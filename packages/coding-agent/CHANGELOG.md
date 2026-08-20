@@ -6,6 +6,10 @@
 
 - Added transcript usage notices for compaction and branch summaries when cache miss notices are enabled.
 
+### Removed
+
+- Removed adaptation of the withdrawn harness manual-action result and snapshot fields.
+
 ### Fixed
 
 - Fixed the subagent example repeatedly prompting before running project-local agents in trusted repositories ([#8261](https://github.com/earendil-works/pi/issues/8261)).
