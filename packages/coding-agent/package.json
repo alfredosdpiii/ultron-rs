@@ -22,6 +22,11 @@
 		"./client": {
 			"types": "./dist/client/index.d.ts",
 			"import": "./dist/client/index.js"
+		},
+		"./experimental/plugin": {
+			"source": "./src/experimental/plugin.ts",
+			"types": "./dist/experimental/plugin.d.ts",
+			"import": "./dist/experimental/plugin.js"
 		}
 	},
 	"files": [
