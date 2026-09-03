@@ -32,6 +32,7 @@
 
 ### Changed
 
+- Changed fullscreen transcript search arrows to underline on hover and capitalized the search placeholder.
 - Changed selectors in `/thinking`, `/model`, `/scoped-models`, `/trust`, per-model thinking settings, and theme settings to keep active options marked while browsing. `/scoped-models` now uses consistent per-item toggles and strikes through unavailable models ([#8900](https://github.com/earendil-works/pi/pull/8900)).
 
 ### Fixed
