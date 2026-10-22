@@ -205,7 +205,7 @@ macro_rules! parity {
 
         #[test]
         fn cli_interactive_cmds_fixture_has_a_test_per_scenario() {
-            let tested = [$($name,)* "usage", "logout", "login-api-key", "rlm-panel"];
+            let tested = [$($name,)* "usage", "logout", "login-api-key", "rlm-panel", "settings-models"];
             for scenario in fixture()["scenarios"].as_array().unwrap() {
                 let name = scenario["name"].as_str().unwrap();
                 assert!(tested.contains(&name), "scenario {name} has no parity test");
@@ -250,11 +250,34 @@ parity! {
     cli_interactive_external_editor_like_ts => "external-editor",
     cli_interactive_external_editor_missing_like_ts => "external-editor-missing",
     cli_interactive_external_editor_failure_keeps_text_like_ts => "external-editor-fails",
-    cli_interactive_settings_models_like_ts => "settings-models",
     cli_interactive_settings_model_thinking_like_ts => "settings-thinking",
     cli_interactive_resume_switch_like_ts => "resume-switch",
     cli_interactive_resume_after_compaction_like_ts => "compact-resume",
     cli_interactive_history_search_empty_matches_ts => "history-search-empty",
+}
+
+/// `/settings` -> Models. Rust-only (wave 47): claude-code models are offered for the Session and sub-agent rows
+/// (their tool lanes run on the Claude subscription), so the Session row no longer says "tool-capable models only",
+/// and an unset Ultron sub-agent model under `ultron claude` is the root's subscription model, not the default model.
+#[test]
+fn cli_interactive_settings_models_like_ts() {
+    replay_with(
+        "settings-models",
+        &[
+            (
+                "  Ultron sub-agent model       default model (none)",
+                "  Ultron sub-agent model       root's subscription model",
+            ),
+            (
+                "  The Session's own model (tool-capable models only). Choosing one switches the running Session",
+                "  The Session's own model. Choosing one switches the running Session now and saves it as the",
+            ),
+            (
+                "  now and saves it as the default, as /model does. Saved default: none.",
+                "  default, as /model does. Saved default: none.",
+            ),
+        ],
+    );
 }
 
 /// `/logout` removes a stored key; TypeScript then refreshes its model catalog over the network, which (offline)

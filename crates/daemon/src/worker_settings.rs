@@ -331,7 +331,7 @@ pub fn values(settings: &SettingsManager, live: &Live, env: Env) -> Result<Map<S
     // `modelSettingValues`: global only.
     let object = |field: &str| global(settings, field).and_then(Value::as_object);
     let rlm = object("rlm");
-    let child = model_ref(rlm.and_then(|r| r.get("childModel"))).filter(|m| !m.starts_with("claude-code/"));
+    let child = model_ref(rlm.and_then(|r| r.get("childModel")));
     let frame_thinking = rlm
         .and_then(|r| r.get("frameThinking"))
         .and_then(Value::as_str)
@@ -438,19 +438,6 @@ fn model_value(key: &str, value: &Value) -> Result<Option<String>, String> {
         Some(v) if is_model_ref(v) => Ok(Some(v.to_string())),
         _ => Err(format!("{key} must be provider/model (or null to clear it)")),
     }
-}
-
-/// A model a sub-agent runs on: the Claude Code CLI provider (no tool calling) is refused.
-fn tool_model_value(key: &str, value: &Value) -> Result<Option<String>, String> {
-    let model = model_value(key, value)?;
-    if let Some(model) = &model
-        && model.starts_with("claude-code/")
-    {
-        return Err(format!(
-            "{key} must be a tool-capable model: {model} runs on the Claude Code CLI, which has no tool calling. Use claude-code models for frames (rlm.frameModel, review.model)."
-        ));
-    }
-    Ok(model)
 }
 
 /// A Claude Code model alias (`claude --model`), from `claude-code/<alias>` or the bare alias; null clears it.
@@ -686,12 +673,7 @@ pub fn apply(
         }
         "rlm.frameModel" | "rlm.childModel" => {
             let field = &key["rlm.".len()..];
-            let model = if field == "childModel" {
-                tool_model_value(key, value)?
-            } else {
-                model_value(key, value)?
-            };
-            nested(settings, "rlm", field, opt(model));
+            nested(settings, "rlm", field, opt(model_value(key, value)?));
             // The runtime reads it for every frame and spawn.
             applied = Applied::Live;
         }
@@ -712,7 +694,7 @@ pub fn apply(
             settings,
             "claudeCode",
             "ultronChildModel",
-            opt(tool_model_value(key, value)?),
+            opt(model_value(key, value)?),
         ),
         "claudeCode.childModel" | "claudeCode.model" => nested(
             settings,

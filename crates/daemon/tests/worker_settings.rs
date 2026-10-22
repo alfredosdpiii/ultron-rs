@@ -59,6 +59,13 @@ fn env_of(case: &Value) -> HashMap<String, String> {
         .unwrap_or_default()
 }
 
+/// Rust-only (wave 47): a claude-code sub-agent model is kept (its tool lanes run on the Claude subscription), where
+/// TypeScript refused or dropped it. Whether the fixture's `key = value` is such a model.
+fn claude_code_child(key: &str, value: &Value) -> bool {
+    matches!(key, "rlm.childModel" | "claudeCode.ultronChildModel")
+        && value.as_str().is_some_and(|v| v.trim().starts_with("claude-code/"))
+}
+
 #[test]
 fn daemon_worker_settings_read_matches_typescript() {
     let tmp = tempfile::tempdir().unwrap();
@@ -75,7 +82,12 @@ fn daemon_worker_settings_read_matches_typescript() {
         };
         let env = env_of(&case["env"]);
         let read = worker_settings::read(&settings, &live, &cwd, &agent, &|name| env.get(name).cloned()).unwrap();
-        assert_eq!(normalized(read, &root), case["read"], "{name}");
+        let mut expected = case["read"].clone();
+        let child = &case["files"]["global"]["rlm"]["childModel"];
+        if claude_code_child("rlm.childModel", child) {
+            expected["values"]["rlm.childModel"] = json!(child.as_str().unwrap().trim());
+        }
+        assert_eq!(normalized(read, &root), expected, "{name}");
     }
 }
 
@@ -93,8 +105,30 @@ fn daemon_worker_settings_apply_matches_typescript() {
         );
         for step in case["steps"].as_array().unwrap() {
             let key = step["key"].as_str().unwrap();
-            let outcome = worker_settings::apply(&mut settings, key, &step["value"], Some(model));
             let label = format!("{name}: {key} = {}", step["value"]);
+            if claude_code_child(key, &step["value"]) {
+                // Saved, as any provider/model; then the fixture's file (which kept the old value) is put back so its
+                // later steps start where TypeScript's did.
+                worker_settings::apply(&mut settings, key, &step["value"], Some(model))
+                    .unwrap_or_else(|e| panic!("{label}: {e}"));
+                let text = std::fs::read_to_string(agent.join("settings.json")).unwrap();
+                let (section, field) = key.split_once('.').unwrap();
+                assert_eq!(
+                    serde_json::from_str::<Value>(&text).unwrap()[section][field],
+                    step["value"],
+                    "{label}"
+                );
+                let previous = &step["file"][section][field];
+                worker_settings::apply(&mut settings, key, previous, Some(model)).unwrap();
+                let text = std::fs::read_to_string(agent.join("settings.json")).unwrap();
+                assert_eq!(
+                    serde_json::from_str::<Value>(&text).unwrap(),
+                    step["file"],
+                    "{label}: restored"
+                );
+                continue;
+            }
+            let outcome = worker_settings::apply(&mut settings, key, &step["value"], Some(model));
             match outcome {
                 Ok((applied, changes)) => {
                     assert_eq!(json!({"applied": applied.name()}), step["result"], "{label}");

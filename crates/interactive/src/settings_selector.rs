@@ -1000,12 +1000,6 @@ impl SettingsSelector {
             )
         };
         let all: Vec<_> = c.models.iter().map(choice).collect();
-        let tools: Vec<_> = c
-            .models
-            .iter()
-            .filter(|m| m.provider != CLAUDE_CODE)
-            .map(choice)
-            .collect();
         let claude: Vec<_> = c
             .models
             .iter()
@@ -1067,10 +1061,10 @@ impl SettingsSelector {
                 "session",
                 "Session model",
                 &format!(
-                    "The Session's own model (tool-capable models only). Choosing one switches the running Session now and saves it as the default, as /model does. Saved default: {session_saved}."
+                    "The Session's own model. Choosing one switches the running Session now and saves it as the default, as /model does. Saved default: {session_saved}."
                 ),
                 format!("{session} (session)"),
-                tools.clone(),
+                all.clone(),
                 c.session.as_ref().map(model_ref),
             ),
             row(
@@ -1096,9 +1090,9 @@ impl SettingsSelector {
             row(
                 "rlm.childModel",
                 "Sub-agent model",
-                "rlm.spawn sub-agents that name no model=. Sub-agents call tools, so claude-code models are not offered.",
+                "rlm.spawn sub-agents that name no model= (claude-code models run on the Claude subscription).",
                 setting(&child, format!("same as session ({session})")),
-                with(plain("", "Same as session model"), &tools),
+                with(plain("", "Same as session model"), &all),
                 child.clone(),
             ),
             row(
@@ -1152,12 +1146,9 @@ impl SettingsSelector {
             row(
                 "claudeCode.ultronChildModel",
                 "Ultron sub-agent model",
-                "Model of Ultron sub-agents under `ultron claude` (children=ultron); tool-capable models only.",
-                setting(
-                    &cc_ultron,
-                    format!("default model ({})", saved_default.unwrap_or_else(|| "none".into())),
-                ),
-                with(plain("", "Default model"), &tools),
+                "Model of Ultron sub-agents under `ultron claude` (children=ultron); unset, they run on the root's Claude subscription model.",
+                setting(&cc_ultron, "root's subscription model".into()),
+                with(plain("", "Root's subscription model"), &all),
                 cc_ultron.clone(),
             ),
         ];
@@ -2034,6 +2025,26 @@ mod tests {
             rust_rows: true,
         };
         SettingsSelector::new(theme, keys, input)
+    }
+
+    /// claude-code models run their tool lanes on the Claude subscription: the Session, sub-agent and `ultron claude`
+    /// Ultron sub-agent rows offer them, and the Ultron sub-agent row's unset value is the root's subscription model.
+    #[test]
+    fn settings_tool_rows_offer_claude_code_models() {
+        let rows = selector(json!({"defaultProvider": "anthropic", "defaultModel": "claude-haiku-4-5"})).model_rows();
+        for id in ["session", "rlm.childModel", "claudeCode.ultronChildModel"] {
+            let row = rows.iter().find(|r| r.id == id).unwrap();
+            assert!(
+                row.choices.iter().any(|c| c.0 == "claude-code/claude-opus-5-5"),
+                "{id}: {:?}",
+                row.choices
+            );
+        }
+        let row = rows.iter().find(|r| r.id == "claudeCode.ultronChildModel").unwrap();
+        assert_eq!(
+            (row.display.as_str(), row.choices[0].1.as_str()),
+            ("root's subscription model", "Root's subscription model")
+        );
     }
 
     /// A durable session (its client marks `durable`): the Models list has the durable default model's row, and the

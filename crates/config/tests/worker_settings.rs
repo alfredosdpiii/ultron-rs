@@ -78,11 +78,16 @@ fn config_worker_settings_getters_match_ts() {
         let label = case["settings"].to_string();
         let m = manager(dir.path(), &case["settings"]);
         let merged: Settings = migrate(case["settings"].as_object().unwrap().clone());
-        assert_eq!(
-            ok(rlm_json(m.rlm_model_settings())),
-            case["rlmModelSettings"],
-            "{label}"
-        );
+        // Rust-only (wave 47): a claude-code child model is kept (its tool lanes run on the Claude subscription);
+        // TypeScript dropped it.
+        let mut expected = case["rlmModelSettings"].clone();
+        if let Some(child) = case["settings"]["rlm"]["childModel"]
+            .as_str()
+            .filter(|m| m.starts_with("claude-code/"))
+        {
+            expected["value"]["childModel"] = json!(child);
+        }
+        assert_eq!(ok(rlm_json(m.rlm_model_settings())), expected, "{label}");
         assert_eq!(
             ok(m.review_model().map_or(Value::Null, Value::from)),
             case["reviewModel"],

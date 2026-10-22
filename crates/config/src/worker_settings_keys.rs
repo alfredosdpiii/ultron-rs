@@ -19,7 +19,7 @@ pub const DISABLED_REQUEST_TIMEOUT_MS: u64 = 2_147_483_647;
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct RlmModelSettings {
     pub frame_model: Option<String>,
-    /// A `claude-code/*` child model is dropped: that provider has no tool calling, and a subagent needs tools.
+    /// A `claude-code/*` child model runs its tool lanes on the Claude subscription (ai::dispatch).
     pub child_model: Option<String>,
     pub frame_thinking: Option<String>,
 }
@@ -193,7 +193,7 @@ impl SettingsManager {
             .map(str::to_string);
         RlmModelSettings {
             frame_model: model_ref(configured.get("frameModel")),
-            child_model: model_ref(configured.get("childModel")).filter(|m| !m.starts_with("claude-code/")),
+            child_model: model_ref(configured.get("childModel")),
             frame_thinking,
         }
     }

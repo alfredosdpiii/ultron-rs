@@ -245,13 +245,14 @@ fn session_core_model_settings_are_read_per_frame_and_per_spawn() {
         serde_json::from_str(text.lines().next().unwrap()).unwrap_or_else(|_| panic!("{text}"))
     };
     assert!(a.prompt("first")["error"].is_null());
-    // `review.model` is the /review frame model (not the old `reviewModel` key); a claude-code child model is dropped.
+    // `review.model` is the /review frame model (not the old `reviewModel` key); a claude-code child model is kept
+    // (its tool lanes run on the Claude subscription).
     assert_eq!(
         models("toolu_models_1"),
         json!({
             "frame": {"model": "anthropic/claude-haiku-4-5", "source": "setting"},
             "review": {"model": "anthropic/claude-opus-4-5", "source": "setting"},
-            "child": {"source": "session"},
+            "child": {"model": "claude-code/sonnet", "source": "setting"},
             "frameThinking": null,
         })
     );
