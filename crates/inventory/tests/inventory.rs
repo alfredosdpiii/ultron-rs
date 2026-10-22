@@ -96,6 +96,7 @@ fn check_row(
 }
 
 #[test]
+#[ignore = "needs the TypeScript sources and the upstream Pi checkout"]
 fn inventory_matches_the_pinned_sources() {
     let tsv = std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("inventory.tsv"))
         .expect("read inventory.tsv");

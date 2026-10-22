@@ -353,6 +353,14 @@ fn loki_hook_matches_loki_py_corpus() {
     check_cases(|name| !OWN_TESTS.iter().any(|p| name.starts_with(p)), 180);
 }
 
+/// The corpus cases whose hook type-checks with the TypeScript compiler: they link `node_modules/typescript` of a
+/// checkout with the TS product (not in this repository), so they run only on request.
+#[test]
+#[ignore = "needs node_modules/typescript from the TypeScript checkout"]
+fn loki_hook_typescript_cases_match_loki_py() {
+    check_selected(|c| c["typescript"] == true, 13);
+}
+
 /// `apply`: a manifest of writes, deletions and moves checked as one candidate, then written (or refused).
 #[test]
 fn loki_apply_transactions_match_loki_py() {
@@ -393,13 +401,21 @@ fn loki_record_events_match_loki_py() {
 }
 
 fn check_cases(select: impl Fn(&str) -> bool, minimum: usize) {
+    // The TypeScript cases need the TS checkout's node_modules: loki_hook_typescript_cases_match_loki_py.
+    check_selected(
+        |c| select(c["name"].as_str().unwrap()) && c["typescript"] != true,
+        minimum,
+    );
+}
+
+fn check_selected(select: impl Fn(&Value) -> bool, minimum: usize) {
     let corpus = corpus();
     let tokens = corpus["tokens"].clone();
     let cases = corpus["cases"].as_array().unwrap();
     let filter = std::env::var("LOKI_CASE").unwrap_or_default();
     let selected: Vec<&Value> = cases
         .iter()
-        .filter(|c| select(c["name"].as_str().unwrap()))
+        .filter(|c| select(c))
         .filter(|c| c["name"].as_str().unwrap().contains(&filter))
         .collect();
     assert!(

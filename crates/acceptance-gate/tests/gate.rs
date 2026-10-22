@@ -153,6 +153,7 @@ fn acceptance_gate_lock_matches_node_script() {
 
 /// The real checkout's lock, computed by both without writing anything.
 #[test]
+#[ignore = "needs the TypeScript checkout's acceptance manifest and vitest evidence"]
 fn acceptance_gate_lock_of_the_checkout_matches_node() {
     let script = format!(
         "const {{ computeLock }} = await import({:?}); process.stdout.write(JSON.stringify(computeLock({:?}), null, '\\t'));",

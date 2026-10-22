@@ -91,6 +91,7 @@ fn records(text: &str) -> Vec<Value> {
 }
 
 #[test]
+#[ignore = "needs the TypeScript product (node packages/coding-agent/src/cli.ts)"]
 fn cli_cross_read_typescript_continues_a_rust_session_and_rust_continues_it_back() {
     if !node_available() {
         eprintln!("skipped: node is not on PATH");
@@ -166,6 +167,7 @@ fn cli_cross_read_typescript_continues_a_rust_session_and_rust_continues_it_back
 }
 
 #[test]
+#[ignore = "needs the TypeScript product (node packages/coding-agent/src/cli.ts)"]
 fn cli_cross_read_typescript_resumes_a_rust_fork_by_id() {
     if !node_available() {
         eprintln!("skipped: node is not on PATH");
