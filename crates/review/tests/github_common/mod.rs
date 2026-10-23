@@ -12,6 +12,7 @@ use regex::Regex;
 use serde_json::{Value, json};
 
 use review::accounts::{Account, TokenStore};
+use review::ban::{BanList, Bans};
 use review::checkout::CheckoutManager;
 use review::github::{PullRef, iso_from_ms};
 use review::ledger::parse_iso_ms;
@@ -577,8 +578,14 @@ impl FakeHub {
                     found
                         .iter()
                         .map(|(owner, repo, number)| {
+                            // GitHub's search results name the author, as `user`.
+                            let author = state
+                                .pulls
+                                .get(&format!("{owner}/{repo}#{number}"))
+                                .map_or_else(String::new, |pull| pull.author.clone());
                             json!({ "number": number,
                                 "repository_url": format!("https://api.github.com/repos/{owner}/{repo}"),
+                                "user": { "login": author },
                                 "pull_request": {} })
                         })
                         .collect()
@@ -1132,6 +1139,7 @@ pub fn setup(settings: Value, engine: Option<Arc<FakeEngine>>) -> Context {
         lessons: None,
         environments: None,
         home: "/home/u".into(),
+        bans: Arc::new(Bans::fixed(BanList::from_value(settings.ban.as_ref()))),
     };
     Context {
         dir,

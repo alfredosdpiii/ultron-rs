@@ -9,7 +9,7 @@ Commands:
   ultron config [-l]               Open TUI to enable/disable package resources (Tab switches scope)
   ultron auth <command>            Print credentials or check provider readiness
   ultron usage [session|--last N]  What a session did: depth (frames, sub-agents), cells, tokens, cost
-  ultron autoreview <command>      Review pull requests automatically as your gh accounts (run, once, review, status)
+  ultron autoreview <command>      Review pull requests automatically as your gh accounts (run, once, review, status, ban, unban, bans)
   ultron schedule <command>        Scheduled prompts of this instance's sessions (list, wake, cancel <id|name>)
   ultron memory import <options>   Import Claude Code or Codex memory notes as Ultron memory records
   ultron migrate <command>         Back up or restore the profile; import or export Pi sessions

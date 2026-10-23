@@ -44,7 +44,13 @@ Commands:
   review <owner/repo#N | URL>  Review one pull request now
   review --repo-dir <dir> --base <sha> --head <sha>
                                Review a local diff with no GitHub access; with --json, one JSON object on stdout
-  status                       Accounts, last poll, queue and recent reviews
+  status                       Accounts, bans (when any), last poll, queue and recent reviews
+  ban <login> [--account <login | host/login | *>]
+                               Never review <login>'s pull requests, nor act on their review requests and mentions;
+                               for every logged-in account (*) unless --account limits it to one
+  unban <login> [--account <login | host/login | *>]
+                               Lift that ban (default: the one for every account, *)
+  bans                         The bans (autoreview.ban), by account
   doctor [--repo owner/name]   The sandbox test execution would use, and a self-check of its isolation; with --repo,
                                the local checkout whose environments would be bound into it
   prepare <repo-dir> [--python 3.x]
@@ -54,8 +60,9 @@ Commands:
 
 Options:
   --dry-run                    Write the would-be review to <agent dir>/autoreview/dry-run/ instead of posting
-  --json                       Machine-readable output (review, once, status)
-  --account <login>            review: the account to review as (default: the first logged-in account of the host)
+  --json                       Machine-readable output (review, once, status, bans)
+  --account <login>            review: the account to review as (default: the first logged-in account of the host);
+                               ban, unban: the reviewing account the ban is for (default: every account, *)
   --model <provider/model>     review: the model of the finder frames (default: autoreview.model, then review.model,
                                then rlm.frameModel, then the default model)
   --verify-model <p/m>         review: the model of the verifier frames (default: the finder model)
@@ -102,7 +109,7 @@ Options:
                                autoreview.deadlineSeconds, none)
 
 Settings (global settings.json): autoreview.accounts, pollSeconds, concurrency, model, verifyModel, budget, dryRun,
-frameConcurrency, modelConcurrency, mode, deepModel, deepThinking, deepRounds, referenceView, verifyBatch, planModel, planThinking, askModel, askThinking, planStyle, planCells, verifyCandidates, prepareEnvs, mise, blockAt, maxComments, runTests, testOwners, testRuns, testTimeoutSeconds, testEnv, testImage, checkoutRoots, guides, thinking, verifyThinking, deadlineSeconds, frameTimeoutSeconds, ack, ackLines, ackArt, signature, learn, skipBots.
+frameConcurrency, modelConcurrency, mode, deepModel, deepThinking, deepRounds, referenceView, verifyBatch, planModel, planThinking, askModel, askThinking, planStyle, planCells, verifyCandidates, prepareEnvs, mise, blockAt, maxComments, runTests, testOwners, testRuns, testTimeoutSeconds, testEnv, testImage, checkoutRoots, guides, thinking, verifyThinking, deadlineSeconds, frameTimeoutSeconds, ack, ackLines, ackArt, signature, learn, skipBots, ban.
 See docs/autoreview.md."
     )
 }
@@ -363,7 +370,9 @@ pub fn parse_args(args: &[String]) -> Result<Parsed, UsageError> {
             _ if arg.starts_with('-') => {
                 return Err(UsageError(format!("unknown option for {APP_NAME} autoreview: {arg}")));
             }
-            _ if parsed.target.is_none() && matches!(parsed.command.as_str(), "review" | "prepare") => {
+            _ if parsed.target.is_none()
+                && matches!(parsed.command.as_str(), "review" | "prepare" | "ban" | "unban") =>
+            {
                 parsed.target = Some(arg.clone());
             }
             _ => return Err(UsageError(format!("unexpected argument: {arg}"))),
@@ -1067,6 +1076,7 @@ fn status(
     parsed: &Parsed,
     config: &AutoreviewConfig,
     state_path: &str,
+    bans: &review::ban::BanList,
     ov: &Overrides,
     out: &mut dyn Write,
 ) -> Result<i32, Failure> {
@@ -1095,6 +1105,7 @@ fn status(
             "recent": serde_json::to_value(&state.recent).unwrap_or(Value::Null),
             "daemon": state.daemon.as_ref().map_or(Value::Null, |d| serde_json::to_value(d).unwrap_or(Value::Null)),
             "dryRun": config.dry_run,
+            "ban": bans.rules().iter().map(|(key, logins)| (key.clone(), json!(logins))).collect::<Map<String, Value>>(),
         });
         writeln!(out, "{}", review::state::to_json_1(&json)).map_err(io)?;
         return Ok(0);
@@ -1144,6 +1155,11 @@ fn status(
             account.host,
             age(entry.last_poll_at.as_deref(), now)
         ));
+    }
+    if !bans.is_empty() {
+        lines.push(String::new());
+        lines.push("Bans (autoreview.ban):".into());
+        lines.extend(crate::autoreview_ban::ban_lines(bans));
     }
     let queue = state.queue.clone().unwrap_or_default();
     lines.push(String::new());
@@ -1577,6 +1593,23 @@ fn reviewer_deps(
             now: Arc::new(now_ms),
         })),
         home: env.home.display().to_string(),
+        // Re-read from the global settings file every poll and before each decision and model turn.
+        bans: Arc::new(review::ban::Bans::reloading(ban_loader(env))),
+    })
+}
+
+/// `autoreview.ban` as the global settings file says now (a repository's settings cannot set it).
+fn ban_loader(env: &Env) -> review::ban::BanLoader {
+    let (cwd, agent_dir) = (env.cwd.clone(), env.agent_dir());
+    Arc::new(move || {
+        let mut manager = config::settings::SettingsManager::create(&cwd, &agent_dir, false);
+        // An unreadable file (caught mid-write, invalid JSON) keeps the bans last read.
+        if !manager.drain_errors().is_empty() {
+            return None;
+        }
+        Some(review::ban::BanList::from_value(
+            manager.autoreview_settings().get("ban"),
+        ))
     })
 }
 
@@ -1809,6 +1842,38 @@ fn service(parsed: &Parsed, config: &AutoreviewConfig, env: &Env, out: &mut dyn 
     Ok(0)
 }
 
+/// `ban <login> [--account <a>]`, `unban <login> [--account <a>]` and `bans [--json]`: `autoreview.ban` in the
+/// global settings file.
+fn ban_command(parsed: &Parsed, env: &Env, out: &mut dyn Write) -> Result<i32, Failure> {
+    let io = |error: std::io::Error| Failure::Error(error.to_string());
+    if parsed.command == "bans" {
+        let list = crate::autoreview_ban::current(env);
+        if parsed.json {
+            let mut ban = Map::new();
+            for (key, logins) in list.rules() {
+                ban.insert(key.clone(), json!(logins));
+            }
+            writeln!(out, "{}", session_file::js::stringify(&Value::Object(ban))).map_err(io)?;
+        } else {
+            let mut lines = vec!["Bans (autoreview.ban):".to_string()];
+            lines.extend(crate::autoreview_ban::ban_lines(&list));
+            writeln!(out, "{}", lines.join("\n")).map_err(io)?;
+        }
+        return Ok(0);
+    }
+    let login = parsed
+        .target
+        .as_deref()
+        .ok_or_else(|| Failure::Usage(format!("{} needs a GitHub login", parsed.command)))?;
+    let message = crate::autoreview_ban::change(env, login, parsed.account.as_deref(), parsed.command == "ban")
+        .map_err(|refused| match refused {
+            crate::autoreview_ban::Refused::Usage(message) => Failure::Usage(message),
+            crate::autoreview_ban::Refused::Error(message) => Failure::Error(message),
+        })?;
+    writeln!(out, "{message}").map_err(io)?;
+    Ok(0)
+}
+
 fn execute(
     parsed: &Parsed,
     env: &Env,
@@ -1816,6 +1881,9 @@ fn execute(
     out: &mut dyn Write,
     err: &mut dyn Write,
 ) -> Result<i32, Failure> {
+    if matches!(parsed.command.as_str(), "ban" | "unban" | "bans") {
+        return ban_command(parsed, env, out);
+    }
     let saved = saved_settings(env);
     let config = configure(parsed, &saved, env);
     let process_env: HashMap<String, String> = ["ULTRON_AUTOREVIEW_CACHE_DIR", "XDG_CACHE_HOME"]
@@ -1841,7 +1909,10 @@ fn execute(
             return daemon_command(parsed, &config, &saved, env, &paths, ov, out);
         }
         "install" | "uninstall" => return service(parsed, &config, env, out),
-        "status" => return status(parsed, &config, &paths.state, ov, out),
+        "status" => {
+            let bans = crate::autoreview_ban::current(env);
+            return status(parsed, &config, &paths.state, &bans, ov, out);
+        }
         "doctor" => return doctor(parsed, &config, &model_lines(&config), env, &paths.cache, ov, out),
         "prepare" => return prepare_command(parsed, &config, env, &paths.cache, ov, out, err),
         other => {

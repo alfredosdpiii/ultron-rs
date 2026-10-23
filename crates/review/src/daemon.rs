@@ -31,6 +31,7 @@ use indexmap::{IndexMap, IndexSet};
 use regex::Regex;
 
 use crate::accounts::{Account, account_key};
+use crate::ban::{BanList, banned_author, banned_reason};
 use crate::github::{Clock, Error, GitHub, PullRef, iso_from_ms, pull_key};
 use crate::js::{Num, head16};
 use crate::ledger::parse_iso_ms;
@@ -68,6 +69,8 @@ pub struct Discovered {
     pub reasons: Vec<String>,
     /// The notification's update time (epoch ms), when a notification led here.
     pub notified_at: Option<i64>,
+    /// The pull request's author, when a search result named it (a notification does not).
+    pub author: Option<String>,
 }
 
 /// Remove files in `dirs` last modified more than `days` ago. Never fails: a directory that cannot be read (or a
@@ -135,12 +138,16 @@ pub fn discover(
     blocked: &[PullRef],
 ) -> Result<(Vec<Discovered>, AccountState), Error> {
     let mut found: IndexMap<String, Discovered> = IndexMap::new();
-    let mut add = |pull: PullRef, reason: &str, updated_at: Option<&str>| {
+    let mut add = |pull: PullRef, reason: &str, updated_at: Option<&str>, author: Option<String>| {
         let entry = found.entry(pull_key(&pull)).or_insert_with(|| Discovered {
             pull,
             reasons: Vec::new(),
             notified_at: None,
+            author: None,
         });
+        if let Some(author) = author.filter(|author| !author.is_empty()) {
+            entry.author = Some(author);
+        }
         if !entry.reasons.iter().any(|known| known == reason) {
             entry.reasons.push(reason.into());
         }
@@ -154,19 +161,23 @@ pub fn discover(
     let since = iso_from_ms(last.map_or(now - FIRST_POLL_WINDOW_MS, |last| last - SINCE_OVERLAP_MS));
     let page = github.notifications(&since, state.last_modified.as_deref(), None)?;
     for notified in page.pulls {
-        add(notified.pull, &notified.reason, Some(&notified.updated_at));
+        add(notified.pull, &notified.reason, Some(&notified.updated_at), None);
     }
     if search {
         let login = github.account.login.clone();
         let day = iso_from_ms(now - SEARCH_WINDOW_MS)[..10].to_string();
-        for found in github.search(&format!("is:open is:pr review-requested:{login} archived:false"))? {
-            add(found, "review_requested", None);
+        for (found, author) in
+            github.search_with_authors(&format!("is:open is:pr review-requested:{login} archived:false"))?
+        {
+            add(found, "review_requested", None, Some(author));
         }
-        for found in github.search(&format!("is:pr mentions:{login} updated:>={day} archived:false"))? {
-            add(found, "search_mention", None);
+        for (found, author) in
+            github.search_with_authors(&format!("is:pr mentions:{login} updated:>={day} archived:false"))?
+        {
+            add(found, "search_mention", None, Some(author));
         }
         for pull in blocked {
-            add(pull.clone(), "requested_changes", None);
+            add(pull.clone(), "requested_changes", None, None);
         }
     }
     let mut next = state.clone();
@@ -284,6 +295,10 @@ struct Inner {
     cycles: u64,
     poll_seconds: f64,
     pruned_at: Option<i64>,
+    /// Pull request authors seen (by pull key): a banned one is dropped before it is decided.
+    authors: HashMap<String, String>,
+    /// The banned pull requests already logged, by task key: logged once, not every poll.
+    banned_noted: HashSet<String>,
     /// Bumped by every finished task, ended sleep and stop: what the loop waits on.
     events: u64,
     stopped: bool,
@@ -346,6 +361,34 @@ impl Shared {
 
     fn enqueue(&self, candidate: Candidate, not_before: f64) {
         self.lock().enqueue(candidate, not_before);
+    }
+
+    /// A pull request skipped because its author is banned for the account: logged once per account and pull
+    /// request while the daemon runs (the skip recurs on every poll that finds it).
+    fn note_banned(&self, inner: &mut Inner, account: &Account, pull: &PullRef, author: &str) {
+        if inner.banned_noted.insert(task_key(account, pull)) {
+            self.log(&format!(
+                "{} as {}: skipped ({})",
+                pull_key(pull),
+                account.login,
+                banned_reason(author)
+            ));
+        }
+    }
+
+    /// An outcome that skipped a banned author: the author remembered, the skip noted once. False for any other.
+    fn banned_outcome(&self, candidate: &Candidate, outcome: &Outcome) -> bool {
+        let Some(author) = outcome
+            .reason()
+            .filter(|_| outcome.kind() == "skipped")
+            .and_then(banned_author)
+        else {
+            return false;
+        };
+        let mut inner = self.lock();
+        inner.authors.insert(pull_key(&candidate.pull), author.to_string());
+        self.note_banned(&mut inner, &candidate.account, &candidate.pull, author);
+        true
     }
 
     /// An account's failure: a rate limit pauses it until GitHub's time. Noted in the state as `lastError`.
@@ -433,6 +476,7 @@ impl Shared {
         let candidate = prepared.candidate.clone();
         match run_review(&self.deps.reviewer, &prepared) {
             Ok(outcome) => {
+                self.banned_outcome(&candidate, &outcome);
                 if matches!(outcome, Outcome::Requeue(_)) {
                     let mut again = candidate.clone();
                     again.picked_at = self.now();
@@ -447,7 +491,9 @@ impl Shared {
     fn decide(&self, key: &str, candidate: Candidate) {
         match prepare_pull(&self.deps.reviewer, &candidate, ReviewOptions::default()) {
             Ok(Preparation::Done(outcome)) => {
-                if let Outcome::Skipped(reason) = &outcome {
+                if !self.banned_outcome(&candidate, &outcome)
+                    && let Outcome::Skipped(reason) = &outcome
+                {
                     self.log(&format!(
                         "{} as {}: skipped ({reason})",
                         pull_key(&candidate.pull),
@@ -457,7 +503,11 @@ impl Shared {
                 self.report(&candidate, Reported::Outcome(outcome));
             }
             Ok(Preparation::Due(prepared)) => {
-                self.lock().queue.insert(key.into(), *prepared);
+                let mut inner = self.lock();
+                inner
+                    .authors
+                    .insert(pull_key(&prepared.candidate.pull), prepared.pull.author.clone());
+                inner.queue.insert(key.into(), *prepared);
             }
             Err(error) => self.retry(candidate, error, "the decision"),
         }
@@ -524,6 +574,8 @@ impl Daemon {
                     cycles: 0,
                     poll_seconds,
                     pruned_at: None,
+                    authors: HashMap::new(),
+                    banned_noted: HashSet::new(),
                     events: 0,
                     stopped: false,
                 }),
@@ -587,6 +639,9 @@ impl Daemon {
             search
         };
         let deps = &shared.deps.reviewer;
+        // `autoreview.ban` as it is now: what waits and what is found by a banned author is dropped.
+        let bans = deps.bans.refresh();
+        self.drop_banned(&bans);
         for account in &shared.deps.accounts {
             let key = account_key(account);
             let now = shared.now();
@@ -623,6 +678,16 @@ impl Daemon {
                         inner.poll_seconds = deps.config.poll_seconds.0.max(interval.0);
                     }
                     for pull in pulls {
+                        let pull_name = pull_key(&pull.pull);
+                        if let Some(author) = &pull.author {
+                            inner.authors.insert(pull_name.clone(), author.clone());
+                        }
+                        if let Some(author) = inner.authors.get(&pull_name).cloned()
+                            && bans.banned(account, &author).is_some()
+                        {
+                            shared.note_banned(&mut inner, account, &pull.pull, &author);
+                            continue;
+                        }
                         inner.enqueue(
                             Candidate {
                                 account: account.clone(),
@@ -640,10 +705,51 @@ impl Daemon {
         }
     }
 
+    /// Drop what waits (to be decided, or for a review slot) by an author `bans` bans for its account: the item is
+    /// reported skipped, its acknowledgement stays, and no review of it starts.
+    fn drop_banned(&self, bans: &BanList) {
+        if bans.is_empty() {
+            return;
+        }
+        let shared = &self.shared;
+        let mut dropped = Vec::new();
+        {
+            let mut inner = shared.lock();
+            let authors = inner.authors.clone();
+            let waiting: Vec<(String, Candidate, String)> = inner
+                .candidates
+                .iter()
+                .filter_map(|(key, waiting)| {
+                    let author = authors.get(&pull_key(&waiting.candidate.pull))?;
+                    Some((key.clone(), waiting.candidate.clone(), author.clone()))
+                })
+                .chain(
+                    inner
+                        .queue
+                        .iter()
+                        .map(|(key, prepared)| (key.clone(), prepared.candidate.clone(), prepared.pull.author.clone())),
+                )
+                .collect();
+            for (key, candidate, author) in waiting {
+                if bans.banned(&candidate.account, &author).is_none() {
+                    continue;
+                }
+                inner.candidates.shift_remove(&key);
+                inner.queue.shift_remove(&key);
+                shared.note_banned(&mut inner, &candidate.account, &candidate.pull, &author);
+                dropped.push((candidate, author));
+            }
+        }
+        for (candidate, author) in dropped {
+            shared.report(&candidate, Reported::Outcome(Outcome::Skipped(banned_reason(&author))));
+        }
+    }
+
     /// Decide and acknowledge every candidate that is due, all at once: acknowledgements do not wait for a review
     /// slot. What is due for a review joins the queue.
     pub fn prepare(&self) {
         let now = self.shared.now() as f64;
+        let bans = self.shared.deps.reviewer.bans.get();
         let mut inner = self.shared.lock();
         let keys: Vec<String> = inner.candidates.keys().cloned().collect();
         for key in keys {
@@ -663,6 +769,14 @@ impl Daemon {
             let Some(waiting) = inner.candidates.shift_remove(&key) else {
                 continue;
             };
+            // An author known to be banned for the account: nothing is fetched or posted.
+            if let Some(author) = inner.authors.get(&pull_key(&waiting.candidate.pull)).cloned()
+                && bans.banned(&waiting.candidate.account, &author).is_some()
+            {
+                self.shared
+                    .note_banned(&mut inner, &waiting.candidate.account, &waiting.candidate.pull, &author);
+                continue;
+            }
             inner.preparing.insert(key.clone());
             let shared = self.shared.clone();
             std::thread::spawn(move || {

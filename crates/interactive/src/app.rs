@@ -750,7 +750,7 @@ fn slash_commands(models: &[ModelInfo], qol: &QolSettings) -> Vec<SlashCommand> 
     // `/engineering` and `/autoreview`: their fixed arguments, by prefix (client-tui-pi-commands.ts).
     let fixed: [(&str, &'static [&'static str]); 4] = [
         ("engineering", &["true", "false"]),
-        ("autoreview", &["on", "off"]),
+        ("autoreview", &["on", "off", "ban", "unban"]),
         ("persona", &["on", "off", "auto", "ultron", "none"]),
         ("keepgoing", &["on", "off"]),
     ];
@@ -2939,12 +2939,28 @@ impl App {
             "schedules" => self
                 .client
                 .inspect("/schedules", "schedule.list", serde_json::json!({"text": true})),
-            "autoreview" => match args.trim().to_lowercase().as_str() {
-                "" => self.client.autoreview(AutoreviewRequest::Status),
-                "on" => self.client.autoreview(AutoreviewRequest::Accounts),
-                "off" => self.client.autoreview(AutoreviewRequest::Off),
-                _ => self.show_status("Usage: /autoreview on|off"),
-            },
+            "autoreview" => {
+                let words: Vec<&str> = args.split_whitespace().collect();
+                let verb = words.first().map(|word| word.to_lowercase());
+                let ban = |login: &str, account: Option<&str>| (login.to_string(), account.map(str::to_string));
+                let target = match &words[..] {
+                    [_, login] => Some(ban(login, None)),
+                    [_, login, "--account", account] => Some(ban(login, Some(account))),
+                    _ => None,
+                };
+                match (verb.as_deref(), target) {
+                    (None, _) => self.client.autoreview(AutoreviewRequest::Status),
+                    (Some("on"), _) if words.len() == 1 => self.client.autoreview(AutoreviewRequest::Accounts),
+                    (Some("off"), _) if words.len() == 1 => self.client.autoreview(AutoreviewRequest::Off),
+                    (Some("ban"), Some((login, account))) => {
+                        self.client.autoreview(AutoreviewRequest::Ban { login, account })
+                    }
+                    (Some("unban"), Some((login, account))) => {
+                        self.client.autoreview(AutoreviewRequest::Unban { login, account })
+                    }
+                    _ => self.show_status("Usage: /autoreview on|off, or ban|unban <login> [--account <login>]"),
+                }
+            }
             "compact" => {
                 self.show_status("Compacting…");
                 self.client.compact((!args.is_empty()).then_some(args));

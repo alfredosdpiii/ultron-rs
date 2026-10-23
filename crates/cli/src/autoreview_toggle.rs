@@ -52,6 +52,15 @@ fn run_line(run: Runner, line: &str) -> Option<String> {
     }
 }
 
+/// `/autoreview ban|unban <login> [--account <login>]`: what changed, or why nothing did.
+fn ban(env: &Env, login: &str, account: Option<&str>, add: bool) -> LaneEvent {
+    use crate::autoreview_ban::Refused;
+    LaneEvent::Status(match crate::autoreview_ban::change(env, login, account, add) {
+        Ok(message) => message,
+        Err(Refused::Usage(message) | Refused::Error(message)) => format!("Error: {message}"),
+    })
+}
+
 /// Answers one `/autoreview` request; `platform` is upstream's (`linux`, `darwin`, ...).
 pub fn autoreview(request: AutoreviewRequest, env: &Env, platform: &str, run: Runner) -> LaneEvent {
     let status = LaneEvent::Status;
@@ -75,11 +84,14 @@ pub fn autoreview(request: AutoreviewRequest, env: &Env, platform: &str, run: Ru
                 _ => "not installed".into(),
             };
             let on = saved.get("enabled") != Some(&Value::Bool(false));
+            let bans = crate::autoreview_ban::summary(&review::ban::BanList::from_value(saved.get("ban")));
             status(format!(
-                "Autoreview is {}: reviewing as {reviewing_as}; service {installed}. /autoreview on|off",
+                "Autoreview is {}: reviewing as {reviewing_as}; service {installed}; {bans}. /autoreview on|off, ban|unban <login>",
                 if on { "on" } else { "off" }
             ))
         }
+        AutoreviewRequest::Ban { login, account } => ban(env, &login, account.as_deref(), true),
+        AutoreviewRequest::Unban { login, account } => ban(env, &login, account.as_deref(), false),
         AutoreviewRequest::Accounts => match run("gh", &["auth", "status", "--json", "hosts"]) {
             Err(_) => status(
                 "Autoreview needs the GitHub CLI (gh): install it and run gh auth login, then /autoreview on".into(),

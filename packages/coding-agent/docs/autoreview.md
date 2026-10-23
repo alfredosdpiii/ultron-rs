@@ -38,7 +38,10 @@ Posting is on by default. `--dry-run` (or the setting `autoreview.dryRun`) write
 | `ultron autoreview review --repo-dir <dir> --base <sha> --head <sha>` | Review the diff between two commits of a local repository, with no GitHub access. `--json` prints one JSON object on stdout (logs go to stderr); `--mode`, `--model`, `--verify-model`, `--deep-model`, `--budget`, `--thinking`, `--verify-thinking`, `--deep-thinking`, `--plan-model`, `--plan-thinking`, `--ask-model`, `--ask-thinking`, `--deadline`, `--block-at`, `--max-comments`, `--guides` and `--checkout-roots` (with `--repo owner/name`) override the settings; `--dump-program` and `--program` save and replay a compiled review program (see below). |
 | `ultron autoreview doctor` | The sandbox that test execution would use, with a self-check of its isolation; `--repo owner/name` adds the local checkout and the prepared environment that would serve its tests. |
 | `ultron autoreview prepare <repo-dir> [--python 3.x]` | Build the repository's test environment now, with the network, into the cache the sandbox binds read-only (see below). |
-| `ultron autoreview status` | Accounts, last poll, queue, and recent reviews with their timings and cost. `--json` for the raw state. |
+| `ultron autoreview status` | Accounts, bans, last poll, queue, and recent reviews with their timings and cost. `--json` for the raw state. |
+| `ultron autoreview ban <login> [--account <login \| host/login \| *>]` | Never review `<login>`'s pull requests, nor act on their review requests and mentions (see [Bans](#bans)). Without `--account`, for every logged-in account (`*`); `--account` limits it to one. |
+| `ultron autoreview unban <login> [--account ...]` | Lift a ban (without `--account`, the one for every account). |
+| `ultron autoreview bans` | The bans, by account. `--json` for the `autoreview.ban` object. |
 | `ultron autoreview install` / `uninstall` | Write or remove a user service that runs `ultron autoreview run` (see below). |
 
 ## What triggers a review
@@ -71,7 +74,29 @@ It is skipped when:
 - it is a draft, unless the account is explicitly @mentioned;
 - a bot opened it (Dependabot, Renovate), unless the account is @mentioned (`autoreview.skipBots: false` reviews them too);
 - it is closed or merged, unless it was freshly mentioned (it then gets a comment-only review and no
-  acknowledgement).
+  acknowledgement);
+- its author is banned for the account (see [Bans](#bans)).
+
+### Bans
+
+`autoreview.ban` maps a reviewing account to the GitHub logins whose pull requests it never reviews, comments on or
+re-reviews, however they come up: a review request, a mention, a push after a review, or `ultron autoreview review`
+(which refuses, naming the ban). A key is the account's login, its `host/login`, or `*` for every account; keys and
+logins compare case-insensitively.
+
+```json
+{ "autoreview": { "ban": { "bryandlp-boost": ["lepmoran-boostkh"], "*": ["some-spammer"] } } }
+```
+
+A banned login's review request (who requested is read from the pull request's events) or mention on somebody else's
+pull request asks for nothing; that pull request is still reviewed when something else asks. The setting is global
+only, and a running `ultron autoreview run` reads it again every poll and before each decision and model turn: a
+banned pull request that waits for a review slot is dropped before its review starts, and one whose author is banned
+while its review runs is not posted (the running model turn finishes first). Pull requests found by a search come with
+their author and are dropped before anything is read; one found by a notification is read once (`GET` of the pull
+request), then remembered. Each skip is logged once per account and pull request while the daemon runs
+(`skipped (author banned: <login>)`). `ultron autoreview ban`, `unban` and `bans`, or `/autoreview ban <login>` and
+`/autoreview unban <login>` in the TUI, change and list them.
 
 A commit is tried three times. After the third failure one comment says it could not be reviewed, and that commit is
 left alone until a new commit or a new mention.
@@ -207,6 +232,7 @@ reviewed.
 | `autoreview.signature` | `true` | End the summary with `Automated review by Ultron`. |
 | `autoreview.referenceView` | `"investigators"` | Who sees the structural reference's rendering as a view: `investigators`, `all` frames, or `none` (lookups and structural findings stay). |
 | `autoreview.skipBots` | `true` | Skip pull requests a bot opened (Dependabot, Renovate: GitHub's `Bot` user type or a `[bot]` login) unless the account is @mentioned on them. |
+| `autoreview.ban` | none | By reviewing account (login, `host/login` or `*`), the logins whose pull requests, review requests and mentions it ignores; see [Bans](#bans). |
 | `autoreview.learn` | `true` | Learn from what becomes of posted findings, per repository (see [Learning from the fate of findings](#learning-from-the-fate-of-findings)); retained in Hindsight when memory is on. |
 
 ```json

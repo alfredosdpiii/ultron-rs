@@ -58,7 +58,7 @@ fn cli_autoreview_toggle_on_and_off_write_the_settings_and_the_user_service() {
     let text = status(autoreview(AutoreviewRequest::Status, &env, "linux", &ok));
     assert_eq!(
         text,
-        "Autoreview is on: reviewing as every logged-in gh account; service not installed. /autoreview on|off"
+        "Autoreview is on: reviewing as every logged-in gh account; service not installed; no bans. /autoreview on|off, ban|unban <login>"
     );
 
     match autoreview(AutoreviewRequest::Accounts, &env, "linux", &ok) {
@@ -105,7 +105,7 @@ fn cli_autoreview_toggle_on_and_off_write_the_settings_and_the_user_service() {
     assert_eq!(
         text,
         format!(
-            "Autoreview is on: reviewing as ghe.example.com/work; service installed ({}). /autoreview on|off",
+            "Autoreview is on: reviewing as ghe.example.com/work; service installed ({}); no bans. /autoreview on|off, ban|unban <login>",
             unit.display()
         )
     );
@@ -168,5 +168,57 @@ fn cli_autoreview_toggle_reports_a_missing_gh_a_failed_start_and_no_service() {
     assert_eq!(
         status(autoreview(on(), &env, "win32", &failing)),
         "Autoreview on, reviewing as github.com/octo. No user service on win32: run ultron autoreview run under your own supervisor"
+    );
+}
+
+/// `/autoreview ban|unban <login> [--account <login>]` (Rust only): `autoreview.ban` in the global settings, and the
+/// status names the bans.
+#[test]
+fn cli_autoreview_toggle_ban_and_unban_write_the_ban_list() {
+    let dir = tempfile::tempdir().unwrap();
+    let env = env_for(dir.path());
+    let never = |command: &str, _: &[&str]| -> Result<Ran, String> { panic!("{command} was run") };
+    let request = |request: AutoreviewRequest| status(autoreview(request, &env, "linux", &never));
+    let ban = |login: &str, account: Option<&str>| AutoreviewRequest::Ban {
+        login: login.into(),
+        account: account.map(String::from),
+    };
+    assert_eq!(
+        request(ban("lepmoran-boostkh", Some("bryandlp-boost"))),
+        "Banned lepmoran-boostkh for bryandlp-boost: autoreview does not review their pull requests there, nor act on their review requests and mentions"
+    );
+    assert_eq!(
+        request(ban("@spammer", None)),
+        "Banned spammer for every account (*): autoreview does not review their pull requests there, nor act on their review requests and mentions"
+    );
+    assert_eq!(
+        saved(dir.path()),
+        json!({"ban": {"bryandlp-boost": ["lepmoran-boostkh"], "*": ["spammer"]}})
+    );
+    assert_eq!(
+        request(AutoreviewRequest::Status),
+        "Autoreview is on: reviewing as every logged-in gh account; service not installed; banned: lepmoran-boostkh for bryandlp-boost; spammer for every account (*). /autoreview on|off, ban|unban <login>"
+    );
+    assert_eq!(
+        request(AutoreviewRequest::Unban {
+            login: "lepmoran-boostkh".into(),
+            account: None
+        }),
+        "Error: lepmoran-boostkh is not banned for every account (*); it is banned for bryandlp-boost (--account bryandlp-boost)"
+    );
+    assert_eq!(
+        request(ban("not a login", None)),
+        "Error: not a GitHub login: \"not a login\""
+    );
+    assert_eq!(
+        request(AutoreviewRequest::Unban {
+            login: "SPAMMER".into(),
+            account: None
+        }),
+        "Unbanned SPAMMER for every account (*)"
+    );
+    assert_eq!(
+        saved(dir.path()),
+        json!({"ban": {"bryandlp-boost": ["lepmoran-boostkh"]}})
     );
 }
