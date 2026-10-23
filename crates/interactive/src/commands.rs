@@ -59,7 +59,7 @@ pub const QOL_COMMANDS: [CommandSpec; 5] = [
 /// easter eggs.
 pub const PI_COMMANDS: [&str; 3] = ["bug", "arminsayshi", "dementedelves"];
 
-pub const COMMANDS: [CommandSpec; 38] = [
+pub const COMMANDS: [CommandSpec; 39] = [
     c("name", "<name>", "Set session display name"),
     c("session", "", "Show session info and stats"),
     c(
@@ -105,6 +105,7 @@ pub const COMMANDS: [CommandSpec; 38] = [
     c("scoped-models", "", "Enable/disable models for Ctrl+P cycling"),
     c("debug", "", "Write a debug log (TUI, Session worker and server state)"),
     c("new", "", "Start a new session"),
+    c("clear", "", "Clear the conversation: start a new session"),
     c(
         "rlm",
         "",

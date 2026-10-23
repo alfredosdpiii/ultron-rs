@@ -218,7 +218,7 @@ pub enum LoginStep {
 pub enum LaneEvent {
     /// `<agentDir>/keybindings.json` read again (`/reload`): the user bindings every key manager resolves.
     Keybindings(tui::keybindings_file::UserBindings),
-    /// A session was opened (startup, `/new`, resume).
+    /// A session was opened (startup, `/new`, `/clear`, resume).
     Opened(SessionOpened),
     /// The opened session's lane entries on its branch (format-4 entries: messages, compactions with their retained
     /// tails, branch summaries); the transcript is drawn from them as the client TUI draws its lane snapshot.

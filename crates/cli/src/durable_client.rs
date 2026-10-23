@@ -110,6 +110,29 @@ pub fn home_session(instance_dir: &std::path::Path) -> Option<String> {
         .filter(|id| !id.is_empty())
 }
 
+/// The durable instance's directory when this process is `ultron-s` ([`run_home`]): its TUI's new sessions can move
+/// the home pointer ([`follow_home`]).
+static HOME_INSTANCE: std::sync::OnceLock<std::path::PathBuf> = std::sync::OnceLock::new();
+
+/// The TUI started session `new` in place of `old` (`/new`, `/clear`): under `ultron-s`, when `old` is the home
+/// session, `new` becomes it, so a later bare `ultron-s` opens it. Another session (`ultron-s --session <id>`) leaves
+/// the pointer alone; the old session stays on disk either way.
+pub fn follow_home(old: &str, new: &str) -> Result<(), String> {
+    match HOME_INSTANCE.get() {
+        Some(dir) if home_session(dir).as_deref() == Some(old) => set_home(dir, new),
+        _ => Ok(()),
+    }
+}
+
+/// herdr resumes the pane through `ultron-s` (the home session, as recorded when it asks) or
+/// `ultron-s --session <id>`.
+fn resume_through_home(instance_dir: &std::path::Path) {
+    let dir = instance_dir.to_path_buf();
+    crate::herdr_report::set_resume_override(move |session_id| {
+        Some(home_resume_argv(home_session(&dir).as_deref(), session_id))
+    });
+}
+
 fn set_home(instance_dir: &std::path::Path, id: &str) -> Result<(), String> {
     std::fs::create_dir_all(instance_dir).map_err(|e| e.to_string())?;
     let temp = instance_dir.join(format!("{HOME_FILE}.{}.tmp", std::process::id()));
@@ -186,6 +209,7 @@ fn home_inner(args: &[String], env: &Env, out: &mut dyn Write, err: &mut dyn Wri
     }
     let instance = crate::instance(env, true);
     instance.prepare().map_err(|e| e.to_string())?;
+    let _ = HOME_INSTANCE.set(instance.dir.clone());
     let session_dir = crate::session::session_directory_of(None, env, &instance);
     let mut sessions = daemon::catalog::list(&session_dir);
     let home = home_session(&instance.dir).filter(|id| sessions.iter().any(|m| &m.id == id));
@@ -214,10 +238,7 @@ fn home_inner(args: &[String], env: &Env, out: &mut dyn Write, err: &mut dyn Wri
                 None => Vec::new(),
             };
         }
-        let current_home = home_session(&instance.dir);
-        crate::herdr_report::set_resume_override(move |session_id| {
-            Some(home_resume_argv(current_home.as_deref(), session_id))
-        });
+        resume_through_home(&instance.dir);
         selector.extend(caller_args(&rest, &env.cwd, &env.home));
         let at_home = Env {
             cwd: env.home.clone(),
@@ -244,11 +265,7 @@ fn home_inner(args: &[String], env: &Env, out: &mut dyn Write, err: &mut dyn Wri
             }
         },
     };
-    // herdr resumes the pane through `ultron-s` (the home session) or `ultron-s --session <id>`.
-    let current_home = home_session(&instance.dir);
-    crate::herdr_report::set_resume_override(move |session_id| {
-        Some(home_resume_argv(current_home.as_deref(), session_id))
-    });
+    resume_through_home(&instance.dir);
     let mut client_args = vec!["--session-id".to_string(), id];
     // The client runs in the home directory: what names a file of the caller's directory is resolved there first.
     client_args.extend(caller_args(&rest, &env.cwd, &env.home));

@@ -57,6 +57,8 @@ pub struct Mock {
     pub gate: Arc<Gate>,
     pub title_gate: Arc<Gate>,
     pub title_requests: Arc<AtomicUsize>,
+    /// The bodies of the requests that took a scripted reply, in arrival order.
+    pub requests: Arc<Mutex<Vec<String>>>,
 }
 
 /// Wait until `gate` is released once more than `ticket` times.
@@ -76,17 +78,24 @@ impl Mock {
         let title_gate = Arc::new(Gate::default());
         let title_requests = Arc::new(AtomicUsize::new(0));
         let next = Arc::new(AtomicUsize::new(0));
-        let (g, t, tg) = (gate.clone(), title_requests.clone(), title_gate.clone());
+        let requests = Arc::new(Mutex::new(Vec::new()));
+        let (g, t, tg, r) = (
+            gate.clone(),
+            title_requests.clone(),
+            title_gate.clone(),
+            requests.clone(),
+        );
         std::thread::spawn(move || {
             for stream in listener.incoming() {
                 let Ok(mut stream) = stream else { return };
-                let (replies, gate, next, titles, title, title_gate) = (
+                let (replies, gate, next, titles, title, title_gate, requests) = (
                     replies.clone(),
                     g.clone(),
                     next.clone(),
                     t.clone(),
                     title.clone(),
                     tg.clone(),
+                    r.clone(),
                 );
                 std::thread::spawn(move || {
                     let mut reader = BufReader::new(stream.try_clone().unwrap());
@@ -118,6 +127,7 @@ impl Mock {
                         }
                         text_reply(&text)
                     } else {
+                        requests.lock().unwrap().push(body.to_string());
                         let i = next.fetch_add(1, Ordering::SeqCst);
                         replies
                             .get(i)
@@ -150,7 +160,13 @@ impl Mock {
             gate,
             title_gate,
             title_requests,
+            requests,
         }
+    }
+
+    /// The bodies of the requests that took a scripted reply so far.
+    pub fn requests(&self) -> Vec<String> {
+        self.requests.lock().unwrap().clone()
     }
 
     pub fn release_title(&self) {

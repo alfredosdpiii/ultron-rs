@@ -1918,3 +1918,34 @@ fn interactive_commands_schedules_lists_and_a_fired_schedule_is_one_line() {
     assert!(s.contains("watch it") && s.contains("scheduled: build (run 1)"), "{s}");
     assert!(!s.contains("check the build"), "{s}");
 }
+
+/// `/clear` is `/new` (Claude Code's `/clear`): offered in the completion list with its description, it aborts a
+/// running turn first, then starts a new session; idle, it only starts one. The new session's `Opened` clears the
+/// chat.
+#[test]
+fn interactive_commands_clear_aborts_the_turn_and_starts_a_new_session() {
+    let (mut listing, _) = app();
+    typed(&mut listing, "/clea");
+    let s = screen(&mut listing);
+    assert!(
+        s.contains("clear") && s.contains("Clear the conversation: start a new session"),
+        "{s}"
+    );
+    let (mut app, c) = app();
+    app.apply(LaneEvent::Message(
+        json!({"role": "user", "content": "Earlier question", "timestamp": 1}),
+    ));
+    assert!(screen(&mut app).contains("Earlier question"), "{}", screen(&mut app));
+    app.apply(LaneEvent::OperationStarted("op-1".into()));
+    submit(&mut app, "/clear");
+    assert_eq!(calls(&c), ["abort", "new"]);
+    app.apply(LaneEvent::Opened(SessionOpened {
+        session_id: "sess-2".into(),
+        session_file: None,
+        name: None,
+        messages: Vec::new(),
+    }));
+    assert!(!screen(&mut app).contains("Earlier question"), "{}", screen(&mut app));
+    submit(&mut app, "/clear");
+    assert_eq!(calls(&c), ["abort", "new", "new"]);
+}

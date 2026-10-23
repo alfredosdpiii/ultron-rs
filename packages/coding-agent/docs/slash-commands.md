@@ -21,6 +21,7 @@ Extensions, prompt templates, and skills can add commands. The command menu in P
 | Command | Description |
 |---|---|
 | `/new` | Start a new session |
+| `/clear` | Clear the conversation: start a new session (as `/new`; under `ultron-s`, in the home session, the new session becomes home) |
 | `/resume` | Switch to another saved session |
 | `/name [name]` | Set the session display name, or show the current name when omitted |
 | `/session` | Show current session information and statistics |

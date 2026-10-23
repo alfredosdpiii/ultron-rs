@@ -901,16 +901,26 @@ fn link_thread(
             },
             Command::RefreshName => report_name(&link, &mut name),
             Command::Reopen => open(&link, &mut name),
-            Command::NewSession => match link.create(json!({})).and_then(|id| link.attach(&id)) {
-                Ok(()) => {
-                    if let Some(herdr) = &herdr {
-                        herdr.new_session();
+            Command::NewSession => {
+                let previous = link.session_id();
+                match link.create(json!({})).and_then(|id| link.attach(&id).map(|()| id)) {
+                    Ok(id) => {
+                        // `ultron-s` in its home session: the new session becomes home (before herdr asks how to
+                        // resume it).
+                        if let Err(error) = crate::durable_client::follow_home(&previous, &id) {
+                            send(LaneEvent::Status(format!(
+                                "Error: the home session was not moved: {error}"
+                            )));
+                        }
+                        if let Some(herdr) = &herdr {
+                            herdr.new_session();
+                        }
+                        open(&link, &mut name);
+                        send(LaneEvent::Status("✓ New session started".into()));
                     }
-                    open(&link, &mut name);
-                    send(LaneEvent::Status("✓ New session started".into()));
+                    Err(error) => send(LaneEvent::Error(error)),
                 }
-                Err(error) => send(LaneEvent::Error(error)),
-            },
+            }
             Command::Resume(path) => {
                 let id = session_journal::repo::read_metadata(std::path::Path::new(&path)).map(|m| m.id);
                 match id
