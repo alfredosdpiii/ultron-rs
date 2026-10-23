@@ -25,7 +25,7 @@ pub fn self_command(var: &dyn Fn(&str) -> Option<String>) -> Result<SelfCommand,
             args: parts[1..].to_vec(),
         });
     }
-    let exe = std::env::current_exe().map_err(|_| "cannot tell how this Ultron CLI was started".to_string())?;
+    let exe = config::paths::own_executable().map_err(|_| "cannot tell how this Ultron CLI was started".to_string())?;
     Ok(SelfCommand {
         command: exe.display().to_string(),
         args: Vec::new(),

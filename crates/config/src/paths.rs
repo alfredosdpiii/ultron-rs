@@ -129,3 +129,19 @@ impl AgentPaths {
         self.join("trust.json")
     }
 }
+
+/// This process's executable for a command another process runs while this one lives (session workers, the inert
+/// MCP server of a subscription lane, Claude Code hooks): `current_exe`, or, once that file is gone, the kernel's
+/// handle on this process's image (`/proc/<pid>/exe`). An install replaces the binary under a long-lived server:
+/// `current_exe` then names `<path> (deleted)`, which no spawn can run (every new durable session failed with
+/// ENOENT); the handle still runs this same version.
+pub fn own_executable() -> std::io::Result<PathBuf> {
+    let image = PathBuf::from(format!("/proc/{}/exe", std::process::id()));
+    Ok(running_image(std::env::current_exe()?, image, &|path| path.exists()))
+}
+
+/// [`own_executable`] over a probe: `exe` while it exists, else `image` when that exists, else `exe` (the spawn's
+/// own error then names it).
+pub fn running_image(exe: PathBuf, image: PathBuf, exists: &dyn Fn(&Path) -> bool) -> PathBuf {
+    if !exists(&exe) && exists(&image) { image } else { exe }
+}

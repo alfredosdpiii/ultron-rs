@@ -61,7 +61,7 @@ pub fn executable() -> PathBuf {
         .get()
         .cloned()
         .or_else(|| std::env::var_os("ULTRON_INTERNAL_EXE").map(PathBuf::from))
-        .or_else(|| std::env::current_exe().ok())
+        .or_else(|| config::paths::own_executable().ok())
         .unwrap_or_else(|| PathBuf::from("ultron"))
 }
 

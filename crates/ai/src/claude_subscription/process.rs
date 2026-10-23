@@ -513,7 +513,7 @@ pub fn run(
     let mut inert = match &config.inert_mcp {
         Some(command) => command.clone(),
         None => {
-            let exe = std::env::current_exe().map_err(|e| ClaudeError::Failed(e.to_string()))?;
+            let exe = config::paths::own_executable().map_err(|e| ClaudeError::Failed(e.to_string()))?;
             vec![
                 exe.to_string_lossy().into_owned(),
                 "__internal".into(),
