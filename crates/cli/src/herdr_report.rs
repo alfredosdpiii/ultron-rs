@@ -1,7 +1,7 @@
 //! Ultron in herdr's agents panel (crates/herdr) for the interactive TUI and the prompted modes. Inside a herdr pane
 //! (and unless the `herdr` setting is `false` or `ULTRON_HERDR=0`):
 //!
-//! - the TUI reports its session when it opens one (start, `/new`, `/resume`, a fork), `working` while a run is
+//! - the TUI reports its session when it opens one (start, `/new` or `/clear`, `/resume`, a fork), `working` while a run is
 //!   active (an auto-nudge or keep-going continuation that starts at once stays `working`), `blocked` when a run
 //!   ends asking the user (its final paragraph ends with a question) or failed on an auth, model or usage-limit
 //!   error, `idle` otherwise (with the message on an abort or another failure), and metadata: display agent
@@ -148,12 +148,12 @@ impl TuiReport {
         self.track.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
-    /// The next opened session is a new one (`/new`), not a resumed one.
+    /// The next opened session is a new one (`/new`, `/clear`), not a resumed one.
     pub fn new_session(&self) {
         self.track().next_source = Some("clear");
     }
 
-    /// The TUI shows `session` (at start, after `/new`, `/resume`, a fork or a reattachment).
+    /// The TUI shows `session` (at start, after `/new` or `/clear`, `/resume`, a fork or a reattachment).
     pub fn opened(&self, session: &SessionOpened, model: &ModelInfo) {
         let mut track = self.track();
         let changed = track.session.as_deref() != Some(&session.session_id);

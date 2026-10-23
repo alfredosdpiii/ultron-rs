@@ -462,7 +462,8 @@ requests and starts no worker: it does nothing unless instructed.
 **`ultron-s`** (argv0 dispatch; `install.sh` links `ultron-s -> ultron`). Attaches to the durable instance's home
 session, recorded in `<durable dir>/home-session`: created once in `$HOME`, reused across clients and server
 restarts, replaced when deleted. `--new` replaces it, `--list` lists, `--session <id>` / `--home` pick one, `-p`
-prompts it. A client killed mid-run leaves the run going; the next client continues after it. `install.sh` runs
+prompts it. `/new` or `/clear` in the TUI while it shows the home session makes the new session home (the old one
+stays on disk); in another session they leave the pointer. A client killed mid-run leaves the run going; the next client continues after it. `install.sh` runs
 `ultron service restart` when an `ultron-durable-*.service` unit is installed.
 
 **Schedule delivery.** A fire counts only once its prompt started or queued; a failed delivery keeps the slot due

@@ -2877,7 +2877,8 @@ impl App {
                 self.chat.append_notice(Box::new(notice));
             }
             "quit" => self.exit = true,
-            "new" => {
+            // `/clear` is `/new` (as Claude Code's `/clear`): the running turn aborted, a new session in this TUI.
+            "new" | "clear" => {
                 if self.operation.is_some() {
                     self.client.abort();
                 }

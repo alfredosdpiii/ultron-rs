@@ -56,7 +56,7 @@ Prompt templates, skills, and extensions can add more commands to the same menu.
 
 Pi saves sessions automatically unless session persistence is disabled.
 
-- `/new` starts a new session.
+- `/new` starts a new session; `/clear` does the same (the chat is cleared, the old session stays saved).
 - `/resume` opens another saved session.
 - `/name` gives the current session a recognizable name.
 - `/session` shows its file, ID, message count, token usage, and cost.
