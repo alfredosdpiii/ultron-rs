@@ -9,6 +9,7 @@ pub mod acp;
 pub mod args;
 pub mod assets;
 pub mod auth;
+pub mod autoreview_ban;
 pub mod autoreview_cli;
 pub mod autoreview_toggle;
 pub mod bug_report;

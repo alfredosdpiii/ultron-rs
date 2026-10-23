@@ -140,6 +140,8 @@ impl LaneClient for Recorder {
             AutoreviewRequest::On { accounts, reviewing_as } => {
                 format!("autoreview on {accounts:?} as {reviewing_as}")
             }
+            AutoreviewRequest::Ban { login, account } => format!("autoreview ban {login} {account:?}"),
+            AutoreviewRequest::Unban { login, account } => format!("autoreview unban {login} {account:?}"),
         });
     }
     fn login_providers(&self, query: &str) {
@@ -1752,6 +1754,26 @@ fn interactive_commands_autoreview_picks_the_account_to_review_as() {
     app.handle_input("\x1b");
     assert!(screen(&mut app).contains("Autoreview left as it was"));
     assert_eq!(calls(&c).len(), before);
+}
+
+/// `/autoreview ban|unban <login> [--account <login>]` (Rust only): `autoreview.ban`; a missing login is the usage.
+#[test]
+fn interactive_commands_autoreview_ban_and_unban() {
+    let (mut app, c) = app();
+    submit(&mut app, "/autoreview ban lepmoran-boostkh");
+    submit(&mut app, "/autoreview ban Lepmoran-Boostkh --account bryandlp-boost");
+    submit(&mut app, "/autoreview unban lepmoran-boostkh");
+    submit(&mut app, "/autoreview unban --account bryandlp-boost");
+    assert!(screen(&mut app).contains("Usage: /autoreview on|off, or ban|unban <login> [--account <login>]"));
+    submit(&mut app, "/autoreview on now");
+    assert_eq!(
+        calls(&c),
+        [
+            "autoreview ban lepmoran-boostkh None",
+            "autoreview ban Lepmoran-Boostkh Some(\"bryandlp-boost\")",
+            "autoreview unban lepmoran-boostkh None",
+        ]
+    );
 }
 
 /// `/persona [on|off|auto|ultron|none]` (Rust-only, with the overlays): report the settings' persona, write the

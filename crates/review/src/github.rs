@@ -640,6 +640,15 @@ impl GitHub {
 
     /// Pull requests matching a search query.
     pub fn search(&self, query: &str) -> Result<Vec<PullRef>, Error> {
+        Ok(self
+            .search_with_authors(query)?
+            .into_iter()
+            .map(|(found, _)| found)
+            .collect())
+    }
+
+    /// [`GitHub::search`] with each pull request's author (empty when the result names none).
+    pub fn search_with_authors(&self, query: &str) -> Result<Vec<(PullRef, String)>, Error> {
         let response = self.get(&format!(
             "search/issues?per_page=50&sort=updated&order=desc&q={}",
             encode_uri_component(query)
@@ -654,7 +663,7 @@ impl GitHub {
             if let Some(found) = pull_ref_from_url(&url, &self.account.host)
                 && item.get("pull_request").is_some()
             {
-                out.push(found);
+                out.push((found, login(item.get("user"))));
             }
         }
         Ok(out)
@@ -789,6 +798,33 @@ impl GitHub {
             }
         }
         Ok(latest)
+    }
+
+    /// Who last asked this account for a review of the pull request, directly or through `team` (a requested team
+    /// it is a member of): the latest `review_requested` event's actor, with its time. `None` when no event says.
+    pub fn last_review_requester(&self, r: &PullRef, team: Option<&str>) -> Result<Option<(String, String)>, Error> {
+        let events = self.list(&format!("{}/issues/{}/events", Self::base(r), r.number), 5)?;
+        let me = self.account.login.to_lowercase();
+        let mut latest: Option<(String, String)> = None;
+        for event in events {
+            if event.get("event") != Some(&json!("review_requested")) {
+                continue;
+            }
+            let direct = login(event.get("requested_reviewer")).to_lowercase() == me;
+            let slug = text(event.get("requested_team").and_then(|team| team.get("slug")));
+            let through_team = team.is_some_and(|team| !slug.is_empty() && slug.eq_ignore_ascii_case(team));
+            if !direct && !through_team {
+                continue;
+            }
+            let at = text(event.get("created_at"));
+            if latest
+                .as_ref()
+                .is_none_or(|(known, _)| crate::js::cmp16(&at, known).is_gt())
+            {
+                latest = Some((at, login(event.get("actor"))));
+            }
+        }
+        Ok(latest.filter(|(_, actor)| !actor.is_empty()))
     }
 
     /// Whether this account is an active member of a team of the repository's organization; `None` when the

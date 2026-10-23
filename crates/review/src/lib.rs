@@ -4,6 +4,7 @@
 //! pipeline itself run as Python in the kernel; nothing here re-implements them.
 
 pub mod accounts;
+pub mod ban;
 pub mod checkout;
 pub mod daemon;
 pub mod engine;

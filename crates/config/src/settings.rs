@@ -774,6 +774,34 @@ impl SettingsManager {
         put("signature", flag("signature"));
         put("learn", flag("learn"));
         put("skipBots", flag("skipBots"));
+        // `ban`: reviewing account (login, `host/login` or `*`) to the logins it never reviews; keys and logins
+        // trimmed, anything but a list of logins dropped.
+        if let Some(Value::Object(ban)) = c.get("ban") {
+            let mut parsed = Map::new();
+            for (key, logins) in ban {
+                let key = js_trim(key);
+                let Some(logins) = logins.as_array().filter(|_| !key.is_empty()) else {
+                    continue;
+                };
+                let logins: Vec<Value> = logins
+                    .iter()
+                    .filter_map(Value::as_str)
+                    .map(js_trim)
+                    .filter(|login| !login.is_empty())
+                    .map(Value::from)
+                    .collect();
+                if logins.is_empty() {
+                    continue;
+                }
+                match parsed.get_mut(key) {
+                    Some(Value::Array(known)) => known.extend(logins),
+                    _ => {
+                        parsed.insert(key.to_string(), Value::Array(logins));
+                    }
+                }
+            }
+            put("ban", (!parsed.is_empty()).then_some(Value::Object(parsed)));
+        }
         out
     }
 }

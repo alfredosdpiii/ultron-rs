@@ -179,6 +179,9 @@ pub struct AutoreviewSettings {
     pub signature: Option<bool>,
     pub learn: Option<bool>,
     pub skip_bots: Option<bool>,
+    /// `autoreview.ban`: by reviewing account (login, `host/login` or `*`), the logins whose pull requests it never
+    /// reviews ([`crate::ban::BanList`]). Read live by the reviewer, not through [`AutoreviewConfig`].
+    pub ban: Option<Value>,
 }
 
 /// What the model settings say besides `autoreview.*`: the fallbacks of `autoreview.model`.

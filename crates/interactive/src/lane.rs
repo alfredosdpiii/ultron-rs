@@ -675,4 +675,8 @@ pub enum AutoreviewRequest {
     },
     /// Save `autoreview.enabled: false`, stop the service and remove its file.
     Off,
+    /// Add `login` to `autoreview.ban` for `account` (`None`: every account, `*`).
+    Ban { login: String, account: Option<String> },
+    /// Remove `login` from `autoreview.ban` for `account` (`None`: every account, `*`).
+    Unban { login: String, account: Option<String> },
 }

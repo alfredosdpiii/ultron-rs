@@ -24,6 +24,7 @@ use regex::Regex;
 use serde_json::{Map, Value, json};
 
 use crate::accounts::{Account, TokenStore, account_key};
+use crate::ban::{Bans, banned_reason, refusal};
 use crate::checkout::{Checkout, CheckoutManager, PullHeads, make_private_dir, random_hex};
 use crate::github::{
     Clock, Comment, Error, GitHub, PullRef, PullRequest, Review, ReviewCommentInput, ReviewInput, iso_from_ms, pull_key,
@@ -87,6 +88,8 @@ pub struct ReviewerDeps {
     pub environments: Option<Arc<dyn EnvironmentPreparer>>,
     /// The home directory `~` in guide paths and checkout roots expands to.
     pub home: String,
+    /// `autoreview.ban`, re-read before each decision and model turn.
+    pub bans: Arc<Bans>,
 }
 
 /// `host/owner/repo`: the key of a repository's ledger of fates.
@@ -464,10 +467,21 @@ pub fn mentions(body: &str, login: &str) -> bool {
 
 /// When the account was last @mentioned on the pull request by somebody else (ISO time), if ever.
 pub fn latest_mention(login: &str, pull: &PullRequest, comments: &[Comment], reviews: &[Review]) -> Option<String> {
+    latest_mention_except(login, pull, comments, reviews, &|_| false)
+}
+
+/// [`latest_mention`] without the mentions written by those `ignored` names (banned logins).
+pub fn latest_mention_except(
+    login: &str,
+    pull: &PullRequest,
+    comments: &[Comment],
+    reviews: &[Review],
+    ignored: &dyn Fn(&str) -> bool,
+) -> Option<String> {
     let me = login.to_lowercase();
     let mut latest: Option<String> = None;
     let mut consider = |author: &str, body: &str, at: &str| {
-        if author.to_lowercase() == me || at.is_empty() || !mentions(body, login) {
+        if author.to_lowercase() == me || at.is_empty() || !mentions(body, login) || ignored(author) {
             return;
         }
         if latest.as_deref().is_none_or(|latest| cmp16(at, latest).is_gt()) {
@@ -743,6 +757,15 @@ pub fn prepare_pull(deps: &ReviewerDeps, candidate: &Candidate, options: ReviewO
             status: 0,
         });
     }
+    // A banned author's pull request is never reviewed, however it got here; asked for on the command line, that is
+    // said rather than skipped.
+    let bans = deps.bans.refresh();
+    if let Some(rule) = bans.banned(account, &pull.author) {
+        if options.force {
+            return Err(Error::Other(refusal(&name, &pull.author, rule)));
+        }
+        return Ok(Preparation::Done(Outcome::Skipped(banned_reason(&pull.author))));
+    }
     let head = pull.head_sha.clone();
     let reviews = github.reviews(r)?;
     let saved: PullState = deps.store.read().pulls.get(&key).cloned().unwrap_or_default();
@@ -765,6 +788,7 @@ pub fn prepare_pull(deps: &ReviewerDeps, candidate: &Candidate, options: ReviewO
         decision(true, "asked for on the command line")
     } else {
         // A requested team counts only when this account is a member of it.
+        let mut through_team = None;
         if !requested && pull.state == "open" && !pull.draft {
             for team in &pull.requested_teams {
                 let member = github.in_team(&r.owner, team)?;
@@ -776,18 +800,37 @@ pub fn prepare_pull(deps: &ReviewerDeps, candidate: &Candidate, options: ReviewO
                 }
                 if member == Some(true) {
                     requested = true;
+                    through_team = Some(team.clone());
                     break;
                 }
             }
+        }
+        // A review request or a mention by a banned login asks for nothing. Who requested is read from the issue's
+        // events, only when a ban applies to this account.
+        let banned = |login: &str| bans.banned(account, login).is_some();
+        let mut ignored = Vec::new();
+        if requested
+            && bans.applies_to(account)
+            && let Some((_, actor)) = github.last_review_requester(r, through_team.as_deref())?
+            && banned(&actor)
+        {
+            requested = false;
+            ignored.push(format!("the review request by {actor}"));
         }
         let mut mention_at = None;
         if !(requested && last_sha.is_none() && pull.state == "open" && !pull.draft) {
             let mut comments = github.issue_comments(r)?;
             comments.extend(github.review_comments(r)?);
-            mention_at = latest_mention(&account.login, &pull, &comments, &reviews);
+            mention_at = latest_mention_except(&account.login, &pull, &comments, &reviews, &banned);
+            if bans.applies_to(account)
+                && let Some(any) = latest_mention(&account.login, &pull, &comments, &reviews)
+                && mention_at.as_deref().is_none_or(|kept| cmp16(&any, kept).is_gt())
+            {
+                ignored.push("a mention by a banned login".into());
+            }
         }
         let requested_at = || github.last_review_request_at(r);
-        decide(&DecisionInput {
+        let mut decided = decide(&DecisionInput {
             pull: &pull,
             last_sha: last_sha.clone(),
             last_at,
@@ -796,7 +839,11 @@ pub fn prepare_pull(deps: &ReviewerDeps, candidate: &Candidate, options: ReviewO
             requested,
             skip_bots: deps.config.skip_bots,
             requested_at: &requested_at,
-        })?
+        })?;
+        if !decided.review && !ignored.is_empty() {
+            decided.reason = format!("{}; ignored {} (autoreview.ban)", decided.reason, ignored.join(" and "));
+        }
+        decided
     };
     if !decided.review {
         // Nothing more to watch for once the pull request is closed: what was still open then is its findings' fate.
@@ -1030,6 +1077,10 @@ pub fn run_review(deps: &ReviewerDeps, prepared: &Prepared) -> Result<Outcome, E
     let key = pull_state_key(account, r);
     let name = format!("{} as {}", pull_key(r), account.login);
     let head = prepared.pull.head_sha.clone();
+    // Banned while it waited for a slot: dropped before anything starts.
+    if let Some(reason) = banned_now(deps, prepared) {
+        return Ok(Outcome::Skipped(reason));
+    }
     let saved: PullState = deps.store.read().pulls.get(&key).cloned().unwrap_or_default();
     (deps.log)(&format!("{name}: reviewing {} ({})", short(&head), prepared.reason));
     deps.store.update_pull(&key, |state, _| {
@@ -1061,6 +1112,15 @@ pub fn run_review(deps: &ReviewerDeps, prepared: &Prepared) -> Result<Outcome, E
         checkout.cleanup();
     }
     outcome
+}
+
+/// The skip reason when the prepared pull request's author is banned for its account now (the list re-read).
+fn banned_now(deps: &ReviewerDeps, prepared: &Prepared) -> Option<String> {
+    let author = &prepared.pull.author;
+    deps.bans
+        .refresh()
+        .banned(&prepared.candidate.account, author)
+        .map(|_| banned_reason(author))
 }
 
 /// The carried sources (`labels`) whose pull request was not approved: none of its reviewers approved it, or one's
@@ -1436,6 +1496,12 @@ fn review_in(
             spec.insert("earlierDiffPath".into(), json!(earlier_diff_path));
         }
     }
+    // Banned during the preparation (checkout, environment): the model turn is not started.
+    if let Some(reason) = banned_now(deps, prepared) {
+        forget_attempt()?;
+        (deps.log)(&format!("{name}: {reason}; the review was not started"));
+        return Ok(Outcome::Skipped(reason));
+    }
     let raw = deps.engine.review(&Value::Object(spec), None).map_err(Error::Other)?;
     let result: EngineResult = serde_json::from_value(raw.clone())
         .map_err(|error| Error::Other(format!("the engine returned an unreadable result: {error}")))?;
@@ -1450,6 +1516,12 @@ fn review_in(
             short(&current.head_sha)
         ));
         return Ok(Outcome::Requeue("the head commit moved during the review".into()));
+    }
+    // Banned during the model turn: nothing is posted.
+    if let Some(reason) = banned_now(deps, prepared) {
+        forget_attempt()?;
+        (deps.log)(&format!("{name}: {reason}; the finished review was discarded"));
+        return Ok(Outcome::Skipped(reason));
     }
 
     let state = if current.state == "open" {

@@ -87,9 +87,14 @@ const RUST_COMMANDS: &str =
 
 /// Where the Rust help differs from TypeScript's (recorded line, Rust line; an empty Rust line removes it): the Pi
 /// package commands (they only exit with "Pi packages are not supported"), the flags parsed but not applied
-/// (`--prompt-template`, `--no-prompt-templates`, `--theme`, `--no-themes`: they warn), the TUI's default mode, and
-/// the tool flags, which are no read-only mode (the model's one tool, rlm, still writes files and runs commands).
-const RUST_HELP_EDITS: [(&str, &str); 12] = [
+/// (`--prompt-template`, `--no-prompt-templates`, `--theme`, `--no-themes`: they warn), the TUI's default mode, the
+/// tool flags, which are no read-only mode (the model's one tool, rlm, still writes files and runs commands), and the
+/// autoreview ban commands (Rust only).
+const RUST_HELP_EDITS: [(&str, &str); 13] = [
+    (
+        "  ultron autoreview <command>      Review pull requests automatically as your gh accounts (run, once, review, status)\n",
+        "  ultron autoreview <command>      Review pull requests automatically as your gh accounts (run, once, review, status, ban, unban, bans)\n",
+    ),
     (
         "  ultron install <source> [-l]     Install extension source and add to settings\n",
         "",

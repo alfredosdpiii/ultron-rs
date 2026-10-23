@@ -459,8 +459,42 @@ fn case<'a>(recorded: &'a Value, name: &str) -> &'a Value {
         .unwrap()
 }
 
+/// Where `ultron autoreview --help` differs from the recorded TypeScript text (recorded, Rust): the ban commands and
+/// `autoreview.ban` are Rust only.
+const USAGE_EDITS: [(&str, &str); 3] = [
+    (
+        "  status                       Accounts, last poll, queue and recent reviews\n",
+        "  status                       Accounts, bans (when any), last poll, queue and recent reviews
+  ban <login> [--account <login | host/login | *>]
+                               Never review <login>'s pull requests, nor act on their review requests and mentions;
+                               for every logged-in account (*) unless --account limits it to one
+  unban <login> [--account <login | host/login | *>]
+                               Lift that ban (default: the one for every account, *)
+  bans                         The bans (autoreview.ban), by account
+",
+    ),
+    (
+        "  --json                       Machine-readable output (review, once, status)
+  --account <login>            review: the account to review as (default: the first logged-in account of the host)
+",
+        "  --json                       Machine-readable output (review, once, status, bans)
+  --account <login>            review: the account to review as (default: the first logged-in account of the host);
+                               ban, unban: the reviewing account the ban is for (default: every account, *)
+",
+    ),
+    ("learn, skipBots.\n", "learn, skipBots, ban.\n"),
+];
+
 fn assert_case(world: &World, recorded: &Value, name: &str) -> (Value, String) {
     let mut expected = case(recorded, name).clone();
+    if matches!(name, "help" | "bare") {
+        let mut usage = expected["stdout"].as_str().unwrap().to_string();
+        for (recorded, rust) in USAGE_EDITS {
+            assert!(usage.contains(recorded), "the recorded usage has no {recorded:?}");
+            usage = usage.replacen(recorded, rust, 1);
+        }
+        expected["stdout"] = json!(usage);
+    }
     if name == "rate_limited" {
         // Known difference: the TS frame lane's harness counts the retried request as one more call of the frame
         // (usage.frames 5, find 4); here the engine retries below the frame (review::engine::RetryingTransport), so
