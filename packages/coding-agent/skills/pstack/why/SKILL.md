@@ -123,7 +123,7 @@ Track what you searched, not only what you found: the queries are part of the ev
 
 ## Step 5. Synthesize in one frame
 
-One `rlm.infer` writes the answer from `references/synthesizer-prompt.md`, with the epistemics framework and the gathered evidence as context. Prefer a strong model when one is configured:
+One `rlm.infer` writes the answer from `references/synthesizer-prompt.md`, with the epistemics framework and the gathered evidence as context. Prefer a strong model when one is configured, and set `thinking=` per rigor's "Match the effort to the job" (`../rigor/SKILL.md`):
 
 ```python
 import json

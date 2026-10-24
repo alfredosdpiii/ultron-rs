@@ -67,7 +67,7 @@ entry gives its path.
 - **Laziness Protocol.** Sizing a diff, tempted by abstractions or layers. Bias to deletion and the smallest change.
 - **Foundational Thinking.** Before logic. Core types, scaffold-vs-feature order, what concurrent actors share.
 - **Redesign From First Principles.** A new requirement in an old design. Redesign as if it were there from day one.
-- **Attack the Premise.** Two fixes sharing one premise failed the same gate. Census the actors, question the premise.
+- **Attack the Premise.** Two fixes sharing one premise failed the same gate. Write the premise down and test it.
 - **Subtract Before You Add.** Sequencing an addition or rewrite. Remove dead weight first.
 - **Minimize Reader Load.** Code hard to trace. Count layers and hidden state, collapse one-caller wrappers.
 - **Outcome-Oriented Execution.** Planned migrations. Converge on the target, keep no throwaway compatibility states.
@@ -85,10 +85,10 @@ entry gives its path.
 
 **Verification**
 - **Prove It Works.** Before declaring done. Verify the real artifact, not a proxy or "it compiles".
-- **Fix Root Causes.** Debugging. Reproduce first, ask why until you reach the cause.
+- **Fix Root Causes.** Debugging. Fix where the system first went wrong; a guard fixes only a legitimate state.
 - **Sequence Work into Verifiable Units** (`../principle-sequence-verifiable-units/SKILL.md`). Multi-step work and
   commit or PR stacking. Small units, each ending in a check.
-- **Test Behavior, Not Implementation.** Any test. Call it as users do, assert a literal expected value.
+- **Test Behavior, Not Implementation.** Any test. Fails when observable behavior breaks, passes through refactors.
 - **Explain the Number.** A measured number. Find what limits it; rule out that it measured something else.
 
 **Delegation**
@@ -142,6 +142,12 @@ print(state["models"])
 The queries are examples; use what `find_models` offers. Pass `model=state["models"][role]` to `rlm.spawn`,
 `rlm.infer` and `rlm.map`. The hardest changes go to the `hard` model whether the task is vague or precisely
 specified; trivial mechanical edits go to `code`.
+
+**Match the effort to the job.** Before each `rlm.spawn`, `rlm.infer` or `rlm.map`, set `thinking=` for the job
+(`minimal`, `low`, `medium`, `high`, `xhigh`, `max`). Start from `xhigh`. Raise it to `max` for the hardest or subtlest
+work, lower it one step for judgment and review, and two or more steps for routine work such as a mechanical edit or a
+classification frame. Change only the level, never the model a role names, so a diverse panel stays diverse. If a call
+rejects the level, drop `thinking=` (the settings default) and say so.
 
 The session that loads rigor runs the playbook. Never spawn a child to run the playbook itself.
 

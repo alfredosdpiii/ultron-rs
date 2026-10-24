@@ -1,40 +1,44 @@
 ### Shipping
 
 **You own what lands. Verify each PR independently, land only the verified run from the root, then keep your hands off
-the queue.** The half after `playbooks/babysit.md`. The forge is GitHub through `gh`.
+the stack.** The half after `playbooks/babysit.md`. The forge is GitHub through `gh`.
 
-1. **Verify every PR independently.** One child per PR, not batched, on the `judgment` model, spawned with a brief
-   that says it did not write the code, checks out parent and head in its own worktree (`worktree=True`), and exercises
-   the real surface (tmux for CLIs and TUIs, a browser MCP for web UIs) on both. It ends with
+1. **Verify each PR independently before it lands.** One child per PR, on the `judgment` model, spawned with a brief
+   that says it did not write the code, checks out parent and head in its own worktree (`worktree=True`), and runs the
+   change the way a user would (tmux for CLIs and TUIs, a browser MCP for web UIs) on both. It ends with
    `await rlm.finish(status, summary, evidence=[...], outputs={"verdict": "PASS" | "PASS+NOTES" | "FAIL", "head": sha})`
-   and posts the verdict on its PR (`gh pr comment <pr> --body-file <file>`). Safe means a verdict from an agent that
-   did not write the code. CI green is not a verdict; an approving bot review is not a verdict.
-2. **Land only the contiguous verified run from the bottom.** Walk up from the lowest unmerged PR; stop at the first
-   without `PASS` or `PASS+NOTES`. A verified PR above an unverified one is not landable. Report the ceiling as a PR
-   number and what breaks the chain.
-3. **Re-check that each verdict still describes the patch.** Record each verdict's head SHA, base SHA and
-   `git diff <base> <head> | git patch-id --stable`. A rebase or retarget rewrites SHAs and can void a verdict without
-   touching a check. Before landing, compare the recorded patch-id with the current one. Same patch: keep the code
-   verdict, re-run mergeability and CI at the current head. Different only in tests, docs or lint config: build twice
-   at the verdict SHA and once at the head; a difference that also shows between the two verdict-SHA builds, or is an
-   embedded commit SHA, is noise. Judge each difference, report each kind of noise with its files. Anything else
-   changed: re-verify. Never accept matching commit messages or an older SHA's green check.
-4. **Prepare only the bottom PR.** Fetch trunk. Rebase the lowest verified branch onto the exact trunk tip when needed,
-   push it, retarget only that PR (`gh pr edit <pr> --base <trunk>`), and re-run step 3. Leave descendants alone.
-5. **Land one PR at a time.** Mergeable now: `gh pr merge <pr> --squash`. Requirements still running and the user
-   asked for merge-when-ready: arm only that PR (`gh pr merge <pr> --squash --auto`). `autoMergeRequest` says only that
-   auto-merge was requested for that one PR, never that the stack is safe.
-6. **Watch the frontier without polling.** Start `gh pr checks <pr> --watch` as a job (`yield_after=0`); when its event
-   arrives, read `gh pr view <pr> --json state,mergedAt,mergeStateStatus,statusCheckRollup,autoMergeRequest`. Merged
-   when `mergedAt` is set or `state` is `MERGED`. Hard-fail only on `CLOSED` without `mergedAt`, a required check
-   ending `FAILURE` or `CANCELLED` once auto-merge is no longer pending, or `UNSTABLE`/`DIRTY` with no auto-merge
-   pending. `BLOCKED` while checks run or auto-merge is armed is not failure. If the queue stalls, diagnose before
-   mutating anything.
-7. **Recompute after every merge.** Fetch trunk, confirm the merged SHA is there, drop the PR from the frozen
-   bottom-to-top list, inspect the new bottom PR's base, head, checks and patch-id. GitHub may retarget a child; do not
-   assume it did. Repeat steps 3 to 6 for that one PR.
-8. **Stop at the ceiling.** Report what landed, the next unverified PR, and what verifying it would take. Extending
-   the run is a new pass through step 1.
+   and posts the verdict on its PR (`gh pr comment <pr> --body-file <file>`). Only a verdict from an agent that did not
+   write the code counts, because an author checks what it meant to build. Green CI and an approving bot review are
+   not verdicts, because neither runs the change as a user would.
+2. **Land only the contiguous verified run rooted at the bottom.** Walk up from the lowest unmerged PR and stop at the
+   first one without `PASS` or `PASS+NOTES`. The PRs below it are the run, and the top one is the ceiling. A verified
+   PR above an unverified one waits, because it cannot land without the code below it. One whose branch neither holds
+   nor needs that code can move onto trunk and land on its own. It needs a fresh verdict first, because its old one ran
+   with that code beneath it and trunk does not have it.
+3. **Re-check that the verdicts still describe the code.** A verdict covers a patch, and a chain rebase moves every PR
+   above it to a new SHA without failing any check. Compare `git diff <base> <head> | git patch-id --stable` at the
+   verdict SHA with the current head before trusting an older verdict. When the patches differ only in tests, docs, or
+   lint config, a lane's result stands if what it ran builds the same at both SHAs apart from noise. Noise is a
+   difference that also shows up between two builds of the verdict SHA, or an embedded commit SHA. Report each kind of
+   noise with its files, so a reader can check the call. The change itself still gets fresh checks and a review,
+   because the old verdict never saw it. A lane with no build output, such as a dev server, cannot show this, so rerun
+   it, and re-verify anything else that drifted.
+4. **Land bottom-up, one PR at a time.** Always merge the run's lowest unmerged PR, with `gh pr merge <pr> --squash`.
+   A PR whose base is still its parent's branch merges into that branch, not trunk. Read the PR back for the result
+   (`gh pr view <pr> --json state,mergedAt,baseRefName`), because a merge command can report success when a merge
+   queue only queued the PR, and a requested auto-merge is not a merge. A landed PR reads merged with trunk as its
+   base, not its parent's branch. Arm `--auto` only on a PR whose verdict covers its current head, because it lands
+   whatever head is ready. After a merge lands, retarget the PR whose base was the merged branch to trunk
+   (`gh pr edit <pr> --base <trunk>`), move its patch onto the merge result, and push with `--force-with-lease`. The
+   verdict covers the patch, not its commits, so step 3's patch-id rule decides whether the verdict survives. Merge it
+   once its checks pass and its verdict survives.
+5. **Leave the stack alone while it lands.** Step 4's move of the next PR is the only change to a branch or base,
+   because a merge lands whatever its branch and base hold at that moment, verdict or not. Watch without polling: start
+   `gh pr checks <pr> --watch` as a job (`yield_after=0`), and when its event arrives, read
+   `gh pr view <pr> --json state,mergedAt,mergeStateStatus,statusCheckRollup,autoMergeRequest`, until the ceiling reads
+   merged. A base that moves to trunk when its parent merges is expected, not damage to repair. If a merge stalls, find
+   out why before you change anything.
+6. **Stop at the ceiling.** Extending the run takes new verdicts, so it is a new pass through step 1.
 
-**Reply:** the verified run and its ceiling, each PR's verdict and who produced it, what you armed and how you confirmed
-it, what landed, and what the next gap needs.
+**Reply:** the verified run and its ceiling, each PR's verdict and who produced it, what landed and how you confirmed
+it, and what the next gap needs.

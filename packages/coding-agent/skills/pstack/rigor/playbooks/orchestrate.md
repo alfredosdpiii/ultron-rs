@@ -31,7 +31,7 @@ protocol, state it and stop; execution starts on an explicit go.
 #### Roles
 
 - **Root (you).** Frames, writes briefs, drains completions, owns the human report, makes judgment calls. Never
-  authors or edits code: conflicted merges, restacks and code changes are always units. In Stack mode the root is the
+  authors or edits code: conflicted merges, chain rebases and code changes are always units. In Stack mode the root is the
   only topology writer.
 - **Sub-coordinator.** One per track, only when the program exceeds what your drains can handle (roughly ten children
   in flight). `rlm.spawn(brief, name=f"track-{slug}", depth=2, worktree=True, model=state["models"]["judgment"])`
@@ -146,31 +146,47 @@ One owner child per PR (`depth=1` so it can run its own verifiers) carries: buil
 within its first unit of work, a decision trail, self-proof on the real artifact (`the prove-it-works principle (`../principle-prove-it-works/SKILL.md`)`),
 review-bot triage per `playbooks/babysit.md`, the pre-PR steps in `playbooks/opening-a-pr.md`, one rebase onto
 current trunk before reporting code-ready, then the babysit loop to green. It reports the code-ready head SHA once the
-code is final, and every later head that changes the patch. Owners push only their own branches
-(`git push --force-with-lease` after a `git ls-remote` check); never a shared one. Self-contained PRs branch from main
-and run in parallel; only overlapping work serializes.
+code is final, and every later head that changes the patch. Fix rounds stay on that base unless trunk conflicts or
+breaks CI, because each rebase restarts CI. Assume the child dies: it pushes soon after starting and after every unit
+worth keeping, so a replacement finds its work on the branch. Owners force-push only their own branches, with
+`--force-with-lease=<branch>:<sha>` pinned to the SHA they last pushed or took over; on any push they did not make,
+they stop and report. Self-contained PRs branch from main and run in parallel; only overlapping work serializes.
 
-**Verify each round.** At each code-ready head, fan out a swarm (`../swarm/SKILL.md`) and aggregate one verdict. Lanes:
-re-run the gates at that SHA; prove the load-bearing behavior live on the real surface; two or more diff-audit lanes,
-each with one focus (consumer parity with trunk, lifetimes and races, data and config safety), distrusting the PR body;
-and a regression lane running the same scenario on trunk (if trunk lacks the feature, record that and gate the added
-behavior and the end state the user waits for). The live lane is the floor; without it the verdict is not clean.
-Every proven finding goes back to the owner in one fix round, each behavior finding with a red test covering every
-site with the same defect.
+**Verify once.** A full swarm (`../swarm/SKILL.md`) runs once, at the code-ready head, and aggregates one verdict.
+Another full swarm runs only for new behavior, a redesign, or a large new diff; a rebase, a conflict resolution or a
+minor fix gets a single verifier at the new head. Lanes: re-run the gates at that SHA; prove the load-bearing behavior
+live on the real surface; two or more diff-audit lanes, each with one focus (consumer parity with trunk, lifetimes and
+races, data and config safety), distrusting the PR body. The live lane is the floor, and the verdict is not clean
+before you audit the receipts in the merge-ready report, because no lane trusts a claim it has not checked. Every
+proven finding, whatever a lane labeled it, goes back to the owner in one fix round, each with a red test covering every
+site with the same defect. A defect trunk shows without the PR is recorded against trunk and does not gate the PR; one
+the PR copies or newly reaches is the PR's own. Never push a fix yourself, because each branch has one writer; replace a
+stuck owner instead.
 
-**Full.** On a clean verdict the owner merges, only from a head freshly rebased onto trunk: right before the merge,
-`git fetch`, check `git merge-tree --write-tree HEAD origin/main` is clean and that no path changed on trunk since the
-merge base is one the PR touches or one that decides its CI; otherwise rebase, report the new head, wait for CI. The
-patch-id rule decides whether the verdict still holds. Then a fresh owner takes the next item.
+**Full.** The owner merges only what you verified, tested on the trunk it lands on; green CI alone never authorizes a
+merge. Once the lanes have started, merge prep rebases onto current trunk, reports the new head and waits for green CI.
+Right before merging, `git fetch` and ask whether trunk's changes can affect the patch, because rebasing for every
+trunk move never ends. Rebase and wait for CI when the code that would land was never tested: a conflict
+(`git merge-tree --write-tree HEAD origin/main`), a file both sides changed, or a change to which checks run for the PR.
+A lockfile both sides changed needs no rebase when a frozen install passes on the merge result and the packages the PR
+changes resolve there as on the head. When trunk changed a caller of the patch or something it depends on, run the
+patch's checks on the merge result and merge on a pass. Otherwise merge. If trunk would force a third rebase past merge
+prep, hold and sequence the colliding work yourself. The patch-id rule in `playbooks/shipping.md` decides whether the
+verdict still holds. Then a fresh owner takes the next item.
 
-**Stack.** No owner merges, arms auto-merge or closes. On a clean verdict the root appends the PR: fetch the parent,
-rebase the child onto the exact parent tip, push with `--force-with-lease`, set the PR base to the parent branch. Only
-the root PR targets trunk. When trunk drifts, the root rebases the chain bottom-up; an owner fixes conflicts in its own
-slice; verdicts at rewritten SHAs go through the patch-id rule and re-verify when they no longer hold. Deliver the
-chain with each link's verdict on its PR.
+**Stack.** Owners report STACK-READY in place of merge-ready, and never rebase onto another branch (trunk included),
+retarget, merge, close or arm auto-merge. An owner whose item depends on another branches from that item's branch, not
+from trunk. You are the only topology writer, because two writers on one chain undo each other: append each clean PR in
+dependency order with its base set to its parent's branch (`gh pr edit <pr> --base <parent-branch>`); an owner takes
+your push as its new base and lease, and on a conflict resolves its own slice for you to push. Until landing starts,
+apply Full's merge-prep test to each link and rebase the chain bottom-up where it calls for one, then apply the patch-id
+rule link by link. Deliver the chain with each link's verdict on its PR. Once landing starts, nobody writes to the
+chain except the post-merge retarget in `playbooks/shipping.md`; a mid-landing problem goes to the operator, and any
+fix waits for the operator's go.
 
-A new raise of a pinned gate or budget value needs your fresh countersign after verifier proof; absorbing values
-already on main is drift, not a raise. You never give or bypass an approval the forge enforces.
+Anything that loosens a gate, such as a raised budget or an allowlist entry, needs a verifier's proof and then your
+fresh countersign, because the owner is the one who wants green. A disabled or soft-failed check always comes out,
+because it stops guarding every case. You never give or bypass an approval the forge enforces.
 
 #### Liveness and failure
 
@@ -193,9 +209,10 @@ already on main is drift, not a raise. You never give or bypass an approval the 
 Reaches the human, batched into the status report: irreversible actions (force-push to shared branches, deploys,
 deletions, closing someone else's PR), product or preference calls no experiment settles, a standing order that
 contradicts reality, a dead end that survived a replan. Park each in `orch["gates"]` with a default and route work
-around it. Never reaches the human: restack mechanics, retries, CI flake triage, review-thread triage, format fixes,
+around it. Never reaches the human: rebase mechanics, retries, CI flake triage, review-thread triage, format fixes,
 and "should I keep going". Mid-run discoveries fix only what blocks the frontier; everything else becomes a follow-up.
 
-**Reply:** at checkpoints and close: the predicate and the count against it from the tables, tracks and what each
+**Reply:** catch the operator up per `../ketchup/SKILL.md`; a drain that changed nothing for the operator stays
+quiet. At checkpoints and close, cover the predicate and the count against it from the tables, tracks and what each
 landed, the frontier (PRs and SHAs), the verdict summary, what was abandoned and why, gates awaiting the human (the only
 asks), and the notes and trail paths, with PR links. Numbers from the tables, not narrative.

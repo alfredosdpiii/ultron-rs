@@ -36,7 +36,7 @@ Group the mistakes into classes in `state["classes"]`, each with the commits or 
 
 1. **Eliminate it with architecture.** Give each piece of state one owner and each task one supported way. Hide internals so the wrong import fails. Replace hand-synced lists with one source of truth. Delete old ways and dead code an agent would copy.
 2. **Enforce it with types so the bad state can't be written.** If bad code still compiles, add a lint or CI check whose error names the file, type, or function to use instead. If the pattern is already common, fail only when a change adds more.
-3. **Test the behavior.** Fix or delete any test that would still pass if every function it calls returned nothing.
+3. **Test the behavior.** Fix or delete any test that still passes when the behavior it checks breaks, or that fails when only the internals change.
 4. **Write docs or agent rules last, only for judgment calls.** A line in `AGENTS.md` or a project skill. Nothing fails when an agent skips them.
 
 When the repeated mistake is in how the agent itself works (a procedure it keeps re-deriving wrong, not a property of the repo's code), the fix between levels 3 and 4 is a tested code skill: `await skills.propose_code(name, source, test_source, evidence)` runs `test_source` in a fresh kernel and activates the skill only if it passes; later sessions use it with `from code_skills import <name>`. `await skills.code_list()` shows what already exists, `await skills.code_history(name)` its versions, `await skills.rollback(name, version)` undoes one. A code skill only helps agents that know to import it, so it never replaces a repo-level check.

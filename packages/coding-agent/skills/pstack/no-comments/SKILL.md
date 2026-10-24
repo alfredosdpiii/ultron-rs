@@ -86,7 +86,7 @@ Large files: pass the passages around the diff hunks (`h.lines(a, b)`) instead o
 
 ## Steps
 
-1. Run the frames above over the scope. A frame that returns `Incomplete` or an error gets one rerun with tighter context.
+1. Run the frames above over the scope, with `thinking=` set per rigor's "Match the effort to the job" (`../rigor/SKILL.md`). A frame that returns `Incomplete` or an error gets one rerun with tighter context.
 2. Inspect every report against the file. Reject application-code edits, scope escapes, exception-protected deletions, misstated `MUST KILL` reasons, and flags that treat kept intentional code as guilty. Reshape flags on our-code surprises stay actionable; do not restore those comments. A keep survives only with proof it is about something we cannot change. Audit missed scoped lint and type-checker suppressions yourself (`rg -n 'eslint-disable|@ts-ignore|@ts-expect-error|noqa|type: ignore'` over the scoped lines); correctness or safety suppressions stay actionable `MUST KILL`s. Before accepting a thin `IMPORTANT` or `do not remove` kill or keep, and for every `investigate` item, run `../how/SKILL.md` or `../why/SKILL.md` on its symbol. If a kill is ambiguous, do not restore. If a keep is refuted or still ambiguous, delete it. Rerun one rejected file's frame with the failure named in the task. Reject a second, report it open, and fail the run.
 3. Apply accepted deletions yourself. Delete whole comment lines with their newline (for a trailing comment, replace `" " + text` with nothing instead); when `edit` raises ValueError because the text repeats, widen `old_str` with a neighboring line.
 

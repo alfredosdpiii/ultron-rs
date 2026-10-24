@@ -26,7 +26,8 @@ Every candidate gets the same prompt, so the prompt is the contract.
    picker's tool in Phase D. Candidates see only the task.
 3. Pick the runners: by default one per model family, so the differences between candidates come from different
    models. Same model N times when the work is generation-bound rather than judgment-sensitive; more runners when the
-   arena covers several design directions. Use models the user names; otherwise query families:
+   arena covers several design directions. Set each runner's `thinking=` per rigor's "Match the effort to the job"
+   (`../rigor/SKILL.md`). Use models the user names; otherwise query families:
 
 ```python
 runners = []

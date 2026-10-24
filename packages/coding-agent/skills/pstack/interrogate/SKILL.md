@@ -39,7 +39,7 @@ One clear paragraph from the user's message, commit messages (`git log main..HEA
 
 ## Step 3: Review once per family
 
-Pick the panel: the models the user names, else one per family.
+Pick the panel: the models the user names, else one per family. Set each frame's `thinking=` per rigor's "Match the effort to the job" (`../rigor/SKILL.md`).
 
 ```python
 panel = []

@@ -106,7 +106,7 @@ Correct the log, not the story. The audit never edits or removes a row, even an 
 
 ## Cross-model review of the trail
 
-Before handing back, have a model from a different family than the one that did the work review the trail. Self-review is not a substitute. The reviewer is one `rlm.infer` frame: it reads the log and this run's transcript and flags what the user should pay attention to. Not a redo of the work, a scan for what's suboptimal or risky:
+Before handing back, have a model from a different family than the one that did the work review the trail. Self-review is not a substitute. The reviewer is one `rlm.infer` frame: it reads the log and this run's transcript and flags what the user should pay attention to. Not a redo of the work, a scan for what's suboptimal or risky. Set its `thinking=` per rigor's "Match the effort to the job" (`../rigor/SKILL.md`):
 
 - Decisions logged with weak or absent evidence.
 - Verification steps skipped or claimed without proof in the transcript.

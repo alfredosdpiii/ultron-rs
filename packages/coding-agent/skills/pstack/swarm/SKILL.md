@@ -30,16 +30,16 @@ state["plan"] = ["frame", "fan out", "aggregate", "report"]
 1. State the done predicate and the artifact or report the swarm must return.
 2. Choose the shape: partition into slices, race N workers on identical briefs, or mix both. For a race or mixed shape,
    declare `first pass`, `rank all` or `best-of` before spawning, and record it (`state["race_rule"] = "best-of"`).
-3. Set N from the user or derive it from the shape. N is total workers.
-4. Pick the worker model. Use the one the user names; otherwise omit `model=` so workers run on the settings default.
-   For a model race, find each arm's model up front and name it in the report.
+3. Pick the worker model. Use the one the user names; otherwise omit `model=` so workers run on the settings default.
+   For a model race, find each arm's model up front and name it in the report. Set the workers' `thinking=` per
+   rigor's "Match the effort to the job" (`../rigor/SKILL.md`).
 
 ```python
 ms = await rlm.find_models("grok")  # the model the user named (example query)
 model = f"{ms[0]['provider']}/{ms[0]['id']}" if ms else None
 ```
 
-5. Workers that write get `worktree=True`, so each has its own branch and no two clobber each other. Read-only
+4. Workers that write get `worktree=True`, so each has its own branch and no two clobber each other. Read-only
    workers share your tree and their brief says read-only. When workers verify or measure commits, each brief names
    the exact SHAs; a measurement brief also names the method (sample count, what one sample is, order). The worker
    records both in its result.

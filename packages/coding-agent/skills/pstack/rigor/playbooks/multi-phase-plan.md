@@ -127,8 +127,9 @@ Tests alone are not sufficient verification. A PR is verified only when its unit
 
 ### Verdict and merge, for every PR
 
-- [ ] At the code-ready head and each later push that changes the patch, run the swarm. One gates lane, the ten live
-  lanes, the perf lane, and two or more audit lanes with their own focus that distrust the PR body.
+- [ ] A full swarm runs once, at the code-ready head; another only for new behavior, a redesign or a large new diff. A
+  rebase, a conflict resolution or a minor fix gets a single verifier at the new head. A full swarm is one gates lane,
+  the ten live lanes, the perf lane, and two or more audit lanes with their own focus that distrust the PR body.
 - [ ] Clean only when every lane passes. Findings go back to the owner. A new head gets a fresh verdict unless the
   patch-id rule in `playbooks/shipping.md` keeps it.
 - [ ] <The merge or append rule of the delivery shape.>

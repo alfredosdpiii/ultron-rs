@@ -9,16 +9,18 @@ nothing polls or spawns a subagent just to read files.
 pstack is MIT licensed; its license is [LICENSE](LICENSE) in this directory, and each ported `SKILL.md` names its
 source. Changes from the original: Cursor-only mechanics replaced or removed, `poteto-mode` renamed `rigor`, the
 three orchestration playbooks merged into one, and `setup-pstack`, `poteto-help` and `make-bot-ui` left out (Ultron's
-model settings and `/skill:` commands cover the first two; the third needs Grok Bot).
+model settings and `/skill:` commands cover the first two; the third needs Grok Bot). `statechart`'s scripts are
+upstream's unchanged, without their test suite; they need Node, and install TLC and the chart renderer on first use.
 
 ## Use
 
 - `/skill:rigor <task>`: the rigorous mode. It reads the task, picks a playbook (bug fix, feature, refactoring,
   perf, investigation, shipping, orchestrate, ...) and runs the other skills as the steps need them.
 - `/skill:<name>` runs one skill directly: architect, arena, automate-me, benchmark-checklist, blast-radius, bro,
-  correct, create-verification-skill, figure-it-out, how, interrogate, ketchup, maintain-verification-skill,
-  no-comments, recall, reflect, show-me-your-work, swarm, tdd, teach, technical-writing, typescript-best-practices,
-  unslop, why.
+  correct, create-formal-verification-skill, create-verification-skill, figure-it-out, how, in-your-own-words,
+  interrogate, ketchup, ketchup-video, maintain-formal-verification-skill, maintain-verification-skill, no-comments,
+  recall, reflect, sharpen, show-me-your-work, statechart, swarm, tdd, teach, technical-writing,
+  typescript-best-practices, unslop, why.
 - The 24 engineering principles are skills too (`/skill:principle-fix-root-causes`, `principle-prove-it-works`, ...);
   the other skills read the ones a step needs.
 

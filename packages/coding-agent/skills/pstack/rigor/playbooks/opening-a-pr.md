@@ -45,7 +45,8 @@ Attach screenshots or recordings when they prove a claim. Full SHAs, lane recita
 
 **Size and stacks.** Prefer five narrow PRs to one large one. A stack is a base-branch chain: the root PR targets trunk;
 each child branch is rebased onto its parent's exact tip and its PR targets the parent branch
-(`gh pr create --base <parent-branch>`, `gh pr edit <pr> --base <parent-branch>`). Branch from trunk only for
+(`gh pr create --base <parent-branch>`, `gh pr edit <pr> --base <parent-branch>`). As a parent merges, move its
+child onto trunk per `playbooks/shipping.md` step 4. Branch from trunk only for
 independent work. Rebase on trunk before substantial stack work.
 
 **Readiness.** Open every PR ready, never draft (omit `--draft`; `gh pr ready <number>` if one opens as draft). Run

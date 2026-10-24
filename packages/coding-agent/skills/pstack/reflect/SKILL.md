@@ -37,7 +37,7 @@ Turn numbers in findings refer to the `[i role]` markers.
 
 ## 2. Three reviewer frames
 
-Run the three lenses as `rlm.infer` frames in one `asyncio.gather`, each with its template from `references/` as the task and the transcript as context. Use a different model per lens when more than one is configured, so the lenses do not share blind spots:
+Run the three lenses as `rlm.infer` frames in one `asyncio.gather`, each with its template from `references/` as the task and the transcript as context. Use a different model per lens when more than one is configured, so the lenses do not share blind spots. Set each frame's `thinking=` per rigor's "Match the effort to the job" (`../rigor/SKILL.md`):
 
 | Lens | Template | Model preference (a `find_models` query) |
 |---|---|---|
@@ -85,6 +85,8 @@ Move any Accepted item that a lint rule, test, script, metadata flag or runtime 
 ## 5. Ask, then apply
 
 Present the full Accepted / Rejected / Backlog output in your reply and end the turn. The user picks the subset and may redirect routings. Skill and AGENTS.md changes affect every future session. Do not apply anything before the user answers.
+
+Never edit a bundled skill in place: it lives in a per-version runtime directory under `~/.ultron/agent/runtime/`, and the next Ultron version replaces it. Before approval, show the destination of each skill edit, `.pi/skills/<skill>/` for the project or `~/.ultron/agent/skills/<skill>/` for the user; a skill there replaces the bundled one of the same name. After approval, copy the skill folder there and edit the copy. Never open a PR or push.
 
 Follow each approved row's Routing exactly:
 
