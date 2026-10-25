@@ -48,7 +48,18 @@ changed. Cite only principles whose leaf you read this session.
 - Shipping a UI, CLI or TUI → drive the real surface yourself: `bash` with tmux for CLIs and TUIs, a configured browser
   MCP server for web UIs (`await mcp.servers()`). For bugs, reproduce on that surface first; hand off to the user only
   under `playbooks/bug-fix.md` step 1's exception.
+- Proving a change on the app → through the project's verification skill (a project skill such as
+  `.pi/skills/verify-<app>/` that drives the app) when it has one. None, and the change needs proving on a UI, CLI or
+  service → `../create-verification-skill/SKILL.md` in the same task. It fails on behavior that works, or the app
+  gained features its map lacks → `../maintain-verification-skill/SKILL.md`.
+- Reading or editing `.ts` or `.tsx` → `../typescript-best-practices/SKILL.md`.
+- A diff whose callers, consumers or shared state lie outside it → `../blast-radius/SKILL.md` before the PR.
+- The user corrects a mistake agents have made before in this repo → `../correct/SKILL.md`, so the next one cannot.
 - A benchmark, a measured speedup or regression → `../benchmark-checklist/SKILL.md` before you report or act on it.
+- The user asks for formal verification, or a race, retry, state machine, parser or other invariant that tests rarely
+  reach → `../create-formal-verification-skill/SKILL.md` (TLA+ by default for ordering and concurrency, read with
+  `../statechart/SKILL.md`; Bend for pure logic with laws). The project has a verify skill and the change touches its
+  covered code → run it. Merges or refactors that skipped it → `../maintain-formal-verification-skill/SKILL.md`.
 - Any PR-status request ("babysit this", "get it green", "check on PR X", "address the review comments") →
   `playbooks/babysit.md`. Opening a PR never starts one.
 - Land or ship a green stack → `playbooks/shipping.md`. Green is not safe.
@@ -56,6 +67,27 @@ changed. Cite only principles whose leaf you read this session.
 - A broken skill mid-task → fix it in its own change. Don't block, don't silently work around it.
 - Long, autonomous or multi-phase work, or work the user steps away from → a decision trail via
   `../show-me-your-work/SKILL.md`. Commit it when the stakes need an audit record; otherwise keep it local.
+
+## Skills by situation
+
+The rest of the bundled skills, for what the user asks or the moment calls for:
+
+- Explain so the user understands → `../teach/SKILL.md` (it runs how and why). A picture says it better → a terminal
+  diagram with `../../humanlayer/diagram-it/SKILL.md`, a page with `../../qingyuna/answer-me-with-html/SKILL.md`, an
+  illustrated figure with `../../wheresryan/anatomy/SKILL.md`.
+- Show a PM, designer or reviewer how the system moves between states, or turn an agreed chart into a TLA+ skeleton →
+  `../statechart/SKILL.md`.
+- Catch the user up on this session → `../ketchup/SKILL.md` (`../ketchup-video/SKILL.md` as a video); on their work
+  across sessions → `../recall/SKILL.md`; on one prior session to resume → `playbooks/session-pickup.md`.
+- The user found your last reply hard to follow → `../bro/SKILL.md`.
+- Before work on a long or messy ask, play the goal back → `../in-your-own-words/SKILL.md`; a prompt to aim deeper
+  before sending → `../sharpen/SKILL.md` (it returns the prompt, not the work).
+- Turn what a finished task taught into skill edits → `../reflect/SKILL.md`; the user's habits into a personal mode
+  skill → `../automate-me/SKILL.md`.
+
+Close calls: how explains what code does, why the reasons, teach both plainly. Interrogate reviews the diff;
+blast-radius looks for breakage outside it. Arena gives every worker one brief and merges the best; swarm splits work
+into slices or a race. Ketchup covers this session; recall rebuilds context across sessions.
 
 ## Principles
 

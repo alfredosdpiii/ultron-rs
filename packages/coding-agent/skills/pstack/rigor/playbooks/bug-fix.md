@@ -9,12 +9,14 @@ evidence justifies ships.
 1. Reproduce it yourself on the matching surface (tmux for CLIs and TUIs, a browser MCP for web UIs), even when a
    debug protocol says to ask the user to reproduce. Ask the user only with a stated, specific reason the surface
    cannot be reached, and only after driving it as far as it goes. If it won't reproduce, synthesize the trigger,
-   tighten conditions, or instrument until it fires.
+   tighten conditions, or instrument until it fires. Drive the app through the project's verification skill when it
+   has one.
 2. Binary-search the cause. Form candidate hypotheses and rule them out until one survives. Seed them with
    `../how/SKILL.md` over the subsystem and `../why/SKILL.md` for regression history. Each pass, take the split that
    cuts the most remaining space, get runtime evidence, eliminate. When state is unclear, add logging and read it as
    the code runs. Don't guess. Keep the hypothesis table in `state["hypotheses"]`; for a long unattended hunt, see
-   `playbooks/autonomous-run.md`. Confirm the surviving mechanism with runtime evidence before step 3.
+   `playbooks/autonomous-run.md`. Confirm the surviving mechanism with runtime evidence before step 3. In code nobody
+   here knows well, or a regression with no clear suspect, run this step by `../../ultron/debug-unfamiliar/SKILL.md`.
 3. Plan the fix. If it crosses a function boundary, `../architect/SKILL.md` first. Delegate the implementation with a
    specific scope: `rlm.spawn(brief, name=..., worktree=True, model=state["models"]["code"])` (`hard` for subtle
    causes).

@@ -20,7 +20,8 @@
    laziness protocol does not override it. A child without spawn depth satisfies it by owning the diff, reviewed by its
    parent. Comments per **Comments** in `SKILL.md`. Surgical edits; re-ground upstream-derived files against their
    source. Port shared-primitive improvements to every consumer and verify each. Commit liberally.
-5. Verify on the matching surface. Inconclusive or wrong-surface is not a pass; flag it.
+5. Verify on the matching surface, through the project's verification skill when it has one. Inconclusive or
+   wrong-surface is not a pass; flag it.
 6. Rebase into small, ordered commits; stack follow-ups (`the sequence-verifiable-units principle (`../principle-sequence-verifiable-units/SKILL.md`)`).
 7. If the design is contested, `../interrogate/SKILL.md` before shipping.
 8. Run `playbooks/opening-a-pr.md`.
