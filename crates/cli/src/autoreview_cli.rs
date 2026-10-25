@@ -696,6 +696,7 @@ struct Saved {
     frame_model: Option<String>,
     frame_thinking: Option<String>,
     child_model: Option<String>,
+    map_tokens: Option<u64>,
     default_provider: Option<String>,
     default_model: Option<String>,
 }
@@ -732,6 +733,7 @@ fn saved_settings(env: &Env) -> Saved {
         child_model: rlm
             .and_then(|rlm| config::settings::model_ref(rlm.get("childModel")))
             .filter(|model| !model.starts_with("claude-code/")),
+        map_tokens: config::settings::token_cap(rlm.and_then(|rlm| rlm.get("mapTokens"))),
         default_provider: text(manager.default_provider().as_ref()),
         default_model: text(manager.default_model().as_ref()),
         autoreview,
@@ -874,6 +876,7 @@ fn open_engine(
             frame_thinking: saved.frame_thinking.clone(),
             child_model: saved.child_model.clone(),
             review_model: saved.fallbacks_review_model.clone(),
+            map_tokens: saved.map_tokens,
         },
         kernel_env: Vec::new(),
         // The review kernels start from this environment's variables, never the server process's.

@@ -49,6 +49,15 @@ The session's own model is `defaultProvider`/`defaultModel`: the Models section'
 running session and saves it as the default, as `/model` does. The `claudeCode.*` rows apply when `ultron claude` next
 starts.
 
+### Token caps (Ultron)
+
+Both are off unless set; `/settings` lists them as "Request token cap" and "rlm.map token cap" (off, or a few sizes).
+
+| Setting | Type | Default | Description |
+|---|---|---|---|
+| `rootBudget.maxTotalTokens` | positive integer \| `"off"` | off | Tokens one request (a root turn, with its sub-agents and frames) may spend before more model work is refused. Read when a session starts. `ULTRON_MAX_TOTAL_TOKENS` (a count, or `off`) overrides it. |
+| `rlm.mapTokens` | positive integer \| `"off"` | off | Token budget of an `rlm.map` that sets no `budget=Budget(tokens=...)`; frames past it come back `Incomplete`. Applies to the next map. `ULTRON_RLM_MAP_TOKENS` overrides it. |
+
 ## Interaction
 
 | Setting | Type | Default | Description |

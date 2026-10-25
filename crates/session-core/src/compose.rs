@@ -1452,6 +1452,7 @@ impl Stack {
                 frame_thinking: rlm.frame_thinking,
                 child_model: rlm.child_model,
                 review_model: settings.review_model(),
+                map_tokens: rlm.map_tokens,
             }
         };
         let frames = inference::Frames::new(inference, self.config.frame_env.clone(), models);
@@ -1757,9 +1758,10 @@ fn typed_agents(
         ),
     };
     // `nativeUsageLimitsFromEnv(process.env, settingsManager.getRootBudgetSettings())`: the session's environment
-    // and the `rootBudget` settings.
+    // and the `rootBudget` settings, whose token cap is off unless set.
     let var = config.var.clone();
-    let limits = delegation::usage::limits_from_env(&|key| var(key), &config.settings["rootBudget"]);
+    let root_budget = delegation::usage::root_budget_settings(&config.settings["rootBudget"]);
+    let limits = delegation::usage::limits_from_env(&|key| var(key), &root_budget);
     // Work refused at a root's limit is counted (`onRefused: () => sessionStats.usageLimitBlock()`).
     let refused = stats.clone();
     let usage = UsageLedger::new(

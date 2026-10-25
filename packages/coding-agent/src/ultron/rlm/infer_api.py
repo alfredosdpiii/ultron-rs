@@ -489,9 +489,10 @@ class Inference:
         context, so a provider's prompt cache can serve it (the Anthropic API marks the system prompt cacheable;
         the Claude Code CLI passes it as `--system-prompt`). Entries are values, `Incomplete`, or `FrameError`.
 
-        Without `budget=Budget(tokens=...)` a top-level map is limited to the host's default token budget
-        (ULTRON_RLM_MAP_TOKENS, 500,000 by default); frames past it come back `Incomplete`. The result is a
-        list with `.spent` ({calls, tokens}), `.budget` and `.remaining`, and one summary line is printed.
+        Without `budget=Budget(tokens=...)` a top-level map has the host's default token limit
+        (ULTRON_RLM_MAP_TOKENS or the `rlm.mapTokens` setting; none by default); frames past a limit come back
+        `Incomplete`. The result is a list with `.spent` ({calls, tokens}), `.budget` and `.remaining`, and one
+        summary line is printed.
         Every frame is a model request: filter with code first and give each frame only what it must judge
         (a section, a few KB), not whole files; compute exact numbers in plain Python. `await rlm.frames()`
         lists traces.

@@ -52,6 +52,44 @@ pub fn format_http_idle(ms: u64) -> String {
         .map_or_else(|| format!("{} sec", ms as f64 / 1000.0), |(l, _)| (*l).to_string())
 }
 
+/// The token caps' choices (`rootBudget.maxTotalTokens`, `rlm.mapTokens`); off, the default, removes the key.
+const REQUEST_TOKEN_CAPS: [&str; 5] = ["off", "10M", "25M", "50M", "100M"];
+const MAP_TOKEN_CAPS: [&str; 5] = ["off", "500k", "1M", "2M", "10M"];
+
+/// A saved token cap as `/settings` shows it: a positive integer, shortened; anything else is off.
+fn format_token_cap(value: &Value) -> String {
+    match value.as_u64() {
+        Some(n) if n >= 1_000_000 && n.is_multiple_of(1_000_000) => format!("{}M", n / 1_000_000),
+        Some(n) if n >= 1_000 && n.is_multiple_of(1_000) => format!("{}k", n / 1_000),
+        Some(n) if n >= 1 => n.to_string(),
+        _ => "off".into(),
+    }
+}
+
+/// What a token-cap choice saves: off removes the key, else the count.
+fn token_cap_value(label: &str) -> Value {
+    let (digits, scale) = match (label.strip_suffix('M'), label.strip_suffix('k')) {
+        (Some(digits), _) => (digits, 1_000_000),
+        (_, Some(digits)) => (digits, 1_000),
+        _ => (label, 1),
+    };
+    digits
+        .parse::<u64>()
+        .ok()
+        .filter(|n| *n > 0)
+        .map_or(Value::Null, |n| Value::from(n * scale))
+}
+
+/// A token-cap row; a saved count that is not one of the choices is offered after off.
+fn token_cap_item(id: &str, label: &str, description: &str, saved: &Value, choices: &[&str]) -> Item {
+    let current = format_token_cap(saved);
+    let mut values = choices.to_vec();
+    if !values.contains(&current.as_str()) {
+        values.insert(1, &current);
+    }
+    item(id, label, description, current.clone(), &values)
+}
+
 /// What `/settings` reads.
 pub struct SettingsInput {
     /// The merged settings document.
@@ -871,6 +909,26 @@ impl SettingsSelector {
                     "The Ultron persona: personality.md in the system prompt, announced next steps continued (applies from the next prompt)",
                     if c.text("persona").as_deref() == Some("ultron") { "ultron" } else { "off" }.into(),
                     &["ultron", "off"],
+                ),
+            );
+            items.insert(
+                at + 1,
+                token_cap_item(
+                    "request-token-cap",
+                    "Request token cap",
+                    "Tokens one request may spend, with its sub-agents and frames, before more model work is refused (applies to new sessions; ULTRON_MAX_TOTAL_TOKENS overrides it)",
+                    c.get("rootBudget.maxTotalTokens"),
+                    &REQUEST_TOKEN_CAPS,
+                ),
+            );
+            items.insert(
+                at + 2,
+                token_cap_item(
+                    "map-token-cap",
+                    "rlm.map token cap",
+                    "Tokens an rlm.map that sets no budget may spend; frames past it come back Incomplete (applies to the next map; ULTRON_RLM_MAP_TOKENS overrides it)",
+                    c.get("rlm.mapTokens"),
+                    &MAP_TOKEN_CAPS,
                 ),
             );
         }
@@ -1871,6 +1929,8 @@ impl SettingsSelector {
             "fullscreen-copy-on-select" => ("fullscreenCopyOnSelect", b),
             // As `/persona ultron|off` writes it: off removes the key.
             "persona" => ("persona", if value == "ultron" { value.into() } else { Value::Null }),
+            "request-token-cap" => ("rootBudget.maxTotalTokens", token_cap_value(value)),
+            "map-token-cap" => ("rlm.mapTokens", token_cap_value(value)),
             other => (other, value.into()),
         };
         set_path(&mut self.input.settings, key, v.clone());
@@ -2100,6 +2160,38 @@ mod tests {
                 .description
                 .ends_with("Saved default: anthropic/claude-haiku-4-5 (durable.model).")
         );
+    }
+
+    /// The token caps are off by default; a choice saves its count and off removes the key. A hand-set count that is
+    /// not a choice is shown and offered.
+    #[test]
+    fn settings_token_caps_default_off() {
+        let row = |s: &SettingsSelector, id: &str| {
+            let it = s.list.items.iter().find(|it| it.id == id).unwrap();
+            (it.value.clone(), it.values.clone())
+        };
+        let mut s = selector(json!({}));
+        assert_eq!(row(&s, "request-token-cap").0, "off");
+        assert_eq!(row(&s, "map-token-cap").0, "off");
+        assert_eq!(
+            s.main_change("request-token-cap", "25M"),
+            SettingsEvent::Change("rootBudget.maxTotalTokens".into(), json!(25_000_000))
+        );
+        assert_eq!(
+            s.main_change("map-token-cap", "500k"),
+            SettingsEvent::Change("rlm.mapTokens".into(), json!(500_000))
+        );
+        assert_eq!(
+            s.main_change("map-token-cap", "off"),
+            SettingsEvent::Change("rlm.mapTokens".into(), Value::Null)
+        );
+        let s = selector(json!({"rootBudget": {"maxTotalTokens": 3_000_000}, "rlm": {"mapTokens": "off"}}));
+        let (value, values) = row(&s, "request-token-cap");
+        assert_eq!(
+            (value.as_str(), &values[..2]),
+            ("3M", &["off".to_string(), "3M".to_string()][..])
+        );
+        assert_eq!(row(&s, "map-token-cap").0, "off");
     }
 
     #[test]

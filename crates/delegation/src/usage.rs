@@ -35,26 +35,28 @@ pub struct UsageLimits {
     pub default_max_total_tokens: Option<u64>,
 }
 
-/// `nativeUsageLimitsFromEnv(env, settings)`: `settings` is `rootBudget` ({maxTotalTokens?, maxTotalTurns?}).
+/// `nativeUsageLimitsFromEnv(env, settings)`: `settings` is `rootBudget` ({maxTotalTokens?, maxTotalTurns?}). Rust
+/// adds `maxTotalTokens: "off"` (any case, or none/unlimited): no token cap, as `ULTRON_MAX_TOTAL_TOKENS=off`; a set
+/// variable still wins. Unset is TypeScript's default cap; the app passes `"off"` for it ([`root_budget_settings`]).
 pub fn limits_from_env(var: &dyn Fn(&str) -> Option<String>, settings: &Value) -> UsageLimits {
     let unlimited = |raw: &str| ["none", "off", "unlimited"].contains(&raw.to_lowercase().as_str());
-    // Some(Some(n)): a value; Some(None): turned off; the fallback otherwise.
-    let integer = |name: &str, fallback: u64, minimum: u64| -> Option<u64> {
+    // The variable's value, None when it is off, else the fallback (None: off).
+    let integer = |name: &str, fallback: Option<u64>, minimum: u64| -> Option<u64> {
         let text = var(name).map(|t| t.trim().to_string()).unwrap_or_default();
         if text.is_empty() {
-            return Some(fallback);
+            return fallback;
         }
         if unlimited(&text) {
             return None;
         }
         match text.parse::<f64>() {
             Ok(n) if n.fract() == 0.0 && n >= minimum as f64 && n <= 9_007_199_254_740_991.0 => Some(n as u64),
-            _ => Some(fallback),
+            _ => fallback,
         }
     };
     let mut limits = UsageLimits {
-        max_admitted_tasks: integer("ULTRON_MAX_ADMITTED_TASKS", DEFAULT_MAX_ADMITTED_TASKS, 0),
-        max_wall_ms: integer("ULTRON_MAX_WALL_MS", DEFAULT_MAX_WALL_MS, 1),
+        max_admitted_tasks: integer("ULTRON_MAX_ADMITTED_TASKS", Some(DEFAULT_MAX_ADMITTED_TASKS), 0),
+        max_wall_ms: integer("ULTRON_MAX_WALL_MS", Some(DEFAULT_MAX_WALL_MS), 1),
         ..UsageLimits::default()
     };
     let cost = var("ULTRON_MAX_COST_USD")
@@ -71,8 +73,16 @@ pub fn limits_from_env(var: &dyn Fn(&str) -> Option<String>, settings: &Value) -
             .filter(|n| n.fract() == 0.0 && *n >= 1.0)
             .map(|n| n as u64)
     };
-    let tokens = integer("ULTRON_MAX_TOTAL_TOKENS", setting("maxTotalTokens").unwrap_or(0), 1);
-    let turns = integer("ULTRON_MAX_TOTAL_TURNS", setting("maxTotalTurns").unwrap_or(0), 1);
+    let tokens_off = settings
+        .get("maxTotalTokens")
+        .and_then(Value::as_str)
+        .is_some_and(unlimited);
+    let tokens = integer(
+        "ULTRON_MAX_TOTAL_TOKENS",
+        (!tokens_off).then(|| setting("maxTotalTokens").unwrap_or(0)),
+        1,
+    );
+    let turns = integer("ULTRON_MAX_TOTAL_TURNS", Some(setting("maxTotalTurns").unwrap_or(0)), 1);
     match tokens {
         Some(0) => limits.default_max_total_tokens = Some(DEFAULT_MAX_TOTAL_TOKENS),
         Some(n) => limits.max_total_tokens = Some(n),
@@ -82,6 +92,20 @@ pub fn limits_from_env(var: &dyn Fn(&str) -> Option<String>, settings: &Value) -
         limits.max_total_turns = Some(n);
     }
     limits
+}
+
+/// The `rootBudget` settings the app reads: Ultron's token cap is off unless `maxTotalTokens` sets one (TypeScript's
+/// default is [`DEFAULT_MAX_TOTAL_TOKENS`]), so a value that is not a positive integer becomes `"off"`.
+pub fn root_budget_settings(root_budget: &Value) -> Value {
+    let mut budget = root_budget.as_object().cloned().unwrap_or_default();
+    let capped = budget
+        .get("maxTotalTokens")
+        .and_then(Value::as_f64)
+        .is_some_and(|n| n.fract() == 0.0 && n >= 1.0);
+    if !capped {
+        budget.insert("maxTotalTokens".into(), "off".into());
+    }
+    Value::Object(budget)
 }
 
 /// `budgetLine(remaining, explicitTokenCap)`: the budget note on a cell result, if any.

@@ -232,3 +232,26 @@ fn config_worker_project_trust_decides_which_settings_apply_like_ts() {
         );
     }
 }
+
+/// `rlm.mapTokens`: a positive integer is the cap; unset, `"off"` and anything else is none.
+#[test]
+fn config_rlm_map_tokens_setting() {
+    let dir = tempfile::tempdir().unwrap();
+    let map_tokens = |value: Value| {
+        manager(dir.path(), &json!({"rlm": {"mapTokens": value}}))
+            .rlm_model_settings()
+            .map_tokens
+    };
+    assert_eq!(map_tokens(json!(2_000_000)), Some(2_000_000));
+    for none in [
+        json!("off"),
+        json!(0),
+        json!(1.5),
+        json!(-3),
+        json!("lots"),
+        json!(true),
+    ] {
+        assert_eq!(map_tokens(none.clone()), None, "{none}");
+    }
+    assert_eq!(manager(dir.path(), &json!({})).rlm_model_settings().map_tokens, None);
+}

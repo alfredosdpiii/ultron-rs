@@ -92,7 +92,7 @@ const MEMORY: &str = r#"- `memory.prepare(query)` recalls long-term memory, `mem
 const INFERENCE_PROMPT: &str = r#"Large inputs stay out of your context as handles; examples: `help(rlm.load)`, `help(rlm.map)`.
 - `h = await rlm.load(path_or_text)`: `h.search(regex)`, `h.count(regex)`, `h.lines(a, b)`, `h.chunks(n)`; views print their text.
 - `await rlm.infer(task, context=[views], contract=T, budget=Budget(calls, tokens, depth))`: one private sub-model call (no transcript, no tools), contract-validated and re-asked; running out returns a falsy `Incomplete`.
-- `await rlm.map(task, items, contract=T)`: one frame per item, in order, under one shared budget (default 500,000 tokens; `budget=Budget(tokens=...)` for more).
+- `await rlm.map(task, items, contract=T)`: one frame per item, in order, under one shared budget (`budget=Budget(tokens=...)` caps it).
 - Every frame is a model request: filter with code first, give each frame only the passage it must judge, and compute exact numbers in Python."#;
 const CONTEXT_PROMPT: &str = r#"- `ctx` edits your view of your own context (`ctx.history()`, `ctx.forget`, `ctx.summarize`, `ctx.pin`, `ctx.note`); a seen task result collapses to one line (`await agents.result(id)`). A `[context: ...]` line on a result means your context nears its limit: free space with `ctx` then. `help(ctx)`."#;
 const CODE_SKILLS_PROMPT: &str = r#"- Save a working procedure that will recur as a tested code skill (`await skills.propose_code(...)`); reuse one with `from code_skills import <name>`. `help(skills)`."#;

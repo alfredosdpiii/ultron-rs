@@ -211,6 +211,14 @@ pub fn model_ref(value: Option<&Value>) -> Option<String> {
     valid.then(|| trimmed.to_string())
 }
 
+/// A token cap setting (`rlm.mapTokens`): a positive safe integer; anything else (unset, `"off"`) is no cap.
+pub fn token_cap(value: Option<&Value>) -> Option<u64> {
+    value?
+        .as_f64()
+        .filter(|n| n.fract() == 0.0 && *n >= 1.0 && *n <= 9_007_199_254_740_991.0)
+        .map(|n| n as u64)
+}
+
 fn js_space(c: char) -> bool {
     c.is_whitespace() || c == '\u{feff}'
 }

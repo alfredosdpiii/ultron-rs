@@ -1,7 +1,7 @@
 //! `rlm.map`, `rlm.models` and the frame-model settings (inference.ts, model-settings.ts). `Frames` wraps
 //! `Inference`: a map runs one frame per item (up to `concurrency` at once, results in order) under one shared budget node (a top-level map without a
-//! token limit gets `ULTRON_RLM_MAP_TOKENS`, default 500,000); every frame's first call is held at admission, so the
-//! shared pool decides deterministically which frames run. Code-free frames that name no model take
+//! token limit gets `ULTRON_RLM_MAP_TOKENS`, else `rlm.mapTokens`, else none; TypeScript's default is 500,000); every
+//! frame's first call is held at admission, so the shared pool decides deterministically which frames run. Code-free frames that name no model take
 //! ULTRON_RLM_FRAME_MODEL, else `rlm.frameModel`; `rlm.frameThinking` is the default thinking level.
 
 use super::{Inference, MAX_SAFE_INTEGER, fields, is_model_ref, js_normalize, js_trim, optional_integer};
@@ -11,6 +11,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
+/// TypeScript's token limit of a top-level map that sets none; Ultron's is `rlm.mapTokens`, off by default.
 pub const DEFAULT_MAP_TOKENS: u64 = 500_000;
 const MAX_MAP_FRAMES: usize = 10_000;
 const MAX_CONCURRENCY: u64 = 16;
@@ -22,7 +23,7 @@ const MAP_TOKENS_ENV: &str = "ULTRON_RLM_MAP_TOKENS";
 pub const INFERENCE_PROMPT: &str = "Large inputs stay out of your context as handles; examples: `help(rlm.load)`, `help(rlm.map)`.
 - `h = await rlm.load(path_or_text)`: `h.search(regex)`, `h.count(regex)`, `h.lines(a, b)`, `h.chunks(n)`; views print their text.
 - `await rlm.infer(task, context=[views], contract=T, budget=Budget(calls, tokens, depth))`: one private sub-model call (no transcript, no tools), contract-validated and re-asked; running out returns a falsy `Incomplete`.
-- `await rlm.map(task, items, contract=T)`: one frame per item, in order, under one shared budget (default 500,000 tokens; `budget=Budget(tokens=...)` for more).
+- `await rlm.map(task, items, contract=T)`: one frame per item, in order, under one shared budget (`budget=Budget(tokens=...)` caps it).
 - Every frame is a model request: filter with code first, give each frame only the passage it must judge, and compute exact numbers in Python.";
 
 /// The saved model settings (`/settings -> Models`), read for every request so a change applies to the next frame.
@@ -32,6 +33,8 @@ pub struct ModelSettings {
     pub frame_thinking: Option<String>,
     pub child_model: Option<String>,
     pub review_model: Option<String>,
+    /// `rlm.mapTokens`: the token limit of a top-level map that sets none (None: no limit).
+    pub map_tokens: Option<u64>,
 }
 
 /// Serves `rlm.map`, `rlm.models` and the frame-model defaults of `rlm.infer`; everything else goes to `inference`.
@@ -88,12 +91,13 @@ impl Frames {
         json!({"frame": frame, "review": review, "child": child, "frameThinking": settings.frame_thinking})
     }
 
-    /// `defaultMapTokens`: ULTRON_RLM_MAP_TOKENS when it is a positive safe integer (JS `Number`), else 500,000.
-    fn default_map_tokens(&self) -> u64 {
+    /// `defaultMapTokens`: ULTRON_RLM_MAP_TOKENS when it is a positive safe integer (JS `Number`), else the
+    /// `rlm.mapTokens` setting (TypeScript: 500,000), else no limit.
+    fn default_map_tokens(&self) -> Option<u64> {
         let value = self.env.get(MAP_TOKENS_ENV).map(|v| js_trim(v).parse::<f64>());
         match value {
-            Some(Ok(n)) if n.fract() == 0.0 && n > 0.0 && n <= MAX_SAFE_INTEGER as f64 => n as u64,
-            _ => DEFAULT_MAP_TOKENS,
+            Some(Ok(n)) if n.fract() == 0.0 && n > 0.0 && n <= MAX_SAFE_INTEGER as f64 => Some(n as u64),
+            _ => (self.settings)().map_tokens,
         }
     }
 
@@ -143,7 +147,7 @@ impl Frames {
         let concurrency = optional_integer(payload.get("concurrency"), "concurrency", 1, MAX_CONCURRENCY)?.unwrap_or(8);
         self.defaults(payload);
         let inference = &self.inference;
-        let (mut options, admission) = inference.options(payload, Some(self.default_map_tokens()))?;
+        let (mut options, admission) = inference.options(payload, self.default_map_tokens())?;
         // The shared prefix is always materialized (it goes into the system prompt, where a handle cannot be opened).
         options.prefix = inference.views(payload.get("prefix"), 1)?;
         // Validate every item before any frame runs or any budget is touched.

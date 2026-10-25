@@ -8,7 +8,7 @@ use std::path::Path;
 
 use serde_json::{Map, Value, json};
 
-use crate::settings::{FRAME_THINKING_LEVELS, Settings, SettingsManager, model_ref};
+use crate::settings::{FRAME_THINKING_LEVELS, Settings, SettingsManager, model_ref, token_cap};
 
 /// `DEFAULT_HTTP_IDLE_TIMEOUT_MS` (core/http-dispatcher.ts): five minutes.
 pub const DEFAULT_HTTP_IDLE_TIMEOUT_MS: u64 = 300_000;
@@ -22,6 +22,8 @@ pub struct RlmModelSettings {
     /// A `claude-code/*` child model runs its tool lanes on the Claude subscription (ai::dispatch).
     pub child_model: Option<String>,
     pub frame_thinking: Option<String>,
+    /// `rlm.mapTokens`: the token cap of a top-level `rlm.map` that sets none (Rust only); unset or `"off"` is none.
+    pub map_tokens: Option<u64>,
 }
 
 /// `getWorktreeSettings`: the default setup of subagent worktrees (`worktrees.link`, `.copy`, `.setupCommand`).
@@ -195,6 +197,7 @@ impl SettingsManager {
             frame_model: model_ref(configured.get("frameModel")),
             child_model: model_ref(configured.get("childModel")),
             frame_thinking,
+            map_tokens: token_cap(configured.get("mapTokens")),
         }
     }
 
