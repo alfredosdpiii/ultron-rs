@@ -5,6 +5,7 @@ description = "Autoreview: the kernel review engine, its plan and the GitHub rev
 edition.workspace = true
 license.workspace = true
 publish.workspace = true
+autotests = false
 
 [dependencies]
 ai = { path = "../ai" }
@@ -24,3 +25,7 @@ workspace = true
 [dev-dependencies]
 tokio = { version = "=1.53.2", features = ["rt", "time"] }
 tempfile = "=3.27.0"
+
+[[test]]
+name = "it"
+path = "tests/it.rs"

@@ -12,3 +12,8 @@ unsafe_code = "forbid"
 
 [workspace.lints.clippy]
 all = { level = "warn", priority = -1 }
+
+# Line tables are enough for panics and backtraces; full debug info made each of the ~600 test binaries ~250 MB, which
+# was most of a test build's link time and of the target directory.
+[profile.dev]
+debug = "line-tables-only"

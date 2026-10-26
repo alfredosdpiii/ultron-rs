@@ -17,7 +17,7 @@ A change is done when it works and is verified, not when it is written:
 - `cargo fmt --all -- --check` is clean.
 - `cargo clippy --workspace --all-targets --locked -- -D warnings` is clean.
 - The tests you touched or that cover the change pass; for runtime, host, kernel, prompt or TUI changes, the whole
-  `cargo test --workspace --locked`.
+  `nice -n 19 cargo nextest run --workspace --locked`.
 - Before a release: the above, plus `scripts/rust-release.sh` and a secret scan of the tree and of the commits since
   the last release.
 
@@ -26,7 +26,13 @@ bar above or something genuinely needs the user; don't end a turn by announcing 
 
 ## Tests
 
-- One crate: `cargo test -p <crate>`; one file: `cargo test -p <crate> --test <name>`.
+- Run tests with `nice -n 19 cargo nextest run`, which runs every test in a process of its own, 8 at a time
+  (`.config/nextest.toml`). One crate: `nice -n 19 cargo nextest run -p <crate>`; one file:
+  `nice -n 19 cargo nextest run -p <crate> <file>::`. `nice` keeps the build and the tests from starving the
+  user's desktop.
+- A crate's `tests/*.rs` files are modules of one test binary, `tests/it.rs`: add a new file's `#[path]` line there.
+  A file that re-runs or exits its own test binary (`current_exe`, `process::exit`) gets a `[[test]]` of its own in
+  the crate's `Cargo.toml` instead. `every_test_file_is_built` fails on a file in neither.
 - Run tests under an empty `HOME`, with no provider keys in the environment. Tests use scripted or fake providers,
   never real ones, and never open a browser, the real clipboard, real Docker or the user's `~/.ultron` or
   `~/.claude`.

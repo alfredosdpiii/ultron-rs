@@ -5,6 +5,7 @@ description = "The `ultron` binary: composition root (host stack, kernel), argum
 edition.workspace = true
 license.workspace = true
 publish.workspace = true
+autotests = false
 
 [[bin]]
 name = "ultron"
@@ -16,6 +17,7 @@ base64 = "=0.23.1"
 image = { version = "=0.25.10", default-features = false, features = ["bmp", "gif", "jpeg", "png", "webp"] }
 ai = { path = "../ai" }
 loki = { path = "../loki" }
+mimalloc = { version = "=0.1.52", default-features = false }
 resources = { path = "../resources" }
 review = { path = "../review" }
 knowledge = { path = "../knowledge" }
@@ -61,3 +63,15 @@ tempfile = "=3.27.0"
 
 [lints]
 workspace = true
+
+[[test]]
+name = "it"
+path = "tests/it.rs"
+
+[[test]]
+name = "daemon_processes"
+path = "tests/daemon_processes.rs"
+
+[[test]]
+name = "self_update"
+path = "tests/self_update.rs"

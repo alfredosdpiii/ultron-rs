@@ -18,7 +18,7 @@ use harness::chat::{
 use harness::scheduler::{Cancel, HarnessError, Registry};
 use serde_json::{Value, json};
 
-use crate::support::{eventually, js};
+use super::support::{eventually, js};
 
 /// A cell body run against the Harness's host operations.
 pub type CellBody = Arc<dyn Fn(&HostOps, &CellCall, &Cancel) -> Result<CellResult, String> + Send + Sync>;

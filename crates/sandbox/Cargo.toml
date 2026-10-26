@@ -5,6 +5,7 @@ description = "Process isolation for the host's shell commands (bwrap, unshare, 
 edition.workspace = true
 license.workspace = true
 publish.workspace = true
+autotests = false
 
 [dependencies]
 getrandom = "=0.4.3"
@@ -16,3 +17,7 @@ tempfile = "=3.27.0"
 
 [lints]
 workspace = true
+
+[[test]]
+name = "it"
+path = "tests/it.rs"

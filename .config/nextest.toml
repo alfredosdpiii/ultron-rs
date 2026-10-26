@@ -1,0 +1,4 @@
+# Half of a 16-core machine: many tests start a kernel, a coordinator and a worker of their own, so one test per core
+# put a load of 40 to 60 on the machine and starved the desktop.
+[profile.default]
+test-threads = 8

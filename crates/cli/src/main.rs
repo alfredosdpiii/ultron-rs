@@ -3,6 +3,11 @@
 
 use std::path::PathBuf;
 
+/// Session workers run for days on many threads, where glibc's per-thread arenas hold on to freed memory (an idle
+/// worker reached 1.4 GB with a dozen 64 MB arenas); mimalloc returns freed pages to the system.
+#[global_allocator]
+static ALLOCATOR: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
 fn main() {
     // Before any thread starts: SIGINT/SIGTERM/SIGHUP are read on a thread of their own (crates/daemon `signals`);
     // without a handler they act as they would have.

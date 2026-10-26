@@ -15,6 +15,17 @@ use std::sync::{Arc, Condvar, Mutex, MutexGuard, OnceLock};
 use std::time::{Duration, Instant};
 
 const WORKER_STARTUP_TIMEOUT: Duration = Duration::from_millis(15_000);
+/// What each megabyte of the session file adds to [`WORKER_STARTUP_TIMEOUT`]: opening replays the whole journal (a
+/// 98 MB one took about 15 s on an idle disk, and every restart timed out on a busy one).
+const WORKER_STARTUP_PER_MB: Duration = Duration::from_millis(250);
+
+/// How long a worker for the session at `path` may take to start.
+fn startup_timeout(path: &std::path::Path) -> Duration {
+    let megabytes = std::fs::metadata(path).map_or(0, |m| m.len()) / 1_000_000;
+    let extra = WORKER_STARTUP_PER_MB.saturating_mul(u32::try_from(megabytes).unwrap_or(u32::MAX));
+    WORKER_STARTUP_TIMEOUT.saturating_add(extra)
+}
+
 /// The error code and message of a call its client cancelled (packages/server server.ts `handleRequest`).
 pub const CANCELLED_CODE: &str = "cancelled";
 pub const CANCELLED_MESSAGE: &str = "RPC request cancelled";
@@ -753,7 +764,7 @@ impl Manager {
     }
 
     fn await_launch(&self, path: &PathBuf, peer: &str) -> Result<Handle, ServiceError> {
-        let (mut inner, ready) = self.wait_until(WORKER_STARTUP_TIMEOUT, |i| {
+        let (mut inner, ready) = self.wait_until(startup_timeout(path), |i| {
             i.pending
                 .get(path)
                 .is_none_or(|p| p.peer != peer || p.outcome.is_some())

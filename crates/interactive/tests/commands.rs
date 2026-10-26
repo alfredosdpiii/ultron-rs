@@ -933,7 +933,7 @@ fn interactive_commands_ctrl_shift_f_opens_transcript_search_with_overlays() {
     app.handle_input("\x1b");
     assert!(screen(&mut app).contains("ultron v"));
     // Parity mode: no transcript search.
-    let (mut parity, _) = crate::app();
+    let (mut parity, _) = self::app();
     parity.handle_input("\x1b[102;6u");
     assert!(!screen(&mut parity).contains("1/1"));
 }

@@ -5,6 +5,7 @@ description = "Supervisor for Ultron's persistent Python kernel (runtime.py): pr
 edition.workspace = true
 license.workspace = true
 publish.workspace = true
+autotests = false
 
 [dependencies]
 command-fds = "=0.3.3"
@@ -20,3 +21,11 @@ tempfile = "=3.27.0"
 
 [lints]
 workspace = true
+
+[[test]]
+name = "it"
+path = "tests/it.rs"
+
+[[test]]
+name = "sandboxed"
+path = "tests/sandboxed.rs"

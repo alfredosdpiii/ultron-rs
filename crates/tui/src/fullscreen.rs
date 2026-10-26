@@ -73,7 +73,7 @@ pub fn strip_zone_prefix(line: &str) -> &str {
             return rest;
         };
         let mut chars = after.chars();
-        if !matches!(chars.next(), Some('A' | 'B' | 'C')) {
+        if !matches!(chars.next(), Some('A'..='C')) {
             return rest;
         }
         let tail = chars.as_str();

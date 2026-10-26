@@ -3,7 +3,7 @@
 //! over, or closes, through its own input). Built on `p_session_support` (its scripted loopback server and replies).
 #![allow(dead_code)]
 
-use crate::p_session_support::{HANG, Script, server};
+use super::p_session_support::{HANG, Script, server};
 use serde_json::{Value, json};
 use session_core::core::{Input, Op};
 use std::path::{Path, PathBuf};
