@@ -99,6 +99,10 @@ pub struct PullState {
     /// `approve`, `request_changes` or `comment`: after `request_changes`, new commits are reviewed unasked.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_verdict: Option<String>,
+    /// The last review covered everything (the engine's `complete`): asked again about the same commit, only its
+    /// findings are re-checked.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_review_complete: Option<bool>,
     /// The pull request was seen closed or merged after the last review.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub closed: Option<bool>,

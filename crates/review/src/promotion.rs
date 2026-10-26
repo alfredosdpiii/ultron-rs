@@ -217,6 +217,36 @@ fn parse_diff(text: &str) -> Vec<FileDiff> {
     files
 }
 
+/// The new-file lines a diff adds, by path, as inclusive ranges; a removal marks the line it left off at. A
+/// re-review tells what changed since the last review from code that review already read with it.
+pub fn changed_new_lines(diff: &str) -> IndexMap<String, Vec<(i64, i64)>> {
+    let mut out: IndexMap<String, Vec<(i64, i64)>> = IndexMap::new();
+    for file in parse_diff(diff) {
+        let ranges = out.entry(file.new_path.clone()).or_default();
+        for hunk in &file.hunks {
+            let mut line = hunk.new_start;
+            for text in &hunk.lines {
+                let marked = match text.chars().next() {
+                    Some('+') => Some(line),
+                    Some('-') => Some(line.max(1)),
+                    _ => None,
+                };
+                if let Some(at) = marked {
+                    match ranges.last_mut() {
+                        Some(last) if at <= last.1 + 1 => last.1 = last.1.max(at),
+                        _ => ranges.push((at, at)),
+                    }
+                }
+                if new_side(text) {
+                    line += 1;
+                }
+            }
+        }
+    }
+    out.retain(|_, ranges| !ranges.is_empty());
+    out
+}
+
 type Counts = IndexMap<String, IndexMap<String, u64>>;
 
 fn add(counts: &mut Counts, path: &str, line: &str, n: u64) {

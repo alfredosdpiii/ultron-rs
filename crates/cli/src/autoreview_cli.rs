@@ -477,6 +477,7 @@ pub fn offline_json(raw: &Value, startup_ms: Option<u64>, block_at: Option<&str>
         block_at: block_at.map(str::to_string),
         max_comments,
         promotion: None,
+        fresh_lines: None,
     };
     let plan = plan_review(&typed, &options);
     let inline: HashSet<usize> = plan.comments.iter().map(|comment| comment.finding).collect();
@@ -2043,6 +2044,7 @@ fn execute(
                 block_at: Some(config.block_at.clone()),
                 max_comments: Some(config.max_comments.0 as i64),
                 promotion: None,
+                fresh_lines: None,
             },
         );
         writeln!(out, "{}", plan.body).map_err(io)?;

@@ -330,6 +330,7 @@ fn review_github_mentions_and_latest_mention_match_typescript() {
                 path: None,
                 line: None,
                 review_id: None,
+                in_reply_to: None,
             })
             .collect();
         let reviews: Vec<review::github::Review> = case["reviews"]
