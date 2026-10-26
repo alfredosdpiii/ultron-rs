@@ -5,6 +5,7 @@ description = "Provider layer of packages/ai: message model, streaming events, e
 edition.workspace = true
 license.workspace = true
 publish.workspace = true
+autotests = false
 
 [dependencies]
 config = { path = "../config" }
@@ -38,3 +39,43 @@ tokio = { version = "=1.53.2", features = ["sync", "time", "macros", "rt", "rt-m
 
 [lints]
 workspace = true
+
+[[test]]
+name = "it"
+path = "tests/it.rs"
+
+[[test]]
+name = "claude_code_lane"
+path = "tests/claude_code_lane.rs"
+
+[[test]]
+name = "claude_subscription_admission"
+path = "tests/claude_subscription_admission.rs"
+
+[[test]]
+name = "claude_subscription_catalog"
+path = "tests/claude_subscription_catalog.rs"
+
+[[test]]
+name = "claude_subscription_client"
+path = "tests/claude_subscription_client.rs"
+
+[[test]]
+name = "claude_subscription_fallback"
+path = "tests/claude_subscription_fallback.rs"
+
+[[test]]
+name = "claude_subscription_relay"
+path = "tests/claude_subscription_relay.rs"
+
+[[test]]
+name = "claude_subscription_setup"
+path = "tests/claude_subscription_setup.rs"
+
+[[test]]
+name = "claude_subscription_usage"
+path = "tests/claude_subscription_usage.rs"
+
+[[test]]
+name = "proxy_env"
+path = "tests/proxy_env.rs"

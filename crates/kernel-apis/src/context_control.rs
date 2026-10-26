@@ -430,7 +430,8 @@ struct EditInfo {
 struct BranchView {
     path: Vec<Value>,
     compaction_index: Option<usize>,
-    window: Vec<Value>,
+    /// Where the window (the entries after the last compaction) starts in `path`.
+    window_start: usize,
     applied: Vec<Applied>,
     /// Edit per target, in first-edit order (a later edit of the same target replaces it in place).
     edits: Vec<(String, EditInfo)>,
@@ -440,8 +441,11 @@ struct BranchView {
 }
 
 impl BranchView {
+    fn window(&self) -> &[Value] {
+        &self.path[self.window_start..]
+    }
     fn by_id(&self, id: &str) -> Option<&Value> {
-        self.window.iter().find(|entry| entry["id"] == id)
+        self.window().iter().find(|entry| entry["id"] == id)
     }
     fn applied(&self, id: &str) -> Option<&Applied> {
         self.applied.iter().find(|applied| applied.entry["id"] == id)
@@ -503,7 +507,12 @@ pub struct ContextControl {
     /// (lane, entry) appended by this module that the branch does not show yet.
     pending: Mutex<Vec<(String, Value)>>,
     tracking: Mutex<Tracking>,
+    /// The last `ctx.state` answer and the main branch it was read from (its tip and the ids pending on it): the TUI
+    /// asks every few seconds, and reading the branch copies all of it.
+    state_cache: Mutex<Option<(StateKey, Value)>>,
 }
+
+type StateKey = (Option<String>, Vec<String>);
 
 /// Whether old tool results are trimmed before a threshold compaction: ULTRON_COMPACTION_TRIM=off disables it.
 pub fn compaction_trim_enabled(value: Option<&str>) -> bool {
@@ -523,6 +532,7 @@ impl ContextControl {
             trim: compaction_trim_enabled(std::env::var("ULTRON_COMPACTION_TRIM").ok().as_deref()),
             pending: Mutex::new(Vec::new()),
             tracking: Mutex::new(tracking),
+            state_cache: Mutex::new(None),
         }
     }
 
@@ -559,7 +569,7 @@ impl ContextControl {
         let committed_ids: HashSet<&str> = committed.iter().filter_map(|entry| entry["id"].as_str()).collect();
         let mut pending = lock(&self.pending);
         pending.retain(|(_, entry)| !entry["id"].as_str().is_some_and(|id| committed_ids.contains(id)));
-        let mut path = committed.clone();
+        let mut path = committed;
         path.extend(
             pending
                 .iter()
@@ -568,10 +578,11 @@ impl ContextControl {
         );
         drop(pending);
         let compaction_index = path.iter().rposition(|entry| entry["type"] == "compaction");
-        let window: Vec<Value> = path[compaction_index.map_or(0, |index| index + 1)..].to_vec();
-        let applied = apply_context_edits(&window);
+        let window_start = compaction_index.map_or(0, |index| index + 1);
+        let window = &path[window_start..];
+        let applied = apply_context_edits(window);
         let mut edits: Vec<(String, EditInfo)> = Vec::new();
-        for entry in &window {
+        for entry in window {
             let data = if entry["type"] == "custom" && entry["data"].is_object() {
                 &entry["data"]
             } else {
@@ -617,7 +628,7 @@ impl ContextControl {
             .filter(|entry| entry["type"] == "message" && entry["message"]["role"] == "toolResult")
             .filter_map(|entry| entry["message"]["toolCallId"].as_str())
             .collect();
-        for entry in &window {
+        for entry in window {
             if entry["type"] == "message"
                 && tool_call_ids(&entry["message"])
                     .iter()
@@ -629,7 +640,7 @@ impl ContextControl {
         Ok(BranchView {
             path,
             compaction_index,
-            window,
+            window_start,
             applied,
             edits,
             pins,
@@ -721,7 +732,7 @@ impl ContextControl {
         };
         let mut call_owner: Vec<(String, String)> = Vec::new();
         let mut results_of: Vec<(String, Vec<String>)> = Vec::new();
-        for entry in &view.window {
+        for entry in view.window() {
             if entry["type"] != "message" {
                 continue;
             }
@@ -763,6 +774,23 @@ impl ContextControl {
 
     /// Forgotten, pinned and noted items of the root branch (`ctx.state`, the `/rlm` panel).
     pub fn state(&self) -> Result<Value, String> {
+        let pending_ids = lock(&self.pending)
+            .iter()
+            .filter(|(lane, _)| lane == "main")
+            .map(|(_, entry)| entry["id"].as_str().unwrap_or_default().to_string())
+            .collect();
+        let key = (self.branches.tip_id("main")?, pending_ids);
+        if let Some((cached, state)) = &*lock(&self.state_cache)
+            && *cached == key
+        {
+            return Ok(state.clone());
+        }
+        let state = self.read_state()?;
+        *lock(&self.state_cache) = Some((key, state.clone()));
+        Ok(state)
+    }
+
+    fn read_state(&self) -> Result<Value, String> {
         let view = self.view("main")?;
         let item = |id: &str| match view.by_id(id) {
             Some(entry) => json!({"id": id, "kind": kind_of(entry).unwrap_or("custom"),
@@ -828,7 +856,7 @@ impl ContextControl {
                     Some(_) => return Err(format!("kinds must be a list of: {}", KINDS.join(", "))),
                 };
                 let items: Vec<Value> = view
-                    .window
+                    .window()
                     .iter()
                     .filter_map(|entry| Self::item(&view, entry))
                     .filter(|item| {
@@ -896,7 +924,7 @@ impl ContextControl {
                 }
                 let mut ids = Self::closure(&view, &id_list(payload.get("ids"))?);
                 Self::guard(&view, &ids)?;
-                let order = |id: &String| view.window.iter().position(|entry| entry["id"] == id.as_str());
+                let order = |id: &String| view.window().iter().position(|entry| entry["id"] == id.as_str());
                 ids.sort_by_key(order);
                 let first = ids[0].clone();
                 let plural = if ids.len() == 1 { "" } else { "s" };
@@ -1089,7 +1117,7 @@ impl ContextControl {
         let mut edits = Vec::new();
         let mut tasks = Vec::new();
         let mut answered_after = false;
-        for entry in view.window.iter().rev() {
+        for entry in view.window().iter().rev() {
             if entry["type"] != "message" {
                 continue;
             }
@@ -1160,7 +1188,7 @@ impl ContextControl {
         let view = self.view(lane)?;
         let target = threshold as f64 * TRIM_TARGET;
         let last_assistant = view
-            .window
+            .window()
             .iter()
             .rev()
             .find(|entry| entry["type"] == "message" && entry["message"]["role"] == "assistant")
@@ -1176,7 +1204,7 @@ impl ContextControl {
         let mut edits = Vec::new();
         let mut saved = 0i64;
         let mut answered_after = false;
-        for entry in view.window.iter().rev() {
+        for entry in view.window().iter().rev() {
             if entry["type"] != "message" {
                 continue;
             }

@@ -5,6 +5,7 @@ description = "Rust evidence for Ultron acceptance rows A01-A56: process-level t
 edition.workspace = true
 license.workspace = true
 publish.workspace = true
+autotests = false
 
 # The `ultron` composition root (crates/cli/src/main.rs) built from this package, so its tests can run the real binary
 # as a subprocess (`CARGO_BIN_EXE_ultron-acceptance`). Same source, same library code, same docs/runtime.py paths.
@@ -15,6 +16,7 @@ test = false
 doc = false
 
 [dependencies]
+mimalloc = { version = "=0.1.52", default-features = false }
 cli = { path = "../cli" }
 config = { path = "../config" }
 daemon = { path = "../daemon" }
@@ -38,3 +40,11 @@ tempfile = "=3.27.0"
 
 [lints]
 workspace = true
+
+[[test]]
+name = "it"
+path = "tests/it.rs"
+
+[[test]]
+name = "a23_durable_work"
+path = "tests/a23_durable_work.rs"

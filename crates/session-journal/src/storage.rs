@@ -1,5 +1,5 @@
 //! `jsonl/storage.ts`: one format-4 session file. Opening replays every complete transaction (a torn final line is
-//! dropped and the file rewritten without it); each commit appends one line. A legacy v3 file is read through
+//! dropped and cut off the file); each commit appends one line. A legacy v3 file is read through
 //! [`LegacyV3Source`] and rewritten as format 4 by its first non-empty commit, which also records the imported
 //! usage as one adjustment row (`details.source = "v3-import"`).
 
@@ -93,8 +93,11 @@ impl JsonlStorage {
         if let Some(next) = codec::header_i64(&header, "nextSeq") {
             state.advance_next_seq(next)?;
         }
+        // The complete lines are the file's first bytes: cutting the torn tail off leaves the bytes TypeScript's
+        // republication writes, without rewriting a large journal (a 98 MB one outlasted the worker's startup
+        // deadline on a busy disk, and every restart was killed mid-rewrite with the tail still torn).
         if torn {
-            io::publish(path, &format!("{}\n", lines.join("\n")))?;
+            io::truncate(path, content.rfind('\n').map_or(0, |last| last + 1))?;
         }
         Ok(JsonlStorage {
             path: path.to_path_buf(),

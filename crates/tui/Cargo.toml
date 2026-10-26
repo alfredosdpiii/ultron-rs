@@ -5,6 +5,7 @@ description = "Terminal UI: ANSI-aware width/wrap/truncate, key parsing, stdin s
 edition.workspace = true
 license.workspace = true
 publish.workspace = true
+autotests = false
 
 [dependencies]
 arboard = { version = "=3.6.1", default-features = false, features = ["image-data", "wayland-data-control"] }
@@ -31,3 +32,7 @@ serde_json = "=1.0.151"
 
 [lints]
 workspace = true
+
+[[test]]
+name = "it"
+path = "tests/it.rs"

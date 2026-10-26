@@ -40,7 +40,7 @@ The first run that needs them installs the runtime files into `~/.ultron/agent/r
 ```bash
 cargo fmt --all -- --check
 cargo clippy --workspace --all-targets --locked -- -D warnings
-cargo test --workspace --locked
+nice -n 19 cargo nextest run --workspace --locked   # cargo install cargo-nextest
 scripts/rust-release.sh              # dist/rust-release/ultron-<version>-<target>.tar.gz; publishes nothing
 ```
 

@@ -5,6 +5,7 @@ description = "Rust host operations behind the Python kernel API: bash, shell jo
 edition.workspace = true
 license.workspace = true
 publish.workspace = true
+autotests = false
 
 [dependencies]
 fancy-regex = "=0.19.2"
@@ -22,3 +23,15 @@ tempfile = "=3.27.0"
 
 [lints]
 workspace = true
+
+[[test]]
+name = "it"
+path = "tests/it.rs"
+
+[[test]]
+name = "durable_jobs"
+path = "tests/durable_jobs.rs"
+
+[[test]]
+name = "sandboxed_hand_over"
+path = "tests/sandboxed_hand_over.rs"

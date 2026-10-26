@@ -52,6 +52,16 @@ pub fn publish(path: &Path, content: &str) -> Result<(), String> {
     })
 }
 
+/// Cut `path` to its first `len` bytes, in place: a torn final line dropped without rewriting the lines before it.
+pub fn truncate(path: &Path, len: usize) -> Result<(), String> {
+    let result = (|| -> std::io::Result<()> {
+        let file = fs::OpenOptions::new().write(true).open(path)?;
+        file.set_len(len as u64)?;
+        file.sync_all()
+    })();
+    result.map_err(|e| format!("Failed to repair JSONL storage {}: {e}", path.display()))
+}
+
 /// Append one line.
 pub fn append(path: &Path, line: &str) -> Result<(), String> {
     let mut file = fs::OpenOptions::new()

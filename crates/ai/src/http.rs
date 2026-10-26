@@ -6,8 +6,8 @@ use serde_json::Value;
 use std::collections::BTreeMap;
 use std::future::Future;
 use std::pin::Pin;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 use tokio::sync::Notify;
 
@@ -640,7 +640,9 @@ pub fn http_idle_timeout(setting: Option<&Value>) -> Option<Duration> {
 /// Real HTTP over reqwest with rustls.
 #[derive(Clone, Debug, Default)]
 pub struct ReqwestTransport {
-    client: reqwest::Client,
+    /// Built from `config` by the first request: building one loads and parses the system's root certificates, and
+    /// a transport built for a handler that only answers inspections never sends. Clones share it.
+    client: Arc<OnceLock<reqwest::Client>>,
     timeout: Option<Duration>,
     /// The longest wait for the response headers, or between two body chunks (undici's `headersTimeout` and
     /// `bodyTimeout`, which TypeScript sets to `httpIdleTimeoutMs`).
@@ -651,12 +653,7 @@ pub struct ReqwestTransport {
 
 impl ReqwestTransport {
     pub fn new(timeout: Option<Duration>) -> Self {
-        let config = crate::net::ClientConfig::default();
-        let client = config.client().unwrap_or_default();
-        ReqwestTransport {
-            config: Some(config),
-            ..Self::with_client(client, timeout)
-        }
+        Self::lazy(crate::net::ClientConfig::default(), timeout)
     }
 
     /// A transport whose clients are built from `config` (an injected environment's proxies).
@@ -671,17 +668,37 @@ impl ReqwestTransport {
     /// [`ReqwestTransport::configured`] with the proxies of the environment `var` holds (`HTTP_PROXY`,
     /// `HTTPS_PROXY`, `NO_PROXY`, as the TypeScript HTTP stack reads them).
     pub fn for_env(var: &dyn Fn(&str) -> Option<String>, timeout: Option<Duration>) -> Self {
-        let config = crate::net::ClientConfig::from_lookup(var);
-        Self::configured(config, timeout).unwrap_or_else(|_| Self::new(timeout))
+        Self::lazy(crate::net::ClientConfig::from_lookup(var), timeout)
+    }
+
+    /// A transport whose client is built from `config` when it first sends (a client `config` cannot build is the
+    /// default configuration's, as [`ReqwestTransport::for_env`] always fell back).
+    fn lazy(config: crate::net::ClientConfig, timeout: Option<Duration>) -> Self {
+        ReqwestTransport {
+            client: Arc::default(),
+            timeout,
+            idle: None,
+            config: Some(config),
+        }
     }
 
     pub fn with_client(client: reqwest::Client, timeout: Option<Duration>) -> Self {
         ReqwestTransport {
-            client,
+            client: Arc::new(OnceLock::from(client)),
             timeout,
             idle: None,
             config: None,
         }
+    }
+
+    fn client(&self) -> &reqwest::Client {
+        self.client.get_or_init(|| {
+            self.config
+                .as_ref()
+                .and_then(|config| config.client().ok())
+                .or_else(|| crate::net::ClientConfig::default().client().ok())
+                .unwrap_or_default()
+        })
     }
 
     /// Fail a request whose headers, or whose next body chunk, take longer than `idle` (`None`: wait forever).
@@ -728,7 +745,7 @@ impl Transport for ReqwestTransport {
             .build()
             .map_err(|e| e.to_string())?;
         Ok(Arc::new(ReqwestTransport {
-            client,
+            client: Arc::new(OnceLock::from(client)),
             timeout: self.timeout,
             idle: self.idle,
             config: self.config.clone(),
@@ -743,7 +760,7 @@ impl Transport for ReqwestTransport {
             None => reqwest::Client::builder().no_proxy(),
         };
         Some(Arc::new(ReqwestTransport {
-            client: builder.build().ok()?,
+            client: Arc::new(OnceLock::from(builder.build().ok()?)),
             timeout: self.timeout,
             idle: self.idle,
             config: self.config.clone(),
@@ -753,7 +770,7 @@ impl Transport for ReqwestTransport {
     fn http1_only(&self) -> Option<Arc<dyn Transport>> {
         let client = self.config.as_ref()?.builder().ok()?.http1_only().build().ok()?;
         Some(Arc::new(ReqwestTransport {
-            client,
+            client: Arc::new(OnceLock::from(client)),
             timeout: self.timeout,
             idle: self.idle,
             config: self.config.clone(),
@@ -783,7 +800,7 @@ impl Transport for ReqwestTransport {
     fn send(&self, request: HttpRequest) -> BoxFuture<'_, Result<HttpResponse, String>> {
         Box::pin(async move {
             let method = reqwest::Method::from_bytes(request.method.as_bytes()).map_err(|e| e.to_string())?;
-            let mut builder = self.client.request(method, &request.url).body(wire_body(&request));
+            let mut builder = self.client().request(method, &request.url).body(wire_body(&request));
             for (name, value) in &request.headers {
                 builder = builder.header(name, value);
             }

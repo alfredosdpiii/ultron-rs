@@ -171,14 +171,15 @@ impl FooterBranch {
                 *current = next;
                 changed
             };
+            // Stamped before the first read: a checkout right after it is a change, not the baseline.
+            let files = paths.as_ref().map(watched).unwrap_or_default();
+            let mut last = stamp(&files);
             let changed = set(read_branch(paths.as_ref(), path_var.as_deref()));
             first.store(true, Ordering::SeqCst);
             if changed {
                 on_change();
             }
             let Some(paths) = paths else { return };
-            let files = watched(&paths);
-            let mut last = stamp(&files);
             loop {
                 match stopped.recv_timeout(WATCH_INTERVAL) {
                     Err(RecvTimeoutError::Timeout) => {}
