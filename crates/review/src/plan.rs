@@ -3,7 +3,8 @@
 //!
 //! - Verdict: REQUEST_CHANGES when a confirmed finding is at or above `blockAt`, or an earlier one is still present
 //!   at that level; APPROVE only when coverage was complete; otherwise COMMENT. The account's own pull request, and
-//!   a closed or merged one, always get COMMENT.
+//!   a closed or merged one, always get COMMENT. On a re-review, a new finding on lines that did not change since
+//!   the last review blocks only when critical; one at `blockAt` or above makes it COMMENT, not APPROVE.
 //! - Few, heavy comments, ranked by level and evidence strength; nits are never inline.
 //! - An inline comment sits on its line or the nearest diff line within three; else the body names it.
 
@@ -183,6 +184,10 @@ pub struct PlanOptions {
     /// A cherry-pick or promotion: only what differs from the merged pull requests it carries was read.
     #[serde(default)]
     pub promotion: Option<PromotionNote>,
+    /// A re-review: the new-file line ranges, by path, that changed since this account's last review (empty when
+    /// the head did not move). `None` (a first review, a force-push) puts every line in play.
+    #[serde(default)]
+    pub fresh_lines: Option<IndexMap<String, Vec<(i64, i64)>>>,
 }
 
 /// What a cherry-pick or promotion carries (`promotion.rs`): its sources and what matched them.
@@ -518,13 +523,52 @@ fn confirmed(finding: &EngineFinding) -> bool {
     finding.verification == "confirmed"
 }
 
+pub type FreshLines = IndexMap<String, Vec<(i64, i64)>>;
+
+/// Whether a finding (or another place of its root cause) is on lines that changed since the last review, or within
+/// [`RELOCATE_WITHIN`] lines of them; always, when `fresh` is `None`.
+pub fn is_fresh(finding: &EngineFinding, fresh: Option<&FreshLines>) -> bool {
+    let Some(fresh) = fresh else { return true };
+    let changed = |file: &str, line: i64| place_line(fresh.get(file).map(Vec::as_slice), line).is_some();
+    changed(&finding.file, finding.line)
+        || finding
+            .also_at
+            .iter()
+            .flatten()
+            .any(|place| changed(&place.file, place.line))
+}
+
+/// A finding at `block_at` or above blocks, unless a re-review found it on code the last review already read: a new
+/// finding there moves the goalposts, so it blocks only when critical (boost-capital/aqua-parser#90 and #91 had 22
+/// change requests, most for medium findings in lines no commit had touched since the review before).
+fn blocks(finding: &EngineFinding, block_at: &str, fresh: Option<&FreshLines>) -> bool {
+    at_or_above(finding.level(), block_at) && (finding.level() == "critical" || is_fresh(finding, fresh))
+}
+
 pub fn decide_verdict(result: &EngineResult, self_authored: bool, state: &str, block_at: Option<&str>) -> Decision {
+    decide_verdict_in(result, self_authored, state, block_at, None)
+}
+
+/// [`decide_verdict`] of a re-review: findings outside `fresh` block only when critical.
+pub fn decide_verdict_in(
+    result: &EngineResult,
+    self_authored: bool,
+    state: &str,
+    block_at: Option<&str>,
+    fresh: Option<&FreshLines>,
+) -> Decision {
     let block_at = block_at.unwrap_or(DEFAULT_BLOCK_AT);
     let blocking = result
         .findings
         .iter()
-        .filter(|finding| confirmed(finding) && at_or_above(finding.level(), block_at))
+        .filter(|finding| confirmed(finding) && blocks(finding, block_at, fresh))
         .count();
+    let late = result
+        .findings
+        .iter()
+        .filter(|finding| confirmed(finding) && at_or_above(finding.level(), block_at))
+        .count()
+        - blocking;
     let still_open = result
         .earlier
         .iter()
@@ -557,6 +601,12 @@ pub fn decide_verdict(result: &EngineResult, self_authored: bool, state: &str, b
         )
     } else if !result.complete {
         decision(Verdict::Comment, "the review did not cover everything".into())
+    } else if late > 0 {
+        // Not a block, and not an approval over them either.
+        decision(
+            Verdict::Comment,
+            "nothing that changed since the last review blocks the merge".into(),
+        )
     } else {
         decision(Verdict::Approve, format!("no confirmed finding at {block_at} or above"))
     }
@@ -645,11 +695,13 @@ fn capitalized(text: &str) -> String {
 pub fn plan_review(result: &EngineResult, options: &PlanOptions) -> ReviewPlan {
     let block_at = options.block_at.as_deref().unwrap_or(DEFAULT_BLOCK_AT);
     let max_comments = options.max_comments.unwrap_or(DEFAULT_MAX_COMMENTS).max(0) as usize;
-    let Decision { verdict, reason } = decide_verdict(
+    let fresh = options.fresh_lines.as_ref();
+    let Decision { verdict, reason } = decide_verdict_in(
         result,
         options.self_authored,
         &options.state,
         options.block_at.as_deref(),
+        fresh,
     );
     let mut comments: Vec<PlannedComment> = Vec::new();
     let mut in_summary = Vec::new();
@@ -660,7 +712,7 @@ pub fn plan_review(result: &EngineResult, options: &PlanOptions) -> ReviewPlan {
     for &index in &ranked {
         let finding = &result.findings[index];
         let level = finding.level();
-        let blocking = at_or_above(level, block_at);
+        let blocking = blocks(finding, block_at, fresh);
         let key = format!("{short_sha}-{}", index + 1);
         let mut comment = if level == "nit" {
             None
@@ -706,8 +758,15 @@ pub fn plan_review(result: &EngineResult, options: &PlanOptions) -> ReviewPlan {
     let blockers: Vec<usize> = ranked
         .iter()
         .copied()
-        .filter(|index| at_or_above(result.findings[*index].level(), block_at))
+        .filter(|index| blocks(&result.findings[*index], block_at, fresh))
         .collect();
+    let late = ranked
+        .iter()
+        .filter(|index| {
+            let finding = &result.findings[**index];
+            at_or_above(finding.level(), block_at) && !blocks(finding, block_at, fresh)
+        })
+        .count();
     let uncertain = result
         .findings
         .iter()
@@ -865,9 +924,18 @@ pub fn plan_review(result: &EngineResult, options: &PlanOptions) -> ReviewPlan {
 
     // Paragraph 3: the non-blocking notes.
     let mut notes = Vec::new();
+    if late > 0 {
+        notes.push(format!(
+            "{late} finding{} at {block_at} or above {} on lines that did not change since the last review, so {} \
+             not block.",
+            if late == 1 { "" } else { "s" },
+            if late == 1 { "is" } else { "are" },
+            if late == 1 { "it does" } else { "they do" }
+        ));
+    }
     let inline_notes = comments
         .iter()
-        .filter(|comment| !at_or_above(result.findings[comment.finding].level(), block_at))
+        .filter(|comment| !blocks(&result.findings[comment.finding], block_at, fresh))
         .count();
     if inline_notes > 0 {
         notes.push(format!(
@@ -878,7 +946,7 @@ pub fn plan_review(result: &EngineResult, options: &PlanOptions) -> ReviewPlan {
     let outside: Vec<usize> = in_summary
         .iter()
         .copied()
-        .filter(|index| !at_or_above(result.findings[*index].level(), block_at))
+        .filter(|index| !blocks(&result.findings[*index], block_at, fresh))
         .collect();
     if !outside.is_empty() {
         let named: Vec<String> = outside

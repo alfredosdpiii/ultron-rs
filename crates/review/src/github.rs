@@ -342,6 +342,9 @@ pub struct Comment {
     pub line: Option<i64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub review_id: Option<i64>,
+    /// The comment this one replies to in its review thread (review comments only).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub in_reply_to: Option<i64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -762,6 +765,7 @@ impl GitHub {
             },
             line: number("line").or_else(|| number("original_line")),
             review_id: number("pull_request_review_id"),
+            in_reply_to: number("in_reply_to_id"),
         }
     }
 
@@ -905,6 +909,19 @@ impl GitHub {
         let body = serde_json::to_value(review).unwrap_or(Value::Null);
         let response = self.post(&format!("{}/pulls/{}/reviews", Self::base(r), r.number), body)?;
         Ok(id_of(response.body.as_ref().and_then(|body| body.get("id"))))
+    }
+
+    /// Dismiss a review (this account's own, whose block a later review lifted), with the reason shown on it.
+    pub fn dismiss_review(&self, r: &PullRef, review_id: i64, message: &str) -> Result<(), Error> {
+        self.request(
+            "PUT",
+            &format!("{}/pulls/{}/reviews/{review_id}/dismissals", Self::base(r), r.number),
+            &RequestOptions {
+                body: Some(json!({ "message": message, "event": "DISMISS" })),
+                ..RequestOptions::default()
+            },
+        )
+        .map(|_| ())
     }
 
     /// The inline comments GitHub kept of a posted review.

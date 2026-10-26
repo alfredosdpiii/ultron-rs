@@ -59,6 +59,8 @@ pub struct FakeComment {
     pub path: Option<String>,
     pub line: Option<i64>,
     pub pull_request_review_id: Option<i64>,
+    /// The comment this one replies to in its thread.
+    pub in_reply_to: Option<i64>,
 }
 
 impl FakeComment {
@@ -87,6 +89,9 @@ impl FakeComment {
         }
         if let Some(id) = self.pull_request_review_id {
             map.insert("pull_request_review_id".into(), json!(id));
+        }
+        if let Some(id) = self.in_reply_to {
+            map.insert("in_reply_to_id".into(), json!(id));
         }
         item
     }
@@ -293,6 +298,8 @@ pub struct HubState {
     pub poll_interval: Option<u64>,
     /// Answer a conditional notifications request with 304.
     pub not_modified: bool,
+    /// Failures answered after the request was carried out (GitHub creating a review and still answering 422).
+    pub failures_after: Vec<Failure>,
     ids: i64,
 }
 
@@ -346,6 +353,7 @@ impl FakeHub {
                 search: Vec::new(),
                 poll_interval: None,
                 not_modified: false,
+                failures_after: Vec::new(),
                 ids: 1000,
             }),
         })
@@ -417,6 +425,17 @@ impl FakeHub {
             matches: matches.into(),
             status,
             headers: headers.iter().map(|(n, v)| (n.to_string(), v.to_string())).collect(),
+            message: message.into(),
+            times: 1,
+        });
+    }
+
+    /// Carry out the next request matching `matches`, then answer it with `status` anyway.
+    pub fn fail_after(&self, matches: &str, status: u16, message: &str) {
+        self.lock().failures_after.push(Failure {
+            matches: matches.into(),
+            status,
+            headers: Vec::new(),
             message: message.into(),
             times: 1,
         });
@@ -701,6 +720,14 @@ impl FakeHub {
         if !state.pulls.contains_key(&key) {
             return respond(404, Some(json!({ "message": "Not Found" })), &[]);
         }
+        let after = state
+            .failures_after
+            .iter_mut()
+            .find(|f| f.times > 0 && probe.contains(&f.matches))
+            .map(|f| {
+                f.times -= 1;
+                (f.status, f.message.clone())
+            });
         let mut ids = state.ids;
         let keep = state.keep_comment.take();
         let can_keep = |path: &str, line: i64, body: &str| keep.as_ref().is_none_or(|keep| keep(path, line, body));
@@ -774,10 +801,24 @@ impl FakeHub {
                     line: Some(line),
                     pull_request_review_id: Some(review_id),
                     updated_at: None,
+                    in_reply_to: None,
                 });
                 pull.threads.insert(next, format!("PRRT_{next}"));
             }
             respond(200, Some(json!({ "id": review_id })), &[])
+        } else if let Some(review) = rest
+            .strip_prefix("reviews/")
+            .and_then(|r| r.strip_suffix("/dismissals"))
+            .filter(|_| method == "PUT")
+        {
+            let review: i64 = review.parse().unwrap_or(-1);
+            match pull.reviews.iter_mut().find(|r| r.id == review) {
+                Some(found) => {
+                    found.state = "DISMISSED".into();
+                    respond(200, Some(json!({ "id": review, "state": "DISMISSED" })), &[])
+                }
+                None => respond(404, Some(json!({ "message": "Not Found" })), &[]),
+            }
         } else if let Some(review) = rest.strip_prefix("reviews/").and_then(|r| r.strip_suffix("/comments")) {
             let review: i64 = review.parse().unwrap_or(-1);
             list(
@@ -808,7 +849,10 @@ impl FakeHub {
         };
         state.ids = ids;
         state.keep_comment = keep;
-        result
+        match after {
+            Some((status, message)) => respond(status, Some(json!({ "message": message })), &[]),
+            None => result,
+        }
     }
 
     fn git(state: &HubState, argv: &[String]) -> RunResult {

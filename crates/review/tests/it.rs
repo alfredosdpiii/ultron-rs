@@ -27,6 +27,8 @@ mod ledger;
 mod prepare_env;
 #[path = "promotion.rs"]
 mod promotion;
+#[path = "rereview.rs"]
+mod rereview;
 #[path = "retrying_websocket.rs"]
 mod retrying_websocket;
 #[path = "review_record.rs"]

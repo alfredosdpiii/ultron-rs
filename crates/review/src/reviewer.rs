@@ -37,7 +37,7 @@ use crate::ledger::{
 use crate::local::{expand_path, find_checkout, without_guide_mentions};
 use crate::plan::{EngineResult, PlanOptions, PromotionNote, ReviewPlan, Verdict, plan_review, without_inline};
 use crate::promotion::{
-    PromotionDelta, PromotionSource, cherry_sources, promotion_delta, referenced_pulls, source_label,
+    PromotionDelta, PromotionSource, changed_new_lines, cherry_sources, promotion_delta, referenced_pulls, source_label,
 };
 use crate::runner::Runner;
 use crate::settings::{AutoreviewConfig, AutoreviewPaths, MAX_ATTEMPTS, engine_settings, tests_eligible};
@@ -708,6 +708,11 @@ pub struct Prepared {
     pub ack_at: Option<i64>,
     /// Milliseconds from the notification to the acknowledgement, when both are known and it was posted now.
     pub tag_to_ack_ms: Option<i64>,
+    /// The head was reviewed in full before and is asked about again: only the earlier findings are re-checked,
+    /// with the replies in their threads, and nothing new is looked for.
+    pub recheck_only: bool,
+    /// Asked for on the command line: every line is in play, as in a first review.
+    pub forced: bool,
 }
 
 /// The verdict as the state and the outcome name it.
@@ -955,6 +960,13 @@ pub fn prepare_pull(deps: &ReviewerDeps, candidate: &Candidate, options: ReviewO
         }
         ack = Some(body);
     }
+    // A mention or a new request about a commit this account already reviewed in full asks it to look again at what
+    // it said (boost-capital/aqua-parser#90: each "please approve" started a whole new review, which found new
+    // things in the same code and requested changes again).
+    let recheck_only = !options.force
+        && last_sha.as_deref() == Some(head.as_str())
+        && saved.last_reviewed_sha.as_deref() == Some(head.as_str())
+        && saved.last_review_complete == Some(true);
     Ok(Preparation::Due(Box::new(Prepared {
         candidate: candidate.clone(),
         dry_run,
@@ -964,6 +976,8 @@ pub fn prepare_pull(deps: &ReviewerDeps, candidate: &Candidate, options: ReviewO
         ack,
         ack_at,
         tag_to_ack_ms,
+        recheck_only,
+        forced: options.force,
     })))
 }
 
@@ -1011,6 +1025,42 @@ fn earlier_statuses(result: &Value) -> Vec<EarlierStatus> {
         }
     }
     out
+}
+
+/// A reply in a finding's thread is cut to this many characters for the re-check.
+pub const MAX_REPLY_CHARS: usize = 2000;
+
+/// Dismiss this account's requests for changes on the pull request, after a review at `head` that blocks nothing.
+/// Never fails a review: an error (an account that may not dismiss reviews there) is logged.
+fn lift_own_blocks(deps: &ReviewerDeps, github: &GitHub, r: &PullRef, me: &str, head: &str, name: &str) {
+    let reviews = match github.reviews(r) {
+        Ok(reviews) => reviews,
+        Err(error) => {
+            (deps.log)(&format!(
+                "{name}: the earlier requests for changes were not read: {error}"
+            ));
+            return;
+        }
+    };
+    let message = format!(
+        "Lifted by the review of `{}`: none of its findings blocks the merge.",
+        short(head)
+    );
+    for review in reviews
+        .iter()
+        .filter(|review| review.user.to_lowercase() == me && review.state == "CHANGES_REQUESTED")
+    {
+        match github.dismiss_review(r, review.id, &message) {
+            Ok(()) => (deps.log)(&format!(
+                "{name}: dismissed its request for changes at {}",
+                short(&review.commit_id)
+            )),
+            Err(error) => (deps.log)(&format!(
+                "{name}: its request for changes at {} was not dismissed: {error}",
+                short(&review.commit_id)
+            )),
+        }
+    }
 }
 
 /// Review records kept: the newest this many.
@@ -1330,10 +1380,25 @@ fn review_in(
             earlier_diff = Some(String::new());
         }
     }
+    // What changed since this account's last review; a new finding elsewhere is on code that review already read.
+    let fresh_lines = if prepared.forced {
+        None
+    } else if last_sha.as_deref() == Some(head.as_str()) {
+        Some(indexmap::IndexMap::new())
+    } else {
+        since_sha.as_ref().and(earlier_diff.as_deref()).map(changed_new_lines)
+    };
+    if prepared.recheck_only {
+        (deps.log)(&format!(
+            "{name}: {} was reviewed in full: re-checking the earlier findings only",
+            short(&head)
+        ));
+        review_diff = String::new();
+    }
     // A cherry-pick or promotion: what matches the merged pull requests it carries was reviewed there.
     let mut promotion: Option<PromotionDelta> = None;
     let mut promotion_inputs: Vec<PromotionSource> = Vec::new();
-    if let Some(checkout) = checkout {
+    if let Some(checkout) = checkout.filter(|_| !prepared.recheck_only) {
         promotion_inputs = promotion_sources(&github, r, pull, checkout);
         if !promotion_inputs.is_empty() {
             let delta = promotion_delta(&review_diff, &promotion_inputs, &|path| {
@@ -1365,6 +1430,7 @@ fn review_in(
     }
     // Tests of the reviewed project run only where this account could push anyway, or the owner is trusted.
     let run_tests = checkout.is_some()
+        && !prepared.recheck_only
         && deps.config.mode != "fast"
         && deps.config.run_tests
         && tests_eligible(&deps.config, &r.owner, github.can_push(r)?);
@@ -1442,6 +1508,9 @@ fn review_in(
         }
     }
     spec.insert("runTests".into(), json!(run_tests));
+    if prepared.recheck_only {
+        spec.insert("recheckOnly".into(), json!(true));
+    }
     if let Some(test_env) = test_env.as_ref().filter(|_| run_tests) {
         spec.insert("testEnv".into(), json!(test_env));
         spec.insert("testEnvKind".into(), json!("testEnv"));
@@ -1487,9 +1556,28 @@ fn review_in(
         spec.insert("lessons".into(), serde_json::to_value(&lessons).unwrap_or(Value::Null));
     }
     if !earlier.is_empty() {
+        // The replies in each finding's thread: the author's answer, for the re-check to weigh against the source.
+        let replies = |finding: &PostedFinding| -> Vec<Value> {
+            let Some(root) = finding.comment_id else {
+                return Vec::new();
+            };
+            review_comments
+                .iter()
+                .filter(|comment| comment.in_reply_to == Some(root) && comment.user.to_lowercase() != me)
+                .map(|comment| json!({ "author": comment.user, "body": crate::js::head16(&comment.body, MAX_REPLY_CHARS) }))
+                .collect()
+        };
         let items: Vec<Value> = earlier
             .iter()
-            .map(|f| json!({ "id": f.id, "file": f.file, "line": f.line, "severity": f.severity, "claim": f.claim }))
+            .map(|f| {
+                let mut item =
+                    json!({ "id": f.id, "file": f.file, "line": f.line, "severity": f.severity, "claim": f.claim });
+                let replies = replies(f);
+                if !replies.is_empty() {
+                    item["replies"] = Value::Array(replies);
+                }
+                item
+            })
             .collect();
         spec.insert("earlier".into(), Value::Array(items));
         if earlier_diff.is_some() {
@@ -1549,6 +1637,7 @@ fn review_in(
                 missing: delta.missing.clone(),
                 entire: changed_lines(&delta.diff) == 0,
             }),
+            fresh_lines,
         },
     );
     // Nothing that names a private review guide is posted.
@@ -1640,13 +1729,28 @@ fn review_in(
     } else {
         let id = match github.post_review(r, &review_input(&head, &plan)) {
             Ok(id) => id,
-            // GitHub rejects the whole review when one inline comment cannot be placed: post it without them.
+            // GitHub rejects the whole review when one inline comment cannot be placed: post it without them. It
+            // can also create the review and still answer 422 (AtticAIInc/attic-proving-ground#25 got the same
+            // review twice): one already there is this review.
             Err(Error::GitHub { message, status: 422 }) if !plan.comments.is_empty() => {
-                (deps.log)(&format!(
-                    "{name}: GitHub rejected the inline comments ({message}); posting them in the summary"
-                ));
-                plan = without_inline(&plan, &result);
-                github.post_review(r, &review_input(&head, &plan))?
+                let created = github.reviews(r)?.into_iter().find(|review| {
+                    review.user.to_lowercase() == me && review.commit_id == head && review.body == plan.body
+                });
+                match created {
+                    Some(review) => {
+                        (deps.log)(&format!(
+                            "{name}: GitHub answered {message} but created the review; not posting it again"
+                        ));
+                        review.id
+                    }
+                    None => {
+                        (deps.log)(&format!(
+                            "{name}: GitHub rejected the inline comments ({message}); posting them in the summary"
+                        ));
+                        plan = without_inline(&plan, &result);
+                        github.post_review(r, &review_input(&head, &plan))?
+                    }
+                }
             }
             Err(error) => return Err(error),
         };
@@ -1730,6 +1834,12 @@ fn review_in(
                 (deps.log)(&format!("{name}: the fates of earlier findings were not read: {error}"));
             }
         }
+        // A COMMENT leaves an earlier request for changes in force on GitHub: once none of its blocking findings is
+        // left, it is dismissed (boost-capital/aqua-parser#91: "Your change request from 17:04 still blocks the
+        // merge. Can you approve #91, or dismiss that change request?").
+        if plan.verdict == Verdict::Comment && state == "open" && pull.author.to_lowercase() != me {
+            lift_own_blocks(deps, &github, r, &me, &head, &name);
+        }
         // Resolve our own threads whose finding is fixed, by the thread id stored when the comment was posted.
         for status in statuses.iter().filter(|status| status.status == "fixed") {
             let Some(finding) = saved.findings.iter().find(|item| item.id == status.id) else {
@@ -1781,6 +1891,8 @@ fn review_in(
         pull_state.last_reviewed_sha = Some(head.clone());
         pull_state.last_reviewed_at = Some(reviewed_at.clone());
         pull_state.last_verdict = Some(verdict.clone());
+        // A re-check alone keeps the coverage of the full review it re-checks.
+        pull_state.last_review_complete = Some(result.complete || prepared.recheck_only);
         pull_state.closed = None;
         pull_state.last_review_dry_run = dry_run.then_some(true);
         if let Some(id) = review_id {
