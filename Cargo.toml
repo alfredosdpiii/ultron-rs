@@ -18,6 +18,12 @@ all = { level = "warn", priority = -1 }
 [profile.dev]
 debug = "line-tables-only"
 
+# Dependencies optimized in dev builds (serde_json, regex, tokio, rusqlite...): the tests run debug binaries that
+# spend most of their time in them, at a fraction of the CPU unoptimized; the workspace's own crates stay quick to
+# rebuild. The first build after a dependency change takes longer.
+[profile.dev.package."*"]
+opt-level = 2
+
 # Cross-crate inlining and one codegen unit per crate: faster code for a slower release build.
 [profile.release]
 lto = "thin"

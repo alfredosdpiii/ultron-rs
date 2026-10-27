@@ -1,4 +1,5 @@
-# Half of a 16-core machine: many tests start a kernel, a coordinator and a worker of their own, so one test per core
-# put a load of 40 to 60 on the machine and starved the desktop.
+# A quarter of a 16-core machine: many tests start a server, a coordinator, a worker and a Python kernel of their
+# own, so one test per core put a load of 40 to 60 on the machine, and eight still about 40. scripts/nextest.sh also
+# caps the whole run's CPU.
 [profile.default]
-test-threads = 8
+test-threads = 4
