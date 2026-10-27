@@ -40,7 +40,8 @@ fn commit(repo: &Path, file: &str, text: &str, message: &str) -> String {
 
 const APP: &str = "def total(rows):\n    result = 0\n    for row in rows:\n        result += row\n    return result\n";
 
-/// init, add parse, speed up totals (the bug), fix: totals (the fix), add logging, risky change, its revert, docs.
+/// init, add parse, speed up totals (the bug), fix: totals (the fix), add logging, risky change, its revert, docs,
+/// fix: a typo in the docs.
 struct History {
     _dir: tempfile::TempDir,
     repo: std::path::PathBuf,
@@ -76,6 +77,12 @@ fn history() -> History {
     git(&repo, &["revert", "--no-edit", "HEAD"]);
     shas.push(git(&repo, &["rev-parse", "HEAD"]));
     shas.push(commit(&repo, "README.md", "# app\n\nSums rows.\n", "docs"));
+    shas.push(commit(
+        &repo,
+        "README.md",
+        "# app\n\nSums the rows.\n",
+        "fix: typo in the readme",
+    ));
     History { _dir: dir, repo, shas }
 }
 
@@ -109,7 +116,7 @@ fn review_eval_cases_are_reverted_fix_inducing_and_controls() {
             (CaseKind::Control, s[4].as_str(), "add logging", vec![]),
             (CaseKind::Control, s[1].as_str(), "add parse", vec![]),
         ],
-        "the fix and the revert are no cases, and the root commit has no parent to review against"
+        "the revert is no case, a fix no control, a README no bug, and the root commit has no parent"
     );
     assert_eq!(cases[1].parent, s[1]);
     assert_eq!(
@@ -129,6 +136,20 @@ fn review_eval_cases_are_reverted_fix_inducing_and_controls() {
     assert_eq!(
         cases.iter().map(|case| case.kind).collect::<Vec<_>>(),
         [CaseKind::Reverted, CaseKind::Control]
+    );
+    // Only the newest fix blamed (the README one): the totals bug is no case, and every commit older than that fix
+    // could have been fixed by one that was not blamed, so there are no controls.
+    let newest = EvalOptions {
+        max_fixes: 1,
+        ..EvalOptions::default()
+    };
+    let cases = build_cases(&ProcessRunner, &h.repo.display().to_string(), &newest).unwrap();
+    assert_eq!(
+        cases
+            .iter()
+            .map(|case| (case.kind, case.sha.as_str()))
+            .collect::<Vec<_>>(),
+        [(CaseKind::Reverted, s[5].as_str())]
     );
 }
 

@@ -944,7 +944,7 @@ fn index_knowledge(parsed: &Parsed, db: &str, repo_dir: &Path, head: &str, spec:
 
 /// `eval <repo-dir>`: the reviewer measured on the repository's own mistakes (review::eval). The cases come from
 /// history with no model call (`--list` stops there); each is then reviewed as `review --repo-dir` would review it,
-/// one at a time on one engine, and scored. The report is kept under the autoreview directory (`evals/`).
+/// up to `autoreview.concurrency` at once on one engine, and scored. The report is kept under the autoreview directory (`evals/`).
 #[allow(clippy::too_many_arguments)]
 fn eval_command(
     parsed: &Parsed,
@@ -967,7 +967,7 @@ fn eval_command(
         scan: parsed.scan.map_or(review::eval::DEFAULT_SCAN, |n| n as usize),
         limit,
         controls: parsed.controls.map_or(limit, |n| n as usize),
-        max_lines: review::eval::MAX_CASE_LINES,
+        ..EvalOptions::default()
     };
     let io = |error: std::io::Error| Failure::Error(error.to_string());
     let cases = build_cases(&*ov.runner(), &repo_dir.display().to_string(), &options).map_err(Failure::Error)?;
@@ -1007,46 +1007,84 @@ fn eval_command(
         Some(engine) => engine.clone(),
         None => Arc::new(open_engine(config, saved, env, &dir, log).map_err(Failure::Error)?),
     };
+    // Every case's spec first (the knowledge graph is indexed here, one commit at a time); then the reviews, up to
+    // autoreview.concurrency at once on the one engine, as the daemon runs them.
+    let specs: Vec<Value> = cases
+        .iter()
+        .map(|case| {
+            let mut one = parsed.clone();
+            one.base = Some(case.parent.clone());
+            one.head = Some(case.sha.clone());
+            let mut spec = offline_spec(&one, config, env, &repo_dir, None, None);
+            index_knowledge(&one, &paths.knowledge, &repo_dir, &case.sha, &mut spec, err);
+            spec
+        })
+        .collect();
+    let workers = (config.concurrency.0.max(1.0) as usize).min(cases.len());
+    let next = std::sync::atomic::AtomicUsize::new(0);
+    let (sender, received) = std::sync::mpsc::channel::<(usize, Result<Value, String>)>();
+    let mut results: Vec<Option<Result<Value, String>>> = vec![None; cases.len()];
+    let _ = writeln!(err, "reviewing {} commit(s), {workers} at a time", cases.len());
+    std::thread::scope(|scope| {
+        for _ in 0..workers {
+            let (sender, engine, specs, next) = (sender.clone(), engine.clone(), &specs, &next);
+            scope.spawn(move || {
+                loop {
+                    let index = next.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                    let Some(spec) = specs.get(index) else {
+                        break;
+                    };
+                    if sender.send((index, engine.review(spec, None))).is_err() {
+                        break;
+                    }
+                }
+            });
+        }
+        drop(sender);
+        for (done, (index, result)) in received.iter().enumerate() {
+            let case = &cases[index];
+            let line = match &result {
+                Ok(raw) => {
+                    let typed: EngineResult = serde_json::from_value(raw.clone()).unwrap_or_default();
+                    let got = score(case, &typed, &config.block_at);
+                    format!(
+                        "{}{}, {} confirmed",
+                        if got.blocked { "blocked" } else { "not blocked" },
+                        match got.located {
+                            Some(true) => ", located",
+                            Some(false) => ", not located",
+                            None => "",
+                        },
+                        got.confirmed
+                    )
+                }
+                Err(error) => format!("failed: {error}"),
+            };
+            let _ = writeln!(
+                err,
+                "[{}/{}] {} {} {}: {line}",
+                done + 1,
+                cases.len(),
+                kind(case.kind),
+                short(&case.sha),
+                case.subject
+            );
+            results[index] = Some(result);
+        }
+    });
     let mut scored = Vec::new();
     let mut rows = Vec::new();
-    for (index, case) in cases.iter().enumerate() {
-        let _ = writeln!(
-            err,
-            "[{}/{}] {} {} {}",
-            index + 1,
-            cases.len(),
-            kind(case.kind),
-            short(&case.sha),
-            case.subject
-        );
-        let mut one = parsed.clone();
-        one.base = Some(case.parent.clone());
-        one.head = Some(case.sha.clone());
-        let mut spec = offline_spec(&one, config, env, &repo_dir, None, None);
-        index_knowledge(&one, &paths.knowledge, &repo_dir, &case.sha, &mut spec, err);
+    for (case, result) in cases.iter().zip(results) {
         let mut row = serde_json::to_value(case).unwrap_or(Value::Null);
-        match engine.review(&spec, None) {
-            Ok(result) => {
-                let typed: EngineResult = serde_json::from_value(result).unwrap_or_default();
+        match result {
+            Some(Ok(raw)) => {
+                let typed: EngineResult = serde_json::from_value(raw).unwrap_or_default();
                 let got = score(case, &typed, &config.block_at);
-                let _ = writeln!(
-                    err,
-                    "  {}{}, {} confirmed",
-                    if got.blocked { "blocked" } else { "not blocked" },
-                    match got.located {
-                        Some(true) => ", located",
-                        Some(false) => ", not located",
-                        None => "",
-                    },
-                    got.confirmed
-                );
                 row["score"] = serde_json::to_value(&got).unwrap_or(Value::Null);
                 scored.push((case.clone(), got));
             }
-            Err(error) => {
-                let _ = writeln!(err, "  failed: {error}");
-                row["error"] = error.into();
-            }
+            Some(Err(error)) => row["error"] = error.into(),
+            None => row["error"] = "not reviewed".into(),
         }
         rows.push(row);
     }

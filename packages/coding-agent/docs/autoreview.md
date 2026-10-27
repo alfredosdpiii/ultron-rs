@@ -864,14 +864,17 @@ commits, `--scan`), with no model call:
 - **Reverted**: a commit a later `This reverts commit <sha>` undid. A review that requests changes caught it.
 - **Fix-inducing**: a commit a later fix repaired, found as SZZ finds it (Śliwerski, Zimmermann and Zeller, MSR
   2005): the lines a fix commit (its subject says fix, bug, regression or hotfix) removed or changed are blamed at
-  its parent, and the commits that wrote them are the cases. A review caught one when it requests changes, and
+  its parent, and the commits that wrote them are the cases. Only the newest 200 fixes are blamed, and only lines
+  that can hold a bug (not documentation, lock files or images). A review caught one when it requests changes, and
   located the bug when a confirmed finding sits within three lines of a line the fix changed.
 - **Controls**: other commits of the same stretch of history, sampled evenly: how often the reviewer blocks a change
-  nobody undid or fixed. The history may simply not show the fix, so this is an upper bound on false alarms.
+  nobody undid or fixed: never a fix or a revert, and never older than the oldest blamed fix. The history may
+  simply not show the fix, so this is an upper bound on false alarms.
 
 Merges, root commits and commits of more than 1,500 changed lines are left out. Up to 20 cases (`--limit`, newest
 first) and as many controls (`--controls`) are each reviewed as `review --repo-dir --base <sha>^ --head <sha>`
-would review them, with the same settings and options (`--mode`, `--model`, `--block-at`, ...), one at a time:
+would review them, with the same settings and options (`--mode`, `--model`, `--block-at`, ...), up to
+`autoreview.concurrency` (3) at once:
 
 ```
 $ ultron autoreview eval ~/src/app --limit 10 --controls 10

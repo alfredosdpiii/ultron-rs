@@ -6,10 +6,12 @@
 //! - **Fix-inducing**: a commit a later fix repaired, found as SZZ finds it (Śliwerski, Zimmermann and Zeller, "When
 //!   do changes induce fixes?", MSR 2005): the lines a fix commit (its subject says fix, bug, regression or hotfix)
 //!   removed or changed are blamed at the fix's parent, and the commits that wrote them are the cases, with those
-//!   lines as where the bug was. A review caught it when it requests changes, and located it when a confirmed
+//!   lines as where the bug was. Only the newest [`MAX_FIXES`] fixes are blamed, and only lines that can hold a bug
+//!   (not documentation, lock files or images). A review caught it when it requests changes, and located it when a confirmed
 //!   finding sits within [`LOCATE_WINDOW`] lines of one.
 //! - **Control**: other commits of the same history, sampled evenly, for how often the reviewer blocks a change no
-//!   one undid or fixed. Not every block of a control is a false alarm (the history may not show the fix), so the
+//!   one undid or fixed: never a fix or a revert, and never older than the oldest blamed fix (an older commit may
+//!   have been fixed by a fix that was not blamed). Not every block of a control is a false alarm (the history may not show the fix), so the
 //!   number is an upper bound on them.
 //!
 //! Each case is reviewed as `review --repo-dir --base <sha>^ --head <sha>` would review it.
@@ -29,8 +31,8 @@ pub const DEFAULT_SCAN: usize = 2000;
 pub const DEFAULT_LIMIT: usize = 20;
 /// A commit changing more lines than this (added plus removed) is no case: a review of it says little.
 pub const MAX_CASE_LINES: u64 = 1500;
-/// Fix commits blamed at most.
-const MAX_FIXES: usize = 200;
+/// Fix commits blamed at most (the newest).
+pub const MAX_FIXES: usize = 200;
 /// A confirmed finding this close to a blamed line located the bug.
 pub const LOCATE_WINDOW: i64 = 3;
 
@@ -68,6 +70,7 @@ pub struct EvalOptions {
     pub limit: usize,
     pub controls: usize,
     pub max_lines: u64,
+    pub max_fixes: usize,
 }
 
 impl Default for EvalOptions {
@@ -77,6 +80,7 @@ impl Default for EvalOptions {
             limit: DEFAULT_LIMIT,
             controls: DEFAULT_LIMIT,
             max_lines: MAX_CASE_LINES,
+            max_fixes: MAX_FIXES,
         }
     }
 }
@@ -211,6 +215,28 @@ fn blame(runner: &dyn Runner, repo: &str, rev: &str, path: &str, start: i64, end
     found
 }
 
+/// Whether a changed line of `path` can hold a bug a review should catch: not documentation, a lock file or an
+/// image (SZZ blames source lines only; a fix that corrects a README says nothing about the code it describes).
+fn blamable(path: &str) -> bool {
+    let name = path.rsplit('/').next().unwrap_or(path).to_lowercase();
+    let ext = name.rsplit_once('.').map_or("", |(_, ext)| ext);
+    let locks = [
+        "package-lock.json",
+        "pnpm-lock.yaml",
+        "yarn.lock",
+        "cargo.lock",
+        "go.sum",
+        "poetry.lock",
+        "uv.lock",
+    ];
+    !matches!(
+        ext,
+        "md" | "mdx" | "markdown" | "rst" | "txt" | "adoc" | "lock" | "svg" | "png" | "jpg" | "jpeg" | "gif" | "ico"
+    ) && !locks.contains(&name.as_str())
+        && !name.starts_with("changelog")
+        && !name.starts_with("license")
+}
+
 fn fix_subject(subject: &str) -> bool {
     Regex::new(r"(?i)\b(fix(es|ed)?|bug|bugfix|regression|hotfix)\b")
         .expect("static pattern")
@@ -225,6 +251,7 @@ pub fn build_cases(runner: &dyn Runner, repo: &str, options: &EvalOptions) -> Re
     let reverts = Regex::new(r"This reverts commit ([0-9a-f]{40})").expect("static pattern");
     // culprit -> (kind, by, lines)
     let mut found: BTreeMap<String, (CaseKind, Vec<String>, Vec<BugLine>)> = BTreeMap::new();
+    // Reverting commits are never cases; fix commits are never controls.
     let mut excluded: HashSet<String> = HashSet::new();
     for commit in &commits {
         let message = format!("{}\n{}", commit.subject, commit.body);
@@ -240,10 +267,22 @@ pub fn build_cases(runner: &dyn Runner, repo: &str, options: &EvalOptions) -> Re
     let fixes: Vec<&Commit> = commits
         .iter()
         .filter(|commit| commit.parents.len() == 1 && !excluded.contains(&commit.sha) && fix_subject(&commit.subject))
-        .take(MAX_FIXES)
         .collect();
-    for fix in fixes {
-        excluded.insert(fix.sha.clone());
+    let fixing: HashSet<&str> = fixes.iter().map(|fix| fix.sha.as_str()).collect();
+    // With more fixes than are blamed, a commit older than the oldest blamed one may have been fixed by one that
+    // was not: controls come only from the history the blamed fixes cover.
+    let covered = if fixes.len() > options.max_fixes {
+        match options.max_fixes.checked_sub(1).map(|last| &fixes[last]) {
+            Some(last) => commits
+                .iter()
+                .position(|commit| commit.sha == last.sha)
+                .map_or(commits.len(), |at| at + 1),
+            None => 0,
+        }
+    } else {
+        commits.len()
+    };
+    for fix in fixes.iter().take(options.max_fixes) {
         let parent = &fix.parents[0];
         let Ok(diff) = git(
             runner,
@@ -260,7 +299,7 @@ pub fn build_cases(runner: &dyn Runner, repo: &str, options: &EvalOptions) -> Re
         ) else {
             continue;
         };
-        for (path, start, end) in removed_ranges(&diff) {
+        for (path, start, end) in removed_ranges(&diff).into_iter().filter(|(path, _, _)| blamable(path)) {
             for (sha, line) in blame(runner, repo, parent, &path, start, end) {
                 let entry = found
                     .entry(sha)
@@ -302,11 +341,12 @@ pub fn build_cases(runner: &dyn Runner, repo: &str, options: &EvalOptions) -> Re
         });
     }
     // Controls: every k-th of the rest, so they span the same stretch of history.
-    let rest: Vec<&Commit> = commits
+    let rest: Vec<&Commit> = commits[..covered]
         .iter()
         .filter(|commit| {
             commit.parents.len() == 1
                 && !excluded.contains(&commit.sha)
+                && !fixing.contains(commit.sha.as_str())
                 && !found.contains_key(&commit.sha)
                 && by_sha.contains_key(commit.parents[0].as_str())
         })
