@@ -2,7 +2,7 @@
 //! (shell-jobs.ts restored after a restart) and utils/shell.ts getShellEnv; plus the session worker's jobEvent
 //! rules with literal values.
 
-use host::journal::{JOURNAL_ENDED_JOBS, JobRecord, handle, job_event, job_summary, persisted, restore};
+use host::journal::{JobRecord, handle, job_event, job_summary, persisted, restore};
 use host::shell_env::shell_env;
 use serde_json::{Map, Value, json};
 use std::path::Path;
@@ -102,30 +102,6 @@ fn host_journal_round_trips_records() {
     );
     assert_eq!(again[5].timeout, Some(2.0));
     assert_eq!(document["jobs"][5]["timeout"], json!(2));
-}
-
-/// The journal keeps every running job and only the newest ended ones: it is rewritten whole at each job's start
-/// and end, so a long session's history made every write larger.
-#[test]
-fn host_journal_keeps_running_jobs_and_the_newest_ended_ones() {
-    let record = |n: usize, status: &str| {
-        JobRecord::from_value(&json!({"id": format!("job-{n:08}"), "lane": "main", "command": "true",
-            "status": status, "startedAt": n, "outputPath": "/tmp/x.log"}))
-    };
-    let mut records = vec![record(0, "running")];
-    records.extend((1..=JOURNAL_ENDED_JOBS + 5).map(|n| record(n, "completed")));
-    records.push(record(JOURNAL_ENDED_JOBS + 6, "running"));
-    let document = persisted(&records);
-    let ids: Vec<&str> = document["jobs"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .map(|job| job["id"].as_str().unwrap())
-        .collect();
-    assert_eq!(ids.len(), JOURNAL_ENDED_JOBS + 2);
-    assert_eq!(ids[0], "job-00000000", "a running job is kept however old");
-    assert_eq!(ids[1], "job-00000006", "the five oldest ended jobs are dropped");
-    assert_eq!(*ids.last().unwrap(), format!("job-{:08}", JOURNAL_ENDED_JOBS + 6));
 }
 
 #[test]

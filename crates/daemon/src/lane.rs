@@ -144,7 +144,8 @@ impl Lane {
                 message: m,
                 assistant_message_event,
             } => {
-                let mut frame = serde_json::to_value(assistant_message_event).unwrap_or(Value::Null);
+                // A delta is built without serializing the response so far (`partial`), which the frame leaves out.
+                let mut frame = session_core::journal::frame_source(assistant_message_event).unwrap_or(Value::Null);
                 if let Some(map) = frame.as_object_mut() {
                     map.remove("partial");
                 }
@@ -166,14 +167,18 @@ impl Lane {
                     ("entryId", entry_id.clone()),
                 ]));
                 let Some(entry) = entry else { return };
-                let seq = self.snapshot()["transcript"].as_array().map_or(0, Vec::len);
+                let seq = self
+                    .transcript
+                    .read(|state| state["snapshot"]["transcript"].as_array().map_or(0, Vec::len));
                 self.publish(event(&[
                     ("type", json!("entry_added")),
                     ("lane", lane.clone()),
                     ("entry", transcript_entry(entry, seq)),
                 ]));
                 if entry["message"]["role"] == "assistant" {
-                    let mut totals = self.snapshot()["stats"]["usage"].clone();
+                    let mut totals = self
+                        .transcript
+                        .read(|state| state["snapshot"]["stats"]["usage"].clone());
                     let usage = entry["message"]["usage"].clone();
                     add(&mut totals, &usage);
                     self.publish(event(&[

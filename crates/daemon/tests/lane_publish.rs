@@ -57,3 +57,21 @@ fn lane_publish_folds_like_a_full_change_and_keeps_the_transcript() {
         .collect();
     assert_eq!(ids, [json!("d")]);
 }
+
+/// A change that panics while the transcript is set aside leaves it in place: the lock is recovered after the panic,
+/// so a transcript left out would stay null for every later reader.
+#[test]
+fn lane_publish_panic_keeps_the_transcript() {
+    let state = State::new(json!({"snapshot": snapshot(), "event": null}));
+    let panicked = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        state.change_beside("/snapshot/transcript", |_| panic!("a malformed event"));
+    }));
+    assert!(panicked.is_err());
+    assert_eq!(state.value(), json!({"snapshot": snapshot(), "event": null}));
+    state.change_beside("/snapshot/transcript", |value| value["event"] = json!("next"));
+    assert_eq!(
+        state.read(|value| value["snapshot"]["transcript"].clone()),
+        snapshot()["transcript"]
+    );
+    assert_eq!(state.read(|value| value["event"].clone()), json!("next"));
+}

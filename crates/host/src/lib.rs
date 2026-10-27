@@ -156,7 +156,8 @@ struct Shared {
 }
 
 impl Shared {
-    /// Writes the journal (every job, tails left out), serialized under the jobs lock so the newest state wins.
+    /// Writes the journal (every job, tails left out: they are not even copied), serialized under the jobs lock so the
+    /// newest state wins.
     fn persist(&self) {
         let jobs = lock(&self.jobs);
         let Some(journal) = lock(&self.journal).clone() else {
@@ -165,7 +166,7 @@ impl Shared {
         if self.released.load(Ordering::SeqCst) {
             return;
         }
-        let records: Vec<JobRecord> = jobs.iter().map(|job| job_record(job)).collect();
+        let records: Vec<JobRecord> = jobs.iter().map(|job| job_record(job, false)).collect();
         let _ = journal.write(&journal::persisted(&records));
     }
 }
@@ -283,7 +284,8 @@ impl Job {
     }
 }
 
-fn job_record(job: &Job) -> JobRecord {
+/// The job's record; `tail`: with its output tail (the journal leaves it out).
+fn job_record(job: &Job, tail: bool) -> JobRecord {
     let record = lock(&job.record);
     let process = *lock(&job.process);
     JobRecord {
@@ -300,7 +302,7 @@ fn job_record(job: &Job) -> JobRecord {
         output_path: job.output_path.to_string_lossy().into_owned(),
         output_bytes: record.output_bytes as u64,
         retained_bytes: record.retained_bytes as u64,
-        tail: record.tail.clone(),
+        tail: if tail { record.tail.clone() } else { String::new() },
         error: record.error.clone(),
         pid: process.map(|(pid, _)| i64::from(pid)),
         pid_start: process.and_then(|(_, start)| start),
@@ -732,7 +734,7 @@ impl Host {
             .iter()
             .rev()
             .filter(|job| visible(job, lane))
-            .map(|job| job_record(job))
+            .map(|job| job_record(job, true))
             .collect()
     }
 
@@ -1318,7 +1320,7 @@ fn follow(job: &Arc<Job>, child: Option<std::process::Child>, shared: &Shared) {
     // `onEnd`, before the job's waiters wake: a caller still waiting gets the result inline, so nothing is announced.
     let reason = *lock(&job.reason);
     let end = JobEnd {
-        record: job_record(job),
+        record: job_record(job, true),
         awaited: job.waiters.load(Ordering::SeqCst) > 0,
         root_aborted: reason == Some(StopReason::RootAborted),
     };

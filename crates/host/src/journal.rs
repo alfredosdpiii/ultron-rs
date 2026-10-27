@@ -243,22 +243,10 @@ fn restore_records(saved: Option<&Value>, now: u64, keep_processes: bool) -> Res
     Ok(Restored { records, persist })
 }
 
-/// The ended jobs the journal keeps, the newest. It is rewritten whole at every job's start and end, so keeping every
-/// job ever run made each write grow with the session (80 KB a write at 64 jobs). Running jobs are always kept.
-pub const JOURNAL_ENDED_JOBS: usize = 32;
-
-/// The journal document: the running records and the newest [`JOURNAL_ENDED_JOBS`] ended ones, in start order,
-/// tails left out (they would be rewritten with every job).
+/// The journal document: every record with its tail left out (it would be rewritten with every job).
 pub fn persisted(records: &[JobRecord]) -> Value {
-    let ended = records.iter().filter(|record| record.status != "running").count();
-    let mut dropped = ended.saturating_sub(JOURNAL_ENDED_JOBS);
     let jobs: Vec<Value> = records
         .iter()
-        .filter(|record| {
-            let drop = dropped > 0 && record.status != "running";
-            dropped -= usize::from(drop);
-            !drop
-        })
         .map(|record| {
             let mut value = record.to_value();
             value["tail"] = json!("");

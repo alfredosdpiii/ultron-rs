@@ -113,20 +113,24 @@ impl State {
             drop(inner);
             return self.change(mutate);
         };
-        let mut next = inner.value.clone();
-        mutate(&mut next);
-        let ops = crate::diff::diff_revisions(&inner.value, &next);
-        // Back in place, unless the mutation set the value after all (then the ops publish its new value).
-        let restore = |value: &mut Value, kept: Value| {
-            if let Some(slot) = value.pointer_mut(aside).filter(|slot| slot.is_null()) {
-                *slot = kept;
-            }
+        // Until the change publishes, the set-aside value goes back on every way out, a panic in `mutate` or the
+        // diff included: the poisoned lock is recovered (`lock`), so a value left out would stay null.
+        let mut aside = Aside {
+            inner: &mut inner,
+            pointer: aside,
+            kept: Some(kept),
         };
+        let mut next = aside.inner.value.clone();
+        mutate(&mut next);
+        let ops = crate::diff::diff_revisions(&aside.inner.value, &next);
         if ops.is_empty() {
-            restore(&mut inner.value, kept);
             return;
         }
-        restore(&mut next, kept);
+        // Back in place, unless the mutation set the value after all (then the ops publish its new value).
+        if let Some(kept) = aside.kept.take() {
+            restore(&mut next, aside.pointer, kept);
+        }
+        let inner = &mut *aside.inner;
         inner.value = next;
         inner.sequence += 1;
         let sequence = inner.sequence;
@@ -150,6 +154,28 @@ impl State {
 
     fn unsubscribe(&self, id: u64) {
         self.lock().listeners.retain(|(i, _)| *i != id);
+    }
+}
+
+/// The value [`State::change_beside`] set aside, put back into the state's value when dropped unpublished.
+struct Aside<'a> {
+    inner: &'a mut StateInner,
+    pointer: &'a str,
+    kept: Option<Value>,
+}
+
+impl Drop for Aside<'_> {
+    fn drop(&mut self) {
+        if let Some(kept) = self.kept.take() {
+            restore(&mut self.inner.value, self.pointer, kept);
+        }
+    }
+}
+
+/// Put `kept` at `pointer` when the slot there is still the null it left.
+fn restore(value: &mut Value, pointer: &str, kept: Value) {
+    if let Some(slot) = value.pointer_mut(pointer).filter(|slot| slot.is_null()) {
+        *slot = kept;
     }
 }
 
