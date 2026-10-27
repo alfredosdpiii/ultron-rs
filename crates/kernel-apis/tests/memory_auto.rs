@@ -1,5 +1,6 @@
-//! Automatic memory's service calls (kernel_apis::memory `recall_for_turn`, `retain_for_session`): a Rust-only
-//! feature with no TypeScript reference, so literal expectations over an in-process Hindsight-shaped bank.
+//! Automatic memory's service calls (kernel_apis::memory `recall_for_turn`, `retain_for_session`, `project_digest`)
+//! and the model's `memory.reflect` / `memory.invalidate`: Rust-only, with no TypeScript reference, so literal
+//! expectations over an in-process Hindsight-shaped bank.
 
 use kernel::Signal;
 use kernel_apis::memory::{MemoryBackend, handle};
@@ -7,11 +8,15 @@ use kernel_apis::{MemoryDocumentStore, MemoryService, worker_gate};
 use serde_json::{Map, Value, json};
 use std::sync::{Arc, Mutex};
 
-/// Answers every recall with `results`; keeps every request.
+/// Answers every recall with `results`; keeps every request. Its units are `f1` (project) and `other` (another
+/// project's); its mental model is `model` (`null`: none yet).
 struct Bank {
     results: Arc<Mutex<Value>>,
     recalls: Arc<Mutex<Vec<Value>>>,
     retains: Arc<Mutex<Vec<Value>>>,
+    model: Arc<Mutex<Value>>,
+    /// Every Rust-only call: `[call, id, body]`.
+    calls: Arc<Mutex<Vec<Value>>>,
 }
 
 impl MemoryBackend for Bank {
@@ -45,6 +50,33 @@ impl MemoryBackend for Bank {
     fn operation(&self, id: &str, _: &Signal) -> Result<Value, String> {
         Ok(json!({"operation_id": id, "status": "completed"}))
     }
+    fn unit(&self, id: &str, _: &Signal) -> Result<Value, String> {
+        self.calls.lock().unwrap().push(json!(["unit", id, null]));
+        match id {
+            "f1" => Ok(json!({"id": "f1", "text": "Stale.", "tags": ["ultron:project:p1"]})),
+            "other" => Ok(json!({"id": "other", "text": "Theirs.", "tags": ["ultron:project:p2"]})),
+            _ => Err("HTTP_ERROR".into()),
+        }
+    }
+    fn curate(&self, id: &str, request: &Value, _: &Signal) -> Result<Value, String> {
+        self.calls.lock().unwrap().push(json!(["curate", id, request]));
+        Ok(json!({"id": id, "state": "invalidated"}))
+    }
+    fn reflect(&self, request: &Value, _: &Signal) -> Result<Value, String> {
+        self.calls.lock().unwrap().push(json!(["reflect", null, request]));
+        Ok(json!({"text": "Run the tests with nextest.", "based_on": {"memories": []}}))
+    }
+    fn mental_model(&self, id: &str, _: &Signal) -> Result<Value, String> {
+        self.calls.lock().unwrap().push(json!(["mental_model", id, null]));
+        Ok(self.model.lock().unwrap().clone())
+    }
+    fn create_mental_model(&self, request: &Value, _: &Signal) -> Result<Value, String> {
+        self.calls
+            .lock()
+            .unwrap()
+            .push(json!(["create_mental_model", null, request]));
+        Ok(json!({"operation_id": "op1"}))
+    }
 }
 
 type Requests = Arc<Mutex<Vec<Value>>>;
@@ -55,15 +87,32 @@ fn service(results: Value) -> (MemoryService, Requests, Requests) {
 }
 
 fn service_with(results: Value) -> (MemoryService, Requests, Requests, Arc<Mutex<Value>>) {
-    let (recalls, retains) = (Requests::default(), Requests::default());
-    let results = Arc::new(Mutex::new(results));
+    let (memory, recalls, retains, results, _, _) = service_full(results);
+    (memory, recalls, retains, results)
+}
+
+type Bench = (
+    MemoryService,
+    Requests,
+    Requests,
+    Arc<Mutex<Value>>,
+    Arc<Mutex<Value>>,
+    Requests,
+);
+
+/// The service, its recall and retain requests, its recall results, its mental model and its other calls.
+fn service_full(results: Value) -> Bench {
+    let (recalls, retains, calls) = (Requests::default(), Requests::default(), Requests::default());
+    let (results, model) = (Arc::new(Mutex::new(results)), Arc::new(Mutex::new(Value::Null)));
     let bank = Bank {
         results: results.clone(),
         recalls: recalls.clone(),
         retains: retains.clone(),
+        model: model.clone(),
+        calls: calls.clone(),
     };
     let memory = MemoryService::new(Arc::new(MemoryDocumentStore::default()), Arc::new(bank), worker_gate()).unwrap();
-    (memory, recalls, retains, results)
+    (memory, recalls, retains, results, model, calls)
 }
 
 fn fact(id: &str, text: &str, tag: &str) -> Value {
@@ -170,4 +219,118 @@ fn kernel_apis_memory_retain_for_session_appends_in_the_background_and_skips_sec
         1,
         "a summary holding a secret is not sent"
     );
+}
+
+fn request(memory: &MemoryService, kind: &str, payload: Value) -> Result<Value, String> {
+    handle(Some(memory), kind, payload.as_object().unwrap(), &Signal::new())
+}
+
+#[test]
+fn kernel_apis_memory_reflect_asks_the_read_scopes_or_the_one_named() {
+    let (memory, _, _, _, _, calls) = service_full(json!([]));
+    assert_eq!(
+        request(&memory, "memory.reflect", json!({"query": "how are tests run"})),
+        Ok(json!({"text": "Run the tests with nextest."}))
+    );
+    request(
+        &memory,
+        "memory.reflect",
+        json!({"query": "what did we decide", "scope": "session"}),
+    )
+    .unwrap();
+    let calls = calls.lock().unwrap();
+    assert_eq!(
+        calls[0][2],
+        json!({"query": "how are tests run", "budget": "low", "max_tokens": 1024,
+            "tags": ["ultron:project:p1", "ultron:global:home"], "tags_match": "any_strict"})
+    );
+    assert_eq!(calls[1][2]["tags"], json!(["ultron:session:s1"]));
+    for bad in [
+        json!({}),
+        json!({"query": ""}),
+        json!({"query": "q", "scope": "team"}),
+        json!({"query": "q", "x": 1}),
+    ] {
+        assert_eq!(
+            request(&memory, "memory.reflect", bad),
+            Err("Invalid memory request: memory.reflect".into())
+        );
+    }
+}
+
+#[test]
+fn kernel_apis_memory_invalidate_retires_only_this_sessions_facts() {
+    let (memory, _, _, _, _, calls) = service_full(json!([]));
+    assert_eq!(
+        request(
+            &memory,
+            "memory.invalidate",
+            json!({"id": "f1", "reason": "The suite moved to nextest."})
+        ),
+        Ok(json!({"id": "f1", "state": "invalidated"}))
+    );
+    assert_eq!(
+        calls.lock().unwrap()[1],
+        json!(["curate", "f1", {"state": "invalidated", "reason": "The suite moved to nextest."}])
+    );
+    assert_eq!(
+        request(&memory, "memory.invalidate", json!({"id": "other"})),
+        Err("Memory operation did not complete (UNKNOWN_MEMORY)".into()),
+        "another project's fact is not this session's to retire"
+    );
+    let secret = format!("leaked {}={}", "api_key", ["sk", "fake", "0123456789"].join("-"));
+    request(&memory, "memory.invalidate", json!({"id": "f1", "reason": secret})).unwrap();
+    let calls = calls.lock().unwrap();
+    let curated: Vec<&Value> = calls.iter().filter(|call| call[0] == "curate").collect();
+    assert_eq!(curated.len(), 2, "{calls:?}");
+    assert_eq!(
+        curated[1][2],
+        json!({"state": "invalidated"}),
+        "a sensitive reason is not sent"
+    );
+}
+
+#[test]
+fn kernel_apis_memory_project_digest_creates_the_model_once_then_reads_it() {
+    let (memory, _, _, _, model, calls) = service_full(json!([]));
+    assert_eq!(memory.project_digest(&Signal::new()), Ok(None));
+    {
+        let calls = calls.lock().unwrap();
+        assert_eq!(calls[0], json!(["mental_model", "ultron-project-p1", null]));
+        let created = &calls[1][2];
+        assert_eq!(
+            (
+                calls[1][0].as_str(),
+                &created["id"],
+                &created["tags"],
+                &created["trigger"]
+            ),
+            (
+                Some("create_mental_model"),
+                &json!("ultron-project-p1"),
+                &json!(["ultron:project:p1", "ultron:global:home"]),
+                &json!({"refresh_after_consolidation": true, "min_refresh_interval_seconds": 3600,
+                    "mode": "delta", "budget": "low", "tags_match": "any_strict"})
+            )
+        );
+        assert!(created["source_query"].as_str().unwrap().contains("conventions"));
+    }
+    *model.lock().unwrap() = json!({"id": "ultron-project-p1", "content": "  ", "last_refreshed_at": null});
+    assert_eq!(memory.project_digest(&Signal::new()), Ok(None), "no content yet");
+    *model.lock().unwrap() = json!({"id": "ultron-project-p1", "content": "## Commands\n- nextest\n",
+        "last_refreshed_at": "2026-10-27T08:00:00+00:00"});
+    assert_eq!(
+        memory.project_digest(&Signal::new()),
+        Ok(Some(
+            json!({"id": "ultron-project-p1", "content": "## Commands\n- nextest",
+            "refreshedAt": "2026-10-27T08:00:00+00:00"})
+        ))
+    );
+    let created = calls
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|call| call[0] == "create_mental_model")
+        .count();
+    assert_eq!(created, 1);
 }

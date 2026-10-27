@@ -6,7 +6,7 @@ use serde_json::Value;
 use session_file::{SessionManager, js};
 
 use crate::{
-    FileOperations, SummaryRequest, add_recorded_files, compute_file_lists, convert_to_llm, entry_type,
+    FileOperations, SummaryRequest, add_recorded_files, compute_file_lists, convert_for_summary, entry_type,
     estimate_tokens, extract_file_ops_from_message, format_file_operations, has_tool_call, response_text,
     serialize_conversation, str_of, summarization_failure, summary_context,
 };
@@ -208,7 +208,7 @@ pub async fn generate_branch_summary(
             modified_files: Vec::new(),
         });
     }
-    let conversation = serialize_conversation(&convert_to_llm(&messages));
+    let conversation = serialize_conversation(&convert_for_summary(&messages));
     let custom = options.custom_instructions.filter(|s| !s.is_empty());
     let instructions = match custom {
         Some(custom) if options.replace_instructions => custom.to_string(),

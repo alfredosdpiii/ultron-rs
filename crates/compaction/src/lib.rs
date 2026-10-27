@@ -258,6 +258,22 @@ fn text_user(text: String, timestamp: Option<&Value>) -> Value {
 }
 
 /// `convertToLlm`: custom agent messages become user messages; `!!` bash executions are dropped.
+/// The custom message type of recalled long-term memory (session-core `auto_memory`).
+pub const RECALLED_MEMORY_TYPE: &str = "ultron.memory";
+
+/// [`convert_to_llm`] for a summary's conversation (Rust-only): recalled long-term memory is left out. It came from
+/// memory; a summary that repeated it would be retained into memory again as if the session had learned it.
+pub fn convert_for_summary(messages: &[Value]) -> Vec<Value> {
+    let recalled = |m: &Value| {
+        role(m) == Some("custom") && m.get("customType").and_then(Value::as_str) == Some(RECALLED_MEMORY_TYPE)
+    };
+    if !messages.iter().any(recalled) {
+        return convert_to_llm(messages);
+    }
+    let kept: Vec<Value> = messages.iter().filter(|m| !recalled(m)).cloned().collect();
+    convert_to_llm(&kept)
+}
+
 pub fn convert_to_llm(messages: &[Value]) -> Vec<Value> {
     messages
         .iter()
@@ -987,7 +1003,7 @@ pub fn history_summary_request(
     if let Some(focus) = options.custom_instructions.filter(|s| !s.is_empty()) {
         instructions = format!("{instructions}\n\nAdditional focus: {focus}");
     }
-    let conversation = serialize_conversation(&convert_to_llm(messages));
+    let conversation = serialize_conversation(&convert_for_summary(messages));
     let mut prompt = format!("<conversation>\n{conversation}\n</conversation>\n\n");
     if let Some(previous) = previous {
         prompt.push_str(&format!("<previous-summary>\n{previous}\n</previous-summary>\n\n"));
@@ -998,7 +1014,7 @@ pub fn history_summary_request(
 
 /// `generateTurnPrefixSummary`'s request: a checkpoint of the start of a split turn, with half the budget.
 pub fn turn_prefix_request(messages: &[Value], reserve_tokens: u64, options: &CompactOptions<'_>) -> SummaryRequest {
-    let conversation = serialize_conversation(&convert_to_llm(messages));
+    let conversation = serialize_conversation(&convert_for_summary(messages));
     let prompt = format!("# Conversation\n{conversation}\n\n# Instructions\n{TURN_PREFIX_SUMMARIZATION_PROMPT}");
     options.request(prompt, summary_max_tokens(0.5, reserve_tokens, options.model))
 }

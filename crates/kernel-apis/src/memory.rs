@@ -1,8 +1,10 @@
 //! `memory.*` (port of `ultron/memory.ts` NativeMemoryService and the memory dispatch of `worker-services.ts`).
 //!
-//! Memory is used on purpose: nothing recalls or keeps on its own. The journal (`{version, namespace, operations}`)
-//! records every prepare/propose/correct/forget/get with hashes and references, never memory text; text lives in
-//! the backend (Hindsight). Only propose-created documents can be read, corrected or forgotten. A correction
+//! These calls are the model's, made on purpose; the session's automatic memory (session-core `auto_memory`) uses
+//! the Rust-only [`MemoryService::recall_for_turn`], [`MemoryService::retain_for_session`] and
+//! [`MemoryService::project_digest`]. The journal (`{version, namespace, operations}`) records every
+//! prepare/propose/correct/forget/get with hashes and references, never memory text; text lives in the backend
+//! (Hindsight). `memory.reflect` and `memory.invalidate` (Rust-only) are journaled nowhere. Only propose-created documents can be read, corrected or forgotten. A correction
 //! supersedes the current claim on its document, and the local journal outranks a lagging backend index: recalled
 //! entries of a superseded claim or a forgotten document are withheld (`excluded`). Interrupted operations are
 //! settled on reopen and remote mutations are never replayed. A failed store write poisons the service.
@@ -30,6 +32,27 @@ pub trait MemoryBackend: Send + Sync {
     fn get(&self, document_id: &str, signal: &Signal) -> std::result::Result<Value, String>;
     fn delete(&self, document_id: &str, signal: &Signal) -> std::result::Result<Value, String>;
     fn operation(&self, operation_id: &str, signal: &Signal) -> std::result::Result<Value, String>;
+    // Rust-only calls past memory.ts's document endpoints (automatic memory, `memory.reflect`,
+    // `memory.invalidate`); a backend without them answers UNSUPPORTED_API.
+    /// One memory unit (a fact or an observation) by id.
+    fn unit(&self, _unit_id: &str, _signal: &Signal) -> std::result::Result<Value, String> {
+        Err("UNSUPPORTED_API".into())
+    }
+    /// Curates a memory unit (`{"state": "invalidated", "reason"?}` retires it).
+    fn curate(&self, _unit_id: &str, _request: &Value, _signal: &Signal) -> std::result::Result<Value, String> {
+        Err("UNSUPPORTED_API".into())
+    }
+    /// An answer reasoned over the bank's memories.
+    fn reflect(&self, _request: &Value, _signal: &Signal) -> std::result::Result<Value, String> {
+        Err("UNSUPPORTED_API".into())
+    }
+    /// A mental model by id, or `Value::Null` when the bank has none.
+    fn mental_model(&self, _id: &str, _signal: &Signal) -> std::result::Result<Value, String> {
+        Err("UNSUPPORTED_API".into())
+    }
+    fn create_mental_model(&self, _request: &Value, _signal: &Signal) -> std::result::Result<Value, String> {
+        Err("UNSUPPORTED_API".into())
+    }
 }
 
 /// Decides whether a recall runs (`{"retrieve", "probability"?}`) and whether a write is kept
@@ -1098,10 +1121,7 @@ impl MemoryService {
     /// forgot or replaced is withheld as [`MemoryService::prepare`] withholds it, and a result tagged with neither
     /// scope's tags exactly is dropped.
     pub fn recall_for_turn(&self, query: &str, limit: usize, signal: &Signal) -> Result<Vec<Value>> {
-        let scopes: Vec<(&str, Vec<String>)> = ["project", "global"]
-            .into_iter()
-            .filter_map(|scope| self.tags(scope).ok().map(|tags| (scope, tags)))
-            .collect();
+        let scopes = self.read_scopes();
         if scopes.is_empty() || !self.backend.supports("recall") || js_trim(query).is_empty() {
             return Ok(Vec::new());
         }
@@ -1209,6 +1229,115 @@ impl MemoryService {
             .retain(&request, signal)
             .map(|_| true)
             .map_err(|error| MemoryError::of(&error))
+    }
+
+    /// The scopes a session reads beyond its own: `project` and `global`, those it has tags for.
+    fn read_scopes(&self) -> Vec<(&'static str, Vec<String>)> {
+        ["project", "global"]
+            .into_iter()
+            .filter_map(|scope| self.tags(scope).ok().map(|tags| (scope, tags)))
+            .collect()
+    }
+
+    /// `memory.reflect` (Rust-only): Hindsight's answer to `query`, reasoned over the memories of `scope`, else of
+    /// the `project` and `global` scopes; `{text}`. Read-only and journaled nowhere. Unlike a recall, the answer is
+    /// written by Hindsight's model and may draw on a document the user forgot that the bank has not yet dropped.
+    pub fn reflect(&self, payload: &Map<String, Value>, signal: &Signal) -> Result<Value> {
+        let query = payload.get("query").and_then(Value::as_str).unwrap_or_default();
+        let tags: Vec<String> = match payload.get("scope") {
+            Some(scope) => self.tags(scope_of(scope)?)?,
+            None => self.read_scopes().into_iter().flat_map(|(_, tags)| tags).collect(),
+        };
+        if tags.is_empty() {
+            return Err(MemoryError::code("UNSUPPORTED_SCOPE"));
+        }
+        let request = json!({
+            "query": query, "budget": "low", "max_tokens": 1024, "tags": tags, "tags_match": "any_strict",
+        });
+        let response = self
+            .backend
+            .reflect(&request, signal)
+            .map_err(|error| MemoryError::of(&error))?;
+        let text = response
+            .get("text")
+            .and_then(Value::as_str)
+            .ok_or(MemoryError::code("INVALID_RESPONSE"))?;
+        Ok(json!({"text": text}))
+    }
+
+    /// `memory.invalidate` (Rust-only): retires the fact or observation `id` that a recall showed (`[fact <id>]`),
+    /// with the reason, so no later recall returns it. Only a unit tagged with one of this session's scopes exactly
+    /// may be retired (UNKNOWN_MEMORY otherwise); a reason the write gate finds sensitive is not sent.
+    pub fn invalidate(&self, payload: &Map<String, Value>, signal: &Signal) -> Result<Value> {
+        let id = payload.get("id").and_then(Value::as_str).unwrap_or_default();
+        let unit = self.backend.unit(id, signal).map_err(|error| MemoryError::of(&error))?;
+        let tags = unit.get("tags").unwrap_or(&Value::Null);
+        let owned = SCOPES
+            .iter()
+            .any(|scope| self.tags(scope).is_ok_and(|own| same_tags(tags, &own)));
+        if !owned {
+            return Err(MemoryError::code("UNKNOWN_MEMORY"));
+        }
+        let mut request = json!({"state": "invalidated"});
+        if let Some(reason) = payload.get("reason").and_then(Value::as_str) {
+            let check = json!({"action": "propose", "text": reason, "scope": "session"});
+            let decision = gate_decision(
+                &(self.gate)(&check, signal).map_err(|_| MemoryError::code("OPERATION_ERROR"))?,
+                false,
+            )?;
+            if decision["action"] == "keep" {
+                request["reason"] = reason.into();
+            }
+        }
+        self.backend
+            .curate(id, &request, signal)
+            .map_err(|error| MemoryError::of(&error))?;
+        Ok(json!({"id": id, "state": "invalidated"}))
+    }
+
+    /// The project's brief (Rust-only; automatic memory opens a context with it): the Hindsight mental model
+    /// `ultron-project-<identity>`, which Hindsight rewrites from the project and global memories after each
+    /// consolidation, at most hourly. `{id, content, refreshedAt}`, or `None` while it has no content. The first
+    /// call for a project creates the model, whose first content Hindsight writes in the background.
+    pub fn project_digest(&self, signal: &Signal) -> Result<Option<Value>> {
+        let Some(project) = self.tags("project").ok().and_then(|tags| tags.into_iter().next()) else {
+            return Ok(None);
+        };
+        let identity: String = project
+            .rsplit(':')
+            .next()
+            .unwrap_or_default()
+            .chars()
+            .filter(char::is_ascii_alphanumeric)
+            .map(|c| c.to_ascii_lowercase())
+            .collect();
+        if identity.is_empty() {
+            return Ok(None);
+        }
+        let id = format!("ultron-project-{identity}");
+        let model = self
+            .backend
+            .mental_model(&id, signal)
+            .map_err(|error| MemoryError::of(&error))?;
+        if model.is_null() {
+            let tags: Vec<String> = self.read_scopes().into_iter().flat_map(|(_, tags)| tags).collect();
+            let request = json!({
+                "id": id, "name": format!("Ultron project brief {identity}"), "source_query": DIGEST_QUERY,
+                "tags": tags, "max_tokens": 1024,
+                "trigger": {
+                    "refresh_after_consolidation": true, "min_refresh_interval_seconds": 3600, "mode": "delta",
+                    "budget": "low", "tags_match": "any_strict",
+                },
+            });
+            self.backend
+                .create_mental_model(&request, signal)
+                .map_err(|error| MemoryError::of(&error))?;
+            return Ok(None);
+        }
+        let content = model.get("content").and_then(Value::as_str).map(js_trim);
+        Ok(content.filter(|content| !content.is_empty()).map(|content| {
+            json!({"id": id, "content": content, "refreshedAt": model.get("last_refreshed_at").cloned().unwrap_or(Value::Null)})
+        }))
     }
 
     pub fn propose(&self, payload: &Map<String, Value>, signal: &Signal) -> Result<Value> {
@@ -1615,6 +1744,11 @@ fn evidence_schema(value: Option<&Value>) -> bool {
 
 const SCOPES: &[&str] = &["session", "project", "global"];
 
+/// What a project's brief answers (see [`MemoryService::project_digest`]).
+const DIGEST_QUERY: &str = "What should a coding agent know before working in this project? Its conventions, the \
+    decisions made and why, pitfalls and their fixes, the commands that build, test and run it, and the user's \
+    preferences. Leave out finished one-off tasks and progress notes.";
+
 /// The worker's payload schemas (`Check(prepare | propose | correct | id | why, payload)`).
 fn payload_valid(kind: &str, payload: &Map<String, Value>) -> bool {
     match kind {
@@ -1659,6 +1793,16 @@ fn payload_valid(kind: &str, payload: &Map<String, Value>) -> bool {
                 && optional_in(payload.get("evidenceClass"), EVIDENCE_CLASSES)
         }
         "memory.get" | "memory.forget" => exact_fields(payload, &["id"]) && string_min1(payload.get("id")),
+        "memory.reflect" => {
+            exact_fields(payload, &["query", "scope"])
+                && string_min1(payload.get("query"))
+                && optional_in(payload.get("scope"), SCOPES)
+        }
+        "memory.invalidate" => {
+            exact_fields(payload, &["id", "reason"])
+                && string_min1(payload.get("id"))
+                && payload.get("reason").is_none_or(|reason| string_min1(Some(reason)))
+        }
         "memory.why" => exact_fields(payload, &["taskId"]) && string_min1(payload.get("taskId")),
         "memory.list" => payload.is_empty(),
         _ => false,
@@ -1685,6 +1829,8 @@ pub fn handle(
         "memory.correct" => service.correct(payload, signal),
         "memory.get" => service.get(payload, signal),
         "memory.forget" => service.forget(payload, signal),
+        "memory.reflect" => service.reflect(payload, signal),
+        "memory.invalidate" => service.invalidate(payload, signal),
         "memory.why" => service.why(payload.get("taskId").unwrap_or(&Value::Null)),
         _ => service.list(),
     };

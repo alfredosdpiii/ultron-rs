@@ -44,8 +44,10 @@ pub fn nudge_line(message: &Value) -> String {
 /// The custom message type of memories recalled for a user message (`session_core::auto_memory` in the engine).
 pub const MEMORY_CUSTOM_TYPE: &str = "ultron.memory";
 
-/// What the chat shows for recalled memories: `memory: 3 recalled (project 2, global 1)`, not their text.
+/// What the chat shows for recalled memories: `memory: 3 recalled (project 2, global 1)`, not their text; with the
+/// project's brief, `memory: project brief, 3 recalled (...)` (or `memory: project brief` alone).
 pub fn memory_line(message: &Value) -> String {
+    let brief = message["details"]["digest"].is_string();
     let scopes = message["details"]["scopes"]
         .as_array()
         .map(Vec::as_slice)
@@ -56,7 +58,11 @@ pub fn memory_line(message: &Value) -> String {
         .filter(|scope| count(scope) > 0)
         .map(|scope| format!("{scope} {}", count(scope)))
         .collect();
-    format!("memory: {} recalled ({})", scopes.len(), parts.join(", "))
+    match (brief, scopes.len()) {
+        (true, 0) => "memory: project brief".to_string(),
+        (true, n) => format!("memory: project brief, {n} recalled ({})", parts.join(", ")),
+        (false, n) => format!("memory: {n} recalled ({})", parts.join(", ")),
+    }
 }
 
 /// The custom message type of a fired schedule's prompt (`kernel_apis::prompt_schedule::CUSTOM_TYPE` in the engine).

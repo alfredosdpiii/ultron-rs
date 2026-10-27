@@ -1971,6 +1971,19 @@ fn interactive_commands_recalled_memories_show_as_one_line() {
         s.contains("memory: 3 recalled (project 2, global 1)") && s.contains("how do I test"),
         "{s}"
     );
+    let briefed = |ids: Value, scopes: Value| {
+        json!({"role": "custom", "customType": "ultron.memory", "display": true, "content": "[memory] Project brief",
+            "details": {"ids": ids, "scopes": scopes, "digest": "ultron-project-p1"}, "timestamp": 1})
+    };
+    let (mut live, _) = app();
+    live.apply(LaneEvent::Message(briefed(json!(["f1"]), json!(["global"]))));
+    live.apply(LaneEvent::Message(briefed(json!([]), json!([]))));
+    let s = screen(&mut live);
+    assert!(s.contains("memory: project brief, 1 recalled (global 1)"), "{s}");
+    assert!(
+        s.lines().any(|line| line.trim_end().ends_with("memory: project brief")),
+        "{s}"
+    );
 }
 
 /// `/clear` is `/new` (Claude Code's `/clear`): offered in the completion list with its description, it aborts a

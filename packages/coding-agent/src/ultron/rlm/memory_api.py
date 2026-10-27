@@ -1,6 +1,6 @@
 class Memory:
     def __init__(self, bridge): self._bridge = bridge
-    # Memory is used on purpose: nothing recalls or keeps on its own. A write holding a secret is refused.
+    # Calls made on purpose (the Rust host also recalls and keeps on its own when automatic memory is on). A write holding a secret is refused.
     async def prepare(self, query, *, scope='session', task_id='rlm'):
         return await self._bridge.request('memory.prepare', {'query': query, 'scope': scope, 'taskId': task_id})
     async def why(self, task_id): return await self._bridge.request('memory.why', {'taskId': task_id})
@@ -10,6 +10,9 @@ class Memory:
     async def forget(self, memory_id): return await self._bridge.request('memory.forget', {'id': memory_id})
     async def get(self, memory_id): return await self._bridge.request('memory.get', {'id': memory_id})
     async def list(self): return await self._bridge.request('memory.list')
+    # Rust host only: reflect answers a question from memory; invalidate retires a wrong [fact <id>] a recall showed.
+    async def reflect(self, query, *, scope=None): return await self._bridge.request('memory.reflect', {'query': query} if scope is None else {'query': query, 'scope': scope})
+    async def invalidate(self, fact_id, reason=None): return await self._bridge.request('memory.invalidate', {'id': fact_id} if reason is None else {'id': fact_id, 'reason': reason})
 
 class Refinements:
     def __init__(self, bridge): self._bridge = bridge

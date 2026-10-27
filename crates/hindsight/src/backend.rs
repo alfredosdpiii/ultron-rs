@@ -221,6 +221,18 @@ impl HindsightBackend {
 
     /// One request: `<namespace><path>`, the body as `JSON.stringify` writes it, the answer parsed as JSON.
     fn request(&self, path: &str, method: &str, body: Option<&Value>, signal: &Signal) -> Result<Value, MemoryError> {
+        self.exchange(path, method, body, false, signal)
+    }
+
+    /// [`Self::request`]; with `missing_ok`, a 404 answer is `Value::Null`.
+    fn exchange(
+        &self,
+        path: &str,
+        method: &str,
+        body: Option<&Value>,
+        missing_ok: bool,
+        signal: &Signal,
+    ) -> Result<Value, MemoryError> {
         let url = format!("{}{path}", self.namespace);
         if utf16_len(&url) > 8192 {
             return Err(code("INVALID_CONFIG"));
@@ -248,6 +260,9 @@ impl HindsightBackend {
         if signal.is_aborted() {
             return Err(code("ABORTED"));
         }
+        if missing_ok && response.status == 404 {
+            return Ok(Value::Null);
+        }
         if !(200..300).contains(&response.status) {
             return Err(code("HTTP_ERROR"));
         }
@@ -255,6 +270,17 @@ impl HindsightBackend {
     }
 
     fn call(&self, path: &str, method: &str, body: Option<&Value>, signal: &Signal) -> Result<Value, MemoryError> {
+        self.call_with(path, method, body, false, signal)
+    }
+
+    fn call_with(
+        &self,
+        path: &str,
+        method: &str,
+        body: Option<&Value>,
+        missing_ok: bool,
+        signal: &Signal,
+    ) -> Result<Value, MemoryError> {
         if self.ensure_bank {
             // Callers arriving during the creation wait for it, as they share its promise in TS.
             let mut ready = lock(&self.bank_ready);
@@ -263,7 +289,7 @@ impl HindsightBackend {
                 *ready = true;
             }
         }
-        self.request(path, method, body, signal)
+        self.exchange(path, method, body, missing_ok, signal)
     }
 
     /// `retain` with the error as a [`MemoryError`].
@@ -305,5 +331,33 @@ impl MemoryBackend for HindsightBackend {
 
     fn operation(&self, operation_id: &str, signal: &Signal) -> Result<Value, String> {
         self.document("operations", operation_id, "GET", signal)
+    }
+
+    // Rust-only: Hindsight 1.1 memory units, reflect and mental models.
+
+    fn unit(&self, unit_id: &str, signal: &Signal) -> Result<Value, String> {
+        self.document("memories", unit_id, "GET", signal)
+    }
+
+    fn curate(&self, unit_id: &str, request: &Value, signal: &Signal) -> Result<Value, String> {
+        let path = format!("/memories/{}", segment(unit_id).map_err(|e| e.code.to_string())?);
+        self.call(&path, "PATCH", Some(request), signal)
+            .map_err(|e| e.code.to_string())
+    }
+
+    fn reflect(&self, request: &Value, signal: &Signal) -> Result<Value, String> {
+        self.call("/reflect", "POST", Some(request), signal)
+            .map_err(|e| e.code.to_string())
+    }
+
+    fn mental_model(&self, id: &str, signal: &Signal) -> Result<Value, String> {
+        let path = format!("/mental-models/{}", segment(id).map_err(|e| e.code.to_string())?);
+        self.call_with(&path, "GET", None, true, signal)
+            .map_err(|e| e.code.to_string())
+    }
+
+    fn create_mental_model(&self, request: &Value, signal: &Signal) -> Result<Value, String> {
+        self.call("/mental-models", "POST", Some(request), signal)
+            .map_err(|e| e.code.to_string())
     }
 }

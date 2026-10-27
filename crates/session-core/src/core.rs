@@ -2388,9 +2388,9 @@ impl Core {
             return None;
         }
         let entries = lock_session(&self.session).branch_entries(LANE).unwrap_or_default();
-        let shown = crate::auto_memory::shown_ids(&entries);
-        let found = self.auto_memory.recall(&self.lane.stack, text, &shown);
-        (!found.is_empty()).then(|| crate::auto_memory::recall_message(&found, now_ms() as u64))
+        let shown = crate::auto_memory::shown(&entries);
+        let recalled = self.auto_memory.recall(&self.lane.stack, text, &shown);
+        crate::auto_memory::recall_message(&recalled, now_ms() as u64)
     }
 
     /// Keep the newest compaction's summary in long-term memory, when automatic retain is on (crate::auto_memory).

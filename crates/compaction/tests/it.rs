@@ -11,6 +11,8 @@ mod bug_summary;
 mod fixture;
 #[path = "prompt_budget.rs"]
 mod prompt_budget;
+#[path = "recalled_memory.rs"]
+mod recalled_memory;
 #[path = "upstream.rs"]
 mod upstream;
 

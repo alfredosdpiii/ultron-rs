@@ -477,11 +477,17 @@ impl MemoryBackend for RecallBank {
     fn operation(&self, id: &str, _: &Signal) -> Result<Value, String> {
         Ok(json!({"operation_id": id, "status": "completed"}))
     }
+    fn mental_model(&self, id: &str, _: &Signal) -> Result<Value, String> {
+        self.calls.lock().unwrap().push(json!(["mental_model", id]));
+        Ok(
+            json!({"id": id, "content": "## Commands\n- cargo nextest run", "last_refreshed_at": "2026-10-27T08:00:00Z"}),
+        )
+    }
 }
 
 /// Automatic recall (session_core::auto_memory): a user message's run opens with the memories recalled for it, as
-/// a custom message the request carries before the prompt; a memory already in the context is not shown again,
-/// and a short message recalls nothing.
+/// a custom message the request carries before the prompt, the first with the project's brief; a memory or brief
+/// already in the context is not shown again, and a short message recalls nothing.
 #[test]
 fn cli_composition_auto_memory_recalls_before_a_user_message() {
     let (port, seen) = mock_server(
@@ -554,6 +560,7 @@ fn cli_composition_auto_memory_recalls_before_a_user_message() {
         .lock()
         .unwrap()
         .iter()
+        .filter(|call| call[0] == "recall")
         .map(|call| call[1]["query"].clone())
         .collect();
     assert_eq!(
@@ -588,9 +595,20 @@ fn cli_composition_auto_memory_recalls_before_a_user_message() {
         "{first:?}"
     );
     assert!(
-        first[0].ends_with("\n- (project) Tests here run under nice -n 19."),
+        first[0].ends_with(
+            "\n\nProject brief (written by Hindsight from memory, 2026-10-27):\n## Commands\n- cargo nextest run\n\n\
+             Recalled:\n- (project) Tests here run under nice -n 19. [fact f1]"
+        ),
         "{first:?}"
     );
+    let briefs = bank
+        .calls
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|call| call[0] == "mental_model")
+        .count();
+    assert_eq!(briefs, 1, "the brief is read once per context");
     assert_eq!(first[1], "how do I run the tests here");
     // The second run's request extends the first: the memory is where it was, and not added again.
     let second = texts(&requests[1]);
