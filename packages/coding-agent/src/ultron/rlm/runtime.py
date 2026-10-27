@@ -1138,6 +1138,7 @@ def _flush_raw_output(request_id: Any) -> dict[str, bool] | None:
 
 _SNAPSHOT_FORMAT = "ultron-rlm-snapshot"
 _SNAPSHOT_VERSION = 2
+_SCALARS = frozenset((type(None), bool, int, str, float))
 
 
 class _NonRestorable(Exception):
@@ -1153,10 +1154,10 @@ def _type_name(kind: type) -> str:
 
 
 def _encode_value(value: Any, mutable: set[int]) -> Any:
-    """Encode only exact builtin data types. Every JSON object in the encoding is a tag,
-    so tuples, sets, bytes and non-string dict keys round-trip as their own types."""
-    kind = type(value)
-    if value is None or kind in (bool, int, str, float):
+    """Encode only exact builtin data types. Every JSON object in the encoding is a tag, so tuples, sets, bytes and
+    non-string dict keys round-trip as their own types. A large container of scalars only is copied at C speed."""
+    kind, scalars, encode = type(value), _SCALARS, _encode_value
+    if kind in scalars:
         return value
     if kind is not list and isinstance(value, list) and getattr(kind, "_snapshot_as_list", False):
         # A list subclass that only adds metadata (rlm.map's MapResults) is kept as its plain items.
@@ -1172,13 +1173,14 @@ def _encode_value(value: Any, mutable: set[int]) -> Any:
             raise _NonRestorable("shared or cyclic mutable reference")
         mutable.add(id(value))
     if kind is list:
-        return [_encode_value(item, mutable) for item in value]
+        return list(value) if len(value) > 16 and set(map(type, value)) <= scalars else [item if type(item) in scalars else encode(item, mutable) for item in value]
     if kind is tuple:
-        return {"$tuple": [_encode_value(item, mutable) for item in value]}
+        return {"$tuple": list(value) if len(value) > 16 and set(map(type, value)) <= scalars else [item if type(item) in scalars else encode(item, mutable) for item in value]}
     if kind in (set, frozenset):
-        return {"$" + kind.__name__: [_encode_value(item, mutable) for item in value]}
+        return {"$" + kind.__name__: list(value) if len(value) > 16 and set(map(type, value)) <= scalars else [item if type(item) in scalars else encode(item, mutable) for item in value]}
     if kind is dict:
-        return {"$dict": [[_encode_value(key, mutable), _encode_value(item, mutable)] for key, item in value.items()]}
+        plain = len(value) > 16 and set(map(type, value)) <= scalars and set(map(type, value.values())) <= scalars
+        return {"$dict": list(map(list, value.items())) if plain else [[key if type(key) in scalars else encode(key, mutable), item if type(item) in scalars else encode(item, mutable)] for key, item in value.items()]}
     raise _NonRestorable(f"unsupported type {_type_name(kind)}")
 
 
@@ -1212,8 +1214,8 @@ def _decode_value(value: Any) -> Any:
     raise SnapshotIntegrityError(f"snapshot contains an unknown tag: {_text_preview(str(tag))}")
 
 
-def _persistable_namespace() -> tuple[dict[str, Any], dict[str, str]]:
-    """Encode restorable names and give every other user name an explicit reason."""
+def _persistable_namespace() -> tuple[dict[str, str], dict[str, str]]:
+    """Encode restorable names, each once to its compact JSON text, and give every other user name an explicit reason."""
     encoded: dict[str, Any] = {}
     reasons: dict[str, str] = {}
     owners: dict[int, str] = {}
@@ -1222,8 +1224,7 @@ def _persistable_namespace() -> tuple[dict[str, Any], dict[str, str]]:
             continue
         mutable: set[int] = set()
         try:
-            candidate = _encode_value(value, mutable)
-            json.dumps(candidate, allow_nan=True)
+            candidate = json.dumps(_encode_value(value, mutable), separators=(",", ":"), allow_nan=True)
         except _NonRestorable as error:
             reasons[name] = str(error)
             continue
@@ -1245,7 +1246,7 @@ def _persistable_namespace() -> tuple[dict[str, Any], dict[str, str]]:
 
 
 def save_snapshot(path: str) -> dict[str, Any]:
-    """Write a constrained data-only snapshot: a sha256 header line, then a JSON body.
+    """Write a constrained data-only snapshot: a sha256 header line, then a JSON body, joined from each name's text.
 
     The digest detects corruption. Authenticity is the host's job: kernel.ts signs the file with an
     HMAC key this process never sees and verifies it before any restore.
@@ -1255,9 +1256,8 @@ def save_snapshot(path: str) -> dict[str, Any]:
     agent_class_api.flush()
     encoded, reasons = _persistable_namespace()
     skipped = sorted(reasons)
-    body = json.dumps(
-        {"names": encoded, "skipped": skipped, "reasons": reasons}, separators=(",", ":"), allow_nan=True
-    ).encode("utf-8")
+    rest = json.dumps({"skipped": skipped, "reasons": reasons}, separators=(",", ":"), allow_nan=True)
+    body = ('{"names":{' + ",".join(json.dumps(name) + ":" + text for name, text in encoded.items()) + "}," + rest[1:]).encode()
     digest = hashlib.sha256(body).hexdigest()
     header = json.dumps(
         {"format": _SNAPSHOT_FORMAT, "version": _SNAPSHOT_VERSION, "sha256": digest, "bytes": len(body)},
