@@ -1984,6 +1984,14 @@ fn interactive_commands_recalled_memories_show_as_one_line() {
         s.lines().any(|line| line.trim_end().ends_with("memory: project brief")),
         "{s}"
     );
+    let (mut live, _) = app();
+    live.apply(LaneEvent::Message(
+        json!({"role": "custom", "customType": "ultron.memory", "display": true,
+        "content": "[memory] x", "details": {"ids": ["f1", "f2"], "scopes": ["project", "project"], "stale": 1},
+        "timestamp": 1}),
+    ));
+    let s = screen(&mut live);
+    assert!(s.contains("memory: 2 recalled (project 2), 1 stale"), "{s}");
 }
 
 /// `/clear` is `/new` (Claude Code's `/clear`): offered in the completion list with its description, it aborts a

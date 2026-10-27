@@ -1832,6 +1832,10 @@ impl Core {
     }
 
     fn stop(&mut self, hand_over: bool) {
+        // A successor keeps the session going; a run in progress resumes when the session opens again.
+        if !hand_over && self.run.is_none() {
+            self.retain_tail();
+        }
         if let Some(run) = &self.run {
             run.signal.abort();
         }
@@ -2411,6 +2415,23 @@ impl Core {
         if let Some(summary) = summary {
             let cwd = self.runtime.config.cwd.display().to_string();
             crate::auto_memory::retain_summary(&self.lane.stack, &session_id, &cwd, &summary);
+        }
+    }
+
+    /// Keep what no compaction summarized in long-term memory as the session closes, when automatic retain is on
+    /// (crate::auto_memory).
+    fn retain_tail(&self) {
+        if !self.auto_memory.retain {
+            return;
+        }
+        let (session_id, tail) = {
+            let session = lock_session(&self.session);
+            let entries = session.branch_entries(LANE).unwrap_or_default();
+            (session.id().to_string(), crate::auto_memory::session_tail(&entries))
+        };
+        if let Some(tail) = tail {
+            let cwd = self.runtime.config.cwd.display().to_string();
+            crate::auto_memory::retain_tail(&self.lane.stack, &session_id, &cwd, tail);
         }
     }
 

@@ -15,6 +15,7 @@ use crate::util::{Clock, iso, js_trim, lock, sha256_hex, stringify, system_clock
 use kernel::Signal;
 use serde_json::{Map, Value, json};
 use std::collections::{HashMap, HashSet};
+use std::path::{Component, Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 /// A Hindsight-shaped document backend. An `Err` whose text is a memory error code (for example "HTTP_ERROR")
@@ -66,7 +67,8 @@ pub fn worker_gate() -> MemoryGate {
             return Ok(json!({"retrieve": true, "probability": 1}));
         }
         let text = request["text"].as_str().unwrap_or_default();
-        // A typed record's situation, key and globs are checked too (they reach later sessions as pointers).
+        // A typed record's situation, key and globs are checked too (they reach later sessions as pointers), and
+        // so are the quotes of its evidence (kept beside it in Hindsight).
         let typed = request["situation"].as_str().unwrap_or_default();
         let action =
             if host::secrets::contains_sensitive_memory(text) || host::secrets::contains_sensitive_memory(typed) {
@@ -299,6 +301,102 @@ fn evidence_refs(value: &Value) -> Result<Vec<Value>> {
             Ok(Value::Object(out))
         })
         .collect()
+}
+
+/// The most quotes one memory's evidence may carry, and the longest quote.
+const MAX_QUOTES: usize = 4;
+const MAX_QUOTE_BYTES: usize = 300;
+/// The largest file a staleness check reads.
+const MAX_QUOTED_FILE_BYTES: u64 = 4 << 20;
+
+/// File text an evidence ref quotes (Rust-only): `{path, quote}`, kept in the memory's Hindsight metadata (never in
+/// the journal, which holds hashes) so a later recall can tell whether the file still says it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Quote {
+    path: String,
+    quote: String,
+}
+
+/// The file an evidence ref names (`src/a.rs`, `src/a.rs:12`, `src/a.rs:12-30`): relative, inside the project.
+fn quoted_path(reference: &str) -> Option<&str> {
+    let path = match reference.rsplit_once(':') {
+        Some((path, lines))
+            if !lines.is_empty()
+                && lines
+                    .split('-')
+                    .all(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit())) =>
+        {
+            path
+        }
+        _ => reference,
+    };
+    let inside = Path::new(path)
+        .components()
+        .all(|part| matches!(part, Component::Normal(_) | Component::CurDir));
+    (!path.is_empty() && !path.contains("://") && inside).then_some(path)
+}
+
+/// `evidence` without its quotes (as the journal keeps it), and the quotes. A quote needs a ref that names a
+/// project file and at most [`MAX_QUOTE_BYTES`] of text.
+fn split_evidence(value: &Value) -> Result<(Value, Vec<Quote>)> {
+    let Some(items) = value.as_array() else {
+        return Ok((value.clone(), Vec::new()));
+    };
+    let mut quotes = Vec::new();
+    let mut stripped = Vec::new();
+    for item in items {
+        let Some(map) = item.as_object() else {
+            stripped.push(item.clone());
+            continue;
+        };
+        let mut map = map.clone();
+        if let Some(quote) = map.remove("quote") {
+            let text = quote.as_str().map(str::trim).unwrap_or_default();
+            let path = map.get("ref").and_then(Value::as_str).and_then(quoted_path);
+            let (Some(path), false, true) = (path, text.is_empty(), text.len() <= MAX_QUOTE_BYTES) else {
+                return Err(MemoryError::code("INVALID_INPUT"));
+            };
+            quotes.push(Quote {
+                path: path.to_string(),
+                quote: text.to_string(),
+            });
+        }
+        stripped.push(Value::Object(map));
+    }
+    if quotes.len() > MAX_QUOTES {
+        return Err(MemoryError::code("INVALID_INPUT"));
+    }
+    Ok((Value::Array(stripped), quotes))
+}
+
+fn squeezed(text: &str) -> String {
+    text.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+/// Why a memory is stale, from the quotes in its Hindsight `metadata` (autolith's check, with no model call): a
+/// quoted file under `root` that is gone, or that no longer holds its quote (whitespace aside). `None` when every
+/// quote still holds, the memory quotes nothing, or a file cannot be read for another reason.
+pub fn staleness(root: &Path, metadata: &Value) -> Option<String> {
+    let quotes: Vec<Value> = serde_json::from_str(metadata.get("ultron_quotes")?.as_str()?).ok()?;
+    for quote in quotes.iter().take(MAX_QUOTES) {
+        let (Some(path), Some(text)) = (quote["path"].as_str().and_then(quoted_path), quote["quote"].as_str()) else {
+            continue;
+        };
+        let file = root.join(path);
+        match std::fs::metadata(&file) {
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Some(format!("{path} is gone")),
+            Ok(meta) if meta.is_file() && meta.len() <= MAX_QUOTED_FILE_BYTES => {
+                let Ok(bytes) = std::fs::read(&file) else {
+                    continue;
+                };
+                if !squeezed(&String::from_utf8_lossy(&bytes)).contains(&squeezed(text)) {
+                    return Some(format!("{path} no longer has the quoted text"));
+                }
+            }
+            _ => {}
+        }
+    }
+    None
 }
 
 fn gate_decision(value: &Value, recall: bool) -> Result<Value> {
@@ -583,6 +681,8 @@ pub struct MemoryService {
     inner: Mutex<Inner>,
     /// Typed records' metadata, shared by every session of the machine (crate::memory_records).
     records: Arc<RecordIndex>,
+    /// The project directory evidence quotes are checked in ([`staleness`]); `None` checks nothing.
+    root: Option<PathBuf>,
 }
 
 impl MemoryService {
@@ -611,7 +711,22 @@ impl MemoryService {
                 reuse: HashMap::new(),
             }),
             records: Arc::new(RecordIndex::in_memory()),
+            root: None,
         })
+    }
+
+    /// Check evidence quotes of `project` and `session` memories against the files under `root` when they are
+    /// recalled (the composition root passes the session's working directory). A `global` memory's quotes name
+    /// files of whatever project it came from, so they are never checked.
+    pub fn with_root(mut self, root: impl Into<PathBuf>) -> Self {
+        self.root = Some(root.into());
+        self
+    }
+
+    /// Why a recalled memory of `scope` with Hindsight `metadata` is stale, if it is ([`staleness`]).
+    fn stale(&self, scope: &str, metadata: &Value) -> Option<String> {
+        let root = self.root.as_deref().filter(|_| scope != "global")?;
+        staleness(root, metadata)
     }
 
     /// Keep typed records' metadata in `records` (the composition root passes the agent directory's shared index).
@@ -1069,6 +1184,9 @@ impl MemoryService {
                 if let Some(class) = class {
                     result.insert("evidenceClass".into(), class.into());
                 }
+                if let Some(stale) = self.stale(scope, &Value::Object(metadata)) {
+                    result.insert("stale".into(), stale.into());
+                }
                 results.push(Value::Object(result));
             }
             let references: Vec<Value> = results
@@ -1101,7 +1219,11 @@ impl MemoryService {
                             .as_str()
                             .map(|class| format!("[{}] ", class_label(class)))
                             .unwrap_or_default();
-                        format!("{}. {label}{}", index + 1, item["text"].as_str().unwrap_or(""))
+                        let stale = item["stale"]
+                            .as_str()
+                            .map(|why| format!(" [stale: {why}]"))
+                            .unwrap_or_default();
+                        format!("{}. {label}{}{stale}", index + 1, item["text"].as_str().unwrap_or(""))
                     })
                     .collect();
                 format!(
@@ -1117,7 +1239,8 @@ impl MemoryService {
 
     /// Automatic recall for a user message (Rust-only; the session runs it before each root turn, see
     /// session-core `auto_memory`): one cheap Hindsight recall over the `project` and `global` scopes, at most
-    /// `limit` entries `{id, text, scope, type?, memoryId?}`. It is read-only and journals nothing; what the user
+    /// `limit` entries `{id, text, scope, type?, memoryId?, stale?}` (`stale`: why its quoted evidence no longer
+    /// holds, see [`MemoryService::with_root`]). It is read-only and journals nothing; what the user
     /// forgot or replaced is withheld as [`MemoryService::prepare`] withholds it, and a result tagged with neither
     /// scope's tags exactly is dropped.
     pub fn recall_for_turn(&self, query: &str, limit: usize, signal: &Signal) -> Result<Vec<Value>> {
@@ -1186,6 +1309,9 @@ impl MemoryService {
             if let Some(memory_id) = memory_id {
                 entry["memoryId"] = memory_id.into();
             }
+            if let Some(stale) = self.stale(scope, &item["metadata"]) {
+                entry["stale"] = stale.into();
+            }
             found.push(entry);
             if found.len() == limit {
                 break;
@@ -1222,6 +1348,50 @@ impl MemoryService {
             "items": [{
                 "content": text, "context": context, "timestamp": timestamp, "document_id": document_id,
                 "tags": tags, "update_mode": "append", "metadata": {"ultron_source": "auto"},
+            }],
+            "async": true,
+        });
+        self.backend
+            .retain(&request, signal)
+            .map(|_| true)
+            .map_err(|error| MemoryError::of(&error))
+    }
+
+    /// Automatic retain of the part of a session no compaction summarized (Rust-only; session-core `auto_memory`
+    /// sends it when the session closes): `text` replaces the document `document_id` under the `project` scope,
+    /// marked as running `through` the session entry it ends at. When the document already ends there, nothing is
+    /// sent: a session closed and reopened without a new message is not read again. `Ok(false)` when nothing was
+    /// sent (unchanged, unsupported, empty, or a secret in `text`).
+    pub fn retain_session_tail(
+        &self,
+        document_id: &str,
+        text: &str,
+        context: &str,
+        through: &str,
+        signal: &Signal,
+    ) -> Result<bool> {
+        let tags = self.tags("project")?;
+        if !self.backend.supports("retain") || js_trim(text).is_empty() {
+            return Ok(false);
+        }
+        let request = json!({"action": "propose", "text": text, "scope": "project"});
+        let decision = gate_decision(
+            &(self.gate)(&request, signal).map_err(|_| MemoryError::code("OPERATION_ERROR"))?,
+            false,
+        )?;
+        if decision["action"] != "keep" {
+            return Ok(false);
+        }
+        // A missing document (or a server that cannot say) is no reason to skip.
+        let kept = self.backend.get(document_id, signal).unwrap_or(Value::Null);
+        if kept["document_metadata"]["ultron_through"] == through {
+            return Ok(false);
+        }
+        let request = json!({
+            "items": [{
+                "content": text, "context": context, "timestamp": iso((self.clock)()), "document_id": document_id,
+                "tags": tags, "update_mode": "replace",
+                "metadata": {"ultron_source": "auto", "ultron_through": through},
             }],
             "async": true,
         });
@@ -1344,7 +1514,8 @@ impl MemoryService {
         let text = payload.get("text").cloned().unwrap_or(Value::Null);
         require_text(&text)?;
         let scope = scope_of(payload.get("scope").unwrap_or(&json!("session")))?;
-        let refs = evidence_refs(payload.get("evidence").unwrap_or(&Value::Null))?;
+        let (evidence, quotes) = split_evidence(payload.get("evidence").unwrap_or(&Value::Null))?;
+        let refs = evidence_refs(&evidence)?;
         let class = evidence_class_of(payload.get("evidenceClass"), "hypothesis")?;
         let typed = typed_fields(payload, text.as_str().unwrap_or(""))?;
         let tags = self.tags(scope)?;
@@ -1367,6 +1538,7 @@ impl MemoryService {
                         Some(&memory_id),
                         text,
                         refs,
+                        &quotes,
                         &class,
                         scope,
                         tags,
@@ -1384,6 +1556,7 @@ impl MemoryService {
                         Some(&memory_id),
                         text,
                         refs,
+                        &quotes,
                         &class,
                         scope,
                         tags,
@@ -1392,7 +1565,18 @@ impl MemoryService {
                     )
                 })?
             }
-            None => self.retain("propose", None, text, refs, &class, scope, tags, typed.as_ref(), signal)?,
+            None => self.retain(
+                "propose",
+                None,
+                text,
+                refs,
+                &quotes,
+                &class,
+                scope,
+                tags,
+                typed.as_ref(),
+                signal,
+            )?,
         };
         Ok(self.index_written(written, typed.as_ref(), text))
     }
@@ -1401,7 +1585,8 @@ impl MemoryService {
         let id = payload.get("id").cloned().unwrap_or(Value::Null);
         let text = payload.get("text").cloned().unwrap_or(Value::Null);
         require_text(&text)?;
-        let refs = evidence_refs(payload.get("evidence").unwrap_or(&Value::Null))?;
+        let (evidence, quotes) = split_evidence(payload.get("evidence").unwrap_or(&Value::Null))?;
+        let refs = evidence_refs(&evidence)?;
         // A user correction is a user statement, not independently verified tool evidence.
         let class = evidence_class_of(payload.get("evidenceClass"), "user_statement")?;
         self.load()?;
@@ -1422,6 +1607,7 @@ impl MemoryService {
                 Some(&memory_id),
                 text,
                 refs,
+                &quotes,
                 &class,
                 &scope,
                 tags,
@@ -1439,6 +1625,7 @@ impl MemoryService {
         memory_id: Option<&str>,
         text: &str,
         evidence: Vec<Value>,
+        quotes: &[Quote],
         class: &str,
         scope: &str,
         tags: Vec<String>,
@@ -1467,8 +1654,10 @@ impl MemoryService {
                 self.editable(memory_id)?;
             }
             let mut request = json!({"action": "retain", "text": text, "evidence": evidence, "scope": scope});
-            if let Some(typed) = typed {
-                request["situation"] = typed.screened().into();
+            let mut screened: Vec<String> = typed.map(Typed::screened).into_iter().collect();
+            screened.extend(quotes.iter().map(|quote| quote.quote.clone()));
+            if !screened.is_empty() {
+                request["situation"] = screened.join("\n").into();
             }
             let decision = gate_decision(
                 &(self.gate)(&request, signal).map_err(|_| MemoryError::code("OPERATION_ERROR"))?,
@@ -1504,6 +1693,14 @@ impl MemoryService {
                 if let Some(key) = &typed.key {
                     metadata["ultron_key"] = key.clone().into();
                 }
+            }
+            if !quotes.is_empty() {
+                let quotes: Vec<Value> = quotes
+                    .iter()
+                    .map(|quote| json!({"path": quote.path, "quote": quote.quote}))
+                    .collect();
+                // Hindsight metadata values are strings.
+                metadata["ultron_quotes"] = Value::Array(quotes).to_string().into();
             }
             let request = json!({
                 "async": true,
@@ -1734,9 +1931,10 @@ fn evidence_schema(value: Option<&Value>) -> bool {
         !items.is_empty()
             && items.iter().all(|item| {
                 item.as_object().is_some_and(|map| {
-                    exact_fields(map, &["ref", "sha256"])
+                    exact_fields(map, &["ref", "sha256", "quote"])
                         && string_min1(map.get("ref"))
                         && map.get("sha256").is_none_or(is_sha256)
+                        && map.get("quote").is_none_or(|quote| string_min1(Some(quote)))
                 })
             })
     })

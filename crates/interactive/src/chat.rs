@@ -45,7 +45,8 @@ pub fn nudge_line(message: &Value) -> String {
 pub const MEMORY_CUSTOM_TYPE: &str = "ultron.memory";
 
 /// What the chat shows for recalled memories: `memory: 3 recalled (project 2, global 1)`, not their text; with the
-/// project's brief, `memory: project brief, 3 recalled (...)` (or `memory: project brief` alone).
+/// project's brief, `memory: project brief, 3 recalled (...)` (or `memory: project brief` alone); `, 1 stale` when
+/// recalled memories quote file text that is gone.
 pub fn memory_line(message: &Value) -> String {
     let brief = message["details"]["digest"].is_string();
     let scopes = message["details"]["scopes"]
@@ -58,10 +59,14 @@ pub fn memory_line(message: &Value) -> String {
         .filter(|scope| count(scope) > 0)
         .map(|scope| format!("{scope} {}", count(scope)))
         .collect();
-    match (brief, scopes.len()) {
+    let line = match (brief, scopes.len()) {
         (true, 0) => "memory: project brief".to_string(),
         (true, n) => format!("memory: project brief, {n} recalled ({})", parts.join(", ")),
         (false, n) => format!("memory: {n} recalled ({})", parts.join(", ")),
+    };
+    match message["details"]["stale"].as_u64() {
+        Some(stale) if stale > 0 => format!("{line}, {stale} stale"),
+        _ => line,
     }
 }
 

@@ -1,6 +1,6 @@
 //! Automatic memory (Rust-only; in TypeScript, and with it off, memory is recalled and kept only when the model calls
 //! `memory.prepare` / `memory.propose`, which it rarely does): the session recalls before each user message and keeps
-//! its compaction summaries.
+//! its compaction summaries, and what no summary covered when it closes.
 //!
 //! - Recall: before a root run of a user message (not a continuation, a custom message or a slash command, and of at
 //!   least [`MIN_WORDS`] words), one cheap Hindsight recall (`budget: low`, no LLM call) over the `project` and
@@ -10,12 +10,18 @@
 //!   the system prompt. A failed or slow recall adds nothing and pauses recall for [`PAUSE`]. The first such
 //!   message of a context (at its start and after each compaction) also carries the project's brief, a Hindsight
 //!   mental model of the project and global memories (kernel_apis `MemoryService::project_digest`). Each recalled
-//!   entry names its id, so the model can `memory.invalidate` a wrong fact or `memory.forget` a wrong memory.
+//!   entry names its id, so the model can `memory.invalidate` a wrong fact or `memory.forget` a wrong memory. A
+//!   memory whose evidence quoted a file that no longer holds the quote is marked stale (autolith's check, with no
+//!   model call: kernel_apis `memory::staleness`).
 //! - Retain: a completed compaction's summary (goal, progress, decisions, as the model wrote them) is appended to the
 //!   session's summaries document under the `project` scope, in the background; Hindsight extracts its facts and
 //!   folds them into observations. Nothing is kept per turn: whole transcripts make noisy memories. The write gate
 //!   drops a summary that holds a secret, and the summarizer never sees recalled memory (compaction
-//!   `convert_for_summary`), so what was recalled is not kept again as if learned.
+//!   `convert_for_summary`), so what was recalled is not kept again as if learned. A session that closes with
+//!   messages after its last compaction (or none at all, as most short sessions) keeps that tail too: the user's
+//!   messages and the agent's final replies, without tool output, replacing the tail document of its segment
+//!   ([`session_tail`], [`retain_tail`]). A tail already kept as it is (a session reopened and closed again) is not
+//!   sent again.
 //! - Both are on when the settings say (`memory.autoRecall`, `memory.autoRetain`), else when the Hindsight server
 //!   is set explicitly (`ULTRON_HINDSIGHT_URL`, or the global `hindsightUrl` setting): the default URL alone is a
 //!   guess, and a test's empty home must not reach a developer's real memory bank.
@@ -175,6 +181,13 @@ pub fn recall_message(recalled: &Recalled, timestamp: u64) -> Option<Value> {
         `memory.invalidate` its [fact <id>] with the reason, or `memory.correct` / `memory.forget` its \
         [memory <id>]. `memory.reflect` asks memory a broader question."
         .to_string();
+    let stale = recalled.found.iter().filter(|item| item["stale"].is_string()).count();
+    if stale > 0 {
+        content.push_str(
+            " An entry marked stale quoted file text that is no longer there: check it, then correct, invalidate \
+             or forget it.",
+        );
+    }
     if let Some(digest) = &recalled.digest {
         let refreshed = digest["refreshedAt"].as_str().map(|at| &at[..at.len().min(10)]);
         content.push_str(&match refreshed {
@@ -194,12 +207,18 @@ pub fn recall_message(recalled: &Recalled, timestamp: u64) -> Option<Value> {
             (None, Some(id)) => format!("\n- ({scope}) {text} [fact {id}]"),
             (None, None) => format!("\n- ({scope}) {text}"),
         });
+        if let Some(why) = item["stale"].as_str() {
+            content.push_str(&format!(" (stale: {why})"));
+        }
     }
     let ids: Vec<&Value> = recalled.found.iter().map(|item| &item["id"]).collect();
     let scopes: Vec<&Value> = recalled.found.iter().map(|item| &item["scope"]).collect();
     let mut details = json!({"ids": ids, "scopes": scopes});
     if let Some(digest) = &recalled.digest {
         details["digest"] = digest["id"].clone();
+    }
+    if stale > 0 {
+        details["stale"] = stale.into();
     }
     Some(json!({
         "role": "custom",
@@ -229,6 +248,127 @@ pub fn retain_summary(stack: &Arc<Stack>, session_id: &str, cwd: &str, summary: 
             let _ = memory.retain_for_session(&document_id, &summary, &context, &timestamp, "project", &Signal::new());
         }
     });
+}
+
+/// The part of a session no compaction summarized, as kept when the session closes ([`retain_tail`]).
+#[derive(Debug, PartialEq)]
+pub struct Tail {
+    /// The compaction it follows (`None`: the session's start); names the document it is kept in.
+    pub after: Option<String>,
+    /// The last entry it covers.
+    pub through: String,
+    pub text: String,
+}
+
+/// User messages a tail needs before it is kept: a one-question session is rarely worth remembering.
+pub const TAIL_MIN_MESSAGES: usize = 2;
+/// The longest tail kept; past it the first message (the goal) and the newest are kept.
+const TAIL_CHARS: usize = 12_000;
+/// The longest single message in a tail.
+const TAIL_MESSAGE_CHARS: usize = 1_500;
+/// How long closing waits for the tail to reach Hindsight.
+pub const TAIL_TIMEOUT: Duration = Duration::from_secs(2);
+
+/// The text of a message's `content` (a string, or its `text` parts).
+fn message_text(content: &Value) -> String {
+    match content {
+        Value::String(text) => text.clone(),
+        Value::Array(parts) => parts
+            .iter()
+            .filter(|part| part["type"] == "text")
+            .filter_map(|part| part["text"].as_str())
+            .collect::<Vec<_>>()
+            .join("\n"),
+        _ => String::new(),
+    }
+}
+
+/// What the branch `entries` hold after their last compaction: the user's messages and the agent's final replies
+/// (an assistant message that ended its run, not one that called a tool), oldest first; never tool output, custom
+/// messages (recalled memory among them) or thinking. `None` with fewer than [`TAIL_MIN_MESSAGES`] user messages.
+pub fn session_tail(entries: &[Value]) -> Option<Tail> {
+    let start = entries.iter().rposition(|entry| entry["type"] == "compaction");
+    let after = start.and_then(|at| entries[at]["id"].as_str().map(str::to_string));
+    let mut lines = Vec::new();
+    let mut users = 0;
+    let mut through = None;
+    for entry in &entries[start.map_or(0, |at| at + 1)..] {
+        let message = &entry["message"];
+        if entry["type"] != "message" {
+            continue;
+        }
+        let who = match message["role"].as_str() {
+            Some("user") => "User",
+            Some("assistant") if message["stopReason"] == "stop" => "Agent",
+            _ => continue,
+        };
+        let text = message_text(&message["content"]);
+        let text = text.trim();
+        if text.is_empty() {
+            continue;
+        }
+        users += usize::from(who == "User");
+        lines.push(format!("{who}: {}", cut(text, TAIL_MESSAGE_CHARS)));
+        through = entry["id"].as_str().map(str::to_string);
+    }
+    if users < TAIL_MIN_MESSAGES {
+        return None;
+    }
+    let size = |lines: &[String]| lines.iter().map(|line| line.chars().count() + 2).sum::<usize>();
+    if size(&lines) > TAIL_CHARS {
+        let first = lines.remove(0);
+        let mut newest = Vec::new();
+        let mut left = TAIL_CHARS.saturating_sub(first.chars().count() + 64);
+        while let Some(line) = lines.pop() {
+            let length = line.chars().count() + 2;
+            if length > left {
+                lines.push(line);
+                break;
+            }
+            left -= length;
+            newest.push(line);
+        }
+        let dropped = lines.len();
+        newest.reverse();
+        lines = std::iter::once(first)
+            .chain(std::iter::once(format!("[{dropped} messages left out]")))
+            .chain(newest)
+            .collect();
+    }
+    Some(Tail {
+        after,
+        through: through?,
+        text: lines.join("\n\n"),
+    })
+}
+
+/// Keep the `tail` of session `session_id` (in `cwd`) as it closes: it replaces the session's tail document for
+/// its segment under the `project` scope, unless that already ends where the tail does. Waits at most
+/// [`TAIL_TIMEOUT`] (the process may exit right after); failures are not reported.
+pub fn retain_tail(stack: &Arc<Stack>, session_id: &str, cwd: &str, tail: Tail) {
+    if stack.memory().is_none() {
+        return;
+    }
+    let document_id = format!(
+        "ultron:session:{session_id}:tail:{}",
+        tail.after.as_deref().unwrap_or("start")
+    );
+    let context = format!(
+        "The end of an Ultron coding-agent session in {cwd} that no compaction summarized: the user's messages and \
+         the agent's final replies, oldest first, with tool output left out. What the agent says it did or verified \
+         is its claim, not a checked fact."
+    );
+    let (tx, rx) = std::sync::mpsc::channel();
+    let (stack, signal) = (stack.clone(), Signal::new());
+    let cancel = signal.clone();
+    std::thread::spawn(move || {
+        if let Some(memory) = stack.memory() {
+            let _ = tx.send(memory.retain_session_tail(&document_id, &tail.text, &context, &tail.through, &cancel));
+        }
+    });
+    if rx.recv_timeout(TAIL_TIMEOUT).is_err() {
+        signal.abort("closing");
+    }
 }
 
 #[cfg(test)]
@@ -339,5 +479,110 @@ mod tests {
         };
         let content = recall_message(&brief_only, 7).unwrap()["content"].clone();
         assert!(content.as_str().unwrap().ends_with("- cargo nextest run"));
+    }
+
+    #[test]
+    fn auto_memory_message_marks_stale_entries() {
+        let recalled = Recalled {
+            found: vec![
+                json!({"id": "f1", "text": "Commits go through op_journal.", "scope": "project",
+                    "stale": "src/journal.rs no longer has the quoted text"}),
+                json!({"id": "f2", "text": "Fresh.", "scope": "project"}),
+            ],
+            digest: None,
+        };
+        let message = recall_message(&recalled, 7).unwrap();
+        let content = message["content"].as_str().unwrap();
+        let mut lines = content.lines();
+        assert!(lines.next().unwrap().ends_with(
+            "An entry marked stale quoted file text that is no longer there: check it, then correct, invalidate or \
+             forget it."
+        ));
+        assert_eq!(
+            lines.collect::<Vec<_>>(),
+            [
+                "- (project) Commits go through op_journal. [fact f1] (stale: src/journal.rs no longer has the \
+                 quoted text)",
+                "- (project) Fresh. [fact f2]"
+            ]
+        );
+        assert_eq!(message["details"]["stale"], 1);
+    }
+
+    fn message(id: &str, message: Value) -> Value {
+        json!({"type": "message", "id": id, "message": message})
+    }
+
+    #[test]
+    fn auto_memory_session_tail_keeps_words_and_final_replies_after_the_last_compaction() {
+        let user = |id: &str, text: &str| message(id, json!({"role": "user", "content": text}));
+        let reply = |id: &str, text: &str, stop: &str| {
+            message(
+                id,
+                json!({"role": "assistant", "stopReason": stop, "content": [
+                    {"type": "thinking", "thinking": "hidden"}, {"type": "text", "text": text}]}),
+            )
+        };
+        let entries = [
+            user("e1", "summarized already"),
+            json!({"type": "compaction", "id": "c1", "summary": "s"}),
+            user("e2", "make the journal faster"),
+            reply("e3", "Looking.", "toolUse"),
+            message(
+                "e4",
+                json!({"role": "toolResult", "content": [{"type": "text", "text": "tool output"}]}),
+            ),
+            message(
+                "e5",
+                json!({"role": "custom", "customType": MEMORY_CUSTOM_TYPE, "content": "[memory] x"}),
+            ),
+            reply("e6", "Joined the deltas.", "stop"),
+            message(
+                "e7",
+                json!({"role": "user", "content": [{"type": "text", "text": "now the tests"}]}),
+            ),
+            reply("e8", "All pass.", "stop"),
+            json!({"type": "custom", "id": "e9", "customType": "other"}),
+        ];
+        assert_eq!(
+            session_tail(&entries),
+            Some(Tail {
+                after: Some("c1".into()),
+                through: "e8".into(),
+                text: "User: make the journal faster\n\nAgent: Joined the deltas.\n\nUser: now the tests\n\nAgent: All pass."
+                    .into(),
+            })
+        );
+        assert_eq!(
+            session_tail(&entries[..7]),
+            None,
+            "one message after the compaction is not worth keeping"
+        );
+        let whole = session_tail(&[user("a", "first"), user("b", "second")]).unwrap();
+        assert_eq!(
+            (whole.after, whole.through.as_str()),
+            (None, "b"),
+            "no compaction: the whole session"
+        );
+    }
+
+    #[test]
+    fn auto_memory_session_tail_keeps_the_goal_and_the_newest_when_long() {
+        let entries: Vec<Value> = (0..40)
+            .map(|n| {
+                message(
+                    &format!("e{n}"),
+                    json!({"role": "user", "content": format!("{n} {}", "x".repeat(1000))}),
+                )
+            })
+            .collect();
+        let tail = session_tail(&entries).unwrap();
+        assert!(tail.text.chars().count() <= TAIL_CHARS, "{}", tail.text.chars().count());
+        let lines: Vec<&str> = tail.text.split("\n\n").collect();
+        assert!(lines[0].starts_with("User: 0 x"), "the first message states the goal");
+        let kept = lines.len() - 2;
+        assert_eq!(lines[1], format!("[{} messages left out]", 39 - kept));
+        assert!(lines.last().unwrap().starts_with("User: 39 x"));
+        assert_eq!(tail.through, "e39");
     }
 }

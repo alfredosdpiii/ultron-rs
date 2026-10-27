@@ -114,7 +114,7 @@ const DELEGATION_TAIL: &str = r#". Trust only verdicts whose `check.outcome` is 
 If you are a subagent, do the brief yourself (spawn only if given depth), then `await rlm.finish(status, summary, evidence=[...], changed_files=[...])` and reply briefly with paths and uncertainties.
 Typed agents, graphs, jobs: `help(agents)`, `help(workflows)`, `help(background)`."#;
 
-const TYPED_MEMORY: &str = r#" A fact tied to files can be typed: `memory.propose(text, evidence, type="pitfall", situation="...", path_globs=["src/**"])`; a `[memory] <id> <type>: <situation>` line on a result points at one matching a file you changed (`await memory.get(id)`)."#;
+const TYPED_MEMORY: &str = r#" A fact tied to files can be typed: `memory.propose(text, evidence, type="pitfall", situation="...", path_globs=["src/**"])`; a `[memory] <id> <type>: <situation>` line on a result points at one matching a file you changed (`await memory.get(id)`). Quote the file in the evidence (`{"ref": "src/a.rs:12", "quote": "<its text>"}`) and recall marks the memory stale once that text is gone."#;
 const IMAGES_PROMPT: &str = r#"- `await rlm.images.generate(prompt, size="16:9")` makes an image and saves it to a file: `{"paths": [...], "model": ...}` (`help(rlm.images)`)."#;
 const SCHEDULE_PROMPT: &str = r#"- `await schedule.every("1h", prompt)` or `schedule.at(when, prompt)` sends this session `prompt` later as a new turn (`help(schedule)`)."#;
 const DIAGRAM_PROMPT: &str = r#"- `await diagram.mermaid(text)` renders Mermaid to an SVG and PNG in your theme and shows the user the PNG; you get its path (`help(diagram)`)."#;

@@ -487,7 +487,8 @@ impl MemoryBackend for RecallBank {
 
 /// Automatic recall (session_core::auto_memory): a user message's run opens with the memories recalled for it, as
 /// a custom message the request carries before the prompt, the first with the project's brief; a memory or brief
-/// already in the context is not shown again, and a short message recalls nothing.
+/// already in the context is not shown again, and a short message recalls nothing. Closing keeps the session's
+/// messages, which no compaction summarized, as its tail.
 #[test]
 fn cli_composition_auto_memory_recalls_before_a_user_message() {
     let (port, seen) = mock_server(
@@ -497,7 +498,7 @@ fn cli_composition_auto_memory_recalls_before_a_user_message() {
     let sandbox = sandbox(port);
     std::fs::write(
         sandbox.agent_dir.join("settings.json"),
-        r#"{"sessionNaming":{"enabled":false},"memory":{"autoRecall":true}}"#,
+        r#"{"sessionNaming":{"enabled":false},"memory":{"autoRecall":true,"autoRetain":true}}"#,
     )
     .unwrap();
     let bank = Arc::new(RecallBank::default());
@@ -537,6 +538,7 @@ fn cli_composition_auto_memory_recalls_before_a_user_message() {
         },
         auto_name: false,
     };
+    let session_id = created.metadata().id.clone();
     drop(created);
     let (core, actor, _) = session_core::core::spawn(open, Box::new(|_| {})).unwrap();
     for message in ["how do I run the tests here", "and how do I run the lints", "ok thanks"] {
@@ -571,6 +573,26 @@ fn cli_composition_auto_memory_recalls_before_a_user_message() {
         ],
         "a two-word message recalls nothing"
     );
+    let retains: Vec<Value> = bank
+        .calls
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|call| call[0] == "retain")
+        .map(|call| call[1]["items"][0].clone())
+        .collect();
+    assert_eq!(retains.len(), 1, "{retains:?}");
+    assert_eq!(
+        retains[0]["document_id"],
+        format!("ultron:session:{session_id}:tail:start")
+    );
+    assert_eq!(
+        retains[0]["content"],
+        "User: how do I run the tests here\n\nAgent: one\n\nUser: and how do I run the lints\n\nAgent: two\n\n\
+         User: ok thanks\n\nAgent: three",
+        "recalled memory is not kept again"
+    );
+    assert_eq!(retains[0]["update_mode"], "replace");
     let requests = seen.lock().unwrap().requests.clone();
     let texts = |request: &Value| -> Vec<String> {
         request["body"]["messages"]

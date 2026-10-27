@@ -445,9 +445,9 @@ fn resources_runtime_guide_names_the_swarm_apis_only_when_the_host_serves_them()
     assert!(swarm[..at].contains("## Delegation"));
     let end = at + swarm[at..].find("`help(swarm)`.").unwrap() + "`help(swarm)`.".len();
     let typed = swarm.find(" A fact tied to files can be typed:").unwrap();
-    let typed_end =
-        typed + swarm[typed..].find("(`await memory.get(id)`).").unwrap() + "(`await memory.get(id)`).".len();
+    let typed_end = typed + swarm[typed..].find("once that text is gone.").unwrap() + "once that text is gone.".len();
     assert!(swarm[typed..typed_end].contains("path_globs"));
+    assert!(swarm[typed..typed_end].contains("\"quote\""));
     // The images line follows the memory line.
     let images = typed_end + swarm[typed_end..].find("\n- `await rlm.images.generate(").unwrap();
     let images_end = images + swarm[images..].find("(`help(rlm.images)`).").unwrap() + "(`help(rlm.images)`).".len();

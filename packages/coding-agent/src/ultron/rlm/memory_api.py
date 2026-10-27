@@ -27,7 +27,9 @@ class Refinements:
 def _propose(text, evidence, scope, type, key, situation, path_globs):
     # Typed records (Rust host only; sent only when given): type is preference, fact, procedure, pitfall or
     # reference; situation says in one line when it applies; key (kebab-case) replaces the record with that key;
-    # path_globs (e.g. ['src/**/*.rs']) make a matching file change point at the record.
+    # path_globs (e.g. ['src/**/*.rs']) make a matching file change point at the record. An evidence item may quote
+    # the file its ref names ({'ref': 'src/a.rs:12', 'quote': '<text copied from it, at most 300 bytes>'}): a later
+    # recall marks the memory stale once the file no longer holds that text.
     payload = {'text': text, 'evidence': evidence, 'scope': scope}
     for name, value in (('type', type), ('key', key), ('situation', situation), ('pathGlobs', path_globs)):
         if value is not None:

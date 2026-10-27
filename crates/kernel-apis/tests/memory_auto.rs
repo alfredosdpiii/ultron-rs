@@ -1,5 +1,6 @@
-//! Automatic memory's service calls (kernel_apis::memory `recall_for_turn`, `retain_for_session`, `project_digest`)
-//! and the model's `memory.reflect` / `memory.invalidate`: Rust-only, with no TypeScript reference, so literal
+//! Automatic memory's service calls (kernel_apis::memory `recall_for_turn`, `retain_for_session`,
+//! `retain_session_tail`, `project_digest`), evidence quotes and staleness, and the model's `memory.reflect` /
+//! `memory.invalidate`: Rust-only, with no TypeScript reference, so literal
 //! expectations over an in-process Hindsight-shaped bank.
 
 use kernel::Signal;
@@ -41,8 +42,18 @@ impl MemoryBackend for Bank {
         self.retains.lock().unwrap().push(request.clone());
         Ok(json!({"success": true, "async": false}))
     }
+    /// The document as its newest retain left it (its metadata, as Hindsight keeps it).
     fn get(&self, id: &str, _: &Signal) -> Result<Value, String> {
-        Ok(json!({"id": id, "original_text": "kept", "tags": ["ultron:project:p1"]}))
+        let retains = self.retains.lock().unwrap();
+        let item = retains
+            .iter()
+            .rev()
+            .flat_map(|request| request["items"].as_array().cloned().unwrap_or_default())
+            .find(|item| item["document_id"] == id);
+        Ok(json!({
+            "id": id, "original_text": "kept", "tags": ["ultron:project:p1"],
+            "document_metadata": item.map_or(Value::Null, |item| item["metadata"].clone()),
+        }))
     }
     fn delete(&self, id: &str, _: &Signal) -> Result<Value, String> {
         Ok(json!({"success": true, "document_id": id}))
@@ -333,4 +344,163 @@ fn kernel_apis_memory_project_digest_creates_the_model_once_then_reads_it() {
         .filter(|call| call[0] == "create_mental_model")
         .count();
     assert_eq!(created, 1);
+}
+
+#[test]
+fn kernel_apis_memory_retain_session_tail_replaces_its_document_once_per_end() {
+    let (memory, _, retains) = service(json!([]));
+    let keep = |through: &str, text: &str| {
+        memory
+            .retain_session_tail(
+                "ultron:session:s1:tail:start",
+                text,
+                "Session tail.",
+                through,
+                &Signal::new(),
+            )
+            .unwrap()
+    };
+    assert!(keep("e4", "User: speed up the journal\n\nAgent: Done."));
+    let sent = retains.lock().unwrap()[0].clone();
+    let item = &sent["items"][0];
+    assert_eq!(sent["async"], true);
+    assert_eq!(item["update_mode"], "replace");
+    assert_eq!(item["document_id"], "ultron:session:s1:tail:start");
+    assert_eq!(item["tags"], json!(["ultron:project:p1"]));
+    assert_eq!(
+        item["metadata"],
+        json!({"ultron_source": "auto", "ultron_through": "e4"})
+    );
+    assert_eq!(item["context"], "Session tail.");
+    assert!(item["timestamp"].as_str().is_some_and(|at| at.ends_with('Z')));
+    assert!(
+        !keep("e4", "User: speed up the journal\n\nAgent: Done."),
+        "a tail the document already ends with is not sent again"
+    );
+    assert!(keep(
+        "e9",
+        "User: speed up the journal\n\nAgent: Done.\n\nUser: and the tests?"
+    ));
+    assert_eq!(retains.lock().unwrap().len(), 2);
+    let secret = format!("User: use {}={}", "api_key", ["sk", "fake", "0123456789"].join("-"));
+    assert!(!keep("e12", &secret), "a tail holding a secret is not sent");
+    assert_eq!(retains.lock().unwrap().len(), 2);
+}
+
+#[test]
+fn kernel_apis_memory_evidence_quotes_go_to_hindsight_never_to_the_journal() {
+    let (memory, _, retains) = service(json!([]));
+    let proposed = request(
+        &memory,
+        "memory.propose",
+        json!({
+            "text": "Journal writes go through op_journal.", "scope": "project",
+            "evidence": [{"ref": "src/journal.rs:12-14", "quote": "fn  commit(\n  &self"}, {"ref": "notes"}],
+        }),
+    )
+    .unwrap();
+    let item = &retains.lock().unwrap()[0]["items"][0];
+    assert_eq!(
+        item["metadata"]["ultron_quotes"],
+        json!([{"path": "src/journal.rs", "quote": "fn  commit(\n  &self"}]).to_string()
+    );
+    assert_eq!(
+        proposed["evidence"],
+        json!([{"ref": "src/journal.rs:12-14"}, {"ref": "notes"}]),
+        "the journal keeps refs only"
+    );
+    for evidence in [
+        json!([{"ref": "/etc/passwd", "quote": "root"}]),
+        json!([{"ref": "../other/a.rs", "quote": "x"}]),
+        json!([{"ref": "https://example.com/a", "quote": "x"}]),
+        json!([{"ref": "a.rs", "quote": "x".repeat(301)}]),
+        json!([{"ref": "a.rs", "quote": " "}]),
+        json!([{"ref": "a.rs", "quote": ""}]),
+        json!(
+            (0..5)
+                .map(|n| json!({"ref": format!("a{n}.rs"), "quote": "x"}))
+                .collect::<Vec<_>>()
+        ),
+    ] {
+        assert!(
+            request(
+                &memory,
+                "memory.propose",
+                json!({"text": "t", "evidence": evidence.clone()})
+            )
+            .is_err(),
+            "{evidence}"
+        );
+    }
+    let secret = format!("{}={}", "api_key", ["sk", "fake", "0123456789"].join("-"));
+    let refused = request(
+        &memory,
+        "memory.propose",
+        json!({"text": "Keys live in the env file.", "evidence": [{"ref": "a.rs", "quote": secret}]}),
+    )
+    .unwrap();
+    assert_eq!(
+        refused["state"], "sensitive",
+        "a quote holding a secret is screened too"
+    );
+}
+
+#[test]
+fn kernel_apis_memory_recall_marks_a_memory_stale_when_its_quote_is_gone() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(dir.path().join("src")).unwrap();
+    std::fs::write(dir.path().join("src/journal.rs"), "pub fn commit(\n    &self,\n) {}\n").unwrap();
+    std::fs::write(dir.path().join("src/old.rs"), "fn renamed() {}\n").unwrap();
+    let quoted = |id: &str, path: &str, quote: &str, tag: &str| {
+        let mut item = fact(id, &format!("{id} text"), tag);
+        item["metadata"] = json!({"ultron_quotes": json!([{"path": path, "quote": quote}]).to_string()});
+        item
+    };
+    let (memory, _, _, results) = service_with(json!([
+        quoted("held", "src/journal.rs", "fn commit( &self,", "ultron:project:p1"),
+        quoted("changed", "src/old.rs", "fn original()", "ultron:project:p1"),
+        quoted("gone", "src/removed.rs", "x", "ultron:project:p1"),
+        quoted("elsewhere", "src/removed.rs", "x", "ultron:global:home"),
+        fact("plain", "No quotes.", "ultron:project:p1"),
+    ]));
+    let memory = memory.with_root(dir.path());
+    let found = memory
+        .recall_for_turn("how are journal writes done", 6, &Signal::new())
+        .unwrap();
+    let stale: Vec<(&str, Option<&str>)> = found
+        .iter()
+        .map(|item| (item["id"].as_str().unwrap(), item["stale"].as_str()))
+        .collect();
+    assert_eq!(
+        stale,
+        [
+            ("held", None),
+            ("changed", Some("src/old.rs no longer has the quoted text")),
+            ("gone", Some("src/removed.rs is gone")),
+            ("elsewhere", None),
+            ("plain", None),
+        ],
+        "whitespace aside; a global memory's quotes name another project's files"
+    );
+    // A deliberate `memory.prepare` marks them too.
+    *results.lock().unwrap() = json!([
+        quoted("held", "src/journal.rs", "fn commit( &self,", "ultron:project:p1"),
+        quoted("gone", "src/removed.rs", "x", "ultron:project:p1"),
+    ]);
+    let prepared = request(
+        &memory,
+        "memory.prepare",
+        json!({"query": "journal writes", "taskId": "t1", "scope": "project"}),
+    )
+    .unwrap();
+    assert_eq!(prepared["results"][0].get("stale"), None);
+    assert_eq!(prepared["results"][1]["stale"], "src/removed.rs is gone");
+    assert!(
+        prepared["context"]
+            .as_str()
+            .unwrap()
+            .ends_with("2. gone text [stale: src/removed.rs is gone]"),
+        "{}",
+        prepared["context"]
+    );
 }

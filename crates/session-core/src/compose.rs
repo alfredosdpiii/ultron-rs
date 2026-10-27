@@ -768,7 +768,8 @@ impl Runtime {
                     kernel_apis::worker_gate(),
                 )
                 .map_err(|e| format!("memory: {e:?}"))?
-                .with_records(memory_records.clone()),
+                .with_records(memory_records.clone())
+                .with_root(config.cwd.clone()),
             ),
             None => None,
         };
