@@ -22,6 +22,8 @@ struct Saturated {
     fixture: Fixture,
     usage: UsageLedger,
     refusals: Arc<Mutex<Vec<String>>>,
+    /// Raised by a parent once its extra spawns were refused and it waits on its children.
+    full: Signal,
 }
 
 fn saturated(max_admitted_tasks: u64) -> Saturated {
@@ -30,6 +32,7 @@ fn saturated(max_admitted_tasks: u64) -> Saturated {
         ..UsageLimits::default()
     });
     let full = Signal::new();
+    let raised = full.clone();
     let refusals: Arc<Mutex<Vec<String>>> = Arc::default();
     let refused = refusals.clone();
     // Both children try their grandchild while the tree is full, before either ends (TS: one microtask turn).
@@ -87,6 +90,7 @@ fn saturated(max_admitted_tasks: u64) -> Saturated {
         fixture,
         usage,
         refusals,
+        full: raised,
     }
 }
 
@@ -157,6 +161,9 @@ fn acceptance_a45_cancelling_a_saturated_parent_cancels_its_waiting_children_and
         )
         .unwrap();
     wait_for("three tasks", BOUND, || run.fixture.journal().len() == 3);
+    // Not before the parent's own extra spawns were refused: a cancel that frees its children's slots first would
+    // admit one of them as a fourth task (cancelled with the rest).
+    assert!(run.full.wait(BOUND), "the parent never reached its children's results");
     // Saturated: parent plus two hanging children hold every slot.
     assert_eq!(run.usage.status(None).unwrap()["admittedTasks"], 3);
     let refused = run
