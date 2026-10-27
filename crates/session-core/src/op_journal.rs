@@ -566,6 +566,22 @@ impl Run {
         Ok(())
     }
 
+    /// When the held delta frame is due, if one is held: the run's owner flushes it then ([`Run::flush_held`]), so a
+    /// stream that stalls mid-answer still has its text journaled within [`FRAME_WINDOW`].
+    pub fn held_until(&self) -> Option<Instant> {
+        self.held.as_ref().map(|(_, since)| *since + FRAME_WINDOW)
+    }
+
+    /// Commit the held delta frame, if any.
+    pub fn flush_held(&mut self, session: &mut Session) -> Result<(), String> {
+        match self.held.take() {
+            Some((held, _)) => session
+                .commit(&[Write::append(PENDING_FRAMES, &self.frames_key(), held)])
+                .map(|_| ()),
+            None => Ok(()),
+        }
+    }
+
     /// Count the response in the Ultron usage ledger (`ultron.usage/root`, root `turn:<operation>`).
     pub fn record_turn(&mut self, session: &mut Session, message: &Value) -> Result<(), String> {
         let mut document = session

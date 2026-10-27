@@ -1941,6 +1941,38 @@ fn interactive_commands_schedules_lists_and_a_fired_schedule_is_one_line() {
     assert!(!s.contains("check the build"), "{s}");
 }
 
+/// Memories recalled for a message (session_core::auto_memory in the engine) show as one line with their count by
+/// scope, not their text, live and when the session is reopened.
+#[test]
+fn interactive_commands_recalled_memories_show_as_one_line() {
+    let recalled = json!({"role": "custom", "customType": "ultron.memory", "display": true,
+        "content": "[memory] Long-term memory recalled for the next message.\n- (project) Tests run under nice.",
+        "details": {"ids": ["f1", "f2", "f3"], "scopes": ["project", "global", "project"]}, "timestamp": 1});
+    let (mut live, _) = app();
+    live.apply(LaneEvent::Message(recalled.clone()));
+    let s = screen(&mut live);
+    assert!(s.contains("memory: 3 recalled (project 2, global 1)"), "{s}");
+    assert!(
+        !s.contains("Tests run under nice") && !s.contains("[ultron.memory]"),
+        "{s}"
+    );
+    let (mut reopened, _) = app();
+    reopened.apply(LaneEvent::Opened(SessionOpened {
+        session_id: "s1".into(),
+        session_file: None,
+        name: None,
+        messages: vec![
+            recalled,
+            json!({"role": "user", "content": "how do I test", "timestamp": 1}),
+        ],
+    }));
+    let s = screen(&mut reopened);
+    assert!(
+        s.contains("memory: 3 recalled (project 2, global 1)") && s.contains("how do I test"),
+        "{s}"
+    );
+}
+
 /// `/clear` is `/new` (Claude Code's `/clear`): offered in the completion list with its description, it aborts a
 /// running turn first, then starts a new session; idle, it only starts one. The new session's `Opened` clears the
 /// chat. It is a Rust-only command: the TypeScript-parity build does not offer it.

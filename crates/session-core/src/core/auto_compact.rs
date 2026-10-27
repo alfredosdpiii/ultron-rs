@@ -163,6 +163,7 @@ impl Core {
                 self.lane.stack.context_reminders.rearm(LANE);
                 self.announce();
                 self.compaction_event("compaction_end", reason, Some(("completed", None)));
+                self.retain_compaction();
                 return Ok(());
             }
             Work::Aborted => {

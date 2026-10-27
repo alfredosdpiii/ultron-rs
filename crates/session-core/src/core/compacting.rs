@@ -469,6 +469,7 @@ impl Core {
             ("reason", json!("manual")),
             ("status", json!("completed")),
         ]));
+        self.retain_compaction();
         let pi = self.pi();
         let entry = pi
             .entry(&id)

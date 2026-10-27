@@ -441,6 +441,167 @@ fn cli_composition_cell_calls_the_memory_api_on_the_injected_backend() {
     assert_eq!(retained[1]["items"][0]["content"], "The build uses cargo workspaces");
 }
 
+/// A bank that recalls the same project fact for every query and keeps every call.
+#[derive(Default)]
+struct RecallBank {
+    calls: Mutex<Vec<Value>>,
+}
+
+impl MemoryBackend for RecallBank {
+    fn namespace(&self) -> String {
+        "fake://recall".into()
+    }
+    fn scope_tags(&self) -> Map<String, Value> {
+        json!({"session": ["ultron:session:s1"], "project": ["ultron:project:p1"], "global": ["ultron:global:home"]})
+            .as_object()
+            .unwrap()
+            .clone()
+    }
+    fn recall(&self, request: &Value, _: &Signal) -> Result<Value, String> {
+        self.calls.lock().unwrap().push(json!(["recall", request]));
+        Ok(
+            json!({"results": [{"id": "f1", "text": "Tests here run under nice -n 19.", "type": "observation",
+            "tags": ["ultron:project:p1"]}]}),
+        )
+    }
+    fn retain(&self, request: &Value, _: &Signal) -> Result<Value, String> {
+        self.calls.lock().unwrap().push(json!(["retain", request]));
+        Ok(json!({"success": true, "async": true}))
+    }
+    fn get(&self, id: &str, _: &Signal) -> Result<Value, String> {
+        Ok(json!({"id": id}))
+    }
+    fn delete(&self, id: &str, _: &Signal) -> Result<Value, String> {
+        Ok(json!({"success": true, "document_id": id}))
+    }
+    fn operation(&self, id: &str, _: &Signal) -> Result<Value, String> {
+        Ok(json!({"operation_id": id, "status": "completed"}))
+    }
+}
+
+/// Automatic recall (session_core::auto_memory): a user message's run opens with the memories recalled for it, as
+/// a custom message the request carries before the prompt; a memory already in the context is not shown again,
+/// and a short message recalls nothing.
+#[test]
+fn cli_composition_auto_memory_recalls_before_a_user_message() {
+    let (port, seen) = mock_server(
+        vec![anthropic_text("one"), anthropic_text("two"), anthropic_text("three")],
+        Naming::Fail,
+    );
+    let sandbox = sandbox(port);
+    std::fs::write(
+        sandbox.agent_dir.join("settings.json"),
+        r#"{"sessionNaming":{"enabled":false},"memory":{"autoRecall":true}}"#,
+    )
+    .unwrap();
+    let bank = Arc::new(RecallBank::default());
+    let vars: Vec<(String, String)> = vec![
+        ("HOME".into(), sandbox.root.display().to_string()),
+        (
+            "ULTRON_CODING_AGENT_DIR".into(),
+            sandbox.agent_dir.display().to_string(),
+        ),
+        (
+            "ULTRON_SERVER_DIR".into(),
+            sandbox.root.join("server").display().to_string(),
+        ),
+        ("ANTHROPIC_API_KEY".into(), "test-key".into()),
+    ];
+    let env = cli::Env {
+        cwd: sandbox.cwd.clone(),
+        home: sandbox.root.clone(),
+        var: Arc::new(move |key| vars.iter().find(|(k, _)| k == key).map(|(_, v)| v.clone())),
+        docs: config::paths::normalize(&Path::new(env!("CARGO_MANIFEST_DIR")).join("../../packages/coding-agent/docs")),
+    };
+    let root = sandbox.sessions_dir();
+    let repo = session_journal::SessionRepo::new(&root, session_journal::SystemClock::shared());
+    let created = repo.create(&sandbox.cwd.display().to_string(), None, None).unwrap();
+    let open = session_core::core::OpenOptions {
+        env: env.clone(),
+        flags: session_core::ModelFlags {
+            model: Some(MODEL.into()),
+            ..Default::default()
+        },
+        session_root: root,
+        metadata: created.metadata().clone(),
+        mode: "print".into(),
+        services: cli::compose::Services {
+            memory: Some(bank.clone()),
+            ..Default::default()
+        },
+        auto_name: false,
+    };
+    drop(created);
+    let (core, actor, _) = session_core::core::spawn(open, Box::new(|_| {})).unwrap();
+    for message in ["how do I run the tests here", "and how do I run the lints", "ok thanks"] {
+        let ran = session_core::core::call(
+            &core,
+            session_core::core::Op::PromptAndWait {
+                message: message.into(),
+                images: Vec::new(),
+            },
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(ran["error"], Value::Null);
+    }
+    let (done, closed) = std::sync::mpsc::channel();
+    core.send(session_core::core::Input::Close(done)).unwrap();
+    closed.recv().unwrap();
+    actor.join().unwrap();
+    let recalls: Vec<Value> = bank
+        .calls
+        .lock()
+        .unwrap()
+        .iter()
+        .map(|call| call[1]["query"].clone())
+        .collect();
+    assert_eq!(
+        recalls,
+        [
+            json!("how do I run the tests here"),
+            json!("and how do I run the lints")
+        ],
+        "a two-word message recalls nothing"
+    );
+    let requests = seen.lock().unwrap().requests.clone();
+    let texts = |request: &Value| -> Vec<String> {
+        request["body"]["messages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|m| m["role"] == "user")
+            .flat_map(|m| match &m["content"] {
+                Value::String(text) => vec![text.clone()],
+                Value::Array(blocks) => blocks
+                    .iter()
+                    .filter_map(|b| b["text"].as_str().map(str::to_string))
+                    .collect(),
+                _ => Vec::new(),
+            })
+            .collect()
+    };
+    let first = texts(&requests[0]);
+    assert_eq!(first.len(), 2, "{first:?}");
+    assert!(
+        first[0].starts_with("[memory] Long-term memory recalled for the next message."),
+        "{first:?}"
+    );
+    assert!(
+        first[0].ends_with("\n- (project) Tests here run under nice -n 19."),
+        "{first:?}"
+    );
+    assert_eq!(first[1], "how do I run the tests here");
+    // The second run's request extends the first: the memory is where it was, and not added again.
+    let second = texts(&requests[1]);
+    assert_eq!(second[..2], first[..]);
+    assert_eq!(
+        second.iter().filter(|t| t.starts_with("[memory]")).count(),
+        1,
+        "{second:?}"
+    );
+}
+
 #[test]
 fn cli_composition_sandbox_doctor_reports_isolation() {
     let (port, _seen) = mock_server(vec![], Naming::Fail);

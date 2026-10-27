@@ -74,6 +74,19 @@ impl RunJournal {
         })
     }
 
+    /// When the run's held stream frame is due ([`Run::held_until`]).
+    pub fn held_until(&self) -> Option<std::time::Instant> {
+        self.run
+            .as_ref()
+            .filter(|_| self.error.is_none())
+            .and_then(Run::held_until)
+    }
+
+    /// Journal the held stream frame now ([`Run::flush_held`]).
+    pub fn flush_held(&mut self, session: &mut Session) {
+        self.apply(session, Run::flush_held);
+    }
+
     /// Leave counting responses to the usage ledger (see [`RunJournal::event`]).
     pub fn ledger_counts_turns(&mut self) {
         self.ledger_counts_turns = true;
@@ -325,7 +338,7 @@ impl RunJournal {
 
 /// A stream event as the frame encoder reads it. A delta becomes its type, index and delta alone: serializing the
 /// event whole copied the response so far (`partial`) once per delta, quadratic in the response's length.
-pub(crate) fn frame_source(event: &AssistantMessageEvent) -> Option<Value> {
+pub fn frame_source(event: &AssistantMessageEvent) -> Option<Value> {
     use AssistantMessageEvent::{TextDelta, ThinkingDelta, ToolCallDelta};
     let (kind, index, delta) = match event {
         TextDelta {

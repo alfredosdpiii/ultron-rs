@@ -41,6 +41,24 @@ pub fn nudge_line(message: &Value) -> String {
     )
 }
 
+/// The custom message type of memories recalled for a user message (`session_core::auto_memory` in the engine).
+pub const MEMORY_CUSTOM_TYPE: &str = "ultron.memory";
+
+/// What the chat shows for recalled memories: `memory: 3 recalled (project 2, global 1)`, not their text.
+pub fn memory_line(message: &Value) -> String {
+    let scopes = message["details"]["scopes"]
+        .as_array()
+        .map(Vec::as_slice)
+        .unwrap_or_default();
+    let count = |scope: &str| scopes.iter().filter(|s| *s == scope).count();
+    let parts: Vec<String> = ["project", "global"]
+        .into_iter()
+        .filter(|scope| count(scope) > 0)
+        .map(|scope| format!("{scope} {}", count(scope)))
+        .collect();
+    format!("memory: {} recalled ({})", scopes.len(), parts.join(", "))
+}
+
 /// The custom message type of a fired schedule's prompt (`kernel_apis::prompt_schedule::CUSTOM_TYPE` in the engine).
 pub const SCHEDULE_CUSTOM_TYPE: &str = "ultron.schedule";
 
@@ -465,6 +483,12 @@ impl ChatView {
             // A fired schedule (kernel_apis::prompt_schedule in the engine): one line, not its prompt.
             Some("custom") if message["customType"] == SCHEDULE_CUSTOM_TYPE => {
                 let line = schedule_line(message);
+                let t = Rc::clone(&self.style.theme);
+                self.append_notice_text(&fg(&t, "muted", &line));
+            }
+            // Recalled memories (session_core::auto_memory in the engine): one line, not their text.
+            Some("custom") if message["customType"] == MEMORY_CUSTOM_TYPE => {
+                let line = memory_line(message);
                 let t = Rc::clone(&self.style.theme);
                 self.append_notice_text(&fg(&t, "muted", &line));
             }

@@ -619,6 +619,9 @@ pub struct Runtime {
     /// The Hindsight server and bank every instance shares (`ULTRON_HINDSIGHT_URL`, the global `hindsightUrl`
     /// setting, else localhost:8888; `ULTRON_HINDSIGHT_BANK`, else "ultron"); `None`: memory is off.
     pub hindsight: Option<hindsight::Endpoint>,
+    /// Whether that server was set explicitly (`ULTRON_HINDSIGHT_URL` or the `hindsightUrl` setting), not the
+    /// default: automatic memory defaults to it (crate::auto_memory).
+    pub hindsight_explicit: bool,
 }
 
 impl Runtime {
@@ -645,7 +648,10 @@ impl Runtime {
         }
         services.resources = Arc::new(resolved);
         let mut diagnostics: Vec<String> = Vec::new();
-        let hindsight = hindsight::Endpoint::resolve(&|key| (env.var)(key), hindsight::resolve::setting_url(&manager));
+        let setting_url = hindsight::resolve::setting_url(&manager);
+        let hindsight_explicit =
+            setting_url.is_some() || (env.var)("ULTRON_HINDSIGHT_URL").is_some_and(|url| !url.trim().is_empty());
+        let hindsight = hindsight::Endpoint::resolve(&|key| (env.var)(key), setting_url);
         // The `mcp` gateway lives in the REPL: the runtime guide lists it with its servers (`mcpServerNames`).
         let runtime_guide = mcp_runtime_guide(&config);
         let system = match &services.session.system_prompt {
@@ -669,6 +675,7 @@ impl Runtime {
             sessions_dir,
             mode: mode.to_string(),
             hindsight,
+            hindsight_explicit,
         })
     }
 
@@ -1355,6 +1362,11 @@ impl Stack {
         &self.config
     }
 
+    /// `memory.*`'s service, when memory is on (crate::auto_memory recalls and keeps through it).
+    pub fn memory(&self) -> Option<&kernel_apis::MemoryService> {
+        self.apis.memory.service.as_ref()
+    }
+
     /// `schedule.*`: the session's scheduled prompts (fired by the server through the session actor).
     pub fn prompt_schedules(&self) -> &Arc<kernel_apis::prompt_schedule::ScheduleModule> {
         &self.apis.schedule
@@ -1940,6 +1952,7 @@ pub fn child_setup(stack: &Stack, run: &ChildRun) -> ChildSetup {
             sessions_dir: stack.sessions_dir.clone(),
             mode: String::new(),
             hindsight: None,
+            hindsight_explicit: false,
         }
         .host_in(
             Path::new(cwd),

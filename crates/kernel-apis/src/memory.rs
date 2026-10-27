@@ -1092,6 +1092,125 @@ impl MemoryService {
         Ok(prepared)
     }
 
+    /// Automatic recall for a user message (Rust-only; the session runs it before each root turn, see
+    /// session-core `auto_memory`): one cheap Hindsight recall over the `project` and `global` scopes, at most
+    /// `limit` entries `{id, text, scope, type?, memoryId?}`. It is read-only and journals nothing; what the user
+    /// forgot or replaced is withheld as [`MemoryService::prepare`] withholds it, and a result tagged with neither
+    /// scope's tags exactly is dropped.
+    pub fn recall_for_turn(&self, query: &str, limit: usize, signal: &Signal) -> Result<Vec<Value>> {
+        let scopes: Vec<(&str, Vec<String>)> = ["project", "global"]
+            .into_iter()
+            .filter_map(|scope| self.tags(scope).ok().map(|tags| (scope, tags)))
+            .collect();
+        if scopes.is_empty() || !self.backend.supports("recall") || js_trim(query).is_empty() {
+            return Ok(Vec::new());
+        }
+        self.load()?;
+        let tags: Vec<&String> = scopes.iter().flat_map(|(_, tags)| tags).collect();
+        let request = json!({
+            "query": query, "tags": tags, "tags_match": "any_strict",
+            "types": ["observation", "world", "experience"], "prefer_observations": true,
+            "budget": "low", "max_tokens": 1024, "include": {"entities": null}, "trace": false,
+        });
+        let response = self
+            .backend
+            .recall(&request, signal)
+            .map_err(|error| MemoryError::of(&error))?;
+        let items = response
+            .get("results")
+            .and_then(Value::as_array)
+            .ok_or(MemoryError::code("INVALID_RESPONSE"))?;
+        let records = lock(&self.inner).records.clone();
+        let mut found = Vec::new();
+        for item in items {
+            let (Some(id), Some(text)) = (
+                item.get("id").filter(|id| nonempty(id)).and_then(Value::as_str),
+                item.get("text").and_then(Value::as_str),
+            ) else {
+                continue;
+            };
+            let Some((scope, _)) = scopes
+                .iter()
+                .find(|(_, tags)| same_tags(item.get("tags").unwrap_or(&Value::Null), tags))
+            else {
+                continue;
+            };
+            let memory_id = item
+                .get("document_id")
+                .filter(|id| nonempty(id))
+                .and_then(Value::as_str);
+            let forgotten = |memory_id: &str| {
+                records.iter().any(|op| {
+                    op["kind"] == "forget"
+                        && op["memoryId"] == memory_id
+                        && matches!(op["state"].as_str(), Some("forgotten" | "unknown"))
+                })
+            };
+            if forgotten(id)
+                || memory_id.is_some_and(|memory_id| forgotten(memory_id) || Self::withdrawn(&records, memory_id))
+            {
+                continue;
+            }
+            let source = item["metadata"].get("ultron_operation").filter(|s| nonempty(s));
+            let superseded = memory_id
+                .and_then(|memory_id| Self::current_claim(&records, memory_id))
+                .zip(source)
+                .is_some_and(|(current, source)| *source != current["id"]);
+            if superseded {
+                continue;
+            }
+            let mut entry = json!({"id": id, "text": text, "scope": scope});
+            if let Some(kind) = item.get("type").filter(|t| t.is_string()) {
+                entry["type"] = kind.clone();
+            }
+            if let Some(memory_id) = memory_id {
+                entry["memoryId"] = memory_id.into();
+            }
+            found.push(entry);
+            if found.len() == limit {
+                break;
+            }
+        }
+        Ok(found)
+    }
+
+    /// Automatic retain of a session's own account of its work (Rust-only; the session sends its compaction
+    /// summaries, see session-core `auto_memory`): appended to the document `document_id` under `scope`, processed
+    /// by Hindsight in the background. A text the write gate finds sensitive is not sent (`Ok(false)`).
+    pub fn retain_for_session(
+        &self,
+        document_id: &str,
+        text: &str,
+        context: &str,
+        timestamp: &str,
+        scope: &str,
+        signal: &Signal,
+    ) -> Result<bool> {
+        let tags = self.tags(scope)?;
+        if !self.backend.supports("retain") || js_trim(text).is_empty() {
+            return Ok(false);
+        }
+        let request = json!({"action": "propose", "text": text, "scope": scope});
+        let decision = gate_decision(
+            &(self.gate)(&request, signal).map_err(|_| MemoryError::code("OPERATION_ERROR"))?,
+            false,
+        )?;
+        if decision["action"] != "keep" {
+            return Ok(false);
+        }
+        let request = json!({
+            "items": [{
+                "content": text, "context": context, "timestamp": timestamp, "document_id": document_id,
+                "tags": tags, "update_mode": "append", "metadata": {"ultron_source": "auto"},
+            }],
+            "async": true,
+        });
+        self.backend
+            .retain(&request, signal)
+            .map(|_| true)
+            .map_err(|error| MemoryError::of(&error))
+    }
+
     pub fn propose(&self, payload: &Map<String, Value>, signal: &Signal) -> Result<Value> {
         let text = payload.get("text").cloned().unwrap_or(Value::Null);
         require_text(&text)?;

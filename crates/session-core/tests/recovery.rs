@@ -264,6 +264,40 @@ fn session_core_recovery_settles_a_stream_whose_deltas_were_joined() {
     assert_eq!(messages[1]["errorMessage"], INTERRUPTED_ASSISTANT);
 }
 
+/// A stream that stalls mid-answer leaves its last deltas held; the worker flushes them when they are due, so a
+/// kill during the stall keeps the text the user saw.
+#[test]
+fn session_core_recovery_keeps_held_deltas_flushed_during_a_stall() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut session = repo(dir.path()).create("/w", None, None).unwrap();
+    let config = run::lane_config("anthropic", "claude-sonnet-4-5", "medium", &["rlm"]);
+    let mut run =
+        session_core::op_journal::Run::admit(&mut session, config, run::default_settings(), user("hi")).unwrap();
+    run.begin_assistant(&mut session, 1000, 200_000).unwrap();
+    let text = |t: &str| json!([{"type": "text", "text": t}]);
+    assert_eq!(run.held_until(), None);
+    for event in [
+        json!({"type": "start", "partial": partial(json!([]))}),
+        json!({"type": "text_start", "contentIndex": 0, "partial": partial(text(""))}),
+        json!({"type": "text_delta", "contentIndex": 0, "delta": "Here is", "partial": partial(text("Here is"))}),
+        json!({"type": "text_delta", "contentIndex": 0, "delta": " the plan", "partial": partial(text("Here is the plan"))}),
+    ] {
+        run.stream_event(&mut session, &event).unwrap();
+    }
+    assert!(run.held_until().is_some(), "the deltas are held");
+    run.flush_held(&mut session).unwrap();
+    assert_eq!(run.held_until(), None);
+    // The worker died during the stall.
+    drop(run);
+    let mut session = reopened(dir.path(), &session);
+    settle(&mut session).unwrap();
+    let messages = branch(&session);
+    assert_eq!(
+        messages[1]["content"][0],
+        json!({"type": "text", "text": "Here is the plan"})
+    );
+}
+
 #[test]
 fn session_core_recovery_reduces_frames_to_text_and_thinking() {
     let frames = [

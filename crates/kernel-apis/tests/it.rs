@@ -31,6 +31,8 @@ mod images;
 mod instances;
 #[path = "loop_detector.rs"]
 mod loop_detector;
+#[path = "memory_auto.rs"]
+mod memory_auto;
 #[path = "memory_journal.rs"]
 mod memory_journal;
 #[path = "memory_records.rs"]

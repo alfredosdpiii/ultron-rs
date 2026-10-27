@@ -669,6 +669,8 @@ pub struct Core {
     run: Option<Running>,
     /// Loki's one-time setup note, for the first root turn that follows it (crate::loki_notice).
     loki_notice: crate::loki_notice::LokiNotice,
+    /// Automatic recall before user messages and retain of compaction summaries (crate::auto_memory).
+    auto_memory: crate::auto_memory::AutoMemory,
     /// The run's provider message being hidden: the empty response an aborted run ends with.
     hiding: bool,
     queues: Arc<Mutex<Queues>>,
@@ -1085,9 +1087,11 @@ impl Core {
         // `compaction.enabled` (default on); `set_auto_compaction` changes it for the session.
         let auto_compaction = runtime.config.settings["compaction"]["enabled"] != false;
         let (env_var, async_events) = (env.var.clone(), runtime.config.async_events);
+        let auto_memory = crate::auto_memory::AutoMemory::new(&runtime.config.settings, runtime.hindsight_explicit);
         let mut core = Core {
             model_unavailable,
             loki_notice,
+            auto_memory,
             thinking: config["thinkingLevel"].as_str().unwrap_or("medium").to_string(),
             models: lane::available_models(&env),
             provider,
@@ -1240,7 +1244,23 @@ impl Core {
         if let Some(input) = self.deferred.pop_front() {
             return Some(input);
         }
-        self.inputs.as_ref()?.recv().ok()
+        loop {
+            // A held stream frame is journaled when its window ends, even if the stream stalls before the next one.
+            let due = self.run.as_ref().and_then(|run| run.journal.held_until());
+            let inputs = self.inputs.as_ref()?;
+            let Some(due) = due else {
+                return inputs.recv().ok();
+            };
+            match inputs.recv_timeout(due.saturating_duration_since(std::time::Instant::now())) {
+                Ok(input) => return Some(input),
+                Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => return None,
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                    if let Some(run) = self.run.as_mut() {
+                        run.journal.flush_held(&mut lock_session(&self.session));
+                    }
+                }
+            }
+        }
     }
 
     fn emit(&mut self, value: Value) {
@@ -2361,6 +2381,39 @@ impl Core {
 
     /// Start a run of `message`; `waiter` is answered when it ends. On failure the waiter comes back with the error.
     #[allow(clippy::result_large_err)]
+    /// The `ultron.memory` message a run of the user message `text` opens with, when automatic recall finds
+    /// memories the context does not show yet (crate::auto_memory).
+    fn recalled_memory(&self, text: &str) -> Option<Value> {
+        if !self.auto_memory.recall_ready() || !crate::auto_memory::worth_recalling(text) {
+            return None;
+        }
+        let entries = lock_session(&self.session).branch_entries(LANE).unwrap_or_default();
+        let shown = crate::auto_memory::shown_ids(&entries);
+        let found = self.auto_memory.recall(&self.lane.stack, text, &shown);
+        (!found.is_empty()).then(|| crate::auto_memory::recall_message(&found, now_ms() as u64))
+    }
+
+    /// Keep the newest compaction's summary in long-term memory, when automatic retain is on (crate::auto_memory).
+    pub(super) fn retain_compaction(&self) {
+        if !self.auto_memory.retain {
+            return;
+        }
+        let (session_id, summary) = {
+            let session = lock_session(&self.session);
+            let entries = session.branch_entries(LANE).unwrap_or_default();
+            let summary = entries
+                .iter()
+                .rev()
+                .find(|entry| entry["type"] == "compaction")
+                .and_then(|entry| entry["summary"].as_str().map(str::to_string));
+            (session.id().to_string(), summary)
+        };
+        if let Some(summary) = summary {
+            let cwd = self.runtime.config.cwd.display().to_string();
+            crate::auto_memory::retain_summary(&self.lane.stack, &session_id, &cwd, &summary);
+        }
+    }
+
     fn prompt(&mut self, message: String, images: Vec<Value>, waiter: Option<Reply>) -> Result<(), (String, Reply)> {
         self.prompt_with(user_message(message, images), waiter, true)
     }
@@ -2419,7 +2472,7 @@ impl Core {
                         lane::catalog_model(&chosen.provider, &chosen.id, &self.env).unwrap_or(chosen)
                     });
                     let key = self.keys.request_key(&naming_model.provider);
-                    naming_request = Some((naming_model, key, text));
+                    naming_request = Some((naming_model, key, text.clone()));
                 }
             }
             Ok(None) => {}
@@ -2428,6 +2481,22 @@ impl Core {
         // Loki's setup note opens the first root turn that follows it (`installLokiNotice`).
         if let Some(text) = self.loki_notice.take(crate::loki_notice::NOTICE_WAIT) {
             let message = crate::loki_notice::notice_message(&text, now_ms() as u64);
+            for kind in ["message_start", "message_end"] {
+                self.emit(event(vec![
+                    ("type", json!(kind)),
+                    ("lane", json!(LANE)),
+                    ("message", message.clone()),
+                ]));
+            }
+            if let Err(error) = self.append(message) {
+                return fail(error, waiter);
+            }
+        }
+        // Long-term memory recalled for a user message opens its run (crate::auto_memory).
+        if prompt["role"] == "user"
+            && !continuation
+            && let Some(message) = self.recalled_memory(&text)
+        {
             for kind in ["message_start", "message_end"] {
                 self.emit(event(vec![
                     ("type", json!(kind)),
