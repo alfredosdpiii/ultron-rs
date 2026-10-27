@@ -8,6 +8,7 @@ pub mod ban;
 pub mod checkout;
 pub mod daemon;
 pub mod engine;
+pub mod eval;
 pub mod github;
 pub mod js;
 pub mod ledger;

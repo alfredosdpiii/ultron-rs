@@ -15,6 +15,8 @@ mod daemon;
 mod engine;
 #[path = "engine_env.rs"]
 mod engine_env;
+#[path = "eval.rs"]
+mod eval;
 #[path = "github_accounts.rs"]
 mod github_accounts;
 #[path = "github_fixtures.rs"]
@@ -27,6 +29,8 @@ mod ledger;
 mod prepare_env;
 #[path = "promotion.rs"]
 mod promotion;
+#[path = "repo_guide.rs"]
+mod repo_guide;
 #[path = "rereview.rs"]
 mod rereview;
 #[path = "retrying_websocket.rs"]

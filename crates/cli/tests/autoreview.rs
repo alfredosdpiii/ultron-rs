@@ -459,9 +459,9 @@ fn case<'a>(recorded: &'a Value, name: &str) -> &'a Value {
         .unwrap()
 }
 
-/// Where `ultron autoreview --help` differs from the recorded TypeScript text (recorded, Rust): the ban commands and
-/// `autoreview.ban` are Rust only.
-const USAGE_EDITS: [(&str, &str); 3] = [
+/// Where `ultron autoreview --help` differs from the recorded TypeScript text (recorded, Rust): the ban commands,
+/// `autoreview.ban` and `eval` are Rust only.
+const USAGE_EDITS: [(&str, &str); 5] = [
     (
         "  status                       Accounts, last poll, queue and recent reviews\n",
         "  status                       Accounts, bans (when any), last poll, queue and recent reviews
@@ -477,16 +477,79 @@ const USAGE_EDITS: [(&str, &str); 3] = [
         "  --json                       Machine-readable output (review, once, status)
   --account <login>            review: the account to review as (default: the first logged-in account of the host)
 ",
-        "  --json                       Machine-readable output (review, once, status, bans)
+        "  --json                       Machine-readable output (review, once, status, bans, eval)
   --account <login>            review: the account to review as (default: the first logged-in account of the host);
                                ban, unban: the reviewing account the ban is for (default: every account, *)
 ",
     ),
     ("learn, skipBots.\n", "learn, skipBots, ban.\n"),
+    (
+        "  install | uninstall ",
+        "  eval <repo-dir>              Measure the reviewer on the repository's history: review the commits later reverted or
+                               fixed, and as many others as controls, and report how many it would have blocked
+  install | uninstall ",
+    ),
+    (
+        "                               autoreview.deadlineSeconds, none)\n",
+        "                               autoreview.deadlineSeconds, none)
+  --list                       eval: list the cases and review nothing (no model calls)
+  --limit <n>                  eval: reverted and fix-inducing commits reviewed at most (default 20)
+  --controls <n>               eval: other commits reviewed as controls (default: as many as --limit)
+  --scan <n>                   eval: commits of history searched for cases (default 2000)
+",
+    ),
 ];
+
+/// Where the Rust review pipeline's verifier frames differ from the recorded TypeScript ones (recorded, Rust): a real
+/// problem in code the change did not touch is confirmed as pre-existing (`introduced: "before"`, reported apart and
+/// never blocking) instead of rejected.
+pub(crate) const VERIFIER_EDITS: [(&str, &str); 3] = [
+    (
+        "- rejected: the cited code does not do what the claim says, code shown elsewhere prevents the problem, the cited
+  line does not exist, or the claim concerns code this change did not touch. Also rejected: a tests finding
+  whose named change an existing test shown would catch, or that names no such change; a maintainability finding
+  without a problem that exists now; a finding that restates a trade-off the author states and explains, unless
+  you can cite why that reasoning is wrong.",
+        "- rejected: the cited code does not do what the claim says, code shown elsewhere prevents the problem, or the cited
+  line does not exist. Also rejected: a tests finding whose named change an existing test shown would catch, or
+  that names no such change; a maintainability finding without a problem that exists now; a finding that restates
+  a trade-off the author states and explains, unless you can cite why that reasoning is wrong.",
+    ),
+    (
+        "false when it is shown (quote it).\n\nseverity:",
+        "false when it is shown (quote it).
+
+introduced: \"this_change\" when the change adds the problem or makes it reachable; \"before\" when the problem sits in
+code the change did not alter and would fail the same way without it. A real problem that predates the change is
+confirmed with \"before\": it is reported apart, as pre-existing, and never blocks the change.
+
+severity:",
+    ),
+    (
+        r#""scenario_holds":{"enum":[true,false,"unknown"]},"#,
+        r#""scenario_holds":{"enum":[true,false,"unknown"]},"introduced":{"enum":["this_change","before"]},"#,
+    ),
+];
+
+/// `value` with [`VERIFIER_EDITS`] made in every string it holds.
+pub(crate) fn with_rust_verifier(value: &mut Value) {
+    match value {
+        Value::String(text) => {
+            for (recorded, rust) in VERIFIER_EDITS {
+                if text.contains(recorded) {
+                    *text = text.replace(recorded, rust);
+                }
+            }
+        }
+        Value::Array(items) => items.iter_mut().for_each(with_rust_verifier),
+        Value::Object(map) => map.values_mut().for_each(with_rust_verifier),
+        _ => {}
+    }
+}
 
 fn assert_case(world: &World, recorded: &Value, name: &str) -> (Value, String) {
     let mut expected = case(recorded, name).clone();
+    with_rust_verifier(&mut expected["requests"]);
     if matches!(name, "help" | "bare") {
         let mut usage = expected["stdout"].as_str().unwrap().to_string();
         for (recorded, rust) in USAGE_EDITS {
@@ -528,7 +591,17 @@ fn assert_case(world: &World, recorded: &Value, name: &str) -> (Value, String) {
     }
     assert_eq!(requests.len(), wanted.len(), "{name}: distinct requests");
     for (index, (got, want)) in requests.iter().zip(&wanted).enumerate() {
-        assert_eq!(got, want, "{name}: request {index}");
+        let mut want = want.clone();
+        // The verifier's task grew (VERIFIER_EDITS), and with it the frame's token estimate: under a budget its
+        // output cap is a little higher.
+        let cap = "max_completion_tokens";
+        if want.to_string().contains("introduced: \\\"this_change\\\"")
+            && let (Some(got_cap), Some(want_cap)) = (got[cap].as_i64(), want[cap].as_i64())
+            && (0..=64).contains(&(got_cap - want_cap))
+        {
+            want[cap] = got_cap.into();
+        }
+        assert_eq!(*got, want, "{name}: request {index}");
     }
     (stdout, raw)
 }
@@ -890,5 +963,51 @@ fn cli_autoreview_custom_provider_models_resolve() {
     assert!(
         auth.iter().all(|(a, rev)| a == "Bearer rev-key-1" && rev == "yes"),
         "{auth:?}"
+    );
+}
+
+/// `eval`: the head commit reverted is a case; the stub's reviewer blocks it (its finding on calc.py:4 is confirmed),
+/// so the report counts 1 of 1 blocked. `--list` names the case and calls no model.
+#[test]
+fn cli_autoreview_eval_reviews_reverted_commits() {
+    let world = World::new();
+    git(&world.repo, &["revert", "--no-edit", &world.head]);
+    world.set(0, true);
+    let repo = world.repo.display().to_string();
+    let (code, stdout, stderr) = world.run(&["eval".into(), repo.clone(), "--list".into()]);
+    assert_eq!(code, 0, "{stderr}");
+    assert_eq!(
+        stdout,
+        format!(
+            "reverted {} tweak total (by {})\n",
+            &world.head[..8],
+            git(&world.repo, &["rev-parse", "--short=8", "HEAD"])
+        )
+    );
+    assert!(world.requests().is_empty(), "--list reviews nothing");
+    let (code, stdout, stderr) = world.run(&[
+        "eval".into(),
+        repo,
+        "--json".into(),
+        "--mode".into(),
+        "fast".into(),
+        "--controls".into(),
+        "0".into(),
+    ]);
+    assert_eq!(code, 0, "{stderr}");
+    let report: Value = serde_json::from_str(&stdout).unwrap();
+    assert_eq!(
+        report["summary"]["reverted"],
+        json!({"cases": 1, "blocked": 1, "blockedShare": 1.0})
+    );
+    assert_eq!(report["cases"][0]["sha"], world.head.as_str());
+    assert_eq!(report["cases"][0]["parent"], world.base.as_str());
+    assert_eq!(report["cases"][0]["score"]["blocked"], true);
+    let kept: Value =
+        serde_json::from_str(&std::fs::read_to_string(report["report"].as_str().unwrap()).unwrap()).unwrap();
+    assert_eq!(kept["summary"], report["summary"], "the report is kept");
+    assert!(
+        stderr.contains(&format!("[1/1] reverted {} tweak total", &world.head[..8])),
+        "{stderr}"
     );
 }

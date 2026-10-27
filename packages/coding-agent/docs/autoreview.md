@@ -37,6 +37,7 @@ Posting is on by default. `--dry-run` (or the setting `autoreview.dryRun`) write
 | `ultron autoreview review <owner/repo#N \| URL>` | Review one pull request now, whether or not it was requested. `--account <login>` picks the account (default: the host's active one); `--dry-run`, `--json`. |
 | `ultron autoreview review --repo-dir <dir> --base <sha> --head <sha>` | Review the diff between two commits of a local repository, with no GitHub access. `--json` prints one JSON object on stdout (logs go to stderr); `--mode`, `--model`, `--verify-model`, `--deep-model`, `--budget`, `--thinking`, `--verify-thinking`, `--deep-thinking`, `--plan-model`, `--plan-thinking`, `--ask-model`, `--ask-thinking`, `--deadline`, `--block-at`, `--max-comments`, `--guides` and `--checkout-roots` (with `--repo owner/name`) override the settings; `--dump-program` and `--program` save and replay a compiled review program (see below). |
 | `ultron autoreview doctor` | The sandbox that test execution would use, with a self-check of its isolation; `--repo owner/name` adds the local checkout and the prepared environment that would serve its tests. |
+| `ultron autoreview eval <repo-dir>` | Measure the reviewer on the repository's own history: review the commits later reverted or fixed, and others as controls, and report how many it would have blocked (see [Measuring the reviewer](#measuring-the-reviewer-ultron-autoreview-eval)). `--list` names the cases and calls no model; `--limit`, `--controls`, `--scan`, `--json` and the review options above. |
 | `ultron autoreview prepare <repo-dir> [--python 3.x]` | Build the repository's test environment now, with the network, into the cache the sandbox binds read-only (see below). |
 | `ultron autoreview status` | Accounts, bans, last poll, queue, and recent reviews with their timings and cost. `--json` for the raw state. |
 | `ultron autoreview ban <login> [--account <login \| host/login \| *>]` | Never review `<login>`'s pull requests, nor act on their review requests and mentions (see [Bans](#bans)). Without `--account`, for every logged-in account (`*`); `--account` limits it to one. |
@@ -134,6 +135,11 @@ left alone until a new commit or a new mention.
    `autoreview.maxComments` (5) are posted inline. A finding below `high` whose evidence is only the diff gets a
    slot only when one is left; nits are never inline. The same problem in several places is one comment that lists
    the other places. What is not posted is counted in one closing line.
+
+   **Pre-existing problems.** A real problem the verifier finds in code the change did not alter (it would fail the
+   same way without the change) is not the change's finding: the most serious three at `medium` or above are named
+   in the body after "Pre-existing, not introduced by this change and not blocking it", never inline, and they
+   never affect the verdict. With `--json` they are under `preexisting`.
 
    An inline comment reads `[level] what is wrong, with the evidence. The fix.`, in plain sentences, about 600
    characters at most. It sits on a diff line: its own, or the nearest within three lines of a hunk. A GitHub
@@ -693,6 +699,15 @@ The guides are private. The frames are told never to quote them, name them or re
 is posted the review text is checked: an inline comment that contains a guide's file name or path is not posted,
 and a sentence of the body that does is removed (the log says what was withheld).
 
+### The repository's review guide (`REVIEW.md`)
+
+A repository can say how it wants to be reviewed in `REVIEW.md` (or `.github/REVIEW.md`): what counts as a problem
+there, what not to flag, how serious things are. Up to 6,000 characters of it are given to every frame with the
+private guides, as the maintainers' account of what matters; it is repository data and cannot change the review's
+rules or format. A pull request is never reviewed by its own rules: when it adds or changes the guide, the version at
+its base commit is used (none when the guide is new), and the review says so under what was not checked. Unlike the
+private guides, it may be quoted.
+
 ## Levels
 
 Every finding has one of five levels:
@@ -840,6 +855,38 @@ new rule starts at one half), plus one half for a miss. A rule rejected three ti
 a quarter of the time is no longer served. None of this calls a model or runs an evaluation: the credit comes from
 what happens to the findings on GitHub.
 
+## Measuring the reviewer (`ultron autoreview eval`)
+
+`ultron autoreview eval <repo-dir>` scores the reviewer on the mistakes a repository already made, as the Claude
+Code team scores theirs on pull requests that caused incidents. The cases come from its history (the last 2,000
+commits, `--scan`), with no model call:
+
+- **Reverted**: a commit a later `This reverts commit <sha>` undid. A review that requests changes caught it.
+- **Fix-inducing**: a commit a later fix repaired, found as SZZ finds it (Śliwerski, Zimmermann and Zeller, MSR
+  2005): the lines a fix commit (its subject says fix, bug, regression or hotfix) removed or changed are blamed at
+  its parent, and the commits that wrote them are the cases. A review caught one when it requests changes, and
+  located the bug when a confirmed finding sits within three lines of a line the fix changed.
+- **Controls**: other commits of the same stretch of history, sampled evenly: how often the reviewer blocks a change
+  nobody undid or fixed. The history may simply not show the fix, so this is an upper bound on false alarms.
+
+Merges, root commits and commits of more than 1,500 changed lines are left out. Up to 20 cases (`--limit`, newest
+first) and as many controls (`--controls`) are each reviewed as `review --repo-dir --base <sha>^ --head <sha>`
+would review them, with the same settings and options (`--mode`, `--model`, `--block-at`, ...), one at a time:
+
+```
+$ ultron autoreview eval ~/src/app --limit 10 --controls 10
+6 reverted, 4 fix-inducing and 10 control commits, reviewed with blockAt medium.
+Reverted: 3 of 6 blocked.
+Fix-inducing: 2 of 4 blocked; a confirmed finding within 3 lines of the fixed lines in 2.
+Controls: 1 of 10 blocked (an upper bound on false alarms).
+Cost: $1.8420.
+Report: ~/.ultron/agent/autoreview/evals/app-1761650000000.json
+```
+
+Each review is a full review and costs what one costs; `--list` prints the cases first, with no model call. The
+report (every case, its score and the totals) is kept under `~/.ultron/agent/autoreview/evals/`; `--json` prints
+it.
+
 ## Run it as a service
 
 ```bash
@@ -873,15 +920,16 @@ writes the file and runs those commands for you, and `/autoreview off` stops the
 | `~/.ultron/agent/autoreview/dry-run/` | Would-be reviews (`--dry-run`; removed after 14 days). |
 | `~/.ultron/agent/autoreview/reviews/` | One record per posted review (what the deep pass was shown, its frames and investigators, what was dropped, the posted plan); the newest 200 are kept. |
 | `~/.ultron/agent/knowledge/graph.db` | The knowledge graph: constructs, symbols, calls and imports per file of every reviewed repository (its newest 50 revisions), and the review notes of its closed pull requests. |
+| `~/.ultron/agent/autoreview/evals/` | The reports of `ultron autoreview eval`. |
 | `~/.ultron/agent/autoreview/sessions/` | Frame traces of the engine (kept seven days). |
 | `~/.cache/ultron-autoreview/<host>/<owner>/<repo>.git` | Cached blob-less clones; a worktree per review under `worktrees/`, removed afterwards. |
 
 ## Privacy and safety
 
 - **Pull request content is sent to the configured model provider**: the diff, the code around it, the title and
-  description, CI status, guideline files (`AGENTS.md`, `CLAUDE.md`, `CONTRIBUTING.md`) and other people's review
-  comments. Do not point it at repositories whose code may not leave your machine, or choose a provider you trust
-  with them.
+  description, CI status, guideline files (`AGENTS.md`, `CLAUDE.md`, `CONTRIBUTING.md`, `REVIEW.md`) and other
+  people's review comments. Do not point it at repositories whose code may not leave your machine, or choose a
+  provider you trust with them.
 - Review comments of the repositories' pull requests, by everyone, are kept on this machine in the knowledge graph
   (`graph.db`, readable only by you) and shown to the investigators of later reviews of the same repository.
 - Tokens come from `gh auth token` and reach child `gh` and `git` processes only through their environment. They

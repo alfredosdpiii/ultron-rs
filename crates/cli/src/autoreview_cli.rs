@@ -3,6 +3,7 @@
 //!   ultron autoreview review --repo-dir <dir> --base <sha> --head <sha> [--json] [--dry-run]
 //!                                               review a local diff, no GitHub access (the benchmark entry)
 //!   ultron autoreview review <owner/repo#N|URL> review one pull request now
+//!   ultron autoreview eval <repo-dir>          the reviewer measured on the repository's reverted and fixed commits
 //!   ultron autoreview run | once | status | doctor | prepare | install | uninstall
 //!
 //! RLM-first: a review is `autoreview_api.run` in a Python kernel of its own (`review::engine`); its only model calls
@@ -56,11 +57,13 @@ Commands:
   prepare <repo-dir> [--python 3.x]
                                Build the repository's test environment now, with the network (uv virtualenv, npm ci,
                                mise toolchains), into the cache the sandbox binds read-only during reviews
+  eval <repo-dir>              Measure the reviewer on the repository's history: review the commits later reverted or
+                               fixed, and as many others as controls, and report how many it would have blocked
   install | uninstall          Write or remove the user service that runs \"{APP_NAME} autoreview run\"
 
 Options:
   --dry-run                    Write the would-be review to <agent dir>/autoreview/dry-run/ instead of posting
-  --json                       Machine-readable output (review, once, status, bans)
+  --json                       Machine-readable output (review, once, status, bans, eval)
   --account <login>            review: the account to review as (default: the first logged-in account of the host);
                                ban, unban: the reviewing account the ban is for (default: every account, *)
   --model <provider/model>     review: the model of the finder frames (default: autoreview.model, then review.model,
@@ -107,6 +110,10 @@ Options:
   --max-comments <n>           review: inline comments at most
   --deadline <seconds>         review: give up unfinished passes after this long and report the rest (default:
                                autoreview.deadlineSeconds, none)
+  --list                       eval: list the cases and review nothing (no model calls)
+  --limit <n>                  eval: reverted and fix-inducing commits reviewed at most (default 20)
+  --controls <n>               eval: other commits reviewed as controls (default: as many as --limit)
+  --scan <n>                   eval: commits of history searched for cases (default 2000)
 
 Settings (global settings.json): autoreview.accounts, pollSeconds, concurrency, model, verifyModel, budget, dryRun,
 frameConcurrency, modelConcurrency, mode, deepModel, deepThinking, deepRounds, referenceView, verifyBatch, planModel, planThinking, askModel, askThinking, planStyle, planCells, verifyCandidates, prepareEnvs, mise, blockAt, maxComments, runTests, testOwners, testRuns, testTimeoutSeconds, testEnv, testImage, checkoutRoots, guides, thinking, verifyThinking, deadlineSeconds, frameTimeoutSeconds, ack, ackLines, ackArt, signature, learn, skipBots, ban.
@@ -157,6 +164,11 @@ pub struct Parsed {
     pub repo_dir: Option<String>,
     pub base: Option<String>,
     pub head: Option<String>,
+    /// eval: list the cases only.
+    pub list: bool,
+    pub limit: Option<f64>,
+    pub controls: Option<f64>,
+    pub scan: Option<f64>,
     pub help: bool,
 }
 
@@ -365,13 +377,23 @@ pub fn parse_args(args: &[String]) -> Result<Parsed, UsageError> {
                 );
             }
             "--repo-dir" => parsed.repo_dir = Some(value()?),
+            "--list" => parsed.list = true,
+            "--limit" | "--controls" | "--scan" => {
+                let count = whole(js_number(&value()?), if arg == "--controls" { 0.0 } else { 1.0 })
+                    .ok_or_else(|| UsageError(format!("{arg} takes a whole number")))?;
+                match arg.as_str() {
+                    "--limit" => parsed.limit = Some(count),
+                    "--controls" => parsed.controls = Some(count),
+                    _ => parsed.scan = Some(count),
+                }
+            }
             "--base" => parsed.base = Some(value()?),
             "--head" => parsed.head = Some(value()?),
             _ if arg.starts_with('-') => {
                 return Err(UsageError(format!("unknown option for {APP_NAME} autoreview: {arg}")));
             }
             _ if parsed.target.is_none()
-                && matches!(parsed.command.as_str(), "review" | "prepare" | "ban" | "unban") =>
+                && matches!(parsed.command.as_str(), "review" | "prepare" | "ban" | "unban" | "eval") =>
             {
                 parsed.target = Some(arg.clone());
             }
@@ -547,6 +569,7 @@ pub fn offline_json(raw: &Value, startup_ms: Option<u64>, block_at: Option<&str>
     dropped.insert("generic".into(), or_else(dropped_in, "generic", json!(0)));
     dropped.insert("refutedByTest".into(), or_else(dropped_in, "refutedByTest", json!(0)));
     dropped.insert("duplicateOf".into(), or_else(dropped_in, "duplicateOf", json!([])));
+    put_present(&mut dropped, "preexisting", dropped_in, "preexisting");
     let timing_in = object(result.get("timing"), &empty);
     let mut timing = Map::new();
     for key in ["totalMs", "scopeMs", "findMs", "verifyMs"] {
@@ -589,6 +612,9 @@ pub fn offline_json(raw: &Value, startup_ms: Option<u64>, block_at: Option<&str>
     out.insert("verdict".into(), serde_json::to_value(verdict).unwrap_or(Value::Null));
     put_present(&mut out, "complete", result, "complete");
     out.insert("findings".into(), Value::Array(findings));
+    // Real problems in code the change did not alter (Rust-only, only when there are any): never posted inline,
+    // never blocking.
+    put_present(&mut out, "preexisting", result, "preexisting");
     out.insert("dropped".into(), Value::Object(dropped));
     out.insert("timing".into(), Value::Object(timing));
     out.insert("usage".into(), Value::Object(usage));
@@ -889,6 +915,165 @@ fn open_engine(
 
 fn absolute(cwd: &Path, path: &str) -> PathBuf {
     config::paths::normalize(&cwd.join(path))
+}
+
+/// The knowledge graph of `repo_dir` at `head` into `spec`, under the repository's name when one is given; a
+/// failure leaves the review without it, and a directory that is not a git checkout is not indexed.
+fn index_knowledge(parsed: &Parsed, db: &str, repo_dir: &Path, head: &str, spec: &mut Value, err: &mut dyn Write) {
+    if !repo_dir.join(".git").exists() {
+        return;
+    }
+    let knowledge_repo = match &parsed.repo {
+        Some(repo) => format!("github.com/{repo}").to_lowercase(),
+        None => format!("local:{}", repo_dir.display()),
+    };
+    match knowledge::index_tree(Path::new(db), &knowledge_repo, repo_dir, head) {
+        Ok(stats) => {
+            if let Value::Object(map) = spec {
+                map.insert(
+                    "knowledge".into(),
+                    json!({ "db": db, "repo": knowledge_repo, "rev": stats.rev }),
+                );
+            }
+        }
+        Err(error) => {
+            let _ = writeln!(err, "the knowledge graph was not updated: {error}");
+        }
+    }
+}
+
+/// `eval <repo-dir>`: the reviewer measured on the repository's own mistakes (review::eval). The cases come from
+/// history with no model call (`--list` stops there); each is then reviewed as `review --repo-dir` would review it,
+/// one at a time on one engine, and scored. The report is kept under the autoreview directory (`evals/`).
+#[allow(clippy::too_many_arguments)]
+fn eval_command(
+    parsed: &Parsed,
+    config: &AutoreviewConfig,
+    saved: &Saved,
+    env: &Env,
+    paths: &review::settings::AutoreviewPaths,
+    ov: &Overrides,
+    out: &mut dyn Write,
+    err: &mut dyn Write,
+) -> Result<i32, Failure> {
+    use review::eval::{CaseKind, EvalOptions, build_cases, score, summary, summary_lines};
+    let target = parsed
+        .target
+        .as_deref()
+        .ok_or_else(|| UsageError("eval needs a repository directory".into()))?;
+    let repo_dir = absolute(&env.cwd, target);
+    let limit = parsed.limit.map_or(review::eval::DEFAULT_LIMIT, |n| n as usize);
+    let options = EvalOptions {
+        scan: parsed.scan.map_or(review::eval::DEFAULT_SCAN, |n| n as usize),
+        limit,
+        controls: parsed.controls.map_or(limit, |n| n as usize),
+        max_lines: review::eval::MAX_CASE_LINES,
+    };
+    let io = |error: std::io::Error| Failure::Error(error.to_string());
+    let cases = build_cases(&*ov.runner(), &repo_dir.display().to_string(), &options).map_err(Failure::Error)?;
+    let kind = |kind: CaseKind| match kind {
+        CaseKind::Reverted => "reverted",
+        CaseKind::FixInducing => "fix-inducing",
+        CaseKind::Control => "control",
+    };
+    let short = |sha: &str| sha.chars().take(8).collect::<String>();
+    if parsed.list {
+        if parsed.json {
+            writeln!(out, "{}", json!({ "cases": cases })).map_err(io)?;
+        } else {
+            for case in &cases {
+                let by: Vec<String> = case.by.iter().map(|sha| short(sha)).collect();
+                let by = if by.is_empty() {
+                    String::new()
+                } else {
+                    format!(" (by {})", by.join(", "))
+                };
+                writeln!(out, "{} {} {}{by}", kind(case.kind), short(&case.sha), case.subject).map_err(io)?;
+            }
+        }
+        return Ok(0);
+    }
+    if cases.is_empty() {
+        let _ = writeln!(
+            err,
+            "no reverted or fixed commits (or controls) in the last {} commits",
+            options.scan
+        );
+        return Ok(1);
+    }
+    let log = logger(&env.var);
+    let dir = PathBuf::from(&paths.dir);
+    let engine: Arc<dyn ReviewEngine> = match &ov.engine {
+        Some(engine) => engine.clone(),
+        None => Arc::new(open_engine(config, saved, env, &dir, log).map_err(Failure::Error)?),
+    };
+    let mut scored = Vec::new();
+    let mut rows = Vec::new();
+    for (index, case) in cases.iter().enumerate() {
+        let _ = writeln!(
+            err,
+            "[{}/{}] {} {} {}",
+            index + 1,
+            cases.len(),
+            kind(case.kind),
+            short(&case.sha),
+            case.subject
+        );
+        let mut one = parsed.clone();
+        one.base = Some(case.parent.clone());
+        one.head = Some(case.sha.clone());
+        let mut spec = offline_spec(&one, config, env, &repo_dir, None, None);
+        index_knowledge(&one, &paths.knowledge, &repo_dir, &case.sha, &mut spec, err);
+        let mut row = serde_json::to_value(case).unwrap_or(Value::Null);
+        match engine.review(&spec, None) {
+            Ok(result) => {
+                let typed: EngineResult = serde_json::from_value(result).unwrap_or_default();
+                let got = score(case, &typed, &config.block_at);
+                let _ = writeln!(
+                    err,
+                    "  {}{}, {} confirmed",
+                    if got.blocked { "blocked" } else { "not blocked" },
+                    match got.located {
+                        Some(true) => ", located",
+                        Some(false) => ", not located",
+                        None => "",
+                    },
+                    got.confirmed
+                );
+                row["score"] = serde_json::to_value(&got).unwrap_or(Value::Null);
+                scored.push((case.clone(), got));
+            }
+            Err(error) => {
+                let _ = writeln!(err, "  failed: {error}");
+                row["error"] = error.into();
+            }
+        }
+        rows.push(row);
+    }
+    let totals = summary(&scored);
+    let name = repo_dir
+        .file_name()
+        .map_or_else(|| "repo".into(), |name| name.to_string_lossy().into_owned());
+    let report_dir = dir.join("evals");
+    let report = report_dir.join(format!("{name}-{}.json", now_ms()));
+    let document = json!({
+        "repo": repo_dir.display().to_string(), "blockAt": config.block_at, "mode": config.mode,
+        "model": config.model, "cases": rows, "summary": totals,
+    });
+    std::fs::create_dir_all(&report_dir)
+        .and_then(|()| std::fs::write(&report, format!("{document:#}\n")))
+        .map_err(io)?;
+    if parsed.json {
+        let mut shown = document;
+        shown["report"] = report.display().to_string().into();
+        writeln!(out, "{shown}").map_err(io)?;
+    } else {
+        for line in summary_lines(&totals, &config.block_at) {
+            writeln!(out, "{line}").map_err(io)?;
+        }
+        writeln!(out, "Report: {}", report.display()).map_err(io)?;
+    }
+    Ok(0)
 }
 
 /// The engine spec of a local review (`review --repo-dir`).
@@ -1919,6 +2104,7 @@ fn execute(
         }
         "doctor" => return doctor(parsed, &config, &model_lines(&config), env, &paths.cache, ov, out),
         "prepare" => return prepare_command(parsed, &config, env, &paths.cache, ov, out, err),
+        "eval" => return eval_command(parsed, &config, &saved, env, &paths, ov, out, err),
         other => {
             return Err(Failure::Usage(format!("unknown command: {other}\n\n{}", usage())));
         }
@@ -1990,41 +2176,12 @@ fn execute(
         }
     };
     let mut spec = offline_spec(parsed, &config, env, &repo_dir, lent.as_deref(), use_prepared);
-    // The knowledge graph at the reviewed commit, under the repository's name when one is given; a failure leaves
-    // the review without it, and a directory that is not a git checkout is not indexed.
-    let knowledge_repo = match &parsed.repo {
-        Some(repo) => format!("github.com/{repo}").to_lowercase(),
-        None => format!("local:{}", repo_dir.display()),
-    };
     let head = parsed
         .head
         .clone()
         .filter(|head| !head.is_empty())
         .unwrap_or_else(|| "HEAD".into());
-    let indexed = if repo_dir.join(".git").exists() {
-        Some(knowledge::index_tree(
-            Path::new(&paths.knowledge),
-            &knowledge_repo,
-            &repo_dir,
-            &head,
-        ))
-    } else {
-        None
-    };
-    match indexed {
-        None => {}
-        Some(Ok(stats)) => {
-            if let Value::Object(map) = &mut spec {
-                map.insert(
-                    "knowledge".into(),
-                    json!({ "db": paths.knowledge, "repo": knowledge_repo, "rev": stats.rev }),
-                );
-            }
-        }
-        Some(Err(error)) => {
-            let _ = writeln!(err, "the knowledge graph was not updated: {error}");
-        }
-    }
+    index_knowledge(parsed, &paths.knowledge, &repo_dir, &head, &mut spec, err);
     let result = engine.review(&spec, None).map_err(Failure::Error)?;
     let io = |error: std::io::Error| Failure::Error(error.to_string());
     if parsed.json {

@@ -237,7 +237,9 @@ fn assert_case(world: &World, name: &str) {
     assert_eq!(stderr, *expected["stderr"].as_array().unwrap(), "{name}: stderr");
     assert_eq!(shown(&stdout, &work), expected["stdout"], "{name}: stdout");
     let requests = world.requests();
-    let wanted = expected["requests"].as_array().unwrap();
+    let mut wanted = expected["requests"].clone();
+    super::autoreview::with_rust_verifier(&mut wanted);
+    let wanted = wanted.as_array().unwrap();
     assert_eq!(requests.len(), wanted.len(), "{name}: request count");
     for (index, (got, want)) in requests.iter().zip(wanted).enumerate() {
         for key in ["model", "effort", "schema", "maxTokens", "system", "text"] {

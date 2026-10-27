@@ -150,6 +150,10 @@ pub struct EngineResult {
     pub added: i64,
     pub removed: i64,
     pub findings: Vec<EngineFinding>,
+    /// Real problems the verifier found in code the change did not alter (Rust-only): named in the body, never
+    /// inline, never blocking.
+    #[serde(default)]
+    pub preexisting: Vec<EngineFinding>,
     #[serde(default)]
     pub also_raised: Vec<AlsoRaised>,
     #[serde(default)]
@@ -968,6 +972,24 @@ pub fn plan_review(result: &EngineResult, options: &PlanOptions) -> ReviewPlan {
             String::new()
         };
         notes.push(format!("Outside the diff: {}{more}", named.join(" ")));
+    }
+    if !result.preexisting.is_empty() {
+        let named: Vec<String> = result
+            .preexisting
+            .iter()
+            .map(|finding| {
+                format!(
+                    "{} [{}] {}",
+                    where_(finding),
+                    finding.level(),
+                    sentence(&short(&finding.claim, 160))
+                )
+            })
+            .collect();
+        notes.push(format!(
+            "Pre-existing, not introduced by this change and not blocking it: {}",
+            named.join(" ")
+        ));
     }
     let mut rest = Vec::new();
     if !over_cap.is_empty() {

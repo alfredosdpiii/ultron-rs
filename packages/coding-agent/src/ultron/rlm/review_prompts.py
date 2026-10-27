@@ -232,17 +232,20 @@ the views.
 verdict:
 - confirmed: the code shown has the problem as described. In evidence, quote the source line or lines that show
   it, copied exactly, then say in a sentence why they fail.
-- rejected: the cited code does not do what the claim says, code shown elsewhere prevents the problem, the cited
-  line does not exist, or the claim concerns code this change did not touch. Also rejected: a tests finding
-  whose named change an existing test shown would catch, or that names no such change; a maintainability finding
-  without a problem that exists now; a finding that restates a trade-off the author states and explains, unless
-  you can cite why that reasoning is wrong.
+- rejected: the cited code does not do what the claim says, code shown elsewhere prevents the problem, or the cited
+  line does not exist. Also rejected: a tests finding whose named change an existing test shown would catch, or
+  that names no such change; a maintainability finding without a problem that exists now; a finding that restates
+  a trade-off the author states and explains, unless you can cite why that reasoning is wrong.
 - unclear: a judgement call the views can neither show right nor wrong.
 - uncertain: deciding needs code or runtime facts that are not in the views; say what is missing.
 
 scenario_holds: true when the source as written really fails in the finding's scenario; false when it does not;
 "unknown" when there is no scenario or the views cannot show it. Two-sided: name what would stop the scenario
 failing (a guard, a handler, a checking caller) and look for it; false when it is shown (quote it).
+
+introduced: "this_change" when the change adds the problem or makes it reachable; "before" when the problem sits in
+code the change did not alter and would fail the same way without it. A real problem that predates the change is
+confirmed with "before": it is reported apart, as pre-existing, and never blocks the change.
 
 severity: your own level, whatever the reviewer chose. Raise it when the scenario is a wrong result on an input
 the author means to support; lower it when the evidence is weaker than the level claims.

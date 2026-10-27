@@ -13,6 +13,7 @@ host serves its `rlm.*` inference and owns the GitHub side.
 | `autoreview/config.ts` settings | `resolveConfig`, `engineSettings`, `testsEligible`, `autoreviewPaths`, `resolveAckArt` | ported: `settings.rs` |
 | `autoreview/prepare.ts` | `detectEcosystems`, `toolchainRequests`, `environmentHash`, `findMise`, `describeToolchain`; `prepareEnvironment`/`cachedEnvironment` | ported: `prepare.rs`, `prepare_env.rs` |
 | `autoreview/plan.ts` + `types.ts` levels | `planReview`, `decideVerdict`, `rankFindings`, `placeLine`, `planComment`, `commentText`, `costLine`, `levelOf`, `severityOf` | ported: `plan.rs` |
+| none (Rust-only) | `ultron autoreview eval`: cases from history (reverted, SZZ fix-inducing, controls), scores and totals | `eval.rs` |
 | `autoreview/*.ts` rest | engine (`engine.rs`: `autoreview_api.run_file` in a kernel of its own, transient provider failures retried), runner, accounts, GitHub client, checkout, local, state, reviewer (lessons via `LessonMemory`, implemented by crates/hindsight), daemon, service files | ported; the command is crates/cli `autoreview_cli.rs` |
 
 `ultron autoreview doctor` runs `autoreview_tests.py doctor` / `environments` with the kernel's interpreter, as
