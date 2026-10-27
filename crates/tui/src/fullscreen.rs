@@ -388,6 +388,12 @@ impl FullscreenViewport {
         self.mouse_capture = None;
     }
 
+    /// The content of the last [`FullscreenViewport::layout`], to be filled again and passed to the next one: its
+    /// strings keep their allocations, so laying out a long transcript every frame copies bytes and allocates nothing.
+    pub fn take_content(&mut self) -> Vec<String> {
+        std::mem::take(&mut self.content)
+    }
+
     /// Lay the transcript out: `content` (rendered at `view.content_width(rect.width)`) shown in `rect`, scrolled
     /// to the view's position. The rect's rows of the frame, with the scrollbar painted.
     pub fn layout(&mut self, content: Vec<String>, rect: Rect) -> Vec<String> {

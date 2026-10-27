@@ -1426,8 +1426,8 @@ impl Core {
                 }
                 self.journal(&agent_event);
                 // The frame (`AssistantMessageFrame`): the provider event without its partial message; a tool
-                // call's start names the call.
-                let mut frame = serde_json::to_value(assistant_message_event).unwrap_or(Value::Null);
+                // call's start names the call. A delta is built without serializing the partial.
+                let mut frame = crate::journal::frame_source(assistant_message_event).unwrap_or(Value::Null);
                 if frame["type"] == "toolcall_start"
                     && let Some(index) = frame["contentIndex"].as_u64()
                 {

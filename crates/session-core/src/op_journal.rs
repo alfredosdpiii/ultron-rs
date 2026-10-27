@@ -14,6 +14,11 @@ pub const OP_PREPARATION: &str = "pi.op.preparation";
 use session_journal::session::{BRANCH_TIP, LANE_STATE};
 use session_journal::usage::num;
 use session_journal::{Session, Write, lock_clock};
+use std::time::{Duration, Instant};
+
+/// How long a streamed delta waits for the ones after it before it commits: a frame per token cost a journal line of
+/// ~250 bytes to carry a few characters. A worker killed mid-stream loses at most this much of the partial answer.
+const FRAME_WINDOW: Duration = Duration::from_millis(100);
 
 /// Default stream options and retry policy of a generation (`timeoutMs` 300000, 4 attempts from 2000 ms); a session
 /// sets the ones its settings name ([`Run::set_stream_options`]).
@@ -50,6 +55,9 @@ pub struct Run {
     calls: Vec<ToolCallState>,
     assistant_entry_id: String,
     encoder: FrameEncoder,
+    /// A text, thinking or tool-call delta frame not committed yet, and when it began: the deltas of one block that
+    /// arrive within [`FRAME_WINDOW`] commit as one frame (see [`Run::stream_event`]).
+    held: Option<(Value, Instant)>,
     /// The operation's control state: running, or cancel requested (`{status, requestedAt}`).
     control: Value,
     /// The lane's queued messages (`pi.lane.state` `inbox`) while the run is current.
@@ -160,6 +168,7 @@ impl Run {
             calls: Vec::new(),
             assistant_entry_id: String::new(),
             encoder: FrameEncoder::default(),
+            held: None,
             control: json!({"status": "running"}),
             inbox,
             generation_trigger: None,
@@ -293,6 +302,7 @@ impl Run {
             calls,
             assistant_entry_id,
             encoder: FrameEncoder::default(),
+            held: None,
             control: state.get("control").cloned().unwrap_or(json!({"status": "running"})),
             inbox: lane.get("inbox").cloned().unwrap_or(json!([])),
             overflow_recovery_used: context["overflowRecoveryUsed"] == true
@@ -480,6 +490,7 @@ impl Run {
         self.response_entry_id = mint(session);
         self.usage_id = mint(session);
         self.encoder = FrameEncoder::default();
+        self.held = None;
         let mut pending = self.scope("assistant.effect_pending");
         pending.insert("generationContext".into(), self.generation_context());
         pending.insert("attempt".into(), self.attempt.into());
@@ -513,11 +524,45 @@ impl Run {
         format!("{}:{}", self.operation_id, self.response_entry_id)
     }
 
-    /// One stream event (`AssistantMessageEvent` JSON) as a progress frame, when it carries progress.
+    /// One stream event (`AssistantMessageEvent` JSON) as a progress frame, when it carries progress. Consecutive
+    /// deltas of one block join into one frame until [`FRAME_WINDOW`] passes or another frame comes: recovery
+    /// concatenates deltas, so the joined frame replays to the same text.
     pub fn stream_event(&mut self, session: &mut Session, event: &Value) -> Result<(), String> {
-        if let Some(frame) = self.encoder.encode(event) {
-            session.commit(&[Write::append(PENDING_FRAMES, &self.frames_key(), frame)])?;
+        let Some(frame) = self.encoder.encode(event) else {
+            return Ok(());
+        };
+        let delta = matches!(
+            frame["type"].as_str(),
+            Some("text_delta" | "thinking_delta" | "toolcall_delta")
+        );
+        let key = self.frames_key();
+        let mut writes = Vec::new();
+        let mut frame = Some(frame);
+        if let Some((mut held, since)) = self.held.take() {
+            let same = |f: &mut Value| delta && f["type"] == held["type"] && f["contentIndex"] == held["contentIndex"];
+            if let Some(next) = frame.take_if(same) {
+                let joined = format!(
+                    "{}{}",
+                    held["delta"].as_str().unwrap_or(""),
+                    next["delta"].as_str().unwrap_or("")
+                );
+                held["delta"] = joined.into();
+                if since.elapsed() < FRAME_WINDOW {
+                    self.held = Some((held, since));
+                    return Ok(());
+                }
+            }
+            writes.push(Write::append(PENDING_FRAMES, &key, held));
         }
+        match frame {
+            Some(frame) if delta => self.held = Some((frame, Instant::now())),
+            Some(frame) => writes.push(Write::append(PENDING_FRAMES, &key, frame)),
+            None => {}
+        }
+        if writes.is_empty() {
+            return Ok(());
+        }
+        session.commit(&writes)?;
         Ok(())
     }
 

@@ -520,13 +520,19 @@ impl ChatView {
     }
 
     /// The tool item for `id`, created after the transcript so far when new; `args` replace its arguments.
+    ///
+    /// Searched from the end: a streaming message's calls and a loaded result's call are the newest items, and a
+    /// search from the first item made every delta, and every call of a loaded session, scan the whole transcript.
+    /// Its render is kept when the arguments are unchanged (every delta repeats each call of the message).
     fn tool(&mut self, name: &str, id: &str, args: Option<Value>) -> usize {
         if let Some(i) = self
             .items
             .iter()
-            .position(|item| matches!(&item.kind, Kind::Tool(t) if t.id == id))
+            .rposition(|item| matches!(&item.kind, Kind::Tool(t) if t.id == id))
         {
-            if let (Some(args), Kind::Tool(t)) = (args, &mut self.items[i].kind) {
+            if let (Some(args), Kind::Tool(t)) = (args, &mut self.items[i].kind)
+                && t.args != args
+            {
                 t.args = args;
                 self.items[i].cache = None;
             }
@@ -828,19 +834,27 @@ impl ChatView {
     }
 
     pub fn render_transcript(&mut self, width: usize) -> Vec<String> {
-        let mut lines = Vec::new();
+        self.render_items(width);
+        self.lines().cloned().collect()
+    }
+
+    /// Render the items not yet cached at `width`; [`ChatView::lines`] then reads the transcript without copying it.
+    pub fn render_items(&mut self, width: usize) {
         for i in 0..self.items.len() {
-            if let Some((w, cached)) = &self.items[i].cache
-                && *w == width
-            {
-                lines.extend(cached.iter().cloned());
+            if self.items[i].cache.as_ref().is_some_and(|(w, _)| *w == width) {
                 continue;
             }
             let rendered = self.render_item(i, width);
-            lines.extend(rendered.iter().cloned());
             self.items[i].cache = Some((width, rendered));
         }
-        lines
+    }
+
+    /// The transcript's rows as of the last [`ChatView::render_items`] (or [`ChatView::render_transcript`]).
+    pub fn lines(&self) -> impl Iterator<Item = &String> {
+        self.items
+            .iter()
+            .filter_map(|item| item.cache.as_ref())
+            .flat_map(|(_, rows)| rows)
     }
 
     /// Transcript items so far: selectors map each entry to the items it added.

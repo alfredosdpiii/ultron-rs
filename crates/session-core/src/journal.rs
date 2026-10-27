@@ -4,7 +4,7 @@
 
 use crate::op_journal::Run;
 use agent::AgentEvent;
-use ai::Message;
+use ai::{AssistantMessageEvent, Message};
 use serde_json::{Value, json};
 use session_journal::Session;
 
@@ -110,7 +110,7 @@ impl RunJournal {
                 assistant_message_event,
                 ..
             } => {
-                if let Ok(event) = serde_json::to_value(assistant_message_event) {
+                if let Some(event) = frame_source(assistant_message_event) {
                     self.apply(session, |run, s| run.stream_event(s, &event));
                 }
             }
@@ -321,4 +321,23 @@ impl RunJournal {
     pub fn error(&self) -> Option<&str> {
         self.error.as_deref()
     }
+}
+
+/// A stream event as the frame encoder reads it. A delta becomes its type, index and delta alone: serializing the
+/// event whole copied the response so far (`partial`) once per delta, quadratic in the response's length.
+pub(crate) fn frame_source(event: &AssistantMessageEvent) -> Option<Value> {
+    use AssistantMessageEvent::{TextDelta, ThinkingDelta, ToolCallDelta};
+    let (kind, index, delta) = match event {
+        TextDelta {
+            content_index, delta, ..
+        } => ("text_delta", content_index, delta),
+        ThinkingDelta {
+            content_index, delta, ..
+        } => ("thinking_delta", content_index, delta),
+        ToolCallDelta {
+            content_index, delta, ..
+        } => ("toolcall_delta", content_index, delta),
+        other => return serde_json::to_value(other).ok(),
+    };
+    Some(json!({"type": kind, "contentIndex": index, "delta": delta}))
 }

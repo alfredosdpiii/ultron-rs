@@ -17,3 +17,8 @@ all = { level = "warn", priority = -1 }
 # was most of a test build's link time and of the target directory.
 [profile.dev]
 debug = "line-tables-only"
+
+# Cross-crate inlining and one codegen unit per crate: faster code for a slower release build.
+[profile.release]
+lto = "thin"
+codegen-units = 1

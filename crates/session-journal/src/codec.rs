@@ -133,7 +133,8 @@ pub fn parse_transaction(line: &str) -> Result<Vec<Value>, String> {
 pub fn serialize_transaction(writes: &[Value]) -> String {
     match writes {
         [one] => js::stringify(one),
-        many => js::stringify(&Value::Array(many.to_vec())),
+        // `JSON.stringify` of the array, without copying the writes into one.
+        many => format!("[{}]", many.iter().map(js::stringify).collect::<Vec<_>>().join(",")),
     }
 }
 

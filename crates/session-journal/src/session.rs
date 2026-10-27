@@ -144,9 +144,15 @@ impl Session {
         self.state().branch_path(tip.as_deref())
     }
 
+    /// [`Session::branch_entries`] borrowed, for reads that copy only part of the branch.
+    pub fn branch_entry_refs(&self, branch: &str) -> Result<Vec<&Value>, String> {
+        let tip = self.branch_tip(branch).flatten();
+        self.state().branch_path_refs(tip.as_deref())
+    }
+
     /// `buildSessionContext` of `branch`: the messages the model sees (no custom-entry projectors).
     pub fn context_messages(&self, branch: &str) -> Result<Vec<Value>, String> {
-        Ok(context::build_session_context(&self.branch_entries(branch)?))
+        Ok(context::build_session_context(&self.branch_entry_refs(branch)?))
     }
 
     /// Fork this open session at its current sequence boundary.

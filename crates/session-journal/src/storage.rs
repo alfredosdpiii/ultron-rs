@@ -46,7 +46,7 @@ impl JsonlStorage {
             content.push('\n');
         }
         io::publish(path, &content)?;
-        state.apply(&writes);
+        state.apply(writes);
         Ok(JsonlStorage {
             path: path.to_path_buf(),
             header,
@@ -79,7 +79,7 @@ impl JsonlStorage {
         for (index, line) in lines.iter().enumerate().skip(1) {
             let replay = codec::parse_transaction(line).and_then(|writes| {
                 state.validate(&writes)?;
-                state.apply(&writes);
+                state.apply(writes);
                 Ok(())
             });
             if let Err(cause) = replay {
@@ -111,9 +111,9 @@ impl JsonlStorage {
         let source = LegacyV3Source::read(path, clock)?;
         let mut state = State::default();
         for write in source.writes(None)? {
-            let writes = [write];
+            let writes = vec![write];
             state.validate(&writes)?;
-            state.apply(&writes);
+            state.apply(writes);
         }
         Ok(JsonlStorage {
             path: path.to_path_buf(),
@@ -161,10 +161,11 @@ impl JsonlStorage {
         if !committed.is_empty() {
             io::append(&self.path, &format!("{}\n", codec::serialize_transaction(&committed)))?;
         }
-        self.state.apply(&committed);
+        let seqs = committed.iter().map(crate::state::seq_of).collect();
+        self.state.apply(committed);
         Ok(CommitResult {
             first_seq,
-            seqs: committed.iter().map(crate::state::seq_of).collect(),
+            seqs,
             timestamp,
             stats: self.stats(),
         })
@@ -197,12 +198,13 @@ impl JsonlStorage {
         content.push_str(&codec::serialize_transaction(&committed));
         content.push('\n');
         io::publish(&self.path, &content)?;
-        self.state.apply(&committed);
+        let seqs = committed.iter().skip(1).map(crate::state::seq_of).collect();
+        self.state.apply(committed);
         self.header = header;
         self.backing = Backing::V4;
         Ok(CommitResult {
             first_seq: first_seq + 1,
-            seqs: committed.iter().skip(1).map(crate::state::seq_of).collect(),
+            seqs,
             timestamp,
             stats: self.stats(),
         })

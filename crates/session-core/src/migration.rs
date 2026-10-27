@@ -960,7 +960,7 @@ pub fn export_native_session_to_pi(session_path: &Path, output_path: &Path) -> R
                 "leaf",
             );
         } else {
-            let items = converted.produced.get(tip).cloned().unwrap_or_default();
+            let items = converted.tip_items;
             let moved: HashSet<&str> = items.iter().map(id_of).collect();
             entries.retain(|e| !moved.contains(id_of(e)));
             entries.extend(items.iter().cloned());

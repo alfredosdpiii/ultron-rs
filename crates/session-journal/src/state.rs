@@ -118,6 +118,21 @@ pub(crate) fn str_of<'a>(write: &'a Value, key: &str) -> &'a str {
     write.get(key).and_then(Value::as_str).unwrap_or("")
 }
 
+/// A committed entry or usage row as stored: the write without its `kind`, other keys in order.
+fn without_kind(write: Value) -> Value {
+    match write {
+        Value::Object(mut map) => {
+            map.shift_remove("kind");
+            Value::Object(map)
+        }
+        _ => Value::Object(Map::new()),
+    }
+}
+
+fn take_value(write: &mut Value) -> Value {
+    write.get_mut("value").map(Value::take).unwrap_or(Value::Null)
+}
+
 fn physical_key(namespace: &str, key: &str) -> String {
     format!("{namespace}\u{0}{key}")
 }
@@ -154,7 +169,8 @@ pub struct BranchScan {
 /// `InMemoryStorageState`.
 #[derive(Clone, Debug)]
 pub struct State {
-    entries: HashMap<String, Value>,
+    /// Each entry's index in `entries_by_seq`: an entry is held once (a 98 MB journal's were held twice).
+    entries: HashMap<String, usize>,
     entries_by_seq: Vec<Value>,
     scalars: BTreeMap<String, StoredValue>,
     lists: HashMap<String, Vec<ListElement>>,
@@ -226,40 +242,40 @@ impl State {
         Ok(())
     }
 
-    /// `applyValidated`: returns the stats after the writes.
-    pub fn apply(&mut self, writes: &[Value]) -> Value {
-        for write in writes {
-            let namespace = str_of(write, "namespace");
-            let key = str_of(write, "key");
-            match (str_of(write, "kind"), str_of(write, "op")) {
+    /// `applyValidated`: returns the stats after the writes. The writes are moved into the state, not copied.
+    pub fn apply(&mut self, writes: Vec<Value>) -> Value {
+        for mut write in writes {
+            let seq = seq_of(&write);
+            let namespace = str_of(&write, "namespace").to_string();
+            let key = str_of(&write, "key").to_string();
+            let kind = str_of(&write, "kind").to_string();
+            let op = str_of(&write, "op").to_string();
+            match (kind.as_str(), op.as_str()) {
                 ("entry", _) => {
-                    let mut entry = write.as_object().cloned().unwrap_or_default();
-                    entry.shift_remove("kind");
-                    let entry = Value::Object(entry);
+                    let entry = without_kind(write);
                     if str_of(&entry, "type") == "message" {
                         self.message_count += 1;
                     }
-                    self.entries.insert(str_of(&entry, "id").into(), entry.clone());
+                    let id = str_of(&entry, "id").to_string();
+                    self.entries.insert(id, self.entries_by_seq.len());
                     self.entries_by_seq.push(entry);
                 }
                 ("usage", _) => {
-                    let mut row = write.as_object().cloned().unwrap_or_default();
-                    row.shift_remove("kind");
-                    let row = Value::Object(row);
+                    let row = without_kind(write);
                     self.usage_total = add_usage(&self.usage_total, &row["usage"]);
                     self.usage.insert(str_of(&row, "id").into(), row);
                 }
                 ("value", "delete") => {
-                    self.scalars.remove(&physical_key(namespace, key));
+                    self.scalars.remove(&physical_key(&namespace, &key));
                 }
                 ("list", "delete") => {
-                    self.lists.remove(&physical_key(namespace, key));
+                    self.lists.remove(&physical_key(&namespace, &key));
                 }
-                ("value", _) => self.set_scalar(namespace, key, write["value"].clone(), seq_of(write)),
-                ("list", _) => self.push_list(namespace, key, write["value"].clone(), seq_of(write)),
+                ("value", _) => self.set_scalar(&namespace, &key, take_value(&mut write), seq),
+                ("list", _) => self.push_list(&namespace, &key, take_value(&mut write), seq),
                 _ => {}
             }
-            self.next_seq = seq_of(write) + 1;
+            self.next_seq = seq + 1;
         }
         self.stats()
     }
@@ -302,7 +318,7 @@ impl State {
     }
 
     pub fn entry(&self, id: &str) -> Option<&Value> {
-        self.entries.get(id)
+        self.entries.get(id).map(|&index| &self.entries_by_seq[index])
     }
 
     /// Entries in sequence order.
@@ -357,36 +373,40 @@ impl State {
         rows
     }
 
-    /// `scanBranch`.
-    pub fn scan_branch(&self, query: &BranchScan) -> Result<Vec<Value>, String> {
+    /// The entries from `start` up to the root, newest first, borrowed.
+    fn ancestry(&self, start: &str) -> Result<Vec<&Value>, String> {
         let mut entry = self
-            .entries
-            .get(&query.start)
-            .ok_or_else(|| format!("Unknown branch start: {}", query.start))?;
+            .entry(start)
+            .ok_or_else(|| format!("Unknown branch start: {start}"))?;
         let mut path = Vec::new();
         loop {
-            path.push(entry.clone());
+            path.push(entry);
             let Some(parent) = entry.get("parentId").and_then(Value::as_str) else {
                 break;
             };
             entry = self
-                .entries
-                .get(parent)
+                .entry(parent)
                 .ok_or_else(|| "Corrupt branch: missing parent".to_string())?;
         }
+        Ok(path)
+    }
+
+    /// `scanBranch`. Only the entries it returns are copied.
+    pub fn scan_branch(&self, query: &BranchScan) -> Result<Vec<Value>, String> {
+        let mut path = self.ancestry(&query.start)?;
         if query.oldest_first {
             path.reverse();
         }
         let mut stopped = Vec::new();
         for candidate in path {
-            let stop = Some(str_of(&candidate, "id")) == query.stop_at_id.as_deref()
-                || Some(str_of(&candidate, "type")) == query.stop_at_type.as_deref();
+            let stop = Some(str_of(candidate, "id")) == query.stop_at_id.as_deref()
+                || Some(str_of(candidate, "type")) == query.stop_at_type.as_deref();
             stopped.push(candidate);
             if stop {
                 break;
             }
         }
-        let filtered: Vec<Value> = stopped
+        Ok(stopped
             .into_iter()
             .filter(|c| query.entry_type.as_deref().is_none_or(|t| str_of(c, "type") == t))
             .filter(|c| {
@@ -404,11 +424,19 @@ impl State {
                     }
                 })
             })
-            .collect();
-        Ok(match query.limit {
-            Some(limit) => filtered.into_iter().take(limit).collect(),
-            None => filtered,
-        })
+            .take(query.limit.unwrap_or(usize::MAX))
+            .cloned()
+            .collect())
+    }
+
+    /// [`State::branch_path`] borrowed: the path from the root to `tip`, oldest first.
+    pub fn branch_path_refs(&self, tip: Option<&str>) -> Result<Vec<&Value>, String> {
+        let Some(tip) = tip else {
+            return Ok(Vec::new());
+        };
+        let mut path = self.ancestry(tip)?;
+        path.reverse();
+        Ok(path)
     }
 
     /// The path from the root to `tip`, oldest first; empty for a `null` tip.

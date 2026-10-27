@@ -909,20 +909,49 @@ pub struct RunningTool {
     pub is_error: bool,
 }
 
-/// What the cell extractors read: the transcript entries (`{message, timestamp?}`, or bare messages) and the open
-/// operation's running tools (`None`: no operation).
+/// What the cell extractors read: the transcript entries (`{message, timestamp?}`, or bare messages), borrowed, and
+/// the open operation's running tools (`None`: no operation). The TUI builds one every frame, so it copies nothing.
 #[derive(Clone, Debug, Default, PartialEq)]
-pub struct TranscriptView {
-    pub transcript: Vec<Value>,
+pub struct TranscriptView<'a> {
+    entries: &'a [Value],
+    bare: bool,
     pub running_tools: Option<Vec<RunningTool>>,
 }
 
-impl TranscriptView {
-    /// From the TUI's Pi messages (each becomes `{message}`); `running` is the open operation's tools.
-    pub fn from_messages(messages: &[Value], running: Option<Vec<RunningTool>>) -> TranscriptView {
+impl<'a> TranscriptView<'a> {
+    /// From transcript entries (`{message, timestamp?}`); `running` is the open operation's tools.
+    pub fn from_entries(entries: &'a [Value], running: Option<Vec<RunningTool>>) -> TranscriptView<'a> {
         TranscriptView {
-            transcript: messages.iter().map(|m| serde_json::json!({"message": m})).collect(),
+            entries,
+            bare: false,
             running_tools: running,
+        }
+    }
+
+    /// From the TUI's Pi messages; `running` is the open operation's tools.
+    pub fn from_messages(messages: &'a [Value], running: Option<Vec<RunningTool>>) -> TranscriptView<'a> {
+        TranscriptView {
+            entries: messages,
+            bare: true,
+            running_tools: running,
+        }
+    }
+
+    fn len(&self) -> usize {
+        self.entries.len()
+    }
+
+    fn message(&self, index: usize) -> &'a Value {
+        let entry = &self.entries[index];
+        if self.bare { entry } else { &entry["message"] }
+    }
+
+    /// The entry's own timestamp (a bare message has none).
+    fn timestamp(&self, index: usize) -> &'a Value {
+        if self.bare {
+            &Value::Null
+        } else {
+            &self.entries[index]["timestamp"]
         }
     }
 }
@@ -947,7 +976,7 @@ fn text_of(result: &Value) -> Option<String> {
 }
 
 /// `extractRootCell`: the current or last root `rlm` cell.
-pub fn extract_root_cell(view: Option<&TranscriptView>, clock: &mut RlmClock, now: f64) -> Option<RlmRootCell> {
+pub fn extract_root_cell(view: Option<&TranscriptView<'_>>, clock: &mut RlmClock, now: f64) -> Option<RlmRootCell> {
     let view = view?;
     let running = view
         .running_tools
@@ -971,9 +1000,8 @@ pub fn extract_root_cell(view: Option<&TranscriptView>, clock: &mut RlmClock, no
             output: if active { None } else { text_of(&tool.result) },
         });
     }
-    let entries = &view.transcript;
-    for index in (0..entries.len()).rev() {
-        let message = &entries[index]["message"];
+    for index in (0..view.len()).rev() {
+        let message = view.message(index);
         if message["role"] != "toolResult" || message["toolName"] != "rlm" {
             continue;
         }
@@ -983,7 +1011,7 @@ pub fn extract_root_cell(view: Option<&TranscriptView>, clock: &mut RlmClock, no
         let mut code = String::new();
         let mut started = None;
         for back in (0..index).rev() {
-            let assistant = &entries[back]["message"];
+            let assistant = view.message(back);
             if assistant["role"] != "assistant" {
                 continue;
             }
@@ -1016,17 +1044,15 @@ pub fn extract_root_cell(view: Option<&TranscriptView>, clock: &mut RlmClock, no
 
 /// `extractTurn`: the last user message (time and preview) and the root `rlm` cells after it, oldest first.
 pub fn extract_turn(
-    view: Option<&TranscriptView>,
+    view: Option<&TranscriptView<'_>>,
     clock: &mut RlmClock,
     now: f64,
     max_cells: usize,
 ) -> (Option<RlmTurn>, Vec<RlmRootCell>) {
     let Some(view) = view else { return (None, Vec::new()) };
-    let entries = &view.transcript;
-    let start = entries.iter().rposition(|e| e["message"]["role"] == "user");
+    let start = (0..view.len()).rposition(|i| view.message(i)["role"] == "user");
     let turn = start.map(|start| {
-        let entry = &entries[start];
-        let message = &entry["message"];
+        let message = view.message(start);
         let text = match &message["content"] {
             Value::String(s) => s.clone(),
             Value::Array(parts) => parts
@@ -1042,8 +1068,8 @@ pub fn extract_turn(
                 .join(" "),
             _ => String::new(),
         };
-        let at = if entry["timestamp"].is_number() {
-            entry["timestamp"].as_f64()
+        let at = if view.timestamp(start).is_number() {
+            view.timestamp(start).as_f64()
         } else {
             message["timestamp"].as_f64()
         };
@@ -1060,8 +1086,8 @@ pub fn extract_turn(
         }
         cells.insert(cell.tool_call_id.clone(), cell);
     };
-    for item in &entries[start.map_or(0, |s| s + 1)..] {
-        let message = &item["message"];
+    for index in start.map_or(0, |s| s + 1)..view.len() {
+        let message = view.message(index);
         if message["role"] == "assistant"
             && let Some(content) = message["content"].as_array()
         {

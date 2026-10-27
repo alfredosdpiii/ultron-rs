@@ -4,6 +4,7 @@
 
 use crate::legacy_v3::{branch_summary_message, compaction_summary_message};
 use serde_json::{Map, Value, json};
+use std::borrow::Borrow;
 use std::collections::{HashMap, HashSet};
 
 pub const CONTEXT_EDIT_CUSTOM_TYPE: &str = "context_edit";
@@ -14,12 +15,13 @@ fn str_of<'a>(value: &'a Value, key: &str) -> &'a str {
     value.get(key).and_then(Value::as_str).unwrap_or("")
 }
 
-/// `buildContextEntries`.
-pub fn build_context_entries(path: &[Value]) -> Vec<Value> {
-    match path.iter().rposition(|e| str_of(e, "type") == "compaction") {
-        None => path.to_vec(),
-        Some(i) => path[i..].to_vec(),
-    }
+/// `buildContextEntries`. The path may be borrowed: only the entries from the newest compaction are copied.
+pub fn build_context_entries<V: Borrow<Value>>(path: &[V]) -> Vec<Value> {
+    let start = path
+        .iter()
+        .rposition(|e| str_of(e.borrow(), "type") == "compaction")
+        .unwrap_or(0);
+    path[start..].iter().map(|e| e.borrow().clone()).collect()
 }
 
 fn is_context_message(message: &Value) -> bool {
@@ -123,18 +125,18 @@ fn omitted(entry: &Value) -> Value {
 }
 
 /// `applyContextEdits`.
-pub fn apply_context_edits(entries: &[Value]) -> Vec<Value> {
+pub fn apply_context_edits<V: Borrow<Value>>(entries: &[V]) -> Vec<Value> {
     let mut edits: HashMap<String, Option<Value>> = HashMap::new();
     for entry in entries {
-        for (target, replacement) in edits_of(entry) {
+        for (target, replacement) in edits_of(entry.borrow()) {
             edits.insert(target, replacement);
         }
     }
     if edits.is_empty() {
-        return entries.to_vec();
+        return entries.iter().map(|e| e.borrow().clone()).collect();
     }
     let mut hidden = HashSet::new();
-    for entry in entries {
+    for entry in entries.iter().map(Borrow::borrow) {
         if str_of(entry, "type") != "message" || str_of(&entry["message"], "role") != "assistant" {
             continue;
         }
@@ -155,7 +157,8 @@ pub fn apply_context_edits(entries: &[Value]) -> Vec<Value> {
     }
     entries
         .iter()
-        .map(|entry| {
+        .map(Borrow::borrow)
+        .map(|entry: &Value| {
             let id = str_of(entry, "id");
             match str_of(entry, "type") {
                 "custom" => {
@@ -190,7 +193,7 @@ pub fn apply_context_edits(entries: &[Value]) -> Vec<Value> {
 }
 
 /// `buildSessionContext` without entry projectors (custom entries contribute nothing).
-pub fn build_session_context(path: &[Value]) -> Vec<Value> {
+pub fn build_session_context<V: Borrow<Value>>(path: &[V]) -> Vec<Value> {
     build_session_context_with(path, &[])
 }
 
@@ -200,7 +203,7 @@ pub type EntryProjector = fn(&Value) -> Vec<Value>;
 /// `buildSessionContext` with `entryProjectors` (custom type, projector): a custom entry whose type has a projector
 /// contributes the projector's messages at its place in the branch. Edits apply first, so an omitted entry projects
 /// nothing.
-pub fn build_session_context_with(path: &[Value], projectors: &[(&str, EntryProjector)]) -> Vec<Value> {
+pub fn build_session_context_with<V: Borrow<Value>>(path: &[V], projectors: &[(&str, EntryProjector)]) -> Vec<Value> {
     project_context_entries(&apply_context_edits(&build_context_entries(path)), projectors)
 }
 

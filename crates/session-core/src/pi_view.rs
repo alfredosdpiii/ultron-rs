@@ -86,7 +86,7 @@ pub(crate) fn native_to_pi_entry(entry: &Value, base: &Map<String, Value>) -> Va
 }
 
 /// `findFirstKeptEntryId`: the Pi entry whose context messages through the branch's end are the retained tail.
-fn first_kept_entry_id(previous: &[Value], tail: &[Value]) -> Option<String> {
+fn first_kept_entry_id(previous: &[&Value], tail: &[Value]) -> Option<String> {
     if tail.is_empty() {
         return None;
     }
@@ -125,7 +125,7 @@ fn pi_entry_context_messages(entry: &Value) -> Vec<Value> {
 }
 
 /// `compactionToPi`: the compaction, plus its retained tail replayed when Pi cannot reference it.
-fn compaction_to_pi(entry: &Value, base: &Map<String, Value>, branch: &[Value]) -> Vec<Value> {
+fn compaction_to_pi(entry: &Value, base: &Map<String, Value>, branch: &[&Value]) -> Vec<Value> {
     let tail = entry["retainedTail"].as_array().cloned().unwrap_or_default();
     let first_kept = first_kept_entry_id(branch, &tail);
     let id = str_of(entry, "id").unwrap_or_default().to_string();
@@ -175,8 +175,8 @@ pub(crate) struct NativeAsPi {
     /// The Pi id of the lane's tip.
     pub leaf_id: Option<String>,
     pub tip_id: Option<String>,
-    /// The Pi entries each exported native entry produced, by native id.
-    pub produced: HashMap<String, Vec<Value>>,
+    /// The Pi entries the lane's tip produced (also in `entries`).
+    pub tip_items: Vec<Value>,
 }
 
 /// `nativeSessionEntriesToPi` of `lane`.
@@ -222,17 +222,18 @@ pub(crate) fn native_session_as_pi(session: &Session, lane: &str) -> NativeAsPi 
         let items = if let Some(original) = original.get(id) {
             vec![original.clone()]
         } else if str_of(entry, "type") == Some("compaction") {
-            // The Pi entries of the compaction's branch, root first.
+            // The Pi entries of the compaction's branch, root first (borrowed: a session with many compactions
+            // copied its whole history once per compaction).
             let mut ids = Vec::new();
             let mut at = str_of(entry, "parentId");
             while let Some(parent) = at {
-                ids.push(parent.to_string());
+                ids.push(original_id(parent));
                 at = by_id.get(parent).and_then(|e| str_of(e, "parentId"));
             }
-            let branch: Vec<Value> = ids
+            let branch: Vec<&Value> = ids
                 .iter()
                 .rev()
-                .flat_map(|id| produced.get(&original_id(id)).cloned().unwrap_or_default())
+                .flat_map(|id| produced.get(id).into_iter().flatten())
                 .collect();
             compaction_to_pi(entry, &base, &branch)
         } else {
@@ -240,17 +241,24 @@ pub(crate) fn native_session_as_pi(session: &Session, lane: &str) -> NativeAsPi 
         };
         produced.insert(id.to_string(), items);
     }
+    let tip = session.branch_tip(lane).flatten();
+    let leaf_id = pi_id_of(&produced, tip.as_deref());
+    let tip_items = tip
+        .as_deref()
+        .and_then(|tip| produced.get(tip))
+        .cloned()
+        .unwrap_or_default();
+    // Moved out, not copied: each native entry produced its items once.
     let entries = natives
         .iter()
         .filter_map(|e| str_of(e, "id"))
-        .flat_map(|id| produced.get(id).cloned().unwrap_or_default())
+        .flat_map(|id| produced.remove(id).unwrap_or_default())
         .collect();
-    let tip = session.branch_tip(lane).flatten();
     NativeAsPi {
         entries,
-        leaf_id: pi_id_of(&produced, tip.as_deref()),
+        leaf_id,
         tip_id: tip,
-        produced,
+        tip_items,
     }
 }
 

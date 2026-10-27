@@ -78,17 +78,29 @@ impl Lane {
         self.transcript.value()["snapshot"].clone()
     }
 
-    /// Fold one harness event into the snapshot and publish it as the current event.
+    /// Fold one harness event into the snapshot and publish it as the current event. Only `entry_added` changes the
+    /// transcript (harness::reducer): every other event leaves it aside rather than copying and comparing it.
     pub fn publish(&self, harness_event: Value) {
-        self.transcript.change(|state| {
+        let entry_added = harness_event["type"] == "entry_added";
+        let fold = |state: &mut Value| {
             harness::reducer::reduce_lane_snapshot(&mut state["snapshot"], &harness_event);
             state["event"] = harness_event;
-        });
+        };
+        if entry_added {
+            self.transcript.change(fold);
+        } else {
+            self.transcript.change_beside("/snapshot/transcript", fold);
+        }
+    }
+
+    /// The snapshot's `tipId`.
+    fn tip(&self) -> Value {
+        self.transcript.read(|state| state["snapshot"]["tipId"].clone())
     }
 
     pub fn start_run(&mut self, run_id: &str, started_at: i64) {
         self.run_id = Some(run_id.to_string());
-        self.from_tip = self.snapshot()["tipId"].clone();
+        self.from_tip = self.tip();
         self.publish(event(&[
             ("type", json!("run_start")),
             ("runId", json!(run_id)),
@@ -99,7 +111,7 @@ impl Lane {
 
     pub fn end_run(&mut self, ended_at: i64, error: Option<&str>) {
         let Some(run_id) = self.run_id.take() else { return };
-        let tip = self.snapshot()["tipId"].clone();
+        let tip = self.tip();
         let mut fields = vec![
             ("type", json!("run_end")),
             ("lane", json!(LANE)),

@@ -1647,19 +1647,23 @@ impl App {
 
     /// Rows of `settled` not yet in scrollback: appended when the committed rows are still its head, else the whole
     /// of it replayed (a toggle, a resize or a session switch changed rows already written).
-    fn commit(&mut self, settled: &[String]) -> Option<HistoryBatch> {
-        let (rows, kind) = if settled.starts_with(&self.committed) {
-            if settled.len() == self.committed.len() {
+    fn commit(committed: &mut Vec<String>, history_id: &mut u64, settled: &[&str]) -> Option<HistoryBatch> {
+        let head = committed.len() <= settled.len() && committed.iter().zip(settled).all(|(row, now)| row == now);
+        let (rows, kind) = if head {
+            if settled.len() == committed.len() {
                 return None;
             }
-            (settled[self.committed.len()..].to_vec(), HistoryKind::Append)
+            let rows: Vec<String> = settled[committed.len()..].iter().map(|row| row.to_string()).collect();
+            committed.extend(rows.iter().cloned());
+            (rows, HistoryKind::Append)
         } else {
-            (settled.to_vec(), HistoryKind::Replay)
+            let rows: Vec<String> = settled.iter().map(|row| row.to_string()).collect();
+            committed.clone_from(&rows);
+            (rows, HistoryKind::Replay)
         };
-        self.committed = settled.to_vec();
-        self.history_id += 1;
+        *history_id += 1;
         Some(HistoryBatch {
-            id: self.history_id,
+            id: *history_id,
             rows,
             kind,
         })
@@ -1667,7 +1671,8 @@ impl App {
 
     /// One frame of the scrollback/live split: finished transcript rows go to history once; the viewport is the
     /// live transcript (a streaming message, running cells) above the dock. The painter keeps the viewport's last
-    /// `height` rows, so the editor and footer stay on screen. The batch it returns must be painted.
+    /// `height` rows, so the editor and footer stay on screen. The batch it returns must be painted. The transcript's
+    /// rows are borrowed from the chat's cache: only new and live rows are copied, not the whole session's each frame.
     pub fn frame_plan(&mut self, width: usize, height: usize) -> FramePlan {
         self.rows = height;
         self.cols = width;
@@ -1678,18 +1683,17 @@ impl App {
             };
         }
         let header = self.header_lines(width);
-        let transcript = self.chat.render_transcript(width);
+        self.chat.render_items(width);
+        let document: Vec<&str> = header.iter().chain(self.chat.lines()).map(String::as_str).collect();
         let settled = if self.session_id.is_none() {
             0
         } else if self.operation.is_none() && !self.chat.is_working() {
-            header.len() + transcript.len()
+            document.len()
         } else {
             header.len() + self.chat.settled_lines()
         };
-        let mut document = header;
-        document.extend(transcript);
-        let history = self.commit(&document[..settled]);
-        let mut viewport = document.split_off(settled);
+        let history = Self::commit(&mut self.committed, &mut self.history_id, &document[..settled]);
+        let mut viewport: Vec<String> = document[settled..].iter().map(|row| row.to_string()).collect();
         for part in self.dock(width) {
             viewport.extend(part);
         }
@@ -1699,7 +1703,8 @@ impl App {
     /// The last frame of the split: the whole transcript in scrollback, the dock below it.
     pub fn exit_plan(&mut self, width: usize) -> FramePlan {
         let document = self.document(width);
-        let history = self.commit(&document);
+        let rows: Vec<&str> = document.iter().map(String::as_str).collect();
+        let history = Self::commit(&mut self.committed, &mut self.history_id, &rows);
         FramePlan {
             history,
             viewport: self.dock(width).concat(),
@@ -5356,7 +5361,12 @@ impl App {
 
     /// The chat column: transcript above the dock, `height` rows.
     fn render_main(&mut self, width: usize, height: usize) -> Vec<String> {
-        let document = self.document(width);
+        // The last frame's rows, overwritten in place.
+        let mut document = self.viewport.take_content();
+        let header = self.header_lines(width);
+        self.mouse_layout.header_rows = header.len();
+        self.chat.render_items(width);
+        refill(&mut document, header.iter().chain(self.chat.lines()));
         let dock = self.dock(width);
         // The editor (second to last) keeps at least three rows.
         let editor = dock.len() - 2;
@@ -5440,6 +5450,19 @@ impl App {
         }
         lines
     }
+}
+
+/// `buffer` holding `rows`: each existing string is overwritten in place, keeping its allocation.
+fn refill<'a>(buffer: &mut Vec<String>, rows: impl Iterator<Item = &'a String>) {
+    let mut len = 0;
+    for row in rows {
+        match buffer.get_mut(len) {
+            Some(slot) => slot.clone_from(row),
+            None => buffer.push(row.clone()),
+        }
+        len += 1;
+    }
+    buffer.truncate(len);
 }
 
 /// Standard base64 with padding.

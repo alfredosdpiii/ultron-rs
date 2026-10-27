@@ -149,9 +149,9 @@ pub fn as_error(message: &AssistantMessage) -> AssistantMessage {
 /// `prepareCompactionThreshold`: a threshold compaction is due at a checkpoint when compaction is on, the branch has
 /// no compaction at or after the checkpoint's trigger entry, and the context leaves less than `reserveTokens` of the
 /// window. `path` is the branch, oldest first; `tokens_before` the preparation's context estimate.
-pub fn threshold_due(
+pub fn threshold_due<V: std::borrow::Borrow<Value>>(
     settings: &CompactionSettings,
-    path: &[Value],
+    path: &[V],
     trigger: Option<&str>,
     tokens_before: u64,
     context_window: u64,
@@ -159,8 +159,8 @@ pub fn threshold_due(
     if !settings.enabled || context_window == 0 {
         return false;
     }
-    let newest_compaction = path.iter().rposition(|e| e["type"] == "compaction");
-    let trigger_index = trigger.and_then(|t| path.iter().position(|e| e["id"] == t));
+    let newest_compaction = path.iter().rposition(|e| e.borrow()["type"] == "compaction");
+    let trigger_index = trigger.and_then(|t| path.iter().position(|e| e.borrow()["id"] == t));
     if let Some(compaction) = newest_compaction
         && trigger_index.is_none_or(|trigger| compaction >= trigger)
     {

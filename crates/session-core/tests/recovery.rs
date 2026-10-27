@@ -223,6 +223,47 @@ fn session_core_recovery_hands_back_queued_messages_and_stops_resuming_after_rep
     assert!(session.value(PENDING_ENTRY, "q-1").is_some());
 }
 
+/// The worker's own run journal joins a block's consecutive deltas into one frame (a frame per token was most of a
+/// long session's journal): the frames committed before the kill replay to the same partial answer.
+#[test]
+fn session_core_recovery_settles_a_stream_whose_deltas_were_joined() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut session = repo(dir.path()).create("/w", None, None).unwrap();
+    let config = run::lane_config("anthropic", "claude-sonnet-4-5", "medium", &["rlm"]);
+    let mut run =
+        session_core::op_journal::Run::admit(&mut session, config, run::default_settings(), user("hi")).unwrap();
+    run.begin_assistant(&mut session, 1000, 200_000).unwrap();
+    let text = |t: &str| json!([{"type": "text", "text": t}]);
+    let both = |t: &str| json!([{"type": "text", "text": t}, {"type": "thinking", "thinking": ""}]);
+    for event in [
+        json!({"type": "start", "partial": partial(json!([]))}),
+        json!({"type": "text_start", "contentIndex": 0, "partial": partial(text(""))}),
+        json!({"type": "text_delta", "contentIndex": 0, "delta": "Hel", "partial": partial(text("Hel"))}),
+        json!({"type": "text_delta", "contentIndex": 0, "delta": "lo", "partial": partial(text("Hello"))}),
+        json!({"type": "text_delta", "contentIndex": 0, "delta": " you", "partial": partial(text("Hello you"))}),
+        json!({"type": "thinking_start", "contentIndex": 1, "partial": partial(both("Hello you"))}),
+    ] {
+        run.stream_event(&mut session, &event).unwrap();
+    }
+    let frames: Vec<Value> = session
+        .state()
+        .lists()
+        .iter()
+        .filter(|(ns, _, _)| ns == PENDING_FRAMES)
+        .flat_map(|(_, _, items)| items.iter().map(|e| e.value.clone()))
+        .collect();
+    let kinds: Vec<&str> = frames.iter().map(|f| f["type"].as_str().unwrap()).collect();
+    assert_eq!(kinds, ["start", "text_start", "text_delta", "thinking_start"]);
+    assert_eq!(frames[2]["delta"], "Hello you");
+    // The worker died here.
+    drop(run);
+    let mut session = reopened(dir.path(), &session);
+    settle(&mut session).unwrap();
+    let messages = branch(&session);
+    assert_eq!(messages[1]["content"][0], json!({"type": "text", "text": "Hello you"}));
+    assert_eq!(messages[1]["errorMessage"], INTERRUPTED_ASSISTANT);
+}
+
 #[test]
 fn session_core_recovery_reduces_frames_to_text_and_thinking() {
     let frames = [

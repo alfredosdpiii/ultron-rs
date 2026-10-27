@@ -276,10 +276,8 @@ fn interactive_rlm_extract_turn_and_root_cell_replay_typescript() {
                 })
                 .collect()
         });
-        let view = TranscriptView {
-            transcript: extract_transcript(),
-            running_tools: running,
-        };
+        let entries = extract_transcript();
+        let view = TranscriptView::from_entries(&entries, running);
         let now = case["now"].as_f64().unwrap();
         let (turn, cells) = extract_turn(Some(&view), &mut RlmClock::new(), now, 30);
         let turn = turn.unwrap();
@@ -1104,16 +1102,16 @@ fn interactive_rlm_clock_uses_admission_freezes_and_omits_unknown_starts() {
 #[test]
 fn interactive_rlm_extracts_the_running_root_cell_and_the_turn() {
     let mut clock = RlmClock::new();
-    let running = TranscriptView {
-        transcript: Vec::new(),
-        running_tools: Some(vec![RunningTool {
+    let running = TranscriptView::from_entries(
+        &[],
+        Some(vec![RunningTool {
             status: "running".into(),
             tool_call_id: "c1".into(),
             tool_name: "rlm".into(),
             args: json!({"code": "x = 1"}),
             ..RunningTool::default()
         }]),
-    };
+    );
     let cell = extract_root_cell(Some(&running), &mut clock, 10.0).unwrap();
     assert_eq!(
         (

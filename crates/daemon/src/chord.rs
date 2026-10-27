@@ -77,6 +77,11 @@ impl State {
         self.lock().value.clone()
     }
 
+    /// `read` of the current value, borrowed.
+    pub fn read<R>(&self, read: impl FnOnce(&Value) -> R) -> R {
+        read(&self.lock().value)
+    }
+
     fn lock(&self) -> std::sync::MutexGuard<'_, StateInner> {
         self.inner.lock().unwrap_or_else(|e| e.into_inner())
     }
@@ -94,6 +99,37 @@ impl State {
         inner.sequence += 1;
         let sequence = inner.sequence;
         // Listeners run under the lock so every subscriber sees publications in sequence order.
+        for (_, listener) in &inner.listeners {
+            listener(&ops, sequence);
+        }
+    }
+
+    /// [`State::change`] for a mutation that leaves the value at the JSON pointer `aside` alone: that value is set
+    /// aside instead of copied and compared, as an unchanged value publishes nothing. A lane's transcript is the
+    /// whole branch, and every streamed token changed the lane.
+    pub fn change_beside(&self, aside: &str, mutate: impl FnOnce(&mut Value)) {
+        let mut inner = self.lock();
+        let Some(kept) = inner.value.pointer_mut(aside).map(Value::take) else {
+            drop(inner);
+            return self.change(mutate);
+        };
+        let mut next = inner.value.clone();
+        mutate(&mut next);
+        let ops = crate::diff::diff_revisions(&inner.value, &next);
+        // Back in place, unless the mutation set the value after all (then the ops publish its new value).
+        let restore = |value: &mut Value, kept: Value| {
+            if let Some(slot) = value.pointer_mut(aside).filter(|slot| slot.is_null()) {
+                *slot = kept;
+            }
+        };
+        if ops.is_empty() {
+            restore(&mut inner.value, kept);
+            return;
+        }
+        restore(&mut next, kept);
+        inner.value = next;
+        inner.sequence += 1;
+        let sequence = inner.sequence;
         for (_, listener) in &inner.listeners {
             listener(&ops, sequence);
         }

@@ -11,6 +11,8 @@ mod agent_markers;
 mod extension_ui;
 #[path = "fixture.rs"]
 mod fixture;
+#[path = "lane_publish.rs"]
+mod lane_publish;
 #[path = "lifecycle.rs"]
 mod lifecycle;
 #[path = "lost.rs"]

@@ -542,14 +542,16 @@ impl Core {
     /// progress (`fromTipId`): the run is split by entry, so a context edit that omits or replaces an entry on
     /// either side never moves the boundary.
     fn context_entries(&self, source_tip: Option<&str>) -> Result<(Vec<Value>, usize), String> {
+        // Borrowed walks: this runs before every request, and a long session's branch from the root is far larger
+        // than its context (only the entries from the newest compaction are copied).
         let session = lock_session(&self.session);
-        let before: std::collections::HashSet<String> = session
+        let before: std::collections::HashSet<&str> = session
             .state()
-            .branch_path(source_tip)?
-            .iter()
-            .filter_map(|entry| entry["id"].as_str().map(str::to_string))
+            .branch_path_refs(source_tip)?
+            .into_iter()
+            .filter_map(|entry| entry["id"].as_str())
             .collect();
-        let entries = session_journal::context::build_context_entries(&session.branch_entries(LANE)?);
+        let entries = session_journal::context::build_context_entries(&session.branch_entry_refs(LANE)?);
         let mut split = entries
             .iter()
             .take_while(|entry| entry["id"].as_str().is_some_and(|id| before.contains(id)))

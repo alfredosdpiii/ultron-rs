@@ -72,14 +72,18 @@ impl Core {
     /// sees is neither summarized back in nor kept). With nothing to cut it keeps the whole branch after an
     /// (empty-conversation) summary, as the native harness does.
     pub(super) fn prepare_compaction(&self, settings: CompactionSettings) -> Result<Prepared, String> {
-        self.prepare_compaction_of(settings, false)
+        self.prepare_compaction_of(&self.pi(), settings, false)
     }
 
-    /// [`Core::prepare_compaction`]; `before_overflow`: of the branch before its overflowed answer (the tip), as
-    /// the compaction that answer started was prepared.
-    fn prepare_compaction_of(&self, settings: CompactionSettings, before_overflow: bool) -> Result<Prepared, String> {
-        let pi = self.pi();
-        let mut path: Vec<Value> = pi.branch_entries(None).into_iter().cloned().collect();
+    /// [`Core::prepare_compaction`] in the Pi view `pi`; `before_overflow`: of the branch before its overflowed
+    /// answer (the tip), as the compaction that answer started was prepared.
+    fn prepare_compaction_of(
+        &self,
+        pi: &SessionManager,
+        settings: CompactionSettings,
+        before_overflow: bool,
+    ) -> Result<Prepared, String> {
+        let mut path: Vec<&Value> = pi.branch_entries(None);
         if before_overflow
             && path
                 .last()
@@ -311,13 +315,20 @@ impl Core {
         }
         let resumed = run.resume_overflow.take();
         let settings = self.compaction_settings();
-        let Ok(prepared) = self.prepare_compaction_of(settings, resumed.is_some()) else {
+        // Nothing is due without automatic compaction or a window (auto_compaction::threshold_due): the checkpoint
+        // runs before every request, and preparing converts the whole session.
+        if resumed.is_none() && (!settings.enabled || self.model.context_window == 0) {
+            return Ok(false);
+        }
+        // One Pi view for the preparation and the threshold check.
+        let pi = self.pi();
+        let Ok(prepared) = self.prepare_compaction_of(&pi, settings, resumed.is_some()) else {
             return Ok(false);
         };
         let reason = if resumed.is_some() {
             Reason::Overflow
         } else {
-            let path: Vec<Value> = self.pi().branch_entries(None).into_iter().cloned().collect();
+            let path = pi.branch_entries(None);
             let trigger = self
                 .run
                 .as_ref()
@@ -334,6 +345,7 @@ impl Core {
             }
             Reason::Threshold
         };
+        drop(pi);
         if let Some(run) = self.run.as_mut() {
             run.journal.begin_compaction(
                 &mut lock_session(&self.session),
