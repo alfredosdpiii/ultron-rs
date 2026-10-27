@@ -198,10 +198,14 @@ fn run_process(case: &Value) -> Vec<String> {
             ));
         }
     };
+    // The recorded length is taken again too: a fixture whose prompt line was edited by hand keeps a true count.
+    let want_stdout = case["stdout"]
+        .as_str()
+        .map(|s| Value::String(stable_print_config(s.to_string())));
     check(
         "stdout",
         stable_print_config(root.normalize(&String::from_utf8_lossy(&output.stdout))),
-        &case["stdout"],
+        want_stdout.as_ref().unwrap_or(&case["stdout"]),
     );
     check(
         "stderr",

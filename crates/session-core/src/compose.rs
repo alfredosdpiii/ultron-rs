@@ -1769,6 +1769,8 @@ fn typed_agents(
         delegation::usage::UsageOptions {
             limits,
             on_refused: Some(Arc::new(move |_: &str| refused.usage_limit_block())),
+            // With the token cap off by default, the turn counts are still kept, as TypeScript's capped ledger does.
+            keep_turns: true,
             ..Default::default()
         },
     )

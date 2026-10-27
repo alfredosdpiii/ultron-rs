@@ -1943,17 +1943,30 @@ fn interactive_commands_schedules_lists_and_a_fired_schedule_is_one_line() {
 
 /// `/clear` is `/new` (Claude Code's `/clear`): offered in the completion list with its description, it aborts a
 /// running turn first, then starts a new session; idle, it only starts one. The new session's `Opened` clears the
-/// chat.
+/// chat. It is a Rust-only command: the TypeScript-parity build does not offer it.
 #[test]
 fn interactive_commands_clear_aborts_the_turn_and_starts_a_new_session() {
-    let (mut listing, _) = app();
+    let rust = || {
+        app_with(
+            interactive::qol::QolSettings::default(),
+            vec![model("a", true), model("b", true), model("c", false)],
+        )
+    };
+    let (mut listing, _) = rust();
     typed(&mut listing, "/clea");
     let s = screen(&mut listing);
     assert!(
         s.contains("clear") && s.contains("Clear the conversation: start a new session"),
         "{s}"
     );
-    let (mut app, c) = app();
+    let (mut parity, _) = app();
+    typed(&mut parity, "/clea");
+    assert!(
+        !screen(&mut parity).contains("Clear the conversation"),
+        "{}",
+        screen(&mut parity)
+    );
+    let (mut app, c) = rust();
     app.apply(LaneEvent::Message(
         json!({"role": "user", "content": "Earlier question", "timestamp": 1}),
     ));

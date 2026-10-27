@@ -521,16 +521,16 @@ fn acceptance_a47_input_larger_than_the_window_is_counted_exactly_through_bounde
     assert_eq!(result["spent"]["calls"], frames);
     assert!(result["spent"]["tokens"].as_u64().unwrap() > 0);
     assert_eq!(result["budget"]["calls"], 200);
+    // The map sets no token budget, and an `rlm.map` has none by default: the spend has no limit after it.
+    assert!(result["budget"]["tokens"].is_null(), "{result}");
     let summary = result["summary"].as_str().unwrap();
     let head = format!("[rlm.map] {frames} frames: {frames} complete, 0 incomplete, 0 failed; spent {frames} calls, ");
     let tail = summary.strip_prefix(&head).unwrap_or_else(|| panic!("{summary}"));
-    let (spent, limit) = tail.split_once(" tokens of ").unwrap_or_else(|| panic!("{summary}"));
-    for number in [spent, limit] {
-        assert!(
-            !number.is_empty() && number.chars().all(|c| c.is_ascii_digit() || c == ','),
-            "{summary}"
-        );
-    }
+    let spent = tail.strip_suffix(" tokens").unwrap_or_else(|| panic!("{summary}"));
+    assert!(
+        !spent.is_empty() && spent.chars().all(|c| c.is_ascii_digit() || c == ','),
+        "{summary}"
+    );
     let messages = serde_json::to_string(&client.get_messages().unwrap()).unwrap();
     assert!(messages.contains(&format!("[rlm.map] {frames} frames")));
     // Frame traces, read in the cell.

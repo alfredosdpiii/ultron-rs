@@ -318,11 +318,13 @@ fn cli_interactive_login_api_key_like_ts() {
 /// `tasks`/`tokens` gauges come from `agents.status {graph: true}` and the `kernels` strip from the inspected
 /// `rlm.pool`, as in TypeScript. The Rust session opens the root lane's kernel at once (TypeScript's starts on the
 /// first cell), so the strip says `1/16` live where TypeScript's says `0/16`: it is compared by its counters after
-/// the live count. Every other row matches TypeScript (blank rows aside).
+/// the live count. TypeScript's default 10M token cap shows a `tokens` gauge; Ultron has no default cap, so it is
+/// left out of the recorded rows. Every other row matches TypeScript (blank rows aside).
 #[test]
 fn cli_interactive_rlm_views_like_ts() {
     let kernels = |row: &str| row.trim_start().starts_with("kernels ");
     replay_compare("rlm-panel", &|got: &str, want: &str| {
+        let want = want.replace("  tokens ▱▱▱▱▱▱ 0/10.0M", "");
         let rows = |screen: &str| -> Vec<String> {
             screen
                 .lines()
@@ -333,7 +335,7 @@ fn cli_interactive_rlm_views_like_ts() {
                 })
                 .collect()
         };
-        assert_eq!(rows(got), rows(want), "--- got\n{got}\n--- want\n{want}");
+        assert_eq!(rows(got), rows(&want), "--- got\n{got}\n--- want\n{want}");
     });
 }
 

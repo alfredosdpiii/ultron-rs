@@ -30,7 +30,7 @@ const fn c(name: &'static str, hint: &'static str, description: &'static str) ->
 /// Every command the TypeScript client TUI offers, in its order.
 /// The Rust-only commands, offered with the overlays ([`crate::qol::QolSettings::overlays`]); a parity build has
 /// exactly the client TUI's [`COMMANDS`].
-pub const QOL_COMMANDS: [CommandSpec; 5] = [
+pub const QOL_COMMANDS: [CommandSpec; 6] = [
     c(
         "mode",
         "[name]",
@@ -51,6 +51,8 @@ pub const QOL_COMMANDS: [CommandSpec; 5] = [
         "",
         "Scheduled prompts of this session (schedule.every / schedule.at): name, next run, runs",
     ),
+    // Claude Code's `/clear`: `/new` by another name.
+    c("clear", "", "Clear the conversation: start a new session"),
     // Pi's own (core/slash-commands.ts), which the client TUI does not offer.
     c("bug", "<description>", "Report a bug to the Pi developers"),
 ];
@@ -59,7 +61,7 @@ pub const QOL_COMMANDS: [CommandSpec; 5] = [
 /// easter eggs.
 pub const PI_COMMANDS: [&str; 3] = ["bug", "arminsayshi", "dementedelves"];
 
-pub const COMMANDS: [CommandSpec; 39] = [
+pub const COMMANDS: [CommandSpec; 38] = [
     c("name", "<name>", "Set session display name"),
     c("session", "", "Show session info and stats"),
     c(
@@ -105,7 +107,6 @@ pub const COMMANDS: [CommandSpec; 39] = [
     c("scoped-models", "", "Enable/disable models for Ctrl+P cycling"),
     c("debug", "", "Write a debug log (TUI, Session worker and server state)"),
     c("new", "", "Start a new session"),
-    c("clear", "", "Clear the conversation: start a new session"),
     c(
         "rlm",
         "",

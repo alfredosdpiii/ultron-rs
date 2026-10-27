@@ -243,6 +243,9 @@ pub struct UsageOptions {
     /// Told when a reservation is refused because a limit was reached.
     pub on_refused: Option<Refused>,
     pub ids: IdSource,
+    /// Persist each root's turn count even while no limit is enforced. TypeScript persists only while one is, which
+    /// with its default token cap is always; Ultron has no default cap and keeps the count for `/usage` anyway.
+    pub keep_turns: bool,
 }
 
 impl Default for UsageOptions {
@@ -259,6 +262,7 @@ impl Default for UsageOptions {
             detailed_roots: DEFAULT_DETAILED_ROOTS,
             on_refused: None,
             ids: Box::new(crate::task_store::uuid_v4),
+            keep_turns: false,
         }
     }
 }
@@ -280,6 +284,7 @@ pub struct UsageLedger {
     now: Clock,
     detailed_roots: usize,
     on_refused: Option<Refused>,
+    keep_turns: bool,
 }
 
 fn empty_document() -> Value {
@@ -624,6 +629,7 @@ impl UsageLedger {
             now: options.now,
             detailed_roots: options.detailed_roots,
             on_refused: options.on_refused,
+            keep_turns: options.keep_turns,
         })
     }
 
@@ -1007,7 +1013,7 @@ impl UsageLedger {
             });
             root["turns"] = next;
             state.document["roots"][&id] = root;
-            if self.enforces_tree() {
+            if self.keep_turns || self.enforces_tree() {
                 self.write(state)?;
             }
             Ok(())
