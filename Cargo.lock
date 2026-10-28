@@ -378,6 +378,7 @@ dependencies = [
  "config",
  "daemon",
  "delegation",
+ "harness",
  "herdr",
  "hindsight",
  "host",

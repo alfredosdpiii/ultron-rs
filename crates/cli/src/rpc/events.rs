@@ -91,12 +91,14 @@ impl LaneEvent {
                 ended_at: event["endedAt"].as_i64().unwrap_or(0),
             },
             "message_start" => LaneEvent::MessageStart(event["message"].clone()),
+            // The usage rides on the event (harness::stream_fold); an older worker's update carries its message.
             "message_update" => {
-                if event["message"]["role"] != "assistant" || event["frame"].is_null() {
+                let message = harness::stream_fold::message_of(event);
+                if message.is_some_and(|m| m["role"] != "assistant") || event["frame"].is_null() {
                     return None;
                 }
                 LaneEvent::MessageUpdate {
-                    usage: event["message"]["usage"].clone(),
+                    usage: message.map_or_else(|| event["usage"].clone(), |m| m["usage"].clone()),
                     event: event["frame"].clone(),
                 }
             }

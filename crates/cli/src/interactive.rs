@@ -611,7 +611,36 @@ fn catalog_info(m: &ai::Model) -> ModelInfo {
     }
 }
 
-/// The TUI events a lane-watch event is (`None` for the ones it does not show).
+/// The streaming assistant message the TUI draws, folded from `message_update` frames (harness::stream_fold): an
+/// update carries its frame, not the message so far.
+#[derive(Default)]
+pub struct TuiStream {
+    message: Option<Value>,
+}
+
+impl TuiStream {
+    /// The TUI events of a lane-watch event, as [`tui_events`], with each update's frame folded into the message.
+    pub fn events(&mut self, event: &Value) -> Vec<LaneEvent> {
+        match event["type"].as_str() {
+            Some("message_start") if event["message"]["role"] == "assistant" => {
+                self.message = Some(event["message"].clone());
+            }
+            Some("message_update") if harness::stream_fold::message_of(event).is_none() => {
+                let Some(message) = self.message.as_mut() else {
+                    return Vec::new();
+                };
+                harness::stream_fold::fold_update(message, event);
+                return vec![LaneEvent::Streaming(message.clone())];
+            }
+            Some("message_end" | "run_end") => self.message = None,
+            _ => {}
+        }
+        tui_events(event)
+    }
+}
+
+/// The TUI events a lane-watch event is (`None` for the ones it does not show). A `message_update` shows only when
+/// it carries its message (an older worker); [`TuiStream`] folds the others.
 pub fn tui_events(event: &Value) -> Vec<LaneEvent> {
     let text = |key: &str| event[key].as_str().unwrap_or_default().to_string();
     match event["type"].as_str() {
@@ -2330,6 +2359,7 @@ fn run_tui(
     let watch = {
         let (ui, commands) = (ui_tx.clone(), command_tx.clone());
         let lane_open = std::sync::Mutex::new(true);
+        let stream = std::sync::Mutex::new(TuiStream::default());
         let herdr = herdr.clone();
         move |event: Value| {
             if let Some(herdr) = &herdr {
@@ -2342,7 +2372,8 @@ fn run_tui(
                 let _ = commands.send(Command::WorkerStopped);
             }
             let (recovery, reopen) = recovery_events(&event, &mut lane_open.lock().unwrap_or_else(|e| e.into_inner()));
-            for lane_event in tui_events(&event).into_iter().chain(recovery) {
+            let shown = stream.lock().unwrap_or_else(|e| e.into_inner()).events(&event);
+            for lane_event in shown.into_iter().chain(recovery) {
                 let _ = ui.send(UiEvent::Lane(lane_event));
             }
             if reopen {
@@ -2744,6 +2775,38 @@ mod tests {
                 AgentStatus::Idle
             ]
         );
+    }
+
+    /// An update carries its frame, not the message so far: the TUI's stream folds it into the started message
+    /// (harness::stream_fold). An older worker's update, whole, still shows as it is.
+    #[test]
+    fn cli_interactive_stream_folds_update_frames() {
+        let mut stream = TuiStream::default();
+        let start = json!({"type": "message_start", "runId": "r1", "lane": "main",
+            "message": {"role": "assistant", "content": [], "stopReason": "pending"}});
+        let update = |frame: Value| {
+            json!({"type": "message_update", "runId": "r1", "lane": "main", "frame": frame,
+            "usage": {"output": 1}})
+        };
+        assert_eq!(
+            stream.events(&update(json!({"type": "text_start", "contentIndex": 0}))),
+            []
+        );
+        stream.events(&start);
+        stream.events(&update(json!({"type": "text_start", "contentIndex": 0})));
+        let shown = stream.events(&update(json!({"type": "text_delta", "contentIndex": 0, "delta": "Hi"})));
+        let [LaneEvent::Streaming(message)] = shown.as_slice() else {
+            panic!("{shown:?}");
+        };
+        assert_eq!(message["content"], json!([{"type": "text", "text": "Hi"}]));
+        assert_eq!(message["usage"], json!({"output": 1}));
+        stream.events(&json!({"type": "message_end", "message": {"role": "assistant", "content": []}}));
+        assert_eq!(
+            stream.events(&update(json!({"type": "text_delta", "contentIndex": 0, "delta": "!"}))),
+            []
+        );
+        let whole = json!({"type": "message_update", "message": {"role": "assistant", "content": []}, "frame": {}});
+        assert_eq!(stream.events(&whole), [LaneEvent::Streaming(whole["message"].clone())]);
     }
 
     #[test]

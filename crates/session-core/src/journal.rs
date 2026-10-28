@@ -336,6 +336,28 @@ impl RunJournal {
     }
 }
 
+/// What a `message_update` lane-watch event carries (Rust-only; harness `stream_fold` folds it): the provider frame,
+/// without its partial message, a tool call's start naming the call; and the usage so far. Never the message: the
+/// response so far, sent once per delta, made streaming quadratic in its length.
+pub fn update_fields(message: &agent::AgentMessage, event: &AssistantMessageEvent) -> (Value, Value) {
+    let mut frame = frame_source(event).unwrap_or(Value::Null);
+    if frame["type"] == "toolcall_start"
+        && let Some(index) = frame["contentIndex"].as_u64()
+    {
+        let call = frame["partial"]["content"][index as usize].clone();
+        frame["id"] = call["id"].clone();
+        frame["toolName"] = call["name"].clone();
+    }
+    if let Some(map) = frame.as_object_mut() {
+        map.shift_remove("partial");
+    }
+    let usage = match message {
+        ai::Message::Assistant(assistant) => serde_json::to_value(&assistant.usage).unwrap_or(Value::Null),
+        _ => Value::Null,
+    };
+    (frame, usage)
+}
+
 /// A stream event as the frame encoder reads it. A delta becomes its type, index and delta alone: serializing the
 /// event whole copied the response so far (`partial`) once per delta, quadratic in the response's length.
 pub fn frame_source(event: &AssistantMessageEvent) -> Option<Value> {

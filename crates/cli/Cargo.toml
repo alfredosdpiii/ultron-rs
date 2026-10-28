@@ -30,6 +30,7 @@ daemon = { path = "../daemon" }
 delegation = { path = "../delegation" }
 host = { path = "../host" }
 herdr = { path = "../herdr" }
+harness = { path = "../harness" }
 hindsight = { path = "../hindsight" }
 interactive = { path = "../interactive" }
 indexmap = "=2.14.2"

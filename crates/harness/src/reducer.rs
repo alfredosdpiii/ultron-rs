@@ -118,16 +118,29 @@ pub fn reduce_lane_snapshot(snapshot: &mut Value, event: &Value) -> Option<Reduc
                 operation.shift_remove("retry");
             }
         }
-        "message_start" | "message_update" => {
+        "message_start" => {
             let message = &event["message"];
-            if message["role"] != "assistant" {
-                return None;
-            }
-            if kind == "message_start" && (run_id.is_none() || message["stopReason"] != "pending") {
+            if message["role"] != "assistant" || run_id.is_none() || message["stopReason"] != "pending" {
                 return None;
             }
             if let Some(operation) = matching(snapshot, run_id) {
                 operation.insert("streamingMessage".into(), message.clone());
+            }
+        }
+        // Rust-only: an update carries its frame, folded into the streaming message (crate::stream_fold); one from an
+        // older worker (or TypeScript) carries the whole message, which replaces it.
+        "message_update" => {
+            if let Some(message) = crate::stream_fold::message_of(event) {
+                if message["role"] != "assistant" {
+                    return None;
+                }
+                if let Some(operation) = matching(snapshot, run_id) {
+                    operation.insert("streamingMessage".into(), message.clone());
+                }
+            } else if let Some(streaming) =
+                matching(snapshot, run_id).and_then(|operation| operation.get_mut("streamingMessage"))
+            {
+                crate::stream_fold::fold_update(streaming, event);
             }
         }
         "message_end" => {

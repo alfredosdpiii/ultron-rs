@@ -8,5 +8,6 @@ pub mod chat;
 pub mod effect_gate;
 pub mod reducer;
 pub mod scheduler;
+pub mod stream_fold;
 pub mod supervisor;
 pub mod task_store;

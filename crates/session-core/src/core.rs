@@ -1445,25 +1445,14 @@ impl Core {
                     return;
                 }
                 self.journal(&agent_event);
-                // The frame (`AssistantMessageFrame`): the provider event without its partial message; a tool
-                // call's start names the call. A delta is built without serializing the partial.
-                let mut frame = crate::journal::frame_source(assistant_message_event).unwrap_or(Value::Null);
-                if frame["type"] == "toolcall_start"
-                    && let Some(index) = frame["contentIndex"].as_u64()
-                {
-                    let call = frame["partial"]["content"][index as usize].clone();
-                    frame["id"] = call["id"].clone();
-                    frame["toolName"] = call["name"].clone();
-                }
-                if let Some(map) = frame.as_object_mut() {
-                    map.shift_remove("partial");
-                }
+                // The frame (`AssistantMessageFrame`) and the usage, never the message (crate::journal::update_fields).
+                let (frame, usage) = crate::journal::update_fields(message, assistant_message_event);
                 self.emit(event(vec![
                     ("type", json!("message_update")),
                     ("runId", run),
                     ("lane", lane),
-                    ("message", serde_json::to_value(message).unwrap_or(Value::Null)),
                     ("frame", frame),
+                    ("usage", usage),
                 ]));
             }
             AgentEvent::MessageEnd { message } => {

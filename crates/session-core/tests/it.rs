@@ -151,6 +151,8 @@ mod snapshot_key_store;
 mod spawn_contracts;
 #[path = "stats_wiring.rs"]
 mod stats_wiring;
+#[path = "stream_fold.rs"]
+mod stream_fold;
 #[path = "subscription_models.rs"]
 mod subscription_models;
 #[path = "swarm_ops.rs"]

@@ -144,17 +144,14 @@ impl Lane {
                 message: m,
                 assistant_message_event,
             } => {
-                // A delta is built without serializing the response so far (`partial`), which the frame leaves out.
-                let mut frame = session_core::journal::frame_source(assistant_message_event).unwrap_or(Value::Null);
-                if let Some(map) = frame.as_object_mut() {
-                    map.remove("partial");
-                }
+                // The frame and the usage, never the response so far (session_core::journal::update_fields).
+                let (frame, usage) = session_core::journal::update_fields(m, assistant_message_event);
                 self.publish(event(&[
                     ("type", json!("message_update")),
                     ("runId", run),
                     ("lane", lane),
-                    ("message", serde_json::to_value(m).unwrap_or(Value::Null)),
                     ("frame", frame),
+                    ("usage", usage),
                 ]));
             }
             AgentEvent::MessageEnd { message: m } => {
