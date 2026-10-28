@@ -464,6 +464,12 @@ fn resources_runtime_guide_names_the_swarm_apis_only_when_the_host_serves_them()
         schedule_end + swarm[schedule_end..].find("(`help(diagram)`).").unwrap() + "(`help(diagram)`).".len();
     assert!(swarm[schedule_end..diagram_end].starts_with("\n- `await diagram.mermaid("));
     assert_eq!(diagram_end, swarm.len());
-    let without = format!("{}{}{}", &swarm[..at - 1], &swarm[end..typed], &swarm[diagram_end..]);
+    // The Rust host's memory line says that automatic memory recalls and keeps without a call; TS's says neither does.
+    let without = format!("{}{}{}", &swarm[..at - 1], &swarm[end..typed], &swarm[diagram_end..]).replacen(
+        ". When automatic memory is on, a `[memory]` message before a user message is what was recalled for it, and \
+         summaries are kept for you; call these for anything else.",
+        "; neither runs on its own.",
+        1,
+    );
     assert_eq!(without, plain);
 }

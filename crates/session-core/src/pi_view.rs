@@ -165,7 +165,7 @@ fn compaction_to_pi(entry: &Value, base: &Map<String, Value>, branch: &[&Value])
 
 /// A format-4 session's tree as Pi entries, and the Pi id of the `main` tip.
 pub fn native_entries_to_pi(session: &Session) -> (Vec<Value>, Option<String>) {
-    let converted = native_session_as_pi(session, "main");
+    let converted = native_session_as_pi(session, "main", false);
     (converted.entries, converted.leaf_id)
 }
 
@@ -175,12 +175,13 @@ pub(crate) struct NativeAsPi {
     /// The Pi id of the lane's tip.
     pub leaf_id: Option<String>,
     pub tip_id: Option<String>,
-    /// The Pi entries the lane's tip produced (also in `entries`).
+    /// The Pi entries the lane's tip produced (also in `entries`); empty unless asked for.
     pub tip_items: Vec<Value>,
 }
 
-/// `nativeSessionEntriesToPi` of `lane`.
-pub(crate) fn native_session_as_pi(session: &Session, lane: &str) -> NativeAsPi {
+/// `nativeSessionEntriesToPi` of `lane`; with `tip_items`, the tip's own items copied out too (only the export
+/// needs them, and a Pi view is built at every checkpoint).
+pub(crate) fn native_session_as_pi(session: &Session, lane: &str, tip_items: bool) -> NativeAsPi {
     let state = session.state();
     let natives = state.entries();
     let original: HashMap<String, Value> = state
@@ -245,6 +246,7 @@ pub(crate) fn native_session_as_pi(session: &Session, lane: &str) -> NativeAsPi 
     let leaf_id = pi_id_of(&produced, tip.as_deref());
     let tip_items = tip
         .as_deref()
+        .filter(|_| tip_items)
         .and_then(|tip| produced.get(tip))
         .cloned()
         .unwrap_or_default();

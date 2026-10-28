@@ -918,7 +918,7 @@ pub fn export_native_session_to_pi(session_path: &Path, output_path: &Path) -> R
         .find(|m| m.path == path)
         .ok_or_else(|| format!("Not a native session in its session directory: {}", path.display()))?;
     let session = repo.open(&metadata)?;
-    let converted = native_session_as_pi(&session, "main");
+    let converted = native_session_as_pi(&session, "main", true);
     let state = session.state();
     let natives = state.entries();
     let native_ids: HashSet<&str> = natives.iter().map(id_of).collect();
@@ -961,9 +961,9 @@ pub fn export_native_session_to_pi(session_path: &Path, output_path: &Path) -> R
             );
         } else {
             let items = converted.tip_items;
-            let moved: HashSet<&str> = items.iter().map(id_of).collect();
+            let moved: HashSet<String> = items.iter().map(|item| id_of(item).to_string()).collect();
             entries.retain(|e| !moved.contains(id_of(e)));
-            entries.extend(items.iter().cloned());
+            entries.extend(items);
             leaf = converted.leaf_id.clone();
         }
     }

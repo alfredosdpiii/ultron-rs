@@ -146,6 +146,12 @@ pub fn as_error(message: &AssistantMessage) -> AssistantMessage {
     error
 }
 
+/// Whether a threshold compaction can be due at all: automatic compaction is on and the model has a window. The cheap
+/// half of [`threshold_due`], for callers that would otherwise build the whole context to learn nothing is due.
+pub fn may_be_due(settings: &CompactionSettings, context_window: u64) -> bool {
+    settings.enabled && context_window != 0
+}
+
 /// `prepareCompactionThreshold`: a threshold compaction is due at a checkpoint when compaction is on, the branch has
 /// no compaction at or after the checkpoint's trigger entry, and the context leaves less than `reserveTokens` of the
 /// window. `path` is the branch, oldest first; `tokens_before` the preparation's context estimate.
@@ -156,7 +162,7 @@ pub fn threshold_due<V: std::borrow::Borrow<Value>>(
     tokens_before: u64,
     context_window: u64,
 ) -> bool {
-    if !settings.enabled || context_window == 0 {
+    if !may_be_due(settings, context_window) {
         return false;
     }
     let newest_compaction = path.iter().rposition(|e| e.borrow()["type"] == "compaction");

@@ -89,6 +89,8 @@ const ASYNC_EVENTS_OFF: &str = r#"Completions are not announced in this session 
 const SEARCH_FIRST: &str = r#"## Search before delegating
 For many files or a large input, narrow with code first: 1. search the concept and its synonyms (`re`, `h.search`, `rg -il`) and count hits; 2. print one compact line per candidate (id and matching sentence); 3. read the deciding passages of unclear candidates and judge them yourself. Use `rlm.map` only for candidates a line or two cannot settle, or text over ~100 KB, one passage per frame. Do not spawn subagents to read or classify documents: each re-sends this prompt and its transcript every turn."#;
 const MEMORY: &str = r#"- `memory.prepare(query)` recalls long-term memory, `memory.propose(text, evidence)` keeps a fact; neither runs on its own."#;
+/// The Rust host's memory line: with automatic memory on, recall and keeping also run without a call.
+const MEMORY_RUST: &str = r#"- `memory.prepare(query)` recalls long-term memory, `memory.propose(text, evidence)` keeps a fact. When automatic memory is on, a `[memory]` message before a user message is what was recalled for it, and summaries are kept for you; call these for anything else."#;
 const INFERENCE_PROMPT: &str = r#"Large inputs stay out of your context as handles; examples: `help(rlm.load)`, `help(rlm.map)`.
 - `h = await rlm.load(path_or_text)`: `h.search(regex)`, `h.count(regex)`, `h.lines(a, b)`, `h.chunks(n)`; views print their text.
 - `await rlm.infer(task, context=[views], contract=T, budget=Budget(calls, tokens, depth))`: one private sub-model call (no transcript, no tools), contract-validated and re-asked; running out returns a falsy `Incomplete`.
@@ -298,7 +300,7 @@ pub fn rlm_runtime_prompt(active_tools: &[&str], options: &RuntimeGuideOptions) 
             String::new()
         };
         parts.push(format!(
-            "{context}\n{MEMORY}{TYPED_MEMORY}\n{IMAGES_PROMPT}{schedule}\n{DIAGRAM_PROMPT}"
+            "{context}\n{MEMORY_RUST}{TYPED_MEMORY}\n{IMAGES_PROMPT}{schedule}\n{DIAGRAM_PROMPT}"
         ));
     } else {
         parts.push(format!("{context}\n{MEMORY}"));

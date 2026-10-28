@@ -316,9 +316,9 @@ impl Core {
         }
         let resumed = run.resume_overflow.take();
         let settings = self.compaction_settings();
-        // Nothing is due without automatic compaction or a window (auto_compaction::threshold_due): the checkpoint
-        // runs before every request, and preparing converts the whole session.
-        if resumed.is_none() && (!settings.enabled || self.model.context_window == 0) {
+        // The checkpoint runs before every request, and preparing converts the whole session: not when nothing can
+        // be due.
+        if resumed.is_none() && !crate::auto_compaction::may_be_due(&settings, self.model.context_window) {
             return Ok(false);
         }
         // One Pi view for the preparation and the threshold check.

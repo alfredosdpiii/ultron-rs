@@ -133,6 +133,18 @@ fn take_value(write: &mut Value) -> Value {
     write.get_mut("value").map(Value::take).unwrap_or(Value::Null)
 }
 
+/// What one committed write does to the state.
+#[derive(Clone, Copy)]
+enum Action {
+    Entry,
+    Usage,
+    DeleteValue,
+    DeleteList,
+    SetValue,
+    PushList,
+    None,
+}
+
 fn physical_key(namespace: &str, key: &str) -> String {
     format!("{namespace}\u{0}{key}")
 }
@@ -246,12 +258,19 @@ impl State {
     pub fn apply(&mut self, writes: Vec<Value>) -> Value {
         for mut write in writes {
             let seq = seq_of(&write);
-            let namespace = str_of(&write, "namespace").to_string();
-            let key = str_of(&write, "key").to_string();
-            let kind = str_of(&write, "kind").to_string();
-            let op = str_of(&write, "op").to_string();
-            match (kind.as_str(), op.as_str()) {
-                ("entry", _) => {
+            // Classified first, so no field is copied out just to outlive the borrow `take_value` needs.
+            let action = match (str_of(&write, "kind"), str_of(&write, "op")) {
+                ("entry", _) => Action::Entry,
+                ("usage", _) => Action::Usage,
+                ("value", "delete") => Action::DeleteValue,
+                ("list", "delete") => Action::DeleteList,
+                ("value", _) => Action::SetValue,
+                ("list", _) => Action::PushList,
+                _ => Action::None,
+            };
+            let place = |write: &Value| physical_key(str_of(write, "namespace"), str_of(write, "key"));
+            match action {
+                Action::Entry => {
                     let entry = without_kind(write);
                     if str_of(&entry, "type") == "message" {
                         self.message_count += 1;
@@ -260,20 +279,26 @@ impl State {
                     self.entries.insert(id, self.entries_by_seq.len());
                     self.entries_by_seq.push(entry);
                 }
-                ("usage", _) => {
+                Action::Usage => {
                     let row = without_kind(write);
                     self.usage_total = add_usage(&self.usage_total, &row["usage"]);
                     self.usage.insert(str_of(&row, "id").into(), row);
                 }
-                ("value", "delete") => {
-                    self.scalars.remove(&physical_key(&namespace, &key));
+                Action::DeleteValue => {
+                    self.scalars.remove(&place(&write));
                 }
-                ("list", "delete") => {
-                    self.lists.remove(&physical_key(&namespace, &key));
+                Action::DeleteList => {
+                    self.lists.remove(&place(&write));
                 }
-                ("value", _) => self.set_scalar(&namespace, &key, take_value(&mut write), seq),
-                ("list", _) => self.push_list(&namespace, &key, take_value(&mut write), seq),
-                _ => {}
+                Action::SetValue => {
+                    let value = take_value(&mut write);
+                    self.set_scalar(str_of(&write, "namespace"), str_of(&write, "key"), value, seq);
+                }
+                Action::PushList => {
+                    let value = take_value(&mut write);
+                    self.push_list(str_of(&write, "namespace"), str_of(&write, "key"), value, seq);
+                }
+                Action::None => {}
             }
             self.next_seq = seq + 1;
         }
