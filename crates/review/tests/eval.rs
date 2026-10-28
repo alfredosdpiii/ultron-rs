@@ -40,8 +40,8 @@ fn commit(repo: &Path, file: &str, text: &str, message: &str) -> String {
 
 const APP: &str = "def total(rows):\n    result = 0\n    for row in rows:\n        result += row\n    return result\n";
 
-/// init, add parse, speed up totals (the bug), fix: totals (the fix), add logging, risky change, its revert, docs,
-/// fix: a typo in the docs.
+/// init, add parse, speed up totals (the bug), fix: totals (the fix), add logging, risky change, its revert, drop
+/// the logger (deletes only), docs, fix: a typo in the docs.
 struct History {
     _dir: tempfile::TempDir,
     repo: std::path::PathBuf,
@@ -76,6 +76,7 @@ fn history() -> History {
     ));
     git(&repo, &["revert", "--no-edit", "HEAD"]);
     shas.push(git(&repo, &["rev-parse", "HEAD"]));
+    shas.push(commit(&repo, "log.py", "import logging\n", "drop the logger"));
     shas.push(commit(&repo, "README.md", "# app\n\nSums rows.\n", "docs"));
     shas.push(commit(
         &repo,
@@ -112,11 +113,12 @@ fn review_eval_cases_are_reverted_fix_inducing_and_controls() {
                 "speed up totals",
                 vec![s[3].as_str()]
             ),
-            (CaseKind::Control, s[7].as_str(), "docs", vec![]),
+            (CaseKind::Control, s[8].as_str(), "docs", vec![]),
             (CaseKind::Control, s[4].as_str(), "add logging", vec![]),
             (CaseKind::Control, s[1].as_str(), "add parse", vec![]),
         ],
-        "the revert is no case, a fix no control, a README no bug, and the root commit has no parent"
+        "the revert is no case, a fix no control, a README no bug, a deletion nothing to review, and the root commit \
+         has no parent"
     );
     assert_eq!(cases[1].parent, s[1]);
     assert_eq!(
@@ -179,6 +181,11 @@ fn review_eval_scores_blocks_and_located_bugs() {
     assert_eq!(
         (caught.blocked, caught.located, caught.confirmed),
         (true, Some(true), 1)
+    );
+    assert_eq!(
+        serde_json::to_value(&caught.findings).unwrap(),
+        json!([{"file": "app.py", "line": 5, "level": "high", "claim": "skips the last row"}]),
+        "the confirmed findings are kept, to be read"
     );
     let noted = score(&case, &result(json!([near(9, "low")])), "medium");
     assert_eq!(

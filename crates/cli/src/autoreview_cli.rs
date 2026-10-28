@@ -114,6 +114,7 @@ Options:
   --limit <n>                  eval: reverted and fix-inducing commits reviewed at most (default 20)
   --controls <n>               eval: other commits reviewed as controls (default: as many as --limit)
   --scan <n>                   eval: commits of history searched for cases (default 2000)
+  --only <sha,...>             eval: review only the cases whose commits start with these
 
 Settings (global settings.json): autoreview.accounts, pollSeconds, concurrency, model, verifyModel, budget, dryRun,
 frameConcurrency, modelConcurrency, mode, deepModel, deepThinking, deepRounds, referenceView, verifyBatch, planModel, planThinking, askModel, askThinking, planStyle, planCells, verifyCandidates, prepareEnvs, mise, blockAt, maxComments, runTests, testOwners, testRuns, testTimeoutSeconds, testEnv, testImage, checkoutRoots, guides, thinking, verifyThinking, deadlineSeconds, frameTimeoutSeconds, ack, ackLines, ackArt, signature, learn, skipBots, ban.
@@ -169,6 +170,8 @@ pub struct Parsed {
     pub limit: Option<f64>,
     pub controls: Option<f64>,
     pub scan: Option<f64>,
+    /// eval: the cases to review, by commit prefix.
+    pub only: Option<Vec<String>>,
     pub help: bool,
 }
 
@@ -378,6 +381,7 @@ pub fn parse_args(args: &[String]) -> Result<Parsed, UsageError> {
             }
             "--repo-dir" => parsed.repo_dir = Some(value()?),
             "--list" => parsed.list = true,
+            "--only" => parsed.only = Some(list(value()?)),
             "--limit" | "--controls" | "--scan" => {
                 let count = whole(js_number(&value()?), if arg == "--controls" { 0.0 } else { 1.0 })
                     .ok_or_else(|| UsageError(format!("{arg} takes a whole number")))?;
@@ -970,7 +974,17 @@ fn eval_command(
         ..EvalOptions::default()
     };
     let io = |error: std::io::Error| Failure::Error(error.to_string());
-    let cases = build_cases(&*ov.runner(), &repo_dir.display().to_string(), &options).map_err(Failure::Error)?;
+    let mut cases = build_cases(&*ov.runner(), &repo_dir.display().to_string(), &options).map_err(Failure::Error)?;
+    if let Some(only) = &parsed.only {
+        cases.retain(|case| {
+            only.iter()
+                .any(|prefix| !prefix.is_empty() && case.sha.starts_with(prefix.as_str()))
+        });
+        if cases.is_empty() {
+            let _ = writeln!(err, "no case's commit starts with {}", only.join(", "));
+            return Ok(1);
+        }
+    }
     let kind = |kind: CaseKind| match kind {
         CaseKind::Reverted => "reverted",
         CaseKind::FixInducing => "fix-inducing",

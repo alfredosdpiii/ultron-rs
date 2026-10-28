@@ -29,7 +29,8 @@ use crate::runner::{Env, RunOptions, Runner, argv};
 pub const DEFAULT_SCAN: usize = 2000;
 /// Cases reviewed (reverted and fix-inducing, newest first).
 pub const DEFAULT_LIMIT: usize = 20;
-/// A commit changing more lines than this (added plus removed) is no case: a review of it says little.
+/// A commit changing more lines than this (added plus removed) is no case: a review of it says little. Nor is one
+/// that adds no line: the reviewer reads added lines, and a deletion alone is "no reviewable changes".
 pub const MAX_CASE_LINES: u64 = 1500;
 /// Fix commits blamed at most (the newest).
 pub const MAX_FIXES: usize = 200;
@@ -139,19 +140,21 @@ fn history(runner: &dyn Runner, repo: &str, scan: usize) -> Result<Vec<Commit>, 
         .collect())
 }
 
-/// Lines `sha` changes (added plus removed; binary files count nothing).
-fn changed_lines(runner: &dyn Runner, repo: &str, sha: &str) -> Option<u64> {
-    let out = git(runner, repo, &["show", "--numstat", "--format=", "--no-renames", sha]).ok()?;
-    Some(
-        out.lines()
-            .filter_map(|line| {
-                let mut fields = line.split('\t');
-                let added = fields.next()?.parse::<u64>().ok()?;
-                let removed = fields.next()?.parse::<u64>().ok()?;
-                Some(added + removed)
-            })
-            .sum(),
-    )
+/// `sha` adds a line, and changes at most `max_lines` (added plus removed; binary files count nothing).
+fn reviewable(runner: &dyn Runner, repo: &str, sha: &str, max_lines: u64) -> bool {
+    let Ok(out) = git(runner, repo, &["show", "--numstat", "--format=", "--no-renames", sha]) else {
+        return false;
+    };
+    let (added, removed) = out
+        .lines()
+        .filter_map(|line| {
+            let mut fields = line.split('\t');
+            let added = fields.next()?.parse::<u64>().ok()?;
+            let removed = fields.next()?.parse::<u64>().ok()?;
+            Some((added, removed))
+        })
+        .fold((0, 0), |(a, r), (added, removed)| (a + added, r + removed));
+    added > 0 && added + removed <= max_lines
 }
 
 /// The old-side line ranges (path, start, end) a commit removes or changes, from `git diff -U0`.
@@ -324,7 +327,7 @@ pub fn build_cases(runner: &dyn Runner, repo: &str, options: &EvalOptions) -> Re
         };
         if commit.parents.len() != 1
             || excluded.contains(&commit.sha)
-            || changed_lines(runner, repo, &commit.sha).is_none_or(|n| n == 0 || n > options.max_lines)
+            || !reviewable(runner, repo, &commit.sha, options.max_lines)
         {
             continue;
         }
@@ -358,7 +361,7 @@ pub fn build_cases(runner: &dyn Runner, repo: &str, options: &EvalOptions) -> Re
             if taken == options.controls {
                 break;
             }
-            if changed_lines(runner, repo, &commit.sha).is_none_or(|n| n == 0 || n > options.max_lines) {
+            if !reviewable(runner, repo, &commit.sha, options.max_lines) {
                 continue;
             }
             taken += 1;
@@ -387,6 +390,23 @@ pub struct CaseScore {
     /// Every model frame ran (an incomplete review is scored, but named).
     pub complete: bool,
     pub cost_usd: f64,
+    /// The confirmed findings, so a block (a control's above all) can be read, not only counted.
+    pub findings: Vec<CaseFinding>,
+    /// Why coverage was incomplete.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub incomplete: Vec<String>,
+}
+
+/// A confirmed finding of a case's review.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CaseFinding {
+    pub file: String,
+    pub line: i64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub end_line: Option<i64>,
+    pub level: &'static str,
+    pub claim: String,
 }
 
 /// Scores the review `result` of `case` at `block_at`.
@@ -413,6 +433,17 @@ pub fn score(case: &Case, result: &EngineResult, block_at: &str) -> CaseScore {
         confirmed: confirmed.len(),
         complete: result.complete,
         cost_usd: result.usage.cost_usd,
+        findings: confirmed
+            .iter()
+            .map(|finding| CaseFinding {
+                file: finding.file.clone(),
+                line: finding.line,
+                end_line: finding.end_line,
+                level: finding.level(),
+                claim: finding.claim.clone(),
+            })
+            .collect(),
+        incomplete: result.incomplete.clone(),
     }
 }
 

@@ -496,6 +496,7 @@ const USAGE_EDITS: [(&str, &str); 5] = [
   --limit <n>                  eval: reverted and fix-inducing commits reviewed at most (default 20)
   --controls <n>               eval: other commits reviewed as controls (default: as many as --limit)
   --scan <n>                   eval: commits of history searched for cases (default 2000)
+  --only <sha,...>             eval: review only the cases whose commits start with these
 ",
     ),
 ];
@@ -1003,6 +1004,10 @@ fn cli_autoreview_eval_reviews_reverted_commits() {
     assert_eq!(report["cases"][0]["sha"], world.head.as_str());
     assert_eq!(report["cases"][0]["parent"], world.base.as_str());
     assert_eq!(report["cases"][0]["score"]["blocked"], true);
+    assert_eq!(
+        report["cases"][0]["score"]["findings"][0]["file"], "calc.py",
+        "the block's findings are kept"
+    );
     let kept: Value =
         serde_json::from_str(&std::fs::read_to_string(report["report"].as_str().unwrap()).unwrap()).unwrap();
     assert_eq!(kept["summary"], report["summary"], "the report is kept");
@@ -1010,4 +1015,13 @@ fn cli_autoreview_eval_reviews_reverted_commits() {
         stderr.contains(&format!("[1/1] reverted {} tweak total", &world.head[..8])),
         "{stderr}"
     );
+    let requests = world.requests().len();
+    let (code, _, stderr) = world.run(&[
+        "eval".into(),
+        world.repo.display().to_string(),
+        "--only".into(),
+        "0000".into(),
+    ]);
+    assert_eq!((code, stderr.as_str()), (1, "no case's commit starts with 0000\n"));
+    assert_eq!(world.requests().len(), requests, "--only with no case reviews nothing");
 }

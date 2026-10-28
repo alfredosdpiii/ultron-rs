@@ -37,7 +37,7 @@ Posting is on by default. `--dry-run` (or the setting `autoreview.dryRun`) write
 | `ultron autoreview review <owner/repo#N \| URL>` | Review one pull request now, whether or not it was requested. `--account <login>` picks the account (default: the host's active one); `--dry-run`, `--json`. |
 | `ultron autoreview review --repo-dir <dir> --base <sha> --head <sha>` | Review the diff between two commits of a local repository, with no GitHub access. `--json` prints one JSON object on stdout (logs go to stderr); `--mode`, `--model`, `--verify-model`, `--deep-model`, `--budget`, `--thinking`, `--verify-thinking`, `--deep-thinking`, `--plan-model`, `--plan-thinking`, `--ask-model`, `--ask-thinking`, `--deadline`, `--block-at`, `--max-comments`, `--guides` and `--checkout-roots` (with `--repo owner/name`) override the settings; `--dump-program` and `--program` save and replay a compiled review program (see below). |
 | `ultron autoreview doctor` | The sandbox that test execution would use, with a self-check of its isolation; `--repo owner/name` adds the local checkout and the prepared environment that would serve its tests. |
-| `ultron autoreview eval <repo-dir>` | Measure the reviewer on the repository's own history: review the commits later reverted or fixed, and others as controls, and report how many it would have blocked (see [Measuring the reviewer](#measuring-the-reviewer-ultron-autoreview-eval)). `--list` names the cases and calls no model; `--limit`, `--controls`, `--scan`, `--json` and the review options above. |
+| `ultron autoreview eval <repo-dir>` | Measure the reviewer on the repository's own history: review the commits later reverted or fixed, and others as controls, and report how many it would have blocked (see [Measuring the reviewer](#measuring-the-reviewer-ultron-autoreview-eval)). `--list` names the cases and calls no model; `--limit`, `--controls`, `--scan`, `--only`, `--json` and the review options above. |
 | `ultron autoreview prepare <repo-dir> [--python 3.x]` | Build the repository's test environment now, with the network, into the cache the sandbox binds read-only (see below). |
 | `ultron autoreview status` | Accounts, bans, last poll, queue, and recent reviews with their timings and cost. `--json` for the raw state. |
 | `ultron autoreview ban <login> [--account <login \| host/login \| *>]` | Never review `<login>`'s pull requests, nor act on their review requests and mentions (see [Bans](#bans)). Without `--account`, for every logged-in account (`*`); `--account` limits it to one. |
@@ -871,7 +871,8 @@ commits, `--scan`), with no model call:
   nobody undid or fixed: never a fix or a revert, and never older than the oldest blamed fix. The history may
   simply not show the fix, so this is an upper bound on false alarms.
 
-Merges, root commits and commits of more than 1,500 changed lines are left out. Up to 20 cases (`--limit`, newest
+Merges, root commits, commits that add no line (the reviewer reads added lines) and commits of more than 1,500
+changed lines are left out. Up to 20 cases (`--limit`, newest
 first) and as many controls (`--controls`) are each reviewed as `review --repo-dir --base <sha>^ --head <sha>`
 would review them, with the same settings and options (`--mode`, `--model`, `--block-at`, ...), up to
 `autoreview.concurrency` (3) at once:
@@ -886,9 +887,11 @@ Cost: $1.8420.
 Report: ~/.ultron/agent/autoreview/evals/app-1761650000000.json
 ```
 
-Each review is a full review and costs what one costs; `--list` prints the cases first, with no model call. The
-report (every case, its score and the totals) is kept under `~/.ultron/agent/autoreview/evals/`; `--json` prints
-it.
+Each review is a full review and costs what one costs; `--list` prints the cases first, with no model call, and
+`--only <sha,...>` reviews just the cases whose commits start with these (to look again at a few). The report
+(every case, its score with its confirmed findings, and the totals) is kept under
+`~/.ultron/agent/autoreview/evals/`; `--json` prints it. Read a control's block next to the catches: the findings
+say whether it is a false alarm or a problem the history never fixed.
 
 ## Run it as a service
 
