@@ -145,6 +145,8 @@ mod session_stats;
 mod session_stats_run;
 #[path = "shared_memory.rs"]
 mod shared_memory;
+#[path = "situational_skills.rs"]
+mod situational_skills;
 #[path = "snapshot_key_store.rs"]
 mod snapshot_key_store;
 #[path = "spawn_contracts.rs"]

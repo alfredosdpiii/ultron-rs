@@ -54,6 +54,7 @@ pub mod session_modules;
 pub mod session_resources;
 pub mod session_stats;
 pub mod session_tools;
+pub mod situational_skills;
 pub mod startup_trace;
 pub mod stored_auth;
 pub mod subagents;

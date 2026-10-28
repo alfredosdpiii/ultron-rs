@@ -721,9 +721,15 @@ impl Runtime {
         let memory_records = Arc::new(kernel_apis::memory_records::RecordIndex::for_agent_dir(
             &config.agent_dir,
         ));
-        let pointers = self.memory_pointers(session_id, &memory_records);
+        // In engineering mode, the skill that fits a cell's file changes comes with its result
+        // (crate::situational_skills).
+        let observers = self
+            .memory_pointers(session_id, &memory_records)
+            .into_iter()
+            .chain(self.situational_skills())
+            .collect();
         let host = Arc::new(
-            self.host_in(&config.cwd, session_id, "bash", Some(&stats), pointers)?
+            self.host_in(&config.cwd, session_id, "bash", Some(&stats), observers)?
                 .with_journal(jobs)?,
         );
         crate::guard_log::loki_setup(&config);
@@ -1147,13 +1153,13 @@ impl Runtime {
         Ok(stack)
     }
 
-    /// The file hooks of a host in `cwd`: Loki's (see [`Config::file_hooks_in`]), with `observer` told each cell's
+    /// The file hooks of a host in `cwd`: Loki's (see [`Config::file_hooks_in`]), with `observers` told each cell's
     /// changes.
     fn file_hooks_in(
         &self,
         cwd: &Path,
         stats: Option<&Arc<SessionStats>>,
-        observer: Option<Arc<dyn host::file_hooks::CellObserver>>,
+        observers: Vec<Arc<dyn host::file_hooks::CellObserver>>,
     ) -> FileHooks {
         let record = stats.map(|stats| {
             let stats = stats.clone();
@@ -1167,10 +1173,39 @@ impl Runtime {
             }) as OnRecord
         });
         let hooks = self.config.file_hooks_in(cwd, record);
-        if let Some(observer) = observer {
+        for observer in observers {
             hooks.observe(observer);
         }
         hooks
+    }
+
+    /// The session's situational skills (crate::situational_skills): the settings' rules over the session's skills,
+    /// while engineering mode is on.
+    fn situational_skills(&self) -> Option<Arc<dyn host::file_hooks::CellObserver>> {
+        let config = self.config.clone();
+        let (extra, no_skills) = (self.services.resources.clone(), self.services.session.no_skills);
+        let resolve = move |name: &str| {
+            let cwd = config.cwd.display().to_string();
+            let agent_dir = config.agent_dir.display().to_string();
+            let bundled = config.bundled_skills();
+            let skill = crate::session_resources::skills(&cwd, &agent_dir, &extra, no_skills, bundled.as_deref())
+                .into_iter()
+                .find(|skill| skill.name == name)?;
+            let raw = std::fs::read_to_string(&skill.file_path).ok()?;
+            Some((skill.file_path, resources::frontmatter::strip(&raw).ok()?))
+        };
+        let (cwd, agent_dir, home) = (
+            self.config.cwd.clone(),
+            self.config.agent_dir.clone(),
+            self.config.home.clone(),
+        );
+        let engineering = move || {
+            config::settings::SettingsManager::for_worker(&cwd, &agent_dir, &home)
+                .settings()
+                .get("engineering")
+                == Some(&Value::Bool(true))
+        };
+        crate::situational_skills::session_observer(&self.config.settings, Box::new(resolve), Box::new(engineering))
     }
 
     /// The session's memory pointers: on while memory is (an injected backend or a Hindsight server) and the
@@ -1201,7 +1236,7 @@ impl Runtime {
         session_id: &str,
         spill: &str,
         stats: Option<&Arc<SessionStats>>,
-        observer: Option<Arc<dyn host::file_hooks::CellObserver>>,
+        observers: Vec<Arc<dyn host::file_hooks::CellObserver>>,
     ) -> Result<Host, String> {
         let config = &self.config;
         let jobs_dir = self.sessions_dir.join("rlm-jobs").join(session_id);
@@ -1221,7 +1256,7 @@ impl Runtime {
             cwd,
             jobs_dir,
             spill_dir,
-            Box::new(self.file_hooks_in(cwd, stats, observer)),
+            Box::new(self.file_hooks_in(cwd, stats, observers)),
         )
         .with_shell_path(shell_path)
         // The session's environment, never the server's: its PATH finds the shell, the sandbox and the tools.
@@ -1960,7 +1995,7 @@ pub fn child_setup(stack: &Stack, run: &ChildRun) -> ChildSetup {
             &stack.session_id,
             &lane_dir(&run.lane_name),
             Some(&stack.stats),
-            None,
+            Vec::new(),
         );
         match host {
             Ok(host) => {

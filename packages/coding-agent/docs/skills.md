@@ -58,6 +58,20 @@ To have a skill apply to every task without reading it or invoking it, name it i
 
 While engineering mode is on, its full text (frontmatter removed) goes in the system prompt, `ultron claude` and Claude Code subagents included, and it leaves the list of skills to read when a task matches. `/engineering false` turns the mode off: the skill is listed like any other from the next message. `/engineering` alone shows the mode. The mode is saved, so it holds across sessions; a running `ultron claude` session and its Claude Code subagents read it when they start. Always-on skills share a 16,000-character limit; a skill past it, or a name with no loaded skill, is a load warning and the skill stays listed as usual. `--no-skills` turns them off.
 
+<a id="situational-skills"></a>
+
+In engineering mode, a skill can also come to the model when its situation does. When a cell changes a file matching a rule's paths, the cell's result ends with that skill's text, once per session and subagent (a subagent in its own worktree gets none), whatever the model would have read on its own. The rules are the `situationalSkills` setting:
+
+```json
+{
+  "situationalSkills": [
+    { "skill": "principle-explain-the-number", "paths": ["bench/**"], "situation": "You changed a benchmark" }
+  ]
+}
+```
+
+Without the setting, a test file brings `principle-test-behavior-not-implementation`, a Markdown or `docs/` file `principle-minimize-reader-load`, and a `.ts`/`.tsx` file `typescript-best-practices`. `false` or `[]` turns it off. A rule whose skill is always on is skipped, one skill comes per cell, and a skill over 4,000 characters is named with its file instead of shown.
+
 Set `disable-model-invocation: true` in frontmatter when a skill should be available only through its explicit command. The `enableSkillCommands` [setting](settings.md) controls whether skill commands appear in interactive command discovery; manually entered `/skill:name` commands still work.
 
 <a id="choose-where-it-loads"></a>
