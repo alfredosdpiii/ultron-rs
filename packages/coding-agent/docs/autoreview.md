@@ -133,7 +133,7 @@ left alone until a new commit or a new mention.
    **Few, heavy comments.** Confirmed findings are ranked by level and by the strength of their evidence (a test
    the host ran, then source quoted from outside the diff, then the diff alone), and at most
    `autoreview.maxComments` (5) are posted inline. A finding below `high` whose evidence is only the diff gets a
-   slot only when one is left; nits are never inline. The same problem in several places is one comment that lists
+   slot only when one is left, and a nit (a small, optional fix the author may skip) only after every other finding. The same problem in several places is one comment that lists
    the other places. What is not posted is counted in one closing line.
 
    **Pre-existing problems.** A real problem the verifier finds in code the change did not alter (it would fail the
@@ -141,7 +141,7 @@ left alone until a new commit or a new mention.
    in the body after "Pre-existing, not introduced by this change and not blocking it", never inline, and they
    never affect the verdict. With `--json` they are under `preexisting`.
 
-   An inline comment reads `[level] what is wrong, with the evidence. The fix.`, in plain sentences, about 600
+   An inline comment reads `[level] what is wrong, with the evidence. The fix.`, in plain sentences, about 320
    characters at most. It sits on a diff line: its own, or the nearest within three lines of a hunk. A GitHub
    suggestion block is used only when the fix is an exact replacement for the commented lines and those lines are
    all in the diff. Findings the verifier could not decide are never posted and never count toward the verdict. A
@@ -304,7 +304,9 @@ branch only. The deep pass looks for these.
    - `siblings`: other producers and consumers, parallel implementations, families (keywords, enum members,
      regexes), and conventions the same file or module already follows that the change breaks or does not extend.
    - `deployment`: environment variables, flags, manifests, CI workflows, infrastructure and dependency pins the
-     change relies on: set and enforced where the feature runs?
+     change relies on: set and enforced where the feature runs? For a migration or new query (`.sql` files and
+     `migrations/` directories also start this part): an index at production size, a lock on a large table, and
+     the release checklist or runbook that lists its neighbours.
    - `tests`: would a test fail if the new behaviour were removed? (settled with a mutation check when tests can
      run); presence-versus-value assertions; what sibling tests set up.
    - `inputs`: a concrete input or state that defeats a new guard, regular expression, limit or parser, with the

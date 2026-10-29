@@ -569,7 +569,7 @@ _STRUCTURE = r"parametrize|fixture|it\.each|test\.each|describe\(|@pytest\.mark"
 #: scripts, documents): no test "pins" a literal there, so a missing-test finding about one is not a finding.
 _NON_CODE = re.compile(r"\.(ya?ml|json|toml|ini|cfg|env|tf|tfvars|hcl|sql|sh|bash|zsh|properties|xml|txt|csv|lock|md|mdx|rst|adoc)$"
                        r"|(^|/)(Dockerfile|Makefile|\.env[^/]*)$", re.I)
-_CONFIG_PATH = re.compile(r"\.(ya?ml|toml|cfg|ini|tf|env|properties)$|(^|/)(\.github|ci|deploy|k8s|helm|charts|infra|terraform)/"
+_CONFIG_PATH = re.compile(r"\.(ya?ml|toml|cfg|ini|tf|env|properties)$|\.sql$|(^|/)(\.github|ci|deploy|k8s|helm|charts|infra|terraform|migrations?|alembic)/"
                           r"|(^|/)(Dockerfile|docker-compose[^/]*|Makefile|package\.json|requirements[^/]*\.txt|pyproject\.toml"
                           r"|go\.mod|Cargo\.toml|Gemfile|pom\.xml|build\.gradle[^/]*)$", re.I)
 _INPUT_HINT = re.compile(r"\bre\.|regex|RegExp|\.match\(|\.test\(|\.search\(|parse|split\(|strip\(|startswith|endswith"

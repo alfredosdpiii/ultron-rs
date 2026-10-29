@@ -110,3 +110,34 @@ fn review_ledger_forgets_merge_rejections_of_findings_nobody_saw() {
         .collect();
     assert_eq!(kept, ["a-2", "a-3"]);
 }
+
+#[test]
+fn review_ledger_a_waved_off_nit_is_not_rejected() {
+    let finding = |id: &str, severity: &str, comment_id: i64| PostedFinding {
+        id: id.into(),
+        file: "a.py".into(),
+        line: 1,
+        claim: "c".into(),
+        severity: severity.into(),
+        category: Some("maintainability".into()),
+        kind: Some("fast".into()),
+        comment_id: Some(comment_id),
+        status: "open".into(),
+    };
+    let thread = |id: &str| ThreadState {
+        id: id.into(),
+        resolved: true,
+        thumbs_up: 0,
+        thumbs_down: 0,
+    };
+    let input = FateInput {
+        pull: "o/r#1".into(),
+        now: "2026-10-29T00:00:00.000Z".into(),
+        findings: vec![finding("a-1", "nit", 1), finding("a-2", "low", 2)],
+        threads: [(1, thread("t1")), (2, thread("t2"))].into_iter().collect(),
+        merged: true,
+        ..FateInput::default()
+    };
+    let ids: Vec<String> = fates_of(&input).into_iter().map(|f| f.id).collect();
+    assert_eq!(ids, ["a-2"]);
+}

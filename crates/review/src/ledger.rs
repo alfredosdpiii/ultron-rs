@@ -108,9 +108,14 @@ pub fn fates_of(input: &FateInput) -> Vec<Fate> {
             Some((FateKind::Accepted, "thumbs up on the comment"))
         } else if status == "fixed" {
             Some((FateKind::Accepted, "fixed in a later commit"))
-        } else if resolved_by_human && status != "not_applicable" {
+        // A nit is optional: waving it off is not a rejection the repository's rules should learn from.
+        } else if resolved_by_human && status != "not_applicable" && finding.severity != "nit" {
             Some((FateKind::Rejected, "the thread was resolved without a fix"))
-        } else if input.merged && finding.comment_id.is_some() && (status == "open" || status == "still_present") {
+        } else if input.merged
+            && finding.comment_id.is_some()
+            && finding.severity != "nit"
+            && (status == "open" || status == "still_present")
+        {
             Some((FateKind::Rejected, MERGED_OPEN))
         } else {
             None

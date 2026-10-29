@@ -257,7 +257,7 @@
    "plan": {
     "verdict": "approve",
     "event": "APPROVE",
-    "body": "Read the diff of `abcdef0` (1 file, +1 -1) with the code around it; every finding below was checked against the source by a second pass.\n\n**Approve.** No confirmed finding at medium or above.\n\n1 non-blocking note inline. Not posted: 1 lower-ranked finding (1 nit).\n\nReviewed in 42 s: 12 model calls, 94k tokens, $0.31.",
+    "body": "Read the diff of `abcdef0` (1 file, +1 -1) with the code around it; every finding below was checked against the source by a second pass.\n\n**Approve.** No confirmed finding at medium or above.\n\n2 non-blocking notes inline.\n\nReviewed in 42 s: 12 model calls, 94k tokens, $0.31.",
     "comments": [
      {
       "finding": 0,
@@ -268,24 +268,31 @@
       "line": 4,
       "side": "RIGHT",
       "body": "[low] total() skips the last item. range(len(items) - 1) stops one short.\n\n```suggestion\n    for i in range(len(items)):\n```\n\n<!-- ultron-autoreview:abcdef0-1 -->"
+     },
+     {
+      "finding": 1,
+      "marker": "<!-- ultron-autoreview:abcdef0-2 -->",
+      "relocated": false,
+      "suggestion": true,
+      "path": "calc.py",
+      "line": 2,
+      "side": "RIGHT",
+      "body": "[nit] total() skips the last item. range(len(items) - 1) stops one short.\n\n```suggestion\n    for i in range(len(items)):\n```\n\n<!-- ultron-autoreview:abcdef0-2 -->"
      }
     ],
     "inSummary": [],
-    "overCap": [
-     1
-    ]
+    "overCap": []
    },
    "withoutInline": {
     "verdict": "approve",
     "event": "APPROVE",
-    "body": "Read the diff of `abcdef0` (1 file, +1 -1) with the code around it; every finding below was checked against the source by a second pass.\n\n**Approve.** No confirmed finding at medium or above.\n\n1 non-blocking note inline. Not posted: 1 lower-ranked finding (1 nit).\n\nReviewed in 42 s: 12 model calls, 94k tokens, $0.31.\n\nThese could not be attached to the diff: `calc.py:4` [low] total() skips the last item. range(len(items) - 1) stops one short.",
+    "body": "Read the diff of `abcdef0` (1 file, +1 -1) with the code around it; every finding below was checked against the source by a second pass.\n\n**Approve.** No confirmed finding at medium or above.\n\n2 non-blocking notes inline.\n\nReviewed in 42 s: 12 model calls, 94k tokens, $0.31.\n\nThese could not be attached to the diff: `calc.py:4` [low] total() skips the last item. range(len(items) - 1) stops one short. `calc.py:2` [nit] total() skips the last item. range(len(items) - 1) stops one short.",
     "comments": [],
     "inSummary": [
-     0
-    ],
-    "overCap": [
+     0,
      1
-    ]
+    ],
+    "overCap": []
    },
    "comments": [
     "[low] total() skips the last item. range(len(items) - 1) stops one short.",

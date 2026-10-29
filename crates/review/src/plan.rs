@@ -5,7 +5,7 @@
 //!   at that level; APPROVE only when coverage was complete; otherwise COMMENT. The account's own pull request, and
 //!   a closed or merged one, always get COMMENT. On a re-review, a new finding on lines that did not change since
 //!   the last review blocks only when critical; one at `blockAt` or above makes it COMMENT, not APPROVE.
-//! - Few, heavy comments, ranked by level and evidence strength; nits are never inline.
+//! - Few, short comments, ranked by level and evidence strength; a nit takes a slot only when one is left.
 //! - An inline comment sits on its line or the nearest diff line within three; else the body names it.
 
 use indexmap::IndexMap;
@@ -19,7 +19,7 @@ pub const DEFAULT_BLOCK_AT: &str = "medium";
 pub const DEFAULT_MAX_COMMENTS: i64 = 5;
 pub const RELOCATE_WITHIN: i64 = 3;
 /// An inline comment's sentences (before any code block) aim to stay under this.
-pub const COMMENT_TARGET_CHARS: usize = 600;
+pub const COMMENT_TARGET_CHARS: usize = 320;
 const MAX_BLOCKING_LISTED: usize = 4;
 const MAX_OUTSIDE_LISTED: usize = 3;
 const MAX_NOT_CHECKED: usize = 3;
@@ -658,7 +658,8 @@ pub fn rank_findings(result: &EngineResult) -> Vec<usize> {
             .map_or(-1, |position| position as i64)
     };
     let tier = |finding: &EngineFinding| {
-        if at_or_above(finding.level(), "high") || finding.strength.as_deref().unwrap_or("diff") != "diff" {
+        let level = finding.level();
+        if level != "nit" && (at_or_above(level, "high") || finding.strength.as_deref().unwrap_or("diff") != "diff") {
             0
         } else {
             1
@@ -718,13 +719,9 @@ pub fn plan_review(result: &EngineResult, options: &PlanOptions) -> ReviewPlan {
         let level = finding.level();
         let blocking = blocks(finding, block_at, fresh);
         let key = format!("{short_sha}-{}", index + 1);
-        let mut comment = if level == "nit" {
-            None
-        } else {
-            plan_comment(finding, index, ranges(&finding.file), &key)
-        };
+        let mut comment = plan_comment(finding, index, ranges(&finding.file), &key);
         // The same root cause at another place that is in the diff: the comment goes there, naming this place.
-        if comment.is_none() && level != "nit" {
+        if comment.is_none() {
             let also = finding.also_at.clone().unwrap_or_default();
             for (position, other) in also.iter().enumerate() {
                 let mut also_at = vec![Place {

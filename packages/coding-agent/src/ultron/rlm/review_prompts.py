@@ -180,7 +180,8 @@ SEVERITY_RUBRIC = """Level, in the severity field (the review asks for changes f
   case; a convention of the same module broken; a new behaviour with no test that would fail if it were removed;
   configuration not set where the feature needs it.
 - low: hardening and robustness: unusual inputs, speculative risks, maintainability.
-- nit: style and wording.
+- nit: small and optional, the author may skip it: a stale or misleading comment, a redundant import, a
+  duplicated literal, a clearer name. Rate it nit, not low.
 No concrete failing scenario: never above medium. Missing or weak tests, architecture and maintainability: never
 above medium unless the scenario is a concrete failure.
 A pull request exists to change behaviour. A change that is the evident point of the diff (or of its title and
@@ -212,6 +213,7 @@ The slice may hold several files, each starting with a "File: <path>" line; in e
 path exactly and its own line number.
 
 More fields per finding:
+- claim and suggested_fix: one short sentence each; the comment posted is about 300 characters in all.
 - scenario: the concrete failure: input or state, what happens, what should happen. One or two sentences.
   Required for critical and high; "" when there is none.
 """ + FINDING_RULES + """
@@ -358,7 +360,10 @@ exported name the change adds or alters (the brief lists them): each caller must
     "deployment": """Your part: deployment reality. For every environment variable, flag, config key, manifest, workflow,
 infrastructure setting and dependency pin the change relies on: is it actually set where the feature runs
 (staging and production manifests, CI workflows, compose files, the sibling test's setup)? Does the CI job really
-run the new gate? Do ordering, replicas and volumes still fit? Is a dependency pin inside the range it claims?""",
+run the new gate? Do ordering, replicas and volumes still fit? Is a dependency pin inside the range it claims?
+For a migration or a new query: is there an index for its filter or join at production size; does a build or
+backfill lock a large table; is the migration listed where the repository's release checklist or runbook lists
+its neighbours (prod-release, deploy docs, DBA gates)? Cite the neighbour that is listed.""",
     "tests": """Your part: tests that pin. For each new behaviour, would any test fail if it were removed, its guard
 dropped or its default changed? Read the neighbouring tests first: a case another test already covers is not a
 finding. Give the mutation in unpinned whenever the change is one line: the host runs it when tests can run.

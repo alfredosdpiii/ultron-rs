@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+### Changed
+
+- Autoreview comments aim at about 320 characters (was 600), and the finders are asked for one short sentence each for the claim and the fix.
+- Autoreview nits are posted inline when a comment slot is left after every other finding; the rubric names what a nit is (a stale comment, a redundant import, a duplicated literal) so small optional fixes are rated nit, not low.
+- Autoreview's `deployment` part also runs for `.sql` files and `migrations/` directories, and checks a migration or new query for an index at production size, a lock on a large table, and its place in the release checklist.
+
 ## [0.87.39] - 2026-10-10
 
 ### Fixed
