@@ -15,8 +15,8 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use protocol::{
-    ClientMessage, DEFAULT_MAX_FRAME_LENGTH, PROTOCOL_VERSION, ProtocolError, RpcTarget, ServerMessage,
-    ServerMessageDecoder, SessionTarget, Value, encode_client_message, is_server_id, parse_service_call,
+    ClientMessage, DEFAULT_MAX_FRAME_LENGTH, MAX_SERVER_FRAME_LENGTH, PROTOCOL_VERSION, ProtocolError, RpcTarget,
+    ServerMessage, ServerMessageDecoder, SessionTarget, Value, encode_client_message, is_server_id, parse_service_call,
 };
 
 pub const DEFAULT_DISCOVERY_TIMEOUT: Duration = Duration::from_millis(1_000);
@@ -68,7 +68,7 @@ impl<T: Read + Write> Client<T> {
         let mut client = Self {
             stream,
             server_id: server_id.into(),
-            decoder: ServerMessageDecoder::default(),
+            decoder: ServerMessageDecoder::new(MAX_SERVER_FRAME_LENGTH).unwrap_or_default(),
             queued: VecDeque::new(),
             sequence: 0,
             attachment: None,

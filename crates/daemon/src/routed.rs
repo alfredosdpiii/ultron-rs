@@ -9,7 +9,7 @@ use crate::chord::{subscribe_id, unsubscribe_id};
 use crate::wire::{to_cbor, to_json};
 use crate::workers::{Handle, Manager};
 use protocol::{
-    ClientMessage, ClientMessageDecoder, DEFAULT_MAX_FRAME_LENGTH, PROTOCOL_VERSION, ProtocolError, RpcTarget,
+    ClientMessage, ClientMessageDecoder, MAX_SERVER_FRAME_LENGTH, PROTOCOL_VERSION, ProtocolError, RpcTarget,
     ServerMessage, SessionTarget, encode_server_message, is_supported_protocol_version,
 };
 use serde_json::{Value, json};
@@ -44,6 +44,8 @@ pub struct Conn {
     /// The plugin package paths `ultron.presentation-plugins.prepareSession` selected for this client (`reload` rebuilds
     /// them); `None` until it prepared a session.
     prepared_plugins: Mutex<Option<Vec<String>>>,
+    /// The server log, where a message too large to send is recorded before the connection closes.
+    log_path: std::path::PathBuf,
 }
 
 /// One request in flight on a connection.
@@ -61,9 +63,13 @@ impl Conn {
         if self.closed.load(Ordering::SeqCst) {
             return false;
         }
-        let Ok(frame) = encode_server_message(message, DEFAULT_MAX_FRAME_LENGTH) else {
-            self.close();
-            return false;
+        let frame = match encode_server_message(message, MAX_SERVER_FRAME_LENGTH) {
+            Ok(frame) => frame,
+            Err(error) => {
+                crate::server::record_error(&self.log_path, "[ultron server error]", &error.0);
+                self.close();
+                return false;
+            }
         };
         let written = self.stream.lock().unwrap_or_else(|e| e.into_inner()).write_all(&frame);
         if written.is_err() {
@@ -738,6 +744,7 @@ impl Hub {
             active: Mutex::new(HashMap::new()),
             next_request: AtomicU64::new(1),
             prepared_plugins: Mutex::new(None),
+            log_path: self.log_path.clone(),
         });
         self.conns
             .lock()

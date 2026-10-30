@@ -5,6 +5,12 @@ use std::fmt;
 /// Default upper bound for one framed CBOR payload.
 pub const DEFAULT_MAX_FRAME_LENGTH: usize = 16 * 1024 * 1024;
 
+/// Upper bound for one server message on the local socket. A session's transcript snapshot travels in one
+/// subscribe response, and a long session's runs past 16 MiB (a 186 MB journal held 19 MB of transcript).
+// ponytail: one bigger frame, not a paged snapshot; the client holds the whole transcript in memory either way.
+// Page it when a snapshot nears this bound.
+pub const MAX_SERVER_FRAME_LENGTH: usize = 256 * 1024 * 1024;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FrameError(pub String);
 

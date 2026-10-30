@@ -5,8 +5,8 @@
 
 use chord_delta::{Decoder, Op};
 use protocol::{
-    ClientMessage, DEFAULT_MAX_FRAME_LENGTH, PROTOCOL_VERSION, ProtocolError, RpcTarget, ServerMessage,
-    ServerMessageDecoder, SessionTarget, Value, encode_client_message, is_server_id,
+    ClientMessage, DEFAULT_MAX_FRAME_LENGTH, MAX_SERVER_FRAME_LENGTH, PROTOCOL_VERSION, ProtocolError, RpcTarget,
+    ServerMessage, ServerMessageDecoder, SessionTarget, Value, encode_client_message, is_server_id,
 };
 use serde_json::{Value as Json, json};
 use std::collections::HashMap;
@@ -372,7 +372,7 @@ impl Connection {
         connection.write(&ClientMessage::Hello {
             version: PROTOCOL_VERSION,
         })?;
-        let mut decoder = ServerMessageDecoder::default();
+        let mut decoder = ServerMessageDecoder::new(MAX_SERVER_FRAME_LENGTH).unwrap_or_default();
         let mut buffer = vec![0u8; 64 * 1024];
         let mut queued = Vec::new();
         let handshake = (|| {

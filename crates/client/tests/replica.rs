@@ -9,7 +9,7 @@ use std::sync::{Arc, Mutex};
 
 use client::runtime::{Connection, to_cbor, to_json};
 use protocol::{
-    ClientMessage, ClientMessageDecoder, DEFAULT_MAX_FRAME_LENGTH, PROTOCOL_VERSION, ServerMessage,
+    ClientMessage, ClientMessageDecoder, MAX_SERVER_FRAME_LENGTH, PROTOCOL_VERSION, ServerMessage,
     encode_server_message,
 };
 use serde_json::{Value as Json, json};
@@ -34,7 +34,7 @@ impl Fake {
     }
 
     fn send(&mut self, message: ServerMessage) {
-        let frame = encode_server_message(&message, DEFAULT_MAX_FRAME_LENGTH).expect("encode");
+        let frame = encode_server_message(&message, MAX_SERVER_FRAME_LENGTH).expect("encode");
         self.stream.write_all(&frame).expect("write");
     }
 
@@ -134,6 +134,17 @@ fn deliver(connection: &Connection, fake: &mut Fake, subscription: &str, updates
 
 fn revision(connection: &Connection, subscription: &str) -> Option<Json> {
     connection.state(subscription, "state").map(|s| s["revision"].clone())
+}
+
+/// A long session's transcript snapshot is one subscribe response past the 16 MiB default frame: it still hydrates.
+#[test]
+fn client_replica_hydrates_a_snapshot_past_the_default_frame_length() {
+    let (connection, mut fake) = connect();
+    let big = "x".repeat(20 * 1024 * 1024);
+    let snapshot = models_snapshot("ultron.models", json!([["r", {"selected": big, "revision": 0}]]));
+    let subscription = subscribe(&connection, &mut fake, "ultron.models", snapshot).expect("subscribe");
+    let state = connection.state(&subscription, "state").expect("hydrated");
+    assert_eq!(state["selected"].as_str().map(str::len), Some(20 * 1024 * 1024));
 }
 
 #[test]
