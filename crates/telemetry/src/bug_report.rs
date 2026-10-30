@@ -11,7 +11,7 @@ use std::io;
 use std::path::Path;
 use url::Url;
 
-pub const BUG_REPORT_CUSTOM_ENTRY_TYPE: &str = "pi.bug-report";
+pub const BUG_REPORT_CUSTOM_ENTRY_TYPE: &str = "ultron.bug-report";
 const SCHEMA_VERSION: u64 = 1;
 const REDACTED: &str = "<redacted>";
 const SENSITIVE_WORDS: &[&str] = &[

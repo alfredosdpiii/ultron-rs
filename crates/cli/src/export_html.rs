@@ -241,7 +241,8 @@ fn parse_transaction(line: &str, state: &mut ReplayState) -> Result<Vec<Map<Stri
         other => vec![other],
     };
     let mut writes = Vec::new();
-    for item in items {
+    for mut item in items {
+        session_journal::codec::rename_legacy(&mut item);
         let Value::Object(write) = item else { return Err(()) };
         if !safe_integer_at_least(write.get("seq"), 1.0) {
             return Err(());
@@ -431,7 +432,7 @@ fn native_session_data(path: &Path) -> Result<Value, String> {
         std::fs::rename(&tmp, path).map_err(|e| e.to_string())?;
     }
     let mut entries: Vec<Value> = Vec::new();
-    if let Some(tip) = state.values.get(&("pi.branch.tip".to_string(), "main".to_string()))
+    if let Some(tip) = state.values.get(&("ultron.branch.tip".to_string(), "main".to_string()))
         && let Some(start) = tip.as_str()
     {
         let mut path_entries = Vec::new();

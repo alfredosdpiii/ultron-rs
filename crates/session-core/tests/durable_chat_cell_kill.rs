@@ -156,11 +156,16 @@ fn session_core_durable_chat_cell_kill_answers_a_cell_interrupted_by_sigkill_exa
     let entries = root.entries().unwrap();
     assert_eq!(
         transcript(&entries),
-        ["pi.user:go", "pi.assistant", "pi.tool-result", "pi.assistant:done"]
+        [
+            "ultron.user:go",
+            "ultron.assistant",
+            "ultron.tool-result",
+            "ultron.assistant:done"
+        ]
     );
     let results: Vec<Value> = entries
         .iter()
-        .filter(|entry| entry.kind == "pi.tool-result")
+        .filter(|entry| entry.kind == "ultron.tool-result")
         .map(|entry| entry.model.as_ref().unwrap()[0].clone())
         .collect();
     assert_eq!(results.len(), 1, "exactly one result for the interrupted cell");
@@ -213,7 +218,7 @@ fn session_core_durable_chat_cell_kill_runs_a_cell_in_the_kernel_and_answers_wit
         .entries()
         .unwrap()
         .into_iter()
-        .find(|entry| entry.kind == "pi.tool-result")
+        .find(|entry| entry.kind == "ultron.tool-result")
         .unwrap()
         .model
         .unwrap()[0]

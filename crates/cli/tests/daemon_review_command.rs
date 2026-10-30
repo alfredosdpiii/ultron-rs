@@ -48,7 +48,7 @@ fn cli_daemon_review_command_expands_for_every_client_entry_like_typescript() {
     let created = connection
         .call(
             connection.server_target(),
-            "pi.session-management",
+            "ultron.session-management",
             "create",
             json!([{}]),
         )
@@ -58,7 +58,7 @@ fn cli_daemon_review_command_expands_for_every_client_entry_like_typescript() {
     connection
         .call(
             connection.server_target(),
-            "pi.session-management",
+            "ultron.session-management",
             "attach",
             json!([id]),
         )
@@ -71,7 +71,7 @@ fn cli_daemon_review_command_expands_for_every_client_entry_like_typescript() {
         connection
             .call(
                 session.clone(),
-                "pi.agent-controller",
+                "ultron.agent-controller",
                 member,
                 json!([{"message": text, "images": null}]),
             )

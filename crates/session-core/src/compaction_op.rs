@@ -10,9 +10,9 @@ use session_journal::run::{OP_META, OP_RESULT, OP_STATE, default_settings};
 use session_journal::session::{BRANCH_TIP, LANE_CONFIG, LANE_STATE};
 use session_journal::{Session, Write};
 
-const OP_PREPARATION: &str = "pi.op.preparation";
+const OP_PREPARATION: &str = "ultron.op.preparation";
 /// Where native sessions keep entry labels (`entryLabel` in harness session/values.ts).
-pub const ENTRY_LABEL: &str = "pi.entry.label";
+pub const ENTRY_LABEL: &str = "ultron.entry.label";
 
 fn mint(session: &Session) -> String {
     session_journal::lock_clock(&session.clock()).next_id()
@@ -22,7 +22,7 @@ fn now(session: &Session) -> i64 {
     session_journal::lock_clock(&session.clock()).now()
 }
 
-/// A compaction's durable preparation (`pi.op.preparation`): what it summarizes, keeps, and the settings it ran with.
+/// A compaction's durable preparation (`ultron.op.preparation`): what it summarizes, keeps, and the settings it ran with.
 pub fn prepared_value(
     preparation: &compaction::CompactionPreparation,
     retained_tail: &[Value],

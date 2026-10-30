@@ -184,12 +184,12 @@ fn harness_chat_swarm_keeps_a_persistent_child_alive_and_answers_follow_ups_thro
         assert_eq!(
             transcript(&child_conversation.entries().unwrap()),
             [
-                "pi.user:You own the parser.",
-                "pi.assistant:I know the parser.",
-                "pi.user:And the lexer?",
-                "pi.assistant:re: And the lexer?",
-                "pi.user:Still there?",
-                "pi.assistant:re: Still there?",
+                "ultron.user:You own the parser.",
+                "ultron.assistant:I know the parser.",
+                "ultron.user:And the lexer?",
+                "ultron.assistant:re: And the lexer?",
+                "ultron.user:Still there?",
+                "ultron.assistant:re: Still there?",
             ]
         );
         // The caller's context grew only by its own turn; the child's transcript stays in the child.
@@ -559,8 +559,8 @@ fn harness_chat_swarm_wakes_a_persistent_child_with_a_message_as_a_follow_up() {
         assert_eq!(
             entries[entries.len() - 2..],
             [
-                "pi.user:Message from root: rebase on main",
-                "pi.assistant:re: Message from root: rebase on main"
+                "ultron.user:Message from root: rebase on main",
+                "ultron.assistant:re: Message from root: rebase on main"
             ]
         );
         op(

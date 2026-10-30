@@ -9,11 +9,11 @@ use crate::storage::JsonlStorage;
 use crate::{SharedClock, lock};
 use serde_json::{Map, Value};
 
-pub const SESSION_NAME: &str = "pi.session.name";
-pub const ENTRY_LABEL: &str = "pi.entry.label";
-pub const BRANCH_TIP: &str = "pi.branch.tip";
-pub const LANE_CONFIG: &str = "pi.lane.config";
-pub const LANE_STATE: &str = "pi.lane.state";
+pub const SESSION_NAME: &str = "ultron.session.name";
+pub const ENTRY_LABEL: &str = "ultron.entry.label";
+pub const BRANCH_TIP: &str = "ultron.branch.tip";
+pub const LANE_CONFIG: &str = "ultron.lane.config";
+pub const LANE_STATE: &str = "ultron.lane.state";
 
 /// An open session.
 pub struct Session {

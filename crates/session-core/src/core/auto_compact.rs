@@ -61,7 +61,7 @@ impl Core {
         })
     }
 
-    /// The operation settings a run is admitted with (`pi.op.state` `settings`).
+    /// The operation settings a run is admitted with (`ultron.op.state` `settings`).
     pub(super) fn run_settings(&self) -> Value {
         let mut settings = session_journal::run::default_settings();
         settings["compaction"] = settings_value(&self.compaction_settings());

@@ -72,7 +72,7 @@ fn harness_chat_submissions_places_idle_input_and_rejects_busy_input_with_when_b
         let placed = submission.status().unwrap();
         assert_eq!(placed.status, SubmissionStatus::Placed);
         let entry = root
-            .commit(|tx| Ok(tx.entry_of("pi.user", placed.entry.unwrap())?))
+            .commit(|tx| Ok(tx.entry_of("ultron.user", placed.entry.unwrap())?))
             .unwrap()
             .unwrap();
         assert_eq!(
@@ -82,7 +82,7 @@ fn harness_chat_submissions_places_idle_input_and_rejects_busy_input_with_when_b
         let state = live(&chat, root.id);
         assert_eq!(state["run"]["inputs"], json!([submission.id.0]));
         let run = durable::TaskId(state["run"]["taskId"].as_u64().unwrap());
-        assert_eq!(chat.get_task(run).unwrap().unwrap().kind, "pi.generation");
+        assert_eq!(chat.get_task(run).unwrap().unwrap().kind, "ultron.generation");
 
         let commits = storage.commit_count();
         let rejected = root.submit(SubmissionDraft::input("again").when_busy(WhenBusy::Reject));
@@ -256,7 +256,7 @@ fn harness_chat_submissions_enables_scheduling_when_a_caller_submits_or_waits() 
 
         let passive = Setup::new();
         let (chat, root) = open_chat(Controlled::new(backend), &passive);
-        let generation = passive.registry.snapshot().task("pi.generation").unwrap().clone();
+        let generation = passive.registry.snapshot().task("ultron.generation").unwrap().clone();
         let task = root
             .commit(|tx| Ok(tx.create_task(generation.definition(), json!({}), TaskOptions::default())?))
             .unwrap();

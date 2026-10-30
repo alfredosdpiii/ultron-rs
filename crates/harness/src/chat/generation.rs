@@ -1,4 +1,4 @@
-//! The built-in generation task `pi.generation` (spec §8.3, §8.5): prepare the positional system prompt and the REPL
+//! The built-in generation task `ultron.generation` (spec §8.3, §8.5): prepare the positional system prompt and the REPL
 //! tool, request or poll the model with options pinned at preparation, retry with durable backoff, compact once on a
 //! context overflow, classify the response, and run the tool round of REPL cells. Port of upstream
 //! `harness/generation.ts`; the tool list is exactly the cell executor's REPL tool.
@@ -109,7 +109,7 @@ pub(crate) fn create_generation(tx: &mut Tx<'_>, conversation_id: ConversationId
     )?)
 }
 
-/// Start a run for `inputs`, placed input submissions: a new generation takes `pi.live.run`.
+/// Start a run for `inputs`, placed input submissions: a new generation takes `ultron.live.run`.
 pub(crate) fn start_run(
     tx: &mut Tx<'_>,
     conversation_id: ConversationId,
@@ -132,7 +132,7 @@ pub(crate) fn read_agent(runtime: &TaskRuntime) -> Result<Agent> {
     let state = runtime.snapshot(&AGENT, owner(runtime.conversation_id()))?;
     let state = state.map(|state| (*state).clone()).unwrap_or(json!({}));
     let model = match state.get("model") {
-        Some(model) if !model.is_null() => Some(from_value::<ModelRef>(model.clone(), "pi.agent model")?),
+        Some(model) if !model.is_null() => Some(from_value::<ModelRef>(model.clone(), "ultron.agent model")?),
         _ => None,
     };
     Ok(Agent {
@@ -141,7 +141,7 @@ pub(crate) fn read_agent(runtime: &TaskRuntime) -> Result<Agent> {
     })
 }
 
-/// The persisted provider session ID; a legacy conversation without `pi.provider` gets one in its own commit.
+/// The persisted provider session ID; a legacy conversation without `ultron.provider` gets one in its own commit.
 pub(crate) fn ensure_provider_session_id(runtime: &TaskRuntime) -> Result<String> {
     let conversation_id = runtime.conversation_id();
     if let Some(state) = runtime.snapshot(&PROVIDER, owner(conversation_id))? {

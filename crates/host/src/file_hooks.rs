@@ -834,11 +834,28 @@ impl Inner {
             modified.retain(|relative| !theirs(relative));
             deleted.retain(|relative| !theirs(relative));
         }
-        if added.is_empty() && modified.is_empty() && deleted.is_empty() {
+        // Checked writes outside the session directory (a sibling worktree) are in no snapshot; they are changes too.
+        let elsewhere: Vec<PathBuf> = {
+            let mut checked = lock(&self.checked);
+            let outside: Vec<PathBuf> = checked
+                .keys()
+                .filter(|p| inside(&after.root, p).is_none())
+                .cloned()
+                .collect();
+            outside
+                .into_iter()
+                .filter(|path| {
+                    let approved = checked.remove(path);
+                    approved.is_some_and(|approved| std::fs::read(path).is_ok_and(|now| sha256(&now) == approved))
+                })
+                .collect()
+        };
+        if added.is_empty() && modified.is_empty() && deleted.is_empty() && elsewhere.is_empty() {
             return;
         }
         let mut changes = CellChanges {
             complete,
+            checked: elsewhere,
             ..CellChanges::default()
         };
         for relative in added.iter().chain(&modified) {

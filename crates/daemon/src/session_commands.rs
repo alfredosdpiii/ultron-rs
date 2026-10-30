@@ -1,6 +1,6 @@
 //! The session's own commands typed as a prompt (Rust-only): `/goal [args]` (the session goal), `/persona
 //! on|off|auto` and `/keepgoing [on|off]` (the session's persona toggle and keep-going mode). The worker answers
-//! them where every client's prompt enters it (`pi.agent-controller.prompt`, the `op` service's `prompt`), so `-p`,
+//! them where every client's prompt enters it (`ultron.agent-controller.prompt`, the `op` service's `prompt`), so `-p`,
 //! `--mode json`, RPC and ACP clients get the command, never a model turn that reads it as text. A command's answer
 //! is `{"command": <name>, "text": <its reply>, "data": <the operation's answer>}` in place of a run's.
 

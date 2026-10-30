@@ -265,7 +265,7 @@ pub fn first_message(entry: &EntryRecord) -> Option<Message> {
 pub fn transcript(entries: &[EntryRecord]) -> Vec<String> {
     entries
         .iter()
-        .filter(|entry| entry.kind != "pi.system")
+        .filter(|entry| entry.kind != "ultron.system")
         .map(|entry| {
             let text = first_message(entry).and_then(|message| match message {
                 Message::ToolResult(_) => None,
@@ -311,7 +311,7 @@ pub fn assistants(conversation: &Conversation) -> Vec<EntryRecord> {
         .entries()
         .unwrap()
         .into_iter()
-        .filter(|entry| entry.kind == "pi.assistant")
+        .filter(|entry| entry.kind == "ultron.assistant")
         .collect()
 }
 

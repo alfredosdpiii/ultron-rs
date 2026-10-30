@@ -215,7 +215,7 @@ fn compactions(chat: &Chat) -> Vec<durable::TaskRecord> {
         .tasks
         .into_iter()
         .map(|task| task.record)
-        .filter(|record| record.kind == "pi.compaction")
+        .filter(|record| record.kind == "ultron.compaction")
         .collect()
 }
 
@@ -287,10 +287,20 @@ fn harness_chat_compaction_cuts_at_a_user_entry() {
     let cut = select_cut(
         &view(
             vec![
-                entry(1, "pi.user", vec![user(&text("u1", 100))], None),
-                entry(2, "pi.assistant", vec![assistant(&text("a1", 100), &[], "stop")], None),
-                entry(3, "pi.user", vec![user(&text("u2", 100))], None),
-                entry(4, "pi.assistant", vec![assistant(&text("a2", 100), &[], "stop")], None),
+                entry(1, "ultron.user", vec![user(&text("u1", 100))], None),
+                entry(
+                    2,
+                    "ultron.assistant",
+                    vec![assistant(&text("a1", 100), &[], "stop")],
+                    None,
+                ),
+                entry(3, "ultron.user", vec![user(&text("u2", 100))], None),
+                entry(
+                    4,
+                    "ultron.assistant",
+                    vec![assistant(&text("a2", 100), &[], "stop")],
+                    None,
+                ),
             ],
             None,
         ),
@@ -302,9 +312,14 @@ fn harness_chat_compaction_cuts_at_a_user_entry() {
 #[test]
 fn harness_chat_compaction_never_cuts_at_a_tool_result_and_keeps_a_huge_last_result_with_its_assistant() {
     let entries = vec![
-        entry(1, "pi.user", vec![user(&text("u1", 100))], None),
-        entry(2, "pi.assistant", vec![assistant("calls", &["c1"], "toolUse")], None),
-        entry(3, "pi.tool-result", vec![tool_result("c1", &text("r1", 500))], None),
+        entry(1, "ultron.user", vec![user(&text("u1", 100))], None),
+        entry(
+            2,
+            "ultron.assistant",
+            vec![assistant("calls", &["c1"], "toolUse")],
+            None,
+        ),
+        entry(3, "ultron.tool-result", vec![tool_result("c1", &text("r1", 500))], None),
     ];
     assert_eq!(select_cut(&view(entries, None), 150), Some(1));
 }
@@ -312,20 +327,20 @@ fn harness_chat_compaction_never_cuts_at_a_tool_result_and_keeps_a_huge_last_res
 #[test]
 fn harness_chat_compaction_never_cuts_at_a_system_entry_or_an_excluded_error_answer() {
     let entries = vec![
-        entry(1, "pi.user", vec![user(&text("u1", 100))], None),
+        entry(1, "ultron.user", vec![user(&text("u1", 100))], None),
         entry(
             2,
-            "pi.assistant",
+            "ultron.assistant",
             vec![assistant(&text("bad", 100), &[], "error")],
             None,
         ),
         entry(
             3,
-            "pi.system",
+            "ultron.system",
             vec![json!({ "role": "system", "content": "", "timestamp": 0 })],
             None,
         ),
-        entry(4, "pi.user", vec![user(&text("u2", 200))], None),
+        entry(4, "ultron.user", vec![user(&text("u2", 200))], None),
     ];
     assert_eq!(select_cut(&view(entries, None), 150), Some(3));
 }
@@ -333,21 +348,31 @@ fn harness_chat_compaction_never_cuts_at_a_system_entry_or_an_excluded_error_ans
 #[test]
 fn harness_chat_compaction_does_not_cut_at_a_user_entry_that_a_result_of_the_preceding_call_still_follows() {
     let entries = vec![
-        entry(1, "pi.user", vec![user(&text("u1", 100))], None),
-        entry(2, "pi.assistant", vec![assistant("calls", &["c1"], "toolUse")], None),
-        entry(3, "pi.user", vec![user(&text("steer", 100))], None),
-        entry(4, "pi.tool-result", vec![tool_result("c1", &text("r1", 100))], None),
-        entry(5, "pi.assistant", vec![assistant(&text("a2", 100), &[], "stop")], None),
+        entry(1, "ultron.user", vec![user(&text("u1", 100))], None),
+        entry(
+            2,
+            "ultron.assistant",
+            vec![assistant("calls", &["c1"], "toolUse")],
+            None,
+        ),
+        entry(3, "ultron.user", vec![user(&text("steer", 100))], None),
+        entry(4, "ultron.tool-result", vec![tool_result("c1", &text("r1", 100))], None),
+        entry(
+            5,
+            "ultron.assistant",
+            vec![assistant(&text("a2", 100), &[], "stop")],
+            None,
+        ),
     ];
     assert_eq!(select_cut(&view(entries, None), 150), Some(4));
 }
 
 #[test]
 fn harness_chat_compaction_finds_nothing_when_the_budget_is_never_reached_or_only_the_marker_precedes_the_cut() {
-    let short = vec![entry(1, "pi.user", vec![user("short")], None)];
+    let short = vec![entry(1, "ultron.user", vec![user("short")], None)];
     assert_eq!(select_cut(&view(short, None), 150), None);
-    let marker = entry(1, "pi.compaction", vec![user("summary")], Some(2));
-    let kept = vec![entry(2, "pi.user", vec![user(&text("u", 300))], None)];
+    let marker = entry(1, "ultron.compaction", vec![user("summary")], Some(2));
+    let kept = vec![entry(2, "ultron.user", vec![user(&text("u", 300))], None)];
     assert_eq!(select_cut(&view(kept, Some(marker)), 150), None);
 }
 
@@ -383,7 +408,7 @@ fn harness_chat_compaction_places_the_summary_at_once_when_idle_and_keeps_raw_hi
         .unwrap();
     assert_matches(
         &js(marker),
-        json!({ "kind": "pi.compaction", "head": u3.id.0, "data": { "reason": "manual" } }),
+        json!({ "kind": "ultron.compaction", "head": u3.id.0, "data": { "reason": "manual" } }),
     );
     assert_eq!(placed.entry, Some(marker.id));
     assert_eq!(
@@ -469,14 +494,20 @@ fn harness_chat_compaction_overflow_compacts_and_retries_with_the_same_attempt_l
     let entries = kinds(&chat.root);
     assert_eq!(
         entries[entries.len() - 5..],
-        ["pi.user", "pi.assistant", "pi.compaction", "pi.system", "pi.assistant"]
+        [
+            "ultron.user",
+            "ultron.assistant",
+            "ultron.compaction",
+            "ultron.system",
+            "ultron.assistant"
+        ]
     );
     let compaction = chat
         .root
         .entries()
         .unwrap()
         .into_iter()
-        .find(|record| record.kind == "pi.compaction")
+        .find(|record| record.kind == "ultron.compaction")
         .unwrap();
     // The entry keeps the file lists for the next compaction (`CompactionDetails`).
     assert_eq!(
@@ -510,8 +541,8 @@ fn harness_chat_compaction_overflow_fails_a_second_overflow_with_its_error_entry
         json!({ "status": "unanswered", "reason": "model_error", "detail": OVERFLOW }),
     );
     let entries = kinds(&chat.root);
-    assert_eq!(entries.iter().filter(|kind| *kind == "pi.compaction").count(), 1);
-    assert_eq!(entries.last().unwrap(), "pi.assistant");
+    assert_eq!(entries.iter().filter(|kind| *kind == "ultron.compaction").count(), 1);
+    assert_eq!(entries.last().unwrap(), "ultron.assistant");
     // The second overflow starts no second compaction: one summarization request in all.
     assert_eq!(chat.faux.summary_requests().len(), 2);
     chat.chat.close().unwrap();
@@ -542,7 +573,10 @@ fn harness_chat_compaction_overflow_never_compacts_twice_in_one_generation_even_
     );
     assert_eq!(chat.faux.summary_requests().len(), 1);
     assert_eq!(
-        kinds(&chat.root).iter().filter(|kind| *kind == "pi.compaction").count(),
+        kinds(&chat.root)
+            .iter()
+            .filter(|kind| *kind == "ultron.compaction")
+            .count(),
         1
     );
     chat.chat.close().unwrap();
@@ -670,7 +704,7 @@ fn harness_chat_compaction_blocking_waits_for_its_compaction_which_appends_the_s
         json!([{ "taskId": child.id.0, "reason": "threshold", "blocking": true, "attempt": 1 }])
     );
     // Nothing was appended before the wait.
-    assert_eq!(kinds(&chat.root).last().unwrap(), "pi.user");
+    assert_eq!(kinds(&chat.root).last().unwrap(), "ultron.user");
     gate.abort();
     assert_eq!(input.wait(&bg()).unwrap().status, SubmissionStatus::Done);
     assert_eq!(
@@ -680,7 +714,7 @@ fn harness_chat_compaction_blocking_waits_for_its_compaction_which_appends_the_s
     let entries = kinds(&chat.root);
     assert_eq!(
         entries[entries.len() - 3..],
-        ["pi.compaction", "pi.system", "pi.assistant"]
+        ["ultron.compaction", "ultron.system", "ultron.assistant"]
     );
     let request = chat.faux.agent_requests().last().unwrap().messages.clone();
     assert!(first_user_text(&request).contains("SUMMARY"));
@@ -711,7 +745,10 @@ fn harness_chat_compaction_blocking_sends_the_request_once_without_a_second_comp
     turn(&chat, &text("u4", 400), "a4");
     assert_eq!(chat.faux.summary_requests().len(), 2);
     assert_eq!(
-        kinds(&chat.root).iter().filter(|kind| *kind == "pi.compaction").count(),
+        kinds(&chat.root)
+            .iter()
+            .filter(|kind| *kind == "ultron.compaction")
+            .count(),
         1
     );
     chat.chat.close().unwrap();
@@ -724,7 +761,7 @@ fn harness_chat_compaction_blocking_sends_the_request_anyway_when_its_compaction
     chat.setup.settings(|settings| settings.compaction = BLOCKING);
     chat.faux.summary(step(failure("bad request")));
     turn(&chat, &text("u4", 200), "a4");
-    assert!(!kinds(&chat.root).contains(&"pi.compaction".to_owned()));
+    assert!(!kinds(&chat.root).contains(&"ultron.compaction".to_owned()));
     assert_eq!(
         first_user_text(&chat.faux.agent_requests().last().unwrap().messages),
         text("u1", 100)
@@ -746,7 +783,7 @@ fn harness_chat_compaction_blocking_sends_the_request_anyway_when_its_compaction
     let child = compactions(&chat).remove(0);
     chat.chat.abort_task(child.id, &bg()).unwrap();
     assert_eq!(input.wait(&bg()).unwrap().status, SubmissionStatus::Done);
-    assert!(!kinds(&chat.root).contains(&"pi.compaction".to_owned()));
+    assert!(!kinds(&chat.root).contains(&"ultron.compaction".to_owned()));
     chat.chat.close().unwrap();
 }
 
@@ -798,7 +835,7 @@ fn harness_chat_compaction_recovery_keeps_a_generation_waiting_on_its_blocking_c
         let entries = kinds(&chat.root);
         assert_eq!(
             entries[entries.len() - 3..],
-            ["pi.compaction", "pi.system", "pi.assistant"]
+            ["ultron.compaction", "ultron.system", "ultron.assistant"]
         );
         chat.chat.close().unwrap();
     }
@@ -897,7 +934,7 @@ fn harness_chat_compaction_keeps_the_edits_of_kept_entries() {
     let submission = durable::SubmissionId(outcome["result"]["submissionId"].as_u64().unwrap());
     chat.chat.submission(submission).unwrap().unwrap().wait(&bg()).unwrap();
     let marker = chat.root.entries().unwrap().last().unwrap().clone();
-    assert_eq!(marker.kind, "pi.compaction");
+    assert_eq!(marker.kind, "ultron.compaction");
     let head = marker.head.unwrap().0;
     assert!(head <= u3 && head < edit.id.0, "kept from {head}");
     let view = chat.root.context(None).unwrap();
@@ -917,7 +954,7 @@ fn harness_chat_compaction_keeps_the_edits_of_kept_entries() {
 #[test]
 fn harness_chat_compaction_plan_splits_a_turn_cut_at_an_answer_and_updates_the_previous_summary() {
     let summary = "The conversation history before this point was compacted into the following summary:\n\n<summary>\nPREVIOUS\n</summary>";
-    let mut head = entry(1, "pi.compaction", vec![user(summary)], Some(2));
+    let mut head = entry(1, "ultron.compaction", vec![user(summary)], Some(2));
     head.data = Some(json!({ "reason": "threshold", "details": { "readFiles": ["a.md"], "modifiedFiles": ["b.rs"] } }));
     let edit = {
         let mut message = assistant("editing", &["c1"], "toolUse");
@@ -927,12 +964,12 @@ fn harness_chat_compaction_plan_splits_a_turn_cut_at_an_answer_and_updates_the_p
     };
     let view = view(
         vec![
-            entry(2, "pi.user", vec![user("u1")], None),
-            entry(3, "pi.assistant", vec![assistant("a1", &[], "stop")], None),
-            entry(4, "pi.user", vec![user("u2")], None),
-            entry(5, "pi.assistant", vec![edit], None),
-            entry(6, "pi.tool-result", vec![tool_result("c1", "ok")], None),
-            entry(7, "pi.assistant", vec![assistant("a2", &[], "stop")], None),
+            entry(2, "ultron.user", vec![user("u1")], None),
+            entry(3, "ultron.assistant", vec![assistant("a1", &[], "stop")], None),
+            entry(4, "ultron.user", vec![user("u2")], None),
+            entry(5, "ultron.assistant", vec![edit], None),
+            entry(6, "ultron.tool-result", vec![tool_result("c1", "ok")], None),
+            entry(7, "ultron.assistant", vec![assistant("a2", &[], "stop")], None),
         ],
         Some(head),
     );

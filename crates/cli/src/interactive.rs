@@ -843,7 +843,7 @@ fn link_thread(
             let connection = link.connection();
             let prepared = connection.call(
                 connection.server_target(),
-                "pi.presentation-plugins",
+                "ultron.presentation-plugins",
                 "prepareSession",
                 json!([{"sessionId": session.session_id, "packagePaths": null}]),
             );
@@ -1001,7 +1001,7 @@ fn link_thread(
             Command::Compact(instructions) => {
                 let started = start_call(
                     &link,
-                    "pi.agent-controller",
+                    "ultron.agent-controller",
                     "compact",
                     json!([{"customInstructions": instructions}]),
                 );
@@ -1100,7 +1100,7 @@ fn link_thread(
                         let _ = ui.send(UiEvent::Lane(event));
                     };
                     let run = connection.session_target().and_then(|target| {
-                        connection.call(target, "pi.legacy-extension-commands", "run", json!(["mcp", args]))
+                        connection.call(target, "ultron.legacy-extension-commands", "run", json!(["mcp", args]))
                     });
                     match run {
                         Ok(result) => {
@@ -1172,7 +1172,7 @@ fn link_thread(
                 // The agent controller's navigate runs on its own worker thread (a summary is a model call).
                 let started = start_call(
                     &link,
-                    "pi.agent-controller",
+                    "ultron.agent-controller",
                     "navigate",
                     json!([{"targetId": target, "summarize": summarize, "label": null, "customInstructions": instructions}]),
                 );
@@ -1722,13 +1722,13 @@ fn reload_plugins(link: &Link) -> Result<(), String> {
     let data = connection
         .call(
             connection.server_target(),
-            "pi.presentation-plugins",
+            "ultron.presentation-plugins",
             "reload",
             json!([]),
         )
         .map_err(|e| e.to_string())?
         .unwrap_or(Value::Null);
-    session_call(link, "pi.session-plugins", "reload", json!([]))?;
+    session_call(link, "ultron.session-plugins", "reload", json!([]))?;
     apply_presentation_plugins(&data)
 }
 

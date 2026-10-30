@@ -1,4 +1,4 @@
-//! The session worker's settings and control members, `pi.presentation-plugins`, `Models.refresh`,
+//! The session worker's settings and control members, `ultron.presentation-plugins`, `Models.refresh`,
 //! `AgentController.resume` and client cancellation, through the real Rust server and session worker
 //! (experimental/services/session-control-provider.ts, services/server.ts, packages/server server.ts `handleCancel` /
 //! `handleRequest`, session-worker.ts `onOperationCancel`). Offline: `PI_OFFLINE=1`, a loopback provider.
@@ -59,7 +59,7 @@ fn wait_until(what: &str, mut done: impl FnMut() -> bool) {
 }
 
 fn management(connection: &Connection, member: &str, args: Value) -> Result<Option<Value>, CallError> {
-    connection.call(connection.server_target(), "pi.session-management", member, args)
+    connection.call(connection.server_target(), "ultron.session-management", member, args)
 }
 
 /// Create a session and attach this connection to it; returns its id.
@@ -86,7 +86,7 @@ fn cli_daemon_presentation_plugins_need_a_prepared_selection_per_client() {
     let server = start(&home);
     let connection = Connection::connect(&server.socket, SERVER_ID).unwrap();
     let plugins = |member: &str, args: Value| {
-        connection.call(connection.server_target(), "pi.presentation-plugins", member, args)
+        connection.call(connection.server_target(), "ultron.presentation-plugins", member, args)
     };
     // `reload` before `prepareSession` throws a plain error: the client sees the internal error.
     assert_eq!(
@@ -118,7 +118,12 @@ fn cli_daemon_presentation_plugins_need_a_prepared_selection_per_client() {
     assert_eq!(
         code(
             other
-                .call(other.server_target(), "pi.presentation-plugins", "reload", json!([]))
+                .call(
+                    other.server_target(),
+                    "ultron.presentation-plugins",
+                    "reload",
+                    json!([])
+                )
                 .unwrap_err()
         ),
         "internal_error: Internal server error"
@@ -183,10 +188,10 @@ fn cli_daemon_session_control_settings_trust_debug_and_models_through_the_worker
         control("beforeFork", json!(["e", "before"])).unwrap(),
         Some(json!({"cancelled": false}))
     );
-    // `Models.refresh` (offline): the catalogue and the refresh status are published on `pi.models`.
-    let models = connection.subscribe(session.clone(), "pi.models").unwrap();
+    // `Models.refresh` (offline): the catalogue and the refresh status are published on `ultron.models`.
+    let models = connection.subscribe(session.clone(), "ultron.models").unwrap();
     connection
-        .call(session.clone(), "pi.models", "refresh", json!([]))
+        .call(session.clone(), "ultron.models", "refresh", json!([]))
         .unwrap();
     wait_until("the refresh is published", || {
         connection
@@ -203,7 +208,7 @@ fn cli_daemon_session_control_settings_trust_debug_and_models_through_the_worker
     let selected = connection
         .call(
             session.clone(),
-            "pi.models",
+            "ultron.models",
             "select",
             json!([{"provider": "anthropic", "modelId": "claude-haiku-4-5"}]),
         )
@@ -220,7 +225,7 @@ fn cli_daemon_session_control_settings_trust_debug_and_models_through_the_worker
     // Nothing interrupted, nothing queued: nothing to resume.
     assert_eq!(
         connection
-            .call(session.clone(), "pi.agent-controller", "resume", json!([]))
+            .call(session.clone(), "ultron.agent-controller", "resume", json!([]))
             .unwrap(),
         Some(
             json!({"accepted": false, "operationId": null, "error": {"code": "nothing_to_resume",
@@ -350,7 +355,7 @@ fn cli_daemon_an_active_request_id_cannot_be_reused() {
     raw.request(
         "attach",
         server_target,
-        json!({"serviceId": "pi.session-management", "member": "attach", "args": [id]}),
+        json!({"serviceId": "ultron.session-management", "member": "attach", "args": [id]}),
     );
     let attachment = loop {
         match raw.next() {

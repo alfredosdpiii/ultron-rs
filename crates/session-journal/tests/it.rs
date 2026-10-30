@@ -9,6 +9,8 @@
 mod all_messages_fixture;
 #[path = "context_projectors.rs"]
 mod context_projectors;
+#[path = "legacy_names.rs"]
+mod legacy_names;
 #[path = "listing_order.rs"]
 mod listing_order;
 #[path = "names_and_run.rs"]

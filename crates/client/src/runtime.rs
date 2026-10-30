@@ -794,7 +794,7 @@ pub fn rejoin(connection: &Connection, session_id: &str, options: &RunOptions) -
         let attached = connection
             .call(
                 server.clone(),
-                "pi.session-management",
+                "ultron.session-management",
                 "attach",
                 match &options.session_options {
                     Some(session_options) => json!([session_id, session_options]),
@@ -825,7 +825,7 @@ pub fn rejoin(connection: &Connection, session_id: &str, options: &RunOptions) -
         }
         if interrupted(options) && !abort_sent {
             abort_sent = true;
-            connection.call(session.clone(), "pi.agent-controller", "requestAbort", json!([]))?;
+            connection.call(session.clone(), "ultron.agent-controller", "requestAbort", json!([]))?;
         }
         if Instant::now() >= deadline {
             return Err(CallError::Disconnected(
@@ -877,7 +877,7 @@ pub fn run_client_reopening(
     if let (Ok(Some(created)), true) = (&result.1, command.no_session) {
         let target = connection.server_target();
         let attached = connection.attachment().is_some_and(|a| &a.session_id == created);
-        match connection.call(target, "pi.session-management", "remove", json!([created])) {
+        match connection.call(target, "ultron.session-management", "remove", json!([created])) {
             Ok(_) if attached => {
                 let _ = connection.wait_attachment(|a| a.is_none());
             }
@@ -990,7 +990,7 @@ fn await_prompt(
         }
         if interrupted(options) && !abort_sent {
             abort_sent = true;
-            let _ = connection.start(session.clone(), "pi.agent-controller", "requestAbort", json!([]));
+            let _ = connection.start(session.clone(), "ultron.agent-controller", "requestAbort", json!([]));
         }
     }
 }
@@ -1006,9 +1006,9 @@ fn operation(
     let server_id = connection.server_id.clone();
     let mut started = Vec::new();
     for service in [
-        "pi.session-directory",
-        "pi.session-management",
-        "pi.presentation-plugins",
+        "ultron.session-directory",
+        "ultron.session-management",
+        "ultron.presentation-plugins",
     ] {
         started.push(connection.start_subscribe(server.clone(), service).map_err(fail)?);
     }
@@ -1021,7 +1021,8 @@ fn operation(
         .state(directory, "state")
         .map(|s| s["sessions"].as_array().cloned().unwrap_or_default())
         .unwrap_or_default();
-    let management = |member: &str, args: Json| connection.call(server.clone(), "pi.session-management", member, args);
+    let management =
+        |member: &str, args: Json| connection.call(server.clone(), "ultron.session-management", member, args);
 
     let mut session_id = command.session_id.clone();
     if session_id.is_none() && command.prompt.is_none() {
@@ -1093,7 +1094,7 @@ fn operation(
     connection
         .call(
             server.clone(),
-            "pi.presentation-plugins",
+            "ultron.presentation-plugins",
             "prepareSession",
             json!([{"sessionId": session_id, "packagePaths": null}]),
         )
@@ -1112,7 +1113,7 @@ fn operation(
         .start(session.clone(), "$chord.service", "catalogue", json!([]))
         .map_err(fail)?;
     let mut started = Vec::new();
-    for service in ["pi.models", "pi.agent-controller", "pi.transcript"] {
+    for service in ["ultron.models", "ultron.agent-controller", "ultron.transcript"] {
         started.push(connection.start_subscribe(session.clone(), service).map_err(fail)?);
     }
     connection.wait(&catalogue).map_err(fail)?;
@@ -1147,7 +1148,7 @@ fn operation(
     let response = connection
         .start(
             session.clone(),
-            "pi.agent-controller",
+            "ultron.agent-controller",
             "prompt",
             json!([{"message": prompt, "images": images}]),
         )

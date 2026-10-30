@@ -82,7 +82,29 @@ pub(crate) fn into_object(value: Value) -> Map<String, Value> {
     }
 }
 
-fn parse_committed_write(value: Value) -> Result<Value, String> {
+/// Files written before the rename name their reserved namespaces and durable kinds `pi.*`; they read as
+/// `ultron.*`. The file itself is never rewritten.
+pub fn rename_legacy(write: &mut Value) {
+    fn rename(slot: Option<&mut Value>) {
+        if let Some(Value::String(name)) = slot
+            && let Some(rest) = name.strip_prefix("pi.")
+        {
+            *name = format!("ultron.{rest}");
+        }
+    }
+    rename(write.get_mut("namespace"));
+    if write["key"] == "durable"
+        && let Some(Value::Array(writes)) = write.pointer_mut("/value/writes")
+    {
+        for inner in writes {
+            rename(inner.pointer_mut("/value/kind"));
+            rename(inner.pointer_mut("/record/kind"));
+        }
+    }
+}
+
+fn parse_committed_write(mut value: Value) -> Result<Value, String> {
+    rename_legacy(&mut value);
     let Some(map) = value.as_object() else {
         return Err("Invalid JSONL transaction write".into());
     };

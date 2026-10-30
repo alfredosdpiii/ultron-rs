@@ -11,13 +11,13 @@ use crate::state::Write;
 use crate::usage::num;
 use serde_json::{Map, Value, json};
 
-pub const OP_META: &str = "pi.op.meta";
-pub const OP_STATE: &str = "pi.op.state";
-pub const OP_RESULT: &str = "pi.result";
-pub const OP_TOOL_ARGS: &str = "pi.op.tool_args";
-pub const PENDING_ENTRY: &str = "pi.pending.entry";
-pub const PENDING_TOOL_OUTPUT: &str = "pi.pending.tool_output";
-pub const PENDING_FRAMES: &str = "pi.pending.assistant_frame";
+pub const OP_META: &str = "ultron.op.meta";
+pub const OP_STATE: &str = "ultron.op.state";
+pub const OP_RESULT: &str = "ultron.result";
+pub const OP_TOOL_ARGS: &str = "ultron.op.tool_args";
+pub const PENDING_ENTRY: &str = "ultron.pending.entry";
+pub const PENDING_TOOL_OUTPUT: &str = "ultron.pending.tool_output";
+pub const PENDING_FRAMES: &str = "ultron.pending.assistant_frame";
 pub const ULTRON_USAGE: &str = "ultron.usage";
 
 /// `LaneConfiguration`.
@@ -102,7 +102,7 @@ pub struct Run {
     encoder: FrameEncoder,
     /// The operation's control state: running, or cancel requested (`{status, requestedAt}`).
     control: Value,
-    /// The lane's queued messages (`pi.lane.state` `inbox`) while the run is current.
+    /// The lane's queued messages (`ultron.lane.state` `inbox`) while the run is current.
     inbox: Value,
     /// The entry the current generation answers when it took queued messages (else the run's trigger).
     generation_trigger: Option<String>,

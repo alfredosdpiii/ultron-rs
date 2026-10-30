@@ -284,7 +284,7 @@ fn cli_daemon_worker_crash_restarts_with_committed_state() {
     let connection = Connection::connect(&route.path, &route.server_id).unwrap();
     let target = connection.server_target();
     let created = connection
-        .call(target.clone(), "pi.session-management", "create", json!([{}]))
+        .call(target.clone(), "ultron.session-management", "create", json!([{}]))
         .unwrap()
         .unwrap();
     let id = created["sessionId"].as_str().unwrap().to_string();
@@ -292,7 +292,7 @@ fn cli_daemon_worker_crash_restarts_with_committed_state() {
         connection
             .call(
                 connection.server_target(),
-                "pi.session-management",
+                "ultron.session-management",
                 "attach",
                 json!([id]),
             )
@@ -301,7 +301,7 @@ fn cli_daemon_worker_crash_restarts_with_committed_state() {
             .wait_attachment(|a| a.is_some_and(|a| a.session_id == id))
             .unwrap();
         let session = connection.session_target().unwrap();
-        let transcript = connection.subscribe(session.clone(), "pi.transcript").unwrap();
+        let transcript = connection.subscribe(session.clone(), "ultron.transcript").unwrap();
         (session, transcript)
     };
     let (session, transcript) = attach(&connection);
@@ -309,7 +309,7 @@ fn cli_daemon_worker_crash_restarts_with_committed_state() {
         connection
             .call(
                 session.clone(),
-                "pi.agent-controller",
+                "ultron.agent-controller",
                 "prompt",
                 json!([{"message": text, "images": null}]),
             )
@@ -353,7 +353,7 @@ fn cli_daemon_two_clients_share_one_server_and_session() {
     let route = server.route();
     let a = Connection::connect(&route.path, &route.server_id).unwrap();
     let b = Connection::connect(&route.path, &route.server_id).unwrap();
-    let directory = b.subscribe(b.server_target(), "pi.session-directory").unwrap();
+    let directory = b.subscribe(b.server_target(), "ultron.session-directory").unwrap();
     let (listed_tx, listed_rx) = std::sync::mpsc::channel();
     b.listen(
         &directory,
@@ -362,7 +362,7 @@ fn cli_daemon_two_clients_share_one_server_and_session() {
         }),
     );
     let created = a
-        .call(a.server_target(), "pi.session-management", "create", json!([{}]))
+        .call(a.server_target(), "ultron.session-management", "create", json!([{}]))
         .unwrap()
         .unwrap();
     let id = created["sessionId"].as_str().unwrap().to_string();
@@ -386,7 +386,7 @@ fn cli_daemon_two_clients_share_one_server_and_session() {
         connection
             .call(
                 connection.server_target(),
-                "pi.session-management",
+                "ultron.session-management",
                 "attach",
                 json!([id]),
             )
@@ -396,7 +396,7 @@ fn cli_daemon_two_clients_share_one_server_and_session() {
             .unwrap();
         transcripts.push(
             connection
-                .subscribe(connection.session_target().unwrap(), "pi.transcript")
+                .subscribe(connection.session_target().unwrap(), "ultron.transcript")
                 .unwrap(),
         );
     }
@@ -414,7 +414,7 @@ fn cli_daemon_two_clients_share_one_server_and_session() {
     let response = a
         .call(
             a.session_target().unwrap(),
-            "pi.agent-controller",
+            "ultron.agent-controller",
             "prompt",
             json!([{"message": "together", "images": null}]),
         )
@@ -455,7 +455,7 @@ fn cli_daemon_attach_to_unknown_session_and_detached_calls_fail_like_typescript(
     let error = connection
         .call(
             connection.server_target(),
-            "pi.session-management",
+            "ultron.session-management",
             "attach",
             json!(["missing"]),
         )
@@ -472,7 +472,7 @@ fn cli_daemon_attach_to_unknown_session_and_detached_calls_fail_like_typescript(
         session_id: "s".into(),
         attachment_id: "a".into(),
     });
-    let error = connection.call(fake, "pi.transcript", "x", json!([])).unwrap_err();
+    let error = connection.call(fake, "ultron.transcript", "x", json!([])).unwrap_err();
     assert_eq!(
         error,
         client::runtime::CallError::Server(protocol::ProtocolError::new(
@@ -484,7 +484,7 @@ fn cli_daemon_attach_to_unknown_session_and_detached_calls_fail_like_typescript(
         server_id: "00000000-0000-4000-8000-0000000000bb".into(),
     };
     let error = connection
-        .call(wrong, "pi.session-management", "detach", json!([]))
+        .call(wrong, "ultron.session-management", "detach", json!([]))
         .unwrap_err();
     assert_eq!(
         error,
@@ -494,13 +494,13 @@ fn cli_daemon_attach_to_unknown_session_and_detached_calls_fail_like_typescript(
         ))
     );
     let error = connection
-        .call(connection.server_target(), "pi.nothing", "x", json!([]))
+        .call(connection.server_target(), "ultron.nothing", "x", json!([]))
         .unwrap_err();
     assert_eq!(
         error,
         client::runtime::CallError::Server(protocol::ProtocolError::new(
             "service_not_allowed",
-            "Remote service pi.nothing is not allowlisted"
+            "Remote service ultron.nothing is not allowlisted"
         ))
     );
     connection.disconnect();
@@ -518,7 +518,7 @@ fn cli_daemon_new_server_adopts_a_busy_orphan_worker() {
     let created = connection
         .call(
             connection.server_target(),
-            "pi.session-management",
+            "ultron.session-management",
             "create",
             json!([{}]),
         )
@@ -528,7 +528,7 @@ fn cli_daemon_new_server_adopts_a_busy_orphan_worker() {
     connection
         .call(
             connection.server_target(),
-            "pi.session-management",
+            "ultron.session-management",
             "attach",
             json!([id]),
         )
@@ -537,7 +537,7 @@ fn cli_daemon_new_server_adopts_a_busy_orphan_worker() {
     let session: RpcTarget = connection.session_target().unwrap();
     let prompting = connection.start(
         session,
-        "pi.agent-controller",
+        "ultron.agent-controller",
         "prompt",
         json!([{"message": "long", "images": null}]),
     );
@@ -554,7 +554,12 @@ fn cli_daemon_new_server_adopts_a_busy_orphan_worker() {
     let route = second.route();
     let adopter = Connection::connect(&route.path, &route.server_id).unwrap();
     adopter
-        .call(adopter.server_target(), "pi.session-management", "attach", json!([id]))
+        .call(
+            adopter.server_target(),
+            "ultron.session-management",
+            "attach",
+            json!([id]),
+        )
         .unwrap();
     adopter.wait_attachment(|a| a.is_some()).unwrap();
     assert_eq!(
@@ -563,7 +568,7 @@ fn cli_daemon_new_server_adopts_a_busy_orphan_worker() {
         "the orphan was adopted, not replaced"
     );
     let transcript = adopter
-        .subscribe(adopter.session_target().unwrap(), "pi.transcript")
+        .subscribe(adopter.session_target().unwrap(), "ultron.transcript")
         .unwrap();
     while transcript_roles(&adopter, &transcript) != ["user", "assistant"] {
         assert!(Instant::now() < deadline, "the adopted worker did not finish its run");
@@ -576,7 +581,7 @@ fn cli_daemon_new_server_adopts_a_busy_orphan_worker() {
     assert_no_processes(&home.root, Duration::from_secs(120));
 }
 
-/// `pi.session-management.describe` carries `allMessagesText` (what Pi's selector searches): the text of every user
+/// `ultron.session-management.describe` carries `allMessagesText` (what Pi's selector searches): the text of every user
 /// and assistant message, for a session file the server lists (recorded in session-journal's all-messages fixture).
 #[test]
 fn cli_daemon_describe_lists_all_messages_text() {
@@ -603,7 +608,7 @@ fn cli_daemon_describe_lists_all_messages_text() {
     let listed = connection
         .call(
             connection.server_target(),
-            "pi.session-management",
+            "ultron.session-management",
             "describe",
             json!([{}]),
         )

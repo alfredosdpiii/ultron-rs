@@ -121,7 +121,7 @@ frames.push({ max: null, ops: ["encode:aabbcc"], results: [{ op: "encode:aabbcc"
 
 const SID = "00000000-0000-4000-8000-000000000001";
 const sessionTarget = { serverId: SID, sessionId: "session-1", attachmentId: "attachment-1" };
-const listCall = { serviceId: "pi.models", member: "list", args: [] };
+const listCall = { serviceId: "ultron.models", member: "list", args: [] };
 const clientValues = [
 	{ type: "hello", version: 8 }, { type: "hello", version: 0 }, { type: "hello", version: 9 },
 	{ type: "hello", version: "8" }, { type: "hello", version: 8.5 }, { type: "hello", version: -1 }, { type: "hello", version: 8, extra: true },
@@ -182,7 +182,7 @@ const messages = [
 ];
 
 const helloFrame = hex(p.encodeClientMessage({ type: "hello", version: 8 }));
-const reqFrame = hex(p.encodeClientMessage({ type: "request", id: "request-1", target: { serverId: SID }, call: { serviceId: "pi.session-directory", member: "list", args: [] } }));
+const reqFrame = hex(p.encodeClientMessage({ type: "request", id: "request-1", target: { serverId: SID }, call: { serviceId: "ultron.session-directory", member: "list", args: [] } }));
 function runDecoder(side, max, ops) {
 	const D = side === "client" ? p.ClientMessageDecoder : p.ServerMessageDecoder;
 	const decoder = new D(max === null ? undefined : { maxFrameLength: max });

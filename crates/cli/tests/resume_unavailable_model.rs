@@ -74,7 +74,7 @@ fn cli_print_continue_with_a_retired_model_fails_with_model_unavailable() {
     let transactions = journal["transactions"].as_array().unwrap();
     let records = |i: usize| transactions[i].as_array().unwrap().clone();
     let last = records(transactions.len() - 1);
-    let result = last.iter().find(|r| r["namespace"] == "pi.result").unwrap();
+    let result = last.iter().find(|r| r["namespace"] == "ultron.result").unwrap();
     let mut result_value = result["value"].clone();
     let operation = result_value["operationId"].clone();
     result_value["operationId"] = Value::Null;
@@ -92,15 +92,15 @@ fn cli_print_continue_with_a_retired_model_fails_with_model_unavailable() {
             .map(|r| format!("{} {}", r["op"].as_str().unwrap(), r["namespace"].as_str().unwrap()))
             .collect::<Vec<_>>(),
         [
-            "delete pi.op.meta",
-            "delete pi.op.state",
-            "set pi.result",
-            "set pi.lane.state"
+            "delete ultron.op.meta",
+            "delete ultron.op.state",
+            "set ultron.result",
+            "set ultron.lane.state"
         ]
     );
     // The transaction before: the generation's `assistant.ready`, its context on the stored model.
     let ready = records(transactions.len() - 2);
-    let state = &ready.iter().find(|r| r["namespace"] == "pi.op.state").unwrap()["value"];
+    let state = &ready.iter().find(|r| r["namespace"] == "ultron.op.state").unwrap()["value"];
     assert_eq!(state["at"], "assistant.ready");
     assert_eq!(state["nextAttempt"], 1);
     assert_eq!(
@@ -108,7 +108,7 @@ fn cli_print_continue_with_a_retired_model_fails_with_model_unavailable() {
         json!({"model": {"provider": "anthropic", "modelId": "claude-retired-1"}, "thinkingLevel": "low", "activeToolNames": ["rlm"]})
     );
     assert_eq!(
-        ready.iter().find(|r| r["namespace"] == "pi.op.state").unwrap()["key"],
+        ready.iter().find(|r| r["namespace"] == "ultron.op.state").unwrap()["key"],
         operation
     );
     // The prompt is the branch's last message; no assistant answer follows it.

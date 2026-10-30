@@ -327,7 +327,7 @@ pub fn run_prompt(
         && let Ok(connection) = client::runtime::Connection::connect(&route.path, &route.server_id)
     {
         let target = connection.server_target();
-        let _ = connection.call(target, "pi.session-management", "remove", json!([session_id]));
+        let _ = connection.call(target, "ultron.session-management", "remove", json!([session_id]));
         connection.disconnect();
     }
     for server in servers.lock().unwrap_or_else(|e| e.into_inner()).drain(..) {

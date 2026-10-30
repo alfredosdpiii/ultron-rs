@@ -4,7 +4,7 @@
 //! preparation, resend the pinned request, convert a committed partial, resume a backoff or a poll).
 //!
 //! RLM-first divergence: the model's tool list is exactly the REPL tool, so every first preparation appends a
-//! `pi.system` entry declaring it; upstream's tool-less setups expect none. Expected entry kinds include it.
+//! `ultron.system` entry declaring it; upstream's tool-less setups expect none. Expected entry kinds include it.
 //! Not ported: registry and section-wrapper cases (no extension registry for sections) and "rejects a registry
 //! without the built-in tasks" (the ChatHarness installs them).
 
@@ -52,7 +52,7 @@ fn checkpoint(chat: &ChatHarness, id: TaskId) -> Value {
     js(&chat.get_task(id).unwrap().unwrap().state)["checkpoint"].clone()
 }
 
-/// Every committed `pi.live` value from now on.
+/// Every committed `ultron.live` value from now on.
 fn live_publications(chat: &ChatHarness) -> Arc<Mutex<Vec<Value>>> {
     let values: Arc<Mutex<Vec<Value>>> = Arc::default();
     let sink = values.clone();
@@ -61,7 +61,7 @@ fn live_publications(chat: &ChatHarness) -> Arc<Mutex<Vec<Value>>> {
         .subscribe_commits(move |publication| {
             for change in &publication.changes {
                 if let CommitChange::Document { record, value, .. } = change
-                    && record.identity.kind == "pi.live"
+                    && record.identity.kind == "ultron.live"
                     && let Some(value) = value.as_ref().and_then(|value| value.as_object().cloned())
                 {
                     sink.lock().unwrap().push(Value::Object(value));
@@ -211,7 +211,7 @@ fn harness_chat_generation_answers_an_input_and_settles_its_submission() {
         let settled = root.submit(SubmissionDraft::input("hi")).unwrap().wait(&bg()).unwrap();
         assert_eq!(settled.status, SubmissionStatus::Done);
         let answer = root
-            .commit(|tx| Ok(tx.entry_of("pi.assistant", settled.answer.unwrap())?))
+            .commit(|tx| Ok(tx.entry_of("ultron.assistant", settled.answer.unwrap())?))
             .unwrap()
             .unwrap();
         assert_eq!(
@@ -219,7 +219,7 @@ fn harness_chat_generation_answers_an_input_and_settles_its_submission() {
             Some("Hello there")
         );
         let entries = root.entries().unwrap();
-        assert_eq!(kinds(&root), ["pi.user", "pi.system", "pi.assistant"]);
+        assert_eq!(kinds(&root), ["ultron.user", "ultron.system", "ultron.assistant"]);
         assert_eq!(Some(entries[0].id), settled.entry);
         let system = &entries[1].model.as_ref().unwrap()[0];
         assert_eq!(system["role"], "system");
@@ -243,7 +243,7 @@ fn harness_chat_generation_answers_an_input_and_settles_its_submission() {
             })
             .unwrap();
         let task = &tasks[0];
-        assert_eq!(task.kind, "pi.generation");
+        assert_eq!(task.kind, "ultron.generation");
         // Entries written by the generation are attributed to it; the admitted user entry is not task work.
         assert_eq!(
             entries.iter().map(|entry| entry.by_task_id).collect::<Vec<_>>(),
@@ -275,7 +275,7 @@ fn harness_chat_generation_stores_partials_as_deltas_and_a_complete_base_once_no
             .iter()
             .flatten()
             .find_map(|write| match write {
-                StorageWrite::DocumentCreate { record, .. } if record.kind == "pi.live" => Some(record.id),
+                StorageWrite::DocumentCreate { record, .. } if record.kind == "ultron.live" => Some(record.id),
                 _ => None,
             })
             .unwrap();
@@ -352,7 +352,7 @@ fn harness_chat_generation_fails_with_no_model_when_no_model_is_configured_or_th
             json!({ "status": "unanswered", "reason": "no_model" }),
         );
         assert!(unknown.entry.is_some());
-        assert_eq!(kinds(&root), ["pi.user"]);
+        assert_eq!(kinds(&root), ["ultron.user"]);
         let tasks = chat
             .commit(|tx| {
                 Ok(tx
@@ -401,7 +401,10 @@ fn harness_chat_generation_retries_a_retryable_error_after_a_durable_backoff_and
         let settled = root.submit(SubmissionDraft::input("hi")).unwrap().wait(&bg()).unwrap();
         assert_eq!(settled.status, SubmissionStatus::Done);
         let entries = root.entries().unwrap();
-        assert_eq!(kinds(&root), ["pi.user", "pi.system", "pi.assistant", "pi.assistant"]);
+        assert_eq!(
+            kinds(&root),
+            ["ultron.user", "ultron.system", "ultron.assistant", "ultron.assistant"]
+        );
         assert_eq!(entries[2].model.as_ref().unwrap()[0]["stopReason"], "error");
         let values = values.lock().unwrap();
         assert!(
@@ -433,7 +436,10 @@ fn harness_chat_generation_fails_with_model_error_once_retries_are_exhausted() {
             &record(&settled),
             json!({ "status": "unanswered", "reason": "model_error", "detail": "503 Service Unavailable" }),
         );
-        assert_eq!(kinds(&root), ["pi.user", "pi.system", "pi.assistant", "pi.assistant"]);
+        assert_eq!(
+            kinds(&root),
+            ["ultron.user", "ultron.system", "ultron.assistant", "ultron.assistant"]
+        );
         assert_eq!(setup.faux.pending(), 1);
         chat.close().unwrap();
     });
@@ -543,7 +549,7 @@ fn harness_chat_generation_polls_a_deferred_response_until_it_is_ready() {
         assert_eq!(polls.len(), 2);
         assert!(polls[1] > polls[0]);
         let answer = root
-            .commit(|tx| Ok(tx.entry_of("pi.assistant", settled.answer.unwrap())?))
+            .commit(|tx| Ok(tx.entry_of("ultron.assistant", settled.answer.unwrap())?))
             .unwrap()
             .unwrap();
         assert_eq!(
@@ -575,7 +581,7 @@ fn harness_chat_generation_converts_the_committed_partial_when_aborted_during_st
             json!({ "status": "unanswered", "reason": "aborted" }),
         );
         let entries = root.entries().unwrap();
-        assert_eq!(kinds(&root), ["pi.user", "pi.system", "pi.assistant"]);
+        assert_eq!(kinds(&root), ["ultron.user", "ultron.system", "ultron.assistant"]);
         let converted = entries[2].model.clone().unwrap()[0].clone();
         assert_eq!(converted["stopReason"], "aborted");
         assert!(text_of_value(&converted).unwrap().starts_with(&partial));
@@ -672,7 +678,7 @@ fn harness_chat_generation_forwards_stream_options_and_the_thinking_level() {
         .unwrap();
         chat.resume().unwrap();
         root.submit(SubmissionDraft::input("one")).unwrap().wait(&bg()).unwrap();
-        // Both are read at the next preparation: the thinking level from pi.agent, the stream options live from settings.
+        // Both are read at the next preparation: the thinking level from ultron.agent, the stream options live from settings.
         root.configure(&AgentChange {
             model: None,
             thinking_level: Some(None),
@@ -944,7 +950,7 @@ fn harness_chat_generation_renders_sections_per_conversation() {
                 .entries()
                 .unwrap()
                 .into_iter()
-                .find(|entry| entry.kind == "pi.system")
+                .find(|entry| entry.kind == "ultron.system")
                 .unwrap()
                 .model
                 .unwrap()[0]
@@ -1000,7 +1006,7 @@ fn harness_chat_generation_commits_no_partial_for_a_response_that_turns_deferred
             &record(&submission.wait(&bg()).unwrap()),
             json!({ "status": "unanswered", "reason": "aborted" }),
         );
-        assert_eq!(kinds(&root), ["pi.user", "pi.system"]);
+        assert_eq!(kinds(&root), ["ultron.user", "ultron.system"]);
         chat.close().unwrap();
     });
 }
@@ -1041,7 +1047,7 @@ fn harness_chat_generation_faults_a_run_task_settling_its_inputs_and_converting_
                 .any(|value| text_of_value(&value["generation"]["message"]).as_deref() == Some("partial"))
         );
         let entries = root.entries().unwrap();
-        assert_eq!(kinds(&root), ["pi.user", "pi.system", "pi.assistant"]);
+        assert_eq!(kinds(&root), ["ultron.user", "ultron.system", "ultron.assistant"]);
         let converted = entries[2].model.clone().unwrap()[0].clone();
         assert_matches(&converted, json!({ "role": "assistant", "stopReason": "aborted" }));
         assert_eq!(text_of_value(&converted).as_deref(), Some("partial"));
@@ -1059,14 +1065,14 @@ fn harness_chat_generation_orphans_a_blocked_run_task_with_full_run_cleanup() {
     each_backend(|backend| {
         let (chat, root) = open_chat(Controlled::new(backend), &Setup::new());
         // A run whose task was stored by a newer generation definition this process cannot run.
-        let newer = TaskDefinition::new("pi.generation", 2, |_| json!({ "phase": "prepare", "attempt": 1 }));
+        let newer = TaskDefinition::new("ultron.generation", 2, |_| json!({ "phase": "prepare", "attempt": 1 }));
         let (task, submission) = chat
             .commit(|tx| {
                 let entry = tx.append_entry(
                     root.id,
                     EntryDraft {
                         model: Some(vec![json!({ "role": "user", "content": "hi", "timestamp": 1 })]),
-                        ..EntryDraft::new("pi.user")
+                        ..EntryDraft::new("ultron.user")
                     },
                 )?;
                 let submission = tx.create_submission(SubmissionCreate {
@@ -1150,7 +1156,7 @@ fn harness_chat_generation_recovery_reruns_preparation_interrupted_before_its_co
             chat.submission(id).unwrap().unwrap().wait(&bg()).unwrap().status,
             SubmissionStatus::Done
         );
-        assert_eq!(kinds(&root), ["pi.user", "pi.system", "pi.assistant"]);
+        assert_eq!(kinds(&root), ["ultron.user", "ultron.system", "ultron.assistant"]);
         chat.close().unwrap();
     }
 }
@@ -1210,7 +1216,7 @@ fn harness_chat_generation_recovery_resends_a_request_interrupted_before_any_par
             vec![vec!["system".to_owned(), "user".to_owned()]]
         );
         assert_eq!(*timeouts.lock().unwrap(), vec![json!(1234)]);
-        assert_eq!(kinds(&root), ["pi.user", "pi.system", "pi.assistant"]);
+        assert_eq!(kinds(&root), ["ultron.user", "ultron.system", "ultron.assistant"]);
         chat.close().unwrap();
     }
 }
@@ -1263,7 +1269,10 @@ fn harness_chat_generation_recovery_converts_a_committed_partial_into_an_aborted
             vec![vec!["system".to_owned(), "user".to_owned()]]
         );
         let entries = root.entries().unwrap();
-        assert_eq!(kinds(&root), ["pi.user", "pi.system", "pi.assistant", "pi.assistant"]);
+        assert_eq!(
+            kinds(&root),
+            ["ultron.user", "ultron.system", "ultron.assistant", "ultron.assistant"]
+        );
         let converted = entries[2].model.clone().unwrap()[0].clone();
         assert_eq!(converted["stopReason"], "aborted");
         assert_eq!(text_of_value(&converted).as_deref(), Some(partial.as_str()));
@@ -1311,7 +1320,10 @@ fn harness_chat_generation_recovery_resumes_a_retry_backoff_after_reopen() {
             chat.submission(id).unwrap().unwrap().wait(&bg()).unwrap().status,
             SubmissionStatus::Done
         );
-        assert_eq!(kinds(&root), ["pi.user", "pi.system", "pi.assistant", "pi.assistant"]);
+        assert_eq!(
+            kinds(&root),
+            ["ultron.user", "ultron.system", "ultron.assistant", "ultron.assistant"]
+        );
         chat.close().unwrap();
     }
 }
@@ -1342,7 +1354,7 @@ fn harness_chat_generation_recovery_resumes_polling_a_deferred_response_after_re
         let settled = chat.submission(id).unwrap().unwrap().wait(&bg()).unwrap();
         assert_eq!(settled.status, SubmissionStatus::Done);
         let answer = root
-            .commit(|tx| Ok(tx.entry_of("pi.assistant", settled.answer.unwrap())?))
+            .commit(|tx| Ok(tx.entry_of("ultron.assistant", settled.answer.unwrap())?))
             .unwrap()
             .unwrap();
         assert_eq!(
@@ -1410,7 +1422,7 @@ fn harness_chat_generation_recovery_runs_a_print_style_turn_and_reads_the_durabl
         let settled = submission.wait(&bg()).unwrap();
         assert_eq!(settled.status, SubmissionStatus::Done);
         let answer = root
-            .commit(|tx| Ok(tx.entry_of("pi.assistant", settled.answer.unwrap())?))
+            .commit(|tx| Ok(tx.entry_of("ultron.assistant", settled.answer.unwrap())?))
             .unwrap()
             .unwrap();
         assert_eq!(text_of(&first_message(&answer).unwrap()).as_deref(), Some("42"));
@@ -1422,7 +1434,7 @@ fn harness_chat_generation_recovery_runs_a_print_style_turn_and_reads_the_durabl
             settled
         );
         assert_eq!(
-            root.commit(|tx| Ok(tx.entry_of("pi.assistant", settled.answer.unwrap())?))
+            root.commit(|tx| Ok(tx.entry_of("ultron.assistant", settled.answer.unwrap())?))
                 .unwrap(),
             Some(answer)
         );
@@ -1485,7 +1497,7 @@ fn harness_chat_generation_runs_on_an_agent_stream_fn_through_the_models_adapter
         assert_eq!(settled.status, SubmissionStatus::Done);
         assert_eq!(
             transcript(&root.entries().unwrap()),
-            ["pi.user:hi", "pi.assistant:answer to hi"]
+            ["ultron.user:hi", "ultron.assistant:answer to hi"]
         );
         let session = chat.snapshot(&PROVIDER, Owner::Conversation(root.id)).unwrap().unwrap()["sessionId"].clone();
         assert_eq!(json!(seen.lock().unwrap()[0]), session);

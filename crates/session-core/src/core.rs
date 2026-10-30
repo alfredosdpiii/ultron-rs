@@ -2,7 +2,7 @@
 //! stack) and the run in progress, owned by one thread. Every client operation is an [`Op`] answered through its
 //! reply; the run's progress is reported as TypeScript lane-watch events (`run_start`, `message_*`, `tool_*`,
 //! `entry_added`, `queue_update`, `compaction_*`, `config_update`, `run_end`) through the event sink, which the
-//! session worker folds into its `pi.transcript` state.
+//! session worker folds into its `ultron.transcript` state.
 //!
 //! The run executes the agent loop on a thread of its own; its events come back to the actor as [`Input::Agent`],
 //! so operations keep being answered while a run streams. Runs and compactions are journaled as the harness journals
@@ -549,7 +549,7 @@ pub type EventSink = Box<dyn FnMut(Value) + Send>;
 struct Queued {
     kind: QueueKind,
     message: Value,
-    /// The pending entry (`pi.pending.entry`) the message waits as; it becomes the message's entry id.
+    /// The pending entry (`ultron.pending.entry`) the message waits as; it becomes the message's entry id.
     entry_id: String,
     /// The run's turn the loop took it for (`turn_start`s it had emitted, plus one); 0 while queued.
     turn: u64,
@@ -1331,7 +1331,7 @@ impl Core {
         lock_session(&self.session).branch_tip(LANE).flatten()
     }
 
-    /// The lane's stored state (`pi.lane.state`), idle when none is stored.
+    /// The lane's stored state (`ultron.lane.state`), idle when none is stored.
     fn lane_state(&self) -> Value {
         lock_session(&self.session)
             .value(LANE_STATE, LANE)
@@ -1386,7 +1386,7 @@ impl Core {
         ]));
     }
 
-    /// Store the model and thinking level as the lane's configuration (`pi.lane.config`).
+    /// Store the model and thinking level as the lane's configuration (`ultron.lane.config`).
     fn store_lane_config(&mut self) -> Result<(), String> {
         let mut config = lock_session(&self.session)
             .value(LANE_CONFIG, LANE)

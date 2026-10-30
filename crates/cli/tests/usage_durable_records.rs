@@ -1,5 +1,5 @@
 //! `ultron usage` over session files whose durable records hold sub-agent conversations: each child response is read
-//! from its `pi.assistant` entry (model, input/output/cache split, cost); the host's ledger only adds what the records
+//! from its `ultron.assistant` entry (model, input/output/cache split, cost); the host's ledger only adds what the records
 //! lack, as a totals-only row; a session without durable records reports from the ledger as before.
 
 use cli::usage::log::read_session_log;
@@ -18,7 +18,7 @@ fn root_lines() -> Vec<Value> {
         json!({"kind": "entry", "id": "e1", "parentId": null, "timestamp": 1001, "type": "message",
             "message": {"role": "assistant", "provider": "anthropic", "model": "claude-sonnet-4-5", "content": [],
                 "usage": usage(10, 5, 0, 0.5)}}),
-        json!({"kind": "value", "op": "set", "seq": 2, "namespace": "pi.branch.tip", "key": "main", "value": "e1"}),
+        json!({"kind": "value", "op": "set", "seq": 2, "namespace": "ultron.branch.tip", "key": "main", "value": "e1"}),
     ]
 }
 
@@ -29,7 +29,7 @@ fn durable(seq: u64, writes: Value) -> Value {
 }
 
 fn assistant(id: u64, conversation: u64, model: &str, usage: Value) -> Value {
-    json!({"type": "entry", "value": {"id": id, "conversationId": conversation, "kind": "pi.assistant",
+    json!({"type": "entry", "value": {"id": id, "conversationId": conversation, "kind": "ultron.assistant",
         "model": [{"role": "assistant", "provider": "anthropic", "model": model, "content": [], "usage": usage}]}})
 }
 

@@ -66,8 +66,8 @@ const assistant = (text, timestamp, extra = {}) => ({
 	...extra,
 });
 const lane = (provider = "anthropic", modelId = "claude-sonnet-4-5") => [
-	{ kind: "value", op: "set", namespace: "pi.lane.config", key: "main", value: { model: { provider, modelId }, thinkingLevel: "medium", activeToolNames: ["rlm"] } },
-	{ kind: "value", op: "set", namespace: "pi.lane.state", key: "main", value: { currentOperationId: null, lastOperationId: null, inbox: [] } },
+	{ kind: "value", op: "set", namespace: "ultron.lane.config", key: "main", value: { model: { provider, modelId }, thinkingLevel: "medium", activeToolNames: ["rlm"] } },
+	{ kind: "value", op: "set", namespace: "ultron.lane.state", key: "main", value: { currentOperationId: null, lastOperationId: null, inbox: [] } },
 ];
 const v3Header = (id, cwd, extra = {}) => JSON.stringify({ type: "session", version: 3, id, timestamp: "2026-01-01T00:00:00.000Z", cwd, ...extra });
 const v3 = (record) => JSON.stringify(record);
@@ -193,7 +193,7 @@ const scenarios = [
 		name: "fork",
 		ops: [
 			{ op: "create", s: "a", cwd: "/work/fork", id: "44444444-aaaa" },
-			{ op: "commit", s: "a", writes: [{ kind: "value", op: "set", namespace: "pi.branch.tip", key: "main", value: null }, ...lane()] },
+			{ op: "commit", s: "a", writes: [{ kind: "value", op: "set", namespace: "ultron.branch.tip", key: "main", value: null }, ...lane()] },
 			{ op: "append", s: "a", message: user("q1", 1) },
 			{ op: "append", s: "a", message: assistant("a1", 2) },
 			{ op: "append", s: "a", message: user("q2", 3) },
@@ -203,9 +203,9 @@ const scenarios = [
 			{ op: "setLabelNth", s: "a", nth: 0, label: "first" },
 			{ op: "setLabelNth", s: "a", nth: 3, label: "late" },
 			{ op: "setName", s: "a", name: "forked" },
-			{ op: "commit", s: "a", writes: [{ kind: "value", op: "set", namespace: "pi.op.state", key: "op1", value: { at: "starting" } }, { kind: "value", op: "set", namespace: "pi.result", key: "op0", value: { status: "completed" } }, { kind: "value", op: "set", namespace: "ultron.usage", key: "root", value: { version: 1, roots: {} } }, { kind: "list", op: "append", namespace: "pi.pending.assistant_frame", key: "op1:r", value: { type: "start" } }, { kind: "list", op: "append", namespace: "ultron.log", key: "k", value: 1 }, { kind: "usage", row: { id: "u-row", usage: assistant("", 0).usage, adjustment: false } }] },
+			{ op: "commit", s: "a", writes: [{ kind: "value", op: "set", namespace: "ultron.op.state", key: "op1", value: { at: "starting" } }, { kind: "value", op: "set", namespace: "ultron.result", key: "op0", value: { status: "completed" } }, { kind: "value", op: "set", namespace: "ultron.usage", key: "root", value: { version: 1, roots: {} } }, { kind: "list", op: "append", namespace: "ultron.pending.assistant_frame", key: "op1:r", value: { type: "start" } }, { kind: "list", op: "append", namespace: "ultron.log", key: "k", value: 1 }, { kind: "usage", row: { id: "u-row", usage: assistant("", 0).usage, adjustment: false } }] },
 			{ op: "commit", s: "a", writes: [{ kind: "list", op: "delete", namespace: "ultron.log", key: "k" }, { kind: "list", op: "append", namespace: "ultron.log", key: "k", value: 2 }] },
-			{ op: "commit", s: "a", writes: [{ kind: "value", op: "set", namespace: "pi.lane.state", key: "main", value: { currentOperationId: "op1", lastOperationId: "op0", inbox: [{ entryId: "x", kind: "steer" }] } }] },
+			{ op: "commit", s: "a", writes: [{ kind: "value", op: "set", namespace: "ultron.lane.state", key: "main", value: { currentOperationId: "op1", lastOperationId: "op0", inbox: [{ entryId: "x", kind: "steer" }] } }] },
 			{ op: "forkOpen", s: "o", source: "a", options: { scope: "tree", id: "fork-open" } },
 			{ op: "append", s: "a", message: user("after fork", 6) },
 			{ op: "dump", s: "o" },
@@ -244,7 +244,7 @@ const scenarios = [
 			{ op: "list", cwd: "/a-b" },
 			{ op: "list", cwd: "/a/b/../b/" },
 			{ op: "listAll" },
-			{ op: "commit", s: "a", writes: [{ kind: "value", op: "set", namespace: "pi.branch.tip", key: "main", value: null }] },
+			{ op: "commit", s: "a", writes: [{ kind: "value", op: "set", namespace: "ultron.branch.tip", key: "main", value: null }] },
 			{ op: "append", s: "a", message: user("u1", 1) },
 			{ op: "append", s: "a", message: { ...assistant("bad", 2), stopReason: "error", errorMessage: "boom" } },
 			{ op: "append", s: "a", message: { ...assistant("calls", 3), content: [{ type: "toolCall", id: "c1", name: "rlm", arguments: { code: "1" } }, { type: "toolCall", id: "c2", name: "rlm", arguments: { code: "2" } }], stopReason: "toolUse" } },
@@ -326,9 +326,9 @@ async function runScenario(scenario) {
 					result = await s.mutate((m) => m.commit(op.writes, ctx), ctx);
 					break;
 				case "commitEntry": {
-					const tip = (await s.getValue({ namespace: "pi.branch.tip", key: "main", kind: "value" }, ctx)).value;
+					const tip = (await s.getValue({ namespace: "ultron.branch.tip", key: "main", kind: "value" }, ctx)).value;
 					const id = `entry-${steps.length}`;
-					result = await s.mutate((m) => m.commit([{ kind: "entry", entry: { id, parentId: tip, ...op.entry } }, { kind: "value", op: "set", namespace: "pi.branch.tip", key: "main", value: id }], ctx), ctx);
+					result = await s.mutate((m) => m.commit([{ kind: "entry", entry: { id, parentId: tip, ...op.entry } }, { kind: "value", op: "set", namespace: "ultron.branch.tip", key: "main", value: id }], ctx), ctx);
 					pushNth(op.s, id);
 					break;
 				}
@@ -406,7 +406,7 @@ async function runScenario(scenario) {
 				}
 				case "context":
 				case "contextBranch": {
-					let tip = (await s.getValue({ namespace: "pi.branch.tip", key: "main", kind: "value" }, ctx)).value;
+					let tip = (await s.getValue({ namespace: "ultron.branch.tip", key: "main", kind: "value" }, ctx)).value;
 					if (op.tipOf !== undefined) tip = s.storage.storageState.scanEntries({}).find((e) => e.message?.content?.[0]?.text === "side")?.id;
 					const entries = tip === null ? [] : await s.scanBranch({ start: tip, order: "oldestFirst" }, ctx);
 					result = await buildSessionContext(entries, undefined, ctx);

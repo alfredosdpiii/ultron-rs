@@ -1,4 +1,4 @@
-//! The positional system prompt (spec §7.4): `pi.system` entries that make the replayed sections and tools of the
+//! The positional system prompt (spec §7.4): `ultron.system` entries that make the replayed sections and tools of the
 //! context equal the desired ones. Port of upstream `harness/prompt.ts`. In Ultron the tool list is exactly the REPL
 //! tool the cell executor declares.
 
@@ -34,8 +34,8 @@ struct ToolChanges {
     added: Vec<Tool>,
 }
 
-/// Plan the `pi.system` entries that make the replayed sections and tools of `view` equal `desired` and `tools` in
-/// values and order: a complete baseline after a head marker with no later `pi.system` entry (omitting every
+/// Plan the `ultron.system` entries that make the replayed sections and tools of `view` equal `desired` and `tools` in
+/// values and order: a complete baseline after a head marker with no later `ultron.system` entry (omitting every
 /// retained earlier one), else a remove-all/re-add-all pair when a minimal patch would leave a different order, else
 /// the minimal patch, or nothing. Tool changes ride on the last planned entry, or on one entry of their own.
 pub fn plan_system_entries(

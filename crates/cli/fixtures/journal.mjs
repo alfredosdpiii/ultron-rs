@@ -34,8 +34,8 @@ export function filteredJournal(text) {
 			return records.filter(
 				(r) =>
 					r.namespace !== "ultron.module" &&
-					r.namespace !== "pi.pending.assistant_frame" &&
-					!(autoName && r.namespace === "pi.session.name") &&
+					r.namespace !== "ultron.pending.assistant_frame" &&
+					!(autoName && r.namespace === "ultron.session.name") &&
 					!(r.kind === "usage" && r.details?.source === "session-naming"),
 			);
 		})

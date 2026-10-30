@@ -62,11 +62,11 @@ pub const RESTART_EXIT_CODE: i32 = 75;
 /// server's heartbeat.
 const LONG_OPERATIONS: [(&str, &str); 10] = [
     // `/mcp` may wait on the client's dialogs (its menu, a sign-in's redirect prompt).
-    ("pi.legacy-extension-commands", "run"),
-    ("pi.agent-controller", "prompt"),
-    ("pi.agent-controller", "resume"),
-    ("pi.agent-controller", "compact"),
-    ("pi.agent-controller", "navigate"),
+    ("ultron.legacy-extension-commands", "run"),
+    ("ultron.agent-controller", "prompt"),
+    ("ultron.agent-controller", "resume"),
+    ("ultron.agent-controller", "compact"),
+    ("ultron.agent-controller", "navigate"),
     ("ultron.extension-ui", "poll"),
     ("ultron.session-control", "bash"),
     ("ultron.session-control", "readTree"),
@@ -392,7 +392,7 @@ fn services(
     let next_core = core.clone();
     let prompt_lifecycle = lifecycle.clone();
     let (resume_core, resume_progress) = (core.clone(), watch.progress.clone());
-    let agent = Service::new("pi.agent-controller")
+    let agent = Service::new("ultron.agent-controller")
         .method("cancelQueued", move |args| {
             let entry_id = args.first().and_then(Value::as_str).unwrap_or_default().to_string();
             call_core(&cancel_core, Op::CancelQueued { entry_id })
@@ -454,12 +454,12 @@ fn services(
             Ok(Some(response))
         })
         .method("steer", move |args| queue(&steer_core, QueueKind::Steer, &args));
-    let plugins = Service::new("pi.session-plugins").method("reload", |_| Ok(None));
+    let plugins = Service::new("ultron.session-plugins").method("reload", |_| Ok(None));
     // `/mcp`, the built-in MCP gateway's command (TypeScript's inline MCP extension, so on the legacy extension
     // command service): it runs here, its dialogs and notices go to the client through the dialog bridge. Pi
     // extensions are not supported by ultron-rs, so it is the only command of the service.
     let (list_mcp, run_mcp, run_ui) = (extensions.mcp.clone(), extensions.mcp.clone(), extensions.ui.clone());
-    let legacy = Service::new("pi.legacy-extension-commands")
+    let legacy = Service::new("ultron.legacy-extension-commands")
         .method("list", move |_| {
             let listed: Vec<Value> = list_mcp
                 .get()
@@ -565,7 +565,7 @@ fn services(
     let (select_state, thinking_state, refresh_state) =
         (models_state.clone(), models_state.clone(), models_state.clone());
     let (refresh_core, refresh_env, select_env) = (models_core, extensions.env.clone(), extensions.env.clone());
-    let models = Service::new("pi.models")
+    let models = Service::new("ultron.models")
         .method("cycleThinking", move |_| call_core(&cycle_core, Op::CycleThinking))
         .method("getThinkingLevels", move |_| {
             call_core(&levels_core, Op::ThinkingLevels)
@@ -616,7 +616,7 @@ fn services(
             Ok(None)
         })
         .state("state", models_state);
-    let transcript = Service::new("pi.transcript").state("state", lane.transcript.clone());
+    let transcript = Service::new("ultron.transcript").state("state", lane.transcript.clone());
     // Rust-only: one session operation (session-core `Op` as JSON), the RPC and TUI clients' whole command set.
     let ops = Service::new(OPS_SERVICE)
         .method("op", move |args| {

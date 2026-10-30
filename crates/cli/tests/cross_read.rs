@@ -141,10 +141,14 @@ fn cli_cross_read_typescript_continues_a_rust_session_and_rust_continues_it_back
     assert_eq!(files.len(), 1, "TypeScript appended to the Rust file: {files:?}");
     let text = std::fs::read_to_string(&files[0]).unwrap();
     let all = records(&text);
-    let results: Vec<&Value> = all.iter().filter(|r| r["namespace"] == "pi.result").collect();
+    let results: Vec<&Value> = all.iter().filter(|r| r["namespace"] == "ultron.result").collect();
     assert_eq!(results.len(), 2, "one terminal result per run");
     assert!(results.iter().all(|r| r["value"]["status"] == "completed"));
-    let name = all.iter().rev().find(|r| r["namespace"] == "pi.session.name").unwrap();
+    let name = all
+        .iter()
+        .rev()
+        .find(|r| r["namespace"] == "ultron.session.name")
+        .unwrap();
     assert_eq!(name["value"], "Rust made", "TypeScript keeps the Rust session's name");
 
     // Rust continues the file TypeScript extended.

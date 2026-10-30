@@ -203,7 +203,7 @@ fn cli_durable_server_idle_without_schedules_starts_no_run_of_its_own() {
     let listed = connection
         .call(
             connection.server_target(),
-            "pi.session-management",
+            "ultron.session-management",
             "describe",
             json!([{}]),
         )

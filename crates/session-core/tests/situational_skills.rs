@@ -52,7 +52,11 @@ fn session_core_situational_skills_rules_come_from_the_settings() {
         names(json!({"alwaysSkills": ["principle-minimize-reader-load"]})),
         [
             "principle-test-behavior-not-implementation",
-            "typescript-best-practices"
+            "typescript-best-practices",
+            "principle-make-operations-idempotent",
+            "principle-explain-the-number",
+            "principle-boundary-discipline",
+            "principle-type-system-discipline"
         ],
         "an always-on skill is in the prompt already"
     );
@@ -185,4 +189,38 @@ fn session_core_situational_skills_stay_quiet_outside_engineering_mode() {
     let results = run_session(false, 5);
     assert!(results.len() > 5, "ran to the hang guard: {}", results.len());
     assert!(!results.iter().any(|r| r.contains("[skill] ")), "{results:?}");
+}
+
+/// A file a cell changed in a sibling worktree, outside the session directory, matches by its path in its own
+/// repository (it used to be dropped, so sessions that worked in worktrees got no skills).
+#[test]
+fn session_core_situational_skills_follow_a_change_in_a_sibling_repository() {
+    let dir = tempfile::tempdir().unwrap();
+    let tmp = dir.path().canonicalize().unwrap();
+    let (session, sibling) = (tmp.join("session"), tmp.join("sibling"));
+    std::fs::create_dir_all(sibling.join("tests")).unwrap();
+    std::fs::create_dir_all(&session).unwrap();
+    let status = std::process::Command::new("git")
+        .args(["init", "-q"])
+        .current_dir(&sibling)
+        .status()
+        .unwrap();
+    assert!(status.success());
+    let file = sibling.join("tests/test_app.py");
+    std::fs::write(&file, "").unwrap();
+    let skills = observer(json!({}), Arc::new(AtomicBool::new(true)));
+    let given = skills.cell_changed(
+        &CellChanges {
+            checked: vec![file],
+            complete: true,
+            ..Default::default()
+        },
+        &session,
+        "main",
+    );
+    assert_eq!(given.len(), 1, "{given:?}");
+    assert!(
+        given[0].contains("(tests/test_app.py): principle-test-behavior-not-implementation"),
+        "{given:?}"
+    );
 }

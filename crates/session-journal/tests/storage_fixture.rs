@@ -174,13 +174,16 @@ impl Runner {
             "createBranch" => {
                 let at = op["at"].clone();
                 self.session(&s)?
-                    .commit(&[Write::set("pi.branch.tip", op["branch"].as_str().unwrap(), at)])?;
+                    .commit(&[Write::set("ultron.branch.tip", op["branch"].as_str().unwrap(), at)])?;
                 Value::Null
             }
             "createBranchAtNth" => {
                 let at = self.nth[&s][op["nth"].as_u64().unwrap() as usize].clone();
-                self.session(&s)?
-                    .commit(&[Write::set("pi.branch.tip", op["branch"].as_str().unwrap(), at.into())])?;
+                self.session(&s)?.commit(&[Write::set(
+                    "ultron.branch.tip",
+                    op["branch"].as_str().unwrap(),
+                    at.into(),
+                )])?;
                 Value::Null
             }
             "commit" | "commitOn" => {
@@ -198,7 +201,7 @@ impl Runner {
                 entry.extend(op["entry"].as_object().unwrap().clone());
                 let result = session.commit(&[
                     Write::Entry(entry),
-                    Write::set("pi.branch.tip", "main", id.clone().into()),
+                    Write::set("ultron.branch.tip", "main", id.clone().into()),
                 ])?;
                 self.nth.entry(s).or_default().push(id);
                 json!({"firstSeq": result.first_seq, "seqs": result.seqs, "timestamp": result.timestamp, "stats": result.stats})

@@ -90,7 +90,7 @@ fn protocol_client_decoder_reassembles_split_messages() {
         id: "request-1".into(),
         target: RpcTarget::Server { server_id: SID.into() },
         call: Value::map([
-            ("serviceId", Value::text("pi.session-directory")),
+            ("serviceId", Value::text("ultron.session-directory")),
             ("member", Value::text("list")),
             ("args", Value::Array(vec![])),
         ]),

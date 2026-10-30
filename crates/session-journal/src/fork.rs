@@ -105,9 +105,9 @@ pub fn project_current_state(
         Plan::Branch { branch, .. } => str_of(w, "key") == branch,
     };
     Ok(match namespace {
-        "pi.session.name" => Some(write.clone()),
-        "pi.entry.label" => copied(key).then(|| write.clone()),
-        "pi.branch.tip" => match plan {
+        "ultron.session.name" => Some(write.clone()),
+        "ultron.entry.label" => copied(key).then(|| write.clone()),
+        "ultron.branch.tip" => match plan {
             Plan::Tree => Some(write.clone()),
             Plan::Branch {
                 branch,
@@ -118,17 +118,14 @@ pub fn project_current_state(
                 w
             }),
         },
-        "pi.lane.config" => branch_scoped(write).then(|| write.clone()),
-        "pi.lane.state" => branch_scoped(write).then(|| {
+        "ultron.lane.config" => branch_scoped(write).then(|| write.clone()),
+        "ultron.lane.state" => branch_scoped(write).then(|| {
             let mut w = write.clone();
             w["value"] = json!({"currentOperationId": null, "lastOperationId": null, "inbox": []});
             w
         }),
-        "pi.result" => None,
-        _ if namespace.starts_with("pi.op.") || namespace.starts_with("pi.pending.") => None,
-        _ if namespace == "pi" || namespace.starts_with("pi.") => {
-            return Err(format!("Unknown reserved fork namespace: {namespace}"));
-        }
+        "ultron.result" => None,
+        _ if namespace.starts_with("ultron.op.") || namespace.starts_with("ultron.pending.") => None,
         _ => matches!(plan, Plan::Tree).then(|| write.clone()),
     })
 }
@@ -169,23 +166,23 @@ impl Index {
                     }
                     let lane = str_of(write, "key").to_string();
                     match str_of(write, "namespace") {
-                        "pi.branch.tip" if set => {
+                        "ultron.branch.tip" if set => {
                             self.branch_tips
                                 .insert(lane, write["value"].as_str().map(str::to_string));
                         }
-                        "pi.branch.tip" => {
+                        "ultron.branch.tip" => {
                             self.branch_tips.remove(&lane);
                         }
-                        "pi.lane.config" if set => {
+                        "ultron.lane.config" if set => {
                             self.lane_configs.insert(lane);
                         }
-                        "pi.lane.config" => {
+                        "ultron.lane.config" => {
                             self.lane_configs.remove(&lane);
                         }
-                        "pi.lane.state" if set => {
+                        "ultron.lane.state" if set => {
                             self.lane_states.insert(lane);
                         }
-                        "pi.lane.state" => {
+                        "ultron.lane.state" => {
                             self.lane_states.remove(&lane);
                         }
                         _ => {}

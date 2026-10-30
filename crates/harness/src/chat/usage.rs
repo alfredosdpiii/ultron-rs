@@ -1,4 +1,4 @@
-//! The `pi.usage` ledger (spec §8.6): every writer of an assistant entry or a result with usage adds it in the same
+//! The `ultron.usage` ledger (spec §8.6): every writer of an assistant entry or a result with usage adds it in the same
 //! commit. Port of upstream `harness/usage.ts`.
 
 use chord_delta::Seg;
@@ -40,7 +40,7 @@ fn sum(a: Option<&Value>, b: Option<&Value>) -> Value {
     }
 }
 
-/// Add `usage` to one bucket of the conversation's `pi.usage`, in the commit that records the response. A first entry
+/// Add `usage` to one bucket of the conversation's `ultron.usage`, in the commit that records the response. A first entry
 /// is set whole; later ones add counter by counter, so each commit writes only numeric sets.
 pub fn record_usage(
     tx: &mut Tx<'_>,

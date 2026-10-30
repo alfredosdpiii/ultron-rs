@@ -203,7 +203,7 @@ fn run_scenario(scenario: &Value) {
     let created = connection
         .call(
             connection.server_target(),
-            "pi.session-management",
+            "ultron.session-management",
             "create",
             json!([{}]),
         )
@@ -213,7 +213,7 @@ fn run_scenario(scenario: &Value) {
     connection
         .call(
             connection.server_target(),
-            "pi.session-management",
+            "ultron.session-management",
             "attach",
             json!([id]),
         )
@@ -225,7 +225,7 @@ fn run_scenario(scenario: &Value) {
     let _prompting = connection
         .start(
             session.clone(),
-            "pi.agent-controller",
+            "ultron.agent-controller",
             "prompt",
             json!([{"message": scenario["prompt"], "images": null}]),
         )

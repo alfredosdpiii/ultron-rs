@@ -1,4 +1,4 @@
-//! `pi.live` operations (spec §8.2): run control, the generation partial, tool slots and compaction statuses, and the
+//! `ultron.live` operations (spec §8.2): run control, the generation partial, tool slots and compaction statuses, and the
 //! Harness cleanup for outcomes the scheduler writes itself. Port of upstream `harness/live.ts`.
 
 use chord_delta::{Draft, Seg};
@@ -11,9 +11,9 @@ use super::usage::{Bucket, record_usage};
 use super::util::{d, delete, get, owner, set};
 use crate::scheduler::{Result, SchedulerOutcome};
 
-pub(crate) const GENERATION_KIND: &str = "pi.generation";
-pub(crate) const CELL_KIND: &str = "pi.tool";
-pub(crate) const COMPACTION_KIND: &str = "pi.compaction";
+pub(crate) const GENERATION_KIND: &str = "ultron.generation";
+pub(crate) const CELL_KIND: &str = "ultron.tool";
+pub(crate) const COMPACTION_KIND: &str = "ultron.compaction";
 
 /// The live document of a conversation.
 pub(crate) fn live(tx: &mut Tx<'_>, conversation_id: ConversationId) -> Result<Draft> {
@@ -48,7 +48,7 @@ pub(crate) fn hand_over(live: &Draft, from: TaskId, to: TaskId) -> Result<()> {
     Ok(())
 }
 
-/// Append a provider result and add its usage to `pi.usage` in the same commit.
+/// Append a provider result and add its usage to `ultron.usage` in the same commit.
 pub(crate) fn append_assistant(
     tx: &mut Tx<'_>,
     conversation_id: ConversationId,
@@ -80,7 +80,7 @@ pub(crate) fn convert_partial(tx: &mut Tx<'_>, live: &Draft, conversation_id: Co
     Ok(())
 }
 
-/// Index of the slot of cell task `task_id` in `pi.live.tools`.
+/// Index of the slot of cell task `task_id` in `ultron.live.tools`.
 pub(crate) fn slot_index(live: &Draft, task_id: TaskId) -> Result<Option<usize>> {
     let tools = get(live, &["tools"])?.unwrap_or(json!([]));
     Ok(tools
@@ -96,7 +96,7 @@ pub(crate) fn slot_path(index: usize, field: Option<&str>) -> Vec<Seg> {
     path
 }
 
-/// The slot value of cell task `task_id`, if `pi.live` still lists it.
+/// The slot value of cell task `task_id`, if `ultron.live` still lists it.
 pub(crate) fn slot(live: &Draft, task_id: TaskId) -> Result<Option<Value>> {
     match slot_index(live, task_id)? {
         Some(index) => d(live.get(&slot_path(index, None))),

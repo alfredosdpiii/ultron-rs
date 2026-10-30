@@ -198,10 +198,13 @@ fn depth_verdict(level: f64, frames: f64, subagents: f64, nested: f64, typed: f6
 /// Whether nothing ran in the session: no entry, no task, and no runtime value beyond the skill catalog.
 pub fn session_is_empty(log: &SessionLog) -> bool {
     log.entries.is_empty()
-        && !log
-            .values
-            .keys()
-            .any(|address| address.starts_with("ultron.") && address != "ultron.module/skills")
+        && !log.values.keys().any(|address| {
+            address.starts_with("ultron.")
+                && address != "ultron.module/skills"
+                && !["ultron.session.name/", "ultron.lane.config/", "ultron.branch.tip/"]
+                    .iter()
+                    .any(|setup| address.starts_with(setup))
+        })
 }
 
 #[derive(Clone, Debug)]
@@ -357,7 +360,7 @@ pub fn build_session_report_with(log: &SessionLog, subscription_providers: &[Str
             tree_lane.insert(root, lane.to_string());
         }
     };
-    for (lane, tip) in log.values_of("pi.branch.tip") {
+    for (lane, tip) in log.values_of("ultron.branch.tip") {
         claim(tip.as_str(), lane, &mut root_ids);
     }
     for result in &log.results {
@@ -373,7 +376,7 @@ pub fn build_session_report_with(log: &SessionLog, subscription_providers: &[Str
         .map(|entry| tree_lane.get(&tree_root(&entry.id, &mut root_ids)).cloned())
         .collect();
     let mut lane_models: HashMap<&str, String> = HashMap::new();
-    for (lane, config) in log.values_of("pi.lane.config") {
+    for (lane, config) in log.values_of("ultron.lane.config") {
         if let Some(model) = model_name(config) {
             lane_models.insert(lane, model);
         }
@@ -392,7 +395,7 @@ pub fn build_session_report_with(log: &SessionLog, subscription_providers: &[Str
         .iter()
         .filter(|r| r.kind == "run" && log.operations.get(&r.operation_id).map(|o| o.lane.as_str()) == Some("main"))
         .collect();
-    let name = log.value("pi.session.name", "").and_then(Value::as_str);
+    let name = log.value("ultron.session.name", "").and_then(Value::as_str);
     let empty_roots = Map::new();
     let usage_roots =
         record(record(log.value("ultron.usage", "root")).and_then(|u| u.get("roots"))).unwrap_or(&empty_roots);
@@ -590,7 +593,7 @@ pub fn build_session_report_with(log: &SessionLog, subscription_providers: &[Str
     }
 
     // Durable children (ultron-rs `rlm.spawn`, kept or not, typed agents) answer in their own conversations, which are
-    // not session entries: their responses are `pi.assistant` entries of the durable records, with model, split and
+    // not session entries: their responses are `ultron.assistant` entries of the durable records, with model, split and
     // cost. A conversation a task owns is a sub-agent's; another root conversation's goes to "other". Under `ultron
     // claude` too: its server runs persistent children and typed agents' `rlm` lanes on a durable runtime of the session.
     let mut durable_other = Bucket::default();

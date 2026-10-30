@@ -125,7 +125,7 @@ fn raw(
 }
 
 /// Admit a submission inside a commit (spec §6). A known request ID returns its existing submission without writing.
-/// A busy conversation queues it in `pi.inbox`, or rejects `WhenBusy::Reject` input with `ConversationBusy`. An idle
+/// A busy conversation queues it in `ultron.inbox`, or rejects `WhenBusy::Reject` input with `ConversationBusy`. An idle
 /// conversation with queued items queues it behind them and runs a final boundary. Otherwise idle input places a user
 /// entry and starts a run, and an idle write appends its entry and settles `done`, or `stale` when its head reaches
 /// before the active range.

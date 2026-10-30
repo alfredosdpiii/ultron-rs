@@ -802,11 +802,11 @@ pub fn choose_server(
     }
 }
 
-/// A server's session summaries (its `pi.session-directory` state).
+/// A server's session summaries (its `ultron.session-directory` state).
 fn server_sessions(route: &Route) -> Result<Vec<Value>, String> {
     let connection = client::runtime::Connection::connect(&route.path, &route.server_id).map_err(crate::link::fail)?;
     let sessions = connection
-        .subscribe(connection.server_target(), "pi.session-directory")
+        .subscribe(connection.server_target(), "ultron.session-directory")
         .map(|subscription| {
             connection
                 .state(&subscription, "state")

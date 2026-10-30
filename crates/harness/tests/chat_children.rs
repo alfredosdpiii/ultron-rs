@@ -154,14 +154,14 @@ fn harness_chat_children_spawn_a_child_owned_by_the_cell_and_collect_its_answer_
         let child_conversation = chat.conversation(conversation).unwrap().unwrap();
         assert_eq!(
             transcript(&child_conversation.entries().unwrap()),
-            ["pi.user:brief", "pi.assistant:child says hi"]
+            ["ultron.user:brief", "ultron.assistant:child says hi"]
         );
         // The cell's result is the collect result the REPL saw.
         let result = root
             .entries()
             .unwrap()
             .into_iter()
-            .find(|entry| entry.kind == "pi.tool-result")
+            .find(|entry| entry.kind == "ultron.tool-result")
             .unwrap();
         let text = result.model.unwrap()[0]["content"][0]["text"]
             .as_str()
@@ -174,7 +174,12 @@ fn harness_chat_children_spawn_a_child_owned_by_the_cell_and_collect_its_answer_
         );
         assert_eq!(
             transcript(&root.entries().unwrap()),
-            ["pi.user:go", "pi.assistant", "pi.tool-result", "pi.assistant:done"]
+            [
+                "ultron.user:go",
+                "ultron.assistant",
+                "ultron.tool-result",
+                "ultron.assistant:done"
+            ]
         );
         chat.close().unwrap();
     });
@@ -209,7 +214,7 @@ fn harness_chat_children_hold_the_spawning_cell_completing_until_an_uncollected_
         eventually(|| chat.get_task(cell).unwrap().unwrap().state.status() == TaskStatus::Completing);
         let child = spawned_child.lock().unwrap().unwrap();
         let entries = root.entries().unwrap();
-        let result = entries.iter().find(|entry| entry.kind == "pi.tool-result").unwrap();
+        let result = entries.iter().find(|entry| entry.kind == "ultron.tool-result").unwrap();
         assert_eq!(
             result.model.as_ref().unwrap()[0]["content"][0]["text"],
             json!(json!({ "results": [], "running": [child.0.to_string()] }).to_string())
@@ -341,7 +346,7 @@ fn harness_chat_children_cancel_a_child_and_report_it_cancelled() {
             .entries()
             .unwrap()
             .into_iter()
-            .find(|entry| entry.kind == "pi.tool-result")
+            .find(|entry| entry.kind == "ultron.tool-result")
             .unwrap();
         let text: Value =
             serde_json::from_str(result.model.unwrap()[0]["content"][0]["text"].as_str().unwrap()).unwrap();

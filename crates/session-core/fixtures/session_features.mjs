@@ -159,7 +159,7 @@ async function run(c) {
 
 /** The `at` of every operation state of the run, in order, and the retry-wait states as written. */
 function operationStates(session) {
-	const records = session.transactions.flat().filter((r) => r.namespace === "pi.op.state" && r.op === "set");
+	const records = session.transactions.flat().filter((r) => r.namespace === "ultron.op.state" && r.op === "set");
 	return { states: records.map((r) => r.value.at), retryWaits: records.filter((r) => r.value.at === "assistant.retry_wait").map((r) => ({ ...r.value, notBefore: 0 })) };
 }
 

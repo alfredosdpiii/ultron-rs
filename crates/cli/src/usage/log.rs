@@ -61,7 +61,7 @@ pub struct LogUsageRow {
 }
 
 /// One model response of a durable runtime conversation other than the root's (an `rlm.spawn` child, a typed agent,
-/// another root conversation): its `pi.assistant` entry in the session's durable records (`ultron.module/durable`).
+/// another root conversation): its `ultron.assistant` entry in the session's durable records (`ultron.module/durable`).
 /// The root conversation's responses are transcript entries already, so they are not listed.
 #[derive(Clone, Debug, PartialEq)]
 pub struct DurableResponse {
@@ -113,7 +113,7 @@ impl DurableDigest {
                         self.task_names.entry(id).or_insert_with(|| name.to_string());
                     }
                 }
-                Some("entry") if value["kind"] == "pi.assistant" => {
+                Some("entry") if value["kind"] == "ultron.assistant" => {
                     let Some(conversation) = value["conversationId"].as_u64() else {
                         continue;
                     };
@@ -212,9 +212,9 @@ impl LogError {
 }
 
 const KEPT_NAMESPACES: [&str; 9] = [
-    "pi.session.name",
-    "pi.lane.config",
-    "pi.branch.tip",
+    "ultron.session.name",
+    "ultron.lane.config",
+    "ultron.branch.tip",
     "ultron.tasks",
     "ultron.usage",
     "ultron.rlm.frames",
@@ -475,11 +475,12 @@ pub fn read_session_log(path: &Path) -> Result<SessionLog, LogError> {
             log.unreadable_lines += 1;
             return Ok(true);
         };
-        let writes = match parsed {
+        let mut writes = match parsed {
             Value::Array(items) => items,
             other => vec![other],
         };
-        for write in &writes {
+        for write in &mut writes {
+            session_journal::codec::rename_legacy(write);
             if let Some(item) = write.as_object() {
                 apply(&mut log, &mut durable, item);
             }
@@ -528,7 +529,7 @@ fn apply(log: &mut SessionLog, durable: &mut DurableDigest, write: &Map<String, 
     };
     let op = write.get("op").and_then(Value::as_str);
     let value = record(write.get("value"));
-    if namespace == "pi.op.meta" {
+    if namespace == "ultron.op.meta" {
         if op == Some("set")
             && let Some(v) = value
             && let Some(lane) = v.get("lane").and_then(Value::as_str)
@@ -548,7 +549,7 @@ fn apply(log: &mut SessionLog, durable: &mut DurableDigest, write: &Map<String, 
         }
         return;
     }
-    if namespace == "pi.result" {
+    if namespace == "ultron.result" {
         if op == Some("set")
             && let Some(v) = value
         {

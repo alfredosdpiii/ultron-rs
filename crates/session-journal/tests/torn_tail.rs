@@ -11,7 +11,7 @@ fn session_journal_open_cuts_a_torn_tail_in_place() {
     let repo = SessionRepo::new(dir.path(), TestClock::shared(1_790_000_000_000, 1));
     let mut session = repo.create("/work", None, None).unwrap();
     session
-        .commit(&[Write::set("pi.branch.tip", "main", Value::Null)])
+        .commit(&[Write::set("ultron.branch.tip", "main", Value::Null)])
         .unwrap();
     session
         .append_message("main", json!({"role": "user", "content": "hi", "timestamp": 1}))

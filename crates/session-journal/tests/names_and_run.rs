@@ -100,7 +100,7 @@ fn session_journal_user_name_wins_over_automatic_and_late_titles() {
     // A session that already has messages is not named by a later prompt.
     let mut talked = repo.create("/w", None, None).unwrap();
     talked
-        .commit(&[session_journal::Write::set("pi.branch.tip", "main", Value::Null)])
+        .commit(&[session_journal::Write::set("ultron.branch.tip", "main", Value::Null)])
         .unwrap();
     talked
         .append_message("main", json!({"role": "user", "content": "hi", "timestamp": 1}))
@@ -278,12 +278,20 @@ fn session_journal_run_commits_a_tool_batch_in_source_order() {
     let c1 = &reopened.branch_entries("main").unwrap()[2]["message"];
     assert!(c1.get("details").is_none(), "a failed tool's result has no details");
     assert_eq!(
-        reopened.value("pi.lane.state", "main").unwrap(),
+        reopened.value("ultron.lane.state", "main").unwrap(),
         &json!({"currentOperationId": null, "lastOperationId": operation, "inbox": []})
     );
-    assert_eq!(reopened.value("pi.result", &operation).unwrap()["status"], "completed");
-    assert!(reopened.state().scan_values("pi.op.", "").is_empty());
-    for namespace in ["pi.op.meta", "pi.op.state", "pi.op.tool_args", "pi.pending.entry"] {
+    assert_eq!(
+        reopened.value("ultron.result", &operation).unwrap()["status"],
+        "completed"
+    );
+    assert!(reopened.state().scan_values("ultron.op.", "").is_empty());
+    for namespace in [
+        "ultron.op.meta",
+        "ultron.op.state",
+        "ultron.op.tool_args",
+        "ultron.pending.entry",
+    ] {
         assert!(
             reopened.state().scan_values(namespace, "").is_empty(),
             "{namespace} is cleared"

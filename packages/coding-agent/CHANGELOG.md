@@ -7,6 +7,12 @@
 - Autoreview comments aim at about 320 characters (was 600), and the finders are asked for one short sentence each for the claim and the fix.
 - Autoreview nits are posted inline when a comment slot is left after every other finding; the rubric names what a nit is (a stale comment, a redundant import, a duplicated literal) so small optional fixes are rated nit, not low.
 - Autoreview's `deployment` part also runs for `.sql` files and `migrations/` directories, and checks a migration or new query for an index at production size, a lock on a large table, and its place in the release checklist.
+- Session files name their reserved namespaces, entry kinds, documents and remote services `ultron.*` instead of `pi.*`. Older files open unchanged: their `pi.*` names read as `ultron.*`, and nothing on disk is rewritten.
+- Engineering mode's default situational skills also bring `principle-make-operations-idempotent` for migrations, SQL and deploy files, `principle-explain-the-number` for benchmarks, `principle-boundary-discipline` for API, route, handler and CLI sources, and `principle-type-system-discipline` for Rust, Go, Java, Kotlin, Swift, C# and Scala.
+
+### Fixed
+
+- Loki and the situational skills skipped files written outside the session directory, so a session that worked in a sibling worktree ran unchecked: a write is now checked against the repository that holds it, under that repository's `.loki/` policy.
 
 ## [0.87.39] - 2026-10-10
 

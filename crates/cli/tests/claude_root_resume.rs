@@ -80,7 +80,7 @@ impl Root {
         )
     }
 
-    /// The stored lane configuration of the one session (its last `pi.lane.config` write).
+    /// The stored lane configuration of the one session (its last `ultron.lane.config` write).
     fn lane(&self) -> Value {
         let files = common::session_files(&self.sandbox.sessions_dir());
         assert_eq!(files.len(), 1, "{files:?}");
@@ -89,7 +89,7 @@ impl Root {
         for line in text.lines() {
             let record: Value = serde_json::from_str(line).unwrap();
             for r in record.as_array().cloned().unwrap_or_else(|| vec![record.clone()]) {
-                if r["namespace"] == "pi.lane.config" && r["key"] == "main" {
+                if r["namespace"] == "ultron.lane.config" && r["key"] == "main" {
                     lane = r["value"].clone();
                 }
             }

@@ -1,7 +1,7 @@
 //! Session names: the listing a picker shows (cwd-scoped, newest first, with name and first message), `--resume
 //! <name|id>` resolution, and automatic names.
 //!
-//! A name is the session value `pi.session.name` (what TypeScript's `setName` writes; a v3 file's `session_info`).
+//! A name is the session value `ultron.session.name` (what TypeScript's `setName` writes; a v3 file's `session_info`).
 //! An automatic name is also recorded in `ultron.module/session-name` as `{ version: 1, automatic: <name> }`; the
 //! name is automatic exactly while the two agree, so a name set later by any writer (`-n`, `/name`, the TypeScript
 //! product) is the user's and is never replaced.
@@ -234,10 +234,11 @@ pub fn session_details(text: &str) -> SessionDetails {
         let Ok(parsed) = serde_json::from_str::<Value>(line) else {
             continue;
         };
-        let mutations = match parsed {
+        let mut mutations = match parsed {
             Value::Array(items) => items,
             other => vec![other],
         };
+        mutations.iter_mut().for_each(crate::codec::rename_legacy);
         for m in mutations.iter().filter(|m| m.is_object()) {
             let kind = m.get("kind").and_then(Value::as_str);
             if kind == Some("value") && m["namespace"] == SESSION_NAME {

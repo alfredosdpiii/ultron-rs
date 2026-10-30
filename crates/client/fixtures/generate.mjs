@@ -53,7 +53,7 @@ const s = (m) => hex(p.encodeServerMessage(m));
 const hello = s({ type: "hello", version: 8, serverId: SID });
 const ok = (id, result) => s(result === undefined ? { type: "response", id, ok: true } : { type: "response", id, ok: true, result });
 const target = { serverId: SID };
-const call = { serviceId: "pi.models", member: "list", args: [] };
+const call = { serviceId: "ultron.models", member: "list", args: [] };
 const attachment = { serverId: SID, sessionId: "session-1", attachmentId: "attachment-1" };
 const connect = { action: "connect", replies: [hello] };
 const scripts = [

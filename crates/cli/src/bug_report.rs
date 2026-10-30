@@ -2,7 +2,7 @@
 //! the report bundle of the attached session (`report.json` metadata, the content-free `diagnostics.json`, the
 //! branch as `session.jsonl` when the user shares it, the model's `summary.md` when they chose one instead), its
 //! upload to the Radius gateway (`PI_RADIUS_GATEWAY`, else `https://radius.pi.dev`) or its zip export into the
-//! working directory, and the `pi.bug-report` entry that records it in the session.
+//! working directory, and the `ultron.bug-report` entry that records it in the session.
 
 use crate::Env;
 use crate::link::Link;
@@ -99,7 +99,7 @@ fn host() -> telemetry::bug_report::Host {
 }
 
 /// `serializeSessionBranch` with `createShareTrailingEntries`: a session header, the branch's entries chained by
-/// `parentId`, and the `pi.share` entry with the system prompt and tools.
+/// `parentId`, and the `ultron.share` entry with the system prompt and tools.
 fn session_jsonl(
     session_id: &str,
     cwd: &str,
@@ -118,7 +118,7 @@ fn session_jsonl(
         lines.push(entry);
     }
     lines.push(json!({
-        "type": "custom", "customType": "pi.share", "id": share_id, "parentId": parent, "timestamp": timestamp,
+        "type": "custom", "customType": "ultron.share", "id": share_id, "parentId": parent, "timestamp": timestamp,
         "data": {"systemPrompt": share["systemPrompt"], "tools": share["tools"]},
     }));
     let text: Vec<String> = lines.iter().map(Value::to_string).collect();
@@ -485,7 +485,7 @@ pub fn export(bundle: &BugReportBundle, env: &Env) -> Result<PathBuf, String> {
     Ok(path)
 }
 
-/// `recordInSession`: the `pi.bug-report` entry (`delivery`: `{delivery: "upload"}` or `{delivery: "zip", path}`),
+/// `recordInSession`: the `ultron.bug-report` entry (`delivery`: `{delivery: "upload"}` or `{delivery: "zip", path}`),
 /// and the crash log cleared once its crashes were reported.
 pub fn record(
     op: &dyn Fn(Op) -> Result<Option<Value>, String>,
@@ -653,7 +653,7 @@ mod tests {
                 json!({"type": "session", "version": 3, "id": "sid", "timestamp": "T", "cwd": "/w"}),
                 json!({"type": "message", "id": "a", "parentId": null}),
                 json!({"type": "message", "id": "b", "parentId": "a"}),
-                json!({"type": "custom", "customType": "pi.share", "id": "abcd1234", "parentId": "b", "timestamp": "T",
+                json!({"type": "custom", "customType": "ultron.share", "id": "abcd1234", "parentId": "b", "timestamp": "T",
                     "data": {"systemPrompt": "S", "tools": [{"name": "rlm"}]}}),
             ]
         );

@@ -756,7 +756,7 @@ fn naming_recorded(root: &Path) {
     }
 }
 
-/// Names stored in the session files under the agent dir (each `pi.session.name` value the format-4 journals set),
+/// Names stored in the session files under the agent dir (each `ultron.session.name` value the format-4 journals set),
 /// oldest first.
 fn stored_names(root: &Path) -> Vec<String> {
     let mut names = Vec::new();
@@ -767,7 +767,7 @@ fn stored_names(root: &Path) -> Vec<String> {
                 record => vec![record],
             };
             for record in records {
-                if record["namespace"] == "pi.session.name" && record["op"] == "set" {
+                if record["namespace"] == "ultron.session.name" && record["op"] == "set" {
                     names.push(record["value"].as_str().unwrap().to_string());
                 }
             }

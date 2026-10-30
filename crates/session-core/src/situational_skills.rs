@@ -60,6 +60,42 @@ pub const DEFAULT_RULES: &[(&str, &str, &[&str])] = &[
         "You changed TypeScript",
         &["**/*.ts", "**/*.tsx"],
     ),
+    (
+        "principle-make-operations-idempotent",
+        "You changed a migration or a deploy step",
+        &[
+            "**/migrations/**",
+            "**/migration/**",
+            "**/alembic/**",
+            "**/*.sql",
+            "**/*.service",
+            "**/Dockerfile",
+            "**/.github/workflows/**",
+        ],
+    ),
+    (
+        "principle-explain-the-number",
+        "You changed a benchmark",
+        &["**/benches/**", "**/bench/**", "**/benchmarks/**", "**/*bench*.*"],
+    ),
+    (
+        "principle-boundary-discipline",
+        "You changed an API or CLI boundary",
+        &["**/api/**", "**/routes/**", "**/handlers/**", "**/cli/src/**"],
+    ),
+    (
+        "principle-type-system-discipline",
+        "You changed typed code",
+        &[
+            "**/*.rs",
+            "**/*.go",
+            "**/*.java",
+            "**/*.kt",
+            "**/*.swift",
+            "**/*.cs",
+            "**/*.scala",
+        ],
+    ),
 ];
 
 /// One rule: a change to a file matching `paths` brings `skill`.
@@ -178,7 +214,13 @@ impl CellObserver for SituationalSkills {
             .files
             .iter()
             .chain(&changes.checked)
-            .filter_map(|path| inside(cwd, path))
+            // A file in another repository (a sibling worktree) matches by its path in that repository.
+            .filter_map(|path| {
+                inside(cwd, path).or_else(|| {
+                    let dir = path.ancestors().skip(1).find(|dir| dir.is_dir())?;
+                    inside(&host::loki_guard::git_root(dir)?, path)
+                })
+            })
             .map(|relative| relative.replace('\\', "/"))
             .collect();
         self.text_for(lane, &paths)

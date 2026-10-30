@@ -3,8 +3,8 @@
 //! REPL, so the tool task is a durable REPL cell ([`cell`]) run by a [`CellExecutor`].
 //!
 //! A [`ChatHarness`] wraps the task [`Harness`](crate::scheduler::Harness): it installs the built-in tasks
-//! (`pi.generation`, `pi.tool`, `pi.compaction`) into the application's registry, creates every conversation with
-//! its built-in documents, admits submissions through `pi.inbox`, and settles them from the run tasks. Everything is
+//! (`ultron.generation`, `ultron.tool`, `ultron.compaction`) into the application's registry, creates every conversation with
+//! its built-in documents, admits submissions through `ultron.inbox`, and settles them from the run tasks. Everything is
 //! a durable record: a crash loses at most an uncommitted throttle window, and reopening resumes runs, resends pinned
 //! requests, and turns interrupted cells into interrupted results without running them again.
 
@@ -144,7 +144,7 @@ impl ChatOptions {
     }
 }
 
-/// A change to a conversation's `pi.agent`: a given field replaces the stored one, `Some(None)` clears it.
+/// A change to a conversation's `ultron.agent`: a given field replaces the stored one, `Some(None)` clears it.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct AgentChange {
     pub model: Option<Option<ModelRef>>,
@@ -160,7 +160,7 @@ impl AgentChange {
     }
 }
 
-/// Apply one change to `pi.agent`.
+/// Apply one change to `ultron.agent`.
 pub fn configure(tx: &mut Tx<'_>, conversation_id: ConversationId, change: &AgentChange) -> Result<()> {
     let state = tx.doc(&docs::AGENT, Owner::Conversation(conversation_id))?;
     match &change.model {
@@ -176,14 +176,14 @@ pub fn configure(tx: &mut Tx<'_>, conversation_id: ConversationId, change: &Agen
     Ok(())
 }
 
-/// The built-in creation hook: empty `pi.live`, `pi.inbox`, `pi.usage`, a fresh `pi.provider` and the conversation's
-/// `pi.agent`, in the creating commit.
+/// The built-in creation hook: empty `ultron.live`, `ultron.inbox`, `ultron.usage`, a fresh `ultron.provider` and the conversation's
+/// `ultron.agent`, in the creating commit.
 pub fn create_documents(tx: &mut Tx<'_>, conversation_id: ConversationId, fork: bool) -> Result<()> {
     let owner = Owner::Conversation(conversation_id);
     for doc in [&docs::LIVE, &docs::INBOX, &docs::USAGE, &docs::PROVIDER] {
         tx.doc(doc, owner)?;
     }
-    // A fork copies `pi.agent` as of its fork entry.
+    // A fork copies `ultron.agent` as of its fork entry.
     if !fork {
         tx.doc(&docs::AGENT, owner)?;
     }
@@ -352,7 +352,7 @@ impl ChatHarness {
         self.harness.snapshot(doc, owner)
     }
 
-    /// A conversation's committed `pi.live`.
+    /// A conversation's committed `ultron.live`.
     pub fn live(&self, conversation_id: ConversationId) -> Result<Value> {
         Ok(self
             .snapshot(&docs::LIVE, Owner::Conversation(conversation_id))?
@@ -376,7 +376,7 @@ impl ChatHarness {
             .collect())
     }
 
-    /// Every conversation's provider session ID (`pi.provider`), the key provider connection caches use (the Codex
+    /// Every conversation's provider session ID (`ultron.provider`), the key provider connection caches use (the Codex
     /// WebSocket cache), in conversation order.
     pub fn provider_session_ids(&self) -> Result<Vec<String>> {
         let mut ids = Vec::new();
@@ -405,7 +405,7 @@ impl ChatHarness {
         })
     }
 
-    /// Sum every conversation's committed `pi.usage` (spec §8.6).
+    /// Sum every conversation's committed `ultron.usage` (spec §8.6).
     pub fn usage(&self) -> Result<Value> {
         let conversations = self.conversation_ids()?;
         let mut total = json!({ "models": {}, "tools": {} });
@@ -523,7 +523,7 @@ impl Conversation {
         self.chat.submit_run(self.id, &first, &steering)
     }
 
-    /// Start a new context: a `pi.reset` write with `head: "self"`, placed at once when idle, else at the next
+    /// Start a new context: a `ultron.reset` write with `head: "self"`, placed at once when idle, else at the next
     /// boundary.
     pub fn reset(&self, handoff: Option<&str>) -> Result<()> {
         let mut entry = json!({ "kind": entries::RESET, "head": "self" });

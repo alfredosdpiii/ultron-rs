@@ -76,7 +76,7 @@ pub struct HarnessOptions {
     pub on_report: Option<Report>,
     /// Harness cleanup in the commit that makes a `faulted` or `orphaned` outcome terminal. Default: nothing.
     pub settle_outcome: Option<SettleOutcome>,
-    /// Withdraw a conversation's queued inputs. Default: the `pi.inbox` withdrawal
+    /// Withdraw a conversation's queued inputs. Default: the `ultron.inbox` withdrawal
     /// ([`crate::chat::inbox::withdraw_queued_inputs`]).
     pub withdraw_inputs: Option<WithdrawInputs>,
 }

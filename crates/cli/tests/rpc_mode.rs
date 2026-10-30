@@ -694,13 +694,13 @@ fn cli_rpc_auto_compaction_trimmed_instead_matches_typescript() {
     );
     let results: Vec<Value> = records(rust)
         .into_iter()
-        .filter(|r| r["namespace"] == "pi.result")
+        .filter(|r| r["namespace"] == "ultron.result")
         .map(|r| r["value"]["status"].clone())
         .collect();
     assert_eq!(results, [json!("completed")]);
     let preparations: Vec<String> = records(rust)
         .into_iter()
-        .filter(|r| r["namespace"] == "pi.op.preparation")
+        .filter(|r| r["namespace"] == "ultron.op.preparation")
         .map(|r| r["op"].as_str().unwrap().to_string())
         .collect();
     assert_eq!(
@@ -735,7 +735,7 @@ fn cli_rpc_auto_compaction_trimmed_mid_run_matches_typescript() {
     );
     let results: Vec<&Value> = records
         .iter()
-        .filter(|r| r["namespace"] == "pi.result")
+        .filter(|r| r["namespace"] == "ultron.result")
         .map(|r| &r["value"]["status"])
         .collect();
     assert_eq!(results, [&json!("completed")]);

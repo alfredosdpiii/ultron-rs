@@ -187,7 +187,7 @@ fn create(connection: &Connection) -> String {
     let created = connection
         .call(
             connection.server_target(),
-            "pi.session-management",
+            "ultron.session-management",
             "create",
             json!([{}]),
         )
@@ -199,7 +199,7 @@ fn create(connection: &Connection) -> String {
 fn attach(connection: &Connection, id: &str) -> Result<RpcTarget, CallError> {
     connection.call(
         connection.server_target(),
-        "pi.session-management",
+        "ultron.session-management",
         "attach",
         json!([id]),
     )?;
@@ -306,7 +306,7 @@ fn cli_durable_killed_worker_restarts_by_itself_and_runs_the_queued_follow_up() 
     let prompting = connection
         .start(
             session.clone(),
-            "pi.agent-controller",
+            "ultron.agent-controller",
             "prompt",
             json!([{"message": "first", "images": null}]),
         )
@@ -386,7 +386,7 @@ fn cli_durable_busy_worker_without_clients_is_restarted_and_finishes() {
     connection
         .start(
             session,
-            "pi.agent-controller",
+            "ultron.agent-controller",
             "prompt",
             json!([{"message": "solo", "images": null}]),
         )
@@ -395,7 +395,12 @@ fn cli_durable_busy_worker_without_clients_is_restarted_and_finishes() {
     // The client detaches (answered once the worker applied the withdrawn demand) and leaves; the busy worker keeps
     // its run.
     connection
-        .call(connection.server_target(), "pi.session-management", "detach", json!([]))
+        .call(
+            connection.server_target(),
+            "ultron.session-management",
+            "detach",
+            json!([]),
+        )
         .unwrap();
     connection.disconnect();
     let worker = worker_pid(&home, &id).expect("the busy worker keeps running");
@@ -424,7 +429,7 @@ fn cli_durable_worker_that_stops_answering_heartbeats_is_killed_and_restarted() 
     connection
         .start(
             session,
-            "pi.agent-controller",
+            "ultron.agent-controller",
             "prompt",
             json!([{"message": "hang", "images": null}]),
         )
@@ -511,7 +516,7 @@ fn cli_durable_stuck_run_is_reported_and_aborted_through_session_ops() {
     let prompting = connection
         .start(
             session.clone(),
-            "pi.agent-controller",
+            "ultron.agent-controller",
             "prompt",
             json!([{"message": "slow", "images": null}]),
         )
@@ -766,7 +771,7 @@ fn prompted(home: &Home, env: &[(&str, &str)], message: &str) -> Prompted {
     let prompting = connection
         .start(
             session,
-            "pi.agent-controller",
+            "ultron.agent-controller",
             "prompt",
             json!([{"message": message, "images": null}]),
         )
@@ -985,7 +990,7 @@ fn cli_durable_a_signalled_worker_hands_its_running_shell_job_to_its_successor()
         .connection
         .start(
             session,
-            "pi.agent-controller",
+            "ultron.agent-controller",
             "prompt",
             json!([{"message": "check the job", "images": null}]),
         )
@@ -1093,11 +1098,11 @@ fn compactions(path: &Path) -> Vec<String> {
         .collect()
 }
 
-/// Compaction preparations (`pi.op.preparation`) written and not removed again.
+/// Compaction preparations (`ultron.op.preparation`) written and not removed again.
 fn open_preparations(path: &Path) -> usize {
     let ops: Vec<Value> = writes(path)
         .iter()
-        .filter(|w| w["namespace"] == "pi.op.preparation")
+        .filter(|w| w["namespace"] == "ultron.op.preparation")
         .map(|w| w["op"].clone())
         .collect();
     ops.iter().filter(|op| *op == "set").count() - ops.iter().filter(|op| *op == "delete").count()

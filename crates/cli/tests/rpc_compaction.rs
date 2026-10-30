@@ -262,12 +262,12 @@ impl Fixture {
         let writes = self.writes();
         let preparations = writes
             .iter()
-            .filter(|w| w["namespace"] == "pi.op.preparation")
+            .filter(|w| w["namespace"] == "ultron.op.preparation")
             .map(|w| if w["op"] == "set" { 1 } else { -1 })
             .sum();
         let lane = writes
             .iter()
-            .rfind(|w| w["namespace"] == "pi.lane.state")
+            .rfind(|w| w["namespace"] == "ultron.lane.state")
             .map_or(Value::Null, |w| w["value"]["currentOperationId"].clone());
         (preparations, lane)
     }
@@ -520,7 +520,7 @@ fn cli_rpc_compaction_compact_during_a_run_recovers_and_cancels() {
         (&result["kind"], &result["error"]["code"]),
         (&json!("compaction"), &json!("interrupted"))
     );
-    assert_eq!(session.state().scan_values("pi.op.preparation", "").len(), 0);
+    assert_eq!(session.state().scan_values("ultron.op.preparation", "").len(), 0);
     // Live: abort cancels the compaction.
     assert_eq!(f.client.send(json!({"type": "abort"})).unwrap()["success"], true);
     assert_eq!(f.held(), Held::Dropped, "the summary request was cancelled");
@@ -791,7 +791,7 @@ fn cli_rpc_compaction_branch_summary_is_compacting_and_abortable() {
         (&result["kind"], &result["error"]["code"]),
         (&json!("navigation"), &json!("interrupted"))
     );
-    assert!(session.state().scan_values("pi.op.preparation", "").is_empty());
+    assert!(session.state().scan_values("ultron.op.preparation", "").is_empty());
     assert_eq!(json!(session.branch_tip("main").flatten()), leaf);
     assert!(session.state().entries().iter().all(|e| e["type"] != "branch_summary"));
     a.call(session_core::core::Op::Abort).unwrap();
@@ -924,7 +924,7 @@ fn cli_rpc_compaction_navigation_is_journaled_as_an_operation() {
     let preparations: Vec<Value> = a
         .writes()
         .into_iter()
-        .filter(|w| w["namespace"] == "pi.op.preparation")
+        .filter(|w| w["namespace"] == "ultron.op.preparation")
         .collect();
     assert_eq!(preparations.len(), 2, "set at admission, removed at the end");
     assert_eq!(preparations[0]["value"]["kind"], "branch_summary");
@@ -1170,7 +1170,7 @@ fn cli_rpc_compaction_retry_wait_is_recoverable_and_abortable() {
         (&json!("compaction"), &json!("interrupted"))
     );
     assert_eq!(json!(session.branch_tip("main").flatten()), leaf);
-    assert!(session.state().scan_values("pi.op.preparation", "").is_empty());
+    assert!(session.state().scan_values("ultron.op.preparation", "").is_empty());
     a.call(session_core::core::Op::Abort).unwrap();
     assert_eq!(
         compaction.recv_timeout(HANG).unwrap().unwrap_err(),

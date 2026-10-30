@@ -1,4 +1,4 @@
-//! The durable REPL cell (`pi.tool` for the model's one tool): port of upstream Pi Durable
+//! The durable REPL cell (`ultron.tool` for the model's one tool): port of upstream Pi Durable
 //! `test/harness-tools-recovery.test.ts` and the resolution cases of `test/harness-tools.test.ts` (spec §8.4). A
 //! cell's intent (its code, lane and replay policy) is committed before it runs; a cell interrupted after intent is
 //! never run again unless both the recorded and the current policy are replay-safe, and the model gets an
@@ -20,7 +20,7 @@ const DONE: &str = "done";
 fn results(entries: &[EntryRecord]) -> Vec<Value> {
     entries
         .iter()
-        .filter(|entry| entry.kind == "pi.tool-result")
+        .filter(|entry| entry.kind == "ultron.tool-result")
         .map(|entry| entry.model.as_ref().unwrap()[0].clone())
         .collect()
 }
@@ -218,7 +218,7 @@ fn harness_chat_cells_let_context_derivation_answer_a_faulted_cell_and_continue_
                     .items)
             })
             .unwrap();
-        let faulted = tasks.iter().find(|task| task.kind == "pi.tool").unwrap();
+        let faulted = tasks.iter().find(|task| task.kind == "ultron.tool").unwrap();
         assert_matches(
             &js(&faulted.state),
             json!({ "status": "terminal", "outcome": { "status": "faulted" } }),

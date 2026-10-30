@@ -1,5 +1,5 @@
 //! `/import <path>` in the real TUI (tmux) over the real server: the client reads a Pi session file, the server's
-//! `pi.session-management.importPi` imports it (session_core::migration), the TUI offers to switch and opens the
+//! `ultron.session-management.importPi` imports it (session_core::migration), the TUI offers to switch and opens the
 //! imported session; a second import of the same Pi session is answered "Already imported", nothing written
 //! (client-tui-sessions.ts `importPiSessionFile`, server.ts `importPi`). The Pi file is the linear fixture of
 //! crates/session-core/fixtures/migration (TypeScript test ultron-migration.test.ts).

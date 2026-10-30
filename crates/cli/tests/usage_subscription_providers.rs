@@ -22,7 +22,7 @@ fn session(dir: &Path) -> std::path::PathBuf {
             "message": {"role": "assistant", "provider": "priced", "model": "m", "content": [],
                 "usage": {"input": 10, "output": 5, "cacheRead": 0, "cacheWrite": 0, "totalTokens": 15,
                     "cost": {"total": 0.1}}}}),
-        json!({"kind": "value", "op": "set", "seq": 2, "namespace": "pi.branch.tip", "key": "main", "value": "e1"}),
+        json!({"kind": "value", "op": "set", "seq": 2, "namespace": "ultron.branch.tip", "key": "main", "value": "e1"}),
     ];
     let text: String = lines.iter().map(|l| format!("{l}\n")).collect();
     std::fs::write(&path, text).unwrap();

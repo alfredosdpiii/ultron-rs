@@ -41,7 +41,7 @@ pub struct Conn {
     /// Requests not answered yet, by request id (server.ts `activeRequests`): a `cancel` finds them here.
     active: Mutex<HashMap<String, Active>>,
     next_request: AtomicU64,
-    /// The plugin package paths `pi.presentation-plugins.prepareSession` selected for this client (`reload` rebuilds
+    /// The plugin package paths `ultron.presentation-plugins.prepareSession` selected for this client (`reload` rebuilds
     /// them); `None` until it prepared a session.
     prepared_plugins: Mutex<Option<Vec<String>>>,
 }
@@ -583,7 +583,7 @@ impl Hub {
     }
 
     fn server_services(&self, conn: &Arc<Conn>) -> Provider {
-        let directory = Service::new("pi.session-directory").state("state", self.directory.clone());
+        let directory = Service::new("ultron.session-directory").state("state", self.directory.clone());
         let weak = self.me.clone();
         let hub = move || weak.upgrade().ok_or_else(|| ServiceError::internal("Server is closed"));
         let conn_weak = Arc::downgrade(conn);
@@ -603,7 +603,7 @@ impl Hub {
         );
         let (c1, c2, c3, c4) = (conn_of.clone(), conn_of.clone(), conn_of.clone(), conn_of);
         let (h8, h9) = (hub.clone(), hub.clone());
-        let management = Service::new("pi.session-management")
+        let management = Service::new("ultron.session-management")
             .method("attach", move |args| {
                 let (hub, conn) = (h1()?, c1()?);
                 let id = args.first().and_then(Value::as_str).unwrap_or_default().to_string();
@@ -663,7 +663,7 @@ impl Hub {
                     Ok(None)
                 })
             });
-        let plugins = Service::new("pi.presentation-plugins")
+        let plugins = Service::new("ultron.presentation-plugins")
             .method("prepareSession", move |args| {
                 let (hub, conn) = (h7()?, c3()?);
                 let request = args.first().unwrap_or(&Value::Null);

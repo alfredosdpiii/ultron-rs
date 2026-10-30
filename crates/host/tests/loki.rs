@@ -244,3 +244,33 @@ fn host_loki_after_cell_skips_loki_files_that_match_the_commit() {
     guard.after_cell_changes(&changes, &root, "main").unwrap();
     assert_eq!(*asked.lock().unwrap(), vec![vec![".loki/loki.json".to_string()]]);
 }
+
+/// A write into a sibling worktree outside the session directory is checked against that repository's own
+/// `.loki/` policy; it used to be let through unchecked because it was outside the session's root.
+#[test]
+fn host_loki_checks_writes_into_a_sibling_repository() {
+    let dir = tempfile::tempdir().unwrap();
+    let tmp = dir.path().canonicalize().unwrap();
+    let (session, sibling) = (tmp.join("session"), tmp.join("sibling"));
+    for repo in [&session, &sibling] {
+        std::fs::create_dir_all(repo.join(".loki")).unwrap();
+        std::fs::write(repo.join(".loki/loki.json"), "{}\n").unwrap();
+        let status = Command::new("git")
+            .args(["init", "-q"])
+            .current_dir(repo)
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .status()
+            .unwrap();
+        assert!(status.success());
+    }
+    let mut hooks = FileHooks::new(&session);
+    hooks.add(Box::new(LokiGuard::new(&session, LokiMode::On)));
+    let policy = sibling.join(".loki/loki.json").to_string_lossy().into_owned();
+    let answer = hooks.before_write(&policy, "{\"off\": true}\n");
+    assert_eq!(answer["blocked"], json!(true), "{answer}");
+    assert!(answer["reason"].as_str().unwrap().contains("protected"), "{answer}");
+    // Outside every repository with a policy, a write is still not Loki's to check.
+    let loose = tmp.join("loose.txt").to_string_lossy().into_owned();
+    assert_eq!(hooks.before_write(&loose, "x\n")["blocked"], json!(false));
+}

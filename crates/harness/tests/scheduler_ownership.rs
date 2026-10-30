@@ -1,6 +1,6 @@
 //! Port of upstream Pi Durable `test/harness-ownership.test.ts` ("ownership": structured concurrency, cascades,
 //! idle scopes, holds) and `test/harness-cancellation-barrier.test.ts`, each case run against Memory, SQLite and
-//! JSONL storage. Queued inputs queue in `pi.inbox` behind a conversation marked busy, as upstream's `busy()` does;
+//! JSONL storage. Queued inputs queue in `ultron.inbox` behind a conversation marked busy, as upstream's `busy()` does;
 //! the cases about tools, subagents and supervisors through conversation handles are not ported.
 
 mod support;
@@ -238,7 +238,7 @@ fn busy(conversation: &Conversation, task: TaskId) {
         .unwrap();
 }
 
-/// Submit to a busy conversation: the submission queues in its `pi.inbox` (upstream `conversation.submit()`).
+/// Submit to a busy conversation: the submission queues in its `ultron.inbox` (upstream `conversation.submit()`).
 fn queue(conversation: &Conversation, kind: SubmissionType) -> SubmissionId {
     let draft = match kind {
         SubmissionType::Input => SubmissionDraft::input("later"),

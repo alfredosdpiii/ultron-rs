@@ -1,5 +1,5 @@
-//! The built-in conversation documents (spec §6, §8.2, §8.6): `pi.live` (run control and presentation), `pi.inbox`
-//! (queued submissions), `pi.usage` (spend ledger), `pi.agent` (model and thinking level) and `pi.provider` (the
+//! The built-in conversation documents (spec §6, §8.2, §8.6): `ultron.live` (run control and presentation), `ultron.inbox`
+//! (queued submissions), `ultron.usage` (spend ledger), `ultron.agent` (model and thinking level) and `ultron.provider` (the
 //! provider-facing session identity). Every Harness conversation gets them in its creating commit.
 
 use std::sync::LazyLock;
@@ -21,12 +21,12 @@ fn running(slots: Option<&Value>) -> bool {
         .is_some_and(|slots| slots.iter().any(|slot| slot["status"] == "running"))
 }
 
-/// `pi.live`: run control (`run`), the current generation attempt, the current tool round, nested calls and
+/// `ultron.live`: run control (`run`), the current generation attempt, the current tool round, nested calls and
 /// compaction statuses. A complete base whenever nothing runs: no `generation` and no running slot.
 pub static LIVE: LazyLock<Doc> = LazyLock::new(|| {
     define(
         DocDefinition::new(
-            "pi.live",
+            "ultron.live",
             1,
             conversation(DocumentHistory::Latest, DocumentFork::Initial),
             |_| json!({}),
@@ -37,11 +37,11 @@ pub static LIVE: LazyLock<Doc> = LazyLock::new(|| {
     )
 });
 
-/// `pi.inbox`: the conversation's queued submissions in ID order; a complete base whenever it is empty.
+/// `ultron.inbox`: the conversation's queued submissions in ID order; a complete base whenever it is empty.
 pub static INBOX: LazyLock<Doc> = LazyLock::new(|| {
     define(
         DocDefinition::new(
-            "pi.inbox",
+            "ultron.inbox",
             1,
             conversation(DocumentHistory::Latest, DocumentFork::Initial),
             |_| json!({ "items": [] }),
@@ -50,11 +50,11 @@ pub static INBOX: LazyLock<Doc> = LazyLock::new(|| {
     )
 });
 
-/// `pi.usage`: assistant spend per `provider/model` and tool spend per tool name; a base on every change.
+/// `ultron.usage`: assistant spend per `provider/model` and tool spend per tool name; a base on every change.
 pub static USAGE: LazyLock<Doc> = LazyLock::new(|| {
     define(
         DocDefinition::new(
-            "pi.usage",
+            "ultron.usage",
             1,
             conversation(DocumentHistory::Latest, DocumentFork::Initial),
             |_| json!({ "models": {}, "tools": {} }),
@@ -63,12 +63,12 @@ pub static USAGE: LazyLock<Doc> = LazyLock::new(|| {
     )
 });
 
-/// `pi.agent`: the conversation's model (`{provider, modelId}`) and thinking level; rewindable so a fork starts from
+/// `ultron.agent`: the conversation's model (`{provider, modelId}`) and thinking level; rewindable so a fork starts from
 /// the agent at its fork entry.
 pub static AGENT: LazyLock<Doc> = LazyLock::new(|| {
     define(
         DocDefinition::new(
-            "pi.agent",
+            "ultron.agent",
             1,
             conversation(DocumentHistory::Rewindable, DocumentFork::AsOf),
             |_| json!({}),
@@ -77,11 +77,11 @@ pub static AGENT: LazyLock<Doc> = LazyLock::new(|| {
     )
 });
 
-/// `pi.provider`: the stable provider session ID; every fork starts with a fresh one.
+/// `ultron.provider`: the stable provider session ID; every fork starts with a fresh one.
 pub static PROVIDER: LazyLock<Doc> = LazyLock::new(|| {
     define(
         DocDefinition::new(
-            "pi.provider",
+            "ultron.provider",
             1,
             conversation(DocumentHistory::Latest, DocumentFork::Initial),
             |_| json!({ "sessionId": uuid_v7() }),

@@ -379,15 +379,29 @@ impl FileWriteGuard for LokiGuard {
     }
 
     fn before_write(&self, path: &Path, content: &str, cwd: &Path) -> Result<Verdict, String> {
-        let Some(relative) = inside(&self.root, path) else {
-            return Ok(Verdict::Allow(None));
+        // A write into another repository (a sibling worktree) is checked against that repository's own policy.
+        let (root, relative) = match inside(&self.root, path) {
+            Some(relative) => (self.root.clone(), relative),
+            None => {
+                let Some((root, relative)) = path
+                    .ancestors()
+                    .skip(1)
+                    .find(|dir| dir.is_dir())
+                    .and_then(git_root)
+                    .filter(|root| root.join(".loki").is_dir())
+                    .and_then(|root| inside(&root, path).map(|relative| (root, relative)))
+                else {
+                    return Ok(Verdict::Allow(None));
+                };
+                (root, relative)
+            }
         };
         let envelope = json!({
             "cwd": cwd.to_string_lossy(),
             "tool_name": "write",
             "tool_input": {"path": path.to_string_lossy(), "content": content},
         });
-        let outcome = loki::run::protect(&self.root, &[relative], Some("ultron"), false, || Ok(envelope));
+        let outcome = loki::run::protect(&root, &[relative], Some("ultron"), false, || Ok(envelope));
         // A check the Rust engine does not have yet (a language rule pack): the write proceeds, with a note.
         if let Some(error) = outcome.stderr.trim().strip_prefix(NOT_PORTED) {
             return Err(error.to_string());

@@ -1,5 +1,5 @@
 //! Port of upstream Pi Durable `test/harness-inbox.test.ts` ("inbox" and "usage", spec §6, §8.6): queued
-//! submissions in `pi.inbox`, writes before user items at boundaries, steer/follow-up modes, resets, stale head
+//! submissions in `ultron.inbox`, writes before user items at boundaries, steer/follow-up modes, resets, stale head
 //! writes, tool-round controls, withdrawal, failed runs leaving queued items, reopen, positional Chord operations,
 //! and the usage ledger. The model's tool is the REPL (`rlm`); upstream's `hold` tool is a scripted cell whose code is
 //! `hold`. Cases run against Memory, SQLite and JSONL storage unless they need one backend.
@@ -84,20 +84,20 @@ fn harness_chat_inbox_queues_busy_submissions_and_places_writes_before_user_item
                 (f2.id.0, "followUp".to_owned()),
             ]
         );
-        assert_eq!(transcript(&root.entries().unwrap()), ["pi.user:a"]);
+        assert_eq!(transcript(&root.entries().unwrap()), ["ultron.user:a"]);
 
         release.abort();
         f2.wait(&bg()).unwrap();
         assert_eq!(
             transcript(&root.entries().unwrap()),
             [
-                "pi.user:a",
-                "pi.assistant:first",
+                "ultron.user:a",
+                "ultron.assistant:first",
                 "note",
-                "pi.user:f1",
-                "pi.assistant:second",
-                "pi.user:f2",
-                "pi.assistant:third",
+                "ultron.user:f1",
+                "ultron.assistant:second",
+                "ultron.user:f2",
+                "ultron.assistant:third",
             ]
         );
         let answers = assistants(&root);
@@ -132,11 +132,11 @@ fn harness_chat_inbox_places_every_follow_up_in_one_successor_run_with_follow_up
         assert_eq!(
             transcript(&root.entries().unwrap()),
             [
-                "pi.user:a",
-                "pi.assistant:first",
-                "pi.user:f1",
-                "pi.user:f2",
-                "pi.assistant:both"
+                "ultron.user:a",
+                "ultron.assistant:first",
+                "ultron.user:f1",
+                "ultron.user:f2",
+                "ultron.assistant:both"
             ]
         );
         assert_eq!(setup.faux.call_count(), 2);
@@ -217,13 +217,13 @@ fn harness_chat_inbox_adds_steers_to_the_run_at_the_post_tools_boundary_and_hold
         assert_eq!(
             transcript(&root.entries().unwrap()),
             [
-                "pi.user:a",
-                "pi.assistant",
-                "pi.tool-result",
-                "pi.user:s",
-                "pi.assistant:after tools",
-                "pi.user:f",
-                "pi.assistant:follow-up",
+                "ultron.user:a",
+                "ultron.assistant",
+                "ultron.tool-result",
+                "ultron.user:s",
+                "ultron.assistant:after tools",
+                "ultron.user:f",
+                "ultron.assistant:follow-up",
             ]
         );
         let answers = assistants(&root);
@@ -274,19 +274,19 @@ fn harness_chat_inbox_ends_the_run_at_a_queued_reset_after_tools_and_runs_earlie
         assert_eq!(
             transcript(&root.entries().unwrap()),
             [
-                "pi.user:a",
-                "pi.assistant",
-                "pi.tool-result",
-                "pi.reset",
-                "pi.user:f",
-                "pi.assistant:fresh"
+                "ultron.user:a",
+                "ultron.assistant",
+                "ultron.tool-result",
+                "ultron.reset",
+                "ultron.user:f",
+                "ultron.assistant:fresh"
             ]
         );
         let reset = root
             .entries()
             .unwrap()
             .into_iter()
-            .find(|entry| entry.kind == "pi.reset")
+            .find(|entry| entry.kind == "ultron.reset")
             .unwrap();
         assert_eq!(reset.head, Some(reset.id));
         // The follow-up's request starts at the reset: the complete system baseline after the cut leads the follow-up.
@@ -315,7 +315,7 @@ fn harness_chat_inbox_places_a_queued_reset_after_the_answer_at_the_final_bounda
         assert_matches(&status(&input), json!({ "status": "done" }));
         assert_eq!(
             transcript(&root.entries().unwrap()),
-            ["pi.user:a", "pi.assistant:first", "pi.reset:handoff"]
+            ["ultron.user:a", "ultron.assistant:first", "ultron.reset:handoff"]
         );
         let view = root.context(None).unwrap();
         assert_eq!(view.messages.len(), 1);
@@ -335,7 +335,7 @@ fn harness_chat_inbox_resets_an_idle_conversation_at_once_with_or_without_handof
         root.reset(None).unwrap();
         let view = root.context(None).unwrap();
         let head = view.head.clone().unwrap();
-        assert_eq!(head.kind, "pi.reset");
+        assert_eq!(head.kind, "ultron.reset");
         assert!(head.model.is_none());
         assert!(view.messages.is_empty());
         root.reset(Some("carry on")).unwrap();
@@ -380,7 +380,7 @@ fn harness_chat_inbox_makes_a_queued_head_write_stale_when_it_targets_an_entry_b
             .entries()
             .unwrap()
             .into_iter()
-            .find(|entry| entry.kind == "pi.user")
+            .find(|entry| entry.kind == "ultron.user")
             .unwrap();
         let second = root.submit(SubmissionDraft::input("b")).unwrap();
         let kept = root
@@ -433,11 +433,16 @@ fn harness_chat_inbox_ends_the_run_with_a_pi_reset_entry_when_a_cell_requests_a_
         let (chat, root) = open_chat(Controlled::new(backend), &setup);
         let settled = root.submit(SubmissionDraft::input("a")).unwrap().wait(&bg()).unwrap();
         let entries = root.entries().unwrap();
-        let calling = entries.iter().find(|entry| entry.kind == "pi.assistant").unwrap();
+        let calling = entries.iter().find(|entry| entry.kind == "ultron.assistant").unwrap();
         assert_matches(&record(&settled), json!({ "status": "done", "answer": calling.id.0 }));
         assert_eq!(
             transcript(&entries),
-            ["pi.user:a", "pi.assistant", "pi.tool-result", "pi.reset:continue here"]
+            [
+                "ultron.user:a",
+                "ultron.assistant",
+                "ultron.tool-result",
+                "ultron.reset:continue here"
+            ]
         );
         let last = entries.last().unwrap();
         assert_eq!(last.head, Some(last.id));
@@ -472,7 +477,12 @@ fn harness_chat_inbox_drops_an_on_yield_continuation_when_the_final_boundary_sel
         assert_matches(&status(&input), json!({ "status": "done" }));
         assert_eq!(
             transcript(&root.entries().unwrap()),
-            ["pi.user:a", "pi.assistant:first", "pi.user:f", "pi.assistant:second"]
+            [
+                "ultron.user:a",
+                "ultron.assistant:first",
+                "ultron.user:f",
+                "ultron.assistant:second"
+            ]
         );
         chat.close().unwrap();
     });
@@ -537,7 +547,12 @@ fn harness_chat_inbox_leaves_queued_items_after_a_failed_run_until_the_next_subm
         let entries = transcript(&root.entries().unwrap());
         assert_eq!(
             entries[entries.len() - 4..],
-            ["pi.user:f", "pi.assistant:for f", "pi.user:g", "pi.assistant:for g"]
+            [
+                "ultron.user:f",
+                "ultron.assistant:for f",
+                "ultron.user:g",
+                "ultron.assistant:for g"
+            ]
         );
         chat.close().unwrap();
     });
@@ -563,12 +578,12 @@ fn harness_chat_inbox_keeps_queued_submissions_across_reopen_and_settles_them_af
         let settled = chat.submission(f).unwrap().unwrap().wait(&bg()).unwrap();
         assert_eq!(settled.status, SubmissionStatus::Done);
         let entries = transcript(&root.entries().unwrap());
-        assert_eq!(entries[entries.len() - 2..], ["pi.user:f", "pi.assistant:f"]);
+        assert_eq!(entries[entries.len() - 2..], ["ultron.user:f", "ultron.assistant:f"]);
         chat.close().unwrap();
     }
 }
 
-/// The ops of every `pi.inbox` change from now on.
+/// The ops of every `ultron.inbox` change from now on.
 fn inbox_ops(chat: &harness::chat::ChatHarness) -> Arc<Mutex<Vec<Value>>> {
     let ops: Arc<Mutex<Vec<Value>>> = Arc::default();
     let sink = ops.clone();
@@ -577,7 +592,7 @@ fn inbox_ops(chat: &harness::chat::ChatHarness) -> Arc<Mutex<Vec<Value>>> {
         .subscribe_commits(move |publication| {
             for change in &publication.changes {
                 if let CommitChange::Document { record, ops, .. } = change
-                    && record.identity.kind == "pi.inbox"
+                    && record.identity.kind == "ultron.inbox"
                     && !ops.is_empty()
                 {
                     sink.lock()
@@ -689,11 +704,11 @@ fn harness_chat_inbox_keeps_an_on_yield_continuation_across_a_queued_plain_write
         assert_eq!(
             transcript(&entries),
             [
-                "pi.user:a",
-                "pi.assistant:first",
+                "ultron.user:a",
+                "ultron.assistant:first",
                 "note",
-                "pi.user:more",
-                "pi.assistant:second"
+                "ultron.user:more",
+                "ultron.assistant:second"
             ]
         );
         assert_matches(
@@ -722,7 +737,7 @@ fn harness_chat_inbox_drops_an_on_yield_continuation_for_a_queued_reset() {
         assert_matches(&status(&input), json!({ "status": "done" }));
         assert_eq!(
             transcript(&root.entries().unwrap()),
-            ["pi.user:a", "pi.assistant:first", "pi.reset"]
+            ["ultron.user:a", "ultron.assistant:first", "ultron.reset"]
         );
         assert_eq!(setup.faux.call_count(), 1);
         chat.close().unwrap();
@@ -755,14 +770,14 @@ fn harness_chat_inbox_adds_every_steer_to_the_run_at_the_post_tools_boundary_wit
         assert_eq!(
             transcript(&entries),
             [
-                "pi.user:a",
-                "pi.assistant",
-                "pi.tool-result",
-                "pi.user:s1",
-                "pi.user:s2",
-                "pi.assistant:after tools",
-                "pi.user:f",
-                "pi.assistant:follow-up",
+                "ultron.user:a",
+                "ultron.assistant",
+                "ultron.tool-result",
+                "ultron.user:s1",
+                "ultron.user:s2",
+                "ultron.assistant:after tools",
+                "ultron.user:f",
+                "ultron.assistant:follow-up",
             ]
         );
         let answers = assistants(&root);
@@ -802,7 +817,7 @@ fn harness_chat_inbox_queues_an_idle_steer_behind_waiting_items_and_places_it_wi
         let entries = transcript(&root.entries().unwrap());
         assert_eq!(
             entries[entries.len() - 3..],
-            ["pi.user:f", "pi.user:s", "pi.assistant:both"]
+            ["ultron.user:f", "ultron.user:s", "ultron.assistant:both"]
         );
         chat.close().unwrap();
     });
@@ -833,11 +848,11 @@ fn harness_chat_inbox_starts_a_queued_follow_up_after_a_terminating_round() {
         assert_eq!(
             transcript(&root.entries().unwrap()),
             [
-                "pi.user:a",
-                "pi.assistant",
-                "pi.tool-result",
-                "pi.user:f",
-                "pi.assistant:follow-up"
+                "ultron.user:a",
+                "ultron.assistant",
+                "ultron.tool-result",
+                "ultron.user:f",
+                "ultron.assistant:follow-up"
             ]
         );
         chat.close().unwrap();
@@ -878,7 +893,12 @@ fn harness_chat_inbox_writes_the_last_handoff_in_call_order_and_then_runs_queued
         let entries = transcript(&root.entries().unwrap());
         assert_eq!(
             entries[entries.len() - 4..],
-            ["pi.tool-result", "pi.reset:two", "pi.user:f", "pi.assistant:follow-up"]
+            [
+                "ultron.tool-result",
+                "ultron.reset:two",
+                "ultron.user:f",
+                "ultron.assistant:follow-up"
+            ]
         );
         chat.close().unwrap();
     });
@@ -971,7 +991,7 @@ fn harness_chat_inbox_stores_the_inbox_as_a_base_exactly_when_it_becomes_empty()
             .iter()
             .flatten()
             .find_map(|write| match write {
-                StorageWrite::DocumentCreate { record, .. } if record.kind == "pi.inbox" => Some(record.id),
+                StorageWrite::DocumentCreate { record, .. } if record.kind == "ultron.inbox" => Some(record.id),
                 _ => None,
             })
             .unwrap();
@@ -1014,7 +1034,7 @@ fn harness_chat_inbox_keeps_a_complete_inbox_base_exactly_while_it_is_empty_and_
     assert!(check(&USAGE, json!({ "models": {}, "tools": {} })));
 }
 
-/// Entries in the commit and the `pi.usage` ops it wrote.
+/// Entries in the commit and the `ultron.usage` ops it wrote.
 type UsageCommit = (usize, Vec<Value>);
 
 // ─── usage ─────────────────────────────────────────────────────────────────────
@@ -1075,7 +1095,7 @@ fn harness_chat_usage_totals_assistant_usage_per_model_and_cell_usage_per_tool_a
             .entries()
             .unwrap()
             .into_iter()
-            .find(|entry| entry.kind == "pi.tool-result")
+            .find(|entry| entry.kind == "ultron.tool-result")
             .unwrap();
         assert_eq!(result.model.as_ref().unwrap()[0]["usage"], usage);
 
@@ -1242,7 +1262,7 @@ fn harness_chat_usage_records_usage_as_numeric_sets_on_the_ledger_in_the_entrys_
                     let CommitChange::Document { record, ops, .. } = change else {
                         continue;
                     };
-                    if record.identity.kind != "pi.usage" {
+                    if record.identity.kind != "ultron.usage" {
                         continue;
                     }
                     let entries = publication

@@ -169,7 +169,7 @@ fn client_radius_reopen_retries_with_backoff_and_reattaches_the_session() {
     assert_eq!(connection.attachment().map(|a| a.session_id), Some("sess-1".into()));
     assert_eq!(
         sent_call(&socket, 1),
-        serde_json::json!({"id": "request-1", "call": {"serviceId": "pi.session-management", "member": "attach", "args": ["sess-1"]}})
+        serde_json::json!({"id": "request-1", "call": {"serviceId": "ultron.session-management", "member": "attach", "args": ["sess-1"]}})
     );
     assert!(!connection.is_closed());
     connection.disconnect();

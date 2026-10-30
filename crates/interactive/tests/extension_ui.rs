@@ -1,5 +1,5 @@
 //! `/mcp` in the TUI (client-tui.ts `#serveExtensionUI`): the command runs in the session's worker
-//! (`pi.legacy-extension-commands.run`); its dialogs arrive as Pi's `extension_ui_request` and are answered one at a
+//! (`ultron.legacy-extension-commands.run`); its dialogs arrive as Pi's `extension_ui_request` and are answered one at a
 //! time (`select` in the selector, `input` in a text prompt, Esc cancels), and `notify` shows in the status line.
 //! Pi extensions are not supported by ultron-rs: `/extension` says so, and a `confirm` request (only an extension
 //! raised one) opens nothing.

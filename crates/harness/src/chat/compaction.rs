@@ -1,4 +1,4 @@
-//! The built-in compaction task `pi.compaction` (spec §8.7): select an old prefix of the model context, summarize it
+//! The built-in compaction task `ultron.compaction` (spec §8.7): select an old prefix of the model context, summarize it
 //! with Ultron's summarization request (`crates/compaction`), and place a summary entry whose `head` is the first kept
 //! entry. Port of upstream `harness/compaction.ts`. A compaction the generation owns blocks it and appends directly;
 //! a conversation-owned one places its summary through a write submission.

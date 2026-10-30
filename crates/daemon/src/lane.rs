@@ -1,4 +1,4 @@
-//! The worker's main lane as presentations see it: the `pi.transcript` state `{ snapshot, event }`
+//! The worker's main lane as presentations see it: the `ultron.transcript` state `{ snapshot, event }`
 //! (experimental/services/transcript-provider.ts), folded with the harness reducer (crates/harness) from the
 //! lane-watch events the agent loop's events translate to.
 //!

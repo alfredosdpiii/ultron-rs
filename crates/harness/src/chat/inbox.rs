@@ -1,4 +1,4 @@
-//! The built-in inbox (spec §6): queued submissions wait in `pi.inbox` until a boundary places them. Port of upstream
+//! The built-in inbox (spec §6): queued submissions wait in `ultron.inbox` until a boundary places them. Port of upstream
 //! `harness/inbox.ts`.
 
 use chord_delta::{Draft, Seg};

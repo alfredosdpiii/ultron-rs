@@ -65,7 +65,7 @@ pub fn mcp_command() -> Value {
 }
 
 /// `{name, description?, sourceInfo?}`: a `source: "extension"` command (only `/mcp`) as
-/// `pi.legacy-extension-commands.list` answers it.
+/// `ultron.legacy-extension-commands.list` answers it.
 pub fn command_info(command: &Value) -> Value {
     let mut out = Map::new();
     out.insert("name".into(), command["name"].clone());

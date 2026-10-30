@@ -111,8 +111,8 @@ fn subscribe_models(connection: &Connection, fake: &mut Fake) -> String {
     subscribe(
         connection,
         fake,
-        "pi.models",
-        models_snapshot("pi.models", json!([["r", {"selected": null, "revision": 0}]])),
+        "ultron.models",
+        models_snapshot("ultron.models", json!([["r", {"selected": null, "revision": 0}]])),
     )
     .expect("subscribe")
 }
@@ -286,14 +286,14 @@ fn client_replica_replacement_errors_are_reported_on_the_replica() {
     deliver(&connection, &mut fake, &models, &[dropped]).expect("dropped");
     assert_eq!(
         connection.take_replica_errors(&models),
-        ["Unknown remote service member pi.models.state"]
+        ["Unknown remote service member ultron.models.state"]
     );
 
     let kind = json!({"type": "replaced", "snapshot": {"members": [{"name": "state", "kind": "method"}]}});
     deliver(&connection, &mut fake, &models, &[kind]).expect("kind");
     assert_eq!(
         connection.take_replica_errors(&models),
-        ["Remote service member pi.models.state changed kind"]
+        ["Remote service member ultron.models.state changed kind"]
     );
     assert!(!connection.is_closed());
 }
@@ -304,32 +304,33 @@ fn client_replica_subscribe_rejects_bad_snapshots() {
     let not_base = subscribe(
         &connection,
         &mut fake,
-        "pi.models",
-        models_snapshot("pi.models", json!([["s", ["revision"], 1]])),
+        "ultron.models",
+        models_snapshot("ultron.models", json!([["s", ["revision"], 1]])),
     );
     assert_eq!(
         not_base,
         Err("Replicated state snapshot is not a base operation batch".into())
     );
-    let two = json!({"serviceId": "pi.models", "mode": "singleton", "instances": [{"members": []}, {"members": []}]});
+    let two =
+        json!({"serviceId": "ultron.models", "mode": "singleton", "instances": [{"members": []}, {"members": []}]});
     assert_eq!(
-        subscribe(&connection, &mut fake, "pi.models", two),
-        Err("Remote service pi.models returned an invalid singleton snapshot".into())
+        subscribe(&connection, &mut fake, "ultron.models", two),
+        Err("Remote service ultron.models returned an invalid singleton snapshot".into())
     );
-    let other = models_snapshot("pi.other", json!([["r", {}]]));
+    let other = models_snapshot("ultron.other", json!([["r", {}]]));
     assert_eq!(
-        subscribe(&connection, &mut fake, "pi.models", other),
-        Err("Remote service pi.models returned an invalid singleton snapshot".into())
+        subscribe(&connection, &mut fake, "ultron.models", other),
+        Err("Remote service ultron.models returned an invalid singleton snapshot".into())
     );
-    let keyed = json!({"serviceId": "pi.models", "mode": "keyed", "instances": [{"members": []}]});
+    let keyed = json!({"serviceId": "ultron.models", "mode": "keyed", "instances": [{"members": []}]});
     assert_eq!(
-        subscribe(&connection, &mut fake, "pi.models", keyed),
-        Err("Remote service pi.models returned an invalid singleton snapshot".into())
+        subscribe(&connection, &mut fake, "ultron.models", keyed),
+        Err("Remote service ultron.models returned an invalid singleton snapshot".into())
     );
-    let duplicate = json!({"serviceId": "pi.models", "mode": "singleton", "instances": [{"members": [
+    let duplicate = json!({"serviceId": "ultron.models", "mode": "singleton", "instances": [{"members": [
         {"name": "select", "kind": "method"}, {"name": "select", "kind": "method"}]}]});
     assert_eq!(
-        subscribe(&connection, &mut fake, "pi.models", duplicate),
+        subscribe(&connection, &mut fake, "ultron.models", duplicate),
         Err("Remote service has invalid member descriptions".into())
     );
     assert!(!connection.is_closed());
@@ -339,7 +340,7 @@ fn client_replica_subscribe_rejects_bad_snapshots() {
 fn client_replica_updates_before_the_snapshot_are_checked_in_order() {
     let (connection, mut fake) = connect();
     let (subscription, request) = connection
-        .start_subscribe(connection.server_target(), "pi.models")
+        .start_subscribe(connection.server_target(), "ultron.models")
         .expect("start");
     let (id, _) = fake.request();
     // An update queued before the snapshot was read, with a gap: reported once the replica is installed.
@@ -349,7 +350,7 @@ fn client_replica_updates_before_the_snapshot_are_checked_in_order() {
     );
     fake.respond(
         &id,
-        models_snapshot("pi.models", json!([["r", {"selected": null, "revision": 0}]])),
+        models_snapshot("ultron.models", json!([["r", {"selected": null, "revision": 0}]])),
     );
     // Wait for the reader to see the response; the update before it is then queued for the subscription.
     let ping = connection

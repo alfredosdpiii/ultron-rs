@@ -10,14 +10,14 @@ fn client_error_message(message: &str) -> String {
 #[test]
 fn daemon_lost_bare_binding_error_becomes_a_clear_message() {
     assert_eq!(
-        describe("Remote service pi.agent-controller binding is closed").as_deref(),
+        describe("Remote service ultron.agent-controller binding is closed").as_deref(),
         Some(
-            "The Ultron server stopped (Remote service pi.agent-controller binding is closed); your session is saved — run `ultron -c` to resume"
+            "The Ultron server stopped (Remote service ultron.agent-controller binding is closed); your session is saved — run `ultron -c` to resume"
         )
     );
     assert_eq!(
-        friendly_status("Error: Remote service pi.agent-controller binding is closed"),
-        "Error: The Ultron server stopped (Remote service pi.agent-controller binding is closed); your session is saved — run `ultron -c` to resume"
+        friendly_status("Error: Remote service ultron.agent-controller binding is closed"),
+        "Error: The Ultron server stopped (Remote service ultron.agent-controller binding is closed); your session is saved — run `ultron -c` to resume"
     );
 }
 

@@ -122,11 +122,11 @@ fn cache_socket(session: &str) -> Log {
     log
 }
 
-/// The provider session IDs (`pi.provider`) the session's journal created.
+/// The provider session IDs (`ultron.provider`) the session's journal created.
 fn provider_session_ids(value: &Value, found: &mut Vec<String>) {
     match value {
         Value::Object(map) => {
-            if map.get("record").and_then(|r| r.get("kind")) == Some(&json!("pi.provider"))
+            if map.get("record").and_then(|r| r.get("kind")) == Some(&json!("ultron.provider"))
                 && let Some(id) = map["content"]["value"]["sessionId"].as_str()
             {
                 found.push(id.to_string());

@@ -110,7 +110,7 @@ pub struct RemoteSelection {
 pub enum Selected {
     /// Open this existing session (renaming it first when `rename`).
     Existing { session_id: String, rename: Option<String> },
-    /// Create a session with these `pi.session-management.create` options.
+    /// Create a session with these `ultron.session-management.create` options.
     Create(Value),
 }
 
@@ -279,7 +279,7 @@ impl Shared {
     fn management(&self, member: &str, args: Value) -> Result<Option<Value>, String> {
         let connection = self.connection();
         connection
-            .call(connection.server_target(), "pi.session-management", member, args)
+            .call(connection.server_target(), "ultron.session-management", member, args)
             .map_err(fail)
     }
 
@@ -325,7 +325,7 @@ impl Shared {
         connection
             .call(
                 server,
-                "pi.presentation-plugins",
+                "ultron.presentation-plugins",
                 "prepareSession",
                 json!([{"sessionId": id, "packagePaths": null}]),
             )
@@ -365,7 +365,7 @@ impl Shared {
         let attachment = connection.attachment().map(|a| a.attachment_id);
         let session = connection.session_target().map_err(fail)?;
         let mut started = Vec::new();
-        for service in ["pi.models", "pi.agent-controller", "pi.transcript"] {
+        for service in ["ultron.models", "ultron.agent-controller", "ultron.transcript"] {
             started.push(connection.start_subscribe(session.clone(), service).map_err(fail)?);
         }
         let mut subscriptions = Vec::new();
@@ -829,7 +829,7 @@ impl Link {
         self.shared.management(member, args)
     }
 
-    /// Create a session (`pi.session-management.create` options); returns its id.
+    /// Create a session (`ultron.session-management.create` options); returns its id.
     pub fn create(&mut self, options: Value) -> Result<String, String> {
         let summary = self.management("create", json!([options]))?.unwrap_or_default();
         let id = summary["sessionId"].as_str().unwrap_or_default().to_string();
@@ -837,19 +837,19 @@ impl Link {
         Ok(id)
     }
 
-    /// Remove a stored session through the server (`pi.session-management.remove`).
+    /// Remove a stored session through the server (`ultron.session-management.remove`).
     pub fn remove(&self, id: &str) -> Result<(), String> {
         self.management("remove", json!([id])).map(|_| ())
     }
 
-    /// Import a Pi session's text through the server (`pi.session-management.importPi`): `{session, alreadyImported,
+    /// Import a Pi session's text through the server (`ultron.session-management.importPi`): `{session, alreadyImported,
     /// imported}`.
     pub fn import_pi(&self, source_path: &str, content: &str) -> Result<Value, String> {
         let source = json!({"sourcePath": source_path, "content": content});
         Ok(self.management("importPi", json!([source]))?.unwrap_or_default())
     }
 
-    /// Rename a stored session through the server (`pi.session-management.rename`).
+    /// Rename a stored session through the server (`ultron.session-management.rename`).
     pub fn rename(&self, id: &str, name: &str) -> Result<(), String> {
         self.management("rename", json!([id, name])).map(|_| ())
     }

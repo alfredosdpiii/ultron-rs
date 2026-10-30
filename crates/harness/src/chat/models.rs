@@ -15,7 +15,7 @@ use serde_json::{Map, Value};
 use super::inbox::{QueueMode, QueueModes};
 use crate::scheduler::{Cancel, HarnessError, Result};
 
-/// A model by provider and ID, as `pi.agent` and generation checkpoints pin it.
+/// A model by provider and ID, as `ultron.agent` and generation checkpoints pin it.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ModelRef {

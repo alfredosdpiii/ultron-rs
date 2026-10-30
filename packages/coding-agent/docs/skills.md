@@ -70,7 +70,7 @@ In engineering mode, a skill can also come to the model when its situation does.
 }
 ```
 
-Without the setting, a test file brings `principle-test-behavior-not-implementation`, a Markdown or `docs/` file `principle-minimize-reader-load`, and a `.ts`/`.tsx` file `typescript-best-practices`. `false` or `[]` turns it off. A rule whose skill is always on is skipped, one skill comes per cell, and a skill over 4,000 characters is named with its file instead of shown.
+Without the setting, a test file brings `principle-test-behavior-not-implementation`, a Markdown or `docs/` file `principle-minimize-reader-load`, a `.ts`/`.tsx` file `typescript-best-practices`, a migration, SQL, Dockerfile, systemd unit or CI workflow `principle-make-operations-idempotent`, a benchmark `principle-explain-the-number`, an API, route, handler or CLI source file `principle-boundary-discipline`, and Rust, Go, Java, Kotlin, Swift, C# or Scala `principle-type-system-discipline`. A file in a sibling worktree outside the session directory matches by its path in its own repository. `false` or `[]` turns it off. A rule whose skill is always on is skipped, one skill comes per cell, and a skill over 4,000 characters is named with its file instead of shown.
 
 Set `disable-model-invocation: true` in frontmatter when a skill should be available only through its explicit command. The `enableSkillCommands` [setting](settings.md) controls whether skill commands appear in interactive command discovery; manually entered `/skill:name` commands still work.
 

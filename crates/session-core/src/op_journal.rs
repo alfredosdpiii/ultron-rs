@@ -9,8 +9,8 @@ use session_journal::run::{
     ULTRON_USAGE,
 };
 
-/// A compaction's durable preparation (`pi.op.preparation`, keyed `<operation>:<task>`).
-pub const OP_PREPARATION: &str = "pi.op.preparation";
+/// A compaction's durable preparation (`ultron.op.preparation`, keyed `<operation>:<task>`).
+pub const OP_PREPARATION: &str = "ultron.op.preparation";
 use session_journal::session::{BRANCH_TIP, LANE_STATE};
 use session_journal::usage::num;
 use session_journal::{Session, Write, lock_clock};
@@ -60,7 +60,7 @@ pub struct Run {
     held: Option<(Value, Instant)>,
     /// The operation's control state: running, or cancel requested (`{status, requestedAt}`).
     control: Value,
-    /// The lane's queued messages (`pi.lane.state` `inbox`) while the run is current.
+    /// The lane's queued messages (`ultron.lane.state` `inbox`) while the run is current.
     inbox: Value,
     /// The entry the current generation answers when it took queued messages (else the run's trigger).
     generation_trigger: Option<String>,
@@ -70,7 +70,7 @@ pub struct Run {
     compaction: Option<Compaction>,
     /// An overflowed answer commits with the compaction it starts: `(task, preparation)`.
     compaction_with_answer: Option<(Value, Value)>,
-    /// `pi.op.preparation` keys this operation wrote; its terminal transaction deletes them.
+    /// `ultron.op.preparation` keys this operation wrote; its terminal transaction deletes them.
     preparations: Vec<String>,
     /// The next generation's `assistant.ready` was committed with the compaction before it (its step id is set).
     ready_written: bool,
@@ -755,7 +755,7 @@ impl Run {
     }
 
     /// The overflowed answer the next [`Run::commit_assistant`] commits starts a compaction (`reason` overflow)
-    /// with `prepared` (`pi.op.preparation`): the request is retried once it completes.
+    /// with `prepared` (`ultron.op.preparation`): the request is retried once it completes.
     pub fn compact_with_answer(&mut self, session: &Session, prepared: Value) {
         let resume_after = json!({
             "continuation": {"kind": "need_assistant", "overflowRecoveryUsed": true},

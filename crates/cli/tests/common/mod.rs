@@ -244,8 +244,8 @@ pub fn normalize_journal(text: &str) -> Value {
                 .into_iter()
                 .filter(|r| {
                     r["namespace"] != "ultron.module"
-                        && r["namespace"] != "pi.pending.assistant_frame"
-                        && !(auto && r["namespace"] == "pi.session.name")
+                        && r["namespace"] != "ultron.pending.assistant_frame"
+                        && !(auto && r["namespace"] == "ultron.session.name")
                         && !(r["kind"] == "usage" && r["details"]["source"] == "session-naming")
                 })
                 .collect::<Vec<_>>()

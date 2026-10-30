@@ -164,7 +164,7 @@ fn printed(root: &Conversation, call: &str) -> Value {
         .entries()
         .unwrap()
         .into_iter()
-        .filter(|entry| entry.kind == "pi.tool-result")
+        .filter(|entry| entry.kind == "ultron.tool-result")
         .map(|entry| entry.model.unwrap()[0].clone())
         .find(|result| result["toolCallId"] == call)
         .unwrap_or_else(|| panic!("no result for {call}"));
@@ -287,12 +287,12 @@ fn session_core_durable_swarm_python_asks_a_persistent_child_again_after_the_pro
     assert_eq!(
         transcript(&child_conversation.entries().unwrap()),
         [
-            "pi.user:You own the parser.",
-            "pi.assistant:I know the parser.",
-            "pi.user:And the lexer?",
-            "pi.assistant:re: And the lexer?",
-            "pi.user:Still there?",
-            "pi.assistant:re: Still there?",
+            "ultron.user:You own the parser.",
+            "ultron.assistant:I know the parser.",
+            "ultron.user:And the lexer?",
+            "ultron.assistant:re: And the lexer?",
+            "ultron.user:Still there?",
+            "ultron.assistant:re: Still there?",
         ]
     );
     opened.chat.close().unwrap();

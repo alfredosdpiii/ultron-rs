@@ -1,9 +1,9 @@
-//! The durable REPL cell: the RLM equivalent of upstream's `pi.tool` (spec §8.4), the task behind every call of the
+//! The durable REPL cell: the RLM equivalent of upstream's `ultron.tool` (spec §8.4), the task behind every call of the
 //! model's one tool. Port of upstream `harness/tool.ts` for model-issued calls.
 //!
 //! `call` reads the call from its assistant entry, checks the tool and arguments, and commits intent (the code, its
 //! lane, and the replay policy) before the cell runs. The cell then runs through a [`CellExecutor`] (normally the
-//! lane's persistent kernel), publishing throttled partial output into its `pi.live` slot, and one commit appends the
+//! lane's persistent kernel), publishing throttled partial output into its `ultron.live` slot, and one commit appends the
 //! result entry and completes. `execute` is reached only by recovery: a cell whose intent was committed before a
 //! crash is never run again unless both the recorded and the current policy say it is replay-safe; otherwise the
 //! model gets an `interrupted` result carrying the committed partial output, exactly once.
@@ -195,7 +195,7 @@ impl Retained {
 /// What a running cell has published: its retained output and last details.
 type Published = (Retained, Option<Value>);
 
-/// Publishes a running cell's output and details into its `pi.live` slot, throttled.
+/// Publishes a running cell's output and details into its `ultron.live` slot, throttled.
 /// Clones share it, so a host request served on another thread (the cell's `cell.output`) can publish too.
 #[derive(Clone)]
 pub struct CellProgress {
@@ -648,8 +648,8 @@ fn render_diagnostics(diagnostics: &[Diagnostic]) -> String {
     format!("<harness>\n{}\n</harness>", lines.join("\n"))
 }
 
-/// Append a `pi.tool-result` entry. The content ends with the rendered diagnostics, so the stored message is exactly
-/// what the model sees; `data` keeps the structured list. A result's usage is added to `pi.usage` in the same commit.
+/// Append a `ultron.tool-result` entry. The content ends with the rendered diagnostics, so the stored message is exactly
+/// what the model sees; `data` keeps the structured list. A result's usage is added to `ultron.usage` in the same commit.
 pub(crate) fn append_tool_result(
     tx: &mut Tx<'_>,
     conversation_id: ConversationId,

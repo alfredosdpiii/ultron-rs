@@ -239,7 +239,7 @@ fn open(connection: &Connection) -> String {
     let created = connection
         .call(
             connection.server_target(),
-            "pi.session-management",
+            "ultron.session-management",
             "create",
             json!([{}]),
         )
@@ -249,7 +249,7 @@ fn open(connection: &Connection) -> String {
     connection
         .call(
             connection.server_target(),
-            "pi.session-management",
+            "ultron.session-management",
             "attach",
             json!([id]),
         )
@@ -265,7 +265,7 @@ fn prompt(connection: &Connection, message: &str) {
     connection
         .start(
             session,
-            "pi.agent-controller",
+            "ultron.agent-controller",
             "prompt",
             json!([{"message": message, "images": null}]),
         )

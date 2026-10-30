@@ -3,7 +3,7 @@
 //! bug-report.ts:
 //!
 //! - consent, the transcript question, the delivery choice, then a zip in the working directory with `report.json`,
-//!   `diagnostics.json` and the branch as `session.jsonl`, recorded in the session as a `pi.bug-report` entry;
+//!   `diagnostics.json` and the branch as `session.jsonl`, recorded in the session as a `ultron.bug-report` entry;
 //! - the transcript declined, a summary written by the session's model instead, uploaded to the gateway named by
 //!   `PI_RADIUS_GATEWAY` (a 127.0.0.1 fake): the summary is attached and no transcript is;
 //! - a failed upload offers the zip export; offline mode refuses the upload; Esc cancels;
@@ -191,7 +191,7 @@ fn cli_interactive_bug_report_exports_a_zip_with_the_transcript() {
     let share = lines.last().unwrap();
     assert_eq!(
         (&share["type"], &share["customType"]),
-        (&json!("custom"), &json!("pi.share"))
+        (&json!("custom"), &json!("ultron.share"))
     );
     assert!(
         share["data"]["systemPrompt"].as_str().unwrap().contains("rlm"),
@@ -200,7 +200,10 @@ fn cli_interactive_bug_report_exports_a_zip_with_the_transcript() {
     assert_eq!(share["data"]["tools"][0]["name"], "rlm");
     // Recorded in the session (`recordInSession`).
     let journal = journals(&tmp.0);
-    assert!(journal.contains("pi.bug-report") && journal.contains(id), "{journal}");
+    assert!(
+        journal.contains("ultron.bug-report") && journal.contains(id),
+        "{journal}"
+    );
     drop(tui);
 }
 
@@ -270,7 +273,7 @@ fn cli_interactive_bug_report_uploads_a_model_summary_instead_of_the_transcript(
     assert!(archives(&tmp.0.join("cwd")).is_empty());
     let journal = journals(&tmp.0);
     assert!(
-        journal.contains("pi.bug-report") && journal.contains("\"delivery\":\"upload\""),
+        journal.contains("ultron.bug-report") && journal.contains("\"delivery\":\"upload\""),
         "{journal}"
     );
     drop(tui);

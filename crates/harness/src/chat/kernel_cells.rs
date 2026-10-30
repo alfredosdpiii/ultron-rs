@@ -1,6 +1,6 @@
 //! A [`CellExecutor`] over persistent Python kernels (`crates/kernel`): one kernel per REPL lane, opened on first
 //! use. A cell's host requests go to the composition root's handler, except `cell.output`, which publishes durable
-//! partial output into the cell's `pi.live` slot (what an interrupted cell's result carries after a crash).
+//! partial output into the cell's `ultron.live` slot (what an interrupted cell's result carries after a crash).
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};

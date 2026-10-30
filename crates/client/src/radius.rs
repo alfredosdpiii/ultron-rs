@@ -633,7 +633,7 @@ impl RadiusReopen {
             connection
                 .call(
                     connection.server_target(),
-                    "pi.session-management",
+                    "ultron.session-management",
                     "attach",
                     serde_json::json!([id]),
                 )

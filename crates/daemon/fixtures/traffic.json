@@ -37,7 +37,7 @@
       "member": "subscribe",
       "args": [
        "service-1",
-       "pi.session-directory",
+       "ultron.session-directory",
        "singleton"
       ]
      }
@@ -56,7 +56,7 @@
       "member": "subscribe",
       "args": [
        "service-2",
-       "pi.session-management",
+       "ultron.session-management",
        "singleton"
       ]
      }
@@ -75,7 +75,7 @@
       "member": "subscribe",
       "args": [
        "service-3",
-       "pi.presentation-plugins",
+       "ultron.presentation-plugins",
        "singleton"
       ]
      }
@@ -88,7 +88,7 @@
      "id": "request-1",
      "ok": true,
      "result": {
-      "serviceId": "pi.session-directory",
+      "serviceId": "ultron.session-directory",
       "mode": "singleton",
       "instances": [
        {
@@ -120,7 +120,7 @@
      "id": "request-2",
      "ok": true,
      "result": {
-      "serviceId": "pi.session-management",
+      "serviceId": "ultron.session-management",
       "mode": "singleton",
       "instances": [
        {
@@ -166,7 +166,7 @@
      "id": "request-3",
      "ok": true,
      "result": {
-      "serviceId": "pi.presentation-plugins",
+      "serviceId": "ultron.presentation-plugins",
       "mode": "singleton",
       "instances": [
        {
@@ -194,7 +194,7 @@
       "serverId": "<id:0>"
      },
      "call": {
-      "serviceId": "pi.session-management",
+      "serviceId": "ultron.session-management",
       "member": "create",
       "args": [
        {}
@@ -263,7 +263,7 @@
       "serverId": "<id:0>"
      },
      "call": {
-      "serviceId": "pi.presentation-plugins",
+      "serviceId": "ultron.presentation-plugins",
       "member": "prepareSession",
       "args": [
        {
@@ -294,7 +294,7 @@
       "serverId": "<id:0>"
      },
      "call": {
-      "serviceId": "pi.session-management",
+      "serviceId": "ultron.session-management",
       "member": "attach",
       "args": [
        "<id:1>"
@@ -353,7 +353,7 @@
       "member": "subscribe",
       "args": [
        "service-4",
-       "pi.models",
+       "ultron.models",
        "singleton"
       ]
      }
@@ -374,7 +374,7 @@
       "member": "subscribe",
       "args": [
        "service-5",
-       "pi.agent-controller",
+       "ultron.agent-controller",
        "singleton"
       ]
      }
@@ -395,7 +395,7 @@
       "member": "subscribe",
       "args": [
        "service-6",
-       "pi.transcript",
+       "ultron.transcript",
        "singleton"
       ]
      }
@@ -409,15 +409,15 @@
      "ok": true,
      "result": [
       {
-       "serviceId": "pi.agent-controller",
+       "serviceId": "ultron.agent-controller",
        "mode": "singleton"
       },
       {
-       "serviceId": "pi.session-plugins",
+       "serviceId": "ultron.session-plugins",
        "mode": "singleton"
       },
       {
-       "serviceId": "pi.legacy-extension-commands",
+       "serviceId": "ultron.legacy-extension-commands",
        "mode": "singleton"
       },
       {
@@ -429,11 +429,11 @@
        "mode": "singleton"
       },
       {
-       "serviceId": "pi.models",
+       "serviceId": "ultron.models",
        "mode": "singleton"
       },
       {
-       "serviceId": "pi.transcript",
+       "serviceId": "ultron.transcript",
        "mode": "singleton"
       }
      ]
@@ -446,7 +446,7 @@
      "id": "request-8",
      "ok": true,
      "result": {
-      "serviceId": "pi.models",
+      "serviceId": "ultron.models",
       "mode": "singleton",
       "instances": [
        {
@@ -512,7 +512,7 @@
      "id": "request-9",
      "ok": true,
      "result": {
-      "serviceId": "pi.agent-controller",
+      "serviceId": "ultron.agent-controller",
       "mode": "singleton",
       "instances": [
        {
@@ -566,7 +566,7 @@
      "id": "request-10",
      "ok": true,
      "result": {
-      "serviceId": "pi.transcript",
+      "serviceId": "ultron.transcript",
       "mode": "singleton",
       "instances": [
        {
@@ -636,7 +636,7 @@
       "attachmentId": "<id:2>"
      },
      "call": {
-      "serviceId": "pi.agent-controller",
+      "serviceId": "ultron.agent-controller",
       "member": "prompt",
       "args": [
        {
@@ -2111,7 +2111,7 @@
       "member": "subscribe",
       "args": [
        "service-1",
-       "pi.session-directory",
+       "ultron.session-directory",
        "singleton"
       ]
      }
@@ -2130,7 +2130,7 @@
       "member": "subscribe",
       "args": [
        "service-2",
-       "pi.session-management",
+       "ultron.session-management",
        "singleton"
       ]
      }
@@ -2149,7 +2149,7 @@
       "member": "subscribe",
       "args": [
        "service-3",
-       "pi.presentation-plugins",
+       "ultron.presentation-plugins",
        "singleton"
       ]
      }
@@ -2162,7 +2162,7 @@
      "id": "request-1",
      "ok": true,
      "result": {
-      "serviceId": "pi.session-directory",
+      "serviceId": "ultron.session-directory",
       "mode": "singleton",
       "instances": [
        {
@@ -2201,7 +2201,7 @@
      "id": "request-2",
      "ok": true,
      "result": {
-      "serviceId": "pi.session-management",
+      "serviceId": "ultron.session-management",
       "mode": "singleton",
       "instances": [
        {
@@ -2247,7 +2247,7 @@
      "id": "request-3",
      "ok": true,
      "result": {
-      "serviceId": "pi.presentation-plugins",
+      "serviceId": "ultron.presentation-plugins",
       "mode": "singleton",
       "instances": [
        {
@@ -2275,7 +2275,7 @@
       "serverId": "<id:0>"
      },
      "call": {
-      "serviceId": "pi.presentation-plugins",
+      "serviceId": "ultron.presentation-plugins",
       "member": "prepareSession",
       "args": [
        {
@@ -2306,7 +2306,7 @@
       "serverId": "<id:0>"
      },
      "call": {
-      "serviceId": "pi.session-management",
+      "serviceId": "ultron.session-management",
       "member": "attach",
       "args": [
        "<id:1>"
@@ -2365,7 +2365,7 @@
       "member": "subscribe",
       "args": [
        "service-4",
-       "pi.models",
+       "ultron.models",
        "singleton"
       ]
      }
@@ -2386,7 +2386,7 @@
       "member": "subscribe",
       "args": [
        "service-5",
-       "pi.agent-controller",
+       "ultron.agent-controller",
        "singleton"
       ]
      }
@@ -2407,7 +2407,7 @@
       "member": "subscribe",
       "args": [
        "service-6",
-       "pi.transcript",
+       "ultron.transcript",
        "singleton"
       ]
      }
@@ -2421,15 +2421,15 @@
      "ok": true,
      "result": [
       {
-       "serviceId": "pi.agent-controller",
+       "serviceId": "ultron.agent-controller",
        "mode": "singleton"
       },
       {
-       "serviceId": "pi.session-plugins",
+       "serviceId": "ultron.session-plugins",
        "mode": "singleton"
       },
       {
-       "serviceId": "pi.legacy-extension-commands",
+       "serviceId": "ultron.legacy-extension-commands",
        "mode": "singleton"
       },
       {
@@ -2441,11 +2441,11 @@
        "mode": "singleton"
       },
       {
-       "serviceId": "pi.models",
+       "serviceId": "ultron.models",
        "mode": "singleton"
       },
       {
-       "serviceId": "pi.transcript",
+       "serviceId": "ultron.transcript",
        "mode": "singleton"
       }
      ]
@@ -2458,7 +2458,7 @@
      "id": "request-7",
      "ok": true,
      "result": {
-      "serviceId": "pi.models",
+      "serviceId": "ultron.models",
       "mode": "singleton",
       "instances": [
        {
@@ -2524,7 +2524,7 @@
      "id": "request-8",
      "ok": true,
      "result": {
-      "serviceId": "pi.agent-controller",
+      "serviceId": "ultron.agent-controller",
       "mode": "singleton",
       "instances": [
        {
@@ -2578,7 +2578,7 @@
      "id": "request-9",
      "ok": true,
      "result": {
-      "serviceId": "pi.transcript",
+      "serviceId": "ultron.transcript",
       "mode": "singleton",
       "instances": [
        {
@@ -2714,7 +2714,7 @@
       "attachmentId": "<id:2>"
      },
      "call": {
-      "serviceId": "pi.agent-controller",
+      "serviceId": "ultron.agent-controller",
       "member": "prompt",
       "args": [
        {
@@ -4203,7 +4203,7 @@
       "member": "subscribe",
       "args": [
        "service-1",
-       "pi.session-directory",
+       "ultron.session-directory",
        "singleton"
       ]
      }
@@ -4222,7 +4222,7 @@
       "member": "subscribe",
       "args": [
        "service-2",
-       "pi.session-management",
+       "ultron.session-management",
        "singleton"
       ]
      }
@@ -4241,7 +4241,7 @@
       "member": "subscribe",
       "args": [
        "service-3",
-       "pi.presentation-plugins",
+       "ultron.presentation-plugins",
        "singleton"
       ]
      }
@@ -4254,7 +4254,7 @@
      "id": "request-1",
      "ok": true,
      "result": {
-      "serviceId": "pi.session-directory",
+      "serviceId": "ultron.session-directory",
       "mode": "singleton",
       "instances": [
        {
@@ -4286,7 +4286,7 @@
      "id": "request-2",
      "ok": true,
      "result": {
-      "serviceId": "pi.session-management",
+      "serviceId": "ultron.session-management",
       "mode": "singleton",
       "instances": [
        {
@@ -4332,7 +4332,7 @@
      "id": "request-3",
      "ok": true,
      "result": {
-      "serviceId": "pi.presentation-plugins",
+      "serviceId": "ultron.presentation-plugins",
       "mode": "singleton",
       "instances": [
        {
@@ -4360,7 +4360,7 @@
       "serverId": "<id:0>"
      },
      "call": {
-      "serviceId": "pi.session-management",
+      "serviceId": "ultron.session-management",
       "member": "create",
       "args": [
        {}
@@ -4429,7 +4429,7 @@
       "serverId": "<id:0>"
      },
      "call": {
-      "serviceId": "pi.presentation-plugins",
+      "serviceId": "ultron.presentation-plugins",
       "member": "prepareSession",
       "args": [
        {
@@ -4460,7 +4460,7 @@
       "serverId": "<id:0>"
      },
      "call": {
-      "serviceId": "pi.session-management",
+      "serviceId": "ultron.session-management",
       "member": "attach",
       "args": [
        "<id:1>"
@@ -4519,7 +4519,7 @@
       "member": "subscribe",
       "args": [
        "service-4",
-       "pi.models",
+       "ultron.models",
        "singleton"
       ]
      }
@@ -4540,7 +4540,7 @@
       "member": "subscribe",
       "args": [
        "service-5",
-       "pi.agent-controller",
+       "ultron.agent-controller",
        "singleton"
       ]
      }
@@ -4561,7 +4561,7 @@
       "member": "subscribe",
       "args": [
        "service-6",
-       "pi.transcript",
+       "ultron.transcript",
        "singleton"
       ]
      }
@@ -4575,15 +4575,15 @@
      "ok": true,
      "result": [
       {
-       "serviceId": "pi.agent-controller",
+       "serviceId": "ultron.agent-controller",
        "mode": "singleton"
       },
       {
-       "serviceId": "pi.session-plugins",
+       "serviceId": "ultron.session-plugins",
        "mode": "singleton"
       },
       {
-       "serviceId": "pi.legacy-extension-commands",
+       "serviceId": "ultron.legacy-extension-commands",
        "mode": "singleton"
       },
       {
@@ -4595,11 +4595,11 @@
        "mode": "singleton"
       },
       {
-       "serviceId": "pi.models",
+       "serviceId": "ultron.models",
        "mode": "singleton"
       },
       {
-       "serviceId": "pi.transcript",
+       "serviceId": "ultron.transcript",
        "mode": "singleton"
       }
      ]
@@ -4612,7 +4612,7 @@
      "id": "request-8",
      "ok": true,
      "result": {
-      "serviceId": "pi.models",
+      "serviceId": "ultron.models",
       "mode": "singleton",
       "instances": [
        {
@@ -4678,7 +4678,7 @@
      "id": "request-9",
      "ok": true,
      "result": {
-      "serviceId": "pi.agent-controller",
+      "serviceId": "ultron.agent-controller",
       "mode": "singleton",
       "instances": [
        {
@@ -4732,7 +4732,7 @@
      "id": "request-10",
      "ok": true,
      "result": {
-      "serviceId": "pi.transcript",
+      "serviceId": "ultron.transcript",
       "mode": "singleton",
       "instances": [
        {
@@ -4802,7 +4802,7 @@
       "attachmentId": "<id:2>"
      },
      "call": {
-      "serviceId": "pi.agent-controller",
+      "serviceId": "ultron.agent-controller",
       "member": "prompt",
       "args": [
        {
@@ -6075,7 +6075,7 @@
       "serverId": "<id:0>"
      },
      "call": {
-      "serviceId": "pi.session-management",
+      "serviceId": "ultron.session-management",
       "member": "remove",
       "args": [
        "<id:1>"
@@ -6265,7 +6265,7 @@
       "member": "subscribe",
       "args": [
        "service-1",
-       "pi.session-directory",
+       "ultron.session-directory",
        "singleton"
       ]
      }
@@ -6284,7 +6284,7 @@
       "member": "subscribe",
       "args": [
        "service-2",
-       "pi.session-management",
+       "ultron.session-management",
        "singleton"
       ]
      }
@@ -6303,7 +6303,7 @@
       "member": "subscribe",
       "args": [
        "service-3",
-       "pi.presentation-plugins",
+       "ultron.presentation-plugins",
        "singleton"
       ]
      }
@@ -6316,7 +6316,7 @@
      "id": "request-1",
      "ok": true,
      "result": {
-      "serviceId": "pi.session-directory",
+      "serviceId": "ultron.session-directory",
       "mode": "singleton",
       "instances": [
        {
@@ -6355,7 +6355,7 @@
      "id": "request-2",
      "ok": true,
      "result": {
-      "serviceId": "pi.session-management",
+      "serviceId": "ultron.session-management",
       "mode": "singleton",
       "instances": [
        {
@@ -6401,7 +6401,7 @@
      "id": "request-3",
      "ok": true,
      "result": {
-      "serviceId": "pi.presentation-plugins",
+      "serviceId": "ultron.presentation-plugins",
       "mode": "singleton",
       "instances": [
        {

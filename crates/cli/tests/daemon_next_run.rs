@@ -32,7 +32,7 @@ fn cli_daemon_next_run_waits_for_the_next_prompt_and_queue_members_answer_like_t
     let created = connection
         .call(
             connection.server_target(),
-            "pi.session-management",
+            "ultron.session-management",
             "create",
             json!([{}]),
         )
@@ -42,7 +42,7 @@ fn cli_daemon_next_run_waits_for_the_next_prompt_and_queue_members_answer_like_t
     connection
         .call(
             connection.server_target(),
-            "pi.session-management",
+            "ultron.session-management",
             "attach",
             json!([id]),
         )
@@ -53,7 +53,7 @@ fn cli_daemon_next_run_waits_for_the_next_prompt_and_queue_members_answer_like_t
     let session = connection.session_target().unwrap();
     let controller = |member: &str, request: Value| {
         connection
-            .call(session.clone(), "pi.agent-controller", member, json!([request]))
+            .call(session.clone(), "ultron.agent-controller", member, json!([request]))
             .unwrap()
             .unwrap()
     };
