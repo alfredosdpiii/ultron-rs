@@ -35,11 +35,14 @@ for q in ["opus", "gpt", "gemini"]:  # example family queries
     ms = await rlm.find_models(q, limit=1)
     if ms:
         runners.append(f"{ms[0]['provider']}/{ms[0]['id']}")
+while 0 < len(runners) < 2:  # an arena of one is not an arena: repeat what resolved
+    runners.append(runners[0])
 runners = runners or [None]  # None: the settings default
 state["arena_runners"] = runners
 ```
 
-   Say which families were not available.
+   Drop a family whose query resolves to nothing, and say which. If that leaves fewer than two runners, repeat a model
+   that resolved, or run on the settings default when none did, until there are two, and say which model repeated.
 4. Each candidate gets its own output: `worktree=True` gives it a private branch of your tree as it is now, per
    the separate-before-serializing-shared-state principle (`../principle-separate-before-serializing-shared-state/SKILL.md`). Outside Git, use `worktree="auto"` and give each brief its own
    directory (`/tmp/arena-<slug>/candidate-<n>/`).
@@ -78,27 +81,36 @@ If a candidate produces no output, proceed with N-1 and note the dropout.
 
 ## Phase C: Cross-judge
 
-After every candidate finished, one judge frame on a model family different from yours (and preferably from the
-runners' families too) sees the rubric and the diffs by label, scores each criterion, and recommends a base. It is a
-frame, not a subagent: it only judges the text it is given.
+After every candidate finished, pick the judge model from a family other than yours and the runners': try families
+in order and take the first that resolves. The judge sees the rubric and the diffs by label, scores each criterion,
+and recommends a base. It is a frame, not a subagent: it only judges the text it is given. If no model from another
+family resolves, skip the judge: pick the base alone in Phase D and say so.
 
 ```python
-judge_ms = await rlm.find_models("gpt", limit=1)  # a family other than yours
-judge_model = f"{judge_ms[0]['provider']}/{judge_ms[0]['id']}" if judge_ms else None
 RUBRIC = ["...", "..."]
-verdict = await rlm.infer(
-    "Score each candidate against every rubric criterion (1-5, one-line reason each), then recommend the base: the "
-    "candidate a future maintainer can extend most easily without breaking invariants. Name what each other "
-    "candidate does better than the base.",
-    context=["Rubric:\n" + "\n".join(f"- {c}" for c in RUBRIC)]
-            + [f"## {c['label']}\nRationale: {c['rationale']}\n{c['diff']}" for c in cands],
-    contract={"type": "object", "properties": {
-        "scores": {"type": "object"}, "base": {"type": "string"}, "why": {"type": "string"},
-        "graft_candidates": {"type": "array", "items": {"type": "string"}}},
-        "required": ["scores", "base", "why", "graft_candidates"]},
-    model=judge_model,
-)
-print(verdict or "judge incomplete")
+judge_model = None
+for q in ["gpt", "grok", "gemini"]:  # families other than yours and the runners'
+    ms = await rlm.find_models(q, limit=1)
+    if ms:
+        judge_model = f"{ms[0]['provider']}/{ms[0]['id']}"
+        break
+verdict = None
+if judge_model:
+    verdict = await rlm.infer(
+        "Score each candidate against every rubric criterion (1-5, one-line reason each), then recommend the base: the "
+        "candidate a future maintainer can extend most easily without breaking invariants. Name what each other "
+        "candidate does better than the base.",
+        context=["Rubric:\n" + "\n".join(f"- {c}" for c in RUBRIC)]
+                + [f"## {c['label']}\nRationale: {c['rationale']}\n{c['diff']}" for c in cands],
+        contract={"type": "object", "properties": {
+            "scores": {"type": "object"}, "base": {"type": "string"}, "why": {"type": "string"},
+            "graft_candidates": {"type": "array", "items": {"type": "string"}}},
+            "required": ["scores", "base", "why", "graft_candidates"]},
+        model=judge_model,
+    )
+    print(verdict or "judge incomplete")
+else:
+    print("no judge: no other family resolved")
 ```
 
 For large diffs, `h = await rlm.load(text=c["diff"])` and pass views instead of whole strings.
@@ -108,7 +120,7 @@ For large diffs, `h = await rlm.load(text=c["diff"])` and pass views instead of 
 Read every candidate end to end before picking: its diff and its rationale (both in `cands`; the files themselves
 under `c["worktree"]["path"]`). Do not trust the judge or the candidates' self-reports alone; run the candidates' tests
 in their worktrees where it matters (`await bash(f"cd {c['worktree']['path']} && npm test")`). Score each against the
-rubric criterion by criterion, not on holistic feel, and compare with the judge. Agreement on the base confirms the
+rubric criterion by criterion, not on holistic feel, and compare with the judge when Phase C ran one. Agreement on the base confirms the
 pick. Disagreement means one of you is biased or the rubric was ambiguous: read both rationales before deciding.
 
 Pick the base a future maintainer can extend most easily without breaking invariants. When two feel tied, prefer the
@@ -149,5 +161,5 @@ graft (back to Phase E). Do not paper over it.
 ## Outputs
 
 One synthesized artifact, uncommitted in your tree, with a short synthesis note alongside naming the base and why,
-the judge's verdict, each graft with its source candidate, what was rejected and why, any convergence or dropouts, and
+the judge's verdict or that Phase C skipped the judge, each graft with its source candidate, what was rejected and why, any convergence or dropouts, and
 the verification result.

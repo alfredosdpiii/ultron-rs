@@ -56,6 +56,7 @@ independent work. Rebase on trunk before substantial stack work.
 Babysit only when the user asks, once the stack exists (`playbooks/babysit.md`); a babysit per new PR stalls the build
 and spends checks on commits later waves restart. Push back when feedback drifts from intent.
 
-A child that opens a PR runs `../interrogate/SKILL.md` when the design is contested, the pre-PR steps above, posts the
-URL in its `rlm.finish` outputs, and returns without babysitting, unless it is an Orchestrate PR owner whose brief
-assigns the babysit loop (`playbooks/orchestrate.md`).
+A child that opens a PR runs the pre-PR steps above and posts the URL in its `rlm.finish` outputs, then returns
+without babysitting, unless it is an Orchestrate owner whose brief assigns the babysit loop
+(`playbooks/orchestrate.md`). That owner starts the loop after its code-ready report, reports merge-ready, and is
+exempt from the rules here and in `playbooks/babysit.md` that hold babysitting until a whole stack is built.

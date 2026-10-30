@@ -23,7 +23,7 @@ in its own REPL until `goal.complete` passes. Only the user can set or change a 
    (`the sequence-verifiable-units principle (`../principle-sequence-verifiable-units/SKILL.md`)`). Keep what you tried in `state["goal"]`. Ten identical failing checks pause
    the goal, so change approach when a check keeps failing the same way. Independent attempts can run as children
    (`worktree=True`), merging the one that works.
-4. Mid-run discoveries are yours: broken skills, related bugs, flaky verifiers, tooling failures, fixable drift. Fix
+4. Mid-run discoveries that support the goal are yours: broken skills, related bugs, flaky verifiers, tooling failures, fixable drift. Fix
    them in their own change and return to the predicate. Do not park reversible work for the human. Surface only
    irreversible actions, product or preference calls no experiment settles, or a real dead end.
 5. Checkpoint every iteration via `../show-me-your-work/SKILL.md`: a row for what changed and whether the predicate

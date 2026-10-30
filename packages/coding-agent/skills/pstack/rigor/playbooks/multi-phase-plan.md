@@ -123,16 +123,20 @@ Tests alone are not sufficient verification. A PR is verified only when its unit
 - [ ] Run the repo's lint and typecheck before the PR-facing push. Push with hooks on.
 - [ ] Strip slop before each commit and run `../no-comments/SKILL.md` before review.
 - [ ] Triage every review-bot and security-review comment per `playbooks/babysit.md`.
-- [ ] Rebase onto current trunk before the code-ready report. Keep that merge base in fix rounds.
+- [ ] Rebase onto current trunk before the code-ready report. Keep that merge base in fix rounds. Rebase again only
+  at merge prep, on a `git merge-tree` conflict with trunk, on a CI failure that comes from a change on trunk, or
+  when a known concurrent change to the same files lands.
 
 ### Verdict and merge, for every PR
 
 - [ ] A full swarm runs once, at the code-ready head; another only for new behavior, a redesign or a large new diff. A
-  rebase, a conflict resolution or a minor fix gets a single verifier at the new head. A full swarm is one gates lane,
-  the ten live lanes, the perf lane, and two or more audit lanes with their own focus that distrust the PR body.
-- [ ] Clean only when every lane passes. Findings go back to the owner. A new head gets a fresh verdict unless the
-  patch-id rule in `playbooks/shipping.md` keeps it.
-- [ ] <The merge or append rule of the delivery shape.>
+  rebase, a conflict resolution or a minor fix gets a single verifier at the new head, and a wording-only change gets
+  none. A full swarm is one gates lane, the ten live lanes, the perf lane, and two or more audit lanes with their own
+  focus that distrust the PR body.
+- [ ] Judge every finding by the execution playbook's blocking rule. The verdict is clean when none blocks. A failure
+  on trunk behavior in a lane marked `Regression lane against trunk.` is recorded against trunk and does not block
+  the PR. A new head gets a fresh verdict unless the patch-id rule in `playbooks/shipping.md` keeps it.
+- [ ] <The merge or handoff rule of the delivery shape.>
 
 ### Boot recipe, for every live lane
 
@@ -183,7 +187,7 @@ Tests alone are not sufficient verification. A PR is verified only when its unit
 - [ ] Clean verdict at the exact head SHA.
 - [ ] Review-bot triage done.
 - [ ] Rebased onto current trunk after the verdict, patch-id unchanged.
-- [ ] <The owner squash-merges its PR, or the root appends it to the stack and the operator lands it.>
+- [ ] <The owner squash-merges its PR, or in the Stack shape hands it stacked on its parent to the operator to land.>
 
 ## Close the program
 

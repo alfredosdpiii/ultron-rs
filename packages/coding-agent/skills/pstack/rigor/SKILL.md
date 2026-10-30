@@ -26,6 +26,11 @@ You are the lead. You plan, brief, review and verify. Children write most of the
 The principles below ground every trigger. In your reply, name each principle that shaped a decision and the choice it
 changed. Cite only principles whose leaf you read this session.
 
+- Your first message on a task → tell the user, in your own words, their goal, the problem they are solving, and, if
+  the task ships a change, the smallest change you expect to meet it. Don't wait for confirmation. If the evidence
+  rules out the change the user asked for, show it and stop. Restate the user's goal in each child's brief, open each
+  PR's `## Why` with it, and open each final report with it, your final reply included, except after a fully specified
+  one-line edit.
 - Nontrivial change, architecture decision, or "are we sure?" → `../how/SKILL.md`.
 - About to ask the user "which approach", "how should I", "what should this do" → classify it first. If the answer is
   a fact you could observe by running something (behavior, timing, layout, output, perf, whether an eval separates),
@@ -121,7 +126,7 @@ entry gives its path.
 - **Sequence Work into Verifiable Units** (`../principle-sequence-verifiable-units/SKILL.md`). Multi-step work and
   commit or PR stacking. Small units, each ending in a check.
 - **Test Behavior, Not Implementation.** Any test. Fails when observable behavior breaks, passes through refactors.
-- **Explain the Number.** A measured number. Find what limits it; rule out that it measured something else.
+- **Explain the Number.** Before you measure, and before you trust or act on a measured number. Find what limits it; rule out that it measured something else.
 
 **Delegation**
 - **Guard the Context Window.** Large outputs and files. Narrow with code, keep bulk in variables, print summaries.
@@ -179,7 +184,9 @@ specified; trivial mechanical edits go to `code`.
 (`minimal`, `low`, `medium`, `high`, `xhigh`, `max`). Start from `xhigh`. Raise it to `max` for the hardest or subtlest
 work, lower it one step for judgment and review, and two or more steps for routine work such as a mechanical edit or a
 classification frame. Change only the level, never the model a role names, so a diverse panel stays diverse. If a call
-rejects the level, drop `thinking=` (the settings default) and say so.
+rejects the level, drop `thinking=` (the settings default) and say so. A call that rejects a role's model never
+gets it again: fall through the role's remaining `find_models` queries, and omit `model=` so the child runs on the
+settings default when none resolves. Say so.
 
 The session that loads rigor runs the playbook. Never spawn a child to run the playbook itself.
 
