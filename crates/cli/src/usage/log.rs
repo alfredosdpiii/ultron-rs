@@ -51,6 +51,16 @@ pub struct LogEntry {
     pub is_error: bool,
     pub redactions: f64,
     pub nudge: Option<&'static str>,
+    /// An automatic memory recall (an `ultron.memory` custom message).
+    pub recall: Option<Recall>,
+}
+
+/// What one automatic recall put in front of the model (session-core `auto_memory::recall_message`).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Recall {
+    pub memories: usize,
+    pub brief: bool,
+    pub stale: usize,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -295,6 +305,7 @@ fn digest_entry(write: &Map<String, Value>) -> Option<LogEntry> {
         is_error: false,
         redactions: 0.0,
         nudge: None,
+        recall: None,
     };
     let kind = write.get("type").and_then(Value::as_str);
     if let Some(k) = kind.and_then(|k| match k {
@@ -343,7 +354,18 @@ fn digest_entry(write: &Map<String, Value>) -> Option<LogEntry> {
             entry.kind = EntryKind::User;
             entry.nudge = classify_nudge(&text_of(message.get("content")));
         }
-        Some("custom") => entry.kind = EntryKind::Custom,
+        Some("custom") => {
+            entry.kind = EntryKind::Custom;
+            if message.get("customType").and_then(Value::as_str) == Some(compaction::RECALLED_MEMORY_TYPE) {
+                let details = record(message.get("details"));
+                let field = |key: &str| details.and_then(|d| d.get(key));
+                entry.recall = Some(Recall {
+                    memories: field("ids").and_then(Value::as_array).map_or(0, Vec::len),
+                    brief: field("digest").is_some_and(|d| !d.is_null()),
+                    stale: field("stale").and_then(Value::as_u64).unwrap_or(0) as usize,
+                });
+            }
+        }
         _ => {}
     }
     Some(entry)

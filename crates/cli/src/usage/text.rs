@@ -684,6 +684,24 @@ pub fn render_session_report(report: &Value, options: &TextOptions) -> Vec<Strin
             .join(" · ");
         row(&mut lines, "  Store", &text);
     }
+    let recall = &report["memory"]["recall"];
+    if recall.is_object() {
+        let count = |key: &str| recall[key].as_f64().unwrap_or(0.0);
+        let memories = count("memories");
+        let mut text = format!(
+            "{} · {} {}",
+            plural(count("messages"), "automatic recall"),
+            number(memories),
+            if memories == 1.0 { "memory" } else { "memories" }
+        );
+        if count("briefs") > 0.0 {
+            text.push_str(&format!(" · {}", plural(count("briefs"), "project brief")));
+        }
+        if count("stale") > 0.0 {
+            text.push_str(&format!(" · {} stale", number(count("stale"))));
+        }
+        row(&mut lines, "  Recall", &text);
+    }
     lines
 }
 

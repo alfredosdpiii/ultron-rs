@@ -233,6 +233,8 @@ mod tui_login_providers;
 mod update_models;
 #[path = "usage_durable_records.rs"]
 mod usage_durable_records;
+#[path = "usage_memory_recall.rs"]
+mod usage_memory_recall;
 #[path = "usage_subscription_providers.rs"]
 mod usage_subscription_providers;
 #[path = "user_keybindings.rs"]

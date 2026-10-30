@@ -1028,6 +1028,17 @@ pub fn build_session_report_with(log: &SessionLog, subscription_providers: &[Str
         .and_then(|m| m.get("operations"))
         .and_then(Value::as_array)
         .filter(|ops| !ops.is_empty());
+    // Automatic recalls (session-core auto_memory): not in the journal, which keeps the model's own `memory.*`
+    // calls, but on the branch as `ultron.memory` messages.
+    let recalls: Vec<_> = log.entries.iter().filter_map(|entry| entry.recall).collect();
+    let recall = (!recalls.is_empty()).then(|| {
+        json!({
+            "messages": recalls.len(),
+            "memories": recalls.iter().map(|r| r.memories).sum::<usize>(),
+            "briefs": recalls.iter().filter(|r| r.brief).count(),
+            "stale": recalls.iter().map(|r| r.stale).sum::<usize>(),
+        })
+    });
     let operations = match memory {
         Some(ops) => {
             let mut counted: IndexMap<String, f64> = IndexMap::new();
@@ -1045,7 +1056,11 @@ pub fn build_session_report_with(log: &SessionLog, subscription_providers: &[Str
         None => {
             unrecorded.insert(
                 "memory.operations".into(),
-                "no memory operation recorded: Hindsight not configured, or memory unused".into(),
+                if recall.is_some() {
+                    "the model made no memory call; automatic recall is below".into()
+                } else {
+                    "no memory operation recorded: Hindsight not configured, or memory unused".into()
+                },
             );
             Value::Null
         }
@@ -1205,7 +1220,10 @@ pub fn build_session_report_with(log: &SessionLog, subscription_providers: &[Str
                 _ => Value::Null,
             },
         },
-        "memory": {"operations": operations},
+        "memory": match recall {
+            Some(recall) => json!({"operations": operations, "recall": recall}),
+            None => json!({"operations": operations}),
+        },
         "unrecorded": unrecorded,
     })
 }
