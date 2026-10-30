@@ -192,7 +192,15 @@ pub struct SocketTransport {
 pub fn connect(path: &std::path::Path) -> std::io::Result<UnixStream> {
     use rustix::net::sockopt::{Timeout, set_socket_timeout};
     use rustix::net::{AddressFamily, SocketAddrUnix, SocketFlags, SocketType};
+    // apple's socket() has no SOCK_CLOEXEC, so it is set with fcntl there (nothing forks between the two calls)
+    #[cfg(not(target_vendor = "apple"))]
     let fd = rustix::net::socket_with(AddressFamily::UNIX, SocketType::STREAM, SocketFlags::CLOEXEC, None)?;
+    #[cfg(target_vendor = "apple")]
+    let fd = {
+        let fd = rustix::net::socket_with(AddressFamily::UNIX, SocketType::STREAM, SocketFlags::empty(), None)?;
+        rustix::io::fcntl_setfd(&fd, rustix::io::FdFlags::CLOEXEC)?;
+        fd
+    };
     set_socket_timeout(&fd, Timeout::Send, Some(IO_TIMEOUT))?;
     set_socket_timeout(&fd, Timeout::Recv, Some(IO_TIMEOUT))?;
     rustix::net::connect(&fd, &SocketAddrUnix::new(path)?)?;

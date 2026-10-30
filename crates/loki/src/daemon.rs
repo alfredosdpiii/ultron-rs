@@ -293,10 +293,14 @@ fn answer(mut connection: UnixStream, engine: &str) -> bool {
     let _ = connection.set_nonblocking(false);
     let _ = connection.set_read_timeout(Some(REQUEST));
     let _ = connection.set_write_timeout(Some(REQUEST));
-    // Peers of another user are ignored.
+    // Peers of another user are ignored. Only linux can ask (SO_PEERCRED); elsewhere the socket is 0600 in
+    // a 0700 directory, so whoever connects far enough to write to it is the user.
+    #[cfg(target_os = "linux")]
     let same_user = rustix::net::sockopt::socket_peercred(&connection)
         .map(|credentials| credentials.uid == rustix::process::getuid())
         .unwrap_or(true);
+    #[cfg(not(target_os = "linux"))]
+    let same_user = true;
     if !same_user {
         return true;
     }

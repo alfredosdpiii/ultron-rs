@@ -1,5 +1,6 @@
 //! Signal handling without `unsafe`: SIGINT, SIGTERM and SIGHUP are blocked on the main thread before any other
-//! thread starts (threads inherit the mask) and read from a `signalfd` on a thread of their own. std's process
+//! thread starts (threads inherit the mask) and read on a thread of their own: from a `signalfd` on linux, from the blocked set with `sigwait` elsewhere
+//! (apple has no `signalfd`). std's process
 //! spawning resets the mask in children, so kernels, shells and re-launched internal processes see default
 //! signal handling.
 //!
@@ -8,6 +9,7 @@
 //! handler the process dies of the signal as it would have unblocked.
 
 use nix::sys::signal::{SigSet, Signal, raise};
+#[cfg(target_os = "linux")]
 use nix::sys::signalfd::{SfdFlags, SignalFd};
 use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
@@ -41,21 +43,26 @@ pub fn install() -> Result<(), String> {
     }
     let mask = handled();
     mask.thread_block().map_err(|e| e.to_string())?;
+    #[cfg(target_os = "linux")]
     let fd = SignalFd::with_flags(&mask, SfdFlags::SFD_CLOEXEC).map_err(|e| e.to_string())?;
     let _ = STARTED.set(());
     std::thread::Builder::new()
         .name("signals".into())
         .spawn(move || {
             loop {
-                let info = match fd.read_signal() {
-                    Ok(Some(info)) => {
-                        RECEIVED.store(info.ssi_signo as i32, Ordering::SeqCst);
-                        info
-                    }
+                #[cfg(target_os = "linux")]
+                let number = match fd.read_signal() {
+                    Ok(Some(info)) => info.ssi_signo as i32,
                     Ok(None) => continue,
                     Err(_) => return,
                 };
-                let Ok(signal) = Signal::try_from(info.ssi_signo as i32) else {
+                #[cfg(not(target_os = "linux"))]
+                let number = match mask.wait() {
+                    Ok(signal) => signal as i32,
+                    Err(_) => return,
+                };
+                RECEIVED.store(number, Ordering::SeqCst);
+                let Ok(signal) = Signal::try_from(number) else {
                     continue;
                 };
                 dispatch(signal);
@@ -85,7 +92,7 @@ fn die(signal: Signal) -> ! {
 }
 
 /// A handled signal this process received: one already read, or one still pending (`ShdPnd`/`SigPnd` of
-/// /proc/self/status). Lets a mode tell input that ended because of a signal (the terminal went away) from input
+/// /proc/self/status, which only linux has). Lets a mode tell input that ended because of a signal (the terminal went away) from input
 /// that ended on its own, whichever its handler sees first.
 pub fn received() -> Option<Signal> {
     let read = || Signal::try_from(RECEIVED.load(Ordering::SeqCst)).ok();
