@@ -121,6 +121,10 @@ pub trait CellObserver: Send + Sync {
     }
     /// The files a cell on `lane` (working in `cwd`) changed, checked writes included; lines for the model.
     fn cell_changed(&self, changes: &CellChanges, cwd: &Path, lane: &str) -> Vec<String>;
+    /// A shell command a cell on `lane` is about to run; lines for the model, with that cell's result.
+    fn before_shell(&self, _command: &str, _lane: &str) -> Vec<String> {
+        Vec::new()
+    }
 }
 
 /// A picture of a working directory: relative path (with `/`) to a metadata signature (workspace-snapshot.ts).
@@ -714,6 +718,21 @@ impl FileHooks {
     /// at once. `Some(reasons)` blocks it. Notes (a guard that could not check, advise-only refusals) are not shown
     /// for shell commands.
     pub fn before_shell_on(&self, lane: &str, command: &str) -> Option<String> {
+        let observers: Vec<Arc<dyn CellObserver>> = lock(&self.inner.observers)
+            .iter()
+            .filter(|observer| observer.enabled())
+            .cloned()
+            .collect();
+        let found: Vec<String> = observers
+            .iter()
+            .flat_map(|observer| observer.before_shell(command, lane))
+            .collect();
+        if !found.is_empty() {
+            lock(&self.inner.pending)
+                .entry(lane.to_string())
+                .or_default()
+                .extend(found);
+        }
         let guards: Vec<Registered> = self
             .guards()
             .into_iter()

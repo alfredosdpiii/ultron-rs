@@ -21,6 +21,9 @@
 //! none when it is `false` or empty). A rule whose skill is always on (`alwaysSkills`) is skipped: its text is in the
 //! prompt already. The observer works only while engineering mode is on, read from the settings at each cell, so
 //! `/engineering off` stops it at once.
+//!
+//! Two skills follow the shape of the work, not a path: [`MANY_FILES_SKILL`] once a lane has changed [`MANY_FILES`]
+//! files, and [`SHIP_SKILL`] when a lane's shell command commits, pushes or opens a pull request.
 
 use host::file_hooks::{CellChanges, CellObserver, inside};
 use kernel_apis::memory_records::Glob;
@@ -98,6 +101,21 @@ pub const DEFAULT_RULES: &[(&str, &str, &[&str])] = &[
     ),
 ];
 
+/// Edited files on one lane from which [`MANY_FILES_SKILL`] applies.
+pub const MANY_FILES: usize = 3;
+/// The playbook for a change across several files.
+pub const MANY_FILES_SKILL: &str = "rigor";
+/// The check before a commit, push or pull request.
+pub const SHIP_SKILL: &str = "blast-radius";
+
+/// Whether `command` commits, pushes or opens a pull request.
+fn ships(command: &str) -> bool {
+    static SHIP: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
+        regex::Regex::new(r"\bgit\s+(-C\s+\S+\s+)?(commit|push)\b|\bgh\s+pr\s+create\b").expect("valid")
+    });
+    SHIP.is_match(command)
+}
+
 /// One rule: a change to a file matching `paths` brings `skill`.
 pub struct Rule {
     pub skill: String,
@@ -156,6 +174,8 @@ pub struct SituationalSkills {
     engineering: Box<Engineering>,
     /// (lane, skill) already given.
     given: Mutex<HashSet<(String, String)>>,
+    /// (lane, file) changed so far, for [`MANY_FILES`].
+    changed: Mutex<HashSet<(String, String)>>,
 }
 
 impl SituationalSkills {
@@ -165,19 +185,48 @@ impl SituationalSkills {
             resolve,
             engineering,
             given: Mutex::new(HashSet::new()),
+            changed: Mutex::new(HashSet::new()),
         }
+    }
+
+    /// `skill` for `lane` once, introduced by `head`; whole when short, named with its file when long.
+    fn give(&self, lane: &str, skill: &str, head: String) -> Option<String> {
+        let mut given = self.given.lock().unwrap_or_else(PoisonError::into_inner);
+        if given.contains(&(lane.to_string(), skill.to_string())) {
+            return None;
+        }
+        // A skill that is not loaded (renamed, `--no-skills`) is given to nobody, and asked for again next time.
+        let (file, text) = (self.resolve)(skill)?;
+        given.insert((lane.to_string(), skill.to_string()));
+        Some(if text.chars().count() > MAX_TEXT_CHARS {
+            format!("{head} Read {file} and follow it.")
+        } else {
+            format!("{head}\n{}", text.trim())
+        })
+    }
+
+    /// [`MANY_FILES_SKILL`] once `lane` has changed [`MANY_FILES`] files; it does not count toward [`PER_CELL`].
+    pub fn many_files(&self, lane: &str, paths: &[String]) -> Option<String> {
+        let count = {
+            let mut changed = self.changed.lock().unwrap_or_else(PoisonError::into_inner);
+            changed.extend(paths.iter().map(|path| (lane.to_string(), path.clone())));
+            changed.iter().filter(|(l, _)| l == lane).count()
+        };
+        (count >= MANY_FILES).then(|| {
+            self.give(
+                lane,
+                MANY_FILES_SKILL,
+                format!("[skill] You changed {count} files: {MANY_FILES_SKILL} applies from here on."),
+            )
+        })?
     }
 
     /// The text for a cell on `lane` that changed `paths` (relative to the session directory, with `/`).
     pub fn text_for(&self, lane: &str, paths: &[String]) -> Vec<String> {
-        let mut given = self.given.lock().unwrap_or_else(PoisonError::into_inner);
         let mut out = Vec::new();
         for rule in &self.rules {
             if out.len() == PER_CELL {
                 break;
-            }
-            if given.contains(&(lane.to_string(), rule.skill.clone())) {
-                continue;
             }
             let Some(path) = paths
                 .iter()
@@ -185,21 +234,13 @@ impl SituationalSkills {
             else {
                 continue;
             };
-            // A skill that is not loaded (renamed, `--no-skills`) is given to nobody, and asked for again next time.
-            let Some((file, text)) = (self.resolve)(&rule.skill) else {
-                continue;
-            };
-            given.insert((lane.to_string(), rule.skill.clone()));
             let head = format!(
                 "[skill] {} ({path}): {} applies from here on.",
                 rule.situation, rule.skill
             );
-            out.push(if text.chars().count() > MAX_TEXT_CHARS {
-                format!("{head} Read {file} and follow it.")
-            } else {
-                format!("{head}\n{}", text.trim())
-            });
+            out.extend(self.give(lane, &rule.skill, head));
         }
+        out.extend(self.many_files(lane, paths));
         out
     }
 }
@@ -224,6 +265,14 @@ impl CellObserver for SituationalSkills {
             .map(|relative| relative.replace('\\', "/"))
             .collect();
         self.text_for(lane, &paths)
+    }
+
+    fn before_shell(&self, command: &str, lane: &str) -> Vec<String> {
+        if !ships(command) {
+            return Vec::new();
+        }
+        let head = format!("[skill] You commit or push: {SHIP_SKILL} applies before the change ships.");
+        self.give(lane, SHIP_SKILL, head).into_iter().collect()
     }
 }
 

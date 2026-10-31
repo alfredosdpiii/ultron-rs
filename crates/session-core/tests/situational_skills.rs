@@ -85,9 +85,10 @@ fn session_core_situational_skills_give_each_skill_once_per_lane() {
         [
             "[skill] You changed a test file (tests/test_app.py): principle-test-behavior-not-implementation applies \
           from here on.\n# principle-test-behavior-not-implementation\n\nThe text of \
-          principle-test-behavior-not-implementation."
+          principle-test-behavior-not-implementation.",
+            "[skill] You changed 3 files: rigor applies from here on.\n# rigor\n\nThe text of rigor."
         ],
-        "one skill per cell, the first matching rule's"
+        "one path skill per cell, the first matching rule's, and the playbook at the third file"
     );
     let next = skills.cell_changed(&changes(&["tests/test_other.py", "docs/guide.md"]), cwd, "main");
     assert_eq!(next.len(), 1);
@@ -104,6 +105,43 @@ fn session_core_situational_skills_give_each_skill_once_per_lane() {
     assert_eq!(child.len(), 1, "another lane gets it too");
     on.store(false, Ordering::SeqCst);
     assert!(!skills.enabled(), "off with engineering mode");
+}
+
+#[test]
+fn session_core_situational_skills_bring_the_playbook_at_the_third_file_and_the_check_before_shipping() {
+    let skills = observer(json!({}), Arc::new(AtomicBool::new(true)));
+    let cwd = Path::new("/repo");
+    let rigor = |given: &[String]| given.iter().any(|line| line.contains("rigor applies"));
+    assert!(!rigor(&skills.cell_changed(&changes(&["a.txt", "b.txt"]), cwd, "main")));
+    assert!(
+        !rigor(&skills.cell_changed(&changes(&["a.txt"]), cwd, "main")),
+        "the same file counts once"
+    );
+    assert!(
+        !rigor(&skills.cell_changed(&changes(&["c.txt"]), cwd, "other")),
+        "files count per lane"
+    );
+    assert!(rigor(&skills.cell_changed(&changes(&["c.txt"]), cwd, "main")));
+    assert!(!rigor(&skills.cell_changed(&changes(&["d.txt"]), cwd, "main")), "once");
+
+    assert!(skills.before_shell("git status && git diff", "main").is_empty());
+    assert!(skills.before_shell("cargo test", "main").is_empty());
+    for command in [
+        "git commit -qm x",
+        "git -C ../wt push origin main",
+        "gh pr create --fill",
+    ] {
+        let fresh = observer(json!({}), Arc::new(AtomicBool::new(true)));
+        assert_eq!(
+            fresh.before_shell(command, "main"),
+            [
+                "[skill] You commit or push: blast-radius applies before the change ships.\n# blast-radius\n\n\
+              The text of blast-radius."
+            ],
+            "{command}"
+        );
+        assert!(fresh.before_shell(command, "main").is_empty(), "once: {command}");
+    }
 }
 
 #[test]
