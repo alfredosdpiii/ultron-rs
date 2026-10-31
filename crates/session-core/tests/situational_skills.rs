@@ -142,6 +142,34 @@ fn session_core_situational_skills_bring_the_playbook_at_the_third_file_and_the_
 }
 
 #[test]
+fn session_core_situational_skills_bring_the_playbooks_section_of_rigor() {
+    let skills = SituationalSkills::new(
+        rules(&json!({})),
+        Box::new(|name: &str| {
+            (name == "rigor").then(|| {
+                (
+                    "/skills/rigor/SKILL.md".to_string(),
+                    format!(
+                        "# Rigor\n\n{}\n\n## Playbooks\n\n- **Bug fix.** Reproduce.\n\n## After\n\nx",
+                        "i".repeat(5000)
+                    ),
+                )
+            })
+        }),
+        Box::new(|| true),
+    );
+    let given = skills.cell_changed(&changes(&["a.txt", "b.txt", "c.txt"]), Path::new("/repo"), "main");
+    assert_eq!(
+        given,
+        [
+            "[skill] You changed 3 files: rigor applies from here on.\n## Playbooks\n\n- **Bug fix.** Reproduce.\n\n\
+          [Paths are relative to /skills/rigor. Pick the playbook now and read it before the next edit; the whole skill \
+          is /skills/rigor/SKILL.md.]"
+        ]
+    );
+}
+
+#[test]
 fn session_core_situational_skills_excerpt_a_long_skill_and_skip_a_missing_one() {
     let settings = json!({"situationalSkills": [
         {"skill": "missing", "paths": ["**/*.rs"]},

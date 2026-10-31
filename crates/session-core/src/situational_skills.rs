@@ -105,6 +105,8 @@ pub const DEFAULT_RULES: &[(&str, &str, &[&str])] = &[
 pub const MANY_FILES: usize = 3;
 /// The playbook for a change across several files.
 pub const MANY_FILES_SKILL: &str = "rigor";
+/// The part of [`MANY_FILES_SKILL`] it brings: the routes, not its opening (an opening and a pointer were not followed).
+pub const MANY_FILES_PART: &str = "Playbooks";
 /// The check before a commit, push or pull request.
 pub const SHIP_SKILL: &str = "blast-radius";
 
@@ -140,6 +142,13 @@ pub fn excerpt(text: &str, file: &str) -> String {
         text[..cut].trim_end(),
         rest.join(" · ")
     )
+}
+
+/// The `## heading` section of `text`, heading included, up to the next `## ` heading.
+pub fn section<'a>(text: &'a str, heading: &str) -> Option<&'a str> {
+    let start = text.find(&format!("\n## {heading}\n"))? + 1;
+    let end = text[start + 3..].find("\n## ").map_or(text.len(), |at| start + 3 + at);
+    Some(text[start..end].trim_end())
 }
 
 /// One rule: a change to a file matching `paths` brings `skill`.
@@ -215,7 +224,29 @@ impl SituationalSkills {
         }
     }
 
-    /// `skill` for `lane` once, introduced by `head`; whole when short, named with its file when long.
+    /// `skill` for `lane` once, introduced by `head`: its `## part` section when it has one (the part to act on,
+    /// with where the rest lives), else the skill whole when short or excerpted when long.
+    fn give_part(&self, lane: &str, skill: &str, head: String, part: &str) -> Option<String> {
+        let mut given = self.given.lock().unwrap_or_else(PoisonError::into_inner);
+        if given.contains(&(lane.to_string(), skill.to_string())) {
+            return None;
+        }
+        let (file, text) = (self.resolve)(skill)?;
+        given.insert((lane.to_string(), skill.to_string()));
+        let dir = Path::new(&file)
+            .parent()
+            .map(|dir| dir.display().to_string())
+            .unwrap_or_default();
+        Some(match section(text.trim(), part) {
+            Some(body) => format!(
+                "{head}\n{body}\n\n[Paths are relative to {dir}. Pick the playbook now and read it before the next edit; \
+                 the whole skill is {file}.]"
+            ),
+            None => format!("{head}\n{}", excerpt(text.trim(), &file)),
+        })
+    }
+
+    /// `skill` for `lane` once, introduced by `head`; whole when short, excerpted when long.
     fn give(&self, lane: &str, skill: &str, head: String) -> Option<String> {
         let mut given = self.given.lock().unwrap_or_else(PoisonError::into_inner);
         if given.contains(&(lane.to_string(), skill.to_string())) {
@@ -235,10 +266,11 @@ impl SituationalSkills {
             changed.iter().filter(|(l, _)| l == lane).count()
         };
         (count >= MANY_FILES).then(|| {
-            self.give(
+            self.give_part(
                 lane,
                 MANY_FILES_SKILL,
                 format!("[skill] You changed {count} files: {MANY_FILES_SKILL} applies from here on."),
+                MANY_FILES_PART,
             )
         })?
     }
