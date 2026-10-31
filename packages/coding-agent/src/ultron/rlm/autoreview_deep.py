@@ -74,7 +74,7 @@ BRIEF_CHARS = 8_000
 #: Changed files whose likes the brief lists, and how many changed files it looks at for them.
 MAX_LIKE = 6
 MAX_LIKE_SCANNED = 12
-DIFF_CHARS = 40_000
+DIFF_CHARS = 80_000
 LEADS_CHARS = 4_000
 MAX_DEEP_FINDINGS = 8
 MAX_CITATIONS = 6
@@ -1258,14 +1258,26 @@ def regression_findings(repo: Repo, compared: dict[str, Any]) -> list[dict[str, 
     return out
 
 
+def diff_view(diff_text: str) -> str:
+    """The diff as frames see it: up to DIFF_CHARS, then the files past the cut by name, so a large change's
+    tail is read with lookups instead of going unseen."""
+    out = f"The diff under review (new-file line numbers in the gutter):\n{diff_text[:DIFF_CHARS]}"
+    if len(diff_text) <= DIFF_CHARS:
+        return out
+    shown = re.findall(r"^File: (\S+)", diff_text[:DIFF_CHARS], re.M)
+    # The file the cut falls inside continues past it.
+    rest = list(dict.fromkeys(shown[-1:] + re.findall(r"^File: (\S+)", diff_text[DIFF_CHARS:], re.M)))
+    listing = "\n".join(f"  {path}" + (" (continued)" if path in shown else "") for path in rest[:200])
+    return (out + "\n... (diff cut at its size limit; these changed files are past the cut, read them with lookups:\n"
+            + listing + (f"\n  (+{len(rest) - 200} more)" if len(rest) > 200 else "") + ")")
+
+
 def shared_views(diff_text: str, brief_text: str | None, retrieved: str, context: str, intent: str,
                  guidance: str, reference: str = "") -> list[str]:
     """What every frame of a review starts with, in one order: the diff, the brief, the retrieved block, the pull
     request context, the author's intent, the guides. Byte-identical across the finders, the investigators and the
     verifiers, so a provider's prompt cache can serve it."""
-    cut = len(diff_text) > DIFF_CHARS
-    out = [f"The diff under review (new-file line numbers in the gutter):\n{diff_text[:DIFF_CHARS]}"
-           + ("\n... (diff cut at its size limit; read the files for the rest)" if cut else "")]
+    out = [diff_view(diff_text)]
     if brief_text:
         out.append(f"Investigation brief, built by the host from the repository at the reviewed commit:\n{brief_text}")
     if retrieved:

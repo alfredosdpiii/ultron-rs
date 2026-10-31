@@ -4,6 +4,10 @@
 
 ### Changed
 
+- Autoreview is faster on large diffs: from 500 changed lines the fast pass runs beside the investigators (as `autoreview.overlap` does), instead of first.
+- Autoreview's investigators see 80,000 characters of the diff (was 40,000) and the names of the changed files past the cut, so they look those up instead of never seeing them; the structural reference reads up to 200 files and 6 MB (was 80 and 3 MB).
+- Autoreview's TypeScript and JavaScript reference uses the TypeScript compiler from PATH (beside `tsc`, else the global install beside `node`) when it is there, resolving calls through re-exports and aliases; the structural scanner remains the fallback (`tsChecker` in the reference stats).
+- Autoreview tests findings the host could not prove by a run are posted as nits (were low): measured, 17% of "not pinned" comments were acted on against 40% of the others.
 - Autoreview comments aim at about 320 characters (was 600), and the finders are asked for one short sentence each for the claim and the fix.
 - Autoreview nits are posted inline when a comment slot is left after every other finding; the rubric names what a nit is (a stale comment, a redundant import, a duplicated literal) so small optional fixes are rated nit, not low.
 - Autoreview's `deployment` part also runs for `.sql` files and `migrations/` directories, and checks a migration or new query for an index at production size, a lock on a large table, and its place in the release checklist.
@@ -12,6 +16,7 @@
 
 ### Fixed
 
+- Autoreview's prepared test environments install Poetry applications with `poetry install --no-root` (an editable install of one failed with "non-package mode"), install an application with no package layout (a flat layout setuptools refuses to build) from the dependencies its `pyproject.toml` declares, pick the Python their nested `pyproject.toml` asks for, and keep the last 4,000 characters of a failed install's output instead of the first 300.
 - Loki and the situational skills skipped files written outside the session directory, so a session that worked in a sibling worktree ran unchecked: a write is now checked against the repository that holds it, under that repository's `.loki/` policy.
 
 ## [0.87.39] - 2026-10-10

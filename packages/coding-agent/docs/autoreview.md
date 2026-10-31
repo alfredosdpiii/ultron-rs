@@ -220,7 +220,7 @@ reviewed.
 | `autoreview.blockAt` | `"medium"` | A confirmed finding at this level or above makes the review request changes (`critical`, `high`, `medium`, `low`, `nit`). |
 | `autoreview.maxComments` | `5` | Inline comments per review at most; the rest are counted in the body. |
 | `autoreview.deepRounds` | `4` | Lookup rounds one investigator may take (maximum 8). After the first, a round gets the new results in full and a one-line ledger of the earlier ones, which `recall` re-reads. Half the investigators use the fourth round and those find the most (1.7 findings against 1.4 for three rounds). |
-| `autoreview.overlap` | `false` | Run the fast pass beside the investigators' first round and verify each investigator's findings as it finishes (about 20 s faster); the fast findings then reach the investigators at round 2 instead of being their round-1 leads. |
+| `autoreview.overlap` | `false` | Run the fast pass beside the investigators' first round and verify each investigator's findings as it finishes (about 20 s faster); the fast findings then reach the investigators at round 2 instead of being their round-1 leads. A diff of 500 or more changed lines overlaps whatever this says. |
 | `autoreview.verifyBatch` | `4` | Findings of one file one verifier frame judges together (maximum 8; `1` is one frame per finding). A finding with a test run, or with more than 6,000 characters of material, keeps its own frame. |
 | `autoreview.modelConcurrency` | `{}` | Frames in flight per model at most, by `provider/model` (default 8 each, 16 for `cliproxyapi/gpt-6-luna`, maximum 16). A model the provider throttles (429, cooldown, `reset_seconds`) has its limit halved for the rest of the review and the reset time is honoured before the retry. |
 | `autoreview.systemPrefix` | `false` | Experimental: send the diff, brief, retrieved block, context, intent and guides as every frame's system prompt (cacheable on every provider path). Measured to lose most findings; see "Speed and cost". |
@@ -657,8 +657,8 @@ Three kinds of finding are held to a stricter shape, because they are where auto
   untested edge case without such a named change is dropped. When the change is a one-line replacement and tests
   can run, the host runs it itself: if the suite still passes, the finding is proven and the run is its evidence;
   if a test fails, an existing test does catch it and the finding is dropped; if the tests cannot run, the finding
-  stands on the verifier's reading of the nearest test, which it is shown, and is posted at `low`: a note that
-  never blocks a merge. Only a tests finding a run proved (the mutated code passed the suite) keeps the verifier's
+  stands on the verifier's reading of the nearest test, which it is shown, and is posted as a `nit`: inline only
+  in a comment slot nothing else wants, never blocking. Only a tests finding a run proved (the mutated code passed the suite) keeps the verifier's
   level and can block. A value in a workflow, manifest, configuration, SQL, script or document file is not a
   behaviour a test pins: a "no test pins it" finding about one is dropped. (Measured on the private set, 17 of the
   21 wrong findings the recommended model posted were tests findings of these two kinds.)

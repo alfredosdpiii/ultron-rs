@@ -6,7 +6,7 @@ holding the word, a "definition" any line that looked like one. This module read
 - Python through `ast`: definitions with their line ranges and signatures, imports resolved to files of the
   repository, call sites resolved to the definitions they reach, class hierarchies (overrides), test functions and
   what they call, and literal families (lists, tuples and sets of strings);
-- TypeScript and JavaScript through a structural scanner: definitions, imports and exports resolved to files,
+- TypeScript and JavaScript through a trusted PATH compiler when available (structural scanner fallback): definitions, imports and exports resolved to files,
   call sites, literal arrays of strings;
 - GitHub Actions workflows through a small YAML reader, and Terraform through a block scanner, enough to state
   facts about permissions, triggers, guards, interpolations and resource references.
@@ -25,15 +25,21 @@ reader that fails leaves the others' results standing.
 from __future__ import annotations
 
 import ast
+import json
+import os
 import posixpath
 import re
+import shutil
+import subprocess
+import tempfile
 import time
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, Callable, Iterable
 
 #: Bounds of the index: files read, bytes parsed, call sites and families kept.
-MAX_FILES = 80
-MAX_BYTES = 3_000_000
+MAX_FILES = 200
+MAX_BYTES = 6_000_000
 MAX_IMPORTERS = 30
 MAX_TEST_FILES = 20
 MAX_CALLS_PER_FILE = 2_000
@@ -117,6 +123,180 @@ class FileIndex:
     #: Names the file exports (TS/JS), or every top-level name (Python).
     exports: set[str] = field(default_factory=set)
     parsed: bool = True
+    checked: bool = False
+
+
+
+# The compiler host sees only commit contents supplied by Reference, never the checkout or tsconfig.
+_TS_CHECKER = r"""
+const ts = require(process.argv[1]);
+const input = JSON.parse(require('node:fs').readFileSync(0, 'utf8'));
+function index(files) {
+  const texts = new Map(Object.entries(files).map(([p, text]) => ['/' + p, text]));
+  const options = {allowJs: true, checkJs: true, noLib: true, noResolve: false,
+    target: ts.ScriptTarget.Latest, module: ts.ModuleKind.ESNext,
+    moduleResolution: ts.ModuleResolutionKind.Bundler, jsx: ts.JsxEmit.Preserve};
+  const host = {
+    getSourceFile: (p, version) => texts.has(p) ? ts.createSourceFile(p, texts.get(p), version, true) : undefined,
+    getDefaultLibFileName: () => '', writeFile: () => {}, getCurrentDirectory: () => '/',
+    getDirectories: () => [], fileExists: p => texts.has(p), readFile: p => texts.get(p),
+    getCanonicalFileName: p => p, useCaseSensitiveFileNames: () => true, getNewLine: () => '\n'
+  };
+  const program = ts.createProgram([...texts.keys()], options, host);
+  const checker = program.getTypeChecker();
+  const result = Object.create(null), definitions = new Map(), scopes = new Set();
+  const clip = s => s.trim().slice(0, 160);
+  for (const sf of program.getSourceFiles()) {
+    const path = sf.fileName.slice(1);
+    const out = result[path] = {symbols: [], calls: [], imports: {}, exports: [], parsed: !sf.parseDiagnostics.length};
+    const line = node => sf.getLineAndCharacterOfPosition(node.getStart(sf)).line + 1;
+    function visit(node, scope = '', parent = null) {
+      let kind;
+      if (ts.isFunctionDeclaration(node)) kind = 'function';
+      else if (ts.isMethodDeclaration(node) || ts.isGetAccessor(node) || ts.isSetAccessor(node)) kind = 'method';
+      else if (ts.isClassDeclaration(node)) kind = 'class';
+      else if (ts.isInterfaceDeclaration(node)) kind = 'interface';
+      else if (ts.isTypeAliasDeclaration(node)) kind = 'type';
+      else if (ts.isEnumDeclaration(node)) kind = 'enum';
+      else if (ts.isVariableDeclaration(node) || ts.isPropertyDeclaration(node)) {
+        kind = node.initializer && (ts.isArrowFunction(node.initializer) || ts.isFunctionExpression(node.initializer))
+          ? (parent ? 'method' : 'function') : 'variable';
+      }
+      const name = node.name && (ts.isIdentifier(node.name) || ts.isStringLiteral(node.name))
+        ? node.name.text : (kind && node.modifiers?.some(m => m.kind === ts.SyntaxKind.DefaultKeyword) ? 'default' : null);
+      if (kind && name) {
+        if (out.symbols.length >= 4000) throw Error('symbol bound');
+        const qualname = scope ? scope + '.' + name : name;
+        const callable = node.initializer && (ts.isArrowFunction(node.initializer) || ts.isFunctionExpression(node.initializer))
+          ? node.initializer : node;
+        const signature = callable.parameters ? checker.getSignatureFromDeclaration(callable) : undefined;
+        const exported = !!node.modifiers?.some(m => m.kind === ts.SyntaxKind.ExportKeyword)
+          || (ts.isVariableDeclaration(node) && !!node.parent.parent.modifiers?.some(m => m.kind === ts.SyntaxKind.ExportKeyword));
+        const symbol = {path, name, qualname, kind, line: line(node),
+          end: sf.getLineAndCharacterOfPosition(node.end).line + 1,
+          signature: clip(signature ? name + checker.signatureToString(signature) : node.getText(sf).split(/[\n{]/)[0]),
+          parent, exported, bases: (node.heritageClauses || []).flatMap(h => h.types.map(t => t.expression.getText(sf)))};
+        out.symbols.push(symbol);
+        definitions.set(node, path + '::' + qualname);
+        if (['function', 'method', 'class'].includes(kind)) scopes.add(node);
+        if (callable !== node) definitions.set(callable, path + '::' + qualname);
+        scope = qualname;
+        parent = kind === 'class' ? name : null;
+      }
+      ts.forEachChild(node, child => visit(child, scope, parent));
+    }
+    visit(sf);
+    const module = checker.getSymbolAtLocation(sf);
+    if (module) {
+      for (const symbol of checker.getExportsOfModule(module)) {
+        out.exports.push(symbol.name);
+        const d = declaration(symbol);
+        if (d && texts.has(d.getSourceFile().fileName)) {
+          out.imports[symbol.name] = [d.getSourceFile().fileName.slice(1), d.name?.text || 'default'];
+        }
+      }
+    }
+  }
+  function declaration(symbol) {
+    if (symbol && symbol.flags & ts.SymbolFlags.Alias) symbol = checker.getAliasedSymbol(symbol);
+    return symbol && (symbol.valueDeclaration || symbol.declarations?.[0]);
+  }
+  for (const sf of program.getSourceFiles()) {
+    const out = result[sf.fileName.slice(1)], lines = sf.text.split(/\r?\n/);
+    function visit(node, enclosing = null) {
+      if (scopes.has(node)) enclosing = definitions.get(node).split('::')[1];
+      if (ts.isImportDeclaration(node) && node.importClause) {
+        const clause = node.importClause;
+        const bindings = [clause.name, ...(clause.namedBindings ?
+          ts.isNamespaceImport(clause.namedBindings) ? [clause.namedBindings.name] : clause.namedBindings.elements.map(e => e.name) : [])];
+        for (const binding of bindings.filter(Boolean)) {
+          const d = declaration(checker.getSymbolAtLocation(binding));
+          if (d && texts.has(d.getSourceFile().fileName)) {
+            out.imports[binding.text] = [d.getSourceFile().fileName.slice(1), d.name?.text || '*'];
+          }
+        }
+      }
+      if ((ts.isCallExpression(node) || ts.isNewExpression(node)) && out.calls.length < 2000) {
+        const signature = checker.getResolvedSignature(node);
+        let d = signature?.declaration;
+        if (!d) d = declaration(checker.getSymbolAtLocation(node.expression));
+        let target = definitions.get(d);
+        if (!target && d && ts.isConstructorDeclaration(d)) target = definitions.get(d.parent);
+        const line = sf.getLineAndCharacterOfPosition(node.getStart(sf)).line + 1;
+        out.calls.push({path: sf.fileName.slice(1), line, callee: clip(node.expression.getText(sf)),
+          text: clip(lines[line - 1]), enclosing, targets: target ? [target] : []});
+      }
+      ts.forEachChild(node, child => visit(child, enclosing));
+    }
+    visit(sf);
+  }
+  return result;
+}
+const output = JSON.stringify(input.map(index));
+if (Buffer.byteLength(output) > 8000000) throw Error('output bound');
+process.stdout.write(output);
+"""
+
+
+def _ts_tools(root: str) -> tuple[str, str] | None:
+    """Node and a `typescript.js` from PATH, outside the reviewed tree: the one beside `tsc`, else the global
+    install beside `node` (a version-manager shim for `tsc` resolves to the manager). Neither is executed here."""
+    reviewed = Path(root).resolve()
+
+    def trusted(tool: str) -> Path | None:
+        executable = shutil.which(tool)
+        if not executable:
+            return None
+        path = Path(executable)
+        resolved = path.resolve()
+        return None if path.absolute().is_relative_to(reviewed) or resolved.is_relative_to(reviewed) else resolved
+
+    node = trusted('node')
+    if node is None:
+        return None
+    tsc = trusted('tsc')
+    candidates = ([tsc.parent.parent / 'lib/typescript.js'] if tsc else []) + \
+        [node.parent.parent / 'lib/node_modules/typescript/lib/typescript.js']
+    for compiler in (candidate.resolve() for candidate in candidates):
+        if compiler.is_file() and not compiler.is_relative_to(reviewed):
+            return str(node), str(compiler)
+    return None
+
+
+def index_ts_checked(root: str, sources: list[dict[str, str]]) -> list[dict[str, FileIndex]] | None:
+    """One bounded, isolated Node invocation; None leaves every scanner result intact."""
+    try:
+        tools = _ts_tools(root)
+        if tools is None or sum(len(group) for group in sources) > MAX_FILES * 2:
+            return None
+        payload = json.dumps(sources).encode()
+        if len(payload) > MAX_BYTES * 4:
+            return None
+        with tempfile.TemporaryDirectory(prefix='ultron-ts-index-') as home:
+            run = subprocess.run([tools[0], '--max-old-space-size=256', '-e', _TS_CHECKER, tools[1]],
+                                 input=payload, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                                 timeout=20, cwd=home, env={'HOME': home})
+        if run.returncode or len(run.stdout) > 8_000_000:
+            return None
+        groups = json.loads(run.stdout)
+        if len(groups) != len(sources):
+            return None
+        result = []
+        for sources_group, group in zip(sources, groups):
+            if set(group) != set(sources_group):
+                return None
+            indexes = {}
+            for path, data in group.items():
+                if not data['parsed']:
+                    continue
+                indexes[path] = FileIndex(path, 'ts', symbols=[Symbol(**s) for s in data['symbols']],
+                                          imports={k: tuple(v) for k, v in data['imports'].items()},
+                                          calls=[CallSite(**c) for c in data['calls']], exports=set(data['exports']),
+                                          checked=True)
+            result.append(indexes)
+        return result
+    except (OSError, ValueError, TypeError, KeyError, subprocess.TimeoutExpired):
+        return None
 
 
 # --- Python ----------------------------------------------------------------------------------------------------
@@ -701,8 +881,9 @@ class Reference:
         self.changed_lines: dict[str, set[int]] = {}
         self.removed_text: dict[str, list[str]] = {}
         self.base_index: dict[str, FileIndex] = {}
+        self._ts_sources: dict[str, str] = {}
         self.stats: dict[str, Any] = {"files": 0, "bytes": 0, "symbols": 0, "calls": 0, "families": 0, "workflows": 0,
-                                      "terraform": 0, "ms": 0, "skipped": 0}
+                                      "terraform": 0, "ms": 0, "skipped": 0, "tsChecker": False}
         self._modules: dict[str, str] = {}
         self._ids: dict[str, str] = {}
         self._facts: list[dict[str, Any]] | None = None
@@ -737,6 +918,8 @@ class Reference:
                 self.stats["skipped"] += 1
                 continue
             self._read(path)
+            if path in self._ts_sources:
+                wanted.extend(p for p in self._imported_paths(self.index[path]) if p not in wanted)
         # Imports resolve to paths once every file is read.
         for index in self.index.values():
             for local, (module_path, name) in list(index.imports.items()):
@@ -751,6 +934,18 @@ class Reference:
                     lines = self.base_repo.lines(path)
                     if lines:
                         self.base_index[path] = (index_python if _PY.search(path) else index_ts)(path, "\n".join(lines))
+        base_sources = {path: "\n".join(lines) for path in self._ts_sources
+                        if self.base_repo is not None and (lines := self.base_repo.lines(path)) is not None}
+        if self._ts_sources:
+            checked = index_ts_checked(getattr(self.repo, "root", os.getcwd()), [self._ts_sources, base_sources])
+            if checked is not None:
+                for indexes, replacements in zip((self.index, self.base_index), checked):
+                    for path, index in replacements.items():
+                        if path not in indexes:
+                            continue
+                        index.families = indexes[path].families
+                        indexes[path] = index
+                self.stats["tsChecker"] = len(checked[0]) == len(self._ts_sources)
         self.stats.update(files=len(self.index) + len(self.workflows) + len(self.terraform),
                           symbols=sum(len(index.symbols) for index in self.index.values()),
                           calls=sum(len(index.calls) for index in self.index.values()),
@@ -773,6 +968,7 @@ class Reference:
                 self.index[path] = index_python(path, text)
             elif _TS.search(path):
                 self.index[path] = index_ts(path, text)
+                self._ts_sources[path] = text
             elif _WORKFLOW.search(path):
                 node = parse_yaml(text)
                 if node is not None and isinstance(node.value, dict):
@@ -832,6 +1028,11 @@ class Reference:
             resolved = module_path or self._resolve_module(name, index.path)
             if resolved and resolved not in out:
                 out.append(resolved)
+        for spec in re.findall(r"export\s+(?:\*|\{[^}]*\})\s+from\s+['\"]([^'\"]+)['\"]",
+                               self._ts_sources.get(index.path, "")):
+            resolved = self._resolve_module(spec, index.path)
+            if resolved and resolved not in out:
+                out.append(resolved)
         return out
 
     def _resolve_module(self, spec: str, from_path: str) -> str | None:
@@ -841,6 +1042,11 @@ class Reference:
             if not spec.startswith("."):
                 return None
             base = posixpath.normpath(posixpath.join(posixpath.dirname(from_path), spec))
+            if base.endswith((".js", ".jsx", ".mjs", ".cjs")):
+                stem, ext = posixpath.splitext(base)
+                for candidate in (stem + {".mjs": ".mts", ".cjs": ".cts"}.get(ext, ".ts"), stem + ".tsx"):
+                    if candidate in self._modules.values():
+                        return candidate
             for candidate in (base, f"{base}.ts", f"{base}.tsx", f"{base}.js", f"{base}.jsx", f"{base}.mjs", f"{base}/index.ts",
                               f"{base}/index.tsx", f"{base}/index.js"):
                 if candidate in self._modules.values():
@@ -909,8 +1115,10 @@ class Reference:
 
     def symbols_named(self, name: str) -> list[Symbol]:
         leaf = name.rsplit(".", 1)[-1]
+        aliases = {target for index in self.index.values() if index.checked
+                   for local, target in index.imports.items() if local == leaf}
         out = [symbol for index in self.index.values() for symbol in index.symbols
-               if symbol.qualname == name or symbol.name == leaf]
+               if symbol.qualname == name or symbol.name == leaf or (symbol.path, symbol.name) in aliases]
         return sorted(out, key=lambda symbol: (symbol.qualname != name, symbol.path not in self.changed_lines, symbol.path, symbol.line))
 
     def enclosing(self, path: str, line: int) -> Symbol | None:
@@ -936,7 +1144,7 @@ class Reference:
                     continue
                 if wanted and set(call.targets) & wanted:
                     resolved.append(call)
-                elif not call.targets and call.callee.rsplit(".", 1)[-1] == leaf:
+                elif not index.checked and not call.targets and call.callee.rsplit(".", 1)[-1] == leaf:
                     by_name.append(call)
         return resolved + by_name
 
@@ -945,7 +1153,7 @@ class Reference:
             index = self.index.get(symbol.path)
             if index is None:
                 continue
-            return [call for call in index.calls if symbol.line < call.line <= symbol.end]
+            return [call for call in index.calls if (call.enclosing == symbol.qualname if index.checked else symbol.line < call.line <= symbol.end)]
         return []
 
     def tests_of(self, name: str) -> list[tuple[str, int, str]]:

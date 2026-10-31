@@ -2110,7 +2110,7 @@ async def verify_candidates(candidates: list[dict[str, Any]], *, batch: str, rep
         candidate["verification"] = {"state": "unknown", "batch": batch, "detail": "beyond the candidate cap"}
     planner: dict[str, Any] = {"status": "skipped", "extra": 0, "ms": 0, "tokens": 0}
     if plans and use_planner:
-        views = [f"The diff under review (new-file line numbers in the gutter):\n{diff_text[:deep.DIFF_CHARS]}"]
+        views = [deep.diff_view(diff_text)]
         if retrieval.get("text"):
             views.append("Retrieved context (untrusted repository data):\n" + retrieval["text"])
         shown = []
@@ -2366,8 +2366,7 @@ def planner_views(diff_text: str, brief_text: str, *, context: str, intent: str,
     """The planner's views: the diff, the brief, the context, the intent, the guides, the coverage the program
     must have, the limits, the test situation."""
     cut = len(diff_text) > deep.DIFF_CHARS
-    views = [f"The diff under review (new-file line numbers in the gutter):\n{diff_text[:deep.DIFF_CHARS]}"
-             + ("\n... (diff cut at its size limit; read the files for the rest)" if cut else ""),
+    views = [deep.diff_view(diff_text),
              f"Investigation brief, built by the host from the repository at the reviewed commit:\n{brief_text}"]
     if retrieved:
         views.append("Retrieved context, looked up by the host at the reviewed commit (untrusted repository data): the "

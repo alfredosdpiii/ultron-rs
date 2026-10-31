@@ -21,7 +21,7 @@ use regex::Regex;
 use serde_json::{Map, Value, json};
 
 use crate::github::iso_from_ms;
-use crate::js::{head16, path_join, trim};
+use crate::js::{path_join, trim};
 use crate::prepare::{NODE_LOCKS, ToolchainEntry, ToolchainRequests, detect_ecosystems, environment_hash, find_mise};
 use crate::reviewer::{EnvironmentPreparer, PreparedEnvironment};
 use crate::runner::{RunOptions, RunResult, Runner};
@@ -124,14 +124,21 @@ fn truthy(value: Option<&Value>) -> bool {
     }
 }
 
-/// `(result.stderr || result.stdout).trim().slice(0, max)`.
-fn output_head(result: &RunResult, max: usize) -> String {
-    let text = if result.stderr.is_empty() {
-        &result.stdout
-    } else {
-        &result.stderr
-    };
-    head16(trim(text), max).to_string()
+/// The last FAILURE_CHARS of stderr then stdout: backend tracebacks put the actionable error last.
+const FAILURE_CHARS: usize = 4000;
+
+fn failure_output(result: &RunResult) -> String {
+    let text = [trim(&result.stderr), trim(&result.stdout)]
+        .into_iter()
+        .filter(|text| !text.is_empty())
+        .collect::<Vec<_>>()
+        .join("\n");
+    let count = text.chars().count();
+    if count <= FAILURE_CHARS {
+        return text;
+    }
+    let tail: String = text.chars().skip(count - FAILURE_CHARS).collect();
+    format!("...{tail}")
 }
 
 /// Node's `path.dirname` for the paths used here.
@@ -301,7 +308,7 @@ pub fn resolve_toolchain(
                 if result.code != 0 {
                     failures.push(format!(
                         "mise install {tool}@{request} failed: {}",
-                        output_head(&result, 200)
+                        failure_output(&result)
                     ));
                 } else {
                     was_installed = true;
@@ -451,7 +458,7 @@ pub fn prepare_environment(repo_dir: &str, options: &PrepareOptions) -> Result<P
                 }
                 let created = run(argv, &dir, &[]);
                 if created.code != 0 {
-                    failures.push(format!("uv venv failed: {}", output_head(&created, 300)));
+                    failures.push(format!("uv venv failed: {}", failure_output(&created)));
                 } else {
                     let interpreter = path_join(&[&venv, "bin", "python"]);
                     let pip = |args: &[&str]| {
@@ -464,6 +471,53 @@ pub fn prepare_environment(repo_dir: &str, options: &PrepareOptions) -> Result<P
                         ];
                         argv.extend(args.iter().map(|arg| arg.to_string()));
                         run(argv, repo_dir, &[])
+                    };
+                    let poetry = |project: &str| {
+                        fs::read_to_string(Path::new(project).join("pyproject.toml")).is_ok_and(|text| {
+                            Regex::new(r"(?m)^\[tool\.poetry\]")
+                                .expect("static pattern")
+                                .is_match(&text)
+                        })
+                    };
+                    let install_poetry = |project: &str| {
+                        run(
+                            vec![
+                                uv.clone(),
+                                "tool".into(),
+                                "run".into(),
+                                "--python".into(),
+                                interpreter.clone(),
+                                "--from".into(),
+                                "poetry".into(),
+                                "poetry".into(),
+                                "--directory".into(),
+                                project.into(),
+                                "install".into(),
+                                "--no-root".into(),
+                                "--all-extras".into(),
+                                "--no-interaction".into(),
+                            ],
+                            repo_dir,
+                            &[("VIRTUAL_ENV", &venv), ("POETRY_VIRTUALENVS_CREATE", "false")],
+                        )
+                    };
+                    // The project's declared dependencies and extras, for an application that is not a buildable
+                    // package. None when its pyproject.toml declares none (the editable failure stands alone).
+                    let deps_only = |project: &str| -> Option<Result<(), String>> {
+                        let manifest = path_join(&[project, "pyproject.toml"]);
+                        let text = fs::read_to_string(&manifest).ok()?;
+                        if !Regex::new(r"(?m)^\s*dependencies\s*=")
+                            .expect("static pattern")
+                            .is_match(&text)
+                        {
+                            return None;
+                        }
+                        let result = pip(&["-r", &manifest, "--all-extras"]);
+                        Some(if result.code == 0 {
+                            Ok(())
+                        } else {
+                            Err(failure_output(&result))
+                        })
                     };
                     let mut ok = false;
                     let has = |name: &str| found.python.iter().any(|item| item == name);
@@ -484,7 +538,15 @@ pub fn prepare_environment(repo_dir: &str, options: &PrepareOptions) -> Result<P
                             prepared.push("python: uv sync --frozen --all-extras (uv.lock)".into());
                             ok = true;
                         } else {
-                            failures.push(format!("uv sync failed: {}", output_head(&synced, 300)));
+                            failures.push(format!("uv sync failed: {}", failure_output(&synced)));
+                        }
+                    } else if poetry(repo_dir) {
+                        let result = install_poetry(repo_dir);
+                        if result.code == 0 {
+                            prepared.push("python: poetry install --no-root .".into());
+                            ok = true;
+                        } else {
+                            failures.push(format!("poetry install . failed: {}", failure_output(&result)));
                         }
                     } else if has("pyproject.toml") || has("setup.py") {
                         for suffix in ["[dev,test]", "[dev]", "[test]", ""] {
@@ -495,7 +557,21 @@ pub fn prepare_environment(repo_dir: &str, options: &PrepareOptions) -> Result<P
                                 break;
                             }
                             if suffix.is_empty() {
-                                failures.push(format!("uv pip install -e . failed: {}", output_head(&result, 300)));
+                                // An application that is not a buildable package (a flat layout of several
+                                // top-level directories): its declared dependencies, without building it.
+                                match deps_only(repo_dir) {
+                                    Some(Ok(())) => {
+                                        prepared.push("python: uv pip install -r pyproject.toml --all-extras".into());
+                                        ok = true;
+                                    }
+                                    Some(Err(deps)) => failures.push(format!(
+                                        "uv pip install -e . failed: {}; uv pip install -r pyproject.toml failed: {deps}",
+                                        failure_output(&result)
+                                    )),
+                                    None => {
+                                        failures.push(format!("uv pip install -e . failed: {}", failure_output(&result)))
+                                    }
+                                }
                             }
                         }
                     }
@@ -509,6 +585,16 @@ pub fn prepare_environment(repo_dir: &str, options: &PrepareOptions) -> Result<P
                     {
                         let sub = dirname(name);
                         let project = path_join(&[repo_dir, &sub]);
+                        if poetry(&project) {
+                            let result = install_poetry(&project);
+                            if result.code == 0 {
+                                prepared.push(format!("python: poetry install --no-root {sub}"));
+                                ok = true;
+                            } else {
+                                failures.push(format!("poetry install {sub} failed: {}", failure_output(&result)));
+                            }
+                            continue;
+                        }
                         for suffix in ["[dev,test]", "[dev]", "[test]", ""] {
                             let result = pip(&["-e", &format!("{project}{suffix}")]);
                             if result.code == 0 {
@@ -517,7 +603,18 @@ pub fn prepare_environment(repo_dir: &str, options: &PrepareOptions) -> Result<P
                                 break;
                             }
                             if suffix.is_empty() {
-                                failures.push(format!("uv pip install -e {sub} failed: {}", output_head(&result, 300)));
+                                match deps_only(&project) {
+                                    Some(Ok(())) => {
+                                        prepared.push(format!("python: uv pip install -r {sub}/pyproject.toml --all-extras"));
+                                        ok = true;
+                                    }
+                                    Some(Err(deps)) => failures.push(format!(
+                                        "uv pip install -e {sub} failed: {}; uv pip install -r {sub}/pyproject.toml failed: {deps}",
+                                        failure_output(&result)
+                                    )),
+                                    None => failures
+                                        .push(format!("uv pip install -e {sub} failed: {}", failure_output(&result))),
+                                }
                             }
                         }
                     }
@@ -529,10 +626,7 @@ pub fn prepare_environment(repo_dir: &str, options: &PrepareOptions) -> Result<P
                             prepared.push(format!("python: uv pip install -r {file}"));
                             ok = true;
                         } else {
-                            failures.push(format!(
-                                "uv pip install -r {file} failed: {}",
-                                output_head(&result, 300)
-                            ));
+                            failures.push(format!("uv pip install -r {file} failed: {}", failure_output(&result)));
                         }
                     }
                     if !ok && prepared.is_empty() && requirements.is_empty() {
@@ -574,7 +668,7 @@ pub fn prepare_environment(repo_dir: &str, options: &PrepareOptions) -> Result<P
                 if result.code == 0 {
                     prepared.push(format!("node: {line} ({lock})"));
                 } else {
-                    failures.push(format!("{line} failed: {}", output_head(&result, 300)));
+                    failures.push(format!("{line} failed: {}", failure_output(&result)));
                 }
             }
         }

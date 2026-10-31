@@ -149,7 +149,8 @@ fn walk(repo: &Path, dir: &str, depth: usize, nested: &mut Vec<String>) {
         } else if !dir.is_empty()
             && ((name.starts_with("requirements") && name.ends_with(".txt") && name.len() >= "requirements.txt".len())
                 || name == "pyproject.toml"
-                || name == "setup.py")
+                || name == "setup.py"
+                || name == "poetry.lock")
         {
             nested.push(relative);
         }
@@ -217,12 +218,30 @@ pub fn toolchain_requests(repo: &Path) -> ToolchainRequests {
             out.node = Some(version.to_string());
         }
     }
-    if out.python.is_none()
-        && let Some(pyproject) = read(&repo.join("pyproject.toml"))
-        && let Some(requires) = regex(r#"(?m)^\s*requires-python\s*=\s*["']([^"']+)["']"#).captures(&pyproject)
-        && let Some(minimum) = regex(r"([0-9]+)\.([0-9]+)").captures(&requires[1])
-    {
-        out.python = Some(format!("{}.{}", &minimum[1], &minimum[2]));
+    if out.python.is_none() {
+        // ponytail: highest named minor, not a full constraint intersection; installers reject conflicts.
+        let minimum = detect_ecosystems(repo)
+            .python
+            .iter()
+            .filter(|name| name.ends_with("pyproject.toml"))
+            .filter_map(|name| read(&repo.join(name)))
+            .filter_map(|text| {
+                let poetry = regex(r"(?ms)^\[tool\.poetry\.dependencies\]\s*\n([^\[]*)")
+                    .captures(&text)
+                    .map(|section| section[1].to_string());
+                let requires = regex(r#"(?m)^\s*requires-python\s*=\s*["']([^"']+)["']"#)
+                    .captures(&text)
+                    .map(|found| found[1].to_string())
+                    .or_else(|| {
+                        regex(r#"(?m)^\s*python\s*=\s*["']([^"']+)["']"#)
+                            .captures(poetry.as_deref().unwrap_or_default())
+                            .map(|found| found[1].to_string())
+                    })?;
+                let version = regex(r"([0-9]+)\.([0-9]+)").captures(&requires)?;
+                Some((version[1].parse::<u32>().ok()?, version[2].parse::<u32>().ok()?))
+            })
+            .max();
+        out.python = minimum.map(|(major, minor)| format!("{major}.{minor}"));
     }
     if out.node.is_none()
         && let Some(package) = read(&repo.join("package.json")).filter(|text| !text.is_empty())

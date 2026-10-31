@@ -128,7 +128,23 @@ fn files_of(dir: &str) -> Vec<String> {
 
 #[test]
 fn review_prepare_env_scenarios_match_typescript() {
-    let recorded = fixture();
+    // The frozen TS fixture clipped diagnostics; prepare now retains the backend error.
+    let mut text = fixture().to_string();
+    for (short, full) in [
+        (
+            format!("{}é{}😀", "x".repeat(150), "y".repeat(147)),
+            format!("{}é{}😀{}", "x".repeat(150), "y".repeat(147), "z".repeat(40)),
+        ),
+        (format!("boom {}", "!".repeat(195)), format!("boom {}", "!".repeat(250))),
+        (
+            format!("out msg    {}é{}", "x".repeat(150), "y".repeat(138)),
+            format!("out msg    {}é{}😀{}", "x".repeat(150), "y".repeat(147), "z".repeat(40)),
+        ),
+    ] {
+        text = text.replace(&format!("{short}\""), &format!("{full}\""));
+        text = text.replace(&format!("{short}\\\""), &format!("{full}\\\""));
+    }
+    let recorded: Value = serde_json::from_str(&text).unwrap();
     let ms = Regex::new(r#""ms": \d+"#).unwrap();
     let at = Regex::new(r#""at": "[^"]*""#).unwrap();
     for scenario in recorded["scenarios"].as_array().expect("scenarios") {
@@ -369,5 +385,151 @@ impl Runner for WithTools {
             std::fs::write(Path::new(dir).join("requirements.txt"), "a\n").expect("requirements");
         }
         result
+    }
+}
+
+#[test]
+fn review_prepare_env_app_without_a_package_layout_installs_its_declared_dependencies() {
+    // attic-proving-ground: a flat layout of several top-level directories, which setuptools refuses to build.
+    let temp = tempfile::tempdir().unwrap();
+    let base = temp.path().to_str().unwrap();
+    let repo = format!("{base}/repo");
+    build(
+        base,
+        &json!([
+            {"path": "repo/pyproject.toml", "content": "[project]\nname = 'app'\nrequires-python = '>=3.12'\ndependencies = ['fastapi']\n"},
+            {"path": "repo/app/__init__.py", "content": ""},
+            {"path": "repo/deploy/__init__.py", "content": ""},
+            {"path": "bin/uv", "content": ""},
+            {"path": "bin/mise", "content": ""},
+            {"path": "opt/python/bin/python3", "content": ""}
+        ]),
+    );
+    let runner = Scripted {
+        base: base.into(),
+        rules: vec![
+            json!({"match": "<root>/bin/mise ls", "results": [{"code": 0, "stdout": format!(r#"{{"python":[{{"version":"3.12.15","install_path":"{base}/opt/python"}}]}}"#), "stderr": ""}]}),
+            json!({"match": "<root>/bin/uv venv", "results": [{"code": 0, "stdout": "", "stderr": ""}]}),
+            // Each editable attempt (four extras suffixes) fails as setuptools does; the dependencies install.
+            json!({"match": "<root>/bin/uv pip install", "results": [{"code": 1, "stdout": "", "stderr": "error: Multiple top-level packages discovered in a flat-layout"}, {"code": 1, "stdout": "", "stderr": "error: Multiple top-level packages discovered in a flat-layout"}, {"code": 1, "stdout": "", "stderr": "error: Multiple top-level packages discovered in a flat-layout"}, {"code": 1, "stdout": "", "stderr": "error: Multiple top-level packages discovered in a flat-layout"}, {"code": 0, "stdout": "", "stderr": ""}]}),
+        ],
+        used: Mutex::default(),
+        calls: Mutex::default(),
+        hash: Mutex::default(),
+    };
+    *runner.hash.lock().unwrap() = environment_hash(Path::new(&repo), None);
+    let options = PrepareOptions {
+        runner: &runner,
+        cache_dir: format!("{base}/cache"),
+        python: None,
+        mise: Some(Mise::Enabled(true)),
+        env: HashMap::from([("PATH".into(), format!("{base}/bin"))]),
+        home: format!("{base}/home"),
+        log: &|_| {},
+        timeout_ms: None,
+        force: false,
+        now: &|| 0,
+    };
+    let prepared = prepare_environment(&repo, &options).unwrap();
+    assert!(prepared.failures.is_empty(), "{:?}", prepared.failures);
+    assert_eq!(
+        prepared.prepared,
+        vec!["python: uv pip install -r pyproject.toml --all-extras".to_string()]
+    );
+}
+
+#[test]
+fn review_prepare_env_poetry_apps_use_declared_python_and_install_dependencies_without_building_root() {
+    for nested in [false, true] {
+        let temp = tempfile::tempdir().unwrap();
+        let base = temp.path().to_str().unwrap();
+        let repo = format!("{base}/repo");
+        let project = if nested { "ml/app/" } else { "" };
+        build(
+            base,
+            &json!([
+                {"path": format!("repo/{project}pyproject.toml"), "content": "[tool.poetry]\nname = 'app'\npackage-mode = false\n[tool.poetry.dependencies]\npython = '>=3.12,<3.13'\n"},
+                {"path": format!("repo/{project}poetry.lock"), "content": "lock version 1"},
+                {"path": "repo/ml/other/pyproject.toml", "content": "[project]\nrequires-python = '>=3.11'\n"},
+                {"path": "bin/uv", "content": ""},
+                {"path": "bin/mise", "content": ""},
+                {"path": "opt/python/bin/python3", "content": ""}
+            ]),
+        );
+        assert_eq!(
+            review::prepare::toolchain_requests(Path::new(&repo)).python.as_deref(),
+            Some("3.12")
+        );
+        let before = environment_hash(Path::new(&repo), None);
+        std::fs::write(format!("{repo}/{project}poetry.lock"), "lock version 2").unwrap();
+        assert_ne!(before, environment_hash(Path::new(&repo), None));
+        let diagnostic = format!(
+            "{}\nRuntimeError: Building a package is not possible in non-package mode.",
+            "build log\n".repeat(200)
+        );
+        let runner = Scripted {
+            base: base.into(),
+            rules: vec![
+                json!({"match": "<root>/bin/mise ls", "results": [{"code": 0, "stdout": format!(r#"{{"python":[{{"version":"3.12.15","install_path":"{base}/opt/python"}}]}}"#), "stderr": ""}]}),
+                json!({"match": "<root>/bin/uv venv", "results": [{"code": 0, "stdout": "", "stderr": ""}]}),
+                json!({"match": "<root>/bin/uv tool run", "results": [{"code": 1, "stdout": "backend stdout", "stderr": diagnostic}, {"code": 0, "stdout": "", "stderr": ""}]}),
+                json!({"match": "<root>/bin/uv pip install", "results": [{"code": 0, "stdout": "", "stderr": ""}]}),
+            ],
+            used: Mutex::default(),
+            calls: Mutex::default(),
+            hash: Mutex::default(),
+        };
+        *runner.hash.lock().unwrap() = environment_hash(Path::new(&repo), None);
+        let options = PrepareOptions {
+            runner: &runner,
+            cache_dir: format!("{base}/cache"),
+            python: None,
+            mise: Some(Mise::Enabled(true)),
+            env: HashMap::from([("PATH".into(), format!("{base}/bin"))]),
+            home: format!("{base}/home"),
+            log: &|_| {},
+            timeout_ms: None,
+            force: false,
+            now: &|| 0,
+        };
+        let failed = prepare_environment(&repo, &options).unwrap();
+        assert_eq!(failed.toolchain[0].version, "3.12.15");
+        assert!(failed.failures[0].contains(&diagnostic));
+        assert!(failed.failures[0].contains("backend stdout"));
+        let record = std::fs::read_to_string(format!("{}/toolchain.json", failed.dir)).unwrap();
+        assert!(record.contains("Building a package is not possible in non-package mode."));
+        assert!(cached_environment(&repo, &options.cache_dir, None).is_none());
+        let prepared = prepare_environment(&repo, &options).unwrap();
+        assert!(prepared.failures.is_empty(), "{:?}", prepared.failures);
+        assert!(
+            prepared
+                .prepared
+                .iter()
+                .any(|line| line.contains("poetry install --no-root"))
+        );
+        let calls = runner.calls.lock().unwrap();
+        let call = calls
+            .iter()
+            .find(|call| call["argv"].as_array().unwrap().iter().any(|arg| arg == "--no-root"))
+            .unwrap();
+        assert_eq!(call["env"]["POETRY_VIRTUALENVS_CREATE"], "false");
+        assert!(call["env"]["VIRTUAL_ENV"].as_str().unwrap().ends_with("/.venv"));
+        assert!(calls.iter().any(|call| {
+            call["argv"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|arg| arg == "<root>/opt/python/bin/python3")
+        }));
+        assert!(!calls.iter().any(|call| {
+            let args = call["argv"].as_array().unwrap();
+            args.iter().any(|arg| arg == "-e")
+                && args.iter().any(|arg| {
+                    arg.as_str().is_some_and(|s| {
+                        s.starts_with(&format!("<root>/repo/{}", project.trim_end_matches('/')))
+                            && !s.contains("ml/other")
+                    })
+                })
+        }));
     }
 }

@@ -655,10 +655,11 @@ def final_level(finding: dict[str, Any], verdict: Any) -> str:
     if level in SERIOUS and holds is not True:
         return "low"
     # A tests finding blocks a merge only when the host proved it: it applied the named change and the tests
-    # still passed (the run is the evidence). On the verifier's reading alone it is a non-blocking note: measured
-    # on real reviews, nearly every "no test would catch this" posted on reading alone was judged hypothetical.
+    # still passed (the run is the evidence). On the verifier's reading alone it is a nit, posted only in a slot
+    # nothing else wants: measured on real reviews, 17% of "not pinned" comments posted on reading alone were
+    # acted on (40% of the others), and tests was the most-rejected category (117 rejected, 59 accepted).
     if finding["category"] == "tests" and finding.get("proof") != "proven" and not finding.get("test_run"):
-        return "low"
+        return "nit"
     return capped_level(level, finding["category"], finding.get("scenario") or "", holds)
 
 
@@ -927,6 +928,8 @@ _OTHER_FILES = "Other files changed in this review: "
 SLICE_SEPARATOR = "\n\n" + "=" * 40 + "\n\n"
 #: Diffs under this many changed lines go to each finder as one slice (one frame per applicable specialist).
 SINGLE_SLICE_LINES = 150
+#: From this many changed lines the fast pass runs beside the investigators (as `overlap` does).
+OVERLAP_LINES = 500
 #: Under this many changed lines the architecture specialist is folded into the correctness one.
 MERGE_ARCH_LINES = 150
 #: Findings of one file a verifier frame judges together; a finding with a test run, or with more than
@@ -1690,7 +1693,10 @@ async def run(rlm: Any, spec: dict[str, Any], *, runner: Runner | None = None,
     # from the second round on; by default the finders run first and their findings are the investigators' leads
     # from round 1 (measured: investigators without round-1 leads look up and find less). The experimental hybrid
     # mode needs the fast findings first, as candidates.
-    parallel = bool(chunks) and run_fast and run_deep_pass and not hybrid and spec.get("overlap") is True
+    # A large diff overlaps by itself: its find stage (7-20 min measured at 500+ changed lines) would otherwise
+    # hold the investigators back longer than their round-1 leads are worth.
+    parallel = bool(chunks) and run_fast and run_deep_pass and not hybrid and (
+        spec.get("overlap") is True or changed_lines >= OVERLAP_LINES)
     if not parallel:
         await fast_pass()
 

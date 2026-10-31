@@ -175,3 +175,120 @@ fn review_plan_names_preexisting_problems_without_blocking() {
         plan.body
     );
 }
+
+#[test]
+fn review_large_diff_names_the_files_past_the_cut_and_unproven_tests_findings_are_nits() {
+    let dir = tempfile::tempdir().expect("dir");
+    let got = engine(
+        dir.path(),
+        "",
+        "",
+        r#"
+import autoreview_deep as d
+big = "File: a.py (modified)\n" + "x" * d.DIFF_CHARS + "\nFile: b.py (added)\n+y\n"
+view = d.diff_view(big)
+small = d.diff_view("File: a.py (modified)\n+x\n")
+finding = {"category": "tests", "level": "medium", "severity": "minor", "scenario": ""}
+proven = dict(finding, proof="proven")
+print(json.dumps([view.endswith("  a.py (continued)\n  b.py)"), "past the cut" in small,
+                  a.final_level(finding, {"severity": "medium", "scenario_holds": True}),
+                  a.final_level(proven, {"severity": "medium", "scenario_holds": True})]))
+"#,
+    );
+    assert_eq!(got, serde_json::json!([true, false, "nit", "medium"]));
+}
+
+#[test]
+fn reference_typescript_checker_resolves_reexports_and_falls_back_safely() {
+    let dir = tempfile::tempdir().expect("dir");
+    let got = engine(
+        dir.path(),
+        "",
+        "",
+        r#"
+import os
+from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import patch
+import autoreview_reference as r
+
+class Repo:
+    root = repo
+    texts = {
+        'source.ts': 'export function original(x: number) { return x; }\n',
+        'barrel.ts': 'export { original as renamed } from "./source.js";\n',
+        'use.tsx': 'import { renamed as local } from "./barrel";\nexport function run() { return local(1); }\n',
+        'other.ts': 'export function original() { return 0; }\n',
+        'bad.ts': 'export function broken( {\n',
+    }
+    def files(self): return list(self.texts)
+    def lines(self, path): return self.texts[path].splitlines() if path in self.texts else None
+    def grep(self, pattern, limit): return []
+
+files = [SimpleNamespace(path='use.tsx', hunks=[], binary=False)]
+# A local compiler and Node preload must never run, even when executable PATH entries point into the repo.
+local = Path(repo) / 'node_modules/typescript'
+(local / 'lib').mkdir(parents=True)
+(local / 'bin').mkdir()
+(local / 'lib/typescript.js').write_text('throw Error("untrusted compiler executed")')
+tsc = local / 'bin/tsc'
+tsc.write_text('#!/bin/sh\nexit 99\n')
+tsc.chmod(0o755)
+with patch.dict(os.environ, {'PATH': str(tsc.parent) + os.pathsep + os.environ.get('PATH', '')}):
+    tools = r._ts_tools(repo)
+    assert tools is None or not any(Path(tool).is_relative_to(Path(repo).resolve()) for tool in tools), tools
+    with patch.object(r, 'index_ts_checked', return_value=None):
+        fallback = r.Reference(Repo(), files).build()
+    assert fallback.stats['tsChecker'] is False
+    assert fallback.symbols_named('run')
+
+if r._ts_tools(repo) is None:
+    print(json.dumps('skipped: trusted tsc/node unavailable; fallback passed'))
+else:
+    with patch.dict(os.environ, {'NODE_OPTIONS': '--require=' + str(local / 'lib/typescript.js')}):
+        with patch.object(r.subprocess, 'run', wraps=r.subprocess.run) as node_run:
+            reference = r.Reference(Repo(), files, base_repo=Repo()).build()
+        assert node_run.call_count == 1
+    assert reference.stats['tsChecker'], reference.stats
+    assert set(reference.index) == {'source.ts', 'barrel.ts', 'use.tsx'}, reference.index
+    calls = reference.callers('original', outside_changes=False)
+    assert [(c.path, c.line, c.targets) for c in calls] == [('use.tsx', 2, ['source.ts::original'])], calls
+    assert reference.callees('run') == calls
+    assert reference.symbols_named('renamed')[0].key == 'source.ts::original'
+    assert reference.symbols_named('local')[0].key == 'source.ts::original'
+    shapes = r.index_ts_checked(repo, [{
+        'shapes.ts': 'export class A { f() { return 1; } }\n'
+                     'class B { f() { return 2; } }\n'
+                     'export const arrow = () => 1;\n'
+                     'export function run() { const obj = new A(); const n = obj.f(); return arrow() + n; }\n'
+                     'declare const unknown: any; unknown.f();\n',
+        'view.jsx': 'export function View() { return <div/>; }\n',
+    }])[0]
+    assert [c.targets for c in shapes['shapes.ts'].calls] == [
+        ['shapes.ts::A'], ['shapes.ts::A.f'], ['shapes.ts::arrow'], []]
+    assert [c.enclosing for c in shapes['shapes.ts'].calls] == ['run', 'run', 'run', None]
+    assert shapes['view.jsx'].symbols[0].name == 'View'
+    assert reference.index['use.tsx'].imports['local'] == ('source.ts', 'original')
+    symbol = reference.symbols_named('original')[0]
+    assert (symbol.line, symbol.end, symbol.signature) == (1, 1, 'original(x: number): number'), symbol
+    assert reference.signature_before(reference.symbols_named('run')[0]) == reference.symbols_named('run')[0].signature
+    assert 'source.ts:1-1' in r.serve(reference, 'symbol', {'name': 'original'})[1]
+    assert '(resolved)' in r.serve(reference, 'callers', {'symbol': 'original'})[1]
+    # Parse failure is per-file: valid files still get checker targets.
+    more = files + [SimpleNamespace(path='bad.ts', hunks=[], binary=False)]
+    partial = r.Reference(Repo(), more).build()
+    assert partial.stats['tsChecker'] is False
+    assert partial.index['use.tsx'].checked and not partial.index['bad.ts'].checked
+    for failure in (r.subprocess.TimeoutExpired('node', 20), OSError('node unavailable')):
+        with patch.object(r.subprocess, 'run', side_effect=failure):
+            fallback = r.Reference(Repo(), files).build()
+        assert not fallback.stats['tsChecker'] and fallback.symbols_named('run')
+    with patch.object(r.subprocess, 'run', return_value=SimpleNamespace(returncode=0, stdout=b'invalid JSON')):
+        assert r.index_ts_checked(repo, [Repo.texts]) is None
+    assert r.index_ts_checked(repo, [{'big.ts': 'x' * (r.MAX_BYTES * 4)}]) is None
+    print(json.dumps('checker reexport, commit data, signatures, queries, isolation and fallbacks passed'))
+"#,
+    );
+    eprintln!("{got}");
+    assert!(got.as_str().is_some(), "{got}");
+}
