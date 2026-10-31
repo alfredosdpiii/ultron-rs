@@ -60,6 +60,44 @@ impl Summarizer {
             .await
     }
 
+    /// One plain side request (crate::auto_refine): `prompt` under `system`, answered as text; no retry.
+    pub(super) fn ask(&self, system: &str, prompt: &str) -> Result<String, String> {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .map_err(|error| error.to_string())?;
+        let context = ai::transcript::normalize_context(&ai::Context {
+            system_prompt: Some(system.to_string()),
+            messages: vec![ai::Message::User(ai::UserMessage {
+                content: ai::UserMessageContent::Blocks(vec![ai::UserContent::Text(ai::TextContent {
+                    text: prompt.to_string(),
+                    text_signature: None,
+                })]),
+                timestamp: now_ms(),
+            })],
+            tools: None,
+        });
+        let request = compaction::SummaryRequest {
+            context,
+            max_tokens: self.model.max_tokens.clamp(1, 2048),
+            reasoning: None,
+            session_id: Some(self.session_id.clone()),
+        };
+        let response = runtime.block_on(self.stream(request, &AbortSignal::new()));
+        if response.stop_reason != ai::StopReason::Stop {
+            return Err(response.error_message.unwrap_or_else(|| "no answer".into()));
+        }
+        Ok(response
+            .content
+            .iter()
+            .filter_map(|block| match block {
+                ai::AssistantContent::Text(text) => Some(text.text.as_str()),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+            .join("\n"))
+    }
+
     /// `/bug`'s report summary of `messages` (`summarizeForBugReport`, `generateBugReportSummary`), cancelled by
     /// `signal`; a retryable provider error is retried under `retry` (`completeSummarization`'s retry policy).
     pub(super) fn bug_report(

@@ -810,6 +810,10 @@ impl Runtime {
         // while the anchor is on the branch in use (A07).
         let branch = values.as_ref().map(crate::session_modules::main_branch);
         let refinements = services::instruction_hook_on(local.clone(), branch.clone());
+        let ledger = crate::auto_refine::Ledger {
+            services: local.clone(),
+            branch: branch.clone(),
+        };
         // `session_start` of the MCP extension: eager servers connect in the background; configuration errors were
         // reported with the runtime's diagnostics.
         let gateway = config.mcp_gateway();
@@ -1133,6 +1137,7 @@ impl Runtime {
                 retired_guards: Mutex::new(Vec::new()),
                 wake,
                 memory_children: memory_children_on,
+                ledger,
             }
         });
         built?;
@@ -1390,6 +1395,8 @@ pub struct Stack {
     pub wake: crate::wake::RootWake,
     /// Subagents run as in-memory agent loops (crate::memory_children): no durable runtime behind their lanes.
     memory_children: bool,
+    /// The session's refinements ledger (crate::auto_refine proposes into it and delivers from it).
+    pub ledger: crate::auto_refine::Ledger,
 }
 
 impl Stack {

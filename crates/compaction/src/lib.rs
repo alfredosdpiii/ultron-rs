@@ -260,12 +260,19 @@ fn text_user(text: String, timestamp: Option<&Value>) -> Value {
 /// `convertToLlm`: custom agent messages become user messages; `!!` bash executions are dropped.
 /// The custom message type of recalled long-term memory (session-core `auto_memory`).
 pub const RECALLED_MEMORY_TYPE: &str = "ultron.memory";
+/// The custom message type of the active instruction refinements (session-core `auto_refine`).
+pub const REFINEMENTS_TYPE: &str = "ultron.refinements";
 
-/// [`convert_to_llm`] for a summary's conversation (Rust-only): recalled long-term memory is left out. It came from
-/// memory; a summary that repeated it would be retained into memory again as if the session had learned it.
+/// [`convert_to_llm`] for a summary's conversation (Rust-only): recalled long-term memory and the active refinements
+/// are left out. They came from memory and the ledger; a summary that repeated them would be kept or proposed again
+/// as if the session had learned them.
 pub fn convert_for_summary(messages: &[Value]) -> Vec<Value> {
     let recalled = |m: &Value| {
-        role(m) == Some("custom") && m.get("customType").and_then(Value::as_str) == Some(RECALLED_MEMORY_TYPE)
+        role(m) == Some("custom")
+            && matches!(
+                m.get("customType").and_then(Value::as_str),
+                Some(RECALLED_MEMORY_TYPE | REFINEMENTS_TYPE)
+            )
     };
     if !messages.iter().any(recalled) {
         return convert_to_llm(messages);
