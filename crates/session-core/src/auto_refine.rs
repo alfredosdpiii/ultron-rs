@@ -11,7 +11,8 @@
 //!   the context shows since its last compaction, the run opens with one `ultron.refinements` custom message listing
 //!   them (on the branch, like recalled memory, so the prompt cache holds). The summarizer never sees it (compaction
 //!   `convert_for_summary`).
-//! - Both run only while the `refine.auto` setting is on (default on); off, the session runs the unmodified harness.
+//! - Both run only while the `refine.auto` setting is on (default on) and `ULTRON_AUTO_REFINE` is not `off` (tests
+//!   that count requests turn it off); off, the session runs the unmodified harness.
 
 use serde_json::{Value, json};
 use services::{Branch, BranchSource, LocalServices};
@@ -89,9 +90,11 @@ pub struct AutoRefine {
 }
 
 impl AutoRefine {
-    pub fn new(settings: &Value) -> AutoRefine {
+    /// From the merged `settings` (`refine.auto`) and `ULTRON_AUTO_REFINE` (`off`, `0`, `false`: off).
+    pub fn new(settings: &Value, env: Option<&str>) -> AutoRefine {
+        let env_off = env.is_some_and(|v| ["off", "0", "false"].contains(&v.trim().to_lowercase().as_str()));
         AutoRefine {
-            on: settings["refine"]["auto"].as_bool().unwrap_or(true),
+            on: !env_off && settings["refine"]["auto"].as_bool().unwrap_or(true),
             last_pass: Mutex::new(None),
         }
     }
@@ -398,8 +401,9 @@ mod tests {
 
     #[test]
     fn auto_refine_follows_the_setting_and_cools_down() {
-        assert!(!AutoRefine::new(&json!({"refine": {"auto": false}})).start_pass());
-        let auto = AutoRefine::new(&json!({}));
+        assert!(!AutoRefine::new(&json!({"refine": {"auto": false}}), None).start_pass());
+        assert!(!AutoRefine::new(&json!({}), Some("off")).on);
+        let auto = AutoRefine::new(&json!({}), Some("1"));
         assert!(auto.on);
         assert!(auto.start_pass());
         assert!(!auto.start_pass(), "one pass per cooldown");

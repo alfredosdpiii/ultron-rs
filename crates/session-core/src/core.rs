@@ -1090,7 +1090,8 @@ impl Core {
         let auto_compaction = runtime.config.settings["compaction"]["enabled"] != false;
         let (env_var, async_events) = (env.var.clone(), runtime.config.async_events);
         let auto_memory = crate::auto_memory::AutoMemory::new(&runtime.config.settings, runtime.hindsight_explicit);
-        let auto_refine = crate::auto_refine::AutoRefine::new(&runtime.config.settings);
+        let auto_refine =
+            crate::auto_refine::AutoRefine::new(&runtime.config.settings, (env_var)("ULTRON_AUTO_REFINE").as_deref());
         let mut core = Core {
             model_unavailable,
             loki_notice,
