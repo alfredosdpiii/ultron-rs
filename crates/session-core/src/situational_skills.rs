@@ -23,7 +23,7 @@
 //! `/engineering off` stops it at once.
 //!
 //! Two skills follow the shape of the work, not a path: [`MANY_FILES_SKILL`] once a lane has changed [`MANY_FILES`]
-//! files, and [`SHIP_SKILL`] when a lane's shell command commits, pushes or opens a pull request.
+//! files, and [`SHIP_SKILL`] as the refusal of a lane's first command that commits, pushes or opens a pull request.
 
 use host::file_hooks::{CellChanges, CellObserver, inside};
 use kernel_apis::memory_records::Glob;
@@ -116,6 +116,32 @@ fn ships(command: &str) -> bool {
     SHIP.is_match(command)
 }
 
+/// `text` whole when it fits [`MAX_TEXT_CHARS`]; otherwise its paragraphs up to the bound, the headings of the
+/// sections left out, and where to read them (a pointer alone was not followed).
+pub fn excerpt(text: &str, file: &str) -> String {
+    if text.chars().count() <= MAX_TEXT_CHARS {
+        return text.to_string();
+    }
+    let bound = text.char_indices().nth(MAX_TEXT_CHARS).map_or(text.len(), |(at, _)| at);
+    let mut cut = text[..bound].rfind("\n\n").unwrap_or(bound);
+    // A heading kept without its body goes with the sections left out.
+    while let Some(at) = text[..cut].rfind("\n\n")
+        && text[at + 2..cut].starts_with('#')
+    {
+        cut = at;
+    }
+    let rest: Vec<&str> = text[cut..]
+        .lines()
+        .filter(|line| line.starts_with("## "))
+        .map(|line| line.trim_start_matches("## "))
+        .collect();
+    format!(
+        "{}\n\n[The rest, {}, is in {file}: read it before you act on it.]",
+        text[..cut].trim_end(),
+        rest.join(" · ")
+    )
+}
+
 /// One rule: a change to a file matching `paths` brings `skill`.
 pub struct Rule {
     pub skill: String,
@@ -198,11 +224,7 @@ impl SituationalSkills {
         // A skill that is not loaded (renamed, `--no-skills`) is given to nobody, and asked for again next time.
         let (file, text) = (self.resolve)(skill)?;
         given.insert((lane.to_string(), skill.to_string()));
-        Some(if text.chars().count() > MAX_TEXT_CHARS {
-            format!("{head} Read {file} and follow it.")
-        } else {
-            format!("{head}\n{}", text.trim())
-        })
+        Some(format!("{head}\n{}", excerpt(text.trim(), &file)))
     }
 
     /// [`MANY_FILES_SKILL`] once `lane` has changed [`MANY_FILES`] files; it does not count toward [`PER_CELL`].
@@ -267,12 +289,17 @@ impl CellObserver for SituationalSkills {
         self.text_for(lane, &paths)
     }
 
-    fn before_shell(&self, command: &str, lane: &str) -> Vec<String> {
+    /// The lane's first commit or push is refused once, with [`SHIP_SKILL`]: given after it ran, the check came
+    /// too late to shape it. Running the same command again goes through.
+    fn before_shell(&self, command: &str, lane: &str) -> Option<String> {
         if !ships(command) {
-            return Vec::new();
+            return None;
         }
-        let head = format!("[skill] You commit or push: {SHIP_SKILL} applies before the change ships.");
-        self.give(lane, SHIP_SKILL, head).into_iter().collect()
+        let head = format!(
+            "{SHIP_SKILL} comes first: check what this change could break outside its diff, then run the command \
+             again (it is refused once per lane)."
+        );
+        self.give(lane, SHIP_SKILL, head)
     }
 }
 

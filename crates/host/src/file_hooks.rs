@@ -121,9 +121,9 @@ pub trait CellObserver: Send + Sync {
     }
     /// The files a cell on `lane` (working in `cwd`) changed, checked writes included; lines for the model.
     fn cell_changed(&self, changes: &CellChanges, cwd: &Path, lane: &str) -> Vec<String>;
-    /// A shell command a cell on `lane` is about to run; lines for the model, with that cell's result.
-    fn before_shell(&self, _command: &str, _lane: &str) -> Vec<String> {
-        Vec::new()
+    /// A shell command a cell on `lane` is about to run: `Some(reason)` refuses it, with the reason for the model.
+    fn before_shell(&self, _command: &str, _lane: &str) -> Option<String> {
+        None
     }
 }
 
@@ -723,15 +723,11 @@ impl FileHooks {
             .filter(|observer| observer.enabled())
             .cloned()
             .collect();
-        let found: Vec<String> = observers
+        if let Some(reason) = observers
             .iter()
-            .flat_map(|observer| observer.before_shell(command, lane))
-            .collect();
-        if !found.is_empty() {
-            lock(&self.inner.pending)
-                .entry(lane.to_string())
-                .or_default()
-                .extend(found);
+            .find_map(|observer| observer.before_shell(command, lane))
+        {
+            return Some(reason);
         }
         let guards: Vec<Registered> = self
             .guards()

@@ -124,41 +124,56 @@ fn session_core_situational_skills_bring_the_playbook_at_the_third_file_and_the_
     assert!(rigor(&skills.cell_changed(&changes(&["c.txt"]), cwd, "main")));
     assert!(!rigor(&skills.cell_changed(&changes(&["d.txt"]), cwd, "main")), "once");
 
-    assert!(skills.before_shell("git status && git diff", "main").is_empty());
-    assert!(skills.before_shell("cargo test", "main").is_empty());
+    assert_eq!(skills.before_shell("git status && git diff", "main"), None);
+    assert_eq!(skills.before_shell("cargo test", "main"), None);
     for command in [
         "git commit -qm x",
         "git -C ../wt push origin main",
         "gh pr create --fill",
     ] {
         let fresh = observer(json!({}), Arc::new(AtomicBool::new(true)));
-        assert_eq!(
-            fresh.before_shell(command, "main"),
-            [
-                "[skill] You commit or push: blast-radius applies before the change ships.\n# blast-radius\n\n\
-              The text of blast-radius."
-            ],
-            "{command}"
+        let refused = fresh.before_shell(command, "main").unwrap_or_default();
+        assert!(
+            refused.starts_with("blast-radius comes first") && refused.contains("The text of blast-radius."),
+            "{command}: {refused}"
         );
-        assert!(fresh.before_shell(command, "main").is_empty(), "once: {command}");
+        assert_eq!(fresh.before_shell(command, "main"), None, "refused once: {command}");
     }
 }
 
 #[test]
-fn session_core_situational_skills_name_a_long_or_missing_skill_differently() {
+fn session_core_situational_skills_excerpt_a_long_skill_and_skip_a_missing_one() {
     let settings = json!({"situationalSkills": [
         {"skill": "missing", "paths": ["**/*.rs"]},
         {"skill": "long", "paths": ["**/*.rs"], "situation": "You changed Rust"},
     ]});
+    let long = format!(
+        "# Long\n\nRead the request, pick a playbook.\n\n## Rules\n\n{}\n\n## Playbooks\n\n{}\n\n## Comments\n\nnone",
+        "r".repeat(3000),
+        "p".repeat(3000)
+    );
     let skills = SituationalSkills::new(
         rules(&settings),
-        Box::new(|name: &str| skill_text(name).map(|(file, _)| (file, "x".repeat(4001)))),
+        Box::new(move |name: &str| skill_text(name).map(|(file, _)| (file, long.clone()))),
         Box::new(|| true),
     );
-    assert_eq!(
-        skills.cell_changed(&changes(&["src/lib.rs"]), Path::new("/repo"), "main"),
-        ["[skill] You changed Rust (src/lib.rs): long applies from here on. Read /skills/long/SKILL.md and follow it."],
-        "a skill that is not loaded is skipped; a long one is named with its file"
+    let given = skills.cell_changed(&changes(&["src/lib.rs"]), Path::new("/repo"), "main");
+    assert_eq!(given.len(), 1, "a skill that is not loaded is skipped: {given:?}");
+    let text = &given[0];
+    assert!(
+        text.starts_with(
+            "[skill] You changed Rust (src/lib.rs): long applies from here on.\n# Long\n\nRead the request"
+        )
+    );
+    assert!(text.contains(&"r".repeat(3000)), "whole paragraphs up to the bound");
+    assert!(
+        !text.contains('p'.to_string().repeat(10).as_str()),
+        "not the paragraph past it"
+    );
+    assert!(
+        text.ends_with("[The rest, Playbooks · Comments, is in /skills/long/SKILL.md: read it before you act on it.]"),
+        "{}",
+        &text[text.len() - 120..]
     );
 }
 
