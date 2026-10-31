@@ -79,7 +79,10 @@ impl Summarizer {
         });
         let request = compaction::SummaryRequest {
             context,
-            max_tokens: self.model.max_tokens.clamp(1, 2048),
+            max_tokens: match self.model.max_tokens {
+                0 => 2048,
+                max => max.min(2048),
+            },
             reasoning: None,
             session_id: Some(self.session_id.clone()),
         };

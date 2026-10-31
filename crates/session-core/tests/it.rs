@@ -15,6 +15,8 @@ mod agents_children;
 mod async_events;
 #[path = "auto_compaction.rs"]
 mod auto_compaction;
+#[path = "auto_refine.rs"]
+mod auto_refine;
 #[path = "budget_gate.rs"]
 mod budget_gate;
 #[path = "budget_line.rs"]
