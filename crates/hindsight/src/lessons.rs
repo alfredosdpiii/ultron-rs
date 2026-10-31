@@ -6,12 +6,17 @@ use crate::backend::{HindsightBackend, HindsightOptions};
 use crate::transport::Transport;
 use kernel::Signal;
 use kernel_apis::MemoryError;
+use kernel_apis::memory::MemoryBackend;
 use kernel_apis::util::sha256_hex;
 use review::ledger::{FATE_DAYS, Fate, FateKind, Lesson};
 use serde_json::json;
 use std::sync::Arc;
 
 const BANK: &str = "ultron-autoreview";
+const GUIDE_QUERY: &str = "Which findings does this repository's team accept and which do they reject? Name the \
+    passes, categories, files and patterns that produce findings they reject, the kinds of finding they reliably \
+    fix, and the review rules that follow (report, report as a low note, or leave out), each with the evidence \
+    count behind it. Only patterns seen in more than one finding.";
 
 fn repo_identity(repo: &str) -> String {
     sha256_hex(repo.to_lowercase().as_bytes())[..16].to_string()
@@ -37,6 +42,35 @@ impl HindsightLessons {
             backend: HindsightBackend::new(options)?,
             now,
         })
+    }
+
+    /// The learned review guide of `repo`: the mental model `autoreview-<identity>`, which Hindsight rewrites from
+    /// the repository's fates and rules after each consolidation, at most hourly. The first call for a repository
+    /// creates it (its first content arrives in the background); `None` while it has no content.
+    pub fn guide(&self, repo: &str) -> Result<Option<String>, String> {
+        let identity = repo_identity(repo);
+        let id = format!("autoreview-{identity}");
+        let signal = Signal::new();
+        let model = self.backend.mental_model(&id, &signal)?;
+        if model.is_null() {
+            let request = json!({
+                "id": id, "name": format!("Autoreview lessons for {repo}"),
+                "source_query": format!("{GUIDE_QUERY} The repository is {repo}."),
+                "tags": [format!("ultron:autoreview:project:{identity}")], "max_tokens": 1024,
+                "trigger": {
+                    "refresh_after_consolidation": true, "min_refresh_interval_seconds": 3600, "mode": "delta",
+                    "budget": "low", "tags_match": "any_strict",
+                },
+            });
+            self.backend.create_mental_model(&request, &signal)?;
+            return Ok(None);
+        }
+        Ok(model
+            .get("content")
+            .and_then(serde_json::Value::as_str)
+            .map(str::trim)
+            .filter(|content| !content.is_empty())
+            .map(str::to_string))
     }
 
     /// Retains each fate and each rule of `repo`; stops at the first failure (the reviewer logs it, never fails).
@@ -107,5 +141,8 @@ impl HindsightLessons {
 impl review::reviewer::LessonMemory for HindsightLessons {
     fn retain(&self, repo: &str, fates: &[Fate], lessons: &[Lesson]) -> Result<(), String> {
         HindsightLessons::retain(self, repo, fates, lessons).map_err(|error| error.to_string())
+    }
+    fn guide(&self, repo: &str) -> Result<Option<String>, String> {
+        HindsightLessons::guide(self, repo)
     }
 }

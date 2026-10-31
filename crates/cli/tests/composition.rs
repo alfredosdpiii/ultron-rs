@@ -619,7 +619,8 @@ fn cli_composition_auto_memory_recalls_before_a_user_message() {
     assert!(
         first[0].ends_with(
             "\n\nProject brief (written by Hindsight from memory, 2026-10-27):\n## Commands\n- cargo nextest run\n\n\
-             Recalled:\n- (project) Tests here run under nice -n 19. [fact f1]"
+             User brief (across projects) (written by Hindsight from memory, 2026-10-27):\n## Commands\n\
+             - cargo nextest run\n\nRecalled:\n- (project) Tests here run under nice -n 19. [fact f1]"
         ),
         "{first:?}"
     );
@@ -630,7 +631,10 @@ fn cli_composition_auto_memory_recalls_before_a_user_message() {
         .iter()
         .filter(|call| call[0] == "mental_model")
         .count();
-    assert_eq!(briefs, 1, "the brief is read once per context");
+    assert_eq!(
+        briefs, 2,
+        "the project's and the user's briefs are each read once per context"
+    );
     assert_eq!(first[1], "how do I run the tests here");
     // The second run's request extends the first: the memory is where it was, and not added again.
     let second = texts(&requests[1]);

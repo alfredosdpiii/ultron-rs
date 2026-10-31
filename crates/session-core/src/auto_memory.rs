@@ -9,7 +9,8 @@
 //!   the request stays a prefix of the next one (the prompt cache holds) and a replay sends the same bytes; never in
 //!   the system prompt. A failed or slow recall adds nothing and pauses recall for [`PAUSE`]. The first such
 //!   message of a context (at its start and after each compaction) also carries the project's brief, a Hindsight
-//!   mental model of the project and global memories (kernel_apis `MemoryService::project_digest`). Each recalled
+//!   mental model of the project and global memories (kernel_apis `MemoryService::project_digest`), and the user's
+//!   brief, one written from every project's memories (`MemoryService::user_brief`). Each recalled
 //!   entry names its id, so the model can `memory.invalidate` a wrong fact or `memory.forget` a wrong memory. A
 //!   memory whose evidence quoted a file that no longer holds the quote is marked stale (autolith's check, with no
 //!   model call: kernel_apis `memory::staleness`).
@@ -48,18 +49,19 @@ const ENTRY_CHARS: usize = 400;
 /// The longest project brief shown whole.
 const DIGEST_CHARS: usize = 4000;
 
-/// What the context shows since its last compaction: the ids of the recalled memories, and whether the brief.
+/// What the context shows since its last compaction: the ids of the recalled memories, and whether the briefs.
 #[derive(Debug, Default, PartialEq)]
 pub struct Shown {
     pub ids: HashSet<String>,
     pub digest: bool,
 }
 
-/// One recall: the memories found and, at a context's first, the project's brief (`{id, content, refreshedAt}`).
+/// One recall: the memories found and, at a context's first, the briefs with content (the project's, then the
+/// user's; each `{id, content, refreshedAt}`).
 #[derive(Debug, Default)]
 pub struct Recalled {
     pub found: Vec<Value>,
-    pub digest: Option<Value>,
+    pub briefs: Vec<Value>,
 }
 
 /// Whether automatic recall and retain are on for a session, and when recall may run again.
@@ -109,22 +111,29 @@ impl AutoMemory {
         let wanted = RECALL_LIMIT + shown.ids.len().min(RECALL_LIMIT);
         std::thread::spawn(move || {
             if let Some(memory) = stack.memory() {
-                let digest = brief.then(|| memory.project_digest(&cancel).ok().flatten()).flatten();
+                let briefs: Vec<Value> = if brief {
+                    [memory.project_digest(&cancel), memory.user_brief(&cancel)]
+                        .into_iter()
+                        .filter_map(|brief| brief.ok().flatten())
+                        .collect()
+                } else {
+                    Vec::new()
+                };
                 let _ = tx.send(
                     memory
                         .recall_for_turn(&query, wanted, &cancel)
-                        .map(|found| (found, digest)),
+                        .map(|found| (found, briefs)),
                 );
             }
         });
         match rx.recv_timeout(RECALL_TIMEOUT) {
-            Ok(Ok((found, digest))) => Recalled {
+            Ok(Ok((found, briefs))) => Recalled {
                 found: found
                     .into_iter()
                     .filter(|item| item["id"].as_str().is_some_and(|id| !shown.ids.contains(id)))
                     .take(RECALL_LIMIT)
                     .collect(),
-                digest,
+                briefs,
             },
             Ok(Err(_)) | Err(_) => {
                 signal.abort("recall timed out");
@@ -157,7 +166,8 @@ pub fn shown(entries: &[Value]) -> Shown {
                     shown.ids.insert(id.to_string());
                 }
             }
-            shown.digest |= details["digest"].is_string();
+            // A string before the user's brief, the list of brief ids since.
+            shown.digest |= details["digest"].is_string() || details["digest"].is_array();
         }
     }
     shown
@@ -173,7 +183,7 @@ fn cut(text: &str, chars: usize) -> String {
 
 /// The custom message that opens a run with what `recalled` holds; `None` when it holds nothing.
 pub fn recall_message(recalled: &Recalled, timestamp: u64) -> Option<Value> {
-    if recalled.found.is_empty() && recalled.digest.is_none() {
+    if recalled.found.is_empty() && recalled.briefs.is_empty() {
         return None;
     }
     let mut content = "[memory] Long-term memory recalled for the next message. It may be stale or wrong: check it \
@@ -188,16 +198,24 @@ pub fn recall_message(recalled: &Recalled, timestamp: u64) -> Option<Value> {
              or forget it.",
         );
     }
-    if let Some(digest) = &recalled.digest {
-        let refreshed = digest["refreshedAt"].as_str().map(|at| &at[..at.len().min(10)]);
+    for brief in &recalled.briefs {
+        let title = match brief["id"].as_str() {
+            Some(id) if id.starts_with("ultron-user-") => "User brief (across projects)",
+            _ => "Project brief",
+        };
+        let refreshed = brief["refreshedAt"].as_str().map(|at| &at[..at.len().min(10)]);
         content.push_str(&match refreshed {
-            Some(at) => format!("\n\nProject brief (written by Hindsight from memory, {at}):\n"),
-            None => "\n\nProject brief (written by Hindsight from memory):\n".to_string(),
+            Some(at) => format!("\n\n{title} (written by Hindsight from memory, {at}):\n"),
+            None => format!("\n\n{title} (written by Hindsight from memory):\n"),
         });
-        content.push_str(&cut(digest["content"].as_str().unwrap_or("").trim(), DIGEST_CHARS));
+        content.push_str(&cut(brief["content"].as_str().unwrap_or("").trim(), DIGEST_CHARS));
     }
     if !recalled.found.is_empty() {
-        content.push_str(if recalled.digest.is_some() { "\n\nRecalled:" } else { "" });
+        content.push_str(if recalled.briefs.is_empty() {
+            ""
+        } else {
+            "\n\nRecalled:"
+        });
     }
     for item in &recalled.found {
         let text = cut(item["text"].as_str().unwrap_or("").trim(), ENTRY_CHARS);
@@ -214,8 +232,8 @@ pub fn recall_message(recalled: &Recalled, timestamp: u64) -> Option<Value> {
     let ids: Vec<&Value> = recalled.found.iter().map(|item| &item["id"]).collect();
     let scopes: Vec<&Value> = recalled.found.iter().map(|item| &item["scope"]).collect();
     let mut details = json!({"ids": ids, "scopes": scopes});
-    if let Some(digest) = &recalled.digest {
-        details["digest"] = digest["id"].clone();
+    if !recalled.briefs.is_empty() {
+        details["digest"] = recalled.briefs.iter().map(|brief| brief["id"].clone()).collect();
     }
     if stale > 0 {
         details["stale"] = stale.into();
@@ -434,7 +452,7 @@ mod tests {
                 json!({"id": "f1", "text": "Short.", "scope": "project", "memoryId": "m1"}),
                 json!({"id": "f2", "text": long, "scope": "global"}),
             ],
-            digest: None,
+            briefs: Vec::new(),
         };
         let message = recall_message(&recalled, 7).unwrap();
         let content = message["content"].as_str().unwrap();
@@ -453,13 +471,13 @@ mod tests {
     }
 
     #[test]
-    fn auto_memory_message_opens_with_the_brief() {
+    fn auto_memory_message_opens_with_the_briefs() {
+        let project = json!({"id": "ultron-project-p1", "content": "## Commands\n- cargo nextest run\n",
+            "refreshedAt": "2026-10-27T08:00:00+00:00"});
+        let user = json!({"id": "ultron-user-home", "content": "- Wants short answers.", "refreshedAt": null});
         let recalled = Recalled {
             found: vec![json!({"id": "f1", "text": "Tests run under nice.", "scope": "project"})],
-            digest: Some(
-                json!({"id": "ultron-project-p1", "content": "## Commands\n- cargo nextest run\n",
-                "refreshedAt": "2026-10-27T08:00:00+00:00"}),
-            ),
+            briefs: vec![project.clone(), user],
         };
         let message = recall_message(&recalled, 7).unwrap();
         let content = message["content"].as_str().unwrap();
@@ -467,18 +485,21 @@ mod tests {
         assert_eq!(
             rest,
             "Project brief (written by Hindsight from memory, 2026-10-27):\n## Commands\n- cargo nextest run\n\n\
+             User brief (across projects) (written by Hindsight from memory):\n- Wants short answers.\n\n\
              Recalled:\n- (project) Tests run under nice. [fact f1]"
         );
         assert_eq!(
             message["details"],
-            json!({"ids": ["f1"], "scopes": ["project"], "digest": "ultron-project-p1"})
+            json!({"ids": ["f1"], "scopes": ["project"], "digest": ["ultron-project-p1", "ultron-user-home"]})
         );
         let brief_only = Recalled {
             found: Vec::new(),
-            digest: recalled.digest,
+            briefs: vec![project],
         };
         let content = recall_message(&brief_only, 7).unwrap()["content"].clone();
         assert!(content.as_str().unwrap().ends_with("- cargo nextest run"));
+        let shown_now = shown(&[json!({"type": "message", "message": message})]);
+        assert!(shown_now.digest, "a message with briefs counts as showing them");
     }
 
     #[test]
@@ -489,7 +510,7 @@ mod tests {
                     "stale": "src/journal.rs no longer has the quoted text"}),
                 json!({"id": "f2", "text": "Fresh.", "scope": "project"}),
             ],
-            digest: None,
+            briefs: Vec::new(),
         };
         let message = recall_message(&recalled, 7).unwrap();
         let content = message["content"].as_str().unwrap();

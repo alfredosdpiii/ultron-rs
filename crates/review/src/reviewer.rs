@@ -50,6 +50,37 @@ pub use crate::engine::ReviewEngine;
 /// Where fates and rules are also retained (Hindsight).
 pub trait LessonMemory: Send + Sync {
     fn retain(&self, repo: &str, fates: &[Fate], lessons: &[Lesson]) -> Result<(), String>;
+    /// What the memory has learned about reviewing `repo` (which findings its team accepts or rejects, and the rules
+    /// that follow), as a review guide; `None` while it has learned nothing.
+    fn guide(&self, _repo: &str) -> Result<Option<String>, String> {
+        Ok(None)
+    }
+}
+
+/// The learned guide of `repo` written to `scratch` for the engine, when learning is on and the memory has one.
+/// Never fails a review: an error is logged and the review runs without it.
+fn learned_guide(deps: &ReviewerDeps, repo: &str, scratch: &str) -> Option<String> {
+    let memory = deps.lessons.as_ref().filter(|_| deps.config.learn)?;
+    let text = match memory.guide(repo) {
+        Ok(text) => text.filter(|text| !text.trim().is_empty())?,
+        Err(error) => {
+            (deps.log)(&format!("{repo}: the learned review guide was not read: {error}"));
+            return None;
+        }
+    };
+    let path = path_join(&[scratch, "learned-review-lessons.md"]);
+    let body = format!(
+        "# What reviews of {repo} have taught\n\nWritten by memory from the fate of earlier findings in this \
+         repository (accepted or rejected by its team). Weigh it when deciding what to report and at what level.\n\n{}\n",
+        text.trim()
+    );
+    match std::fs::write(&path, body) {
+        Ok(()) => Some(path),
+        Err(error) => {
+            (deps.log)(&format!("{repo}: the learned review guide was not written: {error}"));
+            None
+        }
+    }
 }
 
 /// A prepared test environment (`prepareEnvironment`'s result).
@@ -1528,13 +1559,14 @@ fn review_in(
             spec.insert("testEnvFailures".into(), json!(env.failures));
         }
     }
-    if !deps.config.guides.is_empty() {
-        let guides: Vec<String> = deps
-            .config
-            .guides
-            .iter()
-            .map(|path| expand_path(path, &deps.home))
-            .collect();
+    let mut guides: Vec<String> = deps
+        .config
+        .guides
+        .iter()
+        .map(|path| expand_path(path, &deps.home))
+        .collect();
+    guides.extend(learned_guide(deps, &repo_key(r), scratch));
+    if !guides.is_empty() {
         spec.insert("guides".into(), json!(guides));
     }
     spec.insert("repo".into(), json!(format!("{}/{}", r.owner, r.repo)));

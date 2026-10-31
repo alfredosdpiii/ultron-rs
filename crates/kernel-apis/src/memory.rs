@@ -1470,10 +1470,35 @@ impl MemoryService {
     /// consolidation, at most hourly. `{id, content, refreshedAt}`, or `None` while it has no content. The first
     /// call for a project creates the model, whose first content Hindsight writes in the background.
     pub fn project_digest(&self, signal: &Signal) -> Result<Option<Value>> {
-        let Some(project) = self.tags("project").ok().and_then(|tags| tags.into_iter().next()) else {
+        let Some(identity) = self.identity("project") else {
             return Ok(None);
         };
-        let identity: String = project
+        let tags: Vec<String> = self.read_scopes().into_iter().flat_map(|(_, tags)| tags).collect();
+        let name = format!("Ultron project brief {identity}");
+        self.brief(
+            &format!("ultron-project-{identity}"),
+            &name,
+            DIGEST_QUERY,
+            &tags,
+            signal,
+        )
+    }
+
+    /// The user's brief, like [`Self::project_digest`] but written from the memories of every project (a model with
+    /// no tags reads the whole bank): `ultron-user-<global identity>`, what the user prefers, corrects and asks for
+    /// again and again, which no single project's brief sees.
+    pub fn user_brief(&self, signal: &Signal) -> Result<Option<Value>> {
+        let Some(identity) = self.identity("global") else {
+            return Ok(None);
+        };
+        let name = format!("Ultron user brief {identity}");
+        self.brief(&format!("ultron-user-{identity}"), &name, USER_QUERY, &[], signal)
+    }
+
+    /// The identity in the first tag of `scope` (`ultron:project:<identity>`), lowercase alphanumerics only.
+    fn identity(&self, scope: &str) -> Option<String> {
+        let tag = self.tags(scope).ok()?.into_iter().next()?;
+        let identity: String = tag
             .rsplit(':')
             .next()
             .unwrap_or_default()
@@ -1481,22 +1506,23 @@ impl MemoryService {
             .filter(char::is_ascii_alphanumeric)
             .map(|c| c.to_ascii_lowercase())
             .collect();
-        if identity.is_empty() {
-            return Ok(None);
-        }
-        let id = format!("ultron-project-{identity}");
+        (!identity.is_empty()).then_some(identity)
+    }
+
+    /// The content of the mental model `id`, created from `query` over the memories tagged `tags` on first use.
+    fn brief(&self, id: &str, name: &str, query: &str, tags: &[String], signal: &Signal) -> Result<Option<Value>> {
         let model = self
             .backend
-            .mental_model(&id, signal)
+            .mental_model(id, signal)
             .map_err(|error| MemoryError::of(&error))?;
         if model.is_null() {
-            let tags: Vec<String> = self.read_scopes().into_iter().flat_map(|(_, tags)| tags).collect();
             let request = json!({
-                "id": id, "name": format!("Ultron project brief {identity}"), "source_query": DIGEST_QUERY,
+                "id": id, "name": name, "source_query": query,
                 "tags": tags, "max_tokens": 1024,
                 "trigger": {
                     "refresh_after_consolidation": true, "min_refresh_interval_seconds": 3600, "mode": "delta",
-                    "budget": "low", "tags_match": "any_strict",
+                    // No tags reads the whole bank; strict matching would read nothing.
+                    "budget": "low", "tags_match": if tags.is_empty() { "any" } else { "any_strict" },
                 },
             });
             self.backend
@@ -1946,6 +1972,11 @@ const SCOPES: &[&str] = &["session", "project", "global"];
 const DIGEST_QUERY: &str = "What should a coding agent know before working in this project? Its conventions, the \
     decisions made and why, pitfalls and their fixes, the commands that build, test and run it, and the user's \
     preferences. Leave out finished one-off tasks and progress notes.";
+const USER_QUERY: &str = "What should a coding agent know about this user before working with them in any project? \
+    How they want answers and code (tone, length, style), what they corrected an agent for and what it should do \
+    instead, the requests and procedures they repeat across sessions, and their tools and environment. Only what \
+    holds across projects and was seen more than once or stated by the user; leave out project-specific facts, \
+    one-off tasks and progress notes.";
 
 /// The worker's payload schemas (`Check(prepare | propose | correct | id | why, payload)`).
 fn payload_valid(kind: &str, payload: &Map<String, Value>) -> bool {
