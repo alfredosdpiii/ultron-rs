@@ -326,16 +326,6 @@ fn typescript_extends(raw: Option<&[u8]>) -> Option<HashSet<String>> {
 
 /// `typescript_config_json`: whether a JSON file can change compiler options or module resolution.
 /// An unreadable committed tsconfig.json (comments, say) keeps every JSON file.
-#[cfg(test)]
-mod jsonc_tests {
-    #[test]
-    fn commented_tsconfig_still_names_its_extends() {
-        let raw = b"{\n  // base\n  \"extends\": \"./base\", /* \"./x\" */\n  \"a\": \"//no\",\n}";
-        let names = super::typescript_extends(Some(raw)).expect("parses");
-        assert_eq!(names, ["base".to_string(), "base.json".to_string()].into());
-    }
-}
-
 fn typescript_config_json(name: &str, extends: Option<&HashSet<String>>) -> bool {
     let base = name.rsplit('/').next().unwrap_or(name);
     name.ends_with(".json")
@@ -552,4 +542,14 @@ pub fn typescript_findings(
     }
     warnings.extend(messages);
     Ok(findings)
+}
+
+#[cfg(test)]
+mod jsonc_tests {
+    #[test]
+    fn commented_tsconfig_still_names_its_extends() {
+        let raw = b"{\n  // base\n  \"extends\": \"./base\", /* \"./x\" */\n  \"a\": \"//no\",\n}";
+        let names = super::typescript_extends(Some(raw)).expect("parses");
+        assert_eq!(names, ["base".to_string(), "base.json".to_string()].into());
+    }
 }
