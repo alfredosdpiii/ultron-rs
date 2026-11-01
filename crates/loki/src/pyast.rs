@@ -632,10 +632,12 @@ fn request_tainted_calls(
     let mut calls: Vec<usize> = Vec::new();
     for scope in scopes {
         let walked = tree.walk(scope);
-        if !sanitizers.is_empty()
-            && walked
-                .iter()
-                .any(|&n| tree.kind(n) == "Call" && sanitizers.contains(&last_name(tree.func_text(n))))
+        // Taint starts only at request data, so a scope that reads none has no findings.
+        if !walked.iter().any(|&n| request_source(tree, n))
+            || (!sanitizers.is_empty()
+                && walked
+                    .iter()
+                    .any(|&n| tree.kind(n) == "Call" && sanitizers.contains(&last_name(tree.func_text(n)))))
         {
             continue;
         }

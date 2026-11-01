@@ -681,9 +681,12 @@ fn missing_tool(language: &str, root: &Path) -> Option<&'static str> {
     }
 }
 
-/// `command_output`: non-empty stripped lines of stdout then stderr.
+re!(ANSI_ESCAPE, r"\x1b\[[0-?]*[ -/]*[@-~]");
+
+/// `command_output`: non-empty stripped lines of stdout then stderr, without terminal colors.
 pub fn command_output(stdout: &str, stderr: &str) -> Vec<String> {
-    let text = [stdout, stderr]
+    let parts = [stdout, stderr].map(|p| ANSI_ESCAPE.replace_all(p, "").into_owned());
+    let text = parts
         .iter()
         .map(|p| py::strip(p))
         .filter(|p| !p.is_empty())
