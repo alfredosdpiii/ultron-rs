@@ -30,8 +30,10 @@ state["plan"] = ["frame", "fan out", "aggregate", "report"]
 1. State the done predicate and the artifact or report the swarm must return.
 2. Choose the shape: partition into slices, race N workers on identical briefs, or mix both. For a race or mixed shape,
    declare `first pass`, `rank all` or `best-of` before spawning, and record it (`state["race_rule"] = "best-of"`).
+   Race arms on one model share their mistakes: vary model, prompt or context slice across arms. With a checker (tests, contract) take the first pass or best-of; vote only when nothing can check, and only on arms each likely right.
 3. Pick the worker model. Use the one the user names; otherwise omit `model=` so workers run on the settings default.
-   For a model race, find each arm's model up front and name it in the report. Set the workers' `thinking=` per
+   For a model race, the arms come from `await rlm.race_models()` (/settings -> Models -> Race models) when the user
+   named none; find each arm's model up front and name it in the report. Set the workers' `thinking=` per
    rigor's "Match the effort to the job" (`../rigor/SKILL.md`).
 
 ```python

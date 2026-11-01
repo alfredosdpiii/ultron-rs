@@ -24,6 +24,9 @@ pub struct RlmModelSettings {
     pub frame_thinking: Option<String>,
     /// `rlm.mapTokens`: the token cap of a top-level `rlm.map` that sets none (Rust only); unset or `"off"` is none.
     pub map_tokens: Option<u64>,
+    /// `rlm.raceModels`: the `provider/model` refs subagent races run on, one arm each (Rust only); invalid
+    /// entries are dropped.
+    pub race_models: Vec<String>,
 }
 
 /// `getWorktreeSettings`: the default setup of subagent worktrees (`worktrees.link`, `.copy`, `.setupCommand`).
@@ -198,6 +201,13 @@ impl SettingsManager {
             child_model: model_ref(configured.get("childModel")),
             frame_thinking,
             map_tokens: token_cap(configured.get("mapTokens")),
+            race_models: configured
+                .get("raceModels")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+                .filter_map(|m| model_ref(Some(m)))
+                .collect(),
         }
     }
 

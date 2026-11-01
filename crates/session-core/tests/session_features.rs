@@ -183,13 +183,61 @@ fn session_core_abort_retry_aborts_a_run_waiting_to_retry() {
 
 #[test]
 fn session_core_find_models_answers_the_available_models_like_typescript() {
-    let code =
-        "import json\nprint(json.dumps(await rlm.host_request('rlm.find_models', {})))\nprint(await rlm.find_models())";
+    let code = "import json\nprint(json.dumps(await rlm.host_request('rlm.find_models', {})))\n\
+                print(json.dumps(await rlm.find_models()))";
     let a = actor(in_order(vec![tool("toolu_1", code), text("ok")]), Setup::default());
     a.prompt("models");
+    let results = tool_results(&a.requests()[1]);
+    let output = results[0].as_str().unwrap();
+    let (host, found) = output.split_once('\n').unwrap();
+    // The host's answer matches TypeScript's; the fixture's second line is TypeScript's `[]` (it read `models` from
+    // a plain list), which `rlm.find_models` no longer copies.
+    let recorded = case("find-models")["toolResults"][0].as_str().unwrap();
+    assert_eq!(host, recorded.split_once('\n').unwrap().0);
+    let all: Vec<Value> = serde_json::from_str(host).unwrap();
+    let found: Vec<Value> = serde_json::from_str(found.trim_end()).unwrap();
+    assert!(!found.is_empty());
+    assert_eq!(found, all[..8.min(all.len())]);
+}
+
+#[test]
+fn session_core_find_models_filters_by_every_query_word() {
+    let code = "import json\nprint(json.dumps(await rlm.find_models('opus', limit=2)))\n\
+                print(json.dumps(await rlm.find_models('CLAUDE sonnet 5.5')))";
+    let a = actor(in_order(vec![tool("toolu_1", code), text("ok")]), Setup::default());
+    a.prompt("models");
+    let results = tool_results(&a.requests()[1]);
+    let lines: Vec<Vec<Value>> = results[0]
+        .as_str()
+        .unwrap()
+        .lines()
+        .map(|l| serde_json::from_str(l).unwrap())
+        .collect();
+    assert_eq!(lines[0].len(), 2, "{:?}", lines[0]);
+    assert!(
+        lines[0].iter().all(|m| m["id"].as_str().unwrap().contains("opus")),
+        "{:?}",
+        lines[0]
+    );
+    let ids: Vec<&str> = lines[1].iter().map(|m| m["id"].as_str().unwrap()).collect();
+    assert_eq!(ids, ["claude-sonnet-5-5"]);
+}
+
+#[test]
+fn session_core_race_models_answers_the_known_models_of_the_setting() {
+    let a = actor(
+        in_order(vec![tool("toolu_1", "print(await rlm.race_models())"), text("ok")]),
+        Setup {
+            settings: Some(json!({"rlm": {"raceModels": [
+                "anthropic/claude-opus-5-5", "anthropic/no-such-model", "anthropic/claude-sonnet-5"
+            ]}})),
+            ..Setup::default()
+        },
+    );
+    a.prompt("race");
     assert_eq!(
-        json!(tool_results(&a.requests()[1])),
-        case("find-models")["toolResults"]
+        tool_results(&a.requests()[1]),
+        [json!("['anthropic/claude-opus-5-5', 'anthropic/claude-sonnet-5']")]
     );
 }
 

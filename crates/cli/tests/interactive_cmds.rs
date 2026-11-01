@@ -263,7 +263,18 @@ parity! {
 /// and an unset Ultron sub-agent model under `ultron claude` is the root's subscription model, not the default model.
 #[test]
 fn cli_interactive_settings_models_like_ts() {
-    replay_with(
+    // Rust-only row: "Race models" (rlm.raceModels) under Sub-agent model; the panel grows by it, one blank row less
+    // above. Taken out (with the blank row back) the screen is TypeScript's.
+    let compare = |got: &str, want: &str| {
+        let mut rows: Vec<&str> = got.split('\n').collect();
+        if let Some(i) = rows.iter().position(|r| r.starts_with("  Race models ")) {
+            rows.remove(i);
+            rows.insert(4, "");
+        }
+        let got = rows.join("\n");
+        assert_eq!(got, want, "--- got\n{got}\n--- want\n{want}");
+    };
+    replay_full(
         "settings-models",
         &[
             (
@@ -279,6 +290,8 @@ fn cli_interactive_settings_models_like_ts() {
                 "  default, as /model does. Saved default: none.",
             ),
         ],
+        None,
+        Some(&compare),
     );
 }
 

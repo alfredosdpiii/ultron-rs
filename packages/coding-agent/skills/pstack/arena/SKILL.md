@@ -27,14 +27,16 @@ Every candidate gets the same prompt, so the prompt is the contract.
 3. Pick the runners: by default one per model family, so the differences between candidates come from different
    models. Same model N times when the work is generation-bound rather than judgment-sensitive; more runners when the
    arena covers several design directions. Set each runner's `thinking=` per rigor's "Match the effort to the job"
-   (`../rigor/SKILL.md`). Use models the user names; otherwise query families:
+   (`../rigor/SKILL.md`). Use models the user names; else the Race models set in /settings (`rlm.race_models()`);
+   else query families:
 
 ```python
-runners = []
-for q in ["opus", "gpt", "gemini"]:  # example family queries
-    ms = await rlm.find_models(q, limit=1)
-    if ms:
-        runners.append(f"{ms[0]['provider']}/{ms[0]['id']}")
+runners = await rlm.race_models()  # /settings -> Models -> Race models; [] when none
+if not runners:
+    for q in ["opus", "gpt", "gemini"]:  # example family queries
+        ms = await rlm.find_models(q, limit=1)
+        if ms:
+            runners.append(f"{ms[0]['provider']}/{ms[0]['id']}")
 while 0 < len(runners) < 2:  # an arena of one is not an arena: repeat what resolved
     runners.append(runners[0])
 runners = runners or [None]  # None: the settings default

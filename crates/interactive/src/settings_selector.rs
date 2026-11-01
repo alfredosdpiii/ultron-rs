@@ -23,6 +23,8 @@ const DEFAULT_CLAUDE_MODEL: &str = "claude-opus-5-5";
 const CLAUDE_CODE: &str = "claude-code";
 const CLEAR_OVERRIDE: &str = "__clear__";
 const GROUP_PREFIX: &str = "\u{0}group:";
+/// The Models row whose picker toggles models in a list (`rlm.raceModels`) instead of choosing one.
+const RACE_MODELS: &str = "rlm.raceModels";
 const AUTOMATIC_THEME: &str = "/";
 const HTTP_IDLE: [(&str, u64); 5] = [
     ("30 sec", 30_000),
@@ -129,6 +131,15 @@ impl SettingsInput {
     }
     fn text(&self, key: &str) -> Option<String> {
         self.get(key).as_str().filter(|s| !s.is_empty()).map(str::to_string)
+    }
+    /// `rlm.raceModels`: the picked `provider/model` refs, in order.
+    fn race_models(&self) -> Vec<String> {
+        self.get(RACE_MODELS)
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|v| v.as_str().map(str::to_string))
+            .collect()
     }
 }
 
@@ -1154,6 +1165,17 @@ impl SettingsSelector {
                 child.clone(),
             ),
             row(
+                RACE_MODELS,
+                "Race models",
+                "Models that subagent races (arena, swarm model races) run on, one arm each. Pick to toggle; none: the skills choose.",
+                match c.race_models() {
+                    picked if picked.is_empty() => "none (skills choose)".into(),
+                    picked => picked.join(", "),
+                },
+                with(plain("", "Clear"), &all),
+                None,
+            ),
+            row(
                 "rlm.frameThinking",
                 "Frame thinking",
                 "Thinking level of inference frames (claude-code frames pass it as --effort).",
@@ -1275,9 +1297,11 @@ impl SettingsSelector {
     }
 
     fn picker_items(&self, row: &ModelRow) -> Vec<SelectItem> {
+        let race = (row.id == RACE_MODELS).then(|| self.input.race_models());
+        let on = |v: &String| race.as_ref().map_or(*v == row.current, |r| r.contains(v));
         let mark = |(v, l, d, _): &ModelChoice| SelectItem {
             value: v.clone(),
-            label: format!("{}{l}", if *v == row.current { "✓ " } else { "  " }),
+            label: format!("{}{l}", if on(v) { "✓ " } else { "  " }),
             description: d.clone(),
         };
         let mut items: Vec<SelectItem> = row.choices.iter().filter(|c| c.3.is_none()).map(mark).collect();
@@ -1817,7 +1841,24 @@ impl SettingsSelector {
                     return None;
                 }
                 let row = self.model_rows().into_iter().find(|r| r.id == id)?;
-                let event = if id == "session" {
+                let event = if id == RACE_MODELS {
+                    // Toggles `value` (Clear empties the list); the picker reopens below so several can be toggled.
+                    let mut picked = self.input.race_models();
+                    if value.is_empty() {
+                        picked.clear();
+                    } else if let Some(i) = picked.iter().position(|m| *m == value) {
+                        picked.remove(i);
+                    } else {
+                        picked.push(value.clone());
+                    }
+                    let stored = if picked.is_empty() { Value::Null } else { json!(picked) };
+                    set_path(&mut self.input.settings, &id, stored);
+                    SettingsEvent::ModelSetting {
+                        key: id.clone(),
+                        label: row.label.clone(),
+                        value: picked.join(", "),
+                    }
+                } else if id == "session" {
                     if let Some(m) = self.input.models.iter().find(|m| model_ref(m) == value) {
                         self.input.session = Some(m.clone());
                     }
@@ -1849,6 +1890,22 @@ impl SettingsSelector {
                             list.update(&row.id, &shown);
                         }
                     }
+                }
+                if id == RACE_MODELS
+                    && let Some(row) = self.model_rows().into_iter().find(|r| r.id == id)
+                {
+                    self.stack.push(Sub::Select {
+                        menu: SelectSubmenu::new(
+                            Rc::clone(&self.theme),
+                            self.keys.clone(),
+                            (&row.label, &row.description),
+                            self.picker_items(&row),
+                            &value,
+                            true,
+                            (12, 46),
+                        ),
+                        kind: SubKind::ModelPick(id),
+                    });
                 }
                 Some(event)
             }
@@ -2192,6 +2249,63 @@ mod tests {
             ("3M", &["off".to_string(), "3M".to_string()][..])
         );
         assert_eq!(row(&s, "map-token-cap").0, "off");
+    }
+
+    /// Race models: picking toggles a model in `rlm.raceModels` and keeps the picker open with every picked model
+    /// marked; Clear empties the list (removes the key); the row shows the list or "none (skills choose)".
+    #[test]
+    fn settings_race_models_toggle_in_the_picker() {
+        let display = |s: &SettingsSelector| {
+            s.model_rows()
+                .into_iter()
+                .find(|r| r.id == RACE_MODELS)
+                .unwrap()
+                .display
+        };
+        let marked = |s: &SettingsSelector| {
+            let row = s.model_rows().into_iter().find(|r| r.id == RACE_MODELS).unwrap();
+            s.picker_items(&row)
+                .into_iter()
+                .filter(|i| i.label.starts_with("✓ "))
+                .map(|i| i.value)
+                .collect::<Vec<_>>()
+        };
+        let pick = |s: &mut SettingsSelector, value: &str| {
+            let event = s.picked(SubKind::ModelPick(RACE_MODELS.into()), value.into());
+            assert!(
+                matches!(s.stack.last(), Some(Sub::Select { kind: SubKind::ModelPick(id), .. }) if id == RACE_MODELS),
+                "the picker stays open"
+            );
+            event
+        };
+        let haiku = "anthropic/claude-haiku-4-5";
+        let opus = "claude-code/claude-opus-5-5";
+        let mut s = selector(json!({}));
+        assert_eq!(display(&s), "none (skills choose)");
+        let event = pick(&mut s, haiku);
+        assert_eq!(
+            event,
+            Some(SettingsEvent::ModelSetting {
+                key: RACE_MODELS.into(),
+                label: "Race models".into(),
+                value: haiku.into()
+            })
+        );
+        pick(&mut s, opus);
+        assert_eq!(s.input.get(RACE_MODELS), &json!([haiku, opus]));
+        assert_eq!(display(&s), format!("{haiku}, {opus}"));
+        assert_eq!(marked(&s), [haiku, opus]);
+        // Toggle off.
+        let event = pick(&mut s, haiku);
+        assert!(matches!(event, Some(SettingsEvent::ModelSetting { value, .. }) if value == opus));
+        assert_eq!(s.input.get(RACE_MODELS), &json!([opus]));
+        assert_eq!(marked(&s), [opus]);
+        // Clear.
+        let event = pick(&mut s, "");
+        assert!(matches!(event, Some(SettingsEvent::ModelSetting { value, .. }) if value.is_empty()));
+        assert_eq!(s.input.get(RACE_MODELS), &Value::Null);
+        assert_eq!(display(&s), "none (skills choose)");
+        assert!(marked(&s).is_empty());
     }
 
     #[test]

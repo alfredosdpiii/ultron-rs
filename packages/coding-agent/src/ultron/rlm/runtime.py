@@ -276,7 +276,7 @@ class RLMNamespace:
 
     async def find_models(self, query: str = "", limit: int = 8) -> list[dict[str, Any]]:
         result = await self._bridge.request("rlm.find_models", {"query": query, "limit": limit})
-        return result.get("models", []) if isinstance(result, dict) else []
+        return _matching_models(result, query, limit)
 
     async def host_request(self, request_type: str, payload: dict[str, Any] | None = None) -> Any:
         return await self._bridge.request(request_type, payload)
@@ -2303,6 +2303,28 @@ def _exit_words(exit_code: int | None, exit_note: str | None) -> str:
 def _bash_exit_lines(exit_code: int | None, notes: dict[str, Any]) -> str:
     sandbox_note = notes.get("sandbox_note")
     return (f"\n{sandbox_note}" if sandbox_note else "") + f"\n[{_exit_words(exit_code, notes.get('exit_note'))}]"
+
+
+# Below every frozen fixture's traceback line (crates/kernel and crates/cli fixtures pin runtime.py line numbers).
+def _matching_models(result: Any, query: str, limit: int) -> list[dict[str, Any]]:
+    """The host's model list filtered to those whose provider, id or name holds every word of `query`."""
+    words = query.lower().split()
+    # ponytail: catalog order, no ranking; rank by match quality if callers need best-first.
+    found = [
+        m for m in (result if isinstance(result, list) else [])
+        if isinstance(m, dict)
+        and all(w in " ".join(str(m.get(k, "")) for k in ("provider", "id", "name")).lower() for w in words)
+    ]
+    return found[:max(limit, 0)]
+
+
+async def _race_models(self: RLMNamespace) -> list[str]:
+    """Models the user picked in /settings for subagent races (arena, swarm model races); [] when none."""
+    result = await self._bridge.request("rlm.race_models", {})
+    return [m for m in result if isinstance(m, str)] if isinstance(result, list) else []
+
+
+RLMNamespace.race_models = _race_models
 
 
 if __name__ == "__main__":

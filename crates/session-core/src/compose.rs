@@ -317,6 +317,16 @@ impl Config {
         )
     }
 
+    /// `rlm.race_models`: `rlm.raceModels` (/settings -> Models) read now, keeping the refs that name a known model.
+    pub fn race_models(&self) -> Value {
+        let picked = (self.settings_reader())().rlm_model_settings().race_models;
+        picked
+            .into_iter()
+            .filter(|spec| spec.split_once('/').is_some_and(|(p, id)| self.model(p, id).is_some()))
+            .map(Value::String)
+            .collect()
+    }
+
     /// Refuses a spawn's `model=` unless it names a model of the built-in catalog or models.json.
     fn model_check(self: &Arc<Self>) -> delegation::host::ModelCheck {
         let config = self.clone();
@@ -2194,6 +2204,9 @@ impl HostHandler for Router {
         // The worker answers this itself, before the host (session-worker.ts `hostHandler`).
         if kind == "rlm.find_models" {
             return Ok(self.config.find_models());
+        }
+        if kind == "rlm.race_models" {
+            return Ok(self.config.race_models());
         }
         if let Some(swarm) = &self.swarm
             && let Some(result) = swarm.handle(&self.lane, kind, &payload, signal)

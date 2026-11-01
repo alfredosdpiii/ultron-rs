@@ -23,6 +23,7 @@
 3. **Author one organic prompt.** What a user would type, with no leakage of what is measured.
 4. **Run N candidates in parallel on different models**, per `../arena/SKILL.md`: one `rlm.spawn` per candidate with
    the same prompt, each in its own sanitized dir, `model=` from different `rlm.find_models` results.
+   Size the sample before trusting a pass rate: n >= ln(2/δ)/(2ε²) runs (Hoeffding); ±10% at 95% needs ~185, ±20% ~46. Fewer runs: report the interval, not a winner.
 5. **Judge blind on a different model family**, per `../arena/SKILL.md`: one `rlm.infer` frame with the rubric and the
    labeled outputs, for example `contract={"scores": dict, "verdict": str, "reasons": str}`.
 6. **Verify the chain from evidence, not self-report.** What each candidate changed (its worktree result's

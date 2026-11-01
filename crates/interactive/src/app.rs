@@ -3484,6 +3484,9 @@ impl App {
             Some(SettingsEvent::ModelSetting { key, label, value }) => {
                 let stored = if value.is_empty() {
                     Value::Null
+                } else if key == "rlm.raceModels" {
+                    // The selector joins the toggled list with ", " (model refs hold no spaces).
+                    Value::from(value.split(", ").collect::<Vec<_>>())
                 } else {
                     Value::String(value.clone())
                 };
@@ -3492,6 +3495,7 @@ impl App {
                     "rlm.frameModel" | "rlm.frameThinking" => Some("the next frame"),
                     "review.model" => Some("the next /review"),
                     "rlm.childModel" => Some("the next sub-agent"),
+                    "rlm.raceModels" => Some("the next race"),
                     _ => None,
                 };
                 let when = match next {
@@ -3499,7 +3503,11 @@ impl App {
                     None if key.starts_with("claudeCode.") => "applies when ultron claude next starts".to_string(),
                     None => "applies to the running session".to_string(),
                 };
-                let shown = if value.is_empty() { "default".to_string() } else { value };
+                let shown = match value.is_empty() {
+                    true if key == "rlm.raceModels" => "none".to_string(),
+                    true => "default".to_string(),
+                    false => value,
+                };
                 self.show_status(&format!("{label}: {shown} ({when})"));
             }
             None => {}

@@ -255,3 +255,32 @@ fn config_rlm_map_tokens_setting() {
     }
     assert_eq!(manager(dir.path(), &json!({})).rlm_model_settings().map_tokens, None);
 }
+
+/// `rlm.raceModels`: an array of `provider/model` refs; invalid entries are dropped, anything else is none.
+#[test]
+fn config_rlm_race_models_setting() {
+    let dir = tempfile::tempdir().unwrap();
+    let race_models = |value: Value| {
+        manager(dir.path(), &json!({"rlm": {"raceModels": value}}))
+            .rlm_model_settings()
+            .race_models
+    };
+    assert_eq!(
+        race_models(json!([
+            "anthropic/claude-opus-5",
+            " openai/gpt-5 ",
+            "bogus",
+            "",
+            3,
+            "a/b c"
+        ])),
+        vec!["anthropic/claude-opus-5".to_string(), "openai/gpt-5".to_string()]
+    );
+    assert!(race_models(json!("anthropic/claude-opus-5")).is_empty());
+    assert!(
+        manager(dir.path(), &json!({}))
+            .rlm_model_settings()
+            .race_models
+            .is_empty()
+    );
+}
