@@ -361,7 +361,8 @@ impl ScheduleModule {
         Ok(self.all()?.iter().filter(|s| s.active()).map(Schedule::entry).collect())
     }
 
-    fn put(&self, schedule: &Schedule) -> Result<(), String> {
+    /// Write `schedule` as it is (a schedule the server keeps itself, such as the durable instance's dream).
+    pub fn put(&self, schedule: &Schedule) -> Result<(), String> {
         self.store.set(&schedule.id, &schedule.to_json())?;
         if let Some(listener) = &self.listener {
             listener(self.entries()?);

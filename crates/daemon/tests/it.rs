@@ -7,6 +7,8 @@
 
 #[path = "agent_markers.rs"]
 mod agent_markers;
+#[path = "dream.rs"]
+mod dream;
 #[path = "extension_ui.rs"]
 mod extension_ui;
 #[path = "fixture.rs"]
