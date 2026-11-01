@@ -148,7 +148,9 @@ impl Home {
             .env("ULTRON_SERVER_DIR", self.server_dir())
             .env("ANTHROPIC_API_KEY", "test-key")
             .env("NO_COLOR", "1")
-            .env("TZ", "UTC");
+            .env("TZ", "UTC")
+            // The durable instance's nightly dream session (daemon::dream) would be one more session in its store.
+            .env("ULTRON_DREAM", "off");
         command
     }
 
