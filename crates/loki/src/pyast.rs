@@ -617,7 +617,7 @@ fn request_tainted_calls(
     tree: &Tree,
     sink: impl Fn(&str) -> bool,
     arguments: impl Fn(usize) -> Vec<usize>,
-    sanitizers: &[&str],
+    sanitizer: impl Fn(&str) -> bool,
 ) -> Vec<usize> {
     let mut scopes = vec![0usize];
     scopes.extend(
@@ -634,10 +634,9 @@ fn request_tainted_calls(
         let walked = tree.walk(scope);
         // Taint starts only at request data, so a scope that reads none has no findings.
         if !walked.iter().any(|&n| request_source(tree, n))
-            || (!sanitizers.is_empty()
-                && walked
-                    .iter()
-                    .any(|&n| tree.kind(n) == "Call" && sanitizers.contains(&last_name(tree.func_text(n)))))
+            || walked
+                .iter()
+                .any(|&n| tree.kind(n) == "Call" && sanitizer(last_name(tree.func_text(n))))
         {
             continue;
         }
@@ -902,7 +901,7 @@ pub fn python_rules(text: &Text) -> Result<Vec<crate::rules::Finding>, CheckErro
                 .chain(keyword_values(call).into_iter().map(|(_, v)| v))
                 .collect()
         },
-        &PATH_SANITIZERS,
+        |name| PATH_SANITIZERS.contains(&name),
     );
     for call in traversal {
         findings.push((
@@ -933,7 +932,7 @@ pub fn python_rules(text: &Text) -> Result<Vec<crate::rules::Finding>, CheckErro
                 )
                 .collect()
         },
-        &[],
+        |_| false,
     );
     for call in ssrf {
         findings.push((
@@ -942,7 +941,237 @@ pub fn python_rules(text: &Text) -> Result<Vec<crate::rules::Finding>, CheckErro
             at(call)?,
         ));
     }
+    for &node in &walked {
+        if tree.kind(node) == "Assign" {
+            if tree
+                .node(node, "value")
+                .and_then(|v| tree.constant(v))
+                .is_some_and(|c| c.repr == "False")
+                && tree
+                    .list(node, "targets")
+                    .iter()
+                    .any(|&t| tree.kind(t) == "Attribute" && tree.str(t, "attr") == Some("check_hostname"))
+            {
+                findings.push(("loki/tls-verification", jsrules::TLS_VERIFICATION.into(), at(node)?));
+            }
+            continue;
+        }
+        if tree.kind(node) != "Call" {
+            continue;
+        }
+        let name = tree.func_text(node);
+        if SQL_CALLS.contains(&last_name(name))
+            && let Some(&first) = tree.list(node, "args").first()
+            && built_sql(tree, first)
+        {
+            findings.push(("loki/sql-injection", jsrules::SQL_QUERY.into(), at(node)?));
+        }
+        if unsafe_yaml(tree, node) {
+            findings.push((
+                "loki/unsafe-deserialization",
+                format!(
+                    "unsafe deserialization: {name} without SafeLoader can build arbitrary Python objects; use yaml.safe_load"
+                ),
+                at(node)?,
+            ));
+        }
+        if tls_unverified(tree, node) {
+            findings.push(("loki/tls-verification", jsrules::TLS_VERIFICATION.into(), at(node)?));
+        }
+    }
+    let first = |call: usize| tree.list(call, "args").into_iter().take(1).collect::<Vec<_>>();
+    for call in request_tainted_calls(
+        tree,
+        |name| ["eval", "exec", "compile"].contains(&name),
+        first,
+        |_| false,
+    ) {
+        findings.push((
+            "loki/code-eval",
+            format!(
+                "dynamic code execution: non-literal source passed to {}",
+                tree.func_text(call)
+            ),
+            at(call)?,
+        ));
+    }
+    for call in request_tainted_calls(tree, deserialize_call, first, |_| false) {
+        findings.push((
+            "loki/unsafe-deserialization",
+            format!(
+                "unsafe deserialization: request data passed to {} can run arbitrary code; use JSON or verify a signature first",
+                tree.func_text(call)
+            ),
+            at(call)?,
+        ));
+    }
+    let redirects = request_tainted_calls(
+        tree,
+        |name| {
+            REDIRECT_CALLS.contains(&name) || (REDIRECT_CALLS.contains(&last_name(name)) && !name.starts_with("self."))
+        },
+        |call| {
+            tree.list(call, "args")
+                .into_iter()
+                .take(1)
+                .chain(
+                    keyword_values(call)
+                        .into_iter()
+                        .filter(|(k, _)| k.as_deref() == Some("url"))
+                        .map(|(_, v)| v),
+                )
+                .collect()
+        },
+        |name| REDIRECT_SANITIZER.is_match(name),
+    );
+    for call in redirects {
+        findings.push(("loki/open-redirect", jsrules::OPEN_REDIRECT.into(), at(call)?));
+    }
     Ok(findings)
+}
+
+const SQL_CALLS: [&str; 5] = ["execute", "executemany", "executescript", "raw", "text"];
+const REDIRECT_CALLS: [&str; 3] = ["redirect", "RedirectResponse", "HttpResponseRedirect"];
+const UNSAFE_YAML_LOADERS: [&str; 6] = [
+    "Loader",
+    "FullLoader",
+    "UnsafeLoader",
+    "CLoader",
+    "CFullLoader",
+    "CUnsafeLoader",
+];
+const HTTP_CLIENT_METHODS: [&str; 12] = [
+    "get",
+    "post",
+    "put",
+    "patch",
+    "delete",
+    "head",
+    "options",
+    "request",
+    "send",
+    "stream",
+    "Client",
+    "AsyncClient",
+];
+// Text just before a hole that puts it where SQL expects a value, not a clause or name.
+static SQL_VALUE_POSITION: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"(?i)(?:[=<>(,]|\b(?:like|in|values|limit|offset))\s*$").unwrap());
+static SQL_VERB: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)\b(?:select|insert|update|delete)\b").unwrap());
+static PERCENT_HOLE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"%(?:\(\w+\))?[sdifr]").unwrap());
+static FORMAT_HOLE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\{[^{}]*\}").unwrap());
+static REDIRECT_SANITIZER: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"(?i)safe|saniti|valid|allowed|trusted").unwrap());
+
+fn deserialize_call(name: &str) -> bool {
+    name.split_once('.').is_some_and(|(module, call)| {
+        ["pickle", "cPickle", "_pickle", "dill", "marshal"].contains(&module) && ["load", "loads"].contains(&call)
+    })
+}
+
+/// `str(value)` of a `Constant`: the text of a `str`, else its `ascii()`.
+fn constant_text(tree: &Tree, node: usize) -> Option<String> {
+    tree.constant(node)
+        .map(|c| c.text.clone().unwrap_or_else(|| c.repr.clone()))
+}
+
+fn is_add(tree: &Tree, node: usize) -> bool {
+    tree.kind(node) == "BinOp" && tree.node(node, "op").is_some_and(|op| tree.kind(op) == "Add")
+}
+
+/// The operands of a chain of `+` additions.
+fn addends(tree: &Tree, node: usize) -> Vec<usize> {
+    if is_add(tree, node) {
+        let mut out = tree.node(node, "left").map(|l| addends(tree, l)).unwrap_or_default();
+        out.extend(tree.node(node, "right").map(|r| addends(tree, r)).unwrap_or_default());
+        return out;
+    }
+    vec![node]
+}
+
+/// SQL text with a non-constant spliced in where the query expects a value.
+/// Holes in clause or name positions (`WHERE 1=1 {filters}`, `FROM {table}`) pass.
+fn built_sql(tree: &Tree, node: usize) -> bool {
+    let mut befores: Vec<String> = Vec::new();
+    let mut text = String::new();
+    let holes =
+        |text: &str, re: &Regex| -> Vec<String> { re.find_iter(text).map(|m| text[..m.start()].to_string()).collect() };
+    if tree.kind(node) == "JoinedStr" {
+        for value in tree.list(node, "values") {
+            if tree.kind(value) == "FormattedValue" {
+                befores.push(text.clone());
+            } else if let Some(part) = constant_text(tree, value) {
+                text += &part;
+            }
+        }
+    } else if is_add(tree, node) {
+        for item in addends(tree, node) {
+            match constant_text(tree, item) {
+                Some(part) => text += &part,
+                None => befores.push(text.clone()),
+            }
+        }
+    } else if tree.kind(node) == "BinOp" && tree.node(node, "op").is_some_and(|op| tree.kind(op) == "Mod") {
+        if let Some(left) = tree.node(node, "left").and_then(|l| constant_text(tree, l))
+            && tree.node(node, "right").is_some_and(|r| tree.kind(r) != "Constant")
+        {
+            befores = holes(&left, &PERCENT_HOLE);
+            text = left;
+        }
+    } else if tree.kind(node) == "Call"
+        && let Some(func) = tree.node(node, "func")
+        && tree.kind(func) == "Attribute"
+        && tree.str(func, "attr") == Some("format")
+        && let Some(format) = tree.node(func, "value").and_then(|v| constant_text(tree, v))
+        && !(tree.list(node, "args").is_empty() && tree.list(node, "keywords").is_empty())
+    {
+        befores = holes(&format, &FORMAT_HOLE);
+        text = format;
+    }
+    SQL_VERB.is_match(&text)
+        && befores
+            .iter()
+            .any(|before| SQL_VALUE_POSITION.is_match(before) || before.matches('\'').count() % 2 == 1)
+}
+
+/// yaml.load without a loader or with a full one, or yaml.unsafe_load.
+fn unsafe_yaml(tree: &Tree, call: usize) -> bool {
+    let name = tree.func_text(call);
+    if ["yaml.unsafe_load", "yaml.unsafe_load_all"].contains(&name) {
+        return true;
+    }
+    if !["yaml.load", "yaml.load_all"].contains(&name) {
+        return false;
+    }
+    let loader = tree.list(call, "args").get(1).copied().or_else(|| {
+        tree.list(call, "keywords")
+            .into_iter()
+            .find(|&k| tree.str(k, "arg") == Some("Loader"))
+            .and_then(|k| tree.node(k, "value"))
+    });
+    // ponytail: reads the last name of a Name or Attribute loader; Python's unparse-and-split also
+    // matches odd expressions ending in one (`a if c else yaml.Loader`).
+    loader.is_none_or(|l| match tree.kind(l) {
+        "Name" => UNSAFE_YAML_LOADERS.contains(&tree.str(l, "id").unwrap_or("")),
+        "Attribute" => UNSAFE_YAML_LOADERS.contains(&tree.str(l, "attr").unwrap_or("")),
+        _ => false,
+    })
+}
+
+/// An HTTP client call with verify=False, or an unverified SSL context.
+fn tls_unverified(tree: &Tree, call: usize) -> bool {
+    let name = tree.func_text(call);
+    let module = name.split('.').next().unwrap_or(name);
+    let client = ["requests", "httpx"].contains(&module) || HTTP_CLIENT_METHODS.contains(&last_name(name));
+    name == "ssl._create_unverified_context"
+        || (client
+            && tree.list(call, "keywords").into_iter().any(|k| {
+                tree.str(k, "arg") == Some("verify")
+                    && tree
+                        .node(k, "value")
+                        .and_then(|v| tree.constant(v))
+                        .is_some_and(|c| c.repr == "False")
+            }))
 }
 
 // --- stubs, imports, metrics -----------------------------------------------
@@ -1345,4 +1574,61 @@ pub fn annotated_python(text: &str) -> Result<bool, CheckError> {
         }
     }
     Ok(false)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn rules(source: &str) -> Vec<&'static str> {
+        python_rules(&Text::new(source))
+            .unwrap()
+            .into_iter()
+            .map(|(rule, _, _)| rule)
+            .collect()
+    }
+
+    #[test]
+    fn python_injection_rules_match_python() {
+        let deserialize = "loki/unsafe-deserialization";
+        for (source, expected) in [
+            (
+                "cur.execute(f\"SELECT * FROM t WHERE id = {i}\")\n",
+                vec!["loki/sql-injection"],
+            ),
+            (
+                "cur.execute('SELECT * FROM t WHERE id = %s' % i)\n",
+                vec!["loki/sql-injection"],
+            ),
+            (
+                "s.execute(text('DELETE FROM t WHERE a = ' + a))\n",
+                vec!["loki/sql-injection"],
+            ),
+            ("cur.execute('SELECT * FROM t WHERE id = %s', (i,))\n", vec![]),
+            ("cur.execute(f\"SELECT * FROM {table} WHERE 1=1 {filters}\")\n", vec![]),
+            ("def f(request):\n    eval(request.form['c'])\n", vec!["loki/code-eval"]),
+            ("def f(request):\n    eval(expression)\n", vec![]),
+            ("def f(request):\n    pickle.loads(request.body)\n", vec![deserialize]),
+            ("pickle.loads(cache_blob)\n", vec![]),
+            ("yaml.load(f)\nyaml.unsafe_load(f)\n", vec![deserialize, deserialize]),
+            ("yaml.load(f, Loader=yaml.SafeLoader)\nyaml.safe_load(f)\n", vec![]),
+            ("requests.get(u, verify=False)\n", vec!["loki/tls-verification"]),
+            (
+                "ctx = ssl._create_unverified_context()\n",
+                vec!["loki/tls-verification"],
+            ),
+            ("ctx.check_hostname = False\n", vec!["loki/tls-verification"]),
+            ("requests.get(u, verify=True)\ndispatch(f, verify=False)\n", vec![]),
+            (
+                "def f(request):\n    return redirect(request.args['next'])\n",
+                vec!["loki/open-redirect"],
+            ),
+            (
+                "def f(request):\n    url = request.GET.get('next')\n    return HttpResponseRedirect(url_has_allowed_host_and_scheme(url) and url)\n",
+                vec![],
+            ),
+        ] {
+            assert_eq!(rules(source), expected, "{source}");
+        }
+    }
 }

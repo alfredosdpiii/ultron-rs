@@ -18,7 +18,7 @@ macro_rules! re {
 
 pub const REDOS_RULE: &str = "loki/redos";
 pub const REDOS_MESSAGE: &str = "ReDoS: nested quantifier such as (a+)+ causes catastrophic backtracking on crafted input; remove the nesting or bound the repetition";
-const OPEN_REDIRECT: &str =
+pub const OPEN_REDIRECT: &str =
     "open redirect: unvalidated navigation target; check it against an allowlist of paths or origins";
 const TEST_FRAMEWORKS: [&str; 8] = [
     "vitest",
