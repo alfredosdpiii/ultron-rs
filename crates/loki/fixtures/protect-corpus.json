@@ -300,7 +300,7 @@
 			],
 			"expected": {
 				"status": 2,
-				"stdout": "{\"loki\": \"0.1.4\", \"command\": \"protect\", \"status\": \"blocked\", \"blocking\": [{\"text\": \"loki: protected file: .loki/x (set LOKI_ALLOW_PROTECTED=1 to override)\", \"path\": \"loki\", \"rule\": \"protected file\"}], \"advisory\": [], \"not_checked\": []}\n",
+				"stdout": "{\"loki\": \"0.1.8\", \"command\": \"protect\", \"status\": \"blocked\", \"blocking\": [{\"text\": \"loki: protected file: .loki/x (set LOKI_ALLOW_PROTECTED=1 to override)\", \"path\": \"loki\", \"rule\": \"protected file\"}], \"advisory\": [], \"not_checked\": []}\n",
 				"stderr": "loki: protected file: .loki/x (set LOKI_ALLOW_PROTECTED=1 to override)\n"
 			}
 		},
@@ -315,7 +315,7 @@
 			],
 			"expected": {
 				"status": 0,
-				"stdout": "{\"loki\": \"0.1.4\", \"command\": \"protect\", \"status\": \"passed\", \"blocking\": [], \"advisory\": [], \"not_checked\": []}\n",
+				"stdout": "{\"loki\": \"0.1.8\", \"command\": \"protect\", \"status\": \"passed\", \"blocking\": [], \"advisory\": [], \"not_checked\": []}\n",
 				"stderr": ""
 			}
 		},
@@ -329,7 +329,7 @@
 			"rootAfter": true,
 			"expected": {
 				"status": 0,
-				"stdout": "{\"loki\": \"0.1.4\", \"command\": \"protect\", \"status\": \"passed\", \"blocking\": [], \"advisory\": [], \"not_checked\": []}\n",
+				"stdout": "{\"loki\": \"0.1.8\", \"command\": \"protect\", \"status\": \"passed\", \"blocking\": [], \"advisory\": [], \"not_checked\": []}\n",
 				"stderr": ""
 			}
 		},
@@ -357,7 +357,7 @@
 			],
 			"expected": {
 				"status": 2,
-				"stdout": "{\"loki\": \"0.1.4\", \"command\": \"protect\", \"status\": \"error\", \"blocking\": [], \"advisory\": [], \"not_checked\": [], \"error\": \"invalid hook input: path must be a nonempty string without NUL\"}\n",
+				"stdout": "{\"loki\": \"0.1.8\", \"command\": \"protect\", \"status\": \"error\", \"blocking\": [], \"advisory\": [], \"not_checked\": [], \"error\": \"invalid hook input: path must be a nonempty string without NUL\"}\n",
 				"stderr": "loki: invalid hook input: path must be a nonempty string without NUL\n"
 			}
 		},
@@ -999,7 +999,7 @@
 			],
 			"expected": {
 				"status": 2,
-				"stdout": "{\"loki\": \"0.1.4\", \"command\": \"protect\", \"status\": \"error\", \"blocking\": [], \"advisory\": [], \"not_checked\": [], \"error\": \"invalid hook input: loki: unknown configuration key: zeta\"}\n",
+				"stdout": "{\"loki\": \"0.1.8\", \"command\": \"protect\", \"status\": \"error\", \"blocking\": [], \"advisory\": [], \"not_checked\": [], \"error\": \"invalid hook input: loki: unknown configuration key: zeta\"}\n",
 				"stderr": "loki: invalid hook input: loki: unknown configuration key: zeta\n"
 			}
 		},
@@ -1033,7 +1033,7 @@
 			"stdin": "{\"tool_name\":\"write\",\"tool_input\":{\"path\":\"x\",\"content\":\"a\\nkey = '@@AWS@@'\\n\"}}",
 			"expected": {
 				"status": 2,
-				"stdout": "{\"loki\": \"0.1.4\", \"command\": \"protect\", \"status\": \"blocked\", \"blocking\": [{\"text\": \"notes.txt:2: loki/secret: hardcoded credential (AWS access key); load it from the environment or a secret store and rotate the exposed value\", \"path\": \"notes.txt\", \"line\": 2, \"rule\": \"loki/secret\"}], \"advisory\": [], \"not_checked\": []}\n",
+				"stdout": "{\"loki\": \"0.1.8\", \"command\": \"protect\", \"status\": \"blocked\", \"blocking\": [{\"text\": \"notes.txt:2: loki/secret: hardcoded credential (AWS access key); load it from the environment or a secret store and rotate the exposed value\", \"path\": \"notes.txt\", \"line\": 2, \"rule\": \"loki/secret\"}], \"advisory\": [], \"not_checked\": []}\n",
 				"stderr": "notes.txt:2: loki/secret: hardcoded credential (AWS access key); load it from the environment or a secret store and rotate the exposed value\n"
 			}
 		},
@@ -1172,6 +1172,54 @@
 				"status": 2,
 				"stdout": "",
 				"stderr": "u.md:2: loki/secret: hardcoded credential (GitHub token); load it from the environment or a secret store and rotate the exposed value\n"
+			}
+		},
+		{
+			"name": "preview-py-injection-rules",
+			"args": [
+				"protect",
+				"--file",
+				"app/views.py",
+				"--preview",
+				"ultron"
+			],
+			"stdin": "{\"tool_name\":\"write\",\"tool_input\":{\"path\":\"x\",\"content\":\"import pickle\\nimport requests\\nimport ssl\\nimport yaml\\nfrom flask import redirect, request\\n\\n\\ndef q(cur, name):\\n    cur.execute(f\\\"SELECT * FROM users WHERE name = '{name}'\\\")\\n    cur.execute(\\\"SELECT * FROM users WHERE name = %s\\\", (name,))\\n\\n\\ndef y(text):\\n    yaml.load(text)\\n    yaml.load(text, Loader=yaml.SafeLoader)\\n\\n\\ndef t(url):\\n    requests.get(url, verify=False)\\n    ssl._create_unverified_context()\\n\\n\\ndef view():\\n    eval(request.args[\\\"code\\\"])\\n    pickle.loads(request.data)\\n    return redirect(request.args.get(\\\"next\\\"))\\n\\n\\ndef guarded():\\n    target = request.args.get(\\\"next\\\")\\n    if not is_safe_url(target):\\n        target = \\\"/\\\"\\n    return redirect(target)\\n\"}}",
+			"expected": {
+				"status": 2,
+				"stdout": "",
+				"stderr": "app/views.py:9: loki/sql-injection: SQL injection: query text built by concatenation or interpolation; use parameterized placeholders\napp/views.py:14: loki/unsafe-deserialization: unsafe deserialization: yaml.load without SafeLoader can build arbitrary Python objects; use yaml.safe_load\napp/views.py:19: loki/tls-verification: TLS certificate verification disabled; trust the needed CA instead of turning verification off\napp/views.py:20: loki/tls-verification: TLS certificate verification disabled; trust the needed CA instead of turning verification off\napp/views.py:24: loki/code-eval: dynamic code execution: non-literal source passed to eval\napp/views.py:25: loki/unsafe-deserialization: unsafe deserialization: request data passed to pickle.loads can run arbitrary code; use JSON or verify a signature first\napp/views.py:26: loki/open-redirect: open redirect: unvalidated navigation target; check it against an allowlist of paths or origins\n"
+			}
+		},
+		{
+			"name": "preview-go-injection-rules",
+			"args": [
+				"protect",
+				"--file",
+				"db.go",
+				"--preview",
+				"ultron"
+			],
+			"stdin": "{\"tool_name\":\"write\",\"tool_input\":{\"path\":\"x\",\"content\":\"package main\\n\\nimport (\\n\\t\\\"crypto/tls\\\"\\n\\t\\\"database/sql\\\"\\n\\t\\\"fmt\\\"\\n\\t\\\"os/exec\\\"\\n)\\n\\nfunc q(db *sql.DB, name string) {\\n\\tdb.Query(fmt.Sprintf(\\\"SELECT * FROM users WHERE name = '%s'\\\", name))\\n\\tdb.Query(\\\"SELECT * FROM users WHERE name = ?\\\", name)\\n\\texec.Command(\\\"sh\\\", \\\"-c\\\", name)\\n\\t_ = &tls.Config{InsecureSkipVerify: true}\\n\\t_ = `db.Query(fmt.Sprintf(\\\"x %s\\\", name))`\\n}\\n\"}}",
+			"expected": {
+				"status": 2,
+				"stdout": "",
+				"stderr": "db.go:14: loki/tls-verification: TLS certificate verification disabled; trust the needed CA instead of turning verification off\ndb.go:13: loki/command-injection: shell command injection: command string built from variables runs through a shell with -c; pass the program and arguments separately\ndb.go:11: loki/sql-injection: SQL injection: query text built by concatenation or interpolation; use parameterized placeholders\n"
+			}
+		},
+		{
+			"name": "preview-rust-injection-rules",
+			"args": [
+				"protect",
+				"--file",
+				"src/db.rs",
+				"--preview",
+				"ultron"
+			],
+			"stdin": "{\"tool_name\":\"write\",\"tool_input\":{\"path\":\"x\",\"content\":\"fn q(name: &str) {\\n    let _ = reqwest::Client::builder().danger_accept_invalid_certs(true);\\n    let _ = sqlx::query(&format!(\\\"SELECT * FROM users WHERE name = '{}'\\\", name));\\n    let _ = sqlx::query(\\\"SELECT * FROM users WHERE name = $1\\\");\\n}\\n\"}}",
+			"expected": {
+				"status": 2,
+				"stdout": "",
+				"stderr": "src/db.rs:2: loki/tls-verification: TLS certificate verification disabled; trust the needed CA instead of turning verification off\nsrc/db.rs:3: loki/sql-injection: SQL injection: query text built by concatenation or interpolation; use parameterized placeholders\n"
 			}
 		},
 		{
@@ -1443,7 +1491,7 @@
 			"stdin": "{\"tool_name\":\"edit\",\"tool_input\":{}}",
 			"expected": {
 				"status": 0,
-				"stdout": "{\"loki\": \"0.1.4\", \"command\": \"protect\", \"status\": \"passed\", \"blocking\": [], \"advisory\": [], \"not_checked\": [\"NOT CHECKED pre-write content: host operation has no exact content preview\"]}\n",
+				"stdout": "{\"loki\": \"0.1.8\", \"command\": \"protect\", \"status\": \"passed\", \"blocking\": [], \"advisory\": [], \"not_checked\": [\"NOT CHECKED pre-write content: host operation has no exact content preview\"]}\n",
 				"stderr": "NOT CHECKED pre-write content: host operation has no exact content preview\n"
 			}
 		},
@@ -1571,7 +1619,7 @@
 			],
 			"expected": {
 				"status": 0,
-				"stdout": "{\"hookSpecificOutput\": {\"hookEventName\": \"UserPromptSubmit\", \"additionalContext\": \"LOKI guardrails: edit() and write() are checked before the file changes. Change source and configuration with edit()/write(): a bash() command that writes them (redirect, tee, sed -i, cp/mv) is refused. Other writes (Path.write_text, programs) are checked after the cell. A blocked write raises ValueError with the finding: fix the cause and retry. Never weaken Loki, its policy (.loki/), tests or hooks. Checks: secrets, security rules, protected files; Ruff (Python); Oxlint and type checks (TS/JS); Credo and Sobelow (Elixir).\"}, \"loki\": {\"version\": \"0.1.4\", \"formats\": [\"text\", \"json\"]}}\n",
+				"stdout": "{\"hookSpecificOutput\": {\"hookEventName\": \"UserPromptSubmit\", \"additionalContext\": \"LOKI guardrails: edit() and write() are checked before the file changes. Change source and configuration with edit()/write(): a bash() command that writes them (redirect, tee, sed -i, cp/mv) is refused. Other writes (Path.write_text, programs) are checked after the cell. A blocked write raises ValueError with the finding: fix the cause and retry. Never weaken Loki, its policy (.loki/), tests or hooks. Checks: secrets, security rules, protected files; Ruff (Python); Oxlint and type checks (TS/JS); Credo and Sobelow (Elixir).\"}, \"loki\": {\"version\": \"0.1.8\", \"formats\": [\"text\", \"json\"]}}\n",
 				"stderr": ""
 			}
 		},
@@ -1587,7 +1635,7 @@
 			],
 			"expected": {
 				"status": 0,
-				"stdout": "{\"hookSpecificOutput\": {\"hookEventName\": \"SessionStart\", \"additionalContext\": \"LOKI guardrails: edit() and write() are checked before the file changes. Change source and configuration with edit()/write(): a bash() command that writes them (redirect, tee, sed -i, cp/mv) is refused. Other writes (Path.write_text, programs) are checked after the cell. A blocked write raises ValueError with the finding: fix the cause and retry. Never weaken Loki, its policy (.loki/), tests or hooks.\"}, \"loki\": {\"version\": \"0.1.4\", \"formats\": [\"text\", \"json\"]}}\n",
+				"stdout": "{\"hookSpecificOutput\": {\"hookEventName\": \"SessionStart\", \"additionalContext\": \"LOKI guardrails: edit() and write() are checked before the file changes. Change source and configuration with edit()/write(): a bash() command that writes them (redirect, tee, sed -i, cp/mv) is refused. Other writes (Path.write_text, programs) are checked after the cell. A blocked write raises ValueError with the finding: fix the cause and retry. Never weaken Loki, its policy (.loki/), tests or hooks.\"}, \"loki\": {\"version\": \"0.1.8\", \"formats\": [\"text\", \"json\"]}}\n",
 				"stderr": ""
 			}
 		},

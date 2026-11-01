@@ -23,7 +23,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable
 
-__version__ = "0.1.4"
+__version__ = "0.1.8"
 
 SOURCE_ROOT = Path(__file__).resolve().parent
 INSTALLED = SOURCE_ROOT.name == ".loki"
@@ -528,10 +528,13 @@ def harness_paths(raw: str, harness: str) -> list[str]:
     )
 
 
+ANSI_ESCAPE_RE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
+
+
 def command_output(result: subprocess.CompletedProcess[str]) -> list[str]:
-    text = "\n".join(
-        part.strip() for part in (result.stdout, result.stderr) if part.strip()
-    )
+    """Non-empty stripped lines of stdout then stderr, without terminal colors."""
+    parts = (ANSI_ESCAPE_RE.sub("", part) for part in (result.stdout, result.stderr))
+    text = "\n".join(part.strip() for part in parts if part.strip())
     return [line.strip() for line in text.splitlines() if line.strip()]
 
 
@@ -1083,14 +1086,22 @@ def mask_elixir(text: str) -> str:
 RUST_INTERESTING = re.compile(r"/[/*]|b?r#*\"|[\"']")
 RUST_RAW = re.compile(r"b?r(#*)\"")
 RUST_CHAR = re.compile(r"'(?:\\u\{[0-9a-fA-F]+\}|\\.|[^\\'\n])'")
+GO_INTERESTING = re.compile(r"/[/*]|[\"'`]")
 
 
-def mask_rust(text: str) -> str:
+def mask_rust(text: str, go: bool = False) -> str:
     """Blank comments and literals in Rust, Go and other C-family source."""
     chars = list(text)
     index = 0
-    while found := RUST_INTERESTING.search(text, index):
+    interesting = GO_INTERESTING if go else RUST_INTERESTING
+    while found := interesting.search(text, index):
         index = found.start()
+        if text[index] == "`":
+            end = text.find("`", index + 1)
+            end = len(text) if end < 0 else end
+            blank(chars, index + 1, end)
+            index = end + 1
+            continue
         if text.startswith("/*", index):
             depth, end = 1, index + 2
             while end < len(text) and depth:
@@ -1280,14 +1291,7 @@ def javascript_rules(text: str) -> list[Finding]:
         text,
     ):
         if masked[match.start()] != " ":
-            findings.append(
-                (
-                    "loki/tls-verification",
-                    "TLS certificate verification disabled; trust the needed CA "
-                    "instead of turning verification off",
-                    match.start(),
-                )
-            )
+            findings.append(("loki/tls-verification", TLS_VERIFICATION, match.start()))
     for match in re.finditer(r"\bres(?:ponse)?\s*\.\s*redirect\s*\(", masked):
         arguments = split_arguments(masked, match.end() - 1)
         if arguments and re.search(
@@ -1325,7 +1329,7 @@ def javascript_rules(text: str) -> list[Finding]:
             continue
         start, end = arguments[0]
         argument = text[start:end]
-        if re.search(r"\b(?:select|insert|update|delete)\b", argument, re.I) and (
+        if re.search(SQL_WORD, argument, re.I) and (
             "${" in argument or re.search(r"['\"`]\s*\+|\+\s*['\"`]", argument)
         ):
             identifier = (
@@ -1339,12 +1343,7 @@ def javascript_rules(text: str) -> list[Finding]:
             findings.append(
                 (
                     "loki/sql-injection",
-                    "SQL injection: table or column name interpolated into the query; "
-                    "placeholders cannot bind identifiers, so map it to a fixed set of "
-                    "known names before building the query"
-                    if identifier
-                    else "SQL injection: query text built by concatenation or "
-                    "interpolation; use parameterized placeholders",
+                    SQL_IDENTIFIER if identifier else SQL_QUERY,
                     match.start(),
                 )
             )
@@ -1516,7 +1515,7 @@ def delimiter_separated(body: str) -> bool:
     delimiter = found.group(0)[-1]
     if re.search(r"(?<!\\)\.|\\[SWD]", body):
         return False
-    for match in re.finditer(r"\[(\^?)((?:\\.|[^\]])*)\]", body):
+    for match in re.finditer(r"\[(\^?)((?:\\.|[^\]\\])*)\]", body):
         members = re.findall(r"\\.|.", match.group(2))
         inside = False
         for index, member in enumerate(members):
@@ -1724,19 +1723,14 @@ PATH_SANITIZERS = ("basename", "secure_filename", "is_relative_to", "commonpath"
 PATH_SANITIZERS += ("relative_to",)
 
 
-def request_tainted_calls(
-    tree: ast.AST,
-    sink: Any,
-    arguments: Any,
-    *,
-    sanitizers: tuple[str, ...] = (),
-) -> list[ast.Call]:
-    """Calls accepted by sink whose chosen arguments derive from request data.
+def request_scopes(tree: ast.AST) -> list[tuple[list[tuple[ast.Call, str]], set[str]]]:
+    """Each function (or the module) that reads request data: its calls with
+    their callee text, and the names tainted through plain assignments.
 
-    Taint follows plain assignments within one function (or module). A scope
-    that calls any sanitizer is treated as validated.
+    Computed once per tree and shared by every request-taint rule.
     """
-    calls = []
+    names: dict[int, str] = {}
+    found = []
     scopes = [
         tree,
         *(
@@ -1746,15 +1740,13 @@ def request_tainted_calls(
         ),
     ]
     for scope in scopes:
-        if sanitizers and any(
-            isinstance(node, ast.Call)
-            and ast.unparse(node.func).split(".")[-1] in sanitizers
-            for node in ast.walk(scope)
-        ):
+        nodes = list(ast.walk(scope))
+        # Taint starts only at request data, so a scope that reads none has no findings.
+        if not any(map(request_source, nodes)):
             continue
         tainted: set[str] = set()
         for _ in range(2):
-            for node in ast.walk(scope):
+            for node in nodes:
                 if (
                     isinstance(node, ast.Assign | ast.AnnAssign)
                     and node.value
@@ -1773,38 +1765,158 @@ def request_tainted_calls(
                         for item in ast.walk(target)
                         if isinstance(item, ast.Name)
                     )
-        for node in ast.walk(scope):
-            if not isinstance(node, ast.Call) or not sink(ast.unparse(node.func)):
-                continue
-            if any(
+        calls = []
+        for node in nodes:
+            if isinstance(node, ast.Call):
+                if id(node) not in names:
+                    names[id(node)] = ast.unparse(node.func)
+                calls.append((node, names[id(node)]))
+        found.append((calls, tainted))
+    return found
+
+
+def request_tainted_calls(
+    scopes: list[tuple[list[tuple[ast.Call, str]], set[str]]],
+    sink: Any,
+    arguments: Any,
+    *,
+    sanitizer: Any = None,
+) -> list[ast.Call]:
+    """Calls accepted by sink whose chosen arguments derive from request data.
+
+    A scope that calls a function whose last name the sanitizer accepts is
+    treated as validated.
+    """
+    found = []
+    for calls, tainted in scopes:
+        if sanitizer and any(sanitizer(name.split(".")[-1]) for _, name in calls):
+            continue
+        for node, name in calls:
+            if sink(name) and any(
                 request_source(item)
                 or (isinstance(item, ast.Name) and item.id in tainted)
                 for argument in arguments(node)
                 for item in ast.walk(argument)
             ):
-                calls.append(node)
+                found.append(node)
                 break
-    unique = {(call.lineno, call.col_offset): call for call in calls}
+    unique = {(call.lineno, call.col_offset): call for call in found}
     return list(unique.values())
 
 
-def python_ssrf(tree: ast.AST) -> list[ast.Call]:
+def python_ssrf(scopes: list[Any]) -> list[ast.Call]:
     """HTTP client calls whose URL derives from request data."""
     return request_tainted_calls(
-        tree,
+        scopes,
         lambda name: name in PYTHON_HTTP_CALLS,
         lambda call: call.args[:1] + [k.value for k in call.keywords if k.arg == "url"],
     )
 
 
-def python_path_traversal(tree: ast.AST) -> list[ast.Call]:
+def python_path_traversal(scopes: list[Any]) -> list[ast.Call]:
     """File paths built from request data without a containment check."""
     return request_tainted_calls(
-        tree,
+        scopes,
         lambda name: name in PYTHON_PATH_CALLS or name.endswith(".joinpath"),
         lambda call: [*call.args, *(k.value for k in call.keywords)],
-        sanitizers=PATH_SANITIZERS,
+        sanitizer=lambda name: name in PATH_SANITIZERS,
     )
+
+
+SQL_CALLS = {"execute", "executemany", "executescript", "raw", "text"}
+# Text just before a hole that puts it where SQL expects a value, not a clause or name.
+SQL_VALUE_POSITION = r"(?:[=<>(,]|\b(?:like|in|values|limit|offset))\s*$"
+DESERIALIZE_CALLS = {
+    f"{module}.{name}"
+    for module in ("pickle", "cPickle", "_pickle", "dill", "marshal")
+    for name in ("load", "loads")
+}
+UNSAFE_YAML_LOADERS = {"Loader", "FullLoader", "UnsafeLoader"}
+UNSAFE_YAML_LOADERS |= {f"C{name}" for name in UNSAFE_YAML_LOADERS}
+HTTP_CLIENT_METHODS = {"get", "post", "put", "patch", "delete", "head", "options"}
+HTTP_CLIENT_METHODS |= {"request", "send", "stream", "Client", "AsyncClient"}
+REDIRECT_CALLS = {"redirect", "RedirectResponse", "HttpResponseRedirect"}
+
+
+def addends(node: ast.AST) -> list[ast.AST]:
+    """The operands of a chain of + additions."""
+    if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
+        return addends(node.left) + addends(node.right)
+    return [node]
+
+
+def built_sql(node: ast.AST) -> bool:
+    """SQL text with a non-constant spliced in where the query expects a value.
+
+    Holes in clause or name positions (`WHERE 1=1 {filters}`, `FROM {table}`)
+    pass: they are nearly always fixed fragments chosen in code.
+    """
+    befores: list[str] = []
+    text = ""
+    if isinstance(node, ast.JoinedStr):
+        for value in node.values:
+            if isinstance(value, ast.FormattedValue):
+                befores.append(text)
+            else:
+                text += str(getattr(value, "value", ""))
+    elif isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
+        for item in addends(node):
+            if isinstance(item, ast.Constant):
+                text += str(item.value)
+            else:
+                befores.append(text)
+    elif isinstance(node, ast.BinOp) and isinstance(node.op, ast.Mod):
+        if isinstance(node.left, ast.Constant) and not isinstance(
+            node.right, ast.Constant
+        ):
+            text = str(node.left.value)
+            holes = re.finditer(r"%(?:\(\w+\))?[sdifr]", text)
+            befores = [text[: hole.start()] for hole in holes]
+    elif (
+        isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "format"
+        and isinstance(node.func.value, ast.Constant)
+        and (node.args or node.keywords)
+    ):
+        text = str(node.func.value.value)
+        befores = [text[: hole.start()] for hole in re.finditer(r"\{[^{}]*\}", text)]
+    return bool(re.search(r"\b(?:select|insert|update|delete)\b", text, re.I)) and any(
+        re.search(SQL_VALUE_POSITION, before, re.I) or before.count("'") % 2
+        for before in befores
+    )
+
+
+def unsafe_yaml(call: ast.Call) -> bool:
+    """yaml.load without a loader or with a full one, or yaml.unsafe_load."""
+    name = ast.unparse(call.func)
+    if name in {"yaml.unsafe_load", "yaml.unsafe_load_all"}:
+        return True
+    loader = call.args[1:2] + [k.value for k in call.keywords if k.arg == "Loader"]
+    return name in {"yaml.load", "yaml.load_all"} and (
+        not loader or ast.unparse(loader[0]).split(".")[-1] in UNSAFE_YAML_LOADERS
+    )
+
+
+def tls_unverified(call: ast.Call) -> bool:
+    """An HTTP client call with verify=False, or an unverified SSL context."""
+    name = ast.unparse(call.func)
+    client = name.split(".")[0] in {"requests", "httpx"} or (
+        name.split(".")[-1] in HTTP_CLIENT_METHODS
+    )
+    return name == "ssl._create_unverified_context" or (
+        client
+        and any(
+            k.arg == "verify"
+            and isinstance(k.value, ast.Constant)
+            and k.value.value is False
+            for k in call.keywords
+        )
+    )
+
+
+def redirect_sanitizer(name: str) -> bool:
+    return bool(re.search(r"safe|saniti|valid|allowed|trusted", name, re.I))
 
 
 def secret_value(node: ast.AST, derived: set[str] = frozenset()) -> bool:
@@ -1868,6 +1980,85 @@ def tautological_assertions(tree: ast.AST) -> list[ast.AST]:
                 if computed_call(pair[0], values) == computed_call(pair[1], values):
                     found.append(node)
     return found
+
+
+def python_injection_rules(
+    tree: ast.AST, scopes: list[Any], offsets: list[int]
+) -> list[Finding]:
+    """SQL built from values, unsafe YAML, disabled TLS, and request data reaching
+    eval, deserializers or redirects."""
+    findings: list[Finding] = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call | ast.Assign):
+            continue
+        at = offsets[node.lineno - 1] + node.col_offset
+        if isinstance(node, ast.Assign):
+            if (
+                isinstance(node.value, ast.Constant)
+                and node.value.value is False
+                and any(
+                    isinstance(target, ast.Attribute)
+                    and target.attr == "check_hostname"
+                    for target in node.targets
+                )
+            ):
+                findings.append(("loki/tls-verification", TLS_VERIFICATION, at))
+            continue
+        name = ast.unparse(node.func)
+        if name.split(".")[-1] in SQL_CALLS and node.args and built_sql(node.args[0]):
+            findings.append(("loki/sql-injection", SQL_QUERY, at))
+        if unsafe_yaml(node):
+            findings.append(
+                (
+                    "loki/unsafe-deserialization",
+                    f"unsafe deserialization: {name} without SafeLoader can build "
+                    "arbitrary Python objects; use yaml.safe_load",
+                    at,
+                )
+            )
+        if tls_unverified(node):
+            findings.append(("loki/tls-verification", TLS_VERIFICATION, at))
+    first = lambda call: call.args[:1]  # noqa: E731
+    for call in request_tainted_calls(
+        scopes, lambda name: name in {"eval", "exec", "compile"}, first
+    ):
+        findings.append(
+            (
+                "loki/code-eval",
+                f"dynamic code execution: non-literal source passed to "
+                f"{ast.unparse(call.func)}",
+                offsets[call.lineno - 1] + call.col_offset,
+            )
+        )
+    for call in request_tainted_calls(
+        scopes, lambda name: name in DESERIALIZE_CALLS, first
+    ):
+        findings.append(
+            (
+                "loki/unsafe-deserialization",
+                f"unsafe deserialization: request data passed to "
+                f"{ast.unparse(call.func)} can run arbitrary code; use JSON or "
+                "verify a signature first",
+                offsets[call.lineno - 1] + call.col_offset,
+            )
+        )
+    for call in request_tainted_calls(
+        scopes,
+        lambda name: (
+            name in REDIRECT_CALLS
+            or (name.split(".")[-1] in REDIRECT_CALLS and not name.startswith("self."))
+        ),
+        lambda call: call.args[:1] + [k.value for k in call.keywords if k.arg == "url"],
+        sanitizer=redirect_sanitizer,
+    ):
+        findings.append(
+            (
+                "loki/open-redirect",
+                OPEN_REDIRECT,
+                offsets[call.lineno - 1] + call.col_offset,
+            )
+        )
+    return findings
 
 
 def python_rules(text: str) -> list[Finding]:
@@ -1967,7 +2158,8 @@ def python_rules(text: str) -> list[Finding]:
             findings.append(
                 (REDOS_RULE, REDOS_MESSAGE, offsets[node.lineno - 1] + node.col_offset)
             )
-    for call in python_path_traversal(tree):
+    scopes = request_scopes(tree)
+    for call in python_path_traversal(scopes):
         findings.append(
             (
                 "loki/path-traversal",
@@ -1985,7 +2177,7 @@ def python_rules(text: str) -> list[Finding]:
                 offsets[call.lineno - 1] + call.col_offset,
             )
         )
-    for call in python_ssrf(tree):
+    for call in python_ssrf(scopes):
         findings.append(
             (
                 "loki/ssrf",
@@ -1994,6 +2186,7 @@ def python_rules(text: str) -> list[Finding]:
                 offsets[call.lineno - 1] + call.col_offset,
             )
         )
+    findings.extend(python_injection_rules(tree, scopes, offsets))
     return findings
 
 
@@ -2131,6 +2324,20 @@ def elixir_rules(text: str) -> list[Finding]:
 
 
 SHELLS = {"sh", "bash", "zsh", "dash", "/bin/sh", "/bin/bash", "/usr/bin/env"}
+TLS_VERIFICATION = (
+    "TLS certificate verification disabled; trust the needed CA "
+    "instead of turning verification off"
+)
+SQL_WORD = r"\b(?:select|insert|update|delete)\b"
+SQL_QUERY = (
+    "SQL injection: query text built by concatenation or "
+    "interpolation; use parameterized placeholders"
+)
+SQL_IDENTIFIER = (
+    "SQL injection: table or column name interpolated into the query; "
+    "placeholders cannot bind identifiers, so map it to a fixed set of "
+    "known names before building the query"
+)
 SHELL_COMMAND = (
     "shell command injection: command string built from variables runs through "
     "a shell with -c; pass the program and arguments separately"
@@ -2185,6 +2392,24 @@ def rust_rules(text: str) -> list[Finding]:
         dynamic = re.search(r"format!|\.args?\s*\(\s*(?![\"\[\s])", chain)
         if program in SHELLS and '"-c"' in chain and dynamic:
             findings.append(("loki/command-injection", SHELL_COMMAND, match.start()))
+    for match in re.finditer(
+        r"\.\s*danger_accept_invalid_(?:certs|hostnames)\s*\(\s*true\s*\)", masked
+    ):
+        findings.append(("loki/tls-verification", TLS_VERIFICATION, match.start()))
+    for match in re.finditer(
+        r"(?:(?<![\w.])(?:sqlx\s*::\s*)?query(?:_as|_scalar)?(?:\s*::\s*<[^>()]*>)?"
+        r"|\.\s*execute|(?<![\w.])(?:diesel\s*::\s*)?sql_query)"
+        r"\s*\(\s*&?\s*format\s*!\s*\(",
+        masked,
+    ):
+        arguments = split_arguments(masked, match.end() - 1)
+        literal = text[slice(*arguments[0])].strip() if arguments else ""
+        if not re.match(r'r?#*"', literal):
+            continue
+        holes = re.finditer(r"\{(\{)?", literal)
+        message = sql_message(literal, [h.start() for h in holes if not h.group(1)])
+        if message:
+            findings.append(("loki/sql-injection", message, match.start()))
     return findings
 
 
@@ -2274,12 +2499,85 @@ def workflow_injection(text: str) -> list[Finding]:
     return findings
 
 
+GO_STRING = r'\s*(?:"[^"\n]*"|`[^`]*`)\s*'
+
+
+def go_literal(masked: str) -> bool:
+    """A masked Go expression that is only string literals joined with +."""
+    return bool(re.fullmatch(rf"{GO_STRING}(?:\+{GO_STRING})*", masked))
+
+
+def top_level_split(
+    masked: str, start: int, end: int, char: str
+) -> list[tuple[int, int]]:
+    spans, depth, begin = [], 0, start
+    for index in range(start, end):
+        if masked[index] in "([{":
+            depth += 1
+        elif masked[index] in ")]}":
+            depth -= 1
+        elif masked[index] == char and not depth:
+            spans.append((begin, index))
+            begin = index + 1
+    return [*spans, (begin, end)]
+
+
+def sql_message(literal: str, holes: list[int]) -> str | None:
+    """SQL injection message for query text with non-literal values at holes."""
+    if not holes or not re.search(SQL_WORD, literal, re.I):
+        return None
+    if all(re.search(SQL_IDENTIFIER_POSITION, literal[:hole], re.I) for hole in holes):
+        return SQL_IDENTIFIER
+    return SQL_QUERY
+
+
 def go_rules(text: str) -> list[Finding]:
-    """Archive entry names joined into paths without a containment check."""
+    """Zip slip, SQL built with Sprintf or +, shell -c commands, TLS skip-verify."""
+    masked = mask_rust(text, go=True)
+    findings: list[Finding] = [
+        ("loki/tls-verification", TLS_VERIFICATION, match.start())
+        for match in re.finditer(
+            r"\bInsecureSkipVerify\s*(?::|=(?!=))\s*true\b", masked
+        )
+    ]
+    for call in re.finditer(r"\bexec\s*\.\s*Command(Context)?\s*\(", masked):
+        arguments = split_arguments(masked, call.end() - 1)[bool(call.group(1)) :]
+        words = [text[a:b].strip().strip('"`') for a, b in arguments[:2]]
+        if (
+            len(arguments) > 2
+            and words[0] in SHELLS
+            and words[1] == "-c"
+            and not go_literal(masked[slice(*arguments[2])])
+        ):
+            findings.append(("loki/command-injection", SHELL_COMMAND, call.start()))
+    for call in re.finditer(
+        r"\.\s*(?:Query|QueryRow|Exec|Prepare)(Context)?\s*\(", masked
+    ):
+        arguments = split_arguments(masked, call.end() - 1)[bool(call.group(1)) :]
+        if not arguments:
+            continue
+        start, end = arguments[0]
+        sprintf = re.match(r"\s*fmt\s*\.\s*Sprintf\s*\(", masked[start:end])
+        if sprintf:
+            inner = split_arguments(masked, start + sprintf.end() - 1)
+            dynamic = [
+                span for span in inner[1:] if not go_literal(masked[slice(*span)])
+            ]
+            if not dynamic or not go_literal(masked[slice(*inner[0])]):
+                continue
+            literal = text[slice(*inner[0])]
+            holes = re.finditer(r"%(?:%|[-+# 0-9.]*([sv]))", literal)
+            message = sql_message(literal, [h.start() for h in holes if h.group(1)])
+        else:
+            parts = top_level_split(masked, start, end, "+")
+            literals = [part for part in parts if go_literal(masked[slice(*part)])]
+            if not literals or len(literals) == len(parts):
+                continue
+            message = sql_message("".join(text[slice(*p)] for p in literals), [0])
+        if message:
+            findings.append(("loki/sql-injection", message, call.start()))
     if not re.search(r'"archive/(?:zip|tar)"', text):
-        return []
-    masked = mask_rust(text)
-    findings: list[Finding] = []
+        return findings
     for function in re.finditer(r"\bfunc\b[^{]*\{", masked):
         end = matching_close(masked, function.end() - 1)
         body = masked[function.end() - 1 : end]
@@ -2319,8 +2617,17 @@ def content_rule_findings(
         "rust": rust_rules,
         "go": go_rules,
     }
-    findings = generic_rules(relative, text)
-    return findings + (rules[language](text) if language in rules else [])
+    # Pure in (path, text): the daemon warms this for committed files, so the
+    # unchanged base side of a write is a cache hit in its forked request.
+    return content_memo(
+        "rules",
+        relative,
+        text,
+        lambda: (
+            generic_rules(relative, text)
+            + (rules[language](text) if language in rules else [])
+        ),
+    )
 
 
 def content_rule_violations(
@@ -3901,9 +4208,27 @@ def written_slop(
     return notes[:MAX_VIOLATIONS]
 
 
+def ruff_command(root: Path) -> list[str] | None:
+    """Ruff from the project's .venv or venv, PATH, then the project's `-m ruff`.
+
+    Never installs anything: no network, no uvx.
+    """
+    for prefix in (".venv", "venv"):
+        if (local := root / prefix / "bin/ruff").is_file():
+            return [str(local)]
+    if shutil.which("ruff"):
+        return ["ruff"]
+    try:
+        if "ruff" not in resolve_imports(root, ["ruff"]):
+            return [str(project_python(root)), "-m", "ruff"]
+    except ValueError:
+        pass
+    return None
+
+
 def missing_tool(language: str, root: Path) -> str | None:
     if language == "python":
-        return None if shutil.which("ruff") else "ruff"
+        return None if ruff_command(root) else "ruff"
     if language == "typescript":
         return None if resolve_tool(root, "oxlint") else "oxlint"
     if language == "go":
@@ -4001,8 +4326,10 @@ def possibly_existing(keys: Iterable[tuple], texts: dict[str, str]) -> bool:
 
 
 def mypy_binary(root: Path) -> str | None:
-    local = root / ".venv/bin/mypy"
-    return str(local) if local.is_file() else shutil.which("mypy")
+    for prefix in (".venv", "venv"):
+        if (local := root / prefix / "bin/mypy").is_file():
+            return str(local)
+    return shutil.which("mypy")
 
 
 def mypy_state(root: Path) -> Path:
@@ -4443,6 +4770,10 @@ def check_file(
             try:
                 violations.extend(
                     ruff_new_violations(root, None, paths=set(names), deadline=deadline)
+                )
+            except SnapshotTooLarge as error:
+                violations.extend(
+                    not_checked(f"NOT CHECKED python ruff: {error}", strict, warnings)
                 )
             except MissingRuffConfig as error:
                 # A minimal install (init --minimal) adds no .ruff.toml.
@@ -4983,11 +5314,12 @@ def scan_command(
 ) -> tuple[str | None, list[list[str]]]:
     relative_files = [relative_display(path, root) for path in files]
     if language == "python":
-        if not shutil.which("ruff"):
+        ruff = ruff_command(root)
+        if not ruff:
             return "ruff", []
         return None, [
-            ["ruff", "check", *relative_files],
-            ["ruff", "format", "--check", *relative_files],
+            [*ruff, "check", *relative_files],
+            [*ruff, "format", "--check", *relative_files],
         ]
     if language == "typescript":
         oxlint = resolve_tool(root, "oxlint")
@@ -8018,6 +8350,47 @@ def typescript_state(
     return Path.home() / ".cache/loki/typescript" / identity / digest.hexdigest()
 
 
+JSONC_TOKEN_RE = re.compile(r'"(?:\\.|[^"\\])*"|//[^\n]*|/\*.*?\*/|,(?=\s*[}\]])', re.S)
+
+
+def strip_jsonc(text: str) -> str:
+    """tsconfig's JSON dialect as plain JSON: comments and trailing commas dropped."""
+    return JSONC_TOKEN_RE.sub(lambda m: m[0] if m[0][0] == '"' else "", text)
+
+
+def typescript_extends(raw: bytes | None) -> set[str] | None:
+    """Repository paths the committed tsconfig.json extends; None when unreadable.
+
+    Package names resolve into node_modules, which is refused separately.
+    """
+    try:
+        config = json.loads(strip_jsonc(raw.decode("utf-8") if raw else ""))
+    except ValueError:
+        return None
+    targets = config.get("extends", []) if isinstance(config, dict) else []
+    names = set()
+    targets = [targets] if isinstance(targets, str) else targets
+    for target in targets if isinstance(targets, list) else []:
+        if isinstance(target, str) and target.startswith("."):
+            path = os.path.normpath(target)
+            names.update({path, f"{path}.json"})
+    return names
+
+
+def typescript_config_json(name: str, extends: set[str] | None) -> bool:
+    """Whether a JSON file can change compiler options or module resolution.
+
+    An unreadable committed tsconfig.json (comments, say) keeps every JSON file.
+    """
+    base = os.path.basename(name)
+    return name.endswith(".json") and (
+        extends is None
+        or name in extends
+        or base == "package.json"
+        or base.startswith(("tsconfig", "jsconfig"))
+    )
+
+
 def typescript_violations(
     root: Path,
     *,
@@ -8050,14 +8423,17 @@ def typescript_violations(
     findings = protected_change_violations(changes, policy)
     if findings:
         return findings
-    for name in [*(change.path for change in changes), *(overrides or {})]:
-        if name.endswith(".json"):
-            return setup(f"{name}: JSON/config change requires separate review")
-        if name.startswith("node_modules/"):
-            return setup("typescript: dependency changes require separate review")
     try:
         raw = git_output(root, ["show", f"{base}:tsconfig.json"], deadline=deadline)
     except ValueError:
+        raw = None
+    extends = typescript_extends(raw)
+    for name in [*(change.path for change in changes), *(overrides or {})]:
+        if typescript_config_json(name, extends):
+            return setup(f"{name}: JSON/config change requires separate review")
+        if name.startswith("node_modules/"):
+            return setup("typescript: dependency changes require separate review")
+    if raw is None:
         return setup("typescript: committed tsconfig.json required")
     evidence_policy("base", "tsconfig.json", raw, base=base)
     marker = typescript_state(root, base, raw, changes, overrides)
@@ -8223,7 +8599,11 @@ def apply_snapshot_change(root: Path, change: FileChange) -> None:
 
 
 def ruff_delta(
-    raw: bytes, pairs: list[tuple[str, bytes, bytes]], *, deadline: float | None
+    raw: bytes,
+    pairs: list[tuple[str, bytes, bytes]],
+    *,
+    deadline: float | None,
+    ruff: list[str],
 ) -> list[str]:
     """Ruff findings present in each candidate but not its base, by line text."""
     import tempfile
@@ -8240,7 +8620,7 @@ def ruff_delta(
             for content in (before, after):
                 result = subprocess.run(
                     [
-                        "ruff",
+                        *ruff,
                         "check",
                         "--no-cache",
                         "--no-respect-gitignore",
@@ -8315,7 +8695,8 @@ def ruff_new_violations(
         and change.path.endswith(".py")
         and change.after is not None
     ]
-    return ruff_delta(raw, pairs, deadline=deadline)
+    ruff = ruff_command(root) or ["ruff"]
+    return ruff_delta(raw, pairs, deadline=deadline, ruff=ruff)
 
 
 def preview_ruff(
@@ -8327,12 +8708,13 @@ def preview_ruff(
         for path, old, new in changes
         if path.endswith(".py")
     ]
-    if not pairs or not shutil.which("ruff"):
+    ruff = ruff_command(root) if pairs else None
+    if not ruff:
         return []
     try:
         raw = git_output(root, ["show", "HEAD:.ruff.toml"], deadline=deadline)
         evidence_policy("base", ".ruff.toml", raw, base="HEAD")
-        return ruff_delta(raw, pairs, deadline=deadline)
+        return ruff_delta(raw, pairs, deadline=deadline, ruff=ruff)
     except (OSError, ValueError, subprocess.TimeoutExpired, tomllib.TOMLDecodeError):
         return []
 
@@ -8582,8 +8964,7 @@ def prewarm(root: Path) -> None:
             )
             worker.close()
             TYPESCRIPT_WORKERS.clear()
-    local = root / ".venv/bin/mypy"
-    mypy = str(local) if local.is_file() else shutil.which("mypy")
+    mypy = mypy_binary(root)
     dmypy = Path(mypy).with_name("dmypy") if mypy else None
     if dmypy is not None and dmypy.is_file():
         state = mypy_state(root)
@@ -8610,6 +8991,7 @@ def prewarm(root: Path) -> None:
     try:
         for path, text in repository_sources(root, limit=64 * 1024 * 1024).items():
             token_windows(path, text)
+            content_rule_findings(path, text)
             if slop_language(path) == "python":
                 python_imports(path, text)
                 python_functions(path, text)
