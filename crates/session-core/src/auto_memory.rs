@@ -18,7 +18,8 @@
 //!   folds them into observations. Nothing is kept per turn: whole transcripts make noisy memories. The write gate
 //!   drops a summary that holds a secret, and the summarizer never sees recalled memory (compaction
 //!   `convert_for_summary`), so what was recalled is not kept again as if learned. A session that closes with
-//!   messages after its last compaction (or none at all, as most short sessions) keeps that tail too: the user's
+//!   messages after its last compaction (or none at all, as most short sessions) keeps that tail too, as does one
+//!   quiet for [`IDLE_RETAIN`] (a durable session may never close): the user's
 //!   messages and the agent's final replies, without tool output, replacing the tail document of its segment
 //!   ([`session_tail`], [`retain_tail`]). A tail already kept as it is (a session reopened and closed again) is not
 //!   sent again.
@@ -36,9 +37,13 @@ use std::time::{Duration, Instant};
 /// The custom message type of recalled memories.
 pub const MEMORY_CUSTOM_TYPE: &str = compaction::RECALLED_MEMORY_TYPE;
 /// How long a run waits for its recall.
-pub const RECALL_TIMEOUT: Duration = Duration::from_secs(2);
-/// After a failed or slow recall, how long recall is skipped (a server that is down costs no turn its timeout).
+// Hindsight's local cross-encoder takes 1-6 s on a loaded machine; 2 s timed out nearly every recall.
+pub const RECALL_TIMEOUT: Duration = Duration::from_secs(5);
+/// After [`PAUSE_AFTER`] failed or slow recalls in a row, how long recall is skipped (a server that is down costs
+/// no turn its timeout).
 pub const PAUSE: Duration = Duration::from_secs(60);
+/// Failed or slow recalls in a row that pause recall: one slow answer is load, not an outage.
+pub const PAUSE_AFTER: u32 = 3;
 /// The most memories one message opens with.
 pub const RECALL_LIMIT: usize = 6;
 /// A message shorter than this many words recalls nothing ("yes", "go on").
@@ -67,7 +72,15 @@ pub struct AutoMemory {
     pub recall: bool,
     pub retain: bool,
     paused_until: Mutex<Option<Instant>>,
+    /// Failed or slow recalls since the last one that answered.
+    failures: Mutex<u32>,
+    /// Since when the session has been quiet, and whether that quiet stretch was kept already.
+    quiet: Mutex<(Option<Instant>, bool)>,
 }
+
+/// How long a session stays quiet before its tail is kept without waiting for it to close: a durable session may
+/// stay open for days, and most never compact.
+pub const IDLE_RETAIN: Duration = Duration::from_secs(30 * 60);
 
 impl AutoMemory {
     /// From the merged `settings` (`memory.autoRecall`, `memory.autoRetain`: a boolean decides) and whether the
@@ -78,6 +91,8 @@ impl AutoMemory {
             recall: on("autoRecall"),
             retain: on("autoRetain"),
             paused_until: Mutex::new(None),
+            failures: Mutex::new(0),
+            quiet: Mutex::new((None, false)),
         }
     }
 
@@ -91,8 +106,30 @@ impl AutoMemory {
                 .is_none_or(|until| Instant::now() >= until)
     }
 
+    /// Whether to keep the tail now: once per quiet stretch, when the session has been quiet ([`IDLE_RETAIN`]) since
+    /// it was last `active` (as of `now`).
+    pub fn idle_due(&self, active: bool, now: Instant) -> bool {
+        let mut quiet = self.quiet.lock().unwrap_or_else(PoisonError::into_inner);
+        match *quiet {
+            _ if active || !self.retain => *quiet = (None, false),
+            (None, _) => *quiet = (Some(now), false),
+            (Some(since), false) if now.duration_since(since) >= IDLE_RETAIN => {
+                quiet.1 = true;
+                return true;
+            }
+            _ => {}
+        }
+        false
+    }
+
+    /// A failed or slow recall: the [`PAUSE_AFTER`]th in a row pauses recall.
     fn pause(&self) {
-        *self.paused_until.lock().unwrap_or_else(PoisonError::into_inner) = Some(Instant::now() + PAUSE);
+        let mut failures = self.failures.lock().unwrap_or_else(PoisonError::into_inner);
+        *failures += 1;
+        if *failures >= PAUSE_AFTER {
+            *failures = 0;
+            *self.paused_until.lock().unwrap_or_else(PoisonError::into_inner) = Some(Instant::now() + PAUSE);
+        }
     }
 
     /// The memories to open a run of `text` with, not in `shown`: at most [`RECALL_LIMIT`], and the project's brief
@@ -118,14 +155,17 @@ impl AutoMemory {
             }
         });
         match rx.recv_timeout(RECALL_TIMEOUT) {
-            Ok(Ok((found, digest))) => Recalled {
-                found: found
-                    .into_iter()
-                    .filter(|item| item["id"].as_str().is_some_and(|id| !shown.ids.contains(id)))
-                    .take(RECALL_LIMIT)
-                    .collect(),
-                digest,
-            },
+            Ok(Ok((found, digest))) => {
+                *self.failures.lock().unwrap_or_else(PoisonError::into_inner) = 0;
+                Recalled {
+                    found: found
+                        .into_iter()
+                        .filter(|item| item["id"].as_str().is_some_and(|id| !shown.ids.contains(id)))
+                        .take(RECALL_LIMIT)
+                        .collect(),
+                    digest,
+                }
+            }
             Ok(Err(_)) | Err(_) => {
                 signal.abort("recall timed out");
                 self.pause();
@@ -344,8 +384,8 @@ pub fn session_tail(entries: &[Value]) -> Option<Tail> {
 
 /// Keep the `tail` of session `session_id` (in `cwd`) as it closes: it replaces the session's tail document for
 /// its segment under the `project` scope, unless that already ends where the tail does. Waits at most
-/// [`TAIL_TIMEOUT`] (the process may exit right after); failures are not reported.
-pub fn retain_tail(stack: &Arc<Stack>, session_id: &str, cwd: &str, tail: Tail) {
+/// `wait` ([`TAIL_TIMEOUT`] as it closes: the process may exit right after); failures are not reported.
+pub fn retain_tail(stack: &Arc<Stack>, session_id: &str, cwd: &str, tail: Tail, wait: Duration) {
     if stack.memory().is_none() {
         return;
     }
@@ -366,7 +406,7 @@ pub fn retain_tail(stack: &Arc<Stack>, session_id: &str, cwd: &str, tail: Tail) 
             let _ = tx.send(memory.retain_session_tail(&document_id, &tail.text, &context, &tail.through, &cancel));
         }
     });
-    if rx.recv_timeout(TAIL_TIMEOUT).is_err() {
+    if rx.recv_timeout(wait).is_err() {
         signal.abort("closing");
     }
 }
@@ -388,7 +428,32 @@ mod tests {
         let auto = AutoMemory::new(&json!({}), true);
         assert!(auto.recall_ready());
         auto.pause();
-        assert!(!auto.recall_ready(), "a failed recall pauses recall");
+        auto.pause();
+        assert!(auto.recall_ready(), "two slow recalls are load, not an outage");
+        auto.pause();
+        assert!(!auto.recall_ready(), "the third in a row pauses recall");
+    }
+
+    #[test]
+    fn auto_memory_keeps_the_tail_once_per_quiet_stretch() {
+        let auto = AutoMemory::new(&json!({}), true);
+        let t0 = Instant::now();
+        assert!(!auto.idle_due(false, t0), "quiet starts");
+        assert!(!auto.idle_due(false, t0 + IDLE_RETAIN / 2));
+        assert!(auto.idle_due(false, t0 + IDLE_RETAIN), "quiet long enough");
+        assert!(!auto.idle_due(false, t0 + IDLE_RETAIN * 3), "once per stretch");
+        assert!(!auto.idle_due(true, t0 + IDLE_RETAIN * 3), "activity ends the stretch");
+        let t1 = t0 + IDLE_RETAIN * 4;
+        assert!(!auto.idle_due(false, t1));
+        assert!(
+            auto.idle_due(false, t1 + IDLE_RETAIN),
+            "the next stretch keeps it again"
+        );
+        let off = AutoMemory::new(&json!({"memory": {"autoRetain": false}}), true);
+        assert!(
+            !off.idle_due(false, t0) && !off.idle_due(false, t0 + IDLE_RETAIN),
+            "retain off"
+        );
     }
 
     #[test]

@@ -357,6 +357,10 @@ impl Core {
         forward_ends(&stack.events, &self.durable.children, &stack.agents, &self.events);
         let active = running || self.events.pending_for(LANE) > 0;
         self.emit(json!({"type": "activity", "lane": LANE, "active": active}));
+        // A session quiet for a while keeps its tail now, not only when it closes (crate::auto_memory::IDLE_RETAIN).
+        if self.auto_memory.idle_due(active, std::time::Instant::now()) {
+            self.retain_tail(true);
+        }
     }
 
     /// Root-owned work whose completion may still re-invoke the root (`async.pending`).

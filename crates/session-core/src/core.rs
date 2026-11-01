@@ -648,6 +648,9 @@ enum RetryNote {
 }
 
 /// The session actor.
+/// How long a quiet session's tail may take to reach Hindsight.
+const IDLE_WAIT: std::time::Duration = std::time::Duration::from_secs(60);
+
 pub struct Core {
     /// The lane's stored model no longer resolves: each run fails with `model_unavailable` until a model is
     /// selected (see [`unavailable_model`]).
@@ -1823,7 +1826,7 @@ impl Core {
     fn stop(&mut self, hand_over: bool) {
         // A successor keeps the session going; a run in progress resumes when the session opens again.
         if !hand_over && self.run.is_none() {
-            self.retain_tail();
+            self.retain_tail(false);
         }
         if let Some(run) = &self.run {
             run.signal.abort();
@@ -2423,7 +2426,8 @@ impl Core {
 
     /// Keep what no compaction summarized in long-term memory as the session closes, when automatic retain is on
     /// (crate::auto_memory).
-    fn retain_tail(&self) {
+    /// `in_background` when the session stays open (it went quiet): the call does not hold the session up.
+    pub(super) fn retain_tail(&self, in_background: bool) {
         if !self.auto_memory.retain {
             return;
         }
@@ -2434,7 +2438,12 @@ impl Core {
         };
         if let Some(tail) = tail {
             let cwd = self.runtime.config.cwd.display().to_string();
-            crate::auto_memory::retain_tail(&self.lane.stack, &session_id, &cwd, tail);
+            let stack = self.lane.stack.clone();
+            if in_background {
+                std::thread::spawn(move || crate::auto_memory::retain_tail(&stack, &session_id, &cwd, tail, IDLE_WAIT));
+            } else {
+                crate::auto_memory::retain_tail(&stack, &session_id, &cwd, tail, crate::auto_memory::TAIL_TIMEOUT);
+            }
         }
     }
 
