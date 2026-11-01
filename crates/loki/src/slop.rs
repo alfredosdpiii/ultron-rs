@@ -992,7 +992,7 @@ fn clone_lines(files: &[(String, String)], focus: Option<&HashSet<String>>) -> R
 }
 
 /// `os.path.normpath` for relative POSIX paths.
-fn normpath(path: &str) -> String {
+pub(crate) fn normpath(path: &str) -> String {
     let absolute = path.starts_with('/');
     let mut parts: Vec<&str> = Vec::new();
     for part in path.split('/') {

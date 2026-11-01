@@ -664,9 +664,27 @@ pub fn resolve_tool(root: &Path, name: &str) -> Option<String> {
     proc::which(name)
 }
 
+/// `ruff_command`: Ruff from the project's .venv or venv, PATH, then the project's `-m ruff`; never installs.
+pub fn ruff_command(root: &Path) -> Option<Vec<String>> {
+    for prefix in [".venv", "venv"] {
+        let local = root.join(prefix).join("bin/ruff");
+        if local.is_file() {
+            return Some(vec![local.to_string_lossy().into_owned()]);
+        }
+    }
+    if proc::which("ruff").is_some() {
+        return Some(vec!["ruff".into()]);
+    }
+    let wanted = BTreeSet::from(["ruff".to_string()]);
+    let python = project_python(root, None)?;
+    resolve_imports(root, &wanted, None, Deadline::none())
+        .is_ok_and(|missing| missing.is_empty())
+        .then(|| vec![python, "-m".into(), "ruff".into()])
+}
+
 fn missing_tool(language: &str, root: &Path) -> Option<&'static str> {
     match language {
-        "python" => proc::which("ruff").is_none().then_some("ruff"),
+        "python" => ruff_command(root).is_none().then_some("ruff"),
         "typescript" => resolve_tool(root, "oxlint").is_none().then_some("oxlint"),
         "go" => {
             if proc::which("gofmt").is_none() {
@@ -738,6 +756,7 @@ pub fn ruff_delta(
     raw: &[u8],
     pairs: &[(String, Vec<u8>, Vec<u8>)],
     deadline: Deadline,
+    ruff: &[String],
 ) -> Result<Vec<String>, CheckError> {
     let text = proc::decode(raw).map_err(invalid)?;
     let config: toml::Table = text
@@ -756,22 +775,23 @@ pub fn ruff_delta(
     for (path, before, after) in pairs {
         let mut counts: Vec<Counter<(String, String, String)>> = Vec::new();
         for content in [before, after] {
-            let command: Vec<String> = [
-                "ruff",
-                "check",
-                "--no-cache",
-                "--no-respect-gitignore",
-                "--config",
-                &trusted.to_string_lossy(),
-                "--output-format",
-                "json",
-                "--stdin-filename",
-                path,
-                "-",
-            ]
-            .iter()
-            .map(|s| s.to_string())
-            .collect();
+            let command: Vec<String> = ruff
+                .iter()
+                .map(String::as_str)
+                .chain([
+                    "check",
+                    "--no-cache",
+                    "--no-respect-gitignore",
+                    "--config",
+                    &trusted.to_string_lossy(),
+                    "--output-format",
+                    "json",
+                    "--stdin-filename",
+                    path,
+                    "-",
+                ])
+                .map(|s| s.to_string())
+                .collect();
             let result = proc::run(&command, directory.path(), Some(content), &[], deadline.timeout()?)?;
             if result.code != 0 && result.code != 1 {
                 return Err(invalid(format!(
@@ -850,7 +870,8 @@ pub fn ruff_new_violations(
         .filter(|c| paths.is_none_or(|p| p.contains(&c.path)) && c.path.ends_with(".py"))
         .filter_map(|c| c.after.map(|after| (c.path, c.before.unwrap_or_default(), after)))
         .collect();
-    Ok(ruff_delta(&raw, &pairs, deadline)?)
+    let ruff = ruff_command(root).unwrap_or_else(|| vec!["ruff".into()]);
+    Ok(ruff_delta(&raw, &pairs, deadline, &ruff)?)
 }
 
 /// Pre-write net-new Ruff with the committed config; post-write reports gaps.
@@ -864,12 +885,12 @@ pub fn preview_ruff(
         .filter(|(path, _, _)| path.ends_with(".py"))
         .map(|(path, old, new)| (path.clone(), old.clone().into_bytes(), new.clone().into_bytes()))
         .collect();
-    if pairs.is_empty() || proc::which("ruff").is_none() {
+    let Some(ruff) = ruff_command(root).filter(|_| !pairs.is_empty()) else {
         return Ok(vec![]);
-    }
+    };
     let result = git_output(root, &["show", "HEAD:.ruff.toml"], deadline, None).and_then(|raw| {
         crate::evidence::policy("base", ".ruff.toml", Some(&raw), Some("HEAD"));
-        ruff_delta(&raw, &pairs, deadline)
+        ruff_delta(&raw, &pairs, deadline, &ruff)
     });
     match result {
         Err(e) if matches!(e, CheckError::Value(_)) || e.is_os() || e.is_timeout() => Ok(vec![]),
@@ -878,9 +899,11 @@ pub fn preview_ruff(
 }
 
 fn mypy_binary(root: &Path) -> Option<String> {
-    let local = root.join(".venv/bin/mypy");
-    if local.is_file() {
-        return Some(local.to_string_lossy().into_owned());
+    for prefix in [".venv", "venv"] {
+        let local = root.join(prefix).join("bin/mypy");
+        if local.is_file() {
+            return Some(local.to_string_lossy().into_owned());
+        }
     }
     proc::which("mypy")
 }

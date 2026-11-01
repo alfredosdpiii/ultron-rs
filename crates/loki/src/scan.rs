@@ -198,15 +198,12 @@ fn scan_command(language: &str, files: &[PathBuf], root: &Path) -> (Option<&'sta
     let words = |items: &[&str]| -> Vec<String> { items.iter().map(|s| s.to_string()).collect() };
     match language {
         "python" => {
-            if proc::which("ruff").is_none() {
+            let Some(ruff) = hook::ruff_command(root) else {
                 return (Some("ruff"), vec![]);
-            }
+            };
             let files = relative_files(files, root);
-            let check = words(&["ruff", "check"])
-                .into_iter()
-                .chain(files.iter().cloned())
-                .collect();
-            let format = words(&["ruff", "format", "--check"]).into_iter().chain(files).collect();
+            let check = [ruff.clone(), words(&["check"]), files.clone()].concat();
+            let format = [ruff, words(&["format", "--check"]), files].concat();
             (None, vec![check, format])
         }
         "typescript" => match hook::resolve_tool(root, "oxlint") {

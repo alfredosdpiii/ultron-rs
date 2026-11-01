@@ -8,7 +8,7 @@ use crate::proc::{self, Deadline};
 use crate::py::{self, Counter};
 use crate::{CheckError, resolve};
 use serde_json::{Map, Value};
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 pub const TYPESCRIPT_SUFFIXES: [&str; 8] = [".ts", ".tsx", ".mts", ".cts", ".js", ".jsx", ".mjs", ".cjs"];
@@ -291,6 +291,37 @@ fn typescript_state(
         .join(hex(&digest.finalize()))
 }
 
+/// `typescript_extends`: repository paths the committed tsconfig.json extends; None when unreadable.
+/// Package names resolve into node_modules, which is refused separately.
+fn typescript_extends(raw: Option<&[u8]>) -> Option<HashSet<String>> {
+    let config: Value = serde_json::from_slice(raw?).ok()?;
+    let targets = match config.get("extends") {
+        Some(Value::Array(items)) => items.clone(),
+        Some(other) => vec![other.clone()],
+        None => vec![],
+    };
+    let mut names = HashSet::new();
+    for target in targets.iter().filter_map(Value::as_str).filter(|t| t.starts_with('.')) {
+        let path = crate::slop::normpath(target);
+        names.insert(format!("{path}.json"));
+        names.insert(path);
+    }
+    Some(names)
+}
+
+/// `typescript_config_json`: whether a JSON file can change compiler options or module resolution.
+/// An unreadable committed tsconfig.json (comments, say) keeps every JSON file.
+fn typescript_config_json(name: &str, extends: Option<&HashSet<String>>) -> bool {
+    let base = name.rsplit('/').next().unwrap_or(name);
+    name.ends_with(".json")
+        && extends.is_none_or(|extends| {
+            extends.contains(name)
+                || base == "package.json"
+                || base.starts_with("tsconfig")
+                || base.starts_with("jsconfig")
+        })
+}
+
 /// Net-new project type errors, using the committed tsconfig.json.
 pub fn typescript_violations(
     root: &Path,
@@ -319,22 +350,26 @@ pub fn typescript_violations(
     if !findings.is_empty() {
         return Ok(findings);
     }
+    let raw = match git_output(root, &["show", &format!("{base}:tsconfig.json")], deadline, None) {
+        Ok(raw) => Some(raw),
+        Err(CheckError::Value(_)) => None,
+        Err(other) => return Err(other),
+    };
+    let extends = typescript_extends(raw.as_deref());
     let names = changes
         .iter()
         .map(|c| c.path.clone())
         .chain(overrides.into_iter().flatten().map(|(k, _)| k.clone()));
     for name in names {
-        if name.ends_with(".json") {
+        if typescript_config_json(&name, extends.as_ref()) {
             return Ok(setup(format!("{name}: JSON/config change requires separate review")));
         }
         if name.starts_with("node_modules/") {
             return Ok(setup("typescript: dependency changes require separate review".into()));
         }
     }
-    let raw = match git_output(root, &["show", &format!("{base}:tsconfig.json")], deadline, None) {
-        Ok(raw) => raw,
-        Err(CheckError::Value(_)) => return Ok(setup("typescript: committed tsconfig.json required".into())),
-        Err(other) => return Err(other),
+    let Some(raw) = raw else {
+        return Ok(setup("typescript: committed tsconfig.json required".into()));
     };
     crate::evidence::policy("base", "tsconfig.json", Some(&raw), Some(&base));
     let marker = typescript_state(root, &base, &raw, &changes, overrides);
