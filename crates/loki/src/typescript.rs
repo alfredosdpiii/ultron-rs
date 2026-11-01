@@ -291,10 +291,25 @@ fn typescript_state(
         .join(hex(&digest.finalize()))
 }
 
+static JSONC_TOKEN: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
+    regex::Regex::new(r#"(?s)"(?:\\.|[^"\\])*"|//[^\n]*|/\*.*?\*/|,\s*[}\]]"#).expect("valid regex")
+});
+
+/// `strip_jsonc`: tsconfig's JSON dialect as plain JSON: comments and trailing commas dropped.
+pub fn strip_jsonc(text: &str) -> String {
+    JSONC_TOKEN
+        .replace_all(text, |c: &regex::Captures<'_>| match c[0].as_bytes()[0] {
+            b'"' => c[0].to_string(),
+            b',' => c[0][1..].to_string(),
+            _ => String::new(),
+        })
+        .into_owned()
+}
+
 /// `typescript_extends`: repository paths the committed tsconfig.json extends; None when unreadable.
 /// Package names resolve into node_modules, which is refused separately.
 fn typescript_extends(raw: Option<&[u8]>) -> Option<HashSet<String>> {
-    let config: Value = serde_json::from_slice(raw?).ok()?;
+    let config: Value = serde_json::from_str(&strip_jsonc(&String::from_utf8_lossy(raw?))).ok()?;
     let targets = match config.get("extends") {
         Some(Value::Array(items)) => items.clone(),
         Some(other) => vec![other.clone()],
@@ -311,6 +326,16 @@ fn typescript_extends(raw: Option<&[u8]>) -> Option<HashSet<String>> {
 
 /// `typescript_config_json`: whether a JSON file can change compiler options or module resolution.
 /// An unreadable committed tsconfig.json (comments, say) keeps every JSON file.
+#[cfg(test)]
+mod jsonc_tests {
+    #[test]
+    fn commented_tsconfig_still_names_its_extends() {
+        let raw = b"{\n  // base\n  \"extends\": \"./base\", /* \"./x\" */\n  \"a\": \"//no\",\n}";
+        let names = super::typescript_extends(Some(raw)).expect("parses");
+        assert_eq!(names, ["base".to_string(), "base.json".to_string()].into());
+    }
+}
+
 fn typescript_config_json(name: &str, extends: Option<&HashSet<String>>) -> bool {
     let base = name.rsplit('/').next().unwrap_or(name);
     name.ends_with(".json")
