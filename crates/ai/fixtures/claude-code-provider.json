@@ -29,6 +29,34 @@
 			"maxTokens": 32000
 		},
 		{
+			"id": "claude-fable-5-1",
+			"name": "Claude Fable 5.1 (Claude Code CLI)",
+			"api": "claude-code-cli",
+			"provider": "claude-code",
+			"baseUrl": "claude-code://cli",
+			"reasoning": true,
+			"thinkingLevelMap": {
+				"minimal": "low",
+				"low": "low",
+				"medium": "medium",
+				"high": "high",
+				"xhigh": "xhigh",
+				"max": "max"
+			},
+			"input": [
+				"text",
+				"image"
+			],
+			"cost": {
+				"input": 0,
+				"output": 0,
+				"cacheRead": 0,
+				"cacheWrite": 0
+			},
+			"contextWindow": 200000,
+			"maxTokens": 32000
+		},
+		{
 			"id": "claude-haiku-5-5",
 			"name": "Claude Haiku 5.5 (Claude Code CLI)",
 			"api": "claude-code-cli",
@@ -197,6 +225,34 @@
 				{
 					"id": "claude-opus-5-5",
 					"name": "Claude Opus 5.5 (Claude Code CLI)",
+					"api": "claude-code-cli",
+					"provider": "claude-code",
+					"baseUrl": "claude-code://cli",
+					"reasoning": true,
+					"thinkingLevelMap": {
+						"minimal": "low",
+						"low": "low",
+						"medium": "medium",
+						"high": "high",
+						"xhigh": "xhigh",
+						"max": "max"
+					},
+					"input": [
+						"text",
+						"image"
+					],
+					"cost": {
+						"input": 0,
+						"output": 0,
+						"cacheRead": 0,
+						"cacheWrite": 0
+					},
+					"contextWindow": 200000,
+					"maxTokens": 32000
+				},
+				{
+					"id": "claude-fable-5-1",
+					"name": "Claude Fable 5.1 (Claude Code CLI)",
 					"api": "claude-code-cli",
 					"provider": "claude-code",
 					"baseUrl": "claude-code://cli",
@@ -538,6 +594,34 @@
 					"maxTokens": 32000
 				},
 				{
+					"id": "claude-fable-5-1",
+					"name": "Claude Fable 5.1 (Claude Code CLI)",
+					"api": "claude-code-cli",
+					"provider": "claude-code",
+					"baseUrl": "claude-code://cli",
+					"reasoning": true,
+					"thinkingLevelMap": {
+						"minimal": "low",
+						"low": "low",
+						"medium": "medium",
+						"high": "high",
+						"xhigh": "xhigh",
+						"max": "max"
+					},
+					"input": [
+						"text",
+						"image"
+					],
+					"cost": {
+						"input": 0,
+						"output": 0,
+						"cacheRead": 0,
+						"cacheWrite": 0
+					},
+					"contextWindow": 200000,
+					"maxTokens": 32000
+				},
+				{
 					"id": "claude-haiku-5-5",
 					"name": "Claude Haiku 5.5 (Claude Code CLI)",
 					"api": "claude-code-cli",
@@ -652,6 +736,7 @@
 			],
 			"available": [
 				"claude-code/claude-opus-5-5",
+				"claude-code/claude-fable-5-1",
 				"claude-code/claude-haiku-5-5",
 				"claude-code/opus",
 				"claude-code/sonnet",
@@ -773,6 +858,10 @@
 					"models": [
 						{
 							"model": "claude-code/claude-opus-5-5",
+							"thinking": null
+						},
+						{
+							"model": "claude-code/claude-fable-5-1",
 							"thinking": null
 						},
 						{
@@ -892,6 +981,34 @@
 					"maxTokens": 32000
 				},
 				{
+					"id": "claude-fable-5-1",
+					"name": "Claude Fable 5.1 (Claude Code CLI)",
+					"api": "claude-code-cli",
+					"provider": "claude-code",
+					"baseUrl": "claude-code://cli",
+					"reasoning": true,
+					"thinkingLevelMap": {
+						"minimal": "low",
+						"low": "low",
+						"medium": "medium",
+						"high": "high",
+						"xhigh": "xhigh",
+						"max": "max"
+					},
+					"input": [
+						"text",
+						"image"
+					],
+					"cost": {
+						"input": 0,
+						"output": 0,
+						"cacheRead": 0,
+						"cacheWrite": 0
+					},
+					"contextWindow": 200000,
+					"maxTokens": 32000
+				},
+				{
 					"id": "claude-haiku-5-5",
 					"name": "Claude Haiku 5.5 (Claude Code CLI)",
 					"api": "claude-code-cli",
@@ -1006,6 +1123,7 @@
 			],
 			"available": [
 				"claude-code/claude-opus-5-5",
+				"claude-code/claude-fable-5-1",
 				"claude-code/claude-haiku-5-5",
 				"claude-code/opus",
 				"claude-code/sonnet",
@@ -1127,6 +1245,10 @@
 					"models": [
 						{
 							"model": "claude-code/claude-opus-5-5",
+							"thinking": null
+						},
+						{
+							"model": "claude-code/claude-fable-5-1",
 							"thinking": null
 						},
 						{
@@ -1236,6 +1358,34 @@
 					"maxTokens": 32000
 				},
 				{
+					"id": "claude-fable-5-1",
+					"name": "Claude Fable 5.1 (Claude Code CLI)",
+					"api": "claude-code-cli",
+					"provider": "claude-code",
+					"baseUrl": "claude-code://cli",
+					"reasoning": true,
+					"thinkingLevelMap": {
+						"minimal": "low",
+						"low": "low",
+						"medium": "medium",
+						"high": "high",
+						"xhigh": "xhigh",
+						"max": "max"
+					},
+					"input": [
+						"text",
+						"image"
+					],
+					"cost": {
+						"input": 0,
+						"output": 0,
+						"cacheRead": 0,
+						"cacheWrite": 0
+					},
+					"contextWindow": 200000,
+					"maxTokens": 32000
+				},
+				{
 					"id": "claude-haiku-5-5",
 					"name": "Claude Haiku 5.5 (Claude Code CLI)",
 					"api": "claude-code-cli",
@@ -1350,6 +1500,7 @@
 			],
 			"available": [
 				"claude-code/claude-opus-5-5",
+				"claude-code/claude-fable-5-1",
 				"claude-code/claude-haiku-5-5",
 				"claude-code/opus",
 				"claude-code/sonnet",
@@ -1471,6 +1622,10 @@
 					"models": [
 						{
 							"model": "claude-code/claude-opus-5-5",
+							"thinking": null
+						},
+						{
+							"model": "claude-code/claude-fable-5-1",
 							"thinking": null
 						},
 						{
@@ -1580,6 +1735,34 @@
 					"maxTokens": 32000
 				},
 				{
+					"id": "claude-fable-5-1",
+					"name": "Claude Fable 5.1 (Claude Code CLI)",
+					"api": "claude-code-cli",
+					"provider": "claude-code",
+					"baseUrl": "claude-code://cli",
+					"reasoning": true,
+					"thinkingLevelMap": {
+						"minimal": "low",
+						"low": "low",
+						"medium": "medium",
+						"high": "high",
+						"xhigh": "xhigh",
+						"max": "max"
+					},
+					"input": [
+						"text",
+						"image"
+					],
+					"cost": {
+						"input": 0,
+						"output": 0,
+						"cacheRead": 0,
+						"cacheWrite": 0
+					},
+					"contextWindow": 200000,
+					"maxTokens": 32000
+				},
+				{
 					"id": "claude-haiku-5-5",
 					"name": "Claude Haiku 5.5 (Claude Code CLI)",
 					"api": "claude-code-cli",
@@ -1694,6 +1877,7 @@
 			],
 			"available": [
 				"claude-code/claude-opus-5-5",
+				"claude-code/claude-fable-5-1",
 				"claude-code/claude-haiku-5-5",
 				"claude-code/opus",
 				"claude-code/sonnet",
@@ -1815,6 +1999,10 @@
 					"models": [
 						{
 							"model": "claude-code/claude-opus-5-5",
+							"thinking": null
+						},
+						{
+							"model": "claude-code/claude-fable-5-1",
 							"thinking": null
 						},
 						{
@@ -1924,6 +2112,34 @@
 					"maxTokens": 32000
 				},
 				{
+					"id": "claude-fable-5-1",
+					"name": "Claude Fable 5.1 (Claude Code CLI)",
+					"api": "claude-code-cli",
+					"provider": "claude-code",
+					"baseUrl": "claude-code://cli",
+					"reasoning": true,
+					"thinkingLevelMap": {
+						"minimal": "low",
+						"low": "low",
+						"medium": "medium",
+						"high": "high",
+						"xhigh": "xhigh",
+						"max": "max"
+					},
+					"input": [
+						"text",
+						"image"
+					],
+					"cost": {
+						"input": 0,
+						"output": 0,
+						"cacheRead": 0,
+						"cacheWrite": 0
+					},
+					"contextWindow": 200000,
+					"maxTokens": 32000
+				},
+				{
 					"id": "claude-haiku-5-5",
 					"name": "Claude Haiku 5.5 (Claude Code CLI)",
 					"api": "claude-code-cli",
@@ -2038,6 +2254,7 @@
 			],
 			"available": [
 				"claude-code/claude-opus-5-5",
+				"claude-code/claude-fable-5-1",
 				"claude-code/claude-haiku-5-5",
 				"claude-code/opus",
 				"claude-code/sonnet",
@@ -2159,6 +2376,10 @@
 					"models": [
 						{
 							"model": "claude-code/claude-opus-5-5",
+							"thinking": null
+						},
+						{
+							"model": "claude-code/claude-fable-5-1",
 							"thinking": null
 						},
 						{
@@ -2269,6 +2490,34 @@
 					"maxTokens": 32000
 				},
 				{
+					"id": "claude-fable-5-1",
+					"name": "Claude Fable 5.1 (Claude Code CLI)",
+					"api": "claude-code-cli",
+					"provider": "claude-code",
+					"baseUrl": "claude-code://cli",
+					"reasoning": true,
+					"thinkingLevelMap": {
+						"minimal": "low",
+						"low": "low",
+						"medium": "medium",
+						"high": "high",
+						"xhigh": "xhigh",
+						"max": "max"
+					},
+					"input": [
+						"text",
+						"image"
+					],
+					"cost": {
+						"input": 0,
+						"output": 0,
+						"cacheRead": 0,
+						"cacheWrite": 0
+					},
+					"contextWindow": 200000,
+					"maxTokens": 32000
+				},
+				{
 					"id": "claude-haiku-5-5",
 					"name": "Claude Haiku 5.5 (Claude Code CLI)",
 					"api": "claude-code-cli",
@@ -2383,6 +2632,7 @@
 			],
 			"available": [
 				"claude-code/claude-opus-5-5",
+				"claude-code/claude-fable-5-1",
 				"claude-code/claude-haiku-5-5",
 				"claude-code/opus",
 				"claude-code/sonnet",
@@ -2504,6 +2754,10 @@
 					"models": [
 						{
 							"model": "claude-code/claude-opus-5-5",
+							"thinking": null
+						},
+						{
+							"model": "claude-code/claude-fable-5-1",
 							"thinking": null
 						},
 						{
@@ -2614,6 +2868,34 @@
 					"maxTokens": 32000
 				},
 				{
+					"id": "claude-fable-5-1",
+					"name": "Claude Fable 5.1 (Claude Code CLI)",
+					"api": "claude-code-cli",
+					"provider": "claude-code",
+					"baseUrl": "claude-code://cli",
+					"reasoning": true,
+					"thinkingLevelMap": {
+						"minimal": "low",
+						"low": "low",
+						"medium": "medium",
+						"high": "high",
+						"xhigh": "xhigh",
+						"max": "max"
+					},
+					"input": [
+						"text",
+						"image"
+					],
+					"cost": {
+						"input": 0,
+						"output": 0,
+						"cacheRead": 0,
+						"cacheWrite": 0
+					},
+					"contextWindow": 200000,
+					"maxTokens": 32000
+				},
+				{
 					"id": "claude-haiku-5-5",
 					"name": "Claude Haiku 5.5 (Claude Code CLI)",
 					"api": "claude-code-cli",
@@ -2728,6 +3010,7 @@
 			],
 			"available": [
 				"claude-code/claude-opus-5-5",
+				"claude-code/claude-fable-5-1",
 				"claude-code/claude-haiku-5-5",
 				"claude-code/opus",
 				"claude-code/sonnet",
@@ -2849,6 +3132,10 @@
 					"models": [
 						{
 							"model": "claude-code/claude-opus-5-5",
+							"thinking": null
+						},
+						{
+							"model": "claude-code/claude-fable-5-1",
 							"thinking": null
 						},
 						{
@@ -2959,6 +3246,34 @@
 					"maxTokens": 32000
 				},
 				{
+					"id": "claude-fable-5-1",
+					"name": "Claude Fable 5.1 (Claude Code CLI)",
+					"api": "claude-code-cli",
+					"provider": "claude-code",
+					"baseUrl": "claude-code://cli",
+					"reasoning": true,
+					"thinkingLevelMap": {
+						"minimal": "low",
+						"low": "low",
+						"medium": "medium",
+						"high": "high",
+						"xhigh": "xhigh",
+						"max": "max"
+					},
+					"input": [
+						"text",
+						"image"
+					],
+					"cost": {
+						"input": 0,
+						"output": 0,
+						"cacheRead": 0,
+						"cacheWrite": 0
+					},
+					"contextWindow": 200000,
+					"maxTokens": 32000
+				},
+				{
 					"id": "claude-haiku-5-5",
 					"name": "Claude Haiku 5.5 (Claude Code CLI)",
 					"api": "claude-code-cli",
@@ -3073,6 +3388,7 @@
 			],
 			"available": [
 				"claude-code/claude-opus-5-5",
+				"claude-code/claude-fable-5-1",
 				"claude-code/claude-haiku-5-5",
 				"claude-code/opus",
 				"claude-code/sonnet",
@@ -3197,6 +3513,10 @@
 							"thinking": null
 						},
 						{
+							"model": "claude-code/claude-fable-5-1",
+							"thinking": null
+						},
+						{
 							"model": "claude-code/claude-haiku-5-5",
 							"thinking": null
 						},
@@ -3278,6 +3598,34 @@
 				{
 					"id": "claude-opus-5-5",
 					"name": "Claude Opus 5.5 (Claude Code CLI)",
+					"api": "claude-code-cli",
+					"provider": "claude-code",
+					"baseUrl": "claude-code://cli",
+					"reasoning": true,
+					"thinkingLevelMap": {
+						"minimal": "low",
+						"low": "low",
+						"medium": "medium",
+						"high": "high",
+						"xhigh": "xhigh",
+						"max": "max"
+					},
+					"input": [
+						"text",
+						"image"
+					],
+					"cost": {
+						"input": 0,
+						"output": 0,
+						"cacheRead": 0,
+						"cacheWrite": 0
+					},
+					"contextWindow": 200000,
+					"maxTokens": 32000
+				},
+				{
+					"id": "claude-fable-5-1",
+					"name": "Claude Fable 5.1 (Claude Code CLI)",
 					"api": "claude-code-cli",
 					"provider": "claude-code",
 					"baseUrl": "claude-code://cli",
@@ -3615,6 +3963,34 @@
 					"maxTokens": 32000
 				},
 				{
+					"id": "claude-fable-5-1",
+					"name": "Claude Fable 5.1 (Claude Code CLI)",
+					"api": "claude-code-cli",
+					"provider": "claude-code",
+					"baseUrl": "claude-code://cli",
+					"reasoning": true,
+					"thinkingLevelMap": {
+						"minimal": "low",
+						"low": "low",
+						"medium": "medium",
+						"high": "high",
+						"xhigh": "xhigh",
+						"max": "max"
+					},
+					"input": [
+						"text",
+						"image"
+					],
+					"cost": {
+						"input": 0,
+						"output": 0,
+						"cacheRead": 0,
+						"cacheWrite": 0
+					},
+					"contextWindow": 200000,
+					"maxTokens": 32000
+				},
+				{
 					"id": "claude-haiku-5-5",
 					"name": "Claude Haiku 5.5 (Claude Code CLI)",
 					"api": "claude-code-cli",
@@ -3729,6 +4105,7 @@
 			],
 			"available": [
 				"claude-code/claude-opus-5-5",
+				"claude-code/claude-fable-5-1",
 				"claude-code/claude-haiku-5-5",
 				"claude-code/opus",
 				"claude-code/sonnet",
@@ -3853,6 +4230,10 @@
 							"thinking": null
 						},
 						{
+							"model": "claude-code/claude-fable-5-1",
+							"thinking": null
+						},
+						{
 							"model": "claude-code/claude-haiku-5-5",
 							"thinking": null
 						},
@@ -3931,6 +4312,34 @@
 				{
 					"id": "claude-opus-5-5",
 					"name": "Claude Opus 5.5 (Claude Code CLI)",
+					"api": "claude-code-cli",
+					"provider": "claude-code",
+					"baseUrl": "claude-code://cli",
+					"reasoning": true,
+					"thinkingLevelMap": {
+						"minimal": "low",
+						"low": "low",
+						"medium": "medium",
+						"high": "high",
+						"xhigh": "xhigh",
+						"max": "max"
+					},
+					"input": [
+						"text",
+						"image"
+					],
+					"cost": {
+						"input": 0,
+						"output": 0,
+						"cacheRead": 0,
+						"cacheWrite": 0
+					},
+					"contextWindow": 200000,
+					"maxTokens": 32000
+				},
+				{
+					"id": "claude-fable-5-1",
+					"name": "Claude Fable 5.1 (Claude Code CLI)",
 					"api": "claude-code-cli",
 					"provider": "claude-code",
 					"baseUrl": "claude-code://cli",
@@ -4268,6 +4677,34 @@
 					"maxTokens": 32000
 				},
 				{
+					"id": "claude-fable-5-1",
+					"name": "Claude Fable 5.1 (Claude Code CLI)",
+					"api": "claude-code-cli",
+					"provider": "claude-code",
+					"baseUrl": "claude-code://cli",
+					"reasoning": true,
+					"thinkingLevelMap": {
+						"minimal": "low",
+						"low": "low",
+						"medium": "medium",
+						"high": "high",
+						"xhigh": "xhigh",
+						"max": "max"
+					},
+					"input": [
+						"text",
+						"image"
+					],
+					"cost": {
+						"input": 0,
+						"output": 0,
+						"cacheRead": 0,
+						"cacheWrite": 0
+					},
+					"contextWindow": 200000,
+					"maxTokens": 32000
+				},
+				{
 					"id": "claude-haiku-5-5",
 					"name": "Claude Haiku 5.5 (Claude Code CLI)",
 					"api": "claude-code-cli",
@@ -4398,6 +4835,7 @@
 				"anthropic/claude-sonnet-4-6",
 				"anthropic/claude-sonnet-5",
 				"claude-code/claude-opus-5-5",
+				"claude-code/claude-fable-5-1",
 				"claude-code/claude-haiku-5-5",
 				"claude-code/opus",
 				"claude-code/sonnet",
@@ -4519,6 +4957,10 @@
 					"models": [
 						{
 							"model": "claude-code/claude-opus-5-5",
+							"thinking": null
+						},
+						{
+							"model": "claude-code/claude-fable-5-1",
 							"thinking": null
 						},
 						{
@@ -4650,6 +5092,34 @@
 					"maxTokens": 32000
 				},
 				{
+					"id": "claude-fable-5-1",
+					"name": "Claude Fable 5.1 (Claude Code CLI)",
+					"api": "claude-code-cli",
+					"provider": "claude-code",
+					"baseUrl": "claude-code://cli",
+					"reasoning": true,
+					"thinkingLevelMap": {
+						"minimal": "low",
+						"low": "low",
+						"medium": "medium",
+						"high": "high",
+						"xhigh": "xhigh",
+						"max": "max"
+					},
+					"input": [
+						"text",
+						"image"
+					],
+					"cost": {
+						"input": 0,
+						"output": 0,
+						"cacheRead": 0,
+						"cacheWrite": 0
+					},
+					"contextWindow": 200000,
+					"maxTokens": 32000
+				},
+				{
 					"id": "claude-haiku-5-5",
 					"name": "Claude Haiku 5.5 (Claude Code CLI)",
 					"api": "claude-code-cli",
@@ -4764,6 +5234,7 @@
 			],
 			"available": [
 				"claude-code/claude-opus-5-5",
+				"claude-code/claude-fable-5-1",
 				"claude-code/claude-haiku-5-5",
 				"claude-code/opus",
 				"claude-code/sonnet",
@@ -4888,6 +5359,10 @@
 							"thinking": null
 						},
 						{
+							"model": "claude-code/claude-fable-5-1",
+							"thinking": null
+						},
+						{
 							"model": "claude-code/claude-haiku-5-5",
 							"thinking": null
 						},
@@ -5003,6 +5478,34 @@
 				{
 					"id": "claude-opus-5-5",
 					"name": "Claude Opus 5.5 (Claude Code CLI)",
+					"api": "claude-code-cli",
+					"provider": "claude-code",
+					"baseUrl": "claude-code://cli",
+					"reasoning": true,
+					"thinkingLevelMap": {
+						"minimal": "low",
+						"low": "low",
+						"medium": "medium",
+						"high": "high",
+						"xhigh": "xhigh",
+						"max": "max"
+					},
+					"input": [
+						"text",
+						"image"
+					],
+					"cost": {
+						"input": 0,
+						"output": 0,
+						"cacheRead": 0,
+						"cacheWrite": 0
+					},
+					"contextWindow": 200000,
+					"maxTokens": 32000
+				},
+				{
+					"id": "claude-fable-5-1",
+					"name": "Claude Fable 5.1 (Claude Code CLI)",
 					"api": "claude-code-cli",
 					"provider": "claude-code",
 					"baseUrl": "claude-code://cli",
@@ -5162,6 +5665,7 @@
 			],
 			"available": [
 				"claude-code/claude-opus-5-5",
+				"claude-code/claude-fable-5-1",
 				"claude-code/claude-haiku-5-5",
 				"claude-code/opus",
 				"claude-code/sonnet",
@@ -5287,6 +5791,10 @@
 							"thinking": null
 						},
 						{
+							"model": "claude-code/claude-fable-5-1",
+							"thinking": null
+						},
+						{
 							"model": "claude-code/claude-haiku-5-5",
 							"thinking": null
 						},
@@ -5378,6 +5886,34 @@
 				{
 					"id": "claude-opus-5-5",
 					"name": "Claude Opus 5.5 (Claude Code CLI)",
+					"api": "claude-code-cli",
+					"provider": "claude-code",
+					"baseUrl": "claude-code://cli",
+					"reasoning": true,
+					"thinkingLevelMap": {
+						"minimal": "low",
+						"low": "low",
+						"medium": "medium",
+						"high": "high",
+						"xhigh": "xhigh",
+						"max": "max"
+					},
+					"input": [
+						"text",
+						"image"
+					],
+					"cost": {
+						"input": 0,
+						"output": 0,
+						"cacheRead": 0,
+						"cacheWrite": 0
+					},
+					"contextWindow": 200000,
+					"maxTokens": 32000
+				},
+				{
+					"id": "claude-fable-5-1",
+					"name": "Claude Fable 5.1 (Claude Code CLI)",
 					"api": "claude-code-cli",
 					"provider": "claude-code",
 					"baseUrl": "claude-code://cli",
@@ -5518,6 +6054,7 @@
 			],
 			"available": [
 				"claude-code/claude-opus-5-5",
+				"claude-code/claude-fable-5-1",
 				"claude-code/claude-haiku-5-5",
 				"claude-code/opus",
 				"claude-code/sonnet",
@@ -5639,6 +6176,10 @@
 					"models": [
 						{
 							"model": "claude-code/claude-opus-5-5",
+							"thinking": null
+						},
+						{
+							"model": "claude-code/claude-fable-5-1",
 							"thinking": null
 						},
 						{

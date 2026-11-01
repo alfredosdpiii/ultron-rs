@@ -1,5 +1,5 @@
 //! Replays `fixtures/claude-code-provider.json` (recorded from the TypeScript model runtime by
-//! `fixtures/generate-claude-code-provider.mjs`): the always registered `claude-code` provider — its five models, its
+//! `fixtures/generate-claude-code-provider.mjs`): the always registered `claude-code` provider — its six models (`claude-fable-5-1` added in Rust after the recording), its
 //! place after every catalog provider, availability by where its CLI would be found, models.json overrides,
 //! `resolveCliModel`, `resolveModelScope` and `findInitialModel` with its models, and no remote catalog.
 //!
