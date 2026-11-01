@@ -231,7 +231,10 @@ fn home_inner(args: &[String], env: &Env, out: &mut dyn Write, err: &mut dyn Wri
     // Another selector: the client selects the session among the instance's (the TUI's `-r` picker lists them).
     if let Some(mut selector) = selector {
         if selector[0] == "-c" || selector[0] == "--continue" {
-            // The most recently active session (none: a new one), as the client's own `-c` picks it.
+            // The most recently active session (none: a new one), as the client's own `-c` picks it. The dream
+            // session (daemon::dream) is busy every night and is never the one the user left.
+            let dream = daemon::dream::session_id(&instance.dir, &session_dir);
+            sessions.retain(|m| Some(&m.id) != dream.as_ref());
             sessions.sort_by(|a, b| b.modified_at.total_cmp(&a.modified_at));
             selector = match sessions.first() {
                 Some(latest) => vec!["--session-id".to_string(), latest.id.clone()],

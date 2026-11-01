@@ -150,7 +150,9 @@ impl Home {
             // Replies are scripted in order; a refinement request (session_core::auto_refine) would take one.
             .env("ULTRON_AUTO_REFINE", "off")
             .env("NO_COLOR", "1")
-            .env("TZ", "UTC");
+            .env("TZ", "UTC")
+            // The durable instance's nightly dream session (daemon::dream) would be one more session in its store.
+            .env("ULTRON_DREAM", "off");
         command
     }
 

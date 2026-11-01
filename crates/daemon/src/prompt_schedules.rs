@@ -515,6 +515,16 @@ impl kernel_apis::artifacts::KeyedDocuments for JournalValues {
 /// server runs): the session's locks are taken as a worker takes them, so a worker starting meanwhile waits or is
 /// refused.
 pub fn cancel_in_journal(path: &Path, name_or_id: &str, clock: Arc<dyn TickClock>) -> Result<Schedule, String> {
+    in_journal(path, clock, |module| module.cancel(name_or_id))
+}
+
+/// Run `change` on the schedules of the session at `path`, in its journal directly, under the session's locks (see
+/// [`cancel_in_journal`]).
+pub fn in_journal<T>(
+    path: &Path,
+    clock: Arc<dyn TickClock>,
+    change: impl FnOnce(&kernel_apis::prompt_schedule::ScheduleModule) -> Result<T, String>,
+) -> Result<T, String> {
     let _owner = durable::owner::OwnerLock::acquire(path).map_err(|error| match error {
         durable::owner::OwnerError::InUse { pid } => crate::worker::session_in_use(
             &session_journal::repo::read_metadata(path)
@@ -544,5 +554,5 @@ pub fn cancel_in_journal(path: &Path, name_or_id: &str, clock: Arc<dyn TickClock
         clock,
         None,
     );
-    module.cancel(name_or_id)
+    change(&module)
 }

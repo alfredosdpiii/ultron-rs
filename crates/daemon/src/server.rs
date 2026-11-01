@@ -34,6 +34,31 @@ pub fn is_durable_directory(directory: &Path) -> bool {
     })
 }
 
+/// The durable instance's nightly dream schedule, reconciled to the user's settings before the timer reads the
+/// journals (crate::dream). A failure is logged and leaves the schedule as it was.
+fn keep_dreaming(options: &ServerOptions, log: &dyn Fn(&str)) {
+    if std::env::var("ULTRON_DREAM").is_ok_and(|v| matches!(v.as_str(), "off" | "0" | "false")) {
+        return;
+    }
+    let Some(home) = std::env::var_os("HOME").map(PathBuf::from) else {
+        return;
+    };
+    let agent_dir = config::paths::agent_dir(|key| std::env::var(key).ok(), &home);
+    let settings = config::settings::SettingsManager::create(&home, &agent_dir, false);
+    let settings = Value::Object(settings.global_settings().clone());
+    let result = crate::dream::ensure(
+        &options.directory,
+        &options.session_dir,
+        &home,
+        &settings,
+        kernel_apis::prompt_schedule::clock_for(&|key| std::env::var(key).ok()),
+        &kernel_apis::localtime::Zone::from_env(std::env::var("TZ").ok().as_deref()),
+    );
+    if let Err(error) = result {
+        log(&format!("dream schedule: {error}"));
+    }
+}
+
 /// A server process of the durable instance moves to the home directory.
 fn durable_home(directory: &Path) {
     if is_durable_directory(directory)
@@ -433,6 +458,15 @@ fn start_generation(
     );
     manager.discover();
     hub.refresh();
+    if is_durable_directory(&options.directory) {
+        keep_dreaming(options, &|message| {
+            record_error(
+                &error_log_path(&options.directory, server_id),
+                "[ultron server warning]",
+                message,
+            )
+        });
+    }
     schedules.start(options.session_dir.clone());
     let record = options
         .directory
