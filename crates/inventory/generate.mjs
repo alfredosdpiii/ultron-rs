@@ -1,6 +1,9 @@
 // Generates crates/inventory/inventory.tsv: the behavior surfaces of every packages/* package and of the
 // pinned upstream Pi packages (durable, chord, ai), one row per surface with the source line that defines it.
 // Usage: node crates/inventory/generate.mjs [<pi-reference-checkout>]   (run from the repository root)
+// Frozen: the TypeScript packages it scans (packages/agent, ...) are no longer in this repository, so it only runs
+// from a TypeScript Ultron checkout. Keep inventory.tsv as recorded; fix moved rows (such as the loki-engine/loki.py
+// lines after an engine bump) by hand.
 // Deterministic: sorted output, no timestamps; paths are repo-relative, upstream paths are prefixed "upstream:".
 import { execFileSync } from "node:child_process";
 import { existsSync, readdirSync, readFileSync, realpathSync, statSync, writeFileSync } from "node:fs";

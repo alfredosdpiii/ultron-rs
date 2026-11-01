@@ -5,6 +5,9 @@
 // temp Git repository; results are normalized (the temp dir) so the Rust host replaying the same cells must match.
 // Also records `mayWriteFiles` and `lokiMode` over input tables.
 // Usage: node crates/host/fixtures/loki.mjs   Python: $ULTRON_PYTHON, else /usr/bin/python3. Run twice, same sha256.
+// Frozen: loki.json was recorded at cf96e5de; the TypeScript host it loads (ultron/rlm/kernel.ts, ...) is no longer in
+// this repository, so it only runs from a TypeScript Ultron checkout. Its cells hold no engine version or hash, so an
+// engine bump does not need a new recording.
 import { spawnSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
