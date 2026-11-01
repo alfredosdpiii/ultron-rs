@@ -405,7 +405,9 @@ fn session_core_context_reminder_rearms_after_the_root_compacts() {
             text("done"),
         ]),
         Setup {
-            settings: Some(json!({"compaction": {"reserveTokens": 900_000, "keepRecentTokens": 1}})),
+            // Counts every request: the refinement pass after the compaction (crate::auto_refine) would add one.
+            settings: Some(json!({"compaction": {"reserveTokens": 900_000, "keepRecentTokens": 1},
+                "refine": {"auto": false}})),
             vars: vars(&[]),
             ..Setup::default()
         },

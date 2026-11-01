@@ -674,6 +674,8 @@ pub struct Core {
     loki_notice: crate::loki_notice::LokiNotice,
     /// Automatic recall before user messages and retain of compaction summaries (crate::auto_memory).
     auto_memory: crate::auto_memory::AutoMemory,
+    /// Instruction refinements proposed after compactions and delivered before user messages (crate::auto_refine).
+    auto_refine: crate::auto_refine::AutoRefine,
     /// The run's provider message being hidden: the empty response an aborted run ends with.
     hiding: bool,
     queues: Arc<Mutex<Queues>>,
@@ -1091,10 +1093,13 @@ impl Core {
         let auto_compaction = runtime.config.settings["compaction"]["enabled"] != false;
         let (env_var, async_events) = (env.var.clone(), runtime.config.async_events);
         let auto_memory = crate::auto_memory::AutoMemory::new(&runtime.config.settings, runtime.hindsight_explicit);
+        let auto_refine =
+            crate::auto_refine::AutoRefine::new(&runtime.config.settings, (env_var)("ULTRON_AUTO_REFINE").as_deref());
         let mut core = Core {
             model_unavailable,
             loki_notice,
             auto_memory,
+            auto_refine,
             thinking: config["thinkingLevel"].as_str().unwrap_or("medium").to_string(),
             models: lane::available_models(&env),
             provider,
@@ -2403,8 +2408,51 @@ impl Core {
         crate::playbook_route::playbook_message(text, &rigor, &shown, now_ms() as u64)
     }
 
-    /// Keep the newest compaction's summary in long-term memory, when automatic retain is on (crate::auto_memory).
+    /// The `ultron.refinements` message a root user run opens with, when the active refinements differ from what the
+    /// context shows (crate::auto_refine).
+    fn refinements_message(&self) -> Option<Value> {
+        if !self.auto_refine.on {
+            return None;
+        }
+        let entries = lock_session(&self.session).branch_entries(LANE).unwrap_or_default();
+        let shown = crate::auto_refine::shown(&entries);
+        let active = self.lane.stack.ledger.active();
+        crate::auto_refine::message(&active, shown.as_deref(), now_ms() as u64)
+    }
+
+    /// Propose refinements from the newest compaction's summary in the background, when automatic refinement is on
+    /// and past its cooldown (crate::auto_refine).
+    fn refine_after_compaction(&self) {
+        let newest = {
+            let session = lock_session(&self.session);
+            let entries = session.branch_entries(LANE).unwrap_or_default();
+            entries
+                .iter()
+                .rev()
+                .find(|entry| entry["type"] == "compaction")
+                .and_then(|entry| {
+                    Some((
+                        entry["id"].as_str()?.to_string(),
+                        entry["summary"].as_str()?.to_string(),
+                    ))
+                })
+        };
+        let Some((id, summary)) = newest.filter(|(_, summary)| !summary.trim().is_empty()) else {
+            return;
+        };
+        if !self.auto_refine.start_pass() {
+            return;
+        }
+        let summarizer = self.summarizer();
+        crate::auto_refine::propose(self.lane.stack.ledger.clone(), id, summary, move |system, prompt| {
+            summarizer.ask(system, prompt)
+        });
+    }
+
+    /// After a completed compaction: keep its summary in long-term memory, when automatic retain is on
+    /// (crate::auto_memory), and propose refinements from it (crate::auto_refine).
     pub(super) fn retain_compaction(&self) {
+        self.refine_after_compaction();
         if !self.auto_memory.retain {
             return;
         }
@@ -2545,6 +2593,22 @@ impl Core {
         if prompt["role"] == "user"
             && !continuation
             && let Some(message) = self.routed_playbook(&text)
+        {
+            for kind in ["message_start", "message_end"] {
+                self.emit(event(vec![
+                    ("type", json!(kind)),
+                    ("lane", json!(LANE)),
+                    ("message", message.clone()),
+                ]));
+            }
+            if let Err(error) = self.append(message) {
+                return fail(error, waiter);
+            }
+        }
+        // The active instruction refinements, when the context does not show them as they are (crate::auto_refine).
+        if prompt["role"] == "user"
+            && !continuation
+            && let Some(message) = self.refinements_message()
         {
             for kind in ["message_start", "message_end"] {
                 self.emit(event(vec![

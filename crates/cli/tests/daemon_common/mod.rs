@@ -147,6 +147,8 @@ impl Home {
             .env("ULTRON_CODING_AGENT_DIR", self.agent())
             .env("ULTRON_SERVER_DIR", self.server_dir())
             .env("ANTHROPIC_API_KEY", "test-key")
+            // Replies are scripted in order; a refinement request (session_core::auto_refine) would take one.
+            .env("ULTRON_AUTO_REFINE", "off")
             .env("NO_COLOR", "1")
             .env("TZ", "UTC");
         command

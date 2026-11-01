@@ -414,6 +414,8 @@ fn run_case_with(case: &Value, journals: bool) -> Vec<Value> {
         ("ULTRON_HINDSIGHT_URL", "off".into()),
         // TypeScript has no context reminder (session_core::context_reminder, Rust-only).
         ("ULTRON_CONTEXT_REMINDER", "off".into()),
+        // Nor a refinement request after a compaction (session_core::auto_refine).
+        ("ULTRON_AUTO_REFINE", "off".into()),
         ("PI_OFFLINE", "1".into()),
         ("NO_COLOR", "1".into()),
         ("TZ", "UTC".into()),
@@ -794,6 +796,8 @@ fn start_client(replies: Vec<Reply>) -> (RpcClient, Arc<Mutex<Vec<Value>>>, temp
         ("ULTRON_SERVER_DIR", root_dir.join("server").display().to_string()),
         ("ANTHROPIC_API_KEY", "test-key".into()),
         ("ULTRON_HINDSIGHT_URL", "off".into()),
+        // Replies are scripted in order; a refinement request (session_core::auto_refine) would take one.
+        ("ULTRON_AUTO_REFINE", "off".into()),
         ("PI_OFFLINE", "1".into()),
         ("NO_COLOR", "1".into()),
         ("TZ", "UTC".into()),

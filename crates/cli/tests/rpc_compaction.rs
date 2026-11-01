@@ -176,6 +176,8 @@ fn start_full(replies: Vec<String>, summaries: Vec<String>, hold: bool, settings
         ("ULTRON_SERVER_DIR", root.join("server").display().to_string()),
         ("ANTHROPIC_API_KEY", "test-key".into()),
         ("ULTRON_HINDSIGHT_URL", "off".into()),
+        // The provider's replies are scripted in order; a refinement request (session_core::auto_refine) would take one.
+        ("ULTRON_AUTO_REFINE", "off".into()),
         ("PI_OFFLINE", "1".into()),
         ("NO_COLOR", "1".into()),
         ("TZ", "UTC".into()),
@@ -578,6 +580,7 @@ fn actor_full(replies: Vec<String>, summaries: Vec<String>, hold: bool, settings
         ),
         ("ANTHROPIC_API_KEY".into(), "test-key".into()),
         ("ULTRON_HINDSIGHT_URL".into(), "off".into()),
+        ("ULTRON_AUTO_REFINE".into(), "off".into()),
         ("PI_OFFLINE".into(), "1".into()),
     ];
     let env = cli::Env {

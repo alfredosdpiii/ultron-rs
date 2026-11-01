@@ -103,6 +103,8 @@ fn replay_full(name: &str, divergences: &[(&str, &str)], last: Option<&dyn Fn(&s
     let mock = Mock::start(replies(scenario), None);
     let mut env = vec![
         ("ULTRON_AUTO_NAME", "off"),
+        // TypeScript makes no refinement request after a compaction (session_core::auto_refine).
+        ("ULTRON_AUTO_REFINE", "off"),
         ("ULTRON_TUI_PARITY", "1"),
         ("ULTRON_SPLASH", "off"),
     ];

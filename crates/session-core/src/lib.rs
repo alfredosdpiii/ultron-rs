@@ -14,6 +14,7 @@ pub mod agents;
 pub mod async_events;
 pub mod auto_compaction;
 pub mod auto_memory;
+pub mod auto_refine;
 pub mod budget_note;
 pub mod cell_file_changes;
 pub mod commands;
