@@ -57,15 +57,17 @@ re!(
     r"\b([\w$]+)\s*=\s*(?:util\s*\.\s*)?promisify\s*\(\s*(?:child_process\s*\.\s*)?exec\s*\)"
 );
 re!(SQL_CALL, r"\.\s*(?:query|execute|raw|unsafe|prepare)\s*\(");
-re!(SQL_WORD, r"(?i)\b(?:select|insert|update|delete)\b");
+re!(pub SQL_WORD, r"(?i)\b(?:select|insert|update|delete)\b");
 re!(SQL_CONCAT, r#"['"`]\s*\+|\+\s*['"`]"#);
 // Text just before an interpolation that puts it where SQL expects a table or column name (SQL_IDENTIFIER_POSITION).
 re!(
-    SQL_IDENTIFIER_POSITION,
+    pub SQL_IDENTIFIER_POSITION,
     r#"(?i)(?:\b(?:from|into|update|join|table|exists)|\b(?:order|group)\s+by|["`\[.])\s*$"#
 );
-const SQL_IDENTIFIER: &str = "SQL injection: table or column name interpolated into the query; placeholders cannot bind identifiers, so map it to a fixed set of known names before building the query";
-const SQL_QUERY: &str =
+pub const TLS_VERIFICATION: &str =
+    "TLS certificate verification disabled; trust the needed CA instead of turning verification off";
+pub const SQL_IDENTIFIER: &str = "SQL injection: table or column name interpolated into the query; placeholders cannot bind identifiers, so map it to a fixed set of known names before building the query";
+pub const SQL_QUERY: &str =
     "SQL injection: query text built by concatenation or interpolation; use parameterized placeholders";
 re!(
     COMPARE,
@@ -250,11 +252,7 @@ pub fn javascript_rules(text: &Text) -> Vec<Finding> {
     }
     for found in TLS_OFF.iter(text) {
         if masked.at(found.start()) != Some(' ') {
-            findings.push((
-                "loki/tls-verification",
-                "TLS certificate verification disabled; trust the needed CA instead of turning verification off".into(),
-                found.start(),
-            ));
+            findings.push(("loki/tls-verification", TLS_VERIFICATION.into(), found.start()));
         }
     }
     for found in REDIRECT_CALL.iter(&masked) {

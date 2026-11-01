@@ -370,13 +370,31 @@ static RUST_RAW: std::sync::LazyLock<Re> = std::sync::LazyLock::new(|| Re::new(r
 static RUST_CHAR: std::sync::LazyLock<Re> =
     std::sync::LazyLock::new(|| Re::new(r#"'(?:\\u\{[0-9a-fA-F]+\}|\\.|[^\\'\n])'"#));
 
+static GO_INTERESTING: std::sync::LazyLock<Re> = std::sync::LazyLock::new(|| Re::new(r#"/[/*]|["'`]"#));
+
 /// Blank comments and literals in Rust, Go and other C-family source.
 pub fn mask_rust(text: &Text) -> Text {
+    mask_c_family(text, false)
+}
+
+/// `mask_rust(text, go=True)`: also blanks Go backtick raw strings.
+pub fn mask_go(text: &Text) -> Text {
+    mask_c_family(text, true)
+}
+
+fn mask_c_family(text: &Text, go: bool) -> Text {
     let t = &text.c;
     let mut chars = t.clone();
     let mut index = 0;
-    while let Some(found) = RUST_INTERESTING.search(text, index) {
+    let interesting = if go { &GO_INTERESTING } else { &RUST_INTERESTING };
+    while let Some(found) = interesting.search(text, index) {
         index = found.start();
+        if t[index] == '`' {
+            let end = find_chars(t, &['`'], index + 1).unwrap_or(t.len());
+            blank(&mut chars, index + 1, end);
+            index = end + 1;
+            continue;
+        }
         if text.starts_at(index, "/*") {
             let (mut depth, mut end) = (1i64, index + 2);
             while end < t.len() && depth != 0 {

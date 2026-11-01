@@ -1,8 +1,9 @@
 //! Rust, Go and Elixir rule packs (`rust_rules`, `go_rules`, `elixir_rules`).
 
+use crate::jsrules::{SQL_IDENTIFIER, SQL_IDENTIFIER_POSITION, SQL_QUERY, SQL_WORD, TLS_VERIFICATION};
 use crate::py;
 use crate::rules::Finding;
-use crate::text::{Re, Text, closing_quote, mask_elixir, mask_rust, matching_close, split_arguments};
+use crate::text::{Re, Text, closing_quote, mask_elixir, mask_go, mask_rust, matching_close, split_arguments};
 use std::collections::BTreeSet;
 use std::sync::LazyLock;
 
@@ -25,6 +26,25 @@ re!(FLUSHED, r"\.flush\s*\(|\binto_inner\s*\(|->\s*[^{]*BufWriter");
 re!(UNCHECKED, r"\.get_unchecked(?:_mut)?\s*\(\s*([A-Za-z_]\w*)");
 re!(COMMAND_NEW, r#"\bCommand\s*::\s*new\s*\(\s*""#);
 re!(DYNAMIC_ARGS, r#"format!|\.args?\s*\(\s*(?!["\[\s])"#);
+re!(
+    DANGER_ACCEPT,
+    r"\.\s*danger_accept_invalid_(?:certs|hostnames)\s*\(\s*true\s*\)"
+);
+re!(
+    RUST_SQL_FORMAT,
+    r"(?:(?<![\w.])(?:sqlx\s*::\s*)?query(?:_as|_scalar)?(?:\s*::\s*<[^>()]*>)?|\.\s*execute|(?<![\w.])(?:diesel\s*::\s*)?sql_query)\s*\(\s*&?\s*format\s*!\s*\("
+);
+re!(RUST_STRING_START, r#"^r?#*""#);
+re!(RUST_HOLE, r"\{(\{)?");
+re!(GO_SKIP_VERIFY, r"\bInsecureSkipVerify\s*(?::|=(?!=))\s*true\b");
+re!(GO_EXEC, r"\bexec\s*\.\s*Command(Context)?\s*\(");
+re!(GO_SQL_CALL, r"\.\s*(?:Query|QueryRow|Exec|Prepare)(Context)?\s*\(");
+re!(GO_SPRINTF, r"^\s*fmt\s*\.\s*Sprintf\s*\(");
+re!(GO_VERB, r"%(?:%|[-+# 0-9.]*([sv]))");
+re!(
+    GO_LITERAL,
+    r#"^\s*(?:"[^"\n]*"|`[^`]*`)\s*(?:\+\s*(?:"[^"\n]*"|`[^`]*`)\s*)*$"#
+);
 re!(GO_ARCHIVE, r#""archive/(?:zip|tar)""#);
 re!(GO_FUNC, r"\bfunc\b[^{]*\{");
 re!(GO_JOIN, r"\b(?:filepath|path)\.Join\s*\([^)]*\b\w+\.Name\b");
@@ -121,16 +141,126 @@ pub fn rust_rules(text: &Text) -> Vec<Finding> {
             findings.push(("loki/command-injection", SHELL_COMMAND.into(), found.start()));
         }
     }
+    for found in DANGER_ACCEPT.iter(&masked) {
+        findings.push(("loki/tls-verification", TLS_VERIFICATION.into(), found.start()));
+    }
+    for found in RUST_SQL_FORMAT.iter(&masked) {
+        let arguments = split_arguments(m, found.end() - 1);
+        let literal = arguments
+            .first()
+            .map_or("", |&(a, b)| text.sl(a, b).trim_matches(py::is_space));
+        if !RUST_STRING_START.is_match(literal) {
+            continue;
+        }
+        let literal = Text::new(literal);
+        let holes: Vec<usize> = RUST_HOLE
+            .iter(&literal)
+            .into_iter()
+            .filter(|h| h.get(1).is_none())
+            .map(|h| h.start())
+            .collect();
+        if let Some(message) = sql_message(&literal, &holes) {
+            findings.push(("loki/sql-injection", message.into(), found.start()));
+        }
+    }
     findings
 }
 
-/// Archive entry names joined into paths without a containment check.
-pub fn go_rules(text: &Text) -> Vec<Finding> {
-    if !GO_ARCHIVE.is_match(&text.s) {
-        return vec![];
+/// SQL injection message for query text with non-literal values at the hole indexes.
+fn sql_message(literal: &Text, holes: &[usize]) -> Option<&'static str> {
+    if holes.is_empty() || !SQL_WORD.is_match(&literal.s) {
+        return None;
     }
-    let masked = mask_rust(text);
-    let mut findings = Vec::new();
+    let identifier = holes
+        .iter()
+        .all(|&hole| SQL_IDENTIFIER_POSITION.is_match(literal.sl(0, hole)));
+    Some(if identifier { SQL_IDENTIFIER } else { SQL_QUERY })
+}
+
+fn go_literal(masked: &Text, (a, b): (usize, usize)) -> bool {
+    GO_LITERAL.is_match(masked.sl(a, b))
+}
+
+/// Top-level spans of masked[start:end] separated by `+`.
+fn plus_parts(masked: &[char], start: usize, end: usize) -> Vec<(usize, usize)> {
+    let (mut spans, mut depth, mut begin) = (Vec::new(), 0i64, start);
+    for (index, &c) in masked.iter().enumerate().take(end).skip(start) {
+        match c {
+            '(' | '[' | '{' => depth += 1,
+            ')' | ']' | '}' => depth -= 1,
+            '+' if depth == 0 => {
+                spans.push((begin, index));
+                begin = index + 1;
+            }
+            _ => {}
+        }
+    }
+    spans.push((begin, end));
+    spans
+}
+
+fn go_security_rules(text: &Text, masked: &Text) -> Vec<Finding> {
+    let m = &masked.c;
+    let mut findings: Vec<Finding> = GO_SKIP_VERIFY
+        .iter(masked)
+        .into_iter()
+        .map(|found| ("loki/tls-verification", TLS_VERIFICATION.into(), found.start()))
+        .collect();
+    for call in GO_EXEC.iter(masked) {
+        let all = split_arguments(m, call.end() - 1);
+        let arguments = &all[usize::from(call.get(1).is_some()).min(all.len())..];
+        if arguments.len() > 2 {
+            let word = |(a, b): (usize, usize)| text.sl(a, b).trim_matches(py::is_space).trim_matches(['"', '`']);
+            if SHELLS.contains(&word(arguments[0])) && word(arguments[1]) == "-c" && !go_literal(masked, arguments[2]) {
+                findings.push(("loki/command-injection", SHELL_COMMAND.into(), call.start()));
+            }
+        }
+    }
+    for call in GO_SQL_CALL.iter(masked) {
+        let all = split_arguments(m, call.end() - 1);
+        let Some(&(start, end)) = all.get(usize::from(call.get(1).is_some())) else {
+            continue;
+        };
+        let message = if let Some(sprintf) = GO_SPRINTF.search(&Text::new(masked.sl(start, end)), 0) {
+            let inner = split_arguments(m, start + sprintf.end() - 1);
+            let Some(&format) = inner.first() else { continue };
+            if inner[1..].iter().all(|&span| go_literal(masked, span)) || !go_literal(masked, format) {
+                continue;
+            }
+            let literal = Text::new(text.sl(format.0, format.1));
+            let holes: Vec<usize> = GO_VERB
+                .iter(&literal)
+                .into_iter()
+                .filter(|h| h.get(1).is_some())
+                .map(|h| h.start())
+                .collect();
+            sql_message(&literal, &holes)
+        } else {
+            let parts = plus_parts(m, start, end);
+            let literals: Vec<&str> = parts
+                .iter()
+                .filter(|&&part| go_literal(masked, part))
+                .map(|&(a, b)| text.sl(a, b))
+                .collect();
+            if literals.is_empty() || literals.len() == parts.len() {
+                continue;
+            }
+            sql_message(&Text::new(&literals.concat()), &[0])
+        };
+        if let Some(message) = message {
+            findings.push(("loki/sql-injection", message.into(), call.start()));
+        }
+    }
+    findings
+}
+
+/// Zip slip, SQL built with Sprintf or +, shell -c commands, TLS skip-verify.
+pub fn go_rules(text: &Text) -> Vec<Finding> {
+    let masked = mask_go(text);
+    let mut findings = go_security_rules(text, &masked);
+    if !GO_ARCHIVE.is_match(&text.s) {
+        return findings;
+    }
     for function in GO_FUNC.iter(&masked) {
         let open = function.end() - 1;
         let end = matching_close(&masked.c, open);
@@ -281,4 +411,70 @@ pub fn elixir_rules(text: &Text) -> Vec<Finding> {
         }
     }
     findings
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn rules(go: bool, source: &str) -> Vec<&'static str> {
+        let text = Text::new(source);
+        let found = if go { go_rules(&text) } else { rust_rules(&text) };
+        found.into_iter().map(|(rule, _, _)| rule).collect()
+    }
+
+    #[test]
+    fn go_security_rules_match_python() {
+        for (source, expected) in [
+            (
+                r#"func f() { db.Query(fmt.Sprintf("SELECT * FROM t WHERE n = '%s'", n)) }"#,
+                vec!["loki/sql-injection"],
+            ),
+            (
+                r#"func f() { db.QueryRowContext(ctx, "SELECT * FROM t WHERE id = " + id) }"#,
+                vec!["loki/sql-injection"],
+            ),
+            (r#"func f() { db.Query("SELECT * FROM t WHERE id = ?", id) }"#, vec![]),
+            (r#"func f() { db.Query(fmt.Sprintf("SELECT %d", id)) }"#, vec![]),
+            (
+                "func f() {\n\t// db.Query(fmt.Sprintf(\"SELECT %s\", x))\n\ts := `db.Exec(\"DELETE \" + x)`\n}",
+                vec![],
+            ),
+            (
+                r#"func f() { exec.Command("sh", "-c", "ls " + dir) }"#,
+                vec!["loki/command-injection"],
+            ),
+            (r#"func f() { exec.Command("sh", "-c", "ls -la") }"#, vec![]),
+            (
+                "var c = &tls.Config{InsecureSkipVerify: true}",
+                vec!["loki/tls-verification"],
+            ),
+            ("var c = &tls.Config{InsecureSkipVerify: false}", vec![]),
+        ] {
+            assert_eq!(rules(true, source), expected, "{source}");
+        }
+    }
+
+    #[test]
+    fn rust_security_rules_match_python() {
+        for (source, expected) in [
+            (
+                "fn c() { Client::builder().danger_accept_invalid_certs(true); }",
+                vec!["loki/tls-verification"],
+            ),
+            ("fn c() { Client::builder().danger_accept_invalid_certs(v); }", vec![]),
+            (
+                r#"fn q() { sqlx::query(&format!("SELECT * FROM t WHERE n = '{n}'")); }"#,
+                vec!["loki/sql-injection"],
+            ),
+            (
+                r#"fn q() { diesel::sql_query(format!("UPDATE t SET a = {}", v)); }"#,
+                vec!["loki/sql-injection"],
+            ),
+            (r#"fn q() { sqlx::query("SELECT * FROM t WHERE n = $1"); }"#, vec![]),
+            (r##"fn q() { k.execute(&format!("#{}", x)); }"##, vec![]),
+        ] {
+            assert_eq!(rules(false, source), expected, "{source}");
+        }
+    }
 }
