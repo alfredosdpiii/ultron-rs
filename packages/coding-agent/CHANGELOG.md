@@ -4,6 +4,8 @@
 
 ### Changed
 
+- Loki's bundled engine is 0.1.9 (was 0.1.4). Without any analyzer installed it now flags SQL built from strings, `eval` and pickle of request data, unsafe `yaml.load`, open redirects and disabled TLS verification in Python; SQL built with `Sprintf` or `+`, `sh -c` with a variable and `InsecureSkipVerify` in Go; and `danger_accept_invalid_certs` and SQL built with `format!` in Rust. Ruff is found in the project's `.venv`/`venv` or interpreter before Loki reports it missing.
+
 - Autoreview is faster on large diffs: from 500 changed lines the fast pass runs beside the investigators (as `autoreview.overlap` does), instead of first.
 - Autoreview's investigators see 80,000 characters of the diff (was 40,000) and the names of the changed files past the cut, so they look those up instead of never seeing them; the structural reference reads up to 200 files and 6 MB (was 80 and 3 MB).
 - Autoreview's TypeScript and JavaScript reference uses the TypeScript compiler from PATH (beside `tsc`, else the global install beside `node`) when it is there, resolving calls through re-exports and aliases; the structural scanner remains the fallback (`tsChecker` in the reference stats).
@@ -17,6 +19,7 @@
 ### Fixed
 
 - Autoreview's prepared test environments install Poetry applications with `poetry install --no-root` (an editable install of one failed with "non-package mode"), install an application with no package layout (a flat layout setuptools refuses to build) from the dependencies its `pyproject.toml` declares, pick the Python their nested `pyproject.toml` asks for, and keep the last 4,000 characters of a failed install's output instead of the first 300.
+- Loki (bundled engine 0.1.9) no longer fails a write's hook when the project is not a git repository, sits below the repository top or has no commit yet: the missing coverage is a NOT CHECKED note (still blocking under `LOKI_STRICT=1`). A change set over 64 MiB is NOT CHECKED for net-new Ruff instead of a hook error, and an unrelated JSON change no longer turns TypeScript type checks off.
 - Loki and the situational skills skipped files written outside the session directory, so a session that worked in a sibling worktree ran unchecked: a write is now checked against the repository that holds it, under that repository's `.loki/` policy.
 
 ## [0.87.39] - 2026-10-10
