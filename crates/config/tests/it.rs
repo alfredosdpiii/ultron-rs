@@ -15,8 +15,6 @@ mod durable_model;
 mod fixture;
 #[path = "ported.rs"]
 mod ported;
-#[path = "process_defaults.rs"]
-mod process_defaults;
 #[path = "settings_keys.rs"]
 mod settings_keys;
 #[path = "worker_settings.rs"]

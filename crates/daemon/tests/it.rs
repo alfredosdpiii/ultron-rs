@@ -19,8 +19,6 @@ mod lane_publish;
 mod lifecycle;
 #[path = "lost.rs"]
 mod lost;
-#[path = "persona_durable_default.rs"]
-mod persona_durable_default;
 #[path = "persona_setting.rs"]
 mod persona_setting;
 #[path = "prompt_schedules.rs"]
@@ -33,8 +31,6 @@ mod watchdog;
 mod worker_settings;
 #[path = "worker_settings_claude_code_children.rs"]
 mod worker_settings_claude_code_children;
-#[path = "worker_settings_durable_model.rs"]
-mod worker_settings_durable_model;
 
 #[test]
 fn every_test_file_is_built() {

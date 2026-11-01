@@ -569,7 +569,20 @@ fn assert_case(world: &World, recorded: &Value, name: &str) -> (Value, String) {
         usage["byPhase"]["find"]["frames"] = json!(3);
     }
     let expected = &expected;
-    let (code, stdout, stderr, requests, raw) = run_case(world, expected);
+    let (code, mut stdout, stderr, requests, raw) = run_case(world, expected);
+    if let Some(reference) = stdout
+        .get_mut("timing")
+        .and_then(|t| t.get_mut("reference"))
+        .and_then(Value::as_object_mut)
+    {
+        // Known difference: the reference stats gained `tsChecker` (the TypeScript compiler indexed the change)
+        // after the recording; these cases hold no TypeScript, so it is false where it is reported.
+        assert_ne!(
+            reference.remove("tsChecker"),
+            Some(json!(true)),
+            "{name}: no TypeScript to check"
+        );
+    }
     assert_eq!(
         code as i64,
         expected["code"].as_i64().unwrap(),

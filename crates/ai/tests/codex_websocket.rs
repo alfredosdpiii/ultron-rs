@@ -476,14 +476,24 @@ async fn replay(scenario: &Value, server: &FakeCodex) -> Vec<String> {
     let expected = &scenario["connections"];
     let got = normalize_port(&server.log.wait_for(expected), port);
     same(&format!("{name} connections"), expected, &got, &mut diffs);
-    openai_codex_responses::reset_openai_codex_websocket_debug_stats(None);
+    reset_own_stats();
     diffs
+}
+
+/// Resets the debug stats of this fixture's sessions only: the stats are process-wide, and other tests in this
+/// binary (providers_rest's Codex replay) keep their own sessions' stats while this runs.
+fn reset_own_stats() {
+    for scenario in FIXTURE["scenarios"].as_array().unwrap() {
+        for session in scenario["stats"].as_object().unwrap().keys() {
+            openai_codex_responses::reset_openai_codex_websocket_debug_stats(Some(session));
+        }
+    }
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn ai_codex_websocket_replays_recorded_typescript_scenarios() {
     let server = FakeCodex::start();
-    openai_codex_responses::reset_openai_codex_websocket_debug_stats(None);
+    reset_own_stats();
     let mut diffs = Vec::new();
     let scenarios = FIXTURE["scenarios"].as_array().unwrap();
     assert_eq!(scenarios.len(), 21);

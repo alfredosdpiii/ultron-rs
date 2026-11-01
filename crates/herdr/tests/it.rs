@@ -5,8 +5,6 @@
 // Support modules (`mod common;`) stay declared by each file that uses them, so each file also builds alone.
 #![allow(clippy::duplicate_mod)]
 
-#[path = "release_active.rs"]
-mod release_active;
 #[path = "reporter.rs"]
 mod reporter;
 

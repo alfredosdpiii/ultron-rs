@@ -49,3 +49,13 @@ path = "tests/it.rs"
 [[test]]
 name = "signals"
 path = "tests/signals.rs"
+
+# Sets the process-wide settings defaults once: in `it` it leaked into every later settings test.
+[[test]]
+name = "persona_durable_default"
+path = "tests/persona_durable_default.rs"
+
+# Marks the process as the durable instance, once: in `it` every later worker-settings test saw durable.model.
+[[test]]
+name = "worker_settings_durable_model"
+path = "tests/worker_settings_durable_model.rs"

@@ -20,3 +20,8 @@ workspace = true
 [[test]]
 name = "it"
 path = "tests/it.rs"
+
+# Releases the process's most recent reporter: in `it` it released the other tests' reporters mid-run.
+[[test]]
+name = "release_active"
+path = "tests/release_active.rs"

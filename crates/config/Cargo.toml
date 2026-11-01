@@ -23,3 +23,8 @@ path = "tests/it.rs"
 [[test]]
 name = "own_executable"
 path = "tests/own_executable.rs"
+
+# Sets the process-wide settings defaults once: in `it` it leaked into every later settings test.
+[[test]]
+name = "process_defaults"
+path = "tests/process_defaults.rs"

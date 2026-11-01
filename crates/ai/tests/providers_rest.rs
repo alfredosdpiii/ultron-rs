@@ -489,7 +489,10 @@ fn ai_azure_replays_recorded_typescript_scenarios() {
 
 #[test]
 fn ai_codex_replays_recorded_typescript_scenarios() {
-    openai_codex_responses::reset_openai_codex_websocket_debug_stats(None);
+    // Only this fixture's sessions: the stats are process-wide and codex_websocket replays beside this test.
+    for session in CODEX["stats"].as_object().unwrap().keys() {
+        openai_codex_responses::reset_openai_codex_websocket_debug_stats(Some(session));
+    }
     replay_all(&CODEX);
     // WebSocket fallback bookkeeping after the same scenarios, as `getOpenAICodexWebSocketDebugStats` reported it.
     for (session, expected) in CODEX["stats"].as_object().unwrap() {
