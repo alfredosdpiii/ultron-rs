@@ -28,6 +28,7 @@ protocol = { path = "../protocol" }
 resources = { path = "../resources" }
 rustix = { version = "=1.1.5", features = ["process", "std"] }
 serde_json = { version = "=1.0.151", features = ["float_roundtrip", "preserve_order"] }
+signal-hook = { version = "=0.4.6", default-features = false, features = ["iterator"] }
 server = { path = "../server" }
 session-core = { path = "../session-core" }
 session-file = { path = "../session-file" }
@@ -44,3 +45,7 @@ workspace = true
 [[test]]
 name = "it"
 path = "tests/it.rs"
+
+[[test]]
+name = "signals"
+path = "tests/signals.rs"
