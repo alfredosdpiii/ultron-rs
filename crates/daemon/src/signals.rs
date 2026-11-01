@@ -38,6 +38,10 @@ pub fn install() -> Result<(), String> {
         signal_hook::flag::register_usize(signal as i32, &RECEIVED, signal as usize).map_err(|e| e.to_string())?;
     }
     let mut signals = Signals::new(HANDLED.map(|s| s as i32)).map_err(|e| e.to_string())?;
+    // A mask inherited from a parent that blocked them (an older ultron) would keep them blocked here and in every
+    // child: unblock them, before any other thread starts.
+    let handled: nix::sys::signal::SigSet = HANDLED.into_iter().collect();
+    handled.thread_unblock().map_err(|e| e.to_string())?;
     let _ = STARTED.set(());
     std::thread::Builder::new()
         .name("signals".into())
