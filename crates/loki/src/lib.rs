@@ -39,7 +39,7 @@ use serde_json::{Map, Value, json};
 use std::path::{Component, Path, PathBuf};
 use std::sync::LazyLock;
 
-pub const VERSION: &str = "0.1.8";
+pub const VERSION: &str = "0.1.9";
 pub const MAX_VIOLATIONS: usize = 40;
 const PREVIEW_LIMIT: usize = 4 * 1024 * 1024;
 

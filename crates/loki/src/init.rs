@@ -3,7 +3,7 @@
 //! configuration, Ruff/golangci-lint/Credo configuration and the CI workflow, all under the target repository.
 //!
 //! The templates, shims and the vendored anti-slop Oxlint plugin are those of the pinned engine's upstream commit
-//! (alfredosdpiii/loki b56f6e7, `init-assets/`), compiled in: the Rust engine has no template directory on disk, so
+//! (alfredosdpiii/loki d7a6fa0, `init-assets/`), compiled in: the Rust engine has no template directory on disk, so
 //! the "reconcile with" notices name the template by its path in the engine source (`templates/<name>`).
 
 use crate::py;

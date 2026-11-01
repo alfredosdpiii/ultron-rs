@@ -300,7 +300,7 @@
 			],
 			"expected": {
 				"status": 2,
-				"stdout": "{\"loki\": \"0.1.8\", \"command\": \"protect\", \"status\": \"blocked\", \"blocking\": [{\"text\": \"loki: protected file: .loki/x (set LOKI_ALLOW_PROTECTED=1 to override)\", \"path\": \"loki\", \"rule\": \"protected file\"}], \"advisory\": [], \"not_checked\": []}\n",
+				"stdout": "{\"loki\": \"0.1.9\", \"command\": \"protect\", \"status\": \"blocked\", \"blocking\": [{\"text\": \"loki: protected file: .loki/x (set LOKI_ALLOW_PROTECTED=1 to override)\", \"path\": \"loki\", \"rule\": \"protected file\"}], \"advisory\": [], \"not_checked\": []}\n",
 				"stderr": "loki: protected file: .loki/x (set LOKI_ALLOW_PROTECTED=1 to override)\n"
 			}
 		},
@@ -315,7 +315,7 @@
 			],
 			"expected": {
 				"status": 0,
-				"stdout": "{\"loki\": \"0.1.8\", \"command\": \"protect\", \"status\": \"passed\", \"blocking\": [], \"advisory\": [], \"not_checked\": []}\n",
+				"stdout": "{\"loki\": \"0.1.9\", \"command\": \"protect\", \"status\": \"passed\", \"blocking\": [], \"advisory\": [], \"not_checked\": []}\n",
 				"stderr": ""
 			}
 		},
@@ -329,7 +329,7 @@
 			"rootAfter": true,
 			"expected": {
 				"status": 0,
-				"stdout": "{\"loki\": \"0.1.8\", \"command\": \"protect\", \"status\": \"passed\", \"blocking\": [], \"advisory\": [], \"not_checked\": []}\n",
+				"stdout": "{\"loki\": \"0.1.9\", \"command\": \"protect\", \"status\": \"passed\", \"blocking\": [], \"advisory\": [], \"not_checked\": []}\n",
 				"stderr": ""
 			}
 		},
@@ -357,7 +357,7 @@
 			],
 			"expected": {
 				"status": 2,
-				"stdout": "{\"loki\": \"0.1.8\", \"command\": \"protect\", \"status\": \"error\", \"blocking\": [], \"advisory\": [], \"not_checked\": [], \"error\": \"invalid hook input: path must be a nonempty string without NUL\"}\n",
+				"stdout": "{\"loki\": \"0.1.9\", \"command\": \"protect\", \"status\": \"error\", \"blocking\": [], \"advisory\": [], \"not_checked\": [], \"error\": \"invalid hook input: path must be a nonempty string without NUL\"}\n",
 				"stderr": "loki: invalid hook input: path must be a nonempty string without NUL\n"
 			}
 		},
@@ -999,7 +999,7 @@
 			],
 			"expected": {
 				"status": 2,
-				"stdout": "{\"loki\": \"0.1.8\", \"command\": \"protect\", \"status\": \"error\", \"blocking\": [], \"advisory\": [], \"not_checked\": [], \"error\": \"invalid hook input: loki: unknown configuration key: zeta\"}\n",
+				"stdout": "{\"loki\": \"0.1.9\", \"command\": \"protect\", \"status\": \"error\", \"blocking\": [], \"advisory\": [], \"not_checked\": [], \"error\": \"invalid hook input: loki: unknown configuration key: zeta\"}\n",
 				"stderr": "loki: invalid hook input: loki: unknown configuration key: zeta\n"
 			}
 		},
@@ -1033,7 +1033,7 @@
 			"stdin": "{\"tool_name\":\"write\",\"tool_input\":{\"path\":\"x\",\"content\":\"a\\nkey = '@@AWS@@'\\n\"}}",
 			"expected": {
 				"status": 2,
-				"stdout": "{\"loki\": \"0.1.8\", \"command\": \"protect\", \"status\": \"blocked\", \"blocking\": [{\"text\": \"notes.txt:2: loki/secret: hardcoded credential (AWS access key); load it from the environment or a secret store and rotate the exposed value\", \"path\": \"notes.txt\", \"line\": 2, \"rule\": \"loki/secret\"}], \"advisory\": [], \"not_checked\": []}\n",
+				"stdout": "{\"loki\": \"0.1.9\", \"command\": \"protect\", \"status\": \"blocked\", \"blocking\": [{\"text\": \"notes.txt:2: loki/secret: hardcoded credential (AWS access key); load it from the environment or a secret store and rotate the exposed value\", \"path\": \"notes.txt\", \"line\": 2, \"rule\": \"loki/secret\"}], \"advisory\": [], \"not_checked\": []}\n",
 				"stderr": "notes.txt:2: loki/secret: hardcoded credential (AWS access key); load it from the environment or a secret store and rotate the exposed value\n"
 			}
 		},
@@ -1491,7 +1491,7 @@
 			"stdin": "{\"tool_name\":\"edit\",\"tool_input\":{}}",
 			"expected": {
 				"status": 0,
-				"stdout": "{\"loki\": \"0.1.8\", \"command\": \"protect\", \"status\": \"passed\", \"blocking\": [], \"advisory\": [], \"not_checked\": [\"NOT CHECKED pre-write content: host operation has no exact content preview\"]}\n",
+				"stdout": "{\"loki\": \"0.1.9\", \"command\": \"protect\", \"status\": \"passed\", \"blocking\": [], \"advisory\": [], \"not_checked\": [\"NOT CHECKED pre-write content: host operation has no exact content preview\"]}\n",
 				"stderr": "NOT CHECKED pre-write content: host operation has no exact content preview\n"
 			}
 		},
@@ -1619,7 +1619,7 @@
 			],
 			"expected": {
 				"status": 0,
-				"stdout": "{\"hookSpecificOutput\": {\"hookEventName\": \"UserPromptSubmit\", \"additionalContext\": \"LOKI guardrails: edit() and write() are checked before the file changes. Change source and configuration with edit()/write(): a bash() command that writes them (redirect, tee, sed -i, cp/mv) is refused. Other writes (Path.write_text, programs) are checked after the cell. A blocked write raises ValueError with the finding: fix the cause and retry. Never weaken Loki, its policy (.loki/), tests or hooks. Checks: secrets, security rules, protected files; Ruff (Python); Oxlint and type checks (TS/JS); Credo and Sobelow (Elixir).\"}, \"loki\": {\"version\": \"0.1.8\", \"formats\": [\"text\", \"json\"]}}\n",
+				"stdout": "{\"hookSpecificOutput\": {\"hookEventName\": \"UserPromptSubmit\", \"additionalContext\": \"LOKI guardrails: edit() and write() are checked before the file changes. Change source and configuration with edit()/write(): a bash() command that writes them (redirect, tee, sed -i, cp/mv) is refused. Other writes (Path.write_text, programs) are checked after the cell. A blocked write raises ValueError with the finding: fix the cause and retry. Never weaken Loki, its policy (.loki/), tests or hooks. Checks: secrets, security rules, protected files; Ruff (Python); Oxlint and type checks (TS/JS); Credo and Sobelow (Elixir).\"}, \"loki\": {\"version\": \"0.1.9\", \"formats\": [\"text\", \"json\"]}}\n",
 				"stderr": ""
 			}
 		},
@@ -1635,7 +1635,7 @@
 			],
 			"expected": {
 				"status": 0,
-				"stdout": "{\"hookSpecificOutput\": {\"hookEventName\": \"SessionStart\", \"additionalContext\": \"LOKI guardrails: edit() and write() are checked before the file changes. Change source and configuration with edit()/write(): a bash() command that writes them (redirect, tee, sed -i, cp/mv) is refused. Other writes (Path.write_text, programs) are checked after the cell. A blocked write raises ValueError with the finding: fix the cause and retry. Never weaken Loki, its policy (.loki/), tests or hooks.\"}, \"loki\": {\"version\": \"0.1.8\", \"formats\": [\"text\", \"json\"]}}\n",
+				"stdout": "{\"hookSpecificOutput\": {\"hookEventName\": \"SessionStart\", \"additionalContext\": \"LOKI guardrails: edit() and write() are checked before the file changes. Change source and configuration with edit()/write(): a bash() command that writes them (redirect, tee, sed -i, cp/mv) is refused. Other writes (Path.write_text, programs) are checked after the cell. A blocked write raises ValueError with the finding: fix the cause and retry. Never weaken Loki, its policy (.loki/), tests or hooks.\"}, \"loki\": {\"version\": \"0.1.9\", \"formats\": [\"text\", \"json\"]}}\n",
 				"stderr": ""
 			}
 		},

@@ -318,6 +318,6 @@ rmSync(scratch, { recursive: true, force: true });
 assertOffline();
 writeFileSync(
 	join(here, "init-corpus.json"),
-	`${JSON.stringify({ engine: "loki.py 0.1.8 (b56f6e7)", cases: results }, null, "\t")}\n`,
+	`${JSON.stringify({ engine: "loki.py 0.1.9 (d7a6fa0)", cases: results }, null, "\t")}\n`,
 );
 console.log(`init-corpus.json: ${results.length} cases`);

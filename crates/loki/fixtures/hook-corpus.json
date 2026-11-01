@@ -496,7 +496,7 @@
 			},
 			"expected": {
 				"status": 2,
-				"stdout": "{\"loki\": \"0.1.8\", \"command\": \"protect\", \"status\": \"blocked\", \"blocking\": [{\"text\": \"src/j.js:2: loki/unsanitized-html: cross-site scripting (XSS): non-literal HTML assigned to innerHTML; use textContent or a sanitizer\", \"path\": \"src/j.js\", \"line\": 2, \"rule\": \"loki/unsanitized-html\"}, {\"text\": \"src/j.js:1: no-debugger: debugger statement\", \"path\": \"src/j.js\", \"line\": 1, \"rule\": \"no-debugger\"}], \"advisory\": [], \"not_checked\": [\"NOT CHECKED pre-write content: missing oxlint for content preview; built-in fallback rules applied\"]}\n",
+				"stdout": "{\"loki\": \"0.1.9\", \"command\": \"protect\", \"status\": \"blocked\", \"blocking\": [{\"text\": \"src/j.js:2: loki/unsanitized-html: cross-site scripting (XSS): non-literal HTML assigned to innerHTML; use textContent or a sanitizer\", \"path\": \"src/j.js\", \"line\": 2, \"rule\": \"loki/unsanitized-html\"}, {\"text\": \"src/j.js:1: no-debugger: debugger statement\", \"path\": \"src/j.js\", \"line\": 1, \"rule\": \"no-debugger\"}], \"advisory\": [], \"not_checked\": [\"NOT CHECKED pre-write content: missing oxlint for content preview; built-in fallback rules applied\"]}\n",
 				"stderr": "src/j.js:2: loki/unsanitized-html: cross-site scripting (XSS): non-literal HTML assigned to innerHTML; use textContent or a sanitizer\nsrc/j.js:1: no-debugger: debugger statement\nNOT CHECKED pre-write content: missing oxlint for content preview; built-in fallback rules applied\n"
 			}
 		},
@@ -1014,9 +1014,9 @@
 				"a.txt"
 			],
 			"expected": {
-				"status": 2,
+				"status": 0,
 				"stdout": "",
-				"stderr": "loki: post-write check failed; files are already changed.\ngit: fatal: not a git repository (or any parent up to mount point /)\nStopping at filesystem boundary (GIT_DISCOVERY_ACROSS_FILESYSTEM not set).\n"
+				"stderr": "NOT CHECKED repository changes: git: fatal: not a git repository (or any parent up to mount point /)\nStopping at filesystem boundary (GIT_DISCOVERY_ACROSS_FILESYSTEM not set).\n"
 			}
 		},
 		{
@@ -1057,7 +1057,7 @@
 			],
 			"expected": {
 				"status": 0,
-				"stdout": "{\"loki\": \"0.1.8\", \"command\": \"hook\", \"status\": \"passed\", \"blocking\": [], \"advisory\": [], \"not_checked\": []}\n",
+				"stdout": "{\"loki\": \"0.1.9\", \"command\": \"hook\", \"status\": \"passed\", \"blocking\": [], \"advisory\": [], \"not_checked\": []}\n",
 				"stderr": ""
 			}
 		},
@@ -1099,7 +1099,7 @@
 			],
 			"expected": {
 				"status": 2,
-				"stdout": "{\"loki\": \"0.1.8\", \"command\": \"hook\", \"status\": \"blocked\", \"blocking\": [{\"text\": \"a.txt:1: loki/secret: hardcoded credential (GitHub token); load it from the environment or a secret store and rotate the exposed value\", \"path\": \"a.txt\", \"line\": 1, \"rule\": \"loki/secret\"}], \"advisory\": [], \"not_checked\": []}\n",
+				"stdout": "{\"loki\": \"0.1.9\", \"command\": \"hook\", \"status\": \"blocked\", \"blocking\": [{\"text\": \"a.txt:1: loki/secret: hardcoded credential (GitHub token); load it from the environment or a secret store and rotate the exposed value\", \"path\": \"a.txt\", \"line\": 1, \"rule\": \"loki/secret\"}], \"advisory\": [], \"not_checked\": []}\n",
 				"stderr": "loki: post-write check failed; files are already changed.\na.txt:1: loki/secret: hardcoded credential (GitHub token); load it from the environment or a secret store and rotate the exposed value\n"
 			}
 		},
@@ -1153,9 +1153,9 @@
 				"a.txt"
 			],
 			"expected": {
-				"status": 2,
+				"status": 0,
 				"stdout": "",
-				"stderr": "loki: post-write check failed; files are already changed.\ngit: project root must be the repository root\n"
+				"stderr": "NOT CHECKED repository changes: git: project root must be the repository root\n"
 			}
 		},
 		{
@@ -1230,7 +1230,7 @@
 			],
 			"expected": {
 				"status": 2,
-				"stdout": "{\"loki\": \"0.1.8\", \"command\": \"hook\", \"status\": \"blocked\", \"blocking\": [{\"text\": \".loki/loki.json: protected content changed\"}], \"advisory\": [], \"not_checked\": []}\n",
+				"stdout": "{\"loki\": \"0.1.9\", \"command\": \"hook\", \"status\": \"blocked\", \"blocking\": [{\"text\": \".loki/loki.json: protected content changed\"}], \"advisory\": [], \"not_checked\": []}\n",
 				"stderr": "loki: post-write check failed; files are already changed.\n.loki/loki.json: protected content changed\n"
 			}
 		},
@@ -1659,7 +1659,7 @@
 			"stdin": {},
 			"expected": {
 				"status": 2,
-				"stdout": "{\"loki\": \"0.1.8\", \"command\": \"hook\", \"status\": \"error\", \"blocking\": [], \"advisory\": [], \"not_checked\": [], \"error\": \"invalid hook input: --format json requires --file\"}\n",
+				"stdout": "{\"loki\": \"0.1.9\", \"command\": \"hook\", \"status\": \"error\", \"blocking\": [], \"advisory\": [], \"not_checked\": [], \"error\": \"invalid hook input: --format json requires --file\"}\n",
 				"stderr": "loki: invalid hook input: --format json requires --file\n"
 			}
 		},
@@ -1934,7 +1934,7 @@
 			],
 			"expected": {
 				"status": 2,
-				"stdout": "{\"loki\": \"0.1.8\", \"command\": \"protect\", \"status\": \"error\", \"blocking\": [], \"advisory\": [], \"not_checked\": [], \"error\": \"invalid hook input: 'utf-8' codec can't decode byte 0xff in position 0: invalid start byte\"}\n",
+				"stdout": "{\"loki\": \"0.1.9\", \"command\": \"protect\", \"status\": \"error\", \"blocking\": [], \"advisory\": [], \"not_checked\": [], \"error\": \"invalid hook input: 'utf-8' codec can't decode byte 0xff in position 0: invalid start byte\"}\n",
 				"stderr": "loki: invalid hook input: 'utf-8' codec can't decode byte 0xff in position 0: invalid start byte\n"
 			}
 		},
@@ -2016,7 +2016,7 @@
 			],
 			"expected": {
 				"status": 2,
-				"stdout": "{\"loki\": \"0.1.8\", \"command\": \"hook\", \"status\": \"blocked\", \"blocking\": [{\"text\": \"app/a.py: python-ast: invalid syntax (a.py, line 1)\", \"path\": \"app/a.py\", \"rule\": \"python-ast\"}], \"advisory\": [], \"not_checked\": [\"NOT CHECKED python: missing ruff\"]}\n",
+				"stdout": "{\"loki\": \"0.1.9\", \"command\": \"hook\", \"status\": \"blocked\", \"blocking\": [{\"text\": \"app/a.py: python-ast: invalid syntax (a.py, line 1)\", \"path\": \"app/a.py\", \"rule\": \"python-ast\"}], \"advisory\": [], \"not_checked\": [\"NOT CHECKED python: missing ruff\"]}\n",
 				"stderr": "loki: post-write check failed; files are already changed.\napp/a.py: python-ast: invalid syntax (a.py, line 1)\nNOT CHECKED python: missing ruff\n"
 			}
 		},
@@ -2197,7 +2197,7 @@
 			],
 			"expected": {
 				"status": 2,
-				"stdout": "{\"loki\": \"0.1.8\", \"command\": \"hook\", \"status\": \"blocked\", \"blocking\": [{\"text\": \"app/a.py: None: SyntaxError: nope\", \"path\": \"app/a.py\", \"rule\": \"None\"}], \"advisory\": [], \"not_checked\": []}\n",
+				"stdout": "{\"loki\": \"0.1.9\", \"command\": \"hook\", \"status\": \"blocked\", \"blocking\": [{\"text\": \"app/a.py: None: SyntaxError: nope\", \"path\": \"app/a.py\", \"rule\": \"None\"}], \"advisory\": [], \"not_checked\": []}\n",
 				"stderr": "loki: post-write check failed; files are already changed.\napp/a.py: None: SyntaxError: nope\n"
 			}
 		},
@@ -2240,9 +2240,9 @@
 				"app/a.py"
 			],
 			"expected": {
-				"status": 2,
+				"status": 0,
 				"stdout": "",
-				"stderr": "loki: invalid hook input: net-new Ruff requires a committed base\n"
+				"stderr": "NOT CHECKED slop: git: fatal: Not a valid object name HEAD\nNOT CHECKED python ruff: net-new Ruff requires a committed base\n"
 			}
 		},
 		{
@@ -2407,7 +2407,7 @@
 			],
 			"expected": {
 				"status": 0,
-				"stdout": "{\"loki\": \"0.1.8\", \"command\": \"hook\", \"status\": \"passed\", \"blocking\": [], \"advisory\": [{\"text\": \"oxlint advisory (not blocking):\\nsrc/a.ts:1:1: Unexpected console [Warning/eslint(no-console)]\"}], \"not_checked\": []}\n",
+				"stdout": "{\"loki\": \"0.1.9\", \"command\": \"hook\", \"status\": \"passed\", \"blocking\": [], \"advisory\": [{\"text\": \"oxlint advisory (not blocking):\\nsrc/a.ts:1:1: Unexpected console [Warning/eslint(no-console)]\"}], \"not_checked\": []}\n",
 				"stderr": "oxlint advisory (not blocking):\nsrc/a.ts:1:1: Unexpected console [Warning/eslint(no-console)]\n"
 			}
 		},
@@ -2811,7 +2811,7 @@
 			],
 			"expected": {
 				"status": 0,
-				"stdout": "{\"loki\": \"0.1.8\", \"command\": \"hook\", \"status\": \"passed\", \"blocking\": [], \"advisory\": [{\"text\": \"app/m.py:1: loki/slop-complexity: busy cyclomatic complexity 12 -> 15 (> 10); split it into smaller functions\", \"path\": \"app/m.py\", \"line\": 1, \"rule\": \"loki/slop-complexity\"}], \"not_checked\": [\"NOT CHECKED python: missing ruff\"]}\n",
+				"stdout": "{\"loki\": \"0.1.9\", \"command\": \"hook\", \"status\": \"passed\", \"blocking\": [], \"advisory\": [{\"text\": \"app/m.py:1: loki/slop-complexity: busy cyclomatic complexity 12 -> 15 (> 10); split it into smaller functions\", \"path\": \"app/m.py\", \"line\": 1, \"rule\": \"loki/slop-complexity\"}], \"not_checked\": [\"NOT CHECKED python: missing ruff\"]}\n",
 				"stderr": "app/m.py:1: loki/slop-complexity: busy cyclomatic complexity 12 -> 15 (> 10); split it into smaller functions\nNOT CHECKED python: missing ruff\n"
 			}
 		},
@@ -2974,9 +2974,9 @@
 				"app/m.py"
 			],
 			"expected": {
-				"status": 2,
+				"status": 0,
 				"stdout": "",
-				"stderr": "loki: post-write check failed; files are already changed.\ngit: fatal: not a git repository (or any parent up to mount point /)\nStopping at filesystem boundary (GIT_DISCOVERY_ACROSS_FILESYSTEM not set).\n"
+				"stderr": "NOT CHECKED repository changes: git: fatal: not a git repository (or any parent up to mount point /)\nStopping at filesystem boundary (GIT_DISCOVERY_ACROSS_FILESYSTEM not set).\nNOT CHECKED slop: git: fatal: not a git repository (or any parent up to mount point /)\nStopping at filesystem boundary (GIT_DISCOVERY_ACROSS_FILESYSTEM not set).\nNOT CHECKED python: missing ruff\n"
 			}
 		},
 		{
@@ -3530,7 +3530,7 @@
 				"stderr": "",
 				"tree": {
 					"proj/.loki/loki.json": "644 a397f86c9287ad96505a2e31ecaf898afdc0f3c8b0f83b3a9e6ef13d12507f88",
-					"proj/.loki/loki.py": "644 35fa31baa1bc59e4750da37115809324f9264924c65129f55030c6bcea094428"
+					"proj/.loki/loki.py": "644 d9fc5275d70cda9024bb04ccf0f26dd4c557f3132d2f582c7ba7abec05da51f2"
 				}
 			}
 		},
@@ -3577,7 +3577,7 @@
 				"stderr": "",
 				"tree": {
 					"proj/.loki/loki.json": "644 ca3d163bab055381827226140568f3bef7eaac187cebd76878e0b63e9e442356",
-					"proj/.loki/loki.py": "644 35fa31baa1bc59e4750da37115809324f9264924c65129f55030c6bcea094428"
+					"proj/.loki/loki.py": "644 d9fc5275d70cda9024bb04ccf0f26dd4c557f3132d2f582c7ba7abec05da51f2"
 				}
 			}
 		},
@@ -4474,7 +4474,7 @@
 			],
 			"expected": {
 				"status": 2,
-				"stdout": "{\"loki\": \"0.1.8\", \"command\": \"hook\", \"status\": \"blocked\", \"blocking\": [{\"text\": \"crates/c/src/lib.rs:1: clippy::unwrap_used: used unwrap() on a Result value\"}], \"advisory\": [], \"not_checked\": []}\n",
+				"stdout": "{\"loki\": \"0.1.9\", \"command\": \"hook\", \"status\": \"blocked\", \"blocking\": [{\"text\": \"crates/c/src/lib.rs:1: clippy::unwrap_used: used unwrap() on a Result value\"}], \"advisory\": [], \"not_checked\": []}\n",
 				"stderr": "loki: post-write check failed; files are already changed.\ncrates/c/src/lib.rs:1: clippy::unwrap_used: used unwrap() on a Result value\n"
 			}
 		},
@@ -5128,7 +5128,7 @@
 			],
 			"expected": {
 				"status": 0,
-				"stdout": "{\"loki\": \"0.1.8\", \"command\": \"hook\", \"status\": \"passed\", \"blocking\": [], \"advisory\": [], \"not_checked\": []}\n",
+				"stdout": "{\"loki\": \"0.1.9\", \"command\": \"hook\", \"status\": \"passed\", \"blocking\": [], \"advisory\": [], \"not_checked\": []}\n",
 				"stderr": ""
 			}
 		},
@@ -5264,7 +5264,7 @@
 						],
 						"duration_ms": 0,
 						"scope": "delivered event only",
-						"engine_sha256": "35fa31baa1bc59e4750da37115809324f9264924c65129f55030c6bcea094428",
+						"engine_sha256": "d9fc5275d70cda9024bb04ccf0f26dd4c557f3132d2f582c7ba7abec05da51f2",
 						"resolution": "inspect diagnostic; protected changes need independent review",
 						"schema_version": 2,
 						"findings": [],
@@ -5314,7 +5314,7 @@
 						"targets": [],
 						"duration_ms": 0,
 						"scope": "delivered event only",
-						"engine_sha256": "35fa31baa1bc59e4750da37115809324f9264924c65129f55030c6bcea094428",
+						"engine_sha256": "d9fc5275d70cda9024bb04ccf0f26dd4c557f3132d2f582c7ba7abec05da51f2",
 						"resolution": "inspect diagnostic; protected changes need independent review",
 						"schema_version": 2,
 						"findings": [
@@ -5349,7 +5349,7 @@
 			],
 			"expected": {
 				"status": 2,
-				"stdout": "{\"loki\": \"0.1.8\", \"command\": \"hook\", \"status\": \"blocked\", \"blocking\": [{\"text\": \"a.txt:1: loki/secret: hardcoded credential (GitHub token); load it from the environment or a secret store and rotate the exposed value\", \"path\": \"a.txt\", \"line\": 1, \"rule\": \"loki/secret\"}], \"advisory\": [], \"not_checked\": []}\n",
+				"stdout": "{\"loki\": \"0.1.9\", \"command\": \"hook\", \"status\": \"blocked\", \"blocking\": [{\"text\": \"a.txt:1: loki/secret: hardcoded credential (GitHub token); load it from the environment or a secret store and rotate the exposed value\", \"path\": \"a.txt\", \"line\": 1, \"rule\": \"loki/secret\"}], \"advisory\": [], \"not_checked\": []}\n",
 				"stderr": "loki: post-write check failed; files are already changed.\na.txt:1: loki/secret: hardcoded credential (GitHub token); load it from the environment or a secret store and rotate the exposed value\n",
 				"events": [
 					{
@@ -5361,7 +5361,7 @@
 						],
 						"duration_ms": 0,
 						"scope": "delivered event only",
-						"engine_sha256": "35fa31baa1bc59e4750da37115809324f9264924c65129f55030c6bcea094428",
+						"engine_sha256": "d9fc5275d70cda9024bb04ccf0f26dd4c557f3132d2f582c7ba7abec05da51f2",
 						"resolution": "inspect diagnostic; protected changes need independent review",
 						"schema_version": 2,
 						"findings": [
@@ -5418,7 +5418,7 @@
 						],
 						"duration_ms": 0,
 						"scope": "delivered event only",
-						"engine_sha256": "35fa31baa1bc59e4750da37115809324f9264924c65129f55030c6bcea094428",
+						"engine_sha256": "d9fc5275d70cda9024bb04ccf0f26dd4c557f3132d2f582c7ba7abec05da51f2",
 						"resolution": "inspect diagnostic; protected changes need independent review",
 						"schema_version": 2,
 						"findings": [
@@ -5480,7 +5480,7 @@
 						],
 						"duration_ms": 0,
 						"scope": "delivered event only",
-						"engine_sha256": "35fa31baa1bc59e4750da37115809324f9264924c65129f55030c6bcea094428",
+						"engine_sha256": "d9fc5275d70cda9024bb04ccf0f26dd4c557f3132d2f582c7ba7abec05da51f2",
 						"resolution": "inspect diagnostic; protected changes need independent review",
 						"schema_version": 2,
 						"findings": [
@@ -5541,7 +5541,7 @@
 						],
 						"duration_ms": 0,
 						"scope": "delivered event only",
-						"engine_sha256": "35fa31baa1bc59e4750da37115809324f9264924c65129f55030c6bcea094428",
+						"engine_sha256": "d9fc5275d70cda9024bb04ccf0f26dd4c557f3132d2f582c7ba7abec05da51f2",
 						"resolution": "inspect diagnostic; protected changes need independent review",
 						"schema_version": 2,
 						"findings": [
@@ -5598,7 +5598,7 @@
 						],
 						"duration_ms": 0,
 						"scope": "delivered event only",
-						"engine_sha256": "35fa31baa1bc59e4750da37115809324f9264924c65129f55030c6bcea094428",
+						"engine_sha256": "d9fc5275d70cda9024bb04ccf0f26dd4c557f3132d2f582c7ba7abec05da51f2",
 						"resolution": "inspect diagnostic; protected changes need independent review",
 						"schema_version": 2,
 						"findings": [
@@ -5652,7 +5652,7 @@
 						],
 						"duration_ms": 0,
 						"scope": "delivered event only",
-						"engine_sha256": "35fa31baa1bc59e4750da37115809324f9264924c65129f55030c6bcea094428",
+						"engine_sha256": "d9fc5275d70cda9024bb04ccf0f26dd4c557f3132d2f582c7ba7abec05da51f2",
 						"resolution": "inspect diagnostic; protected changes need independent review",
 						"schema_version": 2,
 						"findings": [
@@ -5700,7 +5700,7 @@
 						],
 						"duration_ms": 0,
 						"scope": "delivered event only",
-						"engine_sha256": "35fa31baa1bc59e4750da37115809324f9264924c65129f55030c6bcea094428",
+						"engine_sha256": "d9fc5275d70cda9024bb04ccf0f26dd4c557f3132d2f582c7ba7abec05da51f2",
 						"resolution": "inspect diagnostic; protected changes need independent review",
 						"schema_version": 2,
 						"findings": [
@@ -5748,7 +5748,7 @@
 						],
 						"duration_ms": 0,
 						"scope": "delivered event only",
-						"engine_sha256": "35fa31baa1bc59e4750da37115809324f9264924c65129f55030c6bcea094428",
+						"engine_sha256": "d9fc5275d70cda9024bb04ccf0f26dd4c557f3132d2f582c7ba7abec05da51f2",
 						"resolution": "inspect diagnostic; protected changes need independent review",
 						"schema_version": 2,
 						"findings": [
@@ -5803,7 +5803,7 @@
 						],
 						"duration_ms": 0,
 						"scope": "delivered event only",
-						"engine_sha256": "35fa31baa1bc59e4750da37115809324f9264924c65129f55030c6bcea094428",
+						"engine_sha256": "d9fc5275d70cda9024bb04ccf0f26dd4c557f3132d2f582c7ba7abec05da51f2",
 						"resolution": "inspect diagnostic; protected changes need independent review",
 						"schema_version": 2,
 						"findings": [
@@ -5866,7 +5866,7 @@
 						],
 						"duration_ms": 0,
 						"scope": "delivered event only",
-						"engine_sha256": "35fa31baa1bc59e4750da37115809324f9264924c65129f55030c6bcea094428",
+						"engine_sha256": "d9fc5275d70cda9024bb04ccf0f26dd4c557f3132d2f582c7ba7abec05da51f2",
 						"resolution": "inspect diagnostic; protected changes need independent review",
 						"schema_version": 2,
 						"findings": [
@@ -5923,7 +5923,7 @@
 						],
 						"duration_ms": 0,
 						"scope": "delivered event only",
-						"engine_sha256": "35fa31baa1bc59e4750da37115809324f9264924c65129f55030c6bcea094428",
+						"engine_sha256": "d9fc5275d70cda9024bb04ccf0f26dd4c557f3132d2f582c7ba7abec05da51f2",
 						"resolution": "inspect diagnostic; protected changes need independent review",
 						"schema_version": 2,
 						"findings": [
@@ -5980,7 +5980,7 @@
 						],
 						"duration_ms": 0,
 						"scope": "delivered event only",
-						"engine_sha256": "35fa31baa1bc59e4750da37115809324f9264924c65129f55030c6bcea094428",
+						"engine_sha256": "d9fc5275d70cda9024bb04ccf0f26dd4c557f3132d2f582c7ba7abec05da51f2",
 						"resolution": "inspect diagnostic; protected changes need independent review",
 						"schema_version": 2,
 						"findings": [],
@@ -6032,7 +6032,7 @@
 						],
 						"duration_ms": 0,
 						"scope": "delivered event only",
-						"engine_sha256": "35fa31baa1bc59e4750da37115809324f9264924c65129f55030c6bcea094428",
+						"engine_sha256": "d9fc5275d70cda9024bb04ccf0f26dd4c557f3132d2f582c7ba7abec05da51f2",
 						"resolution": "inspect diagnostic; protected changes need independent review",
 						"schema_version": 2,
 						"findings": [
@@ -6085,7 +6085,7 @@
 						"targets": [],
 						"duration_ms": 0,
 						"scope": "delivered event only",
-						"engine_sha256": "35fa31baa1bc59e4750da37115809324f9264924c65129f55030c6bcea094428",
+						"engine_sha256": "d9fc5275d70cda9024bb04ccf0f26dd4c557f3132d2f582c7ba7abec05da51f2",
 						"resolution": "inspect diagnostic; protected changes need independent review",
 						"schema_version": 2,
 						"findings": [
@@ -6119,28 +6119,23 @@
 				"--record"
 			],
 			"expected": {
-				"status": 2,
+				"status": 0,
 				"stdout": "",
-				"stderr": "loki: post-write check failed; files are already changed.\ngit: fatal: not a git repository (or any parent up to mount point /)\nStopping at filesystem boundary (GIT_DISCOVERY_ACROSS_FILESYSTEM not set).\n",
+				"stderr": "NOT CHECKED repository changes: git: fatal: not a git repository (or any parent up to mount point /)\nStopping at filesystem boundary (GIT_DISCOVERY_ACROSS_FILESYSTEM not set).\n",
 				"events": [
 					{
 						"time": 0,
 						"operation": "hook",
-						"outcome": "deny",
+						"outcome": "warning",
 						"targets": [
 							"a.txt"
 						],
 						"duration_ms": 0,
 						"scope": "delivered event only",
-						"engine_sha256": "35fa31baa1bc59e4750da37115809324f9264924c65129f55030c6bcea094428",
+						"engine_sha256": "d9fc5275d70cda9024bb04ccf0f26dd4c557f3132d2f582c7ba7abec05da51f2",
 						"resolution": "inspect diagnostic; protected changes need independent review",
 						"schema_version": 2,
-						"findings": [
-							{
-								"rule": "unclassified-failure",
-								"path": null
-							}
-						],
+						"findings": [],
 						"policies": [
 							{
 								"source": "candidate",
@@ -6189,7 +6184,7 @@
 						],
 						"duration_ms": 0,
 						"scope": "delivered event only",
-						"engine_sha256": "35fa31baa1bc59e4750da37115809324f9264924c65129f55030c6bcea094428",
+						"engine_sha256": "d9fc5275d70cda9024bb04ccf0f26dd4c557f3132d2f582c7ba7abec05da51f2",
 						"resolution": "inspect diagnostic; protected changes need independent review",
 						"schema_version": 2,
 						"findings": [
@@ -6237,7 +6232,7 @@
 						],
 						"duration_ms": 0,
 						"scope": "delivered event only",
-						"engine_sha256": "35fa31baa1bc59e4750da37115809324f9264924c65129f55030c6bcea094428",
+						"engine_sha256": "d9fc5275d70cda9024bb04ccf0f26dd4c557f3132d2f582c7ba7abec05da51f2",
 						"resolution": "inspect diagnostic; protected changes need independent review",
 						"schema_version": 2,
 						"findings": [
@@ -6303,7 +6298,7 @@
 						],
 						"duration_ms": 0,
 						"scope": "delivered event only",
-						"engine_sha256": "35fa31baa1bc59e4750da37115809324f9264924c65129f55030c6bcea094428",
+						"engine_sha256": "d9fc5275d70cda9024bb04ccf0f26dd4c557f3132d2f582c7ba7abec05da51f2",
 						"resolution": "inspect diagnostic; protected changes need independent review",
 						"schema_version": 2,
 						"findings": [],
@@ -6331,7 +6326,7 @@
 						],
 						"duration_ms": 0,
 						"scope": "delivered event only",
-						"engine_sha256": "35fa31baa1bc59e4750da37115809324f9264924c65129f55030c6bcea094428",
+						"engine_sha256": "d9fc5275d70cda9024bb04ccf0f26dd4c557f3132d2f582c7ba7abec05da51f2",
 						"resolution": "inspect diagnostic; protected changes need independent review",
 						"schema_version": 2,
 						"findings": [],
@@ -6372,7 +6367,7 @@
 						"targets": [],
 						"duration_ms": 0,
 						"scope": "delivered event only",
-						"engine_sha256": "35fa31baa1bc59e4750da37115809324f9264924c65129f55030c6bcea094428",
+						"engine_sha256": "d9fc5275d70cda9024bb04ccf0f26dd4c557f3132d2f582c7ba7abec05da51f2",
 						"resolution": "inspect diagnostic; protected changes need independent review",
 						"schema_version": 2,
 						"findings": [
@@ -6409,7 +6404,7 @@
 						"targets": [],
 						"duration_ms": 0,
 						"scope": "delivered event only",
-						"engine_sha256": "35fa31baa1bc59e4750da37115809324f9264924c65129f55030c6bcea094428",
+						"engine_sha256": "d9fc5275d70cda9024bb04ccf0f26dd4c557f3132d2f582c7ba7abec05da51f2",
 						"resolution": "inspect diagnostic; protected changes need independent review",
 						"schema_version": 2,
 						"findings": [
@@ -6443,7 +6438,7 @@
 						"targets": [],
 						"duration_ms": 0,
 						"scope": "delivered event only",
-						"engine_sha256": "35fa31baa1bc59e4750da37115809324f9264924c65129f55030c6bcea094428",
+						"engine_sha256": "d9fc5275d70cda9024bb04ccf0f26dd4c557f3132d2f582c7ba7abec05da51f2",
 						"resolution": "inspect diagnostic; protected changes need independent review",
 						"schema_version": 2,
 						"findings": [
@@ -6489,7 +6484,7 @@
 						"targets": [],
 						"duration_ms": 0,
 						"scope": "delivered event only",
-						"engine_sha256": "35fa31baa1bc59e4750da37115809324f9264924c65129f55030c6bcea094428",
+						"engine_sha256": "d9fc5275d70cda9024bb04ccf0f26dd4c557f3132d2f582c7ba7abec05da51f2",
 						"resolution": "inspect diagnostic; protected changes need independent review",
 						"schema_version": 2,
 						"findings": [
@@ -6535,7 +6530,7 @@
 						"targets": [],
 						"duration_ms": 0,
 						"scope": "delivered event only",
-						"engine_sha256": "35fa31baa1bc59e4750da37115809324f9264924c65129f55030c6bcea094428",
+						"engine_sha256": "d9fc5275d70cda9024bb04ccf0f26dd4c557f3132d2f582c7ba7abec05da51f2",
 						"resolution": "inspect diagnostic; protected changes need independent review",
 						"schema_version": 2,
 						"findings": [
@@ -6588,7 +6583,7 @@
 						"targets": [],
 						"duration_ms": 0,
 						"scope": "delivered event only",
-						"engine_sha256": "35fa31baa1bc59e4750da37115809324f9264924c65129f55030c6bcea094428",
+						"engine_sha256": "d9fc5275d70cda9024bb04ccf0f26dd4c557f3132d2f582c7ba7abec05da51f2",
 						"resolution": "inspect diagnostic; protected changes need independent review",
 						"schema_version": 2,
 						"findings": [
@@ -6634,7 +6629,7 @@
 						"targets": [],
 						"duration_ms": 0,
 						"scope": "delivered event only",
-						"engine_sha256": "35fa31baa1bc59e4750da37115809324f9264924c65129f55030c6bcea094428",
+						"engine_sha256": "d9fc5275d70cda9024bb04ccf0f26dd4c557f3132d2f582c7ba7abec05da51f2",
 						"resolution": "inspect diagnostic; protected changes need independent review",
 						"schema_version": 2,
 						"findings": [
@@ -6680,7 +6675,7 @@
 						"targets": [],
 						"duration_ms": 0,
 						"scope": "delivered event only",
-						"engine_sha256": "35fa31baa1bc59e4750da37115809324f9264924c65129f55030c6bcea094428",
+						"engine_sha256": "d9fc5275d70cda9024bb04ccf0f26dd4c557f3132d2f582c7ba7abec05da51f2",
 						"resolution": "inspect diagnostic; protected changes need independent review",
 						"schema_version": 2,
 						"findings": [
@@ -6726,7 +6721,7 @@
 						"targets": [],
 						"duration_ms": 0,
 						"scope": "delivered event only",
-						"engine_sha256": "35fa31baa1bc59e4750da37115809324f9264924c65129f55030c6bcea094428",
+						"engine_sha256": "d9fc5275d70cda9024bb04ccf0f26dd4c557f3132d2f582c7ba7abec05da51f2",
 						"resolution": "inspect diagnostic; protected changes need independent review",
 						"schema_version": 2,
 						"findings": [
@@ -6772,7 +6767,7 @@
 						"targets": [],
 						"duration_ms": 0,
 						"scope": "delivered event only",
-						"engine_sha256": "35fa31baa1bc59e4750da37115809324f9264924c65129f55030c6bcea094428",
+						"engine_sha256": "d9fc5275d70cda9024bb04ccf0f26dd4c557f3132d2f582c7ba7abec05da51f2",
 						"resolution": "inspect diagnostic; protected changes need independent review",
 						"schema_version": 2,
 						"findings": [],
@@ -6803,7 +6798,7 @@
 						"targets": [],
 						"duration_ms": 0,
 						"scope": "delivered event only",
-						"engine_sha256": "35fa31baa1bc59e4750da37115809324f9264924c65129f55030c6bcea094428",
+						"engine_sha256": "d9fc5275d70cda9024bb04ccf0f26dd4c557f3132d2f582c7ba7abec05da51f2",
 						"resolution": "inspect diagnostic; protected changes need independent review",
 						"schema_version": 2,
 						"findings": [
@@ -8288,7 +8283,7 @@
 						"targets": [],
 						"duration_ms": 0,
 						"scope": "delivered event only",
-						"engine_sha256": "35fa31baa1bc59e4750da37115809324f9264924c65129f55030c6bcea094428",
+						"engine_sha256": "d9fc5275d70cda9024bb04ccf0f26dd4c557f3132d2f582c7ba7abec05da51f2",
 						"resolution": "inspect diagnostic; protected changes need independent review",
 						"schema_version": 2,
 						"findings": [
