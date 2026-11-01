@@ -41,6 +41,7 @@ pub mod naming;
 pub mod nudge;
 pub mod op_journal;
 pub mod pi_view;
+pub mod playbook_route;
 pub mod recovery;
 pub mod request_keys;
 pub mod request_layer;

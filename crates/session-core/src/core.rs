@@ -2386,6 +2386,20 @@ impl Core {
         crate::auto_memory::recall_message(&recalled, now_ms() as u64)
     }
 
+    /// The `ultron.playbook` message a run of the user message `text` opens with, in engineering mode
+    /// (crate::playbook_route).
+    fn routed_playbook(&self, text: &str) -> Option<Value> {
+        crate::playbook_route::route(text)?;
+        let manager = (self.runtime.config.settings_reader())();
+        if manager.settings().get("engineering") != Some(&Value::Bool(true)) {
+            return None;
+        }
+        let rigor = std::path::PathBuf::from(self.runtime.config.bundled_skills()?).join("pstack/rigor");
+        let entries = lock_session(&self.session).branch_entries(LANE).unwrap_or_default();
+        let shown = crate::playbook_route::shown(&entries);
+        crate::playbook_route::playbook_message(text, &rigor, &shown, now_ms() as u64)
+    }
+
     /// Keep the newest compaction's summary in long-term memory, when automatic retain is on (crate::auto_memory).
     pub(super) fn retain_compaction(&self) {
         if !self.auto_memory.retain {
@@ -2506,6 +2520,22 @@ impl Core {
         if prompt["role"] == "user"
             && !continuation
             && let Some(message) = self.recalled_memory(&text)
+        {
+            for kind in ["message_start", "message_end"] {
+                self.emit(event(vec![
+                    ("type", json!(kind)),
+                    ("lane", json!(LANE)),
+                    ("message", message.clone()),
+                ]));
+            }
+            if let Err(error) = self.append(message) {
+                return fail(error, waiter);
+            }
+        }
+        // In engineering mode the rigor playbook that fits a user message opens its run (crate::playbook_route).
+        if prompt["role"] == "user"
+            && !continuation
+            && let Some(message) = self.routed_playbook(&text)
         {
             for kind in ["message_start", "message_end"] {
                 self.emit(event(vec![
