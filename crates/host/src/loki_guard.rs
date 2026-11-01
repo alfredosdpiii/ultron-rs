@@ -100,8 +100,9 @@ pub fn classify_loki_text(stderr: &str, failed: bool) -> LokiReport {
 /// `findingKey`: a finding's file and its identity without the line number, which moves as the file is edited.
 /// The engine's own `loki: ...` lines name no file at their start (`loki` is no path): a protected-file line is
 /// followed by the file it names, others cannot be followed. Keyed by `loki`, they stayed "still open in loki"
-/// for the rest of the session, since no check ever clears a file named `loki`.
-fn finding_key(line: &str) -> (String, String) {
+/// for the rest of the session, since no check ever clears a file named `loki`. The same holds for other non-path
+/// prefixes such as `git:` and `typescript:`, so a prefix with no `.` or `/` that names no existing file is no file.
+fn finding_key(root: &Path, line: &str) -> (String, String) {
     if let Some(rest) = line.strip_prefix("loki: ") {
         return match rest.strip_prefix("protected file: ") {
             Some(named) => {
@@ -112,6 +113,10 @@ fn finding_key(line: &str) -> (String, String) {
         };
     }
     match FINDING_PATH.captures(line).ok().flatten() {
+        // A tool or engine prefix (`git: ...`, `typescript: ...`) is no path either: no check clears it.
+        Some(found) if !found[1].contains(['.', '/']) && !root.join(&found[1]).exists() => {
+            (String::new(), line.to_string())
+        }
         Some(found) => {
             let path = found[1].to_string();
             let rest = &line[found[0].len()..];
@@ -300,7 +305,7 @@ impl LokiGuard {
         let mut fresh = Vec::new();
         let mut stale: Vec<String> = Vec::new();
         for line in lines {
-            let (path, key) = finding_key(line);
+            let (path, key) = finding_key(&self.root, line);
             if !path.is_empty() && memory.get(&path).is_some_and(|keys| keys.contains(&key)) {
                 if !stale.contains(&path) {
                     stale.push(path.clone());
@@ -536,14 +541,27 @@ mod tests {
     fn host_loki_engine_lines_are_keyed_by_the_file_they_name() {
         let protected = "loki: protected file: .loki/loki.json (set LOKI_ALLOW_PROTECTED=1 to override)";
         assert_eq!(
-            finding_key(protected),
+            finding_key(Path::new("."), protected),
             (".loki/loki.json".to_string(), protected.to_string())
         );
         let other = "loki: unsupported changed file type: a";
-        assert_eq!(finding_key(other), (String::new(), other.to_string()));
+        assert_eq!(finding_key(Path::new("."), other), (String::new(), other.to_string()));
         assert_eq!(
-            finding_key("src/a.py:3: loki/x: y"),
+            finding_key(Path::new("."), "src/a.py:3: loki/x: y"),
             ("src/a.py".to_string(), "src/a.py: loki/x: y".to_string())
+        );
+    }
+
+    /// `git: snapshot content exceeds 64 MiB` was keyed by a file `git` and nagged "still open in git" all session.
+    #[test]
+    fn host_tool_prefixes_are_no_file() {
+        let root = tempfile::tempdir().unwrap();
+        std::fs::write(root.path().join("Makefile"), "").unwrap();
+        let git = "git: snapshot content exceeds 64 MiB";
+        assert_eq!(finding_key(root.path(), git), (String::new(), git.to_string()));
+        assert_eq!(
+            finding_key(root.path(), "Makefile:3: tab"),
+            ("Makefile".to_string(), "Makefile: tab".to_string())
         );
     }
 }

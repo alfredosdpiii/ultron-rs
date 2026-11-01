@@ -1418,6 +1418,10 @@ pub fn check_file(
             let selected: HashSet<String> = names.iter().cloned().collect();
             match ruff_new_violations(root, None, Some(&selected), deadline) {
                 Ok(found) => violations.extend(found),
+                Err(RuffError::Other(error)) if git::snapshot_too_large(&error) => {
+                    let message = format!("NOT CHECKED python ruff: {}", error.message());
+                    violations.extend(not_checked(message, strict, warnings));
+                }
                 Err(RuffError::MissingConfig(error)) => {
                     if strict {
                         violations.push(format!("{display}: loki: {error}"));
@@ -1655,6 +1659,33 @@ mod tests {
         assert_eq!(
             warnings,
             ["NOT CHECKED repository changes: git: snapshot content exceeds 64 MiB"]
+        );
+    }
+
+    /// loki.py test_oversized_snapshot_skips_net_new_ruff: a snapshot too large for net-new Ruff leaves a
+    /// NOT CHECKED note, not an invalid-hook-input error.
+    #[test]
+    fn loki_oversized_snapshot_skips_net_new_ruff() {
+        if proc::which("ruff").is_none() {
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().canonicalize().unwrap();
+        git(&root, &["init", "-q"]);
+        write(&root, ".ruff.toml", b"");
+        let source = write(&root, "a.py", b"x = 1\n");
+        git(&root, &["add", "."]);
+        git(&root, &["commit", "-q", "-m", "base"]);
+        write(&root, "a.py", b"x = 2\n");
+        write(&root, "big.bin", &vec![b'x'; git::SNAPSHOT_LIMIT + 1]);
+        let outcome = crate::run::hook(&root, &[source.to_string_lossy().into_owned()], true);
+        assert_eq!(outcome.status, 0, "{}", outcome.stderr);
+        assert!(
+            outcome
+                .stdout
+                .contains("NOT CHECKED python ruff: git: snapshot content exceeds 64 MiB"),
+            "{}",
+            outcome.stdout
         );
     }
 }
