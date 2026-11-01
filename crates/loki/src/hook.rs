@@ -358,6 +358,20 @@ pub fn write_guardrail_violations(
     deadline: Deadline,
     mut warnings: Option<&mut Vec<String>>,
 ) -> Result<Vec<String>, CheckError> {
+    if let Some(gap) = git::repository_gap(root, deadline)? {
+        let message = format!("NOT CHECKED repository changes: {gap}");
+        if std::env::var("LOKI_STRICT").as_deref() == Ok("1") {
+            return Ok(vec![message]);
+        }
+        if let Some(warnings) = warnings.as_deref_mut() {
+            if !warnings.contains(&message) {
+                warnings.push(message);
+            }
+        } else {
+            eprintln!("{message}");
+        }
+        return Ok(vec![]);
+    }
     let mut checked = || -> Result<Vec<String>, CheckError> {
         let resolved = resolve(root);
         let touched: HashSet<String> = paths
@@ -826,7 +840,7 @@ pub fn ruff_delta(
     Ok(violations)
 }
 
-/// Why net-new Ruff could not run: `MissingRuffConfig` or another error.
+/// Why net-new Ruff could not run: `MissingRuffConfig` (no committed base or config) or another error.
 pub enum RuffError {
     MissingConfig(String),
     Other(CheckError),
@@ -845,9 +859,14 @@ pub fn ruff_new_violations(
     paths: Option<&HashSet<String>>,
     deadline: Deadline,
 ) -> Result<Vec<String>, RuffError> {
+    if let Some(gap) = git::repository_gap(root, deadline)? {
+        return Err(RuffError::MissingConfig(gap));
+    }
     let (base, changes) = git::git_changes(root, reference, deadline)?;
     let Some(base) = base else {
-        return Err(RuffError::Other(invalid("net-new Ruff requires a committed base")));
+        return Err(RuffError::MissingConfig(
+            "net-new Ruff requires a committed base".into(),
+        ));
     };
     let policy = git::base_policy(root, Some(&base), deadline)?;
     let protected = git::protected_change_violations(&changes, &policy.unwrap_or_default())?;
@@ -1682,6 +1701,33 @@ mod tests {
         assert_eq!(
             warnings,
             ["NOT CHECKED repository changes: git: snapshot content exceeds 64 MiB"]
+        );
+    }
+
+    /// loki.py test_exact_paths_empty_tree_modes_and_git_errors: no repository, or a root below the repository
+    /// top, is a NOT CHECKED note rather than a finding.
+    #[test]
+    fn loki_repository_gap_is_not_checked() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().canonicalize().unwrap();
+        let config = Config::default();
+        let mut warnings = Vec::new();
+        let file = write(&root, "a.txt", b"x\n");
+        let findings =
+            write_guardrail_violations(&[file], &root, &config, Deadline::none(), Some(&mut warnings)).unwrap();
+        assert!(findings.is_empty(), "{findings:?}");
+        assert!(
+            warnings[0].starts_with("NOT CHECKED repository changes: git:"),
+            "{warnings:?}"
+        );
+        git(&root, &["init", "-q"]);
+        let sub = root.join("sub");
+        let file = write(&root, "sub/a.txt", b"x\n");
+        let mut warnings = Vec::new();
+        write_guardrail_violations(&[file], &sub, &config, Deadline::none(), Some(&mut warnings)).unwrap();
+        assert_eq!(
+            warnings,
+            ["NOT CHECKED repository changes: git: project root must be the repository root"]
         );
     }
 

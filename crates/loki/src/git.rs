@@ -269,6 +269,20 @@ pub fn git_changes(
 }
 
 /// `git_changes(..., only=...)`: the changes against base, limited to `only` (repository-relative paths) when given.
+/// `repository_gap`: why git cannot compare root (no repository, or a subdirectory of one), else None.
+pub fn repository_gap(root: &Path, deadline: Deadline) -> Result<Option<String>, CheckError> {
+    let top = match git_output(root, &["rev-parse", "--show-toplevel"], deadline, None) {
+        Ok(top) => top,
+        Err(CheckError::Value(message)) => return Ok(Some(message)),
+        Err(error) => return Err(error),
+    };
+    let top = String::from_utf8_lossy(&top).trim_end_matches('\n').to_string();
+    if resolve(Path::new(&top)) != resolve(root) {
+        return Ok(Some("git: project root must be the repository root".into()));
+    }
+    Ok(None)
+}
+
 pub fn git_changes_only(
     root: &Path,
     base: Option<&str>,
@@ -276,10 +290,8 @@ pub fn git_changes_only(
     only: Option<&HashSet<String>>,
 ) -> Result<(Option<String>, Vec<FileChange>), CheckError> {
     let root = resolve(root);
-    let top = git_output(&root, &["rev-parse", "--show-toplevel"], deadline, None)?;
-    let top = String::from_utf8_lossy(&top).trim_end_matches('\n').to_string();
-    if resolve(Path::new(&top)) != root {
-        return Err(invalid("git: project root must be the repository root"));
+    if let Some(gap) = repository_gap(&root, deadline)? {
+        return Err(invalid(gap));
     }
     if !git_output(&root, &["ls-files", "--unmerged", "-z"], deadline, None)?.is_empty() {
         return Err(invalid("loki: unresolved index conflict"));
