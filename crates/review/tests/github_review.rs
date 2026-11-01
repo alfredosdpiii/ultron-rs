@@ -1014,6 +1014,64 @@ impl LessonMemory for Memory {
     }
 }
 
+struct Taught(Result<Option<String>, String>);
+
+impl LessonMemory for Taught {
+    fn retain(&self, _: &str, _: &[Fate], _: &[Lesson]) -> Result<(), String> {
+        Ok(())
+    }
+    fn guide(&self, repo: &str) -> Result<Option<String>, String> {
+        assert_eq!(repo, "github.com/o/r");
+        self.0.clone()
+    }
+}
+
+#[test]
+fn review_github_the_engine_reads_what_memory_learned_about_the_repository() {
+    let spec_with = |guide: Result<Option<String>, String>, settings: Value| {
+        let mut context = setup(settings, None);
+        context.deps.lessons = Some(Arc::new(Taught(guide)));
+        context.hub.add_pull(FakePull::new("o", "r", 1).requested(&[BOT]));
+        requested(&context);
+        let spec = context.engine.specs()[0].clone();
+        let texts: Vec<String> = spec["guides"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|path| std::fs::read_to_string(path.as_str()?).ok())
+            .collect();
+        (spec, texts)
+    };
+    let (spec, texts) = spec_with(
+        Ok(Some("- Fast-pass security findings are rejected here.".into())),
+        json!({ "guides": ["/guides"] }),
+    );
+    let guides = spec["guides"].as_array().expect("guides");
+    assert_eq!(
+        (guides.len(), &guides[0]),
+        (2, &json!("/guides")),
+        "the user's guides come first"
+    );
+    assert!(guides[1].as_str().unwrap().ends_with("learned-review-lessons.md"));
+    assert!(
+        texts.is_empty(),
+        "the guide is read before the review's scratch directory is removed"
+    );
+    for (guide, settings, why) in [
+        (Ok(None), json!({}), "nothing learned yet"),
+        (Ok(Some("  ".into())), json!({}), "empty"),
+        (
+            Err("TIMEOUT".into()),
+            json!({}),
+            "memory failed: the review runs without it",
+        ),
+        (Ok(Some("- Learned.".into())), json!({ "learn": false }), "learning off"),
+    ] {
+        let (spec, _) = spec_with(guide, settings);
+        assert!(spec.get("guides").is_none(), "{why}: {spec}");
+    }
+}
+
 #[test]
 fn review_github_the_fate_of_earlier_findings_is_learned_and_retained() {
     let memory = Arc::new(Memory(Mutex::new(Vec::new())));

@@ -347,6 +347,38 @@ fn kernel_apis_memory_project_digest_creates_the_model_once_then_reads_it() {
 }
 
 #[test]
+fn kernel_apis_memory_user_brief_reads_every_project_and_is_created_once() {
+    let (memory, _, _, _, model, calls) = service_full(json!([]));
+    assert_eq!(memory.user_brief(&Signal::new()), Ok(None));
+    {
+        let calls = calls.lock().unwrap();
+        assert_eq!(calls[0], json!(["mental_model", "ultron-user-home", null]));
+        let created = &calls[1][2];
+        assert_eq!(
+            (&created["id"], &created["tags"], &created["trigger"]["tags_match"]),
+            (&json!("ultron-user-home"), &json!([]), &json!("any")),
+            "no tags and loose matching: the user's brief reads every project's memories"
+        );
+        assert!(created["source_query"].as_str().unwrap().contains("corrected"));
+    }
+    *model.lock().unwrap() =
+        json!({"id": "ultron-user-home", "content": "- Short answers.\n", "last_refreshed_at": null});
+    assert_eq!(
+        memory.user_brief(&Signal::new()),
+        Ok(Some(
+            json!({"id": "ultron-user-home", "content": "- Short answers.", "refreshedAt": null})
+        ))
+    );
+    let created = calls
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|call| call[0] == "create_mental_model")
+        .count();
+    assert_eq!(created, 1);
+}
+
+#[test]
 fn kernel_apis_memory_retain_session_tail_replaces_its_document_once_per_end() {
     let (memory, _, retains) = service(json!([]));
     let keep = |through: &str, text: &str| {
