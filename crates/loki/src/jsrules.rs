@@ -134,7 +134,7 @@ re!(
     r"(?<!\\)(?:\\[^dDwWsSbB]|[^\\\[(.|^$?*+{}])(?:\z|(?=\n\z))"
 );
 re!(ANY_ATOM, r"(?<!\\)\.|\\[SWD]");
-re!(CHAR_CLASS, r"\[(\^?)((?:\\.|[^\]])*)\]");
+re!(CHAR_CLASS, r"\[(\^?)((?:\\.|[^\]\\])*)\]");
 re!(CLASS_MEMBER, r"\\.|.");
 
 /// Constant text of a single string-literal expression, else None.
