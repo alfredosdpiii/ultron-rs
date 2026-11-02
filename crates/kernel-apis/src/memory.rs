@@ -1436,9 +1436,12 @@ impl MemoryService {
         Ok(json!({"text": text}))
     }
 
-    /// `memory.invalidate` (Rust-only): retires the fact or observation `id` that a recall showed (`[fact <id>]`),
-    /// with the reason, so no later recall returns it. Only a unit tagged with one of this session's scopes exactly
-    /// may be retired (UNKNOWN_MEMORY otherwise); a reason the write gate finds sensitive is not sent.
+    /// `memory.invalidate` (Rust-only): retires the fact `id` that a recall showed (`[fact <id>]`), with the reason,
+    /// so no later recall returns it. Only a unit tagged with one of this session's scopes exactly may be retired
+    /// (UNKNOWN_MEMORY otherwise); a reason the write gate finds sensitive is not sent. Hindsight derives an
+    /// observation from facts and refuses to curate it, and only some of those facts may be wrong: an observation
+    /// retires nothing and answers `{id, state: "observation", sources: [{id, text}]}`, its live source facts, so the
+    /// caller invalidates the wrong ones and Hindsight rewrites the observation from the rest.
     pub fn invalidate(&self, payload: &Map<String, Value>, signal: &Signal) -> Result<Value> {
         let id = payload.get("id").and_then(Value::as_str).unwrap_or_default();
         let unit = self.backend.unit(id, signal).map_err(|error| MemoryError::of(&error))?;
@@ -1448,6 +1451,16 @@ impl MemoryService {
             .any(|scope| self.tags(scope).is_ok_and(|own| same_tags(tags, &own)));
         if !owned {
             return Err(MemoryError::code("UNKNOWN_MEMORY"));
+        }
+        if unit["type"] == "observation" {
+            let sources: Vec<Value> = unit["source_memories"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter(|source| source["state"].as_str().is_none_or(|state| state == "valid"))
+                .map(|source| json!({"id": source["id"], "text": source["text"]}))
+                .collect();
+            return Ok(json!({"id": id, "state": "observation", "sources": sources}));
         }
         let mut request = json!({"state": "invalidated"});
         if let Some(reason) = payload.get("reason").and_then(Value::as_str) {
@@ -1971,10 +1984,12 @@ fn evidence_schema(value: Option<&Value>) -> bool {
 const SCOPES: &[&str] = &["session", "project", "global"];
 
 /// What a project's brief answers (see [`MemoryService::project_digest`]).
-/// The final-score floor of a turn's recall: Hindsight returns its best matches however weak. Measured on a real
-/// bank: an unrelated message ("ok thanks") topped out at 0.016, relevant hits started near 0.05.
-// ponytail: one fixed floor; the reranker is not calibrated across queries, so revisit if relevant hits go missing.
-const RECALL_MIN_SCORE: f64 = 0.05;
+/// The final-score floor of a turn's recall: Hindsight returns its best matches however weak. Fitted on the real
+/// bank (150 real user messages, 1188 recalled hits labeled useful or not by a model): F1 is flat from 0.002 to
+/// 0.02 on held-out halves; at 0.005 a turn keeps 45% of the useful hits and drops 90% of the rest (unfloored, 4 in
+/// 5 hits shown were noise). 0.05 kept a quarter of the useful ones.
+// ponytail: one fixed floor; the reranker is not calibrated across queries, so refit if the bank or reranker changes.
+const RECALL_MIN_SCORE: f64 = 0.005;
 
 const DIGEST_QUERY: &str = "What should a coding agent know before working in this project? Its conventions, the \
     decisions made and why, pitfalls and their fixes, the commands that build, test and run it, and the user's \

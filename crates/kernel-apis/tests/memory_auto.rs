@@ -71,6 +71,15 @@ impl MemoryBackend for Bank {
         match id {
             "f1" => Ok(json!({"id": "f1", "text": "Stale.", "tags": ["ultron:project:p1"]})),
             "other" => Ok(json!({"id": "other", "text": "Theirs.", "tags": ["ultron:project:p2"]})),
+            "o1" => Ok(json!({
+                "id": "o1", "type": "observation", "text": "Tests run under nice; commits have no trailers.",
+                "tags": ["ultron:project:p1"],
+                "source_memories": [
+                    {"id": "f1", "text": "Tests run under nice.", "type": "world"},
+                    {"id": "f2", "text": "Commits have no trailers.", "type": "world"},
+                    {"id": "f3", "text": "Retired.", "type": "world", "state": "invalidated"},
+                ],
+            })),
             _ => Err("HTTP_ERROR".into()),
         }
     }
@@ -154,7 +163,7 @@ fn kernel_apis_memory_recall_for_turn_asks_project_and_global_cheaply_and_keeps_
             "query": "how do I run the tests", "tags": ["ultron:project:p1", "ultron:global:home"],
             "tags_match": "any_strict", "types": ["observation", "world", "experience"],
             "prefer_observations": true, "budget": "low", "max_tokens": 1024, "include": {"entities": null},
-            "trace": false, "min_scores": {"final": 0.05},
+            "trace": false, "min_scores": {"final": 0.005},
         })
     );
     // A session-scoped or untagged result is not this turn's; the limit cuts the rest.
@@ -296,11 +305,22 @@ fn kernel_apis_memory_invalidate_retires_only_this_sessions_facts() {
         Err("Memory operation did not complete (UNKNOWN_MEMORY)".into()),
         "another project's fact is not this session's to retire"
     );
+    assert_eq!(
+        request(
+            &memory,
+            "memory.invalidate",
+            json!({"id": "o1", "reason": "Tests moved to nextest."})
+        ),
+        Ok(json!({"id": "o1", "state": "observation", "sources": [
+            {"id": "f1", "text": "Tests run under nice."}, {"id": "f2", "text": "Commits have no trailers."},
+        ]})),
+        "an observation names its live source facts instead of retiring all of them"
+    );
     let secret = format!("leaked {}={}", "api_key", ["sk", "fake", "0123456789"].join("-"));
     request(&memory, "memory.invalidate", json!({"id": "f1", "reason": secret})).unwrap();
     let calls = calls.lock().unwrap();
     let curated: Vec<&Value> = calls.iter().filter(|call| call[0] == "curate").collect();
-    assert_eq!(curated.len(), 2, "{calls:?}");
+    assert_eq!(curated.len(), 2, "an observation is never curated: {calls:?}");
     assert_eq!(
         curated[1][2],
         json!({"state": "invalidated"}),

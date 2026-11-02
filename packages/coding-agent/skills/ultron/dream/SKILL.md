@@ -56,7 +56,8 @@ At most five new memories and one new code skill per night. Fewer is normal; non
   situation=...)`. The key makes a later dream replace the record instead of piling up near-duplicates. `evidence`
   is a list of `{"ref": "<session file or fact id>", "quote": "<copied text, at most 300 bytes>"}`.
 - **Retire:** `await memory.invalidate(fact_id, reason)` for a fact the day's evidence shows is wrong, quoting the
-  evidence in the reason.
+  evidence in the reason. For an observation it retires nothing and returns `{"state": "observation", "sources"}`:
+  invalidate the wrong source facts and Hindsight rewrites the observation from the rest.
 - **Code skill:** only for a procedure done by hand in two or more sessions, small enough to test without the
   network: `await skills.propose_code(name, source, test_source, evidence)`. It activates only if its test passes;
   `skills.rollback(name, version)` undoes it.

@@ -10,7 +10,8 @@ class Memory:
     async def forget(self, memory_id): return await self._bridge.request('memory.forget', {'id': memory_id})
     async def get(self, memory_id): return await self._bridge.request('memory.get', {'id': memory_id})
     async def list(self): return await self._bridge.request('memory.list')
-    # Rust host only: reflect answers a question from memory; invalidate retires a wrong [fact <id>] a recall showed.
+    # Rust host only: reflect answers a question from memory; invalidate retires a wrong [fact <id>] a recall showed;
+    # for an observation it retires nothing and returns its source facts: invalidate the wrong ones.
     async def reflect(self, query, *, scope=None): return await self._bridge.request('memory.reflect', {'query': query} if scope is None else {'query': query, 'scope': scope})
     async def invalidate(self, fact_id, reason=None): return await self._bridge.request('memory.invalidate', {'id': fact_id} if reason is None else {'id': fact_id, 'reason': reason})
 
