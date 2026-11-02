@@ -1,6 +1,6 @@
 ### Bug fix
 
-**You own this task. Plan, review, verify.** Delegate the fix to a child, stay in the lead.
+**You own this task. Plan, review, verify.** Delegate when it pays (`SKILL.md` **Subagents and models**).
 
 Be scientific. Every shipped line traces to runtime evidence. Belt-and-suspenders that "might help" is a hypothesis,
 not a fix, and does not ship. When evidence refutes a hypothesis, revert what it motivated. The smallest change the
@@ -17,7 +17,7 @@ evidence justifies ships.
    the code runs. Don't guess. Keep the hypothesis table in `state["hypotheses"]`; for a long unattended hunt, see
    `playbooks/autonomous-run.md`. Confirm the surviving mechanism with runtime evidence before step 3. In code nobody
    here knows well, or a regression with no clear suspect, run this step by `../../ultron/debug-unfamiliar/SKILL.md`.
-3. Plan the fix. If it crosses a function boundary, `../architect/SKILL.md` first. Delegate the implementation with a
+3. Plan the fix. If it crosses a function boundary, `../architect/SKILL.md` first. Make the fix, or delegate it with a
    specific scope: `rlm.spawn(brief, name=..., worktree=True, model=state["models"]["code"])` (`hard` for subtle
    causes).
 4. Verify on the same surface. The original repro now passes. Inconclusive or wrong-surface is not a pass; flag it.

@@ -14,8 +14,8 @@ instead of measuring.
    5. Do it when they're not looking.
    6. Do it concurrently.
    7. Do it cheaper.
-3. Plan the fix from the trace. If it crosses a function boundary, `../architect/SKILL.md` first. Delegate the
-   implementation to a child (`worktree=True`, `model=state["models"]["code"]`). Review the diff. Capture a post-fix
+3. Plan the fix from the trace. If it crosses a function boundary, `../architect/SKILL.md` first. Make the change,
+   or delegate it to a child (`worktree=True`, `model=state["models"]["code"]`). Review the diff. Capture a post-fix
    trace. Verify each attempt before the next (`the sequence-verifiable-units principle (`../principle-sequence-verifiable-units/SKILL.md`)`).
 4. Parse and compare the artifacts in the REPL (load JSON into sqlite or pandas, diff). Inconclusive or wrong-surface
    is not a pass; flag it.

@@ -1,6 +1,6 @@
 ### Feature
 
-**You own the design. Plan, review, verify.** Delegate implementation; stay in the lead.
+**You own the design. Plan, review, verify.** Delegate when it pays (`SKILL.md` **Subagents and models**).
 
 1. `../how/SKILL.md` over the affected subsystem.
 2. `../architect/SKILL.md` for parallel design exploration.
@@ -11,15 +11,13 @@
    - **Shared mutable state.** Default to splitting the target (`the separate-before-serializing-shared-state principle (`../principle-separate-before-serializing-shared-state/SKILL.md`)`).
      Serialize only for real invariants.
    - **Smallest safe decomposition.** If one worker is best, say why.
-4. Delegate the code to a child: `rlm.spawn(brief, name=..., worktree=True, model=state["models"]["code"])`, or
-   `hard` for cross-cutting or subtle work. The brief names file paths, the data shape and its organizing structure
+4. Write the code, or delegate it to a child:
+   `rlm.spawn(brief, name=..., worktree=True, model=state["models"]["code"])`, or `hard` for cross-cutting or subtle work. The brief names file paths, the data shape and its organizing structure
    (`the model-the-domain principle (`../principle-model-the-domain/SKILL.md`)`: a state machine over scattered booleans, a table over branching, a typed model over
    repeated shape assumptions), chosen before the child writes logic, and success criteria. When the implementation
    admits several valid shapes (error handling, abstraction layer, test structure), delegate through
-   `../arena/SKILL.md` instead. Delegation is mandatory: the gain is review separation, not lines saved, and the
-   laziness protocol does not override it. A child without spawn depth satisfies it by owning the diff, reviewed by its
-   parent. Comments per **Comments** in `SKILL.md`. Surgical edits; re-ground upstream-derived files against their
-   source. Port shared-primitive improvements to every consumer and verify each. Commit liberally.
+   `../arena/SKILL.md` instead. Comments per **Comments** in `SKILL.md`. Surgical edits; re-ground upstream-derived
+   files against their source. Port shared-primitive improvements to every consumer and verify each. Commit liberally.
 5. Verify on the matching surface, through the project's verification skill when it has one. Inconclusive or
    wrong-surface is not a pass; flag it.
 6. Rebase into small, ordered commits; stack follow-ups (`the sequence-verifiable-units principle (`../principle-sequence-verifiable-units/SKILL.md`)`).

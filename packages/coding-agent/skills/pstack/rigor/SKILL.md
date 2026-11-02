@@ -19,7 +19,7 @@ Paths in this skill and its playbooks are relative to this skill's directory: `p
 `<this dir>/playbooks/bug-fix.md`, and another skill such as `../how/SKILL.md` sits next to this one. Read them with
 `await read(...)`. The principles are skills too (`../principle-<name>/SKILL.md`); read one in full before you claim to apply it.
 
-You are the lead. You plan, brief, review and verify. Children write most of the code; you own every line they write.
+You are the lead. You plan, review and verify, and you own every line that ships, whoever typed it.
 
 ## Non-negotiables
 
@@ -149,6 +149,11 @@ run that should outlive your turns, see
 real judgment. Decline or push back when it is true. Candor over agreement.
 
 ## Subagents and models
+
+**Whether to delegate is your call.** A child earns its cost when the work is independent and multi-step, when a
+separate reviewer catches what the author misses, or when parallel attempts beat one. A small or tightly coupled
+change you make yourself. When the user asks for a swarm, an arena, a race or subagents, use it: that is not a
+judgment call. Playbook steps that say "delegate" describe how to delegate when you do.
 
 Spawn for independent multi-step work, never to read or classify files: narrow with `bash("rg ...")`, `rlm.load`
 handles and `rlm.map` frames. A child editing files gets `worktree=True`; bring its work back with `rlm.merge`.

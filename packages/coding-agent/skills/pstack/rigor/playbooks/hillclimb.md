@@ -1,6 +1,6 @@
 ### Hillclimb
 
-**You own the metric and the experiment's integrity. Supervise and review; delegate the attempts.** For sustained,
+**You own the metric and the experiment's integrity. Supervise and review every attempt.** For sustained,
 iterative improvement of one measurable thing against a target. A one-off fix is Bug fix or Perf issue.
 
 Core discipline: one change, one measurement, keep or revert. Never stack untested changes, never claim a win from
@@ -22,8 +22,8 @@ code inspection (`the prove-it-works principle (`../principle-prove-it-works/SKI
    memoizing something". For perf metrics, order hypotheses by the mantras in `playbooks/perf-issue.md` step 2
    (their order, not their stop rule).
 5. Loop, one hypothesis per iteration:
-   - A child makes the change with a tight scope (`worktree=True`, `model=state["models"]["code"]`). Review its diff
-     instead of typing it. Independent live hypotheses fan out to parallel children, each in its own worktree
+   - Make the change with a tight scope, or hand it to a child (`worktree=True`, `model=state["models"]["code"]`)
+     and review its diff. Independent live hypotheses fan out to parallel children, each in its own worktree
      (`the separate-before-serializing-shared-state principle (`../principle-separate-before-serializing-shared-state/SKILL.md`)`).
    - Measure before and after with the frozen harness; run the regression gate.
    - Accept only when the metric moves past noise and the gate stays green. Otherwise revert in full.

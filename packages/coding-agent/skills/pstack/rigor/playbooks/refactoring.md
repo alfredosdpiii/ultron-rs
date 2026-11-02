@@ -18,7 +18,7 @@ to `../figure-it-out/SKILL.md`; this playbook is the focused-to-medium change.
    (`the laziness-protocol principle (`../principle-laziness-protocol/SKILL.md`)`). A speculative cleanup gets reverted.
 5. Move in small behavior-preserving steps, each keeping the pin green. For API reshapes, migrate every caller and
    delete the old API in the same wave (`the migrate-callers-then-delete-legacy-apis principle (`../principle-migrate-callers-then-delete-legacy-apis/SKILL.md`)`); no shims, no parallel
-   paths. Spot-check every rename with `rg`: renames miss strings, prose and back-references. Delegate mechanical edits
+   paths. Spot-check every rename with `rg`: renames miss strings, prose and back-references. Mechanical edits can go
    to a child (`worktree=True`, `model=state["models"]["code"]`) with file paths, the names moved and the behavior
    to hold. A rename across many files is a codemod you write and rerun (`the build-the-lever principle (`../principle-build-the-lever/SKILL.md`)`).
 6. Prove behavior is unchanged on the real artifact (`the prove-it-works principle (`../principle-prove-it-works/SKILL.md`)`). For larger reshapes, an equivalence
