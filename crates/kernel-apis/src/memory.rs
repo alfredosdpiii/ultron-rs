@@ -1254,6 +1254,7 @@ impl MemoryService {
             "query": query, "tags": tags, "tags_match": "any_strict",
             "types": ["observation", "world", "experience"], "prefer_observations": true,
             "budget": "low", "max_tokens": 1024, "include": {"entities": null}, "trace": false,
+            "min_scores": {"final": RECALL_MIN_SCORE},
         });
         let response = self
             .backend
@@ -1753,8 +1754,9 @@ impl MemoryService {
                 return self.update(&id, vec![("state", "stored".into()), ("operationIds", json!([]))]);
             }
             let response_id = response["operation_id"].as_str();
+            // Hindsight sends `operation_ids: null` for a single-group retain.
             let ids: Vec<Value> = match response.get("operation_ids") {
-                None => response_id.map(|id| vec![Value::from(id)]).unwrap_or_default(),
+                None | Some(Value::Null) => response_id.map(|id| vec![Value::from(id)]).unwrap_or_default(),
                 Some(Value::Array(ids)) => ids.clone(),
                 Some(_) => Vec::new(),
             };
@@ -1969,6 +1971,11 @@ fn evidence_schema(value: Option<&Value>) -> bool {
 const SCOPES: &[&str] = &["session", "project", "global"];
 
 /// What a project's brief answers (see [`MemoryService::project_digest`]).
+/// The final-score floor of a turn's recall: Hindsight returns its best matches however weak. Measured on a real
+/// bank: an unrelated message ("ok thanks") topped out at 0.016, relevant hits started near 0.05.
+// ponytail: one fixed floor; the reranker is not calibrated across queries, so revisit if relevant hits go missing.
+const RECALL_MIN_SCORE: f64 = 0.05;
+
 const DIGEST_QUERY: &str = "What should a coding agent know before working in this project? Its conventions, the \
     decisions made and why, pitfalls and their fixes, the commands that build, test and run it, and the user's \
     preferences. Leave out finished one-off tasks and progress notes.";

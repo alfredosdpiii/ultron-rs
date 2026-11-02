@@ -40,7 +40,12 @@ impl MemoryBackend for Bank {
     }
     fn retain(&self, request: &Value, _: &Signal) -> Result<Value, String> {
         self.retains.lock().unwrap().push(request.clone());
-        Ok(json!({"success": true, "async": false}))
+        // Hindsight's own shape: an async retain answers with its operation id and a null `operation_ids`.
+        Ok(if request["async"] == true {
+            json!({"success": true, "async": true, "operation_id": request["operation_id"], "operation_ids": null})
+        } else {
+            json!({"success": true, "async": false})
+        })
     }
     /// The document as its newest retain left it (its metadata, as Hindsight keeps it).
     fn get(&self, id: &str, _: &Signal) -> Result<Value, String> {
@@ -149,7 +154,7 @@ fn kernel_apis_memory_recall_for_turn_asks_project_and_global_cheaply_and_keeps_
             "query": "how do I run the tests", "tags": ["ultron:project:p1", "ultron:global:home"],
             "tags_match": "any_strict", "types": ["observation", "world", "experience"],
             "prefer_observations": true, "budget": "low", "max_tokens": 1024, "include": {"entities": null},
-            "trace": false,
+            "trace": false, "min_scores": {"final": 0.05},
         })
     );
     // A session-scoped or untagged result is not this turn's; the limit cuts the rest.
@@ -178,6 +183,8 @@ fn kernel_apis_memory_recall_for_turn_withholds_what_the_user_forgot() {
     )
     .unwrap();
     let memory_id = proposed["memoryId"].clone();
+    // An async retain stays `accepted` (BUSY to edits) until a read settles it from the operation receipts.
+    assert_eq!(call("memory.get", json!({"id": memory_id})).unwrap()["state"], "stored");
     assert_eq!(
         call("memory.forget", json!({"id": memory_id})).unwrap()["state"],
         "forgotten"
