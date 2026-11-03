@@ -347,7 +347,7 @@ fn kernel_apis_memory_project_digest_creates_the_model_once_then_reads_it() {
                 Some("create_mental_model"),
                 &json!("ultron-project-p1"),
                 &json!(["ultron:project:p1", "ultron:global:home"]),
-                &json!({"refresh_after_consolidation": true, "min_refresh_interval_seconds": 3600,
+                &json!({"refresh_after_consolidation": true, "min_refresh_interval_seconds": 3600, "exclude_mental_models": true,
                     "mode": "delta", "budget": "low", "tags_match": "any_strict"})
             )
         );
@@ -391,6 +391,11 @@ fn kernel_apis_memory_user_brief_reads_only_global_memories_and_is_created_once(
             "the user's brief reads only global memories: one project's rule must not become every project's"
         );
         assert!(created["source_query"].as_str().unwrap().contains("corrected"));
+        assert_eq!(
+            created["trigger"]["exclude_mental_models"],
+            json!(true),
+            "a brief built from other briefs keeps their stale lines"
+        );
     }
     *model.lock().unwrap() =
         json!({"id": "ultron-user-home", "content": "- Short answers.\n", "last_refreshed_at": null});

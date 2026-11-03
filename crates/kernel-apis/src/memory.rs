@@ -1537,6 +1537,8 @@ impl MemoryService {
                 "trigger": {
                     "refresh_after_consolidation": true, "min_refresh_interval_seconds": 3600, "mode": "delta",
                     "budget": "low", "tags_match": "any_strict",
+                    // From memories only: a brief that reads briefs keeps their stale lines after the facts go.
+                    "exclude_mental_models": true,
                 },
             });
             self.backend
