@@ -1498,15 +1498,16 @@ impl MemoryService {
         )
     }
 
-    /// The user's brief, like [`Self::project_digest`] but written from the memories of every project (a model with
-    /// no tags reads the whole bank): `ultron-user-<global identity>`, what the user prefers, corrects and asks for
-    /// again and again, which no single project's brief sees.
+    /// The user's brief, like [`Self::project_digest`] but written from the global memories only:
+    /// `ultron-user-<global identity>`, what the user prefers, corrects and asks for in every project. A project's
+    /// own rules stay out of it, so one repo's convention never reaches another as the user's.
     pub fn user_brief(&self, signal: &Signal) -> Result<Option<Value>> {
         let Some(identity) = self.identity("global") else {
             return Ok(None);
         };
+        let tags = self.tags("global").unwrap_or_default();
         let name = format!("Ultron user brief {identity}");
-        self.brief(&format!("ultron-user-{identity}"), &name, USER_QUERY, &[], signal)
+        self.brief(&format!("ultron-user-{identity}"), &name, USER_QUERY, &tags, signal)
     }
 
     /// The identity in the first tag of `scope` (`ultron:project:<identity>`), lowercase alphanumerics only.
@@ -1535,8 +1536,7 @@ impl MemoryService {
                 "tags": tags, "max_tokens": 1024,
                 "trigger": {
                     "refresh_after_consolidation": true, "min_refresh_interval_seconds": 3600, "mode": "delta",
-                    // No tags reads the whole bank; strict matching would read nothing.
-                    "budget": "low", "tags_match": if tags.is_empty() { "any" } else { "any_strict" },
+                    "budget": "low", "tags_match": "any_strict",
                 },
             });
             self.backend

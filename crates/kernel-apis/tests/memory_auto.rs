@@ -374,7 +374,7 @@ fn kernel_apis_memory_project_digest_creates_the_model_once_then_reads_it() {
 }
 
 #[test]
-fn kernel_apis_memory_user_brief_reads_every_project_and_is_created_once() {
+fn kernel_apis_memory_user_brief_reads_only_global_memories_and_is_created_once() {
     let (memory, _, _, _, model, calls) = service_full(json!([]));
     assert_eq!(memory.user_brief(&Signal::new()), Ok(None));
     {
@@ -383,8 +383,12 @@ fn kernel_apis_memory_user_brief_reads_every_project_and_is_created_once() {
         let created = &calls[1][2];
         assert_eq!(
             (&created["id"], &created["tags"], &created["trigger"]["tags_match"]),
-            (&json!("ultron-user-home"), &json!([]), &json!("any")),
-            "no tags and loose matching: the user's brief reads every project's memories"
+            (
+                &json!("ultron-user-home"),
+                &json!(["ultron:global:home"]),
+                &json!("any_strict")
+            ),
+            "the user's brief reads only global memories: one project's rule must not become every project's"
         );
         assert!(created["source_query"].as_str().unwrap().contains("corrected"));
     }
