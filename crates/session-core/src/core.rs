@@ -2171,12 +2171,8 @@ impl Core {
             Op::Persona { args } => self.persona_command("persona", &args).map(Some),
             Op::KeepGoing { args } => self.persona_command("keepgoing", &args).map(Some),
             Op::RestoreFiles { entry_id, checkpoint } => self.restore_files(entry_id, checkpoint).map(Some),
-            Op::Agents => self
-                .lane
-                .stack
-                .delegation
-                .handle("rlm.list_subagents", json!({}), LANE)
-                .map(Some),
+            // `rlm.list_subagents` with each subagent's name, model and times, for the agent hub and the RLM views.
+            Op::Agents => self.lane.stack.delegation.subagent_views(LANE).map(Some),
             Op::KillAgent { id } => self
                 .lane
                 .stack
@@ -2193,6 +2189,10 @@ impl Core {
             Op::Commands => Ok(Some(Value::Array(self.lane.stack.commands()))),
             // Root-owned work whose completion may still re-invoke the root, asked through the inspector.
             Op::Inspect { request, .. } if request == "async.pending" => Ok(Some(self.async_pending())),
+            // The root lane's detached cells (`rlm.cells` lists them to a cell, without their times).
+            Op::Inspect { request, .. } if request == "rlm.detached" => {
+                Ok(Some(json!({ "cells": self.lane.stack.lanes.detached_cells(LANE) })))
+            }
             // The worker answers the pool itself (session-worker.ts `inspect`): kernels and guard statistics.
             Op::Inspect { request, .. } if request == "rlm.pool" => Ok(Some(self.lane.stack.pool_stats())),
             Op::Inspect { request, payload } => {

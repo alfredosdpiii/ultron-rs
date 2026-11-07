@@ -94,6 +94,9 @@ impl Delegation {
                     outcome,
                     spawn_depth: 0,
                     lane_name,
+                    // A run kept for a retry hop still names its child and model.
+                    name: run.as_ref().map(|run| run.name.clone()),
+                    model: run.as_ref().and_then(|run| run.model.clone()),
                     started_at: None,
                     ended_at: None,
                     verdict: None,

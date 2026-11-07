@@ -610,6 +610,10 @@ pub struct App {
     rlm_poll: RlmPoll,
     /// The wave summary showed at the last poll (it polls at the visible rate while it does).
     wave_active: bool,
+    /// The root lane's detached cells (`rlm.detached`), for the running-work panel.
+    detached_cells: Vec<crate::rlm::DetachedCell>,
+    /// The running-work panel had something to show at the last poll (it polls at the visible rate while it does).
+    work_active: bool,
     /// The running operation's start, ms since the epoch (the pane's auto-open counts runs from it).
     operation_started_ms: Option<f64>,
     /// The external editor edits the editor dialog's text, not the main editor's.
@@ -928,6 +932,8 @@ impl App {
             rlm_pane_auto: true,
             rlm_poll: RlmPoll::default(),
             wave_active: false,
+            detached_cells: Vec::new(),
+            work_active: false,
             operation_started_ms: None,
             edit_dialog: false,
             api_login: None,
@@ -1905,6 +1911,9 @@ impl App {
                 self.operation = Some(id);
                 self.aborting = false;
                 self.turn_started = Some(Instant::now());
+                // A woken turn may start with work's ends (`cell_done`, `child_done`): the running-work panel
+                // reads them on the next pass.
+                self.rlm_poll.last = None;
                 self.chat.set_working(true);
             }
             LaneEvent::Streaming(message) => self.chat.set_streaming(&message),
@@ -1929,6 +1938,8 @@ impl App {
                 }
                 self.turn_ended(error.is_some());
                 self.operation = None;
+                // What the turn left running in the background shows on the next pass.
+                self.rlm_poll.last = None;
                 self.chat.set_working(false);
                 self.chat.set_queues(Vec::new());
                 self.status = error.map(|e| format!("Operation failed: {e}")).unwrap_or_default();
@@ -2007,6 +2018,7 @@ impl App {
                 self.auto_open_rlm_pane();
                 // The wave summary is live: poll at the visible rate while it shows.
                 self.wave_active = !self.wave_summary(200).is_empty();
+                self.update_work_active();
             }
             LaneEvent::RlmInspected { tag, result } => self.rlm_inspected(&tag, result),
             LaneEvent::ShareLoader(true) => {
@@ -4119,6 +4131,8 @@ impl App {
         self.client.rlm_inspect("context", "ctx.state", serde_json::json!({}));
         self.client
             .rlm_inspect("instances", "instances.list", serde_json::json!({}));
+        self.client
+            .rlm_inspect("detached", "rlm.detached", serde_json::json!({}));
     }
 
     /// `#scheduleRlmPolling`: poll every second while an RLM view or the live wave summary shows, else every five
@@ -4127,7 +4141,8 @@ impl App {
         let live = self.rlm_visible
             || matches!(self.panel, Some(Panel::RlmFocus(_)))
             || self.rlm_pane_open
-            || self.wave_active;
+            || self.wave_active
+            || self.work_active;
         let interval = if live { RLM_POLL_VISIBLE } else { RLM_POLL_HIDDEN };
         let now = self.now();
         if self.session_id.is_none()
@@ -4171,6 +4186,7 @@ impl App {
         self.assess_progress();
         self.auto_open_rlm_pane();
         self.wave_active = !self.wave_summary(200).is_empty();
+        self.update_work_active();
     }
 
     /// "Progress assessments are cheap host reads; only fetch them for a few running tasks while visible": while the
@@ -4261,8 +4277,43 @@ impl App {
             ("pool", result) => self.rlm_poll.pool = result.ok().and_then(|v| parse_pool(&v)),
             ("context", result) => self.rlm_poll.context = result.ok().and_then(|v| parse_context_state(&v)),
             ("instances", Ok(value)) => self.rlm_poll.retained = parse_retained(&value),
+            // A worker without `rlm.detached` lists no detached cells.
+            ("detached", result) => {
+                self.detached_cells = result
+                    .ok()
+                    .map(|v| crate::rlm::parse_detached_cells(&v))
+                    .unwrap_or_default();
+                self.update_work_active();
+            }
             _ => {}
         }
+    }
+
+    /// Whether the running-work panel has something to show (it then polls at the visible rate).
+    fn update_work_active(&mut self) {
+        let status = self.rlm_status();
+        self.work_active = crate::rlm::running::any_running_work(&status.tasks, &status.jobs, &self.detached_cells);
+    }
+
+    /// The running-work panel under the transcript, one column in: the session's running shell jobs, subagents and
+    /// tasks, and detached cells. Hidden while the docked RLM panel or the graph shows (they list the same work).
+    fn running_work_lines(&self, snapshot: Option<&crate::rlm::RlmSnapshot>, width: usize) -> Vec<String> {
+        let Some(snapshot) = snapshot else { return Vec::new() };
+        if self.rlm_visible || matches!(self.panel, Some(Panel::RlmFocus(_))) {
+            return Vec::new();
+        }
+        let work = crate::rlm::running_work(snapshot, &self.detached_cells);
+        let style = crate::rlm::RlmStyle::themed(Rc::clone(&self.theme));
+        crate::rlm::render_running_work(
+            &work,
+            width.saturating_sub(2).max(1),
+            &style,
+            snapshot.now,
+            crate::rlm::running::RUNNING_WORK_MAX_LINES,
+        )
+        .into_iter()
+        .map(|line| format!(" {line}"))
+        .collect()
     }
 
     /// `#toggleRlm`: the docked RLM panel under the status.
@@ -5186,7 +5237,8 @@ impl App {
         self.header.render(&self.keys, width)
     }
 
-    /// The dock under the transcript: pending messages, status, editor (or selector) and footer.
+    /// The dock under the transcript: the running-work panel, pending messages, status, editor (or selector) and
+    /// footer.
     fn dock(&mut self, width: usize) -> Vec<Vec<String>> {
         let mut pending = self.chat.render_pending(width);
         if let Some(bash) = self.bash.as_mut() {
@@ -5212,8 +5264,14 @@ impl App {
                     .map(|l| format!(" {l}")),
             );
         }
+        let running = self.running_work_lines(snapshot.as_ref(), width);
         status.extend(self.chat.render_status(width));
-        status.extend(self.wave_summary(width));
+        let mut waves = self.wave_summary(width);
+        // The running-work panel lists what runs: the wave summary keeps its progress line.
+        if !running.is_empty() {
+            waves.truncate(1);
+        }
+        status.extend(waves);
         // `#renderRuntimeLine`: one RLM line under the footer while the panel and the graph are hidden.
         let runtime_line = match &snapshot {
             Some(snapshot) if !self.rlm_visible && !rlm_focus => {
@@ -5303,7 +5361,8 @@ impl App {
                 self.editor.render(width)
             }
         };
-        let mut parts = vec![pending, status];
+        // The running-work panel first, right under the transcript (no rows while nothing runs).
+        let mut parts = vec![running, pending, status];
         if let Some(line) = self.status_line(width) {
             parts.push(vec![line]);
         }

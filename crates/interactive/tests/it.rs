@@ -67,6 +67,8 @@ mod retry;
 mod rlm_highlight;
 #[path = "rlm_views.rs"]
 mod rlm_views;
+#[path = "running_work.rs"]
+mod running_work;
 #[path = "split_images.rs"]
 mod split_images;
 #[path = "startup_env_fallbacks.rs"]

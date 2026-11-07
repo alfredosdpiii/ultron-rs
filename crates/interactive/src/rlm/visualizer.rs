@@ -47,6 +47,8 @@ pub struct RlmTask {
     pub fetch: Option<String>,
     pub workflow: Option<RlmWorkflowMembership>,
     pub model: Option<String>,
+    /// The `name` an `rlm.spawn` child was given (the worker's subagent listing).
+    pub name: Option<String>,
     pub turns: Option<f64>,
     pub tool_call_count: Option<f64>,
     pub last_text: Option<String>,
@@ -606,6 +608,7 @@ pub fn parse_agents_status(value: &Value) -> AgentsStatus {
             input: s(t, "input"),
             fetch: s(t, "fetch"),
             model: s(t, "model"),
+            name: s(t, "name"),
             last_text: s(t, "lastText"),
             worktree: s(t, "worktree"),
             started_at: n(t, "startedAt"),

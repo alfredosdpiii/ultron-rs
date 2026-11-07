@@ -1,12 +1,13 @@
 //! The client TUI's live RLM views (experimental/rlm-visualizer.ts, rlm-graph.ts, rlm-focus.ts, rlm-pane.ts) as
 //! pure model and render code: [`RlmSnapshot`] from the worker's inspections and the lane transcript, the run graph
 //! with its one-line footer summary, docked panel and full-screen focus view, and the RLM pane of dependency waves
-//! with the live wave summary.
+//! with the live wave summary, and the running-work panel between the transcript and the editor.
 
 pub mod focus;
 pub mod graph;
 pub mod highlight;
 pub mod pane;
+pub mod running;
 pub mod visualizer;
 
 pub use focus::{FocusAction, FocusState, RlmGraphFocus, apply_focus_action, focus_hints, render_focus_view};
@@ -14,6 +15,7 @@ pub use graph::{
     GraphKind, GraphNode, GraphRow, GraphStatus, build_rlm_graph, layout_graph, render_rlm_dock, render_rlm_footer,
 };
 pub use pane::{DagAction, DagRun, PaneEvent, RlmPane, RlmPaneState, build_dag_runs, render_wave_summary};
+pub use running::{DetachedCell, RunningWork, parse_detached_cells, render_running_work, running_work};
 pub use visualizer::{RlmClock, RlmSnapshot, RlmStyle};
 
 /// JavaScript `String(n)` for the numbers these views print.

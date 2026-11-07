@@ -10,7 +10,7 @@ use serde_json::{Map, Value};
 /// Read-only host requests the inspector may issue (`INSPECTION_REQUESTS` of session-control.ts, without
 /// `grants.list`: there is no grant system). None of them
 /// runs a search or starts work.
-pub const INSPECTION_REQUESTS: [&str; 24] = [
+pub const INSPECTION_REQUESTS: [&str; 25] = [
     "agents.status",
     "agents.list",
     "agents.inspect",
@@ -35,6 +35,9 @@ pub const INSPECTION_REQUESTS: [&str; 24] = [
     "rlm.frames",
     "ctx.state",
     "async.pending",
+    // The root lane's detached cells with their start times, for the TUI's running-work panel (Rust-only; the
+    // worker answers it itself).
+    "rlm.detached",
     "usage.report",
 ];
 

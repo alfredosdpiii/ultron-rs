@@ -167,6 +167,9 @@ struct Task {
     outcome: Option<Result<Value, String>>,
     spawn_depth: u32,
     lane_name: Option<String>,
+    /// The `name` and `model` it was spawned with (for the TUI's views: [`Delegation::subagent_views`]).
+    name: Option<String>,
+    model: Option<String>,
     started_at: Option<f64>,
     ended_at: Option<f64>,
     verdict: Option<Value>,
@@ -1335,6 +1338,8 @@ impl Delegation {
                 outcome: None,
                 spawn_depth: child_depth as u32,
                 lane_name: None,
+                name: Some(name.clone()),
+                model: model.clone(),
                 started_at: Some((self.inner.now)()),
                 ended_at: None,
                 verdict: None,
@@ -2082,6 +2087,31 @@ impl Delegation {
             .map(|(id, outcome)| outcome.map(|result| json!({ "id": id, "result": result })))
             .collect::<Result<Vec<_>, _>>()?;
         Ok(json!({ "results": results }))
+    }
+
+    /// `rlm.list_subagents` of `lane` with what the TUI's views show besides (never given to a cell): each
+    /// subagent's spawn `name` and `model`, and its `startedAt` / `endedAt` (ms since the epoch) when known.
+    pub fn subagent_views(&self, lane: &str) -> Result<Value, String> {
+        let mut listed = self.handle("rlm.list_subagents", json!({}), lane)?;
+        let state = lock(&self.inner.state);
+        for view in listed["subagents"].as_array_mut().into_iter().flatten() {
+            let Some(task) = view["id"].as_str().and_then(|id| state.task(id)) else {
+                continue;
+            };
+            if let Some(name) = &task.name {
+                view["name"] = json!(name);
+            }
+            if let Some(model) = &task.model {
+                view["model"] = json!(model);
+            }
+            // A host without a clock (`now` 0) knows no times.
+            for (key, at) in [("startedAt", task.started_at), ("endedAt", task.ended_at)] {
+                if let Some(at) = at.filter(|at| *at > 0.0) {
+                    view[key] = json!(at);
+                }
+            }
+        }
+        Ok(listed)
     }
 
     /// Unfinished children started from `lane` ("main" for the root), in admission order: what a turn scheduler

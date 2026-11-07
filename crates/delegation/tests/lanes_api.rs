@@ -7,6 +7,7 @@ use delegation::host::{ChildRunner, CollectMode, Delegation, DelegationOptions, 
 use delegation::lanes::{CellOutcome, Lanes, LanesOptions};
 use delegation::task_store::MemoryStore;
 use kernel::{ContinuityPolicy, ExecutionResult, Kernel, KernelOptions, Status};
+use serde_json::json;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::Receiver;
 use std::sync::{Arc, Condvar, Mutex};
@@ -55,6 +56,7 @@ impl Gates {
 struct Root {
     dir: tempfile::TempDir,
     events: Receiver<DetachedEnd>,
+    host: Delegation,
     lanes: Lanes,
     gates: Gates,
 }
@@ -78,6 +80,7 @@ fn root(collect: CollectMode, max_lanes: usize, continuity: bool) -> Root {
     });
     let cwd = dir.path().to_path_buf();
     let private = dir.path().join("agent");
+    let handlers = host.clone();
     let (lanes, _ends) = Lanes::new(LanesOptions {
         create: Arc::new(move |lane| {
             let mut options = KernelOptions::new(cwd.clone(), runtime());
@@ -97,7 +100,7 @@ fn root(collect: CollectMode, max_lanes: usize, continuity: bool) -> Root {
             );
             Kernel::new(options, null).map_err(|e| e.message().to_string())
         }),
-        handlers: Arc::new(move |lane, signal, park| Arc::new(host.cell_handler(lane, signal, park))),
+        handlers: Arc::new(move |lane, signal, park| Arc::new(handlers.cell_handler(lane, signal, park))),
         max_lanes,
         // No test step can outlast it, so "ended without the grace period" holds however slow the machine.
         cancel_grace: HANG_GUARD,
@@ -108,6 +111,7 @@ fn root(collect: CollectMode, max_lanes: usize, continuity: bool) -> Root {
     Root {
         dir,
         events,
+        host,
         lanes,
         gates,
     }
@@ -237,6 +241,53 @@ fn delegation_rlm_cell_wrappers_list_and_cancel_a_parked_cell() {
         "[('cell-8', 'side')]"
     );
     assert_eq!(value(&r.lanes, "main", "x"), "7");
+    r.gates.open(0);
+    r.events.recv_timeout(HANG_GUARD).unwrap();
+    r.lanes.close();
+}
+
+/// What the TUI's running-work panel reads besides the cell API: the root lane's detached cells with their start
+/// (`Lanes::detached_cells`) and the subagents with the name and model they were spawned with
+/// (`Delegation::subagent_views`); `rlm.cells` and `rlm.list_subagents` stay as a cell sees them.
+#[test]
+fn delegation_running_work_views_list_detached_cells_and_named_subagents() {
+    let r = root(CollectMode::Wait, 2, false);
+    ok(
+        &r.lanes,
+        "main",
+        "h = await rlm.spawn('brief', name='reviewer', model='anthropic/claude-sonnet-4-5')",
+    );
+    let before = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_millis() as u64;
+    let cell = parked_cell(&r.lanes, "main", "await rlm.collect([h])");
+    let cells = r.lanes.detached_cells("main");
+    assert_eq!(cells.len(), 1, "{cells:?}");
+    assert_eq!(
+        (&cells[0]["cell"], &cells[0]["lane"], &cells[0]["parked"]),
+        (&json!(cell), &json!("main"), &json!(true))
+    );
+    let started = cells[0]["startedAt"].as_u64().unwrap();
+    assert!(
+        started + 1000 >= before && started <= before + HANG_GUARD.as_millis() as u64,
+        "{started} {before}"
+    );
+    assert!(r.lanes.detached_cells("side").is_empty());
+    let views = r.host.subagent_views("main").unwrap();
+    let view = &views["subagents"][0];
+    assert_eq!(
+        (&view["name"], &view["model"], &view["state"]),
+        (
+            &json!("reviewer"),
+            &json!("anthropic/claude-sonnet-4-5"),
+            &json!("running")
+        )
+    );
+    // This host has no clock: no times.
+    assert!(view.get("startedAt").is_none(), "{view}");
+    let listed = r.host.handle("rlm.list_subagents", json!({}), "main").unwrap();
+    assert!(listed["subagents"][0].get("name").is_none(), "{listed}");
     r.gates.open(0);
     r.events.recv_timeout(HANG_GUARD).unwrap();
     r.lanes.close();

@@ -169,6 +169,19 @@ struct State {
     closed: bool,
 }
 
+impl State {
+    /// The detached cells of `lane` (its own or its side lanes') still running.
+    fn detached_of<'a>(&'a self, lane: &'a str) -> impl Iterator<Item = (&'a String, &'a Cell)> + 'a {
+        self.cells
+            .iter()
+            .filter(|(_, cell)| cell.detached && cell.outcome.is_none())
+            .filter(move |(_, cell)| {
+                let owner = self.lanes.get(&cell.lane).and_then(|l| l.serves.as_deref());
+                owner.unwrap_or(&cell.lane) == lane
+            })
+    }
+}
+
 struct Inner {
     state: Mutex<State>,
     changed: Condvar,
@@ -479,15 +492,31 @@ impl Lanes {
     /// [`CellEnd`] of `lane`.
     pub fn detached_running(&self, lane: &str) -> usize {
         let state = lock(&self.inner.state);
-        state
-            .cells
-            .values()
-            .filter(|cell| cell.detached && cell.outcome.is_none())
-            .filter(|cell| {
-                let owner = state.lanes.get(&cell.lane).and_then(|l| l.serves.as_deref());
-                owner.unwrap_or(&cell.lane) == lane
+        state.detached_of(lane).count()
+    }
+
+    /// The detached cells [`Lanes::detached_running`] counts, oldest first, for the TUI's running-work views
+    /// (never given to a cell): `{cell, lane, parked, startedAt}` (`startedAt` in ms since the epoch), and
+    /// `cancelling` for one being cancelled.
+    pub fn detached_cells(&self, lane: &str) -> Vec<Value> {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.as_millis());
+        let state = lock(&self.inner.state);
+        let mut cells: Vec<(&String, &Cell)> = state.detached_of(lane).collect();
+        cells.sort_by_key(|(_, cell)| cell.started);
+        cells
+            .into_iter()
+            .map(|(id, cell)| {
+                let started = now.saturating_sub(cell.started.elapsed().as_millis());
+                let mut view =
+                    json!({ "cell": id, "lane": cell.lane, "parked": cell.parked > 0, "startedAt": started as u64 });
+                if cell.cancelled {
+                    view["cancelling"] = json!(true);
+                }
+                view
             })
-            .count()
+            .collect()
     }
 
     /// The live kernel of an open lane (none while it is evicted).

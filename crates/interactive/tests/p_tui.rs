@@ -703,6 +703,7 @@ fn interactive_p_tui_rlm_polls_inspections_on_the_clock() {
             "inspect pool rlm.pool {}",
             "inspect context ctx.state {}",
             "inspect instances instances.list {}",
+            "inspect detached rlm.detached {}",
         ]
     );
     h.clear();
@@ -715,6 +716,80 @@ fn interactive_p_tui_rlm_polls_inspections_on_the_clock() {
     h.clear();
     h.advance(1000);
     assert!(h.app.poll_rlm());
+}
+
+/// The running-work panel: the session's running shell jobs, subagents and detached cells, one line each right
+/// under the transcript, polled every second while it shows; no rows while nothing runs, hidden while the docked RLM
+/// panel shows.
+#[test]
+fn interactive_p_tui_running_work_panel_lists_background_work_under_the_transcript() {
+    let mut h = harness();
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_millis() as f64;
+    assert!(h.app.poll_rlm());
+    let idle = h.screen_at(100, 40);
+    assert!(!idle.contains("● job") && !idle.contains("● cell"), "{idle}");
+    h.app.apply(LaneEvent::RlmInspected {
+        tag: "agents".into(),
+        result: Ok(json!({"tasks": [], "jobs": [
+            {"id": "job-1a2b3c4d", "status": "running", "command": "npm run build", "startedAt": now - 3000.0},
+            {"id": "job-00000000", "status": "completed", "command": "true", "startedAt": now - 9000.0},
+        ]})),
+    });
+    h.app.apply(LaneEvent::RlmInspected {
+        tag: "detached".into(),
+        result: Ok(json!({"cells": [{"cell": "cell-4", "lane": "main", "parked": false, "startedAt": now}]})),
+    });
+    h.app.apply(LaneEvent::RlmStatus(json!({"subagents": [
+        {"id": "ultron-task-abcdef123456", "definition": "rlm-child@1", "state": "running", "name": "reviewer",
+         "model": "anthropic/claude-sonnet-4-5", "startedAt": now - 1000.0},
+    ]})));
+    let screen = h.screen_at(100, 40);
+    let rows: Vec<&str> = screen.lines().collect();
+    let agent = rows
+        .iter()
+        .position(|r| r.starts_with(" ● agent abcdef12  reviewer · anthropic/claude-sonnet-4-5 · running"))
+        .unwrap_or_else(|| panic!("{screen}"));
+    assert!(
+        rows[agent + 1].starts_with(" ● job   job-1a2b3c4d  npm run build"),
+        "{screen}"
+    );
+    assert!(rows[agent + 2].starts_with(" ● cell  cell-4  detached"), "{screen}");
+    assert!(!screen.contains("job-00000000"), "{screen}");
+    // The wave summary keeps its progress line; the panel lists what runs.
+    assert!(
+        screen.contains("running wave 1/1") && !screen.contains("category:job"),
+        "{screen}"
+    );
+    // Under the transcript, above the editor.
+    assert!(rows[agent + 3..].iter().any(|r| r.starts_with('─')), "{screen}");
+    // Live: polled every second.
+    h.clear();
+    h.advance(1000);
+    assert!(h.app.poll_rlm());
+    // The docked RLM panel lists the same work: the panel steps aside.
+    h.app.handle_input("\x12");
+    assert!(!h.screen_at(100, 40).contains("● cell  cell-4"));
+    h.app.handle_input("\x12");
+    // Everything ended: no rows, and the poll slows down again.
+    h.app.apply(LaneEvent::RlmInspected {
+        tag: "agents".into(),
+        result: Ok(json!({"tasks": [], "jobs": []})),
+    });
+    h.app.apply(LaneEvent::RlmInspected {
+        tag: "detached".into(),
+        result: Err("Not an inspection request: rlm.detached".into()),
+    });
+    h.app.apply(LaneEvent::RlmStatus(json!({"subagents": []})));
+    let ended = h.screen_at(100, 40);
+    assert!(
+        !ended.contains("● agent") && !ended.contains("● job") && !ended.contains("● cell"),
+        "{ended}"
+    );
+    h.advance(1000);
+    assert!(!h.app.poll_rlm());
 }
 
 /// Older workers reject `agents.status {graph: true}` (client-tui.ts `#graphListing`): the TUI asks for the plain

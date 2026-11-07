@@ -89,6 +89,12 @@ fn session_core_agent_hub_steers_a_running_subagent_and_reads_its_transcript() {
     let listed = subagents(&w);
     assert_eq!(listed.len(), 1, "{listed:?}");
     assert_eq!(listed[0]["state"], "running");
+    // What the TUI's views show besides the cell API's listing: the spawn name and the start (ms since the epoch).
+    assert_eq!(listed[0]["name"], "auditor");
+    assert!(
+        listed[0]["startedAt"].as_f64().is_some_and(|at| at > 1e12),
+        "{listed:?}"
+    );
     let id = listed[0]["id"].as_str().unwrap().to_string();
 
     let sent = w
@@ -119,6 +125,12 @@ fn session_core_agent_hub_steers_a_running_subagent_and_reads_its_transcript() {
         "{steered}"
     );
     wait_until("the child ends", || subagents(&w)[0]["state"] == "completed");
+    // The running-work panel's detached cells: none left.
+    let detached = Op::Inspect {
+        request: "rlm.detached".into(),
+        payload: json!({}),
+    };
+    assert_eq!(w.call(detached).unwrap().unwrap(), json!({"cells": []}));
     // Its result is its answer after the steering, as an agent loop takes steering before it ends.
     assert_eq!(subagents(&w)[0]["result"]["value"], "child steered");
 
