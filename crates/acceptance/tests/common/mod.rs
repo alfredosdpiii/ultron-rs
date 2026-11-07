@@ -381,6 +381,9 @@ fn base_env(install: &Install, env: &[(&str, &str)]) -> Vec<(String, String)> {
         ("PI_OFFLINE".into(), "1".into()),
         ("NO_COLOR".into(), "1".into()),
         ("TZ".into(), "UTC".into()),
+        // A scripted root cell holds its tool call until it ends, however slow the machine: these tests read its
+        // result in the turn. a56_cell_yield.rs sets `ULTRON_CELL_YIELD_AFTER` itself (`env` wins).
+        ("ULTRON_CELL_YIELD_AFTER".into(), "off".into()),
     ];
     if let Ok(python) = std::env::var("ULTRON_PYTHON") {
         out.push(("ULTRON_PYTHON".into(), python));

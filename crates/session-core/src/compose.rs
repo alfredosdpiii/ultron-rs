@@ -103,6 +103,9 @@ pub struct Config {
     pub skills_dir: PathBuf,
     pub mask_secrets: Option<String>,
     pub output_bytes: Option<String>,
+    /// `ULTRON_CELL_YIELD_AFTER`: how long a woken root's cell may hold its tool call before it continues in the
+    /// background (crate::lane `cell_yield_after`).
+    pub cell_yield_after: Option<String>,
     pub snapshot_key: Option<Vec<u8>>,
     pub spawn_depth: u32,
     /// `ULTRON_ASYNC_EVENTS` is not off: completions of detached work continue the run.
@@ -223,6 +226,7 @@ impl Config {
             skills_dir,
             mask_secrets: (env.var)("ULTRON_MASK_SECRETS"),
             output_bytes: (env.var)("ULTRON_RLM_OUTPUT_BYTES"),
+            cell_yield_after: (env.var)("ULTRON_CELL_YIELD_AFTER"),
             spawn_depth: delegation::host::spawn_depth_limit((env.var)("ULTRON_SPAWN_DEPTH").as_deref()),
             async_events: (env.var)("ULTRON_ASYNC_EVENTS")
                 .is_none_or(|v| !matches!(v.trim().to_lowercase().as_str(), "off" | "0" | "false" | "no")),

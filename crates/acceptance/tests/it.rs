@@ -129,6 +129,8 @@ mod a55_agent_classes_rpc;
 mod a56_async_cli;
 #[path = "a56_async_events.rs"]
 mod a56_async_events;
+#[path = "a56_cell_yield.rs"]
+mod a56_cell_yield;
 #[path = "a56_collapse_cli.rs"]
 mod a56_collapse_cli;
 #[path = "a56_hints.rs"]

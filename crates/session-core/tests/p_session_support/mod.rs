@@ -169,6 +169,9 @@ pub fn actor(script: Script, setup: Setup) -> Actor {
         ("ULTRON_PYTHON".into(), python()),
         ("PI_OFFLINE".into(), "1".into()),
         ("TZ".into(), "UTC".into()),
+        // A scripted root cell holds its tool call until it ends, however slow the machine: these tests read its
+        // result in the turn. A test of the yield sets `ULTRON_CELL_YIELD_AFTER` itself (`setup.vars` win).
+        ("ULTRON_CELL_YIELD_AFTER".into(), "off".into()),
     ];
     vars.extend(setup.vars.iter().map(|(k, v)| (k.to_string(), v.clone())));
     let env = session_core::RunEnv {

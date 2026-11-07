@@ -971,8 +971,30 @@ async fn until_aborted<T>(work: impl Future<Output = T>, signal: &AbortSignal) -
 }
 
 /// How long a cell may run before its tool call returns with the cell still running (detached). Cells that park
-/// on a host-side wait detach at once; others run as long as they need, as in TypeScript.
+/// on a host-side wait detach at once; in a lane nothing wakes, others run as long as they need, as in TypeScript.
 const CELL_BUDGET: Duration = Duration::from_secs(24 * 60 * 60);
+
+/// How long a woken lane's cell holds its tool call by default before it continues in the background: short, so
+/// the user can always keep chatting (anything a cell waits on, `bash` included, yields with it).
+const DEFAULT_CELL_YIELD_AFTER: Duration = Duration::from_secs(10);
+
+/// `ULTRON_CELL_YIELD_AFTER` seconds (default 10): a woken lane's cell still running then is detached, so the turn
+/// ends and its end arrives as a `cell_done` event. `0`, `off`, a negative or a non-finite number keep the cell in its
+/// tool call until it ends; an unreadable value is the default.
+pub fn cell_yield_after(raw: Option<&str>) -> Option<Duration> {
+    let raw = raw.map(|raw| raw.trim().to_lowercase()).unwrap_or_default();
+    if raw.is_empty() {
+        return Some(DEFAULT_CELL_YIELD_AFTER);
+    }
+    if matches!(raw.as_str(), "off" | "none" | "false" | "no") {
+        return None;
+    }
+    match raw.parse::<f64>() {
+        Ok(seconds) if seconds.is_finite() && seconds > 0.0 => Some(Duration::from_secs_f64(seconds)),
+        Ok(_) => None,
+        Err(_) => Some(DEFAULT_CELL_YIELD_AFTER),
+    }
+}
 
 /// The `rlm` tool (`createUltronRlmTool` for one lane): each call runs its cell in the lane of the session's REPL
 /// lanes (crates/delegation `Lanes`). Aborting the turn cancels the running cell.
@@ -999,11 +1021,23 @@ pub struct Rlm {
     /// The context-pressure reminder a cell's result ends with when the lane nears its limit
     /// (crate::context_reminder).
     reminders: Option<Arc<crate::context_reminder::ContextReminders>>,
-    /// Whether the host wakes this lane when its work ends (crate::wake): how a detached cell's note words its end.
+    /// Whether the host wakes this lane when its work ends (crate::wake): how a detached cell's note words its end,
+    /// and whether a slow cell yields its tool call ([`cell_yield_after`]).
     wake: crate::wake::RootWake,
+    /// How long a woken lane's cell holds its tool call ([`cell_yield_after`]); `None`: until it ends.
+    yield_after: Option<Duration>,
 }
 
 impl Rlm {
+    /// How long this lane's next cell holds its tool call: a woken lane's slow cell yields after
+    /// [`cell_yield_after`] (its end wakes the lane); any other lane's waits, as nothing would deliver its end.
+    fn cell_budget(&self) -> Duration {
+        match self.yield_after {
+            Some(after) if self.wake.woken(&self.lane) => after,
+            _ => CELL_BUDGET,
+        }
+    }
+
     /// This tool with the stack's wake rule (crate::wake) for its detached-cell note.
     pub(crate) fn with_wake(mut self, wake: crate::wake::RootWake) -> Rlm {
         self.wake = wake;
@@ -1158,7 +1192,8 @@ impl Rlm {
             let waited = match &started {
                 Ok(id) => {
                     let (lanes, id) = (self.lanes.clone(), id.clone());
-                    Some(tokio::task::spawn_blocking(move || lanes.wait(&id, CELL_BUDGET)))
+                    let budget = self.cell_budget();
+                    Some(tokio::task::spawn_blocking(move || lanes.wait(&id, budget)))
                 }
                 Err(_) => None,
             };
@@ -1215,10 +1250,10 @@ impl Rlm {
                         self.lanes.detach(&cell)?;
                     }
                     return Ok(AgentToolResult {
-                        content: vec![text_block(with_findings(detached_note(
-                            &cell,
-                            self.wake.woken(&self.lane),
-                        )))],
+                        content: vec![text_block(with_findings(match parked {
+                            true => detached_note(&cell, self.wake.woken(&self.lane)),
+                            false => yielded_note(&cell, self.cell_budget()),
+                        }))],
                         details: json!({}),
                         usage: None,
                         terminate: None,
@@ -1362,6 +1397,15 @@ pub fn detached_note(cell: &str, woken: bool) -> String {
     }
 }
 
+/// The tool result of a cell that ran past its budget and continues in the background (only a woken lane's: see
+/// [`Rlm::cell_budget`]).
+pub fn yielded_note(cell: &str, after: Duration) -> String {
+    format!(
+        "Cell {cell} was still running after {} s, so it continues in the background; its end (with its result) arrives as a <runtime_event kind=\"cell_done\" id=\"{cell}\">. Do other work or end your turn. Its variables are not in your next cell until it ends (that cell runs in a side lane); `await rlm.cancel(\"{cell}\")` stops it.",
+        after.as_secs_f64()
+    )
+}
+
 /// The `rlm` tool for `lane` of `lanes`.
 pub(crate) fn rlm_over(
     config: &Config,
@@ -1397,5 +1441,30 @@ pub(crate) fn rlm_over(
         stats: None,
         reminders: None,
         wake: crate::wake::RootWake::default(),
+        yield_after: cell_yield_after(config.cell_yield_after.as_deref()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn cell_yield_after_defaults_to_ten_seconds_and_can_be_turned_off() {
+        assert_eq!(cell_yield_after(None), Some(Duration::from_secs(10)));
+        assert_eq!(cell_yield_after(Some("  ")), Some(Duration::from_secs(10)));
+        assert_eq!(cell_yield_after(Some("2.5")), Some(Duration::from_millis(2500)));
+        assert_eq!(cell_yield_after(Some("junk")), Some(Duration::from_secs(10)));
+        for off in ["0", "off", "OFF", "none", "-1", "inf", "NaN"] {
+            assert_eq!(cell_yield_after(Some(off)), None, "{off}");
+        }
+    }
+
+    #[test]
+    fn a_yielded_cell_says_its_end_arrives_as_an_event() {
+        let note = yielded_note("cell-7", Duration::from_secs(10));
+        assert!(note.starts_with("Cell cell-7 was still running after 10 s"));
+        assert!(note.contains("<runtime_event kind=\"cell_done\" id=\"cell-7\">"));
+        assert!(note.contains("end your turn"));
     }
 }

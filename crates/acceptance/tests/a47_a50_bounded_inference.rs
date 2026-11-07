@@ -322,6 +322,8 @@ impl Harness {
             ("PI_OFFLINE".into(), "1".into()),
             ("NO_COLOR".into(), "1".into()),
             ("TZ".into(), "UTC".into()),
+            // The cells' results are read in the turn: a slow frame (a provider failure's retries) never yields it.
+            ("ULTRON_CELL_YIELD_AFTER".into(), "off".into()),
         ];
         if let Ok(python) = std::env::var("ULTRON_PYTHON") {
             env.push(("ULTRON_PYTHON".into(), python));
