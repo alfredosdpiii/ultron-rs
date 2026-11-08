@@ -289,7 +289,9 @@ fn claude_root_launcher_starts_fake_claude_like_typescript() {
 
 #[test]
 fn claude_root_mcp_argument_errors_match_typescript() {
-    replay_processes(|name| name.starts_with("mcp-"));
+    // `ultron mcp --bridge` (a `--claude` lane's tools served over MCP) is not ported: tool lanes run on the Claude
+    // subscription, so the fixture's two bridge cases are skipped.
+    replay_processes(|name| name.starts_with("mcp-") && !name.starts_with("mcp-bridge-"));
 }
 
 /// The `stable` of the generator: times and pids 0, the session id and turn prefix replaced.

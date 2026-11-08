@@ -1,9 +1,8 @@
 //! The delegation host's view of the one task journal. The journal itself (`task-store.ts`: validation, bounded
 //! persistence, recovery that interrupts unfinished tasks, the error texts) lives once, in `harness::task_store`;
-//! this module keeps the JSON-valued API `host.rs` uses and the boxed [`TaskStore`] it is configured with. The
-//! durable runtime imports these documents with `harness::chat::migrate::import_task_journal`.
+//! this module keeps the JSON-valued API `host.rs` uses and the boxed [`TaskStore`] it is configured with.
 
-pub use harness::task_store::{MAX_PERSISTED_FINISHED_TASKS, task_fingerprint};
+pub use harness::task_store::task_fingerprint;
 use harness::task_store::{TaskDocumentStore, TaskState};
 use serde_json::Value;
 
@@ -27,29 +26,6 @@ impl TaskStore for MemoryStore {
         self.value = Some(document.clone());
         Ok(())
     }
-}
-
-pub fn is_terminal(state: &str) -> bool {
-    TaskState::parse(state).is_some_and(TaskState::is_terminal)
-}
-
-/// The tasks to persist: every unfinished task, and the newest finished ones up to the bound (the rule of
-/// `harness::task_store::persisted_tasks`, on raw records).
-pub fn persisted_tasks(records: &[Value]) -> Vec<Value> {
-    let terminal = |record: &Value| is_terminal(record["state"].as_str().unwrap_or_default());
-    let finished = records.iter().filter(|record| terminal(record)).count();
-    let mut excess = finished.saturating_sub(MAX_PERSISTED_FINISHED_TASKS);
-    records
-        .iter()
-        .filter(|record| {
-            if excess > 0 && terminal(record) {
-                excess -= 1;
-                return false;
-            }
-            true
-        })
-        .cloned()
-        .collect()
 }
 
 struct Store(Box<dyn TaskStore>);

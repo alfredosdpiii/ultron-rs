@@ -805,12 +805,6 @@ impl Runtime {
             config.child_env(),
         ));
         let clock = kernel_apis::util::system_clock();
-        let artifacts = kernel_apis::artifacts::Artifacts::new(
-            Box::new(kernel_apis::artifacts::FileKeyedDocuments::new(
-                config.session_dir("rlm-artifacts", session_id).join("artifacts.json"),
-            )),
-            kernel_apis::artifacts::ArtifactLimits::default(),
-        )?;
         // The local services: refinements (lessons, checked by the worker's activation rules) and experiment history in
         // one keyed document file, release gates in their module document. Active instruction refinements reach
         // later typed-agent prompts through the host's refinement hook.
@@ -855,7 +849,6 @@ impl Runtime {
                 None => Arc::new(services::LocalServicesModule { services: local }),
             },
             gates: Arc::new(services::ReleaseGateModule::new(modules("release-gates"), None)),
-            artifacts: Arc::new(kernel_apis::artifacts::ArtifactsModule::new(artifacts)),
             skills: Arc::new(SkillsModule::new(modules("skills"), loader, clock.clone(), Some(code))),
             memory: Arc::new(MemoryApi { service: memory }),
             hints: Arc::new(HintsModule::new(modules("hints"))),
@@ -1311,7 +1304,6 @@ fn skill_sources(
 struct ApiModules {
     local: Arc<dyn kernel_apis::ApiModule>,
     gates: Arc<services::ReleaseGateModule>,
-    artifacts: Arc<kernel_apis::artifacts::ArtifactsModule>,
     skills: Arc<SkillsModule>,
     memory: Arc<MemoryApi>,
     hints: Arc<HintsModule>,
@@ -1546,7 +1538,6 @@ impl Stack {
             apis = apis.with(context.clone() as Arc<dyn kernel_apis::ApiModule>);
         }
         let apis = apis
-            .with(self.apis.artifacts.clone())
             .with(self.apis.skills.clone())
             .with(self.apis.memory.clone())
             .with(self.apis.hints.clone())
@@ -1686,6 +1677,15 @@ impl Stack {
             &self.services.resources,
         );
         crate::session_flags::filter_commands(commands, &self.services.session)
+    }
+
+    /// The session's prompt templates, the ones [`Stack::commands`] lists as `/name` commands.
+    pub fn prompt_templates(&self) -> Vec<resources::prompt_templates::PromptTemplate> {
+        crate::session_resources::prompts(
+            &self.config.cwd.display().to_string(),
+            &self.config.agent_dir.display().to_string(),
+            &self.services.resources,
+        )
     }
 
     /// The model the session's lanes run on unless told otherwise.
@@ -2234,7 +2234,7 @@ impl HostHandler for Router {
         if kind == "ext.call" || kind == "ext.list" {
             return Err(EXTENSIONS_UNSUPPORTED.into());
         }
-        let shell = matches!(kind, "bash" | "shell.bash" | "shell.run" | "shell.result");
+        let shell = matches!(kind, "bash" | "shell.run" | "shell.result");
         let result = match &self.cell {
             Some(cell) if shell => cell.run(&self.host, &self.lane, kind, payload, signal),
             _ => self.host.handle_lane(&self.lane, kind, payload, signal),

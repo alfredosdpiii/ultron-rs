@@ -259,7 +259,7 @@ fn claude_root_prepare_claude_root_model_selection() {
             .unwrap_err()
             .contains("does not serve openai")
     );
-    // The worker needs to know how to start `ultron mcp --bridge`.
+    // The worker needs to know how to start Ultron itself (`ULTRON_SELF_COMMAND`).
     let fresh = prepare_claude_root(None, None, &no_env).unwrap();
     let command = &fresh.env.iter().find(|(k, _)| k == "ULTRON_SELF_COMMAND").unwrap().1;
     let parts: Vec<String> = serde_json::from_str(command).unwrap();

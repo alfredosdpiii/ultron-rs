@@ -1,14 +1,13 @@
 //! The shell job journal (session value `ultron.module/jobs`) and job-done events, ported from
-//! ultron/rlm/shell-jobs.ts (`#load`, `#persist`, `snapshot`, `read`, `jobSummary`, `#fileTail`) and
+//! ultron/rlm/shell-jobs.ts (`#load`, `#persist`, `jobSummary`, `#fileTail`) and
 //! experimental/session-worker.ts `jobEvent`.
 //!
 //! TypeScript: processes do not outlive the worker that owned them, so on restore a job the journal still lists as
-//! running becomes `interrupted` ("worker restarted") and the journal is rewritten ([`restore`]). The Rust host keeps
-//! a job's process running past its worker (see `Host::with_journal`): a record that names its keeper process (`pid`,
-//! `pidStart`) is left running here and settled by the host from the process and its exit file. Restored jobs answer
-//! `shell.list`, `shell.get`, `shell.result` and `shell.read` from their records and spill files.
+//! running becomes `interrupted` ("worker restarted") and the journal is rewritten. The Rust host keeps a job's
+//! process running past its worker (see `Host::with_journal`): a record that names its keeper process (`pid`,
+//! `pidStart`) is left running here ([`restore_durable`]) and settled by the host from the process and its exit file.
 
-use serde_json::{Map, Value, json};
+use serde_json::{Value, json};
 use std::fs::File;
 use std::io::{Read, Seek, SeekFrom};
 use std::path::PathBuf;
@@ -192,19 +191,11 @@ pub struct Restored {
     pub persist: Option<Value>,
 }
 
-/// Restore the journal (`saved` is the session value, None when unset) at time `now` (ms), as TypeScript does: every
-/// job still running becomes `interrupted`.
-pub fn restore(saved: Option<&Value>, now: u64) -> Result<Restored, String> {
-    restore_records(saved, now, false)
-}
-
-/// [`restore`] for a host that keeps job processes past their worker: a running record that names its keeper
-/// process stays `running` for the host to settle; one without (a TypeScript journal) is `interrupted`.
+/// Restore the journal (`saved` is the session value, None when unset) at time `now` (ms) for a host that keeps job
+/// processes past their worker: a running record that names its keeper process stays `running` for the host to
+/// settle; one without (a TypeScript journal) becomes `interrupted` ("worker restarted"), as TypeScript restores
+/// every running job.
 pub fn restore_durable(saved: Option<&Value>, now: u64) -> Result<Restored, String> {
-    restore_records(saved, now, true)
-}
-
-fn restore_records(saved: Option<&Value>, now: u64, keep_processes: bool) -> Result<Restored, String> {
     let jobs = match saved {
         Some(Value::Object(document)) => {
             if let Some(version) = document.get("version")
@@ -230,7 +221,7 @@ fn restore_records(saved: Option<&Value>, now: u64, keep_processes: bool) -> Res
             if job.tail.is_empty() {
                 job.tail = file_tail(&job);
             }
-            if job.status == "running" && (!keep_processes || job.pid.is_none()) {
+            if job.status == "running" && job.pid.is_none() {
                 changed = true;
                 job.status = "interrupted".into();
                 job.ended_at = Some(job.ended_at.unwrap_or(now));
@@ -254,131 +245,6 @@ pub fn persisted(records: &[JobRecord]) -> Value {
         })
         .collect();
     json!({ "version": JOURNAL_VERSION, "jobs": jobs })
-}
-
-/// Whole output when it fits, else the first and last halves around a marker naming how to read the rest.
-fn job_text(record: &JobRecord) -> (String, bool) {
-    let half = JOB_TEXT_BYTES / 2;
-    if record.output_bytes <= JOB_TEXT_BYTES && record.retained_bytes == record.output_bytes {
-        return (read_text(&record.output_path, 0, JOB_TEXT_BYTES), false);
-    }
-    let head = read_text(&record.output_path, 0, half);
-    let omitted = record.output_bytes.saturating_sub(half + record.tail.len() as u64);
-    let marker = format!(
-        "\n[... {omitted} bytes omitted; {} bytes kept in {}: await job.read(cursor={half}, max_bytes=65536) ...]\n",
-        record.retained_bytes, record.output_path
-    );
-    (format!("{head}{marker}{}", record.tail), true)
-}
-
-/// The kernel's wire form of a job at time `now` (ms).
-pub fn snapshot(record: &JobRecord, now: u64) -> Value {
-    let (text, truncated) = job_text(record);
-    let elapsed = record.ended_at.unwrap_or(now).saturating_sub(record.started_at) as f64;
-    json!({
-        "id": record.id,
-        "lane": record.lane,
-        "command": record.command,
-        "status": record.status,
-        "running": record.status == "running",
-        "exit_code": record.exit_code,
-        "ok": record.status == "completed" && record.exit_code == Some(0),
-        "timed_out": record.status == "timed_out",
-        "cancelled": record.status == "cancelled",
-        "text": text,
-        "truncated": truncated,
-        "output_path": record.output_path,
-        "output_bytes": record.output_bytes,
-        "elapsed_seconds": js_number((elapsed / 100.0 + 0.5).floor() / 10.0),
-        "error": record.error,
-    })
-}
-
-fn fields(payload: &Map<String, Value>, allowed: &[&str]) -> Result<(), String> {
-    match payload.keys().find(|key| !allowed.contains(&key.as_str())) {
-        Some(key) => Err(format!("Unknown payload field: {key}")),
-        None => Ok(()),
-    }
-}
-
-/// The root lane sees every job; a child lane sees its own.
-fn visible<'a>(records: &'a [JobRecord], id: Option<&Value>, lane: &str) -> Result<&'a JobRecord, String> {
-    let id = match id {
-        Some(Value::String(id)) if !id.is_empty() => id,
-        _ => return Err("job id must be a nonempty string".into()),
-    };
-    records
-        .iter()
-        .find(|record| &record.id == id && (lane == "main" || record.lane == lane))
-        .ok_or_else(|| format!("Unknown shell job {id}"))
-}
-
-fn safe_integer(value: Option<&Value>, default: u64) -> Option<u64> {
-    match value {
-        None => Some(default),
-        Some(value) => value.as_u64().or_else(|| {
-            value
-                .as_f64()
-                .filter(|f| f.fract() == 0.0 && *f >= 0.0 && *f <= 9_007_199_254_740_991.0)
-                .map(|f| f as u64)
-        }),
-    }
-}
-
-/// `job.read(cursor, max_bytes)`: retained output from `cursor`.
-pub fn read(record: &JobRecord, cursor: Option<&Value>, max_bytes: Option<&Value>) -> Result<Value, String> {
-    let cursor = safe_integer(cursor, 0).ok_or("cursor must be a non-negative integer")?;
-    let max = safe_integer(max_bytes, 65_536)
-        .filter(|max| (1..=1_048_576).contains(max))
-        .ok_or("max_bytes must be an integer between 1 and 1048576")?;
-    let start = cursor.min(record.retained_bytes);
-    let text = read_text(&record.output_path, start, max.min(record.retained_bytes - start));
-    let next = start + text.len() as u64;
-    Ok(json!({
-        "text": text,
-        "next_cursor": next,
-        "done": record.status != "running" && next >= record.retained_bytes,
-        "truncated": record.retained_bytes < record.output_bytes,
-    }))
-}
-
-/// `shell.list`, `shell.get`, `shell.result` and `shell.read` over restored (finished) jobs, for `lane`.
-pub fn handle(
-    records: &[JobRecord],
-    kind: &str,
-    payload: &Map<String, Value>,
-    lane: &str,
-    now: u64,
-) -> Result<Value, String> {
-    match kind {
-        "shell.list" => {
-            fields(payload, &[])?;
-            let list: Vec<Value> = records
-                .iter()
-                .rev()
-                .filter(|record| lane == "main" || record.lane == lane)
-                .map(|record| {
-                    let mut value = snapshot(record, now);
-                    value["text"] = Value::Null;
-                    value
-                })
-                .collect();
-            Ok(Value::Array(list))
-        }
-        "shell.get" | "shell.result" => {
-            fields(payload, if kind == "shell.get" { &["id"] } else { &["id", "wait"] })?;
-            Ok(snapshot(visible(records, payload.get("id"), lane)?, now))
-        }
-        "shell.read" => {
-            fields(payload, &["id", "cursor", "max_bytes"])?;
-            read(
-                visible(records, payload.get("id"), lane)?,
-                payload.get("cursor"),
-                payload.get("max_bytes"),
-            )
-        }
-        _ => Err(format!("Ultron RLM host request is not wired: {kind}")),
-    }
 }
 
 /// One-line completion summary: the last three non-empty output lines, at most `max_chars` UTF-16 units.

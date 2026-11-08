@@ -2,7 +2,7 @@
 //! Ported from packages/coding-agent/test/ultron-family.test.ts (all thirteen cases) with literal expectations.
 //! The twelve module cases drive the real `kernel_apis::FamilyModule` against the same scripted task host as the TS
 //! `fakeHost` (task tree, lane → task, live lanes that accept steering). The native-host case starts real tasks
-//! through the `harness` task supervisor (`g3_support::Host`, background jobs on waiting lanes) and steers a live
+//! through the product's task host (`g3_support::Host`, background jobs on waiting lanes) and steers a live
 //! child lane, as the TS case does through `NativeRlmHost`.
 
 mod g3_support;

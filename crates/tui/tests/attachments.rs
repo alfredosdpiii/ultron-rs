@@ -170,8 +170,12 @@ impl Clipboard for FakeClipboard {
         *self.text.lock().unwrap() = text.to_string();
         Ok(())
     }
-    fn get_image_png(&mut self) -> Result<Vec<u8>, String> {
-        self.image.clone().ok_or_else(|| "no image".into())
+    fn get_image(&mut self) -> Result<tui::clipboard::ClipboardImage, String> {
+        let bytes = self.image.clone().ok_or("no image")?;
+        Ok(tui::clipboard::ClipboardImage {
+            bytes,
+            mime_type: "image/png".into(),
+        })
     }
 }
 

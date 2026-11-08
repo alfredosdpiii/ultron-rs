@@ -1,6 +1,6 @@
 //! This crate's integration tests as one test binary: each `tests/*.rs` file is a module of it, so the tests link
 //! once rather than once per file. A file that re-runs or exits its own test binary (`current_exe`,
-//! `process::exit`) stays a test binary of its own in Cargo.toml. `every_test_file_is_built` keeps both lists whole.
+//! `process::exit`) stays a test binary of its own in Cargo.toml. `crates/workspace-checks` keeps both lists whole.
 
 // Support modules (`mod common;`) stay declared by each file that uses them, so each file also builds alone.
 #![allow(clippy::duplicate_mod)]
@@ -57,8 +57,6 @@ mod a22_detached_work;
 mod a23_goal_command;
 #[path = "a23_schedules.rs"]
 mod a23_schedules;
-#[path = "a24_accounting_reconciliation.rs"]
-mod a24_accounting_reconciliation;
 #[path = "a25_migration.rs"]
 mod a25_migration;
 #[path = "a27_self_contained_rlm.rs"]
@@ -81,8 +79,6 @@ mod a34_optional_service_outage;
 mod a35_strategy_parity;
 #[path = "a36_instances.rs"]
 mod a36_instances;
-#[path = "a37_artifact_range.rs"]
-mod a37_artifact_range;
 #[path = "a37_bounded_preview.rs"]
 mod a37_bounded_preview;
 #[path = "a38_nested_context.rs"]
@@ -93,8 +89,6 @@ mod a39_live_capabilities;
 mod a41_family;
 #[path = "a42_intervention.rs"]
 mod a42_intervention;
-#[path = "a43_artifacts.rs"]
-mod a43_artifacts;
 #[path = "a43_resource_release.rs"]
 mod a43_resource_release;
 #[path = "a44_progress.rs"]
@@ -145,20 +139,3 @@ mod after_cell_hooks;
 mod spawn_fork;
 #[path = "w22_persona_rpc.rs"]
 mod w22_persona_rpc;
-
-#[test]
-fn every_test_file_is_built() {
-    let (merged, manifest) = (include_str!("it.rs"), include_str!("../Cargo.toml"));
-    let tests = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests");
-    for entry in std::fs::read_dir(tests).unwrap() {
-        let name = entry.unwrap().file_name().into_string().unwrap();
-        if name.ends_with(".rs") && name != "it.rs" {
-            let listed = merged.contains(&format!("#[path = \"{name}\"]"))
-                || manifest.contains(&format!("path = \"tests/{name}\""));
-            assert!(
-                listed,
-                "tests/{name} is neither a module of tests/it.rs nor a [[test]] of Cargo.toml"
-            );
-        }
-    }
-}

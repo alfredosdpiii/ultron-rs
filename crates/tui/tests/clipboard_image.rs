@@ -192,7 +192,6 @@ fn tui_system_clipboard_reads_typed_images_from_the_injected_path() {
         match clipboard.get_image() {
             Ok(ClipboardImage { bytes, mime_type: got }) => {
                 assert_eq!(got, mime_type, "{scenario}");
-                assert_eq!(clipboard.get_image_png().is_ok(), got == "image/png", "{scenario}");
                 if scenario == "x11-jpeg" {
                     assert_eq!(bytes, b"\xff\xd8\xff\xe0jpeg");
                 }

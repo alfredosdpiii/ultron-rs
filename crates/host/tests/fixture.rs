@@ -226,7 +226,7 @@ fn host_blocking_bash_spills_the_whole_output() {
     );
 }
 
-/// shell-jobs.ts `shell.bash` and host-bash.ts: a cell stopped while `bash` waits stops the command and reports it
+/// shell-jobs.ts `bash` with `yield_after` and host-bash.ts: a cell stopped while `bash` waits stops the command and reports it
 /// cancelled (not timed out), with no exit code and nothing left running.
 #[test]
 fn host_bash_stops_the_command_when_the_cell_is_aborted() {

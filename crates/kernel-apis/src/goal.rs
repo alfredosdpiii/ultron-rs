@@ -29,8 +29,6 @@ use serde_json::{Map, Value, json};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
-/// The worker request behind `/goal` (payload `{args}`).
-pub const GOAL_REQUEST: &str = "goal.command";
 /// Failing checks in a row with the same result that pause the goal.
 pub const STUCK_CHECKS: i64 = 10;
 /// Checks needed before the model may declare the goal blocked (when there is a check command).

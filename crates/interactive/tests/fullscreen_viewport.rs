@@ -205,7 +205,7 @@ impl Clipboard for Recording {
         self.0.lock().unwrap().push(text.to_string());
         Ok(())
     }
-    fn get_image_png(&mut self) -> Result<Vec<u8>, String> {
+    fn get_image(&mut self) -> Result<tui::clipboard::ClipboardImage, String> {
         Err("none".into())
     }
 }
@@ -252,7 +252,7 @@ fn interactive_fullscreen_copy_failure_flashes_the_clipboard_error() {
         fn set_text(&mut self, _: &str) -> Result<(), String> {
             Err("Clipboard unavailable".into())
         }
-        fn get_image_png(&mut self) -> Result<Vec<u8>, String> {
+        fn get_image(&mut self) -> Result<tui::clipboard::ClipboardImage, String> {
             Err("x".into())
         }
     }
@@ -465,8 +465,11 @@ impl Clipboard for ImageAndText {
     fn set_text(&mut self, _: &str) -> Result<(), String> {
         Ok(())
     }
-    fn get_image_png(&mut self) -> Result<Vec<u8>, String> {
-        Ok(b"\x89PNG\r\n\x1a\n".to_vec())
+    fn get_image(&mut self) -> Result<tui::clipboard::ClipboardImage, String> {
+        Ok(tui::clipboard::ClipboardImage {
+            bytes: b"\x89PNG\r\n\x1a\n".to_vec(),
+            mime_type: "image/png".into(),
+        })
     }
 }
 
@@ -478,7 +481,7 @@ impl Clipboard for TextClipboard {
     fn set_text(&mut self, _: &str) -> Result<(), String> {
         Ok(())
     }
-    fn get_image_png(&mut self) -> Result<Vec<u8>, String> {
+    fn get_image(&mut self) -> Result<tui::clipboard::ClipboardImage, String> {
         Err("none".into())
     }
 }

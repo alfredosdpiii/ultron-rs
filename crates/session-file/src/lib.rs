@@ -19,7 +19,7 @@ pub mod paths;
 
 pub use context::{
     Leaf, ProjectedEntry, SessionContext, SessionProjection, build_context_entries, build_session_context,
-    build_session_projection, current_system_message, current_tools, entry_messages, latest_compaction,
+    build_session_projection, current_system_message, current_tools, entry_messages,
 };
 pub use env::{Env, SystemEnv, Uuidv7};
 pub use file::{

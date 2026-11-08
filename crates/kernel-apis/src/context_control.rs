@@ -24,8 +24,6 @@ pub const CONTEXT_NOTE_CUSTOM_TYPE: &str = "ultron:context-note";
 pub const CONTEXT_PIN_CUSTOM_TYPE: &str = "ultron:context-pin";
 /// Custom message type of a note in the model's context.
 pub const CONTEXT_NOTE_MESSAGE_TYPE: &str = "ultron-note";
-/// Extension event-bus channel that receives every context edit (`pi.events.on(...)`).
-pub const CONTEXT_EDIT_EVENT: &str = "ultron:context_edit";
 
 /// `CONTEXT_ENTRY_PROJECTORS[CONTEXT_NOTE_CUSTOM_TYPE]`: a note is a custom message at its place in the branch
 /// ("Note (ctx.note): ..."); a note without text projects nothing.

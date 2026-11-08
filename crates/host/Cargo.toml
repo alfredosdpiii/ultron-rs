@@ -13,12 +13,12 @@ getrandom = "=0.4.3"
 image = { version = "=0.25.10", default-features = false, features = ["bmp", "gif", "jpeg", "png", "webp"] }
 kernel = { path = "../kernel" }
 loki = { path = "../loki" }
-rustix = { version = "=1.1.5", features = ["process", "std"] }
 sandbox = { path = "../sandbox" }
 serde_json = { version = "=1.0.151", features = ["preserve_order"] }
 sha2 = "=0.10.9"
 
 [dev-dependencies]
+rustix = { version = "=1.1.5", features = ["process", "std"] }
 tempfile = "=3.27.0"
 
 [lints]

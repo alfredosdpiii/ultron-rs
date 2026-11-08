@@ -2,7 +2,7 @@
 //! filters with it: `#` comments, `!` negation, brace expansion (`{a,b}`, `{1..3}`, `{a..c}`), `/`-separated
 //! segments with `**` globstar, `*`, `?`, `[...]` classes (ranges, `!`/`^` negation, POSIX classes), `\` escapes,
 //! extglobs (`+(a|b)`, `*(..)`, `?(..)`, `@(..)`, `!(..)`), and the dot rule (a wildcard never matches a segment's
-//! leading `.`). Adapted from `crates/ai/src/glob.rs` (the case-insensitive model-scope matcher).
+//! leading `.`). Adapted from `crates/model-scope/src/glob.rs` (the case-insensitive model-scope matcher).
 //!
 //! Evidence: `crates/cli/fixtures/packages.mjs` records minimatch's answers; `tests/packages_units.rs` replays them.
 

@@ -45,7 +45,7 @@ fn diagnostics() -> (String, String) {
     (csv, top)
 }
 
-/// The TS live demo's task, word for word.
+/// The TS live demo's task, word for word, without its `artifacts.put` step (`artifacts.*` is not ported).
 const TASK: &str = r#"This project is disposable. repo/test_calc.py fails (run it with `python3 test_calc.py` inside repo/). diagnostics.csv has 200,000 log rows: never read it into your own context; analyze it only inside the rlm tool.
 
 Do all of the following through the rlm tool's Python API:
@@ -53,8 +53,7 @@ Do all of the following through the rlm tool's Python API:
 2. Fix the bug in an isolated copy of repo/ (e.g. under tempfile.mkdtemp()); do not modify repo/ itself. Run the tests on the original and on the copy with `await bash(...)`, then `await gates.define('live-unit', [{'name': 'unit', 'required': True}], <sha256 of repo/test_calc.py>)` and `await gates.compare(...)` with the baseline and candidate results.
 3. Start an independent review of your diff with `review = await agents.spawn('correctness-reviewer@1', {'request': <diff>})` and wait for `await review.result()`.
 4. Retain that reviewer with `await instances.retain(review.id)` and ask it one follow-up with `await instances.invoke(<instance id>, {'request': 'Does the fix handle an empty list?'})`, then wait for that task's result.
-5. Store the diff with `await rlm.host_request('artifacts.put', {'text': <diff>})`.
-6. Propose and activate an instruction refinement for target 'instruction:correctness-reviewer' with evidence from this run, run one more review of the same diff, then roll the refinement back. Record each of the two reviews with `await rlm.host_request('experiments.record', {'run': {'variant': ..., 'fixtureHash': 'live-v1', 'outcome': 'passed' or 'failed'}})`.
+5. Propose and activate an instruction refinement for target 'instruction:correctness-reviewer' with evidence from this run, run one more review of the same diff, then roll the refinement back. Record each of the two reviews with `await rlm.host_request('experiments.record', {'run': {'variant': ..., 'fixtureHash': 'live-v1', 'outcome': 'passed' or 'failed'}})`.
 
 Finish by replying with only a JSON object: {"top_location": ..., "gate_decision": ..., "review_task_id": ..., "instance_id": ...}."#;
 

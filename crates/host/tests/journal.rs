@@ -1,10 +1,10 @@
 //! Replays crates/host/fixtures/journal.json, recorded by fixtures/journal.mjs from the TypeScript shell job journal
-//! (shell-jobs.ts restored after a restart) and utils/shell.ts getShellEnv; plus the session worker's jobEvent
-//! rules with literal values.
+//! (shell-jobs.ts restored after a restart: job summaries and records) and utils/shell.ts getShellEnv; plus the
+//! session worker's jobEvent rules with literal values.
 
-use host::journal::{JobRecord, handle, job_event, job_summary, persisted, restore};
+use host::journal::{JobRecord, job_event, job_summary, persisted, restore_durable};
 use host::shell_env::shell_env;
-use serde_json::{Map, Value, json};
+use serde_json::{Value, json};
 use std::path::Path;
 
 fn fixture() -> Value {
@@ -22,48 +22,7 @@ fn restored(scenario: &Value, dir: &Path, now: u64) -> Result<host::journal::Res
         std::fs::write(dir.join(format!("{id}.log")), text.as_str().unwrap()).unwrap();
     }
     let saved = swap(&scenario["saved"], "<dir>", dir.to_str().unwrap());
-    restore(if saved.is_null() { None } else { Some(&saved) }, now)
-}
-
-#[test]
-fn host_journal_restart_replies_match_typescript() {
-    let data = fixture();
-    let now = data["now"].as_u64().unwrap();
-    let requests = [
-        ("list", "shell.list", json!({}), "main"),
-        ("child_list", "shell.list", json!({}), "child"),
-        ("get", "shell.get", json!({"id": "job-00000001"}), "main"),
-        ("get_big", "shell.get", json!({"id": "job-00000005"}), "main"),
-        (
-            "result",
-            "shell.result",
-            json!({"id": "job-00000002", "wait": 1}),
-            "main",
-        ),
-        ("read", "shell.read", json!({"id": "job-00000002", "cursor": 6}), "main"),
-        ("child_get_main", "shell.get", json!({"id": "job-00000002"}), "child"),
-    ];
-    for scenario in data["scenarios"].as_array().unwrap() {
-        let dir = tempfile::tempdir().unwrap();
-        let dir_text = dir.path().to_str().unwrap();
-        let name = scenario["name"].as_str().unwrap();
-        let restored = restored(scenario, dir.path(), now);
-        for (key, kind, payload, lane) in &requests {
-            let payload: Map<String, Value> = payload.as_object().unwrap().clone();
-            let got = match &restored {
-                Ok(restored) => handle(&restored.records, kind, &payload, lane, now),
-                Err(error) => Err(error.clone()),
-            };
-            let got = match got {
-                Ok(value) => json!({ "ok": swap(&value, dir_text, "<dir>") }),
-                Err(error) => json!({ "error": error }),
-            };
-            assert_eq!(got, scenario["replies"][key], "{name} {key}");
-        }
-        let persist = restored.ok().and_then(|restored| restored.persist);
-        let persist = persist.map_or(Value::Null, |value| swap(&value, dir_text, "<dir>"));
-        assert_eq!(persist, scenario["persisted"], "{name}");
-    }
+    restore_durable(if saved.is_null() { None } else { Some(&saved) }, now)
 }
 
 #[test]

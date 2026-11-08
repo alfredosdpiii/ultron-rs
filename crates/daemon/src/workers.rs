@@ -571,10 +571,6 @@ impl Manager {
         }
     }
 
-    pub fn open_session(&self, meta: &Meta) -> Result<Handle, ServiceError> {
-        self.open_session_with(meta, None)
-    }
-
     /// The options `meta`'s worker starts (or started) on.
     fn model_for(&self, path: &PathBuf) -> WorkerModel {
         self.session_models
@@ -608,7 +604,7 @@ impl Manager {
         }
     }
 
-    /// [`Manager::open_session`] with a client's session options: a worker started for it runs on them.
+    /// Open `meta`'s session with a client's session options: a worker started for it runs on them.
     pub fn open_session_with(&self, meta: &Meta, options: Option<&Value>) -> Result<Handle, ServiceError> {
         {
             let inner = self.lock();

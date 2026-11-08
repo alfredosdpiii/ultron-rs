@@ -1,7 +1,7 @@
 //! A44 (partial): progress and reassessment use evidence and cannot extend budgets or declare unsupported success.
 //! Ported from packages/coding-agent/test/ultron-progress.test.ts with literal expectations: the real
 //! `kernel_apis::ProgressModule` behind `g3_support::Host` (task identity, lineage, lanes and terminal results from the
-//! real `harness` task supervisor; background jobs on waiting lanes, as the TS tests use them).
+//! product's task host, `delegation::agents`; background jobs on waiting lanes, as the TS tests use them).
 //! Ported: classification (the finished task is a background job whose lane returned, instead of a deterministic
 //! `identity@1` task), reporter identity and scope, strict validation and the receipt bound (on a background job
 //! instead of an `identity@1` task), budget extension denial, persistence and interrupted-verification settling,

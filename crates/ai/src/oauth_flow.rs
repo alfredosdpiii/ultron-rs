@@ -266,14 +266,6 @@ impl TextResponse {
     pub fn ok(&self) -> bool {
         (200..300).contains(&self.status)
     }
-
-    /// `response.json()` as an object, or `None` (`readJson`).
-    pub fn json_object(&self) -> Option<serde_json::Map<String, Value>> {
-        match serde_json::from_str::<Value>(&self.text) {
-            Ok(Value::Object(map)) => Some(map),
-            _ => None,
-        }
-    }
 }
 
 async fn read_all(mut response: HttpResponse) -> TextResponse {

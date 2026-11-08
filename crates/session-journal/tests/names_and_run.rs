@@ -1,10 +1,9 @@
-//! Session names (user requirements; literal expectations) and the run journal's own invariants: progress frames
-//! replay to the committed message, a batch of several tool calls commits its results in source order, and a reopened
-//! journal is idle with the run's result recorded.
+//! Session names (user requirements; literal expectations), the run journal's frame encoder (progress frames replay
+//! to the committed message) and the lane a resumed session keeps.
 
 use serde_json::{Value, json};
 use session_journal::names::{self, auto_name, clean_title, normalize_session_name, resolve_resume};
-use session_journal::run::{self, FrameEncoder, Run};
+use session_journal::run::{self, FrameEncoder};
 use session_journal::{SessionRepo, TestClock};
 
 fn repo(dir: &std::path::Path) -> SessionRepo {
@@ -221,98 +220,6 @@ fn session_journal_frames_replay_to_the_message() {
     );
     // Nothing is encoded before the stream starts.
     assert_eq!(FrameEncoder::default().encode(&events[2]), None);
-}
-
-#[test]
-fn session_journal_run_commits_a_tool_batch_in_source_order() {
-    let dir = tempfile::tempdir().unwrap();
-    let repo = repo(dir.path());
-    let mut session = repo.create("/w", Some("run"), None).unwrap();
-    let config = run::ensure_lane(&mut session, &run::lane_config("anthropic", "m", "low", &["rlm"])).unwrap();
-    let prompt = json!({"role": "user", "content": [{"type": "text", "text": "go"}], "timestamp": 7});
-    let mut journal = Run::admit(&mut session, config, run::default_settings(), prompt).unwrap();
-    journal.begin_assistant(&mut session, 100, 1000).unwrap();
-    let call = |id: &str| json!({"type": "toolCall", "id": id, "name": "rlm", "arguments": {"code": id}});
-    let assistant = json!({"role": "assistant", "content": [{"type": "text", "text": "two calls"}, call("c1"), call("c2")],
-        "api": "x", "provider": "anthropic", "model": "m", "usage": {"totalTokens": 3, "cost": {"total": 0.5}}, "stopReason": "toolUse", "timestamp": 8});
-    journal.record_turn(&mut session, &assistant).unwrap();
-    assert!(journal.commit_assistant(&mut session, assistant).unwrap());
-    let result = |id: &str| json!({"role": "toolResult", "toolCallId": id, "toolName": "rlm", "content": [{"type": "text", "text": id}], "details": {}, "isError": id == "c1", "timestamp": 9});
-    journal.tool_started(&mut session, "c1", json!({"code": "c1"})).unwrap();
-    journal.tool_started(&mut session, "c2", json!({"code": "c2"})).unwrap();
-    // c2 finishes first; the entries still follow the calls' order.
-    journal.tool_finished(&mut session, "c2", result("c2")).unwrap();
-    assert_eq!(
-        session.branch_entries("main").unwrap().len(),
-        2,
-        "results wait for the whole batch"
-    );
-    journal.tool_finished(&mut session, "c1", result("c1")).unwrap();
-    journal.begin_assistant(&mut session, 100, 1000).unwrap();
-    let last = json!({"role": "assistant", "content": [{"type": "text", "text": "done"}], "api": "x", "provider": "anthropic",
-        "model": "m", "usage": {"totalTokens": 2}, "stopReason": "stop", "timestamp": 10});
-    journal.record_turn(&mut session, &last).unwrap();
-    assert!(!journal.commit_assistant(&mut session, last).unwrap());
-    let operation = journal.operation_id().to_string();
-    journal.finish(&mut session, None).unwrap();
-    let metadata = session.metadata().clone();
-    drop(session);
-
-    let reopened = repo.open(&metadata).unwrap();
-    let roles: Vec<String> = reopened
-        .branch_entries("main")
-        .unwrap()
-        .iter()
-        .map(|e| {
-            format!(
-                "{}:{}",
-                e["message"]["role"].as_str().unwrap(),
-                e["message"]["toolCallId"].as_str().unwrap_or("")
-            )
-        })
-        .collect();
-    assert_eq!(
-        roles,
-        ["user:", "assistant:", "toolResult:c1", "toolResult:c2", "assistant:"]
-    );
-    let c1 = &reopened.branch_entries("main").unwrap()[2]["message"];
-    assert!(c1.get("details").is_none(), "a failed tool's result has no details");
-    assert_eq!(
-        reopened.value("ultron.lane.state", "main").unwrap(),
-        &json!({"currentOperationId": null, "lastOperationId": operation, "inbox": []})
-    );
-    assert_eq!(
-        reopened.value("ultron.result", &operation).unwrap()["status"],
-        "completed"
-    );
-    assert!(reopened.state().scan_values("ultron.op.", "").is_empty());
-    for namespace in [
-        "ultron.op.meta",
-        "ultron.op.state",
-        "ultron.op.tool_args",
-        "ultron.pending.entry",
-    ] {
-        assert!(
-            reopened.state().scan_values(namespace, "").is_empty(),
-            "{namespace} is cleared"
-        );
-    }
-    assert!(
-        reopened.state().lists().is_empty(),
-        "frames are deleted with the response"
-    );
-    let turns = &reopened.value("ultron.usage", "root").unwrap()["roots"][format!("turn:{operation}")]["turns"];
-    assert_eq!(
-        (
-            turns["count"].clone(),
-            turns["tokens"].clone(),
-            turns["cost"].clone(),
-            turns["unpriced"].clone()
-        ),
-        (json!(2), json!(5), json!(0.5), json!(1))
-    );
-    let rows = reopened.state().usage_rows();
-    assert_eq!(rows.len(), 2, "one usage row per response");
 }
 
 #[test]

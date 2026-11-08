@@ -442,7 +442,7 @@ impl CellHints {
                 reply.get("timed_out") == Some(&Value::Bool(true)),
             );
         }
-        if (kind == "bash" || kind == "shell.bash") && running {
+        if kind == "bash" && running {
             let id = reply
                 .and_then(|r| r.get("job"))
                 .and_then(|j| j.get("id"))

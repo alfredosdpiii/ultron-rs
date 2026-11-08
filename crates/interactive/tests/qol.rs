@@ -379,11 +379,14 @@ impl Clipboard for FakeClipboard {
     fn set_text(&mut self, _: &str) -> Result<(), String> {
         Ok(())
     }
-    fn get_image_png(&mut self) -> Result<Vec<u8>, String> {
+    fn get_image(&mut self) -> Result<tui::clipboard::ClipboardImage, String> {
         if self.0.is_empty() {
             Err("no image".into())
         } else {
-            Ok(self.0.clone())
+            Ok(tui::clipboard::ClipboardImage {
+                bytes: self.0.clone(),
+                mime_type: "image/png".into(),
+            })
         }
     }
 }
@@ -489,9 +492,6 @@ impl Clipboard for TypedClipboard {
     }
     fn set_text(&mut self, _: &str) -> Result<(), String> {
         Ok(())
-    }
-    fn get_image_png(&mut self) -> Result<Vec<u8>, String> {
-        Err("not a PNG".into())
     }
     fn get_image(&mut self) -> Result<tui::clipboard::ClipboardImage, String> {
         Ok(self.0.clone())

@@ -5,11 +5,12 @@
 //! cell replay) and hands back queued messages.
 
 use serde_json::{Value, json};
+use session_core::op_journal::Run;
 use session_core::recovery::{
     CONTINUE_PROMPT, INTERRUPTED_ASSISTANT, INTERRUPTED_CELL, MAX_RECOVERY_DEPTH, RECOVERY_DEPTH, Recovered,
     interrupted_assistant, reduce_frames, settle,
 };
-use session_journal::run::{self, OP_META, OP_RESULT, OP_STATE, OP_TOOL_ARGS, PENDING_ENTRY, PENDING_FRAMES, Run};
+use session_journal::run::{self, OP_META, OP_RESULT, OP_STATE, OP_TOOL_ARGS, PENDING_ENTRY, PENDING_FRAMES};
 use session_journal::session::LANE_STATE;
 use session_journal::{Session, SessionRepo, TestClock, Write};
 
@@ -60,6 +61,8 @@ fn session_core_recovery_settles_an_interrupted_stream_from_its_committed_frames
     ] {
         run.stream_event(&mut session, &event).unwrap();
     }
+    // The held delta frame's window passed: its owner committed it (`flush_held`).
+    run.flush_held(&mut session).unwrap();
     let operation = run.operation_id().to_string();
     // The worker died here (SIGKILL: nothing else is written).
     drop(run);
@@ -230,8 +233,7 @@ fn session_core_recovery_settles_a_stream_whose_deltas_were_joined() {
     let dir = tempfile::tempdir().unwrap();
     let mut session = repo(dir.path()).create("/w", None, None).unwrap();
     let config = run::lane_config("anthropic", "claude-sonnet-4-5", "medium", &["rlm"]);
-    let mut run =
-        session_core::op_journal::Run::admit(&mut session, config, run::default_settings(), user("hi")).unwrap();
+    let mut run = Run::admit(&mut session, config, run::default_settings(), user("hi")).unwrap();
     run.begin_assistant(&mut session, 1000, 200_000).unwrap();
     let text = |t: &str| json!([{"type": "text", "text": t}]);
     let both = |t: &str| json!([{"type": "text", "text": t}, {"type": "thinking", "thinking": ""}]);
@@ -271,8 +273,7 @@ fn session_core_recovery_keeps_held_deltas_flushed_during_a_stall() {
     let dir = tempfile::tempdir().unwrap();
     let mut session = repo(dir.path()).create("/w", None, None).unwrap();
     let config = run::lane_config("anthropic", "claude-sonnet-4-5", "medium", &["rlm"]);
-    let mut run =
-        session_core::op_journal::Run::admit(&mut session, config, run::default_settings(), user("hi")).unwrap();
+    let mut run = Run::admit(&mut session, config, run::default_settings(), user("hi")).unwrap();
     run.begin_assistant(&mut session, 1000, 200_000).unwrap();
     let text = |t: &str| json!([{"type": "text", "text": t}]);
     assert_eq!(run.held_until(), None);

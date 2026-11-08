@@ -1,8 +1,7 @@
-//! `traceStartup` (experimental/startup-trace.ts), the writer of the CLI and session-worker milestones (the client's
-//! are crates/client's own copy, same format): append one startup milestone to the file named by
-//! `ULTRON_STARTUP_TRACE` (every process of a start shares it), as a JSON line `{at, origin, pid, label}`: `at` the
-//! wall-clock time in milliseconds, `origin` the process's start (`performance.timeOrigin`). Off unless the variable
-//! is set; a failed write is ignored (tracing never affects startup).
+//! `traceStartup` (experimental/startup-trace.ts), the writer of the CLI, session-worker and client milestones:
+//! append one startup milestone to the file named by `ULTRON_STARTUP_TRACE` (every process of a start shares it), as
+//! a JSON line `{at, origin, pid, label}`: `at` the wall-clock time in milliseconds, `origin` the process's start
+//! (`performance.timeOrigin`). Off unless the variable is set; a failed write is ignored (tracing never affects startup).
 
 use std::io::Write;
 use std::path::Path;

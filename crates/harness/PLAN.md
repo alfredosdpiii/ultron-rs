@@ -1,7 +1,6 @@
 # crates/harness: durable task runtime port plan
 
-Scope: the RLM task runtime (`packages/coding-agent/src/ultron/rlm/task-store.ts` and the task supervision half of
-`native-host.ts`) and Ultron's agent-core harness (`packages/agent/src/harness`), onto `crates/durable` (storage,
+Scope: the RLM task journal (`packages/coding-agent/src/ultron/rlm/task-store.ts`) and Ultron's agent-core harness (`packages/agent/src/harness`), onto `crates/durable` (storage,
 sessions, documents) and `crates/agent` (agent loop). RLM-first: the model's only tool is the REPL; everything here is
 host machinery behind kernel APIs (`rlm.spawn/collect`, `agents.*`, workflows). No native model tools, no
 host-driven chat loop.
@@ -15,14 +14,14 @@ host-driven chat loop.
 | `packages/agent/src/harness/session/*` (Session, values, commit, jsonl/) | Ultron fork of Pi agent-core | Ultron's live session format (lanes, operations, inbox, values such as `ultron.tasks/root`); not the Durable schema. |
 | `packages/agent/src/harness/runtime/*` (lane, drive/*, reducer, restore, progress, transcript) | Ultron | Production run engine: one `Lane` per REPL lane; operations admitted, driven, checkpointed, recovered. |
 | `packages/agent/src/harness/execution/*`, `tools/*` | Ultron fork of Pi | Effect gate and tool execution; bash/read/write/edit are `crates/host` operations behind the REPL. |
-| `coding-agent/src/ultron/rlm/task-store.ts`, `native-host.ts` (task part) | Ultron | RLM task journal and supervisor. Ported here. |
+| `coding-agent/src/ultron/rlm/task-store.ts`, `native-host.ts` (task part) | Ultron | RLM task journal ported here; the task host is `delegation::agents`. |
 
 ## File-by-file mapping
 
 | TypeScript | Rust | Status / evidence |
 | --- | --- | --- |
 | `rlm/task-store.ts` (`NativeTaskJournal`, `taskFingerprint`, bounded persistence) | `src/task_store.rs` | Ported. `fixtures/generate.mjs` -> `task-store.json`; `tests/typescript_fixture.rs`. |
-| `rlm/native-host.ts`: `request`/`taskOptions`/`definitionKey`, `spawnTask` admission, `run` (running transition), `finish` (first terminal wins), `cancel` (subtree, `Ancestor X cancelled: ...`, abort once), `close`, `handle` for `agents.spawn/inspect/result/cancel/status` with child-lane visibility, `loadTasks` recovery | `src/supervisor.rs` (`TaskSupervisor`, `SpawnRequest`, `CancelSignal`) | Ported. `fixtures/generate-supervisor.mjs` drives the real `NativeRlmHost` with controlled lanes -> `task-supervisor.json`; `tests/supervisor_fixture.rs`; unit tests for close-before-use and failed writes. |
+| `rlm/native-host.ts` (task part) | `delegation::agents` (the product's task host) | A TS-era supervisor port here (`supervisor.rs`) was removed in the 2026-11 cleanup: nothing in the product used it. |
 | `rlm/native-host.ts`: timers (`timeout_ms`, root wall deadline), usage reservations, worktrees, verdict check (`childResult`), lane execution, workflows, modules, graph view | `crates/harness` (timers, executor glue), `crates/inference`/`crates/host` for the rest | Remaining. Timeouts need the async runtime glue (a timer per task calling `cancel`). |
 | `createSessionTaskStore` (session value `ultron.tasks/root`) | `TaskDocumentStore` impl over the Ultron session value store | Remaining: needs session values. |
 | `harness/runtime/reducer.ts` | `src/reducer.rs` (over the JSON `LaneSnapshot`/`HarnessEvent` shapes) | Ported. `fixtures/generate-reducer.mjs` records real faux-provider lane runs (resnapshot) and synthetic sequences -> `reducer.json`; `tests/reducer_fixture.rs`. |
@@ -66,15 +65,15 @@ durable REPL cell. `ChatHarness` wraps the task `Harness`, installs `pi.generati
 | `submissions.ts`, `inbox.ts` | `chat/{submissions,inbox}.rs` | `tests/chat_submissions.rs`, `tests/chat_inbox.rs` (ported, Memory/SQLite/JSONL); `tests/scheduler_ownership.rs` now queues through the inbox |
 | `live.ts`, `usage.ts`, `provider.ts`, agent doc | `chat/{live,usage,docs}.rs` | `tests/chat_inbox.rs` usage cases |
 | `generation.ts`, `prompt.ts`, `context.ts` | `chat/{generation,prompt,context}.rs` | `tests/chat_generation.rs` (generation + generation-recovery) |
-| `tool.ts` (model-issued calls) | `chat/cell.rs` (REPL cell, intent = code + lane + replay policy), `chat/kernel_cells.rs` (`crates/kernel` lanes) | `tests/chat_cells.rs` (tools-recovery), `tests/chat_cell_kill.rs` (SIGKILL during a real kernel cell, reopen) |
+| `tool.ts` (model-issued calls) | `chat/cell.rs` (REPL cell, intent = code + lane + replay policy); the product's executor is `session_core::turns::TurnCells` (session-core's tests run cells in real kernels through `tests/kernel_cells_support`) | `tests/chat_cells.rs` (tools-recovery), `tests/chat_cell_kill.rs` (SIGKILL during a real kernel cell, reopen) |
 | `compaction.ts` | `chat/compaction.rs` (summary request from `crates/compaction`) | `tests/chat_compaction.rs` |
-| pi-ai `faux`, `utils/{overflow,retry}.ts` | `chat/{faux,models}.rs`; `StreamFnModels` adapts an `agent::StreamFn` | the tests above |
-| `task-store.ts` journals (both Rust ports) | `chat/children.rs` (`ultron.child` tasks), `chat/migrate.rs` (import), `delegation::task_store` now an adapter over `task_store.rs` | `tests/chat_children.rs`, `tests/chat_migrate.rs` (TS-recorded documents) |
+| pi-ai `faux`, `utils/{overflow,retry}.ts` | `chat/{faux,models}.rs`; the product's `Models` is `session_core::turns::TurnModels` | the tests above |
+| `task-store.ts` journals (both Rust ports) | `chat/children.rs` (`ultron.child` tasks), `delegation::task_store` now an adapter over `task_store.rs` | `tests/chat_children.rs` |
 | Swarm items (rewriteplan) | `chat/{swarm,host_ops}.rs`, `packages/coding-agent/src/ultron/rlm/swarm_api.py` | `tests/chat_swarm.rs`, `tests/chat_swarm_python.rs` (runtime.py, SIGKILL/reopen) |
 
-Composition-root adoption (crates/cli, crates/daemon): build `KernelCells` with the stack's lanes and a handler
-factory `|call| HostOps::handler(call, Some(stack_handler))`, `StreamFnModels` over the provider stream, and
-`ChatHarness::open(storage, options)`; submit user input with `Conversation::submit`, render from `pi.live`/entries.
+Composition-root adoption: session-core builds the `ChatHarness` (`turns.rs`: `TurnCells` over the stack's lanes,
+`TurnModels` over the provider stream); user input is submitted with `Conversation::submit` and rendered from
+`pi.live`/entries.
 
 Not ported yet: nested tool calls (`executeTool`), tool hooks (`beforeTool`/`afterTool`/`afterTools`), section
 registry/wrappers (sections come from one `SectionSource`), background threshold compaction cases beyond the
@@ -97,6 +96,5 @@ All generators are deterministic (run twice, same sha256); run from the worktree
 `ULTRON_CODING_AGENT_DIR`/`ULTRON_SERVER_DIR` temp dirs:
 
 - `node crates/harness/fixtures/generate.mjs` -> `task-store.json`
-- `node crates/harness/fixtures/generate-supervisor.mjs` -> `task-supervisor.json`
 - `node crates/harness/fixtures/generate-reducer.mjs` -> `reducer.json` (resolves `@ultron/*` to package sources;
   pins `Date.now`, `Math.random`, `randomUUID`; renames UUIDv7 IDs)

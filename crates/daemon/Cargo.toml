@@ -17,11 +17,7 @@ config = { path = "../config" }
 durable = { path = "../durable" }
 getrandom = "=0.4.3"
 harness = { path = "../harness" }
-host = { path = "../host" }
-inference = { path = "../inference" }
-kernel = { path = "../kernel" }
 kernel-apis = { path = "../kernel-apis" }
-loki = { path = "../loki" }
 mcp = { path = "../mcp" }
 nix = { version = "=0.31.3", features = ["signal"] }
 protocol = { path = "../protocol" }
@@ -34,7 +30,6 @@ session-core = { path = "../session-core" }
 session-file = { path = "../session-file" }
 session-journal = { path = "../session-journal" }
 sha2 = "=0.10.9"
-tokio = { version = "=1.53.2", features = ["rt", "time"] }
 
 [dev-dependencies]
 tempfile = "=3.27.0"

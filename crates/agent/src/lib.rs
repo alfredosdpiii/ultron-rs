@@ -9,5 +9,5 @@ mod agent_loop;
 mod types;
 
 pub use agent::{Agent, AgentControl, AgentOptions, QueueMode};
-pub use agent_loop::{agent_loop, agent_loop_continue};
+pub use agent_loop::agent_loop;
 pub use types::*;

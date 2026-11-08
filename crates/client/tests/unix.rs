@@ -1,5 +1,8 @@
 //! Ported from packages/client/test/unix.test.ts and unix-transport.test.ts: the `Client` over real sockets in a
-//! private temp server dir, against a test peer that runs the server's `Connection` state machine.
+//! private temp server dir, against a test peer that runs the TypeScript server's `Connection` state machine
+//! (`tests/server_peer`).
+
+mod server_peer;
 
 use std::io::{Read, Write};
 use std::os::unix::net::{UnixListener, UnixStream};
@@ -8,7 +11,7 @@ use std::time::Duration;
 
 use client::{Client, ClientError, UnixServerRoute, discover_unix_servers};
 use protocol::{ProtocolError, RpcTarget, ServiceCall, Value};
-use server::{Connection, HostError, Output, ServerConfig, ServerServices};
+use server_peer::{Connection, HostError, Output, ServerConfig, ServerServices};
 
 const A: &str = "00000000-0000-4000-8000-00000000000a";
 const B: &str = "00000000-0000-4000-8000-00000000000b";

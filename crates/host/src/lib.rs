@@ -796,7 +796,7 @@ impl Host {
                 .collect();
             return Ok(json!({ "results": results }));
         }
-        if matches!(kind, "bash" | "shell.bash" | "shell.run")
+        if matches!(kind, "bash" | "shell.run")
             && let Some(Value::String(command)) = payload.get("command")
             && let Some(reason) = self.guard.before_shell_on(lane, command)
         {
@@ -807,7 +807,7 @@ impl Host {
         // The model's results: a non-error exit 1 and a sandbox refusal are noted (bash_notes).
         if matches!(
             kind,
-            "bash" | "shell.bash" | "shell.run" | "shell.result" | "shell.get" | "shell.cancel"
+            "bash" | "shell.run" | "shell.result" | "shell.get" | "shell.cancel"
         ) {
             let command = requested.unwrap_or_else(|| result["command"].as_str().unwrap_or_default().to_string());
             let policy = self
@@ -830,7 +830,6 @@ impl Host {
         match kind {
             "bash" if payload.contains_key("yield_after") => self.shell_bash(lane, &payload, signal),
             "bash" => self.blocking_bash(&payload, signal, &mut |_| {}),
-            "shell.bash" => self.shell_bash(lane, &payload, signal),
             "shell.run" => {
                 fields(&payload, &["command", "timeout", "yield_after"])?;
                 let command = command_of(&payload)?;

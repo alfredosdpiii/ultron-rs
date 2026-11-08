@@ -324,7 +324,7 @@ fn acceptance_a56_the_journal_stays_small_and_survives_a_worker_restart() {
         ),
         "('running', None, 'completed', True, 'kept-output\\n')"
     );
-    let restored = host::journal::restore(
+    let restored = host::journal::restore_durable(
         Some(&serde_json::from_str(&std::fs::read_to_string(&journal).unwrap()).unwrap()),
         0,
     )

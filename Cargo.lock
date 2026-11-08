@@ -11,7 +11,6 @@ dependencies = [
  "config",
  "daemon",
  "delegation",
- "harness",
  "hindsight",
  "host",
  "inference",
@@ -24,17 +23,6 @@ dependencies = [
  "session-core",
  "session-file",
  "session-journal",
- "tempfile",
-]
-
-[[package]]
-name = "acceptance-gate"
-version = "0.1.0"
-dependencies = [
- "base64 0.23.1",
- "serde",
- "serde_json",
- "sha2",
  "tempfile",
 ]
 
@@ -389,7 +377,6 @@ dependencies = [
  "kernel",
  "kernel-apis",
  "knowledge",
- "loki",
  "mcp",
  "mimalloc",
  "protocol",
@@ -590,11 +577,7 @@ dependencies = [
  "durable",
  "getrandom 0.4.3",
  "harness",
- "host",
- "inference",
- "kernel",
  "kernel-apis",
- "loki",
  "mcp",
  "nix",
  "protocol",
@@ -608,7 +591,6 @@ dependencies = [
  "sha2",
  "signal-hook",
  "tempfile",
- "tokio",
 ]
 
 [[package]]
@@ -1065,7 +1047,6 @@ dependencies = [
 name = "harness"
 version = "0.1.0"
 dependencies = [
- "agent",
  "ai",
  "chord-delta",
  "compaction",
@@ -1078,8 +1059,6 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2",
- "tempfile",
- "tokio",
 ]
 
 [[package]]
@@ -1138,7 +1117,6 @@ dependencies = [
  "reqwest",
  "review",
  "serde_json",
- "sha2",
  "tokio",
  "url",
 ]
@@ -1487,10 +1465,6 @@ dependencies = [
  "session-file",
  "tui",
 ]
-
-[[package]]
-name = "inventory"
-version = "0.1.0"
 
 [[package]]
 name = "ipnet"
@@ -2723,10 +2697,8 @@ dependencies = [
  "services",
  "session-file",
  "session-journal",
- "sha2",
  "tempfile",
  "tokio",
- "url",
 ]
 
 [[package]]
@@ -3838,6 +3810,10 @@ dependencies = [
  "wayland-protocols",
  "wayland-protocols-wlr",
 ]
+
+[[package]]
+name = "workspace-checks"
+version = "0.1.0"
 
 [[package]]
 name = "write16"

@@ -1,5 +1,5 @@
 //! The session worker process (experimental/session-worker.ts `run`): registers with the coordinator as a peer,
-//! holds the session file's lock, runs the session (crate::session) on its own thread, serves the session services
+//! holds the session file's lock, runs the session on its own thread, serves the session services
 //! to each attachment scope, and follows its owner's demand until it retires, is released or shut down.
 
 use crate::chord::{Call, Endpoint, Provider, Service, ServiceError, ServiceResult};

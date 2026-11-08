@@ -189,21 +189,8 @@ pub fn normalize_links(markdown: &str, version: (u64, u64, u64)) -> String {
     out
 }
 
-/// What `/changelog` shows: the entries oldest first, links pinned, or Pi's empty notice.
-pub fn changelog_markdown(content: Option<&str>) -> String {
-    let mut entries = content.map(parse).unwrap_or_default();
-    if entries.is_empty() {
-        return "No changelog entries found.".into();
-    }
-    entries.reverse();
-    entries
-        .iter()
-        .map(|e| normalize_links(&e.content, e.version))
-        .collect::<Vec<_>>()
-        .join("\n\n")
-}
-
-/// The tokens of [`changelog_markdown`], built entry by entry on every core.
+/// What `/changelog` shows, as tokens: the entries oldest first, links pinned, or Pi's empty notice; built entry by
+/// entry on every core.
 ///
 /// The whole CHANGELOG.md is about 600 KB; lexing it as one document took 4 s in a release build and 46 s in a debug
 /// build, so `/changelog` stalled the TUI. Every entry starts with its `## ` heading at the top level and no entry

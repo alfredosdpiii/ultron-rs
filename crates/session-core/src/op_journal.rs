@@ -1,7 +1,6 @@
-//! The harness operation journal of one run on lane `main` in the format-4 session (a copy of
-//! `session_journal::run::Run`, which writes exactly what the TypeScript drive commits), plus [`Run::reopen`]: the
-//! durable runtime resumes an operation a dead worker left open, so its journal continues from the stored state
-//! instead of being settled as interrupted.
+//! The harness operation journal of one run on lane `main` in the format-4 session, written as the TypeScript drive
+//! commits it, plus [`Run::reopen`]: the durable runtime resumes an operation a dead worker left open, so its journal
+//! continues from the stored state instead of being settled as interrupted.
 
 use serde_json::{Map, Value, json};
 use session_journal::run::{

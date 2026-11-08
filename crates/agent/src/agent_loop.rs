@@ -16,8 +16,8 @@ use std::sync::Arc;
 use mcp::validation::validate_tool_arguments;
 
 use crate::types::{
-    AfterToolCall, AfterToolCallContext, AgentContext, AgentEvent, AgentLoopConfig, AgentMessage, AgentTool,
-    AgentToolResult, BeforeToolCallContext, StreamFn, ToolExecutionMode,
+    AgentContext, AgentEvent, AgentLoopConfig, AgentMessage, AgentTool, AgentToolResult, BeforeToolCallContext,
+    StreamFn, ToolExecutionMode,
 };
 
 pub(crate) fn now_ms() -> i64 {
@@ -61,27 +61,6 @@ pub async fn agent_loop(
     }
     run_loop(current, &mut new_messages, config, signal, &emit, stream_fn).await;
     new_messages
-}
-
-/// `runAgentLoopContinue`: run from the current context without a new message.
-pub async fn agent_loop_continue(
-    context: AgentContext,
-    config: AgentLoopConfig,
-    emit: &mut (dyn FnMut(AgentEvent) + Send),
-    signal: &AbortSignal,
-    stream_fn: &dyn StreamFn,
-) -> Result<Vec<AgentMessage>, String> {
-    match context.messages.last() {
-        None => return Err("Cannot continue: no messages in context".into()),
-        Some(Message::Assistant(_)) => return Err("Cannot continue from message role: assistant".into()),
-        Some(_) => {}
-    }
-    let emit = Emit(Mutex::new(emit));
-    let mut new_messages = Vec::new();
-    emit.emit(AgentEvent::AgentStart);
-    emit.emit(AgentEvent::TurnStart);
-    run_loop(context, &mut new_messages, config, signal, &emit, stream_fn).await;
-    Ok(new_messages)
 }
 
 fn poll_messages(source: &mut Option<crate::types::MessageSource>) -> Vec<AgentMessage> {
@@ -408,16 +387,7 @@ async fn execute_tool_calls(
     signal: &AbortSignal,
     emit: &Emit<'_>,
 ) -> Batch {
-    let sequential = config.tool_execution == ToolExecutionMode::Sequential
-        || calls.iter().any(|call| {
-            context
-                .tools
-                .iter()
-                .find(|t| t.tool().name == call.name)
-                .and_then(|t| t.execution_mode())
-                == Some(ToolExecutionMode::Sequential)
-        });
-    let after = config.after_tool_call.as_ref();
+    let sequential = config.tool_execution == ToolExecutionMode::Sequential;
     let mut finalized = Vec::new();
     if sequential {
         let mut messages = Vec::new();
@@ -427,7 +397,7 @@ async fn execute_tool_calls(
                 Prepared::Immediate(done) => *done,
                 Prepared::Ready { tool, args } => {
                     let executed = execute_prepared(call, tool, &args, signal, emit).await;
-                    finalize(context, assistant, call, &args, executed, after, signal).await
+                    finalize(call, executed)
                 }
             };
             emit_end(&done, emit);
@@ -464,7 +434,7 @@ async fn execute_tool_calls(
                         immediate(call, "Operation aborted")
                     } else {
                         let executed = execute_prepared(call, tool, &args, signal, emit).await;
-                        finalize(context, assistant, call, &args, executed, after, signal).await
+                        finalize(call, executed)
                     };
                     emit_end(&done, emit);
                     (index, done)
@@ -608,46 +578,8 @@ async fn execute_prepared(
     }
 }
 
-/// `finalizeExecutedToolCall`: `afterToolCall` may replace any part of the result; a throw makes it an error.
-async fn finalize(
-    context: &AgentContext,
-    assistant: &AssistantMessage,
-    call: &ToolCall,
-    args: &Value,
-    (mut result, mut is_error): (AgentToolResult, bool),
-    after: Option<&AfterToolCall>,
-    signal: &AbortSignal,
-) -> Finalized {
-    if let Some(after) = after {
-        let outcome = after(
-            AfterToolCallContext {
-                assistant_message: assistant,
-                tool_call: call,
-                args,
-                result: &result,
-                is_error,
-                context,
-            },
-            signal,
-        )
-        .await;
-        match outcome {
-            Ok(Some(replacement)) => {
-                result = AgentToolResult {
-                    content: replacement.content.unwrap_or(result.content),
-                    details: replacement.details.unwrap_or(result.details),
-                    usage: replacement.usage.or(result.usage),
-                    terminate: replacement.terminate.or(result.terminate),
-                };
-                is_error = replacement.is_error.unwrap_or(is_error);
-            }
-            Ok(None) => {}
-            Err(message) => {
-                result = AgentToolResult::error(message);
-                is_error = true;
-            }
-        }
-    }
+/// `finalizeExecutedToolCall` without an `afterToolCall` hook: the executed result as it is.
+fn finalize(call: &ToolCall, (result, is_error): (AgentToolResult, bool)) -> Finalized {
     Finalized {
         call: call.clone(),
         result,

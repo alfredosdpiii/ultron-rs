@@ -1,7 +1,7 @@
 //! A23 (partial): schedules, goals and verification compose within budgets.
 //! Ported from packages/coding-agent/test/ultron-schedules.test.ts with literal expectations: the real
-//! `kernel_apis::SchedulesModule` behind `g3_support::Host`, whose firings are admitted by the real `harness` task
-//! supervisor (slot keys `schedule:<id>:<slot>` as idempotency keys, restart recovery over the same journal, host
+//! `kernel_apis::SchedulesModule` behind `g3_support::Host`, whose firings are admitted by the product's task host
+//! (`delegation::agents`; slot keys `schedule:<id>:<slot>` as idempotency keys, restart recovery over the same journal, host
 //! close). The fired tasks stay running on waiting lanes; these cases never read their results.
 //! Ported: same-slot ticks run once, restart without re-running a claimed slot, coalesced missed ticks, max_runs and
 //! pause, strict payloads.

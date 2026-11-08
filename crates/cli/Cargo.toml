@@ -16,7 +16,6 @@ agent = { path = "../agent" }
 base64 = "=0.23.1"
 image = { version = "=0.25.10", default-features = false, features = ["bmp", "gif", "jpeg", "png", "webp"] }
 ai = { path = "../ai" }
-loki = { path = "../loki" }
 mimalloc = { version = "=0.1.52", default-features = false }
 resources = { path = "../resources" }
 review = { path = "../review" }
@@ -34,7 +33,6 @@ harness = { path = "../harness" }
 hindsight = { path = "../hindsight" }
 interactive = { path = "../interactive" }
 indexmap = "=2.14.2"
-regex = "=1.13.1"
 rustix = { version = "=1.1.5", features = ["event", "std", "termios"] }
 reqwest = { version = "=0.13.5", default-features = false, features = ["rustls", "http2", "system-proxy"] }
 kernel-apis = { path = "../kernel-apis" }
@@ -43,7 +41,6 @@ session-core = { path = "../session-core" }
 server = { path = "../server" }
 session-journal = { path = "../session-journal" }
 inference = { path = "../inference" }
-kernel = { path = "../kernel" }
 mcp = { path = "../mcp" }
 protocol = { path = "../protocol" }
 session-file = { path = "../session-file" }
@@ -58,6 +55,8 @@ sha2 = "=0.10.9"
 
 [dev-dependencies]
 chord-delta = { path = "../chord-delta" }
+kernel = { path = "../kernel" }
+regex = "=1.13.1"
 rustix = { version = "=1.1.5", features = ["net", "process", "std"] }
 ring = "=0.17.14"
 tempfile = "=3.27.0"

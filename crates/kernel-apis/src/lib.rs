@@ -49,9 +49,7 @@ use kernel::{HostHandler, Signal};
 use serde_json::{Map, Value};
 use std::sync::{Arc, Mutex};
 
-pub use artifacts::{
-    ArtifactLimits, Artifacts, ArtifactsModule, FileKeyedDocuments, KeyedDocuments, MemoryKeyedDocuments,
-};
+pub use artifacts::{FileKeyedDocuments, KeyedDocuments, MemoryKeyedDocuments};
 pub use code_skills::{CodeSkillKind, CodeSkills, CodeSkillsOptions};
 pub use context_control::{ContextBranches, ContextControl};
 pub use diagram::{DiagramConfig, DiagramModule};

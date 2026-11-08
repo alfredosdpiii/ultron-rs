@@ -1,8 +1,10 @@
-//! One client connection, sans I/O: bytes in, frames and close decisions out.
+//! The test peer of the client tests: one client connection of a server, sans I/O (bytes in, frames and close
+//! decisions out), the TypeScript server's protocol state machine (the product's server is `crates/daemon`).
 //!
 //! Mirrors `Server.accept/receive/dispatchMessage/finishHandshake/handleRequest/failProtocol` for
 //! server-scoped services. Calls are synchronous, so a request settles before the next message is
 //! read; a `cancel` therefore never finds an active request (TS aborts in-flight async calls).
+#![allow(dead_code)]
 
 use protocol::{
     ClientMessage, ClientMessageDecoder, PROTOCOL_VERSION, ProtocolError, RpcTarget, ServerMessage,

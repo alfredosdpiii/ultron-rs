@@ -1,6 +1,6 @@
 //! The process theme state from packages/coding-agent theme.ts: registered (in-memory) themes, the theme list,
-//! `initTheme` / `setTheme` with the silent fallback to `dark`, `setThemeInstance` and the change callback.
-//! The file watcher is not part of this port.
+//! `initTheme` / `setTheme` with the silent fallback to `dark`. The file watcher, `setThemeInstance` and the change
+//! callback are not part of this port.
 
 use std::cmp::Ordering;
 use std::path::PathBuf;
@@ -26,8 +26,6 @@ pub struct ThemeRegistry {
     pub mode: ColorMode,
     registered: Vec<Theme>,
     current: Option<Theme>,
-    current_name: Option<String>,
-    on_change: Option<Box<dyn FnMut()>>,
 }
 
 /// `String.prototype.localeCompare` for theme names: case-insensitive first, lowercase before uppercase on ties.
@@ -56,8 +54,6 @@ impl ThemeRegistry {
             mode,
             registered: Vec::new(),
             current: None,
-            current_name: None,
-            on_change: None,
         }
     }
 
@@ -130,13 +126,7 @@ impl ThemeRegistry {
         create_theme(&load_theme_json(name, &self.custom_dir)?, self.mode, None)
     }
 
-    /// `getThemeByName`.
-    pub fn theme_by_name(&self, name: &str) -> Option<Theme> {
-        self.load_theme(name).ok()
-    }
-
     fn fall_back_to_dark(&mut self) {
-        self.current_name = Some("dark".into());
         self.current = builtin_theme_json("dark").and_then(|j| create_theme(&j, self.mode, None).ok());
     }
 
@@ -144,22 +134,17 @@ impl ThemeRegistry {
     /// invalid theme silently falls back to `dark`.
     pub fn init_theme(&mut self, name: Option<&str>, default_name: &str) {
         let name = name.unwrap_or(default_name);
-        self.current_name = Some(name.into());
         match self.load_theme(name) {
             Ok(theme) => self.current = Some(theme),
             Err(_) => self.fall_back_to_dark(),
         }
     }
 
-    /// `setTheme(name)`: switch and notify the change callback; on error fall back to `dark` and return the message.
+    /// `setTheme(name)`: switch; on error fall back to `dark` and return the message.
     pub fn set_theme(&mut self, name: &str) -> Result<(), String> {
-        self.current_name = Some(name.into());
         match self.load_theme(name) {
             Ok(theme) => {
                 self.current = Some(theme);
-                if let Some(cb) = &mut self.on_change {
-                    cb();
-                }
                 Ok(())
             }
             Err(e) => {
@@ -169,26 +154,8 @@ impl ThemeRegistry {
         }
     }
 
-    /// `setThemeInstance`.
-    pub fn set_theme_instance(&mut self, theme: Theme) {
-        self.current = Some(theme);
-        self.current_name = Some("<in-memory>".into());
-        if let Some(cb) = &mut self.on_change {
-            cb();
-        }
-    }
-
-    /// `onThemeChange`: replaces any previous callback.
-    pub fn on_theme_change(&mut self, callback: Box<dyn FnMut()>) {
-        self.on_change = Some(callback);
-    }
-
     /// The global `theme` (`None` before `initTheme`, where TS throws "Theme not initialized").
     pub fn current(&self) -> Option<&Theme> {
         self.current.as_ref()
-    }
-
-    pub fn current_name(&self) -> Option<&str> {
-        self.current_name.as_deref()
     }
 }

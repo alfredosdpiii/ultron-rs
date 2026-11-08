@@ -1,23 +1,19 @@
-//! Provider auth and the `Models` runtime of `packages/ai` (`auth/types.ts`, `auth/resolve.ts`, `auth/helpers.ts`,
-//! `auth/credential-store.ts`, `auth/context.ts`, `models.ts`): credentials (api-key and OAuth, the `auth.json` entry
-//! shapes), login interaction, credential stores (in memory with per-provider serialized writes, or `auth.json` with the
-//! TypeScript product's lock and format), the built-in providers' handlers (Anthropic, OpenAI, OpenAI Codex, GitHub
-//! Copilot, Google, Google Vertex, OpenRouter), `resolveProviderAuth` with its locked OAuth refresh, and the `Models`
-//! collection: `getAuth`, `checkAuth`, `getAvailable`, `login`, `logout`, and the request auth merged into stream
-//! options before dispatch.
+//! Provider auth of `packages/ai` (`auth/types.ts`, `auth/resolve.ts`, `auth/helpers.ts`, `auth/credential-store.ts`,
+//! `auth/context.ts`): credentials (api-key and OAuth, the `auth.json` entry shapes), login interaction, credential
+//! stores (in memory with per-provider serialized writes, or `auth.json` with the TypeScript product's lock and
+//! format), the built-in providers' handlers (Anthropic, OpenAI, OpenAI Codex, GitHub Copilot, Google, Google Vertex,
+//! OpenRouter), `resolveProviderAuth` with its locked OAuth refresh, and `mergeHeaders`.
 //!
 //! Evidence: `fixtures/generate-auth.mjs` (TypeScript `resolveProviderAuth` over the built-in providers,
-//! `tests/auth.rs`) and `fixtures/generate-rest.mjs auth` (a scripted `Models` session and the `auth.json` store,
-//! `tests/auth_rest.rs`); the store's locking and cancellation rules are ported from `models-runtime.test.ts`.
+//! `tests/auth.rs`) and `fixtures/generate-rest.mjs auth` (the `auth.json` store, `tests/auth_rest.rs`); the store's
+//! locking and cancellation rules are ported from `models-runtime.test.ts`.
 
 use crate::http::{AbortSignal, BoxFuture, Transport, is_aborted};
 use crate::json::normalize_numbers;
 use crate::oauth::OAuthProvider;
-use crate::oauth_flow::{Clock, SystemLoginEnv, system_clock};
+use crate::oauth_flow::{Clock, SystemLoginEnv};
 use crate::oauth_login::LoginContext;
-use crate::options::{ProviderHeaders, SimpleStreamOptions, StreamOptions, now_ms};
-use crate::transcript::normalize_context;
-use crate::types::{AssistantMessage, AssistantMessageEvent, Context, EventSink, Model, StopReason};
+use crate::options::{ProviderHeaders, now_ms};
 use indexmap::IndexMap;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
@@ -389,23 +385,6 @@ impl AuthContext for DefaultAuthContext {
     }
 }
 
-/// An auth context over a fixed map (tests, injected environments).
-#[derive(Clone, Debug, Default)]
-pub struct MapAuthContext {
-    pub env: IndexMap<String, String>,
-    pub files: Vec<String>,
-}
-
-impl AuthContext for MapAuthContext {
-    fn env(&self, name: &str) -> Option<String> {
-        self.env.get(name).filter(|v| !v.trim().is_empty()).cloned()
-    }
-
-    fn file_exists(&self, path: &str) -> bool {
-        self.files.iter().any(|f| f == path)
-    }
-}
-
 /// `overlayEnvAuthContext`: request env values first.
 struct OverlayContext<'a> {
     base: &'a dyn AuthContext,
@@ -732,12 +711,8 @@ impl OAuthAuth for BuiltinOAuth {
     }
 }
 
-/// The auth handlers of a built-in provider, OAuth flows going through `transport`.
-pub fn builtin_provider_auth(provider_id: &str, transport: Arc<dyn Transport>) -> Option<ProviderAuth> {
-    builtin_provider_auth_with_clock(provider_id, transport, system_clock)
-}
-
-/// [`builtin_provider_auth`] with an injected clock for OAuth token expiry.
+/// The auth handlers of a built-in provider, OAuth flows going through `transport`, with an injected clock for OAuth
+/// token expiry.
 pub fn builtin_provider_auth_with_clock(
     provider_id: &str,
     transport: Arc<dyn Transport>,
@@ -1304,7 +1279,7 @@ impl crate::images::ImagesAuth for StoredProviderAuth {
     }
 }
 
-// ------------------------------------------------------------------------------------------------------- Models
+// ------------------------------------------------------------------------------------------------------ Headers
 
 /// `mergeHeaders`: names compare case-insensitively; the override's spelling wins.
 pub fn merge_headers(base: Option<&ProviderHeaders>, override_: Option<&ProviderHeaders>) -> Option<ProviderHeaders> {
@@ -1319,385 +1294,9 @@ pub fn merge_headers(base: Option<&ProviderHeaders>, override_: Option<&Provider
     Some(merged)
 }
 
-/// `filterModels`: the models a credential may use.
-pub type ModelFilter = Arc<dyn Fn(&[Model], Option<&Credential>) -> Vec<Model> + Send + Sync>;
-
-/// A provider in a `Models` collection: id, name, auth and its current models.
-#[derive(Clone)]
-pub struct Provider {
-    pub id: String,
-    pub name: String,
-    pub auth: ProviderAuth,
-    pub models: Vec<Model>,
-    /// Credential-specific availability (`filterModels`).
-    pub filter_models: Option<ModelFilter>,
-}
-
-/// What `getAuth` resolves for: a provider id, or a model (whose static headers are merged in).
-pub enum AuthTarget<'a> {
-    Provider(&'a str),
-    Model(&'a Model),
-}
-
-fn aborted_if(signal: Option<&AbortSignal>) -> Result<(), AuthError> {
-    if is_aborted(signal) {
-        Err(AuthError::Aborted)
-    } else {
-        Ok(())
-    }
-}
-
-/// The `Models` collection: providers plus auth application. OAuth expiry is judged by the auth context's clock.
-pub struct Models {
-    providers: IndexMap<String, Provider>,
-    credentials: Arc<dyn CredentialStore>,
-    auth_context: Arc<dyn AuthContext>,
-}
-
-impl Models {
-    pub fn new(credentials: Arc<dyn CredentialStore>, auth_context: Arc<dyn AuthContext>) -> Self {
-        Models {
-            providers: IndexMap::new(),
-            credentials,
-            auth_context,
-        }
-    }
-
-    /// In-memory credentials and the process environment.
-    pub fn in_memory() -> Self {
-        Models::new(Arc::new(InMemoryCredentialStore::new()), Arc::new(DefaultAuthContext))
-    }
-
-    pub fn credentials(&self) -> &Arc<dyn CredentialStore> {
-        &self.credentials
-    }
-
-    pub fn set_provider(&mut self, provider: Provider) {
-        self.providers.insert(provider.id.clone(), provider);
-    }
-
-    pub fn delete_provider(&mut self, id: &str) {
-        self.providers.shift_remove(id);
-    }
-
-    pub fn clear_providers(&mut self) {
-        self.providers.clear();
-    }
-
-    pub fn providers(&self) -> impl Iterator<Item = &Provider> {
-        self.providers.values()
-    }
-
-    pub fn provider(&self, id: &str) -> Option<&Provider> {
-        self.providers.get(id)
-    }
-
-    pub fn models(&self, provider: Option<&str>) -> Vec<Model> {
-        match provider {
-            Some(id) => self.providers.get(id).map(|p| p.models.clone()).unwrap_or_default(),
-            None => self.providers.values().flat_map(|p| p.models.clone()).collect(),
-        }
-    }
-
-    pub fn model(&self, provider: &str, id: &str) -> Option<Model> {
-        self.models(Some(provider)).into_iter().find(|m| m.id == id)
-    }
-
-    async fn read_credential(&self, provider_id: &str) -> Result<Option<Credential>, AuthError> {
-        self.credentials.read(provider_id).await.map_err(|e| {
-            AuthError::models(
-                ModelsErrorCode::Auth,
-                format!("Credential store read failed for {provider_id}"),
-                Some(&e),
-            )
-        })
-    }
-
-    async fn check_provider_auth(
-        &self,
-        provider: &Provider,
-        credential: Option<&Credential>,
-        signal: Option<&AbortSignal>,
-    ) -> Result<Option<AuthCheck>, AuthError> {
-        if let Some(Credential::OAuth(_)) = credential {
-            return Ok(provider.auth.oauth.as_ref().map(|_| AuthCheck {
-                source: Some("OAuth".into()),
-                kind: AuthType::OAuth,
-            }));
-        }
-        let Some(api_key) = &provider.auth.api_key else {
-            return Ok(None);
-        };
-        let api_credential = match credential {
-            Some(Credential::ApiKey(c)) => Some(c),
-            _ => None,
-        };
-        if let Some(check) = api_key.check(self.auth_context.as_ref(), api_credential) {
-            return check.await.map_err(|e| {
-                AuthError::models(
-                    ModelsErrorCode::Auth,
-                    format!("API key auth check failed for provider {}", provider.id),
-                    Some(&e),
-                )
-            });
-        }
-        let overrides = AuthOverrides {
-            signal: signal.cloned(),
-            ..Default::default()
-        };
-        let resolution = resolve_provider_auth(
-            &provider.id,
-            &provider.auth,
-            self.credentials.as_ref(),
-            self.auth_context.as_ref(),
-            &overrides,
-        )
-        .await?;
-        Ok(resolution.map(|r| AuthCheck {
-            source: r.source,
-            kind: AuthType::ApiKey,
-        }))
-    }
-
-    /// `checkAuth`: whether a provider has complete auth configuration, without refreshing OAuth.
-    pub async fn check_auth(
-        &self,
-        provider_id: &str,
-        signal: Option<&AbortSignal>,
-    ) -> Result<Option<AuthCheck>, AuthError> {
-        aborted_if(signal)?;
-        let Some(provider) = self.providers.get(provider_id) else {
-            return Ok(None);
-        };
-        let credential = self.read_credential(provider_id).await?;
-        self.check_provider_auth(provider, credential.as_ref(), signal).await
-    }
-
-    /// `getAvailable`: models of providers with complete auth, filtered per credential.
-    pub async fn get_available(
-        &self,
-        provider_id: Option<&str>,
-        signal: Option<&AbortSignal>,
-    ) -> Result<Vec<Model>, AuthError> {
-        aborted_if(signal)?;
-        let providers: Vec<&Provider> = match provider_id {
-            Some(id) => self.providers.get(id).into_iter().collect(),
-            None => self.providers.values().collect(),
-        };
-        let mut out = Vec::new();
-        for provider in providers {
-            let credential = self.read_credential(&provider.id).await?;
-            if self
-                .check_provider_auth(provider, credential.as_ref(), signal)
-                .await?
-                .is_none()
-            {
-                continue;
-            }
-            match &provider.filter_models {
-                Some(filter) => out.extend(filter(&provider.models, credential.as_ref())),
-                None => out.extend(provider.models.clone()),
-            }
-        }
-        Ok(out)
-    }
-
-    /// `getAuth`: provider-scoped auth, plus the model's static headers when given a model.
-    pub async fn get_auth(
-        &self,
-        target: AuthTarget<'_>,
-        overrides: &AuthOverrides,
-    ) -> Result<Option<AuthResult>, AuthError> {
-        let (provider_id, model) = match target {
-            AuthTarget::Provider(id) => (id, None),
-            AuthTarget::Model(model) => (model.provider.as_str(), Some(model)),
-        };
-        let Some(provider) = self.providers.get(provider_id) else {
-            return Ok(None);
-        };
-        let result = resolve_provider_auth(
-            provider_id,
-            &provider.auth,
-            self.credentials.as_ref(),
-            self.auth_context.as_ref(),
-            overrides,
-        )
-        .await?;
-        let Some(mut result) = result else {
-            return Ok(None);
-        };
-        if let Some(headers) = model.and_then(|m| m.headers.as_ref()) {
-            let model_headers: ProviderHeaders = headers.iter().map(|(k, v)| (k.clone(), Some(v.clone()))).collect();
-            result.auth.headers = merge_headers(result.auth.headers.as_ref(), Some(&model_headers));
-        }
-        Ok(Some(result))
-    }
-
-    /// `login`: run the provider's flow and persist the credential it returns.
-    pub async fn login(
-        &self,
-        provider_id: &str,
-        kind: AuthType,
-        interaction: &dyn AuthInteraction,
-    ) -> Result<Credential, AuthError> {
-        let signal = interaction.signal();
-        aborted_if(signal.as_ref())?;
-        let provider = self.providers.get(provider_id).ok_or_else(|| {
-            AuthError::models(
-                ModelsErrorCode::Provider,
-                format!("Unknown provider: {provider_id}"),
-                None,
-            )
-        })?;
-        let unsupported = || {
-            AuthError::models(
-                ModelsErrorCode::Auth,
-                format!("{} does not support {} login", provider.name, kind.as_str()),
-                None,
-            )
-        };
-        let failed = |e: String| AuthError::Models(ModelsError::new(ModelsErrorCode::Auth, e));
-        let credential = match kind {
-            AuthType::OAuth => {
-                let oauth = provider.auth.oauth.as_ref().ok_or_else(unsupported)?;
-                Credential::OAuth(oauth.login(interaction).await.map_err(failed)?)
-            }
-            AuthType::ApiKey => {
-                let api_key = provider.auth.api_key.as_ref().ok_or_else(unsupported)?;
-                let login = api_key.login(interaction).ok_or_else(unsupported)?;
-                Credential::ApiKey(login.await.map_err(failed)?)
-            }
-        };
-        aborted_if(signal.as_ref())?;
-        let stored = credential.clone();
-        self.credentials
-            .modify(
-                provider_id,
-                Box::new(move |_| Box::pin(async move { Ok(Some(stored)) })),
-                signal.as_ref(),
-            )
-            .await
-            .map_err(|error| {
-                let detail = match error {
-                    StoreError::Callback(e) => e.message(),
-                    StoreError::Aborted => return AuthError::Aborted,
-                    StoreError::Store(e) => e,
-                };
-                AuthError::models(
-                    ModelsErrorCode::Auth,
-                    format!("Credential store modify failed for {provider_id}"),
-                    Some(&detail),
-                )
-            })?;
-        Ok(credential)
-    }
-
-    /// `logout`: remove the stored credential.
-    pub async fn logout(&self, provider_id: &str, signal: Option<&AbortSignal>) -> Result<(), AuthError> {
-        aborted_if(signal)?;
-        self.credentials.delete(provider_id).await.map_err(|e| {
-            AuthError::models(
-                ModelsErrorCode::Auth,
-                format!("Credential store delete failed for {provider_id}"),
-                Some(&e),
-            )
-        })
-    }
-
-    /// `applyAuth`: resolve auth and merge it into the request: explicit options win per field, headers merge
-    /// case-insensitively, `transform_headers` runs last, the resolved env is overlaid by the request env, and an
-    /// auth `baseUrl` replaces the model's.
-    pub async fn apply_auth(
-        &self,
-        model: &Model,
-        options: &StreamOptions,
-        transform_headers: Option<&(dyn Fn(ProviderHeaders) -> ProviderHeaders + Send + Sync)>,
-    ) -> Result<(Model, StreamOptions), AuthError> {
-        if !self.providers.contains_key(&model.provider) {
-            return Err(AuthError::models(
-                ModelsErrorCode::Provider,
-                format!("Unknown provider: {}", model.provider),
-                None,
-            ));
-        }
-        let overrides = AuthOverrides {
-            api_key: options.api_key.clone(),
-            env: options.env.as_ref().map(sorted_env),
-            min_oauth_validity_ms: None,
-            signal: options.signal.clone(),
-        };
-        let resolution = self
-            .get_auth(AuthTarget::Model(model), &overrides)
-            .await?
-            .ok_or_else(|| {
-                AuthError::models(
-                    ModelsErrorCode::Auth,
-                    format!("Provider is not configured: {}", model.provider),
-                    None,
-                )
-            })?;
-        let auth = resolution.auth;
-        let mut request = options.clone();
-        request.api_key = options.api_key.clone().or(auth.api_key);
-        let mut headers = merge_headers(auth.headers.as_ref(), options.headers.as_ref());
-        if let Some(transform) = transform_headers {
-            headers = Some(transform(headers.unwrap_or_default()));
-        }
-        request.headers = headers;
-        if resolution.env.is_some() || options.env.is_some() {
-            let mut env: crate::env::ProviderEnv = resolution.env.unwrap_or_default().into_iter().collect();
-            env.extend(options.env.clone().unwrap_or_default());
-            request.env = Some(env);
-        }
-        let mut request_model = model.clone();
-        if let Some(base_url) = auth.base_url {
-            request_model.base_url = base_url;
-        }
-        Ok((request_model, request))
-    }
-
-    /// `streamSimple`: normalize the context, apply auth, and dispatch to the model's API. A setup failure ends the
-    /// stream with an `error` event (`lazyStream`).
-    pub async fn stream_simple(
-        &self,
-        model: &Model,
-        context: &Context,
-        options: &SimpleStreamOptions,
-        transport: &dyn Transport,
-        sink: &mut EventSink<'_>,
-    ) -> AssistantMessage {
-        let transcript = normalize_context(context);
-        let applied = self.apply_auth(model, &options.base, None).await;
-        let (request_model, base) = match applied {
-            Ok(applied) => applied,
-            Err(error) => return setup_error(model, &error.message(), sink),
-        };
-        let request = SimpleStreamOptions {
-            base,
-            ..options.clone()
-        };
-        match crate::dispatch::stream_simple(&request_model, &transcript, &request, transport, sink).await {
-            Ok(message) => message,
-            Err(error) => setup_error(model, &error, sink),
-        }
-    }
-}
-
 /// Provider env in a stable order.
 fn sorted_env(env: &crate::env::ProviderEnv) -> CredentialEnv {
     let mut entries: Vec<(&String, &String)> = env.iter().collect();
     entries.sort();
     entries.into_iter().map(|(k, v)| (k.clone(), v.clone())).collect()
-}
-
-/// `createSetupErrorMessage` + the error event of `lazyStream`.
-pub fn setup_error(model: &Model, message: &str, sink: &mut EventSink<'_>) -> AssistantMessage {
-    let mut error = AssistantMessage::pending(model, now_ms());
-    error.stop_reason = StopReason::Error;
-    error.error_message = Some(message.to_string());
-    sink(&AssistantMessageEvent::Error {
-        reason: StopReason::Error,
-        error: error.clone(),
-    });
-    error
 }

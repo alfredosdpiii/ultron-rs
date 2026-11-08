@@ -84,33 +84,7 @@ fn tui_qol_keys_double_tap_fires_once_within_the_window() {
 }
 
 #[test]
-fn tui_qol_keys_display_reset_replays_scrollback() {
-    use tui::components::Text;
-    use tui::viewport::{HistoryKind, Transcript, ViewportRenderer};
+fn tui_qol_keys_alt_l_is_display_reset() {
     let k = manager(Vec::new());
-    let mut transcript = Transcript::new();
-    for i in 0..3 {
-        let id = transcript.push_live(Box::new(Text::new(&format!("block {i}"), 0, 0, None)));
-        transcript.finish(id);
-    }
-    let mut renderer = ViewportRenderer::new();
-    let plan = transcript.frame(20, &["editor".into()]);
-    let frame = renderer.render(&plan, 20, 6);
-    transcript.acknowledge(frame.acknowledged.unwrap());
-    // Alt+L resolves to app.display.reset; the reset is a destructive replay of the retired blocks.
     assert!(k.matches("\x1bl", "app.display.reset"));
-    let plan = transcript.replay(20, &["editor".into()]);
-    let history = plan.history.clone().unwrap();
-    assert_eq!(history.kind, HistoryKind::Replay);
-    assert_eq!(
-        history.rows.iter().map(|r| r.trim_end()).collect::<Vec<_>>(),
-        ["block 0", "block 1", "block 2"]
-    );
-    renderer.invalidate();
-    let frame = renderer.render(&plan, 20, 6);
-    assert!(
-        frame.bytes.contains("\x1b[3J"),
-        "scrollback is cleared before the replay"
-    );
-    assert_eq!(frame.acknowledged, Some(history.id));
 }

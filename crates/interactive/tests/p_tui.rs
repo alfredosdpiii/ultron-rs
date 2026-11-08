@@ -462,7 +462,7 @@ impl Clipboard for CopyClipboard {
     fn set_text(&mut self, _: &str) -> Result<(), String> {
         Ok(())
     }
-    fn get_image_png(&mut self) -> Result<Vec<u8>, String> {
+    fn get_image(&mut self) -> Result<tui::clipboard::ClipboardImage, String> {
         Err("none".into())
     }
     fn copy_checked(&mut self, _: &str) -> Result<Option<String>, String> {

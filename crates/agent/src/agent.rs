@@ -5,8 +5,7 @@ use ai::{AbortSignal, ImageContent, Message, Model, TextContent, UserContent, Us
 
 use crate::agent_loop::{agent_loop, now_ms};
 use crate::types::{
-    AfterToolCall, AgentContext, AgentEvent, AgentLoopConfig, AgentMessage, AgentTool, BeforeToolCall, StreamFn,
-    ToolExecutionMode,
+    AgentContext, AgentEvent, AgentLoopConfig, AgentMessage, AgentTool, BeforeToolCall, StreamFn, ToolExecutionMode,
 };
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -84,7 +83,6 @@ pub struct AgentOptions {
     pub tool_execution: ToolExecutionMode,
     pub session_id: Option<String>,
     pub before_tool_call: Option<BeforeToolCall>,
-    pub after_tool_call: Option<AfterToolCall>,
 }
 
 impl AgentOptions {
@@ -100,7 +98,6 @@ impl AgentOptions {
             tool_execution: ToolExecutionMode::Parallel,
             session_id: None,
             before_tool_call: None,
-            after_tool_call: None,
         }
     }
 }
@@ -117,7 +114,6 @@ pub struct Agent {
     pub session_id: Option<String>,
     pub error_message: Option<String>,
     pub before_tool_call: Option<BeforeToolCall>,
-    pub after_tool_call: Option<AfterToolCall>,
     stream_fn: Box<dyn StreamFn>,
     listeners: Vec<Listener>,
     control: AgentControl,
@@ -147,7 +143,6 @@ impl Agent {
             session_id: options.session_id,
             error_message: None,
             before_tool_call: options.before_tool_call,
-            after_tool_call: options.after_tool_call,
             stream_fn,
             listeners: Vec::new(),
             control: AgentControl {
@@ -197,7 +192,6 @@ impl Agent {
             get_steering_messages: Some(Box::new(move || lock(&steering).drain())),
             get_follow_up_messages: Some(Box::new(move || lock(&follow_up).drain())),
             before_tool_call: self.before_tool_call.clone(),
-            after_tool_call: self.after_tool_call.clone(),
         };
         let context = AgentContext {
             messages: self.messages.clone(),

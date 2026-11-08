@@ -20,16 +20,8 @@ pub struct ClipboardImage {
 pub trait Clipboard: Send {
     fn get_text(&mut self) -> Result<String, String>;
     fn set_text(&mut self, text: &str) -> Result<(), String>;
-    /// PNG bytes of a clipboard image.
-    fn get_image_png(&mut self) -> Result<Vec<u8>, String>;
     /// A clipboard image (`readClipboardImage`): PNG, JPEG, WebP or GIF as read, other types converted to PNG.
-    /// By default the PNG of [`Clipboard::get_image_png`].
-    fn get_image(&mut self) -> Result<ClipboardImage, String> {
-        self.get_image_png().map(|bytes| ClipboardImage {
-            bytes,
-            mime_type: "image/png".to_string(),
-        })
-    }
+    fn get_image(&mut self) -> Result<ClipboardImage, String>;
     /// A user-visible copy (`copyToClipboard`): the OSC 52 sequence to write when one is due, else why it failed.
     fn copy_checked(&mut self, text: &str) -> Result<Option<String>, String> {
         self.set_text(text).map(|()| None)
@@ -129,14 +121,6 @@ impl Clipboard for SystemClipboard {
 
     fn set_text(&mut self, text: &str) -> Result<(), String> {
         self.board()?.set_text(text.to_string()).map_err(|e| e.to_string())
-    }
-
-    /// A PNG [`Clipboard::get_image`].
-    fn get_image_png(&mut self) -> Result<Vec<u8>, String> {
-        match self.get_image()? {
-            image if image.mime_type == "image/png" => Ok(image.bytes),
-            _ => Err("no image on the clipboard".to_string()),
-        }
     }
 
     /// `readClipboardImage` (crate::clipboard_image): on Linux `wl-paste` in a Wayland session or WSL, then

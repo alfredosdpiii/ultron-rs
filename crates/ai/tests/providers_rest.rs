@@ -375,8 +375,7 @@ async fn dispatch(
     sink: &mut Sink<'_>,
 ) -> Result<ai::AssistantMessage, String> {
     match (model.api.as_str(), simple) {
-        // The azure and codex scenarios go through the legacy alias names (`streamAzureOpenAIResponses`, ...).
-        ("azure-openai-responses", false) => Ok(ai::legacy::stream_azure_openai_responses(
+        ("azure-openai-responses", false) => Ok(ai::azure_openai_responses::stream(
             model,
             context,
             &parse_options!(options, signal, AzureOpenAIResponsesOptions),
@@ -385,7 +384,7 @@ async fn dispatch(
         )
         .await),
         ("azure-openai-responses", true) => {
-            ai::legacy::stream_simple_azure_openai_responses(
+            ai::azure_openai_responses::stream_simple(
                 model,
                 context,
                 &parse_options!(options, signal, SimpleStreamOptions),
@@ -394,7 +393,7 @@ async fn dispatch(
             )
             .await
         }
-        ("openai-codex-responses", false) => Ok(ai::legacy::stream_openai_codex_responses(
+        ("openai-codex-responses", false) => Ok(ai::openai_codex_responses::stream(
             model,
             context,
             &parse_options!(options, signal, OpenAICodexResponsesOptions),
@@ -403,7 +402,7 @@ async fn dispatch(
         )
         .await),
         ("openai-codex-responses", true) => {
-            ai::legacy::stream_simple_openai_codex_responses(
+            ai::openai_codex_responses::stream_simple(
                 model,
                 context,
                 &parse_options!(options, signal, SimpleStreamOptions),

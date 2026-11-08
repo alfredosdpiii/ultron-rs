@@ -96,12 +96,7 @@ pub fn runtime_event_text_with(events: &[RuntimeEvent], mask: &MaskText) -> Stri
         .join("\n")
 }
 
-/// `runtimeEventMessage`: the events as one Pi custom message.
-pub fn runtime_event_message(events: &[RuntimeEvent], now: u64) -> Value {
-    runtime_event_message_with(events, now, &default_mask())
-}
-
-/// [`runtime_event_message`] with the session's masking.
+/// `runtimeEventMessage`: the events as one Pi custom message, with the session's masking.
 pub fn runtime_event_message_with(events: &[RuntimeEvent], now: u64, mask: &MaskText) -> Value {
     json!({
         "role": "custom",

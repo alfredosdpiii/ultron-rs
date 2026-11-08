@@ -1080,17 +1080,6 @@ mod migration {
             })
             .unwrap_err();
         assert!(refused.contains("imported history root"), "{refused}");
-        let reconciliation = delegation::reconcile::reconcile_records(&delegation::reconcile::ReconcileInput {
-            tasks: None,
-            usage: Some(&stored),
-            progress: None,
-            schedules: None,
-            root_id: None,
-        })
-        .unwrap();
-        assert_eq!(reconciliation["discrepancies"], json!([]));
-        assert_eq!(reconciliation["imported"]["modelCalls"], 3);
-        assert_eq!(reconciliation["imported"]["cost"].as_f64(), Some(cost));
     }
 
     #[test]

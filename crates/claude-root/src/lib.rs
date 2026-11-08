@@ -1,11 +1,10 @@
 //! Claude Code as the root agent of Ultron (packages/coding-agent/src/ultron/claude): `ultron claude` (the
 //! launcher), `ultron mcp` (Ultron's REPL as the one MCP server Claude Code talks to, exposing exactly the `rlm`
-//! tool), `ultron mcp --bridge` (a `--claude` lane's tools), `ultron hook` (Claude Code hook commands),
-//! `ultron watch` and `ultron guide`, plus the `--claude` root-model selection of the session worker.
+//! tool), `ultron hook` (Claude Code hook commands), `ultron watch` and `ultron guide`, plus the `--claude`
+//! root-model selection of the session worker.
 //!
 //! RLM-first: Claude Code sees one tool, `mcp__ultron__rlm`; every capability is a kernel API reached from a cell.
 
-pub mod bridge;
 pub mod checkpoints;
 pub mod child;
 pub mod child_usage;

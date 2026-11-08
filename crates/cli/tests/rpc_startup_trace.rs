@@ -96,7 +96,7 @@ fn cli_rpc_startup_trace_appends_milestones_as_json_lines() {
 #[test]
 fn cli_rpc_startup_trace_line_matches_json_stringify() {
     assert_eq!(
-        client::startup_trace::trace_line(1_729_000_000_123.456, 1_729_000_000_000.5, 7, "rpc.open"),
+        session_core::startup_trace::trace_line(1_729_000_000_123.456, 1_729_000_000_000.5, 7, "rpc.open"),
         "{\"at\":1729000000123.456,\"origin\":1729000000000.5,\"pid\":7,\"label\":\"rpc.open\"}\n"
     );
 }

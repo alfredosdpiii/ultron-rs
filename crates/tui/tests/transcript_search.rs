@@ -10,7 +10,6 @@ use tui::transcript_search::{
     SearchBar, SearchIndex, SearchMatch, SearchOutcome, SearchSegment, SelectionMode, TranscriptSearch, highlight_row,
     match_key, select_match,
 };
-use tui::viewport::Transcript;
 
 fn fixture() -> Value {
     serde_json::from_str(include_str!("../fixtures/transcript-search-parity.json")).unwrap()
@@ -208,21 +207,14 @@ fn tui_transcript_search_highlights_rows_like_ts() {
 
 #[test]
 fn tui_transcript_search_view_searches_scrollback_and_viewport() {
-    let mut transcript = Transcript::new();
-    for i in 0..30 {
-        let id = transcript.push_live(Box::new(tui::components::Text::new(
-            &format!("line {i} alpha"),
-            0,
-            0,
-            None,
-        )));
-        transcript.finish(id);
+    // The rows the app pages: 30 retired (scrollback) blocks, then the live block.
+    let mut rows: Vec<String> = Vec::new();
+    for text in (0..30)
+        .map(|i| format!("line {i} alpha"))
+        .chain(["live alpha tail".to_string()])
+    {
+        rows.extend(tui::components::Text::new(&text, 0, 0, None).render(40));
     }
-    transcript.push_live(Box::new(tui::components::Text::new("live alpha tail", 0, 0, None)));
-    let plan = transcript.frame(40, &[]);
-    transcript.acknowledge(plan.history.unwrap().id);
-    assert_eq!(transcript.retired_len(), 30);
-    let rows = transcript.all_rows(40);
     assert_eq!(rows.len(), 31, "scrollback rows then the live row");
 
     let mut view = TranscriptSearch::new(rows, keys(), false);

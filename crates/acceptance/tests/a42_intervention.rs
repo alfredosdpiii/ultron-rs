@@ -1,7 +1,7 @@
 //! A42: human child intervention and subtree stop preserve unrelated work.
 //! Ported from packages/coding-agent/test/ultron-a42-intervention-subtree-stop.test.ts (both cases) with literal
 //! expectations. The TS cases run `NativeRlmHost` over controlled fake lanes (a prompt that blocks until the test
-//! finishes it, a steer log, an abort count). Here the task runtime is the real `harness` task supervisor (admission,
+//! finishes it, a steer log, an abort count). Here the task runtime is the product's task host, `delegation::agents` (admission,
 //! `agents.inspect` / `agents.status` / `agents.cancel` / `agents.result`, the cancellation cascade with its error
 //! texts, the abort hook of each task whose work is stopped, the durable journal), and the modules are the real
 //! `kernel_apis` family and progress modules, all through `g3_support::Host`; the lanes are the same controlled fakes

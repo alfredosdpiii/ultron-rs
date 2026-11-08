@@ -1876,6 +1876,7 @@ impl Core {
         match op {
             Op::Prompt { message, images, queue } => {
                 let notice = self.persona_user_input(&message);
+                let message = self.expand_prompt_template(message);
                 let result = if self.run.is_some() {
                     match queue {
                         Some(kind) => self.enqueue(kind, message, images, None).map(drop),
@@ -1889,6 +1890,7 @@ impl Core {
             }
             Op::PromptAndWait { message, images } => {
                 self.persona_user_input(&message);
+                let message = self.expand_prompt_template(message);
                 if self.run.is_some() {
                     return reply(Err("Agent is already processing".into()));
                 }
@@ -1929,6 +1931,17 @@ impl Core {
         }
     }
 
+    /// AgentSession `expandPromptTemplate`: a prompt or queued message `/name args` naming one of the session's
+    /// prompt templates (the `/name` commands it lists) becomes the template's text with the arguments substituted.
+    /// Extensions see the text as typed (`persona_user_input` runs first); `/review` was already expanded where the
+    /// client's text entered the worker (crate::review_command).
+    fn expand_prompt_template(&self, message: String) -> String {
+        if !message.starts_with('/') {
+            return message;
+        }
+        resources::prompt_templates::expand_prompt_template(&message, &self.lane.stack.prompt_templates())
+    }
+
     fn sync_op(&mut self, op: Op) -> OpResult {
         // `/usage` reads the session file it describes: the counters still in memory are saved first.
         if matches!(op, Op::Describe) {
@@ -1950,6 +1963,7 @@ impl Core {
                 entry_id,
             } => {
                 self.persona_user_input(&message);
+                let message = self.expand_prompt_template(message);
                 self.enqueue(kind, message, images, entry_id).map(|id| Some(json!(id)))
             }
             Op::CancelQueued { entry_id } => {

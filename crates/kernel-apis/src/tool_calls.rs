@@ -56,8 +56,7 @@ pub trait ToolRunner: Send + Sync {
     /// Runs tool `name` to its end (blocking); `cancel` aborts it. Ok is the tool result `{content, details}`.
     fn execute(&self, name: &str, call_id: &str, params: &Map<String, Value>, cancel: &Signal)
     -> Result<Value, String>;
-    /// [`ToolRunner::execute`] with the tool's progress reported to `on_update` (`onUpdate`); a runner whose tools
-    /// report none runs them as `execute`.
+    /// [`ToolRunner::execute`] with the tool's progress reported to `on_update` (`onUpdate`).
     fn execute_with_updates(
         &self,
         name: &str,
@@ -65,10 +64,7 @@ pub trait ToolRunner: Send + Sync {
         params: &Map<String, Value>,
         cancel: &Signal,
         on_update: ToolUpdate<'_>,
-    ) -> Result<Value, String> {
-        let _ = on_update;
-        self.execute(name, call_id, params, cancel)
-    }
+    ) -> Result<Value, String>;
 }
 
 /// The preview a call shows while it waits for its lane's gate.

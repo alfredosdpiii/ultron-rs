@@ -322,11 +322,6 @@ impl From<SessionProjection<'_>> for SessionContext {
     }
 }
 
-/// `getLatestCompactionEntry`.
-pub fn latest_compaction(entries: &[Value]) -> Option<&Value> {
-    entries.iter().rev().find(|e| entry_type(e) == Some("compaction"))
-}
-
 fn content_text(content: Option<&Value>) -> String {
     match content {
         Some(Value::String(s)) => s.clone(),

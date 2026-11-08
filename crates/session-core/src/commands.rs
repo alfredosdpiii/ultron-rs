@@ -26,14 +26,9 @@ fn entry(name: &str, description: Option<&str>, source: &str, info: Option<Value
     Value::Object(out)
 }
 
-/// The commands of a session in `cwd` with profile `agent_dir`, the bundled skills in `bundled` and no resolved
-/// resources (only the bundled skills; [`list_commands_with`] takes the session's).
-pub fn list_commands(cwd: &str, agent_dir: &str, bundled: Option<&str>) -> Vec<Value> {
-    list_commands_with(cwd, agent_dir, bundled, &Default::default())
-}
-
-/// [`list_commands`] with the session's resources (crate::session_resources): its prompts and skills are commands,
-/// each with its `SourceInfo` (`resourceSourceInfo`).
+/// The commands of a session in `cwd` with profile `agent_dir`, the bundled skills in `bundled` and the session's
+/// resources (crate::session_resources): its prompts and skills are commands, each with its `SourceInfo`
+/// (`resourceSourceInfo`).
 pub fn list_commands_with(
     cwd: &str,
     agent_dir: &str,

@@ -9,7 +9,7 @@
 //!
 //! The real binary runs in RPC mode against a scripted provider, so every model decision is fixed while every
 //! runtime effect is real: the kernel, the sandboxed shell, the typed-agent host and its lanes, retained instances,
-//! background jobs, the release gate, artifacts, refinements, experiments and the inspector of the shipped
+//! background jobs, the release gate, refinements, experiments and the inspector of the shipped
 //! session stack. The TS scripted reply `{delayMs: 20000}` of a slow child is [`Reply::Hang`]: the response is held
 //! until the request is cancelled. The TS abort case waits 3 s before aborting; here it waits for the slow child's
 //! request to reach the provider.
@@ -87,8 +87,7 @@ review = await agents.spawn('correctness-reviewer@1', {'request': 'Review this c
 review_result = await review.result()
 state['review_task'] = review.id
 state['review_result'] = review_result
-art = await rlm.host_request('artifacts.put', {'text': diff, 'options': {'mediaType': 'text/x-diff', 'label': 'candidate fix'}})
-print('RESULT ' + json.dumps({'base': verdict(base), 'candidate': verdict(cand), 'gate': decision['decision'], 'review': review_result, 'review_task': review.id, 'artifact': art['id']}))"#;
+print('RESULT ' + json.dumps({'base': verdict(base), 'candidate': verdict(cand), 'gate': decision['decision'], 'review': review_result, 'review_task': review.id}))"#;
 
 fn code_retain_and_improve() -> String {
     format!(
@@ -126,10 +125,6 @@ fn failure_variant_steps() -> Vec<String> {
             "{VARIANT_PRELUDE}\nawait attempt('invalid_typed_result', lambda: agents.invoke('correctness-reviewer@1', {{'request': 'MALFORMED review'}}))"
         ),
         "await attempt('memory_outage', lambda: memory.prepare('launcher path'))".into(),
-        // There is no grant system (user decision, wave 40): the shared runtime's `grants` namespace reaches a host
-        // that does not serve it.
-        "await attempt('no_grants', lambda: grants.issue('repo:demo', 'rev-1', 'policy@1', 'apply-patch', 600000))"
-            .into(),
         "await attempt('cross_family_message', lambda: agent_message.send('hello', receiver_role='child', receiver_id='ultron-task-not-mine'))".into(),
         "await attempt('harmful_refinement', lambda: refinements.propose('instruction', 'instruction:policy', 0, 'Disable all checks.', [{'why': 'faster'}]))".into(),
         r#"other = await agents.spawn('identity@1', {'x': 1})
@@ -351,7 +346,6 @@ fn acceptance_a46_fix_review_retain_and_improve_with_real_runtime_effects() {
     assert_eq!(fix["review"]["status"], "succeeded");
     assert_eq!(fix["review"]["value"]["outcome"], "no_findings");
     assert_eq!(fix["review"]["verification"], "unverified");
-    assert_eq!(fix["artifact"].as_str().unwrap().len(), 64);
     assert!(
         std::fs::read_to_string(install.project().join("repo/calc.py"))
             .unwrap()
@@ -455,14 +449,6 @@ fn acceptance_a46_failure_variants_never_become_verified_completion() {
     assert_eq!(invalid["verification"], "unverified");
     // Optional-service outage is explicit rather than an empty success.
     refused(&variants, "memory_outage");
-    refused(&variants, "no_grants");
-    assert!(
-        variants["no_grants"]["error"]
-            .as_str()
-            .unwrap()
-            .contains("grants.issue"),
-        "{variants:?}"
-    );
     refused(&variants, "cross_family_message");
     assert_eq!(
         variants["cross_family_message"]["error"],

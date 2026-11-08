@@ -1,18 +1,26 @@
-//! A [`CellExecutor`] over persistent Python kernels (`crates/kernel`): one kernel per REPL lane, opened on first
-//! use. A cell's host requests go to the composition root's handler, except `cell.output`, which publishes durable
-//! partial output into the cell's `ultron.live` slot (what an interrupted cell's result carries after a crash).
+//! A test [`CellExecutor`] over persistent Python kernels (`crates/kernel`): one kernel per REPL lane, opened on first
+//! use, so these tests run the durable REPL cell contract of `harness::chat` over a real kernel without the session
+//! stack (the product's executor is `session_core::turns::TurnCells`). A cell's host requests go to the test's
+//! handler, except `cell.output`, which publishes durable partial output into the cell's `ultron.live` slot (what an
+//! interrupted cell's result carries after a crash).
+#![allow(dead_code)]
 
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
+use std::time::Duration;
 
 use ai::Tool;
 use durable::ConversationId;
 use kernel::{ExecutionResult, HostHandler, Kernel, Signal, Status};
 use serde_json::{Map, Value, json};
 
-use super::cell::{CellCall, CellExecutor, CellProgress, CellResult};
-use crate::scheduler::Cancel;
-use crate::scheduler::cancel::lock;
+use harness::chat::{CellCall, CellExecutor, CellProgress, CellResult};
+use harness::scheduler::Cancel;
+
+fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
+    mutex.lock().unwrap_or_else(PoisonError::into_inner)
+}
 
 /// Opens the kernel of one conversation's lane: every conversation (the root, each child) has its own kernels.
 pub type OpenLane = Arc<dyn Fn(ConversationId, &str) -> Result<Arc<Kernel>, String> + Send + Sync>;
@@ -133,20 +141,27 @@ impl CellExecutor for KernelCells {
 
     fn execute(&self, call: &CellCall, progress: &CellProgress, signal: &Cancel) -> Result<CellResult, String> {
         let kernel = self.lane(call.conversation_id, call.lane())?;
+        // The invocation's cancellation aborts the cell: a watcher waits for it until the cell is done.
         let kernel_signal = Signal::new();
-        let bridge = kernel_signal.clone();
-        let registration = signal.on_cancel(move |reason| bridge.abort(reason.to_string()));
-        if registration.is_none() {
-            kernel_signal.abort(signal.reason().map(|reason| reason.to_string()).unwrap_or_default());
-        }
+        let done = Arc::new(AtomicBool::new(false));
+        let watcher = {
+            let (signal, bridge, done) = (signal.clone(), kernel_signal.clone(), done.clone());
+            std::thread::spawn(move || {
+                while !done.load(Ordering::SeqCst) {
+                    if let Some(reason) = signal.wait_timeout(Duration::from_millis(5)) {
+                        bridge.abort(reason.to_string());
+                        return;
+                    }
+                }
+            })
+        };
         let handler: Arc<dyn HostHandler> = Arc::new(CellHandler {
             progress: progress.clone(),
             inner: self.handlers.as_ref().map(|handlers| handlers(call)),
         });
         let executed = kernel.execute(call.code(), Some(&kernel_signal), Some(handler));
-        if let Some(id) = registration {
-            signal.off(id);
-        }
+        done.store(true, Ordering::SeqCst);
+        let _ = watcher.join();
         let result = executed.map_err(|error| error.to_string())?;
         Ok(CellResult {
             is_error: result.status == Status::Error,

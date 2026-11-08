@@ -1,18 +1,16 @@
 //! A27: RLM handles a self-contained task without graph/delegation/memory/refinement.
 //! Ported from packages/coding-agent/test/ultron-a27-self-contained-rlm.test.ts: a real kernel with a recording
-//! (and a rejecting) host handler; the Rust host operations (crates/host) behind a
-//! recorder with an empty Rust task supervisor; and the `ultron` binary running the task as `rlm` cells.
+//! (and a rejecting) host handler; the Rust host operations (crates/host) behind a recorder; and the `ultron` binary
+//! running the task as `rlm` cells.
 
 mod common;
 
 use common::{Install, Provider, Recorder, Reply, kernel_in, run, stdout_of, value};
-use harness::supervisor::TaskSupervisor;
-use harness::task_store::TaskDocumentStore;
 use host::cell::{CellFormat, cell_output};
 use host::secrets::OutputMasker;
 use host::{AllowAll, Host};
 use kernel::{HostHandler, Status};
-use serde_json::{Value, json};
+use serde_json::json;
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
@@ -102,21 +100,7 @@ fn rejecting_kernel_part() {
     kernel.shutdown();
 }
 
-#[derive(Default)]
-struct MemoryStore(Option<Value>);
-
-impl TaskDocumentStore for MemoryStore {
-    fn read(&mut self) -> Result<Option<Value>, String> {
-        Ok(self.0.clone())
-    }
-    fn write(&mut self, document: &Value) -> Result<(), String> {
-        self.0 = Some(document.clone());
-        Ok(())
-    }
-}
-
-/// The Rust host operations behind a recorder: the task makes no request,
-/// and the Rust task supervisor holds no task.
+/// The Rust host operations behind a recorder: the task makes no request.
 fn native_host_part() {
     let cells = task_cells();
     let dir = tempfile::tempdir().unwrap();
@@ -141,8 +125,6 @@ fn native_host_part() {
     }
     assert_eq!(last.split('\n').next().unwrap(), expected_answer().trim_end());
     assert!(kinds.lock().unwrap().is_empty());
-    let mut supervisor = TaskSupervisor::new(MemoryStore::default());
-    assert_eq!(supervisor.status(None).unwrap(), Vec::<Value>::new());
     // Optional services are genuinely absent here: asking for one fails explicitly.
     let refused = cell_output(&run(&kernel, "await refinements.list()"), &format).unwrap_err();
     assert!(

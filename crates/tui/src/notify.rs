@@ -575,10 +575,6 @@ impl Multiplexer {
         }
     }
 
-    pub fn owns_screen_grid(self) -> bool {
-        self != Self::Orca
-    }
-
     pub fn notifier_tier(self) -> Option<NotifierTier> {
         match self {
             Self::Herdr => Some(NotifierTier::Pane),

@@ -9,6 +9,7 @@
 #[path = "../../harness/tests/chat_support/mod.rs"]
 mod chat_support;
 mod journal_kill_support;
+mod kernel_cells_support;
 #[path = "../../harness/tests/support/mod.rs"]
 mod support;
 
@@ -19,11 +20,11 @@ use std::time::{Duration, Instant};
 use chat_support::*;
 use durable::SubmissionStatus;
 use harness::chat::faux::{rlm_call, text_message};
-use harness::chat::kernel_cells::{KernelCells, rlm_tool};
 use harness::chat::{ChatHarness, ChatOptions, Conversation, SubmissionDraft};
 use harness::scheduler::Registry;
 use journal_kill_support::{create_session, kill_reported_pid, open_journal};
 use kernel::{HostHandler, Kernel, KernelOptions, Signal};
+use kernel_cells_support::{KernelCells, rlm_tool};
 use serde_json::{Map, Value, json};
 use support::{bg, eventually};
 

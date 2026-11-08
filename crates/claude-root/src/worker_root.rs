@@ -16,10 +16,6 @@ pub fn claude_root_requested(var: &dyn Fn(&str) -> Option<String>) -> bool {
     var(ULTRON_ROOT_ENV).is_some_and(|v| v.trim().eq_ignore_ascii_case("claude"))
 }
 
-/// What the lanes are told about their tools under Claude Code (appended to the lane's own system prompt).
-pub const CLAUDE_CODE_LANE_NOTE: &str = "# Running on Claude Code
-You run inside Claude Code (headless), driven by Ultron. Your tools are Ultron's, served over MCP: `rlm` is listed as `mcp__ultron__rlm` (any other tool likewise as `mcp__ultron__<name>`). Claude Code's own built-in tools are disabled; do everything through these. When background work you started finishes while you are idle, Ultron starts a new turn with a `<runtime_event>` message, as the runtime guide describes. Claude Code manages your context window.";
-
 /// The root model `--claude` selects, and the environment the session worker must get.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ClaudeRoot {

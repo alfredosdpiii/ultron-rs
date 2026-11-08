@@ -1,8 +1,23 @@
 //! `/changelog`: replays fixtures/changelog.json, recorded from utils/changelog.ts by fixtures/changelog.mjs.
 
-use interactive::changelog::{changelog_markdown, changelog_tokens, normalize_links, parse};
+use interactive::changelog::{changelog_tokens, normalize_links, parse};
 use serde_json::Value;
 use tui::marked::markdown_tokens;
+
+/// What `/changelog` shows, as one document: the entries oldest first, links pinned, or Pi's empty notice. The
+/// oracle `changelog_tokens` must agree with when the document is lexed whole.
+fn changelog_markdown(content: Option<&str>) -> String {
+    let mut entries = content.map(parse).unwrap_or_default();
+    if entries.is_empty() {
+        return "No changelog entries found.".into();
+    }
+    entries.reverse();
+    entries
+        .iter()
+        .map(|e| normalize_links(&e.content, e.version))
+        .collect::<Vec<_>>()
+        .join("\n\n")
+}
 
 fn fixture() -> Value {
     serde_json::from_str(include_str!("../fixtures/changelog.json")).unwrap()

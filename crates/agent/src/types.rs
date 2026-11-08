@@ -52,9 +52,6 @@ pub type ToolUpdate<'a> = dyn Fn(AgentToolResult) + Send + Sync + 'a;
 pub trait AgentTool: Send + Sync {
     /// The declaration the model sees.
     fn tool(&self) -> &ai::Tool;
-    fn execution_mode(&self) -> Option<ToolExecutionMode> {
-        None
-    }
     /// `prepareArguments`: adapt the raw call arguments before validation (for example an old argument name). `Err`
     /// is a thrown error: the call fails with the message as text.
     fn prepare_arguments(&self, args: &Value) -> Result<Value, String> {
@@ -106,42 +103,12 @@ pub struct BeforeToolCallResult {
     pub terminate: Option<bool>,
 }
 
-/// What `afterToolCall` sees: the executed call, its validated arguments and its result.
-pub struct AfterToolCallContext<'a> {
-    pub assistant_message: &'a AssistantMessage,
-    pub tool_call: &'a ToolCall,
-    pub args: &'a Value,
-    pub result: &'a AgentToolResult,
-    pub is_error: bool,
-    pub context: &'a AgentContext,
-}
-
-/// `afterToolCall`'s replacement: each field present replaces the result's.
-#[derive(Clone, Debug, Default, PartialEq)]
-pub struct AfterToolCallResult {
-    pub content: Option<Vec<UserContent>>,
-    pub details: Option<Value>,
-    pub usage: Option<Usage>,
-    pub terminate: Option<bool>,
-    pub is_error: Option<bool>,
-}
-
 /// Runs after validation, before execution. `Err` is a thrown error: the call fails with the message as text.
 pub type BeforeToolCall = Arc<
     dyn for<'a> Fn(
             BeforeToolCallContext<'a>,
             &'a AbortSignal,
         ) -> BoxFuture<'a, Result<Option<BeforeToolCallResult>, String>>
-        + Send
-        + Sync,
->;
-
-/// Runs after execution. `Err` is a thrown error: the result becomes an error with the message as text.
-pub type AfterToolCall = Arc<
-    dyn for<'a> Fn(
-            AfterToolCallContext<'a>,
-            &'a AbortSignal,
-        ) -> BoxFuture<'a, Result<Option<AfterToolCallResult>, String>>
         + Send
         + Sync,
 >;
@@ -156,7 +123,6 @@ pub struct AgentLoopConfig {
     pub get_steering_messages: Option<MessageSource>,
     pub get_follow_up_messages: Option<MessageSource>,
     pub before_tool_call: Option<BeforeToolCall>,
-    pub after_tool_call: Option<AfterToolCall>,
 }
 
 impl AgentLoopConfig {
@@ -170,7 +136,6 @@ impl AgentLoopConfig {
             get_steering_messages: None,
             get_follow_up_messages: None,
             before_tool_call: None,
-            after_tool_call: None,
         }
     }
 }

@@ -325,14 +325,9 @@ impl Default for OAuthOptions {
     }
 }
 
-/// The OAuth handler of `provider`: a built-in provider's, or Radius's on the provider's gateway (the built-in
-/// `radius`, or a models.json provider with `"oauth": "radius"`).
-pub fn oauth_login_handler(env: &Env, provider: &str) -> Option<Arc<dyn ai::auth::OAuthAuth>> {
-    oauth_handler_with(env, provider, &OAuthOptions::for_env(env))
-}
-
-/// [`oauth_login_handler`] over `options`: every provider TypeScript signs in with an account (Anthropic, OpenAI
-/// Codex, GitHub Copilot, xAI, Kimi For Coding, Meta, OpenRouter, Radius).
+/// The OAuth handler of `provider` over `options`: a built-in provider's, or Radius's on the provider's gateway (the
+/// built-in `radius`, or a models.json provider with `"oauth": "radius"`); every provider TypeScript signs in with an
+/// account (Anthropic, OpenAI Codex, GitHub Copilot, xAI, Kimi For Coding, Meta, OpenRouter, Radius).
 pub fn oauth_handler_with(env: &Env, provider: &str, options: &OAuthOptions) -> Option<Arc<dyn ai::auth::OAuthAuth>> {
     let transport = options.transport.clone();
     let clock = ai::oauth_flow::system_clock;

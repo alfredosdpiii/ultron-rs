@@ -2,8 +2,8 @@
 //!
 //! [`Models`] is upstream `HarnessOptions.models` reduced to what the generation and compaction tasks call:
 //! resolve a model, stream one response under the invocation's signal, and poll or cancel a deferred response. It
-//! blocks the calling task thread. [`StreamFnModels`] adapts an `agent::StreamFn` (the provider stack `crates/cli`
-//! composes) to it; tests use [`super::faux::Faux`].
+//! blocks the calling task thread. The product implementation is `session_core::turns::TurnModels`; tests use
+//! [`super::faux::Faux`].
 
 use std::sync::{Arc, LazyLock};
 
@@ -288,55 +288,4 @@ pub fn is_retryable(message: &AssistantMessage) -> bool {
         return false;
     };
     !NON_RETRYABLE.is_match(text) && RETRYABLE.is_match(text)
-}
-
-/// [`Models`] over the provider stack the composition root already builds: a model catalog and an
-/// `agent::StreamFn`. Each request runs the stream's future on a current-thread Tokio runtime on the calling task
-/// thread; cancelling the invocation's signal aborts the request's `AbortSignal`.
-#[derive(Clone)]
-pub struct StreamFnModels {
-    models: Vec<Model>,
-    stream: Arc<dyn agent::StreamFn>,
-}
-
-impl StreamFnModels {
-    pub fn new(models: Vec<Model>, stream: Arc<dyn agent::StreamFn>) -> StreamFnModels {
-        StreamFnModels { models, stream }
-    }
-}
-
-impl Models for StreamFnModels {
-    fn get_model(&self, provider: &str, model_id: &str) -> Option<Model> {
-        self.models
-            .iter()
-            .find(|model| model.provider == provider && model.id == model_id)
-            .cloned()
-    }
-
-    fn stream(
-        &self,
-        model: &Model,
-        context: &TranscriptContext,
-        request: &StreamRequest,
-        signal: &Cancel,
-        on_event: &mut (dyn FnMut(&AssistantMessageEvent) + Send),
-    ) -> Result<AssistantMessage> {
-        let abort = ai::AbortSignal::new();
-        let mut options = request.simple_options();
-        options.base.signal = Some(abort.clone());
-        let bridge = abort.clone();
-        let registration = signal.on_cancel(move |_| bridge.abort());
-        if registration.is_none() {
-            abort.abort();
-        }
-        let runtime = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .map_err(|error| HarnessError::Error(error.to_string()));
-        let result = runtime.map(|runtime| runtime.block_on(self.stream.stream(model, context, &options, on_event)));
-        if let Some(id) = registration {
-            signal.off(id);
-        }
-        result
-    }
 }

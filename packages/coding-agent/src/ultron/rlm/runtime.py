@@ -27,7 +27,7 @@ from progress_api import Progress
 from skills_api import Skills
 from schedules_api import Goals, Schedules
 from instances_api import Instances
-from grants_api import Grants
+# No `grants` namespace: there is no grant system (TypeScript imports grants_api.Grants here).
 from release_gate_api import ReleaseGates
 import agent_class_api
 from context_api import Context
@@ -985,7 +985,7 @@ class RuntimeState:
         self.namespace["schedules"] = Schedules(self.bridge)
         self.namespace["goals"] = Goals(self.bridge)
         self.namespace["instances"] = Instances(self.bridge)
-        self.namespace["grants"] = Grants(self.bridge)
+        # No "grants" (see the imports); the line count stays, so recorded tracebacks keep their lines.
         self.namespace["gates"] = ReleaseGates(self.bridge)
         self.namespace["ctx"] = Context(self.bridge)
         self.namespace["preview"] = preview

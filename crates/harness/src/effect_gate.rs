@@ -5,7 +5,27 @@
 
 use std::sync::{Arc, Mutex};
 
-use crate::supervisor::CancelSignal;
+/// Cancellation of admitted work: set once by the gate (`signal_abort`, `close`), observed by whatever runs the work.
+#[derive(Clone, Debug, Default)]
+pub struct CancelSignal(Arc<Mutex<Option<String>>>);
+
+impl CancelSignal {
+    pub fn is_cancelled(&self) -> bool {
+        self.reason().is_some()
+    }
+
+    /// The first cancellation reason, once cancelled.
+    pub fn reason(&self) -> Option<String> {
+        self.0.lock().unwrap_or_else(|e| e.into_inner()).clone()
+    }
+
+    pub(crate) fn cancel(&self, reason: &str) {
+        let mut slot = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        if slot.is_none() {
+            *slot = Some(reason.into());
+        }
+    }
+}
 
 /// Refusal of an effect while an abort is being committed; carries that pending cancellation.
 #[derive(Clone, Debug, PartialEq)]

@@ -13,7 +13,6 @@ kernel-apis = { path = "../kernel-apis" }
 reqwest = { version = "=0.13.5", default-features = false, features = ["rustls"] }
 review = { path = "../review" }
 serde_json = { version = "=1.0.151", features = ["preserve_order"] }
-sha2 = "=0.10.9"
 tokio = { version = "=1.53.2", features = ["rt", "rt-multi-thread", "net", "time"] }
 url = "=2.5.8"
 

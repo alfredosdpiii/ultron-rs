@@ -1,14 +1,16 @@
 //! Replays `fixtures/validation.json` (recorded from the TypeScript `validateToolArguments` and `runAgentLoop` by
 //! `fixtures/validation.mjs`): the validated arguments or error text for a matrix of arguments over TypeBox tool
 //! schemas, and agent-loop runs whose tool calls have bad arguments, a `prepareArguments` tool, and
-//! `beforeToolCall` / `afterToolCall` hooks. The Rust loop must emit the same events and call the hooks the same way.
+//! `beforeToolCall` hooks. The Rust loop must emit the same events and call the hooks the same way. The Rust loop has
+//! no `afterToolCall` hook: the fixture's `after_*` scenarios are not replayed, and the other scenarios' `after` hook
+//! calls (which leave the result as it is) are not expected.
 
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
 
 use agent::{
-    AfterToolCall, AfterToolCallResult, AgentContext, AgentEvent, AgentLoopConfig, AgentTool, AgentToolResult,
-    BeforeToolCall, BeforeToolCallResult, StreamFn, ToolExecutionMode, ToolUpdate, agent_loop,
+    AgentContext, AgentEvent, AgentLoopConfig, AgentTool, AgentToolResult, BeforeToolCall, BeforeToolCallResult,
+    StreamFn, ToolExecutionMode, ToolUpdate, agent_loop,
 };
 use ai::http::BoxFuture;
 use ai::{AbortSignal, AssistantMessage, AssistantMessageEvent, EventSink, Message, Model, SimpleStreamOptions};
@@ -177,8 +179,8 @@ fn tool(name: &str, schema: &Value) -> Arc<dyn AgentTool> {
 
 type Calls = Arc<Mutex<Vec<Value>>>;
 
-/// The fixture's `policy` hooks.
-fn policy(calls: &Calls) -> (BeforeToolCall, AfterToolCall) {
+/// The fixture's `policy` hook (its `before` half).
+fn policy(calls: &Calls) -> BeforeToolCall {
     let before_calls = calls.clone();
     let before: BeforeToolCall = Arc::new(move |ctx, _signal| {
         before_calls.lock().unwrap().push(json!({
@@ -205,28 +207,7 @@ fn policy(calls: &Calls) -> (BeforeToolCall, AfterToolCall) {
         };
         Box::pin(async move { decision })
     });
-    let after_calls = calls.clone();
-    let after: AfterToolCall = Arc::new(move |ctx, _signal| {
-        after_calls.lock().unwrap().push(json!({
-            "hook": "after", "id": ctx.tool_call.id, "args": ctx.args, "result": ctx.result, "isError": ctx.is_error,
-        }));
-        let replacement = match ctx.args["text"].as_str() {
-            Some("swap") => Ok(Some(AfterToolCallResult {
-                content: Some(text("replaced")),
-                is_error: Some(true),
-                details: Some(json!({ "swapped": true })),
-                ..Default::default()
-            })),
-            Some("stop") => Ok(Some(AfterToolCallResult {
-                terminate: Some(true),
-                ..Default::default()
-            })),
-            Some("boom") => Err("after exploded".to_string()),
-            _ => Ok(None),
-        };
-        Box::pin(async move { replacement })
-    });
-    (before, after)
+    before
 }
 
 async fn replay(name: &str) {
@@ -246,9 +227,7 @@ async fn replay(name: &str) {
     let calls: Calls = Arc::default();
     match scenario["hooks"].as_str() {
         Some("policy") => {
-            let (before, after) = policy(&calls);
-            config.before_tool_call = Some(before);
-            config.after_tool_call = Some(after);
+            config.before_tool_call = Some(policy(&calls));
         }
         Some("abortBlock") => {
             let before_calls = calls.clone();
@@ -305,7 +284,15 @@ async fn replay(name: &str) {
     assert_eq!(actual.len(), expected.len(), "{name}: event count");
     assert_eq!(
         normalize(Value::Array(calls.lock().unwrap().clone())),
-        normalize(scenario["hookCalls"].clone()),
+        normalize(Value::Array(
+            scenario["hookCalls"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter(|call| call["hook"] != "after")
+                .cloned()
+                .collect()
+        )),
         "{name}: hook calls"
     );
     assert_eq!(
@@ -352,16 +339,6 @@ async fn agent_loop_before_tool_call_terminate_ends_the_run_like_typescript() {
 }
 
 #[tokio::test]
-async fn agent_loop_after_tool_call_replaces_and_throws_like_typescript() {
-    replay("after_hooks").await;
-}
-
-#[tokio::test]
-async fn agent_loop_after_tool_call_terminate_ends_the_run_like_typescript() {
-    replay("after_terminate").await;
-}
-
-#[tokio::test]
 async fn agent_loop_abort_during_a_blocking_before_tool_call_reports_the_abort_like_typescript() {
     replay("abort_and_block_in_before").await;
 }
@@ -378,6 +355,7 @@ fn agent_validation_fixture_covers_every_scenario() {
         .unwrap()
         .iter()
         .map(|s| s["name"].as_str().unwrap().to_string())
+        .filter(|name| !name.starts_with("after_"))
         .collect();
     assert_eq!(
         names,
@@ -388,8 +366,6 @@ fn agent_validation_fixture_covers_every_scenario() {
             "before_hooks",
             "before_hooks_sequential",
             "before_terminate",
-            "after_hooks",
-            "after_terminate",
             "abort_and_block_in_before",
             "abort_in_before"
         ]

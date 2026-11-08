@@ -3,10 +3,10 @@
 //! `findInitialModel` and minimatch, over the TypeScript tests' model lists and the built-in catalog.
 
 use ai::Model;
-use ai::glob::minimatch;
 use ai::model_resolver::{
     InitialSettings, ScopedModel, find_initial_model, parse_model_pattern, resolve_cli_model, resolve_model_scope,
 };
+use model_scope::glob::minimatch;
 use serde_json::{Value, json};
 use std::collections::HashMap;
 

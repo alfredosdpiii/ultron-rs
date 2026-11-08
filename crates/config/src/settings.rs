@@ -375,11 +375,6 @@ impl SettingsManager {
         self.remerge();
     }
 
-    /// `applyOverrides`: in-memory only, never written.
-    pub fn apply_overrides(&mut self, overrides: &Settings) {
-        self.settings = deep_merge(&self.settings, overrides);
-    }
-
     /// Merge this process's modified keys of `scope` into the file's current object and write it.
     fn persist(&self, scope: Scope) -> Result<(), String> {
         let path = &self.paths[scope.index()];

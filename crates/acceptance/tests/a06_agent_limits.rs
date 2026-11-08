@@ -1,8 +1,8 @@
-//! A06 (the artifact and wall-time cases): "oversize artifacts and quota overflow are rejected without being stored",
-//! "an artifact larger than the RPC frame never reaches the service from Python", "a task past its timeout is
-//! cancelled with a durable cancelled result" (through `agents.spawn`, as the TS case does) and "the root wall
-//! deadline caps task timeouts and rejects work after it passes" of packages/coding-agent/test/ultron-a06-limits.test.ts,
-//! over `kernel_apis::artifacts`, the real runtime.py kernel and the Rust typed-agent host with its usage ledger.
+//! A06 (the frame and wall-time cases): "an artifact larger than the RPC frame never reaches the service from Python"
+//! (as any host request: `artifacts.*` is not ported), "a task past its timeout is cancelled with a durable cancelled
+//! result" (through `agents.spawn`, as the TS case does) and "the root wall deadline caps task timeouts and rejects
+//! work after it passes" of packages/coding-agent/test/ultron-a06-limits.test.ts, over the real runtime.py kernel and
+//! the Rust typed-agent host with its usage ledger.
 
 mod agents_support;
 mod common;
@@ -11,55 +11,12 @@ use agents_support::{Memory, Options, aborted, fixture};
 use common::{Recorder, kernel_in, run, value};
 use delegation::usage::{UsageLedger, UsageLimits};
 use kernel::Status;
-use kernel_apis::artifacts::{ArtifactLimits, Artifacts, MemoryKeyedDocuments};
 use serde_json::{Map, Value, json};
 use std::sync::Arc;
 use std::time::Duration;
 
 #[test]
-fn acceptance_a06_oversize_artifacts_and_quota_overflow_are_rejected_without_being_stored() {
-    let limits = ArtifactLimits {
-        max_artifact_bytes: 1024,
-        max_storage_bytes: 1500,
-        quota_bytes: None,
-    };
-    let services = Artifacts::new(Box::new(MemoryKeyedDocuments::default()), limits.clone()).unwrap();
-    let put = |text: String| services.handle("artifacts.put", &json!({ "text": text }));
-    assert!(
-        put("a".repeat(1025))
-            .unwrap_err()
-            .contains("exceeds the 1024-byte artifact limit")
-    );
-    // Multi-byte text is measured in UTF-8 bytes, not characters.
-    assert!(put("é".repeat(513)).unwrap_err().contains("artifact limit"));
-    let first = put("b".repeat(1000)).unwrap();
-    // Storing identical content again deduplicates and does not consume quota.
-    assert_eq!(put("b".repeat(1000)).unwrap()["id"], first["id"]);
-    assert!(
-        put("c".repeat(600))
-            .unwrap_err()
-            .contains("storage quota of 1500 bytes exceeded")
-    );
-    let listed = services.handle("artifacts.list", &json!({})).unwrap();
-    assert_eq!(listed.as_array().unwrap().len(), 1);
-    assert_eq!(
-        (listed[0]["id"].clone(), listed[0]["bytes"].clone()),
-        (first["id"].clone(), json!(1000))
-    );
-    let zero = ArtifactLimits {
-        max_artifact_bytes: 0,
-        ..limits
-    };
-    assert_eq!(
-        Artifacts::new(Box::new(MemoryKeyedDocuments::default()), zero)
-            .err()
-            .unwrap(),
-        "Artifact limits must be positive integers"
-    );
-}
-
-#[test]
-fn acceptance_a06_an_artifact_larger_than_the_rpc_frame_never_reaches_the_service_from_python() {
+fn acceptance_a06_a_request_larger_than_the_rpc_frame_never_reaches_the_host_from_python() {
     let (handler, requests) =
         Recorder::new(|_: &str, _: Map<String, Value>, _: &kernel::Signal| Ok(json!({ "id": "stored" })));
     let dir = tempfile::tempdir().unwrap();
@@ -68,7 +25,7 @@ fn acceptance_a06_an_artifact_larger_than_the_rpc_frame_never_reaches_the_servic
     // Refused in the cell (a ValueError), so the kernel and its variables survive.
     let refused = run(
         &kernel,
-        "await rlm.host_request('artifacts.put', {'text': 'z' * (2 * 1024 * 1024)})",
+        "await rlm.host_request('notes.put', {'text': 'z' * (2 * 1024 * 1024)})",
     );
     assert_eq!(refused.status, Status::Error);
     let error = refused.error.unwrap();
@@ -81,10 +38,10 @@ fn acceptance_a06_an_artifact_larger_than_the_rpc_frame_never_reaches_the_servic
     assert!(requests.lock().unwrap().is_empty());
     assert_eq!(value(&kernel, "kept"), "1");
     assert_eq!(
-        value(&kernel, "await rlm.host_request('artifacts.put', {'text': 'small'})"),
+        value(&kernel, "await rlm.host_request('notes.put', {'text': 'small'})"),
         "{'id': 'stored'}"
     );
-    assert_eq!(*requests.lock().unwrap(), ["artifacts.put"]);
+    assert_eq!(*requests.lock().unwrap(), ["notes.put"]);
     kernel.shutdown();
 }
 

@@ -210,7 +210,7 @@ Two bugs found by w15-lanes, fixed in crates/kernel, crates/host and crates/sess
   nothing changes there; injected environments (tests, embedders) now reach the children. The sandbox launcher
   itself (bwrap, unshare, docker) is still found as the sandbox crate's mechanism probe finds it (`launch_env`).
 - Cancelling a cell (`rlm.cancel`, `rlm.cell.cancel`, `Lanes::cancel`) stops its shell work at once. Each cell's shell requests
-  (`bash`, `shell.bash`, `shell.run`, `shell.result`) run under a signal that also aborts on the cell's cancel: a
+  (`bash`, `shell.run`, `shell.result`) run under a signal that also aborts on the cell's cancel: a
   blocking bash's own process group is killed, a waited-on job is cancelled, and every job the cell started is
   cancelled (`shell.cancel`). The request then fails with "the cell was cancelled; its shell command was stopped",
   so Python raises and the cell ends within the cancel grace: the kernel is not killed and the lane keeps its
@@ -247,8 +247,8 @@ tool-expand key toggles it and the collapsed cell is byte-identical to TypeScrip
 
 **No approvals, no grants.** The `approval.*` settings (omp's tiers, `approval.ops`, bash patterns and the critical
 pattern guard), the `Approver` UI hook and `grants.*` (scoped approvals) are gone: every operation the sandbox
-contains runs. `sandbox.*` (bwrap, unshare, docker, write containment) is unchanged. The shared runtime still binds
-`grants` (the TypeScript product serves it); in ultron-rs its calls fail as unserved host requests.
+contains runs. `sandbox.*` (bwrap, unshare, docker, write containment) is unchanged. The runtime no longer binds
+`grants` either (2026-11-07); a `grants.*` host request fails as an unserved one.
 
 ## Contracts survive a restart; every kernel and the sandbox launcher get the session env (w17-env)
 

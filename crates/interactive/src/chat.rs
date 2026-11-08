@@ -586,12 +586,6 @@ impl ChatView {
         }))
     }
 
-    /// A client-side notice (command output) after the transcript so far.
-    /// `chatContainer.addChild(new Text(text, 1, 0))`, without a spacer.
-    pub fn append_text(&mut self, text: &str) {
-        self.push(Kind::Text(text.to_string()));
-    }
-
     pub fn append_notice_text(&mut self, text: &str) {
         self.push(Kind::Spacer);
         self.push(Kind::Text(text.to_string()));

@@ -1,0 +1,15 @@
+[package]
+name = "workspace-checks"
+version = "0.1.0"
+description = "Workspace-wide checks run by the test suite: every crate's tests/*.rs file is built"
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+autotests = false
+
+[lints]
+workspace = true
+
+[[test]]
+name = "it"
+path = "tests/it.rs"

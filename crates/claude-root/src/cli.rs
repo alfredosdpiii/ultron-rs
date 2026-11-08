@@ -4,7 +4,7 @@ use crate::guide::{Audience, GuideOptions, ResourceFlags};
 use crate::{Ctx, UsageError};
 use session_core::RunEnv;
 use std::io::{IsTerminal, Write};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 pub const CLAUDE_COMMANDS: [&str; 5] = ["claude", "mcp", "hook", "watch", "guide"];
 
@@ -110,36 +110,6 @@ fn guide(args: &[String], ctx: &Ctx, out: &mut dyn Write) -> Result<i32, Failure
     Ok(0)
 }
 
-fn bridge(args: &[String]) -> Result<i32, Failure> {
-    let (mut socket, mut token) = (None, None);
-    let mut index = 0;
-    while index < args.len() {
-        match args[index].as_str() {
-            "--bridge" => {
-                index += 1;
-                socket = args.get(index).cloned();
-            }
-            "--token" => {
-                index += 1;
-                token = args.get(index).cloned();
-            }
-            other => return Err(UsageError(format!("unknown option for ultron mcp --bridge: {other}")).into()),
-        }
-        index += 1;
-    }
-    let (Some(socket), Some(token)) = (socket.filter(|s| !s.is_empty()), token.filter(|t| !t.is_empty())) else {
-        return Err(UsageError("ultron mcp --bridge needs a socket and --token".into()).into());
-    };
-    let stdin = std::io::stdin();
-    crate::bridge::run_mcp_bridge(
-        Path::new(&socket),
-        &token,
-        &mut stdin.lock(),
-        Box::new(std::io::stdout()),
-    )?;
-    Ok(0)
-}
-
 fn dispatch(argv: &[String], ctx: &Ctx, out: &mut dyn Write, err: &mut dyn Write) -> Result<i32, Failure> {
     let rest = &argv[1..];
     match argv[0].as_str() {
@@ -155,7 +125,6 @@ fn dispatch(argv: &[String], ctx: &Ctx, out: &mut dyn Write, err: &mut dyn Write
             &*ctx.env.var,
             out,
         )?),
-        "mcp" if rest.iter().any(|a| a == "--bridge") => bridge(rest),
         "mcp" => {
             let stdin = std::io::stdin();
             Ok(crate::mcp_server::run(

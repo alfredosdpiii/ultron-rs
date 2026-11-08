@@ -2,7 +2,7 @@
 //! operations on the Rust journal must return the same tasks and errors and leave the same stored document, byte for
 //! byte as JSON text (random task ids are numbered by first appearance on both sides).
 
-use delegation::task_store::{MemoryStore, TaskJournal, TaskStore, persisted_tasks, task_fingerprint};
+use delegation::task_store::{TaskJournal, TaskStore, task_fingerprint};
 use serde_json::{Value, json};
 use std::collections::HashMap;
 use std::path::Path;
@@ -156,34 +156,4 @@ fn delegation_task_fingerprint_is_stable_across_key_order() {
         task_fingerprint(&json!({})),
         "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a"
     );
-}
-
-// Ported: "the persisted document keeps every unfinished task and only the newest finished ones".
-#[test]
-fn delegation_persisted_tasks_keep_unfinished_and_newest_finished() {
-    let few = vec![
-        json!({ "id": "a", "key": "a", "state": "completed" }),
-        json!({ "id": "b", "key": "b", "state": "running" }),
-    ];
-    assert_eq!(persisted_tasks(&few), few);
-    let mut journal = TaskJournal::new(Box::new(MemoryStore::default()));
-    let fingerprint = "a".repeat(64);
-    let mut last = String::new();
-    for n in 0..130 {
-        let (task, _) = journal
-            .admit("identity@1", &fingerprint, &format!("request-{n}"), None)
-            .unwrap();
-        last = task["id"].as_str().unwrap().to_string();
-        journal.transition(&last, "running", None).unwrap();
-        if n < 129 {
-            journal.transition(&last, "completed", Some(ok(json!(null)))).unwrap();
-        }
-    }
-    let all = journal.list().unwrap();
-    assert_eq!(all.len(), 130);
-    let kept = persisted_tasks(&all);
-    assert_eq!(kept.len(), 101);
-    assert_eq!(kept[0]["key"], "request-29");
-    assert_eq!(kept[100]["id"], last.as_str());
-    assert_eq!(kept[100]["state"], "running");
 }

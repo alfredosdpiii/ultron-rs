@@ -3,15 +3,12 @@
 
 mod support;
 
-use std::cell::Cell;
 use std::io::{self, Write};
-use std::rc::Rc;
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
 
 use support::latch::HANG_GUARD;
 use support::vterm::VTerm;
-use tui::components::{Component, Text};
 use tui::renderer::CURSOR_MARKER;
 use tui::tty_writer::TtyWriter;
 use tui::viewport::*;
@@ -151,139 +148,6 @@ fn tui_viewport_resize_repaints_the_viewport_only() {
     assert_eq!(vt.all_lines(), ["h1", "a", "b", "c"]);
 }
 
-/// Counts renders; the row changes with `tick` so live blocks look like a streaming message.
-struct Counted {
-    text: String,
-    renders: Rc<Cell<usize>>,
-    cache: Option<Vec<String>>,
-    released: Rc<Cell<usize>>,
-}
-
-impl Component for Counted {
-    fn render(&mut self, _width: usize) -> Vec<String> {
-        self.renders.set(self.renders.get() + 1);
-        self.cache.get_or_insert_with(|| vec![self.text.clone()]).clone()
-    }
-    fn release_cache(&mut self) {
-        self.cache = None;
-        self.released.set(self.released.get() + 1);
-    }
-}
-
-fn counted(text: &str, renders: &Rc<Cell<usize>>, released: &Rc<Cell<usize>>) -> Box<dyn Component> {
-    Box::new(Counted {
-        text: text.into(),
-        renders: renders.clone(),
-        cache: None,
-        released: released.clone(),
-    })
-}
-
-#[test]
-fn tui_viewport_transcript_retires_finished_head_in_order() {
-    let renders = Rc::new(Cell::new(0));
-    let released = Rc::new(Cell::new(0));
-    let mut t = Transcript::new();
-    let a = t.push_live(counted("a", &renders, &released));
-    let b = t.push_live(counted("b", &renders, &released));
-    t.finish(b);
-    // b finished but a is still live: nothing retires (order is preserved).
-    let p = t.frame(10, &["> ".into()]);
-    assert_eq!(p.history, None);
-    assert_eq!(p.viewport, ["a", "b", "> "]);
-    t.finish(a);
-    let p = t.frame(10, &["> ".into()]);
-    assert_eq!(
-        p.history,
-        Some(HistoryBatch {
-            id: 1,
-            rows: vec!["a".into(), "b".into()],
-            kind: HistoryKind::Append
-        })
-    );
-    assert_eq!(p.viewport, ["> "]);
-    assert_eq!(released.get(), 2);
-    assert!(t.block_mut(a).is_none());
-    // Unacknowledged: offered again with the same id, no new retirement.
-    let c = t.push_final(counted("c", &renders, &released));
-    let p = t.frame(10, &[]);
-    assert_eq!(p.history.as_ref().map(|h| h.id), Some(1));
-    assert_eq!(p.viewport, ["c"]);
-    t.acknowledge(1);
-    let p = t.frame(10, &[]);
-    assert_eq!(
-        p.history.as_ref().map(|h| (h.id, h.rows.clone())),
-        Some((2, vec!["c".to_string()]))
-    );
-    assert!(t.block_mut(c).is_none());
-    t.acknowledge(7); // a wrong id is ignored
-    assert_eq!(t.frame(10, &[]).history.map(|h| h.id), Some(2));
-    t.acknowledge(2);
-    assert_eq!(t.frame(10, &[]).history, None);
-    // Replay renders every retired block again under a fresh id.
-    let p = t.replay(10, &["> ".into()]);
-    assert_eq!(
-        p.history,
-        Some(HistoryBatch {
-            id: 3,
-            rows: vec!["a".into(), "b".into(), "c".into()],
-            kind: HistoryKind::Replay
-        })
-    );
-    assert_eq!(t.retired_len(), 3);
-}
-
-/// Benchmark-style bound: with 10,000 finished messages in the transcript, a steady-state frame renders only the
-/// live blocks and writes only the changed live row: the same work and bytes as a 10-message transcript.
-#[test]
-fn tui_viewport_ten_thousand_messages_keep_frame_work_bounded_by_live_area() {
-    fn run(messages: usize) -> (usize, Vec<String>, usize) {
-        let renders = Rc::new(Cell::new(0));
-        let released = Rc::new(Cell::new(0));
-        let mut t = Transcript::new();
-        t.keep_retired = false;
-        for i in 0..messages {
-            t.push_final(Box::new(Text::new(&format!("message {i}"), 0, 0, None)));
-        }
-        let live = t.push_live(counted("streaming 0", &renders, &released));
-        let mut r = ViewportRenderer::new();
-        let chrome = vec!["> prompt".to_string(), "status".to_string()];
-        let p = t.frame(40, &chrome);
-        let f = r.render(&p, 40, 10);
-        t.acknowledge(f.acknowledged.unwrap());
-        assert_eq!(r.history_rows_written, messages);
-        assert_eq!(t.live_len(), 1);
-        assert_eq!(t.retired_len(), 0);
-
-        renders.set(0);
-        let renders_before = t.renders;
-        let rows_before = r.rows_written;
-        let mut frames = Vec::new();
-        for tick in 1..=100 {
-            let block = t.block_mut(live).unwrap();
-            *block = counted(&format!("streaming {tick}"), &renders, &released);
-            let p = t.frame(40, &chrome);
-            assert!(p.history.is_none());
-            frames.push(r.render(&p, 40, 10).bytes);
-        }
-        (t.renders - renders_before, frames, r.rows_written - rows_before)
-    }
-    let (small_renders, small_frames, small_rows) = run(10);
-    let (big_renders, big_frames, big_rows) = run(10_000);
-    assert_eq!(big_renders, 100, "one live block render per frame");
-    assert_eq!(big_renders, small_renders);
-    assert_eq!(big_rows, 100, "one changed row written per frame");
-    assert_eq!(big_rows, small_rows);
-    assert_eq!(
-        big_frames, small_frames,
-        "frame bytes do not depend on transcript length"
-    );
-    assert_eq!(
-        big_frames[0],
-        format!("\x1b[?2026h\x1b[2A\r\x1b[2Kstreaming 1{R}\x1b[?25l\x1b[?2026l")
-    );
-}
-
 #[test]
 fn tui_viewport_gate_paces_frames_and_defers_on_backlog() {
     let mut g = RenderGate::new();
@@ -352,17 +216,14 @@ fn tui_viewport_skips_stale_frames_while_the_writer_is_backlogged() {
         Arc::new(Mutex::new(Vec::new())),
     );
     let mut writer = TtyWriter::new(term.clone()).unwrap();
-    let mut transcript = Transcript::new();
-    let id = transcript.push_live(Box::new(Text::new("initial", 0, 0, None)));
     let mut renderer = ViewportRenderer::new();
     let mut gate = RenderGate::new();
     gate.min_interval = Duration::ZERO;
-    let mut paint = |transcript: &mut Transcript, gate: &mut RenderGate, writer: &TtyWriter, now: Instant| {
+    let mut paint = |state: &str, gate: &mut RenderGate, writer: &TtyWriter, now: Instant| {
         gate.request();
         match gate.poll(now, Some(writer.pending())) {
             GateDecision::Render => {
-                let plan = transcript.frame(40, &[]);
-                writer.write(&renderer.render(&plan, 40, 6).bytes);
+                writer.write(&renderer.render(&plan(&[state]), 40, 6).bytes);
                 gate.rendered(Duration::ZERO);
                 true
             }
@@ -370,24 +231,21 @@ fn tui_viewport_skips_stale_frames_while_the_writer_is_backlogged() {
         }
     };
     let now = Instant::now();
-    assert!(paint(&mut transcript, &mut gate, &writer, now));
+    assert!(paint("initial", &mut gate, &writer, now));
     assert!(writer.flush_sync(HANG_GUARD));
     term.1.lock().unwrap().clear();
 
     // Stall the terminal behind a 1 MiB backlog.
     *term.0.0.lock().unwrap() = false;
     writer.write(&"x".repeat(1024 * 1024));
-    let set = |t: &mut Transcript, s: &str| *t.block_mut(id).unwrap() = Box::new(Text::new(s, 0, 0, None));
-    set(&mut transcript, "frame-A");
-    assert!(!paint(&mut transcript, &mut gate, &writer, now));
-    set(&mut transcript, "frame-B");
-    assert!(!paint(&mut transcript, &mut gate, &writer, now));
+    assert!(!paint("frame-A", &mut gate, &writer, now));
+    assert!(!paint("frame-B", &mut gate, &writer, now));
     assert_eq!(gate.skipped, 2);
 
     *term.0.0.lock().unwrap() = true;
     term.0.1.notify_all();
     assert!(writer.flush_sync(HANG_GUARD));
-    assert!(paint(&mut transcript, &mut gate, &writer, now));
+    assert!(paint("frame-B", &mut gate, &writer, now));
     assert!(writer.flush_sync(HANG_GUARD));
     let out = String::from_utf8(term.1.lock().unwrap().clone()).unwrap();
     assert!(out.contains("frame-B"));

@@ -32,7 +32,8 @@ bar above or something genuinely needs the user; don't end a turn by announcing 
   the tests from starving the user's desktop; never run them uncapped.
 - A crate's `tests/*.rs` files are modules of one test binary, `tests/it.rs`: add a new file's `#[path]` line there.
   A file that re-runs or exits its own test binary (`current_exe`, `process::exit`) gets a `[[test]]` of its own in
-  the crate's `Cargo.toml` instead. `every_test_file_is_built` fails on a file in neither.
+  the crate's `Cargo.toml` instead. `crates/workspace-checks` (`every_test_file_is_built`) fails on a file in
+  neither.
 - Run tests under an empty `HOME`, with no provider keys in the environment. Tests use scripted or fake providers,
   never real ones, and never open a browser, the real clipboard, real Docker or the user's `~/.ultron` or
   `~/.claude`.

@@ -23,8 +23,6 @@ pub const PROVIDER: &str = "claude-code";
 pub const API: &str = "claude-code-cli";
 /// The provider's display name (`createProvider({ name })`).
 pub const NAME: &str = "Claude Code (CLI)";
-/// The name of its key-less auth (`claudeCodeCliAuth().name`, the `/login` method).
-pub const AUTH_NAME: &str = "Claude Code CLI";
 /// Where its configured status comes from (`checkAuth`'s `source`).
 pub const AUTH_SOURCE: &str = "Claude Code CLI (its own login)";
 /// What a request of this provider carries as its key: there is none (the CLI authenticates itself), but Rust
