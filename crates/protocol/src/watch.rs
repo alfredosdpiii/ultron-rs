@@ -8,6 +8,9 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+pub mod reducer;
+pub mod stream_fold;
+
 /// A queue a message can join while a run streams (`steer`, `followUp`, `nextRun`).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]

@@ -21,6 +21,7 @@ fn info(provider: &str, id: &str, reasoning: bool) -> ModelInfo {
         provider: provider.into(),
         id: id.into(),
         name: id.into(),
+        api: String::new(),
         reasoning,
         context_window: 200_000,
         thinking_levels: Vec::new(),

@@ -291,7 +291,7 @@ pub fn system_prompt_with_resources(
         context_files: if mode.no_context_files {
             Vec::new()
         } else {
-            resources::context_files::load_project_context_files(cwd, &agent_dir)
+            resources::context_files::load_project_context_files(cwd, &agent_dir, &env.home.display().to_string())
         },
         skills,
         bundled_skills_dir: bundled,

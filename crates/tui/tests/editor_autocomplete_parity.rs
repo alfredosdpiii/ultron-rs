@@ -177,7 +177,6 @@ impl AutocompleteProvider for Tagged {
 
 fn select_theme() -> SelectListTheme {
     SelectListTheme {
-        selected_prefix: Box::new(str::to_string),
         selected_text: Box::new(|s| format!("[{s}]")),
         description: Box::new(|s| format!("{{{s}}}")),
         scroll_info: Box::new(|s| format!("({s})")),

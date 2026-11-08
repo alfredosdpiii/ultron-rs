@@ -192,8 +192,3 @@ pub fn claude_code_usage_text(messages: &[Value]) -> Option<String> {
     }
     None
 }
-
-/// `isUsingSubscription` of the client footer: Claude Code's costs are notional (its own login pays).
-pub fn using_subscription(provider: &str) -> bool {
-    config::providers::runs_claude_code(provider)
-}

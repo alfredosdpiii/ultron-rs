@@ -301,7 +301,7 @@ impl RunJournal {
     }
 }
 
-/// What a `message_update` lane-watch event carries (Rust-only; harness `stream_fold` folds it): the provider frame,
+/// What a `message_update` lane-watch event carries (Rust-only; `protocol::watch::stream_fold` folds it): the provider frame,
 /// without its partial message, a tool call's start naming the call; and the usage so far. Never the message: the
 /// response so far, sent once per delta, made streaming quadratic in its length.
 pub fn update_fields(message: &agent::AgentMessage, event: &AssistantMessageEvent) -> (Value, Value) {

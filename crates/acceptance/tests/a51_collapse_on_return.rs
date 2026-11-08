@@ -11,8 +11,9 @@
 use crate::common;
 
 use common::{HANG, Install, Provider, Reply, Request, stdout_of};
-use kernel_apis::context_control::{TaskLine, apply_context_edits, collapsed_cell_text, message_text, task_line};
+use kernel_apis::context_control::{TaskLine, collapsed_cell_text, message_text, task_line};
 use serde_json::{Value, json};
+use session_journal::context::apply_context_edits;
 use session_journal::context::{
     CONTEXT_EDIT_CUSTOM_TYPE, CONTEXT_OMITTED_CUSTOM_TYPE, CONTEXT_OMITTED_TOOL_RESULT_TEXT,
 };
@@ -59,7 +60,6 @@ fn base() -> Vec<Value> {
 fn visible_ids(entries: &[Value]) -> Vec<String> {
     apply_context_edits(entries)
         .into_iter()
-        .map(|applied| applied.entry)
         .filter(|entry| !(entry["type"] == "custom" && entry["customType"] == CONTEXT_OMITTED_CUSTOM_TYPE))
         .map(|entry| entry["id"].as_str().unwrap().to_string())
         .collect()
@@ -81,7 +81,7 @@ fn acceptance_a51_an_omitted_result_whose_call_stays_visible_becomes_a_stub() {
     let mut entries = base();
     entries.push(edit("e1", 6, json!({"targetId": "r1", "replacement": null})));
     let applied = apply_context_edits(&entries);
-    let r1 = &applied.iter().find(|a| a.entry["id"] == "r1").unwrap().entry;
+    let r1 = applied.iter().find(|entry| entry["id"] == "r1").unwrap();
     assert_eq!(r1["type"], "message");
     assert_eq!(message_text(&r1["message"]), CONTEXT_OMITTED_TOOL_RESULT_TEXT);
     assert_eq!(CONTEXT_OMITTED_TOOL_RESULT_TEXT, "[Tool result removed from context.]");

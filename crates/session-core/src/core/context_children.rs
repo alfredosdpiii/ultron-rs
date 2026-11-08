@@ -21,7 +21,7 @@ use durable::{ConversationId, EntryRecord, SubmissionId};
 use harness::chat::SubmissionDraft;
 use jsrt::sync;
 use kernel_apis::ContextControl;
-use kernel_apis::context_control::{CONTEXT_NOTE_CUSTOM_TYPE, ContextBranches, apply_context_edits, project_note};
+use kernel_apis::context_control::{CONTEXT_NOTE_CUSTOM_TYPE, ContextBranches, project_note};
 use serde_json::{Value, json};
 use session_journal::context::{CONTEXT_EDIT_CUSTOM_TYPE, CONTEXT_OMITTED_CUSTOM_TYPE};
 use std::collections::HashSet;
@@ -93,7 +93,7 @@ pub(crate) fn durable_edits(path: &[Value], durable: &[Option<u64>]) -> Translat
         .iter()
         .rposition(|entry| entry["type"] == "compaction")
         .map_or(0, |i| i + 1);
-    let applied = apply_context_edits(&path[start..]);
+    let applied = session_journal::context::apply_context_edits_marked(&path[start..]);
     let mut groups: Vec<(u64, bool, Vec<Value>)> = Vec::new();
     let mut waiting = Vec::new();
     for (offset, applied) in applied.iter().enumerate() {

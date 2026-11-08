@@ -108,10 +108,7 @@ pub use select::{
 };
 pub use service::{JobSender, Jobs, ServiceThread};
 pub use stdin_buffer::{StdinBuffer, StdinEvent};
-pub use terminal::{
-    ENABLE_VIRTUAL_TERMINAL_INPUT, Terminal, resolve_escape_timeout, size, spawn_input_pump, spawn_stdin_pump,
-    vt_input_mode,
-};
+pub use terminal::{Terminal, resolve_escape_timeout, size, spawn_input_pump, spawn_stdin_pump};
 pub use terminal_colors::{
     OSC11_BACKGROUND_QUERY, Osc11Read, Osc11Reader, is_osc11_background_color_response, parse_osc11_background_color,
 };

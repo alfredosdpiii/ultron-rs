@@ -81,26 +81,64 @@ pub fn worker_gate() -> MemoryGate {
     })
 }
 
-const ERROR_CODES: &[&str] = &[
-    "INVALID_INPUT",
-    "INVALID_JOURNAL",
-    "BACKEND_MISMATCH",
-    "STORE_ERROR",
-    "UNSUPPORTED_SCOPE",
-    "UNSUPPORTED_API",
-    "INVALID_GATE",
-    "INVALID_RESPONSE",
-    "UNKNOWN_MEMORY",
-    "BUSY",
-    "FORGOTTEN",
-    "ABORTED",
-    "OWNER_ENDED",
-    "OPERATION_ERROR",
-    "INVALID_CONFIG",
-    "HTTP_ERROR",
-    "TIMEOUT",
-    "RESPONSE_TOO_LARGE",
-];
+macro_rules! error_codes {
+    ($($name:ident = $text:literal,)*) => {
+        /// The codes a [`MemoryError`] and a journal record's `error` carry.
+        #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+        pub enum ErrorCode {
+            $($name,)*
+        }
+
+        impl ErrorCode {
+            const ALL: &[ErrorCode] = &[$(ErrorCode::$name,)*];
+
+            pub const fn as_str(self) -> &'static str {
+                match self {
+                    $(ErrorCode::$name => $text,)*
+                }
+            }
+        }
+    };
+}
+
+error_codes! {
+    InvalidInput = "INVALID_INPUT",
+    InvalidJournal = "INVALID_JOURNAL",
+    BackendMismatch = "BACKEND_MISMATCH",
+    StoreError = "STORE_ERROR",
+    UnsupportedScope = "UNSUPPORTED_SCOPE",
+    UnsupportedApi = "UNSUPPORTED_API",
+    InvalidGate = "INVALID_GATE",
+    InvalidResponse = "INVALID_RESPONSE",
+    UnknownMemory = "UNKNOWN_MEMORY",
+    Busy = "BUSY",
+    Forgotten = "FORGOTTEN",
+    Aborted = "ABORTED",
+    OwnerEnded = "OWNER_ENDED",
+    OperationError = "OPERATION_ERROR",
+    InvalidConfig = "INVALID_CONFIG",
+    HttpError = "HTTP_ERROR",
+    Timeout = "TIMEOUT",
+    ResponseTooLarge = "RESPONSE_TOO_LARGE",
+}
+
+impl ErrorCode {
+    fn parse(text: &str) -> Option<Self> {
+        Self::ALL.iter().copied().find(|code| code.as_str() == text)
+    }
+}
+
+impl PartialEq<&str> for ErrorCode {
+    fn eq(&self, text: &&str) -> bool {
+        self.as_str() == *text
+    }
+}
+
+impl std::fmt::Display for ErrorCode {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(self.as_str())
+    }
+}
 const KINDS: &[&str] = &["prepare", "propose", "correct", "forget", "get"];
 const EVIDENCE_CLASSES: &[&str] = &["hypothesis", "user_statement", "tool_evidence", "verified"];
 const CLAIM_STATES: &[&str] = &["accepted", "stored", "unknown"];
@@ -149,23 +187,17 @@ const OPERATION_FIELDS: &[&str] = &[
 /// `UnsupportedFormatVersionError`) so an older Ultron never overwrites it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MemoryError {
-    pub code: &'static str,
+    pub code: ErrorCode,
     format: Option<String>,
 }
 
 impl MemoryError {
-    pub const fn code(code: &'static str) -> Self {
+    pub const fn code(code: ErrorCode) -> Self {
         Self { code, format: None }
     }
 
     fn of(text: &str) -> Self {
-        Self::code(
-            ERROR_CODES
-                .iter()
-                .find(|code| **code == text)
-                .copied()
-                .unwrap_or("OPERATION_ERROR"),
-        )
+        Self::code(ErrorCode::parse(text).unwrap_or(ErrorCode::OperationError))
     }
 }
 
@@ -233,7 +265,7 @@ fn require_text(value: &Value) -> Result<()> {
     if nonempty(value) {
         Ok(())
     } else {
-        Err(MemoryError::code("INVALID_INPUT"))
+        Err(MemoryError::code(ErrorCode::InvalidInput))
     }
 }
 
@@ -242,7 +274,7 @@ fn scope_of(value: &Value) -> Result<&'static str> {
         Some("session") => Ok("session"),
         Some("project") => Ok("project"),
         Some("global") => Ok("global"),
-        _ => Err(MemoryError::code("UNSUPPORTED_SCOPE")),
+        _ => Err(MemoryError::code(ErrorCode::UnsupportedScope)),
     }
 }
 
@@ -261,13 +293,13 @@ fn scope_tag(tag: &str, scope: &str) -> bool {
 }
 
 fn scope_tags(value: Option<&Value>, scope: &str) -> Result<Vec<String>> {
-    let value = value.ok_or(MemoryError::code("UNSUPPORTED_SCOPE"))?;
+    let value = value.ok_or(MemoryError::code(ErrorCode::UnsupportedScope))?;
     if !string_array(value)
         || !value
             .as_array()
             .is_some_and(|tags| tags.iter().any(|tag| scope_tag(tag.as_str().unwrap_or(""), scope)))
     {
-        return Err(MemoryError::code("UNSUPPORTED_SCOPE"));
+        return Err(MemoryError::code(ErrorCode::UnsupportedScope));
     }
     Ok(value
         .as_array()
@@ -281,17 +313,17 @@ fn evidence_refs(value: &Value) -> Result<Vec<Value>> {
     let items = value
         .as_array()
         .filter(|items| !items.is_empty())
-        .ok_or(MemoryError::code("INVALID_INPUT"))?;
+        .ok_or(MemoryError::code(ErrorCode::InvalidInput))?;
     items
         .iter()
         .map(|item| {
-            let map = item.as_object().ok_or(MemoryError::code("INVALID_INPUT"))?;
+            let map = item.as_object().ok_or(MemoryError::code(ErrorCode::InvalidInput))?;
             let sha = map.get("sha256");
             if !exact_fields(map, &["ref", "sha256"])
                 || !map.get("ref").is_some_and(nonempty)
                 || sha.is_some_and(|sha| !is_sha256(sha))
             {
-                return Err(MemoryError::code("INVALID_INPUT"));
+                return Err(MemoryError::code(ErrorCode::InvalidInput));
             }
             let mut out = Map::new();
             out.insert("ref".into(), map["ref"].clone());
@@ -354,7 +386,7 @@ fn split_evidence(value: &Value) -> Result<(Value, Vec<Quote>)> {
             let text = quote.as_str().map(str::trim).unwrap_or_default();
             let path = map.get("ref").and_then(Value::as_str).and_then(quoted_path);
             let (Some(path), false, true) = (path, text.is_empty(), text.len() <= MAX_QUOTE_BYTES) else {
-                return Err(MemoryError::code("INVALID_INPUT"));
+                return Err(MemoryError::code(ErrorCode::InvalidInput));
             };
             quotes.push(Quote {
                 path: path.to_string(),
@@ -364,7 +396,7 @@ fn split_evidence(value: &Value) -> Result<(Value, Vec<Quote>)> {
         stripped.push(Value::Object(map));
     }
     if quotes.len() > MAX_QUOTES {
-        return Err(MemoryError::code("INVALID_INPUT"));
+        return Err(MemoryError::code(ErrorCode::InvalidInput));
     }
     Ok((Value::Array(stripped), quotes))
 }
@@ -400,12 +432,12 @@ pub fn staleness(root: &Path, metadata: &Value) -> Option<String> {
 }
 
 fn gate_decision(value: &Value, recall: bool) -> Result<Value> {
-    let map = value.as_object().ok_or(MemoryError::code("INVALID_GATE"))?;
+    let map = value.as_object().ok_or(MemoryError::code(ErrorCode::InvalidGate))?;
     let score = map.get(if recall { "probability" } else { "confidence" });
     if let Some(score) = score
         && !score.as_f64().is_some_and(|score| (0.0..=1.0).contains(&score))
     {
-        return Err(MemoryError::code("INVALID_GATE"));
+        return Err(MemoryError::code(ErrorCode::InvalidGate));
     }
     let mut out = Map::new();
     if recall && let Some(retrieve) = map.get("retrieve").filter(|v| v.is_boolean()) {
@@ -426,20 +458,20 @@ fn gate_decision(value: &Value, recall: bool) -> Result<Value> {
         }
         return Ok(Value::Object(out));
     }
-    Err(MemoryError::code("INVALID_GATE"))
+    Err(MemoryError::code(ErrorCode::InvalidGate))
 }
 
 fn evidence_class_of(value: Option<&Value>, fallback: &str) -> Result<String> {
     match value {
         None => Ok(fallback.into()),
         Some(Value::String(class)) if EVIDENCE_CLASSES.contains(&class.as_str()) => Ok(class.clone()),
-        Some(_) => Err(MemoryError::code("INVALID_INPUT")),
+        Some(_) => Err(MemoryError::code(ErrorCode::InvalidInput)),
     }
 }
 
 fn check_abort(signal: &Signal) -> Result<()> {
     if signal.is_aborted() {
-        Err(MemoryError::code("ABORTED"))
+        Err(MemoryError::code(ErrorCode::Aborted))
     } else {
         Ok(())
     }
@@ -454,7 +486,7 @@ fn is_iso(value: &Value) -> bool {
 /// `readJournal`: rejects unknown persisted fields and inconsistent histories rather than re-persisting them.
 fn read_journal(value: &Value, namespace: &str) -> Result<Vec<Value>> {
     let inner = || -> Result<Vec<Value>> {
-        const INVALID: MemoryError = MemoryError::code("INVALID_JOURNAL");
+        const INVALID: MemoryError = MemoryError::code(ErrorCode::InvalidJournal);
         let document = value.as_object().ok_or(INVALID)?;
         if !exact_fields(document, &["version", "namespace", "operations"])
             || document.get("version") != Some(&json!(1))
@@ -464,7 +496,7 @@ fn read_journal(value: &Value, namespace: &str) -> Result<Vec<Value>> {
         }
         let operations = document.get("operations").and_then(Value::as_array).ok_or(INVALID)?;
         if document["namespace"] != namespace {
-            return Err(MemoryError::code("BACKEND_MISMATCH"));
+            return Err(MemoryError::code(ErrorCode::BackendMismatch));
         }
         let mut ids = HashSet::new();
         let mut owners: HashMap<String, Value> = HashMap::new();
@@ -521,7 +553,7 @@ fn read_journal(value: &Value, namespace: &str) -> Result<Vec<Value>> {
                         && error
                             .get("code")
                             .and_then(Value::as_str)
-                            .is_some_and(|code| ERROR_CODES.contains(&code))
+                            .is_some_and(|code| ErrorCode::parse(code).is_some())
                 })
             {
                 return Err(INVALID);
@@ -653,10 +685,10 @@ fn read_journal(value: &Value, namespace: &str) -> Result<Vec<Value>> {
         Ok(operations.clone())
     };
     inner().map_err(|error| {
-        if error.code == "BACKEND_MISMATCH" {
+        if error.code == ErrorCode::BackendMismatch {
             error
         } else {
-            MemoryError::code("INVALID_JOURNAL")
+            MemoryError::code(ErrorCode::InvalidJournal)
         }
     })
 }
@@ -689,7 +721,7 @@ impl MemoryService {
     pub fn new(store: Arc<dyn DocumentStore>, backend: Arc<dyn MemoryBackend>, gate: MemoryGate) -> Result<Self> {
         let namespace = backend.namespace();
         if jsrt::string::trim(&namespace).is_empty() {
-            return Err(MemoryError::code("INVALID_CONFIG"));
+            return Err(MemoryError::code(ErrorCode::InvalidConfig));
         }
         let mut filters = Map::new();
         for (scope, tags) in backend.scope_tags() {
@@ -797,13 +829,13 @@ impl MemoryService {
 
     fn commit(&self, inner: &mut Inner, change: impl FnOnce(&[Value]) -> Vec<Value>) -> Result<()> {
         if inner.broken {
-            return Err(MemoryError::code("STORE_ERROR"));
+            return Err(MemoryError::code(ErrorCode::StoreError));
         }
         let next = change(&inner.records);
         let document = json!({"version": 1, "namespace": self.namespace, "operations": next});
         if self.store.write(&document).is_err() {
             inner.broken = true;
-            return Err(MemoryError::code("STORE_ERROR"));
+            return Err(MemoryError::code(ErrorCode::StoreError));
         }
         inner.records = next;
         Ok(())
@@ -813,11 +845,14 @@ impl MemoryService {
         let mut inner = jsrt::sync::lock(&self.inner);
         if inner.loaded.is_none() {
             let outcome = (|| {
-                let saved = self.store.read().map_err(|_| MemoryError::code("STORE_ERROR"))?;
+                let saved = self
+                    .store
+                    .read()
+                    .map_err(|_| MemoryError::code(ErrorCode::StoreError))?;
                 if let Some(saved) = saved {
                     let saved = read_versioned("ultron.memory.state/root", Some(saved), "version")
                         .map_err(|message| MemoryError {
-                            code: "UNSUPPORTED_FORMAT_VERSION",
+                            code: ErrorCode::OperationError,
                             format: Some(message),
                         })?
                         .unwrap_or(Value::Null);
@@ -852,7 +887,7 @@ impl MemoryService {
         }
         inner.loaded.clone().expect("set above")?;
         if inner.broken {
-            return Err(MemoryError::code("STORE_ERROR"));
+            return Err(MemoryError::code(ErrorCode::StoreError));
         }
         Ok(())
     }
@@ -929,7 +964,11 @@ impl MemoryService {
             return outcome;
         };
         let op = self.operation(id);
-        let mut code = if signal.is_aborted() { "ABORTED" } else { error.code };
+        let mut code = if signal.is_aborted() {
+            ErrorCode::Aborted
+        } else {
+            error.code
+        };
         let broken = jsrt::sync::lock(&self.inner).broken;
         if !broken && op["state"] == "started" {
             let kind = op["kind"].as_str().unwrap_or("");
@@ -941,14 +980,17 @@ impl MemoryService {
                 "failed"
             };
             if self
-                .update(id, vec![("state", state.into()), ("error", json!({"code": code}))])
+                .update(
+                    id,
+                    vec![("state", state.into()), ("error", json!({"code": code.as_str()}))],
+                )
                 .is_err()
             {
-                code = "STORE_ERROR";
+                code = ErrorCode::StoreError;
             }
         }
         if jsrt::sync::lock(&self.inner).broken {
-            code = "STORE_ERROR";
+            code = ErrorCode::StoreError;
         }
         Err(MemoryError::code(code))
     }
@@ -962,10 +1004,10 @@ impl MemoryService {
             .find(|op| op["kind"] == "propose" && op["memoryId"] == *id && op["phase"] == "backend")
             .cloned()
             .filter(|op| op.get("tags").is_some())
-            .ok_or(MemoryError::code("UNKNOWN_MEMORY"))?;
+            .ok_or(MemoryError::code(ErrorCode::UnknownMemory))?;
         let scope = owner["scope"].as_str().unwrap_or("").to_string();
         if !same_tags(&owner["tags"], &self.tags(&scope)?) {
-            return Err(MemoryError::code("UNSUPPORTED_SCOPE"));
+            return Err(MemoryError::code(ErrorCode::UnsupportedScope));
         }
         let tags = owner["tags"]
             .as_array()
@@ -984,12 +1026,12 @@ impl MemoryService {
                 is_mutation(op["kind"].as_str().unwrap_or("")) && op["memoryId"] == id && op["phase"] == "backend"
             })
             .cloned()
-            .ok_or(MemoryError::code("UNKNOWN_MEMORY"))
+            .ok_or(MemoryError::code(ErrorCode::UnknownMemory))
     }
 
     fn locked<T>(&self, id: &str, action: impl FnOnce() -> Result<T>) -> Result<T> {
         if !jsrt::sync::lock(&self.inner).busy.insert(id.to_string()) {
-            return Err(MemoryError::code("BUSY"));
+            return Err(MemoryError::code(ErrorCode::Busy));
         }
         let outcome = action();
         jsrt::sync::lock(&self.inner).busy.remove(id);
@@ -999,8 +1041,8 @@ impl MemoryService {
     fn editable(&self, id: &str) -> Result<()> {
         let op = Self::latest(&jsrt::sync::lock(&self.inner).records, id)?;
         match op["state"].as_str() {
-            Some("started" | "accepted" | "unknown") => Err(MemoryError::code("BUSY")),
-            Some("forgotten") => Err(MemoryError::code("FORGOTTEN")),
+            Some("started" | "accepted" | "unknown") => Err(MemoryError::code(ErrorCode::Busy)),
+            Some("forgotten") => Err(MemoryError::code(ErrorCode::Forgotten)),
             _ => Ok(()),
         }
     }
@@ -1066,7 +1108,7 @@ impl MemoryService {
         let refresh = match payload.get("refresh") {
             None => false,
             Some(Value::Bool(flag)) => *flag,
-            Some(_) => return Err(MemoryError::code("INVALID_INPUT")),
+            Some(_) => return Err(MemoryError::code(ErrorCode::InvalidInput)),
         };
         self.load()?;
         let (query, task_id) = (query.as_str().unwrap_or(""), task_id.as_str().unwrap_or(""));
@@ -1097,7 +1139,7 @@ impl MemoryService {
             // Resolved inside the attempt so an unconfigured scope is a recorded denial.
             let tags = self.tags(scope)?;
             let request = json!({"action": "recall", "query": query, "scope": scope, "taskId": task_id});
-            let decision = gate_decision(&(self.gate)(&request, signal).map_err(|_| MemoryError::code("OPERATION_ERROR"))?, true)?;
+            let decision = gate_decision(&(self.gate)(&request, signal).map_err(|_| MemoryError::code(ErrorCode::OperationError))?, true)?;
             check_abort(signal)?;
             self.update(&id, vec![("gate", decision.clone())])?;
             if decision["retrieve"] != true {
@@ -1105,7 +1147,7 @@ impl MemoryService {
                 return Ok(json!({"operation": operation, "results": [], "context": ""}));
             }
             if !self.backend.supports("recall") {
-                return Err(MemoryError::code("UNSUPPORTED_API"));
+                return Err(MemoryError::code(ErrorCode::UnsupportedApi));
             }
             self.update(&id, vec![("tags", json!(tags)), ("phase", "backend".into())])?;
             check_abort(signal)?;
@@ -1115,7 +1157,7 @@ impl MemoryService {
             });
             let response = self.backend.recall(&request, signal).map_err(|error| MemoryError::of(&error))?;
             check_abort(signal)?;
-            let items = response.get("results").and_then(Value::as_array).ok_or(MemoryError::code("INVALID_RESPONSE"))?;
+            let items = response.get("results").and_then(Value::as_array).ok_or(MemoryError::code(ErrorCode::InvalidResponse))?;
             let records = jsrt::sync::lock(&self.inner).records.clone();
             // A backend index or cache can lag a delete: never re-inject a document the user asked to forget.
             let forgotten: HashSet<String> = records
@@ -1126,12 +1168,12 @@ impl MemoryService {
             let mut results = Vec::new();
             let mut excluded = Vec::new();
             for item in items {
-                let map = item.as_object().ok_or(MemoryError::code("INVALID_RESPONSE"))?;
+                let map = item.as_object().ok_or(MemoryError::code(ErrorCode::InvalidResponse))?;
                 if !map.get("id").is_some_and(nonempty)
                     || !map.get("text").is_some_and(Value::is_string)
                     || !same_tags(map.get("tags").unwrap_or(&Value::Null), &tags)
                 {
-                    return Err(MemoryError::code("INVALID_RESPONSE"));
+                    return Err(MemoryError::code(ErrorCode::InvalidResponse));
                 }
                 let item_id = map["id"].as_str().unwrap_or("").to_string();
                 let metadata = map.get("metadata").and_then(Value::as_object).cloned().unwrap_or_default();
@@ -1263,7 +1305,7 @@ impl MemoryService {
         let items = response
             .get("results")
             .and_then(Value::as_array)
-            .ok_or(MemoryError::code("INVALID_RESPONSE"))?;
+            .ok_or(MemoryError::code(ErrorCode::InvalidResponse))?;
         let records = jsrt::sync::lock(&self.inner).records.clone();
         let mut found = Vec::new();
         for item in items {
@@ -1339,7 +1381,7 @@ impl MemoryService {
         }
         let request = json!({"action": "propose", "text": text, "scope": scope});
         let decision = gate_decision(
-            &(self.gate)(&request, signal).map_err(|_| MemoryError::code("OPERATION_ERROR"))?,
+            &(self.gate)(&request, signal).map_err(|_| MemoryError::code(ErrorCode::OperationError))?,
             false,
         )?;
         if decision["action"] != "keep" {
@@ -1377,7 +1419,7 @@ impl MemoryService {
         }
         let request = json!({"action": "propose", "text": text, "scope": "project"});
         let decision = gate_decision(
-            &(self.gate)(&request, signal).map_err(|_| MemoryError::code("OPERATION_ERROR"))?,
+            &(self.gate)(&request, signal).map_err(|_| MemoryError::code(ErrorCode::OperationError))?,
             false,
         )?;
         if decision["action"] != "keep" {
@@ -1420,7 +1462,7 @@ impl MemoryService {
             None => self.read_scopes().into_iter().flat_map(|(_, tags)| tags).collect(),
         };
         if tags.is_empty() {
-            return Err(MemoryError::code("UNSUPPORTED_SCOPE"));
+            return Err(MemoryError::code(ErrorCode::UnsupportedScope));
         }
         let request = json!({
             "query": query, "budget": "low", "max_tokens": 1024, "tags": tags, "tags_match": "any_strict",
@@ -1432,7 +1474,7 @@ impl MemoryService {
         let text = response
             .get("text")
             .and_then(Value::as_str)
-            .ok_or(MemoryError::code("INVALID_RESPONSE"))?;
+            .ok_or(MemoryError::code(ErrorCode::InvalidResponse))?;
         Ok(json!({"text": text}))
     }
 
@@ -1450,7 +1492,7 @@ impl MemoryService {
             .iter()
             .any(|scope| self.tags(scope).is_ok_and(|own| same_tags(tags, &own)));
         if !owned {
-            return Err(MemoryError::code("UNKNOWN_MEMORY"));
+            return Err(MemoryError::code(ErrorCode::UnknownMemory));
         }
         if unit["type"] == "observation" {
             let sources: Vec<Value> = unit["source_memories"]
@@ -1466,7 +1508,7 @@ impl MemoryService {
         if let Some(reason) = payload.get("reason").and_then(Value::as_str) {
             let check = json!({"action": "propose", "text": reason, "scope": "session"});
             let decision = gate_decision(
-                &(self.gate)(&check, signal).map_err(|_| MemoryError::code("OPERATION_ERROR"))?,
+                &(self.gate)(&check, signal).map_err(|_| MemoryError::code(ErrorCode::OperationError))?,
                 false,
             )?;
             if decision["action"] == "keep" {
@@ -1568,7 +1610,7 @@ impl MemoryService {
             Some(key) => self
                 .records
                 .by_key(key, scope, &self.filters)
-                .map_err(|_| MemoryError::code("STORE_ERROR"))?,
+                .map_err(|_| MemoryError::code(ErrorCode::StoreError))?,
             None => None,
         };
         let written = match existing {
@@ -1641,7 +1683,7 @@ impl MemoryService {
             .as_ref()
             .is_some_and(|typed| text.len() > content_cap(&typed.kind))
         {
-            return Err(MemoryError::code("INVALID_INPUT"));
+            return Err(MemoryError::code(ErrorCode::InvalidInput));
         }
         let written = self.locked(&memory_id, || {
             self.retain(
@@ -1702,7 +1744,7 @@ impl MemoryService {
                 request["situation"] = screened.join("\n").into();
             }
             let decision = gate_decision(
-                &(self.gate)(&request, signal).map_err(|_| MemoryError::code("OPERATION_ERROR"))?,
+                &(self.gate)(&request, signal).map_err(|_| MemoryError::code(ErrorCode::OperationError))?,
                 false,
             )?;
             check_abort(signal)?;
@@ -1713,7 +1755,7 @@ impl MemoryService {
                 _ => return self.update(&id, vec![("state", "sensitive".into())]),
             }
             if !self.backend.supports("retain") {
-                return Err(MemoryError::code("UNSUPPORTED_API"));
+                return Err(MemoryError::code(ErrorCode::UnsupportedApi));
             }
             let memory_id = memory_id.map(str::to_string).unwrap_or_else(jsrt::random::uuid_v4);
             // Persist the document handle and deduplication key BEFORE dispatch.
@@ -1763,7 +1805,7 @@ impl MemoryService {
                 .map_err(|error| MemoryError::of(&error))?;
             check_abort(signal)?;
             if !response.is_object() || response["success"] != true || !response["async"].is_boolean() {
-                return Err(MemoryError::code("INVALID_RESPONSE"));
+                return Err(MemoryError::code(ErrorCode::InvalidResponse));
             }
             if response["async"] == false {
                 return self.update(&id, vec![("state", "stored".into()), ("operationIds", json!([]))]);
@@ -1779,7 +1821,7 @@ impl MemoryService {
                 || !ids.iter().all(nonempty)
                 || response_id.is_some_and(|response_id| !ids.iter().any(|id| id == response_id))
             {
-                return Err(MemoryError::code("INVALID_RESPONSE"));
+                return Err(MemoryError::code(ErrorCode::InvalidResponse));
             }
             let mut unique: Vec<Value> = Vec::new();
             for id in ids {
@@ -1821,7 +1863,7 @@ impl MemoryService {
             self.attempt(&op, signal, || {
                 self.editable(&memory_id)?;
                 if !self.backend.supports("delete") {
-                    return Err(MemoryError::code("UNSUPPORTED_API"));
+                    return Err(MemoryError::code(ErrorCode::UnsupportedApi));
                 }
                 self.update(&op, vec![("phase", "backend".into())])?;
                 jsrt::sync::lock(&self.inner).reuse.clear();
@@ -1833,7 +1875,7 @@ impl MemoryService {
                 check_abort(signal)?;
                 if !response.is_object() || response["success"] != true || response["document_id"] != memory_id.as_str()
                 {
-                    return Err(MemoryError::code("INVALID_RESPONSE"));
+                    return Err(MemoryError::code(ErrorCode::InvalidResponse));
                 }
                 self.update(&op, vec![("state", "forgotten".into())])
             })
@@ -1849,7 +1891,9 @@ impl MemoryService {
             (Ok(owned), _) => owned,
             // A typed record another session (or `ultron memory import`) wrote: read from the backend by its index
             // entry, which this session's journal cannot record (it holds only its own documents).
-            (Err(error), Some(entry)) if error.code == "UNKNOWN_MEMORY" => return self.get_indexed(entry, signal),
+            (Err(error), Some(entry)) if error.code == ErrorCode::UnknownMemory => {
+                return self.get_indexed(entry, signal);
+            }
             (Err(error), _) => return Err(error),
         };
         let mut read = self.get_owned(&memory_id, scope, tags, signal)?;
@@ -1863,7 +1907,7 @@ impl MemoryService {
     fn get_indexed(&self, entry: &IndexEntry, signal: &Signal) -> Result<Value> {
         check_abort(signal)?;
         if !self.backend.supports("get") {
-            return Err(MemoryError::code("UNSUPPORTED_API"));
+            return Err(MemoryError::code(ErrorCode::UnsupportedApi));
         }
         let document = self
             .backend
@@ -1875,7 +1919,7 @@ impl MemoryService {
             || !same_tags(&document["tags"], &entry.tags)
             || !(document["original_text"].is_null() || document["original_text"].is_string())
         {
-            return Err(MemoryError::code("INVALID_RESPONSE"));
+            return Err(MemoryError::code(ErrorCode::InvalidResponse));
         }
         Ok(json!({
             "id": entry.id, "scope": entry.scope, "state": "stored", "operation": null,
@@ -1890,7 +1934,7 @@ impl MemoryService {
             self.attempt(&op, signal, || {
                 let mut current = Self::latest(&jsrt::sync::lock(&self.inner).records, &memory_id)?;
                 if current["state"] == "forgotten" {
-                    return Err(MemoryError::code("FORGOTTEN"));
+                    return Err(MemoryError::code(ErrorCode::Forgotten));
                 }
                 if matches!(current["state"].as_str(), Some("accepted" | "unknown"))
                     && current["kind"] != "forget"
@@ -1911,7 +1955,7 @@ impl MemoryService {
                         check_abort(signal)?;
                         let status = receipt["status"].as_str().filter(|status| RECEIPT_STATUSES.contains(status));
                         let Some(status) = status.filter(|_| receipt["operation_id"] == operation_id.as_str()) else {
-                            return Err(MemoryError::code("INVALID_RESPONSE"));
+                            return Err(MemoryError::code(ErrorCode::InvalidResponse));
                         };
                         receipts.push((operation_id.clone(), status.to_string()));
                     }
@@ -1937,7 +1981,7 @@ impl MemoryService {
                 let mut content = Value::Null;
                 if current["state"] == "stored" {
                     if !self.backend.supports("get") {
-                        return Err(MemoryError::code("UNSUPPORTED_API"));
+                        return Err(MemoryError::code(ErrorCode::UnsupportedApi));
                     }
                     self.update(&op, vec![("phase", "backend".into())])?;
                     check_abort(signal)?;
@@ -1948,7 +1992,7 @@ impl MemoryService {
                         || !same_tags(&document["tags"], &tags)
                         || !(document["original_text"].is_null() || document["original_text"].is_string())
                     {
-                        return Err(MemoryError::code("INVALID_RESPONSE"));
+                        return Err(MemoryError::code(ErrorCode::InvalidResponse));
                     }
                     content = document["original_text"].clone();
                 }

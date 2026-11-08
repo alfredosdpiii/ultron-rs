@@ -1,8 +1,7 @@
 //! `ultron claude` serves the durable many-agent APIs and schedules of a native session (crate::durable_apis,
 //! crate::schedules): persistent children with `rlm.ask`, the swarm, the task board, shared notes, and scheduled
-//! prompts that wake the idle root. TypeScript has none of them (swarm_api.py: "Hosts without these requests (the
-//! TypeScript host) answer them with an error"; schedule_api.py likewise), so the expected values are the Rust
-//! session's own (session_core::swarm_ops over harness::chat::host_ops), written out literally.
+//! prompts that wake the idle root. TypeScript has none of them, so the expected values are the Rust session's own
+//! (session_core::swarm_ops over harness::chat::host_ops), written out literally.
 //!
 //! Through the server's product entry (`mcp_server::start` and the MCP loop over pipes), a private temp root, and an
 //! OpenAI-compatible fake provider on 127.0.0.1 scripted by what each request says. No real Claude Code.

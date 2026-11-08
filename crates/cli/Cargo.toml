@@ -30,7 +30,6 @@ daemon = { path = "../daemon" }
 delegation = { path = "../delegation" }
 host = { path = "../host" }
 herdr = { path = "../herdr" }
-harness = { path = "../harness" }
 hindsight = { path = "../hindsight" }
 interactive = { path = "../interactive" }
 rustix = { version = "=1.1.5", features = ["event", "std", "termios"] }

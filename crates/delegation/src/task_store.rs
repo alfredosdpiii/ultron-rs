@@ -3,7 +3,6 @@
 //! this module keeps the JSON-valued API `host.rs` uses over the boxed [`DocumentStore`] it is configured with.
 
 use harness::task_store::TaskState;
-pub use harness::task_store::task_fingerprint;
 use kernel::store::DocumentStore;
 use serde_json::Value;
 

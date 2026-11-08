@@ -10,6 +10,7 @@ pub struct ModelInfo {
     pub provider: String,
     pub id: String,
     pub name: String,
+    pub api: String,
     pub reasoning: bool,
     pub context_window: u64,
     /// The thinking levels the model supports (`getThinkingLevels`), lowest first; empty: Pi's default set.
@@ -26,10 +27,8 @@ impl model_scope::ScopeModel for ModelInfo {
     fn name(&self) -> &str {
         &self.name
     }
-    /// The Claude Code CLI provider's models (`claude-code`, all on its `claude-code-cli` API) and the Claude
-    /// subscription's, whose ids are Anthropic's own.
     fn full_reference_only(&self) -> bool {
-        config::providers::runs_claude_code(&self.provider)
+        config::providers::full_reference_only(&self.provider, &self.api)
     }
 }
 
@@ -621,8 +620,8 @@ pub enum LaneCommand {
     ReloadPlugins,
 }
 
-impl From<rlm_views::Inspect> for LaneCommand {
-    fn from(inspect: rlm_views::Inspect) -> LaneCommand {
+impl From<rlm_views::poller::Inspect> for LaneCommand {
+    fn from(inspect: rlm_views::poller::Inspect) -> LaneCommand {
         LaneCommand::RlmInspect {
             tag: inspect.tag,
             request: inspect.request.into(),

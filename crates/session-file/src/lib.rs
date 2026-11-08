@@ -14,7 +14,7 @@ mod env;
 mod file;
 pub mod js;
 mod manager;
-pub mod paths;
+mod paths;
 
 pub use context::{
     Leaf, ProjectedEntry, SessionContext, SessionProjection, build_context_entries, build_session_context,
@@ -22,9 +22,8 @@ pub use context::{
 };
 pub use env::{Env, SystemEnv};
 pub use file::{
-    CURRENT_SESSION_VERSION, HeaderScanError, MAX_SESSION_HEADER_SCAN_BYTES, SessionInfo, default_session_dir,
-    default_session_dir_path, find_most_recent_session, find_session_by_id, list_all_sessions, list_sessions,
-    load_entries_from_file, migrate_session_entries, migrate_sessions_from_agent_root, parse_session_entries,
-    read_session_header,
+    CURRENT_SESSION_VERSION, HeaderScanError, SessionInfo, default_session_dir, default_session_dir_path,
+    find_most_recent_session, find_session_by_id, list_all_sessions, list_sessions, load_entries_from_file,
+    migrate_session_entries, migrate_sessions_from_agent_root, parse_session_entries, read_session_header,
 };
-pub use manager::{Error, NewSessionOptions, SessionManager, SessionTree, TreeNode, assert_valid_session_id};
+pub use manager::{Error, NewSessionOptions, SessionManager, SessionTree, TreeNode};

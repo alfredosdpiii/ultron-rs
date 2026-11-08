@@ -14,7 +14,7 @@ use jsrt::path::join;
 
 pub const CURRENT_SESSION_VERSION: u64 = 3;
 /// Header discovery reads at most this many bytes before giving up on a file.
-pub const MAX_SESSION_HEADER_SCAN_BYTES: u64 = 1024 * 1024;
+const MAX_SESSION_HEADER_SCAN_BYTES: u64 = 1024 * 1024;
 
 /// One parsed line, as `JSON.parse` would accept it; falsy values (`null`, `0`, `false`, `""`) are skipped.
 fn parse_line(line: &str) -> Option<Value> {
@@ -46,8 +46,8 @@ fn lossy(bytes: &[u8]) -> String {
 /// `loadEntriesFromFile`: all parsed lines of a session file, or nothing when the first parsed line
 /// is not a session header. A missing file is empty. When the file is a session whose last line
 /// lacks a newline, a newline is appended so the next append starts a new line.
-pub fn load_entries_from_file(path: &str) -> io::Result<Vec<Value>> {
-    let path = normalize_path(path);
+pub fn load_entries_from_file(env: &dyn Env, path: &str) -> io::Result<Vec<Value>> {
+    let path = normalize_path(env, path);
     let file = match File::open(&path) {
         Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
         other => other?,
@@ -122,8 +122,8 @@ pub(crate) fn header_cwd(header: &Value) -> Option<&str> {
     header.get("cwd").and_then(Value::as_str)
 }
 
-pub(crate) fn cwd_matches(cwd: Option<&str>, resolved_cwd: &str) -> bool {
-    cwd.is_some_and(|cwd| !cwd.is_empty() && resolve_path(cwd) == resolved_cwd)
+pub(crate) fn cwd_matches(env: &dyn Env, cwd: Option<&str>, resolved_cwd: &str) -> bool {
+    cwd.is_some_and(|cwd| !cwd.is_empty() && resolve_path(env, cwd) == resolved_cwd)
 }
 
 /// File names in a directory in byte order, as Node's `readdir` (libuv scandir) returns them.
@@ -141,9 +141,9 @@ fn mtime_ms(meta: &fs::Metadata) -> io::Result<f64> {
 
 /// `findMostRecentSession`: the most recently modified `.jsonl` session in `dir`, optionally only
 /// sessions started in `cwd`. Any directory or stat error makes the lookup unavailable (`None`).
-pub fn find_most_recent_session(dir: &str, cwd: Option<&str>) -> Option<String> {
-    let dir = normalize_path(dir);
-    let resolved_cwd = cwd.filter(|c| !c.is_empty()).map(resolve_path);
+pub fn find_most_recent_session(env: &dyn Env, dir: &str, cwd: Option<&str>) -> Option<String> {
+    let dir = normalize_path(env, dir);
+    let resolved_cwd = cwd.filter(|c| !c.is_empty()).map(|cwd| resolve_path(env, cwd));
     let mut files = Vec::new();
     for name in read_dir_sorted(&dir).ok()? {
         if name.ends_with(".jsonl") {
@@ -157,7 +157,7 @@ pub fn find_most_recent_session(dir: &str, cwd: Option<&str>) -> Option<String> 
         discovery_header(path).is_some_and(|header| {
             resolved_cwd
                 .as_deref()
-                .is_none_or(|resolved| cwd_matches(header_cwd(&header), resolved))
+                .is_none_or(|resolved| cwd_matches(env, header_cwd(&header), resolved))
         })
     })
 }
@@ -413,8 +413,12 @@ fn encode_cwd(cwd: &str) -> String {
 }
 
 /// `getDefaultSessionDir` without creating it: `<agent>/sessions/<encoded resolved cwd>`.
-pub fn default_session_dir_path(cwd: &str, agent_dir: &str) -> String {
-    join(&[&resolve_path(agent_dir), "sessions", &encode_cwd(&resolve_path(cwd))])
+pub fn default_session_dir_path(env: &dyn Env, cwd: &str, agent_dir: &str) -> String {
+    join(&[
+        &resolve_path(env, agent_dir),
+        "sessions",
+        &encode_cwd(&resolve_path(env, cwd)),
+    ])
 }
 
 /// `migrateSessionsFromAgentRoot` (src/migrations.ts): v0.30.0 wrote sessions straight into the
@@ -450,8 +454,8 @@ fn move_root_session(agent_dir: &str, name: &str) -> Option<()> {
 }
 
 /// `getDefaultSessionDir`: the default session directory for `cwd`, created if missing.
-pub fn default_session_dir(cwd: &str, agent_dir: &str) -> io::Result<String> {
-    let dir = default_session_dir_path(cwd, agent_dir);
+pub fn default_session_dir(env: &dyn Env, cwd: &str, agent_dir: &str) -> io::Result<String> {
+    let dir = default_session_dir_path(env, cwd, agent_dir);
     fs::create_dir_all(&dir)?;
     Ok(dir)
 }
@@ -462,20 +466,20 @@ pub(crate) fn lookup_dir(env: &dyn Env, cwd: &str, session_dir: Option<&str>) ->
     let agent_dir = env.agent_dir();
     Ok(match session_dir {
         Some(dir) => {
-            let dir = normalize_path(dir);
-            let filter = dir != default_session_dir_path(cwd, &agent_dir);
+            let dir = normalize_path(env, dir);
+            let filter = dir != default_session_dir_path(env, cwd, &agent_dir);
             (dir, filter)
         }
-        None => (default_session_dir(cwd, &agent_dir)?, false),
+        None => (default_session_dir(env, cwd, &agent_dir)?, false),
     })
 }
 
 /// `SessionManager.list`: sessions for `cwd`, newest activity first.
 pub fn list_sessions(env: &dyn Env, cwd: &str, session_dir: Option<&str>) -> io::Result<Vec<SessionInfo>> {
     let (dir, filter) = lookup_dir(env, cwd, session_dir)?;
-    let resolved_cwd = resolve_path(cwd);
+    let resolved_cwd = resolve_path(env, cwd);
     let mut sessions = list_dir(&dir);
-    sessions.retain(|s| !filter || cwd_matches(Some(&s.cwd), &resolved_cwd));
+    sessions.retain(|s| !filter || cwd_matches(env, Some(&s.cwd), &resolved_cwd));
     sort_session_infos(&mut sessions);
     Ok(sessions)
 }
@@ -484,7 +488,7 @@ pub fn list_sessions(env: &dyn Env, cwd: &str, session_dir: Option<&str>) -> io:
 /// project directory under `<agent>/sessions`; newest activity first.
 pub fn list_all_sessions(env: &dyn Env, session_dir: Option<&str>) -> Vec<SessionInfo> {
     if let Some(dir) = session_dir {
-        let mut sessions = list_dir(&normalize_path(dir));
+        let mut sessions = list_dir(&normalize_path(env, dir));
         sort_session_infos(&mut sessions);
         return sessions;
     }
@@ -532,7 +536,7 @@ pub fn list_all_sessions(env: &dyn Env, session_dir: Option<&str>) -> Vec<Sessio
 /// `SessionManager.findById`: the file whose header has exactly `id`, without reading bodies.
 pub fn find_session_by_id(env: &dyn Env, cwd: &str, id: &str, session_dir: Option<&str>) -> Option<String> {
     let (dir, filter) = lookup_dir(env, cwd, session_dir).ok()?;
-    let resolved_cwd = resolve_path(cwd);
+    let resolved_cwd = resolve_path(env, cwd);
     read_dir_sorted(&dir)
         .ok()?
         .into_iter()
@@ -541,7 +545,7 @@ pub fn find_session_by_id(env: &dyn Env, cwd: &str, id: &str, session_dir: Optio
             let path = join(&[&dir, &file]);
             let header = discovery_header(&path)?;
             let matches = field(&header, "id").and_then(Value::as_str) == Some(id)
-                && (!filter || cwd_matches(header_cwd(&header), &resolved_cwd));
+                && (!filter || cwd_matches(env, header_cwd(&header), &resolved_cwd));
             matches.then_some(path)
         })
 }

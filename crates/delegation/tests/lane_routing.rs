@@ -383,3 +383,32 @@ fn delegation_a_cancelled_cells_waiting_call_gets_its_outcome_too() {
     );
     r.lanes.close();
 }
+
+/// Each host routes exactly the kinds it dispatches: a kind it names no handling for (not even under a prefix it
+/// owns) goes on to the next handler instead of failing inside the host.
+#[test]
+fn delegation_hosts_route_only_the_kinds_they_dispatch() {
+    use delegation::agents::Agents;
+    for kind in [
+        "rlm.spawn",
+        "rlm.collect",
+        "rlm.merge",
+        "rlm.worktrees.list",
+        "rlm.worktrees.cleanup",
+    ] {
+        assert!(Delegation::serves(kind), "{kind}");
+    }
+    assert!(!Delegation::serves("rlm.worktrees.prune"));
+    for kind in [
+        "ping",
+        "workflows.run",
+        "agents.spawn",
+        "agents.cancel",
+        "background.stop",
+    ] {
+        assert!(Agents::serves(kind), "{kind}");
+    }
+    for kind in ["agents.bogus", "background.bogus", "rlm.finish"] {
+        assert!(!Agents::serves(kind), "{kind}");
+    }
+}

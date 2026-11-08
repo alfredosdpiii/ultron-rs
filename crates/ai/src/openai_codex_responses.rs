@@ -16,7 +16,6 @@ use crate::http::{
     AbortSignal, Body, DEFAULT_MAX_RETRY_DELAY_MS, HeaderBuilder, HttpRequest, HttpResponse, Transport, cancelled,
     is_aborted,
 };
-use crate::json::parse_json;
 use crate::jsutil::{Utf8Stream, latin1};
 use crate::models::clamp_thinking_level;
 use crate::openai_responses::{
@@ -33,6 +32,7 @@ use crate::types::{
     TranscriptContext,
 };
 use indexmap::IndexMap;
+use jsrt::json_parse::parse_json;
 use serde::Deserialize;
 use serde_json::{Map, Value, json};
 use std::time::Duration;

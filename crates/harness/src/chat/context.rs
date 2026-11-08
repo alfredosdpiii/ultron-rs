@@ -37,7 +37,11 @@ pub(crate) fn message_of(value: Value) -> Result<Message> {
 
 /// The committed context of one conversation, or of the context cut off at the visible entry `at`. Runs inside a
 /// transaction; its reads ignore the read-after-write rule, so a commit may derive context after writing.
-pub fn read_context(tx: &mut Tx<'_>, conversation_id: ConversationId, at: Option<EntryId>) -> Result<ContextView> {
+pub(crate) fn read_context(
+    tx: &mut Tx<'_>,
+    conversation_id: ConversationId,
+    at: Option<EntryId>,
+) -> Result<ContextView> {
     let tail = match at {
         None => {
             let query = EntryQuery {

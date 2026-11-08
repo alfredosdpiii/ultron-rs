@@ -1,5 +1,5 @@
-//! The environment variables the kernel process and its Python runtime (`runtime.py` and its modules) read, and the
-//! interpreter the kernel runs.
+//! The environment variables the kernel process and its Python runtime (`runtime.py` and its modules) read, where a
+//! subagent's worktree lives, and the interpreter the kernel runs.
 
 use std::path::Path;
 
@@ -20,6 +20,9 @@ pub const FILE_HOOKS_ENV: &str = "ULTRON_FILE_HOOKS";
 pub const WORKTREE_ENV: &str = "ULTRON_WORKTREE";
 pub const PARENT_REPO_ENV: &str = "ULTRON_PARENT_REPO";
 pub const WORKTREE_BRANCH_ENV: &str = "ULTRON_WORKTREE_BRANCH";
+/// The directory under the Git common dir that holds subagent worktrees and their records (worktrees.ts
+/// `WORKTREES_DIR`).
+pub const WORKTREES_DIR: &str = "ultron-worktrees";
 
 /// Set (to `1`) in every kernel's environment, so a cell's command or a program it started knows it runs inside a
 /// kernel. Rust-only; the resource limits beside it may also come from the user.

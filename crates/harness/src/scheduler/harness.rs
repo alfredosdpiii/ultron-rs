@@ -63,7 +63,7 @@ pub struct Inspection {
     pub submissions: Vec<SubmissionRecord>,
 }
 
-pub type FallibleClock = Arc<dyn Fn() -> std::result::Result<u64, HarnessError> + Send + Sync>;
+pub(crate) type FallibleClock = Arc<dyn Fn() -> std::result::Result<u64, HarnessError> + Send + Sync>;
 
 /// Harness options. `registry` may keep changing while the Harness runs.
 #[derive(Clone)]

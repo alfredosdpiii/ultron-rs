@@ -45,30 +45,12 @@ pub enum Event {
 /// (rpc-native.ts `uiLoop`); a different session starts again from its open dialogs.
 fn serve_extension_ui(link: client::session::LinkHandle, tx: Sender<Input>, stop: Arc<std::sync::atomic::AtomicBool>) {
     std::thread::spawn(move || {
-        let (mut cursor, mut session): (Option<u64>, String) = (None, String::new());
+        let mut poll = crate::link::ExtensionUiPoll::default();
         while !stop.load(Ordering::SeqCst) {
-            if link.session_id() != session {
-                session = link.session_id();
-                cursor = None;
-            }
-            let connection = link.connection();
-            // Short polls: a poll held open in the worker would keep it from retiring after this client is gone.
-            let polled = connection
-                .session_target()
-                .and_then(|target| connection.call(target, protocol::names::EXTENSION_UI, "poll", json!([cursor, 0])));
-            match polled {
-                Ok(Some(result)) => {
-                    cursor = result["cursor"].as_u64();
-                    for item in result["requests"].as_array().into_iter().flatten() {
-                        if tx
-                            .send(Input::Event(Event::ExtensionUi(item["request"].clone())))
-                            .is_err()
-                        {
-                            return;
-                        }
-                    }
+            for request in poll.poll(&link.session_id(), &link.connection()) {
+                if tx.send(Input::Event(Event::ExtensionUi(request))).is_err() {
+                    return;
                 }
-                _ => cursor = None,
             }
             std::thread::sleep(std::time::Duration::from_millis(250));
         }
@@ -580,17 +562,13 @@ pub fn run(
     // with the signal's code.
     let signalled = Arc::new(std::sync::atomic::AtomicI32::new(0));
     let (code, end) = (signalled.clone(), std::sync::Mutex::new(tx.clone()));
-    signals::set_handler(Arc::new(move |signal| {
-        let exit = signals::exit_code(signal);
+    crate::print_mode::exit_on_signal(move |exit| {
         code.store(exit, Ordering::SeqCst);
-        herdr::release_active();
         let _ = end
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .send(Input::Event(Event::Signal(exit)));
-        std::thread::sleep(crate::print_mode::PROMPT_ABORT_WAIT);
-        std::process::exit(signals::exit_code(signal));
-    }));
+    });
     let reader = std::thread::spawn(move || {
         for line in super::jsonl::JsonlLines::new(input) {
             match line {

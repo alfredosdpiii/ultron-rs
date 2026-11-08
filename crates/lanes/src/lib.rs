@@ -22,6 +22,7 @@
 //!   pinned, opening or running another lane is refused with the pool's capacity error. `rlm.pool` reports it.
 
 pub mod kernel_pool;
+pub mod lane_names;
 
 use crate::kernel_pool::{KernelPool, KernelPoolOptions, Lease, PoolableKernel};
 use jsrt::sync;

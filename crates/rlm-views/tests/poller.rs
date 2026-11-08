@@ -1,6 +1,7 @@
 //! `RlmPoller`: the one poll the native TUI (answers later, by tag) and `ultron watch` (blocking requests) share.
 
-use rlm_views::{Answered, Inspect, RlmClock, RlmPoller, TUI_FRAME_LIMIT, WATCH_FRAME_LIMIT};
+use rlm_views::poller::{Answered, Inspect, RlmPoller, TUI_FRAME_LIMIT, WATCH_FRAME_LIMIT};
+use rlm_views::visualizer::RlmClock;
 use serde_json::{Value, json};
 
 fn sent(poller: &RlmPoller) -> Vec<Inspect> {
@@ -85,7 +86,7 @@ fn rlm_poller_progress_round_replaces_assessments_when_complete() {
     assert!(poller_snapshot(&poller).progress.is_empty());
 }
 
-fn poller_snapshot(poller: &RlmPoller) -> rlm_views::RlmSnapshot {
+fn poller_snapshot(poller: &RlmPoller) -> rlm_views::visualizer::RlmSnapshot {
     let status = poller.status().cloned().unwrap_or_default();
     poller.snapshot(status, &mut RlmClock::new(), 1000.0, None, Vec::new(), None)
 }

@@ -692,7 +692,7 @@ impl SettingsSelector {
                 "steering-mode",
                 "Steering mode",
                 "Enter while streaming queues steering messages. 'one-at-a-time': deliver one, wait for response. 'all': deliver all at once.",
-                c.str("steeringMode", config::keys::QUEUE_ALL),
+                c.str("steeringMode", config::keys::QUEUE_DEFAULT),
                 &[config::keys::QUEUE_ONE_AT_A_TIME, config::keys::QUEUE_ALL],
             ),
             item(
@@ -702,7 +702,7 @@ impl SettingsSelector {
                     "{} queues follow-up messages until agent stops. 'one-at-a-time': deliver one, wait for response. 'all': deliver all at once.",
                     c.follow_up_key
                 ),
-                c.str("followUpMode", config::keys::QUEUE_ALL),
+                c.str("followUpMode", config::keys::QUEUE_DEFAULT),
                 &[config::keys::QUEUE_ONE_AT_A_TIME, config::keys::QUEUE_ALL],
             ),
             item(
@@ -1960,8 +1960,8 @@ impl SettingsSelector {
             "fullscreen-exit-output" => ("fullscreenExitOutput", value.into()),
             "fullscreen-scrollbar" => ("fullscreenScrollbar", value.into()),
             "fullscreen-copy-on-select" => ("fullscreenCopyOnSelect", b),
-            // As `/persona ultron|off` writes it: off removes the key.
-            "persona" => ("persona", if value == "ultron" { value.into() } else { Value::Null }),
+            // As `/persona ultron|none` writes it.
+            "persona" => ("persona", if value == "ultron" { value } else { "off" }.into()),
             "request-token-cap" => ("rootBudget.maxTotalTokens", token_cap_value(value)),
             "map-token-cap" => ("rlm.mapTokens", token_cap_value(value)),
             other => (other, value.into()),
@@ -2190,6 +2190,20 @@ mod tests {
             rows[0]
                 .description
                 .ends_with("Saved default: anthropic/claude-haiku-4-5 (durable.model).")
+        );
+    }
+
+    /// Unset queue modes show `all`, the session's default (client-tui-settings.ts `str("steeringMode", "all")`).
+    #[test]
+    fn settings_queue_modes_show_the_session_default_unset() {
+        let s = selector(json!({}));
+        let value = |id: &str| s.list.items.iter().find(|it| it.id == id).unwrap().value.clone();
+        assert_eq!(value("steering-mode"), config::keys::QUEUE_DEFAULT);
+        assert_eq!(value("follow-up-mode"), config::keys::QUEUE_DEFAULT);
+        let s = selector(json!({"steeringMode": "one-at-a-time"}));
+        assert_eq!(
+            s.list.items.iter().find(|it| it.id == "steering-mode").unwrap().value,
+            "one-at-a-time"
         );
     }
 

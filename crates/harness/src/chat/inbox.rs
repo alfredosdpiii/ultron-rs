@@ -44,7 +44,7 @@ pub struct Boundary {
 
 /// Selected user items, in ID order, and whether a `head: "self"` write (a reset) was placed.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct BoundaryResult {
+pub(crate) struct BoundaryResult {
     pub users: Vec<SubmissionId>,
     pub reset: bool,
 }
@@ -65,7 +65,7 @@ fn item_id(item: &Value) -> SubmissionId {
 }
 
 /// The `EntryDraft` a queued write stores as plain JSON.
-pub fn entry_draft(entry: &Value) -> Result<EntryDraft> {
+pub(crate) fn entry_draft(entry: &Value) -> Result<EntryDraft> {
     let kind = entry["kind"]
         .as_str()
         .ok_or_else(|| HarnessError::msg("A write entry needs a kind"))?;
@@ -95,7 +95,11 @@ pub fn entry_draft(entry: &Value) -> Result<EntryDraft> {
 
 /// Read what a boundary needs. Table reads must precede the commit's first table write, so callers prepare the
 /// boundary at the start of their commit.
-pub fn prepare_boundary(tx: &mut Tx<'_>, conversation_id: ConversationId, modes: QueueModes) -> Result<Boundary> {
+pub(crate) fn prepare_boundary(
+    tx: &mut Tx<'_>,
+    conversation_id: ConversationId,
+    modes: QueueModes,
+) -> Result<Boundary> {
     let head = tx.latest_head_marker(conversation_id)?.and_then(|marker| marker.head);
     let inbox = tx.doc(&INBOX, owner(conversation_id))?;
     Ok(Boundary {
@@ -107,7 +111,7 @@ pub fn prepare_boundary(tx: &mut Tx<'_>, conversation_id: ConversationId, modes:
 }
 
 /// Whether a head write targets an entry before the active range, so placing it would bring back cut history.
-pub fn is_stale(boundary: &Boundary, entry: &EntryDraft) -> bool {
+pub(crate) fn is_stale(boundary: &Boundary, entry: &EntryDraft) -> bool {
     matches!((entry.head, boundary.head), (Some(EntryHead::Entry(target)), Some(head)) if target < head)
 }
 
@@ -122,7 +126,7 @@ pub(crate) fn user_entry(content: &Value, now: u64) -> EntryDraft {
 /// first or all follow-ups. A selected reset turns a `postTools` boundary into `final`. Writes are placed first and
 /// user items after them, each in ID order; a stale write settles `unanswered` with `stale`. Selected and stale items
 /// are removed positionally.
-pub fn apply_boundary(tx: &mut Tx<'_>, boundary: &mut Boundary, at: At, now: u64) -> Result<BoundaryResult> {
+pub(crate) fn apply_boundary(tx: &mut Tx<'_>, boundary: &mut Boundary, at: At, now: u64) -> Result<BoundaryResult> {
     let items = items(&boundary.inbox)?;
     let mode = |item: &Value| item["mode"].as_str().unwrap_or_default().to_owned();
     let reset = items
@@ -192,7 +196,7 @@ pub fn apply_boundary(tx: &mut Tx<'_>, boundary: &mut Boundary, at: At, now: u64
 }
 
 /// Remove a withdrawn submission's item; the caller settles the submission.
-pub fn remove_inbox_item(tx: &mut Tx<'_>, conversation_id: ConversationId, id: SubmissionId) -> Result<()> {
+pub(crate) fn remove_inbox_item(tx: &mut Tx<'_>, conversation_id: ConversationId, id: SubmissionId) -> Result<()> {
     let inbox = tx.doc(&INBOX, owner(conversation_id))?;
     if let Some(index) = items(&inbox)?.iter().position(|item| item_id(item) == id) {
         d(inbox.splice(&items_path(), index, 1, Vec::new()))?;
@@ -202,7 +206,7 @@ pub fn remove_inbox_item(tx: &mut Tx<'_>, conversation_id: ConversationId, id: S
 
 /// Withdraw every queued input of a conversation, as `Conversation::abort` and abort cascades do: each settles
 /// `unanswered` with `aborted` and leaves the inbox; queued writes stay for later placement.
-pub fn withdraw_queued_inputs(tx: &mut Tx<'_>, conversation_id: ConversationId) -> Result<()> {
+pub(crate) fn withdraw_queued_inputs(tx: &mut Tx<'_>, conversation_id: ConversationId) -> Result<()> {
     let inbox = tx.doc(&INBOX, owner(conversation_id))?;
     let items = items(&inbox)?;
     for index in (0..items.len()).rev() {

@@ -94,7 +94,7 @@ fn setup(root: &Path, with_children: bool) -> Setup {
     agents.lanes = Some(lanes);
     let (agents, _ends) = Agents::new(agents);
     if with_children {
-        agents.set_worktree_children(Arc::new(delegation.clone()));
+        agents.set_worktree_children(delegation.clone());
     }
     let _ = host.set(agents.clone());
     Setup {

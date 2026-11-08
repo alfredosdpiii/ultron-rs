@@ -4,7 +4,7 @@
 
 use crate::http::{HttpOptions, http_error};
 use crate::jsonrpc::Error;
-use crate::resolve::{expand_home, resolve_config_value_or_err, resolve_headers_or_err};
+use crate::resolve::expand_home;
 use crate::stdio::StdioOptions;
 use serde_json::{Map, Value};
 use std::collections::HashMap;
@@ -53,7 +53,7 @@ pub fn transport_spec(
     env_overlay: &HashMap<String, String>,
 ) -> Result<(TransportSpec, Vec<String>), String> {
     if let Some(url) = config.get("url").and_then(Value::as_str) {
-        let headers = resolve_headers_or_err(
+        let headers = crate::resolve::headers(
             &string_pairs(config.get("headers")),
             &format!("MCP server \"{name}\""),
             env_overlay,
@@ -71,7 +71,7 @@ pub fn transport_spec(
     for (key, value) in string_pairs(config.get("env")) {
         env.push((
             key.clone(),
-            resolve_config_value_or_err(&value, &format!("MCP server \"{name}\" env \"{key}\""), env_overlay)?,
+            crate::resolve::value(&value, &format!("MCP server \"{name}\" env \"{key}\""), env_overlay)?,
         ));
     }
     let secrets = env.iter().map(|(_, v)| v.clone()).collect();

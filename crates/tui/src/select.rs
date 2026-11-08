@@ -51,7 +51,6 @@ pub struct SelectItem {
 }
 
 pub struct SelectListTheme {
-    pub selected_prefix: StyleFn,
     pub selected_text: StyleFn,
     pub description: StyleFn,
     pub scroll_info: StyleFn,

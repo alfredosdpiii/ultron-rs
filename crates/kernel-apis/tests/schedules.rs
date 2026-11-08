@@ -5,7 +5,6 @@
 use crate::common;
 
 use common::{FIXED_NOW, Made, assert_area, fixture, inner, run_scenario};
-use kernel::Signal;
 use kernel::store::{DocumentStore, MemoryDocumentStore};
 use kernel_apis::{KernelApis, SchedulesModule, TaskHost};
 use serde_json::{Value, json};
@@ -44,7 +43,7 @@ impl TaskHost for FakeTasks {
         jsrt::sync::lock(&self.log).push(json!(["tasks"]));
         Ok(jsrt::sync::lock(&self.tasks).clone())
     }
-    fn spawn(&self, request: &Value, parent: Option<&str>, _signal: &Signal) -> Result<Value, String> {
+    fn spawn(&self, request: &Value, parent: Option<&str>) -> Result<Value, String> {
         jsrt::sync::lock(&self.log).push(json!(["spawn", request, parent]));
         if request["definition"] == "refused-check@1" {
             return Err("Usage budget exhausted".into());
@@ -77,7 +76,7 @@ impl TaskHost for FakeTasks {
     fn cancel(&self, _task_id: &str, _reason: &str) -> Result<Value, String> {
         Err("unused".into())
     }
-    fn steer(&self, _task_id: &str, _message: &str, _signal: &Signal) -> Result<bool, String> {
+    fn steer(&self, _task_id: &str, _message: &str) -> Result<bool, String> {
         Ok(false)
     }
     fn now(&self) -> i64 {
@@ -127,7 +126,7 @@ fn direct(clock: &Arc<AtomicI64>) -> (SchedulesModule, Arc<FakeTasks>, Arc<Memor
 }
 
 fn call(module: &SchedulesModule, host: &FakeTasks, kind: &str, payload: Value) -> Result<Value, String> {
-    module.handle(kind, payload.as_object().unwrap(), None, host, &Signal::new())
+    module.handle(kind, payload.as_object().unwrap(), None, host)
 }
 
 /// "duplicate and concurrent ticks in the same slot run the slot once"; a restart on the same stores does not

@@ -90,6 +90,7 @@ fn model(id: &str, reasoning: bool) -> ModelInfo {
         provider: "anthropic".into(),
         id: id.into(),
         name: format!("Model {id}"),
+        api: String::new(),
         reasoning,
         context_window: 1000,
         thinking_levels: Vec::new(),
@@ -1685,7 +1686,7 @@ fn interactive_commands_persona_reports_and_writes_the_setting() {
     assert_eq!(calls(&c).last().unwrap(), "setting persona=\"ultron\"");
     assert!(screen(&mut app).contains("Persona ultron on from the next message"));
     completed(&mut app, "/persona none");
-    assert_eq!(calls(&c).last().unwrap(), "setting persona=null");
+    assert_eq!(calls(&c).last().unwrap(), "setting persona=\"off\"");
     assert!(screen(&mut app).contains("Persona off from the next message"));
     // The session's own toggle goes to the session, which answers with a status line.
     submit(&mut app, "/persona ON");

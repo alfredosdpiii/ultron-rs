@@ -9,7 +9,7 @@ use crate::constrained::{
 use crate::http::{
     Failure, HeaderBuilder, HttpRequest, Sdk, Transport, format_provider_error, join_url, send_with_retry,
 };
-use crate::json::{parse_json, parse_streaming_json, short_hash};
+use crate::json::short_hash;
 use crate::models::{calculate_cost, clamp_thinking_level};
 use crate::openai_completions::client_api_key;
 use crate::options::{SimpleStreamOptions, StreamOptions, build_base_options, pi_user_agent};
@@ -25,6 +25,7 @@ use crate::types::{
     UserMessageContent,
 };
 use indexmap::IndexMap;
+use jsrt::json_parse::{parse_json, parse_streaming_json};
 use serde::Deserialize;
 use serde_json::{Map, Value, json};
 use std::collections::HashMap;

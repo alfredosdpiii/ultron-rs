@@ -78,7 +78,6 @@ fn tui_select_list_renders_and_navigates_like_ts() {
     let mut total = 0;
     for (si, script) in f["select"].as_array().unwrap().iter().enumerate() {
         let theme = SelectListTheme {
-            selected_prefix: sty(36),
             selected_text: sty(1),
             description: sty(2),
             scroll_info: sty(90),
@@ -140,7 +139,6 @@ fn tui_select_list_width_sweep_matches_ts() {
     let mut failures = Vec::new();
     for case in f["selectSweep"].as_array().unwrap() {
         let theme = SelectListTheme {
-            selected_prefix: sty(36),
             selected_text: sty(1),
             description: sty(2),
             scroll_info: sty(90),

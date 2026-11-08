@@ -15,6 +15,7 @@ pub mod compaction;
 pub mod context;
 pub mod docs;
 pub mod entries;
+#[cfg(feature = "test-support")]
 pub mod faux;
 pub mod gate;
 pub mod generation;
@@ -40,12 +41,13 @@ use durable::{
 use indexmap::IndexMap;
 use serde_json::{Value, json};
 
-pub use cell::{CellCall, CellExecutor, CellProgress, CellResult, Diagnostic, Replay};
+pub use cell::{CellCall, CellExecutor, CellProgress, CellResult, Replay};
 pub use context::ContextView;
-pub use generation::{Agent, Control, GenerationCheckpoint};
+pub use generation::Control;
 pub use inbox::{QueueMode, QueueModes};
 pub use models::{CompactionPolicy, ModelRef, Models, Settings, SettingsSource, StreamRequest, ToolExecution};
-pub use submissions::{SubmissionAbort, SubmissionDraft, WhenBusy, admit_run_with_steering, admit_submission};
+use submissions::admit_run_with_steering;
+pub use submissions::{SubmissionAbort, SubmissionDraft, WhenBusy, admit_submission};
 
 use crate::scheduler::{
     AbortResult, Clock, Ctx, Extension, FallibleClock, Harness, HarnessError, HarnessOptions, Inspection, Registry,
@@ -59,17 +61,17 @@ pub type SectionSource =
     Arc<dyn Fn(ConversationId, &crate::scheduler::Cancel) -> Result<IndexMap<String, String>> + Send + Sync>;
 
 /// `onYield`: user content to continue the run with after a final answer.
-pub type OnYield = Arc<dyn Fn(&AssistantMessage) -> Option<Value> + Send + Sync>;
+pub(crate) type OnYield = Arc<dyn Fn(&AssistantMessage) -> Option<Value> + Send + Sync>;
 /// `beforeRequest`: replace the messages of one request.
-pub type BeforeRequest = Arc<dyn Fn(Vec<Message>) -> Vec<Message> + Send + Sync>;
+pub(crate) type BeforeRequest = Arc<dyn Fn(Vec<Message>) -> Vec<Message> + Send + Sync>;
 /// `afterResponse`: observe a terminal provider message.
-pub type AfterResponse = Arc<dyn Fn(&AssistantMessage) + Send + Sync>;
+pub(crate) type AfterResponse = Arc<dyn Fn(&AssistantMessage) + Send + Sync>;
 
 /// The compaction policy of one conversation, instead of the settings' (`None`: the settings').
-pub type CompactionFor = Arc<dyn Fn(ConversationId) -> Option<CompactionPolicy> + Send + Sync>;
+pub(crate) type CompactionFor = Arc<dyn Fn(ConversationId) -> Option<CompactionPolicy> + Send + Sync>;
 /// `before_compaction` of a blocking threshold compaction: `(conversation, estimated context tokens, threshold)`;
 /// entries (`EntryDraft` JSON, as a write takes) to append instead of compacting, or none to compact.
-pub type BeforeCompaction = Arc<dyn Fn(ConversationId, u64, u64) -> Vec<Value> + Send + Sync>;
+pub(crate) type BeforeCompaction = Arc<dyn Fn(ConversationId, u64, u64) -> Vec<Value> + Send + Sync>;
 
 /// Generation hooks (spec §7.2), as plain callbacks.
 #[derive(Clone, Default)]
@@ -174,7 +176,7 @@ pub fn configure(tx: &mut Tx<'_>, conversation_id: ConversationId, change: &Agen
 
 /// The built-in creation hook: empty `ultron.live`, `ultron.inbox`, `ultron.usage`, a fresh `ultron.provider` and the conversation's
 /// `ultron.agent`, in the creating commit.
-pub fn create_documents(tx: &mut Tx<'_>, conversation_id: ConversationId, fork: bool) -> Result<()> {
+pub(crate) fn create_documents(tx: &mut Tx<'_>, conversation_id: ConversationId, fork: bool) -> Result<()> {
     let owner = Owner::Conversation(conversation_id);
     for doc in [&docs::LIVE, &docs::INBOX, &docs::USAGE, &docs::PROVIDER] {
         tx.doc(doc, owner)?;

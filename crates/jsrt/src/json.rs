@@ -456,6 +456,13 @@ mod tests {
     }
 
     #[test]
+    fn jsrt_json_preview_flattens_javascript_whitespace() {
+        // `text.replace(/\s+/g, " ").trim()` treats U+FEFF as whitespace and U+0085 as text (node:
+        // "a﻿b\u0085c" -> "a b\u0085c").
+        assert_eq!(preview(&json!(" a\u{feff}b\u{85}c\n"), 100), "a b\u{85}c");
+    }
+
+    #[test]
     fn jsrt_json_numbers_serialize_like_json_stringify() {
         let input = "[0,-0,1,-1,0.1,0.30000000000000004,1e21,1e-7,1.5e-7,0.000001,123456789012345678901,9007199254740993,1.7976931348623157e308,5e-324,-2.5e-10,100,1234.5678,1e20,12345678901234567890,1e16,1.0]";
         let parsed: Value = serde_json::from_str(input).unwrap();

@@ -200,7 +200,7 @@ pub fn resolve_stored_api_key(
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum TemplatePart {
+enum TemplatePart {
     Literal(String),
     Env(String),
 }
@@ -228,7 +228,7 @@ fn push_literal(parts: &mut Vec<TemplatePart>, value: &str) {
 }
 
 /// `parseConfigValueTemplate`: `$NAME`, `${NAME}`, `$$` and `$!` escapes; anything else stays literal.
-pub fn parse_template(config: &str) -> Vec<TemplatePart> {
+fn parse_template(config: &str) -> Vec<TemplatePart> {
     let mut parts = Vec::new();
     let mut rest = config;
     while let Some(dollar) = rest.find('$') {
@@ -274,36 +274,30 @@ const COMMAND_TIMEOUT: Duration = Duration::from_secs(10);
 static COMMAND_CACHE: std::sync::Mutex<Option<std::collections::HashMap<String, Option<String>>>> =
     std::sync::Mutex::new(None);
 
-/// `executeWithDefaultShell`: `/bin/sh -c <command>` with stdin and stderr ignored, for at most ten seconds; its
-/// trimmed stdout, or `None` when it fails, times out, or prints nothing. Uncached (models.json values,
-/// `resolveConfigValueUncached`); [`command_value`] caches it.
-pub fn command_output(command: &str) -> Option<String> {
-    use std::io::Read;
+/// `executeWithDefaultShell`: `/bin/sh -c <command>` with `envs` added to the environment, stdin and stderr ignored,
+/// for at most ten seconds; its trimmed stdout, or `None` when it fails, times out, or prints nothing. Uncached
+/// (models.json and MCP values, `resolveConfigValueUncached`); [`command_value`] caches it.
+fn command_output(command: &str, envs: &[(String, String)]) -> Option<String> {
     use std::process::{Command, Stdio};
-    let mut child = Command::new("/bin/sh")
-        .arg("-c")
-        .arg(command)
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .spawn()
-        .ok()?;
-    let mut stdout = child.stdout.take()?;
-    let (tx, rx) = std::sync::mpsc::channel();
-    std::thread::spawn(move || {
-        let mut out = Vec::new();
-        let _ = stdout.read_to_end(&mut out);
-        let _ = tx.send(out);
-    });
-    let Ok(out) = rx.recv_timeout(COMMAND_TIMEOUT) else {
-        let _ = child.kill();
-        let _ = child.wait();
-        return None;
+    let bound = signals::child::Bound {
+        timeout: Some(COMMAND_TIMEOUT),
+        ..Default::default()
     };
-    if !child.wait().ok()?.success() {
+    let out = signals::child::run(
+        Command::new("/bin/sh")
+            .arg("-c")
+            .arg(command)
+            .envs(envs.iter().map(|(k, v)| (k, v)))
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null()),
+        None,
+        bound,
+    )
+    .ok()?;
+    if !out.success() {
         return None;
     }
-    let text = String::from_utf8_lossy(&out).trim().to_string();
+    let text = String::from_utf8_lossy(&out.stdout).trim().to_string();
     (!text.is_empty()).then_some(text)
 }
 
@@ -318,7 +312,7 @@ pub fn command_value(command: &str) -> Option<String> {
     {
         return cached.clone();
     }
-    let value = command_output(command);
+    let value = command_output(command, &[]);
     COMMAND_CACHE
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -343,7 +337,7 @@ pub fn resolve_config_value(config: &str, env: &dyn Fn(&str) -> Option<String>) 
 }
 
 /// A template with its variables filled; `None` when a referenced variable is unset or empty.
-pub fn fill_template(config: &str, env: &dyn Fn(&str) -> Option<String>) -> Option<String> {
+fn fill_template(config: &str, env: &dyn Fn(&str) -> Option<String>) -> Option<String> {
     let mut out = String::new();
     for part in parse_template(config) {
         match part {
@@ -352,6 +346,82 @@ pub fn fill_template(config: &str, env: &dyn Fn(&str) -> Option<String>) -> Opti
         }
     }
     Some(out)
+}
+
+/// `!command` values run a shell command; everything else is a template.
+pub fn is_command(config: &str) -> bool {
+    config.starts_with('!')
+}
+
+/// `getConfigValueEnvVarNames`: the variables a template names, first occurrence first.
+pub fn env_names(config: &str) -> Vec<String> {
+    if is_command(config) {
+        return Vec::new();
+    }
+    let mut names: Vec<String> = Vec::new();
+    for part in parse_template(config) {
+        if let TemplatePart::Env(name) = part
+            && !names.contains(&name)
+        {
+            names.push(name);
+        }
+    }
+    names
+}
+
+/// `resolveConfigValueUncached`: `!command` output (run with `envs` added to its environment), or the template with
+/// its variables filled from `lookup` (None when one is unset or empty).
+pub fn resolve_uncached(
+    config: &str,
+    lookup: &dyn Fn(&str) -> Option<String>,
+    envs: &[(String, String)],
+) -> Option<String> {
+    match config.strip_prefix('!') {
+        Some(command) => command_output(command, envs),
+        None => fill_template(config, lookup),
+    }
+}
+
+/// `resolveConfigValueOrThrow`, with its messages.
+pub fn resolve_or_err(
+    config: &str,
+    description: &str,
+    lookup: &dyn Fn(&str) -> Option<String>,
+    envs: &[(String, String)],
+) -> Result<String, String> {
+    if let Some(value) = resolve_uncached(config, lookup, envs) {
+        return Ok(value);
+    }
+    if let Some(command) = config.strip_prefix('!') {
+        return Err(format!("Failed to resolve {description} from shell command: {command}"));
+    }
+    let missing: Vec<String> = env_names(config)
+        .into_iter()
+        .filter(|name| lookup(name).is_none_or(|v| v.is_empty()))
+        .collect();
+    Err(match missing.as_slice() {
+        [] => format!("Failed to resolve {description}"),
+        [one] => format!("Failed to resolve {description} from environment variable: {one}"),
+        many => format!(
+            "Failed to resolve {description} from environment variables: {}",
+            many.join(", ")
+        ),
+    })
+}
+
+/// `resolveHeadersOrThrow`: every header resolved, in order; None when there are none.
+pub fn resolve_headers_or_err(
+    headers: &[(String, String)],
+    description: &str,
+    lookup: &dyn Fn(&str) -> Option<String>,
+    envs: &[(String, String)],
+) -> Result<Option<Vec<(String, String)>>, String> {
+    let mut out = Vec::new();
+    for (key, value) in headers {
+        let resolved = resolve_or_err(value, &format!("{description} header \"{key}\""), lookup, envs)?;
+        out.push((key.clone(), resolved));
+    }
+    Ok((!out.is_empty()).then_some(out))
 }
 
 /// `ReadOnlyAuthStorage`'s validation: every entry an `api_key` (string key, string env map) or a complete `oauth`

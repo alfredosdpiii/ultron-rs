@@ -9,7 +9,6 @@ use crate::google_shared::{
     supports_google_strict_tool_sampling, to_google_thinking_level, uses_google_thinking_level,
 };
 use crate::http::{Failure, HeaderBuilder, RetryOptions, cancelled, format_provider_error, is_aborted};
-use crate::json::parse_json;
 use crate::models::{calculate_cost, clamp_thinking_level};
 use crate::options::{SimpleStreamOptions, StreamOptions, ThinkingBudgets, build_base_options, pi_user_agent};
 use crate::provider::{ProviderError, REQUEST_ABORTED, REQUEST_WAS_ABORTED, Run, UNKNOWN_ERROR, next_chunk};
@@ -20,6 +19,7 @@ use crate::types::{
     ThinkingContent, ToolCall, TranscriptContext, Usage,
 };
 use crate::{AbortSignal, HttpRequest, HttpResponse, Transport};
+use jsrt::json_parse::parse_json;
 use serde::Deserialize;
 use serde_json::{Map, Value, json};
 use std::sync::atomic::{AtomicU64, Ordering};

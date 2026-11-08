@@ -53,7 +53,7 @@ impl TaskHost for Clocked {
     fn tasks(&self) -> Result<Vec<Value>, String> {
         Ok(Vec::new())
     }
-    fn spawn(&self, _: &Value, _: Option<&str>, _: &Signal) -> Result<Value, String> {
+    fn spawn(&self, _: &Value, _: Option<&str>) -> Result<Value, String> {
         Err("no tasks".into())
     }
     fn result(&self, _: &str) -> Result<Value, String> {
@@ -62,7 +62,7 @@ impl TaskHost for Clocked {
     fn cancel(&self, _: &str, _: &str) -> Result<Value, String> {
         Err("no tasks".into())
     }
-    fn steer(&self, _: &str, _: &str, _: &Signal) -> Result<bool, String> {
+    fn steer(&self, _: &str, _: &str) -> Result<bool, String> {
         Ok(false)
     }
     fn now(&self) -> i64 {

@@ -24,7 +24,7 @@ host-driven chat loop.
 | `rlm/native-host.ts` (task part) | `delegation::agents` (the product's task host) | A TS-era supervisor port here (`supervisor.rs`) was removed in the 2026-11 cleanup: nothing in the product used it. |
 | `rlm/native-host.ts`: timers (`timeout_ms`, root wall deadline), usage reservations, worktrees, verdict check (`childResult`), lane execution, workflows, modules, graph view | `crates/harness` (timers, executor glue), `crates/inference`/`crates/host` for the rest | Remaining. Timeouts need the async runtime glue (a timer per task calling `cancel`). |
 | `createSessionTaskStore` (session value `ultron.tasks/root`) | `TaskDocumentStore` impl over the Ultron session value store | Remaining: needs session values. |
-| `harness/runtime/reducer.ts` | `src/reducer.rs` (over the JSON `LaneSnapshot`/`HarnessEvent` shapes) | Ported. `fixtures/generate-reducer.mjs` records real faux-provider lane runs (resnapshot) and synthetic sequences -> `reducer.json`; `tests/reducer_fixture.rs`. |
+| `harness/runtime/reducer.ts` | `crates/protocol/src/watch/reducer.rs` (over the JSON `LaneSnapshot`/`HarnessEvent` shapes) | Ported. `crates/protocol/fixtures/generate-reducer.mjs` records real faux-provider lane runs (resnapshot) and synthetic sequences -> `reducer.json`; `crates/protocol/tests/reducer_fixture.rs`. |
 | `harness/execution/effect-gate.ts` | none | Not needed: an ended invocation refuses runtime operations (`scheduler::Invocation::check`), and admitted work is cancelled through the invocation's `Cancel`. |
 | `harness/session/mutation-line.ts` | none | Not needed: `&mut self` / a `Mutex` serializes mutations. |
 | `harness/session/{types,values,commit,session,memory,in-memory-storage-state}.ts` | `src/session/` over `durable::Storage` atomic commits | Remaining. Values first (`getValue/setValue/scanValues`): the task journal, lane state and operation state live there. |
@@ -96,5 +96,5 @@ All generators are deterministic (run twice, same sha256); run from the worktree
 `ULTRON_CODING_AGENT_DIR`/`ULTRON_SERVER_DIR` temp dirs:
 
 - `node crates/harness/fixtures/generate.mjs` -> `task-store.json`
-- `node crates/harness/fixtures/generate-reducer.mjs` -> `reducer.json` (resolves `@ultron/*` to package sources;
+- `node crates/protocol/fixtures/generate-reducer.mjs` -> `reducer.json` (resolves `@ultron/*` to package sources;
   pins `Date.now`, `Math.random`, `randomUUID`; renames UUIDv7 IDs)

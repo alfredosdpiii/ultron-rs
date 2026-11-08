@@ -328,7 +328,7 @@ fn worktree_actor(keep: bool) -> p_session_support::Actor {
 
 /// The worktree directories Ultron has in the repository at `cwd` (`.git/ultron-worktrees/<id>`).
 fn worktree_dirs(cwd: &Path) -> Vec<std::path::PathBuf> {
-    let dir = cwd.join(".git").join(delegation::worktrees::WORKTREES_DIR);
+    let dir = cwd.join(".git").join(kernel::env::WORKTREES_DIR);
     let mut dirs: Vec<_> = std::fs::read_dir(dir)
         .into_iter()
         .flatten()
@@ -404,7 +404,7 @@ fn session_core_opening_a_session_prunes_orphan_worktrees() {
     .unwrap();
     let record_file = cwd
         .join(".git")
-        .join(delegation::worktrees::WORKTREES_DIR)
+        .join(kernel::env::WORKTREES_DIR)
         .join(format!("{}.json", record.id));
     let mut saved: delegation::worktrees::WorktreeRecord =
         serde_json::from_str(&std::fs::read_to_string(&record_file).unwrap()).unwrap();

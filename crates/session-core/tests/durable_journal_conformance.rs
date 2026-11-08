@@ -277,3 +277,21 @@ conformance!(
     [session_core_journal_rejects_every_operation_after_close, session_core_journal_reopen_rejects_every_operation_after_close] => "rejects every operation after close",
     [session_core_journal_reindexes_a_changed_submission_request_id, session_core_journal_reopen_reindexes_a_changed_submission_request_id] => "extra: a submission whose request ID changes leaves the old request ID unindexed",
 );
+
+/// `ultron usage` reads a child response from the durable commits this store writes into the session file.
+#[test]
+fn session_core_durable_store_commits_are_read_by_the_usage_report() {
+    let (_dir, repo, metadata) = session_file();
+    let mut storage = open_journal(&repo, &metadata);
+    let usage =
+        json!({"input": 4, "output": 1, "cacheRead": 0, "cacheWrite": 0, "totalTokens": 5, "cost": {"total": 1.0}});
+    let writes = json!([{"type": "conversation", "value": {"id": 30}},
+        {"type": "entry", "value": {"id": 31, "conversationId": 30, "kind": "ultron.assistant",
+            "model": [{"role": "assistant", "provider": "anthropic", "model": "claude-opus-4-5", "content": [],
+                "usage": usage}]}}]);
+    storage.commit(serde_json::from_value(writes).unwrap()).unwrap();
+    let log = usage::log::read_session_log(&metadata.path).unwrap();
+    let other = &usage::report::build_session_report(&log, &[])["usage"]["lanes"]["other"];
+    let split = ["responses", "input", "output", "cacheRead", "cacheWrite", "totalTokens"].map(|f| other[f].as_f64());
+    assert_eq!(split, [1.0, 4.0, 1.0, 0.0, 0.0, 5.0].map(Some), "{other}");
+}

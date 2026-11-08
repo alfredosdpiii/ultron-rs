@@ -129,7 +129,7 @@ impl TaskHost for FakeTasks {
         Ok(jsrt::sync::lock(&self.state).tasks.clone())
     }
 
-    fn spawn(&self, request: &Value, parent: Option<&str>, _signal: &Signal) -> Result<Value, String> {
+    fn spawn(&self, request: &Value, parent: Option<&str>) -> Result<Value, String> {
         let mut state = jsrt::sync::lock(&self.state);
         state.log.push(json!(["spawn", request, parent]));
         let key = request["key"].as_str().map(str::to_string);
@@ -187,7 +187,7 @@ impl TaskHost for FakeTasks {
         Err("cancel is not scripted".into())
     }
 
-    fn steer(&self, _task_id: &str, _message: &str, _signal: &Signal) -> Result<bool, String> {
+    fn steer(&self, _task_id: &str, _message: &str) -> Result<bool, String> {
         Ok(false)
     }
 

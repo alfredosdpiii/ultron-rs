@@ -13,9 +13,14 @@ use serde_json::{Map, Value, json};
 use crate::paths::expand_tilde;
 use crate::settings::{Settings, model_ref, token_cap};
 
-/// `steeringMode` and `followUpMode`: deliver every queued message at once, or one per turn (the default).
+/// `steeringMode` and `followUpMode`: deliver every queued message at once, or one per turn.
 pub const QUEUE_ALL: &str = "all";
 pub const QUEUE_ONE_AT_A_TIME: &str = "one-at-a-time";
+/// A session's queue mode when the settings name none: the durable harness's default (harness.ts), and what the
+/// TypeScript settings screen shows unset (client-tui-settings.ts). Pi's `SettingsManager` getters
+/// ([`crate::settings::SettingsManager::steering_mode`]) still answer one-at-a-time, as settings-manager.ts does; no
+/// session reads them.
+pub const QUEUE_DEFAULT: &str = QUEUE_ALL;
 pub const QUEUE_MODES: [&str; 2] = [QUEUE_ALL, QUEUE_ONE_AT_A_TIME];
 /// `transport`: the preferred transport where a provider has several.
 pub const TRANSPORTS: [&str; 4] = ["sse", "websocket", "websocket-cached", "auto"];

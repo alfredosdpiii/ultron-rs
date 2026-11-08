@@ -25,7 +25,7 @@ pub fn screen_theme(env: &crate::Env, settings: &SettingsManager) -> Theme {
     resolve(
         settings.theme_setting().as_deref(),
         (env.var)("COLORFGBG").as_deref(),
-        &env.agent_dir().join("themes"),
+        &config::paths::AgentPaths::new(env.agent_dir()).custom_themes_dir(),
         tui::color_mode(&caps),
     )
 }

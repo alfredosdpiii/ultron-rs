@@ -22,16 +22,11 @@ pub fn browser_command(platform: &str, target: &str) -> (String, Vec<String>) {
     }
 }
 
-/// The launcher name of this platform (`xdg-open`, `open` on macOS, `rundll32` on Windows).
-pub fn launcher_name() -> String {
-    browser_command(jsrt::process::platform(), "").0
-}
-
 pub type UrlOpener = Arc<dyn Fn(&str) + Send + Sync>;
 
 /// The session variables a browser launcher needs to reach the desktop (xdg-open finds the display and the
 /// session bus through them); only these pass to it besides PATH and HOME.
-pub const OPENER_VARS: [&str; 8] = [
+const OPENER_VARS: [&str; 8] = [
     "DISPLAY",
     "WAYLAND_DISPLAY",
     "XDG_RUNTIME_DIR",

@@ -247,7 +247,7 @@ impl TuiReport {
         self.reporter.metadata(metadata);
     }
 
-    /// Release the agent now (a signal is about to end the process).
+    /// Release the agent now (the TUI ended).
     pub fn release(&self) {
         self.reporter.release();
     }

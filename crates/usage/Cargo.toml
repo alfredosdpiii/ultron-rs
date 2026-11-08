@@ -9,14 +9,14 @@ autotests = false
 
 [dependencies]
 config = { path = "../config" }
-delegation = { path = "../delegation" }
 durable = { path = "../durable" }
 harness = { path = "../harness" }
 indexmap = "=2.14.2"
 jsrt = { path = "../jsrt" }
+lanes = { path = "../lanes" }
 protocol = { path = "../protocol" }
+regex = "=1.13.1"
 serde_json = { version = "=1.0.151", features = ["preserve_order"] }
-session-core = { path = "../session-core" }
 session-journal = { path = "../session-journal" }
 
 [dev-dependencies]

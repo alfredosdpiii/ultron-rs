@@ -2,7 +2,8 @@
 //! operations on the Rust journal must return the same tasks and errors and leave the same stored document, byte for
 //! byte as JSON text (random task ids are numbered by first appearance on both sides).
 
-use delegation::task_store::{TaskJournal, task_fingerprint};
+use delegation::task_store::TaskJournal;
+use harness::task_store::task_fingerprint;
 use kernel::store::DocumentStore;
 use serde_json::{Value, json};
 use std::collections::HashMap;

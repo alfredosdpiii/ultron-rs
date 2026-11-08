@@ -81,19 +81,49 @@ pub fn default_mask() -> MaskText {
     Arc::new(|text: &str| host::secrets::OutputMasker::default().mask_counted(text, None).0)
 }
 
-/// `runtimeEventText`: one `<runtime_event>` line per completion, with the shipped masking rules.
-pub fn runtime_event_text(events: &[RuntimeEvent]) -> String {
-    runtime_event_text_with(events, &default_mask())
+/// `<runtime_event>` attribute text (`attribute` of async-events.ts).
+fn attribute(value: &str) -> String {
+    value
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .replace('&', "&amp;")
+        .replace('"', "&quot;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+}
+
+/// `boundedSummary`: one line of at most 240 characters.
+fn bounded(text: &str) -> String {
+    let line = jsrt::string::flatten(text);
+    if line.chars().count() > 240 {
+        format!("{}…", line.chars().take(239).collect::<String>())
+    } else {
+        line
+    }
+}
+
+/// One `<runtime_event>` line (`runtimeEventText` of async-events.ts) with the session's masking
+/// (`maskCellOutput`).
+pub fn runtime_event_line(kind: &str, id: &str, status: &str, summary: &str, fetch: &str, mask: &MaskText) -> String {
+    format!(
+        "<runtime_event kind=\"{}\" id=\"{}\" status=\"{}\" summary=\"{}\" fetch=\"{}\" />",
+        attribute(kind),
+        attribute(id),
+        attribute(status),
+        attribute(&bounded(&mask(summary))),
+        attribute(fetch)
+    )
 }
 
 /// `runtimeEventText` with the session's masking: each summary is cut to 4 × 240 UTF-16 units, masked, then
 /// bounded.
-pub fn runtime_event_text_with(events: &[RuntimeEvent], mask: &MaskText) -> String {
+pub fn runtime_event_text(events: &[RuntimeEvent], mask: &MaskText) -> String {
     events
         .iter()
         .map(|e| {
             let summary = jsrt::utf16::head(&e.summary, 4 * 240).to_string();
-            crate::compose::runtime_event_line_with(&e.kind, &e.id, &e.status, &summary, &e.fetch, mask)
+            runtime_event_line(&e.kind, &e.id, &e.status, &summary, &e.fetch, mask)
         })
         .collect::<Vec<_>>()
         .join("\n")
@@ -104,7 +134,7 @@ pub fn runtime_event_message_with(events: &[RuntimeEvent], now: u64, mask: &Mask
     json!({
         "role": "custom",
         "customType": RUNTIME_EVENT_MESSAGE_TYPE,
-        "content": runtime_event_text_with(events, mask),
+        "content": runtime_event_text(events, mask),
         "display": true,
         "details": {"events": events.iter().map(|e| json!({"kind": e.kind, "id": e.id, "status": e.status})).collect::<Vec<_>>()},
         "timestamp": now,

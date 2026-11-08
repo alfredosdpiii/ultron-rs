@@ -34,10 +34,12 @@ pub struct PromptFiles {
     pub append_sources: Vec<String>,
 }
 
-/// Explicit inputs win; otherwise SYSTEM.md and APPEND_SYSTEM.md are discovered.
+/// Explicit inputs win; otherwise SYSTEM.md and APPEND_SYSTEM.md are discovered. A source path is resolved against
+/// the process cwd, where its existence was checked (`~` names `home`).
 pub fn load_prompt_files(
     cwd: &str,
     agent_dir: &str,
+    home: &str,
     project_trusted: bool,
     system_prompt: Option<&str>,
     append_system_prompt: Option<&[String]>,
@@ -50,7 +52,11 @@ pub fn load_prompt_files(
             .into_iter()
             .collect(),
     };
-    let existing = |s: &String| Path::new(s).exists().then(|| resolve_path(s, &process_cwd(), false));
+    let existing = |s: &String| {
+        Path::new(s)
+            .exists()
+            .then(|| resolve_path(s, &process_cwd(), home, false))
+    };
     PromptFiles {
         system_prompt: resolve_prompt_input(source.as_deref()),
         system_prompt_source: source.as_ref().and_then(existing),

@@ -27,12 +27,13 @@ mod harness;
 pub mod registry;
 mod runtime;
 
-pub use cancel::{Cancel, Ctx, Linked};
+pub use cancel::{Cancel, Ctx};
+pub(crate) use harness::FallibleClock;
 pub use harness::{
-    AbortResult, Conversation, FallibleClock, Harness, HarnessOptions, Inspection, Scheduling, TaskInspection,
-    TaskInspectionState, safe_now,
+    AbortResult, Conversation, Harness, HarnessOptions, Inspection, Scheduling, TaskInspection, TaskInspectionState,
+    safe_now,
 };
-pub use registry::{Extension, Handler, Migrate, Registry, RegistryReader, RegistrySnapshot, Task, TaskBuilder};
+pub use registry::{Extension, Migrate, Registry, RegistryReader, RegistrySnapshot, Task};
 pub use runtime::{NextState, TaskRuntime, aborted_with, completed};
 
 use std::collections::{HashMap, HashSet};
@@ -188,9 +189,9 @@ impl SchedulerOutcome {
 }
 
 /// Harness cleanup staged in the commit that makes a scheduler outcome terminal.
-pub type SettleOutcome = Arc<dyn Fn(&mut Tx<'_>, &TaskRecord, &SchedulerOutcome) -> Result<()> + Send + Sync>;
+pub(crate) type SettleOutcome = Arc<dyn Fn(&mut Tx<'_>, &TaskRecord, &SchedulerOutcome) -> Result<()> + Send + Sync>;
 /// Withdraw a conversation's queued inputs, for conversation abort and abort cascades.
-pub type WithdrawInputs = Arc<dyn Fn(&mut Tx<'_>, ConversationId) -> Result<()> + Send + Sync>;
+pub(crate) type WithdrawInputs = Arc<dyn Fn(&mut Tx<'_>, ConversationId) -> Result<()> + Send + Sync>;
 pub type Report = Arc<dyn Fn(&HarnessError) + Send + Sync>;
 pub type Clock = Arc<dyn Fn() -> u64 + Send + Sync>;
 

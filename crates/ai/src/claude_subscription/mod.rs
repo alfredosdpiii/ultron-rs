@@ -30,7 +30,6 @@ pub mod inert_mcp;
 pub mod limit;
 pub mod process;
 pub mod rewrite;
-pub mod setup;
 pub mod usage;
 
 use crate::options::SimpleStreamOptions;
@@ -52,8 +51,6 @@ pub use catalog::{API, PROVIDER};
 pub type Env = BTreeMap<String, String>;
 
 pub const INSTALL_HINT: &str = "Claude Code is not installed (no `claude` on PATH or in the usual install directories). Install it with `npm install -g @anthropic-ai/claude-code` or set ULTRON_CLAUDE_COMMAND to the binary.";
-pub const LOGIN_HINT: &str =
-    "Claude Code is installed but not logged in. Run `claude auth login`, then select this provider again.";
 pub const LOGGED_OUT_HINT: &str = "Claude Code is installed but has no usable login in the environment Ultron runs it in. Run `claude auth login` as the user Ultron runs as, set CLAUDE_CODE_OAUTH_TOKEN (from `claude setup-token`) in Ultron's environment, or point CLAUDE_CONFIG_DIR at a logged-in config directory, then try again.";
 /// Read-idle limit of one call when the request names none; reset by every native output line.
 pub const DEFAULT_TIMEOUT: Duration = Duration::from_secs(600);

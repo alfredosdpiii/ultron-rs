@@ -25,6 +25,7 @@ pub mod diff;
 pub mod fs;
 pub mod hash;
 pub mod json;
+pub mod json_parse;
 pub mod localtime;
 pub mod number;
 pub mod path;

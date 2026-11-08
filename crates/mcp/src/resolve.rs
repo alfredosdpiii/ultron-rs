@@ -1,111 +1,46 @@
 //! Config value resolution for MCP server `env`, `headers` and `oauth.clientSecret` (`core/resolve-config-value.ts`,
-//! the uncached `OrThrow` path the MCP runtime uses), and `~` expansion of stdio paths (`runtime.ts` `expandHome`).
+//! the uncached `OrThrow` path the MCP runtime uses) over an env overlay, and `~` expansion of stdio paths
+//! (`runtime.ts` `expandHome`).
 
-use config::auth::TemplatePart;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
-use std::time::Duration;
 
-const COMMAND_TIMEOUT: Duration = Duration::from_secs(10);
-
-/// Environment lookup: `env` first, then the process environment; empty counts as unset.
-fn env_value(name: &str, env: &HashMap<String, String>) -> Option<String> {
-    env.get(name)
-        .filter(|v| !v.is_empty())
-        .cloned()
-        .or_else(|| std::env::var(name).ok().filter(|v| !v.is_empty()))
+/// Variables come from `overlay` first (empty counts as unset), then the process environment; `overlay` is also added
+/// to a `!command`'s environment.
+struct Inputs {
+    envs: Vec<(String, String)>,
 }
 
-/// Runs `command` with `/bin/sh -c` and `env` added to the environment, stdin and stderr ignored, for at most 10 s. Trimmed stdout, or None on failure
-/// or empty output.
-fn run_command(command: &str, env: &HashMap<String, String>) -> Option<String> {
-    let bound = signals::child::Bound {
-        timeout: Some(COMMAND_TIMEOUT),
-        ..Default::default()
-    };
-    let out = signals::child::run(
-        Command::new("/bin/sh")
-            .arg("-c")
-            .arg(command)
-            .envs(env)
-            .stdout(Stdio::piped())
-            .stderr(Stdio::null()),
-        None,
-        bound,
-    )
-    .ok()?;
-    if !out.success() {
-        return None;
-    }
-    let text = String::from_utf8_lossy(&out.stdout).trim().to_string();
-    (!text.is_empty()).then_some(text)
-}
-
-/// `resolveConfigValueUncached`: `!cmd` runs a shell command, anything else is a template. `env` overlays the
-/// process environment.
-pub fn resolve_config_value(config: &str, env: &HashMap<String, String>) -> Option<String> {
-    if let Some(command) = config.strip_prefix('!') {
-        return run_command(command, env);
-    }
-    let mut out = String::new();
-    for part in config::auth::parse_template(config) {
-        match part {
-            TemplatePart::Literal(text) => out.push_str(&text),
-            TemplatePart::Env(name) => out.push_str(&env_value(&name, env)?),
+impl Inputs {
+    fn of(overlay: &HashMap<String, String>) -> Self {
+        Inputs {
+            envs: overlay.iter().map(|(k, v)| (k.clone(), v.clone())).collect(),
         }
     }
-    Some(out)
+
+    fn lookup(&self, name: &str) -> Option<String> {
+        self.envs
+            .iter()
+            .find(|(k, v)| k == name && !v.is_empty())
+            .map(|(_, v)| v.clone())
+            .or_else(|| std::env::var(name).ok())
+    }
 }
 
-/// `resolveConfigValueOrThrow`, with its error messages.
-pub fn resolve_config_value_or_err(
-    config: &str,
-    description: &str,
-    env: &HashMap<String, String>,
-) -> Result<String, String> {
-    if let Some(value) = resolve_config_value(config, env) {
-        return Ok(value);
-    }
-    if let Some(command) = config.strip_prefix('!') {
-        return Err(format!("Failed to resolve {description} from shell command: {command}"));
-    }
-    let mut missing: Vec<String> = Vec::new();
-    for part in config::auth::parse_template(config) {
-        if let TemplatePart::Env(name) = part
-            && !missing.contains(&name)
-            && env_value(&name, env).is_none()
-        {
-            missing.push(name);
-        }
-    }
-    Err(match missing.len() {
-        0 => format!("Failed to resolve {description}"),
-        1 => format!(
-            "Failed to resolve {description} from environment variable: {}",
-            missing[0]
-        ),
-        _ => format!(
-            "Failed to resolve {description} from environment variables: {}",
-            missing.join(", ")
-        ),
-    })
+/// `resolveConfigValueOrThrow` over `overlay`.
+pub fn value(config: &str, description: &str, overlay: &HashMap<String, String>) -> Result<String, String> {
+    let inputs = Inputs::of(overlay);
+    config::auth::resolve_or_err(config, description, &|name| inputs.lookup(name), &inputs.envs)
 }
 
-/// `resolveHeadersOrThrow`: every header resolved, None when there are none.
-pub fn resolve_headers_or_err(
+/// `resolveHeadersOrThrow` over `overlay`.
+pub fn headers(
     headers: &[(String, String)],
     description: &str,
-    env: &HashMap<String, String>,
+    overlay: &HashMap<String, String>,
 ) -> Result<Option<Vec<(String, String)>>, String> {
-    let mut out = Vec::new();
-    for (key, value) in headers {
-        out.push((
-            key.clone(),
-            resolve_config_value_or_err(value, &format!("{description} header \"{key}\""), env)?,
-        ));
-    }
-    Ok((!out.is_empty()).then_some(out))
+    let inputs = Inputs::of(overlay);
+    config::auth::resolve_headers_or_err(headers, description, &|name| inputs.lookup(name), &inputs.envs)
 }
 
 /// `~` and `~/…` name `home`, like in a shell.

@@ -351,9 +351,13 @@ fn open_runtime(
     let claude_session_id = server.claude_session_id.as_deref();
     let agent_dir = env.agent_dir();
     let cwd = env.cwd.display().to_string();
-    let session_root = (env.var)(config::paths::ENV_SESSION_DIR)
-        .map(PathBuf::from)
-        .unwrap_or_else(|| config::paths::AgentPaths::new(&agent_dir).experimental_sessions_dir());
+    let session_root = config::paths::session_root(
+        None,
+        &*env.var,
+        &config::paths::AgentPaths::new(&agent_dir).experimental_sessions_dir(),
+        &env.cwd,
+        &env.home,
+    );
     let repo = SessionRepo::new(&session_root, session_journal::SystemClock::shared());
     let mut opened: Option<(Metadata, Option<config::lock::LockGuard>, session_journal::Session)> = None;
     if !args.child
@@ -802,7 +806,10 @@ impl Server {
                     "usage.report" => {
                         // The counters still in memory go to the session file first.
                         stack.stats.flush();
-                        usage::session_report(&opened.session_path, &self.env)
+                        usage::session_report(
+                            &opened.session_path,
+                            &session_core::lane::subscription_providers(&self.env),
+                        )
                     }
                     _ => stack
                         .cell_handler(MAIN_LANE, None)
@@ -1328,7 +1335,7 @@ pub fn start(argv: &[String], ctx: &Ctx) -> Result<(Arc<Running>, Arc<Handlers>)
     };
     let root_finish = args.child.then(|| root_finish(parent.clone(), parent_token));
     let server = Arc::new(Server {
-        hints: kernel_apis::cell_hints::hints_enabled(var(kernel_apis::cell_hints::HINTS_ENV).as_deref()),
+        hints: session_core::compose::hints(&*var),
         args: args.clone(),
         env: env.clone(),
         name,

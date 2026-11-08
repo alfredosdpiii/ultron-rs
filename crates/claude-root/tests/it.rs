@@ -7,6 +7,8 @@
 #[path = "../../cli/tests/executable_support/mod.rs"]
 mod executable_support;
 
+#[path = "child_cancel.rs"]
+mod child_cancel;
 #[path = "claude_parity.rs"]
 mod claude_parity;
 #[path = "durable_apis.rs"]

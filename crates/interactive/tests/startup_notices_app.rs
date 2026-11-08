@@ -36,6 +36,7 @@ fn model(provider: &str) -> ModelInfo {
         provider: provider.into(),
         id: "m".into(),
         name: "M".into(),
+        api: String::new(),
         reasoning: true,
         context_window: 1000,
         thinking_levels: Vec::new(),

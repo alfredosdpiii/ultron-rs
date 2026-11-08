@@ -13,7 +13,6 @@
 
 use crate::schedules::SchedulesModule;
 use crate::tasks::TaskHost;
-use kernel::Signal;
 use serde_json::Value;
 use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
@@ -171,8 +170,7 @@ fn run(
         }
         let deadline = match module.next_fire() {
             Ok(Some(next)) if next <= clock.now() => {
-                // Firings outlive whatever woke the ticker.
-                let report = module.tick(host, &Signal::new());
+                let report = module.tick(host);
                 // A tick that settled nothing (or failed) must not be repeated at once: wait for a change or retry.
                 let settled = report.as_ref().is_ok_and(|report| {
                     ["fired", "failed"]

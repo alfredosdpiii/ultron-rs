@@ -632,10 +632,9 @@ fn route_from_explicit_path(path: &Path) -> Result<Route, String> {
         .file_name()
         .map(|n| n.to_string_lossy().into_owned())
         .unwrap_or_default();
-    let server_id = name.strip_suffix(".sock").unwrap_or_default();
-    if !protocol::is_server_id(server_id) {
+    let Some(server_id) = protocol::sockets::server_id_of(&name) else {
         return Err("--connect path must end with <uuidv4-server-id>.sock".into());
-    }
+    };
     Ok(Route {
         server_id: server_id.to_string(),
         path: path.to_path_buf(),

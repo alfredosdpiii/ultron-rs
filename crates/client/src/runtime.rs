@@ -1270,35 +1270,32 @@ fn follow_event_runs(
         return;
     };
     let mut running: Option<String> = None;
+    let mut take = |event: Json, running: &mut Option<String>| {
+        match event["type"].as_str() {
+            Some("run_start") => *running = event["runId"].as_str().map(str::to_string),
+            Some("run_end" | "run_suspend") => *running = None,
+            _ => {}
+        }
+        absorb(&event);
+    };
     loop {
         while let Ok(event) = received.try_recv() {
-            match event["type"].as_str() {
-                Some("run_start") => running = event["runId"].as_str().map(str::to_string),
-                Some("run_end" | "run_suspend") => running = None,
-                _ => {}
-            }
-            absorb(&event);
+            take(event, &mut running);
         }
-        if running.is_some() {
-            if let Ok(event) = received.recv_timeout(std::time::Duration::from_millis(200)) {
-                if matches!(event["type"].as_str(), Some("run_end" | "run_suspend")) {
-                    running = None;
-                }
-                absorb(&event);
+        if running.is_none() {
+            let status = connection.call(
+                session.clone(),
+                protocol::names::SESSION_CONTROL,
+                "inspect",
+                json!(["async.pending", {}]),
+            );
+            if !matches!(status, Ok(Some(status)) if status["pending"] == true) {
+                break;
             }
-            continue;
         }
-        let status = connection.call(
-            session.clone(),
-            protocol::names::SESSION_CONTROL,
-            "inspect",
-            json!(["async.pending", {}]),
-        );
-        match status {
-            Ok(Some(status)) if status["pending"] == true => {
-                std::thread::sleep(std::time::Duration::from_millis(200));
-            }
-            _ => break,
+        // A run's start or end wakes this at once; pending work with no run is inspected again after this.
+        if let Ok(event) = received.recv_timeout(std::time::Duration::from_millis(200)) {
+            take(event, &mut running);
         }
     }
     if let Ok(id) = connection.start_unsubscribe(session.clone(), &control) {

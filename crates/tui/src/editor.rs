@@ -341,7 +341,6 @@ impl Editor {
             keys,
             on_change: None,
             select_list_theme: Rc::new(SelectListTheme {
-                selected_prefix: Box::new(str::to_string),
                 selected_text: Box::new(str::to_string),
                 description: Box::new(str::to_string),
                 scroll_info: Box::new(str::to_string),

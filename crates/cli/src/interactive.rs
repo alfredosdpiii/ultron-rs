@@ -18,7 +18,6 @@ use interactive::lane::{
     SessionListing, SessionOpened,
 };
 use interactive::run::{UiEvent, run_stdout, spawn_gated_input};
-use protocol::watch::QueueKind;
 use protocol::watch::WatchEvent;
 use serde_json::{Value, json};
 use session_core::core::Op;
@@ -184,36 +183,6 @@ fn route(
     }
 }
 
-/// The dialogs and notices `/mcp` and the MCP gateway raise in the worker (`#serveExtensionUI`): polled between the
-/// link's commands, without waiting, so a dialog shows within one tick. A different session starts again from its open dialogs.
-#[derive(Default)]
-struct ExtensionUiPoll {
-    session: Option<String>,
-    cursor: Option<u64>,
-}
-
-impl ExtensionUiPoll {
-    fn poll(&mut self, link: &Link, send: &dyn Fn(LaneEvent)) {
-        let session = link.session_id();
-        if self.session.as_deref() != Some(session.as_str()) {
-            self.session = Some(session);
-            self.cursor = None;
-        }
-        let connection = link.connection();
-        let polled = connection
-            .session_target()
-            .and_then(|target| connection.call(target, protocol::names::EXTENSION_UI, "poll", json!([self.cursor, 0])));
-        let Ok(Some(result)) = polled else {
-            self.cursor = None;
-            return;
-        };
-        self.cursor = result["cursor"].as_u64();
-        for item in result["requests"].as_array().into_iter().flatten() {
-            send(LaneEvent::ExtensionUi(item["request"].clone()));
-        }
-    }
-}
-
 fn model_info(model: &Value) -> ModelInfo {
     if let Ok(model) = serde_json::from_value::<ai::Model>(model.clone()) {
         return catalog_info(&model);
@@ -222,6 +191,7 @@ fn model_info(model: &Value) -> ModelInfo {
         provider: model["provider"].as_str().unwrap_or_default().to_string(),
         id: model["id"].as_str().unwrap_or_default().to_string(),
         name: model["name"].as_str().unwrap_or_default().to_string(),
+        api: model["api"].as_str().unwrap_or_default().to_string(),
         reasoning: model["reasoning"] == true,
         context_window: model["contextWindow"].as_u64().unwrap_or(0),
         thinking_levels: Vec::new(),
@@ -233,6 +203,7 @@ fn catalog_info(m: &ai::Model) -> ModelInfo {
         provider: m.provider.clone(),
         id: m.id.clone(),
         name: m.name.clone(),
+        api: m.api.clone(),
         reasoning: m.reasoning,
         context_window: m.context_window,
         thinking_levels: ai::models::supported_thinking_levels(m)
@@ -242,7 +213,7 @@ fn catalog_info(m: &ai::Model) -> ModelInfo {
     }
 }
 
-/// The streaming assistant message, folded from `message_update` frames (harness::stream_fold): an update carries
+/// The streaming assistant message, folded from `message_update` frames (protocol::watch::stream_fold): an update carries
 /// its frame, not the message so far, so the TUI's events ([`interactive::lane_watch::lane_events`]) get the message
 /// this folds.
 #[derive(Default)]
@@ -266,7 +237,7 @@ impl TuiStream {
                 let Some(message) = self.message.as_mut() else {
                     return Vec::new();
                 };
-                harness::stream_fold::fold_update(message, value);
+                protocol::watch::stream_fold::fold_update(message, value);
                 *shown = Some(message.clone());
             }
             WatchEvent::MessageEnd { .. } | WatchEvent::RunEnd { .. } => self.message = None,
@@ -299,20 +270,11 @@ pub fn pi_agent_dir(env: &Env) -> String {
     config::paths::resolve(&dir, &env.cwd, &env.home).display().to_string()
 }
 
-/// Pi's per-project session directory under `<piAgentDir>/sessions` (`piSessionDirForCwd`).
-pub fn pi_session_dir_for_cwd(cwd: &str, agent_dir: &str) -> String {
-    let resolved = config::paths::normalize(std::path::Path::new(cwd))
-        .display()
-        .to_string();
-    let relative = resolved.strip_prefix(['/', '\\']).unwrap_or(&resolved);
-    format!("{agent_dir}/sessions/--{}--", relative.replace(['/', '\\', ':'], "-"))
-}
-
 /// `SessionManager.list(cwd, piSessionDirForCwd(cwd, piAgentDir))`: Pi's sessions of this project, newest first, as
 /// Pi's selector lists them. Pi's files are only read.
 pub fn pi_sessions(env: &Env) -> Result<Vec<SessionListing>, String> {
     let cwd = env.cwd.display().to_string();
-    let dir = pi_session_dir_for_cwd(&cwd, &pi_agent_dir(env));
+    let dir = session_file::default_session_dir_path(&session_file::SystemEnv, &cwd, &pi_agent_dir(env));
     let sessions =
         session_file::list_sessions(&session_file::SystemEnv, &cwd, Some(&dir)).map_err(|e| e.to_string())?;
     Ok(sessions
@@ -403,12 +365,16 @@ fn link_thread(
     };
     open(&link, &mut name);
     let mut last_recovery: Option<std::time::Instant> = None;
-    let mut extension_ui = ExtensionUiPoll::default();
+    // The dialogs and notices `/mcp` and the MCP gateway raise in the worker (`#serveExtensionUI`): polled between
+    // the link's commands, so a dialog shows within one tick.
+    let mut extension_ui = crate::link::ExtensionUiPoll::default();
     // The terminal's appearance the TUI reported (OSC 11, a scheme report, else its `COLORFGBG`); before any report,
     // `COLORFGBG`, else dark.
     let mut terminal_theme: Option<String> = None;
     loop {
-        extension_ui.poll(&link, &send);
+        for request in extension_ui.poll(&link.session_id(), &link.connection()) {
+            send(LaneEvent::ExtensionUi(request));
+        }
         let command = match commands.recv_timeout(std::time::Duration::from_millis(250)) {
             Ok(command) => command,
             Err(mpsc::RecvTimeoutError::Disconnected) => break,
@@ -834,26 +800,15 @@ fn link_thread(
                 }
                 terminal_theme = Some(theme);
             }
+            // `changeSetting` (client-tui-settings.ts): the worker's `setSetting` saves it and applies what the session
+            // takes live.
             Command::Lane(LaneCommand::SaveSetting { key, value }) => {
-                let (cwd, agent_dir) = (&catalog_env.cwd, &catalog_env.agent_dir());
-                let mut settings = config::settings::SettingsManager::for_worker(cwd, agent_dir, &catalog_env.home);
-                save_setting(&mut settings, &key, value.clone());
-                // What the session applies live (worker-settings.ts): compaction and the queue modes.
-                let live = match key.as_str() {
-                    "compaction.enabled" => Some(Op::SetAutoCompaction(value == true)),
-                    "steeringMode" | "followUpMode" => Some(Op::SetQueueMode {
-                        kind: if key == "steeringMode" {
-                            QueueKind::Steer
-                        } else {
-                            QueueKind::FollowUp
-                        },
-                        mode: value.as_str().unwrap_or(config::keys::QUEUE_ALL).to_string(),
-                    }),
-                    _ => None,
-                };
-                if let Some(op) = live
-                    && let Err(error) = link.op(&op)
-                {
+                if let Err(error) = session_call(
+                    &link,
+                    protocol::names::SESSION_CONTROL,
+                    "setSetting",
+                    json!([key, value]),
+                ) {
                     send(LaneEvent::Status(format!("Error: {error}")));
                 }
             }
@@ -937,7 +892,7 @@ fn link_thread(
                 send(LaneEvent::AllSessions(listed));
             }
             Command::Lane(LaneCommand::ListAllPiSessions) => {
-                let dir = std::path::Path::new(&pi_agent_dir(&catalog_env)).join("sessions");
+                let dir = config::paths::AgentPaths::new(pi_agent_dir(&catalog_env)).sessions_dir();
                 let listed =
                     session_file::list_all_sessions(&session_file::SystemEnv, Some(&dir.display().to_string()))
                         .into_iter()
@@ -977,7 +932,7 @@ fn link_thread(
                 // `models.refresh()`: from the network unless offline (`PI_OFFLINE`), on its own thread.
                 let (env, ui) = (catalog_env.clone(), ui.clone());
                 std::thread::spawn(move || {
-                    let refresh = match session_core::model_refresh::refresh_catalogs(&env, false) {
+                    let refresh = match session_core::model_refresh::refresh_catalogs(&env) {
                         Ok(errors) => CatalogRefresh::Done(errors.into_iter().map(|(provider, _)| provider).collect()),
                         Err(error) if error == session_core::model_refresh::REFRESH_TIMED_OUT => {
                             CatalogRefresh::TimedOut
@@ -990,7 +945,7 @@ fn link_thread(
             }
             Command::LoginSaved(provider, name) => {
                 // `reloadWorkerAuth`: a catalog refresh.
-                let _ = session_core::model_refresh::refresh_catalogs(&catalog_env, false);
+                let _ = session_core::model_refresh::refresh_catalogs(&catalog_env);
                 credentials_saved(&link, &catalog_env, &send, "Logged in to", &provider, &name);
             }
             Command::Lane(LaneCommand::Credentials) => {
@@ -1026,7 +981,7 @@ fn link_thread(
                     .map(|(key, name, value)| (key.to_string(), (name.to_string(), value)))
                     .collect();
                 let mut themes = vec!["dark".to_string(), "light".to_string()];
-                if let Ok(dir) = std::fs::read_dir(agent_dir.join("themes")) {
+                if let Ok(dir) = std::fs::read_dir(config::paths::AgentPaths::new(agent_dir).custom_themes_dir()) {
                     let mut custom: Vec<String> = dir
                         .flatten()
                         .filter_map(|e| {
@@ -1215,7 +1170,7 @@ fn write_debug_log(
         },
     };
     let (data, summary) = interactive::debug_log::debug_log(capture, &client, &worker);
-    let path = agent_dir.join(interactive::debug_log::DEBUG_LOG_NAME);
+    let path = config::paths::AgentPaths::new(agent_dir).debug_log();
     let written = std::fs::create_dir_all(agent_dir).and_then(|()| {
         use std::os::unix::fs::OpenOptionsExt;
         std::fs::OpenOptions::new()
@@ -1270,34 +1225,6 @@ fn reload_plugins(link: &Link) -> Result<(), String> {
         .unwrap_or(Value::Null);
     session_call(link, protocol::names::SESSION_PLUGINS, "reload", json!([]))?;
     apply_presentation_plugins(&data)
-}
-
-/// The `persona` setting's value for "off" (any value but `ultron` is off).
-const PERSONA_NONE: &str = "none";
-
-/// Save one setting the way the worker's `setSetting` does: dotted keys into their object, per-model thinking
-/// levels into `modelThinkingLevels`, `null` removes.
-fn save_setting(settings: &mut config::settings::SettingsManager, key: &str, value: Value) {
-    if key == "modelThinkingLevel" {
-        let provider = value["provider"].as_str().unwrap_or_default();
-        let model = value["modelId"].as_str().unwrap_or_default();
-        match value["level"].as_str() {
-            Some(level) => settings.set_model_thinking_level(provider, model, level),
-            None => settings.remove_model_thinking_level(provider, model),
-        }
-        return;
-    }
-    // The persona off (`/persona none`, `/settings`) is written as `"none"`, not a removed key: a settings default
-    // (the durable instance's `ultron`) would come back in its place.
-    if key == resources::persona::SETTING && value.is_null() {
-        settings.set_global(key, Some(Value::from(PERSONA_NONE)));
-        return;
-    }
-    let stored = (!value.is_null()).then_some(value);
-    match key.split_once('.') {
-        Some((field, rest)) => settings.set_global_nested(field, rest, stored),
-        None => settings.set_global(key, stored),
-    }
 }
 
 /// Pi's `/share`: the session as HTML in a secret gist (`gh gist create --public=false`), then the viewer and gist
@@ -1524,7 +1451,7 @@ fn configured_key_status(key: &str, var: &dyn Fn(&str) -> Option<String>) -> Opt
     if key.starts_with('!') {
         return Some(("api_key".into(), Some("models_json_command".into())));
     }
-    let names = ai::model_registry::env_names(key);
+    let names = config::auth::env_names(key);
     if names.is_empty() {
         return Some(("api_key".into(), Some("models_json_key".into())));
     }
@@ -1639,7 +1566,7 @@ fn usage_report(link: &Link, env: &Env) -> Result<String, String> {
         .ok_or("The Session worker returned no session report")?;
     let log = usage::log::read_session_log(std::path::Path::new(file)).map_err(|e| e.message().to_string())?;
     let providers = session_core::lane::subscription_providers(env);
-    let report = usage::report::build_session_report_with(&log, &providers);
+    let report = usage::report::build_session_report(&log, &providers);
     let zone = jsrt::localtime::Zone::from_env(std::env::var("TZ").ok().as_deref());
     let home = std::env::var("HOME").unwrap_or_default();
     let options = usage::text::TextOptions {
@@ -1843,7 +1770,7 @@ fn run_tui(
     let theme = Rc::new(crate::themes::resolve(
         theme_setting.as_deref(),
         (env.var)("COLORFGBG").as_deref(),
-        &env.agent_dir().join("themes"),
+        &config::paths::AgentPaths::new(env.agent_dir()).custom_themes_dir(),
         tui::color_mode(&caps),
     ));
     // What every transcript markdown reads (`getCapabilities().hyperlinks`, `markdown.codeBlockIndent`); this thread
@@ -1893,13 +1820,16 @@ fn run_tui(
     let no_session = parsed.no_session;
     let signalled = Arc::new(std::sync::atomic::AtomicI32::new(0));
     let cancels = Cancels::default();
-    let link_worker = {
+    // Disconnected once the link thread ended.
+    let (link_alive, link_ended) = mpsc::channel::<()>();
+    {
         let ui = ui_tx.clone();
         let signalled = signalled.clone();
         let catalog_env = env.clone();
         let reporter = crate::bug_report::Reporter::new(cancels.bug.clone(), parsed.api_key.is_some());
         let (herdr, cancels) = (herdr.clone(), cancels.clone());
         std::thread::spawn(move || {
+            let _alive = link_alive;
             link_thread(
                 link,
                 command_rx,
@@ -1911,8 +1841,8 @@ fn run_tui(
                 herdr,
                 cancels,
             )
-        })
-    };
+        });
+    }
     let (lane_tx, lane_rx) = mpsc::channel::<LaneCommand>();
     let router = {
         let (commands, env, ui) = (command_tx.clone(), env.clone(), ui_tx.clone());
@@ -1959,16 +1889,10 @@ fn run_tui(
     // A signal leaves the TUI as closing its input does (the terminal is restored, the link closes), then the
     // process exits with the signal's code.
     let (code, end) = (signalled.clone(), std::sync::Mutex::new(ui_tx.clone()));
-    let signal_herdr = herdr.clone();
-    signals::set_handler(Arc::new(move |signal| {
-        code.store(signals::exit_code(signal), std::sync::atomic::Ordering::SeqCst);
-        if let Some(herdr) = &signal_herdr {
-            herdr.release();
-        }
+    crate::print_mode::exit_on_signal(move |exit| {
+        code.store(exit, std::sync::atomic::Ordering::SeqCst);
         let _ = end.lock().unwrap_or_else(|e| e.into_inner()).send(UiEvent::InputClosed);
-        std::thread::sleep(crate::print_mode::PROMPT_ABORT_WAIT);
-        std::process::exit(signals::exit_code(signal));
-    }));
+    });
     app.set_hide_thinking(hide_thinking);
     app.set_enabled_models(enabled_models);
     // Inline tool images: Kitty, on the alternate screen (TypeScript's alternate screen turns iTerm2 images off) and in
@@ -1978,7 +1902,10 @@ fn run_tui(
     app.set_image_protocol(caps.images.filter(|p| *p == tui::ImageProtocol::Kitty), wezterm);
     // The theme setting (custom themes from `<agent dir>/themes`, automatic light/dark pairs) and the presentation
     // settings the TUI applies to itself.
-    let mut registry = theme::registry::ThemeRegistry::new(env.agent_dir().join("themes"), tui::color_mode(&caps));
+    let mut registry = theme::registry::ThemeRegistry::new(
+        config::paths::AgentPaths::new(env.agent_dir()).custom_themes_dir(),
+        tui::color_mode(&caps),
+    );
     // `setRegisteredThemes(resourceLoader.getThemes().themes)`: the themes the settings and theme directories register.
     let _ = registry.set_registered_themes(crate::themes::load(env, registry.mode).themes);
     app.set_theme_controller(interactive::theme_setup::ThemeController::new(
@@ -2036,10 +1963,7 @@ fn run_tui(
     // Exiting before that leaves a half-closed server in the instance directory that the next start in it has to
     // wait out (cli_interactive_prompt_history_survives_restart and cli_interactive_resume_lists_this_directory_with_names
     // restart in the same directory and timed out under load), so wait for it; the bound only guards a hung worker.
-    let deadline = std::time::Instant::now() + SHUTDOWN_WAIT;
-    while !link_worker.is_finished() && std::time::Instant::now() < deadline {
-        std::thread::sleep(std::time::Duration::from_millis(10));
-    }
+    let _ = link_ended.recv_timeout(SHUTDOWN_WAIT);
     if let Some(herdr) = &herdr {
         herdr.release();
     }
@@ -2051,6 +1975,7 @@ fn run_tui(
 mod tests {
     use super::*;
     use interactive::lane::Queued;
+    use protocol::watch::QueueKind;
 
     /// The TUI events of one lane-watch event, as the watch shows them.
     fn tui_events(event: &Value) -> Vec<LaneEvent> {
@@ -2234,7 +2159,7 @@ mod tests {
     }
 
     /// An update carries its frame, not the message so far: the TUI's stream folds it into the started message
-    /// (harness::stream_fold). An older worker's update, whole, still shows as it is.
+    /// (protocol::watch::stream_fold). An older worker's update, whole, still shows as it is.
     #[test]
     fn cli_interactive_stream_folds_update_frames() {
         let mut stream = TuiStream::default();

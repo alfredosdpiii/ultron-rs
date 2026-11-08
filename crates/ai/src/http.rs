@@ -1,8 +1,8 @@
 //! HTTP transport seam, cancellation, SDK-shaped API errors and the provider retry policy
 //! (`utils/provider-retry.ts`, `utils/error-body.ts`, and the error construction of the pinned OpenAI/Anthropic SDKs).
 
-use crate::json::parse_json;
 use crate::provider::{ProviderError, REQUEST_ABORTED};
+use jsrt::json_parse::parse_json;
 use serde_json::Value;
 use std::collections::BTreeMap;
 use std::future::Future;

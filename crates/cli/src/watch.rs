@@ -5,8 +5,9 @@
 
 use claude_root::control::{ControlClient, ServerQuery, control_dir, find_server, list_servers};
 use rlm_views::pane::RlmPane;
+use rlm_views::poller::{RlmPoller, WATCH_FRAME_LIMIT};
+use rlm_views::visualizer::RlmSnapshot;
 use rlm_views::visualizer::{RlmClock, RlmStyle, RlmTurn, parse_cell};
-use rlm_views::{RlmPoller, RlmSnapshot, WATCH_FRAME_LIMIT};
 use serde_json::{Map, Value, json};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -167,7 +168,7 @@ fn watch_theme(cwd: &str, var: &dyn Fn(&str) -> Option<String>) -> theme::Theme 
     crate::themes::resolve(
         settings.theme_setting().as_deref(),
         var("COLORFGBG").as_deref(),
-        &agent_dir.join("themes"),
+        &config::paths::AgentPaths::new(&agent_dir).custom_themes_dir(),
         mode,
     )
 }
@@ -282,10 +283,11 @@ pub fn render_watch_frame(
         ..Default::default()
     };
     let max_rows = 6usize.max((height as f64 * 0.4).floor() as usize);
-    let dock: Vec<String> = rlm_views::render_rlm_dock(snapshot, width.saturating_sub(2).max(1), &options, max_rows)
-        .into_iter()
-        .map(|line| format!(" {line}"))
-        .collect();
+    let dock: Vec<String> =
+        rlm_views::graph::render_rlm_dock(snapshot, width.saturating_sub(2).max(1), &options, max_rows)
+            .into_iter()
+            .map(|line| format!(" {line}"))
+            .collect();
     let rest = 6usize.max(height.saturating_sub(dock.len() + 2));
     let pane_lines = pane.render(keys, snapshot, width, pane_height, focused, None, style);
     let mut lines = vec![header];

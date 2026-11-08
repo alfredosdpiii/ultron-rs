@@ -187,7 +187,7 @@ fn resolve_target(target: &str, root: &Path, cwd: &Path, agent_dir: &Path) -> Re
 fn report_of(path: &Path, subscription: &[String]) -> Result<(Value, bool), LogError> {
     let log = read_session_log(path)?;
     Ok((
-        report::build_session_report_with(&log, subscription),
+        report::build_session_report(&log, subscription),
         report::session_is_empty(&log),
     ))
 }
@@ -224,16 +224,13 @@ pub fn run(args: &[String], env: &Env, out: &mut dyn std::io::Write, err: &mut d
 fn command(rest: &[String], env: &Env, lines: &mut Vec<String>) -> Result<(), Failure> {
     let options = parse(rest)?;
     let agent_dir = env.agent_dir();
-    let default_root = config::paths::AgentPaths::new(&agent_dir)
-        .experimental_sessions_dir()
-        .display()
-        .to_string();
-    let root_input = options
-        .sessions_root
-        .clone()
-        .or_else(|| (env.var)(config::paths::ENV_SESSION_DIR))
-        .unwrap_or(default_root);
-    let root = config::paths::resolve(&root_input, &env.cwd, &env.home);
+    let root = config::paths::session_root(
+        options.sessions_root.as_deref(),
+        &*env.var,
+        &config::paths::AgentPaths::new(&agent_dir).experimental_sessions_dir(),
+        &env.cwd,
+        &env.home,
+    );
     let zone = Zone::from_env((env.var)("TZ").as_deref());
     let home = env.home.display().to_string();
     let text = text::TextOptions {

@@ -11,7 +11,7 @@ use crate::transport::{HttpRequest, ReqwestTransport, Transport, TransportError}
 use jsrt::utf16;
 use kernel::Signal;
 use kernel_apis::MemoryBackend;
-use kernel_apis::MemoryError;
+use kernel_apis::memory::{ErrorCode, MemoryError};
 use serde_json::{Map, Value, json};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -61,10 +61,6 @@ pub struct HindsightBackend {
     transport: Arc<dyn Transport>,
 }
 
-const fn code(code: &'static str) -> MemoryError {
-    MemoryError::code(code)
-}
-
 fn safe_integer_in(value: f64, min: f64, max: f64) -> bool {
     jsrt::number::is_safe_integer(value) && (min..=max).contains(&value)
 }
@@ -72,7 +68,7 @@ fn safe_integer_in(value: f64, min: f64, max: f64) -> bool {
 /// A path segment: a non-blank id other than "." and "..", at most 2048 UTF-16 units, URI-component encoded.
 fn segment(value: &str) -> Result<String, MemoryError> {
     if jsrt::string::trim(value).is_empty() || value == "." || value == ".." || utf16::len(value) > 2048 {
-        return Err(code("INVALID_CONFIG"));
+        return Err(MemoryError::code(ErrorCode::InvalidConfig));
     }
     Ok(jsrt::uri::encode_component(value))
 }
@@ -106,7 +102,7 @@ fn scope_tags(value: &Value, scope: &str) -> Result<Value, MemoryError> {
     if valid {
         Ok(value.clone())
     } else {
-        Err(code("UNSUPPORTED_SCOPE"))
+        Err(MemoryError::code(ErrorCode::UnsupportedScope))
     }
 }
 
@@ -125,14 +121,14 @@ fn build_headers(extra: &[(String, String)]) -> Result<Vec<(String, String)>, Me
     let mut headers: Vec<(String, String)> = Vec::new();
     for (name, value) in extra {
         if name.is_empty() || !name.chars().all(token_char) {
-            return Err(code("INVALID_CONFIG"));
+            return Err(MemoryError::code(ErrorCode::InvalidConfig));
         }
         let value = http_trim(value);
         if value
             .chars()
             .any(|c| matches!(c, '\0' | '\r' | '\n') || c as u32 > 0xff)
         {
-            return Err(code("INVALID_CONFIG"));
+            return Err(MemoryError::code(ErrorCode::InvalidConfig));
         }
         let name = name.to_ascii_lowercase();
         match headers.iter_mut().find(|(have, _)| *have == name) {
@@ -155,9 +151,9 @@ impl HindsightBackend {
         let timeout_ms = options.timeout_ms.unwrap_or(10_000.0);
         let max_bytes = options.max_response_bytes.unwrap_or(1_048_576.0);
         if !safe_integer_in(timeout_ms, 1.0, 120_000.0) || !safe_integer_in(max_bytes, 1.0, 16_777_216.0) {
-            return Err(code("INVALID_CONFIG"));
+            return Err(MemoryError::code(ErrorCode::InvalidConfig));
         }
-        let base = url::Url::parse(&options.base_url).map_err(|_| code("INVALID_CONFIG"))?;
+        let base = url::Url::parse(&options.base_url).map_err(|_| MemoryError::code(ErrorCode::InvalidConfig))?;
         if !matches!(base.scheme(), "http" | "https")
             || !base.username().is_empty()
             || base.password().is_some_and(|p| !p.is_empty())
@@ -165,7 +161,7 @@ impl HindsightBackend {
             || base.fragment().is_some_and(|f| !f.is_empty())
             || utf16::len(base.as_str()) > 8192
         {
-            return Err(code("INVALID_CONFIG"));
+            return Err(MemoryError::code(ErrorCode::InvalidConfig));
         }
         let href = base.as_str();
         let namespace = format!(
@@ -174,19 +170,19 @@ impl HindsightBackend {
             segment(&options.bank_id)?
         );
         if utf16::len(&namespace) > 8192 {
-            return Err(code("INVALID_CONFIG"));
+            return Err(MemoryError::code(ErrorCode::InvalidConfig));
         }
         let mut filters = Map::new();
         for (scope, tags) in &options.scope_tags {
             if !matches!(scope.as_str(), "session" | "project" | "global") {
-                return Err(code("UNSUPPORTED_SCOPE"));
+                return Err(MemoryError::code(ErrorCode::UnsupportedScope));
             }
             filters.insert(scope.clone(), scope_tags(tags, scope)?);
         }
         let headers = build_headers(&options.headers)?;
         let transport = match options.transport {
             Some(transport) => transport,
-            None => Arc::new(ReqwestTransport::new().map_err(|_| code("INVALID_CONFIG"))?),
+            None => Arc::new(ReqwestTransport::new().map_err(|_| MemoryError::code(ErrorCode::InvalidConfig))?),
         };
         Ok(Self {
             namespace,
@@ -216,10 +212,10 @@ impl HindsightBackend {
     ) -> Result<Value, MemoryError> {
         let url = format!("{}{path}", self.namespace);
         if utf16::len(&url) > 8192 {
-            return Err(code("INVALID_CONFIG"));
+            return Err(MemoryError::code(ErrorCode::InvalidConfig));
         }
         if signal.is_aborted() {
-            return Err(code("ABORTED"));
+            return Err(MemoryError::code(ErrorCode::Aborted));
         }
         let request = HttpRequest {
             method: method.into(),
@@ -231,23 +227,24 @@ impl HindsightBackend {
             .transport
             .send(request, self.max_bytes, self.timeout, signal)
             .map_err(|error| {
-                code(match error {
-                    TransportError::Timeout => "TIMEOUT",
-                    TransportError::Aborted => "ABORTED",
-                    TransportError::TooLarge => "RESPONSE_TOO_LARGE",
-                    TransportError::Failed => "HTTP_ERROR",
+                MemoryError::code(match error {
+                    TransportError::Timeout => ErrorCode::Timeout,
+                    TransportError::Aborted => ErrorCode::Aborted,
+                    TransportError::TooLarge => ErrorCode::ResponseTooLarge,
+                    TransportError::Failed => ErrorCode::HttpError,
                 })
             })?;
         if signal.is_aborted() {
-            return Err(code("ABORTED"));
+            return Err(MemoryError::code(ErrorCode::Aborted));
         }
         if missing_ok && response.status == 404 {
             return Ok(Value::Null);
         }
         if !(200..300).contains(&response.status) {
-            return Err(code("HTTP_ERROR"));
+            return Err(MemoryError::code(ErrorCode::HttpError));
         }
-        serde_json::from_str(&String::from_utf8_lossy(&response.body)).map_err(|_| code("INVALID_RESPONSE"))
+        serde_json::from_str(&String::from_utf8_lossy(&response.body))
+            .map_err(|_| MemoryError::code(ErrorCode::InvalidResponse))
     }
 
     fn call(&self, path: &str, method: &str, body: Option<&Value>, signal: &Signal) -> Result<Value, MemoryError> {

@@ -4,7 +4,7 @@
 
 use crate::constrained::{json_schema_tool_parameters, resolve_json_schema_strict_sampling};
 use crate::http::{HeaderBuilder, cancelled, is_aborted, truncate_error_text};
-use crate::json::{parse_json, parse_streaming_json, short_hash};
+use crate::json::short_hash;
 use crate::models::{calculate_cost, clamp_thinking_level};
 use crate::options::{SimpleStreamOptions, StreamOptions, build_base_options, pi_user_agent};
 use crate::provider::{ProviderError, Run, next_chunk};
@@ -17,6 +17,7 @@ use crate::types::{
 };
 use crate::{HttpRequest, HttpResponse, Transport};
 use indexmap::IndexMap;
+use jsrt::json_parse::{parse_json, parse_streaming_json};
 use serde::Deserialize;
 use serde_json::{Map, Value, json};
 use std::cell::RefCell;

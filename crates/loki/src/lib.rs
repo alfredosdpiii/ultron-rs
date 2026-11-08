@@ -126,7 +126,7 @@ impl From<proc::RunError> for CheckError {
 }
 
 /// `os.path.abspath(base / path)` without `~` expansion.
-pub fn abspath(base: &Path, path: &str) -> PathBuf {
+pub fn abspath(base: &Path, path: impl AsRef<Path>) -> PathBuf {
     let mut out = PathBuf::from("/");
     for component in base.join(path).components() {
         match component {

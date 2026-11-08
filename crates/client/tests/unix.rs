@@ -34,7 +34,7 @@ impl ServerServices for Echo {
 }
 
 fn socket(dir: &Path, server_id: &str) -> PathBuf {
-    dir.join(format!("{server_id}.sock"))
+    dir.join(protocol::sockets::endpoint_name(server_id))
 }
 
 /// Serve `listen_as`'s protocol at `path` on a background thread: one `Connection` per accepted stream. The thread
@@ -127,7 +127,7 @@ fn client_discovery_returns_reachable_servers_in_id_order_and_never_deletes() {
 
     start(dir, B);
     start(dir, A);
-    std::fs::write(dir.join(format!("{C}.sock")), "not a socket").expect("file");
+    std::fs::write(dir.join(protocol::sockets::endpoint_name(C)), "not a socket").expect("file");
     std::fs::write(dir.join("readme.txt"), "x").expect("file");
     // A socket named for one server that answers as another is not that server.
     serve(&socket(dir, "00000000-0000-4000-8000-0000000000ee"), A);

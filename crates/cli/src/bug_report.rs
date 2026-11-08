@@ -194,10 +194,10 @@ fn environment_source(env: &Env, provider: &str) -> Option<String> {
 /// `configuredRequestAuthStatus` of a models.json `apiKey`: a `!command`, the variables a template names (all set,
 /// else not configured), or the key itself.
 fn configured_key_status(env: &Env, key: &str) -> Value {
-    if ai::model_registry::is_command(key) {
+    if config::auth::is_command(key) {
         return json!({"configured": true, "source": "models_json_command"});
     }
-    let names = ai::model_registry::env_names(key);
+    let names = config::auth::env_names(key);
     if names.is_empty() {
         return json!({"configured": true, "source": "models_json_key"});
     }

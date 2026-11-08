@@ -25,6 +25,12 @@ impl Env for TestEnv {
     fn agent_dir(&self) -> String {
         self.0.clone()
     }
+    fn home(&self) -> String {
+        session_file::SystemEnv.home()
+    }
+    fn cwd(&self) -> String {
+        session_file::SystemEnv.cwd()
+    }
 }
 
 fn env() -> Box<dyn Env> {
@@ -500,39 +506,50 @@ fn session_file_load_entries_repairs_only_session_files() {
         p
     };
     assert!(
-        load_entries_from_file(&format!("{path}/nonexistent.jsonl"))
-            .unwrap()
-            .is_empty()
-    );
-    assert!(load_entries_from_file(&file("empty.jsonl", "")).unwrap().is_empty());
-    assert!(
-        load_entries_from_file(&file("no-header.jsonl", "{\"type\":\"message\",\"id\":\"1\"}\n"))
+        load_entries_from_file(&SystemEnv, &format!("{path}/nonexistent.jsonl"))
             .unwrap()
             .is_empty()
     );
     assert!(
-        load_entries_from_file(&file("malformed.jsonl", "not json\n"))
+        load_entries_from_file(&SystemEnv, &file("empty.jsonl", ""))
+            .unwrap()
+            .is_empty()
+    );
+    assert!(
+        load_entries_from_file(
+            &SystemEnv,
+            &file("no-header.jsonl", "{\"type\":\"message\",\"id\":\"1\"}\n")
+        )
+        .unwrap()
+        .is_empty()
+    );
+    assert!(
+        load_entries_from_file(&SystemEnv, &file("malformed.jsonl", "not json\n"))
             .unwrap()
             .is_empty()
     );
     let header = "{\"type\":\"session\",\"id\":\"abc\",\"timestamp\":\"2025-01-01T00:00:00Z\",\"cwd\":\"/tmp\"}\n";
     let message = "{\"type\":\"message\",\"id\":\"1\",\"parentId\":null,\"timestamp\":\"2025-01-01T00:00:01Z\",\"message\":{\"role\":\"user\",\"content\":\"hi\",\"timestamp\":1}}";
-    let mixed = load_entries_from_file(&file("mixed.jsonl", &format!("{header}not valid json\n{message}\n"))).unwrap();
+    let mixed = load_entries_from_file(
+        &SystemEnv,
+        &file("mixed.jsonl", &format!("{header}not valid json\n{message}\n")),
+    )
+    .unwrap();
     assert_eq!(mixed.len(), 2);
     let unterminated = file("unterminated.jsonl", &format!("{header}{message}"));
-    assert_eq!(load_entries_from_file(&unterminated).unwrap().len(), 2);
+    assert_eq!(load_entries_from_file(&SystemEnv, &unterminated).unwrap().len(), 2);
     assert_eq!(
         fs::read_to_string(&unterminated).unwrap(),
         format!("{header}{message}\n")
     );
     let tail = file("malformed-tail.jsonl", &format!("{header}{{\"type\":\"message\""));
-    assert_eq!(load_entries_from_file(&tail).unwrap().len(), 1);
+    assert_eq!(load_entries_from_file(&SystemEnv, &tail).unwrap().len(), 1);
     assert_eq!(
         fs::read_to_string(&tail).unwrap(),
         format!("{header}{{\"type\":\"message\"\n")
     );
     let invalid = file("invalid.jsonl", "{\"type\":\"message\",\"id\":\"1\"}");
-    assert!(load_entries_from_file(&invalid).unwrap().is_empty());
+    assert!(load_entries_from_file(&SystemEnv, &invalid).unwrap().is_empty());
     assert_eq!(
         fs::read_to_string(&invalid).unwrap(),
         "{\"type\":\"message\",\"id\":\"1\"}"
@@ -624,12 +641,15 @@ fn set_mtime(path: &str, ms: u64) {
 #[test]
 fn session_file_most_recent_session_skips_invalid_files_and_filters_by_cwd() {
     let (_dir, path) = tmp();
-    assert_eq!(find_most_recent_session(&path, None), None);
-    assert_eq!(find_most_recent_session(&format!("{path}/nonexistent"), None), None);
+    assert_eq!(find_most_recent_session(&SystemEnv, &path, None), None);
+    assert_eq!(
+        find_most_recent_session(&SystemEnv, &format!("{path}/nonexistent"), None),
+        None
+    );
     fs::write(format!("{path}/file.txt"), "hello").unwrap();
     fs::write(format!("{path}/invalid.jsonl"), "{\"type\":\"message\"}\n").unwrap();
     fs::write(format!("{path}/oversized.jsonl"), "x".repeat(1024 * 1024 + 1)).unwrap();
-    assert_eq!(find_most_recent_session(&path, None), None);
+    assert_eq!(find_most_recent_session(&SystemEnv, &path, None), None);
     let write = |name: &str, cwd: &str, mtime: u64| {
         let p = format!("{path}/{name}");
         fs::write(
@@ -643,13 +663,13 @@ fn session_file_most_recent_session_skips_invalid_files_and_filters_by_cwd() {
     let a = write("a.jsonl", &format!("{path}/project-a"), 1_000_000);
     let b = write("b.jsonl", &format!("{path}/project-b"), 2_000_000);
     set_mtime(&format!("{path}/invalid.jsonl"), 3_000_000);
-    assert_eq!(find_most_recent_session(&path, None), Some(b.clone()));
+    assert_eq!(find_most_recent_session(&SystemEnv, &path, None), Some(b.clone()));
     assert_eq!(
-        find_most_recent_session(&path, Some(&format!("{path}/project-a"))),
+        find_most_recent_session(&SystemEnv, &path, Some(&format!("{path}/project-a"))),
         Some(a)
     );
     assert_eq!(
-        find_most_recent_session(&path, Some(&format!("{path}/project-b"))),
+        find_most_recent_session(&SystemEnv, &path, Some(&format!("{path}/project-b"))),
         Some(b)
     );
 }
@@ -834,4 +854,37 @@ fn session_file_mtime_fallback_uses_node_mtime_ms() {
     let env_box = TestEnv("/nonexistent-agent-dir".into());
     let info = list_sessions(&env_box, "/tmp", Some(&path)).unwrap();
     assert_eq!(info[0].modified, Some(1_735_689_600_000));
+}
+
+/// An [`Env`] with its own home and cwd.
+struct Placed;
+
+impl Env for Placed {
+    fn now_ms(&mut self) -> i64 {
+        SystemEnv.now_ms()
+    }
+    fn random_uuid(&mut self) -> String {
+        SystemEnv.random_uuid()
+    }
+    fn session_id(&mut self) -> String {
+        SystemEnv.session_id()
+    }
+    fn agent_dir(&self) -> String {
+        "/nonexistent-agent-dir".into()
+    }
+    fn home(&self) -> String {
+        "/env-home".into()
+    }
+    fn cwd(&self) -> String {
+        "/env-cwd".into()
+    }
+}
+
+/// `~` and relative paths name the Env's home and cwd, not the process's.
+#[test]
+fn session_file_paths_resolve_against_the_env_home_and_cwd() {
+    assert_eq!(
+        session_file::default_session_dir_path(&Placed, "proj", "~/agent"),
+        "/env-home/agent/sessions/--env-cwd-proj--"
+    );
 }

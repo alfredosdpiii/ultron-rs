@@ -50,7 +50,7 @@ fn report_of(dir: &Path, lines: &[Value]) -> Value {
         text.push('\n');
     }
     std::fs::write(&path, text).unwrap();
-    build_session_report(&read_session_log(&path).unwrap())
+    build_session_report(&read_session_log(&path).unwrap(), &[])
 }
 
 fn split(bucket: &Value) -> [f64; 6] {
@@ -235,24 +235,4 @@ fn usage_a_session_without_durable_records_reports_children_from_the_ledger() {
         split(&report["usage"]["lanes"]["subagents"]),
         [2.0, 0.0, 0.0, 0.0, 0.0, 30.0]
     );
-}
-
-#[test]
-fn usage_reads_the_durable_commits_the_session_store_writes() {
-    use durable::Storage;
-    let dir = tempfile::tempdir().unwrap();
-    let repo = session_journal::SessionRepo::new(
-        &dir.path().join("sessions"),
-        session_journal::TestClock::shared(1_790_000_000_000, 1),
-    );
-    let session = repo.create(&dir.path().display().to_string(), None, None).unwrap();
-    let path = session.metadata().path.clone();
-    let mut storage =
-        session_core::durable_store::open(std::sync::Arc::new(std::sync::Mutex::new(session)), None).unwrap();
-    let writes = json!([{"type": "conversation", "value": {"id": 30}},
-        assistant(31, 30, "claude-opus-4-5", usage(4, 1, 0, 1.0))]);
-    storage.commit(serde_json::from_value(writes).unwrap()).unwrap();
-    let report = build_session_report(&read_session_log(&path).unwrap());
-    let lanes = &report["usage"]["lanes"];
-    assert_eq!(split(&lanes["other"]), [1.0, 4.0, 1.0, 0.0, 0.0, 5.0], "{lanes}");
 }

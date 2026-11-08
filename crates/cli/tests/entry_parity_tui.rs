@@ -4,7 +4,8 @@
 //! - a resumed session shows its own thinking level (the worker's), and `--thinking` on resume changes it;
 //! - `--models` scopes Ctrl+P as the worker's model cycling does;
 //! - `/persona` in `ultron durable` reports the worker's effective persona (the durable default is on), and
-//!   `/persona none` turns it off for good (a removed key would bring the default back);
+//!   `/persona none` turns it off for good: the worker's `setSetting` keeps `"off"` there (a removed key would bring
+//!   the default back);
 //! - `/settings` -> Models in `ultron durable` lists the durable default model (`durable.model`, the Claude
 //!   subscription by default) where its sessions save a chosen model; plain `ultron` does not.
 
@@ -128,7 +129,7 @@ fn cli_entry_tui_durable_persona_reports_the_workers_state_and_none_sticks() {
     tui.wait("Persona off from the next message");
     let settings: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(tmp.0.join("agent/settings.json")).unwrap()).unwrap();
-    assert_eq!(settings["persona"], "none");
+    assert_eq!(settings["persona"], "off");
     tui.send_text("/persona");
     tui.send_keys(&["Enter"]);
     tui.wait("Persona for this session follows the settings (off); keep-going off");

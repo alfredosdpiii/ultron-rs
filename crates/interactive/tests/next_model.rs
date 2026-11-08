@@ -24,6 +24,11 @@ fn interactive_next_model_matches_typescript() {
                     provider: row[0].as_str().unwrap().into(),
                     id: row[1].as_str().unwrap().into(),
                     name: row[2].as_str().unwrap().into(),
+                    api: if row[0] == config::providers::CLAUDE_CODE {
+                        config::providers::CLAUDE_CODE_API.into()
+                    } else {
+                        String::new()
+                    },
                     reasoning: row[3].as_bool().unwrap(),
                     context_window: 0,
                     thinking_levels: Vec::new(),
@@ -41,6 +46,7 @@ fn interactive_next_model_matches_typescript() {
             provider: provider.into(),
             id: id.into(),
             name: String::new(),
+            api: String::new(),
             reasoning: false,
             context_window: 0,
             thinking_levels: Vec::new(),
@@ -60,4 +66,19 @@ fn interactive_next_model_matches_typescript() {
         );
         assert_eq!(actual, expected, "{case}");
     }
+}
+
+/// A models.json provider on the Claude Code CLI API answers only to its full reference in the TUI, as in the
+/// session (`isClaudeCodeModel` reads the API, not the provider).
+#[test]
+fn interactive_claude_code_api_models_need_their_full_reference() {
+    use model_scope::ScopeModel;
+    let on = |api: &str| ModelInfo {
+        provider: "proxy".into(),
+        id: "opus".into(),
+        api: api.into(),
+        ..Default::default()
+    };
+    assert!(on(config::providers::CLAUDE_CODE_API).full_reference_only());
+    assert!(!on("anthropic-messages").full_reference_only());
 }

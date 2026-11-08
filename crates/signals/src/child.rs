@@ -13,7 +13,7 @@ use std::time::{Duration, Instant};
 
 /// Once the child is reaped, how long its output may take to close: a process it left running can hold the pipes
 /// open, and its output is what arrived by then.
-const PIPE_GRACE: Duration = Duration::from_secs(2);
+pub const PIPE_GRACE: Duration = Duration::from_secs(2);
 
 /// How a run is bounded and stopped.
 #[derive(Clone, Copy, Debug, Default)]

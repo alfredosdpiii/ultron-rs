@@ -16,140 +16,23 @@ mod external_root;
 
 use crate::durable_store::{SharedSession, lock as lock_session};
 use jsrt::sync;
-use regex::Regex;
-use serde_json::{Map, Value, json};
+use serde_json::{Value, json};
 use session_journal::Write;
 use std::collections::HashMap;
-use std::sync::{Arc, Condvar, LazyLock, Mutex, PoisonError};
+use std::sync::{Arc, Condvar, Mutex, PoisonError};
 use std::time::Duration;
+use usage::stats::{SESSION_STATS_MODULE, STATS_VERSION, cell_apis, classify_nudge, stats_lane};
 
-/// The module name: the session value `ultron.module/stats`.
-pub const SESSION_STATS_MODULE: &str = "stats";
-const STATS_VERSION: u64 = 1;
 /// Distinct host request types kept (later ones are not added), and task ids kept per map (the newest).
 const MAX_KEYS: usize = 200;
 /// How long after the first unsaved change the counters are saved.
 pub const DEFAULT_FLUSH: Duration = Duration::from_millis(500);
-
-/// REPL APIs a cell's code can name, in the order the report lists them.
-pub const CELL_APIS: [&str; 16] = [
-    "bash",
-    "read",
-    "edit",
-    "write",
-    "rlm.load",
-    "rlm.infer",
-    "rlm.map",
-    "rlm.spawn",
-    "rlm.collect",
-    "rlm.merge",
-    "mcp.call",
-    "tools.call",
-    "workflows.run",
-    "agents.*",
-    "background.start",
-    "view_image",
-];
-
-static API_PATTERNS: LazyLock<Vec<(&'static str, Regex)>> = LazyLock::new(|| {
-    // `(?<![\w.])name\s*\(`: the regex crate has no look-behind, so the preceding character is matched instead.
-    let bare = |name: &str| format!(r"(?:^|[^A-Za-z0-9_.]){name}\s*\(");
-    let dotted = |name: &str| format!(r"(?:^|[^A-Za-z0-9_]){}\s*\(", name.replace('.', r"\."));
-    CELL_APIS
-        .iter()
-        .map(|&name| {
-            let pattern = match name {
-                "bash" | "read" | "edit" | "write" | "view_image" => bare(name),
-                "agents.*" => r"(?:^|[^A-Za-z0-9_])agents\.(?:spawn|invoke|register)\s*\(".to_string(),
-                _ => dotted(name),
-            };
-            (name, Regex::new(&pattern).expect("API pattern compiles"))
-        })
-        .collect()
-});
-
-/// The REPL APIs a cell's code names (each at most once): a static read of the source, so a call inside a function
-/// the cell only defines counts too, and a call made through an alias does not.
-pub fn cell_apis(code: &str) -> Vec<&'static str> {
-    API_PATTERNS
-        .iter()
-        .filter(|(_, pattern)| pattern.is_match(code))
-        .map(|(name, _)| *name)
-        .collect()
-}
-
-static NUDGES: LazyLock<[(&'static str, Regex); 3]> = LazyLock::new(|| {
-    let re = |p: &str| Regex::new(p).expect("nudge pattern compiles");
-    [
-        (
-            "skill",
-            re(r"^\[Ultron\] [0-9]+ tool rounds in a row succeeded(?-u:\b)"),
-        ),
-        (
-            "wait",
-            re(
-                r"^\[Ultron\] (?:1 subagent or task you started is|[0-9]+ subagents or tasks you started are) still running(?-u:\b)",
-            ),
-        ),
-        (
-            "toolRounds",
-            re(r"^\[Ultron\] You have (?:now )?used [0-9]+ rounds of tool calls(?-u:\b)"),
-        ),
-    ]
-});
-
-/// Which steer a `[Ultron] ...` message is (`skill`, `wait` or `toolRounds`; see crate::nudge), or None.
-pub fn classify_nudge(text: &str) -> Option<&'static str> {
-    if !text.starts_with("[Ultron] ") {
-        return None;
-    }
-    NUDGES.iter().find(|(_, re)| re.is_match(text)).map(|(kind, _)| *kind)
-}
-
-/// Which counter a lane's cells go to: the root lane, `rlm.spawn` subagents, or anything else (typed agents, jobs).
-pub fn stats_lane(lane: &str) -> &'static str {
-    if lane == "main" {
-        "root"
-    } else if lane.starts_with(delegation::lane_names::CHILD_LANE_PREFIX) {
-        "subagents"
-    } else {
-        "other"
-    }
-}
 
 fn count(value: Option<&Value>) -> f64 {
     match value.and_then(Value::as_f64) {
         Some(n) if n.is_finite() && n >= 0.0 => n,
         _ => 0.0,
     }
-}
-
-fn object(value: Option<&Value>) -> Option<&Map<String, Value>> {
-    value.and_then(Value::as_object)
-}
-
-fn counts(value: Option<&Value>) -> Value {
-    let mut out = Map::new();
-    if let Some(map) = object(value) {
-        for (key, item) in jsrt::json::object_entries(map) {
-            if count(Some(item)) > 0.0 {
-                out.insert(key.clone(), jsrt::json::number(count(Some(item))));
-            }
-        }
-    }
-    Value::Object(out)
-}
-
-fn strings(value: Option<&Value>) -> Value {
-    let mut out = Map::new();
-    if let Some(map) = object(value) {
-        for (key, item) in jsrt::json::object_entries(map) {
-            if let Some(text) = item.as_str() {
-                out.insert(key.clone(), json!(text));
-            }
-        }
-    }
-    Value::Object(out)
 }
 
 fn empty_cells() -> Value {
@@ -182,65 +65,7 @@ pub fn empty_session_stats(root: &str, now: u64) -> Value {
 /// `parseSessionStats`: a stored document with every field present, or None when `saved` is not one (not an object,
 /// or another version). Unknown fields are dropped and malformed counters read as zero.
 pub fn parse_session_stats(saved: &Value) -> Option<Value> {
-    let item = saved.as_object()?;
-    if let Some(version) = item.get("version")
-        && version.as_f64() != Some(STATS_VERSION as f64)
-    {
-        return None;
-    }
-    // `(item.x ?? {})`: null and absent read as an empty part.
-    let part = |value: Option<&Value>| value.filter(|v| !v.is_null()).cloned();
-    let cells = part(item.get("cells"));
-    let cells_of = |name: &str| {
-        let c = cells.as_ref().and_then(|c| part(c.get(name)));
-        json!({
-            "count": jsrt::json::number(count(c.as_ref().and_then(|c| c.get("count")))),
-            "failed": jsrt::json::number(count(c.as_ref().and_then(|c| c.get("failed")))),
-            "apis": counts(c.as_ref().and_then(|c| c.get("apis"))),
-        })
-    };
-    let mut guards = Map::new();
-    if let Some(map) = object(item.get("guards")) {
-        for (name, value) in jsrt::json::object_entries(map) {
-            let value = part(Some(value));
-            let g = |k: &str| jsrt::json::number(count(value.as_ref().and_then(|v| v.get(k))));
-            guards.insert(
-                name.clone(),
-                json!({
-                    "checks": g("checks"),
-                    "blocked": g("blocked"),
-                    "unchecked": g("unchecked"),
-                    "afterChecks": g("afterChecks"),
-                    "afterFindings": g("afterFindings"),
-                    "ms": g("ms"),
-                }),
-            );
-        }
-    }
-    let nudges = part(item.get("nudges"));
-    let nudge = |k: &str| jsrt::json::number(count(nudges.as_ref().and_then(|n| n.get(k))));
-    let turns = part(item.get("externalTurns"));
-    let turn = |k: &str| jsrt::json::number(count(turns.as_ref().and_then(|t| t.get(k))));
-    let root = if item.get("root").and_then(Value::as_str) == Some("external") {
-        "external"
-    } else {
-        "lane"
-    };
-    Some(json!({
-        "version": STATS_VERSION,
-        "root": root,
-        "since": jsrt::json::number(count(item.get("since"))),
-        "updatedAt": jsrt::json::number(count(item.get("updatedAt"))),
-        "cells": {"root": cells_of("root"), "subagents": cells_of("subagents"), "other": cells_of("other")},
-        "hostCalls": counts(item.get("hostCalls")),
-        "secretsMasked": jsrt::json::number(count(item.get("secretsMasked"))),
-        "guards": guards,
-        "nudges": {"toolRounds": nudge("toolRounds"), "wait": nudge("wait"), "skill": nudge("skill")},
-        "usageLimitBlocks": jsrt::json::number(count(item.get("usageLimitBlocks"))),
-        "merges": strings(item.get("merges")),
-        "childModels": strings(item.get("childModels")),
-        "externalTurns": {"count": turn("count"), "wallMs": turn("wallMs")},
-    }))
+    usage::stats::parse_session_stats(Some(saved)).map(|stats| stats.to_json())
 }
 
 /// What the store holds, read as `readVersioned` reads it.

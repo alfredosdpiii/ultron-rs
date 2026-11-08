@@ -24,10 +24,7 @@ use session_journal::Write;
 use session_journal::ns::{self, DEFINITIONS_ROOT, TASKS_ROOT, USAGE_ROOT};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, OnceLock, Weak};
-use std::time::Duration;
 
-/// The lane a subagent task's cells run in (`ultron.rlm-child.<task id>`), which its child task is named after.
-pub use delegation::lane_names::CHILD_LANE_PREFIX as LANE_PREFIX;
 /// The lane of another root conversation of the session (`ultron.conversation.<id>`).
 pub const CONVERSATION_LANE_PREFIX: &str = "ultron.conversation.";
 /// The `rlm.spawn(name=...)` of each subagent, a session value per task id (Rust-only: the task journal and the
@@ -453,7 +450,7 @@ impl DurableChildren {
         };
         let children = child_tasks(&chat)?;
         let reattached = stack.delegation.restore(unfinished, |id| {
-            let (task, input, _) = children.get(&format!("{LANE_PREFIX}{id}"))?.clone();
+            let (task, input, _) = children.get(&lanes::lane_names::child_lane(id))?.clone();
             if input.agent || input.keep {
                 return None;
             }
@@ -477,9 +474,8 @@ impl DurableChildren {
         for (name, (task, input, terminal)) in &children {
             let ours = !terminal
                 && (input.agent
-                    || name
-                        .strip_prefix(LANE_PREFIX)
-                        .is_some_and(|id| !reattached.iter().any(|r| r == id)));
+                    || matches!(lanes::lane_names::parse_lane(name),
+                        Some(lanes::lane_names::LaneOwner::Child(id)) if !reattached.iter().any(|r| r == id)));
             if ours && !input.keep {
                 let _ = chat.abort_task(*task, &Ctx::background());
             }
@@ -558,20 +554,10 @@ fn child_tasks(chat: &ChatHarness) -> Result<HashMap<String, (TaskId, ChildInput
 /// host closing) aborts the child's work, as the journal records it cancelled.
 fn wait_child(chat: &ChatHarness, task: TaskId, signal: &Signal) -> Result<String, String> {
     let cancel = Cancel::new();
-    let done = Cancel::new();
-    let (watched, stop, target) = (signal.clone(), done.clone(), cancel.clone());
-    // The task's signal has no callback: it is watched until the wait ends.
-    let watcher = std::thread::spawn(move || {
-        while !stop.is_cancelled() {
-            if watched.wait(Duration::from_millis(200)) {
-                target.abort();
-                return;
-            }
-        }
-    });
+    let target = cancel.clone();
+    let link = signal.link(move |_| target.abort());
     let waited = chat.wait_for_task(task, &Ctx::with_signal(&cancel));
-    done.abort();
-    let _ = watcher.join();
+    drop(link);
     match waited {
         Ok(record) => {
             let report = child_report(&record).ok_or("The subagent ended without a result")?;

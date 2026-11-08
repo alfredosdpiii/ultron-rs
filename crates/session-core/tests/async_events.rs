@@ -7,7 +7,7 @@
 use serde_json::{Value, json};
 use session_core::async_events::{
     Accepted, Cancelled, Delivery, Dispatcher, DispatcherOptions, EventLanes, Execution, RUNTIME_EVENT_MESSAGE_TYPE,
-    RuntimeEvent, async_events_enabled, max_event_runs_from_env, runtime_event_text,
+    RuntimeEvent, async_events_enabled, default_mask, max_event_runs_from_env, runtime_event_text,
 };
 use std::collections::HashMap;
 use std::sync::mpsc::{Receiver, Sender, channel};
@@ -446,10 +446,13 @@ fn session_core_async_events_off_disables_events() {
 
 #[test]
 fn session_core_async_events_the_event_text_is_one_bounded_escaped_line_per_completion() {
-    let line = runtime_event_text(&[RuntimeEvent {
-        summary: format!("a \"quoted\" <b>\n{}", "x".repeat(1000)),
-        ..event("job-a")
-    }]);
+    let line = runtime_event_text(
+        &[RuntimeEvent {
+            summary: format!("a \"quoted\" <b>\n{}", "x".repeat(1000)),
+            ..event("job-a")
+        }],
+        &default_mask(),
+    );
     let head =
         "<runtime_event kind=\"job_done\" id=\"job-a\" status=\"completed\" summary=\"a &quot;quoted&quot; &lt;b&gt; ";
     let tail = "…\" fetch=\"await rlm.job(&quot;job-a&quot;)\" />";

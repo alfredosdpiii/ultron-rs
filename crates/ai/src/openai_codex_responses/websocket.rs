@@ -7,11 +7,11 @@
 
 use super::{CodexError, aborted_error, map_codex_event};
 use crate::http::{AbortSignal, HeaderMap, Transport, cancelled, is_aborted};
-use crate::json::parse_json;
 use crate::openai_responses::{ConvertOptions, OPENAI_TOOL_CALL_PROVIDERS, ResponsesRun, TierPricing, ToolOptions};
 use crate::types::{AssistantMessageEvent, Message, Model, TranscriptContext};
 use crate::websocket::{NO_WEBSOCKET, WebSocketConnection, WsEvent};
 use indexmap::IndexMap;
+use jsrt::json_parse::parse_json;
 use serde::Serialize;
 use serde_json::{Map, Value, json};
 use std::collections::{HashMap, HashSet};

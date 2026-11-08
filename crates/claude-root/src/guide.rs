@@ -96,6 +96,7 @@ pub fn load_prompt_resources(env: &RunEnv, bundled: Option<&Path>, flags: Resour
     let files = resources::prompt_files::load_prompt_files(
         &env.cwd.display().to_string(),
         &agent_dir_path.display().to_string(),
+        &env.home.display().to_string(),
         trusted,
         None,
         None,
@@ -131,7 +132,7 @@ pub fn load_prompt_resources(env: &RunEnv, bundled: Option<&Path>, flags: Resour
     let context_files = if flags.no_context_files {
         Vec::new()
     } else {
-        resources::context_files::load_project_context_files(&cwd, &agent_dir)
+        resources::context_files::load_project_context_files(&cwd, &agent_dir, &env.home.display().to_string())
     };
     PromptResources {
         context_files,

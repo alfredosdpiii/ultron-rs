@@ -20,7 +20,6 @@
 use crate::workspace::WorkspaceDiff;
 use serde_json::{Map, Value, json};
 use std::collections::{BTreeMap, BTreeSet};
-use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -84,7 +83,6 @@ fn git_on(
         )
         .env("GIT_OPTIONAL_LOCKS", "0")
         .env("GIT_TERMINAL_PROMPT", "0")
-        .stdin(if input.is_some() { Stdio::piped() } else { Stdio::null() })
         .stdout(Stdio::piped())
         .stderr(Stdio::null());
     if let Some(index) = index {
@@ -93,12 +91,8 @@ fn git_on(
     if !env.iter().any(|(key, _)| key == "PATH") {
         command.env("PATH", FALLBACK_PATH);
     }
-    let mut child = command.spawn().ok()?;
-    if let (Some(input), Some(mut stdin)) = (input, child.stdin.take()) {
-        let _ = stdin.write_all(input);
-    }
-    let output = child.wait_with_output().ok()?;
-    output.status.success().then_some(output.stdout)
+    let output = signals::child::run(&mut command, input, signals::child::Bound::default()).ok()?;
+    output.success().then_some(output.stdout)
 }
 
 fn git(cwd: &Path, env: &[(String, String)], args: &[&str], input: Option<&[u8]>) -> Option<Vec<u8>> {

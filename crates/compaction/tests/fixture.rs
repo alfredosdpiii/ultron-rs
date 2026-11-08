@@ -327,6 +327,12 @@ impl Env for FixedEnv {
     fn agent_dir(&self) -> String {
         "/nonexistent-agent-dir".to_string()
     }
+    fn home(&self) -> String {
+        session_file::SystemEnv.home()
+    }
+    fn cwd(&self) -> String {
+        session_file::SystemEnv.cwd()
+    }
 }
 
 #[test]

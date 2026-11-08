@@ -20,7 +20,7 @@ use std::path::{Path, PathBuf};
 use std::sync::LazyLock;
 
 pub const PROVIDER: &str = config::providers::CLAUDE_CODE;
-pub const API: &str = "claude-code-cli";
+pub const API: &str = config::providers::CLAUDE_CODE_API;
 /// The provider's display name (`createProvider({ name })`).
 pub const NAME: &str = "Claude Code (CLI)";
 /// Where its configured status comes from (`checkAuth`'s `source`).

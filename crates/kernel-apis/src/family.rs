@@ -363,7 +363,7 @@ impl FamilyModule {
             return Ok(pending);
         };
         let envelope = Self::envelope(&message, resolved.sender_task.as_ref());
-        if request.host.steer(receiver, &envelope, request.signal).unwrap_or(false) {
+        if request.host.steer(receiver, &envelope).unwrap_or(false) {
             return Ok(json!({"id": id, "duplicate": false, "state": "delivered", "steered": true}));
         }
         // The lane did not take it: the message waits in the inbox instead.

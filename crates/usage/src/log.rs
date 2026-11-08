@@ -2,9 +2,9 @@
 //! digest of each entry (who wrote it and what it used, never its text), the latest values of the namespaces the
 //! report reads, and every operation's lane and result.
 
+use crate::stats::{cell_apis, classify_nudge};
 use indexmap::IndexMap;
 use serde_json::{Map, Value};
-use session_core::session_stats::{cell_apis, classify_nudge};
 use session_journal::catalog::HeaderLine;
 use session_journal::ns;
 use std::io::{BufRead, BufReader};

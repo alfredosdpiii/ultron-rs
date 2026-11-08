@@ -28,7 +28,7 @@ pub struct ThemeExport {
 }
 
 /// Required color tokens, in schema order.
-pub const REQUIRED_COLORS: [&str; 51] = [
+const REQUIRED_COLORS: [&str; 51] = [
     "accent",
     "border",
     "borderAccent",

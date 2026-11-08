@@ -5,16 +5,16 @@
 //!
 //! The engine is a [`ReviewEngine`] (the coordinator serves it with the kernel-backed engine); the lesson memory a
 //! [`LessonMemory`] ([`crate::lessons::HindsightLessons`]); building a test environment an optional
-//! [`EnvironmentPreparer`] (`prepareEnvironment`, which becomes a host job).
+//! [`RunnerPreparer`] (`prepareEnvironment`, which becomes a host job).
 //!
 //! Known differences from the TypeScript:
 //! - The engine returns its result as JSON (the TypeScript `EngineResult`): `plan::EngineResult` reads only what
 //!   the plan needs and is not serializable, while the reviewer also needs `guideNames`, `timing.stages`, each
 //!   finding's `kind`, the earlier findings' ids, and the whole result for the dry-run file. A result that
 //!   `plan::EngineResult` cannot read fails the review like an engine error.
-//! - Without an [`EnvironmentPreparer`] no environment is prepared (the TypeScript always tried); the review then
+//! - Without a [`RunnerPreparer`] no environment is prepared (the TypeScript always tried); the review then
 //!   falls back to a local checkout, as it did when nothing could be prepared. The command line's daemon always
-//!   supplies one (`crate::prepare_env::RunnerPreparer`).
+//!   supplies one.
 //! - `mentions` checks the character after the login by hand (the Rust regex has no lookahead).
 
 use std::collections::{HashMap, HashSet};
@@ -36,6 +36,7 @@ use crate::ledger::{
 };
 use crate::local::{expand_path, find_checkout, without_guide_mentions};
 use crate::plan::{EngineResult, PlanOptions, PromotionNote, ReviewPlan, Verdict, plan_review, without_inline};
+use crate::prepare_env::RunnerPreparer;
 use crate::promotion::{
     PromotionDelta, PromotionSource, changed_new_lines, cherry_sources, promotion_delta, referenced_pulls, source_label,
 };
@@ -91,11 +92,6 @@ pub struct PreparedEnvironment {
     pub toolchain: Vec<String>,
 }
 
-/// Builds a test environment for a worktree (with the network, before the review).
-pub trait EnvironmentPreparer: Send + Sync {
-    fn prepare(&self, work_dir: &str, log: &dyn Fn(&str)) -> Result<PreparedEnvironment, String>;
-}
-
 #[derive(Clone)]
 pub struct ReviewerDeps {
     pub runner: Arc<dyn Runner>,
@@ -110,7 +106,8 @@ pub struct ReviewerDeps {
     /// A number in [0, 1): picks the acknowledgement line.
     pub random: Arc<dyn Fn() -> f64 + Send + Sync>,
     pub lessons: Option<Arc<dyn LessonMemory>>,
-    pub environments: Option<Arc<dyn EnvironmentPreparer>>,
+    /// Builds a test environment for a worktree (with the network, before the review).
+    pub environments: Option<Arc<RunnerPreparer>>,
     /// The home directory `~` in guide paths and checkout roots expands to.
     pub home: String,
     /// `autoreview.ban`, re-read before each decision and model turn.

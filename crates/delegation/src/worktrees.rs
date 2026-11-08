@@ -29,8 +29,6 @@ use std::process::{Command, Stdio};
 use std::sync::{LazyLock, Mutex, PoisonError};
 use std::time::Duration;
 
-/// Directory under the Git common dir that holds Ultron's worktrees and their records.
-pub const WORKTREES_DIR: &str = "ultron-worktrees";
 /// Branches of subagent worktrees: `ultron/<session>/<name>`.
 pub const BRANCH_PREFIX: &str = "ultron";
 /// Keep worktrees and branches after merges, on session end and at startup pruning (debugging).
@@ -42,6 +40,8 @@ const MAX_SETUP_DEPTH: usize = 3;
 const MAX_SETUP_ENTRIES: usize = 64;
 const DEFAULT_SETUP_TIMEOUT_MS: u64 = 10 * 60 * 1000;
 const GIT_TIMEOUT: Duration = Duration::from_secs(120);
+/// A stopped Git, jj or setup command gets SIGTERM, and SIGKILL when it is still running this long after.
+pub(crate) const KILL_GRACE: Duration = Duration::from_secs(5);
 const MAX_HUNKS_PER_FILE: usize = 5;
 const MAX_CONFLICT_FILES: usize = 20;
 const HUNK_TEXT_CHARS: usize = 400;
@@ -170,60 +170,31 @@ pub(crate) fn opts<'a>(env: &[(&'a str, &str)]) -> GitOptions<'a> {
 /// Runs `git` without a shell or terminal; stdout and stderr as text. Fails (fallback) when Git cannot start.
 fn git_with(cwd: &Path, args: &[&str], options: GitOptions<'_>) -> Result<GitResult> {
     let mut command = Command::new("git");
-    command
-        .args(args)
-        .current_dir(cwd)
-        .env("GIT_TERMINAL_PROMPT", "0")
-        .stdin(if options.input.is_some() {
-            Stdio::piped()
-        } else {
-            Stdio::null()
-        })
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
+    command.args(args).current_dir(cwd).env("GIT_TERMINAL_PROMPT", "0");
     for (key, value) in &options.env {
         command.env(key, value);
     }
-    let mut child = command.spawn().map_err(|error| {
+    let bound = signals::child::Bound {
+        timeout: Some(GIT_TIMEOUT),
+        stop: signals::child::Stop {
+            group: false,
+            term_grace: Some(KILL_GRACE),
+        },
+        keep: None,
+    };
+    command.stdout(Stdio::piped()).stderr(Stdio::piped());
+    let output = signals::child::run(&mut command, options.input.as_deref(), bound).map_err(|error| {
         if error.kind() == std::io::ErrorKind::NotFound {
             WorktreeError::fallback("worktree=True needs Git, and `git` is not installed or not on PATH")
         } else {
             WorktreeError::new(error.to_string())
         }
     })?;
-    if let (Some(input), Some(mut stdin)) = (options.input, child.stdin.take()) {
-        std::thread::spawn(move || {
-            let _ = stdin.write_all(&input);
-        });
-    }
-    let pid = child.id();
-    let (done, finished) = std::sync::mpsc::channel::<()>();
-    std::thread::spawn(move || {
-        if finished.recv_timeout(GIT_TIMEOUT).is_err()
-            && let Some(pid) = rustix::process::Pid::from_raw(pid as i32)
-        {
-            let _ = rustix::process::kill_process(pid, rustix::process::Signal::TERM);
-        }
-    });
-    let mut stderr_pipe = child.stderr.take();
-    let stderr_reader = std::thread::spawn(move || {
-        let mut bytes = Vec::new();
-        if let Some(pipe) = stderr_pipe.as_mut() {
-            let _ = pipe.read_to_end(&mut bytes);
-        }
-        bytes
-    });
-    let mut stdout = Vec::new();
-    if let Some(mut pipe) = child.stdout.take() {
-        let _ = pipe.read_to_end(&mut stdout);
-    }
-    let status = child.wait()?;
-    let _ = done.send(());
-    let mut stderr = String::from_utf8_lossy(&stderr_reader.join().unwrap_or_default()).into_owned();
+    let mut stderr = String::from_utf8_lossy(&output.stderr).into_owned();
     stderr.truncate(stderr.floor_char_boundary(100_000.min(stderr.len())));
     Ok(GitResult {
-        code: status.code().unwrap_or(1),
-        stdout: String::from_utf8_lossy(&stdout).into_owned(),
+        code: output.code().unwrap_or(1),
+        stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
         stderr,
     })
 }
@@ -433,7 +404,7 @@ pub fn snapshot_working_tree(top: &Path, head: &str, message: &str) -> Result<(S
 }
 
 fn records_dir(common_dir: &Path) -> PathBuf {
-    common_dir.join(WORKTREES_DIR)
+    common_dir.join(kernel::env::WORKTREES_DIR)
 }
 
 fn record_path(record: &WorktreeRecord) -> PathBuf {
@@ -892,7 +863,7 @@ pub fn run_setup_command(record: &WorktreeRecord, signal: Option<&Signal>) -> Re
         )),
         stop: signals::child::Stop {
             group: true,
-            term_grace: Some(Duration::from_secs(5)),
+            term_grace: Some(KILL_GRACE),
         },
         keep: None,
     };

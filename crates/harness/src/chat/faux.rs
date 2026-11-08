@@ -1,4 +1,4 @@
-//! A scripted provider (port of pi-ai `providers/faux.ts`) for tests and offline runs: queued responses (fixed
+//! A scripted provider (port of pi-ai `providers/faux.ts`) for tests: queued responses (fixed
 //! messages or functions of the request), streamed in token-sized deltas, optionally paced, with the faux usage
 //! estimate, deferred responses, and abort handling.
 

@@ -13,16 +13,16 @@ ai = { path = "../ai" }
 compaction = { path = "../compaction" }
 config = { path = "../config" }
 delegation = { path = "../delegation" }
+diagram = { path = "../diagram" }
 durable = { path = "../durable" }
 harness = { path = "../harness" }
 hindsight = { path = "../hindsight" }
-indexmap = "=2.14.2"
 host = { path = "../host" }
+indexmap = "=2.14.2"
 inference = { path = "../inference" }
 jsonschema = { path = "../jsonschema" }
 jsrt = { path = "../jsrt" }
 kernel = { path = "../kernel" }
-diagram = { path = "../diagram" }
 kernel-apis = { path = "../kernel-apis" }
 lanes = { path = "../lanes" }
 loki = { path = "../loki" }
@@ -32,17 +32,19 @@ protocol = { path = "../protocol" }
 regex = "=1.13.1"
 resources = { path = "../resources" }
 sandbox = { path = "../sandbox" }
+serde_json = { version = "=1.0.151", features = ["preserve_order"] }
+services = { path = "../services" }
 session-file = { path = "../session-file" }
 session-journal = { path = "../session-journal" }
-services = { path = "../services" }
-serde_json = { version = "=1.0.151", features = ["preserve_order"] }
 tokio = { version = "=1.53.2", features = ["rt", "time"] }
+usage = { path = "../usage" }
 
 [lints]
 workspace = true
 
 [dev-dependencies]
 base64 = "=0.23.1"
+harness = { path = "../harness", features = ["test-support"] }
 serde = { version = "=1.0.229", features = ["derive"] }
 tempfile = "=3.27.0"
 

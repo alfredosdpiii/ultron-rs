@@ -34,15 +34,11 @@ pub mod tree_memory;
 pub use continuity::{ContinuityPolicy, ContinuityReport, LostName};
 pub use process::{command_group_target, kill_command_group};
 pub use snapshot::{
-    RestoreReport, SnapshotAuthError, SnapshotReport, load_or_create_snapshot_key, process_snapshot_key, sign_snapshot,
-    verify_snapshot,
+    RestoreReport, SnapshotReport, load_or_create_snapshot_key, process_snapshot_key, sign_snapshot, verify_snapshot,
 };
 pub use tree_memory::TreeMemoryBackend;
 
-pub use config::{
-    DEFAULT_KERNEL_LIMITS, KernelResourceLimits, LimitOverrides, kernel_environment, kernel_resource_limits,
-    rlm_output_budget,
-};
+pub use config::{KernelResourceLimits, LimitOverrides, kernel_environment, kernel_resource_limits, rlm_output_budget};
 
 /// The root agent's lane; every other lane is a child's (the session journal's `session_journal::run::MAIN_LANE`).
 pub const ROOT_LANE: &str = "main";
@@ -209,28 +205,41 @@ impl Signal {
     /// Runs `listener` once, on abort (on the aborting thread); None (and `listener` is dropped) when already
     /// aborted. [`Signal::forget`] removes it.
     pub fn on_abort(&self, listener: impl FnOnce(String) + Send + 'static) -> Option<u64> {
-        self.listen(Box::new(listener))
+        self.listen(Box::new(listener)).ok()
     }
 
     pub fn forget(&self, id: u64) {
-        self.unlisten(id);
+        jsrt::sync::lock(&self.inner.0)
+            .listeners
+            .retain(|(listener, _)| *listener != id);
     }
 
-    fn listen(&self, listener: Listener) -> Option<u64> {
+    /// Runs `listener` once on abort, or at once (on this thread) with the reason when already aborted, until the
+    /// returned guard drops.
+    pub fn link(&self, listener: impl FnOnce(String) + Send + 'static) -> Link {
+        let id = match self.listen(Box::new(listener)) {
+            Ok(id) => Some(id),
+            Err((listener, reason)) => {
+                listener(reason);
+                None
+            }
+        };
+        Link {
+            signal: self.clone(),
+            id,
+        }
+    }
+
+    /// Adds `listener`; it comes back with the reason when already aborted.
+    fn listen(&self, listener: Listener) -> Result<u64, (Listener, String)> {
         let mut state = jsrt::sync::lock(&self.inner.0);
-        if state.reason.is_some() {
-            return None;
+        if let Some(reason) = state.reason.clone() {
+            return Err((listener, reason));
         }
         state.next += 1;
         let id = state.next;
         state.listeners.push((id, listener));
-        Some(id)
-    }
-
-    fn unlisten(&self, id: u64) {
-        jsrt::sync::lock(&self.inner.0)
-            .listeners
-            .retain(|(listener, _)| *listener != id);
+        Ok(id)
     }
 
     /// [`signals::child::run`], cancelled when this signal aborts (at once when it already has).
@@ -242,15 +251,22 @@ impl Signal {
     ) -> std::io::Result<signals::child::Output> {
         let running = signals::child::start(command, input, bound)?;
         let watched = running.watched().clone();
-        let listener = self.on_abort(move |_| watched.cancel());
-        if listener.is_none() {
-            running.watched().cancel();
+        let _link = self.link(move |_| watched.cancel());
+        Ok(running.finish())
+    }
+}
+
+/// A [`Signal::link`] listener, removed when this drops.
+pub struct Link {
+    signal: Signal,
+    id: Option<u64>,
+}
+
+impl Drop for Link {
+    fn drop(&mut self) {
+        if let Some(id) = self.id {
+            self.signal.forget(id);
         }
-        let output = running.finish();
-        if let Some(id) = listener {
-            self.forget(id);
-        }
-        Ok(output)
     }
 }
 
@@ -913,22 +929,16 @@ impl Shared {
             .and_then(Value::as_str)
             .unwrap_or_default()
             .to_string();
-        let listener = signal.map(|signal| {
+        let link = signal.map(|signal| {
             let shared: Weak<Self> = Arc::downgrade(self);
-            let id = signal.listen(Box::new(move |reason| {
+            signal.link(move |reason| {
                 if let Some(shared) = shared.upgrade() {
                     shared.abort_op(op, reason);
                 }
-            }));
-            if id.is_none() {
-                self.abort_op(op, signal.reason().unwrap_or_default());
-            }
-            (signal, id)
+            })
         });
         let mut result = self.run(op, frame);
-        if let Some((signal, Some(id))) = listener {
-            signal.unlisten(id);
-        }
+        drop(link);
         let mut state = jsrt::sync::lock(&self.state);
         let recovery = state.ops.remove(&op).and_then(|entry| entry.recovery);
         if state.queue.front() == Some(&op) {
@@ -1819,7 +1829,7 @@ impl Shared {
             ""
         };
         let how = match (signal, code) {
-            (Some(signal), _) => process::signal_name(signal),
+            (Some(signal), _) => jsrt::process::signal_name(signal),
             (None, Some(code)) => code.to_string(),
             (None, None) => "unknown".into(),
         };

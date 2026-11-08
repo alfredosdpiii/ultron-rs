@@ -275,7 +275,7 @@ fn publish_ends(
     for mut event in ends {
         if event.root_id.is_none() {
             event.root_id = if event.kind == "child_done" {
-                children.usage_root_of_lane(&format!("{}{}", crate::subagents::LANE_PREFIX, event.id), agents)
+                children.usage_root_of_lane(&lanes::lane_names::child_lane(&event.id), agents)
             } else {
                 None
             }

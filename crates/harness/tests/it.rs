@@ -23,8 +23,6 @@ mod chat_submissions;
 mod chat_swarm;
 #[path = "child_compaction.rs"]
 mod child_compaction;
-#[path = "reducer_fixture.rs"]
-mod reducer_fixture;
 #[path = "scheduler_failure.rs"]
 mod scheduler_failure;
 #[path = "scheduler_ownership.rs"]

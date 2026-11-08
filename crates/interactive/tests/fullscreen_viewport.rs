@@ -49,6 +49,7 @@ fn app_with(turns: usize, qol: QolSettings) -> (App, Rc<Sent>) {
         provider: "anthropic".into(),
         id: "a".into(),
         name: "Model a".into(),
+        api: String::new(),
         reasoning: false,
         context_window: 1000,
         thinking_levels: Vec::new(),

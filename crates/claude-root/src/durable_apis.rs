@@ -27,23 +27,20 @@
 //! - Typed agents' `rlm` lanes run here too, as agent child conversations (crate::typed_agents).
 
 use crate::root_sink::RootSink;
-use ai::AssistantMessage;
 use ai::retry::RetryPolicy;
 use durable::{ConversationId, ROOT_CONVERSATION_ID};
-use harness::chat::{AgentChange, ChatHarness, ChatOptions, CompactionPolicy, ModelRef, Settings};
-use harness::scheduler::Registry;
+use harness::chat::{AgentChange, ChatHarness, ModelRef, Settings};
 use serde_json::{Map, Value, json};
-use session_core::compose::Runtime;
+use session_core::compose::{Runtime, Stack};
+use session_core::core::durable_turns::{ChildTurns, child_chat_options};
 use session_core::durable_store::SharedSession;
 use session_core::lane::Lane;
+use session_core::request_keys::Keys;
 use session_core::subagents::{CONVERSATION_LANE_PREFIX, DurableChildren};
 use session_core::swarm_ops::SwarmOps;
-use session_core::turns::{Bridge, TurnCells, TurnModels};
+use session_core::turns::Bridge;
 use session_journal::run::MAIN_LANE;
 use std::sync::Arc;
-
-/// Generation partials are not committed (as the native runtime: nothing shows a child's stream).
-const NO_PARTIALS_MS: u64 = 365 * 24 * 3600 * 1000;
 
 /// Whether `payload` of an `rlm.spawn` asks for a persistent child.
 pub fn is_keep_spawn(kind: &str, payload: &Map<String, Value>) -> bool {
@@ -97,102 +94,28 @@ pub fn open(
     // Nothing reaches an actor: the root conversation never runs, and children's requests never use the bridge.
     let bridge = Bridge::new(Arc::new(|_| {}));
     let provider = Arc::new(session_core::lane::Provider::new().with_live_settings(runtime.config.settings_reader()));
-    let stream_provider = provider.clone();
-    let retry = runtime.config.settings["retry"].clone();
-    let settings: harness::chat::SettingsSource = Arc::new(move || Settings {
-        stream: stream_provider
-            .stream_options()
-            .and_then(|options| options.as_object().cloned())
-            .unwrap_or_default(),
-        retry: RetryPolicy::from_settings(&retry, true),
-        compaction: CompactionPolicy {
-            enabled: false,
-            ..CompactionPolicy::default()
-        },
-        partial_interval_ms: NO_PARTIALS_MS,
-        follow_up_after_steer: true,
-        ..Settings::default()
-    });
-    let (catalog_env, key_env) = (env.clone(), env.clone());
+    let retry = RetryPolicy::from_settings(&runtime.config.settings["retry"], true);
     // Requests of no conversation carry this provider session: every request is a child's.
     let root_session = Arc::new(std::sync::OnceLock::new());
     let _ = root_session.set(format!("ultron-claude-root-{}", jsrt::random::random_hex(8)));
-    let (charged, charge_stack) = (children.clone(), stack.clone());
-    let budget = runtime.config.context_images;
-    let models = TurnModels {
-        bridge: bridge.clone(),
-        provider: provider as Arc<dyn agent::StreamFn>,
-        resolve: Arc::new(move |provider, id| session_core::lane::catalog_model(provider, id, &catalog_env).ok()),
-        api_key: Arc::new(move |provider| {
-            session_core::lane::api_key(&session_core::ModelFlags::default(), &key_env, provider)
-        }),
-        root_session,
-        // Each response is charged to the ledger when it arrives, to the root its conversation belongs to (the
-        // ledger's default root for a persistent child), as the native runtime's `charge_turns`.
-        charge: Some(Arc::new(
-            move |conversation: ConversationId, message: &AssistantMessage| {
-                let root = charged.usage_root(conversation, &charge_stack.agents);
-                let usage = serde_json::to_value(&message.usage).unwrap_or(Value::Null);
-                let _ = charge_stack.usage.record_turn(
-                    root.as_deref(),
-                    usage["totalTokens"].as_f64(),
-                    usage["cost"]["total"].as_f64(),
-                );
-            },
-        )),
-        transform_child: Some(Arc::new(move |_, messages: &mut Vec<ai::Message>| {
-            session_core::view_images::apply_image_budget(messages, budget);
-        })),
-        trace: session_core::request_trace::RequestTrace::from_env(&*env.var)
-            .map(|trace| (trace, session_core::durable_store::lock(session).id().to_string())),
-    };
-    let cells = TurnCells {
-        bridge,
-        tool: lane.tool.clone(),
-        progress: stack.cell_progress.clone(),
-        stack: stack.clone(),
-        children: children.clone(),
-    };
-    // A child conversation's system prompt is a subagent's.
-    let (section_children, section_stack) = (children.clone(), stack.clone());
-    let sections: harness::chat::SectionSource = Arc::new(move |conversation, _| {
-        let mut sections = indexmap::IndexMap::new();
-        if conversation != ROOT_CONVERSATION_ID {
-            let system = section_children
-                .lane_of(conversation)
-                .and_then(|lane| section_children.system_of(&lane))
-                .unwrap_or_else(|| section_stack.child_system());
-            sections.insert("system".to_string(), system);
-        }
-        Ok(sections)
-    });
-    let mut options = ChatOptions::new(Registry::new(), Arc::new(models), Arc::new(cells));
-    options.settings = Some(settings);
-    options.sections = Some(sections);
-    // The session's per-root limits on every child run (session_core::core::budget_gate).
-    let (root_children, root_stack) = (children.clone(), stack.clone());
-    let gate = session_core::core::budget_gate::BudgetGate::new(
-        stack.usage.clone(),
-        stack.stats.clone(),
-        Arc::new(move |conversation| {
-            if conversation == ROOT_CONVERSATION_ID {
-                root_children.current_root()
-            } else {
-                root_children.usage_root(conversation, &root_stack.agents)
-            }
-        }),
+    let options = child_chat_options(
+        session,
+        lane,
+        &children,
+        env,
+        ChildTurns {
+            bridge,
+            provider,
+            keys: Keys::session(None, "", env),
+            root_session,
+            live: Arc::new(move |settings: &mut Settings| settings.retry = retry),
+            charged: None,
+            transform: None,
+            image_budget: runtime.config.context_images,
+            // A child conversation's system prompt is a subagent's.
+            fallback_system: Stack::child_system,
+        },
     );
-    let request_gate = gate.clone();
-    options.hooks.gate_request = Some(Arc::new(move |run| request_gate.before_request(run)));
-    options.hooks.gate_tool = Some(Arc::new(move |run, call| gate.before_tool(run, call)));
-    // A child conversation compacts at its threshold, as in a native session.
-    options.hooks.compaction = Some(Arc::new(|conversation| {
-        Some(CompactionPolicy {
-            enabled: conversation != ROOT_CONVERSATION_ID,
-            background_tokens: 0,
-            ..CompactionPolicy::default()
-        })
-    }));
     let chat = ChatHarness::open(storage, options).map_err(|e| e.to_string())?;
     let root = chat.root(None).map_err(|e| e.to_string())?;
     // A persistent child spawned without `model=` runs on its parent conversation's model.

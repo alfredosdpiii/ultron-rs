@@ -48,7 +48,7 @@ pub fn backend_error(model: &Model, overrides: &[&str]) -> String {
 /// The route of a request: `None` leaves it to `claude -p` (another API, no tools, or an id the subscription does
 /// not serve). `env` is the environment the subscription would run in, read only for a request with tools.
 pub fn route(model: &Model, context: &TranscriptContext, env: impl FnOnce() -> Env) -> Option<Route> {
-    if model.api != "claude-code-cli" || current_tools(&context.messages).is_empty() {
+    if model.api != crate::claude_code::API || current_tools(&context.messages).is_empty() {
         return None;
     }
     let overrides = process::conflicts(&env());

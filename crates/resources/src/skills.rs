@@ -204,14 +204,16 @@ fn load_dir_with(dir: &str, source: &str, include_root_files: bool, ig: &mut Ign
 pub struct LoadSkillsOptions<'a> {
     pub cwd: &'a str,
     pub agent_dir: &'a str,
+    /// What a leading `~` names.
+    pub home: &'a str,
     pub skill_paths: &'a [String],
     pub include_defaults: bool,
 }
 
 /// Load skills from the agent dir, the project's `.pi/skills` and explicit paths; first name wins.
 pub fn load_skills(options: &LoadSkillsOptions) -> LoadSkillsResult {
-    let cwd = resolve_path(options.cwd, "/", false);
-    let agent_dir = resolve_path(options.agent_dir, &cwd, false);
+    let cwd = resolve_path(options.cwd, "/", options.home, false);
+    let agent_dir = resolve_path(options.agent_dir, &cwd, options.home, false);
     let user_dir = jsrt::path::join(&[&agent_dir, "skills"]);
     let project_dir = resolve(&cwd, &format!("{}/skills", config::paths::CONFIG_DIR_NAME));
 
@@ -246,7 +248,7 @@ pub fn load_skills(options: &LoadSkillsOptions) -> LoadSkillsResult {
     }
     let under = |target: &str, root: &str| target == root || target.starts_with(&format!("{root}/"));
     for raw in options.skill_paths {
-        let path = resolve_path(raw, &cwd, true);
+        let path = resolve_path(raw, &cwd, options.home, true);
         let Ok(meta) = fs::metadata(&path) else {
             diagnostics.push(Diagnostic::warning("skill path does not exist", Some(&path)));
             continue;

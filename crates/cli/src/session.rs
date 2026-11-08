@@ -17,11 +17,8 @@ pub fn session_directory(session_dir: Option<&str>, env: &Env) -> PathBuf {
 }
 
 pub fn session_directory_of(session_dir: Option<&str>, env: &Env, instance: &daemon::instance::Instance) -> PathBuf {
-    let dir = session_dir
-        .map(str::to_string)
-        .or_else(|| (env.var)(config::paths::ENV_SESSION_DIR))
-        .unwrap_or_else(|| instance.default_session_dir(&env.agent_dir()).display().to_string());
-    resolve(&env.cwd, &dir)
+    let default = instance.default_session_dir(&env.agent_dir());
+    config::paths::session_root(session_dir, &*env.var, &default, &env.cwd, &env.home)
 }
 
 /// Whether a session selector names a session file rather than an id (`sessionIdFromSelector`): it has a path

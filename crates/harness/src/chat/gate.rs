@@ -42,9 +42,9 @@ pub struct ToolBlock {
 }
 
 /// `before_request` (step `assistant`) of one run.
-pub type GateRequest = Arc<dyn Fn(&GateRun) -> RequestGate + Send + Sync>;
+pub(crate) type GateRequest = Arc<dyn Fn(&GateRun) -> RequestGate + Send + Sync>;
 /// `before_tool` of one cell of a run.
-pub type GateTool = Arc<dyn Fn(&GateRun, &CellCall) -> Option<ToolBlock> + Send + Sync>;
+pub(crate) type GateTool = Arc<dyn Fn(&GateRun, &CellCall) -> Option<ToolBlock> + Send + Sync>;
 
 /// The run `conversation_id` is in, as the gates see it.
 pub(crate) fn gate_run(tx: &mut Tx<'_>, conversation_id: ConversationId) -> Result<GateRun> {
@@ -59,7 +59,7 @@ pub(crate) fn gate_run(tx: &mut Tx<'_>, conversation_id: ConversationId) -> Resu
     })
 }
 
-pub const FINAL_TOOL_CHOICE: &str = "none";
+pub(crate) const FINAL_TOOL_CHOICE: &str = "none";
 
 /// Apply a final request's gate to what a provider is sent: tool choice `none`, and the note as a user message
 /// after the context (`createCustomMessage(...)` as the model sees it: a user message with one text block).

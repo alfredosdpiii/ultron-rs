@@ -7,9 +7,9 @@ use jsrt::sync;
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Write};
 use std::net::{TcpListener, TcpStream};
-use std::sync::mpsc::{Receiver, Sender, channel};
+use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender, channel};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use url::Url;
 
 /// What the browser's redirect delivered.
@@ -77,22 +77,20 @@ impl CallbackServer {
         Ok(server)
     }
 
-    /// Waits for the callback with `state`; the receiver yields its code, or why not.
-    pub fn wait_for_callback(&self, state: &str) -> Result<Receiver<Result<Callback, OAuthError>>, OAuthError> {
+    /// Waits for the callback with `state` from now on, for at most the server's timeout.
+    pub fn wait_for_callback(&self, state: &str) -> Result<PendingCallback, OAuthError> {
         let mut pending = sync::lock(&self.pending);
         if pending.contains_key(state) {
             return Err(OAuthError::Other("OAuth state is already pending".into()));
         }
         let (tx, rx) = channel();
-        pending.insert(state.to_string(), tx.clone());
-        let (pending, state, timeout) = (self.pending.clone(), state.to_string(), self.timeout);
-        std::thread::spawn(move || {
-            std::thread::sleep(timeout);
-            if let Some(tx) = sync::lock(&pending).remove(&state) {
-                let _ = tx.send(Err(OAuthError::Other("OAuth callback timed out".into())));
-            }
-        });
-        Ok(rx)
+        pending.insert(state.to_string(), tx);
+        Ok(PendingCallback {
+            rx,
+            pending: self.pending.clone(),
+            state: state.to_string(),
+            deadline: Instant::now() + self.timeout,
+        })
     }
 
     pub fn close(&self) {
@@ -102,6 +100,35 @@ impl CallbackServer {
         }
         // Wakes the accept loop so it sees the close.
         let _ = TcpStream::connect(self.address);
+    }
+}
+
+/// A sign-in waiting for its callback ([`CallbackServer::wait_for_callback`]).
+pub struct PendingCallback {
+    rx: Receiver<Result<Callback, OAuthError>>,
+    pending: Arc<Mutex<Pending>>,
+    state: String,
+    deadline: Instant,
+}
+
+impl PendingCallback {
+    /// Blocks until the callback came (its code, or why not), the server closed, or the timeout passed.
+    pub fn recv(&self) -> Result<Callback, OAuthError> {
+        let closed = || OAuthError::Other("OAuth callback server closed".into());
+        match self
+            .rx
+            .recv_timeout(self.deadline.saturating_duration_since(Instant::now()))
+        {
+            Ok(outcome) => outcome,
+            Err(RecvTimeoutError::Disconnected) => Err(closed()),
+            Err(RecvTimeoutError::Timeout) => {
+                if sync::lock(&self.pending).remove(&self.state).is_some() {
+                    return Err(OAuthError::Other("OAuth callback timed out".into()));
+                }
+                // The callback took the state just now.
+                self.rx.recv().unwrap_or_else(|_| Err(closed()))
+            }
+        }
     }
 }
 

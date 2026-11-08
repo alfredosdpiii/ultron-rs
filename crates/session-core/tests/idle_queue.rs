@@ -136,3 +136,20 @@ fn session_core_idle_queue_mixes_one_at_a_time_steering_with_all_follow_ups() {
 fn session_core_idle_queue_places_a_lone_follow_up_before_the_prompt() {
     replay(&fixture()["scenarios"][3]);
 }
+
+/// A session whose settings name no queue modes delivers every queued message at once, as the TypeScript durable
+/// harness does (harness.ts `steeringMode ?? "all"`), and `/settings` shows the same value unset.
+#[test]
+fn session_core_queue_modes_default_to_all() {
+    assert_eq!(config::keys::QUEUE_DEFAULT, "all");
+    let home = Home::new(None);
+    let w = home.open(in_order(Vec::new()), &[], None);
+    let state = w.call(Op::State).unwrap().unwrap();
+    assert_eq!(
+        (&state["steeringMode"], &state["followUpMode"]),
+        (&json!("all"), &json!("all"))
+    );
+    assert_eq!(session_journal::run::default_settings()["steeringMode"], "all");
+    assert_eq!(session_journal::run::default_settings()["followUpMode"], "all");
+    w.close();
+}

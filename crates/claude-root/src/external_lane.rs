@@ -13,7 +13,7 @@ use jsrt::sync;
 use kernel_apis::TaskHost;
 use kernel_apis::context_control::ContextBranches;
 use serde_json::{Value, json};
-use session_core::async_events::{RuntimeEvent, runtime_event_text_with};
+use session_core::async_events::{RuntimeEvent, runtime_event_text};
 use session_core::compose::Stack;
 use session_core::durable_store::SharedSession;
 use session_core::lane::Lane;
@@ -191,7 +191,7 @@ pub fn wire(lane: &Lane, session: SharedSession, host: &LaneRootHost, sink: Arc<
             return;
         }
         let Some(event) = end.event() else { return };
-        jobs.publish(runtime_event_text_with(
+        jobs.publish(runtime_event_text(
             &[RuntimeEvent {
                 kind: event["kind"].as_str().unwrap_or("job_done").into(),
                 id: end.record.id.clone(),
@@ -214,7 +214,7 @@ pub fn wire(lane: &Lane, session: SharedSession, host: &LaneRootHost, sink: Arc<
             let Some((id, status, summary, fetch)) = kernel_apis::tool_calls::tool_event(&end) else {
                 return;
             };
-            tools.publish(runtime_event_text_with(
+            tools.publish(runtime_event_text(
                 &[RuntimeEvent {
                     kind: "tool_done".into(),
                     id,

@@ -7,7 +7,7 @@
 //! process group; nothing here signals a group).
 
 use serde_json::Value;
-use std::path::{Component, Path, PathBuf};
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::Duration;
 
@@ -18,8 +18,6 @@ const OFF_VALUES: [&str; 5] = ["off", "0", "false", "no", "none"];
 const COMMIT_MESSAGE: &str = "Add Loki guardrails";
 const GIT_TIMEOUT_MS: u64 = 10_000;
 const COMMIT_TIMEOUT_MS: u64 = 30_000;
-/// A sub-agent's worktree lives under this directory (worktrees.ts `WORKTREES_DIR`).
-const WORKTREES_DIR: &str = "ultron-worktrees";
 
 /// The variables git sees: what it, its hooks and a signer need, read from the session's environment.
 const GIT_VARIABLES: [&str; 22] = [
@@ -174,31 +172,18 @@ fn auto_commit(context: &SetupContext<'_>) -> bool {
     }
 }
 
-/// `path.resolve`: absolute, `.` and `..` folded, no symlinks followed.
-fn resolve(base: &Path, path: &Path) -> PathBuf {
-    let mut out = PathBuf::from("/");
-    for component in base.join(path).components() {
-        match component {
-            Component::ParentDir => {
-                out.pop();
-            }
-            Component::Normal(part) => out.push(part),
-            _ => {}
-        }
-    }
-    out
-}
-
 /// `gitRoot`: the Git work tree containing `cwd`, or none outside one.
 pub fn git_root(context: &SetupContext<'_>, cwd: &Path) -> Option<PathBuf> {
     let result = context.git(cwd, &["rev-parse", "--show-toplevel"], GIT_TIMEOUT_MS, &[]);
     let root = result.stdout.trim();
-    (result.status == Some(0) && !root.is_empty()).then(|| resolve(cwd, Path::new(root)))
+    (result.status == Some(0) && !root.is_empty()).then(|| crate::abspath(cwd, Path::new(root)))
 }
 
 fn is_ultron_worktree(context: &SetupContext<'_>, path: &Path) -> bool {
     context.trimmed(kernel::env::WORKTREE_ENV).is_some()
-        || path.components().any(|part| part.as_os_str() == WORKTREES_DIR)
+        || path
+            .components()
+            .any(|part| part.as_os_str() == kernel::env::WORKTREES_DIR)
 }
 
 fn expand_home(path: &str, home: &Path) -> PathBuf {
@@ -215,33 +200,21 @@ fn writable(path: &Path) -> bool {
     rustix::fs::access(path, rustix::fs::Access::WRITE_OK).is_ok()
 }
 
-/// `autoInitEligibility`: the repository root `.loki/` may be created in, or why not.
-fn auto_init_eligibility(context: &SetupContext<'_>) -> Result<PathBuf, String> {
-    if !auto_init(context) {
-        return Err(if context.trimmed(LOKI_AUTOINIT_ENV).is_some() {
-            "auto-install is off (ULTRON_LOKI_AUTOINIT)".into()
-        } else {
-            "auto-install is off (loki.autoInit setting)".into()
-        });
+/// `autoInitEligibility`: the repository root `.loki/` may be created in, if any.
+fn auto_init_eligibility(context: &SetupContext<'_>) -> Option<PathBuf> {
+    if !auto_init(context) || context.trimmed("CI").is_some() {
+        return None;
     }
-    if context.trimmed("CI").is_some() {
-        return Err("CI is set".into());
-    }
-    let Some(root) = git_root(context, context.cwd) else {
-        return Err("not a Git repository".into());
-    };
+    let root = git_root(context, context.cwd)?;
     if is_ultron_worktree(context, &root) {
-        return Err("this is an Ultron sub-agent worktree".into());
+        return None;
     }
-    let home = resolve(context.cwd, context.home);
-    if root == home {
-        return Err("the repository root is the home directory".into());
-    }
-    if root.parent().is_none() {
-        return Err("the repository root is the filesystem root".into());
+    let home = crate::abspath(context.cwd, context.home);
+    if root == home || root.parent().is_none() {
+        return None;
     }
     if root.components().any(|part| part.as_os_str() == "node_modules") {
-        return Err("the repository is inside node_modules".into());
+        return None;
     }
     let ignored = context
         .settings
@@ -250,14 +223,11 @@ fn auto_init_eligibility(context: &SetupContext<'_>) -> Result<PathBuf, String> 
         .into_iter()
         .flatten()
         .filter_map(Value::as_str)
-        .any(|path| resolve(context.cwd, &expand_home(path, &home)) == root);
-    if ignored {
-        return Err("the repository is listed in loki.ignoreRepos".into());
+        .any(|path| crate::abspath(context.cwd, expand_home(path, &home)) == root);
+    if ignored || !writable(&root) {
+        return None;
     }
-    if !writable(&root) {
-        return Err("the checkout is read-only".into());
-    }
-    Ok(root)
+    Some(root)
 }
 
 /// Git operations whose state files mean a commit now would be part of them.
@@ -270,7 +240,8 @@ const IN_PROGRESS: [(&str, &str); 6] = [
     ("BISECT_LOG", "a bisect is in progress"),
 ];
 
-/// `autoCommitSkipReason`: why `.loki/` must not be committed now, or none when it may be.
+/// `autoCommitSkipReason`: why `.loki/` must not be committed now, or none when it may be. Runs only after
+/// [`auto_init_eligibility`], which already refused CI and sub-agent worktrees.
 fn auto_commit_skip_reason(context: &SetupContext<'_>, root: &Path) -> Option<String> {
     if !auto_commit(context) {
         return Some(if context.trimmed(LOKI_AUTOCOMMIT_ENV).is_some() {
@@ -279,18 +250,12 @@ fn auto_commit_skip_reason(context: &SetupContext<'_>, root: &Path) -> Option<St
             "auto-commit is off (loki.autoCommit setting)".into()
         });
     }
-    if context.trimmed("CI").is_some() {
-        return Some("CI is set".into());
-    }
-    if is_ultron_worktree(context, root) {
-        return Some("this is an Ultron sub-agent worktree".into());
-    }
     for (name, reason) in IN_PROGRESS {
         let path = context.git(root, &["rev-parse", "--git-path", name], GIT_TIMEOUT_MS, &[]);
         if path.status != Some(0) {
             return Some("Git state could not be read".into());
         }
-        if resolve(root, Path::new(path.stdout.trim())).exists() {
+        if crate::abspath(root, Path::new(path.stdout.trim())).exists() {
             return Some(reason.into());
         }
     }
@@ -366,11 +331,11 @@ pub fn commit_loki(context: &SetupContext<'_>, root: &Path, timeout_ms: Option<u
 /// where [`auto_init_eligibility`] allows it; then the note says it could not, that it is not committed and why,
 /// or that the commit follows ([`Setup::Commit`]).
 pub fn setup(context: &SetupContext<'_>) -> Setup {
-    let root = git_root(context, context.cwd).unwrap_or_else(|| resolve(Path::new("/"), context.cwd));
+    let root = git_root(context, context.cwd).unwrap_or_else(|| crate::abspath(Path::new("/"), context.cwd));
     if root.join(".loki").join("loki.py").is_file() {
         return Setup::Quiet;
     }
-    let Ok(eligible) = auto_init_eligibility(context) else {
+    let Some(eligible) = auto_init_eligibility(context) else {
         return Setup::Quiet;
     };
     if let Err(error) = crate::scan::install_minimal_files(&eligible.display().to_string(), false) {

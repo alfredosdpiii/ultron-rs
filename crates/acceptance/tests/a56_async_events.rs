@@ -17,12 +17,13 @@ use std::time::Duration;
 #[test]
 fn acceptance_a56_event_text_is_one_bounded_escaped_line() {
     let summary = format!("a \"quoted\" <b>\n{}", "x".repeat(1000));
-    let line = session_core::compose::runtime_event_line(
+    let line = session_core::async_events::runtime_event_line(
         "job_done",
         "job-a",
         "completed",
         &summary,
         "await rlm.job(\"job-a\")",
+        &session_core::async_events::default_mask(),
     );
     let head =
         "<runtime_event kind=\"job_done\" id=\"job-a\" status=\"completed\" summary=\"a &quot;quoted&quot; &lt;b&gt; ";

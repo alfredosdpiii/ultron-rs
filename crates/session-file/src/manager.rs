@@ -70,7 +70,7 @@ pub struct NewSessionOptions {
 }
 
 /// `assertValidSessionId`: alphanumerics with interior `.`, `_`, `-`.
-pub fn assert_valid_session_id(id: &str) -> Result<(), Error> {
+fn assert_valid_session_id(id: &str) -> Result<(), Error> {
     let bytes = id.as_bytes();
     let edge_ok = |b: Option<&u8>| b.is_some_and(u8::is_ascii_alphanumeric);
     let valid = edge_ok(bytes.first())
@@ -180,12 +180,13 @@ impl SessionManager {
         options: Option<NewSessionOptions>,
         preloaded: Option<Vec<Value>>,
     ) -> Result<Self, Error> {
+        let (session_dir, cwd) = (normalize_path(&*env, session_dir), resolve_path(&*env, cwd));
         let mut manager = SessionManager {
             env,
             session_id: String::new(),
             session_file: None,
-            session_dir: normalize_path(session_dir),
-            cwd: resolve_path(cwd),
+            session_dir,
+            cwd,
             persist,
             flushed: false,
             file_entries: Vec::new(),
@@ -214,8 +215,8 @@ impl SessionManager {
         options: Option<NewSessionOptions>,
     ) -> Result<Self, Error> {
         let dir = match session_dir.filter(|d| !d.is_empty()) {
-            Some(dir) => normalize_path(dir),
-            None => file::default_session_dir(cwd, &env.agent_dir())?,
+            Some(dir) => normalize_path(&*env, dir),
+            None => file::default_session_dir(&*env, cwd, &env.agent_dir())?,
         };
         Self::construct(env, cwd, &dir, None, true, options, None)
     }
@@ -228,7 +229,7 @@ impl SessionManager {
         session_dir: Option<&str>,
         cwd_override: Option<&str>,
     ) -> Result<Self, Error> {
-        let resolved = resolve_path(path);
+        let resolved = resolve_path(&*env, path);
         let mut header = None;
         let mut preloaded = None;
         if cwd_override.is_none() && Path::new(&resolved).exists() {
@@ -237,20 +238,20 @@ impl SessionManager {
                 Err(HeaderScanError::Io(e)) => return Err(e.into()),
                 // The bounded scan only speeds up discovery; a full load stays authoritative.
                 Err(HeaderScanError::ScanLimit) => {
-                    let entries = load_entries_from_file(&resolved)?;
+                    let entries = load_entries_from_file(&*env, &resolved)?;
                     header = entries.first().filter(|e| entry_type(e) == Some("session")).cloned();
                     preloaded = Some(entries);
                 }
             }
         }
-        let process_cwd = std::env::current_dir()?.to_string_lossy().into_owned();
+        let process_cwd = env.cwd();
         let cwd = cwd_override
             .or_else(|| header.as_ref().and_then(header_cwd))
             .unwrap_or(&process_cwd)
             .to_string();
         let dir = session_dir
             .filter(|d| !d.is_empty())
-            .map_or_else(|| parent(&resolved), normalize_path);
+            .map_or_else(|| parent(&*env, &resolved), |dir| normalize_path(&*env, dir));
         Self::construct(env, &cwd, &dir, Some(&resolved), true, None, preloaded)
     }
 
@@ -272,9 +273,9 @@ impl SessionManager {
         session_dir: Option<&str>,
         options: Option<NewSessionOptions>,
     ) -> Result<Self, Error> {
-        let source = resolve_path(source_path);
-        let target = resolve_path(target_cwd);
-        let entries = load_entries_from_file(&source)?;
+        let source = resolve_path(&*env, source_path);
+        let target = resolve_path(&*env, target_cwd);
+        let entries = load_entries_from_file(&*env, &source)?;
         if entries.is_empty() {
             return invalid(format!(
                 "Cannot fork: source session file is empty or invalid: {source}"
@@ -284,8 +285,8 @@ impl SessionManager {
             return invalid(format!("Cannot fork: source session has no header: {source}"));
         }
         let dir = match session_dir.filter(|d| !d.is_empty()) {
-            Some(dir) => normalize_path(dir),
-            None => file::default_session_dir(&target, &env.agent_dir())?,
+            Some(dir) => normalize_path(&*env, dir),
+            None => file::default_session_dir(&*env, &target, &env.agent_dir())?,
         };
         fs::create_dir_all(&dir)?;
         let options = options.unwrap_or_default();
@@ -309,7 +310,7 @@ impl SessionManager {
     }
 
     fn set_session_file_with(&mut self, session_file: &str, preloaded: Option<Vec<Value>>) -> Result<(), Error> {
-        let path = resolve_path(session_file);
+        let path = resolve_path(&*self.env, session_file);
         self.session_file = Some(path.clone());
         if !Path::new(&path).exists() {
             self.new_session(None)?;
@@ -318,7 +319,7 @@ impl SessionManager {
         }
         let entries = match preloaded {
             Some(entries) => entries,
-            None => load_entries_from_file(&path)?,
+            None => load_entries_from_file(&*self.env, &path)?,
         };
         if entries.is_empty() {
             // An empty file gets a header; any other non-session content is left untouched.

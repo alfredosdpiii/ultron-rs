@@ -44,7 +44,7 @@ fn lane_publish_folds_like_a_full_change_and_keeps_the_transcript() {
     for event in events {
         lane.publish(event.clone());
         full.change(|state| {
-            harness::reducer::reduce_lane_snapshot(&mut state["snapshot"], &event);
+            protocol::watch::reducer::reduce_lane_snapshot(&mut state["snapshot"], &event);
             state["event"] = event.clone();
         });
         assert_eq!(lane.transcript.value(), full.value(), "after {}", event["type"]);

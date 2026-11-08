@@ -27,6 +27,7 @@ fn resources_skill_directories_honour_ignore_files_like_typescript() {
         let result = load_skills(&LoadSkillsOptions {
             cwd: &format!("{root}/proj"),
             agent_dir: &format!("{root}/agent"),
+            home: "/nonexistent-home",
             skill_paths: &paths,
             include_defaults: case["includeDefaults"].as_bool().unwrap(),
         });

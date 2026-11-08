@@ -77,10 +77,7 @@ fn session_core_schedules_and_goal_reach_every_lane_and_the_goal_admits_only_the
     assert_eq!(listed.trim(), "[]");
     assert_eq!(cell(&stack, "lane-x", "print(await goal.get())").trim(), "None");
     // The goal (its job cannot start without the session's runtime: the goal pauses).
-    stack
-        .goal
-        .command("Make the tests pass", &kernel::Signal::new())
-        .unwrap();
+    stack.goal.command("Make the tests pass").unwrap();
     let complete = "try:\n    await goal.complete(1, 'done', ['ok'])\nexcept Exception as e:\n    print(e)";
     assert_eq!(
         cell(&stack, "lane-x", complete).trim(),

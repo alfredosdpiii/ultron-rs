@@ -29,7 +29,7 @@ fn executable(path: &Path) -> bool {
 /// `getToolPath("fd")`: `<agentDir>/bin/fd` when it exists, else the first of `fd`, `fdfind` that the run's PATH
 /// can start (resolved to its path).
 pub fn fd_path(env: &Env) -> Option<PathBuf> {
-    let local = env.agent_dir().join("bin").join("fd");
+    let local = config::paths::AgentPaths::new(env.agent_dir()).bin_dir().join("fd");
     if local.exists() {
         return Some(local);
     }
@@ -132,7 +132,7 @@ pub fn download_fd(env: &Env, host: &str) -> Result<PathBuf, String> {
             std::env::consts::ARCH
         )
     })?;
-    let bin = env.agent_dir().join("bin");
+    let bin = config::paths::AgentPaths::new(env.agent_dir()).bin_dir();
     std::fs::create_dir_all(&bin).map_err(|e| e.to_string())?;
     let url = format!("{host}/{FD_REPO}/releases/download/v{version}/{asset}");
     let archive = bin.join(&asset);

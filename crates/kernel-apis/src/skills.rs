@@ -408,7 +408,7 @@ impl SkillsModule {
                     .cloned()
                     .ok_or_else(|| format!("Unknown skill decision: {id}"))
             }
-            "skills.invoke" => self.invoke(payload, caller, host, signal),
+            "skills.invoke" => self.invoke(payload, caller, host),
             "skills.propose_code" | "skills.propose_policy" | "skills.rollback" => {
                 self.change_code(kind, payload, caller, signal)
             }
@@ -436,13 +436,7 @@ impl SkillsModule {
     /// `invoke`: the pinned skill as an `rlm-child@1` task of the caller. Only definition, input and key reach the
     /// host: frontmatter never changes the child's model, tools or budget. Each invocation is journaled
     /// (`admitting`, then `spawned` with its task, or `failed` with the error).
-    fn invoke(
-        &self,
-        payload: &Map<String, Value>,
-        caller: Option<&str>,
-        host: &dyn TaskHost,
-        signal: &Signal,
-    ) -> Result<Value, String> {
+    fn invoke(&self, payload: &Map<String, Value>, caller: Option<&str>, host: &dyn TaskHost) -> Result<Value, String> {
         kernel::ops::fields("skills.invoke", payload)?;
         let name = jsrt::payload::nonempty_string(payload.get("name"), "name")?;
         let version = version_string(payload.get("version"))?;
@@ -491,7 +485,7 @@ impl SkillsModule {
             "input": {"prompt": invocation_prompt(skill, input)},
             "key": format!("skills.invoke:{id}"),
         });
-        let task_id = match host.spawn(&request, caller, signal) {
+        let task_id = match host.spawn(&request, caller) {
             Ok(task) => task["id"].as_str().unwrap_or_default().to_string(),
             Err(error) => {
                 record(json!({"state": "failed", "error": error}))?;

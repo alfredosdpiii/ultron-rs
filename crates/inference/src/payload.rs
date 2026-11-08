@@ -7,7 +7,7 @@ use serde_json::{Map, Value, json};
 /// `withContractSchema`: hand a frame's contract to a provider that enforces JSON schemas natively. Only the Claude
 /// Code CLI (`claude -p --json-schema`) takes it, through its payload's `json_schema`.
 pub fn with_contract_schema(mut payload: Value, contract: Option<&Value>, api: &str) -> Value {
-    if api != "claude-code-cli" {
+    if api != ai::claude_code::API {
         return payload;
     }
     if let (Some(contract), Value::Object(body)) = (contract, &mut payload) {

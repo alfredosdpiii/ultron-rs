@@ -63,6 +63,7 @@ fn model_info(m: &Value) -> ModelInfo {
         provider: m["provider"].as_str().unwrap().into(),
         id: m["id"].as_str().unwrap().into(),
         name: m["name"].as_str().unwrap().into(),
+        api: String::new(),
         reasoning: m["reasoning"] == true,
         context_window: m["contextWindow"].as_u64().unwrap(),
         thinking_levels: Vec::new(),

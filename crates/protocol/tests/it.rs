@@ -10,3 +10,5 @@ mod handshake;
 mod json;
 #[path = "ported.rs"]
 mod ported;
+#[path = "reducer_fixture.rs"]
+mod reducer_fixture;

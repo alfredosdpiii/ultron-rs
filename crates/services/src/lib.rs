@@ -23,5 +23,5 @@ pub use gates::ReleaseGateModule;
 pub use local::{
     Branch, BranchSource, LocalOptions, LocalServices, LocalServicesModule, instruction_hook, refinement_view,
 };
-pub use session_values::{SessionDocument, SessionKeyed, SessionValues};
-pub use validation::{validate_refinement_content, worker_validator};
+pub use session_values::{SessionDocument, SessionValues};
+pub use validation::validate_refinement_content;

@@ -1,10 +1,8 @@
 //! Literal expectations for the JavaScript semantics and helpers the ported subcommands print with (values checked
-//! against Node: `String.prototype.replace`, `JSON.stringify(v, null, "\t")`),
-//! and the ported `session-stats.test.ts` cases for cell APIs and steers.
+//! against Node: `String.prototype.replace`, `JSON.stringify(v, null, "\t")`).
 
 use cli::js::replace_first;
 use serde_json::json;
-use session_core::session_stats::{cell_apis, classify_nudge};
 
 #[test]
 fn cli_js_replace_first_expands_dollar_patterns() {
@@ -14,53 +12,6 @@ fn cli_js_replace_first_expands_dollar_patterns() {
         "a[{{X}}|a|b{{X}}|$|$1]b{{X}}"
     );
     assert_eq!(replace_first("abc", "z", "$&"), "abc");
-}
-
-#[test]
-fn cli_usage_cell_apis_match_session_stats_test() {
-    assert_eq!(
-        cell_apis("out = await bash(\"ls\")\ntext = await read ( \"a\" )\nobj.read(1)\nx.bash(2)"),
-        ["bash", "read"]
-    );
-    assert_eq!(
-        cell_apis("await rlm.map(f, xs)\nmyrlm.infer(1)\nawait agents.invoke(x)"),
-        ["rlm.map", "agents.*"]
-    );
-    assert_eq!(cell_apis("def f():\n    return view_image('a.png')"), ["view_image"]);
-    assert_eq!(cell_apis("bashful()\nreader(x)\nwrite_file()"), Vec::<&str>::new());
-    assert_eq!(
-        cell_apis("await background.start(...)\nworkflows.run(w)\nmcp.call(t)\ntools.call(t)\nrlm.merge([w])"),
-        [
-            "rlm.merge",
-            "mcp.call",
-            "tools.call",
-            "workflows.run",
-            "background.start",
-        ]
-    );
-}
-
-#[test]
-fn cli_usage_classify_nudge_matches_session_stats_test() {
-    assert_eq!(
-        classify_nudge("[Ultron] 5 tool rounds in a row succeeded. Save a skill."),
-        Some("skill")
-    );
-    assert_eq!(
-        classify_nudge("[Ultron] 1 subagent or task you started is still running."),
-        Some("wait")
-    );
-    assert_eq!(
-        classify_nudge("[Ultron] 3 subagents or tasks you started are still running"),
-        Some("wait")
-    );
-    assert_eq!(
-        classify_nudge("[Ultron] You have now used 12 rounds of tool calls"),
-        Some("toolRounds")
-    );
-    assert_eq!(classify_nudge("[Ultron] You have used 12 rounds of tool callsx"), None);
-    assert_eq!(classify_nudge("hello"), None);
-    assert_eq!(classify_nudge(" [Ultron] 5 tool rounds in a row succeeded"), None);
 }
 
 #[test]

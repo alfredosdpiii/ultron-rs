@@ -11,7 +11,7 @@
 //! 4 KiB, procedure 8 KiB; situation 200 bytes on one line; key 64 bytes; at most 16 globs of at most 256 bytes;
 //! source 1 KiB. Records without these fields are untyped and behave exactly as before.
 
-use crate::memory::MemoryError;
+use crate::memory::{ErrorCode, MemoryError};
 use kernel::store::{DocumentStore, MemoryDocumentStore};
 
 use fancy_regex::Regex;
@@ -74,7 +74,7 @@ impl Typed {
 const TYPED_FIELDS: [&str; 5] = ["type", "key", "situation", "pathGlobs", "source"];
 
 fn invalid() -> MemoryError {
-    MemoryError::code("INVALID_INPUT")
+    MemoryError::code(ErrorCode::InvalidInput)
 }
 
 fn has_control(text: &str) -> bool {

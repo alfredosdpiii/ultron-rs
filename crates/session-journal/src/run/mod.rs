@@ -32,11 +32,13 @@ pub fn lane_config(provider: &str, model_id: &str, thinking_level: &str, tools: 
     json!({"model": {"provider": provider, "modelId": model_id}, "thinkingLevel": thinking_level, "activeToolNames": tools})
 }
 
-/// The default `RunSettings` (compaction on, reserve 16384, keep 20000; queues "all"; parallel tools).
+/// The default `RunSettings` (compaction on, reserve 16384, keep 20000; queues `config::keys::QUEUE_DEFAULT`;
+/// parallel tools).
 pub fn default_settings() -> Value {
     json!({
         "compaction": {"enabled": true, "reserveTokens": 16384, "keepRecentTokens": 20000},
-        "steeringMode": "all", "followUpMode": "all", "toolExecution": "parallel",
+        "steeringMode": config::keys::QUEUE_DEFAULT, "followUpMode": config::keys::QUEUE_DEFAULT,
+        "toolExecution": "parallel",
     })
 }
 

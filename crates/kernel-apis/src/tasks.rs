@@ -2,7 +2,6 @@
 //! the TS JSON shapes (`NativeTask`, `NativeResult` of `ultron/rlm/task-store.ts`) so modules port unchanged.
 //! Identity comes from the calling lane, never from a payload.
 
-use kernel::Signal;
 use serde_json::Value;
 
 pub trait TaskHost: Send + Sync {
@@ -15,12 +14,12 @@ pub trait TaskHost: Send + Sync {
     /// Every task of the session (`NativeTask` objects: id, parentId, definition, state, ...).
     fn tasks(&self) -> Result<Vec<Value>, String>;
     /// Admits `request` (`{definition, input, model?, key?, timeoutMs?, lane?}`) as a child of `parent`.
-    fn spawn(&self, request: &Value, parent: Option<&str>, signal: &Signal) -> Result<Value, String>;
+    fn spawn(&self, request: &Value, parent: Option<&str>) -> Result<Value, String>;
     /// Blocks until the task's durable terminal result (`NativeResult`).
     fn result(&self, task_id: &str) -> Result<Value, String>;
     fn cancel(&self, task_id: &str, reason: &str) -> Result<Value, String>;
     /// Queues a steering message into a running task's lane; false when it has no live lane.
-    fn steer(&self, task_id: &str, message: &str, signal: &Signal) -> Result<bool, String>;
+    fn steer(&self, task_id: &str, message: &str) -> Result<bool, String>;
     /// Usage status of the caller's root.
     fn usage(&self) -> Result<Option<Value>, String> {
         Ok(None)
@@ -53,7 +52,7 @@ impl TaskHost for RootOnly {
     fn tasks(&self) -> Result<Vec<Value>, String> {
         Ok(Vec::new())
     }
-    fn spawn(&self, _request: &Value, _parent: Option<&str>, _signal: &Signal) -> Result<Value, String> {
+    fn spawn(&self, _request: &Value, _parent: Option<&str>) -> Result<Value, String> {
         Err(NO_TASKS.into())
     }
     fn result(&self, _task_id: &str) -> Result<Value, String> {
@@ -62,7 +61,7 @@ impl TaskHost for RootOnly {
     fn cancel(&self, _task_id: &str, _reason: &str) -> Result<Value, String> {
         Err("Unknown Ultron task".into())
     }
-    fn steer(&self, _task_id: &str, _message: &str, _signal: &Signal) -> Result<bool, String> {
+    fn steer(&self, _task_id: &str, _message: &str) -> Result<bool, String> {
         Ok(false)
     }
     fn now(&self) -> i64 {

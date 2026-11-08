@@ -13,7 +13,6 @@
 use crate::store::read_versioned;
 use crate::tasks::TaskHost;
 use crate::util::Clock;
-use kernel::Signal;
 use kernel::store::DocumentStore;
 use serde_json::{Map, Value, json};
 use std::collections::HashSet;
@@ -21,22 +20,9 @@ use std::sync::{Arc, Mutex};
 
 const MAX_EVERY_MS: i64 = 366 * 24 * 60 * 60 * 1000;
 
-/// `/^[a-z][a-z0-9-]*@[0-9]+$/`
-fn valid_definition(text: &str) -> bool {
-    let Some((id, version)) = text.split_once('@') else {
-        return false;
-    };
-    id.as_bytes().first().is_some_and(u8::is_ascii_lowercase)
-        && id
-            .bytes()
-            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
-        && !version.is_empty()
-        && version.bytes().all(|b| b.is_ascii_digit())
-}
-
 fn definition_key(value: Option<&Value>, name: &str) -> Result<String, String> {
     match value.and_then(Value::as_str) {
-        Some(text) if valid_definition(text) => Ok(text.to_string()),
+        Some(text) if crate::util::valid_definition(text) => Ok(text.to_string()),
         _ => Err(format!("{name} must be id@version")),
     }
 }
@@ -315,10 +301,9 @@ impl SchedulesModule {
         payload: &Map<String, Value>,
         caller: Option<&str>,
         host: &dyn TaskHost,
-        signal: &Signal,
     ) -> Result<Value, String> {
         if kind == "goals.verify" {
-            return self.verify(payload, caller, host, signal);
+            return self.verify(payload, caller, host);
         }
         let mut guard = jsrt::sync::lock(&self.document);
         let document = self.loaded(&mut guard)?;
@@ -343,7 +328,7 @@ impl SchedulesModule {
             "schedules.tick" => {
                 kernel::ops::fields("schedules.tick", payload)?;
                 // Firings outlive the request that happened to drive the tick.
-                self.tick_locked(document, host, &Signal::new())
+                self.tick_locked(document, host)
             }
             "goals.create" => self.create_goal(document, payload, caller, host),
             "goals.list" => {
@@ -492,13 +477,13 @@ impl SchedulesModule {
     }
 
     /// Fires due schedules (the TS background timer's work); returns `{fired, failed}`.
-    pub fn tick(&self, host: &dyn TaskHost, signal: &Signal) -> Result<Value, String> {
+    pub fn tick(&self, host: &dyn TaskHost) -> Result<Value, String> {
         let mut guard = jsrt::sync::lock(&self.document);
         let document = self.loaded(&mut guard)?;
-        self.tick_locked(document, host, signal)
+        self.tick_locked(document, host)
     }
 
-    fn tick_locked(&self, document: &mut Value, host: &dyn TaskHost, signal: &Signal) -> Result<Value, String> {
+    fn tick_locked(&self, document: &mut Value, host: &dyn TaskHost) -> Result<Value, String> {
         let mut fired = Vec::new();
         let mut failed = Vec::new();
         let now = self.now(host);
@@ -571,7 +556,7 @@ impl SchedulesModule {
                 if !claimed["model"].is_null() {
                     request["model"] = claimed["model"].clone();
                 }
-                match host.spawn(&request, claimed["owner"].as_str(), signal) {
+                match host.spawn(&request, claimed["owner"].as_str()) {
                     Ok(spawned) => task = Some(spawned),
                     Err(error) => failure = Some(error),
                 }
@@ -618,13 +603,7 @@ impl SchedulesModule {
 
     /// Runs every required check and accepts the goal only on unanimous, explicit passes. Admission is serialized
     /// with other mutations; waiting for results is not.
-    fn verify(
-        &self,
-        payload: &Map<String, Value>,
-        caller: Option<&str>,
-        host: &dyn TaskHost,
-        signal: &Signal,
-    ) -> Result<Value, String> {
+    fn verify(&self, payload: &Map<String, Value>, caller: Option<&str>, host: &dyn TaskHost) -> Result<Value, String> {
         kernel::ops::fields("goals.verify", payload)?;
         let (goal_id, round, spawned) = {
             let mut guard = jsrt::sync::lock(&self.document);
@@ -666,7 +645,7 @@ impl SchedulesModule {
                 .map(|(index, definition)| {
                     let request = json!({"definition": definition, "input": input,
                         "key": format!("goal:{goal_id}:verify:{round}:{index}")});
-                    (definition.clone(), host.spawn(&request, caller, signal))
+                    (definition.clone(), host.spawn(&request, caller))
                 })
                 .collect();
             self.update(document, |draft| {
@@ -733,13 +712,6 @@ impl crate::ApiModule for SchedulesModule {
     }
 
     fn handle(&self, request: &crate::Request<'_>) -> Result<Value, String> {
-        SchedulesModule::handle(
-            self,
-            request.kind,
-            request.payload,
-            request.caller_task,
-            request.host,
-            request.signal,
-        )
+        SchedulesModule::handle(self, request.kind, request.payload, request.caller_task, request.host)
     }
 }

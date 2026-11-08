@@ -6,7 +6,7 @@
 use crate::common;
 
 use common::{Scripted, model};
-use inference::{DEFAULT_MAP_TOKENS, Frames, INFERENCE_PROMPT, Inference, ModelSettings};
+use inference::{Frames, INFERENCE_PROMPT, Inference, ModelSettings};
 use kernel::{HostHandler, Kernel, KernelOptions};
 use serde_json::{Value, json};
 use std::collections::HashMap;
@@ -71,7 +71,7 @@ fn settings_of(cell: &Value) -> ModelSettings {
         child_model: text(&s["rlm"]["childModel"]),
         review_model: text(&s["reviewModel"]),
         // The recorded TypeScript runs have its default map limit.
-        map_tokens: Some(DEFAULT_MAP_TOKENS),
+        map_tokens: Some(500_000),
     }
 }
 

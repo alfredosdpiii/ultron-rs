@@ -32,11 +32,11 @@ pub fn refresh_model_catalogs(env: &Env) -> Result<(), String> {
 }
 
 /// The model runtime's refresh: [`refresh_catalogs_from`] pi.dev, or nothing when offline (`PI_OFFLINE`).
-pub fn refresh_catalogs(env: &Env, force: bool) -> Result<Vec<(String, String)>, String> {
+pub fn refresh_catalogs(env: &Env) -> Result<Vec<(String, String)>, String> {
     if config::env::offline(&*env.var) {
         return Ok(Vec::new());
     }
-    refresh_catalogs_from(env, DEFAULT_CATALOG_BASE_URL, force)
+    refresh_catalogs_from(env, DEFAULT_CATALOG_BASE_URL, false)
 }
 
 /// [`refresh_model_catalogs`]' per-provider failures, in provider order; `Err` when the whole refresh timed out.

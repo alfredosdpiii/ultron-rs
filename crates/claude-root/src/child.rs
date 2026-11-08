@@ -16,6 +16,9 @@ use std::time::Duration;
 
 pub const CHILD_CWD_ENV: &str = "ULTRON_CHILD_CWD";
 
+/// A cancelled child gets SIGTERM, and SIGKILL when it is still running this long after (child.ts).
+const KILL_GRACE: Duration = Duration::from_secs(5);
+
 /// Environment a child Claude Code must not inherit from the session that started its parent server.
 pub const PARENT_ONLY_ENV: [&str; 7] = [
     "CLAUDE_CODE_SESSION_ID",
@@ -307,7 +310,11 @@ pub fn run_claude_child(
     command.env_remove(host::PARENT_TOKEN_ENV);
     let mut child = command.spawn().map_err(|e| e.to_string())?;
     if let Some(mut stdin) = child.stdin.take() {
-        let _ = stdin.write_all(run.prompt.as_bytes());
+        let prompt = run.prompt.clone();
+        // A child that stops reading must not block the run (child.ts `stdin.end(prompt)`).
+        std::thread::spawn(move || {
+            let _ = stdin.write_all(prompt.as_bytes());
+        });
     }
     let mut stderr_pipe = child.stderr.take().expect("piped stderr");
     let stderr_reader = std::thread::spawn(move || {
@@ -320,24 +327,20 @@ pub fn run_claude_child(
         }
         text[start..].to_string()
     });
-    let pid = child.id();
-    let killer_signal = signal.clone();
-    let killer = std::thread::spawn(move || {
-        while !killer_signal.wait(Duration::from_millis(200)) {
-            if !signals::pid_alive(pid) {
-                return;
-            }
-        }
-        let group = i32::try_from(pid).ok().and_then(rustix::process::Pid::from_raw);
-        if let Some(group) = group {
-            let _ = rustix::process::kill_process_group(group, rustix::process::Signal::TERM);
-            std::thread::sleep(Duration::from_secs(5));
-            let _ = rustix::process::kill_process_group(group, rustix::process::Signal::KILL);
-        }
+    let stdout = child.stdout.take().expect("piped stdout");
+    let watched = signals::child::Watched::new(child);
+    let stopper = watched.clone();
+    let link = signal.link(move |_| {
+        std::thread::spawn(move || {
+            stopper.stop(signals::child::Stop {
+                group: true,
+                term_grace: Some(KILL_GRACE),
+            })
+        });
     });
     let mut stats = StreamStats::default();
     let mut result = None;
-    for line in BufReader::new(child.stdout.take().expect("piped stdout")).lines() {
+    for line in BufReader::new(stdout).lines() {
         let Ok(line) = line else { break };
         if line.trim().is_empty() {
             continue;
@@ -347,14 +350,14 @@ pub fn run_claude_child(
         }
         progress(&stats);
     }
-    let status = child.wait().map_err(|e| e.to_string())?;
+    let status = watched.wait();
+    drop(link);
     let stderr = stderr_reader.join().unwrap_or_default();
     drop(cleanup);
     if signal.is_aborted() {
-        let _ = killer.join();
         return Err(signal.reason().unwrap_or_else(|| "subagent cancelled".into()));
     }
-    child_result(result.as_ref(), &stats, status.code(), &stderr)
+    child_result(result.as_ref(), &stats, status.and_then(|s| s.code()), &stderr)
 }
 
 struct DirGuard(std::path::PathBuf);

@@ -37,6 +37,21 @@ pub fn resolve(input: &str, base: &Path, home: &Path) -> PathBuf {
     PathBuf::from(jsrt::path::resolve_path(input, &text(base), &text(home)))
 }
 
+/// `resolveSessionDirectory`: the session store root is `flag` (`--session-dir`, `--sessions-root`), else
+/// `$ULTRON_CODING_AGENT_SESSION_DIR` (`var` looks it up), else `default`, resolved against `cwd` with `~` expanded.
+pub fn session_root(
+    flag: Option<&str>,
+    var: &dyn Fn(&str) -> Option<String>,
+    default: &Path,
+    cwd: &Path,
+    home: &Path,
+) -> PathBuf {
+    match flag.map(str::to_string).or_else(|| var(ENV_SESSION_DIR)) {
+        Some(dir) => resolve(&dir, cwd, home),
+        None => resolve(&text(default), cwd, home),
+    }
+}
+
 /// The user's agent directory: `$ULTRON_CODING_AGENT_DIR` (tilde-expanded) when set and non-empty, else
 /// `~/.ultron/agent`. `env` looks up an environment variable.
 pub fn agent_dir(env: impl Fn(&str) -> Option<String>, home: &Path) -> PathBuf {

@@ -192,15 +192,16 @@ fn load_dir(dir: &str, scope_of: &dyn Fn(&str) -> &'static str, result: &mut Loa
     }
 }
 
-/// Load templates from `agent_dir/prompts`, `cwd/.pi/prompts` (non-recursive) and explicit paths.
+/// Load templates from `agent_dir/prompts`, `cwd/.pi/prompts` (non-recursive) and explicit paths (`~` names `home`).
 pub fn load_prompt_templates(
     cwd: &str,
     agent_dir: &str,
+    home: &str,
     prompt_paths: &[String],
     include_defaults: bool,
 ) -> LoadPromptTemplatesResult {
-    let cwd = resolve_path(cwd, "/", false);
-    let agent_dir = resolve_path(agent_dir, &cwd, false);
+    let cwd = resolve_path(cwd, "/", home, false);
+    let agent_dir = resolve_path(agent_dir, &cwd, home, false);
     let global = jsrt::path::join(&[&agent_dir, "prompts"]);
     let project = resolve(&cwd, &format!("{CONFIG_DIR_NAME}/prompts"));
     let under = |target: &str, root: &str| target == root || target.starts_with(&format!("{root}/"));
@@ -219,7 +220,7 @@ pub fn load_prompt_templates(
         load_dir(&project, &scope_of, &mut result);
     }
     for raw in prompt_paths {
-        let path = resolve_path(raw, &cwd, true);
+        let path = resolve_path(raw, &cwd, home, true);
         let Ok(meta) = fs::metadata(&path) else { continue };
         if meta.is_dir() {
             load_dir(&path, &scope_of, &mut result);

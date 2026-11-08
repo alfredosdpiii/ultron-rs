@@ -1,5 +1,5 @@
-//! Node's names for the platform this build runs on (`process.platform`, `process.arch`), and the PATH lookup of an
-//! executable.
+//! Node's names for the platform this build runs on (`process.platform`, `process.arch`) and for signals, and the
+//! PATH lookup of an executable.
 
 pub fn platform() -> &'static str {
     match std::env::consts::OS {
@@ -37,10 +37,59 @@ pub fn which(name: &str, path: &str) -> Option<std::path::PathBuf> {
         .find(|candidate| is_executable(candidate))
 }
 
+/// Node's name for a Linux signal number (what a child's `exit` event carries); the number itself when it has none.
+pub fn signal_name(number: i32) -> String {
+    const NAMES: &[&str] = &[
+        "SIGHUP",
+        "SIGINT",
+        "SIGQUIT",
+        "SIGILL",
+        "SIGTRAP",
+        "SIGABRT",
+        "SIGBUS",
+        "SIGFPE",
+        "SIGKILL",
+        "SIGUSR1",
+        "SIGSEGV",
+        "SIGUSR2",
+        "SIGPIPE",
+        "SIGALRM",
+        "SIGTERM",
+        "SIGSTKFLT",
+        "SIGCHLD",
+        "SIGCONT",
+        "SIGSTOP",
+        "SIGTSTP",
+        "SIGTTIN",
+        "SIGTTOU",
+        "SIGURG",
+        "SIGXCPU",
+        "SIGXFSZ",
+        "SIGVTALRM",
+        "SIGPROF",
+        "SIGWINCH",
+        "SIGIO",
+        "SIGPWR",
+        "SIGSYS",
+    ];
+    usize::try_from(number - 1)
+        .ok()
+        .and_then(|index| NAMES.get(index))
+        .map_or_else(|| number.to_string(), |name| (*name).to_string())
+}
+
 #[cfg(test)]
 mod tests {
-    use super::which;
+    use super::{signal_name, which};
     use std::os::unix::fs::PermissionsExt;
+
+    #[test]
+    fn jsrt_signal_names_follow_node() {
+        assert_eq!(signal_name(3), "SIGQUIT");
+        assert_eq!(signal_name(15), "SIGTERM");
+        assert_eq!(signal_name(31), "SIGSYS");
+        assert_eq!(signal_name(64), "64");
+    }
 
     #[test]
     fn jsrt_which_takes_the_first_executable_file_on_the_path() {

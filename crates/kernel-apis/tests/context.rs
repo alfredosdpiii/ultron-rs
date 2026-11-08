@@ -9,10 +9,11 @@ use crate::common;
 use common::{Made, assert_area};
 use kernel::{HostHandler, Signal};
 use kernel_apis::context_control::{
-    ContextBranches, ContextControl, TaskLine, apply_context_edits, collapsed_cell_text, task_line, trimmed_result_text,
+    ContextBranches, ContextControl, TaskLine, collapsed_cell_text, task_line, trimmed_result_text,
 };
 use kernel_apis::{ApiModule, KernelApis, Request};
 use serde_json::{Map, Value, json};
+use session_journal::context::apply_context_edits;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 
@@ -179,10 +180,7 @@ fn kernel_apis_context_helpers_match_typescript() {
         );
     }
     for (index, case) in helpers["apply"].as_array().unwrap().iter().enumerate() {
-        let applied: Vec<Value> = apply_context_edits(case[0].as_array().unwrap())
-            .into_iter()
-            .map(|applied| applied.entry)
-            .collect();
+        let applied = apply_context_edits(case[0].as_array().unwrap());
         assert_eq!(Value::Array(applied), case[1], "apply case {index}");
     }
 }
@@ -210,7 +208,7 @@ fn kernel_apis_context_apply_edits_pairs_calls_and_results() {
         json!({"id": "e2", "parentId": null, "seq": 5, "timestamp": 5, "type": "custom", "customType": "context_edit",
             "data": {"targetId": "u1", "replacement": {"content": "kept after all"}}}),
     ];
-    let applied = apply_context_edits(&entries);
+    let applied = session_journal::context::apply_context_edits_marked(&entries);
     let visible: Vec<&str> = applied
         .iter()
         .filter(|applied| applied.entry["customType"] != "context_edit:omitted")

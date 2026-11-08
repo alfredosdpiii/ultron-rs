@@ -173,7 +173,7 @@ enum Panel {
     PiSessions(Box<SessionSelector>),
     Settings(Box<SettingsSelector>),
     /// The full-screen RLM graph (`RlmGraphFocus`) in the editor's place.
-    RlmFocus(Box<rlm_views::RlmGraphFocus>),
+    RlmFocus(Box<rlm_views::focus::RlmGraphFocus>),
     Logout(Box<crate::selectors::AuthSelector>),
     /// `/trust`: the project trust selector.
     Trust(Box<crate::trust_selector::TrustSelector>),
@@ -506,7 +506,7 @@ pub struct App {
     rlm_visible: bool,
     /// The last subagent listing (`rlm.list_subagents`).
     rlm_agents: Value,
-    rlm_clock: rlm_views::RlmClock,
+    rlm_clock: rlm_views::visualizer::RlmClock,
     /// `/mcp` dialogs not shown yet: they share the selector, so they are answered in order.
     extension_dialogs: std::collections::VecDeque<Value>,
     /// A `/mcp` dialog is open.
@@ -561,13 +561,13 @@ pub struct App {
     /// `rlmPaneAutoOpen` (and not `ULTRON_RLM_PANE_AUTO=off`).
     rlm_pane_auto: bool,
     /// The RLM inspections polled besides the subagent listing (`#refreshRlm`).
-    rlm_poll: rlm_views::RlmPoller,
+    rlm_poll: rlm_views::poller::RlmPoller,
     /// When the RLM inspections were last polled (`None`: poll on the next pass).
     rlm_polled: Option<Instant>,
     /// The wave summary showed at the last poll (it polls at the visible rate while it does).
     wave_active: bool,
     /// The root lane's detached cells (`rlm.detached`), for the running-work panel.
-    detached_cells: Vec<rlm_views::DetachedCell>,
+    detached_cells: Vec<rlm_views::running::DetachedCell>,
     /// The running-work panel had something to show at the last poll (it polls at the visible rate while it does).
     work_active: bool,
     /// The running operation's start, ms since the epoch (the pane's auto-open counts runs from it).
@@ -831,7 +831,7 @@ impl App {
             cols: 80,
             rlm_visible: false,
             rlm_agents: Value::Null,
-            rlm_clock: rlm_views::RlmClock::new(),
+            rlm_clock: rlm_views::visualizer::RlmClock::new(),
             clock: Box::new(Instant::now),
             theme_controller: None,
             told_terminal_theme: None,
@@ -864,7 +864,7 @@ impl App {
             rlm_pane_focused: false,
             rlm_pane_handled: std::collections::HashSet::new(),
             rlm_pane_auto: true,
-            rlm_poll: rlm_views::RlmPoller::new(rlm_views::TUI_FRAME_LIMIT),
+            rlm_poll: rlm_views::poller::RlmPoller::new(rlm_views::poller::TUI_FRAME_LIMIT),
             rlm_polled: None,
             wave_active: false,
             detached_cells: Vec::new(),
@@ -2872,7 +2872,7 @@ impl App {
                 Some(crate::modes::PersonaArg::Global(on)) => {
                     self.send(LaneCommand::SaveSetting {
                         key: "persona".into(),
-                        value: if on { Value::from("ultron") } else { Value::Null },
+                        value: Value::from(if on { "ultron" } else { "off" }),
                     });
                     self.show_status(&crate::modes::persona_changed(on));
                 }
@@ -4151,7 +4151,7 @@ impl App {
     }
 
     /// "Progress assessments are cheap host reads; only fetch them for a few running tasks while visible": while the
-    /// docked panel or the graph shows, `progress.assess` of the first [`rlm_views::MAX_ASSESSED`] running tasks; else none.
+    /// docked panel or the graph shows, `progress.assess` of the first [`rlm_views::poller::MAX_ASSESSED`] running tasks; else none.
     fn assess_progress(&mut self) {
         let running: Vec<String> = if self.rlm_visible || matches!(self.panel, Some(Panel::RlmFocus(_))) {
             self.rlm_status()
@@ -4197,7 +4197,7 @@ impl App {
         if tag == "detached" {
             self.detached_cells = result
                 .ok()
-                .map(|v| rlm_views::parse_detached_cells(&v))
+                .map(|v| rlm_views::running::parse_detached_cells(&v))
                 .unwrap_or_default();
             return self.update_work_active();
         }
@@ -4205,7 +4205,7 @@ impl App {
         let answered = self.rlm_poll.answer(tag, result, &mut |i| {
             let _ = lane.send(i.into());
         });
-        if answered == rlm_views::Answered::Agents {
+        if answered == rlm_views::poller::Answered::Agents {
             self.agents_status_inspected();
         }
     }
@@ -4218,14 +4218,14 @@ impl App {
 
     /// The running-work panel under the transcript, one column in: the session's running shell jobs, subagents and
     /// tasks, and detached cells. Hidden while the docked RLM panel or the graph shows (they list the same work).
-    fn running_work_lines(&self, snapshot: Option<&rlm_views::RlmSnapshot>, width: usize) -> Vec<String> {
+    fn running_work_lines(&self, snapshot: Option<&rlm_views::visualizer::RlmSnapshot>, width: usize) -> Vec<String> {
         let Some(snapshot) = snapshot else { return Vec::new() };
         if self.rlm_visible || matches!(self.panel, Some(Panel::RlmFocus(_))) {
             return Vec::new();
         }
-        let work = rlm_views::running_work(snapshot, &self.detached_cells);
-        let style = rlm_views::RlmStyle::themed(Rc::clone(&self.theme));
-        rlm_views::render_running_work(
+        let work = rlm_views::running::running_work(snapshot, &self.detached_cells);
+        let style = rlm_views::visualizer::RlmStyle::themed(Rc::clone(&self.theme));
+        rlm_views::running::render_running_work(
             &work,
             width.saturating_sub(2).max(1),
             &style,
@@ -4328,7 +4328,7 @@ impl App {
         }
         let snapshot = self.rlm_snapshot();
         let runs = rlm_views::pane::build_dag_runs(&snapshot);
-        let style = rlm_views::RlmStyle::themed(Rc::clone(&self.theme));
+        let style = rlm_views::visualizer::RlmStyle::themed(Rc::clone(&self.theme));
         rlm_views::pane::render_wave_summary(&runs, width.saturating_sub(2).max(1), &style, snapshot.now, 4)
             .into_iter()
             .map(|line| format!(" {line}"))
@@ -4340,7 +4340,7 @@ impl App {
         if matches!(self.panel, Some(Panel::RlmFocus(_))) {
             return;
         }
-        self.panel = Some(Panel::RlmFocus(Box::new(rlm_views::RlmGraphFocus::new())));
+        self.panel = Some(Panel::RlmFocus(Box::new(rlm_views::focus::RlmGraphFocus::new())));
         self.editor.focused = false;
         self.refresh_rlm();
     }
@@ -4352,7 +4352,7 @@ impl App {
     }
 
     /// `#buildRlmSnapshot`: the session's subagents (polled) and the root turn's `rlm` cells (the transcript).
-    fn rlm_snapshot(&mut self) -> rlm_views::RlmSnapshot {
+    fn rlm_snapshot(&mut self) -> rlm_views::visualizer::RlmSnapshot {
         use rlm_views::visualizer::{RunningTool, TranscriptView, extract_root_cell, extract_turn};
         let now = jsrt::date::now_ms() as f64;
         // The open operation's tools: the calls of the last assistant message that have no result yet.
@@ -4394,7 +4394,7 @@ impl App {
 
     fn rlm_options(&self) -> rlm_views::graph::RlmViewOptions {
         rlm_views::graph::RlmViewOptions {
-            style: rlm_views::RlmStyle::themed(Rc::clone(&self.theme)),
+            style: rlm_views::visualizer::RlmStyle::themed(Rc::clone(&self.theme)),
             spinner_frame: (self.ticks * 80 / 100) as i64,
             focus_key: self.keys.get_keys("app.rlm.focus").first().cloned(),
             ..Default::default()
@@ -5063,7 +5063,8 @@ impl App {
             cwd: self.cwd.clone(),
             home: self.home.clone(),
             git_branch: self.footer_git_branch.clone(),
-            using_subscription: crate::footer_data::using_subscription(&self.model.provider),
+            // `isUsingSubscription` of the client footer: Claude Code's costs are notional (its own login pays).
+            using_subscription: config::providers::runs_claude_code(&self.model.provider),
             session_name: self.session_name.clone(),
             thinking_level: self.thinking_level.clone(),
             auto_compact: self.auto_compact,
@@ -5154,7 +5155,7 @@ impl App {
         {
             let inner = width.saturating_sub(2).max(1);
             status.extend(
-                rlm_views::render_rlm_dock(snapshot, inner, &options, usize::MAX)
+                rlm_views::graph::render_rlm_dock(snapshot, inner, &options, usize::MAX)
                     .into_iter()
                     .map(|l| format!(" {l}")),
             );
@@ -5170,7 +5171,7 @@ impl App {
         // `#renderRuntimeLine`: one RLM line under the footer while the panel and the graph are hidden.
         let runtime_line = match &snapshot {
             Some(snapshot) if !self.rlm_visible && !rlm_focus => {
-                rlm_views::render_rlm_footer(snapshot, width.max(1), &options)
+                rlm_views::graph::render_rlm_footer(snapshot, width.max(1), &options)
             }
             _ => None,
         };
@@ -5294,7 +5295,7 @@ impl App {
             return main;
         }
         let snapshot = self.rlm_snapshot();
-        let style = rlm_views::RlmStyle::themed(Rc::clone(&self.theme));
+        let style = rlm_views::visualizer::RlmStyle::themed(Rc::clone(&self.theme));
         let toggle = self.keys.get_keys("app.rlm.pane").first().cloned();
         let mut side = self.rlm_pane.render(
             &self.keys,

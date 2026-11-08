@@ -181,6 +181,11 @@ fn acceptance_a38_a_child_lane_sees_its_own_subtree_only_siblings_are_indistingu
     agents_support::wait_for("A's lane", std::time::Duration::from_secs(120), || {
         fixture.agents.caller_task(&as_a).is_some()
     });
+    // The sibling has started too (its state below is `running`, not `admitted`).
+    let as_b = format!("ultron.background-job.{b}");
+    agents_support::wait_for("B's lane", std::time::Duration::from_secs(120), || {
+        fixture.agents.caller_task(&as_b).is_some()
+    });
     let grandchild = call(
         "agents.spawn",
         json!({"definition": "identity@1", "input": {"from": "a"}}),

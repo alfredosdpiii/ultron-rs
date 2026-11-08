@@ -1326,7 +1326,6 @@ pub fn select_theme(t: &Rc<Theme>, scroll: Fg, no_match: Fg) -> tui::SelectListT
         Box::new(move |s: &str| t.fg(color, s)) as Box<dyn Fn(&str) -> String>
     };
     tui::SelectListTheme {
-        selected_prefix: style(Fg::Accent),
         selected_text: style(Fg::Accent),
         description: style(Fg::Muted),
         scroll_info: style(scroll),

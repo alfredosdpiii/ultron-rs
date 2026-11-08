@@ -35,27 +35,11 @@ pub fn is_concrete_evidence(item: &str) -> bool {
     CONCRETE.iter().any(|pattern| pattern.is_match(item))
 }
 
-/// `path.posix.relative` between two absolute paths.
-fn relative(from: &str, to: &str) -> String {
-    let split = |p: &str| -> Vec<String> {
-        jsrt::path::normalize(p)
-            .split('/')
-            .filter(|s| !s.is_empty())
-            .map(String::from)
-            .collect()
-    };
-    let (from, to) = (split(from), split(to));
-    let common = from.iter().zip(&to).take_while(|(a, b)| a == b).count();
-    let mut parts: Vec<String> = vec!["..".into(); from.len() - common];
-    parts.extend(to[common..].iter().cloned());
-    parts.join("/")
-}
-
 /// A declared path relative to the workspace with `/` separators, or `None` when it lies outside it.
 pub fn workspace_path(path: &str, workspace: Option<&str>) -> Option<String> {
     let mut value = path.trim().to_string();
     if value.starts_with('/') {
-        value = relative(workspace?, &value);
+        value = jsrt::path::relative(workspace?, &value);
         if value.is_empty() || value.starts_with("..") || value.starts_with('/') {
             return None;
         }

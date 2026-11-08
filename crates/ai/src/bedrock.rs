@@ -14,7 +14,6 @@ use crate::aws_credentials::{ChainInput, CredentialError, default_credentials, p
 use crate::constrained::{json_schema_tool_parameters, resolve_json_schema_strict_sampling};
 use crate::env::provider_env_value;
 use crate::http::{AbortSignal, HttpRequest, HttpResponse, Transport, cancelled, is_aborted};
-use crate::json::{parse_json, parse_streaming_json};
 use crate::models::calculate_cost;
 use crate::options::{
     SimpleStreamOptions, StreamOptions, ThinkingBudgets, adjust_max_tokens_for_thinking, build_base_options,
@@ -30,6 +29,7 @@ use crate::types::{
     UserMessageContent,
 };
 use indexmap::IndexMap;
+use jsrt::json_parse::{parse_json, parse_streaming_json};
 use serde::Deserialize;
 use serde_json::{Map, Value, json};
 

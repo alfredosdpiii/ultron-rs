@@ -64,7 +64,7 @@ impl RpcEventTranslator {
                 events.push(json!({"type": "message_start", "message": message}));
                 events
             }
-            // The usage rides on the event (harness::stream_fold); an older worker's update carries its message.
+            // The usage rides on the event (protocol::watch::stream_fold); an older worker's update carries its message.
             WatchEvent::MessageUpdate {
                 frame, usage, message, ..
             } => {

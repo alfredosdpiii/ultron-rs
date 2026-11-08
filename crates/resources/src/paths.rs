@@ -1,12 +1,12 @@
-//! Path helpers for resource discovery: `resolvePath` against `$HOME`, `canonicalizePath`, BOM stripping. Node's
-//! `path` itself is [`jsrt::path`].
+//! Path helpers for resource discovery: `resolvePath` against a home directory, `canonicalizePath`, BOM stripping.
+//! Node's `path` itself is [`jsrt::path`].
 
 use std::path::Path;
 
-/// `resolvePath` from utils/paths.ts against `$HOME`, trimming the input first when `trim` is set.
-pub fn resolve_path(input: &str, base: &str, trim: bool) -> String {
+/// `resolvePath` from utils/paths.ts (`~` names `home`), trimming the input first when `trim` is set.
+pub fn resolve_path(input: &str, base: &str, home: &str, trim: bool) -> String {
     let input = if trim { input.trim() } else { input };
-    jsrt::path::resolve_path(input, base, &std::env::var("HOME").unwrap_or_default())
+    jsrt::path::resolve_path(input, base, home)
 }
 
 /// `canonicalizePath`: realpath, or the input when it cannot be resolved.

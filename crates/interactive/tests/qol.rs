@@ -56,6 +56,7 @@ fn model(id: &str) -> ModelInfo {
         provider: "anthropic".into(),
         id: id.into(),
         name: format!("Claude {id}"),
+        api: String::new(),
         reasoning: true,
         context_window: 1000,
         thinking_levels: Vec::new(),

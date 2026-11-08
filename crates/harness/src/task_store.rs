@@ -9,7 +9,7 @@ use kernel::store::DocumentStore;
 use serde_json::{Map, Value, json};
 
 /// Finished tasks kept in the persisted document: the newest ones. Memory keeps every task.
-pub const MAX_PERSISTED_FINISHED_TASKS: usize = 100;
+pub(crate) const MAX_PERSISTED_FINISHED_TASKS: usize = 100;
 
 const RESULT_KEYS: [&str; 8] = [
     "status",
@@ -253,7 +253,7 @@ fn parse_task(value: &Value) -> Option<Task> {
 }
 
 /// `readVersioned` then the schema and invariant checks of the saved document.
-pub fn parse_document(saved: &Value) -> Result<Vec<Task>, TaskStoreError> {
+pub(crate) fn parse_document(saved: &Value) -> Result<Vec<Task>, TaskStoreError> {
     let map = saved.as_object().ok_or(TaskStoreError::InvalidDocument)?;
     if let Some(version) = map.get("version")
         && version.as_f64() != Some(1.0)
@@ -301,7 +301,7 @@ impl<S> TaskJournal<S> {
 }
 
 /// The tasks to persist: every unfinished task and the newest finished ones up to the bound.
-pub fn persisted_tasks(records: &[Task]) -> Vec<Task> {
+pub(crate) fn persisted_tasks(records: &[Task]) -> Vec<Task> {
     let finished = records.iter().filter(|t| t.state.is_terminal()).count();
     let mut excess = finished.saturating_sub(MAX_PERSISTED_FINISHED_TASKS);
     records

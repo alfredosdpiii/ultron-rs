@@ -16,9 +16,10 @@
 use crate::DEFAULT_TIMEOUT_MS;
 use crate::contract::Brief;
 use crate::definitions::{Definition, DefinitionRegistry, Strategy};
-use crate::task_store::{TaskJournal, task_fingerprint};
+use crate::task_store::TaskJournal;
 use crate::usage::{Measurement, Reservation, ReserveRequest, UsageLedger};
 use crate::verdict::{MAX_VERDICT_REJECTIONS, validate_verdict};
+use harness::task_store::task_fingerprint;
 use jsonschema::json_equal;
 use jsrt::payload::nonempty_string;
 use jsrt::{json, random, string, sync, utf16};
@@ -290,7 +291,10 @@ struct Inner {
     root_turns: bool,
     now: Clock,
     events: Mutex<Sender<TaskEnd>>,
-    worktree_children: std::sync::OnceLock<Arc<dyn WorktreeChildren>>,
+    /// The subagent host, for `rlm-child@1` workflow nodes with `worktree=True` / `"auto"` (`workflowTask` +
+    /// `newWorktree` of native-host.ts). It owns worktrees: their creation, setup, commit at the end, `rlm.merge` and
+    /// cleanup, so a worktree node is a subagent of the workflow's caller there.
+    worktree_children: std::sync::OnceLock<crate::host::Delegation>,
 }
 
 /// The typed agent host; clones share it.
@@ -476,34 +480,6 @@ struct Node {
     spawn_contract: Option<Map<String, Value>>,
     /// The lane that ran `workflows.run` (a worktree node is that lane's subagent).
     lane: String,
-}
-
-/// Subagents with worktrees, for `rlm-child@1` workflow nodes with `worktree=True` / `"auto"`
-/// (`workflowTask` + `newWorktree` of native-host.ts). The subagent host owns worktrees: their creation, setup,
-/// commit at the end, `rlm.merge` and cleanup, so a worktree node is a subagent of the workflow's caller there.
-pub trait WorktreeChildren: Send + Sync {
-    /// Admit the node's child for `lane` (`rlm.spawn(prompt, name=, model=, timeout_ms=, worktree=, **extra)`, `extra`
-    /// holding the node's `role`, `contract`, `hop`); its id.
-    #[allow(clippy::too_many_arguments)]
-    fn spawn(
-        &self,
-        lane: &str,
-        name: &str,
-        prompt: &str,
-        model: Option<&str>,
-        timeout_ms: u64,
-        worktree: &Value,
-        extra: &Map<String, Value>,
-    ) -> Result<String, String>;
-    /// Wait for the child's terminal result (`{status, value?, error?, verdict?, worktree?}`); once `cell` is
-    /// aborted the child is cancelled and its cancelled result returned.
-    fn result(&self, id: &str, cell: Option<&Signal>) -> Value;
-    /// `agents.inspect` / `agents.result` / `agents.cancel` of a subagent this host does not keep (`rlm-child@1`
-    /// tasks are in the one TypeScript journal): `None` when `id` is none of `lane`'s.
-    fn agents_request(&self, kind: &str, id: &str, lane: &str, cell: Option<&Signal>) -> Option<Result<Value, String>> {
-        let _ = (kind, id, lane, cell);
-        None
-    }
 }
 
 impl Agents {
@@ -1278,7 +1254,7 @@ impl Agents {
             .frames
             .clone()
             .ok_or("rlm-frame@1 tasks are started by rlm.infer and rlm.map only")?;
-        let lane = crate::lane_names::frame_lane(id);
+        let lane = lanes::lane_names::frame_lane(id);
         let (usage_root, deadline_at) = {
             let mut state = self.state();
             state.lane_tasks.insert(lane.clone(), id.into());
@@ -1639,9 +1615,9 @@ impl Agents {
         }
     }
 
-    /// The request types this host answers for any lane (`rlm.finish` only for its own lanes).
+    /// Whether this host answers `kind` for any lane (`rlm.finish` only for its own lanes).
     pub fn serves(kind: &str) -> bool {
-        kind == "ping" || kind == "workflows.run" || kind.starts_with("agents.") || kind.starts_with("background.")
+        Request::of(kind).is_some_and(|request| !matches!(request, Request::Finish))
     }
 
     /// Serve one host request from `lane`; `cell` is the requesting cell's signal.
@@ -1666,17 +1642,20 @@ impl Agents {
         if kind == "agents.status" {
             jsrt::payload::fields(&payload, &["graph"])?;
         }
-        match kind {
-            "ping" => Ok(json!({ "ok": true })),
-            "agents.list" => Ok(Value::from(self.state().registry.list())),
-            "agents.status" | "agents.tasks" => self.status(&payload, lane, parent, &records),
-            "agents.register" => {
+        let Some(request) = Request::of(kind) else {
+            return Err(format!("Ultron RLM host request is not wired: {kind}"));
+        };
+        match request {
+            Request::Ping => Ok(json!({ "ok": true })),
+            Request::List => Ok(Value::from(self.state().registry.list())),
+            Request::Status => self.status(&payload, lane, parent, &records),
+            Request::Register => {
                 jsrt::payload::fields(&payload, &["definition"])?;
                 self.state()
                     .registry
                     .register(payload.get("definition").unwrap_or(&Value::Null))
             }
-            "background.start" => {
+            Request::BackgroundStart => {
                 jsrt::payload::fields(&payload, &["prompt", "model", "key", "timeout_ms"])?;
                 let prompt = nonempty_string(payload.get("prompt"), "prompt")?;
                 if utf16::len(&prompt) > 65_536 {
@@ -1703,7 +1682,7 @@ impl Agents {
                 let (_, admitted) = self.spawn_task_with_record(request, cell, parent, Some("task_done"))?;
                 Ok(public_task(&admitted))
             }
-            "background.list" => {
+            Request::BackgroundList => {
                 jsrt::payload::fields(&payload, &[])?;
                 Ok(Value::from(
                     records
@@ -1714,7 +1693,7 @@ impl Agents {
                         .collect::<Vec<_>>(),
                 ))
             }
-            "background.inspect" | "background.result" | "background.stop" => {
+            Request::BackgroundJob => {
                 jsrt::payload::fields(&payload, &["id"])?;
                 let id = nonempty_string(payload.get("id"), "id")?;
                 let stored = records
@@ -1735,7 +1714,7 @@ impl Agents {
                     },
                 }
             }
-            "agents.spawn" | "agents.invoke" => {
+            Request::Start => {
                 let spawn = kind == "agents.spawn";
                 let request = self.request(&payload, parent)?;
                 let (id, admitted) =
@@ -1745,7 +1724,7 @@ impl Agents {
                 }
                 self.result_of(&id, cell.map(|c| (c, true)))
             }
-            "agents.inspect" | "agents.result" | "agents.cancel" => {
+            Request::Task => {
                 jsrt::payload::fields(&payload, &["id"])?;
                 let id = nonempty_string(payload.get("id"), "id")?;
                 let stored = records.iter().find(|r| r["id"] == id.as_str());
@@ -1771,20 +1750,19 @@ impl Agents {
                     },
                 }
             }
-            "rlm.finish" => self.finish_request(payload, parent),
-            "workflows.run" => {
+            Request::Finish => self.finish_request(payload, parent),
+            Request::WorkflowsRun => {
                 let mut nodes = self.workflow(&payload)?;
                 for node in &mut nodes {
                     node.lane = lane.to_string();
                 }
                 self.run_workflow(nodes, cell, parent)
             }
-            other => Err(format!("Ultron RLM host request is not wired: {other}")),
         }
     }
 
     /// Run `rlm-child@1` workflow nodes with `worktree=True` / `"auto"` as subagents of `children` (set once).
-    pub fn set_worktree_children(&self, children: Arc<dyn WorktreeChildren>) {
+    pub fn set_worktree_children(&self, children: crate::host::Delegation) {
         let _ = self.inner.worktree_children.set(children);
     }
 
@@ -2385,7 +2363,7 @@ impl Agents {
                 Some(brief) => brief.prompt(&base),
                 None => base,
             };
-            let spawned = children.spawn(
+            let spawned = children.spawn_worktree_node(
                 &node.lane,
                 &node.id,
                 &prompt,
@@ -2396,7 +2374,7 @@ impl Agents {
             );
             signal_admitted();
             let result = match spawned {
-                Ok(id) => children.result(&id, cell),
+                Ok(id) => children.worktree_node_result(&id, cell),
                 Err(error) => return failed(format!("Admission refused: {error}")),
             };
             return if gate { verdict_gate(result) } else { result };
@@ -2699,7 +2677,7 @@ impl kernel_apis::TaskHost for Agents {
 
     /// Module work (instance invocations, skill runs, schedule firings, verifiers) is detached: it is collected
     /// later or awaited explicitly, and stops with its parent task's subtree.
-    fn spawn(&self, request: &Value, parent: Option<&str>, signal: &Signal) -> Result<Value, String> {
+    fn spawn(&self, request: &Value, parent: Option<&str>) -> Result<Value, String> {
         self.load()?;
         let definition = definition_key(request.get("definition"))?;
         let item = self.definition(&definition)?;
@@ -2722,7 +2700,6 @@ impl kernel_apis::TaskHost for Agents {
             lane: request.get("lane").and_then(Value::as_str).map(String::from),
             ..TaskRequest::default()
         };
-        let _ = signal;
         let id = self.spawn_task(task, None, parent, None)?;
         Ok(public_record(&self.record(&id)))
     }
@@ -2741,7 +2718,7 @@ impl kernel_apis::TaskHost for Agents {
         Agents::cancel(self, task_id, reason)
     }
 
-    fn steer(&self, task_id: &str, message: &str, _signal: &Signal) -> Result<bool, String> {
+    fn steer(&self, task_id: &str, message: &str) -> Result<bool, String> {
         let lane = {
             let state = self.state();
             match state.task(task_id) {
@@ -2838,4 +2815,39 @@ pub fn predict_adapter(complete: Complete) -> Adapter {
             json!(string::strip_json_fence(trimmed))
         }))
     })
+}
+
+/// A host request [`Agents`] answers; the kinds a variant groups are told apart where it is served.
+#[derive(Clone, Copy)]
+enum Request {
+    Ping,
+    List,
+    Status,
+    Register,
+    BackgroundStart,
+    BackgroundList,
+    BackgroundJob,
+    Start,
+    Task,
+    Finish,
+    WorkflowsRun,
+}
+
+impl Request {
+    fn of(kind: &str) -> Option<Request> {
+        Some(match kind {
+            "ping" => Request::Ping,
+            "agents.list" => Request::List,
+            "agents.status" | "agents.tasks" => Request::Status,
+            "agents.register" => Request::Register,
+            "background.start" => Request::BackgroundStart,
+            "background.list" => Request::BackgroundList,
+            "background.inspect" | "background.result" | "background.stop" => Request::BackgroundJob,
+            "agents.spawn" | "agents.invoke" => Request::Start,
+            "agents.inspect" | "agents.result" | "agents.cancel" => Request::Task,
+            "rlm.finish" => Request::Finish,
+            "workflows.run" => Request::WorkflowsRun,
+            _ => return None,
+        })
+    }
 }

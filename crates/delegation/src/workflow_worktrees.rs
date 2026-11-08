@@ -3,13 +3,15 @@
 //! worktree when the node starts, runs its setup, commits what it changed when it ends (the result's `worktree`),
 //! and lets the caller merge it with `rlm.merge` like any other worktree child.
 
-use crate::agents::WorktreeChildren;
 use crate::host::Delegation;
 use kernel::Signal;
 use serde_json::{Map, Value, json};
 
-impl WorktreeChildren for Delegation {
-    fn spawn(
+impl Delegation {
+    /// Admit a worktree node's child for `lane` (`rlm.spawn(prompt, name=, model=, timeout_ms=, worktree=, **extra)`,
+    /// `extra` holding the node's `role`, `contract`, `hop`); its id.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn spawn_worktree_node(
         &self,
         lane: &str,
         name: &str,
@@ -33,7 +35,9 @@ impl WorktreeChildren for Delegation {
             .ok_or_else(|| "rlm.spawn returned no child id".to_string())
     }
 
-    fn result(&self, id: &str, cell: Option<&Signal>) -> Value {
+    /// Wait for the node's child's terminal result (`{status, value?, error?, verdict?, worktree?}`); once `cell` is
+    /// aborted the child is cancelled and its cancelled result returned.
+    pub(crate) fn worktree_node_result(&self, id: &str, cell: Option<&Signal>) -> Value {
         let ids = [id.to_string()];
         if let Some((_, outcome)) = self.wait_until(&ids, None, cell).pop() {
             return outcome
@@ -47,9 +51,5 @@ impl WorktreeChildren for Delegation {
             Ok(result) => result,
             Err(error) => json!({ "status": "cancelled", "error": error, "verification": "unverified" }),
         }
-    }
-
-    fn agents_request(&self, kind: &str, id: &str, lane: &str, cell: Option<&Signal>) -> Option<Result<Value, String>> {
-        Delegation::agents_request(self, kind, id, lane, cell)
     }
 }

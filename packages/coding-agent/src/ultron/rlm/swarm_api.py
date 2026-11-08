@@ -131,7 +131,7 @@ class Notes:
 
 
 def install(rlm_class: Any, namespace: dict[str, Any], bridge: Any) -> None:
-    """Add `rlm.ask`, `rlm.partial`, `rlm.images` and `spawn(keep=True)` to the `rlm` class, and `swarm`, `board`,
+    """Add `rlm.ask`, `rlm.partial` and `spawn(keep=True)` to the `rlm` class, and `swarm`, `board`,
     `notes`."""
     original_spawn = rlm_class.spawn
 
@@ -182,12 +182,3 @@ def install(rlm_class: Any, namespace: dict[str, Any], bridge: Any) -> None:
     namespace["swarm"] = Swarm(bridge)
     namespace["board"] = Board(bridge)
     namespace["notes"] = Notes(bridge)
-    from images_api import install as install_images
-
-    install_images(rlm_class)
-    from schedule_api import Schedule
-
-    namespace["schedule"] = Schedule(bridge)
-    from diagram_api import Diagram
-
-    namespace["diagram"] = Diagram(bridge)

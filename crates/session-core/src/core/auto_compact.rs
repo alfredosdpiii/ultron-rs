@@ -251,17 +251,7 @@ impl Core {
             }
         };
         let usage = serde_json::to_value(&result.usage).unwrap_or(Value::Null);
-        let mut entry = Map::new();
-        entry.insert("type".into(), "compaction".into());
-        entry.insert("summary".into(), result.summary.into());
-        entry.insert("retainedTail".into(), Value::Array(prepared.retained_tail.clone()));
-        entry.insert("tokensBefore".into(), result.tokens_before.into());
-        entry.insert(
-            "details".into(),
-            json!({"readFiles": result.read_files, "modifiedFiles": result.modified_files}),
-        );
-        entry.insert("usage".into(), usage.clone());
-        entry.insert("fromHook".into(), false.into());
+        let entry = result.entry(prepared.retained_tail.clone(), usage.clone());
         let Some(run) = self.run.as_mut() else {
             return Work::Failed("No run is in progress".into());
         };

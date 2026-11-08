@@ -69,7 +69,7 @@ impl GoalJobs for Worker {
         Ok(result)
     }
 
-    fn start_job(&self, prompt: &str, key: &str, usage_root: &str, _: &Signal) -> Result<String, String> {
+    fn start_job(&self, prompt: &str, key: &str, usage_root: &str) -> Result<String, String> {
         jsrt::sync::lock(&self.calls).push(json!(["start", key, usage_root, prompt]));
         if prompt.contains("unstartable") {
             return Err("no capacity for a background job".into());
@@ -94,22 +94,19 @@ fn goal_host(_: &Path) -> Made {
     let worker = Arc::new(Worker::default());
     let driver = Arc::new(GoalDriver::new(store.clone(), worker.clone(), fixed(FIXED_NOW)));
     let test = driver.clone();
-    let inner: Arc<dyn HostHandler> =
-        Arc::new(
-            move |kind: &str, payload: Map<String, Value>, signal: &Signal| match kind {
-                "test.goal.command" => Ok(json!({"text": test.command(payload["args"].as_str().unwrap(), signal)?})),
-                "test.goal.ended" => {
-                    test.task_ended(payload["id"].as_str().unwrap(), payload.get("result"))?;
-                    Ok(Value::Null)
-                }
-                "test.goal.as" => test.handle_request(
-                    payload["type"].as_str().unwrap(),
-                    payload["payload"].as_object().unwrap(),
-                    payload["lane"].as_str().unwrap(),
-                ),
-                _ => Err(format!("Ultron RLM host request is not wired: {kind}")),
-            },
-        );
+    let inner: Arc<dyn HostHandler> = Arc::new(move |kind: &str, payload: Map<String, Value>, _: &Signal| match kind {
+        "test.goal.command" => Ok(json!({"text": test.command(payload["args"].as_str().unwrap())?})),
+        "test.goal.ended" => {
+            test.task_ended(payload["id"].as_str().unwrap(), payload.get("result"))?;
+            Ok(Value::Null)
+        }
+        "test.goal.as" => test.handle_request(
+            payload["type"].as_str().unwrap(),
+            payload["payload"].as_object().unwrap(),
+            payload["lane"].as_str().unwrap(),
+        ),
+        _ => Err(format!("Ultron RLM host request is not wired: {kind}")),
+    });
     Made {
         handler: KernelApis::new(inner).with(driver),
         env: Vec::new(),
@@ -185,9 +182,8 @@ fn kernel_apis_goal_check_signature_ignores_durations_and_addresses() {
 #[test]
 fn kernel_apis_goal_restart_pauses_a_running_job() {
     let store = Arc::new(MemoryDocumentStore::default());
-    let signal = Signal::new();
     let first = GoalDriver::new(store.clone(), Arc::new(Worker::default()), fixed(FIXED_NOW));
-    first.command("ship the parser", &signal).unwrap();
+    first.command("ship the parser").unwrap();
     assert_eq!(first.get().unwrap().unwrap()["job"], "task-1");
     let again = GoalDriver::new(store, Arc::new(Worker::default()), fixed(FIXED_NOW));
     let goal = again.get().unwrap().unwrap();
@@ -196,9 +192,6 @@ fn kernel_apis_goal_restart_pauses_a_running_job() {
         goal["reason"],
         "Ultron restarted while the goal job ran; /goal resume continues"
     );
-    assert_eq!(again.command("clear", &signal).unwrap(), "Goal cleared.");
-    assert_eq!(
-        again.command("", &signal).unwrap(),
-        "No goal. Set one with /goal <objective>."
-    );
+    assert_eq!(again.command("clear").unwrap(), "Goal cleared.");
+    assert_eq!(again.command("").unwrap(), "No goal. Set one with /goal <objective>.");
 }

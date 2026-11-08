@@ -1271,11 +1271,11 @@ impl Manager {
             let this = self.self_arc();
             let peer = peer.to_string();
             std::thread::spawn(move || {
-                std::thread::sleep(WORKER_SHUTDOWN_TIMEOUT);
-                if let Some(this) = this.and_then(|w| w.upgrade()) {
+                if !terminated.wait(WORKER_SHUTDOWN_TIMEOUT)
+                    && let Some(this) = this.and_then(|w| w.upgrade())
+                {
                     this.settle_exited(&peer);
                 }
-                let _ = terminated;
             });
         }
     }

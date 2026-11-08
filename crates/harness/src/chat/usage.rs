@@ -93,7 +93,7 @@ pub fn add_usage(total: &mut Value, usage: &Value) {
     }
 }
 
-pub fn add_usage_state(total: &mut Value, state: &Value) {
+pub(crate) fn add_usage_state(total: &mut Value, state: &Value) {
     for bucket in ["models", "tools"] {
         if !total[bucket].is_object() {
             total[bucket] = Value::Object(Map::new());

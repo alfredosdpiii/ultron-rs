@@ -11,7 +11,6 @@ use harness::chat::children::{CHILD_KIND, child_report};
 use harness::chat::{AgentChange, ChatHarness, ModelRef, SubmissionDraft, WhenBusy};
 use harness::scheduler::{Cancel, Ctx};
 use serde_json::Value;
-use std::time::Duration;
 
 /// The conversation a lane's newest child task holds, if the lane ever ran as a child conversation.
 pub fn lane_conversation(chat: &ChatHarness, lane: &str) -> Result<Option<ConversationId>, String> {
@@ -61,20 +60,10 @@ pub fn continue_lane(chat: &ChatHarness, conversation: ConversationId, run: &Lan
         .submit(SubmissionDraft::input(run.prompt.clone()).when_busy(WhenBusy::Reject))
         .map_err(|e| e.to_string())?;
     let cancel = Cancel::new();
-    let done = Cancel::new();
-    let (watched, stop, target) = (run.signal.clone(), done.clone(), cancel.clone());
-    // The task's signal has no callback: it is watched until the wait ends.
-    let watcher = std::thread::spawn(move || {
-        while !stop.is_cancelled() {
-            if watched.wait(Duration::from_millis(200)) {
-                target.abort();
-                return;
-            }
-        }
-    });
+    let target = cancel.clone();
+    let link = run.signal.link(move |_| target.abort());
     let settled = submission.wait(&Ctx::with_signal(&cancel));
-    done.abort();
-    let _ = watcher.join();
+    drop(link);
     let settled = match settled {
         Ok(settled) => settled,
         Err(error) => {

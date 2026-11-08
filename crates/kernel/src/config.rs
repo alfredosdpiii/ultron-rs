@@ -63,7 +63,7 @@ pub struct KernelResourceLimits {
     pub max_cpu_seconds: u64,
 }
 
-pub const DEFAULT_KERNEL_LIMITS: KernelResourceLimits = KernelResourceLimits {
+const DEFAULT_KERNEL_LIMITS: KernelResourceLimits = KernelResourceLimits {
     max_memory_mb: 4096,
     max_cpu_seconds: 1800,
 };

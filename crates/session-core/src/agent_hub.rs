@@ -14,12 +14,10 @@
 //! host that lists them beside the typed agents', and steers their lanes (and typed agents' lanes) through
 //! [`LaneSteer`].
 
-use crate::subagents::LANE_PREFIX;
 use delegation::host::Delegation;
 use durable::{ConversationId, Cursor, TaskId, TaskOutcome, TaskQuery, TaskState};
 use harness::chat::ChatHarness;
 use harness::chat::children::{CHILD_KIND, ChildInput};
-use kernel::Signal;
 use kernel_apis::{ApiModule, FamilyModule, Request, TaskHost};
 use serde_json::Value;
 use std::sync::{Arc, OnceLock};
@@ -29,7 +27,9 @@ pub type LaneSteer = Arc<dyn Fn(&str, &str) -> bool + Send + Sync>;
 
 /// The subagent `lane` runs (`ultron.rlm-child.<id>`), when the delegation host knows it.
 fn subagent_of_lane(lane: &str, delegation: &Delegation) -> Option<String> {
-    let id = lane.strip_prefix(LANE_PREFIX)?;
+    let Some(lanes::lane_names::LaneOwner::Child(id)) = lanes::lane_names::parse_lane(lane) else {
+        return None;
+    };
     let known = delegation
         .tasks()
         .ok()?
@@ -114,7 +114,7 @@ impl TaskHost for SessionTasks<'_> {
     fn task_lane(&self, task_id: &str) -> Option<String> {
         self.host
             .task_lane(task_id)
-            .or_else(|| self.subagent(task_id).map(|_| format!("{LANE_PREFIX}{task_id}")))
+            .or_else(|| self.subagent(task_id).map(|_| lanes::lane_names::child_lane(task_id)))
     }
 
     fn strategy(&self, definition: &str) -> Result<String, String> {
@@ -131,8 +131,8 @@ impl TaskHost for SessionTasks<'_> {
         Ok(tasks)
     }
 
-    fn spawn(&self, request: &Value, parent: Option<&str>, signal: &Signal) -> Result<Value, String> {
-        self.host.spawn(request, parent, signal)
+    fn spawn(&self, request: &Value, parent: Option<&str>) -> Result<Value, String> {
+        self.host.spawn(request, parent)
     }
 
     fn result(&self, task_id: &str) -> Result<Value, String> {
@@ -144,8 +144,8 @@ impl TaskHost for SessionTasks<'_> {
     }
 
     /// A subagent's lane, or a typed agent's the typed-agent host does not steer itself.
-    fn steer(&self, task_id: &str, message: &str, signal: &Signal) -> Result<bool, String> {
-        if self.subagent(task_id).is_none() && self.host.steer(task_id, message, signal)? {
+    fn steer(&self, task_id: &str, message: &str) -> Result<bool, String> {
+        if self.subagent(task_id).is_none() && self.host.steer(task_id, message)? {
             return Ok(true);
         }
         let lane = self.task_lane(task_id);

@@ -73,7 +73,7 @@ impl Delegation {
                         Some(Ok(record["result"].clone()))
                     }
                 };
-                let lane_name = child.then(|| crate::lane_names::child_lane(&id));
+                let lane_name = child.then(|| lanes::lane_names::child_lane(&id));
                 // A reattached worktree child keeps its worktree (its saved record names the task): its work is
                 // committed on its branch when it ends, and `rlm.merge` finds it.
                 let worktree = waiter

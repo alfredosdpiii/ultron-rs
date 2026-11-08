@@ -11,6 +11,7 @@ autotests = false
 jsrt = { path = "../jsrt" }
 model-scope = { path = "../model-scope" }
 serde_json = { version = "=1.0.151", features = ["preserve_order"] }
+signals = { path = "../signals" }
 
 [lints]
 workspace = true

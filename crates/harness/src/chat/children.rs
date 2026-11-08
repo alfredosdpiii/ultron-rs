@@ -72,7 +72,7 @@ pub struct ChildFork {
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "phase", rename_all = "camelCase", rename_all_fields = "camelCase")]
-pub enum ChildCheckpoint {
+pub(crate) enum ChildCheckpoint {
     Start,
     /// Waiting for the answer to `submission` in the child's conversation; `until` is the durable deadline.
     Wait {

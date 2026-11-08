@@ -580,7 +580,8 @@ mod migration {
     }
 
     fn open_pi(path: &Path) -> SessionManager {
-        let entries = session_file::load_entries_from_file(&path.display().to_string()).unwrap();
+        let entries =
+            session_file::load_entries_from_file(&session_file::SystemEnv, &path.display().to_string()).unwrap();
         SessionManager::in_memory(Box::new(SystemEnv), "/project", None, Some(entries)).unwrap()
     }
 

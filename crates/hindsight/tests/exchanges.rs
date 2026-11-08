@@ -103,7 +103,7 @@ fn hindsight_backend_requests_and_results_match_typescript() {
         let created = HindsightBackend::new(options(&scenario["options"]));
         let created_record = match &created {
             Ok(backend) => json!({"namespace": backend.namespace(), "scopeTags": backend.scope_tags()}),
-            Err(error) => json!({"error": error.code}),
+            Err(error) => json!({"error": error.code.as_str()}),
         };
         let mut calls = Vec::new();
         for planned in scenario["calls"].as_array().unwrap() {

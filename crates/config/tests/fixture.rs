@@ -323,6 +323,24 @@ fn config_paths_match_typescript() {
     }
 }
 
+/// `resolveSessionDirectory` (`experimental/server.ts`, `usage-cli.ts`, `migration-cli.ts`): flag, then the env
+/// variable, then the default, through `resolvePath` (cwd-relative, `~` expanded).
+#[test]
+fn config_session_root_follows_resolve_session_directory() {
+    let (cwd, home, default) = (
+        Path::new("/work/p"),
+        Path::new("/home/u"),
+        Path::new("/agent/experimental/sessions"),
+    );
+    let set = |name: &str| (name == config::paths::ENV_SESSION_DIR).then(|| "~/from-env".to_string());
+    let unset = |_: &str| None;
+    let root = |flag, var: &dyn Fn(&str) -> Option<String>| config::paths::session_root(flag, var, default, cwd, home);
+    assert_eq!(root(Some("rel/s"), &set), Path::new("/work/p/rel/s"));
+    assert_eq!(root(Some("~"), &set), Path::new("/home/u"));
+    assert_eq!(root(None, &set), Path::new("/home/u/from-env"));
+    assert_eq!(root(None, &unset), default);
+}
+
 #[test]
 fn config_trust_store_matches_typescript() {
     let fx = fixture();

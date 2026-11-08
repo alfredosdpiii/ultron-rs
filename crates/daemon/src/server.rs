@@ -361,13 +361,12 @@ const COORDINATOR_REGISTRATION_ATTEMPTS: u32 = 5;
 
 /// A hard-killed server leaves its endpoint socket behind: remove this ID's endpoints that refuse connections.
 fn remove_dead_endpoints(directory: &Path, server_id: &str) {
-    let prefix = format!("server-{server_id}-");
     let Ok(entries) = std::fs::read_dir(directory) else {
         return;
     };
     for entry in entries.flatten() {
         let name = entry.file_name().to_string_lossy().into_owned();
-        if name.starts_with(&prefix) && name.ends_with(".sock") && !sockets::is_live(&entry.path()) {
+        if protocol::sockets::is_generation_of(&name, server_id) && !sockets::is_live(&entry.path()) {
             let _ = std::fs::remove_file(entry.path());
         }
     }
@@ -380,9 +379,9 @@ fn start_generation(
     let sockets_dir = instance::socket_dir(&options.directory);
     paths::ensure_private_directory(&sockets_dir).map_err(Err)?;
     let socket_path = instance::socket_path(&options.directory, server_id);
-    let control_path = sockets_dir.join(format!("control-{server_id}.sock"));
-    let nonce: String = jsrt::random::uuid_v4().replace('-', "")[..12].to_string();
-    let endpoint_path = sockets_dir.join(format!("server-{server_id}-{nonce}.sock"));
+    let control_path = sockets_dir.join(protocol::sockets::control_name(server_id));
+    let nonce = &jsrt::random::uuid_v4().replace('-', "")[..protocol::sockets::NONCE_LEN];
+    let endpoint_path = sockets_dir.join(protocol::sockets::generation_name(server_id, nonce));
     remove_dead_endpoints(&sockets_dir, server_id);
     crate::process::trace_startup("server.coordinator");
     let mut lease = coord_client::ensure_coordinator(&socket_path, &control_path).map_err(Err)?;

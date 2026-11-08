@@ -36,7 +36,7 @@ pub fn module(config: &Config, session_id: &str, images: Arc<ViewImages>) -> Dia
                     .map(str::to_string),
                 colorfgbg: var("COLORFGBG"),
                 terminal: terminal.lock().unwrap_or_else(|e| e.into_inner()).clone(),
-                custom_dir: agent_dir.join("themes"),
+                custom_dir: config::paths::AgentPaths::new(&agent_dir).custom_themes_dir(),
             }
         }),
         show: Arc::new(move |shown: &ShownDiagram<'_>| {

@@ -21,8 +21,17 @@ pub const KIMI_CODING: &str = "kimi-coding";
 pub const CLAUDE_CODE_DEFAULT_MODEL: &str = claude_code_default_model!();
 pub const CLAUDE_CODE_DEFAULT_REF: &str = concat!(claude_code!(), "/", claude_code_default_model!());
 
-/// Claude Code and the Claude subscription: models with Anthropic's own ids that answer only to their full
-/// reference, and responses that carry Claude Code's usage.
+/// The Claude Code CLI provider's API (`claude-code-cli`).
+pub const CLAUDE_CODE_API: &str = "claude-code-cli";
+
+/// `isClaudeCodeModel`, plus the Claude subscription's models (TypeScript has no `claude-subscription`, so a bare
+/// Claude id there matches the `anthropic` model alone): models with Anthropic's own ids that answer only to their
+/// full `<provider>/<id>` reference.
+pub fn full_reference_only(provider: &str, api: &str) -> bool {
+    api == CLAUDE_CODE_API || provider == CLAUDE_SUBSCRIPTION
+}
+
+/// Claude Code and the Claude subscription: responses that carry Claude Code's usage.
 pub fn runs_claude_code(provider: &str) -> bool {
     provider == CLAUDE_CODE || provider == CLAUDE_SUBSCRIPTION
 }

@@ -20,7 +20,7 @@ const POLL: Duration = Duration::from_millis(20);
 
 /// How long `rlm.ask` waits for an answer when the call gives no `timeout_ms`: a kept child that stops making
 /// progress must not hold the caller's cell forever (a DeepSWE run sat 67 minutes in one ask).
-pub const ASK_TIMEOUT: Duration = Duration::from_secs(20 * 60);
+pub(crate) const ASK_TIMEOUT: Duration = Duration::from_secs(20 * 60);
 
 type OpResult = Result<Value, String>;
 
@@ -77,16 +77,32 @@ pub const SWARM_KINDS: [&str; 12] = [
     "notes.write",
 ];
 
-/// The requests about persistent children ([`SWARM_KINDS`] and these are every request [`HostOps`] serves).
-pub const CHILD_KINDS: [&str; 7] = [
-    "rlm.spawn",
-    "rlm.collect",
-    "rlm.results",
-    "rlm.list_subagents",
-    "rlm.cancel",
-    "rlm.delete_subagent",
-    "rlm.ask",
-];
+/// A request [`HostOps`] serves: one about persistent children, or one of [`SWARM_KINDS`].
+#[derive(Clone, Copy)]
+enum Op {
+    Spawn,
+    Collect,
+    Results,
+    List,
+    Cancel,
+    Ask,
+    Swarm,
+}
+
+impl Op {
+    fn of(kind: &str) -> Option<Op> {
+        Some(match kind {
+            "rlm.spawn" => Op::Spawn,
+            "rlm.collect" => Op::Collect,
+            "rlm.results" => Op::Results,
+            "rlm.list_subagents" => Op::List,
+            "rlm.cancel" | "rlm.delete_subagent" => Op::Cancel,
+            "rlm.ask" => Op::Ask,
+            kind if SWARM_KINDS.contains(&kind) => Op::Swarm,
+            _ => return None,
+        })
+    }
+}
 
 impl HostOps {
     pub fn new(chat: ChatHarness) -> HostOps {
@@ -101,20 +117,15 @@ impl HostOps {
         call: &CellCall,
         signal: &Cancel,
     ) -> Option<OpResult> {
-        Some(match kind {
-            "rlm.spawn" => self.spawn(payload, call),
-            "rlm.collect" => self.collect(payload, call, signal),
-            "rlm.results" => self.results(payload, call),
-            "rlm.list_subagents" => self.list(call),
-            "rlm.cancel" | "rlm.delete_subagent" => self.cancel(payload, signal),
-            "rlm.ask" => self.ask(payload, signal),
-            kind if SWARM_KINDS.contains(&kind) => self.swarm(kind, payload, call),
-            _ => return None,
+        Some(match Op::of(kind)? {
+            Op::Spawn => self.spawn(payload, call),
+            Op::Collect => self.collect(payload, call, signal),
+            Op::Results => self.results(payload, call),
+            Op::List => self.list(call),
+            Op::Cancel => self.cancel(payload, signal),
+            Op::Ask => self.ask(payload, signal),
+            Op::Swarm => self.swarm(kind, payload, call),
         })
-    }
-
-    pub fn serves(kind: &str) -> bool {
-        CHILD_KINDS.contains(&kind) || SWARM_KINDS.contains(&kind)
     }
 
     /// A [`HostHandler`] for one cell: delegation operations here, everything else to `fallback`.
@@ -487,7 +498,7 @@ struct CellOps {
 
 impl HostHandler for CellOps {
     fn handle(&self, kind: &str, payload: Map<String, Value>, signal: &Signal) -> Result<Value, String> {
-        if !HostOps::serves(kind) {
+        if Op::of(kind).is_none() {
             return match &self.fallback {
                 Some(fallback) => fallback.handle(kind, payload, signal),
                 None => Err(format!("Unknown host request {kind}")),

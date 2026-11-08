@@ -452,6 +452,7 @@ impl CliProcess {
         let stdout = child.stdout.take();
         let stderr = child.stderr.take();
         let child = signals::child::Watched::new(child);
+        let (stderr_closed, stderr_done) = std::sync::mpsc::channel::<()>();
         if let Some(stderr) = stderr {
             let tail_buffer = stderr_tail.clone();
             std::thread::spawn(move || {
@@ -463,6 +464,7 @@ impl CliProcess {
                     *buffer = tail(&joined, STDERR_TAIL_CHARS);
                     chunk.clear();
                 }
+                drop(stderr_closed);
             });
         }
         {
@@ -480,6 +482,9 @@ impl CliProcess {
                     }
                 }
                 let status = child.wait();
+                // The stderr tail is complete before the exit is reported (a process it left running may hold the
+                // pipe, so only for a while).
+                let _ = stderr_done.recv_timeout(signals::child::PIPE_GRACE);
                 use std::os::unix::process::ExitStatusExt;
                 let _ = sender.send(ChildEvent::Exited(
                     status.and_then(|s| s.code()),
@@ -1315,8 +1320,6 @@ impl Run<'_, '_, CliStream> {
                 usage_limit: false,
             };
         }
-        // Give the stderr reader a moment to collect the last lines.
-        std::thread::sleep(Duration::from_millis(20));
         let stderr = jsrt::sync::lock(&child.stderr).clone();
         if let Some(start) = stderr.find("unknown option '") {
             let rest = &stderr[start + "unknown option '".len()..];
@@ -1331,7 +1334,7 @@ impl Run<'_, '_, CliStream> {
             }
         }
         let how = match (signal, code) {
-            (Some(signal), _) => signal_name(signal),
+            (Some(signal), _) => jsrt::process::signal_name(signal),
             (None, code) => format!("code {}", code.map_or("null".into(), |c| c.to_string())),
         };
         let trimmed = stderr.trim();
@@ -1347,19 +1350,6 @@ impl Run<'_, '_, CliStream> {
             usage_limit: false,
         }
     }
-}
-
-fn signal_name(signal: i32) -> String {
-    match signal {
-        1 => "SIGHUP",
-        2 => "SIGINT",
-        6 => "SIGABRT",
-        9 => "SIGKILL",
-        13 => "SIGPIPE",
-        15 => "SIGTERM",
-        _ => return format!("signal {signal}"),
-    }
-    .into()
 }
 
 /// One request against the CLI as an assistant-message stream.

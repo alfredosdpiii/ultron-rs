@@ -6,11 +6,10 @@
 //! renderer reads it.
 
 use crate::log::{EntryKind, LogEntry, LogUsage, SessionLog, log_usage, record};
-use crate::stats::{Cells, Stats, parse_session_stats};
-use delegation::lane_names::{LaneOwner, child_lane, frame_lane, parse_lane};
+use crate::stats::{CELL_APIS, Cells, SESSION_STATS_MODULE, Stats, parse_session_stats};
 use indexmap::{IndexMap, IndexSet};
+use lanes::lane_names::{LaneOwner, child_lane, frame_lane, parse_lane};
 use serde_json::{Map, Value, json};
-use session_core::session_stats::CELL_APIS;
 use session_journal::ns;
 use std::collections::{HashMap, HashSet};
 
@@ -309,14 +308,9 @@ fn cells_value(cells: &Cells) -> Value {
     json!({"count": jsrt::json::number(cells.count), "failed": jsrt::json::number(cells.failed), "apis": apis_value(&cells.apis)})
 }
 
-/// Build the report from a session file's digest.
-pub fn build_session_report(log: &SessionLog) -> Value {
-    build_session_report_with(log, &[])
-}
-
-/// [`build_session_report`] with the providers whose costs are notional besides Claude Code (`subscriptionProviders`:
-/// every provider the session's runtime reaches through a subscription login).
-pub fn build_session_report_with(log: &SessionLog, subscription_providers: &[String]) -> Value {
+/// Build the report from a session file's digest, given the providers whose costs are notional besides Claude Code
+/// (`subscriptionProviders`: every provider the session's runtime reaches through a subscription login).
+pub fn build_session_report(log: &SessionLog, subscription_providers: &[String]) -> Value {
     let subscription: HashSet<&str> = SUBSCRIPTION_PROVIDERS
         .into_iter()
         .chain(subscription_providers.iter().map(String::as_str))
@@ -423,7 +417,7 @@ pub fn build_session_report_with(log: &SessionLog, subscription_providers: &[Str
         happened(root.get("startedAt").and_then(Value::as_f64));
     }
     let nothing_ran = first_activity == f64::INFINITY && tasks.is_empty() && !external_marks;
-    let stats: Option<Stats> = parse_session_stats(log.value(ns::MODULE, "stats"))
+    let stats: Option<Stats> = parse_session_stats(log.value(ns::MODULE, SESSION_STATS_MODULE))
         .or_else(|| nothing_ran.then(|| Stats::empty(log.header.created_at)));
     let mode = if stats.as_ref().is_some_and(|s| s.external)
         || (stats.is_none() && main_entries.is_empty() && external_marks)

@@ -10,7 +10,6 @@ pub mod definitions;
 pub mod fork;
 pub mod git_baseline;
 pub mod host;
-pub mod lane_names;
 pub mod spawn_contract;
 pub mod task_store;
 pub mod usage;

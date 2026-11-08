@@ -28,6 +28,7 @@ fn model() -> ModelInfo {
         provider: "anthropic".into(),
         id: "a".into(),
         name: "a".into(),
+        api: String::new(),
         reasoning: true,
         context_window: 200_000,
         thinking_levels: Vec::new(),

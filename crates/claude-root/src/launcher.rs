@@ -398,7 +398,7 @@ pub fn run(
         platform: jsrt::process::platform(),
         resources: &resources,
         bundled_skills: bundled.as_deref(),
-        hints: kernel_apis::cell_hints::hints_enabled(var(kernel_apis::cell_hints::HINTS_ENV).as_deref()),
+        hints: session_core::compose::hints(var),
         skip_permissions: skip,
         apis: Some(&apis),
     });

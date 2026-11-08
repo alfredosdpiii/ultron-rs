@@ -1,4 +1,4 @@
-//! One `claude -p` process per model call (`directsdk.py` `Client._run`, `directsdk_setup.py`): locating the CLI,
+//! One `claude -p` process per model call (`directsdk.py` `Client._run`): locating the CLI,
 //! the child environment (auth overrides refused, isolation and quiet flags set, credentials never touched), the
 //! stable working directory, the private per-request files, the stream-json exchange, process-group cancellation
 //! and the reconciliation of native's output with what the admission relay captured.

@@ -14,6 +14,8 @@ mod github_common;
 #[path = "../../ai/tests/claude_subscription_support/isolate.rs"]
 mod isolate;
 mod radius_bridge;
+#[path = "../../kernel/tests/traceback_support/mod.rs"]
+mod traceback_support;
 mod tui_harness;
 
 #[path = "acp.rs"]

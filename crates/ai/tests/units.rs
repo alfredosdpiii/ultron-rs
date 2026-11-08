@@ -3,7 +3,7 @@
 
 use ai::constrained::make_strict_json_schema;
 use ai::env::{EnvSource, env_api_key_in, find_env_keys_in};
-use ai::json::{parse_json_with_repair, parse_streaming_json, repair_json, short_hash};
+use ai::json::short_hash;
 use ai::models::{
     builtin_model, builtin_models, builtin_providers, calculate_cost, clamp_thinking_level, supported_thinking_levels,
 };
@@ -11,6 +11,7 @@ use ai::options::{ThinkingBudgets, adjust_max_tokens_for_thinking};
 use ai::sse::SseDecoder;
 use ai::transcript::{estimate_context_tokens, transform_messages};
 use ai::{AssistantMessageEvent, Message, Model, StopReason, TranscriptContext, Usage};
+use jsrt::json_parse::{parse_json_with_repair, parse_streaming_json, repair_json};
 use serde_json::{Value, json};
 use std::collections::HashMap;
 use std::io::{Read, Write};

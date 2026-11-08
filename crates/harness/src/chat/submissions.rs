@@ -252,7 +252,7 @@ pub fn admit_submission(
 /// when no draft names a known request, `first`'s user entry and then each steer's are placed (all `placed`) and one
 /// run starts for them; the IDs are returned in order. Otherwise nothing is written and `None` says to admit them one
 /// by one.
-pub fn admit_run_with_steering(
+pub(crate) fn admit_run_with_steering(
     tx: &mut Tx<'_>,
     conversation_id: ConversationId,
     first: &SubmissionDraft,
@@ -306,7 +306,7 @@ pub fn admit_run_with_steering(
 
 /// Place input on a conversation created in this transaction (idle, with an empty inbox, so no table read is needed):
 /// a user entry, a `placed` input submission, and a run for it.
-pub fn place_initial_input(
+pub(crate) fn place_initial_input(
     tx: &mut Tx<'_>,
     conversation_id: ConversationId,
     content: &Value,

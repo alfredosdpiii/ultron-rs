@@ -10,9 +10,6 @@ use theme::{Fg, Theme};
 use tui::visible_width;
 use tui::{Component, Text};
 
-/// The log's file name in the agent directory (`basename(getDebugLogPath())`).
-pub const DEBUG_LOG_NAME: &str = "ultron-debug.log";
-
 /// What the TUI shows when `/debug` runs.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct DebugCapture {

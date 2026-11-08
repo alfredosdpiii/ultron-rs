@@ -37,6 +37,9 @@ from hints_api import Hints
 from goal_api import Goal
 from secret_patterns import REDACTION_MARKER
 from swarm_api import install as install_swarm
+from images_api import install as install_images
+from schedule_api import Schedule
+from diagram_api import Diagram
 import waits
 from tools_api import Mcp, McpError, ToolCall, ToolError, ToolResult, Tools
 from worktree_api import Worktrees, worktree_path
@@ -1058,9 +1061,14 @@ def _open_protocol() -> None:
     builtins.input = _no_input
 
 
+# Frames are written from the cell's thread and from the live-output timer: one line at a time.
+_FRAME_LOCK = threading.Lock()
+
+
 def _write_frame(line: str) -> None:
-    _PROTOCOL_OUT.write(line.encode("utf-8"))
-    _PROTOCOL_OUT.flush()
+    with _FRAME_LOCK:
+        _PROTOCOL_OUT.write(line.encode("utf-8"))
+        _PROTOCOL_OUT.flush()
 
 
 def emit(event: str, **fields: Any) -> None:
@@ -1996,6 +2004,9 @@ _STATE = RuntimeState()
 install_lanes(RLMNamespace)
 install_extensions(_STATE.namespace, _STATE.bridge)
 install_swarm(RLMNamespace, _STATE.namespace, _STATE.bridge)
+install_images(RLMNamespace)
+_STATE.namespace["schedule"] = Schedule(_STATE.bridge)
+_STATE.namespace["diagram"] = Diagram(_STATE.bridge)
 _STATE.bindings = {name: value for name, value in _STATE.namespace.items() if name != "state"}
 
 
@@ -2123,16 +2134,6 @@ async def main() -> None:
             return
         except Exception as error:
             emit("error", **_error_preview(error))
-
-
-# Frames are written from the cell's thread and from the live-output timer: one line at a time.
-_FRAME_LOCK = threading.Lock()
-_write_frame_unlocked = _write_frame
-
-
-def _write_frame(line: str) -> None:  # noqa: F811 - serializes the protocol writer defined above
-    with _FRAME_LOCK:
-        _write_frame_unlocked(line)
 
 
 # How often a running cell's new output is sent, and the most one send carries (the newest bytes; older ones are

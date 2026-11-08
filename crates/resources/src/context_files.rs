@@ -43,10 +43,10 @@ fn find_shadowed(cwd: &str) -> Option<String> {
     Some(jsrt::path::join(&[&main_root, basename(&own.path)]))
 }
 
-/// The global context file from `agent_dir`, then one per ancestor of `cwd`, outermost first.
-pub fn load_project_context_files(cwd: &str, agent_dir: &str) -> Vec<ContextFile> {
-    let cwd = resolve_path(cwd, "/", false);
-    let agent_dir = resolve_path(agent_dir, &cwd, false);
+/// The global context file from `agent_dir`, then one per ancestor of `cwd`, outermost first (`~` names `home`).
+pub fn load_project_context_files(cwd: &str, agent_dir: &str, home: &str) -> Vec<ContextFile> {
+    let cwd = resolve_path(cwd, "/", home, false);
+    let agent_dir = resolve_path(agent_dir, &cwd, home, false);
     let mut files = Vec::new();
     let mut seen: Vec<String> = Vec::new();
     if let Some(global) = load_from_dir(&agent_dir) {

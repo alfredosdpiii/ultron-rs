@@ -1,7 +1,7 @@
 //! Replays crates/mcp/fixtures/runtime.json, recorded from the TypeScript MCP extension by generate-runtime.mjs.
 
 use mcp::http::{SseItem, SseParser};
-use mcp::resolve::{resolve_config_value_or_err, resolve_headers_or_err};
+use mcp::resolve::{headers, value};
 use mcp::results::{convert_mcp_result, is_mcp_app_resource, listed};
 use mcp::runtime::{TransportSpec, transport_spec};
 use serde_json::{Map, Value, json};
@@ -45,11 +45,7 @@ fn expected(case: &Value) -> Value {
 #[test]
 fn mcp_runtime_resolve_config_values_match_typescript() {
     for case in fixture()["resolveCases"].as_array().unwrap() {
-        let got = outcome(resolve_config_value_or_err(
-            case["value"].as_str().unwrap(),
-            "thing",
-            &env(),
-        ));
+        let got = outcome(value(case["value"].as_str().unwrap(), "thing", &env()));
         assert_eq!(got, expected(case), "{}", case["value"]);
     }
 }
@@ -63,12 +59,10 @@ fn mcp_runtime_resolve_headers_match_typescript() {
             .iter()
             .map(|(k, v)| (k.clone(), v.as_str().unwrap().into()))
             .collect();
-        let got = outcome(
-            resolve_headers_or_err(&pairs, "MCP server \"s\"", &env()).map(|h| match h {
-                None => Value::Null,
-                Some(h) => Value::Object(h.into_iter().map(|(k, v)| (k, Value::String(v))).collect()),
-            }),
-        );
+        let got = outcome(headers(&pairs, "MCP server \"s\"", &env()).map(|h| match h {
+            None => Value::Null,
+            Some(h) => Value::Object(h.into_iter().map(|(k, v)| (k, Value::String(v))).collect()),
+        }));
         assert_eq!(got, expected(case), "{}", case["headers"]);
     }
 }

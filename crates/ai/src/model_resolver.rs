@@ -67,7 +67,7 @@ fn default_model_id(provider: &str) -> Option<&'static str> {
 
 /// `isClaudeCodeModel`: Claude Code CLI models answer only to their full `claude-code/<id>` reference.
 pub fn is_claude_code_model(model: &Model) -> bool {
-    model.api == "claude-code-cli"
+    model.api == crate::claude_code::API
 }
 
 impl model_scope::ScopeModel for Model {
@@ -80,10 +80,8 @@ impl model_scope::ScopeModel for Model {
     fn name(&self) -> &str {
         &self.name
     }
-    /// Claude Code CLI models, and the Claude subscription's, whose ids are Anthropic's own (TypeScript has no
-    /// `claude-subscription`, so a bare Claude id there matches the `anthropic` model alone).
     fn full_reference_only(&self) -> bool {
-        is_claude_code_model(self) || self.provider == crate::claude_subscription::catalog::PROVIDER
+        config::providers::full_reference_only(&self.provider, &self.api)
     }
 }
 

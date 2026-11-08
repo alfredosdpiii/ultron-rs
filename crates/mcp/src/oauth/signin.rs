@@ -163,9 +163,7 @@ fn wait_for_response(
     std::thread::scope(|scope| {
         let browser_tx = tx.clone();
         let browser = scope.spawn(move || {
-            let outcome = from_browser
-                .recv()
-                .unwrap_or_else(|_| Err(OAuthError::Other("OAuth callback server closed".into())));
+            let outcome = from_browser.recv();
             let _ = browser_tx.send(outcome.map(|Callback { code, iss, .. }| (code, iss)));
         });
         let user_cancel = cancel.clone();

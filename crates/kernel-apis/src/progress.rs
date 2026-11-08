@@ -42,19 +42,6 @@ fn valid_kind(kind: &str) -> bool {
             .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b"_.-".contains(b))
 }
 
-/// `/^[a-z][a-z0-9-]*@[0-9]+$/`
-fn valid_definition(text: &str) -> bool {
-    let Some((id, version)) = text.split_once('@') else {
-        return false;
-    };
-    id.as_bytes().first().is_some_and(u8::is_ascii_lowercase)
-        && id
-            .bytes()
-            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
-        && !version.is_empty()
-        && version.bytes().all(|b| b.is_ascii_digit())
-}
-
 fn valid_sha256(text: &str) -> bool {
     text.len() == 64 && text.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
 }
@@ -554,7 +541,7 @@ impl ProgressModule {
     fn verify(request: &Request<'_>, task: &Value, verifier: &str, input: Value, caller: Option<&str>) -> Value {
         let host = request.host;
         let mut claim = json!({"claim": "complete", "verifier": verifier});
-        let spawned = host.spawn(&json!({"definition": verifier, "input": input}), caller, request.signal);
+        let spawned = host.spawn(&json!({"definition": verifier, "input": input}), caller);
         let verifier_task_id = match spawned {
             Ok(task) => task["id"].as_str().unwrap_or_default().to_string(),
             Err(error) => {
@@ -618,7 +605,7 @@ impl ProgressModule {
             return Err("claim must be \"complete\"".into());
         }
         let verifier = present("verifier");
-        if verifier.is_some_and(|v| !v.as_str().is_some_and(valid_definition)) {
+        if verifier.is_some_and(|v| !v.as_str().is_some_and(crate::util::valid_definition)) {
             return Err("verifier must be id@version".into());
         }
         let verifier = verifier.and_then(Value::as_str);

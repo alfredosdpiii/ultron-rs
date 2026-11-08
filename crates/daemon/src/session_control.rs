@@ -50,7 +50,7 @@ fn state(core: &CoreCall) -> Result<Value, ServiceError> {
 }
 
 fn mode_of(value: &Value) -> String {
-    value.as_str().unwrap_or(config::keys::QUEUE_ONE_AT_A_TIME).to_string()
+    value.as_str().unwrap_or(config::keys::QUEUE_DEFAULT).to_string()
 }
 
 /// `{name, steeringMode, followUpMode, autoCompaction, autoRetry}`.

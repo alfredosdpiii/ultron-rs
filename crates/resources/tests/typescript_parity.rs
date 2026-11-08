@@ -137,7 +137,7 @@ fn resources_context_files_match_typescript() {
         }
         let cwd = format!("{root}/{}", case["cwd"].as_str().unwrap());
         let agent = format!("{root}/{}", case["agentDir"].as_str().unwrap());
-        let files: Vec<Value> = load_project_context_files(&cwd, &agent)
+        let files: Vec<Value> = load_project_context_files(&cwd, &agent, "/nonexistent-home")
             .iter()
             .map(|f| json!({"path": scrub(&f.path, &root), "content": f.content}))
             .collect();
@@ -157,6 +157,7 @@ fn resources_skill_loading_matches_typescript() {
         let result = load_skills(&LoadSkillsOptions {
             cwd: &format!("{root}/proj"),
             agent_dir: &format!("{root}/agent"),
+            home: "/nonexistent-home",
             skill_paths: &paths,
             include_defaults: case["includeDefaults"].as_bool().unwrap(),
         });
@@ -175,6 +176,7 @@ fn prompt_base(fx: &Value, root: &str) -> (Vec<Skill>, Vec<Skill>, Vec<resources
     let mut loaded = load_skills(&LoadSkillsOptions {
         cwd: &format!("{root}/proj"),
         agent_dir: &format!("{root}/agent"),
+        home: "/nonexistent-home",
         skill_paths: &[],
         include_defaults: true,
     })
@@ -193,7 +195,7 @@ fn prompt_base(fx: &Value, root: &str) -> (Vec<Skill>, Vec<Skill>, Vec<resources
         })
         .collect();
     assert_eq!(bundled.len() as u64, fx["bundledCount"].as_u64().unwrap());
-    let context = load_project_context_files(&format!("{root}/proj"), &format!("{root}/agent"));
+    let context = load_project_context_files(&format!("{root}/proj"), &format!("{root}/agent"), "/nonexistent-home");
     (loaded, bundled, context)
 }
 
@@ -328,7 +330,13 @@ fn resources_prompt_templates_match_typescript() {
             .iter()
             .map(|p| p.replace("$ROOT", &root))
             .collect();
-        let result = load_prompt_templates(&cwd, &agent, &paths, case["includeDefaults"].as_bool().unwrap());
+        let result = load_prompt_templates(
+            &cwd,
+            &agent,
+            "/nonexistent-home",
+            &paths,
+            case["includeDefaults"].as_bool().unwrap(),
+        );
         let templates: Vec<Value> = result
             .templates
             .iter()
@@ -355,7 +363,7 @@ fn resources_prompt_templates_match_typescript() {
             without_yaml_messages(case["diagnostics"].clone())
         );
     }
-    let loaded = load_prompt_templates(&cwd, &agent, &[], true).templates;
+    let loaded = load_prompt_templates(&cwd, &agent, "/nonexistent-home", &[], true).templates;
     for case in fx["expand"].as_array().unwrap() {
         let text = case["text"].as_str().unwrap();
         assert_eq!(
@@ -400,6 +408,7 @@ fn resources_system_prompt_files_match_typescript() {
         let files = load_prompt_files(
             &format!("{root}/{}", case["cwd"].as_str().unwrap()),
             &format!("{root}/{}", case["agentDir"].as_str().unwrap()),
+            "/nonexistent-home",
             case["trusted"].as_bool().unwrap(),
             system.as_deref(),
             appends.as_deref(),

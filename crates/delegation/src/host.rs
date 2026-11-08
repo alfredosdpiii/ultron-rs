@@ -16,10 +16,11 @@ pub use restore::{ChildWaiter, Reattached};
 
 use crate::git_baseline::GitBaseline;
 use crate::spawn_contract::{CheckPlace, CheckRunner, Enforcer, SpawnContract, enforce, plain_check_runner};
-use crate::task_store::{TaskJournal, task_fingerprint};
+use crate::task_store::TaskJournal;
 use crate::verdict::{MAX_VERDICT_REJECTIONS, validate_verdict};
 use crate::workspace::{WorkspaceSnapshot, check_files, diff_snapshots, snapshot_workspace};
 use crate::worktrees::{self as wt, WorktreeRecord, WorktreeSetup};
+use harness::task_store::task_fingerprint;
 use jsrt::payload::nonempty_string;
 use jsrt::{number, sync};
 use kernel::store::{DocumentStore, MemoryDocumentStore};
@@ -604,18 +605,9 @@ impl Delegation {
         }
     }
 
-    /// The host requests [`Delegation::handle_with`] answers.
+    /// Whether `kind` is a host request [`Delegation::handle_with`] answers.
     pub fn serves(kind: &str) -> bool {
-        matches!(
-            kind,
-            "rlm.spawn"
-                | "rlm.finish"
-                | "rlm.list_subagents"
-                | "rlm.collect"
-                | "rlm.results"
-                | "rlm.delete_subagent"
-                | "rlm.merge"
-        ) || kind.starts_with("rlm.worktrees.")
+        Request::of(kind).is_some()
     }
 
     pub fn handle(&self, kind: &str, payload: Value, lane: &str) -> Result<Value, String> {
@@ -623,6 +615,7 @@ impl Delegation {
     }
 
     pub fn handle_with(&self, kind: &str, payload: Value, lane: &str, cell: &CellContext) -> Result<Value, String> {
+        let request = Request::of(kind);
         let cancel = cell.cancel.as_ref();
         let Value::Object(payload) = payload else {
             return Err("Host payload must be a JSON object".into());
@@ -636,10 +629,13 @@ impl Delegation {
             state.lane_tasks.get(lane).cloned()
         };
         let parent = parent.as_deref();
-        match kind {
-            "rlm.spawn" => self.spawn(&payload, parent, lane),
-            "rlm.finish" => self.finish_request(payload, parent),
-            "rlm.list_subagents" => {
+        let Some(request) = request else {
+            return Err(format!("Unknown host request: {kind}"));
+        };
+        match request {
+            Request::Spawn => self.spawn(&payload, parent, lane),
+            Request::Finish => self.finish_request(payload, parent),
+            Request::ListSubagents => {
                 jsrt::payload::fields(&payload, &[])?;
                 let state = sync::lock(&self.inner.state);
                 let subagents: Vec<Value> = state
@@ -651,12 +647,13 @@ impl Delegation {
                     .collect();
                 Ok(json!({ "subagents": subagents }))
             }
-            "rlm.collect" | "rlm.results" => {
+            Request::Collect | Request::Results => {
+                let collect = matches!(request, Request::Collect);
                 let ids = self.selected(&payload, parent)?;
-                let waits = kind == "rlm.collect" && self.collect_mode(lane) == CollectMode::InCell;
+                let waits = collect && self.collect_mode(lane) == CollectMode::InCell;
                 if !waits {
                     let running = self.unfinished(&ids);
-                    if kind == "rlm.collect" && !running.is_empty() {
+                    if collect && !running.is_empty() {
                         return Err(format!(
                             "rlm.collect: {} subagent(s) still running ({}). The host waits for them, not this cell: do other work, or end your turn; each end arrives as a child_done event, then collect again.",
                             running.len(),
@@ -664,7 +661,7 @@ impl Delegation {
                         ));
                     }
                     let mut out = self.collected(self.wait_until(&ids, Some(Duration::ZERO), None))?;
-                    if kind == "rlm.results" {
+                    if !collect {
                         out["running"] = json!(running);
                     }
                     return Ok(out);
@@ -690,7 +687,7 @@ impl Delegation {
                 }
                 self.collected(outcomes)
             }
-            "rlm.delete_subagent" => {
+            Request::DeleteSubagent => {
                 jsrt::payload::fields(&payload, &["selector"])?;
                 let selector = nonempty_string(payload.get("selector"), "selector")?;
                 let known = {
@@ -703,8 +700,8 @@ impl Delegation {
                 let result = self.cancel(&selector, "RLM child deleted")?;
                 Ok(json!({ "deleted": result["status"] == "cancelled" }))
             }
-            "rlm.merge" => self.merge_request(&payload, parent, lane, cell),
-            "rlm.worktrees.list" => {
+            Request::Merge => self.merge_request(&payload, parent, lane, cell),
+            Request::WorktreesList => {
                 jsrt::payload::fields(&payload, &["all"])?;
                 let shared = self.inner.workspace.as_deref();
                 let from = sync::lock(&self.inner.state)
@@ -728,7 +725,7 @@ impl Delegation {
                     .collect();
                 Ok(json!({ "worktrees": worktrees }))
             }
-            "rlm.worktrees.cleanup" => {
+            Request::WorktreesCleanup => {
                 jsrt::payload::fields(&payload, &["branches"])?;
                 let workspace = sync::lock(&self.inner.state).workspace_of(parent, self.inner.workspace.as_deref());
                 let Some(workspace) = workspace else {
@@ -774,7 +771,6 @@ impl Delegation {
                     .collect();
                 Ok(json!({ "removed": removed, "kept_branches": kept, "running": still }))
             }
-            other => Err(format!("Unknown host request: {other}")),
         }
     }
 
@@ -1248,7 +1244,7 @@ impl Delegation {
             }
             (id, level)
         };
-        let lane_name = crate::lane_names::child_lane(&task_id);
+        let lane_name = lanes::lane_names::child_lane(&task_id);
         let (cwd, env, brief) = {
             let state = sync::lock(&self.inner.state);
             let inherited = state.worktree_of(Some(&task_id));
@@ -2192,5 +2188,36 @@ impl Delegation {
                 },
             );
         }
+    }
+}
+
+/// A host request [`Delegation`] answers.
+#[derive(Clone, Copy)]
+enum Request {
+    Spawn,
+    Finish,
+    ListSubagents,
+    Collect,
+    Results,
+    DeleteSubagent,
+    Merge,
+    WorktreesList,
+    WorktreesCleanup,
+}
+
+impl Request {
+    fn of(kind: &str) -> Option<Request> {
+        Some(match kind {
+            "rlm.spawn" => Request::Spawn,
+            "rlm.finish" => Request::Finish,
+            "rlm.list_subagents" => Request::ListSubagents,
+            "rlm.collect" => Request::Collect,
+            "rlm.results" => Request::Results,
+            "rlm.delete_subagent" => Request::DeleteSubagent,
+            "rlm.merge" => Request::Merge,
+            "rlm.worktrees.list" => Request::WorktreesList,
+            "rlm.worktrees.cleanup" => Request::WorktreesCleanup,
+            _ => return None,
+        })
     }
 }

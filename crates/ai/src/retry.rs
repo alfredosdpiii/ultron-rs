@@ -94,6 +94,12 @@ impl RetryPolicy {
         })
     }
 
+    /// How long to wait before trying again after attempt `attempt` (1-based) answered `message`: some when the
+    /// policy allows another attempt and the failure is a retryable provider error (`isRetryableAssistantError`).
+    pub fn retry_delay(&self, attempt: u64, message: &AssistantMessage) -> Option<u64> {
+        (attempt < self.max_attempts() && is_retryable(message)).then(|| self.delay_ms(attempt))
+    }
+
     /// `retryDelayMs`: `baseDelayMs * 2^(attempt-1)`, capped.
     pub fn delay_ms(&self, attempt: u64) -> u64 {
         let factor = 1u64.checked_shl(attempt.saturating_sub(1) as u32).unwrap_or(u64::MAX);

@@ -74,6 +74,7 @@ pub fn options() -> AppOptions {
         provider: "anthropic".into(),
         id: "a".into(),
         name: "Model a".into(),
+        api: String::new(),
         reasoning: true,
         context_window: 1000,
         thinking_levels: Vec::new(),

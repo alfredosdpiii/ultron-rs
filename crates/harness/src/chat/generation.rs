@@ -28,14 +28,13 @@ use super::prompt::{plan_system_entries, replay_sections};
 use super::throttle::Throttle;
 use super::util::{delete, from_value, get, owner, set, strict, to_value};
 use crate::scheduler::{HarnessError, NextState, Result, Task, TaskRuntime, completed};
-use ai::retry::is_retryable;
 
 const DEFAULT_POLL_AFTER_MS: u64 = 5000;
 
 /// The generation's checkpoint (spec §8.3).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "phase", rename_all = "camelCase", rename_all_fields = "camelCase")]
-pub enum GenerationCheckpoint {
+pub(crate) enum GenerationCheckpoint {
     Prepare {
         attempt: u64,
         /// The blocking compaction this generation waited for; it starts no other compaction.
@@ -610,22 +609,15 @@ fn classify(services: &Services, runtime: &TaskRuntime, request: Request, messag
             });
         }
     }
-    let policy = settings.retry;
     // An overflow is never retried: only a compaction can make the next request fit.
-    let retry = message.stop_reason == StopReason::Error
-        && !overflow
-        && is_retryable(&message)
-        && policy.enabled
-        && attempt <= policy.max_retries;
-    let until = if retry {
-        runtime.now()? + policy.delay_ms(attempt)
-    } else {
-        0
+    let retry = match settings.retry.retry_delay(attempt, &message).filter(|_| !overflow) {
+        Some(delay) => Some(runtime.now()? + delay),
+        None => None,
     };
     runtime.commit(&runtime.ctx(), |tx, _| {
         let live = live(tx, conversation_id)?;
         append_assistant(tx, conversation_id, &stored)?;
-        if retry {
+        if let Some(until) = retry {
             let error = message.error_message.clone().unwrap_or_default();
             set(
                 &live,

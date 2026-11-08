@@ -41,7 +41,7 @@ impl TaskHost for FakeHost {
     fn tasks(&self) -> Result<Vec<Value>, String> {
         Ok(self.tasks.clone())
     }
-    fn spawn(&self, _: &Value, _: Option<&str>, _: &Signal) -> Result<Value, String> {
+    fn spawn(&self, _: &Value, _: Option<&str>) -> Result<Value, String> {
         Err("unused".into())
     }
     fn result(&self, _: &str) -> Result<Value, String> {
@@ -50,7 +50,7 @@ impl TaskHost for FakeHost {
     fn cancel(&self, _: &str, _: &str) -> Result<Value, String> {
         Err("unused".into())
     }
-    fn steer(&self, task_id: &str, message: &str, _: &Signal) -> Result<bool, String> {
+    fn steer(&self, task_id: &str, message: &str) -> Result<bool, String> {
         if !self.live.iter().any(|id| id == task_id) {
             return Ok(false);
         }

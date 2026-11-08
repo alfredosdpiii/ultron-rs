@@ -13,7 +13,6 @@ use crate::auth::merge_headers;
 use crate::model_config::ModelConfig;
 use crate::options::{ProviderHeaders, SimpleStreamOptions};
 use crate::types::Model;
-use config::auth::{TemplatePart, parse_template};
 use serde_json::{Map, Value, json};
 use std::path::Path;
 use std::sync::Arc;
@@ -490,8 +489,8 @@ impl ModelRegistry {
     /// resolve with or without the CLI.
     pub fn auth_configured(&self, provider: &str, lookup: Lookup<'_>, inherited: bool) -> bool {
         match self.raw_key(provider) {
-            Some(raw) if is_command(raw) => true,
-            Some(raw) => env_names(raw)
+            Some(raw) if config::auth::is_command(raw) => true,
+            Some(raw) => config::auth::env_names(raw)
                 .iter()
                 .all(|name| lookup(name).is_some_and(|v| !v.trim().is_empty())),
             None if provider == crate::claude_code::PROVIDER => {
@@ -518,9 +517,11 @@ impl ModelRegistry {
             return Ok(Some(key.to_string()));
         }
         match self.raw_key(provider) {
-            Some(raw) => resolve_config_value_or_err(raw, &format!("API key for provider \"{provider}\""), lookup)
-                .map(Some)
-                .map_err(|e| auth_failed(provider, &e)),
+            Some(raw) => {
+                config::auth::resolve_or_err(raw, &format!("API key for provider \"{provider}\""), lookup, &[])
+                    .map(Some)
+                    .map_err(|e| auth_failed(provider, &e))
+            }
             None => Ok(inherited),
         }
     }
@@ -888,72 +889,12 @@ fn apply_models_json(provider: &str, base: Vec<Value>, config: &Map<String, Valu
     Ok(models)
 }
 
-/// `!command` values run a shell command; everything else is a template.
-pub fn is_command(config: &str) -> bool {
-    config.starts_with('!')
-}
-
-/// `getConfigValueEnvVarNames`: the variables a template names, first occurrence first.
-pub fn env_names(config: &str) -> Vec<String> {
-    if is_command(config) {
-        return Vec::new();
-    }
-    let mut names: Vec<String> = Vec::new();
-    for part in parse_template(config) {
-        if let TemplatePart::Env(name) = part
-            && !names.contains(&name)
-        {
-            names.push(name);
-        }
-    }
-    names
-}
-
-fn env_value(name: &str, lookup: Lookup<'_>) -> Option<String> {
-    lookup(name).filter(|v| !v.is_empty())
-}
-
-/// `resolveConfigValueUncached`: `!command` output, or the template with its variables filled (None when one is
-/// unset or empty).
-pub fn resolve_config_value(config: &str, lookup: Lookup<'_>) -> Option<String> {
-    match config.strip_prefix('!') {
-        Some(command) => config::auth::command_output(command),
-        None => config::auth::fill_template(config, lookup),
-    }
-}
-
-/// `resolveConfigValueOrThrow`, with its messages.
-pub fn resolve_config_value_or_err(config: &str, description: &str, lookup: Lookup<'_>) -> Result<String, String> {
-    if let Some(value) = resolve_config_value(config, lookup) {
-        return Ok(value);
-    }
-    if let Some(command) = config.strip_prefix('!') {
-        return Err(format!("Failed to resolve {description} from shell command: {command}"));
-    }
-    let missing: Vec<String> = env_names(config)
-        .into_iter()
-        .filter(|name| env_value(name, lookup).is_none())
-        .collect();
-    Err(match missing.as_slice() {
-        [] => format!("Failed to resolve {description}"),
-        [one] => format!("Failed to resolve {description} from environment variable: {one}"),
-        many => format!(
-            "Failed to resolve {description} from environment variables: {}",
-            many.join(", ")
-        ),
-    })
-}
-
-/// `resolveHeadersOrThrow`: every header resolved; None when there are none.
-pub fn resolve_headers_or_err(
+/// `resolveHeadersOrThrow` as request headers.
+fn resolve_headers_or_err(
     headers: &[(String, String)],
     description: &str,
     lookup: Lookup<'_>,
 ) -> Result<Option<ProviderHeaders>, String> {
-    let mut out = ProviderHeaders::new();
-    for (key, value) in headers {
-        let resolved = resolve_config_value_or_err(value, &format!("{description} header \"{key}\""), lookup)?;
-        out.insert(key.clone(), Some(resolved));
-    }
-    Ok((!out.is_empty()).then_some(out))
+    let resolved = config::auth::resolve_headers_or_err(headers, description, lookup, &[])?;
+    Ok(resolved.map(|pairs| pairs.into_iter().map(|(k, v)| (k, Some(v))).collect()))
 }

@@ -6,6 +6,7 @@ use crate::p_session_support;
 
 use p_session_support::{Setup, actor, text, tool, tool_results};
 use serde_json::Value;
+use session_core::async_events::default_mask;
 
 const SECRET: &str = "ghp_aB3dE5fG7hI9jK1lM3nO5pQ7rS9tU1vW3xY5";
 
@@ -69,7 +70,7 @@ fn session_core_event_lines_mask_registered_values() {
         let masker = masker.clone();
         std::sync::Arc::new(move |text: &str| masker.mask_counted(text, None).0)
     };
-    let line = session_core::compose::runtime_event_line_with(
+    let line = session_core::async_events::runtime_event_line(
         "job_done",
         "job-1",
         "completed",
@@ -82,12 +83,13 @@ fn session_core_event_lines_mask_registered_values() {
         "<runtime_event kind=\"job_done\" id=\"job-1\" status=\"completed\" summary=\"printed [REDACTED:known_secret]\" fetch=\"await rlm.job(&quot;job-1&quot;)\" />"
     );
     // The shipped rules alone do not know the value.
-    let plain = session_core::compose::runtime_event_line(
+    let plain = session_core::async_events::runtime_event_line(
         "job_done",
         "job-1",
         "completed",
         "printed opaque-session-value",
         "x",
+        &default_mask(),
     );
     assert!(plain.contains("printed opaque-session-value"), "{plain}");
 }
@@ -97,6 +99,13 @@ fn session_core_event_lines_mask_registered_values() {
 /// turns control characters such as U+0085 into spaces.)
 #[test]
 fn session_core_runtime_event_summary_flattens_javascript_whitespace() {
-    let line = session_core::compose::runtime_event_line("cell", "c1", "done", "\u{feff} a\u{feff}\u{feff}b\n c ", "f");
+    let line = session_core::async_events::runtime_event_line(
+        "cell",
+        "c1",
+        "done",
+        "\u{feff} a\u{feff}\u{feff}b\n c ",
+        "f",
+        &default_mask(),
+    );
     assert!(line.contains("summary=\"a b c\""), "{line}");
 }

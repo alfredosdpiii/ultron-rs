@@ -7,7 +7,7 @@
 //!   block's final text.
 //! - `toolcall_start` opens a call (`id`, `toolName` from the frame) with empty arguments; `toolcall_delta` appends to
 //!   its streamed argument text, kept beside the call as `partialJson`, and parses it as the providers do
-//!   (`ai::json::parse_streaming_json`); `toolcall_end` puts the finished call in its place.
+//!   (`jsrt::json_parse::parse_streaming_json`); `toolcall_end` puts the finished call in its place.
 //!
 //! A `message_update` from an older worker still carries `message`: it replaces the fold ([`message_of`]).
 
@@ -77,7 +77,7 @@ pub fn fold_frame(message: &mut Value, frame: &Value) {
         }
         "toolcall_delta" => {
             append(block, PARTIAL_JSON, frame["delta"].as_str().unwrap_or_default());
-            let arguments = ai::json::parse_streaming_json(block[PARTIAL_JSON].as_str().unwrap_or_default());
+            let arguments = jsrt::json_parse::parse_streaming_json(block[PARTIAL_JSON].as_str().unwrap_or_default());
             block.insert("arguments".into(), arguments);
         }
         _ => {}

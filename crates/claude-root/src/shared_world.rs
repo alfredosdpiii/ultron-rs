@@ -18,7 +18,6 @@
 
 use crate::durable_apis::DurableApis;
 use serde_json::{Map, Value};
-use session_core::subagents::LANE_PREFIX;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, OnceLock, PoisonError};
 
@@ -66,7 +65,7 @@ impl SharedWorld {
 
     /// The name the subagent working in `lane` goes by: its spawn's name, else `subagent-<task id>`.
     pub fn name_of_lane(&self, lane: &str) -> String {
-        let Some(id) = lane.strip_prefix(LANE_PREFIX) else {
+        let Some(lanes::lane_names::LaneOwner::Child(id)) = lanes::lane_names::parse_lane(lane) else {
             return lane.to_string();
         };
         self.names

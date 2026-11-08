@@ -226,17 +226,8 @@ impl Core {
         let attempt: AttemptFn<compaction::BranchSummary> =
             Arc::new(move || summarizer.branch(&entries, instructions.as_deref(), replace, RESERVE_TOKENS, &cancel));
         let ids = (op.operation_id().to_string(), op.task_id().to_string());
-        let mut journal = |core: &mut Core, step: RetryStep<'_>| {
-            let mut session = lock_session(&core.session);
-            match step {
-                RetryStep::Wait {
-                    usage,
-                    error,
-                    not_before,
-                } => op.retry_wait(&mut session, usage.as_ref(), error, not_before),
-                RetryStep::Retry => op.retry(&mut session),
-            }
-        };
+        let mut journal =
+            |core: &mut Core, step: RetryStep<'_>| op.journal_step(&mut lock_session(&core.session), step);
         let (result, _) = self.summary_attempts(
             signal,
             retry,

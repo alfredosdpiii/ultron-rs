@@ -99,6 +99,46 @@ fn ai_claude_code_cli_second_request_takes_the_warm_spare() {
     assert_eq!(claude_code_cli::claude_code_cli_stats().1, 0);
 }
 
+/// child.on("close"): a CLI that exits without a result reports the stderr written until its pipes closed, even when
+/// a process it left running writes the last line after the exit.
+#[test]
+fn ai_claude_code_cli_exit_error_waits_for_the_stderr_pipe_to_close() {
+    claude_code_cli::reset_claude_code_cli_state();
+    let dir = tempfile::tempdir().unwrap();
+    let fixture = concat!(env!("CARGO_MANIFEST_DIR"), "/fixtures/fake-claude/claude");
+    let bin = dir.path().join("claude");
+    std::fs::write(
+        &bin,
+        format!(
+            "#!/bin/sh\ncase \"$1\" in --version|--help|auth) exec {fixture} \"$@\" ;; esac\nread -r line\n(sleep 0.3; echo 'late stderr line' >&2) >/dev/null &\nexit 3\n"
+        ),
+    )
+    .unwrap();
+    std::fs::set_permissions(&bin, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+    let options: ClaudeCodeOptions = serde_json::from_value(json!({"env": {
+        (ai::claude_code_cli::CLAUDE_CODE_BIN_ENV): bin.to_string_lossy(),
+        "CLAUDE_CONFIG_DIR": "/cfg/late",
+    }}))
+    .unwrap();
+    let context: TranscriptContext =
+        serde_json::from_value(json!({"messages": [{"role": "user", "content": "q", "timestamp": 1}]})).unwrap();
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_time()
+        .build()
+        .unwrap();
+    let reply = runtime.block_on(claude_code_cli::stream_simple(
+        &cc_model(),
+        &context,
+        &options,
+        &mut |_| {},
+    ));
+    assert_eq!(
+        reply.error_message.as_deref(),
+        Some("Claude Code CLI exited (code 3) before a result: late stderr line")
+    );
+    claude_code_cli::reset_claude_code_cli_state();
+}
+
 /// The page the browser thread read back from the callback server, once it has read it (hang guard 120 s).
 fn served_page(pages: &mpsc::Receiver<String>) -> String {
     pages

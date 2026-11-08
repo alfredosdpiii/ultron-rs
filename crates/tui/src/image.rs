@@ -714,20 +714,13 @@ pub const TMUX_PROBE_TIMEOUT: std::time::Duration = std::time::Duration::from_mi
 /// a cleared environment but the variables above), at most `timeout`; any failure is `false`.
 pub fn tmux_forwards_hyperlinks(env: &dyn Fn(&str) -> Option<String>, timeout: std::time::Duration) -> bool {
     use std::process::{Command, Stdio};
-    let Some(path) = env("PATH") else {
-        return false;
-    };
-    let Some(tmux) = std::env::split_paths(&path)
-        .map(|dir| dir.join("tmux"))
-        .find(|p| p.is_file())
-    else {
+    let Some(tmux) = env("PATH").and_then(|path| jsrt::process::which("tmux", &path)) else {
         return false;
     };
     let mut command = Command::new(tmux);
     command
         .args(["display-message", "-p", "#{client_termfeatures}"])
         .env_clear()
-        .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::null());
     for name in TMUX_PROBE_ENV {
@@ -735,28 +728,12 @@ pub fn tmux_forwards_hyperlinks(env: &dyn Fn(&str) -> Option<String>, timeout: s
             command.env(name, value);
         }
     }
-    let Ok(mut child) = command.spawn() else {
-        return false;
+    let bound = signals::child::Bound {
+        timeout: Some(timeout),
+        ..Default::default()
     };
-    let Some(mut stdout) = child.stdout.take() else {
-        let _ = child.kill();
-        let _ = child.wait();
-        return false;
-    };
-    let (tx, rx) = std::sync::mpsc::channel();
-    std::thread::spawn(move || {
-        let mut text = String::new();
-        let _ = std::io::Read::read_to_string(&mut stdout, &mut text);
-        let _ = tx.send(text);
-    });
-    let Ok(text) = rx.recv_timeout(timeout) else {
-        // Our own child only.
-        let _ = child.kill();
-        let _ = child.wait();
-        return false;
-    };
-    match child.wait() {
-        Ok(status) if status.success() => termfeatures_list_hyperlinks(&text),
+    match signals::child::run(&mut command, None, bound) {
+        Ok(output) if output.success() => termfeatures_list_hyperlinks(&String::from_utf8_lossy(&output.stdout)),
         _ => false,
     }
 }

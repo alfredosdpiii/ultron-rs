@@ -67,7 +67,7 @@ impl TaskHost for Recorder {
     fn tasks(&self) -> Result<Vec<Value>, String> {
         Ok(Vec::new())
     }
-    fn spawn(&self, request: &Value, parent: Option<&str>, _: &Signal) -> Result<Value, String> {
+    fn spawn(&self, request: &Value, parent: Option<&str>) -> Result<Value, String> {
         let mut spawned = self.spawned.lock().unwrap();
         spawned.push(json!({"request": request, "parent": parent}));
         if std::mem::take(&mut *self.fail.lock().unwrap()) {
@@ -81,7 +81,7 @@ impl TaskHost for Recorder {
     fn cancel(&self, _: &str, _: &str) -> Result<Value, String> {
         Err("unused".into())
     }
-    fn steer(&self, _: &str, _: &str, _: &Signal) -> Result<bool, String> {
+    fn steer(&self, _: &str, _: &str) -> Result<bool, String> {
         Ok(false)
     }
     fn now(&self) -> i64 {

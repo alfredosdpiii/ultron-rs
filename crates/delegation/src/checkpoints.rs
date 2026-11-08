@@ -16,11 +16,10 @@
 //! (ignored or too large). Ignored files, HEAD and the index are never changed.
 
 use crate::worktrees::{
-    GitOptions, TempIndex, WorktreeError, copy_index, git_ok, git_ok_with, identity_env, opts, quiet, repo_info,
-    temporary_index,
+    GitOptions, KILL_GRACE, TempIndex, WorktreeError, copy_index, git_ok, git_ok_with, identity_env, opts, quiet,
+    repo_info, temporary_index,
 };
 use serde_json::{Value, json};
-use std::io::Read;
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -444,45 +443,35 @@ fn interrupted(safety: &Checkpoint, why: &str) -> String {
     )
 }
 
-/// Run `jj` in `root`; stdout trimmed. A hang guard kills it after two minutes.
+/// Run `jj` in `root`; stdout trimmed. It is stopped after two minutes.
 fn jj_run(jj: &Path, root: &Path, args: &[&str]) -> Result<String, String> {
-    let mut child = Command::new(jj)
-        .args(args)
-        .current_dir(root)
-        .env("LC_ALL", "C")
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .map_err(|e| format!("jj could not start: {e}"))?;
-    let pid = child.id();
-    let (done, finished) = std::sync::mpsc::channel::<()>();
-    std::thread::spawn(move || {
-        if finished.recv_timeout(JJ_TIMEOUT).is_err()
-            && let Some(pid) = rustix::process::Pid::from_raw(pid as i32)
-        {
-            let _ = rustix::process::kill_process(pid, rustix::process::Signal::TERM);
-        }
-    });
-    let mut stderr_pipe = child.stderr.take();
-    let stderr_reader = std::thread::spawn(move || {
-        let mut text = String::new();
-        if let Some(pipe) = stderr_pipe.as_mut() {
-            let _ = pipe.read_to_string(&mut text);
-        }
-        text
-    });
-    let mut stdout = String::new();
-    if let Some(mut pipe) = child.stdout.take() {
-        let _ = pipe.read_to_string(&mut stdout);
+    let bound = signals::child::Bound {
+        timeout: Some(JJ_TIMEOUT),
+        stop: signals::child::Stop {
+            group: false,
+            term_grace: Some(KILL_GRACE),
+        },
+        keep: None,
+    };
+    let output = signals::child::run(
+        Command::new(jj)
+            .args(args)
+            .current_dir(root)
+            .env("LC_ALL", "C")
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped()),
+        None,
+        bound,
+    )
+    .map_err(|e| format!("jj could not start: {e}"))?;
+    if !output.success() {
+        return Err(format!(
+            "jj {} failed: {}",
+            args.join(" "),
+            String::from_utf8_lossy(&output.stderr).trim()
+        ));
     }
-    let status = child.wait().map_err(|e| e.to_string())?;
-    let _ = done.send(());
-    let stderr = stderr_reader.join().unwrap_or_default();
-    if !status.success() {
-        return Err(format!("jj {} failed: {}", args.join(" "), stderr.trim()));
-    }
-    Ok(stdout.trim().to_string())
+    Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
 }
 
 fn jj_commit(jj: &Path, root: &Path, snapshot: bool, limits: &Limits) -> Result<String, String> {

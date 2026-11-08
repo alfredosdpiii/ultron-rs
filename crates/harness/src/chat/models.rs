@@ -3,7 +3,7 @@
 //! [`Models`] is upstream `HarnessOptions.models` reduced to what the generation and compaction tasks call:
 //! resolve a model, stream one response under the invocation's signal, and poll or cancel a deferred response. It
 //! blocks the calling task thread. The product implementation is `session_core::turns::TurnModels`; tests use
-//! [`super::faux::Faux`].
+//! `faux::Faux` (feature `test-support`).
 
 use std::sync::{Arc, LazyLock};
 
@@ -149,7 +149,7 @@ impl Default for Settings {
 }
 
 impl Settings {
-    pub fn queue_modes(&self) -> QueueModes {
+    pub(crate) fn queue_modes(&self) -> QueueModes {
         QueueModes {
             steering: self.steering_mode,
             follow_up: self.follow_up_mode,

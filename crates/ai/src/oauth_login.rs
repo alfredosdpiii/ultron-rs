@@ -529,7 +529,7 @@ async fn login_codex_device(ctx: &LoginContext<'_>) -> Result<OAuthCredential, S
             reply.status
         ));
     }
-    let data = crate::json::parse_json(&reply.text).map_err(|e| format!("SyntaxError: {e}"))?;
+    let data = jsrt::json_parse::parse_json(&reply.text).map_err(|e| format!("SyntaxError: {e}"))?;
     let interval = match data.get("interval") {
         Some(Value::String(s)) => Some(jsrt::number::parse(s)),
         Some(Value::Number(n)) => n.as_f64(),
@@ -569,7 +569,7 @@ async fn login_codex_device(ctx: &LoginContext<'_>) -> Result<OAuthCredential, S
         || async {
             let reply = codex_send(ctx, CODEX_DEVICE_TOKEN_URL, &headers, poll_body.clone()).await?;
             if reply.ok() {
-                let data = crate::json::parse_json(&reply.text).map_err(|e| format!("SyntaxError: {e}"))?;
+                let data = jsrt::json_parse::parse_json(&reply.text).map_err(|e| format!("SyntaxError: {e}"))?;
                 let field = |key| data.get(key).and_then(Value::as_str).filter(|s| !s.is_empty());
                 return Ok(match (field("authorization_code"), field("code_verifier")) {
                     (Some(code), Some(verifier)) => Poll::Complete((code.to_owned(), verifier.to_owned())),
@@ -582,7 +582,7 @@ async fn login_codex_device(ctx: &LoginContext<'_>) -> Result<OAuthCredential, S
             if matches!(reply.status, 403 | 404) {
                 return Ok(Poll::Pending);
             }
-            let error_code = crate::json::parse_json(&reply.text)
+            let error_code = jsrt::json_parse::parse_json(&reply.text)
                 .ok()
                 .and_then(|json| match json.get("error") {
                     Some(Value::Object(error)) => error.get("code").and_then(Value::as_str).map(str::to_owned),
@@ -785,7 +785,7 @@ async fn fetch_copilot_models(ctx: &LoginContext<'_>, token: &str, base_url: &st
     if !reply.ok() {
         return Err(format!("{} {}: {}", reply.status, reply.status_text(), reply.text));
     }
-    let raw = crate::json::parse_json(&reply.text).map_err(|e| format!("SyntaxError: {e}"))?;
+    let raw = jsrt::json_parse::parse_json(&reply.text).map_err(|e| format!("SyntaxError: {e}"))?;
     CopilotCatalog::parse(&raw, base_url == COPILOT_INDIVIDUAL_URL)
 }
 

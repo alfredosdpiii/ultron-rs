@@ -1058,7 +1058,7 @@ fn interactive_w18s_settings_lists_persona_and_writes_it_like_the_command() {
         "{screen}"
     );
     h.app.handle_input("\r");
-    assert_eq!(h.calls().last().unwrap(), "setting persona=null");
+    assert_eq!(h.calls().last().unwrap(), "setting persona=\"off\"");
     h.app.handle_input(ESC);
     open_settings(&mut h, json!({}));
     h.typed("persona");

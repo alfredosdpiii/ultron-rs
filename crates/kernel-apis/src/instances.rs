@@ -216,7 +216,7 @@ impl ApiModule for InstancesModule {
                     let key = text(Some(key), "key")?;
                     spawn["key"] = format!("instance:{}:{key}", instance["id"].as_str().unwrap_or("")).into();
                 }
-                let task = host.spawn(&spawn, caller, request.signal)?;
+                let task = host.spawn(&spawn, caller)?;
                 let invoked = instance["invocations"]
                     .as_array()
                     .is_some_and(|items| items.iter().any(|item| item["task_id"] == task["id"]));

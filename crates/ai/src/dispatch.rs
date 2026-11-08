@@ -26,7 +26,7 @@ pub const APIS: &[&str] = &[
     "mistral-conversations",
     "bedrock-converse-stream",
     "pi-messages",
-    "claude-code-cli",
+    crate::claude_code::API,
     "claude-subscription",
 ];
 
@@ -87,7 +87,7 @@ pub async fn stream_simple_routed(
         "mistral-conversations" => mistral::stream_simple(model, context, options, transport, sink).await,
         "bedrock-converse-stream" => Ok(bedrock::stream_simple(model, context, options, transport, sink).await),
         "pi-messages" => Ok(pi_messages::stream_simple(model, context, options, transport, sink).await),
-        "claude-code-cli" => {
+        crate::claude_code::API => {
             // With tools: the Claude subscription, for every caller (session lanes, inference frames with depth).
             if let Some(message) = router.stream_claude_code(model, context, options, sink).await {
                 return Ok(message);

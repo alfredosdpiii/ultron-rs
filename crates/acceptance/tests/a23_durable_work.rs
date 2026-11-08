@@ -188,12 +188,12 @@ impl TaskHost for Phased {
     fn tasks(&self) -> Result<Vec<Value>, String> {
         TaskHost::tasks(&self.inner)
     }
-    fn spawn(&self, request: &Value, parent: Option<&str>, signal: &Signal) -> Result<Value, String> {
+    fn spawn(&self, request: &Value, parent: Option<&str>) -> Result<Value, String> {
         let schedule = request["key"].as_str().is_some_and(|key| key.starts_with("schedule:"));
         if schedule && self.phase == Phase::Claimed {
             reached(&self.dir, self.phase);
         }
-        let task = TaskHost::spawn(&self.inner, request, parent, signal)?;
+        let task = TaskHost::spawn(&self.inner, request, parent)?;
         if schedule && self.phase == Phase::Admitted {
             reached(&self.dir, self.phase);
         }
@@ -205,8 +205,8 @@ impl TaskHost for Phased {
     fn cancel(&self, task_id: &str, reason: &str) -> Result<Value, String> {
         TaskHost::cancel(&self.inner, task_id, reason)
     }
-    fn steer(&self, task_id: &str, message: &str, signal: &Signal) -> Result<bool, String> {
-        TaskHost::steer(&self.inner, task_id, message, signal)
+    fn steer(&self, task_id: &str, message: &str) -> Result<bool, String> {
+        TaskHost::steer(&self.inner, task_id, message)
     }
     fn now(&self) -> i64 {
         TaskHost::now(&self.inner)
@@ -223,8 +223,8 @@ impl GoalJobs for PhasedGoalJobs {
     fn run_check(&self, command: &str, timeout: u64) -> Result<kernel_apis::goal::GoalCheckResult, String> {
         self.inner.run_check(command, timeout)
     }
-    fn start_job(&self, prompt: &str, key: &str, root: &str, signal: &Signal) -> Result<String, String> {
-        let job = self.inner.start_job(prompt, key, root, signal)?;
+    fn start_job(&self, prompt: &str, key: &str, root: &str) -> Result<String, String> {
+        let job = self.inner.start_job(prompt, key, root)?;
         if self.phase == Phase::GoalAdmitted {
             reached(&self.dir, self.phase);
         }
@@ -419,9 +419,8 @@ fn acceptance_a23_durable_missed_fires_while_down_coalesce_and_fire_on_their_own
 fn goal_child(dir: &Path, phase: Phase) -> ! {
     let w = worker(dir, T0, phase);
     let _work = w.open();
-    let signal = Signal::new();
-    w.goal.command("make the build pass", &signal).unwrap();
-    w.goal.command("check exit 1", &signal).unwrap();
+    w.goal.command("make the build pass").unwrap();
+    w.goal.command("check exit 1").unwrap();
     let check = w.goal.handle_request("goal.check", &Map::new(), "main").unwrap();
     ready(dir, &json!({"goal": w.goal.get().unwrap(), "check": check}));
 }
@@ -553,7 +552,7 @@ fn acceptance_a23_durable_work_wiring_drives_schedules_goal_and_jobs_like_the_co
         ),
         "True"
     );
-    first.goal.command("keep the docs current", &Signal::new()).unwrap();
+    first.goal.command("keep the docs current").unwrap();
     k.shutdown();
     work.hand_over();
     first.agents.close();

@@ -80,7 +80,7 @@ impl TaskHost for FakeHost {
     fn tasks(&self) -> Result<Vec<Value>, String> {
         Ok(Vec::new())
     }
-    fn spawn(&self, request: &Value, parent: Option<&str>, _: &Signal) -> Result<Value, String> {
+    fn spawn(&self, request: &Value, parent: Option<&str>) -> Result<Value, String> {
         let mut spawned = self.spawned.lock().unwrap();
         spawned.push((request.clone(), parent.map(String::from)));
         Ok(json!({"id": format!("task-{}", spawned.len()), "definition": request["definition"], "state": "queued"}))
@@ -91,7 +91,7 @@ impl TaskHost for FakeHost {
     fn cancel(&self, _: &str, _: &str) -> Result<Value, String> {
         Err("unused".into())
     }
-    fn steer(&self, _: &str, _: &str, _: &Signal) -> Result<bool, String> {
+    fn steer(&self, _: &str, _: &str) -> Result<bool, String> {
         Ok(false)
     }
     fn now(&self) -> i64 {

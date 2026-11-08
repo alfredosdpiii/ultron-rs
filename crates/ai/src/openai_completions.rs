@@ -10,7 +10,7 @@ use crate::http::{
     Failure, HeaderBuilder, HttpRequest, Sdk, Transport, format_provider_error, has_header, is_aborted, join_url,
     send_with_retry,
 };
-use crate::json::{parse_json, parse_streaming_json, short_hash};
+use crate::json::short_hash;
 use crate::models::{calculate_cost, clamp_thinking_level};
 use crate::options::{
     SimpleStreamOptions, StreamOptions, ThinkingBudgets, build_base_options, clamp_thinking_budget_to_answer_room,
@@ -28,6 +28,7 @@ use crate::types::{
     UserMessageContent,
 };
 use indexmap::IndexMap;
+use jsrt::json_parse::{parse_json, parse_streaming_json};
 use serde::Deserialize;
 use serde_json::{Map, Value, json};
 use std::collections::HashMap;

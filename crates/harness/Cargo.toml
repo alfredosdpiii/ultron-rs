@@ -21,6 +21,13 @@ serde = { version = "=1.0.229", features = ["derive"] }
 serde_json = { version = "=1.0.151", features = ["preserve_order"] }
 session-journal = { path = "../session-journal" }
 
+[features]
+# The scripted provider `chat::faux`, for this crate's and dependents' tests.
+test-support = []
+
+[dev-dependencies]
+harness = { path = ".", features = ["test-support"] }
+
 [lints]
 workspace = true
 

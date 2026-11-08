@@ -230,8 +230,20 @@ pub fn session_options(env: &Env, options: &ServerOptions) -> Option<serde_json:
         .flatten()
 }
 
-/// How long a signalled print run waits for its aborted turn to end before it exits anyway (`PROMPT_ABORT_WAIT_MS`).
-pub const PROMPT_ABORT_WAIT: std::time::Duration = std::time::Duration::from_millis(5_000);
+/// How long a signalled run waits for its mode to end before it exits anyway (`PROMPT_ABORT_WAIT_MS`).
+const PROMPT_ABORT_WAIT: std::time::Duration = std::time::Duration::from_millis(5_000);
+
+/// Handles the signals from now on: `notify` gets the signal's exit code (the mode ends its run with it), herdr's
+/// agent is released, and the process exits with that code after [`PROMPT_ABORT_WAIT`] if it is still running.
+pub fn exit_on_signal(notify: impl Fn(i32) + Send + Sync + 'static) {
+    signals::set_handler(Arc::new(move |signal| {
+        let code = signals::exit_code(signal);
+        notify(code);
+        herdr::release_active();
+        std::thread::sleep(PROMPT_ABORT_WAIT);
+        std::process::exit(code);
+    }));
+}
 
 /// Run one prompted turn through this process's own server generation. A signal aborts the turn and exits with the
 /// signal's code once it ended; a lost worker or server is rejoined (the server restarted) and the turn's session
@@ -254,14 +266,10 @@ pub fn run_prompt(
     let interrupt = Arc::new(AtomicBool::new(false));
     let code = Arc::new(AtomicI32::new(0));
     let (flag, signalled) = (interrupt.clone(), code.clone());
-    signals::set_handler(Arc::new(move |signal| {
-        signalled.store(signals::exit_code(signal), Ordering::SeqCst);
+    exit_on_signal(move |exit| {
+        signalled.store(exit, Ordering::SeqCst);
         flag.store(true, Ordering::SeqCst);
-        herdr::release_active();
-        // Never hang the exit on the aborted turn.
-        std::thread::sleep(PROMPT_ABORT_WAIT);
-        std::process::exit(signals::exit_code(signal));
-    }));
+    });
     let restarted = servers.clone();
     let run_options = RunOptions {
         session_options: session_options(env, &options),

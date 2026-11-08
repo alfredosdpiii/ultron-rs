@@ -207,7 +207,7 @@ fn transcript_projection(frames: &[(String, Value)], transcript: &str) -> (Vec<V
         if !state["event"].is_null() {
             let event = &state["event"];
             let mut summary = json!({"type": event["type"]});
-            // Rust-only: a `message_update` carries its frame and usage, not the message (harness::stream_fold), so
+            // Rust-only: a `message_update` carries its frame and usage, not the message (protocol::watch::stream_fold), so
             // the recorded updates' role is not compared; every update is the assistant's.
             if let Some(role) = event["message"]["role"].as_str()
                 && event["type"] != "message_update"

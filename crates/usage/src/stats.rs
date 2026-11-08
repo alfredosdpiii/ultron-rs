@@ -2,7 +2,103 @@
 //! and the stored runtime counters (`ultron.module/stats`).
 
 use indexmap::IndexMap;
-use serde_json::{Map, Value};
+use regex::Regex;
+use serde_json::{Map, Value, json};
+use std::sync::LazyLock;
+
+/// The module name: the session value `ultron.module/stats`.
+pub const SESSION_STATS_MODULE: &str = "stats";
+/// The stored document's format version.
+pub const STATS_VERSION: u64 = 1;
+
+/// REPL APIs a cell's code can name, in the order the report lists them.
+pub const CELL_APIS: [&str; 16] = [
+    "bash",
+    "read",
+    "edit",
+    "write",
+    "rlm.load",
+    "rlm.infer",
+    "rlm.map",
+    "rlm.spawn",
+    "rlm.collect",
+    "rlm.merge",
+    "mcp.call",
+    "tools.call",
+    "workflows.run",
+    "agents.*",
+    "background.start",
+    "view_image",
+];
+
+static API_PATTERNS: LazyLock<Vec<(&'static str, Regex)>> = LazyLock::new(|| {
+    // `(?<![\w.])name\s*\(`: the regex crate has no look-behind, so the preceding character is matched instead.
+    let bare = |name: &str| format!(r"(?:^|[^A-Za-z0-9_.]){name}\s*\(");
+    let dotted = |name: &str| format!(r"(?:^|[^A-Za-z0-9_]){}\s*\(", name.replace('.', r"\."));
+    CELL_APIS
+        .iter()
+        .map(|&name| {
+            let pattern = match name {
+                "bash" | "read" | "edit" | "write" | "view_image" => bare(name),
+                "agents.*" => r"(?:^|[^A-Za-z0-9_])agents\.(?:spawn|invoke|register)\s*\(".to_string(),
+                _ => dotted(name),
+            };
+            (name, Regex::new(&pattern).expect("API pattern compiles"))
+        })
+        .collect()
+});
+
+/// The REPL APIs a cell's code names (each at most once): a static read of the source, so a call inside a function
+/// the cell only defines counts too, and a call made through an alias does not.
+pub fn cell_apis(code: &str) -> Vec<&'static str> {
+    API_PATTERNS
+        .iter()
+        .filter(|(_, pattern)| pattern.is_match(code))
+        .map(|(name, _)| *name)
+        .collect()
+}
+
+static NUDGES: LazyLock<[(&'static str, Regex); 3]> = LazyLock::new(|| {
+    let re = |p: &str| Regex::new(p).expect("nudge pattern compiles");
+    [
+        (
+            "skill",
+            re(r"^\[Ultron\] [0-9]+ tool rounds in a row succeeded(?-u:\b)"),
+        ),
+        (
+            "wait",
+            re(
+                r"^\[Ultron\] (?:1 subagent or task you started is|[0-9]+ subagents or tasks you started are) still running(?-u:\b)",
+            ),
+        ),
+        (
+            "toolRounds",
+            re(r"^\[Ultron\] You have (?:now )?used [0-9]+ rounds of tool calls(?-u:\b)"),
+        ),
+    ]
+});
+
+/// Which steer a `[Ultron] ...` message is (`skill`, `wait` or `toolRounds`; see crate::nudge), or None.
+pub fn classify_nudge(text: &str) -> Option<&'static str> {
+    if !text.starts_with("[Ultron] ") {
+        return None;
+    }
+    NUDGES.iter().find(|(_, re)| re.is_match(text)).map(|(kind, _)| *kind)
+}
+
+/// Which counter a lane's cells go to: the root lane, `rlm.spawn` subagents, or anything else (typed agents, jobs).
+pub fn stats_lane(lane: &str) -> &'static str {
+    if lane == "main" {
+        "root"
+    } else if matches!(
+        lanes::lane_names::parse_lane(lane),
+        Some(lanes::lane_names::LaneOwner::Child(_))
+    ) {
+        "subagents"
+    } else {
+        "other"
+    }
+}
 
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Cells {
@@ -26,6 +122,7 @@ pub struct Guard {
 pub struct Stats {
     pub external: bool,
     pub since: f64,
+    pub updated_at: f64,
     pub cells: [Cells; 3],
     pub host_calls: IndexMap<String, f64>,
     pub secrets_masked: f64,
@@ -39,11 +136,55 @@ pub struct Stats {
 }
 
 impl Stats {
+    /// The stored document (`SessionStatsDocument`), every field present.
+    pub fn to_json(&self) -> Value {
+        let number = jsrt::json::number;
+        let numbers = |map: &IndexMap<String, f64>| -> Map<String, Value> {
+            map.iter().map(|(k, v)| (k.clone(), number(*v))).collect()
+        };
+        let texts = |map: &IndexMap<String, String>| -> Map<String, Value> {
+            map.iter().map(|(k, v)| (k.clone(), json!(v))).collect()
+        };
+        let cells = |c: &Cells| json!({"count": number(c.count), "failed": number(c.failed), "apis": numbers(&c.apis)});
+        let guards: Map<String, Value> = self
+            .guards
+            .iter()
+            .map(|(name, g)| {
+                let guard = json!({
+                    "checks": number(g.checks),
+                    "blocked": number(g.blocked),
+                    "unchecked": number(g.unchecked),
+                    "afterChecks": number(g.after_checks),
+                    "afterFindings": number(g.after_findings),
+                    "ms": number(g.ms),
+                });
+                (name.clone(), guard)
+            })
+            .collect();
+        let [tool_rounds, wait, skill] = self.nudges;
+        json!({
+            "version": STATS_VERSION,
+            "root": if self.external { "external" } else { "lane" },
+            "since": number(self.since),
+            "updatedAt": number(self.updated_at),
+            "cells": {"root": cells(&self.cells[0]), "subagents": cells(&self.cells[1]), "other": cells(&self.cells[2])},
+            "hostCalls": numbers(&self.host_calls),
+            "secretsMasked": number(self.secrets_masked),
+            "guards": guards,
+            "nudges": {"toolRounds": number(tool_rounds), "wait": number(wait), "skill": number(skill)},
+            "usageLimitBlocks": number(self.usage_limit_blocks),
+            "merges": texts(&self.merges),
+            "childModels": texts(&self.child_models),
+            "externalTurns": {"count": number(self.external_turns.0), "wallMs": number(self.external_turns.1)},
+        })
+    }
+
     /// `emptySessionStats("lane", now)`.
     pub fn empty(now: f64) -> Stats {
         Stats {
             external: false,
             since: now,
+            updated_at: now,
             cells: Default::default(),
             host_calls: IndexMap::new(),
             secrets_masked: 0.0,
@@ -96,7 +237,7 @@ fn strings(value: Option<&Value>) -> IndexMap<String, String> {
 pub fn parse_session_stats(saved: Option<&Value>) -> Option<Stats> {
     let item = object(saved)?;
     if let Some(version) = item.get("version")
-        && version.as_f64() != Some(1.0)
+        && version.as_f64() != Some(STATS_VERSION as f64)
     {
         return None;
     }
@@ -133,6 +274,7 @@ pub fn parse_session_stats(saved: Option<&Value>) -> Option<Stats> {
     Some(Stats {
         external: item.get("root").and_then(Value::as_str) == Some("external"),
         since: count(item.get("since")),
+        updated_at: count(item.get("updatedAt")),
         cells: [cells_of("root"), cells_of("subagents"), cells_of("other")],
         host_calls: counts(item.get("hostCalls")),
         secrets_masked: count(item.get("secretsMasked")),

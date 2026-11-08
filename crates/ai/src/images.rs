@@ -10,10 +10,10 @@ use crate::http::{
     AbortSignal, Failure, HeaderBuilder, HttpRequest, Sdk, Transport, format_provider_error, is_aborted, join_url,
     send_with_retry,
 };
-use crate::json::parse_json;
 use crate::options::ProviderHeaders;
 use crate::types::{Cost, ImageContent, ModelCost, TextContent, Usage};
 use indexmap::IndexMap;
+use jsrt::json_parse::parse_json;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 use std::sync::{Arc, LazyLock};

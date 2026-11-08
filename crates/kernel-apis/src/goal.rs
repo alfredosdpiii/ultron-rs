@@ -72,7 +72,7 @@ fn cut_off(result: &Value) -> bool {
 pub trait GoalJobs: Send + Sync {
     fn run_check(&self, command: &str, timeout_seconds: u64) -> Result<GoalCheckResult, String>;
     /// Starts the goal's background job with `prompt`; returns its task id.
-    fn start_job(&self, prompt: &str, key: &str, usage_root: &str, signal: &Signal) -> Result<String, String>;
+    fn start_job(&self, prompt: &str, key: &str, usage_root: &str) -> Result<String, String>;
     fn stop_job(&self, task_id: &str, reason: &str) -> Result<(), String>;
     fn lane_of_job(&self, task_id: &str) -> Option<String>;
     /// The journal's state of a job task; `None` when the worker keeps no task journal.
@@ -320,7 +320,7 @@ impl GoalDriver {
                     changed = true;
                 }
                 None => {
-                    self.start_job(state, &Signal::new());
+                    self.start_job(state);
                     return;
                 }
             }
@@ -338,7 +338,7 @@ impl GoalDriver {
                 // The worker going away cut the run off, not the job's own work: the goal goes on with its next run.
                 goal["job"] = Value::Null;
                 goal["last_answer"] = "The previous run was interrupted when Ultron restarted; continue from the goal's state and the files.".into();
-                self.start_job(state, &Signal::new());
+                self.start_job(state);
             }
             Some(JobState::Ended(result)) => self.job_ended(state, &job, Some(&result)),
             None => {
@@ -372,7 +372,7 @@ impl GoalDriver {
         jsrt::sync::lock(&self.state).closed = true;
     }
 
-    fn start_job(&self, state: &mut State, signal: &Signal) {
+    fn start_job(&self, state: &mut State) {
         if state.closed {
             return;
         }
@@ -387,12 +387,10 @@ impl GoalDriver {
         goal["job"] = Value::Null;
         self.persist(state);
         let goal = state.goal.as_mut().expect("a goal");
-        match self.jobs.start_job(
-            &goal_brief(goal),
-            &key,
-            &format!("{GOAL_USAGE_ROOT_PREFIX}{id}"),
-            signal,
-        ) {
+        match self
+            .jobs
+            .start_job(&goal_brief(goal), &key, &format!("{GOAL_USAGE_ROOT_PREFIX}{id}"))
+        {
             Ok(job) => goal["job"] = job.into(),
             Err(error) => {
                 goal["job"] = Value::Null;
@@ -421,7 +419,7 @@ impl GoalDriver {
     }
 
     /// `/goal [objective | pause | resume | clear | check [command] | status]`; returns the text to show.
-    pub fn command(&self, args: &str, signal: &Signal) -> Result<String, String> {
+    pub fn command(&self, args: &str) -> Result<String, String> {
         let mut guard = jsrt::sync::lock(&self.state);
         let state = &mut *guard;
         self.load(state)?;
@@ -453,7 +451,7 @@ impl GoalDriver {
             }
             self.set_status(state, "active", None);
             state.goal.as_mut().expect("a goal")["stuck"] = 0.into();
-            self.start_job(state, signal);
+            self.start_job(state);
             return Ok(goal_status_text(state.goal.as_ref()));
         }
         if text == "check" || text.starts_with("check ") {
@@ -499,7 +497,7 @@ impl GoalDriver {
             "updated_at": now,
             "completion": null,
         }));
-        self.start_job(state, signal);
+        self.start_job(state);
         Ok(format!(
             "{}\nAdd the check that decides when it is done: /goal check <command>.",
             goal_status_text(state.goal.as_ref())
@@ -543,7 +541,7 @@ impl GoalDriver {
             return;
         }
         if goal["run_progress"] == true {
-            self.start_job(state, &Signal::new());
+            self.start_job(state);
             return;
         }
         self.set_status(
@@ -743,9 +741,9 @@ impl GoalJobs for TaskGoalJobs {
     }
 
     /// The usage root is not passed: [`TaskHost::spawn`] charges the job to its admission root.
-    fn start_job(&self, prompt: &str, key: &str, _usage_root: &str, signal: &Signal) -> Result<String, String> {
+    fn start_job(&self, prompt: &str, key: &str, _usage_root: &str) -> Result<String, String> {
         let request = json!({"definition": "background-job@1", "input": {"prompt": prompt}, "key": key});
-        let task = self.tasks.spawn(&request, None, signal)?;
+        let task = self.tasks.spawn(&request, None)?;
         task["id"]
             .as_str()
             .map(str::to_string)

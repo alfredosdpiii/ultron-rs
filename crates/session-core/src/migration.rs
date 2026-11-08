@@ -92,32 +92,6 @@ fn put(out: &mut Map<String, Value>, key: &str, from: &Value) {
     }
 }
 
-/// `replaceContent`: Pi's content replacement for one projected message.
-fn replace_content(message: &Value, content: Option<&Value>) -> Value {
-    let role = str_of(message, "role");
-    if !matches!(role, Some("user" | "assistant" | "toolResult" | "custom")) {
-        return message.clone();
-    }
-    let next = match content {
-        Some(Value::String(text)) if matches!(role, Some("assistant" | "toolResult")) => {
-            Some(json!([{"type": "text", "text": text}]))
-        }
-        other => other.cloned(),
-    };
-    let mut out = message.clone();
-    if let Value::Object(map) = &mut out {
-        match next {
-            Some(next) => {
-                map.insert("content".into(), next);
-            }
-            None => {
-                map.shift_remove("content");
-            }
-        }
-    }
-    out
-}
-
 /// `applyEdit`: `None` is no edit, `Some(Null)` an omission, `Some(replacement)` a replacement.
 fn apply_edit(messages: Vec<Value>, edit: Option<&Value>) -> Vec<Value> {
     match edit {
@@ -125,7 +99,7 @@ fn apply_edit(messages: Vec<Value>, edit: Option<&Value>) -> Vec<Value> {
         Some(Value::Null) => Vec::new(),
         Some(replacement) => messages
             .iter()
-            .map(|message| replace_content(message, replacement.get("content")))
+            .map(|message| session_journal::context::replace_content(message, replacement.get("content")))
             .collect(),
     }
 }
@@ -464,7 +438,10 @@ fn edited_message_body(message: &Value, edit: Option<&Value>) -> Map<String, Val
         ]),
         Some(replacement) => object(vec![
             ("type", json!("message")),
-            ("message", replace_content(message, replacement.get("content"))),
+            (
+                "message",
+                session_journal::context::replace_content(message, replacement.get("content")),
+            ),
         ]),
     }
 }
@@ -677,7 +654,7 @@ pub fn import_pi_session_with(
         &pi_session_path.display().to_string(),
     ));
     let shown = pi_path.display().to_string();
-    let file_entries = session_file::load_entries_from_file(&shown).unwrap_or_default();
+    let file_entries = session_file::load_entries_from_file(&session_file::SystemEnv, &shown).unwrap_or_default();
     let header = match file_entries.first() {
         Some(header) if type_of(header) == "session" => header.clone(),
         _ => {
@@ -900,7 +877,7 @@ pub fn export_native_session_to_pi(session_path: &Path, output_path: &Path) -> R
         .find(|m| m.path == path)
         .ok_or_else(|| format!("Not a native session in its session directory: {}", path.display()))?;
     let session = repo.open(&metadata)?;
-    let converted = native_session_as_pi(&session, "main", true);
+    let converted = native_session_as_pi(&session, true);
     let state = session.state();
     let natives = state.entries();
     let native_ids: HashSet<&str> = natives.iter().map(id_of).collect();

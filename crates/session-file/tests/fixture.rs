@@ -53,6 +53,12 @@ impl Env for FixtureEnv {
     fn agent_dir(&self) -> String {
         self.0.borrow().agent_dir.clone()
     }
+    fn home(&self) -> String {
+        session_file::SystemEnv.home()
+    }
+    fn cwd(&self) -> String {
+        session_file::SystemEnv.cwd()
+    }
 }
 
 struct Scenario {
@@ -327,8 +333,12 @@ fn run_step(sc: &mut Scenario, step: &Value) -> Result<Value, Error> {
                 .collect();
             Value::Null
         }
-        "loadEntries" => Value::Array(load_entries_from_file(&sc.sub_str(step["path"].as_str().unwrap()))?),
+        "loadEntries" => Value::Array(load_entries_from_file(
+            &sc.env,
+            &sc.sub_str(step["path"].as_str().unwrap()),
+        )?),
         "findMostRecent" => json!(find_most_recent_session(
+            &sc.env,
             &sc.sub_str(step["dir"].as_str().unwrap()),
             opt_dir(sc, "cwd").as_deref()
         )),
@@ -345,6 +355,7 @@ fn run_step(sc: &mut Scenario, step: &Value) -> Result<Value, Error> {
         )?),
         "listAll" => session_info_json(list_all_sessions(&sc.env, opt_dir(sc, "dir").as_deref())),
         "defaultSessionDir" => json!(default_session_dir(
+            &sc.env,
             &sc.sub_str(step["cwd"].as_str().unwrap()),
             &sc.env.agent_dir()
         )?),

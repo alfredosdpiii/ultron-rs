@@ -373,7 +373,6 @@ impl Admission {
         let mut warnings = Vec::new();
         let proxy = upstream_proxy(&upstream, env, &mut warnings);
         let listener = TcpListener::bind("127.0.0.1:0").map_err(|e| e.to_string())?;
-        listener.set_nonblocking(true).map_err(|e| e.to_string())?;
         let port = listener.local_addr().map_err(|e| e.to_string())?.port();
         let prefix = format!("/admit/{}", jsrt::random::random_hex(32));
         let gate = Arc::new(Gate {
@@ -393,17 +392,13 @@ impl Admission {
         let listener = {
             let (gate, stop, handlers) = (gate.clone(), stop.clone(), handlers.clone());
             std::thread::spawn(move || {
-                while !stop.load(Ordering::SeqCst) {
-                    match listener.accept() {
-                        Ok((stream, _)) => {
-                            let gate = gate.clone();
-                            jsrt::sync::lock(&handlers).push(std::thread::spawn(move || handle(&gate, stream)));
-                        }
-                        Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
-                            std::thread::sleep(Duration::from_millis(10));
-                        }
-                        Err(_) => std::thread::sleep(Duration::from_millis(10)),
+                for stream in listener.incoming() {
+                    if stop.load(Ordering::SeqCst) {
+                        break;
                     }
+                    let Ok(stream) = stream else { continue };
+                    let gate = gate.clone();
+                    jsrt::sync::lock(&handlers).push(std::thread::spawn(move || handle(&gate, stream)));
                 }
             })
         };
@@ -440,8 +435,10 @@ impl Admission {
 
     /// Stop listening and wait for handlers to unwind. Does not abort a finished exchange's outcome.
     pub fn close(&mut self) {
-        self.stop.store(true, Ordering::SeqCst);
         if let Some(listener) = self.listener.take() {
+            self.stop.store(true, Ordering::SeqCst);
+            // Wake the accept loop so it sees `stop`.
+            let _ = std::net::TcpStream::connect(("127.0.0.1", self.port));
             let _ = listener.join();
         }
         self.abort();

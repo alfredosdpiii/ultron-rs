@@ -29,11 +29,11 @@ impl Lane {
     }
 
     /// Fold one harness event into the snapshot and publish it as the current event. Only `entry_added` changes the
-    /// transcript (harness::reducer): every other event leaves it aside rather than copying and comparing it.
+    /// transcript (protocol::watch::reducer): every other event leaves it aside rather than copying and comparing it.
     pub fn publish(&self, harness_event: Value) {
         let entry_added = harness_event["type"] == "entry_added";
         let fold = |state: &mut Value| {
-            harness::reducer::reduce_lane_snapshot(&mut state["snapshot"], &harness_event);
+            protocol::watch::reducer::reduce_lane_snapshot(&mut state["snapshot"], &harness_event);
             state["event"] = harness_event;
         };
         if entry_added {

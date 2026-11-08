@@ -167,8 +167,8 @@ impl TaskHost for Tasks {
     fn tasks(&self) -> Result<Vec<Value>, String> {
         TaskHost::tasks(&self.agents)
     }
-    fn spawn(&self, request: &Value, parent: Option<&str>, signal: &Signal) -> Result<Value, String> {
-        let admitted = TaskHost::spawn(&self.agents, request, parent, signal)?;
+    fn spawn(&self, request: &Value, parent: Option<&str>) -> Result<Value, String> {
+        let admitted = TaskHost::spawn(&self.agents, request, parent)?;
         self.wait_started(admitted["id"].as_str().unwrap_or_default());
         Ok(admitted)
     }
@@ -178,8 +178,8 @@ impl TaskHost for Tasks {
     fn cancel(&self, task_id: &str, reason: &str) -> Result<Value, String> {
         TaskHost::cancel(&self.agents, task_id, reason)
     }
-    fn steer(&self, task_id: &str, message: &str, signal: &Signal) -> Result<bool, String> {
-        TaskHost::steer(&self.agents, task_id, message, signal)
+    fn steer(&self, task_id: &str, message: &str) -> Result<bool, String> {
+        TaskHost::steer(&self.agents, task_id, message)
     }
     fn now(&self) -> i64 {
         self.clock.load(Ordering::SeqCst)

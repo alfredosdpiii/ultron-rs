@@ -5,7 +5,7 @@
 use std::collections::{HashMap, HashSet};
 
 use interactive::keybindings::{Platform, app_keybindings};
-use rlm_views::RlmGraphFocus;
+use rlm_views::focus::RlmGraphFocus;
 use rlm_views::focus::{
     FocusAction, FocusRenderOptions, FocusState, apply_focus_action, render_focus_view, selected_row,
 };
@@ -147,7 +147,7 @@ fn interactive_rlm_views_replay_typescript_fixture() {
             &render_rlm_dock(&snap, 80, &RlmViewOptions::default(), 12),
             &case["dockDefault"],
         );
-        let hints = rlm_views::focus_hints(&keys);
+        let hints = rlm_views::focus::focus_hints(&keys);
         for (size, want) in case["focus"].as_object().unwrap() {
             let (w, h) = size.split_once('x').unwrap();
             let view = render_focus_view(
@@ -232,7 +232,7 @@ fn interactive_rlm_views_replay_typescript_fixture() {
             &render_wave_summary(&runs, 80, &plain(), snap.now, 3),
             &case["waveSummary3"],
         );
-        let keys_of = |list: Vec<&rlm_views::DagRun>| list.iter().map(|r| r.key.clone()).collect::<Vec<_>>();
+        let keys_of = |list: Vec<&rlm_views::pane::DagRun>| list.iter().map(|r| r.key.clone()).collect::<Vec<_>>();
         assert_eq!(
             keys_of(pane_work_runs(&runs, None)),
             strings(&case["paneWork"]),
@@ -354,7 +354,7 @@ fn interactive_rlm_formats_replay_typescript() {
         assert_eq!(short_id(row[0].as_str().unwrap()), row[1], "{row}");
     }
     let keys = keys();
-    assert_eq!(rlm_views::focus_hints(&keys), f["focusHints"]);
+    assert_eq!(rlm_views::focus::focus_hints(&keys), f["focusHints"]);
     assert_eq!(json!(rlm_pane_hints(&keys)), f["paneHints"]);
 }
 
@@ -961,7 +961,7 @@ fn interactive_rlm_focus_hints_follow_the_bindings() {
         Default::default(),
     );
     assert_eq!(
-        rlm_views::focus_hints(&k),
+        rlm_views::focus::focus_hints(&k),
         "up/k down/j move · enter details · c collapse · escape back"
     );
 }
@@ -1226,7 +1226,7 @@ const HINTS: [&str; 7] = [
     "q/Esc Close",
 ];
 
-fn workflow_runs(snapshot: &RlmSnapshot) -> Vec<rlm_views::DagRun> {
+fn workflow_runs(snapshot: &RlmSnapshot) -> Vec<rlm_views::pane::DagRun> {
     build_dag_runs(snapshot)
         .into_iter()
         .filter(|r| r.kind == rlm_views::pane::RunKind::Workflow)
@@ -1251,7 +1251,7 @@ fn pane(width: usize, state: &RlmPaneState, height: usize, snapshot: &RlmSnapsho
 #[test]
 fn interactive_rlm_pane_work_runs_live_or_from_the_running_turn() {
     let live = reference();
-    let keys_of = |runs: Vec<&rlm_views::DagRun>| runs.iter().map(|r| r.key.clone()).collect::<Vec<_>>();
+    let keys_of = |runs: Vec<&rlm_views::pane::DagRun>| runs.iter().map(|r| r.key.clone()).collect::<Vec<_>>();
     assert_eq!(
         keys_of(pane_work_runs(&build_dag_runs(&live), None)),
         ["turn", "workflow:wf-01a07520"]
@@ -1692,17 +1692,26 @@ fn interactive_rlm_wave_summary_active_run_bounded() {
 fn interactive_rlm_pane_component_keys_and_render() {
     let keys = keys();
     let snap = reference();
-    let mut pane = rlm_views::RlmPane::new();
+    let mut pane = rlm_views::pane::RlmPane::new();
     let first = pane.render(&keys, &snap, 50, 30, false, Some("alt+w"), &plain());
     assert_eq!(first.len(), 30);
     assert!(first.iter().all(|l| l.starts_with(' ')));
     assert!(first.iter().any(|l| l.contains("alt+w focus")));
-    assert_eq!(pane.handle_input(&keys, "n", &snap, 30), rlm_views::PaneEvent::Render);
+    assert_eq!(
+        pane.handle_input(&keys, "n", &snap, 30),
+        rlm_views::pane::PaneEvent::Render
+    );
     let moved = pane.render(&keys, &snap, 50, 30, true, Some("alt+w"), &plain());
     assert_ne!(moved, first);
     assert!(moved.iter().any(|l| l.contains("alt+w chat")));
-    assert_eq!(pane.handle_input(&keys, "z", &snap, 30), rlm_views::PaneEvent::Ignored);
-    assert_eq!(pane.handle_input(&keys, "q", &snap, 30), rlm_views::PaneEvent::Close);
+    assert_eq!(
+        pane.handle_input(&keys, "z", &snap, 30),
+        rlm_views::pane::PaneEvent::Ignored
+    );
+    assert_eq!(
+        pane.handle_input(&keys, "q", &snap, 30),
+        rlm_views::pane::PaneEvent::Close
+    );
 }
 
 // ---- added for mutations that survived the ported tests (values recorded from the TypeScript) ----

@@ -74,14 +74,16 @@ pub struct SessionResources {
     pub system_prompt: Option<String>,
     /// The discovered APPEND_SYSTEM.md's text (`getAppendSystemPrompt`).
     pub append_system_prompt: Vec<String>,
+    /// The session's home directory, which a leading `~` in a skill or prompt path names.
+    pub home: String,
 }
 
 /// `mergePaths`: each path (resolved against the cwd) once by its canonical path, first place kept.
-fn merge(cwd: &str, paths: impl IntoIterator<Item = String>) -> Vec<String> {
+fn merge(cwd: &str, home: &str, paths: impl IntoIterator<Item = String>) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
     let mut seen: Vec<String> = Vec::new();
     for path in paths {
-        let resolved = resources::paths::resolve_path(&path, cwd, true);
+        let resolved = resources::paths::resolve_path(&path, cwd, home, true);
         let canonical = resources::paths::canonicalize(&resolved);
         if !seen.contains(&canonical) {
             seen.push(canonical);
@@ -98,11 +100,12 @@ pub fn resolve(
     settings: config::settings::SettingsManager,
     append_system_prompt: Option<&[String]>,
 ) -> SessionResources {
-    let cwd = resources::paths::resolve_path(&env.cwd.display().to_string(), "/", false);
+    let home = env.home.display().to_string();
+    let cwd = resources::paths::resolve_path(&env.cwd.display().to_string(), "/", &home, false);
     let agent_dir = env.agent_dir().display().to_string();
     let trusted = settings.is_project_trusted();
     let prompt_files =
-        resources::prompt_files::load_prompt_files(&cwd, &agent_dir, trusted, None, append_system_prompt);
+        resources::prompt_files::load_prompt_files(&cwd, &agent_dir, &home, trusted, None, append_system_prompt);
     let resolved = LocalResources::new(env, settings).resolve();
     let mut metadata: Vec<ResourceSource> = Vec::new();
     for list in [&resolved.skills, &resolved.prompts, &resolved.themes] {
@@ -121,6 +124,7 @@ pub fn resolve(
         metadata,
         system_prompt: prompt_files.system_prompt,
         append_system_prompt: prompt_files.append_system_prompt,
+        home,
     }
 }
 
@@ -147,6 +151,7 @@ pub fn skills(
     }
     let paths = merge(
         cwd,
+        &resources.home,
         resources.skill_paths.iter().cloned().chain(bundled.map(str::to_string)),
     );
     if paths.is_empty() {
@@ -155,6 +160,7 @@ pub fn skills(
     load_skills(&LoadSkillsOptions {
         cwd,
         agent_dir,
+        home: &resources.home,
         skill_paths: &paths,
         include_defaults: false,
     })
@@ -163,8 +169,8 @@ pub fn skills(
 
 /// The prompt templates of a session (`updatePromptsFromPaths`): the resolved ones, the first of a name kept.
 pub fn prompts(cwd: &str, agent_dir: &str, resources: &SessionResources) -> Vec<PromptTemplate> {
-    let paths = merge(cwd, resources.prompt_paths.iter().cloned());
-    let loaded = resources::prompt_templates::load_prompt_templates(cwd, agent_dir, &paths, false);
+    let paths = merge(cwd, &resources.home, resources.prompt_paths.iter().cloned());
+    let loaded = resources::prompt_templates::load_prompt_templates(cwd, agent_dir, &resources.home, &paths, false);
     let mut out: Vec<PromptTemplate> = Vec::new();
     for template in loaded.templates {
         if !out.iter().any(|t| t.name == template.name) {

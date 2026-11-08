@@ -2,7 +2,6 @@
 
 use super::*;
 use crate::agent_hub::{child_conversation, child_task};
-use crate::subagents::LANE_PREFIX;
 
 impl Core {
     /// [`Op::SteerAgent`]: the root lane's `agent_message.send` to its child `id`, delivered by steering.
@@ -33,7 +32,7 @@ impl Core {
                 "Subagent {id} is {state}: only a subagent its worker left interrupted can be revived"
             ));
         }
-        let (_, input, _) = child_task(&self.durable.chat, &format!("{LANE_PREFIX}{id}"))
+        let (_, input, _) = child_task(&self.durable.chat, &lanes::lane_names::child_lane(id))
             .ok_or_else(|| format!("Subagent {id} left no brief to revive it from"))?;
         if input.cwd.is_some() {
             return Err(format!(
@@ -65,7 +64,7 @@ impl Core {
     pub(super) fn agent_transcript(&mut self, id: &str) -> Result<Value, String> {
         let chat = &self.durable.chat;
         let missing = || format!("No transcript for agent {id}");
-        let (task, _, state) = child_task(chat, &format!("{LANE_PREFIX}{id}")).ok_or_else(missing)?;
+        let (task, _, state) = child_task(chat, &lanes::lane_names::child_lane(id)).ok_or_else(missing)?;
         let conversation = child_conversation(chat, task, &state)
             .and_then(|conversation| chat.conversation(conversation).ok().flatten())
             .ok_or_else(missing)?;

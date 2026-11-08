@@ -209,11 +209,3 @@ fn kernel_apis_tool_progress_becomes_the_running_preview() {
     assert_eq!(record(&calls, &id)["preview"], "par_a");
     calls.close();
 }
-
-#[test]
-fn kernel_apis_tool_call_preview_flattens_javascript_whitespace() {
-    // D-W2: `text.replace(/\s+/g, " ").trim()` treats U+FEFF as whitespace and U+0085 as text (node:
-    // "a﻿b\u0085c" -> "a b\u0085c").
-    let shown = jsrt::json::preview(&serde_json::json!(" a\u{feff}b\u{85}c\n"), 100);
-    assert_eq!(shown, "a b\u{85}c");
-}

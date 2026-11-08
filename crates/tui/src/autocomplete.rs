@@ -4,9 +4,8 @@
 //! provider hand the editor work that may block (the `fd` walk), which the editor runs off the UI thread with an
 //! [`AbortSignal`] (TS `getSuggestions(..., { signal })`), dropping answers for text that changed meanwhile.
 
-use std::io::Read;
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Stdio};
+use std::process::{Command, Stdio};
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -49,19 +48,17 @@ pub struct Completion {
 
 /// TS `AbortSignal` for one autocomplete request: aborting it SIGKILLs the `fd` child the request is waiting on
 /// (only that child, which this process spawned and has not reaped yet).
-#[derive(Debug, Default)]
+#[derive(Default)]
 pub struct AbortSignal {
     aborted: AtomicBool,
-    child: Mutex<Option<Child>>,
+    child: Mutex<Option<signals::child::Watched>>,
 }
 
 impl AbortSignal {
     pub fn abort(&self) {
         self.aborted.store(true, Ordering::SeqCst);
-        let mut child = self.child.lock().unwrap_or_else(|e| e.into_inner());
-        if let Some(child) = child.as_mut() {
-            // Unreaped, so the pid is still this child's (TS `child.kill("SIGKILL")`).
-            let _ = child.kill();
+        if let Some(child) = self.child.lock().unwrap_or_else(|e| e.into_inner()).as_ref() {
+            child.cancel();
         }
     }
 
@@ -278,36 +275,27 @@ fn walk_with_fd(
     if !query.is_empty() {
         cmd.arg(build_fd_path_query(query));
     }
-    let Ok(mut child) = cmd
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .spawn()
-    else {
-        return Vec::new();
-    };
-    let Some(mut pipe) = child.stdout.take() else {
-        let _ = child.kill();
-        let _ = child.wait();
+    // Cancelled (TS `child.kill("SIGKILL")`) when the request is aborted.
+    let Ok(running) = signals::child::start(
+        cmd.stdout(Stdio::piped()).stderr(Stdio::null()),
+        None,
+        signals::child::Bound::default(),
+    ) else {
         return Vec::new();
     };
     {
         let mut slot = signal.child.lock().unwrap_or_else(|e| e.into_inner());
         if signal.is_aborted() {
-            let _ = child.kill();
-            let _ = child.wait();
-            return Vec::new();
+            running.watched().cancel();
         }
-        *slot = Some(child);
+        *slot = Some(running.watched().clone());
     }
-    let mut bytes = Vec::new();
-    let _ = pipe.read_to_end(&mut bytes);
-    let child = signal.child.lock().unwrap_or_else(|e| e.into_inner()).take();
-    let success = child.and_then(|mut c| c.wait().ok()).is_some_and(|s| s.success());
-    if signal.is_aborted() || !success || bytes.is_empty() {
+    let output = running.finish();
+    signal.child.lock().unwrap_or_else(|e| e.into_inner()).take();
+    if signal.is_aborted() || !output.success() || output.stdout.is_empty() {
         return Vec::new();
     }
-    let stdout = String::from_utf8_lossy(&bytes);
+    let stdout = String::from_utf8_lossy(&output.stdout);
     stdout
         .trim_matches(string::is_space)
         .split('\n')

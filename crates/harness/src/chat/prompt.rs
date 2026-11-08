@@ -11,7 +11,7 @@ use super::context::ContextView;
 use super::entries;
 
 /// Sections in effect after replaying system messages in order: set in place, `null` deletes, re-adding appends.
-pub fn replay_sections(messages: &[Message]) -> IndexMap<String, String> {
+pub(crate) fn replay_sections(messages: &[Message]) -> IndexMap<String, String> {
     let mut shown = IndexMap::new();
     for message in messages {
         let Message::System(system) = message else { continue };
@@ -38,7 +38,7 @@ struct ToolChanges {
 /// values and order: a complete baseline after a head marker with no later `ultron.system` entry (omitting every
 /// retained earlier one), else a remove-all/re-add-all pair when a minimal patch would leave a different order, else
 /// the minimal patch, or nothing. Tool changes ride on the last planned entry, or on one entry of their own.
-pub fn plan_system_entries(
+pub(crate) fn plan_system_entries(
     view: &ContextView,
     desired: &IndexMap<String, String>,
     tools: &[Tool],

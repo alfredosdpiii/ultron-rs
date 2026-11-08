@@ -701,11 +701,11 @@ mod auto_compact;
 mod checkpoints;
 pub use checkpoints::{RESTORE_IN_SANDBOX, RESTORE_WHILE_STREAMING};
 mod agent_ops;
-pub mod budget_gate;
+pub(crate) mod budget_gate;
 mod compacting;
 mod context_children;
 mod context_lane;
-mod durable_turns;
+pub mod durable_turns;
 pub mod event_lanes;
 mod persona_nudge;
 mod schedule_ops;
@@ -969,8 +969,8 @@ impl Core {
                 })
                 .collect(),
             delivered: Vec::new(),
-            steering_all: true,
-            follow_up_all: true,
+            steering_all: config::keys::QUEUE_DEFAULT == config::keys::QUEUE_ALL,
+            follow_up_all: config::keys::QUEUE_DEFAULT == config::keys::QUEUE_ALL,
         }));
         let durable = durable_turns::open_durable(
             &session,
@@ -2154,12 +2154,7 @@ impl Core {
                 let runtime = self.lane.stack.cell_handler(MAIN_LANE, None);
                 crate::inspect::inspect(Some(&*runtime), &request, payload, &kernel::Signal::new()).map(Some)
             }
-            Op::Goal { args } => self
-                .lane
-                .stack
-                .goal
-                .command(&args, &kernel::Signal::new())
-                .map(|text| Some(json!(text))),
+            Op::Goal { args } => self.lane.stack.goal.command(&args).map(|text| Some(json!(text))),
             Op::ListSessions => {
                 let listed =
                     names::list_sessions(Path::new(self.repo.root()), &lock_session(&self.session).metadata().cwd);
@@ -2189,13 +2184,9 @@ impl Core {
         }
         let journal = run.journal.run()?;
         let (attempt, step) = (journal.attempt(), journal.step_id().to_string());
-        let error = answer.stop_reason == ai::StopReason::Error;
-        if error
-            && attempt < policy.max_attempts()
-            && ai::retry::is_retryable(answer)
-            && !harness::chat::models::is_context_overflow(answer)
+        if !harness::chat::models::is_context_overflow(answer)
+            && let Some(delay) = policy.retry_delay(attempt, answer)
         {
-            let delay = policy.delay_ms(attempt);
             let not_before = now_ms().saturating_add(i64::try_from(delay).unwrap_or(i64::MAX));
             let message = answer
                 .error_message

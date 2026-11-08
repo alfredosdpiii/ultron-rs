@@ -99,7 +99,7 @@ fn kernel_apis_memory_scope_tags_and_namespace_use_javascript_whitespace() {
         let store = Arc::new(MemoryDocumentStore::new(None));
         MemoryService::new(store, Arc::new(Tagged(namespace, tag)), worker_gate())
             .err()
-            .map(|e| e.code)
+            .map(|e| e.code.as_str())
     };
     assert_eq!(open("fake://bank", "ultron:session:s\u{85}1"), None);
     assert_eq!(open("\u{85}", "ultron:session:s1"), None);

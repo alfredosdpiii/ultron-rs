@@ -11,9 +11,7 @@ use std::path::Path;
 
 use serde_json::Value;
 
-pub use schema::{
-    ColorValue, REQUIRED_COLORS, ThemeExport, ThemeJson, assert_theme_name_is_valid, validate_theme_json,
-};
+pub use schema::{ColorValue, ThemeExport, ThemeJson, assert_theme_name_is_valid, validate_theme_json};
 
 pub const DARK_JSON: &str = include_str!("dark.json");
 pub const LIGHT_JSON: &str = include_str!("light.json");

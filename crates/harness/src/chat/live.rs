@@ -151,7 +151,7 @@ pub(crate) fn remove_compaction_status(live: &Draft, task_id: TaskId) -> Result<
 /// Harness cleanup for a terminal outcome the scheduler writes itself (`faulted` or `orphaned`). A run task ends its
 /// run, converting a committed partial; a cell task's slot is marked done without an entry, and context derivation
 /// synthesizes the missing result; a compaction task's status is removed. Other kinds are ignored.
-pub fn settle_scheduler_outcome(tx: &mut Tx<'_>, record: &TaskRecord, outcome: &SchedulerOutcome) -> Result<()> {
+pub(crate) fn settle_scheduler_outcome(tx: &mut Tx<'_>, record: &TaskRecord, outcome: &SchedulerOutcome) -> Result<()> {
     match record.kind.as_str() {
         CELL_KIND => {
             let live = live(tx, record.conversation_id)?;

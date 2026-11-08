@@ -15,7 +15,7 @@ pub mod payload;
 mod session;
 mod trace;
 
-pub use map::{DEFAULT_MAP_TOKENS, Frames, INFERENCE_PROMPT, ModelSettings, frame_env};
+pub use map::{Frames, INFERENCE_PROMPT, ModelSettings, frame_env};
 pub use session::{FrameExecution, FrameGate, FrameMeter, FrameSession, FrameTasks};
 pub use trace::{MemoryTraceStore, TraceStore};
 

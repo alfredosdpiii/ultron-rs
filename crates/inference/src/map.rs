@@ -11,8 +11,6 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-/// TypeScript's token limit of a top-level map that sets none; Ultron's is `rlm.mapTokens`, off by default.
-pub const DEFAULT_MAP_TOKENS: u64 = 500_000;
 const MAX_MAP_FRAMES: usize = 10_000;
 const MAX_CONCURRENCY: u64 = 16;
 const MAP_TOKENS_ENV: &str = "ULTRON_RLM_MAP_TOKENS";

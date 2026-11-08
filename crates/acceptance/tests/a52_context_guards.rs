@@ -17,9 +17,10 @@ use crate::common;
 use common::{HANG, Install, Provider, Reply, Request, kernel_in, null_handler, run};
 use kernel::Status;
 use kernel_apis::KernelApis;
-use kernel_apis::context_control::{ContextBranches, ContextControl, apply_context_edits, message_text};
+use kernel_apis::context_control::{ContextBranches, ContextControl, message_text};
 use serde_json::{Value, json};
 use session_journal::context::CONTEXT_OMITTED_CUSTOM_TYPE;
+use session_journal::context::apply_context_edits;
 use std::sync::{Arc, Mutex};
 
 /// The lane's committed branch.
@@ -57,7 +58,6 @@ impl Lane {
     fn context(&self) -> Vec<String> {
         apply_context_edits(&self.all())
             .into_iter()
-            .map(|applied| applied.entry)
             .filter(|e| e["type"] == "message" && e["customType"] != CONTEXT_OMITTED_CUSTOM_TYPE)
             .map(|e| message_text(&e["message"]))
             .collect()

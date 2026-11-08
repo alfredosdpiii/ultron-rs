@@ -220,3 +220,35 @@ fn daemon_session_command_trims_like_js_trim() {
         }
     );
 }
+
+/// The Rust-only keys the TUI's `/settings` writes (the TUI saves through `setSetting`): `rlm.raceModels` (a list of
+/// `provider/model`), and the token caps `rlm.mapTokens` and `rootBudget.maxTotalTokens` (a positive whole number);
+/// null removes each.
+#[test]
+fn daemon_worker_settings_apply_takes_the_rust_only_tui_keys() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (agent, cwd) = (tmp.path().join("agent"), tmp.path().join("cwd"));
+    std::fs::create_dir_all(&agent).unwrap();
+    std::fs::create_dir_all(&cwd).unwrap();
+    let file =
+        || -> Value { serde_json::from_str(&std::fs::read_to_string(agent.join("settings.json")).unwrap()).unwrap() };
+    let mut settings = SettingsManager::create(&cwd, &agent, false);
+    let mut apply = |key: &str, value: Value| worker_settings::apply(&mut settings, key, &value, None);
+    let (applied, _) = apply("rlm.raceModels", json!(["anthropic/a", "openai/b"])).unwrap();
+    assert_eq!(applied, worker_settings::Applied::Live);
+    let (applied, _) = apply("rlm.mapTokens", json!(500_000)).unwrap();
+    assert_eq!(applied, worker_settings::Applied::Live);
+    let (applied, _) = apply("rootBudget.maxTotalTokens", json!(25_000_000)).unwrap();
+    assert_eq!(applied, worker_settings::Applied::Restart);
+    assert_eq!(
+        file(),
+        json!({"rlm": {"raceModels": ["anthropic/a", "openai/b"], "mapTokens": 500_000},
+            "rootBudget": {"maxTotalTokens": 25_000_000}})
+    );
+    assert!(apply("rlm.mapTokens", json!(0)).is_err());
+    assert!(apply("rlm.raceModels", json!(["nope"])).is_err());
+    apply("rlm.mapTokens", Value::Null).unwrap();
+    apply("rlm.raceModels", Value::Null).unwrap();
+    apply("rootBudget.maxTotalTokens", Value::Null).unwrap();
+    assert_eq!(file(), json!({"rlm": {}, "rootBudget": {}}));
+}

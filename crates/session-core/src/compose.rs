@@ -113,6 +113,8 @@ pub struct Config {
     pub async_events: bool,
     /// `ULTRON_GUIDE=ts` ([`ts_guide`]).
     pub ts_guide: bool,
+    /// `ULTRON_HINTS=on` ([`hints`]).
+    pub hints: bool,
     /// Rounds without a user message before the root is nudged (`ULTRON_TOOL_ROUNDS_NUDGE`).
     pub tool_rounds_nudge: u64,
     /// Turns before a skill-extraction nudge (`ULTRON_SKILL_NUDGE`).
@@ -210,6 +212,12 @@ pub fn ts_guide(var: &dyn Fn(&str) -> Option<String>) -> bool {
     var(GUIDE_ENV).as_deref() == Some("ts")
 }
 
+/// Whether `ULTRON_HINTS=on` ends cell results with situational `[hint:<tag>]` lines (kernel_apis::cell_hints), which
+/// the runtime guide then explains.
+pub fn hints(var: &dyn Fn(&str) -> Option<String>) -> bool {
+    kernel_apis::cell_hints::hints_enabled(var(kernel_apis::cell_hints::HINTS_ENV).as_deref())
+}
+
 impl Config {
     pub fn child_env(&self) -> Vec<(String, String)> {
         session_environment(&*self.var)
@@ -248,6 +256,7 @@ impl Config {
                 (env.var)(crate::async_events::ASYNC_EVENTS_ENV).as_deref(),
             ),
             ts_guide: ts_guide(&*env.var),
+            hints: hints(&*env.var),
             tool_rounds_nudge: crate::nudge::tool_rounds_nudge_from_env(
                 (env.var)(crate::nudge::TOOL_ROUNDS_NUDGE_ENV).as_deref(),
             ),
@@ -478,7 +487,7 @@ pub fn mcp_runtime_guide(config: &Config) -> resources::runtime_guide::RuntimeGu
         // recorded replays) keeps its wording.
         host_waits: !config.ts_guide,
         // Cell results end with `[hint:<tag>]` lines under `ULTRON_HINTS=on`: the guide says what to do with them.
-        hints: kernel_apis::cell_hints::hints_enabled((config.var)(kernel_apis::cell_hints::HINTS_ENV).as_deref()),
+        hints: config.hints,
         ..Default::default()
     }
 }
@@ -904,7 +913,7 @@ impl Runtime {
         let cell_hints = Arc::new(kernel_apis::cell_hints::CellHints::new(
             apis.hints.clone(),
             kernel_apis::cell_hints::CellHintsOptions {
-                enabled: kernel_apis::cell_hints::hints_enabled(var(kernel_apis::cell_hints::HINTS_ENV).as_deref()),
+                enabled: config.hints,
                 max_per_tag: kernel_apis::cell_hints::hint_max_per_tag(
                     var(kernel_apis::cell_hints::HINTS_MAX_ENV).as_deref(),
                 ),
@@ -1058,7 +1067,7 @@ impl Runtime {
             let pruning = delegation.clone();
             std::thread::spawn(move || pruning.prune_orphan_worktrees());
             // Workflow nodes with worktree=True run as subagents of the workflow's caller (worktrees live there).
-            agents.set_worktree_children(Arc::new(delegation.clone()));
+            agents.set_worktree_children(delegation.clone());
             let factory_stack = me.clone();
             let handler_stack = me.clone();
             let lanes = Lanes::new(LanesOptions {
@@ -2156,19 +2165,11 @@ impl CellShell {
         let combined = Signal::new();
         let follow = |source: &Signal| {
             let target = combined.clone();
-            source.on_abort(move |reason| target.abort(reason))
+            source.link(move |reason| target.abort(reason))
         };
-        let (from_request, from_cell) = (follow(request), follow(&self.waits));
-        if from_request.is_none() || from_cell.is_none() {
-            combined.abort("the cell ended");
-        }
+        let links = (follow(request), follow(&self.waits));
         let result = host.handle_lane(lane, kind, payload, &combined);
-        if let Some(id) = from_request {
-            request.forget(id);
-        }
-        if let Some(id) = from_cell {
-            self.waits.forget(id);
-        }
+        drop(links);
         if let Ok(value) = &result {
             let job = match kind {
                 "shell.run" => value["id"].as_str(),
@@ -2327,28 +2328,6 @@ impl HostHandler for FramesOfCell {
     }
 }
 
-/// `<runtime_event>` attribute text (`attribute` of async-events.ts).
-fn attribute(value: &str) -> String {
-    value
-        .split_whitespace()
-        .collect::<Vec<_>>()
-        .join(" ")
-        .replace('&', "&amp;")
-        .replace('"', "&quot;")
-        .replace('<', "&lt;")
-        .replace('>', "&gt;")
-}
-
-/// `boundedSummary`: one line of at most 240 characters.
-fn bounded(text: &str) -> String {
-    let line = jsrt::string::flatten(text);
-    if line.chars().count() > 240 {
-        format!("{}…", line.chars().take(239).collect::<String>())
-    } else {
-        line
-    }
-}
-
 /// The summary of a task's end event (`taskEvent` of session-worker.ts): the task's definition, then its verdict
 /// tag (`[passed, verified]`, `[unverified]`, ...) when it has one, then its reply (a non-string value as JSON) or,
 /// unless it succeeded, its error.
@@ -2372,30 +2351,6 @@ pub fn task_event_summary(task: &Value) -> String {
         Some(tag) => format!("{definition}: {tag} {detail}"),
         None => format!("{definition}: {detail}"),
     }
-}
-
-/// One `<runtime_event>` line (`runtimeEventText` of async-events.ts), with the shipped masking rules.
-pub fn runtime_event_line(kind: &str, id: &str, status: &str, summary: &str, fetch: &str) -> String {
-    runtime_event_line_with(kind, id, status, summary, fetch, &crate::async_events::default_mask())
-}
-
-/// [`runtime_event_line`] with the session's masking (`maskCellOutput`).
-pub fn runtime_event_line_with(
-    kind: &str,
-    id: &str,
-    status: &str,
-    summary: &str,
-    fetch: &str,
-    mask: &crate::async_events::MaskText,
-) -> String {
-    format!(
-        "<runtime_event kind=\"{}\" id=\"{}\" status=\"{}\" summary=\"{}\" fetch=\"{}\" />",
-        attribute(kind),
-        attribute(id),
-        attribute(status),
-        attribute(&bounded(&mask(summary))),
-        attribute(fetch)
-    )
 }
 
 /// The session's masking of text that reaches the model: values MCP servers resolved (`registerSecretValues`) and
@@ -2464,7 +2419,9 @@ impl RuntimeEvents {
         events
             .iter()
             .filter(|e| e.lane == session_journal::run::MAIN_LANE)
-            .map(|e| runtime_event_line_with(&e.kind, &e.id, &e.status, &e.summary, &e.fetch, &self.mask))
+            .map(|e| {
+                crate::async_events::runtime_event_line(&e.kind, &e.id, &e.status, &e.summary, &e.fetch, &self.mask)
+            })
             .collect()
     }
 

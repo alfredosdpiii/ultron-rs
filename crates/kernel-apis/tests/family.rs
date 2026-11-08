@@ -67,7 +67,7 @@ impl TaskHost for FakeHost {
     fn tasks(&self) -> Result<Vec<Value>, String> {
         Ok(tasks())
     }
-    fn spawn(&self, _: &Value, _: Option<&str>, _: &Signal) -> Result<Value, String> {
+    fn spawn(&self, _: &Value, _: Option<&str>) -> Result<Value, String> {
         Err("unused".into())
     }
     fn result(&self, _: &str) -> Result<Value, String> {
@@ -76,7 +76,7 @@ impl TaskHost for FakeHost {
     fn cancel(&self, _: &str, _: &str) -> Result<Value, String> {
         Err("unused".into())
     }
-    fn steer(&self, task_id: &str, message: &str, _: &Signal) -> Result<bool, String> {
+    fn steer(&self, task_id: &str, message: &str) -> Result<bool, String> {
         jsrt::sync::lock(&self.steered).push(json!([task_id, message]));
         match task_id {
             "t-child" => Ok(true),

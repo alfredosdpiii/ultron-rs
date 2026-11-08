@@ -3,12 +3,11 @@
 //! snapshots; the pure helpers (`cellApis`, `classifyNudge`, `statsLane`, `parseSessionStats`) agree case by case.
 
 use serde_json::Value;
-use session_core::session_stats::{
-    GuardOutcome, SessionStats, StatsStore, cell_apis, classify_nudge, parse_session_stats, stats_lane,
-};
+use session_core::session_stats::{GuardOutcome, SessionStats, StatsStore, parse_session_stats};
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, LazyLock, Mutex};
 use std::time::Duration;
+use usage::stats::{cell_apis, classify_nudge, stats_lane};
 
 static FIXTURE: LazyLock<Value> =
     LazyLock::new(|| serde_json::from_str(include_str!("../fixtures/session_stats.json")).expect("fixture parses"));

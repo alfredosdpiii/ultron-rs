@@ -193,13 +193,6 @@ fn hidden(relative: &str) -> bool {
     relative.split('/').any(|part| part.starts_with('.'))
 }
 
-fn load(root: &Path) -> Result<Config, CheckError> {
-    config::load_config(root).map_err(|e| match e {
-        config::ConfigError::Invalid(m) => CheckError::Value(m),
-        config::ConfigError::Guard(kind, m) => CheckError::Guard(kind, m),
-    })
-}
-
 /// Printing into project notes is allowed; source and policy writes are not.
 fn redirect_violation(target: &str, root: &Path, cwd: &Path) -> Result<Option<String>, CheckError> {
     let path = abspath(cwd, target);
@@ -207,7 +200,7 @@ fn redirect_violation(target: &str, root: &Path, cwd: &Path) -> Result<Option<St
         crate::evidence::finding("shell-redirect-outside", None);
         return Ok(Some("loki: shell redirect target escapes the repository root".into()));
     }
-    if let Some(message) = protect_path(&path.to_string_lossy(), root, &load(root)?)? {
+    if let Some(message) = protect_path(&path.to_string_lossy(), root, &crate::run::load(root)?)? {
         return Ok(Some(message));
     }
     let relative = relative_of(&path, root).unwrap_or_default();
@@ -742,7 +735,7 @@ pub fn shell_writes_violation(
         return Ok(None);
     };
     let root = resolve(root);
-    let config = load(&root)?;
+    let config = crate::run::load(&root)?;
     for (target, how) in targets {
         if target.contains(['$', '`', '*', '?', '~']) {
             continue;

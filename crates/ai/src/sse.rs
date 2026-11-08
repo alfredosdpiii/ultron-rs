@@ -3,7 +3,7 @@
 //! OpenAI SDK's stream of JSON events the Chat Completions and Responses providers read.
 
 use crate::http::{AbortSignal, Failure, HttpResponse, Read, Sdk, is_aborted, read_chunk};
-use crate::json::parse_json;
+use jsrt::json_parse::parse_json;
 use serde_json::{Value, json};
 
 /// The earliest frame boundary in `buffer` (its offset and length): at each offset, the first of `separators` that

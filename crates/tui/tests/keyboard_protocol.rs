@@ -222,12 +222,3 @@ fn tui_keyboard_protocol_terminal_start_and_stop_write_exact_bytes() {
     plain.stop().unwrap();
     assert_eq!(String::from_utf8(plain.out).unwrap(), "\x1b[?2004h\x1b[?2004l");
 }
-
-/// terminal.ts `enableWindowsVTInput`: `ENABLE_VIRTUAL_TERMINAL_INPUT` (0x0200) is added to the console input mode,
-/// keeping its other flags (the call itself is `cfg(windows)`).
-#[test]
-fn tui_terminal_windows_vt_input_mode_adds_the_flag() {
-    assert_eq!(tui::vt_input_mode(0x0007), 0x0207);
-    assert_eq!(tui::vt_input_mode(0x0207), 0x0207);
-    assert_eq!(tui::vt_input_mode(0), 0x0200);
-}

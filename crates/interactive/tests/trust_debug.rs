@@ -209,6 +209,7 @@ fn app() -> (App, Rc<Sent>) {
         provider: "anthropic".into(),
         id: "a".into(),
         name: "A".into(),
+        api: String::new(),
         reasoning: true,
         context_window: 1000,
         thinking_levels: Vec::new(),

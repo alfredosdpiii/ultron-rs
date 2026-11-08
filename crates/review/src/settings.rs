@@ -8,7 +8,7 @@ use indexmap::IndexMap;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
-use crate::js::{Num, clamp};
+use crate::js::Num;
 
 pub const CACHE_DIR_ENV: &str = "ULTRON_AUTOREVIEW_CACHE_DIR";
 
@@ -313,7 +313,7 @@ pub fn resolve_config(settings: &AutoreviewSettings, fallbacks: &ModelFallbacks,
         .model_concurrency
         .iter()
         .flatten()
-        .map(|(name, limit)| (name.clone(), Num(clamp(*limit, 1.0, MAX_MODEL_CONCURRENCY))))
+        .map(|(name, limit)| (name.clone(), Num(at_least_one(*limit, MAX_MODEL_CONCURRENCY))))
         .collect();
     model_concurrency
         .entry(RECOMMENDED_MODEL.to_string())
@@ -323,9 +323,8 @@ pub fn resolve_config(settings: &AutoreviewSettings, fallbacks: &ModelFallbacks,
     AutoreviewConfig {
         accounts: settings.accounts.clone(),
         poll_seconds: Num(MIN_POLL_SECONDS.max(settings.poll_seconds.unwrap_or(DEFAULT_POLL_SECONDS))),
-        concurrency: Num(clamp(
+        concurrency: Num(at_least_one(
             settings.concurrency.unwrap_or(DEFAULT_CONCURRENCY),
-            1.0,
             MAX_CONCURRENCY,
         )),
         model: model.clone(),
@@ -333,9 +332,8 @@ pub fn resolve_config(settings: &AutoreviewSettings, fallbacks: &ModelFallbacks,
         budget: Num(settings
             .budget
             .map_or(DEFAULT_BUDGET_TOKENS, |budget| MIN_BUDGET_TOKENS.max(budget))),
-        frame_concurrency: Num(clamp(
+        frame_concurrency: Num(at_least_one(
             settings.frame_concurrency.unwrap_or(DEFAULT_FRAME_CONCURRENCY),
-            1.0,
             MAX_FRAME_CONCURRENCY,
         )),
         thinking: thinking(&settings.thinking, Stage::Finders, &model),
@@ -343,9 +341,8 @@ pub fn resolve_config(settings: &AutoreviewSettings, fallbacks: &ModelFallbacks,
         mode: text(&settings.mode, DEFAULT_MODE),
         deep_thinking: thinking(&settings.deep_thinking, Stage::Investigators, &deep_model),
         deep_model,
-        deep_rounds: Num(clamp(
+        deep_rounds: Num(at_least_one(
             settings.deep_rounds.unwrap_or(DEFAULT_DEEP_ROUNDS),
-            1.0,
             MAX_DEEP_ROUNDS,
         )),
         reference_view: text(&settings.reference_view, DEFAULT_REFERENCE_VIEW),
@@ -354,19 +351,16 @@ pub fn resolve_config(settings: &AutoreviewSettings, fallbacks: &ModelFallbacks,
         ask_thinking: thinking(&settings.ask_thinking, Stage::Asks, &ask_model),
         ask_model,
         plan_style: text(&settings.plan_style, DEFAULT_PLAN_STYLE),
-        plan_cells: Num(clamp(
+        plan_cells: Num(at_least_one(
             settings.plan_cells.unwrap_or(DEFAULT_PLAN_CELLS),
-            1.0,
             MAX_PLAN_CELLS,
         )),
-        verify_candidates: Num(clamp(
+        verify_candidates: Num(at_least_one(
             settings.verify_candidates.unwrap_or(DEFAULT_VERIFY_CANDIDATES),
-            1.0,
             MAX_VERIFY_CANDIDATES,
         )),
-        verify_batch: Num(clamp(
+        verify_batch: Num(at_least_one(
             settings.verify_batch.unwrap_or(DEFAULT_VERIFY_BATCH),
-            1.0,
             MAX_VERIFY_BATCH,
         )),
         system_prefix: settings.system_prefix == Some(Value::Bool(true)),
@@ -687,4 +681,9 @@ pub fn saved(global: &Map<String, Value>) -> Map<String, Value> {
         put("ban", (!parsed.is_empty()).then_some(Value::Object(parsed)));
     }
     out
+}
+
+/// `Math.min(max, Math.max(1, value))`.
+fn at_least_one(value: f64, max: f64) -> f64 {
+    max.min(1f64.max(value))
 }

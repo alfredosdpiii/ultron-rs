@@ -71,8 +71,8 @@ name = "claude_subscription_relay"
 path = "tests/claude_subscription_relay.rs"
 
 [[test]]
-name = "claude_subscription_setup"
-path = "tests/claude_subscription_setup.rs"
+name = "claude_subscription_process"
+path = "tests/claude_subscription_process.rs"
 
 [[test]]
 name = "claude_subscription_usage"

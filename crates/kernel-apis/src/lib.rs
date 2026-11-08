@@ -55,7 +55,7 @@ pub use images::{ImagesConfig, ImagesModule};
 pub use instances::InstancesModule;
 pub use memory::{MemoryApi, MemoryBackend, MemoryError, MemoryService, worker_gate};
 pub use progress::ProgressModule;
-pub use schedule_tick::{ManualTickClock, ScheduleTicker, SystemTickClock, TickClock, TickObserver};
+pub use schedule_tick::{ManualTickClock, ScheduleTicker, TickClock};
 pub use schedules::SchedulesModule;
 pub use skills::{SkillLoader, SkillSource, SkillsModule};
 pub use tasks::{RootOnly, TaskHost};

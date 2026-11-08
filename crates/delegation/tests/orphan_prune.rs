@@ -58,7 +58,7 @@ fn worktree(cwd: &Path, session_id: &str, name: &str, dead: bool) -> WorktreeRec
     .unwrap();
     if dead {
         let file = Path::new(&record.common_dir)
-            .join(wt::WORKTREES_DIR)
+            .join(kernel::env::WORKTREES_DIR)
             .join(format!("{}.json", record.id));
         let mut saved: WorktreeRecord = serde_json::from_str(&std::fs::read_to_string(&file).unwrap()).unwrap();
         saved.owner.pid = dead_pid();
@@ -110,7 +110,7 @@ fn delegation_startup_pruning_leaves_repositories_without_ultron_worktrees_alone
     assert!(admin.exists());
     assert_eq!(host(&cwd, false).prune_orphan_worktrees(), wt::PruneReport::default());
     assert!(admin.exists(), "git worktree prune ran");
-    assert!(!cwd.join(".git").join(wt::WORKTREES_DIR).exists());
+    assert!(!cwd.join(".git").join(kernel::env::WORKTREES_DIR).exists());
 }
 
 /// A record is replaced whole (written beside it, then renamed), and a save that cannot write reports its error
@@ -122,7 +122,7 @@ fn delegation_worktree_record_saves_replace_the_file_or_fail_loudly() {
     let cwd = dir.path().canonicalize().unwrap();
     repo(&cwd);
     let mut record = worktree(&cwd, "session", "saved", false);
-    let records = Path::new(&record.common_dir).join(wt::WORKTREES_DIR);
+    let records = Path::new(&record.common_dir).join(kernel::env::WORKTREES_DIR);
     let file = records.join(format!("{}.json", record.id));
     record.state = "merged".into();
     wt::save_record(&record).unwrap();

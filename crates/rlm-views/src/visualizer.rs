@@ -75,7 +75,6 @@ pub struct RlmWorkflowRun {
     pub started_at: Option<f64>,
     pub ended_at: Option<f64>,
     pub nodes: Vec<RlmWorkflowNode>,
-    pub truncated_nodes: Option<f64>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -92,10 +91,9 @@ pub struct RlmUsage {
     pub remaining_wall_ms: Option<f64>,
     pub started_at: Option<f64>,
     pub deadline_at: Option<f64>,
-    /// `usage.cost`, `usage.totalTokens`, `usage.calls`.
+    /// `usage.cost`, `usage.totalTokens`.
     pub usage_cost: Option<f64>,
     pub usage_total_tokens: Option<f64>,
-    pub usage_calls: Option<f64>,
     pub reservations: Vec<RlmReservation>,
     pub spent_usd: Option<f64>,
     pub max_cost_usd: Option<f64>,
@@ -121,7 +119,6 @@ impl RlmUsage {
             deadline_at: n(&v["deadlineAt"]),
             usage_cost: n(&v["usage"]["cost"]),
             usage_total_tokens: n(&v["usage"]["totalTokens"]),
-            usage_calls: n(&v["usage"]["calls"]),
             reservations: v["reservations"]
                 .as_array()
                 .into_iter()
@@ -649,7 +646,6 @@ pub fn parse_agents_status(value: &Value) -> AgentsStatus {
             parent_id: s(r, "parentId"),
             started_at: n(r, "startedAt"),
             ended_at: n(r, "endedAt"),
-            truncated_nodes: n(r, "truncatedNodes"),
             nodes,
         });
     }

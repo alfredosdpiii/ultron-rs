@@ -11,6 +11,7 @@ pub mod names;
 pub mod pi_message;
 mod route;
 pub mod service;
+pub mod sockets;
 pub mod watch;
 
 pub use cbor::{CborError, CborOptions, Value, decode_cbor, encode_cbor};

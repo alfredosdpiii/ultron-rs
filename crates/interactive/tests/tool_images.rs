@@ -228,6 +228,7 @@ mod app {
             provider: "anthropic".into(),
             id: "m".into(),
             name: "M".into(),
+            api: String::new(),
             reasoning: false,
             context_window: 1000,
             thinking_levels: Vec::new(),

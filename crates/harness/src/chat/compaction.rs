@@ -24,7 +24,6 @@ use super::submissions::{SubmissionDraft, admit_submission};
 use super::usage::{Bucket, record_usage};
 use super::util::{d, from_value, strict, to_value};
 use crate::scheduler::{HarnessError, NextState, Result, Task, TaskRuntime, completed};
-use ai::retry::is_retryable;
 
 /// Which threshold compaction preparation starts before its request.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -49,7 +48,7 @@ pub struct SummaryRequest {
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "phase", rename_all = "camelCase", rename_all_fields = "camelCase")]
-pub enum CompactionCheckpoint {
+pub(crate) enum CompactionCheckpoint {
     Select,
     Summarize {
         #[serde(flatten)]
@@ -529,15 +528,9 @@ fn summarize_phase(services: &Services, task: &TaskRecord, runtime: &TaskRuntime
         return Err(HarnessError::msg("compaction made no summary request"));
     };
     let summary = (texts.len() == responses.len()).then(|| super::child_summary::compose_summary(&plan, &texts));
-    let policy = settings.retry;
-    let retry = message.stop_reason == StopReason::Error
-        && is_retryable(&message)
-        && policy.enabled
-        && request.attempt <= policy.max_retries;
-    let until = if retry {
-        runtime.now()? + policy.delay_ms(request.attempt)
-    } else {
-        0
+    let retry = match settings.retry.retry_delay(request.attempt, &message) {
+        Some(delay) => Some(runtime.now()? + delay),
+        None => None,
     };
     let modes = settings.queue_modes();
     runtime.commit(&runtime.ctx(), |tx, current| {
@@ -557,7 +550,7 @@ fn summarize_phase(services: &Services, task: &TaskRecord, runtime: &TaskRuntime
                 modes,
             );
         }
-        if retry {
+        if let Some(until) = retry {
             if let Some(index) = compaction_status_index(&live, task_id)? {
                 let path = vec![
                     chord_delta::Seg::from("compactions"),

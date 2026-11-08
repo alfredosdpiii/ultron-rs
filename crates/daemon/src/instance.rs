@@ -10,8 +10,6 @@ use std::path::{Path, PathBuf};
 use config::paths::{ENV_SERVER_DIR, LEGACY_ENV_SERVER_DIR};
 /// `sockaddr_un.sun_path` holds 108 bytes including the terminator.
 const MAX_SOCKET_PATH: usize = 107;
-/// The longest socket name a server directory holds: `server-<uuid>-<12 hex>.sock`.
-const LONGEST_SOCKET_NAME: usize = "server-00000000-0000-4000-8000-000000000000-000000000000.sock".len();
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Kind {
@@ -135,7 +133,7 @@ impl Instance {
 /// Where a server directory's sockets live: the directory itself, unless its longest socket path would not fit in
 /// a Unix socket address; then a private runtime directory named after it.
 pub fn socket_dir(server_dir: &Path) -> PathBuf {
-    if server_dir.as_os_str().len() + 1 + LONGEST_SOCKET_NAME <= MAX_SOCKET_PATH {
+    if server_dir.as_os_str().len() + 1 + protocol::sockets::LONGEST_NAME <= MAX_SOCKET_PATH {
         return server_dir.to_path_buf();
     }
     let hex = &jsrt::hash::sha256_hex(server_dir.as_os_str().as_encoded_bytes())[..12];
@@ -145,7 +143,7 @@ pub fn socket_dir(server_dir: &Path) -> PathBuf {
 }
 
 pub fn socket_path(server_dir: &Path, server_id: &str) -> PathBuf {
-    socket_dir(server_dir).join(format!("{server_id}.sock"))
+    socket_dir(server_dir).join(protocol::sockets::endpoint_name(server_id))
 }
 
 /// A running server generation as its record describes it.

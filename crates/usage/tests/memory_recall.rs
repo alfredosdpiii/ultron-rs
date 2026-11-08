@@ -31,7 +31,7 @@ fn memory_lines(dir: &Path, lines: &[Value]) -> (Value, Vec<String>) {
         text.push('\n');
     }
     std::fs::write(&path, text).unwrap();
-    let report = build_session_report(&read_session_log(&path).unwrap());
+    let report = build_session_report(&read_session_log(&path).unwrap(), &[]);
     let zone = Zone::utc();
     let rendered = render_session_report(
         &report,

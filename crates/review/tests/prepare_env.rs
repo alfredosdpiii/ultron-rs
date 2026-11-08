@@ -269,10 +269,9 @@ fn review_prepare_env_summary_is_what_the_reviewer_binds() {
         now: Arc::new(|| 0),
     };
     let lines: Mutex<Vec<String>> = Mutex::default();
-    let summary = review::reviewer::EnvironmentPreparer::prepare(&preparer, &repo, &|line| {
-        lines.lock().unwrap().push(line.into())
-    })
-    .expect("prepared");
+    let summary = preparer
+        .prepare(&repo, &|line| lines.lock().unwrap().push(line.into()))
+        .expect("prepared");
     let hash = environment_hash(Path::new(&repo), None);
     assert_eq!(
         summary,
@@ -287,7 +286,7 @@ fn review_prepare_env_summary_is_what_the_reviewer_binds() {
     );
     // The second time it is a cache hit: nothing runs.
     let calls = runner.calls.lock().unwrap().len();
-    let again = review::reviewer::EnvironmentPreparer::prepare(&preparer, &repo, &|_| {}).expect("cached");
+    let again = preparer.prepare(&repo, &|_| {}).expect("cached");
     assert!(again.cached);
     assert_eq!(runner.calls.lock().unwrap().len(), calls);
 }

@@ -170,6 +170,16 @@ fn cli_terminal_settings_tmux_probe_reads_client_termfeatures() {
     let env = env_of(&[("PATH", &empty.display().to_string())], dir.path().to_path_buf());
     assert!(!tmux_probe(&env, hang));
     assert!(!tmux_probe(&env_of(&[], dir.path().to_path_buf()), hang));
+    // A `tmux` file that is not executable is passed over, as the shell's PATH lookup does.
+    let plain = dir.path().join("plain");
+    std::fs::create_dir_all(&plain).unwrap();
+    std::fs::write(plain.join("tmux"), "#!/bin/sh\necho hyperlinks\n").unwrap();
+    let bin = fake_tmux(dir.path(), "echo hyperlinks");
+    let env = env_of(
+        &[("PATH", &format!("{}:{}", plain.display(), bin.display()))],
+        dir.path().to_path_buf(),
+    );
+    assert!(tmux_probe(&env, hang));
     // A tmux that never answers is given up on (`timeout`): `exec` keeps the child the process we spawned.
     let bin = fake_tmux(dir.path(), "exec sleep 600");
     let env = env_of(

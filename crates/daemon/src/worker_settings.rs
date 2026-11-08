@@ -610,6 +610,40 @@ pub fn apply(
             nested(settings, "review", "model", opt(model_value(key, value)?));
             applied = Applied::Live;
         }
+        // Rust-only: the subagent race's models, read for every race.
+        "rlm.raceModels" => {
+            let models = match value {
+                Value::Null => None,
+                Value::Array(items) => Some(
+                    items
+                        .iter()
+                        .map(|item| match model_value(key, item)? {
+                            Some(model) => Ok(Value::String(model)),
+                            None => Err(format!("{key} must be a list of provider/model (or null to clear it)")),
+                        })
+                        .collect::<Result<Vec<_>, String>>()?,
+                ),
+                _ => return Err(format!("{key} must be a list of provider/model (or null to clear it)")),
+            };
+            nested(settings, "rlm", "raceModels", models.map(Value::Array));
+            applied = Applied::Live;
+        }
+        // Rust-only token caps: `rlm.mapTokens` is read for every frame, `rootBudget` when the session starts.
+        "rlm.mapTokens" | "rootBudget.maxTotalTokens" => {
+            let cap = match value {
+                Value::Null => None,
+                value => Some(json!(config::settings::token_cap(Some(value)).ok_or_else(|| {
+                    format!("{key} must be a positive whole number (or null to clear it)")
+                })?)),
+            };
+            let (field, k) = key.split_once('.').expect("dotted key");
+            nested(settings, field, k, cap);
+            applied = if field == "rlm" {
+                Applied::Live
+            } else {
+                Applied::Restart
+            };
+        }
         "claudeCode.frameModel" => nested(settings, "claudeCode", "frameModel", opt(model_value(key, value)?)),
         "claudeCode.ultronChildModel" => nested(
             settings,

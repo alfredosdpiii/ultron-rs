@@ -16,5 +16,6 @@ mod snapshot;
 mod snapshot_fixture;
 #[path = "snapshot_key_store.rs"]
 mod snapshot_key_store;
+mod traceback_support;
 #[path = "tree_memory.rs"]
 mod tree_memory;

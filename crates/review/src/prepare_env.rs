@@ -21,7 +21,7 @@ use regex::Regex;
 use serde_json::{Map, Value, json};
 
 use crate::prepare::{NODE_LOCKS, ToolchainEntry, ToolchainRequests, detect_ecosystems, environment_hash, find_mise};
-use crate::reviewer::{EnvironmentPreparer, PreparedEnvironment};
+use crate::reviewer::PreparedEnvironment;
 use crate::runner::{RunOptions, RunResult, Runner};
 use crate::settings::Mise;
 use crate::state::to_json_1;
@@ -692,7 +692,7 @@ pub fn cached_environment(repo_dir: &str, cache_dir: &str, python: Option<&str>)
     Some(Prepared::from_record(Value::Object(record)))
 }
 
-/// The daemon's [`EnvironmentPreparer`]: `prepareEnvironment` over the injected runner, with the cache, the mise
+/// The daemon's test-environment builder: `prepareEnvironment` over the injected runner, with the cache, the mise
 /// setting, the environment and the home the service runs with.
 pub struct RunnerPreparer {
     pub runner: std::sync::Arc<dyn Runner>,
@@ -703,8 +703,8 @@ pub struct RunnerPreparer {
     pub now: std::sync::Arc<dyn Fn() -> i64 + Send + Sync>,
 }
 
-impl EnvironmentPreparer for RunnerPreparer {
-    fn prepare(&self, work_dir: &str, log: &dyn Fn(&str)) -> Result<PreparedEnvironment, String> {
+impl RunnerPreparer {
+    pub fn prepare(&self, work_dir: &str, log: &dyn Fn(&str)) -> Result<PreparedEnvironment, String> {
         let now = || (self.now)();
         let options = PrepareOptions {
             runner: &*self.runner,

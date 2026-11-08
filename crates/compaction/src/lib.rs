@@ -933,6 +933,25 @@ pub struct CompactionResult {
     pub modified_files: Vec<String>,
 }
 
+impl CompactionResult {
+    /// The compaction entry it makes (Pi's `CompactionEntry` fields, written by Ultron itself: `fromHook` false),
+    /// keeping `retained_tail` after the summary and recording the summary's `usage`.
+    pub fn entry(&self, retained_tail: Vec<Value>, usage: Value) -> serde_json::Map<String, Value> {
+        let mut entry = serde_json::Map::new();
+        entry.insert("type".into(), "compaction".into());
+        entry.insert("summary".into(), self.summary.clone().into());
+        entry.insert("retainedTail".into(), Value::Array(retained_tail));
+        entry.insert("tokensBefore".into(), self.tokens_before.into());
+        entry.insert(
+            "details".into(),
+            serde_json::json!({"readFiles": self.read_files, "modifiedFiles": self.modified_files}),
+        );
+        entry.insert("usage".into(), usage);
+        entry.insert("fromHook".into(), false.into());
+        entry
+    }
+}
+
 fn combine_usage(first: &Usage, second: &Usage) -> Usage {
     let optional =
         |a: Option<u64>, b: Option<u64>| (a.is_some() || b.is_some()).then(|| a.unwrap_or(0) + b.unwrap_or(0));

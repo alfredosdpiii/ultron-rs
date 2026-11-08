@@ -123,18 +123,13 @@ fn command(sub: &str, rest: &[String], env: &Env) -> Result<Vec<String>, Failure
         "import-pi" => {
             let o = parse_options(rest, &["sessions-root"])?;
             expect_positional(&o.positional, 1, 1)?;
-            let root_input = o
-                .get("sessions-root")
-                .map(str::to_string)
-                .or_else(|| (env.var)(config::paths::ENV_SESSION_DIR))
-                .unwrap_or_else(|| {
-                    env.agent_dir()
-                        .join("experimental")
-                        .join("sessions")
-                        .display()
-                        .to_string()
-                });
-            let sessions_root = config::paths::resolve(&root_input, &env.cwd, &env.home);
+            let sessions_root = config::paths::session_root(
+                o.get("sessions-root"),
+                &*env.var,
+                &config::paths::AgentPaths::new(env.agent_dir()).experimental_sessions_dir(),
+                &env.cwd,
+                &env.home,
+            );
             let result = session_core::migration::import_pi_session(&resolve(env, &o.positional[0]), &sessions_root)
                 .map_err(|e| Failure::Error(e.to_string()))?;
             Ok(import_lines(&result))

@@ -172,7 +172,7 @@ pub fn export_page(data: &Value, theme: Option<&str>, env: &crate::Env) -> Resul
         }
         _ => Vec::new(),
     };
-    let custom_dir = env.agent_dir().join("themes");
+    let custom_dir = config::paths::AgentPaths::new(env.agent_dir()).custom_themes_dir();
     generate_html_themed(
         data,
         theme,

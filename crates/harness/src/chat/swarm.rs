@@ -22,9 +22,9 @@ use super::{ChatHarness, SubmissionDraft, WhenBusy};
 use crate::scheduler::{HarnessError, Result};
 
 /// Recent work an agent keeps in the registry.
-pub const MAX_RECENT: usize = 10;
+pub(crate) const MAX_RECENT: usize = 10;
 /// Messages kept per mailbox; the oldest read ones go first.
-pub const MAX_MAIL: usize = 200;
+pub(crate) const MAX_MAIL: usize = 200;
 
 fn session_doc(kind: &str, initial: Value) -> Doc {
     DocDefinition::new(kind, 1, DocSemantics::Session, move |_| initial.clone())
@@ -33,9 +33,11 @@ fn session_doc(kind: &str, initial: Value) -> Doc {
 }
 
 pub static AGENTS: LazyLock<Doc> = LazyLock::new(|| session_doc("ultron.agents", json!({ "agents": {} })));
-pub static MAIL: LazyLock<Doc> = LazyLock::new(|| session_doc("ultron.mail", json!({ "boxes": {}, "next": 1 })));
-pub static BOARD: LazyLock<Doc> = LazyLock::new(|| session_doc("ultron.board", json!({ "tasks": [], "next": 1 })));
-pub static NOTES: LazyLock<Doc> = LazyLock::new(|| session_doc("ultron.notes", json!({ "text": "", "version": 0 })));
+pub(crate) static MAIL: LazyLock<Doc> = LazyLock::new(|| session_doc("ultron.mail", json!({ "boxes": {}, "next": 1 })));
+pub(crate) static BOARD: LazyLock<Doc> =
+    LazyLock::new(|| session_doc("ultron.board", json!({ "tasks": [], "next": 1 })));
+pub(crate) static NOTES: LazyLock<Doc> =
+    LazyLock::new(|| session_doc("ultron.notes", json!({ "text": "", "version": 0 })));
 
 fn path(segments: &[&str]) -> Vec<Seg> {
     segments.iter().map(|segment| Seg::from(*segment)).collect()
@@ -241,7 +243,7 @@ fn task_path(index: usize, field: &str) -> Vec<Seg> {
 }
 
 /// Add a task to the board; returns it.
-pub fn board_add(tx: &mut Tx<'_>, by: &str, title: &str, detail: Option<&str>, now: u64) -> Result<Value> {
+pub(crate) fn board_add(tx: &mut Tx<'_>, by: &str, title: &str, detail: Option<&str>, now: u64) -> Result<Value> {
     if title.trim().is_empty() {
         return Err(msg("A board task needs a title"));
     }
@@ -259,7 +261,7 @@ pub fn board_add(tx: &mut Tx<'_>, by: &str, title: &str, detail: Option<&str>, n
 }
 
 /// Claim an open task for `owner`; a task someone else claimed is refused.
-pub fn board_claim(tx: &mut Tx<'_>, owner: &str, id: u64, now: u64) -> Result<Value> {
+pub(crate) fn board_claim(tx: &mut Tx<'_>, owner: &str, id: u64, now: u64) -> Result<Value> {
     let (doc, index, mut task) = board_index(tx, id)?;
     match task["status"].as_str() {
         Some("open") => {}
@@ -287,7 +289,7 @@ pub fn board_claim(tx: &mut Tx<'_>, owner: &str, id: u64, now: u64) -> Result<Va
 }
 
 /// Change a task's status (`open`, `claimed`, `done`, `dropped`) and/or append a note.
-pub fn board_update(
+pub(crate) fn board_update(
     tx: &mut Tx<'_>,
     by: &str,
     id: u64,
@@ -319,7 +321,7 @@ pub fn board_update(
     Ok(task)
 }
 
-pub fn board_list(tx: &mut Tx<'_>, status: Option<&str>) -> Result<Value> {
+pub(crate) fn board_list(tx: &mut Tx<'_>, status: Option<&str>) -> Result<Value> {
     let doc = tx.doc(&BOARD, Owner::Session)?;
     let tasks = d(doc.get(&path(&["tasks"])))?.unwrap_or(json!([]));
     Ok(json!(
@@ -333,7 +335,7 @@ pub fn board_list(tx: &mut Tx<'_>, status: Option<&str>) -> Result<Value> {
     ))
 }
 
-pub fn notes_read(tx: &mut Tx<'_>) -> Result<Value> {
+pub(crate) fn notes_read(tx: &mut Tx<'_>) -> Result<Value> {
     let doc = tx.doc(&NOTES, Owner::Session)?;
     Ok(json!({
         "text": d(doc.get(&path(&["text"])))?.unwrap_or(json!("")),
@@ -342,7 +344,7 @@ pub fn notes_read(tx: &mut Tx<'_>) -> Result<Value> {
 }
 
 /// Append a line to the notes (never conflicts).
-pub fn notes_append(tx: &mut Tx<'_>, by: &str, text: &str) -> Result<Value> {
+pub(crate) fn notes_append(tx: &mut Tx<'_>, by: &str, text: &str) -> Result<Value> {
     let doc = tx.doc(&NOTES, Owner::Session)?;
     let current = d(doc.get(&path(&["text"])))?
         .and_then(|text| text.as_str().map(str::to_owned))
@@ -363,7 +365,7 @@ pub fn notes_append(tx: &mut Tx<'_>, by: &str, text: &str) -> Result<Value> {
 }
 
 /// Replace the notes; with `expect`, only when the current version is `expect` (a stale writer is refused).
-pub fn notes_write(tx: &mut Tx<'_>, text: &str, expect: Option<u64>) -> Result<Value> {
+pub(crate) fn notes_write(tx: &mut Tx<'_>, text: &str, expect: Option<u64>) -> Result<Value> {
     let doc = tx.doc(&NOTES, Owner::Session)?;
     let version = d(doc.get(&path(&["version"])))?
         .and_then(|version| version.as_u64())
@@ -390,7 +392,7 @@ pub struct Caller<'a> {
 }
 
 /// `(from, to, text)` of a message that wakes the root.
-pub type RootInbox<'a> = &'a dyn Fn(&str, &str, &str);
+pub(crate) type RootInbox<'a> = &'a dyn Fn(&str, &str, &str);
 
 /// Serve `kind` (one of [`super::host_ops::SWARM_KINDS`]) for `caller`. A `swarm.send` with `wake` wakes its
 /// recipient: the root through `root_inbox` when it has one, else a recipient with a conversation here gets the

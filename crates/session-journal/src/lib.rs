@@ -27,7 +27,7 @@ pub mod usage;
 pub use fork::ForkOptions;
 pub use repo::{Metadata, SessionRepo};
 pub use session::Session;
-pub use state::{CommitResult, Write};
+pub use state::Write;
 pub use storage::JsonlStorage;
 
 use std::sync::{Arc, Mutex, MutexGuard};

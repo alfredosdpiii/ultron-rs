@@ -218,7 +218,7 @@ impl Run {
             "deadOwner" => {
                 let record = &self.records[op[1].as_u64().unwrap() as usize];
                 let path = Path::new(&record.common_dir)
-                    .join(wt::WORKTREES_DIR)
+                    .join(kernel::env::WORKTREES_DIR)
                     .join(format!("{}.json", record.id));
                 let mut saved: WorktreeRecord = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
                 saved.owner.pid = 2147483646;

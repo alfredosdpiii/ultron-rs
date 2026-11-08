@@ -125,9 +125,13 @@ impl Summarizer {
                 now_ms(),
             );
             let response = runtime.block_on(self.stream(request, signal));
-            if !signal.aborted() && attempt < retry.max_attempts() && ai::retry::is_retryable(&response) {
-                let delay = i64::try_from(retry.delay_ms(attempt)).unwrap_or(i64::MAX);
-                wait_until(now_ms().saturating_add(delay), signal);
+            if !signal.aborted()
+                && let Some(delay) = retry.retry_delay(attempt, &response)
+            {
+                wait_until(
+                    now_ms().saturating_add(i64::try_from(delay).unwrap_or(i64::MAX)),
+                    signal,
+                );
                 attempt += 1;
                 continue;
             }
@@ -225,6 +229,24 @@ pub(super) enum RetryStep<'a> {
     },
     /// The wait ended: the next attempt starts.
     Retry,
+}
+
+impl CompactionOp {
+    /// Journals `step` of this operation's summary attempts.
+    pub(super) fn journal_step(
+        &mut self,
+        session: &mut session_journal::Session,
+        step: RetryStep<'_>,
+    ) -> Result<(), String> {
+        match step {
+            RetryStep::Wait {
+                usage,
+                error,
+                not_before,
+            } => self.retry_wait(session, usage.as_ref(), error, not_before),
+            RetryStep::Retry => self.retry(session),
+        }
+    }
 }
 
 /// Waits until `not_before` (milliseconds since the epoch) or until `signal` aborts.
@@ -386,10 +408,9 @@ impl Core {
             if signal.aborted() {
                 return (result, last);
             }
-            let error = match &result {
-                Err(error) if number < retry.max_attempts() && last.as_ref().is_some_and(ai::retry::is_retryable) => {
-                    error.clone()
-                }
+            let retrying = last.as_ref().and_then(|message| retry.retry_delay(number, message));
+            let (error, delay) = match (&result, retrying) {
+                (Err(error), Some(delay)) => (error.clone(), delay),
                 _ => {
                     if number > 1 {
                         self.emit(WatchEvent::RetryEnd {
@@ -404,7 +425,6 @@ impl Core {
                     return (result, last);
                 }
             };
-            let delay = retry.delay_ms(number);
             let not_before = now_ms().saturating_add(i64::try_from(delay).unwrap_or(i64::MAX));
             let usage = last.as_ref().and_then(|m| serde_json::to_value(&m.usage).ok());
             if let Err(write) = journal(
@@ -541,17 +561,8 @@ impl Core {
         let attempt: AttemptFn<compaction::CompactionResult> =
             Arc::new(move || summarizer.run(&preparation, instructions.as_deref(), &cancel));
         let ids = (op.operation_id().to_string(), op.task_id().to_string());
-        let mut journal = |core: &mut Core, step: RetryStep<'_>| {
-            let mut session = lock_session(&core.session);
-            match step {
-                RetryStep::Wait {
-                    usage,
-                    error,
-                    not_before,
-                } => op.retry_wait(&mut session, usage.as_ref(), error, not_before),
-                RetryStep::Retry => op.retry(&mut session),
-            }
-        };
+        let mut journal =
+            |core: &mut Core, step: RetryStep<'_>| op.journal_step(&mut lock_session(&core.session), step);
         let (result, _) = self.summary_attempts(
             signal,
             retry,
@@ -577,17 +588,9 @@ impl Core {
         };
         let usage = serde_json::to_value(&result.usage).map_err(|e| e.to_string())?;
         op.record_usage(&mut lock_session(&self.session), &usage)?;
-        let mut entry = Map::new();
-        entry.insert("type".into(), "compaction".into());
-        entry.insert("summary".into(), result.summary.clone().into());
-        entry.insert("retainedTail".into(), Value::Array(prepared.retained_tail));
-        entry.insert("tokensBefore".into(), result.tokens_before.into());
-        entry.insert(
-            "details".into(),
-            json!({"readFiles": result.read_files, "modifiedFiles": result.modified_files}),
-        );
-        entry.insert("usage".into(), usage);
-        entry.insert("fromHook".into(), false.into());
-        op.complete(&mut lock_session(&self.session), entry)
+        op.complete(
+            &mut lock_session(&self.session),
+            result.entry(prepared.retained_tail, usage),
+        )
     }
 }

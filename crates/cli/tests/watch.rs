@@ -6,8 +6,8 @@ use std::sync::Arc;
 
 use claude_root::control::{ControlHandler, listen};
 use cli::watch::{parse_watch_args, render_watch_frame, run};
-use rlm_views::RlmSnapshot;
 use rlm_views::pane::RlmPane;
+use rlm_views::visualizer::RlmSnapshot;
 use rlm_views::visualizer::RlmStyle;
 use serde_json::{Value, json};
 

@@ -1,7 +1,7 @@
 //! Process terminal: raw mode and size through crossterm, escape-sequence writes, and an input pump that feeds stdin
 //! bytes through [`StdinBuffer`] (port of `ProcessTerminal` in packages/tui/src/terminal.ts; the Kitty keyboard
-//! protocol negotiation is [`crate::keyboard_protocol`], whose replies the run loop reads from the input; on Windows
-//! the console input mode gains `ENABLE_VIRTUAL_TERMINAL_INPUT`; no progress keepalive).
+//! protocol negotiation is [`crate::keyboard_protocol`], whose replies the run loop reads from the input; Unix only,
+//! so no Windows console input mode; no progress keepalive).
 
 use std::io::{self, Read, Write};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
@@ -42,8 +42,6 @@ impl<W: Write> Terminal<W> {
         if raw {
             self.was_raw = crossterm::terminal::is_raw_mode_enabled()?;
             crossterm::terminal::enable_raw_mode()?;
-            // After raw mode, which resets the console mode flags (terminal.ts:194-198).
-            enable_windows_vt_input();
         }
         self.started = raw;
         self.write("\x1b[?2004h")
@@ -77,30 +75,6 @@ impl<W: Write> Terminal<W> {
         self.write("\x1b[?25h")
     }
 }
-
-/// `ENABLE_VIRTUAL_TERMINAL_INPUT`: the console sends VT sequences for modified keys (`\x1b[Z` for Shift+Tab).
-pub const ENABLE_VIRTUAL_TERMINAL_INPUT: u32 = 0x0200;
-
-/// The console input mode `mode` with VT input on.
-pub fn vt_input_mode(mode: u32) -> u32 {
-    mode | ENABLE_VIRTUAL_TERMINAL_INPUT
-}
-
-/// `enableWindowsVTInput` (terminal.ts:369-382): add VT input to the stdin console handle; without it Shift+Tab
-/// arrives as plain `\t`. A failure is ignored (Shift+Tab is then not distinguishable from Tab).
-#[cfg(windows)]
-fn enable_windows_vt_input() {
-    use crossterm_winapi::{ConsoleMode, Handle};
-    if let Ok(handle) = Handle::input_handle() {
-        let console = ConsoleMode::from(handle);
-        if let Ok(mode) = console.mode() {
-            let _ = console.set_mode(vt_input_mode(mode));
-        }
-    }
-}
-
-#[cfg(not(windows))]
-fn enable_windows_vt_input() {}
 
 /// Terminal (columns, rows): the tty size, else $COLUMNS/$LINES, else 80x24.
 pub fn size() -> (u16, u16) {

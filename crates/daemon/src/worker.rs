@@ -568,7 +568,7 @@ fn services(
             let env = refresh_env.clone();
             crate::session_control::refresh_models(
                 &refresh_state,
-                || session_core::model_refresh::refresh_catalogs(&env, false),
+                || session_core::model_refresh::refresh_catalogs(&env),
                 || {
                     session_core::lane::available_models(&refresh_env)
                         .iter()

@@ -4,7 +4,6 @@
 
 use crate::env::provider_env_value;
 use crate::http::{AbortSignal, HttpRequest, HttpResponse, Transport, cancelled, is_aborted};
-use crate::json::{parse_json, parse_streaming_json};
 use crate::jsutil::Utf8Stream;
 use crate::options::{SimpleStreamOptions, StreamOptions};
 use crate::provider::{ProviderError, next_chunk};
@@ -13,6 +12,7 @@ use crate::types::{
     DiagnosticErrorInfo, EventSink, Model, StopReason, TextContent, ThinkingContent, ToolCall, TranscriptContext,
     Usage,
 };
+use jsrt::json_parse::{parse_json, parse_streaming_json};
 use serde::Deserialize;
 use serde_json::{Map, Value, json};
 use std::collections::HashMap;

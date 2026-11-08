@@ -61,20 +61,28 @@ pub fn entry_context_messages(entry: &Value) -> Vec<Value> {
     }
 }
 
-fn parse_edit(value: &Value) -> Option<(String, Option<Value>)> {
-    let target = value.get("targetId")?.as_str().filter(|t| !t.is_empty())?;
-    match value.get("replacement")? {
-        Value::Null => Some((target.into(), None)),
-        Value::Object(r) => {
-            let content = r.get("content")?;
-            (content.is_string() || content.is_array()).then(|| (target.into(), Some(content.clone())))
-        }
-        _ => None,
-    }
+/// One edit: `replacement` is `None` to omit the target, else `Some(content)` (a string or a content array).
+#[derive(Debug, Clone, PartialEq)]
+pub struct ContextEdit {
+    pub target_id: String,
+    pub replacement: Option<Value>,
 }
 
-/// `contextEditsOf`.
-fn edits_of(entry: &Value) -> Vec<(String, Option<Value>)> {
+fn parse_edit(value: &Value) -> Option<ContextEdit> {
+    let target = value.get("targetId")?.as_str().filter(|t| !t.is_empty())?;
+    let replacement = match value.get("replacement")? {
+        Value::Null => None,
+        Value::Object(r) => Some(r.get("content").filter(|c| c.is_string() || c.is_array())?.clone()),
+        _ => return None,
+    };
+    Some(ContextEdit {
+        target_id: target.into(),
+        replacement,
+    })
+}
+
+/// `contextEditsOf`: the edits one entry carries; none for any other entry or malformed data.
+pub fn context_edits_of(entry: &Value) -> Vec<ContextEdit> {
     if str_of(entry, "type") != "custom" || str_of(entry, "customType") != CONTEXT_EDIT_CUSTOM_TYPE {
         return vec![];
     }
@@ -87,7 +95,8 @@ fn edits_of(entry: &Value) -> Vec<(String, Option<Value>)> {
     }
 }
 
-fn tool_call_ids(content: &Value) -> Vec<String> {
+/// The ids of the tool calls in a message's content.
+pub fn content_call_ids(content: &Value) -> Vec<String> {
     content
         .as_array()
         .map(|parts| {
@@ -100,17 +109,28 @@ fn tool_call_ids(content: &Value) -> Vec<String> {
         .unwrap_or_default()
 }
 
-fn replace_content(message: &Value, content: &Value) -> Value {
+/// `replaceContent`: `message` with `content` in place of its own (a string becomes one text part for an assistant
+/// message or a tool result; `None` removes it). Messages of other roles are left as they are.
+pub fn replace_content(message: &Value, content: Option<&Value>) -> Value {
     let role = str_of(message, "role");
     if !matches!(role, "user" | "assistant" | "toolResult" | "custom") {
         return message.clone();
     }
     let next = match (role, content) {
-        ("assistant" | "toolResult", Value::String(text)) => json!([{"type": "text", "text": text}]),
-        _ => content.clone(),
+        ("assistant" | "toolResult", Some(Value::String(text))) => Some(json!([{"type": "text", "text": text}])),
+        (_, other) => other.cloned(),
     };
     let mut out = message.clone();
-    out["content"] = next;
+    if let Value::Object(map) = &mut out {
+        match next {
+            Some(next) => {
+                map.insert("content".into(), next);
+            }
+            None => {
+                map.shift_remove("content");
+            }
+        }
+    }
     out
 }
 
@@ -124,15 +144,38 @@ fn omitted(entry: &Value) -> Value {
     Value::Object(out)
 }
 
+/// An entry as the model sees it, and whether an edit produced it.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Applied {
+    pub entry: Value,
+    pub changed: bool,
+}
+
+/// `applyContextEdits`: applies the edits found among `entries` to them. Tool calls and results stay paired:
+/// results of an omitted assistant message (or of calls a replacement dropped) are omitted with it, and an omitted
+/// result whose call stays visible becomes a stub result. Later edits win.
 pub fn apply_context_edits<V: Borrow<Value>>(entries: &[V]) -> Vec<Value> {
+    apply_context_edits_marked(entries)
+        .into_iter()
+        .map(|applied| applied.entry)
+        .collect()
+}
+
+/// [`apply_context_edits`], each entry marked with whether an edit changed it.
+pub fn apply_context_edits_marked<V: Borrow<Value>>(entries: &[V]) -> Vec<Applied> {
     let mut edits: HashMap<String, Option<Value>> = HashMap::new();
     for entry in entries {
-        for (target, replacement) in edits_of(entry.borrow()) {
-            edits.insert(target, replacement);
+        for edit in context_edits_of(entry.borrow()) {
+            edits.insert(edit.target_id, edit.replacement);
         }
     }
+    let unchanged = |entry: &Value| Applied {
+        entry: entry.clone(),
+        changed: false,
+    };
+    let changed = |entry: Value| Applied { entry, changed: true };
     if edits.is_empty() {
-        return entries.iter().map(|e| e.borrow().clone()).collect();
+        return entries.iter().map(|e| unchanged(e.borrow())).collect();
     }
     let mut hidden = HashSet::new();
     for entry in entries.iter().map(Borrow::borrow) {
@@ -144,11 +187,11 @@ pub fn apply_context_edits<V: Borrow<Value>>(entries: &[V]) -> Vec<Value> {
         };
         let kept: HashSet<String> = replacement
             .as_ref()
-            .map(tool_call_ids)
+            .map(content_call_ids)
             .unwrap_or_default()
             .into_iter()
             .collect();
-        for id in tool_call_ids(&entry["message"]["content"]) {
+        for id in content_call_ids(&entry["message"]["content"]) {
             if !kept.contains(&id) {
                 hidden.insert(id);
             }
@@ -162,30 +205,30 @@ pub fn apply_context_edits<V: Borrow<Value>>(entries: &[V]) -> Vec<Value> {
             match str_of(entry, "type") {
                 "custom" => {
                     if matches!(edits.get(id), Some(None)) {
-                        omitted(entry)
+                        changed(omitted(entry))
                     } else {
-                        entry.clone()
+                        unchanged(entry)
                     }
                 }
                 "message" => {
                     let message = &entry["message"];
                     if str_of(message, "role") == "toolResult" && hidden.contains(str_of(message, "toolCallId")) {
-                        return omitted(entry);
+                        return changed(omitted(entry));
                     }
                     let Some(replacement) = edits.get(id) else {
-                        return entry.clone();
+                        return unchanged(entry);
                     };
                     let mut out = entry.clone();
                     match replacement {
                         None if str_of(message, "role") == "toolResult" => {
-                            out["message"] = replace_content(message, &CONTEXT_OMITTED_TOOL_RESULT_TEXT.into());
+                            out["message"] = replace_content(message, Some(&CONTEXT_OMITTED_TOOL_RESULT_TEXT.into()));
                         }
-                        None => return omitted(entry),
-                        Some(content) => out["message"] = replace_content(message, content),
+                        None => return changed(omitted(entry)),
+                        Some(content) => out["message"] = replace_content(message, Some(content)),
                     }
-                    out
+                    changed(out)
                 }
-                _ => entry.clone(),
+                _ => unchanged(entry),
             }
         })
         .collect()

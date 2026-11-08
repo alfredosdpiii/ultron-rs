@@ -7,11 +7,12 @@
 
 use serde_json::{Value, json};
 use session_core::RunEnv;
+use session_core::lane::subscription_providers;
 use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Arc;
 use usage::log::read_session_log;
-use usage::report::build_session_report_with;
+use usage::report::build_session_report;
 
 /// rootOnlySession: one root response on provider `priced`, $0.10.
 fn session(dir: &Path) -> std::path::PathBuf {
@@ -33,12 +34,12 @@ fn session(dir: &Path) -> std::path::PathBuf {
 fn cli_usage_a_provider_on_a_subscription_login_is_priced_as_one() {
     let dir = tempfile::tempdir().unwrap();
     let log = read_session_log(&session(dir.path())).unwrap();
-    let report = build_session_report_with(&log, &["priced".to_string()]);
+    let report = build_session_report(&log, &["priced".to_string()]);
     let cost = &report["usage"]["total"]["cost"];
     assert_eq!(cost["reportedUsd"], Value::Null);
     assert!((cost["subscriptionUsd"].as_f64().unwrap() - 0.1).abs() < 1e-9, "{cost}");
     // Without it the cost is reported.
-    let plain = build_session_report_with(&log, &[]);
+    let plain = build_session_report(&log, &[]);
     assert!((plain["usage"]["total"]["cost"]["reportedUsd"].as_f64().unwrap() - 0.1).abs() < 1e-9);
     assert_eq!(plain["usage"]["total"]["cost"]["subscriptionUsd"], Value::Null);
 }
@@ -75,12 +76,12 @@ fn sorted(mut providers: Vec<String>) -> Vec<String> {
 #[test]
 fn cli_usage_subscription_providers_are_the_runtimes_subscription_logins() {
     let dir = tempfile::tempdir().unwrap();
-    let providers = session_core::lane::subscription_providers(&env(dir.path(), &[]));
+    let providers = subscription_providers(&env(dir.path(), &[]));
     assert_eq!(sorted(providers), ["anthropic", "claude-subscription", "openai-codex"]);
     // Claude Code counts once its CLI is configured.
     let cli = dir.path().join("claude");
     std::fs::write(&cli, "").unwrap();
-    let providers = session_core::lane::subscription_providers(&env(
+    let providers = subscription_providers(&env(
         dir.path(),
         &[(ai::claude_code_cli::CLAUDE_CODE_BIN_ENV, cli.display().to_string())],
     ));
@@ -156,7 +157,7 @@ fn cli_usage_mcp_report_prices_the_servers_subscription_logins_as_notional() {
         .unwrap()
         .replace("\"priced\"", "\"anthropic\"");
     std::fs::write(&path, text).unwrap();
-    let report = usage::session_report(&path, &env(dir.path(), &[])).unwrap();
+    let report = usage::session_report(&path, &subscription_providers(&env(dir.path(), &[]))).unwrap();
     let cost = &report["usage"]["total"]["cost"];
     assert_eq!(cost["reportedUsd"], Value::Null, "{cost}");
     assert!((cost["subscriptionUsd"].as_f64().unwrap() - 0.1).abs() < 1e-9, "{cost}");
@@ -167,9 +168,9 @@ fn cli_usage_mcp_report_prices_the_servers_subscription_logins_as_notional() {
         json!({"anthropic": {"type": "api_key", "key": "fake-anthropic-key"}}).to_string(),
     )
     .unwrap();
-    let report = usage::session_report(&path, &env).unwrap();
+    let report = usage::session_report(&path, &subscription_providers(&env)).unwrap();
     let cost = &report["usage"]["total"]["cost"];
     assert!((cost["reportedUsd"].as_f64().unwrap() - 0.1).abs() < 1e-9, "{cost}");
     assert_eq!(cost["subscriptionUsd"], Value::Null, "{cost}");
-    assert!(usage::session_report(&dir.path().join("missing.jsonl"), &env).is_err());
+    assert!(usage::session_report(&dir.path().join("missing.jsonl"), &subscription_providers(&env)).is_err());
 }

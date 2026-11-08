@@ -661,15 +661,12 @@ pub fn run(
 ) -> Result<i32, String> {
     let (tx, rx): (Sender<Input>, Receiver<Input>) = channel();
     let signal_tx = Mutex::new(tx.clone());
-    signals::set_handler(Arc::new(move |signal| {
-        let code = signals::exit_code(signal);
+    crate::print_mode::exit_on_signal(move |code| {
         let _ = signal_tx
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .send(Input::Signal(code));
-        std::thread::sleep(crate::print_mode::PROMPT_ABORT_WAIT);
-        std::process::exit(code);
-    }));
+    });
     let lines = tx.clone();
     std::thread::spawn(move || {
         for line in crate::rpc::jsonl::JsonlLines::new(input) {

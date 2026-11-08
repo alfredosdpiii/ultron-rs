@@ -2,9 +2,7 @@
 //! `fixtures/generate-model-registry.mjs`): models.json providers and models composed over the built-in catalog,
 //! composition errors, availability, request auth (key and headers) and exact model references.
 
-use ai::model_registry::{
-    ModelRegistry, env_names, request_options, resolve_config_value, resolve_config_value_or_err,
-};
+use ai::model_registry::{ModelRegistry, request_options};
 use ai::{Model, SimpleStreamOptions};
 use serde_json::{Map, Value, json};
 use std::collections::HashMap;
@@ -246,31 +244,6 @@ fn ai_model_registry_auth_header_needs_a_key() {
     assert_eq!(
         error,
         "API key auth failed for provider gw: authHeader requires a resolved API key"
-    );
-}
-
-/// `resolve-config-value.test.ts` literals: templates, escapes and commands.
-#[test]
-fn ai_model_registry_config_values() {
-    let env: HashMap<&str, &str> = [("A", "x"), ("B", "y"), ("EMPTY", "")].into_iter().collect();
-    let lookup = |name: &str| env.get(name).map(|v| v.to_string());
-    let resolve = |value: &str| resolve_config_value(value, &lookup);
-    assert_eq!(resolve("literal").as_deref(), Some("literal"));
-    assert_eq!(resolve("$A").as_deref(), Some("x"));
-    assert_eq!(resolve("pre-${A}-$B-post").as_deref(), Some("pre-x-y-post"));
-    assert_eq!(resolve("$$A and $!").as_deref(), Some("$A and !"));
-    assert_eq!(resolve("${not a name}").as_deref(), Some("${not a name}"));
-    assert_eq!(resolve("$EMPTY"), None);
-    assert_eq!(resolve("$MISSING"), None);
-    assert_eq!(resolve("!printf '  out  '").as_deref(), Some("out"));
-    assert_eq!(resolve("!true"), None);
-    assert_eq!(resolve("!exit 1"), None);
-    assert_eq!(env_names("$A ${B} $A $$C"), ["A", "B"]);
-    assert!(env_names("!echo $A").is_empty());
-    assert_eq!(resolve_config_value_or_err("lit$", "x", &lookup).as_deref(), Ok("lit$"));
-    assert_eq!(
-        resolve_config_value_or_err("$EMPTY", "the key", &lookup).unwrap_err(),
-        "Failed to resolve the key from environment variable: EMPTY"
     );
 }
 

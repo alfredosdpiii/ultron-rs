@@ -74,7 +74,7 @@ fn guide(args: &[String], ctx: &Ctx, out: &mut dyn Write) -> Result<i32, Failure
         index += 1;
     }
     let var = &*ctx.env.var;
-    let hints = kernel_apis::cell_hints::hints_enabled(var(kernel_apis::cell_hints::HINTS_ENV).as_deref());
+    let hints = session_core::compose::hints(var);
     let dir = cwd.unwrap_or_else(|| ctx.env.cwd.display().to_string());
     let bundled = ctx.bundled_skills();
     let resources;

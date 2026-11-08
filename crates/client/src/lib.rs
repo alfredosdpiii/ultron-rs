@@ -187,12 +187,9 @@ pub fn discover_unix_servers(directory: &Path, timeout: Duration) -> io::Result<
     for entry in entries {
         let entry = entry?;
         let name = entry.file_name();
-        let Some(server_id) = name.to_str().and_then(|n| n.strip_suffix(".sock")) else {
+        let Some(server_id) = name.to_str().and_then(protocol::sockets::server_id_of) else {
             continue;
         };
-        if !is_server_id(server_id) {
-            continue;
-        }
         let path = entry.path();
         match std::fs::symlink_metadata(&path) {
             Ok(meta) if meta.file_type().is_socket() => {}

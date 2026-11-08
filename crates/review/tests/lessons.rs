@@ -36,7 +36,7 @@ fn review_lessons_match_typescript() {
         let memory = HindsightLessons::new(base.as_str().unwrap(), Box::new(|| 1_760_000_000_000), None).unwrap();
         let mut record = json!({"name": case["name"], "baseUrl": case["baseUrl"], "repo": case["repo"]});
         if let Err(error) = memory.retain(case["repo"].as_str().unwrap(), &fates, &lessons) {
-            record["error"] = json!(error.code);
+            record["error"] = json!(error.code.as_str());
             // What the reviewer logs: the error's message.
             assert_eq!(
                 error.to_string(),

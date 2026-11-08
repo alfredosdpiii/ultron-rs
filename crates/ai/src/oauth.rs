@@ -7,8 +7,8 @@
 
 pub use crate::auth::{ModelAuth, OAuthCredential};
 use crate::http::{AbortSignal, HeaderMap, HttpRequest, Transport};
-use crate::json::parse_json;
 use crate::oauth_flow::form_urlencode;
+use jsrt::json_parse::parse_json;
 use serde_json::{Map, Value, json};
 
 pub(crate) const ANTHROPIC_CLIENT_ID: &str = "9d1c250a-e61b-44d9-88ed-5944d1962f5e";

@@ -12,6 +12,7 @@ fn app() -> App {
         provider: "p".into(),
         id: "m".into(),
         name: "m".into(),
+        api: String::new(),
         reasoning: false,
         context_window: 1000,
         thinking_levels: Vec::new(),

@@ -96,7 +96,7 @@ fn oauth_settings_of(
     };
     let text = |key: &str| oauth.get(key).and_then(Value::as_str).map(String::from);
     let client_secret = match oauth.get("clientSecret").and_then(Value::as_str) {
-        Some(secret) => Some(crate::resolve::resolve_config_value_or_err(
+        Some(secret) => Some(crate::resolve::value(
             secret,
             &format!("MCP server \"{}\" oauth.clientSecret", entry.name),
             env,

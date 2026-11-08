@@ -1209,7 +1209,6 @@ pub struct PaneRender {
     pub lines: Vec<String>,
     pub state: RlmPaneState,
     pub run_key: Option<String>,
-    pub body_length: usize,
 }
 
 /// Render the pane into exactly `height` lines of at most `width` columns: a fixed header, the scrolled body and a
@@ -1376,7 +1375,6 @@ pub fn render_rlm_pane(
         lines: out,
         state: next,
         run_key: run.map(|r| r.key.clone()),
-        body_length: total,
     }
 }
 

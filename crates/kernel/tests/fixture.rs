@@ -2,6 +2,7 @@
 //! fixtures/generate.mjs: configuration functions over input tables, and one scripted session through the real
 //! runtime.py whose results, errors and protocol lines (both directions, captured by fixtures/tap.py) must be equal.
 
+use crate::traceback_support::without_line_numbers;
 use kernel::{
     EchoHandler, Kernel, KernelOptions, LimitOverrides, kernel_environment, kernel_resource_limits, rlm_output_budget,
 };
@@ -112,32 +113,6 @@ fn normalize_wire(log: &str) -> Value {
         }
     }
     json!({"h2k": h2k, "k2h": k2h})
-}
-
-/// Python source line numbers (traceback `.py", line N` at any JSON escaping depth, warning `.py:N:`) become
-/// `<line>`, so the recorded tracebacks and warnings do not pin runtime.py's layout.
-fn without_line_numbers(text: &str) -> String {
-    let mut out = String::new();
-    let mut rest = text;
-    while let Some(i) = rest.find(".py") {
-        let after = &rest[i + 3..];
-        let quotes = after.len() - after.trim_start_matches(['\\', '"']).len();
-        let tail = &after[quotes..];
-        out.push_str(&rest[..i + 3 + quotes]);
-        rest = tail;
-        let (marker, numbered) = match tail.strip_prefix(", line ") {
-            Some(numbered) if quotes > 0 => (", line ", numbered),
-            _ => (":", tail.strip_prefix(':').unwrap_or_default()),
-        };
-        let digits = numbered.bytes().take_while(u8::is_ascii_digit).count();
-        if digits > 0 && (marker != ":" || numbered[digits..].starts_with(':')) {
-            out.push_str(marker);
-            out.push_str("<line>");
-            rest = &numbered[digits..];
-        }
-    }
-    out.push_str(rest);
-    out
 }
 
 fn line_free(value: &Value) -> Value {

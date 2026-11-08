@@ -283,7 +283,7 @@ impl CellProgress {
 /// The cell task's input and checkpoint (spec §8.4).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "phase", rename_all = "camelCase")]
-pub enum CellCheckpoint {
+pub(crate) enum CellCheckpoint {
     Call,
     /// Durable intent: the final arguments and the replay policy recorded before execution.
     Execute {

@@ -1,10 +1,10 @@
 //! A `message_update` carries its frame and usage, not the message (session_core::journal::update_fields), and a
-//! watcher folds the frames into the `message_start` message (harness::stream_fold). Played over a provider's stream
+//! watcher folds the frames into the `message_start` message (protocol::watch::stream_fold). Played over a provider's stream
 //! of text, thinking and a code cell streamed as partial JSON: after every event the fold equals the provider's own
 //! partial message, the streamed argument text aside.
 
 use ai::{AssistantMessage, AssistantMessageEvent, Message};
-use harness::stream_fold::{PARTIAL_JSON, fold_update};
+use protocol::watch::stream_fold::{PARTIAL_JSON, fold_update};
 use serde_json::{Value, json};
 use session_core::journal::update_fields;
 
@@ -43,7 +43,7 @@ fn shown(message: &Value) -> Value {
 fn session_core_stream_fold_rebuilds_the_partial_message_from_frames() {
     let mut text = String::new();
     let mut args = String::new();
-    let call = |args: &str| json!({"type": "toolCall", "id": "c1", "name": "rlm", "arguments": ai::json::parse_streaming_json(args)});
+    let call = |args: &str| json!({"type": "toolCall", "id": "c1", "name": "rlm", "arguments": jsrt::json_parse::parse_streaming_json(args)});
     // (the event's own fields, the content after it): a provider's stream, step by step.
     let mut steps: Vec<(Value, Value)> = Vec::new();
     steps.push((
@@ -114,33 +114,5 @@ fn session_core_stream_fold_rebuilds_the_partial_message_from_frames() {
     assert!(
         folded["content"][2].get(PARTIAL_JSON).is_none(),
         "a finished call drops its streamed text"
-    );
-}
-
-#[test]
-fn session_core_stream_fold_takes_an_older_workers_whole_message() {
-    let mut snapshot = json!({"lane": "main", "operation": {"id": "r1", "kind": "run",
-        "streamingMessage": {"role": "assistant", "content": [{"type": "text", "text": "Hel"}]}}});
-    let update = |fields: Value| {
-        let mut event = json!({"type": "message_update", "runId": "r1", "lane": "main"});
-        for (key, value) in fields.as_object().unwrap() {
-            event[key] = value.clone();
-        }
-        event
-    };
-    harness::reducer::reduce_lane_snapshot(
-        &mut snapshot,
-        &update(json!({"frame": {"type": "text_delta", "contentIndex": 0, "delta": "lo"}, "usage": usage(2)})),
-    );
-    assert_eq!(snapshot["operation"]["streamingMessage"]["content"][0]["text"], "Hello");
-    assert_eq!(snapshot["operation"]["streamingMessage"]["usage"], usage(2));
-    let whole = json!({"role": "assistant", "content": [{"type": "text", "text": "Hello, world"}]});
-    harness::reducer::reduce_lane_snapshot(
-        &mut snapshot,
-        &update(json!({"message": whole, "frame": {"type": "text_delta", "contentIndex": 0, "delta": ", world"}})),
-    );
-    assert_eq!(
-        snapshot["operation"]["streamingMessage"], whole,
-        "a whole message replaces the fold"
     );
 }

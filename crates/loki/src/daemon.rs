@@ -20,8 +20,21 @@ use std::time::{Duration, Instant};
 pub const COMMANDS: [&str; 3] = ["protect", "hook", "shell"];
 const IDLE: Duration = Duration::from_secs(30 * 60);
 const REQUEST: Duration = Duration::from_secs(60);
-const ACCEPT_POLL: Duration = Duration::from_millis(200);
 const RECHECK: Duration = Duration::from_secs(30);
+
+/// Waits up to `timeout` for a connection to accept on `listener`.
+fn readable(listener: &UnixListener, timeout: Duration) -> std::io::Result<bool> {
+    use rustix::event::{PollFd, PollFlags, Timespec, poll};
+    let timeout = Timespec {
+        tv_sec: i64::try_from(timeout.as_secs()).unwrap_or(i64::MAX),
+        tv_nsec: i64::from(timeout.subsec_nanos()),
+    };
+    match poll(&mut [PollFd::new(listener, PollFlags::IN)], Some(&timeout)) {
+        Ok(n) => Ok(n > 0),
+        Err(rustix::io::Errno::INTR) => Ok(false),
+        Err(error) => Err(error.into()),
+    }
+}
 
 fn home() -> PathBuf {
     PathBuf::from(std::env::var_os("HOME").unwrap_or_default())
@@ -250,15 +263,18 @@ fn serve(root: &Path) -> (i32, String, String) {
                     break;
                 }
             }
+            let wait = RECHECK
+                .saturating_sub(checked.elapsed())
+                .min(IDLE.saturating_sub(idle_since.elapsed()));
+            if !readable(&listener, wait)? {
+                if idle_since.elapsed() >= IDLE {
+                    break;
+                }
+                continue;
+            }
             let connection = match listener.accept() {
                 Ok((connection, _)) => connection,
-                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
-                    if idle_since.elapsed() > IDLE {
-                        break;
-                    }
-                    std::thread::sleep(ACCEPT_POLL);
-                    continue;
-                }
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => continue,
                 Err(error) => return Err(error),
             };
             idle_since = Instant::now();

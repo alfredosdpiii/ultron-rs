@@ -83,7 +83,7 @@ pub fn compose_summary(plan: &SummaryPlan, texts: &[String]) -> (String, Vec<Str
 
 /// `extractFileOperations`: the previous compaction's lists (`details.readFiles` read, `details.modifiedFiles`
 /// edited), then the `read`/`write`/`edit` calls of the summarized messages and the split turn's prefix.
-pub fn file_operations(previous_details: Option<&Value>, messages: &[&Value]) -> FileOperations {
+pub(crate) fn file_operations(previous_details: Option<&Value>, messages: &[&Value]) -> FileOperations {
     let mut ops = FileOperations::default();
     if let Some(details) = previous_details.filter(|d| d.is_object()) {
         for path in details["readFiles"]
