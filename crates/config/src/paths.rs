@@ -122,6 +122,11 @@ impl AgentPaths {
     pub fn skill_proposals(&self) -> PathBuf {
         self.join("skill-proposals")
     }
+    /// The memory backend detected once when `memory.backend` is unset (memorantado::resolve), kept so a later
+    /// outage pauses memory instead of switching stores.
+    pub fn memory_backend(&self) -> PathBuf {
+        self.join("memory-backend")
+    }
     /// The session store of the durable and explicit instances and of `ultron claude` without
     /// `ULTRON_CODING_AGENT_SESSION_DIR`.
     pub fn experimental_sessions_dir(&self) -> PathBuf {

@@ -1,7 +1,8 @@
 //! `ultron skills proposals|show|approve|reject` (Rust-only): procedure skills proposed by dreaming or a session
 //! (`skills.propose_procedure` in a cell, delegation::procedure::proposals) wait in `<agent dir>/skill-proposals/`
 //! until the user publishes one into `<agent dir>/skills/<name>/SKILL.md`. Nothing is published without this
-//! command.
+//! command, and `approve` and `reject` refuse inside a kernel (`ULTRON_IN_KERNEL=1`, kernel::env), so the model
+//! cannot decide on its own proposals from a cell.
 
 use crate::Env;
 use delegation::procedure::proposals;
@@ -20,6 +21,8 @@ Commands:
   approve <id>         Publish it as ~/.ultron/agent/skills/<name>/SKILL.md (never over an existing skill). Edit
                        the proposal's SKILL.md first if you want changes; it is checked again here.
   reject <id> [reason] Keep it out; the proposal stays on record.
+
+approve and reject are yours: they refuse to run inside an Ultron kernel (a model's cell).
 ";
 
 fn io(e: std::io::Error) -> String {
@@ -35,6 +38,18 @@ pub fn run(args: &[String], env: &Env, out: &mut dyn Write, err: &mut dyn Write)
         Ok(text) => writeln!(out, "{text}").map(|()| 0).map_err(io),
         Err(error) => writeln!(err, "Error: {error}").map(|()| 1).map_err(io),
     };
+    let deciding = matches!(args, [verb, _, ..] if matches!(verb.as_str(), "approve" | "reject"));
+    if deciding && kernel::env::inside_kernel(|name| (env.var)(name)) {
+        return Some(
+            writeln!(
+                err,
+                "Error: skills {} is the user's decision; it does not run inside an Ultron kernel.",
+                args[0]
+            )
+            .map(|()| 1)
+            .map_err(io),
+        );
+    }
     let result = match args {
         [help] if matches!(help.as_str(), "--help" | "-h" | "help") => {
             return Some(out.write_all(HELP.as_bytes()).map(|()| 0).map_err(io));

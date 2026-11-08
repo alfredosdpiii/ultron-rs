@@ -6,7 +6,6 @@
 //! <url>/memory-conflicts`) until the memory backend exposes a list of its own.
 
 use blocking_http::{HttpRequest, Transport, TransportError};
-use config::keys::MemorantadoSettings;
 use kernel::Signal;
 use serde_json::Value;
 use std::sync::Arc;
@@ -39,6 +38,14 @@ pub struct MemoryGraph {
     pub supersedes: Vec<(i64, i64)>,
     /// (memory, conflicting memory, reason), open conflicts only.
     pub conflicts: Vec<(i64, i64, String)>,
+}
+
+/// The memorantado memory lives in, as the session chose it (memorantado::resolve): its REST API and project.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MemorantadoSettings {
+    /// Its REST API (`<url>/semantic-memories`).
+    pub url: String,
+    pub project: String,
 }
 
 pub struct Memorantado {

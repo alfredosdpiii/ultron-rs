@@ -845,20 +845,20 @@ enum BackendAction {
     Skip,
 }
 
-/// Saves `memory.backend` (`None` removes it: chosen at each start), keeping the other `memory.*` settings.
+/// Saves `memory.backend` (`None` removes it: detected), keeping the other `memory.*` settings.
 fn save_backend(deps: &mut SetupDeps, choice: Option<memorantado::Choice>) {
     deps.settings
         .set_global_nested("memory", "backend", choice.map(|c| Value::String(c.as_str().into())));
 }
 
 /// Which memory server `memory.*`, automatic memory and dreaming use: memorantado (claims with keys, curation,
-/// file evidence; dreaming writes its briefs) or Hindsight (its own model writes briefs); unset, memorantado when
-/// it answers at the start of a session, else Hindsight.
+/// file evidence; dreaming writes its briefs) or Hindsight (its own model writes briefs); unset, memorantado once it
+/// answers at the start of a session (kept from then on: memorantado::resolve), else Hindsight.
 fn memory_backend_step<U: SetupUi>(ui: &mut U, deps: &mut SetupDeps) -> Result<SummaryLine, SetupQuit> {
     let judge = usize::from(deps.probe_judge.is_some());
     ui.heading(&format!("Step 3/{}: Memory backend", 6 + judge));
     ui.note(
-        "Memory lives in memorantado (scoped claims that dreaming re-checks against your files) or in Hindsight. Unset, each session uses memorantado when it answers, else Hindsight.",
+        "Memory lives in memorantado (scoped claims that dreaming re-checks against your files) or in Hindsight. Unset, memorantado is used once it answers and kept from then on (unless you set a Hindsight URL); until then, Hindsight. Once memorantado is the backend, memory pauses while it is down: nothing goes to Hindsight instead.",
         Tone::Info,
     );
     let Some(probe) = deps.probe_memorantado.clone() else {
@@ -881,7 +881,12 @@ fn memory_backend_step<U: SetupUi>(ui: &mut U, deps: &mut SetupDeps) -> Result<S
             },
             if up { Tone::Success } else { Tone::Warning },
         );
-        let now = current.map_or("chosen at each start", memorantado::Choice::as_str);
+        let detected = memorantado::resolve::remembered(&deps.agent_dir());
+        let now = match (current, detected) {
+            (Some(choice), _) => choice.as_str(),
+            (None, Some(memorantado::Choice::Memorantado)) => "unset (memorantado, detected)",
+            (None, _) => "unset (memorantado once it answers, else Hindsight)",
+        };
         ui.note(&format!("memory.backend: {now}."), Tone::Dim);
         let mut choices = Vec::new();
         if up {
@@ -896,7 +901,10 @@ fn memory_backend_step<U: SetupUi>(ui: &mut U, deps: &mut SetupDeps) -> Result<S
                 BackendAction::Hindsight,
             ),
             (
-                Choice::described("Choose at each start", "memorantado when it answers, else Hindsight"),
+                Choice::described(
+                    "Detect automatically",
+                    "memorantado once it answers (then kept), else Hindsight",
+                ),
                 BackendAction::Automatic,
             ),
             (
@@ -925,7 +933,7 @@ fn memory_backend_step<U: SetupUi>(ui: &mut U, deps: &mut SetupDeps) -> Result<S
                 (Some(memorantado::Choice::Memorantado), format!("memorantado at {url}"))
             }
             Some(BackendAction::Hindsight) => (Some(memorantado::Choice::Hindsight), "Hindsight".to_string()),
-            Some(BackendAction::Automatic) => (None, "chosen at each start".to_string()),
+            Some(BackendAction::Automatic) => (None, "detected".to_string()),
         };
         let status = if choice == current { "unchanged" } else { "configured" };
         save_backend(deps, choice);

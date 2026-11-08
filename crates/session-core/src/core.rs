@@ -657,6 +657,8 @@ pub struct Core {
     loki_notice: crate::loki_notice::LokiNotice,
     /// Automatic recall before user messages and retain of compaction summaries (crate::auto_memory).
     auto_memory: crate::auto_memory::AutoMemory,
+    /// Memory paused at start (memorantado did not answer), for the first root turn (crate::auto_memory).
+    memory_notice: Option<String>,
     /// Instruction refinements proposed after compactions and delivered before user messages (crate::auto_refine).
     auto_refine: crate::auto_refine::AutoRefine,
     /// The run's provider message being hidden: the empty response an aborted run ends with.
@@ -1083,6 +1085,7 @@ impl Core {
         let mut core = Core {
             model_unavailable,
             loki_notice,
+            memory_notice: runtime.memory_notice.clone(),
             auto_memory,
             auto_refine,
             thinking: config["thinkingLevel"].as_str().unwrap_or("medium").to_string(),
@@ -2537,7 +2540,7 @@ impl Core {
             Err(error) => return fail(error, waiter),
         }
         // The messages the run opens with: Loki's setup note for the first root turn that follows it
-        // (`installLokiNotice`); for a user message, the long-term memory recalled for it (crate::auto_memory), in
+        // (`installLokiNotice`) and the memory-paused notice for the first root turn; for a user message, the long-term memory recalled for it (crate::auto_memory), in
         // engineering mode the rigor playbook that fits it (crate::playbook_route), and the active instruction
         // refinements when the context does not show them as they are (crate::auto_refine).
         let mut opening: Vec<Value> = self
@@ -2545,6 +2548,11 @@ impl Core {
             .take(crate::loki_notice::NOTICE_WAIT)
             .map(|text| crate::loki_notice::notice_message(&text, now_ms() as u64))
             .into_iter()
+            .chain(
+                self.memory_notice
+                    .take()
+                    .map(|text| crate::auto_memory::paused_message(&text, now_ms() as u64)),
+            )
             .collect();
         if prompt["role"] == "user" && !continuation {
             opening.extend(self.recalled_memory(&text));

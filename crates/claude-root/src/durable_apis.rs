@@ -113,7 +113,7 @@ pub fn open(
             transform: None,
             image_budget: runtime.config.context_images,
             // A child conversation's system prompt is a subagent's.
-            fallback_system: Stack::child_system,
+            fallback_system: |stack: &Stack| stack.child_system(stack.model()),
         },
     );
     let chat = ChatHarness::open(storage, options).map_err(|e| e.to_string())?;

@@ -8,6 +8,10 @@ use std::path::Path;
 use std::process::{Command, Output};
 
 fn ultron(home: &Path, args: &[&str]) -> Output {
+    ultron_with(home, args, &[])
+}
+
+fn ultron_with(home: &Path, args: &[&str], vars: &[(&str, &str)]) -> Output {
     Command::new(env!("CARGO_BIN_EXE_ultron"))
         .args(args)
         .current_dir(home)
@@ -16,6 +20,7 @@ fn ultron(home: &Path, args: &[&str]) -> Output {
         .env("HOME", home)
         .env(config::paths::ENV_AGENT_DIR, home.join("agent"))
         .env(config::paths::ENV_SERVER_DIR, home.join("server"))
+        .envs(vars.iter().copied())
         .output()
         .unwrap()
 }
@@ -45,6 +50,26 @@ fn cli_skills_lists_shows_and_publishes_a_proposal_only_on_approval() {
     assert!(
         shown.contains("\"session\": \"s1\"") && shown.ends_with("# flaky\n\n"),
         "{shown}"
+    );
+    assert!(!paths.skills_dir().join("flaky/SKILL.md").exists());
+    // From a cell (the kernel's marker), the model cannot approve or reject its own proposal; it can still look.
+    let in_kernel = [(kernel::env::IN_KERNEL_ENV, "1")];
+    for verb in ["approve", "reject"] {
+        let refused = ultron_with(home, &["skills", verb, id], &in_kernel);
+        assert_eq!(
+            (
+                refused.status.code(),
+                String::from_utf8_lossy(&refused.stderr).into_owned()
+            ),
+            (
+                Some(1),
+                format!("Error: skills {verb} is the user's decision; it does not run inside an Ultron kernel.\n")
+            )
+        );
+    }
+    assert_eq!(
+        stdout(&ultron_with(home, &["skills", "proposals"], &in_kernel)),
+        format!("{id}\tproposed\tflaky\t1\t1\n")
     );
     assert!(!paths.skills_dir().join("flaky/SKILL.md").exists());
     let approved = ultron(home, &["skills", "approve", id]);

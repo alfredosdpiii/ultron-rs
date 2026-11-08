@@ -10,6 +10,8 @@ mod executable_support;
 mod fake_proxy;
 #[path = "../../ai/tests/claude_subscription_support/isolate.rs"]
 mod isolate;
+#[path = "../../memorantado/tests/support/fake.rs"]
+mod memorantado_fake;
 mod p_session_support;
 mod reopen_support;
 

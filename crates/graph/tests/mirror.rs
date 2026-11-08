@@ -2,7 +2,8 @@
 //! errors as text, and memorantado read page by page, without writing to it.
 
 use crate::fakes::{FakeHttp, password, serve};
-use config::keys::{MemorantadoSettings, Neo4jSettings, neo4j_settings};
+use config::keys::{Neo4jSettings, neo4j_settings};
+use graph::MemorantadoSettings;
 use graph::{Memorantado, Neo4j};
 use kernel::Signal;
 use knowledge::relations::{Kind, Relation};
@@ -64,15 +65,6 @@ fn graph_settings_read_neo4j_only_when_its_url_is_set() {
     assert_eq!(
         (named.url.as_str(), named.database.as_str(), named.user.as_str()),
         ("http://h", "code", "ultron")
-    );
-    let memory = |value: serde_json::Value| config::keys::memorantado_settings(value.as_object().unwrap());
-    assert_eq!(memory(json!({"memory": {"backend": "hindsight"}})), None);
-    assert_eq!(
-        memory(json!({"memory": {"backend": "memorantado"}})),
-        Some(MemorantadoSettings {
-            url: "http://127.0.0.1:3789/api".into(),
-            project: "ultron".into()
-        })
     );
 }
 

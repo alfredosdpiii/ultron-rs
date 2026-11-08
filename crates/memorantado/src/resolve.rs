@@ -1,7 +1,11 @@
 //! Which memory backend a process uses, and where memorantado is.
 //!
-//! `memory.backend` (a global setting: it points at a service) picks `memorantado` or `hindsight`; unset, memorantado
-//! is used when its server answers a health check, else Hindsight. The server is `ULTRON_MEMORANTADO_URL`, else the
+//! `memory.backend` (a global setting: it points at a service) picks `memorantado` or `hindsight`. Unset, memorantado
+//! is used once its server answers a health check, and that choice is kept in the agent directory
+//! ([`config::paths::AgentPaths::memory_backend`]); until then, Hindsight. A Hindsight server set explicitly
+//! (`ULTRON_HINDSIGHT_URL`, `hindsightUrl`) is kept while memorantado was never chosen: nothing is detected. Once memorantado is the backend (set or
+//! detected), a server that does not answer pauses memory with a notice ([`Endpoint::paused_notice`]) and nothing
+//! is written to Hindsight, so memories never split across two stores. The server is `ULTRON_MEMORANTADO_URL`, else the
 //! global `memorantadoUrl` setting, else [`DEFAULT_MEMORANTADO_URL`]; "off", "none", "0" or "false" turn it off. The
 //! project is `ULTRON_MEMORANTADO_PROJECT`, else "ultron". Every Ultron process on a machine shares the project;
 //! the scope tags (kernel_apis `worker_scope_tags`) keep sessions, projects and the user's global memory apart.
@@ -12,6 +16,7 @@ use kernel::Signal;
 use kernel_apis::MemoryError;
 use kernel_apis::memory::worker_scope_tags;
 use serde_json::Value;
+use std::path::Path;
 use std::time::Duration;
 
 pub const MEMORANTADO_URL_ENV: &str = "ULTRON_MEMORANTADO_URL";
@@ -95,6 +100,50 @@ pub fn answers(transport: &dyn Transport, url: &str) -> bool {
         .is_some_and(|health| health["status"] == "ok")
 }
 
+/// The Hindsight server a process resolved (hindsight::resolve), as the backend choice needs it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Hindsight {
+    /// Turned off (`ULTRON_HINDSIGHT_URL=off`): memory is off unless memorantado is set.
+    Off,
+    /// The default URL only: a guess, so memorantado is detected first.
+    Default,
+    /// Set explicitly (`ULTRON_HINDSIGHT_URL` or `hindsightUrl`).
+    Set,
+}
+
+/// The memory backend a process uses ([`Endpoint::choose`]).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Backend {
+    /// memorantado; `up`: it answered at start (else memory is paused until it does).
+    Memorantado { endpoint: Endpoint, up: bool },
+    /// Hindsight, when its server is configured.
+    Hindsight,
+    /// No memory.
+    Off,
+}
+
+impl Backend {
+    /// The memorantado endpoint, when memorantado is the backend.
+    pub fn memorantado(&self) -> Option<&Endpoint> {
+        match self {
+            Backend::Memorantado { endpoint, .. } => Some(endpoint),
+            _ => None,
+        }
+    }
+}
+
+/// The backend detected and kept in `agent_dir` while `memory.backend` is unset.
+pub fn remembered(agent_dir: &Path) -> Option<Choice> {
+    let path = config::paths::AgentPaths::new(agent_dir).memory_backend();
+    std::fs::read_to_string(path).ok().as_deref().and_then(Choice::parse)
+}
+
+/// Keeps a detected backend; a profile whose directory cannot be written detects again next time.
+fn remember(agent_dir: &Path, choice: Choice) {
+    let path = config::paths::AgentPaths::new(agent_dir).memory_backend();
+    let _ = std::fs::write(path, format!("{}\n", choice.as_str()));
+}
+
 /// The memorantado server and project a process uses.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Endpoint {
@@ -116,22 +165,48 @@ impl Endpoint {
         Some(Endpoint { url, project })
     }
 
-    /// The memorantado endpoint this process uses, `None` for Hindsight (or no memory): `memory.backend:
-    /// memorantado` uses it unchecked (an outage pauses the client), `hindsight` never; unset, it is used when
-    /// `answers` says its server is up, unless `memory_off` (memory turned off, as `ULTRON_HINDSIGHT_URL=off` does).
+    /// The memory backend this process uses. `memory.backend: memorantado`, or a detection kept in `agent_dir`
+    /// (unless `hindsight` is off: memory turned off), is memorantado whether or not it answers (`up` says; an
+    /// outage pauses memory), or no memory when memorantado is turned off; `hindsight` is Hindsight. Unset and
+    /// never detected, a Hindsight server set explicitly is Hindsight; else memorantado is used when `answers`
+    /// says its server is up, and the choice is kept; otherwise Hindsight.
     pub fn choose(
         var: &dyn Fn(&str) -> Option<String>,
         manager: &config::settings::SettingsManager,
-        memory_off: bool,
+        agent_dir: &Path,
+        hindsight: Hindsight,
         answers: &dyn Fn(&str) -> bool,
-    ) -> Option<Endpoint> {
-        let endpoint = Self::configured(var, manager)?;
+    ) -> Backend {
+        let configured = Self::configured(var, manager);
+        let chosen = |endpoint: Option<Endpoint>| match endpoint {
+            Some(endpoint) => Backend::Memorantado {
+                up: answers(&endpoint.url),
+                endpoint,
+            },
+            None => Backend::Off,
+        };
         match choice(manager) {
-            Some(Choice::Memorantado) => Some(endpoint),
-            Some(Choice::Hindsight) => None,
-            None if memory_off => None,
-            None => answers(&endpoint.url).then_some(endpoint),
+            Some(Choice::Memorantado) => chosen(configured),
+            Some(Choice::Hindsight) => Backend::Hindsight,
+            None if hindsight == Hindsight::Off => Backend::Off,
+            None if remembered(agent_dir) == Some(Choice::Memorantado) => chosen(configured),
+            None if hindsight == Hindsight::Set => Backend::Hindsight,
+            None => match configured {
+                Some(endpoint) if answers(&endpoint.url) => {
+                    remember(agent_dir, Choice::Memorantado);
+                    Backend::Memorantado { endpoint, up: true }
+                }
+                _ => Backend::Hindsight,
+            },
         }
+    }
+
+    /// What a session says when memorantado is the backend but does not answer.
+    pub fn paused_notice(&self) -> String {
+        format!(
+            "Memory is paused: memorantado does not answer at {}. Nothing is kept elsewhere; memory resumes once it answers (`ultron setup` chooses the memory backend).",
+            self.url
+        )
     }
 
     /// A backend with `scope_tags`.

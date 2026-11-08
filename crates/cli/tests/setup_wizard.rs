@@ -952,7 +952,7 @@ fn cli_setup_start_model_an_unknown_default_gets_no_misleading_hint() {
 }
 
 /// The memory backend step (before Hindsight): memorantado is probed at its URL, a choice saves `memory.backend`
-/// beside the other `memory.*` settings, a moved server's URL is saved, and "choose at each start" removes the key.
+/// beside the other `memory.*` settings, a moved server's URL is saved, and "detect automatically" removes the key.
 #[test]
 fn cli_setup_wizard_chooses_the_memory_backend() {
     let profile = Profile::new();
@@ -999,11 +999,13 @@ fn cli_setup_wizard_chooses_the_memory_backend() {
     );
     assert!(text.contains("memorantado is not reachable at http://127.0.0.1:3789."));
 
+    // A detection a session kept (memorantado::resolve) is shown while the key is unset.
+    std::fs::write(profile.agent().join("memory-backend"), "memorantado\n").unwrap();
     let (mut again, _) = deps_again(&profile);
     again.probe_memorantado = Some(Arc::new(|_: &str| false));
     let mut ui = ScriptedUi::new(vec![
         Step::Select("reach a model", "Skip"),
-        Step::Select("^Memory backend$", "Choose at each start"),
+        Step::Select("^Memory backend$", "Detect automatically"),
         Step::Select("Set up Hindsight", "^Skip$"),
         Step::Select("^Judge seat$", "^Skip$"),
         Step::Select("^Loki guardrails$", "^Keep"),
@@ -1012,4 +1014,20 @@ fn cli_setup_wizard_chooses_the_memory_backend() {
     assert!(ui.steps.is_empty());
     assert_eq!(profile.settings()["memory"], json!({"autoRecall": true}));
     assert_eq!(result.lines[1].status, "configured");
+    assert!(ui.text().contains("memory.backend: memorantado."), "{}", ui.text());
+    let (mut third, _) = deps_again(&profile);
+    third.probe_memorantado = Some(Arc::new(|_: &str| false));
+    let mut ui = ScriptedUi::new(vec![
+        Step::Select("reach a model", "Skip"),
+        Step::Select("^Memory backend$", "^Skip$"),
+        Step::Select("Set up Hindsight", "^Skip$"),
+        Step::Select("^Judge seat$", "^Skip$"),
+        Step::Select("^Loki guardrails$", "^Keep"),
+    ]);
+    run_setup_wizard(&mut ui, &mut third);
+    assert!(
+        ui.text().contains("memory.backend: unset (memorantado, detected)."),
+        "{}",
+        ui.text()
+    );
 }

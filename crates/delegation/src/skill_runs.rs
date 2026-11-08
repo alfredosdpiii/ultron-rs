@@ -16,7 +16,9 @@
 //! that steps is judged by the step's own picture instead.
 //!
 //! Every run is a record in the skills module document (`ultron.module/skills`, list `runs`): skill path and
-//! version, input and output digests, each segment's tries and outcome, duration and outcome.
+//! version, input and output digests, each segment's tries and outcome, duration and outcome. The record is written
+//! `running` when the run starts; a worker that dies mid-run leaves it so, and the next stack of the session marks
+//! it `interrupted` ([`SkillRuns::interrupt_orphans`]).
 //! `procedure.coverage` summarizes them; `procedure.propose` keeps a proposed procedure skill for the user's
 //! approval ([`crate::procedure::proposals`]).
 
@@ -566,6 +568,35 @@ impl SkillRuns {
             current.as_ref(),
             &self.skills.records(RUNS)?,
         ))
+    }
+
+    /// Marks the runs a dead worker left `running` (its book, which walked them, is gone) `interrupted`, so they
+    /// do not stay running forever. Called when a session's stack opens, before any run of it starts; returns how
+    /// many it marked.
+    pub fn interrupt_orphans(&self) -> Result<usize, String> {
+        let live: Vec<String> = jsrt::sync::lock(&self.book.runs)
+            .values()
+            .map(|run| run.id.clone())
+            .collect();
+        let ended = (self.now)();
+        let mut marked = 0;
+        for record in self.skills.records(RUNS)? {
+            let Some(id) = record["id"].as_str().filter(|id| !live.iter().any(|live| live == id)) else {
+                continue;
+            };
+            if record["outcome"] != "running" {
+                continue;
+            }
+            let at = record["at"].as_i64().unwrap_or(ended);
+            self.skills.upsert(
+                RUNS,
+                &json!({"id": id}),
+                &json!({"outcome": "interrupted", "reason": "the worker running it stopped; its effects are unknown",
+                        "ended_at": ended, "duration_ms": ended - at}),
+            )?;
+            marked += 1;
+        }
+        Ok(marked)
     }
 
     fn propose(&self, request: &Request<'_>) -> Result<Value, String> {

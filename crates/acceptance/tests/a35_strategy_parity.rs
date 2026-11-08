@@ -14,6 +14,10 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 const STRATEGIES: [(&str, &str); 3] = [("deterministic", "det@1"), ("predict", "pred@1"), ("rlm", "loop@1")];
+/// The timeout of the hanging task. TypeScript's test uses 10 ms, which a loaded machine can spend before the task's
+/// work (or its usage reservation) even starts; the hanging task ends only by this timeout, so it is long enough for
+/// the work to begin and short enough to keep the test quick.
+const TIMEOUT_MS: u64 = 1_000;
 
 /// n doubles; negative n answers schema-invalid; n = 999 hangs until the task is aborted.
 fn answer(n: i64, signal: &Signal) -> Result<Value, String> {
@@ -89,7 +93,7 @@ fn acceptance_a35_only_rlm_launches_a_lane_predict_and_deterministic_never_start
         }
         invoke(
             &run.fixture,
-            json!({ "definition": key, "input": { "n": 999 }, "timeout_ms": 10 }),
+            json!({ "definition": key, "input": { "n": 999 }, "timeout_ms": TIMEOUT_MS }),
         )
         .unwrap();
     }
@@ -168,20 +172,29 @@ fn acceptance_a35_idempotency_keys_behave_identically_across_strategies() {
 #[test]
 fn acceptance_a35_timeout_and_cancellation_commit_the_same_cancelled_result_and_abort_the_work_for_every_strategy() {
     let run = parity();
+    // Work started: an adapter call (deterministic, predict) or a lane run (rlm) more than before.
+    let started = || lock(&run.adapter_calls).len() + lock(&run.fixture.lane_calls).len();
     for (_, key) in STRATEGIES {
         assert_eq!(
             invoke(
                 &run.fixture,
-                json!({ "definition": key, "input": { "n": 999 }, "timeout_ms": 10 })
+                json!({ "definition": key, "input": { "n": 999 }, "timeout_ms": TIMEOUT_MS })
             )
             .unwrap(),
-            json!({ "status": "cancelled", "error": "Ultron task exceeded 10ms timeout", "verification": "unverified" })
+            json!({ "status": "cancelled", "error": format!("Ultron task exceeded {TIMEOUT_MS}ms timeout"),
+                "verification": "unverified" })
         );
+        let before = started();
         let spawned = run
             .fixture
             .call("agents.spawn", json!({ "definition": key, "input": { "n": 999 } }))
             .unwrap();
-        std::thread::sleep(Duration::from_millis(5));
+        // Cancel once the work runs (TypeScript waits 5 ms), so the abort reaches it.
+        let deadline = std::time::Instant::now() + Duration::from_secs(30);
+        while started() == before {
+            assert!(std::time::Instant::now() < deadline, "the spawned task never started");
+            std::thread::sleep(Duration::from_millis(1));
+        }
         assert_eq!(
             run.fixture
                 .call("agents.cancel", json!({ "id": spawned["id"] }))

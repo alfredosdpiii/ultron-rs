@@ -13,6 +13,6 @@ pub mod memory;
 pub mod module;
 pub mod neo4j;
 
-pub use memory::{Memorantado, MemoryGraph, MemoryNode};
+pub use memory::{Memorantado, MemorantadoSettings, MemoryGraph, MemoryNode};
 pub use module::{KnowledgeModule, Mirrors};
 pub use neo4j::Neo4j;

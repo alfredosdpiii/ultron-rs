@@ -534,3 +534,40 @@ fn skill_runs_propose_keeps_a_procedure_skill_with_its_session_for_approval() {
     let dir: &Path = &f.runs.proposals;
     assert!(dir.join(kept["id"].as_str().unwrap()).join("SKILL.md").is_file());
 }
+
+/// A run in progress is recorded `running`; the worker that walks it dies, and the session's next stack (a fresh
+/// book over the same document) marks it `interrupted` instead of leaving it running forever. A live run is left.
+#[test]
+fn skill_runs_a_run_a_dead_worker_left_running_is_marked_interrupted() {
+    let f = fixture(skill("demo", TDD), yes());
+    let run = f
+        .call("procedure.start", json!({"name": "demo", "input": {"test": "true"}}))
+        .unwrap();
+    assert_eq!(f.records()[0]["outcome"], "running");
+    assert_eq!(f.runs.interrupt_orphans(), Ok(0), "the live book still walks it");
+    assert_eq!(f.records()[0]["outcome"], "running");
+    let restarted = SkillRuns {
+        book: Arc::new(RunBook::default()),
+        skills: f.skills.clone(),
+        judge: f.judge.clone(),
+        cwd: f.cwd.clone(),
+        env: Vec::new(),
+        runner: Arc::new(OnceLock::new()),
+        proposals: f.cwd.join("skill-proposals"),
+        session_id: Some("sess-1".into()),
+        now: Arc::new(|| 4_000),
+    };
+    assert_eq!(restarted.interrupt_orphans(), Ok(1));
+    let record = &f.records()[0];
+    assert_eq!(
+        (
+            record["id"].clone(),
+            record["outcome"].clone(),
+            record["ended_at"].clone(),
+            record["duration_ms"].clone()
+        ),
+        (run["run"].clone(), json!("interrupted"), json!(4_000), json!(3_000))
+    );
+    assert!(record["reason"].as_str().unwrap().contains("worker"), "{record}");
+    assert_eq!(restarted.interrupt_orphans(), Ok(0), "marked once");
+}

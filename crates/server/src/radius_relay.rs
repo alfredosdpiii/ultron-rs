@@ -573,7 +573,12 @@ impl Run {
             Ok(socket) => socket,
             Err(error) => return Attempt::Failed(error),
         };
+        // The writer is shared before the host checks for a close and reports `connected`: a close() that runs
+        // after the check finds it and sends the close frame. Shared only in serve(), a close() between the report
+        // and serve() found no writer and the socket ended without its close frame.
+        *sync::lock(&self.shared.writer) = Some(socket.writer.clone());
         if self.closed() {
+            *sync::lock(&self.shared.writer) = None;
             socket.writer.close_socket(1000, "Pi server stopped");
             socket.finish().await;
             return Attempt::Stop;
@@ -587,9 +592,9 @@ impl Run {
         }
     }
 
-    /// `#serve`: handle the gateway's messages until the socket closes; `Ok` for a normal (1000) closure.
+    /// `#serve`: handle the gateway's messages until the socket closes (its writer is shared already); `Ok` for a
+    /// normal (1000) closure.
     async fn serve(&self, mut socket: WsConnection) -> Result<(), String> {
-        *sync::lock(&self.shared.writer) = Some(socket.writer.clone());
         let result = loop {
             let event = tokio::select! {
                 event = socket.reader.next() => event,

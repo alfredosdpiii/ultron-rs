@@ -10,10 +10,10 @@
 //! When `graph.neo4j.url` is set, `relations` and `settle` also mirror what they accepted (and remove what the
 //! judge refused); a mirror that fails is reported in the reply (`mirror.error`) and the request still succeeds.
 
-use crate::memory::Memorantado;
+use crate::memory::{Memorantado, MemorantadoSettings};
 use crate::neo4j::{Neo4j, Password};
 use blocking_http::Transport;
-use config::keys::{MemorantadoSettings, Neo4jSettings};
+use config::keys::Neo4jSettings;
 use kernel::Signal;
 use kernel_apis::{ApiModule, Request};
 use knowledge::relations::{Kind, Relation};
@@ -27,7 +27,7 @@ use std::sync::{Arc, Mutex};
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Mirrors {
     pub neo4j: Option<Neo4jSettings>,
-    /// Set when memory lives in memorantado.
+    /// Set when memory lives in memorantado (the session's backend choice).
     pub memorantado: Option<MemorantadoSettings>,
 }
 

@@ -116,3 +116,87 @@ fn resources_runtime_guide_wording_per_lane_mode() {
     let off_child = guide(EventDelivery::Off, GuideReader::Subagent { swarm: true }, false);
     assert!(off_child.contains("Completions are not announced in this session (ULTRON_ASYNC_EVENTS=off)"));
 }
+
+/// The Rust host's newer APIs (sessions, judge, relations, procedure skills, budget, progress, retrieve context) are
+/// named once each to every durable reader, an in-memory subagent included, and never in the TypeScript guide.
+/// Memory: every reader is told what it is for; only a weaker tier (MemoryGuidance::PurposeAndProcedure) also how
+/// to go about it; topic pages only on memorantado; the result footer only when the setting turns it on.
+#[test]
+fn resources_runtime_guide_new_apis_memory_tiers_and_footer() {
+    use resources::runtime_guide::{EventDelivery, GuideReader, MemoryGuidance};
+    let guide = |options: RuntimeGuideOptions| rlm_runtime_prompt(&["rlm"], &options).unwrap();
+    let durable = |reader| RuntimeGuideOptions {
+        reader,
+        durable_apis: true,
+        host_waits: true,
+        delivery: EventDelivery::Wake,
+        ..Default::default()
+    };
+    let needles = [
+        "`await sessions.search(",
+        "`await judge.decide(",
+        "`await knowledge.relations(",
+        "`run = await skills.run(",
+        "`await budget.estimate(plan)`",
+        "`await rlm.progress()`",
+        "`context=\"retrieve\"`",
+        "Long-term memory is for what you cannot see next time",
+    ];
+    let plain = guide(RuntimeGuideOptions::default());
+    for reader in [
+        GuideReader::Root,
+        GuideReader::Subagent { swarm: true },
+        GuideReader::Subagent { swarm: false },
+    ] {
+        let text = guide(durable(reader));
+        for needle in needles {
+            assert_eq!(text.matches(needle).count(), 1, "{reader:?} {needle}");
+            assert!(!plain.contains(needle), "{needle}");
+        }
+        assert!(
+            !text.contains("check memory for it"),
+            "{reader:?}: no procedure by default"
+        );
+        assert!(!text.contains("memory.topic"));
+        assert!(!text.contains("[t+"));
+    }
+    let procedure =
+        " Before answering about a topic, check memory for it (`memory.prepare`); test a theory before you keep it.";
+    let weak = guide(RuntimeGuideOptions {
+        memory: MemoryGuidance::PurposeAndProcedure,
+        ..durable(GuideReader::Subagent { swarm: true })
+    });
+    assert!(
+        weak.contains(&format!(
+            "call these for anything else.{procedure} A fact tied to files"
+        )),
+        "{weak}"
+    );
+    let topics = guide(RuntimeGuideOptions {
+        memory_topics: true,
+        ..durable(GuideReader::Root)
+    });
+    assert!(topics.contains(
+        "once that text is gone. `memory.topic()` lists the topic pages dreaming wrote, `memory.topic(name)` reads one.\n"
+    ));
+    let footer =
+        "Each rlm result ends with `[t+<time since the session started> ctx <tokens of the request that ran it>]`.";
+    let on = guide(RuntimeGuideOptions {
+        result_footer: true,
+        ..durable(GuideReader::Root)
+    });
+    assert!(
+        on.contains(&format!(
+            "re-create imports and functions.\n{footer}\nNothing needs polling"
+        )),
+        "{on}"
+    );
+    // The TypeScript guide never changes: none of the switches reach it.
+    let ts = guide(RuntimeGuideOptions {
+        memory: MemoryGuidance::PurposeAndProcedure,
+        memory_topics: true,
+        result_footer: true,
+        ..Default::default()
+    });
+    assert_eq!(ts, plain);
+}

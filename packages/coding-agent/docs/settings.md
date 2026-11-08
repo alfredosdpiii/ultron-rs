@@ -57,6 +57,53 @@ Both are off unless set; `/settings` lists them as "Request token cap" and "rlm.
 |---|---|---|---|
 | `rootBudget.maxTotalTokens` | positive integer \| `"off"` | off | Tokens one request (a root turn, with its sub-agents and frames) may spend before more model work is refused. Read when a session starts. `ULTRON_MAX_TOTAL_TOKENS` (a count, or `off`) overrides it. |
 | `rlm.mapTokens` | positive integer \| `"off"` | off | Token budget of an `rlm.map` that sets no `budget=Budget(tokens=...)`; frames past it come back `Incomplete`. Applies to the next map. `ULTRON_RLM_MAP_TOKENS` overrides it. |
+| `rootBudget.maxCalls.task` | positive integer | none | Sub-agent tasks one request may admit before more are refused. Read when a session starts. `ULTRON_MAX_TASK_CALLS` (a count, or `off`) overrides it. Not in `/settings`. |
+| `rootBudget.maxCalls.model` | positive integer | none | Model calls one request may admit. Read when a session starts. `ULTRON_MAX_MODEL_CALLS` (a count, or `off`) overrides it. Not in `/settings`. |
+
+### Judge seat (Ultron)
+
+`judge.decide` answers closed questions (yes/no, a choice, a number) with a small judge model. Global settings only:
+they point at services and spend money. `ultron setup` sets up the backends and their keys (`TYPESAFE_API_KEY` or
+auth.json `typesafe` for Jev, `ULTRON_D1_KEY` or auth.json `d1` for d1); keys are never settings. `/settings` shows
+"Judge backends", "Judge budget" and, under Models, the fallback and escalation models; every key below is applied
+by the session worker and read at each `judge.decide`.
+
+| Setting | Type | Default | Description |
+|---|---|---|---|
+| `judge.provider` | `("jev" \| "d1")[]` | `["jev", "d1"]` | Backends tried in order; a backend without a key, an error, a timeout or an unknown cost moves to the next. `[]` turns them off. |
+| `judge.d1.url` | URL | none | The d1 server (`<url>/decide`); unset, d1 is not configured. |
+| `judge.model` | string | `"jev-latest"` | The Jev model asked for. |
+| `judge.fallbackModel` | `provider/model` | none | Asked when no backend answers; unset, the verdict abstains. |
+| `judge.escalateModel` | `provider/model` | none | Answers under their confidence threshold go to it; it must be of another model family than the one that answered. Unset, they come back for review. |
+| `judge.thresholds` | object | Jev 0.75, d1 0.85 | Confidence thresholds from 0 to 1: `{<backend>: n}`, and `{<kind>: {<backend>: n}}` for one question kind. `ultron optimize judge` fits them into a proposal file you apply by hand. |
+| `judge.budgetUsd` | number | none | USD one session's judge may spend (Jev and the chat models; d1 is free). Unset, no cap; spend is still recorded. |
+| `judge.maxCalls` | positive integer | 1000 | Backend calls one session's judge may make. |
+| `judge.jev.pricePerMTok` | number | none | USD per million tokens of a Jev answer that reports no cost; unset, such an answer has an unknown cost. |
+
+### Memory backend (Ultron)
+
+Global settings only (they point at a service). `ultron setup` has a step for them, and `/settings` shows "Memory
+backend".
+
+| Setting | Type | Default | Description |
+|---|---|---|---|
+| `memory.backend` | `"memorantado" \| "hindsight"` | detected | Where `memory.*`, automatic memory and dreaming keep memories. Unset, memorantado is used once its server answers when a session starts, and that choice is kept (`<agent dir>/memory-backend`); until then, Hindsight. A Hindsight server you set (`hindsightUrl`, `ULTRON_HINDSIGHT_URL`) is kept while memorantado was never chosen: nothing is detected. Once memorantado is the backend, set or detected, a session where it does not answer pauses memory with a notice and writes nothing to Hindsight, so memories never split across two stores; `hindsight` switches back explicitly. Applies to new sessions. |
+| `memorantadoUrl` | URL | `http://127.0.0.1:3789` | The memorantado server. `ULTRON_MEMORANTADO_URL` overrides it; `off` turns memorantado off. |
+
+`ultron memory migrate --to memorantado` copies Hindsight's memories into memorantado once.
+
+### Knowledge graph mirror (Ultron)
+
+Global settings only. When `graph.neo4j.url` is set, the relations `knowledge.relations` accepts, and, when memory
+lives in memorantado (set or detected), memorantado's memories with their `supersedes` and conflict links, are
+mirrored to Neo4j. The knowledge store stays the source of truth; a mirror that fails is reported and never fails the
+call. The password is `NEO4J_PASSWORD`, else auth.json `neo4j`; never a setting. Not in `/settings`.
+
+| Setting | Type | Default | Description |
+|---|---|---|---|
+| `graph.neo4j.url` | URL | none | Neo4j's HTTP endpoint (`<url>/db/<database>/query/v2`); unset, no mirror. |
+| `graph.neo4j.database` | string | `"neo4j"` | The database. |
+| `graph.neo4j.user` | string | `"neo4j"` | The user. |
 
 ## Interaction
 

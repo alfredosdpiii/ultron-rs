@@ -1,5 +1,6 @@
-//! `judge.*` from `/settings` (crate::worker_settings, Rust only; literal expectations): each key is checked, saved
-//! in the global settings (never the project's) and applies to the next `judge.decide`; null clears it.
+//! `judge.*` and `memory.backend` from `/settings` (crate::worker_settings, Rust only; literal expectations): each
+//! key is checked, saved in the global settings (never the project's) and applies to the next `judge.decide` (the
+//! memory backend to the next session); null clears it.
 
 use config::settings::SettingsManager;
 use daemon::worker_settings::{self, Applied};
@@ -109,5 +110,31 @@ fn daemon_worker_settings_judge_jev_price_is_saved_globally_and_checked() {
     );
     apply("judge.jev.pricePerMTok", Value::Null).unwrap();
     assert_eq!(saved(&agent), json!({}));
+    assert!(!cwd.join(".pi/settings.json").exists());
+}
+
+#[test]
+fn daemon_worker_settings_memory_backend_is_saved_globally_and_checked() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (agent, cwd) = (tmp.path().join("agent"), tmp.path().join("cwd"));
+    std::fs::create_dir_all(&agent).unwrap();
+    std::fs::create_dir_all(cwd.join(".pi")).unwrap();
+    let mut settings = SettingsManager::create(&cwd, &agent, true);
+    let mut apply = |key: &str, value: Value| worker_settings::apply(&mut settings, key, &value, None);
+    let memory = |agent: &std::path::Path| {
+        serde_json::from_str::<Value>(&std::fs::read_to_string(agent.join("settings.json")).unwrap()).unwrap()["memory"]
+            .clone()
+    };
+    assert_eq!(
+        apply("memory.backend", json!("memorantado")).unwrap().0,
+        Applied::Restart
+    );
+    assert_eq!(memory(&agent), json!({"backend": "memorantado"}));
+    assert_eq!(
+        apply("memory.backend", json!("redis")).unwrap_err(),
+        "memory.backend must be one of: memorantado, hindsight"
+    );
+    apply("memory.backend", Value::Null).unwrap();
+    assert_eq!(memory(&agent), json!({}));
     assert!(!cwd.join(".pi/settings.json").exists());
 }

@@ -27,8 +27,6 @@ use std::task::Poll;
 use std::time::Duration;
 
 pub const CLOCK_CONTEXT_ENV: &str = "ULTRON_CLOCK_CONTEXT";
-/// `ULTRON_RESULT_FOOTER=on|1|true` adds [`result_footer`]s to requests (off until the runtime guide explains them).
-pub const RESULT_FOOTER_ENV: &str = "ULTRON_RESULT_FOOTER";
 
 /// `RLM_TOOL_DESCRIPTION` and `RLM_TOOL_SNIPPET` from ultron/rlm/prompt.ts.
 const RLM_DESCRIPTION: &str = "Run a Python cell in your persistent REPL: variables, imports and functions persist across calls, top-level `await` works, and the last expression's value is shown with anything printed (kept as `_`).\nPre-imported: `bash`, `read`, `edit`, `write`, `view_image`, `rlm`, `agents`, `workflows`, `background`, `tools`, `mcp`, `ctx`, `skills`, `memory`, `hints`, `agent`, `Budget`, `state`, `preview`, `asyncio`; `help(obj)` shows any API's docs.";
@@ -202,12 +200,8 @@ pub fn result_footer(at_ms: i64, start_ms: i64, context_tokens: u64) -> String {
     format!("[t+{elapsed} ctx {context}]")
 }
 
-/// Whether requests carry result footers ([`RESULT_FOOTER_ENV`]).
-pub fn result_footer_enabled(env: &Env) -> bool {
-    (env.var)(RESULT_FOOTER_ENV).is_some_and(|v| matches!(v.trim().to_lowercase().as_str(), "on" | "1" | "true"))
-}
-
-/// A footer ([`result_footer`]) after each tool result of a request: derived from the stored messages (the result's
+/// A footer ([`result_footer`]) after each tool result of a request (the `rlm.resultFooter` setting,
+/// crate::compose::Config::result_footer): derived from the stored messages (the result's
 /// timestamp, the usage of the response that made the call), never stored, so an earlier result's footer reads the
 /// same in every request and the prompt cache keeps it.
 pub fn add_result_footers(messages: &mut [Message], start_ms: i64) {

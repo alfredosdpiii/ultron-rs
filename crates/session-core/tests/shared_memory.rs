@@ -101,6 +101,8 @@ impl Machine {
         std::fs::create_dir_all(&cwd).unwrap();
         let mut all: Vec<(String, String)> = vec![
             ("HOME".into(), self.home().display().to_string()),
+            // These sessions remember on Hindsight: a memorantado the machine runs is never probed.
+            ("ULTRON_MEMORANTADO_URL".into(), "off".into()),
             (
                 config::paths::ENV_AGENT_DIR.into(),
                 self.home().join(".ultron/agent").display().to_string(),
@@ -284,5 +286,114 @@ fn session_core_memory_follows_env_over_setting_and_turns_off() {
     assert_eq!(
         invalid.stack(&model(), None, "s4").err(),
         Some("Memory operation did not complete (INVALID_CONFIG)".into())
+    );
+}
+
+fn closed_port() -> u16 {
+    std::net::TcpListener::bind("127.0.0.1:0")
+        .unwrap()
+        .local_addr()
+        .unwrap()
+        .port()
+}
+
+/// The split-store fix: with `memory.backend` unset, memorantado answering once makes it the backend for good (kept
+/// in the agent dir); a later session where it does not answer pauses memory with a notice and writes nothing to
+/// Hindsight, though Hindsight is now set explicitly.
+#[test]
+fn session_core_a_detected_memorantado_that_is_down_pauses_memory_instead_of_using_hindsight() {
+    let fake = Fake::start();
+    let memorantado = crate::memorantado_fake::FakeMemorantado::new();
+    let up = memorantado.serve();
+    let machine = Machine::new(json!({"sandbox": {"mode": "off"}}));
+    let agent = machine.home().join(".ultron/agent");
+    let hindsight = (hindsight::resolve::HINDSIGHT_URL_ENV, fake.base());
+    let url = memorantado::resolve::MEMORANTADO_URL_ENV;
+    // No Hindsight set explicitly: memorantado is detected (an explicit Hindsight would be kept instead).
+    let first = machine.instance("alpha", &[(url, up.clone())]);
+    assert_eq!(first.memorantado.as_ref().map(|e| e.url.as_str()), Some(up.as_str()));
+    assert_eq!((first.hindsight.as_ref(), first.memory_notice.as_ref()), (None, None));
+    assert_eq!(
+        memorantado::resolve::remembered(&agent),
+        Some(memorantado::Choice::Memorantado)
+    );
+
+    let down = format!("http://127.0.0.1:{}", closed_port());
+    let second = machine.instance("beta", &[hindsight, (url, down.clone())]);
+    assert_eq!(second.memorantado.as_ref().map(|e| e.url.as_str()), Some(down.as_str()));
+    assert_eq!(
+        second.hindsight, None,
+        "never Hindsight once memorantado is the backend"
+    );
+    let notice = second.memory_notice.clone().expect("a paused-memory notice");
+    assert!(
+        notice.starts_with("Memory is paused: memorantado does not answer at"),
+        "{notice}"
+    );
+    assert!(second.diagnostics.contains(&notice));
+    let stack = session(&second, "s2");
+    assert_eq!(
+        host(&stack, "memory.prepare", json!({"query": "note", "taskId": "t"})),
+        Err("Memory operation did not complete (HTTP_ERROR)".into())
+    );
+    // A write goes to memorantado (and fails or stays unknown), never to Hindsight.
+    let _ = host(
+        &stack,
+        "memory.propose",
+        json!({"text": "Build with make build.", "evidence": [{"ref": "user:statement"}]}),
+    );
+    assert_eq!(fake.requests(), [], "Hindsight received nothing");
+}
+
+/// Never detected: a memorantado that does not answer leaves memory on Hindsight, with no notice, and nothing is
+/// kept, so a later session still detects; a Hindsight set explicitly is kept without detecting at all.
+#[test]
+fn session_core_an_undetected_memorantado_that_is_down_leaves_memory_on_hindsight() {
+    let fake = Fake::start();
+    let machine = Machine::new(json!({"sandbox": {"mode": "off"}}));
+    let down = format!("http://127.0.0.1:{}", closed_port());
+    let runtime = machine.instance(
+        "alpha",
+        &[
+            (hindsight::resolve::HINDSIGHT_URL_ENV, fake.base()),
+            (memorantado::resolve::MEMORANTADO_URL_ENV, down),
+        ],
+    );
+    assert_eq!(
+        (runtime.memorantado.as_ref(), runtime.memory_notice.as_ref()),
+        (None, None)
+    );
+    assert!(runtime.hindsight.is_some());
+    assert_eq!(
+        memorantado::resolve::remembered(&machine.home().join(".ultron/agent")),
+        None
+    );
+    host(
+        &session(&runtime, "s1"),
+        "memory.prepare",
+        json!({"query": "anything", "taskId": "t"}),
+    )
+    .unwrap();
+    assert!(
+        fake.requests()
+            .iter()
+            .any(|(line, _)| line.contains("/memories/recall"))
+    );
+    // memorantado up, Hindsight set: still Hindsight (memorantado was never chosen).
+    let memorantado = crate::memorantado_fake::FakeMemorantado::new();
+    let explicit = machine.instance(
+        "beta",
+        &[
+            (hindsight::resolve::HINDSIGHT_URL_ENV, fake.base()),
+            (memorantado::resolve::MEMORANTADO_URL_ENV, memorantado.serve()),
+        ],
+    );
+    assert_eq!(
+        (explicit.memorantado.as_ref(), explicit.hindsight.is_some()),
+        (None, true)
+    );
+    assert_eq!(
+        memorantado::resolve::remembered(&machine.home().join(".ultron/agent")),
+        None
     );
 }

@@ -55,10 +55,11 @@ pub fn runtime_apis(env: &RunEnv) -> RuntimeGuideOptions {
 
 /// What `ultron claude` serves of native Ultron's APIs: all of them, persistent children with `rlm.ask`, the swarm
 /// (`swarm`, `board`, `notes`) and `schedule` included (crate::durable_apis, crate::schedules). It is an external
-/// root's guide: Claude Code owns its context, so there is no `ctx`.
+/// root's guide: Claude Code owns its context, so there is no `ctx`, and its results carry no footers.
 pub fn external_root_apis(native: RuntimeGuideOptions) -> RuntimeGuideOptions {
     RuntimeGuideOptions {
         external_root: true,
+        result_footer: false,
         ..native
     }
 }

@@ -485,15 +485,17 @@ fn cli_durable_two_servers_racing_for_one_session_one_is_refused() {
     wait_until(HANG_GUARD, "the refused worker exits", || workers().len() == 1);
     let owner = worker_pid(&home, &id).expect("the winner's worker runs");
     match refused[0] {
-        CallError::Server(error) => {
-            assert_eq!(error.code, "service_invalid_value");
-            assert_eq!(
-                error.message,
+        // Code and message together, so a refusal by another path (seen once under load as `internal_error`)
+        // shows what it said.
+        CallError::Server(error) => assert_eq!(
+            (error.code.as_str(), error.message.clone()),
+            (
+                "service_invalid_value",
                 format!(
                     "Session {id} is open in another Ultron process (worker pid {owner}); close it there, or wait for its work to finish, then resume it"
                 )
-            );
-        }
+            )
+        ),
         other => panic!("refused with {other:?}"),
     }
     assert_eq!(workers(), [owner], "one worker owns the session");
@@ -727,7 +729,10 @@ fn cli_durable_sigterm_shuts_the_coordinator_and_a_server_down_with_socket_clean
         "{:?}",
         sockets()
     );
-    // The server generation: its endpoint goes, it exits 0; the coordinator stays (it has a grace period).
+    // The server generation: its endpoint goes, it exits 0; the coordinator stays. Left empty it would exit after its
+    // 250 ms grace, which a loaded machine can spend before the checks below: a connection to its control socket
+    // (a startup lease, as `ensure_coordinator` holds) keeps it until it is signalled.
+    let _lease = std::os::unix::net::UnixStream::connect(home.server_dir().join(format!("control-{id}.sock"))).unwrap();
     signal(server.child.id(), rustix::process::Signal::TERM);
     let status = server.child.wait().unwrap();
     assert_eq!(status.code(), Some(0));

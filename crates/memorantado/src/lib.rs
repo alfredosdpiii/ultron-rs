@@ -7,4 +7,4 @@ pub mod resolve;
 
 pub use backend::{BRIEF_WRITER, MemorantadoBackend, MemorantadoOptions, PAUSE, PAUSE_AFTER};
 pub use blocking_http::{HttpRequest, HttpResponse, ReqwestTransport, Transport, TransportError};
-pub use resolve::{Choice, DEFAULT_MEMORANTADO_URL, Endpoint};
+pub use resolve::{Backend, Choice, DEFAULT_MEMORANTADO_URL, Endpoint, Hindsight};

@@ -212,12 +212,16 @@ impl DurableChildren {
         {
             return crate::lane_reuse::continue_lane(&chat, conversation, &run);
         }
-        // A typed agent's lane is never woken: it gets the subagent guide (crate::wake).
-        sync::lock(&self.systems).insert(run.lane.clone(), stack.child_system());
         let model = match run.model.as_deref().and_then(|spec| spec.split_once('/')) {
             Some((provider, id)) => ModelRef::new(provider, id),
             None => ModelRef::new(&stack.model().provider, &stack.model().id),
         };
+        // A typed agent's lane is never woken: it gets the subagent guide (crate::wake), for its model's tier.
+        let lane_model = stack
+            .config()
+            .model(&model.provider, &model.model_id)
+            .unwrap_or_else(|| stack.model().clone());
+        sync::lock(&self.systems).insert(run.lane.clone(), stack.child_system(&lane_model));
         let input = ChildInput {
             name: run.lane.clone(),
             prompt: run.prompt.clone(),

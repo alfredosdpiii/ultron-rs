@@ -17,6 +17,9 @@ use model_scope::{DEFAULT_THINKING_LEVEL, THINKING_LEVELS};
 use serde_json::{Map, Value, json};
 use std::path::Path;
 
+/// `memory.backend`'s values (unset: detected).
+const MEMORY_BACKENDS: [&str; 2] = ["memorantado", "hindsight"];
+
 /// The worker's environment, by variable name.
 pub type Env<'a> = &'a dyn Fn(&str) -> Option<String>;
 
@@ -771,6 +774,16 @@ pub fn apply(
             };
             nested(settings, "judge", "maxCalls", cap);
             applied = Applied::Live;
+        }
+        // Rust-only, global (it points at a service): the memory backend (memorantado::resolve), chosen when a
+        // session starts; null removes it (detected).
+        "memory.backend" => {
+            let backend = match value {
+                Value::Null => None,
+                value => Some(json!(one_of(key, value, &MEMORY_BACKENDS)?)),
+            };
+            nested(settings, "memory", "backend", backend);
+            applied = Applied::Restart;
         }
         "claudeCode.frameModel" => nested(settings, "claudeCode", "frameModel", opt(model_value(key, value)?)),
         "claudeCode.ultronChildModel" => nested(

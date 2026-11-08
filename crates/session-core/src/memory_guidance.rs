@@ -1,18 +1,11 @@
 //! How much the memory section of a reader's guide says, by the reader's model tier (the memory guidance of the
 //! plan): every reader gets the purpose line (what memory is for); a weaker tier also gets the procedural line
 //! (check memory for the topic before answering; test a theory before keeping it). A strong root model does
-//! better with the purpose alone, so procedure is spent only where it helps. The guide's owner maps each value to
-//! its text in the runtime guide; this decides which one a reader gets.
+//! better with the purpose alone, so procedure is spent only where it helps. The runtime guide maps each value to
+//! its text; this decides which one a reader gets.
 
 use ai::Model;
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum MemoryGuidance {
-    /// What memory is for, and nothing on how to go about it.
-    Purpose,
-    /// The purpose and the procedural line.
-    PurposeAndProcedure,
-}
+pub use resources::runtime_guide::MemoryGuidance;
 
 /// The guidance of a reader on `model` in a session whose root runs `root`: the root lane, and a child on the
 /// root's model (or one priced as high), get the purpose only; a child or job on a cheaper model (its input price

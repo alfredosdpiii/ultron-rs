@@ -297,6 +297,12 @@ pub fn rlm_model_settings(global: &Settings) -> RlmModelSettings {
     }
 }
 
+/// `rlm.resultFooter` (global, Rust only): REPL results end with a `[t+... ctx ...]` footer, and the runtime guide
+/// says so. Off unless `true`.
+pub fn result_footer(global: &Settings) -> bool {
+    object(global.get("rlm")).and_then(|rlm| rlm.get("resultFooter")) == Some(&Value::Bool(true))
+}
+
 /// `getReviewModel`: `review.model` of the global settings.
 pub fn review_model(global: &Settings) -> Option<String> {
     model_ref(object(global.get("review"))?.get("model"))
@@ -436,34 +442,5 @@ pub fn neo4j_settings(global: &Settings) -> Option<Neo4jSettings> {
         url,
         database: text_setting(neo4j.get("database")).unwrap_or_else(|| NEO4J_DEFAULT_DATABASE.into()),
         user: text_setting(neo4j.get("user")).unwrap_or_else(|| NEO4J_DEFAULT_USER.into()),
-    })
-}
-
-/// memorantado's REST API and project when `memory.memorantado.*` does not name them.
-pub const MEMORANTADO_DEFAULT_URL: &str = "http://127.0.0.1:3789/api";
-pub const MEMORANTADO_DEFAULT_PROJECT: &str = "ultron";
-
-/// The memorantado server memory lives in (global only).
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct MemorantadoSettings {
-    /// `memory.memorantado.url`: its REST API (`<url>/semantic-memories`).
-    pub url: String,
-    /// `memory.memorantado.project`.
-    pub project: String,
-}
-
-/// `memory.memorantado.*` of the global settings when `memory.backend` is `memorantado`, else `None`.
-pub fn memorantado_settings(global: &Settings) -> Option<MemorantadoSettings> {
-    let memory = object(global.get("memory"))?;
-    if text_setting(memory.get("backend")).as_deref() != Some("memorantado") {
-        return None;
-    }
-    let configured = object(memory.get("memorantado"));
-    let field = |key: &str| text_setting(configured.and_then(|c| c.get(key)));
-    Some(MemorantadoSettings {
-        url: field("url")
-            .map(|url| url.trim_end_matches('/').to_string())
-            .unwrap_or_else(|| MEMORANTADO_DEFAULT_URL.into()),
-        project: field("project").unwrap_or_else(|| MEMORANTADO_DEFAULT_PROJECT.into()),
     })
 }

@@ -116,6 +116,9 @@ pub struct Config {
     pub ts_guide: bool,
     /// `ULTRON_HINTS=on` ([`hints`]).
     pub hints: bool,
+    /// The global `rlm.resultFooter` setting, outside the TypeScript guide: REPL results end with
+    /// [`crate::lane::result_footer`]s, and the runtime guide says so.
+    pub result_footer: bool,
     /// Rounds without a user message before the root is nudged (`ULTRON_TOOL_ROUNDS_NUDGE`).
     pub tool_rounds_nudge: u64,
     /// Turns before a skill-extraction nudge (`ULTRON_SKILL_NUDGE`).
@@ -258,6 +261,7 @@ impl Config {
             ),
             ts_guide: ts_guide(&*env.var),
             hints: hints(&*env.var),
+            result_footer: !ts_guide(&*env.var) && config::keys::result_footer(manager.global_settings()),
             tool_rounds_nudge: crate::nudge::tool_rounds_nudge_from_env(
                 (env.var)(crate::nudge::TOOL_ROUNDS_NUDGE_ENV).as_deref(),
             ),
@@ -489,6 +493,7 @@ pub fn mcp_runtime_guide(config: &Config) -> resources::runtime_guide::RuntimeGu
         host_waits: !config.ts_guide,
         // Cell results end with `[hint:<tag>]` lines under `ULTRON_HINTS=on`: the guide says what to do with them.
         hints: config.hints,
+        result_footer: config.result_footer,
         ..Default::default()
     }
 }
@@ -500,15 +505,23 @@ pub fn mcp_runtime_guide(config: &Config) -> resources::runtime_guide::RuntimeGu
 pub struct SystemPrompt(Arc<PromptState>);
 
 type RenderPrompt = dyn Fn(&crate::lane::PromptMode) -> Result<(String, Vec<String>), String> + Send + Sync;
-type RenderChildPrompt = dyn Fn(&crate::lane::PromptMode, bool) -> Result<String, String> + Send + Sync;
+type RenderChildPrompt = dyn Fn(&crate::lane::PromptMode, ChildReader) -> Result<String, String> + Send + Sync;
+
+/// Who a subagent's prompt is for: an in-memory child (without the durable runtime's APIs) or not, and how much its
+/// guide says about memory (crate::memory_guidance, by its model's tier).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ChildReader {
+    pub in_memory: bool,
+    pub memory: crate::memory_guidance::MemoryGuidance,
+}
 
 struct PromptState {
     /// `None`: a fixed prompt.
     render: Option<Box<RenderPrompt>>,
-    /// A subagent's prompt (`true`: an in-memory child, without the durable runtime's APIs); `None`: as the root's.
+    /// A subagent's prompt, by [`ChildReader`]; `None`: as the root's.
     render_child: Option<Box<RenderChildPrompt>>,
-    /// The subagent prompt last rendered, by mode and in-memory flag.
-    child: Mutex<Option<(crate::lane::PromptMode, bool, String)>>,
+    /// The subagent prompt last rendered, by mode and reader.
+    child: Mutex<Option<(crate::lane::PromptMode, ChildReader, String)>>,
     mode: Box<dyn Fn() -> crate::lane::PromptMode + Send + Sync>,
     current: Mutex<(crate::lane::PromptMode, String, Vec<String>)>,
     /// The session's own persona toggle over the settings' (resources::keep_going): `None` follows the settings.
@@ -562,9 +575,12 @@ impl SystemPrompt {
         };
         // A subagent's guide (crate::wake): it awaits what its answer needs, has no `schedule`, and an in-memory
         // child has no persistent children, `swarm`, `board` or `notes`.
-        let render_child = move |mode: &crate::lane::PromptMode, memory: bool| {
+        let render_child = move |mode: &crate::lane::PromptMode, reader: ChildReader| {
             let guide = resources::runtime_guide::RuntimeGuideOptions {
-                reader: resources::runtime_guide::GuideReader::Subagent { swarm: !memory },
+                reader: resources::runtime_guide::GuideReader::Subagent {
+                    swarm: !reader.in_memory,
+                },
+                memory: reader.memory,
                 ..child_guide.clone()
             };
             crate::lane::system_prompt_with_resources(
@@ -608,9 +624,9 @@ impl SystemPrompt {
         current.1.clone()
     }
 
-    /// A subagent's prompt in the settings' current mode (`memory`: an in-memory child): the root's, with the
-    /// subagent's runtime guide. A fixed prompt is the same for every lane.
-    pub fn child_current(&self, memory: bool) -> String {
+    /// A subagent's prompt in the settings' current mode, for `reader`: the root's, with the subagent's runtime
+    /// guide. A fixed prompt is the same for every lane.
+    pub fn child_current(&self, reader: ChildReader) -> String {
         let state = &self.0;
         let Some(render) = &state.render_child else {
             return self.current();
@@ -620,15 +636,15 @@ impl SystemPrompt {
             mode.persona = persona;
         }
         let mut child = sync::lock(&state.child);
-        if let Some((cached, flag, text)) = &*child
+        if let Some((cached, cached_reader, text)) = &*child
             && *cached == mode
-            && *flag == memory
+            && *cached_reader == reader
         {
             return text.clone();
         }
-        match render(&mode, memory) {
+        match render(&mode, reader) {
             Ok(text) => {
-                *child = Some((mode, memory, text.clone()));
+                *child = Some((mode, reader, text.clone()));
                 text
             }
             Err(_) => {
@@ -664,8 +680,12 @@ pub struct Runtime {
     /// The Hindsight server and bank every instance shares (`ULTRON_HINDSIGHT_URL`, the global `hindsightUrl`
     /// setting, else localhost:8888; `ULTRON_HINDSIGHT_BANK`, else "ultron"); `None`: memory is off.
     pub hindsight: Option<hindsight::Endpoint>,
-    /// The memorantado server memory uses instead, when `memory.backend` says so or (unset) it answered at start.
+    /// The memorantado server memory uses instead, when `memory.backend` says so or (unset) it answered once
+    /// (memorantado::resolve).
     pub memorantado: Option<memorantado::Endpoint>,
+    /// Set when memorantado is the backend but did not answer at start: memory is paused (never written to
+    /// Hindsight instead); the session shows it once.
+    pub memory_notice: Option<String>,
     /// Whether the memory server was set explicitly (`ULTRON_HINDSIGHT_URL` or the `hindsightUrl` setting;
     /// `memory.backend: memorantado`, `ULTRON_MEMORANTADO_URL` or `memorantadoUrl`), not a default: automatic
     /// memory defaults to it (crate::auto_memory).
@@ -695,15 +715,32 @@ impl Runtime {
         let (hindsight_url, source) = hindsight::resolve::resolve_in(&*env.var, &manager);
         let hindsight_explicit = source != hindsight::resolve::Source::Default;
         let hindsight = hindsight::Endpoint::at(hindsight_url, &*env.var);
-        let memorantado = memorantado::Endpoint::choose(&*env.var, &manager, hindsight.is_none(), &|url| {
+        let resolved = match (&hindsight, hindsight_explicit) {
+            (None, _) => memorantado::Hindsight::Off,
+            (Some(_), false) => memorantado::Hindsight::Default,
+            (Some(_), true) => memorantado::Hindsight::Set,
+        };
+        let backend = memorantado::Endpoint::choose(&*env.var, &manager, &config.agent_dir, resolved, &|url| {
             blocking_http::ReqwestTransport::new().is_ok_and(|transport| memorantado::resolve::answers(&transport, url))
         });
+        // Once memorantado is the backend, Hindsight is never written: an outage pauses memory, with a notice.
+        let memory_notice = match &backend {
+            memorantado::Backend::Memorantado { endpoint, up: false } => Some(endpoint.paused_notice()),
+            _ => None,
+        };
+        diagnostics.extend(memory_notice.clone());
+        let hindsight = hindsight.filter(|_| backend == memorantado::Backend::Hindsight);
+        let memorantado = backend.memorantado().cloned();
         let memorantado_explicit = memorantado.is_some()
             && (memorantado::resolve::choice(&manager) == Some(memorantado::Choice::Memorantado)
                 || (env.var)(memorantado::resolve::MEMORANTADO_URL_ENV).is_some()
                 || memorantado::resolve::setting_url(&manager).is_some());
         // The `mcp` gateway lives in the REPL: the runtime guide lists it with its servers (`mcpServerNames`).
-        let runtime_guide = mcp_runtime_guide(&config);
+        let runtime_guide = resources::runtime_guide::RuntimeGuideOptions {
+            // Topic pages are memorantado's (its dreaming writes them); an injected backend is neither.
+            memory_topics: memorantado.is_some() && services.memory.is_none(),
+            ..mcp_runtime_guide(&config)
+        };
         let system = match &services.session.system_prompt {
             // `--system-prompt`: exactly the given text (`currentSystemPrompt`).
             Some(text) => SystemPrompt::fixed(text.clone()),
@@ -726,6 +763,7 @@ impl Runtime {
             mode: mode.to_string(),
             hindsight,
             memorantado,
+            memory_notice,
             memory_explicit: hindsight_explicit || memorantado_explicit,
         })
     }
@@ -918,23 +956,27 @@ impl Runtime {
         let skills = Arc::new(SkillsModule::new(modules("skills"), loader, clock.clone(), Some(code)));
         // A skill procedure's `check` commands run as spawn contract checks do, with the stack's check runner.
         let skill_checks: Arc<std::sync::OnceLock<delegation::spawn_contract::CheckRunner>> = Arc::default();
+        // Runs a dead worker left `running` end `interrupted` now: their book died with it. A store that cannot be
+        // read leaves them for the next start.
+        let procedures = Arc::new(delegation::skill_runs::SkillRuns {
+            book: skill_runs,
+            skills: skills.clone(),
+            judge: judge.clone(),
+            cwd: config.cwd.clone(),
+            env: config.child_env(),
+            runner: skill_checks.clone(),
+            proposals: config::paths::AgentPaths::new(&config.agent_dir).skill_proposals(),
+            session_id: Some(session_id.to_string()),
+            now: clock.clone(),
+        });
+        let _ = procedures.interrupt_orphans();
         let apis = ApiModules {
             local: Arc::new(services::LocalServicesModule {
                 services: local,
                 branch,
             }),
             gates: Arc::new(services::ReleaseGateModule::new(modules("release-gates"), None)),
-            procedures: Arc::new(delegation::skill_runs::SkillRuns {
-                book: skill_runs,
-                skills: skills.clone(),
-                judge: judge.clone(),
-                cwd: config.cwd.clone(),
-                env: config.child_env(),
-                runner: skill_checks.clone(),
-                proposals: config::paths::AgentPaths::new(&config.agent_dir).skill_proposals(),
-                session_id: Some(session_id.to_string()),
-                now: clock.clone(),
-            }),
+            procedures,
             skills,
             memory: Arc::new(MemoryApi {
                 service: memory.map(|memory| memory.with_judge(crate::session_judge::decider(judge.clone()))),
@@ -943,7 +985,7 @@ impl Runtime {
             images: Arc::new(crate::session_images::module(&config, session_id)),
             diagram: Arc::new(crate::session_diagrams::module(&config, session_id, images.clone())),
             judge,
-            knowledge: Arc::new(crate::session_knowledge::module(&config)),
+            knowledge: Arc::new(crate::session_knowledge::module(&config, self.memorantado.clone())),
             schedule: Arc::new(kernel_apis::prompt_schedule::ScheduleModule::new(
                 match &values {
                     Some(values) => Box::new(values.keyed(kernel_apis::prompt_schedule::NAMESPACE)),
@@ -1837,9 +1879,13 @@ impl Stack {
         self.system.current()
     }
 
-    /// A subagent lane's system prompt (crate::wake: its runtime guide says to await before replying).
-    pub fn child_system(&self) -> String {
-        self.system.child_current(self.memory_children)
+    /// The system prompt of a subagent lane on `model` (crate::wake: its runtime guide says to await before
+    /// replying; crate::memory_guidance: a model cheaper than the root's is told how to use memory too).
+    pub fn child_system(&self, model: &Model) -> String {
+        self.system.child_current(ChildReader {
+            in_memory: self.memory_children,
+            memory: crate::memory_guidance::memory_guidance(model, &self.root_model(), true),
+        })
     }
 
     /// As [`Stack::close`], for a worker whose session a successor worker takes over: running shell jobs keep
@@ -2120,7 +2166,7 @@ pub fn child_setup(stack: &Stack, run: &ChildRun) -> ChildSetup {
         .unwrap_or_else(|| stack.model.clone());
     let root_cwd = stack.config.cwd.display().to_string();
     // The subagent's own guide (crate::wake): nothing wakes it, so it awaits what its answer needs.
-    let mut system = stack.child_system();
+    let mut system = stack.child_system(&model);
     if let Some(cwd) = run.cwd.as_deref() {
         // A worktree subagent works in its worktree: its shell, kernel and prompt name it, not the checkout.
         let host = Runtime {
@@ -2132,6 +2178,7 @@ pub fn child_setup(stack: &Stack, run: &ChildRun) -> ChildSetup {
             mode: String::new(),
             hindsight: None,
             memorantado: None,
+            memory_notice: None,
             memory_explicit: false,
         }
         .host_in(

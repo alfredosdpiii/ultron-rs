@@ -183,6 +183,19 @@ impl AutoMemory {
     }
 }
 
+/// The notice that memory is paused (memorantado, the backend, did not answer at start: memorantado::resolve), as
+/// the displayed message that opens the session's first root turn.
+pub fn paused_message(text: &str, timestamp: u64) -> Value {
+    json!({
+        "role": "custom",
+        "customType": protocol::custom_types::MEMORY_PAUSED,
+        "content": text,
+        "display": true,
+        "details": {},
+        "timestamp": timestamp,
+    })
+}
+
 /// Whether a user message is worth a recall: not a slash command, and at least [`MIN_WORDS`] words.
 pub fn worth_recalling(text: &str) -> bool {
     let text = text.trim();

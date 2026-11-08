@@ -1,11 +1,19 @@
-//! REPL result footers in the product's requests (`ULTRON_RESULT_FOOTER=on`, session_core::lane::add_result_footers):
-//! each tool result ends with `[t+... ctx ...]`, derived from the stored log, so an earlier result's footer reads the
-//! same in every later request. Off by default. New in Rust: literal expectations.
+//! REPL result footers in the product's requests (the global `rlm.resultFooter` setting,
+//! session_core::lane::add_result_footers): each tool result ends with `[t+... ctx ...]`, derived from the stored log,
+//! so an earlier result's footer reads the same in every later request, and the runtime guide says so. Off by
+//! default, guide line included. New in Rust: literal expectations.
 
 use crate::p_session_support;
 
 use p_session_support::{Setup, actor, in_order, text, tool, tool_results};
-use serde_json::Value;
+use serde_json::{Value, json};
+
+const GUIDE_LINE: &str =
+    "Each rlm result ends with `[t+<time since the session started> ctx <tokens of the request that ran it>]`.";
+
+fn system_of(request: &Value) -> String {
+    request["system"].to_string()
+}
 
 fn footer_of(result: &Value) -> String {
     let text = match result {
@@ -29,7 +37,7 @@ fn session_core_result_footers_end_each_result_and_stay_the_same_across_requests
     let a = actor(
         script,
         Setup {
-            vars: vec![("ULTRON_RESULT_FOOTER", "on".into())],
+            settings: Some(json!({"rlm": {"resultFooter": true}})),
             ..Setup::default()
         },
     );
@@ -44,6 +52,10 @@ fn session_core_result_footers_end_each_result_and_stay_the_same_across_requests
     // The next request carries the first result exactly as before, then the second with its own footer.
     assert_eq!(third[0], second[0]);
     assert!(footer.is_match(&footer_of(&third[1])), "{third:?}");
+    assert!(
+        system_of(&requests[0]).contains(GUIDE_LINE),
+        "the guide explains the footer"
+    );
 }
 
 #[test]
@@ -53,5 +65,7 @@ fn session_core_result_footers_are_off_by_default() {
         Setup::default(),
     );
     assert_eq!(a.prompt("go")["error"], Value::Null);
-    assert_eq!(tool_results(&a.requests()[1]), [Value::String("one".into())]);
+    let requests = a.requests();
+    assert_eq!(tool_results(&requests[1]), [Value::String("one".into())]);
+    assert!(!system_of(&requests[0]).contains("[t+"), "no footer line in the guide");
 }

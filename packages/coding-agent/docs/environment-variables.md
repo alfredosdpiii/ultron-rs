@@ -89,6 +89,11 @@ These variables are read by Pi itself:
 | `ULTRON_LOKI_PYTHON` | Python 3.11+ interpreter that runs Loki (default `python3`) |
 | `ULTRON_LOKI_PROJECT_PYTHON` | The project's own interpreter, which Loki asks whether a newly imported module exists. Default: the `python` (else `python3`) on `PATH` when it belongs to a virtual or conda environment, else `.venv`/`venv` in the session directory or the repository root. Without one, new imports are reported as not checked |
 | `ULTRON_LOKI_LOG` | Append every Loki check (and setup) to this file as JSON lines |
+| `ULTRON_MEMORANTADO_URL` | The memorantado memory server (overrides the `memorantadoUrl` setting); `off` turns it off. See [memory backend](settings.md#memory-backend-ultron) |
+| `ULTRON_MEMORANTADO_PROJECT` | The memorantado project memory lives in (default `ultron`) |
+| `ULTRON_MAX_TASK_CALLS`, `ULTRON_MAX_MODEL_CALLS` | Sub-agent tasks and model calls one request may admit (a count, or `off`); override `rootBudget.maxCalls.task` and `.model` |
+| `TYPESAFE_API_KEY`, `ULTRON_D1_KEY` | Keys of the judge seat's backends, Jev and d1 (else auth.json `typesafe`, `d1`). See [judge seat](settings.md#judge-seat-ultron) |
+| `NEO4J_PASSWORD` | Password of the knowledge graph's Neo4j mirror (else auth.json `neo4j`) |
 | `ULTRON_RLM_FRAME_MODEL` | Default model (`provider/model`, e.g. `claude-code/haiku`) of `rlm.infer`/`rlm.map` frames that give none and run no code |
 | `ULTRON_CLAUDE_CODE_BIN` | The `claude` executable used by the `claude-code` provider (default: `claude` on `PATH`) |
 | `ULTRON_CLAUDE_CODE_CONCURRENCY` | Most `claude-code` calls running at once (default 4) |

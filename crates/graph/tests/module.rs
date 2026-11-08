@@ -3,7 +3,8 @@
 //! request.
 
 use crate::fakes::{FakeHttp, git, password, write};
-use config::keys::{MemorantadoSettings, neo4j_settings};
+use config::keys::neo4j_settings;
+use graph::MemorantadoSettings;
 use graph::{KnowledgeModule, Mirrors};
 use kernel::Signal;
 use kernel_apis::{ApiModule, Request, RootOnly};

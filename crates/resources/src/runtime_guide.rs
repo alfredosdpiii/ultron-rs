@@ -27,6 +27,17 @@ pub enum GuideReader {
     Subagent { swarm: bool },
 }
 
+/// How much the guide says about memory (the reader's model tier picks it: session_core::memory_guidance). Every
+/// reader is told what memory is for; only a weaker tier is also told how to go about it.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum MemoryGuidance {
+    /// What memory is for, and nothing on how to go about it.
+    #[default]
+    Purpose,
+    /// The purpose and the procedural line.
+    PurposeAndProcedure,
+}
+
 /// An extension tool as the guide lists it.
 #[derive(Clone, Debug)]
 pub struct ExtensionToolSummary {
@@ -44,7 +55,8 @@ pub struct RuntimeGuideOptions {
     pub mcp_servers: Vec<String>,
     pub native_extension_tools: Vec<String>,
     /// The host serves the Rust session runtime's APIs that TS lacks: the durable many-agent APIs (`keep=True`
-    /// children, `rlm.ask`, `swarm`, `board`, `notes`), typed memory records with file pointers, `rlm.images`, `schedule` and `diagram`
+    /// children, `rlm.ask`, `swarm`, `board`, `notes`), typed memory records with file pointers, `rlm.images`, `schedule` and `diagram`,
+    /// and `sessions`, `judge`, `knowledge.relations`, procedure skills, `budget`, `rlm.progress` and retrieve context
     /// (the Claude root's server serves them too). The TS host does not. Off keeps the guide equal to TS.
     pub durable_apis: bool,
     pub reader: GuideReader,
@@ -52,6 +64,12 @@ pub struct RuntimeGuideOptions {
     /// raises while selected children run), as the Rust session's woken root does. Off keeps TS's wording, whose
     /// collect waits.
     pub host_waits: bool,
+    /// With the durable APIs: whether the memory line adds the procedural steering ([`MemoryGuidance`]).
+    pub memory: MemoryGuidance,
+    /// With the durable APIs: memory is on memorantado, whose dreaming writes topic pages (`memory.topic`).
+    pub memory_topics: bool,
+    /// With the durable APIs: each REPL result ends with a `[t+... ctx ...]` footer (the `rlm.resultFooter` setting).
+    pub result_footer: bool,
 }
 
 impl Default for RuntimeGuideOptions {
@@ -66,6 +84,9 @@ impl Default for RuntimeGuideOptions {
             durable_apis: false,
             reader: GuideReader::Root,
             host_waits: false,
+            memory: MemoryGuidance::Purpose,
+            memory_topics: false,
+            result_footer: false,
         }
     }
 }
@@ -88,8 +109,15 @@ const ASYNC_EVENTS_OFF: &str = r#"Completions are not announced in this session 
 const SEARCH_FIRST: &str = r#"## Search before delegating
 For many files or a large input, narrow with code first: 1. search the concept and its synonyms (`re`, `h.search`, `rg -il`) and count hits; 2. print one compact line per candidate (id and matching sentence); 3. read the deciding passages of unclear candidates and judge them yourself. Use `rlm.map` only for candidates a line or two cannot settle, or text over ~100 KB, one passage per frame. Do not spawn subagents to read or classify documents: each re-sends this prompt and its transcript every turn."#;
 const MEMORY: &str = r#"- `memory.prepare(query)` recalls long-term memory, `memory.propose(text, evidence)` keeps a fact; neither runs on its own."#;
-/// The Rust host's memory line: with automatic memory on, recall and keeping also run without a call.
-const MEMORY_RUST: &str = r#"- `memory.prepare(query)` recalls long-term memory, `memory.propose(text, evidence)` keeps a fact. When automatic memory is on, a `[memory]` message before a user message is what was recalled for it, and summaries are kept for you; call these for anything else."#;
+/// The Rust host's memory line: what memory is for, then how; with automatic memory on, recall and keeping also run
+/// without a call.
+const MEMORY_RUST: &str = r#"- Long-term memory is for what you cannot see next time: unwritten conventions, gotchas and their fixes, the user's preferences and decisions, theories you tested; not what the repo, git or a command already shows. Keep something when the user asks or it is clearly worth it. `memory.prepare(query)` recalls it, `memory.propose(text, evidence)` keeps a fact. When automatic memory is on, a `[memory]` message before a user message is what was recalled for it, and summaries are kept for you; call these for anything else."#;
+/// The procedural steering a weaker tier gets ([`MemoryGuidance::PurposeAndProcedure`]).
+const MEMORY_PROCEDURE: &str =
+    r#" Before answering about a topic, check memory for it (`memory.prepare`); test a theory before you keep it."#;
+/// Topic pages (memorantado's dreaming writes them).
+const MEMORY_TOPICS: &str =
+    r#" `memory.topic()` lists the topic pages dreaming wrote, `memory.topic(name)` reads one."#;
 const INFERENCE_PROMPT: &str = r#"Large inputs stay out of your context as handles; examples: `help(rlm.load)`, `help(rlm.map)`.
 - `h = await rlm.load(path_or_text)`: `h.search(regex)`, `h.count(regex)`, `h.lines(a, b)`, `h.chunks(n)`; views print their text.
 - `await rlm.infer(task, context=[views], contract=T, budget=Budget(calls, tokens, depth))`: one private sub-model call (no transcript, no tools), contract-validated and re-asked; running out returns a falsy `Incomplete`.
@@ -120,6 +148,14 @@ const IMAGES_PROMPT: &str = r#"- `await rlm.images.generate(prompt, size="16:9")
 const SCHEDULE_PROMPT: &str = r#"- `await schedule.every("1h", prompt)` or `schedule.at(when, prompt)` sends this session `prompt` later as a new turn (`help(schedule)`)."#;
 const DIAGRAM_PROMPT: &str = r#"- `await diagram.mermaid(text)` renders Mermaid to an SVG and PNG in your theme and shows the user the PNG; you get its path (`help(diagram)`)."#;
 const PERSISTENT_PROMPT: &str = r#"Persistent agents: `h = await rlm.spawn(brief, name=..., keep=True)` stays alive after its answer (its context, files and kernel survive restarts); `await rlm.ask(h, question)` asks it a follow-up, so your context grows only by the question and the answer: ask the child that already read something instead of re-reading it. `await swarm.route(question)` ranks the agents holding matching context; `swarm.send(name, text)` and `swarm.inbox()` message agents; `board` (tasks with exclusive claims) and `notes` are the session's shared durable records."#;
+/// The Rust host's delegation APIs every durable reader has: retrieve context, progress, cost projection.
+const DELEGATION_RUST: &str = r#"`context="retrieve"` starts a fresh child that can look up what its brief left out in this session's log; prefer it to `context="fork"`, which re-sends your whole conversation every child turn. When the user asks how the subagents are doing, `await rlm.progress()` gives each running child's stage and time and cost forecasts (never poll it). `await budget.estimate(plan)` prices planned model work before you start it; with a cost cap, work whose estimate crosses it is refused (`help(budget.estimate)`)."#;
+const PROCEDURE_SKILLS_PROMPT: &str = r#"- A skill with a `procedure:` (such as `tdd`) is walked with `run = await skills.run(name, input={...})`: do `run.segment["goal"]` changing only its `writes` files, then `await run.check()` (`state="your claim"` for a judged segment); the host runs every check itself and the run passes only if the final check passes again (`help(skills.run)`)."#;
+const SESSIONS_PROMPT: &str = r#"- `await sessions.search("regex", days=7)` finds turns in this project's stored sessions (`cwd="all"`: every project, only when the user asks); each hit's `span` (`session://<id>#<from>..<to>`) reads back with `await sessions.read(span, around=5)`, and `sessions.read()` is this whole session, past compaction. Cite what you found in an old session by its span (`help(sessions)`)."#;
+const JUDGE_PROMPT: &str = r#"- `await judge.decide(state, questions, kind=...)` asks the judge seat closed questions (choice, yes/no, score, number) about evidence, for batch and background checks, not every turn; `expect={name: value}` makes an answer that differs a dispute, escalated to another model family. Its `rung`: "first" or "escalated" settled, "review" needs a person, "abstained" no answer (`help(judge)`)."#;
+const RELATIONS_PROMPT: &str = r#"- Before changing a config key, route, table or a module's tests, `await knowledge.relations(paths=[...])` lists what relates to it across the repository at HEAD (`reads_config`, `serves_route`, `touches_table`, `tests`), each with `evidence` (`repo://path#Lline`) and a `status`; check "review" ones yourself. It is cached by file content (`help(knowledge)`)."#;
+const RESULT_FOOTER: &str =
+    r#"Each rlm result ends with `[t+<time since the session started> ctx <tokens of the request that ran it>]`."#;
 const CONTRACTS_PROMPT: &str = r#"Contracts: `rlm.spawn(brief, name=..., contract={"checks": [{"run": "cargo test -q"}, {"changed_files_within": ["src/**"]}]}, hop={"retry": 1})` makes the host run the checks itself when the child ends, and its result's `check["contract"]["verdict"]` is "verified" or "contract_failed" (`help(rlm.spawn)`)."#;
 
 /// Guideline bullets for the `rlm` tool, depending on whether native file tools are active too.
@@ -262,6 +298,11 @@ pub fn rlm_runtime_prompt(active_tools: &[&str], options: &RuntimeGuideOptions) 
     } else {
         format!("## Other APIs\n{CONTEXT_PROMPT}\n{CODE_SKILLS_PROMPT}\n{AGENT_CLASS_PROMPT}")
     };
+    let runtime = if options.durable_apis && options.result_footer {
+        format!("{runtime}\n{RESULT_FOOTER}")
+    } else {
+        runtime
+    };
     let mut parts = vec![
         format!("{runtime}\n{events}"),
         skills.join("\n"),
@@ -276,10 +317,12 @@ pub fn rlm_runtime_prompt(active_tools: &[&str], options: &RuntimeGuideOptions) 
     let persistent = options.durable_apis && swarm && !(options.external_root && subagent);
     if persistent {
         parts.push(format!(
-            "{delegation}\n{PERSISTENT_PROMPT} {CONTRACTS_PROMPT} `help(swarm)`."
+            "{delegation}\n{PERSISTENT_PROMPT} {CONTRACTS_PROMPT} `help(swarm)`.\n{DELEGATION_RUST}"
         ));
     } else if options.durable_apis && swarm {
-        parts.push(format!("{delegation}\n{CONTRACTS_PROMPT}"));
+        parts.push(format!("{delegation}\n{CONTRACTS_PROMPT}\n{DELEGATION_RUST}"));
+    } else if options.durable_apis {
+        parts.push(format!("{delegation}\n{DELEGATION_RUST}"));
     } else {
         parts.push(delegation);
     }
@@ -290,8 +333,13 @@ pub fn rlm_runtime_prompt(active_tools: &[&str], options: &RuntimeGuideOptions) 
         } else {
             String::new()
         };
+        let procedure = match options.memory {
+            MemoryGuidance::Purpose => "",
+            MemoryGuidance::PurposeAndProcedure => MEMORY_PROCEDURE,
+        };
+        let topics = if options.memory_topics { MEMORY_TOPICS } else { "" };
         parts.push(format!(
-            "{context}\n{MEMORY_RUST}{TYPED_MEMORY}\n{IMAGES_PROMPT}{schedule}\n{DIAGRAM_PROMPT}"
+            "{context}\n{PROCEDURE_SKILLS_PROMPT}\n{MEMORY_RUST}{procedure}{TYPED_MEMORY}{topics}\n{SESSIONS_PROMPT}\n{JUDGE_PROMPT}\n{RELATIONS_PROMPT}\n{IMAGES_PROMPT}{schedule}\n{DIAGRAM_PROMPT}"
         ));
     } else {
         parts.push(format!("{context}\n{MEMORY}"));

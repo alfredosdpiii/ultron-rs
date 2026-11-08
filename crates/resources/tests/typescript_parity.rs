@@ -303,6 +303,8 @@ fn resources_runtime_guide_matches_typescript() {
             // TS's root guide: its collect waits.
             reader: resources::runtime_guide::GuideReader::Root,
             host_waits: false,
+            // The memory tier, topic pages and result footer are Rust-only lines: off here, and never in TS's text.
+            ..RuntimeGuideOptions::default()
         };
         match case["text"].as_str() {
             Some(expected) => assert_text(
@@ -449,32 +451,52 @@ fn resources_runtime_guide_names_the_swarm_apis_only_when_the_host_serves_them()
     ] {
         assert!(swarm.contains(needle), "{needle}");
     }
-    // The section follows the delegation section; with the typed-memory sentence removed too, nothing else changes.
+    // The section follows the delegation section, with the Rust delegation APIs after it; with the procedure-skill,
+    // memory-purpose and typed-memory sentences and the pointer lines removed too, nothing else changes.
     let at = swarm.find("Persistent agents:").unwrap();
     assert!(swarm[..at].contains("## Delegation"));
-    let end = at + swarm[at..].find("`help(swarm)`.").unwrap() + "`help(swarm)`.".len();
+    let close = "(`help(budget.estimate)`).";
+    let end = at + swarm[at..].find(close).unwrap() + close.len();
+    assert!(swarm[at..end].contains("`help(swarm)`.\n`context=\"retrieve\"`"));
+    let procedure = swarm.find("\n- A skill with a `procedure:`").unwrap();
+    let close = "(`help(skills.run)`).";
+    let memory = procedure + swarm[procedure..].find(close).unwrap() + close.len();
+    assert!(swarm[memory..].starts_with("\n- Long-term memory is for"));
     let typed = swarm.find(" A fact tied to files can be typed:").unwrap();
     let typed_end = typed + swarm[typed..].find("once that text is gone.").unwrap() + "once that text is gone.".len();
     assert!(swarm[typed..typed_end].contains("path_globs"));
     assert!(swarm[typed..typed_end].contains("\"quote\""));
-    // The images line follows the memory line.
-    let images = typed_end + swarm[typed_end..].find("\n- `await rlm.images.generate(").unwrap();
-    let images_end = images + swarm[images..].find("(`help(rlm.images)`).").unwrap() + "(`help(rlm.images)`).".len();
-    assert_eq!(
-        images, typed_end,
-        "the images line directly follows the typed-memory sentence"
-    );
-    // The schedule line directly follows the images line.
-    let schedule_end =
-        images_end + swarm[images_end..].find("(`help(schedule)`).").unwrap() + "(`help(schedule)`).".len();
-    assert!(swarm[images_end..schedule_end].starts_with("\n- `await schedule.every("));
-    // The diagram line directly follows the schedule line and ends the guide.
-    let diagram_end =
-        schedule_end + swarm[schedule_end..].find("(`help(diagram)`).").unwrap() + "(`help(diagram)`).".len();
-    assert!(swarm[schedule_end..diagram_end].starts_with("\n- `await diagram.mermaid("));
-    assert_eq!(diagram_end, swarm.len());
-    // The Rust host's memory line says that automatic memory recalls and keeps without a call; TS's says neither does.
-    let without = format!("{}{}{}", &swarm[..at - 1], &swarm[end..typed], &swarm[diagram_end..]).replacen(
+    // The pointer lines follow the typed-memory sentence in this order, and the diagram line ends the guide.
+    let mut cursor = typed_end;
+    for (line, close) in [
+        ("\n- `await sessions.search(", "(`help(sessions)`)."),
+        ("\n- `await judge.decide(", "(`help(judge)`)."),
+        ("\n- Before changing a config key", "(`help(knowledge)`)."),
+        ("\n- `await rlm.images.generate(", "(`help(rlm.images)`)."),
+        ("\n- `await schedule.every(", "(`help(schedule)`)."),
+        ("\n- `await diagram.mermaid(", "(`help(diagram)`)."),
+    ] {
+        assert!(swarm[cursor..].starts_with(line), "{line} at {}", &swarm[cursor..]);
+        cursor += swarm[cursor..].find(close).unwrap() + close.len();
+    }
+    assert_eq!(cursor, swarm.len());
+    // The Rust host's memory line says what memory is for, and that automatic memory recalls and keeps without a
+    // call; TS's says neither does.
+    let without = format!(
+        "{}{}{}{}",
+        &swarm[..at - 1],
+        &swarm[end..procedure],
+        &swarm[memory..typed],
+        &swarm[cursor..]
+    )
+    .replacen(
+        "- Long-term memory is for what you cannot see next time: unwritten conventions, gotchas and their fixes, the \
+         user's preferences and decisions, theories you tested; not what the repo, git or a command already shows. \
+         Keep something when the user asks or it is clearly worth it. `memory.prepare(query)` recalls it, ",
+        "- `memory.prepare(query)` recalls long-term memory, ",
+        1,
+    )
+    .replacen(
         ". When automatic memory is on, a `[memory]` message before a user message is what was recalled for it, and \
          summaries are kept for you; call these for anything else.",
         "; neither runs on its own.",

@@ -5,6 +5,8 @@
 pub const NUDGE: &str = "ultron.nudge";
 /// Long-term memories recalled for a user message.
 pub const RECALLED_MEMORY: &str = "ultron.memory";
+/// Memory is paused: its backend (memorantado) did not answer when the session started.
+pub const MEMORY_PAUSED: &str = "ultron.memory-paused";
 /// The active instruction refinements.
 pub const REFINEMENTS: &str = "ultron.refinements";
 /// A fired schedule's prompt.

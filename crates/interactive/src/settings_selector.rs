@@ -100,6 +100,9 @@ fn judge_order_value(label: &str) -> Value {
     Value::from(names)
 }
 
+/// `memory.backend` choices: detect (unset), then the backends.
+const MEMORY_BACKENDS: [&str; 3] = ["detect", "memorantado", "hindsight"];
+
 /// A saved `judge.budgetUsd` as a choice.
 fn budget_label(value: &Value) -> String {
     match value.as_f64().filter(|n| *n > 0.0) {
@@ -989,6 +992,18 @@ impl SettingsSelector {
                     "USD the judge may spend in a session (Jev and the fallback and escalation models; d1 is free). Off: no cap, spend is still recorded.",
                     budget.clone(),
                     &budgets,
+                ),
+            );
+            items.insert(
+                at + 5,
+                item(
+                    "memory-backend",
+                    "Memory backend",
+                    "Where memory lives (applies to new sessions). detect: memorantado once it answers, kept from then on; until then Hindsight. Once memorantado is the backend, an outage pauses memory instead of writing to Hindsight.",
+                    c.text("memory.backend")
+                        .filter(|b| MEMORY_BACKENDS.contains(&b.as_str()))
+                        .unwrap_or_else(|| MEMORY_BACKENDS[0].into()),
+                    &MEMORY_BACKENDS,
                 ),
             );
         }
@@ -2069,6 +2084,14 @@ impl SettingsSelector {
             "map-token-cap" => ("rlm.mapTokens", token_cap_value(value)),
             "judge-provider" => ("judge.provider", judge_order_value(value)),
             "judge-budget" => ("judge.budgetUsd", budget_value(value)),
+            "memory-backend" => (
+                "memory.backend",
+                if value == MEMORY_BACKENDS[0] {
+                    Value::Null
+                } else {
+                    value.into()
+                },
+            ),
             other => (other, value.into()),
         };
         set_path(&mut self.input.settings, key, v.clone());
@@ -2342,6 +2365,34 @@ mod tests {
             ("3M", &["off".to_string(), "3M".to_string()][..])
         );
         assert_eq!(row(&s, "map-token-cap").0, "off");
+    }
+
+    /// `memory.backend`: unset shows detect; a backend saves its name, detect removes the key.
+    #[test]
+    fn settings_memory_backend_row() {
+        let value = |s: &SettingsSelector| {
+            s.list
+                .items
+                .iter()
+                .find(|it| it.id == "memory-backend")
+                .unwrap()
+                .value
+                .clone()
+        };
+        let mut s = selector(json!({}));
+        assert_eq!(value(&s), "detect");
+        assert_eq!(
+            s.main_change("memory-backend", "memorantado"),
+            SettingsEvent::Change("memory.backend".into(), json!("memorantado"))
+        );
+        assert_eq!(
+            s.main_change("memory-backend", "detect"),
+            SettingsEvent::Change("memory.backend".into(), Value::Null)
+        );
+        assert_eq!(
+            value(&selector(json!({"memory": {"backend": "hindsight"}}))),
+            "hindsight"
+        );
     }
 
     /// Race models: picking toggles a model in `rlm.raceModels` and keeps the picker open with every picked model
