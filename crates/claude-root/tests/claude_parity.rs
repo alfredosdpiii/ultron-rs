@@ -629,6 +629,35 @@ fn claude_root_w25c_guide_names_the_mcp_servers_and_the_rust_apis_the_external_r
     }
 }
 
+/// The guide the server serves as a prompt and a resource describes the event delivery the launcher set up: woken
+/// with `--wake`, otherwise told with the next rlm result.
+#[test]
+fn claude_root_w25c_the_served_guide_follows_the_wake_flag() {
+    let root = Root::new();
+    for (args, wakes) in [
+        (&["--no-instructions"][..], false),
+        (&["--no-instructions", "--wake"][..], true),
+    ] {
+        let mut server = Server::start(args, root.env(&[]));
+        let read = server.call("resources/read", json!({"uri": "ultron://guide"}));
+        let resource = read["result"]["contents"][0]["text"].as_str().unwrap().to_string();
+        let got = server.call("prompts/get", json!({"name": "ultron-guide"}));
+        let prompt = got["result"]["messages"][0]["content"]["text"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        server.close();
+        for guide in [resource, prompt] {
+            assert_eq!(guide.contains("which starts a new turn"), wakes, "{args:?}: {guide}");
+            assert_eq!(
+                guide.contains("Nothing wakes you after you reply"),
+                !wakes,
+                "{args:?}: {guide}"
+            );
+        }
+    }
+}
+
 #[test]
 fn claude_root_w25c_system_md_and_append_system_md_shape_root_and_child_prompts() {
     let root = Root::new();

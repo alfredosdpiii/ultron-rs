@@ -1075,7 +1075,7 @@ impl Server {
                 self.hints,
             )
         } else {
-            claude_runtime_guide_for(Some(&self.apis), self.hints, false)
+            claude_runtime_guide_for(Some(&self.apis), self.hints, self.args.wake)
         }
     }
 
@@ -1157,7 +1157,7 @@ impl McpHandlers for Handlers {
         self.0
             .args
             .instructions
-            .then(|| claude_runtime_guide_for(Some(&self.0.apis), self.0.hints, false))
+            .then(|| claude_runtime_guide_for(Some(&self.0.apis), self.0.hints, self.0.args.wake))
     }
     fn tools(&self) -> Vec<Value> {
         let mut input_schema = session_core::lane::rlm_tool().parameters;
