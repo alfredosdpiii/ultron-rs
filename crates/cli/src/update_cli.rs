@@ -21,12 +21,13 @@ const UPDATE_HELP: &str = "Usage:
   ultron update [self] [--self|--models] [--force]
 
 Update ultron or model catalogs.
-ultron updates itself from the npm package ultron-agent.
+ultron cannot replace its own binary: when a newer version exists it prints the releases page to
+download it from (install the new archive with its install.sh).
 
 Options:
   --self                  Update ultron only (the default)
   --models                Refresh model catalogs only
-  --force                 Reinstall ultron even if the current version is latest
+  --force                 Print the releases page even if the current version is latest
 
 Short forms:
   ultron update                Update ultron only
