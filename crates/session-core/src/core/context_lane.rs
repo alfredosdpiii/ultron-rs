@@ -53,7 +53,6 @@ pub(super) fn placement(session: &session_journal::Session, tip: Option<String>)
     (writes, tip)
 }
 
-/// How many entries wait for the run's next boundary.
 pub(super) fn pending_count(session: &session_journal::Session) -> usize {
     session.state().scan_values(CONTEXT_PENDING, "").len()
 }

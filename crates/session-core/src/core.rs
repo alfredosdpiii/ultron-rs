@@ -609,7 +609,6 @@ struct Running {
     resume_overflow: Option<Value>,
 }
 
-/// How a session is opened.
 pub struct OpenOptions {
     pub env: RunEnv,
     pub flags: ModelFlags,
@@ -623,7 +622,6 @@ pub struct OpenOptions {
     pub auto_name: bool,
 }
 
-/// The session actor.
 /// How long a quiet session's tail may take to reach Hindsight.
 const IDLE_WAIT: std::time::Duration = std::time::Duration::from_secs(60);
 
@@ -925,10 +923,8 @@ impl Core {
         let announced_usage = session.state().usage_rows().len();
         let session_id = session.id().to_string();
         let session: SharedSession = Arc::new(Mutex::new(session));
-        // The host modules' documents are values of the session (crate::session_modules).
         let values = crate::session_modules::session_values(&session);
         runtime.services.values = Some(values.clone());
-        // Subagents run as child conversations of the durable runtime; their task journal is in the session.
         let children = crate::subagents::DurableChildren::new();
         let unfinished = crate::subagents::unfinished(&session);
         trace("worker.harness-create");
@@ -940,12 +936,10 @@ impl Core {
             Some(children.host(values)),
         )?;
         trace("worker.host");
-        // The runtime counters are the session value `ultron.module/stats` (counting continues from a resumed one).
         lane.stack
             .stats
             .attach(Arc::new(crate::session_stats::SessionStore(session.clone())));
         let branches = Arc::new(context_lane::RootBranches::new(session.clone()));
-        // One module answers `ctx.*` from every lane's kernel; each lane edits its own branch.
         let child_context = Arc::new(context_children::ChildContext::new(children.clone(), session.clone()));
         // `ULTRON_COMPACTION_TRIM` of the session's environment, as every other session switch.
         let context = Arc::new(
@@ -991,7 +985,6 @@ impl Core {
             runtime.config.context_images,
         )?;
         children.attach(durable.chat.clone());
-        // The agent hub steers a child lane's running conversation through its inbox (crate::agent_hub).
         let steer_children = children.clone();
         let _ = lane
             .stack
@@ -1118,7 +1111,6 @@ impl Core {
             // its next boundary.
             core.branches.place(true)?;
         }
-        // Whatever else the runtime holds (subagents, background work) continues now.
         core.durable.chat.resume().map_err(|e| e.to_string())?;
         // A fork's first worker consumes the marker its source recorded (`forkedSessionStart` of session-start.ts).
         let forked = lock_session(&core.session)
@@ -1462,7 +1454,6 @@ impl Core {
                     // The run's prompt was committed when the run was admitted; a steering or follow-up message
                     // joins the branch when the loop takes it.
                     let committed = match &delivered {
-                        // Committed when the generation that takes it began.
                         Some(queued) if self.taken.contains(&queued.entry_id) => {
                             self.taken.retain(|id| *id != queued.entry_id);
                             Ok(())
@@ -1640,7 +1631,6 @@ impl Core {
             run.error.get_or_insert(error);
         }
         self.announce();
-        // Entries that waited for the boundary left the lane's queue.
         if waiting > 0 {
             self.queue_update();
         }
@@ -1687,7 +1677,6 @@ impl Core {
             ended_at: now_ms(),
         });
         let failed = error.is_some();
-        // The dispatcher's `run_end`: an aborted root never restarts work; unconsumed steers are taken back.
         if let Some(operation) = &operation {
             self.events.run_ended(MAIN_LANE, operation, aborted);
         }
@@ -1695,7 +1684,6 @@ impl Core {
         self.skill_nudger.run_ended(&run.id);
         // What the run counted is in the session file when its end is reported.
         self.lane.stack.stats.flush();
-        // Failure streaks of the hints' loop detector start over with the next run.
         self.lane.stack.cell_hints().run_ended(MAIN_LANE);
         if let Some(waiter) = run.waiter {
             let error = error.map_or(Value::Null, |m| json!({"code": "run_failed", "message": m}));
@@ -1703,11 +1691,9 @@ impl Core {
                 json!({"accepted": true, "operationId": run.id, "error": error}),
             )));
         }
-        // What waited for the run's end runs next, before any other input.
         for input in std::mem::take(&mut self.after_run).into_iter().rev() {
             self.deferred.push_front(input);
         }
-        // The persona continues a turn that announced its next step instead of taking it.
         self.persona_run_ended(aborted, failed);
     }
 
@@ -1838,7 +1824,6 @@ impl Core {
                 } else {
                     self.prompt(message, images, None).map_err(|(error, _)| error)
                 };
-                // A keep-going phrase (or the input that ended keep-going) is reported in one line.
                 reply(result.map(|()| notice.map(|notice| json!({"keepGoing": notice}))));
             }
             Op::PromptAndWait { message, images } => {
@@ -1846,7 +1831,6 @@ impl Core {
                 if self.run.is_some() {
                     return reply(Err("Agent is already processing".into()));
                 }
-                // Answered when the run ends.
                 if let Err((error, reply)) = self.prompt(message, images, Some(reply)) {
                     reply(Err(error));
                 }
@@ -2159,7 +2143,6 @@ impl Core {
             Op::Conversations { id } => self.conversations(id).map(Some),
             Op::AsyncPending => Ok(Some(self.async_pending())),
             Op::Commands => Ok(Some(Value::Array(self.lane.stack.commands()))),
-            // Root-owned work whose completion may still re-invoke the root, asked through the inspector.
             Op::Inspect { request, .. } if request == "async.pending" => Ok(Some(self.async_pending())),
             // The root lane's detached cells (`rlm.cells` lists them to a cell, without their times).
             Op::Inspect { request, .. } if request == "rlm.detached" => Ok(Some(
@@ -2641,7 +2624,6 @@ impl Core {
         }
         // The turn runs in the durable runtime; its prompt is the entry the run just admitted.
         let prompt_entry = self.tip().unwrap_or_default();
-        // A root user turn records the working tree before it runs (core::checkpoints).
         if !continuation && prompt["role"] == "user" {
             self.checkpoint_turn(&prompt_entry);
         }
@@ -2742,8 +2724,6 @@ impl Core {
             };
             return answer(false, Value::Null, reason);
         };
-        // Recovery runs the first queued message (or the continuation); the others are delivered by the run, in
-        // order, as before.
         match self.prompt_with(prompt, None, false) {
             Ok(()) => answer(true, json!(self.run_id()), reason),
             Err((error, _)) => Err(error),
@@ -2761,7 +2741,6 @@ impl Core {
             return Err(EMPTY_QUEUED.into());
         }
         let message = user_message(message, images);
-        // The message waits in the lane's inbox as a pending entry.
         let entry_id =
             entry_id.unwrap_or_else(|| session_journal::lock_clock(&lock_session(&self.session).clock()).next_id());
         let mut lane_state = self.lane_state();

@@ -5,7 +5,7 @@
 //! - `providerRequestOptions` (`retry.provider.*`, else the idle timeout) and `transport` as the operation's
 //!   `streamOptions`;
 //! - `rlm.frameModel` / `rlm.frameThinking` / `rlm.childModel` / `review.model` read per frame and per spawn, so a
-//!   changed setting applies without a restart (a `claude-code/*` child model is dropped);
+//!   changed setting applies without a restart;
 //! - the `worktrees` setting as every worktree child's default setup, and `ULTRON_KEEP_WORKTREES`.
 //!
 //! TS values come from crates/config/fixtures/worker-settings.json (generate-worker-settings.mjs) where recorded;
@@ -33,18 +33,6 @@ fn first_user_text(body: &Value) -> String {
         .into_iter()
         .find(|text| !text.starts_with("[clock] "))
         .unwrap_or_default()
-}
-
-/// Waits (hang guard only) until `found` returns something for the requests so far.
-fn wait_for<T>(a: &p_session_support::Actor, what: &str, found: impl Fn(&[Value]) -> Option<T>) -> T {
-    let deadline = Instant::now() + HANG;
-    loop {
-        if let Some(value) = found(&a.requests()) {
-            return value;
-        }
-        assert!(Instant::now() < deadline, "timed out waiting for {what}");
-        std::thread::sleep(Duration::from_millis(10));
-    }
 }
 
 fn result_text(content: &Value) -> String {
@@ -229,7 +217,7 @@ fn session_core_model_settings_are_read_per_frame_and_per_spawn() {
         },
     );
     let models_text = |id: &str| -> String {
-        wait_for(&a, id, |requests| {
+        a.requests.wait(id, |requests| {
             requests.iter().find_map(|r| {
                 let blocks = r["messages"].as_array()?;
                 blocks.iter().find_map(|m| {
@@ -274,7 +262,7 @@ fn session_core_model_settings_are_read_per_frame_and_per_spawn() {
         })
     );
     // The spawn named no model: the child runs on rlm.childModel as it is now.
-    let child = wait_for(&a, "the child's request", |requests| {
+    let child = a.requests.wait("the child's request", |requests| {
         requests
             .iter()
             .find(|r| first_user_text(r).contains("child task"))
@@ -364,7 +352,7 @@ fn session_core_worktrees_setting_sets_up_children_and_keep_worktrees_keeps_them
         let a = worktree_actor(keep);
         assert!(a.prompt("go")["error"].is_null());
         // The setup command (trimmed setupCommand) ran in the child's worktree before the child started.
-        let seen = wait_for(&a, "the child's cell result", |requests| {
+        let seen = a.requests.wait("the child's cell result", |requests| {
             requests
                 .iter()
                 .filter(|r| first_user_text(r).contains("child task"))
@@ -374,7 +362,7 @@ fn session_core_worktrees_setting_sets_up_children_and_keep_worktrees_keeps_them
         });
         assert_eq!(seen.lines().next(), Some("from-setup"), "{seen}");
         // The child's end re-invokes the root: its worktree has ended unmerged.
-        wait_for(&a, "the root's next turn", |requests| {
+        a.requests.wait("the root's next turn", |requests| {
             (requests
                 .iter()
                 .filter(|r| !first_user_text(r).contains("child task"))

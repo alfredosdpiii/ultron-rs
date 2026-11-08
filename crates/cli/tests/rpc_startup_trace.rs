@@ -1,6 +1,6 @@
-//! `ULTRON_STARTUP_TRACE` in RPC mode (experimental/startup-trace.ts, rpc-native.ts:56-94, native-command.ts): the binary appends its
-//! milestones to the named file as `{at, origin, pid, label}` JSON lines; unset, nothing is written. The trace file
-//! lives in the test's private directory.
+//! `ULTRON_STARTUP_TRACE` in RPC mode (experimental/startup-trace.ts, rpc-native.ts:56-94, native-command.ts): the
+//! binary appends its milestones to the named file as `{at, origin, pid, label}` JSON lines; unset, nothing is written.
+//! The trace file lives in the test's private directory.
 
 use crate::common;
 use crate::tui_harness;

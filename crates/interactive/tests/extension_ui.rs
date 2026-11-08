@@ -10,13 +10,8 @@ use crate::support;
 use support::Sent;
 
 use interactive::app::{App, AppOptions};
-use interactive::history::PromptHistoryStore;
-use interactive::keybindings::Platform;
-use interactive::keybindings::native_app_keybindings;
-use interactive::lane::{LaneCommand, LaneEvent, ModelInfo, SessionOpened};
+use interactive::lane::{LaneCommand, LaneEvent, SessionOpened};
 use serde_json::{Value, json};
-use theme::{ColorMode, builtin_theme_json, create_theme};
-use tui::KeybindingsManager;
 
 fn record(command: &LaneCommand) -> Option<String> {
     Some(match command {
@@ -27,43 +22,8 @@ fn record(command: &LaneCommand) -> Option<String> {
 }
 
 fn app() -> (App, Rc<Sent>) {
-    let theme = Rc::new(create_theme(&builtin_theme_json("dark").unwrap(), ColorMode::Truecolor, None).unwrap());
-    let keys = || {
-        KeybindingsManager::new(
-            native_app_keybindings(Platform::new("linux", false)),
-            Vec::new(),
-            Default::default(),
-        )
-    };
-    let model = ModelInfo {
-        provider: "anthropic".into(),
-        id: "a".into(),
-        name: "Model a".into(),
-        reasoning: true,
-        context_window: 1000,
-        thinking_levels: Vec::new(),
-    };
     let (lane, sent) = Sent::new(record);
-    let mut app = App::new(
-        AppOptions {
-            theme,
-            keys: keys(),
-            version: "1.2.3".into(),
-            cwd: "/p".into(),
-            home: None,
-            server_id: "server".into(),
-            models: vec![model.clone()],
-            model,
-            thinking_level: "medium".into(),
-            splash: false,
-            history: PromptHistoryStore::new(None, "/p"),
-            fd_path: None,
-            highlight: Rc::new(|code: &str| code.split('\n').map(str::to_string).collect()),
-            qol: interactive::qol::QolSettings::parity(),
-            bug_report_target: ("radius.pi.dev".into(), false),
-        },
-        lane,
-    );
+    let mut app = App::new(AppOptions { ..support::options() }, lane);
     app.apply(LaneEvent::Opened(SessionOpened {
         session_id: "sess".into(),
         session_file: None,

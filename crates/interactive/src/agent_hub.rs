@@ -101,9 +101,7 @@ pub struct AgentView {
     pub kind: AgentKind,
     pub parent_id: Option<String>,
     pub status: AgentStatus,
-    /// Unread messages from the agent.
     pub unread: usize,
-    /// Current or last task.
     pub task: Option<String>,
     /// Last activity time, epoch milliseconds.
     pub last_activity: i64,
@@ -527,10 +525,8 @@ pub fn running_subagent_badge(theme: &Theme, agents: &[AgentView]) -> Option<Str
     (n > 0).then(|| theme.fg(Fg::Accent, &format!("⟳ {n} agent{}", if n == 1 { "" } else { "s" })))
 }
 
-/// What the client should do.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum HubEvent {
-    /// Not the hub's key.
     Ignored,
     Render,
     Close,

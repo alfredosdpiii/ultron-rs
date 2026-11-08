@@ -39,7 +39,6 @@ impl RootSink {
         }
     }
 
-    /// A sink on the system clock.
     pub fn system() -> RootSink {
         RootSink::new(Arc::new(|| jsrt::date::now_ms().max(0) as u64))
     }

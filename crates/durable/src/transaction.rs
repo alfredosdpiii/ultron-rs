@@ -150,7 +150,6 @@ fn apply_submission_change(current: &SubmissionRecord, change: &SubmissionChange
             next.answer = Some(*answer);
         }
         SubmissionChange::Settle(SubmissionSettlement::Unanswered { reason, detail }) => {
-            // An unanswered input keeps its entry.
             next.status = SubmissionStatus::Unanswered;
             next.reason = Some(reason.clone());
             next.detail = detail.clone();
@@ -352,8 +351,6 @@ impl<'a> Tx<'a> {
         }
     }
 
-    // ─── Table reads ────────────────────────────────────────────────────────
-
     pub fn conversation(&mut self, id: ConversationId) -> Result<Option<ConversationRecord>> {
         self.table_read("conversation")?;
         self.read(|storage| storage.conversation(id))
@@ -419,8 +416,6 @@ impl<'a> Tx<'a> {
         self.table_read("submissionByRequest")?;
         self.read(|storage| storage.submission_by_request(conversation_id, request_id))
     }
-
-    // ─── Table writes ───────────────────────────────────────────────────────
 
     pub fn create_conversation(&mut self, ownership: ConversationOwnership) -> Result<ConversationRecord> {
         self.has_table_write = true;
@@ -721,8 +716,6 @@ impl<'a> Tx<'a> {
         Ok(())
     }
 
-    // ─── Documents ──────────────────────────────────────────────────────────
-
     /// Acquire a draft of a singleton document, creating it from `initial` when absent.
     pub fn doc(&mut self, doc: &Doc, owner: Owner) -> Result<Draft> {
         let resolved = resolve_address(doc.definition(), owner)?;
@@ -840,8 +833,6 @@ impl<'a> Tx<'a> {
         entry.draft = Some(draft.clone());
         Ok(draft)
     }
-
-    // ─── Settlement ─────────────────────────────────────────────────────────
 
     /// Revoke every draft without writing anything.
     pub(crate) fn discard(&self) {

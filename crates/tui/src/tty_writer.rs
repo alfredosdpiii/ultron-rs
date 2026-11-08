@@ -86,11 +86,12 @@ fn pump<W: Write>(mut out: W, inner: &Inner) {
                 },
             );
             if result.is_err() {
-                inner.dead.store(true, Ordering::Release);
                 let mut back = inner.lock();
                 let dropped = back.len() + (front.len() - written);
                 back.clear();
                 inner.pending.fetch_sub(dropped, Ordering::AcqRel);
+                // Under the lock and after the drop, so a writer seen dead has no output pending.
+                inner.dead.store(true, Ordering::Release);
             }
         }
         front.clear();

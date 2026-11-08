@@ -273,8 +273,6 @@ impl Op {
     }
 }
 
-// ─── Applier ─────────────────────────────────────────────────────────────────
-
 /// Apply ops to a value the caller owns exclusively. On error the value is lost: recover from a later `Replace`.
 pub fn apply(mut root: Value, ops: Vec<Op>) -> Result<Value> {
     for op in ops {
@@ -462,8 +460,6 @@ fn trim_utf16(text: &mut String, count: usize, path: &[Seg]) -> Result<()> {
     Ok(())
 }
 
-// ─── Wire codec ──────────────────────────────────────────────────────────────
-//
 // One encoder/decoder pair per ordered state stream. Path ids span batches; a `Replace` resets them, and the
 // omitted-path short form is scoped to one batch.
 

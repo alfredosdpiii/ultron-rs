@@ -2,6 +2,7 @@
 //! the row -> entry map, the outlined turn, stepping into blocks with keyboard and mouse controls, user-turn jumps
 //! and the word filter, all through keybinding ids.
 
+use crate::support;
 use std::rc::Rc;
 
 use interactive::chat::ChatStyle;
@@ -10,7 +11,6 @@ use interactive::keybindings::Platform;
 use interactive::keybindings::native_app_keybindings;
 use interactive::transcript_picker::{PickerEvent, PickerMode, PickerOptions, TranscriptPicker};
 use serde_json::json;
-use theme::{ColorMode, builtin_theme_json, create_theme};
 use tui::KeybindingsManager;
 use tui::{strip_terminal_sequences, visible_width};
 
@@ -51,7 +51,7 @@ fn entries() -> Vec<TranscriptEntry> {
 }
 
 fn picker_with(mode: PickerMode, keys: KeybindingsManager) -> TranscriptPicker {
-    let theme = Rc::new(create_theme(&builtin_theme_json("dark").unwrap(), ColorMode::Truecolor, None).unwrap());
+    let theme = support::dark_theme();
     let chat = ChatStyle {
         theme: Rc::clone(&theme),
         highlight: Rc::new(|code: &str| code.lines().map(str::to_string).collect()),

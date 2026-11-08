@@ -4,7 +4,8 @@
 //! The rendered rows are flattened into one corpus where every whitespace run is a single space, so a phrase
 //! matches across wrapped rows; each match maps back to per-row column segments. [`TranscriptSearch`] is the
 //! fullscreen view: it pages the whole transcript (retired scrollback rows plus the live viewport rows) with every
-//! visible match underlined, the current one inverted, and the TS search bar at the bottom. Rows are rendered once when the search opens, never on the paint path.
+//! visible match underlined, the current one inverted, and the TS search bar at the bottom. Rows are rendered once
+//! when the search opens, never on the paint path.
 
 use std::borrow::Cow;
 

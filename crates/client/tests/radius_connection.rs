@@ -45,29 +45,9 @@ fn connect(gateway: &Gateway) -> (std::sync::Arc<Connection>, support::gateway::
     })
 }
 
-/// The gateway's snapshot once its reader has recorded `count` messages from the client: a client call can end (its
-/// answer arrive) before the gateway's reader thread has recorded the request.
-fn recorded(socket: &support::gateway::GatewaySocket, count: usize) -> serde_json::Value {
-    let deadline = std::time::Instant::now() + HANG_GUARD;
-    loop {
-        let snapshot = socket.snapshot();
-        if snapshot["sent"].as_array().unwrap().len() >= count {
-            return snapshot;
-        }
-        assert!(
-            std::time::Instant::now() < deadline,
-            "the gateway never recorded {count} client messages"
-        );
-        std::thread::yield_now();
-    }
-}
-
 fn wait_closed(connection: &Connection) {
-    let deadline = std::time::Instant::now() + HANG_GUARD;
-    while !connection.is_closed() {
-        assert!(std::time::Instant::now() < deadline, "the connection never closed");
-        std::thread::yield_now();
-    }
+    connection.wait_attachment_change(None, HANG_GUARD);
+    assert!(connection.is_closed(), "the connection never closed");
 }
 
 #[test]
@@ -75,7 +55,7 @@ fn client_radius_connection_disconnects_its_relay_while_held() {
     let gateway = Gateway::start();
     let (connection, socket) = connect(&gateway);
     // The handshake can end before the gateway's reader has recorded the client's hello: wait for it.
-    let snapshot = recorded(&socket, 1);
+    let snapshot = socket.wait_sent(1);
     assert_eq!(snapshot["protocol"], "pi-session-relay.client.v1");
     assert_eq!(snapshot["authorization"], "Bearer secret");
     assert_eq!(snapshot["path"], format!("/v1/session-relays/{SERVER_ID}/connect"));
@@ -127,7 +107,7 @@ fn recorded_sleep(
 }
 
 fn sent_call(socket: &support::gateway::GatewaySocket, index: usize) -> serde_json::Value {
-    let sent = recorded(socket, index + 1)["sent"][index]["binary"]
+    let sent = socket.wait_sent(index + 1)["sent"][index]["binary"]
         .as_str()
         .unwrap()
         .to_string();
@@ -208,5 +188,4 @@ fn client_radius_reopen_gives_up_with_the_last_error() {
     expired.sleep = Some(recorded_sleep(expired_delays.clone(), Some(2)));
     assert_eq!(expired.reopen("sess-1").err().unwrap(), "Radius reconnect stopped");
     assert_eq!(expired_delays.lock().unwrap().clone(), Vec::<u64>::new());
-    assert_eq!(client::radius::REOPEN_TIMEOUT, std::time::Duration::from_secs(120));
 }

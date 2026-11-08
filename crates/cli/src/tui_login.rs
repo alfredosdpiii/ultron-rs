@@ -34,7 +34,6 @@ impl LoginSlot {
     }
 }
 
-/// `CANCELLED`.
 const CANCELLED: &str = "Login cancelled";
 
 /// Whether this client signs in to `provider` with an account.

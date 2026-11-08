@@ -197,9 +197,7 @@ impl HostHandler for ViewImageLayer {
     }
 }
 
-/// `DEFAULT_CONTEXT_IMAGES`.
 pub const DEFAULT_CONTEXT_IMAGES: usize = 8;
-/// `OFFLOADED_IMAGE_TEXT`.
 pub const OFFLOADED_IMAGE_TEXT: &str =
     "[image omitted from context to stay within the image budget; call view_image again to see it]";
 

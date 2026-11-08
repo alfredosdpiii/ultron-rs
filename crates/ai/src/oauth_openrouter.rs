@@ -24,7 +24,6 @@ const CANCELLED: &str = "Login cancelled";
 /// `Number.MAX_SAFE_INTEGER`: the key never expires.
 const NEVER: f64 = 9_007_199_254_740_991.0;
 
-/// `openRouterOAuth`.
 pub struct OpenRouterOAuth {
     pub transport: Arc<dyn Transport>,
 }
@@ -51,7 +50,6 @@ fn parse_authorization_input(input: &str) -> Option<String> {
     Some(value.to_string())
 }
 
-/// `errorDetail`.
 fn error_detail(body: &Map<String, Value>) -> Option<String> {
     for key in ["error_description", "message", "error"] {
         if let Some(text) = body.get(key).and_then(Value::as_str) {

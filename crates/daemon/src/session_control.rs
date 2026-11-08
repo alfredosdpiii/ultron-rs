@@ -22,11 +22,9 @@ pub struct ControlContext {
     pub cwd: PathBuf,
     /// The profile directory (`settings.json`, `auth.json`, `trust.json`).
     pub agent_dir: PathBuf,
-    /// The session file.
     pub session_file: Option<String>,
     /// Whether this worker loaded the project's settings (`workerProjectTrusted` when it started).
     pub project_trusted: bool,
-    /// The worker's environment.
     pub var: session_core::VarLookup,
     /// Every environment variable (for `/debug`'s `ULTRON_*`/`PI_*` listing).
     pub vars: Arc<dyn Fn() -> Vec<(String, String)> + Send + Sync>,

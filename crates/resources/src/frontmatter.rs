@@ -45,7 +45,6 @@ pub fn strip(content: &str) -> Result<String, String> {
     parse(content).map(|parsed| parsed.body)
 }
 
-/// A string field of a frontmatter mapping.
 pub fn string_field<'a>(frontmatter: &'a Yaml, key: &str) -> Option<&'a str> {
     frontmatter[key].as_str()
 }

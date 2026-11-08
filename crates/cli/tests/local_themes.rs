@@ -1,8 +1,8 @@
 //! Themes registered by the settings and `<agentDir>/themes` (client-tui.ts
 //! `setRegisteredThemes(resourceLoader.getThemes().themes)`) against `fixtures/local_themes.json`, recorded from the
-//! TypeScript resource loader by `fixtures/local_themes.mjs` over the same profile: which themes register, in which order, the collision and the
-//! file that does not load, and what `/settings` offers (`getAvailableThemesWithPaths`); then the TUI's theme
-//! controller applies one of them by name.
+//! TypeScript resource loader by `fixtures/local_themes.mjs` over the same profile: which themes register, in which
+//! order, the collision and the file that does not load, and what `/settings` offers (`getAvailableThemesWithPaths`);
+//! then the TUI's theme controller applies one of them by name.
 
 use serde_json::{Value, json};
 use std::path::Path;

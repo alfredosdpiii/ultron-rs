@@ -290,7 +290,6 @@ fn ai_claude_code_lane_routes_only_tool_requests_the_subscription_serves() {
             "claude-code/Not A Model {TOOLS_UNSUPPORTED} (this lane declares tools: rlm)."
         ))
     );
-    assert!(!TOOLS_UNSUPPORTED.contains("frames"), "no longer recommends frames");
 }
 
 /// Every caller of `dispatch` (inference frames with depth call it directly) gets the reroute; the subscription

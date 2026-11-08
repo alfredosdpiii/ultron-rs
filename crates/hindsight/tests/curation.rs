@@ -107,7 +107,7 @@ fn hindsight_backend_units_reflect_and_mental_models_use_the_1_1_endpoints() {
 #[test]
 fn hindsight_bank_id_blank_check_trims_like_javascript() {
     // D-W1: `"\u0085".trim()` is "\u0085" in JavaScript (NEL is not whitespace there), so such a bank id is not
-    // blank; the old Rust trim dropped NEL and refused it. A JavaScript-blank id is still refused.
+    // blank. A JavaScript-blank id is refused.
     let options = |bank: &str| HindsightOptions::new("http://hs.test", bank, Default::default());
     assert!(HindsightBackend::new(options("\u{85}")).is_ok());
     assert_eq!(

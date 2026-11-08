@@ -8,7 +8,6 @@ fn field(value: &Value, key: &str) -> f64 {
     value.get(key).and_then(Value::as_f64).unwrap_or(0.0)
 }
 
-/// `emptyUsage()`.
 pub fn empty_usage() -> Value {
     json!({
         "input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0, "totalTokens": 0,
@@ -16,7 +15,6 @@ pub fn empty_usage() -> Value {
     })
 }
 
-/// `addUsage(left, right)`.
 pub fn add_usage(left: &Value, right: &Value) -> Value {
     let mut out = Map::new();
     for key in ["input", "output", "cacheRead", "cacheWrite"] {

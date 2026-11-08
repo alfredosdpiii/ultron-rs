@@ -137,7 +137,6 @@ pub fn parse_mcp_args(args: &[String]) -> Result<McpServerArgs, UsageError> {
     Ok(parsed)
 }
 
-/// `provider/model` split at the first slash.
 pub fn split_model(model: &str) -> Option<(String, String)> {
     let slash = model.find('/')?;
     (slash > 0 && slash < model.len() - 1).then(|| (model[..slash].to_string(), model[slash + 1..].to_string()))
@@ -771,7 +770,6 @@ impl Server {
         Value::Object(status)
     }
 
-    /// One control request.
     pub fn control(&self, request: Map<String, Value>) -> Result<Value, String> {
         let requested = request.get("op").and_then(Value::as_str).unwrap_or("");
         match requested {
@@ -1228,7 +1226,6 @@ impl Running {
         self.server.waiters.load(std::sync::atomic::Ordering::SeqCst)
     }
 
-    /// The control socket's path.
     pub fn socket(&self) -> String {
         self.server.record.socket.clone()
     }
@@ -1254,7 +1251,6 @@ pub fn run(
         std::process::exit(0);
     }));
     serve(handlers, stdin, stdout);
-    // Claude Code closed the connection: shut down (running subagents and jobs stop with the host).
     running.shutdown();
     signals::clear_handler();
     Ok(0)
@@ -1573,7 +1569,7 @@ mod tests {
         let env = env(tmp.path());
         for id in ["claude-opus-5-5", "claude-haiku-5-5", "opus", "sonnet", "haiku"] {
             let model = frame_model(&format!("claude-code/{id}"), &env).unwrap();
-            assert_eq!(model, ai::claude_code::MODELS[id], "{id}");
+            assert_eq!((model.provider.as_str(), model.id.as_str()), ("claude-code", id));
         }
         let sonnet = frame_model("claude-code/sonnet", &env).unwrap();
         assert_eq!(
@@ -1594,9 +1590,10 @@ mod tests {
         )
         .unwrap();
         for unknown in ["claude-code/claude-sonnet-9", "groq/no-such-model", "nonsense"] {
+            let model = frame_model(unknown, &env).unwrap();
             assert_eq!(
-                frame_model(unknown, &env).unwrap(),
-                ai::claude_code::MODELS["claude-opus-5-5"],
+                (model.provider.as_str(), model.id.as_str()),
+                ("claude-code", "claude-opus-5-5"),
                 "{unknown}"
             );
         }

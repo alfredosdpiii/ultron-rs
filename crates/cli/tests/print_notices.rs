@@ -43,6 +43,5 @@ fn cli_print_route_notices_are_read_from_the_runs_new_messages_once() {
     let only_user = dir.path().join("user.jsonl");
     std::fs::write(&only_user, format!("{header}\n{user}\n")).unwrap();
     assert!(route_notices(&only_user, 0).is_empty());
-    // A missing file has none.
     assert!(route_notices(&dir.path().join("missing.jsonl"), 0).is_empty());
 }

@@ -20,7 +20,7 @@ use serde_json::{Map, Value, json};
 use session_journal::context::{BRANCH_SUMMARY_PREFIX, COMPACTION_SUMMARY_PREFIX, CONTEXT_OMITTED_TOOL_RESULT_TEXT};
 use std::collections::HashMap;
 use std::io::Write;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::{Arc, Mutex, PoisonError};
 
 pub const TRACE_ENV: &str = "ULTRON_REQUEST_TRACE";
@@ -129,9 +129,7 @@ struct TraceState {
     lanes: HashMap<(String, String), LaneState>,
 }
 
-/// An open request trace.
 pub struct RequestTrace {
-    path: PathBuf,
     state: Mutex<TraceState>,
 }
 
@@ -150,16 +148,11 @@ impl RequestTrace {
             .mode(0o600)
             .open(path)?;
         Ok(RequestTrace {
-            path: path.to_path_buf(),
             state: Mutex::new(TraceState {
                 file: Some(file),
                 lanes: HashMap::new(),
             }),
         })
-    }
-
-    pub fn path(&self) -> &Path {
-        &self.path
     }
 
     /// Record one answered request of `lane` in `session`.
@@ -428,8 +421,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("t.jsonl");
         let wanted = path.display().to_string();
-        let trace = RequestTrace::from_env(&|k| (k == TRACE_ENV).then(|| wanted.clone())).unwrap();
-        assert_eq!(trace.path(), path);
+        assert!(RequestTrace::from_env(&|k| (k == TRACE_ENV).then(|| wanted.clone())).is_some());
         assert!(path.exists());
     }
 }

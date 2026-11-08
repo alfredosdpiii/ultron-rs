@@ -53,7 +53,6 @@ fn items_path() -> Vec<Seg> {
     vec![Seg::from("items")]
 }
 
-/// The queued items of an inbox draft.
 pub(crate) fn items(inbox: &Draft) -> Result<Vec<Value>> {
     Ok(match d(inbox.get(&items_path()))? {
         Some(Value::Array(items)) => items,
@@ -112,7 +111,6 @@ pub fn is_stale(boundary: &Boundary, entry: &EntryDraft) -> bool {
     matches!((entry.head, boundary.head), (Some(EntryHead::Entry(target)), Some(head)) if target < head)
 }
 
-/// A user entry for queued or submitted input.
 pub(crate) fn user_entry(content: &Value, now: u64) -> EntryDraft {
     EntryDraft {
         model: Some(vec![json!({ "role": "user", "content": content, "timestamp": now })]),

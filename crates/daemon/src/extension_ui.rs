@@ -100,11 +100,6 @@ impl ExtensionUiBridge {
         self.lock().events.len()
     }
 
-    /// How many dialogs wait for an answer.
-    pub fn open_dialogs(&self) -> usize {
-        self.lock().dialogs.len()
-    }
-
     fn lock(&self) -> MutexGuard<'_, State> {
         jsrt::sync::lock(&self.state)
     }

@@ -19,23 +19,13 @@ fn env_of(vars: &[(&str, &str)]) -> ConnectionEnv {
     }
 }
 
-/// The host's own container markers (files, not env): with one, an SSH session is still a container.
-fn host_in_container() -> bool {
-    std::path::Path::new("/.dockerenv").exists()
-        || std::path::Path::new("/run/.containerenv").exists()
-        || std::fs::read_to_string("/proc/1/cgroup").is_ok_and(|cgroup| {
-            ["docker", "containerd", "kubepods", "libpod", "lxc"]
-                .iter()
-                .any(|marker| cgroup.contains(marker))
-        })
-}
-
 #[test]
 fn mcp_sign_in_hint_reads_the_injected_environment() {
-    let base = if host_in_container() { CONTAINER } else { LOCAL };
-    let ssh = if host_in_container() { CONTAINER } else { SSH };
+    // The host's own container markers are files, not env: on such a host every hint is the container one.
+    let base = sign_in_hint(&ConnectionEnv::default());
+    assert!(base == LOCAL || base == CONTAINER, "{base}");
+    let ssh = if base == CONTAINER { CONTAINER } else { SSH };
     // No injected environment is an empty one.
-    assert_eq!(sign_in_hint(&ConnectionEnv::default()), base);
     assert_eq!(sign_in_hint(&env_of(&[])), base);
     assert_eq!(
         sign_in_hint(&env_of(&[("SSH_CONNECTION", "10.0.0.1 5 10.0.0.2 22")])),

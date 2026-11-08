@@ -50,7 +50,6 @@ pub fn encode_frame(opcode: u8, payload: &[u8], mask: Option<[u8; 4]>) -> Vec<u8
     out
 }
 
-/// A message as one frame.
 pub fn encode_message(message: &Message, mask: Option<[u8; 4]>) -> Vec<u8> {
     match message {
         Message::Text(text) => encode_frame(OPCODE_TEXT, text.as_bytes(), mask),
@@ -78,7 +77,6 @@ pub struct MessageDecoder {
     max_message: usize,
     /// The opcode and payload of a fragmented message under way.
     fragments: Option<(u8, Vec<u8>)>,
-    /// Frames from the server side are unmasked; from the client side masked.
     expect_masked: bool,
 }
 

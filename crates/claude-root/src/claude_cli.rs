@@ -142,7 +142,6 @@ pub fn skip_permissions_args(
     vec!["--dangerously-skip-permissions".into()]
 }
 
-/// This process's user id.
 pub fn current_uid() -> Option<u32> {
     Some(rustix::process::getuid().as_raw())
 }

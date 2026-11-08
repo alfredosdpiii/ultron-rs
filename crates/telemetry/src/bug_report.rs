@@ -221,7 +221,6 @@ fn redact_url_value(value: &Value) -> Value {
     }
 }
 
-/// `describeModel`.
 pub fn describe_model(model: &Value) -> Value {
     let mut out = Map::new();
     for key in ["provider", "id", "name", "api"] {
@@ -263,7 +262,6 @@ pub struct ProviderInfo {
     pub registered_by_extension: bool,
 }
 
-/// `describeProvider`.
 pub fn describe_provider(info: &ProviderInfo) -> Value {
     let provider = &info.provider;
     let auth = provider.get("auth");
@@ -294,7 +292,6 @@ pub fn describe_provider(info: &ProviderInfo) -> Value {
     Value::Object(out)
 }
 
-/// `describeExtension`.
 pub fn describe_extension(extension: &Extension) -> Value {
     json!({
         "path": extension.path,
@@ -490,7 +487,6 @@ pub fn bug_report_files(bundle: &BugReportBundle) -> Vec<BugReportFile> {
     files
 }
 
-/// `bugReportArchiveFileName`.
 pub fn bug_report_archive_file_name(id: &str) -> String {
     format!("pi-bug-report-{id}.zip")
 }

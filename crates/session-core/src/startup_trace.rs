@@ -15,7 +15,6 @@ pub fn trace_line(at: f64, origin: f64, pid: u32, label: &str) -> String {
     format!("{line}\n")
 }
 
-/// Append the trace line to `path`.
 pub fn append(path: &Path, at: f64, origin: f64, pid: u32, label: &str) {
     let file = std::fs::OpenOptions::new().create(true).append(true).open(path);
     if let Ok(mut file) = file {

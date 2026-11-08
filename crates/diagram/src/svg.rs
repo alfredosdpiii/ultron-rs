@@ -169,17 +169,17 @@ fn split_top_comma(text: &str) -> (&str, Option<&str>) {
 }
 
 /// What `var()` references resolve against.
-pub struct VarScope<'a> {
+struct VarScope<'a> {
     /// `--pele-*` colours of the theme: they win over every definition and fallback.
-    pub palette: &'a DiagramPalette,
+    palette: &'a DiagramPalette,
     /// Custom properties the SVG defines (`--_bg:var(--pele-bg,#fff)`), by name.
-    pub defs: HashMap<String, String>,
+    defs: HashMap<String, String>,
 }
 
 impl VarScope<'_> {
     /// `value` with every `var()` replaced, innermost definitions first. A reference that names nothing and has no
     /// fallback (or a cycle) becomes the theme's foreground colour.
-    pub fn resolve(&self, value: &str) -> String {
+    fn resolve(&self, value: &str) -> String {
         self.resolve_at(value, &mut Vec::new())
     }
 
@@ -222,7 +222,7 @@ impl VarScope<'_> {
 }
 
 /// The custom-property declarations (`--name:value`) of every `style="..."` attribute, by name (the first one wins).
-pub fn custom_properties(svg: &str) -> HashMap<String, String> {
+fn custom_properties(svg: &str) -> HashMap<String, String> {
     let mut defs = HashMap::new();
     for style in style_attributes(svg) {
         for declaration in split_declarations(style) {
@@ -300,7 +300,7 @@ fn mix_component(text: &str) -> Option<((f64, f64, f64), Option<f64>)> {
 
 /// `color-mix(in srgb, A p%, B q%)` of two hex colours, as CSS computes it: a missing percentage is the other's
 /// complement (both missing: 50% each), and the weights are normalized to their sum.
-pub fn color_mix(arguments: &str) -> Option<String> {
+fn color_mix(arguments: &str) -> Option<String> {
     let (space, rest) = split_top_comma(arguments);
     if space.trim() != "in srgb" {
         return None;

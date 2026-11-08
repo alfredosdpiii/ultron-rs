@@ -188,6 +188,11 @@ fn cli_interactive_bug_report_exports_a_zip_with_the_transcript() {
         session.contains("hi there") && session.contains("Hello back."),
         "{session}"
     );
+    // `serializeSessionBranch` re-chains the branch: each entry's parent is the line before it.
+    assert_eq!(lines[1]["parentId"], Value::Null, "{session}");
+    for pair in lines[1..].windows(2) {
+        assert_eq!(pair[1]["parentId"], pair[0]["id"], "{session}");
+    }
     let share = lines.last().unwrap();
     assert_eq!(
         (&share["type"], &share["customType"]),

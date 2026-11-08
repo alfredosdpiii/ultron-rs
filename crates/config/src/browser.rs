@@ -42,7 +42,6 @@ pub const OPENER_VARS: [&str; 8] = [
     "BROWSER",
 ];
 
-/// [`OPENER_VARS`] as `var` (the session's environment) has them.
 pub fn opener_vars(var: &dyn Fn(&str) -> Option<String>) -> Vec<(String, String)> {
     OPENER_VARS
         .iter()
@@ -105,7 +104,6 @@ pub fn browser_reach(var: &dyn Fn(&str) -> Option<String>, exists: &dyn Fn(&str)
     }
 }
 
-/// `UNREACHABLE_CALLBACK_STEP`.
 const UNREACHABLE_CALLBACK_STEP: &str = "copy that page's full address from the address bar and paste it here.";
 
 /// `unreachableCallbackHint`: what to do when the browser cannot load the login's localhost callback page.

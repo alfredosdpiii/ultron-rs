@@ -164,7 +164,7 @@ def finder_task(reviewer: Reviewer) -> str:
             f"Look in particular for:\n{checklist}")
 
 
-# --- Automated pull-request review (autoreview_api.py) ---------------------------------------------------------
+# Automated pull-request review (autoreview_api.py).
 
 #: /review's severity bullet, replaced in automated reviews by the rubric below.
 _FINDER_SEVERITY = """- severity: blocker (breaks users, loses data, or opens a security hole on a normal path), major (a real defect on a
@@ -303,7 +303,7 @@ def autoreview_finder_task(reviewer: Reviewer) -> str:
     return f"{task}\n\n{SEVERITY_RUBRIC}\n\n{AUTOREVIEW_FINDER_EXTRA}"
 
 
-# --- The deep pass of an automated review (autoreview_deep.py) -------------------------------------------------
+# The deep pass of an automated review (autoreview_deep.py).
 
 DEEP_RULES = """You investigate one pull request beyond its diff. A first pass already reviewed the changed lines; you
 look at what it cannot see: whether the change does what it says where that matters, in the code, tests,
@@ -438,7 +438,7 @@ def deep_task(lens: str, tests: bool = False, notes: bool = False, graph: str = 
     return f"{rules}\n\n{DEEP_LENSES[lens]}\n\n{SEVERITY_RUBRIC}"
 
 
-# --- The compiled mode of an automated review (autoreview_compiled.py) -----------------------------------------
+# The compiled mode of an automated review (autoreview_compiled.py).
 
 #: The planner: one strong model reads the whole change once and writes the review program the host executes.
 COMPILED_PLANNER_RULES = """You write the review program for one pull request. You are called once, with the whole change;

@@ -61,7 +61,6 @@ fn run(draft: &Draft, step: &Value) {
 fn chord_delta_tracker_emits_upstream_ops_for_recorded_mutations() {
     let fixture = fixture();
     let cases = fixture["cases"].as_array().expect("cases");
-    assert_eq!(cases.len(), 76);
     for case in cases {
         let name = case["name"].as_str().expect("name");
         let mut tracker = Tracker::new(case["base"].clone());

@@ -249,7 +249,6 @@ impl ChatHarness {
         })
     }
 
-    /// The task Harness underneath.
     pub fn harness(&self) -> &Harness {
         &self.harness
     }
@@ -470,7 +469,6 @@ impl ChatHarness {
     }
 }
 
-/// Handle of one durable submission.
 #[derive(Clone)]
 pub struct Submission {
     pub id: SubmissionId,
@@ -497,7 +495,6 @@ impl Submission {
     }
 }
 
-/// Handle of one conversation.
 #[derive(Clone)]
 pub struct Conversation {
     pub id: ConversationId,

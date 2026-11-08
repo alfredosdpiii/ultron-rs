@@ -271,8 +271,6 @@ fn server_radius_relay_host_replays_recorded_typescript_scenarios() {
     );
 }
 
-// ------------------------------------------------------------------------------------- ported literal expectations
-
 /// "matches the Radius multiplexing envelope".
 #[test]
 fn server_radius_relay_data_frame_round_trips() {

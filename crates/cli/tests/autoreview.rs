@@ -648,7 +648,6 @@ fn cli_autoreview_fast_json_contract() {
     let world = World::new();
     let recorded = fixture();
     let (json, raw) = assert_case(&world, &recorded, "fast");
-    // Exactly one line, one object.
     assert_eq!(raw.trim().lines().count(), 1);
     let mut keys: Vec<&String> = json.as_object().unwrap().keys().collect();
     keys.sort();

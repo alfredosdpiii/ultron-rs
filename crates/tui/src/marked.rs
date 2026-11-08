@@ -274,12 +274,10 @@ fn from(s: &str, mut i: usize) -> &str {
     &s[i..]
 }
 
-/// marked `rtrim(str, c)`.
 fn rtrim(s: &str, c: char) -> &str {
     s.trim_end_matches(c)
 }
 
-/// marked `trimTrailingBlankLines`.
 fn trim_trailing_blank_lines(s: &str) -> String {
     let lines: Vec<&str> = s.split('\n').collect();
     let mut t = lines.len() as isize - 1;
@@ -1276,7 +1274,6 @@ impl Lexer {
         self.output_link(g(&c, 0), c[1].to_string(), href)
     }
 
-    /// marked `outputLink`.
     fn output_link(&mut self, raw: String, label: String, href: String) -> Option<(usize, Token)> {
         let text = label.replace("\\[", "[").replace("\\]", "]");
         let image = raw.starts_with('!');
@@ -1755,7 +1752,6 @@ fn push_text(tokens: &mut Vec<Token>, t: Token) {
     tokens.push(t);
 }
 
-/// marked `indentCodeCompensation`.
 fn indent_code_compensation(raw: &str, text: &str) -> String {
     let Some(c) = exec(&rules::INDENT_COMP, raw) else {
         return text.to_string();

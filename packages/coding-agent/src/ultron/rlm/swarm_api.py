@@ -5,7 +5,6 @@ registry of what each agent holds, and the session's shared task board and notes
 restarts); `await rlm.ask(child, question)` asks it a follow-up, so your context grows only by the question and the
 answer. `await rlm.partial(text)` records output that survives a crash of this cell. `swarm`, `board` and `notes`
 are the session's shared world: every agent of the session reads and writes the same durable records.
-Hosts without these requests (the TypeScript host) answer them with an error.
 """
 
 from __future__ import annotations
@@ -183,15 +182,12 @@ def install(rlm_class: Any, namespace: dict[str, Any], bridge: Any) -> None:
     namespace["swarm"] = Swarm(bridge)
     namespace["board"] = Board(bridge)
     namespace["notes"] = Notes(bridge)
-    # `rlm.images` is the other Rust-host API; it is installed here so runtime.py's line numbers stay put.
     from images_api import install as install_images
 
     install_images(rlm_class)
-    # `schedule` (prompts the session sends itself later) is Rust-host only too.
     from schedule_api import Schedule
 
     namespace["schedule"] = Schedule(bridge)
-    # `diagram` (Mermaid diagrams through node and Pele) is Rust-host only too.
     from diagram_api import Diagram
 
     namespace["diagram"] = Diagram(bridge)

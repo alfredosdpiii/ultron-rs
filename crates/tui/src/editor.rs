@@ -507,8 +507,6 @@ impl Editor {
         self.set_text_internal(&normalized, false);
     }
 
-    // Hooks for modal editing and attachments (crate::vim_editor, crate::attachments).
-
     /// Place the cursor: line clamped to the buffer, column to the line and back to a char boundary.
     pub fn set_cursor(&mut self, line: usize, col: usize) {
         self.cursor_line = line.min(self.lines.len() - 1);

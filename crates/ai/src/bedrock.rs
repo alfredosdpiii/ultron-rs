@@ -40,7 +40,6 @@ const DESERIALIZATION_HINT: &str =
     "\n  Deserialization error: to see the raw response, inspect the hidden field {error}.$response on this object.";
 const DEFAULT_MAX_ATTEMPTS: u32 = 3;
 
-/// `BedrockOptions`.
 #[derive(Clone, Default, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct BedrockOptions {
@@ -58,8 +57,6 @@ pub struct BedrockOptions {
     pub request_metadata: Option<IndexMap<String, String>>,
     pub bearer_token: Option<String>,
 }
-
-// ------------------------------------------------------------------------------------------------------- errors
 
 /// A failure as upstream's error objects describe it.
 #[derive(Debug, Default)]
@@ -294,8 +291,6 @@ fn stream_error(message: &EventMessage, first: bool, response_status: u16, respo
     error
 }
 
-// ------------------------------------------------------------------------------------------------ model predicates
-
 fn match_candidates(model: &Model) -> Vec<String> {
     let mut values = vec![model.id.as_str()];
     if !model.name.is_empty() {
@@ -329,7 +324,6 @@ fn any_candidate(model: &Model, needles: &[&str]) -> bool {
         .any(|c| needles.iter().any(|n| c.contains(n)))
 }
 
-/// `supportsAdaptiveThinking`.
 pub fn supports_adaptive_thinking(model: &Model) -> bool {
     any_candidate(
         model,
@@ -353,7 +347,6 @@ fn supports_native_xhigh_effort(model: &Model) -> bool {
     )
 }
 
-/// `isAnthropicClaudeModel`.
 pub fn is_anthropic_claude_model(model: &Model) -> bool {
     let id = model.id.to_lowercase();
     let name = model.name.to_lowercase();
@@ -364,7 +357,6 @@ pub fn is_anthropic_claude_model(model: &Model) -> bool {
         || name.contains("claude")
 }
 
-/// `supportsPromptCaching`.
 pub fn supports_prompt_caching(model: &Model, env: Option<&crate::env::ProviderEnv>) -> bool {
     let candidates = match_candidates(model);
     if !candidates.iter().any(|c| c.contains("claude")) {
@@ -395,8 +387,6 @@ fn effort_for(model: &Model, level: &str) -> String {
     }
     .into()
 }
-
-// ------------------------------------------------------------------------------------------------- request body
 
 fn cache_point(retention: CacheRetention) -> Value {
     if retention == CacheRetention::Long {
@@ -750,8 +740,6 @@ const REQUEST_MEMBERS: &[&str] = &[
     "outputConfig",
 ];
 
-// -------------------------------------------------------------------------------------------- endpoint and auth
-
 fn standard_endpoint_region(base_url: &str) -> Option<String> {
     let host = reqwest::Url::parse(base_url).ok()?.host_str()?.to_lowercase();
     let rest = host
@@ -1047,8 +1035,6 @@ fn build_request(target: &Target, model: &Model, body: &str, options: &BedrockOp
         body: body.to_string(),
     }
 }
-
-// ------------------------------------------------------------------------------------------------------ the stream
 
 /// A content block being streamed, keyed by Bedrock's `contentBlockIndex`.
 struct Block {

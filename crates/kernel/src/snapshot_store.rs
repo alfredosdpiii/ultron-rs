@@ -16,7 +16,6 @@ pub const RLM_SNAPSHOT_KEY_STORE_ENV: &str = "ULTRON_RLM_SNAPSHOT_KEY_STORE";
 /// Marker left in place of the key file once the key lives in the OS keyring; it holds no secret.
 pub const SNAPSHOT_KEYRING_MARKER: &str = "rlm-snapshot.key.keyring";
 
-/// `SnapshotKeyStore`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum KeyStore {
     Auto,

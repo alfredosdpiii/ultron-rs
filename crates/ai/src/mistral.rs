@@ -412,7 +412,6 @@ impl MistralError {
     }
 }
 
-/// `AbortSignal.timeout`'s reason (a `TimeoutError` DOMException) when the request outlives its limit.
 /// The request's limit without `timeoutMs`.
 const DEFAULT_TIMEOUT_MS: u64 = 60_000;
 

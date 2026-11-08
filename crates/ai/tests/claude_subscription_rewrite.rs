@@ -4,7 +4,7 @@
 //! next request replays, and puts the first turn ahead of native's prepended context.
 
 use crate::isolate;
-use ai::claude_subscription::rewrite::{MISMATCH, QueriedTurnMismatch, pin_message_breakpoint, restore_queried_turn};
+use ai::claude_subscription::rewrite::{QueriedTurnMismatch, pin_message_breakpoint, restore_queried_turn};
 use isolate::seal;
 use serde_json::{Value, json};
 
@@ -258,10 +258,7 @@ fn ai_claude_subscription_restoration_is_anchored_on_ids_and_content_not_native_
     );
     assert_eq!(out["messages"][1]["content"], json!([first]));
     assert_eq!(out["messages"][2], messages[2]);
-    assert_eq!(MISMATCH, "Native request does not uniquely match Ultron tool results");
 }
-
-// ---------------------------------------------------------------------------------------------- the breakpoint
 
 const QUESTION: &str = "the real question";
 
@@ -394,8 +391,6 @@ fn ai_claude_subscription_stable_breakpoint_or_nothing_to_anchor_forwards_unchan
         assert_eq!(pin_message_breakpoint(&payload, queried.as_deref()), payload);
     }
 }
-
-// ------------------------------------------------------------------------------------------------ first turn
 
 fn reminder() -> Value {
     json!({"type": "text", "text": "<system-reminder>\nAs you answer the user's questions, you can use the following context:\n# userEmail\nThe user's email address is a@example.invalid.\n</system-reminder>\n"})

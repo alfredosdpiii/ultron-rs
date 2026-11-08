@@ -18,7 +18,7 @@ use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Condvar, Mutex};
 use std::time::Duration;
 
 pub fn python() -> String {
@@ -132,7 +132,8 @@ pub type Handler = Arc<dyn Fn(&Seen, &mut TcpStream) + Send + Sync>;
 /// A loopback HTTP server standing in for the Messages API.
 pub struct Upstream {
     pub port: u16,
-    pub seen: Arc<Mutex<Vec<Seen>>>,
+    /// The requests so far, notified with each one.
+    seen: Arc<(Mutex<Vec<Seen>>, Condvar)>,
     stop: Arc<AtomicBool>,
 }
 
@@ -188,27 +189,25 @@ impl Upstream {
     pub fn start(handler: impl Fn(&Seen, &mut TcpStream) + Send + Sync + 'static) -> Upstream {
         let handler: Handler = Arc::new(handler);
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-        listener.set_nonblocking(true).unwrap();
         let port = listener.local_addr().unwrap().port();
-        let seen: Arc<Mutex<Vec<Seen>>> = Arc::default();
+        let seen: Arc<(Mutex<Vec<Seen>>, Condvar)> = Arc::default();
         let stop = Arc::new(AtomicBool::new(false));
         {
             let (seen, stop) = (seen.clone(), stop.clone());
             std::thread::spawn(move || {
-                while !stop.load(Ordering::SeqCst) {
-                    match listener.accept() {
-                        Ok((mut stream, _)) => {
-                            stream.set_nonblocking(false).unwrap();
-                            let (seen, handler) = (seen.clone(), handler.clone());
-                            std::thread::spawn(move || {
-                                if let Some(request) = read_request(&stream) {
-                                    seen.lock().unwrap().push(request.clone());
-                                    handler(&request, &mut stream);
-                                }
-                            });
-                        }
-                        Err(_) => std::thread::sleep(Duration::from_millis(5)),
+                for stream in listener.incoming() {
+                    if stop.load(Ordering::SeqCst) {
+                        return;
                     }
+                    let Ok(mut stream) = stream else { continue };
+                    let (seen, handler) = (seen.clone(), handler.clone());
+                    std::thread::spawn(move || {
+                        if let Some(request) = read_request(&stream) {
+                            seen.0.lock().unwrap().push(request.clone());
+                            seen.1.notify_all();
+                            handler(&request, &mut stream);
+                        }
+                    });
                 }
             });
         }
@@ -220,13 +219,28 @@ impl Upstream {
     }
 
     pub fn requests(&self) -> Vec<Seen> {
-        self.seen.lock().unwrap().clone()
+        self.seen.0.lock().unwrap().clone()
+    }
+
+    /// The requests once there are at least `count` (hang guard 120 s).
+    pub fn wait_requests(&self, count: usize) -> Vec<Seen> {
+        let (seen, waited) = self
+            .seen
+            .1
+            .wait_timeout_while(self.seen.0.lock().unwrap(), Duration::from_secs(120), |seen| {
+                seen.len() < count
+            })
+            .unwrap();
+        assert!(!waited.timed_out(), "the upstream never got {count} request(s)");
+        seen.clone()
     }
 }
 
 impl Drop for Upstream {
+    /// Stops accepting: the flag, then a connection that wakes the blocked `accept`.
     fn drop(&mut self) {
         self.stop.store(true, Ordering::SeqCst);
+        let _ = TcpStream::connect(("127.0.0.1", self.port));
     }
 }
 
@@ -306,8 +320,6 @@ pub fn post(url: &str, body: &[u8], headers: &[(&str, &str)]) -> (u16, Vec<u8>) 
     };
     (status, body)
 }
-
-// ---------------------------------------------------------------------------------------------------- transcripts
 
 pub fn rlm_tool() -> Tool {
     Tool {

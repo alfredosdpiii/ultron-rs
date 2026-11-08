@@ -50,8 +50,9 @@ fn tui_theme_registry_matches_ts() {
             }
             "init" | "set" => {
                 let result = match step["op"].as_str().unwrap() {
+                    // `initTheme(name)` is `setTheme` with the error dropped.
                     "init" => {
-                        reg.init_theme(Some(arg), "dark");
+                        let _ = reg.set_theme(arg);
                         Value::Null
                     }
                     _ => match reg.set_theme(arg) {

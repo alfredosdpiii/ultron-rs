@@ -15,8 +15,6 @@ mod reopen_support;
 
 #[path = "agent_hub_ops.rs"]
 mod agent_hub_ops;
-#[path = "agent_ops.rs"]
-mod agent_ops;
 #[path = "agents_children.rs"]
 mod agents_children;
 #[path = "async_events.rs"]

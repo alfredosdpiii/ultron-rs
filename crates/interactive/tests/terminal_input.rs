@@ -12,15 +12,12 @@ use crate::support;
 use support::Sent;
 
 use interactive::app::{App, AppOptions};
-use interactive::history::PromptHistoryStore;
 use interactive::keybindings::Platform;
 use interactive::keybindings::native_app_keybindings;
-use interactive::lane::{LaneCommand, LaneEvent, ModelInfo, SessionOpened};
-use interactive::qol::QolSettings;
+use interactive::lane::{LaneCommand, LaneEvent, SessionOpened};
 use interactive::run::{UiEvent, paint_loop_with};
 use protocol::watch::QueueKind;
 use serde_json::{Value, json};
-use theme::{ColorMode, builtin_theme_json, create_theme};
 use tui::KeyContext;
 use tui::KeybindingsManager;
 use tui::KeyboardProtocol;
@@ -54,33 +51,12 @@ fn app_with(ctx: KeyContext, messages: Vec<Value>) -> (App, Rc<Sent>) {
 }
 
 fn app_with_keys(ctx: KeyContext, user: User, messages: Vec<Value>) -> (App, Rc<Sent>) {
-    let theme = Rc::new(create_theme(&builtin_theme_json("dark").unwrap(), ColorMode::Truecolor, None).unwrap());
-    let model = ModelInfo {
-        provider: "anthropic".into(),
-        id: "a".into(),
-        name: "Model a".into(),
-        reasoning: true,
-        context_window: 1000,
-        thinking_levels: Vec::new(),
-    };
     let (lane, calls) = Sent::new(record);
     let mut app = App::new(
         AppOptions {
-            theme,
             keys: keys(ctx, &user),
-            version: "1.2.3".into(),
-            cwd: "/p".into(),
-            home: None,
-            server_id: "server".into(),
-            models: vec![model.clone()],
-            model,
             thinking_level: "off".into(),
-            splash: false,
-            history: PromptHistoryStore::new(None, "/p"),
-            fd_path: None,
-            highlight: Rc::new(|code: &str| code.split('\n').map(str::to_string).collect()),
-            qol: QolSettings::parity(),
-            bug_report_target: ("radius.pi.dev".into(), false),
+            ..support::options()
         },
         lane,
     );
@@ -150,8 +126,6 @@ fn run(app: &mut App, inputs: &[&str], keyboard: &mut KeyboardProtocol) -> Strin
     out
 }
 
-// ---- keyboard protocol ----
-
 /// A Kitty flags reply turns Kitty matching on for the app, the editor and its bindings (ESC CR is Shift+Enter,
 /// a new line), and never reaches the editor; key releases are dropped (`isKeyRelease`).
 #[test]
@@ -196,8 +170,6 @@ fn interactive_split_kitty_reply_is_held_and_completed() {
     assert_eq!(app.editor_text(), "x");
 }
 
-// ---- Windows Terminal ----
-
 /// keys.ts `matchesRawBackspace`: in Windows Terminal (WT_SESSION, not over SSH) a raw BS is Ctrl+Backspace;
 /// elsewhere it is Backspace. With Ctrl+Backspace bound to deleteWordBackward, the BS deletes the word only there.
 #[test]
@@ -219,8 +191,6 @@ fn interactive_windows_terminal_raw_bs_is_ctrl_backspace() {
     app.handle_input("\x08");
     assert_eq!(app.editor_text(), "foo ba");
 }
-
-// ---- mouse ----
 
 /// editor.ts `handleMouse`: a left click (press and release on one cell) on a text row moves the cursor there.
 #[test]
@@ -386,8 +356,6 @@ fn interactive_mouse_press_moved_off_its_cell_is_no_click() {
     app.handle_input(&format!("\x1b[<0;{};{}m", x + 3, y + 1));
     assert_eq!(app.editor_text(), "/se");
 }
-
-// ---- settings env fallbacks ----
 
 /// settings-manager.ts `getShowHardwareCursor` (`??` falls back to `PI_HARDWARE_CURSOR=1`) and `getClearOnShrink`
 /// (a present setting, else `PI_CLEAR_ON_SHRINK=1`).

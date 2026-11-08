@@ -54,7 +54,13 @@ fn protocol_handshake_keeps_what_follows_the_hello() {
     let mut stream = peer(&[server_hello(A), attachment.clone()]);
     let connected = hello(&mut stream, A).unwrap();
     assert_eq!(connected.queued, vec![attachment]);
-    assert_eq!(stream.written, protocol::handshake::client_hello());
+    let sent = protocol::ClientMessageDecoder::default().push(&stream.written).unwrap();
+    assert_eq!(
+        sent,
+        vec![protocol::ClientMessage::Hello {
+            version: PROTOCOL_VERSION
+        }]
+    );
 }
 
 /// The runtime connection used to answer another server's hello with "Expected server hello as first message".

@@ -2,7 +2,7 @@
 
 use std::io::{self, ErrorKind, Write};
 use std::sync::{Arc, Condvar, Mutex, mpsc};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use tui::*;
 
@@ -132,13 +132,14 @@ fn tui_tty_writer_enqueue_never_blocks_and_reports_pending() {
 #[test]
 fn tui_tty_writer_pending_tracks_partial_drain_progress() {
     // The terminal accepts 1000 bytes per write call; pending must shrink as chunks land, not only per batch.
-    // After the first chunk it blocks until the test has observed the partial count, so the pump cannot finish
-    // the whole frame before the test looks.
+    // The second write reports that it started (the first chunk is accounted by then) and blocks until the test has
+    // observed the partial count, so the pump cannot finish the whole frame before the test looks.
     #[derive(Clone)]
-    struct Slow(Arc<Mutex<usize>>, Latch);
+    struct Slow(Arc<Mutex<usize>>, Latch, Latch);
     impl Write for Slow {
         fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
             if *self.0.lock().unwrap() > 0 {
+                self.2.open();
                 self.1.wait();
             }
             let n = buf.len().min(1000);
@@ -151,19 +152,11 @@ fn tui_tty_writer_pending_tracks_partial_drain_progress() {
     }
     let total = 200_000;
     let counter = Arc::new(Mutex::new(0));
-    let observed = Latch::default();
-    let mut w = TtyWriter::new(Slow(counter.clone(), observed.clone())).unwrap();
+    let (observed, second_write) = (Latch::default(), Latch::default());
+    let mut w = TtyWriter::new(Slow(counter.clone(), observed.clone(), second_write.clone())).unwrap();
     w.write_bytes(&vec![b'x'; total]);
-    let deadline = Instant::now() + HANG_GUARD;
-    loop {
-        let p = w.pending();
-        if p > 0 && p < total {
-            assert_eq!(p, total - 1000);
-            break;
-        }
-        assert!(Instant::now() < deadline, "no observable partial progress: {p}");
-        std::thread::sleep(Duration::from_millis(5));
-    }
+    second_write.wait();
+    assert_eq!(w.pending(), total - 1000);
     observed.open();
     assert!(w.flush_sync(HANG_GUARD));
     assert_eq!(*counter.lock().unwrap(), total);
@@ -196,10 +189,7 @@ fn tui_tty_writer_dead_output_marks_writer_and_drops_queue() {
     }
     let mut w = TtyWriter::new(Broken).unwrap();
     w.write("doomed");
-    let deadline = Instant::now() + HANG_GUARD;
-    while !w.dead() && Instant::now() < deadline {
-        std::thread::sleep(Duration::from_millis(5));
-    }
+    assert!(w.flush_sync(HANG_GUARD), "a dead writer has nothing pending");
     assert!(w.dead());
     assert_eq!(w.pending(), 0);
     assert_eq!(w.write("more"), 0, "a dead writer accepts nothing");

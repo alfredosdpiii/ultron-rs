@@ -249,7 +249,6 @@ impl Writer<'_> {
     }
 }
 
-/// Encodes the protocol's strict, definite-length RFC 8949 subset.
 pub fn encode_cbor(value: &Value, options: &CborOptions) -> Result<Vec<u8>, CborError> {
     options.validate()?;
     let mut writer = Writer {

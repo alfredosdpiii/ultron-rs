@@ -21,7 +21,6 @@ pub mod loki_guard;
 pub mod sandboxed;
 pub mod secrets;
 pub mod shell;
-pub mod shell_env;
 pub mod text;
 pub mod view_image;
 
@@ -126,7 +125,6 @@ pub type JobEnds = Arc<dyn Fn(JobEnd) + Send + Sync>;
 /// lane, or the root of the task that owns another lane.
 pub type RootOf = Arc<dyn Fn(&str) -> Option<String> + Send + Sync>;
 
-/// Why a job was stopped.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum StopReason {
     /// `job.cancel()`.
@@ -328,9 +326,6 @@ fn safe_integer(value: Option<&Value>, default: u64) -> Option<u64> {
 /// environment.
 pub const PARENT_TOKEN_ENV: &str = "ULTRON_PARENT_TOKEN";
 
-/// Runs `command` with bash in its own process group, stdout and stderr on one pipe. `on_text` gets each decoded,
-/// cleaned chunk and the raw byte count; `stop` is polled and kills the process group when it turns true.
-/// Returns the exit code (None when killed by a signal).
 /// `argv` as it runs inside a sandbox: every sandbox clears the environment to its allowlist (bwrap `--clearenv`,
 /// `env -i` under unshare and in a Docker container), so the command's own variables (a worktree subagent's
 /// `ULTRON_WORKTREE`, `ULTRON_PARENT_REPO`, `ULTRON_WORKTREE_BRANCH`, `PWD`) are set inside, by `env`.
@@ -352,7 +347,6 @@ struct CommandEnv<'a> {
     env: &'a [(String, String)],
 }
 
-/// The PATH entry of `env`.
 fn path_of(env: &[(String, String)]) -> Option<String> {
     env.iter()
         .find(|(key, _)| key == "PATH")
@@ -370,6 +364,9 @@ fn command_env(process: &mut Command, base: Option<&[(String, String)]>, env: &[
     process.envs(env.iter().map(|(key, value)| (key, value)));
 }
 
+/// Runs `command` with `shell` in its own process group, stdout and stderr on one pipe. `on_text` gets each decoded,
+/// cleaned chunk and the raw byte count; `stop` is polled and kills the process group when it turns true.
+/// Returns the exit code (None when killed by a signal).
 fn run_shell(
     shell: &shell::ShellConfig,
     command: &str,
@@ -666,7 +663,6 @@ impl Host {
             .collect()
     }
 
-    /// Running jobs of every lane.
     pub fn running_jobs(&self) -> usize {
         sync::lock(&self.shared.jobs)
             .iter()

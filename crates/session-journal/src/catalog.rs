@@ -10,13 +10,11 @@ use serde_json::{Map, Value};
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
 
-/// `sessionDirectoryName`.
 pub fn session_directory_name(cwd: &str) -> String {
     let trimmed = cwd.strip_prefix(['/', '\\']).unwrap_or(cwd);
     format!("--{}--", trimmed.replace(['/', '\\', ':'], "-"))
 }
 
-/// `sessionFileName`.
 pub fn session_file_name(created_at: i64, id: &str) -> String {
     let timestamp = jsrt::date::iso_string(created_at).replace([':', '.'], "-");
     format!("{timestamp}_{}.jsonl", jsrt::uri::encode_component(id))

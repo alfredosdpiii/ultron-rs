@@ -7,7 +7,6 @@
 use compaction::{CompactOptions, FileOperations, SummaryRequest};
 use serde_json::Value;
 
-/// `TURN_PREFIX_SUMMARIZATION_PROMPT` of the harness compaction.
 pub const TURN_PREFIX_SUMMARIZATION_PROMPT: &str =
     "This is the PREFIX of a turn that was too large to keep. The SUFFIX (recent work) is retained.
 

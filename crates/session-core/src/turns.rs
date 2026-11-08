@@ -392,14 +392,12 @@ fn runtime() -> Result<tokio::runtime::Runtime, HarnessError> {
 
 /// Resolves a pinned model by provider and ID.
 pub type ResolveModel = Arc<dyn Fn(&str, &str) -> Option<Model> + Send + Sync>;
-/// The API key of a provider.
 pub type ProviderKey = Arc<dyn Fn(&str) -> Option<String> + Send + Sync>;
 
 /// The provider as the durable generation calls it.
 pub struct TurnModels {
     pub bridge: Arc<Bridge>,
     pub provider: Arc<dyn agent::StreamFn>,
-    /// Resolves a pinned model (`provider`, `id`).
     pub resolve: ResolveModel,
     /// The key a request uses for its model's provider (crate::request_keys), resolved per request: a root
     /// generation's model is the one its checkpoint pinned, which a model switch during the turn does not change.

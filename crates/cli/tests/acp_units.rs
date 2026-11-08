@@ -52,7 +52,6 @@ fn cli_acp_user_message_rejects_empty_and_unknown() {
         user_message(&[json!({"type": "image", "data": "x"})]),
         Err("An image content block needs data and mimeType".into())
     );
-    // An image alone is a prompt.
     assert!(user_message(&[json!({"type": "image", "data": "x", "mimeType": "image/png"})]).is_ok());
 }
 
@@ -329,7 +328,6 @@ fn cli_acp_cell_changes_between_pictures() {
     std::fs::write(dir.join("gone.txt"), "bye").unwrap();
     std::fs::write(dir.join("edit.txt"), "v1").unwrap();
     let mut tracker = Tracker::default();
-    // No picture held: nothing to report.
     assert_eq!(tracker.cell_ended(&dir), FileChanges::default());
     tracker.end();
     tracker.begin(&dir);
@@ -354,7 +352,6 @@ fn cli_acp_cell_changes_between_pictures() {
             json!({"type": "diff", "path": dir.join("edit.txt"), "oldText": "v2 longer", "newText": "v3 even longer"})
         ]
     );
-    // Nothing changed: nothing reported.
     assert_eq!(tracker.cell_ended(&dir), FileChanges::default());
     // `begin` keeps a held picture; `end` drops it.
     std::fs::write(dir.join("later.txt"), "x").unwrap();

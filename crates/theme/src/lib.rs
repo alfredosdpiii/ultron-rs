@@ -230,12 +230,10 @@ fn ansi(color: &Resolved, mode: ColorMode, layer: u8) -> Result<String, String> 
     }
 }
 
-/// `fgAnsi`.
 pub fn fg_ansi(color: &Resolved, mode: ColorMode) -> Result<String, String> {
     ansi(color, mode, 3)
 }
 
-/// `bgAnsi`.
 pub fn bg_ansi(color: &Resolved, mode: ColorMode) -> Result<String, String> {
     ansi(color, mode, 4)
 }
@@ -345,12 +343,10 @@ impl Theme {
         *self.palette.borrow_mut() = palette;
     }
 
-    /// `getFgAnsi`.
     pub fn fg_ansi(&self, color: Fg) -> String {
         self.palette.borrow().fg[color as usize].clone()
     }
 
-    /// `getBgAnsi`.
     pub fn bg_ansi(&self, color: Bg) -> String {
         self.palette.borrow().bg[color as usize].clone()
     }
@@ -444,7 +440,6 @@ pub fn resolve_theme(setting: Option<&str>, terminal: TerminalTheme, custom_dir:
     }
 }
 
-/// `loadThemeFromPath`.
 pub fn load_theme_from_path(path: &Path, mode: ColorMode) -> Result<Theme, String> {
     let label = path.display().to_string();
     let content = std::fs::read_to_string(path).map_err(|e| format!("Failed to read theme {label}: {e}"))?;
@@ -508,7 +503,6 @@ pub fn resolved_css_colors(json: &ThemeJson, theme_name: &str) -> Result<Vec<(St
         .collect())
 }
 
-/// `isLightTheme`.
 pub fn is_light_theme(theme_name: &str) -> bool {
     theme_name == "light"
 }
@@ -622,7 +616,6 @@ pub fn luminance((r, g, b): (u8, u8, u8)) -> f64 {
     0.2126 * linear(r) + 0.7152 * linear(g) + 0.0722 * linear(b)
 }
 
-/// `getThemeForRgbColor`.
 pub fn theme_for_rgb(r: u8, g: u8, b: u8) -> TerminalTheme {
     if luminance((r, g, b)) >= 0.5 {
         TerminalTheme::Light

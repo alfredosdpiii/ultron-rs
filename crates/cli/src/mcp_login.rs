@@ -13,7 +13,6 @@ use std::path::Path;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-/// `DEFAULT_LOGIN_TIMEOUT_SECONDS`.
 pub const DEFAULT_LOGIN_TIMEOUT_SECONDS: f64 = 300.0;
 
 /// The connection environment of a command outside a session: the stored OAuth credentials, no secret masking.

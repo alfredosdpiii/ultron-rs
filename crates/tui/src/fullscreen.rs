@@ -32,7 +32,6 @@ use jsrt::string;
 
 /// Rows a page scroll keeps from the previous page (`PAGE_SCROLL_OVERLAP`).
 pub const PAGE_SCROLL_OVERLAP: usize = 4;
-/// `ALT_WHEEL_SCROLL_MULTIPLIER`.
 pub const ALT_WHEEL_SCROLL_MULTIPLIER: i64 = 5;
 const DOUBLE_CLICK_INTERVAL: Duration = Duration::from_millis(500);
 const FLASH_DURATION: Duration = Duration::from_millis(1000);
@@ -44,7 +43,6 @@ const OSC133_PROMPT: [&str; 2] = ["\x1b]133;A\x07", "\x1b]133;A\x1b\\"];
 pub const ENABLE_BUTTON_MOTION_MOUSE: &str = "\x1b[?1000h\x1b[?1002h\x1b[?1004h\x1b[?1006h";
 /// `ENABLE_ALL_MOTION_MOUSE`: also pointer motion without a button (scrollbar hover).
 pub const ENABLE_ALL_MOTION_MOUSE: &str = "\x1b[?1000h\x1b[?1002h\x1b[?1003h\x1b[?1004h\x1b[?1006h";
-/// `DISABLE_MOUSE`.
 pub const DISABLE_MOUSE: &str = "\x1b[?1006l\x1b[?1004l\x1b[?1003l\x1b[?1002l\x1b[?1000l";
 const FOCUS_IN: &str = "\x1b[I";
 const FOCUS_OUT: &str = "\x1b[O";
@@ -180,7 +178,6 @@ fn decode_button(button: u32) -> MouseButton {
     }
 }
 
-/// `retargetMouseEvent`.
 pub fn retarget_mouse_event(event: &MouseEvent, target: &MouseTarget) -> MouseEvent {
     MouseEvent {
         x: event.screen_x - target.origin_x,
@@ -358,12 +355,10 @@ impl FullscreenViewport {
         self.rows = rows;
     }
 
-    /// `viewportTop`.
     pub fn viewport_top(&self) -> usize {
         self.view.scroll_top()
     }
 
-    /// `isFollowingOutput`.
     pub fn is_following_output(&self) -> bool {
         self.view.is_following_end()
     }
@@ -686,7 +681,6 @@ impl FullscreenViewport {
         self.press_moved = false;
     }
 
-    /// `getComponentClickCount`.
     fn component_click_count(&mut self, target: &MouseTarget, x: i64, y: i64, now: Instant) -> u32 {
         let count = match self.last_component_click {
             Some((at, count, id, px, py))
@@ -703,7 +697,6 @@ impl FullscreenViewport {
         count
     }
 
-    /// `clearTextSelection`.
     fn clear_text_selection(&mut self) {
         self.stop_auto_scroll();
         self.press_active = false;
@@ -958,7 +951,6 @@ impl FullscreenViewport {
         }
     }
 
-    /// `getClickCount`.
     fn click_count(&mut self, p: Point, word: Option<Range>, now: Instant) -> u32 {
         let count = match (word, self.last_click) {
             (Some(w), Some(prev))
@@ -1138,7 +1130,6 @@ impl FullscreenViewport {
         Some(if a_first { (a, f) } else { (f, a) })
     }
 
-    /// `applySelection`.
     fn apply_selection(&self, screen: Vec<String>) -> Vec<String> {
         let Some((start, end)) = self.bounds() else {
             return screen;
@@ -1355,7 +1346,6 @@ fn parse_wheel(data: &str) -> Option<(i64, i64, i64, u32)> {
     None
 }
 
-/// `isMouseSequence`.
 pub fn is_mouse_sequence(data: &str) -> bool {
     parse_sgr_mouse(data).is_some() || (data.chars().count() == 6 && data.starts_with("\x1b[M"))
 }
@@ -1386,18 +1376,11 @@ pub fn is_right_click_press(button: u32, release: bool) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::utils::ansi_len;
 
     #[test]
     fn zone_prefix_strips_every_leading_marker() {
         assert_eq!(strip_zone_prefix("\x1b]133;A\x07\x1b]133;B\x1b\\x"), "x");
         assert_eq!(strip_zone_prefix("\x1b]133;D\x07x"), "\x1b]133;D\x07x");
         assert_eq!(strip_zone_prefix("plain"), "plain");
-    }
-
-    #[test]
-    fn ansi_len_is_used_for_highlight() {
-        assert_eq!(ansi_len("\x1b[1mx", 0), Some(4));
-        assert_eq!(selection_highlight("\x1b[1mab"), "\x1b[7m\x1b[1m\x1b[7mab\x1b[27m");
     }
 }

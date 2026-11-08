@@ -1,15 +1,28 @@
 //! `PI_CODING_AGENT` / `AI_AGENT` in every session process: replays fixtures/agent-markers.json (cli/setup.ts
 //! `setupCli` and process.ts's `{ ...process.env, ...options.env }`, recorded by fixtures/generate-agent-markers.mjs)
-//! through `daemon::process::spawn` with a stand-in executable that writes the environment it got.
+//! through `daemon::process::spawn` with a stand-in executable that writes the environment it got. The spawning
+//! process is this test binary re-run with `ULTRON_INTERNAL_EXE` naming the stand-in.
 
-use std::time::{Duration, Instant};
-
-use daemon::process::{AGENT_MARKERS, Role, set_executable, spawn};
+use daemon::process::{AGENT_MARKERS, INTERNAL_EXE_ENV, Role, spawn};
 use serde_json::Value;
+use std::process::{Command, Stdio};
+
+const OUT_ENV: &str = "DAEMON_AGENT_MARKERS_OUT";
+const OPTIONS_ENV: &str = "DAEMON_AGENT_MARKERS_OPTIONS";
 
 fn env_of(text: &str, key: &str) -> Option<String> {
     text.split('\0')
         .find_map(|entry| entry.strip_prefix(&format!("{key}=")).map(str::to_string))
+}
+
+/// Run as the spawning process: spawn the internal process with the `options.env` named by the environment and
+/// wait for it to end.
+#[test]
+fn daemon_agent_markers_spawner_process() {
+    let Ok(out) = std::env::var(OUT_ENV) else { return };
+    let env: Vec<(String, String)> = serde_json::from_str(&std::env::var(OPTIONS_ENV).unwrap()).unwrap();
+    let mut child = spawn(Role::Server, &[out], &env).unwrap();
+    assert!(child.wait().unwrap().success());
 }
 
 #[test]
@@ -36,16 +49,17 @@ fn daemon_internal_processes_carry_the_agent_markers_like_ts() {
     )
     .unwrap();
     std::fs::set_permissions(&exe, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
-    set_executable(exe);
     let run = |name: &str, env: &[(String, String)]| -> String {
         let out = dir.path().join(name);
-        let mut child = spawn(Role::Server, &[out.display().to_string()], env).unwrap();
-        let deadline = Instant::now() + Duration::from_secs(120);
-        while !out.exists() {
-            assert!(Instant::now() < deadline, "hang guard: {name}");
-            std::thread::sleep(Duration::from_millis(5));
-        }
-        let _ = child.wait();
+        let status = Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", "daemon_agent_markers_spawner_process", "--test-threads=1"])
+            .env(INTERNAL_EXE_ENV, &exe)
+            .env(OUT_ENV, &out)
+            .env(OPTIONS_ENV, serde_json::to_string(env).unwrap())
+            .stdout(Stdio::null())
+            .status()
+            .unwrap();
+        assert!(status.success(), "{name}: the spawning process failed");
         std::fs::read_to_string(out).unwrap()
     };
     let plain = run("plain.env", &[]);

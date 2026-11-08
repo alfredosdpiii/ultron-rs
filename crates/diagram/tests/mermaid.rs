@@ -6,8 +6,8 @@
 //! real node with the vendored Pele, only with `ULTRON_MERMAID_TEST_NODE=1`.
 
 use diagram::svg::{
-    DiagramPalette, VarScope, color_mix, custom_properties, flatten_svg, font_database, palette_from_theme,
-    pick_family, rasterize, select_palette, select_palette_for_terminal,
+    DiagramPalette, flatten_svg, font_database, palette_from_theme, pick_family, rasterize, select_palette,
+    select_palette_for_terminal,
 };
 use diagram::{
     DiagramConfig, DiagramModule, NO_NODE, PELE_JS, RUNNER, ShowDiagram, ShownDiagram, ThemeInputs, find_node,
@@ -159,50 +159,53 @@ fn diagram_auto_theme_follows_the_detected_terminal_before_colorfgbg() {
     assert_eq!(theme("light", Some("dark"), Some("dark"), None), "light");
 }
 
+/// The `fill` `flatten_svg` writes for `value` under the Pele-shaped definitions.
+fn flat_fill(value: &str) -> String {
+    let defs = "--_bg:var(--pele-bg,#fff);--_s:var(--pele-surface,#f3f3f3);--_a:var(--pele-surface-alt,#e6e6e6)";
+    let flat = flatten_svg(&format!(r#"<g style="{defs}"><rect fill="{value}"/></g>"#), &dark());
+    flat.strip_prefix(r#"<g><rect fill=""#)
+        .and_then(|rest| rest.strip_suffix(r#""/></g>"#))
+        .unwrap_or_else(|| panic!("{flat}"))
+        .to_string()
+}
+
 #[test]
 fn diagram_var_resolution_handles_nesting_definitions_and_missing_fallbacks() {
-    let palette = dark();
-    let scope = VarScope {
-        palette: &palette,
-        defs: custom_properties(SVG),
-    };
-    assert_eq!(scope.defs["--_s"], "var(--pele-surface,#f3f3f3)");
-    assert_eq!(scope.defs.len(), 5, "{:?}", scope.defs);
     // A theme colour beats the fallback; a definition is followed to it.
-    assert_eq!(scope.resolve("var(--pele-surface,#f3f3f3)"), "#282832");
-    assert_eq!(
-        scope.resolve("fill:var(--_s);stroke:var(--_b)"),
-        "fill:#282832;stroke:#5f87ff"
-    );
+    assert_eq!(flat_fill("var(--pele-surface,#f3f3f3)"), "#282832");
+    assert_eq!(flat_fill("var(--_s)"), "#282832");
     // An unknown name takes its fallback, itself resolved (nested var); a fallback may hold commas.
-    assert_eq!(scope.resolve("var(--x,var(--y,#123456))"), "#123456");
-    assert_eq!(scope.resolve("var(--x,var(--_a))"), "#3a3a4a");
-    assert_eq!(scope.resolve("var(--font, Inter, sans-serif)"), "Inter, sans-serif");
+    assert_eq!(flat_fill("var(--x,var(--y,#123456))"), "#123456");
+    assert_eq!(flat_fill("var(--x,var(--_a))"), "#3a3a4a");
+    assert_eq!(flat_fill("var(--font, Inter, sans-serif)"), "Inter, sans-serif");
     // Nothing to resolve to: the theme's foreground.
-    assert_eq!(scope.resolve("var(--nothing)"), "#d4d4d4");
+    assert_eq!(flat_fill("var(--nothing)"), "#d4d4d4");
     // A definition naming itself is not followed forever.
-    let cyclic = VarScope {
-        palette: &palette,
-        defs: [("--_x".to_string(), "var(--_x,#010203)".to_string())].into(),
-    };
-    assert_eq!(cyclic.resolve("var(--_x)"), "#010203");
+    assert_eq!(
+        flatten_svg(
+            r#"<g style="--_x:var(--_x,#010203)"><rect fill="var(--_x)"/></g>"#,
+            &dark()
+        ),
+        r##"<g><rect fill="#010203"/></g>"##
+    );
     // Unbalanced text stays.
-    assert_eq!(scope.resolve("var(--_s"), "var(--_s");
+    assert_eq!(flat_fill("var(--_s"), "var(--_s");
 }
 
 #[test]
 fn diagram_color_mix_follows_css_weights() {
-    assert_eq!(color_mix("in srgb,#000000 50%,#ffffff").as_deref(), Some("#808080"));
-    assert_eq!(color_mix("in srgb,#ff0000 25%,#0000ff").as_deref(), Some("#4000bf"));
-    assert_eq!(color_mix("in srgb,#ff0000,#0000ff 25%").as_deref(), Some("#bf0040"));
-    assert_eq!(color_mix("in srgb,#fff,#000").as_deref(), Some("#808080"));
+    assert_eq!(flat_fill("color-mix(in srgb,#000000 50%,#ffffff)"), "#808080");
+    assert_eq!(flat_fill("color-mix(in srgb,#ff0000 25%,#0000ff)"), "#4000bf");
+    assert_eq!(flat_fill("color-mix(in srgb,#ff0000,#0000ff 25%)"), "#bf0040");
+    assert_eq!(flat_fill("color-mix(in srgb,#fff,#000)"), "#808080");
     // Weights over 100% are normalized.
+    assert_eq!(flat_fill("color-mix(in srgb,#ff0000 100%,#0000ff 100%)"), "#800080");
+    // Only sRGB mixes of hex colours are computed; others stay.
     assert_eq!(
-        color_mix("in srgb,#ff0000 100%,#0000ff 100%").as_deref(),
-        Some("#800080")
+        flat_fill("color-mix(in oklab,#fff,#000)"),
+        "color-mix(in oklab,#fff,#000)"
     );
-    assert_eq!(color_mix("in oklab,#fff,#000"), None);
-    assert_eq!(color_mix("in srgb,red,#000"), None);
+    assert_eq!(flat_fill("color-mix(in srgb,red,#000)"), "color-mix(in srgb,red,#000)");
 }
 
 #[test]

@@ -85,7 +85,6 @@ impl Tracker {
         self.revision
     }
 
-    /// Start a change against the current revision.
     pub fn begin_change(&self) -> Result<Draft> {
         let root =
             Node::new(&self.value).ok_or_else(|| DeltaError::Invalid("Tracked roots must be containers".into()))?;
@@ -236,7 +235,6 @@ impl Node {
         }
     }
 
-    /// The current value of this container.
     fn materialize(&self) -> Value {
         match self {
             Node::Object(node) => {

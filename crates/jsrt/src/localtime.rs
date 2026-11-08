@@ -200,18 +200,15 @@ fn be(bytes: &[u8], at: usize, len: usize) -> Option<i64> {
     for b in slice {
         value = (value << 8) | i64::from(*b);
     }
-    // Sign-extend.
     let shift = 64 - 8 * len as u32;
     Some((value << shift) >> shift)
 }
 
 impl Zone {
-    /// UTC.
     pub fn utc() -> Zone {
         Zone::default()
     }
 
-    /// Parse a TZif file.
     pub fn from_tzif(bytes: &[u8]) -> Option<Zone> {
         if bytes.get(..4)? != b"TZif" {
             return None;

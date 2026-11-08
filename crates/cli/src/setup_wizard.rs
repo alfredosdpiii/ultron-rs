@@ -74,10 +74,8 @@ pub enum LoginOutcome {
 
 /// What the wizard asks through (`SetupUi`). `Err(SetupQuit)` is Ctrl+C; `Ok(None)` is Esc (skip or go back).
 pub trait SetupUi {
-    /// Start a step.
     fn heading(&mut self, title: &str);
     fn note(&mut self, text: &str, tone: Tone);
-    /// The index of the picked choice.
     fn select(
         &mut self,
         title: &str,
@@ -89,7 +87,6 @@ pub trait SetupUi {
     fn pick_login_provider(&mut self, providers: &[AuthProvider], title: &str) -> Result<Option<usize>, SetupQuit>;
     /// Pi's login dialog (browser/device flows, masked API-key prompt); saves to the profile's auth.json.
     fn login(&mut self, env: &Env, option: &AuthProvider) -> Result<LoginOutcome, SetupQuit>;
-    /// Show `message` with a spinner while `task` runs.
     fn busy<T: Send + 'static>(
         &mut self,
         message: &str,
@@ -204,7 +201,6 @@ impl ProfileRuntime {
         session_core::lane::registry(&self.env).find(provider, id)
     }
 
-    /// `hasConfiguredAuth`.
     pub fn has_configured_auth(&self, provider: &str) -> bool {
         self.available.iter().any(|m| m.provider == provider)
     }
@@ -1033,7 +1029,6 @@ fn custom_hindsight_url<U: SetupUi>(ui: &mut U, deps: &mut SetupDeps) -> Result<
     Ok(Some(line(HINDSIGHT, "configured", detail)))
 }
 
-/// The last three lines of docker's output, joined.
 fn last_lines(output: &str) -> String {
     let lines: Vec<&str> = output.trim().split('\n').collect();
     lines[lines.len().saturating_sub(3)..].join(" ")
@@ -1165,7 +1160,6 @@ enum LokiAction {
     On,
 }
 
-/// `describeLoki`.
 pub fn describe_loki(settings: &Map<String, Value>) -> String {
     let mode = settings.get("mode").and_then(Value::as_str).unwrap_or("on");
     if mode == "off" {
@@ -1326,7 +1320,6 @@ fn summary_step<U: SetupUi>(ui: &mut U, deps: &SetupDeps, lines: &[SummaryLine],
 
 // ------------------------------------------------------------------------------------------------- the live test
 
-/// `MODEL_TEST_TIMEOUT_MS`.
 const MODEL_TEST_TIMEOUT: Duration = Duration::from_secs(90);
 
 /// `testModel`: one short request, as small as the provider allows.

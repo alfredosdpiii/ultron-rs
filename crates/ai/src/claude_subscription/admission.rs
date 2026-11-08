@@ -25,8 +25,6 @@ pub const CONSUMED: &str =
 const ERROR_BODY_LIMIT: usize = 65_536;
 const HEAD_LIMIT: usize = 65_536;
 
-// ------------------------------------------------------------------------------------------------------- capture
-
 /// The Messages SSE stream assembled into the assistant message native would build (`Capture`).
 #[derive(Debug, Default)]
 pub struct Capture {
@@ -188,8 +186,6 @@ fn frame_break(text: &str) -> Option<(usize, usize)> {
     None
 }
 
-// ---------------------------------------------------------------------------------------------------------- proxy
-
 /// The HTTP CONNECT proxy for the upstream hop: host, port and the `Proxy-Authorization` value from the URL's
 /// credentials. TLS still ends at the upstream host, so the subscription bearer never reaches the proxy.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -284,8 +280,6 @@ pub fn upstream_proxy(
         authorization,
     })
 }
-
-// -------------------------------------------------------------------------------------------------------- the gate
 
 /// What the one admitted request produced, read after native exits.
 #[derive(Debug, Default)]

@@ -15,7 +15,6 @@ pub fn check_runner(stack: Weak<Stack>) -> CheckRunner {
     })
 }
 
-/// Run one check command, isolated by `launcher` when there is one.
 pub fn run_check(check: &CommandCheck, launcher: Option<&sandbox::Launcher>) -> CommandOutcome {
     let argv = vec!["/bin/sh".to_string(), "-c".to_string(), check.command.clone()];
     let mut command = match launcher {

@@ -194,7 +194,6 @@ fn bad_percent(value: &str) -> bool {
     })
 }
 
-/// `IsIri`.
 fn is_iri(value: &str) -> bool {
     if value.chars().any(|c| (c as u32) <= 0x20 || "<>^`{|}\\".contains(c)) || bad_percent(value) {
         return false;
@@ -228,7 +227,6 @@ fn narrow_ipv_future(value: &str) -> String {
     value.to_string()
 }
 
-/// `IsIriReference`.
 fn is_iri_reference(value: &str) -> bool {
     let invalid = value.chars().any(|c| (c as u32) <= 0x20 || c == '\u{7f}' || c == '\\') || bad_percent(value);
     // A scheme followed directly by `//` (`http//x`).
@@ -632,7 +630,6 @@ fn nfc(value: &str) -> String {
         .into_owned()
 }
 
-/// `IsIdnHostname`.
 pub fn is_idn_hostname(value: &str) -> bool {
     if value.is_empty() || value.contains(' ') {
         return false;
@@ -664,7 +661,6 @@ pub fn is_idn_hostname(value: &str) -> bool {
     })
 }
 
-/// `IsIdnEmail`.
 fn is_idn_email(value: &str) -> bool {
     static RE: OnceLock<fancy_regex::Regex> = OnceLock::new();
     RE.get_or_init(|| {

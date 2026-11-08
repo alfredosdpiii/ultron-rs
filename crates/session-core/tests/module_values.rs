@@ -53,13 +53,9 @@ fn last_result(w: &reopen_support::Worker) -> String {
         .join("\n")
 }
 
-fn sessions(home: &Home) -> PathBuf {
-    home.root.join("agent").join("experimental").join("sessions")
-}
-
 /// Fork the only session with `options`, then keep only the fork (the support opens the one session it finds).
 fn fork_only(home: &Home, options: &ForkOptions) -> String {
-    let repo = SessionRepo::new(&sessions(home), SystemClock::shared());
+    let repo = SessionRepo::new(&home.sessions(), SystemClock::shared());
     let source = repo.list(None).into_iter().next().unwrap();
     let fork = repo.fork(&source, options, None).unwrap();
     let id = fork.id().to_string();

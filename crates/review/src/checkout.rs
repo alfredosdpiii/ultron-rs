@@ -36,7 +36,6 @@ pub struct PullHeads {
     pub base_sha: String,
 }
 
-/// `n` random bytes as hex.
 pub fn random_hex(n: usize) -> String {
     use ring::rand::SecureRandom;
     let mut bytes = vec![0u8; n];
@@ -44,7 +43,6 @@ pub fn random_hex(n: usize) -> String {
     bytes.iter().map(|byte| format!("{byte:02x}")).collect()
 }
 
-/// `mkdirSync(dir, { recursive: true, mode: 0o700 })`.
 pub fn make_private_dir(dir: &str) -> std::io::Result<()> {
     std::fs::DirBuilder::new().recursive(true).mode(0o700).create(dir)
 }
@@ -104,7 +102,6 @@ impl Git {
 
 /// A worktree at the pull request's head.
 pub struct Checkout {
-    /// A worktree at the head commit.
     pub work_dir: String,
     /// The merge base of the base branch and the head: the pull request diff starts here.
     pub merge_base: String,
@@ -226,7 +223,6 @@ impl Checkout {
         self.git.run(&args, &self.env, FETCH_TIMEOUT_MS);
     }
 
-    /// Remove the worktree (never fails).
     pub fn cleanup(&self) {
         let _serial = self.lock.lock().unwrap_or_else(|e| e.into_inner());
         self.git.run(

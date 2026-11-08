@@ -43,7 +43,6 @@ pub fn rlm_tool(description: &str) -> Tool {
     }
 }
 
-/// Cells run in per-lane kernels.
 pub struct KernelCells {
     tool: Tool,
     open: OpenLane,
@@ -77,7 +76,6 @@ impl KernelCells {
         lock(&self.lanes).keys().cloned().collect()
     }
 
-    /// Shut every lane's kernel down.
     pub fn shutdown(&self) {
         for kernel in lock(&self.lanes).drain().map(|(_, kernel)| kernel) {
             kernel.shutdown();

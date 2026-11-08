@@ -14,7 +14,6 @@ use interactive::keybindings::{Platform, app_keybindings};
 use interactive::lane::{LaneCommand, LaneEvent, ModelInfo, SessionOpened};
 use protocol::watch::QueueKind;
 use serde_json::json;
-use theme::{ColorMode, builtin_theme_json, create_theme};
 use tui::KeybindingsManager;
 
 const FULL_HEIGHT: usize = 55;
@@ -87,13 +86,7 @@ fn interactive_prompt_history_current_project_first_and_skips_repeats() {
     assert_eq!(store.append("  mine new  ", 4), None);
     assert_eq!(store.append("fresh", 5).as_deref(), Some("fresh"));
     assert_eq!(store.history(&[]), ["fresh", "mine new", "mine old", "other"]);
-    // The append is written by a background thread; wait for it.
-    for _ in 0..100 {
-        if std::fs::read_to_string(&path).unwrap().contains("fresh") {
-            break;
-        }
-        std::thread::sleep(std::time::Duration::from_millis(10));
-    }
+    drop(store);
     let text = std::fs::read_to_string(&path).unwrap();
     assert!(
         text.ends_with("\n{\"text\":\"fresh\",\"cwd\":\"/p\",\"timestamp\":5}\n"),
@@ -163,7 +156,6 @@ fn model(id: &str) -> ModelInfo {
 }
 
 fn app() -> (App, Rc<Sent>) {
-    let theme = Rc::new(create_theme(&builtin_theme_json("dark").unwrap(), ColorMode::Truecolor, None).unwrap());
     let keys = || {
         KeybindingsManager::new(
             app_keybindings(Platform::new("linux", false)),
@@ -174,21 +166,10 @@ fn app() -> (App, Rc<Sent>) {
     let (lane, sent) = Sent::new(record);
     let mut app = App::new(
         AppOptions {
-            theme,
             keys: keys(),
-            version: "1.2.3".into(),
-            cwd: "/p".into(),
-            home: None,
-            server_id: "server".into(),
             models: vec![model("a"), model("b")],
             model: model("a"),
-            thinking_level: "medium".into(),
-            splash: false,
-            history: PromptHistoryStore::new(None, "/p"),
-            fd_path: None,
-            highlight: Rc::new(|code: &str| code.split('\n').map(str::to_string).collect()),
-            qol: interactive::qol::QolSettings::parity(),
-            bug_report_target: ("radius.pi.dev".into(), false),
+            ..support::options()
         },
         lane,
     );

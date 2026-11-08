@@ -13,7 +13,7 @@ use session_core::compose::{Runtime, Services};
 use session_core::core::Op;
 use std::path::Path;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 const HANG: Duration = Duration::from_secs(120);
 
@@ -92,7 +92,6 @@ fn session_core_schedules_and_goal_reach_every_lane_and_the_goal_admits_only_the
     stack.close();
 }
 
-/// The text of every user message of a request.
 fn body_text(body: &Value) -> String {
     body["messages"].to_string()
 }
@@ -120,19 +119,12 @@ fn session_core_the_goal_job_checks_and_completes_the_goal_from_its_own_repl() {
     });
     assert!(set.is_ok(), "{set:?}");
     // The job ran its cell on its own lane: the next request carries the cell's result.
-    let end = Instant::now() + HANG;
-    let result = loop {
-        let found = a
-            .requests()
+    let result = a.requests.wait("the job's cell result", |requests| {
+        requests
             .iter()
             .flat_map(p_session_support::tool_results)
-            .find(|r| r.to_string().contains("complete:"));
-        if let Some(found) = found {
-            break found;
-        }
-        assert!(Instant::now() < end, "the job's cell did not run: {:?}", a.requests());
-        std::thread::sleep(Duration::from_millis(20));
-    };
+            .find(|r| r.to_string().contains("complete:"))
+    });
     let shown = result.to_string();
     // Past the lane gate: the goal's own answers.
     assert!(shown.contains("check: This goal has no check command"), "{shown}");

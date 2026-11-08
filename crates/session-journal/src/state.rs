@@ -103,7 +103,6 @@ impl Write {
     }
 }
 
-/// `commitWrite`.
 pub fn commit_write(write: &Write, seq: i64, timestamp: i64) -> Value {
     let mut out = Map::new();
     match write {
@@ -190,7 +189,6 @@ fn physical_key(namespace: &str, key: &str) -> String {
     format!("{namespace}\u{0}{key}")
 }
 
-/// One stored scalar value.
 #[derive(Clone, Debug, PartialEq)]
 pub struct StoredValue {
     pub namespace: String,
@@ -199,7 +197,6 @@ pub struct StoredValue {
     pub seq: i64,
 }
 
-/// One list element.
 #[derive(Clone, Debug, PartialEq)]
 pub struct ListElement {
     pub seq: i64,
@@ -365,7 +362,6 @@ impl State {
             .push(ListElement { seq, value });
     }
 
-    /// `advanceNextSeq`.
     pub fn advance_next_seq(&mut self, next: i64) -> Result<(), String> {
         if next < 1 {
             return Err(format!("Invalid storage sequence high-water mark: {next}"));

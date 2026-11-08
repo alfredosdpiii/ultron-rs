@@ -388,12 +388,13 @@ fn mcp_oauth_a_held_refresh_lock_is_renewed_and_not_taken_over() {
     let first = timed().for_server("test", SERVER_URL);
     let second = timed().for_server("test", SERVER_URL);
     let lock = first.refresh_lock_path().unwrap();
-    let (held, released) = (AtomicBool::new(false), AtomicBool::new(false));
+    let released = AtomicBool::new(false);
+    let (held, holding) = std::sync::mpsc::channel();
     std::thread::scope(|scope| {
         scope.spawn(|| {
             first
                 .with_refresh_lock(|| {
-                    held.store(true, Ordering::SeqCst);
+                    held.send(()).unwrap();
                     // Hold well past the staleness period, counted in renewals of the lock's mtime.
                     let mut seen = std::fs::metadata(&lock).unwrap().modified().unwrap();
                     let mut renewals = 0;
@@ -412,11 +413,9 @@ fn mcp_oauth_a_held_refresh_lock_is_renewed_and_not_taken_over() {
                 })
                 .unwrap();
         });
-        let start = Instant::now();
-        while !held.load(Ordering::SeqCst) {
-            assert!(start.elapsed() < Duration::from_secs(120));
-            std::thread::sleep(Duration::from_millis(5));
-        }
+        holding
+            .recv_timeout(Duration::from_secs(120))
+            .expect("the first refresh never took the lock");
         second
             .with_refresh_lock(|| {
                 assert!(released.load(Ordering::SeqCst), "the lock was taken over mid-refresh");

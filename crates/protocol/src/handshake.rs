@@ -36,7 +36,6 @@ pub struct Connected {
     pub queued: Vec<ServerMessage>,
 }
 
-/// The client's `hello` frame.
 pub fn client_hello() -> Vec<u8> {
     encode_client_message(
         &ClientMessage::Hello {
@@ -76,7 +75,6 @@ pub fn read_hello(read: &mut dyn Read, server_id: &str) -> Result<Connected, Hel
     }
 }
 
-/// Send the client hello on `stream` and [`read_hello`].
 pub fn hello<S: Read + Write>(stream: &mut S, server_id: &str) -> Result<Connected, HelloError> {
     stream.write_all(&client_hello()).map_err(HelloError::Io)?;
     read_hello(stream, server_id)

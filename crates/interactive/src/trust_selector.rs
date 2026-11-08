@@ -32,7 +32,6 @@ pub struct TrustView {
     pub project_trusted: bool,
 }
 
-/// What a key did.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum TrustAction {
     Selected {
@@ -50,7 +49,6 @@ pub fn saved_status(trusted: bool) -> String {
     )
 }
 
-/// `formatDecision`.
 fn format_decision(trust_path: Option<&str>, decision: Option<&(String, bool)>) -> String {
     let Some((path, decided)) = decision else {
         return "none".into();

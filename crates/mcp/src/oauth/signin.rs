@@ -130,7 +130,6 @@ pub trait SignInPrompt: Sync {
     fn prompt_for_redirect_url(&self, cancel: &CancelToken) -> Option<String>;
 }
 
-/// `responseFromRedirectUrl`.
 fn response_from_redirect_url(input: &str, state: &str) -> Result<(String, Option<String>), OAuthError> {
     let url = Url::parse(input.trim())
         .map_err(|_| OAuthError::Other("Expected the full redirect URL from the browser address bar".into()))?;

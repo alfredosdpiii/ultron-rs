@@ -250,7 +250,6 @@ pub(crate) fn native_session_as_pi(session: &Session, lane: &str, tip_items: boo
         .and_then(|tip| produced.get(tip))
         .cloned()
         .unwrap_or_default();
-    // Moved out, not copied: each native entry produced its items once.
     let entries = natives
         .iter()
         .filter_map(|e| str_of(e, "id"))

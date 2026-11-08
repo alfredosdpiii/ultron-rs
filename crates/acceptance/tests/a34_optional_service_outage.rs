@@ -59,7 +59,6 @@ impl MemoryBackend for HindsightDown {
     }
 }
 
-/// The skills module is down.
 struct BrokenSkills;
 
 impl ApiModule for BrokenSkills {

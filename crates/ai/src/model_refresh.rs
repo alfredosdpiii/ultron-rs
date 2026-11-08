@@ -26,9 +26,7 @@ pub fn builtin_generated_at() -> Option<i64> {
     *AT
 }
 
-/// `REMOTE_CATALOG_REFRESH_INTERVAL_MS`.
 pub const REMOTE_CATALOG_REFRESH_INTERVAL_MS: i64 = 4 * 60 * 60 * 1000;
-/// `REMOTE_CATALOG_ATTEMPT_TIMEOUT_MS`.
 const REMOTE_CATALOG_ATTEMPT_TIMEOUT: Duration = Duration::from_secs(4);
 /// The pi.dev catalog service (`DEFAULT_CATALOG_BASE_URL`).
 pub const DEFAULT_CATALOG_BASE_URL: &str = "https://pi.dev";

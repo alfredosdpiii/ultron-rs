@@ -70,7 +70,6 @@ fn exists(path: &str) -> bool {
     Path::new(path).exists()
 }
 
-/// `collectFiles`.
 fn collect_files(dir: &str, kind: ResourceType, ig: &mut Ignore, root: &str, out: &mut Vec<String>) {
     if !exists(dir) {
         return;
@@ -213,7 +212,6 @@ fn matches_any(file: &str, patterns: &[&str], base: &str) -> bool {
     })
 }
 
-/// `matchesAnyExactPattern`.
 fn matches_any_exact(file: &str, patterns: &[&str], base: &str) -> bool {
     let rel = relative(base, file);
     let skill = basename(file) == "SKILL.md";
@@ -227,7 +225,6 @@ fn matches_any_exact(file: &str, patterns: &[&str], base: &str) -> bool {
     })
 }
 
-/// `isEnabledByOverrides`.
 pub fn enabled_by_overrides(file: &str, patterns: &[String], base: &str) -> bool {
     let with = |c: char| -> Vec<&str> { patterns.iter().filter_map(|p| p.strip_prefix(c)).collect() };
     let (excludes, force_in, force_out) = (with('!'), with('+'), with('-'));

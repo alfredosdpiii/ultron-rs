@@ -1,5 +1,5 @@
 //! A06 (the frame and wall-time cases): "an artifact larger than the RPC frame never reaches the service from Python"
-//! (as any host request: `artifacts.*` is not ported), "a task past its timeout is cancelled with a durable cancelled
+//! (as any host request: `artifacts.*` was removed), "a task past its timeout is cancelled with a durable cancelled
 //! result" (through `agents.spawn`, as the TS case does) and "the root wall deadline caps task timeouts and rejects
 //! work after it passes" of packages/coding-agent/test/ultron-a06-limits.test.ts, over the real runtime.py kernel and
 //! the Rust typed-agent host with its usage ledger.

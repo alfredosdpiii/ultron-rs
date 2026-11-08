@@ -21,8 +21,6 @@ use std::sync::{Arc, mpsc};
 
 pub const EXPERIMENTAL_ENV: &str = "PI_EXPERIMENTAL";
 
-// ------------------------------------------------------------------------------------------------- command lines
-
 /// `TransportAddress` of `--connect`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TransportAddress {
@@ -30,7 +28,6 @@ pub enum TransportAddress {
     Radius(String),
 }
 
-/// `ServerCommand`.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ServerCommand {
     pub auth: Option<AuthInput>,
@@ -142,7 +139,6 @@ impl Experimental {
     }
 }
 
-/// An option's parsed value.
 #[derive(Debug, Clone)]
 enum OptionValue {
     Text(String),
@@ -315,7 +311,6 @@ fn parse_options(argv: &[String], options: &[OptionSpec]) -> Parsed {
     parsed
 }
 
-/// `parseAuth`.
 fn parse_auth(parsed: &Parsed) -> (Option<AuthInput>, Vec<String>) {
     match (parsed.text("--auth-token"), parsed.text("--auth-token-file")) {
         (Some(_), Some(_)) => (
@@ -493,8 +488,6 @@ pub fn parse_transport_address(value: &str) -> Result<TransportAddress, String> 
     }
 }
 
-// ------------------------------------------------------------------------------------------------------ running
-
 /// `runExperimentalCommand`: with `PI_EXPERIMENTAL=1`, `ultron server …` and `ultron client …` run here (`None`
 /// leaves every other command line to the stable CLI). Errors are printed as `Error: …` and exit 1.
 pub fn run(argv: &[String], env: &Env, out: &mut dyn Write, err: &mut dyn Write) -> Option<i32> {
@@ -536,7 +529,6 @@ fn resolved_auth(env: &Env, auth: &Option<AuthInput>) -> Option<AuthInput> {
     })
 }
 
-/// The server options of this instance for the experimental commands.
 fn instance_server_options(
     env: &Env,
     session_dir: Option<&str>,
@@ -555,7 +547,6 @@ fn instance_server_options(
     ServerOptions::for_instance(&instance, session_dir, &*env.var, model).map_err(io)
 }
 
-/// What the server command waits for.
 enum ServerEvent {
     Status(RelayHostStatus),
     Stop,
@@ -636,7 +627,6 @@ pub fn pending_relay_status(statuses: Vec<RelayHostStatus>) -> Option<RelayHostS
     statuses.into_iter().last()
 }
 
-/// `routeFromExplicitPath`.
 fn route_from_explicit_path(path: &Path) -> Result<Route, String> {
     let name = path
         .file_name()

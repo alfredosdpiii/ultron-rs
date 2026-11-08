@@ -8,10 +8,10 @@
 //! directory is private too. Each trial drives the Rust `ultron` binary in RPC mode.
 //!
 //! Frozen before measurement: TRIALS per case and PASS_THRESHOLD. Expected answers are computed here, independently
-//! of the model's own description of what it did. The one difference from the TypeScript runner: the Rust build has
-//! no RPC `inspect` yet, so the event-retrieval case reads the session's recorded `agents.status` tasks from its
-//! session file through the product's task journal after the process exits (the session is kept in a private
-//! session directory for that, where the TS runner used `--no-session`).
+//! of the model's own description of what it did. The one difference from the TypeScript runner: the
+//! event-retrieval case reads the session's recorded `agents.status` tasks from its session file through the
+//! product's task journal after the process exits (the session is kept in a private session directory for that,
+//! where the TS runner used `--no-session` and RPC `inspect`).
 
 use crate::live_support;
 

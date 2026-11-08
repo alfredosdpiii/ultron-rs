@@ -22,7 +22,6 @@ pub struct ContextView {
     pub messages: Vec<Message>,
 }
 
-/// The model messages an entry stores.
 pub fn entry_messages(entry: &EntryRecord) -> Result<Vec<Message>> {
     entry
         .model

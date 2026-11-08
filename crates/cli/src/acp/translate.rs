@@ -10,7 +10,6 @@ use serde_json::{Map, Value, json};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-/// The ACP protocol version spoken (schema v1).
 pub const PROTOCOL_VERSION: u64 = 1;
 /// The default refusal text of the Anthropic provider (`ai::anthropic`), the only refusal the stream can tell apart.
 use ai::anthropic::REFUSAL_TEXT;
@@ -87,7 +86,6 @@ pub fn user_message(blocks: &[Value]) -> Result<UserMessage, String> {
     Ok(message)
 }
 
-/// `{sessionUpdate, content: {type: "text", text}}`.
 pub fn chunk(kind: &str, text: &str) -> Value {
     json!({"sessionUpdate": kind, "content": {"type": "text", "text": text}})
 }
@@ -128,7 +126,6 @@ pub fn result_text(result: &Value) -> String {
         .join("\n")
 }
 
-/// The `tool_call` that opens a cell.
 pub fn tool_call(id: &str, name: &str, args: &Value) -> Value {
     let mut content = Vec::new();
     if let Some(code) = args["code"].as_str() {
@@ -198,7 +195,6 @@ pub fn tool_update(id: &str, args: &Value, output: &Value, end: Option<(bool, &F
     Value::Object(update)
 }
 
-/// How a prompt turn ended.
 #[derive(Debug, Clone, PartialEq)]
 pub enum TurnEnd {
     /// `PromptResponse.stopReason`.

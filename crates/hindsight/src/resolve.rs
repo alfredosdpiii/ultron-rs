@@ -16,7 +16,6 @@ pub const HINDSIGHT_URL_ENV: &str = "ULTRON_HINDSIGHT_URL";
 
 /// `DEFAULT_HINDSIGHT_URL` (core/defaults.ts).
 pub const DEFAULT_HINDSIGHT_URL: &str = "http://localhost:8888";
-/// The bank when `ULTRON_HINDSIGHT_BANK` is unset or empty.
 const DEFAULT_BANK: &str = "ultron";
 
 fn off(value: &str) -> bool {

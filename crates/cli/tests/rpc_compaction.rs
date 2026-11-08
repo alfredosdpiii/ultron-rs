@@ -148,7 +148,7 @@ struct Fixture {
     _tmp: tempfile::TempDir,
 }
 
-/// The binary in RPC mode against [`provider`].
+/// The binary in RPC mode against [`provider_scripted`].
 fn start(replies: Vec<String>, hold: bool) -> Fixture {
     start_full(replies, Vec::new(), hold, None)
 }
@@ -176,7 +176,8 @@ fn start_full(replies: Vec<String>, summaries: Vec<String>, hold: bool, settings
         (config::paths::ENV_SERVER_DIR, root.join("server").display().to_string()),
         ("ANTHROPIC_API_KEY", "test-key".into()),
         (hindsight::resolve::HINDSIGHT_URL_ENV, "off".into()),
-        // The provider's replies are scripted in order; a refinement request (session_core::auto_refine) would take one.
+        // The provider's replies are scripted in order; a refinement request (session_core::auto_refine) would take
+        // one.
         (session_core::core::AUTO_REFINE_ENV, "off".into()),
         (config::env::OFFLINE_ENV, "1".into()),
         ("NO_COLOR", "1".into()),
@@ -544,7 +545,7 @@ fn cli_rpc_compaction_compact_during_a_run_recovers_and_cancels() {
     assert_eq!(code, Some(0));
 }
 
-/// The session actor itself (what the session worker runs) against [`provider`], for the operations RPC has no
+/// The session actor itself (what the session worker runs) against [`provider_scripted`], for the operations RPC has no
 /// command for (tree navigation is the agent controller's `navigate`): ops go in through `core::call`, its events
 /// are collected.
 struct Actor {
@@ -765,11 +766,11 @@ fn navigate(target: &str, summarize: bool) -> session_core::core::Op {
 }
 
 /// TypeScript `should handle abort during summarization` (agent-session-tree-navigation.test.ts) and #9178: while a
-/// navigation's branch summary runs the session answers, `isCompacting` is true, another navigation is refused
-/// ("Wait for the current compaction or tree navigation to finish ..."); a worker killed then leaves the
-/// navigation's operation to settle `failed` (`interrupted`) with the session where it was; `abort` cancels the summary: the navigation ends `aborted` with no
-/// summary entry and the leaf unchanged, and `isCompacting` is false again. Before, the actor blocked on the
-/// summary and `isCompacting` stayed false.
+/// navigation's branch summary runs the session answers, `isCompacting` is true, another navigation is refused ("Wait
+/// for the current compaction or tree navigation to finish ..."); a worker killed then leaves the navigation's
+/// operation to settle `failed` (`interrupted`) with the session where it was; `abort` cancels the summary: the
+/// navigation ends `aborted` with no summary entry and the leaf unchanged, and `isCompacting` is false again. Before,
+/// the actor blocked on the summary and `isCompacting` stayed false.
 #[test]
 fn cli_rpc_compaction_branch_summary_is_compacting_and_abortable() {
     let a = actor(vec![reply(10, "One."), reply(10, "Two.")], true);
@@ -1274,9 +1275,9 @@ fn cli_rpc_compaction_summary_retry_needs_a_transient_error_and_retries_on() {
     }
 }
 
-/// The summarization retry events AgentSession emits (`_summarizationRetryCallbacks` over `retryAssistantCall`)
-/// and their order: `summarization_retry_scheduled` with the retry's number (1), the retries allowed (`maxRetries`,
-/// 3), the delay and the provider's error message; `summarization_retry_attempt_start` with the source (`compaction` and its
+/// The summarization retry events AgentSession emits (`_summarizationRetryCallbacks` over `retryAssistantCall`) and
+/// their order: `summarization_retry_scheduled` with the retry's number (1), the retries allowed (`maxRetries`, 3), the
+/// delay and the provider's error message; `summarization_retry_attempt_start` with the source (`compaction` and its
 /// reason, or `branchSummary`); `summarization_retry_finished` once the retries end, also after an abort during the
 /// wait (then with no attempt start).
 #[test]

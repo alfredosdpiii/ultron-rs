@@ -10,7 +10,6 @@ use session_core::context_reminder::{
     ContextReminders, Limit, Measure, ReminderSettings, format_tokens, lane_limit, margin, reminder_line,
 };
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
 
 const ON: ReminderSettings = ReminderSettings {
     enabled: true,
@@ -449,13 +448,10 @@ fn session_core_context_reminder_reaches_a_subagent_lane() {
         tool_at("toolu_c3", "print('c3')", 976_000),
         text("child done"),
     ];
-    let child_requests = Arc::new(Mutex::new(Vec::new()));
-    let seen = child_requests.clone();
     let counters = Arc::new(Mutex::new((0usize, 0usize)));
     let script = Box::new(move |body: &Value, _| {
         let mut counters = counters.lock().unwrap();
         if first_user_text(body).contains("look around") {
-            seen.lock().unwrap().push(body.clone());
             counters.1 += 1;
             child.get(counters.1 - 1).cloned().unwrap_or_else(|| text("(no more)"))
         } else {
@@ -471,16 +467,15 @@ fn session_core_context_reminder_reaches_a_subagent_lane() {
         },
     );
     a.prompt("delegate");
-    // The child runs on after the root's turn: wait for its last request (a hang guard, never a pass condition).
-    let deadline = Instant::now() + p_session_support::HANG;
-    let requests = loop {
-        let requests = child_requests.lock().unwrap().clone();
-        if requests.len() >= 4 {
-            break requests;
-        }
-        assert!(Instant::now() < deadline, "the child made {} requests", requests.len());
-        std::thread::sleep(Duration::from_millis(10));
-    };
+    // The child runs on after the root's turn: wait for its last request.
+    let requests = a.requests.wait("the child's fourth request", |all| {
+        let child: Vec<Value> = all
+            .iter()
+            .filter(|r| first_user_text(r).contains("look around"))
+            .cloned()
+            .collect();
+        (child.len() >= 4).then_some(child)
+    });
     assert_eq!(requests.len(), 4);
     let results = texts(tool_results(requests.last().unwrap()));
     assert_eq!(

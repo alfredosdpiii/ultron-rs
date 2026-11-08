@@ -32,7 +32,6 @@ pub fn builder(proxy: Option<&ProxyEnv>) -> ClientBuilder {
     builder
 }
 
-/// [`builder`] with an optional request timeout, built.
 pub fn client(proxy: Option<&ProxyEnv>, timeout: Option<Duration>) -> reqwest::Result<Client> {
     let mut builder = builder(proxy);
     if let Some(timeout) = timeout {

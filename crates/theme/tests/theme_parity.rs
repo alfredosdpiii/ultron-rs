@@ -1,5 +1,6 @@
 //! Differential parity of the theme port against packages/coding-agent theme.ts and theme-json.ts (TypeScript).
-//! Fixture: fixtures/theme-parity.json, produced by `node crates/theme/fixtures/generate-theme.mjs`.
+//! Fixture: fixtures/theme-parity.json, produced by `node crates/theme/fixtures/generate-theme.mjs`. Plus [`Theme::adopt`],
+//! the in-place swap that stands in for TypeScript's global theme.
 
 use std::path::Path;
 
@@ -352,4 +353,19 @@ fn tui_theme_constructor_fills_optional_tokens_like_typescript() {
     }
     // TypeScript throws "Unknown theme color: nope" from `getFgAnsi`; here a token name is checked where it is read.
     assert_eq!((Fg::from_name("nope"), Bg::from_name("nope")), (None, None));
+}
+
+#[test]
+fn tui_theme_adopt_recolors_every_holder() {
+    let dark =
+        std::rc::Rc::new(create_theme(&builtin_theme_json("dark").unwrap(), ColorMode::Truecolor, None).unwrap());
+    let light = create_theme(&builtin_theme_json("light").unwrap(), ColorMode::Truecolor, None).unwrap();
+    let held = std::rc::Rc::clone(&dark);
+    let before = held.fg(Fg::Accent, "x");
+    dark.adopt(&light);
+    assert_eq!(held.fg(Fg::Accent, "x"), light.fg(Fg::Accent, "x"));
+    assert_ne!(held.fg(Fg::Accent, "x"), before);
+    assert_eq!(held.thinking_border("high", "x"), light.thinking_border("high", "x"));
+    // The name stays the holder's.
+    assert_eq!(held.name.as_deref(), Some("dark"));
 }

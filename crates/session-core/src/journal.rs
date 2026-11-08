@@ -54,7 +54,6 @@ impl RunJournal {
         })
     }
 
-    /// When the run's held stream frame is due ([`Run::held_until`]).
     pub fn held_until(&self) -> Option<std::time::Instant> {
         self.run
             .as_ref()
@@ -62,7 +61,6 @@ impl RunJournal {
             .and_then(Run::held_until)
     }
 
-    /// Journal the held stream frame now ([`Run::flush_held`]).
     pub fn flush_held(&mut self, session: &mut Session) {
         self.apply(session, Run::flush_held);
     }
@@ -88,7 +86,6 @@ impl RunJournal {
         }
     }
 
-    /// Journal one loop event.
     pub fn event(&mut self, session: &mut Session, event: &AgentEvent) {
         let (max_tokens, context_window) = self.model;
         match event {
@@ -144,21 +141,18 @@ impl RunJournal {
         });
     }
 
-    /// The stream options of the run's generations (see [`Run::set_stream_options`]).
     pub fn set_stream_options(&mut self, options: Value) {
         if let Some(run) = self.run.as_mut() {
             run.set_stream_options(options);
         }
     }
 
-    /// The generation's retry policy (see [`Run::set_retry_policy`]).
     pub fn set_retry_policy(&mut self, policy: Value) {
         if let Some(run) = self.run.as_mut() {
             run.set_retry_policy(policy);
         }
     }
 
-    /// The next error answer is retried (see [`Run::schedule_retry`]).
     pub fn schedule_retry(&mut self, not_before: i64, error: String) {
         if let Some(run) = self.run.as_mut() {
             run.schedule_retry(not_before, error);
@@ -199,7 +193,6 @@ impl RunJournal {
         }
     }
 
-    /// The run fails before its first generation with a configuration error (see [`Run::fail_configuration`]).
     pub fn fail_configuration(
         self,
         session: &mut Session,
@@ -216,14 +209,12 @@ impl RunJournal {
         }
     }
 
-    /// The run's next answer is an overflow that starts a compaction (see [`Run::compact_with_answer`]).
     pub fn compact_with_answer(&mut self, session: &Session, prepared: Value) {
         if let Some(run) = self.run.as_mut() {
             run.compact_with_answer(session, prepared);
         }
     }
 
-    /// A compaction starts at the current checkpoint (see [`Run::begin_compaction`]).
     pub fn begin_compaction(
         &mut self,
         session: &mut Session,
@@ -251,7 +242,6 @@ impl RunJournal {
         self.run.as_ref()?.compaction_task_id()
     }
 
-    /// See [`Run::compaction_retry_wait`].
     pub fn compaction_retry_wait(
         &mut self,
         session: &mut Session,
@@ -262,7 +252,6 @@ impl RunJournal {
         self.apply(session, |run, s| run.compaction_retry_wait(s, usage, error, not_before));
     }
 
-    /// See [`Run::compaction_retry`].
     pub fn compaction_retry(&mut self, session: &mut Session) {
         self.apply(session, |run, s| run.compaction_retry(s));
     }

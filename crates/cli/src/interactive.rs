@@ -1137,7 +1137,6 @@ fn link_thread(
     }
 }
 
-/// One call of the attached session's services.
 fn session_call(link: &Link, service: &str, member: &str, args: Value) -> Result<Option<Value>, String> {
     let connection = link.connection();
     connection
@@ -1170,8 +1169,6 @@ fn read_trust(link: &Link) -> Result<interactive::trust_selector::TrustView, Str
     })
 }
 
-/// `/debug`: the worker's `debugInfo` and this client's and server's facts with what the TUI shows, written to
-/// `<agentDir>/ultron-debug.log` (0600).
 /// The socket of server `server_id` in this project's instance or the durable one, whichever has it.
 fn local_server_socket(env: &Env, server_id: &str) -> Option<std::path::PathBuf> {
     [false, true]
@@ -1180,6 +1177,8 @@ fn local_server_socket(env: &Env, server_id: &str) -> Option<std::path::PathBuf>
         .find(|p| p.exists())
 }
 
+/// `/debug`: the worker's `debugInfo` and this client's and server's facts with what the TUI shows, written to
+/// `<agentDir>/ultron-debug.log` (0600).
 fn write_debug_log(
     link: &Link,
     env: &Env,
@@ -1273,11 +1272,11 @@ fn reload_plugins(link: &Link) -> Result<(), String> {
     apply_presentation_plugins(&data)
 }
 
-/// Save one setting the way the worker's `setSetting` does: dotted keys into their object, per-model thinking
-/// levels into `modelThinkingLevels`, `null` removes.
 /// The `persona` setting's value for "off" (any value but `ultron` is off).
 const PERSONA_NONE: &str = "none";
 
+/// Save one setting the way the worker's `setSetting` does: dotted keys into their object, per-model thinking
+/// levels into `modelThinkingLevels`, `null` removes.
 fn save_setting(settings: &mut config::settings::SettingsManager, key: &str, value: Value) {
     if key == "modelThinkingLevel" {
         let provider = value["provider"].as_str().unwrap_or_default();
@@ -1543,8 +1542,6 @@ fn catalog(env: &Env) -> Vec<ModelInfo> {
         .collect()
 }
 
-/// Start a long call of the attached session (one the worker runs on its own thread, so later calls such as
-/// `abortBash` are not queued behind it) without waiting for it.
 /// An operation of the attached session that any thread can run (the link stays with its thread).
 fn session_op_runner(link: &Link) -> Arc<dyn Fn(Op) -> Result<Option<Value>, String> + Send + Sync> {
     let connection = link.connection();
@@ -1557,6 +1554,8 @@ fn session_op_runner(link: &Link) -> Arc<dyn Fn(Op) -> Result<Option<Value>, Str
     })
 }
 
+/// Start a long call of the attached session (one the worker runs on its own thread, so later calls such as
+/// `abortBash` are not queued behind it) without waiting for it.
 fn start_call(
     link: &Link,
     service: &str,
@@ -1676,7 +1675,6 @@ pub fn pick_session(
     sessions.get(index).map(|s| s.metadata.clone())
 }
 
-/// Whether stdin and stdout are a terminal (the TUI runs only then).
 pub fn is_terminal() -> bool {
     std::io::stdin().is_terminal() && std::io::stdout().is_terminal()
 }
@@ -1684,7 +1682,6 @@ pub fn is_terminal() -> bool {
 /// A second unexpected worker stop within this long is reported instead of recovered (`WORKER_RECOVERY_INTERVAL_MS`).
 const WORKER_RECOVERY_INTERVAL: std::time::Duration = std::time::Duration::from_secs(30);
 
-/// How long exit waits for the session's server to stop.
 const SHUTDOWN_WAIT: std::time::Duration = std::time::Duration::from_secs(30);
 
 /// Run the interactive TUI on `target`'s session until the user exits.
@@ -1788,7 +1785,6 @@ pub fn user_keybindings(agent_dir: &std::path::Path, platform: interactive::keyb
     )
 }
 
-/// Run the TUI over the link `open_link` opens (its watch events go to the TUI) until the user exits.
 /// The TUI's debug outputs and Termux flag from `env` ([`interactive::run::terminal_debug`]): the redraw log goes to
 /// the agent directory (`logDirectory: agentDir`), dumps to `dump_dir`; the write-log file is named by local time.
 pub fn terminal_debug(env: &Env, dump_dir: &std::path::Path) -> (Option<std::sync::Arc<tui::RenderDebug>>, bool) {
@@ -1827,6 +1823,7 @@ pub fn presentation_settings(parsed: &Args, settings: &serde_json::Map<String, V
     Value::Object(settings)
 }
 
+/// Run the TUI over the link `open_link` opens (its watch events go to the TUI) until the user exits.
 fn run_tui(
     parsed: &Args,
     env: &Env,

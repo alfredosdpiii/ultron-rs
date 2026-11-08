@@ -155,8 +155,6 @@ impl Source {
     }
 }
 
-// --- Claude Code ---------------------------------------------------------------------------------------------------
-
 fn collect_markdown(directory: &Path, out: &mut Vec<PathBuf>) -> Result<(), String> {
     let entries = std::fs::read_dir(directory).map_err(|e| format!("{}: {e}", directory.display()))?;
     for entry in entries {
@@ -234,8 +232,6 @@ pub fn claude_code_notes(directory: &Path) -> Result<Vec<Note>, String> {
     }
     Ok(notes)
 }
-
-// --- Codex -----------------------------------------------------------------------------------------------------------
 
 struct Section {
     heading: String,
@@ -428,8 +424,6 @@ pub fn codex_notes(directory: &Path) -> Result<Vec<Note>, String> {
     }
     Ok(notes)
 }
-
-// --- planning and import -------------------------------------------------------------------------------------------
 
 /// A kebab-case key of at most 60 bytes from free text (Mirror `slug_key`).
 pub fn slug_key(text: &str) -> String {

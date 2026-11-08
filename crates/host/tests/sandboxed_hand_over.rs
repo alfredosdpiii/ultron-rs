@@ -166,23 +166,12 @@ fn hand_over(base: &Path, mechanism: Mechanism) {
         json!({ "command": format!("echo {marker}; while true; do sleep 0.05; done"), "yield_after": 0 }),
     );
     let id = job["id"].as_str().unwrap().to_string();
-    wait_for("the second job's process", || !processes_with(&marker).is_empty());
+    wait_for("the second job's process", || {
+        !backends_support::processes_with(&marker).is_empty()
+    });
     let cancelled = call(&host, "shell.cancel", json!({ "id": id }));
     assert_eq!(cancelled["status"], "cancelled", "{name}: {cancelled}");
     wait_for("every process of the cancelled sandbox to go", || {
-        processes_with(&marker).is_empty()
+        backends_support::processes_with(&marker).is_empty()
     });
-}
-
-/// Live processes whose command line mentions `marker` (the sandbox's inner processes are visible here too).
-fn processes_with(marker: &str) -> Vec<i32> {
-    std::fs::read_dir("/proc")
-        .unwrap()
-        .filter_map(|entry| entry.ok()?.file_name().to_str()?.parse::<i32>().ok())
-        .filter(|pid| *pid != std::process::id() as i32 && alive(*pid))
-        .filter(|pid| {
-            std::fs::read(format!("/proc/{pid}/cmdline"))
-                .is_ok_and(|cmdline| String::from_utf8_lossy(&cmdline).contains(marker))
-        })
-        .collect()
 }

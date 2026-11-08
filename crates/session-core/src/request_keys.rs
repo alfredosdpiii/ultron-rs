@@ -20,7 +20,6 @@ use std::task::Poll;
 /// Resolves a provider's own credentials (auth.json, models.json, the environment) now.
 pub type ProviderCredentials = Arc<dyn Fn(&str) -> Option<String> + Send + Sync>;
 
-/// The keys of a session's requests.
 #[derive(Clone)]
 pub struct Keys {
     /// `--api-key` and the provider it was given for.

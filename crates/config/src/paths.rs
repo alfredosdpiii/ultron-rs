@@ -96,7 +96,6 @@ impl AgentPaths {
     pub fn trust(&self) -> PathBuf {
         self.join("trust.json")
     }
-    /// The global MCP server configuration.
     pub fn mcp(&self) -> PathBuf {
         self.join("mcp.json")
     }

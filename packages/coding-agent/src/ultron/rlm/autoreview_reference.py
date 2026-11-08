@@ -67,7 +67,6 @@ def _clip(text: str, limit: int = MAX_LINE_CHARS) -> str:
     return text if len(text) <= limit else text[: limit - 1] + "…"
 
 
-# --- Data ------------------------------------------------------------------------------------------------------
 
 
 @dataclass
@@ -299,7 +298,6 @@ def index_ts_checked(root: str, sources: list[dict[str, str]]) -> list[dict[str,
         return None
 
 
-# --- Python ----------------------------------------------------------------------------------------------------
 
 
 def _py_signature(node: ast.AST) -> str:
@@ -467,7 +465,6 @@ def index_python(path: str, text: str) -> FileIndex:
     return index
 
 
-# --- TypeScript and JavaScript ---------------------------------------------------------------------------------
 
 
 _TS_FUNC = re.compile(r"^\s*(?:export\s+)?(?:default\s+)?(?:async\s+)?function\s*\*?\s*([A-Za-z_$][\w$]*)\s*[<(]")
@@ -605,7 +602,6 @@ def index_ts(path: str, text: str) -> FileIndex:
     return index
 
 
-# --- YAML (a subset: what workflows and manifests use) ---------------------------------------------------------
 
 
 class YamlNode:
@@ -773,7 +769,6 @@ def _yaml_get(value: Any, *keys: Any) -> Any:
     return value
 
 
-# --- Terraform -------------------------------------------------------------------------------------------------
 
 
 _TF_BLOCK = re.compile(r"""^\s*(resource|data|module|variable|output|locals|provider|terraform)(?:\s+"([^"]+)")?(?:\s+"([^"]+)")?\s*\{""")
@@ -857,7 +852,6 @@ def parse_terraform(path: str, text: str) -> list[TfBlock]:
     return blocks
 
 
-# --- The reference ---------------------------------------------------------------------------------------------
 
 
 _IMPORT_LINE = re.compile(r"^\s*(?:from\s+([\w.]+)\s+import|import\s+([\w.]+))|require\(\s*['\"]([^'\"]+)['\"]\s*\)|from\s+['\"]([^'\"]+)['\"]")
@@ -888,7 +882,6 @@ class Reference:
         self._ids: dict[str, str] = {}
         self._facts: list[dict[str, Any]] | None = None
 
-    # -- building
 
     def build(self) -> "Reference":
         began = self.clock()
@@ -1111,7 +1104,6 @@ class Reference:
                 targets = by_name[leaf]  # a method of a known class, reached through an object of unknown type
             call.targets = [symbol.key for symbol in targets][:5]
 
-    # -- queries
 
     def symbols_named(self, name: str) -> list[Symbol]:
         leaf = name.rsplit(".", 1)[-1]
@@ -1217,7 +1209,6 @@ class Reference:
                 return other.signature
         return ""  # new in this change
 
-    # -- views
 
     def _id(self, prefix: str, key: str) -> str:
         if key not in self._ids:
@@ -1295,7 +1286,6 @@ class Reference:
             text += "\n\n" + section
         return text
 
-    # -- facts
 
     def facts(self) -> list[dict[str, Any]]:
         """Host-observed facts about the change, each {id, kind, text, path, line, ...}: literal families the
@@ -1397,7 +1387,6 @@ def _module_map(tracked: Iterable[str]) -> dict[str, str]:
     return out
 
 
-# --- Workflow and Terraform facts ------------------------------------------------------------------------------
 
 
 _OIDC_USERS = re.compile(r"configure-aws-credentials|google-github-actions/auth|azure/login|actions/attest|sigstore|"
@@ -1617,7 +1606,6 @@ def _terraform_facts(reference: Reference) -> list[dict[str, Any]]:
     return out
 
 
-# --- Serving requests ------------------------------------------------------------------------------------------
 
 
 def serve(reference: Reference, kind: str, args: dict[str, Any]) -> tuple[str, str] | None:

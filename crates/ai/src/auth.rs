@@ -1,8 +1,8 @@
 //! Provider auth of `packages/ai` (`auth/types.ts`, `auth/resolve.ts`, `auth/helpers.ts`, `auth/credential-store.ts`,
-//! `auth/context.ts`): credentials (api-key and OAuth, the `auth.json` entry shapes), login interaction, credential
-//! stores (in memory with per-provider serialized writes, or `auth.json` with the TypeScript product's lock and
-//! format), the built-in providers' handlers (Anthropic, OpenAI, OpenAI Codex, GitHub Copilot, Google, Google Vertex,
-//! OpenRouter), `resolveProviderAuth` with its locked OAuth refresh, and `mergeHeaders`.
+//! `auth/context.ts`): credentials (api-key and OAuth, the `auth.json` entry shapes), login interaction, the
+//! credential store (`auth.json` with the TypeScript product's lock and format), the built-in providers' handlers
+//! (Anthropic, OpenAI, OpenAI Codex, GitHub Copilot, Google, Google Vertex, OpenRouter), `resolveProviderAuth` with
+//! its locked OAuth refresh, and `mergeHeaders`.
 //!
 //! Evidence: `fixtures/generate-auth.mjs` (TypeScript `resolveProviderAuth` over the built-in providers,
 //! `tests/auth.rs`) and `fixtures/generate-rest.mjs auth` (the `auth.json` store, `tests/auth_rest.rs`); the store's
@@ -18,13 +18,11 @@ use jsrt::date::now_ms;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::Arc;
 use std::time::Duration;
 
 /// Provider-scoped config values (Vertex project/location, Cloudflare account/gateway ids, ...), in insertion order.
 pub type CredentialEnv = IndexMap<String, String>;
-
-// ------------------------------------------------------------------------------------------------------ credentials
 
 /// Request auth for one model request (`ModelAuth`).
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -173,9 +171,6 @@ pub struct AuthCheck {
     pub kind: AuthType,
 }
 
-// ------------------------------------------------------------------------------------------------------------ errors
-
-/// `ModelsErrorCode`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ModelsErrorCode {
@@ -233,7 +228,7 @@ impl std::fmt::Display for ModelsError {
     }
 }
 
-/// Why auth resolution or a `Models` operation failed: the caller's signal aborted (`AbortError`), or a `ModelsError`.
+/// Why auth resolution failed: the caller's signal aborted (`AbortError`), or a `ModelsError`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum AuthError {
     Aborted,
@@ -267,8 +262,6 @@ impl std::fmt::Display for AuthError {
         f.write_str(&self.message())
     }
 }
-
-// --------------------------------------------------------------------------------------------- interaction / context
 
 /// A login prompt (`AuthPrompt`).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -364,27 +357,6 @@ pub trait AuthContext: Send + Sync {
     }
 }
 
-/// `defaultProviderAuthContext`: the process environment and the real file system.
-#[derive(Clone, Copy, Debug, Default)]
-pub struct DefaultAuthContext;
-
-impl AuthContext for DefaultAuthContext {
-    fn env(&self, name: &str) -> Option<String> {
-        std::env::var(name).ok().filter(|v| !v.trim().is_empty())
-    }
-
-    fn file_exists(&self, path: &str) -> bool {
-        let resolved = match path.strip_prefix('~') {
-            Some(rest) => match std::env::var_os("HOME") {
-                Some(home) => PathBuf::from(format!("{}{rest}", home.to_string_lossy())),
-                None => return false,
-            },
-            None => PathBuf::from(path),
-        };
-        resolved.exists()
-    }
-}
-
 /// `overlayEnvAuthContext`: request env values first.
 struct OverlayContext<'a> {
     base: &'a dyn AuthContext,
@@ -409,8 +381,6 @@ impl AuthContext for OverlayContext<'_> {
     }
 }
 
-// ---------------------------------------------------------------------------------------------------- provider auth
-
 /// Api-key auth: a stored key/provider env plus ambient sources (`ApiKeyAuth`).
 pub trait ApiKeyAuth: Send + Sync {
     fn name(&self) -> &str;
@@ -423,7 +393,7 @@ pub trait ApiKeyAuth: Send + Sync {
         None
     }
 
-    /// Side-effect-free availability check; `None` means `Models` resolves auth instead.
+    /// Side-effect-free availability check; `None` when the provider has none.
     fn check<'a>(
         &'a self,
         _ctx: &'a dyn AuthContext,
@@ -806,7 +776,6 @@ fn bedrock_auth(ctx: &dyn AuthContext, credential: Option<&ApiKeyCredential>) ->
     var("AWS_WEB_IDENTITY_TOKEN_FILE").map(|_| result(None, None, "web identity token"))
 }
 
-/// Amazon Bedrock's api-key auth ([`bedrock_auth`]).
 struct BedrockAuth;
 
 impl ApiKeyAuth for BedrockAuth {
@@ -869,8 +838,6 @@ pub fn filter_models<'m, M>(
     }
 }
 
-// ------------------------------------------------------------------------------------------------ credential stores
-
 /// The write callback of [`CredentialStore::modify`]: sees the current credential, returns the new one or `None` to
 /// leave it unchanged.
 pub type ModifyFn<'a> =
@@ -912,86 +879,6 @@ async fn unless_aborted<T>(
         biased;
         () = crate::http::cancelled(signal) => Err(StoreError::Aborted),
         result = work => result,
-    }
-}
-
-/// `InMemoryCredentialStore`: reads see the current map at once; writes per provider run one at a time in arrival
-/// order; `list` is in insertion order.
-#[derive(Default)]
-pub struct InMemoryCredentialStore {
-    credentials: Mutex<IndexMap<String, Credential>>,
-    locks: Mutex<IndexMap<String, Arc<tokio::sync::Mutex<()>>>>,
-}
-
-impl InMemoryCredentialStore {
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    fn data(&self) -> std::sync::MutexGuard<'_, IndexMap<String, Credential>> {
-        self.credentials.lock().unwrap_or_else(PoisonError::into_inner)
-    }
-
-    fn lock_for(&self, provider_id: &str) -> Arc<tokio::sync::Mutex<()>> {
-        Arc::clone(
-            self.locks
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner)
-                .entry(provider_id.to_owned())
-                .or_default(),
-        )
-    }
-}
-
-impl CredentialStore for InMemoryCredentialStore {
-    fn read<'a>(&'a self, provider_id: &'a str) -> BoxFuture<'a, Result<Option<Credential>, String>> {
-        let value = self.data().get(provider_id).cloned();
-        Box::pin(async move { Ok(value) })
-    }
-
-    fn list(&self) -> BoxFuture<'_, Result<Vec<CredentialInfo>, String>> {
-        let out = self
-            .data()
-            .iter()
-            .map(|(id, c)| CredentialInfo {
-                provider_id: id.clone(),
-                kind: c.kind(),
-            })
-            .collect();
-        Box::pin(async move { Ok(out) })
-    }
-
-    fn modify<'a>(
-        &'a self,
-        provider_id: &'a str,
-        f: ModifyFn<'a>,
-        signal: Option<&'a AbortSignal>,
-    ) -> BoxFuture<'a, Result<Option<Credential>, StoreError>> {
-        Box::pin(unless_aborted(signal, async move {
-            let lock = self.lock_for(provider_id);
-            let _guard = lock.lock().await;
-            let current = self.data().get(provider_id).cloned();
-            let next = f(current.clone()).await.map_err(StoreError::Callback)?;
-            if is_aborted(signal) {
-                return Err(StoreError::Aborted);
-            }
-            match next {
-                Some(next) => {
-                    self.data().insert(provider_id.to_owned(), next.clone());
-                    Ok(Some(next))
-                }
-                None => Ok(current),
-            }
-        }))
-    }
-
-    fn delete<'a>(&'a self, provider_id: &'a str) -> BoxFuture<'a, Result<(), String>> {
-        Box::pin(async move {
-            let lock = self.lock_for(provider_id);
-            let _guard = lock.lock().await;
-            self.data().shift_remove(provider_id);
-            Ok(())
-        })
     }
 }
 
@@ -1106,8 +993,6 @@ impl CredentialStore for FileCredentialStore {
         })
     }
 }
-
-// ---------------------------------------------------------------------------------------------- auth resolution
 
 const DEFAULT_OAUTH_MINIMUM_VALIDITY_MS: f64 = 5.0 * 60.0 * 1000.0;
 const DEFAULT_OAUTH_REFRESH_TIMEOUT: Duration = Duration::from_secs(15);
@@ -1278,48 +1163,6 @@ async fn resolve_stored_oauth(
     }))
 }
 
-/// A provider's auth bound to a credential store and context: `resolveProviderAuth` as `ImagesModels.getAuth` uses
-/// it, so image providers get stored credentials and OAuth refresh like chat providers.
-pub struct StoredProviderAuth {
-    pub auth: ProviderAuth,
-    pub credentials: Arc<dyn CredentialStore>,
-    pub ctx: Arc<dyn AuthContext>,
-}
-
-impl crate::images::ImagesAuth for StoredProviderAuth {
-    fn resolve<'a>(
-        &'a self,
-        provider_id: &'a str,
-        overrides: &'a crate::images::ImagesAuthOverrides,
-    ) -> BoxFuture<'a, Result<Option<crate::images::ImagesAuthResult>, String>> {
-        Box::pin(async move {
-            let overrides = AuthOverrides {
-                api_key: overrides.api_key.clone(),
-                env: overrides.env.as_ref().map(sorted_env),
-                ..Default::default()
-            };
-            let result = resolve_provider_auth(
-                provider_id,
-                &self.auth,
-                self.credentials.as_ref(),
-                self.ctx.as_ref(),
-                &overrides,
-            )
-            .await
-            .map_err(|e| e.message())?;
-            Ok(result.map(|r| crate::images::ImagesAuthResult {
-                api_key: r.auth.api_key,
-                headers: r.auth.headers,
-                base_url: r.auth.base_url,
-                env: r.env.map(|env| env.into_iter().collect()),
-                source: r.source,
-            }))
-        })
-    }
-}
-
-// ------------------------------------------------------------------------------------------------------ Headers
-
 /// `mergeHeaders`: names compare case-insensitively; the override's spelling wins.
 pub fn merge_headers(base: Option<&ProviderHeaders>, override_: Option<&ProviderHeaders>) -> Option<ProviderHeaders> {
     if base.is_none() && override_.is_none() {
@@ -1331,11 +1174,4 @@ pub fn merge_headers(base: Option<&ProviderHeaders>, override_: Option<&Provider
         merged.insert(name.clone(), value.clone());
     }
     Some(merged)
-}
-
-/// Provider env in a stable order.
-fn sorted_env(env: &crate::env::ProviderEnv) -> CredentialEnv {
-    let mut entries: Vec<(&String, &String)> = env.iter().collect();
-    entries.sort();
-    entries.into_iter().map(|(k, v)| (k.clone(), v.clone())).collect()
 }

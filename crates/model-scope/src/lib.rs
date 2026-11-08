@@ -59,12 +59,11 @@ pub fn is_model_ref(value: &str) -> bool {
 
 use jsrt::collate::locale_compare;
 
-/// `modelsAreEqual`: same provider and id.
+/// `modelsAreEqual`.
 pub fn same<M: ScopeModel>(a: &M, b: &M) -> bool {
     a.id() == b.id() && a.provider() == b.provider()
 }
 
-/// `provider/id`.
 pub fn reference<M: ScopeModel>(model: &M) -> String {
     format!("{}/{}", model.provider(), model.id())
 }

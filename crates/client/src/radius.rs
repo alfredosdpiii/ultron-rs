@@ -21,7 +21,6 @@ const CLIENT_RETRY_INITIAL_MS: u64 = 1_000;
 const CLIENT_RETRY_MAX_MS: u64 = 30_000;
 const LOCAL_TRANSPORT_ERROR_CLOSE_CODE: u16 = 4001;
 
-/// `ByteTransportHandlers`.
 pub trait ByteTransportHandlers: Send {
     fn on_data(&mut self, chunk: &[u8]);
     fn on_close(&mut self);
@@ -154,8 +153,6 @@ pub fn connect_radius_client_transport(
         thread: Mutex::new(Some(thread)),
     })
 }
-
-// ------------------------------------------------------------------------------------------- a blocking stream
 
 enum Incoming {
     Data(Vec<u8>),
@@ -290,8 +287,6 @@ impl Write for RadiusByteStream {
         Ok(())
     }
 }
-
-// ------------------------------------------------------------------------------------------------- reconnecting
 
 /// `ClientConnectionState`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -478,8 +473,6 @@ impl ReconnectInner {
     }
 }
 
-// ----------------------------------------------------------------------------------------------- TUI statuses
-
 /// What the client TUI shows for its selected Radius server (`#busy`, `#status`, and whether the Session's lane is
 /// closed while recovering).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -536,8 +529,6 @@ pub fn attachment_state_view(state: &AttachmentState, session_id: &str) -> Optio
         _ => None,
     }
 }
-
-// ------------------------------------------------------------------------------------------ a one-shot client
 
 /// The relay connection a [`RadiusReopen`] brings back, as the reconnector's client.
 struct ReopenSlot {

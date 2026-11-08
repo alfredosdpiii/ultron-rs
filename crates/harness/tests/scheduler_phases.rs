@@ -572,10 +572,11 @@ fn harness_runtime_orders_commits_against_the_step_one_queued_before_lands_one_a
 fn harness_runtime_sleeps_until_the_harness_clock_reaches_the_deadline() {
     each_backend(|backend| {
         let clock = Arc::new(Mutex::new(1_000u64));
-        let woke = Deferred::new();
-        let w = woke.clone();
+        let (asleep, woke) = (Deferred::new(), Deferred::new());
+        let (a, w) = (asleep.clone(), woke.clone());
         let sleeper = one_step("test.sleeper", move |_, runtime| {
             runtime.sleep(900, &runtime.ctx())?;
+            a.resolve();
             runtime.sleep(1_005, &runtime.ctx())?;
             w.resolve();
             runtime.commit(&runtime.ctx(), |_, _| Ok(completed(Value::Null)))
@@ -590,7 +591,8 @@ fn harness_runtime_sleeps_until_the_harness_clock_reaches_the_deadline() {
         opened.harness.resume().unwrap();
         // The clock stands still, so real timers keep firing without waking the task. (A settle: a slow machine can
         // only let this check pass wrongly.)
-        std::thread::sleep(std::time::Duration::from_millis(30));
+        asleep.wait();
+        flush();
         assert!(!woke.is_resolved());
         *clock.lock().unwrap() = 1_005;
         opened.harness.wait_for_task(id, &bg()).unwrap();

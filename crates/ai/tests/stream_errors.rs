@@ -4,13 +4,8 @@
 //! `error` event and its HTTP 529 / 429 / 500 bodies, and the stream and HTTP errors of OpenAI completions,
 //! OpenAI responses, Google and Mistral.
 
-use ai::anthropic::{self, AnthropicOptions};
-use ai::google::{self, GoogleOptions};
 use ai::http::ReqwestTransport;
-use ai::mistral::{self, MistralOptions};
-use ai::openai_completions::{self, OpenAICompletionsOptions};
-use ai::openai_responses::{self, OpenAIResponsesOptions};
-use ai::{AssistantMessage, AssistantMessageEvent, Model, TranscriptContext};
+use ai::{AbortSignal, AssistantMessage, AssistantMessageEvent, Model, TranscriptContext};
 use serde_json::{Value, json};
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::TcpListener;
@@ -75,31 +70,15 @@ fn run(scenario: &Value) -> (AssistantMessage, usize) {
         .enable_all()
         .build()
         .unwrap();
-    let message = runtime.block_on(async {
-        match model.api.as_str() {
-            "anthropic-messages" => {
-                let options: AnthropicOptions = serde_json::from_value(options.clone()).unwrap();
-                anthropic::stream(&model, &context, &options, &transport, &mut sink).await
-            }
-            "openai-completions" => {
-                let options: OpenAICompletionsOptions = serde_json::from_value(options.clone()).unwrap();
-                openai_completions::stream(&model, &context, &options, &transport, &mut sink).await
-            }
-            "openai-responses" => {
-                let options: OpenAIResponsesOptions = serde_json::from_value(options.clone()).unwrap();
-                openai_responses::stream(&model, &context, &options, &transport, &mut sink).await
-            }
-            "google-generative-ai" => {
-                let options: GoogleOptions = serde_json::from_value(options.clone()).unwrap();
-                google::stream(&model, &context, &options, &transport, &mut sink).await
-            }
-            "mistral-conversations" => {
-                let options: MistralOptions = serde_json::from_value(options.clone()).unwrap();
-                mistral::stream(&model, &context, &options, &transport, &mut sink).await
-            }
-            api => panic!("unknown api {api}"),
-        }
-    });
+    let message = runtime.block_on(crate::provider_replay::stream(
+        &model,
+        &context,
+        &options,
+        &AbortSignal::new(),
+        None,
+        &transport,
+        &mut sink,
+    ));
     let count = *served.lock().unwrap();
     (message, count)
 }

@@ -53,7 +53,8 @@ fn ai_claude_code_cli_second_request_takes_the_warm_spare() {
             .filter(|l| l.starts_with(prefix))
             .count()
     };
-    // Hang guard only: under load the spare can take long to start.
+    // A process writes its argv line when it starts, after the request that spawned it may have returned; the fake
+    // only logs to a file, so the file is read until the line is there (hang guard only).
     let wait_for = |prefix: &str, n: usize| {
         let deadline = Instant::now() + Duration::from_secs(120);
         while Instant::now() < deadline {
@@ -75,9 +76,9 @@ fn ai_claude_code_cli_second_request_takes_the_warm_spare() {
         json!([{"type": "text", "text": "ok"}])
     );
     // After a request completes, one idle process with the same arguments starts ahead of time.
+    assert_eq!(claude_code_cli::claude_code_cli_stats().1, 1);
     wait_for("argv:", 2);
     assert_eq!(count("stdin:"), 1);
-    assert_eq!(claude_code_cli::claude_code_cli_stats().1, 1);
     let second = runtime.block_on(claude_code_cli::stream_simple(
         &cc_model(),
         &context,
@@ -88,10 +89,10 @@ fn ai_claude_code_cli_second_request_takes_the_warm_spare() {
         serde_json::to_value(&second.content).unwrap(),
         json!([{"type": "text", "text": "ok"}])
     );
-    // The second request wrote its prompt into the spare; a proven shape gets the next spare while it runs.
+    // The second request wrote its prompt into the spare; a proven shape gets the next spare while it runs, and
+    // the end of the request starts none beside it. Spares start before the request returns.
+    assert_eq!(claude_code_cli::claude_code_cli_stats().1, 1);
     wait_for("argv:", 3);
-    // Settle, then check no fourth process started (a short settle can only miss an extra spawn, never fail).
-    std::thread::sleep(Duration::from_millis(100));
     assert_eq!(count("argv:"), 3);
     assert_eq!(count("stdin:"), 2);
     claude_code_cli::reset_claude_code_cli_state();

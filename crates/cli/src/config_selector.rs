@@ -70,7 +70,6 @@ fn type_label(kind: ResourceType) -> &'static str {
     }
 }
 
-/// `formatBaseDir`.
 fn format_base_dir(base: &str, home: &str) -> String {
     let display = if base == home {
         "~".to_string()
@@ -86,7 +85,6 @@ fn format_base_dir(base: &str, home: &str) -> String {
     }
 }
 
-/// `getGroupLabel`.
 fn group_label(m: &PathMetadata, agent_dir: &str, home: &str) -> String {
     if m.source == "auto" {
         return match (&m.base_dir, m.scope) {
@@ -104,7 +102,6 @@ fn group_label(m: &PathMetadata, agent_dir: &str, home: &str) -> String {
     .to_string()
 }
 
-/// `buildGroups`.
 fn build_groups(resolved: &ResolvedPaths, agent_dir: &str, home: &str) -> Vec<Group> {
     let mut groups: Vec<(String, Group)> = Vec::new();
     for kind in RESOURCE_TYPES {

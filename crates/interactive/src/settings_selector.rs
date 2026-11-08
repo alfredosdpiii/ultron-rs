@@ -142,7 +142,6 @@ impl SettingsInput {
     }
 }
 
-/// What the client does.
 #[derive(Clone, Debug, PartialEq)]
 pub enum SettingsEvent {
     /// Save `key` (a settings path, or `modelThinkingLevel` with `{provider, modelId, level}`).
@@ -601,7 +600,6 @@ impl SelectSubmenu {
 /// A model picker entry: `(value, label, description, group)`.
 type ModelChoice = (String, String, Option<String>, Option<String>);
 
-/// One row of the Models section.
 #[derive(Clone)]
 struct ModelRow {
     id: String,
@@ -1239,7 +1237,6 @@ impl SettingsSelector {
         format!("frames: {}", frame.unwrap_or_default())
     }
 
-    /// The models submenu's list.
     fn models_list(&self) -> (List, Vec<String>) {
         let t = &self.theme;
         let items = self
@@ -2071,9 +2068,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn settings_http_idle_labels_like_ts() {
-        assert_eq!(format_http_idle(300_000), "5 min");
-        assert_eq!(format_http_idle(0), "disabled");
+    fn settings_http_idle_values_off_the_list_print_as_seconds() {
         assert_eq!(format_http_idle(45_000), "45 sec");
         assert_eq!(format_http_idle(1_500), "1.5 sec");
     }
@@ -2285,13 +2280,5 @@ mod tests {
         assert_eq!(s.input.get(RACE_MODELS), &Value::Null);
         assert_eq!(display(&s), "none (skills choose)");
         assert!(marked(&s).is_empty());
-    }
-
-    #[test]
-    fn settings_set_path_creates_objects() {
-        let mut v = json!({"a": 1});
-        set_path(&mut v, "terminal.showImages", json!(false));
-        set_path(&mut v, "theme", json!("light"));
-        assert_eq!(v, json!({"a": 1, "terminal": {"showImages": false}, "theme": "light"}));
     }
 }

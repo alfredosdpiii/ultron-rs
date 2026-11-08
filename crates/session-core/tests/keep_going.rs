@@ -24,14 +24,6 @@ use std::time::{Duration, Instant};
 
 const PERSONALITY: &str = "# Ultron\n\nYou were built to finish things.";
 
-fn wait_runs(events: &dyn Fn() -> Vec<Value>, n: usize) {
-    let end = Instant::now() + HANG;
-    while events().len() < n {
-        assert!(Instant::now() < end, "timed out waiting for {n} runs: {:?}", events());
-        std::thread::sleep(Duration::from_millis(10));
-    }
-}
-
 fn nudges(messages: Vec<Value>) -> Vec<Value> {
     messages
         .into_iter()
@@ -69,7 +61,7 @@ fn session_core_keep_going_phrase_continues_every_working_run_until_a_report() {
         reply,
         Some(json!({"keepGoing": "keep-going on: \"i'm going to sleep\" (/keepgoing off ends it)"}))
     );
-    wait_runs(&|| a.events("run_end"), 8);
+    a.events.wait_count("run_end", 8);
     a.call(Op::Describe).unwrap();
     assert_eq!(a.events("run_start").len(), 8, "the report ends it: no ninth run");
     let sent = nudges(a.events("message_end"));
@@ -125,7 +117,7 @@ fn session_core_keep_going_ceiling_sends_a_final_nudge_and_stops() {
         },
     );
     start(&a, "keep going");
-    wait_runs(&|| a.events("run_end"), 5);
+    a.events.wait_count("run_end", 5);
     a.call(Op::Describe).unwrap();
     assert_eq!(
         a.events("run_start").len(),
@@ -173,7 +165,7 @@ fn session_core_keep_going_ends_on_keepgoing_off_abort_and_user_input() {
     assert_eq!(reply["keepGoing"], Value::Null);
     assert_eq!(reply["text"], "Persona is on for this session; keep-going off");
     go.send(()).unwrap();
-    wait_runs(&|| off.events("run_end"), 1);
+    off.events.wait_count("run_end", 1);
     off.call(Op::Describe).unwrap();
     assert_eq!(off.events("run_start").len(), 1);
     assert!(nudges(off.events("message_end")).is_empty());
@@ -185,7 +177,7 @@ fn session_core_keep_going_ends_on_keepgoing_off_abort_and_user_input() {
     started.recv_timeout(HANG).unwrap();
     aborted.call(Op::Abort).unwrap();
     go.send(()).unwrap();
-    wait_runs(&|| aborted.events("run_end"), 1);
+    aborted.events.wait_count("run_end", 1);
     aborted.call(Op::Describe).unwrap();
     assert_eq!(aborted.events("run_start").len(), 1);
     assert!(nudges(aborted.events("message_end")).is_empty());
@@ -206,7 +198,7 @@ fn session_core_keep_going_ends_on_keepgoing_off_abort_and_user_input() {
         .unwrap();
     assert_eq!(status(|op| input.call(op))["keepGoing"], Value::Null);
     go.send(()).unwrap();
-    wait_runs(&|| input.events("run_end"), 1);
+    input.events.wait_count("run_end", 1);
     input.call(Op::Describe).unwrap();
     assert_eq!(
         input.events("run_start").len(),
@@ -258,7 +250,7 @@ fn session_core_keep_going_session_toggle_beats_the_setting_and_survives_a_reope
         images: Vec::new(),
     })
     .unwrap();
-    wait_runs(&|| next.events("run_end"), 2);
+    next.events.wait_count("run_end", 2);
     next.call(Op::Describe).unwrap();
     assert!(system_text(&next.requests()[0]).contains("You were built to finish things."));
     let sent = nudges(next.events("message_end"));
@@ -349,7 +341,7 @@ fn session_core_keep_going_resumes_after_a_restart_with_its_counters() {
         None,
     );
     next.call(Op::Recover).unwrap();
-    wait_runs(&|| next.events("run_end"), 2);
+    next.events.wait_count("run_end", 2);
     next.call(Op::Describe).unwrap();
     let sent = nudges(next.events("message_end"));
     assert_eq!(sent.len(), 1, "{sent:?}");
@@ -385,7 +377,7 @@ fn session_core_keep_going_eight_hours_from_the_kept_start_ends_with_the_final_n
         None,
     );
     next.call(Op::Recover).unwrap();
-    wait_runs(&|| next.events("run_end"), 2);
+    next.events.wait_count("run_end", 2);
     next.call(Op::Describe).unwrap();
     let sent = nudges(next.events("message_end"));
     assert_eq!(sent.len(), 1, "{sent:?}");

@@ -15,7 +15,6 @@ pub(crate) const GENERATION_KIND: &str = "ultron.generation";
 pub(crate) const CELL_KIND: &str = "ultron.tool";
 pub(crate) const COMPACTION_KIND: &str = "ultron.compaction";
 
-/// The live document of a conversation.
 pub(crate) fn live(tx: &mut Tx<'_>, conversation_id: ConversationId) -> Result<Draft> {
     Ok(tx.doc(&LIVE, owner(conversation_id))?)
 }

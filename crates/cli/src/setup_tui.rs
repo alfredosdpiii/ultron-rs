@@ -437,7 +437,6 @@ impl SetupUi for TuiSetupUi {
 
     fn note(&mut self, text: &str, tone: Tone) {
         self.transcript.push(Entry::Note(text.into(), tone));
-        // Painted with the next frame: TS coalesces notes into one render.
     }
 
     fn select(
@@ -474,7 +473,6 @@ impl SetupUi for TuiSetupUi {
             let data = match self.key() {
                 Ok(data) => data,
                 Err(quit) => {
-                    // Ctrl+C: TS paints the cleared slot and what follows in one frame.
                     return Err(quit);
                 }
             };
@@ -501,7 +499,6 @@ impl SetupUi for TuiSetupUi {
             let data = match self.key() {
                 Ok(data) => data,
                 Err(quit) => {
-                    // Ctrl+C: TS paints the cleared slot and what follows in one frame.
                     return Err(quit);
                 }
             };
@@ -550,7 +547,6 @@ impl SetupUi for TuiSetupUi {
             );
             loop {
                 self.paint(Slot::Dialog(&mut dialog));
-                // Ctrl+C stops the login as Esc does (`quit` cancels the dialog).
                 let data = match self.screen.next(Duration::from_millis(100)) {
                     Some(Ev::Input(data)) => data,
                     Some(Ev::Closed) => return Err(SetupQuit),
@@ -678,7 +674,6 @@ impl SetupUi for TuiSetupUi {
     }
 }
 
-/// `CANCELLED`.
 const CANCELLED: &str = "Login cancelled";
 
 struct Interaction {

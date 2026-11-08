@@ -38,7 +38,6 @@ const HELP: &str = "Usage:
 
 Auth commands require at least one of --provider or --model. Checks refresh expired OAuth credentials by default; --no-refresh prevents this. --credentials emits the credential, or includes it in JSON output.";
 
-/// Providers without API-key auth.
 const NO_API_KEY: [&str; 1] = ["openai-codex"];
 const DEFAULT_BEARER_TOKEN_MIN_EXPIRY_MS: f64 = 30.0 * 60_000.0;
 const MIN_OAUTH_VALIDITY_MS: f64 = 5.0 * 60_000.0;
@@ -164,7 +163,7 @@ fn validate(args: &Args, kind: Kind) -> Result<(Option<String>, Option<String>),
     Ok((provider, model))
 }
 
-/// A resolution that needs what is not ported (an OAuth refresh, `--model`): TypeScript would try it.
+/// A credential that could not be read or resolved: a check reports the provider invalid, a print fails.
 struct Unsupported;
 
 struct Credentials<'a> {

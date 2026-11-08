@@ -1,11 +1,11 @@
 //! Replays `fixtures/auth.json` (TypeScript `resolveProviderAuth` over the built-in providers, recorded by
 //! `fixtures/generate-auth.mjs`) and ports the credential-store and OAuth-refresh locking tests of
-//! `models-runtime.test.ts` and `oauth-auth.test.ts`.
+//! `models-runtime.test.ts` and `oauth-auth.test.ts`, all over the `auth.json` store the product uses.
 
 use ai::auth::{
     AuthContext, AuthError, AuthInteraction, AuthOverrides, AuthType, Credential, CredentialEnv, CredentialInfo,
-    CredentialStore, InMemoryCredentialStore, ModelAuth, ModelsError, ModelsErrorCode, ModifyFn, OAuthAuth,
-    ProviderAuth, StoreError, builtin_provider_auth_with_clock, filter_models, resolve_provider_auth,
+    CredentialStore, FileCredentialStore, ModelAuth, ModelsError, ModelsErrorCode, ModifyFn, OAuthAuth, ProviderAuth,
+    StoreError, builtin_provider_auth_with_clock, filter_models, resolve_provider_auth,
 };
 use ai::http::{AbortSignal, Body, BoxFuture, HttpRequest, HttpResponse, Transport};
 use ai::oauth::OAuthCredential;
@@ -70,6 +70,26 @@ impl AuthContext for FixedContext {
     }
 }
 
+/// No environment, no files, the real clock.
+struct Ambient;
+
+impl AuthContext for Ambient {
+    fn env(&self, _: &str) -> Option<String> {
+        None
+    }
+
+    fn file_exists(&self, _: &str) -> bool {
+        false
+    }
+}
+
+/// An `auth.json` store in a fresh directory; the directory lives as long as the store is used.
+fn file_store() -> (tempfile::TempDir, FileCredentialStore) {
+    let dir = tempfile::tempdir().unwrap();
+    let store = FileCredentialStore::new(dir.path().join("auth.json"));
+    (dir, store)
+}
+
 fn string_map(value: &Value) -> CredentialEnv {
     value
         .as_object()
@@ -100,7 +120,7 @@ async fn ai_auth_resolve_provider_auth_matches_typescript() {
             .map(|r| (r[0].as_u64().unwrap() as u16, r[1].as_str().unwrap().to_owned()))
             .collect();
         let auth = builtin_provider_auth_with_clock(provider, mock.clone(), || NOW as i64).unwrap();
-        let store = InMemoryCredentialStore::new();
+        let (_dir, store) = file_store();
         if !case["stored"].is_null() {
             let stored = Credential::from_json(&case["stored"]).unwrap();
             store
@@ -217,7 +237,7 @@ impl OAuthAuth for TestOAuth {
 }
 
 fn now() -> f64 {
-    ai::auth::DefaultAuthContext.now_ms()
+    Ambient.now_ms()
 }
 
 fn oauth_credential(access: &str, expires: f64) -> Credential {
@@ -249,7 +269,7 @@ async fn access_of(store: &dyn CredentialStore) -> String {
 
 #[tokio::test]
 async fn ai_auth_concurrent_refreshes_run_once() {
-    let store = InMemoryCredentialStore::new();
+    let (_dir, store) = file_store();
     store
         .modify("p1", set(oauth_credential("old", 0.0)), None)
         .await
@@ -259,7 +279,7 @@ async fn ai_auth_concurrent_refreshes_run_once() {
         ..TestOAuth::new()
     });
     let auth = oauth_only(oauth.clone());
-    let ctx = ai::auth::DefaultAuthContext;
+    let ctx = Ambient;
     let overrides = AuthOverrides::default();
     let (a, b) = tokio::join!(
         resolve_provider_auth("p1", &auth, &store, &ctx, &overrides),
@@ -273,7 +293,7 @@ async fn ai_auth_concurrent_refreshes_run_once() {
 
 #[tokio::test]
 async fn ai_auth_refresh_failure_keeps_the_credential_and_the_reason() {
-    let store = InMemoryCredentialStore::new();
+    let (_dir, store) = file_store();
     store
         .modify("p1", set(oauth_credential("old", 0.0)), None)
         .await
@@ -282,15 +302,9 @@ async fn ai_auth_refresh_failure_keeps_the_credential_and_the_reason() {
         fail: Some("token refresh failed (400): invalid_grant".into()),
         ..TestOAuth::new()
     }));
-    let error = resolve_provider_auth(
-        "p1",
-        &auth,
-        &store,
-        &ai::auth::DefaultAuthContext,
-        &AuthOverrides::default(),
-    )
-    .await
-    .unwrap_err();
+    let error = resolve_provider_auth("p1", &auth, &store, &Ambient, &AuthOverrides::default())
+        .await
+        .unwrap_err();
     assert_eq!(
         error,
         AuthError::Models(ModelsError {
@@ -303,10 +317,10 @@ async fn ai_auth_refresh_failure_keeps_the_credential_and_the_reason() {
 
 #[tokio::test]
 async fn ai_auth_valid_tokens_and_minimum_validity() {
-    let store = InMemoryCredentialStore::new();
+    let (_dir, store) = file_store();
     let oauth = Arc::new(TestOAuth::new());
     let auth = oauth_only(oauth.clone());
-    let ctx = ai::auth::DefaultAuthContext;
+    let ctx = Ambient;
     // Ten minutes left: valid under the default five-minute window.
     store
         .modify("p1", set(oauth_credential("valid", now() + 10.0 * 60_000.0)), None)
@@ -333,7 +347,7 @@ async fn ai_auth_valid_tokens_and_minimum_validity() {
 
 #[tokio::test]
 async fn ai_auth_cancelling_a_refresh_keeps_the_previous_credential() {
-    let store = Arc::new(InMemoryCredentialStore::new());
+    let (_dir, store) = file_store();
     store
         .modify("p1", set(oauth_credential("old", 0.0)), None)
         .await
@@ -349,19 +363,21 @@ async fn ai_auth_cancelling_a_refresh_keeps_the_previous_credential() {
         ..Default::default()
     };
     let started = oauth.started.notified();
-    let resolving = resolve_provider_auth("p1", &auth, store.as_ref(), &ai::auth::DefaultAuthContext, &overrides);
+    let resolving = resolve_provider_auth("p1", &auth, &store, &Ambient, &overrides);
     let (result, ()) = tokio::join!(resolving, async {
         started.await;
         signal.abort();
     });
     assert_eq!(result.unwrap_err(), AuthError::Aborted);
     assert!(oauth.seen_signal.lock().unwrap().as_ref().unwrap().aborted());
-    assert_eq!(access_of(store.as_ref()).await, "old");
+    assert_eq!(access_of(&store).await, "old");
 }
 
 #[tokio::test]
 async fn ai_auth_cancelled_queued_mutations_never_run() {
-    let store = Arc::new(InMemoryCredentialStore::new());
+    let (_dir, store) = file_store();
+    let store = Arc::new(store);
+    let (entered, writing) = tokio::sync::oneshot::channel::<()>();
     let (release, released) = tokio::sync::oneshot::channel::<()>();
     let first = {
         let store = Arc::clone(&store);
@@ -371,6 +387,7 @@ async fn ai_auth_cancelled_queued_mutations_never_run() {
                     "p1",
                     Box::new(move |_| {
                         Box::pin(async move {
+                            entered.send(()).unwrap();
                             released.await.unwrap();
                             Ok(Some(
                                 Credential::from_json(&json!({"type": "api_key", "key": "first"})).unwrap(),
@@ -382,7 +399,7 @@ async fn ai_auth_cancelled_queued_mutations_never_run() {
                 .await
         })
     };
-    tokio::task::yield_now().await;
+    writing.await.unwrap();
     let ran = Arc::new(AtomicUsize::new(0));
     let signal = AbortSignal::new();
     let second = {
@@ -458,7 +475,7 @@ impl CredentialStore for FailingStore {
 #[tokio::test]
 async fn ai_auth_store_failures_are_auth_errors() {
     let auth = oauth_only(Arc::new(TestOAuth::new()));
-    let ctx = ai::auth::DefaultAuthContext;
+    let ctx = Ambient;
     let read_failing = FailingStore {
         read_fails: true,
         modifies: AtomicUsize::new(0),
@@ -529,68 +546,22 @@ fn ai_auth_copilot_filters_models_by_available_ids() {
 }
 
 #[tokio::test]
-async fn ai_auth_images_resolve_through_the_credential_store() {
-    use ai::images::{ImagesAuth, ImagesAuthOverrides};
-    let store = Arc::new(InMemoryCredentialStore::new());
-    let resolver = ai::auth::StoredProviderAuth {
-        auth: builtin_provider_auth_with_clock("openrouter", Arc::new(Mock::default()), || NOW as i64).unwrap(),
-        credentials: store.clone(),
-        ctx: Arc::new(FixedContext {
-            env: HashMap::from([("OPENROUTER_API_KEY".to_owned(), "env-key".to_owned())]),
-            files: Vec::new(),
-        }),
-    };
-    let resolve = |overrides: ImagesAuthOverrides| {
-        let resolver = &resolver;
-        async move { resolver.resolve("openrouter", &overrides).await.unwrap().unwrap() }
-    };
-    let ambient = resolve(ImagesAuthOverrides::default()).await;
-    assert_eq!(
-        (ambient.api_key.as_deref(), ambient.source.as_deref()),
-        (Some("env-key"), Some("OPENROUTER_API_KEY"))
-    );
-    store
-        .modify(
-            "openrouter",
-            set(Credential::from_json(&json!({"type": "api_key", "key": "stored"})).unwrap()),
-            None,
-        )
-        .await
-        .unwrap();
-    let stored = resolve(ImagesAuthOverrides::default()).await;
-    assert_eq!(
-        (stored.api_key.as_deref(), stored.source.as_deref()),
-        (Some("stored"), Some("stored credential"))
-    );
-    let explicit = resolve(ImagesAuthOverrides {
-        api_key: Some("explicit".into()),
-        env: None,
-    })
-    .await;
-    assert_eq!(explicit.api_key.as_deref(), Some("explicit"));
-}
-
-#[tokio::test]
 async fn ai_auth_openrouter_oauth_credential_gives_its_key() {
     // auth/oauth/openrouter.ts: the login stores a permanent key as an OAuth credential; requests use its access.
-    use ai::images::ImagesAuthOverrides;
-    let store = Arc::new(InMemoryCredentialStore::new());
-    let resolver = ai::auth::StoredProviderAuth {
-        auth: builtin_provider_auth_with_clock("openrouter", Arc::new(Mock::default()), || NOW as i64).unwrap(),
-        credentials: store.clone(),
-        ctx: Arc::new(FixedContext {
-            env: HashMap::new(),
-            files: Vec::new(),
-        }),
-    };
+    let (_dir, store) = file_store();
+    let auth = builtin_provider_auth_with_clock("openrouter", Arc::new(Mock::default()), || NOW as i64).unwrap();
     let credential = json!({"type": "oauth", "access": "or-key", "refresh": "", "expires": 9_007_199_254_740_991_i64});
     store
         .modify("openrouter", set(Credential::from_json(&credential).unwrap()), None)
         .await
         .unwrap();
-    let resolved = ai::images::ImagesAuth::resolve(&resolver, "openrouter", &ImagesAuthOverrides::default())
+    let ctx = FixedContext {
+        env: HashMap::new(),
+        files: Vec::new(),
+    };
+    let resolved = resolve_provider_auth("openrouter", &auth, &store, &ctx, &AuthOverrides::default())
         .await
         .unwrap()
         .unwrap();
-    assert_eq!(resolved.api_key.as_deref(), Some("or-key"));
+    assert_eq!(resolved.auth.api_key.as_deref(), Some("or-key"));
 }

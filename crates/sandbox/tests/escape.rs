@@ -245,11 +245,8 @@ fn sandbox_escape_sandbox_dies_with_its_parent() {
         let tree = tree();
         let policy = policy(&tree, false);
         let launcher = Launcher::new(Mode::Required, policy.clone()).with_mechanism(Some(mechanism));
-        let argv: Vec<String> = vec![
-            "bash".into(),
-            "-c".into(),
-            "while :; do date +%s%N > tick; sleep 0.05; done".into(),
-        ];
+        let marker = format!("dies-with-parent-{}-{}", std::process::id(), mechanism.name());
+        let argv: Vec<String> = vec!["bash".into(), "-c".into(), backends_support::tick_loop(&marker)];
         let inner = launcher.command(&argv, &policy.cwd).unwrap();
         let mut parent = Command::new("sh");
         parent
@@ -276,22 +273,10 @@ fn sandbox_escape_sandbox_dies_with_its_parent() {
         assert!(tick.exists(), "{}: the sandboxed loop never started", mechanism.name());
         child.kill().unwrap();
         child.wait().unwrap();
-        // The loop ticks every 50 ms while it lives: wait until the tick holds still for 400 ms. Teardown can take
-        // a while under load; a loop that outlived its parent never holds still (hang guard 120 s).
-        let killed = Instant::now();
-        loop {
-            let before = std::fs::read_to_string(&tick).unwrap_or_default();
-            std::thread::sleep(Duration::from_millis(400));
-            let after = std::fs::read_to_string(&tick).unwrap_or_default();
-            if before == after {
-                break;
-            }
-            assert!(
-                killed.elapsed() < Duration::from_secs(120),
-                "{}: the sandboxed command outlived its parent",
-                mechanism.name()
-            );
-        }
+        backends_support::wait_until_gone(
+            &format!("{}: the sandbox of a killed parent", mechanism.name()),
+            &marker,
+        );
     }
 }
 
@@ -431,19 +416,6 @@ impl sandbox::launcher::Layout for PathLayout {
     }
 }
 
-/// Wait until `tick` (rewritten every 50 ms while its loop lives) holds still for 400 ms (hang guard 120 s).
-fn wait_until_still(what: &str, tick: &std::path::Path) {
-    let deadline = Instant::now() + Duration::from_secs(120);
-    loop {
-        let before = std::fs::read_to_string(tick).unwrap_or_default();
-        std::thread::sleep(Duration::from_millis(400));
-        if before == std::fs::read_to_string(tick).unwrap_or_default() {
-            return;
-        }
-        assert!(Instant::now() < deadline, "{what}: the command outlived its stop");
-    }
-}
-
 /// Docker on a machine without `setpriv`: the client's stdin holder polls the client instead of dying with it. With
 /// a PATH holding only bash, docker and sleep, the command runs and keeps its exit status, a killed client's
 /// container stops, and the holder ends after its client.
@@ -516,7 +488,8 @@ fn sandbox_escape_docker_without_setpriv_ties_the_container_to_its_client() {
         std::thread::sleep(Duration::from_millis(50));
     }
     // A killed client's container stops.
-    let mut client = run("while :; do date +%s%N > tick; sleep 0.05; done");
+    let marker = format!("docker-without-setpriv-{}", std::process::id());
+    let mut client = run(&backends_support::tick_loop(&marker));
     let tick = tree.project.join("tick");
     let deadline = Instant::now() + Duration::from_secs(120);
     while !tick.exists() {
@@ -526,5 +499,5 @@ fn sandbox_escape_docker_without_setpriv_ties_the_container_to_its_client() {
     let pid = rustix::process::Pid::from_raw(client.id() as i32).unwrap();
     rustix::process::kill_process_group(pid, rustix::process::Signal::KILL).unwrap();
     client.wait().unwrap();
-    wait_until_still("docker without setpriv", &tick);
+    backends_support::wait_until_gone("docker without setpriv", &marker);
 }

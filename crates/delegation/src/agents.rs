@@ -630,7 +630,6 @@ impl Agents {
         state.root_turn_active = true;
     }
 
-    /// `endRootTurn(runId)`.
     pub fn end_root_turn(&self, run_id: &str) {
         let mut state = self.state();
         if state.root_turn.as_deref() == Some(Self::root_of_run(&state, run_id).as_str()) {
@@ -669,7 +668,6 @@ impl Agents {
             .map(|r| r.root_id().to_string())
     }
 
-    /// `admissionRoot(parentId)`.
     fn admission_root(&self, state: &State, parent: Option<&str>) -> Option<String> {
         let inherited = parent
             .and_then(|id| state.task(id))
@@ -687,7 +685,6 @@ impl Agents {
         Some(format!("job:{}", random::uuid_v4()))
     }
 
-    /// `statusRoot(parentId)`.
     fn status_root(&self, state: &State, parent: Option<&str>) -> Option<String> {
         let inherited = parent
             .and_then(|id| state.task(id))

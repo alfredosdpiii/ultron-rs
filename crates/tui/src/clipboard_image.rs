@@ -31,7 +31,6 @@ pub enum ImageRead {
 /// Runs a clipboard tool: its stdout when it exited 0 (possibly empty), None when it failed (`runClipboardCommand`).
 pub type RunTool<'a> = dyn FnMut(&str, &[&str]) -> Option<Vec<u8>> + 'a;
 
-/// `isWaylandSession`.
 pub fn is_wayland_session(var: &dyn Fn(&str) -> Option<String>) -> bool {
     var("WAYLAND_DISPLAY").is_some_and(|v| !v.is_empty()) || var("XDG_SESSION_TYPE").as_deref() == Some("wayland")
 }
@@ -63,7 +62,6 @@ pub fn extension_for_image_mime_type(mime_type: &str) -> Option<&'static str> {
     }
 }
 
-/// `isSupportedImageMimeType`.
 fn is_supported_image_mime_type(mime_type: &str) -> bool {
     SUPPORTED_IMAGE_MIME_TYPES.contains(&base_mime_type(mime_type).as_str())
 }

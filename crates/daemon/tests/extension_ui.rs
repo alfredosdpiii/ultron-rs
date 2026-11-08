@@ -6,7 +6,6 @@
 use daemon::extension_ui::{BridgeUi, ExtensionUiBridge};
 use mcp::gateway::CommandUi;
 use serde_json::{Map, Value, json};
-use std::sync::Arc;
 use std::time::Duration;
 
 fn fields(value: Value) -> Map<String, Value> {
@@ -129,21 +128,20 @@ fn daemon_extension_ui_an_expected_client_gets_what_was_queued_before_its_first_
     std::thread::scope(|scope| {
         let ui = BridgeUi(bridge.clone());
         let picked = scope.spawn(move || ui.select("Early", &["a".into(), "b".into()]));
-        let start = std::time::Instant::now();
-        while bridge.open_dialogs() == 0 {
-            assert!(start.elapsed() < Duration::from_secs(120), "the dialog never opened");
-            std::thread::sleep(Duration::from_millis(5));
+        let mut requests = bridge.poll(None, Duration::from_secs(1))["requests"]
+            .as_array()
+            .unwrap()
+            .clone();
+        if requests.len() == 1 {
+            let cursor = requests[0]["seq"].as_u64();
+            let next = bridge.poll(cursor, Duration::from_secs(30));
+            requests.extend(next["requests"].as_array().unwrap().iter().cloned());
         }
-        let first = bridge.poll(None, Duration::from_secs(1));
-        assert_eq!(methods(&first), ["setStatus", "select"]);
-        bridge.respond(
-            first["requests"][1]["request"]["id"].as_str().unwrap(),
-            json!({"value": "a"}),
-        );
+        assert_eq!(methods(&json!({ "requests": requests })), ["setStatus", "select"]);
+        bridge.respond(requests[1]["request"]["id"].as_str().unwrap(), json!({"value": "a"}));
         assert_eq!(picked.join().unwrap().as_deref(), Some("a"));
     });
     bridge.close();
-    let _ = Arc::strong_count(&bridge);
 }
 
 #[test]

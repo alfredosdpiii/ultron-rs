@@ -164,7 +164,6 @@ pub fn format_key_text(key: &str, capitalize: bool) -> String {
         .join("/")
 }
 
-/// `keyText(keybinding)`.
 pub fn key_text(keys: &KeybindingsManager, keybinding: &str) -> String {
     format_key_text(&keys.get_keys(keybinding).join("/"), false)
 }
@@ -1008,7 +1007,6 @@ impl BashExecution {
         self.updated = true;
     }
 
-    /// `setComplete`.
     pub fn set_complete(
         &mut self,
         exit_code: Option<i64>,
@@ -1033,7 +1031,6 @@ impl BashExecution {
         self.output_lines.join("\n")
     }
 
-    /// Advance the running spinner one frame.
     pub fn tick(&mut self) {
         self.loader.tick();
     }
@@ -1161,7 +1158,6 @@ pub struct FooterView {
     pub statuses: Vec<(String, String)>,
 }
 
-/// `formatTokens`.
 pub fn format_tokens(count: u64) -> String {
     let c = count as f64;
     match count {

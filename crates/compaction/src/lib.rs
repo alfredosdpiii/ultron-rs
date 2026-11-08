@@ -220,11 +220,6 @@ const SUMMARIZATION_SYSTEM_PROMPT: &str = "You are a context summarization assis
 
 Do NOT continue the conversation. Do NOT respond to any questions in the conversation. ONLY output the structured summary.";
 
-// ============================================================================
-// Token estimation
-// ============================================================================
-
-/// `CompactionSettings`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct CompactionSettings {
     pub enabled: bool,
@@ -400,10 +395,6 @@ pub fn should_compact(context_tokens: u64, context_window: u64, settings: &Compa
     settings.enabled && i128::from(context_tokens) > i128::from(context_window) - i128::from(settings.reserve_tokens)
 }
 
-// ============================================================================
-// Cut points
-// ============================================================================
-
 fn is_cut_point_message(message: &Value) -> bool {
     matches!(
         role(message),
@@ -422,7 +413,6 @@ fn is_turn_start_entry(entry: &Value) -> bool {
     entry_type(entry) != Some("compaction") && session_file::entry_messages(entry).iter().any(is_turn_start_message)
 }
 
-/// `CutPointResult`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct CutPoint {
     /// Index of the first entry to keep.
@@ -592,10 +582,6 @@ fn id_key(value: Option<&Value>) -> String {
     value.map_or_else(|| "undefined".to_string(), jsrt::json::stringify)
 }
 
-// ============================================================================
-// Preparation
-// ============================================================================
-
 /// `CompactionPreparation`: what [`compact`] summarizes and keeps.
 #[derive(Clone, Debug, PartialEq)]
 pub struct CompactionPreparation {
@@ -697,10 +683,6 @@ pub fn prepare_compaction(path_entries: &[Value], settings: CompactionSettings) 
         settings,
     })
 }
-
-// ============================================================================
-// Summarization requests
-// ============================================================================
 
 const SUMMARIZATION_PROMPT: &str = "The messages above are a conversation to summarize. Create a structured context checkpoint summary that another LLM will use to continue the work.
 

@@ -19,7 +19,7 @@ const TREES: &[(&str, Keep)] = &[
 ];
 const FILES: &[&str] = &["CHANGELOG.md"];
 
-/// Files under `dir` that `keep` accepts, in path order. `keep("")` says whether to descend into subdirectories.
+/// Files under `dir` that `keep` accepts, in path order.
 fn walk(dir: &Path, keep: Keep, out: &mut Vec<PathBuf>) {
     let mut entries: Vec<_> = std::fs::read_dir(dir)
         .unwrap_or_else(|e| panic!("read {}: {e}", dir.display()))

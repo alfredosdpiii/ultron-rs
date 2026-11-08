@@ -51,15 +51,14 @@ const DAY_MS: i64 = 24 * 60 * 60 * 1000;
 /// A pull request this large (added plus removed lines, as GitHub counts them) is a large review. Large reviews
 /// leave one slot to the rest: on 2026-10-16 three large pull requests (fisher-ki-saas#2945, #2951, #2926) held all
 /// three slots for hours while a 40-second review waited 71 minutes.
-pub const LARGE_PULL_LINES: u64 = 10_000;
+const LARGE_PULL_LINES: u64 = 10_000;
 
-/// Whether a pull request is a large review.
-pub fn is_large(pull: &crate::github::PullRequest) -> bool {
+fn is_large(pull: &crate::github::PullRequest) -> bool {
     pull.additions + pull.deletions >= LARGE_PULL_LINES
 }
 
 /// How many large reviews may run at once: all but one slot, and the only slot when there is one.
-pub fn large_slots(concurrency: usize) -> usize {
+fn large_slots(concurrency: usize) -> usize {
     concurrency.saturating_sub(1).max(1)
 }
 
@@ -787,7 +786,6 @@ impl Daemon {
         }
     }
 
-    /// Start queued reviews, up to the concurrency limit.
     pub fn pump(&self) {
         let mut inner = self.shared.lock();
         self.shared.pump(&mut inner);
@@ -835,6 +833,7 @@ impl Daemon {
         self.prune();
         self.poll();
         loop {
+            let seen = self.shared.lock().events;
             self.prepare();
             self.pump();
             self.record();
@@ -845,7 +844,6 @@ impl Daemon {
                 }
                 continue;
             }
-            let seen = inner.events;
             while inner.events == seen {
                 inner = self.shared.changed.wait(inner).unwrap_or_else(|e| e.into_inner());
             }

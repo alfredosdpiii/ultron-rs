@@ -115,16 +115,4 @@ fn resources_runtime_guide_wording_per_lane_mode() {
     // With events off a subagent is told so, like the root.
     let off_child = guide(EventDelivery::Off, GuideReader::Subagent { swarm: true }, false);
     assert!(off_child.contains("Completions are not announced in this session (ULTRON_ASYNC_EVENTS=off)"));
-    // The default guide (TypeScript's) is unchanged by the new options.
-    assert_eq!(
-        rlm_runtime_prompt(&["rlm"], &RuntimeGuideOptions::default()),
-        rlm_runtime_prompt(
-            &["rlm"],
-            &RuntimeGuideOptions {
-                reader: GuideReader::Root,
-                host_waits: false,
-                ..Default::default()
-            }
-        )
-    );
 }

@@ -95,7 +95,6 @@ impl Root {
         self.dir.path().join(name).display().to_string()
     }
 
-    /// Start a cell on `lane` through the router.
     fn start(&self, lane: &str, code: &str) -> Started {
         self.lanes.start_routed(lane, code).unwrap()
     }

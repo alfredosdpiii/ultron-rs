@@ -41,10 +41,8 @@ pub enum PickerMode {
     Rewind,
 }
 
-/// What the owner should do.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum PickerEvent {
-    /// The key is not the picker's.
     Ignored,
     /// State changed; paint.
     Render,
@@ -460,8 +458,6 @@ impl TranscriptPicker {
         }
     }
 
-    // Rewind filter.
-
     fn open_filter(&mut self) {
         let input = Input::new(self.keys.clone()).with_options(
             Some(&format!("{} ", self.theme.fg(Fg::Accent, "filter:"))),
@@ -587,8 +583,6 @@ impl TranscriptPicker {
             })
             .collect()
     }
-
-    // Render.
 
     fn painter(&self) -> impl Fn(Fg, &str) -> String + 'static {
         let theme = Rc::clone(&self.theme);

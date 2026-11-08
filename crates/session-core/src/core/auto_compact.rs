@@ -20,9 +20,7 @@ use compaction::CompactionSettings;
 enum Work {
     /// The entry committed.
     Done,
-    /// An abort cancelled it.
     Aborted,
-    /// It failed.
     Failed(String),
 }
 
@@ -326,7 +324,6 @@ impl Core {
         if resumed.is_none() && !crate::auto_compaction::may_be_due(&settings, self.model.context_window) {
             return Ok(false);
         }
-        // One Pi view for the preparation and the threshold check.
         let pi = self.pi();
         let Ok(prepared) = self.prepare_compaction_of(&pi, settings, resumed.is_some()) else {
             return Ok(false);

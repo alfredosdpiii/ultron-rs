@@ -36,11 +36,15 @@ workspace = true
 name = "it"
 path = "tests/it.rs"
 
-# Sets the process-wide settings defaults once: in `it` it leaked into every later settings test.
+[[test]]
+name = "agent_markers"
+path = "tests/agent_markers.rs"
+
 [[test]]
 name = "owner"
 path = "tests/owner.rs"
 
+# Sets the process-wide settings defaults once: in `it` it leaked into every later settings test.
 [[test]]
 name = "persona_durable_default"
 path = "tests/persona_durable_default.rs"

@@ -107,7 +107,6 @@ fn from_literal(constant: &Value, value: Value) -> Value {
     }
 }
 
-/// `TryString`.
 fn try_string(value: &Value) -> Option<Value> {
     match value {
         Value::Bool(b) => Some(Value::String(b.to_string())),
@@ -172,7 +171,6 @@ fn big_int(text: &str) -> Option<f64> {
     }
 }
 
-/// `TryBoolean`.
 fn try_boolean(value: &Value) -> Option<bool> {
     match value {
         Value::Bool(b) => Some(*b),
@@ -190,7 +188,6 @@ fn try_boolean(value: &Value) -> Option<bool> {
     }
 }
 
-/// `TryNull`.
 fn try_null(value: &Value) -> bool {
     match value {
         Value::Bool(b) => !b,

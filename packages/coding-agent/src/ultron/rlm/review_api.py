@@ -113,9 +113,6 @@ class ReviewError(Exception):
     """A request `/review` cannot run: bad arguments, not a repository, no `gh`, an unknown ref."""
 
 
-# --- Arguments -------------------------------------------------------------------------------------------------
-
-
 @dataclass
 class Options:
     targets: list[str] = field(default_factory=list)
@@ -262,8 +259,6 @@ def classify_targets(options: Options, *, exists: Callable[[str], bool], is_ref:
     return target
 
 
-# --- Processes -------------------------------------------------------------------------------------------------
-
 Runner = Callable[[list[str], str, float], "tuple[int, str, str]"]
 
 
@@ -299,9 +294,6 @@ class Git:
     def value(self, *args: str) -> str | None:
         code, stdout, _ = self.call(*args)
         return stdout.strip() or None if code == 0 else None
-
-
-# --- Diff parsing ----------------------------------------------------------------------------------------------
 
 
 @dataclass
@@ -478,9 +470,6 @@ def file_kind(path: str) -> str:
     return "code"
 
 
-# --- Chunks ----------------------------------------------------------------------------------------------------
-
-
 @dataclass
 class Chunk:
     id: int
@@ -615,8 +604,6 @@ def plan_find(chunks: list[Chunk], reviewers: list[Reviewer], budget_tokens: int
     return {"frames": frames, "dropped": dropped, "not_applicable": not_applicable, "estimate": spent}
 
 
-# --- Findings --------------------------------------------------------------------------------------------------
-
 _CATEGORY_WORDS: dict[str, tuple[str, ...]] = {
     "security": ("secur", "inject", "auth", "secret", "credential", "xss", "ssrf", "travers", "crypto", "vuln",
                  "permission", "privilege", "sanitiz"),
@@ -732,8 +719,6 @@ def dedupe(findings: list[dict[str, Any]], window: int = DEDUPE_WINDOW) -> list[
         finding["id"] = number
     return merged
 
-
-# --- Verification ----------------------------------------------------------------------------------------------
 
 _DEF = re.compile(r"^\s*(?:export\s+)?(?:async\s+)?(?:def|function|class|func|fn)\s+([A-Za-z_]\w*)"
                   r"|^\s*(?:export\s+)?(?:const|let|var)\s+([A-Za-z_]\w*)\s*=\s*(?:async\s*)?(?:function|\()")
@@ -860,9 +845,6 @@ def parse_json_object(text: Any) -> dict[str, Any] | None:
         if isinstance(value, dict) and "verdict" in value:
             found = value
     return found
-
-
-# --- Scope -----------------------------------------------------------------------------------------------------
 
 
 @dataclass
@@ -1046,9 +1028,6 @@ def related_code(git: Git, scope: Scope, finding: dict[str, Any], source: list[s
     return "\n".join(lines)
 
 
-# --- Report ----------------------------------------------------------------------------------------------------
-
-
 @dataclass
 class Review:
     report: str
@@ -1159,9 +1138,6 @@ def _save(report: str, git: Git | None) -> str | None:
         return str(path)
     except OSError:
         return None
-
-
-# --- Orchestration ---------------------------------------------------------------------------------------------
 
 
 def _spent(results: Any) -> tuple[int, int]:

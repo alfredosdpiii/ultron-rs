@@ -2,18 +2,14 @@
 //! by fixtures/generate-omp-model-hub.mjs), then drives the hub: scopes sidebar, search, inline thinking strip and
 //! the session-only pick, with keys and mouse.
 
-use std::rc::Rc;
+use crate::support;
 
-use interactive::keybindings::Platform;
-use interactive::keybindings::native_app_keybindings;
 use interactive::lane::ModelInfo;
 use interactive::model_hub::{
     Focus, ModelHub, ModelHubEvent, ModelItem, ScopeKind, compact_search_text, compare_model_items,
     extract_version_number, model_search_tier,
 };
 use serde_json::Value;
-use theme::{ColorMode, builtin_theme_json, create_theme};
-use tui::KeybindingsManager;
 use tui::strip_terminal_sequences;
 
 fn fixture() -> Value {
@@ -77,12 +73,8 @@ fn interactive_model_hub_ordering_matches_omp() {
 }
 
 fn hub() -> ModelHub {
-    let theme = Rc::new(create_theme(&builtin_theme_json("dark").unwrap(), ColorMode::Truecolor, None).unwrap());
-    let keys = KeybindingsManager::new(
-        native_app_keybindings(Platform::new("linux", false)),
-        Vec::new(),
-        Default::default(),
-    );
+    let theme = support::dark_theme();
+    let keys = support::keys();
     ModelHub::new(
         theme,
         keys,

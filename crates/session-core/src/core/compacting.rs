@@ -41,7 +41,6 @@ pub(super) struct Summarizer {
 }
 
 impl Summarizer {
-    /// One summary request (`request`), cancelled by `signal`.
     async fn stream(&self, request: compaction::SummaryRequest, signal: &AbortSignal) -> ai::AssistantMessage {
         let options = SimpleStreamOptions {
             base: StreamOptions {
@@ -333,7 +332,6 @@ impl Core {
         }
     }
 
-    /// Cancel the compaction or branch summary in progress.
     fn cancel_compaction(&self) {
         if let Some(signal) = &self.compacting {
             signal.abort();

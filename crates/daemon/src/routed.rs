@@ -246,8 +246,6 @@ impl Hub {
         crate::server::record_error(&self.log_path, label, message);
     }
 
-    // ── Session routing ──────────────────────────────────────────────────────
-
     /// Attach `conn` to `session_id`; `options` are the client's own session options (see
     /// [`crate::workers::WorkerModel::session_options`]).
     fn attach(&self, conn: &Arc<Conn>, session_id: &str, options: Option<&Value>) -> Result<(), ServiceError> {
@@ -507,8 +505,6 @@ impl Hub {
         self.manager.close_session(&hosted.handle);
     }
 
-    // ── Server services ──────────────────────────────────────────────────────
-
     fn serialized<T>(&self, operation: impl FnOnce() -> T) -> T {
         let _guard = self.mutations.lock().unwrap_or_else(|e| e.into_inner());
         operation()
@@ -711,8 +707,6 @@ impl Hub {
             ],
         }
     }
-
-    // ── Connections ──────────────────────────────────────────────────────────
 
     fn connection_count_changed(&self) {
         let count = self.conns.lock().unwrap_or_else(|e| e.into_inner()).len();

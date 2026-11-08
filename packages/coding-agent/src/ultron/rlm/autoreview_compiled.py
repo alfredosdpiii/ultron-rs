@@ -139,9 +139,6 @@ ASK_CONTRACT: dict[str, Any] = {
 }
 
 
-# --- Validation ------------------------------------------------------------------------------------------------
-
-
 def _flat(text: str) -> str:
     return " ".join(text.split())
 
@@ -573,9 +570,6 @@ def validate(raw: Any, coverage: list[dict[str, str]] | None = None,
     return Program(steps, _text(raw.get("summary"), 300), declared), []
 
 
-# --- Interpretation --------------------------------------------------------------------------------------------
-
-
 def _count_of(op: str, title: str, body: str) -> int | None:
     match = _TITLE_COUNT.search(title)
     if match:
@@ -678,7 +672,6 @@ class Interpreter:
         self.not_emitted = {"gateFalse": 0, "undecided": 0, "askedNo": 0, "askedUnclear": 0}
         self.test_runs_before = len(session.records) if session is not None else 0
 
-    # -- placeholders --
 
     def _value(self, ref: str, scope: dict[str, Any]) -> str | None:
         name, _, field = ref.partition(".")
@@ -712,7 +705,6 @@ class Interpreter:
 
         return _PLACEHOLDER.sub(replace, text)
 
-    # -- truth --
 
     def truth(self, sid: str) -> bool | None:
         """Whether an assert or ask step holds: True, False, or None when it is unknown (the assert could not be
@@ -778,7 +770,6 @@ class Interpreter:
         return any(leaf["op"] in TEST_OPS and (self.results.get(leaf["id"]) or {}).get("outcome") == "could_not_run"
                    for leaf in leaves)
 
-    # -- running --
 
     def _summary(self, op: str, result: dict[str, Any]) -> str:
         if op in TEST_OPS:
@@ -1025,7 +1016,6 @@ class Interpreter:
         self.expanded += len(instances)
         return instances
 
-    # -- findings --
 
     def _resolve_views(self, step: dict[str, Any], scope: dict[str, Any], why: str) -> tuple[list[str], str]:
         """The question the host puts to the small model for a finding whose check is unknown or contradicted: the
@@ -1403,8 +1393,6 @@ class Interpreter:
                 sentences.append(text if text.endswith((".", "!", "?")) else text + ".")
         return [first, *sentences]
 
-
-# --- The planner as a REPL: sandboxed cells over the rv API ------------------------------------------------------
 
 #: The child process that runs the planner's cells. It is launched inside the test sandbox (bubblewrap or unshare:
 #: no network, no home, no repository, an empty writable directory) as `python3 -I -c <this>`, and speaks JSON lines
@@ -1866,8 +1854,6 @@ CELL_CONTRACT: dict[str, Any] = {
 }
 
 
-# --- Hybrid mode: candidates from discovery, verified by host-written check programs ----------------------------
-
 _COMMENTISH = re.compile(r"\b(comment|docstring|readme|description|documentation|help text|says|claims)\b", re.I)
 _ERRORISH = re.compile(r"\b(except|catch|raise|throw|rollback|swallow|sentinel|exception|error path|cleanup|finally)\b", re.I)
 _INPUTISH = re.compile(r"\b(regex|regular expression|pattern|guard|input|validat|parse|boundary|escape|unicode|limit)\w*", re.I)
@@ -2219,9 +2205,6 @@ async def verify_candidates(candidates: list[dict[str, Any]], *, batch: str, rep
     return {"batch": batch, "candidates": len(candidates), "checked": len(plans), **counts, "capped": capped, "shapes": shapes,
             "skipped": skipped, "planner": planner, "records": interpreter.records, "stats": interpreter.stats(),
             "assurance": interpreter.assurance(), "ms": int((clock() - began) * 1000)}
-
-
-# --- Orchestration ---------------------------------------------------------------------------------------------
 
 
 def runner_availability(session: Any) -> tuple[list[str], set[tuple[str, str]]]:

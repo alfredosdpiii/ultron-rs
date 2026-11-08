@@ -8,7 +8,6 @@ use delegation::workspace::{WorkspaceSnapshot, diff_snapshots, snapshot_workspac
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-/// Texts kept for later diffs, in all.
 const MAX_CACHED_BYTES: usize = 8 * 1024 * 1024;
 
 #[derive(Default)]
@@ -18,7 +17,6 @@ pub struct Tracker {
     cached: usize,
 }
 
-/// The text of a file small enough to show.
 fn small_text(path: &Path) -> Option<String> {
     let meta = std::fs::metadata(path).ok()?;
     if !meta.is_file() || meta.len() as usize > MAX_DIFF_BYTES {

@@ -41,7 +41,6 @@ pub enum Answered {
     Progress,
     /// Another of the poller's inspections, or a stale progress answer.
     Other,
-    /// Not one of the poller's tags.
     NotMine,
 }
 

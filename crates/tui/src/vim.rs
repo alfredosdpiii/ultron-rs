@@ -210,7 +210,6 @@ fn is_joiner(g: &str) -> bool {
     matches!(g.chars().next(), Some('\'' | '’' | '-' | '‐' | '‑'))
 }
 
-/// omp `moveWordLeft`.
 pub fn move_word_left(text: &str, cursor: usize) -> usize {
     let mut i = cursor.min(text.len());
     if i == 0 {
@@ -253,7 +252,6 @@ pub fn move_word_left(text: &str, cursor: usize) -> usize {
     i.saturating_sub(gs.pop().map_or(0, str::len))
 }
 
-/// omp `moveWordRight`.
 pub fn move_word_right(text: &str, cursor: usize) -> usize {
     let mut i = cursor.min(text.len());
     if i == text.len() {

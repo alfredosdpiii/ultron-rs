@@ -11,7 +11,6 @@ use serde_json::{Map, Value};
 #[derive(Clone, Debug, PartialEq)]
 pub struct RequestSettings {
     pub thinking_budgets: Option<ai::ThinkingBudgets>,
-    /// The parsed timeout, or why it is invalid.
     pub websocket_connect_timeout_ms: Result<Option<f64>, String>,
     /// `providerRequestOptions` (`{timeoutMs, maxRetries?, maxRetryDelayMs}`; none: no stream defaults), or why the
     /// HTTP idle timeout is invalid.

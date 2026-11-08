@@ -41,8 +41,7 @@ fn files(name: &str) -> Vec<(&'static str, Vec<u8>)> {
 /// The actor's retry events as TypeScript's RPC mode maps them (rpc-events.ts).
 fn rpc_retry_events(a: &p_session_support::Actor) -> Vec<Value> {
     a.events
-        .lock()
-        .unwrap()
+        .all()
         .iter()
         .filter_map(|e| match e["type"].as_str() {
             Some("retry_scheduled") => Some(json!({

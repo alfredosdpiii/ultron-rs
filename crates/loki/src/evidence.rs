@@ -9,7 +9,6 @@ use std::io::{Seek, SeekFrom, Write};
 use std::path::Path;
 use std::time::Instant;
 
-/// What a recorded run collected.
 #[derive(Debug, Default, Clone, PartialEq)]
 pub struct Evidence {
     pub policies: Vec<Value>,
@@ -57,7 +56,6 @@ pub fn finding(rule: &str, path: Option<&str>) {
     });
 }
 
-/// The run's targets (the checked paths).
 pub fn targets(paths: &[String]) {
     ACTIVE.with(|active| {
         if let Some(evidence) = active.borrow_mut().as_mut() {

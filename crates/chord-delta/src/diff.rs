@@ -220,7 +220,6 @@ fn op_cost(op: &Op) -> usize {
     }
 }
 
-/// Compute a compact operation batch from two JSON revisions.
 pub fn diff_revisions(before: &Value, after: &Value) -> Vec<Op> {
     let mut ops = Vec::new();
     diff_value(before, after, &[], &mut ops);

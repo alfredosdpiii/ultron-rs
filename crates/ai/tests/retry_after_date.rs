@@ -230,3 +230,22 @@ fn ai_provider_retry_after_http_date_is_checked_against_the_cap() {
         "{waited:?}"
     );
 }
+
+/// The date is read as `Date.parse` reads an IMF-fixdate: the month name in any case; a named zone other than `GMT`
+/// is refused (V8 would apply its offset), which is `NaN` upstream: it passes the cap and the retry goes at once.
+#[test]
+fn ai_provider_retry_after_http_date_reads_like_date_parse() {
+    let mut parts: Vec<String> = http_date_in(30).split(' ').map(str::to_string).collect();
+    parts[2] = parts[2].to_lowercase();
+    let lower = parts.join(" ");
+    let (message, seen) = completions(lower, json!({}));
+    assert_eq!(message.stop_reason, StopReason::Stop, "{:?}", message.error_message);
+    let waited = seen[1] - seen[0];
+    assert!(
+        waited > Duration::from_secs(28) && waited <= Duration::from_secs(30),
+        "{waited:?}"
+    );
+    let (message, seen) = completions(http_date_in(30).replace(" GMT", " PST"), json!({}));
+    assert_eq!(message.stop_reason, StopReason::Stop, "{:?}", message.error_message);
+    assert_eq!(seen[1] - seen[0], Duration::ZERO);
+}

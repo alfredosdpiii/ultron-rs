@@ -55,8 +55,6 @@ impl std::fmt::Display for Error {
 
 impl std::error::Error for Error {}
 
-// ---- JavaScript conversions the TypeScript relies on ----
-
 /// `Number(value)` of a JSON value (undefined: NaN).
 pub fn js_value_number(value: Option<&Value>) -> f64 {
     match value {
@@ -98,8 +96,6 @@ fn items(value: Option<&Value>) -> Vec<Value> {
         _ => Vec::new(),
     }
 }
-
-// ---- Pure parts ----
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize)]
 pub struct PullRef {

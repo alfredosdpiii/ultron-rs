@@ -21,7 +21,7 @@ use ai::types::{Message, TranscriptContext, UserMessage, UserMessageContent};
 use ai::{AssistantMessage, Body, HttpRequest, HttpResponse, SimpleStreamOptions, Transport};
 use harness::chat::{Models, StreamRequest};
 use harness::scheduler::Cancel;
-use p_session_support::{overloaded, text, tool};
+use p_session_support::{HANG, Log, overloaded, text, tool};
 use serde_json::{Map, Value, json};
 use session_core::core::{Input, Op};
 use session_core::lane::{self, Provider};
@@ -34,9 +34,7 @@ use std::net::TcpListener;
 use std::path::Path;
 use std::sync::mpsc::{Sender, channel};
 use std::sync::{Arc, Mutex, OnceLock};
-use std::time::{Duration, Instant};
 
-const HANG: Duration = Duration::from_secs(120);
 /// The fake `--api-key` of the starting provider (built from parts, so no secret scanner sees a key).
 fn flag_key() -> String {
     ["flag", "key", "a"].join("-")
@@ -64,10 +62,10 @@ fn in_order(replies: Vec<String>) -> Script {
     Box::new(move |index| replies.get(index).cloned().unwrap_or_else(|| text("(no more replies)")))
 }
 
-fn server(mut script: Script) -> (u16, Arc<Mutex<Vec<Seen>>>) {
+fn server(mut script: Script) -> (u16, Arc<Log<Seen>>) {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let port = listener.local_addr().unwrap().port();
-    let seen = Arc::new(Mutex::new(Vec::new()));
+    let seen: Arc<Log<Seen>> = Arc::default();
     let kept = seen.clone();
     std::thread::spawn(move || {
         for stream in listener.incoming() {
@@ -96,11 +94,7 @@ fn server(mut script: Script) -> (u16, Arc<Mutex<Vec<Seen>>>) {
                 continue;
             }
             let body: Value = serde_json::from_slice(&body).unwrap_or(Value::Null);
-            let index = {
-                let mut kept = kept.lock().unwrap();
-                kept.push(Seen { headers, body });
-                kept.len() - 1
-            };
+            let index = kept.push(Seen { headers, body });
             let reply = script(index);
             let head = format!(
                 "HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\ncontent-length: {}\r\nconnection: close\r\n\r\n",
@@ -116,7 +110,7 @@ fn server(mut script: Script) -> (u16, Arc<Mutex<Vec<Seen>>>) {
 struct Session {
     tx: Sender<Input>,
     actor: Option<std::thread::JoinHandle<()>>,
-    seen: Arc<Mutex<Vec<Seen>>>,
+    seen: Arc<Log<Seen>>,
     cwd: std::path::PathBuf,
     _tmp: tempfile::TempDir,
 }
@@ -209,16 +203,7 @@ impl Session {
     }
 
     fn seen(&self) -> Vec<Seen> {
-        self.seen.lock().unwrap().clone()
-    }
-
-    /// Waits (hang guard only) until the server saw `count` requests.
-    fn wait_requests(&self, count: usize) {
-        let end = Instant::now() + HANG;
-        while self.seen().len() < count {
-            assert!(Instant::now() < end, "timed out waiting for {count} requests");
-            std::thread::sleep(Duration::from_millis(10));
-        }
+        self.seen.all()
     }
 
     fn set_model(&self, provider: &str, id: &str) {
@@ -318,7 +303,8 @@ fn session_core_request_keys_mid_turn_switch_keeps_the_generations_key() {
             },
         )
     });
-    s.wait_requests(1);
+    s.seen
+        .wait("the first request", |seen| (!seen.is_empty()).then_some(()));
     s.set_model("other", "m1");
     std::fs::write(s.cwd.join(gate), "").unwrap();
     running.join().unwrap().unwrap();

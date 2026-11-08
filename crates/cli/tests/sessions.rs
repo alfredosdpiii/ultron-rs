@@ -114,7 +114,8 @@ fn cli_sessions_model_title_replaces_the_automatic_name() {
         "thinking off: {}",
         body["thinking"]
     );
-    // The cheapest Anthropic catalog model that can run without thinking (none is non-reasoning), not the session model.
+    // The cheapest Anthropic catalog model that can run without thinking (none is non-reasoning), not the session
+    // model.
     assert_eq!(body["model"], "claude-haiku-4-5");
     // Its usage is recorded as a usage row of its own.
     let file = &session_files(&sandbox.sessions_dir())[0];

@@ -247,7 +247,6 @@ impl CellProgress {
         }
     }
 
-    /// Append running output.
     pub fn output(&self, chunk: &str) {
         let snapshot = {
             let mut state = lock(&self.retained);
@@ -300,7 +299,6 @@ pub(crate) fn cell_definition() -> &'static TaskDefinition {
     &CELL_DEFINITION
 }
 
-/// The built-in cell task over `services`.
 pub(crate) fn cell_task(services: Arc<Services>) -> Task {
     let (call, execute, abort) = (services.clone(), services.clone(), services);
     Task::define(CELL_KIND, 2, |input| (CELL_DEFINITION.initial)(input))
@@ -505,7 +503,6 @@ fn abort_handler(_services: &Services, task: &TaskRecord, runtime: &TaskRuntime)
     )
 }
 
-/// Execute the cell, then settle its result.
 fn run(services: &Services, runtime: &TaskRuntime, task: &TaskRecord, call: CellCall) -> Result<()> {
     let interval = Duration::from_millis((services.settings)().output_interval_ms);
     let progress = CellProgress::new(runtime, interval);

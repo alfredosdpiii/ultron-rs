@@ -121,97 +121,96 @@ fn flat_policy(network: bool, tmp: Option<&str>) -> Policy {
     }
 }
 
-fn argv(policy: &Policy, mechanism: Mechanism) -> String {
-    policy
-        .wrap(
-            mechanism,
-            &Flat,
-            &["bash".into(), "-c".into(), "x".into()],
-            Path::new("/p"),
-        )
-        .join(" ")
+fn argv(policy: &Policy, mechanism: Mechanism) -> Vec<String> {
+    policy.wrap(
+        mechanism,
+        &Flat,
+        &["bash".into(), "-c".into(), "x".into()],
+        Path::new("/p"),
+    )
+}
+
+/// The index just past `fragment` (consecutive words of `argv`) at or after `from`, or a panic naming it.
+fn after(argv: &[String], from: usize, fragment: &str) -> usize {
+    let words: Vec<&str> = fragment.split(' ').collect();
+    (from..=argv.len().saturating_sub(words.len()))
+        .find(|&at| argv[at..at + words.len()].iter().zip(&words).all(|(a, b)| a == b))
+        .map(|at| at + words.len())
+        .unwrap_or_else(|| panic!("`{fragment}` not found after word {from} of {}", argv.join(" ")))
+}
+
+/// `fragments` occur in `argv` in this order: later mounts cover earlier ones, so the order is the policy.
+fn in_order(argv: &[String], fragments: &[&str]) {
+    fragments.iter().fold(0, |from, fragment| after(argv, from, fragment));
 }
 
 #[test]
 fn sandbox_interactive_bwrap_argv() {
-    assert_eq!(
-        argv(&flat_policy(false, None), Mechanism::Bwrap),
-        "bwrap --unshare-all --die-with-parent --new-session --cap-drop ALL --clearenv --setenv PATH /usr/bin \
---ro-bind /usr /usr --symlink usr/bin /bin --ro-bind /lib /lib --ro-bind /etc /etc --proc /proc --dev /dev \
---tmpfs /tmp --ro-bind /h /h --bind /p /p --tmpfs /h/.ssh --ro-bind /dev/null /h/.netrc --chdir /p -- bash -c x"
+    let off = argv(&flat_policy(false, None), Mechanism::Bwrap);
+    in_order(
+        &off,
+        &[
+            "bwrap --unshare-all",
+            "--die-with-parent --new-session --cap-drop ALL --clearenv --setenv PATH /usr/bin",
+            "--ro-bind /usr /usr",
+            "--tmpfs /tmp",
+            "--ro-bind /h /h",
+            "--bind /p /p",
+            "--tmpfs /h/.ssh",
+            "--ro-bind /dev/null /h/.netrc",
+            "--chdir /p -- bash -c x",
+        ],
     );
+    assert!(!off.contains(&"--share-net".to_owned()), "{off:?}");
+    assert!(!off.iter().any(|word| word == "/gone"), "{off:?}");
     let on = argv(&flat_policy(true, Some("/t")), Mechanism::Bwrap);
-    assert!(
-        on.starts_with("bwrap --unshare-all --share-net --die-with-parent"),
-        "{on}"
+    in_order(
+        &on,
+        &[
+            "bwrap --unshare-all --share-net",
+            "--ro-bind-try /run/systemd/resolve /run/systemd/resolve",
+            "--bind /t /tmp",
+            "-- bash -c x",
+        ],
     );
-    assert!(
-        on.contains("--ro-bind-try /run/systemd/resolve /run/systemd/resolve"),
-        "{on}"
-    );
-    assert!(on.contains("--bind /t /tmp") && !on.contains("--tmpfs /tmp"), "{on}");
+    assert!(!on.join(" ").contains("--tmpfs /tmp"), "{on:?}");
 }
 
 #[test]
 fn sandbox_interactive_unshare_and_docker_argv() {
-    let off = flat_policy(false, None).wrap(Mechanism::Unshare, &Flat, &["true".into()], Path::new("/p"));
-    let head: Vec<&str> = off.iter().take(15).map(String::as_str).collect();
-    assert_eq!(
-        head,
-        [
-            "setpriv",
-            "--pdeathsig",
-            "KILL",
-            "--",
-            "unshare",
-            "--user",
-            "--map-root-user",
-            "--mount",
-            "--net",
-            "--pid",
-            "--fork",
-            "--ipc",
-            "--uts",
-            "--kill-child",
-            "env"
-        ]
+    let off = argv(&flat_policy(false, None), Mechanism::Unshare);
+    in_order(
+        &off,
+        &[
+            "setpriv --pdeathsig KILL -- unshare --user --map-root-user --mount --net --pid --fork",
+            "--kill-child env",
+            "/h",
+            "/p",
+            "/h/.ssh /h/.netrc",
+            "-- bash -c x",
+        ],
     );
-    assert!(off.ends_with(&[
-        "7".into(),
-        "8".into(),
-        "/h".into(),
-        "/p".into(),
-        "".into(),
-        "1".into(),
-        "/p".into(),
-        "0".into(),
-        "2".into(),
-        "/h/.ssh".into(),
-        "/h/.netrc".into(),
-        "0".into(),
-        "--".into(),
-        "true".into()
-    ]));
-    let on = flat_policy(true, None).wrap(Mechanism::Unshare, &Flat, &["true".into()], Path::new("/p"));
-    assert!(!on.contains(&"--net".to_owned()));
-    let docker = flat_policy(false, Some("/t")).wrap(
-        Mechanism::Docker,
-        &Flat,
-        &["bash".into(), "-c".into(), "x".into()],
-        Path::new("/p"),
-    );
+    let on = argv(&flat_policy(true, None), Mechanism::Unshare);
+    assert!(!on.contains(&"--net".to_owned()), "{on:?}");
+    let docker = argv(&flat_policy(false, Some("/t")), Mechanism::Docker);
     // The client dies with its parent, and the container with its client (escape.rs runs both for real).
-    assert_eq!(docker[..6], ["setpriv", "--pdeathsig", "KILL", "--", "bash", "-c"]);
-    assert_eq!(docker[7], "ultron-docker");
-    assert_eq!(
-        docker[8..].join(" "),
-        format!(
-            "docker run --rm --init -i --pull never --network none --cap-drop ALL --security-opt no-new-privileges \
---pids-limit 1024 --user 7:8 -v /t:/tmp:rw -v /h:/h:ro -v /p:/p:rw --tmpfs /h/.ssh -v /dev/null:/h/.netrc:ro -w /p \
-img sh -c {} sh env -i PATH=/usr/bin bash -c x",
-            docker[docker.len() - 8]
-        )
+    in_order(
+        &docker,
+        &[
+            "setpriv --pdeathsig KILL -- bash -c",
+            "ultron-docker docker run --rm --init -i --pull never --network none --cap-drop ALL \
+--security-opt no-new-privileges",
+            "--user 7:8",
+            "-v /t:/tmp:rw",
+            "-v /h:/h:ro",
+            "-v /p:/p:rw",
+            "--tmpfs /h/.ssh",
+            "-v /dev/null:/h/.netrc:ro",
+            "-w /p img",
+            "env -i PATH=/usr/bin bash -c x",
+        ],
     );
+    assert_eq!(docker.last().map(String::as_str), Some("x"));
 }
 
 /// A writable or readable path inside a hidden one is mounted again after the hidden ones (most specific wins), and
@@ -235,25 +234,20 @@ fn sandbox_nested_paths_inside_hidden_ones_are_mounted_last() {
             Flat.which(name)
         }
     }
-    let wrap = |mechanism| {
-        policy
-            .wrap(mechanism, &Nested, &["true".into()], Path::new("/p"))
-            .join(" ")
-    };
-    assert!(
-        wrap(Mechanism::Bwrap).ends_with(
-            "--tmpfs /h/.ssh --ro-bind /dev/null /h/.netrc --ro-bind /h/.ssh/skills /h/.ssh/skills \
---bind /h/.ssh/session /h/.ssh/session --bind /h/.ssh/session/deep /h/.ssh/session/deep --chdir /p -- true"
-        ),
-        "{}",
-        wrap(Mechanism::Bwrap)
-    );
-    assert!(
-        wrap(Mechanism::Unshare)
-            .ends_with("2 /h/.ssh /h/.netrc 3 r0 /h/.ssh/skills w2 /h/.ssh/session w1 /h/.ssh/session/deep -- true"),
-        "{}",
-        wrap(Mechanism::Unshare)
-    );
+    for mechanism in [Mechanism::Bwrap, Mechanism::Unshare] {
+        let argv = policy.wrap(mechanism, &Nested, &["true".into()], Path::new("/p"));
+        in_order(
+            &argv,
+            &[
+                "/h/.ssh",
+                "/h/.netrc",
+                "/h/.ssh/skills",
+                "/h/.ssh/session",
+                "/h/.ssh/session/deep",
+                "-- true",
+            ],
+        );
+    }
     assert!(policy.may_write(Path::new("/h/.ssh/session/x")));
     assert!(policy.may_write(Path::new("/h/.ssh/session/deep/x")));
     assert!(!policy.may_write(Path::new("/h/.ssh/id_rsa")));

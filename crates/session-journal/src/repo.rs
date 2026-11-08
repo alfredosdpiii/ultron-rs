@@ -128,7 +128,6 @@ impl SessionRepo {
         found
     }
 
-    /// `delete`.
     pub fn delete(&self, metadata: &Metadata) -> Result<(), String> {
         if !metadata.path.exists() {
             return Err(format!("Session file does not exist: {}", metadata.path.display()));

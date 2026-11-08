@@ -2,8 +2,7 @@
 //! fixtures/generate-transcript-search.mjs) against `interactive::transcript_search`, and tests the selection, highlight
 //! and fullscreen view behavior ported from tui-alt-screen.ts over the scrollback/viewport split.
 
-use interactive::keybindings::Platform;
-use interactive::keybindings::native_app_keybindings;
+use crate::support;
 use interactive::transcript_search::{
     SearchBar, SearchIndex, SearchMatch, SearchOutcome, SearchSegment, SelectionMode, TranscriptSearch, highlight_row,
     match_key, select_match,
@@ -25,11 +24,7 @@ fn strings(v: &Value) -> Vec<String> {
 }
 
 fn keys() -> KeybindingsManager {
-    KeybindingsManager::new(
-        native_app_keybindings(Platform::new("linux", false)),
-        Vec::new(),
-        Default::default(),
-    )
+    support::keys()
 }
 
 fn seg(row: usize, start_col: usize, end_col: usize) -> SearchSegment {

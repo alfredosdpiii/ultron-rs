@@ -60,8 +60,6 @@ pub trait ContextBranches: Send + Sync {
     fn tip_id(&self, lane: &str) -> Result<Option<String>, String>;
 }
 
-// --- context edits (agent-core context.ts) ---------------------------------------------------------------------
-
 /// One edit: `replacement` is `None` to omit the target, else `Some(content)` (a string or a content array).
 #[derive(Debug, Clone, PartialEq)]
 pub struct ContextEdit {
@@ -221,8 +219,6 @@ pub fn apply_context_edits(entries: &[Value]) -> Vec<Applied> {
         })
         .collect()
 }
-
-// --- text helpers -------------------------------------------------------------------------------------------------
 
 /// Readable text of a message, for previews and kept items (`messageText`).
 pub fn message_text(message: &Value) -> String {
@@ -396,8 +392,6 @@ pub fn trimmed_result_text(entry_id: &str, original: &str) -> String {
         &original[tail_start..]
     )
 }
-
-// --- the module -----------------------------------------------------------------------------------------------------
 
 #[derive(Debug, Clone)]
 struct EditInfo {
@@ -948,8 +942,6 @@ impl ApiModule for ContextControl {
     }
 }
 
-// --- harness hooks: collapse on return, trim before compaction, kept across compaction, observation ------------------
-
 const COLLAPSE_MIN_BYTES: usize = 600;
 const MAX_PENDING_CELLS: usize = 64;
 const TRIM_MIN_CHARS: usize = 8192;
@@ -972,7 +964,6 @@ impl ContextControl {
         }
     }
 
-    /// Harness `tool_end`.
     pub fn tool_end(&self, lane: &str, tool_call_id: &str) {
         let mut tracking = jsrt::sync::lock(&self.tracking);
         if lane == kernel::ROOT_LANE && tracking.current_cell.as_deref() == Some(tool_call_id) {
@@ -988,7 +979,6 @@ impl ContextControl {
         Ok(())
     }
 
-    /// Harness `run_end`.
     pub fn run_end(&self, lane: &str) -> Result<(), String> {
         if lane == kernel::ROOT_LANE && !jsrt::sync::lock(&self.tracking).cells.is_empty() {
             self.collapse()?;

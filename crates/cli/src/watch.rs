@@ -12,7 +12,6 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 use theme::Fg;
 
-/// `POLL_MS`.
 const POLL: Duration = Duration::from_millis(500);
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]

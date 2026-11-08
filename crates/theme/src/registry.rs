@@ -1,5 +1,5 @@
 //! The process theme state from packages/coding-agent theme.ts: registered (in-memory) themes, the theme list,
-//! `initTheme` / `setTheme` with the silent fallback to `dark`. The file watcher, `setThemeInstance` and the change
+//! `setTheme` with the fallback to `dark`. The file watcher, `setThemeInstance` and the change
 //! callback are not part of this port.
 
 use std::path::PathBuf;
@@ -90,7 +90,6 @@ impl ThemeRegistry {
         result
     }
 
-    /// `getAvailableThemes`.
     pub fn available_themes(&self) -> Vec<String> {
         self.available_themes_with_paths().into_iter().map(|t| t.name).collect()
     }
@@ -103,20 +102,6 @@ impl ThemeRegistry {
         create_theme(&load_theme_json(name, &self.custom_dir)?, self.mode, None)
     }
 
-    fn fall_back_to_dark(&mut self) {
-        self.current = Some(fallback_theme(self.mode));
-    }
-
-    /// `initTheme(name)`: `default_name` stands in for TS `getDefaultTheme()` (terminal background detection); an
-    /// invalid theme silently falls back to `dark`.
-    pub fn init_theme(&mut self, name: Option<&str>, default_name: &str) {
-        let name = name.unwrap_or(default_name);
-        match self.load_theme(name) {
-            Ok(theme) => self.current = Some(theme),
-            Err(_) => self.fall_back_to_dark(),
-        }
-    }
-
     /// `setTheme(name)`: switch; on error fall back to `dark` and return the message.
     pub fn set_theme(&mut self, name: &str) -> Result<(), String> {
         match self.load_theme(name) {
@@ -125,13 +110,13 @@ impl ThemeRegistry {
                 Ok(())
             }
             Err(e) => {
-                self.fall_back_to_dark();
+                self.current = Some(fallback_theme(self.mode));
                 Err(e)
             }
         }
     }
 
-    /// The global `theme` (`None` before `initTheme`, where TS throws "Theme not initialized").
+    /// The global `theme` (`None` before the first [`Self::set_theme`], where TS throws "Theme not initialized").
     pub fn current(&self) -> Option<&Theme> {
         self.current.as_ref()
     }

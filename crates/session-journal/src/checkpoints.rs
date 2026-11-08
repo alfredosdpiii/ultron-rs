@@ -15,7 +15,6 @@ use serde_json::Value;
 
 pub const RESTORE_PREFIX: &str = "restore:";
 
-/// Record checkpoint `key`.
 pub fn put(session: &mut Session, key: &str, value: Value) -> Result<(), String> {
     session.commit(&[Write::set(CHECKPOINTS, key, value)]).map(|_| ())
 }

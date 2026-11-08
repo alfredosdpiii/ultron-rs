@@ -76,7 +76,6 @@ pub fn flag_off(value: Option<&str>) -> bool {
     value.is_some_and(|v| matches!(v.trim().to_lowercase().as_str(), "off" | "0" | "false"))
 }
 
-/// An environment variable lookup usable from any thread.
 pub type VarLookup = Arc<dyn Fn(&str) -> Option<String> + Send + Sync>;
 
 /// The process environment and locations a session sees.
@@ -105,22 +104,18 @@ impl RunEnv {
         self.package_file("docs")
     }
 
-    /// The bundled skills.
     pub fn skills(&self) -> PathBuf {
         self.package_file("skills")
     }
 
-    /// The REPL's runtime, `src/ultron/rlm/runtime.py`.
     pub fn runtime(&self) -> PathBuf {
         self.package_file(RUNTIME_PY)
     }
 
-    /// Whether the switch `name` is set to off ([`flag_off`]).
     pub fn flag_off(&self, name: &str) -> bool {
         flag_off((self.var)(name).as_deref())
     }
 
-    /// This process's environment in `cwd`.
     pub fn process(cwd: PathBuf, package: PathBuf) -> RunEnv {
         RunEnv {
             cwd,

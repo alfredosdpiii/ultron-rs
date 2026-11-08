@@ -11,7 +11,6 @@ use serde_json::{Map, Value, json};
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
-/// `ForkOptions`.
 #[derive(Clone, Debug, PartialEq)]
 pub enum ForkOptions {
     /// Every entry and branch tip.
@@ -201,7 +200,6 @@ impl Index {
     }
 }
 
-/// The source of a fork.
 pub enum ForkInput<'a> {
     /// A format-4 file; `next_seq` is the boundary of an open source (later writes are excluded).
     V4 {

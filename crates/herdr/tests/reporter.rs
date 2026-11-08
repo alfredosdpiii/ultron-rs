@@ -2,14 +2,17 @@
 //! latest-state-wins while the socket is busy, updates that never wait for the socket, a release that is bounded
 //! when herdr never answers, and env detection from the injected lookup only.
 
-use herdr::{Metadata, Pane, Reporter, Session, State, Transport, detect, ends_with_question, needs_user};
+use herdr::{
+    METADATA_INTERVAL, Metadata, Pane, Reporter, SETTLE, Session, State, Transport, detect, ends_with_question,
+    needs_user,
+};
 use serde_json::{Value, json};
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::UnixListener;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc;
 use std::sync::{Arc, Condvar, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 const HANG_GUARD: Duration = Duration::from_secs(120);
 
@@ -189,18 +192,137 @@ fn herdr_release_is_bounded_when_herdr_never_answers() {
     let socket = dir.path().join("herdr.sock");
     // Listening, never accepting: connects queue in the backlog, replies never come.
     let _listener = UnixListener::bind(&socket).unwrap();
-    let gate = Gated::default();
-    let reporter = Reporter::with_transport("p", "ultron", false, Box::new(gate.clone()));
-    reporter.state(State::Working, None);
-    gate.wait_started(1);
-    // The transport never returns; the release waits at most RELEASE_WAIT, then the process may exit.
-    reporter.release();
+    let (tx, rx) = mpsc::channel();
+    std::thread::spawn(move || {
+        let gate = Gated::default();
+        let reporter = Reporter::with_transport("p", "ultron", false, Box::new(gate.clone()));
+        reporter.state(State::Working, None);
+        gate.wait_started(1);
+        // The transport never returns; the release waits at most RELEASE_WAIT, then the process may exit.
+        reporter.release();
+        reporter.state(State::Idle, None);
+        drop(reporter);
+        // The socket transport itself gives up after its timeouts.
+        let real = Reporter::start(&pane(&socket), "ultron");
+        real.state(State::Working, None);
+        drop(real);
+        let _ = tx.send(());
+    });
+    rx.recv_timeout(HANG_GUARD).expect("the releases returned");
+}
+
+/// A transport that never blocks: every line with when it was sent.
+#[derive(Clone, Default)]
+struct Recorded {
+    inner: Arc<(Mutex<Vec<Sent>>, Condvar)>,
+}
+
+type Sent = (Instant, Value);
+
+impl Recorded {
+    fn wait_lines(&self, n: usize) -> Vec<Sent> {
+        let mut lines = self.inner.0.lock().unwrap();
+        while lines.len() < n {
+            lines = self.inner.1.wait_timeout(lines, HANG_GUARD).unwrap().0;
+        }
+        lines.clone()
+    }
+}
+
+impl Transport for Recorded {
+    fn send(&mut self, line: &str) -> Result<(), String> {
+        let mut lines = self.inner.0.lock().unwrap();
+        lines.push((Instant::now(), serde_json::from_str(line).unwrap()));
+        self.inner.1.notify_all();
+        Ok(())
+    }
+}
+
+#[test]
+fn herdr_idle_and_blocked_states_are_held_for_the_settle_time() {
+    let sent = Recorded::default();
+    let reporter = Reporter::with_transport("p", "ultron", false, Box::new(sent.clone()));
+    let idle_at = Instant::now();
     reporter.state(State::Idle, None);
+    let (at, line) = sent.wait_lines(1)[0].clone();
+    assert_eq!(line["params"]["state"], "idle");
+    assert!(at - idle_at >= SETTLE, "{:?}", at - idle_at);
+    let blocked_at = Instant::now();
+    reporter.state(State::Blocked, Some("Which file?".into()));
+    let (at, line) = sent.wait_lines(2)[1].clone();
+    assert_eq!(line["params"]["state"], "blocked");
+    assert_eq!(line["params"]["message"], "Which file?");
+    assert!(at - blocked_at >= SETTLE, "{:?}", at - blocked_at);
+}
+
+#[test]
+fn herdr_metadata_is_sent_at_most_once_an_interval_only_when_changed_and_clears_what_is_gone() {
+    let sent = Recorded::default();
+    let reporter = Reporter::with_transport("p", "ultron", false, Box::new(sent.clone()));
+    let before = Metadata {
+        display_agent: Some("Ultron".into()),
+        title: Some("Fix the parser".into()),
+        tokens: [("ctx", "12%"), ("model", "m")]
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .into(),
+    };
+    let after = Metadata {
+        display_agent: Some("Ultron".into()),
+        title: None,
+        tokens: [("model".to_string(), "m".to_string())].into(),
+    };
+    let start = Instant::now();
+    reporter.metadata(before);
+    sent.wait_lines(1);
+    reporter.metadata(after.clone());
+    let (at, line) = sent.wait_lines(2)[1].clone();
+    assert!(at - start >= METADATA_INTERVAL, "{:?}", at - start);
+    assert_eq!(line["method"], "pane.report_metadata");
+    let params = line["params"].as_object().unwrap();
+    assert_eq!(
+        (&params["display_agent"], &params["clear_title"], &params["tokens"]),
+        (&json!("Ultron"), &json!(true), &json!({"model": "m", "ctx": null}))
+    );
+    // The same metadata again is not sent, not even once the interval has passed: idle states (each held for the
+    // settle time) are reported until one is sent past the interval, then one more.
+    reporter.metadata(after);
+    let mut n = 2;
+    loop {
+        reporter.state(State::Idle, None);
+        n += 1;
+        if sent.wait_lines(n)[n - 1].0 - at >= METADATA_INTERVAL {
+            break;
+        }
+    }
+    reporter.state(State::Idle, None);
+    let lines = sent.wait_lines(n + 1);
+    assert!(
+        lines[2..].iter().all(|(_, line)| line["method"] == "pane.report_agent"),
+        "{lines:?}"
+    );
+}
+
+#[test]
+fn herdr_release_flushes_the_pending_state_is_sent_once_and_seq_increases() {
+    let sent = Recorded::default();
+    let reporter = Reporter::with_transport("p", "ultron", false, Box::new(sent.clone()));
+    reporter.state(State::Working, None);
+    sent.wait_lines(1);
+    // An idle state is held for the settle time, but a release sends it at once.
+    reporter.state(State::Idle, None);
+    reporter.release();
+    reporter.release();
+    reporter.state(State::Working, None);
     drop(reporter);
-    // The socket transport itself gives up after its timeouts.
-    let real = Reporter::start(&pane(&socket), "ultron");
-    real.state(State::Working, None);
-    drop(real);
+    let lines: Vec<Value> = sent.wait_lines(3).into_iter().map(|(_, line)| line).collect();
+    let methods: Vec<&str> = lines.iter().map(|l| l["method"].as_str().unwrap()).collect();
+    assert_eq!(
+        methods,
+        ["pane.report_agent", "pane.report_agent", "pane.release_agent"]
+    );
+    assert_eq!(lines[1]["params"]["state"], "idle");
+    let seqs: Vec<u64> = lines.iter().map(|l| l["params"]["seq"].as_u64().unwrap()).collect();
+    assert!(seqs.windows(2).all(|w| w[0] < w[1]), "{seqs:?}");
 }
 
 /// A herdr that is stuck: a listener with a backlog of 0 that never accepts, with the one queued connection already
@@ -230,14 +352,6 @@ fn herdr_connect_gives_up_on_a_stuck_herdr_instead_of_waiting_forever() {
     let (connected, sent) = rx.recv_timeout(HANG_GUARD).expect("connect gave up");
     assert!(connected.is_err());
     assert!(sent.is_err());
-}
-
-#[test]
-fn herdr_missing_socket_is_silent() {
-    let dir = tempfile::tempdir().unwrap();
-    let reporter = Reporter::start(&pane(&dir.path().join("absent.sock")), "ultron");
-    reporter.state(State::Working, None);
-    reporter.release();
 }
 
 fn vars(pairs: &[(&str, &str)]) -> impl Fn(&str) -> Option<String> {

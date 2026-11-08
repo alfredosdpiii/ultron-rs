@@ -24,8 +24,7 @@ static FIXTURE: LazyLock<Value> =
 /// RPC's retry events (rpc-events.ts) of a worker, without the delay (the wait here is longer than the recording's).
 fn retry_events(w: &Worker) -> Vec<Value> {
     w.events
-        .lock()
-        .unwrap()
+        .all()
         .iter()
         .filter_map(|e| match e["type"].as_str() {
             Some("retry_scheduled") => Some(json!({"type": "auto_retry_start", "attempt": e["attempt"],

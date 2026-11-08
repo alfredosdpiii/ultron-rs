@@ -2,8 +2,6 @@
 //! once rather than once per file. A file that re-runs or exits its own test binary (`current_exe`,
 //! `process::exit`) stays a test binary of its own in Cargo.toml. `crates/workspace-checks` keeps both lists whole.
 
-#[path = "agent_markers.rs"]
-mod agent_markers;
 #[path = "dream.rs"]
 mod dream;
 #[path = "extension_ui.rs"]

@@ -483,7 +483,6 @@ fn experiment(value: &Value) -> Result<(), String> {
     {
         return Err(INVALID.into());
     }
-    // Usage is optional, but when present its parts must reconcile with its declared total.
     if let Some(usage) = map.get("usage") {
         let usage = usage.as_object().ok_or("Experiment usage must be an object")?;
         let mut sum = 0.0;
@@ -560,7 +559,6 @@ impl LocalServices {
         }
     }
 
-    /// The active refinement of `kind`/`target` on `branch`, or `None`.
     pub fn current(&self, kind: &str, target: &str, branch: Option<&Branch>) -> Result<Option<Value>, String> {
         let value = self.handle("refinements.current", &json!({"kind": kind, "target": target}), branch)?;
         Ok((!value.is_null()).then_some(value))

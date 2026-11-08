@@ -11,7 +11,6 @@ use crate::autoreview_cli::user_service;
 
 const APP_NAME: &str = "ultron";
 
-/// What a command printed and how it exited.
 pub struct Ran {
     pub code: i32,
     pub stdout: String,

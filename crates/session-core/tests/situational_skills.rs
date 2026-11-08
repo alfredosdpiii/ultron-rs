@@ -10,7 +10,7 @@ use p_session_support::{text, tool, tool_results};
 use reopen_support::Home;
 use serde_json::{Value, json};
 use session_core::core::Op;
-use session_core::situational_skills::{DEFAULT_RULES, SituationalSkills, rules};
+use session_core::situational_skills::{SituationalSkills, rules};
 use std::path::Path;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -44,8 +44,19 @@ fn observer(settings: Value, on: Arc<AtomicBool>) -> SituationalSkills {
 #[test]
 fn session_core_situational_skills_rules_come_from_the_settings() {
     let names = |settings: Value| rules(&settings).into_iter().map(|rule| rule.skill).collect::<Vec<_>>();
-    let defaults: Vec<String> = DEFAULT_RULES.iter().map(|(skill, _, _)| skill.to_string()).collect();
-    assert_eq!(names(json!({})), defaults, "no setting: the defaults");
+    assert_eq!(
+        names(json!({})),
+        [
+            "principle-test-behavior-not-implementation",
+            "principle-minimize-reader-load",
+            "typescript-best-practices",
+            "principle-make-operations-idempotent",
+            "principle-explain-the-number",
+            "principle-boundary-discipline",
+            "principle-type-system-discipline"
+        ],
+        "no setting: the defaults"
+    );
     assert!(names(json!({"situationalSkills": false})).is_empty());
     assert!(names(json!({"situationalSkills": []})).is_empty());
     assert_eq!(

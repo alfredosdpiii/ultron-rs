@@ -133,9 +133,6 @@ class Rejected(Exception):
     """A request the host will not serve; the message goes back to the investigator."""
 
 
-# --- The repository, read-only ---------------------------------------------------------------------------------
-
-
 class Repo:
     """A repository at one commit, through a fixed set of read-only git subcommands."""
 
@@ -551,8 +548,6 @@ def serve(repo: Repo, requests: Any, limit: int = ROUND_CHARS,
     return "\n\n".join(block for _title, block in blocks), served, rejected
 
 
-# --- Map -------------------------------------------------------------------------------------------------------
-
 _CONSTANT = re.compile(r"^\s*(?:export\s+)?(?:const\s+|final\s+|static\s+)*([A-Z][A-Z0-9_]{2,})\s*[:=]")
 _ENV = re.compile(r"""(?:environ(?:\.get)?\s*[\[(]\s*|getenv\(\s*|process\.env\.|\$\{?)["']?([A-Z][A-Z0-9_]{3,})""")
 _FLAG = re.compile(r"""["'\s](--[a-z][a-z0-9-]{2,})""")
@@ -852,9 +847,6 @@ def build_brief(repo: Repo, files: list[FileDiff], read_file: Callable[[str], li
     return brief
 
 
-# --- Evidence --------------------------------------------------------------------------------------------------
-
-
 def _flat(text: str) -> str:
     return " ".join(text.split())
 
@@ -1024,8 +1016,6 @@ def merge(fast: list[dict[str, Any]], deep: list[dict[str, Any]],
                 twin["end_line"] = finding["end_line"]
     return remaining + kept, duplicates
 
-
-# --- Investigators ---------------------------------------------------------------------------------------------
 
 LAST_ROUND = ("This is your last round: requests will not be served. Reply with your final findings, "
               "\"requests\": [] and \"done\": true.")

@@ -221,7 +221,6 @@ impl Tree {
         self.nodes[id].position.and_then(|p| p[2])
     }
 
-    /// The `Constant` value of a node, when it is one.
     pub fn constant(&self, id: usize) -> Option<&Const> {
         if self.kind(id) != "Constant" {
             return None;
@@ -532,8 +531,6 @@ pub fn mask_python(text: &Text) -> Result<Text, CheckError> {
     }
     Ok(Text::from_chars(chars))
 }
-
-// --- rules ---------------------------------------------------------------
 
 const REQUEST_NAMES: [&str; 6] = ["request", "req", "params", "query_params", "form", "cookies"];
 const SERVER_ATTRIBUTES: [&str; 6] = ["user", "session", "auth", "state", "identity", "principal"];
@@ -1170,8 +1167,6 @@ fn tls_unverified(tree: &Tree, call: usize) -> bool {
                         .is_some_and(|c| c.repr == "False")
             }))
 }
-
-// --- stubs, imports, metrics -----------------------------------------------
 
 const ABSTRACT_DECORATORS: [&str; 5] = [
     "abstractmethod",

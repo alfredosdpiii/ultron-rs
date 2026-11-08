@@ -92,7 +92,6 @@ impl FrameTasks for StackFrameTasks {
         match ask(Some(signal)) {
             Ok(result) => result,
             Err(_) if signal.is_aborted() => {
-                // The frame ends with its cell: cancel the task, then report its (cancelled) result.
                 let _ = self
                     .agents
                     .cancel_task(task_id, "Inference cancelled: the calling cell was aborted");

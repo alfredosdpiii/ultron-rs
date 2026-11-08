@@ -98,8 +98,6 @@ pub fn bash_failed(command: &str, exit_code: &Value, timed_out: bool) -> bool {
     }
 }
 
-// ------------------------------------------------------------------------------------------------- loop detector
-
 /// Thresholds of the stuck-loop detector (`LoopLimits`).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct LoopLimits {
@@ -292,9 +290,6 @@ pub fn loop_hint_text(trip: &LoopTrip) -> String {
     }
 }
 
-// ------------------------------------------------------------------------------------------------------ cell hints
-
-/// `CellHintsOptions`.
 #[derive(Clone)]
 pub struct CellHintsOptions {
     pub enabled: bool,
@@ -356,7 +351,6 @@ struct LaneState {
 /// Whether the host wakes a lane when its work ends (its event wording says "end your turn").
 pub type LaneWoken = Arc<dyn Fn(&str) -> bool + Send + Sync>;
 
-/// `CellHints`.
 pub struct CellHints {
     module: Arc<HintsModule>,
     options: CellHintsOptions,

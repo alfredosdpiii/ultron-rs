@@ -341,7 +341,6 @@ impl LegacyV3Source {
             .collect()
     }
 
-    /// `translateForkEntryId`.
     pub fn translate_fork_entry_id(&self, legacy: &str) -> Result<String, String> {
         let entry = self
             .by_id

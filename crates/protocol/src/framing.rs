@@ -22,7 +22,6 @@ impl fmt::Display for FrameError {
 
 impl std::error::Error for FrameError {}
 
-/// Prefixes a payload with its unsigned 32-bit big-endian byte length.
 pub fn encode_frame(payload: &[u8]) -> Result<Vec<u8>, FrameError> {
     let Ok(length) = u32::try_from(payload.len()) else {
         return Err(FrameError(
@@ -42,7 +41,6 @@ enum State {
     Failed,
 }
 
-/// Incrementally splits arbitrary byte chunks into length-prefixed payloads.
 #[derive(Debug)]
 pub struct FrameDecoder {
     header: Vec<u8>,

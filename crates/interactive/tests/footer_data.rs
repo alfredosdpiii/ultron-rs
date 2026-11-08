@@ -5,20 +5,16 @@
 //! must hold the TypeScript footer lines exactly. Plus the branch following a `HEAD` change, and the Rust root's
 //! `claude-subscription` provider read as Claude Code (literal expectations).
 
+use crate::support;
 use std::path::{Path, PathBuf};
-use std::rc::Rc;
 use std::time::{Duration, Instant};
 
 use config::git::find_git_paths;
 use interactive::app::{App, AppOptions};
 use interactive::footer_data::{FooterBranch, claude_code_usage_text, read_branch};
 use interactive::history::PromptHistoryStore;
-use interactive::keybindings::Platform;
-use interactive::keybindings::native_app_keybindings;
 use interactive::lane::{LaneEvent, ModelInfo, SessionOpened};
 use serde_json::{Value, json};
-use theme::{ColorMode, builtin_theme_json, create_theme};
-use tui::KeybindingsManager;
 
 struct Root(PathBuf);
 
@@ -74,43 +70,30 @@ fn model_info(m: &Value) -> ModelInfo {
 }
 
 fn app(cwd: &Path, home: &Path, model: ModelInfo, models: Vec<ModelInfo>) -> App {
-    let theme = Rc::new(create_theme(&builtin_theme_json("dark").unwrap(), ColorMode::Truecolor, None).unwrap());
-    let keys = || {
-        KeybindingsManager::new(
-            native_app_keybindings(Platform::new("linux", false)),
-            Vec::new(),
-            Default::default(),
-        )
-    };
     let cwd = cwd.display().to_string();
     App::new(
         AppOptions {
-            theme,
-            keys: keys(),
-            version: "1.2.3".into(),
             cwd: cwd.clone(),
             home: Some(home.display().to_string()),
-            server_id: "server".into(),
             models,
             model,
-            thinking_level: "medium".into(),
-            splash: false,
             history: PromptHistoryStore::new(None, &cwd),
-            fd_path: None,
-            highlight: Rc::new(|code: &str| code.split('\n').map(str::to_string).collect()),
-            qol: interactive::qol::QolSettings::parity(),
-            bug_report_target: ("radius.pi.dev".into(), false),
+            ..support::options()
         },
         std::sync::mpsc::channel().0,
     )
 }
 
-fn wait_read(branch: &FooterBranch) {
-    let deadline = Instant::now() + Duration::from_secs(120);
-    while !branch.has_read() {
-        assert!(Instant::now() < deadline, "the footer branch was never read");
-        std::thread::sleep(Duration::from_millis(5));
-    }
+/// A footer branch watcher of `cwd`, once its first read finished.
+fn read_branch_of(cwd: &Path, path_var: Option<String>) -> FooterBranch {
+    let (tx, rx) = std::sync::mpsc::channel::<()>();
+    let tx = std::sync::Mutex::new(tx);
+    let branch = FooterBranch::spawn(cwd.to_path_buf(), path_var, move || {
+        let _ = tx.lock().unwrap().send(());
+    });
+    rx.recv_timeout(Duration::from_secs(120))
+        .expect("the footer branch was never read");
+    branch
 }
 
 /// `want` as consecutive rows of `screen`.
@@ -142,8 +125,7 @@ fn interactive_footer_data_branch_sub_and_usage_match_the_ts_native_footer() {
         );
         let models: Vec<ModelInfo> = case["models"].as_array().unwrap().iter().map(model_info).collect();
         let mut app = app(&cwd, &root.0, model_info(&case["model"]), models);
-        let branch = FooterBranch::spawn(cwd.clone(), path_var, || {});
-        wait_read(&branch);
+        let branch = read_branch_of(&cwd, path_var);
         app.set_footer_branch(branch);
         app.poll_services();
         app.apply(LaneEvent::Opened(SessionOpened {

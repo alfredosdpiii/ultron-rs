@@ -352,7 +352,6 @@ pub fn key_display_text(keys: &KeybindingsManager, keybinding: &str) -> String {
     format_key_text(&keys.get_keys(keybinding).join("/"), true)
 }
 
-/// `hotkeysMarkdown()`.
 pub fn hotkeys_markdown(keys: &KeybindingsManager) -> String {
     let k = |id: &str| key_display_text(keys, id);
     format!(

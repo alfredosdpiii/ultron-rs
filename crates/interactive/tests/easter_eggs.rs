@@ -4,10 +4,11 @@
 //! recording's color codes stand for the theme's colors, so each recorded line is translated to this theme's codes
 //! and compared whole.
 
+use crate::support;
 use interactive::easter_eggs::{Armin, EarendilAnnouncement};
 use serde_json::Value;
 use std::rc::Rc;
-use theme::{ColorMode, Fg, Theme, builtin_theme_json, create_theme};
+use theme::{Fg, Theme};
 use tui::Component;
 
 fn fixture() -> Value {
@@ -15,7 +16,7 @@ fn fixture() -> Value {
 }
 
 fn theme() -> Rc<Theme> {
-    Rc::new(create_theme(&builtin_theme_json("dark").unwrap(), ColorMode::Truecolor, None).unwrap())
+    support::dark_theme()
 }
 
 /// The fixture's `mulberry32`.

@@ -13,7 +13,6 @@
 
 use serde_json::{Map, Number, Value};
 
-/// `JSON.stringify(value)`.
 pub fn stringify(value: &Value) -> String {
     stringify_indented(value, "")
 }
@@ -155,8 +154,6 @@ pub fn preview(value: &Value, limit: usize) -> String {
         flat
     }
 }
-
-// ------------------------------------------------------------------------------------------------- JSON.parse
 
 /// Sources at least this long show the unexpected token in context (V8 `kMinOriginalSourceLengthForContext`).
 const MIN_LENGTH_FOR_CONTEXT: usize = 21;
@@ -469,20 +466,6 @@ mod tests {
     }
 
     #[test]
-    fn jsrt_json_serde_differs_where_this_module_exists() {
-        let value: Value =
-            serde_json::from_str(r#"{"b":1,"2":2,"a":[1.0,-0.0,1e21,1e16,1e-6,1e-7,9007199254740993]}"#).unwrap();
-        assert_eq!(
-            serde_json::to_string(&value).unwrap(),
-            r#"{"b":1,"2":2,"a":[1.0,-0.0,1e+21,1e+16,1e-6,1e-7,9007199254740993]}"#
-        );
-        assert_eq!(
-            stringify(&value),
-            r#"{"2":2,"b":1,"a":[1,0,1e+21,10000000000000000,0.000001,1e-7,9007199254740992]}"#
-        );
-    }
-
-    #[test]
     fn jsrt_json_objects_and_strings_serialize_like_json_stringify() {
         let parsed: Value =
             serde_json::from_str(r#"{"b":1,"10":2,"2":3,"a":4,"01":5,"4294967295":6,"4294967294":7,"+1":8}"#).unwrap();
@@ -493,7 +476,6 @@ mod tests {
         let s = Value::from("\u{0}\u{8}\u{c}\n\r\t\u{1f}\u{7f}\"\\/\u{2028}é");
         let expected = "\"\\u0000\\b\\f\\n\\r\\t\\u001f\u{7f}\\\"\\\\/\u{2028}é\"";
         assert_eq!(stringify(&s), expected);
-        assert_eq!(serde_json::to_string(&s).unwrap(), expected);
     }
 
     #[test]
@@ -504,10 +486,6 @@ mod tests {
             "{\n\t\"b\": [],\n\t\"c\": {},\n\t\"d\": [\n\t\t1,\n\t\t{\n\t\t\t\"e\": null\n\t\t}\n\t]\n}"
         );
         assert_eq!(stringify_pretty(&json!({"a": [1]})), "{\n  \"a\": [\n    1\n  ]\n}");
-        assert_eq!(
-            stringify_pretty(&json!({"a": [1]})),
-            serde_json::to_string_pretty(&json!({"a": [1]})).unwrap()
-        );
         assert_eq!(stringify_indented(&json!({"a": [1]}), ""), r#"{"a":[1]}"#);
         assert_eq!(stringify_indented(&json!([1]), "            "), "[\n          1\n]");
     }

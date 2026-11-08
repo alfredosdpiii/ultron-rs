@@ -778,8 +778,6 @@ fn review_daemon_log_lines_mask_a_token() {
     assert_eq!(mode, 0o600);
 }
 
-// ---- Failures, retries and the recorded queue ----
-
 #[test]
 fn review_daemon_failed_decision_retried_after_a_minute() {
     let context = setup(json!({}), None);
@@ -887,8 +885,6 @@ fn review_daemon_records_reviewing_and_waiting_queue_lines() {
     assert_eq!(outcomes_of(&outcomes).len(), 2);
     assert_eq!(store.read().queue, Some(vec![]));
 }
-
-// ---- run ----
 
 /// A sleep that never ends before the test opens it: the daemon can only move on by an event.
 fn blocked_sleep() -> (Arc<(Mutex<bool>, Condvar)>, review::daemon::Sleep) {
@@ -1195,18 +1191,18 @@ fn review_daemon_large_reviews_leave_a_slot_to_the_rest() {
 }
 
 #[test]
-fn review_daemon_large_slots_keep_one_for_the_rest() {
-    use review::daemon::{LARGE_PULL_LINES, is_large, large_slots};
-    assert_eq!([1, 2, 3, 8].map(large_slots), [1, 1, 2, 7]);
-    let pull = |additions, deletions| review::github::PullRequest {
-        additions,
-        deletions,
-        ..Default::default()
-    };
-    assert!(is_large(&pull(LARGE_PULL_LINES - 1, 1)));
-    assert!(!is_large(&pull(LARGE_PULL_LINES - 2, 1)));
-    // GitHub did not say: not large.
-    assert!(!is_large(&pull(0, 0)));
+fn review_daemon_a_large_review_takes_the_only_slot() {
+    let context = setup(json!({ "concurrency": 1 }), Some(FakeEngine::new(Vec::new())));
+    add_numbered(&context, 1, true);
+    context.hub.with_pull_n(1, |pull| pull.additions = 43_060);
+    context
+        .hub
+        .lock()
+        .notifications
+        .push(Notification::new("review_requested", 1));
+    let (instance, outcomes) = daemon(&context);
+    instance.once();
+    assert_eq!(outcomes_of(&outcomes), vec![pair(1, "posted")]);
 }
 
 #[test]

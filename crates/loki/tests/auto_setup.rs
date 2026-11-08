@@ -1,13 +1,12 @@
 //! Loki's session setup (loki.ts `autoInitEligibility`, `autoCommitSkipReason`, `commitLoki`, `setupLoki`'s notice),
 //! ported from ultron-loki.test.ts ("Loki switches", "auto-install eligibility", "auto-commit", "setup creates only
-//! .loki/, commits it") with its literal expectations. Every git process sees only the test's variables: a private
+//! .loki/, commits it") with its literal expectations, through what a session sees: `setup` and `commit_notice`. Every git process sees only the test's variables: a private
 //! HOME, no system config, a fixed identity.
 
 use crate::executable_support;
 
 use loki::auto_setup::{
-    Setup, SetupContext, auto_commit, auto_commit_skip_reason, auto_init, auto_init_eligibility, commit_loki,
-    commit_notice, setup,
+    LOKI_AUTOCOMMIT_ENV, LOKI_AUTOINIT_ENV, Setup, SetupContext, commit_loki, commit_notice, setup,
 };
 use serde_json::{Value, json};
 use std::os::unix::fs::PermissionsExt;
@@ -96,30 +95,45 @@ fn with_context<T>(
     })
 }
 
+/// `setup` in `cwd` of a repository at `root` that has no `.loki/` yet (one an earlier case installed is removed).
+fn fresh_setup(root: &Path, cwd: &Path, home: &Path, extra: &[(&str, &str)], settings: Value) -> Setup {
+    let _ = std::fs::remove_dir_all(root.join(".loki"));
+    with_context(cwd, home, extra, settings, setup)
+}
+
+fn not_committed(reason: &str) -> Setup {
+    Setup::Notice(format!(
+        "Loki set up in .loki/ (not committed: {reason}). Commit it to enable post-write checks: git add .loki && \
+         git commit -m \"Add Loki guardrails\" -- .loki"
+    ))
+}
+
 #[test]
 fn loki_auto_setup_switches_environment_overrides_settings_defaults_on() {
     let w = work();
-    let on = |extra: &[(&str, &str)], settings: Value| {
-        with_context(&w.dir, &w.dir, extra, settings, |c| (auto_init(c), auto_commit(c)))
-    };
-    assert_eq!(on(&[], json!({})), (true, true));
-    assert!(
-        !on(
-            &[(loki::auto_setup::LOKI_AUTOINIT_ENV, "off")],
-            json!({"autoInit": true})
-        )
-        .0
+    let root = repository(&w.dir, "repo", &w.dir);
+    let outcome = |extra: &[(&str, &str)], settings: Value| fresh_setup(&root, &root, &w.dir, extra, settings);
+    let commit = Setup::Commit(root.clone());
+    assert_eq!(outcome(&[], json!({})), commit);
+    assert_eq!(
+        outcome(&[(LOKI_AUTOINIT_ENV, "off")], json!({"autoInit": true})),
+        Setup::Quiet
     );
-    assert!(!on(&[], json!({"autoInit": false})).0);
-    assert!(!on(&[(loki::auto_setup::LOKI_AUTOCOMMIT_ENV, "0")], json!({})).1);
-    assert!(
-        on(
-            &[(loki::auto_setup::LOKI_AUTOCOMMIT_ENV, "on")],
-            json!({"autoCommit": false})
-        )
-        .1
+    assert_eq!(outcome(&[], json!({"autoInit": false})), Setup::Quiet);
+    assert_eq!(outcome(&[(LOKI_AUTOINIT_ENV, " NONE ")], json!({})), Setup::Quiet);
+    assert!(!root.join(".loki").exists());
+    assert_eq!(
+        outcome(&[(LOKI_AUTOCOMMIT_ENV, "0")], json!({})),
+        not_committed("auto-commit is off (ULTRON_LOKI_AUTOCOMMIT)")
     );
-    assert!(!on(&[(loki::auto_setup::LOKI_AUTOINIT_ENV, " NONE ")], json!({})).0);
+    assert_eq!(
+        outcome(&[], json!({"autoCommit": false})),
+        not_committed("auto-commit is off (loki.autoCommit setting)")
+    );
+    assert_eq!(
+        outcome(&[(LOKI_AUTOCOMMIT_ENV, "on")], json!({"autoCommit": false})),
+        commit
+    );
 }
 
 #[test]
@@ -127,85 +141,61 @@ fn loki_auto_setup_a_writable_repository_qualifies_from_any_directory_inside_it(
     let w = work();
     let root = repository(&w.dir, "repo", &w.dir);
     std::fs::create_dir(root.join("src")).unwrap();
-    let got = with_context(&root.join("src"), &w.dir, &[], json!({}), auto_init_eligibility);
-    assert_eq!(got, Ok(root));
+    let got = with_context(&root.join("src"), &w.dir, &[], json!({}), setup);
+    assert_eq!(got, Setup::Commit(root.clone()));
+    assert!(root.join(".loki/loki.py").is_file());
+    assert!(!root.join("src/.loki").exists());
 }
 
 #[test]
-fn loki_auto_setup_every_skip_condition_names_its_reason() {
+fn loki_auto_setup_installs_nothing_where_it_is_not_eligible() {
     let w = work();
     let root = repository(&w.dir, "repo", &w.dir);
-    let reason = |cwd: &Path, home: &Path, extra: &[(&str, &str)], settings: Value| {
-        with_context(cwd, home, extra, settings, auto_init_eligibility).err()
+    let quiet = |root: &Path, home: &Path, extra: &[(&str, &str)], settings: Value| {
+        let outcome = fresh_setup(root, root, home, extra, settings);
+        let installed = root.join(".loki").exists();
+        let _ = std::fs::remove_dir_all(root.join(".loki"));
+        outcome == Setup::Quiet && !installed
     };
     let plain = w.dir.join("plain");
     std::fs::create_dir(&plain).unwrap();
-    let r = |s: &str| Some(s.to_string());
-    assert_eq!(reason(&plain, &w.dir, &[], json!({})), r("not a Git repository"));
-    assert_eq!(
-        reason(&root, &root, &[], json!({})),
-        r("the repository root is the home directory")
+    assert!(quiet(&plain, &w.dir, &[], json!({})), "not a Git repository");
+    assert!(
+        quiet(&root, &root, &[], json!({})),
+        "the repository root is the home directory"
     );
     let package = repository(&w.dir.join("node_modules"), "pkg", &w.dir);
-    assert_eq!(
-        reason(&package, &w.dir, &[], json!({})),
-        r("the repository is inside node_modules")
+    assert!(quiet(&package, &w.dir, &[], json!({})), "inside node_modules");
+    assert!(quiet(&root, &w.dir, &[("CI", "true")], json!({})), "CI is set");
+    assert!(
+        quiet(&root, &w.dir, &[], json!({"ignoreRepos": [root.display().to_string()]})),
+        "listed in loki.ignoreRepos"
     );
-    assert_eq!(reason(&root, &w.dir, &[("CI", "true")], json!({})), r("CI is set"));
-    assert_eq!(
-        reason(
-            &root,
-            &w.dir,
-            &[(loki::auto_setup::LOKI_AUTOINIT_ENV, "off")],
-            json!({})
-        ),
-        r("auto-install is off (ULTRON_LOKI_AUTOINIT)")
+    assert!(
+        quiet(&root, &w.dir, &[], json!({"ignoreRepos": ["~/repo"]})),
+        "listed in loki.ignoreRepos as ~/repo"
     );
-    assert_eq!(
-        reason(&root, &w.dir, &[], json!({"autoInit": false})),
-        r("auto-install is off (loki.autoInit setting)")
-    );
-    assert_eq!(
-        reason(&root, &w.dir, &[], json!({"ignoreRepos": [root.display().to_string()]})),
-        r("the repository is listed in loki.ignoreRepos")
-    );
-    assert_eq!(
-        reason(&root, &w.dir, &[], json!({"ignoreRepos": ["~/repo"]})),
-        r("the repository is listed in loki.ignoreRepos")
-    );
-    assert_eq!(
-        reason(&root, &w.dir, &[(kernel::env::WORKTREE_ENV, "1")], json!({})),
-        r("this is an Ultron sub-agent worktree")
+    assert!(
+        quiet(&root, &w.dir, &[(kernel::env::WORKTREE_ENV, "1")], json!({})),
+        "an Ultron sub-agent worktree"
     );
     let nested = repository(&w.dir.join("ultron-worktrees"), "child", &w.dir);
-    assert_eq!(
-        reason(&nested, &w.dir, &[], json!({})),
-        r("this is an Ultron sub-agent worktree")
-    );
+    assert!(quiet(&nested, &w.dir, &[], json!({})), "under ultron-worktrees");
     std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o555)).unwrap();
-    let read_only = reason(&root, &w.dir, &[], json!({}));
+    let read_only = quiet(&root, &w.dir, &[], json!({}));
     std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o755)).unwrap();
-    assert_eq!(read_only, r("the checkout is read-only"));
+    assert!(read_only, "the checkout is read-only");
+    assert_eq!(
+        fresh_setup(&root, &root, &w.dir, &[], json!({})),
+        Setup::Commit(root.clone())
+    );
 }
 
 #[test]
-fn loki_auto_setup_commit_skip_reasons_switches_ci_operations_detached_ignored() {
+fn loki_auto_setup_commit_skip_reasons_operations_detached_ignored() {
     let w = work();
     let root = repository(&w.dir, "repo", &w.dir);
-    let reason = |extra: &[(&str, &str)], settings: Value| {
-        with_context(&root, &w.dir, extra, settings, |c| auto_commit_skip_reason(c, &root))
-    };
-    let r = |s: &str| Some(s.to_string());
-    assert_eq!(reason(&[], json!({})), None);
-    assert_eq!(
-        reason(&[(loki::auto_setup::LOKI_AUTOCOMMIT_ENV, "off")], json!({})),
-        r("auto-commit is off (ULTRON_LOKI_AUTOCOMMIT)")
-    );
-    assert_eq!(
-        reason(&[], json!({"autoCommit": false})),
-        r("auto-commit is off (loki.autoCommit setting)")
-    );
-    assert_eq!(reason(&[("CI", "1")], json!({})), r("CI is set"));
+    let outcome = || fresh_setup(&root, &root, &w.dir, &[], json!({}));
     for (name, expected) in [
         ("MERGE_HEAD", "a merge is in progress"),
         ("rebase-merge", "a rebase is in progress"),
@@ -220,15 +210,15 @@ fn loki_auto_setup_commit_skip_reasons_switches_ci_operations_detached_ignored()
         } else {
             std::fs::write(&path, "").unwrap();
         }
-        assert_eq!(reason(&[], json!({})), r(expected), "{name}");
+        assert_eq!(outcome(), not_committed(expected), "{name}");
         let _ = std::fs::remove_dir_all(&path);
         let _ = std::fs::remove_file(&path);
     }
     git(&root, &w.dir, &["checkout", "-q", "--detach"]);
-    assert_eq!(reason(&[], json!({})), r("HEAD is detached"));
+    assert_eq!(outcome(), not_committed("HEAD is detached"));
     git(&root, &w.dir, &["checkout", "-q", "main"]);
     std::fs::write(root.join(".gitignore"), ".loki/\n").unwrap();
-    assert_eq!(reason(&[], json!({})), r(".loki is gitignored"));
+    assert_eq!(outcome(), not_committed(".loki is gitignored"));
 }
 
 #[test]
@@ -245,8 +235,12 @@ fn loki_auto_setup_commits_loki_only_and_keeps_other_changes_exactly() {
     let unstaged_before = git(&root, &w.dir, &["diff"]);
     fake_loki_dir(&root);
 
-    let outcome = with_context(&root, &w.dir, &[], json!({}), |c| commit_loki(c, &root, None));
-    assert_eq!(outcome, Ok(git(&root, &w.dir, &["rev-parse", "--short", "HEAD"])));
+    let note = with_context(&root, &w.dir, &[], json!({}), |c| commit_notice(c, &root));
+    let sha = git(&root, &w.dir, &["rev-parse", "--short", "HEAD"]);
+    assert_eq!(
+        note,
+        format!("Loki set up and committed ({sha}): .loki/ holds the guardrail engine and policy.")
+    );
     let mut names: Vec<String> = git(&root, &w.dir, &["show", "--name-only", "--format=", "HEAD"])
         .lines()
         .map(str::to_string)
@@ -278,10 +272,11 @@ fn loki_auto_setup_a_rejecting_hook_leaves_loki_uncommitted_and_unstaged() {
     fake_loki_dir(&root);
     let head = git(&root, &w.dir, &["rev-parse", "HEAD"]);
 
-    let outcome = with_context(&root, &w.dir, &[], json!({}), |c| commit_loki(c, &root, None));
+    let note = with_context(&root, &w.dir, &[], json!({}), |c| commit_notice(c, &root));
     assert_eq!(
-        outcome,
-        Err("git commit failed: policy: commits need a ticket".to_string())
+        note,
+        "Loki set up in .loki/ but not committed (git commit failed: policy: commits need a ticket). Before-write \
+         checks run with the default policy; commit .loki/ to enable post-write checks."
     );
     assert_eq!(git(&root, &w.dir, &["rev-parse", "HEAD"]), head);
     assert!(root.join(".loki/loki.py").exists());
@@ -289,13 +284,6 @@ fn loki_auto_setup_a_rejecting_hook_leaves_loki_uncommitted_and_unstaged() {
     assert_eq!(
         git(&root, &w.dir, &["status", "--porcelain", "--", ".loki"]),
         "?? .loki/"
-    );
-    // The note says why.
-    let note = with_context(&root, &w.dir, &[], json!({}), |c| commit_notice(c, &root));
-    assert_eq!(
-        note,
-        "Loki set up in .loki/ but not committed (git commit failed: policy: commits need a ticket). Before-write \
-         checks run with the default policy; commit .loki/ to enable post-write checks."
     );
 }
 
@@ -312,8 +300,11 @@ fn loki_auto_setup_a_failing_or_hanging_signer_never_prompts() {
     git(&root, &w.dir, &["config", "commit.gpgsign", "true"]);
     git(&root, &w.dir, &["config", "gpg.program", &signer.display().to_string()]);
     fake_loki_dir(&root);
-    let failed = with_context(&root, &w.dir, &[], json!({}), |c| commit_loki(c, &root, None)).unwrap_err();
-    assert!(failed.starts_with("git commit failed: "), "{failed}");
+    let failed = with_context(&root, &w.dir, &[], json!({}), |c| commit_notice(c, &root));
+    assert!(
+        failed.starts_with("Loki set up in .loki/ but not committed (git commit failed: "),
+        "{failed}"
+    );
     assert!(
         failed.to_lowercase().contains("gpg") || failed.contains("sign"),
         "{failed}"

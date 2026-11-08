@@ -2,11 +2,11 @@
 //! `details.displayImages`, never in the content the model saw, and the chat draws it inline after the result's own
 //! content like any tool image. New in Rust: literal expectations.
 
+use crate::support;
 use std::rc::Rc;
 
 use interactive::chat::{ChatStyle, ChatView, ImageSettings};
 use serde_json::{Value, json};
-use theme::{ColorMode, builtin_theme_json, create_theme};
 use tui::{DEFAULT_CELL, ImageProtocol};
 
 fn png() -> Value {
@@ -16,7 +16,7 @@ fn png() -> Value {
 
 /// The rows of an `rlm` call whose result is `content` with `details`.
 fn rows(content: Value, details: Value) -> Vec<String> {
-    let theme = Rc::new(create_theme(&builtin_theme_json("dark").unwrap(), ColorMode::Truecolor, None).unwrap());
+    let theme = support::dark_theme();
     let mut chat = ChatView::new(ChatStyle {
         theme,
         highlight: Rc::new(|code: &str| code.split('\n').map(str::to_string).collect()),

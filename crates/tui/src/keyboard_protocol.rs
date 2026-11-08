@@ -13,10 +13,8 @@ pub const KITTY_KEYBOARD_PROTOCOL_QUERY: &str = "\x1b[>7u\x1b[?u\x1b[c";
 pub const KITTY_KEYBOARD_PROTOCOL_POP: &str = "\x1b[<u";
 pub const MODIFY_OTHER_KEYS_ENABLE: &str = "\x1b[>4;2m";
 pub const MODIFY_OTHER_KEYS_DISABLE: &str = "\x1b[>4;0m";
-/// `KEYBOARD_PROTOCOL_RESPONSE_FRAGMENT_TIMEOUT_MS`.
 pub const RESPONSE_FRAGMENT_TIMEOUT: Duration = Duration::from_millis(150);
 
-/// `KeyboardProtocolNegotiationSequence`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum NegotiationSequence {
     KittyFlags(u32),

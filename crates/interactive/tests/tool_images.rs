@@ -5,6 +5,7 @@
 //! image controls and the decoded pixels (the two PNG encoders write different bytes for the same pixels). Plus the
 //! App: the settings toggle offered only when images are drawn, and the terminal's cell size answer.
 
+use crate::support;
 use std::rc::Rc;
 use std::time::{Duration, Instant};
 
@@ -14,7 +15,6 @@ use interactive::chat::{ChatStyle, ChatView, ImageSettings};
 use interactive::key_text;
 use interactive::keybindings::{Platform, app_keybindings};
 use serde_json::{Value, json};
-use theme::{ColorMode, builtin_theme_json, create_theme};
 use tui::KeyContext;
 use tui::KeybindingsManager;
 use tui::{DEFAULT_CELL, ImageProtocol};
@@ -32,7 +32,7 @@ fn strings(v: &Value) -> Vec<String> {
 }
 
 fn chat(case: &Value) -> ChatView {
-    let theme = Rc::new(create_theme(&builtin_theme_json("dark").unwrap(), ColorMode::Truecolor, None).unwrap());
+    let theme = support::dark_theme();
     let keys = KeybindingsManager::new(
         app_keybindings(Platform::new("linux", false)),
         Vec::new(),
@@ -115,11 +115,13 @@ fn tool_rows(chat: &mut ChatView, width: usize) -> Vec<String> {
         .unwrap()
 }
 
+/// Until the converter thread finished a conversion (the chat reads its results when polled; the bound only guards a
+/// hang).
 fn wait_conversions(chat: &mut ChatView) {
     let deadline = Instant::now() + Duration::from_secs(120);
     while !chat.poll_images() {
         assert!(Instant::now() < deadline, "the PNG conversion never finished");
-        std::thread::sleep(Duration::from_millis(5));
+        std::thread::yield_now();
     }
 }
 
@@ -212,37 +214,16 @@ fn interactive_tool_images_without_protocol_name_the_image() {
     assert!(second.iter().any(|l| l.contains(",c=30,")));
 }
 
-#[test]
-fn interactive_tool_images_cell_size_answer_like_consume_cell_size_response() {
-    use interactive::app::parse_cell_size_response;
-    assert_eq!(parse_cell_size_response("\x1b[6;20;10t"), Some((20, 10)));
-    assert_eq!(parse_cell_size_response("\x1b[6;0;10t"), Some((0, 10)));
-    assert_eq!(parse_cell_size_response("\x1b[6;20t"), None);
-    assert_eq!(parse_cell_size_response("\x1b[6;a;10t"), None);
-    assert_eq!(parse_cell_size_response("x\x1b[6;20;10t"), None);
-}
-
 mod app {
+    use crate::support;
     use interactive::app::{App, AppOptions};
-    use interactive::history::PromptHistoryStore;
-    use interactive::keybindings::Platform;
-    use interactive::keybindings::native_app_keybindings;
+
     use interactive::lane::{LaneEvent, ModelInfo, SessionOpened};
     use serde_json::json;
-    use std::rc::Rc;
-    use theme::{ColorMode, builtin_theme_json, create_theme};
+
     use tui::ImageProtocol;
-    use tui::KeybindingsManager;
 
     fn app() -> App {
-        let theme = Rc::new(create_theme(&builtin_theme_json("dark").unwrap(), ColorMode::Truecolor, None).unwrap());
-        let keys = || {
-            KeybindingsManager::new(
-                native_app_keybindings(Platform::new("linux", false)),
-                Vec::new(),
-                Default::default(),
-            )
-        };
         let model = ModelInfo {
             provider: "anthropic".into(),
             id: "m".into(),
@@ -253,21 +234,9 @@ mod app {
         };
         let mut app = App::new(
             AppOptions {
-                theme,
-                keys: keys(),
-                version: "1.2.3".into(),
-                cwd: "/p".into(),
-                home: None,
-                server_id: "server".into(),
                 models: vec![model.clone()],
                 model,
-                thinking_level: "medium".into(),
-                splash: false,
-                history: PromptHistoryStore::new(None, "/p"),
-                fd_path: None,
-                highlight: Rc::new(|code: &str| code.split('\n').map(str::to_string).collect()),
-                qol: interactive::qol::QolSettings::parity(),
-                bug_report_target: ("radius.pi.dev".into(), false),
+                ..support::options()
             },
             std::sync::mpsc::channel().0,
         );

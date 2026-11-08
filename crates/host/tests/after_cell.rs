@@ -137,13 +137,14 @@ fn host_after_cell_leaves_out_files_changed_by_work_outside_the_cells() {
     let work = outside.begin();
     hooks.cell_started("main");
     let (started, start) = std::sync::mpsc::channel();
+    let (finish, go) = std::sync::mpsc::channel::<()>();
     // It pictures only what it commits (.loki/), so the cell's own writes meanwhile stay the cell's.
     let commit = {
         let root = root.clone();
         std::thread::spawn(move || {
             work.record(&root.join(".loki"), &snapshotter(), || {
                 started.send(()).unwrap();
-                std::thread::sleep(std::time::Duration::from_millis(200));
+                go.recv().unwrap();
                 std::fs::write(root.join(".loki/loki.json"), "{\n}\n").unwrap();
                 std::fs::remove_file(root.join(".loki/stale.txt")).unwrap();
             })
@@ -152,6 +153,8 @@ fn host_after_cell_leaves_out_files_changed_by_work_outside_the_cells() {
     start.recv().unwrap();
     std::fs::write(root.join("cell.txt"), "the cell's\n").unwrap();
     hooks.cell_ended("main");
+    // The setup commit ends only after the cell did, so its check has to wait for it.
+    finish.send(()).unwrap();
     hooks.settled();
     commit.join().unwrap();
     {

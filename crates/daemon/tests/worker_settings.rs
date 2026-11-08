@@ -59,7 +59,7 @@ fn env_of(case: &Value) -> HashMap<String, String> {
         .unwrap_or_default()
 }
 
-/// Rust-only (wave 47): a claude-code sub-agent model is kept (its tool lanes run on the Claude subscription), where
+/// Rust-only: a claude-code sub-agent model is kept (its tool lanes run on the Claude subscription), where
 /// TypeScript refused or dropped it. Whether the fixture's `key = value` is such a model.
 fn claude_code_child(key: &str, value: &Value) -> bool {
     matches!(key, "rlm.childModel" | "claudeCode.ultronChildModel")

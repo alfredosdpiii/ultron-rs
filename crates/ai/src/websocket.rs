@@ -31,7 +31,6 @@ pub enum WsEvent {
     Error(String),
 }
 
-/// An open WebSocket.
 pub trait WebSocketConnection: Send {
     /// `socket.send(text)`; on a socket that is no longer open the message is dropped, as the standard says.
     fn send_text<'a>(&'a mut self, text: &'a str) -> BoxFuture<'a, ()>;

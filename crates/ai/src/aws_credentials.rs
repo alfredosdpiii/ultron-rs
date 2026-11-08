@@ -100,7 +100,6 @@ impl ChainInput<'_> {
         provider_env_value(name, self.env)
     }
 
-    /// `getProfileName`.
     fn profile_name(&self) -> String {
         self.profile
             .filter(|p| !p.is_empty())
@@ -147,7 +146,6 @@ fn from_env_link(input: &ChainInput<'_>) -> Result<AwsCredentials> {
     from_env(input)
 }
 
-/// `fromEnv`.
 fn from_env(input: &ChainInput<'_>) -> Result<AwsCredentials> {
     match (input.var("AWS_ACCESS_KEY_ID"), input.var("AWS_SECRET_ACCESS_KEY")) {
         (Some(access_key_id), Some(secret_access_key)) => {
@@ -165,8 +163,6 @@ fn from_env(input: &ChainInput<'_>) -> Result<AwsCredentials> {
         )),
     }
 }
-
-// ------------------------------------------------------------------------------------------- shared config files
 
 /// A profile's settings in file order.
 pub type Section = IndexMap<String, String>;
@@ -283,7 +279,6 @@ fn config_data(data: Profiles) -> Profiles {
     out
 }
 
-/// `getHomeDir`.
 pub fn home_dir(env: Option<&ProviderEnv>) -> PathBuf {
     provider_env_value("HOME", env)
         .or_else(|| provider_env_value("USERPROFILE", env))
@@ -350,8 +345,6 @@ pub fn profile_config_value(profile: &str, key: &str, env: Option<&ProviderEnv>)
         .cloned()
 }
 
-// ------------------------------------------------------------------------------------------------------ fromIni
-
 fn has(section: Option<&Section>, key: &str) -> bool {
     section.is_some_and(|s| s.contains_key(key))
 }
@@ -393,13 +386,11 @@ fn static_credentials(section: &Section) -> AwsCredentials {
     }
 }
 
-/// `fromIni`.
 async fn from_ini(input: &ChainInput<'_>, profile: &str) -> Result<AwsCredentials> {
     let profiles = parse_known_files(input.env);
     resolve_profile_data(input, profile, &profiles, &mut Vec::new(), false).await
 }
 
-/// `resolveProfileData`.
 fn resolve_profile_data<'a>(
     input: &'a ChainInput<'a>,
     name: &'a str,
@@ -442,7 +433,6 @@ fn resolve_profile_data<'a>(
     })
 }
 
-/// `resolveAssumeRoleCredentials`.
 async fn resolve_assume_role(
     input: &ChainInput<'_>,
     name: &str,
@@ -536,8 +526,6 @@ async fn credential_source_credentials(input: &ChainInput<'_>, source: &str, pro
     }
 }
 
-// ------------------------------------------------------------------------------------------------------ HTTP
-
 struct Reply {
     status: u16,
     headers: HeaderMap,
@@ -604,8 +592,6 @@ fn json_body(text: &str) -> Value {
 fn str_field(value: &Value, key: &str) -> Option<String> {
     value.get(key).and_then(Value::as_str).map(str::to_string)
 }
-
-// ------------------------------------------------------------------------------------------------------ STS
 
 /// The STS modeled errors (`awsQueryError` codes to exception names).
 fn sts_error_name(code: &str) -> String {
@@ -713,8 +699,6 @@ async fn sts_call(
     }
 }
 
-// ------------------------------------------------------------------------------------------------ web identity
-
 struct WebIdentity {
     token_file: Option<String>,
     role_arn: Option<String>,
@@ -759,8 +743,6 @@ async fn from_token_file(input: &ChainInput<'_>, config: Option<WebIdentity>) ->
     )
     .await
 }
-
-// ------------------------------------------------------------------------------------------- credential_process
 
 /// `fromProcess`: the profile's `credential_process` run by the shell, its JSON validated.
 async fn from_process(input: &ChainInput<'_>, profile: &str) -> Result<AwsCredentials> {
@@ -840,8 +822,6 @@ async fn from_process(input: &ChainInput<'_>, profile: &str) -> Result<AwsCreden
             .map(str::to_string),
     })
 }
-
-// ------------------------------------------------------------------------------------------------------ SSO
 
 const SSO_REFRESH: &str = "To refresh this SSO session run aws sso login with the corresponding profile.";
 const TOKEN_REFRESH: &str = "To refresh this SSO session run 'aws sso login' with the corresponding profile.";
@@ -1124,8 +1104,6 @@ fn parse_js_date(value: &Value) -> Option<i64> {
     }
 }
 
-// ----------------------------------------------------------------------------------------- container and IMDS
-
 const METADATA_TIMEOUT: Duration = Duration::from_millis(1000);
 
 /// `isImdsCredentials` and `fromImdsCredentials` (`expiration: new Date(Expiration)`). With `static_stability`
@@ -1277,7 +1255,6 @@ async fn from_http(input: &ChainInput<'_>, url: &reqwest::Url) -> Result<AwsCred
     Err(last.unwrap_or_else(|| CredentialError::next("Could not load credentials from any providers")))
 }
 
-/// `fromContainerMetadata`.
 async fn from_container_metadata(input: &ChainInput<'_>) -> Result<AwsCredentials> {
     let url = if let Some(relative) = input.var("AWS_CONTAINER_CREDENTIALS_RELATIVE_URI") {
         format!("http://169.254.170.2{relative}")

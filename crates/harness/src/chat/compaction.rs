@@ -314,7 +314,6 @@ pub fn summary_plan(view: &ContextView, cut: usize) -> SummaryPlan {
     }
 }
 
-/// The built-in compaction task over `services`.
 pub(crate) fn compaction_task(services: Arc<Services>) -> Task {
     let (select, summarize, retry) = (services.clone(), services.clone(), services);
     Task::define(COMPACTION_KIND, 1, |input| (DEFINITION.initial)(input))

@@ -11,13 +11,8 @@ use crate::support;
 use support::Sent;
 
 use interactive::app::{App, AppOptions};
-use interactive::history::PromptHistoryStore;
-use interactive::keybindings::Platform;
-use interactive::keybindings::native_app_keybindings;
-use interactive::lane::{LaneCommand, LaneEvent, ModelInfo, SessionListing, SessionOpened};
-use interactive::qol::QolSettings;
+use interactive::lane::{LaneCommand, LaneEvent, SessionListing, SessionOpened};
 use serde_json::json;
-use theme::{ColorMode, builtin_theme_json, create_theme};
 use tui::KeybindingsManager;
 use tui::strip_terminal_sequences;
 
@@ -35,41 +30,15 @@ fn record(command: &LaneCommand) -> Option<String> {
 }
 
 fn keys() -> KeybindingsManager {
-    KeybindingsManager::new(
-        native_app_keybindings(Platform::new("linux", false)),
-        Vec::new(),
-        Default::default(),
-    )
+    support::keys()
 }
 
 fn app() -> (App, Rc<Sent>) {
-    let theme = Rc::new(create_theme(&builtin_theme_json("dark").unwrap(), ColorMode::Truecolor, None).unwrap());
-    let model = ModelInfo {
-        provider: "anthropic".into(),
-        id: "a".into(),
-        name: "Model a".into(),
-        reasoning: true,
-        context_window: 1000,
-        thinking_levels: Vec::new(),
-    };
     let (lane, calls) = Sent::new(record);
     let mut app = App::new(
         AppOptions {
-            theme,
-            keys: keys(),
-            version: "1.2.3".into(),
-            cwd: "/p".into(),
-            home: None,
-            server_id: "server".into(),
-            models: vec![model.clone()],
-            model,
             thinking_level: "off".into(),
-            splash: false,
-            history: PromptHistoryStore::new(None, "/p"),
-            fd_path: None,
-            highlight: Rc::new(|code: &str| code.split('\n').map(str::to_string).collect()),
-            qol: QolSettings::parity(),
-            bug_report_target: ("radius.pi.dev".into(), false),
+            ..support::options()
         },
         lane,
     );
@@ -344,7 +313,7 @@ fn interactive_mouse_press_in_selector_search_lines_moves_their_cursor() {
 #[test]
 fn interactive_mouse_click_in_the_bug_report_editor_moves_its_cursor() {
     use tui::{MouseButton, MouseEvent, MouseEventType};
-    let theme = Rc::new(create_theme(&builtin_theme_json("dark").unwrap(), ColorMode::Truecolor, None).unwrap());
+    let theme = support::dark_theme();
     let mut flow = interactive::bug_report::BugFlow::new(
         theme,
         keys(),

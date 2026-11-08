@@ -6,20 +6,11 @@ use std::collections::VecDeque;
 use std::io::{self, Read, Write};
 use std::rc::Rc;
 
+use crate::support::gateway::{hex, unhex};
 use client::{Client, ClientError};
-use protocol::{RpcTarget, SessionTarget, Value};
+use protocol::json::{to_cbor, to_json};
+use protocol::{RpcTarget, SessionTarget};
 use serde_json::{Value as Json, json};
-
-fn hex(bytes: &[u8]) -> String {
-    bytes.iter().map(|b| format!("{b:02x}")).collect()
-}
-
-fn unhex(text: &str) -> Vec<u8> {
-    (0..text.len())
-        .step_by(2)
-        .map(|i| u8::from_str_radix(&text[i..i + 2], 16).expect("hex"))
-        .collect()
-}
 
 /// Scripted server side: queued reads (`None` = orderly close) and the frames the client wrote.
 #[derive(Default)]
@@ -52,32 +43,6 @@ impl Write for Stream {
 
     fn flush(&mut self) -> io::Result<()> {
         Ok(())
-    }
-}
-
-fn to_value(json: &Json) -> Value {
-    match json {
-        Json::Null => Value::Null,
-        Json::Bool(b) => Value::Bool(*b),
-        Json::Number(n) => n
-            .as_i64()
-            .map_or_else(|| Value::Float(n.as_f64().expect("number")), Value::Int),
-        Json::String(s) => Value::text(s.as_str()),
-        Json::Array(items) => Value::Array(items.iter().map(to_value).collect()),
-        Json::Object(map) => Value::Map(map.iter().map(|(k, v)| (k.clone(), to_value(v))).collect()),
-    }
-}
-
-fn to_json(value: &Value) -> Json {
-    match value {
-        Value::Null => Json::Null,
-        Value::Bool(b) => json!(b),
-        Value::Int(n) => json!(n),
-        Value::Float(f) => json!(f),
-        Value::Text(s) => json!(s),
-        Value::Bytes(_) => unreachable!("responses carry JSON"),
-        Value::Array(items) => Json::Array(items.iter().map(to_json).collect()),
-        Value::Map(entries) => Json::Object(entries.iter().map(|(k, v)| (k.clone(), to_json(v))).collect()),
     }
 }
 
@@ -143,7 +108,7 @@ fn client_scripts_match_typescript() {
                 }
             } else {
                 let client = client.as_mut().expect("connected in an earlier step");
-                match client.request(target(&step["target"]), &to_value(&step["call"])) {
+                match client.request(target(&step["target"]), &to_cbor(&step["call"])) {
                     Ok(value) => json!({ "ok": value.as_ref().map_or(Json::Null, to_json) }),
                     Err(error) => error_json(&error),
                 }

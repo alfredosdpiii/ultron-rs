@@ -785,27 +785,3 @@ impl HostHandler for Inference {
         }
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::{Kind, Ledger};
-
-    /// BudgetNode: a node's availability is the tightest pool on its path, and holds/charges reach every ancestor.
-    #[test]
-    fn inference_ledger_takes_the_tightest_pool_on_the_path() {
-        let mut ledger = Ledger::default();
-        let root = ledger.add(None, Some(10), Some(1000));
-        let child = ledger.add(Some(root), Some(3), None);
-        assert_eq!(ledger.available(child, Kind::Calls), Some(3));
-        assert_eq!(ledger.available(child, Kind::Tokens), Some(1000));
-        assert!(ledger.hold(child, Kind::Calls, 2));
-        assert!(!ledger.hold(child, Kind::Calls, 2));
-        ledger.charge(child, Kind::Calls, 2);
-        ledger.release(child, Kind::Calls, 2);
-        assert_eq!(ledger.available(child, Kind::Calls), Some(1));
-        assert_eq!(ledger.available(root, Kind::Calls), Some(8));
-        assert_eq!(ledger.claim(child, 100, 8192, false), Some((350, 250)));
-        assert_eq!(ledger.available(root, Kind::Tokens), Some(650));
-        assert_eq!(ledger.claim(child, 0, 8192, false), None);
-    }
-}

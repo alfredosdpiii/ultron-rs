@@ -70,7 +70,6 @@ impl RemoteRoute {
         }
     }
 
-    /// A new connection over the route's transport.
     pub fn connect(&self) -> Result<Arc<Connection>, CallError> {
         match self {
             RemoteRoute::Unix(route) => Connection::connect(&route.path, &route.server_id),
@@ -92,7 +91,6 @@ pub struct Started {
 /// a detached server activated when it is not running (a client of the durable instance, which never stops it).
 pub type Start = Arc<dyn Fn() -> Result<Started, String> + Send + Sync>;
 
-/// Where a link's server is.
 enum Origin {
     /// Brought up by `start`; every attach carries `session_options` (the options a durable client's sessions start
     /// their workers on).
@@ -557,7 +555,6 @@ impl Shared {
         }
     }
 
-    /// A Radius route's reconnector over this link.
     fn start_radius_reconnector(self: &Arc<Self>) {
         if self.radius_route().is_none() {
             return;
@@ -777,7 +774,6 @@ impl SessionLink {
         }
     }
 
-    /// The attached session's id.
     pub fn session_id(&self) -> String {
         self.shared.lock().session_id.clone()
     }

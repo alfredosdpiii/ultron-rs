@@ -47,7 +47,6 @@ pub fn cleanup_socket(path: &Path) -> io::Result<()> {
     }
 }
 
-/// Bind with owner-only permissions.
 pub fn listen(path: &Path) -> io::Result<UnixListener> {
     let listener = UnixListener::bind(path)?;
     std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))?;

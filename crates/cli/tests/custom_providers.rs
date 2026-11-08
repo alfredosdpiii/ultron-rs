@@ -102,7 +102,6 @@ fn cli_custom_providers_list_models_matches_typescript() {
     }
 }
 
-/// What the stub saw of one request.
 #[derive(Clone, Debug)]
 struct Seen {
     url: String,

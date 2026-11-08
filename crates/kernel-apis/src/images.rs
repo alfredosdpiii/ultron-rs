@@ -59,7 +59,7 @@ fn model_name(model: &ImagesModel) -> String {
 }
 
 /// A catalog model by `provider/id` or by its bare id.
-pub fn resolve_model(name: &str) -> Result<&'static ImagesModel, String> {
+fn resolve_model(name: &str) -> Result<&'static ImagesModel, String> {
     let qualified = image_providers().find_map(|provider| {
         name.strip_prefix(provider)
             .and_then(|rest| rest.strip_prefix('/'))
@@ -71,7 +71,7 @@ pub fn resolve_model(name: &str) -> Result<&'static ImagesModel, String> {
 }
 
 /// OpenRouter's `image_config` for a `size`.
-pub fn image_config(size: &str) -> Result<Value, String> {
+fn image_config(size: &str) -> Result<Value, String> {
     if RESOLUTIONS.contains(&size) {
         return Ok(json!({ "image_size": size }));
     }
@@ -89,7 +89,7 @@ pub fn image_config(size: &str) -> Result<Value, String> {
 }
 
 /// The file extension of an image MIME type.
-pub fn extension(mime: &str) -> &'static str {
+fn extension(mime: &str) -> &'static str {
     match mime {
         "image/png" => "png",
         "image/jpeg" | "image/jpg" => "jpg",
@@ -103,7 +103,7 @@ pub fn extension(mime: &str) -> &'static str {
 /// Where the images go: `count` paths for images of `mimes`. Without `out`, or with `out` an existing directory,
 /// `image-<k>.<ext>` with the first unused numbers; otherwise `out` itself (one image; its extension added when it has
 /// none) or `<stem>-<i>.<ext>` (several).
-pub fn output_paths(out: Option<&Path>, default_dir: &Path, mimes: &[&str]) -> Vec<PathBuf> {
+fn output_paths(out: Option<&Path>, default_dir: &Path, mimes: &[&str]) -> Vec<PathBuf> {
     let directory = match out {
         None => Some(default_dir.to_path_buf()),
         Some(path) if path.is_dir() => Some(path.to_path_buf()),

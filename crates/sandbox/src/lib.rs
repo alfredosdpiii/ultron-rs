@@ -2,7 +2,7 @@
 //!
 //! - [`launcher`]: run a command under bubblewrap, rootless `unshare` namespaces or Docker (strongest that works),
 //!   with the project and session dirs writable, the home read-only with credentials hidden, the environment cleared
-//!   to an allowlist, configurable network; plus the review profile ported from autoreview's test launcher.
+//!   to an allowlist, configurable network.
 //! - [`doctor`]: verify that isolation holds by trying the escapes it must stop.
 //! - [`refusal`]: the note a failed command's result gets when its output shows the sandbox refused it.
 //! - [`settings`] reads the `sandbox.*` settings.

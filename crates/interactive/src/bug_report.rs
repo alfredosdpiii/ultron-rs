@@ -243,7 +243,6 @@ impl BugFlow {
         Action::Deliver
     }
 
-    /// The summary arrived.
     pub fn summarized(&mut self, summary: String) -> Action {
         self.summary = Some(summary);
         self.deliver()

@@ -169,7 +169,6 @@ impl ThemeController {
         self.registry.current().and_then(|t| t.name.clone())
     }
 
-    /// `getTerminalTheme`.
     pub fn terminal_theme(&self) -> &'static str {
         self.terminal.name()
     }

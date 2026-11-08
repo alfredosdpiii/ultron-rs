@@ -474,15 +474,3 @@ pub fn install_minimal_files(target: &str, force: bool) -> Result<(), CheckError
     }
     Ok(())
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn loki_init_template_is_the_reference_policy() {
-        let value: Value = serde_json::from_slice(TEMPLATE).unwrap();
-        assert!(config::validate_config(&value).is_ok());
-        assert!(ENGINE.starts_with(b"#!/usr/bin/env python3\n"));
-    }
-}

@@ -3,7 +3,7 @@
 //! subscription) when unset or not a `provider/model` reference; saving it merges into the `durable` object and
 //! leaves the global default model alone.
 
-use config::settings::{DURABLE_MODEL_DEFAULT, SettingsManager};
+use config::settings::SettingsManager;
 use serde_json::{Value, json};
 
 #[test]
@@ -12,7 +12,6 @@ fn config_durable_model_is_global_only_with_the_subscription_default() {
     let (agent, cwd) = (dir.path().join("agent"), dir.path().join("cwd"));
     std::fs::create_dir_all(&agent).unwrap();
     std::fs::create_dir_all(cwd.join(".pi")).unwrap();
-    assert_eq!(DURABLE_MODEL_DEFAULT, "claude-code/claude-opus-5-5");
     let read = || SettingsManager::create(&cwd, &agent, true).durable_model();
     assert_eq!(read(), "claude-code/claude-opus-5-5");
     // A project cannot choose it (it would move the user's durable sessions off their subscription).

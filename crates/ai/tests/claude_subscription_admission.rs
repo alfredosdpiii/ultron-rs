@@ -201,8 +201,6 @@ fn ai_claude_subscription_wire_continuity_across_parallel_rounds_and_relay_recre
     }
 }
 
-// --------------------------------------------------------------------------------------------- two native marks
-
 fn marker() -> Value {
     json!({"type": "ephemeral"})
 }
@@ -336,8 +334,6 @@ fn ai_claude_subscription_unrestorable_result_falls_back_to_native_tool_use_mark
     );
 }
 
-// ------------------------------------------------------------------------------------------------ admission
-
 #[test]
 fn ai_claude_subscription_relay_admits_one_request_and_refuses_the_rest_locally() {
     seal();
@@ -454,11 +450,7 @@ fn ai_claude_subscription_abort_ends_an_exchange_blocked_on_a_silent_upstream() 
     .unwrap();
     let url = format!("{}/v1/messages", relay.url);
     let client = std::thread::spawn(move || post(&url, b"{}", &[]));
-    let deadline = Instant::now() + Duration::from_secs(120);
-    while upstream.requests().is_empty() && Instant::now() < deadline {
-        std::thread::sleep(Duration::from_millis(10));
-    }
-    assert_eq!(upstream.requests().len(), 1, "the exchange reached the upstream");
+    assert_eq!(upstream.wait_requests(1).len(), 1, "the exchange reached the upstream");
     let started = Instant::now();
     relay.abort();
     let _ = client.join();
@@ -471,8 +463,6 @@ fn ai_claude_subscription_abort_ends_an_exchange_blocked_on_a_silent_upstream() 
     );
     assert_eq!(relay.outcome().failure.as_deref(), Some("Cancelled"));
 }
-
-// ---------------------------------------------------------------------------------------------------- proxies
 
 fn env(pairs: &[(&str, &str)]) -> BTreeMap<String, String> {
     pairs.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect()

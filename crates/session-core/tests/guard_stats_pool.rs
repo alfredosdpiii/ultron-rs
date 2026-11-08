@@ -5,11 +5,10 @@
 
 use crate::p_session_support;
 
-use p_session_support::{HANG, Setup, actor, text, tool};
+use p_session_support::{Setup, actor, text, tool};
 use serde_json::{Value, json};
 use session_core::core::Op;
 use std::sync::{Arc, Mutex};
-use std::time::Instant;
 
 const POOL_CELL: &str =
     "p = await rlm.host_request('rlm.pool', {})\nprint([(g['name'], g['checks'], g['blocked']) for g in p['guards']])";
@@ -107,18 +106,9 @@ fn session_core_pool_guards_add_worktree_subagents_and_reach_the_cell() {
     let end = a.prompt("go");
     assert!(end["error"].is_null(), "{end}");
     // The subagent's end re-invokes the root, whose next turn asks for the pool from its cell.
-    let deadline = Instant::now() + HANG;
-    let asked = loop {
-        if let Some(text) = a.requests().iter().find_map(|r| tool_result(r, "toolu_pool")) {
-            break text;
-        }
-        assert!(
-            Instant::now() < deadline,
-            "the root never asked for the pool: {:?}",
-            a.requests().len()
-        );
-        std::thread::sleep(std::time::Duration::from_millis(10));
-    };
+    let asked = a.requests.wait("the root's pool cell", |requests| {
+        requests.iter().find_map(|r| tool_result(r, "toolu_pool"))
+    });
     // Each write was checked by Loki: the root's in the session's host, the subagent's in its worktree's.
     assert_eq!(asked, "[('Loki', 2, 0)]");
     let inspected = a
@@ -135,14 +125,9 @@ fn session_core_pool_guards_add_worktree_subagents_and_reach_the_cell() {
         (&json!("Loki"), &json!(2), &json!(0))
     );
     // The merge and the subagent's model are in the session's counters (`onMerge`, `childModel`).
-    let deadline = Instant::now() + HANG;
-    let merged = loop {
-        if let Some(text) = a.requests().iter().find_map(|r| tool_result(r, "toolu_merge")) {
-            break text;
-        }
-        assert!(Instant::now() < deadline, "the root never merged");
-        std::thread::sleep(std::time::Duration::from_millis(10));
-    };
+    let merged = a.requests.wait("the root's merge", |requests| {
+        requests.iter().find_map(|r| tool_result(r, "toolu_merge"))
+    });
     assert_eq!(merged, "['merged']");
     a.call(Op::Describe).unwrap();
     let stats = a

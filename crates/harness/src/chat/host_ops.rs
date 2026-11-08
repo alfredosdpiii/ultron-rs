@@ -113,7 +113,6 @@ impl HostOps {
         })
     }
 
-    /// Whether `kind` is one of these operations.
     pub fn serves(kind: &str) -> bool {
         CHILD_KINDS.contains(&kind) || SWARM_KINDS.contains(&kind)
     }

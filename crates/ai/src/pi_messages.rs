@@ -17,7 +17,6 @@ use serde::Deserialize;
 use serde_json::{Map, Value, json};
 use std::collections::HashMap;
 
-/// `PiMessagesOptions`.
 #[derive(Clone, Default, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PiMessagesOptions {

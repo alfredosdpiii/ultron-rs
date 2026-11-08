@@ -234,7 +234,7 @@ pub(crate) fn summary(ledger: &Ledger, budget: &Budget, frame: &Frame, outcome: 
     if let Some(Outcome::Incomplete(reason, _)) = outcome {
         out.insert("reason".into(), (*reason).into());
     }
-    // `task.replace(/\s+/g, " ")`: every run of whitespace becomes one space.
+    // `task.replace(/\s+/g, " ")`.
     let mut collapsed = String::new();
     for c in frame.task.chars() {
         if jsrt::string::is_space(c) {

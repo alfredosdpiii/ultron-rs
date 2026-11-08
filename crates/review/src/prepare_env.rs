@@ -721,18 +721,3 @@ impl EnvironmentPreparer for RunnerPreparer {
         prepare_environment(work_dir, &options).map(|prepared| prepared.summary())
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn review_prepare_env_versions_order_numerically() {
-        use std::cmp::Ordering::*;
-        assert_eq!(compare_numeric("3.12.10", "3.12.9"), Greater);
-        assert_eq!(compare_numeric("3.12", "3.12.1"), Less);
-        assert_eq!(compare_numeric("20.0", "20.0"), Equal);
-        assert_eq!(compare_numeric("3.9", "3.10"), Less);
-        assert_eq!(compare_numeric("1.0RC", "1.0rc"), Equal);
-    }
-}

@@ -21,7 +21,6 @@ pub struct GateRun {
     pub run: Option<u64>,
 }
 
-/// What the request gate decided for a model request of a run.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum RequestGate {
     Allow,
@@ -60,7 +59,6 @@ pub(crate) fn gate_run(tx: &mut Tx<'_>, conversation_id: ConversationId) -> Resu
     })
 }
 
-/// The tool choice a run's final request is sent with.
 pub const FINAL_TOOL_CHOICE: &str = "none";
 
 /// Apply a final request's gate to what a provider is sent: tool choice `none`, and the note as a user message

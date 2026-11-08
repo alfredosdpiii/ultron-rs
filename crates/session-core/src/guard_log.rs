@@ -13,7 +13,7 @@ use std::sync::{Arc, Mutex};
 pub const LOKI_LOG_ENV: &str = "ULTRON_LOKI_LOG";
 
 /// One log line: `JSON.stringify({ at, ...record })`.
-pub fn log_line(at: u64, record: &GuardRecord) -> String {
+fn log_line(at: u64, record: &GuardRecord) -> String {
     let mut line = json!({ "at": at });
     if let (Value::Object(line), Value::Object(fields)) = (&mut line, record.to_json()) {
         line.extend(fields);

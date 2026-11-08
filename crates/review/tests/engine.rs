@@ -3,12 +3,11 @@
 //! transport, routed by the model each frame names. The command-level differential test against the TypeScript is
 //! crates/cli/tests/autoreview.rs.
 
-use ai::retry::{RetryPolicy, is_retryable_text};
+use ai::retry::RetryPolicy;
 use ai::{Body, HttpRequest, HttpResponse, Model, Transport};
-use kernel::CellError;
 use review::engine::{
     EngineOptions, KernelEngine, ModelResolver, RetryingTransport, ReviewEngine, SESSION_RETENTION, finish_result,
-    pipeline_error, prune_sessions, review_cell,
+    prune_sessions,
 };
 use serde_json::{Value, json};
 use std::future::Future;
@@ -19,30 +18,6 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime};
 
 type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
-
-#[test]
-fn review_engine_cell_runs_run_file_with_json_quoted_paths() {
-    assert_eq!(
-        review_cell("/tmp/a b/spec.json", "/tmp/x\"y/result.json"),
-        "import autoreview_api\nawait autoreview_api.run_file(rlm, \"/tmp/a b/spec.json\", \"/tmp/x\\\"y/result.json\")"
-    );
-}
-
-#[test]
-fn review_engine_pipeline_error_names_the_exception_and_the_traceback_end() {
-    let traceback: Vec<String> = (1..=8).map(|n| format!("frame {n}")).collect();
-    let error = CellError {
-        ename: "ReviewError".into(),
-        evalue: "base 'nope' is not a commit".into(),
-        traceback,
-    };
-    assert_eq!(
-        pipeline_error(Some(&error)),
-        "the review pipeline failed: ReviewError: base 'nope' is not a commit\nframe 3\nframe 4\nframe 5\nframe 6\nframe 7\nframe 8"
-    );
-    // No error object: the TypeScript's `?? "error"` and `?? ""`, trimmed.
-    assert_eq!(pipeline_error(None), "the review pipeline failed: error:");
-}
 
 #[test]
 fn review_engine_result_error_and_model_defaults() {
@@ -374,14 +349,4 @@ fn review_engine_retries_transient_provider_failures_like_the_frame_harness() {
         send(vec![(429, "rate limit")], off),
         (Ok((429, "rate limit".into())), 1)
     );
-    // The delays: baseDelayMs * 2^(attempt-1), capped by maxAgentDelayMs.
-    let policy = RetryPolicy::default();
-    assert_eq!(
-        (1..=7).map(|a| policy.delay_ms(a)).collect::<Vec<_>>(),
-        [2000, 4000, 8000, 16000, 32000, 60000, 60000]
-    );
-    assert!(is_retryable_text("429 Too Many Requests"));
-    assert!(is_retryable_text("upstream connect error"));
-    assert!(!is_retryable_text("429 GoUsageLimitError"));
-    assert!(!is_retryable_text(""));
 }

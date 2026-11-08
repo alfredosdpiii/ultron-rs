@@ -117,7 +117,6 @@ fn checkpoint_of(task: &TaskRecord) -> Result<ChildCheckpoint> {
     }
 }
 
-/// The built-in child task.
 pub(crate) fn child_task(services: Arc<Services>) -> Task {
     let (start, wait) = (services.clone(), services);
     Task::define(CHILD_KIND, 1, |input| (DEFINITION.initial)(input))

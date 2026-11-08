@@ -2,7 +2,8 @@
 //! `crates/ai/fixtures/claude-code-provider.json` (the TypeScript runtime recorded by
 //! `crates/ai/fixtures/generate-claude-code-provider.mjs`, with and without a `claude` where the provider looks):
 //!
-//! - `ultron --list-models [search]` prints what TypeScript's `listModels` printed;
+//! - `ultron --list-models [search]` prints what TypeScript's `listModels` printed, plus the rows of the models
+//!   added after the recording;
 //! - `/login`'s Claude Code row carries the status `loginProviderOptions` showed;
 //! - `--model claude-code/<id>` (and `--provider claude-code`) resolve for a session as `resolveCliModel` does, and
 //!   a request on them always has auth (the CLI's own login).
@@ -112,11 +113,92 @@ impl Case {
     }
 }
 
+/// The catalog models no recorded listing shows: `claude-fable-5-1`, which the Rust provider added after the
+/// recording (cc8501ec) with the fixture's `catalogModels` and each case's models, but not its `list` output.
+fn added_after_recording() -> Vec<String> {
+    let fixture = fixture();
+    let listed: Vec<&str> = fixture["cases"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .flat_map(|case| case["list"].as_array().unwrap())
+        .flat_map(|listing| listing["stdout"].as_str().unwrap().lines())
+        .filter_map(|line| line.split_whitespace().nth(1))
+        .collect();
+    fixture["catalogModels"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|model| model["id"].as_str().unwrap().to_string())
+        .filter(|id| !listed.contains(&id.as_str()))
+        .collect()
+}
+
+/// A recorded listing as it reads with the `added` models: when it shows every other claude-code model its case has
+/// available (its search admitted the whole provider), each added model takes the row of a listed model with the
+/// same catalog columns, under its own id, in id order.
+fn with_added_models(case: &Value, stdout: &str, added: &[String]) -> String {
+    let mut lines: Vec<String> = stdout.lines().map(str::to_string).collect();
+    let (Some(start), Some(end)) = (lines[0].find("model"), lines[0].find("context")) else {
+        return stdout.to_string();
+    };
+    let id_of = |line: &str| line[start..end].trim_end().to_string();
+    let mut listed: Vec<String> = lines[1..]
+        .iter()
+        .filter(|line| line.starts_with("claude-code "))
+        .map(|line| id_of(line))
+        .collect();
+    let available: Vec<&str> = case["available"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|model| model.as_str()?.strip_prefix("claude-code/"))
+        .collect();
+    let mut others: Vec<&str> = available
+        .iter()
+        .copied()
+        .filter(|id| !added.iter().any(|a| a == id))
+        .collect();
+    listed.sort();
+    others.sort();
+    if listed.is_empty() || listed != others {
+        return stdout.to_string();
+    }
+    let columns = |id: &str| {
+        let model = case["providerModels"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|model| model["id"] == id)
+            .unwrap();
+        ["contextWindow", "maxTokens", "reasoning", "input"].map(|key| model[key].clone())
+    };
+    for id in added.iter().filter(|id| available.contains(&id.as_str())) {
+        let twin = listed
+            .iter()
+            .find(|listed| columns(listed) == columns(id))
+            .unwrap_or_else(|| panic!("no listed model has the catalog columns of {id}"));
+        let row = lines
+            .iter()
+            .find(|line| line.starts_with("claude-code ") && id_of(line) == *twin)
+            .unwrap();
+        assert!(id.len() < end - start, "{id} would widen the recorded model column");
+        let row = format!("{}{id:<width$}{}", &row[..start], &row[end..], width = end - start);
+        let at = (1..lines.len())
+            .find(|&i| lines[i].starts_with("claude-code ") && id_of(&lines[i]) > *id)
+            .unwrap_or(lines.len());
+        lines.insert(at, row);
+    }
+    lines.iter().map(|line| format!("{line}\n")).collect()
+}
+
 #[test]
 fn cli_claude_code_list_models_matches_typescript() {
     let tmp = tempfile::tempdir().unwrap();
     let root = tmp.path().canonicalize().unwrap();
     let docs = docs();
+    let added = added_after_recording();
+    assert_eq!(added, ["claude-fable-5-1"]);
     for case in cases(&root) {
         for listing in case.spec["list"].as_array().unwrap() {
             let mut command = Command::new(env!("CARGO_BIN_EXE_ultron"));
@@ -134,7 +216,8 @@ fn cli_claude_code_list_models_matches_typescript() {
             let label = format!("{}: {}", case.name(), listing["search"]);
             assert!(output.status.success(), "{label}: {output:?}");
             let stdout = String::from_utf8(output.stdout).unwrap().replace(&docs, "<docs>");
-            assert_eq!(stdout, listing["stdout"].as_str().unwrap(), "{label}");
+            let want = with_added_models(&case.spec, listing["stdout"].as_str().unwrap(), &added);
+            assert_eq!(stdout, want, "{label}");
             let stderr = String::from_utf8(output.stderr).unwrap();
             assert_eq!(stderr, listing["stderr"].as_str().unwrap(), "{label}");
         }

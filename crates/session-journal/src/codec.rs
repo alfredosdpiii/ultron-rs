@@ -47,7 +47,6 @@ pub fn is_v3_header(value: &Value) -> bool {
         && optional_string(map, "parentSession")
 }
 
-/// A parsed first line.
 #[derive(Clone, Debug, PartialEq)]
 pub enum ParsedHeader {
     V4(Map<String, Value>),
@@ -145,12 +144,10 @@ pub fn serialize_transaction(writes: &[Value]) -> String {
     }
 }
 
-/// A header field as a string.
 pub fn header_str<'a>(header: &'a Map<String, Value>, key: &str) -> Option<&'a str> {
     header.get(key).and_then(Value::as_str)
 }
 
-/// A header field as an integer.
 pub fn header_i64(header: &Map<String, Value>, key: &str) -> Option<i64> {
     header
         .get(key)

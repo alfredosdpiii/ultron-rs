@@ -248,10 +248,10 @@ fn delegation_cancel_parked_cell_keeps_kernel_state() {
         (error.ename.as_str(), error.evalue.as_str()),
         ("RuntimeError", "rlm.merge was cancelled: user pressed escape")
     );
-    // No CellEnd event for a cancelled cell: the canceller has its outcome.
-    assert!(r.ends.recv_timeout(Duration::from_millis(200)).is_err());
     assert_eq!(r.lanes.kernel("main").unwrap().pid(), Some(pid), "same kernel process");
     assert_eq!(ok(&r.lanes, "main", "x").result.unwrap(), "7");
+    // No CellEnd event for a cancelled cell: the canceller has its outcome.
+    assert!(r.ends.try_recv().is_err());
     // The child itself keeps running; it was not the cell's to cancel.
     assert_eq!(r.host.running("main").len(), 1);
     r.gates.open(0);
@@ -318,8 +318,8 @@ fn delegation_cell_outliving_its_budget_detaches_or_cancels() {
     // Killed after the grace period, not after the cell's hour-long sleep.
     assert!(started.elapsed() < HANG_GUARD);
     assert_eq!(cancelled.unwrap_err(), "stop");
-    assert!(r.ends.recv_timeout(Duration::from_millis(100)).is_err());
     assert_eq!(ok(&r.lanes, "main", "'y' in globals()").result.unwrap(), "False");
+    assert!(r.ends.try_recv().is_err());
     assert_ne!(r.lanes.kernel("main").unwrap().pid(), Some(pid));
     assert_eq!(r.lanes.cancel("cell-404", "x").unwrap_err(), "Unknown cell: cell-404");
     r.lanes.close();
@@ -330,7 +330,12 @@ fn delegation_cell_cancels_another_lanes_cell_but_not_itself() {
     let r = root(CollectMode::InCell, 2);
     r.lanes.open("side").unwrap();
     ok(&r.lanes, "main", "h = await rlm.spawn('brief', name='a')");
-    let (cell, _) = running(r.lanes.run("main", "await rlm.collect([h])", BUDGET).unwrap());
+    // An in-cell collect never parks: a short budget hands the still-running cell back at once.
+    let (cell, _) = running(
+        r.lanes
+            .run("main", "await rlm.collect([h])", Duration::from_millis(50))
+            .unwrap(),
+    );
     let reply = ok(
         &r.lanes,
         "side",

@@ -409,7 +409,6 @@ pub struct CaseFinding {
     pub claim: String,
 }
 
-/// Scores the review `result` of `case` at `block_at`.
 pub fn score(case: &Case, result: &EngineResult, block_at: &str) -> CaseScore {
     let blocked = decide_verdict(result, Some(block_at)).verdict == Verdict::RequestChanges;
     let confirmed: Vec<_> = result
@@ -477,7 +476,6 @@ pub fn summary(scored: &[(Case, CaseScore)]) -> Value {
     })
 }
 
-/// The summary as lines of text.
 pub fn summary_lines(summary: &Value, block_at: &str) -> Vec<String> {
     let count = |path: &str, key: &str| summary[path][key].as_u64().unwrap_or(0);
     let mut lines = vec![format!(

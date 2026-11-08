@@ -201,7 +201,6 @@ fn acceptance_a16_scope_tags_pinned_through_consolidation_and_cross_scope_merge_
     assert!(decisions[1].get("references").is_none());
 }
 
-/// `until(read, timeoutMs)`: polls every 3 s.
 fn until(timeout: std::time::Duration, mut read: impl FnMut() -> bool) -> bool {
     let deadline = std::time::Instant::now() + timeout;
     while std::time::Instant::now() < deadline {

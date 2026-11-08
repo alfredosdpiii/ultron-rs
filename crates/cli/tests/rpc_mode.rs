@@ -245,7 +245,6 @@ fn number_ids(value: &Value) -> Value {
             other => other.clone(),
         }
     }
-    // Insertion order is first appearance; `ids.len()` numbers them.
     walk(value, "", &mut HashMap::new())
 }
 

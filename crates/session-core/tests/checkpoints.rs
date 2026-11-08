@@ -136,11 +136,9 @@ fn session_core_checkpoints_record_each_turn_and_restore_is_undoable() {
     for gone in ["b.txt", "c.txt", "during.txt", "sub/deep/d.txt"] {
         assert_eq!(read(&a.cwd, gone), None, "{gone}");
     }
-    // Emptied directories are removed.
     assert!(!a.cwd.join("sub").exists());
     assert_eq!(restored["written"], 1);
     assert_eq!(restored["deleted"], 4);
-    // HEAD, the branch and the real index are untouched.
     assert_eq!(git(&a.cwd, &["rev-parse", "HEAD"]), head);
     assert_eq!(git(&a.cwd, &["symbolic-ref", "HEAD"]), "refs/heads/main");
     assert_eq!(std::fs::read(a.cwd.join(".git/index")).unwrap(), index_before);

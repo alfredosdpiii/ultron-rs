@@ -1,5 +1,5 @@
 //! Ported expectations from packages/coding-agent/test/session-manager/*.test.ts and
-//! test/session-context-edit.test.ts (format behavior), plus JavaScript-semantics literals taken from node 26.
+//! test/session-context-edit.test.ts (format behavior).
 
 use std::fs;
 
@@ -795,102 +795,6 @@ fn session_file_retain_none_and_repeated_compactions_show_only_newest_summary() 
         .collect();
     assert_eq!(summaries, [json!("second summary")]);
 }
-// ---- JavaScript semantics (literals printed by node 26) ----
-
-#[test]
-fn session_file_numbers_serialize_like_json_stringify() {
-    let input = "[0,-0,1,-1,0.1,0.30000000000000004,1e21,1e-7,1.5e-7,0.000001,123456789012345678901,9007199254740993,1.7976931348623157e308,5e-324,-2.5e-10,100,1234.5678,1e20,12345678901234567890]";
-    let parsed: Value = serde_json::from_str(input).unwrap();
-    assert_eq!(
-        jsrt::json::stringify(&parsed),
-        "[0,0,1,-1,0.1,0.30000000000000004,1e+21,1e-7,1.5e-7,0.000001,123456789012345680000,9007199254740992,1.7976931348623157e+308,5e-324,-2.5e-10,100,1234.5678,100000000000000000000,12345678901234567000]"
-    );
-}
-
-#[test]
-fn session_file_objects_and_strings_serialize_like_json_stringify() {
-    let parsed: Value =
-        serde_json::from_str(r#"{"b":1,"10":2,"2":3,"a":4,"01":5,"4294967295":6,"4294967294":7}"#).unwrap();
-    assert_eq!(
-        jsrt::json::stringify(&parsed),
-        r#"{"2":3,"10":2,"4294967294":7,"b":1,"a":4,"01":5,"4294967295":6}"#
-    );
-    let s = Value::from("\u{0}\u{8}\u{c}\n\r\t\u{1f}\u{7f}\"\\/\u{2028}é");
-    assert_eq!(
-        jsrt::json::stringify(&s),
-        "\"\\u0000\\b\\f\\n\\r\\t\\u001f\u{7f}\\\"\\\\/\u{2028}é\""
-    );
-}
-
-#[test]
-fn session_file_dates_parse_and_print_like_v8() {
-    let cases: [(&str, Option<i64>); 18] = [
-        ("2019-02-30", Some(1_551_484_800_000)),
-        ("2019-02-31T00:00:00Z", Some(1_551_571_200_000)),
-        ("2025-01-01T00:00:00.123456Z", Some(1_735_689_600_123)),
-        ("2025-01-01T24:00:00Z", Some(1_735_776_000_000)),
-        ("2025-01-01T00:00Z", Some(1_735_689_600_000)),
-        ("2025-1-01", Some(1_735_689_600_000)),
-        ("+002025-01-01T00:00:00Z", Some(1_735_689_600_000)),
-        ("2025", Some(1_735_689_600_000)),
-        ("2025-06", Some(1_748_736_000_000)),
-        ("2025-01-01T00:00:00", Some(1_735_689_600_000)),
-        ("2025-01-01T00:00:00.5+01:30", Some(1_735_684_200_500)),
-        ("2025-01-01T00:00:00z", Some(1_735_689_600_000)),
-        ("2025-01-01 00:00:00Z", Some(1_735_689_600_000)),
-        ("2025-01-01T00:00:00+0100", Some(1_735_686_000_000)),
-        (" 2025-01-01", Some(1_735_689_600_000)),
-        ("2025-01-01T00:00:60Z", None),
-        ("-000001-01-01T00:00:00Z", Some(-62_198_755_200_000)),
-        ("2025-01-01T00:00:00.Z", None),
-    ];
-    for (input, expected) in cases {
-        assert_eq!(jsrt::date::parse_date(input), expected, "{input}");
-    }
-    let iso: Vec<String> = [0, 1_735_689_600_123, -1, 253_402_300_800_000, -62_198_755_200_000]
-        .into_iter()
-        .map(jsrt::date::iso_string)
-        .collect();
-    assert_eq!(
-        iso,
-        [
-            "1970-01-01T00:00:00.000Z",
-            "2025-01-01T00:00:00.123Z",
-            "1969-12-31T23:59:59.999Z",
-            "+010000-01-01T00:00:00.000Z",
-            "-000001-01-01T00:00:00.000Z"
-        ]
-    );
-}
-
-#[test]
-fn session_file_trim_and_number_coercion_follow_javascript() {
-    assert_eq!(jsrt::string::trim(" \u{a0}\u{feff}\u{2028}x\u{85} "), "x\u{85}");
-    let numbers: Vec<Option<f64>> = [
-        "", " 12 ", "0x1F", "1e3", ".5", "5.", "+5", "-0b1", "abc", "Infinity", "1_000", "3",
-    ]
-    .into_iter()
-    .map(|s| Some(jsrt::value::number(&Value::from(s))).filter(|n| n.is_finite()))
-    .collect();
-    assert_eq!(
-        numbers,
-        [
-            Some(0.0),
-            Some(12.0),
-            Some(31.0),
-            Some(1000.0),
-            Some(0.5),
-            Some(5.0),
-            Some(5.0),
-            None,
-            None,
-            None,
-            None,
-            Some(3.0)
-        ]
-    );
-}
-
 #[test]
 fn session_file_listing_orders_names_by_locale_compare() {
     // `files.sort((a, b) => b.localeCompare(a))`: ICU sorts "_" before "-" ("a_b".localeCompare("a-b") === -1 in

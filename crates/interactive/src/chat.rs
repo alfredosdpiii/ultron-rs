@@ -18,7 +18,6 @@ use crate::lane::Queued;
 use crate::rlm_cell::{Highlighter, rlm_renderers};
 use protocol::watch::QueueKind;
 
-/// Text of a user message's text blocks.
 /// What the chat shows for a nudge: `auto-continue (n/max)`.
 pub fn nudge_line(message: &Value) -> String {
     let details = &message["details"];
@@ -413,7 +412,6 @@ impl ChatView {
         self.items.len() - 1
     }
 
-    /// Append a message that joined the transcript.
     pub fn add_message(&mut self, message: &Value) {
         match message["role"].as_str() {
             Some("user") => {
@@ -747,7 +745,6 @@ impl ChatView {
         self.indicator.is_some()
     }
 
-    /// Advance the spinner one frame.
     pub fn tick(&mut self) {
         if let Some(i) = &mut self.indicator {
             i.tick();

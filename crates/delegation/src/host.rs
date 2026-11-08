@@ -484,7 +484,6 @@ impl Delegation {
         (host, receiver)
     }
 
-    /// The collect mode of `lane`.
     pub fn collect_mode(&self, lane: &str) -> CollectMode {
         (self.inner.collect)(lane)
     }
@@ -619,12 +618,10 @@ impl Delegation {
         ) || kind.starts_with("rlm.worktrees.")
     }
 
-    /// Serve one host request from `lane`.
     pub fn handle(&self, kind: &str, payload: Value, lane: &str) -> Result<Value, String> {
         self.handle_with(kind, payload, lane, &CellContext::default())
     }
 
-    /// Serve one host request from `lane`, made by `cell`.
     pub fn handle_with(&self, kind: &str, payload: Value, lane: &str, cell: &CellContext) -> Result<Value, String> {
         let cancel = cell.cancel.as_ref();
         let Value::Object(payload) = payload else {
@@ -806,7 +803,6 @@ impl Delegation {
         let children: Vec<String> = {
             let state = sync::lock(&self.inner.state);
             if selectors.is_empty() {
-                // Default: the caller's own worktree children, in the order they were spawned.
                 state
                     .tasks
                     .iter()
@@ -1707,7 +1703,6 @@ impl Delegation {
                 task.signal.abort(result["error"].as_str().unwrap_or("cancelled"));
             }
         }
-        // A worktree child's work is committed on its branch before its result is published.
         let result = self.finalize_worktree(id, result);
         let mut ended = None;
         let event = {
@@ -2083,7 +2078,6 @@ impl Delegation {
         sync::lock(&self.inner.state).task(id).map_or(0, |t| t.waiters)
     }
 
-    /// The journal's tasks, in admission order.
     pub fn tasks(&self) -> Result<Vec<Value>, String> {
         sync::lock(&self.inner.state).journal.list()
     }

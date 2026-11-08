@@ -41,7 +41,6 @@ pub struct DurableWorkOptions {
     /// The host whose shell jobs this worker owns (recovered by `Host::with_journal`); stopped or handed over on
     /// close.
     pub jobs: Option<Arc<host::Host>>,
-    /// The tick's clock (default: wall time).
     pub clock: Arc<dyn TickClock>,
     /// Sees every tick's report (`{fired, failed}`), e.g. to wake the session when a firing was admitted.
     pub on_tick: Option<TickObserver>,

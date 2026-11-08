@@ -6,7 +6,6 @@
 use host::Host;
 use serde_json::{Value, json};
 
-/// Context lines around each change.
 pub const CONTEXT_LINES: usize = 2;
 /// Diff lines kept per file; the rest is counted in `omitted`.
 pub const MAX_DIFF_LINES: usize = 400;

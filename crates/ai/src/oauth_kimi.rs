@@ -17,7 +17,6 @@ const DEFAULT_POLL_INTERVAL_SECONDS: f64 = 5.0;
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 const REFRESH_MAX_RETRIES: u32 = 3;
 
-/// `kimiCodingOAuth`.
 pub struct KimiCodingOAuth {
     pub transport: Arc<dyn Transport>,
     pub clock: Clock,

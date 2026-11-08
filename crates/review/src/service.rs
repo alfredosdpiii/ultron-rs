@@ -154,7 +154,6 @@ pub fn service_file(
     }
 }
 
-/// Writes the service file (mode 0644), creating its directory.
 pub fn install_service(file: &ServiceFile) -> Result<(), String> {
     use std::io::Write;
     use std::os::unix::fs::OpenOptionsExt;
@@ -173,7 +172,6 @@ pub fn install_service(file: &ServiceFile) -> Result<(), String> {
         .map_err(|error| format!("{}: {error}", file.path))
 }
 
-/// Removes the service file; false when there was none.
 pub fn uninstall_service(file: &ServiceFile) -> bool {
     let path = Path::new(&file.path);
     if !path.exists() {

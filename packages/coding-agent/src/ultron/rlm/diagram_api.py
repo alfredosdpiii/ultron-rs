@@ -1,5 +1,5 @@
 """`diagram`: Mermaid diagrams rendered by the Rust host (node with the vendored Pele renderer, Ultron's theme colours,
-an SVG and a 2x PNG saved to files). Hosts without the request (the TypeScript host) answer it with an error.
+an SVG and a 2x PNG saved to files).
 """
 
 from __future__ import annotations

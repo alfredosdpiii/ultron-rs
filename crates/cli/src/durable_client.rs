@@ -17,7 +17,6 @@ use std::sync::Arc;
 /// Set (to `1`) in the environment of a client of the durable instance.
 pub const CLIENT_ENV: &str = "__ULTRON_DURABLE_CLIENT";
 
-/// Whether this run is a client of the durable instance.
 pub fn is_client(env: &Env) -> bool {
     (env.var)(CLIENT_ENV).as_deref() == Some("1")
 }
@@ -103,7 +102,6 @@ pub fn is_home_command(argv0: &str) -> bool {
     name.strip_suffix(".exe").unwrap_or(&name) == HOME_COMMAND
 }
 
-/// The durable instance's recorded home session id.
 pub fn home_session(instance_dir: &std::path::Path) -> Option<String> {
     std::fs::read_to_string(instance_dir.join(HOME_FILE))
         .ok()

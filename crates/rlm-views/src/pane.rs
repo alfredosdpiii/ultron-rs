@@ -614,8 +614,6 @@ pub fn run_counts(run: &DagRun) -> RunCounts {
     c
 }
 
-// ---- text helpers ----
-
 fn pad_to(text: &str, width: usize) -> String {
     if width == 0 {
         return String::new();
@@ -683,8 +681,6 @@ fn progress_line(p: &GraphProgress, width: usize) -> String {
     let cells = (width as isize - visible_width(&text) as isize - 1).clamp(3, 10) as usize;
     format!("{} {text}", bar(finished as f64 / p.total.max(1) as f64, cells))
 }
-
-// ---- state and navigation ----
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct RlmPaneState {
@@ -827,8 +823,6 @@ pub fn apply_dag_action(state: &RlmPaneState, runs: &[DagRun], action: DagAction
     }
     next
 }
-
-// ---- rendering ----
 
 const GAP: usize = 2;
 const MIN_BOX: usize = 20;
@@ -1386,8 +1380,6 @@ pub fn render_rlm_pane(
     }
 }
 
-// ---- the live wave summary ----
-
 fn summarized(kind: GraphKind) -> bool {
     matches!(
         kind,
@@ -1518,8 +1510,6 @@ pub fn render_wave_summary(runs: &[DagRun], width: usize, style: &RlmStyle, now:
     }
     lines
 }
-
-// ---- keys and the pane component ----
 
 const PANE_ACTIONS: [(Option<DagAction>, &str); 11] = [
     (None, "app.rlm.pane.close"),

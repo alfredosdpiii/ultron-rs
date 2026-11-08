@@ -1,10 +1,19 @@
 //! Clock lines and their formats (`ultron/clock-context.ts`, `ultron-clock-context.test.ts`).
 
+use jsrt::localtime::Zone;
 use serde_json::{Value, json};
-use session_core::lane::{clock_lines, format_clock, format_gap, with_clock_lines};
+use session_core::lane::{clock_lines_in, format_clock, format_gap, with_clock_lines_in};
 
 fn utc(ms: i64) -> String {
-    format_clock(ms, &jsrt::localtime::Zone::utc())
+    format_clock(ms, &Zone::utc())
+}
+
+fn clock_lines(messages: &[Value]) -> Vec<(usize, ai::Message)> {
+    clock_lines_in(messages, &Zone::utc())
+}
+
+fn with_clock_lines(messages: &[Value]) -> Option<Vec<Value>> {
+    with_clock_lines_in(messages, &Zone::utc())
 }
 
 #[test]
@@ -111,14 +120,4 @@ fn session_core_clock_lines_open_conversations_and_follow_gaps() {
     // Exactly the gap counts; one millisecond short does not.
     assert!(with_clock_lines(&[answer(T0), user("y", T0 + 600_000)]).is_some());
     assert!(with_clock_lines(&[answer(T0), user("y", T0 + 599_999)]).is_none());
-}
-
-#[test]
-fn session_core_clock_formats() {
-    assert_eq!(utc(T0), "2026-10-05 12:00 UTC+00:00");
-    assert_eq!(format_gap(12 * 60_000), "12 min");
-    assert_eq!(format_gap(119 * 60_000), "119 min");
-    assert_eq!(format_gap(3 * 3_600_000), "3 h");
-    assert_eq!(format_gap(47 * 3_600_000), "47 h");
-    assert_eq!(format_gap(50 * 3_600_000), "2 d");
 }

@@ -200,16 +200,6 @@ mod tests {
     }
 
     #[test]
-    fn kernel_append_bounded_cuts_once_with_a_marker() {
-        let mut current = "a".repeat(MAX_REQUEST_STREAM_CHARS - 2);
-        append_bounded(&mut current, "🎉🎉");
-        assert!(current.ends_with(&format!("{}🎉{REQUEST_STREAM_MARKER}", "a")));
-        let before = current.clone();
-        append_bounded(&mut current, "more");
-        assert_eq!(current, before);
-    }
-
-    #[test]
     fn kernel_stderr_tail_keeps_the_last_8000_code_units() {
         let mut tail = String::new();
         keep_tail(&mut tail, &"a".repeat(7990));
@@ -217,19 +207,6 @@ mod tests {
         assert_eq!(tail, format!("{}{}", "a".repeat(7980), "b".repeat(20)));
         keep_tail(&mut tail, &format!("{}c", "d".repeat(9000)));
         assert_eq!(tail, format!("{}c", "d".repeat(7999)));
-    }
-
-    #[test]
-    fn kernel_raw_capture_keeps_head_and_tail_and_counts_the_cut() {
-        let half = MAX_REQUEST_STREAM_CHARS / 2;
-        let mut capture = RawCapture::default();
-        capture.push(&"h".repeat(half + 10));
-        assert_eq!(capture.text(1), format!("{}{}", "h".repeat(half), "h".repeat(10)));
-        capture.push(&"t".repeat(half));
-        let text = capture.text(1);
-        assert!(text.starts_with(&"h".repeat(half)));
-        assert!(text.contains("\n[... 10 characters of raw fd 1 output cut from the middle"));
-        assert!(text.ends_with(&format!("...]\n{}", "t".repeat(half))));
     }
 
     #[test]

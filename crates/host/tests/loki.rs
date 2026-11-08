@@ -134,17 +134,17 @@ fn host_loki_mode_matches_typescript() {
     }
 }
 
-/// The python rule pack is ported, so a clean Python write is checked and passes without a note; a guard that errors
-/// still fails open with file-hooks.ts's "did not check" note, and the write happens.
+/// A clean Python write is checked and passes without a note; a guard that errors fails open with file-hooks.ts's
+/// "did not check" note, and the write happens.
 #[test]
-fn host_loki_unported_check_writes_with_a_note() {
+fn host_loki_clean_write_passes_and_a_failing_guard_writes_with_a_note() {
     struct Broken;
     impl host::file_hooks::FileWriteGuard for Broken {
         fn name(&self) -> &str {
             "Loki"
         }
         fn before_write(&self, _: &Path, _: &str, _: &Path, _: &str) -> Result<host::file_hooks::Verdict, String> {
-            Err("the elixir rule pack is not ported to the Rust engine".into())
+            Err("the engine crashed".into())
         }
     }
     let dir = tempfile::tempdir().unwrap();
@@ -163,7 +163,7 @@ fn host_loki_unported_check_writes_with_a_note() {
     assert_eq!(
         broken.before_write("main", &elixir, "x = 1\n"),
         json!({"blocked": false, "notes": [
-            "[Loki] Loki did not check this write to a.ex (the elixir rule pack is not ported to the Rust engine); it was written unchecked."
+            "[Loki] Loki did not check this write to a.ex (the engine crashed); it was written unchecked."
         ]})
     );
 }

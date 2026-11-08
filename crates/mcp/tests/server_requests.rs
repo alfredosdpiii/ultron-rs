@@ -2,13 +2,26 @@
 
 use mcp::{CancelToken, Client, ClientOptions, Error, Incoming, Sink, Transport};
 use serde_json::{Value, json};
+use std::sync::mpsc::{Receiver, Sender, channel};
 use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
-/// Answers `initialize` and records everything else the client sends.
-#[derive(Default)]
+/// Answers `initialize` and passes everything else the client sends to `received`.
 struct Fake {
     sink: Mutex<Option<Sink>>,
-    sent: Mutex<Vec<Value>>,
+    sent: Mutex<Sender<Value>>,
+    received: Mutex<Receiver<Value>>,
+}
+
+impl Fake {
+    fn new() -> Self {
+        let (sent, received) = channel();
+        Fake {
+            sink: Mutex::default(),
+            sent: Mutex::new(sent),
+            received: Mutex::new(received),
+        }
+    }
 }
 
 impl Transport for Fake {
@@ -28,7 +41,7 @@ impl Transport for Fake {
                 ))
             });
         } else {
-            self.sent.lock().unwrap().push(message.clone());
+            let _ = self.sent.lock().unwrap().send(message.clone());
         }
         Ok(())
     }
@@ -39,19 +52,22 @@ impl Transport for Fake {
 fn ask(fake: &Fake, request: Value, expected_id: &Value) -> Value {
     let sink = fake.sink.lock().unwrap().clone().unwrap();
     sink(Incoming::Message(request));
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(120);
-    while std::time::Instant::now() < deadline {
-        if let Some(reply) = fake.sent.lock().unwrap().iter().find(|m| &m["id"] == expected_id) {
-            return reply.clone();
+    let deadline = Instant::now() + Duration::from_secs(120);
+    let received = fake.received.lock().unwrap();
+    loop {
+        let wait = deadline.saturating_duration_since(Instant::now());
+        let message = received
+            .recv_timeout(wait)
+            .unwrap_or_else(|_| panic!("no reply to {expected_id}"));
+        if &message["id"] == expected_id {
+            return message;
         }
-        std::thread::sleep(std::time::Duration::from_millis(5));
     }
-    panic!("no reply to {expected_id}");
 }
 
 #[test]
 fn mcp_client_answers_server_requests_with_handler_results_and_errors() {
-    let fake = Arc::new(Fake::default());
+    let fake = Arc::new(Fake::new());
     let client = Client::new(ClientOptions {
         name: "c".into(),
         version: "1".into(),

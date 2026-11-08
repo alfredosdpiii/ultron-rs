@@ -8,7 +8,6 @@ pub fn fill(buf: &mut [u8]) {
     getrandom::fill(buf).expect("the OS random source is unavailable");
 }
 
-/// `N` random bytes.
 pub fn bytes<const N: usize>() -> [u8; N] {
     let mut out = [0u8; N];
     fill(&mut out);

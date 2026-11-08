@@ -116,7 +116,6 @@ pub struct SessionListing {
     /// Every user and assistant message's text, joined by spaces (`SessionInfo.allMessagesText`); the selector
     /// searches it.
     pub all_messages_text: String,
-    /// The session's working directory.
     pub cwd: String,
 }
 

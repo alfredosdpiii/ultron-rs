@@ -211,15 +211,6 @@ impl Store {
         Ok(())
     }
 
-    pub fn schema_version(&self) -> Result<i64, Error> {
-        let value: String = self
-            .conn
-            .query_row("SELECT value FROM meta WHERE key = 'schema_version'", [], |row| {
-                row.get(0)
-            })?;
-        value.parse().map_err(|_| Error(format!("schema version {value:?}")))
-    }
-
     /// The blobs among `oids` that are already indexed by extractor `version`.
     pub fn known_blobs(&self, oids: &[&str], version: i64) -> Result<std::collections::HashSet<String>, Error> {
         let mut known = std::collections::HashSet::new();
@@ -424,7 +415,7 @@ impl Store {
         Ok(changed)
     }
 
-    /// A rule's credit, for tests and the CLI: (accepted, rejected, missed, human).
+    /// A rule's credit: (accepted, rejected, missed, human).
     pub fn rule_credit(&self, id: i64) -> Result<Option<(i64, i64, bool, bool)>, Error> {
         Ok(self
             .conn
@@ -465,31 +456,6 @@ impl Store {
             params![key, value],
         )?;
         Ok(())
-    }
-
-    /// How many notes the store holds for `repo`.
-    pub fn note_count(&self, repo: &str) -> Result<i64, Error> {
-        Ok(self.conn.query_row(
-            "SELECT COUNT(*) FROM notes n JOIN repos r ON r.id = n.repo WHERE r.name = ?1",
-            params![repo],
-            |row| row.get(0),
-        )?)
-    }
-
-    /// The constructs of the file at `path` in `repo` at `rev`, for tests and the CLI: (kind, line, count).
-    pub fn constructs_at(&self, repo: &str, rev: &str, path: &str) -> Result<Vec<(String, i64, i64)>, Error> {
-        let mut statement = self.conn.prepare(
-            "SELECT c.kind, c.line, c.count FROM constructs c
-             JOIN entries e ON e.blob = c.blob
-             JOIN trees t ON t.id = e.tree
-             JOIN repos r ON r.id = t.repo
-             WHERE r.name = ?1 AND t.rev = ?2 AND e.path = ?3
-             ORDER BY c.line, c.kind",
-        )?;
-        let rows = statement.query_map(params![repo, rev, path], |row| {
-            Ok((row.get(0)?, row.get(1)?, row.get(2)?))
-        })?;
-        Ok(rows.collect::<Result<_, _>>()?)
     }
 
     /// How many trees the store holds for `repo`.

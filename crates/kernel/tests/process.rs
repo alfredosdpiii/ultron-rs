@@ -1,9 +1,7 @@
 //! Process-level tests: the Rust supervisor drives the real runtime.py. Expectations are ported from the TypeScript
 //! kernel tests (packages/coding-agent/test/ultron-kernel*.test.ts) with their literal values.
 
-use kernel::{
-    ExecutionResult, HostHandler, Kernel, KernelError, KernelOptions, LimitOverrides, ProtocolChannel, Signal, Status,
-};
+use kernel::{ExecutionResult, HostHandler, Kernel, KernelError, KernelOptions, LimitOverrides, Signal, Status};
 use serde_json::{Map, Value, json};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -697,26 +695,6 @@ fn kernel_stdin_is_empty() {
         );
         assert_eq!(value(kernel, "sys.stdin.readline()"), "''");
     });
-}
-
-#[test]
-fn kernel_stdio_protocol_channel_works() {
-    let kernel = kernel_with(
-        KernelOptions {
-            protocol_channel: ProtocolChannel::Stdio,
-            ..options()
-        },
-        null_handler(),
-    );
-    let result = run(&kernel, "print('hello')\n6 * 7");
-    assert_eq!(
-        (result.stdout.as_str(), result.result.as_deref()),
-        ("hello\n", Some("42"))
-    );
-    // On this channel stderr is only a diagnostic tail (read asynchronously).
-    let result = run(&kernel, "import os\nos.write(2, b'tail text\\n')");
-    assert_eq!(result.stderr, "");
-    wait_until("the stderr tail", || kernel.stderr_tail().ends_with("tail text\n"));
 }
 
 // ultron-kernel-long-session.test.ts

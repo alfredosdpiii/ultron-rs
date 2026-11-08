@@ -73,7 +73,6 @@ pub fn shell_command_prefix(settings: &Settings) -> Option<String> {
     settings.get("shellCommandPrefix")?.as_str().map(str::to_string)
 }
 
-/// `thinkingBudgets` as configured.
 pub fn thinking_budgets(settings: &Settings) -> Option<&Value> {
     settings.get("thinkingBudgets").filter(|v| !v.is_null())
 }
@@ -92,7 +91,6 @@ pub fn websocket_connect_timeout_ms(settings: &Settings) -> Result<Option<f64>, 
     })
 }
 
-/// `getTerminalCapabilityOverrides`.
 pub fn terminal_capability_overrides(settings: &Settings) -> CapabilityOverrides {
     let terminal = settings.get("terminal");
     let field = |key: &str| terminal.and_then(|t| t.get(key));

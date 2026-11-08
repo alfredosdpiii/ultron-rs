@@ -6,13 +6,11 @@
 
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
-use std::sync::OnceLock;
 
 pub use rustix::process::Signal;
 
 pub const INTERNAL_EXE_ENV: &str = "ULTRON_INTERNAL_EXE";
 
-/// The argument that marks an internal process invocation: `ultron __internal <role> ...`.
 pub const INTERNAL_ARGUMENT: &str = "__internal";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -51,18 +49,10 @@ fn parse_role(value: Option<&str>) -> Result<Option<Role>, String> {
     }
 }
 
-static EXECUTABLE: OnceLock<PathBuf> = OnceLock::new();
-
-/// The executable internal processes run; defaults to this process's own (`process.execPath`).
-pub fn set_executable(path: PathBuf) {
-    let _ = EXECUTABLE.set(path);
-}
-
+/// The executable internal processes run: [`INTERNAL_EXE_ENV`], else this process's own (`process.execPath`).
 pub fn executable() -> PathBuf {
-    EXECUTABLE
-        .get()
-        .cloned()
-        .or_else(|| std::env::var_os(INTERNAL_EXE_ENV).map(PathBuf::from))
+    std::env::var_os(INTERNAL_EXE_ENV)
+        .map(PathBuf::from)
         .or_else(|| config::paths::own_executable().ok())
         .unwrap_or_else(|| PathBuf::from("ultron"))
 }
@@ -92,7 +82,6 @@ pub fn spawn(role: Role, args: &[String], env: &[(String, String)]) -> std::io::
     Ok(child)
 }
 
-/// Reap a child in the background so it never lingers as a zombie; returns its exit observer.
 pub fn watch(mut child: Child) -> std::sync::mpsc::Receiver<Option<std::process::ExitStatus>> {
     let (tx, rx) = std::sync::mpsc::channel();
     std::thread::spawn(move || {

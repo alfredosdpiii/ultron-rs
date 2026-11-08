@@ -239,7 +239,6 @@ pub fn record(value: Option<&Value>) -> Option<&Map<String, Value>> {
     value.and_then(Value::as_object)
 }
 
-/// A finite number above zero, else 0.
 fn amount(value: Option<&Value>) -> f64 {
     match value.and_then(Value::as_f64) {
         Some(n) if n.is_finite() && n > 0.0 => n,
@@ -571,7 +570,6 @@ fn apply(log: &mut SessionLog, durable: &mut DurableDigest, write: &Map<String, 
 }
 
 impl SessionLog {
-    /// The latest value at `namespace/key`.
     pub fn value(&self, namespace: &str, key: &str) -> Option<&Value> {
         self.values.get(&format!("{namespace}/{key}"))
     }

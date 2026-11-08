@@ -670,8 +670,6 @@ pub fn logo_text() -> String {
         .join("\n")
 }
 
-/// Log lines (`createLogger`): `<ISO time> <line with secrets masked>` on the process's stderr as they happen (and,
-/// for the service, in the day's log file).
 /// The secrets this process knows (`output-secrets.ts` `knownSecrets`, module-global): every gh token the token
 /// store reads is registered here (`registerSecretValues`), and every autoreview log line is masked with it.
 fn known_secrets() -> Arc<host::secrets::OutputMasker> {
@@ -679,6 +677,8 @@ fn known_secrets() -> Arc<host::secrets::OutputMasker> {
     MASKER.get_or_init(Arc::default).clone()
 }
 
+/// Log lines (`createLogger`): `<ISO time> <line with secrets masked>` on the process's stderr as they happen (and,
+/// for the service, in the day's log file).
 fn logger(var: &crate::VarLookup) -> Log {
     let mask = var(session_core::compose::MASK_SECRETS_ENV);
     let masker = known_secrets();
@@ -1695,7 +1695,6 @@ pub fn outcome_json(outcome: &review::reviewer::Outcome) -> Value {
     }
 }
 
-/// `outcomeText`.
 pub fn outcome_text(name: &str, outcome: &review::reviewer::Outcome) -> String {
     if let Some(reason) = outcome.reason() {
         return format!("{name}: {} ({reason})", outcome.kind());

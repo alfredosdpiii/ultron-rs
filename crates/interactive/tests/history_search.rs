@@ -1,11 +1,10 @@
 //! Prompt-history search: replays fixtures/history-search-parity.json (experimental/prompt-history-search.ts and
 //! searchPromptHistory, recorded by fixtures/generate-history-search.mjs) key by key, in both themes and three widths.
 
+use crate::support;
 use std::rc::Rc;
 
 use interactive::history_search::{HistorySearchEvent, PromptHistorySearch, search_prompt_history};
-use interactive::keybindings::Platform;
-use interactive::keybindings::native_app_keybindings;
 use serde_json::Value;
 use theme::{ColorMode, builtin_theme_json, create_theme};
 use tui::Component;
@@ -24,11 +23,7 @@ fn strings(v: &Value) -> Vec<String> {
 }
 
 fn keys() -> KeybindingsManager {
-    KeybindingsManager::new(
-        native_app_keybindings(Platform::new("linux", false)),
-        Vec::new(),
-        Default::default(),
-    )
+    support::keys()
 }
 
 fn key(name: &str) -> &str {
@@ -96,7 +91,7 @@ fn interactive_history_search_keys_and_rows_match_ts() {
             assert_eq!(search.selected(), step["selected"].as_str());
         }
     }
-    let theme = Rc::new(create_theme(&builtin_theme_json("dark").unwrap(), ColorMode::Truecolor, None).unwrap());
+    let theme = support::dark_theme();
     let mut seeded = PromptHistorySearch::new(history, theme, keys(), "parser");
     assert_eq!(seeded.matches(), strings(&f["seeded"]["matches"]));
     assert_eq!(seeded.render(60), strings(&f["seeded"]["lines"]));

@@ -12,7 +12,6 @@ use std::process::{Command, Stdio};
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
-/// Variables added to a child's environment.
 pub type Env = BTreeMap<String, String>;
 
 pub const DEFAULT_TIMEOUT_MS: u64 = 120_000;
@@ -40,7 +39,6 @@ pub trait Runner: Send + Sync {
     fn run(&self, argv: &[String], options: &RunOptions) -> RunResult;
 }
 
-/// `argv` as owned strings.
 pub fn argv(parts: &[&str]) -> Vec<String> {
     parts.iter().map(|part| part.to_string()).collect()
 }

@@ -157,7 +157,6 @@ pub fn validate_provider_id(value: &str) -> Option<String> {
     (!ok).then(|| "Use lowercase letters, digits, '.', '_' or '-' (e.g. my-proxy)".into())
 }
 
-/// `validateBaseUrl`.
 pub fn validate_base_url(value: &str) -> Option<String> {
     if value.split("://").count() > 2 {
         return Some("That looks like two URLs run together; enter one".into());
@@ -169,7 +168,6 @@ pub fn validate_base_url(value: &str) -> Option<String> {
     }
 }
 
-/// `parseModelIds`: split on whitespace and commas, unique, in order.
 pub fn parse_model_ids(value: &str) -> Vec<String> {
     let mut ids: Vec<String> = Vec::new();
     for id in value.split(|c: char| jsrt::string::is_space(c) || c == ',') {
@@ -235,7 +233,6 @@ pub fn merge_custom_endpoint(existing: Option<&str>, endpoint: &CustomEndpoint) 
     ))
 }
 
-/// `readTextFile`: the file's text, `None` when it does not exist.
 pub fn read_text_file(path: &Path) -> std::io::Result<Option<String>> {
     match std::fs::read_to_string(path) {
         Ok(text) => Ok(Some(text)),
@@ -244,7 +241,6 @@ pub fn read_text_file(path: &Path) -> std::io::Result<Option<String>> {
     }
 }
 
-/// `customProviderExists`.
 pub fn custom_provider_exists(models_json: &Path, provider_id: &str) -> bool {
     let Ok(Some(text)) = read_text_file(models_json) else {
         return false;
@@ -471,7 +467,6 @@ const fn llm(provider: &'static str, label: &'static str) -> HindsightLlmChoice 
     }
 }
 
-/// `HINDSIGHT_LLM_PROVIDERS`.
 pub const HINDSIGHT_LLM_PROVIDERS: [HindsightLlmChoice; 8] = [
     llm("openai", "OpenAI (Hindsight's default)"),
     llm("anthropic", "Anthropic"),
@@ -575,7 +570,6 @@ pub fn hindsight_port(url: &str) -> u16 {
     }
 }
 
-/// `isLocalUrl`.
 pub fn is_local_url(url: &str) -> bool {
     url::Url::parse(url)
         .is_ok_and(|parsed| ["localhost", "127.0.0.1", "::1", "[::1]"].contains(&parsed.host_str().unwrap_or_default()))
@@ -607,7 +601,6 @@ pub fn wait_for_hindsight(url: &str, timeout: Duration, interval: Duration, fetc
     false
 }
 
-/// `hindsightManualInstructions`.
 pub fn hindsight_manual_instructions(url: &str) -> Vec<String> {
     let port = hindsight_port(url);
     vec![
@@ -651,7 +644,6 @@ pub struct SetupOfferInput<'a> {
     pub has_usable_model: &'a dyn Fn() -> bool,
 }
 
-/// `shouldOfferSetup`.
 pub fn should_offer_setup(input: &SetupOfferInput) -> bool {
     if !input.stdin_is_tty || !input.stdout_is_tty || !input.interactive {
         return false;

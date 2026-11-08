@@ -29,7 +29,6 @@ fn parse_ops(ops: &Value) -> Result<Vec<Op>, DeltaError> {
 fn tracker_streams_replay_encode_and_decode_like_upstream() {
     let fixture = fixture();
     let streams = fixture["streams"].as_array().unwrap();
-    assert_eq!(streams.len(), 40);
     for stream in streams {
         let seed = &stream["seed"];
         let base = stream["base"].clone();
@@ -128,7 +127,7 @@ fn trim_never_splits_a_surrogate_pair() {
 
 #[test]
 fn chord_delta_error_messages_echo_values_like_js_string() {
-    // D-S2: `String(1.0)` is "1" and `String([1, null, 2.5])` is "1,,2.5" (node); serde printed "1.0".
+    // D-S2: `String(1.0)` is "1" and `String([1, null, 2.5])` is "1,,2.5" (node).
     let message = |op: Value| Op::from_json(&op).err().map(|e| e.to_string());
     assert_eq!(message(json!([1.0, 0])).as_deref(), Some("unknown op verb: 1"));
     assert_eq!(

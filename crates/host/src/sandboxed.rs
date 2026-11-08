@@ -59,7 +59,7 @@ impl Guard for SandboxGuard {
 /// [`Host::with_base_env`]); a host without one gets an empty environment plus `PATH` = [`SANDBOX_PATH`] and `HOME` =
 /// the sandbox's `home`, never this process's environment (its PATH, credentials or `DOCKER_HOST` would otherwise
 /// reach the sandbox and its launcher).
-pub fn sandbox_host_env(base: Option<&[(String, String)]>, home: &Path) -> Vec<(String, String)> {
+fn sandbox_host_env(base: Option<&[(String, String)]>, home: &Path) -> Vec<(String, String)> {
     match base {
         Some(env) => env.to_vec(),
         None => vec![

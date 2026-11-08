@@ -63,7 +63,6 @@ fn invalid<T>(message: impl Into<String>) -> Result<T, Error> {
     Err(Error::Invalid(message.into()))
 }
 
-/// `NewSessionOptions`.
 #[derive(Clone, Debug, Default)]
 pub struct NewSessionOptions {
     pub id: Option<String>,
@@ -557,7 +556,6 @@ impl SessionManager {
         self.by_id.get(key).map(|i| &self.file_entries[*i])
     }
 
-    /// `getEntry`.
     pub fn entry(&self, id: &str) -> Option<&Value> {
         self.lookup(&str_key(id))
     }
@@ -571,7 +569,6 @@ impl SessionManager {
             .collect()
     }
 
-    /// `getLabel`.
     pub fn label(&self, id: &str) -> Option<&Value> {
         self.labels.get(&str_key(id)).map(|l| &l.label)
     }
@@ -605,7 +602,6 @@ impl SessionManager {
         self.build_session_projection().into()
     }
 
-    /// `getHeader`.
     pub fn header(&self) -> Option<&Value> {
         self.file_entries.iter().find(|e| entry_type(e) == Some("session"))
     }
@@ -618,7 +614,6 @@ impl SessionManager {
             .collect()
     }
 
-    /// `getTree`.
     pub fn tree(&self) -> SessionTree<'_> {
         let entries = self.entries();
         let mut node_of: std::collections::HashMap<String, usize> = std::collections::HashMap::new();

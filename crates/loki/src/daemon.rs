@@ -100,14 +100,12 @@ pub fn root_of(argv: &[String]) -> PathBuf {
     }
 }
 
-/// A forwarded run's reply: its exit status and output.
 pub struct Reply {
     pub exit: i32,
     pub stdout: String,
     pub stderr: String,
 }
 
-/// How a forwarded run went.
 pub enum Forwarded {
     /// The daemon ran it.
     Ran(Reply),

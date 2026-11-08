@@ -4,8 +4,6 @@
 
 use std::collections::BTreeMap;
 
-// --------------------------------------------------------------------------------------------------------- SigV4
-
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AwsCredentials {
     pub access_key_id: String,
@@ -192,8 +190,6 @@ pub fn sign_request(
     ));
 }
 
-// ------------------------------------------------------------------------------------------- event-stream framing
-
 /// One decoded event-stream message: string-valued headers (other header types are kept as their JSON-ish text) and
 /// the payload.
 #[derive(Clone, Debug, PartialEq)]
@@ -324,8 +320,6 @@ pub fn encode_message(headers: &[(&str, &str)], body: &[u8]) -> Vec<u8> {
     out
 }
 
-// ---------------------------------------------------------------------------------------------------------- retries
-
 const THROTTLING_ERROR_CODES: &[&str] = &[
     "BandwidthLimitExceeded",
     "EC2ThrottledException",
@@ -345,7 +339,6 @@ const THROTTLING_ERROR_CODES: &[&str] = &[
 const TRANSIENT_ERROR_CODES: &[&str] = &["TimeoutError", "RequestTimeout", "RequestTimeoutException"];
 const TRANSIENT_STATUS_CODES: &[u16] = &[500, 502, 503, 504];
 
-/// `isThrottlingError`.
 pub fn is_throttling_error(name: &str, status: Option<u16>) -> bool {
     status == Some(429) || THROTTLING_ERROR_CODES.contains(&name)
 }

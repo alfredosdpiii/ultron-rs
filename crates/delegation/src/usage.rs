@@ -444,7 +444,6 @@ fn validate_history(value: &Value) -> Result<(), String> {
     Ok(())
 }
 
-/// `validateDocument`.
 fn validate_document(value: &Value) -> Result<(), String> {
     let document = object(value)?;
     if document.get("version").and_then(Value::as_f64) != Some(1.0) {
@@ -622,7 +621,6 @@ impl UsageLedger {
         })
     }
 
-    /// An in-memory ledger with `limits`.
     pub fn in_memory(limits: UsageLimits) -> Self {
         UsageLedger::new(
             Box::new(MemoryDocumentStore::default()),
@@ -713,7 +711,6 @@ impl UsageLedger {
         }
     }
 
-    /// `spend(root, limits)`.
     fn spend(&self, root: &Value, with_limits: bool) -> Value {
         let (spent, unknown) = match root["turns"].get("cost").and_then(Value::as_f64) {
             Some(cost) => (cost, root["turns"]["unpriced"].as_f64().unwrap_or(0.0)),
@@ -928,7 +925,6 @@ impl UsageLedger {
         })
     }
 
-    /// `status(rootId)`.
     pub fn status(&self, root_id: Option<&str>) -> Result<Value, String> {
         let root_id = root_id.unwrap_or(&self.root_id).to_string();
         self.step(|state| {
@@ -1009,12 +1005,10 @@ impl UsageLedger {
         })
     }
 
-    /// `turnBudgetExhausted(rootId)`.
     pub fn turn_budget_exhausted(&self, root_id: Option<&str>) -> Result<Option<String>, String> {
         Ok(self.budget_exhaustion(root_id)?.map(|e| e.reason))
     }
 
-    /// `budgetExhaustion(rootId)`.
     pub fn budget_exhaustion(&self, root_id: Option<&str>) -> Result<Option<Exhaustion>, String> {
         if !self.enforces_tree() {
             return Ok(None);
@@ -1043,7 +1037,6 @@ impl UsageLedger {
         Ok(None)
     }
 
-    /// `remaining(rootId)`.
     pub fn remaining(&self, root_id: Option<&str>) -> Result<Remaining, String> {
         let id = root_id.unwrap_or(&self.root_id).to_string();
         self.step(|state| {

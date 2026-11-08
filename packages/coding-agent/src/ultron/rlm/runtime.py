@@ -62,7 +62,7 @@ class SpawnHandle:
         return f"SpawnHandle(name={self.name!r}, rlm_child_id={self.rlm_child_id!r}{branch})"
 
 
-# json.dumps escapes non-ASCII, so a line's length is its byte count; kept under kernel.ts MAX_FRAME_BYTES.
+# json.dumps escapes non-ASCII, so a line's length is its byte count; kept under the host's MAX_FRAME_BYTES.
 _MAX_HOST_FRAME_BYTES = 1024 * 1024 - 1024
 
 
@@ -814,7 +814,7 @@ def _env_limit(name: str) -> int:
         return 0
 
 
-# Resource limits come from the host (kernel.ts), which resolves defaults and overrides. 0 disables one.
+# Resource limits come from the host, which resolves defaults and overrides. 0 disables one.
 # Memory is RLIMIT_DATA per process, inherited by every subprocess a cell spawns. CPU is a per-cell budget:
 # the soft RLIMIT_CPU is re-armed at each cell start, and the host kills the kernel if a cell overruns it.
 _MAX_MEMORY_MB = _env_limit("ULTRON_RLM_MAX_MEMORY_MB")
@@ -1215,7 +1215,7 @@ def _persistable_namespace() -> tuple[dict[str, str], dict[str, str]]:
 def save_snapshot(path: str) -> dict[str, Any]:
     """Write a constrained data-only snapshot: a sha256 header line, then a JSON body, joined from each name's text.
 
-    The digest detects corruption. Authenticity is the host's job: kernel.ts signs the file with an
+    The digest detects corruption. Authenticity is the host's job: it signs the file with an
     HMAC key this process never sees and verifies it before any restore.
     """
     target = Path(path)
@@ -2240,10 +2240,9 @@ class _LiveTee(io.TextIOBase):
         return self._capture.getvalue()  # type: ignore[attr-defined]
 
 
-# Notes on a bash result that only the Rust host sends (the TypeScript host never does), defined here so the lines
-# above keep their numbers: `exit_note` when exit code 1 reports a result rather than a failure (grep found no
-# match: "[No matches found (exit code 1)]" replaces "[exit code 1]"; .ok stays False, as it means a clean exit 0),
-# and `sandbox_note`, a line saying the sandbox refused the command and what it allows.
+# Notes on a bash result from the host: `exit_note` when exit code 1 reports a result rather than a failure (grep
+# found no match: "[No matches found (exit code 1)]" replaces "[exit code 1]"; .ok stays False, as it means a clean
+# exit 0), and `sandbox_note`, a line saying the sandbox refused the command and what it allows.
 def _bash_notes(result: Any) -> dict[str, str | None]:
     def note(key: str) -> str | None:
         value = result.get(key) if isinstance(result, dict) else None

@@ -29,7 +29,6 @@ pub fn message_of(event: &Value) -> Option<&Value> {
     event.get("message").filter(|message| message.is_object())
 }
 
-/// Fold one provider frame into `message`.
 pub fn fold_frame(message: &mut Value, frame: &Value) {
     let Some(kind) = frame["type"].as_str() else {
         return;

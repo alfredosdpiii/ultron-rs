@@ -381,8 +381,6 @@ fn kernel_snapshot_without_continuity_a_started_kernel_that_dies_is_not_restored
     assert!(configured.last_recovery().is_none());
 }
 
-// ---- Continuity (Rust-only) ----
-
 fn kill(pid: u32) {
     let pid = rustix::process::Pid::from_raw(i32::try_from(pid).unwrap()).unwrap();
     rustix::process::kill_process(pid, rustix::process::Signal::KILL).unwrap();
@@ -645,20 +643,14 @@ fn kernel_continuity_shutdown_does_not_restart() {
     checkpointed(&kernel, "x");
     let pid = kernel.pid().unwrap();
     kernel.shutdown();
-    // Settle, then check no restart happened: a late restart could only let this pass wrongly, never fail.
-    std::thread::sleep(Duration::from_millis(300));
+    // Reaped: the supervisor's exit thread has seen the death, which is where a continuity restart would start.
+    wait_until(|| !std::path::Path::new(&format!("/proc/{pid}")).exists());
     assert!(kernel.pid().is_none());
     assert!(!kernel.is_running());
     assert_eq!(
         kernel.execute("x", None, None).unwrap_err().message(),
         "RLM kernel is shut down"
     );
-    wait_until(|| {
-        !std::path::Path::new(&format!("/proc/{pid}")).exists() || {
-            let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).unwrap_or_default();
-            stat.rsplit(')').next().unwrap_or("").trim_start().starts_with('Z')
-        }
-    });
 }
 
 #[test]

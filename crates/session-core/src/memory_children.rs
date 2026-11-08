@@ -44,12 +44,10 @@ impl MemoryChildren {
         true
     }
 
-    /// Whether a child runs on `lane`.
     pub fn is_running(&self, lane: &str) -> bool {
         sync::lock(&self.running).contains_key(lane)
     }
 
-    /// The runner of subagents built by `factory`.
     pub fn runner(self: &Arc<Self>, factory: ChildAgentFactory) -> ChildRunner {
         let children = self.clone();
         Arc::new(move |run: ChildRun| children.run(&factory, run))

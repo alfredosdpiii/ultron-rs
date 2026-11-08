@@ -73,7 +73,6 @@ impl Repo {
         baseline.changes(cwd, &self.env).unwrap().changed
     }
 
-    /// `git` with its stdout.
     fn out(&self, args: &[&str]) -> Vec<u8> {
         let output = Command::new("git")
             .args(args)

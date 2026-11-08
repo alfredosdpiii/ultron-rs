@@ -162,9 +162,8 @@ fn services_local_refinements_and_experiments_match_native_local_services() {
 
 #[test]
 fn services_local_record_dates_are_checked_like_date_parse() {
-    // D5: a stored `recordedAt` is valid exactly when `Date.parse` reads it. V8 refuses `T24:30` (the old check
-    // accepted it, ranging hours and minutes apart) and accepts the space form and `±HHmm` (the old check refused
-    // both): node prints NaN for `Date.parse("2026-10-07T24:30Z")` and 1791402180000 for
+    // D5: a stored `recordedAt` is valid exactly when `Date.parse` reads it. V8 refuses `T24:30` and accepts the
+    // space form and `±HHmm`: node prints NaN for `Date.parse("2026-10-07T24:30Z")` and 1791402180000 for
     // `Date.parse("2026-10-07 19:43+0000")`.
     let list = |recorded_at: &str| {
         let documents = Documents::default();

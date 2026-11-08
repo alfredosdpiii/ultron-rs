@@ -15,7 +15,6 @@ const TOKEN_URL: &str = "https://auth.x.ai/oauth2/token";
 const REFRESH_SKEW_MS: f64 = 5.0 * 60.0 * 1000.0;
 const DEFAULT_TOKEN_LIFETIME_SECONDS: f64 = 3600.0;
 
-/// `xaiOAuth`.
 pub struct XaiOAuth {
     pub transport: Arc<dyn Transport>,
     pub clock: Clock,

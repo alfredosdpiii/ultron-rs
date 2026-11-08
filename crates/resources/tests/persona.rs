@@ -131,10 +131,9 @@ fn resources_persona_chain_counts_to_the_cap_resets_on_input_and_an_abort_ends_i
 fn resources_persona_nudge_message_is_a_displayed_custom_message() {
     assert_eq!(
         nudge_message(2, 7),
-        json!({"role": "custom", "customType": protocol::custom_types::NUDGE, "content": NUDGE_TEXT, "display": true,
+        json!({"role": "custom", "customType": "ultron.nudge", "content": NUDGE_TEXT, "display": true,
                "details": {"nudge": 2, "max": 5}, "timestamp": 7})
     );
-    assert_eq!(protocol::custom_types::NUDGE, "ultron.nudge");
 }
 
 #[test]

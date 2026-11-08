@@ -14,15 +14,10 @@ use crate::support;
 use support::Sent;
 
 use interactive::app::{App, AppOptions};
-use interactive::history::PromptHistoryStore;
-use interactive::keybindings::Platform;
-use interactive::keybindings::native_app_keybindings;
 use interactive::lane::{LaneCommand, LaneEvent, ModelInfo, SessionOpened};
 use interactive::qol::QolSettings;
 use interactive::run::{UiEvent, paint_loop};
 use serde_json::{Value, json};
-use theme::{ColorMode, builtin_theme_json, create_theme};
-use tui::KeybindingsManager;
 use tui::strip_terminal_sequences;
 use tui::{Clipboard, ClipboardService};
 
@@ -31,14 +26,6 @@ fn record(command: &LaneCommand) -> Option<String> {
         LaneCommand::SaveSetting { key, value } => Some(format!("{key}={value}")),
         _ => None,
     }
-}
-
-fn keys() -> KeybindingsManager {
-    KeybindingsManager::new(
-        native_app_keybindings(Platform::new("linux", false)),
-        Vec::new(),
-        Default::default(),
-    )
 }
 
 fn messages(turns: usize) -> Vec<Value> {
@@ -58,7 +45,6 @@ fn app(turns: usize) -> (App, Rc<Sent>) {
 }
 
 fn app_with(turns: usize, qol: QolSettings) -> (App, Rc<Sent>) {
-    let theme = Rc::new(create_theme(&builtin_theme_json("dark").unwrap(), ColorMode::Truecolor, None).unwrap());
     let model = ModelInfo {
         provider: "anthropic".into(),
         id: "a".into(),
@@ -70,21 +56,11 @@ fn app_with(turns: usize, qol: QolSettings) -> (App, Rc<Sent>) {
     let (lane, saved) = Sent::new(record);
     let mut app = App::new(
         AppOptions {
-            theme,
-            keys: keys(),
-            version: "1.2.3".into(),
-            cwd: "/p".into(),
-            home: None,
-            server_id: "server".into(),
             models: vec![model.clone()],
             model,
             thinking_level: "off".into(),
-            splash: false,
-            history: PromptHistoryStore::new(None, "/p"),
-            fd_path: None,
-            highlight: Rc::new(|code: &str| code.split('\n').map(str::to_string).collect()),
             qol,
-            bug_report_target: ("radius.pi.dev".into(), false),
+            ..support::options()
         },
         lane,
     );
@@ -199,16 +175,6 @@ impl Clipboard for Recording {
     }
 }
 
-/// Poll the app's services until `done` (hang guard only).
-fn poll_until(app: &mut App, done: impl Fn(&mut App) -> bool) {
-    let guard = Instant::now() + Duration::from_secs(120);
-    while !done(app) {
-        assert!(Instant::now() < guard, "timed out");
-        app.poll_services();
-        std::thread::yield_now();
-    }
-}
-
 #[test]
 fn interactive_fullscreen_drag_selection_copies_through_the_clipboard_service_and_flashes() {
     let (mut app, _) = app(12);
@@ -221,7 +187,7 @@ fn interactive_fullscreen_drag_selection_copies_through_the_clipboard_service_an
     app.handle_input(&format!("\x1b[<0;{col};{row}M"));
     app.handle_input(&format!("\x1b[<32;{};{row}M", col + 5));
     app.handle_input(&format!("\x1b[<0;{};{row}m", col + 5));
-    poll_until(&mut app, |a| screen(a)[0].contains("Copied!"));
+    support::poll_services_until(&mut app, |a| screen(a)[0].contains("Copied!"));
     assert_eq!(*copies.lock().unwrap(), ["answer"]);
     // The flash sits at the top right and expires after a second.
     let top = screen(&mut app)[0].clone();
@@ -252,7 +218,7 @@ fn interactive_fullscreen_copy_failure_flashes_the_clipboard_error() {
     app.handle_input(&format!("\x1b[<0;2;{row}M"));
     app.handle_input(&format!("\x1b[<32;6;{row}M"));
     app.handle_input(&format!("\x1b[<0;6;{row}m"));
-    poll_until(&mut app, |a| screen(a)[0].contains("Clipboard unavailable"));
+    support::poll_services_until(&mut app, |a| screen(a)[0].contains("Clipboard unavailable"));
     assert!(!app.poll_viewport(Instant::now() + Duration::from_secs(2)));
     assert!(app.poll_viewport(Instant::now() + Duration::from_secs(6)));
 }
@@ -488,12 +454,12 @@ fn interactive_fullscreen_right_click_pastes_the_clipboard_text_when_enabled() {
     let row = row_of(&mut on, "answer 3") + 1;
     on.handle_input(&format!("\x1b[<2;3;{row}M"));
     on.handle_input(&format!("\x1b[<2;3;{row}m"));
-    poll_until(&mut on, |a| !a.editor_text().is_empty());
+    support::poll_services_until(&mut on, |a| !a.editor_text().is_empty());
     assert_eq!(on.editor_text(), "pasted text");
     // A right-click paste, then Ctrl+V: both answers land, in order.
     on.handle_input(&format!("\x1b[<2;3;{row}M"));
     on.handle_input("\x16");
-    poll_until(&mut on, |a| a.editor_text().len() > "pasted text".len() * 2);
+    support::poll_services_until(&mut on, |a| a.editor_text().len() > "pasted text".len() * 2);
     assert_eq!(on.editor_text(), "pasted textpasted textpasted text");
     assert_eq!(*reads.lock().unwrap(), 3);
     // It is a bracketed paste (the editor folds a long one into a marker), not typed text as Ctrl+V inserts.
@@ -503,7 +469,7 @@ fn interactive_fullscreen_right_click_pastes_the_clipboard_text_when_enabled() {
     long.set_right_click_paste(true);
     screen(&mut long);
     long.handle_input(&format!("\x1b[<2;3;{row}M"));
-    poll_until(&mut long, |a| !a.editor_text().is_empty());
+    support::poll_services_until(&mut long, |a| !a.editor_text().is_empty());
     assert_eq!(long.editor_text(), "[paste #1 +12 lines]");
     // Ctrl+V first, then a right click: the Ctrl+V answer is typed text, the right click's a bracketed paste.
     let (mut both, _) = app(3);
@@ -512,7 +478,7 @@ fn interactive_fullscreen_right_click_pastes_the_clipboard_text_when_enabled() {
     screen(&mut both);
     both.handle_input("\x16");
     both.handle_input(&format!("\x1b[<2;3;{row}M"));
-    poll_until(&mut both, |a| a.editor_text().ends_with(']'));
+    support::poll_services_until(&mut both, |a| a.editor_text().ends_with(']'));
     assert_eq!(both.editor_text(), format!("{text}[paste #1 +12 lines]"));
     // A right click pastes the text even when the clipboard also holds an image (it reads text only).
     let (mut image, _) = app(3);
@@ -521,7 +487,7 @@ fn interactive_fullscreen_right_click_pastes_the_clipboard_text_when_enabled() {
     screen(&mut image);
     image.handle_input(&format!("\x1b[<2;3;{row}M"));
     image.handle_input("\x16");
-    poll_until(&mut image, |a| {
+    support::poll_services_until(&mut image, |a| {
         a.editor_text().contains("ultron-clipboard-") || a.editor_text().contains("[Image")
     });
     assert!(image.editor_text().starts_with("the text"), "{}", image.editor_text());
@@ -533,7 +499,7 @@ fn interactive_fullscreen_right_click_pastes_the_clipboard_text_when_enabled() {
     screen(&mut off);
     off.handle_input(&format!("\x1b[<2;3;{row}M"));
     off.handle_input("\x16");
-    poll_until(&mut off, |a| !a.editor_text().is_empty());
+    support::poll_services_until(&mut off, |a| !a.editor_text().is_empty());
     assert_eq!(off.editor_text(), "pasted text");
     assert_eq!(*reads.lock().unwrap(), 1);
 }

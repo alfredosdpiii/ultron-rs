@@ -9,11 +9,8 @@ use std::collections::{HashMap, HashSet};
 pub const SKILL_NUDGE_ENV: &str = "ULTRON_SKILL_NUDGE";
 pub const TOOL_ROUNDS_NUDGE_ENV: &str = "ULTRON_TOOL_ROUNDS_NUDGE";
 
-/// `DEFAULT_TOOL_ROUNDS_NUDGE`.
 pub const DEFAULT_TOOL_ROUNDS_NUDGE: u64 = 10;
-/// `DEFAULT_WAIT_ROUNDS`.
 pub const DEFAULT_WAIT_ROUNDS: u64 = 3;
-/// `DEFAULT_SKILL_NUDGE`.
 pub const DEFAULT_SKILL_NUDGE: u64 = 8;
 
 /// `nudgeThreshold`: unset or off is 0 (disabled), `on` is `enabled`, a whole number is itself.
@@ -41,7 +38,6 @@ pub fn skill_nudge_from_env(value: Option<&str>) -> u64 {
     nudge_threshold(value, DEFAULT_SKILL_NUDGE)
 }
 
-/// `nudgeMessage`.
 pub fn nudge_message(rounds: u64, last: bool) -> String {
     if last {
         format!(
@@ -78,7 +74,6 @@ pub fn wait_nudge_message(running: u64, async_events: bool, next_call: bool) -> 
     }
 }
 
-/// `skillNudgeMessage`.
 pub fn skill_nudge_message(rounds: u64) -> String {
     format!(
         "[Ultron] {rounds} tool rounds in a row succeeded. If this procedure will recur, once it works save it as a tested skill with `await skills.propose_code(name, source, test_source, evidence)`; otherwise carry on."
@@ -163,7 +158,6 @@ impl ToolRoundNudger {
     }
 }
 
-/// `SkillExtractionNudger`.
 pub struct SkillExtractionNudger {
     threshold: u64,
     streaks: HashMap<String, u64>,

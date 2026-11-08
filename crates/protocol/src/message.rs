@@ -376,7 +376,6 @@ fn encode(value: &Value, kind: &str, max_frame_length: usize) -> Result<Vec<u8>,
         .map_err(|e| ProtocolValidationError(format!("Unable to encode {kind} protocol message: {}", bounded(&e))))
 }
 
-/// Validates and encodes one complete length-prefixed client message.
 pub fn encode_client_message(
     message: &ClientMessage,
     max_frame_length: usize,
@@ -386,7 +385,6 @@ pub fn encode_client_message(
     encode(&value, "client", max_frame_length)
 }
 
-/// Validates and encodes one complete length-prefixed server message.
 pub fn encode_server_message(
     message: &ServerMessage,
     max_frame_length: usize,
@@ -462,7 +460,6 @@ impl Decoder {
     }
 }
 
-/// Incrementally decodes and validates framed client messages.
 pub struct ClientMessageDecoder(Decoder);
 
 impl ClientMessageDecoder {
@@ -490,7 +487,6 @@ impl Default for ClientMessageDecoder {
     }
 }
 
-/// Incrementally decodes and validates framed server messages.
 pub struct ServerMessageDecoder(Decoder);
 
 impl ServerMessageDecoder {

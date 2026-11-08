@@ -92,7 +92,6 @@ pub trait Storage {
         limit: usize,
         cursor: Option<&Cursor>,
     ) -> Result<Page<ConversationRecord>>;
-    /// One entry by global ID.
     fn entry(&self, id: EntryId) -> Result<Option<StoredEntry>>;
     /// One entry only when it is visible through the conversation's fork ancestry.
     fn visible_entry(&self, conversation_id: ConversationId, id: EntryId) -> Result<Option<StoredEntry>>;

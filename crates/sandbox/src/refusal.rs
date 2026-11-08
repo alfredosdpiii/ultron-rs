@@ -14,7 +14,6 @@
 use crate::launcher::Policy;
 use std::path::{Path, PathBuf};
 
-/// What the sandbox refused.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Refusal {
     /// A write to a path the sandbox keeps read-only.
@@ -100,7 +99,6 @@ pub fn detect(policy: &Policy, output: &str, paths: &dyn HostPaths) -> Option<Re
     None
 }
 
-/// The note line for `refusal`.
 pub fn note(policy: &Policy, refusal: &Refusal) -> String {
     match refusal {
         Refusal::ReadOnly(path) => {

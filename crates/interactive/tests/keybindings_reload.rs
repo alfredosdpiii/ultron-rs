@@ -1,25 +1,13 @@
 //! `/reload` re-reads `<agentDir>/keybindings.json` (`KeybindingsManager.reload()`): the app's keys and the
 //! editor's follow the file.
 
-use std::rc::Rc;
+use crate::support;
 
 use interactive::app::{App, AppOptions};
-use interactive::history::PromptHistoryStore;
 use interactive::keybindings::Platform;
-use interactive::keybindings::native_app_keybindings;
 use interactive::lane::{LaneEvent, ModelInfo, SessionOpened};
-use theme::{ColorMode, builtin_theme_json, create_theme};
-use tui::KeybindingsManager;
 
 fn app() -> App {
-    let theme = Rc::new(create_theme(&builtin_theme_json("dark").unwrap(), ColorMode::Truecolor, None).unwrap());
-    let keys = || {
-        KeybindingsManager::new(
-            native_app_keybindings(Platform::new("linux", false)),
-            Vec::new(),
-            Default::default(),
-        )
-    };
     let model = ModelInfo {
         provider: "p".into(),
         id: "m".into(),
@@ -30,21 +18,9 @@ fn app() -> App {
     };
     let mut app = App::new(
         AppOptions {
-            theme,
-            keys: keys(),
-            version: "1.2.3".into(),
-            cwd: "/p".into(),
-            home: None,
-            server_id: "server".into(),
             models: vec![model.clone()],
             model,
-            thinking_level: "medium".into(),
-            splash: false,
-            history: PromptHistoryStore::new(None, "/p"),
-            fd_path: None,
-            highlight: Rc::new(|code: &str| code.split('\n').map(str::to_string).collect()),
-            qol: interactive::qol::QolSettings::parity(),
-            bug_report_target: ("radius.pi.dev".into(), false),
+            ..support::options()
         },
         std::sync::mpsc::channel().0,
     );

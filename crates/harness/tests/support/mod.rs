@@ -480,6 +480,10 @@ impl Deferred {
     pub fn is_resolved(&self) -> bool {
         self.0.is_cancelled()
     }
+
+    pub fn signal(&self) -> &Cancel {
+        &self.0
+    }
 }
 
 /// Block until the runtime's signal aborts; returns its reason as an error (upstream `aborted(signal)`).
@@ -487,7 +491,6 @@ pub fn aborted(runtime: &TaskRuntime) -> std::result::Result<(), HarnessError> {
     Err(runtime.signal().wait())
 }
 
-/// Next state that completes a task with `result`.
 pub fn completed(result: Value) -> Option<NextState> {
     Some(harness::scheduler::completed(result))
 }
@@ -527,7 +530,6 @@ pub fn assert_matches(actual: &Value, expected: Value) {
     assert!(matches(actual, &expected), "{actual:#} does not match {expected:#}");
 }
 
-/// Run `f` on a thread; the handle joins with its result.
 pub fn spawn<T: Send + 'static>(f: impl FnOnce() -> T + Send + 'static) -> std::thread::JoinHandle<T> {
     std::thread::spawn(f)
 }

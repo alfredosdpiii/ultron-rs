@@ -4,7 +4,7 @@
 //! prompt. On an injected clock: no sleeps, every step is a clock value.
 
 use claude_root::external_root::{CellRunner, EventSource, ExternalRoot};
-use claude_root::root_sink::{COALESCE_MS, RootSink};
+use claude_root::root_sink::RootSink;
 use serde_json::json;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -36,11 +36,6 @@ impl Fixture {
         let result = self.root.run_cell(code, &ai::AbortSignal::new());
         result.content[0]["text"].as_str().unwrap().to_string()
     }
-}
-
-#[test]
-fn claude_root_sink_window_is_the_dispatchers_500_ms() {
-    assert_eq!(COALESCE_MS, 500);
 }
 
 #[test]

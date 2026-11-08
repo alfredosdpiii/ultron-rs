@@ -283,7 +283,6 @@ pub struct RunEnd<'a> {
     pub pending_input: bool,
     /// `rlm` calls the run made.
     pub tool_calls: usize,
-    /// The run's final assistant text.
     pub text: &'a str,
 }
 
@@ -331,7 +330,6 @@ pub fn after_run(state: &mut SessionPersona, end: &RunEnd, now: i64, limits: Lim
     }
 }
 
-/// Whether the text's last paragraph ends with a question.
 pub fn asks(text: &str) -> bool {
     text.trim()
         .rsplit("\n\n")
@@ -341,7 +339,6 @@ pub fn asks(text: &str) -> bool {
         .ends_with('?')
 }
 
-/// The text of a keep-going nudge.
 pub fn nudge_text(next: &Next) -> Option<&'static str> {
     match next {
         Next::Continue { asked: false, .. } => Some(KEEP_GOING_TEXT),

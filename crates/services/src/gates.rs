@@ -102,7 +102,6 @@ fn checks_field(value: Option<&Value>) -> Result<Vec<(String, bool)>, String> {
     Ok(checks)
 }
 
-/// SHA-256 of the canonical definition `{id, checks: [[name, required]], fixture_hash}`.
 fn gate_digest(id: &str, checks: &[(String, bool)], fixture_hash: &str) -> String {
     let checks: Vec<Value> = checks.iter().map(|(name, required)| json!([name, required])).collect();
     jsrt::hash::sha256_hex(

@@ -90,15 +90,10 @@ fn wait_for(what: &str, ready: impl Fn() -> bool) {
 }
 
 /// Waits for a daemon this test started to end on its own; never signals it.
-fn ended(child: &mut Child) -> bool {
-    let deadline = Instant::now() + HANG_GUARD;
-    while Instant::now() < deadline {
-        if child.try_wait().unwrap().is_some() {
-            return true;
-        }
-        std::thread::sleep(Duration::from_millis(10));
-    }
-    false
+fn ended(mut child: Child) -> bool {
+    let (exited, exit) = std::sync::mpsc::channel();
+    std::thread::spawn(move || exited.send(child.wait().is_ok()));
+    exit.recv_timeout(HANG_GUARD).unwrap_or(false)
 }
 
 fn serve(repo: &Repo) -> Child {
@@ -128,7 +123,7 @@ fn parts(output: &Output) -> (Option<i32>, String, String) {
 #[test]
 fn loki_daemon_runs_forwarded_hooks_exactly_as_the_local_engine() {
     let repo = repo();
-    let mut daemon = serve(&repo);
+    let daemon = serve(&repo);
     let status = loki(&repo, &["daemon", "status"], None, "");
     assert_eq!(
         String::from_utf8_lossy(&status.stdout),
@@ -152,7 +147,7 @@ fn loki_daemon_runs_forwarded_hooks_exactly_as_the_local_engine() {
         String::from_utf8_lossy(&stopped.stdout),
         format!("loki daemon: running ({})\n", socket(&repo).display())
     );
-    assert!(ended(&mut daemon), "the daemon did not stop");
+    assert!(ended(daemon), "the daemon did not stop");
     assert!(!socket(&repo).exists());
     let status = loki(&repo, &["daemon", "status"], None, "");
     assert_eq!(
@@ -164,7 +159,7 @@ fn loki_daemon_runs_forwarded_hooks_exactly_as_the_local_engine() {
 #[test]
 fn loki_daemon_answers_another_engine_stale_and_exits() {
     let repo = repo();
-    let mut daemon = serve(&repo);
+    let daemon = serve(&repo);
     let mut connection = std::os::unix::net::UnixStream::connect(socket(&repo)).unwrap();
     connection
         .write_all(br#"{"engine": "another", "argv": ["hook", "--file", "a.txt"], "stdin": "", "cwd": "/", "env": {}}"#)
@@ -173,7 +168,7 @@ fn loki_daemon_answers_another_engine_stale_and_exits() {
     let mut reply = String::new();
     connection.read_to_string(&mut reply).unwrap();
     assert_eq!(reply, r#"{"stale": true}"#);
-    assert!(ended(&mut daemon));
+    assert!(ended(daemon));
 }
 
 #[test]

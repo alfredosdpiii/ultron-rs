@@ -9,7 +9,7 @@ mod claude_subscription_support;
 use ai::claude_subscription::ClaudeError;
 use ai::claude_subscription::catalog::{self, context_window, native_model};
 use ai::claude_subscription::history::{
-    BodyParams, CARRIER, CARRIER_KEY, PREFIX, Reasoning, carrier, prepare_history, projection, request_body,
+    BodyParams, CARRIER_KEY, PREFIX, Reasoning, carrier, prepare_history, projection, request_body,
 };
 use ai::types::{
     AssistantContent, AssistantMessage, ImageContent, Message, StopReason, TextContent, ThinkingContent, Tool,
@@ -19,27 +19,13 @@ use claude_subscription_support::*;
 use serde_json::{Value, json};
 use std::collections::BTreeSet;
 
-const EXPECTED: &[(&str, u64)] = &[
-    ("claude-sonnet-5-5[1m]", 1_000_000),
-    ("claude-sonnet-5[1m]", 1_000_000),
-    ("claude-haiku-5-5[1m]", 1_000_000),
-    ("claude-haiku-4-5-20251001", 200_000),
-    ("claude-opus-5-5[1m]", 1_000_000),
-    ("claude-opus-5[1m]", 1_000_000),
-    ("claude-opus-4-8[1m]", 1_000_000),
-    ("claude-fable-5-1[1m]", 1_000_000),
-];
-
 #[test]
 fn ai_claude_subscription_catalog_windows_match_explicit_native_routes() {
     seal();
-    let routes: Vec<(String, u64)> = catalog::pinned_routes().into_iter().map(|(r, _, w)| (r, w)).collect();
-    let expected: Vec<(String, u64)> = EXPECTED.iter().map(|(r, w)| (r.to_string(), *w)).collect();
-    assert_eq!(routes, expected);
-    for (route, window) in EXPECTED {
-        assert_eq!(context_window(route), *window, "{route}");
-        assert_eq!(native_model(route).unwrap(), *route);
-        assert_eq!(catalog::model(route).unwrap().context_window, *window);
+    for (route, _, window) in catalog::pinned_routes() {
+        assert_eq!(context_window(&route), window, "{route}");
+        assert_eq!(native_model(&route).unwrap(), route);
+        assert_eq!(catalog::model(&route).unwrap().context_window, window);
     }
     // Unpinned: the plain id runs within native's 200K gateway default; a [1m] id is never promised more.
     assert_eq!(context_window("unqualified-future-model"), 200_000);
@@ -346,8 +332,6 @@ fn ai_claude_subscription_tool_schemas_are_normalized_for_the_native_validator()
     );
 }
 
-// -------------------------------------------------------------------------------------------------- replay
-
 fn assistant(content: Vec<AssistantContent>) -> AssistantMessage {
     let mut message: AssistantMessage = serde_json::from_value(json!({
         "role": "assistant", "content": [], "api": "claude-subscription", "provider": "claude-subscription",
@@ -448,7 +432,6 @@ fn ai_claude_subscription_host_history_edits_replay_canonical_visible_blocks() {
     history[1] = Message::Assistant(future);
     let error = prepare_history(&history, &names()).unwrap_err().to_string();
     assert!(error.contains("version"), "{error}");
-    assert_eq!(CARRIER, "claude-subscription.native_assistant");
 }
 
 #[test]

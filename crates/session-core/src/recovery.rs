@@ -250,7 +250,6 @@ pub fn settle(session: &mut Session) -> Result<Recovered, String> {
     result.insert("tipId".into(), tip.clone().map_or(Value::Null, Value::from));
     result.insert("startedAt".into(), meta["startedAt"].clone());
     result.insert("endedAt".into(), json!(jsrt::date::now_ms()));
-    // The inbox keeps the queued messages that are still pending.
     let queued = inbox(session);
     let kept: Vec<Value> = queued
         .iter()

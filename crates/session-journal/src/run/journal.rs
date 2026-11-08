@@ -27,7 +27,6 @@ struct ToolCallState {
     result: Option<Value>,
 }
 
-/// One run in progress.
 pub struct Run {
     operation_id: String,
     config: Value,
@@ -301,12 +300,12 @@ impl Run {
         })
     }
 
-    /// The generation's retry policy from now on (`{maxAttempts, baseDelayMs, maxAgentDelayMs}`).
     /// The stream options the generations run with (the settings' `providerRequestOptions`, and `transport`).
     pub fn set_stream_options(&mut self, options: Value) {
         self.stream_options = options;
     }
 
+    /// The generation's retry policy from now on (`{maxAttempts, baseDelayMs, maxAgentDelayMs}`).
     pub fn set_retry_policy(&mut self, policy: Value) {
         self.retry_policy = policy;
     }
@@ -548,7 +547,6 @@ impl Run {
         self.held.as_ref().map(|(_, since)| *since + FRAME_WINDOW)
     }
 
-    /// Commit the held delta frame, if any.
     pub fn flush_held(&mut self, session: &mut Session) -> Result<(), String> {
         match self.held.take() {
             Some((held, _)) => session
@@ -768,7 +766,6 @@ impl Run {
         Ok(result_entry_id)
     }
 
-    /// The task id of the compaction in progress.
     pub fn compaction_task_id(&self) -> Option<String> {
         self.compaction.as_ref()?.task["taskId"].as_str().map(str::to_string)
     }

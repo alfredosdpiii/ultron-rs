@@ -71,7 +71,7 @@ fn slow() -> Slow {
     }
 }
 
-/// `settle()`: a short pause for anything that would wrongly start.
+/// A short pause for anything that would wrongly start.
 fn settle() {
     std::thread::sleep(Duration::from_millis(40));
 }

@@ -61,7 +61,6 @@ use std::path::Path;
 
 pub const HELP: &str = include_str!("help.txt");
 
-/// An environment variable lookup usable from any thread.
 pub use session_core::VarLookup;
 
 /// The process environment and locations one run sees (the session runtime's own).
@@ -78,7 +77,6 @@ pub fn package_files(env: &Env) -> Result<(), String> {
     assets::package_dir(&*env.var, &env.home).map(|_| ())
 }
 
-/// Run the CLI; returns the exit code.
 pub fn run(argv: &[String], env: &Env, out: &mut dyn Write, err: &mut dyn Write) -> i32 {
     match run_inner(argv, env, out, err) {
         Ok(code) => code,

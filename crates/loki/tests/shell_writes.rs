@@ -1,10 +1,9 @@
 //! Replays `fixtures/shell-writes-corpus.json` (loki.py `shell-writes`, recorded by `fixtures/shell_writes.mjs`)
-//! through the library call the host uses and through the `loki` binary.
+//! through the library call the host uses; shell_differential.rs runs the `loki` binary's `shell-writes`.
 
 use serde_json::{Value, json};
-use std::io::Write;
 use std::path::Path;
-use std::process::{Command, Stdio};
+use std::process::Command;
 
 fn corpus() -> Value {
     let text = std::fs::read_to_string(concat!(
@@ -83,40 +82,6 @@ fn loki_shell_writes_library_matches_loki_py_corpus() {
     });
 }
 
-#[test]
-fn loki_shell_writes_binary_matches_loki_py_corpus() {
-    compare(|root, payload| {
-        let mut child = Command::new(env!("CARGO_BIN_EXE_loki"))
-            .args(["--root", root.to_str().unwrap(), "shell-writes", "--harness", "ultron"])
-            .current_dir(root)
-            .env_clear()
-            .env("PATH", std::env::var("PATH").unwrap_or_default())
-            .env("HOME", root.parent().unwrap())
-            .env("GIT_CONFIG_GLOBAL", "/dev/null")
-            .env("GIT_CONFIG_NOSYSTEM", "1")
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-            .unwrap();
-        child
-            .stdin
-            .take()
-            .unwrap()
-            .write_all(payload.to_string().as_bytes())
-            .unwrap();
-        let output = child.wait_with_output().unwrap();
-        assert!(output.stdout.is_empty());
-        (
-            i64::from(output.status.code().unwrap()),
-            String::from_utf8(output.stderr).unwrap(),
-        )
-    });
-}
-
-/// `shlex.shlex(posix=True, punctuation_chars=True)` with whitespace_split, against values printed by
-/// `python3 -c 'import shlex; l = shlex.shlex(S, posix=True, punctuation_chars=True); l.whitespace_split = True;
-/// l.commenters = ""; print(list(l))'`.
 #[test]
 fn loki_shell_tokens_match_python_shlex() {
     let cases: [(&str, &[&str]); 7] = [

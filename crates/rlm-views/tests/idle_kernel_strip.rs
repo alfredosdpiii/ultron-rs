@@ -1,7 +1,7 @@
 //! The kernel strip of an idle session (no cell yet) reads `kernels ················ 0/16`, as the TypeScript
 //! footer draws it from the session's `rlm.pool` (crates/lanes/fixtures/idle-pool.json, recorded from
 //! `createUltronRlmTool(...).poolStats()` and `renderKernelStrip`). The pool reporting 0 live kernels is checked in
-//! crates/delegation/tests/idle_pool.rs and crates/session-core/tests/idle_kernel_count.rs.
+//! crates/lanes/tests/idle_pool.rs and crates/session-core/tests/idle_kernel_count.rs.
 
 use rlm_views::graph::render_kernel_strip;
 use rlm_views::visualizer::{RlmSnapshot, RlmStyle, parse_pool};

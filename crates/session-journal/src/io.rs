@@ -63,7 +63,6 @@ pub fn truncate(path: &Path, len: usize) -> Result<(), String> {
     result.map_err(|e| format!("Failed to repair JSONL storage {}: {e}", path.display()))
 }
 
-/// Append one line.
 pub fn append(path: &Path, line: &str) -> Result<(), String> {
     let mut file = fs::OpenOptions::new()
         .append(true)
@@ -73,7 +72,6 @@ pub fn append(path: &Path, line: &str) -> Result<(), String> {
         .map_err(|e| format!("Failed to append JSONL storage {}: {e}", path.display()))
 }
 
-/// File modification time in milliseconds (`mtimeMs`).
 pub fn mtime_ms(path: &Path) -> Option<f64> {
     fs::metadata(path).ok()?.modified().ok().map(jsrt::date::mtime_ms)
 }

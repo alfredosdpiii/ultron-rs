@@ -19,7 +19,6 @@ fn response_body(data: &str) -> Option<&str> {
     matches!(&rest[end..], "\x07" | "\x1b\\").then_some(&rest[..end])
 }
 
-/// `isOsc11BackgroundColorResponse`.
 pub fn is_osc11_background_color_response(data: &str) -> bool {
     response_body(data).is_some()
 }

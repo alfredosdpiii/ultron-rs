@@ -159,7 +159,7 @@ fn is_off(value: &str) -> bool {
 }
 
 /// `lokiAutoInit`: ULTRON_LOKI_AUTOINIT, else the `loki.autoInit` setting, else on.
-pub fn auto_init(context: &SetupContext<'_>) -> bool {
+fn auto_init(context: &SetupContext<'_>) -> bool {
     match context.trimmed(LOKI_AUTOINIT_ENV) {
         Some(raw) => !is_off(&raw),
         None => context.settings.get("autoInit") != Some(&Value::Bool(false)),
@@ -167,7 +167,7 @@ pub fn auto_init(context: &SetupContext<'_>) -> bool {
 }
 
 /// `lokiAutoCommit`: ULTRON_LOKI_AUTOCOMMIT, else the `loki.autoCommit` setting, else on.
-pub fn auto_commit(context: &SetupContext<'_>) -> bool {
+fn auto_commit(context: &SetupContext<'_>) -> bool {
     match context.trimmed(LOKI_AUTOCOMMIT_ENV) {
         Some(raw) => !is_off(&raw),
         None => context.settings.get("autoCommit") != Some(&Value::Bool(false)),
@@ -196,7 +196,6 @@ pub fn git_root(context: &SetupContext<'_>, cwd: &Path) -> Option<PathBuf> {
     (result.status == Some(0) && !root.is_empty()).then(|| resolve(cwd, Path::new(root)))
 }
 
-/// `isUltronWorktreePath`.
 fn is_ultron_worktree(context: &SetupContext<'_>, path: &Path) -> bool {
     context.trimmed(kernel::env::WORKTREE_ENV).is_some()
         || path.components().any(|part| part.as_os_str() == WORKTREES_DIR)
@@ -217,7 +216,7 @@ fn writable(path: &Path) -> bool {
 }
 
 /// `autoInitEligibility`: the repository root `.loki/` may be created in, or why not.
-pub fn auto_init_eligibility(context: &SetupContext<'_>) -> Result<PathBuf, String> {
+fn auto_init_eligibility(context: &SetupContext<'_>) -> Result<PathBuf, String> {
     if !auto_init(context) {
         return Err(if context.trimmed(LOKI_AUTOINIT_ENV).is_some() {
             "auto-install is off (ULTRON_LOKI_AUTOINIT)".into()
@@ -272,7 +271,7 @@ const IN_PROGRESS: [(&str, &str); 6] = [
 ];
 
 /// `autoCommitSkipReason`: why `.loki/` must not be committed now, or none when it may be.
-pub fn auto_commit_skip_reason(context: &SetupContext<'_>, root: &Path) -> Option<String> {
+fn auto_commit_skip_reason(context: &SetupContext<'_>, root: &Path) -> Option<String> {
     if !auto_commit(context) {
         return Some(if context.trimmed(LOKI_AUTOCOMMIT_ENV).is_some() {
             "auto-commit is off (ULTRON_LOKI_AUTOCOMMIT)".into()

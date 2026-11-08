@@ -39,7 +39,6 @@ fn acceptance_a04_an_explicit_child_model_reaches_only_the_child_lane_the_root_l
     );
     // No model was set on any other lane, the root ("main") included.
     assert!(lock(&fixture.models).iter().all(|(lane, _)| lane != "main"));
-    // A malformed explicit model is refused rather than silently replaced.
     let refused = fixture
         .call(
             "agents.spawn",

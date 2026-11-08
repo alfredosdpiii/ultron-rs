@@ -326,7 +326,6 @@ impl Connection {
         Connection::connect_over(Box::new(read), Box::new(write), server_id)
     }
 
-    /// Handshake with `server_id` over a byte transport's halves.
     pub fn connect_over(
         mut read: Box<dyn Read + Send>,
         writer: Box<dyn ConnectionWriter>,
@@ -508,7 +507,6 @@ impl Connection {
         }
     }
 
-    /// The connection ended (the server went away or closed it).
     pub fn is_closed(&self) -> bool {
         self.lock().closed.is_some()
     }
@@ -569,7 +567,6 @@ impl Connection {
         shared.services.remove(subscription);
     }
 
-    /// The current value of a subscription's state member.
     pub fn state(&self, subscription: &str, member: &str) -> Option<Json> {
         self.lock()
             .replicas
@@ -600,7 +597,6 @@ impl Connection {
         }
     }
 
-    /// Wait until the attachment satisfies `done`.
     pub fn wait_attachment(&self, done: impl Fn(Option<&SessionTarget>) -> bool) -> Result<(), CallError> {
         let (lock, changed) = &*self.shared;
         let mut shared = lock.lock().unwrap_or_else(|e| e.into_inner());

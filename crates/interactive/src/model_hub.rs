@@ -29,7 +29,6 @@ pub const THINKING_LEVELS: &[&str] = model_scope::THINKING_LEVELS.split_at(6).0;
 /// Recent scope size (`RECENT_LIMIT`).
 pub const RECENT_LIMIT: usize = 15;
 
-/// One model row.
 #[derive(Clone, Debug, PartialEq)]
 pub struct ModelItem {
     pub model: ModelInfo,
@@ -196,7 +195,6 @@ pub enum ScopeKind {
     Provider(String),
 }
 
-/// One sidebar entry.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Scope {
     pub kind: ScopeKind,
@@ -211,7 +209,6 @@ pub enum Focus {
     Models,
 }
 
-/// What the client should do.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ModelHubEvent {
     Ignored,
@@ -422,7 +419,6 @@ impl ModelHub {
         self.cursor = 0;
     }
 
-    /// `#onQueryChanged`.
     fn query_changed(&mut self) {
         let query = self.query.value().to_string();
         if query.trim().is_empty() {
@@ -657,7 +653,6 @@ impl ModelHub {
         let sidebar = (inner / 4).clamp(14, 26);
         let pane = inner.saturating_sub(sidebar + 3).max(1);
         let body_rows = height - 4;
-        // Sidebar.
         let mut side: Vec<String> = Vec::new();
         for scope in &self.scopes {
             if scope.kind == ScopeKind::Separator {
@@ -751,7 +746,6 @@ impl ModelHub {
             .unwrap_or_default();
         right.push(t.fg(Fg::Dim, &detail));
         self.layout = (sidebar, 3, list_rows, 1);
-        // Compose.
         let mut out = vec![top_border(&t, width, "Models")];
         for r in 0..body_rows {
             let l = side.get(r).cloned().unwrap_or_default();

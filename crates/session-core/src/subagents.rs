@@ -26,7 +26,6 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex, OnceLock, Weak};
 use std::time::Duration;
 
-/// Where the TypeScript product keeps the task journal of a session's task host.
 /// The lane a subagent task's cells run in (`ultron.rlm-child.<task id>`), which its child task is named after.
 pub use delegation::lane_names::CHILD_LANE_PREFIX as LANE_PREFIX;
 /// The lane of another root conversation of the session (`ultron.conversation.<id>`).
@@ -121,7 +120,6 @@ impl DurableChildren {
         Arc::new(DurableChildren::default())
     }
 
-    /// The runtime the children run in, once it is open.
     pub fn attach(&self, chat: ChatHarness) {
         let _ = self.chat.set(chat);
     }

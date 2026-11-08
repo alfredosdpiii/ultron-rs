@@ -272,7 +272,8 @@ fn harness_chat_swarm_ask_returns_a_timeout_when_a_kept_child_never_answers() {
         &call_from(root.id),
     )
     .unwrap();
-    assert!(started.elapsed() < std::time::Duration::from_secs(30));
+    // Well under the default ask timeout: the call's own `timeout_ms` bounded the wait.
+    assert!(started.elapsed() < HANG_GUARD);
     assert_eq!(asked["status"], "timeout", "{asked}");
     assert_eq!(asked["id"], child.0.to_string());
     assert!(

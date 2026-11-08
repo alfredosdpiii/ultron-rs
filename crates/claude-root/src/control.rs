@@ -58,13 +58,11 @@ pub fn control_dir(var: &dyn Fn(&str) -> Option<String>) -> Result<PathBuf, Stri
     Ok(dir)
 }
 
-/// A registry name safe as a file name.
 pub fn safe_name(name: &str) -> String {
     let safe: String = config::paths::safe_file_name(name).take(120).collect();
     if safe.is_empty() { "session".into() } else { safe }
 }
 
-/// The socket path for a registry name.
 pub fn socket_path_for(name: &str, dir: &Path) -> PathBuf {
     dir.join(format!("{}.sock", safe_name(name)))
 }
@@ -302,7 +300,6 @@ pub fn start_control_server(
     Ok(server)
 }
 
-/// A connection to a control socket.
 pub struct ControlClient {
     stream: UnixStream,
     reader: BufReader<UnixStream>,

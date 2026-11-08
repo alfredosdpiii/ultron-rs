@@ -39,6 +39,8 @@ pub struct GatewaySocket {
     pongs: Receiver<()>,
     /// Pongs to drop from the record (the replay's own synchronization pings).
     hidden: Arc<Mutex<usize>>,
+    /// One message per entry recorded in `sent`.
+    recorded: Receiver<()>,
     done: Receiver<()>,
 }
 
@@ -99,6 +101,7 @@ impl Gateway {
         let gateway_closed = Arc::new(AtomicBool::new(false));
         let hidden = Arc::new(Mutex::new(0));
         let (pong_tx, pongs) = channel();
+        let (recorded_tx, recorded) = channel();
         let (done_tx, done) = channel();
         if refuse {
             let _ = stream.write_all(b"HTTP/1.1 403 Forbidden\r\ncontent-length: 0\r\nconnection: close\r\n\r\n");
@@ -119,6 +122,7 @@ impl Gateway {
                 gateway_closed.clone(),
                 hidden.clone(),
                 pong_tx,
+                recorded_tx,
                 done_tx,
             );
         }
@@ -128,6 +132,7 @@ impl Gateway {
             gateway_closed,
             pongs,
             hidden,
+            recorded,
             done,
         }
     }
@@ -139,6 +144,7 @@ fn spawn_reader(
     gateway_closed: Arc<AtomicBool>,
     hidden: Arc<Mutex<usize>>,
     pongs: Sender<()>,
+    recorded: Sender<()>,
     done: Sender<()>,
 ) {
     std::thread::spawn(move || {
@@ -162,12 +168,16 @@ fn spawn_reader(
                             *hidden -= 1;
                         } else {
                             record.sent.push(json!({ "text": text }));
+                            let _ = recorded.send(());
                         }
                         if is_pong {
                             let _ = pongs.send(());
                         }
                     }
-                    Message::Binary(bytes) => record.sent.push(json!({ "binary": hex(&bytes) })),
+                    Message::Binary(bytes) => {
+                        record.sent.push(json!({ "binary": hex(&bytes) }));
+                        let _ = recorded.send(());
+                    }
                     Message::Close(code, reason) => {
                         if !gateway_closed.swap(true, Ordering::SeqCst) {
                             record.closed = Some(json!({ "code": code.unwrap_or(1005), "reason": reason }));
@@ -229,6 +239,17 @@ impl GatewaySocket {
         self.done
             .recv_timeout(HANG_GUARD)
             .expect("the relay closed the connection");
+    }
+
+    /// The snapshot once at least `count` messages from the relay are recorded: a call can end (its answer arrive)
+    /// before this reader has recorded the request.
+    pub fn wait_sent(&self, count: usize) -> Value {
+        while self.record.lock().unwrap().sent.len() < count {
+            self.recorded
+                .recv_timeout(HANG_GUARD)
+                .unwrap_or_else(|_| panic!("the relay never sent {count} recorded messages"));
+        }
+        self.snapshot()
     }
 
     pub fn is_gateway_closed(&self) -> bool {

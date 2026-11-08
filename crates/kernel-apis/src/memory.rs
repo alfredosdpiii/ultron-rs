@@ -1959,8 +1959,6 @@ impl MemoryService {
     }
 }
 
-// --- worker dispatch (worker-services.ts): typebox-checked payloads ------------------------------------------------
-
 fn string_min1(value: Option<&Value>) -> bool {
     value.and_then(Value::as_str).is_some_and(|text| !text.is_empty())
 }
@@ -1985,7 +1983,6 @@ fn evidence_schema(value: Option<&Value>) -> bool {
 
 const SCOPES: &[&str] = &["session", "project", "global"];
 
-/// What a project's brief answers (see [`MemoryService::project_digest`]).
 /// The final-score floor of a turn's recall: Hindsight returns its best matches however weak. Fitted on the real
 /// bank (150 real user messages, 1188 recalled hits labeled useful or not by a model): F1 is flat from 0.002 to
 /// 0.02 on held-out halves; at 0.005 a turn keeps 45% of the useful hits and drops 90% of the rest (unfloored, 4 in
@@ -1993,6 +1990,7 @@ const SCOPES: &[&str] = &["session", "project", "global"];
 // ponytail: one fixed floor; the reranker is not calibrated across queries, so refit if the bank or reranker changes.
 const RECALL_MIN_SCORE: f64 = 0.005;
 
+/// What a project's brief answers (see [`MemoryService::project_digest`]).
 const DIGEST_QUERY: &str = "What should a coding agent know before working in this project? Its conventions, the \
     decisions made and why, pitfalls and their fixes, the commands that build, test and run it, and the user's \
     preferences. Leave out finished one-off tasks and progress notes.";

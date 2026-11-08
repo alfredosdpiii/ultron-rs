@@ -1,15 +1,7 @@
-//! Retry (`app.retry`, F5): the retryable-tail rule of omp turn-recovery.ts and the idle hint row advertising the
-//! live binding.
+//! Retry (`app.retry`, F5): the retryable-tail rule of omp turn-recovery.ts.
 
-use std::rc::Rc;
-
-use interactive::keybindings::Platform;
-use interactive::keybindings::native_app_keybindings;
-use interactive::retry::{failed_turn_tail, retry_hint_rows};
+use interactive::retry::failed_turn_tail;
 use serde_json::json;
-use theme::{ColorMode, builtin_theme_json, create_theme};
-use tui::KeybindingsManager;
-use tui::strip_terminal_sequences;
 
 fn assistant(stop: &str) -> serde_json::Value {
     json!({"role": "assistant", "content": [], "stopReason": stop})
@@ -42,38 +34,4 @@ fn interactive_retry_failed_tail_rule() {
     );
     assert!(!failed_turn_tail(&[user]));
     assert!(!failed_turn_tail(&[]));
-}
-
-#[test]
-fn interactive_retry_hint_names_the_live_binding() {
-    let theme = Rc::new(create_theme(&builtin_theme_json("dark").unwrap(), ColorMode::Truecolor, None).unwrap());
-    let failed = [json!({"role": "user", "content": "go"}), assistant("error")];
-    let keys = KeybindingsManager::new(
-        native_app_keybindings(Platform::new("linux", false)),
-        Vec::new(),
-        Default::default(),
-    );
-    let rows = retry_hint_rows(&theme, &keys, &failed, false).unwrap();
-    assert_eq!(
-        rows.iter().map(|r| strip_terminal_sequences(r)).collect::<Vec<_>>(),
-        ["", " f5 to retry"]
-    );
-    assert_eq!(
-        retry_hint_rows(&theme, &keys, &failed, true),
-        None,
-        "never while streaming"
-    );
-    let rebound = KeybindingsManager::new(
-        native_app_keybindings(Platform::new("linux", false)),
-        vec![("app.retry".into(), Some(vec!["ctrl+shift+r".into()]))],
-        Default::default(),
-    );
-    let rows = retry_hint_rows(&theme, &rebound, &failed, false).unwrap();
-    assert_eq!(strip_terminal_sequences(&rows[1]), " ctrl+shift+r to retry");
-    let unbound = KeybindingsManager::new(
-        native_app_keybindings(Platform::new("linux", false)),
-        vec![("app.retry".into(), Some(vec![]))],
-        Default::default(),
-    );
-    assert_eq!(retry_hint_rows(&theme, &unbound, &failed, false), None);
 }

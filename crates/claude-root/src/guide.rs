@@ -186,7 +186,6 @@ pub fn describe_prompt_resources(resources: &PromptResources) -> serde_json::Val
     })
 }
 
-/// Options of the Claude system prompt.
 #[derive(Clone, Debug, Default)]
 pub struct GuideOptions<'a> {
     pub cwd: Option<String>,
@@ -349,7 +348,6 @@ pub fn claude_system_prompt(audience: Audience, options: &GuideOptions, hints: b
     parts.join("\n\n")
 }
 
-/// `RLM_TOOL_DESCRIPTION`.
 pub fn rlm_tool_description() -> String {
     session_core::lane::rlm_tool().description
 }

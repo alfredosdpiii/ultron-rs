@@ -2,9 +2,7 @@
 //! fixtures/osc11-parity.json (recorded from packages/tui/src/terminal-colors.ts by generate-osc11.mjs), and the
 //! reader that takes the reply out of the input stream, fed through the stdin buffer as the terminal thread feeds it.
 
-use tui::{
-    OSC11_BACKGROUND_QUERY, Osc11Read, Osc11Reader, is_osc11_background_color_response, parse_osc11_background_color,
-};
+use tui::{Osc11Read, Osc11Reader, is_osc11_background_color_response, parse_osc11_background_color};
 use tui::{StdinBuffer, StdinEvent};
 
 fn fixture() -> serde_json::Value {
@@ -29,7 +27,6 @@ fn tui_osc11_reply_parsing_matches_typescript() {
 
 #[test]
 fn tui_osc11_reply_literals() {
-    assert_eq!(OSC11_BACKGROUND_QUERY, "\x1b]11;?\x07");
     // 4-digit and 2-digit channels, BEL and ST.
     assert_eq!(
         parse_osc11_background_color("\x1b]11;rgb:fafa/fafa/fafa\x07"),

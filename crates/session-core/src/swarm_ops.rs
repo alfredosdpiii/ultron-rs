@@ -39,7 +39,6 @@ impl SwarmOps {
         self
     }
 
-    /// The conversation `lane` works in.
     fn conversation(&self, lane: &str) -> Option<ConversationId> {
         if lane == session_journal::run::MAIN_LANE {
             return Some(ROOT_CONVERSATION_ID);
@@ -62,9 +61,7 @@ impl SwarmOps {
             .is_some_and(|task| task.kind == CHILD_KIND && task.input["keep"] == true)
     }
 
-    /// Whether `kind` with `payload` is served here.
     fn serves(&self, kind: &str, payload: &Map<String, Value>) -> bool {
-        // Always here: `rlm.ask`, the swarm, the board and the notes.
         if kind == "rlm.ask" || harness::chat::host_ops::SWARM_KINDS.contains(&kind) {
             return true;
         }

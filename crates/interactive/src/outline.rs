@@ -41,7 +41,6 @@ pub struct OutlineEntry {
 pub trait OutlineBuilder {
     /// Children rendered so far.
     fn child_count(&self) -> usize;
-    /// Append entry `index`.
     fn append(&mut self, index: usize);
     /// A usage row flushed at the head of an append (attributed to the turn above).
     fn is_usage_row(&self, _child: usize) -> bool {
@@ -263,7 +262,6 @@ pub fn compose_outline_column(
     ComposedColumn { lines, selection }
 }
 
-/// `clampScrollOffset`.
 pub fn clamp_scroll_offset(offset: i64, total: usize, height: usize) -> usize {
     let max = total.saturating_sub(height) as i64;
     offset.clamp(0, max.max(0)) as usize

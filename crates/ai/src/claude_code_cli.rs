@@ -124,8 +124,6 @@ pub fn child_env(options: &StreamOptions) -> Env {
     env
 }
 
-// --------------------------------------------------------------------------------------------- locating the CLI
-
 static RESOLVED_CLI: LazyLock<Mutex<HashMap<String, String>>> = LazyLock::new(Mutex::default);
 
 fn is_executable(file: &Path) -> bool {
@@ -170,8 +168,6 @@ pub fn resolve_claude_cli(env: &Env) -> Result<String, String> {
         }),
     }
 }
-
-// ------------------------------------------------------------------------------------- feature detection / login
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct ClaudeCliCapabilities {
@@ -346,8 +342,6 @@ pub async fn ensure_claude_cli(bin: &str, env: &Env, cwd: &Path) -> Result<Claud
     result
 }
 
-// ------------------------------------------------------------------------------------------------ working directory
-
 static WORK_DIR: LazyLock<Mutex<Option<PathBuf>>> = LazyLock::new(Mutex::default);
 
 /// One empty directory per user, so no project CLAUDE.md or settings are near the call.
@@ -369,8 +363,6 @@ pub fn empty_work_dir() -> Result<PathBuf, String> {
     *guard = Some(dir.clone());
     Ok(dir)
 }
-
-// ---------------------------------------------------------------------------------------------- concurrency cap
 
 #[derive(Default)]
 struct Limiter {
@@ -406,8 +398,6 @@ async fn acquire(limit: u64, signal: Option<&crate::http::AbortSignal>) -> Resul
         }
     }
 }
-
-// --------------------------------------------------------------------------------------------------- processes
 
 enum ChildEvent {
     Line(Value),
@@ -536,8 +526,6 @@ impl CliProcess {
     }
 }
 
-// --------------------------------------------------------------------------------------------------- warm spares
-
 struct Spare {
     key: String,
     process: CliProcess,
@@ -608,8 +596,6 @@ pub fn claude_code_cli_stats() -> (u64, usize) {
     let spares = jsrt::sync::lock(&SPARES).iter().filter(|s| s.process.alive()).count();
     (in_flight, spares)
 }
-
-// ------------------------------------------------------------------------------------------- request construction
 
 fn push_text(blocks: &mut Vec<Value>, text: &str) {
     if text.is_empty() {
@@ -846,8 +832,6 @@ fn plan_request(
     })
 }
 
-// ----------------------------------------------------------------------------------------------- result mapping
-
 fn num(value: Option<&Value>) -> Option<f64> {
     value.and_then(Value::as_f64).filter(|n| n.is_finite() && *n >= 0.0)
 }
@@ -894,7 +878,6 @@ pub fn rate_limit_info(event: &Value) -> Option<RateLimitInfo> {
     })
 }
 
-/// `resetText`.
 pub fn reset_text(info: Option<&RateLimitInfo>) -> String {
     match info.and_then(|i| i.resets_at).filter(|r| *r != 0.0) {
         Some(resets_at) => {
@@ -921,7 +904,6 @@ fn contains_ci(text: &str, needle: &str) -> bool {
     text.to_lowercase().contains(needle)
 }
 
-/// `classifyFailure`.
 fn classify_failure(result: &Value, rate_limit: Option<&RateLimitInfo>) -> Failure {
     let text = result
         .get("result")
@@ -1019,8 +1001,6 @@ fn diagnostic(kind: &str, message: &str) -> AssistantMessageDiagnostic {
         details: None,
     }
 }
-
-// ------------------------------------------------------------------------------------------------------ one request
 
 /// Options of a Claude Code request: the simple options plus an optional JSON schema for structured output.
 #[derive(Clone, Default, serde::Deserialize)]

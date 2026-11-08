@@ -33,7 +33,6 @@ pub fn screen_theme(env: &crate::Env, settings: &SettingsManager) -> Theme {
 /// A theme file that did not load (`warning`) or a name already taken (`collision`): (type, path).
 pub type Diagnostic = (String, String);
 
-/// The registered themes and the problems loading them.
 #[derive(Default)]
 pub struct LoadedThemes {
     pub themes: Vec<Theme>,

@@ -84,7 +84,6 @@ pub fn validate_refinement_content(kind: &str, content: &Value) -> Result<bool, 
     }
 }
 
-/// [`validate_refinement_content`] as a refinement service validator (the worker's).
 pub fn worker_validator() -> Validator {
     Arc::new(validate_refinement_content)
 }

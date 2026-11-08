@@ -35,8 +35,7 @@ pub enum Event {
         result: Result<Option<Value>, String>,
         pending: Arc<AtomicUsize>,
     },
-    /// A signal ended RPC mode: release the session (a busy worker keeps its work, detached; nothing is aborted,
-    /// as leaving RPC mode is not an abort) and exit with this code.
+    /// A signal ended RPC mode: release the session (nothing is aborted) and exit with this code.
     Signal(i32),
     /// A `/mcp` dialog or an MCP notice of the worker, written as Pi's `extension_ui_request` line.
     ExtensionUi(Value),
@@ -199,7 +198,7 @@ impl<'a> Remote<'a> {
     }
 }
 
-/// The session operations behind the RPC commands. Errors are the `error` text of the failed response.
+/// Errors are the `error` text of the failed response.
 impl Remote<'_> {
     pub fn deliver(&mut self, event: Event, out: &Output) {
         let event = match event {
@@ -262,8 +261,7 @@ impl Remote<'_> {
 
     /// Stdin ended: stop runs, then [`busy`](Self::busy) drains the rest.
     pub fn input_ended(&mut self) {
-        // Leaving is not an abort (TS: a root turn in flight when its client closes stdin runs to completion): the
-        // session is released at once and a busy worker keeps its work running detached.
+        // Leaving is not an abort (TS: a root turn in flight when its client closes stdin runs to completion).
         if signals::received().is_some() {
             return;
         }
@@ -425,7 +423,6 @@ impl Remote<'_> {
         pending.fetch_add(1, Ordering::SeqCst);
         std::thread::spawn(move || {
             let result = connection.wait(&request).map_err(|e| e.to_string());
-            // The command loop answers it: that thread holds the process's stdout.
             let _ = tx.send(Input::Event(Event::BashDone { reply, result, pending }));
         });
         Ok(())
@@ -587,8 +584,6 @@ pub fn run(
         let exit = signals::exit_code(signal);
         code.store(exit, Ordering::SeqCst);
         herdr::release_active();
-        // Leaving RPC on a signal releases the session without aborting the running turn (as in TS): a busy worker
-        // keeps its work running detached.
         let _ = end
             .lock()
             .unwrap_or_else(|e| e.into_inner())

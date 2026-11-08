@@ -277,7 +277,6 @@ pub fn focus_hints(keys: &KeybindingsManager) -> String {
 /// What a key did in the focus view.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum FocusEvent {
-    /// Not the view's key.
     Ignored,
     Render,
     Exit,

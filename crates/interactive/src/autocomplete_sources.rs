@@ -17,8 +17,6 @@ use std::sync::{Arc, Mutex, OnceLock};
 use tui::{AbortSignal, AutocompleteItem, AutocompleteProvider, AutocompleteSuggestions, Completion, SuggestionsJob};
 use tui::{ServiceThread, fuzzy_filter};
 
-// ---- emoji ----
-
 type Buckets = HashMap<String, Vec<(String, String)>>;
 
 fn buckets() -> &'static Buckets {
@@ -178,8 +176,6 @@ impl AutocompleteProvider for EmojiProvider {
         replace_prefix(lines, line, col, col.saturating_sub(prefix.len()), &item.value)
     }
 }
-
-// ---- GitHub references ----
 
 /// Which kind a `#123` reference names.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -389,8 +385,6 @@ impl AutocompleteProvider for GithubRefProvider {
     }
 }
 
-// ---- model mentions ----
-
 /// A model offered for mention.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct MentionModel {
@@ -473,8 +467,6 @@ impl AutocompleteProvider for ModelMentionProvider {
         replace_prefix(lines, line, col, start, &format!("{}{} ", self.trigger, item.value))
     }
 }
-
-// ---- chaining ----
 
 /// Providers tried in order; the first with suggestions answers and applies its own completions.
 pub struct ChainProvider {

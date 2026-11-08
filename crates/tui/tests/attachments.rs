@@ -119,7 +119,6 @@ fn tui_attachments_paste_routing() {
         classify_paste("line1\x1b[106;5uline2"),
         PasteAction::Text("line1\nline2".into())
     );
-    assert_eq!(RAW_PASTE_KEY, "ctrl+shift+v");
     assert!(tui::matches_key(
         "\x1b[118;6u",
         RAW_PASTE_KEY,

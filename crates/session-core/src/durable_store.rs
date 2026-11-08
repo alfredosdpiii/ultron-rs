@@ -73,7 +73,6 @@ pub fn open(session: SharedSession, observer: Option<Observer>) -> Result<Memory
     })))
 }
 
-/// Whether a session file holds durable runtime records.
 pub fn has_records(session: &Session) -> bool {
     !session
         .state()

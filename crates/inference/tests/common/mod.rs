@@ -24,6 +24,8 @@ pub struct Scripted {
     pub bodies: Mutex<Vec<Value>>,
     /// Each request's `authorization` header.
     pub authorizations: Mutex<Vec<Option<String>>>,
+    /// Notified after each request is recorded.
+    pub arrived: tokio::sync::Notify,
 }
 
 impl Transport for Scripted {
@@ -39,6 +41,7 @@ impl Transport for Scripted {
             .lock()
             .unwrap()
             .push(serde_json::from_str(&request.body).unwrap());
+        self.arrived.notify_waiters();
         let reply = {
             let mut replies = self.replies.lock().unwrap();
             (!replies.is_empty()).then(|| replies.remove(0))
@@ -52,10 +55,18 @@ impl Transport for Scripted {
             if let Some(count) = reply["gather"].as_u64() {
                 // Concurrent frames: answer only once `count` requests are in flight (or after 120 s, a hang guard,
                 // so a host that runs them one at a time fails the comparison instead of hanging).
-                let since = std::time::Instant::now();
-                while (self.bodies.lock().unwrap().len() as u64) < count && since.elapsed().as_secs() < 120 {
-                    tokio::time::sleep(std::time::Duration::from_millis(1)).await;
-                }
+                let gathered = async {
+                    loop {
+                        let arrived = self.arrived.notified();
+                        tokio::pin!(arrived);
+                        arrived.as_mut().enable();
+                        if self.bodies.lock().unwrap().len() as u64 >= count {
+                            break;
+                        }
+                        arrived.await;
+                    }
+                };
+                let _ = tokio::time::timeout(std::time::Duration::from_secs(120), gathered).await;
             }
             if reply.get("hang").is_some() {
                 // A provider that never answers: only the frame's timeout ends the request.

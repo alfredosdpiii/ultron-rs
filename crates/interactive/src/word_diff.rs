@@ -179,7 +179,6 @@ fn dedupe(changes: &mut [Change], start: Option<usize>, del: Option<usize>, ins:
     }
 }
 
-/// `diffWords(old, new)`.
 pub fn diff_words(old: &str, new: &str) -> Vec<Change> {
     let (old, new) = (tokenize(old), tokenize(new));
     let mut changes = jsrt::diff::diff_tokens(&old, &new, equals, join);

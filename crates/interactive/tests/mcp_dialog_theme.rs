@@ -2,29 +2,19 @@
 //! with its own theme, the settings theme. Here: an input dialog and a selection under a light theme use the light
 //! theme's colors.
 
+use crate::support;
 use std::rc::Rc;
 
 use interactive::app::{App, AppOptions};
-use interactive::history::PromptHistoryStore;
-use interactive::keybindings::Platform;
-use interactive::keybindings::native_app_keybindings;
 use interactive::lane::{LaneEvent, ModelInfo, SessionOpened};
 use serde_json::json;
 use theme::{ColorMode, Fg, Theme, builtin_theme_json, create_theme};
-use tui::KeybindingsManager;
 
 fn theme(name: &str) -> Rc<Theme> {
     Rc::new(create_theme(&builtin_theme_json(name).unwrap(), ColorMode::Truecolor, None).unwrap())
 }
 
 fn app(theme: Rc<Theme>) -> App {
-    let keys = || {
-        KeybindingsManager::new(
-            native_app_keybindings(Platform::new("linux", false)),
-            Vec::new(),
-            Default::default(),
-        )
-    };
     let model = ModelInfo {
         provider: "anthropic".into(),
         id: "a".into(),
@@ -36,20 +26,10 @@ fn app(theme: Rc<Theme>) -> App {
     let mut app = App::new(
         AppOptions {
             theme,
-            keys: keys(),
-            version: "1.2.3".into(),
-            cwd: "/p".into(),
-            home: None,
-            server_id: "server".into(),
             models: vec![model.clone()],
             model,
             thinking_level: "off".into(),
-            splash: false,
-            history: PromptHistoryStore::new(None, "/p"),
-            fd_path: None,
-            highlight: Rc::new(|code: &str| code.split('\n').map(str::to_string).collect()),
-            qol: interactive::qol::QolSettings::parity(),
-            bug_report_target: ("radius.pi.dev".into(), false),
+            ..support::options()
         },
         std::sync::mpsc::channel().0,
     );

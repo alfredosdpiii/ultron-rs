@@ -10,8 +10,11 @@ use session_core::async_events::{
     RuntimeEvent, async_events_enabled, max_event_runs_from_env, runtime_event_text,
 };
 use std::collections::HashMap;
+use std::sync::mpsc::{Receiver, Sender, channel};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
+
+const HANG: Duration = Duration::from_secs(120);
 
 #[derive(Default)]
 struct LaneState {
@@ -29,6 +32,8 @@ struct LaneState {
 struct Fake {
     lanes: Mutex<HashMap<String, LaneState>>,
     aliases: Mutex<HashMap<String, String>>,
+    /// Told each time the dispatcher finds a lane busy with another operation.
+    busy: Mutex<Option<Sender<()>>>,
 }
 
 impl Fake {
@@ -97,7 +102,7 @@ impl Fake {
 
 impl EventLanes for Fake {
     fn execution(&self, lane: &str) -> Execution {
-        self.with(lane, |state| {
+        let execution = self.with(lane, |state| {
             if state.other {
                 Execution::Other
             } else if state.current.is_some() {
@@ -105,7 +110,13 @@ impl EventLanes for Fake {
             } else {
                 Execution::Idle
             }
-        })
+        });
+        if matches!(execution, Execution::Other)
+            && let Some(busy) = self.busy.lock().unwrap().as_ref()
+        {
+            let _ = busy.send(());
+        }
+        execution
     }
 
     fn accept(&self, lane: &str, message: &Value, root: &str) -> Accepted {
@@ -159,6 +170,16 @@ struct Setup {
     aborted: Arc<Mutex<Vec<String>>>,
     deliveries: Arc<Mutex<Vec<String>>>,
     messages: Arc<Mutex<Vec<Value>>>,
+    /// One message per delivery, sent as the dispatcher delivers.
+    delivered: Receiver<()>,
+}
+
+impl Setup {
+    /// Waits for the next delivery, then for the dispatcher to finish it (its `drain` runs after the delivery).
+    fn wait_delivery(&self) {
+        self.delivered.recv_timeout(HANG).expect("the dispatcher delivered");
+        self.dispatcher.drain();
+    }
 }
 
 fn setup(configure: impl FnOnce(&mut DispatcherOptions)) -> Setup {
@@ -180,7 +201,9 @@ fn setup(configure: impl FnOnce(&mut DispatcherOptions)) -> Setup {
     let deliveries = Arc::new(Mutex::new(Vec::new()));
     let messages = Arc::new(Mutex::new(Vec::new()));
     let (log, kept) = (deliveries.clone(), messages.clone());
+    let (delivering, delivered) = channel();
     options.on_delivery = Some(Arc::new(move |delivery: &Delivery| {
+        let _ = delivering.send(());
         log.lock().unwrap().push(format!(
             "{}:{}",
             delivery.mode,
@@ -198,6 +221,7 @@ fn setup(configure: impl FnOnce(&mut DispatcherOptions)) -> Setup {
         aborted,
         deliveries,
         messages,
+        delivered,
     }
 }
 
@@ -254,26 +278,24 @@ fn session_core_async_events_an_idle_root_is_reinvoked_once_per_coalesced_batch_
 #[test]
 fn session_core_async_events_an_event_waiting_for_a_retry_still_counts_as_pending() {
     let s = setup(|options| options.retry_after = Duration::from_millis(50));
+    let (busy, found_busy) = channel();
+    *s.fake.busy.lock().unwrap() = Some(busy);
     s.fake.with("main", |state| state.other = true);
     s.dispatcher.publish(event("job-a"));
     s.dispatcher.drain();
     assert!(s.fake.runs("main").is_empty());
     assert_eq!(s.dispatcher.pending_for("main"), 1);
-    s.fake.with("main", |state| state.other = false);
-    let deadline = std::time::Instant::now() + Duration::from_secs(120);
-    loop {
-        // Read the count first: 0 only once the delivery (counted in flight until it returns) has run.
-        let pending = s.dispatcher.pending_for("main");
-        if !s.fake.runs("main").is_empty() {
-            break;
-        }
-        assert_eq!(pending, 1, "pending until delivered");
-        assert!(
-            std::time::Instant::now() < deadline,
-            "the retried event was never delivered"
-        );
-        std::thread::sleep(Duration::from_millis(10));
+    // A retry finds the lane busy again: the event is still pending once that attempt is over.
+    for attempt in ["the first", "a retried"] {
+        found_busy
+            .recv_timeout(HANG)
+            .unwrap_or_else(|_| panic!("{attempt} attempt"));
     }
+    s.dispatcher.drain();
+    assert!(s.fake.runs("main").is_empty());
+    assert_eq!(s.dispatcher.pending_for("main"), 1);
+    s.fake.with("main", |state| state.other = false);
+    s.wait_delivery();
     assert_eq!(s.fake.runs("main").len(), 1);
     assert_eq!(s.dispatcher.pending_for("main"), 0);
 }
@@ -284,16 +306,8 @@ fn session_core_async_events_coalesce_within_the_window_without_a_drain() {
     s.dispatcher.publish(event("job-a"));
     s.dispatcher.publish(event("job-b"));
     assert_eq!(s.dispatcher.pending_for("main"), 2);
-    let deadline = std::time::Instant::now() + Duration::from_secs(120);
-    loop {
-        // Read the count first: 0 only once the delivery (counted in flight until it returns) has run.
-        let pending = s.dispatcher.pending_for("main");
-        if !s.fake.runs("main").is_empty() && pending == 0 {
-            break;
-        }
-        assert!(std::time::Instant::now() < deadline, "the batch was never delivered");
-        std::thread::sleep(Duration::from_millis(10));
-    }
+    s.wait_delivery();
+    assert_eq!(s.dispatcher.pending_for("main"), 0);
     assert_eq!(s.fake.runs("main").len(), 1);
     assert_eq!(s.fake.runs("main")[0].1.split('\n').count(), 2);
 }

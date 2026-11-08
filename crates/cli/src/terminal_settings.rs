@@ -46,7 +46,6 @@ pub fn screen_keys(env: &Env) -> tui::KeybindingsManager {
     )
 }
 
-/// The keybinding platform of this run.
 pub fn platform(env: &Env) -> interactive::keybindings::Platform {
     interactive::keybindings::Platform::current(wsl_keybindings(env))
 }

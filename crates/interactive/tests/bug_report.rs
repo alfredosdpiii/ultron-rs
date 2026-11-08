@@ -2,11 +2,8 @@
 //! each answer leads to the next question, Esc anywhere cancels, an upload in offline mode is refused, a summary is
 //! written before the report, and a failed upload offers the zip.
 
+use crate::support;
 use interactive::bug_report::{Action, BugFlow, DISCLAIMER, Step, TRANSCRIPT_NOTE};
-use interactive::keybindings::Platform;
-use interactive::keybindings::native_app_keybindings;
-use std::rc::Rc;
-use theme::{ColorMode, builtin_theme_json, create_theme};
 use tui::KeybindingsManager;
 
 const ENTER: &str = "\r";
@@ -14,15 +11,11 @@ const DOWN: &str = "\x1b[B";
 const ESC: &str = "\x1b";
 
 fn keys() -> KeybindingsManager {
-    KeybindingsManager::new(
-        native_app_keybindings(Platform::new("linux", false)),
-        Vec::new(),
-        Default::default(),
-    )
+    support::keys()
 }
 
 fn flow(hint: Option<&str>, offline: bool) -> BugFlow {
-    let theme = Rc::new(create_theme(&builtin_theme_json("dark").unwrap(), ColorMode::Truecolor, None).unwrap());
+    let theme = support::dark_theme();
     BugFlow::new(
         theme,
         keys(),

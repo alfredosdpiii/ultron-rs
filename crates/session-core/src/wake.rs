@@ -21,12 +21,10 @@ use std::sync::atomic::{AtomicBool, Ordering};
 pub struct RootWake(Arc<AtomicBool>);
 
 impl RootWake {
-    /// The root lane is (`true`) or is not woken from now on.
     pub fn set(&self, woken: bool) {
         self.0.store(woken, Ordering::SeqCst);
     }
 
-    /// Whether the root lane is woken.
     pub fn root_woken(&self) -> bool {
         self.0.load(Ordering::SeqCst)
     }

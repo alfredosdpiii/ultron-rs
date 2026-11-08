@@ -143,7 +143,6 @@ impl Outside {
     }
 }
 
-/// The mask hides the checkout from the process (so any read of it fails).
 fn assert_mask_hides_checkout() {
     let mut probe = Command::new(bwrap());
     probe
@@ -798,7 +797,8 @@ fn cli_package_prune_spares_installs_and_staging_in_use_by_running_processes() {
     // ...whose install becomes an older version's (the rename keeps its locks): the old session still running.
     let in_use = base.join("0.0.0-0000000000000000");
     std::fs::rename(outside.installed(), &in_use).unwrap();
-    // An older install nobody uses, a crashed install, an install being written, a fresh staging dir, a moved-aside one.
+    // An older install nobody uses, a crashed install, an install being written, a fresh staging dir, a moved-aside
+    // one.
     let unused = base.join("0.0.1-1111111111111111");
     std::fs::rename(assets::install(&outside.root.join("spare")).unwrap(), &unused).unwrap();
     let crashed = base.join(".tmp-0.0.2-crashed");

@@ -252,3 +252,27 @@ fn tui_viewport_skips_stale_frames_while_the_writer_is_backlogged() {
     assert!(!out.contains("frame-A"));
     writer.stop(HANG_GUARD);
 }
+
+#[test]
+fn tui_viewport_clear_on_shrink_repaints_the_shrunk_viewport() {
+    use tui::{FramePlan, ViewportRenderer};
+    let plan = |n: usize| FramePlan {
+        history: None,
+        viewport: (0..n).map(|i| format!("row {i}")).collect(),
+    };
+    let shrink = |clear: bool| {
+        let mut r = ViewportRenderer::new();
+        r.clear_on_shrink = clear;
+        r.render(&plan(5), 40, 20);
+        let before = r.rows_written;
+        let frame = r.render(&plan(2), 40, 20);
+        (r.rows_written - before, frame.bytes)
+    };
+    // Diffed: the unchanged rows stay, the rest is cleared below.
+    let (written, _) = shrink(false);
+    assert_eq!(written, 0);
+    // Clear-on-shrink: the viewport is painted whole from its top.
+    let (written, bytes) = shrink(true);
+    assert_eq!(written, 2);
+    assert!(bytes.contains("\x1b[4A\r\x1b[J"), "{bytes:?}");
+}

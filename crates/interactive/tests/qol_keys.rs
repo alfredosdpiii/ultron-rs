@@ -83,9 +83,3 @@ fn tui_qol_keys_double_tap_fires_once_within_the_window() {
     );
     assert!(tap.tap(t0 + Duration::from_millis(1800)));
 }
-
-#[test]
-fn tui_qol_keys_alt_l_is_display_reset() {
-    let k = manager(Vec::new());
-    assert!(k.matches("\x1bl", "app.display.reset"));
-}

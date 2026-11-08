@@ -139,7 +139,6 @@ fn walk_files(root: &Path, ignore: &[&str], limit: usize) -> (Vec<String>, bool)
     (files, true)
 }
 
-/// A metadata snapshot of the files under `cwd`.
 pub fn snapshot_workspace(cwd: &Path) -> WorkspaceSnapshot {
     let root = cwd.to_path_buf();
     let (method, files, complete) = match git_files(&root) {

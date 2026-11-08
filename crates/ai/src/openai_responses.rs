@@ -32,7 +32,6 @@ use std::collections::HashMap;
 pub(crate) const OPENAI_TOOL_CALL_PROVIDERS: &[&str] = &["openai", "openai-codex", "opencode"];
 const MIN_OUTPUT_TOKENS: u64 = 16;
 
-/// `OpenAIResponsesOptions`.
 #[derive(Clone, Default, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct OpenAIResponsesOptions {
@@ -594,7 +593,6 @@ struct ToolScratch {
     custom: Option<(String, GrammarInputBuffer)>,
 }
 
-/// `processResponsesStream` state.
 /// `api/openai-prompt-cache.ts`: an OpenAI prompt cache key is at most 64 characters (code points).
 pub(crate) fn clamp_prompt_cache_key(key: &str) -> String {
     key.chars().take(64).collect()

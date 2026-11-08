@@ -93,7 +93,6 @@ pub fn add_usage(total: &mut Value, usage: &Value) {
     }
 }
 
-/// Add every bucket of `state` into `sum`.
 pub fn add_usage_state(total: &mut Value, state: &Value) {
     for bucket in ["models", "tools"] {
         if !total[bucket].is_object() {

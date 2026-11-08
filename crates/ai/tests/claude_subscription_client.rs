@@ -590,9 +590,10 @@ fn ai_claude_subscription_large_requests_use_files_and_effort_follows_reasoning(
     let mut opts = options();
     opts.reasoning = Some("minimal".into());
     opts.base.temperature = Some(0.3);
-    // Eight deltas 0.3 s apart (2.4 s in all) outlive a 2 s read-idle budget: output resets it. Under load the
-    // fake can stall past the budget (Python startup alone can); the timeout is then right, and the call is retried
-    // until the fake kept its pace.
+    // Eight deltas 0.3 s apart (2.4 s in all) outlive a 2 s read-idle budget: output resets it. The budget is
+    // wall-clock, so a timeout is a bug unless the events show a pause past the budget (the fake stalled on a loaded
+    // machine, or Python started slowly); only then is the call tried again.
+    let idle = Duration::from_secs(2);
     let mut done = None;
     for _attempt in 0..20 {
         let mut config = fake.config(
@@ -603,9 +604,24 @@ fn ai_claude_subscription_large_requests_use_files_and_effort_follows_reasoning(
                 ("CLAUDE_CODE_EFFORT_LEVEL", "max"),
             ],
         );
-        config.timeout = Duration::from_secs(2);
-        let (message, events) = call(config, &model("sonnet"), &context, &opts);
+        config.timeout = idle;
+        let started = Instant::now();
+        let arrivals = Mutex::new(Vec::new());
+        let mut sink = |event: &AssistantMessageEvent| arrivals.lock().unwrap().push((Instant::now(), event.clone()));
+        let message = runtime().block_on(ai::claude_subscription::stream_with(
+            &model("sonnet"),
+            &context,
+            &opts,
+            config,
+            &mut sink,
+        ));
+        let ended = Instant::now();
+        let (times, events): (Vec<Instant>, Vec<AssistantMessageEvent>) =
+            arrivals.into_inner().unwrap().into_iter().unzip();
         if message.error_message.as_deref() == Some("Claude request timed out") {
+            let marks: Vec<Instant> = std::iter::once(started).chain(times).chain([ended]).collect();
+            let longest = marks.windows(2).map(|w| w[1] - w[0]).max().unwrap();
+            assert!(longest >= idle, "timed out though output paused at most {longest:?}");
             continue;
         }
         done = Some((message, events));
@@ -753,8 +769,6 @@ fn ai_claude_subscription_cancellation_kills_native_and_its_grandchild() {
     assert_eq!(fake.records().len(), runs);
 }
 
-// --------------------------------------------------------------------------------------------------- telemetry
-
 const QUIET: [&str; 3] = [
     "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC",
     "DISABLE_TELEMETRY",
@@ -810,8 +824,6 @@ fn ai_claude_subscription_telemetry_stays_on_by_default_and_the_cli_never_update
     call(config, &model("sonnet"), &first_turn(), &options());
     assert_eq!(fake.last()["env"]["DISABLE_TELEMETRY"], "1");
 }
-
-// ---------------------------------------------------------------------------------------------------- workspace
 
 fn cwd_of(fake: &Fake, config: Config) -> String {
     let mut config = config;

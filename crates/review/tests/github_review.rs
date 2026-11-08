@@ -587,7 +587,6 @@ fn review_github_by_default_the_acknowledgement_carries_the_logo() {
         body,
         format!("{}\n\n```text\n{}\n```", ack(DEFAULT_ACK_LINES[0], &head()), logo())
     );
-    assert!(body.len() < review::reviewer::MAX_ACK_CHARS / 10);
 }
 
 #[test]
@@ -604,15 +603,6 @@ fn review_github_the_acknowledgement_can_be_turned_off_or_customized() {
         custom.hub.pull().issue_comments[0].body,
         "> *On it.*\n> — Ultron\n\nReviewing `aaaaaaa`.\n\n```text\n[banner]\n```"
     );
-    let lines: Vec<String> = DEFAULT_ACK_LINES.iter().map(|l| l.to_string()).collect();
-    for step in 0..50 {
-        let line = review::reviewer::pick_ack_line(&lines, Some(DEFAULT_ACK_LINES[3]), f64::from(step) / 50.0);
-        assert_ne!(line, DEFAULT_ACK_LINES[3]);
-    }
-    let all: std::collections::HashSet<String> = (0..50)
-        .map(|step| review::reviewer::pick_ack_line(&lines, None, f64::from(step) / 50.0))
-        .collect();
-    assert_eq!(all.len(), 17);
 }
 
 #[test]

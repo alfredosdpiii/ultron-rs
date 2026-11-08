@@ -6,7 +6,6 @@
 use crate::types::AssistantMessageDiagnostic;
 use serde_json::{Map, Value};
 
-/// `CLAUDE_USAGE_DIAGNOSTIC`.
 pub const CLAUDE_USAGE_DIAGNOSTIC: &str = "claude_code_usage";
 
 /// `ClaudeRateLimits`: the plan's status and, per window (`five_hour`, `seven_day`, ...), utilization 0..1 and the

@@ -58,7 +58,6 @@ pub fn settings(
     let defaults = CompactionSettings::default();
     let compaction = settings.get("compaction");
     let key = format!("{provider}/{model_id}");
-    // Each token setting: the ordinary value checked, then the model's override entry, then its value.
     let resolve = |field: &str, fallback: u64| -> Result<u64, String> {
         let ordinary = token_setting(compaction.and_then(|c| c.get(field)), &format!("compaction.{field}"))?;
         let entry = compaction

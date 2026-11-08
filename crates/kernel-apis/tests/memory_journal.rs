@@ -94,7 +94,7 @@ impl MemoryBackend for Tagged {
 #[test]
 fn kernel_apis_memory_scope_tags_and_namespace_use_javascript_whitespace() {
     // D-W1: JavaScript's `\s` and `trim` leave U+0085 alone (`/^session:[^\s:][^\s]*$/.test("session:s\u0085")` is
-    // true and `"\u0085".trim()` is not blank in node); the old Rust class treated it as whitespace and refused both.
+    // true and `"\u0085".trim()` is not blank in node).
     let open = |namespace, tag| {
         let store = Arc::new(MemoryDocumentStore::new(None));
         MemoryService::new(store, Arc::new(Tagged(namespace, tag)), worker_gate())

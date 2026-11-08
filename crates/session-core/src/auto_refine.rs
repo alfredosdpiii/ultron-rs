@@ -208,7 +208,6 @@ pub fn plan(reply: &str, summary: &str) -> Plan {
     }
 }
 
-/// The proposal request's prompt.
 fn prompt(summary: &str, records: &[Value]) -> String {
     let active = serde_json::to_string_pretty(&active(records)).unwrap_or_default();
     let history: Vec<Value> = records[records.len().saturating_sub(HISTORY_LIMIT)..]
@@ -370,7 +369,6 @@ mod tests {
     fn auto_refine_message_follows_what_the_context_shows() {
         let active = [json!({"id": "r1", "version": 1, "text": "Use nextest."})];
         let message = message(&active, None, 7).unwrap();
-        assert_eq!(message["customType"], REFINEMENTS);
         assert!(message["content"].as_str().unwrap().contains("[r1 v1] Use nextest."));
         let entries = [json!({"type": "message", "message": message})];
         let shown = shown(&entries);

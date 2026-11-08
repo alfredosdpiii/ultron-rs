@@ -3,7 +3,6 @@
 
 use std::path::{Path, PathBuf};
 
-/// `GitPaths`: the repository directory, its common git directory and its `HEAD` file.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct GitPaths {
     pub repo_dir: PathBuf,

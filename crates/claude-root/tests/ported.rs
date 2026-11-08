@@ -9,13 +9,13 @@ use claude_root::control::{
 };
 use claude_root::external_root::{CellRunner, EventSource, ExternalRoot, MAX_INBOX};
 use claude_root::guide::{
-    Audience, CLAUDE_RLM_TOOL, GuideOptions, PromptResources, claude_runtime_guide, claude_system_prompt, runtime_guide,
+    Audience, GuideOptions, PromptResources, claude_runtime_guide, claude_system_prompt, runtime_guide,
 };
 use claude_root::launcher::{LaunchInput, LauncherOptions, build_claude_launch, parse_launcher_args};
 use claude_root::mcp_protocol::{McpHandlers, McpPrompt, McpResource, serve};
 use claude_root::mcp_server::parse_mcp_args;
 use claude_root::self_cmd::SelfCommand;
-use claude_root::worker_root::prepare_claude_root;
+use claude_root::worker_root::subscription_root;
 use jsrt::string::shell_quote;
 use serde_json::{Map, Value, json};
 use session_core::core::claude_root_requested;
@@ -126,7 +126,7 @@ fn claude_root_launcher_runs_claude_with_the_repl_as_the_only_tool() {
     let built = build(&["mcp-config", "system-prompt-file"], &options, &no_env, Vec::new());
     let value = |flag: &str| built.args[built.args.iter().position(|a| a == flag).unwrap() + 1].clone();
     assert_eq!(value("--tools"), "");
-    assert_eq!(value("--allowedTools"), CLAUDE_RLM_TOOL);
+    assert_eq!(value("--allowedTools"), "mcp__ultron__rlm");
     assert_eq!(value("--setting-sources"), "");
     assert_eq!(value("--system-prompt-file"), "/tmp/x/system-prompt.md");
     assert!(built.args.contains(&"--strict-mcp-config".to_string()));
@@ -151,7 +151,7 @@ fn claude_root_launcher_runs_claude_with_the_repl_as_the_only_tool() {
         json!({"mcpServers": {"ultron": {"type": "stdio", "command": "node", "args": ["cli.js", "mcp", "--no-instructions", "--socket", "/run/s.sock", "--root-model", "sonnet"]}}})
     );
     let settings: Value = serde_json::from_str(&built.files[1].1).unwrap();
-    assert_eq!(settings["permissions"], json!({"allow": [CLAUDE_RLM_TOOL]}));
+    assert_eq!(settings["permissions"], json!({"allow": ["mcp__ultron__rlm"]}));
     assert_eq!(
         settings["hooks"]["UserPromptSubmit"][0]["hooks"][0],
         json!({"type": "command", "command": "node cli.js hook user-prompt --socket /run/s.sock", "timeout": 60})
@@ -166,7 +166,7 @@ fn claude_root_launcher_runs_claude_with_the_repl_as_the_only_tool() {
     assert!(!built.args.contains(&"--strict-mcp-config".to_string()));
     assert!(!built.args.contains(&"--setting-sources".to_string()));
     let settings: Value = serde_json::from_str(&built.files[1].1).unwrap();
-    assert_eq!(settings, json!({"permissions": {"allow": [CLAUDE_RLM_TOOL]}}));
+    assert_eq!(settings, json!({"permissions": {"allow": ["mcp__ultron__rlm"]}}));
 }
 
 #[test]
@@ -228,57 +228,18 @@ fn claude_root_skip_permissions_by_default_except_as_root_or_turned_off() {
 }
 
 #[test]
-fn claude_root_prepare_claude_root_model_selection() {
+fn claude_root_claude_root_environment_for_the_worker() {
     let env = |k: &str| (k == claude_root::worker_root::SELF_COMMAND_ENV).then(|| r#"["node","cli.js"]"#.to_string());
-    let root = prepare_claude_root(None, None, &env).unwrap();
     assert_eq!(
-        (root.provider, root.model.as_str()),
-        (None, "claude-code/claude-opus-5-5")
-    );
-    assert_eq!(
-        root.env,
+        subscription_root(None, None, &env).unwrap().env,
         vec![(session_core::core::ROOT_ENV.to_string(), "claude".to_string())]
     );
     assert!(claude_root_requested(
         &|k: &str| (k == session_core::core::ROOT_ENV).then(|| " Claude ".to_string())
     ));
     assert!(!claude_root_requested(&no_env));
-    let model = |provider: Option<&str>, model: Option<&str>| prepare_claude_root(provider, model, &env);
-    assert_eq!(
-        model(None, Some("claude-code/haiku")).unwrap().model,
-        "claude-code/haiku"
-    );
-    assert_eq!(model(None, Some("sonnet")).unwrap().model, "claude-code/sonnet");
-    let opus = model(Some("claude-code"), Some("opus")).unwrap();
-    assert_eq!(
-        (opus.provider.as_deref(), opus.model.as_str()),
-        (Some("claude-code"), "opus")
-    );
-    let with_env = |k: &str| match k {
-        config::env::CLAUDE_MODEL_ENV => Some("sonnet".to_string()),
-        other => env(other),
-    };
-    assert_eq!(
-        prepare_claude_root(None, None, &with_env).unwrap().model,
-        "claude-code/sonnet"
-    );
-    assert!(
-        model(None, Some("openai/gpt-5"))
-            .unwrap_err()
-            .contains("does not serve openai/gpt-5")
-    );
-    assert!(
-        model(None, Some("gpt-5"))
-            .unwrap_err()
-            .contains("--model claude-code/<model>")
-    );
-    assert!(
-        model(Some("openai"), None)
-            .unwrap_err()
-            .contains("does not serve openai")
-    );
     // The worker needs to know how to start Ultron itself (`ULTRON_SELF_COMMAND`).
-    let fresh = prepare_claude_root(None, None, &no_env).unwrap();
+    let fresh = subscription_root(None, None, &no_env).unwrap();
     let command = &fresh
         .env
         .iter()
@@ -293,7 +254,8 @@ fn claude_root_prepare_claude_root_model_selection() {
 struct Fake;
 
 /// Set once a `wait` call is running (its abort signal exists), so a test cancels it only then.
-static WAITING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+static WAITING: Mutex<bool> = Mutex::new(false);
+static WAIT_STARTED: std::sync::Condvar = std::sync::Condvar::new();
 
 impl McpHandlers for Fake {
     fn name(&self) -> String {
@@ -316,7 +278,8 @@ impl McpHandlers for Fake {
         _: Map<String, Value>,
     ) -> Result<Value, String> {
         if args.get("code") == Some(&json!("wait")) {
-            WAITING.store(true, std::sync::atomic::Ordering::SeqCst);
+            *WAITING.lock().unwrap() = true;
+            WAIT_STARTED.notify_all();
             while !signal.aborted() {
                 std::thread::sleep(Duration::from_millis(5));
             }
@@ -438,11 +401,11 @@ fn claude_root_mcp_initialize_tools_prompts_and_resources() {
 fn claude_root_mcp_cancelled_notification_aborts_the_call() {
     let mut session = Session::new();
     session.line(&json!({"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {"name": "rlm", "arguments": {"code": "wait"}}}).to_string());
-    let deadline = std::time::Instant::now() + Duration::from_secs(120);
-    while !WAITING.load(std::sync::atomic::Ordering::SeqCst) {
-        assert!(std::time::Instant::now() < deadline, "the call never started");
-        std::thread::sleep(Duration::from_millis(5));
-    }
+    let (started, _) = WAIT_STARTED
+        .wait_timeout_while(WAITING.lock().unwrap(), Duration::from_secs(120), |waiting| !*waiting)
+        .unwrap();
+    assert!(*started, "the call never started");
+    drop(started);
     session
         .line(&json!({"jsonrpc": "2.0", "method": "notifications/cancelled", "params": {"requestId": 1}}).to_string());
     let cancelled = session.next();
@@ -688,7 +651,7 @@ fn claude_root_child_has_only_the_repl_tool_and_its_own_prompt() {
     let value = |flag: &str| args[args.iter().position(|a| a == flag).unwrap() + 1].clone();
     assert_eq!(args[0], "-p");
     assert_eq!(value("--tools"), "");
-    assert_eq!(value("--allowedTools"), CLAUDE_RLM_TOOL);
+    assert_eq!(value("--allowedTools"), "mcp__ultron__rlm");
     assert_eq!(value("--setting-sources"), "");
     assert_eq!(value("--system-prompt-file"), "/tmp/p.md");
     assert!(args.contains(&"--strict-mcp-config".to_string()));
@@ -711,7 +674,7 @@ fn claude_root_stream_json_turns_count_responses_not_blocks() {
     fold_stream_line(
         &assistant(
             "m1",
-            json!({"type": "tool_use", "id": "t1", "name": CLAUDE_RLM_TOOL, "input": {}}),
+            json!({"type": "tool_use", "id": "t1", "name": "mcp__ultron__rlm", "input": {}}),
         ),
         &mut stats,
     );
@@ -772,7 +735,7 @@ fn claude_root_guide_wording_for_a_root_nothing_can_wake() {
         },
         false,
     );
-    assert!(prompt.contains(CLAUDE_RLM_TOOL));
+    assert!(prompt.contains("mcp__ultron__rlm"));
     assert!(prompt.contains("destructive"));
     assert!(prompt.contains("Never commit or push unless asked"));
     assert!(prompt.ends_with("# Environment\n- Working directory: /work\n- Platform: linux\n- Date: 2026-09-30"));

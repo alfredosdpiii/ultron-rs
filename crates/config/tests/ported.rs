@@ -158,32 +158,19 @@ fn config_ported_settings_lock_held_blocks_write_and_stale_lock_is_taken_over() 
 
 #[test]
 fn config_ported_settings_write_reads_the_file_only_after_taking_the_lock() {
+    use std::os::unix::fs::PermissionsExt;
     let (_tmp, agent, project) = dirs();
     let path = agent.join("settings.json");
     fs::write(&path, r#"{"theme":"dark"}"#).expect("seed");
-    let lock = agent.join("settings.json.lock");
-    // Another process holds the lock, writes a key, then releases it inside the 200 ms retry window. Under load
-    // that process can be starved past the window; the write then fails with the lock held, which is right, so
-    // that attempt checks nothing was written and the test tries again until the other process kept its pace.
-    for _attempt in 0..50 {
-        fs::write(&path, r#"{"theme":"dark"}"#).expect("seed");
-        let mut manager = SettingsManager::create(&project, &agent, true);
-        fs::create_dir(&lock).expect("held lock");
-        let other = {
-            let (path, lock) = (path.clone(), lock.clone());
-            std::thread::spawn(move || {
-                std::thread::sleep(std::time::Duration::from_millis(60));
-                fs::write(&path, r#"{"theme":"dark","packages":["npm:other"]}"#).expect("other write");
-                fs::remove_dir(&lock).expect("release");
-            })
-        };
-        manager.set_global("theme", Some("light".into()));
-        other.join().expect("other");
-        if manager.drain_errors().is_empty() {
-            assert_eq!(read_json(&path), json!({ "theme": "light", "packages": ["npm:other"] }));
-            return;
-        }
-        assert_eq!(read_json(&path), json!({ "theme": "dark", "packages": ["npm:other"] }));
-    }
-    panic!("the other writer never released inside the retry window in 50 attempts");
+    let mut manager = SettingsManager::create(&project, &agent, true);
+    // Another process holds the lock for the whole write, over a file no read can open: a write that read the file
+    // before taking the lock fails on the read, one that reads after it fails on the lock.
+    fs::create_dir(agent.join("settings.json.lock")).expect("held lock");
+    fs::set_permissions(&path, fs::Permissions::from_mode(0o000)).expect("unreadable");
+    manager.set_global("theme", Some("light".into()));
+    let errors = manager.drain_errors();
+    fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).expect("readable");
+    assert_eq!(errors.len(), 1, "{errors:?}");
+    assert_eq!(errors[0].message, "Lock file is already being held");
+    assert_eq!(read_json(&path), json!({ "theme": "dark" }));
 }

@@ -278,7 +278,6 @@ struct Closed {
     changed: Condvar,
 }
 
-/// A running server generation.
 pub struct RunningServer {
     pub server_id: String,
     /// The coordinator's public socket: it reaches the newest generation of this server ID.

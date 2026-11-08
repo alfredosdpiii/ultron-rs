@@ -307,7 +307,7 @@ fn hex(v: &Value) -> bool {
         .is_some_and(|t| t.len() == 40 && t.chars().all(|c| c.is_ascii_hexdigit()))
 }
 
-/// The kept contract's Git baseline (waves 41, 43): `{"commit": <40 hex>, "tree": <40 hex>}`.
+/// The kept contract's Git baseline: `{"commit": <40 hex>, "tree": <40 hex>}`.
 fn assert_clean_baseline(kept: &[Value]) {
     assert_eq!(kept.len(), 1, "{kept:?}");
     let baseline = &kept[0]["baseline"];
@@ -412,15 +412,12 @@ fn session_core_w18s_a_kept_childs_workspace_checks_after_a_restart_use_the_kept
     let ended = prompt(&worker, "ROOT1: keep a child");
     assert_eq!(ended["error"], Value::Null, "{ended}");
     // The kept child's cell ended (its verdict is recorded) before the worker hands the session over.
-    let end = Instant::now() + HANG;
-    while !worker
-        .requests()
-        .iter()
-        .any(|r| answering(r) && texts(r).first().is_some_and(|t| t.contains("KEPT: fix status")))
-    {
-        assert!(Instant::now() < end, "the kept child never ran its cell");
-        std::thread::sleep(Duration::from_millis(10));
-    }
+    worker.requests.wait("the kept child's cell result", |requests| {
+        requests
+            .iter()
+            .any(|r| answering(r) && texts(r).first().is_some_and(|t| t.contains("KEPT: fix status")))
+            .then_some(())
+    });
     worker.hand_over();
     let collect = format!(
         "import json\nhid = open({}).read()\nr = (await rlm.collect([hid]))[0]['result']\nopen({}, 'w').write(json.dumps(r))\nprint('collected')",
@@ -446,8 +443,8 @@ fn session_core_w18s_a_kept_childs_workspace_checks_after_a_restart_use_the_kept
     assert!(hex(&baseline["commit"]) && hex(&baseline["tree"]), "{kept:?}");
 }
 
-/// Wave 43: a working directory with far more dirty paths than the earlier baseline kept (256) when the child
-/// starts: the next worker still compares with the kept baseline (one tree id), so only the child's own edit counts.
+/// A working directory with a thousand dirty paths when the child starts: the next worker still compares with the
+/// kept baseline (one tree id), so only the child's own edit counts.
 #[test]
 fn session_core_w21c_workspace_checks_after_a_restart_cover_a_thousand_dirty_paths() {
     let r = across_restart_with(
@@ -472,7 +469,7 @@ fn session_core_w21c_workspace_checks_after_a_restart_cover_a_thousand_dirty_pat
     assert_clean_baseline(&r.kept);
 }
 
-/// Wave 43: a kept child's failed attempts are kept with its contract (`ultron.kept-contracts`), so the next worker
+/// A kept child's failed attempts are kept with its contract (`ultron.kept-contracts`), so the next worker
 /// goes on counting. `{"retry": 2}`: the first worker's first answer fails once and its retry passes (1 attempt
 /// used); after the restart a failing answer gets only the retry left (attempt 2, never 3), then its failure is
 /// final: the next answer reports it without re-running the checks and the child's `rlm.finish` is refused.

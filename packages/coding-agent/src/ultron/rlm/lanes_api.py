@@ -1,7 +1,7 @@
 """REPL lanes, running cells, never-waiting results and kernel recovery: the `rlm` methods for the Rust host's lane API.
 
 A root may run several lanes, each a kernel of its own; a cell that outlives its tool call or waits on the host
-does not hold the others. Hosts without lanes (the TypeScript host) answer these requests with an error.
+does not hold the others.
 """
 
 from __future__ import annotations

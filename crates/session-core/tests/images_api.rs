@@ -101,8 +101,7 @@ fn session_core_rlm_images_generate_saves_the_image_and_returns_its_path() {
     );
     assert_eq!(lines("doc"), vec![json!(true)], "{output}");
     assert_eq!(lines("models"), vec![json!(true)], "{output}");
-    // The provider saw the session's key and the size as image_config.
-    let sent = images.lock().unwrap().clone();
+    let sent = images.all();
     assert_eq!(sent.len(), 2, "{sent:?}");
     assert_eq!(sent[0]["image_config"], json!({"aspect_ratio": "1:1"}));
     assert_eq!(sent[0]["model"], "google/gemini-2.5-flash-image");

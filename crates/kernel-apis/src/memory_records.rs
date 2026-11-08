@@ -147,8 +147,6 @@ pub fn typed_fields(payload: &Map<String, Value>, text: &str) -> Result<Option<T
     }))
 }
 
-// --- globs ---------------------------------------------------------------------------------------------------------
-
 /// A repository-relative file pattern: `*` and `?` stay within one path segment, `**` as a whole segment spans any
 /// number of segments (also none), `[abc]` / `[!abc]` match one character of a set, `{a,b}` either alternative.
 #[derive(Debug, Clone)]
@@ -270,8 +268,6 @@ fn translate(pattern: &str) -> Option<String> {
     out.push('$');
     Some(out)
 }
-
-// --- the shared record index -----------------------------------------------------------------------------------------
 
 /// One indexed record: its Hindsight document id, typed fields, scope and the identity tags it was stored with.
 #[derive(Debug, Clone, PartialEq, Eq)]

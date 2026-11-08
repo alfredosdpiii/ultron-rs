@@ -21,18 +21,9 @@ fn loki_registry_urls_match_loki_py() {
     }
 }
 
+/// The answered lookups (found, 404, 503, a redirect) run end to end in hook_differential's `online-` cases.
 #[test]
-fn loki_registry_lookup_failures_read_as_loki_py_reports_them() {
-    assert_eq!(dependency_violation("npm", "pkg", Ok(200)), None);
-    assert_eq!(dependency_violation("npm", "pkg", Ok(301)), None);
-    assert_eq!(
-        dependency_violation("npm", "pkg", Ok(404)),
-        Some("npm: package not found: pkg".into())
-    );
-    assert_eq!(
-        dependency_violation("hex", "pkg", Ok(500)),
-        Some("hex: registry check unavailable: pkg: HTTP 500".into())
-    );
+fn loki_registry_refused_connection_reads_as_loki_py_reports_it() {
     // A registry that refuses the connection (a port nothing listens on, on loopback).
     let port = std::net::TcpListener::bind("127.0.0.1:0")
         .unwrap()

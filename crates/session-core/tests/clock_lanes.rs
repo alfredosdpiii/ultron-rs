@@ -63,7 +63,6 @@ fn session_core_clock_lines_on_subagent_lanes_in_the_local_zone() {
         let lines = clock(request);
         assert_eq!(lines.len(), 1, "{lane}: {lines:?}");
         let line = &lines[0];
-        // "[clock] 2026-10-17 21:03 UTC+05:30"
         assert_eq!(line.len(), "[clock] 2026-10-17 21:03 UTC+05:30".len(), "{lane}: {line}");
         assert!(line.ends_with(" UTC+05:30"), "{lane}: {line}");
     }

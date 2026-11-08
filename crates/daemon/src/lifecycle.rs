@@ -219,7 +219,6 @@ impl Lifecycle {
         self.reconcile(inner);
     }
 
-    /// Cancel pending timers and drop every demand.
     pub fn close(&self) {
         let mut inner = self.lock();
         inner.initial_timer = None;

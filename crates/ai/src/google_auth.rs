@@ -185,8 +185,6 @@ pub async fn request_headers(env: Option<&ProviderEnv>, transport: &dyn Transpor
     })
 }
 
-// ------------------------------------------------------------------------------------------ loading the credential
-
 fn optional_string(json: &Value, key: &str) -> Option<String> {
     jsrt::value::truthy(json.get(key)).then(|| jsrt::value::string(json.get(key)))
 }
@@ -413,8 +411,6 @@ async fn application_default(env: Option<&ProviderEnv>, transport: &dyn Transpor
     Ok(credential)
 }
 
-// ------------------------------------------------------------------------------------------- the metadata server
-
 /// gcp-metadata's `detectGCPResidency`: a serverless runtime, a Google BIOS, or a GCE MAC address.
 fn gcp_residency(env: Option<&ProviderEnv>) -> bool {
     if ["CLOUD_RUN_JOB", "FUNCTION_NAME", "K_SERVICE"]
@@ -554,8 +550,6 @@ async fn futures_select<'a, T>(
         first = &mut b => (first, a),
     }
 }
-
-// ------------------------------------------------------------------------------------------------------- gaxios
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum ResponseType {
@@ -728,8 +722,6 @@ const NO_RETRY: Retry = Retry {
     status_retries: 0,
     timeout: None,
 };
-
-// ------------------------------------------------------------------------------------------------- access tokens
 
 fn token_field(data: &Value, key: &str) -> String {
     jsrt::value::string(data.get(key))

@@ -358,15 +358,19 @@ fn kernel_sandbox_snapshot_restore_and_continuity_work_in_the_session_dir() {
             kernel.is_running() && kernel.pid().is_some_and(|pid| pid != old)
         });
         let restarted = kernel.pid().unwrap();
-        // Settle, then check nothing happened: a late death could only let this check pass wrongly, never fail.
-        std::thread::sleep(Duration::from_millis(500));
+        // The restarting thread ends as the restart completes; a death tied to it would end this cell or follow it.
+        let reply = kernel.execute_cell("total + 1", None, None).unwrap();
+        assert_eq!(reply.result.result.as_deref(), Some("42"), "{name}: {reply:?}");
+        assert_eq!(
+            value(&kernel, "6 * 7"),
+            "42",
+            "{name}: the restarted kernel died with its spawning thread"
+        );
         assert_eq!(
             kernel.pid(),
             Some(restarted),
             "{name}: the restarted kernel died with its spawning thread"
         );
-        let reply = kernel.execute_cell("total + 1", None, None).unwrap();
-        assert_eq!(reply.result.result.as_deref(), Some("42"), "{name}: {reply:?}");
         let recovery = reply.recovery.expect("recovery report");
         assert!(
             recovery.reason.starts_with("RLM kernel exited (SIGKILL)"),
@@ -491,9 +495,7 @@ fn kernel_sandbox_helper_host() {
         scope.spawn(|| kernel.start().unwrap());
     });
     let started = kernel.pid();
-    // Settle, then check the kernel started by the ended thread still serves (a late death could only make the
-    // outer test pass wrongly, never fail).
-    std::thread::sleep(Duration::from_millis(300));
+    // The spawning thread has ended (joined); a death tied to it would end this cell or follow it.
     assert_eq!(value(&kernel, "6 * 7"), "42");
     assert_eq!(kernel.pid(), started, "the kernel died with its spawning thread");
     let root = i32::try_from(kernel.pid().unwrap()).unwrap();

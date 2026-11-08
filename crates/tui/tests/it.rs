@@ -10,6 +10,8 @@ mod support;
 mod attachments;
 #[path = "autocomplete_parity.rs"]
 mod autocomplete_parity;
+#[path = "clipboard_copy.rs"]
+mod clipboard_copy;
 #[path = "clipboard_image.rs"]
 mod clipboard_image;
 #[path = "editor_autocomplete_async.rs"]
@@ -44,8 +46,6 @@ mod marked_parity;
 mod marked_perf;
 #[path = "osc11.rs"]
 mod osc11;
-#[path = "p_tui.rs"]
-mod p_tui;
 #[path = "parity.rs"]
 mod parity;
 #[path = "paste_parity.rs"]
@@ -60,6 +60,8 @@ mod right_click_paste;
 mod screen;
 #[path = "split_kitty_images.rs"]
 mod split_kitty_images;
+#[path = "split_view.rs"]
+mod split_view;
 #[path = "tty_writer.rs"]
 mod tty_writer;
 #[path = "viewport.rs"]

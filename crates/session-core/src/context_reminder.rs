@@ -93,7 +93,6 @@ pub fn format_tokens(tokens: u64) -> String {
     }
 }
 
-/// The reminder line for `used` tokens of `limit`.
 pub fn reminder_line(used: u64, limit: &Limit) -> String {
     let at = if limit.compaction {
         "before compaction"

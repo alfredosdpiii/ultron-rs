@@ -24,8 +24,6 @@ pub fn resolve_cloudflare_model(model: &Model, env: Option<&ProviderEnv>) -> Mod
     }
 }
 
-// ------------------------------------------------------------------------------------------------------- auth
-
 use crate::auth::{
     ApiKeyAuth, ApiKeyCredential, AuthContext, AuthInteraction, AuthPrompt, AuthResult, CredentialEnv, ModelAuth,
 };

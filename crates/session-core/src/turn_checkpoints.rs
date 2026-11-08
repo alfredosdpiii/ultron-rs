@@ -43,7 +43,6 @@ impl TurnCheckpoints {
         }
     }
 
-    /// Whether turns record checkpoints.
     pub fn enabled(&self) -> bool {
         self.settings["enabled"] != false && !self.sandboxed
     }
@@ -81,7 +80,6 @@ impl TurnCheckpoints {
         value["kind"] = json!("turn");
         value[field] = json!(key);
         value["createdAt"] = json!(jsrt::date::now_ms());
-        // A checkpoint that cannot be stored costs the turn nothing.
         let _ = stored::put(&mut lock(&self.session), key, value);
     }
 }

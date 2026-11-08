@@ -193,7 +193,6 @@ pub fn query_tmux_client_terminal_name(env: &Env) -> Option<String> {
     parse_client_termtype(&out)
 }
 
-/// Notification urgency.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Urgency {
     Low,

@@ -135,8 +135,6 @@ pub fn detect(
     })
 }
 
-// --- Interactive profile ---------------------------------------------------------------------------------------
-
 /// Extra directories bubblewrap shows read-only besides the system ones (when present).
 const INTERACTIVE_SYSTEM_EXTRA: &[&str] = &["/opt", "/nix"];
 // Rootless `unshare` replaces /tmp, /var/tmp, /dev/shm and /run/user by private empty tmpfs mounts: shared sockets
@@ -364,7 +362,6 @@ impl Policy {
             .collect()
     }
 
-    /// The command line running `argv` in `cwd` under `mechanism`.
     pub fn wrap(&self, mechanism: Mechanism, layout: &dyn Layout, argv: &[String], cwd: &Path) -> Vec<String> {
         let exists = |path: &PathBuf| layout.entry(path) != Entry::Missing;
         let writable: Vec<&PathBuf> = self.writable.iter().filter(|p| exists(p)).collect();

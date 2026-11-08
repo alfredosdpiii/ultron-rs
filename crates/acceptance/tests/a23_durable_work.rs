@@ -257,7 +257,6 @@ fn run_child_until_killed(test: &str, role: &str, dir: &Path, signal_file: &str)
     child.wait().unwrap();
 }
 
-/// The child role named by the environment, if this process is a child.
 fn child_role() -> Option<(String, PathBuf)> {
     let value = std::env::var(CHILD).ok()?;
     let (role, dir) = value.split_once('\n')?;

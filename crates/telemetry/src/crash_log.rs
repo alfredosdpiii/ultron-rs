@@ -11,7 +11,6 @@ use std::path::{Path, PathBuf};
 #[derive(Debug, Clone, PartialEq)]
 pub struct CrashRecord(pub Map<String, Value>);
 
-/// `<agent dir>/crashes.json`.
 pub fn crash_log_path(agent_dir: &Path) -> PathBuf {
     agent_dir.join("crashes.json")
 }
@@ -36,7 +35,6 @@ pub fn read_crash_log(path: &Path) -> Vec<CrashRecord> {
         .collect()
 }
 
-/// `clearCrashLog`.
 pub fn clear_crash_log(path: &Path) {
     let _ = fs::remove_file(path);
 }

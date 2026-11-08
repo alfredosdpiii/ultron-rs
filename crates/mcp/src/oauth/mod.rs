@@ -176,7 +176,6 @@ fn strings(items: Option<Vec<String>>) -> Option<Value> {
     items.map(|items| Value::Array(items.into_iter().map(Value::String).collect()))
 }
 
-/// `parseProtectedResourceMetadata`.
 pub fn parse_protected_resource_metadata(value: &Value) -> Result<Value, String> {
     let input = object(value, "OAuth protected resource metadata")?;
     let mut out = input.clone();
@@ -196,7 +195,6 @@ pub fn parse_protected_resource_metadata(value: &Value) -> Result<Value, String>
     Ok(Value::Object(out))
 }
 
-/// `parseAuthorizationServerMetadata`.
 pub fn parse_authorization_server_metadata(value: &Value) -> Result<Value, String> {
     let input = object(value, "authorization server metadata")?;
     let response_types = optional_strings(input.get("response_types_supported"), "response_types_supported")?
@@ -275,7 +273,6 @@ pub fn parse_tokens(value: &Value) -> Result<Value, String> {
     Ok(Value::Object(out))
 }
 
-/// `parseClientInformation`.
 pub fn parse_client_information(value: &Value) -> Result<Value, String> {
     let input = object(value, "OAuth client registration response")?;
     let mut out = input.clone();

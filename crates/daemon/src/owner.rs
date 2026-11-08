@@ -10,7 +10,6 @@ use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
-/// Why ownership was not taken.
 #[derive(Debug)]
 pub enum OwnerError {
     /// Another live process owns the file (its recorded pid, when readable).
@@ -32,7 +31,6 @@ impl std::fmt::Display for OwnerError {
 
 impl std::error::Error for OwnerError {}
 
-/// The owner record of `target` (`<target>.owner`).
 pub fn owner_path(target: &Path) -> PathBuf {
     PathBuf::from(format!("{}.owner", target.display()))
 }

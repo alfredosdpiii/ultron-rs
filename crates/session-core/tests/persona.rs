@@ -14,7 +14,6 @@ use session_core::compose::{Runtime, Services};
 use session_core::core::Op;
 use std::path::Path;
 use std::sync::Arc;
-use std::time::Instant;
 
 const PERSONALITY: &str = "# Ultron\n\nYou were built to finish things.";
 
@@ -134,18 +133,6 @@ fn session_core_engineering_mode_with_the_rust_guide_uses_bundled_skills_proacti
     assert!(ts.contains(REACTIVE) && !ts.contains(PROACTIVE), "{ts}");
 }
 
-fn wait_runs(a: &p_session_support::Actor, n: usize) {
-    let end = Instant::now() + HANG;
-    while a.events("run_end").len() < n {
-        assert!(
-            Instant::now() < end,
-            "timed out waiting for {n} runs: {:?}",
-            a.events("run_end")
-        );
-        std::thread::sleep(std::time::Duration::from_millis(10));
-    }
-}
-
 /// The actor has handled everything before this call (its input is in order).
 fn settle(a: &p_session_support::Actor) {
     a.call(Op::Describe).unwrap();
@@ -176,7 +163,7 @@ fn session_core_persona_nudge_continues_a_turn_that_announced_its_next_step() {
     let a = actor(script, persona_setup());
     let ended = a.prompt("fix the bug");
     assert_eq!(ended["error"], Value::Null, "{ended}");
-    wait_runs(&a, 2);
+    a.events.wait_count("run_end", 2);
     settle(&a);
     assert_eq!(a.events("run_start").len(), 2, "the answer that asks is not nudged");
     assert!(a.events("run_end").iter().all(|e| e["status"] == "completed"));
@@ -255,14 +242,14 @@ fn session_core_persona_nudge_stops_at_five_and_user_input_starts_over() {
     });
     let a = actor(script, persona_setup());
     a.prompt("go");
-    wait_runs(&a, 6);
+    a.events.wait_count("run_end", 6);
     settle(&a);
     assert_eq!(a.events("run_start").len(), 6, "the prompt's run and five nudges");
     let numbers: Vec<Value> = nudges(&a).iter().map(|m| m["details"]["nudge"].clone()).collect();
     assert_eq!(numbers, [1, 2, 3, 4, 5].map(Value::from));
     // The user's next prompt resets the count.
     a.prompt("again");
-    wait_runs(&a, 12);
+    a.events.wait_count("run_end", 12);
     settle(&a);
     assert_eq!(a.events("run_start").len(), 12);
     let numbers: Vec<Value> = nudges(&a).iter().map(|m| m["details"]["nudge"].clone()).collect();
@@ -299,7 +286,7 @@ fn session_core_persona_nudge_yields_to_a_queued_user_message() {
     })
     .unwrap();
     go.send(()).unwrap();
-    wait_runs(&a, 1);
+    a.events.wait_count("run_end", 1);
     settle(&a);
     assert_eq!(a.events("run_start").len(), 1, "the queued message wins over the nudge");
     assert!(nudges(&a).is_empty());

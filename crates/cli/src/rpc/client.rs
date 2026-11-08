@@ -49,7 +49,6 @@ pub struct RpcClient {
 pub const RESPONSE_TIMEOUT: Duration = Duration::from_secs(30);
 
 impl RpcClient {
-    /// `start()`.
     pub fn start(options: &RpcClientOptions) -> Result<Self, String> {
         let mut command = Command::new(&options.program);
         command.args(&options.program_args).args(["--mode", "rpc"]);
@@ -92,7 +91,6 @@ impl RpcClient {
         let (tx, lines) = channel();
         std::thread::spawn(move || {
             for line in JsonlLines::new(stdout).map_while(Result::ok) {
-                // Non-JSON lines are ignored.
                 if let Ok(value) = serde_json::from_str(&line)
                     && tx.send(Line::Record(value)).is_err()
                 {
@@ -154,7 +152,6 @@ impl RpcClient {
         }
     }
 
-    /// Write one raw line to the agent's stdin.
     pub fn write_line(&mut self, line: &str) -> Result<(), String> {
         if let Some(error) = &self.exit_error {
             return Err(error.clone());

@@ -14,10 +14,8 @@ use tui::{Markdown, MarkdownOptions};
 use crate::changelog::{Entry, normalize_links, parse};
 use crate::components::{bold, dynamic_border, markdown_theme};
 
-/// `ANTHROPIC_SUBSCRIPTION_AUTH_WARNING`.
 pub const ANTHROPIC_SUBSCRIPTION_AUTH_WARNING: &str = "Anthropic subscription auth is active. Third-party harness usage draws from extra usage and is billed per token, not your Claude plan limits. Manage extra usage at https://claude.ai/settings/usage. Disable this warning in /settings.";
 
-/// `RELEASES_URL`.
 pub const RELEASES_URL: &str = "https://github.com/alfredosdpiii/ultron/releases";
 
 /// The command the update notice names (`${APP_NAME} update`).

@@ -12,7 +12,6 @@ use std::time::Duration;
 /// How long one wait for input lasts before `stop` is checked again.
 pub const POLL: Duration = Duration::from_millis(50);
 
-/// Bytes as they arrive.
 pub trait Input {
     /// The bytes available within `timeout`: `None` when none came, an empty vector at the end of the input.
     fn wait(&mut self, timeout: Duration) -> std::io::Result<Option<Vec<u8>>>;
@@ -26,7 +25,6 @@ pub enum LineRead {
     Cancelled,
     /// The input ended (Ctrl+D on an empty line, a closed stdin, a read error).
     Closed,
-    /// `stop` said so.
     Stopped,
 }
 

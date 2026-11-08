@@ -27,7 +27,6 @@ pub(super) const WEBSOCKET_CONNECTION_LIMIT_REACHED_CODE: &str = "websocket_conn
 pub(super) const PREVIOUS_RESPONSE_NOT_FOUND_CODE: &str = "previous_response_not_found";
 const WEBSOCKET_MESSAGE_TOO_BIG_CLOSE_CODE: u16 = 1009;
 
-/// `OpenAICodexWebSocketDebugStats`.
 #[derive(Clone, Debug, Default, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct OpenAICodexWebSocketDebugStats {

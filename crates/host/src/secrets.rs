@@ -12,9 +12,9 @@ use std::sync::{Mutex, OnceLock};
 
 const PATTERNS: &str = include_str!("../../../packages/coding-agent/src/ultron/rlm/secret-patterns.json");
 const KNOWN_SECRET_MIN_LENGTH: usize = 8;
-/// JavaScript's `\s` (WhiteSpace and LineTerminator), without the class brackets.
 /// JavaScript's (ASCII) word character, for `\b` and `\B`: fancy-regex cannot switch Unicode mode off inline.
 const W: &str = "[A-Za-z0-9_]";
+/// JavaScript's `\s` (WhiteSpace and LineTerminator), without the class brackets.
 const JS_SPACE: &str =
     r"\t\n\x0B\x0C\r \u{A0}\u{1680}\u{2000}-\u{200A}\u{2028}\u{2029}\u{202F}\u{205F}\u{3000}\u{FEFF}";
 

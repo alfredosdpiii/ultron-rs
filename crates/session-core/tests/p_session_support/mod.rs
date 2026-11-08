@@ -7,11 +7,78 @@ use std::io::{BufRead, BufReader, Read, Write};
 use std::net::TcpListener;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{Sender, channel};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
 
 /// A hang guard, never a pass condition.
 pub const HANG: Duration = Duration::from_secs(120);
+
+/// What a test watches grow (a session's events, the requests its server saw): a waiter wakes on every push.
+pub struct Log<T> {
+    items: Mutex<Vec<T>>,
+    grew: Condvar,
+}
+
+impl<T> Default for Log<T> {
+    fn default() -> Self {
+        Log {
+            items: Mutex::new(Vec::new()),
+            grew: Condvar::new(),
+        }
+    }
+}
+
+impl<T: Clone> Log<T> {
+    /// Appends `item`; its index.
+    pub fn push(&self, item: T) -> usize {
+        let mut items = self.items.lock().unwrap();
+        items.push(item);
+        self.grew.notify_all();
+        items.len() - 1
+    }
+
+    pub fn all(&self) -> Vec<T> {
+        self.items.lock().unwrap().clone()
+    }
+
+    /// Waits until `found` answers for the items so far (a hang guard, never a pass condition).
+    pub fn wait<R>(&self, what: &str, mut found: impl FnMut(&[T]) -> Option<R>) -> R {
+        let end = Instant::now() + HANG;
+        let mut items = self.items.lock().unwrap();
+        loop {
+            if let Some(answer) = found(&items) {
+                return answer;
+            }
+            let left = end
+                .checked_duration_since(Instant::now())
+                .unwrap_or_else(|| panic!("timed out waiting for {what}"));
+            items = self.grew.wait_timeout(items, left).unwrap().0;
+        }
+    }
+}
+
+impl Log<Value> {
+    /// The events of `kind`, in order.
+    pub fn of_kind(&self, kind: &str) -> Vec<Value> {
+        of_kind(&self.all(), kind)
+    }
+
+    /// Waits until `n` events of `kind` were emitted (a hang guard, never a pass condition).
+    pub fn wait_count(&self, kind: &str, n: usize) {
+        self.wait(&format!("{n} {kind}"), |events| {
+            (of_kind(events, kind).len() >= n).then_some(())
+        })
+    }
+
+    /// Waits until an event of `kind` was emitted (a hang guard, never a pass condition); the latest.
+    pub fn wait_latest(&self, kind: &str) -> Value {
+        self.wait(kind, |events| of_kind(events, kind).pop())
+    }
+}
+
+fn of_kind(events: &[Value], kind: &str) -> Vec<Value> {
+    events.iter().filter(|e| e["type"] == kind).cloned().collect()
+}
 
 fn sse(events: &[Value]) -> String {
     events
@@ -69,10 +136,10 @@ pub fn in_order(replies: Vec<String>) -> Script {
 }
 
 /// Serve `script` on loopback; the request bodies are kept.
-pub fn server(mut script: Script) -> (u16, Arc<Mutex<Vec<Value>>>) {
+pub fn server(mut script: Script) -> (u16, Arc<Log<Value>>) {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let port = listener.local_addr().unwrap().port();
-    let requests = Arc::new(Mutex::new(Vec::new()));
+    let requests: Arc<Log<Value>> = Arc::default();
     let seen = requests.clone();
     std::thread::spawn(move || {
         for stream in listener.incoming() {
@@ -99,11 +166,7 @@ pub fn server(mut script: Script) -> (u16, Arc<Mutex<Vec<Value>>>) {
                 continue;
             }
             let body: Value = serde_json::from_slice(&body).unwrap_or(Value::Null);
-            let index = {
-                let mut seen = seen.lock().unwrap();
-                seen.push(body.clone());
-                seen.len() - 1
-            };
+            let index = seen.push(body.clone());
             let reply = script(&body, index);
             let head = format!(
                 "HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\ncontent-length: {}\r\nconnection: close\r\n\r\n",
@@ -116,7 +179,6 @@ pub fn server(mut script: Script) -> (u16, Arc<Mutex<Vec<Value>>>) {
     (port, requests)
 }
 
-/// What a session starts with.
 #[derive(Default)]
 pub struct Setup {
     pub settings: Option<Value>,
@@ -127,8 +189,8 @@ pub struct Setup {
 pub struct Actor {
     pub tx: Sender<Input>,
     actor: Option<std::thread::JoinHandle<()>>,
-    pub events: Arc<Mutex<Vec<Value>>>,
-    pub requests: Arc<Mutex<Vec<Value>>>,
+    pub events: Arc<Log<Value>>,
+    pub requests: Arc<Log<Value>>,
     pub root: PathBuf,
     pub cwd: PathBuf,
     _tmp: tempfile::TempDir,
@@ -198,9 +260,15 @@ pub fn actor(script: Script, setup: Setup) -> Actor {
         auto_name: false,
     };
     drop(created);
-    let events = Arc::new(Mutex::new(Vec::new()));
+    let events: Arc<Log<Value>> = Arc::default();
     let sink = events.clone();
-    let (tx, actor, _) = session_core::core::spawn(open, Box::new(move |e| sink.lock().unwrap().push(e))).unwrap();
+    let (tx, actor, _) = session_core::core::spawn(
+        open,
+        Box::new(move |e| {
+            sink.push(e);
+        }),
+    )
+    .unwrap();
     Actor {
         tx,
         actor: Some(actor),
@@ -228,29 +296,15 @@ impl Actor {
     }
 
     pub fn events(&self, kind: &str) -> Vec<Value> {
-        self.events
-            .lock()
-            .unwrap()
-            .iter()
-            .filter(|e| e["type"] == kind)
-            .cloned()
-            .collect()
+        self.events.of_kind(kind)
     }
 
-    /// Waits until an event of `kind` was emitted (a hang guard, never a pass condition).
     pub fn wait_event(&self, kind: &str) -> Value {
-        let end = Instant::now() + HANG;
-        loop {
-            if let Some(event) = self.events(kind).pop() {
-                return event;
-            }
-            assert!(Instant::now() < end, "timed out waiting for {kind}");
-            std::thread::sleep(Duration::from_millis(10));
-        }
+        self.events.wait_latest(kind)
     }
 
     pub fn requests(&self) -> Vec<Value> {
-        self.requests.lock().unwrap().clone()
+        self.requests.all()
     }
 
     /// The committed writes of the session's journal, in order.

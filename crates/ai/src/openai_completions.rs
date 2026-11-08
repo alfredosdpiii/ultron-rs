@@ -32,7 +32,6 @@ use serde::Deserialize;
 use serde_json::{Map, Value, json};
 use std::collections::HashMap;
 
-/// `OpenAICompletionsOptions`.
 #[derive(Clone, Default, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct OpenAICompletionsOptions {

@@ -10,7 +10,6 @@ use crate::storage::JsonlStorage;
 use crate::{SharedClock, lock_clock};
 use serde_json::Value;
 
-/// An open session.
 pub struct Session {
     metadata: Metadata,
     storage: JsonlStorage,
@@ -46,7 +45,6 @@ impl Session {
         self.clock.clone()
     }
 
-    /// The stored value at `namespace`/`key`.
     pub fn value(&self, namespace: &str, key: &str) -> Option<&Value> {
         self.state().value(namespace, key).map(|v| &v.value)
     }
@@ -65,7 +63,6 @@ impl Session {
         self.storage.commit(writes, &mut *lock_clock(&self.clock))
     }
 
-    /// `getName`.
     pub fn name(&self) -> Option<String> {
         self.value(SESSION_NAME, "").and_then(Value::as_str).map(str::to_string)
     }
@@ -79,14 +76,12 @@ impl Session {
         self.commit(&[write]).map(|_| ())
     }
 
-    /// `getLabel`.
     pub fn label(&self, target: &str) -> Option<String> {
         self.value(ENTRY_LABEL, target)
             .and_then(Value::as_str)
             .map(str::to_string)
     }
 
-    /// `setLabel`.
     pub fn set_label(&mut self, target: &str, label: Option<&str>) -> Result<(), String> {
         let write = match label {
             Some(label) => Write::set(ENTRY_LABEL, target, label.into()),

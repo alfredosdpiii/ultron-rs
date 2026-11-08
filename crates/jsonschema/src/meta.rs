@@ -47,7 +47,7 @@ fn schema_list(value: &Value, path: &str) -> Result<(), String> {
         .try_for_each(|(index, nested)| validate_json_schema(nested, &format!("{path}[{index}]")))
 }
 
-/// `validateJsonSchema(value, path)` of definition-registry.ts. JSON cannot be cyclic.
+/// `validateJsonSchema(value, path)` of definition-registry.ts.
 pub fn validate_json_schema(value: &Value, path: &str) -> Result<(), String> {
     // typebox's IsSchema takes an array too; its entries are then read as keywords named by index.
     if let Some(items) = value.as_array() {

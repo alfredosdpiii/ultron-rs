@@ -28,7 +28,6 @@ impl Output {
         Output(Arc::new(Mutex::new(writer)))
     }
 
-    /// Write one JSONL record and flush it.
     pub fn emit(&self, value: &Value) {
         let mut writer = self.0.lock().unwrap_or_else(PoisonError::into_inner);
         let _ = writer.write_all(jsonl::serialize_json_line(value).as_bytes());
@@ -108,7 +107,6 @@ fn prompt_request(command: &Value, kind: &str) -> Result<(String, Vec<Value>), S
     Ok((message.to_string(), images))
 }
 
-/// `queueMode`.
 fn queue_mode(mode: Option<&Value>) -> Result<&str, String> {
     mode.and_then(Value::as_str)
         .filter(|mode| config::keys::QUEUE_MODES.contains(mode))

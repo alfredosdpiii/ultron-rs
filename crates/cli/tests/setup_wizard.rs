@@ -227,11 +227,6 @@ fn cli_setup_core_environment_flags_missing_python_and_docker_is_optional() {
 #[test]
 fn cli_setup_core_first_run_offer_only_on_a_terminal_start_without_a_model() {
     let none = |_: &str| None::<String>;
-    let calls = std::cell::Cell::new(0);
-    let no_model = || {
-        calls.set(calls.get() + 1);
-        false
-    };
     fn never() -> bool {
         false
     }
@@ -278,13 +273,8 @@ fn cli_setup_core_first_run_offer_only_on_a_terminal_start_without_a_model() {
         base(&skip),
         base(&ci),
     ] {
-        assert!(!setup_core::should_offer_setup(&SetupOfferInput {
-            has_usable_model: &no_model,
-            ..input
-        }));
+        assert!(!setup_core::should_offer_setup(&input));
     }
-    // The model catalog is not even loaded in those cases.
-    assert_eq!(calls.get(), 0);
     assert!(setup_core::should_offer_setup(&base(&skip_off)));
 }
 

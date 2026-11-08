@@ -2,8 +2,8 @@
 //! Ported from the kernel cases of packages/coding-agent/test/ultron-a06-limits.test.ts with their literal
 //! expectations, against the real runtime.py under the Rust kernel supervisor. The two other evidence files
 //! (ultron-kernel-long-session.test.ts, ultron-kernel-raw-output.test.ts) are ported in crates/kernel/tests/process.rs.
-//! Not ported: artifact size and quota (NativeLocalServices `artifacts.*`), task `timeout_ms` and the root wall
-//! deadline (timers and the usage ledger), and the admitted-task cap (usage ledger `maxAdmittedTasks`).
+//! Not ported: artifact size and quota (`artifacts.*`, removed by user decision). The task `timeout_ms` and root wall
+//! deadline cases are `a06_agent_limits.rs`; the admitted-task cap is A09 (`a09_budget_admission.rs`).
 
 use crate::common;
 

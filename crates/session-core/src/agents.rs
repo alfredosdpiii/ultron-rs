@@ -4,34 +4,6 @@
 
 use serde_json::{Map, Value, json};
 
-/// `text.slice(0, n)` of a JavaScript string: the first `n` UTF-16 code units (a surrogate pair is not split).
-fn js_head(text: &str, n: usize) -> String {
-    let mut units = 0;
-    let mut out = String::new();
-    for c in text.chars() {
-        units += c.len_utf16();
-        if units > n {
-            break;
-        }
-        out.push(c);
-    }
-    out
-}
-
-/// `text.slice(-n)`: the last `n` UTF-16 code units.
-fn js_tail(text: &str, n: usize) -> String {
-    let mut units = 0;
-    let mut start = text.len();
-    for (index, c) in text.char_indices().rev() {
-        units += c.len_utf16();
-        if units > n {
-            break;
-        }
-        start = index;
-    }
-    text[start..].to_string()
-}
-
 /// `statusExtras(caller)`: `{jobs, toolCalls}` for `lane`.
 pub fn status_extras(host: &host::Host, tool_calls: &kernel_apis::ToolCalls, lane: &str) -> Map<String, Value> {
     let jobs: Vec<Value> = host
@@ -42,14 +14,14 @@ pub fn status_extras(host: &host::Host, tool_calls: &kernel_apis::ToolCalls, lan
             json!({
                 "id": job.id,
                 "lane": job.lane,
-                "command": js_head(&job.command, 200),
+                "command": jsrt::utf16::head(&job.command, 200),
                 "status": job.status.as_str(),
                 "exitCode": job.exit_code,
                 "startedAt": job.started_at,
                 "endedAt": job.ended_at,
                 "outputBytes": job.output_bytes,
                 // Last output, bounded, for the TUI graph's job details.
-                "tail": js_tail(&job.tail, 160),
+                "tail": jsrt::utf16::tail(&job.tail, 160),
             })
         })
         .collect();
@@ -85,21 +57,4 @@ pub fn status_extras(host: &host::Host, tool_calls: &kernel_apis::ToolCalls, lan
     extras.insert("jobs".into(), Value::Array(jobs));
     extras.insert("toolCalls".into(), Value::Array(calls));
     extras
-}
-
-#[cfg(test)]
-mod tests {
-    use super::{js_head, js_tail};
-
-    #[test]
-    fn session_core_status_extras_slices_like_javascript() {
-        assert_eq!(js_head("abcdef", 3), "abc");
-        assert_eq!(js_tail("abcdef", 2), "ef");
-        // An astral character is two UTF-16 units and is never split.
-        assert_eq!(js_head("a😀b", 2), "a");
-        assert_eq!(js_head("a😀b", 3), "a😀");
-        assert_eq!(js_tail("a😀b", 2), "b");
-        assert_eq!(js_tail("a😀b", 3), "😀b");
-        assert_eq!(js_tail("ab", 160), "ab");
-    }
 }

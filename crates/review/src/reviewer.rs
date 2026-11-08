@@ -468,7 +468,6 @@ pub struct ReviewOptions {
     pub dry_run: Option<bool>,
 }
 
-/// State key of an account's view of a pull request.
 pub fn pull_state_key(account: &Account, r: &PullRef) -> String {
     format!("{}@{}", account.login, pull_key(r))
 }
@@ -1096,7 +1095,7 @@ fn lift_own_blocks(deps: &ReviewerDeps, github: &GitHub, r: &PullRef, me: &str, 
 pub const MAX_REVIEW_RECORDS: usize = 200;
 
 /// Writes `<dir>/reviews/<name>.json` and removes the oldest records beyond [`MAX_REVIEW_RECORDS`].
-pub fn write_review_record(dir: &str, name: &str, record: &Value) -> std::io::Result<()> {
+fn write_review_record(dir: &str, name: &str, record: &Value) -> std::io::Result<()> {
     let reviews = jsrt::path::join(&[dir, "reviews"]);
     make_private_dir(&reviews)?;
     write_private(
@@ -1227,7 +1226,6 @@ fn unapproved_sources(github: &GitHub, r: &PullRef, sources: &[PromotionSource],
     out
 }
 
-/// Added and removed lines of a diff.
 fn changed_lines(diff: &str) -> usize {
     diff.lines()
         .filter(|line| {

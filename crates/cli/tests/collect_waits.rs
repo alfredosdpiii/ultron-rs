@@ -22,7 +22,6 @@ const MODEL: &str = "anthropic/claude-sonnet-4-5";
 /// Hang guard only: every wait ends on a condition.
 const HANG_GUARD: Duration = Duration::from_secs(120);
 
-/// One scripted reply.
 #[derive(Clone)]
 enum Reply {
     Now(String),

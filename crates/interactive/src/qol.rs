@@ -169,7 +169,6 @@ impl QolSettings {
 }
 
 impl QolSettings {
-    /// See [`from_settings`].
     pub fn from_settings(settings: &Value, var: &dyn Fn(&str) -> Option<String>) -> Self {
         if var(PARITY_ENV).is_some_and(|v| v.trim() == "1") {
             return Self::parity();
@@ -214,8 +213,6 @@ impl QolSettings {
     }
 }
 
-// ---- highlighting ----
-
 /// A fenced code block highlighter: `(code, language)` to one styled string per line.
 pub type CodeHighlight = Rc<dyn Fn(&str, Option<&str>) -> Vec<String>>;
 
@@ -230,8 +227,6 @@ pub fn code_highlighter(theme: &Rc<Theme>) -> CodeHighlight {
         },
     )
 }
-
-// ---- autocomplete ----
 
 /// The editor's completion: slash commands and files, preceded by the enabled extra sources (each answers only
 /// for its own syntax, so `/` and `@` still reach the command and file provider).
@@ -271,8 +266,6 @@ pub fn autocomplete_provider(
     chain.push(combined);
     Box::new(ChainProvider::new(chain))
 }
-
-// ---- background services ----
 
 /// Where the status line's git fields come from (never blocks).
 pub trait GitSource {

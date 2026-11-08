@@ -39,7 +39,7 @@ pub const PER_CELL: usize = 1;
 pub const MAX_TEXT_CHARS: usize = 4000;
 
 /// The rules when the settings name none: (skill, situation, paths).
-pub const DEFAULT_RULES: &[(&str, &str, &[&str])] = &[
+const DEFAULT_RULES: &[(&str, &str, &[&str])] = &[
     (
         "principle-test-behavior-not-implementation",
         "You changed a test file",
@@ -126,7 +126,6 @@ pub fn excerpt(text: &str, file: &str) -> String {
     }
     let bound = text.char_indices().nth(MAX_TEXT_CHARS).map_or(text.len(), |(at, _)| at);
     let mut cut = text[..bound].rfind("\n\n").unwrap_or(bound);
-    // A heading kept without its body goes with the sections left out.
     while let Some(at) = text[..cut].rfind("\n\n")
         && text[at + 2..cut].starts_with('#')
     {
@@ -202,7 +201,6 @@ pub type Resolve = dyn Fn(&str) -> Option<(String, String)> + Send + Sync;
 /// Whether engineering mode is on now.
 pub type Engineering = dyn Fn() -> bool + Send + Sync;
 
-/// The situational skills of one session.
 pub struct SituationalSkills {
     rules: Vec<Rule>,
     resolve: Box<Resolve>,

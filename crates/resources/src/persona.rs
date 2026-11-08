@@ -8,15 +8,11 @@ use serde_json::Value;
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
-/// The setting that turns the persona on.
 pub const SETTING: &str = "persona";
-/// The only persona there is.
 pub const ULTRON: &str = "ultron";
-/// The persona's text, in the agent dir.
 pub const PERSONALITY_FILE: &str = "personality.md";
 /// Nudges allowed since the user last sent input.
 pub const MAX_NUDGES: u32 = 5;
-/// What a nudge says.
 pub const NUDGE_TEXT: &str = "Continue: take that next step now. End the turn only when the work is done and verified, or when you need the user; then ask one direct question.";
 
 /// The host's rules that close the persona section, whatever personality.md says: outward or irreversible actions
@@ -33,7 +29,6 @@ pub fn enabled(settings: &serde_json::Map<String, Value>) -> bool {
     settings.get(SETTING).and_then(Value::as_str) == Some(ULTRON)
 }
 
-/// `<agent_dir>/personality.md`.
 pub fn personality_path(agent_dir: &Path) -> PathBuf {
     agent_dir.join(PERSONALITY_FILE)
 }
@@ -78,17 +73,14 @@ pub fn should_nudge(text: &str, tool_calls: usize) -> bool {
 /// How a root turn ended, for [`decide`].
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct TurnEnd<'a> {
-    /// The persona is on.
     pub persona: bool,
     /// The user (or a client) aborted the run.
     pub aborted: bool,
-    /// The run ended on an error.
     pub failed: bool,
     /// A user message is queued, or other input waits for the lane.
     pub pending_input: bool,
     /// Tool (`rlm`) calls the turn made.
     pub tool_calls: usize,
-    /// The final assistant text.
     pub text: &'a str,
     /// Nudges since the user last sent input.
     pub nudges: u32,

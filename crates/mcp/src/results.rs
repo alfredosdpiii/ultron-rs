@@ -37,7 +37,6 @@ pub fn format_size(bytes: usize) -> String {
     }
 }
 
-/// The texts of `content`, joined by newlines.
 pub fn text_of(content: &[Value]) -> String {
     content
         .iter()
@@ -126,7 +125,6 @@ fn block_to_content(server: &str, block: &Value, readable: bool, save: OutputSav
     to_llm_content(&json!({ "content": [block] }))
 }
 
-/// `toModelContent`: model-facing content of a server's content blocks.
 pub fn to_model_content(server: &str, blocks: &[Value], readable: bool, save: OutputSaver) -> Vec<Value> {
     blocks
         .iter()

@@ -39,7 +39,6 @@ pub const KEPT_CONTRACTS_NAMESPACE: &str = "ultron.kept-contracts";
 /// Serves a request for the calling lane: `(kind, payload)` -> its answer (the durable runtime's host operations).
 pub type Serve<'a> = &'a dyn Fn(&str, &Map<String, Value>) -> Result<Value, String>;
 
-/// The kept children's contracts of one session.
 pub struct KeptContracts {
     children: Arc<DurableChildren>,
     stack: Weak<Stack>,
@@ -273,7 +272,6 @@ impl KeptContracts {
                 return result;
             }
         };
-        // The attempts are used up: the final failure stands, the checks no longer run.
         if let Some(last) = kept.get("final").filter(|f| !f.is_null()) {
             let mut result = result;
             result["status"] = json!("failed");
@@ -355,7 +353,6 @@ impl KeptContracts {
         };
         let fallback = result.clone();
         let mut checked = enforce_after(&contract, result, id, &name, &mut enforcer, used).unwrap_or(fallback);
-        // The failed attempts count for every later answer; with none left, this failure is final.
         if failures.get() > 0
             && let Some(mut kept) = self.kept(id)
         {

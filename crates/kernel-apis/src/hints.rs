@@ -77,7 +77,6 @@ impl HintsModule {
         self.load(&mut jsrt::sync::lock(&self.lanes))
     }
 
-    /// The tags `lane` muted.
     pub fn muted(&self, lane: &str) -> Vec<String> {
         let mut lanes = jsrt::sync::lock(&self.lanes);
         if self.load(&mut lanes).is_err() {

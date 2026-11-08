@@ -40,10 +40,8 @@ class Skills:
     async def invoke(self, name, version, input):
         return await self._bridge.request('skills.invoke', {'name': name, 'version': version, 'input': input})
 
-    # --- Code skills (procedural memory as tested code) ---------------------------------------
-    # Active code skills import as `from code_skills import <name>`; see CODE_SKILLS_PROMPT in
-    # src/ultron/code-skills.ts. The package is named `code_skills` so it never shadows this
-    # `skills` object.
+    # Code skills (procedural memory as tested code) import as `from code_skills import <name>`. The package is
+    # named `code_skills` so it never shadows this `skills` object.
 
     async def propose_code(self, name, source, test_source, evidence):
         """Write `name` as a new version, run its test in a fresh kernel, and activate it only on pass."""
@@ -105,7 +103,7 @@ def _plan_source(plan):
     return source
 
 
-# --- `code_skills` package: active code skills, importable in every kernel ----------------------
+# `code_skills` package: active code skills, importable in every kernel.
 
 import importlib.abc as _abc
 import importlib.util as _util

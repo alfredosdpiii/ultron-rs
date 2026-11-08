@@ -348,8 +348,6 @@ pub fn extract_image_paste_paths_from_text(text: &str) -> Option<Vec<String>> {
     whole_text_attachment_path(text).map(|p| vec![p])
 }
 
-// ---- OSC 5522 enhanced (typed) paste ----
-
 const OSC5522: &str = "\x1b]5522;";
 
 /// One parsed OSC 5522 packet: `metadata` keys in order (a later duplicate wins on lookup) and the payload.
@@ -560,8 +558,6 @@ impl EnhancedPaste {
         }
     }
 }
-
-// ---- attachments and chips ----
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum AttachmentKind {

@@ -599,8 +599,6 @@ fn kernel_apis_memory_pointers_reach_the_file_hooks_pending_lines() {
     assert_eq!(hooks.take_pending("main"), None);
 }
 
-// --- import readers --------------------------------------------------------------------------------------------------
-
 fn write(path: &Path, text: &str) {
     std::fs::create_dir_all(path.parent().unwrap()).unwrap();
     std::fs::write(path, text).unwrap();

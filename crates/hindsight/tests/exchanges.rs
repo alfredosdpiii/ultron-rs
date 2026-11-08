@@ -32,28 +32,47 @@ fn options(value: &Value) -> HindsightOptions {
     options
 }
 
-fn call(backend: &HindsightBackend, call: &Value) -> Result<Value, String> {
+fn logged(server: &FakeHindsight) -> usize {
+    server.raw_requests().as_array().map_or(0, Vec::len)
+}
+
+/// Until the server has logged more than `count` requests since the last reset (hang guard 120 s): the fake server
+/// offers no signal, so its log is polled.
+fn wait_logged_beyond(server: &FakeHindsight, count: usize) {
+    let deadline = Instant::now() + Duration::from_secs(120);
+    while logged(server) <= count && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(10));
+    }
+}
+
+/// `abortAfterMs` (an abort while the answer is awaited) aborts once the server has logged the call's request, not
+/// after a wall-clock delay that a loaded machine can outrun before the request is sent.
+fn call(server: &FakeHindsight, backend: &HindsightBackend, call: &Value) -> Result<Value, String> {
     let signal = Signal::new();
     if call["abortBefore"] == true {
         signal.abort("aborted");
     }
-    if let Some(ms) = call["abortAfterMs"].as_u64() {
-        let signal = signal.clone();
-        std::thread::spawn(move || {
-            std::thread::sleep(Duration::from_millis(ms));
-            signal.abort("aborted");
-        });
-    }
     let arg = &call["arg"];
     let id = arg.as_str().unwrap_or_default();
-    match call["op"].as_str().unwrap() {
+    let run = || match call["op"].as_str().unwrap() {
         "recall" => backend.recall(arg, &signal),
         "retain" => backend.retain(arg, &signal),
         "get" => backend.get(id, &signal),
         "delete" => backend.delete(id, &signal),
         "operation" => backend.operation(id, &signal),
         other => panic!("unknown op {other}"),
+    };
+    if call.get("abortAfterMs").is_none() {
+        return run();
     }
+    let before = logged(server);
+    std::thread::scope(|scope| {
+        scope.spawn(|| {
+            wait_logged_beyond(server, before);
+            signal.abort("aborted");
+        });
+        run()
+    })
 }
 
 fn outcome(result: Result<Value, String>) -> Map<String, Value> {
@@ -91,25 +110,17 @@ fn hindsight_backend_requests_and_results_match_typescript() {
             let backend = created.as_ref().expect("calls only on created backends");
             calls.push(with(
                 planned.as_object().unwrap().clone(),
-                outcome(call(backend, planned)),
+                outcome(call(&server, backend, planned)),
             ));
         }
-        let slow = scenario["calls"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|c| c.get("abortAfterMs").is_some())
-            || scenario["options"]["bankId"]
-                .as_str()
-                .is_some_and(|b| b.contains("slow"));
-        if slow {
-            // A slow handler logs its request on arrival, then stalls: wait until the log holds what the fixture
-            // recorded (hang guard 120 s) instead of sleeping.
-            let wanted = expected["requests"].as_array().map_or(0, Vec::len);
-            let deadline = Instant::now() + Duration::from_secs(120);
-            while server.requests(&transport).as_array().map_or(0, Vec::len) < wanted && Instant::now() < deadline {
-                std::thread::sleep(Duration::from_millis(10));
-            }
+        let slow = scenario["options"]["bankId"]
+            .as_str()
+            .is_some_and(|b| b.contains("slow"));
+        let wanted = expected["requests"].as_array().map_or(0, Vec::len);
+        if slow && wanted > 0 {
+            // A slow handler logs its request on arrival, then stalls; a client timeout can return before it is
+            // logged: wait until the log holds what the fixture recorded.
+            wait_logged_beyond(&server, wanted - 1);
         }
         let record = normalizer.apply(&json!({
             "name": scenario["name"],
@@ -173,10 +184,6 @@ fn hindsight_transport_sends_only_client_headers_plus_host() {
     );
     assert_eq!(raw[1]["body"], r#"{"query":"q","tags":["ultron:session:s1"]}"#);
     assert!(transport.contains(&"host".to_string()) && !transport.contains(&"accept".to_string()));
-}
-
-fn error_or_result(result: Result<Value, String>) -> Map<String, Value> {
-    outcome(result)
 }
 
 #[test]
@@ -244,7 +251,7 @@ fn hindsight_worker_sessions_share_one_bank_like_typescript() {
             ids.push(id.clone());
         }
         let head = json!({"worker": worker, "type": kind, "payload": payload});
-        steps.push(with(head.as_object().unwrap().clone(), error_or_result(result)));
+        steps.push(with(head.as_object().unwrap().clone(), outcome(result)));
     }
     let record = normalizer.apply(&json!({
         "workers": expected["workers"],

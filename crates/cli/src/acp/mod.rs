@@ -75,7 +75,6 @@ impl RpcError {
     }
 }
 
-/// What the loop reacts to.
 pub enum Input {
     Line(String),
     Eof,
@@ -84,7 +83,6 @@ pub enum Input {
     Signal(i32),
 }
 
-/// A prompt turn in progress.
 struct Turn {
     request: Value,
     session_id: String,
@@ -190,7 +188,6 @@ impl Server {
             "params": {"sessionId": session_id, "update": update}}));
     }
 
-    /// One line from the client.
     pub fn handle_line(&mut self, line: &str) {
         if line.trim().is_empty() {
             return;
@@ -271,7 +268,6 @@ impl Server {
         }
     }
 
-    /// The environment of sessions in `cwd`.
     fn env_for(&mut self, cwd: &Path) -> &'static Env {
         if let Some(env) = self.envs.get(cwd) {
             return env;
@@ -560,7 +556,6 @@ impl Server {
         slot.remote.abort();
     }
 
-    /// An event of slot `index`'s session.
     pub fn deliver(&mut self, index: usize, event: Event) {
         if let Some(slot) = self.slots.get_mut(index) {
             slot.remote.deliver(event, &slot.out);
@@ -568,7 +563,6 @@ impl Server {
         self.drain(index);
     }
 
-    /// Translate what slot `index` wrote.
     fn drain(&mut self, index: usize) {
         let bytes = std::mem::take(&mut *self.slots[index].capture.lock().unwrap_or_else(PoisonError::into_inner));
         for line in String::from_utf8_lossy(&bytes).lines() {

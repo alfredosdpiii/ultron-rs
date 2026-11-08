@@ -3,19 +3,19 @@
 //! `getCapabilities().hyperlinks`, recorded by fixtures/generate-render-settings.mjs) through
 //! `interactive::render_settings` and the Rust components.
 
+use crate::support;
 use std::rc::Rc;
 
 use interactive::render_settings::{self, RenderSettings};
 use interactive::{AssistantBlock, AssistantMessage, AssistantView, UserMessage};
 use serde_json::Value;
-use theme::{ColorMode, builtin_theme_json, create_theme};
 use tui::Component;
 
 #[test]
 fn interactive_render_settings_reach_the_transcript_markdown_like_ts() {
     let fixture: Value = serde_json::from_str(include_str!("../fixtures/render-settings.json")).unwrap();
     let text = fixture["text"].as_str().unwrap().to_string();
-    let theme = Rc::new(create_theme(&builtin_theme_json("dark").unwrap(), ColorMode::Truecolor, None).unwrap());
+    let theme = support::dark_theme();
     for case in fixture["cases"].as_array().unwrap() {
         render_settings::set(RenderSettings {
             hyperlinks: case["hyperlinks"] == true,

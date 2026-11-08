@@ -2,13 +2,12 @@
 //! successor worker opens a session (no process is killed and no signal is sent: the first actor hands the session
 //! over, or closes, through its own input). Built on `p_session_support` (its scripted loopback server and replies).
 
-use super::p_session_support::{HANG, Script, server};
+use super::p_session_support::{HANG, Log, Script, server};
 use serde_json::{Value, json};
 use session_core::core::{Input, Op};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{Sender, channel};
-use std::sync::{Arc, Mutex, OnceLock};
-use std::time::{Duration, Instant};
+use std::sync::{Arc, OnceLock};
 
 /// Where a session lives: a private home with its agent directory, working directory and session file.
 pub struct Home {
@@ -23,8 +22,8 @@ pub type Watcher = Box<dyn FnMut(&Value, &Sender<Input>) + Send>;
 /// One actor over the session.
 pub struct Worker {
     pub tx: Sender<Input>,
-    pub events: Arc<Mutex<Vec<Value>>>,
-    pub requests: Arc<Mutex<Vec<Value>>>,
+    pub events: Arc<Log<Value>>,
+    pub requests: Arc<Log<Value>>,
     actor: Option<std::thread::JoinHandle<()>>,
 }
 
@@ -139,7 +138,7 @@ impl Home {
             services: session_core::compose::Services::default(),
             auto_name: false,
         };
-        let events = Arc::new(Mutex::new(Vec::new()));
+        let events: Arc<Log<Value>> = Arc::default();
         let sink = events.clone();
         let input: Arc<OnceLock<Sender<Input>>> = Arc::new(OnceLock::new());
         let actor_input = input.clone();
@@ -149,7 +148,7 @@ impl Home {
                 if let (Some(watch), Some(tx)) = (watch.as_mut(), actor_input.get()) {
                     watch(&event, tx);
                 }
-                sink.lock().unwrap().push(event);
+                sink.push(event);
             }),
         )?;
         let _ = input.set(tx.clone());
@@ -168,34 +167,15 @@ impl Worker {
     }
 
     pub fn events(&self, kind: &str) -> Vec<Value> {
-        self.events
-            .lock()
-            .unwrap()
-            .iter()
-            .filter(|e| e["type"] == kind)
-            .cloned()
-            .collect()
+        self.events.of_kind(kind)
     }
 
-    /// Waits until an event of `kind` was emitted (a hang guard, never a pass condition).
     pub fn wait_event(&self, kind: &str) -> Value {
-        self.wait_for(kind, |_| true)
-    }
-
-    /// Waits until an event of `kind` that `matches` was emitted (a hang guard, never a pass condition).
-    pub fn wait_for(&self, kind: &str, matches: impl Fn(&Value) -> bool) -> Value {
-        let end = Instant::now() + HANG;
-        loop {
-            if let Some(event) = self.events(kind).into_iter().rev().find(|e| matches(e)) {
-                return event;
-            }
-            assert!(Instant::now() < end, "timed out waiting for {kind}");
-            std::thread::sleep(Duration::from_millis(10));
-        }
+        self.events.wait_latest(kind)
     }
 
     pub fn requests(&self) -> Vec<Value> {
-        self.requests.lock().unwrap().clone()
+        self.requests.all()
     }
 
     /// Hand the session over to a successor (the worker's `HandOver`): the run in progress stays open in the

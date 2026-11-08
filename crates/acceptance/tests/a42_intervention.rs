@@ -117,7 +117,6 @@ fn acceptance_a42_inspect_correct_and_stop_one_childs_subtree_while_the_sibling_
     assert!(steered[0].contains(&json!("Stop auditing tests; focus on src/").to_string()));
     assert!(tasks.probe(&b).steered.is_empty());
 
-    // Stop child A's subtree.
     assert_eq!(
         host.call("agents.cancel", json!({"id": a})).unwrap(),
         json!({"cancelled": true})

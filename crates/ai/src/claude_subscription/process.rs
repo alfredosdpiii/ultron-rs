@@ -173,8 +173,6 @@ pub fn refuse_overrides(env: &Env) -> Result<(), ClaudeError> {
     )))
 }
 
-// ------------------------------------------------------------------------------------------------- working dirs
-
 fn uid() -> u32 {
     rustix::process::getuid().as_raw()
 }
@@ -268,8 +266,6 @@ pub fn workdir(temp_root: &Path) -> std::io::Result<PathBuf> {
         None => process_workdir(temp_root),
     }
 }
-
-// --------------------------------------------------------------------------------------------------- the request
 
 /// A model call ready to run: the system prompt, the stream-json frames and the extra body.
 #[derive(Clone, Debug)]

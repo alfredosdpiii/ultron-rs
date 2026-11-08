@@ -59,7 +59,6 @@ impl CertificateSource {
         })
     }
 
-    /// `getSubjectToken`.
     pub(super) fn subject_token(&self, env: Option<&ProviderEnv>) -> Result<CertificateToken, Fail> {
         let config_path = self.config_path(env)?;
         let (cert_path, key_path) = cert_and_key_paths(&config_path)?;

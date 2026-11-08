@@ -87,10 +87,6 @@ class AgentCallError(RuntimeError):
         self.definition = definition
 
 
-# --------------------------------------------------------------------------------------------------------------
-# JSON schema from annotations
-
-
 def _is_pydantic(tp: Any) -> bool:
     return isinstance(tp, type) and callable(getattr(tp, "model_json_schema", None)) and callable(
         getattr(tp, "model_validate", None)
@@ -306,10 +302,6 @@ def _sanitize(schema: Any, where: str) -> Any:
     return result
 
 
-# --------------------------------------------------------------------------------------------------------------
-# Validation, encoding, decoding
-
-
 def _json_key(value: Any) -> str:
     return json.dumps(value, sort_keys=True, separators=(",", ":"))
 
@@ -507,10 +499,6 @@ def _checked(schema: dict[str, Any], value: Any, where: str) -> Any:
     return encoded
 
 
-# --------------------------------------------------------------------------------------------------------------
-# Readable type descriptions for descriptors
-
-
 def describe(schema: Any, depth: int = 0) -> str:
     if schema is True or schema == {} or depth > 6:
         return "any"
@@ -549,10 +537,6 @@ def _public_schema(schema: Any) -> Any:
     if isinstance(schema, list):
         return [_public_schema(item) for item in schema]
     return schema
-
-
-# --------------------------------------------------------------------------------------------------------------
-# Class source capture (so a class can be defined again after restore or rollback)
 
 
 def _kebab(name: str) -> str:
@@ -680,10 +664,6 @@ def _segment_with_decorators(source: str, node: ast.stmt) -> str:
     return "\n".join(lines[first - 1 : last])
 
 
-# --------------------------------------------------------------------------------------------------------------
-# Durable state
-
-
 def _state_root(create: bool = True) -> dict[str, Any] | None:
     namespace = _namespace_getter() if _namespace_getter else {}
     state = namespace.get("state")
@@ -786,10 +766,6 @@ def _key_of(obj: Any) -> str:
     if key is None:
         key = obj.__dict__["_agent_key"] = "default"
     return key
-
-
-# --------------------------------------------------------------------------------------------------------------
-# Class specs
 
 
 @dataclasses.dataclass
@@ -1088,10 +1064,6 @@ def _record_class(spec: _AgentSpec) -> None:
     }
 
 
-# --------------------------------------------------------------------------------------------------------------
-# Invocation
-
-
 def _spill_dir() -> Path:
     configured = os.environ.get("ULTRON_RLM_SPILL_DIR")
     base = Path(configured) if configured else Path(tempfile.gettempdir()) / f"ultron-{os.getuid()}" / "agent-args"
@@ -1226,10 +1198,6 @@ def _exec_bundle(source: str, mode: str, version: int | None = None) -> type | N
         return _rehydrating["result"]
     finally:
         _rehydrating = previous
-
-
-# --------------------------------------------------------------------------------------------------------------
-# Public surface
 
 
 class Agent:
@@ -1435,10 +1403,6 @@ class _AgentDecorator:
 
 
 agent = _AgentDecorator()
-
-
-# --------------------------------------------------------------------------------------------------------------
-# Runtime hooks (runtime.py)
 
 
 def begin_cell(source: str) -> None:

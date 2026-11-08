@@ -12,7 +12,6 @@ use protocol::custom_types::SCHEDULE;
 use serde_json::{Value, json};
 use session_core::core::Op;
 use std::path::{Path, PathBuf};
-use std::time::{Duration, Instant};
 
 const T0: i64 = 1_800_000_000_000;
 const HOUR: i64 = 3_600_000;
@@ -31,18 +30,6 @@ fn setup(clock: &Path) -> Setup {
     Setup {
         vars: vec![(CLOCK_FILE_ENV, clock.display().to_string())],
         ..Setup::default()
-    }
-}
-
-fn wait_runs(a: &p_session_support::Actor, n: usize) {
-    let end = Instant::now() + HANG;
-    while a.events("run_end").len() < n {
-        assert!(
-            Instant::now() < end,
-            "timed out waiting for {n} runs: {:?}",
-            a.events("run_end")
-        );
-        std::thread::sleep(Duration::from_millis(10));
     }
 }
 
@@ -109,7 +96,7 @@ fn session_core_schedule_from_a_cell_fires_as_a_custom_message_run() {
         fire(&a, &id, T0 + HOUR),
         json!({"fired": true, "run": 1, "schedules": [{"id": id, "name": "build", "nextDue": T0 + 2 * HOUR}]})
     );
-    wait_runs(&a, 2);
+    a.events.wait_count("run_end", 2);
     // The model reads the prompt as the run's user message.
     let requests = a.requests();
     assert_eq!(requests.len(), 3);
@@ -135,7 +122,7 @@ fn session_core_schedule_from_a_cell_fires_as_a_custom_message_run() {
         (json!(true), json!(2))
     );
     assert_eq!(missed["schedules"][0]["nextDue"], T0 + 7 * HOUR);
-    wait_runs(&a, 3);
+    a.events.wait_count("run_end", 3);
     assert_eq!(a.requests().len(), 4);
     assert_eq!(
         schedule_messages(&a)
@@ -182,8 +169,7 @@ fn session_core_schedule_from_a_cell_fires_as_a_custom_message_run() {
 fn session_core_schedule_fired_during_a_run_waits_for_its_end() {
     let dir = tempfile::tempdir().unwrap();
     let clock = clock(dir.path());
-    let gate = dir.path().join("release");
-    let held = gate.clone();
+    let (release, released) = std::sync::mpsc::channel::<()>();
     let replies = [
         tool("toolu_1", "await schedule.every('1h', 'check nightly', name='nightly')"),
         text("Scheduled."),
@@ -192,9 +178,8 @@ fn session_core_schedule_fired_during_a_run_waits_for_its_end() {
     ];
     let script: p_session_support::Script = Box::new(move |_, index| {
         // The third request (the long run) is answered once the test fired the schedule.
-        let end = Instant::now() + HANG;
-        while index == 2 && !held.exists() && Instant::now() < end {
-            std::thread::sleep(Duration::from_millis(10));
+        if index == 2 {
+            let _ = released.recv_timeout(HANG);
         }
         replies.get(index).cloned().unwrap_or_else(|| text("(no more replies)"))
     });
@@ -208,16 +193,13 @@ fn session_core_schedule_fired_during_a_run_waits_for_its_end() {
         queue: None,
     })
     .unwrap();
-    let end = Instant::now() + HANG;
-    while a.requests().len() < 3 {
-        assert!(Instant::now() < end, "the long run's request did not arrive");
-        std::thread::sleep(Duration::from_millis(10));
-    }
+    a.requests
+        .wait("the long run's request", |requests| (requests.len() >= 3).then_some(()));
     // The fire is recorded at once, but its run waits for the one in progress.
     assert_eq!(fire(&a, &id, T0 + HOUR)["run"], 1);
     assert_eq!(a.events("run_start").len(), 2);
-    std::fs::write(&gate, "").unwrap();
-    wait_runs(&a, 3);
+    release.send(()).unwrap();
+    a.events.wait_count("run_end", 3);
     let requests = a.requests();
     assert_eq!(requests.len(), 4);
     assert!(
@@ -317,7 +299,7 @@ fn session_core_schedule_fire_that_cannot_start_counts_nothing_and_answers_the_e
         fire(&a, &id, T0 + HOUR),
         json!({"fired": true, "run": 1, "schedules": []})
     );
-    wait_runs(&a, 2);
+    a.events.wait_count("run_end", 2);
     assert_eq!(user_texts(&a.requests()[2]).last().unwrap(), &json!("say hi"));
     assert_eq!(sets(), vec![(json!(0), json!("active")), (json!(1), json!("done"))]);
 }

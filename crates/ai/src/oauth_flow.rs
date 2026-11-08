@@ -108,12 +108,10 @@ fn render_page(title: &str, heading: &str, message: &str, details: Option<&str>)
     )
 }
 
-/// `oauthSuccessHtml`.
 pub fn oauth_success_html(message: &str) -> String {
     render_page("Authentication successful", "Authentication successful", message, None)
 }
 
-/// `oauthErrorHtml`.
 pub fn oauth_error_html(message: &str, details: Option<&str>) -> String {
     render_page("Authentication failed", "Authentication failed", message, details)
 }
@@ -309,8 +307,6 @@ pub fn form_request(url: &str, fields: &[(&str, &str)], headers: &[(&str, &str)]
         body: form_urlencode(fields),
     }
 }
-
-// --------------------------------------------------------------------------------------------- device-code polling
 
 pub(crate) const CANCEL_MESSAGE: &str = "Login cancelled";
 const TIMEOUT_MESSAGE: &str = "Device flow timed out";

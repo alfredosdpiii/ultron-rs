@@ -69,7 +69,6 @@ pub fn is_oauth_token(key: &str) -> bool {
     key.contains("sk-ant-oat")
 }
 
-/// `AnthropicOptions`.
 #[derive(Clone, Default, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AnthropicOptions {

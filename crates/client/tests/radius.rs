@@ -146,8 +146,6 @@ fn client_radius_transport_replays_recorded_typescript_scenarios() {
     assert!(failures.is_empty(), "{}", failures.join("\n"));
 }
 
-// ---------------------------------------------------------------------------------------------- the reconnector
-
 struct FakeClient {
     state: Mutex<(bool, ConnectionState)>,
     reconnects: Mutex<Vec<String>>,
@@ -264,8 +262,6 @@ fn client_radius_reconnect_replays_recorded_typescript_scenarios() {
     }
     assert!(failures.is_empty(), "{}", failures.join("\n"));
 }
-
-// ----------------------------------------------------------------------------------------------- TUI statuses
 
 /// `#handleConnectionState` / `#handleAttachmentState` of client-tui.ts (lines 894-924), literally.
 #[test]

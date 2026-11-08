@@ -46,7 +46,6 @@ fn assistant() -> Value {
     })
 }
 
-/// A lane-watch event from its JSON.
 fn watch(event: Value) -> WatchEvent {
     WatchEvent::decode(&event).unwrap()
 }

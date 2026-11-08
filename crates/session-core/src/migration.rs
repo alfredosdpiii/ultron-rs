@@ -51,7 +51,6 @@ const KNOWN_PI_ENTRY_TYPES: [&str; 11] = [
     "context_edit",
 ];
 
-/// `piImportUsageRoot`.
 pub fn pi_import_usage_root(pi_session_id: &str) -> String {
     format!("import:pi:{pi_session_id}")
 }
@@ -470,7 +469,6 @@ fn edited_message_body(message: &Value, edit: Option<&Value>) -> Map<String, Val
     }
 }
 
-/// `toNativeEntryBody`.
 fn to_native_entry_body(entry: &Value, plan: &ImportPlan) -> Map<String, Value> {
     let edit = plan.message_edits.get(id_of(entry)).cloned().flatten();
     let mut out = Map::new();
@@ -600,7 +598,6 @@ impl ImportResult {
     }
 }
 
-/// Why an import failed.
 #[derive(Clone, Debug, PartialEq)]
 pub enum ImportError {
     /// `PiSessionAlreadyImportedError`: nothing was written; the native copy is `session_id` at `path`.

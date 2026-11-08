@@ -23,11 +23,8 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 pub const ULTRON_HERDR_ENV: &str = "ULTRON_HERDR";
 
-/// The `source` of every report.
 pub const SOURCE: &str = "ultron";
-/// The `agent` of every report.
 pub const AGENT: &str = "ultron";
-/// Write and read timeout of one request.
 pub const IO_TIMEOUT: Duration = Duration::from_millis(500);
 /// How long an idle or blocked state waits for a newer one before it is sent.
 pub const SETTLE: Duration = Duration::from_millis(300);
@@ -459,7 +456,6 @@ pub struct Reporter {
 static ACTIVE: Mutex<Option<Weak<Shared>>> = Mutex::new(None);
 
 impl Reporter {
-    /// A reporter to the pane's socket.
     pub fn start(pane: &Pane, agent: &str) -> Reporter {
         Reporter::with_transport(
             &pane.pane_id,
@@ -570,147 +566,5 @@ pub fn release_active() {
     let active = jsrt::sync::lock(&ACTIVE).as_ref().and_then(Weak::upgrade);
     if let Some(shared) = active {
         release(&shared);
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn shared() -> Shared {
-        Shared {
-            pane_id: "p1".into(),
-            agent: AGENT.into(),
-            debug: false,
-            queue: Mutex::default(),
-            wake: Condvar::new(),
-            done: Mutex::new(false),
-            done_wake: Condvar::new(),
-        }
-    }
-
-    fn sent(next: Next) -> Value {
-        match next {
-            Next::Send(line) => serde_json::from_str(&line).unwrap(),
-            Next::Wait(w) => panic!("waits {w:?}"),
-            Next::Exit => panic!("exits"),
-        }
-    }
-
-    fn waits(next: Next) -> Option<Duration> {
-        match next {
-            Next::Wait(w) => w,
-            Next::Send(line) => panic!("sends {line}"),
-            Next::Exit => panic!("exits"),
-        }
-    }
-
-    #[test]
-    fn herdr_idle_is_held_for_the_settle_time_and_working_is_not() {
-        let s = shared();
-        let mut q = Queue::default();
-        let t0 = Instant::now();
-        q.state = Some((State::Idle, None, t0));
-        assert_eq!(
-            waits(s.next(&mut q, t0 + Duration::from_millis(100))),
-            Some(SETTLE - Duration::from_millis(100))
-        );
-        // A continuation that starts within the settle time replaces the idle state: only `working` is sent.
-        q.state = Some((State::Working, None, t0 + Duration::from_millis(150)));
-        let line = sent(s.next(&mut q, t0 + Duration::from_millis(150)));
-        assert_eq!(line["params"]["state"], "working");
-        assert_eq!(waits(s.next(&mut q, t0 + Duration::from_secs(9))), None);
-        q.state = Some((State::Blocked, Some("Which file?".into()), t0));
-        let line = sent(s.next(&mut q, t0 + SETTLE));
-        assert_eq!(line["params"]["state"], "blocked");
-        assert_eq!(line["params"]["message"], "Which file?");
-    }
-
-    #[test]
-    fn herdr_metadata_is_sent_at_most_once_a_second_and_only_when_changed() {
-        let s = shared();
-        let mut q = Queue::default();
-        let t0 = Instant::now();
-        let meta = |cost: &str| Metadata {
-            display_agent: Some("Ultron".into()),
-            title: None,
-            tokens: [("cost".to_string(), cost.to_string())].into(),
-        };
-        q.metadata = Some(meta("$0.01"));
-        let line = sent(s.next(&mut q, t0));
-        assert_eq!(line["method"], "pane.report_metadata");
-        assert_eq!(line["params"]["tokens"], json!({"cost": "$0.01"}));
-        q.metadata = Some(meta("$0.02"));
-        assert_eq!(
-            waits(s.next(&mut q, t0 + Duration::from_millis(400))),
-            Some(Duration::from_millis(600))
-        );
-        let line = sent(s.next(&mut q, t0 + METADATA_INTERVAL));
-        assert_eq!(line["params"]["tokens"], json!({"cost": "$0.02"}));
-        // The same metadata again is not sent.
-        q.metadata = Some(meta("$0.02"));
-        assert_eq!(waits(s.next(&mut q, t0 + Duration::from_secs(5))), None);
-        assert!(q.metadata.is_none());
-    }
-
-    #[test]
-    fn herdr_metadata_clears_what_is_no_longer_known() {
-        let before = Metadata {
-            display_agent: Some("Ultron".into()),
-            title: Some("Fix the parser".into()),
-            tokens: [("ctx", "12%"), ("model", "m")]
-                .map(|(k, v)| (k.to_string(), v.to_string()))
-                .into(),
-        };
-        let after = Metadata {
-            display_agent: Some("Ultron".into()),
-            title: None,
-            tokens: [("model".to_string(), "m".to_string())].into(),
-        };
-        assert_eq!(
-            Value::Object(metadata_params(Some(&before), &after).unwrap()),
-            json!({"display_agent": "Ultron", "clear_title": true, "tokens": {"model": "m", "ctx": null}})
-        );
-        assert_eq!(metadata_params(Some(&after), &after), None);
-    }
-
-    #[test]
-    fn herdr_release_flushes_the_pending_state_and_is_sent_once() {
-        let s = shared();
-        let t0 = Instant::now();
-        let mut q = Queue {
-            state: Some((State::Idle, None, t0)),
-            metadata: Some(Metadata::default()),
-            ..Queue::default()
-        };
-        q.releasing = true;
-        q.metadata = None;
-        // Within the settle time, a release sends the idle state at once.
-        assert_eq!(sent(s.next(&mut q, t0))["params"]["state"], "idle");
-        let line = sent(s.next(&mut q, t0));
-        assert_eq!(line["method"], "pane.release_agent");
-        assert_eq!(
-            line["params"].as_object().unwrap().keys().collect::<Vec<_>>(),
-            ["pane_id", "source", "agent", "seq"]
-        );
-        assert!(matches!(s.next(&mut q, Instant::now()), Next::Exit));
-    }
-
-    #[test]
-    fn herdr_seq_is_strictly_increasing() {
-        let s = shared();
-        let mut q = Queue {
-            seq: u64::MAX / 2,
-            ..Queue::default()
-        };
-        let a = s.request(&mut q, "m", Map::new());
-        let b = s.request(&mut q, "m", Map::new());
-        let seq = |l: &str| {
-            serde_json::from_str::<Value>(l).unwrap()["params"]["seq"]
-                .as_u64()
-                .unwrap()
-        };
-        assert_eq!(seq(&a), u64::MAX / 2 + 1);
-        assert_eq!(seq(&b), u64::MAX / 2 + 2);
     }
 }

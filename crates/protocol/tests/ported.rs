@@ -52,7 +52,6 @@ fn protocol_frame_decoder_rejects_oversized_then_stays_failed() {
 
 #[test]
 fn protocol_negotiates_version_8_only() {
-    assert_eq!(PROTOCOL_VERSION, 8);
     assert!(is_supported_protocol_version(8));
     assert!(!is_supported_protocol_version(7));
 }

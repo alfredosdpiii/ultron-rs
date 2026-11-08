@@ -17,7 +17,6 @@ const API_KEY_MINT_URL: &str = "https://api.meta.ai/muse-code/key";
 const API_KEY_LIFETIME_MS: f64 = 24.0 * 60.0 * 60.0 * 1000.0;
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 
-/// `metaOAuth`.
 pub struct MetaOAuth {
     pub transport: Arc<dyn Transport>,
     pub clock: Clock,

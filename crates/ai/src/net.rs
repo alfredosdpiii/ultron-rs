@@ -37,7 +37,6 @@ impl ProxyEnv {
         }
     }
 
-    /// Whether any proxy is configured.
     pub fn is_set(&self) -> bool {
         self.http.is_some() || self.https.is_some()
     }
@@ -179,7 +178,6 @@ impl ClientConfig {
         Ok(builder)
     }
 
-    /// A built client.
     pub fn client(&self) -> Result<reqwest::Client, String> {
         self.builder()?.build().map_err(|e| e.to_string())
     }
@@ -194,10 +192,8 @@ fn proxy_url(uri: &str) -> String {
     }
 }
 
-// ---------------------------------------------------------------------------------------------------------------
 // utils/node-http-proxy.ts: the proxy a Node SDK client (Bedrock's) is given for its target
 
-/// `UNSUPPORTED_PROXY_PROTOCOL_MESSAGE`.
 pub const UNSUPPORTED_PROXY_PROTOCOL_MESSAGE: &str =
     "Unsupported proxy protocol. SOCKS and PAC proxy URLs are not supported; use an HTTP or HTTPS proxy URL.";
 

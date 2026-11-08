@@ -82,7 +82,6 @@ pub(crate) fn parse_data(content: &str) -> Result<AuthData, String> {
     }
 }
 
-/// Read-write credential store over one `auth.json`.
 pub struct AuthStorage {
     path: PathBuf,
     data: AuthData,

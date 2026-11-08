@@ -16,7 +16,6 @@ pub fn is_lost(error: &CallError) -> bool {
     }
 }
 
-/// `lostServerMessage`.
 pub fn lost_server_message(reason: Option<&str>) -> String {
     let detail = reason
         .map(str::trim)

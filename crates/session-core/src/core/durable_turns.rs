@@ -162,8 +162,6 @@ pub(super) fn open_durable(
     let mut options = ChatOptions::new(Registry::new(), Arc::new(models), Arc::new(cells));
     options.settings = Some(settings);
     options.sections = Some(sections);
-    // Per-root limits on every lane run: a spent tree's cells are refused, its runs get one final request (turn and
-    // token limits) and then nothing more.
     let gate = super::budget_gate::BudgetGate::new(
         lane.stack.usage.clone(),
         lane.stack.stats.clone(),
@@ -665,8 +663,6 @@ impl Core {
         if let Err(error) = self.checkpoint_compaction() {
             return answer.give(Err(StartError::Checkpoint(error)));
         }
-        // The prompt budget (crate::prompt_budget): a system prompt and tool schemas that leave the
-        // conversation no room under the compaction threshold fail the run before any request.
         if let Err(error) = self.prompt_budget() {
             return answer.give(Err(StartError::Checkpoint(error)));
         }

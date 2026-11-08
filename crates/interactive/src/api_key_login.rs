@@ -25,7 +25,6 @@ pub enum Step {
     Prompt(LoginPrompt),
     /// The credential to save (`{type: "api_key", key?, env?}`).
     Done(Value),
-    /// The flow failed with this error.
     Failed(String),
 }
 

@@ -90,22 +90,6 @@ fn wait_for(what: &str, mut condition: impl FnMut() -> bool) {
     }
 }
 
-/// Wait until `tick` (rewritten every 50 ms while the loop lives) holds still for 400 ms: the loop is gone. A loop
-/// that outlived its stop never holds still (hang guard 120 s).
-fn wait_until_still(what: &str, tick: &Path) {
-    let deadline = Instant::now() + HANG;
-    loop {
-        let before = std::fs::read_to_string(tick).unwrap_or_default();
-        std::thread::sleep(Duration::from_millis(400));
-        if before == std::fs::read_to_string(tick).unwrap_or_default() {
-            return;
-        }
-        assert!(Instant::now() < deadline, "{what}: the command outlived its stop");
-    }
-}
-
-const TICK: &str = "while :; do date +%s%N > tick; sleep 0.05; done";
-
 /// Names the sandboxed environment may hold: the allowlist (sandbox::settings::DEFAULT_ENV, LC_*), TMPDIR, and what
 /// the shell or the container runtime set themselves.
 fn allowed(name: &str) -> bool {
@@ -231,25 +215,27 @@ fn host_sandboxed_backends_stopped_commands_stop_inside_the_sandbox() {
         let tree = tree();
         let host = host(&tree, mechanism, false);
         let tick = tree.project.join("tick");
+        let marker = format!("stopped-commands-{}-{name}", std::process::id());
+        let looping = backends_support::tick_loop(&marker);
         // A sandbox can take longer than a short timeout to start under load: grow the timeout until the loop ran
         // before it fired (the last step is the 120 s hang guard).
         let mut timed_out = json!(null);
         for timeout in [2, 8, 30, 120] {
-            timed_out = call(&host, "bash", json!({ "command": TICK, "timeout": timeout }));
+            timed_out = call(&host, "bash", json!({ "command": looping, "timeout": timeout }));
             assert_eq!(timed_out["timed_out"], true, "{name}: {timed_out}");
             if tick.exists() {
                 break;
             }
         }
         assert!(tick.exists(), "{name}: the loop never ran: {timed_out}");
-        wait_until_still(&format!("{name} timed-out bash"), &tick);
+        backends_support::wait_until_gone(&format!("{name} timed-out bash"), &marker);
 
         std::fs::remove_file(&tick).unwrap();
-        let job = call(&host, "shell.run", json!({ "command": TICK, "yield_after": 0 }));
+        let job = call(&host, "shell.run", json!({ "command": looping, "yield_after": 0 }));
         wait_for(&format!("{name}: the job's loop"), || tick.exists());
         let cancelled = call(&host, "shell.cancel", json!({ "id": job["id"] }));
         assert_eq!(cancelled["status"], "cancelled", "{name}: {cancelled}");
-        wait_until_still(&format!("{name} cancelled job"), &tick);
+        backends_support::wait_until_gone(&format!("{name} cancelled job"), &marker);
     }
 }
 

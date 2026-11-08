@@ -54,8 +54,6 @@ class TestsRejected(Exception):
     """A test request the host will not run; the message goes back to the investigator."""
 
 
-# --- Sandbox ---------------------------------------------------------------------------------------------------
-
 _SYSTEM_DIRS = ("/usr", "/bin", "/sbin", "/lib", "/lib64", "/lib32")
 _ETC = ("ld.so.cache", "ld.so.conf", "ld.so.conf.d", "passwd", "group", "nsswitch.conf", "localtime", "alternatives",
         "ssl", "ca-certificates", "mime.types", "os-release")
@@ -286,8 +284,6 @@ def doctor(image: str | None = None) -> dict[str, Any]:
             "ok": bool(check.get("ok"))}
 
 
-# --- Environments from a local checkout -----------------------------------------------------------------------
-
 #: The only directories of a checkout that are ever bound: prepared environments.
 PYTHON_ENVS = (".venv", "venv")
 NODE_ENV = "node_modules"
@@ -378,9 +374,6 @@ def list_environments(checkout: str, depth: int = 3) -> list[dict[str, Any]]:
                 entry["interpreter"] = prefix if prefix and not _inside(prefix, root) else "system"
             out.append(entry)
     return out
-
-
-# --- Test runners ----------------------------------------------------------------------------------------------
 
 
 @dataclass
@@ -531,9 +524,6 @@ def parse_outcome(runner: str, code: int, output: str) -> tuple[str, list[dict[s
     if code == 127 or (not failed and _MISSING.search(output)) or (runner == "pytest" and code in (4, 5) and not failed):
         return "unavailable", tests
     return "failed", tests
-
-
-# --- A review's test session -----------------------------------------------------------------------------------
 
 
 def export_commit(root: str, rev: str) -> str:

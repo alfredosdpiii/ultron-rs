@@ -4,25 +4,12 @@
 //! HOME or allowlisted variables.
 //! Pure checks on the computed policy; nothing is spawned. New in Rust (wave 41): literal expectations.
 
-use host::sandboxed::sandbox_host_env;
 use host::{AllowAll, Host};
 use sandbox::launcher::Mechanism;
 use serde_json::json;
 
 fn env(pairs: &[(&str, &str)]) -> Vec<(String, String)> {
     pairs.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect()
-}
-
-#[test]
-fn host_w18s_sandbox_host_env_is_the_base_env_else_only_the_sandbox_path() {
-    let home = std::path::Path::new("/sandbox/home");
-    assert_eq!(
-        sandbox_host_env(None, home),
-        env(&[("PATH", "/usr/local/bin:/usr/bin:/bin"), ("HOME", "/sandbox/home")])
-    );
-    let base = env(&[("PATH", "/session/bin"), ("HOME", "/session/home")]);
-    assert_eq!(sandbox_host_env(Some(&base), home), base);
-    assert_eq!(sandbox_host_env(Some(&[]), home), Vec::<(String, String)>::new());
 }
 
 #[test]

@@ -10,7 +10,7 @@ class Memory:
     async def forget(self, memory_id): return await self._bridge.request('memory.forget', {'id': memory_id})
     async def get(self, memory_id): return await self._bridge.request('memory.get', {'id': memory_id})
     async def list(self): return await self._bridge.request('memory.list')
-    # Rust host only: reflect answers a question from memory; invalidate retires a wrong [fact <id>] a recall showed;
+    # reflect answers a question from memory; invalidate retires a wrong [fact <id>] a recall showed;
     # for an observation it retires nothing and returns its source facts: invalidate the wrong ones.
     async def reflect(self, query, *, scope=None): return await self._bridge.request('memory.reflect', {'query': query} if scope is None else {'query': query, 'scope': scope})
     async def invalidate(self, fact_id, reason=None): return await self._bridge.request('memory.invalidate', {'id': fact_id} if reason is None else {'id': fact_id, 'reason': reason})
@@ -26,7 +26,7 @@ class Refinements:
 
 
 def _propose(text, evidence, scope, type, key, situation, path_globs):
-    # Typed records (Rust host only; sent only when given): type is preference, fact, procedure, pitfall or
+    # Typed records (sent only when given): type is preference, fact, procedure, pitfall or
     # reference; situation says in one line when it applies; key (kebab-case) replaces the record with that key;
     # path_globs (e.g. ['src/**/*.rs']) make a matching file change point at the record. An evidence item may quote
     # the file its ref names ({'ref': 'src/a.rs:12', 'quote': '<text copied from it, at most 300 bytes>'}): a later

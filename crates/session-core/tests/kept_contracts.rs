@@ -168,7 +168,7 @@ fn session_core_w18s_kept_child_each_answer_is_held_to_its_contract() {
 /// A kept child's `rlm.finish` that catches what the host says.
 const TRY_FINISH: &str = "try:\n    print(await rlm.finish('passed', 'did it', evidence=['status.txt:1'], changed_files=['status.txt']))\nexcept Exception as e:\n    print('FINISH-ERROR', e)";
 
-/// Wave 43: a kept child's answers share its contract's attempts, as a one-shot child's runs do. Here
+/// A kept child's answers share its contract's attempts, as a one-shot child's runs do. Here
 /// `{"retry": 1}`: the first answer fails, its retry fails too (attempts 2 of 2), and that failure is final: the next
 /// question's answer reports it without re-running the checks (status.txt is fixed by then), and the child's
 /// `rlm.finish` says the limit is reached.

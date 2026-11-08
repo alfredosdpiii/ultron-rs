@@ -10,7 +10,6 @@ use config::git::GitPaths;
 use serde_json::Value;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, RecvTimeoutError, Sender};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime};
@@ -77,17 +76,15 @@ const WATCH_INTERVAL: Duration = Duration::from_millis(500);
 /// The footer's git branch (`FooterDataProvider.getGitBranch`), kept current on its own thread.
 pub struct FooterBranch {
     branch: Arc<Mutex<Option<String>>>,
-    read: Arc<AtomicBool>,
     stop: Option<Sender<()>>,
 }
 
 impl FooterBranch {
     /// Read the branch of `cwd` and keep it current; `path_var` is the PATH `git` is looked up on. `on_change` runs
-    /// on the watcher thread after each change (wake the paint loop there).
+    /// on the watcher thread after the first read and after each change (wake the paint loop there).
     pub fn spawn(cwd: PathBuf, path_var: Option<String>, on_change: impl Fn() + Send + 'static) -> FooterBranch {
         let branch = Arc::new(Mutex::new(None));
-        let read = Arc::new(AtomicBool::new(false));
-        let (shared, first) = (Arc::clone(&branch), Arc::clone(&read));
+        let shared = Arc::clone(&branch);
         let (stop, stopped) = mpsc::channel::<()>();
         let _ = std::thread::Builder::new().name("footer-branch".into()).spawn(move || {
             let paths = config::git::find_git_paths(&cwd);
@@ -100,11 +97,8 @@ impl FooterBranch {
             // Stamped before the first read: a checkout right after it is a change, not the baseline.
             let files = paths.as_ref().map(watched).unwrap_or_default();
             let mut last = stamp(&files);
-            let changed = set(read_branch(paths.as_ref(), path_var.as_deref()));
-            first.store(true, Ordering::SeqCst);
-            if changed {
-                on_change();
-            }
+            set(read_branch(paths.as_ref(), path_var.as_deref()));
+            on_change();
             let Some(paths) = paths else { return };
             loop {
                 match stopped.recv_timeout(WATCH_INTERVAL) {
@@ -123,14 +117,8 @@ impl FooterBranch {
         });
         FooterBranch {
             branch,
-            read,
             stop: Some(stop),
         }
-    }
-
-    /// Whether the first read finished (its result, possibly no branch, is in [`FooterBranch::branch`]).
-    pub fn has_read(&self) -> bool {
-        self.read.load(Ordering::SeqCst)
     }
 
     /// The latest branch (`None` outside a repository or before the first read).

@@ -22,7 +22,6 @@ const MAX_VISIBLE_ANCHOR_CONTENT_WIDTH: usize = 20;
 const MIN_ANCHOR_CONTEXT_WIDTH: usize = 2;
 const MAX_ANCHOR_CONTEXT_WIDTH: usize = 12;
 
-/// `FilterMode`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum FilterMode {
     Default,
@@ -53,7 +52,6 @@ const MODES: [FilterMode; 5] = [
     FilterMode::All,
 ];
 
-/// What a key did.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum TreeAction {
     Selected(String),
@@ -184,7 +182,6 @@ fn format_tool_call(name: &str, args: &Value, home: &str) -> String {
     }
 }
 
-/// `TreeList`.
 struct TreeList {
     theme: Rc<Theme>,
     keys: KeybindingsManager,
@@ -1110,11 +1107,11 @@ fn word_replace(text: &str) -> String {
     out
 }
 
-/// `TreeHelp`.
 /// The help item of the file-restoring rewind, shown only when some entry has a checkpoint (so a session without
 /// checkpoints shows TypeScript's help).
 const RESTORE_HELP: (&[&str], &str, bool) = (&["app.tree.restoreFiles"], "restore files", false);
 
+/// `TreeHelp`.
 fn help_lines(theme: &Theme, keys: &KeybindingsManager, width: usize, checkpoints: bool) -> Vec<String> {
     let mut help = HELP.to_vec();
     if checkpoints {

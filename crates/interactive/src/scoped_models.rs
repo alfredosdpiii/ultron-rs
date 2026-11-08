@@ -97,7 +97,6 @@ struct Item {
     enabled: bool,
 }
 
-/// What a key did.
 #[derive(Debug, PartialEq)]
 pub enum ScopedAction {
     None,
@@ -176,7 +175,6 @@ impl ScopedModelsSelector {
         }
     }
 
-    /// `setRefreshStatus`.
     pub fn set_refresh_status(&mut self, message: &str, kind: Fg) {
         self.refresh = Some((message.to_string(), kind));
     }

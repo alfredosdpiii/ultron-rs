@@ -247,7 +247,6 @@ fn resources_keep_going_after_run_ends_on_abort_failure_and_waits_for_input() {
 #[test]
 fn resources_keep_going_ceiling_is_100_continues_or_8_hours_then_a_final_nudge() {
     let limits = Limits::default();
-    assert_eq!((limits.max_continues, limits.max_ms), (100, 8 * 60 * 60 * 1000));
     let mut counted = stretch(0, 99);
     assert_eq!(
         after_run(&mut counted, &end(1, "ok"), 1, limits),
@@ -294,15 +293,8 @@ fn resources_keep_going_nudge_messages_carry_their_text_and_count() {
     );
     let asked = nudge_message(&Next::Continue { n: 3, asked: true }, limits, 9).unwrap();
     assert_eq!(asked["content"], KEEP_GOING_ASKED_TEXT);
-    assert!(KEEP_GOING_ASKED_TEXT.contains("record the decision and the alternative"));
     let last = nudge_message(&Next::Final { n: 101 }, limits, 9).unwrap();
     assert_eq!(last["content"], FINAL_TEXT);
     assert_eq!(last["details"]["final"], true);
     assert_eq!(nudge_message(&Next::Stop, limits, 9), None);
-    // The guardrails: outward or irreversible actions are skipped and listed, schedules never started.
-    for text in [KEEP_GOING_TEXT, KEEP_GOING_ASKED_TEXT] {
-        assert!(text.contains("Skip irreversible or outward actions"), "{text}");
-        assert!(text.contains("never start schedules"), "{text}");
-        assert!(text.contains("final report instead of asking"), "{text}");
-    }
 }

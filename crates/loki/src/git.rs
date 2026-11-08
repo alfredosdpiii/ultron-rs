@@ -266,7 +266,6 @@ pub fn git_changes(
     git_changes_only(root, base, deadline, None)
 }
 
-/// `git_changes(..., only=...)`: the changes against base, limited to `only` (repository-relative paths) when given.
 /// `repository_gap`: why git cannot compare root (no repository, or a subdirectory of one), else None.
 pub fn repository_gap(root: &Path, deadline: Deadline) -> Result<Option<String>, CheckError> {
     let top = match git_output(root, &["rev-parse", "--show-toplevel"], deadline, None) {
@@ -281,6 +280,7 @@ pub fn repository_gap(root: &Path, deadline: Deadline) -> Result<Option<String>,
     Ok(None)
 }
 
+/// `git_changes(..., only=...)`: the changes against base, limited to `only` (repository-relative paths) when given.
 pub fn git_changes_only(
     root: &Path,
     base: Option<&str>,

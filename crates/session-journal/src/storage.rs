@@ -16,7 +16,6 @@ enum Backing {
     V3(Box<LegacyV3Source>),
 }
 
-/// `JsonlStorage`.
 pub struct JsonlStorage {
     path: PathBuf,
     header: Map<String, Value>,

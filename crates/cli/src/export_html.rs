@@ -26,7 +26,6 @@ fn parse_color(color: &str) -> Option<(u8, u8, u8)> {
         let part = |i: usize| u8::from_str_radix(&hex[i..i + 2], 16).ok();
         return Some((part(0)?, part(2)?, part(4)?));
     }
-    // `^rgb\s*\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*\)$`
     let inner = color
         .strip_prefix("rgb")?
         .trim_start()
@@ -350,7 +349,6 @@ pub fn export(input: &str, output: Option<&str>, env: &crate::Env) -> Result<Str
     Ok(target)
 }
 
-/// `basename(path, ".jsonl")`.
 fn file_stem(path: &Path) -> String {
     let name = path
         .file_name()

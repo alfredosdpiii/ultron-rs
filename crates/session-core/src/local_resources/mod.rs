@@ -184,7 +184,6 @@ impl LocalResources {
         string_list(s.get(kind.key())).unwrap_or_default()
     }
 
-    /// `addAutoDiscoveredResources`.
     fn add_auto_discovered(&self, acc: &mut Accumulator, global_base: &str, project_base: &str) {
         let meta = |scope: Scope, base: &str| PathMetadata {
             source: "auto".into(),

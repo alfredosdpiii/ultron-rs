@@ -17,7 +17,6 @@ pub const PROMPT_CHARS: usize = 2_000;
 pub const MAX_TOKENS: u64 = 24;
 pub const TIMEOUT: Duration = Duration::from_secs(10);
 
-/// What the naming request needs from the settings.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct NamingSettings {
     pub enabled: bool,
@@ -53,7 +52,6 @@ pub fn naming_model(setting: Option<&str>, session: &Model, supported: &dyn Fn(&
             return model;
         }
     }
-    // Thinking stays off: models that always think (managed effort) are not candidates; non-reasoning ones first.
     let cheapest = ai::models::builtin_models(&session.provider)
         .filter(|m| supported(&m.api) && m.input.iter().any(|i| i == "text") && price(m) > 0.0)
         .filter(|m| {
@@ -105,7 +103,6 @@ pub fn options(api_key: Option<String>) -> SimpleStreamOptions {
     }
 }
 
-/// The title of a finished response, when it has one.
 pub fn title_of(message: &AssistantMessage) -> Option<String> {
     if matches!(message.stop_reason, StopReason::Error | StopReason::Aborted) {
         return None;

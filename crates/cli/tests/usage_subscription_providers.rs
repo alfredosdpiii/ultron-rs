@@ -11,7 +11,7 @@ use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Arc;
 use usage::log::read_session_log;
-use usage::report::{build_session_report, build_session_report_with};
+use usage::report::build_session_report_with;
 
 /// rootOnlySession: one root response on provider `priced`, $0.10.
 fn session(dir: &Path) -> std::path::PathBuf {
@@ -38,7 +38,7 @@ fn cli_usage_a_provider_on_a_subscription_login_is_priced_as_one() {
     assert_eq!(cost["reportedUsd"], Value::Null);
     assert!((cost["subscriptionUsd"].as_f64().unwrap() - 0.1).abs() < 1e-9, "{cost}");
     // Without it the cost is reported.
-    let plain = build_session_report(&log);
+    let plain = build_session_report_with(&log, &[]);
     assert!((plain["usage"]["total"]["cost"]["reportedUsd"].as_f64().unwrap() - 0.1).abs() < 1e-9);
     assert_eq!(plain["usage"]["total"]["cost"]["subscriptionUsd"], Value::Null);
 }

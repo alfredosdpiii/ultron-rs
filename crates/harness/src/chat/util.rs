@@ -1,5 +1,3 @@
-//! Small helpers shared by the conversation runtime.
-
 use chord_delta::{DeltaError, Draft, Seg};
 use durable::{ConversationId, Owner, SessionError};
 use serde_json::Value;
@@ -20,7 +18,6 @@ pub(crate) fn keys(path: &[&str]) -> Vec<Seg> {
     path.iter().map(|key| Seg::from(*key)).collect()
 }
 
-/// The value at a key path of a draft, if present.
 pub(crate) fn get(draft: &Draft, path: &[&str]) -> Result<Option<Value>> {
     d(draft.get(&keys(path)))
 }
@@ -53,7 +50,6 @@ pub(crate) fn to_value<T: serde::Serialize>(value: &T) -> Value {
     serde_json::to_value(value).expect("serializable")
 }
 
-/// Deserialize a stored value; a malformed one is a Harness error.
 pub(crate) fn from_value<T: serde::de::DeserializeOwned>(value: Value, what: &str) -> Result<T> {
     serde_json::from_value(value).map_err(|error| HarnessError::Error(format!("Malformed {what}: {error}")))
 }

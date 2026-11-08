@@ -30,14 +30,12 @@ pub enum NextState {
     },
 }
 
-/// Next state that completes a task with `result`.
 pub fn completed(result: Value) -> NextState {
     NextState::Terminal {
         outcome: TaskOutcome::Completed { result },
     }
 }
 
-/// Next state that aborts a task with `reason`.
 pub fn aborted_with(reason: &str) -> NextState {
     NextState::Terminal {
         outcome: TaskOutcome::Aborted {
@@ -106,7 +104,6 @@ impl TaskRuntime {
         })
     }
 
-    /// The memo `name` of the live task, if one was stored.
     pub fn memo(&self, name: &str) -> Result<Option<Value>> {
         self.invocation.check()?;
         Ok(self
@@ -190,7 +187,6 @@ impl TaskRuntime {
         })
     }
 
-    /// The Harness clock.
     pub fn now(&self) -> Result<u64> {
         self.invocation.check()?;
         Ok((self.scheduler.now)())
@@ -250,7 +246,6 @@ impl TaskRuntime {
         })
     }
 
-    /// Whether the invocation has ended.
     pub fn ended(&self) -> bool {
         self.invocation.is_ended()
     }

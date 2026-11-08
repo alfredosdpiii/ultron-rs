@@ -21,7 +21,6 @@ pub enum Naming {
     Slow(Duration, String),
 }
 
-/// What the scripted server saw.
 #[derive(Default)]
 pub struct Seen {
     pub requests: Vec<Value>,

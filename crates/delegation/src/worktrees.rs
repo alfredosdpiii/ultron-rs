@@ -147,9 +147,6 @@ fn present<'de, D: serde::Deserializer<'de>>(deserializer: D) -> std::result::Re
     Ok(Some(Option::deserialize(deserializer)?))
 }
 
-// ---------------------------------------------------------------------------------------------------------------
-// Git
-
 #[derive(Debug, Clone, Default)]
 pub struct GitResult {
     pub code: i32,
@@ -231,8 +228,7 @@ fn git_with(cwd: &Path, args: &[&str], options: GitOptions<'_>) -> Result<GitRes
     })
 }
 
-/// Public for tests and the host: `git` in `cwd`.
-pub fn git(cwd: &Path, args: &[&str]) -> Result<GitResult> {
+fn git(cwd: &Path, args: &[&str]) -> Result<GitResult> {
     git_with(cwd, args, GitOptions::default())
 }
 
@@ -323,7 +319,6 @@ fn text(path: &Path) -> String {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RepoInfo {
-    /// The working tree's top directory.
     pub top: PathBuf,
     pub common_dir: PathBuf,
     /// HEAD's commit; `None` in a repository without commits.
@@ -437,9 +432,6 @@ pub fn snapshot_working_tree(top: &Path, head: &str, message: &str) -> Result<(S
     Ok((commit, true))
 }
 
-// ---------------------------------------------------------------------------------------------------------------
-// Records
-
 fn records_dir(common_dir: &Path) -> PathBuf {
     common_dir.join(WORKTREES_DIR)
 }
@@ -521,9 +513,6 @@ pub fn owner_alive(owner: &Owner) -> bool {
     }
     signals::pid_alive(owner.pid)
 }
-
-// ---------------------------------------------------------------------------------------------------------------
-// Create
 
 static SLUG_RULES: LazyLock<[Regex; 5]> = LazyLock::new(|| {
     [
@@ -785,7 +774,6 @@ pub struct CreateWorktreeOptions<'a> {
 /// Creations per repository run one at a time, so branch names are picked and taken without a race.
 static CREATING: LazyLock<Mutex<()>> = LazyLock::new(Mutex::default);
 
-/// Create a child's worktree (see the module comment).
 pub fn create_child_worktree(options: &CreateWorktreeOptions<'_>) -> Result<WorktreeRecord> {
     let info = repo_info(options.cwd)?;
     let _serial = CREATING.lock().unwrap_or_else(PoisonError::into_inner);
@@ -989,9 +977,6 @@ pub fn in_worktree(path: &str, record: &WorktreeRecord) -> String {
     }
 }
 
-// ---------------------------------------------------------------------------------------------------------------
-// Commit
-
 /// Paths (relative to the root) that differ from HEAD in a working tree, untracked ones included; `None` on error.
 pub fn list_dirty(root: &Path) -> Option<Vec<String>> {
     let status = git_with(
@@ -1136,9 +1121,6 @@ pub fn commit_message(summary: &str, name: &str, task_id: Option<&str>, status: 
     ));
     out.join("\n")
 }
-
-// ---------------------------------------------------------------------------------------------------------------
-// Merge
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ConflictHunk {
@@ -1562,9 +1544,6 @@ pub fn merge_child_worktree(target_cwd: &Path, source: &MergeSource, markers: bo
     })
 }
 
-// ---------------------------------------------------------------------------------------------------------------
-// Remove and prune
-
 fn unlink_tree(dir: &Path) {
     for entry in sorted_entries(dir) {
         let path = dir.join(entry);
@@ -1741,9 +1720,6 @@ pub fn prune_worktrees(cwd: &Path, options: &PruneOptions<'_>) -> PruneReport {
     let _ = git(&info.top, &["worktree", "prune"]);
     report
 }
-
-// ---------------------------------------------------------------------------------------------------------------
-// JSON views, as the TS objects serialize
 
 impl CommitOutcome {
     pub fn to_json(&self) -> serde_json::Value {

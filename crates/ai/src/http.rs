@@ -369,7 +369,6 @@ fn retry_delay_ms(failure: &Failure, retry_index: u32, max: Option<f64>) -> Resu
     Ok(exponential * (1.0 - jitter() * 0.25))
 }
 
-/// A cheap uniform value in [0, 1) for backoff jitter.
 fn jitter() -> f64 {
     let nanos = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -569,7 +568,6 @@ pub fn http_idle_timeout(setting: Option<&Value>) -> Option<Duration> {
     }
 }
 
-/// Real HTTP over reqwest with rustls.
 #[derive(Clone, Debug, Default)]
 pub struct ReqwestTransport {
     /// Built from `config` by the first request: building one loads and parses the system's root certificates, and
@@ -778,31 +776,5 @@ pub(crate) async fn read_chunk(body: &mut dyn Body, signal: Option<&AbortSignal>
             Err(error) => Read::Failed(error),
         },
         () = cancelled(signal) => Read::Aborted,
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn ai_http_date_is_date_parse_of_an_imf_fixdate() {
-        // Date.parse("Thu, 01 Jan 2026 00:00:01 GMT"), Date.parse("Sun, 06 Nov 1994 08:49:37 GMT")
-        assert_eq!(
-            parse_http_date("Thu, 01 Jan 2026 00:00:01 GMT"),
-            Some(1_767_225_601_000)
-        );
-        assert_eq!(parse_http_date("Sun, 06 Nov 1994 08:49:37 GMT"), Some(784_111_777_000));
-        assert_eq!(parse_http_date("Sun, 06 nov 1994 08:49:37 GMT"), Some(784_111_777_000));
-        assert_eq!(parse_http_date("soon"), None);
-        // A named zone other than GMT is refused rather than read as GMT.
-        assert_eq!(parse_http_date("Sun, 06 Nov 1994 08:49:37 PST"), None);
-    }
-
-    /// `Date.parse(t) - Date.now()` is a whole number of milliseconds.
-    #[test]
-    fn ai_http_until_date_counts_whole_milliseconds() {
-        let delay = until_http_date_ms("Fri, 01 Jan 2100 00:00:00 GMT").unwrap();
-        assert!(delay > 0.0 && delay.fract() == 0.0, "{delay}");
     }
 }

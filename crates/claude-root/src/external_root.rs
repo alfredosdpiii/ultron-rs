@@ -39,7 +39,6 @@ pub type CellRunner = Arc<dyn Fn(&str, &AbortSignal) -> Result<Vec<Value>, Strin
 pub trait RootHost: Send + Sync {
     /// `host.beginRootTurn`: work admitted while the turn is open is charged to the turn's own root.
     fn begin_root_turn(&self, _turn: &str) {}
-    /// `host.endRootTurn`.
     fn end_root_turn(&self, _turn: &str) {}
     /// `host.rootIdOfRun`: the usage root of a turn.
     fn root_id_of_run(&self, turn: &str) -> String {

@@ -298,8 +298,6 @@ pub fn to_json_1<T: Serialize>(value: &T) -> String {
     String::from_utf8(out).unwrap_or_default()
 }
 
-// ---- Locks ----
-
 fn process_lock(path: &str) -> Arc<Mutex<()>> {
     static LOCKS: OnceLock<Mutex<HashMap<String, Arc<Mutex<()>>>>> = OnceLock::new();
     LOCKS

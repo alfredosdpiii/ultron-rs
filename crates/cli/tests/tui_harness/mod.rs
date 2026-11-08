@@ -1,6 +1,5 @@
-//! The tmux harness of the interactive TUI tests (a copy of the one in tests/interactive.rs, shared by the
-//! command parity tests): the scripted Anthropic SSE server, screen normalization, private temp dirs, one TUI
-//! process per tmux server.
+//! The tmux harness of the interactive TUI tests: the scripted Anthropic SSE server, screen normalization, private
+//! temp dirs, one TUI process per tmux server.
 
 use serde_json::Value;
 use std::io::{BufRead, BufReader, Read, Write};
@@ -55,29 +54,58 @@ pub struct Gate {
     held: AtomicUsize,
 }
 
-/// The scripted SSE server. Requests whose body asks for a session title (the naming call) get `title` (after
-/// `title_delay`) and do not use up a scripted reply.
+/// The scripted SSE server. Requests whose body asks for a session title (the naming call) get `title` and do not
+/// use up a scripted reply.
 pub struct Mock {
     pub port: u16,
     pub gate: Arc<Gate>,
     /// The bodies of the requests that took a scripted reply, in arrival order.
     pub requests: Arc<Mutex<Vec<String>>>,
+    title_gate: Arc<Gate>,
+    title_requests: Arc<AtomicUsize>,
+    titles_consumed: Arc<AtomicUsize>,
 }
 
 impl Mock {
     /// `title`: the naming call's reply.
     pub fn start(replies: Vec<Reply>, title: Option<String>) -> Mock {
+        Self::serve(replies, title, false)
+    }
+
+    /// [`Mock::start`] whose naming reply waits for [`Mock::release_title`].
+    pub fn start_with_held_title(replies: Vec<Reply>, title: &str) -> Mock {
+        Self::serve(replies, Some(title.to_string()), true)
+    }
+
+    fn serve(replies: Vec<Reply>, title: Option<String>, hold_title: bool) -> Mock {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let port = listener.local_addr().unwrap().port();
         let gate = Arc::new(Gate::default());
+        let title_gate = Arc::new(Gate::default());
+        let title_requests = Arc::new(AtomicUsize::new(0));
+        let titles_consumed = Arc::new(AtomicUsize::new(0));
         let next = Arc::new(AtomicUsize::new(0));
         let requests = Arc::new(Mutex::new(Vec::new()));
-        let (g, r) = (gate.clone(), requests.clone());
+        let (g, r, tg, t, tc) = (
+            gate.clone(),
+            requests.clone(),
+            title_gate.clone(),
+            title_requests.clone(),
+            titles_consumed.clone(),
+        );
         std::thread::spawn(move || {
             for stream in listener.incoming() {
                 let Ok(mut stream) = stream else { return };
-                let (replies, gate, next, title, requests) =
-                    (replies.clone(), g.clone(), next.clone(), title.clone(), r.clone());
+                let (replies, gate, next, title, requests, title_gate, titles, consumed) = (
+                    replies.clone(),
+                    g.clone(),
+                    next.clone(),
+                    title.clone(),
+                    r.clone(),
+                    tg.clone(),
+                    t.clone(),
+                    tc.clone(),
+                );
                 std::thread::spawn(move || {
                     let mut reader = BufReader::new(stream.try_clone().unwrap());
                     let mut line = String::new();
@@ -100,7 +128,15 @@ impl Mock {
                     let mut body = vec![0; length];
                     reader.read_exact(&mut body).unwrap();
                     let body = String::from_utf8_lossy(&body);
-                    let reply = if body.contains(session_core::naming::SYSTEM) {
+                    let naming = body.contains(session_core::naming::SYSTEM);
+                    let reply = if naming {
+                        titles.fetch_add(1, Ordering::SeqCst);
+                        if hold_title {
+                            let mut released = title_gate.released.lock().unwrap();
+                            while *released == 0 {
+                                released = title_gate.cv.wait(released).unwrap();
+                            }
+                        }
                         text_reply(title.as_deref().unwrap_or("Untitled"))
                     } else {
                         requests.lock().unwrap().push(body.to_string());
@@ -128,10 +164,52 @@ impl Mock {
                     for c in &reply.chunks[cut..] {
                         let _ = stream.write_all(c.as_bytes());
                     }
+                    if naming {
+                        // The client closes its end once it has read the whole reply (or gave it up).
+                        let _ = stream.shutdown(std::net::Shutdown::Write);
+                        let _ = stream.set_read_timeout(Some(Duration::from_secs(120)));
+                        let _ = stream.read_to_end(&mut Vec::new());
+                        consumed.fetch_add(1, Ordering::SeqCst);
+                    }
                 });
             }
         });
-        Mock { port, gate, requests }
+        Mock {
+            port,
+            gate,
+            requests,
+            title_gate,
+            title_requests,
+            titles_consumed,
+        }
+    }
+
+    pub fn release_title(&self) {
+        *self.title_gate.released.lock().unwrap() += 1;
+        self.title_gate.cv.notify_all();
+    }
+
+    /// The naming calls that reached the server so far.
+    pub fn title_requests(&self) -> usize {
+        self.title_requests.load(Ordering::SeqCst)
+    }
+
+    /// Wait until the client is done with a naming reply: read it whole, or dropped the call (hang guard 120 s).
+    pub fn wait_title_consumed(&self) {
+        let deadline = Instant::now() + Duration::from_secs(120);
+        while self.titles_consumed.load(Ordering::SeqCst) == 0 {
+            assert!(Instant::now() < deadline, "the naming reply was never consumed");
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    /// Wait until the naming call reached the server (hang guard 120 s).
+    pub fn wait_title_request(&self) {
+        let deadline = Instant::now() + Duration::from_secs(120);
+        while self.title_requests() == 0 {
+            assert!(Instant::now() < deadline, "no naming request");
+            std::thread::sleep(Duration::from_millis(10));
+        }
     }
 
     /// The bodies of the requests that took a scripted reply so far.
@@ -192,7 +270,6 @@ pub fn normalize(screen: &str, tmp: &str) -> String {
                 continue;
             }
         }
-        // 8-4-4-4-12 lowercase hex
         let groups = [8, 4, 4, 4, 12];
         let mut j = i;
         let uuid = groups.iter().enumerate().all(|(g, &n)| {
@@ -456,6 +533,19 @@ impl Tui {
     pub fn wait_screen(&self, mut screen: String, want: &str) -> String {
         let deadline = Instant::now() + Duration::from_secs(120);
         while screen != want && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(20));
+            screen = self.capture();
+        }
+        screen
+    }
+
+    /// The first screen that satisfies `done` (hang guard 120 s). Unlike [`Tui::wait`], it does not stop at a frame
+    /// drawn before a later redraw, however slow the machine.
+    pub fn wait_for(&self, what: &str, done: impl Fn(&str) -> bool) -> String {
+        let deadline = Instant::now() + Duration::from_secs(120);
+        let mut screen = self.capture();
+        while !done(&screen) {
+            assert!(Instant::now() < deadline, "timed out waiting for {what}:\n{screen}");
             std::thread::sleep(Duration::from_millis(20));
             screen = self.capture();
         }

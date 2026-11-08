@@ -5,7 +5,7 @@
 //! line, at most 1 MiB) arrive on the kernel's fd 3 and host messages go to its fd 4; stdin is /dev/null, and fd 1 and
 //! fd 2 are plain output attributed to the running cell. After a cell, runtime.py writes a flush marker naming the
 //! cell's request id to fd 1 and fd 2 and then sends `done`, listing the markers it wrote; the cell resolves once the
-//! host has read them, so the cell's raw output is complete. With [`ProtocolChannel::Stdio`] frames use stdout and stdin.
+//! host has read them, so the cell's raw output is complete.
 //!
 //! Calls block; cells run one at a time in call order. A [`Signal`] cancels a call: a queued call is rejected without
 //! touching the kernel, a running one kills the kernel's process tree. Any kernel failure (exit, protocol violation,
@@ -212,12 +212,10 @@ impl Signal {
         self.listen(Box::new(listener))
     }
 
-    /// Removes a listener [`Signal::on_abort`] added.
     pub fn forget(&self, id: u64) {
         self.unlisten(id);
     }
 
-    /// Runs `listener` on abort; None (and `listener` is dropped) when already aborted.
     fn listen(&self, listener: Listener) -> Option<u64> {
         let mut state = jsrt::sync::lock(&self.inner.0);
         if state.reason.is_some() {
@@ -287,15 +285,6 @@ impl HostHandler for EchoHandler {
     }
 }
 
-/// Where protocol frames travel.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ProtocolChannel {
-    /// Frames on fd 3, host messages on fd 4, stdin /dev/null; fd 1 and fd 2 are the running cell's output.
-    PrivateFd,
-    /// Frames on stdout and messages on stdin (kernel.ts's Windows channel): raw writes to fd 1 corrupt the stream.
-    Stdio,
-}
-
 pub struct KernelOptions {
     pub cwd: PathBuf,
     pub runtime_path: PathBuf,
@@ -307,7 +296,6 @@ pub struct KernelOptions {
     pub limits: LimitOverrides,
     /// Extra environment for the kernel, applied after the credential filter.
     pub env: Vec<(String, String)>,
-    pub protocol_channel: ProtocolChannel,
     /// The default path of [`Kernel::snapshot`] / [`Kernel::restore`]; a new kernel restores it before its first
     /// call (kernel.ts `snapshotPath`).
     pub snapshot_path: Option<PathBuf>,
@@ -361,7 +349,6 @@ impl KernelOptions {
             startup_timeout: Duration::from_secs(10),
             limits: LimitOverrides::default(),
             env: Vec::new(),
-            protocol_channel: ProtocolChannel::PrivateFd,
             snapshot_path: None,
             snapshot_key: None,
             continuity: None,
@@ -555,7 +542,6 @@ struct Generation {
     oom_kills_at_start: u64,
     /// Descendants seen by watchdog scans (pid to start time), killed with the tree even if they left it.
     known_descendants: Arc<Mutex<HashMap<i32, u64>>>,
-    private_protocol: bool,
     writer: mpsc::Sender<String>,
     exit: Arc<Exit>,
     raw: [RawStream; 2],
@@ -569,7 +555,6 @@ struct Generation {
     cell_cpu_start: Option<f64>,
     /// The process the CPU backstop measures: the root, or under a sandbox the Python process found at the first cell.
     cpu_pid: Option<i32>,
-    /// The sandbox this generation runs in.
     sandbox: Option<sandbox::Mechanism>,
     buffer: Vec<u8>,
     /// The snapshot this generation restores before it counts as started.
@@ -730,7 +715,6 @@ impl Kernel {
         jsrt::sync::lock(&self.shared.state).queue.len()
     }
 
-    /// The pid of the running kernel process.
     pub fn pid(&self) -> Option<u32> {
         let state = jsrt::sync::lock(&self.shared.state);
         state
@@ -1156,9 +1140,7 @@ impl Shared {
             }
             current.cell_cpu_start = current.cpu_pid.and_then(process::process_cpu_seconds);
             current.active_cell = Some(request_id.clone());
-            if current.private_protocol {
-                take_raw_output(current, &request_id);
-            }
+            take_raw_output(current, &request_id);
             let notice = state.continuity.notice.take();
             if let Some(entry) = state.ops.get_mut(&op) {
                 entry.cell = Some(controller);
@@ -1558,7 +1540,6 @@ impl Shared {
         }
     }
 
-    /// The interpreter: `python`, else [`crate::env::python`].
     fn python(&self) -> PathBuf {
         self.options
             .python
@@ -1568,7 +1549,6 @@ impl Shared {
 
     fn spawn(self: &Arc<Self>, state: &mut State, restore: bool) -> Result<u64, KernelError> {
         let options = &self.options;
-        let private_protocol = options.protocol_channel == ProtocolChannel::PrivateFd;
         let python = self.python();
         let spawn_error = |error: std::io::Error| KernelError::new(format!("RLM kernel spawn failed: {error}"));
         let mechanism = match &options.sandbox {
@@ -1588,10 +1568,11 @@ impl Shared {
                 })
             }
         };
-        let mut argv: Vec<std::ffi::OsString> = vec![python.clone().into(), options.runtime_path.clone().into()];
-        if private_protocol {
-            argv.push("--protocol-fds".into());
-        }
+        let argv: Vec<std::ffi::OsString> = vec![
+            python.clone().into(),
+            options.runtime_path.clone().into(),
+            "--protocol-fds".into(),
+        ];
         let budget = rlm_output_budget(options.var(crate::env::RLM_OUTPUT_BYTES_ENV).as_deref());
         let fixed_env: Vec<(String, String)> = vec![
             ("NO_COLOR".into(), "1".into()),
@@ -1646,27 +1627,21 @@ impl Shared {
             }
         };
         command.process_group(0).stdout(Stdio::piped()).stderr(Stdio::piped());
-        let protocol = if private_protocol {
-            let (from_kernel, kernel_out) = std::io::pipe().map_err(spawn_error)?;
-            let (kernel_in, to_kernel) = std::io::pipe().map_err(spawn_error)?;
-            command.stdin(Stdio::null());
-            command
-                .fd_mappings(vec![
-                    FdMapping {
-                        parent_fd: kernel_out.into(),
-                        child_fd: 3,
-                    },
-                    FdMapping {
-                        parent_fd: kernel_in.into(),
-                        child_fd: 4,
-                    },
-                ])
-                .map_err(|error| KernelError::new(error.to_string()))?;
-            Some((from_kernel, to_kernel))
-        } else {
-            command.stdin(Stdio::piped());
-            None
-        };
+        let (protocol_out, kernel_out) = std::io::pipe().map_err(spawn_error)?;
+        let (kernel_in, protocol_in) = std::io::pipe().map_err(spawn_error)?;
+        command.stdin(Stdio::null());
+        command
+            .fd_mappings(vec![
+                FdMapping {
+                    parent_fd: kernel_out.into(),
+                    child_fd: 3,
+                },
+                FdMapping {
+                    parent_fd: kernel_in.into(),
+                    child_fd: 4,
+                },
+            ])
+            .map_err(|error| KernelError::new(error.to_string()))?;
         let mut child = if mechanism.is_some() {
             // Spawned (and the command dropped) on the process-lifetime spawner thread: see `sandboxed`.
             sandboxed::spawn(command).map_err(spawn_error)?
@@ -1678,17 +1653,7 @@ impl Shared {
         };
         let pid = i32::try_from(child.id()).map_err(|error| KernelError::new(error.to_string()))?;
         let stderr = child.stderr.take();
-        type Streams = (
-            Box<dyn Read + Send>,
-            Box<dyn Write + Send>,
-            Option<std::process::ChildStdout>,
-        );
-        let (protocol_out, protocol_in, raw_stdout): Streams = match (protocol, child.stdout.take(), child.stdin.take())
-        {
-            (Some((from_kernel, to_kernel)), stdout, _) => (Box::new(from_kernel), Box::new(to_kernel), stdout),
-            (None, Some(stdout), Some(stdin)) => (Box::new(stdout), Box::new(stdin), None),
-            _ => return Err(KernelError::new(NOT_RUNNING)),
-        };
+        let raw_stdout = child.stdout.take();
         state.next_generation += 1;
         let id = state.next_generation;
         let restore_path = if restore && !state.no_auto_restore {
@@ -1708,7 +1673,6 @@ impl Shared {
             cgroup_dir: None,
             oom_kills_at_start: 0,
             known_descendants: known_descendants.clone(),
-            private_protocol,
             writer,
             exit: exit.clone(),
             raw: Default::default(),
@@ -1745,11 +1709,6 @@ impl Shared {
         let shared = self.clone();
         let channel_exit = exit.clone();
         std::thread::spawn(move || {
-            let channel = if private_protocol {
-                "protocol channel (fd 3)"
-            } else {
-                "stdout"
-            };
             if let Err(error) = read_chunks(protocol_out, |chunk| {
                 shared.with_state(|state| shared.handle_data(state, id, chunk));
             }) {
@@ -1758,7 +1717,10 @@ impl Shared {
             }
             if !channel_exit.wait_reaped(CLOSED_CHANNEL_GRACE) {
                 shared.with_state(|state| {
-                    let error = KernelError::new(format!("RLM kernel {channel} closed{}", state.diagnostics()));
+                    let error = KernelError::new(format!(
+                        "RLM kernel protocol channel (fd 3) closed{}",
+                        state.diagnostics()
+                    ));
                     shared.fail(state, id, error);
                 });
             }
@@ -1779,13 +1741,7 @@ impl Shared {
                         if state.current(id).is_none() {
                             return;
                         }
-                        if private_protocol {
-                            handle_raw(state, id, 1, chunk);
-                        } else {
-                            // Only a bounded tail is kept, for diagnostics.
-                            let start = chunk.len().saturating_sub(4 * output::STDERR_TAIL_CHARS);
-                            keep_tail(&mut state.stderr, &String::from_utf8_lossy(&chunk[start..]));
-                        }
+                        handle_raw(state, id, 1, chunk);
                     });
                 });
             });
@@ -2149,7 +2105,6 @@ fn entry_reject(state: &mut State, op: u64, error: KernelError) {
     }
 }
 
-/// Reads `stream` to its end in chunks; an interrupted read is retried.
 fn read_chunks(mut stream: impl Read, mut handle: impl FnMut(&[u8])) -> std::io::Result<()> {
     let mut buffer = vec![0u8; 64 * 1024];
     loop {

@@ -1,7 +1,6 @@
 """`rlm.images`: image generation for the Rust host (OpenRouter's images API through the host's provider auth).
 
 The host makes the request and saves each image to a file; the cell gets back file paths, never image bytes.
-Hosts without these requests (the TypeScript host) answer them with an error.
 """
 
 from __future__ import annotations

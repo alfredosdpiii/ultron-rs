@@ -49,7 +49,6 @@ const CODEX_RESPONSE_STATUSES: &[&str] = &[
     "in_progress",
 ];
 
-/// `OpenAICodexResponsesOptions`.
 #[derive(Clone, Default, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct OpenAICodexResponsesOptions {
@@ -63,8 +62,6 @@ pub struct OpenAICodexResponsesOptions {
     pub text_verbosity: Option<String>,
     pub tool_choice: Option<String>,
 }
-
-// ---------------------------------------------------------------------------------------------- request building
 
 /// `extractAccountId`: `chatgpt_account_id` from the JWT's `https://api.openai.com/auth` claim.
 pub fn extract_account_id(token: &str) -> Result<String, String> {
@@ -81,7 +78,6 @@ pub fn extract_account_id(token: &str) -> Result<String, String> {
     }
 }
 
-/// `resolveCodexUrl`.
 pub fn resolve_codex_url(base_url: &str) -> String {
     let raw = if jsrt::string::trim(base_url).is_empty() {
         DEFAULT_CODEX_BASE_URL
@@ -248,8 +244,6 @@ fn normalize_timeout_ms(value: Option<f64>) -> Result<Option<u64>, String> {
         Some(v) => Ok(Some(v.floor() as u64)),
     }
 }
-
-// --------------------------------------------------------------------------------------------------- errors / retry
 
 /// Why a Codex request failed: the kind decides retries and the WebSocket fallback.
 #[derive(Debug)]
@@ -445,8 +439,6 @@ pub fn parse_error_response(status: u16, raw: &str, now: i64) -> (String, Option
     (message, friendly)
 }
 
-// ------------------------------------------------------------------------------------------------- SSE processing
-
 /// `parseSSE`: frames end at a blank line (`\n\n`); `data:` lines are trimmed and joined; `[DONE]` is skipped.
 #[derive(Default)]
 struct CodexSse {
@@ -577,8 +569,6 @@ async fn process_stream(
     }
     run.terminated().map_err(CodexError::Plain)
 }
-
-// ----------------------------------------------------------------------------------------------------- the request
 
 /// Stream one Codex response; failures end with an `error` event.
 pub async fn stream(

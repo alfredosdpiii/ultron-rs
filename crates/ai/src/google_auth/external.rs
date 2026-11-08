@@ -61,8 +61,6 @@ fn truthy_string(json: &Value, key: &str) -> Option<String> {
         .map(|v| jsrt::value::string(Some(v)))
 }
 
-// ---------------------------------------------------------------------------------------------- external_account
-
 #[derive(Clone, Debug)]
 enum Format {
     Text,
@@ -355,8 +353,6 @@ fn credential_source(json: &Value) -> Result<Source, Fail> {
     Err(Fail::new(NO_SOURCE))
 }
 
-// ------------------------------------------------------------------------------------------ identity pool sources
-
 /// `FileSubjectTokenSupplier.getSubjectToken`.
 fn file_subject_token(path: &str, format: &Format) -> Result<String, Fail> {
     let not_a_file = |shown: &str, inner: &str| {
@@ -425,8 +421,6 @@ async fn url_subject_token(
     }
     Ok(jsrt::value::string(Some(&token)))
 }
-
-// -------------------------------------------------------------------------------------------------------- AWS
 
 fn aws_source(source: &Value) -> Result<Source, Fail> {
     let environment_id = truthy_string(source, "environment_id").unwrap_or_default();
@@ -633,8 +627,6 @@ pub fn aws_subject_token(
     Ok(jsrt::uri::encode_component(&Value::Object(request).to_string()))
 }
 
-// -------------------------------------------------------------------------------------------- pluggable executable
-
 fn executable_source(source: &Value) -> Result<Source, Fail> {
     let executable = source.get("executable").cloned().unwrap_or(Value::Null);
     let Some(command) = executable.get("command").filter(|v| jsrt::value::truthy(Some(v))) else {
@@ -702,7 +694,6 @@ fn parse_command(command: &str) -> Result<Vec<String>, Fail> {
     Ok(components)
 }
 
-/// `ExecutableResponse`.
 struct ExecutableResponse {
     version: f64,
     success: bool,
@@ -950,8 +941,6 @@ async fn run_executable(
     ExecutableResponse::parse(&json).map_err(|message| message.map_or_else(invalid, Fail::new))
 }
 
-// ------------------------------------------------------------------------------------ the shared STS error shape
-
 /// A token request whose error response is reworded by `getErrorFromOAuthErrorResponse`.
 async fn oauth_exchange(transport: &dyn Transport, request: HttpRequest) -> Result<String, Fail> {
     match gaxios(transport, request, &AUTH_RETRY, ResponseType::Json).await {
@@ -972,8 +961,6 @@ async fn oauth_exchange(transport: &dyn Transport, request: HttpRequest) -> Resu
         }
     }
 }
-
-// ------------------------------------------------------------------------------ external_account_authorized_user
 
 /// An `external_account_authorized_user` client.
 #[derive(Clone, Debug)]
@@ -1031,8 +1018,6 @@ impl ExternalUser {
         oauth_exchange(transport, request).await
     }
 }
-
-// ---------------------------------------------------------------------------------------------- self-signed JWT
 
 /// `JWTAccess.getRequestHeaders` with scopes: the bearer token a service account outside the default universe signs
 /// for itself (`{alg, typ, kid?}` header, `{iss, sub, scope, exp, iat}` payload, one hour).

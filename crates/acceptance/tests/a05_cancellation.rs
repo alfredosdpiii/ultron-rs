@@ -40,7 +40,6 @@ fn all_gone(pids: &[u32]) {
     wait_until("the process tree to end", || pids.iter().all(|pid| !alive(*pid)));
 }
 
-/// A gate the test opens once.
 #[derive(Default)]
 struct Gate(Mutex<bool>, Condvar);
 

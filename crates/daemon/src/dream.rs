@@ -22,7 +22,6 @@ pub const SESSION_NAME: &str = "Dream";
 pub const DEFAULT_AT: &str = "03:30";
 const MINUTE_MS: i64 = 60_000;
 const DAY_MS: i64 = 24 * 60 * MINUTE_MS;
-/// What each night's run is told.
 pub const PROMPT: &str = "Dream: consolidate what you learned since the last dream. Read `ultron/dream/SKILL.md` \
     from the bundled skills directory and follow it. This run is unattended: nobody is here to answer.";
 

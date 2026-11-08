@@ -6,8 +6,6 @@
 //!   failure line `[exit code 1]`. `exit_code` stays 1 (and `.ok`, a clean exit 0, stays false);
 //! - a failed command whose output shows the sandbox refused it carries a `sandbox_note` (`sandbox::refusal`), a
 //!   line runtime.py prints after the output, saying what was blocked and what is allowed.
-//!
-//! Both are fields the TypeScript host never sends, so runtime.py under it is unchanged.
 
 use serde_json::Value;
 

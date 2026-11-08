@@ -74,8 +74,6 @@ mod collect_waits;
 mod composition;
 #[path = "config_tui.rs"]
 mod config_tui;
-#[path = "cross_read.rs"]
-mod cross_read;
 #[path = "custom_providers.rs"]
 mod custom_providers;
 #[path = "daemon_coordinator.rs"]

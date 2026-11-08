@@ -6,6 +6,8 @@
 
 #[path = "claude_subscription_support/isolate.rs"]
 mod isolate;
+#[path = "provider_replay/mod.rs"]
+mod provider_replay;
 
 #[path = "auth.rs"]
 mod auth;

@@ -284,7 +284,8 @@ fn sse(answer: Answer, usage: Value) -> String {
 }
 
 // ---------------------------------------------------------------------------------------------------------------
-// The `ultron --mode rpc` harness: private agent, server and project directories, a `scripted/scripted` model.
+// The `ultron --mode rpc` harness: private agent, server and project directories, and the built-in groq model
+// pointed at the scripted provider by models.json.
 
 struct Harness {
     root: tempfile::TempDir,
@@ -297,8 +298,6 @@ impl Harness {
         let harness = Harness { root, provider };
         std::fs::create_dir_all(harness.agent()).unwrap();
         std::fs::create_dir_all(harness.project()).unwrap();
-        // The Rust build reads only `providers.<name>.baseUrl` from models.json (no custom models), so the built-in
-        // groq model points at the scripted provider; the window bound is still asserted on every request.
         let models =
             json!({"providers": {"groq": {"baseUrl": format!("http://127.0.0.1:{}/v1", harness.provider.port)}}});
         std::fs::write(harness.agent().join("models.json"), models.to_string()).unwrap();

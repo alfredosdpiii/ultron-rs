@@ -239,7 +239,6 @@ fn acceptance_a25_restore_rehearsal_is_byte_identical_and_leaves_sessions_untouc
         .collect();
     let original = |file: &str| &snapshot.iter().find(|(f, _)| f == file).unwrap().1;
 
-    // Damage the profile.
     std::fs::write(agent.join("settings.json"), "{broken").unwrap();
     std::fs::remove_file(agent.join("auth.json")).unwrap();
     std::fs::remove_dir_all(agent.join("extensions")).unwrap();

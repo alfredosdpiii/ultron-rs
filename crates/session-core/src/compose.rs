@@ -211,7 +211,6 @@ pub fn ts_guide(var: &dyn Fn(&str) -> Option<String>) -> bool {
 }
 
 impl Config {
-    /// [`session_environment`] of this session.
     pub fn child_env(&self) -> Vec<(String, String)> {
         session_environment(&*self.var)
     }
@@ -507,7 +506,6 @@ struct PromptState {
 }
 
 impl SystemPrompt {
-    /// A prompt that never changes.
     pub fn fixed(text: impl Into<String>) -> SystemPrompt {
         SystemPrompt(Arc::new(PromptState {
             render: None,
@@ -667,7 +665,6 @@ impl Runtime {
     pub fn new(env: &Env, mode: &str, sessions_dir: PathBuf, services: Services) -> Result<Runtime, String> {
         let mut services = services;
         let config = Config::from_env(env);
-        // The worker's project trust (`workerProjectTrusted`, decided by Config).
         let trusted = config.project_trusted;
         let manager = config::settings::SettingsManager::create(&env.cwd, &config.agent_dir, trusted);
         // resource-loader.ts `reload`: the local skills and prompts.
@@ -814,7 +811,6 @@ impl Runtime {
             None => None,
         };
         let skills_config = config.clone();
-        // `--no-skills`: the catalog is empty.
         let no_skills = self.services.session.no_skills;
         let extra = self.services.resources.clone();
         let loader: kernel_apis::SkillLoader = Arc::new(move || Ok(skill_sources(&skills_config, &extra, no_skills)));
@@ -870,9 +866,7 @@ impl Runtime {
             memory: Arc::new(MemoryApi { service: memory }),
             hints: Arc::new(HintsModule::new(modules("hints"))),
             images: Arc::new(crate::session_images::module(&config, session_id)),
-            // `diagram.*`: Mermaid diagrams through node and Pele, shown through the lanes' cell images.
             diagram: Arc::new(crate::session_diagrams::module(&config, session_id, images.clone())),
-            // `schedule.*`: the session's own prompts for later, kept as session values.
             schedule: Arc::new(kernel_apis::prompt_schedule::ScheduleModule::new(
                 match &values {
                     Some(values) => Box::new(values.keyed(kernel_apis::prompt_schedule::NAMESPACE)),
@@ -940,7 +934,6 @@ impl Runtime {
         };
         let mut built: Result<(), String> = Ok(());
         let (schedules_store, goal_store) = (modules("schedules"), modules("goal"));
-        // Which lanes the host wakes (crate::wake): none until the root's composer says so.
         let wake = crate::wake::RootWake::default();
         let hints_wake = wake.clone();
         cell_hints.set_lane_woken(Arc::new(move |lane: &str| hints_wake.woken(lane)));
@@ -1417,7 +1410,6 @@ pub struct Stack {
 }
 
 impl Stack {
-    /// The settings and locations the session's lanes share.
     pub(crate) fn config(&self) -> &Arc<Config> {
         &self.config
     }
@@ -1544,7 +1536,6 @@ impl Stack {
             .with_host(Arc::new(self.agents.clone()), lane)
             .with(self.schedules.clone() as Arc<dyn kernel_apis::ApiModule>)
             .with(self.goal.clone() as Arc<dyn kernel_apis::ApiModule>);
-        // `ctx.*` from any lane edits that lane's own branch (core::context_children).
         if let Some(context) = self.context.get() {
             apis = apis.with(context.clone() as Arc<dyn kernel_apis::ApiModule>);
         }
@@ -1707,7 +1698,6 @@ impl Stack {
         &self.model
     }
 
-    /// The root lane's model now.
     pub fn root_model(&self) -> Model {
         sync::lock(&self.root_model).clone()
     }
@@ -2421,7 +2411,6 @@ pub fn session_mask(config: &Config) -> crate::async_events::MaskText {
 pub struct RuntimeEvents {
     ends: Arc<(Mutex<Vec<RuntimeEvent>>, Condvar)>,
     enabled: bool,
-    /// The session's masking of event summaries.
     mask: crate::async_events::MaskText,
 }
 

@@ -15,7 +15,6 @@ static PROVIDERS: LazyLock<Value> =
 
 #[test]
 fn ai_http_idle_timeout_setting_selects_the_dispatcher_timeout() {
-    assert_eq!(DEFAULT_HTTP_IDLE_TIMEOUT, Duration::from_millis(300_000));
     assert_eq!(http_idle_timeout(None), Some(DEFAULT_HTTP_IDLE_TIMEOUT));
     assert_eq!(http_idle_timeout(Some(&json!("x"))), Some(DEFAULT_HTTP_IDLE_TIMEOUT));
     assert_eq!(http_idle_timeout(Some(&json!(0))), None);

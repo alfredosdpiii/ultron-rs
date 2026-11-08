@@ -22,7 +22,7 @@ pub use visualizer::{RlmClock, RlmSnapshot, RlmStyle};
 
 use jsrt::{string, utf16};
 
-/// `flat(text, limit)`: one line, cut to `limit` UTF-16 units with an ellipsis.
+/// One line, cut to `limit` UTF-16 units with an ellipsis.
 pub(crate) fn flat(text: &str, limit: usize) -> String {
     let line = string::flatten(text);
     if utf16::len(&line) > limit {

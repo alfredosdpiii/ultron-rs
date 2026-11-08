@@ -19,7 +19,7 @@ use interactive::status_git::GitSnapshot;
 use interactive::status_line::{GitCounts, Preset, SegmentId, SeparatorStyle};
 use protocol::watch::QueueKind;
 use serde_json::{Value, json};
-use theme::{ColorMode, Fg, Theme, builtin_theme_json, create_theme};
+use theme::{Fg, Theme};
 use tui::KeybindingsManager;
 use tui::VimMode;
 use tui::strip_terminal_sequences;
@@ -48,7 +48,7 @@ fn record(command: &LaneCommand) -> Option<String> {
 }
 
 fn theme() -> Rc<Theme> {
-    Rc::new(create_theme(&builtin_theme_json("dark").unwrap(), ColorMode::Truecolor, None).unwrap())
+    support::dark_theme()
 }
 
 fn model(id: &str) -> ModelInfo {
@@ -79,19 +79,13 @@ fn app_with_fd(cwd: &str, qol: QolSettings, fd_path: Option<std::path::PathBuf>)
         AppOptions {
             theme: theme(),
             keys: keys(),
-            version: "1.2.3".into(),
             cwd: cwd.into(),
-            home: None,
-            server_id: "server".into(),
             models: vec![model("sonnet"), model("opus")],
             model: model("sonnet"),
-            thinking_level: "medium".into(),
-            splash: false,
             history: PromptHistoryStore::new(None, cwd),
             fd_path,
-            highlight: Rc::new(|code: &str| code.split('\n').map(str::to_string).collect()),
             qol,
-            bug_report_target: ("radius.pi.dev".into(), false),
+            ..support::options()
         },
         lane,
     );
@@ -154,15 +148,12 @@ fn assistant(text: &str, stop: &str) -> Value {
         "usage": {"input": 300, "output": 20, "cacheRead": 0, "cacheWrite": 0, "totalTokens": 0, "cost": {"total": 0.5}}})
 }
 
-// ---- settings ----
-
 /// client-tui.ts `createInteractiveTui({ tuiMode: "fullscreen" })`: fullscreen by default; only an explicit
 /// "regular" keeps the scrollback split (any other value stays fullscreen).
 #[test]
 fn interactive_qol_tui_mode_defaults_to_fullscreen_like_ts() {
     let none = |_: &str| None;
     assert!(!QolSettings::from_settings(&json!({}), &none).viewport_split);
-    assert!(!QolSettings::default().viewport_split);
     assert!(QolSettings::from_settings(&json!({"tuiMode": "regular"}), &none).viewport_split);
     assert!(!QolSettings::from_settings(&json!({"tuiMode": "fullscreen"}), &none).viewport_split);
     assert!(!QolSettings::from_settings(&json!({"tuiMode": "split"}), &none).viewport_split);
@@ -174,9 +165,6 @@ fn interactive_qol_settings_keys_defaults_and_parity_env() {
     let none = |_: &str| None;
     let d = QolSettings::from_settings(&json!({}), &none);
     assert_eq!(d, QolSettings::default());
-    assert!(d.notifications && d.tty_writer && d.render_gate && d.status_line);
-    assert!(d.attachments && d.highlight && d.autocomplete_emoji && d.autocomplete_models);
-    assert!(!d.vim && !d.autocomplete_github && !d.status_pr);
 
     let q = QolSettings::from_settings(
         &json!({
@@ -211,10 +199,7 @@ fn interactive_qol_settings_keys_defaults_and_parity_env() {
     );
     let zero = |k: &str| (k == interactive::qol::PARITY_ENV).then(|| "0".to_string());
     assert!(QolSettings::from_settings(&json!({"vimMode": true}), &zero).vim);
-    assert!(!QolSettings::parity().any() && QolSettings::default().any());
 }
-
-// ---- notifications ----
 
 fn notified(qol: QolSettings, script: impl FnOnce(&mut App)) -> Vec<Message> {
     let (mut app, _) = fresh(qol);
@@ -272,8 +257,6 @@ fn interactive_qol_service_writes_reach_the_terminal_queue() {
     assert!(!app.poll_services());
 }
 
-// ---- status line ----
-
 struct FakeGit(Arc<Mutex<GitSnapshot>>, Rc<Cell<usize>>);
 
 impl GitSource for FakeGit {
@@ -323,8 +306,6 @@ fn interactive_qol_status_line_shows_model_git_context_and_session() {
     assert!(!screen(&mut parity).contains("feature-x"));
 }
 
-// ---- vim ----
-
 #[test]
 fn interactive_qol_vim_mode_toggle_changes_editor_keys() {
     let vim = QolSettings {
@@ -359,8 +340,6 @@ fn interactive_qol_vim_mode_toggle_changes_editor_keys() {
     assert_eq!(off.editor_text(), "hello0dw");
 }
 
-// ---- attachments ----
-
 struct FakeClipboard(Vec<u8>);
 
 impl Clipboard for FakeClipboard {
@@ -380,19 +359,6 @@ impl Clipboard for FakeClipboard {
             })
         }
     }
-}
-
-fn poll_until(app: &mut App, done: impl Fn(&App) -> bool) {
-    // The deadline only guards a hang; the reply is an event the loop waits for.
-    let deadline = std::time::Instant::now() + Duration::from_secs(120);
-    while std::time::Instant::now() < deadline {
-        app.poll_services();
-        if done(app) {
-            return;
-        }
-        std::thread::sleep(Duration::from_millis(5));
-    }
-    panic!("service reply never arrived");
 }
 
 #[test]
@@ -440,14 +406,14 @@ fn interactive_qol_clipboard_paste_image_then_text_fallback() {
     let (mut app, _) = fresh(QolSettings::default());
     app.set_clipboard(ClipboardService::spawn(FakeClipboard(png(2, 3))).unwrap());
     app.handle_input("\x16");
-    poll_until(&mut app, |a| !a.editor_text().is_empty());
+    support::poll_services_until(&mut app, |a| !a.editor_text().is_empty());
     assert_eq!(app.editor_text(), "[Image #1, 2x3] ");
     assert_eq!(app.attachments().images[0].mime, "image/png");
 
     let (mut app, _) = fresh(QolSettings::default());
     app.set_clipboard(ClipboardService::spawn(FakeClipboard(Vec::new())).unwrap());
     app.handle_input("\x16");
-    poll_until(&mut app, |a| !a.editor_text().is_empty());
+    support::poll_services_until(&mut app, |a| !a.editor_text().is_empty());
     assert_eq!(app.editor_text(), "clip text");
 
     // Parity (client-tui-actions.ts `clipboardPasteText`): an image is saved to a temp file and its path inserted;
@@ -458,7 +424,7 @@ fn interactive_qol_clipboard_paste_image_then_text_fallback() {
     parity.set_temp_dir(dir.clone());
     parity.set_clipboard(ClipboardService::spawn(FakeClipboard(png(2, 3))).unwrap());
     parity.handle_input("\x16");
-    poll_until(&mut parity, |a| !a.editor_text().is_empty());
+    support::poll_services_until(&mut parity, |a| !a.editor_text().is_empty());
     let path = parity.editor_text();
     assert!(
         path.starts_with(&format!("{}/ultron-clipboard-", dir.display())) && path.ends_with(".png"),
@@ -469,7 +435,7 @@ fn interactive_qol_clipboard_paste_image_then_text_fallback() {
     let (mut parity, _) = fresh(QolSettings::parity());
     parity.set_clipboard(ClipboardService::spawn(FakeClipboard(Vec::new())).unwrap());
     parity.handle_input("\x16");
-    poll_until(&mut parity, |a| !a.editor_text().is_empty());
+    support::poll_services_until(&mut parity, |a| !a.editor_text().is_empty());
     assert_eq!(parity.editor_text(), "clip text");
     let _ = std::fs::remove_dir_all(dir);
 }
@@ -513,7 +479,7 @@ fn interactive_qol_clipboard_paste_keeps_the_image_type_like_ts() {
         parity.set_temp_dir(dir.clone());
         parity.set_clipboard(ClipboardService::spawn(TypedClipboard(image)).unwrap());
         parity.handle_input("\x16");
-        poll_until(&mut parity, |a| !a.editor_text().is_empty());
+        support::poll_services_until(&mut parity, |a| !a.editor_text().is_empty());
         let path = parity.editor_text();
         assert!(
             path.starts_with(&format!("{}/ultron-clipboard-", dir.display()))
@@ -531,13 +497,11 @@ fn interactive_qol_clipboard_paste_keeps_the_image_type_like_ts() {
         .unwrap(),
     );
     app.handle_input("\x16");
-    poll_until(&mut app, |a| !a.editor_text().is_empty());
+    support::poll_services_until(&mut app, |a| !a.editor_text().is_empty());
     assert_eq!(app.editor_text(), "[Image #1, 4x2] ");
     assert_eq!(app.attachments().images[0].mime, "image/jpeg");
     let _ = std::fs::remove_dir_all(dir);
 }
-
-// ---- highlighting ----
 
 fn rlm_transcript() -> Vec<Value> {
     vec![
@@ -685,8 +649,6 @@ fn interactive_rlm_cell_shows_the_diff_of_written_files_only_when_expanded() {
     );
 }
 
-// ---- autocomplete ----
-
 #[test]
 fn interactive_qol_autocomplete_chain_offers_commands_files_emoji_and_models() {
     let dir = temp_dir("complete");
@@ -722,8 +684,6 @@ fn interactive_qol_autocomplete_chain_offers_commands_files_emoji_and_models() {
     assert!(!suggest(QolSettings::parity(), "^opu").contains("anthropic/opus"));
     let _ = std::fs::remove_dir_all(dir);
 }
-
-// ---- scrollback/live split, render gate, writer thread ----
 
 #[test]
 fn interactive_qol_viewport_split_commits_finished_rows_once() {

@@ -72,7 +72,7 @@ pub const DEPENDENCY_FILES: [&str; 22] = [
 ];
 
 /// Whether `path` (relative, with `/`) is a dependency manifest or lockfile; `requirements*.txt` counts too.
-pub fn is_dependency_file(path: &str) -> bool {
+fn is_dependency_file(path: &str) -> bool {
     let name = path.rsplit('/').next().unwrap_or(path);
     DEPENDENCY_FILES.contains(&name) || (name.starts_with("requirements") && name.ends_with(".txt"))
 }

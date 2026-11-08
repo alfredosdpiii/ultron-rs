@@ -11,16 +11,12 @@ use crate::support;
 use support::Sent;
 
 use interactive::app::{App, AppOptions};
-use interactive::history::PromptHistoryStore;
-use interactive::keybindings::Platform;
-use interactive::keybindings::native_app_keybindings;
 use interactive::lane::{LaneCommand, ModelInfo};
 use interactive::run::{UiEvent, paint_loop};
 use interactive::theme_setup::ThemeController;
 use serde_json::Value;
 use theme::registry::ThemeRegistry;
 use theme::{ColorMode, Fg, Theme, builtin_theme_json, create_theme};
-use tui::KeybindingsManager;
 use tui::{StdinBuffer, StdinEvent};
 
 const QUERY: &str = "\x1b]11;?\x07";
@@ -52,14 +48,6 @@ fn record(command: &LaneCommand) -> Option<String> {
     }
 }
 
-fn keys() -> KeybindingsManager {
-    KeybindingsManager::new(
-        native_app_keybindings(Platform::new("linux", false)),
-        Vec::new(),
-        Default::default(),
-    )
-}
-
 fn new_app(theme: Rc<Theme>) -> (App, Rc<Sent>) {
     let model = ModelInfo {
         provider: "anthropic".into(),
@@ -73,20 +61,9 @@ fn new_app(theme: Rc<Theme>) -> (App, Rc<Sent>) {
     let app = App::new(
         AppOptions {
             theme,
-            keys: keys(),
-            version: "1.2.3".into(),
-            cwd: "/p".into(),
-            home: None,
-            server_id: "server".into(),
             models: vec![model.clone()],
             model,
-            thinking_level: "medium".into(),
-            splash: false,
-            history: PromptHistoryStore::new(None, "/p"),
-            fd_path: None,
-            highlight: Rc::new(|code: &str| code.split('\n').map(str::to_string).collect()),
-            qol: interactive::qol::QolSettings::parity(),
-            bug_report_target: ("radius.pi.dev".into(), false),
+            ..support::options()
         },
         lane,
     );

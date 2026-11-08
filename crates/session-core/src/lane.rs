@@ -143,12 +143,7 @@ fn is_compaction_summary(message: &Value) -> bool {
     text.is_some_and(|text| text.starts_with(session_journal::context::COMPACTION_SUMMARY_PREFIX))
 }
 
-/// One clock line (a user message) per [`clock_texts`] entry, with the index of the message it precedes, in UTC.
-pub fn clock_lines(messages: &[Value]) -> Vec<(usize, Message)> {
-    clock_lines_in(messages, &jsrt::localtime::Zone::utc())
-}
-
-/// [`clock_lines`] in `zone`.
+/// One clock line (a user message) per [`clock_texts`] entry, with the index of the message it precedes.
 pub fn clock_lines_in(messages: &[Value], zone: &jsrt::localtime::Zone) -> Vec<(usize, Message)> {
     clock_texts(messages, zone)
         .into_iter()
@@ -164,11 +159,6 @@ pub fn clock_lines_in(messages: &[Value], zone: &jsrt::localtime::Zone) -> Vec<(
 
 /// `withClockLines`: the messages with their clock lines in place; `None` when no line was added. Lines are derived,
 /// never stored.
-pub fn with_clock_lines(messages: &[Value]) -> Option<Vec<Value>> {
-    with_clock_lines_in(messages, &jsrt::localtime::Zone::utc())
-}
-
-/// [`with_clock_lines`] in `zone`.
 pub fn with_clock_lines_in(messages: &[Value], zone: &jsrt::localtime::Zone) -> Option<Vec<Value>> {
     let lines = clock_texts(messages, zone);
     if lines.is_empty() {
@@ -731,8 +721,6 @@ pub fn api_supported(api: &str) -> bool {
     ai::dispatch::APIS.contains(&api)
 }
 
-/// The model call for every API the Rust providers cover. A request whose signal is already aborted is not sent:
-/// it ends as an empty aborted message. `api_key` fills requests that carry none (a subagent's loop).
 /// A client with this process's proxy variables as Pi's HTTP stack reads them (`EnvHttpProxyAgent` over
 /// `process.env`): a session worker's environment carries the run's `HTTP_PROXY`/`HTTPS_PROXY`/`NO_PROXY`.
 pub fn process_transport() -> ReqwestTransport {
@@ -748,6 +736,8 @@ struct LiveTransport {
     current: Mutex<(Option<std::time::Duration>, Arc<dyn Transport>)>,
 }
 
+/// The model call for every API the Rust providers cover. A request whose signal is already aborted is not sent:
+/// it ends as an empty aborted message. `api_key` fills requests that carry none (a subagent's loop).
 pub struct Provider {
     transport: Arc<dyn Transport>,
     api_key: Option<String>,
@@ -1011,7 +1001,6 @@ impl Rlm {
         self
     }
 
-    /// This tool with the stack's budget line on its results.
     pub(crate) fn with_budget_note(mut self, budget: Arc<std::sync::OnceLock<crate::budget_note::BudgetNote>>) -> Rlm {
         self.budget = budget;
         self
@@ -1023,7 +1012,6 @@ impl Rlm {
         self
     }
 
-    /// This tool with the stack's context reminders on its results.
     pub(crate) fn with_context_reminders(mut self, reminders: Arc<crate::context_reminder::ContextReminders>) -> Rlm {
         self.reminders = Some(reminders);
         self
@@ -1364,7 +1352,6 @@ pub fn yielded_note(cell: &str, after: Duration) -> String {
     )
 }
 
-/// The `rlm` tool for `lane` of `lanes`.
 pub(crate) fn rlm_over(
     config: &Config,
     lanes: Lanes,

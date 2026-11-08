@@ -4,12 +4,12 @@
 
 use base64::Engine;
 use kernel::{HostHandler, Signal};
-use kernel_apis::images::{DEFAULT_IMAGE_MODEL, extension, image_config, output_paths, resolve_model};
+use kernel_apis::images::DEFAULT_IMAGE_MODEL;
 use kernel_apis::{ImagesConfig, ImagesModule, KernelApis};
 use serde_json::{Map, Value, json};
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::TcpListener;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
 /// One recorded request: the path, the headers (lowercase names) and the JSON body.
@@ -332,52 +332,75 @@ fn kernel_apis_images_models_lists_the_catalog_as_provider_slash_id() {
     );
 }
 
+/// How a call's model, size and `out` reach the request and the saved files: a `provider/id` model, a resolution and
+/// an aspect ratio, the extension of every image type, and each way `out` names the files.
 #[test]
-fn kernel_apis_images_helpers_resolve_sizes_models_and_paths() {
-    assert_eq!(
-        resolve_model("openrouter/openai/gpt-image-1").unwrap().id,
-        "openai/gpt-image-1"
-    );
-    assert_eq!(resolve_model("openai/gpt-image-1").unwrap().id, "openai/gpt-image-1");
-    assert!(resolve_model("openrouter/").is_err());
-    assert_eq!(image_config("4K").unwrap(), json!({"image_size": "4K"}));
-    assert_eq!(image_config("21:9").unwrap(), json!({"aspect_ratio": "21:9"}));
-    for bad in ["4k", "16:", ":9", "0:1", "16:9:1", "a:b", "3K"] {
-        assert!(image_config(bad).is_err(), "{bad}");
-    }
-    assert_eq!(
-        [
-            "image/png",
-            "image/jpeg",
-            "image/webp",
-            "image/gif",
-            "image/svg+xml",
-            "image/x"
-        ]
-        .map(extension),
-        ["png", "jpg", "webp", "gif", "svg", "img"]
-    );
-    let dir = tempfile::tempdir().unwrap();
-    let base = dir.path();
-    assert_eq!(
-        output_paths(Some(&base.join("cat.jpeg")), Path::new("/unused"), &["image/png"]),
-        [base.join("cat.jpeg")]
-    );
-    assert_eq!(
-        output_paths(Some(&base.join("cat")), Path::new("/unused"), &["image/png"]),
-        [base.join("cat.png")]
-    );
-    assert_eq!(
-        output_paths(
-            Some(&base.join("cat.jpeg")),
-            Path::new("/unused"),
-            &["image/png", "image/png"]
+fn kernel_apis_images_models_sizes_and_out_name_the_request_and_files() {
+    let image = |mime: &'static str| (mime, b"i".as_slice());
+    let (base, seen) = fake(vec![
+        (
+            200,
+            answer(
+                &[
+                    image("image/png"),
+                    image("image/jpeg"),
+                    image("image/webp"),
+                    image("image/gif"),
+                ],
+                None,
+            ),
         ),
-        [base.join("cat-1.jpeg"), base.join("cat-2.jpeg")]
+        (200, answer(&[image("image/svg+xml"), image("image/x")], None)),
+        (200, answer(&[image("image/png")], None)),
+        (200, answer(&[image("image/png")], None)),
+        (200, answer(&[image("image/png"), image("image/png")], None)),
+        (200, answer(&[image("image/gif")], None)),
+    ]);
+    let s = setup(Some(base), None, Some("k"));
+    let cwd = s.root.join("cwd");
+    std::fs::create_dir_all(cwd.join("art")).unwrap();
+    let paths = |payload: Value| s.call("images.generate", payload).unwrap()["paths"].clone();
+    let shown = |files: &[PathBuf]| json!(files.iter().map(|p| p.display().to_string()).collect::<Vec<_>>());
+    let out = s.root.join("out/images");
+    assert_eq!(
+        paths(json!({"prompt": "x", "model": "openrouter/openai/gpt-image-1", "size": "4K", "n": 4})),
+        shown(&["image-1.png", "image-2.jpg", "image-3.webp", "image-4.gif"].map(|f| out.join(f)))
+    );
+    assert_eq!(
+        paths(json!({"prompt": "x", "size": "21:9", "n": 2, "out": "pics"})),
+        shown(&[cwd.join("pics-1.svg"), cwd.join("pics-2.img")])
+    );
+    assert_eq!(
+        paths(json!({"prompt": "x", "out": "cat.jpeg"})),
+        shown(&[cwd.join("cat.jpeg")])
+    );
+    assert_eq!(
+        paths(json!({"prompt": "x", "out": "cat"})),
+        shown(&[cwd.join("cat.png")])
+    );
+    assert_eq!(
+        paths(json!({"prompt": "x", "n": 2, "out": "dog.jpeg"})),
+        shown(&[cwd.join("dog-1.jpeg"), cwd.join("dog-2.jpeg")])
     );
     // An existing directory gets numbered names.
     assert_eq!(
-        output_paths(Some(base), Path::new("/unused"), &["image/gif"]),
-        [base.join("image-1.gif")]
+        paths(json!({"prompt": "x", "out": "art"})),
+        shown(&[cwd.join("art/image-1.gif")])
     );
+    let bodies: Vec<Value> = seen.lock().unwrap().iter().map(|r| r.body.clone()).collect();
+    assert_eq!(bodies[0]["model"], "openai/gpt-image-1");
+    assert_eq!(bodies[0]["image_config"], json!({"image_size": "4K"}));
+    assert_eq!(bodies[1]["image_config"], json!({"aspect_ratio": "21:9"}));
+    assert!(
+        s.call("images.generate", json!({"prompt": "x", "model": "openrouter/"}))
+            .is_err()
+    );
+    for bad in ["4k", "16:", ":9", "0:1", "16:9:1", "a:b", "3K"] {
+        assert_eq!(
+            s.call("images.generate", json!({"prompt": "x", "size": bad}))
+                .unwrap_err(),
+            format!("Unsupported image size: {bad}; use an aspect ratio such as \"16:9\" or one of 1K, 2K, 4K")
+        );
+    }
+    assert_eq!(seen.lock().unwrap().len(), 6, "refused calls send nothing");
 }

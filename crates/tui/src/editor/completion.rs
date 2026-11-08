@@ -158,10 +158,6 @@ impl Editor {
         self.padding_x = padding;
     }
 
-    pub fn padding_x(&self) -> usize {
-        self.padding_x
-    }
-
     pub fn is_showing_autocomplete(&self) -> bool {
         self.picker.is_some()
     }

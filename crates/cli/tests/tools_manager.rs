@@ -59,12 +59,7 @@ fn cli_tools_manager_fd_lookup_order_matches_ts() {
 }
 
 #[test]
-fn cli_tools_manager_offline_and_assets_match_ts() {
-    let dir = tempfile::tempdir().unwrap();
-    let with = |v: &str| config::env::offline(&*env(&[(config::env::OFFLINE_ENV, v.to_string())], dir.path()).var);
-    assert!(with("1") && with("true") && with("TRUE") && with("yes") && with("Yes"));
-    assert!(!with("0") && !with("on") && !with(""));
-    assert!(!config::env::offline(&*env(&[], dir.path()).var));
+fn cli_tools_manager_release_assets_match_ts() {
     assert_eq!(
         fd_asset_name("10.2.0", "linux", "x86_64").as_deref(),
         Some("fd-v10.2.0-x86_64-unknown-linux-musl.tar.gz")

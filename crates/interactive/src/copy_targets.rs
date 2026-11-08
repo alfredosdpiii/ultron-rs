@@ -199,7 +199,6 @@ fn eval_code(args: &Value) -> Option<(String, String)> {
     (!blocks.is_empty()).then(|| (blocks.join("\n\n"), language.unwrap_or("python").to_string()))
 }
 
-/// `commandFromToolCall`.
 pub fn command_from_tool_call(name: &str, args: &Value) -> Option<LastCommand> {
     match name {
         "bash" => args["command"].as_str().map(|c| LastCommand {

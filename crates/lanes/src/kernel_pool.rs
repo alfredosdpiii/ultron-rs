@@ -163,7 +163,6 @@ impl<K: PoolableKernel> KernelPool<K> {
         Ok(Lease { id: self.next_lease })
     }
 
-    /// The leased kernel.
     pub fn kernel(&mut self, lease: Lease) -> Option<&mut K> {
         let lane = self.leases.get(&lease.id)?.clone();
         self.entry(&lane).map(|e| &mut e.kernel)

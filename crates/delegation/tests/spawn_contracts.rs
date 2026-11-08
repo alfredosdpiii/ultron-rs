@@ -3,9 +3,7 @@
 //! behaviour is in session-core/tests/spawn_contracts.rs). New in Rust: literal expectations.
 
 use delegation::host::{ChildRunner, Delegation, DelegationOptions};
-use delegation::spawn_contract::{
-    CheckPlace, CommandCheck, Expect, Hop, HostCheck, SpawnContract, is_dependency_file, plain_check_runner,
-};
+use delegation::spawn_contract::{CheckPlace, CommandCheck, Expect, Hop, HostCheck, SpawnContract, plain_check_runner};
 use delegation::workspace::WorkspaceDiff;
 use kernel::Signal;
 use serde_json::{Map, Value, json};
@@ -180,6 +178,21 @@ fn delegation_spawn_contract_refuses_malformed_options() {
 
 #[test]
 fn delegation_spawn_contract_dependency_files_are_manifests_and_lockfiles_at_any_depth() {
+    let dir = tempfile::tempdir().unwrap();
+    let flagged = |path: &str| {
+        let diff = WorkspaceDiff {
+            changed: vec![path.into()],
+            complete: true,
+            ..WorkspaceDiff::default()
+        };
+        let report = evaluate(
+            json!({"contract": {"checks": [{"no_new_dependencies": true}]}}),
+            None,
+            dir.path(),
+            Some(&diff),
+        );
+        report["checks"][0]["ok"] == false
+    };
     for path in [
         "Cargo.toml",
         "crates/x/Cargo.toml",
@@ -190,7 +203,7 @@ fn delegation_spawn_contract_dependency_files_are_manifests_and_lockfiles_at_any
         "go.sum",
         "pyproject.toml",
     ] {
-        assert!(is_dependency_file(path), "{path}");
+        assert!(flagged(path), "{path}");
     }
     for path in [
         "src/Cargo.rs",
@@ -199,7 +212,7 @@ fn delegation_spawn_contract_dependency_files_are_manifests_and_lockfiles_at_any
         "notes.txt",
         "my-Cargo.toml",
     ] {
-        assert!(!is_dependency_file(path), "{path}");
+        assert!(!flagged(path), "{path}");
     }
 }
 

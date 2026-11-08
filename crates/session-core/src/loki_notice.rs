@@ -11,7 +11,6 @@ use std::time::{Duration, Instant};
 /// How long a turn waits for a commit still running before it starts without the note.
 pub const NOTICE_WAIT: Duration = Duration::from_secs(5);
 
-/// The custom message type of the note.
 pub const LOKI_MESSAGE_TYPE: &str = "loki";
 
 #[derive(Default)]
@@ -36,12 +35,10 @@ impl Default for LokiNotice {
 }
 
 impl LokiNotice {
-    /// A note not known yet.
     fn pending() -> LokiNotice {
         LokiNotice { state: Arc::default() }
     }
 
-    /// A note that is already known.
     pub fn known(text: Option<String>) -> LokiNotice {
         let notice = LokiNotice::pending();
         notice.settle(text);
@@ -153,11 +150,10 @@ mod tests {
         commit.join().unwrap();
         assert_eq!(notice.take(Duration::from_secs(120)), None);
         let none = LokiNotice::known(None);
-        let started = Instant::now();
-        assert_eq!(none.take(Duration::from_secs(120)), None);
-        assert!(
-            started.elapsed() < Duration::from_secs(60),
-            "a known absence is not waited for"
+        assert_eq!(
+            none.take(Duration::from_secs(24 * 60 * 60)),
+            None,
+            "a known absence is not waited for (a wait would hang the test)"
         );
         assert_eq!(LokiNotice::default().take(Duration::from_secs(120)), None);
     }

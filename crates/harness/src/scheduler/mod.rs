@@ -194,8 +194,6 @@ pub type WithdrawInputs = Arc<dyn Fn(&mut Tx<'_>, ConversationId) -> Result<()> 
 pub type Report = Arc<dyn Fn(&HarnessError) + Send + Sync>;
 pub type Clock = Arc<dyn Fn() -> u64 + Send + Sync>;
 
-// ─── Records ────────────────────────────────────────────────────────────────
-
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Mode {
     Run,
@@ -375,8 +373,6 @@ pub(crate) fn json_equal(left: &Value, right: &Value) -> bool {
     }
 }
 
-// ─── Invocations ──────────────────────────────────────────────────────────────
-
 /// One in-memory execution of a task in run or abort mode.
 pub(crate) struct Invocation {
     pub(crate) task_id: TaskId,
@@ -434,8 +430,6 @@ enum Decision {
     End,
     Fault(HarnessError),
 }
-
-// ─── State ────────────────────────────────────────────────────────────────────
 
 #[derive(Default)]
 struct State {
@@ -688,8 +682,6 @@ fn overlay_of(tx: &Tx<'_>) -> Overlay {
             .collect(),
     }
 }
-
-// ─── Scheduler ────────────────────────────────────────────────────────────────
 
 pub(crate) struct SchedulerOptions {
     pub session: Session,
@@ -999,8 +991,6 @@ impl Scheduler {
         }
         self.wait_for_idle(Some(conversation_id), ctx)
     }
-
-    // ─── Scheduling ───────────────────────────────────────────────────────────
 
     fn observe(&self, publication: &CommitPublication) {
         let mut signal = Vec::new();

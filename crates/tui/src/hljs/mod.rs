@@ -91,8 +91,6 @@ pub struct Grammar {
     pub case_insensitive: bool,
 }
 
-// ---- JavaScript regex sources to fancy-regex ----
-
 const JS_SPACE: &str =
     r"\t\n\x0B\x0C\r \u{a0}\u{1680}\u{2000}-\u{200a}\u{2028}\u{2029}\u{202f}\u{205f}\u{3000}\u{feff}";
 const WORD: &str = "0-9A-Za-z_";
@@ -217,8 +215,6 @@ fn quantifier_open(out: &str) -> bool {
 fn lang_re(src: &str, ci: bool) -> Regex {
     Regex::new(&js_regex(src, ci)).unwrap_or_else(|_| Regex::new("(?!)").expect("never-matching regex"))
 }
-
-// ---- compilation ----
 
 /// A JavaScript object identity during compilation.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -484,8 +480,6 @@ pub fn compile(g: &Grammar) -> Compiled {
         .collect();
     Compiled { modes, root, states }
 }
-
-// ---- highlighting ----
 
 /// The token tree, flattened: text, and opened/closed scopes.
 #[derive(Clone, Debug, PartialEq, Eq)]

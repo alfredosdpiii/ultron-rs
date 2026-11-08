@@ -137,7 +137,6 @@ impl Progress {
         true
     }
 
-    /// `{running, runId, startedAt, lastProgressAt, idleMs, stuck, stuckAfterMs}` at `now`.
     pub fn health(&self, now: i64, after: Option<Duration>) -> Value {
         let state = self.lock();
         let after = after.map(|a| a.as_millis() as u64);

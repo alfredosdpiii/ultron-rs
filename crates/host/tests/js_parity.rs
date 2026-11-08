@@ -1,4 +1,4 @@
-//! Payload checks that follow JavaScript once the helpers moved to `jsrt`.
+//! Payload checks that follow JavaScript's number rules.
 
 use host::{AllowAll, Host};
 use kernel::{HostHandler, Signal};

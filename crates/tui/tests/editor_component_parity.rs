@@ -123,3 +123,16 @@ fn tui_editor_key_release_matches_ts() {
         );
     }
 }
+
+#[test]
+fn tui_editor_padding_x_moves_the_text() {
+    let keys = tui::KeybindingsManager::new(tui::tui_keybindings(), Vec::new(), Default::default());
+    let mut editor = tui::Editor::new(keys, Box::new(str::to_string), 0);
+    editor.set_text("hi");
+    let plain = editor.render(20);
+    editor.set_padding_x(3);
+    let padded = editor.render(20);
+    let row = |lines: &[String]| tui::strip_terminal_sequences(&lines[1]);
+    assert!(row(&plain).starts_with("hi"), "{:?}", row(&plain));
+    assert!(row(&padded).starts_with("   hi"), "{:?}", row(&padded));
+}

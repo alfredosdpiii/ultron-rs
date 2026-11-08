@@ -19,7 +19,6 @@ pub enum EventDelivery {
 /// Who reads the guide.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum GuideReader {
-    /// The root agent.
     #[default]
     Root,
     /// A subagent: its reply ends its run and nothing wakes it after it, so it awaits what its answer needs; it
@@ -134,7 +133,7 @@ pub fn rlm_tool_guidelines(active_tools: &[&str]) -> Vec<String> {
     .to_string()]
 }
 
-/// Truncate to `max` characters with an ellipsis, like the TS `slice(0, max - 1) + "…"`.
+/// Flattened and cut to 120 characters with an ellipsis, like the TS `slice(0, 119) + "…"`.
 fn one_line(text: &str) -> String {
     let flat = jsrt::string::flatten(text);
     if flat.chars().count() > 120 {

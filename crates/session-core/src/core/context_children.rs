@@ -178,7 +178,6 @@ impl ChildContext {
         }
     }
 
-    /// Report landed entries to `context`.
     pub(crate) fn observe(&self, context: &Arc<ContextControl>) {
         let _ = self.observers.set(Arc::downgrade(context));
     }
@@ -198,7 +197,6 @@ impl ChildContext {
         self.observers.get()?.upgrade()
     }
 
-    /// The lane of a child conversation.
     fn lane_of(&self, conversation: ConversationId) -> Option<String> {
         self.children.upgrade()?.lane_of(conversation)
     }

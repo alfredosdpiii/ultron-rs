@@ -378,7 +378,6 @@ impl ViewportRenderer {
                 };
                 self.goto(&mut out, i);
                 if reserved > 1 {
-                    // Clear the reserved rows first, then place the image on its first row.
                     let up = reserved - 1;
                     out.push_str("\r\x1b[2K");
                     for k in 1..reserved {

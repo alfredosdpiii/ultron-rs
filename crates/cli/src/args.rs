@@ -110,7 +110,6 @@ fn set_flag(flags: &mut Vec<(String, FlagValue)>, name: &str, value: FlagValue) 
 pub fn parse_args(args: &[String]) -> Args {
     let mut r = Args::default();
     let mut i = 0;
-    // `args[i + 1]` when present.
     let next = |i: usize| args.get(i + 1).map(String::as_str);
     while i < args.len() {
         let arg = args[i].as_str();

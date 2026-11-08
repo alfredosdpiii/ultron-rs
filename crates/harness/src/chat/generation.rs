@@ -179,7 +179,6 @@ fn failed(message: &str, reason: &str) -> Option<NextState> {
     })
 }
 
-/// The built-in generation task over `services`.
 pub(crate) fn generation_task(services: Arc<Services>) -> Task {
     let (prepare, request, retry, poll, tools, abort) = (
         services.clone(),
@@ -787,7 +786,6 @@ fn tools_phase(services: &Services, task: &TaskRecord, runtime: &TaskRuntime) ->
     let Some((next, rest)) = pending.split_first() else {
         return finish_tool_round(services, runtime, assistant, tools);
     };
-    // Sequential round: start the next call and wait for it.
     let conversation_id = runtime.conversation_id();
     let task_id = runtime.task_id();
     runtime.commit(&runtime.ctx(), |tx, _| {

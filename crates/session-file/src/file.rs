@@ -12,7 +12,6 @@ use crate::js;
 use crate::paths::{normalize_path, resolve_path};
 use jsrt::path::join;
 
-/// The session format version this crate writes.
 pub const CURRENT_SESSION_VERSION: u64 = 3;
 /// Header discovery reads at most this many bytes before giving up on a file.
 pub const MAX_SESSION_HEADER_SCAN_BYTES: u64 = 1024 * 1024;
@@ -105,7 +104,6 @@ pub fn read_session_header(path: &str) -> Result<Option<Value>, HeaderScanError>
             }
             continue;
         }
-        // End of the bounded read: a real end of file, or the scan limit.
         let mut probe = [0u8; 1];
         let at_limit = reader.into_inner().limit() == 0;
         if at_limit && file.read(&mut probe).map_err(HeaderScanError::Io)? != 0 {
@@ -257,7 +255,6 @@ pub fn migrate_session_entries(entries: &mut [Value], env: &mut dyn Env) -> bool
     true
 }
 
-/// `SessionInfo`: one listed session.
 #[derive(Clone, Debug, PartialEq)]
 pub struct SessionInfo {
     pub path: String,

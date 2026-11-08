@@ -207,7 +207,6 @@ pub fn js_order(value: Value) -> Value {
         Value::Array(items) => Value::Array(items.into_iter().map(js_order).collect()),
         Value::Object(map) => {
             let mut entries: Vec<(String, Value)> = map.into_iter().map(|(k, v)| (k, js_order(v))).collect();
-            // Stable: non-index keys keep insertion order after the ascending index keys.
             entries.sort_by_key(|(k, _)| array_index(k).map_or((1, 0), |n| (0, n)));
             Value::Object(entries.into_iter().collect())
         }
@@ -215,9 +214,7 @@ pub fn js_order(value: Value) -> Value {
     }
 }
 
-// ---------------------------------------------------------------------------------------------------------------
 // The TypeBox schema of models.json and the subset of TypeBox's error walk it needs (`schema/engine/schema.mjs`).
-// ---------------------------------------------------------------------------------------------------------------
 
 enum Schema {
     Unknown,

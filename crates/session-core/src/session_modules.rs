@@ -36,7 +36,6 @@ impl kernel::store::DocumentStore for ModuleJobJournal {
     }
 
     fn write(&self, document: &serde_json::Value) -> Result<(), String> {
-        // A session that never ran a job keeps no journal.
         let empty = document["jobs"].as_array().is_some_and(Vec::is_empty);
         if empty && kernel::store::DocumentStore::read(&self.0)?.is_none() {
             return Ok(());

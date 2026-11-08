@@ -75,7 +75,6 @@ impl State {
         self.lock().value.clone()
     }
 
-    /// `read` of the current value, borrowed.
     pub fn read<R>(&self, read: impl FnOnce(&Value) -> R) -> R {
         read(&self.lock().value)
     }
@@ -201,7 +200,6 @@ impl Service {
         }
     }
 
-    /// Leave the service out of the catalogue.
     pub fn unlisted(mut self) -> Self {
         self.unlisted = true;
         self

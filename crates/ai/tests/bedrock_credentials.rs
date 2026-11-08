@@ -16,7 +16,7 @@ use serde_json::{Map, Value, json};
 use std::collections::BTreeMap;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream};
-use std::sync::{Arc, LazyLock, Mutex};
+use std::sync::{Arc, Condvar, LazyLock, Mutex};
 
 static FIXTURE: LazyLock<Value> =
     LazyLock::new(|| serde_json::from_str(include_str!("../fixtures/bedrock-credentials.json")).unwrap());
@@ -40,6 +40,8 @@ struct Recorded {
 struct FakeAws {
     port: u16,
     recorded: Arc<Mutex<Recorded>>,
+    /// Notified with each recorded request.
+    arrived: Arc<Condvar>,
 }
 
 fn converse_stream() -> Vec<u8> {
@@ -102,20 +104,25 @@ impl FakeAws {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let port = listener.local_addr().unwrap().port();
         let recorded = Arc::new(Mutex::new(Recorded::default()));
-        let shared = recorded.clone();
+        let arrived = Arc::new(Condvar::new());
+        let (shared, notify) = (recorded.clone(), arrived.clone());
         std::thread::spawn(move || {
             for stream in listener.incoming() {
                 let Ok(mut stream) = stream else { break };
-                let recorded = shared.clone();
+                let (recorded, arrived) = (shared.clone(), notify.clone());
                 let routes = routes.clone();
-                std::thread::spawn(move || serve(&mut stream, &recorded, &routes, port));
+                std::thread::spawn(move || serve(&mut stream, &recorded, &arrived, &routes, port));
             }
         });
-        FakeAws { port, recorded }
+        FakeAws {
+            port,
+            recorded,
+            arrived,
+        }
     }
 }
 
-fn serve(stream: &mut TcpStream, recorded: &Mutex<Recorded>, routes: &Value, port: u16) {
+fn serve(stream: &mut TcpStream, recorded: &Mutex<Recorded>, arrived: &Condvar, routes: &Value, port: u16) {
     let Some((method, target, headers, body)) = read_request(stream) else {
         return;
     };
@@ -195,6 +202,7 @@ fn serve(stream: &mut TcpStream, recorded: &Mutex<Recorded>, routes: &Value, por
         *used - 1
     };
     drop(guard);
+    arrived.notify_all();
     let Some(list) = routes.get(&key).and_then(Value::as_array) else {
         reply(stream, 404, "text/plain", &[], b"no route");
         return;
@@ -440,15 +448,15 @@ fn replay(scenario: &Value) {
     // the call's own requests.
     let in_call = scenario["requests"].as_array().unwrap().len();
     let late = scenario["lateRequests"].as_u64().unwrap_or(0) as usize;
-    let guard = std::time::Instant::now() + std::time::Duration::from_secs(120);
-    while server.recorded.lock().unwrap().requests.len() < in_call + late {
-        assert!(
-            std::time::Instant::now() < guard,
-            "{name}: waiting for {late} late request(s)"
-        );
-        std::thread::sleep(std::time::Duration::from_millis(10));
-    }
-    let recorded = server.recorded.lock().unwrap();
+    let (recorded, waited) = server
+        .arrived
+        .wait_timeout_while(
+            server.recorded.lock().unwrap(),
+            std::time::Duration::from_secs(120),
+            |recorded| recorded.requests.len() < in_call + late,
+        )
+        .unwrap();
+    assert!(!waited.timed_out(), "{name}: waiting for {late} late request(s)");
     let requests: Vec<Value> = recorded
         .requests
         .iter()
@@ -553,18 +561,20 @@ fn ai_bedrock_credentials_process_expiration_with_an_offset_is_expired() {
 }
 
 #[test]
-fn ai_bedrock_credentials_fixture_covers_every_scenario() {
-    let names: Vec<&str> = FIXTURE["scenarios"]
+fn ai_bedrock_credentials_every_fixture_scenario_is_replayed() {
+    let missing: Vec<&str> = FIXTURE["scenarios"]
         .as_array()
         .unwrap()
         .iter()
         .map(|s| s["name"].as_str().unwrap())
+        .filter(|name| !REPLAYED.contains(name))
         .collect();
-    assert_eq!(names.len(), 57);
+    assert_eq!(missing, Vec::<&str>::new());
 }
 
 macro_rules! replays {
     ($(($test:ident, $name:literal),)*) => {
+        const REPLAYED: &[&str] = &[$($name),*];
         $(
             #[test]
             fn $test() {
@@ -682,8 +692,6 @@ fn ai_bedrock_credentials_dpop_key_is_nodes_sec1_pem() {
             .contains("P-256")
     );
 }
-
-// ------------------------------------------------------------------------------------- ported literal expectations
 
 /// `@smithy/core/config` parseIni tests: comments, quoted and prefixed section names, sub-sections.
 #[test]

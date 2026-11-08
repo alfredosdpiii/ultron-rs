@@ -284,7 +284,6 @@ pub fn qol_keybindings() -> Vec<KeybindingDefinition> {
             &["shift+down"],
             "Transcript: scroll down fast",
         ),
-        // /copy picker.
         KeybindingDefinition::new(
             "app.copy.blocks",
             &["right"],
@@ -296,7 +295,6 @@ pub fn qol_keybindings() -> Vec<KeybindingDefinition> {
             &["o", "shift+o"],
             "Copy picker: open the selected link",
         ),
-        // Esc-Esc rewind selector.
         KeybindingDefinition::new("app.rewind.prevUser", &["left"], "Rewind: previous user turn"),
         KeybindingDefinition::new("app.rewind.nextUser", &["right"], "Rewind: next user turn"),
         KeybindingDefinition::new("app.rewind.filter", &["f"], "Rewind: filter turns by words"),
@@ -311,7 +309,6 @@ pub fn qol_keybindings() -> Vec<KeybindingDefinition> {
             &["shift+r"],
             "Tree: restore files to this point",
         ),
-        // Agent hub table and transcript viewer.
         KeybindingDefinition::new("app.agentHub.up", &["k"], "Agent hub: previous agent"),
         KeybindingDefinition::new("app.agentHub.down", &["j"], "Agent hub: next agent"),
         KeybindingDefinition::new("app.agentHub.filter", &["/"], "Agent hub: filter agents"),
@@ -333,7 +330,6 @@ pub fn qol_keybindings() -> Vec<KeybindingDefinition> {
             &["shift+g"],
             "Agent transcript: scroll to the bottom",
         ),
-        // Model hub.
         KeybindingDefinition::new(
             "app.modelHub.focus",
             &["tab"],

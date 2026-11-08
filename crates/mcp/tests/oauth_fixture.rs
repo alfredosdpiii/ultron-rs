@@ -180,7 +180,6 @@ fn mcp_oauth_sign_in_refresh_and_sign_out_match_typescript() {
         })),
     });
     let ui = Ui::default();
-    let async_notices: Arc<Mutex<Vec<Value>>> = Arc::default();
     let http = reqwest::blocking::Client::new();
     for (index, expected) in fixture["events"].as_array().unwrap().iter().enumerate() {
         let mut got = json!({ "op": expected["op"] });
@@ -191,24 +190,26 @@ fn mcp_oauth_sign_in_refresh_and_sign_out_match_typescript() {
         }
         match expected["op"].as_str().unwrap() {
             "start" => {
-                let sink = async_notices.clone();
-                let notices: Vec<Value> = gateway
+                let (sink, notified) = std::sync::mpsc::channel();
+                let mut notices: Vec<Value> = gateway
                     .start(Some(Arc::new(move |message: &str, level: &str| {
-                        sink.lock().unwrap().push(json!({ "message": message, "level": level }));
+                        let _ = sink.send(json!({ "message": message, "level": level }));
                     })))
                     .into_iter()
                     .map(|(message, level)| json!({ "message": message, "level": level }))
                     .collect();
-                wait_until("the eager server's sign-in notice", || {
-                    async_notices
-                        .lock()
-                        .unwrap()
-                        .iter()
-                        .any(|n| n["message"].as_str().is_some_and(|m| m.contains("eager-issues")))
-                });
-                let mut all = notices;
-                all.extend(take(&async_notices).as_array().unwrap().clone());
-                got["notices"] = json!(all);
+                loop {
+                    let notice = notified
+                        .recv_timeout(GUARD)
+                        .expect("timed out waiting for the eager server's sign-in notice");
+                    let signed = notice["message"].as_str().is_some_and(|m| m.contains("eager-issues"));
+                    notices.push(notice);
+                    if signed {
+                        break;
+                    }
+                }
+                notices.extend(notified.try_iter());
+                got["notices"] = json!(notices);
             }
             "call" => {
                 let result = gateway.execute(expected["params"].as_object().unwrap(), None).unwrap();

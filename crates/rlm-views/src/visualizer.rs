@@ -57,7 +57,6 @@ pub struct RlmTask {
     pub worktree: Option<String>,
 }
 
-/// One planned workflow node.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct RlmWorkflowNode {
     pub id: String,
@@ -79,7 +78,6 @@ pub struct RlmWorkflowRun {
     pub truncated_nodes: Option<f64>,
 }
 
-/// One usage reservation.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct RlmReservation {
     pub task_id: Option<String>,
@@ -168,7 +166,6 @@ impl RlmLimits {
     }
 }
 
-/// One kernel lane of the pool.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct RlmPoolLane {
     pub lane: String,
@@ -405,12 +402,12 @@ pub fn is_active_state(state: &str) -> bool {
     !TERMINAL.contains(&state)
 }
 
-/// `oneLine`: whitespace collapsed, at most 200 UTF-16 units.
+/// Whitespace collapsed, at most 200 UTF-16 units.
 pub(crate) fn one_line(text: &str) -> String {
     flat(text, 200)
 }
 
-/// `shortId`: the id without `ultron-task-`/`ultron-instance-`, first 8 characters.
+/// The id without `ultron-task-`/`ultron-instance-`, first 8 characters.
 pub fn short_id(id: &str) -> String {
     let rest = id
         .strip_prefix("ultron-task-")
@@ -419,7 +416,6 @@ pub fn short_id(id: &str) -> String {
     utf16::head_lossy(rest, 8)
 }
 
-/// `formatDuration`.
 pub fn format_duration(ms: f64) -> String {
     if ms < 1000.0 {
         return format!("{}ms", number::to_string(ms.round()));
@@ -513,8 +509,6 @@ impl RlmClock {
     }
 }
 
-// ---- defensive parsing ----
-
 fn s(v: &Value, key: &str) -> Option<String> {
     v.get(key).and_then(Value::as_str).map(str::to_string)
 }
@@ -532,7 +526,6 @@ fn strings(v: &Value) -> Vec<String> {
         .collect()
 }
 
-/// What `parseAgentsStatus` returns.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct AgentsStatus {
     pub truncated_tasks: Option<f64>,
@@ -544,7 +537,7 @@ pub struct AgentsStatus {
     pub workflows: Vec<RlmWorkflowRun>,
 }
 
-/// `parseAgentsStatus` (`agents.status {graph: true}`).
+/// The `agents.status {graph: true}` answer.
 pub fn parse_agents_status(value: &Value) -> AgentsStatus {
     let body = if value.is_object() { value } else { &Value::Null };
     let mut tasks = Vec::new();
@@ -671,7 +664,7 @@ pub fn parse_agents_status(value: &Value) -> AgentsStatus {
     }
 }
 
-/// `parseRetained` (`instances.list`): task ids owned by open retained instances.
+/// `instances.list`: task ids owned by open retained instances.
 pub fn parse_retained(value: &Value) -> HashSet<String> {
     let mut retained = HashSet::new();
     for instance in value.as_array().into_iter().flatten() {
@@ -690,7 +683,7 @@ pub fn parse_retained(value: &Value) -> HashSet<String> {
     retained
 }
 
-/// `parsePool` (`rlm.pool`).
+/// The `rlm.pool` answer.
 pub fn parse_pool(value: &Value) -> Option<RlmPool> {
     let (Some(live), Some(max_live)) = (value["live"].as_f64(), value["maxLive"].as_f64()) else {
         return None;
@@ -745,7 +738,7 @@ fn tri(v: &Value, key: &str) -> Tri {
     }
 }
 
-/// `parseFrames` (`rlm.frames`).
+/// The `rlm.frames` answer.
 pub fn parse_frames(value: &Value) -> Vec<RlmFrame> {
     value["frames"]
         .as_array()
@@ -781,7 +774,7 @@ pub fn parse_frames(value: &Value) -> Vec<RlmFrame> {
         .collect()
 }
 
-/// `parseProgress` (`progress.assess`).
+/// The `progress.assess` answer.
 pub fn parse_progress(value: &Value) -> Option<RlmProgress> {
     Some(RlmProgress {
         classification: s(value, "classification")?,
@@ -789,7 +782,7 @@ pub fn parse_progress(value: &Value) -> Option<RlmProgress> {
     })
 }
 
-/// `parseContextState` (`ctx.state`).
+/// The `ctx.state` answer.
 pub fn parse_context_state(value: &Value) -> Option<RlmContextState> {
     if !value.is_object() {
         return None;
@@ -867,8 +860,6 @@ pub fn render_context_lines(context: Option<&RlmContextState>, style: &RlmStyle)
     }
     lines
 }
-
-// ---- the root turn from the lane transcript ----
 
 /// A running tool of the open operation (`LaneSnapshot.operation.runningTools`).
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -948,7 +939,7 @@ fn text_of(result: &Value) -> Option<String> {
     (!text.is_empty()).then_some(text)
 }
 
-/// `extractRootCell`: the current or last root `rlm` cell.
+/// The current or last root `rlm` cell.
 pub fn extract_root_cell(view: Option<&TranscriptView<'_>>, clock: &mut RlmClock, now: f64) -> Option<RlmRootCell> {
     let view = view?;
     let running = view
@@ -1015,7 +1006,7 @@ pub fn extract_root_cell(view: Option<&TranscriptView<'_>>, clock: &mut RlmClock
     None
 }
 
-/// `extractTurn`: the last user message (time and preview) and the root `rlm` cells after it, oldest first.
+/// The last user message (time and preview) and the root `rlm` cells after it, oldest first.
 pub fn extract_turn(
     view: Option<&TranscriptView<'_>>,
     clock: &mut RlmClock,

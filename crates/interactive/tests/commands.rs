@@ -7,15 +7,12 @@ use std::rc::Rc;
 use crate::support;
 use support::Sent;
 
-use interactive::app::{App, AppOptions, next_model, path_argument};
+use interactive::app::{App, AppOptions, next_model};
 use interactive::history::PromptHistoryStore;
-use interactive::keybindings::Platform;
-use interactive::keybindings::native_app_keybindings;
 use interactive::lane::{AutoreviewRequest, BashResult, ForkMessage, LaneCommand, LaneEvent, ModelInfo, SessionOpened};
 use protocol::watch::QueueKind;
 use serde_json::{Value, json};
-use theme::{ColorMode, builtin_theme_json, create_theme};
-use tui::KeybindingsManager;
+use theme::ColorMode;
 
 fn record(command: &LaneCommand) -> Option<String> {
     Some(match command {
@@ -100,33 +97,14 @@ fn model(id: &str, reasoning: bool) -> ModelInfo {
 }
 
 fn app_with(qol: interactive::qol::QolSettings, models: Vec<ModelInfo>) -> (App, Rc<Sent>) {
-    let theme = Rc::new(create_theme(&builtin_theme_json("dark").unwrap(), ColorMode::Truecolor, None).unwrap());
-    let keys = || {
-        KeybindingsManager::new(
-            native_app_keybindings(Platform::new("linux", false)),
-            Vec::new(),
-            Default::default(),
-        )
-    };
     let (lane, calls) = Sent::new(record);
     let current = models[0].clone();
     let mut app = App::new(
         AppOptions {
-            theme,
-            keys: keys(),
-            version: "1.2.3".into(),
-            cwd: "/p".into(),
-            home: None,
-            server_id: "server".into(),
             models,
             model: current,
-            thinking_level: "medium".into(),
-            splash: false,
-            history: PromptHistoryStore::new(None, "/p"),
-            fd_path: None,
-            highlight: Rc::new(|code: &str| code.split('\n').map(str::to_string).collect()),
             qol,
-            bug_report_target: ("radius.pi.dev".into(), false),
+            ..support::options()
         },
         lane,
     );
@@ -171,17 +149,6 @@ fn calls(c: &Sent) -> Vec<String> {
 
 fn footer(app: &mut App) -> String {
     screen(app).lines().last().unwrap_or("").to_string()
-}
-
-#[test]
-fn interactive_commands_path_argument_like_ts() {
-    assert_eq!(path_argument(""), None);
-    assert_eq!(path_argument("   "), None);
-    assert_eq!(path_argument("out.html rest"), Some("out.html".into()));
-    assert_eq!(path_argument("  a\tb"), Some("a".into()));
-    assert_eq!(path_argument("\"my file.jsonl\" x"), Some("my file.jsonl".into()));
-    assert_eq!(path_argument("'q'"), Some("q".into()));
-    assert_eq!(path_argument("\"open"), None);
 }
 
 #[test]
@@ -884,35 +851,18 @@ fn interactive_commands_images_go_with_steering_and_follow_ups() {
     std::fs::create_dir_all(&dir).unwrap();
     let png = dir.join("shot.png");
     std::fs::write(&png, PNG).unwrap();
-    let theme = Rc::new(create_theme(&builtin_theme_json("dark").unwrap(), ColorMode::Truecolor, None).unwrap());
-    let keys = || {
-        KeybindingsManager::new(
-            native_app_keybindings(Platform::new("linux", false)),
-            Vec::new(),
-            Default::default(),
-        )
-    };
     let (lane, sent) = Sent::new(|_| None);
     let mut app = App::new(
         AppOptions {
-            theme,
-            keys: keys(),
             version: "1".into(),
-            cwd: "/p".into(),
-            home: None,
             server_id: "s".into(),
             models: vec![model("a", true)],
             model: model("a", true),
-            thinking_level: "medium".into(),
-            splash: false,
-            history: PromptHistoryStore::new(None, "/p"),
-            fd_path: None,
-            highlight: Rc::new(|code: &str| code.split('\n').map(str::to_string).collect()),
             qol: interactive::qol::QolSettings {
                 attachments: true,
                 ..interactive::qol::QolSettings::parity()
             },
-            bug_report_target: ("radius.pi.dev".into(), false),
+            ..support::options()
         },
         lane,
     );

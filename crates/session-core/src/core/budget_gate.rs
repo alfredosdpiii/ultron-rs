@@ -68,7 +68,6 @@ pub struct BudgetGate {
     finals: Arc<Mutex<HashMap<LaneRun, FinalAnswer>>>,
 }
 
-/// Where lane runs stand after their tree's limit.
 pub type Finals = Arc<Mutex<HashMap<LaneRun, FinalAnswer>>>;
 
 /// The final-answer states of frame lanes (`frame:<lane>`; a frame's lane is named after its task, unique across

@@ -208,7 +208,6 @@ impl Shared {
         let _ = self.send(self.status(Value::Null), None);
     }
 
-    /// A run started or ended (it holds retirement while it runs), or a stuck run moved again.
     /// `holdActivity`: detached work is active (held as an operation) or no longer.
     fn activity(&self, active: bool) {
         let Some(lifecycle) = self.lifecycle.lock().unwrap_or_else(|e| e.into_inner()).clone() else {
@@ -221,6 +220,7 @@ impl Shared {
         }
     }
 
+    /// A run started or ended (it holds retirement while it runs), or a stuck run moved again.
     fn progress_changed(&self, change: Change) {
         let lifecycle = self.lifecycle.lock().unwrap_or_else(|e| e.into_inner()).clone();
         match (&change, &lifecycle) {
@@ -341,12 +341,10 @@ pub fn queue_response(result: session_core::core::OpResult) -> Value {
     }
 }
 
-/// The first argument of a call as a request object.
 fn request(args: &[Value]) -> &Value {
     args.first().unwrap_or(&Value::Null)
 }
 
-/// The session services in their catalogue order, over the session actor `core`.
 /// What the operations service's watchdog members use.
 struct Watch {
     progress: Arc<Progress>,
@@ -367,6 +365,7 @@ struct Extensions {
     env: RunEnv,
 }
 
+/// The session services in their catalogue order, over the session actor `core`.
 fn services(
     lane: &Lane,
     models_state: Arc<crate::chord::State>,
@@ -627,7 +626,6 @@ fn services(
             }
             Ok(answer)
         })
-        // The run's progress (crate::watchdog), now.
         .method("checkHealth", move |_| {
             Ok(Some(health_progress.health(jsrt::date::now_ms(), watch.stuck_after)))
         })
@@ -653,7 +651,6 @@ fn services(
             }
             Ok(Some(json!({"aborted": true, "runId": run, "restarted": true})))
         })
-        // The session's display name (`{name}`), as it changes.
         .state("name", name_state)
         .state("health", watch.health)
         .unlisted();

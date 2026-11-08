@@ -19,7 +19,6 @@ use tui::{truncate_to_width, visible_width};
 use crate::components::{bold, key_hint, key_text};
 use crate::lane::SessionListing;
 
-/// `SortMode`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SortMode {
     Threaded,
@@ -27,7 +26,6 @@ pub enum SortMode {
     Relevance,
 }
 
-/// What a key did.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum SessionAction {
     Selected(String),
@@ -273,7 +271,6 @@ impl SessionSelector {
         self.show_rename_hint = show;
     }
 
-    /// `toggleScope`.
     fn toggle_scope(&mut self) -> Option<SessionAction> {
         self.scope_all = !self.scope_all;
         let sessions = if self.scope_all {

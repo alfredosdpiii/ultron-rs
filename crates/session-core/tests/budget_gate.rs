@@ -75,7 +75,6 @@ fn results_text(request: &Value) -> String {
 
 #[test]
 fn session_core_budget_gate_turn_limit_grants_one_final_request_then_ends_the_run() {
-    // A model that never stops calling its REPL (and ignores tool choice).
     let a = actor(
         Box::new(|_, index| looping(index, &format!("print('round {index}')"))),
         Setup {

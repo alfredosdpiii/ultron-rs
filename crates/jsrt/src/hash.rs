@@ -12,7 +12,6 @@ pub fn hex(bytes: &[u8]) -> String {
     out
 }
 
-/// The SHA-256 digest of `data`.
 pub fn sha256(data: impl AsRef<[u8]>) -> [u8; 32] {
     Sha256::digest(data.as_ref()).into()
 }

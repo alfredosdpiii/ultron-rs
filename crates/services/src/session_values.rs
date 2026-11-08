@@ -46,7 +46,6 @@ impl SessionValues {
         }
     }
 
-    /// Whether the session was handed to a successor ([`SessionValues::hand_over`]).
     pub fn handed_over(&self) -> bool {
         self.handed_over
             .as_ref()
@@ -61,7 +60,6 @@ impl SessionValues {
         jsrt::sync::lock(&self.session).value(namespace, key).cloned()
     }
 
-    /// One committed transaction setting the value.
     pub fn set(&self, namespace: &str, key: &str, value: &Value) -> Result<(), String> {
         if self.handed_over() {
             return Ok(());
@@ -71,7 +69,6 @@ impl SessionValues {
             .map(drop)
     }
 
-    /// One whole document at `namespace`/`key`.
     pub fn document(&self, namespace: &str, key: &str) -> SessionDocument {
         SessionDocument {
             values: self.clone(),

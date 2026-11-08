@@ -96,7 +96,6 @@ fn json_body(fetched: &Fetched) -> Result<Value, OAuthError> {
     serde_json::from_str(&fetched.body).map_err(|e| OAuthError::Other(e.to_string()))
 }
 
-/// `discoverProtectedResourceMetadata`.
 pub fn discover_protected_resource_metadata(
     server_url: &str,
     resource_metadata_url: Option<&str>,
@@ -211,7 +210,6 @@ impl ServerInfo {
     }
 }
 
-/// `discoverOAuthServerInfo`.
 pub fn discover_oauth_server_info(
     server_url: &str,
     resource_metadata_url: Option<&str>,

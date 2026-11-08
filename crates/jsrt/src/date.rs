@@ -191,7 +191,6 @@ pub fn parse_date(input: &str) -> Option<i64> {
     if c.i != c.s.len() {
         return None;
     }
-    // Month and day were range-checked above, so the casts are lossless; the day may overflow the month.
     let days = days_from_civil(year, month as u32, 1) + (day - 1);
     time_clip((days * DAY_MS + time_ms - offset_min * 60_000) as f64)
 }

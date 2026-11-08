@@ -258,7 +258,6 @@ impl Connection {
         oauth_settings_of(&self.entry, &self.env.env_overlay, self.env.proxy.as_ref())
     }
 
-    /// The server's last OAuth challenge.
     pub fn challenge(&self) -> Option<Challenge> {
         self.challenge
             .lock()
@@ -661,7 +660,6 @@ impl Connection {
         self.with_client(true, |client| list_templates(client, options.clone()))
     }
 
-    /// Connect again with fresh credentials.
     pub fn reconnect(self: &Arc<Self>) -> Result<(), String> {
         self.wait_opening();
         let current = sync::lock(&self.data).client.clone();

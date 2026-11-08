@@ -111,7 +111,8 @@ impl Drop for ServerProcess {
     }
 }
 
-/// The first `Radius: …` line the TypeScript `ultron server` printed in a recorded scenario (fixtures/radius_server.mjs).
+/// The first `Radius: …` line the TypeScript `ultron server` printed in a recorded scenario
+/// (fixtures/radius_server.mjs).
 fn recorded_status(scenario: &str) -> String {
     let text = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/fixtures/radius_server.json")).unwrap();
     let cases: Vec<serde_json::Value> = serde_json::from_str(&text).unwrap();

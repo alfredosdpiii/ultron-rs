@@ -1,8 +1,8 @@
 //! The parts of node-semver 7 the self-update check uses, without options (`loose` and `includePrerelease` off):
-//! `valid` and `compare` (crate::package_cli `latest_release`, `is_newer`).
+//! `valid` and `compare` (crate::update_cli `latest_release`, `is_newer`).
 //!
 //! Evidence: `crates/cli/fixtures/packages.mjs` records node-semver's answers over a version matrix;
-//! `tests/semver_units.rs` replays them.
+//! `tests/local_resources_units.rs` replays them.
 
 use std::cmp::Ordering;
 

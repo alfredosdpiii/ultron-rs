@@ -626,7 +626,6 @@ fn save(shared: &Shared) {
         (store, state.document.clone())
     };
     if store.write(&document).is_err() {
-        // The counters stay in memory; the next change tries again.
         sync::lock(&shared.state).dirty = true;
     }
 }

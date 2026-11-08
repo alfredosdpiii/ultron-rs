@@ -10,7 +10,6 @@ use std::sync::mpsc;
 use std::thread::sleep;
 use std::time::{Duration, Instant, SystemTime};
 
-/// Held lock; dropping it stops its refresh and removes the lock directory.
 #[derive(Debug)]
 pub struct LockGuard {
     path: PathBuf,
@@ -25,7 +24,6 @@ impl Drop for LockGuard {
     }
 }
 
-/// How a lock is waited for and held.
 #[derive(Clone, Copy, Debug)]
 pub struct Options {
     /// A lock directory not refreshed for longer is taken over.
@@ -46,9 +44,7 @@ pub struct Retry {
 
 #[derive(Clone, Copy, Debug)]
 pub enum Until {
-    /// This many tries in all.
     Tries(u32),
-    /// Tries until this long has passed.
     Elapsed(Duration),
 }
 

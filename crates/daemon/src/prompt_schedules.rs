@@ -204,12 +204,10 @@ impl Scheduler {
         self.bell.notify_all();
     }
 
-    /// Deliveries in progress.
     pub fn in_flight(&self) -> usize {
         self.lock().in_flight.len()
     }
 
-    /// How many times the timer has looked at the clock.
     pub fn passes(&self) -> u64 {
         self.lock().passes
     }
@@ -386,12 +384,10 @@ pub fn scan_sessions(session_dir: &Path) -> Vec<(Meta, Vec<Schedule>)> {
         .collect()
 }
 
-/// The session operation that fires a schedule.
 pub fn fire_call(id: &str, due: i64) -> Value {
     json!({"serviceId": protocol::names::SESSION_OPS, "member": "op", "args": [{"op": "scheduleFire", "id": id, "due": due}]})
 }
 
-/// The session operation that cancels a schedule.
 pub fn cancel_call(id: &str) -> Value {
     json!({"serviceId": protocol::names::SESSION_OPS, "member": "op", "args": [{"op": "scheduleCancel", "id": id}]})
 }

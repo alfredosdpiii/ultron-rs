@@ -141,7 +141,6 @@ impl Agent {
         self.listeners.push(Box::new(listener));
     }
 
-    /// Prompt with text (and images) as one user message.
     pub async fn prompt_text(&mut self, text: &str, images: Vec<ImageContent>) {
         let mut content = vec![UserContent::Text(TextContent {
             text: text.into(),

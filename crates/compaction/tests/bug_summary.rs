@@ -16,7 +16,6 @@ fn compaction_bug_summary_requests_and_outcomes_match_typescript() {
     let fixture = fixture();
     let now = fixture["now"].as_i64().unwrap();
     let cases = fixture["cases"].as_array().unwrap();
-    assert_eq!(cases.len(), 15);
     for case in cases {
         let name = case["name"].as_str().unwrap();
         let model: Model = serde_json::from_value(case["model"].clone()).unwrap();

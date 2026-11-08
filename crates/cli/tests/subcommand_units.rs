@@ -104,7 +104,7 @@ fn cli_usage_format_tokens_and_elapsed_match_report_text() {
 #[test]
 fn cli_export_derived_colors_follow_the_template_formula() {
     use cli::export_html::derive_export_colors;
-    // deriveExportColors("#343541") (dark): 0.7 and 0.85 brightness, info +20/+15.
+    // deriveExportColors("#343541") (dark).
     assert_eq!(
         derive_export_colors("#343541"),
         ["rgb(36, 37, 46)", "rgb(44, 45, 55)", "rgb(72, 68, 65)"]

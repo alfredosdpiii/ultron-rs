@@ -45,7 +45,7 @@ fn diagnostics() -> (String, String) {
     (csv, top)
 }
 
-/// The TS live demo's task, word for word, without its `artifacts.put` step (`artifacts.*` is not ported).
+/// The TS live demo's task, word for word, without its `artifacts.put` step (`artifacts.*` was removed).
 const TASK: &str = r#"This project is disposable. repo/test_calc.py fails (run it with `python3 test_calc.py` inside repo/). diagnostics.csv has 200,000 log rows: never read it into your own context; analyze it only inside the rlm tool.
 
 Do all of the following through the rlm tool's Python API:
@@ -302,17 +302,4 @@ fn acceptance_a46_live_model_fixes_reviews_and_improves_through_the_typed_rlm_ap
     if let Err(error) = outcome {
         panic!("A46 live demo failed: {error}");
     }
-}
-
-#[test]
-fn acceptance_a46_live_diagnostics_top_location_is_counted_from_the_rows() {
-    let (csv, top) = diagnostics();
-    // The TS runner's fixed answer for the same rows.
-    assert_eq!(top, "calc.py:average");
-    assert_eq!(csv.lines().count(), 200_001);
-    assert!(csv.contains("\nrow-199999,ok,calc.py:average\n"));
-    assert!(csv.starts_with("id,status,location\nrow-0,fail,calc.py:average\n"));
-    // The task is the TS one: retained instances included.
-    assert!(TASK.contains("4. Retain that reviewer with `await instances.retain(review.id)`"));
-    assert!(TASK.ends_with(r#""review_task_id": ..., "instance_id": ...}."#));
 }

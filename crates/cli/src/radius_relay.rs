@@ -21,7 +21,6 @@ pub fn stored_radius_token(env: &Env) -> Result<Option<String>, String> {
     })
 }
 
-/// The relay of a server generation started by this process.
 pub fn relay_config(env: &Env) -> RelayConfig {
     relay_config_with(env, None, None)
 }

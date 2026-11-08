@@ -8,7 +8,6 @@
 //! `crates/ai/tests/model_resolver.rs` replays them; `crates/cli/fixtures/packages.mjs` records the case-sensitive
 //! ones, replayed by `crates/cli/tests/packages_units.rs`.
 
-/// Whether `text` matches `pattern` (case-insensitively with `nocase`).
 pub fn minimatch(text: &str, pattern: &str, nocase: bool) -> bool {
     if pattern.starts_with('#') {
         return false;
@@ -18,8 +17,6 @@ pub fn minimatch(text: &str, pattern: &str, nocase: bool) -> bool {
     let matched = brace_expand(body).iter().any(|p| match_path(text, p, nocase));
     if bangs % 2 == 1 { !matched } else { matched }
 }
-
-// ---------------------------------------------------------------------------------------------- brace expansion
 
 /// `brace-expansion`: every alternative of the first `{...}` group with a top-level comma or a `..` range,
 /// recursively; anything else stays literal.
@@ -157,8 +154,6 @@ fn range(inner: &str) -> Option<Vec<String>> {
     }
     Some(out)
 }
-
-// -------------------------------------------------------------------------------------------------- path matching
 
 fn match_path(text: &str, pattern: &str, nocase: bool) -> bool {
     if pattern.is_empty() {
@@ -401,7 +396,6 @@ fn class_has(items: &[ClassItem], c: char, nocase: bool) -> bool {
     })
 }
 
-/// Whether all of `text` matches `nodes`.
 fn match_nodes(text: &[char], nodes: &[Node], nocase: bool) -> bool {
     let Some((node, rest)) = nodes.split_first() else {
         return text.is_empty();

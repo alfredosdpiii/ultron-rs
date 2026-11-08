@@ -31,7 +31,6 @@ pub const SESSION_RETENTION: Duration = Duration::from_secs(7 * 24 * 60 * 60);
 /// Resolves a `provider/model` reference to the model and its API key.
 pub type ModelResolver = Arc<dyn Fn(&str) -> Result<(ai::Model, Option<String>), String> + Send + Sync>;
 
-/// A log line sink.
 pub type Log = Arc<dyn Fn(&str) + Send + Sync>;
 
 /// What reviews: a spec in, an engine result (JSON, as `autoreview_api.run` returns it) out.
@@ -146,7 +145,6 @@ pub struct EngineOptions {
     pub log: Option<Log>,
 }
 
-/// `provider/id` of a model.
 pub fn model_ref(model: &ai::Model) -> String {
     format!("{}/{}", model.provider, model.id)
 }
@@ -334,7 +332,7 @@ impl KernelEngine {
 }
 
 /// The cell that runs one review: the spec and result paths as JSON strings, which Python reads as literals.
-pub fn review_cell(spec_path: &str, result_path: &str) -> String {
+fn review_cell(spec_path: &str, result_path: &str) -> String {
     let quote = |text: &str| serde_json::to_string(text).unwrap_or_else(|_| "\"\"".into());
     format!(
         "import autoreview_api\nawait autoreview_api.run_file(rlm, {}, {})",
@@ -344,7 +342,7 @@ pub fn review_cell(spec_path: &str, result_path: &str) -> String {
 }
 
 /// The error of a failed pipeline cell (`the review pipeline failed: <ename>: <evalue>` and the traceback's end).
-pub fn pipeline_error(error: Option<&kernel::CellError>) -> String {
+fn pipeline_error(error: Option<&kernel::CellError>) -> String {
     let (name, value, traceback) = match error {
         Some(error) => (error.ename.as_str(), error.evalue.as_str(), error.traceback.as_slice()),
         None => ("error", "", &[][..]),

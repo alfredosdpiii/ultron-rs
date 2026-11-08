@@ -22,7 +22,6 @@ const DEFAULT_AZURE_API_VERSION: &str = "v1";
 const AZURE_TOOL_CALL_PROVIDERS: &[&str] = &["openai", "openai-codex", "opencode", "azure-openai-responses"];
 const MIN_OUTPUT_TOKENS: u64 = 16;
 
-/// `AzureOpenAIResponsesOptions`.
 #[derive(Clone, Default, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AzureOpenAIResponsesOptions {

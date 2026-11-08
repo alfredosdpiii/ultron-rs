@@ -23,6 +23,9 @@ struct Gated {
     changed: Condvar,
     /// Progress texts each call reports before it waits (`onUpdate`).
     updates: Vec<String>,
+    /// Notified after every start, progress report, call end and record change, so a test waits on these events.
+    wake: Mutex<()>,
+    woke: Condvar,
 }
 
 impl Gated {
@@ -33,6 +36,22 @@ impl Gated {
 
     fn log(&self) -> Vec<String> {
         self.log.lock().unwrap().clone()
+    }
+
+    fn notify(&self) {
+        let _held = self.wake.lock().unwrap();
+        self.woke.notify_all();
+    }
+
+    /// Blocks until `check` holds, re-checking it on every event.
+    fn until(&self, what: &str, check: impl Fn() -> bool) {
+        let deadline = Instant::now() + HANG;
+        let mut held = self.wake.lock().unwrap();
+        while !check() {
+            let left = deadline.saturating_duration_since(Instant::now());
+            assert!(!left.is_zero(), "timed out waiting for {what}");
+            held = self.woke.wait_timeout(held, left).unwrap().0;
+        }
     }
 }
 
@@ -66,6 +85,7 @@ impl ToolRunner for Gated {
         for text in &self.updates {
             on_update(&json!({"content": [{"type": "text", "text": text}]}));
         }
+        self.notify();
         let mut open = self.open.lock().unwrap();
         loop {
             if let Some(count) = open.get_mut(name).filter(|c| **c > 0) {
@@ -83,14 +103,6 @@ impl ToolRunner for Gated {
     }
 }
 
-fn until(what: &str, check: impl Fn() -> bool) {
-    let start = Instant::now();
-    while !check() {
-        assert!(start.elapsed() < HANG, "timed out waiting for {what}");
-        std::thread::sleep(Duration::from_millis(5));
-    }
-}
-
 fn record(calls: &ToolCalls, id: &str) -> Value {
     calls.list().into_iter().find(|r| r["id"] == id).unwrap()
 }
@@ -104,6 +116,8 @@ fn setup(updates: Vec<String>) -> (Arc<Gated>, ToolCalls) {
         Some(runner.clone() as Arc<dyn ToolRunner>),
         Arc::new(MemoryDocumentStore::default()),
     );
+    let ended = runner.clone();
+    calls.on_end(Arc::new(move |_| ended.notify()));
     (runner, calls)
 }
 
@@ -116,32 +130,31 @@ fn kernel_apis_sequential_tool_waits_for_lane_calls_and_runs_alone() {
     let par_b = calls.start("main", None, "par_b", Map::new()).unwrap();
     // Another lane is not held up by this lane's sequential call.
     let other = calls.start("child", None, "par_b", Map::new()).unwrap();
-    until("two calls started", || runner.log().len() == 2);
+    runner.until("two calls started", || runner.log().len() == 2);
     let mut started = runner.log();
     started.sort();
     assert_eq!(started, ["start par_a", "start par_b"]);
     assert_eq!(record(&calls, &seq_a)["preview"], QUEUED_PREVIEW);
-    assert!(QUEUED_PREVIEW.starts_with("queued:"));
     runner.open("par_b"); // the other lane's call
-    until("the other lane's call ended", || {
+    runner.until("the other lane's call ended", || {
         record(&calls, &other)["status"] == "completed"
     });
     assert!(!runner.log().contains(&"start seq_a".to_string()));
     runner.open("par_a");
-    until("seq_a started", || runner.log().contains(&"start seq_a".to_string()));
+    runner.until("seq_a started", || runner.log().contains(&"start seq_a".to_string()));
     assert!(!runner.log().contains(&"start seq_b".to_string()));
     assert_eq!(record(&calls, &seq_b)["preview"], QUEUED_PREVIEW);
     assert!(record(&calls, &seq_a).get("preview").is_none());
     runner.open("seq_a");
-    until("seq_b started", || runner.log().contains(&"start seq_b".to_string()));
+    runner.until("seq_b started", || runner.log().contains(&"start seq_b".to_string()));
     assert_eq!(runner.log().iter().filter(|l| *l == "start par_b").count(), 1);
     runner.open("seq_b");
-    until("par_b started", || {
+    runner.until("par_b started", || {
         runner.log().iter().filter(|l| *l == "start par_b").count() == 2
     });
     runner.open("par_b");
     for id in [&par_a, &seq_a, &seq_b, &par_b, &other] {
-        until("every call ended", || record(&calls, id)["status"] != "running");
+        runner.until("every call ended", || record(&calls, id)["status"] != "running");
     }
     let statuses: Vec<Value> = [&par_a, &seq_a, &seq_b, &par_b, &other]
         .iter()
@@ -166,16 +179,16 @@ fn kernel_apis_call_cancelled_while_queued_never_starts() {
     let seq_a = calls.start("main", None, "seq_a", Map::new()).unwrap();
     let seq_b = calls.start("main", None, "seq_b", Map::new()).unwrap();
     let par_a = calls.start("main", None, "par_a", Map::new()).unwrap();
-    until("seq_a started", || runner.log().len() == 1);
+    runner.until("seq_a started", || runner.log().len() == 1);
     assert_eq!(runner.log(), ["start seq_a"]);
     calls.cancel(&seq_b, "cancelled");
     assert_eq!(record(&calls, &seq_b)["status"], "cancelled");
     assert!(record(&calls, &seq_b).get("preview").is_none());
     runner.open("seq_a");
-    until("par_a started", || runner.log().contains(&"start par_a".to_string()));
+    runner.until("par_a started", || runner.log().contains(&"start par_a".to_string()));
     runner.open("par_a");
     for id in [&seq_a, &par_a] {
-        until("the calls ended", || record(&calls, id)["status"] == "completed");
+        runner.until("the calls ended", || record(&calls, id)["status"] == "completed");
     }
     assert!(!runner.log().contains(&"start seq_b".to_string()));
     calls.close();
@@ -187,12 +200,12 @@ fn kernel_apis_call_cancelled_while_queued_never_starts() {
 fn kernel_apis_tool_progress_becomes_the_running_preview() {
     let (runner, calls) = setup(vec!["step 1".into(), "step  2\n of 3".into()]);
     let id = calls.start("main", None, "par_a", Map::new()).unwrap();
-    until("the progress arrived", || {
+    runner.until("the progress arrived", || {
         record(&calls, &id)["preview"] == "step 2 of 3"
     });
     assert_eq!(record(&calls, &id)["status"], "running");
     runner.open("par_a");
-    until("the call ended", || record(&calls, &id)["status"] == "completed");
+    runner.until("the call ended", || record(&calls, &id)["status"] == "completed");
     assert_eq!(record(&calls, &id)["preview"], "par_a");
     calls.close();
 }
@@ -200,7 +213,7 @@ fn kernel_apis_tool_progress_becomes_the_running_preview() {
 #[test]
 fn kernel_apis_tool_call_preview_flattens_javascript_whitespace() {
     // D-W2: `text.replace(/\s+/g, " ").trim()` treats U+FEFF as whitespace and U+0085 as text (node:
-    // "a﻿b\u0085c" -> "a b\u0085c"); `split_whitespace` did the opposite.
+    // "a﻿b\u0085c" -> "a b\u0085c").
     let shown = jsrt::json::preview(&serde_json::json!(" a\u{feff}b\u{85}c\n"), 100);
     assert_eq!(shown, "a b\u{85}c");
 }

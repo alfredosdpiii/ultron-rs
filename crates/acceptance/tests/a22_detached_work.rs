@@ -26,7 +26,6 @@ const LONG_RESULT: &str = "LONG_TURN_DONE";
 /// A hang guard, never a pass condition: waits end on the condition they poll.
 const HANG: Duration = Duration::from_secs(180);
 
-/// A gate the scripted provider waits on.
 #[derive(Clone, Default)]
 struct Gate(Arc<(Mutex<bool>, Condvar)>);
 
@@ -76,7 +75,6 @@ fn owned(needle: &Path) -> Vec<(u32, String)> {
     found
 }
 
-/// A message's text blocks, joined.
 fn text_of(message: &Value) -> String {
     match &message["content"] {
         Value::String(text) => text.clone(),

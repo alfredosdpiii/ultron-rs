@@ -1,4 +1,4 @@
-//! Gaps between native Ultron and `ultron claude` (wave 44 audit), through the product entries: `ultron mcp`
+//! Gaps between native Ultron and `ultron claude`, through the product entries: `ultron mcp`
 //! (`mcp_server::start` and the MCP loop over pipes) and `ultron claude --print-config` (`launcher::run`), with a
 //! private temp root as their environment. Claude Code subagents are a FAKE `claude` (a script this test writes,
 //! named by ULTRON_CLAUDE_BIN; never the real CLI) that records how it was started and reports scripted usage.

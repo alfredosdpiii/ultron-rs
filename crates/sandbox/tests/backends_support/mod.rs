@@ -177,3 +177,48 @@ pub fn docker_opted_in() -> bool {
 fn skip_quietly(mechanism: &str, reason: &str) {
     println!("SKIPPED {mechanism}: {reason}");
 }
+
+/// Live (not zombie) processes other than this one whose command line mentions `marker`; a sandbox's inner processes
+/// (its own pid namespace, a container's) are visible here too.
+pub fn processes_with(marker: &str) -> Vec<i32> {
+    let own = std::process::id().cast_signed();
+    std::fs::read_dir("/proc")
+        .unwrap()
+        .filter_map(|entry| entry.ok()?.file_name().to_str()?.parse::<i32>().ok())
+        .filter(|pid| *pid != own)
+        .filter(|pid| {
+            let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).unwrap_or_default();
+            let state = stat
+                .rsplit_once(')')
+                .map_or("", |(_, rest)| rest)
+                .split_whitespace()
+                .next();
+            state.is_some_and(|state| state != "Z")
+        })
+        .filter(|pid| {
+            std::fs::read(format!("/proc/{pid}/cmdline"))
+                .is_ok_and(|cmdline| String::from_utf8_lossy(&cmdline).contains(marker))
+        })
+        .collect()
+}
+
+/// Waits until no process mentions `marker` (hang guard 120 s): everything a stopped command started is gone.
+pub fn wait_until_gone(what: &str, marker: &str) {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(120);
+    loop {
+        let left = processes_with(marker);
+        if left.is_empty() {
+            return;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "{what}: processes outlived their stop: {left:?}"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+}
+
+/// A loop that rewrites `tick` every 50 ms for as long as it lives, named by `marker` in its command line.
+pub fn tick_loop(marker: &str) -> String {
+    format!("while :; do date +%s%N > tick; sleep 0.05; done # {marker}")
+}

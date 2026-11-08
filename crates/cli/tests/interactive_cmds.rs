@@ -90,7 +90,6 @@ fn replay_checked(name: &str, divergences: &[(&str, &str)], last: Option<&dyn Fn
     replay_full(name, divergences, last, None);
 }
 
-/// A screen comparison `(got, want)`.
 type Compare<'a> = dyn Fn(&str, &str) + 'a;
 
 fn replay_full(name: &str, divergences: &[(&str, &str)], last: Option<&dyn Fn(&str)>, compare: Option<&Compare<'_>>) {

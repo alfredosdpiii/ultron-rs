@@ -449,7 +449,6 @@ impl Session {
         status.end.clone().expect("ended")
     }
 
-    /// The error that failed the Session, if one did.
     pub fn failure(&self) -> Option<SessionError> {
         lock(&self.inner.status).failure.clone()
     }
@@ -536,7 +535,6 @@ impl Inner {
         }
     }
 
-    /// Deliver a durable commit to the host listeners.
     fn publish(&self, publication: &CommitPublication) {
         let commits = lock(&self.listeners).commits.clone();
         for (_, listener) in commits {

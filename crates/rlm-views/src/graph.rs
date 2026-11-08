@@ -211,7 +211,6 @@ pub fn rollup(c: &GraphProgress) -> GraphStatus {
     GraphStatus::Done
 }
 
-/// `count(statuses, total)`.
 pub fn count(statuses: &[GraphStatus], total: usize) -> GraphProgress {
     let mut p = GraphProgress {
         total,
@@ -631,7 +630,6 @@ fn cell_node(cell: &RlmRootCell, index: usize) -> GraphNode {
     node
 }
 
-/// Stable chronological sort, recursively.
 fn sort_chronological(nodes: &mut [GraphNode]) {
     let key = |n: &GraphNode| n.started_at.unwrap_or(9_007_199_254_740_991.0);
     nodes.sort_by(|a, b| key(a).partial_cmp(&key(b)).unwrap_or(std::cmp::Ordering::Equal));
@@ -640,7 +638,6 @@ fn sort_chronological(nodes: &mut [GraphNode]) {
     }
 }
 
-/// `buildRlmGraph`.
 pub fn build_rlm_graph(snapshot: &RlmSnapshot) -> GraphNode {
     let now = snapshot.now;
     let turn_start = snapshot.turn.as_ref().and_then(|t| t.started_at);
@@ -1013,8 +1010,6 @@ pub fn build_rlm_graph(snapshot: &RlmSnapshot) -> GraphNode {
     turn
 }
 
-// ---- layout ----
-
 #[derive(Clone, Debug, PartialEq)]
 pub struct GraphRow<'a> {
     pub node: &'a GraphNode,
@@ -1052,7 +1047,6 @@ fn descendants(node: &GraphNode) -> usize {
     node.children.iter().map(|c| 1 + descendants(c)).sum()
 }
 
-/// `layoutGraph`.
 pub fn layout_graph<'a>(root: &'a GraphNode, collapse: &CollapseState) -> Vec<GraphRow<'a>> {
     fn visit<'a>(
         node: &'a GraphNode,
@@ -1105,8 +1099,6 @@ pub fn layout_graph<'a>(root: &'a GraphNode, collapse: &CollapseState) -> Vec<Gr
     rows
 }
 
-// ---- rendering helpers ----
-
 const SPINNER: [&str; 10] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 
 pub fn spinner_glyph(frame: i64) -> &'static str {
@@ -1135,7 +1127,6 @@ pub fn status_color(status: GraphStatus) -> Fg {
     }
 }
 
-/// `formatTokens`.
 pub fn format_tokens(tokens: f64) -> String {
     if tokens < 1000.0 {
         number::to_string(tokens.round())
@@ -1148,7 +1139,6 @@ pub fn format_tokens(tokens: f64) -> String {
     }
 }
 
-/// `formatCost`.
 pub fn format_cost(cost: f64) -> String {
     if cost >= 0.01 {
         format!("${}", number::to_fixed(cost, 2))
@@ -1157,7 +1147,6 @@ pub fn format_cost(cost: f64) -> String {
     }
 }
 
-/// `formatBytes`.
 pub fn format_bytes(bytes: f64) -> String {
     let mib = bytes / (1024.0 * 1024.0);
     if mib >= 1024.0 {
@@ -1431,8 +1420,6 @@ pub fn window_rows(total: usize, max: usize, focus: usize) -> (usize, usize) {
     (start, start + size)
 }
 
-// ---- gauges and the kernel strip ----
-
 #[derive(Clone, Debug, PartialEq)]
 pub struct Gauge {
     pub label: String,
@@ -1441,7 +1428,6 @@ pub struct Gauge {
     pub text: String,
 }
 
-/// `budgetGauges`.
 pub fn budget_gauges(snapshot: &RlmSnapshot, _graph: &GraphNode) -> Vec<Gauge> {
     let mut gauges = Vec::new();
     let usage = snapshot.usage.as_ref();
@@ -1699,8 +1685,6 @@ pub fn render_kernel_strip(snapshot: &RlmSnapshot, width: usize, style: &RlmStyl
     ))
 }
 
-// ---- the three levels ----
-
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct GraphTotals {
     pub running: usize,
@@ -1778,7 +1762,6 @@ fn count_active_tasks(root: &GraphNode) -> usize {
     active
 }
 
-/// True while anything in the graph runs.
 pub fn graph_active(root: &GraphNode) -> bool {
     root.status == GraphStatus::Running || graph_totals(root).running > 0
 }

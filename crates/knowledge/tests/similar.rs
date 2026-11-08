@@ -180,6 +180,35 @@ fn rlm_dir() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../../packages/coding-agent/src/ultron/rlm")
 }
 
+fn sql(db: &Path) -> rusqlite::Connection {
+    rusqlite::Connection::open(db).unwrap()
+}
+
+fn stored_schema(db: &Path) -> i64 {
+    sql(db)
+        .query_row("SELECT value FROM meta WHERE key = 'schema_version'", [], |row| {
+            row.get::<_, String>(0)
+        })
+        .unwrap()
+        .parse()
+        .unwrap()
+}
+
+fn construct_kinds(db: &Path, rev: &str, path: &str) -> Vec<String> {
+    let conn = sql(db);
+    let mut statement = conn
+        .prepare(
+            "SELECT c.kind FROM constructs c JOIN entries e ON e.blob = c.blob JOIN trees t ON t.id = e.tree
+             JOIN repos r ON r.id = t.repo WHERE r.name = ?1 AND t.rev = ?2 AND e.path = ?3",
+        )
+        .unwrap();
+    statement
+        .query_map([REPO, rev, path], |row| row.get(0))
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap()
+}
+
 /// Runs `body` in the kernel's Python with the runtime modules importable; returns its stdout.
 fn kernel_python(body: &str, args: &[&str]) -> String {
     let script = format!(
@@ -211,14 +240,7 @@ fn the_new_migration_is_indexed_with_its_trigger_shape() {
     let stats = index_tree(&db, REPO, &root, "HEAD").unwrap();
     assert_eq!(stats.rev, head);
     assert_eq!(stats.files, 11, "{stats:?}");
-    let store = Store::open(&db).unwrap();
-    assert_eq!(store.schema_version().unwrap(), SCHEMA_VERSION);
-    let kinds: Vec<String> = store
-        .constructs_at(REPO, &head, NEW)
-        .unwrap()
-        .into_iter()
-        .map(|(kind, _, _)| kind)
-        .collect();
+    let kinds = construct_kinds(&db, &head, NEW);
     for kind in [
         "sql:create-table",
         "sql:foreign-key",
@@ -233,12 +255,7 @@ fn the_new_migration_is_indexed_with_its_trigger_shape() {
         !kinds.iter().any(|kind| kind == "sql:trigger:before-truncate"),
         "{kinds:?}"
     );
-    let audit: Vec<String> = store
-        .constructs_at(REPO, &head, AUDIT)
-        .unwrap()
-        .into_iter()
-        .map(|(kind, _, _)| kind)
-        .collect();
+    let audit = construct_kinds(&db, &head, AUDIT);
     assert!(audit.contains(&"sql:trigger:before-truncate".to_string()), "{audit:?}");
 }
 
@@ -260,8 +277,8 @@ fn a_later_revision_reads_only_its_new_blobs_and_keeps_both_trees() {
     assert_eq!(again.read, 0, "{again:?}");
     let store = Store::open(&db).unwrap();
     assert_eq!(store.tree_count(REPO).unwrap(), 2);
-    assert!(store.constructs_at(REPO, &base, NEW).unwrap().is_empty());
-    assert!(!store.constructs_at(REPO, &head, NEW).unwrap().is_empty());
+    assert!(construct_kinds(&db, &base, NEW).is_empty());
+    assert!(!construct_kinds(&db, &head, NEW).is_empty());
 }
 
 #[test]
@@ -419,9 +436,9 @@ fn a_store_of_schema_1_gains_the_notes_and_keeps_its_trees() {
     );
     assert_eq!(out, "ok");
     let mut store = Store::open(&db).unwrap();
-    assert_eq!(store.schema_version().unwrap(), SCHEMA_VERSION);
+    assert_eq!(stored_schema(&db), SCHEMA_VERSION);
     assert_eq!(store.tree_count(REPO).unwrap(), 1);
-    assert!(!store.constructs_at(REPO, &head, NEW).unwrap().is_empty());
+    assert!(!construct_kinds(&db, &head, NEW).is_empty());
     assert_eq!(
         store
             .record_notes(REPO, &[note(2801, AUDIT, "jgericardo", "TRUNCATE?", "open")])
@@ -452,7 +469,12 @@ fn a_note_is_recorded_once_and_its_state_follows_the_thread() {
         0,
         "the same comment is not a new note"
     );
-    assert_eq!(store.note_count(REPO).unwrap(), 1);
+    assert_eq!(
+        sql(&db)
+            .query_row("SELECT COUNT(*) FROM notes", [], |row| row.get::<_, i64>(0))
+            .unwrap(),
+        1
+    );
     let out = kernel_python(
         "import sqlite3\nprint(sqlite3.connect(sys.argv[1]).execute('SELECT state FROM notes').fetchone()[0])",
         &[&db.display().to_string()],
@@ -470,7 +492,7 @@ fn a_note_is_recorded_once_and_its_state_follows_the_thread() {
         store.set_meta("schema_version", "9").is_err(),
         "the version is not a host value"
     );
-    assert_eq!(store.schema_version().unwrap(), SCHEMA_VERSION);
+    assert_eq!(stored_schema(&db), SCHEMA_VERSION);
 }
 
 /// fisher-ki-saas#2920 with history: the audit table's pull request had a reviewer ask about TRUNCATE. An
@@ -587,7 +609,7 @@ fn a_store_of_schema_2_gains_the_rule_columns_and_keeps_its_notes() {
     );
     assert_eq!(out, "ok");
     let mut store = Store::open(&db).unwrap();
-    assert_eq!(store.schema_version().unwrap(), SCHEMA_VERSION);
+    assert_eq!(stored_schema(&db), SCHEMA_VERSION);
     // Schema 2's addressed included outdated threads: none is a rule until the backfill reads them again.
     assert_eq!(store.meta("notes_backfilled:x").unwrap(), None);
     let state = kernel_python(

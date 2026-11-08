@@ -5,7 +5,6 @@ use jsrt::path::{basename, dirname};
 use std::fs;
 use std::path::Path;
 
-/// A loaded context file.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ContextFile {
     pub path: String,

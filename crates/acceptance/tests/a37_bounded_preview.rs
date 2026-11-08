@@ -1,7 +1,7 @@
 //! A37 (partial): bounded preview preserves full values and does not execute unsafe introspection on the host.
 //! Ported from the kernel half of packages/coding-agent/test/ultron-a37-bounded-preview.test.ts with its literal
 //! expectations, against the real runtime.py under the Rust supervisor. Not ported: the "artifact range reads" half
-//! (`artifacts.put` / `artifacts.read` of NativeLocalServices has no Rust implementation yet).
+//! (`artifacts.put` / `artifacts.read`, removed by user decision).
 
 use crate::common;
 

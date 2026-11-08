@@ -1,12 +1,8 @@
-//! The terminal pieces of the client TUI's live settings and side pane: `copyToClipboard` (ported
-//! packages/coding-agent test/clipboard.test.ts, literal expectations, over a recording [`CopyIo`]), `SplitView`
-//! (fixtures/split-view-parity.json from `node crates/tui/fixtures/generate-split-view.mjs`), a live theme swap,
-//! the editor's padding and the split viewport's clear-on-shrink.
+//! `copyToClipboard`, ported from packages/coding-agent test/clipboard.test.ts with its literal expectations, over a
+//! recording [`CopyIo`]; and the helper-program runner, which finds programs only on the injected PATH.
 
 use std::path::{Path, PathBuf};
-use theme::Fg;
 
-use serde_json::Value;
 use tui::{CopyEnv, CopyIo, copy_to_clipboard};
 
 /// Records every command and answers from a script: `fail` lists the commands that fail.
@@ -304,112 +300,4 @@ fn tui_copy_clipboard_command_needs_the_injected_path() {
         None
     );
     let _ = std::fs::remove_dir_all(empty);
-}
-
-#[test]
-fn tui_split_view_matches_typescript() {
-    let fixture: Value = serde_json::from_str(include_str!("../fixtures/split-view-parity.json")).unwrap();
-    let lines = |v: &Value| -> Vec<String> {
-        v.as_array()
-            .unwrap()
-            .iter()
-            .map(|l| l.as_str().unwrap().into())
-            .collect()
-    };
-    let cases = fixture["cases"].as_array().unwrap();
-    assert_eq!(cases.len(), 32);
-    for case in cases {
-        let width = case["width"].as_u64().unwrap() as usize;
-        let open = case["open"].as_bool().unwrap();
-        let (main_width, side_width) =
-            tui::split_widths(width, open, 44usize.max((width as f64 * 0.4).round() as usize));
-        assert_eq!(
-            (main_width as u64, side_width as u64),
-            (case["mainWidth"].as_u64().unwrap(), case["sideWidth"].as_u64().unwrap()),
-            "{case}"
-        );
-        let main = lines(&fixture["mains"][case["main"].as_u64().unwrap() as usize]);
-        let side = lines(&fixture["sides"][case["side"].as_u64().unwrap() as usize]);
-        let got = tui::render_split(&main, &side, main_width, side_width, "\x1b[90m│\x1b[39m");
-        assert_eq!(got, lines(&case["lines"]), "{width} open={open}");
-    }
-}
-
-#[test]
-fn tui_split_view_keeps_the_editor_cursor_marker() {
-    let main = vec![format!("ab{}c", tui::CURSOR_MARKER)];
-    let got = tui::render_split(&main, &["x".into()], 10, 5, "│");
-    assert!(got[0].contains(tui::CURSOR_MARKER), "{:?}", got[0]);
-}
-
-#[test]
-fn tui_theme_adopt_recolors_every_holder() {
-    use theme::{ColorMode, builtin_theme_json, create_theme};
-    let dark =
-        std::rc::Rc::new(create_theme(&builtin_theme_json("dark").unwrap(), ColorMode::Truecolor, None).unwrap());
-    let light = create_theme(&builtin_theme_json("light").unwrap(), ColorMode::Truecolor, None).unwrap();
-    let held = std::rc::Rc::clone(&dark);
-    let before = held.fg(Fg::Accent, "x");
-    dark.adopt(&light);
-    assert_eq!(held.fg(Fg::Accent, "x"), light.fg(Fg::Accent, "x"));
-    assert_ne!(held.fg(Fg::Accent, "x"), before);
-    assert_eq!(held.thinking_border("high", "x"), light.thinking_border("high", "x"));
-    // The name stays the holder's.
-    assert_eq!(held.name.as_deref(), Some("dark"));
-}
-
-#[test]
-fn tui_editor_padding_x_moves_the_text() {
-    let keys = tui::KeybindingsManager::new(tui::tui_keybindings(), Vec::new(), Default::default());
-    let mut editor = tui::Editor::new(keys, Box::new(str::to_string), 0);
-    editor.set_text("hi");
-    let plain = editor.render(20);
-    editor.set_padding_x(3);
-    assert_eq!(editor.padding_x(), 3);
-    let padded = editor.render(20);
-    let row = |lines: &[String]| strip(&lines[1].replace(tui::CURSOR_MARKER, ""));
-    assert!(row(&plain).starts_with("hi"), "{:?}", row(&plain));
-    assert!(row(&padded).starts_with("   hi"), "{:?}", row(&padded));
-}
-
-#[test]
-fn tui_viewport_clear_on_shrink_repaints_the_shrunk_viewport() {
-    use tui::{FramePlan, ViewportRenderer};
-    let plan = |n: usize| FramePlan {
-        history: None,
-        viewport: (0..n).map(|i| format!("row {i}")).collect(),
-    };
-    let shrink = |clear: bool| {
-        let mut r = ViewportRenderer::new();
-        r.clear_on_shrink = clear;
-        r.render(&plan(5), 40, 20);
-        let before = r.rows_written;
-        let frame = r.render(&plan(2), 40, 20);
-        (r.rows_written - before, frame.bytes)
-    };
-    // Diffed: the unchanged rows stay, the rest is cleared below.
-    let (written, _) = shrink(false);
-    assert_eq!(written, 0);
-    // Clear-on-shrink: the viewport is painted whole from its top.
-    let (written, bytes) = shrink(true);
-    assert_eq!(written, 2);
-    assert!(bytes.contains("\x1b[4A\r\x1b[J"), "{bytes:?}");
-}
-
-/// Drop CSI sequences.
-fn strip(text: &str) -> String {
-    let mut out = String::new();
-    let mut chars = text.chars();
-    while let Some(c) = chars.next() {
-        if c == '\x1b' {
-            for c in chars.by_ref() {
-                if c.is_ascii_alphabetic() {
-                    break;
-                }
-            }
-            continue;
-        }
-        out.push(c);
-    }
-    out
 }

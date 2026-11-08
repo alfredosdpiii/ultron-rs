@@ -19,7 +19,6 @@ use interactive::lane::{ModelInfo, SessionOpened};
 use serde_json::Value;
 use std::sync::{Mutex, OnceLock, PoisonError};
 
-/// The display name herdr shows for the TUI.
 pub const DISPLAY_AGENT: &str = "Ultron";
 
 /// The pane to report to: the injected env and the `herdr` setting (global or trusted project).
@@ -267,7 +266,6 @@ impl PrintReport {
         Some(PrintReport { reporter })
     }
 
-    /// The run ended with this answer or error.
     pub fn finish(&self, result: Result<&str, &str>) {
         let (state, message) = match result {
             Ok(text) => run_end_state(&serde_json::json!({"status": "completed"}), text),

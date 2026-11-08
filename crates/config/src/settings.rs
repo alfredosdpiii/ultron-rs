@@ -83,7 +83,6 @@ pub fn set_process_defaults(defaults: Settings) {
     let _ = PROCESS_DEFAULTS.set(defaults);
 }
 
-/// The defaults [`set_process_defaults`] gave this process.
 pub fn process_defaults() -> Option<&'static Settings> {
     PROCESS_DEFAULTS.get()
 }
@@ -106,7 +105,6 @@ pub fn set_durable_process() {
     let _ = DURABLE_PROCESS.set(());
 }
 
-/// Whether [`set_durable_process`] marked this process.
 pub fn is_durable_process() -> bool {
     DURABLE_PROCESS.get().is_some()
 }

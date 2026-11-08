@@ -124,7 +124,6 @@ fn omitted(entry: &Value) -> Value {
     Value::Object(out)
 }
 
-/// `applyContextEdits`.
 pub fn apply_context_edits<V: Borrow<Value>>(entries: &[V]) -> Vec<Value> {
     let mut edits: HashMap<String, Option<Value>> = HashMap::new();
     for entry in entries {
@@ -263,7 +262,6 @@ pub(crate) fn join_string(value: Option<&Value>) -> String {
     }
 }
 
-/// `bashExecutionToText`.
 fn bash_execution_to_text(message: &Value) -> String {
     let output = join_string(message.get("output"));
     let mut text = format!("Ran `{}`\n", join_string(message.get("command")));

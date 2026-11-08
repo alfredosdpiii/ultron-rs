@@ -1,6 +1,6 @@
-//! `ultron watch` (crates/cli/src/watch.rs) frames against packages/coding-agent ultron/claude/watch.ts (`renderWatchFrame`), replayed from
-//! fixtures/watch.json (`node crates/cli/fixtures/generate-watch.mjs`), and `--once --plain` end to end over
-//! a fake control socket.
+//! `ultron watch` (crates/cli/src/watch.rs) frames against packages/coding-agent ultron/claude/watch.ts
+//! (`renderWatchFrame`), replayed from fixtures/watch.json (`node crates/cli/fixtures/generate-watch.mjs`), and `--once
+//! --plain` end to end over a fake control socket.
 
 use std::sync::Arc;
 

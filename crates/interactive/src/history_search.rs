@@ -35,9 +35,7 @@ pub fn search_prompt_history(history: &[String], query: &str) -> Vec<String> {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum HistorySearchEvent {
     None,
-    /// Replace the editor text with this entry.
     Accept(String),
-    /// Close and keep the draft.
     Cancel,
 }
 

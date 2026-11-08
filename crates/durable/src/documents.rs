@@ -137,7 +137,6 @@ pub(crate) struct Resolved {
     pub id: String,
 }
 
-/// Resolve an owner against a definition.
 pub(crate) fn resolve_address(definition: &DocDefinition, owner: Owner) -> Result<Resolved, SessionError> {
     let scope = match (definition.semantics, owner) {
         (DocSemantics::Session, Owner::Session) => DocumentScope::Session,
@@ -162,7 +161,6 @@ pub(crate) fn resolve_address(definition: &DocDefinition, owner: Owner) -> Resul
     Ok(Resolved { address, id })
 }
 
-/// Stable string identity of one logical address (upstream `addressId`).
 pub(crate) fn address_id(address: &DocumentAddress) -> String {
     let (scope, owner) = match address.scope {
         DocumentScope::Session => ("session", Value::Null),
@@ -180,7 +178,6 @@ pub(crate) fn address_of(record: &DocumentCreate) -> DocumentAddress {
     }
 }
 
-/// The storage create record of a new incarnation at an address.
 pub(crate) fn document_create(definition: &DocDefinition, address: &DocumentAddress, id: DocumentId) -> DocumentCreate {
     let (history, fork) = match definition.semantics {
         DocSemantics::Conversation { history, fork } => (Some(history), Some(fork)),

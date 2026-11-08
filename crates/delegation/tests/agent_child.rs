@@ -47,10 +47,7 @@ impl StreamFn for Scripted {
             match next {
                 Some(message) => message,
                 None => {
-                    let signal = options.base.signal.clone().unwrap();
-                    while !signal.aborted() {
-                        tokio::time::sleep(Duration::from_millis(2)).await;
-                    }
+                    options.base.signal.clone().unwrap().cancelled().await;
                     let mut aborted = message(json!([]), "aborted");
                     aborted.error_message = Some("Request was aborted".into());
                     aborted

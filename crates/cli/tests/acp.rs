@@ -20,7 +20,6 @@ use std::sync::mpsc::{Receiver, RecvTimeoutError, channel};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-/// Hang guard for any one wait.
 const HANG: Duration = Duration::from_secs(120);
 
 // ---------------------------------------------------------------------------------------------------------------
@@ -138,7 +137,6 @@ fn check_def(name: &str, value: &Value) -> Result<(), String> {
     check(&json!({"$ref": format!("#/$defs/{name}")}), value, "")
 }
 
-/// The response type of each agent method.
 fn response_def(method: &str) -> &'static str {
     match method {
         "initialize" => "InitializeResponse",
@@ -317,7 +315,6 @@ impl Acp {
         self.cursor = self.seen.len();
     }
 
-    /// The session updates since `from`.
     fn updates(&self, from: usize) -> Vec<Value> {
         self.seen[from..]
             .iter()
@@ -537,7 +534,6 @@ fn cli_acp_cancel_mid_turn_ends_with_cancelled() {
     assert_eq!(cell.last().unwrap()["status"], "failed", "{updates:#?}");
     assert_eq!(seen.lock().unwrap().requests.len(), 1, "the turn stopped at the cell");
 
-    // The session takes the next prompt.
     let reply = acp.call(
         "session/prompt",
         json!({"sessionId": session, "prompt": [{"type": "text", "text": "again"}]}),

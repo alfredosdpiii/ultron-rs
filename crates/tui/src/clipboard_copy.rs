@@ -11,7 +11,6 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-/// `MAX_OSC52_ENCODED_LENGTH`.
 pub const MAX_OSC52_ENCODED_LENGTH: usize = 100_000;
 
 /// What the copy decisions read: `os.platform()` (`linux`, `darwin`, `win32`), the environment and `/proc/version`.
@@ -41,7 +40,6 @@ pub trait CopyIo {
     fn remove(&mut self, path: &Path);
 }
 
-/// `isRemoteSession`.
 fn is_remote_session(env: &CopyEnv) -> bool {
     env.set("SSH_CONNECTION") || env.set("SSH_CLIENT") || env.set("MOSH_CONNECTION")
 }

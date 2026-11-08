@@ -4,8 +4,8 @@
 //! (`QOL_PARITY_RECORD=1 cargo test -p interactive --test qol_parity` rewrites it; never re-record to make a change
 //! pass).
 
+use crate::support;
 use std::cell::{Cell, RefCell};
-use std::rc::Rc;
 use std::sync::mpsc;
 
 use interactive::app::{App, AppOptions};
@@ -16,7 +16,6 @@ use interactive::qol::QolSettings;
 use interactive::run::{UiEvent, paint_loop};
 use protocol::watch::QueueKind;
 use serde_json::{Value, json};
-use theme::{ColorMode, builtin_theme_json, create_theme};
 use tui::KeybindingsManager;
 
 fn model(id: &str) -> ModelInfo {
@@ -31,7 +30,6 @@ fn model(id: &str) -> ModelInfo {
 }
 
 pub fn parity_app(qol: QolSettings) -> App {
-    let theme = Rc::new(create_theme(&builtin_theme_json("dark").unwrap(), ColorMode::Truecolor, None).unwrap());
     let keys = || {
         KeybindingsManager::new(
             app_keybindings(Platform::new("linux", false)),
@@ -41,21 +39,14 @@ pub fn parity_app(qol: QolSettings) -> App {
     };
     App::new(
         AppOptions {
-            theme,
             keys: keys(),
-            version: "1.2.3".into(),
             cwd: "/nonexistent-qol-parity".into(),
-            home: None,
-            server_id: "server".into(),
             models: vec![model("claude-a"), model("claude-b")],
             model: model("claude-a"),
-            thinking_level: "medium".into(),
             splash: true,
             history: PromptHistoryStore::new(None, "/nonexistent-qol-parity"),
-            fd_path: None,
-            highlight: Rc::new(|code: &str| code.split('\n').map(str::to_string).collect()),
             qol,
-            bug_report_target: ("radius.pi.dev".into(), false),
+            ..support::options()
         },
         std::sync::mpsc::channel().0,
     )

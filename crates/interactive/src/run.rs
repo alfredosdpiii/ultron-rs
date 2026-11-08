@@ -23,7 +23,6 @@ pub const TUI_WRITE_LOG_ENV: &str = "PI_TUI_WRITE_LOG";
 pub enum UiEvent {
     Input(String),
     Lane(LaneEvent),
-    /// Stdin closed.
     InputClosed,
     /// Something finished off the UI thread (an autocomplete answer): poll and paint.
     Wake,

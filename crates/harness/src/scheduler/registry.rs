@@ -1,8 +1,7 @@
 //! Task definitions and the extension registry the scheduler resolves them from.
 //!
 //! Port of upstream `harness/define.ts` (`defineTask`), the task part of `harness/registry.ts`, and `TaskDefinition`
-//! of `types.ts`. Tools are kept only as names (the tool runtime is not ported); built-in tasks (generation, tool,
-//! compaction) are not registered because their runtimes are not ported.
+//! of `types.ts`. Tools are kept only as names (the tool runtime is not ported).
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};

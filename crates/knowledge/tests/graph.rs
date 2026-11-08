@@ -9,7 +9,7 @@
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
-use knowledge::{SCHEMA_VERSION, Store, index_tree};
+use knowledge::{Store, index_tree};
 
 const REPO: &str = "github.com/example/saas";
 
@@ -251,7 +251,6 @@ fn a_graph_query_reads_only_the_revisions_views_within_its_limits() {
             }],
         )
         .unwrap();
-    assert_eq!(store.schema_version().unwrap(), SCHEMA_VERSION);
     drop(store);
     let body = "\
 from knowledge_api import Knowledge, QueryError
@@ -388,9 +387,6 @@ fn a_store_of_schema_3_gains_the_graph_on_the_next_index() {
     drop(conn);
     let stats = index_tree(&db, REPO, &root, &base).unwrap();
     assert_eq!(stats.read, stats.files, "{stats:?}");
-    let store = Store::open(&db).unwrap();
-    assert_eq!(store.schema_version().unwrap(), SCHEMA_VERSION);
-    drop(store);
     let body = "\
 from knowledge_api import Knowledge
 db, repo, base = sys.argv[1:4]

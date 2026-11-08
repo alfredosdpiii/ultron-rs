@@ -19,7 +19,6 @@ pub const CLAUDE_SUBSCRIPTION: &str = "claude-subscription";
 pub const KIMI_CODING: &str = "kimi-coding";
 /// The Claude Code model of the root, of claude subagents and (as `claude-code/…`) of frames.
 pub const CLAUDE_CODE_DEFAULT_MODEL: &str = claude_code_default_model!();
-/// [`CLAUDE_CODE_DEFAULT_MODEL`] as a model reference.
 pub const CLAUDE_CODE_DEFAULT_REF: &str = concat!(claude_code!(), "/", claude_code_default_model!());
 
 /// Claude Code and the Claude subscription: models with Anthropic's own ids that answer only to their full

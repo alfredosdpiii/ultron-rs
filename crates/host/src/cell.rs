@@ -13,7 +13,6 @@ use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt, PermissionsExt};
 use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-/// Spill files kept per directory.
 pub const SPILL_KEEP: usize = 20;
 
 /// A cell's tool result: its text and how many secrets were masked in it.
@@ -39,7 +38,6 @@ pub struct CellFormat<'a> {
     pub spill_dir: Option<&'a Path>,
 }
 
-/// `.replace(/\n$/, "")`.
 fn drop_final_newline(text: &str) -> &str {
     text.strip_suffix('\n').unwrap_or(text)
 }

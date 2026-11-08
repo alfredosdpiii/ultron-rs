@@ -313,7 +313,6 @@ impl Harness {
     }
 }
 
-/// Handle of one conversation.
 #[derive(Clone)]
 pub struct Conversation {
     pub id: ConversationId,

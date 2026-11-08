@@ -3,8 +3,9 @@
 //! this test binary re-runs itself as the holder.
 
 use daemon::owner::{OwnerError, OwnerLock, owner_path, recorded_owner};
+use std::io::{BufRead, BufReader};
 use std::process::{Command, Stdio};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 const HOLDER_ENV: &str = "DAEMON_OWNER_TEST_HOLD";
 /// How long a refusal waits for the owner's record: one a loaded machine still meets.
@@ -53,15 +54,16 @@ fn daemon_owner_dead_owner_lock_is_adopted() {
             "--test-threads=1",
         ])
         .env(HOLDER_ENV, &target)
-        .stdout(Stdio::null())
+        .stdout(Stdio::piped())
         .stderr(Stdio::null())
         .spawn()
         .unwrap();
-    let deadline = Instant::now() + Duration::from_secs(120);
-    while recorded_owner(&target) != Some(holder.id()) {
-        assert!(Instant::now() < deadline, "the holder never took ownership");
-        std::thread::sleep(Duration::from_millis(20));
-    }
+    let held = BufReader::new(holder.stdout.take().unwrap())
+        .lines()
+        .map_while(Result::ok)
+        .any(|line| line.ends_with("held"));
+    assert!(held, "the holder never took ownership");
+    assert_eq!(recorded_owner(&target), Some(holder.id()));
     match OwnerLock::acquire(&target, GRACE) {
         Err(OwnerError::InUse { pid }) => assert_eq!(pid, Some(holder.id())),
         other => panic!("a live owner must refuse, got {other:?}"),

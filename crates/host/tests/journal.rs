@@ -1,9 +1,8 @@
 //! Replays crates/host/fixtures/journal.json, recorded by fixtures/journal.mjs from the TypeScript shell job journal
-//! (shell-jobs.ts restored after a restart: job summaries and records) and utils/shell.ts getShellEnv; plus the
-//! session worker's jobEvent rules with literal values.
+//! (shell-jobs.ts restored after a restart: job summaries and records; its `shell_env` table has no Rust user); plus
+//! the session worker's jobEvent rules with literal values.
 
 use host::journal::{JobRecord, job_event, job_summary, persisted, restore_durable};
-use host::shell_env::shell_env;
 use serde_json::{Value, json};
 use std::path::Path;
 
@@ -81,21 +80,4 @@ fn host_journal_job_done_events_follow_session_worker() {
     let mut no_root = record.clone();
     no_root.root_id = None;
     assert!(job_event(&no_root, false, false).unwrap().get("rootId").is_none());
-}
-
-#[test]
-fn host_shell_env_path_matches_typescript() {
-    for case in fixture()["shell_env"].as_array().unwrap() {
-        let env: Vec<(String, String)> = case["env"]
-            .as_object()
-            .unwrap()
-            .iter()
-            .map(|(k, v)| (k.clone(), v.as_str().unwrap().to_owned()))
-            .collect();
-        let got: Vec<Value> = shell_env(&env, "/a/agent/bin")
-            .into_iter()
-            .map(|(k, v)| json!([k, v]))
-            .collect();
-        assert_eq!(json!(got), case["result"], "{env:?}");
-    }
 }

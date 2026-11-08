@@ -189,28 +189,11 @@ fn session_core_mcp_servers_are_kernel_apis_and_the_model_keeps_one_tool() {
 fn session_core_mcp_servers_are_listed_in_the_runtime_guide() {
     let dir = tempfile::tempdir().unwrap();
     let session = session(dir.path(), None);
-    let description = mcp::gateway::gateway_description(&["alpha".into()]);
-    let section = resources::runtime_guide::extension_tools_prompt(
-        &[resources::runtime_guide::ExtensionToolSummary {
-            name: "mcp".into(),
-            description,
-        }],
-        &["alpha".into()],
-        &[],
-        resources::runtime_guide::EventDelivery::Wake,
-    )
-    .unwrap();
+    let system = session.runtime.system.current();
+    assert!(system.contains("## Extension tools"), "{system}");
     assert!(
-        session.runtime.system.current().contains(&section),
-        "{}",
-        session.runtime.system.current()
-    );
-    assert!(
-        session
-            .runtime
-            .system
-            .current()
-            .contains("MCP servers (alpha) are reached through the `mcp` namespace")
+        system.contains("MCP servers (alpha) are reached through the `mcp` namespace"),
+        "{system}"
     );
     session.lane.shutdown();
 }

@@ -9,7 +9,6 @@ use session_journal::{Session, SessionRepo, SystemClock};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
-/// Create an empty session file under `dir` and return its path.
 pub fn create_session(dir: &Path) -> PathBuf {
     let repo = SessionRepo::new(&dir.join("sessions"), SystemClock::shared());
     let session = repo

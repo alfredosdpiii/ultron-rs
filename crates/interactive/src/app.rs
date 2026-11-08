@@ -73,7 +73,7 @@ const RLM_POLL_HIDDEN: Duration = Duration::from_millis(5000);
 pub type SuspendHook = Box<dyn FnMut() -> Result<(), String>>;
 
 /// `rlmPaneWidth`: about 40% of the terminal, at least 44 columns (border excluded).
-pub fn rlm_pane_width(columns: usize) -> usize {
+fn rlm_pane_width(columns: usize) -> usize {
     44usize.max((columns as f64 * 0.4).round() as usize)
 }
 
@@ -101,7 +101,7 @@ pub struct AppOptions {
     pub splash: bool,
     pub history: PromptHistoryStore,
     pub fd_path: Option<std::path::PathBuf>,
-    /// The `rlm` cell highlighter; replaced by syntect Python when `qol.highlight` is on.
+    /// The `rlm` cell highlighter (highlight.js Python, as TypeScript); `qol.highlight` covers code blocks only.
     pub highlight: Highlighter,
     /// The Rust-only additions ([`QolSettings::parity`] paints exactly what the TypeScript client TUI paints).
     pub qol: QolSettings,
@@ -409,7 +409,6 @@ pub struct App {
     model: ModelInfo,
     thinking_level: String,
     status: String,
-    /// The running operation's id.
     operation: Option<String>,
     /// A compaction is running (its indicator says Esc cancels it).
     compacting: bool,
@@ -430,7 +429,6 @@ pub struct App {
     pending_name: Option<String>,
     transcript: Vec<Value>,
     last_ctrl_c: Option<Instant>,
-    /// The app asked to exit.
     pub exit: bool,
     /// Escape sequences for the terminal (clipboard), written by the run loop.
     pub terminal_writes: Vec<String>,
@@ -1118,8 +1116,6 @@ impl App {
         }
     }
 
-    /// Draw with `theme` from now on (`refreshTheme`): every view shares the app's theme; the highlighters and the
-    /// transcript's rendered rows are rebuilt and the terminal repainted.
     /// `theme.name`: the name of the theme drawn now (the controller's, else the startup theme's).
     fn active_theme_name(&self) -> Option<String> {
         match &self.theme_controller {
@@ -1128,6 +1124,8 @@ impl App {
         }
     }
 
+    /// Draw with `theme` from now on (`refreshTheme`): every view shares the app's theme; the highlighters and the
+    /// transcript's rendered rows are rebuilt and the terminal repainted.
     fn adopt_theme(&mut self, theme: &Theme) {
         self.theme.adopt(theme);
         let mut style = self.chat.style();
@@ -1237,7 +1235,6 @@ impl App {
         self.vim.as_ref().map(VimEditor::mode)
     }
 
-    /// The editor's text.
     pub fn editor_text(&self) -> String {
         self.editor.text()
     }
@@ -1404,7 +1401,6 @@ impl App {
         self.viewport.right_click_paste = enabled;
     }
 
-    /// The fullscreen transcript viewport.
     pub fn viewport(&self) -> &tui::FullscreenViewport {
         &self.viewport
     }
@@ -1776,8 +1772,6 @@ impl App {
             self.send(LaneCommand::SubscriptionAuthWarning(self.model.provider.to_string()));
         }
     }
-
-    // ---- lane events ----
 
     pub fn apply(&mut self, event: LaneEvent) {
         match event {
@@ -2381,8 +2375,6 @@ impl App {
     fn notice(&mut self, text: &str) {
         self.chat.append_notice_text(text);
     }
-
-    // ---- input ----
 
     /// The terminal draws tool images inline with `protocol` (Kitty; TypeScript's alternate screen turns iTerm2
     /// images off): tool results draw their images, and the terminal is asked for its cell size (`CSI 16 t`,
@@ -5066,8 +5058,6 @@ impl App {
         s
     }
 
-    // ---- rendering ----
-
     fn footer_view(&self) -> FooterView {
         let mut v = FooterView {
             cwd: self.cwd.clone(),
@@ -5432,7 +5422,7 @@ fn refill<'a>(buffer: &mut Vec<String>, rows: impl Iterator<Item = &'a String>) 
 }
 
 /// Pi's path argument (`pathArgument`): the first word, or a quoted string.
-pub fn path_argument(args: &str) -> Option<String> {
+fn path_argument(args: &str) -> Option<String> {
     let text = args.trim_start();
     let quote = text.chars().next()?;
     if quote == '"' || quote == '\'' {
@@ -5446,9 +5436,34 @@ pub fn path_argument(args: &str) -> Option<String> {
 }
 
 /// `/^\x1b\[6;(\d+);(\d+)t$/`: the terminal's cell size answer as (height, width) in pixels.
-pub fn parse_cell_size_response(data: &str) -> Option<(u32, u32)> {
+fn parse_cell_size_response(data: &str) -> Option<(u32, u32)> {
     let body = data.strip_prefix("\x1b[6;")?.strip_suffix('t')?;
     let (height, width) = body.split_once(';')?;
     let digits = |s: &str| (!s.is_empty() && s.bytes().all(|b| b.is_ascii_digit())).then(|| s.parse::<u32>().ok())?;
     Some((digits(height)?, digits(width)?))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn app_path_argument_like_ts() {
+        assert_eq!(path_argument(""), None);
+        assert_eq!(path_argument("   "), None);
+        assert_eq!(path_argument("out.html rest"), Some("out.html".into()));
+        assert_eq!(path_argument("  a\tb"), Some("a".into()));
+        assert_eq!(path_argument("\"my file.jsonl\" x"), Some("my file.jsonl".into()));
+        assert_eq!(path_argument("'q'"), Some("q".into()));
+        assert_eq!(path_argument("\"open"), None);
+    }
+
+    #[test]
+    fn app_cell_size_answer_like_consume_cell_size_response() {
+        assert_eq!(parse_cell_size_response("\x1b[6;20;10t"), Some((20, 10)));
+        assert_eq!(parse_cell_size_response("\x1b[6;0;10t"), Some((0, 10)));
+        assert_eq!(parse_cell_size_response("\x1b[6;20t"), None);
+        assert_eq!(parse_cell_size_response("\x1b[6;a;10t"), None);
+        assert_eq!(parse_cell_size_response("x\x1b[6;20;10t"), None);
+    }
 }

@@ -1,12 +1,11 @@
-//! A55 (partial): an agent class defined in a cell is invokable typed end to end, its state persists across cells
+//! A55 (the kernel-only cases): an agent class defined in a cell is invokable typed end to end, its state persists
 //! and snapshots, and a bad return is rejected with the schema error.
 //! Ported from packages/coding-agent/test/ultron-agent-classes.test.ts: the cases runtime.py decides alone, on the
 //! real kernel with the Rust host stack's refusal of unknown requests behind it: schema derivation from annotations,
 //! contracts refused at class definition, and field state (type-checked assignment, required fields, `load`) that
 //! needs no model-driven method.
-//! Not ported: every case that invokes a model-driven method or registers a definition (`agents.register`,
-//! `agents.invoke`, `agents.list`, the definition registry and its journal) and the RPC end-to-end case of
-//! ultron-a55-agent-classes.test.ts: the Rust host has no definition registry yet.
+//! The cases that invoke a model-driven method or register a definition are in a55_agent_classes_registry.rs, and
+//! the RPC end-to-end case of ultron-a55-agent-classes.test.ts is in a55_agent_classes_rpc.rs.
 
 use crate::common;
 

@@ -87,9 +87,6 @@ impl OAuthProvider {
     }
 }
 
-// ---------------------------------------------------------------------------------------------------------------
-// PKCE, pasted codes, the callback server
-
 /// What a pasted redirect URL, query string, `code#state` or bare code carries (`parseAuthorizationInput`).
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct AuthorizationInput {
@@ -356,9 +353,6 @@ async fn race_callback_and_prompt(
     result
 }
 
-// ---------------------------------------------------------------------------------------------------------------
-// Anthropic
-
 async fn login_anthropic(ctx: &LoginContext<'_>) -> Result<OAuthCredential, String> {
     let (verifier, challenge) = generate_pkce_from(ctx.env);
     let port = ctx.callback_port.unwrap_or(ANTHROPIC_CALLBACK_PORT);
@@ -419,9 +413,6 @@ async fn login_anthropic(ctx: &LoginContext<'_>) -> Result<OAuthCredential, Stri
     )
     .await
 }
-
-// ---------------------------------------------------------------------------------------------------------------
-// OpenAI Codex
 
 async fn login_codex(ctx: &LoginContext<'_>) -> Result<OAuthCredential, String> {
     let option = |id: &str, label: &str| SelectOption {
@@ -618,9 +609,6 @@ async fn login_codex_device(ctx: &LoginContext<'_>) -> Result<OAuthCredential, S
     .await?;
     codex_exchange(ctx, &code, &verifier, CODEX_DEVICE_REDIRECT_URI).await
 }
-
-// ---------------------------------------------------------------------------------------------------------------
-// GitHub Copilot
 
 async fn login_copilot(ctx: &LoginContext<'_>) -> Result<OAuthCredential, String> {
     let input = ctx

@@ -9,12 +9,7 @@ use crate::support;
 use support::Sent;
 
 use interactive::app::{App, AppOptions};
-use interactive::history::PromptHistoryStore;
-use interactive::keybindings::Platform;
-use interactive::keybindings::native_app_keybindings;
 use interactive::lane::{LaneCommand, LaneEvent, ModelInfo, SessionOpened, StartupNotice};
-use theme::{ColorMode, builtin_theme_json, create_theme};
-use tui::KeybindingsManager;
 
 fn record(command: &LaneCommand) -> Option<String> {
     Some(match command {
@@ -48,32 +43,12 @@ fn model(provider: &str) -> ModelInfo {
 }
 
 fn app(provider: &str) -> (App, Rc<Sent>) {
-    let keys = || {
-        KeybindingsManager::new(
-            native_app_keybindings(Platform::new("linux", false)),
-            Vec::new(),
-            Default::default(),
-        )
-    };
     let (lane, calls) = Sent::new(record);
-    let theme = Rc::new(create_theme(&builtin_theme_json("dark").unwrap(), ColorMode::Truecolor, None).unwrap());
     let app = App::new(
         AppOptions {
-            theme,
-            keys: keys(),
-            version: "1.2.3".into(),
-            cwd: "/p".into(),
-            home: None,
-            server_id: "server".into(),
             models: vec![model(provider)],
             model: model(provider),
-            thinking_level: "medium".into(),
-            splash: false,
-            history: PromptHistoryStore::new(None, "/p"),
-            fd_path: None,
-            highlight: Rc::new(|code: &str| code.split('\n').map(str::to_string).collect()),
-            qol: interactive::qol::QolSettings::parity(),
-            bug_report_target: ("radius.pi.dev".into(), false),
+            ..support::options()
         },
         lane,
     );

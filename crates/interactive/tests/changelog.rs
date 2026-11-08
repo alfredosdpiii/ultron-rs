@@ -60,11 +60,14 @@ fn interactive_changelog_entries_match_ts() {
 fn interactive_changelog_oldest_first_and_empty_notice() {
     let text = "# Changelog\n\n## [Unreleased]\n\nx\n\n## [0.2.0] - d\n\nnew\n\n## 0.1.0\n\nold [a](docs/a.md)\n";
     assert_eq!(
-        changelog_markdown(Some(text)),
-        "## 0.1.0\n\nold [a](https://github.com/earendil-works/pi/blob/v0.1.0/packages/coding-agent/docs/a.md)\n\n## [0.2.0] - d\n\nnew"
+        changelog_tokens(Some(text)),
+        markdown_tokens(
+            "## 0.1.0\n\nold [a](https://github.com/earendil-works/pi/blob/v0.1.0/packages/coding-agent/docs/a.md)\n\n## [0.2.0] - d\n\nnew"
+        )
     );
-    assert_eq!(changelog_markdown(None), "No changelog entries found.");
-    assert_eq!(changelog_markdown(Some("no versions")), "No changelog entries found.");
+    let empty = markdown_tokens("No changelog entries found.");
+    assert_eq!(changelog_tokens(None), empty);
+    assert_eq!(changelog_tokens(Some("no versions")), empty);
 }
 
 #[test]
@@ -80,5 +83,4 @@ fn interactive_changelog_lexed_per_entry_matches_the_whole_document() {
         changelog_tokens(Some(sample)),
         markdown_tokens(changelog_markdown(Some(sample)).trim())
     );
-    assert_eq!(changelog_tokens(None), markdown_tokens("No changelog entries found."));
 }

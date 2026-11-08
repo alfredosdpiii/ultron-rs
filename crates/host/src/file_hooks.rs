@@ -132,7 +132,6 @@ pub struct Snapshot {
     pub complete: bool,
 }
 
-/// Takes a [`Snapshot`] of a directory.
 pub type Snapshotter = Arc<dyn Fn(&Path) -> Result<Snapshot, String> + Send + Sync>;
 
 /// How long an after-cell check waits for work outside the cells still running (Loki's setup commit: 30 s for
@@ -226,7 +225,6 @@ impl Drop for OutsideWork {
 }
 
 pub const DEFAULT_AFTER_CELL_TIMEOUT: Duration = Duration::from_secs(120);
-/// `DEFAULT_BEFORE_WRITE_TIMEOUT_MS`.
 pub const DEFAULT_BEFORE_WRITE_TIMEOUT: Duration = Duration::from_millis(5_000);
 
 /// One guard's time and outcomes, for the RLM pane and diagnostics (`GuardStats`).
@@ -293,7 +291,6 @@ impl GuardRecord {
     }
 }
 
-/// Receives every [`GuardRecord`].
 pub type OnRecord = Arc<dyn Fn(&GuardRecord) + Send + Sync>;
 /// Milliseconds on some clock (TS `now`, default `Date.now`): only differences are used.
 pub type Clock = Arc<dyn Fn() -> u64 + Send + Sync>;

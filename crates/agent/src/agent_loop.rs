@@ -19,7 +19,6 @@ use crate::types::{
     StreamFn,
 };
 
-/// The event sink, shared by concurrently running tools.
 pub(crate) struct Emit<'a>(Mutex<&'a mut (dyn FnMut(AgentEvent) + Send)>);
 
 impl Emit<'_> {
@@ -372,8 +371,6 @@ async fn execute_tool_calls(
     signal: &AbortSignal,
     emit: &Emit<'_>,
 ) -> Batch {
-    // Each call is prepared in order (lookup, validation, `beforeToolCall`), and an immediate outcome ends at once;
-    // then every prepared call runs concurrently; result messages follow in call order.
     let mut slots: Vec<Option<Finalized>> = Vec::new();
     let mut running: Vec<BoxFuture<'_, (usize, Finalized)>> = Vec::new();
     for call in calls {

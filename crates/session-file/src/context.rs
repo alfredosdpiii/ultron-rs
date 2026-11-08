@@ -272,7 +272,6 @@ fn settings(path: &[&Value]) -> (Option<Value>, Option<Value>) {
     (thinking, model)
 }
 
-/// `buildSessionProjection`.
 pub fn build_session_projection<'a>(entries: &'a [Value], leaf: Leaf<'_>) -> SessionProjection<'a> {
     session_projection(&entries.iter().collect::<Vec<_>>(), leaf)
 }
@@ -309,7 +308,6 @@ pub(crate) fn session_projection<'a>(entries: &[&'a Value], leaf: Leaf<'_>) -> S
     }
 }
 
-/// `buildSessionContext`.
 pub fn build_session_context(entries: &[Value], leaf: Leaf<'_>) -> SessionContext {
     build_session_projection(entries, leaf).into()
 }

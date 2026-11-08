@@ -9,7 +9,6 @@
 
 use regex::Regex;
 
-/// One compiled rule.
 struct Rule {
     negative: bool,
     regex: Option<Regex>,

@@ -10,8 +10,7 @@ use ai::{AbortSignal, AssistantMessage, SimpleStreamOptions};
 use claude_subscription_support::*;
 use serde_json::{Value, json};
 use std::io::Read;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, mpsc};
 use std::time::{Duration, Instant};
 
 fn zero() -> Value {
@@ -184,43 +183,35 @@ fn ai_claude_subscription_empty_tool_input_completes_the_capture() {
 fn ai_claude_subscription_cancel_closes_the_active_upstream_socket() {
     seal();
     let fake = Fake::new();
-    let entered = Arc::new(AtomicBool::new(false));
-    let disconnected = Arc::new(AtomicBool::new(false));
-    let upstream = {
-        let (entered, disconnected) = (entered.clone(), disconnected.clone());
-        Upstream::start(move |_, stream| {
-            entered.store(true, Ordering::SeqCst);
-            // Far longer than the test: only the relay closing the socket ends this read.
-            stream.set_read_timeout(Some(Duration::from_secs(600))).unwrap();
-            let mut byte = [0u8; 1];
-            if matches!(stream.read(&mut byte), Ok(0) | Err(_)) {
-                disconnected.store(true, Ordering::SeqCst);
-            }
-        })
-    };
+    let (entered_tx, entered) = mpsc::channel();
+    let (closed_tx, closed) = mpsc::channel();
+    let upstream = Upstream::start(move |_, stream| {
+        let _ = entered_tx.send(());
+        // Far longer than the test: only the relay closing the socket ends this read.
+        stream.set_read_timeout(Some(Duration::from_secs(600))).unwrap();
+        let mut byte = [0u8; 1];
+        let _ = closed_tx.send(matches!(stream.read(&mut byte), Ok(0) | Err(_)));
+    });
     let signal = AbortSignal::new();
     let mut opts = options();
     opts.base.signal = Some(signal.clone());
     let aborter = {
-        let (signal, entered) = (signal.clone(), entered.clone());
+        let signal = signal.clone();
         std::thread::spawn(move || {
-            let deadline = Instant::now() + Duration::from_secs(120);
-            while !entered.load(Ordering::SeqCst) && Instant::now() < deadline {
-                std::thread::sleep(Duration::from_millis(10));
-            }
+            let reached = entered.recv_timeout(Duration::from_secs(120)).is_ok();
             signal.abort();
+            reached
         })
     };
     let (message, _) = call(fake.config(&upstream.url(), &[]), &model("sonnet"), &turn(false), &opts);
-    aborter.join().unwrap();
-    assert!(entered.load(Ordering::SeqCst));
+    assert!(aborter.join().unwrap(), "the request reached the upstream");
     assert_eq!(message.stop_reason, StopReason::Aborted);
     assert_eq!(message.error_message.as_deref(), Some("Claude request cancelled"));
-    let deadline = Instant::now() + Duration::from_secs(120);
-    while !disconnected.load(Ordering::SeqCst) && Instant::now() < deadline {
-        std::thread::sleep(Duration::from_millis(10));
-    }
-    assert!(disconnected.load(Ordering::SeqCst), "the upstream socket was closed");
+    assert_eq!(
+        closed.recv_timeout(Duration::from_secs(120)),
+        Ok(true),
+        "the upstream socket was closed"
+    );
 }
 
 #[test]
@@ -295,27 +286,22 @@ fn ai_claude_subscription_incomplete_upstream_error_carries_the_first_status() {
 fn ai_claude_subscription_silent_upstream_fails_fast_and_pings_keep_a_slow_one_alive() {
     seal();
     let fake = Fake::new();
-    let release = Arc::new(AtomicBool::new(false));
-    let silent = {
-        let release = release.clone();
-        Upstream::start(move |_, stream| {
-            let start = json!({"type": "message_start", "message": {"id": "m", "role": "assistant", "model": "sonnet", "content": [], "usage": {"input_tokens": 0, "output_tokens": 0}}});
-            let _ = std::io::Write::write_all(
-                stream,
-                format!("HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\n\r\ndata: {start}\n\n").as_bytes(),
-            );
-            let deadline = Instant::now() + Duration::from_secs(600);
-            while !release.load(Ordering::SeqCst) && Instant::now() < deadline {
-                std::thread::sleep(Duration::from_millis(20));
-            }
-        })
-    };
+    let (release, released) = mpsc::channel::<()>();
+    let released = Mutex::new(released);
+    let silent = Upstream::start(move |_, stream| {
+        let start = json!({"type": "message_start", "message": {"id": "m", "role": "assistant", "model": "sonnet", "content": [], "usage": {"input_tokens": 0, "output_tokens": 0}}});
+        let _ = std::io::Write::write_all(
+            stream,
+            format!("HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\n\r\ndata: {start}\n\n").as_bytes(),
+        );
+        let _ = released.lock().unwrap().recv_timeout(Duration::from_secs(600));
+    });
     let mut config = fake.config(&silent.url(), &[]);
     config.idle = Duration::from_secs(1);
     config.timeout = Duration::from_secs(600);
     let began = Instant::now();
     let (message, _) = call(config, &model("sonnet"), &turn(false), &options());
-    release.store(true, Ordering::SeqCst);
+    drop(release);
     let error = message.error_message.unwrap();
     assert!(
         error.contains("status 200, capture incomplete, relay failure UpstreamIdle"),
@@ -324,14 +310,21 @@ fn ai_claude_subscription_silent_upstream_fails_fast_and_pings_keep_a_slow_one_a
     // The 1 s idle budget ended it, not the overall timeout (a hang guard, loose for load).
     assert!(began.elapsed() < Duration::from_secs(120));
 
-    // Pings every 0.5 s for 3 s keep a 2 s idle budget from firing. Under load the upstream thread can stall past
-    // the budget; the idle failure is then right, and the call is retried until the upstream kept its pace.
+    // Pings every 0.5 s for 3 s keep a 2 s idle budget from firing: the budget is wall-clock, so the upstream
+    // reports the longest pause between its writes. An idle failure is a bug unless the upstream itself stalled
+    // past the budget (a loaded machine); only then is the call tried again.
+    let idle = Duration::from_secs(2);
     for _attempt in 0..20 {
-        let slow = Upstream::start(|_, stream| {
+        let (pause_tx, pause) = mpsc::channel();
+        let slow = Upstream::start(move |_, stream| {
             let usage = json!({"input_tokens": 0, "output_tokens": 0});
             let _ = std::io::Write::write_all(stream, b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\n\r\n");
-            let send = |stream: &mut std::net::TcpStream, event: Value| {
+            let mut last = Instant::now();
+            let mut longest = Duration::ZERO;
+            let mut send = |stream: &mut std::net::TcpStream, event: Value| {
                 let _ = std::io::Write::write_all(stream, format!("data: {event}\n\n").as_bytes());
+                longest = longest.max(last.elapsed());
+                last = Instant::now();
             };
             let events = reply_events("first", &[json!({"type": "text", "text": "FIRST"})], "end_turn", usage);
             send(stream, events[0].clone());
@@ -342,15 +335,23 @@ fn ai_claude_subscription_silent_upstream_fails_fast_and_pings_keep_a_slow_one_a
             for event in &events[1..] {
                 send(stream, event.clone());
             }
+            let _ = pause_tx.send(longest);
         });
         let mut config = fake.config(&slow.url(), &[]);
-        config.idle = Duration::from_secs(2);
+        config.idle = idle;
         let (message, _) = call(config, &model("sonnet"), &turn(false), &options());
         if message
             .error_message
             .as_deref()
             .is_some_and(|error| error.contains("relay failure UpstreamIdle"))
         {
+            let longest = pause
+                .recv_timeout(Duration::from_secs(120))
+                .expect("the upstream finished");
+            assert!(
+                longest >= idle,
+                "idle fired though the upstream paused at most {longest:?}"
+            );
             continue;
         }
         assert_eq!(message.stop_reason, StopReason::Stop, "{:?}", message.error_message);

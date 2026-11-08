@@ -12,7 +12,7 @@ use p_session_support::{in_order, text, tool, user_texts};
 use protocol::watch::QueueKind;
 use reopen_support::Home;
 use serde_json::{Value, json};
-use session_core::core::{EMPTY_QUEUED, Op};
+use session_core::core::Op;
 use session_journal::ns::LANE_STATE;
 use session_journal::ns::PENDING_ENTRY;
 
@@ -195,8 +195,7 @@ fn session_core_next_run_refuses_an_empty_message_like_typescript() {
         images: Vec::new(),
         entry_id: None,
     });
-    assert_eq!(refused, Err(EMPTY_QUEUED.to_string()));
-    assert_eq!(EMPTY_QUEUED, "Queued input must contain text or an image");
+    assert_eq!(refused, Err("Queued input must contain text or an image".to_string()));
     // `setQueueMode` has no next-run mode.
     assert_eq!(
         Op::from_json(&json!({"op": "setQueueMode", "kind": "nextRun", "mode": "all"})).unwrap_err(),

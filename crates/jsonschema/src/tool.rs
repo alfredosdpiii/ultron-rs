@@ -8,7 +8,6 @@
 use crate::check::{SchemaError, check, errors};
 use serde_json::{Map, Value};
 
-/// Validate and coerce `params` for tool `name` with parameter schema `schema`.
 pub fn prepare_tool_arguments(
     name: &str,
     schema: &Value,

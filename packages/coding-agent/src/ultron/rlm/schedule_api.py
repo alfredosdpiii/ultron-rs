@@ -1,4 +1,4 @@
-"""`schedule`: prompts this session sends itself later (the Rust host; the TypeScript host answers with an error).
+"""`schedule`: prompts this session sends itself later.
 
 The host keeps each schedule in the session and an Ultron server fires it: the prompt arrives as a new turn of this
 session (after a run in progress, never interrupting it). Missed fires while no server ran collapse into one.

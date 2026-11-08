@@ -8,6 +8,7 @@ use daemon::lifecycle::Lifecycle;
 use daemon::server::Lifetime;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::mpsc::{Receiver, channel};
 use std::time::{Duration, Instant};
 
 const GENERATION: &str = "generation-1";
@@ -16,28 +17,39 @@ fn ms(n: u64) -> Duration {
     Duration::from_millis(n)
 }
 
-fn create(initial: u64, orphan: u64) -> (Arc<Lifecycle>, Arc<AtomicUsize>) {
-    let retired = Arc::new(AtomicUsize::new(0));
-    let count = retired.clone();
-    let lifecycle = Lifecycle::new(
-        Some(GENERATION.into()),
-        ms(initial),
-        ms(orphan),
-        Box::new(move || {
-            count.fetch_add(1, Ordering::SeqCst);
-        }),
-    );
+/// How often the retirement ran, and a signal each time it does.
+struct Retired {
+    count: Arc<AtomicUsize>,
+    signal: Receiver<()>,
+}
+
+impl Retired {
+    fn new() -> (Retired, Box<dyn Fn() + Send + Sync>) {
+        let count = Arc::new(AtomicUsize::new(0));
+        let (tx, signal) = channel();
+        let counted = count.clone();
+        let retire = Box::new(move || {
+            counted.fetch_add(1, Ordering::SeqCst);
+            let _ = tx.send(());
+        });
+        (Retired { count, signal }, retire)
+    }
+}
+
+fn create(initial: u64, orphan: u64) -> (Arc<Lifecycle>, Retired) {
+    let (retired, retire) = Retired::new();
+    let lifecycle = Lifecycle::new(Some(GENERATION.into()), ms(initial), ms(orphan), retire);
     (lifecycle, retired)
 }
 
-fn retired(count: &AtomicUsize) -> usize {
-    count.load(Ordering::SeqCst)
+fn retired(retired: &Retired) -> usize {
+    retired.count.load(Ordering::SeqCst)
 }
 
 /// Asserts nothing retired yet, when the read provably happened before `grace` had passed since `armed` (taken
 /// before the timer was armed, so the timer cannot fire earlier). Under load the read may come too late; then the
 /// check proves nothing and is skipped.
-fn before_grace(count: &AtomicUsize, armed: Instant, grace: Duration) {
+fn before_grace(count: &Retired, armed: Instant, grace: Duration) {
     let seen = retired(count);
     if armed.elapsed() < grace {
         assert_eq!(seen, 0, "retired before the grace elapsed");
@@ -45,12 +57,11 @@ fn before_grace(count: &AtomicUsize, armed: Instant, grace: Duration) {
 }
 
 /// Waits (hang guard 120 s) until the worker retired exactly once.
-fn retires(count: &AtomicUsize) {
-    let deadline = Instant::now() + Duration::from_secs(120);
-    while retired(count) == 0 {
-        assert!(Instant::now() < deadline, "never retired");
-        std::thread::sleep(ms(5));
-    }
+fn retires(count: &Retired) {
+    count
+        .signal
+        .recv_timeout(Duration::from_secs(120))
+        .expect("never retired");
     assert_eq!(retired(count), 1);
 }
 
@@ -223,13 +234,10 @@ fn daemon_lifecycle_rejects_demand_from_a_stale_generation() {
     lifecycle.close();
 }
 
-fn lifetime(keep_alive: bool) -> (Arc<Lifetime>, Arc<AtomicUsize>) {
-    let retired = Arc::new(AtomicUsize::new(0));
-    let count = retired.clone();
+fn lifetime(keep_alive: bool) -> (Arc<Lifetime>, Retired) {
+    let (retired, retire) = Retired::new();
     let lifetime = Lifetime::with_graces(keep_alive, ms(300), ms(100));
-    lifetime.start(Box::new(move || {
-        count.fetch_add(1, Ordering::SeqCst);
-    }));
+    lifetime.start(retire);
     (lifetime, retired)
 }
 

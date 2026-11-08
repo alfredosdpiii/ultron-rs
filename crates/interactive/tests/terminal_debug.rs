@@ -4,34 +4,20 @@
 //! `PI_TUI_DEBUG=1` dumps each differential render; `TERMUX_VERSION` turns on the Termux height rule. Everything is
 //! written into the test's private directory.
 
+use crate::support;
 use std::cell::Cell;
 use std::collections::HashMap;
-use std::rc::Rc;
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
 
 use interactive::app::{App, AppOptions};
-use interactive::history::PromptHistoryStore;
-use interactive::keybindings::Platform;
-use interactive::keybindings::native_app_keybindings;
 use interactive::lane::{LaneEvent, ModelInfo, SessionOpened};
 use interactive::qol::QolSettings;
 use interactive::run::{UiEvent, paint_loop, terminal_debug};
 use serde_json::json;
-use theme::{ColorMode, builtin_theme_json, create_theme};
-use tui::KeybindingsManager;
 use tui::LocalStamp;
 
-fn keys() -> KeybindingsManager {
-    KeybindingsManager::new(
-        native_app_keybindings(Platform::new("linux", false)),
-        Vec::new(),
-        Default::default(),
-    )
-}
-
 fn split_app() -> App {
-    let theme = Rc::new(create_theme(&builtin_theme_json("dark").unwrap(), ColorMode::Truecolor, None).unwrap());
     let model = ModelInfo {
         provider: "anthropic".into(),
         id: "a".into(),
@@ -44,21 +30,11 @@ fn split_app() -> App {
     qol.viewport_split = true;
     let mut app = App::new(
         AppOptions {
-            theme,
-            keys: keys(),
-            version: "1.2.3".into(),
-            cwd: "/p".into(),
-            home: None,
-            server_id: "server".into(),
             models: vec![model.clone()],
             model,
             thinking_level: "off".into(),
-            splash: false,
-            history: PromptHistoryStore::new(None, "/p"),
-            fd_path: None,
-            highlight: Rc::new(|code: &str| code.split('\n').map(str::to_string).collect()),
             qol,
-            bug_report_target: ("radius.pi.dev".into(), false),
+            ..support::options()
         },
         mpsc::channel().0,
     );

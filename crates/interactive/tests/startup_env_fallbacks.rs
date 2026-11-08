@@ -3,51 +3,16 @@
 //! (settings-manager.ts; the getters' TypeScript values are recorded in crates/config/fixtures/worker-settings.json).
 //! Literal expectations through `App::apply_startup_settings`, which the interactive command calls at startup.
 
-use std::rc::Rc;
+use crate::support;
 
 use interactive::app::{App, AppOptions};
-use interactive::history::PromptHistoryStore;
-use interactive::keybindings::Platform;
-use interactive::keybindings::native_app_keybindings;
-use interactive::lane::ModelInfo;
-use interactive::qol::QolSettings;
 use serde_json::{Value, json};
-use theme::{ColorMode, builtin_theme_json, create_theme};
-use tui::KeybindingsManager;
 
 fn app() -> App {
-    let keys = || {
-        KeybindingsManager::new(
-            native_app_keybindings(Platform::new("linux", false)),
-            Vec::new(),
-            Default::default(),
-        )
-    };
-    let model = ModelInfo {
-        provider: "anthropic".into(),
-        id: "a".into(),
-        name: "Model a".into(),
-        reasoning: true,
-        context_window: 1000,
-        thinking_levels: Vec::new(),
-    };
     App::new(
         AppOptions {
-            theme: Rc::new(create_theme(&builtin_theme_json("dark").unwrap(), ColorMode::Truecolor, None).unwrap()),
-            keys: keys(),
-            version: "1.2.3".into(),
-            cwd: "/p".into(),
-            home: None,
-            server_id: "server".into(),
-            models: vec![model.clone()],
-            model,
-            thinking_level: "medium".into(),
-            splash: false,
-            history: PromptHistoryStore::new(None, "/p"),
-            fd_path: None,
-            highlight: Rc::new(|code: &str| code.split('\n').map(str::to_string).collect()),
-            qol: QolSettings::parity(),
-            bug_report_target: ("radius.pi.dev".into(), false),
+            theme: support::dark_theme(),
+            ..support::options()
         },
         std::sync::mpsc::channel().0,
     )

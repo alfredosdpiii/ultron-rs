@@ -15,15 +15,11 @@ use support::Sent;
 
 use interactive::api_key_login::{ApiKeyLogin, Step};
 use interactive::app::{App, AppOptions};
-use interactive::history::PromptHistoryStore;
-use interactive::keybindings::Platform;
-use interactive::keybindings::native_app_keybindings;
-use interactive::lane::{LaneCommand, LaneEvent, LoginEvent, LoginPrompt, ModelInfo, SessionListing, SessionOpened};
+use interactive::lane::{LaneCommand, LaneEvent, LoginEvent, LoginPrompt, SessionListing, SessionOpened};
 use interactive::qol::QolSettings;
 use interactive::run::{UiEvent, paint_loop};
 use serde_json::{Value, json};
 use theme::{ColorMode, Fg, Theme, builtin_theme_json, create_theme};
-use tui::KeybindingsManager;
 use tui::{Clipboard, ClipboardService};
 
 fn record(command: &LaneCommand) -> Option<String> {
@@ -50,14 +46,6 @@ fn record(command: &LaneCommand) -> Option<String> {
     })
 }
 
-fn keys() -> KeybindingsManager {
-    KeybindingsManager::new(
-        native_app_keybindings(Platform::new("linux", false)),
-        Vec::new(),
-        Default::default(),
-    )
-}
-
 fn dark() -> Theme {
     create_theme(&builtin_theme_json("dark").unwrap(), ColorMode::Truecolor, None).unwrap()
 }
@@ -76,32 +64,13 @@ struct Harness {
 
 fn harness_with(qol: QolSettings, splash: bool) -> Harness {
     let theme = Rc::new(dark());
-    let model = ModelInfo {
-        provider: "anthropic".into(),
-        id: "a".into(),
-        name: "Model a".into(),
-        reasoning: true,
-        context_window: 1000,
-        thinking_levels: Vec::new(),
-    };
     let (lane, calls) = Sent::new(record);
     let mut app = App::new(
         AppOptions {
             theme: Rc::clone(&theme),
-            keys: keys(),
-            version: "1.2.3".into(),
-            cwd: "/p".into(),
-            home: None,
-            server_id: "server".into(),
-            models: vec![model.clone()],
-            model,
-            thinking_level: "medium".into(),
             splash,
-            history: PromptHistoryStore::new(None, "/p"),
-            fd_path: None,
-            highlight: Rc::new(|code: &str| code.split('\n').map(str::to_string).collect()),
             qol,
-            bug_report_target: ("radius.pi.dev".into(), false),
+            ..support::options()
         },
         lane,
     );
@@ -137,12 +106,7 @@ impl Harness {
         self.clock.set(self.clock.get() + Duration::from_millis(ms));
     }
     fn screen_at(&mut self, width: usize, height: usize) -> String {
-        self.app
-            .render(width, height)
-            .iter()
-            .map(|l| tui::strip_terminal_sequences(l).trim_end().to_string())
-            .collect::<Vec<_>>()
-            .join("\n")
+        screen_at(&mut self.app, width, height)
     }
     fn screen(&mut self) -> String {
         self.screen_at(80, 30)
@@ -160,8 +124,6 @@ impl Harness {
 
 const ESC: &str = "\x1b";
 const DOWN: &str = "\x1b[B";
-
-// ---- multi-field API-key logins ----
 
 fn prompt_json(prompt: &LoginPrompt) -> Value {
     match prompt {
@@ -285,8 +247,6 @@ fn interactive_p_tui_login_runs_the_bedrock_flow_in_the_dialog_and_saves_the_cre
     assert!(!h.screen().contains("Enter Amazon Bedrock bearer token"));
 }
 
-// ---- extension UI ----
-
 fn ui(h: &mut Harness, request: Value) {
     h.app.apply(LaneEvent::ExtensionUi(request));
 }
@@ -321,8 +281,6 @@ fn interactive_p_tui_extension_input_counts_down_and_cancels() {
     h.app.handle_input("\r");
     assert_eq!(h.calls().last().unwrap(), "respond i2 {\"value\":\"ok\"}");
 }
-
-// ---- Esc, quiet startup, suspend ----
 
 #[test]
 fn interactive_p_tui_double_escape_action_tree_fork_none() {
@@ -401,8 +359,6 @@ fn interactive_p_tui_ctrl_z_suspends_through_the_injected_hook() {
     assert!(h.screen().contains("Suspend to background is not supported on Windows"));
 }
 
-// ---- clipboard copies ----
-
 struct CopyClipboard(Result<Option<String>, String>);
 
 impl Clipboard for CopyClipboard {
@@ -420,17 +376,17 @@ impl Clipboard for CopyClipboard {
     }
 }
 
+fn screen_at(app: &mut App, width: usize, height: usize) -> String {
+    app.render(width, height)
+        .iter()
+        .map(|l| tui::strip_terminal_sequences(l).trim_end().to_string())
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
 fn wait_status(h: &mut Harness, needle: &str) -> String {
-    let deadline = Instant::now() + Duration::from_secs(120);
-    while Instant::now() < deadline {
-        h.app.poll_services();
-        let s = h.screen();
-        if s.contains(needle) {
-            return s;
-        }
-        std::thread::sleep(Duration::from_millis(5));
-    }
-    panic!("never showed {needle}");
+    support::poll_services_until(&mut h.app, |app| screen_at(app, 80, 30).contains(needle));
+    h.screen()
 }
 
 #[test]
@@ -461,8 +417,6 @@ fn interactive_p_tui_copy_uses_the_clipboard_before_osc52() {
     }
 }
 
-// ---- /share ----
-
 #[test]
 fn interactive_p_tui_share_loader_cancels_with_escape() {
     let mut h = harness();
@@ -484,8 +438,6 @@ fn interactive_p_tui_share_loader_cancels_with_escape() {
     h.app.apply(LaneEvent::ShareLoader(false));
     assert!(!h.screen().contains("Creating gist..."));
 }
-
-// ---- session scope ----
 
 fn listing(path: &str, first: &str, cwd: &str) -> SessionListing {
     SessionListing {
@@ -543,8 +495,6 @@ fn interactive_p_tui_resume_tab_lists_every_project() {
     assert_eq!(h.calls().last().unwrap(), "list_all_pi");
 }
 
-// ---- RLM pane ----
-
 fn running_child() -> Value {
     json!({"subagents": [{"id": "ultron-task-a", "definition": "rlm-child@1", "state": "running", "input": {"preview": "{\"prompt\": \"audit the parser\"}"}}]})
 }
@@ -557,7 +507,6 @@ fn interactive_p_tui_rlm_pane_opens_beside_the_chat_and_moves_the_focus() {
     assert!(h.calls().contains(&"rlm_status".to_string()), "{:?}", h.calls());
     let frame = h.app.render(160, 40);
     // Chat 95 columns, the border, the pane 64 columns (rlmPaneWidth(160)).
-    assert_eq!(interactive::app::rlm_pane_width(160), 64);
     let border = tui::strip_terminal_sequences(&frame[0]);
     assert_eq!(border.chars().nth(95), Some('│'), "{border:?}");
     // Focused, keys go to the pane: typing does not reach the editor; Alt+W gives the focus back.
@@ -939,8 +888,6 @@ fn interactive_p_tui_rlm_focus_loads_frame_traces() {
     assert!(h.screen_at(120, 40).contains("unavailable: trace gone"));
 }
 
-// ---- themes and local settings ----
-
 fn controller(
     setting: Option<&str>,
     colorfgbg: Option<&str>,
@@ -1083,8 +1030,6 @@ fn interactive_p_tui_local_settings_apply_live_from_settings() {
     h.app.handle_input(ESC);
     assert_eq!(h.calls(), ["fork_messages"]);
 }
-
-// ---- the persona (wave 41) ----
 
 fn open_settings(h: &mut Harness, settings: Value) {
     h.app.apply(LaneEvent::Settings {

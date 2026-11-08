@@ -4,9 +4,8 @@
 
 use crate::p_session_support;
 
-use p_session_support::{HANG, Setup, actor, text, tool, tool_results};
+use p_session_support::{Setup, actor, text, tool, tool_results};
 use serde_json::Value;
-use std::time::{Duration, Instant};
 
 const SECRET: &str = "ghp_aB3dE5fG7hI9jK1lM3nO5pQ7rS9tU1vW3xY5";
 
@@ -44,14 +43,9 @@ fn job_event(vars: Vec<(&'static str, String)>) -> String {
     );
     a.prompt("go");
     std::fs::write(a.cwd.join("go"), "").unwrap();
-    let end = Instant::now() + HANG;
-    loop {
-        if let Some(text) = a.requests().iter().find_map(event_text) {
-            return text;
-        }
-        assert!(Instant::now() < end, "the job's end never re-invoked the root");
-        std::thread::sleep(Duration::from_millis(10));
-    }
+    a.requests.wait("the job's end re-invoking the root", |requests| {
+        requests.iter().find_map(event_text)
+    })
 }
 
 #[test]

@@ -50,8 +50,6 @@ impl Default for RetryDelays {
     }
 }
 
-// ------------------------------------------------------------------------------------------------- the envelope
-
 /// The connection ID pattern: a canonical lowercase UUIDv4.
 pub fn is_connection_id(value: &str) -> bool {
     let bytes = value.as_bytes();
@@ -66,7 +64,6 @@ pub fn is_connection_id(value: &str) -> bool {
     })
 }
 
-/// `encodeRelayDataFrame`.
 pub fn encode_relay_data_frame(connection_id: &str, payload: &[u8]) -> Result<Vec<u8>, String> {
     if !is_connection_id(connection_id) {
         return Err("Invalid Radius relay connection ID".into());
@@ -117,7 +114,6 @@ pub enum HostControl {
 
 const INVALID_CONTROL: &str = "Invalid Radius relay control message";
 
-/// `parseHostControlMessage`.
 pub fn parse_host_control_message(text: &str) -> Result<HostControl, String> {
     let Ok(Value::Object(message)) = serde_json::from_str::<Value>(text) else {
         return Err(INVALID_CONTROL.into());
@@ -154,7 +150,6 @@ fn close_control(connection_id: &str, code: u16) -> String {
     json!({"version": 1, "type": "connection_close", "connection_id": connection_id, "code": code}).to_string()
 }
 
-/// `relayWebSocketUrl`.
 pub fn relay_web_socket_url(gateway: &str, server_id: &str) -> Result<String, String> {
     let base = reqwest::Url::parse(gateway).map_err(|_| "Invalid URL".to_string())?;
     let mut url = base
@@ -169,9 +164,6 @@ pub fn relay_web_socket_url(gateway: &str, server_id: &str) -> Result<String, St
     Ok(url.to_string())
 }
 
-// ------------------------------------------------------------------------------------------------ credentials
-
-/// A gateway and the bearer token for it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RelayAuth {
     pub gateway: String,
@@ -260,8 +252,6 @@ impl RelayAuthResolver for RadiusRelayAuthResolver {
     }
 }
 
-// ------------------------------------------------------------------------------------------------------ status
-
 /// `RadiusRelayHostStatus`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RelayHostStatus {
@@ -298,8 +288,6 @@ pub fn relay_status_line(previous: &mut String, status: &RelayHostStatus) -> Opt
     Some(format!("Radius: {description}"))
 }
 
-// ---------------------------------------------------------------------------------------------- connections
-
 /// What the server does with one relayed connection's events (`server.accept`'s handler).
 pub trait RelayConnectionHandler: Send {
     fn on_data(&mut self, chunk: &[u8]);
@@ -327,7 +315,6 @@ impl RelayConnection {
         self.closed.load(Ordering::SeqCst)
     }
 
-    /// Queue `chunk` for the client.
     pub fn send(&self, chunk: &[u8]) -> Result<(), String> {
         if self.is_closed() {
             return Err("Radius relay connection is closed".into());
@@ -393,8 +380,6 @@ impl Shared {
     }
 }
 
-// --------------------------------------------------------------------------------------------------- the host
-
 /// A sleep the host awaits between attempts (tests make it instant).
 pub type Sleep = Arc<dyn Fn(u64) -> Pin<Box<dyn Future<Output = ()> + Send>> + Send + Sync>;
 
@@ -408,7 +393,6 @@ pub struct RelayHostOptions {
     pub sleep: Option<Sleep>,
 }
 
-/// Where a relay host's statuses go.
 pub type StatusSink = Arc<dyn Fn(&RelayHostStatus) + Send + Sync>;
 
 /// What a server generation needs to run its relay host: the credential lookup and where statuses go.
@@ -712,8 +696,6 @@ enum Attempt {
     Stop,
     Failed(String),
 }
-
-// ------------------------------------------------------------------------------------------ the local bridge
 
 struct UnixBridge {
     stream: std::os::unix::net::UnixStream,

@@ -47,7 +47,6 @@ struct State {
 /// How the gateway answers a relay host's upgrade.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HostMode {
-    /// Accept every host.
     Accept,
     /// Accept, but close the first host connection right away with this code and reason.
     CloseFirst(u16, &'static str),
@@ -182,7 +181,6 @@ impl Bridge {
     }
 }
 
-/// Read one HTTP request head.
 fn request_head(stream: &mut TcpStream) -> Option<String> {
     let mut head = Vec::new();
     let mut byte = [0u8; 1];

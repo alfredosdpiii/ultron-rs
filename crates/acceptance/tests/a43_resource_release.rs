@@ -4,9 +4,8 @@
 //! supervisor) on a controlled clock. A cell runs on its own thread while the pool sweeps, as the TS test leaves its
 //! cell promise pending.
 //!
-//! Not ported: artifact retention, deletion policy and quota (`artifacts.*` of NativeLocalServices has no Rust
-//! counterpart), and ultron-a43-kernel-pool-wired.test.ts (the session's REPL lanes, `lanes::Lanes`, refuse
-//! past their lane limit instead of evicting through the pool, and no `rlm.pool` stats exist).
+//! Not ported: artifact retention, deletion policy and quota (`artifacts.*`, removed by user decision).
+//! ultron-a43-kernel-pool-wired.test.ts is ported in crates/session-core/tests/kernel_pool_wired.rs.
 
 use crate::common;
 

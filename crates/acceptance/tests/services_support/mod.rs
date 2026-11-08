@@ -1,7 +1,7 @@
 //! The TS `NativeRlmHost` with local services, as the local-service acceptance rows build it, over the Rust stack:
 //! the typed-agent host (`delegation::agents::Agents`, its journal, definition registry, optional usage ledger,
 //! adapters and the refinement hook of `NativeHostOptions.refinements`) answers `agents.*` / `workflows.run`, and
-//! `kernel_apis::KernelApis` routes every other request to the host modules (progress, schedules and goals, grants,
+//! `kernel_apis::KernelApis` routes every other request to the host modules (progress, schedules and goals,
 //! release gates, local services, memory) exactly as a session's cell handler does. Lanes are faked as the TS
 //! fixtures fake them: a script from the lane and its prompt to the reply, every prompt recorded.
 

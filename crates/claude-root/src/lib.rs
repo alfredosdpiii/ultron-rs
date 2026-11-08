@@ -33,12 +33,10 @@ pub mod worker_root;
 use session_core::RunEnv;
 use std::path::PathBuf;
 
-/// `<model>` of a `claude-code/<model>` reference.
 pub(crate) fn claude_code_id(model: &str) -> Option<&str> {
     model.strip_prefix(ai::claude_code::PROVIDER)?.strip_prefix('/')
 }
 
-/// `claude-code/<id>`.
 pub(crate) fn claude_code_ref(id: &str) -> String {
     format!("{}/{id}", ai::claude_code::PROVIDER)
 }

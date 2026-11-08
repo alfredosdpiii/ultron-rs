@@ -101,7 +101,6 @@ impl ScrollView {
         self.content_height.saturating_sub(self.viewport_height)
     }
 
-    /// `isScrollbarVisible`.
     pub fn is_scrollbar_visible(&self) -> bool {
         match self.scrollbar {
             Scrollbar::Always => self.viewport_height > 0,
@@ -202,7 +201,6 @@ impl ScrollView {
         lines - moved
     }
 
-    /// `scrollToStart`.
     pub fn scroll_to_start(&mut self) {
         let following = self.follow_end && self.content_height <= self.viewport_height;
         let changed = self.scroll_top != 0 || self.following_end != following;
@@ -214,7 +212,6 @@ impl ScrollView {
         }
     }
 
-    /// `scrollToEnd`.
     pub fn scroll_to_end(&mut self) {
         let next = self.max_scroll_top();
         let changed = self.scroll_top != next || self.following_end != self.follow_end;
@@ -266,7 +263,6 @@ impl Rect {
     }
 }
 
-/// `ScrollbarGeometry`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ScrollbarGeometry {
     pub column: usize,
@@ -341,7 +337,6 @@ pub fn grapheme_cell_range(line: &str, column: usize) -> Option<(usize, usize)> 
     None
 }
 
-/// `sliceByColumn`.
 pub fn slice_by_column(line: &str, start: usize, length: usize) -> String {
     slice_with_width(line, start, length, true).0
 }

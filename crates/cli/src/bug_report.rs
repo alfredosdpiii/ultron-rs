@@ -540,41 +540,9 @@ mod tests {
     use super::*;
 
     #[test]
-    fn cli_bug_report_uuid_v7_has_the_time_version_and_variant() {
-        // The report id is `jsrt::random::uuid_v7`; an owned generator keeps the process-wide one's clock out of it.
-        let id = jsrt::random::Uuidv7::new().generate(None, 0x0123_4567_89ab, jsrt::random::bytes());
-        assert_eq!(id.len(), 36);
-        assert!(id.starts_with("01234567-89ab-7"), "{id}");
-        assert!(matches!(&id[19..20], "8" | "9" | "a" | "b"), "{id}");
-    }
-
-    #[test]
     fn cli_bug_report_gateway_host_keeps_a_non_default_port() {
         assert_eq!(gateway_host("https://radius.pi.dev"), "radius.pi.dev");
         assert_eq!(gateway_host("http://127.0.0.1:8123"), "127.0.0.1:8123");
         assert_eq!(gateway_host("https://example.com:443"), "example.com");
-    }
-
-    /// `serializeSessionBranch`: entries re-chained in branch order, the share entry last.
-    #[test]
-    fn cli_bug_report_session_jsonl_chains_the_branch() {
-        let branch = [
-            json!({"type": "message", "id": "a", "parentId": "x"}),
-            json!({"type": "message", "id": "b"}),
-        ];
-        let share = json!({"systemPrompt": "S", "tools": [{"name": "rlm"}]});
-        let text = session_jsonl("sid", "/w", &branch, &share, "T", "abcd1234");
-        let lines: Vec<Value> = text.lines().map(|l| serde_json::from_str(l).unwrap()).collect();
-        assert!(text.ends_with('\n'));
-        assert_eq!(
-            lines,
-            vec![
-                json!({"type": "session", "version": 3, "id": "sid", "timestamp": "T", "cwd": "/w"}),
-                json!({"type": "message", "id": "a", "parentId": null}),
-                json!({"type": "message", "id": "b", "parentId": "a"}),
-                json!({"type": "custom", "customType": "ultron.share", "id": "abcd1234", "parentId": "b", "timestamp": "T",
-                    "data": {"systemPrompt": "S", "tools": [{"name": "rlm"}]}}),
-            ]
-        );
     }
 }

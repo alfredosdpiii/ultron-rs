@@ -596,8 +596,6 @@ impl ModelRegistry {
     }
 }
 
-// ---------------------------------------------------------------------------------------------------- composition
-
 /// `composeModelProvider(...).getModels()` over `base` (the provider's built-in models) for a provider models.json
 /// names: its error when the configuration does not compose.
 fn compose_over<'a>(
@@ -674,7 +672,6 @@ fn merge_compat(base: Option<&Value>, override_: Option<&Value>) -> Option<Value
     Some(merged)
 }
 
-/// `mergeInputLimits`.
 fn merge_input_limits(base: Option<&Value>, override_: Option<&Value>) -> Option<Value> {
     let Some(override_) = override_ else {
         return base.cloned();
@@ -702,7 +699,6 @@ fn merge_input_limits(base: Option<&Value>, override_: Option<&Value>) -> Option
     Some(merged)
 }
 
-/// `applyModelOverride`.
 fn apply_model_override(model: Value, ov: &Map<String, Value>) -> Value {
     let Value::Object(mut model) = model else {
         return model;
@@ -891,8 +887,6 @@ fn apply_models_json(provider: &str, base: Vec<Value>, config: &Map<String, Valu
     }
     Ok(models)
 }
-
-// -------------------------------------------------------------------------------------------------- config values
 
 /// `!command` values run a shell command; everything else is a template.
 pub fn is_command(config: &str) -> bool {

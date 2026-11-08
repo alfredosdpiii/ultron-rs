@@ -39,7 +39,6 @@ pub fn normalize(path: &str) -> String {
     if absolute { format!("/{s}") } else { s }
 }
 
-/// `path.join`.
 pub fn join(parts: &[&str]) -> String {
     let joined: Vec<&str> = parts.iter().copied().filter(|p| !p.is_empty()).collect();
     if joined.is_empty() {
@@ -68,7 +67,6 @@ pub fn absolute(path: &std::path::Path) -> std::path::PathBuf {
     resolve("/", &path.to_string_lossy()).into()
 }
 
-/// `path.dirname`.
 pub fn dirname(path: &str) -> String {
     let b = path.as_bytes();
     if b.is_empty() {
@@ -94,7 +92,6 @@ pub fn dirname(path: &str) -> String {
     }
 }
 
-/// `path.basename`.
 pub fn basename(path: &str) -> &str {
     let trimmed = path.trim_end_matches('/');
     trimmed.rsplit('/').next().unwrap_or(trimmed)

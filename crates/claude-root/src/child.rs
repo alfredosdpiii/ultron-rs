@@ -3,8 +3,7 @@
 //! the task's result and its reported usage is charged to the task.
 //!
 //! Ported here: the model rule, the `claude` arguments and MCP config of a child, the stream-json fold and the
-//! process run with its result. Not yet wired: the session runtime builds its subagent runner itself
-//! (session-core `Stack`), so `ultron mcp` children still run as native lanes until session-core takes a runner.
+//! process run with its result.
 
 use crate::claude_cli::skip_permissions_args;
 use crate::guide::CLAUDE_RLM_TOOL;
@@ -358,7 +357,6 @@ pub fn run_claude_child(
     child_result(result.as_ref(), &stats, status.code(), &stderr)
 }
 
-/// Removes a directory when dropped.
 struct DirGuard(std::path::PathBuf);
 
 impl Drop for DirGuard {

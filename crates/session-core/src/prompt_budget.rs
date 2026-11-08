@@ -114,11 +114,11 @@ mod tests {
         let system =
             json!({"role": "system", "content": "a".repeat(4001), "toolsAdded": [tool.clone()], "timestamp": 0});
         let measured = PromptSize::of(&system);
-        // 4001 characters: 1001 tokens; the whole message is one estimate, so the parts add up to it.
+        // 4001 characters: 1001 tokens; with the 75 characters of `toolsAdded`, 1019. The whole message is one
+        // estimate, so the parts add up to it.
         assert_eq!(measured.system, 1001);
-        let tools_chars = json!([tool]).to_string().len();
-        assert_eq!(measured.fixed(), (4001 + tools_chars).div_ceil(4) as u64);
-        assert_eq!(measured.tools, measured.fixed() - 1001);
+        assert_eq!(measured.fixed(), 1019);
+        assert_eq!(measured.tools, 18);
         // Sections count as system text; a message without tools has none.
         let sectioned = json!({"role": "system", "content": "abcd", "sections": {"guide": "efgh"}, "timestamp": 0});
         assert_eq!(PromptSize::of(&sectioned), size(2, 0));

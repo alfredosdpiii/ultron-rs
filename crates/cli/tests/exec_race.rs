@@ -13,9 +13,9 @@ const WRITERS: usize = 4;
 const FORKERS: usize = 4;
 const ROUNDS: usize = 150;
 
-/// Write-then-exec `ROUNDS` scripts in each of `WRITERS` threads while `FORKERS` threads fork without pause; the
+/// Install-then-exec `ROUNDS` scripts in each of `WRITERS` threads while `FORKERS` threads fork without pause; the
 /// failed launches, with their errors.
-fn launch_while_forking(dir: &Path, write: fn(&Path, &str)) -> Vec<String> {
+fn launch_while_forking(dir: &Path) -> Vec<String> {
     let stop = Arc::new(AtomicBool::new(false));
     let forkers: Vec<_> = (0..FORKERS)
         .map(|_| {
@@ -34,7 +34,7 @@ fn launch_while_forking(dir: &Path, write: fn(&Path, &str)) -> Vec<String> {
                 let mut failures = Vec::new();
                 for round in 0..ROUNDS {
                     let script = dir.join(format!("s{writer}-{round}"));
-                    write(&script, "#!/bin/sh\nexit 7\n");
+                    executable_support::install(&script, "#!/bin/sh\nexit 7\n");
                     match Command::new(&script).status() {
                         Ok(status) if status.code() == Some(7) => {}
                         Ok(status) => failures.push(format!("{}: {status}", script.display())),
@@ -53,35 +53,14 @@ fn launch_while_forking(dir: &Path, write: fn(&Path, &str)) -> Vec<String> {
     failures
 }
 
-/// The way the tests used to write them: a write descriptor in this process, then chmod.
-fn write_in_process(path: &Path, text: &str) {
-    use std::os::unix::fs::PermissionsExt;
-    std::fs::write(path, text).unwrap();
-    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
-}
-
 #[test]
 fn cli_exec_race_installed_scripts_always_launch_while_other_threads_fork() {
     let dir = tempfile::tempdir().unwrap();
-    let failures = launch_while_forking(dir.path(), executable_support::install);
+    let failures = launch_while_forking(dir.path());
     assert!(
         failures.is_empty(),
         "{} launches failed:\n{}",
         failures.len(),
         failures.join("\n")
-    );
-}
-
-/// The race itself (evidence for the helper, not a gate: whether a given run loses it depends on scheduling):
-/// scripts written in-process fail to launch with ETXTBSY while other threads fork.
-#[test]
-#[ignore = "demonstration of the race; run with `--ignored exec_race`"]
-fn cli_exec_race_scripts_written_in_process_hit_text_file_busy() {
-    let dir = tempfile::tempdir().unwrap();
-    let failures = launch_while_forking(dir.path(), write_in_process);
-    println!("{} of {} launches failed", failures.len(), WRITERS * ROUNDS);
-    assert!(
-        failures.iter().any(|f| f.contains("Text file busy")),
-        "no ETXTBSY this run (the race depends on scheduling)"
     );
 }

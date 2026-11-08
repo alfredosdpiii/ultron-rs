@@ -82,7 +82,6 @@ impl BanList {
         self.rules.iter().all(|(_, logins)| logins.is_empty())
     }
 
-    /// `(key, logins)` as written.
     pub fn rules(&self) -> &[(String, Vec<String>)] {
         &self.rules
     }

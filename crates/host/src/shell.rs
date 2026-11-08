@@ -19,7 +19,6 @@ impl ShellConfig {
         }
     }
 
-    /// The argument vector that runs `command`.
     pub fn argv(&self, command: &str) -> Vec<String> {
         let mut argv = vec![self.shell.clone()];
         argv.extend(self.args.iter().cloned());

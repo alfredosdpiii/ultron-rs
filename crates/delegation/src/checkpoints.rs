@@ -444,9 +444,6 @@ fn interrupted(safety: &Checkpoint, why: &str) -> String {
     )
 }
 
-// ---------------------------------------------------------------------------------------------------------------
-// Jujutsu
-
 /// Run `jj` in `root`; stdout trimmed. A hang guard kills it after two minutes.
 fn jj_run(jj: &Path, root: &Path, args: &[&str]) -> Result<String, String> {
     let mut child = Command::new(jj)

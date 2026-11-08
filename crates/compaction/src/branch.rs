@@ -80,7 +80,6 @@ fn message_from_entry(entry: &Value) -> Option<Value> {
     }
 }
 
-/// `BranchPreparation`.
 #[derive(Clone, Debug, PartialEq)]
 pub struct BranchPreparation {
     /// Messages to summarize, oldest first.

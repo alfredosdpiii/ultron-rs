@@ -1,5 +1,3 @@
-//! Workspace-wide checks.
-
 use std::fs;
 use std::path::Path;
 

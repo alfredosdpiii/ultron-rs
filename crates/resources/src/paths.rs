@@ -16,7 +16,6 @@ pub fn canonicalize(path: &str) -> String {
         .unwrap_or_else(|_| path.to_string())
 }
 
-/// Strip a leading UTF-8 byte order mark.
 pub fn strip_bom(text: &str) -> &str {
     text.strip_prefix('\u{feff}').unwrap_or(text)
 }

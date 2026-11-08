@@ -101,7 +101,6 @@ struct Io<'a> {
 
 /// Where the self-update asks for the latest release (`LATEST_VERSION_URL`).
 pub const LATEST_VERSION_URL: &str = "https://registry.npmjs.org/ultron-agent/latest";
-/// `RELEASES_URL`.
 pub const RELEASES_URL: &str = "https://github.com/alfredosdpiii/ultron/releases";
 
 /// What `ultron update` reaches outside the machine (tests point it at a local server).
@@ -127,7 +126,6 @@ pub fn run_update(
     run_update_with(argv, env, out, err, &Endpoints::default())
 }
 
-/// [`run_update`] with explicit endpoints.
 pub fn run_update_with(
     argv: &[String],
     env: &Env,
@@ -186,7 +184,6 @@ fn update_command(parsed: Parsed, env: &Env, io: &mut Io, endpoints: &Endpoints)
         Parsed::Update { target, force } => (target, force),
     };
     if target == UpdateTarget::Models {
-        // `refreshModelCatalogs`: every provider with a credential refreshes its stored catalog.
         return match session_core::model_refresh::refresh_model_catalogs(env) {
             Ok(()) => {
                 let _ = writeln!(io.out, "Model catalogs refreshed");

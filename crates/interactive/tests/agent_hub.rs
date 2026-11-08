@@ -2,6 +2,7 @@
 //! taskSummary, formatCost, formatAge and the roster window arithmetic, recorded by
 //! fixtures/generate-omp-agent-hub.mjs), then drives the hub component over a plain view model.
 
+use crate::support;
 use std::collections::HashMap;
 use std::rc::Rc;
 
@@ -11,11 +12,8 @@ use interactive::agent_hub::{
 };
 use interactive::chat::ChatStyle;
 use interactive::copy_targets::TranscriptEntry;
-use interactive::keybindings::Platform;
-use interactive::keybindings::native_app_keybindings;
 use serde_json::{Value, json};
-use theme::{ColorMode, Theme, builtin_theme_json, create_theme};
-use tui::KeybindingsManager;
+use theme::Theme;
 use tui::strip_terminal_sequences;
 
 fn fixture() -> Value {
@@ -218,17 +216,13 @@ fn interactive_agent_hub_new_agents_rank_above_the_captured_order() {
 }
 
 fn theme() -> Rc<Theme> {
-    Rc::new(create_theme(&builtin_theme_json("dark").unwrap(), ColorMode::Truecolor, None).unwrap())
+    support::dark_theme()
 }
 
 fn hub() -> AgentHub {
     let t = theme();
     let style_theme = Rc::clone(&t);
-    let keys = KeybindingsManager::new(
-        native_app_keybindings(Platform::new("linux", false)),
-        Vec::new(),
-        Default::default(),
-    );
+    let keys = support::keys();
     let mut hub = AgentHub::new(
         t,
         keys,

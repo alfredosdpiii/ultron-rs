@@ -20,7 +20,6 @@ const MAX_MESSAGE: usize = protocol::DEFAULT_MAX_FRAME_LENGTH * 4;
 /// How long the writer has to put a close frame on the wire after the socket is closed.
 const CLOSE_FLUSH_TIMEOUT: Duration = Duration::from_secs(5);
 
-/// What a socket delivers.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum WsEvent {
     Text(String),

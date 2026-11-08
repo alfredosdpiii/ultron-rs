@@ -21,13 +21,11 @@ const REFRESH_LOCK_WAIT: Duration = Duration::from_secs(25);
 /// How often the holder renews the lock: half the staleness, as `proper-lockfile`'s default `update`.
 const REFRESH_LOCK_RENEW: Duration = Duration::from_secs(10);
 
-/// The credential file of a profile.
 pub struct CredentialStore {
     path: PathBuf,
     /// Directory for the refresh lock files; without one, refreshes are only serialized in this process.
     lock_dir: Option<PathBuf>,
     secrets: Option<SecretSink>,
-    /// Serializes this process's refreshes (the lock file keeps other processes out).
     /// Serializes this process's refreshes of one server (the lock file keeps other processes out).
     refreshing: Mutex<std::collections::HashMap<String, Arc<Mutex<()>>>>,
     /// The refresh lock's staleness and how often its holder renews it (`proper-lockfile` `stale` and `update`).

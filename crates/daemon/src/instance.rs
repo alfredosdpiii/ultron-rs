@@ -144,7 +144,6 @@ pub fn socket_dir(server_dir: &Path) -> PathBuf {
         .join(hex)
 }
 
-/// A server's socket, `<serverId>.sock` in its directory's [`socket_dir`].
 pub fn socket_path(server_dir: &Path, server_id: &str) -> PathBuf {
     socket_dir(server_dir).join(format!("{server_id}.sock"))
 }
