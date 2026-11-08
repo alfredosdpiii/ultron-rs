@@ -261,12 +261,58 @@ fn session_file_migration_skips_current_entries() {
 
 // ---- save-entry.test.ts, labels.test.ts, tree-traversal.test.ts ----
 
+/// A Pi session's entries written by hand (the writer API beyond `appendMessage` is not ported: nothing in the
+/// product writes a Pi session): each entry a child of the one before, `e<n>` ids, timestamps one second apart.
+#[derive(Default)]
+struct Chain(Vec<Value>);
+
+impl Chain {
+    fn push(&mut self, kind: &str, fields: Value) -> String {
+        let n = self.0.len() + 1;
+        let id = format!("e{n}");
+        let parent = self.0.last().map_or(Value::Null, |e| e["id"].clone());
+        let mut entry = json!({ "type": kind, "id": id, "parentId": parent,
+            "timestamp": format!("2025-01-01T00:00:{n:02}.000Z") });
+        entry
+            .as_object_mut()
+            .unwrap()
+            .extend(fields.as_object().unwrap().clone());
+        self.0.push(entry);
+        id
+    }
+
+    fn message(&mut self, message: Value) -> String {
+        self.push("message", json!({ "message": message }))
+    }
+
+    fn edit(&mut self, target: &str, replacement: Value) -> String {
+        self.push(
+            "context_edit",
+            json!({ "targetId": target, "replacement": replacement }),
+        )
+    }
+
+    fn compaction(&mut self, summary: &str, first_kept: Option<&str>) -> String {
+        let id = format!("e{}", self.0.len() + 1);
+        let first_kept = first_kept.unwrap_or(&id).to_string();
+        self.push(
+            "compaction",
+            json!({ "summary": summary, "firstKeptEntryId": first_kept, "tokensBefore": 100 }),
+        )
+    }
+
+    fn manager(&self) -> SessionManager {
+        SessionManager::in_memory(env(), "/project", None, Some(self.0.clone())).unwrap()
+    }
+}
+
 #[test]
 fn session_file_custom_entries_join_the_tree_but_not_the_context() {
-    let mut s = mem();
-    let m1 = s.append_message(user("hello")).unwrap();
-    let c = s.append_custom_entry("my_data", Some(json!({ "foo": "bar" }))).unwrap();
-    let m2 = s.append_message(assistant("hi")).unwrap();
+    let mut chain = Chain::default();
+    let m1 = chain.message(user("hello"));
+    let c = chain.push("custom", json!({ "customType": "my_data", "data": { "foo": "bar" } }));
+    let m2 = chain.message(assistant("hi"));
+    let s = chain.manager();
     let custom = s.entry(&c).unwrap();
     assert_eq!(custom["customType"], "my_data");
     assert_eq!(custom["data"], json!({ "foo": "bar" }));
@@ -275,62 +321,33 @@ fn session_file_custom_entries_join_the_tree_but_not_the_context() {
     assert_eq!(path, [&id(&m1), &id(&c), &id(&m2)]);
     assert_eq!(s.build_session_context().messages.len(), 2);
 }
-
 #[test]
 fn session_file_labels_set_clear_and_last_wins_with_timestamps() {
-    let mut s = mem();
-    let m = s.append_message(user("hello")).unwrap();
-    assert_eq!(s.label(&m), None);
-    s.append_label_change(&m, Some("checkpoint")).unwrap();
-    assert_eq!(s.label(&m), Some(&json!("checkpoint")));
-    s.append_label_change(&m, None).unwrap();
-    assert_eq!(s.label(&m), None);
-    s.append_label_change(&m, Some("first")).unwrap();
-    let last = s.append_label_change(&m, Some("third")).unwrap();
+    let mut chain = Chain::default();
+    let m = chain.message(user("hello"));
+    assert_eq!(chain.manager().label(&m), None);
+    let label = |label: Value| json!({ "targetId": m, "label": label });
+    chain.push("label", label(json!("checkpoint")));
+    assert_eq!(chain.manager().label(&m), Some(&json!("checkpoint")));
+    chain.push("label", label(Value::Null));
+    assert_eq!(chain.manager().label(&m), None);
+    chain.push("label", label(json!("first")));
+    let last = chain.push("label", label(json!("third")));
+    let s = chain.manager();
     assert_eq!(s.label(&m), Some(&json!("third")));
     let tree = s.tree();
     let node = &tree.nodes[tree.roots[0]];
     assert_eq!(node.label_timestamp, s.entry(&last).map(|e| &e["timestamp"]));
     assert_eq!(s.build_session_context().messages.len(), 1);
-    assert_eq!(
-        s.append_label_change("non-existent", Some("x"))
-            .unwrap_err()
-            .to_string(),
-        "Entry non-existent not found"
-    );
 }
-
-#[test]
-fn session_file_branched_session_keeps_path_labels_and_rewires_label_children() {
-    let mut s = mem();
-    let m1 = s.append_message(user("hello")).unwrap();
-    s.append_label_change(&m1, Some("checkpoint")).unwrap();
-    let model = s.append_model_change("anthropic", "claude-test").unwrap();
-    let m2 = s.append_message(user("followup")).unwrap();
-    let m3 = s.append_message(user("dropped")).unwrap();
-    s.append_label_change(&m3, Some("third")).unwrap();
-    s.create_branched_session(&m2).unwrap();
-    assert_eq!(s.entry(&model).unwrap()["parentId"], Value::from(m1.as_str()));
-    assert_eq!(s.label(&m1), Some(&json!("checkpoint")));
-    assert_eq!(s.label(&m3), None);
-    let labels: Vec<&Value> = s.entries().into_iter().filter(|e| e["type"] == "label").collect();
-    assert_eq!(labels.len(), 1);
-    assert_eq!(labels[0]["parentId"], Value::from(m2.as_str()));
-    assert_eq!(
-        s.create_branched_session("nonexistent").unwrap_err().to_string(),
-        "Entry nonexistent not found"
-    );
-}
-
 #[test]
 fn session_file_branch_moves_leaf_and_new_appends_fork_the_tree() {
     let mut s = mem();
     assert!(s.branch_entries(None).is_empty());
     assert!(s.tree().roots.is_empty());
-    assert!(s.leaf_entry().is_none());
     let a = s.append_message(user("1")).unwrap();
     s.append_message(assistant("2")).unwrap();
-    let c = s.append_message(user("3")).unwrap();
+    s.append_message(user("3")).unwrap();
     s.branch(&a).unwrap();
     assert_eq!(s.leaf_id(), Some(&id(&a)));
     let d = s.append_message(user("4")).unwrap();
@@ -342,106 +359,28 @@ fn session_file_branch_moves_leaf_and_new_appends_fork_the_tree() {
         s.branch("nonexistent").unwrap_err().to_string(),
         "Entry nonexistent not found"
     );
-    let usage = json!({ "input": 10, "output": 20, "cacheRead": 30, "cacheWrite": 40, "totalTokens": 100,
-        "cost": { "input": 0.1, "output": 0.2, "cacheRead": 0.3, "cacheWrite": 0.4, "total": 1 } });
-    s.branch(&c).unwrap();
-    let summary = s
-        .branch_with_summary(
-            Some(&a),
-            "Summary of abandoned work",
-            None,
-            Some(false),
-            Some(usage.clone()),
-        )
-        .unwrap();
-    let entry = s.entry(&summary).unwrap();
-    assert_eq!(s.leaf_id(), Some(&id(&summary)));
-    assert_eq!(entry["parentId"], Value::from(a.as_str()));
-    assert_eq!(entry["fromId"], Value::from(c.as_str()));
-    assert_eq!(entry["usage"], usage);
-    assert_eq!(
-        s.branch_with_summary(Some("nonexistent"), "summary", None, None, None)
-            .unwrap_err()
-            .to_string(),
-        "Entry nonexistent not found"
-    );
-}
-
-#[test]
-fn session_file_forking_from_first_user_message_defers_then_writes_one_header() {
-    let (_dir, path) = tmp();
-    let mut s = SessionManager::create(env(), &path, Some(&path), None).unwrap();
-    let id1 = s.append_message(user("first question")).unwrap();
-    s.append_message(assistant("first answer")).unwrap();
-    let file = s.create_branched_session(&id1).unwrap().unwrap();
-    assert!(!fs::exists(&file).unwrap());
-    s.append_custom_entry("preset-state", Some(json!({ "name": "plan" })))
-        .unwrap();
-    s.append_message(assistant("new answer")).unwrap();
-    let content = fs::read_to_string(&file).unwrap();
-    let records: Vec<Value> = content.lines().map(|l| serde_json::from_str(l).unwrap()).collect();
-    assert_eq!(records.iter().filter(|r| r["type"] == "session").count(), 1);
-    let ids: std::collections::HashSet<&Value> = records[1..].iter().map(|r| &r["id"]).collect();
-    assert_eq!(ids.len(), records.len() - 1);
-    // Forking where the path has an assistant writes immediately.
-    let assistant_id = s.entries()[2]["id"].as_str().unwrap().to_string();
-    let file = s.create_branched_session(&assistant_id).unwrap().unwrap();
-    assert!(fs::exists(&file).unwrap());
-}
-
-#[test]
-fn session_file_usage_survives_a_file_backed_reload() {
-    let (_dir, path) = tmp();
-    let mut s = SessionManager::create(env(), &path, Some(&path), None).unwrap();
-    let root = s.append_message(user("question")).unwrap();
-    s.append_message(assistant("answer")).unwrap();
-    let usage = json!({ "input": 10, "output": 20, "totalTokens": 100, "cost": { "input": 0.1, "total": 1 } });
-    s.append_message(
-        json!({ "role": "toolResult", "toolCallId": "call-1", "toolName": "nested-model",
-        "content": [{ "type": "text", "text": "result" }], "isError": false, "usage": usage, "timestamp": 1 }),
-    )
-    .unwrap();
-    s.append_compaction("summary", Some(&root), 100, None, Some(false), Some(usage.clone()))
-        .unwrap();
-    s.branch_with_summary(Some(&root), "branch summary", None, Some(false), Some(usage.clone()))
-        .unwrap();
-    let reopened = SessionManager::open(env(), s.session_file().unwrap(), Some(&path), None).unwrap();
-    let entries = reopened.entries();
-    assert!(entries.iter().any(|e| e["type"] == "compaction" && e["usage"] == usage));
-    assert!(
-        entries
-            .iter()
-            .any(|e| e["type"] == "branch_summary" && e["usage"] == usage)
-    );
-    assert!(
-        entries
-            .iter()
-            .any(|e| e["message"]["role"] == "toolResult" && e["message"]["usage"] == usage)
-    );
 }
 
 // ---- load-entries.test.ts ----
 
 #[test]
 fn session_file_preloaded_entries_are_adopted_with_leaf_labels_and_tree() {
-    let mut source = mem();
-    let first = source.append_message(user("hello")).unwrap();
-    source.append_message(user("abandoned")).unwrap();
-    source.branch(&first).unwrap();
-    source.append_label_change(&first, Some("checkpoint")).unwrap();
-    let last = source.append_message(user("kept")).unwrap();
-    let stored: Vec<Value> = source.entries().into_iter().cloned().collect();
+    let stored = vec![
+        msg("m1", None, "user", "hello"),
+        msg("m2", Some("m1"), "user", "abandoned"),
+        json!({ "type": "label", "id": "l1", "parentId": "m1", "timestamp": "2025-01-01T00:00:01Z",
+            "targetId": "m1", "label": "checkpoint" }),
+        msg("m3", Some("l1"), "user", "kept"),
+    ];
     let mut s = SessionManager::in_memory(env(), "/project", None, Some(stored.clone())).unwrap();
     assert_eq!(s.entries().into_iter().cloned().collect::<Vec<_>>(), stored);
-    assert_eq!(s.label(&first), Some(&json!("checkpoint")));
+    assert_eq!(s.label("m1"), Some(&json!("checkpoint")));
     assert_eq!(s.tree().nodes[s.tree().roots[0]].children.len(), 2);
     let appended = s.append_message(user("continued")).unwrap();
-    assert_eq!(s.entry(&appended).unwrap()["parentId"], Value::from(last.as_str()));
+    assert_eq!(s.entry(&appended).unwrap()["parentId"], json!("m3"));
     assert!(!stored.iter().any(|e| e["id"] == appended.as_str()));
     assert_eq!(s.session_file(), None);
-    assert!(!s.is_persisted());
 }
-
 #[test]
 fn session_file_preloaded_headers_set_identity_and_migrate() {
     let opts = |id: &str| {
@@ -716,7 +655,7 @@ fn session_file_most_recent_session_skips_invalid_files_and_filters_by_cwd() {
 }
 
 #[test]
-fn session_file_flat_dir_lists_by_cwd_and_continues_the_recent_one() {
+fn session_file_flat_dir_lists_by_cwd() {
     let (_dir, path) = tmp();
     let make = |cwd: &str, label: &str| {
         let mut s = SessionManager::create(env(), cwd, Some(&path), None).unwrap();
@@ -743,8 +682,6 @@ fn session_file_flat_dir_lists_by_cwd_and_continues_the_recent_one() {
     let mut expected = vec![a.clone(), b];
     expected.sort();
     assert_eq!(all, expected);
-    let continued = SessionManager::continue_recent(env(), &format!("{path}/project-a"), Some(&path)).unwrap();
-    assert_eq!(continued.session_file(), Some(a.as_str()));
 }
 
 #[test]
@@ -771,12 +708,13 @@ fn tool_result(text: &str) -> Value {
 
 #[test]
 fn session_file_context_edits_omit_replace_and_latest_wins() {
-    let mut s = mem();
-    s.append_message(user("request")).unwrap();
-    let a = s.append_message(assistant("partial")).unwrap();
-    let r = s.append_message(tool_result("raw output")).unwrap();
-    s.append_context_edit(&a, Value::Null).unwrap();
-    s.append_context_edit(&r, Value::Null).unwrap();
+    let mut chain = Chain::default();
+    chain.message(user("request"));
+    let a = chain.message(assistant("partial"));
+    let r = chain.message(tool_result("raw output"));
+    chain.edit(&a, Value::Null);
+    chain.edit(&r, Value::Null);
+    let s = chain.manager();
     assert_eq!(
         s.branch_entries(None).iter().filter(|e| e["type"] == "message").count(),
         3
@@ -784,66 +722,34 @@ fn session_file_context_edits_omit_replace_and_latest_wins() {
     assert_eq!(roles(&s.build_session_projection().messages), ["user"]);
     assert_eq!(s.entry(&r).unwrap()["message"], tool_result("raw output"));
 
-    let mut s = mem();
-    let t = s.append_message(assistant("original")).unwrap();
-    s.append_context_edit(&t, json!({ "content": [{ "type": "text", "text": "first" }] }))
-        .unwrap();
-    s.append_context_edit(&t, Value::Null).unwrap();
-    s.append_context_edit(&t, json!({ "content": [{ "type": "text", "text": "restored" }] }))
-        .unwrap();
+    let mut chain = Chain::default();
+    let t = chain.message(assistant("original"));
+    chain.edit(&t, json!({ "content": [{ "type": "text", "text": "first" }] }));
+    chain.edit(&t, Value::Null);
+    chain.edit(&t, json!({ "content": [{ "type": "text", "text": "restored" }] }));
+    let s = chain.manager();
     let projected = &s.build_session_projection().messages[0];
     assert_eq!(text(projected), "restored");
     assert_eq!(projected["usage"]["totalTokens"], 2);
     assert_eq!(text(&s.entry(&t).unwrap()["message"]), "original");
 }
-
-#[test]
-fn session_file_string_edits_become_text_blocks_for_assistant_and_tool_results() {
-    let mut s = mem();
-    let a = s.append_message(assistant("original")).unwrap();
-    let r = s.append_message(tool_result("original result")).unwrap();
-    let ea = s
-        .append_context_edit(&a, json!({ "content": "assistant replacement" }))
-        .unwrap();
-    let er = s
-        .append_context_edit(&r, json!({ "content": "result replacement" }))
-        .unwrap();
-    assert_eq!(
-        s.entry(&ea).unwrap()["replacement"],
-        json!({ "content": [{ "type": "text", "text": "assistant replacement" }] })
-    );
-    assert_eq!(
-        s.entry(&er).unwrap()["replacement"],
-        json!({ "content": [{ "type": "text", "text": "result replacement" }] })
-    );
-    let projected = s.build_session_projection().messages;
-    assert_eq!(
-        projected[0]["content"],
-        json!([{ "type": "text", "text": "assistant replacement" }])
-    );
-    assert_eq!(
-        projected[1]["content"],
-        json!([{ "type": "text", "text": "result replacement" }])
-    );
-}
-
 #[test]
 fn session_file_edits_are_branch_relative_and_apply_to_retained_entries() {
-    let mut s = mem();
-    let t = s.append_message(user("original")).unwrap();
-    s.append_context_edit(&t, json!({ "content": "edited" })).unwrap();
+    let mut chain = Chain::default();
+    let t = chain.message(user("original"));
+    chain.edit(&t, json!({ "content": "edited" }));
+    let mut s = chain.manager();
     assert_eq!(text(&s.build_session_projection().messages[0]), "edited");
     s.branch(&t).unwrap();
     assert_eq!(text(&s.build_session_projection().messages[0]), "original");
 
-    let mut s = mem();
-    s.append_message(user("summarized")).unwrap();
-    let kept = s.append_message(user("original retained")).unwrap();
-    s.append_compaction("summary", Some(&kept), 100, None, None, None)
-        .unwrap();
-    s.append_context_edit(&kept, json!({ "content": "edited retained" }))
-        .unwrap();
-    let shown: Vec<String> = s
+    let mut chain = Chain::default();
+    chain.message(user("summarized"));
+    let kept = chain.message(user("original retained"));
+    chain.compaction("summary", Some(&kept));
+    chain.edit(&kept, json!({ "content": "edited retained" }));
+    let shown: Vec<String> = chain
+        .manager()
         .build_session_projection()
         .messages
         .iter()
@@ -855,17 +761,14 @@ fn session_file_edits_are_branch_relative_and_apply_to_retained_entries() {
         .collect();
     assert_eq!(shown, ["summary", "edited retained"]);
 }
-
 #[test]
 fn session_file_retain_none_and_repeated_compactions_show_only_newest_summary() {
-    let mut s = mem();
-    s.append_message(user("discarded")).unwrap();
-    let c = s
-        .append_compaction("exact handoff", None, 100, None, None, None)
-        .unwrap();
-    s.append_message(user("after")).unwrap();
-    assert_eq!(s.entry(&c).unwrap()["firstKeptEntryId"], Value::from(c.as_str()));
-    let shown: Vec<String> = s
+    let mut chain = Chain::default();
+    chain.message(user("discarded"));
+    chain.compaction("exact handoff", None);
+    chain.message(user("after"));
+    let shown: Vec<String> = chain
+        .manager()
         .build_session_projection()
         .messages
         .iter()
@@ -877,15 +780,14 @@ fn session_file_retain_none_and_repeated_compactions_show_only_newest_summary() 
         .collect();
     assert_eq!(shown, ["exact handoff", "after"]);
 
-    let mut s = mem();
-    s.append_message(user("summarized first")).unwrap();
-    let kept = s.append_message(user("retained")).unwrap();
-    s.append_compaction("first summary", Some(&kept), 100, None, None, None)
-        .unwrap();
-    s.append_message(assistant("after first compaction")).unwrap();
-    s.append_compaction("second summary", Some(&kept), 80, None, None, None)
-        .unwrap();
-    let summaries: Vec<Value> = s
+    let mut chain = Chain::default();
+    chain.message(user("summarized first"));
+    let kept = chain.message(user("retained"));
+    chain.compaction("first summary", Some(&kept));
+    chain.message(assistant("after first compaction"));
+    chain.compaction("second summary", Some(&kept));
+    let summaries: Vec<Value> = chain
+        .manager()
         .build_session_projection()
         .messages
         .iter()
@@ -893,7 +795,6 @@ fn session_file_retain_none_and_repeated_compactions_show_only_newest_summary() 
         .collect();
     assert_eq!(summaries, [json!("second summary")]);
 }
-
 // ---- JavaScript semantics (literals printed by node 26) ----
 
 #[test]

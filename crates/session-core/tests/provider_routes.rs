@@ -7,10 +7,10 @@
 
 use agent::StreamFn;
 use ai::http::{BoxFuture, HeaderMap};
-use ai::json::normalize_numbers;
 use ai::{
     AbortSignal, Body, HttpRequest, HttpResponse, Model, SimpleStreamOptions, StopReason, TranscriptContext, Transport,
 };
+use jsrt::json::normalize_numbers;
 use serde_json::{Map, Value, json};
 use session_core::lane::{Provider, api_supported};
 use std::sync::{Arc, Mutex};
@@ -80,7 +80,7 @@ fn through_provider(scenario: &Value) -> (ai::AssistantMessage, Vec<HttpRequest>
     options.base.signal = Some(AbortSignal::new());
     let transport = Recorded::default();
     *transport.responses.lock().unwrap() = scenario["responses"].as_array().cloned().unwrap_or_default();
-    let provider = Provider::with_router(ai::claude_subscription::fallback::global(), Arc::new(transport.clone()));
+    let provider = Provider::new().with_transport(Arc::new(transport.clone()));
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()

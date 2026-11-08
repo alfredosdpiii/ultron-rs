@@ -2,7 +2,7 @@
 //! each case run against Memory, SQLite and JSONL storage. Cases about agents, hooks, tools, context reads and
 //! document watches through the runtime are not ported (those runtimes are not).
 
-mod support;
+use crate::support;
 
 use durable::{
     ConversationOwnership, DocDefinition, DocSemantics, EntryDraft, JoinPolicy, Owner, TaskId, TaskOptions, TaskStatus,

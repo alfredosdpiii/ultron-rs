@@ -5,7 +5,7 @@
 //! the UserPromptSubmit hook, one by the first cell of a turn, each closed by the next hook or by shutdown). A FAKE
 //! `claude` is first on PATH and is never needed; the kernel is the test's Python.
 
-mod executable_support;
+use crate::executable_support;
 
 use serde_json::{Value, json};
 use std::collections::HashMap;

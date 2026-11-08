@@ -5,8 +5,8 @@
 //! operations service (`abortStuck`).
 
 use serde_json::{Value, json};
-use std::sync::Mutex;
-use std::time::Duration;
+use std::sync::{Condvar, Mutex};
+use std::time::{Duration, Instant};
 
 pub const STUCK_AFTER_ENV: &str = "ULTRON_STUCK_AFTER_MS";
 pub const DEFAULT_STUCK_AFTER: Duration = Duration::from_secs(600);
@@ -41,6 +41,8 @@ pub enum Change {
 #[derive(Default)]
 pub struct Progress {
     state: Mutex<State>,
+    /// Notified when the run in progress changes.
+    changed: Condvar,
 }
 
 impl Progress {
@@ -50,6 +52,14 @@ impl Progress {
 
     /// Fold one lane-watch event at `now` (milliseconds).
     pub fn event(&self, event: &Value, now: i64) -> Change {
+        let change = self.fold(event, now);
+        if matches!(change, Change::Started(_) | Change::Ended(_)) {
+            self.changed.notify_all();
+        }
+        change
+    }
+
+    fn fold(&self, event: &Value, now: i64) -> Change {
         let mut state = self.lock();
         let run = event["runId"].as_str().map(str::to_string);
         match event["type"].as_str() {
@@ -88,6 +98,32 @@ impl Progress {
 
     pub fn run(&self) -> Option<String> {
         self.lock().run.clone()
+    }
+
+    /// Blocks until `run` is no longer the run in progress, or until `deadline`; whether it is no longer.
+    pub fn wait_until_not(&self, run: &str, deadline: Option<Instant>) -> bool {
+        let mut state = self.lock();
+        loop {
+            if state.run.as_deref() != Some(run) {
+                return true;
+            }
+            state = match deadline {
+                None => self
+                    .changed
+                    .wait(state)
+                    .unwrap_or_else(std::sync::PoisonError::into_inner),
+                Some(deadline) => {
+                    let left = deadline.saturating_duration_since(Instant::now());
+                    if left.is_zero() {
+                        return false;
+                    }
+                    self.changed
+                        .wait_timeout(state, left)
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .0
+                }
+            };
+        }
     }
 
     /// Mark the run stuck when it made no progress for `after`; returns true only when it just became stuck.

@@ -4,7 +4,7 @@
 //! concurrent ends by microtask), and the journal ends the same. Ids and keys are numbered by first appearance.
 
 use delegation::host::{ChildRunner, Delegation, DelegationOptions, DetachedEnd};
-use delegation::task_store::DocumentStore;
+use kernel::store::DocumentStore;
 use serde_json::{Value, json};
 use std::collections::HashMap;
 use std::path::Path;
@@ -19,10 +19,10 @@ struct Shared {
 struct Store(Arc<Mutex<Shared>>);
 
 impl DocumentStore for Store {
-    fn read(&mut self) -> Result<Option<Value>, String> {
+    fn read(&self) -> Result<Option<Value>, String> {
         Ok(self.0.lock().unwrap().value.clone())
     }
-    fn write(&mut self, document: &Value) -> Result<(), String> {
+    fn write(&self, document: &Value) -> Result<(), String> {
         self.0.lock().unwrap().value = Some(document.clone());
         Ok(())
     }

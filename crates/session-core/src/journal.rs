@@ -237,11 +237,7 @@ impl RunJournal {
     }
 
     /// The summary request: returns the compaction entry's id (none without a journal or after a write error).
-    pub fn compaction_request(
-        &mut self,
-        session: &mut Session,
-        retry: &harness::chat::models::RetryPolicy,
-    ) -> Option<String> {
+    pub fn compaction_request(&mut self, session: &mut Session, retry: &ai::retry::RetryPolicy) -> Option<String> {
         let mut id = None;
         self.apply(session, |run, s| {
             id = Some(run.compaction_request(s, retry.journal_value())?);

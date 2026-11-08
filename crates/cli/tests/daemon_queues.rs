@@ -5,8 +5,7 @@
 //! first answer is held until the messages are queued through the session operations, and every request's user
 //! texts and the transcript must match the recording.
 
-#[path = "daemon_common/mod.rs"]
-mod common;
+use crate::daemon_common as common;
 
 use client::runtime::{CallError, Connection};
 use common::{HANG_GUARD, Home, assert_no_processes, text_reply};

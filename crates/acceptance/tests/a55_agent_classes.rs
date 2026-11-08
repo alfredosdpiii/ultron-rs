@@ -8,7 +8,7 @@
 //! `agents.invoke`, `agents.list`, the definition registry and its journal) and the RPC end-to-end case of
 //! ultron-a55-agent-classes.test.ts: the Rust host has no definition registry yet.
 
-mod common;
+use crate::common;
 
 use common::{null_handler, runtime};
 use kernel::{Kernel, KernelOptions, Status};

@@ -3,7 +3,7 @@
 //! the skill's test, run by the host in a fresh kernel, finds the fake tool and not a tool only the process PATH has.
 //! The session actor against a scripted provider on loopback. New in Rust: literal expectations.
 
-mod p_session_support;
+use crate::p_session_support;
 
 use p_session_support::{Setup, actor, text, tool, tool_results};
 use serde_json::{Value, json};

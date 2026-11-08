@@ -271,8 +271,12 @@ fn herdr_detect_reads_the_injected_env_and_the_setting() {
         assert_eq!(detect(&vars(&env), None), None, "{off}");
     }
     let mut kernel = inside.to_vec();
-    kernel.push((kernel::env::RLM_MAX_MEMORY_MB_ENV, "4096"));
+    kernel.push((kernel::env::IN_KERNEL_ENV, "1"));
     assert_eq!(detect(&vars(&kernel), None), None);
+    // A memory limit the user set is no kernel.
+    let mut limited = inside.to_vec();
+    limited.push((kernel::env::RLM_MAX_MEMORY_MB_ENV, "4096"));
+    assert_eq!(detect(&vars(&limited), None).map(|p| p.pane_id), Some("p9".into()));
     assert_eq!(detect(&vars(&inside[1..]), None), None);
     assert_eq!(detect(&vars(&[("HERDR_ENV", "1"), ("HERDR_PANE_ID", "p")]), None), None);
     assert_eq!(

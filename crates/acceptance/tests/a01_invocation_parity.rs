@@ -4,8 +4,8 @@
 //! Port of packages/coding-agent/test/ultron-a01-invocation-parity.test.ts over the Rust typed-agent host
 //! (`delegation::agents`) and the real runtime.py kernel, with the TS fixture's scripted lane.
 
-mod agents_support;
-mod common;
+use crate::agents_support;
+use crate::common;
 
 use agents_support::{Fixture, Options, definition, fixture, input_of, lock};
 use common::{kernel_in, null_handler, run};

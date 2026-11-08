@@ -252,7 +252,7 @@ fn normalize(value: &Value, ports: (u16, u16), started: i64) -> Value {
             other => other,
         }
     }
-    ai::json::normalize_numbers(walk(serde_json::from_str(&text).unwrap(), started))
+    jsrt::json::normalize_numbers(walk(serde_json::from_str(&text).unwrap(), started))
 }
 
 fn read(path: &Path) -> Value {
@@ -284,7 +284,7 @@ fn request_set(requests: &Value) -> Vec<String> {
 #[test]
 fn session_core_model_refresh_matches_typescript() {
     let fixture = fixture();
-    let generated_at = ai::model_refresh::parse_iso_ms(fixture["generatedAt"].as_str().unwrap()).unwrap();
+    let generated_at = jsrt::date::parse_date(fixture["generatedAt"].as_str().unwrap()).unwrap();
     assert_eq!(ai::model_refresh::builtin_generated_at(), Some(generated_at));
     let cases = fixture["cases"].as_array().unwrap();
     assert_eq!(cases.len(), 3);
@@ -293,15 +293,11 @@ fn session_core_model_refresh_matches_typescript() {
         let requests: Requests = Arc::default();
         let ports = servers(generated_at, requests.clone());
         let profile = profile(spec, ports);
-        let started = lane::now_ms();
+        let started = jsrt::date::now_ms();
         let errors = if spec["network"] == true {
-            let errors = model_refresh::refresh_catalogs(
-                &profile.env,
-                &format!("http://127.0.0.1:{}", ports.0),
-                &ai::model_refresh::management_user_agent("0.0.0"),
-                true,
-            )
-            .unwrap();
+            let errors =
+                model_refresh::refresh_catalogs_from(&profile.env, &format!("http://127.0.0.1:{}", ports.0), true)
+                    .unwrap();
             let map: Map<String, Value> = errors.into_iter().map(|(p, e)| (p, json!(e))).collect();
             Value::Object(map)
         } else {
@@ -313,7 +309,7 @@ fn session_core_model_refresh_matches_typescript() {
             let actual = serde_json::to_value(registry.models(provider)).unwrap();
             assert_eq!(
                 normalize(&actual, ports, started),
-                ai::json::normalize_numbers(expected.clone()),
+                jsrt::json::normalize_numbers(expected.clone()),
                 "{name}: {provider}"
             );
         }
@@ -325,12 +321,12 @@ fn session_core_model_refresh_matches_typescript() {
         );
         assert_eq!(
             normalize(&read(&profile.agent.join("models-store.json")), ports, started),
-            ai::json::normalize_numbers(spec["storeAfter"].clone()),
+            jsrt::json::normalize_numbers(spec["storeAfter"].clone()),
             "{name}: models-store.json"
         );
         assert_eq!(
             normalize(&read(&profile.agent.join("auth.json")), ports, started),
-            ai::json::normalize_numbers(spec["authAfter"].clone()),
+            jsrt::json::normalize_numbers(spec["authAfter"].clone()),
             "{name}: auth.json"
         );
     }

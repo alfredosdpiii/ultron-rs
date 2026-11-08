@@ -220,7 +220,7 @@ fn cli_self_update_points_the_binary_at_the_release_download() {
     let root = tmp.path().to_path_buf();
     for (args, version) in [
         (vec!["update", "--self"], "999.0.0".to_string()),
-        (vec!["update", "--self", "--force"], cli::version()),
+        (vec!["update", "--self", "--force"], config::version().to_string()),
     ] {
         let (port, count) = registry(vec![json!({"status": 200, "body": {"version": version}})]);
         let agent = root.join("agent").display().to_string();

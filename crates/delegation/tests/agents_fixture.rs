@@ -5,8 +5,8 @@
 //! first appearance. Prompts and adapter calls are compared as multisets (parallel workflow nodes run concurrently).
 
 use delegation::agents::{AdapterRequest, Agents, AgentsOptions, LaneReply, LaneRun, TaskEnd};
-use delegation::task_store::DocumentStore;
 use delegation::usage::{UsageLedger, UsageLimits, UsageOptions};
+use kernel::store::DocumentStore;
 use kernel_apis::TaskHost;
 use regex::Regex;
 use serde_json::{Map, Value, json};
@@ -29,10 +29,10 @@ impl Shared {
 }
 
 impl DocumentStore for Shared {
-    fn read(&mut self) -> Result<Option<Value>, String> {
+    fn read(&self) -> Result<Option<Value>, String> {
         Ok(self.0.lock().unwrap().clone())
     }
-    fn write(&mut self, document: &Value) -> Result<(), String> {
+    fn write(&self, document: &Value) -> Result<(), String> {
         *self.0.lock().unwrap() = Some(document.clone());
         Ok(())
     }

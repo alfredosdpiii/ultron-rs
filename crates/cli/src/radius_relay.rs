@@ -5,10 +5,8 @@
 //! `RADIUS_API_KEY`), looked up anew for every connection attempt.
 
 use crate::Env;
-use server::radius_relay::{
-    AuthInput, DEFAULT_RADIUS_GATEWAY, ENV_RADIUS_GATEWAY, RadiusRelayAuthResolver, RelayConfig, StatusSink,
-    StoredToken,
-};
+use config::radius::{DEFAULT_RADIUS_GATEWAY, ENV_RADIUS_GATEWAY};
+use server::radius_relay::{AuthInput, RadiusRelayAuthResolver, RelayConfig, StatusSink, StoredToken};
 use session_core::stored_auth::Stored;
 use std::sync::Arc;
 

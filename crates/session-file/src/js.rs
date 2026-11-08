@@ -3,15 +3,6 @@
 
 use serde_json::Value;
 
-/// `Number.prototype.toString()` for a double; non-finite values become `null` as in JSON.
-pub fn format_f64(f: f64) -> String {
-    if f.is_finite() {
-        jsrt::number::to_string(f)
-    } else {
-        "null".to_string()
-    }
-}
-
 /// `undefined` or `null`, the values `??` and `== null` treat as missing.
 pub fn nullish(value: Option<&Value>) -> bool {
     matches!(value, None | Some(Value::Null))

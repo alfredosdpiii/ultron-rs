@@ -2,7 +2,7 @@
 //! `ULTRON_EXTENSION_TOOLS=native`, `ULTRON_NATIVE_EXTENSION_TOOLS`, the `extensionTools` setting) are warned about
 //! by the native command and ignored: the model's tool list stays `[rlm]` (user decision 2026-10-17).
 
-mod common;
+use crate::common;
 
 use common::{Naming, Sandbox, anthropic_text, mock_server};
 use std::process::Output;
@@ -71,7 +71,7 @@ fn cli_tool_env_and_extension_tools_setting_warn_and_keep_only_rlm() {
     assert_eq!(text(&output.stderr), "");
     for request in seen.lock().unwrap().requests.iter() {
         assert!(
-            cli::compose::only_rlm(request["body"]["tools"].as_array().unwrap()),
+            session_core::compose::only_rlm(request["body"]["tools"].as_array().unwrap()),
             "{request}"
         );
     }

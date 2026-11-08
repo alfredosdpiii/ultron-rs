@@ -11,14 +11,15 @@
 use super::Core;
 use crate::durable_store::lock as lock_session;
 use jsrt::sync;
-use resources::keep_going::{self, Limits, Next, RunEnd, STATE_KEY, STATE_NAMESPACE, SessionPersona, Toggle};
+use resources::keep_going::{self, Limits, Next, RunEnd, STATE_KEY, SessionPersona, Toggle};
 use serde_json::{Value, json};
 use session_journal::Write;
+use session_journal::ns::MODULE;
 
 impl Core {
     /// The session's persona state as the session keeps it; the system prompt follows its toggle.
     pub(super) fn persona_load(&mut self) {
-        let saved = lock_session(&self.session).value(STATE_NAMESPACE, STATE_KEY).cloned();
+        let saved = lock_session(&self.session).value(MODULE, STATE_KEY).cloned();
         self.persona_session = SessionPersona::from_json(saved.as_ref());
         self.runtime.system.set_persona(self.persona_session.prompt_override());
     }
@@ -30,9 +31,9 @@ impl Core {
         let value = self.persona_session.to_json();
         // A state that cannot be written stays in memory; the next change writes it again.
         let _ = match &self.runtime.services.values {
-            Some(values) => values.set(STATE_NAMESPACE, STATE_KEY, &value),
+            Some(values) => values.set(MODULE, STATE_KEY, &value),
             None => lock_session(&self.session)
-                .commit(&[Write::set(STATE_NAMESPACE, STATE_KEY, value)])
+                .commit(&[Write::set(MODULE, STATE_KEY, value)])
                 .map(drop),
         };
     }
@@ -47,7 +48,7 @@ impl Core {
     pub(super) fn persona_user_input(&mut self, text: &str) -> Option<String> {
         self.persona.user_input();
         let before = self.persona_session.clone();
-        let notice = self.persona_session.user_input(text, crate::lane::now_ms());
+        let notice = self.persona_session.user_input(text, jsrt::date::now_ms());
         if self.persona_session != before {
             self.persona_save();
         }
@@ -61,7 +62,7 @@ impl Core {
         let before = self.persona_session.clone();
         let text = self
             .persona_session
-            .command(command, args, crate::lane::now_ms(), global, limits)?;
+            .command(command, args, jsrt::date::now_ms(), global, limits)?;
         if self.persona_session != before {
             self.persona_save();
         }
@@ -121,7 +122,7 @@ impl Core {
                 tool_calls: self.persona.tool_calls,
                 text: &self.persona.text,
             },
-            crate::lane::now_ms(),
+            jsrt::date::now_ms(),
             limits,
         );
         if self.persona_session != before {
@@ -139,7 +140,7 @@ impl Core {
                     // After the final report nothing continues until the user's next input.
                     self.persona.nudges = resources::persona::MAX_NUDGES;
                 }
-                if let Some(message) = keep_going::nudge_message(&next, limits, crate::lane::now_ms()) {
+                if let Some(message) = keep_going::nudge_message(&next, limits, jsrt::date::now_ms()) {
                     // A nudge that cannot start is dropped, as the persona's is.
                     let _ = self.prompt_with(message, None, true);
                 }
@@ -155,7 +156,7 @@ impl Core {
         let Some(n) = self.persona.run_ended(persona, aborted, failed, pending) else {
             return;
         };
-        let message = resources::persona::nudge_message(n, crate::lane::now_ms());
+        let message = resources::persona::nudge_message(n, jsrt::date::now_ms());
         // A nudge that cannot start (no key, a journal error) is dropped; the user's next input starts over.
         let _ = self.prompt_with(message, None, true);
     }
@@ -168,8 +169,8 @@ impl Core {
             Some(run)
                 if run.prompt_pending
                     && message["role"] == "user"
-                    && (run.prompt["customType"] == resources::persona::NUDGE_CUSTOM_TYPE
-                        || run.prompt["customType"] == kernel_apis::prompt_schedule::CUSTOM_TYPE) =>
+                    && (run.prompt["customType"] == protocol::custom_types::NUDGE
+                        || run.prompt["customType"] == protocol::custom_types::SCHEDULE) =>
             {
                 run.prompt.clone()
             }

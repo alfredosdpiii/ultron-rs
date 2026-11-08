@@ -4,7 +4,7 @@
 //! `ultron` binary in RPC mode (`--mode rpc --no-session`, as the TS test drives it: server generation plus session
 //! worker) against a scripted OpenAI-compatible provider that records every request body.
 
-mod common;
+use crate::common;
 
 use common::{Install, Provider, Reply, kernel_in, null_handler, run};
 use host::cell::{CellFormat, cell_output};

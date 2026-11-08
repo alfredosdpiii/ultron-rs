@@ -18,6 +18,7 @@ use ai::{
 };
 use indexmap::IndexSet;
 use jsrt::utf16;
+use protocol::custom_types;
 use serde_json::Value;
 use session_file::{Leaf, ProjectedEntry, SessionProjection, build_session_projection, current_system_message, js};
 use session_journal::context::convert_to_llm;
@@ -197,11 +198,6 @@ pub fn serialize_conversation(messages: &[Value]) -> String {
     parts.join("\n\n")
 }
 
-/// The custom message type of recalled long-term memory (session-core `auto_memory`).
-pub const RECALLED_MEMORY_TYPE: &str = "ultron.memory";
-/// The custom message type of the active instruction refinements (session-core `auto_refine`).
-pub const REFINEMENTS_TYPE: &str = "ultron.refinements";
-
 /// [`convert_to_llm`] for a summary's conversation (Rust-only): recalled long-term memory and the active refinements
 /// are left out. They came from memory and the ledger; a summary that repeated them would be kept or proposed again
 /// as if the session had learned them.
@@ -210,7 +206,7 @@ pub fn convert_for_summary(messages: &[Value]) -> Vec<Value> {
         role(m) == Some("custom")
             && matches!(
                 m.get("customType").and_then(Value::as_str),
-                Some(RECALLED_MEMORY_TYPE | REFINEMENTS_TYPE)
+                Some(custom_types::RECALLED_MEMORY | custom_types::REFINEMENTS)
             )
     };
     if !messages.iter().any(recalled) {

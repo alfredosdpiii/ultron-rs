@@ -6,7 +6,7 @@
 //! `ULTRON_LIVE_HINDSIGHT_URL`, default http://localhost:8888) over the reqwest transport; it is ignored by default
 //! and no Rust live run is recorded yet, which keeps the row partial (TS stands in a recorded demonstration).
 
-mod memory_support;
+use crate::memory_support;
 
 use hindsight::{HindsightBackend, HindsightOptions, HttpRequest, ReqwestTransport, Transport};
 use kernel::{HostHandler, Signal};
@@ -41,7 +41,7 @@ fn acceptance_a16_skip_sends_nothing_and_secrets_are_refused_before_any_request_
 
     // The production binding: the worker keeps every write except one holding a secret.
     let service = MemoryService::new(
-        Arc::new(kernel_apis::MemoryDocumentStore::default()),
+        Arc::new(kernel::store::MemoryDocumentStore::default()),
         hindsight.backend(),
         worker_gate(),
     )

@@ -4,14 +4,15 @@
 
 use std::rc::Rc;
 
-mod support;
+use crate::support;
 use support::Sent;
 
 use interactive::app::{App, AppOptions, context_usage};
 use interactive::header::{ULTRON_LOGO, color_logo_line, halve_logo, splash_lines};
 use interactive::history::{PromptHistoryStore, merge_prompt_history};
 use interactive::keybindings::{Platform, app_keybindings};
-use interactive::lane::{LaneCommand, LaneEvent, ModelInfo, QueueKind, SessionOpened};
+use interactive::lane::{LaneCommand, LaneEvent, ModelInfo, SessionOpened};
+use protocol::watch::QueueKind;
 use serde_json::json;
 use theme::{ColorMode, builtin_theme_json, create_theme};
 use tui::KeybindingsManager;
@@ -248,13 +249,13 @@ fn interactive_escape_restores_queued_messages_then_aborts() {
     app.apply(LaneEvent::Queues(vec![
         interactive::lane::Queued {
             entry_id: "f1".into(),
-            kind: interactive::lane::QueueKind::FollowUp,
+            kind: QueueKind::FollowUp,
             text: "second".into(),
             user: true,
         },
         interactive::lane::Queued {
             entry_id: "s1".into(),
-            kind: interactive::lane::QueueKind::Steer,
+            kind: QueueKind::Steer,
             text: "first".into(),
             user: true,
         },
@@ -280,7 +281,7 @@ fn interactive_escape_restores_queued_messages_then_aborts() {
 /// dequeue hint shows only while a user message is queued (`#syncQueues`).
 #[test]
 fn interactive_dequeue_leaves_queued_runtime_events_queued() {
-    use interactive::lane::{QueueKind, Queued};
+    use interactive::lane::Queued;
     let (mut app, c) = app();
     app.apply(LaneEvent::OperationStarted("op1".into()));
     let queued = |id: &str, kind, text: &str, user| Queued {
@@ -320,7 +321,7 @@ fn interactive_dequeue_leaves_queued_runtime_events_queued() {
 /// message labelled "Next run".
 #[test]
 fn interactive_pending_messages_label_next_run_like_typescript() {
-    use interactive::lane::{QueueKind, Queued};
+    use interactive::lane::Queued;
     let (mut app, _) = app();
     app.apply(LaneEvent::OperationStarted("op1".into()));
     let queued = |id: &str, kind, text: &str| Queued {

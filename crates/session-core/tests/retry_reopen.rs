@@ -7,8 +7,8 @@
 //! killed and no signal is sent: the first actor hands over through its own input, from the event that announced
 //! the wait (so the hand-over always lands inside the wait).
 
-mod p_session_support;
-mod reopen_support;
+use crate::p_session_support;
+use crate::reopen_support;
 
 use p_session_support::{HANG, in_order, overloaded, text};
 use reopen_support::{Home, Worker};

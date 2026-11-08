@@ -16,19 +16,20 @@ pub fn split_complete_lines(content: &str) -> (Vec<&str>, bool) {
 }
 
 /// Complete lines only (the reader's `terminated` lines).
-pub fn complete_lines(content: &str) -> Vec<&str> {
+pub(crate) fn complete_lines(content: &str) -> Vec<&str> {
     split_complete_lines(content).0
 }
 
-/// The first line when it is newline-terminated; `None` for an empty or unterminated first line.
-pub fn read_first_line(path: &Path) -> std::io::Result<Option<String>> {
+/// A file's first line without its newline (the whole file when it has none) and whether a newline ended it, read
+/// no further than that.
+pub fn first_line(path: &Path) -> std::io::Result<(String, bool)> {
     let mut line = Vec::new();
     BufReader::new(fs::File::open(path)?).read_until(b'\n', &mut line)?;
-    if line.last() != Some(&b'\n') {
-        return Ok(None);
+    let terminated = line.last() == Some(&b'\n');
+    if terminated {
+        line.pop();
     }
-    line.pop();
-    Ok(Some(String::from_utf8_lossy(&line).into_owned()))
+    Ok((String::from_utf8_lossy(&line).into_owned(), terminated))
 }
 
 fn temp_path(path: &Path) -> PathBuf {

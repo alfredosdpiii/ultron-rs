@@ -3,7 +3,7 @@
 //! chain's count, the prompt's persona section, and engineering mode's proactive skills note.
 
 use resources::persona::{
-    Chain, MAX_NUDGES, NUDGE_CUSTOM_TYPE, NUDGE_TEXT, TurnEnd, decide, nudge_message, read_personality, should_nudge,
+    Chain, MAX_NUDGES, NUDGE_TEXT, TurnEnd, decide, nudge_message, read_personality, should_nudge,
 };
 use resources::skills::{Skill, bundled_skills_note};
 use resources::system_prompt::{BuildOptions, build_system_prompt};
@@ -131,10 +131,10 @@ fn resources_persona_chain_counts_to_the_cap_resets_on_input_and_an_abort_ends_i
 fn resources_persona_nudge_message_is_a_displayed_custom_message() {
     assert_eq!(
         nudge_message(2, 7),
-        json!({"role": "custom", "customType": NUDGE_CUSTOM_TYPE, "content": NUDGE_TEXT, "display": true,
+        json!({"role": "custom", "customType": protocol::custom_types::NUDGE, "content": NUDGE_TEXT, "display": true,
                "details": {"nudge": 2, "max": 5}, "timestamp": 7})
     );
-    assert_eq!(NUDGE_CUSTOM_TYPE, "ultron.nudge");
+    assert_eq!(protocol::custom_types::NUDGE, "ultron.nudge");
 }
 
 #[test]

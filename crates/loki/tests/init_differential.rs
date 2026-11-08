@@ -2,8 +2,7 @@
 //! `fixtures/generate-init.mjs` (stdout, stderr, exit status of each run, then every file under the repository and
 //! the managed-engine directory). Runs use a private HOME and a PATH holding only fake `python3` (and `loki`).
 
-#[path = "../../cli/tests/executable_support/mod.rs"]
-mod executable_support;
+use crate::executable_support;
 
 use serde_json::Value;
 use sha2::{Digest, Sha256};

@@ -8,14 +8,15 @@
 //! checked by `relay_web_socket_url`'s own test); before a server-side send or close the replay pings the relay and
 //! drops that pong from the record (the TypeScript fake socket handles messages synchronously, the real one does not).
 
-mod support;
+use crate::support;
 
+use config::radius::normalize_radius_gateway_url;
 use serde_json::{Value, json};
 use server::radius_relay::{
     AuthInput, HostControl, RadiusRelayAuthResolver, RadiusRelayHost, RelayAccept, RelayAuth, RelayAuthResolver,
     RelayConnection, RelayConnectionHandler, RelayHostOptions, RelayHostStatus, RetryDelays, Sleep,
-    encode_relay_data_frame, normalize_radius_gateway_url, parse_host_control_message, parse_relay_data_frame,
-    relay_status_line, relay_web_socket_url,
+    encode_relay_data_frame, parse_host_control_message, parse_relay_data_frame, relay_status_line,
+    relay_web_socket_url,
 };
 use std::sync::mpsc::{Receiver, Sender, channel};
 use std::sync::{Arc, Condvar, LazyLock, Mutex};

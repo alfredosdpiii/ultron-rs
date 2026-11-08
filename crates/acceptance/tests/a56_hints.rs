@@ -4,7 +4,7 @@
 //! whose plain `bash` came back running (past `ULTRON_BASH_YIELD_AFTER`) ends with the `job-detached` line, the next status check of that job in a
 //! following cell earns `poll-loop`, and without `ULTRON_HINTS` nothing is added.
 
-mod common;
+use crate::common;
 
 use common::{HANG, Install, Provider, Reply, Request};
 

@@ -10,7 +10,7 @@ use std::path::{Path, PathBuf};
 use serde_json::{Map, Value};
 
 use crate::json::parse;
-use crate::lock::{SYNC_ATTEMPTS, SYNC_STALE, acquire, lock_path_for};
+use crate::lock::{SYNC, acquire, lock_path_for};
 use crate::paths::{CONFIG_DIR_NAME, expand_tilde, resolve};
 
 pub type Settings = Map<String, Value>;
@@ -90,7 +90,7 @@ pub fn process_defaults() -> Option<&'static Settings> {
 
 /// The durable instance's own default model (`durable.model`) when the user's settings name none: Claude Opus on
 /// the Claude subscription (a `claude-code` lane with tools runs as `claude-subscription`, never on API credits).
-pub const DURABLE_MODEL_DEFAULT: &str = "claude-code/claude-opus-5-5";
+pub const DURABLE_MODEL_DEFAULT: &str = crate::providers::CLAUDE_CODE_DEFAULT_REF;
 /// Set (to `1`) in the (injected) environment of a client of the durable instance's own directory (`ultron durable
 /// ...`, `ultron-s`; not one whose `ULTRON_SERVER_DIR` names another): it resolves a new session's model as the
 /// instance's workers do.
@@ -185,7 +185,7 @@ fn read_locked(path: &Path) -> Result<Option<String>, String> {
     if !path.exists() {
         return Ok(None);
     }
-    let _lock = acquire(&lock_path_for(path), SYNC_STALE, SYNC_ATTEMPTS).map_err(|e| e.to_string())?;
+    let _lock = acquire(&lock_path_for(path), SYNC).map_err(|e| e.to_string())?;
     fs::read_to_string(path).map(Some).map_err(|e| e.to_string())
 }
 
@@ -236,7 +236,7 @@ impl SettingsManager {
         let cwd = resolve(&cwd.to_string_lossy(), &base, &home);
         let agent_dir = resolve(&agent_dir.to_string_lossy(), &base, &home);
         let paths = [
-            agent_dir.join("settings.json"),
+            crate::paths::AgentPaths::new(agent_dir).settings(),
             cwd.join(CONFIG_DIR_NAME).join("settings.json"),
         ];
         let mut manager = SettingsManager {
@@ -372,7 +372,7 @@ impl SettingsManager {
         let modified = &self.modified[scope.index()];
         let exists = path.exists();
         let mut lock = if exists {
-            Some(acquire(&lock_path_for(path), SYNC_STALE, SYNC_ATTEMPTS).map_err(|e| e.to_string())?)
+            Some(acquire(&lock_path_for(path), SYNC).map_err(|e| e.to_string())?)
         } else {
             None
         };
@@ -412,7 +412,7 @@ impl SettingsManager {
             fs::create_dir_all(dir).map_err(|e| e.to_string())?;
         }
         if lock.is_none() {
-            lock = Some(acquire(&lock_path_for(path), SYNC_STALE, SYNC_ATTEMPTS).map_err(|e| e.to_string())?);
+            lock = Some(acquire(&lock_path_for(path), SYNC).map_err(|e| e.to_string())?);
         }
         let written = fs::write(path, jsrt::json::stringify_pretty(&Value::Object(merged))).map_err(|e| e.to_string());
         drop(lock);
@@ -511,12 +511,12 @@ impl SettingsManager {
     pub fn steering_mode(&self) -> Value {
         Self::truthy(self.get("steeringMode"))
             .cloned()
-            .unwrap_or("one-at-a-time".into())
+            .unwrap_or(crate::keys::QUEUE_ONE_AT_A_TIME.into())
     }
     pub fn follow_up_mode(&self) -> Value {
         Self::truthy(self.get("followUpMode"))
             .cloned()
-            .unwrap_or("one-at-a-time".into())
+            .unwrap_or(crate::keys::QUEUE_ONE_AT_A_TIME.into())
     }
     pub fn theme_setting(&self) -> Option<String> {
         self.get("theme")?.as_str().map(str::to_string)

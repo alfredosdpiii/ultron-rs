@@ -2,10 +2,9 @@
 //! imported module exists (`LOKI_PYTHON` for the engine). Not the interpreter that parses Python for Loki
 //! (`ULTRON_LOKI_PYTHON`), whose packages are not the project's.
 
-use std::io::Read;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::{Command, Stdio};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 pub const LOKI_PROJECT_PYTHON_ENV: &str = "ULTRON_LOKI_PROJECT_PYTHON";
 
@@ -56,7 +55,7 @@ pub fn find_project_python(cwd: &Path, var: &dyn Fn(&str) -> Option<String>) -> 
 fn probe_environment(cwd: &Path, env: &[(String, String)]) -> Option<String> {
     let path = env.iter().find(|(k, _)| k == "PATH").map(|(_, v)| v.as_str())?;
     for command in ["python", "python3"] {
-        let Some(executable) = find_on_path(command, path) else {
+        let Some(executable) = jsrt::process::which(command, path) else {
             continue;
         };
         let Some(stdout) = run_probe(&executable, cwd, env) else {
@@ -84,47 +83,23 @@ fn venv_python(cwd: &Path) -> Option<String> {
     })
 }
 
-fn find_on_path(name: &str, path: &str) -> Option<PathBuf> {
-    use std::os::unix::fs::PermissionsExt;
-    std::env::split_paths(path)
-        .filter(|dir| !dir.as_os_str().is_empty())
-        .map(|dir| dir.join(name))
-        .find(|candidate| {
-            std::fs::metadata(candidate).is_ok_and(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
-        })
-}
-
 /// The probe's stdout when it exits 0 within the timeout; the child is killed otherwise.
 fn run_probe(executable: &Path, cwd: &Path, env: &[(String, String)]) -> Option<String> {
-    let mut child = Command::new(executable)
-        .args(["-c", ENVIRONMENT_PROBE])
-        .current_dir(cwd)
-        .env_clear()
-        .envs(env.iter().map(|(k, v)| (k, v)))
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .spawn()
-        .ok()?;
-    let mut stdout = child.stdout.take()?;
-    let reader = std::thread::spawn(move || {
-        let mut text = String::new();
-        let _ = stdout.read_to_string(&mut text);
-        text
-    });
-    let deadline = Instant::now() + PROBE_TIMEOUT;
-    let status = loop {
-        match child.try_wait() {
-            Ok(Some(status)) => break Some(status),
-            Ok(None) if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(10)),
-            _ => {
-                // Our own child, which did not answer in time.
-                let _ = child.kill();
-                let _ = child.wait();
-                break None;
-            }
-        }
+    let bound = signals::child::Bound {
+        timeout: Some(PROBE_TIMEOUT),
+        ..Default::default()
     };
-    let text = reader.join().unwrap_or_default();
-    status.filter(|s| s.success()).map(|_| text)
+    let out = signals::child::run(
+        Command::new(executable)
+            .args(["-c", ENVIRONMENT_PROBE])
+            .current_dir(cwd)
+            .env_clear()
+            .envs(env.iter().map(|(k, v)| (k, v)))
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null()),
+        None,
+        bound,
+    )
+    .ok()?;
+    out.success().then(|| String::from_utf8_lossy(&out.stdout).into_owned())
 }

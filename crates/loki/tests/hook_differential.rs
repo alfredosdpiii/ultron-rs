@@ -4,8 +4,7 @@
 //! built it: a temp dir with a work tree, a bin dir of git/sh/python3 (node when
 //! asked) plus the case's fake tools, HOME there, and the same git history.
 
-#[path = "../../cli/tests/executable_support/mod.rs"]
-mod executable_support;
+use crate::executable_support;
 
 use serde_json::Value;
 use std::collections::BTreeMap;

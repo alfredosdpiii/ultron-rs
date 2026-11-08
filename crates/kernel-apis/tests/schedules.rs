@@ -2,11 +2,12 @@
 //! ultron/schedules.ts behind NativeRlmHost, serving runtime.py through kernel.ts) against `SchedulesModule`, with
 //! the same scripted task API, and checks literal cases ported from test/ultron-schedules.test.ts.
 
-mod common;
+use crate::common;
 
 use common::{FIXED_NOW, Made, assert_area, fixture, inner, run_scenario};
 use kernel::Signal;
-use kernel_apis::{DocumentStore, KernelApis, MemoryDocumentStore, SchedulesModule, TaskHost};
+use kernel::store::{DocumentStore, MemoryDocumentStore};
+use kernel_apis::{KernelApis, SchedulesModule, TaskHost};
 use serde_json::{Value, json};
 use std::path::Path;
 use std::sync::atomic::{AtomicI64, Ordering};

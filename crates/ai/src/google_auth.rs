@@ -16,7 +16,6 @@ mod external;
 
 use crate::env::{ProviderEnv, provider_env_value};
 use crate::http::{HttpRequest, HttpResponse, Transport};
-use crate::jsutil::json_parse_error;
 use crate::oauth_flow::form_urlencode;
 use serde_json::{Map, Value, json};
 use std::path::{Path, PathBuf};
@@ -323,16 +322,6 @@ fn impersonated(json: &Value) -> Result<Credential, Fail> {
     })
 }
 
-fn io_message(error: &std::io::Error, syscall: &str, path: &Path) -> String {
-    let path = path.display();
-    match error.kind() {
-        std::io::ErrorKind::NotFound => format!("ENOENT: no such file or directory, {syscall} '{path}'"),
-        std::io::ErrorKind::PermissionDenied => format!("EACCES: permission denied, {syscall} '{path}'"),
-        std::io::ErrorKind::IsADirectory => "EISDIR: illegal operation on a directory, read".into(),
-        _ => format!("{error}, {syscall} '{path}'"),
-    }
-}
-
 fn absolute(path: &str) -> PathBuf {
     let path = Path::new(path);
     if path.is_absolute() {
@@ -346,13 +335,13 @@ fn absolute(path: &str) -> PathBuf {
 /// key-file `JWT` when the JSON is not a usable credential.
 fn key_file_credential(key_file: &str) -> Result<Credential, Fail> {
     let path = absolute(key_file);
-    let text = std::fs::read(&path).map_err(|e| Fail::new(io_message(&e, "open", &path)))?;
+    let text = std::fs::read(&path).map_err(|e| Fail::new(jsrt::fs::error_message(&e, "open", &path)))?;
     let text = String::from_utf8_lossy(&text);
     let fallback = |scoped| Credential::KeyFile {
         path: path.clone(),
         scoped,
     };
-    if json_parse_error(&text).is_some() {
+    if jsrt::json::parse(&text).is_err() {
         return Ok(fallback(false));
     }
     let json: Value = serde_json::from_str(&text).unwrap_or(Value::Null);
@@ -369,7 +358,10 @@ fn realpath(path: &Path) -> Result<PathBuf, std::io::Error> {
     for component in path.components() {
         prefix.push(component);
         if let Err(error) = std::fs::symlink_metadata(&prefix) {
-            return Err(std::io::Error::new(error.kind(), io_message(&error, "lstat", &prefix)));
+            return Err(std::io::Error::new(
+                error.kind(),
+                jsrt::fs::error_message(&error, "lstat", &prefix),
+            ));
         }
     }
     std::fs::canonicalize(path)
@@ -390,11 +382,11 @@ fn file_path_credential(file_path: &str) -> Result<Credential, Fail> {
     match std::fs::symlink_metadata(&real) {
         Ok(meta) if meta.is_file() => {}
         Ok(_) => return Err(not_a_file(&shown, "")),
-        Err(e) => return Err(not_a_file(&shown, &io_message(&e, "lstat", &real))),
+        Err(e) => return Err(not_a_file(&shown, &jsrt::fs::error_message(&e, "lstat", &real))),
     }
-    let text = std::fs::read(&real).map_err(|e| Fail::new(io_message(&e, "open", &real)))?;
+    let text = std::fs::read(&real).map_err(|e| Fail::new(jsrt::fs::error_message(&e, "open", &real)))?;
     let text = String::from_utf8_lossy(&text);
-    if let Some(message) = json_parse_error(&text) {
+    if let Some(message) = jsrt::json::parse(&text).err() {
         return Err(Fail::typed("SyntaxError", message));
     }
     let json: Value = serde_json::from_str(&text).unwrap_or(Value::Null);

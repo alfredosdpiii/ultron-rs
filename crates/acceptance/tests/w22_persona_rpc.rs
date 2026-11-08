@@ -2,7 +2,7 @@
 //! `keep_going` commands, and a `prompt` whose whole message is `/persona ...` or `/keepgoing ...`, answer the
 //! session's status without a turn; any other prompt is a turn (Rust-only, literal expectations).
 
-mod common;
+use crate::common;
 
 use cli::rpc::client::RpcClient;
 use common::{HANG, Install, Provider, Reply};

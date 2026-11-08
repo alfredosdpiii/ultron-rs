@@ -1,8 +1,6 @@
 //! Minimal terminal emulator for renderer tests: a screen grid plus scrollback, honoring the sequences the
 //! renderers emit (cursor up/down/column, CR/LF with scrolling, EL 2, ED 0/2/3, CUP home). Styling is dropped.
 
-#![allow(dead_code)]
-
 pub struct VTerm {
     pub width: usize,
     pub height: usize,

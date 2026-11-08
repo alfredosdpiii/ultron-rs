@@ -3,7 +3,7 @@
 //! its parent's finished conversation (without the cell still running, which spawned it) and its brief says its
 //! kernel is new; without fork the child sees only its brief; fork is refused when it must be a boolean.
 
-mod common;
+use crate::common;
 
 use common::{Install, Provider, Reply, Request, rpc_tool_results};
 

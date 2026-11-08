@@ -19,8 +19,8 @@
 //! (`fixtures/migration/migration.json`).
 
 use crate::pi_view::{native_session_as_pi, native_to_pi_entry};
-use delegation::task_store::DocumentStore;
 use delegation::usage::{Measurement, UsageLedger, UsageOptions};
+use kernel::store::DocumentStore;
 use serde_json::{Map, Value, json};
 use session_file::{Leaf, SessionManager, SystemEnv, build_context_entries, build_session_context, entry_messages, js};
 use session_journal::ns::{BRANCH_TIP, ENTRY_LABEL, LANE_CONFIG, LANE_STATE, SESSION_NAME, USAGE_ROOT};
@@ -650,10 +650,10 @@ impl Clock for PiClock {
 struct Captured(Arc<Mutex<Option<Value>>>);
 
 impl DocumentStore for Captured {
-    fn read(&mut self) -> Result<Option<Value>, String> {
+    fn read(&self) -> Result<Option<Value>, String> {
         Ok(None)
     }
-    fn write(&mut self, document: &Value) -> Result<(), String> {
+    fn write(&self, document: &Value) -> Result<(), String> {
         *self.0.lock().unwrap_or_else(PoisonError::into_inner) = Some(document.clone());
         Ok(())
     }

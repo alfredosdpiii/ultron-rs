@@ -3,7 +3,7 @@
 //! expectations: the real runtime.py under `crates/kernel`, snapshots signed by the host with a 32-byte profile key
 //! (`kernel::sign_snapshot`), saved and restored explicitly and at startup.
 
-mod common;
+use crate::common;
 
 use common::{null_handler, runtime};
 use kernel::{ExecutionResult, Kernel, KernelOptions, Status, sign_snapshot};

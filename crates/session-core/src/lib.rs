@@ -61,6 +61,7 @@ pub mod startup_trace;
 pub mod stored_auth;
 pub mod subagents;
 pub mod swarm_ops;
+pub mod turn_checkpoints;
 pub mod turns;
 pub mod view;
 pub mod view_images;

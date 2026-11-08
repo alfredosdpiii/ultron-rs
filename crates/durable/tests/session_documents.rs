@@ -2,7 +2,7 @@
 //! Not ported: tests of callbacks that settle with pending acquisitions, of Tx use after settlement, and of non-JSON
 //! values; a synchronous callback, the borrow checker, and `serde_json::Value` make those states unrepresentable.
 
-mod session_support;
+use crate::session_support;
 
 use chord_delta::path;
 use durable::{

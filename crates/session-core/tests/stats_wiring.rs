@@ -2,7 +2,7 @@
 //! to the root (`steerRoot` -> `sessionStats.nudge`) and work the usage ledger refuses at a root's limit
 //! (`onRefused` -> `usageLimitBlock`) reach the stored `ultron.module/stats` document.
 
-mod p_session_support;
+use crate::p_session_support;
 
 use p_session_support::{Setup, actor, in_order, text, tool, user_texts};
 use serde_json::Value;

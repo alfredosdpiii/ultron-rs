@@ -4,7 +4,6 @@
 
 use mcp::CancelToken;
 use mcp::http::{AuthProvider, Unauthorized};
-use mcp::oauth::flow::StateStore;
 use mcp::oauth::signin::{OAuthAuth, OAuthSettings, SignInPrompt, sign_in};
 use mcp::oauth::store::CredentialStore;
 use mcp::oauth::{Challenge, OAuthError};

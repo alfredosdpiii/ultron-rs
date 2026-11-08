@@ -29,7 +29,7 @@ fn border(theme: &Theme, width: usize) -> String {
 }
 
 fn hint(theme: &Theme, keys: &KeybindingsManager, id: &str, description: &str) -> String {
-    key_hint(theme, &key_text(keys, id, false), description)
+    key_hint(theme, &key_text(keys, id), description)
 }
 
 /// `ExtensionInputComponent`: a one-line input under an accent title; with a timeout the title counts the seconds

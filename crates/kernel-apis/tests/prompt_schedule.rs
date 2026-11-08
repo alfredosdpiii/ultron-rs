@@ -5,7 +5,7 @@
 use kernel::Signal;
 use kernel_apis::artifacts::{KeyedDocuments, MemoryKeyedDocuments};
 use kernel_apis::prompt_schedule::{
-    CUSTOM_TYPE, Schedule, ScheduleModule, State, fire_message, format_interval, parse_interval, text,
+    Schedule, ScheduleModule, State, fire_message, format_interval, parse_interval, text,
 };
 use kernel_apis::{ApiModule, ManualTickClock, Request, RootOnly};
 use serde_json::{Value, json};
@@ -194,7 +194,7 @@ fn kernel_apis_prompt_schedule_fire_runs_each_slot_once_and_collapses_missed_slo
     assert_eq!(fired.schedule.last_fired, Some(T0 + HOUR + 5_000));
     assert_eq!(
         fired.message,
-        json!({"role": "custom", "customType": CUSTOM_TYPE, "content": "check the build", "display": true,
+        json!({"role": "custom", "customType": protocol::custom_types::SCHEDULE, "content": "check the build", "display": true,
                "details": {"name": "build", "id": id, "run": 1}, "timestamp": T0 + HOUR + 5_000})
     );
     // The same slot again (another server generation) is a duplicate.

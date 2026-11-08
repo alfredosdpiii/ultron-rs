@@ -4,8 +4,7 @@
 //! backend. The product backend itself (session-core `durable_store::open`) replays the same cases in
 //! `crates/session-core/tests/durable_journal_conformance.rs`.
 
-#[path = "replay_support/mod.rs"]
-mod replay_support;
+use crate::replay_support;
 
 use durable::{
     ConversationId, ConversationQuery, ConversationRecord, Cursor, DocumentAddress, DocumentId, DocumentPoint,

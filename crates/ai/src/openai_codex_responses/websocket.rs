@@ -662,7 +662,7 @@ async fn read_response(
             Err(_) => continue,
         };
         let event = parse_json(&text).map_err(|e| {
-            let message = crate::jsutil::json_parse_error(&text).unwrap_or_else(|| e.to_string());
+            let message = jsrt::json::parse(&text).err().unwrap_or_else(|| e.to_string());
             CodexError::Protocol(format!("Invalid Codex WebSocket JSON: {message}"))
         })?;
         let Some((event, terminal)) = map_codex_event(event, &mut run.output)? else {

@@ -2,7 +2,7 @@
 //! in the product's session: the root's cells reach the durable runtime's records (`harness::chat::host_ops`) as the
 //! root conversation (`root`), and a persistent child answers its first prompt, then a follow-up through its inbox.
 
-mod p_session_support;
+use crate::p_session_support;
 
 use p_session_support::{Setup, actor, text, tool};
 use serde_json::{Value, json};

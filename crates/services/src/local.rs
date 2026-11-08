@@ -15,7 +15,6 @@
 //! the events anchored on the caller's conversation branch (A07). Experiments are append-only, and only runs on
 //! the same frozen fixture compare. Calls serialize; a failed write makes the service unusable until reopened.
 
-use delegation::agents::RefinementsHook;
 use kernel_apis::artifacts::KeyedDocuments;
 use kernel_apis::store::read_versioned;
 use kernel_apis::util::{Clock, system_clock};
@@ -755,10 +754,13 @@ pub fn refinement_view(record: &Value) -> Value {
     json!({"id": record["id"], "version": record["version"], "text": text})
 }
 
+/// A definition id's active instruction refinements, `[{id, version, text}]`.
+pub type InstructionHook = Arc<dyn Fn(&str) -> Result<Vec<Value>, String> + Send + Sync>;
+
 /// The active instruction refinements of a definition id as a typed-agent host's refinement hook
 /// (`refinements` of `NativeHostOptions`): `[{id, version, text}]` of `instruction:<definition id>` on the branch
 /// `branch` names (`mainBranch`; every event without one).
-pub fn instruction_hook(services: Arc<LocalServices>, branch: Option<BranchSource>) -> RefinementsHook {
+pub fn instruction_hook(services: Arc<LocalServices>, branch: Option<BranchSource>) -> InstructionHook {
     Arc::new(move |definition: &str| {
         let branch = branch.as_ref().map(|source| source());
         let current = services.current("instruction", &format!("instruction:{definition}"), branch.as_ref())?;

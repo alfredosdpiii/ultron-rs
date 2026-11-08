@@ -2,7 +2,7 @@
 //! makes its provider's models available, and selectable even before the list is asked for again. Private temp
 //! profile; no request reaches a provider.
 
-mod common;
+use crate::common;
 
 use serde_json::{Value, json};
 use session_core::core::{Input, Op};
@@ -58,7 +58,7 @@ impl Actor {
             session_root: sandbox.sessions_dir(),
             metadata,
             mode: "rpc".into(),
-            services: cli::compose::Services::default(),
+            services: session_core::compose::Services::default(),
             auto_name: false,
         };
         let (tx, handle, _) = session_core::core::spawn(open, Box::new(|_| {})).unwrap();

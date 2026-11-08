@@ -5,8 +5,6 @@
 use std::collections::HashMap;
 use std::path::Path;
 
-use crate::js::path_join;
-
 pub const SERVICE_NAME: &str = "ultron-autoreview";
 pub const LAUNCHD_LABEL: &str = "com.ultron.autoreview";
 
@@ -26,24 +24,8 @@ pub struct ServiceFile {
     pub disable: Vec<String>,
 }
 
-fn safe(value: &str) -> bool {
-    !value.is_empty()
-        && value
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() || "_@%+=:,./-".contains(c))
-}
-
-/// `shellQuote` of claude/self.ts.
-pub fn shell_quote(value: &str) -> String {
-    if safe(value) {
-        value.to_string()
-    } else {
-        format!("'{}'", value.replace('\'', "'\\''"))
-    }
-}
-
 fn systemd_quote(value: &str) -> String {
-    if safe(value) {
+    if jsrt::string::is_shell_safe(value) {
         value.to_string()
     } else {
         let escaped: String = value
@@ -82,7 +64,7 @@ pub fn service_file(
                 .get("XDG_CONFIG_HOME")
                 .map(|value| jsrt::string::trim(value))
                 .filter(|value| !value.is_empty())
-                .map_or_else(|| path_join(&[home, ".config"]), str::to_string);
+                .map_or_else(|| jsrt::path::join(&[home, ".config"]), str::to_string);
             let mut lines = vec![
                 "[Unit]".to_string(),
                 "Description=Ultron automated pull-request reviewer".into(),
@@ -118,7 +100,7 @@ pub fn service_file(
                 .map(str::to_string),
             );
             Some(ServiceFile {
-                path: path_join(&[&config, "systemd", "user", &format!("{SERVICE_NAME}.service")]),
+                path: jsrt::path::join(&[&config, "systemd", "user", &format!("{SERVICE_NAME}.service")]),
                 content: lines.join("\n"),
                 enable: vec![
                     "systemctl --user daemon-reload".into(),
@@ -128,8 +110,8 @@ pub fn service_file(
             })
         }
         "darwin" => {
-            let file = path_join(&[home, "Library", "LaunchAgents", &format!("{LAUNCHD_LABEL}.plist")]);
-            let logs = path_join(&[home, "Library", "Logs", &format!("{SERVICE_NAME}.log")]);
+            let file = jsrt::path::join(&[home, "Library", "LaunchAgents", &format!("{LAUNCHD_LABEL}.plist")]);
+            let logs = jsrt::path::join(&[home, "Library", "Logs", &format!("{SERVICE_NAME}.log")]);
             let mut variables = vec![("PATH", path.to_string())];
             if let Some(dir) = agent_dir {
                 variables.push((config::paths::ENV_AGENT_DIR, dir.clone()));
@@ -162,8 +144,8 @@ pub fn service_file(
                 String::new(),
             ]);
             Some(ServiceFile {
-                enable: vec![format!("launchctl load -w {}", shell_quote(&file))],
-                disable: vec![format!("launchctl unload -w {}", shell_quote(&file))],
+                enable: vec![format!("launchctl load -w {}", jsrt::string::shell_quote(&file))],
+                disable: vec![format!("launchctl unload -w {}", jsrt::string::shell_quote(&file))],
                 path: file,
                 content: lines.join("\n"),
             })

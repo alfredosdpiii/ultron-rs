@@ -39,7 +39,7 @@ impl MemoryChildren {
         };
         control.steer(Message::User(UserMessage {
             content: UserMessageContent::Text(message.to_string()),
-            timestamp: crate::lane::now_ms(),
+            timestamp: jsrt::date::now_ms(),
         }));
         true
     }

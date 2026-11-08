@@ -1078,7 +1078,7 @@ fn help_keys(keys: &KeybindingsManager, ids: &[&str]) -> String {
             first.join("/")
         }
     };
-    let text = format_key_text(&compact, false, false);
+    let text = format_key_text(&compact, false);
     word_replace(&text)
 }
 
@@ -1320,7 +1320,7 @@ impl Component for TreeSelector {
                     lines.push(truncate_to_width(&format!("{indent}{l}"), width, "...", false));
                 }
                 let hint = |id: &str, d: &str| {
-                    crate::components::key_hint(&t, &crate::components::key_text(&self.list.keys, id, false), d)
+                    crate::components::key_hint(&t, &crate::components::key_text(&self.list.keys, id), d)
                 };
                 lines.push(truncate_to_width(
                     &format!(

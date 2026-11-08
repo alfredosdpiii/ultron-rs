@@ -4,7 +4,7 @@
 //! Ports of packages/coding-agent/test/ultron-a09-budget-admission.test.ts and ultron-usage-deadline.test.ts over the
 //! Rust typed-agent host and usage ledger (`delegation::usage`); a burst is real threads released together.
 
-mod agents_support;
+use crate::agents_support;
 
 use agents_support::{Fixture, Options, burst, fixture, lock, wait_for};
 use delegation::agents::Agents;

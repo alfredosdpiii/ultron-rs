@@ -3,12 +3,13 @@
 //! settled as interrupted/unknown with OWNER_ENDED), refuse the same documents with the same error, and leave the
 //! store holding the same document.
 
-mod common;
+use crate::common;
 
 use common::normalize;
 use kernel::Signal;
+use kernel::store::{DocumentStore, MemoryDocumentStore};
 use kernel_apis::memory::MemoryBackend;
-use kernel_apis::{DocumentStore, MemoryDocumentStore, MemoryService, worker_gate};
+use kernel_apis::{MemoryService, worker_gate};
 use serde_json::{Map, Value, json};
 use std::path::Path;
 use std::sync::Arc;

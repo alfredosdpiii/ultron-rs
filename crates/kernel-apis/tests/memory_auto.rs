@@ -4,8 +4,9 @@
 //! expectations over an in-process Hindsight-shaped bank.
 
 use kernel::Signal;
+use kernel::store::MemoryDocumentStore;
 use kernel_apis::memory::{MemoryBackend, handle};
-use kernel_apis::{MemoryDocumentStore, MemoryService, worker_gate};
+use kernel_apis::{MemoryService, worker_gate};
 use serde_json::{Map, Value, json};
 use std::sync::{Arc, Mutex};
 

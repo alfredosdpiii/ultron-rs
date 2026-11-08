@@ -13,8 +13,6 @@ use daemon::workers::WorkerModel;
 use protocol::Route;
 use serde_json::json;
 use session_core::ModelFlags;
-pub use session_core::core::lane_config;
-pub use session_core::lane::{catalog_model, clock_lines, format_clock_utc, format_gap, rlm_tool, system_prompt};
 use session_journal::repo::Metadata;
 use std::sync::Arc;
 

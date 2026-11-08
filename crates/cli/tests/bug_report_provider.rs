@@ -5,7 +5,7 @@
 //! CLI's ambient credentials, a models.json override of a built-in, and models.json providers with `$VAR`, literal
 //! and `!command` keys. Each case runs in a private temp HOME / agent dir with only the variables it names.
 
-mod tui_harness;
+use crate::tui_harness;
 
 use serde_json::{Value, json};
 use std::path::Path;
@@ -126,7 +126,7 @@ fn cli_bug_report_provider_section_of_the_tui_report() {
     let env = [
         (session_core::core::AUTO_NAME_ENV, "off"),
         (cli::interactive::SPLASH_ENV, "off"),
-        (server::radius_relay::ENV_RADIUS_GATEWAY, "http://127.0.0.1:9"),
+        (config::radius::ENV_RADIUS_GATEWAY, "http://127.0.0.1:9"),
     ];
     let args = ["--model", "anthropic/claude-sonnet-4-5", "--api-key", "cli-key"];
     let tui = tui_harness::Tui::start_at(&tmp.0, mock.port, 120, 50, &args, &env);

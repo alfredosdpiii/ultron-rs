@@ -5,7 +5,7 @@
 //! A `compact` during a run aborts the run first; tree navigation's branch summary (driven on the session actor
 //! directly, RPC has no navigate command) is `isCompacting`, abortable and exclusive with compaction.
 
-mod common;
+use crate::common;
 
 use cli::rpc::client::{RpcClient, RpcClientOptions};
 use serde_json::{Value, json};
@@ -601,7 +601,7 @@ fn actor_full(replies: Vec<String>, summaries: Vec<String>, hold: bool, settings
         session_root: root,
         metadata: created.metadata().clone(),
         mode: "rpc".into(),
-        services: cli::compose::Services::default(),
+        services: session_core::compose::Services::default(),
         auto_name: false,
     };
     drop(created);

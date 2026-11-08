@@ -17,7 +17,7 @@ use std::ffi::{OsStr, OsString};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::{LazyLock, Mutex, PoisonError};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 /// The memory cap of the probe scope (64 MiB), read back from its `memory.max`.
 const PROBE_BYTES: u64 = 64 * 1024 * 1024;
@@ -111,34 +111,15 @@ fn probe(program: &OsStr) -> bool {
         "-c".into(),
         r#"cat "/sys/fs/cgroup$(cut -d: -f3 /proc/self/cgroup)/memory.max""#.into(),
     ]);
-    let Ok(mut child) = Command::new(program)
-        .args(&args)
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .spawn()
-    else {
-        return false;
+    let bound = signals::child::Bound {
+        timeout: Some(PROBE_TIMEOUT),
+        ..Default::default()
     };
-    let deadline = Instant::now() + PROBE_TIMEOUT;
-    loop {
-        match child.try_wait() {
-            Ok(Some(_)) => break,
-            Ok(None) if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(10)),
-            _ => {
-                let _ = child.kill();
-                let _ = child.wait();
-                return false;
-            }
-        }
-    }
-    match child.wait_with_output() {
-        Ok(output) => {
-            output.status.success()
-                && jsrt::string::trim(&String::from_utf8_lossy(&output.stdout)) == PROBE_BYTES.to_string()
-        }
-        Err(_) => false,
-    }
+    let mut command = Command::new(program);
+    command.args(&args).stdout(Stdio::piped()).stderr(Stdio::null());
+    signals::child::run(&mut command, None, bound).is_ok_and(|out| {
+        out.success() && jsrt::string::trim(&String::from_utf8_lossy(&out.stdout)) == PROBE_BYTES.to_string()
+    })
 }
 
 /// `cgroupScopeCommand`: the command prefix that starts the kernel inside a capped transient scope; the first item

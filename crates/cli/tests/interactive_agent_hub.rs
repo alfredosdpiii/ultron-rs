@@ -3,7 +3,7 @@
 //! (`agent_message.send` with `steer: true`, the hub's notice says so), and the subagent's transcript then holds the
 //! untrusted-message envelope and the answer it gave after it.
 
-mod tui_harness;
+use crate::tui_harness;
 
 use serde_json::json;
 use tui_harness::{Mock, QUIET, Reply, Tui, sse, text_reply};

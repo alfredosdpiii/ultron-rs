@@ -4,7 +4,7 @@
 
 use cli::js::replace_first;
 use serde_json::json;
-use usage::stats::{cell_apis, classify_nudge};
+use session_core::session_stats::{cell_apis, classify_nudge};
 
 #[test]
 fn cli_js_replace_first_expands_dollar_patterns() {

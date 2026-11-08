@@ -6,7 +6,7 @@
 //! The `claude` on PATH is a FAKE (a Python script, never the real CLI): as a subagent it starts the MCP server its
 //! `--mcp-config` names, as Claude Code would, runs one `rlm` cell there and streams that cell's text as its reply.
 
-mod executable_support;
+use crate::executable_support;
 
 use serde_json::{Value, json};
 use std::io::{BufRead, BufReader, Write};

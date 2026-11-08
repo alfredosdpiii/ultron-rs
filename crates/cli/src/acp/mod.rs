@@ -4,7 +4,7 @@
 //!
 //! It is a front end of the same session path as `--mode rpc` ([`crate::rpc::remote`]): each working directory a
 //! client opens sessions in gets one [`Remote`] (this process's server generation, attached to a session worker),
-//! every ACP request is an [`RpcSession`] operation, and the RPC event stream it writes is translated into
+//! every ACP request is a [`Remote`] operation, and the RPC event stream it writes is translated into
 //! `session/update`s ([`translate`]). The model still has one tool, `rlm`; each cell is reported as an ACP tool call.
 //!
 //! - `initialize`: protocol version 1; `loadSession` (not with `--no-session`), image and embedded-context prompts,
@@ -23,8 +23,8 @@ pub mod translate;
 use crate::Env;
 use crate::args::Args;
 use crate::print_mode::Target;
+use crate::rpc::Output;
 use crate::rpc::remote::{Event, Remote};
-use crate::rpc::{Output, RpcSession};
 use serde_json::{Value, json};
 use std::collections::HashMap;
 use std::io::Write;
@@ -260,7 +260,7 @@ impl Server {
                         "sessionCapabilities": {"list": {}},
                     },
                     "authMethods": [],
-                    "agentInfo": {"name": "ultron", "title": "Ultron", "version": crate::version()},
+                    "agentInfo": {"name": "ultron", "title": "Ultron", "version": config::version()},
                 }))
             }
             "authenticate" => Ok(json!({})),
@@ -506,7 +506,7 @@ impl Server {
                     .ok_or_else(|| invalid(format!("Unknown model: {value}")))?;
                 slot.remote.set_model(provider, model).map_err(invalid)?;
             }
-            "thought_level" => slot.remote.set_thinking_level(value, &slot.out).map_err(invalid)?,
+            "thought_level" => slot.remote.set_thinking_level(value).map_err(invalid)?,
             other => return Err(invalid(format!("Unknown config option: {other}"))),
         }
         self.drain(index);
@@ -529,7 +529,7 @@ impl Server {
         }
         slot.tracker.begin(&slot.cwd);
         slot.remote
-            .prompt(message.text, message.images, &slot.out)
+            .prompt(message.text, message.images)
             .map_err(|e| RpcError::new(INTERNAL_ERROR, e))?;
         // `/goal`, `/persona`, `/keepgoing`: the worker answered the session's command; its reply is the agent's
         // message and the turn ends at once.

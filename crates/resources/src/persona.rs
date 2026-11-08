@@ -14,8 +14,6 @@ pub const SETTING: &str = "persona";
 pub const ULTRON: &str = "ultron";
 /// The persona's text, in the agent dir.
 pub const PERSONALITY_FILE: &str = "personality.md";
-/// The custom message type of a nudge (`role: custom`): clients draw it as one line, the model sees its text.
-pub const NUDGE_CUSTOM_TYPE: &str = "ultron.nudge";
 /// Nudges allowed since the user last sent input.
 pub const MAX_NUDGES: u32 = 5;
 /// What a nudge says.
@@ -169,7 +167,7 @@ impl Chain {
 pub fn nudge_message(n: u32, timestamp: i64) -> Value {
     serde_json::json!({
         "role": "custom",
-        "customType": NUDGE_CUSTOM_TYPE,
+        "customType": protocol::custom_types::NUDGE,
         "content": NUDGE_TEXT,
         "display": true,
         "details": {"nudge": n, "max": MAX_NUDGES},

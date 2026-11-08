@@ -3,7 +3,7 @@
 //! their name and appends its own run; the Rust build then continues the TypeScript-extended file. Private
 //! ULTRON_CODING_AGENT_DIR / ULTRON_SERVER_DIR dirs; a scripted provider. Needs `node` on PATH.
 
-mod common;
+use crate::common;
 
 use common::{Naming, Sandbox, anthropic_text, mock_server, session_files};
 use serde_json::{Value, json};

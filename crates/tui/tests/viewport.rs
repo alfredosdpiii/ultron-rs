@@ -1,7 +1,7 @@
 //! History/viewport split, frame gate and the bounded-work benchmark (contract from omp
 //! docs/tui-core-renderer.md and packages/tui/test/{history-frame-plan,output-backpressure-gate}.test.ts).
 
-mod support;
+use crate::support;
 
 use std::io::{self, Write};
 use std::sync::{Arc, Condvar, Mutex};

@@ -189,7 +189,7 @@ fn session_core_lane_provider_sends_models_json_headers() {
     let env = env(dir.path(), &[("STUB_KEY", "k-1"), ("PROXY_TOKEN", "tok")]);
     let model = lane::resolve_model(&flags("stubproxy/sol"), &env).unwrap();
     let transport = Completions::default();
-    let provider = Provider::with_router(ai::claude_subscription::fallback::global(), Arc::new(transport.clone()));
+    let provider = Provider::new().with_transport(Arc::new(transport.clone()));
     let context = TranscriptContext {
         messages: vec![Message::User(UserMessage {
             content: UserMessageContent::Text("go".into()),

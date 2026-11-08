@@ -4,9 +4,10 @@
 //! `packages` of the recorded trees are ignored, so the local resolution is compared with TypeScript's top-level
 //! resources (a package resource ranks after every top-level one, so leaving them out changes nothing else).
 
+use model_scope::glob;
 use resources::ignore::Ignore;
 use serde_json::{Value, json};
-use session_core::local_resources::{LocalResources, RESOURCE_TYPES, glob};
+use session_core::local_resources::{LocalResources, RESOURCE_TYPES};
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -39,7 +40,7 @@ fn cli_local_resources_semver_matches_node_semver() {
 fn cli_local_resources_minimatch_matches_typescript() {
     let mut diffs = Vec::new();
     for c in fixture()["units"]["minimatch"].as_array().unwrap() {
-        let got = glob::minimatch(c[0].as_str().unwrap(), c[1].as_str().unwrap());
+        let got = glob::minimatch(c[0].as_str().unwrap(), c[1].as_str().unwrap(), false);
         if json!(got) != c[2] {
             diffs.push(format!("{c}: {got}"));
         }

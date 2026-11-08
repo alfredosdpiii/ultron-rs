@@ -3,8 +3,7 @@
 //! crates/review/tests/github_common (FakeHub behind the injected runner, a scripted engine): ported from
 //! ultron-autoreview.test.ts with its literal expectations. No network, no real gh, no model.
 
-#[path = "../../review/tests/github_common/mod.rs"]
-mod github_common;
+use crate::github_common;
 
 use cli::autoreview_cli::{Overrides, logo_text, run_command_with};
 use github_common::{BOT, FakeEngine, FakeHub, FakePull, engine_result, head, major};

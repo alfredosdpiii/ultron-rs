@@ -4,7 +4,7 @@
 //! Port of packages/coding-agent/test/ultron-a35-strategy-parity.test.ts over the Rust typed-agent host, its usage
 //! ledger and the TS fixture's scripted adapters and lane.
 
-mod agents_support;
+use crate::agents_support;
 
 use agents_support::{Fixture, Memory, Options, aborted, adapter, definition, fixture, input_of, lock};
 use delegation::usage::{UsageLedger, UsageOptions};

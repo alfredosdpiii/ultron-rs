@@ -187,11 +187,7 @@ fn update_command(parsed: Parsed, env: &Env, io: &mut Io, endpoints: &Endpoints)
     };
     if target == UpdateTarget::Models {
         // `refreshModelCatalogs`: every provider with a credential refreshes its stored catalog.
-        return match session_core::model_refresh::refresh_model_catalogs(
-            env,
-            ai::model_refresh::DEFAULT_CATALOG_BASE_URL,
-            &ai::model_refresh::management_user_agent(&crate::version()),
-        ) {
+        return match session_core::model_refresh::refresh_model_catalogs(env) {
             Ok(()) => {
                 let _ = writeln!(io.out, "Model catalogs refreshed");
                 0
@@ -244,7 +240,7 @@ pub(crate) fn latest_release(env: &Env, url: &str, retries: u32) -> Result<Optio
         .enable_all()
         .build()
         .map_err(|e| e.to_string())?;
-    let user_agent = ai::model_refresh::management_user_agent(&crate::version());
+    let user_agent = ai::model_refresh::management_user_agent();
     runtime.block_on(async {
         // The run's proxies (`HTTP_PROXY`, `HTTPS_PROXY`, `NO_PROXY`, the `httpProxy` setting), as Pi's HTTP stack.
         let client = ai::net::ClientConfig::from_lookup(&*env.var).client()?;
@@ -294,13 +290,13 @@ pub(crate) fn is_newer(candidate: &str, current: &str) -> bool {
 
 /// `ultron update --self` for the self-contained binary.
 fn self_update(env: &Env, force: bool, io: &mut Io, endpoints: &Endpoints) -> Result<i32, String> {
-    let env_version = crate::version();
+    let env_version = config::version();
     let latest = match latest_release(env, &endpoints.latest_version_url, 2) {
         Ok(Some(version)) => version,
         Ok(None) => return Err("Could not determine latest ultron version.".into()),
         Err(error) => return Err(format!("Could not determine latest ultron version: {error}")),
     };
-    if !force && !is_newer(&latest, &env_version) {
+    if !force && !is_newer(&latest, env_version) {
         let _ = writeln!(io.out, "ultron is already up to date (v{env_version})");
         return Ok(0);
     }

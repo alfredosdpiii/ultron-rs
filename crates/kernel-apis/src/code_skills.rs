@@ -14,7 +14,7 @@ use kernel::{HostHandler, Kernel, KernelOptions, Signal, Status};
 use serde_json::{Map, Value, json};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::time::{Duration, Instant, SystemTime};
+use std::time::{Duration, Instant};
 
 pub const CODE_SKILL_TEST_TIMEOUT_MS_ENV: &str = "ULTRON_CODE_SKILL_TEST_TIMEOUT_MS";
 
@@ -228,47 +228,20 @@ impl HostHandler for Refuse {
     }
 }
 
-/// Cross-process exclusion per skill, compatible with proper-lockfile: the lock is the `.lock` directory;
-/// one older than 30 s is stale and taken over.
-struct SkillLock {
-    path: PathBuf,
-}
-
-impl SkillLock {
-    fn acquire(base: &Path) -> Result<Self, String> {
-        std::fs::create_dir_all(base).map_err(|error| error.to_string())?;
-        let path = base.join(".lock");
-        let mut delay = 20u64;
-        for attempt in 0..=100 {
-            match std::fs::create_dir(&path) {
-                Ok(()) => return Ok(Self { path }),
-                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
-                    let stale = std::fs::metadata(&path)
-                        .and_then(|meta| meta.modified())
-                        .ok()
-                        .and_then(|modified| SystemTime::now().duration_since(modified).ok())
-                        .is_some_and(|age| age > Duration::from_secs(30));
-                    if stale {
-                        let _ = std::fs::remove_dir(&path);
-                        continue;
-                    }
-                    if attempt == 100 {
-                        break;
-                    }
-                    std::thread::sleep(Duration::from_millis(delay));
-                    delay = (delay * 2).min(500);
-                }
-                Err(error) => return Err(error.to_string()),
-            }
-        }
-        Err("Lock file is already being held".into())
-    }
-}
-
-impl Drop for SkillLock {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_dir(&self.path);
-    }
+/// Cross-process exclusion per skill, compatible with proper-lockfile: the lock is the `.lock` directory; one older
+/// than 30 s is stale and taken over. Tried 101 times, 20 ms apart at first, doubling to 500 ms.
+fn lock_skill(base: &Path) -> Result<config::lock::LockGuard, String> {
+    std::fs::create_dir_all(base).map_err(|error| error.to_string())?;
+    let options = config::lock::Options {
+        stale: Duration::from_secs(30),
+        retry: config::lock::Retry {
+            delay: Duration::from_millis(20),
+            backoff_to: Some(Duration::from_millis(500)),
+            until: config::lock::Until::Tries(101),
+        },
+        update: None,
+    };
+    config::lock::acquire(&base.join(".lock"), options).map_err(|error| error.to_string())
 }
 
 pub struct CodeSkillsOptions {
@@ -519,7 +492,7 @@ impl CodeSkills {
         let at = || jsrt::date::iso_string(self.now());
         let cause = jsrt::random::uuid_v4();
         let version = {
-            let _lock = SkillLock::acquire(&base)?;
+            let _lock = lock_skill(&base)?;
             let mut history = read_history(&base, &name)?;
             let next = versions(&mut history)
                 .iter()
@@ -555,7 +528,7 @@ impl CodeSkills {
             next
         };
         let report = self.run_test(&name, kind, &source, &test_source, signal)?;
-        let _lock = SkillLock::acquire(&base)?;
+        let _lock = lock_skill(&base)?;
         let mut history = read_history(&base, &name)?;
         let passed = report["passed"] == true;
         let active = history["active"].clone();
@@ -622,7 +595,7 @@ impl CodeSkills {
         if !base.join(".history.json").exists() {
             return Err(format!("Unknown code skill: {name}"));
         }
-        let _lock = SkillLock::acquire(&base)?;
+        let _lock = lock_skill(&base)?;
         let mut history = read_history(&base, &name)?;
         let active = history["active"].clone();
         let at = jsrt::date::iso_string(self.now());

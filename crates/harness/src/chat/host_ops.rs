@@ -107,7 +107,7 @@ impl HostOps {
             "rlm.results" => self.results(payload, call),
             "rlm.list_subagents" => self.list(call),
             "rlm.cancel" | "rlm.delete_subagent" => self.cancel(payload, signal),
-            "rlm.ask" => self.ask(payload, call, signal),
+            "rlm.ask" => self.ask(payload, signal),
             kind if SWARM_KINDS.contains(&kind) => self.swarm(kind, payload, call),
             _ => return None,
         })
@@ -333,7 +333,7 @@ impl HostOps {
     /// caller's context grows only by the question and the answer. The wait is bounded by `timeout_ms` (default
     /// [`ASK_TIMEOUT`]); when it runs out the answer is `status: "timeout"` and the question stays queued in the
     /// child, which keeps working on it.
-    fn ask(&self, payload: &Map<String, Value>, call: &CellCall, signal: &Cancel) -> OpResult {
+    fn ask(&self, payload: &Map<String, Value>, signal: &Cancel) -> OpResult {
         let id = parse_child(payload.get("child").ok_or("rlm.ask needs a child")?)?;
         let question = payload
             .get("question")
@@ -360,7 +360,6 @@ impl HostOps {
             }
             signal.wait_timeout(POLL);
         };
-        let _ = call;
         let request = payload.get("request_id").and_then(Value::as_str);
         let mut draft = SubmissionDraft::input(question).when_busy(WhenBusy::FollowUp);
         if let Some(request) = request {
@@ -455,84 +454,12 @@ impl HostOps {
     }
 
     fn swarm(&self, kind: &str, payload: &Map<String, Value>, call: &CellCall) -> OpResult {
-        use super::swarm;
-        let text = |key: &str| payload.get(key).and_then(Value::as_str);
-        let me = self.agent_name(call)?;
-        let now = self.chat.now();
-        let conversation = call.conversation_id;
-        let result = match kind {
-            "swarm.register" => {
-                let name = text("name").map(str::to_owned).unwrap_or(me);
-                self.chat
-                    .commit(|tx| swarm::register(tx, &name, Some(conversation), None, payload, now))
-            }
-            "swarm.agents" => self.chat.commit(swarm::agents),
-            "swarm.route" => {
-                let query = text("query").ok_or("swarm.route needs a query")?.to_owned();
-                self.chat.commit(|tx| swarm::route(tx, &query))
-            }
-            "swarm.send" => {
-                let to = text("to").ok_or("swarm.send needs a recipient")?.to_owned();
-                let body = text("text").ok_or("swarm.send needs text")?.to_owned();
-                let id = self
-                    .chat
-                    .commit(|tx| swarm::send(tx, &me, &to, &body, now))
-                    .map_err(error)?;
-                let mut woke = false;
-                if payload.get("wake").and_then(Value::as_bool).unwrap_or(false) {
-                    let agents = self.chat.commit(swarm::agents).map_err(error)?;
-                    if let Some(target) = agents[&to]["conversation"].as_u64()
-                        && let Some(handle) = self.chat.conversation(durable::ConversationId(target)).map_err(error)?
-                    {
-                        let draft =
-                            SubmissionDraft::input(format!("Message from {me}: {body}")).when_busy(WhenBusy::FollowUp);
-                        handle.submit(draft).map_err(error)?;
-                        woke = true;
-                    }
-                }
-                return Ok(json!({ "id": id, "woke": woke }));
-            }
-            "swarm.inbox" => {
-                let all = payload.get("all").and_then(Value::as_bool).unwrap_or(false);
-                let mark = payload.get("mark").and_then(Value::as_bool).unwrap_or(true);
-                let name = text("name").map(str::to_owned).unwrap_or(me);
-                self.chat.commit(|tx| swarm::inbox(tx, &name, all, mark))
-            }
-            "board.add" => {
-                let title = text("title").ok_or("board.add needs a title")?.to_owned();
-                let detail = text("detail").map(str::to_owned);
-                self.chat
-                    .commit(|tx| swarm::board_add(tx, &me, &title, detail.as_deref(), now))
-            }
-            "board.claim" | "board.update" => {
-                let id = payload
-                    .get("id")
-                    .and_then(Value::as_u64)
-                    .ok_or("A board task id is a number")?;
-                if kind == "board.claim" {
-                    self.chat.commit(|tx| swarm::board_claim(tx, &me, id, now))
-                } else {
-                    let (status, note) = (text("status").map(str::to_owned), text("note").map(str::to_owned));
-                    self.chat
-                        .commit(|tx| swarm::board_update(tx, &me, id, status.as_deref(), note.as_deref(), now))
-                }
-            }
-            "board.list" => {
-                let status = text("status").map(str::to_owned);
-                self.chat.commit(|tx| swarm::board_list(tx, status.as_deref()))
-            }
-            "notes.read" => self.chat.commit(swarm::notes_read),
-            "notes.append" => {
-                let line = text("text").ok_or("notes.append needs text")?.to_owned();
-                self.chat.commit(|tx| swarm::notes_append(tx, &me, &line))
-            }
-            _ => {
-                let body = text("text").ok_or("notes.write needs text")?.to_owned();
-                let expect = payload.get("expect_version").and_then(Value::as_u64);
-                self.chat.commit(|tx| swarm::notes_write(tx, &body, expect))
-            }
+        let caller = super::swarm::Caller {
+            name: self.agent_name(call)?,
+            conversation: Some(call.conversation_id),
+            root_inbox: None,
         };
-        result.map_err(error)
+        super::swarm::serve(&self.chat, kind, payload, &caller)
     }
 }
 

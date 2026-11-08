@@ -4,7 +4,7 @@
 //! (`ultron.schedule` / `<id>`, append-only journal writes replayed on open; the last write per id wins, a cancel is
 //! a write too). The server (crates/daemon `prompt_schedules`) owns timing: when a schedule is due it asks the
 //! session's worker to [`ScheduleModule::fire`] it, which records the run and returns the prompt as a displayed
-//! custom message ([`CUSTOM_TYPE`], details `{name, id, run}`) that starts a run. A fire names the due time it was
+//! custom message (`protocol::custom_types::SCHEDULE`, details `{name, id, run}`) that starts a run. A fire names the due time it was
 //! for: a duplicate or stale fire (another server generation, a value changed since) does nothing. Missed fires
 //! collapse into one: the next due time is the first slot after now.
 //!
@@ -20,8 +20,6 @@ use std::time::Duration;
 
 /// The session-value namespace of the schedules (one value per schedule id).
 pub const NAMESPACE: &str = "ultron.schedule";
-/// The custom message type of a fired schedule's prompt.
-pub const CUSTOM_TYPE: &str = "ultron.schedule";
 pub const MIN_INTERVAL_MS: i64 = 60_000;
 pub const MAX_INTERVAL_MS: i64 = 365 * DAY_MS;
 /// Active schedules one session may hold (each run is a model turn the user pays for).
@@ -258,7 +256,7 @@ pub fn format_interval(ms: i64) -> String {
 pub fn fire_message(schedule: &Schedule, run: u64, timestamp: i64) -> Value {
     json!({
         "role": "custom",
-        "customType": CUSTOM_TYPE,
+        "customType": protocol::custom_types::SCHEDULE,
         "content": schedule.prompt,
         "display": true,
         "details": {"name": schedule.name, "id": schedule.id, "run": run},
@@ -573,32 +571,30 @@ impl ApiModule for ScheduleModule {
 }
 
 /// The schedules a session journal holds (its own: values copied from another session by a fork are left out), in
-/// creation order, read without opening the session (its worker may be writing it): complete lines only.
+/// creation order, read without opening the session (its worker may be writing it).
 pub fn scan_journal(path: &Path) -> Vec<Schedule> {
     let Some(meta) = session_journal::catalog::read_metadata(path) else {
         return Vec::new();
     };
-    let Ok(content) = std::fs::read_to_string(path) else {
-        return Vec::new();
-    };
-    if !content.contains(NAMESPACE) {
-        return Vec::new();
-    }
     let mut values: Vec<(String, Value)> = Vec::new();
-    for line in session_journal::io::complete_lines(&content).into_iter().skip(1) {
-        let Ok(writes) = session_journal::codec::parse_transaction(line) else {
-            continue;
-        };
-        for write in writes {
-            if write["kind"] != "value" || write["namespace"] != NAMESPACE {
-                continue;
+    let scanned = session_journal::catalog::scan_writes(
+        path,
+        |line| !line.contains(NAMESPACE),
+        |writes| {
+            for write in writes.into_iter().flatten() {
+                if write["kind"] != "value" || write["namespace"] != NAMESPACE {
+                    continue;
+                }
+                let Some(key) = write["key"].as_str() else { continue };
+                values.retain(|(k, _)| k != key);
+                if write["op"] == "set" {
+                    values.push((key.to_string(), write["value"].clone()));
+                }
             }
-            let Some(key) = write["key"].as_str() else { continue };
-            values.retain(|(k, _)| k != key);
-            if write["op"] == "set" {
-                values.push((key.to_string(), write["value"].clone()));
-            }
-        }
+        },
+    );
+    if scanned.is_err() {
+        return Vec::new();
     }
     let mut found: Vec<Schedule> = values
         .iter()

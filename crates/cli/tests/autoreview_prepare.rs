@@ -5,8 +5,7 @@
 //! recording its spec; exit codes, stdout, stderr, runner calls and engine specs compared exactly. Plus the doctor's
 //! prepared-environment lines. No network, no real uv, git or model.
 
-#[path = "../../review/tests/github_common/mod.rs"]
-mod github_common;
+use crate::github_common;
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};

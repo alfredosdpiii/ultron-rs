@@ -15,7 +15,6 @@ use crate::constrained::{json_schema_tool_parameters, resolve_json_schema_strict
 use crate::env::provider_env_value;
 use crate::http::{AbortSignal, HttpRequest, HttpResponse, Transport, cancelled, is_aborted};
 use crate::json::{parse_json, parse_streaming_json};
-use crate::jsutil::json_parse_error;
 use crate::models::calculate_cost;
 use crate::options::{
     SimpleStreamOptions, StreamOptions, ThinkingBudgets, adjust_max_tokens_for_thinking, build_base_options,
@@ -191,7 +190,10 @@ fn http_error(status: u16, headers: &crate::http::HeaderMap, body: &str) -> Bedr
             Err(_) => {
                 return BedrockError {
                     name: "SyntaxError".into(),
-                    message: format!("{}{DESERIALIZATION_HINT}", json_parse_error(body).unwrap_or_default()),
+                    message: format!(
+                        "{}{DESERIALIZATION_HINT}",
+                        jsrt::json::parse(body).err().unwrap_or_default()
+                    ),
                     status: Some(status),
                     request_id,
                     ..Default::default()

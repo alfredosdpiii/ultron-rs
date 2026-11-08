@@ -3,7 +3,7 @@
 //! the summary is activated in the session's refinements ledger and opens the next user run as an
 //! `ultron.refinements` message; one whose quote is not is never stored; with `refine.auto` off neither happens.
 
-mod p_session_support;
+use crate::p_session_support;
 
 use p_session_support::{HANG, Setup, actor, text, user_texts};
 use serde_json::{Value, json};

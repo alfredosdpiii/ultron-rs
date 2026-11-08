@@ -5,7 +5,7 @@
 //! Not ported: artifact size and quota (NativeLocalServices `artifacts.*`), task `timeout_ms` and the root wall
 //! deadline (timers and the usage ledger), and the admitted-task cap (usage ledger `maxAdmittedTasks`).
 
-mod common;
+use crate::common;
 
 use common::{alive, kernel_in, null_handler, read_pids, run, value, wait_until};
 use kernel::{KernelError, Signal, Status};

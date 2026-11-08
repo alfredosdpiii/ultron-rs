@@ -5,8 +5,8 @@
 //! `interrupted` result with the committed partial output instead. Not ported: environment/cwd reruns, `beforeTool`
 //! hooks, and the `afterTools` hook rerun case (no tool hooks in the RLM runtime).
 
-mod chat_support;
-mod support;
+use crate::chat_support;
+use crate::support;
 
 use chat_support::*;
 use durable::{EntryRecord, SubmissionStatus, TaskId};

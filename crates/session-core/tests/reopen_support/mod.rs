@@ -1,7 +1,6 @@
 //! A session actor started, closed and opened again in-process over the same private home and session file, as a
 //! successor worker opens a session (no process is killed and no signal is sent: the first actor hands the session
 //! over, or closes, through its own input). Built on `p_session_support` (its scripted loopback server and replies).
-#![allow(dead_code)]
 
 use super::p_session_support::{HANG, Script, server};
 use serde_json::{Value, json};

@@ -7,8 +7,8 @@
 //! - transcript: the child conversation's messages;
 //! - revive: a subagent left `interrupted` runs again from its brief as a new subagent; anything else is refused.
 
-mod p_session_support;
-mod reopen_support;
+use crate::p_session_support;
+use crate::reopen_support;
 
 use p_session_support::{HANG, text, tool};
 use reopen_support::Home;

@@ -6,7 +6,7 @@
 //! project, `ULTRON_BUNDLED_SKILLS=off` and `-ns`. Each case runs in a private temp root with a FAKE `claude` first on
 //! PATH; stdout, stderr and the exit code must equal the recording after the generator's normalization.
 
-mod executable_support;
+use crate::executable_support;
 
 use regex::Regex;
 use serde_json::Value;

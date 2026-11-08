@@ -4,7 +4,7 @@
 //! selects text that copy-on-select puts on the clipboard (OSC 52 here, no display) with the "Copied!" flash.
 //! The viewport's behavior is replayed against tui-alt-screen.ts in crates/tui/tests/fullscreen_scroll.rs.
 
-mod tui_harness;
+use crate::tui_harness;
 
 use tui_harness::{Mock, Tui, text_reply};
 

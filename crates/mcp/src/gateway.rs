@@ -25,13 +25,6 @@ use std::thread::JoinHandle;
 pub const MCP_GATEWAY_TOOL: &str = "mcp";
 pub const MCP_GATEWAY_LABEL: &str = "MCP";
 
-/// Ultron's version, sent as `clientInfo.version` (`VERSION` of config.ts: packages/coding-agent/package.json).
-pub fn client_version() -> String {
-    let package: Value =
-        serde_json::from_str(include_str!("../../../packages/coding-agent/package.json")).unwrap_or(Value::Null);
-    package["version"].as_str().unwrap_or("0.0.0").to_string()
-}
-
 /// The gateway tool's JSON schema (`GATEWAY_PARAMETERS`).
 pub fn gateway_parameters() -> Value {
     json!({
@@ -102,7 +95,7 @@ pub struct GatewayOptions {
     pub servers: Option<Vec<ServerEntry>>,
     pub env: ConnectionEnv,
     /// Opens the sign-in URL (default: the platform browser).
-    pub open_url: Option<UrlOpener>,
+    pub open_url: Option<config::browser::UrlOpener>,
 }
 
 const COMMAND_ACTIONS: [&str; 7] = ["connect", "disconnect", "login", "logout", "enable", "disable", "tools"];
@@ -148,7 +141,7 @@ impl CommandUi for Recorded {
 struct Prompt<'a> {
     name: &'a str,
     ui: &'a dyn CommandUi,
-    open_url: Option<UrlOpener>,
+    open_url: Option<config::browser::UrlOpener>,
     hint: String,
 }
 
@@ -188,80 +181,7 @@ impl crate::oauth::signin::SignInPrompt for Prompt<'_> {
 /// environment: whether the browser may not reach the loopback callback (SSH, a container).
 pub fn sign_in_hint(env: &ConnectionEnv) -> String {
     let var = |key: &str| env.var.as_ref().and_then(|lookup| lookup(key));
-    crate::oauth::signin::unreachable_callback_hint(crate::oauth::signin::browser_reach(&var, &|path| {
-        Path::new(path).exists()
-    }))
-}
-
-/// `openBrowser`'s launcher for `platform` (Node's `process.platform`): `open` on macOS, `rundll32
-/// url.dll,FileProtocolHandler` on Windows (never `cmd /c start`, which would re-parse the URL), else `xdg-open`.
-pub fn browser_command(platform: &str, target: &str) -> (String, Vec<String>) {
-    match platform {
-        "darwin" => ("open".into(), vec![target.into()]),
-        "win32" => (
-            "rundll32".into(),
-            vec!["url.dll,FileProtocolHandler".into(), target.into()],
-        ),
-        _ => ("xdg-open".into(), vec![target.into()]),
-    }
-}
-
-pub type UrlOpener = Arc<dyn Fn(&str) + Send + Sync>;
-
-/// The session variables a browser launcher needs to reach the desktop (xdg-open finds the display and the
-/// session bus through them); only these pass to it besides PATH and HOME.
-pub const OPENER_VARS: [&str; 8] = [
-    "DISPLAY",
-    "WAYLAND_DISPLAY",
-    "XDG_RUNTIME_DIR",
-    "DBUS_SESSION_BUS_ADDRESS",
-    "XAUTHORITY",
-    "XDG_CURRENT_DESKTOP",
-    "XDG_SESSION_TYPE",
-    "BROWSER",
-];
-
-/// [`OPENER_VARS`] as `var` (the session's environment) has them.
-pub fn opener_vars(var: &dyn Fn(&str) -> Option<String>) -> Vec<(String, String)> {
-    OPENER_VARS
-        .iter()
-        .filter_map(|name| var(name).map(|value| (name.to_string(), value)))
-        .collect()
-}
-
-/// `openBrowser` with the launcher found on `path` (the session's PATH, never the process's), run detached (its own
-/// process group, no stdio, reaped in the background) with only that PATH, `home` and `desktop` (from
-/// [`opener_vars`]) in its environment; a missing launcher opens nothing.
-pub fn browser_opener_with(path: Option<String>, home: Option<String>, desktop: Vec<(String, String)>) -> UrlOpener {
-    Arc::new(move |url: &str| {
-        let (name, args) = browser_command(jsrt::process::platform(), url);
-        let Some(launcher) = path.as_deref().and_then(|path| {
-            std::env::split_paths(path)
-                .map(|dir| dir.join(&name))
-                .find(|candidate| candidate.is_file())
-        }) else {
-            return;
-        };
-        let mut command = std::process::Command::new(launcher);
-        command
-            .args(&args)
-            .env_clear()
-            .env("PATH", path.as_deref().unwrap_or_default())
-            .stdin(std::process::Stdio::null())
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null());
-        if let Some(home) = &home {
-            command.env("HOME", home);
-        }
-        command.envs(desktop.iter().map(|(name, value)| (name, value)));
-        #[cfg(unix)]
-        std::os::unix::process::CommandExt::process_group(&mut command, 0);
-        if let Ok(mut child) = command.spawn() {
-            std::thread::spawn(move || {
-                let _ = child.wait();
-            });
-        }
-    })
+    config::browser::unreachable_callback_hint(config::browser::browser_reach(&var, &|path| Path::new(path).exists()))
 }
 
 /// A notice for the user (`ctx.ui.notify`): `(message, level)`.
@@ -1189,7 +1109,7 @@ fn parse_args(args: Option<&Value>) -> Result<Map<String, Value>, GatewayError> 
     let parsed = match args {
         None => return Ok(Map::new()),
         Some(Value::String(s)) if s.is_empty() => return Ok(Map::new()),
-        Some(Value::String(s)) => crate::js_json::parse(s).map_err(GatewayError::other)?,
+        Some(Value::String(s)) => jsrt::json::parse(s).map_err(GatewayError::other)?,
         Some(other) => other.clone(),
     };
     match parsed {

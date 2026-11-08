@@ -1,5 +1,4 @@
 //! What an app under test sent to its session: the commands on its lane channel, kept in order.
-#![allow(dead_code)]
 
 use std::cell::RefCell;
 use std::rc::Rc;

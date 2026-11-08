@@ -18,9 +18,8 @@ use std::fs::OpenOptions;
 use std::io::Write;
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::Path;
-use std::sync::mpsc;
 use std::sync::{Arc, Mutex, OnceLock};
-use std::time::{Duration, SystemTime};
+use std::time::Duration;
 
 use indexmap::IndexMap;
 use serde::{Deserialize, Serialize};
@@ -312,27 +311,22 @@ fn process_lock(path: &str) -> Arc<Mutex<()>> {
         .clone()
 }
 
-fn is_stale(lock_dir: &str, stale_ms: u64) -> bool {
-    std::fs::metadata(lock_dir)
-        .and_then(|meta| meta.modified())
-        .ok()
-        .and_then(|modified| SystemTime::now().duration_since(modified).ok())
-        .is_some_and(|age| age > Duration::from_millis(stale_ms))
-}
-
-/// One attempt at `proper-lockfile`'s lock: the directory `<file>.lock`, taken over when stale.
-fn try_lock_dir(lock_dir: &str, stale_ms: u64) -> std::io::Result<bool> {
-    match std::fs::create_dir(lock_dir) {
-        Ok(()) => Ok(true),
-        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
-            if is_stale(lock_dir, stale_ms) {
-                let _ = std::fs::remove_dir(lock_dir);
-                return Ok(std::fs::create_dir(lock_dir).is_ok());
-            }
-            Ok(false)
-        }
-        Err(error) => Err(error),
-    }
+/// A `proper-lockfile` lock on `lock_dir`, tried `tries` times 20 ms apart, refreshed every `update`.
+fn take_lock(
+    lock_dir: &str,
+    stale_ms: u64,
+    tries: u32,
+    update: Option<Duration>,
+) -> std::io::Result<config::lock::LockGuard> {
+    let options = config::lock::Options {
+        stale: Duration::from_millis(stale_ms),
+        retry: config::lock::Retry {
+            until: config::lock::Until::Tries(tries),
+            ..config::lock::SYNC.retry
+        },
+        update,
+    };
+    config::lock::acquire(Path::new(lock_dir), options)
 }
 
 pub struct StateStore {
@@ -361,19 +355,14 @@ impl StateStore {
         let local = process_lock(&self.path);
         let _local = local.lock().unwrap_or_else(|e| e.into_inner());
         // Another process (another `ultron autoreview`) may hold it: retried as proper-lockfile does (50 times,
-        // 20 ms apart), since a lock directory has no event to wait on.
-        let lock_dir = format!("{}.lock", self.path);
-        let mut tries = 0;
-        while !try_lock_dir(&lock_dir, STATE_STALE_MS).map_err(io)? {
-            tries += 1;
-            if tries > 50 {
+        // 20 ms apart).
+        let _lock = match take_lock(&format!("{}.lock", self.path), STATE_STALE_MS, 51, None) {
+            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
                 return Err(Error::Other(format!("Lock file is already being held: {}", self.path)));
             }
-            std::thread::sleep(Duration::from_millis(20));
-        }
-        let result = self.write_locked(change);
-        let _ = std::fs::remove_dir(&lock_dir);
-        result.map_err(io)
+            locked => locked.map_err(io)?,
+        };
+        self.write_locked(change).map_err(io)
     }
 
     fn write_locked<T>(&self, change: impl FnOnce(&mut AutoreviewState) -> T) -> std::io::Result<T> {
@@ -427,31 +416,11 @@ impl StateStore {
 
 /// The daemon lock of an autoreview directory: held until dropped (or [`DaemonLock::release`]).
 pub struct DaemonLock {
-    lock_dir: String,
-    stop: Option<mpsc::Sender<()>>,
-    refresher: Option<std::thread::JoinHandle<()>>,
+    _lock: config::lock::LockGuard,
 }
 
 impl DaemonLock {
-    pub fn release(mut self) {
-        self.stop_and_remove();
-    }
-
-    fn stop_and_remove(&mut self) {
-        drop(self.stop.take());
-        if let Some(refresher) = self.refresher.take() {
-            let _ = refresher.join();
-        }
-        let _ = std::fs::remove_dir(&self.lock_dir);
-    }
-}
-
-impl Drop for DaemonLock {
-    fn drop(&mut self) {
-        if self.refresher.is_some() {
-            self.stop_and_remove();
-        }
-    }
+    pub fn release(self) {}
 }
 
 /// Take the daemon lock of an autoreview directory; fails with [`Error::DaemonRunning`] while another holds it.
@@ -469,24 +438,16 @@ pub fn acquire_daemon_lock(dir: &str) -> Result<DaemonLock, Error> {
             .map_err(io)?;
     }
     let lock_dir = format!("{}.lock", target.to_string_lossy());
-    if !try_lock_dir(&lock_dir, DAEMON_STALE_MS).map_err(io)? {
-        return Err(Error::DaemonRunning(format!(
+    match take_lock(
+        &lock_dir,
+        DAEMON_STALE_MS,
+        1,
+        Some(Duration::from_millis(DAEMON_UPDATE_MS)),
+    ) {
+        Ok(lock) => Ok(DaemonLock { _lock: lock }),
+        Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => Err(Error::DaemonRunning(format!(
             "another ultron autoreview is already running for {dir}"
-        )));
+        ))),
+        Err(error) => Err(io(error)),
     }
-    // Keep the lock fresh (its mtime) until released; the stop channel wakes the thread at once.
-    let (stop, stopped) = mpsc::channel::<()>();
-    let path = lock_dir.clone();
-    let refresher = std::thread::spawn(move || {
-        while let Err(mpsc::RecvTimeoutError::Timeout) = stopped.recv_timeout(Duration::from_millis(DAEMON_UPDATE_MS)) {
-            if let Ok(dir) = std::fs::File::open(&path) {
-                let _ = dir.set_modified(SystemTime::now());
-            }
-        }
-    });
-    Ok(DaemonLock {
-        lock_dir,
-        stop: Some(stop),
-        refresher: Some(refresher),
-    })
 }

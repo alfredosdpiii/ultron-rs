@@ -4,11 +4,12 @@
 
 use host::file_hooks::{CellChanges, CellObserver, FileHooks, Snapshot};
 use kernel::Signal;
+use kernel::store::{DocumentStore, MemoryDocumentStore};
 use kernel_apis::memory::{MemoryBackend, handle};
 use kernel_apis::memory_import::{self, Action, Harness};
 use kernel_apis::memory_pointers::{MemoryPointers, file_pointers_enabled, session_pointers};
 use kernel_apis::memory_records::{RecordIndex, glob_matches};
-use kernel_apis::{DocumentStore, MemoryDocumentStore, MemoryService, worker_gate};
+use kernel_apis::{MemoryService, worker_gate};
 use serde_json::{Map, Value, json};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};

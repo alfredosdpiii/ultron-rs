@@ -5,8 +5,7 @@
 //! arguments opens the menu (pick a server, then an action) for a client that serves dialogs. `--no-extensions`
 //! leaves MCP out of the session (session-worker.ts skips the built-in MCP extension).
 
-#[path = "daemon_common/mod.rs"]
-mod common;
+use crate::daemon_common as common;
 
 use client::runtime::Connection;
 use common::{HANG_GUARD, Home, provider, start_server, text_reply};

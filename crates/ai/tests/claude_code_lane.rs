@@ -133,12 +133,7 @@ fn dispatch(
     let mut sink = |event: &AssistantMessageEvent| events.lock().unwrap().push(event.clone());
     let message = runtime()
         .block_on(ai::dispatch::stream_simple(
-            &ai::claude_subscription::fallback::global(),
-            model,
-            context,
-            &options,
-            transport,
-            &mut sink,
+            model, context, &options, transport, &mut sink,
         ))
         .unwrap();
     (message, events.into_inner().unwrap())

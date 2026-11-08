@@ -342,8 +342,8 @@ pub fn grapheme_cell_range(line: &str, column: usize) -> Option<(usize, usize)> 
 }
 
 /// `sliceByColumn`.
-pub fn slice_by_column(line: &str, start: usize, length: usize, strict: bool) -> String {
-    slice_with_width(line, start, length, strict).0
+pub fn slice_by_column(line: &str, start: usize, length: usize) -> String {
+    slice_with_width(line, start, length, true).0
 }
 
 /// `composeScrollbarCell`: `replacement` in `column` of `line` (`total_width` columns), styles reset before it;
@@ -356,9 +356,9 @@ pub fn compose_scrollbar_cell(
     preserve_background: bool,
 ) -> String {
     let (start, end) = grapheme_cell_range(line, column).unwrap_or((column, column + 1));
-    let before = slice_by_column(line, 0, start, true);
-    let target = slice_by_column(line, start, end - start, true);
-    let after = slice_by_column(line, end, total_width.saturating_sub(end), true);
+    let before = slice_by_column(line, 0, start);
+    let target = slice_by_column(line, start, end - start);
+    let after = slice_by_column(line, end, total_width.saturating_sub(end));
     let mut prefix_end = 0;
     while let Some(len) = ansi_len(&target, prefix_end) {
         prefix_end += len;

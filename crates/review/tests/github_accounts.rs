@@ -1,9 +1,8 @@
 //! Ported from `test/ultron-autoreview.test.ts`: "accounts and auth", "GitHub client", "state", and the process
 //! runner (`runner.ts`), against the fake hub, stub scripts in temp dirs, and temp state files.
 
-#[path = "../../cli/tests/executable_support/mod.rs"]
-mod executable_support;
-mod github_common;
+use crate::executable_support;
+use crate::github_common;
 
 use std::collections::HashSet;
 use std::sync::{Arc, Mutex};

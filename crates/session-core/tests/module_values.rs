@@ -3,8 +3,8 @@
 //! fork copies them, a branch fork starts without them (fork-policy.ts `projectForkCurrentStateWrite`), and nothing
 //! is kept beside the session. The shell jobs' journal (`ultron.module/jobs`) is the observable one here.
 
-mod p_session_support;
-mod reopen_support;
+use crate::p_session_support;
+use crate::reopen_support;
 
 use p_session_support::{text, tool, tool_results};
 use reopen_support::Home;

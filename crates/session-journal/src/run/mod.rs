@@ -8,18 +8,10 @@ use crate::session::Session;
 use crate::state::Write;
 use serde_json::{Map, Value, json};
 
-pub const OP_META: &str = "ultron.op.meta";
-pub const OP_STATE: &str = "ultron.op.state";
-pub const OP_RESULT: &str = "ultron.result";
-pub const OP_TOOL_ARGS: &str = "ultron.op.tool_args";
-pub const PENDING_ENTRY: &str = "ultron.pending.entry";
-pub const PENDING_TOOL_OUTPUT: &str = "ultron.pending.tool_output";
-pub const PENDING_FRAMES: &str = "ultron.pending.assistant_frame";
-pub const USAGE: &str = "ultron.usage";
-
 mod journal;
+pub mod summary;
 
-/// The root lane of a session: the lane every prompted run journals on.
+/// The root lane of a session: the lane every prompted run journals on (the kernel's `kernel::ROOT_LANE`).
 pub const MAIN_LANE: &str = "main";
 
 pub use journal::{OpenCompaction, Run};
@@ -28,13 +20,6 @@ pub use journal::{OpenCompaction, Run};
 /// settings name ([`Run::set_stream_options`]).
 pub fn stream_options() -> Value {
     json!({"timeoutMs": 300000, "maxRetryDelayMs": 60000})
-}
-
-/// A summary request's `streamOptions`: the defaults, never deferred.
-pub fn summary_stream_options() -> Value {
-    let mut options = stream_options();
-    options["deferred"] = false.into();
-    options
 }
 
 /// The default `retryPolicy` of a generation (4 attempts from 2000 ms; `normalizedRetryPolicy` of absent settings).

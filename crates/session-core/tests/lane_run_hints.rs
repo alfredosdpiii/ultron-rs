@@ -3,8 +3,9 @@
 //! streak of its last run. Literal expectations from kernel_apis' loop detector (3 failed cells in a row trip it).
 
 use delegation::agents::{LaneReply, LaneRun, LaneRunner};
+use kernel::store::MemoryDocumentStore;
+use kernel_apis::HintsModule;
 use kernel_apis::cell_hints::{CellHints, CellHintsOptions, CellOutcome};
-use kernel_apis::{HintsModule, MemoryDocumentStore};
 use std::sync::Arc;
 
 const LANE: &str = "agent-retained";
@@ -55,4 +56,10 @@ fn session_core_lane_run_end_resets_the_lanes_loop_hints() {
     run(&plain);
     let hint = fail(&unreported, "c()").unwrap();
     assert!(hint.starts_with("[hint:stuck-loop] The last 3 cells failed"), "{hint}");
+}
+
+/// The kernel's root lane (which cells and host requests name) is the session journal's root lane.
+#[test]
+fn session_core_kernel_root_lane_is_the_journal_main_lane() {
+    assert_eq!(kernel::ROOT_LANE, session_journal::run::MAIN_LANE);
 }

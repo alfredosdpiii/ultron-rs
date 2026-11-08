@@ -4,13 +4,14 @@
 //! run delivers it. Replays crates/session-core/fixtures/idle_queue.json, recorded from the TypeScript AgentHarness
 //! lane by generate-idle-queue.mjs: the same provider requests, the same transcript, the same inbox after admission.
 
-mod p_session_support;
-mod reopen_support;
+use crate::p_session_support;
+use crate::reopen_support;
 
 use p_session_support::{in_order, text, user_texts};
+use protocol::watch::QueueKind;
 use reopen_support::Home;
 use serde_json::{Value, json};
-use session_core::core::{Op, QueueKind};
+use session_core::core::Op;
 use session_journal::ns::LANE_STATE;
 use std::collections::HashMap;
 

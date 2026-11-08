@@ -4,7 +4,7 @@
 //! the filter is checked on the real path (process env -> print mode -> kernel), and the model-written cell runs
 //! through the scripted provider.
 
-mod common;
+use crate::common;
 
 use common::{Install, Provider, Reply, stdout_of};
 

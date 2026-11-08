@@ -133,7 +133,7 @@ impl Transport for Recorder {
 fn send(case: &Case) -> Option<HttpRequest> {
     let model = case.model();
     let transport = Recorder::default();
-    let provider = Provider::with_router(ai::claude_subscription::fallback::global(), Arc::new(transport.clone()));
+    let provider = Provider::new().with_transport(Arc::new(transport.clone()));
     let context = TranscriptContext {
         messages: vec![Message::User(UserMessage {
             content: UserMessageContent::Text("go".into()),

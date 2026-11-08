@@ -2,7 +2,7 @@
 //! from this machine", the reviewer half of "running the reviewed project's tests", and "a bot's pull request is
 //! skipped", all against the fake hub and a scripted engine. No network, no model calls, no real accounts.
 
-mod github_common;
+use crate::github_common;
 
 use std::sync::{Arc, Mutex};
 

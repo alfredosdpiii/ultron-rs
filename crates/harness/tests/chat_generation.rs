@@ -8,8 +8,8 @@
 //! Not ported: registry and section-wrapper cases (no extension registry for sections) and "rejects a registry
 //! without the built-in tasks" (the ChatHarness installs them).
 
-mod chat_support;
-mod support;
+use crate::chat_support;
+use crate::support;
 
 use std::sync::{Arc, Mutex};
 use std::time::Duration;

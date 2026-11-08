@@ -215,7 +215,7 @@ impl RequestTrace {
             "stopReason".into(),
             serde_json::to_value(response.stop_reason).unwrap_or(Value::Null),
         );
-        line.insert("timestamp".into(), json!(crate::lane::now_ms()));
+        line.insert("timestamp".into(), json!(jsrt::date::now_ms()));
         lane_state.model = model_key;
         lane_state.messages = messages;
         let mut text = Value::Object(line).to_string();

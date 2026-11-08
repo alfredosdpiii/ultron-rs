@@ -5,7 +5,7 @@
 //! files back after saving the current files as another checkpoint, and never touches HEAD, the index or ignored
 //! files.
 
-mod p_session_support;
+use crate::p_session_support;
 
 use p_session_support::{Actor, Setup, actor, in_order, text};
 use serde_json::{Value, json};

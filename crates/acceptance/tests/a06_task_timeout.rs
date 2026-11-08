@@ -4,7 +4,7 @@
 //! timeout commits the same cancelled result, and a host reopened over the same journal reports it.
 
 use delegation::host::{ChildRunner, Delegation, DelegationOptions};
-use delegation::task_store::DocumentStore;
+use kernel::store::DocumentStore;
 use serde_json::{Value, json};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -13,10 +13,10 @@ use std::time::Duration;
 struct Store(Arc<Mutex<Option<Value>>>);
 
 impl DocumentStore for Store {
-    fn read(&mut self) -> Result<Option<Value>, String> {
+    fn read(&self) -> Result<Option<Value>, String> {
         Ok(self.0.lock().unwrap().clone())
     }
-    fn write(&mut self, document: &Value) -> Result<(), String> {
+    fn write(&self, document: &Value) -> Result<(), String> {
         *self.0.lock().unwrap() = Some(document.clone());
         Ok(())
     }

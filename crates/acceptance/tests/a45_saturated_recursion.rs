@@ -4,7 +4,7 @@
 //! Port of packages/coding-agent/test/ultron-a45-saturated-recursion.test.ts over the Rust typed-agent host and usage
 //! ledger; children are spawned from the parent's lane with its task signal, as its kernel would.
 
-mod agents_support;
+use crate::agents_support;
 
 use agents_support::{Fixture, Options, aborted, fixture, lock, wait_for};
 use delegation::agents::Agents;

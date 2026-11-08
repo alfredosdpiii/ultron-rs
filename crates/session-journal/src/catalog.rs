@@ -16,42 +16,16 @@ pub fn session_directory_name(cwd: &str) -> String {
     format!("--{}--", trimmed.replace(['/', '\\', ':'], "-"))
 }
 
-/// `encodeURIComponent`.
-pub fn encode_uri_component(text: &str) -> String {
-    let mut out = String::new();
-    for c in text.chars() {
-        if c.is_ascii_alphanumeric() || "-_.!~*'()".contains(c) {
-            out.push(c);
-        } else {
-            let mut buf = [0; 4];
-            for b in c.encode_utf8(&mut buf).bytes() {
-                out.push_str(&format!("%{b:02X}"));
-            }
-        }
-    }
-    out
-}
-
 /// `sessionFileName`.
 pub fn session_file_name(created_at: i64, id: &str) -> String {
     let timestamp = jsrt::date::iso_string(created_at).replace([':', '.'], "-");
-    format!("{timestamp}_{}.jsonl", encode_uri_component(id))
+    format!("{timestamp}_{}.jsonl", jsrt::uri::encode_component(id))
 }
 
 /// `path.resolve(p)` against the process cwd, without resolving symlinks.
 pub fn absolute(path: &str) -> String {
     let base = std::env::current_dir().unwrap_or_default();
-    config::paths::normalize(&base.join(path)).display().to_string()
-}
-
-/// A file's first line without its newline (the whole file when it has none), read no further than that.
-pub fn first_line(path: &Path) -> std::io::Result<String> {
-    let mut line = Vec::new();
-    BufReader::new(std::fs::File::open(path)?).read_until(b'\n', &mut line)?;
-    if line.last() == Some(&b'\n') {
-        line.pop();
-    }
-    Ok(String::from_utf8_lossy(&line).into_owned())
+    jsrt::path::resolve(&base.to_string_lossy(), path)
 }
 
 /// What a file's first line says it is, as the selectors and readers that take any file check it (loosely: a
@@ -78,7 +52,7 @@ impl HeaderLine {
 
     /// The first line of `path`.
     pub fn read(path: &Path) -> std::io::Result<HeaderLine> {
-        first_line(path).map(|line| HeaderLine::parse(&line))
+        io::first_line(path).map(|(line, _)| HeaderLine::parse(&line))
     }
 
     /// The header of a native session file.
@@ -106,7 +80,7 @@ pub(crate) fn metadata_from_header(header: &Map<String, Value>, path: &Path, mod
 /// The metadata of one session file from its header line (format 4, or a legacy Pi v3 header as format 4 reads it),
 /// or `None` when it is not a session.
 pub fn read_metadata(path: &Path) -> Option<Metadata> {
-    let line = first_line(path).ok()?;
+    let (line, _) = io::first_line(path).ok()?;
     let modified = io::mtime_ms(path).unwrap_or(0.0);
     match codec::parse_header(&line).ok()? {
         ParsedHeader::V4(header) => Some(metadata_from_header(&header, path, modified)),
@@ -185,5 +159,43 @@ pub fn find(root: &Path, id: &str) -> Result<Option<Metadata>, String> {
             "Session {id} is ambiguous: more than one session file has this id"
         )),
         (only, _) => Ok(only),
+    }
+}
+
+/// Read a session file's transactions without opening the session (its worker may be writing it): every line after
+/// the header (as `readline` reads them, so a last line still being written does not parse), unless `skip(line)` (a
+/// cheap filter on the raw text), decoded as its writes with legacy names renamed. `each` gets `None` for a line that
+/// is not JSON.
+pub fn scan_writes(
+    path: &Path,
+    skip: impl Fn(&str) -> bool,
+    mut each: impl FnMut(Option<Vec<Value>>),
+) -> std::io::Result<()> {
+    let mut reader = BufReader::new(std::fs::File::open(path)?);
+    let mut buffer = Vec::new();
+    let mut header = true;
+    loop {
+        buffer.clear();
+        if reader.read_until(b'\n', &mut buffer)? == 0 {
+            return Ok(());
+        }
+        if std::mem::take(&mut header) {
+            continue;
+        }
+        let line = String::from_utf8_lossy(&buffer);
+        let line = line.trim_end_matches(['\n', '\r']);
+        if line.is_empty() || skip(line) {
+            continue;
+        }
+        let Ok(parsed) = serde_json::from_str::<Value>(line) else {
+            each(None);
+            continue;
+        };
+        let mut writes = match parsed {
+            Value::Array(items) => items,
+            other => vec![other],
+        };
+        writes.iter_mut().for_each(codec::rename_legacy);
+        each(Some(writes));
     }
 }

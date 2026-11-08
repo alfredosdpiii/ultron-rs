@@ -333,7 +333,6 @@ fn run(request: &Value) -> Value {
         .args(&argv)
         .current_dir(request["cwd"].as_str().unwrap_or("/"))
         .env_clear()
-        .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
     for (key, value) in request["env"].as_object().into_iter().flatten() {
@@ -343,8 +342,13 @@ fn run(request: &Value) -> Value {
     }
     // The run is the daemon's: it never forwards again.
     command.env("LOKI_DAEMON", "0");
-    let mut child = match command.spawn() {
-        Ok(child) => child,
+    let bound = signals::child::Bound {
+        timeout: Some(REQUEST),
+        ..Default::default()
+    };
+    let input = request["stdin"].as_str().unwrap_or_default().as_bytes();
+    let out = match signals::child::run(&mut command, Some(input), bound) {
+        Ok(out) => out,
         Err(error) => {
             return failed(format!(
                 "loki: daemon error: OSError: {}\n",
@@ -352,36 +356,15 @@ fn run(request: &Value) -> Value {
             ));
         }
     };
-    if let Some(mut input) = child.stdin.take() {
-        let _ = input.write_all(request["stdin"].as_str().unwrap_or_default().as_bytes());
-    }
-    let pipe = |stream: Option<Box<dyn Read + Send>>| {
-        std::thread::spawn(move || {
-            let mut bytes = Vec::new();
-            if let Some(mut stream) = stream {
-                let _ = stream.read_to_end(&mut bytes);
-            }
-            String::from_utf8_lossy(&bytes).into_owned()
-        })
-    };
-    let stdout = pipe(child.stdout.take().map(|s| Box::new(s) as Box<dyn Read + Send>));
-    let stderr = pipe(child.stderr.take().map(|s| Box::new(s) as Box<dyn Read + Send>));
-    let deadline = Instant::now() + REQUEST;
-    let status = loop {
-        match child.try_wait() {
-            Ok(Some(status)) => break Some(status),
-            Ok(None) if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(5)),
-            _ => {
-                // The run this daemon started, through its own handle.
-                let _ = child.kill();
-                let _ = child.wait();
-                break None;
-            }
+    let text = |bytes: &[u8]| String::from_utf8_lossy(bytes).into_owned();
+    match out.end {
+        signals::child::End::Exited(status) => json!({
+            "exit": status.and_then(|s| s.code()).unwrap_or(2),
+            "stdout": text(&out.stdout),
+            "stderr": text(&out.stderr),
+        }),
+        signals::child::End::TimedOut | signals::child::End::Cancelled => {
+            failed("loki: daemon error: TimeoutExpired: the run took over 60 seconds\n".into())
         }
-    };
-    let (stdout, stderr) = (stdout.join().unwrap_or_default(), stderr.join().unwrap_or_default());
-    match status {
-        Some(status) => json!({ "exit": status.code().unwrap_or(2), "stdout": stdout, "stderr": stderr }),
-        None => failed("loki: daemon error: TimeoutExpired: the run took over 60 seconds\n".into()),
     }
 }

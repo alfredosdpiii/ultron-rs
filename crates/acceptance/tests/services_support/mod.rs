@@ -4,17 +4,17 @@
 //! `kernel_apis::KernelApis` routes every other request to the host modules (progress, schedules and goals, grants,
 //! release gates, local services, memory) exactly as a session's cell handler does. Lanes are faked as the TS
 //! fixtures fake them: a script from the lane and its prompt to the reply, every prompt recorded.
-#![allow(dead_code)]
 
 use delegation::agents::{Adapter, Agents, AgentsOptions, LaneReply, LaneRun, RefinementsHook, TaskEnd};
-use delegation::task_store::{DocumentStore, MemoryStore};
+use kernel::store::{DocumentStore, MemoryDocumentStore};
+
 use delegation::usage::UsageLedger;
 use kernel::{HostHandler, Signal};
 use kernel_apis::artifacts::{KeyedDocuments, MemoryKeyedDocuments};
 use kernel_apis::{ApiModule, KernelApis};
 use serde_json::{Map, Value};
 use std::sync::mpsc::Receiver;
-use std::sync::{Arc, Mutex, OnceLock, PoisonError};
+use std::sync::{Arc, Mutex, PoisonError};
 
 /// A lane script: (lane, prompt, the task's abort signal) to the reply text, or an error.
 pub type Script = Arc<dyn Fn(&str, &str, &Signal) -> Result<String, String> + Send + Sync>;
@@ -33,8 +33,8 @@ pub struct Setup {
 impl Default for Setup {
     fn default() -> Self {
         Setup {
-            tasks: Box::new(MemoryStore::default()),
-            definitions: Box::new(MemoryStore::default()),
+            tasks: Box::new(MemoryDocumentStore::default()),
+            definitions: Box::new(MemoryDocumentStore::default()),
             usage: None,
             deterministic: None,
             predict: None,
@@ -48,7 +48,8 @@ impl Default for Setup {
 pub struct Host {
     pub agents: Agents,
     pub apis: Arc<KernelApis>,
-    pub events: Receiver<TaskEnd>,
+    /// Held open so the host can report task ends.
+    pub _events: Receiver<TaskEnd>,
     /// `(lane, prompt)` of every lane run, in order.
     pub prompts: Arc<Mutex<Vec<(String, String)>>>,
 }
@@ -90,7 +91,7 @@ pub fn build(setup: Setup) -> Host {
     Host {
         agents,
         apis: Arc::new(apis),
-        events,
+        _events: events,
         prompts,
     }
 }
@@ -154,9 +155,6 @@ impl KeyedDocuments for Down {
         Err(self.0.into())
     }
 }
-
-/// A host set once its builder has it (for lane scripts that call back into the host).
-pub type Later = Arc<OnceLock<Agents>>;
 
 pub fn rejects(outcome: Result<Value, String>, text: &str) {
     match outcome {

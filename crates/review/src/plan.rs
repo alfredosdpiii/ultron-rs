@@ -171,6 +171,13 @@ pub struct EngineResult {
     pub diff_lines: IndexMap<String, Vec<(i64, i64)>>,
 }
 
+impl EngineResult {
+    /// The plan's view of an engine's raw result; an unreadable result is an error, never an empty review.
+    pub fn parse(raw: &serde_json::Value) -> Result<EngineResult, String> {
+        EngineResult::deserialize(raw).map_err(|error| format!("the engine returned an unreadable result: {error}"))
+    }
+}
+
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PlanOptions {
@@ -563,8 +570,9 @@ fn blocks(finding: &EngineFinding, block_at: &str, fresh: Option<&FreshLines>) -
     at_or_above(finding.level(), block_at) && (finding.level() == "critical" || is_fresh(finding, fresh))
 }
 
-pub fn decide_verdict(result: &EngineResult, self_authored: bool, state: &str, block_at: Option<&str>) -> Decision {
-    decide_verdict_in(result, self_authored, state, block_at, None)
+/// The verdict of a first review of an open pull request the reviewer did not author.
+pub fn decide_verdict(result: &EngineResult, block_at: Option<&str>) -> Decision {
+    decide_verdict_in(result, false, "open", block_at, None)
 }
 
 /// [`decide_verdict`] of a re-review: findings outside `fresh` block only when critical.

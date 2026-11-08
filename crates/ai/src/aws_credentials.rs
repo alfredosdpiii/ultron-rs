@@ -721,16 +721,6 @@ struct WebIdentity {
     session_name: Option<String>,
 }
 
-/// Node's `fs` error message for a failed open.
-fn fs_error(error: &std::io::Error, path: &str) -> String {
-    match error.kind() {
-        std::io::ErrorKind::NotFound => format!("ENOENT: no such file or directory, open '{path}'"),
-        std::io::ErrorKind::PermissionDenied => format!("EACCES: permission denied, open '{path}'"),
-        std::io::ErrorKind::IsADirectory => "EISDIR: illegal operation on a directory, read".into(),
-        _ => format!("{error}, open '{path}'"),
-    }
-}
-
 /// `fromTokenFile`: the profile's settings, else `AWS_WEB_IDENTITY_TOKEN_FILE`/`AWS_ROLE_ARN`/`AWS_ROLE_SESSION_NAME`.
 async fn from_token_file(input: &ChainInput<'_>, config: Option<WebIdentity>) -> Result<AwsCredentials> {
     let config = config.unwrap_or(WebIdentity {
@@ -746,7 +736,7 @@ async fn from_token_file(input: &ChainInput<'_>, config: Option<WebIdentity>) ->
         return Err(CredentialError::next("Web identity configuration not specified"));
     };
     let token = std::fs::read(&token_file)
-        .map_err(|e| CredentialError::plain("Error", fs_error(&e, &token_file)))?
+        .map_err(|e| CredentialError::plain("Error", jsrt::fs::error_message(&e, "open", Path::new(&token_file))))?
         .into_iter()
         .map(|b| (b & 0x7f) as char)
         .collect::<String>();
@@ -1242,12 +1232,13 @@ async fn from_http(input: &ChainInput<'_>, url: &reqwest::Url) -> Result<AwsCred
             tokio::time::sleep(METADATA_TIMEOUT).await;
         }
         let mut headers = HeaderMap::new();
-        let authorization = match &token_file {
-            Some(path) => {
-                Some(std::fs::read_to_string(path).map_err(|e| CredentialError::plain("Error", fs_error(&e, path)))?)
-            }
-            None => token.clone(),
-        };
+        let authorization =
+            match &token_file {
+                Some(path) => Some(std::fs::read_to_string(path).map_err(|e| {
+                    CredentialError::plain("Error", jsrt::fs::error_message(&e, "open", Path::new(path)))
+                })?),
+                None => token.clone(),
+            };
         if let Some(authorization) = authorization {
             if authorization.contains("\r\n") {
                 last = Some(CredentialError::next(

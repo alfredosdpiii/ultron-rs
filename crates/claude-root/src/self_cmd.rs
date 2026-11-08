@@ -37,20 +37,7 @@ pub fn shell_command(command: &SelfCommand, args: &[&str]) -> String {
     std::iter::once(command.command.as_str())
         .chain(command.args.iter().map(String::as_str))
         .chain(args.iter().copied())
-        .map(shell_quote)
+        .map(jsrt::string::shell_quote)
         .collect::<Vec<_>>()
         .join(" ")
-}
-
-/// Single-quote `value` unless it is made only of shell-safe characters.
-pub fn shell_quote(value: &str) -> String {
-    let safe = !value.is_empty()
-        && value
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() || "_@%+=:,./-".contains(c));
-    if safe {
-        value.to_string()
-    } else {
-        format!("'{}'", value.replace('\'', "'\\''"))
-    }
 }

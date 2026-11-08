@@ -3,18 +3,13 @@
 //! thread, so their responses may come back in any order); every other request is answered in arrival order.
 
 use ai::AbortSignal;
+use mcp::SUPPORTED_PROTOCOL_VERSIONS;
+use mcp::jsonrpc::{INTERNAL_ERROR, INVALID_PARAMS, INVALID_REQUEST, METHOD_NOT_FOUND, PARSE_ERROR};
 use serde_json::{Map, Value, json};
 use std::collections::HashMap;
 use std::io::{BufRead, Read, Write};
 use std::sync::{Arc, Mutex};
 
-pub const MCP_PROTOCOL_VERSIONS: [&str; 4] = ["2025-11-25", "2025-06-18", "2025-03-26", "2024-11-05"];
-
-const PARSE_ERROR: i64 = -32700;
-const INVALID_REQUEST: i64 = -32600;
-const METHOD_NOT_FOUND: i64 = -32601;
-const INVALID_PARAMS: i64 = -32602;
-const INTERNAL_ERROR: i64 = -32603;
 /// Lines longer than this are rejected.
 pub const MAX_LINE_BYTES: usize = 16 * 1024 * 1024;
 
@@ -95,9 +90,6 @@ fn record(value: Option<&Value>) -> Map<String, Value> {
     }
 }
 
-// ponytail: only the do-not-touch bridge.rs still calls `mcp_protocol::js_string`; drop this once it is gone.
-pub use jsrt::value::string as js_string;
-
 struct Server<H: McpHandlers + 'static> {
     handlers: Arc<H>,
     out: Out,
@@ -113,8 +105,8 @@ impl<H: McpHandlers + 'static> Server<H> {
             "initialize" => {
                 let requested = params.get("protocolVersion").and_then(Value::as_str);
                 let protocol = requested
-                    .filter(|v| MCP_PROTOCOL_VERSIONS.contains(v))
-                    .unwrap_or(MCP_PROTOCOL_VERSIONS[0]);
+                    .filter(|v| SUPPORTED_PROTOCOL_VERSIONS.contains(v))
+                    .unwrap_or(SUPPORTED_PROTOCOL_VERSIONS[0]);
                 let info = record(params.get("clientInfo"));
                 let mut client = Map::new();
                 for key in ["name", "version"] {

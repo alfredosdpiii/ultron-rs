@@ -2,13 +2,14 @@
 //! the session goal reconciled with a task journal on reopen (every journal state a goal job can be in), plus the
 //! ticker on a manual clock. Kill/reopen evidence over real processes is in crates/acceptance/tests/a23_durable_work.rs.
 
-mod common;
+use crate::common;
 
 use common::fixed;
 use kernel::Signal;
+use kernel::store::{DocumentStore, MemoryDocumentStore};
 use kernel_apis::goal::{GoalCheckResult, GoalDriver, GoalJobs, HOST_CLOSED, JobState};
 use kernel_apis::schedules::next_fire_at;
-use kernel_apis::{DocumentStore, ManualTickClock, MemoryDocumentStore, ScheduleTicker, SchedulesModule, TaskHost};
+use kernel_apis::{ManualTickClock, ScheduleTicker, SchedulesModule, TaskHost};
 use serde_json::{Value, json};
 use std::collections::HashMap;
 use std::sync::mpsc;

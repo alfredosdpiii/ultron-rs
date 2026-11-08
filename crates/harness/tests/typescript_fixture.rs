@@ -2,10 +2,11 @@
 //! (packages/coding-agent/src/ultron/rlm/task-store.ts) by fixtures/generate.mjs: every operation's value or
 //! error message and the stored document after it must match.
 
+use kernel::store::DocumentStore;
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
 
-use harness::task_store::{DocumentStore, TaskJournal, TaskState, task_fingerprint};
+use harness::task_store::{TaskJournal, TaskState, task_fingerprint};
 use serde_json::{Value, json};
 
 #[derive(Default)]
@@ -19,7 +20,7 @@ struct Shared {
 struct MemoryStore(Arc<Mutex<Shared>>);
 
 impl DocumentStore for MemoryStore {
-    fn read(&mut self) -> Result<Option<Value>, String> {
+    fn read(&self) -> Result<Option<Value>, String> {
         let shared = self.0.lock().unwrap();
         if shared.fail_read {
             return Err("read failed".into());
@@ -27,7 +28,7 @@ impl DocumentStore for MemoryStore {
         Ok(shared.value.clone())
     }
 
-    fn write(&mut self, document: &Value) -> Result<(), String> {
+    fn write(&self, document: &Value) -> Result<(), String> {
         let mut shared = self.0.lock().unwrap();
         if shared.fail_writes {
             return Err("write failed".into());

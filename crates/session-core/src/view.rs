@@ -1,7 +1,6 @@
 //! `experimental/pi-session-view.ts`: Pi's read-side views (tree, context messages, last assistant text, stats)
 //! over a format-4 session converted to Pi entries ([`super::pi_view`]), with the shapes and numbers Pi reports.
 
-pub use protocol::pi_message::text as message_text;
 use serde_json::{Map, Value, json};
 use session_file::SessionManager;
 
@@ -69,7 +68,7 @@ pub fn fork_messages(manager: &SessionManager) -> Vec<Value> {
         .into_iter()
         .filter(|e| str_of(e, "type") == Some("message") && str_of(&e["message"], "role") == Some("user"))
         .filter_map(|e| {
-            let text = message_text(&e["message"]);
+            let text = protocol::pi_message::text(&e["message"]);
             (!text.is_empty()).then(|| json!({"entryId": e["id"], "text": text}))
         })
         .collect()

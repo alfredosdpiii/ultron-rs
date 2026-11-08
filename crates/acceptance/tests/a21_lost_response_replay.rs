@@ -9,12 +9,12 @@
 //! is committed while the reply is held until the service closes or the caller aborts). The deterministic adapter
 //! calls it with the task's abort signal, as the TS adapter passes `signal` to `fetch`.
 
-mod agents_support;
+use crate::agents_support;
 
 use agents_support::{Fixture, Options, adapter, fixture_with_stores, lock, wait_for};
-use delegation::task_store::DocumentStore;
 use delegation::usage::{UsageLedger, UsageOptions};
 use kernel::Signal;
+use kernel::store::DocumentStore;
 use serde_json::{Value, json};
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -50,8 +50,8 @@ impl Durable {
         Owner {
             durable: self.clone(),
             mine: state.generation,
-            writes: 0,
-            dead: false,
+            writes: Default::default(),
+            dead: Default::default(),
             crash,
         }
     }
@@ -60,22 +60,23 @@ impl Durable {
 struct Owner {
     durable: Durable,
     mine: u64,
-    writes: usize,
-    dead: bool,
+    writes: std::sync::atomic::AtomicUsize,
+    dead: std::sync::atomic::AtomicBool,
     crash: Option<Crash>,
 }
 
 impl DocumentStore for Owner {
-    fn read(&mut self) -> Result<Option<Value>, String> {
+    fn read(&self) -> Result<Option<Value>, String> {
         Ok(self.durable.document())
     }
-    fn write(&mut self, next: &Value) -> Result<(), String> {
-        self.writes += 1;
-        if !self.dead && self.crash.as_ref().is_some_and(|crash| crash(next, self.writes)) {
-            self.dead = true;
+    fn write(&self, next: &Value) -> Result<(), String> {
+        use std::sync::atomic::Ordering::Relaxed;
+        let writes = self.writes.fetch_add(1, Relaxed) + 1;
+        if !self.dead.load(Relaxed) && self.crash.as_ref().is_some_and(|crash| crash(next, writes)) {
+            self.dead.store(true, Relaxed);
         }
         let mut state = lock(&self.durable.0);
-        if self.dead || self.mine != state.generation {
+        if self.dead.load(Relaxed) || self.mine != state.generation {
             return Err("owner is gone".into());
         }
         state.document = Some(next.clone());

@@ -3,8 +3,8 @@
 //! Prints the report as JSON; exits 0 when isolation holds (or the sandbox is off), 1 otherwise.
 
 use crate::Env;
-use crate::compose::Config;
 use sandbox::launcher::{Launcher, Policy};
+use session_core::compose::Config;
 use std::io::Write;
 
 pub const USAGE: &str = "Usage: ultron sandbox doctor\n\nChecks the shell sandbox a session in this directory gets: which mechanism runs commands (bubblewrap,\nunshare or Docker), what it isolates, and a self-check that tries to write outside the project, read hidden\ncredentials and reach the host's /tmp. Prints a JSON report; exits 1 when isolation does not hold.\n";

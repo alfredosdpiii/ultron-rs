@@ -1,7 +1,7 @@
 //! Port of upstream Pi Durable `test/harness-tasks.test.ts` ("task scheduling", "task abort", "task close"), each
 //! case run against Memory, SQLite and JSONL storage.
 
-mod support;
+use crate::support;
 
 use durable::{
     ConversationOwnership, EntryDraft, ScanOrder, SessionEnd, SessionError, StorageError, StorageWrite, TaskId,

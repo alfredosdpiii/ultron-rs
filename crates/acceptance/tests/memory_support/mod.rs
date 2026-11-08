@@ -4,12 +4,12 @@
 //! `createHindsightBackend`) and the fake is its HTTP transport (the captured `fetch`): it sees the exact wire
 //! method, path (bank prefix stripped) and JSON body, and answers with the same statuses (503 for an injected
 //! failure, 404 for an unknown document or endpoint) that the adapter maps to its error codes.
-#![allow(dead_code)]
 
 use hindsight::{HindsightBackend, HindsightOptions, HttpRequest, HttpResponse, Transport, TransportError};
 use kernel::Signal;
+use kernel::store::{DocumentStore, MemoryDocumentStore};
+use kernel_apis::MemoryService;
 use kernel_apis::memory::{MemoryBackend, MemoryGate};
-use kernel_apis::{DocumentStore, MemoryDocumentStore, MemoryService};
 use serde_json::{Map, Value, json};
 use std::collections::{BTreeMap, HashMap};
 use std::sync::{Arc, Mutex};

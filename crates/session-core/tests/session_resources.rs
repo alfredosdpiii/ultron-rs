@@ -91,7 +91,7 @@ fn resolve(root: &Root, case: &Value) -> SessionResources {
     let env = run_env(&root.root);
     let settings =
         config::settings::SettingsManager::create(&env.cwd, &root.root.join("agent"), case["trusted"] == true);
-    session_resources::resolve(&env, settings)
+    session_resources::resolve(&env, settings, None)
 }
 
 #[test]
@@ -276,6 +276,22 @@ fn session_core_resources_follow_the_stored_trust_decision() {
     );
 }
 
+/// `--append-system-prompt` replaces the discovered APPEND_SYSTEM.md (resource-loader.ts `appendSystemPromptSource`).
+#[test]
+fn session_core_resources_append_flag_replaces_the_discovered_append_file() {
+    let case = case("defaults-trusted-project");
+    let root = materialize(&case);
+    let env = run_env(&root.root);
+    let agent = root.root.join("agent");
+    let settings = |trusted| config::settings::SettingsManager::create(&env.cwd, &agent, trusted);
+    assert_eq!(
+        session_resources::resolve(&env, settings(false), None).append_system_prompt,
+        vec!["Profile addendum.\n".to_string()]
+    );
+    let flagged = session_resources::resolve(&env, settings(false), Some(&["Flag addendum.".to_string()]));
+    assert_eq!(flagged.append_system_prompt, vec!["Flag addendum.".to_string()]);
+}
+
 /// Pi packages are not supported by ultron-rs: a settings package is neither installed nor resolved (the
 /// configured npm command never runs), the local and auto-discovered resources load as without it, and the startup
 /// note counts the ignored entries of both scopes (the project's only when it is trusted).
@@ -318,7 +334,7 @@ fn session_core_resources_ignore_settings_packages_and_keep_local_ones() {
         session_core::local_resources::ignored_packages_note(&untrusted).as_deref(),
         Some("Pi packages are not supported by ultron-rs; ignoring 2 packages in settings")
     );
-    let resources = session_resources::resolve(&env, trusted);
+    let resources = session_resources::resolve(&env, trusted, None);
     assert!(!ran.exists(), "npm ran for a settings package");
     let skills = session_resources::skills(&root.cwd(), &root.agent(), &resources, false, Some(&root.bundled()));
     let want: Vec<&str> = case["skills"]

@@ -21,11 +21,9 @@ use durable::{ConversationId, EntryRecord, SubmissionId};
 use harness::chat::SubmissionDraft;
 use jsrt::sync;
 use kernel_apis::ContextControl;
-use kernel_apis::context_control::{
-    CONTEXT_EDIT_CUSTOM_TYPE, CONTEXT_NOTE_CUSTOM_TYPE, CONTEXT_OMITTED_CUSTOM_TYPE, ContextBranches,
-    apply_context_edits, project_note,
-};
+use kernel_apis::context_control::{CONTEXT_NOTE_CUSTOM_TYPE, ContextBranches, apply_context_edits, project_note};
 use serde_json::{Value, json};
+use session_journal::context::{CONTEXT_EDIT_CUSTOM_TYPE, CONTEXT_OMITTED_CUSTOM_TYPE};
 use std::collections::HashSet;
 use std::sync::{Arc, Mutex, OnceLock, Weak};
 
@@ -292,7 +290,7 @@ impl ChildContext {
         let (id, timestamp) = {
             let session = lock_session(&self.session);
             let id = session_journal::lock_clock(&session.clock()).next_id();
-            (id, crate::lane::now_ms())
+            (id, jsrt::date::now_ms())
         };
         let custom = json!({"id": id, "parentId": null, "type": "custom", "customType": custom_type, "data": data,
             "timestamp": timestamp});
@@ -402,7 +400,7 @@ pub(crate) struct LaneBranches {
 
 impl ContextBranches for LaneBranches {
     fn entries(&self, lane: &str) -> Result<Vec<Value>, String> {
-        if lane == super::LANE {
+        if lane == session_journal::run::MAIN_LANE {
             self.root.entries(lane)
         } else {
             self.children.entries(lane)
@@ -410,7 +408,7 @@ impl ContextBranches for LaneBranches {
     }
 
     fn append_custom(&self, lane: &str, custom_type: &str, data: &Value) -> Result<String, String> {
-        if lane == super::LANE {
+        if lane == session_journal::run::MAIN_LANE {
             self.root.append_custom(lane, custom_type, data)
         } else {
             self.children.append_custom(lane, custom_type, data)
@@ -418,7 +416,7 @@ impl ContextBranches for LaneBranches {
     }
 
     fn tip_id(&self, lane: &str) -> Result<Option<String>, String> {
-        if lane == super::LANE {
+        if lane == session_journal::run::MAIN_LANE {
             self.root.tip_id(lane)
         } else {
             self.children.tip_id(lane)

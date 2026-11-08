@@ -6,7 +6,7 @@ use std::sync::{Arc, Mutex};
 use tui::*;
 use tui::{strip_terminal_sequences, visible_width};
 
-mod support;
+use crate::support;
 use support::latch::{HANG_GUARD, Latch};
 
 /// 2x2 red PNG with a real header.

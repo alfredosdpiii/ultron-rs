@@ -30,7 +30,7 @@ use crate::engine::{Log, ReviewEngine};
 use crate::github::{
     Clock, Comment, Error, GitHub, PullRef, PullRequest, Review, ReviewCommentInput, ReviewInput, pull_key,
 };
-use crate::js::{Num, path_join};
+use crate::js::Num;
 use crate::ledger::{
     Fate, FateInput, FateKind, Lesson, ThreadState, fates_of, lessons_for, merge_fates, without_unposted_merges,
 };
@@ -64,7 +64,7 @@ fn learned_guide(deps: &ReviewerDeps, repo: &str, scratch: &str) -> Option<Strin
             return None;
         }
     };
-    let path = path_join(&[scratch, "learned-review-lessons.md"]);
+    let path = jsrt::path::join(&[scratch, "learned-review-lessons.md"]);
     let body = format!(
         "# What reviews of {repo} have taught\n\nWritten by memory from the fate of earlier findings in this \
          repository (accepted or rejected by its team). Weigh it when deciding what to report and at what level.\n\n{}\n",
@@ -1097,10 +1097,10 @@ pub const MAX_REVIEW_RECORDS: usize = 200;
 
 /// Writes `<dir>/reviews/<name>.json` and removes the oldest records beyond [`MAX_REVIEW_RECORDS`].
 pub fn write_review_record(dir: &str, name: &str, record: &Value) -> std::io::Result<()> {
-    let reviews = path_join(&[dir, "reviews"]);
+    let reviews = jsrt::path::join(&[dir, "reviews"]);
     make_private_dir(&reviews)?;
     write_private(
-        &path_join(&[&reviews, &format!("{name}.json")]),
+        &jsrt::path::join(&[&reviews, &format!("{name}.json")]),
         &format!("{}\n", to_json_1(record)),
     )?;
     let mut records: Vec<(std::time::SystemTime, std::path::PathBuf)> = std::fs::read_dir(&reviews)?
@@ -1167,7 +1167,7 @@ pub fn run_review(deps: &ReviewerDeps, prepared: &Prepared) -> Result<Outcome, E
             }
         })
     };
-    let scratch = path_join(&[
+    let scratch = jsrt::path::join(&[
         &std::env::temp_dir().to_string_lossy(),
         &format!("ultron-autoreview-diff-{}", random_hex(6)),
     ]);
@@ -1444,9 +1444,9 @@ fn review_in(
             }
         }
     }
-    let diff_path = path_join(&[scratch, "review.diff"]);
-    let post_diff_path = path_join(&[scratch, "pull.diff"]);
-    let earlier_diff_path = path_join(&[scratch, "earlier.diff"]);
+    let diff_path = jsrt::path::join(&[scratch, "review.diff"]);
+    let post_diff_path = jsrt::path::join(&[scratch, "pull.diff"]);
+    let earlier_diff_path = jsrt::path::join(&[scratch, "earlier.diff"]);
     std::fs::write(&diff_path, &review_diff).map_err(io)?;
     std::fs::write(&post_diff_path, &full_diff).map_err(io)?;
     if let Some(earlier_diff) = &earlier_diff {
@@ -1616,8 +1616,7 @@ fn review_in(
         return Ok(Outcome::Skipped(reason));
     }
     let raw = deps.engine.review(&Value::Object(spec), None).map_err(Error::Other)?;
-    let result: EngineResult = serde_json::from_value(raw.clone())
-        .map_err(|error| Error::Other(format!("the engine returned an unreadable result: {error}")))?;
+    let result = EngineResult::parse(&raw).map_err(Error::Other)?;
     let reviewed_at_ms = now();
 
     // A review of a commit that is no longer the head would be stale: drop it and come back.
@@ -1722,7 +1721,7 @@ fn review_in(
     let statuses = earlier_statuses(&raw);
     if dry_run {
         make_private_dir(&deps.paths.dry_run).map_err(io)?;
-        let base = path_join(&[
+        let base = jsrt::path::join(&[
             &deps.paths.dry_run,
             &format!("{}-{}-{}-{short_sha}-{}", r.owner, r.repo, r.number, account.login),
         ]);

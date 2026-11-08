@@ -48,7 +48,6 @@ pub mod transcript_picker;
 pub mod transcript_search;
 pub mod tree_selector;
 pub mod trust_selector;
-pub mod url_opener;
 pub mod word_diff;
 
 pub use components::*;

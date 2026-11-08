@@ -25,11 +25,11 @@ host-driven chat loop.
 | `rlm/native-host.ts`: timers (`timeout_ms`, root wall deadline), usage reservations, worktrees, verdict check (`childResult`), lane execution, workflows, modules, graph view | `crates/harness` (timers, executor glue), `crates/inference`/`crates/host` for the rest | Remaining. Timeouts need the async runtime glue (a timer per task calling `cancel`). |
 | `createSessionTaskStore` (session value `ultron.tasks/root`) | `TaskDocumentStore` impl over the Ultron session value store | Remaining: needs session values. |
 | `harness/runtime/reducer.ts` | `src/reducer.rs` (over the JSON `LaneSnapshot`/`HarnessEvent` shapes) | Ported. `fixtures/generate-reducer.mjs` records real faux-provider lane runs (resnapshot) and synthetic sequences -> `reducer.json`; `tests/reducer_fixture.rs`. |
-| `harness/execution/effect-gate.ts` | `src/effect_gate.rs` | Ported; createGate cases of `test/harness/execution-primitives.test.ts` plus transition tests. |
+| `harness/execution/effect-gate.ts` | none | Not needed: an ended invocation refuses runtime operations (`scheduler::Invocation::check`), and admitted work is cancelled through the invocation's `Cancel`. |
 | `harness/session/mutation-line.ts` | none | Not needed: `&mut self` / a `Mutex` serializes mutations. |
 | `harness/session/{types,values,commit,session,memory,in-memory-storage-state}.ts` | `src/session/` over `durable::Storage` atomic commits | Remaining. Values first (`getValue/setValue/scanValues`): the task journal, lane state and operation state live there. |
 | `harness/session/jsonl/*` (+ `legacy-v3.ts`) | `src/session/jsonl.rs` (reuse `durable::JsonlStorage` framing where formats match) | Remaining; fixture-test against copied TS session dirs, never live ones. |
-| `harness/runtime/types.ts` (`LaneState`, `Drive`) | `src/runtime/` | Remaining; `Drive` wraps `effect_gate` + a completion channel. |
+| `harness/runtime/types.ts` (`LaneState`, `Drive`) | `src/runtime/` | Remaining. |
 | `harness/runtime/lane.ts` (accept, drive, requestOperationAbort, resume, abort, steer/nextRun/followUp/cancelQueued, waitForIdle, watch) | `src/runtime/lane.rs` | Remaining. Needs session values. Abort: `begin_abort` on the drive's gate, commit `cancel_requested` + drained steer/followUp, then `signal_abort` (or on the repeat path). |
 | `harness/runtime/drive.ts`, `drive/{boundary,checkpoint,deferred,reconcile,recovery,retry,terminal}.ts` | `src/runtime/drive/` | Remaining. Recovery: an unfinished operation on reopen is reconciled from its checkpoint; unsafe in-flight tools get the interrupted result, never re-run. |
 | `drive/{generation,response,tools,tool-placement,structural}.ts` | `src/runtime/drive/` calling `crates/agent` / `crates/ai` | Remaining. The single tool is the REPL via `crates/kernel`. |
@@ -83,7 +83,7 @@ threshold check, events/view/task-graph, and `agents.*` typed agents as durable 
 
 1. Ultron session values over `crates/durable` storage; `TaskDocumentStore` on `ultron.tasks/root` (journal survives a
    real reopen).
-2. Task timeouts and the async executor glue: one task future per spawn, `CancelSignal` -> lane abort, timer ->
+2. Task timeouts and the async executor glue: one task future per spawn, `Cancel` -> lane abort, timer ->
    `cancel(reason)` (fixture: the TS host with fake timers).
 3. Lane admission and queues, then drive + checkpoint + recovery, then `requestOperationAbort` over the effect gate
    (fixtures recorded from `Lane` with the faux provider, as `generate-reducer.mjs` already does).

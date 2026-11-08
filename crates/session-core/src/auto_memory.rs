@@ -35,8 +35,7 @@ use std::collections::HashSet;
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
-/// The custom message type of recalled memories.
-pub const MEMORY_CUSTOM_TYPE: &str = compaction::RECALLED_MEMORY_TYPE;
+use protocol::custom_types::RECALLED_MEMORY;
 /// How long a run waits for its recall.
 // Hindsight's local cross-encoder takes 1-6 s on a loaded machine; 2 s timed out nearly every recall.
 pub const RECALL_TIMEOUT: Duration = Duration::from_secs(5);
@@ -194,7 +193,7 @@ pub fn worth_recalling(text: &str) -> bool {
 /// (a compaction summarizes them away, so they may be shown again).
 pub fn shown(entries: &[Value]) -> Shown {
     let mut shown = Shown::default();
-    for details in session_journal::context::custom_details_since_compaction(entries, MEMORY_CUSTOM_TYPE) {
+    for details in session_journal::context::custom_details_since_compaction(entries, RECALLED_MEMORY) {
         for id in details["ids"].as_array().into_iter().flatten() {
             if let Some(id) = id.as_str() {
                 shown.ids.insert(id.to_string());
@@ -273,7 +272,7 @@ pub fn recall_message(recalled: &Recalled, timestamp: u64) -> Option<Value> {
     }
     Some(json!({
         "role": "custom",
-        "customType": MEMORY_CUSTOM_TYPE,
+        "customType": RECALLED_MEMORY,
         "content": content,
         "display": true,
         "details": details,
@@ -292,7 +291,7 @@ pub fn retain_summary(stack: &Arc<Stack>, session_id: &str, cwd: &str, summary: 
         "Compaction summary of an Ultron coding-agent session in {cwd}: the agent's own account of the user's goal, \
          its progress and its decisions. What it says it did or verified is its claim, not a checked fact."
     );
-    let timestamp = jsrt::date::iso_string(crate::lane::now_ms());
+    let timestamp = jsrt::date::iso_string(jsrt::date::now_ms());
     let (stack, summary) = (stack.clone(), summary.to_string());
     std::thread::spawn(move || {
         if let Some(memory) = stack.memory() {
@@ -320,20 +319,6 @@ const TAIL_MESSAGE_CHARS: usize = 1_500;
 /// How long closing waits for the tail to reach Hindsight.
 pub const TAIL_TIMEOUT: Duration = Duration::from_secs(2);
 
-/// The text of a message's `content` (a string, or its `text` parts).
-fn message_text(content: &Value) -> String {
-    match content {
-        Value::String(text) => text.clone(),
-        Value::Array(parts) => parts
-            .iter()
-            .filter(|part| part["type"] == "text")
-            .filter_map(|part| part["text"].as_str())
-            .collect::<Vec<_>>()
-            .join("\n"),
-        _ => String::new(),
-    }
-}
-
 /// What the branch `entries` hold after their last compaction: the user's messages and the agent's final replies
 /// (an assistant message that ended its run, not one that called a tool), oldest first; never tool output, custom
 /// messages (recalled memory among them) or thinking. `None` with fewer than [`TAIL_MIN_MESSAGES`] user messages.
@@ -353,7 +338,7 @@ pub fn session_tail(entries: &[Value]) -> Option<Tail> {
             Some("assistant") if message["stopReason"] == "stop" => "Agent",
             _ => continue,
         };
-        let text = message_text(&message["content"]);
+        let text = protocol::pi_message::content_text(&message["content"], "\n");
         let text = text.trim();
         if text.is_empty() {
             continue;
@@ -477,7 +462,7 @@ mod tests {
     #[test]
     fn auto_memory_shown_ids_reset_at_a_compaction() {
         let recalled = |ids: Value| {
-            json!({"type": "message", "message": {"role": "custom", "customType": MEMORY_CUSTOM_TYPE,
+            json!({"type": "message", "message": {"role": "custom", "customType": RECALLED_MEMORY,
                 "details": {"ids": ids}}})
         };
         let entries = [
@@ -493,7 +478,7 @@ mod tests {
                 digest: false
             }
         );
-        let briefed = json!({"type": "message", "message": {"role": "custom", "customType": MEMORY_CUSTOM_TYPE,
+        let briefed = json!({"type": "message", "message": {"role": "custom", "customType": RECALLED_MEMORY,
             "details": {"ids": [], "digest": "ultron-project-p1"}}});
         assert!(shown(std::slice::from_ref(&briefed)).digest);
         assert!(
@@ -523,7 +508,7 @@ mod tests {
         );
         assert_eq!(
             (message["customType"].as_str(), message["timestamp"].as_u64()),
-            (Some(MEMORY_CUSTOM_TYPE), Some(7))
+            (Some(RECALLED_MEMORY), Some(7))
         );
         assert_eq!(recall_message(&Recalled::default(), 7), None);
     }
@@ -613,7 +598,7 @@ mod tests {
             ),
             message(
                 "e5",
-                json!({"role": "custom", "customType": MEMORY_CUSTOM_TYPE, "content": "[memory] x"}),
+                json!({"role": "custom", "customType": RECALLED_MEMORY, "content": "[memory] x"}),
             ),
             reply("e6", "Joined the deltas.", "stop"),
             message(

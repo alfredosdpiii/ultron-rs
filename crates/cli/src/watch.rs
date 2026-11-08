@@ -123,7 +123,7 @@ pub fn run(
     let mut clock = RlmClock::new();
     let mut poller = RlmPoller::new(WATCH_FRAME_LIMIT);
     let keys = tui::KeybindingsManager::new(
-        interactive::keybindings::native_app_keybindings(interactive::keybindings::Platform::new("linux", false)),
+        interactive::keybindings::native_app_keybindings(interactive::keybindings::Platform::current(false)),
         Vec::new(),
         Default::default(),
     );

@@ -17,10 +17,11 @@
 //!
 //! Not ported: the records of native tool calls (the model's only tool is `rlm`).
 
-use crate::store::{DocumentStore, read_versioned};
+use crate::store::read_versioned;
 use crate::util::{Clock, system_clock};
 use crate::{ApiModule, Request};
 use kernel::Signal;
+use kernel::store::DocumentStore;
 use serde_json::{Map, Value, json};
 use std::collections::HashMap;
 use std::sync::{Arc, Condvar, Mutex};

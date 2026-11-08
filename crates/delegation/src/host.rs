@@ -16,14 +16,13 @@ pub use restore::{ChildWaiter, Reattached};
 
 use crate::git_baseline::GitBaseline;
 use crate::spawn_contract::{CheckPlace, CheckRunner, Enforcer, SpawnContract, enforce, plain_check_runner};
-use crate::task_store::{DocumentStore, MemoryStore, TaskJournal, task_fingerprint};
+use crate::task_store::{TaskJournal, task_fingerprint};
 use crate::verdict::{MAX_VERDICT_REJECTIONS, validate_verdict};
-use crate::workspace::{
-    DEFAULT_MAX_SNAPSHOT_ENTRIES, WorkspaceSnapshot, check_files, diff_snapshots, snapshot_workspace,
-};
+use crate::workspace::{WorkspaceSnapshot, check_files, diff_snapshots, snapshot_workspace};
 use crate::worktrees::{self as wt, WorktreeRecord, WorktreeSetup};
 use jsrt::payload::nonempty_string;
 use jsrt::{number, sync};
+use kernel::store::{DocumentStore, MemoryDocumentStore};
 use kernel::{HostHandler, Signal};
 use lanes::Park;
 use serde_json::{Map, Value, json};
@@ -154,7 +153,7 @@ impl DelegationOptions {
     /// clock, no default worktree setup, contract checks run unsandboxed ([`plain_check_runner`]).
     pub fn new(runner: ChildRunner) -> Self {
         DelegationOptions {
-            store: Box::new(MemoryStore::default()),
+            store: Box::new(MemoryDocumentStore::default()),
             collect: Arc::new(|_: &str| CollectMode::InCell),
             runner,
             spawn_depth: DEFAULT_SPAWN_DEPTH,
@@ -274,7 +273,7 @@ pub type ModelCheck = Arc<dyn Fn(&str) -> Result<(), String> + Send + Sync>;
 /// output); `None` lets the commit take every change.
 fn worktree_changes(record: &WorktreeRecord, baseline: Option<&WorkspaceSnapshot>) -> Option<Vec<String>> {
     let baseline = baseline.filter(|b| b.complete)?;
-    let now = snapshot_workspace(&baseline.root, DEFAULT_MAX_SNAPSHOT_ENTRIES, true);
+    let now = snapshot_workspace(&baseline.root);
     if !now.complete {
         return None;
     }
@@ -975,11 +974,10 @@ impl Delegation {
                     markers,
                     message,
                 } => {
-                    if let Some(mut record) = record {
+                    let record_error = record.and_then(|mut record| {
                         record.state = "conflict".into();
-                        let _ = wt::save_record(&record);
-                        self.store_record(id, record);
-                    }
+                        self.store_record(id, record).err()
+                    });
                     let text = if markers {
                         format!(
                             "conflict markers written in {}: resolve them, or restore those files",
@@ -997,30 +995,37 @@ impl Delegation {
                             info["path"].as_str().unwrap_or_default()
                         )
                     };
-                    results.push(with(json!({ "status": "conflict", "files": files,
+                    let mut item = with(json!({ "status": "conflict", "files": files,
                         "conflicts": conflicts.iter().map(wt::ConflictFile::to_json).collect::<Vec<_>>(),
-                        "markers": markers, "message": text, "commit": info["commit"] })));
+                        "markers": markers, "message": text, "commit": info["commit"] }));
+                    if let Some(error) = record_error {
+                        item["record_error"] = error.into();
+                    }
+                    results.push(item);
                     if on_conflict != "skip" {
                         stopped_at = Some(id.clone());
                     }
                 }
                 other => {
                     // Merged or empty: its worktree and branch have done their job.
-                    if let Some(mut record) = record {
+                    let record_error = record.and_then(|mut record| {
                         if !self.inner.keep_worktrees {
                             wt::remove_child_worktree(&record, true);
-                        } else {
-                            record.state = "merged".into();
-                            let _ = wt::save_record(&record);
-                            self.store_record(id, record);
+                            return None;
                         }
-                    }
-                    results.push(match other {
+                        record.state = "merged".into();
+                        self.store_record(id, record).err()
+                    });
+                    let mut item = match other {
                         wt::MergeOutcome::Merged { files, diffstat } => {
                             with(json!({ "status": "merged", "files": files, "diffstat": diffstat }))
                         }
                         _ => with(json!({ "status": "empty" })),
-                    });
+                    };
+                    if let Some(error) = record_error {
+                        item["record_error"] = error.into();
+                    }
+                    results.push(item);
                 }
             }
         }
@@ -1043,13 +1048,16 @@ impl Delegation {
         out
     }
 
-    fn store_record(&self, id: &str, record: WorktreeRecord) {
+    /// Saves the task's worktree record to disk and keeps it as the task's record; the save's error, if any.
+    fn store_record(&self, id: &str, record: WorktreeRecord) -> Result<(), String> {
+        let saved = wt::save_record(&record).map_err(|error| error.message);
         let mut state = sync::lock(&self.inner.state);
         if let Some(task) = state.task_mut(id)
             && task.worktree.is_some()
         {
             task.worktree = Some(record);
         }
+        saved
     }
 
     fn spawn(&self, payload: &Map<String, Value>, parent: Option<&str>, lane: &str) -> Result<Value, String> {
@@ -1147,14 +1155,12 @@ impl Delegation {
         }
         // A named model must be `provider/model` and one the session can run: never silently the root's model.
         let model = match kwargs.get("model") {
-            Some(Value::String(model)) => {
-                if !model_scope::is_model_ref(model) {
-                    return Err("model must be provider/model".into());
-                }
+            Some(value @ Value::String(_)) => {
+                let model = model_scope::model_ref(value)?;
                 if let Some(check) = &self.inner.model_check {
-                    check(model)?;
+                    check(&model)?;
                 }
-                Some(model.clone())
+                Some(model)
             }
             _ => self.child_model(),
         };
@@ -1168,20 +1174,15 @@ impl Delegation {
         };
         // The worktree branches from the spawner's tree as it is now, before the child is admitted.
         let worktree = self.new_worktree(mode, &name, setup.as_ref(), parent)?;
-        let thinking = match kwargs.get("thinking") {
+        let thinking = match kwargs.get("thinking").map(model_scope::thinking_level) {
             None => None,
-            Some(value) => match value.as_str().filter(|t| model_scope::THINKING_LEVELS.contains(t)) {
-                Some(level) => Some(level.to_string()),
-                None => {
-                    if let Some(record) = &worktree {
-                        wt::remove_child_worktree(record, true);
-                    }
-                    return Err(format!(
-                        "thinking must be one of {}",
-                        model_scope::THINKING_LEVELS.join(", ")
-                    ));
+            Some(Ok(level)) => Some(level),
+            Some(Err(error)) => {
+                if let Some(record) = &worktree {
+                    wt::remove_child_worktree(record, true);
                 }
-            },
+                return Err(error);
+            }
         };
         let mut fingerprinted = json!({
             "definition": CHILD,
@@ -1195,6 +1196,7 @@ impl Delegation {
         }
         let fingerprint = task_fingerprint(&fingerprinted);
         let signal = Signal::new();
+        let mut record_error = None;
         let (task_id, level) = {
             let mut state = sync::lock(&self.inner.state);
             if state.closed {
@@ -1233,7 +1235,7 @@ impl Delegation {
                 finishing: false,
                 worktree: worktree.clone().map(|mut record| {
                     record.task_id = Some(id.clone());
-                    let _ = wt::save_record(&record);
+                    record_error = wt::save_record(&record).err().map(|error| error.message);
                     record
                 }),
                 worktree_baseline: None,
@@ -1314,6 +1316,13 @@ impl Delegation {
                 let _ = host.cancel(&id, &format!("Ultron task exceeded {timeout_ms}ms timeout"));
             }
         });
+        let mut worktree = worktree.map_or(
+            Value::Null,
+            |w| json!({ "branch": w.branch, "path": w.path, "cwd": w.cwd }),
+        );
+        if let Some(error) = record_error {
+            worktree["record_error"] = error.into();
+        }
         Ok(json!({
             "rlm_child_id": task_id,
             "name": name,
@@ -1321,7 +1330,7 @@ impl Delegation {
             "model": model.unwrap_or_default(),
             "timeout_ms": timeout_ms,
             "parent_branch_anchor": fork_at.unwrap_or_default(),
-            "worktree": worktree.map_or(Value::Null, |w| json!({ "branch": w.branch, "path": w.path, "cwd": w.cwd })),
+            "worktree": worktree,
         }))
     }
 
@@ -1479,11 +1488,7 @@ impl Delegation {
         };
         // The snapshot of its start, else (a child reattached after a restart) the kept Git baseline.
         let diff = match (&before, &baseline, &workspace) {
-            (Some(before), _, Some(_)) => diff_snapshots(
-                before,
-                &snapshot_workspace(&before.root, DEFAULT_MAX_SNAPSHOT_ENTRIES, true),
-            )
-            .ok(),
+            (Some(before), _, Some(_)) => diff_snapshots(before, &snapshot_workspace(&before.root)).ok(),
             (None, Some(baseline), Some(workspace)) => baseline.changes(workspace, &self.inner.command_env).ok(),
             _ => None,
         };
@@ -1518,9 +1523,9 @@ impl Delegation {
             (Some(w), true) => GitBaseline::capture(w, &self.inner.command_env),
             _ => None,
         };
-        let before = workspace.map(|w| snapshot_workspace(&w, DEFAULT_MAX_SNAPSHOT_ENTRIES, true));
+        let before = workspace.map(|w| snapshot_workspace(&w));
         let outside = match (&own, &before) {
-            (Some(_), Some(_)) => parent_workspace.map(|w| snapshot_workspace(&w, DEFAULT_MAX_SNAPSHOT_ENTRIES, true)),
+            (Some(_), Some(_)) => parent_workspace.map(|w| snapshot_workspace(&w)),
             _ => None,
         };
         let mut state = sync::lock(&self.inner.state);
@@ -1558,7 +1563,7 @@ impl Delegation {
             json!(text)
         };
         let after = match (&before, &workspace) {
-            (Some(_), Some(w)) => Some(snapshot_workspace(w, DEFAULT_MAX_SNAPSHOT_ENTRIES, true)),
+            (Some(_), Some(w)) => Some(snapshot_workspace(w)),
             _ => None,
         };
         let (concurrent, explained) = {
@@ -1647,7 +1652,7 @@ impl Delegation {
                 .collect();
             (before.root.clone(), before.clone(), explained)
         };
-        let after = snapshot_workspace(&root, DEFAULT_MAX_SNAPSHOT_ENTRIES, true);
+        let after = snapshot_workspace(&root);
         diff_snapshots(&before, &after)
             .map(|diff| {
                 diff.changed
@@ -1836,25 +1841,32 @@ impl Delegation {
                 .into();
                 record.commit = Some(commit.commit.clone());
                 empty = commit.commit.is_none();
-                if empty && !keep {
+                let saved = if empty && !keep {
                     wt::remove_child_worktree(&record, true);
+                    Ok(())
                 } else {
-                    let _ = wt::save_record(&record);
-                }
+                    wt::save_record(&record)
+                };
                 let mut info = json!({ "task": id, "branch": record.branch, "path": record.path, "repo": record.repo,
                     "base": record.base, "commit": commit.commit, "changed_files": commit.changed_files,
                     "diffstat": commit.diffstat });
                 if empty && !keep {
                     info["removed"] = json!(true);
                 }
+                if let Err(error) = saved {
+                    info["record_error"] = error.message.into();
+                }
                 info
             }
             Err(error) => {
                 record.state = "failed".into();
-                let _ = wt::save_record(&record);
-                json!({ "task": id, "branch": record.branch, "path": record.path, "repo": record.repo,
+                let mut info = json!({ "task": id, "branch": record.branch, "path": record.path, "repo": record.repo,
                     "base": record.base, "commit": null, "changed_files": [], "diffstat": "",
-                    "error": format!("committing the worktree failed: {}", error.message) })
+                    "error": format!("committing the worktree failed: {}", error.message) });
+                if let Err(error) = wt::save_record(&record) {
+                    info["record_error"] = error.message.into();
+                }
+                info
             }
         };
         {

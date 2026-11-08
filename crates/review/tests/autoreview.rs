@@ -5,7 +5,7 @@ use std::collections::HashMap;
 use std::path::Path;
 
 use review::plan::{
-    EngineFinding, EngineResult, LEVELS, PlanOptions, comment_marker, comment_text, cost_line, decide_verdict,
+    EngineFinding, EngineResult, LEVELS, PlanOptions, comment_marker, comment_text, cost_line, decide_verdict_in,
     level_of, place_line, plan_review, rank_findings, severity_of, without_inline,
 };
 use review::prepare::{
@@ -147,11 +147,12 @@ fn review_plan_posts_like_plan_ts() {
     for (number, case) in fx["plans"].as_array().expect("plans").iter().enumerate() {
         let result: EngineResult = from(&case["result"]);
         let options: PlanOptions = from(&case["options"]);
-        let verdict = decide_verdict(
+        let verdict = decide_verdict_in(
             &result,
             options.self_authored,
             &options.state,
             options.block_at.as_deref(),
+            None,
         );
         assert_eq!(json(&verdict), case["verdict"], "case {number}");
         assert_eq!(json(rank_findings(&result)), case["ranked"], "case {number}");

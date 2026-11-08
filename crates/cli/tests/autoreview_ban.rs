@@ -2,8 +2,7 @@
 //! through `autoreview_cli::run_command_with` against the in-memory fake GitHub of crates/review/tests/github_common
 //! (FakeHub behind the injected runner, a scripted engine). A private agent dir; no network, no real gh, no model.
 
-#[path = "../../review/tests/github_common/mod.rs"]
-mod github_common;
+use crate::github_common;
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;

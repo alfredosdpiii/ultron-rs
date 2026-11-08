@@ -192,82 +192,7 @@ fn build_completion_value(path: &str, is_at: bool, is_quoted: bool) -> String {
     }
 }
 
-/// Node `path.normalize` (POSIX).
-fn normalize(path: &str) -> String {
-    let absolute = path.starts_with('/');
-    let trailing = path.ends_with('/');
-    let mut parts: Vec<&str> = Vec::new();
-    for seg in path.split('/') {
-        match seg {
-            "" | "." => {}
-            ".." => {
-                if parts.last().is_some_and(|p| *p != "..") {
-                    parts.pop();
-                } else if !absolute {
-                    parts.push("..");
-                }
-            }
-            s => parts.push(s),
-        }
-    }
-    let mut out = parts.join("/");
-    if out.is_empty() && !absolute {
-        out = ".".into();
-    }
-    if trailing && !out.is_empty() {
-        out.push('/');
-    }
-    if absolute { format!("/{out}") } else { out }
-}
-
-/// Node `path.join` (POSIX) of two parts.
-fn join(a: &str, b: &str) -> String {
-    let joined = [a, b]
-        .iter()
-        .filter(|s| !s.is_empty())
-        .copied()
-        .collect::<Vec<_>>()
-        .join("/");
-    if joined.is_empty() {
-        return ".".into();
-    }
-    normalize(&joined)
-}
-
-/// Node `path.dirname` (POSIX).
-fn dirname(path: &str) -> String {
-    let b = path.as_bytes();
-    if b.is_empty() {
-        return ".".into();
-    }
-    let has_root = b[0] == b'/';
-    let mut end = None;
-    let mut matched_slash = true;
-    for i in (1..b.len()).rev() {
-        if b[i] == b'/' {
-            if !matched_slash {
-                end = Some(i);
-                break;
-            }
-        } else {
-            matched_slash = false;
-        }
-    }
-    match end {
-        None => (if has_root { "/" } else { "." }).into(),
-        Some(1) if has_root => "//".into(),
-        Some(e) => path[..e].into(),
-    }
-}
-
-/// Node `path.basename` (POSIX).
-fn basename(path: &str) -> &str {
-    let trimmed = path.trim_end_matches('/');
-    if trimmed.is_empty() {
-        return "";
-    }
-    trimmed.rsplit('/').next().unwrap_or(trimmed)
-}
+use jsrt::path::{basename, dirname};
 
 fn home_dir() -> String {
     std::env::var("HOME").unwrap_or_default()
@@ -275,7 +200,7 @@ fn home_dir() -> String {
 
 fn expand_home(path: &str) -> String {
     if let Some(rest) = path.strip_prefix("~/") {
-        let expanded = join(&home_dir(), rest);
+        let expanded = jsrt::path::join(&[&home_dir(), rest]);
         if path.ends_with('/') && !expanded.ends_with('/') {
             return format!("{expanded}/");
         }
@@ -508,7 +433,7 @@ impl CombinedAutocompleteProvider {
         if raw.starts_with('~') || expanded.starts_with('/') {
             PathBuf::from(expanded)
         } else {
-            PathBuf::from(join(&self.base_path.display().to_string(), expanded))
+            PathBuf::from(jsrt::path::join(&[&self.base_path.display().to_string(), expanded]))
         }
     }
 
@@ -529,7 +454,7 @@ impl CombinedAutocompleteProvider {
             let search_dir = if raw.starts_with('~') || expanded.starts_with('/') {
                 PathBuf::from(dir)
             } else {
-                PathBuf::from(join(&self.base_path.display().to_string(), &dir))
+                PathBuf::from(jsrt::path::join(&[&self.base_path.display().to_string(), &dir]))
             };
             (search_dir, file)
         };
@@ -557,7 +482,7 @@ impl CombinedAutocompleteProvider {
                     if dir == "." {
                         format!("~/{name}")
                     } else {
-                        format!("~/{}", join(&dir, &name))
+                        format!("~/{}", jsrt::path::join(&[&dir, &name]))
                     }
                 } else if raw.starts_with('/') {
                     let dir = dirname(raw);
@@ -567,7 +492,7 @@ impl CombinedAutocompleteProvider {
                         format!("{dir}/{name}")
                     }
                 } else {
-                    let joined = join(&dirname(raw), &name);
+                    let joined = jsrt::path::join(&[&dirname(raw), &name]);
                     if raw.starts_with("./") && !joined.starts_with("./") {
                         format!("./{joined}")
                     } else {
@@ -606,7 +531,7 @@ fn resolve_scoped_query(base_path: &Path, raw: &str) -> Option<(PathBuf, String,
     } else if display_base.starts_with('/') {
         PathBuf::from(&display_base)
     } else {
-        PathBuf::from(join(&base_path.display().to_string(), &display_base))
+        PathBuf::from(jsrt::path::join(&[&base_path.display().to_string(), &display_base]))
     };
     std::fs::metadata(&base_dir)
         .ok()?

@@ -121,15 +121,6 @@ fn options(v: Option<&Value>) -> Option<NewSessionOptions> {
     })
 }
 
-/// An optional argument: missing or `null` (JSON's spelling of `undefined` in an argument list).
-fn opt(args: &[Value], i: usize) -> Option<Value> {
-    args.get(i).filter(|v| !v.is_null()).cloned()
-}
-
-fn opt_str(args: &[Value], i: usize) -> Option<String> {
-    opt(args, i).and_then(|v| v.as_str().map(str::to_string))
-}
-
 fn s(args: &[Value], i: usize) -> String {
     args[i].as_str().expect("string argument").to_string()
 }
@@ -195,7 +186,6 @@ fn snapshot(sm: &SessionManager) -> Value {
         "sessionFile": sm.session_file(),
         "cwd": sm.cwd(),
         "sessionDir": sm.session_dir(),
-        "persisted": sm.is_persisted(),
         "leafId": sm.leaf_id(),
         "header": sm.header(),
         "entries": sm.entries(),
@@ -245,40 +235,6 @@ fn call(sc: &mut Scenario, step: &Value) -> Result<Value, Error> {
     let unit = |r: Result<(), Error>| r.map(|()| Value::Null);
     match step["method"].as_str().unwrap() {
         "appendMessage" => id(sm.append_message(args[0].clone())),
-        "appendThinkingLevelChange" => id(sm.append_thinking_level_change(&s(&args, 0))),
-        "appendModelChange" => id(sm.append_model_change(&s(&args, 0), &s(&args, 1))),
-        "appendCustomEntry" => id(sm.append_custom_entry(&s(&args, 0), opt(&args, 1))),
-        "appendUsage" => sm.append_usage(
-            &s(&args, 0),
-            &s(&args, 1),
-            &s(&args, 2),
-            args[3].clone(),
-            opt_str(&args, 4).as_deref(),
-        ),
-        "appendSessionInfo" => id(sm.append_session_info(&s(&args, 0))),
-        "appendCustomMessageEntry" => id(sm.append_custom_message_entry(
-            &s(&args, 0),
-            args[1].clone(),
-            args[2].as_bool().unwrap(),
-            opt(&args, 3),
-        )),
-        "appendContextEdit" => id(sm.append_context_edit(&s(&args, 0), args[1].clone())),
-        "appendLabelChange" => id(sm.append_label_change(&s(&args, 0), opt_str(&args, 1).as_deref())),
-        "appendCompaction" => id(sm.append_compaction(
-            &s(&args, 0),
-            opt_str(&args, 1).as_deref(),
-            args[2].as_u64().unwrap(),
-            opt(&args, 3),
-            opt(&args, 4).and_then(|v| v.as_bool()),
-            opt(&args, 5),
-        )),
-        "branchWithSummary" => id(sm.branch_with_summary(
-            opt_str(&args, 0).as_deref(),
-            &s(&args, 1),
-            opt(&args, 2),
-            opt(&args, 3).and_then(|v| v.as_bool()),
-            opt(&args, 4),
-        )),
         "getChildren" => Ok(sm.children(&s(&args, 0)).into_iter().cloned().collect()),
         "getBranch" => Ok(sm.branch_entries(Some(&s(&args, 0))).into_iter().cloned().collect()),
         "branch" => unit(sm.branch(&s(&args, 0))),
@@ -288,10 +244,6 @@ fn call(sc: &mut Scenario, step: &Value) -> Result<Value, Error> {
         }
         "newSession" => sm
             .new_session(options(args.first()))
-            .map(|f| f.map_or(Value::Null, Value::from)),
-        "setSessionFile" => unit(sm.set_session_file(&s(&args, 0))),
-        "createBranchedSession" => sm
-            .create_branched_session(&s(&args, 0))
             .map(|f| f.map_or(Value::Null, Value::from)),
         other => panic!("unknown method {other}"),
     }
@@ -312,11 +264,6 @@ fn run_step(sc: &mut Scenario, step: &Value) -> Result<Value, Error> {
             &sc.path(&step["path"]),
             opt_dir(sc, "dir").as_deref(),
             opt_dir(sc, "cwdOverride").as_deref(),
-        )),
-        "continueRecent" => Some(SessionManager::continue_recent(
-            sc.env(),
-            &sc.sub_str(step["cwd"].as_str().unwrap()),
-            opt_dir(sc, "dir").as_deref(),
         )),
         "inMemory" => {
             let entries = step.get("entries").map(|e| sc.sub(e).as_array().unwrap().clone());
@@ -493,9 +440,13 @@ fn replay(name: &str) {
             let after = fs::read_to_string(sc.sub_str(step["path"].as_str().unwrap())).ok();
             assert_eq!(sc.unsub(&json!(after)), step["fileAfter"], "{context}: file after load");
         }
-        if let Some(expected) = step.get("snapshot") {
+        if let Some(recorded) = step.get("snapshot") {
             let sm = &sc.managers[step["sm"].as_str().unwrap()];
             let actual = sc.unsub(&snapshot(sm));
+            // `isPersisted` is not ported: nothing in the product writes a Pi session.
+            let mut expected = recorded.clone();
+            expected.as_object_mut().unwrap().shift_remove("persisted");
+            let expected = &expected;
             for key in expected.as_object().unwrap().keys() {
                 assert_eq!(actual[key], expected[key], "{context}: snapshot.{key}");
             }
@@ -509,16 +460,6 @@ fn replay(name: &str) {
 }
 
 #[test]
-fn session_file_persisted_lifecycle_matches_typescript() {
-    replay("persisted_lifecycle");
-}
-
-#[test]
-fn session_file_deferred_flush_and_branched_sessions_match_typescript() {
-    replay("deferred_flush_and_branched_sessions");
-}
-
-#[test]
 fn session_file_open_edge_cases_match_typescript() {
     replay("open_edge_cases");
 }
@@ -526,11 +467,6 @@ fn session_file_open_edge_cases_match_typescript() {
 #[test]
 fn session_file_migrations_match_typescript() {
     replay("migrations");
-}
-
-#[test]
-fn session_file_fork_and_discovery_match_typescript() {
-    replay("fork_and_discovery");
 }
 
 #[test]
@@ -544,11 +480,6 @@ fn session_file_pure_context_matches_typescript() {
 }
 
 #[test]
-fn session_file_tree_order_matches_typescript() {
-    replay("tree_order");
-}
-
-#[test]
 fn session_file_fixture_covers_every_scenario() {
     let fixture: Value = serde_json::from_str(FIXTURE).unwrap();
     let names: Vec<&str> = fixture["scenarios"]
@@ -557,6 +488,8 @@ fn session_file_fixture_covers_every_scenario() {
         .iter()
         .map(|s| s["name"].as_str().unwrap())
         .collect();
+    // The scenarios of the TypeScript writer API (appends other than messages, branch summaries, branched sessions,
+    // `continueRecent`, `setSessionFile`) are not replayed: nothing in the product writes a Pi session that way.
     assert_eq!(
         names,
         [

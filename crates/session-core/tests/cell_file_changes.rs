@@ -3,7 +3,7 @@
 //! file, an edited one, a blocked-or-unchanged write and a cell that writes nothing (whose details stay `{}`, as in
 //! TypeScript). The interactive mode draws it under the expanded cell.
 
-mod p_session_support;
+use crate::p_session_support;
 
 use p_session_support::{Setup, actor, in_order, text, tool};
 use serde_json::{Value, json};

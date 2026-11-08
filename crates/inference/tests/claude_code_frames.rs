@@ -5,9 +5,8 @@
 //! with the plan's usage limit; an API key in that env is never used. The task host is a fake that runs each
 //! `rlm-frame@1` task on its own thread. Sealed environment; nothing reaches the network.
 
-mod common;
-#[path = "../../ai/tests/claude_subscription_support/isolate.rs"]
-mod isolate;
+use crate::common;
+use crate::isolate;
 
 use agent::{AgentTool, AgentToolResult, ToolUpdate};
 use ai::http::BoxFuture;

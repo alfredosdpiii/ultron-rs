@@ -80,19 +80,6 @@ pub fn id_of(value: Option<&Value>) -> i64 {
     if n.is_finite() && n.fract() == 0.0 { n as i64 } else { 0 }
 }
 
-/// `encodeURIComponent`.
-pub fn encode_uri_component(text: &str) -> String {
-    let mut out = String::new();
-    for byte in text.bytes() {
-        if byte.is_ascii_alphanumeric() || b"-_.!~*'()".contains(&byte) {
-            out.push(byte as char);
-        } else {
-            out.push_str(&format!("%{byte:02X}"));
-        }
-    }
-    out
-}
-
 /// `typeof value === "string" ? value : ""`.
 pub fn text(value: Option<&Value>) -> String {
     match value {
@@ -515,7 +502,7 @@ impl GitHub {
             "GET",
             &format!(
                 "notifications?all=true&per_page=50&since={}",
-                encode_uri_component(since)
+                jsrt::uri::encode_component(since)
             ),
             &RequestOptions {
                 headers,
@@ -577,7 +564,7 @@ impl GitHub {
     pub fn search_with_authors(&self, query: &str) -> Result<Vec<(PullRef, String)>, Error> {
         let response = self.get(&format!(
             "search/issues?per_page=50&sort=updated&order=desc&q={}",
-            encode_uri_component(query)
+            jsrt::uri::encode_component(query)
         ))?;
         let mut out = Vec::new();
         for item in items(response.body.as_ref().and_then(|body| body.get("items"))) {

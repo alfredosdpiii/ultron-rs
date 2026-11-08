@@ -2,8 +2,8 @@
 //! registry, journal, validation) with scripted model lanes. Ports of the invocation, bounded-preview, bad-return,
 //! subclass-role, durable-field, snapshot and generation cases of packages/coding-agent/test/ultron-agent-classes.test.ts.
 
-mod agents_support;
-mod common;
+use crate::agents_support;
+use crate::common;
 
 use agents_support::{Fixture, Options, fixture, lock};
 use common::{null_handler, runtime};

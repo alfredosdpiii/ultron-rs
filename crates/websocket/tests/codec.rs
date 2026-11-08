@@ -1,7 +1,7 @@
 //! RFC 6455 framing with the RFC's own literal examples (section 1.3 handshake, section 5.7 frames), plus the
 //! decoder's protocol checks.
 
-use websocket::{Message, MessageDecoder, accept_key, encode_frame, encode_message};
+use websocket::{ClientHandshake, Message, MessageDecoder, accept_key, encode_frame, encode_message};
 
 fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
@@ -106,4 +106,50 @@ fn websocket_decoder_rejects_protocol_violations() {
         push(MessageDecoder::client(64), &[0x88, 0x01, 0x03]),
         "Invalid close payload"
     );
+}
+
+/// A response completes a client handshake only with 101, the key's accept value, no extension and exactly the
+/// subprotocol asked for.
+#[test]
+fn websocket_client_handshake_checks_the_upgrade_response() {
+    for protocol in [None, Some("relay.v1")] {
+        let handshake = ClientHandshake::new(protocol);
+        let headers = handshake.request_headers();
+        let key = headers
+            .iter()
+            .find(|(name, _)| *name == "sec-websocket-key")
+            .unwrap()
+            .1
+            .clone();
+        assert_eq!(
+            headers
+                .iter()
+                .find(|(name, _)| *name == "sec-websocket-protocol")
+                .map(|(_, v)| v.as_str()),
+            protocol
+        );
+        let respond = |status: u16, extra: &[(&str, &str)]| {
+            let mut answer: Vec<(String, String)> = vec![("sec-websocket-accept".into(), accept_key(&key))];
+            if let Some(protocol) = protocol {
+                answer.push(("sec-websocket-protocol".into(), protocol.into()));
+            }
+            for (name, value) in extra {
+                answer.retain(|(n, _)| n != name);
+                answer.push((name.to_string(), value.to_string()));
+            }
+            handshake.accepted(status, &|name| {
+                answer
+                    .iter()
+                    .find(|(n, _)| n == name)
+                    .map(|(_, v)| v.clone())
+                    .filter(|v| !v.is_empty())
+            })
+        };
+        assert!(respond(101, &[]));
+        assert!(!respond(200, &[]));
+        assert!(!respond(101, &[("sec-websocket-accept", "wrong")]));
+        assert!(!respond(101, &[("sec-websocket-extensions", "permessage-deflate")]));
+        let other = if protocol.is_some() { "" } else { "relay.v1" };
+        assert!(!respond(101, &[("sec-websocket-protocol", other)]));
+    }
 }

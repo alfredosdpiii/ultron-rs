@@ -33,7 +33,7 @@ impl RootWake {
 
     /// Whether the host wakes `lane` when its work ends: only the root lane, and only while the root is woken.
     pub fn woken(&self, lane: &str) -> bool {
-        lane == crate::lane::MAIN && self.root_woken()
+        lane == session_journal::run::MAIN_LANE && self.root_woken()
     }
 
     /// How `lane`'s `rlm.collect` treats running children.

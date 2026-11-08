@@ -8,15 +8,14 @@ publish.workspace = true
 autotests = false
 
 [dependencies]
-delegation = { path = "../delegation" }
 jsrt = { path = "../jsrt" }
+kernel = { path = "../kernel" }
 kernel-apis = { path = "../kernel-apis" }
 serde_json = { version = "=1.0.151", features = ["preserve_order"] }
 session-journal = { path = "../session-journal" }
 
 [dev-dependencies]
 fancy-regex = "=0.19.2"
-kernel = { path = "../kernel" }
 tempfile = "=3.27.0"
 
 [lints]

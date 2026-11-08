@@ -359,7 +359,6 @@ mod tests {
         assert_eq!(Zone::from_env(Some(":UTC")).offset(0.0), 0);
     }
 
-    // The UTC fields session-core's `format_clock_utc` prints (cli/tests/print_mode.rs, rpc_units.rs).
     #[test]
     fn jsrt_localtime_utc_fields_match_format_clock() {
         assert_eq!(fields(1_791_208_239_000.0, 0), at(2026, 10, 5, 13, 50));

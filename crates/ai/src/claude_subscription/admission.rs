@@ -199,25 +199,6 @@ pub struct ProxyRoute {
     pub authorization: Option<String>,
 }
 
-fn percent_decode(text: &str) -> String {
-    let bytes = text.as_bytes();
-    let mut out = Vec::with_capacity(bytes.len());
-    let mut i = 0;
-    while i < bytes.len() {
-        if bytes[i] == b'%'
-            && let Some(hex) = text.get(i + 1..i + 3)
-            && let Ok(byte) = u8::from_str_radix(hex, 16)
-        {
-            out.push(byte);
-            i += 3;
-            continue;
-        }
-        out.push(bytes[i]);
-        i += 1;
-    }
-    String::from_utf8_lossy(&out).into_owned()
-}
-
 /// `getproxies_environment`: every `*_proxy` variable by scheme; a lowercase name wins over its uppercase form.
 fn proxies(env: &BTreeMap<String, String>) -> BTreeMap<String, String> {
     let mut found = BTreeMap::new();
@@ -292,8 +273,8 @@ pub fn upstream_proxy(
     let authorization = (!url.username().is_empty() || url.password().is_some()).then(|| {
         let credentials = format!(
             "{}:{}",
-            percent_decode(url.username()),
-            percent_decode(url.password().unwrap_or_default())
+            jsrt::uri::decode(url.username()),
+            jsrt::uri::decode(url.password().unwrap_or_default())
         );
         format!("Basic {}", jsrt::base64::encode(credentials))
     });

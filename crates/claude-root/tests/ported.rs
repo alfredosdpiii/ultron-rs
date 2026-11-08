@@ -14,8 +14,9 @@ use claude_root::guide::{
 use claude_root::launcher::{LaunchInput, LauncherOptions, build_claude_launch, parse_launcher_args};
 use claude_root::mcp_protocol::{McpHandlers, McpPrompt, McpResource, serve};
 use claude_root::mcp_server::parse_mcp_args;
-use claude_root::self_cmd::{SelfCommand, shell_quote};
+use claude_root::self_cmd::SelfCommand;
 use claude_root::worker_root::prepare_claude_root;
+use jsrt::string::shell_quote;
 use serde_json::{Map, Value, json};
 use session_core::core::claude_root_requested;
 use std::collections::BTreeSet;

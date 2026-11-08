@@ -28,6 +28,7 @@ dependencies = [
  "session-journal",
  "signals",
  "tempfile",
+ "tokio",
 ]
 
 [[package]]
@@ -63,19 +64,19 @@ version = "0.1.0"
 dependencies = [
  "config",
  "crc32fast",
- "getrandom 0.4.3",
  "indexmap",
  "jsrt",
  "kernel",
  "model-scope",
  "rcgen",
+ "regex",
  "reqwest",
  "ring",
  "rustix",
  "ruzstd",
  "serde",
  "serde_json",
- "sha2",
+ "signals",
  "tempfile",
  "tokio",
  "tokio-rustls",
@@ -337,7 +338,6 @@ dependencies = [
  "config",
  "delegation",
  "durable",
- "getrandom 0.4.3",
  "harness",
  "herdr",
  "hindsight",
@@ -347,13 +347,12 @@ dependencies = [
  "kernel",
  "kernel-apis",
  "loki",
+ "mcp",
  "regex",
  "resources",
  "rustix",
- "sandbox",
  "serde_json",
  "session-core",
- "session-file",
  "session-journal",
  "signals",
  "tempfile",
@@ -371,7 +370,6 @@ dependencies = [
  "chord-delta",
  "claude-root",
  "client",
- "compaction",
  "config",
  "daemon",
  "delegation",
@@ -396,7 +394,6 @@ dependencies = [
  "reqwest",
  "resources",
  "review",
- "ring",
  "rlm-views",
  "rustix",
  "sandbox",
@@ -482,6 +479,7 @@ dependencies = [
  "ai",
  "indexmap",
  "jsrt",
+ "protocol",
  "serde_json",
  "session-file",
  "session-journal",
@@ -593,12 +591,9 @@ dependencies = [
 name = "daemon"
 version = "0.1.0"
 dependencies = [
- "ai",
  "base64 0.23.1",
  "chord-delta",
  "config",
- "durable",
- "getrandom 0.4.3",
  "harness",
  "jsrt",
  "kernel-apis",
@@ -611,9 +606,7 @@ dependencies = [
  "serde_json",
  "server",
  "session-core",
- "session-file",
  "session-journal",
- "sha2",
  "signals",
  "tempfile",
 ]
@@ -637,7 +630,6 @@ dependencies = [
  "agent",
  "ai",
  "config",
- "getrandom 0.4.3",
  "harness",
  "jsonschema",
  "jsrt",
@@ -683,6 +675,7 @@ dependencies = [
  "kernel-apis",
  "resvg",
  "serde_json",
+ "signals",
  "tempfile",
  "theme",
 ]
@@ -748,7 +741,6 @@ dependencies = [
  "jsrt",
  "serde",
  "serde_json",
- "tempfile",
 ]
 
 [[package]]
@@ -1093,9 +1085,7 @@ dependencies = [
  "ai",
  "chord-delta",
  "compaction",
- "config",
  "durable",
- "getrandom 0.4.3",
  "indexmap",
  "jsrt",
  "kernel",
@@ -1104,7 +1094,6 @@ dependencies = [
  "serde",
  "serde_json",
  "session-journal",
- "sha2",
 ]
 
 [[package]]
@@ -1175,7 +1164,6 @@ name = "host"
 version = "0.1.0"
 dependencies = [
  "fancy-regex 0.19.2",
- "getrandom 0.4.3",
  "image",
  "jsrt",
  "kernel",
@@ -1183,7 +1171,6 @@ dependencies = [
  "rustix",
  "sandbox",
  "serde_json",
- "sha2",
  "tempfile",
 ]
 
@@ -1494,7 +1481,6 @@ dependencies = [
  "agent",
  "ai",
  "config",
- "getrandom 0.4.3",
  "host",
  "jsonschema",
  "jsrt",
@@ -1641,6 +1627,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2",
+ "signals",
  "tempfile",
 ]
 
@@ -1650,16 +1637,16 @@ version = "0.1.0"
 dependencies = [
  "ai",
  "base64 0.23.1",
+ "config",
  "fancy-regex 0.19.2",
- "getrandom 0.4.3",
  "host",
  "jsrt",
  "kernel",
+ "model-scope",
+ "protocol",
  "resources",
- "serde",
  "serde_json",
  "session-journal",
- "sha2",
  "tempfile",
  "tokio",
  "yaml-rust2",
@@ -1785,6 +1772,7 @@ dependencies = [
  "rustix",
  "serde_json",
  "sha2",
+ "signals",
  "tempfile",
  "tokio",
  "toml",
@@ -1801,7 +1789,6 @@ name = "mcp"
 version = "0.1.0"
 dependencies = [
  "ai",
- "base64 0.23.1",
  "config",
  "getrandom 0.4.3",
  "jsonschema",
@@ -1810,7 +1797,7 @@ dependencies = [
  "reqwest",
  "rustix",
  "serde_json",
- "sha2",
+ "signals",
  "tempfile",
  "url",
 ]
@@ -1872,6 +1859,7 @@ name = "model-scope"
 version = "0.1.0"
 dependencies = [
  "jsrt",
+ "serde_json",
 ]
 
 [[package]]
@@ -2404,6 +2392,7 @@ version = "0.1.0"
 dependencies = [
  "config",
  "jsrt",
+ "protocol",
  "regex",
  "serde_json",
  "tempfile",
@@ -2659,7 +2648,6 @@ dependencies = [
 name = "sandbox"
 version = "0.1.0"
 dependencies = [
- "getrandom 0.4.3",
  "jsrt",
  "rustix",
  "serde_json",
@@ -2767,7 +2755,7 @@ dependencies = [
 name = "server"
 version = "0.1.0"
 dependencies = [
- "getrandom 0.4.3",
+ "config",
  "jsrt",
  "protocol",
  "reqwest",
@@ -2781,7 +2769,6 @@ dependencies = [
 name = "services"
 version = "0.1.0"
 dependencies = [
- "delegation",
  "fancy-regex 0.19.2",
  "jsrt",
  "kernel",
@@ -2844,7 +2831,6 @@ dependencies = [
 name = "session-journal"
 version = "0.1.0"
 dependencies = [
- "config",
  "jsrt",
  "serde_json",
  "tempfile",
@@ -2892,6 +2878,7 @@ name = "signals"
 version = "0.1.0"
 dependencies = [
  "nix",
+ "rustix",
  "signal-hook",
 ]
 
@@ -3485,6 +3472,7 @@ dependencies = [
  "image",
  "jsrt",
  "serde_json",
+ "signals",
  "syntect",
  "theme",
  "unicode-segmentation",
@@ -3548,11 +3536,13 @@ dependencies = [
 name = "usage"
 version = "0.1.0"
 dependencies = [
- "compaction",
+ "config",
  "delegation",
+ "durable",
+ "harness",
  "indexmap",
- "inference",
  "jsrt",
+ "protocol",
  "serde_json",
  "session-core",
  "session-journal",

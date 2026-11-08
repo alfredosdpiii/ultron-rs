@@ -6,15 +6,17 @@
 //! `--dangerously-skip-permissions` (see [`crate::claude_cli::skip_permissions_args`]). Other arguments go to
 //! `claude` unchanged. `--print-config` prints the command instead of running it, with the configs inline.
 
-use crate::claude_cli::{self, ClaudeAuthStatus, DEFAULT_CLAUDE_MODEL, REQUIRED_CLAUDE_FLAGS, resolve_claude_binary};
+use crate::claude_cli::{self, ClaudeAuthStatus, REQUIRED_CLAUDE_FLAGS, resolve_claude_binary};
 use crate::control::socket_path_for;
 use crate::guide::{
     Audience, CLAUDE_RLM_TOOL, GuideOptions, PromptResources, ResourceFlags, claude_system_prompt,
     describe_prompt_resources,
 };
 use crate::hooks::{HERDR_HOOKS, HookEvent, SESSION_HOOKS};
-use crate::self_cmd::{SelfCommand, shell_command, shell_quote};
+use crate::self_cmd::{SelfCommand, shell_command};
 use crate::{Ctx, UsageError};
+use config::providers::CLAUDE_CODE_DEFAULT_MODEL;
+use jsrt::string::shell_quote;
 use serde_json::{Map, Value, json};
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
@@ -152,7 +154,7 @@ fn root_model(options: &LauncherOptions, var: &dyn Fn(&str) -> Option<String>) -
                 .map(|v| v.trim().to_string())
                 .filter(|v| !v.is_empty())
                 .or_else(|| options.root_model.clone())
-                .unwrap_or_else(|| DEFAULT_CLAUDE_MODEL.into()),
+                .unwrap_or_else(|| CLAUDE_CODE_DEFAULT_MODEL.into()),
             false,
         ),
     }
@@ -164,7 +166,7 @@ pub fn build_claude_launch(input: &LaunchInput) -> ClaudeLaunch {
     let options = input.options;
     let self_cmd = input.self_cmd;
     let (model, model_in_args) = root_model(options, input.var);
-    let root = (model.trim() != DEFAULT_CLAUDE_MODEL).then(|| model.trim().to_string());
+    let root = (model.trim() != CLAUDE_CODE_DEFAULT_MODEL).then(|| model.trim().to_string());
     let mut mcp_args: Vec<String> = self_cmd.args.clone();
     mcp_args.extend(["mcp", "--no-instructions", "--socket", input.socket].map(String::from));
     let children = options.children.map(|mode| mode.as_str().to_string());
@@ -378,7 +380,10 @@ pub fn run(
     let dir = if parsed.print_config {
         None
     } else {
-        Some(crate::temp_dir("ultron-claude-", var)?)
+        Some({
+            let base = config::paths::tmpdir(var);
+            config::paths::private_temp_dir(&base, "ultron-claude-").map_err(|e| format!("{}: {e}", base.display()))?
+        })
     };
     let launch = build_claude_launch(&LaunchInput {
         claude: &claude,

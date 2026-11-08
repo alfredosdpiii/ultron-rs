@@ -9,8 +9,9 @@ use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::time::{Duration, Instant};
 
+use config::git::find_git_paths;
 use interactive::app::{App, AppOptions};
-use interactive::footer_data::{FooterBranch, claude_code_usage_text, find_git_paths, read_branch};
+use interactive::footer_data::{FooterBranch, claude_code_usage_text, read_branch};
 use interactive::history::PromptHistoryStore;
 use interactive::keybindings::Platform;
 use interactive::keybindings::native_app_keybindings;

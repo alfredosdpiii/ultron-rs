@@ -4,14 +4,15 @@
 //! and fail the same, and leave the same durable state (module documents, the code-skills directory, the backend
 //! calls). Ids, timestamps, durations and temp paths are normalized on both sides by the same rules.
 
-mod common;
+use crate::common;
 
 use common::{FIXED_NOW, Made, assert_area, fixed, inner, runtime, tree};
 use kernel::Signal;
+use kernel::store::{DocumentStore, MemoryDocumentStore};
 use kernel_apis::memory::MemoryBackend;
 use kernel_apis::{
-    CodeSkills, CodeSkillsOptions, DocumentStore, HintsModule, KernelApis, MemoryApi, MemoryDocumentStore,
-    MemoryService, SkillSource, SkillsModule, worker_gate,
+    CodeSkills, CodeSkillsOptions, HintsModule, KernelApis, MemoryApi, MemoryService, SkillSource, SkillsModule,
+    worker_gate,
 };
 use serde_json::{Map, Value, json};
 use std::path::Path;

@@ -138,8 +138,10 @@ fn zone(mut lines: Vec<String>) -> Vec<String> {
     lines
 }
 
-/// `formatKeyText`: `alt` reads `option` on macOS; `capitalize` upper-cases each part's first letter.
-pub fn format_key_text(key: &str, capitalize: bool, darwin: bool) -> String {
+/// `formatKeyText`: `alt` reads `option` on macOS (`process.platform`); `capitalize` upper-cases each part's first
+/// letter.
+pub fn format_key_text(key: &str, capitalize: bool) -> String {
+    let darwin = jsrt::process::platform() == "darwin";
     key.split('/')
         .map(|k| {
             k.split('+')
@@ -163,8 +165,8 @@ pub fn format_key_text(key: &str, capitalize: bool, darwin: bool) -> String {
 }
 
 /// `keyText(keybinding)`.
-pub fn key_text(keys: &KeybindingsManager, keybinding: &str, darwin: bool) -> String {
-    format_key_text(&keys.get_keys(keybinding).join("/"), false, darwin)
+pub fn key_text(keys: &KeybindingsManager, keybinding: &str) -> String {
+    format_key_text(&keys.get_keys(keybinding).join("/"), false)
 }
 
 /// `keyHint(keybinding, description)` given the formatted key text.
@@ -1230,7 +1232,7 @@ pub fn render_footer(theme: &Theme, v: &FooterView, width: usize) -> Vec<String>
         stats.push(format!("CH{}%", number::to_fixed(rate, 1)));
     }
     let model = v.model.as_ref();
-    let subscription = model.is_some_and(|m| m.provider == "kimi-coding" || v.using_subscription);
+    let subscription = model.is_some_and(|m| m.provider == config::providers::KIMI_CODING || v.using_subscription);
     if v.cost != 0.0 || subscription {
         stats.push(format!(
             "${}{}",
@@ -1240,7 +1242,7 @@ pub fn render_footer(theme: &Theme, v: &FooterView, width: usize) -> Vec<String>
     }
     let window = v.context_window.or(model.map(|m| m.context_window)).unwrap_or(0);
     let percent_value = v.context_percent.flatten().unwrap_or(0.0);
-    let claude_code = model.is_some_and(|m| m.provider == "claude-code");
+    let claude_code = model.is_some_and(|m| m.provider == config::providers::CLAUDE_CODE);
     let auto = if v.auto_compact && !claude_code { " (auto)" } else { "" };
     let display = match v.context_percent {
         Some(None) => format!("?/{}{auto}", format_tokens(window)),
@@ -1322,7 +1324,7 @@ pub fn render_footer(theme: &Theme, v: &FooterView, width: usize) -> Vec<String>
 }
 
 /// A select list's theme: accented selection, muted descriptions, and the scroll and no-match lines in their colors.
-pub(crate) fn select_theme(t: &Rc<Theme>, scroll: Fg, no_match: Fg) -> tui::SelectListTheme {
+pub fn select_theme(t: &Rc<Theme>, scroll: Fg, no_match: Fg) -> tui::SelectListTheme {
     let style = |color: Fg| {
         let t = Rc::clone(t);
         Box::new(move |s: &str| t.fg(color, s)) as Box<dyn Fn(&str) -> String>

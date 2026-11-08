@@ -6,17 +6,13 @@
 use regex::Regex;
 use serde_json::Value;
 use std::collections::BTreeSet;
-use std::io::Read;
 use std::path::Path;
 use std::process::{Command, Stdio};
 use std::sync::LazyLock;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 pub const CLAUDE_BIN_ENV: &str = "ULTRON_CLAUDE_BIN";
 pub const CLAUDE_SKIP_PERMISSIONS_ENV: &str = "ULTRON_CLAUDE_SKIP_PERMISSIONS";
-
-/// Claude Code model of the root, of claude subagents and (as claude-code/…) of frames.
-pub const DEFAULT_CLAUDE_MODEL: &str = "claude-opus-5-5";
 
 /// Flags `ultron claude` needs from Claude Code; a CLI without one of them is too old.
 pub const REQUIRED_CLAUDE_FLAGS: [&str; 6] = [
@@ -33,6 +29,7 @@ const PROBE_TIMEOUT: Duration = Duration::from_secs(20);
 /// `ULTRON_CLAUDE_BIN`, else `claude` on PATH.
 pub fn resolve_claude_binary(var: &dyn Fn(&str) -> Option<String>) -> Option<String> {
     let path = var("PATH").unwrap_or_default();
+    let which = |name: &str| jsrt::process::which(name, &path).map(|found| found.display().to_string());
     if let Some(configured) = var(CLAUDE_BIN_ENV)
         .map(|v| v.trim().to_string())
         .filter(|v| !v.is_empty())
@@ -40,56 +37,29 @@ pub fn resolve_claude_binary(var: &dyn Fn(&str) -> Option<String>) -> Option<Str
         if Path::new(&configured).is_absolute() {
             return Some(configured);
         }
-        return Some(which(&configured, &path).unwrap_or(configured));
+        return Some(which(&configured).unwrap_or(configured));
     }
-    which("claude", &path)
-}
-
-/// The first executable `command` in `path` (`accessSync(X_OK)`).
-pub fn which(command: &str, path: &str) -> Option<String> {
-    use std::os::unix::fs::PermissionsExt;
-    path.split(':').filter(|dir| !dir.is_empty()).find_map(|dir| {
-        let candidate = Path::new(dir).join(command);
-        let mode = std::fs::metadata(&candidate).ok()?.permissions().mode();
-        (mode & 0o111 != 0).then(|| candidate.display().to_string())
-    })
+    which("claude")
 }
 
 /// Run `binary args` with no stdin, capturing stdout and stderr, killed after `PROBE_TIMEOUT`.
 pub fn run_capture(binary: &str, args: &[&str]) -> std::io::Result<(String, String)> {
-    let mut child = Command::new(binary)
-        .args(args)
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()?;
-    let mut out = child.stdout.take().expect("piped stdout");
-    let mut err = child.stderr.take().expect("piped stderr");
-    let out_reader = std::thread::spawn(move || {
-        let mut text = Vec::new();
-        let _ = out.read_to_end(&mut text);
-        text
-    });
-    let err_reader = std::thread::spawn(move || {
-        let mut text = Vec::new();
-        let _ = err.read_to_end(&mut text);
-        text
-    });
-    let started = Instant::now();
-    loop {
-        if child.try_wait()?.is_some() {
-            break;
-        }
-        if started.elapsed() >= PROBE_TIMEOUT {
-            let _ = child.kill();
-            let _ = child.wait();
-            break;
-        }
-        std::thread::sleep(Duration::from_millis(10));
-    }
-    let stdout = String::from_utf8_lossy(&out_reader.join().unwrap_or_default()).into_owned();
-    let stderr = String::from_utf8_lossy(&err_reader.join().unwrap_or_default()).into_owned();
-    Ok((stdout, stderr))
+    let bound = signals::child::Bound {
+        timeout: Some(PROBE_TIMEOUT),
+        ..Default::default()
+    };
+    let out = signals::child::run(
+        Command::new(binary)
+            .args(args)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped()),
+        None,
+        bound,
+    )?;
+    Ok((
+        String::from_utf8_lossy(&out.stdout).into_owned(),
+        String::from_utf8_lossy(&out.stderr).into_owned(),
+    ))
 }
 
 /// `claude auth status --json`, reduced to the fields Ultron shows (never the account's identity).

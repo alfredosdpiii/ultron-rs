@@ -110,7 +110,7 @@ impl Instance {
     pub fn default_session_dir(&self, agent_dir: &Path) -> PathBuf {
         match self.kind {
             Kind::Project { .. } => self.dir.join("sessions"),
-            _ => agent_dir.join("experimental").join("sessions"),
+            _ => config::paths::AgentPaths::new(agent_dir).experimental_sessions_dir(),
         }
     }
 
@@ -142,6 +142,11 @@ pub fn socket_dir(server_dir: &Path) -> PathBuf {
     std::env::temp_dir()
         .join(format!("ultron-{}", rustix::process::getuid().as_raw()))
         .join(hex)
+}
+
+/// A server's socket, `<serverId>.sock` in its directory's [`socket_dir`].
+pub fn socket_path(server_dir: &Path, server_id: &str) -> PathBuf {
+    socket_dir(server_dir).join(format!("{server_id}.sock"))
 }
 
 /// A running server generation as its record describes it.

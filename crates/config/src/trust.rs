@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 use serde_json::{Map, Value};
 
 use crate::json::parse;
-use crate::lock::{SYNC_ATTEMPTS, SYNC_STALE, acquire};
+use crate::lock::{SYNC, acquire};
 use crate::paths::{CONFIG_DIR_NAME, normalize};
 
 const TRUST_REQUIRING_PROJECT_CONFIG_RESOURCES: [&str; 8] = [
@@ -133,7 +133,7 @@ impl ProjectTrustStore {
             normalize(&std::env::current_dir().unwrap_or_default().join(agent_dir))
         };
         ProjectTrustStore {
-            path: agent_dir.join("trust.json"),
+            path: crate::paths::AgentPaths::new(agent_dir).trust(),
         }
     }
 
@@ -142,7 +142,7 @@ impl ProjectTrustStore {
         fs::create_dir_all(dir).map_err(|e| e.to_string())?;
         let mut lock = self.path.as_os_str().to_os_string();
         lock.push(".lock");
-        let _lock = acquire(Path::new(&lock), SYNC_STALE, SYNC_ATTEMPTS).map_err(|e| e.to_string())?;
+        let _lock = acquire(Path::new(&lock), SYNC).map_err(|e| e.to_string())?;
         f()
     }
 

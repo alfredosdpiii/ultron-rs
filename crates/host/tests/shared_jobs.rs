@@ -6,9 +6,9 @@
 //!
 //! Every wait is on a condition with a 120 s hang guard; the only processes signalled are the jobs this test started.
 
-use host::journal::FileJobJournal;
 use host::{AllowAll, Host, JobEnd};
 use kernel::Signal;
+use kernel::store::FileDocumentStore;
 use serde_json::{Value, json};
 use std::path::Path;
 use std::sync::{Arc, Mutex};
@@ -74,7 +74,7 @@ fn host_shared_jobs_a_worktree_lanes_jobs_are_the_sessions() {
     let worktree = dir.join("wt");
     std::fs::create_dir_all(&worktree).unwrap();
     let session = Host::new(&dir, dir.join(".jobs"), &dir, Box::new(AllowAll))
-        .with_journal(Arc::new(FileJobJournal::new(dir.join("jobs.json"))))
+        .with_journal(Arc::new(FileDocumentStore::new(dir.join("jobs.json"))))
         .unwrap();
     session.set_roots(Arc::new(|lane: &str| Some(format!("root-of:{lane}"))));
     let ends: Arc<Mutex<Vec<JobEnd>>> = Arc::default();

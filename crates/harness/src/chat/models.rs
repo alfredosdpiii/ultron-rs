@@ -84,67 +84,6 @@ pub trait Models: Send + Sync {
     }
 }
 
-/// `settings.retry` (spec §7.1): bounded attempts with exponential backoff.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct RetryPolicy {
-    pub enabled: bool,
-    /// Retries after the first attempt.
-    pub max_retries: u64,
-    pub base_delay_ms: u64,
-    pub max_delay_ms: u64,
-}
-
-impl Default for RetryPolicy {
-    fn default() -> Self {
-        RetryPolicy {
-            enabled: true,
-            max_retries: 3,
-            base_delay_ms: 2000,
-            max_delay_ms: 60_000,
-        }
-    }
-}
-
-impl RetryPolicy {
-    /// `normalizedRetryPolicy` of settings.json's `retry` object (missing members take their defaults):
-    /// `retry.enabled ? retry.maxRetries + 1 : 1` attempts; `enabled` false turns retries off for this session.
-    pub fn from_settings(retry: &serde_json::Value, enabled: bool) -> RetryPolicy {
-        let defaults = RetryPolicy::default();
-        let number = |key: &str, default: u64| retry[key].as_u64().unwrap_or(default);
-        let max_retries = if enabled && retry["enabled"] != false {
-            number("maxRetries", defaults.max_retries)
-        } else {
-            0
-        };
-        RetryPolicy {
-            enabled: max_retries > 0,
-            max_retries,
-            base_delay_ms: number("baseDelayMs", defaults.base_delay_ms),
-            max_delay_ms: number("maxAgentDelayMs", defaults.max_delay_ms),
-        }
-    }
-
-    /// Attempts in all, the first included.
-    pub fn max_attempts(&self) -> u64 {
-        if self.enabled { self.max_retries + 1 } else { 1 }
-    }
-
-    /// The policy as an operation journal records it (`{maxAttempts, baseDelayMs, maxAgentDelayMs}`).
-    pub fn journal_value(&self) -> serde_json::Value {
-        serde_json::json!({
-            "maxAttempts": self.max_attempts(),
-            "baseDelayMs": self.base_delay_ms,
-            "maxAgentDelayMs": self.max_delay_ms,
-        })
-    }
-
-    /// `retryDelayMs`: `baseDelayMs * 2^(attempt-1)`, capped.
-    pub fn delay_ms(&self, attempt: u64) -> u64 {
-        let factor = 1u64.checked_shl(attempt.saturating_sub(1) as u32).unwrap_or(u64::MAX);
-        self.base_delay_ms.saturating_mul(factor).min(self.max_delay_ms)
-    }
-}
-
 /// `settings.compaction` (spec §8.7).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct CompactionPolicy {
@@ -178,7 +117,7 @@ pub enum ToolExecution {
 pub struct Settings {
     /// Request options pinned at preparation (`ConversationStreamOptions`).
     pub stream: Map<String, Value>,
-    pub retry: RetryPolicy,
+    pub retry: ai::retry::RetryPolicy,
     pub compaction: CompactionPolicy,
     /// Throttle of committed generation partials.
     pub partial_interval_ms: u64,
@@ -197,7 +136,7 @@ impl Default for Settings {
     fn default() -> Self {
         Settings {
             stream: Map::new(),
-            retry: RetryPolicy::default(),
+            retry: ai::retry::RetryPolicy::default(),
             compaction: CompactionPolicy::default(),
             partial_interval_ms: 100,
             output_interval_ms: 100,
@@ -284,40 +223,4 @@ pub fn is_context_overflow(message: &AssistantMessage) -> bool {
     }
     OVERFLOW.iter().any(|pattern| pattern.is_match(text))
         || (message.provider == "cerebras" && CEREBRAS_BODYLESS.is_match(text))
-}
-
-static NON_RETRYABLE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(
-        "(?i)GoUsageLimitError|FreeUsageLimitError|Monthly usage limit reached|available balance|insufficient_quota|\
-         out of budget|quota exceeded|billing|subscription_sharing_usage_limit_exceeded",
-    )
-    .expect("valid pattern")
-});
-
-static RETRYABLE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(
-        "(?i)overloaded|server_busy|servers are currently busy|currently experiencing high demand|model is at capacity|\
-         rate.?limit|too many requests|429|500|502|503|504|520|524|service.?unavailable|server.?error|internal.?error|\
-         provider.?returned.?error|exceeded request buffer limit while retrying upstream|network.?error|\
-         connection.?error|connection.?refused|connection.?lost|other side closed|fetch failed|getaddrinfo|ENOTFOUND|\
-         EAI_AGAIN|upstream.?connect|reset before headers|socket hang up|socket connection was closed|timed? out|\
-         timeout|terminated|websocket.?closed|websocket.?error|ended without|stream ended before message_stop|\
-         stream ended before a terminal response event|http2 request did not get a response|\
-         pending stream has been canceled|retry delay|you can retry your request|try your request again|\
-         please retry your request|ResourceExhausted|subscription_sharing_usage_unavailable|\
-         subscription_sharing_user_unavailable",
-    )
-    .expect("valid pattern")
-});
-
-/// pi-ai `isRetryableAssistantError`: a transient provider or transport error.
-pub fn is_retryable(message: &AssistantMessage) -> bool {
-    let Some(text) = message
-        .error_message
-        .as_deref()
-        .filter(|text| message.stop_reason == StopReason::Error && !text.is_empty())
-    else {
-        return false;
-    };
-    !NON_RETRYABLE.is_match(text) && RETRYABLE.is_match(text)
 }

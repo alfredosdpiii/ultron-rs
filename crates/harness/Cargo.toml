@@ -11,9 +11,7 @@ autotests = false
 ai = { path = "../ai" }
 chord-delta = { path = "../chord-delta" }
 compaction = { path = "../compaction" }
-config = { path = "../config" }
 durable = { path = "../durable" }
-getrandom = "=0.4.3"
 indexmap = "=2.14.2"
 jsrt = { path = "../jsrt" }
 kernel = { path = "../kernel" }
@@ -22,7 +20,6 @@ regex = "=1.13.1"
 serde = { version = "=1.0.229", features = ["derive"] }
 serde_json = { version = "=1.0.151", features = ["preserve_order"] }
 session-journal = { path = "../session-journal" }
-sha2 = "=0.10.9"
 
 [lints]
 workspace = true

@@ -3,7 +3,7 @@
 //! real runtime.py under the Rust kernel supervisor. The three task cases ran over a TS-era task supervisor the
 //! product does not use; the product task host's cancellation and late-success rules are `a05_native_host.rs`.
 
-mod common;
+use crate::common;
 
 use common::{alive, kernel_in, null_handler, read_pids, run, wait_until};
 use kernel::{HostHandler, KernelError, Signal, Status};

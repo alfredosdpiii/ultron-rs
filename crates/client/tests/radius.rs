@@ -3,8 +3,7 @@
 //! `RadiusClientReconnect` by `crates/server/fixtures/generate-radius-relay.mjs`), with a fake gateway on 127.0.0.1;
 //! plus the client TUI's recovery statuses (`client-tui.ts` `#handleConnectionState`, `#handleAttachmentState`).
 
-#[path = "../../server/tests/support/mod.rs"]
-mod support;
+use crate::support;
 
 use client::radius::{
     AttachmentState, ByteTransportHandlers, Cancellation, ConnectionState, RadiusClientReconnect, ReconnectClient,

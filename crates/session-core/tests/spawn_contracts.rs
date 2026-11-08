@@ -5,7 +5,7 @@
 //! brief, a review hop spawns the reviewer, all-pass is `verified` with evidence; `changed_files_within` and
 //! `no_new_dependencies` catch out-of-scope and dependency edits. New in Rust: literal expectations.
 
-mod p_session_support;
+use crate::p_session_support;
 
 use p_session_support::{Setup, actor, text, tool, tool_results, user_texts};
 use serde_json::{Value, json};

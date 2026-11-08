@@ -3,8 +3,7 @@
 //! the unit goes under the injected XDG_CONFIG_HOME inside the test's temp root, never the real HOME. The durable
 //! instance is the temp HOME's (`ULTRON_SERVER_DIR` unset).
 
-#[path = "daemon_common/mod.rs"]
-mod common;
+use crate::daemon_common as common;
 
 use common::{HANG_GUARD, Home, assert_none_mentioning};
 use std::os::unix::fs::PermissionsExt;

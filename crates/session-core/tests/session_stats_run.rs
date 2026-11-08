@@ -3,7 +3,7 @@
 //! write through `write()` leaves the same runtime counters in the session file (`ultron.module/stats`): cells, the
 //! APIs they name, the kernels' host requests, masked secrets and Loki's checks (times zeroed on both sides).
 
-mod p_session_support;
+use crate::p_session_support;
 
 use p_session_support::{Setup, actor, in_order, text, tool, tool_results};
 use serde_json::Value;

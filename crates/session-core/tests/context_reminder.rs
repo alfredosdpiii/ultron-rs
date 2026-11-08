@@ -2,7 +2,7 @@
 //! the threshold arithmetic, the environment's margin and off switch, once per approach with its re-arming, and
 //! sessions against a scripted provider whose usage crosses the trigger, on the root lane and on a subagent's.
 
-mod p_session_support;
+use crate::p_session_support;
 
 use p_session_support::{Setup, actor, in_order, text, tool_results};
 use serde_json::{Value, json};

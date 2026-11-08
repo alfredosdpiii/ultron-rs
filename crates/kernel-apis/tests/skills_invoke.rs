@@ -5,8 +5,9 @@
 
 use fancy_regex::Regex;
 use kernel::Signal;
+use kernel::store::{DocumentStore, MemoryDocumentStore};
+use kernel_apis::TaskHost;
 use kernel_apis::skills::{SkillSource, SkillsModule};
-use kernel_apis::{DocumentStore, MemoryDocumentStore, TaskHost};
 use serde_json::{Map, Value, json};
 use std::path::Path;
 use std::sync::{Arc, Mutex};

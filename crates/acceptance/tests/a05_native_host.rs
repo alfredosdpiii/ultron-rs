@@ -4,7 +4,7 @@
 //! A TS lane result that is not a completed prompt at its returned tip (a missing tip, a suspended prompt) is a lane
 //! runner error in Rust: the run reports no assistant result, and the host must fail the task.
 
-mod agents_support;
+use crate::agents_support;
 
 use agents_support::{Fixture, Memory, Options, Script, aborted, fixture, lock};
 use kernel::Signal;

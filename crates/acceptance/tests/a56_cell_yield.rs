@@ -3,7 +3,7 @@
 //! the user chats on while it runs, and its end arrives as a `cell_done` `<runtime_event>` that re-invokes the idle
 //! root with the cell's output. The cell waits for a file the test writes, never on a timer.
 
-mod common;
+use crate::common;
 
 use common::{HANG, Install, Provider, Reply, Request};
 

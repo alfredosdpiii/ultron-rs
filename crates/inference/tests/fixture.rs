@@ -4,7 +4,7 @@
 //! and must print and return the same, and send the same prompts with the same output caps, request by request.
 //! The typebox Check/Errors and validateJsonSchema tables of the fixture are replayed against `jsonschema`.
 
-mod common;
+use crate::common;
 
 use common::{Scripted, model};
 use inference::{Inference, contract_errors};

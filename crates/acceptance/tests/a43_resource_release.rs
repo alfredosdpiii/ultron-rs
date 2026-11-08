@@ -8,7 +8,7 @@
 //! counterpart), and ultron-a43-kernel-pool-wired.test.ts (the session's REPL lanes, `lanes::Lanes`, refuse
 //! past their lane limit instead of evicting through the pool, and no `rlm.pool` stats exist).
 
-mod common;
+use crate::common;
 
 use common::runtime;
 use kernel::{ExecutionResult, Kernel, KernelOptions, Status};

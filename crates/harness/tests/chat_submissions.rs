@@ -4,8 +4,8 @@
 //! the start of close" (the controlled storage holds commits, not reads) and the typed entry token case (Rust entries
 //! are untyped records).
 
-mod chat_support;
-mod support;
+use crate::chat_support;
+use crate::support;
 
 use chat_support::*;
 use durable::{

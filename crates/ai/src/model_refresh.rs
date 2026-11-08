@@ -35,8 +35,8 @@ pub const DEFAULT_CATALOG_BASE_URL: &str = "https://pi.dev";
 
 /// `getPiUserAgent(VERSION)`, the user agent of management requests: `pi/<version> (<platform>; <runtime>; <arch>)`
 /// with Node's platform and arch names. The runtime is `rust` (TypeScript reports `node/<version>`).
-pub fn management_user_agent(version: &str) -> String {
-    let (platform, arch) = (jsrt::process::platform(), jsrt::process::arch());
+pub fn management_user_agent() -> String {
+    let (version, platform, arch) = (config::version(), jsrt::process::platform(), jsrt::process::arch());
     format!("pi/{version} ({platform}; rust; {arch})")
 }
 
@@ -385,6 +385,3 @@ fn parse_catalog(provider: &str, value: &Value) -> Result<Vec<Value>, String> {
         })
         .collect())
 }
-
-// ponytail: session-core/tests/model_refresh.rs still names `ai::model_refresh::parse_iso_ms`.
-pub use jsrt::date::parse_date as parse_iso_ms;

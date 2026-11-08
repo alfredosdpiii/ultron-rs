@@ -476,7 +476,7 @@ impl CodexSse {
             let data = jsrt::string::trim(&data);
             if !data.is_empty() && data != "[DONE]" {
                 let value = parse_json(data).map_err(|e| {
-                    let message = crate::jsutil::json_parse_error(data).unwrap_or_else(|| e.to_string());
+                    let message = jsrt::json::parse(data).err().unwrap_or_else(|| e.to_string());
                     CodexError::Protocol(format!("Invalid Codex SSE JSON: {message}"))
                 })?;
                 out.push(value);

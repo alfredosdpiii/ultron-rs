@@ -16,12 +16,6 @@ pub const GUIDE_HELP: &str =
 Print the runtime guide: Ultron's own (default), or the system prompt `ultron claude` gives Claude Code
 (--for claude; --for claude-child for a Claude Code subagent), with the directory's context files and skills.";
 
-pub fn version() -> String {
-    let package: serde_json::Value = serde_json::from_str(include_str!("../../../packages/coding-agent/package.json"))
-        .expect("packages/coding-agent/package.json parses");
-    package["version"].as_str().unwrap_or_default().to_string()
-}
-
 /// A command's failure: a usage error (exit 2) or a message classified like TypeScript's catch.
 enum Failure {
     Usage(String),

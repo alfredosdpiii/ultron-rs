@@ -19,7 +19,7 @@ use std::time::Duration;
 use theme::{Fg, Theme};
 use tui::KeybindingsManager;
 use tui::{Component, Text};
-use tui::{Loader, SelectEvent, SelectItem, SelectList, SelectListTheme};
+use tui::{Loader, SelectEvent, SelectItem, SelectList};
 
 const MAX_VISIBLE: usize = 10;
 
@@ -108,25 +108,11 @@ impl Screen {
 }
 
 fn hint(theme: &Theme, keys: &KeybindingsManager, binding: &str, description: &str) -> String {
-    key_hint(theme, &key_text(keys, binding, false), description)
+    key_hint(theme, &key_text(keys, binding), description)
 }
 
 fn border(theme: &Theme, width: usize) -> String {
     theme.fg(Fg::Border, &"─".repeat(width.max(1)))
-}
-
-fn select_theme(theme: &Rc<Theme>) -> SelectListTheme {
-    let style = |color: Fg| {
-        let t = Rc::clone(theme);
-        Box::new(move |s: &str| t.fg(color, s)) as Box<dyn Fn(&str) -> String>
-    };
-    SelectListTheme {
-        selected_prefix: style(Fg::Accent),
-        selected_text: style(Fg::Accent),
-        description: style(Fg::Muted),
-        scroll_info: style(Fg::Muted),
-        no_match: style(Fg::Muted),
-    }
 }
 
 /// A bordered list; with more than a screenful of choices, typing filters it (`SetupSelect`).
@@ -165,7 +151,11 @@ impl SetupSelect {
 
     fn list(screen: &Screen, items: Vec<SelectItem>) -> SelectList {
         let visible = MAX_VISIBLE.min(items.len().max(1));
-        let mut list = SelectList::new(items, visible, select_theme(&screen.theme));
+        let mut list = SelectList::new(
+            items,
+            visible,
+            interactive::select_theme(&screen.theme, Fg::Muted, Fg::Muted),
+        );
         list.min_primary_column_width = Some(16);
         list.max_primary_column_width = Some(48);
         list

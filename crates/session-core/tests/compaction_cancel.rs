@@ -56,8 +56,7 @@ fn session_core_compaction_cancel_journaled_before_a_kill_settles_aborted() {
     let dir = tempfile::tempdir().unwrap();
     let (mut session, tip) = session(dir.path());
     let mut op = CompactionOp::begin(&mut session, &preparation(&tip), &[json!({"role": "user"})], None).unwrap();
-    op.request(&mut session, harness::chat::models::RetryPolicy::default())
-        .unwrap();
+    op.request(&mut session, ai::retry::RetryPolicy::default()).unwrap();
     let operation = current_operation(&session).as_str().unwrap().to_string();
     compaction_op::request_cancel(&mut session, 5).unwrap();
     let state = session.value(OP_STATE, &operation).unwrap().clone();
@@ -95,8 +94,7 @@ fn session_core_compaction_killed_without_a_cancel_settles_failed_and_drops_its_
     let dir = tempfile::tempdir().unwrap();
     let (mut session, tip) = session(dir.path());
     let mut op = CompactionOp::begin(&mut session, &preparation(&tip), &[], Some("short")).unwrap();
-    op.request(&mut session, harness::chat::models::RetryPolicy::default())
-        .unwrap();
+    op.request(&mut session, ai::retry::RetryPolicy::default()).unwrap();
     let operation = current_operation(&session).as_str().unwrap().to_string();
     assert_eq!(preparations(&session), 1);
     drop(op);
@@ -163,7 +161,7 @@ fn session_core_compaction_cancel_during_the_hook_then_a_kill_settles_aborted() 
 /// 2^(attempt-1)` capped at `maxAgentDelayMs`; `maxRetries + 1` attempts, one when retries are off.
 #[test]
 fn session_core_compaction_summary_retry_policy_matches_the_harness() {
-    use harness::chat::models::RetryPolicy;
+    use ai::retry::RetryPolicy;
     let policy = RetryPolicy::default();
     assert_eq!(
         (
@@ -198,7 +196,7 @@ fn session_core_compaction_summary_retry_policy_matches_the_harness() {
 /// (`interrupted`), or `aborted` after a cancel request, with nothing moved and the preparation removed.
 #[test]
 fn session_core_compaction_retry_wait_journal_and_kill() {
-    use harness::chat::models::RetryPolicy;
+    use ai::retry::RetryPolicy;
     let dir = tempfile::tempdir().unwrap();
     let (mut session, tip) = session(dir.path());
     let mut op = CompactionOp::begin(&mut session, &preparation(&tip), &[], None).unwrap();

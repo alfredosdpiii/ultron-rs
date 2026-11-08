@@ -16,9 +16,9 @@ use crate::types::{
 };
 use serde_json::{Map, Value, json};
 use std::collections::{BTreeMap, HashMap, HashSet};
-use std::io::{BufRead, BufReader, Read as _, Write as _};
+use std::io::{BufRead, BufReader, Write as _};
 use std::path::{Path, PathBuf};
-use std::process::{Child, ChildStdin, Command, Stdio};
+use std::process::{ChildStdin, Command, Stdio};
 use std::sync::{Arc, LazyLock, Mutex};
 use std::time::{Duration, Instant};
 use tokio::sync::Notify;
@@ -66,7 +66,7 @@ pub const REQUIRED_FLAGS: &[&str] = &[
 ];
 
 /// Session variables a parent Claude Code sets for its children; a frame is not one of them.
-const PARENT_SESSION_ENV: &[&str] = &[
+pub const PARENT_SESSION_ENV: &[&str] = &[
     "CLAUDECODE",
     "CLAUDE_CODE_ENTRYPOINT",
     "CLAUDE_CODE_SESSION_ID",
@@ -194,48 +194,26 @@ struct ExecResult {
 }
 
 fn exec_cli(bin: &str, args: &[&str], env: &Env, cwd: &Path) -> Result<ExecResult, String> {
-    let mut child = Command::new(bin)
-        .args(args)
-        .env_clear()
-        .envs(env)
-        .current_dir(cwd)
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .map_err(|e| format!("claude-code provider: could not run {bin} {}: {e}", args.join(" ")))?;
-    let mut stdout = child.stdout.take();
-    let mut stderr = child.stderr.take();
-    let out_thread = std::thread::spawn(move || {
-        let mut text = String::new();
-        if let Some(stdout) = stdout.as_mut() {
-            let _ = stdout.read_to_string(&mut text);
-        }
-        text
-    });
-    let err_thread = std::thread::spawn(move || {
-        let mut text = String::new();
-        if let Some(stderr) = stderr.as_mut() {
-            let _ = stderr.read_to_string(&mut text);
-        }
-        text
-    });
-    let deadline = Instant::now() + PROBE_TIMEOUT;
-    let status = loop {
-        match child.try_wait() {
-            Ok(Some(status)) => break status,
-            Ok(None) if Instant::now() >= deadline => {
-                let _ = child.kill();
-                break child.wait().map_err(|e| e.to_string())?;
-            }
-            Ok(None) => std::thread::sleep(Duration::from_millis(5)),
-            Err(e) => return Err(e.to_string()),
-        }
+    let bound = signals::child::Bound {
+        timeout: Some(PROBE_TIMEOUT),
+        ..Default::default()
     };
+    let out = signals::child::run(
+        Command::new(bin)
+            .args(args)
+            .env_clear()
+            .envs(env)
+            .current_dir(cwd)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped()),
+        None,
+        bound,
+    )
+    .map_err(|e| format!("claude-code provider: could not run {bin} {}: {e}", args.join(" ")))?;
     Ok(ExecResult {
-        code: status.code(),
-        stdout: out_thread.join().unwrap_or_default(),
-        stderr: err_thread.join().unwrap_or_default(),
+        code: out.code(),
+        stdout: String::from_utf8_lossy(&out.stdout).into_owned(),
+        stderr: String::from_utf8_lossy(&out.stderr).into_owned(),
     })
 }
 
@@ -431,9 +409,6 @@ async fn acquire(limit: u64, signal: Option<&crate::http::AbortSignal>) -> Resul
 
 // --------------------------------------------------------------------------------------------------- processes
 
-/// Exit code and signal of a finished process.
-type ExitStatus = (Option<i32>, Option<i32>);
-
 enum ChildEvent {
     Line(Value),
     Exited(Option<i32>, Option<i32>),
@@ -441,21 +416,25 @@ enum ChildEvent {
 
 /// One `claude` process: stdout lines that are JSON objects become events; stderr keeps a tail.
 pub struct CliProcess {
-    child: Arc<Mutex<Child>>,
+    /// `None` when it could not be spawned ([`CliProcess::spawn_error`]).
+    child: Option<signals::child::Watched>,
     stdin: Option<ChildStdin>,
     events: tokio::sync::mpsc::UnboundedReceiver<ChildEvent>,
     stderr: Arc<Mutex<String>>,
-    exited: Arc<Mutex<Option<ExitStatus>>>,
     spawn_error: Option<String>,
-    pid: u32,
 }
+
+/// SIGTERM to its process group, SIGKILL after [`KILL_GRACE`].
+const STOP: signals::child::Stop = signals::child::Stop {
+    group: true,
+    term_grace: Some(KILL_GRACE),
+};
 
 impl CliProcess {
     fn spawn(bin: &str, args: &[String], env: &Env, cwd: &Path) -> Self {
         use std::os::unix::process::CommandExt;
         let (sender, events) = tokio::sync::mpsc::unbounded_channel();
         let stderr_tail = Arc::new(Mutex::new(String::new()));
-        let exited = Arc::new(Mutex::new(None));
         let spawned = Command::new(bin)
             .args(args)
             .env_clear()
@@ -469,24 +448,20 @@ impl CliProcess {
         let mut child = match spawned {
             Ok(child) => child,
             Err(error) => {
-                *jsrt::sync::lock(&exited) = Some((None, None));
                 let _ = sender.send(ChildEvent::Exited(None, None));
                 return CliProcess {
-                    child: Arc::new(Mutex::new(Command::new("true").spawn().expect("`true` runs"))),
+                    child: None,
                     stdin: None,
                     events,
                     stderr: stderr_tail,
-                    exited,
                     spawn_error: Some(error.to_string()),
-                    pid: 0,
                 };
             }
         };
-        let pid = child.id();
         let stdin = child.stdin.take();
         let stdout = child.stdout.take();
         let stderr = child.stderr.take();
-        let child = Arc::new(Mutex::new(child));
+        let child = signals::child::Watched::new(child);
         if let Some(stderr) = stderr {
             let tail_buffer = stderr_tail.clone();
             std::thread::spawn(move || {
@@ -502,7 +477,6 @@ impl CliProcess {
         }
         {
             let child = child.clone();
-            let exited = exited.clone();
             std::thread::spawn(move || {
                 if let Some(stdout) = stdout {
                     for line in BufReader::new(stdout).lines() {
@@ -515,34 +489,25 @@ impl CliProcess {
                         }
                     }
                 }
-                let status = loop {
-                    let polled = jsrt::sync::lock(&child).try_wait();
-                    match polled {
-                        Ok(Some(status)) => break Some(status),
-                        Ok(None) => std::thread::sleep(Duration::from_millis(2)),
-                        Err(_) => break None,
-                    }
-                };
+                let status = child.wait();
                 use std::os::unix::process::ExitStatusExt;
-                let code = status.and_then(|s| s.code());
-                let signal = status.and_then(|s| s.signal());
-                *jsrt::sync::lock(&exited) = Some((code, signal));
-                let _ = sender.send(ChildEvent::Exited(code, signal));
+                let _ = sender.send(ChildEvent::Exited(
+                    status.and_then(|s| s.code()),
+                    status.and_then(|s| s.signal()),
+                ));
             });
         }
         CliProcess {
-            child,
+            child: Some(child),
             stdin,
             events,
             stderr: stderr_tail,
-            exited,
             spawn_error: None,
-            pid,
         }
     }
 
     fn alive(&self) -> bool {
-        self.spawn_error.is_none() && jsrt::sync::lock(&self.exited).is_none()
+        self.child.as_ref().is_some_and(|child| !child.ended())
     }
 
     fn send(&mut self, message: &Value) {
@@ -555,53 +520,19 @@ impl CliProcess {
     /// Close stdin so the CLI exits by itself; stop it if it lingers.
     fn finish(mut self) {
         self.stdin.take();
-        if !self.alive() {
-            return;
-        }
+        let Some(child) = self.child.clone() else { return };
         std::thread::spawn(move || {
-            let deadline = Instant::now() + EXIT_GRACE;
-            while Instant::now() < deadline {
-                if !self.alive() {
-                    return;
-                }
-                std::thread::sleep(Duration::from_millis(20));
+            if !child.wait_timeout(EXIT_GRACE) {
+                child.stop(STOP);
             }
-            self.kill();
         });
     }
 
     /// SIGTERM to the process group, SIGKILL after a grace period.
     fn kill(&self) {
-        if !self.alive() || self.pid == 0 {
-            return;
+        if let Some(child) = self.child.clone().filter(|_| self.alive()) {
+            std::thread::spawn(move || child.stop(STOP));
         }
-        let group = format!("-{}", self.pid);
-        let signal = |sig: &str| {
-            let sent = Command::new("kill")
-                .args([sig, "--", &group])
-                .stdout(Stdio::null())
-                .stderr(Stdio::null())
-                .status()
-                .is_ok_and(|s| s.success());
-            if !sent {
-                let _ = jsrt::sync::lock(&self.child).kill();
-            }
-        };
-        signal("-TERM");
-        let child = self.child.clone();
-        let exited = self.exited.clone();
-        let pid = self.pid;
-        std::thread::spawn(move || {
-            std::thread::sleep(KILL_GRACE);
-            if jsrt::sync::lock(&exited).is_none() {
-                let _ = Command::new("kill")
-                    .args(["-KILL", "--", &format!("-{pid}")])
-                    .stdout(Stdio::null())
-                    .stderr(Stdio::null())
-                    .status();
-                let _ = jsrt::sync::lock(&child).kill();
-            }
-        });
     }
 }
 

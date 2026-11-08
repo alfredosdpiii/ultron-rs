@@ -30,7 +30,26 @@ pub const APIS: &[&str] = &[
     "claude-subscription",
 ];
 
+/// [`stream_simple_routed`] through the process's router.
 pub async fn stream_simple(
+    model: &Model,
+    context: &TranscriptContext,
+    options: &SimpleStreamOptions,
+    transport: &dyn Transport,
+    sink: &mut EventSink<'_>,
+) -> Result<AssistantMessage, String> {
+    stream_simple_routed(
+        &crate::claude_subscription::fallback::global(),
+        model,
+        context,
+        options,
+        transport,
+        sink,
+    )
+    .await
+}
+
+pub async fn stream_simple_routed(
     router: &Router,
     model: &Model,
     context: &TranscriptContext,

@@ -13,7 +13,6 @@ path = "src/main.rs"
 
 [dependencies]
 agent = { path = "../agent" }
-base64 = "=0.23.1"
 image = { version = "=0.25.10", default-features = false, features = ["bmp", "gif", "jpeg", "png", "webp"] }
 ai = { path = "../ai" }
 kernel = { path = "../kernel" }
@@ -26,7 +25,6 @@ knowledge = { path = "../knowledge" }
 tokio = { version = "=1.53.2", features = ["rt", "time"] }
 claude-root = { path = "../claude-root" }
 client = { path = "../client" }
-compaction = { path = "../compaction" }
 config = { path = "../config" }
 daemon = { path = "../daemon" }
 delegation = { path = "../delegation" }
@@ -35,7 +33,6 @@ herdr = { path = "../herdr" }
 harness = { path = "../harness" }
 hindsight = { path = "../hindsight" }
 interactive = { path = "../interactive" }
-indexmap = "=2.14.2"
 rustix = { version = "=1.1.5", features = ["event", "std", "termios"] }
 reqwest = { version = "=0.13.5", default-features = false, features = ["rustls", "http2", "system-proxy"] }
 jsrt = { path = "../jsrt" }
@@ -62,10 +59,11 @@ usage = { path = "../usage" }
 sha2 = "=0.10.9"
 
 [dev-dependencies]
+indexmap = "=2.14.2"
+base64 = "=0.23.1"
 chord-delta = { path = "../chord-delta" }
 regex = "=1.13.1"
 rustix = { version = "=1.1.5", features = ["net", "process", "std"] }
-ring = "=0.17.14"
 tempfile = "=3.27.0"
 websocket = { path = "../websocket" }
 

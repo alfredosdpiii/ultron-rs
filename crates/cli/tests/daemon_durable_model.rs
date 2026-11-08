@@ -7,11 +7,9 @@
 //! `seal()`), with a FAKE `claude` (crates/ai/fixtures/claude-subscription/claude.py, answering offline) and a scripted
 //! Anthropic server on loopback standing in for the global default's provider.
 
-#[path = "daemon_common/mod.rs"]
-mod common;
-mod executable_support;
-#[path = "../../ai/tests/claude_subscription_support/isolate.rs"]
-mod isolate;
+use crate::daemon_common as common;
+use crate::executable_support;
+use crate::isolate;
 
 use cli::rpc::client::{RpcClient, RpcClientOptions};
 use common::{HANG_GUARD, Home, Provider, assert_none_mentioning, provider, text_reply};

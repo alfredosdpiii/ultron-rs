@@ -6,7 +6,8 @@
 use crate::Env;
 use config::settings::SettingsManager;
 use interactive::{bold, key_hint, key_text};
-use resources::paths::{basename, canonicalize, dirname, join, relative};
+use jsrt::path::{basename, dirname, relative};
+use resources::paths::canonicalize;
 use serde_json::{Map, Value};
 use session_core::local_resources::{LocalResources, PathMetadata, RESOURCE_TYPES, ResolvedPaths, ResourceType, Scope};
 use std::collections::HashMap;
@@ -428,7 +429,7 @@ impl ConfigSelector {
 
     fn base_dir(&self, scope: Scope) -> String {
         match scope {
-            Scope::Project => join(&self.cwd, config::paths::CONFIG_DIR_NAME),
+            Scope::Project => jsrt::path::join(&[&self.cwd, config::paths::CONFIG_DIR_NAME]),
             Scope::User => self.agent_dir.clone(),
         }
     }
@@ -622,11 +623,7 @@ impl ConfigSelector {
         let switch = if self.project_mode {
             format!(
                 "{}{sep}",
-                key_hint(
-                    &self.theme,
-                    &key_text(&self.keys, "tui.input.tab", false),
-                    "switch mode"
-                )
+                key_hint(&self.theme, &key_text(&self.keys, "tui.input.tab"), "switch mode")
             )
         } else {
             String::new()

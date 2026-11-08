@@ -349,7 +349,7 @@ impl Slash {
 
 /// `keyDisplayText(keybinding)`: the binding's keys, capitalized.
 pub fn key_display_text(keys: &KeybindingsManager, keybinding: &str) -> String {
-    format_key_text(&keys.get_keys(keybinding).join("/"), true, false)
+    format_key_text(&keys.get_keys(keybinding).join("/"), true)
 }
 
 /// `hotkeysMarkdown()`.

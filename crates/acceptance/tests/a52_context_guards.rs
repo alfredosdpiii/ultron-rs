@@ -12,15 +12,14 @@
 //! `apply_context_edits`. Edit events are the module's `entry_added` observations. Not ported: the `/rlm` context
 //! panel.
 
-mod common;
+use crate::common;
 
 use common::{HANG, Install, Provider, Reply, Request, kernel_in, null_handler, run};
 use kernel::Status;
 use kernel_apis::KernelApis;
-use kernel_apis::context_control::{
-    CONTEXT_OMITTED_CUSTOM_TYPE, ContextBranches, ContextControl, apply_context_edits, message_text,
-};
+use kernel_apis::context_control::{ContextBranches, ContextControl, apply_context_edits, message_text};
 use serde_json::{Value, json};
+use session_journal::context::CONTEXT_OMITTED_CUSTOM_TYPE;
 use std::sync::{Arc, Mutex};
 
 /// The lane's committed branch.

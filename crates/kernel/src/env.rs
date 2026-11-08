@@ -21,10 +21,13 @@ pub const WORKTREE_ENV: &str = "ULTRON_WORKTREE";
 pub const PARENT_REPO_ENV: &str = "ULTRON_PARENT_REPO";
 pub const WORKTREE_BRANCH_ENV: &str = "ULTRON_WORKTREE_BRANCH";
 
-/// Whether this process runs inside an Ultron kernel (a cell's command or a program it started): the kernel puts
-/// its resource limits, `ULTRON_RLM_MAX_MEMORY_MB` among them, in every kernel's environment.
+/// Set (to `1`) in every kernel's environment, so a cell's command or a program it started knows it runs inside a
+/// kernel. Rust-only; the resource limits beside it may also come from the user.
+pub const IN_KERNEL_ENV: &str = "ULTRON_IN_KERNEL";
+
+/// Whether this process runs inside an Ultron kernel ([`IN_KERNEL_ENV`]).
 pub fn inside_kernel(var: impl Fn(&str) -> Option<String>) -> bool {
-    var(RLM_MAX_MEMORY_MB_ENV).is_some()
+    var(IN_KERNEL_ENV).as_deref() == Some("1")
 }
 
 /// kernel.ts: the interpreter the kernel runs, `ULTRON_PYTHON ?? (linux && /usr/bin/python3 exists ?

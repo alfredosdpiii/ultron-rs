@@ -3,8 +3,7 @@
 //! (experimental/services/session-control-provider.ts, services/server.ts, packages/server server.ts `handleCancel` /
 //! `handleRequest`, session-worker.ts `onOperationCancel`). Offline: `PI_OFFLINE=1`, a loopback provider.
 
-#[path = "daemon_common/mod.rs"]
-mod common;
+use crate::daemon_common as common;
 
 use client::runtime::{CallError, Connection};
 use common::{HANG_GUARD, Home, SERVER_ID};

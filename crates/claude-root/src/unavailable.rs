@@ -20,8 +20,8 @@ use kernel_apis::ApiModule;
 use kernel_apis::prompt_schedule::ScheduleModule;
 use serde_json::{Map, Value};
 use session_core::compose::Stack;
-use session_core::lane::MAIN;
 use session_core::request_layer::{Next, RequestLayer};
+use session_journal::run::MAIN_LANE;
 use std::sync::{Arc, Weak};
 
 /// Why a Claude Code subagent's server cannot serve `kind` with `payload`, if it cannot.
@@ -52,7 +52,7 @@ pub fn root_layer(
     Arc::new(
         move |lane: &str, kind: &str, payload: Map<String, Value>, next: Next<'_>| {
             if kind.starts_with("schedule.") {
-                if lane != MAIN {
+                if lane != MAIN_LANE {
                     return Err(format!("{kind} is available to the root agent only"));
                 }
                 let stack = stack.upgrade().ok_or("The session is closed")?;
@@ -89,7 +89,7 @@ pub fn child_layer(world: Arc<SharedWorld>) -> RequestLayer {
             }
             if SWARM_KINDS.contains(&kind) {
                 // This server's root is the subagent its parent knows by its token; its own subagents go by name.
-                let name = (lane != MAIN).then(|| world.name_of_lane(lane));
+                let name = (lane != MAIN_LANE).then(|| world.name_of_lane(lane));
                 return world.serve(name.as_deref(), kind, &payload);
             }
             spawn(&world, kind, payload, next)

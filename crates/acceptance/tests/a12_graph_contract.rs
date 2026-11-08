@@ -3,7 +3,7 @@
 //! Port of packages/coding-agent/test/ultron-a12-graph-contract.test.ts over the Rust typed-agent host
 //! (`workflows.run`), its definition registry and usage ledger, with the TS fixture's deterministic adapter.
 
-mod agents_support;
+use crate::agents_support;
 
 use agents_support::{Fixture, Memory, Options, adapter, definition, fixture, lock, wait_for};
 use delegation::definitions::definition_hash;

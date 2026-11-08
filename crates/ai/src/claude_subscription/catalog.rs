@@ -9,7 +9,7 @@ use serde_json::Map;
 use std::collections::HashMap;
 use std::sync::{LazyLock, Mutex};
 
-pub const PROVIDER: &str = "claude-subscription";
+pub const PROVIDER: &str = config::providers::CLAUDE_SUBSCRIPTION;
 pub const API: &str = "claude-subscription";
 /// The only upstream a request may reach (a loopback `http://` URL is accepted as a test fixture).
 pub const UPSTREAM: &str = "https://api.anthropic.com";

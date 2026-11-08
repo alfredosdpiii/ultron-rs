@@ -10,8 +10,6 @@ use std::sync::Mutex;
 
 const TRACE_INDEX_LIMIT: usize = 200;
 pub(crate) const TRACE_REQUEST_LIMIT: usize = 50;
-/// The session-value namespace of frame traces; the index is its key `index`.
-pub const TRACE_NAMESPACE: &str = "ultron.rlm.frames";
 
 /// Where frame traces live (`FrameTraceStore`): one document per key, replaced whole.
 pub trait TraceStore: Send + Sync {

@@ -10,8 +10,8 @@
 //! ultron-a38-query-scope.test.ts runs over the Rust typed-agent host (`agents_support`) as the TS case runs over
 //! `NativeRlmHost`, with lanes that work until cancelled.
 
-mod agents_support;
-mod common;
+use crate::agents_support;
+use crate::common;
 
 use common::{Install, Provider, Reply, Request, rpc_tool_results};
 use serde_json::Value;

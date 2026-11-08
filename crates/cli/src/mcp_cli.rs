@@ -153,7 +153,7 @@ pub fn run(argv: &[String], env: &Env, out: &mut dyn std::io::Write, err: &mut d
         return Some(0);
     }
     let agent_dir = env.agent_dir();
-    let project_config = env.cwd.join(config::paths::CONFIG_DIR_NAME).join("mcp.json");
+    let project_config = mcp::config::project_path(&env.cwd);
     let rest = &args[1..];
     match command {
         "add" => return Some(add(rest, &project_config, env, &agent_dir, &mut io)),
@@ -384,7 +384,7 @@ fn add(args: &[String], project_config: &Path, env: &Env, agent_dir: &Path, io: 
     let path = if project {
         project_config.to_path_buf()
     } else {
-        agent_dir.join("mcp.json")
+        config::paths::AgentPaths::new(agent_dir).mcp()
     };
     let scope = if project { "project" } else { "global" };
     let may_need_sign_in = validated.contains_key("url")
@@ -439,7 +439,7 @@ fn remove(args: &[String], project_config: &Path, env: &Env, agent_dir: &Path, i
     let path = if project {
         project_config.to_path_buf()
     } else {
-        agent_dir.join("mcp.json")
+        config::paths::AgentPaths::new(agent_dir).mcp()
     };
     let scope = if project { Scope::Project } else { Scope::Global };
     match mcp::edit::remove_server_config(&path, name) {
@@ -573,7 +573,7 @@ fn connect(entry: &ServerEntry, env: &Env) -> Connection {
         .unwrap_or(DEFAULT_TIMEOUT_SECONDS);
     let client = Client::new(ClientOptions {
         name: "ultron".into(),
-        version: crate::version(),
+        version: config::version().to_string(),
         request_timeout: Some(Duration::from_secs_f64((timeout * 1000.0).max(0.0) / 1000.0)),
         roots: Some(vec![json!({
             "uri": file_url(&env.cwd),
@@ -728,7 +728,7 @@ fn list(loaded: &LoadedConfig, as_json: bool, note: Option<String>, env: &Env, a
     if reports.is_empty() && loaded.errors.is_empty() {
         io.log(&format!(
             "No MCP servers configured. Add them to {} or .pi/mcp.json.",
-            agent_dir.join("mcp.json").display()
+            config::paths::AgentPaths::new(agent_dir).mcp().display()
         ));
     }
     for report in &reports {

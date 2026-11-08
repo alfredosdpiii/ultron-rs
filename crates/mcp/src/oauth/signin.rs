@@ -3,7 +3,7 @@
 //! access token, refreshes it when it is about to expire or after a 401, and otherwise reports that sign-in is needed.
 
 use super::callback::{Callback, CallbackServer, PageRenderer};
-use super::flow::{Fetcher, FlowOptions, FlowResult, Provider, StateStore, authorize, step_up_scope};
+use super::flow::{Fetcher, FlowOptions, FlowResult, Provider, authorize, step_up_scope};
 use super::store::ServerStore;
 use super::{Challenge, OAuthError, parse_www_authenticate};
 use crate::CancelToken;
@@ -105,7 +105,7 @@ fn registered_redirect_urls(client: Option<&Value>) -> Vec<String> {
 
 fn provider<'a>(
     server_url: &str,
-    store: &'a dyn StateStore,
+    store: &'a ServerStore,
     settings: &OAuthSettings,
     redirect_url: &str,
     on_redirect: Box<dyn Fn(&str) + 'a>,
@@ -459,48 +459,4 @@ impl AuthProvider for ProviderAuth {
     fn token(&self) -> Result<Option<String>, Error> {
         Ok((self.token)(&self.provider))
     }
-}
-
-/// Where this process runs relative to the user's browser (`browserReach`).
-pub fn browser_reach(var: &dyn Fn(&str) -> Option<String>, exists: &dyn Fn(&str) -> bool) -> &'static str {
-    let set = |key: &str| var(key).is_some_and(|v| !v.trim().is_empty());
-    if set(ai::oauth_flow::OAUTH_CALLBACK_HOST_ENV) || set(ai::oauth_flow::LEGACY_OAUTH_CALLBACK_HOST_ENV) {
-        return "local";
-    }
-    let container = set("container")
-        || set("KUBERNETES_SERVICE_HOST")
-        || exists("/.dockerenv")
-        || exists("/run/.containerenv")
-        || std::fs::read_to_string("/proc/1/cgroup").is_ok_and(|cgroup| {
-            ["docker", "containerd", "kubepods", "libpod", "lxc"]
-                .iter()
-                .any(|marker| cgroup.contains(marker))
-        });
-    if container {
-        return "container";
-    }
-    if set("SSH_CONNECTION") || set("SSH_TTY") {
-        "ssh"
-    } else {
-        "local"
-    }
-}
-
-const UNREACHABLE_CALLBACK_STEP: &str = "copy that page's full address from the address bar and paste it here.";
-
-/// `unreachableCallbackHint`.
-pub fn unreachable_callback_hint(reach: &str) -> String {
-    if reach == "local" {
-        return format!(
-            "If the browser ends on a page that can't be reached (localhost refused to connect), {UNREACHABLE_CALLBACK_STEP}"
-        );
-    }
-    let place = if reach == "container" {
-        "in a container"
-    } else {
-        "over SSH"
-    };
-    format!(
-        "Ultron is running {place}, so the browser on your computer may not reach this login's callback. If it ends on a page that can't be reached (localhost refused to connect) after you sign in, that is expected: {UNREACHABLE_CALLBACK_STEP}"
-    )
 }

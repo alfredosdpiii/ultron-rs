@@ -214,7 +214,7 @@ fn ai_model_resolver_minimatch_matches_typescript() {
     for case in cases {
         let (text, pattern) = (case["text"].as_str().unwrap(), case["pattern"].as_str().unwrap());
         assert_eq!(
-            minimatch(text, pattern),
+            minimatch(text, pattern, true),
             case["match"].as_bool().unwrap(),
             "minimatch({text:?}, {pattern:?})"
         );

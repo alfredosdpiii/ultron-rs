@@ -9,13 +9,19 @@ use std::time::Duration;
 use serde_json::{Map, Value};
 
 use crate::json::parse;
-use crate::lock::{LockGuard, acquire, lock_path_for};
+use crate::lock::{LockGuard, Options, Retry, SYNC, Until, acquire, lock_path_for};
 
 pub type AuthData = Map<String, Value>;
 
 /// The async TypeScript lock (`withLockAsync`): stale after 30 s, retried for up to 30 s.
-const AUTH_STALE: Duration = Duration::from_secs(30);
-const AUTH_ATTEMPTS: u32 = 1500;
+const AUTH_LOCK: Options = Options {
+    stale: Duration::from_secs(30),
+    retry: Retry {
+        until: Until::Tries(1500),
+        ..SYNC.retry
+    },
+    update: None,
+};
 
 /// `auth.json` held under its lock (`FileAuthStorageBackend.withLockAsync`): the parent (0700) and an empty `{}`
 /// file (0600) are created when missing; dropping it releases the lock.
@@ -36,7 +42,7 @@ impl LockedAuthFile {
         if !path.exists() {
             crate::paths::write_private(path, "{}").map_err(|e| e.to_string())?;
         }
-        let lock = acquire(&lock_path_for(path), AUTH_STALE, AUTH_ATTEMPTS).map_err(|e| e.to_string())?;
+        let lock = acquire(&lock_path_for(path), AUTH_LOCK).map_err(|e| e.to_string())?;
         Ok(LockedAuthFile {
             path: path.to_path_buf(),
             _lock: lock,

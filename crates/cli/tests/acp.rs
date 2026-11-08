@@ -8,7 +8,7 @@
 //! sources in `fixtures/acp/codecompanion.json` and `fixtures/acp/avante.json`) and check the replies with those
 //! clients' own acceptance rules, ported from their Lua.
 
-mod common;
+use crate::common;
 
 use common::{Naming, Sandbox, anthropic_text, anthropic_tool, mock_server, tool_result_text};
 use serde_json::{Value, json};

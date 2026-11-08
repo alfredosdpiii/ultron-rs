@@ -409,6 +409,16 @@ impl Connection {
         }
     }
 
+    /// `plugins.prepareSession` for session `id` with the default packages: the plugin selection `/reload` rebuilds.
+    pub fn prepare_session(&self, id: &str) -> Result<Option<Json>, CallError> {
+        self.call(
+            self.server_target(),
+            protocol::names::PRESENTATION_PLUGINS,
+            "prepareSession",
+            json!([{"sessionId": id, "packagePaths": null}]),
+        )
+    }
+
     pub fn session_target(&self) -> Result<RpcTarget, CallError> {
         self.attachment()
             .map(RpcTarget::Session)
@@ -605,6 +615,19 @@ impl Connection {
         }
     }
 
+    /// Blocks until the connection closed or its attachment is no longer `seen`, or `timeout` passed.
+    pub fn wait_attachment_change(&self, seen: Option<&SessionTarget>, timeout: Duration) {
+        let (lock, changed) = &*self.shared;
+        let shared = lock.lock().unwrap_or_else(|e| e.into_inner());
+        drop(
+            changed
+                .wait_timeout_while(shared, timeout, |shared| {
+                    shared.closed.is_none() && shared.attachment.as_ref() == seen
+                })
+                .unwrap_or_else(|e| e.into_inner()),
+        );
+    }
+
     pub fn disconnect(&self) {
         self.writer.lock().unwrap_or_else(|e| e.into_inner()).shutdown();
     }
@@ -688,16 +711,6 @@ impl ClientResult {
     }
 }
 
-fn message_text(message: &Json) -> String {
-    message["content"]
-        .as_array()
-        .into_iter()
-        .flatten()
-        .filter(|c| c["type"] == "text")
-        .filter_map(|c| c["text"].as_str())
-        .collect()
-}
-
 fn fail(error: CallError) -> String {
     crate::lost::message(&error)
 }
@@ -770,33 +783,74 @@ pub fn rejoin(connection: &Connection, session_id: &str, options: &RunOptions) -
             Err(_) => std::thread::sleep(Duration::from_millis(250)),
         }
     };
-    // Recovery is idempotent: whichever of the worker and this client asks first starts the recovered run.
-    ops(connection, &session, json!({"op": "recover"}))?;
-    let mut abort_sent = false;
-    loop {
-        let state = ops(connection, &session, json!({"op": "state"}))?.unwrap_or_default();
-        let busy = state["isStreaming"] == true || state["pendingMessageCount"].as_u64().unwrap_or(0) > 0;
-        if !busy || (abort_sent && state["isStreaming"] != true) {
-            break;
-        }
-        if interrupted(options) && !abort_sent {
-            abort_sent = true;
-            connection.call(
-                session.clone(),
-                protocol::names::AGENT_CONTROLLER,
-                "requestAbort",
-                json!([]),
-            )?;
-        }
-        if Instant::now() >= deadline {
-            return Err(CallError::Disconnected(
-                "The rejoined session did not become idle".into(),
-            ));
-        }
-        std::thread::sleep(Duration::from_millis(100));
+    // The session's run boundaries wake the wait for idle; subscribed before the recovery starts its run.
+    let (boundaries, boundary) = mpsc::channel::<()>();
+    let transcript = connection.subscribe(session.clone(), protocol::names::TRANSCRIPT)?;
+    connection.listen(
+        &transcript,
+        Box::new(move |_, value| {
+            if matches!(value["event"]["type"].as_str(), Some("run_end" | "run_suspend")) {
+                let _ = boundaries.send(());
+            }
+        }),
+    );
+    let idle = wait_idle(connection, &session, &boundary, deadline, options);
+    connection.unlisten(&transcript);
+    if let Ok(id) = connection.start_unsubscribe(session.clone(), &transcript) {
+        let _ = connection.wait(&id);
     }
+    connection.forget(&transcript);
+    idle?;
     let text = ops(connection, &session, json!({"op": "lastAssistantText"}))?;
     Ok(text.and_then(|t| t.as_str().map(str::to_string)).unwrap_or_default())
+}
+
+/// Recover the rejoined session and wait until it is idle with nothing queued: its state is read again at each run
+/// boundary (`boundary`); an interrupt asks the run to abort.
+fn wait_idle(
+    connection: &Connection,
+    session: &RpcTarget,
+    boundary: &mpsc::Receiver<()>,
+    deadline: Instant,
+    options: &RunOptions,
+) -> Result<(), CallError> {
+    // Recovery is idempotent: whichever of the worker and this client asks first starts the recovered run.
+    ops(connection, session, json!({"op": "recover"}))?;
+    let mut abort_sent = false;
+    loop {
+        let state = ops(connection, session, json!({"op": "state"}))?.unwrap_or_default();
+        let busy = state["isStreaming"] == true || state["pendingMessageCount"].as_u64().unwrap_or(0) > 0;
+        if !busy || (abort_sent && state["isStreaming"] != true) {
+            return Ok(());
+        }
+        loop {
+            if interrupted(options) && !abort_sent {
+                abort_sent = true;
+                connection.call(
+                    session.clone(),
+                    protocol::names::AGENT_CONTROLLER,
+                    "requestAbort",
+                    json!([]),
+                )?;
+                break;
+            }
+            if Instant::now() >= deadline {
+                return Err(CallError::Disconnected(
+                    "The rejoined session did not become idle".into(),
+                ));
+            }
+            // The interrupt flag has no wake of its own: it is looked at between waits.
+            // A closed connection is reported by the next state read.
+            match boundary.recv_timeout(Duration::from_millis(100)) {
+                Ok(()) => break,
+                Err(mpsc::RecvTimeoutError::Timeout) if connection.is_closed() => break,
+                Err(mpsc::RecvTimeoutError::Timeout) => {}
+                Err(mpsc::RecvTimeoutError::Disconnected) => {
+                    return Err(CallError::Disconnected("The transcript subscription ended".into()));
+                }
+            }
+        }
+    }
 }
 
 /// `runClient` against one server route.
@@ -1062,14 +1116,7 @@ fn operation(
             id
         }
     };
-    connection
-        .call(
-            server.clone(),
-            protocol::names::PRESENTATION_PLUGINS,
-            "prepareSession",
-            json!([{"sessionId": session_id, "packagePaths": null}]),
-        )
-        .map_err(fail)?;
+    connection.prepare_session(&session_id).map_err(fail)?;
     let attach = match &options.session_options {
         Some(session_options) => json!([session_id, session_options]),
         None => json!([session_id]),
@@ -1144,7 +1191,7 @@ fn operation(
             && event["message"]["role"] == "assistant"
             && let Some(run) = &run
         {
-            completed.insert(run.clone(), message_text(&event["message"]));
+            completed.insert(run.clone(), protocol::pi_message::text(&event["message"]));
         }
         if matches!(event["type"].as_str(), Some("run_end" | "run_suspend"))
             && let Some(run) = run

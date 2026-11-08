@@ -3,8 +3,7 @@
 //! frame only when native's copy is a lossless, unambiguous extension, keeps one message breakpoint on content the
 //! next request replays, and puts the first turn ahead of native's prepended context.
 
-#[path = "claude_subscription_support/isolate.rs"]
-mod isolate;
+use crate::isolate;
 use ai::claude_subscription::rewrite::{MISMATCH, QueriedTurnMismatch, pin_message_breakpoint, restore_queried_turn};
 use isolate::seal;
 use serde_json::{Value, json};

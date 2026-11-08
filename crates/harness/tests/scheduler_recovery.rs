@@ -2,7 +2,7 @@
 //! JSONL storage. Close/reopen goes through the same database (a fresh SQLite connection / JSONL open); a crash
 //! abandons the Harness without close, drops its held commit, and reopens what was committed.
 
-mod support;
+use crate::support;
 
 use durable::{
     DocDefinition, DocSemantics, Owner, StorageError, StorageWrite, TaskId, TaskOptions, TaskQuery, TaskStatus,

@@ -174,8 +174,8 @@ fn cli_auth_for_builtin_and_models_json_providers_matches_typescript() {
             .map(|t| serde_json::from_str::<Value>(&t).unwrap())
             .unwrap_or(Value::Null);
         assert_eq!(
-            ai::json::normalize_numbers(times(stored, started)),
-            ai::json::normalize_numbers(case["stored"].clone()),
+            jsrt::json::normalize_numbers(times(stored, started)),
+            jsrt::json::normalize_numbers(case["stored"].clone()),
             "{name}: auth.json"
         );
     }

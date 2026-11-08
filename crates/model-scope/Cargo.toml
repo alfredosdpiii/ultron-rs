@@ -8,6 +8,7 @@ publish.workspace = true
 
 [dependencies]
 jsrt = { path = "../jsrt" }
+serde_json = { version = "=1.0.151", features = ["preserve_order"] }
 
 [lints]
 workspace = true

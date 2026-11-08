@@ -2,10 +2,11 @@
 //! literal expectations, over `kernel_apis::cell_hints::CellHints` and the `hints.*` module it shares mutes and
 //! counts with. The A56 cases are job-detached, blocked-on-job and poll-loop.
 
+use kernel::store::MemoryDocumentStore;
+use kernel_apis::HintsModule;
 use kernel_apis::cell_hints::{
     CellHints, CellHintsOptions, CellOutcome, hint_max_per_tag, hints_enabled, read_handle_bytes,
 };
-use kernel_apis::{HintsModule, MemoryDocumentStore};
 use serde_json::{Map, Value, json};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicI64, Ordering};
@@ -515,7 +516,7 @@ fn kernel_apis_hints_mutes_are_per_lane_and_persist_each_tag_fires_at_most_n_tim
         json!({"muted": ["poll-loop"]})
     );
     assert_eq!(fx.cell(&again, "x", &[], (TRUNCATED, None)), None);
-    let stored = kernel_apis::DocumentStore::read(fx.store.as_ref()).unwrap().unwrap();
+    let stored = kernel::store::DocumentStore::read(fx.store.as_ref()).unwrap().unwrap();
     assert_eq!(stored["version"], 1);
     assert_eq!(stored["lanes"]["main"]["fired"]["output-truncated"], 3);
     // Disabled: nothing fires.

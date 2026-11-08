@@ -1,6 +1,5 @@
 //! A session actor (`session_core::core`) in a private home against a scripted Anthropic server on loopback: the
 //! replies are SSE bodies served in order, every request body is kept. Nothing reads the real environment or home.
-#![allow(dead_code)]
 
 use serde_json::{Value, json};
 use session_core::core::{Input, Op};

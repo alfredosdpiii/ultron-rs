@@ -3,7 +3,7 @@
 //! opens the copy picker, Esc-Esc the rewind selector (which forks before the picked turn), Ctrl+L the model hub.
 //! These have no TypeScript counterpart; expectations are the behavior the overlays promise.
 
-mod tui_harness;
+use crate::tui_harness;
 
 use serde_json::json;
 use tui_harness::{Mock, QUIET, Reply, Tui, sse, text_reply};

@@ -16,6 +16,7 @@
 //! cell completions continue the run between turns ([`RuntimeEvents`]). The model sees one tool, `rlm`.
 
 use crate::RunEnv as Env;
+use crate::async_events::RuntimeEvent;
 use crate::lane::{Provider, Rlm, rlm_over};
 use crate::session_stats::{GuardOutcome, SessionStats};
 use agent::{AgentOptions, AgentTool, StreamFn};
@@ -29,10 +30,11 @@ use host::file_hooks::{FileHooks, GuardRecord, OnRecord};
 use host::loki_guard::{LokiGuard, LokiMode, git_root, loki_mode};
 use inference::Inference;
 use jsrt::sync;
+use kernel::store::{FileDocumentStore, MemoryDocumentStore};
 use kernel::{ContinuityPolicy, HostHandler, Kernel, KernelOptions, Signal};
 use kernel_apis::{
-    CodeSkills, CodeSkillsOptions, DurableWork, DurableWorkOptions, FileDocumentStore, GoalDriver, HintsModule,
-    KernelApis, MemoryApi, MemoryBackend, MemoryService, SchedulesModule, SkillSource, SkillsModule, TaskGoalJobs,
+    CodeSkills, CodeSkillsOptions, DurableWork, DurableWorkOptions, GoalDriver, HintsModule, KernelApis, MemoryApi,
+    MemoryBackend, MemoryService, SchedulesModule, SkillSource, SkillsModule, TaskGoalJobs,
 };
 use lanes::Park;
 use lanes::{CellEnd, Lanes, LanesOptions};
@@ -40,7 +42,7 @@ use serde_json::{Map, Value, json};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::Receiver;
-use std::sync::{Arc, Mutex, Weak};
+use std::sync::{Arc, Condvar, Mutex, Weak};
 use std::time::Duration;
 
 pub const CONTEXT_REMINDER_ENV: &str = "ULTRON_CONTEXT_REMINDER";
@@ -109,6 +111,14 @@ pub struct Config {
     pub spawn_depth: u32,
     /// `ULTRON_ASYNC_EVENTS` is not off: completions of detached work continue the run.
     pub async_events: bool,
+    /// `ULTRON_GUIDE=ts` ([`ts_guide`]).
+    pub ts_guide: bool,
+    /// Rounds without a user message before the root is nudged (`ULTRON_TOOL_ROUNDS_NUDGE`).
+    pub tool_rounds_nudge: u64,
+    /// Turns before a skill-extraction nudge (`ULTRON_SKILL_NUDGE`).
+    pub skill_nudge: u64,
+    /// Tool-result images a request keeps (`ULTRON_CONTEXT_IMAGES`; 0: all).
+    pub context_images: usize,
     /// The frame settings `rlm.map` / `rlm.infer` read from the environment (`ULTRON_RLM_FRAME_MODEL`,
     /// `ULTRON_REVIEW_MODEL`, `ULTRON_RLM_MAP_TOKENS`).
     pub frame_env: HashMap<String, String>,
@@ -131,8 +141,7 @@ pub struct Config {
 /// After-cell checks picture the directory between cells (workspace-snapshot.ts).
 pub fn workspace_snapshotter() -> host::file_hooks::Snapshotter {
     std::sync::Arc::new(|dir: &Path| {
-        let picture =
-            delegation::workspace::snapshot_workspace(dir, delegation::workspace::DEFAULT_MAX_SNAPSHOT_ENTRIES, true);
+        let picture = delegation::workspace::snapshot_workspace(dir);
         Ok(host::file_hooks::Snapshot {
             root: picture.root,
             entries: picture.entries,
@@ -195,6 +204,12 @@ pub fn session_environment(var: &dyn Fn(&str) -> Option<String>) -> Vec<(String,
         .collect()
 }
 
+/// Whether `ULTRON_GUIDE=ts` asks for the TypeScript guide and output (the TS-recorded replays use it): no Rust-only
+/// APIs, wording or cell-result additions.
+pub fn ts_guide(var: &dyn Fn(&str) -> Option<String>) -> bool {
+    var(GUIDE_ENV).as_deref() == Some("ts")
+}
+
 impl Config {
     /// [`session_environment`] of this session.
     pub fn child_env(&self) -> Vec<(String, String)> {
@@ -232,6 +247,14 @@ impl Config {
             spawn_depth: delegation::host::spawn_depth_limit((env.var)(delegation::host::SPAWN_DEPTH_ENV).as_deref()),
             async_events: crate::async_events::async_events_enabled(
                 (env.var)(crate::async_events::ASYNC_EVENTS_ENV).as_deref(),
+            ),
+            ts_guide: ts_guide(&*env.var),
+            tool_rounds_nudge: crate::nudge::tool_rounds_nudge_from_env(
+                (env.var)(crate::nudge::TOOL_ROUNDS_NUDGE_ENV).as_deref(),
+            ),
+            skill_nudge: crate::nudge::skill_nudge_from_env((env.var)(crate::nudge::SKILL_NUDGE_ENV).as_deref()),
+            context_images: crate::view_images::context_image_budget(
+                (env.var)(crate::view_images::CONTEXT_IMAGES_ENV).as_deref(),
             ),
             frame_env: inference::frame_env(&*env.var),
             var: env.var.clone(),
@@ -272,7 +295,7 @@ impl Config {
                 cwd: self.cwd.clone(),
                 home: self.home.clone(),
                 env_overlay: HashMap::new(),
-                client_version: mcp::gateway::client_version(),
+                client_version: config::version().to_string(),
                 log: Some(Arc::new(mcp::log::ServerLog::new(self.agent_dir.join("mcp.log")))),
                 secrets: Some(Arc::new(move |values: &[String]| {
                     let values: Vec<Value> = values.iter().map(|v| Value::String(v.clone())).collect();
@@ -285,10 +308,10 @@ impl Config {
                 ..mcp::connection::ConnectionEnv::default()
             },
             // The session's PATH finds the launcher (never the process's).
-            open_url: Some(mcp::gateway::browser_opener_with(
+            open_url: Some(config::browser::browser_opener(
                 (self.var)("PATH"),
                 (self.var)("HOME"),
-                mcp::gateway::opener_vars(&*self.var),
+                config::browser::opener_vars(&*self.var),
             )),
         })
     }
@@ -444,7 +467,7 @@ pub fn mcp_runtime_guide(config: &Config) -> resources::runtime_guide::RuntimeGu
             .collect(),
         // The session runtime serves `rlm.ask`, `swarm`, `board`, `notes` (swarm_ops.rs) and typed memory: the model
         // is told, unless `ULTRON_GUIDE=ts` asks for the TypeScript guide (the TS-recorded request replays use it).
-        durable_apis: (config.var)(GUIDE_ENV).as_deref() != Some("ts"),
+        durable_apis: !config.ts_guide,
         // The root is woken by its work's ends only with completion events on (crate::wake); with them off it is
         // told to wait (`ULTRON_ASYNC_EVENTS=off`).
         delivery: if config.async_events {
@@ -454,7 +477,7 @@ pub fn mcp_runtime_guide(config: &Config) -> resources::runtime_guide::RuntimeGu
         },
         // The woken root's rlm.collect never waits (crate::wake); TypeScript's guide (`ULTRON_GUIDE=ts`, its
         // recorded replays) keeps its wording.
-        host_waits: (config.var)(GUIDE_ENV).as_deref() != Some("ts"),
+        host_waits: !config.ts_guide,
         // Cell results end with `[hint:<tag>]` lines under `ULTRON_HINTS=on`: the guide says what to do with them.
         hints: kernel_apis::cell_hints::hints_enabled((config.var)(kernel_apis::cell_hints::HINTS_ENV).as_deref()),
         ..Default::default()
@@ -651,20 +674,18 @@ impl Runtime {
         let mut resolved = crate::session_resources::resolve(
             env,
             config::settings::SettingsManager::create(&env.cwd, &config.agent_dir, trusted),
+            services.session.append_system_prompt.as_deref(),
         );
         // `--skill <path>`: after the discovered skills (resource-loader.ts `additionalSkillPaths`).
         resolved
             .skill_paths
             .extend(services.session.skill_paths.iter().cloned());
-        if let Some(appends) = &services.session.append_system_prompt {
-            // `--append-system-prompt` replaces a discovered APPEND_SYSTEM.md (resource-loader.ts).
-            resolved.append_system_prompt = appends.clone();
-        }
         services.resources = Arc::new(resolved);
         let mut diagnostics: Vec<String> = Vec::new();
         let setting_url = hindsight::resolve::setting_url(&manager);
-        let hindsight_explicit = setting_url.is_some()
-            || (env.var)(hindsight::resolve::HINDSIGHT_URL_ENV).is_some_and(|url| !url.trim().is_empty());
+        let env_url = (env.var)(hindsight::resolve::HINDSIGHT_URL_ENV);
+        let (_, source) = hindsight::resolve::resolve(env_url.as_deref(), setting_url.as_deref());
+        let hindsight_explicit = source != hindsight::resolve::Source::Default;
         let hindsight = hindsight::Endpoint::resolve(&|key| (env.var)(key), setting_url);
         // The `mcp` gateway lives in the REPL: the runtime guide lists it with its servers (`mcpServerNames`).
         let runtime_guide = mcp_runtime_guide(&config);
@@ -718,11 +739,11 @@ impl Runtime {
         // Shell jobs are durable: their journal is in the session's module directory, and opening the host recovers
         // the jobs a dead worker left (from their processes).
         let values = self.services.values.clone();
-        let jobs: Arc<dyn host::journal::JobJournal> = match &values {
+        let jobs: Arc<dyn kernel::store::DocumentStore> = match &values {
             Some(values) => Arc::new(crate::session_modules::ModuleJobJournal(
                 crate::session_modules::ModuleDocument(values.document(session_journal::ns::MODULE, "jobs")),
             )),
-            None => Arc::new(host::journal::FileJobJournal::new(
+            None => Arc::new(kernel::store::FileDocumentStore::new(
                 config.session_dir("rlm-modules", session_id).join("jobs.json"),
             )),
         };
@@ -746,7 +767,7 @@ impl Runtime {
         );
         crate::guard_log::loki_setup(&config);
         // `createSessionModuleStore(session, name)`: the session value `ultron.module/<name>`.
-        let modules = |name: &str| -> Arc<dyn kernel_apis::DocumentStore> {
+        let modules = |name: &str| -> Arc<dyn kernel::store::DocumentStore> {
             match &values {
                 Some(values) => Arc::new(crate::session_modules::ModuleDocument(
                     values.document(session_journal::ns::MODULE, name),
@@ -938,12 +959,11 @@ impl Runtime {
                     };
                     // Typed agents keep in-memory records, their `rlm` lanes run where `agent_lanes` says.
                     let agent_stores = agent_lanes.as_ref().map(|lanes| {
-                        use delegation::task_store::MemoryStore;
                         let lanes = lanes.clone();
                         AgentStores {
-                            tasks: Box::new(MemoryStore::default()),
-                            definitions: Box::new(MemoryStore::default()),
-                            usage: Box::new(MemoryStore::default()),
+                            tasks: Box::new(MemoryDocumentStore::default()),
+                            definitions: Box::new(MemoryDocumentStore::default()),
+                            usage: Box::new(MemoryDocumentStore::default()),
                             lanes: Box::new(move |stack| lanes(stack)),
                             frames: Arc::new(inference::MemoryTraceStore::default()),
                         }
@@ -1007,7 +1027,7 @@ impl Runtime {
             options.spawn_depth = config.spawn_depth;
             options.session_id = session_id.clone();
             options.workspace = Some(config.cwd.clone());
-            options.now = Box::new(|| crate::lane::now_ms() as f64);
+            options.now = Box::new(|| jsrt::date::now_ms() as f64);
             // `ULTRON_KEEP_WORKTREES`: worktrees and branches stay after merges, on close and at startup.
             options.keep_worktrees = delegation::worktrees::keep_worktrees(
                 (config.var)(delegation::worktrees::KEEP_WORKTREES_ENV).as_deref(),
@@ -1097,15 +1117,11 @@ impl Runtime {
                     (lanes, ends)
                 }
             };
-            let events = Arc::new(RuntimeEvents {
-                task_ends: Mutex::new(task_ends),
-                child_ends: Mutex::new(child_ends),
-                cell_ends: Mutex::new(cell_ends),
-                delegation: delegation.clone(),
-                lanes: lanes.clone(),
-                enabled: config.async_events,
-                mask: session_mask(&config),
-            });
+            let events = Arc::new(RuntimeEvents::new(
+                (task_ends, child_ends, cell_ends),
+                config.async_events,
+                session_mask(&config),
+            ));
             Stack {
                 config,
                 mcp: gateway,
@@ -1153,7 +1169,7 @@ impl Runtime {
                 .lane_steer
                 .set(Arc::new(move |lane: &str, message: &str| children.steer(lane, message)));
         }
-        stack.lanes.open(crate::lane::MAIN)?;
+        stack.lanes.open(session_journal::run::MAIN_LANE)?;
         let work = DurableWork::open(
             DurableWorkOptions::new(Arc::new(stack.agents.clone()))
                 .schedules(stack.schedules.clone())
@@ -1274,7 +1290,7 @@ impl Runtime {
         .with_base_env(config.child_env())
         // Cell results carry the diff of what they wrote (crate::cell_file_changes), except in the TS-compatible
         // output the TS-recorded replays compare (`ULTRON_GUIDE=ts`).
-        .recording_cell_writes((config.var)(GUIDE_ENV).as_deref() != Some("ts"))
+        .recording_cell_writes(!config.ts_guide)
         .sandboxed(&config.settings, &config.home, Some(&tmp_dir)))
     }
 }
@@ -1475,7 +1491,7 @@ impl Stack {
         let router = Router {
             delegation,
             host: self.host_of(lane),
-            progress: (lane == crate::lane::MAIN).then(|| self.cell_progress.clone()),
+            progress: (lane == session_journal::run::MAIN_LANE).then(|| self.cell_progress.clone()),
             lane: lane.to_string(),
             config: self.config.clone(),
             swarm: self.swarm.get().cloned(),
@@ -1769,7 +1785,7 @@ impl Stack {
 
 /// How a session's subagents run, and where their task journal lives.
 pub struct SubagentHost {
-    pub store: Box<dyn delegation::task_store::DocumentStore>,
+    pub store: Box<dyn kernel::store::DocumentStore>,
     /// Builds the runner from the stack being built (it may hold the stack weakly).
     pub runner: Box<dyn FnOnce(Weak<Stack>) -> delegation::host::ChildRunner>,
     /// The typed agents' task journal, definition registry and usage ledger stores, and the runner of their `rlm`
@@ -1779,9 +1795,9 @@ pub struct SubagentHost {
 
 /// Where the typed-agent host keeps its records, and how its `rlm` lanes run.
 pub struct AgentStores {
-    pub tasks: Box<dyn delegation::task_store::DocumentStore>,
-    pub definitions: Box<dyn delegation::task_store::DocumentStore>,
-    pub usage: Box<dyn delegation::task_store::DocumentStore>,
+    pub tasks: Box<dyn kernel::store::DocumentStore>,
+    pub definitions: Box<dyn kernel::store::DocumentStore>,
+    pub usage: Box<dyn kernel::store::DocumentStore>,
     pub lanes: Box<dyn FnOnce(Weak<Stack>) -> delegation::agents::LaneRunner>,
     /// Where frame traces are kept (`ultron.rlm.frames`).
     pub frames: Arc<dyn inference::TraceStore>,
@@ -1802,7 +1818,6 @@ fn typed_agents(
     frames: delegation::agents::FrameRunner,
     stats: &Arc<SessionStats>,
 ) -> (Agents, UsageLedger, Receiver<delegation::agents::TaskEnd>) {
-    use delegation::task_store::MemoryStore;
     let (tasks, definitions, usage_store, lanes) = match stores {
         Some(stores) => (
             stores.tasks,
@@ -1818,9 +1833,9 @@ fn typed_agents(
             })),
         ),
         None => (
-            Box::new(MemoryStore::default()) as Box<dyn delegation::task_store::DocumentStore>,
-            Box::new(MemoryStore::default()) as Box<dyn delegation::task_store::DocumentStore>,
-            Box::new(MemoryStore::default()) as Box<dyn delegation::task_store::DocumentStore>,
+            Box::new(MemoryDocumentStore::default()) as Box<dyn kernel::store::DocumentStore>,
+            Box::new(MemoryDocumentStore::default()) as Box<dyn kernel::store::DocumentStore>,
+            Box::new(MemoryDocumentStore::default()) as Box<dyn kernel::store::DocumentStore>,
             None,
         ),
     };
@@ -1842,7 +1857,7 @@ fn typed_agents(
         },
     )
     .unwrap_or_else(|_| {
-        UsageLedger::new(Box::new(MemoryStore::default()), Default::default()).expect("an empty ledger opens")
+        UsageLedger::new(Box::new(MemoryDocumentStore::default()), Default::default()).expect("an empty ledger opens")
     });
     let mut options = AgentsOptions::new(tasks);
     options.definition_store = Some(definitions);
@@ -1928,11 +1943,11 @@ fn complete_once(model: &Model, provider: &dyn StreamFn, call: &PredictCall<'_>)
                 sections: None,
                 tools_added: None,
                 tools_removed: None,
-                timestamp: crate::lane::now_ms(),
+                timestamp: jsrt::date::now_ms(),
             }),
             Message::User(UserMessage {
                 content: UserMessageContent::Text(call.user.clone()),
-                timestamp: crate::lane::now_ms(),
+                timestamp: jsrt::date::now_ms(),
             }),
         ],
     };
@@ -2078,7 +2093,7 @@ fn child_agent(stack: &Weak<Stack>, defaults: &ChildDefaults, run: &ChildRun) ->
     // Its requests carry the session's stream options as the root's do (one harness in TypeScript).
     // Each request carries its provider's key, resolved when it is sent.
     let provider = crate::request_keys::Keyed {
-        inner: Provider::new().with_live_settings(stack.config.settings_reader(), true),
+        inner: Provider::new().with_live_settings(stack.config.settings_reader()),
         keys: stack.keys.clone(),
     };
     (options, Box::new(provider))
@@ -2400,191 +2415,137 @@ pub fn session_mask(config: &Config) -> crate::async_events::MaskText {
     Arc::new(move |text: &str| masker.mask_counted(text, flag.as_deref()).0)
 }
 
-/// Completions of work a run started that outlives its cell: subagents (`child_done`) and detached cells
-/// (`cell_done`) of the root lane. Between turns the run waits here (in the host, never in a cell) while such work
-/// is running, and each completion continues the run as a `<runtime_event>` message. `ULTRON_ASYNC_EVENTS=off`
-/// turns this off: nothing waits and nothing is announced.
+/// Completions of work a run started that outlives its cell: typed tasks nobody awaited (`task_done`), subagents
+/// (`child_done`) and detached cells (`cell_done`), of every lane. Each completion continues its lane's run as a
+/// `<runtime_event>` message. `ULTRON_ASYNC_EVENTS=off` turns this off: nothing waits and nothing is announced.
 pub struct RuntimeEvents {
-    task_ends: Mutex<Receiver<delegation::agents::TaskEnd>>,
-    child_ends: Mutex<Receiver<DetachedEnd>>,
-    cell_ends: Mutex<Receiver<CellEnd>>,
-    delegation: Delegation,
-    lanes: Lanes,
+    ends: Arc<(Mutex<Vec<RuntimeEvent>>, Condvar)>,
     enabled: bool,
     /// The session's masking of event summaries.
     mask: crate::async_events::MaskText,
 }
 
 impl RuntimeEvents {
-    fn pending_lines(&self) -> Vec<String> {
-        let mut lines = Vec::new();
-        // A typed task's end nobody awaited (`task_done`, as session-worker.ts `onDetachedEnd`).
-        while let Ok(end) = sync::lock(&self.task_ends).try_recv() {
-            if end.owner_lane != crate::lane::MAIN || end.awaited {
-                continue;
-            }
-            let task = &end.task;
-            let status = task["result"]["status"]
-                .as_str()
-                .or(task["state"].as_str())
-                .unwrap_or("ended");
-            let id = task["id"].as_str().unwrap_or_default();
-            lines.push(runtime_event_line_with(
-                end.kind,
-                id,
-                status,
-                &task_event_summary(task),
-                &end.fetch,
-                &self.mask,
-            ));
+    /// Over the three hosts' end channels; each is read on a thread of its own until its host goes away.
+    fn new(
+        (task_ends, child_ends, cell_ends): (
+            Receiver<delegation::agents::TaskEnd>,
+            Receiver<DetachedEnd>,
+            Receiver<CellEnd>,
+        ),
+        enabled: bool,
+        mask: crate::async_events::MaskText,
+    ) -> Self {
+        let ends: Arc<(Mutex<Vec<RuntimeEvent>>, Condvar)> = Arc::default();
+        fn read<T: Send + 'static>(
+            from: Receiver<T>,
+            into: &Arc<(Mutex<Vec<RuntimeEvent>>, Condvar)>,
+            event: fn(T) -> Option<RuntimeEvent>,
+        ) {
+            let into = into.clone();
+            std::thread::spawn(move || {
+                for end in from {
+                    if let Some(event) = event(end) {
+                        sync::lock(&into.0).push(event);
+                        into.1.notify_all();
+                    }
+                }
+            });
         }
-        while let Ok(end) = sync::lock(&self.child_ends).try_recv() {
-            if end.owner_lane != crate::lane::MAIN {
-                continue;
-            }
-            let task = &end.task;
-            let result = &task["result"];
-            let status = result["status"].as_str().or(task["state"].as_str()).unwrap_or("ended");
-            let summary = task_event_summary(task);
-            let id = task["id"].as_str().unwrap_or_default();
-            lines.push(runtime_event_line_with(
-                end.kind, id, status, &summary, &end.fetch, &self.mask,
-            ));
-        }
-        while let Ok(end) = sync::lock(&self.cell_ends).try_recv() {
-            if end.lane != crate::lane::MAIN {
-                continue;
-            }
-            let (status, summary) = match &end.outcome {
-                Ok(result) => (
-                    if result.status == kernel::Status::Ok {
-                        "completed"
-                    } else {
-                        "failed"
-                    },
-                    [result.stdout.as_str(), result.result.as_deref().unwrap_or_default()].join(" "),
-                ),
-                Err(error) => ("failed", error.clone()),
-            };
-            lines.push(runtime_event_line_with(
-                "cell_done",
-                &end.cell,
-                status,
-                &summary,
-                "await rlm.cells()",
-                &self.mask,
-            ));
-        }
-        lines
+        read(task_ends, &ends, task_end_event);
+        read(child_ends, &ends, |end| Some(child_end_event(end)));
+        read(cell_ends, &ends, |end| Some(cell_end_event(end)));
+        RuntimeEvents { ends, enabled, mask }
     }
 
-    /// Every completion since the last call, for the event dispatcher (crate::async_events): typed tasks' ends
-    /// nobody awaited (`task_done`, with their root), subagents' ends (`child_done`) and detached cells' ends
-    /// (`cell_done`), each for the lane that owns the work. A subagent's or cell's root is left for the caller.
-    pub fn drain_ends(&self) -> Vec<crate::async_events::RuntimeEvent> {
-        let mut events = Vec::new();
-        while let Ok(end) = sync::lock(&self.task_ends).try_recv() {
-            if end.awaited {
-                continue;
-            }
-            let task = &end.task;
-            events.push(crate::async_events::RuntimeEvent {
-                kind: end.kind.into(),
-                id: task["id"].as_str().unwrap_or_default().into(),
-                status: task["result"]["status"]
-                    .as_str()
-                    .or(task["state"].as_str())
-                    .unwrap_or("ended")
-                    .into(),
-                summary: task_event_summary(task),
-                fetch: end.fetch.clone(),
-                lane: end.owner_lane.clone(),
-                root_id: end.root_id.clone(),
-            });
-        }
-        while let Ok(end) = sync::lock(&self.child_ends).try_recv() {
-            let task = &end.task;
-            events.push(crate::async_events::RuntimeEvent {
-                kind: end.kind.into(),
-                id: task["id"].as_str().unwrap_or_default().into(),
-                status: task["result"]["status"]
-                    .as_str()
-                    .or(task["state"].as_str())
-                    .unwrap_or("ended")
-                    .into(),
-                summary: task_event_summary(task),
-                fetch: end.fetch.clone(),
-                lane: end.owner_lane.clone(),
-                root_id: None,
-            });
-        }
-        while let Ok(end) = sync::lock(&self.cell_ends).try_recv() {
-            let (status, summary) = match &end.outcome {
-                Ok(result) => (
-                    if result.status == kernel::Status::Ok {
-                        "completed"
-                    } else {
-                        "failed"
-                    },
-                    [result.stdout.as_str(), result.result.as_deref().unwrap_or_default()].join(" "),
-                ),
-                Err(error) => ("failed", error.clone()),
-            };
-            events.push(crate::async_events::RuntimeEvent {
-                kind: "cell_done".into(),
-                id: end.cell.clone(),
-                status: status.into(),
-                summary,
-                fetch: "await rlm.cells()".into(),
-                lane: end.lane.clone(),
-                root_id: None,
-            });
-        }
+    /// Every completion that arrived, for the event dispatcher (crate::async_events), each for the lane that owns
+    /// the work: waits up to `wait` for the first when none has. A subagent's or cell's root is left for the caller.
+    pub fn recv(&self, wait: Duration) -> Vec<RuntimeEvent> {
+        let ends = sync::lock(&self.ends.0);
+        let (mut ends, _) = self
+            .ends
+            .1
+            .wait_timeout_while(ends, wait, |ends| ends.is_empty())
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        std::mem::take(&mut *ends)
+    }
+
+    /// The `<runtime_event>` lines of the root lane's `events`.
+    pub fn root_lines(&self, events: &[RuntimeEvent]) -> Vec<String> {
         events
+            .iter()
+            .filter(|e| e.lane == session_journal::run::MAIN_LANE)
+            .map(|e| runtime_event_line_with(&e.kind, &e.id, &e.status, &e.summary, &e.fetch, &self.mask))
+            .collect()
     }
 
     /// Whether events are on (`ULTRON_ASYNC_EVENTS`).
     pub fn enabled(&self) -> bool {
         self.enabled
     }
+}
 
-    /// Whether work of the root lane is still running: subagents, or detached cells.
-    fn running(&self) -> bool {
-        if !self.delegation.running(crate::lane::MAIN).is_empty() {
-            return true;
-        }
-        self.lanes
-            .request("rlm.cells", Map::new(), None)
-            .ok()
-            .and_then(|v| v["cells"].as_array().cloned())
-            .is_some_and(|cells| {
-                cells
-                    .iter()
-                    .any(|c| c["lane"] == crate::lane::MAIN && c["detached"] == true)
-            })
+/// A typed task's end nobody awaited (`task_done`, as session-worker.ts `onDetachedEnd`), with its root.
+fn task_end_event(end: delegation::agents::TaskEnd) -> Option<RuntimeEvent> {
+    if end.awaited {
+        return None;
     }
+    let task = &end.task;
+    Some(RuntimeEvent {
+        kind: end.kind.into(),
+        id: task["id"].as_str().unwrap_or_default().into(),
+        status: task_status(task).into(),
+        summary: task_event_summary(task),
+        fetch: end.fetch.clone(),
+        lane: end.owner_lane.clone(),
+        root_id: end.root_id.clone(),
+    })
+}
 
-    /// The next completion message: at once when one waits, else after waiting (until `signal` aborts) while work
-    /// is running; none when nothing runs.
-    pub fn next_message(&self, signal: &ai::AbortSignal) -> Vec<Message> {
-        if !self.enabled {
-            return Vec::new();
-        }
-        loop {
-            let lines = self.pending_lines();
-            if !lines.is_empty() {
-                let text = lines.join("\n");
-                return vec![Message::User(UserMessage {
-                    content: UserMessageContent::Blocks(vec![crate::lane::text_block(text)]),
-                    timestamp: crate::lane::now_ms(),
-                })];
-            }
-            if signal.aborted() || !self.running() {
-                return Vec::new();
-            }
-            std::thread::sleep(Duration::from_millis(50));
-        }
+/// A subagent's end (`child_done`).
+fn child_end_event(end: DetachedEnd) -> RuntimeEvent {
+    let task = &end.task;
+    RuntimeEvent {
+        kind: end.kind.into(),
+        id: task["id"].as_str().unwrap_or_default().into(),
+        status: task_status(task).into(),
+        summary: task_event_summary(task),
+        fetch: end.fetch.clone(),
+        lane: end.owner_lane.clone(),
+        root_id: None,
     }
+}
+
+/// A detached cell's end (`cell_done`).
+fn cell_end_event(end: CellEnd) -> RuntimeEvent {
+    let (status, summary) = match &end.outcome {
+        Ok(result) => (
+            if result.status == kernel::Status::Ok {
+                "completed"
+            } else {
+                "failed"
+            },
+            [result.stdout.as_str(), result.result.as_deref().unwrap_or_default()].join(" "),
+        ),
+        Err(error) => ("failed", error.clone()),
+    };
+    RuntimeEvent {
+        kind: "cell_done".into(),
+        id: end.cell,
+        status: status.into(),
+        summary,
+        fetch: "await rlm.cells()".into(),
+        lane: end.lane,
+        root_id: None,
+    }
+}
+
+/// A task's status: its result's, else its state, else `ended`.
+fn task_status(task: &Value) -> &str {
+    task["result"]["status"]
+        .as_str()
+        .or(task["state"].as_str())
+        .unwrap_or("ended")
 }
 
 /// Whether a value lists exactly the `rlm` tool: the invariant every request body keeps.

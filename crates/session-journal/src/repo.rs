@@ -1,8 +1,8 @@
 //! `jsonl/repo.ts`: the file-backed session repository over the layout of [`crate::catalog`].
 
 use crate::catalog::{
-    absolute, directory_files, encode_uri_component, metadata_from_header, read_metadata, session_directories,
-    session_directory_name, session_file_name,
+    absolute, directory_files, metadata_from_header, read_metadata, session_directories, session_directory_name,
+    session_file_name,
 };
 use crate::codec::{self, JSONL_FORMAT_VERSION, JSONL_STORAGE_VERSION, ParsedHeader};
 use crate::fork::{ForkInput, ForkOptions, run_fork};
@@ -52,7 +52,7 @@ impl SessionRepo {
     /// `resolveNewSessionPath`: refuses an id that already has a file in the cwd's directory.
     fn new_session_path(&self, cwd: &str, created_at: i64, id: &str) -> Result<PathBuf, String> {
         let directory = self.directory(cwd);
-        let suffix = format!("_{}.jsonl", encode_uri_component(id));
+        let suffix = format!("_{}.jsonl", jsrt::uri::encode_component(id));
         if let Ok(entries) = std::fs::read_dir(&directory) {
             for entry in entries.flatten() {
                 if !entry.file_type().is_ok_and(|t| t.is_dir())
@@ -139,7 +139,9 @@ impl SessionRepo {
 
     /// `fork` of a closed session (an open one is forked through [`Session::fork_into`]).
     pub fn fork(&self, source: &Metadata, options: &ForkOptions, id: Option<&str>) -> Result<Session, String> {
-        let first = io::read_first_line(&source.path).ok().flatten();
+        let first = io::first_line(&source.path)
+            .ok()
+            .and_then(|(line, terminated)| terminated.then_some(line));
         let legacy = matches!(first.as_deref().map(codec::parse_header), Some(Ok(ParsedHeader::V3(_))));
         let legacy_source = if legacy {
             let source_v3 = LegacyV3Source::read(&source.path, &mut *lock_clock(&self.clock))?;

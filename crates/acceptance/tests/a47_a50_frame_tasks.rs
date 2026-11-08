@@ -9,9 +9,9 @@
 
 use ai::{Body, HttpRequest, HttpResponse, Model, Transport};
 use delegation::agents::{Agents, AgentsOptions};
-use delegation::task_store::MemoryStore;
 use delegation::usage::UsageLedger;
 use inference::{FrameSession, Frames, Inference, MemoryTraceStore, ModelSettings};
+use kernel::store::MemoryDocumentStore;
 use kernel::{HostHandler, Signal};
 use serde_json::{Map, Value, json};
 use session_core::frames::{StackFrameTasks, frame_runner};
@@ -144,12 +144,10 @@ impl Transport for Scripted {
             // The whole guard moves into the request (not only its flag): dropping the request drops it.
             let mut held = held;
             if let Some(flag) = &reply.wait {
-                // Pending until released; the frame's request loop polls it again every few milliseconds.
-                std::future::poll_fn(|_| match flag.load(Ordering::SeqCst) {
-                    true => std::task::Poll::Ready(()),
-                    false => std::task::Poll::Pending,
-                })
-                .await;
+                // Pending until released (the flag has no wake of its own: looked at every millisecond).
+                while !flag.load(Ordering::SeqCst) {
+                    tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+                }
             }
             held.armed = false;
             let headers: ai::http::HeaderMap = Default::default();
@@ -197,7 +195,7 @@ fn setup(script: impl Fn(&Call) -> Reply + Send + Sync + 'static) -> Setup {
     let usage = UsageLedger::in_memory(Default::default());
     let traces = Arc::new(MemoryTraceStore::default());
     let frames = FrameSession::new(traces.clone());
-    let mut options = AgentsOptions::new(Box::new(MemoryStore::default()));
+    let mut options = AgentsOptions::new(Box::new(MemoryDocumentStore::default()));
     options.usage = Some(usage.clone());
     options.frames = Some(frame_runner(frames.clone()));
     let (agents, _ends) = Agents::new(options);

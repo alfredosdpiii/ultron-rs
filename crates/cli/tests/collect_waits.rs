@@ -7,7 +7,7 @@
 //! the cell under test writes once its `rlm.collect` request is out, so a collect that did not wait has failed
 //! before the reply it would wait for is sent.
 
-mod common;
+use crate::common;
 
 use common::{Sandbox, anthropic_text, anthropic_tool, assert_private_home, tool_result_text};
 use serde_json::{Value, json};

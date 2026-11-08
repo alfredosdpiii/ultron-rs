@@ -1,7 +1,6 @@
 //! Shared by the live, metered acceptance tests (A39, A46): the opt-in switch, an isolated install that holds only a
 //! copy of the profile's `models.json`, the `ultron` binary in RPC mode against a real provider, the session records
 //! read back through the product's own stores, and result scrubbing. Nothing here runs unless `ULTRON_LIVE_EVAL=1`.
-#![allow(dead_code)]
 
 use cli::rpc::client::{RpcClient, RpcClientOptions};
 use serde_json::Value;
@@ -159,12 +158,7 @@ impl LiveInstall {
     /// The typed agents' task records (`agents.status` tasks), through the product's task journal.
     pub fn agent_tasks(&self) -> Result<Vec<Value>, String> {
         let stored = self.session_value("ultron.tasks", "agents")?;
-        delegation::task_store::TaskJournal::new(Box::new(delegation::task_store::MemoryStore { value: stored })).list()
-    }
-
-    /// The session's module files (`<agent>/rlm-modules/<session id>/`).
-    pub fn modules(&self, session_id: &str) -> PathBuf {
-        self.agent().join("rlm-modules").join(session_id)
+        delegation::task_store::TaskJournal::new(Box::new(kernel::store::MemoryDocumentStore::new(stored))).list()
     }
 
     /// `text` with every copied key and the real home directory removed.

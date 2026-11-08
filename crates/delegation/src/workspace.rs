@@ -13,7 +13,7 @@ use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
-pub const DEFAULT_MAX_SNAPSHOT_ENTRIES: usize = 200_000;
+const MAX_SNAPSHOT_ENTRIES: usize = 200_000;
 pub const DEFAULT_WALK_IGNORE: [&str; 12] = [
     ".git",
     ".hg",
@@ -139,21 +139,20 @@ fn walk_files(root: &Path, ignore: &[&str], limit: usize) -> (Vec<String>, bool)
     (files, true)
 }
 
-/// A metadata snapshot of the files under `cwd`; `git: false` always walks.
-pub fn snapshot_workspace(cwd: &Path, max_entries: usize, git: bool) -> WorkspaceSnapshot {
+/// A metadata snapshot of the files under `cwd`.
+pub fn snapshot_workspace(cwd: &Path) -> WorkspaceSnapshot {
     let root = cwd.to_path_buf();
-    let listed = if git { git_files(&root) } else { None };
-    let (method, files, complete) = match listed {
+    let (method, files, complete) = match git_files(&root) {
         Some(listed) => {
-            let complete = listed.len() <= max_entries;
+            let complete = listed.len() <= MAX_SNAPSHOT_ENTRIES;
             (
                 "git",
-                listed.into_iter().take(max_entries).collect::<Vec<_>>(),
+                listed.into_iter().take(MAX_SNAPSHOT_ENTRIES).collect::<Vec<_>>(),
                 complete,
             )
         }
         None => {
-            let (files, complete) = walk_files(&root, &DEFAULT_WALK_IGNORE, max_entries);
+            let (files, complete) = walk_files(&root, &DEFAULT_WALK_IGNORE, MAX_SNAPSHOT_ENTRIES);
             ("walk", files, complete)
         }
     };

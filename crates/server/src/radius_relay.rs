@@ -24,10 +24,6 @@ use websocket::Message;
 
 pub const RADIUS_RELAY_HOST_SUBPROTOCOL: &str = "pi-session-relay.host.v1";
 pub const RADIUS_RELAY_CLIENT_SUBPROTOCOL: &str = "pi-session-relay.client.v1";
-/// `DEFAULT_RADIUS_GATEWAY`.
-pub const DEFAULT_RADIUS_GATEWAY: &str = "https://radius.pi.dev";
-/// `ENV_RADIUS_GATEWAY`.
-pub const ENV_RADIUS_GATEWAY: &str = "PI_RADIUS_GATEWAY";
 
 const RELAY_DATA_HEADER_BYTES: usize = 18;
 const RELAY_DATA_FRAME_VERSION: u8 = 1;
@@ -198,17 +194,6 @@ pub enum AuthInput {
 /// The stored Radius credential (`getAuthCredential(await runtime.getAuth("radius", { minOAuthValidityMs: 5 min }))`).
 pub type StoredToken = Arc<dyn Fn() -> Result<Option<String>, String> + Send + Sync>;
 
-/// `normalizeRadiusGatewayUrl`.
-pub fn normalize_radius_gateway_url(value: &str) -> String {
-    let lower = value.to_ascii_lowercase();
-    let with_scheme = if lower.starts_with("http://") || lower.starts_with("https://") {
-        value.to_string()
-    } else {
-        format!("https://{value}")
-    };
-    with_scheme.trim_end_matches('/').to_string()
-}
-
 /// `RadiusRelayAuthResolver`: offline mode has no relay; an explicit token (trimmed, never empty) wins; else the
 /// stored credential.
 pub struct RadiusRelayAuthResolver {
@@ -222,7 +207,7 @@ impl RadiusRelayAuthResolver {
     pub fn new(input: Option<AuthInput>, gateway: &str, offline: bool, stored: StoredToken) -> Self {
         RadiusRelayAuthResolver {
             input,
-            gateway: normalize_radius_gateway_url(gateway),
+            gateway: config::radius::normalize_radius_gateway_url(gateway),
             offline,
             stored,
         }
@@ -236,13 +221,9 @@ impl RadiusRelayAuthResolver {
         let value = match &self.input {
             None => return Ok(None),
             Some(AuthInput::Token(token)) => token.clone(),
-            Some(AuthInput::File(path)) => std::fs::read_to_string(path).map_err(|e| match e.kind() {
-                std::io::ErrorKind::NotFound => {
-                    format!("ENOENT: no such file or directory, open '{}'", path.display())
-                }
-                std::io::ErrorKind::IsADirectory => "EISDIR: illegal operation on a directory, read".into(),
-                _ => e.to_string(),
-            })?,
+            Some(AuthInput::File(path)) => {
+                std::fs::read_to_string(path).map_err(|e| jsrt::fs::error_message(&e, "open", path))?
+            }
         };
         let token = value.trim();
         if token.is_empty() {

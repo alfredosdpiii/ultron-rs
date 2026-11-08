@@ -465,11 +465,16 @@ fn array_copy(value: Option<&Value>) -> Value {
 
 /// `offlineJson`: the JSON `review --repo-dir ... --json` prints, with where each finding would go (inline, named in
 /// the body, or only counted) computed by the same ranking and cap the poster uses.
-pub fn offline_json(raw: &Value, startup_ms: Option<u64>, block_at: Option<&str>, max_comments: Option<i64>) -> Value {
+pub fn offline_json(
+    raw: &Value,
+    startup_ms: Option<u64>,
+    block_at: Option<&str>,
+    max_comments: Option<i64>,
+) -> Result<Value, String> {
     let empty = Map::new();
     let result = object(Some(raw), &empty);
-    let typed: EngineResult = serde_json::from_value(raw.clone()).unwrap_or_default();
-    let verdict = decide_verdict(&typed, false, "open", block_at).verdict;
+    let typed = EngineResult::parse(raw)?;
+    let verdict = decide_verdict(&typed, block_at).verdict;
     let options = PlanOptions {
         self_authored: false,
         state: "open".into(),
@@ -629,7 +634,7 @@ pub fn offline_json(raw: &Value, startup_ms: Option<u64>, block_at: Option<&str>
     }
     out.insert("program".into(), program);
     out.insert("notChecked".into(), array_copy(result.get("notChecked")));
-    Value::Object(out)
+    Ok(Value::Object(out))
 }
 
 /// `String(value)` for an array element joined by `Array.join`.
@@ -686,7 +691,7 @@ fn logger(var: &crate::VarLookup) -> Log {
 /// The settings `ultron autoreview` reads (global only: a reviewed repository cannot change them).
 struct Saved {
     autoreview: AutoreviewSettings,
-    retry: review::engine::RetryPolicy,
+    retry: ai::retry::RetryPolicy,
     enabled: Option<bool>,
     fallbacks_review_model: Option<String>,
     frame_model: Option<String>,
@@ -704,15 +709,8 @@ fn saved_settings(env: &Env) -> Saved {
     let autoreview: AutoreviewSettings = serde_json::from_value(raw.clone()).unwrap_or_default();
     let rlm = config::keys::rlm_model_settings(manager.global_settings());
     let text = |value: Option<&Value>| value.and_then(Value::as_str).map(str::to_string);
-    let retry = manager.retry_settings();
-    let number = |key: &str, default: f64| retry[key].as_f64().unwrap_or(default);
     Saved {
-        retry: review::engine::RetryPolicy {
-            enabled: retry["enabled"].as_bool().unwrap_or(true),
-            max_retries: number("maxRetries", 3.0).max(0.0) as u32,
-            base_delay_ms: number("baseDelayMs", 2000.0),
-            max_delay_ms: number("maxAgentDelayMs", 60_000.0),
-        },
+        retry: ai::retry::RetryPolicy::from_settings(&manager.retry_settings(), true),
         enabled: raw.get("enabled").and_then(Value::as_bool),
         fallbacks_review_model: config::keys::review_model(manager.global_settings()),
         frame_model: rlm.frame_model,
@@ -982,8 +980,8 @@ fn eval_command(
         .collect();
     let workers = (config.concurrency.0.max(1.0) as usize).min(cases.len());
     let next = std::sync::atomic::AtomicUsize::new(0);
-    let (sender, received) = std::sync::mpsc::channel::<(usize, Result<Value, String>)>();
-    let mut results: Vec<Option<Result<Value, String>>> = vec![None; cases.len()];
+    let (sender, received) = std::sync::mpsc::channel::<(usize, Result<EngineResult, String>)>();
+    let mut results: Vec<Option<Result<EngineResult, String>>> = vec![None; cases.len()];
     let _ = writeln!(err, "reviewing {} commit(s), {workers} at a time", cases.len());
     std::thread::scope(|scope| {
         for _ in 0..workers {
@@ -994,7 +992,8 @@ fn eval_command(
                     let Some(spec) = specs.get(index) else {
                         break;
                     };
-                    if sender.send((index, engine.review(spec, None))).is_err() {
+                    let reviewed = engine.review(spec, None).and_then(|raw| EngineResult::parse(&raw));
+                    if sender.send((index, reviewed)).is_err() {
                         break;
                     }
                 }
@@ -1004,9 +1003,8 @@ fn eval_command(
         for (done, (index, result)) in received.iter().enumerate() {
             let case = &cases[index];
             let line = match &result {
-                Ok(raw) => {
-                    let typed: EngineResult = serde_json::from_value(raw.clone()).unwrap_or_default();
-                    let got = score(case, &typed, &config.block_at);
+                Ok(typed) => {
+                    let got = score(case, typed, &config.block_at);
                     format!(
                         "{}{}, {} confirmed",
                         if got.blocked { "blocked" } else { "not blocked" },
@@ -1037,8 +1035,7 @@ fn eval_command(
     for (case, result) in cases.iter().zip(results) {
         let mut row = serde_json::to_value(case).unwrap_or(Value::Null);
         match result {
-            Some(Ok(raw)) => {
-                let typed: EngineResult = serde_json::from_value(raw).unwrap_or_default();
+            Some(Ok(typed)) => {
                 let got = score(case, &typed, &config.block_at);
                 row["score"] = serde_json::to_value(&got).unwrap_or(Value::Null);
                 scored.push((case.clone(), got));
@@ -1158,7 +1155,7 @@ pub fn expand_path(path: &str, home: &str, cwd: &Path) -> String {
         return home.to_string();
     }
     if let Some(rest) = text.strip_prefix("~/") {
-        return review::js::path_join(&[home, rest]);
+        return jsrt::path::join(&[home, rest]);
     }
     absolute(cwd, text).display().to_string()
 }
@@ -1680,7 +1677,8 @@ pub fn outcome_json(outcome: &review::reviewer::Outcome) -> Value {
             out.insert("kind".into(), outcome.kind().into());
             out.insert("sha".into(), reviewed.sha.clone().into());
             out.insert("event".into(), reviewed.plan.event.into());
-            if let Value::Object(offline) = offline_json(&reviewed.result, None, None, None) {
+            // The reviewer parsed this result before planning it.
+            if let Ok(Value::Object(offline)) = offline_json(&reviewed.result, None, None, None) {
                 out.extend(offline);
             }
             out.insert("verdict".into(), reviewed.verdict.into());
@@ -2175,10 +2173,10 @@ fn execute(
     let io = |error: std::io::Error| Failure::Error(error.to_string());
     if parsed.json {
         let max_comments = Some(config.max_comments.0 as i64);
-        let json = offline_json(&result, start_ms, Some(&config.block_at), max_comments);
+        let json = offline_json(&result, start_ms, Some(&config.block_at), max_comments).map_err(Failure::Error)?;
         writeln!(out, "{}", jsrt::json::stringify(&json)).map_err(io)?;
     } else {
-        let typed: EngineResult = serde_json::from_value(result).unwrap_or_default();
+        let typed = EngineResult::parse(&result).map_err(Failure::Error)?;
         let plan = plan_review(
             &typed,
             &PlanOptions {

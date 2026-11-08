@@ -5,8 +5,8 @@
 //! exit code) and show the gateway the same upgrades and close frames. The `Socket:` line differs only in its
 //! directory (the Rust server's instance directory, decision wave29), so both sides compare it by file name.
 
-mod radius_bridge;
-mod tui_harness;
+use crate::radius_bridge;
+use crate::tui_harness;
 
 use radius_bridge::{Bridge, HANG_GUARD, HostMode, Upgrade};
 use serde_json::Value;
@@ -118,7 +118,7 @@ fn cli_radius_server_command_prints_what_typescript_prints() {
             .env(config::paths::ENV_AGENT_DIR, tmp.0.join("agent"))
             .env(config::paths::ENV_SERVER_DIR, tmp.0.join("server"))
             .env(cli::experimental::EXPERIMENTAL_ENV, "1")
-            .env(server::radius_relay::ENV_RADIUS_GATEWAY, bridge.origin())
+            .env(config::radius::ENV_RADIUS_GATEWAY, bridge.origin())
             .env("NO_COLOR", "1")
             .env("TZ", "UTC")
             .env("ANTHROPIC_API_KEY", "test-key");

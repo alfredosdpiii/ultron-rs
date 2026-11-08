@@ -5,12 +5,13 @@
 //! the tip and records the result. A navigation without a summary is admitted at `navigation.ready_to_commit` and
 //! committed by its own terminal transaction (`commitNavigation`).
 
-use harness::chat::models::RetryPolicy;
+use ai::retry::RetryPolicy;
 use serde_json::{Map, Value, json};
 use session_journal::ns::{
     BRANCH_TIP, ENTRY_LABEL, LANE_CONFIG, LANE_STATE, OP_META, OP_PREPARATION, OP_RESULT, OP_STATE,
 };
-use session_journal::run::default_settings;
+use session_journal::run::summary::{self, Scope, SummaryAttempt};
+use session_journal::run::{MAIN_LANE, default_settings};
 use session_journal::{Session, Write};
 
 fn mint(session: &Session) -> String {
@@ -52,16 +53,14 @@ pub struct CompactionOp {
     operation_id: String,
     task_id: String,
     pub result_entry_id: String,
-    usage_id: String,
-    /// The summary attempt in progress (1-based) and the policy it retries under.
-    attempt: u64,
+    /// The summary request, once made, and the policy it retries under.
+    summary: Option<SummaryAttempt>,
     retry: RetryPolicy,
     source_tip: Option<String>,
     started_at: i64,
     last_operation_id: Value,
     inbox: Value,
     task: Value,
-    summary_context: Value,
 }
 
 impl CompactionOp {
@@ -73,19 +72,20 @@ impl CompactionOp {
         &self.operation_id
     }
 
+    fn scope(&self) -> Scope {
+        let mut base = Map::new();
+        base.insert("control".into(), json!({"status": "running"}));
+        base.insert("settings".into(), default_settings());
+        base.insert("latestAssistantEntryId".into(), Value::Null);
+        Scope {
+            operation_id: self.operation_id.clone(),
+            base,
+            task: self.task.clone(),
+        }
+    }
+
     fn state(&self, at: &str, extra: Vec<(&str, Value)>) -> Value {
-        let mut state = Map::new();
-        state.insert("control".into(), json!({"status": "running"}));
-        state.insert("settings".into(), default_settings());
-        state.insert("latestAssistantEntryId".into(), Value::Null);
-        state.insert("at".into(), at.into());
-        if !self.task.is_null() {
-            state.insert("task".into(), self.task.clone());
-        }
-        for (key, value) in extra {
-            state.insert(key.into(), value);
-        }
-        Value::Object(state)
+        self.scope().state(at, extra)
     }
 
     fn lane_state(&self, running: bool) -> Value {
@@ -106,7 +106,7 @@ impl CompactionOp {
     ) -> Result<CompactionOp, String> {
         let operation_id = mint(session);
         let task_id = mint(session);
-        let lane = session.value(LANE_STATE, "main").cloned().unwrap_or(Value::Null);
+        let lane = session.value(LANE_STATE, MAIN_LANE).cloned().unwrap_or(Value::Null);
         let mut task = json!({"taskId": task_id, "reason": "manual"});
         let mut intent = json!({"kind": "compaction"});
         if let Some(instructions) = custom_instructions {
@@ -119,49 +119,45 @@ impl CompactionOp {
             target: None,
             label: None,
             label_entry: None,
-            source_tip: session.branch_tip("main").flatten(),
+            source_tip: session.branch_tip(MAIN_LANE).flatten(),
             started_at: now(session),
             last_operation_id: lane["lastOperationId"].clone(),
             inbox: lane.get("inbox").cloned().unwrap_or_else(|| json!([])),
             task,
-            summary_context: Value::Null,
             result_entry_id: String::new(),
-            usage_id: String::new(),
-            attempt: 1,
+            summary: None,
             retry: RetryPolicy::default(),
             operation_id,
             task_id,
         };
         let prepared = prepared_value(preparation, retained_tail, &default_settings()["compaction"]);
         let meta = json!({
-            "operationId": op.operation_id, "lane": "main", "sourceTipId": op.source_tip, "startedAt": op.started_at,
+            "operationId": op.operation_id, "lane": MAIN_LANE, "sourceTipId": op.source_tip, "startedAt": op.started_at,
             "intent": intent,
         });
         session.commit(&[
             Write::set(OP_PREPARATION, &op.preparation_key(), prepared),
             Write::set(OP_META, &op.operation_id, meta),
-            Write::set(OP_STATE, &op.operation_id, op.state("summary.deciding", vec![])),
-            Write::set(LANE_STATE, "main", op.lane_state(true)),
+            Write::set(OP_STATE, &op.operation_id, op.state(summary::DECIDING, vec![])),
+            Write::set(LANE_STATE, MAIN_LANE, op.lane_state(true)),
         ])?;
         Ok(op)
     }
 
     fn navigation(session: &Session, target: Option<&str>, label: Option<&str>, task: Value) -> CompactionOp {
-        let lane = session.value(LANE_STATE, "main").cloned().unwrap_or(Value::Null);
+        let lane = session.value(LANE_STATE, MAIN_LANE).cloned().unwrap_or(Value::Null);
         CompactionOp {
             kind: "navigation",
             target: target.map(str::to_string),
             label: label.map(str::to_string),
             label_entry: target.map(str::to_string),
-            source_tip: session.branch_tip("main").flatten(),
+            source_tip: session.branch_tip(MAIN_LANE).flatten(),
             started_at: now(session),
             last_operation_id: lane["lastOperationId"].clone(),
             inbox: lane.get("inbox").cloned().unwrap_or_else(|| json!([])),
             task,
-            summary_context: Value::Null,
             result_entry_id: String::new(),
-            usage_id: String::new(),
-            attempt: 1,
+            summary: None,
             retry: RetryPolicy::default(),
             operation_id: String::new(),
             task_id: String::new(),
@@ -177,7 +173,7 @@ impl CompactionOp {
             intent["customInstructions"] = json!(instructions);
         }
         json!({
-            "operationId": self.operation_id, "lane": "main", "sourceTipId": self.source_tip,
+            "operationId": self.operation_id, "lane": MAIN_LANE, "sourceTipId": self.source_tip,
             "startedAt": self.started_at, "intent": intent,
         })
     }
@@ -219,8 +215,8 @@ impl CompactionOp {
         session.commit(&[
             Write::set(OP_PREPARATION, &op.preparation_key(), prepared),
             Write::set(OP_META, &op.operation_id, op.navigation_meta(true, custom_instructions)),
-            Write::set(OP_STATE, &op.operation_id, op.state("summary.deciding", vec![])),
-            Write::set(LANE_STATE, "main", op.lane_state(true)),
+            Write::set(OP_STATE, &op.operation_id, op.state(summary::DECIDING, vec![])),
+            Write::set(LANE_STATE, MAIN_LANE, op.lane_state(true)),
         ])?;
         Ok(op)
     }
@@ -251,7 +247,7 @@ impl CompactionOp {
                 &op.operation_id,
                 op.state("navigation.ready_to_commit", extra),
             ),
-            Write::set(LANE_STATE, "main", op.lane_state(true)),
+            Write::set(LANE_STATE, MAIN_LANE, op.lane_state(true)),
         ])?;
         Ok(op)
     }
@@ -260,7 +256,7 @@ impl CompactionOp {
     pub fn commit_navigation(self, session: &mut Session) -> Result<Option<String>, String> {
         let mut writes = vec![Write::set(
             BRANCH_TIP,
-            "main",
+            MAIN_LANE,
             self.target.clone().map_or(Value::Null, Value::from),
         )];
         if let (Some(entry), Some(label)) = (&self.label_entry, &self.label) {
@@ -283,29 +279,23 @@ impl CompactionOp {
         if self.result_entry_id.is_empty() {
             self.result_entry_id = mint(session);
         }
-        let mut writes = Vec::new();
-        if let Some(usage) = hook_usage {
-            let mut row = Map::new();
-            row.insert("id".into(), mint(session).into());
-            row.insert("usage".into(), usage);
-            row.insert("adjustment".into(), false.into());
-            writes.push(Write::Usage(row));
-        }
+        let mut writes: Vec<Write> = hook_usage
+            .map(|usage| Write::usage(&mint(session), usage, None))
+            .into_iter()
+            .collect();
         let id = self.result_entry_id.clone();
         let target = self.target.clone().map_or(Value::Null, Value::from);
-        let mut full = Map::new();
-        full.insert("id".into(), id.clone().into());
-        full.insert("parentId".into(), target.clone());
-        full.insert("type".into(), "branch_summary".into());
-        full.insert(
+        let mut fields = Map::new();
+        fields.insert("type".into(), "branch_summary".into());
+        fields.insert(
             "fromId".into(),
             self.source_tip.clone().map_or(Value::Null, Value::from),
         );
-        full.append(&mut entry);
+        fields.append(&mut entry);
         writes.extend([
-            Write::set(BRANCH_TIP, "main", target),
-            Write::Entry(full),
-            Write::set(BRANCH_TIP, "main", id.clone().into()),
+            Write::set(BRANCH_TIP, MAIN_LANE, target),
+            Write::entry(&id, self.target.as_deref(), fields),
+            Write::set(BRANCH_TIP, MAIN_LANE, id.clone().into()),
         ]);
         if let Some(label) = &self.label {
             writes.push(Write::set(ENTRY_LABEL, &id, label.clone().into()));
@@ -327,14 +317,11 @@ impl CompactionOp {
     pub fn request(&mut self, session: &mut Session, retry: RetryPolicy) -> Result<(), String> {
         self.result_entry_id = mint(session);
         self.retry = retry;
-        self.attempt = 1;
-        self.summary_context = json!({
-            "resultEntryId": self.result_entry_id,
-            "configuration": session.value(LANE_CONFIG, "main").cloned().unwrap_or(Value::Null),
-            "streamOptions": session_journal::run::summary_stream_options(),
-            "retryPolicy": retry.journal_value(),
-        });
-        self.attempt_states(session)
+        let configuration = session.value(LANE_CONFIG, MAIN_LANE).cloned().unwrap_or(Value::Null);
+        let mut attempt = SummaryAttempt::new(&self.result_entry_id, configuration, retry.journal_value());
+        attempt.start(session, &self.scope())?;
+        self.summary = Some(attempt);
+        Ok(())
     }
 
     /// The summary task's id (the harness's retry `step`).
@@ -344,44 +331,7 @@ impl CompactionOp {
 
     /// The summary attempt in progress (1-based).
     pub fn attempt(&self) -> u64 {
-        self.attempt
-    }
-
-    /// `summary.ready` (`nextAttempt`), `summary.effect_pending` for the attempt, then with its request.
-    fn attempt_states(&mut self, session: &mut Session) -> Result<(), String> {
-        let context = self.summary_context.clone();
-        session.commit(&[Write::set(
-            OP_STATE,
-            &self.operation_id,
-            self.state(
-                "summary.ready",
-                vec![
-                    ("summaryContext", context.clone()),
-                    ("nextAttempt", json!(self.attempt)),
-                ],
-            ),
-        )])?;
-        let pending = |usage_ids: Value| {
-            vec![
-                ("summaryContext", context.clone()),
-                ("attempt", json!(self.attempt)),
-                ("usageIds", usage_ids),
-            ]
-        };
-        session.commit(&[Write::set(
-            OP_STATE,
-            &self.operation_id,
-            self.state("summary.effect_pending", pending(json!([]))),
-        )])?;
-        self.usage_id = mint(session);
-        let mut with_request = pending(json!([]));
-        with_request.push(("request", json!({"index": 0, "usageId": self.usage_id})));
-        session.commit(&[Write::set(
-            OP_STATE,
-            &self.operation_id,
-            self.state("summary.effect_pending", with_request),
-        )])?;
-        Ok(())
+        self.summary.as_ref().map_or(1, SummaryAttempt::attempt)
     }
 
     /// A retryable failed attempt (`publishAttemptResult`): its response's usage row (when it reported one) and
@@ -393,50 +343,33 @@ impl CompactionOp {
         error: &str,
         not_before: i64,
     ) -> Result<(), String> {
-        let mut writes = Vec::new();
-        if let Some(usage) = usage {
-            let mut row = Map::new();
-            row.insert("id".into(), self.usage_id.clone().into());
-            row.insert("usage".into(), usage.clone());
-            row.insert("adjustment".into(), false.into());
-            writes.push(Write::Usage(row));
-        }
-        let state = self.state(
-            "summary.retry_wait",
-            vec![
-                ("summaryContext", self.summary_context.clone()),
-                ("nextAttempt", json!(self.attempt + 1)),
-                ("notBefore", json!(not_before)),
-                ("errorMessage", json!(error)),
-            ],
-        );
-        writes.push(Write::set(OP_STATE, &self.operation_id, state));
+        let Some(attempt) = &self.summary else {
+            return Ok(());
+        };
+        let writes = attempt.retry_wait(&self.scope(), usage, error, not_before);
         session.commit(&writes).map(drop)
     }
 
     /// The wait ended (`runStructuralRetryWait`): the next attempt's `summary.ready`, `summary.effect_pending` and
     /// request.
     pub fn retry(&mut self, session: &mut Session) -> Result<(), String> {
-        self.attempt += 1;
-        self.attempt_states(session)
+        let scope = self.scope();
+        match self.summary.as_mut() {
+            Some(attempt) => attempt.retry(session, &scope),
+            None => Ok(()),
+        }
     }
 
     /// The summary response arrived: its usage row, with the state that lists it.
     pub fn record_usage(&self, session: &mut Session, usage: &Value) -> Result<(), String> {
-        let mut row = Map::new();
-        row.insert("id".into(), self.usage_id.clone().into());
-        row.insert("usage".into(), usage.clone());
-        row.insert("adjustment".into(), false.into());
-        let state = self.state(
-            "summary.effect_pending",
-            vec![
-                ("summaryContext", self.summary_context.clone()),
-                ("attempt", json!(self.attempt)),
-                ("usageIds", json!([self.usage_id])),
-            ],
-        );
-        session.commit(&[Write::Usage(row), Write::set(OP_STATE, &self.operation_id, state)])?;
-        Ok(())
+        let Some(attempt) = &self.summary else {
+            return Ok(());
+        };
+        let writes = attempt.record_usage(&self.scope(), usage);
+        if writes.is_empty() {
+            return Ok(());
+        }
+        session.commit(&writes).map(drop)
     }
 
     fn terminal(&self, session: &Session, status: &str, tip: Option<&str>, error: Option<&str>) -> Vec<Write> {
@@ -462,22 +395,18 @@ impl CompactionOp {
         }
         writes.extend([
             Write::set(OP_RESULT, &self.operation_id, result),
-            Write::set(LANE_STATE, "main", self.lane_state(false)),
+            Write::set(LANE_STATE, MAIN_LANE, self.lane_state(false)),
         ]);
         writes
     }
 
     /// Commit the compaction entry (`entry` without id and parent) as the new tip and end the operation.
-    pub fn complete(self, session: &mut Session, mut entry: Map<String, Value>) -> Result<String, String> {
+    pub fn complete(self, session: &mut Session, entry: Map<String, Value>) -> Result<String, String> {
         let id = self.result_entry_id.clone();
-        let mut full = Map::new();
-        full.insert("id".into(), id.clone().into());
-        full.insert(
-            "parentId".into(),
-            self.source_tip.clone().map_or(Value::Null, Value::from),
-        );
-        full.append(&mut entry);
-        let mut writes = vec![Write::Entry(full), Write::set(BRANCH_TIP, "main", id.clone().into())];
+        let mut writes = vec![
+            Write::entry(&id, self.source_tip.as_deref(), entry),
+            Write::set(BRANCH_TIP, MAIN_LANE, id.clone().into()),
+        ];
         writes.extend(self.terminal(session, "completed", Some(&id), None));
         session.commit(&writes)?;
         Ok(id)
@@ -500,7 +429,7 @@ impl CompactionOp {
 /// becomes `cancel_requested`, so a worker that dies before the terminal transaction is settled `aborted`.
 pub fn request_cancel(session: &mut Session, requested_at: i64) -> Result<(), String> {
     let Some(operation) = session
-        .value(LANE_STATE, "main")
+        .value(LANE_STATE, MAIN_LANE)
         .and_then(|lane| lane["currentOperationId"].as_str().map(str::to_string))
     else {
         return Ok(());

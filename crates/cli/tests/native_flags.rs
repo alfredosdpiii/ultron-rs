@@ -5,7 +5,7 @@
 //! `httpProxy` setting (HTTP_PROXY for the session's provider requests), `!command` keys in auth.json, and
 //! `--append-system-prompt` (the TS server never passed it to a worker).
 
-mod common;
+use crate::common;
 
 use common::{Naming, Sandbox, anthropic_text, completions_text, mock_server};
 use serde_json::Value;
@@ -85,7 +85,7 @@ fn cli_native_extension_flags_and_settings_packages_are_warned_about_and_ignored
     for request in &requests {
         assert!(!system_of(request).contains("ext.hello"), "{}", system_of(request));
         assert!(
-            cli::compose::only_rlm(request["body"]["tools"].as_array().unwrap()),
+            session_core::compose::only_rlm(request["body"]["tools"].as_array().unwrap()),
             "{request}"
         );
     }
@@ -165,7 +165,7 @@ fn cli_native_tool_flags_warn_and_keep_the_rlm_tool() {
     );
     for request in seen.lock().unwrap().requests.iter() {
         assert!(
-            cli::compose::only_rlm(request["body"]["tools"].as_array().unwrap()),
+            session_core::compose::only_rlm(request["body"]["tools"].as_array().unwrap()),
             "{request}"
         );
     }

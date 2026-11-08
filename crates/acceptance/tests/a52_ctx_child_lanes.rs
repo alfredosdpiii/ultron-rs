@@ -9,7 +9,7 @@
 //! instead of a question and its answer. The root lane's branch and requests stay untouched. Not ported: `ctx.state`
 //! (the `/rlm` panel, which reads the root lane in TypeScript too).
 
-mod common;
+use crate::common;
 
 use common::{HANG, Install, Provider, Reply, Request, wait_until};
 use serde_json::{Value, json};

@@ -5,7 +5,7 @@
 //! the model's request. Without node on the session PATH the cell sees the one-line error. New in Rust: literal
 //! expectations.
 
-mod p_session_support;
+use crate::p_session_support;
 
 use base64::Engine;
 use p_session_support::{Setup, actor, in_order, text, tool};

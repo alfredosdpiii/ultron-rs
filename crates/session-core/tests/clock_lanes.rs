@@ -1,7 +1,7 @@
 //! Clock lines (clock-context.ts): the root and subagent lanes (`ultron.rlm-child.*`) see the local time with its UTC
 //! offset before a user message that opens their conversation; the zone is the session's `TZ`.
 
-mod p_session_support;
+use crate::p_session_support;
 
 use p_session_support::{Setup, actor, text, tool, tool_results};
 use serde_json::Value;

@@ -1,12 +1,11 @@
 //! Slash commands that become prompts. `/review` typed into any client is expanded where the client's text enters the
-//! worker (agent-controller-provider.ts `toTextPrompt`): the agent controller's `prompt`, `steer`, `followUp` and
+//! session (agent-controller-provider.ts `toTextPrompt`): the agent controller's `prompt`, `steer`, `followUp` and
 //! `nextRun`, and the Rust session-ops `op` the TUI and RPC clients send. Through the real server and session worker;
 //! the expected texts are the TypeScript controller's (crates/session-core/fixtures/review_command.json). Messages
 //! queued while the session is idle reach the next prompt's request before the prompt, in the order they were queued
 //! (lane.ts `selectAcceptedInbox`). A prompt template's `/name args` is expanded in the session itself.
 
-#[path = "daemon_common/mod.rs"]
-mod common;
+use crate::daemon_common as common;
 
 use client::runtime::Connection;
 use common::{HANG_GUARD, Home, SERVER_ID, assert_no_processes, provider, start_server, text_reply};

@@ -4,8 +4,8 @@
 //! without them (fork-policy.ts `projectForkCurrentStateWrite`: every non-reserved namespace is tree-only).
 //! Through the session actor over a private home and a scripted loopback model.
 
-mod p_session_support;
-mod reopen_support;
+use crate::p_session_support;
+use crate::reopen_support;
 
 use p_session_support::{text, tool, tool_results};
 use reopen_support::Home;

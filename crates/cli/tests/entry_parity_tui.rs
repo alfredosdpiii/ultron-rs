@@ -8,7 +8,7 @@
 //! - `/settings` -> Models in `ultron durable` lists the durable default model (`durable.model`, the Claude
 //!   subscription by default) where its sessions save a chosen model; plain `ultron` does not.
 
-mod tui_harness;
+use crate::tui_harness;
 
 use std::process::{Command, Stdio};
 use tui_harness::{Mock, TempDir, Tui, text_reply};

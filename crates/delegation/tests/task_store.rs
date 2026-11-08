@@ -2,7 +2,8 @@
 //! operations on the Rust journal must return the same tasks and errors and leave the same stored document, byte for
 //! byte as JSON text (random task ids are numbered by first appearance on both sides).
 
-use delegation::task_store::{DocumentStore, TaskJournal, task_fingerprint};
+use delegation::task_store::{TaskJournal, task_fingerprint};
+use kernel::store::DocumentStore;
 use serde_json::{Value, json};
 use std::collections::HashMap;
 use std::path::Path;
@@ -16,21 +17,21 @@ fn fixture() -> Value {
 /// A store whose n-th write (1-based) or every read fails; the stored value is shared with the test.
 struct Scripted {
     value: Arc<Mutex<Option<Value>>>,
-    writes: usize,
+    writes: std::sync::atomic::AtomicUsize,
     fail_write_at: Option<usize>,
     fail_read: bool,
 }
 
 impl DocumentStore for Scripted {
-    fn read(&mut self) -> Result<Option<Value>, String> {
+    fn read(&self) -> Result<Option<Value>, String> {
         if self.fail_read {
             return Err("disk".into());
         }
         Ok(self.value.lock().unwrap().clone())
     }
-    fn write(&mut self, document: &Value) -> Result<(), String> {
-        self.writes += 1;
-        if self.fail_write_at == Some(self.writes) {
+    fn write(&self, document: &Value) -> Result<(), String> {
+        let writes = self.writes.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+        if self.fail_write_at == Some(writes) {
             return Err("disk".into());
         }
         *self.value.lock().unwrap() = Some(document.clone());
@@ -75,7 +76,7 @@ fn delegation_task_journal_replays_typescript_scenarios() {
         let value = Arc::new(Mutex::new(Some(scenario["initial"].clone()).filter(|v| !v.is_null())));
         let mut journal = TaskJournal::new(Box::new(Scripted {
             value: value.clone(),
-            writes: 0,
+            writes: Default::default(),
             fail_write_at: scenario["failWriteAt"].as_u64().map(|n| n as usize),
             fail_read: scenario["failRead"] == true,
         }));

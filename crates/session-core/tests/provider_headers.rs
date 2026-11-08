@@ -75,8 +75,7 @@ fn session_core_opencode_session_header_matches_typescript() {
         let (provider, id) = spec["model"].as_str().unwrap().split_once('/').unwrap();
         let model = lane::catalog_model(provider, id, &env).unwrap();
         let transport = Recorder::default();
-        let lane_provider =
-            Provider::with_router(ai::claude_subscription::fallback::global(), Arc::new(transport.clone()));
+        let lane_provider = Provider::new().with_transport(Arc::new(transport.clone()));
         let context = TranscriptContext {
             messages: vec![Message::User(UserMessage {
                 content: UserMessageContent::Text("go".into()),

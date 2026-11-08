@@ -5,7 +5,7 @@
 use ai::auth::{
     AuthContext, AuthError, AuthInteraction, AuthOverrides, AuthType, Credential, CredentialEnv, CredentialInfo,
     CredentialStore, InMemoryCredentialStore, ModelAuth, ModelsError, ModelsErrorCode, ModifyFn, OAuthAuth,
-    ProviderAuth, StoreError, builtin_provider_auth_with_clock, copilot_filter_models, resolve_provider_auth,
+    ProviderAuth, StoreError, builtin_provider_auth_with_clock, filter_models, resolve_provider_auth,
 };
 use ai::http::{AbortSignal, Body, BoxFuture, HttpRequest, HttpResponse, Transport};
 use ai::oauth::OAuthCredential;
@@ -509,7 +509,7 @@ fn ai_auth_copilot_filters_models_by_available_ids() {
         Credential::from_json(&entry).unwrap()
     };
     let ids = |credential: Option<&Credential>| -> Vec<&str> {
-        copilot_filter_models(&models, |m| m, credential)
+        filter_models("github-copilot", &models, |m| m, || credential.cloned())
             .into_iter()
             .copied()
             .collect()

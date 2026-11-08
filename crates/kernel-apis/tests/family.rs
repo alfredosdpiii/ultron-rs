@@ -2,12 +2,13 @@
 //! crates/kernel against `FamilyModule`, with the same scripted task host as the TS recording (task tree, lane →
 //! task, steer log, clock moved by `test.*` requests), compared cell by cell and by the final document.
 
-mod common;
+use crate::common;
 
 use common::{FIXED_NOW, Made, assert_area};
+use kernel::store::{DocumentStore, MemoryDocumentStore};
 use kernel::{HostHandler, Signal};
 use kernel_apis::family::{FamilyModule, FamilyOptions};
-use kernel_apis::{ApiModule, DocumentStore, KernelApis, MemoryDocumentStore, Request, TaskHost};
+use kernel_apis::{ApiModule, KernelApis, Request, TaskHost};
 use serde_json::{Map, Value, json};
 use std::path::Path;
 use std::sync::{Arc, Mutex};

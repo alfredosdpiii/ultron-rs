@@ -8,8 +8,8 @@ use crate::turns::{Answer, Bridge, GenerationStart, Request, StartError, TurnCel
 use agent::AgentToolResult;
 use durable::{ROOT_CONVERSATION_ID, SubmissionId, SubmissionStatus};
 use harness::chat::{
-    AgentChange, ChatHarness, ChatOptions, CompactionPolicy, ModelRef, QueueMode, RetryPolicy, Settings,
-    SubmissionAbort, SubmissionDraft, ToolExecution, WhenBusy,
+    AgentChange, ChatHarness, ChatOptions, CompactionPolicy, ModelRef, QueueMode, Settings, SubmissionAbort,
+    SubmissionDraft, ToolExecution, WhenBusy,
 };
 use harness::scheduler::{Cancel, Ctx, Registry};
 use session_journal::ns::{OP_META, OP_STATE};
@@ -50,6 +50,7 @@ pub(super) fn open_durable(
     queues: Arc<Mutex<Queues>>,
     children: Arc<crate::subagents::DurableChildren>,
     child_context: Arc<super::context_children::ChildContext>,
+    image_budget: usize,
 ) -> Result<Durable, String> {
     let to_actor = tx.clone();
     let to_actor = Mutex::new(to_actor);
@@ -83,7 +84,7 @@ pub(super) fn open_durable(
                 .stream_options()
                 .and_then(|options| options.as_object().cloned())
                 .unwrap_or_default(),
-            retry: RetryPolicy::from_settings(&retry_settings, retry.load(Ordering::SeqCst)),
+            retry: ai::retry::RetryPolicy::from_settings(&retry_settings, retry.load(Ordering::SeqCst)),
             compaction: CompactionPolicy {
                 enabled: false,
                 ..CompactionPolicy::default()
@@ -120,8 +121,7 @@ pub(super) fn open_durable(
         charge: Some(charge_turns(children.clone(), lane.stack.clone(), child_costs.clone())),
         transform_child: Some({
             let context = child_context.clone();
-            let budget =
-                crate::view_images::context_image_budget((env.var)(crate::view_images::CONTEXT_IMAGES_ENV).as_deref());
+            let budget = image_budget;
             // Subagent lanes get clock lines as the root does (`clockLane`); typed agents and frames do not.
             let clock = lane::clock_enabled(env).then(|| (lane::clock_zone(env), children.clone()));
             Arc::new(move |conversation, messages: &mut Vec<ai::Message>| {
@@ -284,11 +284,6 @@ fn text_of(message: &Message) -> String {
 }
 
 impl Core {
-    /// `ULTRON_CONTEXT_IMAGES`: tool-result images a request keeps (0: all).
-    fn image_budget(&self) -> usize {
-        crate::view_images::context_image_budget((self.env.var)(crate::view_images::CONTEXT_IMAGES_ENV).as_deref())
-    }
-
     /// The operation of the run in progress.
     pub(super) fn operation_id(&self) -> Option<String> {
         self.run
@@ -543,7 +538,7 @@ impl Core {
             .into_iter()
             .filter_map(|entry| entry["id"].as_str())
             .collect();
-        let entries = session_journal::context::build_context_entries(&session.branch_entry_refs(LANE)?);
+        let entries = session_journal::context::build_context_entries(&session.branch_entry_refs(MAIN_LANE)?);
         let mut split = entries
             .iter()
             .take_while(|entry| entry["id"].as_str().is_some_and(|id| before.contains(id)))
@@ -594,7 +589,7 @@ impl Core {
             |entries: &[Value]| session_journal::context::project_context_entries(entries, context_lane::PROJECTORS);
         let mut history = project(&applied[..split]);
         let run = project(&applied[split..]);
-        if let Ok(Some(kept)) = self.context.transform_context(LANE, &history) {
+        if let Ok(Some(kept)) = self.context.transform_context(MAIN_LANE, &history) {
             history = kept;
         }
         // The clock lines are placed over the history and the run's first message (a compaction during the run
@@ -617,7 +612,7 @@ impl Core {
         messages.extend(lane::to_llm(&history));
         messages.extend(lane::to_llm(&run));
         // Old view_image results beyond the image budget leave the request (image-budget.ts).
-        crate::view_images::apply_image_budget(&mut messages, self.image_budget());
+        crate::view_images::apply_image_budget(&mut messages, self.runtime.config.context_images);
         Ok(messages)
     }
 
@@ -650,12 +645,12 @@ impl Core {
             for message in captured {
                 self.emit(WatchEvent::MessageStart {
                     run_id: Some(run_id.clone()),
-                    lane: LANE.into(),
+                    lane: MAIN_LANE.into(),
                     message: message.clone(),
                 });
                 self.emit(WatchEvent::MessageEnd {
                     run_id: Some(run_id.clone()),
-                    lane: LANE.into(),
+                    lane: MAIN_LANE.into(),
                     message,
                 });
             }
@@ -727,7 +722,7 @@ impl Core {
         // The root lane's context reminder follows its model and compaction settings as of this request.
         let settings = self.compaction_settings();
         self.lane.stack.context_reminders.set_limit(
-            LANE,
+            MAIN_LANE,
             crate::context_reminder::lane_limit(&self.model, settings.enabled, settings.reserve_tokens),
         );
         let start = self
@@ -788,7 +783,7 @@ impl Core {
         self.lane.stack.agents.begin_root_turn(operation_id);
         self.durable
             .children
-            .set_root(self.lane.stack.agents.usage_root_for_lane(LANE, operation_id));
+            .set_root(self.lane.stack.agents.usage_root_for_lane(MAIN_LANE, operation_id));
         self.branches.run_started();
         // Per-turn guard times start from zero (`fileHooks.beginTurn()` on the root lane's `run_start`).
         self.lane.stack.host.begin_turn();
@@ -813,7 +808,7 @@ impl Core {
         self.emit(WatchEvent::RunStart {
             run_id: id.clone(),
             started_at: now_ms(),
-            lane: LANE.into(),
+            lane: MAIN_LANE.into(),
         });
         // A prompt admitted to the transcript but not to the runtime is submitted now (idempotent by its entry).
         if submission.is_none() && !cancelled {

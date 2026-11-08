@@ -2,7 +2,8 @@
 //! commits it, plus [`Run::reopen`]: the durable runtime resumes an operation a dead worker left open, so its journal
 //! continues from the stored state instead of being settled as interrupted.
 
-use super::{FrameEncoder, MAIN_LANE, retry_policy, stream_options, summary_stream_options};
+use super::summary::{self, Scope, SummaryAttempt};
+use super::{FrameEncoder, MAIN_LANE, retry_policy, stream_options};
 use crate::ns::{
     BRANCH_TIP, LANE_CONFIG, LANE_STATE, OP_META, OP_PREPARATION, OP_RESULT, OP_STATE, OP_TOOL_ARGS, PENDING_ENTRY,
     PENDING_FRAMES, PENDING_TOOL_OUTPUT, USAGE,
@@ -78,13 +79,10 @@ pub struct Run {
 }
 
 /// A compaction inside a run (packages/agent/src/harness/runtime/drive/structural.ts): its task (id, reason and the
-/// checkpoint it resumes), the summary request's context and its usage row.
+/// checkpoint it resumes) and, once requested, its summary attempt.
 struct Compaction {
     task: Value,
-    summary_context: Value,
-    usage_ids: Vec<String>,
-    /// The summary attempt in progress (1-based).
-    attempt: u64,
+    summary: Option<SummaryAttempt>,
 }
 
 /// The compaction a checkpoint left in progress when its worker died: the task as its state stored it.
@@ -93,15 +91,6 @@ pub struct OpenCompaction {
     pub reason: String,
     /// `{continuation, triggerEntryId}`: the checkpoint the compaction resumes.
     pub resume_after: Value,
-}
-
-fn entry(id: &str, parent: Option<&str>, message: Value) -> Write {
-    let mut map = Map::new();
-    map.insert("id".into(), id.into());
-    map.insert("parentId".into(), parent.map_or(Value::Null, Value::from));
-    map.insert("type".into(), "message".into());
-    map.insert("message".into(), message);
-    Write::Entry(map)
 }
 
 fn now(session: &Session) -> i64 {
@@ -181,10 +170,10 @@ impl Run {
         let mut writes = Vec::new();
         let mut parent = source_tip.clone();
         for (id, message) in captured {
-            writes.push(entry(id, parent.as_deref(), message.clone()));
+            writes.push(Write::message_entry(id, parent.as_deref(), message.clone()));
             parent = Some(id.clone());
         }
-        writes.push(entry(&prompt_id, parent.as_deref(), prompt));
+        writes.push(Write::message_entry(&prompt_id, parent.as_deref(), prompt));
         writes.extend(captured.iter().map(|(id, _)| Write::delete(PENDING_ENTRY, id)));
         writes.extend([
             Write::set(BRANCH_TIP, MAIN_LANE, prompt_id.clone().into()),
@@ -387,7 +376,8 @@ impl Run {
         }
     }
 
-    fn scope(&self, at: &str) -> Map<String, Value> {
+    /// The fields every state of the operation starts with.
+    fn base(&self) -> Map<String, Value> {
         let mut state = Map::new();
         state.insert("control".into(), self.control.clone());
         state.insert("settings".into(), self.settings.clone());
@@ -395,6 +385,11 @@ impl Run {
             "latestAssistantEntryId".into(),
             self.latest_assistant.clone().map_or(Value::Null, Value::from),
         );
+        state
+    }
+
+    fn scope(&self, at: &str) -> Map<String, Value> {
+        let mut state = self.base();
         state.insert("at".into(), at.into());
         state
     }
@@ -602,11 +597,7 @@ impl Run {
     pub fn commit_assistant(&mut self, session: &mut Session, message: Value) -> Result<bool, String> {
         let tip = session.branch_tip(MAIN_LANE).flatten();
         let id = self.response_entry_id.clone();
-        let mut usage_row = Map::new();
-        usage_row.insert("id".into(), self.usage_id.clone().into());
-        usage_row.insert("usage".into(), message["usage"].clone());
-        usage_row.insert("entryId".into(), id.clone().into());
-        usage_row.insert("adjustment".into(), false.into());
+        let usage_row = Write::usage(&self.usage_id, message["usage"].clone(), Some(&id));
         let calls: Vec<(usize, String)> = message["content"]
             .as_array()
             .map(|content| {
@@ -627,11 +618,9 @@ impl Run {
             writes.push(self.prepare_compaction(&task, prepared));
             self.compaction = Some(Compaction {
                 task: task.clone(),
-                summary_context: Value::Null,
-                usage_ids: Vec::new(),
-                attempt: 1,
+                summary: None,
             });
-            self.summary_state("summary.deciding", vec![])
+            self.summary_scope().state(summary::DECIDING, vec![])
         } else if calls.is_empty() || message["stopReason"] != "toolUse" {
             self.trigger = id.clone();
             self.calls.clear();
@@ -656,8 +645,8 @@ impl Run {
         let error = message["stopReason"] == "error" && writes.is_empty();
         let retry = if error { self.retry_next.take() } else { None };
         let mut all = vec![
-            entry(&id, tip.as_deref(), message),
-            Write::Usage(usage_row),
+            Write::message_entry(&id, tip.as_deref(), message),
+            usage_row,
             Write::set(BRANCH_TIP, MAIN_LANE, id.clone().into()),
             Write::delete_list(PENDING_FRAMES, &self.frames_key()),
         ];
@@ -724,15 +713,13 @@ impl Run {
         Write::set(OP_PREPARATION, &key, prepared)
     }
 
-    fn summary_state(&self, at: &str, extra: Vec<(&str, Value)>) -> Value {
-        let mut state = self.scope(at);
-        if let Some(compaction) = &self.compaction {
-            state.insert("task".into(), compaction.task.clone());
+    /// Where the compaction's `summary.*` states go.
+    fn summary_scope(&self) -> Scope {
+        Scope {
+            operation_id: self.operation_id.clone(),
+            base: self.base(),
+            task: self.compaction.as_ref().map_or(Value::Null, |c| c.task.clone()),
         }
-        for (key, value) in extra {
-            state.insert(key.into(), value);
-        }
-        Value::Object(state)
     }
 
     /// The overflowed answer the next [`Run::commit_assistant`] commits starts a compaction (`reason` overflow)
@@ -758,13 +745,8 @@ impl Run {
         let resume_after = resume_after.unwrap_or_else(|| self.checkpoint_resume(session));
         let task = self.task(session, reason, resume_after);
         let preparation = self.prepare_compaction(&task, prepared);
-        self.compaction = Some(Compaction {
-            task,
-            summary_context: Value::Null,
-            usage_ids: Vec::new(),
-            attempt: 1,
-        });
-        let deciding = self.summary_state("summary.deciding", vec![]);
+        self.compaction = Some(Compaction { task, summary: None });
+        let deciding = self.summary_scope().state(summary::DECIDING, vec![]);
         session
             .commit(&[
                 preparation,
@@ -778,48 +760,21 @@ impl Run {
     /// id. Returns the compaction entry's id.
     pub fn compaction_request(&mut self, session: &mut Session, retry_policy: Value) -> Result<String, String> {
         let result_entry_id = mint(session);
-        let context = json!({
-            "resultEntryId": result_entry_id,
-            "configuration": self.config,
-            "streamOptions": summary_stream_options(),
-            "retryPolicy": retry_policy,
-        });
+        let mut attempt = SummaryAttempt::new(&result_entry_id, self.config.clone(), retry_policy);
+        attempt.start(session, &self.summary_scope())?;
         if let Some(compaction) = self.compaction.as_mut() {
-            compaction.summary_context = context;
-            compaction.attempt = 1;
+            compaction.summary = Some(attempt);
         }
-        self.compaction_attempt(session)?;
         Ok(result_entry_id)
-    }
-
-    /// The attempt's `summary.ready` (`nextAttempt`), `summary.effect_pending`, then with its request.
-    fn compaction_attempt(&mut self, session: &mut Session) -> Result<(), String> {
-        let (context, attempt) = self
-            .compaction
-            .as_ref()
-            .map_or((Value::Null, 1), |c| (c.summary_context.clone(), c.attempt));
-        let ready = self.summary_state(
-            "summary.ready",
-            vec![("summaryContext", context), ("nextAttempt", json!(attempt))],
-        );
-        session.commit(&[Write::set(OP_STATE, &self.operation_id, ready)])?;
-        if let Some(compaction) = self.compaction.as_mut() {
-            compaction.usage_ids.clear();
-        }
-        let pending = self.effect_pending(None);
-        session.commit(&[Write::set(OP_STATE, &self.operation_id, pending)])?;
-        let usage_id = mint(session);
-        let requested = self.effect_pending(Some(&usage_id));
-        session.commit(&[Write::set(OP_STATE, &self.operation_id, requested)])?;
-        if let Some(compaction) = self.compaction.as_mut() {
-            compaction.usage_ids.push(usage_id);
-        }
-        Ok(())
     }
 
     /// The task id of the compaction in progress.
     pub fn compaction_task_id(&self) -> Option<String> {
         self.compaction.as_ref()?.task["taskId"].as_str().map(str::to_string)
+    }
+
+    fn summary_attempt(&self) -> Option<&SummaryAttempt> {
+        self.compaction.as_ref()?.summary.as_ref()
     }
 
     /// A retryable failed attempt: its response's usage row (when it reported one) and `summary.retry_wait` until
@@ -831,72 +786,41 @@ impl Run {
         error: &str,
         not_before: i64,
     ) -> Result<(), String> {
-        let Some(compaction) = self.compaction.as_ref() else {
+        let Some(attempt) = self.summary_attempt() else {
             return Ok(());
         };
-        let mut writes = Vec::new();
-        if let (Some(usage), Some(usage_id)) = (usage, compaction.usage_ids.last()) {
-            let mut row = Map::new();
-            row.insert("id".into(), usage_id.clone().into());
-            row.insert("usage".into(), usage.clone());
-            row.insert("adjustment".into(), false.into());
-            writes.push(Write::Usage(row));
-        }
-        let state = self.summary_state(
-            "summary.retry_wait",
-            vec![
-                ("summaryContext", compaction.summary_context.clone()),
-                ("nextAttempt", json!(compaction.attempt + 1)),
-                ("notBefore", json!(not_before)),
-                ("errorMessage", json!(error)),
-            ],
-        );
-        writes.push(Write::set(OP_STATE, &self.operation_id, state));
+        let writes = attempt.retry_wait(&self.summary_scope(), usage, error, not_before);
         session.commit(&writes).map(drop)
     }
 
     /// The wait ended: the next attempt (`runStructuralRetryWait`).
     pub fn compaction_retry(&mut self, session: &mut Session) -> Result<(), String> {
-        if let Some(compaction) = self.compaction.as_mut() {
-            compaction.attempt += 1;
+        let scope = self.summary_scope();
+        match self.compaction.as_mut().and_then(|c| c.summary.as_mut()) {
+            Some(attempt) => attempt.retry(session, &scope),
+            None => Ok(()),
         }
-        self.compaction_attempt(session)
     }
 
-    /// `summary.effect_pending`: with the request in flight (`request`), else with the usage rows recorded so far.
-    fn effect_pending(&self, request: Option<&str>) -> Value {
-        let context = self
-            .compaction
-            .as_ref()
-            .map_or(Value::Null, |c| c.summary_context.clone());
-        let recorded: Vec<String> = match (request, &self.compaction) {
-            (Some(_), _) | (None, None) => Vec::new(),
-            (None, Some(compaction)) => compaction.usage_ids.clone(),
-        };
-        let attempt = self.compaction.as_ref().map_or(1, |c| c.attempt);
-        let mut extra = vec![
-            ("summaryContext", context),
-            ("attempt", json!(attempt)),
-            ("usageIds", json!(recorded)),
-        ];
-        if let Some(usage_id) = request {
-            extra.push(("request", json!({"index": 0, "usageId": usage_id})));
+    /// The compaction's state before it commits: `summary.effect_pending` once requested, else `summary.deciding`.
+    fn summary_current(&self) -> Value {
+        let scope = self.summary_scope();
+        match self.summary_attempt() {
+            Some(attempt) => attempt.pending(&scope),
+            None => scope.state(summary::DECIDING, vec![]),
         }
-        self.summary_state("summary.effect_pending", extra)
     }
 
     /// The summary response arrived: its usage row, with the state that lists it.
     pub fn compaction_usage(&mut self, session: &mut Session, usage: &Value) -> Result<(), String> {
-        let Some(usage_id) = self.compaction.as_ref().and_then(|c| c.usage_ids.last().cloned()) else {
+        let Some(attempt) = self.summary_attempt() else {
             return Ok(());
         };
-        let mut row = Map::new();
-        row.insert("id".into(), usage_id.into());
-        row.insert("usage".into(), usage.clone());
-        row.insert("adjustment".into(), false.into());
-        let state = self.effect_pending(None);
-        session.commit(&[Write::Usage(row), Write::set(OP_STATE, &self.operation_id, state)])?;
-        Ok(())
+        let writes = attempt.record_usage(&self.summary_scope(), usage);
+        if writes.is_empty() {
+            return Ok(());
+        }
+        session.commit(&writes).map(drop)
     }
 
     /// The state a compaction resumes its checkpoint with: the next generation's `assistant.ready` (its state
@@ -931,19 +855,15 @@ impl Run {
         &mut self,
         session: &mut Session,
         result_entry_id: &str,
-        mut entry: Map<String, Value>,
+        entry: Map<String, Value>,
     ) -> Result<(), String> {
         let tip = session.branch_tip(MAIN_LANE).flatten();
-        let mut full = Map::new();
-        full.insert("id".into(), result_entry_id.into());
-        full.insert("parentId".into(), tip.map_or(Value::Null, Value::from));
-        full.append(&mut entry);
-        let current = self.effect_pending(None);
+        let current = self.summary_current();
         let resumed = self.resumed_state(session, current);
         self.compaction = None;
         session
             .commit(&[
-                Write::Entry(full),
+                Write::entry(result_entry_id, tip.as_deref(), entry),
                 Write::set(BRANCH_TIP, MAIN_LANE, result_entry_id.into()),
                 Write::set(OP_STATE, &self.operation_id, resumed),
                 Write::set(LANE_STATE, MAIN_LANE, self.lane_state(true)),
@@ -957,28 +877,20 @@ impl Run {
     pub fn complete_compaction_from_hook(
         &mut self,
         session: &mut Session,
-        mut entry: Map<String, Value>,
+        entry: Map<String, Value>,
         usage: Option<Value>,
     ) -> Result<String, String> {
         let result_entry_id = mint(session);
-        let mut writes = Vec::new();
-        if let Some(usage) = usage {
-            let mut row = Map::new();
-            row.insert("id".into(), mint(session).into());
-            row.insert("usage".into(), usage);
-            row.insert("adjustment".into(), false.into());
-            writes.push(Write::Usage(row));
-        }
+        let mut writes: Vec<Write> = usage
+            .map(|usage| Write::usage(&mint(session), usage, None))
+            .into_iter()
+            .collect();
         let tip = session.branch_tip(MAIN_LANE).flatten();
-        let mut full = Map::new();
-        full.insert("id".into(), result_entry_id.clone().into());
-        full.insert("parentId".into(), tip.map_or(Value::Null, Value::from));
-        full.append(&mut entry);
-        let current = self.summary_state("summary.deciding", vec![]);
+        let current = self.summary_current();
         let resumed = self.resumed_state(session, current);
         self.compaction = None;
         writes.extend([
-            Write::Entry(full),
+            Write::entry(&result_entry_id, tip.as_deref(), entry),
             Write::set(BRANCH_TIP, MAIN_LANE, result_entry_id.clone().into()),
             Write::set(OP_STATE, &self.operation_id, resumed),
             Write::set(LANE_STATE, MAIN_LANE, self.lane_state(true)),
@@ -1000,7 +912,7 @@ impl Run {
             self.compaction = None;
             return Ok(false);
         }
-        let current = self.summary_state("summary.deciding", vec![]);
+        let current = self.summary_current();
         let resumed = self.resumed_state(session, current);
         self.compaction = None;
         let mut writes = placement;
@@ -1091,7 +1003,7 @@ impl Run {
         let mut writes = Vec::new();
         let mut tip = session.branch_tip(MAIN_LANE).flatten();
         for call in &self.calls {
-            writes.push(entry(
+            writes.push(Write::message_entry(
                 &call.result_entry_id,
                 tip.as_deref(),
                 call.result.clone().unwrap_or_default(),

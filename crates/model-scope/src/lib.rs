@@ -31,6 +31,22 @@ pub fn is_valid_thinking_level(level: &str) -> bool {
     THINKING_LEVELS.contains(&level)
 }
 
+/// A request payload's `thinking` value: one of [`THINKING_LEVELS`], else "thinking must be one of ...".
+pub fn thinking_level(value: &serde_json::Value) -> Result<String, String> {
+    match value.as_str().filter(|level| is_valid_thinking_level(level)) {
+        Some(level) => Ok(level.to_string()),
+        None => Err(format!("thinking must be one of {}", THINKING_LEVELS.join(", "))),
+    }
+}
+
+/// A request payload's `model` value: a [`is_model_ref`] string, else "model must be provider/model".
+pub fn model_ref(value: &serde_json::Value) -> Result<String, String> {
+    match value.as_str().filter(|model| is_model_ref(model)) {
+        Some(model) => Ok(model.to_string()),
+        None => Err("model must be provider/model".into()),
+    }
+}
+
 /// `MODEL_REF_PATTERN` (`^[^/\s]+\/[^/\s]+(?:\/[^/\s]+)*$`): `provider/model[/more]`, no part empty or with
 /// whitespace.
 pub fn is_model_ref(value: &str) -> bool {
@@ -41,8 +57,7 @@ pub fn is_model_ref(value: &str) -> bool {
             .all(|part| !part.is_empty() && !part.chars().any(jsrt::string::is_space))
 }
 
-/// `String.prototype.localeCompare` (ICU root collation), re-exported for `ai::jsutil`.
-pub use jsrt::collate::locale_compare;
+use jsrt::collate::locale_compare;
 
 /// `modelsAreEqual`: same provider and id.
 pub fn same<M: ScopeModel>(a: &M, b: &M) -> bool {
@@ -238,7 +253,9 @@ pub fn resolve_model_scope<'a, M: ScopeModel>(
             }
             let matching: Vec<&M> = models
                 .iter()
-                .filter(|m| minimatch(&reference(*m), glob) || (!m.full_reference_only() && minimatch(m.id(), glob)))
+                .filter(|m| {
+                    minimatch(&reference(*m), glob, true) || (!m.full_reference_only() && minimatch(m.id(), glob, true))
+                })
                 .collect();
             if matching.is_empty() {
                 diagnostics.push(no_match(pattern));

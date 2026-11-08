@@ -17,7 +17,7 @@ mod trace;
 
 pub use map::{DEFAULT_MAP_TOKENS, Frames, INFERENCE_PROMPT, ModelSettings, frame_env};
 pub use session::{FrameExecution, FrameGate, FrameMeter, FrameSession, FrameTasks};
-pub use trace::{MemoryTraceStore, TRACE_NAMESPACE, TraceStore};
+pub use trace::{MemoryTraceStore, TraceStore};
 
 use ai::{AssistantMessage, Message, Model, SimpleStreamOptions, Transport};
 use jsrt::payload::fields;
@@ -441,32 +441,25 @@ impl Engine {
                 Box::pin(async move {
                     let model = routed.as_ref().unwrap_or(&self.model);
                     let options = prepared.as_ref().unwrap_or(options);
-                    ai::dispatch::stream_simple(
-                        &ai::claude_subscription::fallback::global(),
-                        model,
-                        context,
-                        options,
-                        transport,
-                        sink,
-                    )
-                    .await
+                    ai::dispatch::stream_simple(model, context, options, transport, sink).await
                 })
             }
         };
         // The request ends at the deadline or as soon as the frame is cancelled (the root turn's abort cancels
         // every in-flight frame); either way nothing is charged.
-        let mut stream = std::pin::pin!(stream);
-        loop {
-            if signal.is_aborted() {
-                return Ok(None);
-            }
-            let step = (Instant::now() + Duration::from_millis(20)).min(deadline);
-            match tokio::time::timeout_at(step.into(), &mut stream).await {
-                Ok(reply) => return reply.map(Some),
-                Err(_) if Instant::now() >= deadline => return Ok(None),
-                Err(_) => {}
-            }
-        }
+        let (abort, aborted) = tokio::sync::oneshot::channel::<()>();
+        let Some(listener) = signal.on_abort(move |_| {
+            let _ = abort.send(());
+        }) else {
+            return Ok(None);
+        };
+        let reply = tokio::select! {
+            reply = stream => reply.map(Some),
+            _ = aborted => Ok(None),
+            () = tokio::time::sleep_until(deadline.into()) => Ok(None),
+        };
+        signal.forget(listener);
+        reply
     }
 
     /// One code-free request: the frame's system prompt and its private conversation so far.
@@ -694,8 +687,7 @@ impl Inference {
         let requested_depth = optional_integer(budget.get("depth"), "budget.depth", 1, MAX_DEPTH)?;
         let model = match payload.get("model") {
             None | Some(Value::Null) => None,
-            Some(Value::String(model)) if model_scope::is_model_ref(model) => Some(model.clone()),
-            Some(_) => return Err("model must be provider/model".into()),
+            Some(model) => Some(model_scope::model_ref(model)?),
         };
         let max_repairs = optional_integer(payload.get("max_repairs"), "max_repairs", 0, MAX_REPAIRS)?.unwrap_or(
             if contract
@@ -710,18 +702,7 @@ impl Inference {
         let timeout = optional_integer(payload.get("timeout_ms"), "timeout_ms", 1, MAX_TIMEOUT_MS)?;
         let thinking = match payload.get("thinking") {
             None | Some(Value::Null) => None,
-            Some(level) => match level
-                .as_str()
-                .filter(|level| model_scope::THINKING_LEVELS.contains(level))
-            {
-                Some(level) => Some(level.to_string()),
-                None => {
-                    return Err(format!(
-                        "thinking must be one of {}",
-                        model_scope::THINKING_LEVELS.join(", ")
-                    ));
-                }
-            },
+            Some(level) => Some(model_scope::thinking_level(level)?),
         };
         let admission = self
             .session

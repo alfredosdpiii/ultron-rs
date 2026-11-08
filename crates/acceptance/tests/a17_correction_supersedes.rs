@@ -3,9 +3,9 @@
 //! with one durable journal reopened by each fresh session, through the real Hindsight adapter
 //! (`hindsight::HindsightBackend`) over the fake Hindsight of `memory_support`, as the TS fake sits behind `createHindsightBackend`.
 
-mod memory_support;
+use crate::memory_support;
 
-use kernel_apis::MemoryDocumentStore;
+use kernel::store::MemoryDocumentStore;
 use memory_support::*;
 use serde_json::{Value, json};
 use std::sync::Arc;

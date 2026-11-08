@@ -5,11 +5,11 @@
 //! the same user. `secret-tool` is found on the session's `PATH` only, and runs with the session's desktop variables.
 
 use crate::snapshot::{KEY_BYTES, SNAPSHOT_KEY_FILE, load_or_create_snapshot_key, parse_key};
-use std::io::{Read, Write};
+use std::io::Write;
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 pub const RLM_SNAPSHOT_KEY_STORE_ENV: &str = "ULTRON_RLM_SNAPSHOT_KEY_STORE";
 
@@ -87,7 +87,7 @@ const SECRET_TOOL_ENV: &[&str] = &[
 pub fn secret_tool_keyring(agent_dir: &Path, var: &dyn Fn(&str) -> Option<String>) -> SecretToolKeyring {
     let profile = std::path::absolute(agent_dir).unwrap_or_else(|_| agent_dir.to_path_buf());
     SecretToolKeyring {
-        command: var("PATH").and_then(|path| find_on_path("secret-tool", &path)),
+        command: var("PATH").and_then(|path| jsrt::process::which("secret-tool", &path)),
         attributes: ["application", "ultron", "purpose", "rlm-snapshot-key", "profile"]
             .iter()
             .map(|s| s.to_string())
@@ -101,16 +101,6 @@ pub fn secret_tool_keyring(agent_dir: &Path, var: &dyn Fn(&str) -> Option<String
     }
 }
 
-fn find_on_path(name: &str, path: &str) -> Option<PathBuf> {
-    use std::os::unix::fs::PermissionsExt;
-    std::env::split_paths(path)
-        .filter(|dir| !dir.as_os_str().is_empty())
-        .map(|dir| dir.join(name))
-        .find(|candidate| {
-            std::fs::metadata(candidate).is_ok_and(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
-        })
-}
-
 /// A finished `secret-tool` run: its exit code (`None`: killed by a signal or the timeout), stdout and stderr.
 struct Run {
     code: Option<i32>,
@@ -121,48 +111,25 @@ struct Run {
 impl SecretToolKeyring {
     fn run(&self, args: &[String], input: Option<&str>) -> Option<Run> {
         let command = self.command.as_ref()?;
-        let mut child = Command::new(command)
-            .args(args)
-            .env_clear()
-            .envs(self.env.iter().map(|(k, v)| (k, v)))
-            .stdin(if input.is_some() { Stdio::piped() } else { Stdio::null() })
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-            .ok()?;
-        if let (Some(input), Some(mut stdin)) = (input, child.stdin.take()) {
-            let _ = stdin.write_all(input.as_bytes());
-        }
-        let mut stdout = child.stdout.take()?;
-        let mut stderr = child.stderr.take()?;
-        let out = std::thread::spawn(move || {
-            let mut text = String::new();
-            let _ = stdout.read_to_string(&mut text);
-            text
-        });
-        let err = std::thread::spawn(move || {
-            let mut text = String::new();
-            let _ = stderr.read_to_string(&mut text);
-            text
-        });
-        let deadline = Instant::now() + self.timeout;
-        let status = loop {
-            match child.try_wait() {
-                Ok(Some(status)) => break Some(status),
-                Ok(None) if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(10)),
-                // Our own child only: it did not answer in time.
-                _ => {
-                    let _ = child.kill();
-                    let _ = child.wait();
-                    break None;
-                }
-            }
+        let bound = signals::child::Bound {
+            timeout: Some(self.timeout),
+            ..Default::default()
         };
-        let (stdout, stderr) = (out.join().unwrap_or_default(), err.join().unwrap_or_default());
+        let out = signals::child::run(
+            Command::new(command)
+                .args(args)
+                .env_clear()
+                .envs(self.env.iter().map(|(k, v)| (k, v)))
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped()),
+            input.map(str::as_bytes),
+            bound,
+        )
+        .ok()?;
         Some(Run {
-            code: status.and_then(|s| s.code()),
-            stdout,
-            stderr,
+            code: out.code(),
+            stdout: String::from_utf8_lossy(&out.stdout).into_owned(),
+            stderr: String::from_utf8_lossy(&out.stderr).into_owned(),
         })
     }
 }

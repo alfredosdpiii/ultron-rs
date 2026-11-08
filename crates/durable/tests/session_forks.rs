@@ -2,7 +2,7 @@
 
 #![allow(clippy::type_complexity)]
 
-mod session_support;
+use crate::session_support;
 
 use chord_delta::path;
 use durable::{

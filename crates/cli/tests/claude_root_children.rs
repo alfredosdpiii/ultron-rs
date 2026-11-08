@@ -5,7 +5,7 @@
 //! socket with its one-time token (`child.finish`), its final reply is the task's result, and the end reaches the
 //! root as a `child_done` event at the top of its next rlm result.
 
-mod executable_support;
+use crate::executable_support;
 
 use serde_json::{Value, json};
 use std::io::{BufRead, BufReader, Write};

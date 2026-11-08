@@ -5,18 +5,17 @@
 //! local services over session values that refuse `ultron.local`), the refinement hook of the typed-agent host, the
 //! skills module, and a workflow step; the typed-agent host, usage ledger, progress, goals and release gates stay up.
 
-mod agents_support;
-mod common;
-mod services_support;
+use crate::agents_support;
+use crate::common;
+use crate::services_support;
 
 use agents_support::{Memory, adapter};
 use common::{kernel_in, run};
 use delegation::usage::UsageLedger;
+use kernel::store::MemoryDocumentStore;
 use kernel::{HostHandler, Signal, Status};
 use kernel_apis::memory::MemoryBackend;
-use kernel_apis::{
-    ApiModule, MemoryApi, MemoryDocumentStore, MemoryService, ProgressModule, Request, SchedulesModule, worker_gate,
-};
+use kernel_apis::{ApiModule, MemoryApi, MemoryService, ProgressModule, Request, SchedulesModule, worker_gate};
 use serde_json::{Map, Value, json};
 use services::ReleaseGateModule;
 use services::local::{LocalOptions, LocalServices, LocalServicesModule};

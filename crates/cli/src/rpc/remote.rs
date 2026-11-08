@@ -13,12 +13,12 @@
 //! followed; a sandboxed job dies with its worker) when the next client attaches.
 
 use super::events::RpcEventTranslator;
-use super::{Input, Output, QueueKind, Reply, RpcSession};
+use super::{Input, Output, Reply};
 use crate::Env;
 use crate::args::Args;
 use crate::print_mode::Target;
 use client::session::SessionLink;
-use protocol::watch::WatchEvent;
+use protocol::watch::{QueueKind, WatchEvent};
 use serde_json::{Value, json};
 use session_core::core::Op;
 use std::sync::Arc;
@@ -44,11 +44,7 @@ pub enum Event {
 
 /// `/mcp` dialogs and MCP notices from the worker reach this client as Pi's `extension_ui_request` lines
 /// (rpc-native.ts `uiLoop`); a different session starts again from its open dialogs.
-fn serve_extension_ui(
-    link: client::session::LinkHandle,
-    tx: Sender<Input<Event>>,
-    stop: Arc<std::sync::atomic::AtomicBool>,
-) {
+fn serve_extension_ui(link: client::session::LinkHandle, tx: Sender<Input>, stop: Arc<std::sync::atomic::AtomicBool>) {
     std::thread::spawn(move || {
         let (mut cursor, mut session): (Option<u64>, String) = (None, String::new());
         while !stop.load(Ordering::SeqCst) {
@@ -84,7 +80,7 @@ pub struct Remote<'a> {
     env: &'a Env,
     parsed: &'a Args,
     link: Option<SessionLink>,
-    tx: Sender<Input<Event>>,
+    tx: Sender<Input>,
     translator: RpcEventTranslator,
     running: bool,
     /// The run in progress (its `run_start` id).
@@ -120,7 +116,7 @@ fn selector_id(env: &Env, selector: &str) -> Result<String, String> {
 }
 
 impl<'a> Remote<'a> {
-    pub fn open(parsed: &'a Args, env: &'a Env, target: Target, tx: Sender<Input<Event>>) -> Result<Self, String> {
+    pub fn open(parsed: &'a Args, env: &'a Env, target: Target, tx: Sender<Input>) -> Result<Self, String> {
         if matches!(target, Target::New { .. } | Target::Ephemeral) {
             crate::print_mode::resolve_model(parsed, env)?;
         }
@@ -203,10 +199,9 @@ impl<'a> Remote<'a> {
     }
 }
 
-impl RpcSession for Remote<'_> {
-    type Event = Event;
-
-    fn deliver(&mut self, event: Event, out: &Output) {
+/// The session operations behind the RPC commands. Errors are the `error` text of the failed response.
+impl Remote<'_> {
+    pub fn deliver(&mut self, event: Event, out: &Output) {
         let event = match event {
             Event::Watch(event) => event,
             Event::BashDone { reply, result, pending } => {
@@ -260,11 +255,13 @@ impl RpcSession for Remote<'_> {
         }
     }
 
-    fn busy(&self) -> bool {
+    /// Whether work is still in flight that must finish before the process exits.
+    pub fn busy(&self) -> bool {
         self.running || self.bash.load(Ordering::SeqCst) > 0
     }
 
-    fn input_ended(&mut self) {
+    /// Stdin ended: stop runs, then [`busy`](Self::busy) drains the rest.
+    pub fn input_ended(&mut self) {
         // Leaving is not an abort (TS: a root turn in flight when its client closes stdin runs to completion): the
         // session is released at once and a busy worker keeps its work running detached.
         if signals::received().is_some() {
@@ -275,18 +272,19 @@ impl RpcSession for Remote<'_> {
         self.bash.store(0, Ordering::SeqCst);
     }
 
-    fn close(&mut self) {
+    /// Release the session (delete `--no-session` files, stop the kernel).
+    pub fn close(&mut self) {
         self.ui_stop.store(true, Ordering::SeqCst);
         if let Some(link) = self.link.take() {
             link.close(self.parsed.no_session);
         }
     }
 
-    fn is_running(&self) -> bool {
+    pub fn is_running(&self) -> bool {
         self.running
     }
 
-    fn prompt(&mut self, message: String, images: Vec<Value>, _out: &Output) -> Result<(), String> {
+    pub fn prompt(&mut self, message: String, images: Vec<Value>) -> Result<(), String> {
         let reply = self.op(Op::Prompt {
             message,
             images,
@@ -302,7 +300,7 @@ impl RpcSession for Remote<'_> {
         Ok(())
     }
 
-    fn enqueue(&mut self, kind: QueueKind, message: String, images: Vec<Value>, _out: &Output) -> Result<(), String> {
+    pub fn enqueue(&mut self, kind: QueueKind, message: String, images: Vec<Value>) -> Result<(), String> {
         self.op(Op::Enqueue {
             kind,
             message,
@@ -312,29 +310,31 @@ impl RpcSession for Remote<'_> {
         .map(drop)
     }
 
-    fn abort(&mut self) {
+    pub fn abort(&mut self) {
         let _ = self.op(Op::Abort);
     }
 
-    fn clear_queue(&mut self, _out: &Output) -> Value {
+    /// Empty the queues; returns the texts that were queued.
+    pub fn clear_queue(&mut self) -> Value {
         self.read(Op::ClearQueue)
     }
 
     /// rpc-native.ts:256-261: create a session and switch to it, also during a run (that turn keeps running, detached).
-    fn new_session(&mut self) -> Result<(), String> {
+    pub fn new_session(&mut self) -> Result<(), String> {
         let created = self.link.as_mut().ok_or("The session is closed")?.create(json!({}))?;
         self.switch_to(&created)
     }
 
-    fn state(&self) -> Value {
+    pub fn state(&self) -> Value {
         self.read(Op::State)
     }
 
-    fn available_models(&self) -> Vec<Value> {
+    pub fn available_models(&self) -> Vec<Value> {
         self.read(Op::AvailableModels).as_array().cloned().unwrap_or_default()
     }
 
-    fn set_model(&mut self, provider: &str, model_id: &str) -> Result<Value, String> {
+    /// Select a model from the available ones; returns it.
+    pub fn set_model(&mut self, provider: &str, model_id: &str) -> Result<Value, String> {
         self.op(Op::SetModel {
             provider: provider.into(),
             model_id: model_id.into(),
@@ -342,11 +342,12 @@ impl RpcSession for Remote<'_> {
         .map(Option::unwrap_or_default)
     }
 
-    fn cycle_model(&mut self) -> Result<Option<Value>, String> {
+    /// The next available model, or `None` with fewer than two.
+    pub fn cycle_model(&mut self) -> Result<Option<Value>, String> {
         self.op(Op::CycleModel).map(|v| v.filter(|v| !v.is_null()))
     }
 
-    fn thinking_levels(&self) -> Vec<String> {
+    pub fn thinking_levels(&self) -> Vec<String> {
         self.read(Op::ThinkingLevels)
             .as_array()
             .into_iter()
@@ -355,16 +356,16 @@ impl RpcSession for Remote<'_> {
             .collect()
     }
 
-    fn set_thinking_level(&mut self, level: &str, _out: &Output) -> Result<(), String> {
+    pub fn set_thinking_level(&mut self, level: &str) -> Result<(), String> {
         self.op(Op::SetThinking { level: level.into() }).map(drop)
     }
 
-    fn cycle_thinking_level(&mut self, _out: &Output) -> Result<Option<String>, String> {
+    pub fn cycle_thinking_level(&mut self) -> Result<Option<String>, String> {
         self.op(Op::CycleThinking)
             .map(|v| v.and_then(|v| v.as_str().map(str::to_string)))
     }
 
-    fn set_queue_mode(&mut self, kind: QueueKind, mode: &str) -> Result<(), String> {
+    pub fn set_queue_mode(&mut self, kind: QueueKind, mode: &str) -> Result<(), String> {
         self.op(Op::SetQueueMode {
             kind,
             mode: mode.into(),
@@ -372,7 +373,8 @@ impl RpcSession for Remote<'_> {
         .map(drop)
     }
 
-    fn compact(&mut self, custom_instructions: Option<&str>, reply: Reply) -> Result<(), String> {
+    /// Compact; `reply` answers once the compaction ends, so `abort` and `get_state` are served meanwhile.
+    pub fn compact(&mut self, custom_instructions: Option<&str>, reply: Reply) -> Result<(), String> {
         let connection = self.link()?.connection();
         let session = connection.session_target().map_err(|e| e.to_string())?;
         let op = Op::Compact {
@@ -394,19 +396,19 @@ impl RpcSession for Remote<'_> {
         Ok(())
     }
 
-    fn set_auto_compaction(&mut self, enabled: bool) {
+    pub fn set_auto_compaction(&mut self, enabled: bool) {
         let _ = self.op(Op::SetAutoCompaction(enabled));
     }
 
-    fn set_auto_retry(&mut self, enabled: bool) {
+    pub fn set_auto_retry(&mut self, enabled: bool) {
         let _ = self.op(Op::SetAutoRetry(enabled));
     }
 
-    fn abort_retry(&mut self) {
+    pub fn abort_retry(&mut self) {
         let _ = self.op(Op::AbortRetry);
     }
 
-    fn bash(&mut self, command: String, exclude_from_context: bool, reply: Reply) -> Result<(), String> {
+    pub fn bash(&mut self, command: String, exclude_from_context: bool, reply: Reply) -> Result<(), String> {
         let connection = self.link()?.connection();
         let session = connection.session_target().map_err(|e| e.to_string())?;
         // The command's id tags its streamed output (`bash_execution_update`), as rpc-mode.ts passes it.
@@ -429,16 +431,16 @@ impl RpcSession for Remote<'_> {
         Ok(())
     }
 
-    fn abort_bash(&mut self) {
+    pub fn abort_bash(&mut self) {
         let _ = self.op(Op::AbortBash);
     }
 
-    fn session_stats(&self) -> Value {
+    pub fn session_stats(&self) -> Value {
         self.read(Op::Stats)
     }
 
     /// rpc-native.ts `switch_session`: also during a run, which keeps running detached.
-    fn switch_session(&mut self, selector: &str) -> Result<(), String> {
+    pub fn switch_session(&mut self, selector: &str) -> Result<(), String> {
         let id = selector_id(self.env, selector)?;
         if id == self.link()?.session_id() {
             return Ok(());
@@ -449,7 +451,8 @@ impl RpcSession for Remote<'_> {
         self.switch_to(&id)
     }
 
-    fn fork(&mut self, entry_id: &str) -> Result<String, String> {
+    /// Fork before a user message; returns its text.
+    pub fn fork(&mut self, entry_id: &str) -> Result<String, String> {
         let text = self
             .op(Op::ForkSource {
                 entry_id: entry_id.into(),
@@ -461,16 +464,17 @@ impl RpcSession for Remote<'_> {
         Ok(text)
     }
 
-    fn clone_session(&mut self) -> Result<(), String> {
+    pub fn clone_session(&mut self) -> Result<(), String> {
         self.op(Op::CloneSource)?;
         self.fork_to(json!({"position": "at"}))
     }
 
-    fn fork_messages(&self) -> Vec<Value> {
+    pub fn fork_messages(&self) -> Vec<Value> {
         self.read(Op::ForkMessages).as_array().cloned().unwrap_or_default()
     }
 
-    fn entries(&self, since: Option<&str>) -> Result<(Vec<Value>, Value), String> {
+    /// Entries after `since` (all without it), and the leaf id.
+    pub fn entries(&self, since: Option<&str>) -> Result<(Vec<Value>, Value), String> {
         let data = self
             .op(Op::Entries {
                 since: since.map(str::to_string),
@@ -482,31 +486,32 @@ impl RpcSession for Remote<'_> {
         ))
     }
 
-    fn tree(&self) -> (Value, Value) {
+    pub fn tree(&self) -> (Value, Value) {
         let data = self.read(Op::Tree);
         (data["tree"].clone(), data["leafId"].clone())
     }
 
-    fn last_assistant_text(&self) -> Option<String> {
+    pub fn last_assistant_text(&self) -> Option<String> {
         self.read(Op::LastAssistantText).as_str().map(str::to_string)
     }
 
-    fn set_session_name(&mut self, name: &str) -> Result<(), String> {
+    pub fn set_session_name(&mut self, name: &str) -> Result<(), String> {
         self.op(Op::SetName { name: name.into() }).map(drop)
     }
 
-    fn messages(&self) -> Vec<Value> {
+    pub fn messages(&self) -> Vec<Value> {
         self.read(Op::Messages).as_array().cloned().unwrap_or_default()
     }
 
-    fn commands(&self) -> Result<Vec<Value>, String> {
+    pub fn commands(&self) -> Result<Vec<Value>, String> {
         Ok(self
             .op(Op::Commands)?
             .and_then(|v| v.as_array().cloned())
             .unwrap_or_default())
     }
 
-    fn inspect(&mut self, request: &str, payload: Value) -> Result<Value, String> {
+    /// A read-only inspection request (`agents.status`, `rlm.frames`, ...) through the session's inspector.
+    pub fn inspect(&mut self, request: &str, payload: Value) -> Result<Value, String> {
         Ok(self
             .op(Op::Inspect {
                 request: request.into(),
@@ -515,13 +520,15 @@ impl RpcSession for Remote<'_> {
             .unwrap_or(Value::Null))
     }
 
-    fn extension_ui_response(&mut self, id: &str, answer: Value) {
+    /// Pi's `extension_ui_response`: the answer to a `/mcp` dialog of the worker.
+    pub fn extension_ui_response(&mut self, id: &str, answer: Value) {
         if let Some(link) = &self.link {
             let _ = link.call(protocol::names::EXTENSION_UI, "respond", json!([id, answer]));
         }
     }
 
-    fn export_html(&mut self, output_path: Option<&str>) -> Result<String, String> {
+    /// Write the session's active branch as an HTML page; returns the path written.
+    pub fn export_html(&mut self, output_path: Option<&str>) -> Result<String, String> {
         // The session's active branch as the worker holds it (`snapshot().transcript`), under its header's creation
         // time; the page's working directory is this process's, as in rpc-native.ts.
         let described = self.op(Op::Describe)?.unwrap_or_default();
@@ -537,7 +544,9 @@ impl RpcSession for Remote<'_> {
         crate::export_html::write_native_session_html(&data, &id, output_path, self.env)
     }
 
-    fn persona(&mut self, command: &str, args: &str) -> Result<Value, String> {
+    /// `/persona on|off|auto`, `/keepgoing on|off` (`command`: `persona` or `keepgoing`; empty `args` reports): the
+    /// session's persona toggle and keep-going mode (resources::keep_going); `{text, persona, effective, keepGoing}`.
+    pub fn persona(&mut self, command: &str, args: &str) -> Result<Value, String> {
         let args = args.to_string();
         let op = if command == "keepgoing" {
             Op::KeepGoing { args }
@@ -547,7 +556,8 @@ impl RpcSession for Remote<'_> {
         Ok(self.op(op)?.unwrap_or_default())
     }
 
-    fn goal(&mut self, args: &str) -> Result<String, String> {
+    /// `/goal <args>`: the session goal's command (set, pause, resume, clear, check); returns its reply text.
+    pub fn goal(&mut self, args: &str) -> Result<String, String> {
         let reply = self.op(Op::Goal { args: args.to_string() })?;
         Ok(reply
             .as_ref()

@@ -27,9 +27,9 @@ pub struct Request {
 
 /// `getRadiusGatewayUrl()`.
 pub fn gateway_url(env: &Env) -> String {
-    let gateway = (env.var)(server::radius_relay::ENV_RADIUS_GATEWAY)
-        .unwrap_or_else(|| ai::model_registry::DEFAULT_RADIUS_GATEWAY.into());
-    ai::oauth_radius::normalize_radius_gateway_url(&gateway)
+    let gateway =
+        (env.var)(config::radius::ENV_RADIUS_GATEWAY).unwrap_or_else(|| config::radius::DEFAULT_RADIUS_GATEWAY.into());
+    config::radius::normalize_radius_gateway_url(&gateway)
 }
 
 /// `new URL(gateway).host`: the host, with its port when it is not the scheme's default.
@@ -54,7 +54,7 @@ fn host() -> telemetry::bug_report::Host {
     };
     let (platform, arch) = (jsrt::process::platform(), jsrt::process::arch());
     telemetry::bug_report::Host {
-        version: crate::version(),
+        version: config::version().to_string(),
         runtime: "rust".into(),
         platform: platform.into(),
         arch: arch.into(),

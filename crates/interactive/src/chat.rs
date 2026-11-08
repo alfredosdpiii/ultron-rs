@@ -4,6 +4,7 @@
 
 use std::rc::Rc;
 
+use protocol::custom_types;
 use serde_json::Value;
 use theme::{Fg, Theme};
 use tui::Loader;
@@ -13,13 +14,11 @@ use crate::components::{
     AssistantBlock, AssistantMessage, AssistantView, BashExecution, InlineImage, InlineImages, ToolContent,
     ToolExecution, ToolResultView, UserMessage,
 };
-use crate::lane::{QueueKind, Queued};
+use crate::lane::Queued;
 use crate::rlm_cell::{Highlighter, rlm_renderers};
+use protocol::watch::QueueKind;
 
 /// Text of a user message's text blocks.
-/// The custom message type of the persona's auto-nudge (`resources::persona::NUDGE_CUSTOM_TYPE` in the engine).
-pub const NUDGE_CUSTOM_TYPE: &str = "ultron.nudge";
-
 /// What the chat shows for a nudge: `auto-continue (n/max)`.
 pub fn nudge_line(message: &Value) -> String {
     let details = &message["details"];
@@ -40,9 +39,6 @@ pub fn nudge_line(message: &Value) -> String {
         details["max"].as_u64().unwrap_or(5)
     )
 }
-
-/// The custom message type of memories recalled for a user message (`session_core::auto_memory` in the engine).
-pub const MEMORY_CUSTOM_TYPE: &str = "ultron.memory";
 
 /// What the chat shows for recalled memories: `memory: 3 recalled (project 2, global 1)`, not their text; with the
 /// project's brief, `memory: project brief, 3 recalled (...)` (or `memory: project brief` alone); `, 1 stale` when
@@ -69,9 +65,6 @@ pub fn memory_line(message: &Value) -> String {
         _ => line,
     }
 }
-
-/// The custom message type of a fired schedule's prompt (`kernel_apis::prompt_schedule::CUSTOM_TYPE` in the engine).
-pub const SCHEDULE_CUSTOM_TYPE: &str = "ultron.schedule";
 
 /// What the chat shows for a fired schedule: `scheduled: <name> (run n)`.
 pub fn schedule_line(message: &Value) -> String {
@@ -470,19 +463,19 @@ impl ChatView {
                 self.push(Kind::Bash(Box::new(bash)));
             }
             // The persona's auto-nudge (resources::persona in the engine): one line, not the nudge's text.
-            Some("custom") if message["customType"] == NUDGE_CUSTOM_TYPE => {
+            Some("custom") if message["customType"] == custom_types::NUDGE => {
                 let line = nudge_line(message);
                 let t = Rc::clone(&self.style.theme);
                 self.append_notice_text(&t.fg(Fg::Muted, &line));
             }
             // A fired schedule (kernel_apis::prompt_schedule in the engine): one line, not its prompt.
-            Some("custom") if message["customType"] == SCHEDULE_CUSTOM_TYPE => {
+            Some("custom") if message["customType"] == custom_types::SCHEDULE => {
                 let line = schedule_line(message);
                 let t = Rc::clone(&self.style.theme);
                 self.append_notice_text(&t.fg(Fg::Muted, &line));
             }
             // Recalled memories (session_core::auto_memory in the engine): one line, not their text.
-            Some("custom") if message["customType"] == MEMORY_CUSTOM_TYPE => {
+            Some("custom") if message["customType"] == custom_types::RECALLED_MEMORY => {
                 let line = memory_line(message);
                 let t = Rc::clone(&self.style.theme);
                 self.append_notice_text(&t.fg(Fg::Muted, &line));

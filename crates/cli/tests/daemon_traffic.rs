@@ -8,8 +8,7 @@
 //! catalog) and the `ultron.transcript` updates (the format-4 lane runtime's ops, ids and `seq` numbers); for those the
 //! decoded lane-watch event sequence and the final transcript are compared instead.
 
-#[path = "daemon_common/mod.rs"]
-mod common;
+use crate::daemon_common as common;
 
 use chord_delta::Decoder;
 use common::{HANG_GUARD, Home, assert_no_processes, processes_mentioning, provider, start_server, text_reply};

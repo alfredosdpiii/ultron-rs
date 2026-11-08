@@ -4,8 +4,8 @@
 //! `crates/services/tests/local_fixture.rs`), and memory through `kernel_apis::MemoryService` over the real
 //! Hindsight adapter with the fake Hindsight as its transport (`memory_support`), one shared server as in production.
 
-mod memory_support;
-mod services_support;
+use crate::memory_support;
+use crate::services_support;
 
 use kernel_apis::MemoryService;
 use memory_support::{FakeHindsight, durable_store, keep_gate, p, sha256, sig};
@@ -118,7 +118,7 @@ fn acceptance_a33_every_attempt_including_crashed_failed_and_incomplete_ones_is_
 struct Variant {
     name: &'static str,
     tags: Value,
-    journal: std::sync::Arc<kernel_apis::MemoryDocumentStore>,
+    journal: std::sync::Arc<kernel::store::MemoryDocumentStore>,
     memory: MemoryService,
     refinements: LocalServices,
 }

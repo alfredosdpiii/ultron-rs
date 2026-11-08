@@ -4,7 +4,7 @@
 //! session-value stores (`ultron.local` keyed documents scanned by prefix and namespace, whole documents replaced,
 //! both restored when the session is reopened).
 
-use kernel_apis::DocumentStore;
+use kernel::store::DocumentStore;
 use kernel_apis::artifacts::{KeyedDocuments, MemoryKeyedDocuments};
 use serde_json::{Value, json};
 use services::local::{LocalOptions, LocalServices};

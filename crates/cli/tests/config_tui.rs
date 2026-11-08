@@ -2,7 +2,7 @@
 //! from the TypeScript resource selector by `fixtures/config_tui.mjs`, and compares every screen and the settings
 //! files the run leaves (local resources only: Pi packages are not supported by ultron-rs).
 
-mod tui_harness;
+use crate::tui_harness;
 
 use serde_json::Value;
 use tui_harness::{TempDir, Tui};

@@ -13,7 +13,7 @@
 //!
 //! Sessions run against a scripted Anthropic server on loopback in a private home; nothing reads the real environment.
 
-mod p_session_support;
+use crate::p_session_support;
 
 use agent::StreamFn;
 use ai::http::{BoxFuture, HeaderMap};
@@ -504,7 +504,7 @@ impl StreamFn for Flaky {
     }
 }
 
-fn retried(fail: usize, error: &'static str, policy: harness::chat::RetryPolicy, aborted: bool) -> (usize, bool) {
+fn retried(fail: usize, error: &'static str, policy: ai::retry::RetryPolicy, aborted: bool) -> (usize, bool) {
     let stream = Retrying {
         inner: Flaky {
             calls: Mutex::new(0),
@@ -534,7 +534,7 @@ fn retried(fail: usize, error: &'static str, policy: harness::chat::RetryPolicy,
 /// times; a permanent one, a spent policy, retries off or an aborted request are not.
 #[test]
 fn session_core_request_keys_side_lanes_retry_transient_errors() {
-    let policy = harness::chat::RetryPolicy {
+    let policy = ai::retry::RetryPolicy {
         enabled: true,
         max_retries: 3,
         base_delay_ms: 1,
@@ -543,7 +543,7 @@ fn session_core_request_keys_side_lanes_retry_transient_errors() {
     assert_eq!(retried(2, "Overloaded", policy, false), (3, true));
     assert_eq!(retried(5, "Overloaded", policy, false), (4, false));
     assert_eq!(retried(1, "Bad request", policy, false), (1, false));
-    let off = harness::chat::RetryPolicy {
+    let off = ai::retry::RetryPolicy {
         enabled: false,
         ..policy
     };
@@ -710,7 +710,7 @@ fn session_core_request_keys_login_applies_to_the_current_model() {
     std::fs::write(agent.join("auth.json"), spec["auth"].to_string()).unwrap();
     let keys = Keys::session(None, &model.provider, &env);
     let transport = Recorder::default();
-    let provider = Provider::with_router(ai::claude_subscription::fallback::global(), Arc::new(transport.clone()));
+    let provider = Provider::new().with_transport(Arc::new(transport.clone()));
     let mut options = SimpleStreamOptions::default();
     options.base.api_key = keys.request_key(&model.provider);
     let context = TranscriptContext {

@@ -2,7 +2,7 @@
 //! `maskCellOutput(summary)`), with the session's masking: `ULTRON_MASK_SECRETS=off` leaves them, and values the
 //! session registered as secret (MCP env values, headers, tokens) are masked whatever they look like.
 
-mod p_session_support;
+use crate::p_session_support;
 
 use p_session_support::{HANG, Setup, actor, text, tool, tool_results};
 use serde_json::Value;

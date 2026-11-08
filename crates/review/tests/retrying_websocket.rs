@@ -43,7 +43,7 @@ fn review_retrying_transport_passes_the_websocket_through() {
         });
         let retrying = review::engine::RetryingTransport {
             inner: inner.clone(),
-            policy: review::engine::RetryPolicy::default(),
+            policy: ai::retry::RetryPolicy::default(),
         };
         assert_eq!(ai::Transport::websocket_available(&retrying), available);
         let runtime = tokio::runtime::Builder::new_current_thread().build().unwrap();

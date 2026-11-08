@@ -4,7 +4,7 @@
 //! OpenAI-compatible provider whose root script derives the procedure over several cells and saves it as a code
 //! skill, or, once the rlm tool description lists the skill, imports it and answers in one cell.
 
-mod common;
+use crate::common;
 
 use common::{Install, Provider, Reply, Request, rpc_tool_results};
 use serde_json::Value;

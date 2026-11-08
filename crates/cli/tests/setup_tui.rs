@@ -5,7 +5,7 @@
 //! files left and the requests the stand-in saw are compared. The Rust build has no Node.js, so the recorded
 //! environment step's `Node.js` row is left out of the expected screens (see decisions.tsv).
 
-mod tui_harness;
+use crate::tui_harness;
 
 use serde_json::Value;
 use std::io::{BufRead, BufReader, Read, Write};

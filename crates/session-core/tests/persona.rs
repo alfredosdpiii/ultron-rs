@@ -3,10 +3,11 @@
 //! use them on its own with the Rust guide only; and the session actor's auto-nudge continues a turn that announced
 //! its next step after an rlm call (faux Anthropic server on loopback, private temp profile).
 
-mod p_session_support;
+use crate::p_session_support;
 
 use p_session_support::{HANG, Setup, actor, in_order, text, tool, user_texts};
-use resources::persona::{NUDGE_CUSTOM_TYPE, NUDGE_TEXT};
+use protocol::custom_types::NUDGE;
+use resources::persona::NUDGE_TEXT;
 use serde_json::{Value, json};
 use session_core::RunEnv;
 use session_core::compose::{Runtime, Services};
@@ -161,7 +162,7 @@ fn nudges(a: &p_session_support::Actor) -> Vec<Value> {
     a.events("message_end")
         .into_iter()
         .map(|e| e["message"].clone())
-        .filter(|m| m["customType"] == NUDGE_CUSTOM_TYPE)
+        .filter(|m| m["customType"] == NUDGE)
         .collect()
 }
 
@@ -204,13 +205,13 @@ fn session_core_persona_nudge_continues_a_turn_that_announced_its_next_step() {
         .collect();
     assert_eq!(kept.len(), 1, "{messages}");
     assert_eq!(kept[0]["role"], "custom");
-    assert_eq!(kept[0]["customType"], NUDGE_CUSTOM_TYPE);
+    assert_eq!(kept[0]["customType"], NUDGE);
     assert_eq!(kept[0]["details"]["nudge"], 1);
     // It is journaled: resume shows it.
     let journaled = a
         .writes()
         .iter()
-        .any(|w| w.to_string().contains(NUDGE_CUSTOM_TYPE) && w.to_string().contains("take that next step now"));
+        .any(|w| w.to_string().contains(NUDGE) && w.to_string().contains("take that next step now"));
     assert!(journaled);
 }
 
@@ -291,7 +292,7 @@ fn session_core_persona_nudge_yields_to_a_queued_user_message() {
     .unwrap();
     started_rx.recv_timeout(HANG).unwrap();
     a.call(Op::Enqueue {
-        kind: session_core::core::QueueKind::NextRun,
+        kind: protocol::watch::QueueKind::NextRun,
         message: "then the docs".into(),
         images: Vec::new(),
         entry_id: None,

@@ -3,7 +3,7 @@
 //! N model turns, M tokens]`) under a turn cap, an explicit token cap, or both, from the environment or the
 //! `rootBudget` settings; without a cap that shows, the result is unchanged.
 
-mod p_session_support;
+use crate::p_session_support;
 
 use p_session_support::{Setup, actor, in_order, text, tool, tool_results};
 use serde_json::{Value, json};

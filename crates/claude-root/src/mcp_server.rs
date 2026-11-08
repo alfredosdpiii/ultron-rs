@@ -11,7 +11,7 @@
 //! The Ultron session of a Claude Code session is remembered by Claude Code's session id, so `claude --resume`
 //! reopens the same session.
 
-use crate::claude_cli::{DEFAULT_CLAUDE_MODEL, resolve_claude_binary};
+use crate::claude_cli::resolve_claude_binary;
 use crate::control::{
     ControlClient, ControlHandler, ServerRecord, control_dir, op, socket_path_for, start_control_server,
 };
@@ -22,12 +22,14 @@ use crate::mcp_protocol::{McpHandlers, McpPrompt, McpResource, serve};
 use crate::settings::ChildrenMode;
 use crate::{Ctx, UsageError};
 use ai::AbortSignal;
+use config::providers::CLAUDE_CODE_DEFAULT_MODEL;
 use serde_json::{Map, Value, json};
 use session_core::RunEnv;
 use session_core::compose::{Runtime, Services, SubagentHost};
-use session_core::lane::{Lane, MAIN};
+use session_core::lane::Lane;
 use session_journal::SessionRepo;
 use session_journal::repo::Metadata;
+use session_journal::run::MAIN_LANE;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Condvar, Mutex, PoisonError};
 use std::time::{Duration, Instant};
@@ -40,7 +42,7 @@ const WAIT_EVENTS_POLL: Duration = Duration::from_millis(250);
 const WAIT_EVENTS_GRACE: Duration = Duration::from_secs(2);
 
 pub fn default_frame_model() -> String {
-    crate::claude_code_ref(DEFAULT_CLAUDE_MODEL)
+    crate::claude_code_ref(CLAUDE_CODE_DEFAULT_MODEL)
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -57,7 +59,7 @@ pub struct McpServerArgs {
     pub child_model: Option<String>,
     pub ultron_child_model: Option<String>,
     /// `--root-model`: the Claude Code model the root runs on, as the launcher passed it to `claude --model` (only
-    /// when it is not the default, [`crate::claude_cli::DEFAULT_CLAUDE_MODEL`]).
+    /// when it is not the default, [`config::providers::CLAUDE_CODE_DEFAULT_MODEL`]).
     pub root_model: Option<String>,
     pub socket: Option<String>,
     pub instructions: bool,
@@ -141,18 +143,6 @@ pub fn split_model(model: &str) -> Option<(String, String)> {
     (slash > 0 && slash < model.len() - 1).then(|| (model[..slash].to_string(), model[slash + 1..].to_string()))
 }
 
-/// Inspections the viewer may make (none of them changes anything).
-pub const READ_ONLY_INSPECTIONS: [&str; 8] = [
-    "agents.status",
-    "instances.list",
-    "rlm.pool",
-    "ctx.state",
-    "rlm.frames",
-    "progress.assess",
-    "async.pending",
-    "usage.report",
-];
-
 /// The models and modes a server runs with (env, settings and flags resolved).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Resolved {
@@ -234,7 +224,7 @@ pub fn resolve(args: &McpServerArgs, var: &dyn Fn(&str) -> Option<String>, cwd: 
         .or_else(|| trimmed(config::env::CLAUDE_CHILD_MODEL_ENV))
         .or(settings.child_model.clone());
     let child_model_explicit = named_child_model.is_some();
-    let child_model = named_child_model.unwrap_or_else(|| DEFAULT_CLAUDE_MODEL.into());
+    let child_model = named_child_model.unwrap_or_else(|| CLAUDE_CODE_DEFAULT_MODEL.into());
     let ultron_child_model = args.ultron_child_model.clone().or(settings.ultron_child_model.clone());
     Resolved {
         frame_model,
@@ -252,13 +242,12 @@ pub fn resolve(args: &McpServerArgs, var: &dyn Fn(&str) -> Option<String>, cwd: 
 
 /// Where the Ultron session of each Claude Code session is remembered.
 fn session_map_path(agent_dir: &Path, claude_session_id: &str) -> PathBuf {
-    let dir = agent_dir.join("claude-code").join("sessions");
-    {
+    let path = config::paths::AgentPaths::new(agent_dir).claude_session_map(claude_session_id);
+    if let Some(dir) = path.parent() {
         use std::os::unix::fs::DirBuilderExt;
-        let _ = std::fs::DirBuilder::new().recursive(true).mode(0o700).create(&dir);
+        let _ = std::fs::DirBuilder::new().recursive(true).mode(0o700).create(dir);
     }
-    let safe: String = crate::control::file_name_chars(claude_session_id).collect();
-    dir.join(format!("{safe}.json"))
+    path
 }
 
 fn remembered_session(agent_dir: &Path, claude_session_id: &str) -> Option<Value> {
@@ -295,31 +284,17 @@ fn metadata_from_json(value: &Value) -> Option<Metadata> {
 }
 
 /// A held session lock: `proper-lockfile`'s `<file>.lock` directory, its mtime refreshed every second.
-struct SessionLock {
-    _guard: config::lock::LockGuard,
-    stop: Arc<std::sync::atomic::AtomicBool>,
-}
-
-impl Drop for SessionLock {
-    fn drop(&mut self) {
-        self.stop.store(true, std::sync::atomic::Ordering::SeqCst);
-    }
-}
-
-fn lock_session(path: &Path) -> Option<SessionLock> {
+fn lock_session(path: &Path) -> Option<config::lock::LockGuard> {
     let lock_path = config::lock::lock_path_for(&std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf()));
-    let guard = config::lock::acquire(&lock_path, Duration::from_secs(2), 41).ok()?;
-    let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
-    let flag = stop.clone();
-    std::thread::spawn(move || {
-        while !flag.load(std::sync::atomic::Ordering::SeqCst) {
-            std::thread::sleep(Duration::from_secs(1));
-            if let Ok(dir) = std::fs::File::open(&lock_path) {
-                let _ = dir.set_modified(std::time::SystemTime::now());
-            }
-        }
-    });
-    Some(SessionLock { _guard: guard, stop })
+    let options = config::lock::Options {
+        stale: Duration::from_secs(2),
+        retry: config::lock::Retry {
+            until: config::lock::Until::Tries(41),
+            ..config::lock::SYNC.retry
+        },
+        update: Some(Duration::from_secs(1)),
+    };
+    config::lock::acquire(&lock_path, options).ok()
 }
 
 /// The runtime a server's cells run on, once opened.
@@ -340,7 +315,7 @@ pub struct Opened {
     timer: Option<Arc<crate::schedules::ScheduleTimer>>,
     pub schedules: Option<Arc<kernel_apis::prompt_schedule::ScheduleModule>>,
     /// Released when the runtime closes, so the next server for the same Claude Code session reopens it.
-    lock: Mutex<Option<SessionLock>>,
+    lock: Mutex<Option<config::lock::LockGuard>>,
 }
 
 impl Opened {
@@ -379,9 +354,9 @@ fn open_runtime(
     let cwd = env.cwd.display().to_string();
     let session_root = (env.var)(config::paths::ENV_SESSION_DIR)
         .map(PathBuf::from)
-        .unwrap_or_else(|| agent_dir.join("experimental").join("sessions"));
+        .unwrap_or_else(|| config::paths::AgentPaths::new(&agent_dir).experimental_sessions_dir());
     let repo = SessionRepo::new(&session_root, session_journal::SystemClock::shared());
-    let mut opened: Option<(Metadata, Option<SessionLock>, session_journal::Session)> = None;
+    let mut opened: Option<(Metadata, Option<config::lock::LockGuard>, session_journal::Session)> = None;
     if !args.child
         && let Some(id) = claude_session_id
         && let Some(metadata) = remembered_session(&agent_dir, id).as_ref().and_then(metadata_from_json)
@@ -446,8 +421,13 @@ fn open_runtime(
     }
     // Loki's policy is in the system prompt `ultron claude` gave Claude Code when it was there before this server set
     // Loki up (the launcher read it); a policy this server installs reaches Claude Code with the session context.
-    let loki_in_prompt =
-        !args.instructions && crate::guide::loki_note_at(runtime.config.loki_root.as_deref()).is_some();
+    let loki_in_prompt = !args.instructions
+        && runtime
+            .config
+            .loki_root
+            .as_deref()
+            .and_then(loki::session_note)
+            .is_some();
     // Loki's setup (the minimal install where allowed, its commit in the background) before any cell runs.
     let loki_notice = session_core::loki_notice::LokiNotice::start(&runtime.config);
     let settings_child = runtime.config.settings["rlm"]["childModel"]
@@ -524,7 +504,7 @@ fn open_runtime(
     let loki_context = if loki_in_prompt {
         None
     } else {
-        crate::guide::loki_note_at(runtime.config.loki_root.as_deref())
+        runtime.config.loki_root.as_deref().and_then(loki::session_note)
     };
     // The runtime counters (`/usage`, `ultron usage`) are the session value `ultron.module/stats` of a session whose
     // root is Claude Code (counting continues from a resumed one).
@@ -569,17 +549,13 @@ fn open_runtime(
     }
     // What the session actor wires for its own root lane: `ctx.*`, the budget line, shell jobs' roots, the completion
     // events of root work (into the root's inbox) and each turn's working-tree checkpoint.
-    let checkpoints = crate::checkpoints::TurnCheckpoints {
-        session: session.clone(),
-        cwd: env.cwd.clone(),
-        settings: runtime.config.settings["checkpoints"].clone(),
-        sandboxed: lane
-            .stack
-            .host
-            .launcher()
-            .is_some_and(|launcher| launcher.mode != sandbox::settings::Mode::Off),
-        jj: crate::checkpoints::jj_on((env.var)("PATH").as_deref()),
-    };
+    let checkpoints = session_core::turn_checkpoints::TurnCheckpoints::of_lane(
+        session.clone(),
+        env.cwd.clone(),
+        &runtime.config.settings,
+        &lane,
+        (env.var)("PATH").as_deref(),
+    );
     let host = Arc::new(crate::external_lane::LaneRootHost::new(lane.stack.clone()).with_checkpoints(checkpoints));
     // Each subagent's work is charged to the turn that spawned it (crate::child_usage).
     let spawn_host = Arc::downgrade(&host);
@@ -587,12 +563,12 @@ fn open_runtime(
         let turn_root = spawn_host
             .upgrade()
             .and_then(|host| host.current_root())
-            .filter(|_| lane == MAIN);
+            .filter(|_| lane == MAIN_LANE);
         roots.spawned(task, parent, turn_root);
     }));
     crate::external_lane::wire(&lane, session.clone(), &host, sink.clone());
-    let root =
-        ExternalRoot::over_lane(lane.clone(), loki_context, sink.clone(), host, &*env.var).with_loki_setup(loki_notice);
+    let root = ExternalRoot::over_lane(lane.clone(), loki_context, sink.clone(), host, &runtime.config)
+        .with_loki_setup(loki_notice);
     // The launcher's wait-events hook wakes the root (`--wake`).
     let root = if args.wake { root.waking() } else { root };
     Ok(Opened {
@@ -811,7 +787,7 @@ impl Server {
                     None | Some(Value::Null) => String::new(),
                     other => jsrt::value::string(other),
                 };
-                if !READ_ONLY_INSPECTIONS.contains(&inspect.as_str()) {
+                if !session_core::inspect::VIEWER_INSPECTIONS.contains(&inspect.as_str()) {
                     return Err(format!("not a read-only inspection: {inspect}"));
                 }
                 let payload = match request.get("payload") {
@@ -831,7 +807,7 @@ impl Server {
                         usage::session_report(&opened.session_path, &self.env)
                     }
                     _ => stack
-                        .cell_handler(MAIN, None)
+                        .cell_handler(MAIN_LANE, None)
                         .handle(&inspect, payload, &kernel::Signal::new()),
                 }
             }
@@ -1026,15 +1002,16 @@ impl Server {
         opened: &Opened,
         change: impl FnOnce(&mut resources::keep_going::SessionPersona, i64, resources::keep_going::Limits) -> T,
     ) -> T {
-        use resources::keep_going::{STATE_KEY, STATE_NAMESPACE, SessionPersona};
+        use resources::keep_going::{STATE_KEY, SessionPersona};
+        use session_journal::ns::MODULE;
         let mut session = session_core::durable_store::lock(&opened.session);
-        let mut state = SessionPersona::from_json(session.value(STATE_NAMESPACE, STATE_KEY));
+        let mut state = SessionPersona::from_json(session.value(MODULE, STATE_KEY));
         let before = state.clone();
         let limits = resources::keep_going::Limits::from_env(&*self.env.var);
         let out = change(&mut state, jsrt::date::now_ms(), limits);
         if state != before {
             // A state that cannot be written is kept for this hook only; the next change writes it again.
-            let _ = session.commit(&[session_journal::Write::set(STATE_NAMESPACE, STATE_KEY, state.to_json())]);
+            let _ = session.commit(&[session_journal::Write::set(MODULE, STATE_KEY, state.to_json())]);
         }
         out
     }
@@ -1042,10 +1019,10 @@ impl Server {
     /// When the session's toggle differs from the persona the launch prompt has (the settings'), the model is told
     /// once per change: the persona's section when it is on, that the section is off when it is off.
     fn persona_context(&self, opened: &Opened) -> Option<String> {
-        use resources::keep_going::{STATE_KEY, STATE_NAMESPACE, SessionPersona};
-        let state = SessionPersona::from_json(
-            session_core::durable_store::lock(&opened.session).value(STATE_NAMESPACE, STATE_KEY),
-        );
+        use resources::keep_going::{STATE_KEY, SessionPersona};
+        use session_journal::ns::MODULE;
+        let state =
+            SessionPersona::from_json(session_core::durable_store::lock(&opened.session).value(MODULE, STATE_KEY));
         let launched = self.persona_on();
         let wanted = state.effective(launched);
         let mut told = self.persona_told.lock().unwrap_or_else(PoisonError::into_inner);
@@ -1169,7 +1146,7 @@ impl McpHandlers for Handlers {
         "ultron".into()
     }
     fn version(&self) -> String {
-        crate::cli::version()
+        config::version().into()
     }
     fn instructions(&self) -> Option<String> {
         self.0
@@ -1178,16 +1155,13 @@ impl McpHandlers for Handlers {
             .then(|| claude_runtime_guide_for(Some(&self.0.apis), self.0.hints, false))
     }
     fn tools(&self) -> Vec<Value> {
+        let mut input_schema = session_core::lane::rlm_tool().parameters;
+        input_schema["additionalProperties"] = json!(false);
         vec![json!({
             "name": "rlm",
             "title": "Ultron REPL",
             "description": self.0.tool_description(),
-            "inputSchema": {
-                "type": "object",
-                "properties": {"code": {"type": "string", "description": "Python code for persistent RLM computation, typed agents, and data processing"}},
-                "required": ["code"],
-                "additionalProperties": false,
-            },
+            "inputSchema": input_schema,
         })]
     }
     fn call_tool(
@@ -1485,7 +1459,7 @@ fn claude_subagents(
             Arc::new(move |run: delegation::host::ChildRun| {
                 let cwd = run.cwd.clone().unwrap_or_else(|| server.env.cwd.display().to_string());
                 let resources = crate::guide::PromptResources {
-                    loki: crate::guide::loki_note_at(loki_root.as_deref()),
+                    loki: loki_root.as_deref().and_then(loki::session_note),
                     ..resources.clone()
                 };
                 let system_prompt = claude_system_prompt(

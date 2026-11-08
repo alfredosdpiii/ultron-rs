@@ -46,6 +46,6 @@ pub fn retry_hint_rows(
     let key = keys.get_keys("app.retry").into_iter().next()?;
     Some(vec![
         String::new(),
-        format!(" {}", key_hint(theme, &format_key_text(&key, false, false), "to retry")),
+        format!(" {}", key_hint(theme, &format_key_text(&key, false), "to retry")),
     ])
 }

@@ -52,10 +52,10 @@ pub fn check_for_new_version(env: &Env, current: &str) -> Option<String> {
 pub fn startup_changelog(env: &Env) -> Option<StartupNotice> {
     let mut settings = config::settings::SettingsManager::create(&env.cwd, &env.agent_dir(), false);
     let content = std::fs::read_to_string(env.package_file("CHANGELOG.md")).ok();
-    let version = crate::version();
+    let version = config::version();
     let last = settings.last_changelog_version();
     let shown =
-        interactive::startup_notices::changelog_for_display(content.as_deref(), last.as_deref(), &version, false);
+        interactive::startup_notices::changelog_for_display(content.as_deref(), last.as_deref(), version, false);
     // interactive-mode.ts also records the version on a first run (no `lastChangelogVersion`); the shipped TUI
     // (client-tui.ts) never writes the setting, and its recorded settings.json has no such key, so a first run here
     // records nothing either. Once a version is recorded, newer entries show and the version moves on.
@@ -70,7 +70,7 @@ pub fn startup_changelog(env: &Env) -> Option<StartupNotice> {
     shown.markdown.map(|markdown| StartupNotice::WhatsNew {
         markdown,
         collapse,
-        version,
+        version: version.to_string(),
     })
 }
 

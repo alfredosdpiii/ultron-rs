@@ -31,7 +31,7 @@ fn painted(view: &mut FullscreenViewport, lines: &[String], cols: usize, rows: u
         .map(|l| {
             let l = normalize_terminal_output(&l) + SEGMENT_RESET;
             if visible_width(&l) > cols {
-                slice_by_column(&l, 0, cols, true)
+                slice_by_column(&l, 0, cols)
             } else {
                 l
             }

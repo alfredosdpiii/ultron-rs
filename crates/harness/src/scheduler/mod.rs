@@ -49,7 +49,6 @@ use durable::{
 use indexmap::{IndexMap, IndexSet};
 use serde_json::Value;
 
-use crate::effect_gate::{Gate, GateControl, Refusal, create_gate};
 use cancel::{Waiters, lock, wait_any};
 use registry::phase_of;
 
@@ -385,9 +384,7 @@ pub(crate) struct Invocation {
     pub(crate) mode: Mode,
     /// Signal passed to handlers.
     pub(crate) controller: Cancel,
-    /// Admission of runtime operations; closed with the ended error when the invocation ends.
-    gate: Gate<(), HarnessError>,
-    control: GateControl<(), HarnessError>,
+    /// The invocation has ended: its runtime operations are refused.
     ended: AtomicBool,
     /// Cancelled once the invocation's thread has finished.
     pub(crate) done: Cancel,
@@ -400,10 +397,10 @@ impl Invocation {
 
     /// Fails once the invocation has ended.
     pub(crate) fn check(&self) -> Result<()> {
-        self.gate.admit(|| ()).map_err(|refusal| match refusal {
-            Refusal::Closed(error) => error,
-            Refusal::Aborting(_) => self.ended_error(),
-        })
+        if self.is_ended() {
+            return Err(self.ended_error());
+        }
+        Ok(())
     }
 
     pub(crate) fn is_ended(&self) -> bool {
@@ -1683,14 +1680,11 @@ impl Scheduler {
     }
 
     fn create_invocation(&self, record: &TaskRecord, mode: Mode) -> Arc<Invocation> {
-        let (gate, control) = create_gate();
         let invocation = Arc::new(Invocation {
             task_id: record.id,
             conversation_id: record.conversation_id,
             mode,
             controller: Cancel::new(),
-            gate,
-            control,
             ended: AtomicBool::new(false),
             done: Cancel::new(),
         });
@@ -2042,10 +2036,8 @@ impl Scheduler {
                 st.invocations.remove(&invocation.task_id);
             }
         }
-        let error = invocation.ended_error();
-        invocation.control.close(error.clone(), "invocation has ended");
-        // Pending waits bound to the invocation, such as a waitForTask(), reject with it.
-        invocation.controller.cancel(error);
+        // Pending waits bound to the invocation, such as a waitForTask(), reject with its ended error.
+        invocation.controller.cancel(invocation.ended_error());
     }
 
     pub(crate) fn live_record(&self, id: TaskId) -> Option<TaskRecord> {

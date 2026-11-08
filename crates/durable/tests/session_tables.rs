@@ -1,7 +1,7 @@
 //! Port of upstream `test/session-tables.test.ts` ("Session transaction tables"), run against every backend.
 //! Not ported: non-strict JSON rejection (a `serde_json::Value` is always strict JSON).
 
-mod session_support;
+use crate::session_support;
 
 use chord_delta::path;
 use durable::{

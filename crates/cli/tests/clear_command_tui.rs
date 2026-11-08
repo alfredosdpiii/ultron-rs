@@ -8,7 +8,7 @@
 //!   it, and the old session's file stays;
 //! - `ultron-s --session <id>` (not the home session): `/clear` leaves `home-session` alone.
 
-mod tui_harness;
+use crate::tui_harness;
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};

@@ -141,7 +141,7 @@ fn cli_local_themes_are_offered_and_applied_by_the_settings() {
     );
 }
 
-mod tui_harness;
+use crate::tui_harness;
 
 /// At startup the TUI registers the settings themes, so a `theme` setting naming one draws with it (every color of
 /// `zest` is #123456 here); a name nothing registers falls back to dark.

@@ -272,7 +272,7 @@ impl Transport for Recorder {
 /// Sends one request of `provider/id` through the lane provider with the key the session resolves for it.
 fn send(case: &Case, provider: &str, id: &str, transport: &Recorder) -> HttpRequest {
     let model = lane::catalog_model(provider, id, &case.env).unwrap();
-    let lane_provider = Provider::with_router(ai::claude_subscription::fallback::global(), Arc::new(transport.clone()));
+    let lane_provider = Provider::new().with_transport(Arc::new(transport.clone()));
     let context = TranscriptContext {
         messages: vec![Message::User(UserMessage {
             content: UserMessageContent::Text("go".into()),

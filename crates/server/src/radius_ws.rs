@@ -11,7 +11,7 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::Duration;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, ReadHalf, WriteHalf};
 use tokio::sync::mpsc;
-use websocket::{Message, MessageDecoder, accept_key, encode_message};
+use websocket::{ClientHandshake, Message, MessageDecoder, encode_message};
 
 /// `webSocketError` for an undici error event without details.
 pub const CONNECTION_FAILED: &str = "Radius WebSocket connection failed";
@@ -192,23 +192,17 @@ pub async fn connect(
         _ => return Err(CONNECTION_FAILED.into()),
     };
     http.set_scheme(scheme).map_err(|_| CONNECTION_FAILED.to_string())?;
-    let key = jsrt::base64::encode(jsrt::random::bytes::<16>());
+    let handshake = ClientHandshake::new(Some(protocol));
     let client = reqwest::Client::builder()
         .http1_only()
         .no_proxy()
         .build()
         .map_err(|_| CONNECTION_FAILED.to_string())?;
-    let response = client
-        .get(http)
-        .header("connection", "upgrade")
-        .header("upgrade", "websocket")
-        .header("authorization", authorization)
-        .header("sec-websocket-key", &key)
-        .header("sec-websocket-version", "13")
-        .header("sec-websocket-protocol", protocol)
-        .send()
-        .await
-        .map_err(|_| CONNECTION_FAILED.to_string())?;
+    let mut request = client.get(http).header("authorization", authorization);
+    for (name, value) in handshake.request_headers() {
+        request = request.header(name, value);
+    }
+    let response = request.send().await.map_err(|_| CONNECTION_FAILED.to_string())?;
     let header = |name: &str| {
         response
             .headers()
@@ -216,11 +210,7 @@ pub async fn connect(
             .and_then(|v| v.to_str().ok())
             .map(str::to_string)
     };
-    if response.status().as_u16() != 101
-        || header("sec-websocket-accept").as_deref() != Some(accept_key(&key).as_str())
-        || header("sec-websocket-protocol").as_deref() != Some(protocol)
-        || header("sec-websocket-extensions").is_some()
-    {
+    if !handshake.accepted(response.status().as_u16(), &header) {
         return Err(CONNECTION_FAILED.into());
     }
     let upgraded = response.upgrade().await.map_err(|_| CONNECTION_FAILED.to_string())?;

@@ -8,7 +8,7 @@ use crate::repo::{Metadata, SessionRepo};
 use crate::state::{CommitResult, State, Write};
 use crate::storage::JsonlStorage;
 use crate::{SharedClock, lock_clock};
-use serde_json::{Map, Value};
+use serde_json::Value;
 
 /// An open session.
 pub struct Session {
@@ -106,12 +106,10 @@ impl Session {
             .branch_tip(branch)
             .ok_or_else(|| format!("Unknown branch: {branch}"))?;
         let id = lock_clock(&self.clock).next_id();
-        let mut entry = Map::new();
-        entry.insert("id".into(), id.clone().into());
-        entry.insert("parentId".into(), tip.map_or(Value::Null, Value::from));
-        entry.insert("type".into(), "message".into());
-        entry.insert("message".into(), message);
-        self.commit(&[Write::Entry(entry), Write::set(BRANCH_TIP, branch, id.clone().into())])?;
+        self.commit(&[
+            Write::message_entry(&id, tip.as_deref(), message),
+            Write::set(BRANCH_TIP, branch, id.clone().into()),
+        ])?;
         Ok(id)
     }
 
@@ -121,15 +119,10 @@ impl Session {
             .branch_tip(branch)
             .ok_or_else(|| format!("Unknown branch: {branch}"))?;
         let id = lock_clock(&self.clock).next_id();
-        let mut entry = Map::new();
-        entry.insert("id".into(), id.clone().into());
-        entry.insert("parentId".into(), tip.map_or(Value::Null, Value::from));
-        entry.insert("type".into(), "custom".into());
-        entry.insert("customType".into(), custom_type.into());
-        if let Some(data) = data {
-            entry.insert("data".into(), data);
-        }
-        self.commit(&[Write::Entry(entry), Write::set(BRANCH_TIP, branch, id.clone().into())])?;
+        self.commit(&[
+            Write::custom_entry(&id, tip.as_deref(), custom_type, data),
+            Write::set(BRANCH_TIP, branch, id.clone().into()),
+        ])?;
         Ok(id)
     }
 

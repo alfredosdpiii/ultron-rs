@@ -28,6 +28,7 @@ mod process;
 mod sandboxed;
 pub mod snapshot;
 pub mod snapshot_store;
+pub mod store;
 pub mod tree_memory;
 
 pub use continuity::{ContinuityPolicy, ContinuityReport, LostName};
@@ -43,7 +44,7 @@ pub use config::{
     rlm_output_budget,
 };
 
-/// The root agent's lane; every other lane is a child's.
+/// The root agent's lane; every other lane is a child's (the session journal's `session_journal::run::MAIN_LANE`).
 pub const ROOT_LANE: &str = "main";
 
 /// Whether `viewer`'s kernel sees work owned by `owner`: the root lane sees every lane's, a child lane its own.
@@ -232,6 +233,26 @@ impl Signal {
         jsrt::sync::lock(&self.inner.0)
             .listeners
             .retain(|(listener, _)| *listener != id);
+    }
+
+    /// [`signals::child::run`], cancelled when this signal aborts (at once when it already has).
+    pub fn run_child(
+        &self,
+        command: &mut std::process::Command,
+        input: Option<&[u8]>,
+        bound: signals::child::Bound,
+    ) -> std::io::Result<signals::child::Output> {
+        let running = signals::child::start(command, input, bound)?;
+        let watched = running.watched().clone();
+        let listener = self.on_abort(move |_| watched.cancel());
+        if listener.is_none() {
+            running.watched().cancel();
+        }
+        let output = running.finish();
+        if let Some(id) = listener {
+            self.forget(id);
+        }
+        Ok(output)
     }
 }
 
@@ -1575,6 +1596,7 @@ impl Shared {
         let fixed_env: Vec<(String, String)> = vec![
             ("NO_COLOR".into(), "1".into()),
             ("PYTHONDONTWRITEBYTECODE".into(), "1".into()),
+            (crate::env::IN_KERNEL_ENV.into(), "1".into()),
             (
                 crate::env::RLM_MAX_MEMORY_MB_ENV.into(),
                 self.limits.max_memory_mb.to_string(),

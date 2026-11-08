@@ -764,10 +764,71 @@ pub fn builtin_provider_auth_with_clock(
     })
 }
 
+/// amazon-bedrock.ts `bedrockAuth.resolve`: a stored key (with the credential's env), else
+/// `AWS_BEARER_TOKEN_BEDROCK`, else an AWS profile (the stored credential's `AWS_PROFILE` and env, or the
+/// environment's), else access keys, an ECS task role or a web identity token; no key in those cases, so the SDK's
+/// credential chain signs the request.
+fn bedrock_auth(ctx: &dyn AuthContext, credential: Option<&ApiKeyCredential>) -> Option<AuthResult> {
+    let var = |name: &str| ctx.env(name);
+    let result = |api_key: Option<String>, env: Option<CredentialEnv>, source: &str| AuthResult {
+        auth: ModelAuth {
+            api_key,
+            ..Default::default()
+        },
+        env,
+        source: Some(source.into()),
+    };
+    let stored_profile = credential.and_then(|c| c.env.as_ref()?.get("AWS_PROFILE").filter(|p| !p.is_empty()).cloned());
+    if let Some(key) = credential.and_then(|c| c.key.clone()).filter(|k| !k.is_empty()) {
+        return Some(result(
+            Some(key),
+            credential.and_then(|c| c.env.clone()),
+            "stored credential",
+        ));
+    }
+    if var("AWS_BEARER_TOKEN_BEDROCK").is_some() {
+        return Some(result(None, None, "AWS_BEARER_TOKEN_BEDROCK"));
+    }
+    if stored_profile.is_some() || var("AWS_PROFILE").is_some() {
+        let source = if stored_profile.is_some() {
+            "stored credential"
+        } else {
+            "AWS_PROFILE"
+        };
+        return Some(result(None, credential.and_then(|c| c.env.clone()), source));
+    }
+    if var("AWS_ACCESS_KEY_ID").is_some() && var("AWS_SECRET_ACCESS_KEY").is_some() {
+        return Some(result(None, None, "AWS access keys"));
+    }
+    if var("AWS_CONTAINER_CREDENTIALS_RELATIVE_URI").is_some() || var("AWS_CONTAINER_CREDENTIALS_FULL_URI").is_some() {
+        return Some(result(None, None, "ECS task role"));
+    }
+    var("AWS_WEB_IDENTITY_TOKEN_FILE").map(|_| result(None, None, "web identity token"))
+}
+
+/// Amazon Bedrock's api-key auth ([`bedrock_auth`]).
+struct BedrockAuth;
+
+impl ApiKeyAuth for BedrockAuth {
+    fn name(&self) -> &str {
+        "Amazon Bedrock credentials"
+    }
+
+    fn resolve<'a>(
+        &'a self,
+        ctx: &'a dyn AuthContext,
+        credential: Option<&'a ApiKeyCredential>,
+    ) -> BoxFuture<'a, Result<Option<AuthResult>, String>> {
+        let result = bedrock_auth(ctx, credential);
+        Box::pin(async move { Ok(result) })
+    }
+}
+
 /// The built-in api-key auth of the providers whose resolution is more than "the stored key, else an environment
 /// key": Anthropic (`ANTHROPIC_AUTH_TOKEN` as a bearer header), Google Vertex (Application Default Credentials and
-/// the project/location env) and Cloudflare (account and gateway ids merged per field from the stored credential and
-/// the environment; the AI Gateway authenticates by `cf-aig-authorization`). `None` for every other provider.
+/// the project/location env), Cloudflare (account and gateway ids merged per field from the stored credential and
+/// the environment; the AI Gateway authenticates by `cf-aig-authorization`) and Amazon Bedrock (a key, else the AWS
+/// credential chain signs). `None` for every other provider.
 pub fn builtin_api_key_auth(provider_id: &str) -> Option<Arc<dyn ApiKeyAuth>> {
     use crate::cloudflare::{CloudflareAuth, CloudflareAuthKind};
     let auth: Arc<dyn ApiKeyAuth> = match provider_id {
@@ -775,19 +836,26 @@ pub fn builtin_api_key_auth(provider_id: &str) -> Option<Arc<dyn ApiKeyAuth>> {
         "google-vertex" => Arc::new(VertexAuth),
         "cloudflare-workers-ai" => Arc::new(CloudflareAuth(CloudflareAuthKind::WorkersAi)),
         "cloudflare-ai-gateway" => Arc::new(CloudflareAuth(CloudflareAuthKind::AiGateway)),
+        "amazon-bedrock" => Arc::new(BedrockAuth),
         _ => return None,
     };
     Some(auth)
 }
 
-/// GitHub Copilot's `filterModels`: with an OAuth credential listing `availableModelIds` (all strings), only those
-/// models; otherwise all.
-pub fn copilot_filter_models<'m, M>(
+/// `provider.filterModels(models, credential)`, which only GitHub Copilot has: with an OAuth credential listing
+/// `availableModelIds` (all strings), only those models; otherwise, and for every other provider, all. `credential`
+/// is read only for a provider that filters.
+pub fn filter_models<'m, M>(
+    provider: &str,
     models: &'m [M],
     id: impl Fn(&M) -> &str,
-    credential: Option<&Credential>,
+    credential: impl FnOnce() -> Option<Credential>,
 ) -> Vec<&'m M> {
-    let available = match credential {
+    if provider != "github-copilot" {
+        return models.iter().collect();
+    }
+    let credential = credential();
+    let available = match credential.as_ref() {
         Some(Credential::OAuth(c)) => c
             .extra
             .get("availableModelIds")

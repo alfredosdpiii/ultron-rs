@@ -44,9 +44,7 @@ pub use cell::{CellCall, CellExecutor, CellProgress, CellResult, Diagnostic, Rep
 pub use context::ContextView;
 pub use generation::{Agent, Control, GenerationCheckpoint};
 pub use inbox::{QueueMode, QueueModes};
-pub use models::{
-    CompactionPolicy, ModelRef, Models, RetryPolicy, Settings, SettingsSource, StreamRequest, ToolExecution,
-};
+pub use models::{CompactionPolicy, ModelRef, Models, Settings, SettingsSource, StreamRequest, ToolExecution};
 pub use submissions::{SubmissionAbort, SubmissionDraft, WhenBusy, admit_run_with_steering, admit_submission};
 
 use crate::scheduler::{

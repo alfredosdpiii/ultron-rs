@@ -6,9 +6,10 @@
 //! in the receiver's bounded inbox until `receive` marks them delivered. Delivered and expired history is kept,
 //! bounded, in the module document `{version: 1, messages}`.
 
-use crate::store::{DocumentStore, read_versioned};
+use crate::store::read_versioned;
 use crate::util::Clock;
 use crate::{ApiModule, Request, TaskHost};
+use kernel::store::DocumentStore;
 use serde_json::{Map, Value, json};
 use std::collections::HashSet;
 use std::sync::{Arc, Mutex};

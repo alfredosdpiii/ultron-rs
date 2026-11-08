@@ -3,7 +3,7 @@
 //! JSONL storage. Queued inputs queue in `ultron.inbox` behind a conversation marked busy, as upstream's `busy()` does;
 //! the cases about tools, subagents and supervisors through conversation handles are not ported.
 
-mod support;
+use crate::support;
 
 use durable::{
     AbortReason, ConversationId, ConversationOwnership, JoinPolicy, Session, StorageError, StorageWrite, SubmissionId,

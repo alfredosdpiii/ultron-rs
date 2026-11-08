@@ -13,6 +13,7 @@ kernel = { path = "../kernel" }
 kernel-apis = { path = "../kernel-apis" }
 resvg = { version = "=0.48.1", default-features = false, features = ["text", "system-fonts"] }
 serde_json = { version = "=1.0.151", features = ["preserve_order"] }
+signals = { path = "../signals" }
 theme = { path = "../theme" }
 
 [dev-dependencies]

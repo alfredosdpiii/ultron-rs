@@ -11,7 +11,7 @@
 //!
 //! No real endpoint is contacted: the model and the gateway are 127.0.0.1 fakes, and nothing opens a browser.
 
-mod tui_harness;
+use crate::tui_harness;
 
 use serde_json::{Value, json};
 use std::io::{BufRead, BufReader, Read, Write};
@@ -125,7 +125,7 @@ fn cli_interactive_bug_report_exports_a_zip_with_the_transcript() {
     let env = [
         (session_core::core::AUTO_NAME_ENV, "off"),
         (cli::interactive::SPLASH_ENV, "off"),
-        (server::radius_relay::ENV_RADIUS_GATEWAY, gateway_url.as_str()),
+        (config::radius::ENV_RADIUS_GATEWAY, gateway_url.as_str()),
     ];
     let tui = Tui::start_at(&tmp.0, mock.port, 120, 50, &MODEL, &env);
     tui.wait("Session:");
@@ -217,7 +217,7 @@ fn cli_interactive_bug_report_uploads_a_model_summary_instead_of_the_transcript(
     let env = [
         (session_core::core::AUTO_NAME_ENV, "off"),
         (cli::interactive::SPLASH_ENV, "off"),
-        (server::radius_relay::ENV_RADIUS_GATEWAY, gateway_url.as_str()),
+        (config::radius::ENV_RADIUS_GATEWAY, gateway_url.as_str()),
     ];
     let tui = Tui::start_at(&tmp.0, mock.port, 120, 50, &MODEL, &env);
     tui.wait("Session:");
@@ -291,7 +291,7 @@ fn cli_interactive_bug_report_failed_upload_offers_the_zip_and_cancel_and_offlin
     let env = [
         (session_core::core::AUTO_NAME_ENV, "off"),
         (cli::interactive::SPLASH_ENV, "off"),
-        (server::radius_relay::ENV_RADIUS_GATEWAY, gateway_url.as_str()),
+        (config::radius::ENV_RADIUS_GATEWAY, gateway_url.as_str()),
     ];
     let tui = Tui::start_at(&tmp.0, mock.port, 120, 50, &MODEL, &env);
     tui.wait("Session:");
@@ -328,7 +328,7 @@ fn cli_interactive_bug_report_failed_upload_offers_the_zip_and_cancel_and_offlin
     let env = [
         (session_core::core::AUTO_NAME_ENV, "off"),
         (cli::interactive::SPLASH_ENV, "off"),
-        (server::radius_relay::ENV_RADIUS_GATEWAY, gateway_url.as_str()),
+        (config::radius::ENV_RADIUS_GATEWAY, gateway_url.as_str()),
         (config::env::OFFLINE_ENV, "1"),
     ];
     let tui = Tui::start_at(&tmp.0, mock.port, 120, 50, &MODEL, &env);

@@ -1,7 +1,7 @@
 //! Server directory profile (experimental/server.ts): private directory checks, the logical server ID in
 //! `default-server-id`, the launcher and activation locks, IDs and the fallback ID beside another release.
 
-use crate::lock::Lock;
+use config::lock::LockGuard;
 use std::io::{self, ErrorKind, Write};
 use std::os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt, PermissionsExt};
 use std::path::Path;
@@ -35,14 +35,10 @@ pub fn ensure_private_directory(directory: &Path) -> io::Result<()> {
     std::fs::set_permissions(directory, std::fs::Permissions::from_mode(0o700))
 }
 
-// ponytail: re-exported for cli (durable_client.rs, interactive.rs); drop once it calls jsrt directly.
-pub use jsrt::date::now_ms;
-pub use jsrt::random::uuid_v4;
-
 /// The held launcher lock of one logical server.
 pub struct Profile {
     pub server_id: String,
-    _lock: Lock,
+    _lock: LockGuard,
 }
 
 /// `acquireServerProfile`: the requested ID, else the directory's default (created once), under its launcher lock.
@@ -56,12 +52,7 @@ pub fn acquire_profile(directory: &Path, requested: Option<&str>) -> io::Result<
         Some(id) => return Err(io::Error::other(format!("Invalid experimental server ID: {id}"))),
         None => default_server_id(directory)?,
     };
-    let lock = Lock::acquire(
-        &directory.join(format!("launcher-{server_id}")),
-        LOCK_STALE,
-        LOCK_RETRY,
-        LOCK_WAIT,
-    )?;
+    let lock = lock(&directory.join(format!("launcher-{server_id}")), LOCK_STALE, LOCK_WAIT)?;
     Ok(Profile { server_id, _lock: lock })
 }
 
@@ -100,13 +91,27 @@ fn default_server_id(directory: &Path) -> io::Result<String> {
 }
 
 /// `acquireServerActivation`: serializes cold starts of one logical server.
-pub fn acquire_activation(directory: &Path, server_id: &str) -> io::Result<Lock> {
-    Lock::acquire(
+pub fn acquire_activation(directory: &Path, server_id: &str) -> io::Result<LockGuard> {
+    lock(
         &directory.join(format!("activation-{server_id}")),
         ACTIVATION_TIMEOUT * 2,
-        LOCK_RETRY,
         ACTIVATION_TIMEOUT,
     )
+}
+
+/// The daemon's `proper-lockfile` lock on `target` (`<target>.lock`): tried every 25 ms for up to `wait`, its mtime
+/// refreshed every `stale / 3` while held.
+pub fn lock(target: &Path, stale: Duration, wait: Duration) -> io::Result<LockGuard> {
+    let options = config::lock::Options {
+        stale,
+        retry: config::lock::Retry {
+            delay: LOCK_RETRY,
+            backoff_to: None,
+            until: config::lock::Until::Elapsed(wait),
+        },
+        update: Some(stale / 3),
+    };
+    config::lock::acquire(&config::lock::lock_path_for(target), options)
 }
 
 /// `fallbackServerId`: a stable UUIDv4 derived from the logical ID and the coordinator protocol.

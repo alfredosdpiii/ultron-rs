@@ -93,7 +93,6 @@ fn tui_transcript_search_bar_renders_and_hit_tests_like_ts() {
     for case in f["bars"].as_array().unwrap() {
         let mut bar = SearchBar::new(
             &k,
-            false,
             Box::new(|t, hovered| if hovered { format!("[{t}]") } else { t.to_string() }),
         );
         for ch in case["query"].as_str().unwrap().chars() {
@@ -218,7 +217,7 @@ fn tui_transcript_search_view_searches_scrollback_and_viewport() {
     }
     assert_eq!(rows.len(), 31, "scrollback rows then the live row");
 
-    let mut view = TranscriptSearch::new(rows, keys(), false);
+    let mut view = TranscriptSearch::new(rows, keys());
     view.set_styles(Box::new(|t| format!("<{t}>")), Box::new(|t| format!("[{t}]")));
     let first = view.render(40, 13);
     assert_eq!(first.len(), 13);

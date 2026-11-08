@@ -10,8 +10,7 @@
 //! - print and RPC clients whose coordinator is killed reconnect to a restarted server and finish the session;
 //! - SIGINT aborts a print run (exit 130); SIGTERM shuts the coordinator and a server down with socket cleanup.
 
-#[path = "daemon_common/mod.rs"]
-mod common;
+use crate::daemon_common as common;
 
 use client::runtime::{CallError, Connection};
 use common::{Home, assert_no_processes, processes_mentioning, text_reply};
@@ -1018,7 +1017,7 @@ fn cli_durable_kill_after_the_answer_commits_keeps_it_once_without_asking_again(
     let crash = format!("answer:{}", marker.path().join("crashed").display());
     let provider = provider(vec![(text_reply("Committed once."), Duration::ZERO)]);
     let home = Home::new(provider.port);
-    let run = prompted(&home, &[("__ULTRON_DURABLE_CRASH", &crash)], "first");
+    let run = prompted(&home, &[(session_core::turns::DURABLE_CRASH_ENV, &crash)], "first");
     assert!(
         run.connection.wait(&run.prompting).is_err(),
         "the worker died before answering"
@@ -1048,7 +1047,7 @@ fn cli_durable_kill_after_a_cell_result_commits_keeps_it_once() {
     ]);
     let home = Home::new(provider.port);
     let runs = home.cwd().join("runs");
-    let run = prompted(&home, &[("__ULTRON_DURABLE_CRASH", &crash)], "compute");
+    let run = prompted(&home, &[(session_core::turns::DURABLE_CRASH_ENV, &crash)], "compute");
     assert!(
         run.connection.wait(&run.prompting).is_err(),
         "the worker died after the result"

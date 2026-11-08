@@ -20,8 +20,8 @@
 
 use crate::memory::{MemoryBackend, MemoryError, MemoryService, worker_gate};
 use crate::memory_records::{MAX_SITUATION_BYTES, RecordIndex, Typed, content_cap};
-use crate::store::FileDocumentStore;
 use kernel::Signal;
+use kernel::store::FileDocumentStore;
 use serde_json::{Map, Value, json};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};

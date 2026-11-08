@@ -6,8 +6,7 @@
 //! list` reads the journals, `ultron schedule cancel` goes through the running server, and without a server it
 //! writes the journal itself.
 
-#[path = "daemon_common/mod.rs"]
-mod common;
+use crate::daemon_common as common;
 
 use client::runtime::Connection;
 use common::{HANG_GUARD, Home, SERVER_ID, ServerProcess, assert_no_processes, provider, sse, text_reply};

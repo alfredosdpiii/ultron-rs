@@ -155,6 +155,8 @@ pub struct Hub {
     pub manager: Arc<Manager>,
     conns: Mutex<HashMap<u64, Arc<Conn>>>,
     router: Mutex<Router>,
+    /// Notified when a hosted session is dropped from the router.
+    unhosted: std::sync::Condvar,
     directory: Arc<State>,
     revision: Mutex<i64>,
     /// Serializes session management (`mutationTail`).
@@ -191,6 +193,7 @@ impl Hub {
             manager,
             conns: Mutex::new(HashMap::new()),
             router: Mutex::new(Router::default()),
+            unhosted: std::sync::Condvar::new(),
             directory: State::new(json!({"revision": 1, "sessions": sessions})),
             revision: Mutex::new(1),
             mutations: Mutex::new(()),
@@ -382,16 +385,15 @@ impl Hub {
         }));
         let _ = ended.recv_timeout(Duration::from_secs(30));
         // The hub drops the ended worker's entry on its own thread (`invalidate`).
-        let deadline = std::time::Instant::now() + Duration::from_secs(30);
-        while std::time::Instant::now() < deadline
-            && self
-                .router()
-                .hosted
-                .get(session_id)
-                .is_some_and(|h| Arc::ptr_eq(&h.handle.terminated, &handle.terminated))
-        {
-            std::thread::sleep(Duration::from_millis(10));
-        }
+        let router = self.router();
+        let _ = self
+            .unhosted
+            .wait_timeout_while(router, Duration::from_secs(30), |router| {
+                router
+                    .hosted
+                    .get(session_id)
+                    .is_some_and(|h| Arc::ptr_eq(&h.handle.terminated, &handle.terminated))
+            });
     }
 
     /// The worker ended: drop the hosted session and its attachments (clients see `attachment: null`). When the
@@ -404,6 +406,7 @@ impl Hub {
             let Some(hosted) = router.hosted.remove(session_id) else {
                 return;
             };
+            self.unhosted.notify_all();
             let attachments: Vec<(u64, Attachment)> = hosted
                 .attachments
                 .iter()
@@ -490,6 +493,7 @@ impl Hub {
             let Some(hosted) = router.hosted.remove(session_id) else {
                 return;
             };
+            self.unhosted.notify_all();
             let attachments: Vec<(u64, Attachment)> = hosted
                 .attachments
                 .iter()
@@ -556,7 +560,7 @@ impl Hub {
     /// `importPi`: the client sends the Pi file's text (it may live on another machine); it is imported into this
     /// server's session store. A session imported before is answered as `alreadyImported`, nothing written.
     fn import_pi(&self, content: &str) -> ServiceResult {
-        let directory = private_temp_dir("ultron-pi-import-")
+        let directory = config::paths::private_temp_dir(&std::env::temp_dir(), "ultron-pi-import-")
             .map_err(|e| ServiceError::internal(format!("Pi import directory: {e}")))?;
         let source = directory.join("session.jsonl");
         let written = {
@@ -1095,20 +1099,4 @@ fn respond(conn: &Arc<Conn>, id: &str, subscription: Option<&str>, result: Servi
         }
     }
     subscriptions.insert(subscription.to_string(), Subscription::Ready(encoder));
-}
-
-/// A new private (0700) directory under the system temp directory.
-fn private_temp_dir(prefix: &str) -> std::io::Result<PathBuf> {
-    use std::os::unix::fs::DirBuilderExt;
-    loop {
-        let mut bytes = [0u8; 6];
-        getrandom::fill(&mut bytes).map_err(|e| std::io::Error::other(e.to_string()))?;
-        let suffix: String = bytes.iter().map(|b| format!("{b:02x}")).collect();
-        let path = std::env::temp_dir().join(format!("{prefix}{suffix}"));
-        match std::fs::DirBuilder::new().mode(0o700).create(&path) {
-            Ok(()) => return Ok(path),
-            Err(e) if e.kind() == ErrorKind::AlreadyExists => continue,
-            Err(e) => return Err(e),
-        }
-    }
 }

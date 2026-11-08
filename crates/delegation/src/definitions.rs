@@ -3,9 +3,9 @@
 //! document replaced whole, a failed write poisons the registry), and the input/output contract checks every
 //! strategy shares, with the schema error detail of definitions derived from Python agent classes.
 
-use crate::task_store::DocumentStore;
 use harness::task_store::task_fingerprint;
 use jsonschema::{unchecked_keyword, validate_json_schema};
+use kernel::store::DocumentStore;
 use serde_json::{Map, Value, json};
 
 /// Schema keyword marking a definition derived from a Python agent class (`agent_class_api.py`).

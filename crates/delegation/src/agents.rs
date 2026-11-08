@@ -16,12 +16,13 @@
 use crate::DEFAULT_TIMEOUT_MS;
 use crate::contract::Brief;
 use crate::definitions::{Definition, DefinitionRegistry, Strategy};
-use crate::task_store::{DocumentStore, TaskJournal, task_fingerprint};
+use crate::task_store::{TaskJournal, task_fingerprint};
 use crate::usage::{Measurement, Reservation, ReserveRequest, UsageLedger};
 use crate::verdict::{MAX_VERDICT_REJECTIONS, validate_verdict};
 use jsonschema::json_equal;
 use jsrt::payload::nonempty_string;
 use jsrt::{json, random, string, sync, utf16};
+use kernel::store::DocumentStore;
 use kernel::{HostHandler, Signal};
 use serde_json::{Map, Value, json};
 use std::collections::HashMap;
@@ -317,8 +318,7 @@ fn definition_key(value: Option<&Value>) -> Result<String, String> {
 fn task_options(payload: &Map<String, Value>) -> Result<(Option<String>, Option<String>, u64), String> {
     let model = match payload.get("model") {
         None | Some(Value::Null) => None,
-        Some(Value::String(model)) if model_scope::is_model_ref(model) => Some(model.clone()),
-        Some(_) => return Err("model must be provider/model".into()),
+        Some(model) => Some(model_scope::model_ref(model)?),
     };
     let key = match payload.get("key") {
         None | Some(Value::Null) => None,
@@ -1596,7 +1596,7 @@ impl Agents {
     }
 
     /// Whether `id` is `caller`'s own task or a descendant (the root lane sees everything).
-    fn visible(state: &State, records: &[Value], id: &str, caller: Option<&str>) -> bool {
+    fn visible(records: &[Value], id: &str, caller: Option<&str>) -> bool {
         let Some(caller) = caller else {
             return true;
         };
@@ -1609,7 +1609,6 @@ impl Agents {
                 .as_str()
                 .and_then(|parent| records.iter().find(|r| r["id"] == parent));
         }
-        let _ = state;
         false
     }
 
@@ -1663,7 +1662,7 @@ impl Agents {
         let parent = self.caller_task(lane);
         let parent = parent.as_deref();
         let records = self.state().journal.list()?;
-        let visible = |id: &str| Self::visible(&self.state(), &records, id, parent);
+        let visible = |id: &str| Self::visible(&records, id, parent);
         if ["ping", "agents.list", "agents.tasks"].contains(&kind) {
             jsrt::payload::fields(&payload, &[])?;
         }
@@ -1843,7 +1842,7 @@ impl Agents {
         let state = self.state();
         let shown: Vec<&Value> = records
             .iter()
-            .filter(|r| Self::visible(&state, records, r["id"].as_str().unwrap_or_default(), parent))
+            .filter(|r| Self::visible(records, r["id"].as_str().unwrap_or_default(), parent))
             .collect();
         let graph = payload.get("graph") == Some(&Value::Bool(true));
         let listed = if graph && shown.len() > GRAPH_TASK_LIMIT {
@@ -1874,7 +1873,7 @@ impl Agents {
                 .iter()
                 .filter(|run| match run["parentId"].as_str() {
                     None => parent.is_none(),
-                    Some(owner) => Self::visible(&state, records, owner, parent),
+                    Some(owner) => Self::visible(records, owner, parent),
                 })
                 .map(graph_workflow)
                 .collect();

@@ -15,6 +15,8 @@
 //! - [`base64`], [`hash`], [`random`]: `btoa`/`atob`/`Buffer.from`, sha256 hex and HMAC, `randomUUID` and UUIDv7.
 //! - [`sync`]: a poison-free `Mutex::lock`; [`payload`]: the "Unknown payload field" check.
 //! - [`diff`]: jsdiff's Myers diff, `diffLines` and the edit tool's `generateDiffString`.
+//! - [`path`]: Node's POSIX `path.normalize`/`join`/`resolve` and `normalizePath`/`resolvePath`; [`uri`]:
+//!   `encodeURIComponent`, `decodeURIComponent` and percent-decoding.
 
 pub mod base64;
 pub mod collate;
@@ -25,10 +27,12 @@ pub mod hash;
 pub mod json;
 pub mod localtime;
 pub mod number;
+pub mod path;
 pub mod payload;
 pub mod process;
 pub mod random;
 pub mod string;
 pub mod sync;
+pub mod uri;
 pub mod utf16;
 pub mod value;

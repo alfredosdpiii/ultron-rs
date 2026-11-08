@@ -4,8 +4,7 @@
 //! replaced, `--list` lists them; `-p` / `--mode json` send to it; a client that goes away mid-run leaves the run
 //! going on the durable server, and the next client sees it.
 
-#[path = "daemon_common/mod.rs"]
-mod common;
+use crate::daemon_common as common;
 
 use common::{HANG_GUARD, Home, assert_none_mentioning, text_reply};
 use serde_json::Value;

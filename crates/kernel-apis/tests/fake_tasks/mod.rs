@@ -1,7 +1,6 @@
 //! fixtures/fake-tasks.mjs as a `TaskHost`: the scripted task tree, sequential spawned tasks whose outcome depends on
 //! their definition, idempotent spawn keys, two lane pins, a settable caller and clock, and a log of task operations.
 //! `test.clock`, `test.caller` and `test.finish` are served by [`FakeTasks::inner`].
-#![allow(dead_code)]
 
 use kernel::{HostHandler, Signal};
 use kernel_apis::TaskHost;

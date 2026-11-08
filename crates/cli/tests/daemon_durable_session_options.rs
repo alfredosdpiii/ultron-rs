@@ -4,8 +4,7 @@
 //! options differ from those of a session's running worker is refused with what to do. The durable server, its
 //! workers and the clients run under a private HOME against a scripted Anthropic server on loopback.
 
-#[path = "daemon_common/mod.rs"]
-mod common;
+use crate::daemon_common as common;
 
 use cli::rpc::client::{RpcClient, RpcClientOptions};
 use common::{HANG_GUARD, Home, assert_none_mentioning, provider, text_reply};

@@ -35,7 +35,7 @@ fn saved(dir: &Path) -> serde_json::Value {
 
 #[test]
 fn cli_startup_changelog_shows_new_entries_and_records_the_version() {
-    let version = cli::version();
+    let version = config::version();
     let (dir, env) = profile(r#"{"lastChangelogVersion":"0.0.1"}"#);
     std::fs::write(
         dir.path().join("pkg/CHANGELOG.md"),
@@ -54,7 +54,7 @@ fn cli_startup_changelog_shows_new_entries_and_records_the_version() {
         }
         other => panic!("{other:?}"),
     }
-    assert_eq!(saved(dir.path())["lastChangelogVersion"], version.as_str());
+    assert_eq!(saved(dir.path())["lastChangelogVersion"], version);
     // Seen now: nothing more to show.
     assert_eq!(cli::startup_checks::startup_changelog(&env), None);
 }

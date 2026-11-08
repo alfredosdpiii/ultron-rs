@@ -170,19 +170,5 @@ pub fn expand(path: &str, home: &Path, cwd: &Path) -> PathBuf {
     } else {
         cwd.join(path)
     };
-    normalize(&joined)
-}
-
-pub fn normalize(path: &Path) -> PathBuf {
-    let mut out = PathBuf::new();
-    for component in path.components() {
-        match component {
-            std::path::Component::ParentDir => {
-                out.pop();
-            }
-            std::path::Component::CurDir => {}
-            other => out.push(other),
-        }
-    }
-    out
+    jsrt::path::absolute(&joined)
 }

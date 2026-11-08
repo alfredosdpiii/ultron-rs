@@ -39,49 +39,6 @@ pub trait ReviewEngine: Send + Sync {
     fn review(&self, spec: &Value, signal: Option<&Signal>) -> Result<Value, String>;
 }
 
-/// The frames' retry of a transient provider failure (`settings.retry`; the TS harness's retry policy, which every
-/// frame lane applies): up to `max_retries` more attempts, `base_delay_ms * 2^(attempt-1)` apart, capped.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct RetryPolicy {
-    pub enabled: bool,
-    pub max_retries: u32,
-    pub base_delay_ms: f64,
-    pub max_delay_ms: f64,
-}
-
-impl Default for RetryPolicy {
-    fn default() -> Self {
-        Self {
-            enabled: true,
-            max_retries: 3,
-            base_delay_ms: 2000.0,
-            max_delay_ms: 60_000.0,
-        }
-    }
-}
-
-impl RetryPolicy {
-    /// `retryDelayMs`: the wait before retry `attempt` (1-indexed).
-    pub fn delay_ms(&self, attempt: u32) -> f64 {
-        let delay = self.base_delay_ms * 2f64.powi(attempt.saturating_sub(1).min(1023) as i32);
-        delay.min(self.max_delay_ms)
-    }
-}
-
-const NON_RETRYABLE: &str = "GoUsageLimitError|FreeUsageLimitError|Monthly usage limit reached|available balance|insufficient_quota|out of budget|quota exceeded|billing|Claude Code usage limit reached";
-const RETRYABLE: &str = "overloaded|currently experiencing high demand|rate.?limit|too many requests|429|500|502|503|504|520|524|service.?unavailable|server.?error|internal.?error|provider.?returned.?error|exceeded request buffer limit while retrying upstream|network.?error|connection.?error|connection.?refused|connection.?lost|other side closed|fetch failed|getaddrinfo|ENOTFOUND|EAI_AGAIN|upstream.?connect|reset before headers|socket hang up|socket connection was closed|timed? out|timeout|terminated|websocket.?closed|websocket.?error|ended without|stream ended before message_stop|stream ended before a terminal response event|http2 request did not get a response|retry delay|you can retry your request|try your request again|please retry your request|ResourceExhausted";
-
-/// `isRetryableAssistantError` over a failure's text (the status and the provider's message).
-pub fn is_retryable_failure(text: &str) -> bool {
-    use std::sync::OnceLock;
-    static PATTERNS: OnceLock<(regex::Regex, regex::Regex)> = OnceLock::new();
-    let (never, again) = PATTERNS.get_or_init(|| {
-        let compile = |pattern: &str| regex::Regex::new(&format!("(?i){pattern}")).expect("retry pattern");
-        (compile(NON_RETRYABLE), compile(RETRYABLE))
-    });
-    !text.is_empty() && !never.is_match(text) && again.is_match(text)
-}
-
 struct Buffered(Option<Vec<u8>>);
 
 impl ai::Body for Buffered {
@@ -95,9 +52,10 @@ impl ai::Body for Buffered {
 
 /// Retries a frame's provider request that failed transiently (a connection failure, or a non-2xx response whose
 /// status and message are retryable), as the TS frame lanes' harness does; the frame sees only the last attempt.
+/// The policy is `settings.retry`, the TS harness's retry policy, which every frame lane applies.
 pub struct RetryingTransport {
     pub inner: Arc<dyn ai::Transport>,
-    pub policy: RetryPolicy,
+    pub policy: ai::retry::RetryPolicy,
 }
 
 impl ai::Transport for RetryingTransport {
@@ -106,7 +64,7 @@ impl ai::Transport for RetryingTransport {
         request: ai::HttpRequest,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<ai::HttpResponse, String>> + Send + '_>> {
         Box::pin(async move {
-            let mut attempt = 0u32;
+            let mut attempt = 0;
             loop {
                 let copy = ai::HttpRequest {
                     method: request.method.clone(),
@@ -124,21 +82,20 @@ impl ai::Transport for RetryingTransport {
                             body.extend(chunk);
                         }
                         let text = format!("{} {}", response.status, String::from_utf8_lossy(&body));
-                        if !is_retryable_failure(&text) {
+                        if !ai::retry::is_retryable_text(&text) {
                             response.body = Box::new(Buffered(Some(body)));
                             return Ok(response);
                         }
                         Err(text)
                     }
-                    Err(error) if !retries_left || !is_retryable_failure(&error) => return Err(error),
+                    Err(error) if !retries_left || !ai::retry::is_retryable_text(&error) => return Err(error),
                     Err(error) => Err(error),
                 };
                 match outcome {
                     Ok(response) => return Ok(response),
                     Err(_) => {
                         attempt += 1;
-                        let delay = self.policy.delay_ms(attempt).max(0.0);
-                        tokio::time::sleep(Duration::from_secs_f64(delay / 1000.0)).await;
+                        tokio::time::sleep(Duration::from_millis(self.policy.delay_ms(attempt))).await;
                     }
                 }
             }
@@ -175,7 +132,7 @@ pub struct EngineOptions {
     pub resolve: ModelResolver,
     pub transport: Arc<dyn ai::Transport>,
     /// Transient provider failures are retried under this policy before a frame sees them.
-    pub retry: RetryPolicy,
+    pub retry: ai::retry::RetryPolicy,
     /// `ULTRON_RLM_FRAME_MODEL`, `ULTRON_REVIEW_MODEL`, `ULTRON_RLM_MAP_TOKENS` as the process has them.
     pub frame_env: HashMap<String, String>,
     /// The saved frame-model settings (`rlm.frameModel`, `rlm.frameThinking`, ...).

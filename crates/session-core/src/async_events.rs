@@ -369,7 +369,7 @@ impl Worker {
                         .push(event);
                 }
                 Ok(Command::RunEnded { lane, run_id, aborted }) => {
-                    if lane == crate::lane::MAIN && aborted {
+                    if lane == session_journal::run::MAIN_LANE && aborted {
                         let root = (self.options.root_of_run)(&run_id);
                         sync::lock(&self.counts).aborted.insert(root.clone());
                         if let Some(callback) = &self.options.on_root_aborted {
@@ -496,7 +496,7 @@ impl Worker {
 
     /// Why an idle lane's events must not start a run; `None` when they may.
     fn refusal(&self, lane: &str, events: &[RuntimeEvent]) -> Option<String> {
-        if lane != crate::lane::MAIN {
+        if lane != session_journal::run::MAIN_LANE {
             return Some("child lanes are never re-invoked".into());
         }
         let Some(root) = chain_root(events) else {

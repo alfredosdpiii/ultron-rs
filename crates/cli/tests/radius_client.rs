@@ -9,8 +9,8 @@
 //! client without `--connect` over several discovered servers (`runClientOperation`). The server's `Radius: …`
 //! lines are the ones the TypeScript command printed (fixtures/radius_server.json).
 
-mod radius_bridge;
-mod tui_harness;
+use crate::radius_bridge;
+use crate::tui_harness;
 
 use radius_bridge::{Bridge, HANG_GUARD};
 use std::io::{BufRead, BufReader};
@@ -51,7 +51,7 @@ fn ultron(root: &Path, gateway: &str, args: &[&str], env: &[(&str, &str)]) -> Co
         .env(config::paths::ENV_SERVER_DIR, root.join("server"))
         .env("ANTHROPIC_API_KEY", "test-key")
         .env(cli::experimental::EXPERIMENTAL_ENV, "1")
-        .env(server::radius_relay::ENV_RADIUS_GATEWAY, gateway)
+        .env(config::radius::ENV_RADIUS_GATEWAY, gateway)
         .env("NO_COLOR", "1")
         .env("TZ", "UTC");
     for (key, value) in env {
@@ -408,7 +408,7 @@ fn cli_radius_client_tui_recovers_a_dropped_connection() {
         &["client", "--connect", &address, "--auth-token", "tok"],
         &[
             (cli::experimental::EXPERIMENTAL_ENV, "1"),
-            (server::radius_relay::ENV_RADIUS_GATEWAY, &origin),
+            (config::radius::ENV_RADIUS_GATEWAY, &origin),
         ],
     );
     tui.wait("Session: <ID>");

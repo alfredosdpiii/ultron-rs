@@ -158,8 +158,7 @@ fn cli_daemon_coordinator_matches_typescript() {
     assert!(!Path::new(&public).exists());
 }
 
-#[path = "daemon_common/mod.rs"]
-mod common;
+use crate::daemon_common as common;
 
 /// A server generation whose leased coordinator exits before registering it (its empty shutdown fired while the
 /// lease sat unaccepted, and it removed its control socket) starts a live coordinator and registers there, instead

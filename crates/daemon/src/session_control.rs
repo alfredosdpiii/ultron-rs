@@ -6,8 +6,9 @@
 
 use crate::chord::{Service, ServiceError, ServiceResult};
 use crate::worker_settings::{self, Change, Live};
+use protocol::watch::QueueKind;
 use serde_json::{Value, json};
-use session_core::core::{Op, OpResult, QueueKind};
+use session_core::core::{Op, OpResult};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -51,7 +52,7 @@ fn state(core: &CoreCall) -> Result<Value, ServiceError> {
 }
 
 fn mode_of(value: &Value) -> String {
-    value.as_str().unwrap_or("one-at-a-time").to_string()
+    value.as_str().unwrap_or(config::keys::QUEUE_ONE_AT_A_TIME).to_string()
 }
 
 /// `{name, steeringMode, followUpMode, autoCompaction, autoRetry}`.
@@ -152,13 +153,6 @@ fn rss_bytes() -> u64 {
         .map_or(0, |kb| kb * 1024)
 }
 
-/// The product version (`VERSION`): the coding agent package's.
-pub fn version() -> String {
-    let package: Value = serde_json::from_str(include_str!("../../../packages/coding-agent/package.json"))
-        .expect("packages/coding-agent/package.json parses");
-    package["version"].as_str().unwrap_or_default().to_string()
-}
-
 /// `debugInfo`: non-secret facts about the worker for `/debug`. The Rust worker runs no Node: `nodeVersion` names
 /// the build instead.
 fn debug_info(core: &CoreCall, context: &ControlContext) -> ServiceResult {
@@ -179,7 +173,7 @@ fn debug_info(core: &CoreCall, context: &ControlContext) -> ServiceResult {
         "pid": std::process::id(),
         "parentPid": std::os::unix::process::parent_id(),
         "nodeVersion": "none (Rust build)",
-        "version": version(),
+        "version": config::version(),
         "platform": platform(),
         "cwd": context.cwd.display().to_string(),
         "agentDir": context.agent_dir.display().to_string(),
@@ -307,7 +301,7 @@ pub fn resume_response(recovered: &Value, running: Option<String>) -> Value {
         }
         _ => json!({"accepted": false, "operationId": null, "error": {
             "code": "nothing_to_resume",
-            "message": format!("Lane {} has no active operation to resume", json!(session_core::core::LANE)),
+            "message": format!("Lane {} has no active operation to resume", json!(session_journal::run::MAIN_LANE)),
         }}),
     }
 }

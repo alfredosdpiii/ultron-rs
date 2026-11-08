@@ -29,7 +29,7 @@ impl model_scope::ScopeModel for ModelInfo {
     /// The Claude Code CLI provider's models (`claude-code`, all on its `claude-code-cli` API) and the Claude
     /// subscription's, whose ids are Anthropic's own.
     fn full_reference_only(&self) -> bool {
-        self.provider == "claude-code" || self.provider == "claude-subscription"
+        config::providers::runs_claude_code(&self.provider)
     }
 }
 
@@ -101,7 +101,7 @@ pub struct Queued {
     pub user: bool,
 }
 
-pub use protocol::watch::QueueKind;
+use protocol::watch::QueueKind;
 
 /// A stored session the resume picker offers.
 #[derive(Clone, Debug, PartialEq)]

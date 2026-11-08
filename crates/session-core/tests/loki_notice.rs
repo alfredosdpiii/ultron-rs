@@ -3,8 +3,8 @@
 //! turn as a displayed `loki` custom message (in the transcript and the model's request), once; a later session in
 //! the same repository has nothing to say.
 
-mod p_session_support;
-mod reopen_support;
+use crate::p_session_support;
+use crate::reopen_support;
 
 use p_session_support::{HANG, text, user_texts};
 use reopen_support::Home;

@@ -2,7 +2,7 @@
 //! commands and jobs run in its worktree with `ULTRON_WORKTREE`, `ULTRON_PARENT_REPO`, `ULTRON_WORKTREE_BRANCH` and
 //! `PWD` set, and its jobs are the session's one table: the root lane lists them, even after the child ended.
 
-mod p_session_support;
+use crate::p_session_support;
 
 use p_session_support::{Setup, actor, text, tool, tool_results, user_texts};
 use serde_json::Value;

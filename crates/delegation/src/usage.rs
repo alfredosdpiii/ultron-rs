@@ -6,8 +6,8 @@
 //! The document is the TS one (`ultron.usage/root`), with its key order, so either implementation reads the other's.
 //! Every change is one serialized step that writes the whole document; a failed write poisons the ledger.
 
-use crate::task_store::{DocumentStore, MemoryStore};
 use jsrt::{json, sync};
+use kernel::store::{DocumentStore, MemoryDocumentStore};
 use serde_json::{Map, Value, json};
 use std::sync::{Arc, Mutex};
 
@@ -220,9 +220,6 @@ pub struct Measurement {
     pub cost: Option<f64>,
     pub wall_ms: Option<f64>,
 }
-
-// ponytail: reconcile.rs (deleted on another branch) still imports `crate::usage::number`; drop this once it is gone.
-pub use jsrt::json::number;
 
 fn known(n: Option<f64>) -> Value {
     n.map_or(Value::Null, json::number)
@@ -628,7 +625,7 @@ impl UsageLedger {
     /// An in-memory ledger with `limits`.
     pub fn in_memory(limits: UsageLimits) -> Self {
         UsageLedger::new(
-            Box::new(MemoryStore::default()),
+            Box::new(MemoryDocumentStore::default()),
             UsageOptions {
                 limits,
                 ..UsageOptions::default()

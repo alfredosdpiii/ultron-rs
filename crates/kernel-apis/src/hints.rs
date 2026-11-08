@@ -1,7 +1,8 @@
 //! `hints.mute` / `hints.unmute` / `hints.muted` (the request side of `ultron/rlm/hints.ts`): per-lane hint mutes,
 //! persisted in the module document `{version: 1, lanes: {<lane>: {muted, fired}}}`.
 
-use crate::store::{DocumentStore, read_versioned};
+use crate::store::read_versioned;
+use kernel::store::DocumentStore;
 use serde_json::{Map, Value, json};
 use std::sync::{Arc, Mutex};
 

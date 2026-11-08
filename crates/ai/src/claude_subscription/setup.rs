@@ -8,9 +8,8 @@ use super::catalog::{catalog_label, native_model, pinned_routes};
 use super::process::{apply_traffic_policy, resolve_claude, telemetry_enabled};
 use super::{Config, Env, INSTALL_HINT, LOGIN_HINT};
 use serde_json::{Value, json};
-use std::io::Write;
 use std::process::{Command, Stdio};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SetupStatus {
@@ -63,7 +62,7 @@ fn child_env(config: &Config, env: &Env) -> Env {
     child
 }
 
-/// Run `argv` with `input` on stdin, killing it after `timeout`; (exit success, stdout).
+/// Run `argv` with `input` on stdin, killing its process group after `timeout`; (exit success, stdout).
 fn run_bounded(
     argv: &[String],
     env: &Env,
@@ -71,45 +70,27 @@ fn run_bounded(
     input: &str,
     timeout: Duration,
 ) -> Option<(bool, String)> {
-    use std::os::unix::process::CommandExt;
     let mut command = Command::new(&argv[0]);
     command
         .args(&argv[1..])
         .env_clear()
         .envs(env)
-        .stdin(Stdio::piped())
         .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .process_group(0);
+        .stderr(Stdio::null());
     if let Some(cwd) = cwd {
         command.current_dir(cwd);
     }
-    let mut child = command.spawn().ok()?;
-    if let Some(mut stdin) = child.stdin.take() {
-        let _ = stdin.write_all(input.as_bytes());
-    }
-    let stdout = child.stdout.take()?;
-    let reader = std::thread::spawn(move || {
-        let mut text = String::new();
-        let _ = std::io::Read::read_to_string(&mut std::io::BufReader::new(stdout), &mut text);
-        text
-    });
-    let deadline = Instant::now() + timeout;
-    let status = loop {
-        match child.try_wait() {
-            Ok(Some(status)) => break Some(status),
-            Ok(None) if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(5)),
-            _ => {
-                if let Some(pid) = rustix::process::Pid::from_raw(child.id() as i32) {
-                    let _ = rustix::process::kill_process_group(pid, rustix::process::Signal::KILL);
-                }
-                let _ = child.wait();
-                break None;
-            }
-        }
+    let bound = signals::child::Bound {
+        timeout: Some(timeout),
+        stop: signals::child::Stop {
+            group: true,
+            term_grace: None,
+        },
+        keep: None,
     };
-    let text = reader.join().unwrap_or_default();
-    status.map(|s| (s.success(), text))
+    let out = signals::child::run(&mut command, Some(input.as_bytes()), bound).ok()?;
+    let status = out.status()?;
+    Some((status.success(), String::from_utf8_lossy(&out.stdout).into_owned()))
 }
 
 /// Installed and logged in, from the CLI's own `auth status`.

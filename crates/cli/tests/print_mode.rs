@@ -5,7 +5,7 @@
 //! progress frames, ids renamed, times zeroed). Cases with setup start from the session files a TypeScript run wrote
 //! (TypeScript writes, Rust reads: continue, resume, `--session`, `--fork`, v3 upgrade).
 
-mod common;
+use crate::common;
 
 use common::{Naming, Sandbox, mock_server, normalize_journal, session_files, transcript};
 use serde_json::Value;
@@ -214,72 +214,4 @@ fn cli_print_mode_matches_typescript() {
             }
         }
     }
-}
-
-#[test]
-fn cli_format_clock_utc_matches_format_clock() {
-    // formatClock(1791208239000) with TZ=UTC; and the epoch, and a leap day.
-    assert_eq!(
-        cli::print_mode::format_clock_utc(1_791_208_239_000),
-        "2026-10-05 13:50 UTC+00:00"
-    );
-    assert_eq!(cli::print_mode::format_clock_utc(0), "1970-01-01 00:00 UTC+00:00");
-    assert_eq!(
-        cli::print_mode::format_clock_utc(951_782_400_000),
-        "2000-02-29 00:00 UTC+00:00"
-    );
-}
-
-#[test]
-fn cli_clock_lines_match_with_clock_lines() {
-    // formatGap and withClockLines (packages/coding-agent/src/ultron/clock-context.ts), values from node.
-    for (ms, want) in [
-        (600_000, "10 min"),
-        (7_199_999, "119 min"),
-        (7_200_000, "2 h"),
-        (172_799_999, "47 h"),
-        (172_800_000, "2 d"),
-    ] {
-        assert_eq!(cli::print_mode::format_gap(ms), want, "{ms}");
-    }
-    let user = |t: i64| serde_json::json!({"role": "user", "content": "x", "timestamp": t});
-    let assistant = |t: i64| serde_json::json!({"role": "assistant", "content": [], "timestamp": t});
-    // Only user messages get a line; a tool result's time still counts as the previous message (no lines here).
-    let tool = serde_json::json!({"role": "toolResult", "content": [], "timestamp": 20_000_000});
-    assert!(cli::print_mode::clock_lines(&[user(0), tool, user(20_000_001)]).is_empty());
-    let messages = [
-        user(0),
-        user(1_000),
-        assistant(500_000),
-        user(1_099_999),
-        user(1_700_000),
-        user(9_000_000),
-    ];
-    let lines: Vec<(usize, String)> = cli::print_mode::clock_lines(&messages)
-        .into_iter()
-        .map(|(i, m)| match m {
-            ai::Message::User(u) => match u.content {
-                ai::UserMessageContent::Blocks(b) => match &b[0] {
-                    ai::UserContent::Text(t) => (i, t.text.clone()),
-                    _ => unreachable!(),
-                },
-                _ => unreachable!(),
-            },
-            _ => unreachable!(),
-        })
-        .collect();
-    assert_eq!(
-        lines,
-        [
-            (1, "[clock] 1970-01-01 00:00 UTC+00:00".to_string()),
-            (
-                4,
-                "[clock] 1970-01-01 00:28 UTC+00:00, 10 min after the previous message".to_string()
-            ),
-            (
-                5,
-                "[clock] 1970-01-01 02:30 UTC+00:00, 2 h after the previous message".to_string()
-            ),
-        ]
-    );
 }

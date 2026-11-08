@@ -8,6 +8,7 @@ use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::time::{Duration, Instant};
 
+use config::browser::{browser_command, browser_opener, launcher_name};
 use interactive::app::{App, AppOptions};
 use interactive::history::PromptHistoryStore;
 use interactive::keybindings::Platform;
@@ -15,7 +16,6 @@ use interactive::keybindings::native_app_keybindings;
 use interactive::lane::{LaneEvent, ModelInfo, SessionOpened};
 use interactive::qol::QolSettings;
 use interactive::render_settings::{self, RenderSettings};
-use interactive::url_opener::{browser_command, find_launcher, launcher_name, url_opener};
 use serde_json::json;
 use theme::{ColorMode, builtin_theme_json, create_theme};
 use tui::KeybindingsManager;
@@ -152,7 +152,7 @@ fn interactive_fullscreen_click_on_a_markdown_link_opens_it_with_the_session_lau
     let dir = TempDir::new("markdown");
     let (path, out) = fake_launcher(dir.path());
     let mut app = app(QolSettings::parity(), &format!("Read [the manual]({URL}) first."));
-    app.set_url_opener(url_opener(Some(path.clone()), Some("/h".into())));
+    app.set_url_opener(browser_opener(Some(path.clone()), Some("/h".into()), Vec::new()));
     let rows = screen(&mut app);
     let row = rows.iter().position(|l| l.contains("the manual")).unwrap();
     let col = rows[row].find("the manual").unwrap() + 2;
@@ -184,7 +184,7 @@ fn interactive_copy_picker_opens_a_link_with_the_session_launcher() {
     let dir = TempDir::new("picker");
     let (path, out) = fake_launcher(dir.path());
     let mut app = app(QolSettings::default(), &format!("Docs at {URL}"));
-    app.set_url_opener(url_opener(Some(path), None));
+    app.set_url_opener(browser_opener(Some(path), None, Vec::new()));
     for data in ["/copy", "\r"] {
         app.handle_input(data);
     }
@@ -232,15 +232,16 @@ fn interactive_url_opener_finds_the_launcher_on_the_given_path_only() {
     for d in [&first, &second, &empty] {
         std::fs::create_dir_all(d).unwrap();
     }
-    std::fs::write(first.join("xdg-open"), "").unwrap();
-    std::fs::write(second.join("xdg-open"), "").unwrap();
+    for launcher in [first.join("xdg-open"), second.join("xdg-open")] {
+        std::fs::write(&launcher, "").unwrap();
+        std::fs::set_permissions(&launcher, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+    }
     std::fs::create_dir_all(empty.join("xdg-open")).unwrap();
     let joined = |dirs: &[&PathBuf]| std::env::join_paths(dirs).unwrap().into_string().unwrap();
     assert_eq!(
-        find_launcher(Some(&joined(&[&empty, &second, &first])), "xdg-open"),
+        jsrt::process::which("xdg-open", &joined(&[&empty, &second, &first])),
         Some(second.join("xdg-open")),
         "a directory of that name is not a launcher"
     );
-    assert_eq!(find_launcher(Some(&joined(&[&empty])), "xdg-open"), None);
-    assert_eq!(find_launcher(None, "xdg-open"), None);
+    assert_eq!(jsrt::process::which("xdg-open", &joined(&[&empty])), None);
 }

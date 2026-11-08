@@ -8,9 +8,8 @@
 //! certificate is a PEM `CERTIFICATE` block (or a DER buffer) holding an X.509 `Certificate` structure, and a key a PEM
 //! private key block, and their failures carry OpenSSL's message for the common case.
 
-use super::{Fail, io_message};
+use super::Fail;
 use crate::env::{ProviderEnv, provider_env_value};
-use crate::jsutil::json_parse_error;
 use serde_json::Value;
 use std::path::{Path, PathBuf};
 
@@ -69,7 +68,7 @@ impl CertificateSource {
                 UNAVAILABLE,
                 format!(
                     "Failed to read certificate file at {cert_path}: {}",
-                    io_message(&e, "open", Path::new(&cert_path))
+                    jsrt::fs::error_message(&e, "open", Path::new(&cert_path))
                 ),
             )
         })?;
@@ -84,7 +83,7 @@ impl CertificateSource {
                 UNAVAILABLE,
                 format!(
                     "Failed to read private key file at {key_path}: {}",
-                    io_message(&e, "open", Path::new(&key_path))
+                    jsrt::fs::error_message(&e, "open", Path::new(&key_path))
                 ),
             )
         })?;
@@ -145,7 +144,7 @@ impl CertificateSource {
                 UNAVAILABLE,
                 format!(
                     "Failed to process certificate chain from {path}: {}",
-                    io_message(&e, "open", Path::new(path))
+                    jsrt::fs::error_message(&e, "open", Path::new(path))
                 ),
             )
         })?;
@@ -231,7 +230,7 @@ fn cert_and_key_paths(config_path: &str) -> Result<(String, String), Fail> {
                 format!("Failed to read certificate config file at: {config_path}"),
             )
         })?;
-    if let Some(message) = json_parse_error(&text) {
+    if let Some(message) = jsrt::json::parse(&text).err() {
         return Err(Fail::typed(
             INVALID,
             format!("Failed to parse certificate config from {config_path}: {message}"),

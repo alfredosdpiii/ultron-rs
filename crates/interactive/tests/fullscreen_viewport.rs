@@ -10,7 +10,7 @@ use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-mod support;
+use crate::support;
 use support::Sent;
 
 use interactive::app::{App, AppOptions};

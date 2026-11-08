@@ -35,38 +35,10 @@ pub fn is_concrete_evidence(item: &str) -> bool {
     CONCRETE.iter().any(|pattern| pattern.is_match(item))
 }
 
-/// `path.posix.normalize`.
-fn normalize(path: &str) -> String {
-    let absolute = path.starts_with('/');
-    let trailing = path.ends_with('/');
-    let mut parts: Vec<&str> = Vec::new();
-    for part in path.split('/') {
-        match part {
-            "" | "." => {}
-            ".." if parts.last().is_some_and(|p| *p != "..") => {
-                parts.pop();
-            }
-            ".." if absolute => {}
-            other => parts.push(other),
-        }
-    }
-    let mut out = parts.join("/");
-    if absolute {
-        out.insert(0, '/');
-    }
-    if out.is_empty() {
-        return ".".into();
-    }
-    if trailing && !out.ends_with('/') {
-        out.push('/');
-    }
-    out
-}
-
 /// `path.posix.relative` between two absolute paths.
 fn relative(from: &str, to: &str) -> String {
     let split = |p: &str| -> Vec<String> {
-        normalize(p)
+        jsrt::path::normalize(p)
             .split('/')
             .filter(|s| !s.is_empty())
             .map(String::from)
@@ -88,7 +60,7 @@ pub fn workspace_path(path: &str, workspace: Option<&str>) -> Option<String> {
             return None;
         }
     }
-    let value = normalize(&value).trim_end_matches('/').to_string();
+    let value = jsrt::path::normalize(&value).trim_end_matches('/').to_string();
     if value == "." || value.is_empty() || value.starts_with("../") || value == ".." {
         return None;
     }

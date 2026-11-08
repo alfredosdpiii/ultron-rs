@@ -28,16 +28,18 @@
 
 use crate::root_sink::RootSink;
 use ai::AssistantMessage;
+use ai::retry::RetryPolicy;
 use durable::{ConversationId, ROOT_CONVERSATION_ID};
-use harness::chat::{AgentChange, ChatHarness, ChatOptions, CompactionPolicy, ModelRef, RetryPolicy, Settings};
+use harness::chat::{AgentChange, ChatHarness, ChatOptions, CompactionPolicy, ModelRef, Settings};
 use harness::scheduler::Registry;
 use serde_json::{Map, Value, json};
 use session_core::compose::Runtime;
 use session_core::durable_store::SharedSession;
-use session_core::lane::{Lane, MAIN};
+use session_core::lane::Lane;
 use session_core::subagents::{CONVERSATION_LANE_PREFIX, DurableChildren};
 use session_core::swarm_ops::SwarmOps;
 use session_core::turns::{Bridge, TurnCells, TurnModels};
+use session_journal::run::MAIN_LANE;
 use std::sync::Arc;
 
 /// Generation partials are not committed (as the native runtime: nothing shows a child's stream).
@@ -62,7 +64,7 @@ pub fn keep_model(
         |model: &str| crate::mcp_server::split_model(model.trim()).map(|(provider, id)| ModelRef::new(&provider, &id));
     reference(&chosen)
         .or_else(|| reference(subscription))
-        .unwrap_or_else(|| ModelRef::new(ai::claude_code::PROVIDER, crate::claude_cli::DEFAULT_CLAUDE_MODEL))
+        .unwrap_or_else(|| ModelRef::new(ai::claude_code::PROVIDER, config::providers::CLAUDE_CODE_DEFAULT_MODEL))
 }
 
 /// The durable runtime of an `ultron mcp` root and the APIs served over it.
@@ -94,8 +96,7 @@ pub fn open(
     let storage = session_core::durable_store::open(session.clone(), None).map_err(|e| e.message().to_string())?;
     // Nothing reaches an actor: the root conversation never runs, and children's requests never use the bridge.
     let bridge = Bridge::new(Arc::new(|_| {}));
-    let provider =
-        Arc::new(session_core::lane::Provider::new().with_live_settings(runtime.config.settings_reader(), true));
+    let provider = Arc::new(session_core::lane::Provider::new().with_live_settings(runtime.config.settings_reader()));
     let stream_provider = provider.clone();
     let retry = runtime.config.settings["retry"].clone();
     let settings: harness::chat::SettingsSource = Arc::new(move || Settings {
@@ -117,9 +118,7 @@ pub fn open(
     let root_session = Arc::new(std::sync::OnceLock::new());
     let _ = root_session.set(format!("ultron-claude-root-{}", jsrt::random::random_hex(8)));
     let (charged, charge_stack) = (children.clone(), stack.clone());
-    let budget = session_core::view_images::context_image_budget(
-        (env.var)(session_core::view_images::CONTEXT_IMAGES_ENV).as_deref(),
-    );
+    let budget = runtime.config.context_images;
     let models = TurnModels {
         bridge: bridge.clone(),
         provider: provider as Arc<dyn agent::StreamFn>,
@@ -235,7 +234,7 @@ fn agent_name(agents: &Value, conversation: ConversationId) -> String {
 impl DurableApis {
     /// The conversation `lane` works in, if it has one in this runtime (the root lane, a persistent child's lane).
     pub fn conversation(&self, lane: &str) -> Option<ConversationId> {
-        if lane == MAIN {
+        if lane == MAIN_LANE {
             return Some(ROOT_CONVERSATION_ID);
         }
         if let Some(id) = lane.strip_prefix(CONVERSATION_LANE_PREFIX) {
@@ -296,89 +295,13 @@ impl DurableApis {
     /// `name` (what it adds, appends, claims and sends is by `name`; its inbox is `name`'s): a wake to the root goes
     /// to the root's inbox ([`DurableApis::wake_root`]), one to a persistent child starts its next turn.
     pub fn serve_as(&self, name: &str, kind: &str, payload: &Map<String, Value>) -> Result<Value, String> {
-        use harness::chat::swarm;
-        let chat = &self.chat;
-        let failed = |error: harness::scheduler::HarnessError| error.message();
-        let text = |key: &str| payload.get(key).and_then(Value::as_str);
-        let now = chat.now();
-        let result = match kind {
-            "swarm.register" => {
-                let named = text("name").unwrap_or(name).to_string();
-                chat.commit(|tx| swarm::register(tx, &named, None, None, payload, now))
-            }
-            "swarm.agents" => chat.commit(swarm::agents),
-            "swarm.route" => {
-                let query = text("query").ok_or("swarm.route needs a query")?.to_owned();
-                chat.commit(|tx| swarm::route(tx, &query))
-            }
-            "swarm.send" => {
-                let to = text("to").ok_or("swarm.send needs a recipient")?.to_owned();
-                let body = text("text").ok_or("swarm.send needs text")?.to_owned();
-                let id = chat
-                    .commit(|tx| swarm::send(tx, name, &to, &body, now))
-                    .map_err(failed)?;
-                let mut woke = false;
-                if payload.get("wake").and_then(Value::as_bool).unwrap_or(false) {
-                    let agents = chat.commit(swarm::agents).map_err(failed)?;
-                    let target = agents.get(&to).map(|entry| entry["conversation"].as_u64());
-                    // The root: the name it registered, else `root` (as [`DurableApis::wake_root`]).
-                    let root = target.map_or(to == "root", |conversation| {
-                        conversation == Some(ROOT_CONVERSATION_ID.0)
-                    });
-                    if root {
-                        self.publish(name, &to, &body);
-                        woke = true;
-                    } else if let Some(Some(target)) = target
-                        && let Some(handle) = chat.conversation(ConversationId(target)).map_err(failed)?
-                    {
-                        let draft = harness::chat::SubmissionDraft::input(format!("Message from {name}: {body}"))
-                            .when_busy(harness::chat::WhenBusy::FollowUp);
-                        handle.submit(draft).map_err(failed)?;
-                        woke = true;
-                    }
-                }
-                return Ok(json!({"id": id, "woke": woke}));
-            }
-            "swarm.inbox" => {
-                let all = payload.get("all").and_then(Value::as_bool).unwrap_or(false);
-                let mark = payload.get("mark").and_then(Value::as_bool).unwrap_or(true);
-                let named = text("name").unwrap_or(name).to_string();
-                chat.commit(|tx| swarm::inbox(tx, &named, all, mark))
-            }
-            "board.add" => {
-                let title = text("title").ok_or("board.add needs a title")?.to_owned();
-                let detail = text("detail").map(str::to_owned);
-                chat.commit(|tx| swarm::board_add(tx, name, &title, detail.as_deref(), now))
-            }
-            "board.claim" | "board.update" => {
-                let id = payload
-                    .get("id")
-                    .and_then(Value::as_u64)
-                    .ok_or("A board task id is a number")?;
-                if kind == "board.claim" {
-                    chat.commit(|tx| swarm::board_claim(tx, name, id, now))
-                } else {
-                    let (status, note) = (text("status").map(str::to_owned), text("note").map(str::to_owned));
-                    chat.commit(|tx| swarm::board_update(tx, name, id, status.as_deref(), note.as_deref(), now))
-                }
-            }
-            "board.list" => {
-                let status = text("status").map(str::to_owned);
-                chat.commit(|tx| swarm::board_list(tx, status.as_deref()))
-            }
-            "notes.read" => chat.commit(swarm::notes_read),
-            "notes.append" => {
-                let line = text("text").ok_or("notes.append needs text")?.to_owned();
-                chat.commit(|tx| swarm::notes_append(tx, name, &line))
-            }
-            "notes.write" => {
-                let body = text("text").ok_or("notes.write needs text")?.to_owned();
-                let expect = payload.get("expect_version").and_then(Value::as_u64);
-                chat.commit(|tx| swarm::notes_write(tx, &body, expect))
-            }
-            other => return Err(format!("{other} is not one of the session's shared records")),
+        let publish = |from: &str, to: &str, text: &str| self.publish(from, to, text);
+        let caller = harness::chat::swarm::Caller {
+            name: name.to_string(),
+            conversation: None,
+            root_inbox: Some(&publish),
         };
-        result.map_err(failed)
+        harness::chat::swarm::serve(&self.chat, kind, payload, &caller)
     }
 
     /// A `<swarm_message>` from `from` to the root (`to`, its name) in the root's inbox.

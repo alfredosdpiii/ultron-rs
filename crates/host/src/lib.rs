@@ -25,8 +25,9 @@ pub mod shell_env;
 pub mod text;
 pub mod view_image;
 
-use journal::{JobJournal, JobRecord, Status};
+use journal::{JobRecord, Status};
 use jsrt::sync;
+use kernel::store::DocumentStore;
 use kernel::{HostHandler, Signal};
 use serde_json::{Map, Value, json};
 use std::fs::File;
@@ -140,7 +141,7 @@ enum StopReason {
 /// its jobs to a next owner, and who hears of their ends.
 struct Shared {
     jobs: Mutex<Vec<Arc<Job>>>,
-    journal: Mutex<Option<Arc<dyn JobJournal>>>,
+    journal: Mutex<Option<Arc<dyn DocumentStore>>>,
     released: AtomicBool,
     ends: Mutex<Option<JobEnds>>,
     roots: Mutex<Option<RootOf>>,
@@ -554,7 +555,7 @@ impl Host {
     /// on. A job the journal lists as running is settled from its process: followed again while its keeper runs,
     /// completed with the exit status the keeper wrote, or `lost` when the process ended without one. Records
     /// without a process (TypeScript journals) read as `interrupted`, as there. Call once, before the first request.
-    pub fn with_journal(self, journal: Arc<dyn JobJournal>) -> Result<Host, String> {
+    pub fn with_journal(self, journal: Arc<dyn DocumentStore>) -> Result<Host, String> {
         let now = jsrt::date::now_ms() as u64;
         let restored = journal::restore_durable(journal.read()?.as_ref(), now)?;
         let mut adopted = Vec::new();

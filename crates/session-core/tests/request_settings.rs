@@ -48,7 +48,8 @@ fn session_core_thinking_budgets_setting_reaches_the_request_like_ts() {
             Value::Null => json!({}),
             budgets => json!({ "thinkingBudgets": budgets }),
         };
-        let provider = Provider::with_router(ai::claude_subscription::fallback::global(), capture.clone())
+        let provider = Provider::new()
+            .with_transport(capture.clone())
             .with_request_settings(RequestSettings::from_settings(&settings));
         let mut options = ai::SimpleStreamOptions::default();
         options.base.api_key = Some("sk-ant-api-fixture".into());
@@ -97,10 +98,12 @@ fn session_core_invalid_websocket_timeout_setting_fails_the_request() {
     let fixture = fixture();
     let model: ai::Model = serde_json::from_value(fixture["model"].clone()).unwrap();
     let capture = Arc::new(Capture::default());
-    let provider = Provider::with_router(ai::claude_subscription::fallback::global(), capture.clone())
-        .with_request_settings(RequestSettings::from_settings(
-            &json!({"websocketConnectTimeoutMs": "soon"}),
-        ));
+    let provider =
+        Provider::new()
+            .with_transport(capture.clone())
+            .with_request_settings(RequestSettings::from_settings(
+                &json!({"websocketConnectTimeoutMs": "soon"}),
+            ));
     let mut options = ai::SimpleStreamOptions::default();
     options.base.api_key = Some("sk-ant-api-fixture".into());
     options.base.max_retries = Some(0);

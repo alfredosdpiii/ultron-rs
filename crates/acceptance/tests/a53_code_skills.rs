@@ -6,15 +6,13 @@
 //! the same facts from the `ultron` binary itself: the system prompt of a run whose agent dir holds the skills lists
 //! the published Pi skill (or none) and carries the code-skills line of the runtime guide.
 
-mod common;
+use crate::common;
 
 use common::{Install, Provider, Reply, runtime};
+use kernel::store::{DocumentStore, MemoryDocumentStore};
 use kernel::{Kernel, KernelOptions, Signal, Status};
 use kernel_apis::util::system_clock;
-use kernel_apis::{
-    CodeSkillKind, CodeSkills, CodeSkillsOptions, DocumentStore, KernelApis, MemoryDocumentStore, SkillLoader,
-    SkillsModule,
-};
+use kernel_apis::{CodeSkillKind, CodeSkills, CodeSkillsOptions, KernelApis, SkillLoader, SkillsModule};
 use serde_json::{Map, Value, json};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;

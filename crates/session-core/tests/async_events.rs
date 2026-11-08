@@ -285,13 +285,17 @@ fn session_core_async_events_coalesce_within_the_window_without_a_drain() {
     s.dispatcher.publish(event("job-b"));
     assert_eq!(s.dispatcher.pending_for("main"), 2);
     let deadline = std::time::Instant::now() + Duration::from_secs(120);
-    while s.fake.runs("main").is_empty() {
+    loop {
+        // Read the count first: 0 only once the delivery (counted in flight until it returns) has run.
+        let pending = s.dispatcher.pending_for("main");
+        if !s.fake.runs("main").is_empty() && pending == 0 {
+            break;
+        }
         assert!(std::time::Instant::now() < deadline, "the batch was never delivered");
         std::thread::sleep(Duration::from_millis(10));
     }
     assert_eq!(s.fake.runs("main").len(), 1);
     assert_eq!(s.fake.runs("main")[0].1.split('\n').count(), 2);
-    assert_eq!(s.dispatcher.pending_for("main"), 0);
 }
 
 #[test]

@@ -3,7 +3,7 @@
 //! choice reaches the profile's trust.json through the worker, the debug log lands in the agent dir with the worker's
 //! facts, and the plugin reload answers.
 
-mod tui_harness;
+use crate::tui_harness;
 
 use std::os::unix::fs::PermissionsExt;
 use tui_harness::{Mock, QUIET, Tui};

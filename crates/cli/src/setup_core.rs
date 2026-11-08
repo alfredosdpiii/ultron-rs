@@ -34,42 +34,25 @@ pub fn probe_command(path: Option<&str>, command: &str, args: &[&str]) -> Option
     let mut child = std::process::Command::new(command);
     child
         .args(args)
-        .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped());
     match path {
         Some(path) => child.env("PATH", path),
         None => child.env_remove("PATH"),
     };
-    let mut child = child.spawn().ok()?;
-    let (mut stdout, mut stderr) = (child.stdout.take()?, child.stderr.take()?);
-    let out = std::thread::spawn(move || {
-        let mut text = String::new();
-        let _ = stdout.read_to_string(&mut text);
-        text
-    });
-    let err = std::thread::spawn(move || {
-        let mut text = String::new();
-        let _ = stderr.read_to_string(&mut text);
-        text
-    });
-    let deadline = Instant::now() + Duration::from_secs(5);
-    let status = loop {
-        match child.try_wait() {
-            Ok(Some(status)) => break Some(status),
-            Ok(None) if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(5)),
-            _ => {
-                let _ = child.kill();
-                let _ = child.wait();
-                break None;
-            }
-        }
+    let bound = signals::child::Bound {
+        timeout: Some(Duration::from_secs(5)),
+        ..Default::default()
     };
-    let (out, err) = (out.join().unwrap_or_default(), err.join().unwrap_or_default());
-    if !status?.success() {
+    let out = signals::child::run(&mut child, None, bound).ok()?;
+    if !out.success() {
         return None;
     }
-    let text = format!("{out}{err}");
+    let text = format!(
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
     Some(text.trim().split('\n').next().unwrap_or("").trim().to_string())
 }
 
@@ -577,17 +560,7 @@ pub fn hindsight_docker_args(options: &HindsightDockerOptions) -> Vec<String> {
 pub fn format_command(command: &str, args: &[String]) -> String {
     std::iter::once(command.to_string())
         .chain(args.iter().cloned())
-        .map(|part| {
-            let plain = !part.is_empty()
-                && part
-                    .chars()
-                    .all(|c| c.is_ascii_alphanumeric() || "_@%+=:,./-".contains(c));
-            if plain {
-                part
-            } else {
-                format!("'{}'", part.replace('\'', "'\\''"))
-            }
-        })
+        .map(|part| jsrt::string::shell_quote(&part))
         .collect::<Vec<_>>()
         .join(" ")
 }

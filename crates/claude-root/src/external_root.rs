@@ -11,11 +11,12 @@
 //! - a turn whose budget is spent refuses its cells.
 
 use agent::AgentTool;
-use ai::{AbortSignal, UserContent};
+use ai::AbortSignal;
 use serde_json::{Value, json};
-use session_core::lane::{Lane, MAIN};
+use session_core::lane::Lane;
 use session_core::nudge::{SkillExtractionNudger, ToolRoundNudger};
 use session_core::session_stats::SessionStats;
+use session_journal::run::MAIN_LANE;
 use std::sync::{Arc, Mutex, PoisonError};
 
 /// At most this many events are kept waiting; older ones are dropped with a count.
@@ -160,28 +161,34 @@ impl ExternalRoot {
 
     /// Over a session's root lane: events through `sink` (the dispatcher's coalescing: shell-job and tool-call ends
     /// published into it by crate::external_lane::wire, and the lane's runtime events, forwarded as they arrive),
-    /// cells through its `rlm` tool, turns through `host`, nudges as the environment sets them.
+    /// cells through its `rlm` tool, turns through `host`, nudges as the session `config` sets them.
     pub fn over_lane(
         lane: Arc<Lane>,
         loki_context: Option<String>,
         sink: Arc<crate::root_sink::RootSink>,
         host: Arc<dyn RootHost>,
-        var: &dyn Fn(&str) -> Option<String>,
+        config: &session_core::compose::Config,
     ) -> ExternalRoot {
         let stats = lane.stack.stats.clone();
         // Subagents', typed tasks' and detached cells' ends, forwarded until the root or its lane goes away (the
         // native session forwards them to its dispatcher the same way).
-        let (forward_lane, forward_sink) = (Arc::downgrade(&lane), Arc::downgrade(&sink));
+        let (forward_lane, forward_sink, forward_events) =
+            (Arc::downgrade(&lane), Arc::downgrade(&sink), lane.events.clone());
         std::thread::spawn(move || {
             loop {
-                let (Some(lane), Some(sink)) = (forward_lane.upgrade(), forward_sink.upgrade()) else {
+                // Returns as soon as an end arrives; the wait only bounds how long a closed root keeps this thread.
+                let ends = forward_events.recv(std::time::Duration::from_secs(1));
+                let (Some(_lane), Some(sink)) = (forward_lane.upgrade(), forward_sink.upgrade()) else {
                     return;
                 };
-                for line in lane_event_lines(&lane) {
-                    sink.publish(line);
+                if !forward_events.enabled() {
+                    continue;
                 }
-                drop((lane, sink));
-                std::thread::sleep(std::time::Duration::from_millis(50));
+                for line in forward_events.root_lines(&ends) {
+                    for line in line.lines() {
+                        sink.publish(line.to_string());
+                    }
+                }
             }
         });
         let events: EventSource = Arc::new(move || sink.take());
@@ -202,19 +209,10 @@ impl ExternalRoot {
                 .filter_map(|part| serde_json::to_value(part).ok())
                 .collect())
         });
-        let async_events = session_core::async_events::async_events_enabled(
-            var(session_core::async_events::ASYNC_EVENTS_ENV).as_deref(),
-        );
         ExternalRoot::new(events, runner, loki_context)
             .with_stats(stats)
             .with_host(host)
-            .with_nudges(
-                session_core::nudge::tool_rounds_nudge_from_env(
-                    var(session_core::nudge::TOOL_ROUNDS_NUDGE_ENV).as_deref(),
-                ),
-                session_core::nudge::skill_nudge_from_env(var(session_core::nudge::SKILL_NUDGE_ENV).as_deref()),
-                async_events,
-            )
+            .with_nudges(config.tool_rounds_nudge, config.skill_nudge, config.async_events)
     }
 
     fn lock(&self) -> std::sync::MutexGuard<'_, State> {
@@ -298,7 +296,7 @@ impl ExternalRoot {
             stats.external_turn_ended(&turn);
         }
         self.host.end_root_turn(&turn);
-        self.host.run_ended(MAIN);
+        self.host.run_ended(MAIN_LANE);
         let mut nudgers = self.nudgers.lock().unwrap_or_else(PoisonError::into_inner);
         nudgers.0.run_ended(&turn);
         nudgers.1.run_ended(&turn);
@@ -398,31 +396,4 @@ impl ExternalRoot {
             is_error,
         }
     }
-}
-
-/// The `<runtime_event>` lines of the root lane's runtime events that have arrived (never waiting for running work).
-fn lane_event_lines(lane: &Lane) -> Vec<String> {
-    let now = AbortSignal::new();
-    now.abort();
-    lane.events
-        .next_message(&now)
-        .into_iter()
-        .filter_map(|message| match message {
-            ai::Message::User(user) => match user.content {
-                ai::UserMessageContent::Blocks(blocks) => Some(
-                    blocks
-                        .into_iter()
-                        .filter_map(|b| match b {
-                            UserContent::Text(t) => Some(t.text),
-                            UserContent::Image(_) => None,
-                        })
-                        .collect::<Vec<_>>()
-                        .join("\n"),
-                ),
-                ai::UserMessageContent::Text(text) => Some(text),
-            },
-            _ => None,
-        })
-        .flat_map(|text| text.lines().map(str::to_string).collect::<Vec<_>>())
-        .collect()
 }

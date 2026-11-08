@@ -5,8 +5,8 @@
 //! <situation>`, never the content; `memory.get(id)` then reads the content. The memory server is the fake
 //! Hindsight server of crates/hindsight/fixtures on 127.0.0.1.
 
-mod p_session_support;
-mod reopen_support;
+use crate::p_session_support;
+use crate::reopen_support;
 
 use p_session_support::{text, tool, tool_results};
 use reopen_support::Home;

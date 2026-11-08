@@ -54,7 +54,7 @@ pub use autocomplete::{
     Completion, SlashCommand, SuggestionsJob, apply_completion,
 };
 pub use clipboard::{Clipboard, ClipboardImage, ClipboardRead, ClipboardReply, ClipboardService, SystemClipboard};
-pub use clipboard_copy::{CopyEnv, CopyIo, copy_to_clipboard, platform};
+pub use clipboard_copy::{CopyEnv, CopyIo, copy_to_clipboard};
 pub use clipboard_image::{
     ImageRead, ImageSources, extension_for_image_mime_type, is_wayland_session, is_wsl, powershell_script,
     read_clipboard_image, rgba_to_png,

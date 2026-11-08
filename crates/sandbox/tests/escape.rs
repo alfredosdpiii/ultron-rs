@@ -9,7 +9,7 @@
 //!   base/fakehome/work/project   the project (writable), with `link` -> base/outside
 //!   base/outside                 a directory outside every writable path
 
-mod backends_support;
+use crate::backends_support;
 
 use sandbox::launcher::{Launcher, Mechanism, Policy};
 use sandbox::settings::{Mode, Settings};

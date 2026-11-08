@@ -3,7 +3,7 @@
 //! gets back the saved file's path under the session's output directory, and sees argument and provider errors as
 //! Python exceptions. The session's runtime guide names the API.
 
-mod p_session_support;
+use crate::p_session_support;
 
 use base64::Engine;
 use p_session_support::{Setup, actor, server, text, tool};

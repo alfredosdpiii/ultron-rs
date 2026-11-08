@@ -3,8 +3,7 @@
 //! exit, and its scheduled prompts keep firing; its sessions have the Ultron persona on by default; an idle durable
 //! server starts no run of its own; a project client keeps its own server as before.
 
-#[path = "daemon_common/mod.rs"]
-mod common;
+use crate::daemon_common as common;
 
 use common::{HANG_GUARD, Home, assert_none_mentioning, provider, sse, text_reply};
 use serde_json::{Value, json};

@@ -1,7 +1,6 @@
 //! The tmux harness of the interactive TUI tests (a copy of the one in tests/interactive.rs, shared by the
 //! command parity tests): the scripted Anthropic SSE server, screen normalization, private temp dirs, one TUI
 //! process per tmux server.
-#![allow(dead_code)]
 
 use serde_json::Value;
 use std::io::{BufRead, BufReader, Read, Write};
@@ -61,48 +60,24 @@ pub struct Gate {
 pub struct Mock {
     pub port: u16,
     pub gate: Arc<Gate>,
-    pub title_gate: Arc<Gate>,
-    pub title_requests: Arc<AtomicUsize>,
     /// The bodies of the requests that took a scripted reply, in arrival order.
     pub requests: Arc<Mutex<Vec<String>>>,
 }
 
-/// Wait until `gate` is released once more than `ticket` times.
-pub fn wait_gate(gate: &Gate, ticket: usize) {
-    let mut released = gate.released.lock().unwrap();
-    while *released <= ticket {
-        released = gate.cv.wait(released).unwrap();
-    }
-}
-
 impl Mock {
-    /// `title`: the naming call's reply, and whether it waits for [`Mock::release_title`].
-    pub fn start(replies: Vec<Reply>, title: Option<(String, bool)>) -> Mock {
+    /// `title`: the naming call's reply.
+    pub fn start(replies: Vec<Reply>, title: Option<String>) -> Mock {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let port = listener.local_addr().unwrap().port();
         let gate = Arc::new(Gate::default());
-        let title_gate = Arc::new(Gate::default());
-        let title_requests = Arc::new(AtomicUsize::new(0));
         let next = Arc::new(AtomicUsize::new(0));
         let requests = Arc::new(Mutex::new(Vec::new()));
-        let (g, t, tg, r) = (
-            gate.clone(),
-            title_requests.clone(),
-            title_gate.clone(),
-            requests.clone(),
-        );
+        let (g, r) = (gate.clone(), requests.clone());
         std::thread::spawn(move || {
             for stream in listener.incoming() {
                 let Ok(mut stream) = stream else { return };
-                let (replies, gate, next, titles, title, title_gate, requests) = (
-                    replies.clone(),
-                    g.clone(),
-                    next.clone(),
-                    t.clone(),
-                    title.clone(),
-                    tg.clone(),
-                    r.clone(),
-                );
+                let (replies, gate, next, title, requests) =
+                    (replies.clone(), g.clone(), next.clone(), title.clone(), r.clone());
                 std::thread::spawn(move || {
                     let mut reader = BufReader::new(stream.try_clone().unwrap());
                     let mut line = String::new();
@@ -125,13 +100,8 @@ impl Mock {
                     let mut body = vec![0; length];
                     reader.read_exact(&mut body).unwrap();
                     let body = String::from_utf8_lossy(&body);
-                    let reply = if body.contains(cli::naming::SYSTEM) {
-                        titles.fetch_add(1, Ordering::SeqCst);
-                        let (text, hold) = title.unwrap_or(("Untitled".into(), false));
-                        if hold {
-                            wait_gate(&title_gate, 0);
-                        }
-                        text_reply(&text)
+                    let reply = if body.contains(session_core::naming::SYSTEM) {
+                        text_reply(title.as_deref().unwrap_or("Untitled"))
                     } else {
                         requests.lock().unwrap().push(body.to_string());
                         let i = next.fetch_add(1, Ordering::SeqCst);
@@ -161,32 +131,12 @@ impl Mock {
                 });
             }
         });
-        Mock {
-            port,
-            gate,
-            title_gate,
-            title_requests,
-            requests,
-        }
+        Mock { port, gate, requests }
     }
 
     /// The bodies of the requests that took a scripted reply so far.
     pub fn requests(&self) -> Vec<String> {
         self.requests.lock().unwrap().clone()
-    }
-
-    pub fn release_title(&self) {
-        *self.title_gate.released.lock().unwrap() += 1;
-        self.title_gate.cv.notify_all();
-    }
-
-    /// Wait until the naming call reached the server.
-    pub fn wait_title_request(&self) {
-        let deadline = Instant::now() + Duration::from_secs(120);
-        while self.title_requests.load(Ordering::SeqCst) == 0 {
-            assert!(Instant::now() < deadline, "no naming request");
-            std::thread::sleep(Duration::from_millis(10));
-        }
     }
 
     /// Wait until `n` held replies reached their hold point (hang guard 120 s): a [`Mock::release`] only frees the
@@ -309,7 +259,6 @@ pub struct Tui {
     pub socket: String,
     pub root: PathBuf,
     pub _tmp: Option<TempDir>,
-    pub started: Instant,
 }
 
 impl Tui {
@@ -423,12 +372,10 @@ impl Tui {
         .unwrap();
         // The tmux server's socket lives in the temp dir, so nothing is left behind.
         let socket = root.join("tmux.sock").display().to_string();
-        let started = Instant::now();
         let tui = Tui {
             socket,
             root,
             _tmp: None,
-            started,
         };
         tui.tmux(&[
             "new-session",

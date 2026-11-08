@@ -4,16 +4,15 @@
 
 use std::rc::Rc;
 
-mod support;
+use crate::support;
 use support::Sent;
 
 use interactive::app::{App, AppOptions, next_model, path_argument};
 use interactive::history::PromptHistoryStore;
 use interactive::keybindings::Platform;
 use interactive::keybindings::native_app_keybindings;
-use interactive::lane::{
-    AutoreviewRequest, BashResult, ForkMessage, LaneCommand, LaneEvent, ModelInfo, QueueKind, SessionOpened,
-};
+use interactive::lane::{AutoreviewRequest, BashResult, ForkMessage, LaneCommand, LaneEvent, ModelInfo, SessionOpened};
+use protocol::watch::QueueKind;
 use serde_json::{Value, json};
 use theme::{ColorMode, builtin_theme_json, create_theme};
 use tui::KeybindingsManager;

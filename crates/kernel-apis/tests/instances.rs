@@ -3,12 +3,13 @@
 //! lane names, best-effort pinning with two pins, busy and idempotent invocations, close/unpin, owner scoping), then a
 //! restart that re-pins the open instances.
 
-mod common;
-mod fake_tasks;
+use crate::common;
+use crate::fake_tasks;
 
 use common::{FIXED_NOW, Made, assert_area};
 use fake_tasks::FakeTasks;
-use kernel_apis::{ApiModule, DocumentStore, InstancesModule, KernelApis, MemoryDocumentStore};
+use kernel::store::{DocumentStore, MemoryDocumentStore};
+use kernel_apis::{ApiModule, InstancesModule, KernelApis};
 use serde_json::json;
 use std::path::Path;
 use std::sync::Arc;

@@ -1,19 +1,21 @@
-//! `minimatch(text, pattern, { nocase: true })` (minimatch 10) as the model scope uses it: `#` comments, `!`
-//! negation, brace expansion (`{a,b}`, `{1..3}`, `{a..c}`), `/`-separated segments with `**` globstar, `*`, `?`,
-//! `[...]` classes (ranges, `!`/`^` negation, POSIX classes), `\` escapes, extglobs (`+(a|b)`, `*(..)`, `?(..)`,
-//! `@(..)`, `!(..)`), and the dot rule (a wildcard never matches a segment's leading `.`).
+//! `minimatch(text, pattern, { nocase })` (minimatch 10): `#` comments, `!` negation, brace expansion (`{a,b}`,
+//! `{1..3}`, `{a..c}`), `/`-separated segments with `**` globstar, `*`, `?`, `[...]` classes (ranges, `!`/`^`
+//! negation, POSIX classes), `\` escapes, extglobs (`+(a|b)`, `*(..)`, `?(..)`, `@(..)`, `!(..)`), and the dot rule (a
+//! wildcard never matches a segment's leading `.`). The model scope matches case-insensitively; the package manager's
+//! resource filters case-sensitively.
 //!
-//! Evidence: `crates/ai/fixtures/generate-model-resolver.mjs` records minimatch's answers (`globs`);
-//! `crates/ai/tests/model_resolver.rs` replays them.
+//! Evidence: `crates/ai/fixtures/generate-model-resolver.mjs` records minimatch's answers (`globs`) and
+//! `crates/ai/tests/model_resolver.rs` replays them; `crates/cli/fixtures/packages.mjs` records the case-sensitive
+//! ones, replayed by `crates/cli/tests/packages_units.rs`.
 
-/// Whether `text` matches `pattern`, case-insensitively.
-pub fn minimatch(text: &str, pattern: &str) -> bool {
+/// Whether `text` matches `pattern` (case-insensitively with `nocase`).
+pub fn minimatch(text: &str, pattern: &str, nocase: bool) -> bool {
     if pattern.starts_with('#') {
         return false;
     }
     let bangs = pattern.chars().take_while(|c| *c == '!').count();
     let body = &pattern[bangs..];
-    let matched = brace_expand(body).iter().any(|p| match_path(text, p));
+    let matched = brace_expand(body).iter().any(|p| match_path(text, p, nocase));
     if bangs % 2 == 1 { !matched } else { matched }
 }
 
@@ -158,22 +160,22 @@ fn range(inner: &str) -> Option<Vec<String>> {
 
 // -------------------------------------------------------------------------------------------------- path matching
 
-fn match_path(text: &str, pattern: &str) -> bool {
+fn match_path(text: &str, pattern: &str, nocase: bool) -> bool {
     if pattern.is_empty() {
         return text.is_empty();
     }
     let parts: Vec<&str> = pattern.split('/').collect();
     let files: Vec<&str> = text.split('/').collect();
-    match_parts(&files, &parts)
+    match_parts(&files, &parts, nocase)
 }
 
 /// `matchOne`: segment by segment; `**` takes zero or more segments, never one starting with `.`.
-fn match_parts(files: &[&str], parts: &[&str]) -> bool {
+fn match_parts(files: &[&str], parts: &[&str], nocase: bool) -> bool {
     match parts.split_first() {
         None => files.is_empty(),
         Some((&"**", rest)) => {
             for skip in 0..=files.len() {
-                if match_parts(&files[skip..], rest) {
+                if match_parts(&files[skip..], rest, nocase) {
                     return true;
                 }
                 match files.get(skip) {
@@ -184,7 +186,7 @@ fn match_parts(files: &[&str], parts: &[&str]) -> bool {
             false
         }
         Some((part, rest)) => match files.split_first() {
-            Some((file, files)) => match_segment(file, part) && match_parts(files, rest),
+            Some((file, files)) => match_segment(file, part, nocase) && match_parts(files, rest, nocase),
             None => false,
         },
     }
@@ -206,7 +208,7 @@ enum ClassItem {
     Posix(String),
 }
 
-fn match_segment(text: &str, pattern: &str) -> bool {
+fn match_segment(text: &str, pattern: &str, nocase: bool) -> bool {
     let nodes = parse(&pattern.chars().collect::<Vec<_>>());
     let text: Vec<char> = text.chars().collect();
     if text.is_empty() {
@@ -216,7 +218,7 @@ fn match_segment(text: &str, pattern: &str) -> bool {
     if text[0] == '.' && !matches!(nodes.first(), Some(Node::Lit('.'))) {
         return false;
     }
-    match_nodes(&text, &nodes)
+    match_nodes(&text, &nodes, nocase)
 }
 
 fn parse(chars: &[char]) -> Vec<Node> {
@@ -365,20 +367,26 @@ fn parse_class(chars: &[char], open: usize) -> Option<(Node, usize)> {
     }
 }
 
-fn eq_nocase(a: char, b: char) -> bool {
-    a == b || a.to_lowercase().eq(b.to_lowercase())
+fn eq_char(a: char, b: char, nocase: bool) -> bool {
+    a == b || nocase && a.to_lowercase().eq(b.to_lowercase())
 }
 
-fn class_has(items: &[ClassItem], c: char) -> bool {
-    let variants = [c, c.to_ascii_lowercase(), c.to_ascii_uppercase()];
+fn class_has(items: &[ClassItem], c: char, nocase: bool) -> bool {
+    let variants = if nocase {
+        vec![c, c.to_ascii_lowercase(), c.to_ascii_uppercase()]
+    } else {
+        vec![c]
+    };
     items.iter().any(|item| match item {
-        ClassItem::Char(x) => eq_nocase(*x, c),
+        ClassItem::Char(x) => eq_char(*x, c, nocase),
         ClassItem::Range(lo, hi) => variants.iter().any(|v| lo <= v && v <= hi),
         ClassItem::Posix(name) => match name.as_str() {
             "alpha" => c.is_alphabetic(),
             "digit" => c.is_ascii_digit(),
             "alnum" => c.is_alphanumeric(),
-            "upper" | "lower" => c.is_alphabetic(),
+            "upper" | "lower" if nocase => c.is_alphabetic(),
+            "upper" => c.is_uppercase(),
+            "lower" => c.is_lowercase(),
             "space" => c.is_whitespace(),
             "punct" => c.is_ascii_punctuation(),
             "xdigit" => c.is_ascii_hexdigit(),
@@ -394,37 +402,38 @@ fn class_has(items: &[ClassItem], c: char) -> bool {
 }
 
 /// Whether all of `text` matches `nodes`.
-fn match_nodes(text: &[char], nodes: &[Node]) -> bool {
+fn match_nodes(text: &[char], nodes: &[Node], nocase: bool) -> bool {
     let Some((node, rest)) = nodes.split_first() else {
         return text.is_empty();
     };
     match node {
-        Node::Lit(c) => text.first().is_some_and(|t| eq_nocase(*t, *c)) && match_nodes(&text[1..], rest),
-        Node::Any => !text.is_empty() && match_nodes(&text[1..], rest),
+        Node::Lit(c) => text.first().is_some_and(|t| eq_char(*t, *c, nocase)) && match_nodes(&text[1..], rest, nocase),
+        Node::Any => !text.is_empty() && match_nodes(&text[1..], rest, nocase),
         Node::Class { negated, items } => {
-            text.first().is_some_and(|t| class_has(items, *t) != *negated) && match_nodes(&text[1..], rest)
+            text.first().is_some_and(|t| class_has(items, *t, nocase) != *negated)
+                && match_nodes(&text[1..], rest, nocase)
         }
-        Node::Star => (0..=text.len()).any(|n| match_nodes(&text[n..], rest)),
+        Node::Star => (0..=text.len()).any(|n| match_nodes(&text[n..], rest, nocase)),
         Node::Ext { kind, alternatives } => {
-            let one = |chunk: &[char]| alternatives.iter().any(|alt| match_nodes(chunk, alt));
+            let one = |chunk: &[char]| alternatives.iter().any(|alt| match_nodes(chunk, alt, nocase));
             match kind {
-                '@' => (0..=text.len()).any(|n| one(&text[..n]) && match_nodes(&text[n..], rest)),
+                '@' => (0..=text.len()).any(|n| one(&text[..n]) && match_nodes(&text[n..], rest, nocase)),
                 '?' => {
-                    match_nodes(text, rest)
-                        || (0..=text.len()).any(|n| one(&text[..n]) && match_nodes(&text[n..], rest))
+                    match_nodes(text, rest, nocase)
+                        || (0..=text.len()).any(|n| one(&text[..n]) && match_nodes(&text[n..], rest, nocase))
                 }
-                '+' => repeat(text, rest, &one, false),
-                '*' => repeat(text, rest, &one, true),
-                _ => (0..=text.len()).any(|n| !one(&text[..n]) && match_nodes(&text[n..], rest)),
+                '+' => repeat(text, rest, &one, false, nocase),
+                '*' => repeat(text, rest, &one, true, nocase),
+                _ => (0..=text.len()).any(|n| !one(&text[..n]) && match_nodes(&text[n..], rest, nocase)),
             }
         }
     }
 }
 
 /// One or more (zero or more with `empty`) chunks matching an alternative, then `rest`.
-fn repeat(text: &[char], rest: &[Node], one: &dyn Fn(&[char]) -> bool, empty: bool) -> bool {
-    if empty && match_nodes(text, rest) {
+fn repeat(text: &[char], rest: &[Node], one: &dyn Fn(&[char]) -> bool, empty: bool, nocase: bool) -> bool {
+    if empty && match_nodes(text, rest, nocase) {
         return true;
     }
-    (1..=text.len()).any(|n| one(&text[..n]) && repeat(&text[n..], rest, one, true))
+    (1..=text.len()).any(|n| one(&text[..n]) && repeat(&text[n..], rest, one, true, nocase))
 }

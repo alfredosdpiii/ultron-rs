@@ -1,6 +1,6 @@
 //! SYSTEM.md / APPEND_SYSTEM.md discovery and prompt inputs (DefaultResourceLoader in core/resource-loader.ts).
 
-use crate::paths::{join, resolve_path, strip_bom};
+use crate::paths::{resolve_path, strip_bom};
 use config::paths::CONFIG_DIR_NAME;
 use std::fs;
 use std::path::Path;
@@ -17,11 +17,11 @@ pub fn resolve_prompt_input(input: Option<&str>) -> Option<String> {
 
 /// `<cwd>/.pi/<name>` when the project is trusted and it exists, else `<agent_dir>/<name>` when it exists.
 fn discover(cwd: &str, agent_dir: &str, name: &str, project_trusted: bool) -> Option<String> {
-    let project = join(&join(cwd, CONFIG_DIR_NAME), name);
+    let project = jsrt::path::join(&[cwd, CONFIG_DIR_NAME, name]);
     if project_trusted && Path::new(&project).exists() {
         return Some(project);
     }
-    let global = join(agent_dir, name);
+    let global = jsrt::path::join(&[agent_dir, name]);
     Path::new(&global).exists().then_some(global)
 }
 

@@ -3,7 +3,7 @@
 //! each lane run still going gets one final request with tool choice "none" and the `[Ultron]` note, then nothing
 //! more; a cost cap allows nothing more at all. Requests are counted at a scripted provider.
 
-mod p_session_support;
+use crate::p_session_support;
 
 use p_session_support::{Setup, actor, in_order, text, tool, tool_results, user_texts};
 use serde_json::Value;

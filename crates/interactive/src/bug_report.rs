@@ -80,13 +80,13 @@ impl SelectorDialog {
         lines.push(String::new());
         let raw = format!(
             "{}{}",
-            t.fg(Fg::Dim, &format_key_text("↑↓", false, false)),
+            t.fg(Fg::Dim, &format_key_text("↑↓", false)),
             t.fg(Fg::Muted, " navigate")
         );
         let hints = format!(
             "{raw}  {}  {}",
-            key_hint(t, &key_text(&self.keys, "tui.select.confirm", false), "select"),
-            key_hint(t, &key_text(&self.keys, "tui.select.cancel", false), "cancel")
+            key_hint(t, &key_text(&self.keys, "tui.select.confirm"), "select"),
+            key_hint(t, &key_text(&self.keys, "tui.select.cancel"), "cancel")
         );
         lines.extend(text(&hints));
         lines.push(String::new());

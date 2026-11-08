@@ -259,10 +259,9 @@ fn manage(action: &str, env: &Env, out: &mut dyn Write, err: &mut dyn Write) -> 
 /// The durable instance's reachable server generations (`Server: <id> pid <pid> sessions <n>`) and its active
 /// schedules.
 fn servers(env: &Env, instance: &daemon::instance::Instance, out: &mut dyn Write) -> Result<(), String> {
-    let socket_dir = daemon::instance::socket_dir(&instance.dir);
     let mut any = false;
     for server in daemon::instance::generations(&instance.dir) {
-        let socket = socket_dir.join(format!("{}.sock", server.server_id));
+        let socket = daemon::instance::socket_path(&instance.dir, &server.server_id);
         match client::runtime::Connection::connect(&socket, &server.server_id) {
             Ok(connection) => connection.disconnect(),
             Err(_) => continue,

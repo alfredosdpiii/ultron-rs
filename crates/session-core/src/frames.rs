@@ -9,10 +9,11 @@ use crate::compose::Stack;
 use crate::durable_store::{SharedSession, lock};
 use delegation::agents::{Agents, FrameRun, FrameRunner};
 use delegation::usage::{Measurement, Reservation, ReserveRequest, UsageLedger};
-use inference::{FrameExecution, FrameSession, FrameTasks, TRACE_NAMESPACE, TraceStore};
+use inference::{FrameExecution, FrameSession, FrameTasks, TraceStore};
 use kernel::Signal;
 use serde_json::{Value, json};
 use session_journal::Write;
+use session_journal::ns::RLM_FRAMES;
 use std::sync::{Arc, Weak};
 
 /// Frame traces as values of the session (`createSessionFrameStore`).
@@ -20,12 +21,12 @@ pub struct SessionTraceStore(pub SharedSession);
 
 impl TraceStore for SessionTraceStore {
     fn read(&self, key: &str) -> Option<Value> {
-        lock(&self.0).value(TRACE_NAMESPACE, key).cloned()
+        lock(&self.0).value(RLM_FRAMES, key).cloned()
     }
 
     fn write(&self, key: &str, document: &Value) -> Result<(), String> {
         lock(&self.0)
-            .commit(&[Write::set(TRACE_NAMESPACE, key, document.clone())])
+            .commit(&[Write::set(RLM_FRAMES, key, document.clone())])
             .map(drop)
     }
 }

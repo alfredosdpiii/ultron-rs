@@ -69,25 +69,12 @@ fn safe_integer_in(value: f64, min: f64, max: f64) -> bool {
     jsrt::number::is_safe_integer(value) && (min..=max).contains(&value)
 }
 
-/// `encodeURIComponent`.
-pub fn encode_uri_component(value: &str) -> String {
-    let mut out = String::with_capacity(value.len());
-    for byte in value.bytes() {
-        if byte.is_ascii_alphanumeric() || b"-_.!~*'()".contains(&byte) {
-            out.push(byte as char);
-        } else {
-            out.push_str(&format!("%{byte:02X}"));
-        }
-    }
-    out
-}
-
 /// A path segment: a non-blank id other than "." and "..", at most 2048 UTF-16 units, URI-component encoded.
 fn segment(value: &str) -> Result<String, MemoryError> {
     if jsrt::string::trim(value).is_empty() || value == "." || value == ".." || utf16::len(value) > 2048 {
         return Err(code("INVALID_CONFIG"));
     }
-    Ok(encode_uri_component(value))
+    Ok(jsrt::uri::encode_component(value))
 }
 
 /// `/(?:^|:)<scope>:[^\s:][^\s]*$/`.

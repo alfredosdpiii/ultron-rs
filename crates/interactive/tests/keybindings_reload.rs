@@ -99,3 +99,15 @@ fn interactive_keybindings_reload_applies_the_file_to_app_and_editor() {
     app.handle_input("\x11");
     assert!(app.exit, "ctrl+q is app.exit");
 }
+
+/// The keybinding platform of a run is this process's (`process.platform`), so macOS gets its bindings and its
+/// `option` key labels.
+#[test]
+fn interactive_keybinding_platform_is_this_process_platform() {
+    let platform = jsrt::process::platform();
+    let current = Platform::current(false);
+    assert_eq!(current.darwin, platform == "darwin");
+    assert_eq!(current.win32, platform == "win32");
+    let alt = interactive::format_key_text("alt+x", true);
+    assert_eq!(alt, if current.darwin { "Option+X" } else { "Alt+X" });
+}

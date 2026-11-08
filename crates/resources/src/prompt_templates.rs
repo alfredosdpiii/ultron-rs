@@ -1,8 +1,9 @@
 //! Prompt templates: `/name args` expansion from markdown files (core/prompt-templates.ts).
 
-use crate::paths::{basename, join, resolve, resolve_path};
+use crate::paths::resolve_path;
 use crate::{Diagnostic, frontmatter};
 use config::paths::CONFIG_DIR_NAME;
+use jsrt::path::{basename, resolve};
 use std::fs;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -182,7 +183,7 @@ fn load_dir(dir: &str, scope_of: &dyn Fn(&str) -> &'static str, result: &mut Loa
         .collect();
     names.sort_by(|a, b| a.as_bytes().cmp(b.as_bytes()));
     for name in names {
-        let full = join(dir, &name);
+        let full = jsrt::path::join(&[dir, &name]);
         if name.ends_with(".md") && fs::metadata(&full).is_ok_and(|m| m.is_file()) {
             let (template, diagnostics) = load_file(&full, scope_of(&full));
             result.templates.extend(template);
@@ -200,7 +201,7 @@ pub fn load_prompt_templates(
 ) -> LoadPromptTemplatesResult {
     let cwd = resolve_path(cwd, "/", false);
     let agent_dir = resolve_path(agent_dir, &cwd, false);
-    let global = join(&agent_dir, "prompts");
+    let global = jsrt::path::join(&[&agent_dir, "prompts"]);
     let project = resolve(&cwd, &format!("{CONFIG_DIR_NAME}/prompts"));
     let under = |target: &str, root: &str| target == root || target.starts_with(&format!("{root}/"));
     let scope_of = |path: &str| -> &'static str {

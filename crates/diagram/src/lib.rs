@@ -17,11 +17,10 @@ pub mod svg;
 use kernel_apis::{ApiModule, Request};
 use resvg::usvg::fontdb;
 use serde_json::{Value, json};
-use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 use svg::DiagramPalette;
 
 /// Pele 1.7.0's `dist/pele.js` (see `assets/pele/VERSION`).
@@ -257,23 +256,6 @@ fn flag(request: &Request<'_>, key: &str, default: bool) -> Result<bool, String>
     }
 }
 
-/// Reads all of `reader`, keeping at most `cap` bytes (and whether more came).
-fn read_capped(mut reader: impl Read, cap: usize) -> (Vec<u8>, bool) {
-    let mut kept = Vec::new();
-    let mut buffer = [0u8; 64 * 1024];
-    let mut over = false;
-    loop {
-        match reader.read(&mut buffer) {
-            Ok(0) | Err(_) => return (kept, over),
-            Ok(n) => {
-                let room = cap.saturating_sub(kept.len());
-                kept.extend_from_slice(&buffer[..n.min(room)]);
-                over |= n > room;
-            }
-        }
-    }
-}
-
 impl DiagramModule {
     /// Pele's SVG for `text`, from node on the session's PATH.
     fn render(&self, text: &str, signal: &kernel::Signal) -> Result<PeleOutput, String> {
@@ -285,58 +267,39 @@ impl DiagramModule {
             .current_dir(runner.parent().unwrap_or(Path::new("/")))
             .env_clear()
             .env("HOME", &self.config.home)
-            .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
         if let Some(path) = &self.config.path_var {
             command.env("PATH", path);
         }
-        let mut child = command
-            .spawn()
+        let bound = signals::child::Bound {
+            timeout: Some(self.config.timeout),
+            keep: Some(OUTPUT_CAP),
+            ..Default::default()
+        };
+        let output = signal
+            .run_child(&mut command, Some(text.as_bytes()), bound)
             .map_err(|e| format!("diagram.mermaid: cannot run {}: {e}", node.display()))?;
-        let mut stdin = child.stdin.take();
-        let input = text.to_string();
-        let writer = std::thread::spawn(move || {
-            if let Some(stdin) = stdin.as_mut() {
-                let _ = stdin.write_all(input.as_bytes());
+        let status = match output.end {
+            signals::child::End::Exited(Some(status)) => status,
+            signals::child::End::Exited(None) => {
+                return Err("diagram.mermaid: node's exit status could not be read".into());
             }
-        });
-        let stdout = child.stdout.take();
-        let reader = std::thread::spawn(move || stdout.map(|out| read_capped(out, OUTPUT_CAP)).unwrap_or_default());
-        let stderr = child.stderr.take();
-        let errors = std::thread::spawn(move || stderr.map(|err| read_capped(err, 8 * 1024)).unwrap_or_default());
-        let deadline = Instant::now() + self.config.timeout;
-        let status = loop {
-            match child.try_wait() {
-                Ok(Some(status)) => break Ok(status),
-                Ok(None) => {}
-                Err(e) => break Err(format!("diagram.mermaid: {e}")),
-            }
-            if Instant::now() >= deadline {
-                break Err(format!(
+            signals::child::End::TimedOut => {
+                return Err(format!(
                     "diagram.mermaid: node did not finish within {} s",
                     self.config.timeout.as_secs()
                 ));
             }
-            if signal.wait(Duration::from_millis(10)) {
-                break Err("diagram.mermaid was cancelled".to_string());
-            }
+            signals::child::End::Cancelled => return Err("diagram.mermaid was cancelled".to_string()),
         };
-        if status.is_err() {
-            // Only the node this call started is stopped.
-            let _ = child.kill();
-            let _ = child.wait();
-        }
-        let _ = writer.join();
-        let (out, over) = reader.join().unwrap_or_default();
-        let (err, _) = errors.join().unwrap_or_default();
-        let status = status?;
-        if over {
+        if output.cut {
             return Err(format!(
                 "diagram.mermaid: the renderer's output is over {} MiB",
                 OUTPUT_CAP / 1024 / 1024
             ));
         }
+        let (out, err) = (output.stdout, output.stderr);
         let out = String::from_utf8_lossy(&out);
         match parse_runner_output(&out) {
             Ok(output) => Ok(output),

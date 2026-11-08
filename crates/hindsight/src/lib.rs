@@ -6,6 +6,6 @@ mod backend;
 pub mod resolve;
 mod transport;
 
-pub use backend::{HindsightBackend, HindsightOptions, encode_uri_component};
+pub use backend::{HindsightBackend, HindsightOptions};
 pub use resolve::{DEFAULT_HINDSIGHT_URL, Endpoint, hindsight_url, worker_scope_tags};
 pub use transport::{HttpRequest, HttpResponse, ReqwestTransport, Transport, TransportError};

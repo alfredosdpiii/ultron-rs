@@ -4,12 +4,13 @@
 //! `GoalDriver`, with the same scripted worker (checks, job starts and stops), and must print the same and leave the
 //! same goal document and worker calls. Plus the pure functions over the recorded table, and ported TS tests.
 
-mod common;
+use crate::common;
 
 use common::{FIXED_NOW, Made, fixed, fixture, run_scenario};
+use kernel::store::{DocumentStore, MemoryDocumentStore};
 use kernel::{HostHandler, Signal};
+use kernel_apis::KernelApis;
 use kernel_apis::goal::{GoalCheckResult, GoalDriver, GoalJobs, check_signature, goal_brief, goal_status_text};
-use kernel_apis::{DocumentStore, KernelApis, MemoryDocumentStore};
 use serde_json::{Map, Value, json};
 use std::collections::HashMap;
 use std::path::Path;

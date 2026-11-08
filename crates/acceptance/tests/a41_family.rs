@@ -5,12 +5,13 @@
 //! through the product's task host (`g3_support::Host`, background jobs on waiting lanes) and steers a live
 //! child lane, as the TS case does through `NativeRlmHost`.
 
-mod g3_support;
+use crate::g3_support;
 
 use g3_support::{Host, JournalStore, Tasks, lane_name, rejects};
 use kernel::Signal;
+use kernel::store::{DocumentStore, MemoryDocumentStore};
 use kernel_apis::family::{FamilyModule, FamilyOptions};
-use kernel_apis::{ApiModule, DocumentStore, MemoryDocumentStore, Request, TaskHost};
+use kernel_apis::{ApiModule, Request, TaskHost};
 use serde_json::{Value, json};
 use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::{Arc, Mutex};

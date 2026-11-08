@@ -3,7 +3,7 @@
 //! recorded from TypeScript in crates/agent/fixtures/validation.json, case `rlm {}`), and `code: 5` runs as the
 //! string "5".
 
-mod p_session_support;
+use crate::p_session_support;
 
 use p_session_support::{Setup, actor, in_order, text, tool_results};
 use serde_json::{Value, json};

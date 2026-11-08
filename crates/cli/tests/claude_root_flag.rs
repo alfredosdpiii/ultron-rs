@@ -4,8 +4,8 @@
 //! CLI) and a fake Messages upstream on loopback: the request carries the model `--claude` selected and exactly the
 //! `rlm` tool.
 
-mod common;
-mod executable_support;
+use crate::common;
+use crate::executable_support;
 
 use common::{Naming, Sandbox, assert_private_home, mock_server};
 use serde_json::{Value, json};

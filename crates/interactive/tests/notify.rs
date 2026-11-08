@@ -5,8 +5,7 @@ use std::sync::{Arc, Mutex};
 
 use interactive::notify::*;
 
-#[path = "../../tui/tests/support/latch.rs"]
-mod latch;
+use crate::latch;
 use latch::Latch;
 
 const UUID: &str = "123e4567-e89b-12d3-a456-426614174000";
@@ -477,7 +476,7 @@ fn tui_notify_resolves_desktop_notifier() {
     let file = dir.join("notify-send");
     std::fs::write(&file, "#!/bin/sh\n").unwrap();
     assert_eq!(
-        tui::proc::which("notify-send", Some(dir.to_str().unwrap())),
+        jsrt::process::which("notify-send", dir.to_str().unwrap()),
         None,
         "not executable"
     );
@@ -486,7 +485,7 @@ fn tui_notify_resolves_desktop_notifier() {
         use std::os::unix::fs::PermissionsExt;
         std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o755)).unwrap();
         assert_eq!(
-            tui::proc::which("notify-send", Some(dir.to_str().unwrap())),
+            jsrt::process::which("notify-send", dir.to_str().unwrap()),
             Some(file.clone())
         );
     }

@@ -4,8 +4,8 @@
 //! (models.json `providers.claude-subscription.baseUrl`). The model calls `rlm`, the Rust host runs the cell, the
 //! result is replayed natively on the next call, and the advertised inventory is exactly `[rlm]` everywhere.
 
-mod common;
-mod executable_support;
+use crate::common;
+use crate::executable_support;
 
 use common::{Naming, Sandbox, assert_private_home, mock_server};
 use serde_json::{Value, json};

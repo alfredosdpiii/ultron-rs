@@ -3,7 +3,7 @@
 //! `.pi/settings.json` turning it off keeps an oversized image at its size; a distrusted project's does not, and
 //! the image is downscaled as by default. The stack is the session's composition (`Runtime::stack`).
 
-mod p_session_support;
+use crate::p_session_support;
 
 use agent::AgentTool;
 use ai::{AbortSignal, UserContent};

@@ -7,7 +7,7 @@
 //! (`Host::handle_lane`), and a job's root is the lane's root turn (`Host::set_roots`, TS `host.rootOf(caller)`).
 //! Where the TypeScript test sleeps until a job ends, these jobs wait for a file the test writes.
 
-mod common;
+use crate::common;
 
 use common::{runtime, wait_until};
 use host::{AllowAll, Host, JobEnd};

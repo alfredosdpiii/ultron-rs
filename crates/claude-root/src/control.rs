@@ -36,17 +36,6 @@ pub mod op {
 /// Lines longer than this are refused.
 pub const MAX_CONTROL_LINE: usize = 4 * 1024 * 1024;
 
-/// `name.replace(/[^A-Za-z0-9._-]/g, "_")`.
-pub(crate) fn file_name_chars(name: &str) -> impl Iterator<Item = char> + '_ {
-    name.chars().map(|c| {
-        if c.is_ascii_alphanumeric() || "._-".contains(c) {
-            c
-        } else {
-            '_'
-        }
-    })
-}
-
 /// The per-user directory for control sockets and registry files (created 0700, owned by this user).
 pub fn control_dir(var: &dyn Fn(&str) -> Option<String>) -> Result<PathBuf, String> {
     use std::os::unix::fs::{DirBuilderExt, MetadataExt, PermissionsExt};
@@ -56,7 +45,7 @@ pub fn control_dir(var: &dyn Fn(&str) -> Option<String>) -> Result<PathBuf, Stri
         .filter(|v| !v.is_empty())
     {
         Some(runtime) => Path::new(&runtime).join("ultron-claude"),
-        None => crate::tmpdir(var).join(format!("ultron-claude-{uid}")),
+        None => config::paths::tmpdir(var).join(format!("ultron-claude-{uid}")),
     };
     let _ = std::fs::DirBuilder::new().recursive(true).mode(0o700).create(&dir);
     let meta = std::fs::symlink_metadata(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
@@ -71,7 +60,7 @@ pub fn control_dir(var: &dyn Fn(&str) -> Option<String>) -> Result<PathBuf, Stri
 
 /// A registry name safe as a file name.
 pub fn safe_name(name: &str) -> String {
-    let safe: String = file_name_chars(name).take(120).collect();
+    let safe: String = config::paths::safe_file_name(name).take(120).collect();
     if safe.is_empty() { "session".into() } else { safe }
 }
 

@@ -278,7 +278,7 @@ impl Bridge {
                 details: Some(reported.result.details).filter(|d| !d.is_null()),
                 usage: reported.result.usage,
                 is_error: reported.is_error,
-                timestamp: crate::lane::now_ms(),
+                timestamp: jsrt::date::now_ms(),
             });
             self.send(AgentEvent::MessageStart {
                 message: message.clone(),
@@ -291,8 +291,10 @@ impl Bridge {
 /// Fault injection for the durability tests: `__ULTRON_DURABLE_CRASH=<answer|result>:<marker file>` kills the
 /// process right after the first durable commit of that kind, before anything else sees it (the marker file makes
 /// it happen once across restarts).
+pub const DURABLE_CRASH_ENV: &str = "__ULTRON_DURABLE_CRASH";
+
 fn crash_point() -> Option<(String, std::path::PathBuf)> {
-    let spec = std::env::var("__ULTRON_DURABLE_CRASH").ok()?;
+    let spec = std::env::var(DURABLE_CRASH_ENV).ok()?;
     let (kind, marker) = spec.split_once(':')?;
     Some((kind.to_string(), std::path::PathBuf::from(marker)))
 }
@@ -447,7 +449,7 @@ impl TurnModels {
                     transform(conversation, &mut messages);
                 }
                 if let Some(note) = note {
-                    harness::chat::gate::apply_final(note, &mut messages, &mut options, crate::lane::now_ms());
+                    harness::chat::gate::apply_final(note, &mut messages, &mut options, jsrt::date::now_ms());
                 }
                 transformed = ai::TranscriptContext { messages };
                 &transformed
@@ -547,7 +549,7 @@ impl TurnModels {
         let mut messages = start.messages;
         // The run's final request: tools off, and the note saying why after its context (not stored).
         if let Some(note) = &request.final_note {
-            harness::chat::gate::apply_final(note, &mut messages, &mut options, crate::lane::now_ms());
+            harness::chat::gate::apply_final(note, &mut messages, &mut options, jsrt::date::now_ms());
         }
         let llm = ai::TranscriptContext { messages };
         let bridge = self.bridge.clone();
@@ -583,7 +585,7 @@ impl TurnModels {
         let message = runtime()?.block_on(self.provider.stream(model, &llm, &options, &mut sink));
         drop(bridged);
         if let Some((trace, session)) = &self.trace {
-            trace.record(session, crate::lane::MAIN, model, &llm, &message);
+            trace.record(session, session_journal::run::MAIN_LANE, model, &llm, &message);
         }
         // The ledger counts the response before its entry commits and before the next request or cell is gated, as
         // the TypeScript drive's `after_response` does; a response a closing worker drops is not counted (the
@@ -716,11 +718,11 @@ impl CellExecutor for TurnCells {
         // cell's (collapse on return), whenever the actor gets to the cell's events.
         let context = self.stack.context.get().cloned();
         if let Some(context) = &context {
-            context.tool_start(crate::lane::MAIN, &call.name, &call.call_id);
+            context.tool_start(session_journal::run::MAIN_LANE, &call.name, &call.call_id);
         }
         let executed = run_tool(self.tool.as_ref(), call, &bridged.abort);
         if let Some(context) = &context {
-            context.tool_end(crate::lane::MAIN, &call.call_id);
+            context.tool_end(session_journal::run::MAIN_LANE, &call.call_id);
         }
         *sync::lock(&self.progress) = None;
         drop(bridged);

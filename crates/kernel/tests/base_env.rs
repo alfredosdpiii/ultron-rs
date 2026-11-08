@@ -42,7 +42,7 @@ fn kernel_w16f_base_env_replaces_the_process_environment_of_the_kernel() {
     let result = kernel
         .execute(
             "import os\n(os.environ.get('PATH'), os.environ.get('W16F_SESSION_ONLY'), 'W16F_API_TOKEN' in os.environ, \
-             os.environ.get('CARGO_MANIFEST_DIR'), os.environ['ULTRON_RLM_MAX_MEMORY_MB'])",
+             os.environ.get('CARGO_MANIFEST_DIR'), os.environ['ULTRON_RLM_MAX_MEMORY_MB'], os.environ.get('ULTRON_IN_KERNEL'))",
             None,
             None,
         )
@@ -51,7 +51,7 @@ fn kernel_w16f_base_env_replaces_the_process_environment_of_the_kernel() {
     // CARGO_MANIFEST_DIR is in this process's environment (cargo sets it for tests), never in the kernel's.
     assert_eq!(
         result.result.as_deref(),
-        Some("('/w16f/session/bin', 'from-session', False, None, '1234')")
+        Some("('/w16f/session/bin', 'from-session', False, None, '1234', '1')")
     );
     kernel.shutdown();
 }

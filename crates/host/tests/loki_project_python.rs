@@ -3,8 +3,7 @@
 //! is reported unresolved exactly when that interpreter says it is missing. The interpreter is a fake script that
 //! answers the engine's import probe and records that it ran.
 
-#[path = "../../cli/tests/executable_support/mod.rs"]
-mod executable_support;
+use crate::executable_support;
 
 use host::file_hooks::{CellChanges, FileWriteGuard};
 use host::loki_guard::{LokiGuard, LokiMode};

@@ -4,9 +4,10 @@
 
 use crate::TaskHost;
 use crate::code_skills::{CodeSkillKind, CodeSkills};
-use crate::store::{DocumentStore, read_versioned};
+use crate::store::read_versioned;
 use crate::util::{Clock, object};
 use kernel::Signal;
+use kernel::store::DocumentStore;
 use serde_json::{Map, Value, json};
 use std::collections::HashSet;
 use std::sync::{Arc, Mutex};

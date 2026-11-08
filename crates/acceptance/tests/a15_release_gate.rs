@@ -4,8 +4,9 @@
 //! `gates.*` calls reach), its clock fixed at 5000 as the TS `now: () => 5_000`. Module replay against
 //! release-gate.ts: `crates/services/tests/gates_fixture.rs`; through runtime.py: `kernel_fixture.rs`.
 
+use kernel::store::{DocumentStore, MemoryDocumentStore};
 use kernel::{HostHandler, Signal};
-use kernel_apis::{DocumentStore, KernelApis, MemoryDocumentStore};
+use kernel_apis::KernelApis;
 use serde_json::{Map, Value, json};
 use services::ReleaseGateModule;
 use std::sync::Arc;

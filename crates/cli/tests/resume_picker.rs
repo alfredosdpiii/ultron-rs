@@ -2,7 +2,7 @@
 //! stdout.isTTY` asks `selectInteractiveSession` before the prompt runs): the numbered list, the chosen session
 //! continued with the prompt, its answer streamed (no `-p`). Driven in tmux; the provider is a local mock.
 
-mod tui_harness;
+use crate::tui_harness;
 
 use std::process::Command;
 use tui_harness::{Mock, TempDir, Tui, text_reply};

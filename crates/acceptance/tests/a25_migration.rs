@@ -10,7 +10,7 @@
 //! replayed against TS in crates/cli/tests/rpc_mode.rs) and `export_html`. Pi extensions are not supported by
 //! ultron-rs, so the TS test's `hello.ts` extension command is not listed.
 
-mod common;
+use crate::common;
 
 use cli::rpc::events::RpcEventTranslator;
 use common::{Install, Provider, Reply};
@@ -1048,9 +1048,7 @@ mod migration {
         let (native, _) = open_native(&sessions, &result.session_id);
         let stored = native.value("ultron.usage", "root").unwrap().clone();
         let ledger = delegation::usage::UsageLedger::new(
-            Box::new(delegation::task_store::MemoryStore {
-                value: Some(stored.clone()),
-            }),
+            Box::new(kernel::store::MemoryDocumentStore::new(Some(stored.clone()))),
             Default::default(),
         )
         .unwrap();

@@ -5,7 +5,7 @@
 //! none": the request goes to that model), with literal expectations; this host refuses a model it cannot resolve at
 //! admission.
 
-mod common;
+use crate::common;
 
 use common::{Scripted, model};
 use inference::{Frames, Inference, ModelResolver, ModelSettings};

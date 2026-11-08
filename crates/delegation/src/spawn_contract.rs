@@ -27,12 +27,10 @@ use jsonschema::{errors as schema_errors, unchecked_keyword, validate_json_schem
 use kernel::Signal;
 use kernel_apis::memory_records::Glob;
 use serde_json::{Map, Value, json};
-use std::io::Read;
-use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 /// Most checks one contract may list.
 pub const MAX_CHECKS: usize = 16;
@@ -543,37 +541,21 @@ fn tail(text: &str, limit: usize) -> String {
     format!("[... {} characters cut]{kept}", count - limit)
 }
 
-fn drain(source: Option<impl Read + Send + 'static>) -> std::thread::JoinHandle<String> {
-    std::thread::spawn(move || {
-        let Some(mut source) = source else {
-            return String::new();
-        };
-        let mut kept: Vec<u8> = Vec::new();
-        let mut chunk = [0u8; 8192];
-        while let Ok(n) = source.read(&mut chunk) {
-            if n == 0 {
-                break;
-            }
-            kept.extend_from_slice(&chunk[..n]);
-            // Bounded: only the end is evidence.
-            if kept.len() > 64 * OUTPUT_CHARS {
-                kept.drain(..kept.len() - 16 * OUTPUT_CHARS);
-            }
-        }
-        String::from_utf8_lossy(&kept).into_owned()
-    })
-}
-
-/// Run `command` to its end in a process group of its own, stdin closed, stdout and stderr kept (bounded). Past
-/// `timeout`, or once `signal` is aborted, the group this call started is stopped (TERM, then KILL after 5 s).
+/// Run `command` to its end in a process group of its own, stdin closed, stdout and stderr kept (bounded: only the
+/// end is evidence). Past `timeout`, or once `signal` is aborted, the group this call started is stopped (TERM, then
+/// KILL after 5 s).
 pub fn run_command(mut command: Command, timeout: Duration, signal: &Signal) -> CommandOutcome {
-    command
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .process_group(0);
-    let mut child = match command.spawn() {
-        Ok(child) => child,
+    command.stdout(Stdio::piped()).stderr(Stdio::piped());
+    let bound = signals::child::Bound {
+        timeout: Some(timeout),
+        stop: signals::child::Stop {
+            group: true,
+            term_grace: Some(Duration::from_secs(5)),
+        },
+        keep: Some(64 * OUTPUT_CHARS),
+    };
+    let out = match signal.run_child(&mut command, None, bound) {
+        Ok(out) => out,
         Err(error) => {
             return CommandOutcome {
                 error: Some(error.to_string()),
@@ -581,50 +563,12 @@ pub fn run_command(mut command: Command, timeout: Duration, signal: &Signal) -> 
             };
         }
     };
-    let (stdout, stderr) = (drain(child.stdout.take()), drain(child.stderr.take()));
-    // The command's own group (process_group(0) above), through the kernel's guard: never pid <= 1, this process
-    // or its own group.
-    let group = i32::try_from(child.id()).ok().and_then(|pgid| {
-        kernel::command_group_target(
-            pgid,
-            rustix::process::getpid().as_raw_nonzero().get(),
-            rustix::process::getpgrp().as_raw_nonzero().get(),
-        )
-    });
-    let started = Instant::now();
-    let mut stopped_at: Option<Instant> = None;
-    let mut timed_out = false;
-    let status = loop {
-        match child.try_wait() {
-            Ok(Some(status)) => break Some(status),
-            Ok(None) => {}
-            Err(_) => break None,
-        }
-        if stopped_at.is_none() && (started.elapsed() >= timeout || signal.is_aborted()) {
-            timed_out = !signal.is_aborted();
-            if let Some(group) = group {
-                let _ = rustix::process::kill_process_group(group, rustix::process::Signal::TERM);
-            }
-            stopped_at = Some(Instant::now());
-        }
-        if let (Some(at), Some(group)) = (stopped_at, group)
-            && at.elapsed() >= Duration::from_secs(5)
-        {
-            let _ = rustix::process::kill_process_group(group, rustix::process::Signal::KILL);
-        }
-        // The check thread waits on the task's signal, so a cancel stops the command at once.
-        signal.wait(Duration::from_millis(10));
-    };
-    let (stdout, stderr) = (stdout.join().unwrap_or_default(), stderr.join().unwrap_or_default());
+    let text = |bytes: &[u8]| String::from_utf8_lossy(bytes).into_owned();
     CommandOutcome {
-        exit: if stopped_at.is_some() {
-            None
-        } else {
-            status.and_then(|s| s.code())
-        },
-        stdout,
-        stderr,
-        timed_out,
+        exit: out.code(),
+        stdout: text(&out.stdout),
+        stderr: text(&out.stderr),
+        timed_out: out.end == signals::child::End::TimedOut,
         error: None,
     }
 }

@@ -4,7 +4,7 @@
 //! `crates/services/tests/local_fixture.rs`); the third case through the session's host-request path (the typed-agent
 //! host, `KernelApis` with the local-services module).
 
-mod services_support;
+use crate::services_support;
 
 use kernel_apis::artifacts::KeyedDocuments;
 use serde_json::{Value, json};

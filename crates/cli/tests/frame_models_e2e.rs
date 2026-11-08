@@ -4,7 +4,7 @@
 //! refused instead of running the child on the root's model (A04). Private HOME and agent/server dirs, a scripted
 //! Anthropic server on 127.0.0.1.
 
-mod common;
+use crate::common;
 
 use common::{Naming, Sandbox, anthropic_text, anthropic_tool, assert_private_home, mock_server, tool_result_text};
 

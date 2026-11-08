@@ -3,8 +3,7 @@
 //! .loki/, commits it") with its literal expectations. Every git process sees only the test's variables: a private
 //! HOME, no system config, a fixed identity.
 
-#[path = "../../cli/tests/executable_support/mod.rs"]
-mod executable_support;
+use crate::executable_support;
 
 use loki::auto_setup::{
     Setup, SetupContext, auto_commit, auto_commit_skip_reason, auto_init, auto_init_eligibility, commit_loki,

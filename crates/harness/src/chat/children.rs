@@ -153,7 +153,6 @@ pub(crate) fn child_task(services: Arc<Services>) -> Task {
 
 fn start_phase(_services: &Services, task: &TaskRecord, runtime: &TaskRuntime) -> Result<()> {
     let input: ChildInput = from_value(task.input.clone(), "child input")?;
-    let parent = runtime.conversation_id();
     let model = match input.model.clone() {
         Some(model) => Some(model),
         None => super::generation::read_agent(runtime)?.model,
@@ -161,7 +160,6 @@ fn start_phase(_services: &Services, task: &TaskRecord, runtime: &TaskRuntime) -
     let task_id = runtime.task_id();
     let now = runtime.now()?;
     runtime.commit(&runtime.ctx(), |tx, _| {
-        let _ = parent;
         // A forked child's conversation starts as its parent's history up to the fork entry.
         let conversation = match input.fork {
             Some(fork) => {

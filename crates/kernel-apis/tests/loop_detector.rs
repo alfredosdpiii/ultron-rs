@@ -1,11 +1,12 @@
 //! The stuck-loop detector and its hint, ported from packages/coding-agent/test/ultron-loop-detector.test.ts
 //! ("loop detector" and "stuck-loop hint") with its literal expectations, over `kernel_apis::cell_hints`.
 
+use kernel::store::MemoryDocumentStore;
+use kernel_apis::HintsModule;
 use kernel_apis::cell_hints::{
     CellHints, CellHintsOptions, CellOutcome, LoopDetector, LoopLimits, LoopTrip, alternation_length, bash_failed,
     loop_hint_text, normalize_cell,
 };
-use kernel_apis::{HintsModule, MemoryDocumentStore};
 use serde_json::{Map, Value, json};
 use std::sync::Arc;
 

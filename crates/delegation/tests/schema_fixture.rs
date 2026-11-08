@@ -3,8 +3,8 @@
 //! the corpus, and the registry's register / list / stored hashes / reload / validation errors.
 
 use delegation::definitions::DefinitionRegistry;
-use delegation::task_store::DocumentStore;
 use jsonschema::{check, errors, validate_json_schema};
+use kernel::store::DocumentStore;
 use serde_json::{Value, json};
 use std::path::Path;
 use std::sync::{Arc, Mutex};
@@ -24,13 +24,13 @@ struct Store {
 }
 
 impl DocumentStore for Store {
-    fn read(&mut self) -> Result<Option<Value>, String> {
+    fn read(&self) -> Result<Option<Value>, String> {
         if self.fail_read {
             return Err("disk".into());
         }
         Ok(self.shared.0.lock().unwrap().clone())
     }
-    fn write(&mut self, document: &Value) -> Result<(), String> {
+    fn write(&self, document: &Value) -> Result<(), String> {
         if self.fail_write {
             return Err("full".into());
         }

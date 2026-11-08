@@ -19,8 +19,7 @@ use services::{Branch, BranchSource, LocalServices};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
-/// The custom message type of the active refinements.
-pub const REFINEMENTS_TYPE: &str = compaction::REFINEMENTS_TYPE;
+use protocol::custom_types::REFINEMENTS;
 /// Targets of main-lane refinements: `instruction:main.r<n>` (the ledger keeps one active record per target).
 const TARGET_PREFIX: &str = "instruction:main.";
 /// The least time between two proposal passes.
@@ -108,7 +107,7 @@ impl AutoRefine {
 
 /// The refinement ids the context shows since its last compaction (`None`: no refinements message since).
 pub fn shown(entries: &[Value]) -> Option<Vec<String>> {
-    let details = *session_journal::context::custom_details_since_compaction(entries, REFINEMENTS_TYPE).last()?;
+    let details = *session_journal::context::custom_details_since_compaction(entries, REFINEMENTS).last()?;
     let ids = details["ids"].as_array().into_iter().flatten();
     Some(ids.filter_map(|id| id.as_str().map(str::to_string)).collect())
 }
@@ -142,7 +141,7 @@ pub fn message(active: &[Value], shown: Option<&[String]>, timestamp: u64) -> Op
     }
     Some(json!({
         "role": "custom",
-        "customType": REFINEMENTS_TYPE,
+        "customType": REFINEMENTS,
         "content": content,
         "display": true,
         "details": {"ids": ids},
@@ -371,7 +370,7 @@ mod tests {
     fn auto_refine_message_follows_what_the_context_shows() {
         let active = [json!({"id": "r1", "version": 1, "text": "Use nextest."})];
         let message = message(&active, None, 7).unwrap();
-        assert_eq!(message["customType"], REFINEMENTS_TYPE);
+        assert_eq!(message["customType"], REFINEMENTS);
         assert!(message["content"].as_str().unwrap().contains("[r1 v1] Use nextest."));
         let entries = [json!({"type": "message", "message": message})];
         let shown = shown(&entries);

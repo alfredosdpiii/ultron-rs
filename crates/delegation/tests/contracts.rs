@@ -6,7 +6,7 @@
 
 use delegation::agents::{AdapterRequest, Agents, AgentsOptions, LaneReply, LaneRun};
 use delegation::contract::{Brief, Check};
-use delegation::task_store::MemoryStore;
+use kernel::store::MemoryDocumentStore;
 use serde_json::{Value, json};
 use std::sync::{Arc, Mutex};
 
@@ -19,8 +19,8 @@ struct Host {
 /// "ok".
 fn host() -> Host {
     let prompts: Arc<Mutex<Vec<(String, String)>>> = Arc::default();
-    let mut options = AgentsOptions::new(Box::new(MemoryStore::default()));
-    options.definition_store = Some(Box::new(MemoryStore::default()));
+    let mut options = AgentsOptions::new(Box::new(MemoryDocumentStore::default()));
+    options.definition_store = Some(Box::new(MemoryDocumentStore::default()));
     options.deterministic = Some(Arc::new(|request: AdapterRequest<'_>| Ok(request.input.clone())));
     let said = prompts.clone();
     options.lanes = Some(Arc::new(move |run: LaneRun| {

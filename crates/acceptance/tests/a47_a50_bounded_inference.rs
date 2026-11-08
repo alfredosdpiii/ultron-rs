@@ -14,7 +14,7 @@
 //! frames (`budget.depth > 1`) run their own `rlm` cell on the frame task's lane. The host-level cases with the
 //! journal and usage ledger in view are in a47_a50_frame_tasks.rs.
 
-mod common;
+use crate::common;
 
 use cli::rpc::client::{RpcClient, RpcClientOptions};
 use common::rpc_tool_results;

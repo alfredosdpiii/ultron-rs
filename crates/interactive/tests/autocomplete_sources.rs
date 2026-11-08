@@ -10,8 +10,7 @@ use interactive::autocomplete_sources::*;
 use serde_json::{Value, json};
 use tui::{AutocompleteItem, AutocompleteProvider, AutocompleteSuggestions};
 
-#[path = "../../tui/tests/support/latch.rs"]
-mod latch;
+use crate::latch;
 use latch::{HANG_GUARD, Latch};
 
 fn fixture() -> Value {

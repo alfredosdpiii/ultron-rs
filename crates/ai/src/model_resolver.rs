@@ -11,7 +11,7 @@
 
 use crate::types::Model;
 
-use model_scope::is_valid_thinking_level;
+use model_scope::{ScopeDiagnostic, is_valid_thinking_level};
 
 /// `defaultModelPerProvider`: the model a fallback prefers for each known provider, in declaration order.
 pub const DEFAULT_MODEL_PER_PROVIDER: &[(&str, &str)] = &[
@@ -86,8 +86,6 @@ impl model_scope::ScopeModel for Model {
         is_claude_code_model(self) || self.provider == crate::claude_subscription::catalog::PROVIDER
     }
 }
-
-pub use model_scope::{ScopeDiagnostic, find_exact_model_reference_match};
 
 /// A model chosen by a pattern, with the thinking level the pattern named.
 #[derive(Clone, Debug, PartialEq)]

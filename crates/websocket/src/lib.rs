@@ -226,6 +226,45 @@ fn finish(opcode: u8, payload: Vec<u8>) -> Result<Message, String> {
     }
 }
 
+/// A client's opening handshake (RFC 6455 section 4.1) under one fresh `Sec-WebSocket-Key`.
+pub struct ClientHandshake {
+    key: String,
+    protocol: Option<String>,
+}
+
+impl ClientHandshake {
+    /// A handshake asking for `protocol` (`Sec-WebSocket-Protocol`) when given.
+    pub fn new(protocol: Option<&str>) -> Self {
+        Self {
+            key: jsrt::base64::encode(jsrt::random::bytes::<16>()),
+            protocol: protocol.map(str::to_string),
+        }
+    }
+
+    /// The upgrade request's own headers, sent after the caller's.
+    pub fn request_headers(&self) -> Vec<(&'static str, String)> {
+        let mut headers = vec![
+            ("connection", "upgrade".to_string()),
+            ("upgrade", "websocket".to_string()),
+            ("sec-websocket-key", self.key.clone()),
+            ("sec-websocket-version", "13".to_string()),
+        ];
+        if let Some(protocol) = &self.protocol {
+            headers.push(("sec-websocket-protocol", protocol.clone()));
+        }
+        headers
+    }
+
+    /// Whether the response completes the handshake: `101`, this key's `Sec-WebSocket-Accept`, no extension, and
+    /// exactly the subprotocol asked for (none when none was). `header` reads a response header by its lowercase name.
+    pub fn accepted(&self, status: u16, header: &dyn Fn(&str) -> Option<String>) -> bool {
+        status == 101
+            && header("sec-websocket-accept").as_deref() == Some(accept_key(&self.key).as_str())
+            && header("sec-websocket-extensions").is_none()
+            && header("sec-websocket-protocol") == self.protocol
+    }
+}
+
 /// `Sec-WebSocket-Accept` for a `Sec-WebSocket-Key`.
 pub fn accept_key(key: &str) -> String {
     let digest = ring::digest::digest(

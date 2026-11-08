@@ -7,7 +7,7 @@
 //! Because they are session values, resuming a session restores them, a tree fork copies them at the fork point,
 //! and deleting a fork leaves its source untouched: no state lives beside the session to drift from it (A07).
 
-use kernel_apis::DocumentStore;
+use kernel::store::DocumentStore;
 use kernel_apis::artifacts::KeyedDocuments;
 use serde_json::Value;
 use session_journal::{Session, Write};
@@ -103,15 +103,6 @@ impl DocumentStore for SessionDocument {
     }
     fn write(&self, document: &Value) -> Result<(), String> {
         self.values.set(&self.namespace, &self.key, document)
-    }
-}
-
-impl delegation::task_store::DocumentStore for SessionDocument {
-    fn read(&mut self) -> Result<Option<Value>, String> {
-        DocumentStore::read(self)
-    }
-    fn write(&mut self, document: &Value) -> Result<(), String> {
-        DocumentStore::write(self, document)
     }
 }
 

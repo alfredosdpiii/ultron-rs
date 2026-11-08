@@ -5,8 +5,9 @@
 //! tests check the call's queued preview and the start log once the preceding call has started.
 
 use kernel::Signal;
+use kernel::store::MemoryDocumentStore;
 use kernel_apis::tool_calls::{QUEUED_PREVIEW, ToolUpdate};
-use kernel_apis::{MemoryDocumentStore, ToolCalls, ToolInfo, ToolRunner};
+use kernel_apis::{ToolCalls, ToolInfo, ToolRunner};
 use serde_json::{Map, Value, json};
 use std::collections::HashMap;
 use std::sync::{Arc, Condvar, Mutex};

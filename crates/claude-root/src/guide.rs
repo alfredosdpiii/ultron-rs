@@ -41,30 +41,16 @@ pub struct PromptResources {
     pub loki: Option<String>,
 }
 
-/// Loki's policy note for a session in `env`'s directory (none when Loki is off or its policy is unreadable).
-pub fn loki_note(env: &RunEnv) -> Option<String> {
-    loki_note_at(session_core::compose::Config::from_env(env).loki_root.as_deref())
-}
-
-/// Loki's policy note for the policy under `root`.
-pub fn loki_note_at(root: Option<&Path>) -> Option<String> {
-    let config = loki::config::load_config(root?).ok()?;
-    loki::injected_context(&config, Some("ultron"))
-        .ok()
-        .filter(|note| !note.is_empty())
-}
-
 /// The kernel APIs the runtime guide names for a session in `env`'s directory, as native Ultron's guide names them
 /// (session_core::compose::mcp_runtime_guide: the `mcp.json` servers through `mcp`, the Rust host's APIs), minus what
 /// an external root cannot serve (see [`external_root_apis`]).
 /// `ULTRON_GUIDE=ts` keeps the TypeScript guide's set (it names neither `mcp.json` servers nor the Rust APIs).
 pub fn runtime_apis(env: &RunEnv) -> RuntimeGuideOptions {
-    if (env.var)(session_core::compose::GUIDE_ENV).as_deref() == Some("ts") {
+    let config = session_core::compose::Config::from_env(env);
+    if config.ts_guide {
         return RuntimeGuideOptions::default();
     }
-    external_root_apis(session_core::compose::mcp_runtime_guide(
-        &session_core::compose::Config::from_env(env),
-    ))
+    external_root_apis(session_core::compose::mcp_runtime_guide(&config))
 }
 
 /// What `ultron claude` serves of native Ultron's APIs: all of them, persistent children with `rlm.ask`, the swarm
@@ -84,14 +70,6 @@ pub struct ResourceFlags {
     pub no_skills: bool,
 }
 
-/// Whether `ULTRON_BUNDLED_SKILLS` leaves the bundled skills on.
-pub fn bundled_skills_enabled(value: Option<&str>) -> bool {
-    !matches!(
-        value.map(|v| v.trim().to_lowercase()).as_deref(),
-        Some("off" | "0" | "false")
-    )
-}
-
 /// `workerProjectTrusted`: nothing to trust, else the stored decision, else `defaultProjectTrust` is not "never".
 pub fn project_trusted(cwd: &Path, agent_dir: &Path, home: &Path) -> bool {
     config::trust::worker_project_trusted(cwd, agent_dir, home)
@@ -104,6 +82,7 @@ pub fn project_trusted(cwd: &Path, agent_dir: &Path, home: &Path) -> bool {
 /// project contributes no settings and no project skills). `bundled` is the bundled skills directory, unless
 /// `ULTRON_BUNDLED_SKILLS` turned it off.
 pub fn load_prompt_resources(env: &RunEnv, bundled: Option<&Path>, flags: ResourceFlags) -> PromptResources {
+    let session = session_core::compose::Config::from_env(env);
     let agent_dir_path = env.agent_dir();
     let trusted = project_trusted(&env.cwd, &agent_dir_path, &env.home);
     let settings = config::settings::SettingsManager::create(&env.cwd, &agent_dir_path, trusted);
@@ -125,7 +104,7 @@ pub fn load_prompt_resources(env: &RunEnv, bundled: Option<&Path>, flags: Resour
         persona,
         system_prompt: files.system_prompt.filter(|text| !text.trim().is_empty()),
         append_system_prompt: files.append_system_prompt,
-        loki: loki_note(env),
+        loki: session.loki_root.as_deref().and_then(loki::session_note),
         ..PromptResources::default()
     };
     if flags.no_context_files && flags.no_skills {
@@ -158,7 +137,7 @@ pub fn load_prompt_resources(env: &RunEnv, bundled: Option<&Path>, flags: Resour
         context_files,
         skills,
         engineering,
-        proactive_skills: engineering && (env.var)(session_core::compose::GUIDE_ENV).as_deref() != Some("ts"),
+        proactive_skills: engineering && !session.ts_guide,
         ..shaped
     }
 }
@@ -232,7 +211,7 @@ pub fn claude_runtime_guide(hints: bool) -> String {
 /// Whether the root is woken by its events: Ultron's hooks are on (`hooks`) and the guide is not TypeScript's
 /// (`ULTRON_GUIDE=ts` keeps its next-call wording).
 pub fn wakes(var: &dyn Fn(&str) -> Option<String>, hooks: bool) -> bool {
-    hooks && var(session_core::compose::GUIDE_ENV).as_deref() != Some("ts")
+    hooks && !session_core::compose::ts_guide(var)
 }
 
 /// [`claude_runtime_guide`]; `wake`: events wake the idle root (crate::hooks::HookEvent::WaitEvents), as in native Ultron.

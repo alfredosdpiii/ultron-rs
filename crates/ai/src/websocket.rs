@@ -8,7 +8,7 @@ use crate::http::{BoxFuture, HeaderMap};
 use std::collections::VecDeque;
 use std::time::Duration;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, ReadHalf, WriteHalf};
-use websocket::{Message, MessageDecoder, accept_key, encode_message};
+use websocket::{ClientHandshake, Message, MessageDecoder, encode_message};
 
 /// What `new WebSocket(...)` throws where the runtime has none.
 pub const NO_WEBSOCKET: &str = "WebSocket transport is not available in this runtime";
@@ -230,19 +230,15 @@ pub async fn connect(
         }
     };
     http.set_scheme(scheme).map_err(|_| fail())?;
-    let key = jsrt::base64::encode(jsrt::random::bytes::<16>());
+    let handshake = ClientHandshake::new(None);
     let mut request = client.get(http);
     for (name, value) in headers {
         request = request.header(name, value);
     }
-    let response = request
-        .header("connection", "upgrade")
-        .header("upgrade", "websocket")
-        .header("sec-websocket-key", &key)
-        .header("sec-websocket-version", "13")
-        .send()
-        .await
-        .map_err(|_| fail())?;
+    for (name, value) in handshake.request_headers() {
+        request = request.header(name, value);
+    }
+    let response = request.send().await.map_err(|_| fail())?;
     let header = |name: &str| {
         response
             .headers()
@@ -250,11 +246,7 @@ pub async fn connect(
             .and_then(|v| v.to_str().ok())
             .map(str::to_string)
     };
-    if response.status().as_u16() != 101
-        || header("sec-websocket-accept").as_deref() != Some(accept_key(&key).as_str())
-        || header("sec-websocket-extensions").is_some()
-        || header("sec-websocket-protocol").is_some()
-    {
+    if !handshake.accepted(response.status().as_u16(), &header) {
         return Err(fail());
     }
     let upgraded = response.upgrade().await.map_err(|_| fail())?;

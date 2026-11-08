@@ -2,7 +2,7 @@
 //! request, and does not act on a banned login's review request or mention. Against the fake hub and a scripted
 //! engine; concurrency waits on events (an engine gate, the queue in the state), every deadline is a hang guard.
 
-mod github_common;
+use crate::github_common;
 
 use std::sync::mpsc;
 use std::sync::{Arc, Condvar, Mutex};

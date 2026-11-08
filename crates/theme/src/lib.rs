@@ -609,7 +609,8 @@ fn parse_int(s: &str) -> Option<i64> {
     Some(if neg { -n } else { n })
 }
 
-fn luminance((r, g, b): (u8, u8, u8)) -> f64 {
+/// WCAG relative luminance of an sRGB color, 0 (black) to 1 (white).
+pub fn luminance((r, g, b): (u8, u8, u8)) -> f64 {
     let linear = |c: u8| {
         let v = f64::from(c) / 255.0;
         if v <= 0.03928 {

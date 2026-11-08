@@ -4,9 +4,9 @@
 //!
 //! Directory entries are visited in name order (TypeScript takes the operating system's `readdir` order).
 
-use super::glob::minimatch;
+use jsrt::path::{basename, dirname, relative, resolve};
+use model_scope::glob::minimatch;
 use resources::ignore::{Ignore, add_ignore_rules};
-use resources::paths::{basename, dirname, join, relative, resolve};
 use std::path::Path;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -80,7 +80,7 @@ fn collect_files(dir: &str, kind: ResourceType, ig: &mut Ignore, root: &str, out
         if entry.name.starts_with('.') || entry.name == "node_modules" {
             continue;
         }
-        let full = join(dir, &entry.name);
+        let full = jsrt::path::join(&[dir, &entry.name]);
         let rel = relative(root, &full);
         let ignore_path = if entry.is_dir { format!("{rel}/") } else { rel };
         if ig.ignores(&ignore_path) {
@@ -112,7 +112,7 @@ fn collect_skill_entries(dir: &str, mode: SkillMode, ig: &mut Ignore, root: &str
         if entry.name != "SKILL.md" {
             continue;
         }
-        let full = join(dir, &entry.name);
+        let full = jsrt::path::join(&[dir, &entry.name]);
         if entry.is_file && !ig.ignores(&relative(root, &full)) {
             out.push(full);
             return;
@@ -122,7 +122,7 @@ fn collect_skill_entries(dir: &str, mode: SkillMode, ig: &mut Ignore, root: &str
         if entry.name.starts_with('.') || entry.name == "node_modules" {
             continue;
         }
-        let full = join(dir, &entry.name);
+        let full = jsrt::path::join(&[dir, &entry.name]);
         let rel = relative(root, &full);
         let at_root = dir == root;
         if entry.is_file
@@ -157,7 +157,7 @@ fn top_level_files(dir: &str, extension: &str) -> Vec<String> {
         .into_iter()
         .filter(|e| !e.name.starts_with('.') && e.name != "node_modules")
         .filter(|e| e.is_file && e.name.ends_with(extension) && !ig.ignores(&e.name))
-        .map(|e| join(dir, &e.name))
+        .map(|e| jsrt::path::join(&[dir, &e.name]))
         .collect()
 }
 
@@ -203,13 +203,13 @@ fn matches_any(file: &str, patterns: &[&str], base: &str) -> bool {
     let skill = name == "SKILL.md";
     let parent = dirname(file);
     patterns.iter().any(|pattern| {
-        if minimatch(&rel, pattern) || minimatch(name, pattern) || minimatch(file, pattern) {
+        if minimatch(&rel, pattern, false) || minimatch(name, pattern, false) || minimatch(file, pattern, false) {
             return true;
         }
         skill
-            && (minimatch(&relative(base, &parent), pattern)
-                || minimatch(basename(&parent), pattern)
-                || minimatch(&parent, pattern))
+            && (minimatch(&relative(base, &parent), pattern, false)
+                || minimatch(basename(&parent), pattern, false)
+                || minimatch(&parent, pattern, false))
     })
 }
 
@@ -299,7 +299,7 @@ pub fn ancestor_agents_skill_dirs(start: &str) -> Vec<String> {
     let git_root = {
         let mut dir = start.clone();
         loop {
-            if exists(&join(&dir, ".git")) {
+            if exists(&jsrt::path::join(&[&dir, ".git"])) {
                 break Some(dir);
             }
             let parent = dirname(&dir);
@@ -312,7 +312,7 @@ pub fn ancestor_agents_skill_dirs(start: &str) -> Vec<String> {
     let mut out = Vec::new();
     let mut dir = start;
     loop {
-        out.push(join(&join(&dir, ".agents"), "skills"));
+        out.push(jsrt::path::join(&[&dir, ".agents", "skills"]));
         if git_root.as_deref() == Some(dir.as_str()) {
             break;
         }
@@ -338,7 +338,7 @@ fn pi_manifest_extensions(package_json: &str) -> Option<Vec<String>> {
 /// `resolveExtensionEntries`: a directory's declared extensions (package.json `pi.extensions`, those that exist),
 /// else its `index.ts`, else its `index.js`.
 fn extension_entries(dir: &str) -> Option<Vec<String>> {
-    let manifest = join(dir, "package.json");
+    let manifest = jsrt::path::join(&[dir, "package.json"]);
     if exists(&manifest)
         && let Some(list) = pi_manifest_extensions(&manifest)
     {
@@ -349,7 +349,7 @@ fn extension_entries(dir: &str) -> Option<Vec<String>> {
     }
     ["index.ts", "index.js"]
         .iter()
-        .map(|index| join(dir, index))
+        .map(|index| jsrt::path::join(&[dir, index]))
         .find(|p| exists(p))
         .map(|p| vec![p])
 }
@@ -378,7 +378,7 @@ pub fn auto_extensions(dir: &str) -> Vec<String> {
         if ig.ignores(&ignore_path) {
             continue;
         }
-        let full = join(dir, &e.name);
+        let full = jsrt::path::join(&[dir, &e.name]);
         if e.is_file && (e.name.ends_with(".ts") || e.name.ends_with(".js")) {
             out.push(full);
         } else if e.is_dir

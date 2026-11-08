@@ -10,9 +10,10 @@
 //! settled on reopen and remote mutations are never replayed. A failed store write poisons the service.
 
 use crate::memory_records::{IndexEntry, RecordIndex, Typed, content_cap, typed_fields};
-use crate::store::{DocumentStore, read_versioned};
+use crate::store::read_versioned;
 use crate::util::{Clock, system_clock};
 use kernel::Signal;
+use kernel::store::DocumentStore;
 use serde_json::{Map, Value, json};
 use std::collections::{HashMap, HashSet};
 use std::path::{Component, Path, PathBuf};

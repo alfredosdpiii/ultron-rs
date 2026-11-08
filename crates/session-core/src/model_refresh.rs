@@ -8,7 +8,9 @@
 
 use crate::RunEnv as Env;
 use crate::{ModelFlags, lane};
-use ai::model_refresh::{load_radius_gateway_config, radius_models_from_config, refresh_remote_catalog};
+use ai::model_refresh::{
+    DEFAULT_CATALOG_BASE_URL, load_radius_gateway_config, radius_models_from_config, refresh_remote_catalog,
+};
 use serde_json::json;
 use std::sync::Arc;
 use std::time::Duration;
@@ -20,9 +22,8 @@ const REFRESH_BUDGET: Duration = Duration::from_secs(15);
 pub const REFRESH_TIMED_OUT: &str = "Model catalog refresh timed out.";
 
 /// Refresh every provider's stored catalog. `Err` is the message `ultron update --models` prints after `Error: `.
-/// `user_agent` is `getPiUserAgent(VERSION)` ([`ai::model_refresh::management_user_agent`]).
-pub fn refresh_model_catalogs(env: &Env, catalog_base_url: &str, user_agent: &str) -> Result<(), String> {
-    let errors = refresh_catalogs(env, catalog_base_url, user_agent, true)?;
+pub fn refresh_model_catalogs(env: &Env) -> Result<(), String> {
+    let errors = refresh_catalogs_from(env, DEFAULT_CATALOG_BASE_URL, true)?;
     if errors.is_empty() {
         return Ok(());
     }
@@ -30,14 +31,18 @@ pub fn refresh_model_catalogs(env: &Env, catalog_base_url: &str, user_agent: &st
     Err(format!("Could not refresh model catalogs: {}", details.join("; ")))
 }
 
+/// The model runtime's refresh: [`refresh_catalogs_from`] pi.dev, or nothing when offline (`PI_OFFLINE`).
+pub fn refresh_catalogs(env: &Env, force: bool) -> Result<Vec<(String, String)>, String> {
+    if config::env::offline(&*env.var) {
+        return Ok(Vec::new());
+    }
+    refresh_catalogs_from(env, DEFAULT_CATALOG_BASE_URL, force)
+}
+
 /// [`refresh_model_catalogs`]' per-provider failures, in provider order; `Err` when the whole refresh timed out.
 /// Without `force`, a pi.dev catalog checked within the last four hours is not asked again (a login's refresh).
-pub fn refresh_catalogs(
-    env: &Env,
-    catalog_base_url: &str,
-    user_agent: &str,
-    force: bool,
-) -> Result<Vec<(String, String)>, String> {
+pub fn refresh_catalogs_from(env: &Env, catalog_base_url: &str, force: bool) -> Result<Vec<(String, String)>, String> {
+    let user_agent = &ai::model_refresh::management_user_agent();
     let registry = lane::registry(env);
     let store = config::models_store::ModelsStore::beside(&config::paths::AgentPaths::new(env.agent_dir()).models());
     let transport: Arc<dyn ai::Transport> = Arc::new(ai::ReqwestTransport::for_env(&*env.var, None));
@@ -49,7 +54,7 @@ pub fn refresh_catalogs(
         // `claude-code` has no catalog to refresh (its models are the CLI's), though its requests always resolve.
         .filter(|p| p != ai::claude_code::PROVIDER)
         .collect();
-    let now = || lane::now_ms();
+    let now = || jsrt::date::now_ms();
     let work = async {
         let mut errors: Vec<(String, String)> = Vec::new();
         for provider in &providers {

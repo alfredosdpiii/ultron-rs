@@ -48,9 +48,6 @@ fn hex64(text: &str) -> Option<Vec<u8>> {
         .collect()
 }
 
-// ponytail: kept as a re-export for the acceptance tests; new code calls `jsrt::hash::sha256_hex`.
-pub use jsrt::hash::sha256_hex;
-
 /// The signed file: a signature line over `content`, then `content`.
 pub fn sign_snapshot(key: &[u8], content: &[u8]) -> Vec<u8> {
     let mut line = Map::new();

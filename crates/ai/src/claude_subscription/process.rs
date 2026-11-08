@@ -9,9 +9,9 @@ use super::history::{Body, PREFIX, TOOL};
 use super::{ClaudeError, Config, Env, INSTALL_HINT, LOGGED_OUT_HINT};
 use serde_json::{Value, json};
 use std::io::{BufRead, BufReader, Write};
-use std::os::unix::fs::{DirBuilderExt, MetadataExt, PermissionsExt};
+use std::os::unix::fs::{DirBuilderExt, MetadataExt};
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Stdio};
+use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, RecvTimeoutError};
 use std::sync::{Arc, LazyLock, Mutex};
@@ -44,23 +44,8 @@ pub const QUIET_TRAFFIC: &[(&str, &str)] = &[
 ];
 const OFF: &[&str] = &["false", "0", "no", "off"];
 
-/// Session variables a parent Claude Code sets for its children, and inherited request knobs this provider owns.
-const DROPPED_ENV: &[&str] = &[
-    "CLAUDECODE",
-    "CLAUDE_CODE_ENTRYPOINT",
-    "CLAUDE_CODE_SESSION_ID",
-    "CLAUDE_CODE_CHILD_SESSION",
-    "CLAUDE_CODE_SESSION_ATTENDED",
-    "CLAUDE_CODE_MESSAGING_SOCKET",
-    "CLAUDE_CODE_MESSAGING_TOKEN",
-    "CLAUDE_CODE_EXECPATH",
-    "CLAUDE_CODE_SSE_PORT",
-    "CLAUDE_PID",
-    "CLAUDE_EFFORT",
-    "CLAUDE_CODE_MAX_OUTPUT_TOKENS",
-    "CLAUDE_CODE_EXTRA_BODY",
-    "CLAUDE_CODE_EFFORT_LEVEL",
-];
+/// Inherited request knobs this provider owns; dropped with [`crate::claude_code_cli::PARENT_SESSION_ENV`].
+const REQUEST_KNOB_ENV: [&str; 2] = ["CLAUDE_CODE_EXTRA_BODY", "CLAUDE_CODE_EFFORT_LEVEL"];
 
 /// Install prefixes probed after PATH (a service or desktop launch inherits a PATH without them).
 const HOME_PREFIXES: &[&str] = &[
@@ -86,20 +71,6 @@ pub fn native_error_status(code: &str) -> Option<u16> {
     }
 }
 
-fn executable(path: &Path) -> bool {
-    std::fs::metadata(path).is_ok_and(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
-}
-
-fn which(name: &str, path: &str) -> Option<PathBuf> {
-    if name.contains('/') {
-        return executable(Path::new(name)).then(|| PathBuf::from(name));
-    }
-    path.split(':')
-        .filter(|dir| !dir.is_empty())
-        .map(|dir| Path::new(dir).join(name))
-        .find(|candidate| executable(candidate))
-}
-
 /// The argv prefix that runs Claude Code (`_resolve`): `command`, else `ULTRON_CLAUDE_COMMAND`, else
 /// `ULTRON_CLAUDE_CODE_BIN` (the binary the `claude-code` provider runs and is listed by), else `claude` on the
 /// env's PATH, then in the usual install directories. Only the bare default name is probed outside PATH.
@@ -114,10 +85,10 @@ pub fn resolve_claude(command: Option<&[String]>, env: &Env) -> Option<Vec<Strin
         ],
     };
     let head = &command[0];
-    let found = if Path::new(head).is_absolute() && executable(Path::new(head)) {
+    let found = if Path::new(head).is_absolute() && jsrt::process::is_executable(Path::new(head)) {
         Some(PathBuf::from(head))
     } else {
-        which(head, env.get("PATH").map_or(DEFAULT_PATH, String::as_str))
+        jsrt::process::which(head, env.get("PATH").map_or(DEFAULT_PATH, String::as_str))
     };
     let found = found.or_else(|| {
         if head != "claude" {
@@ -129,7 +100,7 @@ pub fn resolve_claude(command: Option<&[String]>, env: &Env) -> Option<Vec<Strin
             .flat_map(|home| HOME_PREFIXES.iter().map(move |p| format!("{home}/{p}")))
             .chain(SYSTEM_PREFIXES.iter().map(|p| p.to_string()))
             .collect();
-        which(head, &prefixes.join(":"))
+        jsrt::process::which(head, &prefixes.join(":"))
     })?;
     let mut resolved = vec![found.to_string_lossy().into_owned()];
     resolved.extend(command[1..].iter().cloned());
@@ -354,7 +325,7 @@ pub struct NativeResponse {
 #[derive(Default)]
 pub struct Handle {
     cancelled: AtomicBool,
-    child: Mutex<Option<Child>>,
+    child: Mutex<Option<signals::child::Watched>>,
     admission: Mutex<Option<AbortHandle>>,
     /// The request's last `rate_limit_event` (the footer's subscription usage).
     rate_limit_event: Mutex<Option<Value>>,
@@ -384,13 +355,19 @@ impl Handle {
 
     /// SIGKILL native's process group while its leader is not reaped (a shim's node child dies with it).
     fn kill(&self) {
-        let mut child = self.child.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-        if let Some(child) = child.as_mut()
-            && matches!(child.try_wait(), Ok(None))
-            && let Some(pid) = rustix::process::Pid::from_raw(child.id() as i32)
-        {
-            let _ = rustix::process::kill_process_group(pid, rustix::process::Signal::KILL);
+        if let Some(child) = self.watched() {
+            child.stop(signals::child::Stop {
+                group: true,
+                term_grace: None,
+            });
         }
+    }
+
+    fn watched(&self) -> Option<signals::child::Watched> {
+        self.child
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
     }
 
     /// The request's last `rate_limit_event`, whether the call succeeded or not.
@@ -399,16 +376,6 @@ impl Handle {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .clone()
-    }
-
-    /// The exit code once native exited; `None` while it runs.
-    fn exit_code(&self) -> Option<Option<i32>> {
-        let mut child = self.child.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-        match child.as_mut().map(Child::try_wait) {
-            Some(Ok(Some(status))) => Some(status.code()),
-            Some(Ok(None)) => None,
-            _ => Some(None),
-        }
     }
 }
 
@@ -436,9 +403,8 @@ impl Drop for Cleanup<'_> {
         if let Some(mut admission) = self.admission.take() {
             admission.close();
         }
-        let deadline = Instant::now() + Duration::from_secs(5);
-        while self.handle.exit_code().is_none() && Instant::now() < deadline {
-            std::thread::sleep(Duration::from_millis(5));
+        if let Some(child) = self.handle.watched() {
+            child.wait_timeout(Duration::from_secs(5));
         }
         if let Some(reader) = self.reader.take() {
             let _ = reader.join();
@@ -514,7 +480,10 @@ pub fn run(
     };
     inert.push(manifest.to_string_lossy().into_owned());
     let mcp = json!({"mcpServers": {"ultron": {"command": inert[0], "args": inert[1..]}}});
-    for key in DROPPED_ENV {
+    for key in crate::claude_code_cli::PARENT_SESSION_ENV
+        .iter()
+        .chain(&REQUEST_KNOB_ENV)
+    {
         env.remove(*key);
     }
     for (k, v) in [
@@ -610,7 +579,7 @@ pub fn run(
             .map_err(|e| ClaudeError::Failed(format!("Could not start Claude Code ({}): {e}", argv[0])))?;
         let stdout = child.stdout.take().expect("stdout is piped");
         let stdin = child.stdin.take().expect("stdin is piped");
-        *child_slot = Some(child);
+        *child_slot = Some(signals::child::Watched::new(child));
         cleanup.reader = Some(std::thread::spawn(move || {
             for line in BufReader::new(stdout).lines() {
                 let Ok(line) = line else { break };
@@ -742,18 +711,16 @@ pub fn run(
             _ => {}
         }
     }
-    let code = loop {
-        if let Some(code) = handle.exit_code() {
-            break code;
-        }
-        if handle.cancelled() {
-            return Err(ClaudeError::Cancelled);
-        }
-        if Instant::now() >= deadline {
-            return Err(ClaudeError::Timeout);
-        }
-        std::thread::sleep(Duration::from_millis(5));
-    };
+    // A cancel kills native, which ends this wait.
+    let child = handle.watched().expect("native was spawned");
+    let ended = child.wait_timeout(deadline.saturating_duration_since(Instant::now()));
+    if !ended && handle.cancelled() {
+        return Err(ClaudeError::Cancelled);
+    }
+    if !ended {
+        return Err(ClaudeError::Timeout);
+    }
+    let code = child.status().and_then(|s| s.code());
     if let Some(reader) = cleanup.reader.take() {
         let _ = reader.join();
     }

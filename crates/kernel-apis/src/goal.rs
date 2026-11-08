@@ -20,11 +20,12 @@
 //! The document `{version: 1, goal}` is the session value `ultron.module/goal`. Requests and commands run one at a
 //! time (TS interleaves `goal.*` requests with commands; only their order of effects matters here).
 
-use crate::store::{DocumentStore, read_versioned};
+use crate::store::read_versioned;
 use crate::util::Clock;
 use crate::{ApiModule, Request, TaskHost};
 use fancy_regex::Regex;
 use kernel::Signal;
+use kernel::store::DocumentStore;
 use serde_json::{Map, Value, json};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;

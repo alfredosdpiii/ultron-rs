@@ -5,7 +5,7 @@
 //! ULTRON_CODING_AGENT_DIR / ULTRON_SERVER_DIR), and every stable screen (and file the scenario names) must equal
 //! the TypeScript one after the same normalization.
 
-mod tui_harness;
+use crate::tui_harness;
 
 use serde_json::Value;
 use tui_harness::{Mock, TempDir, Tui, normalize, replies};

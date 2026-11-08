@@ -100,8 +100,7 @@ fn session_core_navigation_journal_commits_the_summary_under_the_target() {
     )
     .unwrap();
     let operation = op.operation_id().to_string();
-    op.request(&mut session, harness::chat::models::RetryPolicy::default())
-        .unwrap();
+    op.request(&mut session, ai::retry::RetryPolicy::default()).unwrap();
     let state = session.value(OP_STATE, &operation).unwrap();
     assert_eq!(state["at"], "summary.effect_pending");
     assert_eq!(state["task"]["customInstructions"], "names");
@@ -231,8 +230,7 @@ fn session_core_navigation_journal_interrupted_summary_settles_without_moving() 
                 "cancel_requested"
             );
         } else {
-            op.request(&mut session, harness::chat::models::RetryPolicy::default())
-                .unwrap();
+            op.request(&mut session, ai::retry::RetryPolicy::default()).unwrap();
         }
         drop(op);
         let mut session = reopen(dir.path(), session);
@@ -257,7 +255,7 @@ fn session_core_navigation_journal_interrupted_summary_settles_without_moving() 
 /// summary; killed during the wait it settles `failed` (`interrupted`) without moving.
 #[test]
 fn session_core_navigation_journal_retry_wait_then_retry_or_kill() {
-    use harness::chat::models::RetryPolicy;
+    use ai::retry::RetryPolicy;
     let dir = tempfile::tempdir().unwrap();
     let (mut session, target, _) = session(dir.path());
     let mut op = CompactionOp::begin_navigation(&mut session, Some(&target), &preparation(), None, None).unwrap();

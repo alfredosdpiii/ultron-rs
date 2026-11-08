@@ -4,8 +4,7 @@
 //! the client kept only the sessions of its own directory, so `--session <id>` (how herdr resumes a durable pane)
 //! failed with "No native session found matching".
 
-#[path = "daemon_common/mod.rs"]
-mod common;
+use crate::daemon_common as common;
 
 use common::{HANG_GUARD, Home, assert_none_mentioning, provider, text_reply};
 use serde_json::Value;

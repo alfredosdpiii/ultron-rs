@@ -4,9 +4,6 @@
 use indexmap::IndexMap;
 use serde_json::{Map, Value};
 
-/// The recorder's helpers, shared with the session that writes the counters (crates/session-core).
-pub use session_core::session_stats::{CELL_APIS, cell_apis, classify_nudge};
-
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Cells {
     pub count: f64,

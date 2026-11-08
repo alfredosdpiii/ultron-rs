@@ -4,7 +4,7 @@
 //! `worker.harness`, `worker.resources-loaded`, `worker.harness-create`, `worker.host`, `worker.ready`
 //! (session-worker.ts), each in that order. Without the variable nothing is written.
 
-mod common;
+use crate::common;
 
 use common::{Naming, Sandbox, anthropic_text, mock_server};
 use serde_json::Value;

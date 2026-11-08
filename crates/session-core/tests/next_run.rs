@@ -5,13 +5,14 @@
 //! pending entries and empties the inbox; the run in progress never takes one; the message waits in the lane's inbox
 //! past that run's end, and survives the worker (a successor's recovery does not start a run for it).
 
-mod p_session_support;
-mod reopen_support;
+use crate::p_session_support;
+use crate::reopen_support;
 
 use p_session_support::{in_order, text, tool, user_texts};
+use protocol::watch::QueueKind;
 use reopen_support::Home;
 use serde_json::{Value, json};
-use session_core::core::{EMPTY_QUEUED, Op, QueueKind};
+use session_core::core::{EMPTY_QUEUED, Op};
 use session_journal::ns::LANE_STATE;
 use session_journal::ns::PENDING_ENTRY;
 

@@ -207,7 +207,7 @@ fn run(recorded: &Value) {
             cwd: cwd.clone(),
             home: base.clone(),
             env_overlay,
-            client_version: mcp::gateway::client_version(),
+            client_version: config::version().to_string(),
             log: Some(Arc::new(ServerLog::new(agent.join("mcp.log")))),
             secrets: Some(sink),
             ..ConnectionEnv::default()

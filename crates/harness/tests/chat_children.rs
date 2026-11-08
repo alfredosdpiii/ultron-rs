@@ -2,8 +2,8 @@
 //! the durable task table. A child is owned by the cell that spawned it and owns its own conversation; its timeout is
 //! a durable deadline; cancelling the parent's run cascades to it. Cases run against Memory, SQLite and JSONL.
 
-mod chat_support;
-mod support;
+use crate::chat_support;
+use crate::support;
 
 use std::sync::{Arc, Mutex};
 

@@ -1069,3 +1069,12 @@ fn cli_autoreview_age_reads_times_like_date_parse() {
     assert_eq!(cli::autoreview_cli::age(Some("2026-10-01 10:00Z"), now), "30 s ago");
     assert_eq!(cli::autoreview_cli::age(Some("2026-10-01T24:30:00Z"), now), "NaN h ago");
 }
+
+/// An engine result the plan cannot read is an error for `--json` and the offline body, as on the daemon path,
+/// never an empty "complete: false, no findings" review.
+#[test]
+fn cli_autoreview_offline_json_refuses_an_unreadable_engine_result() {
+    let error = cli::autoreview_cli::offline_json(&json!({"complete": true, "findings": "none"}), None, None, None)
+        .unwrap_err();
+    assert!(error.starts_with("the engine returned an unreadable result"), "{error}");
+}

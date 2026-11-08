@@ -411,7 +411,7 @@ pub struct CaseFinding {
 
 /// Scores the review `result` of `case` at `block_at`.
 pub fn score(case: &Case, result: &EngineResult, block_at: &str) -> CaseScore {
-    let blocked = decide_verdict(result, false, "open", Some(block_at)).verdict == Verdict::RequestChanges;
+    let blocked = decide_verdict(result, Some(block_at)).verdict == Verdict::RequestChanges;
     let confirmed: Vec<_> = result
         .findings
         .iter()

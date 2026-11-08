@@ -6,7 +6,7 @@
 
 use std::rc::Rc;
 
-mod support;
+use crate::support;
 use support::Sent;
 
 use interactive::app::{App, AppOptions};

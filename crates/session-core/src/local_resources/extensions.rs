@@ -5,7 +5,7 @@
 //! the ones it ignores.
 
 use super::{LocalResources, PathMetadata, ResolvedResource, Scope, files, rank, string_list};
-use ::resources::paths::{canonicalize, join};
+use ::resources::paths::canonicalize;
 use indexmap::IndexMap;
 
 impl LocalResources {
@@ -20,7 +20,7 @@ impl LocalResources {
             }
         };
         let global_base = self.agent_dir.clone();
-        let project_base = join(&self.cwd, config::paths::CONFIG_DIR_NAME);
+        let project_base = jsrt::path::join(&[&self.cwd, config::paths::CONFIG_DIR_NAME]);
         let entries = |scope: Scope| {
             let s = match scope {
                 Scope::User => self.settings.global_settings(),
@@ -50,7 +50,7 @@ impl LocalResources {
                 base_dir: Some(base.to_string()),
             };
             let overrides = entries(scope);
-            for p in files::auto_extensions(&join(base, "extensions")) {
+            for p in files::auto_extensions(&jsrt::path::join(&[base, "extensions"])) {
                 let enabled = files::enabled_by_overrides(&p, &overrides, base);
                 add(&p, &m, enabled);
             }

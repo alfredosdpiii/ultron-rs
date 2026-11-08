@@ -3,8 +3,7 @@
 //! `python3`) of the session's PATH counts only when it belongs to an environment; else `.venv`/`venv` in the
 //! session directory. Fake interpreters are scripts on an injected PATH.
 
-#[path = "../../cli/tests/executable_support/mod.rs"]
-mod executable_support;
+use crate::executable_support;
 
 use loki::project::find_project_python;
 use std::collections::HashMap;

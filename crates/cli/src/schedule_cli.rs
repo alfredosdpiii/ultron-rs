@@ -180,7 +180,7 @@ fn cancel_schedule(env: &Env, target: &str, out: &mut dyn Write) -> Result<i32, 
     let servers = servers(env, &instance);
     let cancelled = match servers.first() {
         Some(server) => {
-            let socket = instance::socket_dir(&server.dir).join(format!("{}.sock", server.server_id));
+            let socket = instance::socket_path(&server.dir, &server.server_id);
             let connection =
                 client::runtime::Connection::connect(&socket, &server.server_id).map_err(|e| e.to_string())?;
             connection

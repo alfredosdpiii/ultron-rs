@@ -3,7 +3,7 @@
 //! agent works the session goal; subagents report to it"). The goal's job works it from its own REPL lane:
 //! `goal.check`, `goal.blocked` and `goal.complete` from the job's cells.
 
-mod p_session_support;
+use crate::p_session_support;
 
 use lanes::CellOutcome;
 use p_session_support::{Setup, actor, text, tool};

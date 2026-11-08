@@ -56,7 +56,7 @@ pub fn status_extras(host: &host::Host, tool_calls: &kernel_apis::ToolCalls, lan
     let calls: Vec<Value> = tool_calls
         .list()
         .into_iter()
-        .filter(|call| lane == crate::lane::MAIN || call["lane"] == lane)
+        .filter(|call| lane == session_journal::run::MAIN_LANE || call["lane"] == lane)
         .take(40)
         .map(|call| {
             let mut out = Map::new();

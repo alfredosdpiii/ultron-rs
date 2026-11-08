@@ -3,7 +3,6 @@
 
 /// The `claude-subscription` provider's inert MCP inventory server (`ultron __internal inert-mcp`).
 pub use ai::claude_subscription::inert_mcp;
-pub use session_core::{compose, journal, lane, naming};
 
 pub mod acp;
 pub mod args;
@@ -61,15 +60,6 @@ use std::io::Write;
 use std::path::Path;
 
 pub const HELP: &str = include_str!("help.txt");
-
-pub fn version() -> String {
-    let package: serde_json::Value = serde_json::from_str(include_str!("../../../packages/coding-agent/package.json"))
-        .expect("packages/coding-agent/package.json parses");
-    package["version"]
-        .as_str()
-        .expect("package.json has a version")
-        .to_string()
-}
 
 /// An environment variable lookup usable from any thread.
 pub use session_core::VarLookup;
@@ -304,7 +294,7 @@ fn run_inner(argv: &[String], env: &Env, out: &mut dyn Write, err: &mut dyn Writ
         writeln!(err, "Warning: {warning}").map_err(io)?;
     }
     if parsed.version {
-        writeln!(out, "{}", version()).map_err(io)?;
+        writeln!(out, "{}", config::version()).map_err(io)?;
         return Ok(0);
     }
     if let Some(input) = &parsed.export {

@@ -5,7 +5,7 @@
 //! events and the journal. Temp roots, worktree ids, task ids, keys and Git ids are normalized as by the generator.
 
 use delegation::host::{ChildRunner, Delegation, DelegationOptions, DetachedEnd};
-use delegation::task_store::DocumentStore;
+use kernel::store::DocumentStore;
 use regex::Regex;
 use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
@@ -16,10 +16,10 @@ use std::time::{Duration, Instant};
 struct Store(Arc<Mutex<Option<Value>>>);
 
 impl DocumentStore for Store {
-    fn read(&mut self) -> Result<Option<Value>, String> {
+    fn read(&self) -> Result<Option<Value>, String> {
         Ok(self.0.lock().unwrap().clone())
     }
-    fn write(&mut self, document: &Value) -> Result<(), String> {
+    fn write(&self, document: &Value) -> Result<(), String> {
         *self.0.lock().unwrap() = Some(document.clone());
         Ok(())
     }

@@ -5,7 +5,7 @@
 //!
 //! ```text
 //! let host = Arc::new(Host::new(cwd, jobs_dir, spill_dir, guard)            // shell jobs: recovered here,
-//!     .with_journal(Arc::new(FileJobJournal::new(jobs_journal)))?);         //   from their processes
+//!     .with_journal(Arc::new(FileDocumentStore::new(jobs_journal)))?);         //   from their processes
 //! let schedules = Arc::new(SchedulesModule::new(store("schedules"), None));
 //! let goal = Arc::new(GoalDriver::new(store("goal"),
 //!     Arc::new(TaskGoalJobs::new(tasks.clone(), host.clone())), clock));

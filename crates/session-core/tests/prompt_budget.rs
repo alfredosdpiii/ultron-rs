@@ -4,7 +4,7 @@
 //! any request with an error naming the sizes; turning auto-compaction off (only the window limits then) lets the
 //! next prompt reach the provider, as the check reads the live settings before each request.
 
-mod p_session_support;
+use crate::p_session_support;
 
 use p_session_support::{Setup, actor, in_order, text};
 use serde_json::json;

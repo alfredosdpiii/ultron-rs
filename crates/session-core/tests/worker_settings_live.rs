@@ -11,7 +11,7 @@
 //! TS values come from crates/config/fixtures/worker-settings.json (generate-worker-settings.mjs) where recorded;
 //! the rest are literal expectations from the cited TypeScript.
 
-mod p_session_support;
+use crate::p_session_support;
 
 use p_session_support::{HANG, Setup, actor, text, tool, tool_results};
 use serde_json::{Value, json};

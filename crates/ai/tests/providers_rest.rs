@@ -609,7 +609,7 @@ fn ai_json_parse_errors_match_v8_messages() {
     for case in BEDROCK["jsonErrors"].as_array().unwrap() {
         let input = case["input"].as_str().unwrap();
         assert_eq!(
-            json!(ai::jsutil::json_parse_error(input)),
+            json!(jsrt::json::parse(input).err()),
             case["message"],
             "JSON.parse({input:?})"
         );
@@ -1039,7 +1039,7 @@ fn ai_oauth_pages_pkce_and_gateway_urls_match_typescript() {
     );
     for case in units["gateways"].as_array().unwrap() {
         assert_eq!(
-            json!(ai::oauth_radius::normalize_radius_gateway_url(
+            json!(config::radius::normalize_radius_gateway_url(
                 case["input"].as_str().unwrap()
             )),
             case["output"]

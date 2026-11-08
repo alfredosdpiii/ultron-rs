@@ -3,7 +3,7 @@
 //! delta from the previous request of its lane: the first request starts the lane, the next turn appends (the
 //! answer and the new prompt), and a compaction resets it with the reason `compaction`.
 
-mod p_session_support;
+use crate::p_session_support;
 
 use p_session_support::{Setup, actor, text};
 use serde_json::Value;

@@ -6,7 +6,7 @@
 //! Divergence: a Rust adapter cannot return a non-JSON value (TS NaN); the non-JSON case goes through the
 //! production predict adapter, whose unparsable reply is returned as text and fails validation the same way.
 
-mod agents_support;
+use crate::agents_support;
 
 use agents_support::{Options, adapter, definition, fixture, input_of, lock};
 use delegation::agents::{Complete, Completion, PredictCall, predict_adapter};

@@ -5,7 +5,7 @@
 //! (`kernel_apis::context_control` wired into the root lane by `session_core::core::context_lane`), while every other
 //! request extends the previous one byte for byte.
 
-mod common;
+use crate::common;
 
 use common::{HANG, Install, Provider, Reply, Request};
 

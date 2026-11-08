@@ -2,8 +2,7 @@
 //! injected environment, undici's semantics), never this process's: the server is under `.invalid`, so only the
 //! 127.0.0.1 fake proxy can answer. No browser is on the run's PATH and the sign-in fails at discovery.
 
-#[path = "../../mcp/tests/support/fake_proxy.rs"]
-mod fake_proxy;
+use crate::fake_proxy;
 
 use fake_proxy::FakeProxy;
 use std::process::{Command, Stdio};

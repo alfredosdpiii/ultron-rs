@@ -6,13 +6,12 @@
 //! What the TS tests fake, this fakes the same way: task lanes are controlled probes (a prompt that blocks until the
 //! test finishes it, a steer log, an abort count), named `ultron.<definition id>.<task id>` as the host names them.
 //! The `agents.*` / `background.*` requests go to the host's own `handle`.
-#![allow(dead_code)]
 
 use delegation::agents::{Agents, AgentsOptions, LaneReply, LaneRun};
-use delegation::task_store::DocumentStore;
 use kernel::Signal;
+use kernel::store::DocumentStore;
 use kernel_apis::{ApiModule, Request, TaskHost};
-use serde_json::{Value, json};
+use serde_json::Value;
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
@@ -27,10 +26,10 @@ fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
 pub struct JournalStore(pub Arc<Mutex<Option<Value>>>);
 
 impl DocumentStore for JournalStore {
-    fn read(&mut self) -> Result<Option<Value>, String> {
+    fn read(&self) -> Result<Option<Value>, String> {
         Ok(lock(&self.0).clone())
     }
-    fn write(&mut self, document: &Value) -> Result<(), String> {
+    fn write(&self, document: &Value) -> Result<(), String> {
         *lock(&self.0) = Some(document.clone());
         Ok(())
     }
@@ -116,27 +115,6 @@ impl Tasks {
     /// The journal document's tasks (`host.api.tasks()`), after the owner has loaded (and recovered) it.
     pub fn journal(&self) -> Vec<Value> {
         TaskHost::tasks(&self.agents).unwrap_or_default()
-    }
-
-    /// Admit and start a task whose lane then waits (its prompt is pending): its journal record.
-    pub fn start(
-        &self,
-        definition: &str,
-        input: Value,
-        key: Option<String>,
-        parent: Option<&str>,
-    ) -> Result<Value, String> {
-        let mut request = json!({"definition": definition, "input": input});
-        if let Some(key) = key {
-            request["key"] = json!(key);
-        }
-        let admitted = TaskHost::spawn(&self.agents, &request, parent, &Signal::new())?;
-        let id = admitted["id"].as_str().unwrap_or_default().to_string();
-        self.wait_started(&id);
-        self.journal()
-            .into_iter()
-            .find(|task| task["id"] == id)
-            .ok_or_else(|| "Unknown Ultron task".into())
     }
 
     /// Wait until task `id`'s lane runs, as the TS host's lane is registered when `spawn` returns; a task that runs

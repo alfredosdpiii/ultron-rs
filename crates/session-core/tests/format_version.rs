@@ -2,8 +2,8 @@
 //! "resume check"): opening a session whose Ultron values were written in a format this build does not know fails
 //! up front, naming the value and its version, and leaves the session file as it was.
 
-mod p_session_support;
-mod reopen_support;
+use crate::p_session_support;
+use crate::reopen_support;
 
 use p_session_support::text;
 use reopen_support::Home;

@@ -3,7 +3,7 @@
 //! the frame-model defaults of `rlm.infer` run through crates/kernel with `Frames` over a scripted openai-completions
 //! transport and must print the same and send the same prompts with the same output caps (tranches).
 
-mod common;
+use crate::common;
 
 use common::{Scripted, model};
 use inference::{DEFAULT_MAP_TOKENS, Frames, INFERENCE_PROMPT, Inference, ModelSettings};

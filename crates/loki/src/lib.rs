@@ -776,6 +776,13 @@ pub fn hook_report(command: &str, messages: &[String], warnings: &[String], erro
     report
 }
 
+/// The policy note an Ultron session's prompt carries for the policy under `root` (loki.ts `readContext`): none when
+/// the policy cannot be read (the guard still runs and reports it).
+pub fn session_note(root: &std::path::Path) -> Option<String> {
+    let config = config::load_config(root).ok()?;
+    injected_context(&config, Some("ultron")).ok()
+}
+
 /// `injected_context`: session guidance for the configured rule packs.
 pub fn injected_context(config: &Config, host: Option<&str>) -> Result<String, String> {
     let packs = config::rule_packs(config)?;

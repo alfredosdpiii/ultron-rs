@@ -14,15 +14,16 @@
 //! and `abort` cancels the navigation (AgentSession `abortBranchSummary`). (Pi extensions' `session_before_tree`
 //! and `session_tree` hooks are not supported by ultron-rs.)
 
+use super::Core;
 use super::compacting::{AttemptFn, RetryStep, Summarizer};
-use super::{Core, LANE};
 use crate::compaction_op::CompactionOp;
 use crate::durable_store::lock as lock_session;
-use crate::lane::now_ms;
+use jsrt::date::now_ms;
 use protocol::watch::{Ended, Failure, WatchEvent};
 use serde_json::{Map, Value, json};
 use session_journal::Write;
 use session_journal::ns::ENTRY_LABEL;
+use session_journal::run::MAIN_LANE;
 use std::sync::Arc;
 
 /// Tokens kept free when choosing branch history to summarize (upstream default).
@@ -241,7 +242,7 @@ impl Core {
             retry,
             (&ids.0, &ids.1),
             WatchEvent::SummarizationRetryAttemptStart {
-                lane: LANE.into(),
+                lane: MAIN_LANE.into(),
                 source: "branchSummary".into(),
                 reason: None,
             },
@@ -277,7 +278,7 @@ impl Core {
 
     fn navigation_start(&mut self, operation: &str, target: &Option<String>) {
         self.emit(WatchEvent::NavigationStart {
-            lane: LANE.into(),
+            lane: MAIN_LANE.into(),
             run_id: operation.into(),
             target_id: target.clone(),
             started_at: now_ms(),
@@ -292,7 +293,7 @@ impl Core {
             Err(Stopped::Failed(message)) => (Ended::Failed, from.clone(), Some(message.clone())),
         };
         self.emit(WatchEvent::NavigationEnd {
-            lane: LANE.into(),
+            lane: MAIN_LANE.into(),
             run_id: operation.into(),
             status,
             error: error.map(|message| Failure { code: None, message }),

@@ -171,23 +171,6 @@ fn has_uri_scheme(p: &str) -> bool {
     false
 }
 
-fn percent_decode(s: &str) -> Option<String> {
-    let b = s.as_bytes();
-    let mut out = Vec::with_capacity(b.len());
-    let mut i = 0;
-    while i < b.len() {
-        if b[i] == b'%' {
-            let hex = s.get(i + 1..i + 3)?;
-            out.push(u8::from_str_radix(hex, 16).ok()?);
-            i += 3;
-        } else {
-            out.push(b[i]);
-            i += 1;
-        }
-    }
-    String::from_utf8(out).ok()
-}
-
 /// Unquote, decode `file://` URLs and shell-unescape a pasted path.
 pub fn normalize_pasted_path(path: &str) -> String {
     let trimmed = path.trim();
@@ -205,7 +188,7 @@ pub fn normalize_pasted_path(path: &str) -> String {
         let host_end = rest.find('/').unwrap_or(rest.len());
         let host = &rest[..host_end];
         if (host.is_empty() || host == "localhost")
-            && let Some(decoded) = percent_decode(&rest[host_end..])
+            && let Some(decoded) = jsrt::uri::decode_component(&rest[host_end..])
         {
             return decoded;
         }

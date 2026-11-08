@@ -5,8 +5,8 @@
 //! concurrent first runs, never rewrites a verified directory and replaces a damaged one. Masked runs have no Node.js:
 //! `PATH` holds only a few system tools and the system `node`, when there is one, is hidden too.
 
-mod common;
-mod daemon_common;
+use crate::common;
+use crate::daemon_common;
 
 use cli::assets::{self, FILES, HASH, MARKER};
 use common::{
@@ -194,7 +194,7 @@ fn cli_package_copied_binary_runs_with_the_checkout_hidden() {
     });
     assert_eq!(
         String::from_utf8(version.stdout).unwrap(),
-        format!("{}\n", cli::version())
+        format!("{}\n", config::version())
     );
     assert_eq!(version.status.code(), Some(0));
     let help = run({
@@ -395,7 +395,7 @@ fn cli_package_install_keeps_a_verified_directory() {
     let dir = assets::install(&base).unwrap();
     assert_eq!(
         dir.file_name().unwrap().to_string_lossy(),
-        format!("{}-{}", cli::version(), &HASH[..16])
+        format!("{}-{}", config::version(), &HASH[..16])
     );
     // A file the user added and the files' identities survive a second install: nothing is rewritten.
     std::fs::write(dir.join("user-note.txt"), "kept").unwrap();
@@ -564,7 +564,7 @@ fn cli_package_install_script_installs_into_a_prefix_without_node() {
         stdout,
         format!(
             "Installed {} to {}\nAdd {} to your PATH to run ultron.\n",
-            cli::version(),
+            config::version(),
             bin.display(),
             prefix.join("bin").display()
         )
@@ -611,7 +611,7 @@ fn cli_package_install_script_installs_into_a_prefix_without_node() {
     });
     assert_eq!(
         String::from_utf8(version.stdout).unwrap(),
-        format!("{}\n", cli::version())
+        format!("{}\n", config::version())
     );
     // An unknown argument is refused before anything is written.
     let refused = install(&["--frobnicate"], None);

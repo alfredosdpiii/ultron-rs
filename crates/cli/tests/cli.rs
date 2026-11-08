@@ -2,7 +2,8 @@
 //! crates/cli/fixtures/generate.mjs.
 
 use cli::args::parse_args;
-use cli::list_models::{format_token_count, locale_compare};
+use cli::list_models::format_token_count;
+use jsrt::collate::locale_compare;
 use serde_json::Value;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -82,7 +83,7 @@ fn cli_format_token_count_keeps_to_fixed_below_the_tie() {
 
 #[test]
 fn cli_version_matches_typescript() {
-    assert_eq!(cli::version(), fixture()["version"].as_str().unwrap());
+    assert_eq!(config::version(), fixture()["version"].as_str().unwrap());
 }
 
 /// The help's command lines after TypeScript's `autoreview` line: the subcommands only the Rust build dispatches

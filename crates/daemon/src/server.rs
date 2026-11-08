@@ -380,7 +380,7 @@ fn start_generation(
 ) -> Result<Arc<RunningServer>, io::Result<RegistrationRejected>> {
     let sockets_dir = instance::socket_dir(&options.directory);
     paths::ensure_private_directory(&sockets_dir).map_err(Err)?;
-    let socket_path = sockets_dir.join(format!("{server_id}.sock"));
+    let socket_path = instance::socket_path(&options.directory, server_id);
     let control_path = sockets_dir.join(format!("control-{server_id}.sock"));
     let nonce: String = jsrt::random::uuid_v4().replace('-', "")[..12].to_string();
     let endpoint_path = sockets_dir.join(format!("server-{server_id}-{nonce}.sock"));
@@ -561,7 +561,7 @@ pub fn activate_server(options: &ServerOptions, keep_alive: bool) -> io::Result<
     paths::ensure_private_directory(&options.directory)?;
     let server_id = paths::acquire_profile(&options.directory, options.server_id.as_deref())?.server_id;
     let route = Route {
-        path: instance::socket_dir(&options.directory).join(format!("{server_id}.sock")),
+        path: instance::socket_path(&options.directory, &server_id),
         server_id: server_id.clone(),
     };
     let _activation = paths::acquire_activation(&options.directory, &server_id)?;

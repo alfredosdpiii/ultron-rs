@@ -41,7 +41,7 @@ impl SwarmOps {
 
     /// The conversation `lane` works in.
     fn conversation(&self, lane: &str) -> Option<ConversationId> {
-        if lane == crate::lane::MAIN {
+        if lane == session_journal::run::MAIN_LANE {
             return Some(ROOT_CONVERSATION_ID);
         }
         if let Some(id) = lane.strip_prefix(CONVERSATION_LANE_PREFIX) {

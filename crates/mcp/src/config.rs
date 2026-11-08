@@ -5,7 +5,7 @@
 //! model tools: the kernel's `mcp` namespace reaches them, and of `exposure` only `hidden` has an effect.
 
 use serde_json::{Map, Value, json};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use url::Url;
 
 const EXPOSURES: [&str; 4] = ["codemode", "deferred", "direct", "hidden"];
@@ -438,16 +438,21 @@ fn read_config_file(path: &Path, scope: Scope, loaded: &mut LoadedConfig) {
     }
 }
 
+/// A project's MCP server configuration, `.pi/mcp.json` (the global one is [`config::paths::AgentPaths::mcp`]).
+pub fn project_path(cwd: &Path) -> PathBuf {
+    cwd.join(config::paths::CONFIG_DIR_NAME).join("mcp.json")
+}
+
 /// Global and (when trusted) project configuration. Disabled servers are included with `enabled: false`.
 pub fn load_config(agent_dir: &Path, cwd: &Path, project_trusted: bool) -> LoadedConfig {
     let mut loaded = LoadedConfig::default();
-    read_config_file(&agent_dir.join("mcp.json"), Scope::Global, &mut loaded);
+    read_config_file(
+        &config::paths::AgentPaths::new(agent_dir).mcp(),
+        Scope::Global,
+        &mut loaded,
+    );
     if project_trusted {
-        read_config_file(
-            &cwd.join(config::paths::CONFIG_DIR_NAME).join("mcp.json"),
-            Scope::Project,
-            &mut loaded,
-        );
+        read_config_file(&project_path(cwd), Scope::Project, &mut loaded);
     }
     loaded
 }

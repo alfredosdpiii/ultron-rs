@@ -5,8 +5,8 @@
 //! session from before kept contracts) is reattached and ends unchecked, as before. Two in-process actors over one
 //! private session file; nothing is killed and no signal is sent. New in Rust: literal expectations.
 
-mod p_session_support;
-mod reopen_support;
+use crate::p_session_support;
+use crate::reopen_support;
 
 use p_session_support::{HANG, Script, text, tool, tool_results, user_texts};
 use reopen_support::{Home, Worker};

@@ -12,7 +12,6 @@ use fake_proxy::FakeProxy;
 use mcp::config::{Scope, ServerEntry};
 use mcp::connection::{Connection, ConnectionEnv};
 use mcp::http::{HttpOptions, HttpTransport};
-use mcp::oauth::flow::StateStore;
 use mcp::oauth::store::CredentialStore;
 use mcp::{Client, ClientOptions, Transport};
 use serde_json::{Value, json};

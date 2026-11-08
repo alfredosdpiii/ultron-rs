@@ -11,18 +11,17 @@
 //! deterministic adapter, as the TS fixture does, and its usage ledger admits tasks), with the
 //! `kernel_apis::ScheduleTicker` on a manual clock as the background timer.
 
-mod agents_support;
-mod common;
-mod g3_support;
+use crate::agents_support;
+use crate::common;
+use crate::g3_support;
 
 use agents_support::{Options, adapter};
 use common::null_handler;
 use delegation::usage::{UsageLedger, UsageLimits, UsageOptions};
 use g3_support::{Host, JournalStore, Tasks, rejects};
+use kernel::store::{DocumentStore, MemoryDocumentStore};
 use kernel::{HostHandler, Signal};
-use kernel_apis::{
-    ApiModule, KernelApis, ManualTickClock, MemoryDocumentStore, ScheduleTicker, SchedulesModule, TaskHost,
-};
+use kernel_apis::{ApiModule, KernelApis, ManualTickClock, ScheduleTicker, SchedulesModule, TaskHost};
 use serde_json::{Value, json};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicI64, Ordering};
@@ -134,7 +133,6 @@ fn acceptance_a23_a_restart_on_the_same_stores_does_not_rerun_a_completed_or_cla
     after.tasks.close();
 
     // Crash after claiming but before recording the admission: completion reuses the slot key.
-    use kernel_apis::DocumentStore;
     let mut saved = module_store.read().unwrap().unwrap();
     saved["schedules"][0]["pending_slot"] = 0.into();
     module_store.write(&saved).unwrap();
@@ -434,7 +432,7 @@ fn acceptance_a23_max_tasks_caps_schedule_firings_verification_and_attachments()
 #[test]
 fn acceptance_a23_admission_failure_from_the_usage_budget_is_recorded_once_per_slot_without_a_retry_storm() {
     let usage = UsageLedger::new(
-        Box::new(delegation::task_store::MemoryStore::default()),
+        Box::new(kernel::store::MemoryDocumentStore::default()),
         UsageOptions {
             limits: UsageLimits {
                 max_admitted_tasks: Some(0),

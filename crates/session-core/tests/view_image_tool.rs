@@ -4,7 +4,7 @@
 //! downscaled and `detail='low'` caps the long side at 512; a model without image input gets the note. The stack is
 //! the session's composition (`Runtime::stack`), the tool the lane's `rlm`.
 
-mod p_session_support;
+use crate::p_session_support;
 
 use agent::AgentTool;
 use ai::{AbortSignal, UserContent};

@@ -1,6 +1,5 @@
 //! `SessionManager`: an append-only session tree persisted as JSONL.
 
-use std::collections::HashSet;
 use std::fmt;
 use std::fs::{self, OpenOptions};
 use std::io::{self, Write};
@@ -14,11 +13,12 @@ use crate::context::{
 };
 use crate::env::Env;
 use crate::file::{
-    self, CURRENT_SESSION_VERSION, HeaderScanError, find_most_recent_session, generate_id, header_cwd,
-    load_entries_from_file, lookup_dir, migrate_session_entries, read_session_header,
+    self, CURRENT_SESSION_VERSION, HeaderScanError, generate_id, header_cwd, load_entries_from_file,
+    migrate_session_entries, read_session_header,
 };
 use crate::js;
-use crate::paths::{join, normalize_path, parent, resolve_path};
+use crate::paths::{normalize_path, parent, resolve_path};
+use jsrt::path::join;
 
 /// Errors from session operations. `Invalid` messages are the TypeScript error messages.
 #[derive(Debug)]
@@ -107,7 +107,6 @@ pub struct SessionTree<'a> {
 
 #[derive(Clone, Debug)]
 struct LabelState {
-    target: Value,
     label: Value,
     timestamp: Value,
 }
@@ -256,13 +255,6 @@ impl SessionManager {
         Self::construct(env, &cwd, &dir, Some(&resolved), true, None, preloaded)
     }
 
-    /// `continueRecent`: the most recent session for `cwd`, or a new one.
-    pub fn continue_recent(env: Box<dyn Env>, cwd: &str, session_dir: Option<&str>) -> Result<Self, Error> {
-        let (dir, filter) = lookup_dir(env.as_ref(), cwd, session_dir)?;
-        let recent = find_most_recent_session(&dir, filter.then_some(cwd));
-        Self::construct(env, cwd, &dir, recent.as_deref(), true, None, None)
-    }
-
     /// `inMemory`: a session that is never written, optionally adopting stored entries.
     pub fn in_memory(
         env: Box<dyn Env>,
@@ -315,11 +307,6 @@ impl SessionManager {
         let body: Vec<&Value> = entries.iter().filter(|e| entry_type(e) != Some("session")).collect();
         append_line(&path, &body)?;
         Self::construct(env, &target, &dir, Some(&path), true, None, None)
-    }
-
-    /// `setSessionFile`: switch to another session file (resume).
-    pub fn set_session_file(&mut self, session_file: &str) -> Result<(), Error> {
-        self.set_session_file_with(session_file, None)
     }
 
     fn set_session_file_with(&mut self, session_file: &str, preloaded: Option<Vec<Value>>) -> Result<(), Error> {
@@ -425,7 +412,6 @@ impl SessionManager {
             labels.insert(
                 key,
                 LabelState {
-                    target: entry.get("targetId").cloned().unwrap_or(Value::Null),
                     label: entry["label"].clone(),
                     timestamp: entry.get("timestamp").cloned().unwrap_or(Value::Null),
                 },
@@ -508,119 +494,6 @@ impl SessionManager {
         self.append(entry)
     }
 
-    /// `appendThinkingLevelChange`.
-    pub fn append_thinking_level_change(&mut self, thinking_level: &str) -> Result<String, Error> {
-        let entry = self.entry_with(
-            "thinking_level_change",
-            vec![("thinkingLevel", Some(thinking_level.into()))],
-        );
-        self.append(entry)
-    }
-
-    /// `appendModelChange`.
-    pub fn append_model_change(&mut self, provider: &str, model_id: &str) -> Result<String, Error> {
-        let entry = self.entry_with(
-            "model_change",
-            vec![("provider", Some(provider.into())), ("modelId", Some(model_id.into()))],
-        );
-        self.append(entry)
-    }
-
-    /// `appendUsage`: model-attributed usage outside model context. Returns the entry.
-    pub fn append_usage(
-        &mut self,
-        kind: &str,
-        provider: &str,
-        model: &str,
-        usage: Value,
-        note: Option<&str>,
-    ) -> Result<Value, Error> {
-        let entry = self.entry_with(
-            "usage",
-            vec![
-                ("kind", Some(kind.into())),
-                ("provider", Some(provider.into())),
-                ("model", Some(model.into())),
-                ("usage", Some(usage)),
-                ("note", note.filter(|n| !n.is_empty()).map(Value::from)),
-            ],
-        );
-        self.append_entry(entry.clone())?;
-        Ok(entry)
-    }
-
-    /// `appendCompaction`: a summary replacing the path before `first_kept_entry_id` (itself when
-    /// `None`: keep nothing). Captures the current system prompt and tools at this boundary.
-    pub fn append_compaction(
-        &mut self,
-        summary: &str,
-        first_kept_entry_id: Option<&str>,
-        tokens_before: u64,
-        details: Option<Value>,
-        from_hook: Option<bool>,
-        usage: Option<Value>,
-    ) -> Result<String, Error> {
-        let now = self.env.now_ms();
-        let system_message = context::current_system_message(&self.build_session_projection().messages);
-        let id = self.new_id();
-        let entry = object(vec![
-            ("type", Some("compaction".into())),
-            ("id", Some(id.clone().into())),
-            ("parentId", Some(self.leaf_id.clone().unwrap_or(Value::Null))),
-            ("timestamp", Some(jsrt::date::iso_string(now).into())),
-            ("summary", Some(summary.into())),
-            ("firstKeptEntryId", Some(first_kept_entry_id.unwrap_or(&id).into())),
-            ("tokensBefore", Some(tokens_before.into())),
-            ("details", details),
-            ("usage", usage),
-            ("fromHook", from_hook.map(Value::from)),
-            (
-                "systemMessage",
-                system_message.map(|mut m| {
-                    m["timestamp"] = now.into();
-                    m
-                }),
-            ),
-        ]);
-        self.append(entry)
-    }
-
-    /// `appendCustomEntry`: extension state outside model context.
-    pub fn append_custom_entry(&mut self, custom_type: &str, data: Option<Value>) -> Result<String, Error> {
-        let mut entry = object(vec![
-            ("type", Some("custom".into())),
-            ("customType", Some(custom_type.into())),
-            ("data", data),
-        ]);
-        let head = self.entry_with("custom", vec![]);
-        if let (Value::Object(map), Value::Object(head)) = (&mut entry, head) {
-            map.extend(head.into_iter().filter(|(k, _)| k != "type"));
-        }
-        self.append(entry)
-    }
-
-    /// `appendSessionInfo`: the display name; line breaks become spaces, and "" clears it.
-    pub fn append_session_info(&mut self, name: &str) -> Result<String, Error> {
-        let mut collapsed = String::new();
-        let mut in_break = false;
-        for c in name.chars() {
-            if c == '\r' || c == '\n' {
-                if !in_break {
-                    collapsed.push(' ');
-                }
-                in_break = true;
-            } else {
-                collapsed.push(c);
-                in_break = false;
-            }
-        }
-        let entry = self.entry_with(
-            "session_info",
-            vec![("name", Some(jsrt::string::trim(&collapsed).into()))],
-        );
-        self.append(entry)
-    }
-
     /// `getSessionName`: the latest `session_info` name; empty clears it.
     pub fn session_name(&self) -> Option<String> {
         let entry = self
@@ -634,90 +507,6 @@ impl SessionManager {
             .map(jsrt::string::trim)
             .filter(|n| !n.is_empty())
             .map(str::to_string)
-    }
-
-    /// `appendCustomMessageEntry`: extension content that does reach model context.
-    pub fn append_custom_message_entry(
-        &mut self,
-        custom_type: &str,
-        content: Value,
-        display: bool,
-        details: Option<Value>,
-    ) -> Result<String, Error> {
-        let mut entry = object(vec![
-            ("type", Some("custom_message".into())),
-            ("customType", Some(custom_type.into())),
-            ("content", Some(content)),
-            ("display", Some(display.into())),
-            ("details", details),
-        ]);
-        let head = self.entry_with("custom_message", vec![]);
-        if let (Value::Object(map), Value::Object(head)) = (&mut entry, head) {
-            map.extend(head.into_iter().filter(|(k, _)| k != "type"));
-        }
-        self.append(entry)
-    }
-
-    /// `appendContextEdit`: replaces (or with `null`, omits) an earlier entry's model content on
-    /// this branch. String content for assistant and tool-result targets becomes one text block.
-    pub fn append_context_edit(&mut self, target_id: &str, replacement: Value) -> Result<String, Error> {
-        let valid = match &replacement {
-            Value::Null => true,
-            Value::Object(map) => matches!(map.get("content"), Some(Value::String(_) | Value::Array(_))),
-            _ => false,
-        };
-        if !valid {
-            return invalid("Context edit replacement must be null or contain string/array content");
-        }
-        let Some(target) = self.entry(target_id) else {
-            return invalid(format!("Entry {target_id} not found"));
-        };
-        let target_value = target.get("id").cloned();
-        if !self
-            .branch_entries(None)
-            .iter()
-            .any(|e| e.get("id") == target_value.as_ref())
-        {
-            return invalid(format!("Entry {target_id} is not on the active branch"));
-        }
-        let role = match entry_type(target) {
-            Some("custom_message") => "custom",
-            Some("message") => target["message"]
-                .get("role")
-                .and_then(Value::as_str)
-                .filter(|role| matches!(*role, "user" | "assistant" | "toolResult"))
-                .unwrap_or(""),
-            _ => "",
-        };
-        if role.is_empty() {
-            return invalid(format!("Entry {target_id} does not contribute editable model content"));
-        }
-        let replacement = match replacement.get("content") {
-            Some(Value::String(text)) if matches!(role, "assistant" | "toolResult") => {
-                json!({ "content": [{ "type": "text", "text": text }] })
-            }
-            _ => replacement,
-        };
-        let entry = self.entry_with(
-            "context_edit",
-            vec![("targetId", Some(target_id.into())), ("replacement", Some(replacement))],
-        );
-        self.append(entry)
-    }
-
-    /// `appendLabelChange`: sets (or with `None`/"" clears) a bookmark label on an entry.
-    pub fn append_label_change(&mut self, target_id: &str, label: Option<&str>) -> Result<String, Error> {
-        if self.entry(target_id).is_none() {
-            return invalid(format!("Entry {target_id} not found"));
-        }
-        let entry = self.entry_with(
-            "label",
-            vec![("targetId", Some(target_id.into())), ("label", label.map(Value::from))],
-        );
-        let id = self.append(entry)?;
-        let entry = &self.file_entries[self.file_entries.len() - 1];
-        Self::apply_label(&mut self.labels, entry);
-        Ok(id)
     }
 
     /// `branch`: moves the leaf to an earlier entry; the next append starts a new branch there.
@@ -734,137 +523,7 @@ impl SessionManager {
         self.leaf_id = None;
     }
 
-    /// `branchWithSummary`: branches to `branch_from_id` (`None`: the root) and appends a summary of
-    /// the abandoned path, recording the old leaf (or "root") as `fromId`.
-    pub fn branch_with_summary(
-        &mut self,
-        branch_from_id: Option<&str>,
-        summary: &str,
-        details: Option<Value>,
-        from_hook: Option<bool>,
-        usage: Option<Value>,
-    ) -> Result<String, Error> {
-        if let Some(id) = branch_from_id
-            && self.entry(id).is_none()
-        {
-            return invalid(format!("Entry {id} not found"));
-        }
-        let from_id = self.leaf_id.clone().unwrap_or_else(|| "root".into());
-        self.leaf_id = branch_from_id.map(Value::from);
-        let entry = self.entry_with(
-            "branch_summary",
-            vec![
-                ("fromId", Some(from_id)),
-                ("summary", Some(summary.into())),
-                ("details", details),
-                ("usage", usage),
-                ("fromHook", from_hook.map(Value::from)),
-            ],
-        );
-        self.append(entry)
-    }
-
-    /// `createBranchedSession`: a new session holding only the path to `leaf_id`, with its labels
-    /// re-created at the end. Persisted: returns the new file (written now only if the path has an
-    /// assistant message). In memory: replaces this session and returns `None`.
-    pub fn create_branched_session(&mut self, leaf_id: &str) -> Result<Option<String>, Error> {
-        let previous_file = self.session_file.clone();
-        let path: Vec<Value> = self.branch_entries(Some(leaf_id)).into_iter().cloned().collect();
-        if path.is_empty() {
-            return invalid(format!("Entry {leaf_id} not found"));
-        }
-        // Labels are tree entries: dropping them re-chains the rest so no subtree is orphaned.
-        let mut kept: Vec<Value> = Vec::new();
-        let mut replacement_by_label: IndexMap<String, Value> = IndexMap::new();
-        let mut pending_labels: Vec<String> = Vec::new();
-        let mut parent_id = Value::Null;
-        for entry in path {
-            if entry_type(&entry) == Some("label") {
-                pending_labels.push(id_key(entry.get("id")));
-                continue;
-            }
-            let id = entry.get("id").cloned().unwrap_or(Value::Null);
-            for label in pending_labels.drain(..) {
-                replacement_by_label.insert(label, id.clone());
-            }
-            let mut copy = entry.clone();
-            if let Value::Object(map) = &mut copy {
-                map.insert("parentId".into(), parent_id.clone());
-                if entry_type(&entry) == Some("compaction") && entry.get("firstKeptEntryId") != entry.get("id") {
-                    let first_kept = entry.get("firstKeptEntryId");
-                    if let Some(replacement) = replacement_by_label.get(&id_key(first_kept)) {
-                        map.insert("firstKeptEntryId".into(), replacement.clone());
-                    }
-                }
-            }
-            kept.push(copy);
-            parent_id = id;
-        }
-
-        let new_session_id = self.env.session_id();
-        let timestamp = self.now_iso();
-        let new_file = join(&[
-            &self.session_dir,
-            &format!("{}_{new_session_id}.jsonl", file_timestamp(&timestamp)),
-        ]);
-        let header = object(vec![
-            ("type", Some("session".into())),
-            ("version", Some(CURRENT_SESSION_VERSION.into())),
-            ("id", Some(new_session_id.clone().into())),
-            ("timestamp", Some(timestamp.into())),
-            ("cwd", Some(self.cwd.clone().into())),
-            ("parentSession", previous_file.filter(|_| self.persist).map(Value::from)),
-        ]);
-
-        let mut in_use: HashSet<String> = kept.iter().map(|e| id_key(e.get("id"))).collect();
-        let labels: Vec<LabelState> = self
-            .labels
-            .values()
-            .filter(|l| in_use.contains(&id_key(Some(&l.target))))
-            .cloned()
-            .collect();
-        let mut parent_id = kept
-            .last()
-            .and_then(|e| e.get("id"))
-            .filter(|id| jsrt::value::truthy(Some(id)))
-            .cloned()
-            .unwrap_or(Value::Null);
-        let mut label_entries = Vec::new();
-        for label in labels {
-            let id = generate_id(self.env.as_mut(), |id| in_use.contains(&str_key(id)));
-            in_use.insert(str_key(&id));
-            label_entries.push(object(vec![
-                ("type", Some("label".into())),
-                ("id", Some(id.clone().into())),
-                ("parentId", Some(parent_id)),
-                ("timestamp", Some(label.timestamp)),
-                ("targetId", Some(label.target)),
-                ("label", Some(label.label)),
-            ]));
-            parent_id = id.into();
-        }
-
-        self.file_entries = std::iter::once(header).chain(kept).chain(label_entries).collect();
-        self.session_id = new_session_id;
-        if !self.persist {
-            self.build_index();
-            return Ok(None);
-        }
-        self.session_file = Some(new_file.clone());
-        self.build_index();
-        // Written now only with an assistant message; otherwise the first assistant append writes it.
-        self.flushed = self.has_assistant();
-        if self.flushed {
-            self.rewrite_file()?;
-        }
-        Ok(Some(new_file))
-    }
-
     // ---- reads ----
-
-    pub fn is_persisted(&self) -> bool {
-        self.persist
-    }
 
     pub fn cwd(&self) -> &str {
         &self.cwd
@@ -887,7 +546,7 @@ impl SessionManager {
         self.leaf_id.as_ref()
     }
 
-    pub fn leaf_entry(&self) -> Option<&Value> {
+    fn leaf_entry(&self) -> Option<&Value> {
         self.leaf_id
             .as_ref()
             .filter(|id| jsrt::value::truthy(Some(id)))

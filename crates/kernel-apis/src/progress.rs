@@ -3,8 +3,9 @@
 //! is verified only by a verifier task the host ran that returned `passed: true`. The document is
 //! `{version: 1, receipts, decisions}`; a verifier still pending when the owner ended is settled as unverified on load.
 
-use crate::store::{DocumentStore, read_versioned};
+use crate::store::read_versioned;
 use crate::{ApiModule, Request, TaskHost};
+use kernel::store::DocumentStore;
 use serde_json::{Map, Value, json};
 use std::sync::{Arc, Mutex};
 

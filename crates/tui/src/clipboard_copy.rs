@@ -203,14 +203,3 @@ impl CopyIo for SystemCopyIo {
         let _ = std::fs::remove_file(path);
     }
 }
-
-/// `os.platform()` of this build.
-pub fn platform() -> &'static str {
-    if cfg!(target_os = "macos") {
-        "darwin"
-    } else if cfg!(windows) {
-        "win32"
-    } else {
-        "linux"
-    }
-}

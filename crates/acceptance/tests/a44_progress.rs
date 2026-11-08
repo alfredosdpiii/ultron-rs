@@ -11,11 +11,12 @@
 //! deterministic adapter where "failing-check" throws "check exploded" and every other definition echoes its input,
 //! as the TS setup's adapter), with the module served through `KernelApis` for the calling lane.
 
-mod agents_support;
-mod g3_support;
+use crate::agents_support;
+use crate::g3_support;
 
 use g3_support::{Host, JournalStore, Tasks, lane_name, rejects};
-use kernel_apis::{ApiModule, DocumentStore, MemoryDocumentStore, ProgressModule, TaskHost};
+use kernel::store::{DocumentStore, MemoryDocumentStore};
+use kernel_apis::{ApiModule, ProgressModule, TaskHost};
 use serde_json::{Value, json};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicI64, Ordering};

@@ -8,7 +8,7 @@
 //! Requests (`release_gate_api.py`): `gates.define` `{id, checks, fixture_hash}`, `gates.compare`
 //! `{gate_id, baseline, candidate}`, `gates.history` `{gate_id}`, `gates.list` `{}`.
 
-use kernel_apis::DocumentStore;
+use kernel::store::DocumentStore;
 use kernel_apis::store::read_versioned;
 use kernel_apis::util::Clock;
 use serde_json::{Map, Value, json};

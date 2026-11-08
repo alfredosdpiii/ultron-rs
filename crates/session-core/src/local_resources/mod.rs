@@ -10,14 +10,14 @@
 
 pub mod extensions;
 pub mod files;
-pub mod glob;
 
 pub use files::{RESOURCE_TYPES, ResourceType};
 
 use ::resources::paths as resources_paths;
 use config::settings::SettingsManager;
 use indexmap::IndexMap;
-use resources_paths::{canonicalize, dirname, join};
+use jsrt::path::dirname;
+use resources_paths::canonicalize;
 use serde_json::Value;
 use std::path::Path;
 
@@ -150,7 +150,7 @@ impl LocalResources {
     pub fn resolve(&self) -> ResolvedPaths {
         let mut acc: Accumulator = Default::default();
         let global_base = self.agent_dir.clone();
-        let project_base = join(&self.cwd, config::paths::CONFIG_DIR_NAME);
+        let project_base = jsrt::path::join(&[&self.cwd, config::paths::CONFIG_DIR_NAME]);
         for kind in RESOURCE_TYPES {
             for (scope, base) in [(Scope::Project, &project_base), (Scope::User, &global_base)] {
                 let list = self.entries(scope, kind);
@@ -198,19 +198,19 @@ impl LocalResources {
                 add(acc, kind, &p, m, enabled);
             }
         };
-        let user_agents = join(&join(&self.home, ".agents"), "skills");
+        let user_agents = jsrt::path::join(&[&self.home, ".agents", "skills"]);
         let trusted = self.settings.is_project_trusted();
         let project_agents: Vec<String> = if trusted {
-            let user_resolved = resources_paths::resolve("/", &user_agents);
+            let user_resolved = jsrt::path::resolve("/", &user_agents);
             files::ancestor_agents_skill_dirs(&self.cwd)
                 .into_iter()
-                .filter(|d| resources_paths::resolve("/", d) != user_resolved)
+                .filter(|d| jsrt::path::resolve("/", d) != user_resolved)
                 .collect()
         } else {
             Vec::new()
         };
         let pm = meta(Scope::Project, project_base);
-        let dir = |base: &str, kind: ResourceType| join(base, kind.key());
+        let dir = |base: &str, kind: ResourceType| jsrt::path::join(&[base, kind.key()]);
         if trusted {
             put(
                 ResourceType::Skills,

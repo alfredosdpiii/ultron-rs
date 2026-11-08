@@ -12,7 +12,8 @@
 //! source 1 KiB. Records without these fields are untyped and behave exactly as before.
 
 use crate::memory::MemoryError;
-use crate::store::{DocumentStore, MemoryDocumentStore};
+use kernel::store::{DocumentStore, MemoryDocumentStore};
+
 use fancy_regex::Regex;
 use serde_json::{Map, Value, json};
 use std::path::PathBuf;
@@ -364,7 +365,7 @@ impl RecordIndex {
         let path = path.into();
         let lock_path = PathBuf::from(format!("{}.lock", path.display()));
         RecordIndex {
-            store: Arc::new(crate::store::FileDocumentStore::new(path)),
+            store: Arc::new(kernel::store::FileDocumentStore::new(path)),
             lock_path: Some(lock_path),
             local: Mutex::new(()),
         }

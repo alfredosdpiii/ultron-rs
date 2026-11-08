@@ -10,7 +10,6 @@ use std::path::Path;
 use regex::Regex;
 
 use crate::github::PullRef;
-use crate::js::path_join;
 use crate::plan::{PlannedComment, ReviewPlan};
 use crate::runner::{Env, RunOptions, Runner, argv};
 
@@ -21,14 +20,14 @@ pub fn expand_path(path: &str, home: &str) -> String {
         return home.into();
     }
     if let Some(rest) = text.strip_prefix("~/") {
-        return path_join(&[home, rest]);
+        return jsrt::path::join(&[home, rest]);
     }
     if text.starts_with('/') {
         return text.into();
     }
     let cwd = std::env::current_dir().map_or_else(|_| String::new(), |dir| dir.to_string_lossy().into_owned());
     // path.resolve: joined and normalized, without a trailing slash.
-    let resolved = path_join(&[&cwd, text]);
+    let resolved = jsrt::path::join(&[&cwd, text]);
     match resolved.strip_suffix('/') {
         Some(stripped) if !stripped.is_empty() => stripped.into(),
         _ => resolved,
@@ -65,7 +64,7 @@ pub fn find_checkout(runner: &dyn Runner, roots: &[String], r: &PullRef) -> Opti
     }
     let home = home_dir();
     for root in roots {
-        let dir = path_join(&[&expand_path(root, &home), &r.repo]);
+        let dir = jsrt::path::join(&[&expand_path(root, &home), &r.repo]);
         if !Path::new(&dir).join(".git").exists() {
             continue;
         }
@@ -150,12 +149,6 @@ fn sentences(text: &str) -> Vec<&str> {
     parts
 }
 
-/// `path.basename`.
-fn basename(path: &str) -> &str {
-    let trimmed = path.trim_end_matches('/');
-    trimmed.rsplit('/').next().unwrap_or(trimmed)
-}
-
 /// The plan with nothing that names a private review guide: an inline comment that mentions one is not posted,
 /// and a sentence of the body that does is removed. Returns the plan and what was withheld.
 pub fn without_guide_mentions(plan: &ReviewPlan, guide_names: &[String]) -> (ReviewPlan, Vec<String>) {
@@ -171,7 +164,7 @@ pub fn without_guide_mentions(plan: &ReviewPlan, guide_names: &[String]) -> (Rev
             comments.push(comment.clone());
         } else {
             dropped.push(comment.finding);
-            let names: Vec<&str> = found.iter().map(|name| basename(name)).collect();
+            let names: Vec<&str> = found.iter().map(|name| jsrt::path::basename(name)).collect();
             withheld.push(format!(
                 "an inline comment on {}:{} ({})",
                 comment.path,

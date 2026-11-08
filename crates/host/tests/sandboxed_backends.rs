@@ -10,8 +10,7 @@
 //!   base/home/project      the project
 //! Every wait is on a condition, with a 120 s hang guard only.
 
-#[path = "../../sandbox/tests/backends_support/mod.rs"]
-mod backends_support;
+use crate::backends_support;
 
 use host::{AllowAll, Host};
 use kernel::{HostHandler, Signal};

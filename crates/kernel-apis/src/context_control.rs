@@ -14,14 +14,14 @@
 use crate::util::{Clock, system_clock};
 use crate::{ApiModule, Request};
 use serde_json::{Map, Value, json};
+use session_journal::context::{
+    CONTEXT_EDIT_CUSTOM_TYPE, CONTEXT_OMITTED_CUSTOM_TYPE, CONTEXT_OMITTED_TOOL_RESULT_TEXT,
+};
 use std::collections::HashSet;
 use std::sync::{Arc, Mutex};
 
 pub const COMPACTION_TRIM_ENV: &str = "ULTRON_COMPACTION_TRIM";
 
-pub const CONTEXT_EDIT_CUSTOM_TYPE: &str = "context_edit";
-pub const CONTEXT_OMITTED_CUSTOM_TYPE: &str = "context_edit:omitted";
-pub const CONTEXT_OMITTED_TOOL_RESULT_TEXT: &str = "[Tool result removed from context.]";
 pub const CONTEXT_NOTE_CUSTOM_TYPE: &str = "ultron:context-note";
 pub const CONTEXT_PIN_CUSTOM_TYPE: &str = "ultron:context-pin";
 /// Custom message type of a note in the model's context.
@@ -487,12 +487,6 @@ pub struct ContextControl {
 
 type StateKey = (Option<String>, Vec<String>);
 
-/// Whether old tool results are trimmed before a threshold compaction: ULTRON_COMPACTION_TRIM=off disables it.
-pub fn compaction_trim_enabled(value: Option<&str>) -> bool {
-    let raw = value.map(|value| jsrt::string::trim(value).to_lowercase());
-    !matches!(raw.as_deref(), Some("off" | "0" | "false"))
-}
-
 impl ContextControl {
     pub fn new(branches: Arc<dyn ContextBranches>) -> Self {
         let tracking = Tracking {
@@ -502,14 +496,14 @@ impl ContextControl {
         Self {
             branches,
             clock: system_clock(),
-            trim: compaction_trim_enabled(std::env::var(COMPACTION_TRIM_ENV).ok().as_deref()),
+            trim: true,
             pending: Mutex::new(Vec::new()),
             tracking: Mutex::new(tracking),
             state_cache: Mutex::new(None),
         }
     }
 
-    /// Trim old tool results before a threshold compaction (default: [`compaction_trim_enabled`] of the env).
+    /// Trim old tool results before a threshold compaction (default on; `ULTRON_COMPACTION_TRIM=off` turns it off).
     pub fn with_trim(mut self, trim: bool) -> Self {
         self.trim = trim;
         self

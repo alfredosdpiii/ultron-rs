@@ -4,8 +4,8 @@
 //! work after it passes" of packages/coding-agent/test/ultron-a06-limits.test.ts, over the real runtime.py kernel and
 //! the Rust typed-agent host with its usage ledger.
 
-mod agents_support;
-mod common;
+use crate::agents_support;
+use crate::common;
 
 use agents_support::{Memory, Options, aborted, fixture};
 use common::{Recorder, kernel_in, run, value};

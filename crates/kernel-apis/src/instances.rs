@@ -3,9 +3,10 @@
 //! An open instance pins its lane's kernel (holder `instance:<id>`); closing unpins it, and a restarted owner re-pins
 //! every open instance. Pinning is best effort: retain reports `pinned: false` when the pool has no capacity.
 
-use crate::store::{DocumentStore, read_versioned};
+use crate::store::read_versioned;
 use crate::util::Clock;
 use crate::{ApiModule, Request, TaskHost};
+use kernel::store::DocumentStore;
 use serde_json::{Value, json};
 use std::collections::HashSet;
 use std::sync::{Arc, Mutex};

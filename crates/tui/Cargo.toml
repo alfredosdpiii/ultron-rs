@@ -21,6 +21,7 @@ image = { version = "=0.25.10", default-features = false, features = ["bmp", "gi
 jsrt = { path = "../jsrt" }
 unicode-segmentation = "=1.13.3"
 serde_json = { version = "=1.0.151", features = ["preserve_order"] }
+signals = { path = "../signals" }
 syntect = { version = "=5.3.0", default-features = false, features = ["default-syntaxes", "regex-fancy", "yaml-load"] }
 theme = { path = "../theme" }
 

@@ -3,7 +3,7 @@
 
 use serde_json::Value;
 
-mod support;
+use crate::support;
 use support::latch::HANG_GUARD;
 use tui::Component;
 use tui::{Anchor, OverlayOptions, SizeValue, composite_line, resolve_overlay_layout};

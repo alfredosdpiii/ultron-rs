@@ -18,6 +18,7 @@ use host::secrets::OutputMasker;
 use kernel::Kernel;
 use lanes::{CellOutcome, Lanes};
 use serde_json::{Value, json};
+use session_journal::run::MAIN_LANE;
 use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::pin::pin;
@@ -48,7 +49,7 @@ pub fn rlm_tool() -> Tool {
     }
 }
 
-pub use jsrt::date::now_ms;
+use jsrt::date::now_ms;
 
 pub fn text_block(text: String) -> UserContent {
     UserContent::Text(TextContent {
@@ -73,15 +74,6 @@ pub fn format_clock(ms: i64, zone: &jsrt::localtime::Zone) -> String {
         local.minute,
         minutes.abs() / 60,
         minutes.abs() % 60
-    )
-}
-
-/// `formatClock` for UTC: "2026-10-05 14:03 UTC+00:00".
-pub fn format_clock_utc(ms: i64) -> String {
-    let utc = jsrt::localtime::fields(ms as f64, 0);
-    format!(
-        "{}-{:02}-{:02} {:02}:{:02} UTC+00:00",
-        utc.year, utc.month, utc.day, utc.hour, utc.minute
     )
 }
 
@@ -300,10 +292,7 @@ pub fn system_prompt_with_resources(
         None
     };
     let runtime = resources::runtime_guide::rlm_runtime_prompt(&["rlm"], guide).unwrap_or_default();
-    // loki.ts `readContext`: a policy the engine cannot read gives no note (the guard still runs and reports it).
-    let loki_note = loki_root
-        .and_then(|root| loki::config::load_config(root).ok())
-        .and_then(|config| loki::injected_context(&config, Some("ultron")).ok());
+    let loki_note = loki_root.and_then(loki::session_note);
     let options = BuildOptions {
         selected_tools: vec!["rlm".into()],
         tool_snippets: vec![("rlm".into(), RLM_SNIPPET.into())],
@@ -507,9 +496,6 @@ fn durable_choice(flags: &ModelFlags, env: &Env) -> Option<ModelChoice> {
     })
 }
 
-/// `defaultModelPerProvider` of model-resolver.ts.
-pub use ai::model_resolver::DEFAULT_MODEL_PER_PROVIDER;
-
 fn initial_choice(flags: &ModelFlags, env: &Env, continuing: bool) -> Option<ModelChoice> {
     let settings = config::settings::SettingsManager::for_worker(&env.cwd, &env.agent_dir(), &env.home);
     let all = settings.settings();
@@ -624,17 +610,15 @@ pub fn available_models(env: &Env) -> Vec<Model> {
     models
 }
 
-/// A configured provider's models as `getAvailable` lists them: `provider.filterModels(models, credential)`, which
-/// only GitHub Copilot has (an OAuth credential's `availableModelIds`).
+/// A configured provider's models as `getAvailable` lists them: [`ai::auth::filter_models`] with its stored
+/// credential.
 fn provider_models(env: &Env, registry: &ModelRegistry, provider: &str) -> Vec<Model> {
     let models = registry.models(provider);
-    if provider != "github-copilot" {
-        return models;
-    }
-    let auth = config::paths::AgentPaths::new(env.agent_dir()).auth();
-    let credential =
-        config::auth::read_stored_credential(&auth, provider).and_then(|c| ai::auth::Credential::from_json(&c));
-    ai::auth::copilot_filter_models(&models, |m| m.id.as_str(), credential.as_ref())
+    let credential = || {
+        let auth = config::paths::AgentPaths::new(env.agent_dir()).auth();
+        config::auth::read_stored_credential(&auth, provider).and_then(|c| ai::auth::Credential::from_json(&c))
+    };
+    ai::auth::filter_models(provider, &models, |m| m.id.as_str(), credential)
         .into_iter()
         .cloned()
         .collect()
@@ -767,8 +751,9 @@ struct LiveTransport {
 pub struct Provider {
     transport: Arc<dyn Transport>,
     api_key: Option<String>,
-    /// Routes `claude-subscription` calls (subscription first, API credits when out of usage): the process's.
-    router: Arc<ai::claude_subscription::fallback::Router>,
+    /// Routes `claude-subscription` calls (subscription first, API credits when out of usage); `None`: the
+    /// process's router.
+    router: Option<Arc<ai::claude_subscription::fallback::Router>>,
     /// What the settings fill into every request (`thinkingBudgets`, `websocketConnectTimeoutMs`, the stream
     /// options and `transport`).
     request: crate::request_settings::RequestSettings,
@@ -783,7 +768,7 @@ impl Provider {
         Provider {
             transport: Arc::new(process_transport().with_idle_timeout(None)),
             api_key: None,
-            router: ai::claude_subscription::fallback::global(),
+            router: None,
             request: Default::default(),
             live: None,
             live_transport: None,
@@ -798,18 +783,23 @@ impl Provider {
 
     /// Requests take the settings as `settings` reads them before each request, so a `/settings` change of
     /// `transport`, `httpIdleTimeoutMs` (the request timeout and the transport's idle timeout) or `retry.provider`
-    /// applies to the next request (TS `harness.setStreamOptions`). `idle_transport`: the process transport follows
-    /// `httpIdleTimeoutMs` too (the session's; tests over their own transport leave it off).
-    pub fn with_live_settings(mut self, settings: SettingsReader, idle_transport: bool) -> Self {
-        if idle_transport {
-            let idle = ai::http::http_idle_timeout(settings().settings().get("httpIdleTimeoutMs"));
-            let transport: Arc<dyn Transport> = Arc::new(process_transport().with_idle_timeout(idle));
-            self.transport = transport.clone();
-            self.live_transport = Some(LiveTransport {
-                current: Mutex::new((idle, transport)),
-            });
-        }
+    /// applies to the next request (TS `harness.setStreamOptions`). The process transport follows `httpIdleTimeoutMs`
+    /// too, until [`with_transport`](Self::with_transport) replaces it.
+    pub fn with_live_settings(mut self, settings: SettingsReader) -> Self {
+        let idle = ai::http::http_idle_timeout(settings().settings().get("httpIdleTimeoutMs"));
+        let transport: Arc<dyn Transport> = Arc::new(process_transport().with_idle_timeout(idle));
+        self.transport = transport.clone();
+        self.live_transport = Some(LiveTransport {
+            current: Mutex::new((idle, transport)),
+        });
         self.live = Some(settings);
+        self
+    }
+
+    /// Requests go over `transport` (tests and embedders), whatever `httpIdleTimeoutMs` says.
+    pub fn with_transport(mut self, transport: Arc<dyn Transport>) -> Self {
+        self.transport = transport;
+        self.live_transport = None;
         self
     }
 
@@ -844,16 +834,13 @@ impl Provider {
         self.current().0.stream_options()
     }
 
-    /// A provider over `transport` whose Claude subscription calls go through `router` (tests and embedders).
+    /// [`Provider::with_transport`] whose Claude subscription calls go through `router`.
     pub fn with_router(router: Arc<ai::claude_subscription::fallback::Router>, transport: Arc<dyn Transport>) -> Self {
         Provider {
-            transport,
-            api_key: None,
-            router,
-            request: Default::default(),
-            live: None,
-            live_transport: None,
+            router: Some(router),
+            ..Provider::new()
         }
+        .with_transport(transport)
     }
 
     pub fn with_key(api_key: Option<String>) -> Self {
@@ -912,9 +899,13 @@ impl StreamFn for Provider {
             let options = prepared.as_ref().unwrap_or(options);
             // Every API the TypeScript session streams (`streamSimple` over the API registry), the Claude ones through
             // this provider's router.
-            ai::dispatch::stream_simple(&self.router, model, context, options, &*transport, sink)
-                .await
-                .unwrap_or_else(|e| error_message(model, e))
+            match &self.router {
+                Some(router) => {
+                    ai::dispatch::stream_simple_routed(router, model, context, options, &*transport, sink).await
+                }
+                None => ai::dispatch::stream_simple(model, context, options, &*transport, sink).await,
+            }
+            .unwrap_or_else(|e| error_message(model, e))
         })
     }
 }
@@ -1315,7 +1306,7 @@ impl Lane {
         subagents: Option<crate::compose::SubagentHost>,
     ) -> Result<Lane, String> {
         let stack = runtime.stack_with(model, api_key, session_id, subagents)?;
-        let tool = Arc::new(stack.rlm(MAIN)?);
+        let tool = Arc::new(stack.rlm(MAIN_LANE)?);
         Ok(Lane {
             host: stack.host.clone(),
             events: stack.events.clone(),
@@ -1337,7 +1328,7 @@ impl Lane {
 
     /// The root lane's kernel, once open.
     pub fn kernel(&self) -> Option<Arc<Kernel>> {
-        self.stack.lanes.kernel(MAIN)
+        self.stack.lanes.kernel(MAIN_LANE)
     }
 
     pub fn shutdown(&self) {
@@ -1349,9 +1340,6 @@ impl Lane {
         self.stack.hand_over();
     }
 }
-
-/// The root lane's name.
-pub const MAIN: &str = session_journal::run::MAIN_LANE;
 
 /// The result of a call whose cell keeps running detached: how its end reaches a lane the host wakes (`woken`: the
 /// end starts a new turn) or one nothing wakes (the end is reported with a later result; stop it or check on it).

@@ -4,7 +4,7 @@
 //! token), offline (PI_OFFLINE=1). Every stable screen, the saved `auth.json` and the gateway's distinct requests
 //! must equal the TypeScript ones after the same normalization.
 
-mod tui_harness;
+use crate::tui_harness;
 
 use serde_json::{Value, json};
 use std::io::{BufRead, BufReader, Read, Write};

@@ -92,11 +92,17 @@ fn merge(cwd: &str, paths: impl IntoIterator<Item = String>) -> Vec<String> {
 }
 
 /// The session's resources for the settings `settings` holds (with the session's project trust).
-pub fn resolve(env: &Env, settings: config::settings::SettingsManager) -> SessionResources {
+/// `append_system_prompt` (`--append-system-prompt`) replaces a discovered APPEND_SYSTEM.md.
+pub fn resolve(
+    env: &Env,
+    settings: config::settings::SettingsManager,
+    append_system_prompt: Option<&[String]>,
+) -> SessionResources {
     let cwd = resources::paths::resolve_path(&env.cwd.display().to_string(), "/", false);
     let agent_dir = env.agent_dir().display().to_string();
     let trusted = settings.is_project_trusted();
-    let prompt_files = resources::prompt_files::load_prompt_files(&cwd, &agent_dir, trusted, None, None);
+    let prompt_files =
+        resources::prompt_files::load_prompt_files(&cwd, &agent_dir, trusted, None, append_system_prompt);
     let resolved = LocalResources::new(env, settings).resolve();
     let mut metadata: Vec<ResourceSource> = Vec::new();
     for list in [&resolved.skills, &resolved.prompts, &resolved.themes] {
@@ -124,7 +130,7 @@ pub fn resolve_default(env: &Env) -> SessionResources {
     let agent_dir = env.agent_dir();
     let trusted = config::trust::worker_project_trusted(&env.cwd, &agent_dir, &env.home);
     let settings = config::settings::SettingsManager::create(&env.cwd, &agent_dir, trusted);
-    resolve(env, settings)
+    resolve(env, settings, None)
 }
 
 /// The skills of a session (`updateSkillsFromPaths`): without `--no-skills`, the resolved ones and the bundled ones
@@ -172,12 +178,12 @@ pub fn prompts(cwd: &str, agent_dir: &str, resources: &SessionResources) -> Vec<
 /// directory holding it; `None` for anything else. (TypeScript looks for the exact path first; here every resolved
 /// skill and prompt is a file of its own, listed before any directory that could hold it, so one pass is the same.)
 pub fn source_info(resources: &SessionResources, file_path: &str) -> Option<serde_json::Value> {
-    let file = resources::paths::resolve("/", file_path);
+    let file = jsrt::path::resolve("/", file_path);
     resources
         .metadata
         .iter()
         .find(|m| {
-            let root = resources::paths::resolve("/", &m.path);
+            let root = jsrt::path::resolve("/", &m.path);
             file == root || file.starts_with(&format!("{root}/"))
         })
         .map(|m| m.source_info(file_path))
@@ -205,12 +211,12 @@ pub fn prompt_source_info(
 ) -> serde_json::Value {
     source_info(resources, &template.file_path).unwrap_or_else(|| {
         let (scope, base) = match template.scope {
-            "user" => ("user", resources::paths::join(agent_dir, "prompts")),
+            "user" => ("user", jsrt::path::join(&[agent_dir, "prompts"])),
             "project" => (
                 "project",
-                resources::paths::join(&resources::paths::join(cwd, config::paths::CONFIG_DIR_NAME), "prompts"),
+                jsrt::path::join(&[cwd, config::paths::CONFIG_DIR_NAME, "prompts"]),
             ),
-            _ => ("temporary", resources::paths::dirname(&template.file_path)),
+            _ => ("temporary", jsrt::path::dirname(&template.file_path)),
         };
         serde_json::json!({
             "path": template.file_path, "source": "local", "scope": scope, "origin": "top-level", "baseDir": base,

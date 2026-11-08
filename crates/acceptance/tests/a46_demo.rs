@@ -14,7 +14,7 @@
 //! until the request is cancelled. The TS abort case waits 3 s before aborting; here it waits for the slow child's
 //! request to reach the provider.
 
-mod common;
+use crate::common;
 
 use cli::rpc::client::RpcClient;
 use common::{HANG, Install, Provider, Reply, Request};

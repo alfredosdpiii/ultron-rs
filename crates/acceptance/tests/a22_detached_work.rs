@@ -9,7 +9,7 @@
 //! in the session (`ultron.tasks/root`), so a later worker collects the result, and a worker that dies while a
 //! child runs is restarted with the child reattached (a Rust Ultron Durable case beyond the TS file).
 
-mod common;
+use crate::common;
 
 use common::{Install, Provider, Reply, Request, rpc_tool_results};
 use serde_json::Value;

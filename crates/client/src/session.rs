@@ -22,7 +22,8 @@ pub type CallResult = Result<Option<Value>, String>;
 /// Where a link forwards the attached session's lane-watch events.
 pub type WatchSink = Arc<dyn Fn(Value) + Send + Sync>;
 
-/// How often the supervisor looks at the connection.
+/// How long the supervisor and a refused call wait for a change before they look again: a bound, since they are
+/// woken by the change itself (the connection closing or its attachment moving, or the link's own state).
 const SUPERVISE: Duration = Duration::from_millis(100);
 /// How long a link keeps trying to rejoin before it reports the session lost.
 const REJOIN_TIMEOUT: Duration = crate::runtime::REJOIN_TIMEOUT;
@@ -246,7 +247,7 @@ impl Shared {
             let connection = self.connection();
             if connection.is_closed() && !self.lost_reported.load(Ordering::SeqCst) && Instant::now() < deadline {
                 // Not sent: wait for the supervisor to reconnect.
-                std::thread::sleep(SUPERVISE);
+                self.wait_link_change();
                 continue;
             }
             let result = connection
@@ -257,7 +258,7 @@ impl Shared {
                 Err(CallError::Server(error))
                     if error.code == protocol::names::RECONNECTING_CODE && Instant::now() < deadline =>
                 {
-                    std::thread::sleep(SUPERVISE);
+                    connection.wait_attachment_change(connection.attachment().as_ref(), SUPERVISE);
                 }
                 other => return other.map_err(crate::lost::message),
             }
@@ -322,15 +323,7 @@ impl Shared {
             self.unsubscribe(&mut state);
             state.connection.clone()
         };
-        let server = connection.server_target();
-        connection
-            .call(
-                server,
-                protocol::names::PRESENTATION_PLUGINS,
-                "prepareSession",
-                json!([{"sessionId": id, "packagePaths": null}]),
-            )
-            .map_err(crate::lost::message)?;
+        connection.prepare_session(id).map_err(crate::lost::message)?;
         let options = match &self.origin {
             Origin::Started { session_options, .. } => session_options.clone(),
             Origin::Remote(_) => None,
@@ -412,6 +405,27 @@ impl Shared {
         state.session_id = id.to_string();
         state.attachment_id = attachment;
         Ok(())
+    }
+
+    /// Waits (bounded by [`SUPERVISE`]) for the link's own state to change: a rejoin starting or ending, closing.
+    fn wait_link_change(&self) {
+        let state = self.lock();
+        drop(
+            self.changed
+                .wait_timeout(state, SUPERVISE)
+                .unwrap_or_else(|e| e.into_inner()),
+        );
+    }
+
+    /// What the supervisor waits on: the connection, or the link's own state while the connection is closed or a
+    /// Radius recovery runs.
+    fn wait_supervised_change(&self) {
+        let connection = self.connection();
+        if connection.is_closed() || self.radius_recovering.load(Ordering::SeqCst) {
+            self.wait_link_change();
+        } else {
+            connection.wait_attachment_change(connection.attachment().as_ref(), SUPERVISE);
+        }
     }
 
     fn set_reconnecting(&self, reconnecting: bool) {
@@ -721,8 +735,8 @@ impl SessionLink {
         let shared = Arc::downgrade(&self.shared);
         std::thread::spawn(move || {
             loop {
-                std::thread::sleep(SUPERVISE);
                 let Some(shared) = shared.upgrade() else { return };
+                shared.wait_supervised_change();
                 if shared.closing.load(Ordering::SeqCst) {
                     return;
                 }

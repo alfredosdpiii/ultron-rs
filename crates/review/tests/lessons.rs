@@ -1,8 +1,7 @@
 //! `HindsightLessons` replayed against the fake Hindsight server: the requests autoreview's lessons make must equal
 //! TypeScript's (the `lessons` section of crates/hindsight/fixtures/exchanges.json, recorded by its generate.mjs).
 
-#[path = "../../hindsight/tests/common/mod.rs"]
-mod common;
+use crate::common;
 
 use common::{FakeHindsight, Normalizer, closed_port, fill, fixture, strings};
 use review::ledger::{Fate, Lesson};

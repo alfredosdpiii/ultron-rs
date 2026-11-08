@@ -3,8 +3,7 @@
 //! refused message as `invalid_message`), and a message queued with `nextRun` while the session is idle starts no
 //! run: the next prompt's run carries it before the prompt.
 
-#[path = "daemon_common/mod.rs"]
-mod common;
+use crate::daemon_common as common;
 
 use client::runtime::Connection;
 use common::{HANG_GUARD, Home, SERVER_ID, assert_no_processes, provider, start_server, text_reply};

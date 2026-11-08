@@ -3,8 +3,8 @@
 //! task board and notes. Operations are called the way a cell's host requests reach them; durability is checked
 //! across reopen on SQLite and JSONL.
 
-mod chat_support;
-mod support;
+use crate::chat_support;
+use crate::support;
 
 use std::sync::{Arc, Mutex};
 

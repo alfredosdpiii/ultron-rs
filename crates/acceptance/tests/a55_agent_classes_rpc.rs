@@ -3,7 +3,7 @@
 //! while the kernel, host, definition registry, task journal and lanes are the shipped session stack's
 //! (session-core's composition root wires the typed-agent host into every cell's requests).
 
-mod common;
+use crate::common;
 
 use common::{Install, Provider, Reply, Request};
 use serde_json::{Value, json};

@@ -162,7 +162,7 @@ impl TuiReport {
                 .messages
                 .iter()
                 .find(|m| m["role"] == "user")
-                .map(|m| first_line(&session_core::view::message_text(m)))
+                .map(|m| first_line(&protocol::pi_message::text(m)))
                 .filter(|t| !t.is_empty());
             self.reporter.session(Session {
                 id: session.session_id.clone(),
@@ -200,11 +200,11 @@ impl TuiReport {
             Some("message_end") => {
                 let message = &event["message"];
                 if message["role"] == "assistant" {
-                    track.final_text = session_core::view::message_text(message);
+                    track.final_text = protocol::pi_message::text(message);
                     track.cost += message_cost(message);
                 }
                 if message["role"] == "user" && track.first_prompt.is_none() {
-                    let text = first_line(&session_core::view::message_text(message));
+                    let text = first_line(&protocol::pi_message::text(message));
                     track.first_prompt = (!text.is_empty()).then_some(text);
                 }
                 track.transcript.push(message.clone());
@@ -304,7 +304,7 @@ impl RpcReport {
                 self.reporter.state(State::Working, None);
             }
             Some("message_end") if event["message"]["role"] == "assistant" => {
-                *text = session_core::view::message_text(&event["message"]);
+                *text = protocol::pi_message::text(&event["message"]);
             }
             Some("run_end") => {
                 let (state, message) = run_end_state(event, &text);

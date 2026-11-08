@@ -45,18 +45,6 @@ fn parse_color(color: &str) -> Option<(u8, u8, u8)> {
     Some((n(parts[0])?, n(parts[1])?, n(parts[2])?))
 }
 
-fn luminance(r: u8, g: u8, b: u8) -> f64 {
-    let linear = |c: u8| {
-        let s = f64::from(c) / 255.0;
-        if s <= 0.03928 {
-            s / 12.92
-        } else {
-            ((s + 0.055) / 1.055).powf(2.4)
-        }
-    };
-    0.2126 * linear(r) + 0.7152 * linear(g) + 0.0722 * linear(b)
-}
-
 fn adjust_brightness(color: &str, factor: f64) -> String {
     let Some((r, g, b)) = parse_color(color) else {
         return color.to_string();
@@ -75,7 +63,7 @@ pub fn derive_export_colors(base: &str) -> [String; 3] {
         ];
     };
     let (r, g, b) = (u32::from(r), u32::from(g), u32::from(b));
-    if luminance(r as u8, g as u8, b as u8) > 0.5 {
+    if theme::luminance((r as u8, g as u8, b as u8)) > 0.5 {
         [
             adjust_brightness(base, 0.96),
             base.to_string(),
@@ -270,8 +258,8 @@ fn native_session_data(path: &Path) -> Result<Value, String> {
     // `repo.list()` finds the file only when its header is a format-4 header.
     let listed = path.extension().is_some_and(|e| e == "jsonl")
         && path.is_file()
-        && session_journal::catalog::first_line(path)
-            .is_ok_and(|line| matches!(codec::parse_header(&line), Ok(ParsedHeader::V4(_))));
+        && session_journal::io::first_line(path)
+            .is_ok_and(|(line, _)| matches!(codec::parse_header(&line), Ok(ParsedHeader::V4(_))));
     if !listed {
         return Err(format!("Session is not in its session directory: {}", path.display()));
     }

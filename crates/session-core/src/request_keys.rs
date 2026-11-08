@@ -11,8 +11,8 @@
 
 use agent::StreamFn;
 use ai::http::BoxFuture;
+use ai::retry::RetryPolicy;
 use ai::{AssistantMessage, EventSink, Model, SimpleStreamOptions, TranscriptContext};
-use harness::chat::RetryPolicy;
 use std::pin::pin;
 use std::sync::Arc;
 use std::task::Poll;
@@ -124,11 +124,7 @@ impl<S: StreamFn> StreamFn for Retrying<S> {
             loop {
                 let message = self.inner.stream(model, context, options, sink).await;
                 let aborted = options.base.signal.as_ref().is_some_and(ai::AbortSignal::aborted);
-                if aborted
-                    || !policy.enabled
-                    || attempt >= policy.max_retries
-                    || !harness::chat::models::is_retryable(&message)
-                {
+                if aborted || !policy.enabled || attempt >= policy.max_retries || !ai::retry::is_retryable(&message) {
                     return message;
                 }
                 attempt += 1;
@@ -168,7 +164,7 @@ pub fn lane_stream(settings: crate::lane::SettingsReader, keys: Keys) -> Arc<dyn
     let reader = settings.clone();
     Arc::new(Retrying {
         inner: Keyed {
-            inner: crate::lane::Provider::new().with_live_settings(settings, true),
+            inner: crate::lane::Provider::new().with_live_settings(settings),
             keys,
         },
         policy: Arc::new(move || retry_policy(&reader())),

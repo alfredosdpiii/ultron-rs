@@ -4,7 +4,7 @@
 //! a DPoP proof: an ES256 JWT signed with the token's P-256 `dpopKey`), written back to the cache. A failed refresh
 //! keeps a token that has not expired yet; the error texts and which failures end the chain are upstream's.
 
-use super::{CredentialError, Result, configured_endpoint, fs_error, home_dir, js_string, parse_js_date, request};
+use super::{CredentialError, Result, configured_endpoint, home_dir, js_string, parse_js_date, request};
 use crate::aws::AwsCredentials;
 use crate::http::HeaderMap;
 use ring::rand::SystemRandom;
@@ -52,7 +52,12 @@ fn thrown(name: &str, message: &str) -> String {
 fn load_token(path: &PathBuf) -> Result<Map<String, Value>> {
     let shown = path.display().to_string();
     let fail = |inner: String| CredentialError::stop(format!("Failed to load token from {shown}: {inner}"));
-    let text = std::fs::read_to_string(path).map_err(|e| fail(thrown("Error", &fs_error(&e, &shown))))?;
+    let text = std::fs::read_to_string(path).map_err(|e| {
+        fail(thrown(
+            "Error",
+            &jsrt::fs::error_message(&e, "open", std::path::Path::new(&shown)),
+        ))
+    })?;
     let token: Value = serde_json::from_str(&text).map_err(|e| fail(thrown("SyntaxError", &e.to_string())))?;
     let token = match token {
         Value::Object(map) => map,
@@ -265,7 +270,7 @@ async fn create_token(
     }
     let text = serde_json::to_string_pretty(&Value::Object(updated.clone())).unwrap_or_default();
     std::fs::write(path, text)
-        .map_err(|e| Failure::Other(thrown("Error", &fs_error(&e, &path.display().to_string()))))?;
+        .map_err(|e| Failure::Other(thrown("Error", &jsrt::fs::error_message(&e, "open", path))))?;
     Ok(credentials(input, &updated))
 }
 

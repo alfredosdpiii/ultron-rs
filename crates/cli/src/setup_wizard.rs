@@ -453,7 +453,7 @@ fn login_provider<U: SetupUi>(ui: &mut U, deps: &SetupDeps, oauth: bool) -> Resu
         }
         match ui.login(&deps.env, &option)? {
             LoginOutcome::Ok => {
-                let auth = deps.agent_dir().join("auth.json");
+                let auth = config::paths::AgentPaths::new(deps.agent_dir()).auth();
                 let text = if option.auth_type == "oauth" {
                     format!("✓ Signed in to {}. Saved to {}.", option.name, auth.display())
                 } else {
@@ -475,7 +475,7 @@ fn login_provider<U: SetupUi>(ui: &mut U, deps: &SetupDeps, oauth: bool) -> Resu
 
 /// Ask for a custom OpenAI-compatible endpoint and write it to models.json; its provider id.
 fn custom_endpoint<U: SetupUi>(ui: &mut U, deps: &SetupDeps) -> Result<Option<String>, SetupQuit> {
-    let models_path = deps.agent_dir().join("models.json");
+    let models_path = config::paths::AgentPaths::new(deps.agent_dir()).models();
     ui.note(
         &format!(
             "The endpoint is saved in {} (readable only by you).",
@@ -1025,7 +1025,7 @@ fn custom_hindsight_url<U: SetupUi>(ui: &mut U, deps: &mut SetupDeps) -> Result<
     ui.note(
         &format!(
             "✓ Saved hindsightUrl in {}.",
-            deps.agent_dir().join("settings.json").display()
+            config::paths::AgentPaths::new(deps.agent_dir()).settings().display()
         ),
         Tone::Success,
     );

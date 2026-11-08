@@ -164,9 +164,6 @@ pub fn provider_logins() -> Vec<ProviderLogin> {
         .collect()
 }
 
-/// `String.localeCompare` for provider names (re-exported for cli's auth selector).
-pub use jsrt::collate::locale_compare;
-
 /// One provider row of the auth selector (`AuthSelectorProvider`).
 #[derive(Clone, Debug, PartialEq)]
 pub struct AuthProvider {

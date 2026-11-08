@@ -16,8 +16,7 @@ pub mod content;
 pub mod edit;
 pub mod gateway;
 pub mod http;
-pub mod js_json;
-mod jsonrpc;
+pub mod jsonrpc;
 pub mod log;
 mod net;
 pub mod oauth;
@@ -26,7 +25,7 @@ pub mod results;
 pub mod runtime;
 mod stdio;
 
-pub use client::{CancelToken, Client, ClientOptions, ConnState, RequestOptions};
+pub use client::{CancelToken, Client, ClientOptions, ConnState, RequestOptions, SUPPORTED_PROTOCOL_VERSIONS};
 pub use jsonrpc::Error;
 pub use stdio::{StdioOptions, StdioTransport};
 

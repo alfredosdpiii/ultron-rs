@@ -10,47 +10,6 @@
 use serde_json::{Value, json};
 use std::fs::File;
 use std::io::{Read, Seek, SeekFrom};
-use std::path::PathBuf;
-
-/// Where the jobs journal (the session value `ultron.module/jobs`) is kept; one document, replaced whole.
-pub trait JobJournal: Send + Sync {
-    /// The stored document, `None` before the first write.
-    fn read(&self) -> Result<Option<Value>, String>;
-    fn write(&self, document: &Value) -> Result<(), String>;
-}
-
-/// A journal in one JSON file, replaced atomically (temporary file, then rename) on every write.
-pub struct FileJobJournal {
-    path: PathBuf,
-}
-
-impl FileJobJournal {
-    pub fn new(path: impl Into<PathBuf>) -> Self {
-        Self { path: path.into() }
-    }
-}
-
-impl JobJournal for FileJobJournal {
-    fn read(&self) -> Result<Option<Value>, String> {
-        match std::fs::read_to_string(&self.path) {
-            Ok(text) => serde_json::from_str(&text)
-                .map(Some)
-                .map_err(|error| format!("{}: {error}", self.path.display())),
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
-            Err(error) => Err(format!("{}: {error}", self.path.display())),
-        }
-    }
-
-    fn write(&self, document: &Value) -> Result<(), String> {
-        if let Some(parent) = self.path.parent() {
-            std::fs::create_dir_all(parent).map_err(|error| error.to_string())?;
-        }
-        let temporary = PathBuf::from(format!("{}.{}.tmp", self.path.display(), std::process::id()));
-        std::fs::write(&temporary, serde_json::to_string(document).unwrap_or_default())
-            .map_err(|error| error.to_string())?;
-        std::fs::rename(&temporary, &self.path).map_err(|error| error.to_string())
-    }
-}
 
 pub const JOURNAL_NAMESPACE: &str = "ultron.module/jobs";
 const JOURNAL_VERSION: u64 = 1;

@@ -2,7 +2,7 @@
 //! comment where this reviewer raised nothing is a miss; a finding that cites a rule credits it with its fate, once.
 //! Against the fake hub and a scripted engine. No network, no model calls.
 
-mod github_common;
+use crate::github_common;
 
 use std::path::Path;
 use std::sync::Arc;

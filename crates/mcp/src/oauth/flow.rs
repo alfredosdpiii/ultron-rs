@@ -2,6 +2,7 @@
 //! resource and authorization server metadata (with issuer validation), dynamic client registration, PKCE S256,
 //! code exchange and refresh, and the stateful provider over a per-server state store.
 
+use super::store::ServerStore;
 use super::{
     OAuthError, parse_authorization_server_metadata, parse_client_information, parse_protected_resource_metadata,
     parse_tokens,
@@ -297,19 +298,13 @@ pub fn secure_endpoint(value: &str) -> Result<Url, OAuthError> {
 
 // ---- the stateful provider (`McpOAuthProvider`) ----
 
-/// Where a provider keeps a server's OAuth state (`McpOAuthStateStore`).
-pub trait StateStore: Send + Sync {
-    fn load(&self) -> Result<Option<Value>, OAuthError>;
-    fn save(&self, state: &Value) -> Result<(), OAuthError>;
-}
-
 /// The default stateful provider for one exact MCP server URL.
 pub struct Provider<'a> {
     pub redirect_url: String,
     pub client_metadata: Map<String, Value>,
     server_url: String,
     configured_client: Option<Value>,
-    store: &'a dyn StateStore,
+    store: &'a ServerStore,
     on_redirect: Box<dyn Fn(&str) + 'a>,
     now: fn() -> i64,
 }
@@ -326,7 +321,7 @@ impl<'a> Provider<'a> {
         client_name: &str,
         client_id: Option<&str>,
         client_secret: Option<&str>,
-        store: &'a dyn StateStore,
+        store: &'a ServerStore,
         on_redirect: Box<dyn Fn(&str) + 'a>,
     ) -> Self {
         let mut client_metadata = Map::new();

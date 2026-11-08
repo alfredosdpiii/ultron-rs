@@ -96,7 +96,9 @@ pub fn normalize_header(header: &Map<String, Value>) -> Map<String, Value> {
 
 /// The id in the header of the parent session file, when it has a readable one.
 fn parent_session_id(path: &str) -> Option<String> {
-    let line = crate::io::read_first_line(Path::new(path)).ok()??;
+    let line = crate::io::first_line(Path::new(path))
+        .ok()
+        .and_then(|(line, terminated)| terminated.then_some(line))?;
     match codec::parse_header(&line).ok()? {
         ParsedHeader::V4(h) | ParsedHeader::V3(h) => codec::header_str(&h, "id").map(str::to_string),
     }

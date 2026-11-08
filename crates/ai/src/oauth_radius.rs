@@ -4,7 +4,6 @@
 
 use crate::auth::{AuthEvent, AuthInteraction, AuthPrompt, ModelAuth, OAuthAuth, OAuthCredential, SelectOption};
 use crate::http::{AbortSignal, BoxFuture, HttpRequest, Transport, cancelled, is_aborted};
-use crate::jsutil::json_parse_error;
 use crate::oauth_flow::{
     Clock, ClockLoginEnv, FetchError, Poll, TextResponse, fetch_text, form_urlencode, generate_pkce,
     oauth_callback_host, oauth_error_html, oauth_success_html, poll_device_code_flow,
@@ -21,17 +20,6 @@ const CLIENT_ID: &str = "pi-gateway";
 const SCOPE: &str = "gateway offline_access";
 const DEVICE_CODE_GRANT_TYPE: &str = "urn:ietf:params:oauth:grant-type:device_code";
 
-/// `normalizeRadiusGatewayUrl`: `https://` unless a scheme is given, no trailing slashes.
-pub fn normalize_radius_gateway_url(value: &str) -> String {
-    let lower = value.to_ascii_lowercase();
-    let with_scheme = if lower.starts_with("http://") || lower.starts_with("https://") {
-        value.to_string()
-    } else {
-        format!("https://{value}")
-    };
-    with_scheme.trim_end_matches('/').to_string()
-}
-
 /// `createRadiusOAuth`.
 pub struct RadiusOAuth {
     pub name: String,
@@ -47,7 +35,7 @@ impl RadiusOAuth {
     pub fn new(name: &str, gateway: &str, transport: Arc<dyn Transport>, clock: Clock) -> Self {
         RadiusOAuth {
             name: name.into(),
-            gateway: normalize_radius_gateway_url(gateway),
+            gateway: config::radius::normalize_radius_gateway_url(gateway),
             transport,
             clock,
             callback_port: CALLBACK_PORT,
@@ -118,7 +106,7 @@ fn read_oauth_error(response: &TextResponse, message: &str) -> OAuthResponseErro
 }
 
 fn parse_json_body(text: &str) -> Result<Value, String> {
-    serde_json::from_str(text).map_err(|_| json_parse_error(text).unwrap_or_else(|| "Invalid JSON".into()))
+    serde_json::from_str(text).map_err(|_| jsrt::json::parse(text).err().unwrap_or_else(|| "Invalid JSON".into()))
 }
 
 fn cancelled_or(error: FetchError, signal: Option<&AbortSignal>) -> String {

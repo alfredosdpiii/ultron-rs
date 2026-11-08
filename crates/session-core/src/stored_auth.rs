@@ -208,9 +208,6 @@ pub fn api_key_request_auth(env: &Env, provider: &str) -> Result<Option<ai::auth
                 env: None,
             }),
     };
-    if provider == "amazon-bedrock" {
-        return Ok(bedrock_auth(env, credential));
-    }
     let Some(auth) = ai::auth::builtin_api_key_auth(provider) else {
         return Ok(credential.and_then(|c| {
             let key = c.key.filter(|k| !k.is_empty())?;
@@ -239,50 +236,6 @@ fn string_map(value: Option<&Value>) -> std::collections::HashMap<String, String
                 .collect()
         })
         .unwrap_or_default()
-}
-
-/// amazon-bedrock.ts `bedrockAuth.resolve`: a stored key (with the credential's env), else
-/// `AWS_BEARER_TOKEN_BEDROCK`, else an AWS profile (the stored credential's `AWS_PROFILE` and env, or the
-/// environment's), else access keys, an ECS task role or a web identity token; no key in those cases, so the SDK's
-/// credential chain signs the request.
-fn bedrock_auth(env: &Env, credential: Option<ai::auth::ApiKeyCredential>) -> Option<ai::auth::AuthResult> {
-    let var = |name: &str| (env.var)(name).filter(|v| !v.is_empty());
-    let result = |api_key: Option<String>, env: Option<ai::auth::CredentialEnv>, source: &str| ai::auth::AuthResult {
-        auth: ai::auth::ModelAuth {
-            api_key,
-            ..Default::default()
-        },
-        env,
-        source: Some(source.into()),
-    };
-    let stored_profile = credential
-        .as_ref()
-        .and_then(|c| c.env.as_ref()?.get("AWS_PROFILE").filter(|p| !p.is_empty()).cloned());
-    if let Some(key) = credential
-        .as_ref()
-        .and_then(|c| c.key.clone())
-        .filter(|k| !k.is_empty())
-    {
-        return Some(result(Some(key), credential.and_then(|c| c.env), "stored credential"));
-    }
-    if var("AWS_BEARER_TOKEN_BEDROCK").is_some() {
-        return Some(result(None, None, "AWS_BEARER_TOKEN_BEDROCK"));
-    }
-    if stored_profile.is_some() || var("AWS_PROFILE").is_some() {
-        let source = if stored_profile.is_some() {
-            "stored credential"
-        } else {
-            "AWS_PROFILE"
-        };
-        return Some(result(None, credential.and_then(|c| c.env), source));
-    }
-    if var("AWS_ACCESS_KEY_ID").is_some() && var("AWS_SECRET_ACCESS_KEY").is_some() {
-        return Some(result(None, None, "AWS access keys"));
-    }
-    if var("AWS_CONTAINER_CREDENTIALS_RELATIVE_URI").is_some() || var("AWS_CONTAINER_CREDENTIALS_FULL_URI").is_some() {
-        return Some(result(None, None, "ECS task role"));
-    }
-    var("AWS_WEB_IDENTITY_TOKEN_FILE").map(|_| result(None, None, "web identity token"))
 }
 
 /// The value of a future that is ready on its first poll (the built-in api-key auths read only the environment and

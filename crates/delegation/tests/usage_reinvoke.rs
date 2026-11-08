@@ -2,14 +2,14 @@
 //! turn/token/cost limit, a used-up wall budget (`remainingWallMs === 0`) or a cost cap that is reached or cannot be
 //! enforced keeps the root quiet. The ledger's clock is injected: time moves only when the test moves it.
 
-use delegation::task_store::MemoryStore;
 use delegation::usage::{ReserveRequest, UsageLedger, UsageLimits, UsageOptions};
+use kernel::store::MemoryDocumentStore;
 use std::sync::{Arc, Mutex};
 
 fn ledger(limits: UsageLimits, now: Arc<Mutex<f64>>) -> UsageLedger {
     let clock = now.clone();
     UsageLedger::new(
-        Box::new(MemoryStore::default()),
+        Box::new(MemoryDocumentStore::default()),
         UsageOptions {
             limits,
             now: Arc::new(move || *clock.lock().unwrap()),

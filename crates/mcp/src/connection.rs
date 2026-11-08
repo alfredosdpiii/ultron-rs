@@ -228,7 +228,7 @@ impl Connection {
         env: &ConnectionEnv,
         challenge: &Arc<Mutex<Option<Challenge>>>,
     ) -> Option<Arc<dyn AuthProvider>> {
-        let url = entry.config.get("url").and_then(Value::as_str)?;
+        entry.config.get("url").and_then(Value::as_str)?;
         if let Some(url) = oauth_url_of(entry)
             && let Some(credentials) = &env.credentials
         {
@@ -240,7 +240,6 @@ impl Connection {
                 challenge.clone(),
             )));
         }
-        let _ = url;
         let provider = entry.config.get("auth")?.get("provider")?.as_str()?;
         let token = env.provider_token.clone().unwrap_or_else(|| Arc::new(|_: &str| None));
         Some(Arc::new(ProviderAuth {

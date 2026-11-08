@@ -11,7 +11,6 @@ use regex::Regex;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::js::path_join;
 use crate::settings::Mise;
 
 const PYTHON: [&str; 6] = [
@@ -286,9 +285,9 @@ pub fn find_mise(env: &HashMap<String, String>, home: &str, setting: Option<&Mis
     }
     let path = env.get("PATH").map(String::as_str).unwrap_or("");
     path.split(':')
-        .map(|dir| path_join(&[dir, "mise"]))
+        .map(|dir| jsrt::path::join(&[dir, "mise"]))
         .chain([
-            path_join(&[home, ".local", "bin", "mise"]),
+            jsrt::path::join(&[home, ".local", "bin", "mise"]),
             "/usr/bin/mise".into(),
             "/usr/local/bin/mise".into(),
         ])

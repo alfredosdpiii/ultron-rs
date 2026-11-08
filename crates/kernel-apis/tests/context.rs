@@ -4,7 +4,7 @@
 //! entries back as a running turn does). Also replays the pure helpers table (taskLine, collapsedCellText,
 //! trimmedResultText, applyContextEdits).
 
-mod common;
+use crate::common;
 
 use common::{Made, assert_area};
 use kernel::{HostHandler, Signal};

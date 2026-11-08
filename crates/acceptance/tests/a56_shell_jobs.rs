@@ -12,7 +12,7 @@
 //! Job end reporting (`ShellJobs.onEnd`: `awaited`, `rootAborted`, `jobSummary`), root ids and `cancelRoot`, and
 //! per-lane job visibility are in a56_shell_job_ends.rs. Not ported: a configurable retention cap (fixed at 4 MiB).
 
-mod common;
+use crate::common;
 
 use common::{alive, read_pids, runtime, wait_until};
 use host::{AllowAll, Host};
@@ -291,7 +291,7 @@ fn acceptance_a56_the_journal_stays_small_and_survives_a_worker_restart() {
     let open = || {
         Arc::new(
             Host::new(&cwd, cwd.join(".jobs2"), &cwd, Box::new(AllowAll))
-                .with_journal(Arc::new(host::journal::FileJobJournal::new(&journal)))
+                .with_journal(Arc::new(kernel::store::FileDocumentStore::new(&journal)))
                 .unwrap(),
         )
     };

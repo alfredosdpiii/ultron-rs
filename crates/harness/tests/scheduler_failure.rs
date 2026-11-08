@@ -2,7 +2,7 @@
 //! against Memory, SQLite and JSONL storage. Cases about context reads, conversation views, event streams and
 //! JavaScript promise containment have no counterpart in the thread-based runtime and are not ported.
 
-mod support;
+use crate::support;
 
 use durable::{EntryDraft, SessionEnd, SessionError, StorageError, TaskId, TaskStatus};
 use harness::scheduler::{Extension, Harness, HarnessError, HarnessOptions, Registry, Task, safe_now};

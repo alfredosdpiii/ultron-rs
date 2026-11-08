@@ -3,8 +3,6 @@
 //! test runs against a MemoryStorage kept across reopen and against a storage that reopens by replaying its
 //! acknowledged commits, the way the product's journal-backed storage reopens (`replay_support`).
 
-#![allow(dead_code)]
-
 use durable::{
     CommitChange, CommitPublication, ConversationId, ConversationOwnership, ConversationQuery, ConversationRecord,
     Cursor, DocumentAddress, DocumentId, DocumentPoint, DocumentQuery, DocumentRecord, EntryId, EntryQuery,
@@ -15,10 +13,7 @@ use serde_json::Value;
 use std::sync::{Arc, Condvar, Mutex, MutexGuard};
 use std::time::Duration;
 
-#[path = "../replay_support/mod.rs"]
-mod replay;
-
-use replay::ReplayLog;
+use crate::replay_support::ReplayLog;
 
 type Result<T> = std::result::Result<T, StorageError>;
 
@@ -68,7 +63,6 @@ struct Control {
     mint_count: usize,
     document_reads: usize,
     commit_gate: Option<Gate>,
-    find_gate: Option<Gate>,
     commit_failure: Option<StorageError>,
     closed: bool,
 }
@@ -143,12 +137,6 @@ impl Controlled {
     pub fn hold_commits(&self) -> Gate {
         let gate = Gate::default();
         self.control().commit_gate = Some(gate.clone());
-        gate
-    }
-
-    pub fn hold_find_document(&self) -> Gate {
-        let gate = Gate::default();
-        self.control().find_gate = Some(gate.clone());
         gate
     }
 
@@ -257,10 +245,6 @@ impl Storage for Controlled {
     }
 
     fn find_document(&self, address: &DocumentAddress, at: DocumentPoint) -> Result<Option<DocumentRecord>> {
-        let gate = self.control().find_gate.take();
-        if let Some(gate) = gate {
-            gate.pass();
-        }
         self.read(|storage| storage.find_document(address, at))
     }
 
@@ -291,7 +275,6 @@ impl Storage for Controlled {
 
 /// Session kernel plus its controlled storage and every committed publication.
 pub struct TestSession {
-    pub backend: Backend,
     pub session: Session,
     pub storage: Controlled,
     pub publications: Arc<Mutex<Vec<CommitPublication>>>,
@@ -303,7 +286,6 @@ impl TestSession {
         let publications = Arc::new(Mutex::new(Vec::new()));
         let session = publishing_session(&storage, &publications);
         TestSession {
-            backend,
             session,
             storage,
             publications,

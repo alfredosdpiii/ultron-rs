@@ -7,15 +7,17 @@
 //! survive a hand-over to the next worker, whose resumed run is continued. Faux Anthropic server on loopback,
 //! private temp homes; nothing is killed and no signal is sent.
 
-mod p_session_support;
-mod reopen_support;
+use crate::p_session_support;
+use crate::reopen_support;
 
 use p_session_support::{HANG, Script, Setup, actor, in_order, text, tool, user_texts};
+use protocol::custom_types::NUDGE;
+use protocol::watch::QueueKind;
 use reopen_support::Home;
-use resources::keep_going::{FINAL_TEXT, KEEP_GOING_ASKED_TEXT, KEEP_GOING_TEXT, STATE_KEY, STATE_NAMESPACE};
-use resources::persona::NUDGE_CUSTOM_TYPE;
+use resources::keep_going::{FINAL_TEXT, KEEP_GOING_ASKED_TEXT, KEEP_GOING_TEXT, STATE_KEY};
 use serde_json::{Value, json};
-use session_core::core::{Op, QueueKind};
+use session_core::core::Op;
+use session_journal::ns::MODULE;
 use std::path::Path;
 use std::sync::mpsc::{Receiver, Sender, channel};
 use std::time::{Duration, Instant};
@@ -34,7 +36,7 @@ fn nudges(messages: Vec<Value>) -> Vec<Value> {
     messages
         .into_iter()
         .map(|e| e["message"].clone())
-        .filter(|m| m["customType"] == NUDGE_CUSTOM_TYPE)
+        .filter(|m| m["customType"] == NUDGE)
         .collect()
 }
 
@@ -97,7 +99,7 @@ fn session_core_keep_going_phrase_continues_every_working_run_until_a_report() {
     let kept: Vec<Value> = a
         .writes()
         .into_iter()
-        .filter(|w| w["namespace"] == STATE_NAMESPACE && w["key"] == STATE_KEY && w["op"] == "set")
+        .filter(|w| w["namespace"] == MODULE && w["key"] == STATE_KEY && w["op"] == "set")
         .map(|w| w["value"].clone())
         .collect();
     assert_eq!(kept.first().unwrap()["keepGoing"]["reason"], "i'm going to sleep");
@@ -327,7 +329,7 @@ fn interrupted_stretch(home: &Home) {
 fn kept_state(home: &Home) -> Value {
     home.writes()
         .into_iter()
-        .filter(|w| w["namespace"] == STATE_NAMESPACE && w["key"] == STATE_KEY && w["op"] == "set")
+        .filter(|w| w["namespace"] == MODULE && w["key"] == STATE_KEY && w["op"] == "set")
         .map(|w| w["value"].clone())
         .next_back()
         .unwrap()
@@ -368,13 +370,13 @@ fn session_core_keep_going_eight_hours_from_the_kept_start_ends_with_the_final_n
     // The stretch started more than 8 hours ago (the clock, injected through the kept start time).
     let mut state = kept_state(&home);
     let eight_hours = 8 * 60 * 60 * 1000;
-    state["keepGoing"]["startedAt"] = json!(session_core::lane::now_ms() - eight_hours - 1_000);
+    state["keepGoing"]["startedAt"] = json!(jsrt::date::now_ms() - eight_hours - 1_000);
     state["keepGoing"]["continues"] = json!(2);
     let repo = session_journal::SessionRepo::new(&home.sessions(), session_journal::SystemClock::shared());
     let metadata = repo.list(None).into_iter().next().unwrap();
     let mut session = repo.open(&metadata).unwrap();
     session
-        .commit(&[session_journal::Write::set(STATE_NAMESPACE, STATE_KEY, state)])
+        .commit(&[session_journal::Write::set(MODULE, STATE_KEY, state)])
         .unwrap();
     drop(session);
     let next = home.open(

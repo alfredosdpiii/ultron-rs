@@ -500,7 +500,7 @@ impl SessionSelector {
         );
         let left = truncate_to_width(&left_text, width.saturating_sub(visible_width(&right) + 1), "", false);
         let spacing = width.saturating_sub(visible_width(&left) + visible_width(&right));
-        let hint = |id: &str, d: &str| key_hint(&t, &key_text(&self.keys, id, false), d);
+        let hint = |id: &str, d: &str| key_hint(&t, &key_text(&self.keys, id), d);
         if self
             .status
             .as_ref()
@@ -555,7 +555,7 @@ impl SessionSelector {
         let mut lines = self.search.render(width);
         lines.push(String::new());
         if self.filtered.is_empty() {
-            let toggle = key_text(&self.keys, "app.session.toggleNamedFilter", false);
+            let toggle = key_text(&self.keys, "app.session.toggleNamedFilter");
             let message = match (self.named_only, self.scope_all) {
                 (true, true) => format!("  No named sessions found. Press {toggle} to show all."),
                 (true, false) => {
@@ -663,8 +663,8 @@ impl Component for SessionSelector {
             lines.push(String::new());
             let hint = format!(
                 "{} to save · {} to cancel",
-                key_text(&self.keys, "tui.select.confirm", false),
-                key_text(&self.keys, "tui.select.cancel", false)
+                key_text(&self.keys, "tui.select.confirm"),
+                key_text(&self.keys, "tui.select.cancel")
             );
             lines.extend(Text::new(&t.fg(Fg::Muted, &hint), 1, 0, None).render(width));
         } else {

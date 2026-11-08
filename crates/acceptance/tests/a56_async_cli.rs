@@ -11,7 +11,7 @@
 //! "nothing else happens" is checked after the root lane reports no pending work (`async.pending` through
 //! `get_state`-driven settles), never on a timer alone.
 
-mod common;
+use crate::common;
 
 use common::{HANG, Install, Provider, Reply, Request};
 use serde_json::Value;

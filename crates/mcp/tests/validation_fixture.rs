@@ -46,7 +46,7 @@ fn mcp_validation_prepare_tool_arguments_matches_typescript() {
 fn mcp_validation_json_parse_messages_match_v8() {
     for case in fixture()["parse"].as_array().unwrap() {
         let input = case["input"].as_str().unwrap();
-        assert_eq!(outcome(mcp::js_json::parse(input)), expected(case), "{input:?}");
+        assert_eq!(outcome(jsrt::json::parse(input)), expected(case), "{input:?}");
     }
 }
 

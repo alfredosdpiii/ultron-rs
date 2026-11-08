@@ -9,7 +9,7 @@
 //! so it prints only the closing newline); and a start without a usable model reports why in Rust where TypeScript
 //! says "Internal server error" (the setup hint after it is the same).
 
-mod common;
+use crate::common;
 
 use common::{Naming, Sandbox, mock_server};
 use serde_json::Value;

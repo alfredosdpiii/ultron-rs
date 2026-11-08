@@ -160,7 +160,7 @@ pub fn run_stdout(app: &mut App, events: &Receiver<UiEvent>, size: &dyn Fn() -> 
     app.set_suspend_hook(Box::new(suspend_process));
     // Fullscreen owns the mouse (wheel, scrollbar, selection); the tracking mode follows the terminal multiplexer.
     app.set_mouse_tracking(Some(tui::mouse_tracking(&|name| std::env::var(name).ok())));
-    app.set_right_click_paste(tui::right_click_paste_enabled(tui::platform(), &|name| {
+    app.set_right_click_paste(tui::right_click_paste_enabled(jsrt::process::platform(), &|name| {
         std::env::var(name).ok()
     }));
     let mut terminal = Terminal::new(std::io::stdout());

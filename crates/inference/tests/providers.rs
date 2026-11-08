@@ -7,7 +7,7 @@
 //! the same result. The Claude Code CLI frame runs the ai crate's fake `claude` and must hand it the same argv,
 //! output cap and prompt. The fixture's capOutputTokens / withContractSchema table is replayed against `payload`.
 
-mod common;
+use crate::common;
 
 use ai::ReqwestTransport;
 use inference::Inference;

@@ -1,7 +1,6 @@
 //! `subprocess.run` with loki.py's deadline (`command_timeout`) and error texts.
 
 use crate::{CheckError, py};
-use std::io::{Read, Write};
 use std::path::Path;
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
@@ -75,13 +74,16 @@ pub fn run(
     builder
         .args(&command[1..])
         .current_dir(cwd)
-        .stdin(if input.is_some() { Stdio::piped() } else { Stdio::null() })
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
     for (key, value) in env {
         builder.env(key, value);
     }
-    let mut child = builder.spawn().map_err(|e| {
+    let bound = signals::child::Bound {
+        timeout: Some(Duration::from_secs_f64(timeout.max(0.0))),
+        ..Default::default()
+    };
+    let running = signals::child::start(&mut builder, input, bound).map_err(|e| {
         let name = if e.kind() == std::io::ErrorKind::NotFound {
             Some(command[0].as_str())
         } else {
@@ -95,61 +97,32 @@ pub fn run(
         };
         RunError::Os(crate::os_kind(&e), py::os_error(&e, name))
     })?;
-    let writer = match (child.stdin.take(), input) {
-        (Some(mut stdin), Some(data)) => {
-            let data = data.to_vec();
-            Some(std::thread::spawn(move || {
-                let _ = stdin.write_all(&data);
-            }))
+    let out = running.finish();
+    let status = match out.end {
+        signals::child::End::Exited(Some(status)) => status,
+        signals::child::End::Exited(None) => {
+            return Err(RunError::Os(
+                "OSError",
+                "the command's exit status could not be read".into(),
+            ));
         }
-        _ => None,
-    };
-    let mut stdout = child
-        .stdout
-        .take()
-        .ok_or_else(|| RunError::Os("OSError", "no stdout".into()))?;
-    let mut stderr = child
-        .stderr
-        .take()
-        .ok_or_else(|| RunError::Os("OSError", "no stderr".into()))?;
-    let out_reader = std::thread::spawn(move || {
-        let mut buffer = Vec::new();
-        let _ = stdout.read_to_end(&mut buffer);
-        buffer
-    });
-    let err_reader = std::thread::spawn(move || {
-        let mut buffer = Vec::new();
-        let _ = stderr.read_to_end(&mut buffer);
-        buffer
-    });
-    let started = Instant::now();
-    let limit = Duration::from_secs_f64(timeout.max(0.0));
-    let status = loop {
-        match child.try_wait() {
-            Ok(Some(status)) => break status,
-            Ok(None) if started.elapsed() >= limit => {
-                let _ = child.kill();
-                let _ = child.wait();
-                return Err(RunError::Timeout(format!(
-                    "Command '{}' timed out after {} seconds",
-                    command_repr(command),
-                    py::float_repr(timeout)
-                )));
-            }
-            Ok(None) => std::thread::sleep(Duration::from_millis(2)),
-            Err(e) => return Err(RunError::Os(crate::os_kind(&e), py::os_error(&e, None))),
+        signals::child::End::TimedOut | signals::child::End::Cancelled => {
+            return Err(RunError::Timeout(format!(
+                "Command '{}' timed out after {} seconds",
+                command_repr(command),
+                py::float_repr(timeout)
+            )));
         }
     };
-    if let Some(writer) = writer {
-        let _ = writer.join();
-    }
-    let stdout = out_reader.join().unwrap_or_default();
-    let stderr = err_reader.join().unwrap_or_default();
     let code = status.code().unwrap_or_else(|| {
         use std::os::unix::process::ExitStatusExt;
         -status.signal().unwrap_or(0)
     });
-    Ok(Output { code, stdout, stderr })
+    Ok(Output {
+        code,
+        stdout: out.stdout,
+        stderr: out.stderr,
+    })
 }
 
 /// Text-mode output: `errors="replace"` decoding and universal newlines.

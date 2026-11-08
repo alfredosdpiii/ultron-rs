@@ -4,8 +4,8 @@
 //! and the usage ledger. The model's tool is the REPL (`rlm`); upstream's `hold` tool is a scripted cell whose code is
 //! `hold`. Cases run against Memory, SQLite and JSONL storage unless they need one backend.
 
-mod chat_support;
-mod support;
+use crate::chat_support;
+use crate::support;
 
 use std::sync::{Arc, Mutex};
 

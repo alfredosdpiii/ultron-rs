@@ -56,6 +56,23 @@ fn fence_body(text: &str, closing_newline: bool) -> Option<&str> {
     None
 }
 
+/// A word the shell reads as itself: non-empty, only ASCII letters, digits and `_@%+=:,./-`.
+pub fn is_shell_safe(value: &str) -> bool {
+    !value.is_empty()
+        && value
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || "_@%+=:,./-".contains(c))
+}
+
+/// `shellQuote` (claude/self.ts): `value` single-quoted (`'` as `'\''`) unless [`is_shell_safe`].
+pub fn shell_quote(value: &str) -> String {
+    if is_shell_safe(value) {
+        value.to_string()
+    } else {
+        format!("'{}'", value.replace('\'', "'\\''"))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

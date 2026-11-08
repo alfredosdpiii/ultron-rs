@@ -18,9 +18,10 @@ use interactive::lane::{
     SessionListing, SessionOpened,
 };
 use interactive::run::{UiEvent, run_stdout, spawn_gated_input};
+use protocol::watch::QueueKind;
 use protocol::watch::WatchEvent;
 use serde_json::{Value, json};
-use session_core::core::{Op, QueueKind};
+use session_core::core::Op;
 use std::io::{BufRead, IsTerminal, Write};
 use std::rc::Rc;
 use std::sync::{Arc, mpsc};
@@ -115,8 +116,8 @@ fn image_values(images: Vec<PromptImage>) -> Vec<Value> {
 /// The flags the link thread's long commands watch, set by [`route`] without waiting on the link.
 #[derive(Clone, Default)]
 struct Cancels {
-    /// Set when the user cancels `/share`'s gist upload.
-    share: Arc<std::sync::atomic::AtomicBool>,
+    /// Aborted when the user cancels `/share`'s gist upload; a fresh one for each `/share`.
+    share: Arc<std::sync::Mutex<kernel::Signal>>,
     /// Set when the user cancels `/bug`'s upload.
     bug: Arc<std::sync::atomic::AtomicBool>,
 }
@@ -171,11 +172,11 @@ fn route(
                 crate::tui_login::start(env.clone(), provider, name, events, login.clone(), saved);
             }
             LaneCommand::LoginReply(answer) => login.reply(answer),
-            LaneCommand::CancelShare => cancels.share.store(true, std::sync::atomic::Ordering::SeqCst),
+            LaneCommand::CancelShare => jsrt::sync::lock(&cancels.share).abort("cancelled"),
             LaneCommand::CancelBugReport => cancels.bug.store(true, std::sync::atomic::Ordering::SeqCst),
             command => {
                 if matches!(command, LaneCommand::Share { .. }) {
-                    cancels.share.store(false, std::sync::atomic::Ordering::SeqCst);
+                    *jsrt::sync::lock(&cancels.share) = kernel::Signal::new();
                 }
                 let _ = commands.send(Command::Lane(command));
             }
@@ -295,12 +296,14 @@ fn opened(link: &Link) -> Result<(SessionOpened, ModelInfo, Vec<Value>, Option<S
 /// `piAgentDir`).
 pub fn pi_agent_dir(env: &Env) -> String {
     let dir = (env.var)(PI_AGENT_DIR_ENV).unwrap_or_else(|| env.home.join(".pi").join("agent").display().to_string());
-    session_file::paths::resolve_path(&dir)
+    config::paths::resolve(&dir, &env.cwd, &env.home).display().to_string()
 }
 
 /// Pi's per-project session directory under `<piAgentDir>/sessions` (`piSessionDirForCwd`).
 pub fn pi_session_dir_for_cwd(cwd: &str, agent_dir: &str) -> String {
-    let resolved = session_file::paths::resolve_path(cwd);
+    let resolved = config::paths::normalize(std::path::Path::new(cwd))
+        .display()
+        .to_string();
     let relative = resolved.strip_prefix(['/', '\\']).unwrap_or(&resolved);
     format!("{agent_dir}/sessions/--{}--", relative.replace(['/', '\\', ':'], "-"))
 }
@@ -362,13 +365,7 @@ fn link_thread(
         Ok((session, model, entries, thinking)) => {
             *name = session.name.clone();
             // `plugins.prepareSession` for the attached session (client-tui.ts): `/reload` rebuilds this selection.
-            let connection = link.connection();
-            let prepared = connection.call(
-                connection.server_target(),
-                protocol::names::PRESENTATION_PLUGINS,
-                "prepareSession",
-                json!([{"sessionId": session.session_id, "packagePaths": null}]),
-            );
+            let prepared = link.connection().prepare_session(&session.session_id);
             if let Ok(data) = prepared
                 && let Err(error) = apply_presentation_plugins(&data.unwrap_or(Value::Null))
             {
@@ -850,7 +847,7 @@ fn link_thread(
                         } else {
                             QueueKind::FollowUp
                         },
-                        mode: value.as_str().unwrap_or("all").to_string(),
+                        mode: value.as_str().unwrap_or(config::keys::QUEUE_ALL).to_string(),
                     }),
                     _ => None,
                 };
@@ -872,7 +869,8 @@ fn link_thread(
                 });
             }
             Command::Lane(LaneCommand::Share { theme }) => {
-                share_session(&link, &send, &cancels.share, theme.as_deref(), &catalog_env)
+                let cancel = jsrt::sync::lock(&cancels.share).clone();
+                share_session(&link, &send, &cancel, theme.as_deref(), &catalog_env)
             }
             Command::Lane(LaneCommand::BugReportSummary(hint)) => {
                 let op = Op::BugSummary { hint };
@@ -979,38 +977,20 @@ fn link_thread(
                 // `models.refresh()`: from the network unless offline (`PI_OFFLINE`), on its own thread.
                 let (env, ui) = (catalog_env.clone(), ui.clone());
                 std::thread::spawn(move || {
-                    let refresh = if !config::env::offline(&*env.var) {
-                        match session_core::model_refresh::refresh_catalogs(
-                            &env,
-                            ai::model_refresh::DEFAULT_CATALOG_BASE_URL,
-                            &ai::model_refresh::management_user_agent(&crate::version()),
-                            false,
-                        ) {
-                            Ok(errors) => {
-                                CatalogRefresh::Done(errors.into_iter().map(|(provider, _)| provider).collect())
-                            }
-                            Err(error) if error == session_core::model_refresh::REFRESH_TIMED_OUT => {
-                                CatalogRefresh::TimedOut
-                            }
-                            Err(error) => CatalogRefresh::Failed(error),
+                    let refresh = match session_core::model_refresh::refresh_catalogs(&env, false) {
+                        Ok(errors) => CatalogRefresh::Done(errors.into_iter().map(|(provider, _)| provider).collect()),
+                        Err(error) if error == session_core::model_refresh::REFRESH_TIMED_OUT => {
+                            CatalogRefresh::TimedOut
                         }
-                    } else {
-                        CatalogRefresh::Done(Vec::new())
+                        Err(error) => CatalogRefresh::Failed(error),
                     };
                     let _ = ui.send(UiEvent::Lane(LaneEvent::Catalog(catalog(&env))));
                     let _ = ui.send(UiEvent::Lane(LaneEvent::CatalogRefreshed(refresh)));
                 });
             }
             Command::LoginSaved(provider, name) => {
-                // `reloadWorkerAuth`: the catalog refresh reaches the network unless offline (`PI_OFFLINE`).
-                if !config::env::offline(&*catalog_env.var) {
-                    let _ = session_core::model_refresh::refresh_catalogs(
-                        &catalog_env,
-                        ai::model_refresh::DEFAULT_CATALOG_BASE_URL,
-                        &ai::model_refresh::management_user_agent(&crate::version()),
-                        false,
-                    );
-                }
+                // `reloadWorkerAuth`: a catalog refresh.
+                let _ = session_core::model_refresh::refresh_catalogs(&catalog_env, false);
                 credentials_saved(&link, &catalog_env, &send, "Logged in to", &provider, &name);
             }
             Command::Lane(LaneCommand::Credentials) => {
@@ -1192,6 +1172,14 @@ fn read_trust(link: &Link) -> Result<interactive::trust_selector::TrustView, Str
 
 /// `/debug`: the worker's `debugInfo` and this client's and server's facts with what the TUI shows, written to
 /// `<agentDir>/ultron-debug.log` (0600).
+/// The socket of server `server_id` in this project's instance or the durable one, whichever has it.
+fn local_server_socket(env: &Env, server_id: &str) -> Option<std::path::PathBuf> {
+    [false, true]
+        .into_iter()
+        .map(|durable| daemon::instance::socket_path(&crate::instance(env, durable).dir, server_id))
+        .find(|p| p.exists())
+}
+
 fn write_debug_log(
     link: &Link,
     env: &Env,
@@ -1208,15 +1196,12 @@ fn write_debug_log(
             }
         });
     let server_id = link.connection().server_id.clone();
-    let socket = [false, true]
-        .into_iter()
-        .map(|durable| crate::instance(env, durable).dir.join(format!("{server_id}.sock")))
-        .find(|p| p.exists());
+    let socket = local_server_socket(env, &server_id);
     let client = interactive::debug_log::ClientFacts {
         time: jsrt::date::iso_string(jsrt::date::now_ms()),
         process: format!(
             "ultron {} · rust · {} · pid {}",
-            crate::version(),
+            config::version(),
             daemon::session_control::platform(),
             std::process::id()
         ),
@@ -1318,13 +1303,7 @@ fn save_setting(settings: &mut config::settings::SettingsManager, key: &str, val
 
 /// Pi's `/share`: the session as HTML in a secret gist (`gh gist create --public=false`), then the viewer and gist
 /// URLs.
-fn share_session(
-    link: &Link,
-    send: &dyn Fn(LaneEvent),
-    cancel: &std::sync::atomic::AtomicBool,
-    theme: Option<&str>,
-    env: &Env,
-) {
+fn share_session(link: &Link, send: &dyn Fn(LaneEvent), cancel: &kernel::Signal, theme: Option<&str>, env: &Env) {
     let status = |text: String| send(LaneEvent::Status(text));
     let auth = std::process::Command::new("gh")
         .args(["auth", "status"])
@@ -1354,7 +1333,7 @@ fn share_session(
         let Some(out) = out.map_err(|e| format!("Error: Failed to create gist: {e}"))? else {
             return Ok(None);
         };
-        if !out.status.success() {
+        if !out.success() {
             let stderr = String::from_utf8_lossy(&out.stderr).trim().to_string();
             return Err(format!(
                 "Error: Failed to create gist: {}",
@@ -1388,31 +1367,18 @@ fn share_session(
     }
 }
 
-/// `gh gist create --public=false <file>`, killed when `cancel` is set (`None` then).
-fn gist_create(
-    file: &std::path::Path,
-    cancel: &std::sync::atomic::AtomicBool,
-) -> std::io::Result<Option<std::process::Output>> {
-    use std::sync::atomic::Ordering;
-    let mut child = std::process::Command::new("gh")
-        .args(["gist", "create", "--public=false"])
-        .arg(file)
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .spawn()?;
-    loop {
-        if child.try_wait()?.is_some() {
-            return child.wait_with_output().map(Some);
-        }
-        if cancel.load(Ordering::SeqCst) {
-            // Only the gh this call started.
-            let _ = child.kill();
-            let _ = child.wait();
-            return Ok(None);
-        }
-        std::thread::sleep(std::time::Duration::from_millis(20));
-    }
+/// `gh gist create --public=false <file>`, killed when `cancel` aborts (`None` then).
+fn gist_create(file: &std::path::Path, cancel: &kernel::Signal) -> std::io::Result<Option<signals::child::Output>> {
+    let out = cancel.run_child(
+        std::process::Command::new("gh")
+            .args(["gist", "create", "--public=false"])
+            .arg(file)
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped()),
+        None,
+        signals::child::Bound::default(),
+    )?;
+    Ok((out.end != signals::child::End::Cancelled).then_some(out))
 }
 
 /// What follows saving a credential (`runLoginDialog`): where it went, the refreshed catalog, and whether the session's
@@ -1972,7 +1938,7 @@ fn run_tui(
     let options = AppOptions {
         theme,
         keys: keys(),
-        version: crate::version(),
+        version: config::version().to_string(),
         cwd: env.cwd.display().to_string(),
         home: Some(env.home.display().to_string()).filter(|h| !h.is_empty()),
         server_id,
@@ -2048,7 +2014,7 @@ fn run_tui(
     {
         let (env, ui) = (env.clone(), ui_tx.clone());
         std::thread::spawn(move || {
-            if let Some(version) = crate::startup_checks::check_for_new_version(&env, &crate::version()) {
+            if let Some(version) = crate::startup_checks::check_for_new_version(&env, config::version()) {
                 let notice = interactive::lane::StartupNotice::NewVersion(version);
                 let _ = ui.send(UiEvent::Lane(LaneEvent::StartupNotice(notice)));
             }
@@ -2087,7 +2053,7 @@ fn run_tui(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use interactive::lane::{QueueKind, Queued};
+    use interactive::lane::Queued;
 
     /// The TUI events of one lane-watch event, as the watch shows them.
     fn tui_events(event: &Value) -> Vec<LaneEvent> {
@@ -2112,6 +2078,28 @@ mod tests {
             all_messages_text: "hi".into(),
             message_count: 1,
         }
+    }
+
+    /// A server directory too deep for a Unix socket address keeps its sockets in a private runtime directory;
+    /// `/debug` finds the socket there, where the server put it.
+    #[test]
+    fn cli_debug_finds_the_socket_of_a_deep_server_directory() {
+        let tmp = tempfile::tempdir().unwrap();
+        let deep = tmp.path().join("d".repeat(120));
+        let server_dir = deep.display().to_string();
+        let env = Env {
+            cwd: tmp.path().to_path_buf(),
+            home: tmp.path().to_path_buf(),
+            var: std::sync::Arc::new(move |k: &str| (k == config::paths::ENV_SERVER_DIR).then(|| server_dir.clone())),
+            package: tmp.path().to_path_buf(),
+        };
+        let socket = daemon::instance::socket_path(&deep, "srv1");
+        assert!(!socket.starts_with(&deep), "{}", socket.display());
+        std::fs::create_dir_all(socket.parent().unwrap()).unwrap();
+        std::fs::write(&socket, "").unwrap();
+        let found = local_server_socket(&env, "srv1");
+        let _ = std::fs::remove_dir_all(socket.parent().unwrap());
+        assert_eq!(found, Some(socket));
     }
 
     #[test]

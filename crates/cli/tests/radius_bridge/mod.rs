@@ -6,7 +6,6 @@
 //! client upgrades until released, and drop every client connection (the gateway losing them). Relay hosts are
 //! accepted, refused (`401`), or accepted with the first one closed at once ([`HostMode`]). Waits are on
 //! condition variables with a 120 s hang guard; nothing sleeps.
-#![allow(dead_code)]
 
 use serde_json::{Value, json};
 use server::radius_relay::{encode_relay_data_frame, parse_relay_data_frame};
@@ -180,11 +179,6 @@ impl Bridge {
                 .unwrap_or_else(|e| e.into_inner())
                 .shutdown(Shutdown::Both);
         }
-    }
-
-    /// The number of open client connections.
-    pub fn client_count(&self) -> usize {
-        self.shared.lock().clients.len()
     }
 }
 

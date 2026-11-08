@@ -55,8 +55,8 @@ fn mcp_sign_in_hint_reads_the_injected_environment() {
     );
     // A callback host put elsewhere on purpose: the redirect is expected to arrive.
     for key in [
-        ai::oauth_flow::OAUTH_CALLBACK_HOST_ENV,
-        ai::oauth_flow::LEGACY_OAUTH_CALLBACK_HOST_ENV,
+        config::browser::OAUTH_CALLBACK_HOST_ENV,
+        config::browser::LEGACY_OAUTH_CALLBACK_HOST_ENV,
     ] {
         assert_eq!(
             sign_in_hint(&env_of(&[

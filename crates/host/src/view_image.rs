@@ -308,10 +308,7 @@ impl CellImages {
             _ => return Err("view_image: path must be a non-empty string".into()),
         };
         let size = std::fs::metadata(path)
-            .map_err(|error| match error.kind() {
-                std::io::ErrorKind::NotFound => format!("ENOENT: no such file or directory, stat '{path}'"),
-                _ => error.to_string(),
-            })?
+            .map_err(|error| jsrt::fs::error_message(&error, "stat", std::path::Path::new(path)))?
             .len();
         if size > MAX_VIEW_IMAGE_SOURCE_BYTES {
             return Err(format!(

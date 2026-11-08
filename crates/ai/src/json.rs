@@ -9,9 +9,6 @@ pub fn parse_json(text: &str) -> Result<Value, serde_json::Error> {
     serde_json::from_str::<Value>(text).map(jsrt::json::normalize_numbers)
 }
 
-// ponytail: cli/tests (provider_auth, tui_login_providers) still import `ai::json::normalize_numbers`.
-pub use jsrt::json::normalize_numbers;
-
 const VALID_JSON_ESCAPES: &[char] = &['"', '\\', '/', 'b', 'f', 'n', 'r', 't', 'u'];
 
 /// Escapes raw control characters inside strings and doubles backslashes before invalid escapes.

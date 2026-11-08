@@ -4,7 +4,7 @@
 //! a file it never saw is reported by location only, and a new file as a diff from nothing.
 
 use super::translate::{FileChanges, MAX_DIFF_BYTES, diff};
-use delegation::workspace::{DEFAULT_MAX_SNAPSHOT_ENTRIES, WorkspaceSnapshot, diff_snapshots, snapshot_workspace};
+use delegation::workspace::{WorkspaceSnapshot, diff_snapshots, snapshot_workspace};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
@@ -29,7 +29,7 @@ fn small_text(path: &Path) -> Option<String> {
 
 impl Tracker {
     fn picture(dir: &Path) -> WorkspaceSnapshot {
-        snapshot_workspace(dir, DEFAULT_MAX_SNAPSHOT_ENTRIES, true)
+        snapshot_workspace(dir)
     }
 
     /// The picture changes are measured against (a prompt starts, or a cell starts with none held).

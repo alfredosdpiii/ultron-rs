@@ -526,7 +526,7 @@ impl Policy {
 /// The real location a write to `path` would reach: the nearest existing ancestor with symlinks resolved, plus the
 /// rest. A symlink inside the project pointing outside therefore counts as outside.
 pub fn resolve_for_write(path: &Path) -> PathBuf {
-    let path = crate::settings::normalize(path);
+    let path = jsrt::path::absolute(path);
     let mut existing = path.as_path();
     let mut rest: Vec<&std::ffi::OsStr> = Vec::new();
     loop {

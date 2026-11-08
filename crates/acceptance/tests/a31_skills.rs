@@ -8,11 +8,12 @@
 //! The exact spawned request (the `rlm-child@1` prompt, key and parent) is replayed against the TypeScript module in
 //! crates/kernel-apis/tests/skills_invoke.rs.
 
-mod agents_support;
+use crate::agents_support;
 
+use kernel::store::{DocumentStore, MemoryDocumentStore};
 use kernel::{HostHandler, Signal};
 use kernel_apis::skills::{SkillSource, SkillsModule};
-use kernel_apis::{ApiModule, DocumentStore, KernelApis, MemoryDocumentStore, TaskHost};
+use kernel_apis::{ApiModule, KernelApis, TaskHost};
 use serde_json::{Map, Value, json};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;

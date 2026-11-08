@@ -820,7 +820,10 @@ impl<W: FnMut(&str) + Send> NotifySink for ProcessSink<W> {
         self.notifier
             .get_or_insert_with(|| {
                 resolve_desktop_notifier(&|name| {
-                    tui::proc::which(name, path_var.as_deref()).map(|p| p.to_string_lossy().into_owned())
+                    path_var
+                        .as_deref()
+                        .and_then(|path| jsrt::process::which(name, path))
+                        .map(|p| p.to_string_lossy().into_owned())
                 })
             })
             .clone()

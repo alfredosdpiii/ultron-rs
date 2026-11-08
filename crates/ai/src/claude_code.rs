@@ -19,7 +19,7 @@ use serde_json::json;
 use std::path::{Path, PathBuf};
 use std::sync::LazyLock;
 
-pub const PROVIDER: &str = "claude-code";
+pub const PROVIDER: &str = config::providers::CLAUDE_CODE;
 pub const API: &str = "claude-code-cli";
 /// The provider's display name (`createProvider({ name })`).
 pub const NAME: &str = "Claude Code (CLI)";

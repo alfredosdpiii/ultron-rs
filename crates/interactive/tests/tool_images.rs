@@ -46,7 +46,7 @@ fn chat(case: &Value) -> ChatView {
             strings(&hl["lines"])
         }),
         code_highlight: None,
-        expand_key: key_text(&keys, "app.tools.expand", false),
+        expand_key: key_text(&keys, "app.tools.expand"),
         dequeue_key: String::new(),
         interrupt_key: String::new(),
     });

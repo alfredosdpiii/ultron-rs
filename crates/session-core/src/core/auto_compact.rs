@@ -128,7 +128,7 @@ impl Core {
     }
 
     fn compaction_event(&mut self, reason: Reason, end: Option<(Ended, Option<&str>)>) {
-        let (lane, run_id, reason) = (LANE.to_string(), self.run_id(), reason.name().to_string());
+        let (lane, run_id, reason) = (MAIN_LANE.to_string(), self.run_id(), reason.name().to_string());
         self.emit(match end {
             None => WatchEvent::CompactionStart { lane, run_id, reason },
             Some((status, error)) => WatchEvent::CompactionEnd {
@@ -161,7 +161,7 @@ impl Core {
         let message = match work {
             Work::Done => {
                 // A compacted context starts a new approach to the limit: its next crossing reminds again.
-                self.lane.stack.context_reminders.rearm(LANE);
+                self.lane.stack.context_reminders.rearm(MAIN_LANE);
                 self.announce();
                 self.compaction_event(reason, Some((Ended::Completed, None)));
                 self.retain_compaction();
@@ -230,7 +230,7 @@ impl Core {
             retry,
             (&run_id, &task_id),
             WatchEvent::SummarizationRetryAttemptStart {
-                lane: LANE.into(),
+                lane: MAIN_LANE.into(),
                 source: "compaction".into(),
                 reason: Some(reason.name().into()),
             },
@@ -289,10 +289,10 @@ impl Core {
         // Before a request, the boundary is now: what waited for it is placed with the resumed checkpoint.
         let placement = {
             let session = lock_session(&self.session);
-            let tip = session.branch_tip(LANE).flatten();
+            let tip = session.branch_tip(MAIN_LANE).flatten();
             let (mut writes, placed) = context_lane::placement(&session, tip.clone());
             if let Some(placed) = placed.filter(|placed| Some(placed) != tip.as_ref()) {
-                writes.push(Write::set(BRANCH_TIP, LANE, placed.into()));
+                writes.push(Write::set(BRANCH_TIP, MAIN_LANE, placed.into()));
             }
             writes
         };
@@ -368,7 +368,7 @@ impl Core {
         let reserve = i64::try_from(settings.reserve_tokens).unwrap_or(i64::MAX);
         if self
             .context
-            .before_compaction(LANE, reason.name(), tokens, window, reserve)
+            .before_compaction(MAIN_LANE, reason.name(), tokens, window, reserve)
             .unwrap_or(false)
         {
             self.decline(reason, waiting);

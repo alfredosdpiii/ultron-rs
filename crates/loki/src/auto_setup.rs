@@ -6,12 +6,10 @@
 //! a command past its time limit is stopped: SIGTERM, then SIGKILL, to the child alone (TypeScript signals its
 //! process group; nothing here signals a group).
 
-use rustix::process::{Pid, Signal, kill_process};
 use serde_json::Value;
-use std::io::Read;
 use std::path::{Component, Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 pub const LOKI_AUTOCOMMIT_ENV: &str = "ULTRON_LOKI_AUTOCOMMIT";
 pub const LOKI_AUTOINIT_ENV: &str = "ULTRON_LOKI_AUTOINIT";
@@ -102,76 +100,47 @@ fn run(program: &str, args: &[&str], cwd: &Path, env: &[(String, String)], timeo
         stderr: String::new(),
         error: Some(error),
     };
-    let spawned = Command::new(program)
-        .args(args)
-        .current_dir(cwd)
-        .env_clear()
-        .envs(env.iter().map(|(k, v)| (k.as_str(), v.as_str())))
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn();
-    let mut child = match spawned {
-        Ok(child) => child,
+    // SIGTERM first (git removes its index.lock on SIGTERM, never on SIGKILL), SIGKILL 2 s later; only this child
+    // is signalled.
+    let bound = signals::child::Bound {
+        timeout: Some(Duration::from_millis(timeout_ms)),
+        stop: signals::child::Stop {
+            group: false,
+            term_grace: Some(Duration::from_secs(2)),
+        },
+        keep: None,
+    };
+    let spawned = signals::child::run(
+        Command::new(program)
+            .args(args)
+            .current_dir(cwd)
+            .env_clear()
+            .envs(env.iter().map(|(k, v)| (k.as_str(), v.as_str())))
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped()),
+        None,
+        bound,
+    );
+    let out = match spawned {
+        Ok(out) => out,
         // Node's spawn error for a program that is not there.
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
             return failed(format!("spawn {program} ENOENT"));
         }
         Err(error) => return failed(error.to_string()),
     };
-    // A process the command left behind can hold its pipes open: once the command ended, its output is what
-    // arrives within 2 s.
-    let read = |pipe: Option<Box<dyn Read + Send>>| {
-        let (tx, rx) = std::sync::mpsc::channel();
-        std::thread::spawn(move || {
-            let mut buffer = Vec::new();
-            if let Some(mut pipe) = pipe {
-                let _ = pipe.read_to_end(&mut buffer);
-            }
-            let _ = tx.send(String::from_utf8_lossy(&buffer).into_owned());
-        });
-        rx
+    let error = match out.end {
+        signals::child::End::Exited(Some(_)) => None,
+        signals::child::End::Exited(None) => Some("the exit status could not be read".to_string()),
+        signals::child::End::TimedOut | signals::child::End::Cancelled => Some(format!(
+            "timed out after {} s",
+            jsrt::number::to_string((timeout_ms as f64 / 100.0).round() / 10.0)
+        )),
     };
-    let stdout = read(child.stdout.take().map(|p| Box::new(p) as Box<dyn Read + Send>));
-    let stderr = read(child.stderr.take().map(|p| Box::new(p) as Box<dyn Read + Send>));
-    let started = Instant::now();
-    let mut error = None;
-    let mut terminated: Option<Instant> = None;
-    let status = loop {
-        match child.try_wait() {
-            Ok(Some(status)) => break status.code(),
-            Ok(None) => {}
-            Err(e) => {
-                error = Some(e.to_string());
-                break None;
-            }
-        }
-        match terminated {
-            // SIGTERM first (git removes its index.lock on SIGTERM, never on SIGKILL), SIGKILL 2 s later; only
-            // this child is signalled.
-            None if started.elapsed() >= Duration::from_millis(timeout_ms) => {
-                error = Some(format!(
-                    "timed out after {} s",
-                    jsrt::number::to_string((timeout_ms as f64 / 100.0).round() / 10.0)
-                ));
-                if let Some(pid) = i32::try_from(child.id()).ok().and_then(Pid::from_raw) {
-                    let _ = kill_process(pid, Signal::TERM);
-                }
-                terminated = Some(Instant::now());
-            }
-            Some(at) if at.elapsed() >= Duration::from_secs(2) => {
-                let _ = child.kill();
-            }
-            _ => {}
-        }
-        std::thread::sleep(Duration::from_millis(5));
-    };
-    let collect = |rx: std::sync::mpsc::Receiver<String>| rx.recv_timeout(Duration::from_secs(2)).unwrap_or_default();
-    let (stdout, stderr) = (collect(stdout), collect(stderr));
     Run {
-        status: if error.is_some() { None } else { status },
-        stdout,
-        stderr,
+        status: out.code(),
+        stdout: String::from_utf8_lossy(&out.stdout).into_owned(),
+        stderr: String::from_utf8_lossy(&out.stderr).into_owned(),
         error,
     }
 }

@@ -2,7 +2,7 @@
 //! (`executable_support`): the race that made fake `claude`/`gh`/linter launches fail with ETXTBSY ("Text file
 //! busy") under parallel load. Every wait here is a process ending; nothing sleeps.
 
-mod executable_support;
+use crate::executable_support;
 
 use std::path::{Path, PathBuf};
 use std::process::Command;

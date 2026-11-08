@@ -5,8 +5,8 @@
 //! `claude-subscription` provider, which keeps Ultron's harness as the agent loop with exactly `[rlm]`, so
 //! [`subscription_root`] maps the selection to `claude-subscription/<id>` (decisions.tsv, 2026-10-13 claude).
 
-use crate::claude_cli::DEFAULT_CLAUDE_MODEL;
 use crate::self_cmd::self_command;
+use config::providers::CLAUDE_CODE_DEFAULT_MODEL;
 
 pub const SELF_COMMAND_ENV: &str = "ULTRON_SELF_COMMAND";
 
@@ -67,7 +67,7 @@ pub fn prepare_claude_root(
         let id = var(config::env::CLAUDE_MODEL_ENV)
             .map(|v| v.trim().to_string())
             .filter(|v| !v.is_empty())
-            .unwrap_or_else(|| DEFAULT_CLAUDE_MODEL.into());
+            .unwrap_or_else(|| CLAUDE_CODE_DEFAULT_MODEL.into());
         return Ok(done(None, crate::claude_code_ref(&id)));
     };
     if let Some(provider) = provider {

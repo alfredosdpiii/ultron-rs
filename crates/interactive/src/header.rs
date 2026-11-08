@@ -121,7 +121,7 @@ pub struct StartupHeader {
 impl StartupHeader {
     fn text(&self, keys: &KeybindingsManager) -> String {
         let t = &self.theme;
-        let k = |id: &str| key_text(keys, id, false);
+        let k = |id: &str| key_text(keys, id);
         let hint = |id: &str, desc: &str| key_hint(t, &k(id), desc);
         let raw = |key: &str, desc: &str| key_hint(t, key, desc);
         let logo = format!(

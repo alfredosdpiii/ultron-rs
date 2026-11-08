@@ -112,7 +112,7 @@ pub fn package_dir(var: &dyn Fn(&str) -> Option<String>, home: &Path) -> Result<
 
 /// The directory the embedded files are installed into under `base`.
 pub fn install_dir(base: &Path) -> PathBuf {
-    base.join(format!("{}-{}", crate::version(), &HASH[..16]))
+    base.join(format!("{}-{}", config::version(), &HASH[..16]))
 }
 
 /// Whether `dir` holds this binary's files: the marker names [`HASH`] and every file has its embedded length.

@@ -3,7 +3,7 @@
 //! The reply texts are the literals of packages/coding-agent/src/ultron/goal.ts (`goalStatusText`, `/goal clear`,
 //! `/goal check`), which kernel-apis ports.
 
-mod common;
+use crate::common;
 
 use cli::rpc::client::RpcClient;
 use common::{HANG, Install, Provider, Reply};

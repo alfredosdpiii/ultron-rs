@@ -1,8 +1,7 @@
 //! Ported expectations of the TypeScript RPC tests: `rpc-jsonl.test.ts` (framing), the `RpcEventTranslator` case
-//! of `ultron-native-rpc.test.ts`, `ultron-clock-context.test.ts` (clock lines), and `rpc-client-process-exit`,
+//! of `ultron-native-rpc.test.ts`, `rpc-client-process-exit`,
 //! `rpc-client-clear-queue` / `rpc-client-clone` (client).
 
-use cli::lane::{format_clock_utc, format_gap, with_clock_lines};
 use cli::rpc::client::{RpcClient, RpcClientOptions};
 use cli::rpc::events::{RpcEventTranslator, frame_to_assistant_message_event, queue_update};
 use cli::rpc::jsonl::{JsonlLines, serialize_json_line};
@@ -185,60 +184,6 @@ fn cli_rpc_frames_drop_partials() {
         frame_to_assistant_message_event(&json!({"type": "done", "reason": "stop"})),
         None
     );
-}
-
-/// `Date.UTC(2026, 9, 5, 12, 0)`.
-const T0: i64 = 1_791_201_600_000;
-
-fn user(text: &str, timestamp: i64) -> Value {
-    json!({"role": "user", "content": text, "timestamp": timestamp})
-}
-
-fn answer(timestamp: i64) -> Value {
-    json!({"role": "assistant", "content": [{"type": "text", "text": "ok"}], "timestamp": timestamp})
-}
-
-#[test]
-fn cli_rpc_clock_lines_open_conversations_and_follow_gaps() {
-    let messages = [
-        user("a", T0),
-        answer(T0 + 1000),
-        user("b", T0 + 5 * 60_000),
-        answer(T0 + 6 * 60_000),
-        user("c", T0 + 3 * 3_600_000),
-    ];
-    let out = with_clock_lines(&messages).unwrap();
-    let text = |m: &Value| m["content"][0]["text"].as_str().map(str::to_string);
-    let lines: Vec<String> = out
-        .iter()
-        .filter_map(text)
-        .filter(|t| t.starts_with("[clock] "))
-        .collect();
-    assert_eq!(
-        lines,
-        [
-            "[clock] 2026-10-05 12:00 UTC+00:00".to_string(),
-            "[clock] 2026-10-05 15:00 UTC+00:00, 2 h after the previous message".to_string(),
-        ]
-    );
-    assert_eq!(out.len(), 7);
-    assert_eq!(out[6], messages[4]);
-    assert_eq!(out[0]["timestamp"], T0);
-    assert_eq!(with_clock_lines(&messages), Some(out));
-    assert_eq!(with_clock_lines(&[user("x", 0)]), None);
-    // Exactly the gap counts; one millisecond short does not.
-    assert!(with_clock_lines(&[answer(T0), user("y", T0 + 600_000)]).is_some());
-    assert!(with_clock_lines(&[answer(T0), user("y", T0 + 599_999)]).is_none());
-}
-
-#[test]
-fn cli_rpc_clock_formats() {
-    assert_eq!(format_clock_utc(T0), "2026-10-05 12:00 UTC+00:00");
-    assert_eq!(format_gap(12 * 60_000), "12 min");
-    assert_eq!(format_gap(119 * 60_000), "119 min");
-    assert_eq!(format_gap(3 * 3_600_000), "3 h");
-    assert_eq!(format_gap(47 * 3_600_000), "47 h");
-    assert_eq!(format_gap(50 * 3_600_000), "2 d");
 }
 
 fn script_client(script: &str) -> (tempfile::TempDir, RpcClient) {

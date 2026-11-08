@@ -2,7 +2,7 @@
 //! private temp server dir, against a test peer that runs the TypeScript server's `Connection` state machine
 //! (`tests/server_peer`).
 
-mod server_peer;
+use crate::server_peer;
 
 use std::io::{Read, Write};
 use std::os::unix::net::{UnixListener, UnixStream};
@@ -12,7 +12,7 @@ use std::time::Duration;
 use client::{Client, ClientError, discover_unix_servers};
 use protocol::Route;
 use protocol::{ProtocolError, RpcTarget, ServiceCall, Value};
-use server_peer::{Connection, HostError, Output, ServerConfig, ServerServices};
+use server_peer::{Connection, Output, ServerConfig, ServerServices};
 
 const A: &str = "00000000-0000-4000-8000-00000000000a";
 const B: &str = "00000000-0000-4000-8000-00000000000b";
@@ -25,13 +25,10 @@ const PATIENT: Duration = Duration::from_secs(120);
 struct Echo;
 
 impl ServerServices for Echo {
-    fn invoke(&mut self, call: &ServiceCall) -> Result<Option<Value>, HostError> {
+    fn invoke(&mut self, call: &ServiceCall) -> Result<Option<Value>, ProtocolError> {
         match call.service_id.as_str() {
             "test.echo" => Ok(Some(Value::Array(call.args.clone()))),
-            _ => Err(HostError::Coded(ProtocolError::new(
-                "service_not_found",
-                "no such service",
-            ))),
+            _ => Err(ProtocolError::new("service_not_found", "no such service")),
         }
     }
 }

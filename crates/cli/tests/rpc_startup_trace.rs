@@ -2,8 +2,8 @@
 //! milestones to the named file as `{at, origin, pid, label}` JSON lines; unset, nothing is written. The trace file
 //! lives in the test's private directory.
 
-mod common;
-mod tui_harness;
+use crate::common;
+use crate::tui_harness;
 
 use serde_json::Value;
 use std::io::Write;

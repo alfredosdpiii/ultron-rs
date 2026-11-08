@@ -8,14 +8,14 @@
 //! keep tool calls and results paired; collapse lines), with literal expectations, over
 //! `kernel_apis::context_control`; the guide line is checked in the system prompt the `ultron` binary sends.
 
-mod common;
+use crate::common;
 
 use common::{HANG, Install, Provider, Reply, Request, stdout_of};
-use kernel_apis::context_control::{
-    CONTEXT_EDIT_CUSTOM_TYPE, CONTEXT_OMITTED_CUSTOM_TYPE, CONTEXT_OMITTED_TOOL_RESULT_TEXT, TaskLine,
-    apply_context_edits, collapsed_cell_text, message_text, task_line,
-};
+use kernel_apis::context_control::{TaskLine, apply_context_edits, collapsed_cell_text, message_text, task_line};
 use serde_json::{Value, json};
+use session_journal::context::{
+    CONTEXT_EDIT_CUSTOM_TYPE, CONTEXT_OMITTED_CUSTOM_TYPE, CONTEXT_OMITTED_TOOL_RESULT_TEXT,
+};
 
 fn message(id: &str, seq: i64, message: Value) -> Value {
     json!({"id": id, "parentId": null, "seq": seq, "timestamp": seq, "type": "message", "message": message})

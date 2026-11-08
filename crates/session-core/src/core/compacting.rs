@@ -9,7 +9,7 @@
 
 use super::*;
 use crate::compaction_op;
-use harness::chat::models::RetryPolicy;
+use ai::retry::RetryPolicy;
 
 /// The error a cancelled compaction ends with (AgentSession: `Compaction cancelled`).
 pub(super) const CANCELLED: &str = "Compaction cancelled";
@@ -126,7 +126,7 @@ impl Summarizer {
                 now_ms(),
             );
             let response = runtime.block_on(self.stream(request, signal));
-            if !signal.aborted() && attempt < retry.max_attempts() && harness::chat::models::is_retryable(&response) {
+            if !signal.aborted() && attempt < retry.max_attempts() && ai::retry::is_retryable(&response) {
                 let delay = i64::try_from(retry.delay_ms(attempt)).unwrap_or(i64::MAX);
                 wait_until(now_ms().saturating_add(delay), signal);
                 attempt += 1;
@@ -365,7 +365,7 @@ impl Core {
         let outcome = self.attempt_loop(signal, retry, ids, &attempt_start, attempt, journal, &mut scheduled);
         // AgentSession's `onRetryFinished`: the retries ended, however they did.
         if scheduled {
-            self.emit(WatchEvent::SummarizationRetryFinished { lane: LANE.into() });
+            self.emit(WatchEvent::SummarizationRetryFinished { lane: MAIN_LANE.into() });
         }
         outcome
     }
@@ -389,16 +389,13 @@ impl Core {
                 return (result, last);
             }
             let error = match &result {
-                Err(error)
-                    if number < retry.max_attempts()
-                        && last.as_ref().is_some_and(harness::chat::models::is_retryable) =>
-                {
+                Err(error) if number < retry.max_attempts() && last.as_ref().is_some_and(ai::retry::is_retryable) => {
                     error.clone()
                 }
                 _ => {
                     if number > 1 {
                         self.emit(WatchEvent::RetryEnd {
-                            lane: LANE.into(),
+                            lane: MAIN_LANE.into(),
                             run_id: Some(run_id.into()),
                             step: step.into(),
                             attempt: number,
@@ -424,7 +421,7 @@ impl Core {
             }
             *scheduled = true;
             self.emit(WatchEvent::RetryScheduled {
-                lane: LANE.into(),
+                lane: MAIN_LANE.into(),
                 run_id: Some(run_id.into()),
                 step: step.into(),
                 attempt: number + 1,
@@ -440,7 +437,7 @@ impl Core {
                 .and_then(|m| m.error_message.clone())
                 .unwrap_or_else(|| error.clone());
             self.emit(WatchEvent::SummarizationRetryScheduled {
-                lane: LANE.into(),
+                lane: MAIN_LANE.into(),
                 attempt: number,
                 max_attempts: retry.max_attempts() - 1,
                 delay_ms: delay,
@@ -453,7 +450,7 @@ impl Core {
             }
             number += 1;
             self.emit(WatchEvent::RetryStart {
-                lane: LANE.into(),
+                lane: MAIN_LANE.into(),
                 run_id: Some(run_id.into()),
                 step: step.into(),
                 attempt: number,
@@ -469,7 +466,7 @@ impl Core {
     pub(super) fn compact(&mut self, instructions: Option<&str>) -> Result<Value, String> {
         self.idle()?;
         self.emit(WatchEvent::CompactionStart {
-            lane: LANE.into(),
+            lane: MAIN_LANE.into(),
             run_id: None,
             reason: "manual".into(),
         });
@@ -483,7 +480,7 @@ impl Core {
                 self.compacting = None;
                 let cancelled = error == CANCELLED;
                 self.emit(WatchEvent::CompactionEnd {
-                    lane: LANE.into(),
+                    lane: MAIN_LANE.into(),
                     run_id: None,
                     reason: "manual".into(),
                     status: if cancelled { Ended::Aborted } else { Ended::Failed },
@@ -498,7 +495,7 @@ impl Core {
         self.announce();
         self.compacting = None;
         self.emit(WatchEvent::CompactionEnd {
-            lane: LANE.into(),
+            lane: MAIN_LANE.into(),
             run_id: None,
             reason: "manual".into(),
             status: Ended::Completed,
@@ -562,7 +559,7 @@ impl Core {
             retry,
             (&ids.0, &ids.1),
             WatchEvent::SummarizationRetryAttemptStart {
-                lane: LANE.into(),
+                lane: MAIN_LANE.into(),
                 source: "compaction".into(),
                 reason: Some("manual".into()),
             },

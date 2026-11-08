@@ -249,8 +249,7 @@ pub struct RequestAuth {
     pub headers: Option<ProviderHeaders>,
 }
 
-/// `DEFAULT_RADIUS_GATEWAY` (providers/radius-config.ts).
-pub const DEFAULT_RADIUS_GATEWAY: &str = "https://radius.pi.dev";
+use config::radius::DEFAULT_RADIUS_GATEWAY;
 
 /// models.json over the built-in catalog, with the Radius catalogs models-store.json keeps.
 #[derive(Clone, Debug, Default)]
@@ -289,10 +288,7 @@ impl ModelRegistry {
                     .or_else(|| base_url.strip_suffix("/v1"))
                     .unwrap_or(base_url);
                 let name = config.get("name").and_then(Value::as_str).unwrap_or(provider);
-                Some((
-                    name.to_string(),
-                    crate::oauth_radius::normalize_radius_gateway_url(trimmed),
-                ))
+                Some((name.to_string(), config::radius::normalize_radius_gateway_url(trimmed)))
             }
             None => (provider == "radius").then(|| ("Radius".to_string(), DEFAULT_RADIUS_GATEWAY.to_string())),
         }

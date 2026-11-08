@@ -4,12 +4,12 @@
 //! through crates/kernel with `KernelApis` over this crate's modules and must print, return and fail the same, and
 //! leave the same documents. The kernel-apis replay harness is shared (same normalization rules).
 
-#[path = "../../kernel-apis/tests/common/mod.rs"]
-mod common;
+use crate::common;
 
 use common::{FIXED_NOW, Made, fixed, inner, run_scenario};
+use kernel::store::{DocumentStore, MemoryDocumentStore};
+use kernel_apis::KernelApis;
 use kernel_apis::artifacts::{KeyedDocuments, MemoryKeyedDocuments};
-use kernel_apis::{DocumentStore, KernelApis, MemoryDocumentStore};
 use serde_json::{Map, Value, json};
 use services::local::{LocalOptions, LocalServices, LocalServicesModule, Validator};
 use services::{ReleaseGateModule, validate_refinement_content};

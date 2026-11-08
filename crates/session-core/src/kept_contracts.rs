@@ -24,7 +24,7 @@ use crate::subagents::DurableChildren;
 use delegation::git_baseline::GitBaseline;
 use delegation::spawn_contract::{CheckPlace, Enforcer, SPAWN_KEYS, SpawnContract, enforce_after};
 use delegation::verdict::MAX_VERDICT_REJECTIONS;
-use delegation::workspace::{DEFAULT_MAX_SNAPSHOT_ENTRIES, WorkspaceSnapshot, diff_snapshots, snapshot_workspace};
+use delegation::workspace::{WorkspaceSnapshot, diff_snapshots, snapshot_workspace};
 use jsrt::sync;
 use kernel::Signal;
 use serde_json::{Map, Value, json};
@@ -108,7 +108,7 @@ impl KeptContracts {
         let (baseline, before) = match contract.needs_baseline() {
             true => (
                 GitBaseline::capture(&cwd, &stack.config().child_env()),
-                Some(snapshot_workspace(&cwd, DEFAULT_MAX_SNAPSHOT_ENTRIES, true)),
+                Some(snapshot_workspace(&cwd)),
             ),
             false => (None, None),
         };
@@ -306,9 +306,7 @@ impl KeptContracts {
                 .filter(|v| !v.is_null());
             let before = sync::lock(&self.before).get(id).cloned();
             let diff = match (&before, &baseline) {
-                (Some(before), _) => {
-                    diff_snapshots(before, &snapshot_workspace(&cwd, DEFAULT_MAX_SNAPSHOT_ENTRIES, true)).ok()
-                }
+                (Some(before), _) => diff_snapshots(before, &snapshot_workspace(&cwd)).ok(),
                 (None, Some(baseline)) => baseline.changes(&cwd, &stack.config().child_env()).ok(),
                 (None, None) => None,
             };

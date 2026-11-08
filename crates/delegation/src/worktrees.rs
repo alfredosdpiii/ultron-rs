@@ -24,7 +24,6 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::io::{Read, Write};
 use std::os::unix::fs::symlink;
-use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::{LazyLock, Mutex, PoisonError};
@@ -318,21 +317,6 @@ pub(crate) fn identity_env(cwd: &Path) -> Result<Identity> {
     Ok(env)
 }
 
-/// Lexical normalization of an absolute path (node's `path.resolve` without a cwd).
-fn normalize(path: &Path) -> PathBuf {
-    let mut out = PathBuf::new();
-    for part in path.components() {
-        match part {
-            std::path::Component::ParentDir => {
-                out.pop();
-            }
-            std::path::Component::CurDir => {}
-            other => out.push(other),
-        }
-    }
-    out
-}
-
 fn text(path: &Path) -> String {
     path.display().to_string()
 }
@@ -385,8 +369,8 @@ pub fn repo_info(cwd: &Path) -> Result<RepoInfo> {
     }
     let head = git(cwd, &["rev-parse", "--verify", "-q", "HEAD^{commit}"])?;
     Ok(RepoInfo {
-        top: normalize(Path::new(top)),
-        common_dir: normalize(Path::new(common)),
+        top: jsrt::path::absolute(Path::new(top)),
+        common_dir: jsrt::path::absolute(Path::new(common)),
         head: (head.code == 0).then(|| head.stdout.trim().to_string()),
     })
 }
@@ -474,17 +458,24 @@ pub fn record_json(record: &WorktreeRecord) -> String {
     String::from_utf8_lossy(&out).into_owned()
 }
 
+/// Writes the record beside its final path and renames it there, so a crash never leaves a truncated record.
 pub fn save_record(record: &WorktreeRecord) -> Result<()> {
     use std::os::unix::fs::OpenOptionsExt;
     std::fs::create_dir_all(records_dir(Path::new(&record.common_dir)))?;
-    let mut file = std::fs::OpenOptions::new()
+    let path = record_path(record);
+    let partial = path.with_extension(format!("json.{}.tmp", std::process::id()));
+    let written = std::fs::OpenOptions::new()
         .write(true)
         .create(true)
         .truncate(true)
         .mode(0o600)
-        .open(record_path(record))?;
-    file.write_all(format!("{}\n", record_json(record)).as_bytes())?;
-    Ok(())
+        .open(&partial)
+        .and_then(|mut file| file.write_all(format!("{}\n", record_json(record)).as_bytes()))
+        .and_then(|()| std::fs::rename(&partial, &path));
+    if written.is_err() {
+        let _ = std::fs::remove_file(&partial);
+    }
+    written.map_err(Into::into)
 }
 
 fn delete_record(record: &WorktreeRecord) {
@@ -591,7 +582,10 @@ fn unique_branch(top: &Path, session_id: &str, name: &str) -> Result<String> {
 
 /// `path` relative to `root` with "/" separators, "" for the root itself, `None` outside it.
 pub fn relative_inside(root: &Path, path: &Path) -> Option<String> {
-    let rel = normalize(path).strip_prefix(normalize(root)).ok()?.to_path_buf();
+    let rel = jsrt::path::absolute(path)
+        .strip_prefix(jsrt::path::absolute(root))
+        .ok()?
+        .to_path_buf();
     Some(
         rel.components()
             .map(|c| c.as_os_str().to_string_lossy().into_owned())
@@ -818,7 +812,7 @@ fn create_in(info: &RepoInfo, options: &CreateWorktreeOptions<'_>) -> Result<Wor
         jsrt::random::random_hex(3)
     );
     let path = records_dir(&info.common_dir).join(&id);
-    let real = std::fs::canonicalize(options.cwd).unwrap_or_else(|_| normalize(options.cwd));
+    let real = std::fs::canonicalize(options.cwd).unwrap_or_else(|_| jsrt::path::absolute(options.cwd));
     let at = relative_inside(&info.top, &real).unwrap_or_default();
     let setup = options.setup.cloned().unwrap_or_default();
     let mut record = WorktreeRecord {
@@ -898,69 +892,56 @@ pub fn run_setup_command(record: &WorktreeRecord, signal: Option<&Signal>) -> Re
     // One pipe for stdout and stderr: the output keeps the order the command wrote it in. Two pipes drained by two
     // threads (or two event-loop callbacks) can reorder `echo out; echo err >&2` into "err\nout".
     let (reader, writer) = std::io::pipe()?;
-    let mut child = {
-        let mut sh = Command::new("/bin/sh");
-        sh.args(["-c", command])
-            .current_dir(&record.cwd)
-            .envs(worktree_env(record))
-            .stdin(Stdio::null())
-            .stdout(writer.try_clone()?)
-            .stderr(writer)
-            .process_group(0);
-        // The Command (and with it our copies of the write end) is dropped here, so the reader sees EOF once the
-        // command and anything it left running close the pipe.
-        sh.spawn()
+    let mut sh = Command::new("/bin/sh");
+    sh.args(["-c", command])
+        .current_dir(&record.cwd)
+        .envs(worktree_env(record))
+        .stdout(writer.try_clone()?)
+        .stderr(writer);
+    let bound = signals::child::Bound {
+        timeout: Some(Duration::from_millis(
+            record.command_timeout_ms.unwrap_or(DEFAULT_SETUP_TIMEOUT_MS),
+        )),
+        stop: signals::child::Stop {
+            group: true,
+            term_grace: Some(Duration::from_secs(5)),
+        },
+        keep: None,
     };
     let output = std::sync::Arc::new(Mutex::new(String::new()));
-    let (code, timed_out) = match &mut child {
+    let drain = {
+        let output = output.clone();
+        let mut pipe = reader;
+        std::thread::spawn(move || {
+            let mut chunk = [0u8; 8192];
+            while let Ok(n) = pipe.read(&mut chunk) {
+                if n == 0 {
+                    break;
+                }
+                let mut out = output.lock().unwrap_or_else(PoisonError::into_inner);
+                out.push_str(&String::from_utf8_lossy(&chunk[..n]));
+                let excess = out.chars().count().saturating_sub(4000);
+                if excess > 0 {
+                    *out = out.chars().skip(excess).collect();
+                }
+            }
+        })
+    };
+    let ran = match signal {
+        Some(signal) => signal.run_child(&mut sh, None, bound),
+        None => signals::child::run(&mut sh, None, bound),
+    };
+    // The Command holds our copies of the write end: dropped, the reader sees EOF once the command and anything it
+    // left running close the pipe.
+    drop(sh);
+    let (code, timed_out) = match ran {
         Err(error) => {
             *output.lock().unwrap_or_else(PoisonError::into_inner) = error.to_string();
             (None, false)
         }
-        Ok(child) => {
-            let drain = {
-                let output = output.clone();
-                let mut pipe = reader;
-                std::thread::spawn(move || {
-                    let mut chunk = [0u8; 8192];
-                    while let Ok(n) = pipe.read(&mut chunk) {
-                        if n == 0 {
-                            break;
-                        }
-                        let mut out = output.lock().unwrap_or_else(PoisonError::into_inner);
-                        out.push_str(&String::from_utf8_lossy(&chunk[..n]));
-                        let excess = out.chars().count().saturating_sub(4000);
-                        if excess > 0 {
-                            *out = out.chars().skip(excess).collect();
-                        }
-                    }
-                })
-            };
-            let group = rustix::process::Pid::from_raw(child.id() as i32);
-            let timeout = Duration::from_millis(record.command_timeout_ms.unwrap_or(DEFAULT_SETUP_TIMEOUT_MS));
-            let started = std::time::Instant::now();
-            let mut timed_out = false;
-            let status = loop {
-                if let Some(status) = child.try_wait()? {
-                    break status;
-                }
-                let aborted = signal.is_some_and(Signal::is_aborted);
-                if (started.elapsed() >= timeout || aborted)
-                    && let Some(group) = group
-                {
-                    timed_out |= !aborted;
-                    let _ = rustix::process::kill_process_group(group, rustix::process::Signal::TERM);
-                    break child.wait()?;
-                }
-                match signal {
-                    Some(signal) => {
-                        signal.wait(Duration::from_millis(10));
-                    }
-                    None => std::thread::sleep(Duration::from_millis(10)),
-                }
-            };
+        Ok(out) => {
             let _ = drain.join();
-            (status.code(), timed_out)
+            (out.code(), out.end == signals::child::End::TimedOut)
         }
     };
     if let Some(reason) = signal.and_then(Signal::reason) {

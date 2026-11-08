@@ -20,30 +20,31 @@ mod navigate;
 use crate::compose::{Runtime, Services};
 use crate::durable_store::{SharedSession, lock as lock_session};
 use crate::journal::RunJournal;
-use crate::lane::{self, Lane, Provider, api_supported, now_ms};
-use crate::view::{self, message_text};
+use crate::lane::{self, Lane, Provider, api_supported};
+use crate::view;
 use crate::{ModelFlags, RunEnv, naming, pi_view};
 use agent::{AgentEvent, StreamFn};
 use ai::{AbortSignal, AssistantMessage, Message, Model, SimpleStreamOptions, StreamOptions};
+use jsrt::date::now_ms;
+use protocol::pi_message::text as message_text;
 use serde_json::{Map, Value, json};
 use session_file::SessionManager;
 use session_journal::ns::PENDING_ENTRY;
 use session_journal::ns::{BRANCH_TIP, LANE_CONFIG, LANE_STATE};
 use session_journal::repo::Metadata;
-use session_journal::run::{self};
+use session_journal::run::{self, MAIN_LANE};
 use session_journal::{Session, SessionRepo, SystemClock, Write, names};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::Sender;
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 
-pub const LANE: &str = session_journal::run::MAIN_LANE;
-
 /// `InvalidMessage` (`reason: "empty"`) of a queued message without text or image (lane.ts `enqueue`).
 pub const EMPTY_QUEUED: &str = "Queued input must contain text or an image";
+/// The error of a call to a [`Core`] whose thread has stopped.
+pub const SESSION_CLOSED: &str = "Session is closed";
 
-pub use protocol::watch::QueueKind;
-use protocol::watch::{Ended, Failure, QueueItem, WatchEvent};
+use protocol::watch::{Ended, Failure, QueueItem, QueueKind, WatchEvent};
 
 /// What an operation answers: data for the response (`None`: no data), or the error text.
 pub type OpResult = Result<Option<Value>, String>;
@@ -821,7 +822,7 @@ fn lane_config_resolving(
                 && config["thinkingLevel"] != json!(level)
             {
                 config["thinkingLevel"] = json!(level);
-                session.commit(&[Write::set(LANE_CONFIG, lane::MAIN, config.clone())])?;
+                session.commit(&[Write::set(LANE_CONFIG, session_journal::run::MAIN_LANE, config.clone())])?;
             }
             // `ultron --claude` (session-worker.ts): a resumed lane that is not on the Claude root's provider moves
             // to the root model, as `lane.setModel` does (its thinking level stays). A plain `--model` keeps the
@@ -831,7 +832,7 @@ fn lane_config_resolving(
                 && config["model"]["provider"] != json!(m.provider)
             {
                 config["model"] = json!({"provider": m.provider, "modelId": m.id});
-                session.commit(&[Write::set(LANE_CONFIG, lane::MAIN, config.clone())])?;
+                session.commit(&[Write::set(LANE_CONFIG, session_journal::run::MAIN_LANE, config.clone())])?;
             }
             config
         }
@@ -854,21 +855,16 @@ fn lane_config_resolving(
 
 /// Apply a naming response: its usage as a row of its own, and its title while the name is still automatic.
 pub fn record_naming(session: &mut Session, response: &AssistantMessage) -> Result<(), String> {
-    let mut row = Map::new();
-    row.insert(
-        "id".into(),
-        session_journal::lock_clock(&session.clock()).next_id().into(),
-    );
-    row.insert(
-        "usage".into(),
-        serde_json::to_value(&response.usage).map_err(|e| e.to_string())?,
-    );
-    row.insert("adjustment".into(), false.into());
-    row.insert(
-        "details".into(),
-        json!({"source": "session-naming", "model": format!("{}/{}", response.provider, response.model)}),
-    );
-    session.commit(&[Write::Usage(row)])?;
+    let id = session_journal::lock_clock(&session.clock()).next_id();
+    let usage = serde_json::to_value(&response.usage).map_err(|e| e.to_string())?;
+    let mut row = Write::usage(&id, usage, None);
+    if let Write::Usage(fields) = &mut row {
+        fields.insert(
+            "details".into(),
+            json!({"source": "session-naming", "model": format!("{}/{}", response.provider, response.model)}),
+        );
+    }
+    session.commit(&[row])?;
     if let Some(title) = naming::title_of(response) {
         names::replace_auto_name(session, &title)?;
     }
@@ -895,7 +891,7 @@ impl Core {
         // A worker that died left its run open. A run of the durable runtime resumes there; one journaled without
         // it (an older build, the TypeScript product) is settled before anything reads the lane.
         let open_operation = session
-            .value(LANE_STATE, LANE)
+            .value(LANE_STATE, MAIN_LANE)
             .and_then(|state| state["currentOperationId"].as_str().map(str::to_string));
         // Only a run resumes in the durable runtime; another operation a dead worker left (a manual compaction, a
         // navigation) is settled as interrupted.
@@ -963,7 +959,7 @@ impl Core {
         let _ = lane.stack.context.set(context.clone());
         // Requests read the settings as they are now (crate::request_settings): the stream options, transport and
         // idle timeout of `/settings` apply to the next request.
-        let provider = Arc::new(Provider::new().with_live_settings(runtime.config.settings_reader(), true));
+        let provider = Arc::new(Provider::new().with_live_settings(runtime.config.settings_reader()));
         let queues = Arc::new(Mutex::new(Queues {
             items: recovered
                 .queued
@@ -992,6 +988,7 @@ impl Core {
             queues.clone(),
             children.clone(),
             child_context,
+            runtime.config.context_images,
         )?;
         children.attach(durable.chat.clone());
         // The agent hub steers a child lane's running conversation through its inbox (crate::agent_hub).
@@ -1028,7 +1025,7 @@ impl Core {
         let meter_children = children.clone();
         lane.stack.context_reminders.set_meter(Arc::new(move |lane_name: &str| {
             let chat = meter_children.chat()?;
-            let conversation = if lane_name == lane::MAIN {
+            let conversation = if lane_name == session_journal::run::MAIN_LANE {
                 durable::ROOT_CONVERSATION_ID
             } else {
                 meter_children.conversation_of_lane(lane_name)?
@@ -1063,10 +1060,11 @@ impl Core {
             });
         // `compaction.enabled` (default on); `set_auto_compaction` changes it for the session.
         let auto_compaction = runtime.config.settings["compaction"]["enabled"] != false;
-        let (env_var, async_events) = (env.var.clone(), runtime.config.async_events);
+        let nudger = crate::nudge::ToolRoundNudger::new(runtime.config.tool_rounds_nudge, runtime.config.async_events);
+        let skill_nudger = crate::nudge::SkillExtractionNudger::new(runtime.config.skill_nudge);
         let auto_memory = crate::auto_memory::AutoMemory::new(&runtime.config.settings, runtime.hindsight_explicit);
         let auto_refine =
-            crate::auto_refine::AutoRefine::new(&runtime.config.settings, (env_var)(AUTO_REFINE_ENV).as_deref());
+            crate::auto_refine::AutoRefine::new(&runtime.config.settings, (env.var)(AUTO_REFINE_ENV).as_deref());
         let mut core = Core {
             model_unavailable,
             loki_notice,
@@ -1106,13 +1104,8 @@ impl Core {
             compacting: None,
             navigating: false,
             after_run: Vec::new(),
-            nudger: crate::nudge::ToolRoundNudger::new(
-                crate::nudge::tool_rounds_nudge_from_env((env_var)(crate::nudge::TOOL_ROUNDS_NUDGE_ENV).as_deref()),
-                async_events,
-            ),
-            skill_nudger: crate::nudge::SkillExtractionNudger::new(crate::nudge::skill_nudge_from_env(
-                (env_var)(crate::nudge::SKILL_NUDGE_ENV).as_deref(),
-            )),
+            nudger,
+            skill_nudger,
             persona: Default::default(),
             persona_session: Default::default(),
         };
@@ -1155,15 +1148,17 @@ impl Core {
 
     /// The lane snapshot transcript state starts from (`LaneSnapshot`): the branch's entries, configuration, usage.
     pub fn snapshot(&self) -> Value {
-        let entries = lock_session(&self.session).branch_entries(LANE).unwrap_or_default();
+        let entries = lock_session(&self.session)
+            .branch_entries(MAIN_LANE)
+            .unwrap_or_default();
         let mut usage = session_journal::usage::empty_usage();
         for row in lock_session(&self.session).state().usage_rows() {
             usage = session_journal::usage::add_usage(&usage, &row["usage"]);
         }
         json!({
-            "lane": LANE,
+            "lane": MAIN_LANE,
             "transcript": entries,
-            "tipId": lock_session(&self.session).branch_tip(LANE).flatten(),
+            "tipId": lock_session(&self.session).branch_tip(MAIN_LANE).flatten(),
             "configuration": {"model": {"provider": self.model.provider, "modelId": self.model.id}, "thinkingLevel": self.thinking, "activeToolNames": ["rlm"]},
             "stats": {"messageCount": entries.iter().filter(|e| e["type"] == "message").count(), "usage": usage},
             "operation": null,
@@ -1251,7 +1246,7 @@ impl Core {
     fn name_changed(&mut self) {
         let name = lock_session(&self.session).name();
         self.emit(WatchEvent::SessionName {
-            lane: LANE.into(),
+            lane: MAIN_LANE.into(),
             name,
         });
     }
@@ -1260,7 +1255,7 @@ impl Core {
     fn session_info_changed(&mut self) {
         let name = lock_session(&self.session).name();
         self.emit(WatchEvent::SessionInfoChanged {
-            lane: LANE.into(),
+            lane: MAIN_LANE.into(),
             name,
         });
     }
@@ -1279,9 +1274,9 @@ impl Core {
         let entries: Vec<Value> = lock_session(&self.session).state().entries()[self.announced..].to_vec();
         self.announced += entries.len();
         for entry in entries {
-            let _ = self.context.entry_added(LANE, &entry);
+            let _ = self.context.entry_added(MAIN_LANE, &entry);
             self.emit(WatchEvent::EntryAdded {
-                lane: LANE.into(),
+                lane: MAIN_LANE.into(),
                 entry,
             });
         }
@@ -1298,7 +1293,7 @@ impl Core {
                     session_journal::usage::add_usage(&total, &row["usage"])
                 });
             self.emit(WatchEvent::Usage {
-                lane: LANE.into(),
+                lane: MAIN_LANE.into(),
                 row: rows[index].clone(),
                 totals,
             });
@@ -1307,13 +1302,13 @@ impl Core {
     }
 
     fn tip(&self) -> Option<String> {
-        lock_session(&self.session).branch_tip(LANE).flatten()
+        lock_session(&self.session).branch_tip(MAIN_LANE).flatten()
     }
 
     /// The lane's stored state (`ultron.lane.state`), idle when none is stored.
     fn lane_state(&self) -> Value {
         lock_session(&self.session)
-            .value(LANE_STATE, LANE)
+            .value(LANE_STATE, MAIN_LANE)
             .cloned()
             .unwrap_or_else(|| json!({"currentOperationId": null, "lastOperationId": null, "inbox": []}))
     }
@@ -1322,16 +1317,12 @@ impl Core {
     /// state in one transaction) and announce the entry.
     fn append(&mut self, message: Value) -> Result<(), String> {
         let id = session_journal::lock_clock(&lock_session(&self.session).clock()).next_id();
-        let mut entry = Map::new();
-        entry.insert("id".into(), id.clone().into());
-        entry.insert("parentId".into(), self.tip().map_or(Value::Null, Value::from));
-        entry.insert("type".into(), "message".into());
-        entry.insert("message".into(), message);
+        let entry = Write::message_entry(&id, self.tip().as_deref(), message);
         let lane_state = self.lane_state();
         lock_session(&self.session).commit(&[
-            Write::Entry(entry),
-            Write::set(BRANCH_TIP, LANE, id.into()),
-            Write::set(LANE_STATE, LANE, lane_state),
+            entry,
+            Write::set(BRANCH_TIP, MAIN_LANE, id.into()),
+            Write::set(LANE_STATE, MAIN_LANE, lane_state),
         ])?;
         self.announce();
         Ok(())
@@ -1339,15 +1330,11 @@ impl Core {
 
     /// A queued message taken by the loop joins the branch under its pending entry's id.
     fn commit_queued(&mut self, queued: &Queued, message: Value) -> Result<(), String> {
-        let mut entry = Map::new();
-        entry.insert("id".into(), queued.entry_id.clone().into());
-        entry.insert("parentId".into(), self.tip().map_or(Value::Null, Value::from));
-        entry.insert("type".into(), "message".into());
-        entry.insert("message".into(), message);
+        let entry = Write::message_entry(&queued.entry_id, self.tip().as_deref(), message);
         lock_session(&self.session).commit(&[
-            Write::Entry(entry),
+            entry,
             Write::delete(PENDING_ENTRY, &queued.entry_id),
-            Write::set(BRANCH_TIP, LANE, queued.entry_id.clone().into()),
+            Write::set(BRANCH_TIP, MAIN_LANE, queued.entry_id.clone().into()),
         ])?;
         Ok(())
     }
@@ -1365,7 +1352,7 @@ impl Core {
             })
             .collect();
         self.emit(WatchEvent::QueueUpdate {
-            lane: LANE.into(),
+            lane: MAIN_LANE.into(),
             queues,
         });
     }
@@ -1373,13 +1360,13 @@ impl Core {
     /// Store the model and thinking level as the lane's configuration (`ultron.lane.config`).
     fn store_lane_config(&mut self) -> Result<(), String> {
         let mut config = lock_session(&self.session)
-            .value(LANE_CONFIG, LANE)
+            .value(LANE_CONFIG, MAIN_LANE)
             .cloned()
             .unwrap_or_else(|| run::lane_config("", "", "", &["rlm"]));
         config["model"] = json!({"provider": self.model.provider, "modelId": self.model.id});
         config["thinkingLevel"] = json!(self.thinking);
-        if lock_session(&self.session).value(LANE_CONFIG, LANE) != Some(&config) {
-            lock_session(&self.session).commit(&[Write::set(LANE_CONFIG, LANE, config)])?;
+        if lock_session(&self.session).value(LANE_CONFIG, MAIN_LANE) != Some(&config) {
+            lock_session(&self.session).commit(&[Write::set(LANE_CONFIG, MAIN_LANE, config)])?;
         }
         Ok(())
     }
@@ -1415,7 +1402,7 @@ impl Core {
                 let shown = self.persona_shown(value);
                 self.emit(WatchEvent::MessageStart {
                     run_id: run,
-                    lane: LANE.into(),
+                    lane: MAIN_LANE.into(),
                     message: shown,
                 });
             }
@@ -1431,7 +1418,7 @@ impl Core {
                 let (frame, usage) = crate::journal::update_fields(message, assistant_message_event);
                 self.emit(WatchEvent::MessageUpdate {
                     run_id: run,
-                    lane: LANE.into(),
+                    lane: MAIN_LANE.into(),
                     frame,
                     usage,
                     message: None,
@@ -1450,7 +1437,7 @@ impl Core {
                 let shown = self.persona_shown(value.clone());
                 self.emit(WatchEvent::MessageEnd {
                     run_id: run,
-                    lane: LANE.into(),
+                    lane: MAIN_LANE.into(),
                     message: shown,
                 });
                 let delivered = if value["role"] == "user" {
@@ -1481,7 +1468,7 @@ impl Core {
                             Ok(())
                         }
                         Some(queued) => self.commit_queued(queued, value),
-                        None if !first => lock_session(&self.session).append_message(LANE, value).map(drop),
+                        None if !first => lock_session(&self.session).append_message(MAIN_LANE, value).map(drop),
                         None => Ok(()),
                     };
                     if let Err(error) = committed {
@@ -1510,7 +1497,7 @@ impl Core {
                 }
                 // Once the model answered after a cell's output that returned finished tasks, it collapses.
                 if answered {
-                    let _ = self.context.message_end(LANE, "assistant");
+                    let _ = self.context.message_end(MAIN_LANE, "assistant");
                 }
             }
             AgentEvent::ToolExecutionStart {
@@ -1521,7 +1508,7 @@ impl Core {
                 self.journal(&agent_event);
                 self.emit(WatchEvent::ToolStart {
                     run_id: run,
-                    lane: LANE.into(),
+                    lane: MAIN_LANE.into(),
                     tool_call_id: tool_call_id.clone(),
                     tool_name: tool_name.clone(),
                     args: args.clone(),
@@ -1534,7 +1521,7 @@ impl Core {
                 partial_result,
             } => self.emit(WatchEvent::ToolUpdate {
                 run_id: run,
-                lane: LANE.into(),
+                lane: MAIN_LANE.into(),
                 tool_call_id: tool_call_id.clone(),
                 tool_name: tool_name.clone(),
                 args: args.clone(),
@@ -1552,7 +1539,7 @@ impl Core {
                 }
                 self.emit(WatchEvent::ToolEnd {
                     run_id: run,
-                    lane: LANE.into(),
+                    lane: MAIN_LANE.into(),
                     tool_call_id: tool_call_id.clone(),
                     tool_name: tool_name.clone(),
                     result,
@@ -1590,12 +1577,11 @@ impl Core {
         let tip = self.tip();
         let (mut writes, mut parent) = context_lane::placement(&lock_session(&self.session), tip.clone());
         for queued in &taken {
-            let mut entry = Map::new();
-            entry.insert("id".into(), queued.entry_id.clone().into());
-            entry.insert("parentId".into(), parent.clone().map_or(Value::Null, Value::from));
-            entry.insert("type".into(), "message".into());
-            entry.insert("message".into(), queued.message.clone());
-            writes.push(Write::Entry(entry));
+            writes.push(Write::message_entry(
+                &queued.entry_id,
+                parent.as_deref(),
+                queued.message.clone(),
+            ));
             writes.push(Write::delete(PENDING_ENTRY, &queued.entry_id));
             parent = Some(queued.entry_id.clone());
         }
@@ -1609,14 +1595,14 @@ impl Core {
         if let Some((attempt, step)) = retry_start {
             let run_id = self.run_id();
             self.emit(WatchEvent::RetryStart {
-                lane: LANE.into(),
+                lane: MAIN_LANE.into(),
                 run_id,
                 step,
                 attempt,
             });
         }
         if let Some(placed) = parent.filter(|placed| Some(placed) != tip.as_ref()) {
-            writes.push(Write::set(BRANCH_TIP, LANE, placed.into()));
+            writes.push(Write::set(BRANCH_TIP, MAIN_LANE, placed.into()));
         }
         let mut inbox = self.lane_state()["inbox"].clone();
         if let Some(items) = inbox.as_array_mut() {
@@ -1648,7 +1634,7 @@ impl Core {
             run.error = self.unanswered(run.submission);
         }
         // The run's last boundary: collapse what the model answered after, then place what is still waiting.
-        let _ = self.context.run_end(LANE);
+        let _ = self.context.run_end(MAIN_LANE);
         let waiting = context_lane::pending_count(&lock_session(&self.session));
         if let Err(error) = self.branches.place(true) {
             run.error.get_or_insert(error);
@@ -1689,7 +1675,7 @@ impl Core {
         // Detached work the run leaves running keeps the worker alive: reported before the run's end is.
         self.report_activity();
         self.emit(WatchEvent::RunEnd {
-            lane: LANE.into(),
+            lane: MAIN_LANE.into(),
             run_id: run.id.clone(),
             status,
             error: error.as_ref().map(|message| Failure {
@@ -1703,14 +1689,14 @@ impl Core {
         let failed = error.is_some();
         // The dispatcher's `run_end`: an aborted root never restarts work; unconsumed steers are taken back.
         if let Some(operation) = &operation {
-            self.events.run_ended(LANE, operation, aborted);
+            self.events.run_ended(MAIN_LANE, operation, aborted);
         }
         self.nudger.run_ended(&run.id);
         self.skill_nudger.run_ended(&run.id);
         // What the run counted is in the session file when its end is reported.
         self.lane.stack.stats.flush();
         // Failure streaks of the hints' loop detector start over with the next run.
-        self.lane.stack.cell_hints().run_ended(LANE);
+        self.lane.stack.cell_hints().run_ended(MAIN_LANE);
         if let Some(waiter) = run.waiter {
             let error = error.map_or(Value::Null, |m| json!({"code": "run_failed", "message": m}));
             waiter(Ok(Some(
@@ -1734,19 +1720,17 @@ impl Core {
             return;
         }
         let id = session_journal::lock_clock(&lock_session(&self.session).clock()).next_id();
-        let mut entry = Map::new();
-        entry.insert("id".into(), id.clone().into());
-        entry.insert("parentId".into(), self.tip().map_or(Value::Null, Value::from));
-        entry.insert("type".into(), "custom".into());
-        entry.insert("customType".into(), custom_type.into());
-        if !data.is_null() {
-            entry.insert("data".into(), data);
-        }
+        let entry = Write::custom_entry(
+            &id,
+            self.tip().as_deref(),
+            &custom_type,
+            Some(data).filter(|d| !d.is_null()),
+        );
         let lane_state = self.lane_state();
         let committed = lock_session(&self.session).commit(&[
-            Write::Entry(entry),
-            Write::set(session_journal::ns::BRANCH_TIP, LANE, id.into()),
-            Write::set(session_journal::ns::LANE_STATE, LANE, lane_state),
+            entry,
+            Write::set(session_journal::ns::BRANCH_TIP, MAIN_LANE, id.into()),
+            Write::set(session_journal::ns::LANE_STATE, MAIN_LANE, lane_state),
         ]);
         if committed.is_ok() {
             self.announce();
@@ -1772,12 +1756,12 @@ impl Core {
     fn announce_message(&mut self, message: &Value) {
         self.emit(WatchEvent::MessageStart {
             run_id: None,
-            lane: LANE.into(),
+            lane: MAIN_LANE.into(),
             message: message.clone(),
         });
         self.emit(WatchEvent::MessageEnd {
             run_id: None,
-            lane: LANE.into(),
+            lane: MAIN_LANE.into(),
             message: message.clone(),
         });
     }
@@ -1785,7 +1769,7 @@ impl Core {
     /// AgentSession's `bash_execution_update`: a chunk of the running command's output, under its id.
     fn emit_bash_output(&mut self, id: Option<String>, delta: String) {
         self.emit(WatchEvent::BashExecutionUpdate {
-            lane: LANE.into(),
+            lane: MAIN_LANE.into(),
             id,
             delta,
         });
@@ -1845,8 +1829,7 @@ impl Core {
     fn op(&mut self, op: Op, reply: Reply) {
         match op {
             Op::Prompt { message, images, queue } => {
-                let notice = self.persona_user_input(&message);
-                let message = self.expand_prompt_template(message);
+                let (message, notice) = self.user_text(&message);
                 let result = if self.run.is_some() {
                     match queue {
                         Some(kind) => self.enqueue(kind, message, images, None).map(drop),
@@ -1859,8 +1842,7 @@ impl Core {
                 reply(result.map(|()| notice.map(|notice| json!({"keepGoing": notice}))));
             }
             Op::PromptAndWait { message, images } => {
-                self.persona_user_input(&message);
-                let message = self.expand_prompt_template(message);
+                let (message, _) = self.user_text(&message);
                 if self.run.is_some() {
                     return reply(Err("Agent is already processing".into()));
                 }
@@ -1901,10 +1883,17 @@ impl Core {
         }
     }
 
+    /// A prompt's or queued message's text as the session takes it: `/review` expanded (agent-controller-provider.ts
+    /// `toTextPrompt`, crate::review_command), seen by the persona as that text (`persona_user_input`), then a prompt
+    /// template's `/name args` expanded. The persona's keep-going notice, if any.
+    fn user_text(&mut self, message: &str) -> (String, Option<String>) {
+        let message = crate::review_command::expand_review_command(message);
+        let notice = self.persona_user_input(&message);
+        (self.expand_prompt_template(message), notice)
+    }
+
     /// AgentSession `expandPromptTemplate`: a prompt or queued message `/name args` naming one of the session's
     /// prompt templates (the `/name` commands it lists) becomes the template's text with the arguments substituted.
-    /// Extensions see the text as typed (`persona_user_input` runs first); `/review` was already expanded where the
-    /// client's text entered the worker (crate::review_command).
     fn expand_prompt_template(&self, message: String) -> String {
         if !message.starts_with('/') {
             return message;
@@ -1932,8 +1921,7 @@ impl Core {
                 images,
                 entry_id,
             } => {
-                self.persona_user_input(&message);
-                let message = self.expand_prompt_template(message);
+                let (message, _) = self.user_text(&message);
                 self.enqueue(kind, message, images, entry_id).map(|id| Some(json!(id)))
             }
             Op::CancelQueued { entry_id } => {
@@ -2011,7 +1999,7 @@ impl Core {
             }
             Op::SetQueueMode { kind, mode } => {
                 let mut queues = sync::lock(&self.queues);
-                let all = mode == "all";
+                let all = mode == config::keys::QUEUE_ALL;
                 match kind {
                     QueueKind::Steer => queues.steering_all = all,
                     QueueKind::FollowUp => queues.follow_up_all = all,
@@ -2136,7 +2124,7 @@ impl Core {
                 "name": lock_session(&self.session).name(),
                 "messages": view::messages(&self.pi()),
                 // The lane's own entries (compactions and branch summaries as entries), as the TUI draws them.
-                "entries": lock_session(&self.session).branch_entries(LANE).unwrap_or_default(),
+                "entries": lock_session(&self.session).branch_entries(MAIN_LANE).unwrap_or_default(),
                 "model": serde_json::to_value(&self.model).unwrap_or(Value::Null),
                 "thinkingLevel": self.thinking,
             }))),
@@ -2156,7 +2144,7 @@ impl Core {
             Op::KeepGoing { args } => self.persona_command("keepgoing", &args).map(Some),
             Op::RestoreFiles { entry_id, checkpoint } => self.restore_files(entry_id, checkpoint).map(Some),
             // `rlm.list_subagents` with each subagent's name, model and times, for the agent hub and the RLM views.
-            Op::Agents => self.lane.stack.delegation.subagent_views(LANE).map(Some),
+            Op::Agents => self.lane.stack.delegation.subagent_views(MAIN_LANE).map(Some),
             Op::KillAgent { id } => self
                 .lane
                 .stack
@@ -2174,13 +2162,13 @@ impl Core {
             // Root-owned work whose completion may still re-invoke the root, asked through the inspector.
             Op::Inspect { request, .. } if request == "async.pending" => Ok(Some(self.async_pending())),
             // The root lane's detached cells (`rlm.cells` lists them to a cell, without their times).
-            Op::Inspect { request, .. } if request == "rlm.detached" => {
-                Ok(Some(json!({ "cells": self.lane.stack.lanes.detached_cells(LANE) })))
-            }
+            Op::Inspect { request, .. } if request == "rlm.detached" => Ok(Some(
+                json!({ "cells": self.lane.stack.lanes.detached_cells(MAIN_LANE) }),
+            )),
             // The worker answers the pool itself (session-worker.ts `inspect`): kernels and guard statistics.
             Op::Inspect { request, .. } if request == "rlm.pool" => Ok(Some(self.lane.stack.pool_stats())),
             Op::Inspect { request, payload } => {
-                let runtime = self.lane.stack.cell_handler(LANE, None);
+                let runtime = self.lane.stack.cell_handler(MAIN_LANE, None);
                 crate::inspect::inspect(Some(&*runtime), &request, payload, &kernel::Signal::new()).map(Some)
             }
             Op::Goal { args } => self
@@ -2221,7 +2209,7 @@ impl Core {
         let error = answer.stop_reason == ai::StopReason::Error;
         if error
             && attempt < policy.max_attempts()
-            && harness::chat::models::is_retryable(answer)
+            && ai::retry::is_retryable(answer)
             && !harness::chat::models::is_context_overflow(answer)
         {
             let delay = policy.delay_ms(attempt);
@@ -2232,7 +2220,7 @@ impl Core {
                 .unwrap_or_else(|| "Assistant request failed".into());
             run.journal.schedule_retry(not_before, message.clone());
             return Some(WatchEvent::RetryScheduled {
-                lane: LANE.into(),
+                lane: MAIN_LANE.into(),
                 run_id: Some(run.id.clone()),
                 step,
                 attempt: attempt + 1,
@@ -2253,7 +2241,7 @@ impl Core {
             })
         });
         Some(WatchEvent::RetryEnd {
-            lane: LANE.into(),
+            lane: MAIN_LANE.into(),
             run_id: Some(run.id.clone()),
             step,
             attempt,
@@ -2298,7 +2286,7 @@ impl Core {
     /// `pendingRootNotifications`: subagents and root-level tasks the root started that have not ended.
     fn root_started_running(&self) -> u64 {
         use kernel_apis::TaskHost;
-        let subagents = self.lane.stack.delegation.running(LANE).len();
+        let subagents = self.lane.stack.delegation.running(MAIN_LANE).len();
         let tasks = self
             .lane
             .stack
@@ -2330,7 +2318,7 @@ impl Core {
             self.thinking = level.to_string();
             self.store_lane_config()?;
             self.emit(WatchEvent::ConfigUpdate {
-                lane: LANE.into(),
+                lane: MAIN_LANE.into(),
                 property: "thinkingLevel".into(),
                 value: json!(level),
             });
@@ -2345,7 +2333,13 @@ impl Core {
         state.insert("thinkingLevel".into(), self.thinking.clone().into());
         state.insert("isStreaming".into(), self.run.is_some().into());
         state.insert("isCompacting".into(), self.compacting.is_some().into());
-        let mode = |all: bool| if all { "all" } else { "one-at-a-time" };
+        let mode = |all: bool| {
+            if all {
+                config::keys::QUEUE_ALL
+            } else {
+                config::keys::QUEUE_ONE_AT_A_TIME
+            }
+        };
         state.insert("steeringMode".into(), mode(queues.steering_all).into());
         state.insert("followUpMode".into(), mode(queues.follow_up_all).into());
         state.insert("sessionFile".into(), self.session_file().into());
@@ -2368,7 +2362,9 @@ impl Core {
         if !self.auto_memory.recall_ready() || !crate::auto_memory::worth_recalling(text) {
             return None;
         }
-        let entries = lock_session(&self.session).branch_entries(LANE).unwrap_or_default();
+        let entries = lock_session(&self.session)
+            .branch_entries(MAIN_LANE)
+            .unwrap_or_default();
         let shown = crate::auto_memory::shown(&entries);
         let recalled = self.auto_memory.recall(&self.lane.stack, text, &shown);
         crate::auto_memory::recall_message(&recalled, now_ms() as u64)
@@ -2383,7 +2379,9 @@ impl Core {
             return None;
         }
         let rigor = std::path::PathBuf::from(self.runtime.config.bundled_skills()?).join("pstack/rigor");
-        let entries = lock_session(&self.session).branch_entries(LANE).unwrap_or_default();
+        let entries = lock_session(&self.session)
+            .branch_entries(MAIN_LANE)
+            .unwrap_or_default();
         let shown = crate::playbook_route::shown(&entries);
         crate::playbook_route::playbook_message(text, &rigor, &shown, now_ms() as u64)
     }
@@ -2394,7 +2392,9 @@ impl Core {
         if !self.auto_refine.on {
             return None;
         }
-        let entries = lock_session(&self.session).branch_entries(LANE).unwrap_or_default();
+        let entries = lock_session(&self.session)
+            .branch_entries(MAIN_LANE)
+            .unwrap_or_default();
         let shown = crate::auto_refine::shown(&entries);
         let active = self.lane.stack.ledger.active();
         crate::auto_refine::message(&active, shown.as_deref(), now_ms() as u64)
@@ -2405,7 +2405,7 @@ impl Core {
     fn refine_after_compaction(&self) {
         let newest = {
             let session = lock_session(&self.session);
-            let entries = session.branch_entries(LANE).unwrap_or_default();
+            let entries = session.branch_entries(MAIN_LANE).unwrap_or_default();
             entries
                 .iter()
                 .rev()
@@ -2438,7 +2438,7 @@ impl Core {
         }
         let (session_id, summary) = {
             let session = lock_session(&self.session);
-            let entries = session.branch_entries(LANE).unwrap_or_default();
+            let entries = session.branch_entries(MAIN_LANE).unwrap_or_default();
             let summary = entries
                 .iter()
                 .rev()
@@ -2461,7 +2461,7 @@ impl Core {
         }
         let (session_id, tail) = {
             let session = lock_session(&self.session);
-            let entries = session.branch_entries(LANE).unwrap_or_default();
+            let entries = session.branch_entries(MAIN_LANE).unwrap_or_default();
             (session.id().to_string(), crate::auto_memory::session_tail(&entries))
         };
         if let Some(tail) = tail {
@@ -2564,7 +2564,7 @@ impl Core {
             return fail(error, waiter);
         }
         let lane_config = lock_session(&self.session)
-            .value(LANE_CONFIG, LANE)
+            .value(LANE_CONFIG, MAIN_LANE)
             .cloned()
             .unwrap_or(Value::Null);
         let started_tip = self.tip().map_or(Value::Null, Value::from);
@@ -2619,9 +2619,12 @@ impl Core {
         }
         if let Some(run) = journal.run() {
             self.lane.stack.agents.begin_root_turn(run.operation_id());
-            self.durable
-                .children
-                .set_root(self.lane.stack.agents.usage_root_for_lane(LANE, run.operation_id()));
+            self.durable.children.set_root(
+                self.lane
+                    .stack
+                    .agents
+                    .usage_root_for_lane(MAIN_LANE, run.operation_id()),
+            );
         }
         // `prepareGeneration`: a model that does not resolve fails the run at its first generation, before any
         // request (generation.ts `configurationError("model_unavailable", identity)`).
@@ -2676,7 +2679,7 @@ impl Core {
         self.emit(WatchEvent::RunStart {
             run_id: id,
             started_at: now_ms(),
-            lane: LANE.into(),
+            lane: MAIN_LANE.into(),
         });
         self.spawn_waiter();
         Ok(())
@@ -2770,7 +2773,7 @@ impl Core {
         }
         lock_session(&self.session).commit(&[
             Write::set(PENDING_ENTRY, &entry_id, json!({"type": "message", "payload": message})),
-            Write::set(LANE_STATE, LANE, lane_state),
+            Write::set(LANE_STATE, MAIN_LANE, lane_state),
         ])?;
         sync::lock(&self.queues).items.push(Queued {
             kind,
@@ -2797,7 +2800,7 @@ impl Core {
             run.journal.set_inbox(lane_state["inbox"].clone());
         }
         let mut writes: Vec<Write> = ids.iter().map(|id| Write::delete(PENDING_ENTRY, id)).collect();
-        writes.push(Write::set(LANE_STATE, LANE, lane_state));
+        writes.push(Write::set(LANE_STATE, MAIN_LANE, lane_state));
         lock_session(&self.session).commit(&writes)?;
         if !ids.is_empty() {
             self.withdraw_queued(ids);
@@ -2904,6 +2907,6 @@ pub fn call(tx: &Sender<Input>, op: Op) -> OpResult {
             let _ = reply_tx.send(result);
         }),
     ))
-    .map_err(|_| "Session is closed".to_string())?;
-    reply_rx.recv().map_err(|_| "Session is closed".to_string())?
+    .map_err(|_| SESSION_CLOSED.to_string())?;
+    reply_rx.recv().map_err(|_| SESSION_CLOSED.to_string())?
 }

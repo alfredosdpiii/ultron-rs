@@ -30,8 +30,7 @@ pub fn format_token_count(count: u64) -> String {
     count.to_string()
 }
 
-/// `String.prototype.localeCompare` (ICU root collation), for the catalog ids `--list-models` sorts.
-pub use jsrt::collate::locale_compare;
+use jsrt::collate::locale_compare;
 
 /// The `--list-models` output for `models`, filtered by `search`.
 pub fn render(models: &[Model], search: Option<&str>, docs: &Path) -> String {

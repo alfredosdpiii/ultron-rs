@@ -4,10 +4,11 @@
 //! duplicate and early fires do nothing, missed slots collapse into one run, a fire during a run waits for that run
 //! to end, and a cancel stops it. Time is a test clock file (`__ULTRON_SCHEDULE_CLOCK_FILE`), never a real wait.
 
-mod p_session_support;
+use crate::p_session_support;
 
-use kernel_apis::prompt_schedule::{CLOCK_FILE_ENV, CUSTOM_TYPE, NAMESPACE};
+use kernel_apis::prompt_schedule::{CLOCK_FILE_ENV, NAMESPACE};
 use p_session_support::{HANG, Setup, actor, in_order, text, tool, tool_results, user_texts};
+use protocol::custom_types::SCHEDULE;
 use serde_json::{Value, json};
 use session_core::core::Op;
 use std::path::{Path, PathBuf};
@@ -65,7 +66,7 @@ fn schedule_messages(a: &p_session_support::Actor) -> Vec<Value> {
     a.events("message_end")
         .into_iter()
         .map(|e| e["message"].clone())
-        .filter(|m| m["customType"] == CUSTOM_TYPE)
+        .filter(|m| m["customType"] == SCHEDULE)
         .collect()
 }
 
@@ -149,7 +150,7 @@ fn session_core_schedule_from_a_cell_fires_as_a_custom_message_run() {
         .as_array()
         .unwrap()
         .iter()
-        .filter(|m| m["customType"] == CUSTOM_TYPE)
+        .filter(|m| m["customType"] == SCHEDULE)
         .collect();
     assert_eq!(kept.len(), 2, "{messages}");
     assert_eq!(kept[0]["role"], "custom");

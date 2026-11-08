@@ -23,6 +23,9 @@ pub const PENDING_ENTRY: &str = "ultron.pending.entry";
 pub const PENDING_TOOL_OUTPUT: &str = "ultron.pending.tool_output";
 pub const PENDING_FRAMES: &str = "ultron.pending.assistant_frame";
 
+/// The inference runtime's frame traces, keyed by frame id (and `index`).
+pub const RLM_FRAMES: &str = "ultron.rlm.frames";
+
 /// Working-tree checkpoints (Rust-only), keyed by the turn's prompt entry id or `restore:<id>`.
 pub const CHECKPOINTS: &str = "ultron.checkpoint";
 
@@ -37,6 +40,8 @@ pub const MEMORY_STATE: &str = "ultron.memory.state";
 /// Ultron's own module state, keyed by module (`stats`, `skills`, `durable`, `session-name`, ...). The TypeScript
 /// product keeps it opaque.
 pub const MODULE: &str = "ultron.module";
+/// The `ultron.module` list of the durable conversation runtime's commits (`{seq, writes}`).
+pub const DURABLE_KEY: &str = "durable";
 /// The local services' documents, keyed by service (`ultron.refinements`, `ultron.experiments`, ...).
 pub const LOCAL: &str = "ultron.local";
 

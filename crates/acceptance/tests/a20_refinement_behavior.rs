@@ -4,7 +4,7 @@
 //! `refinements` option: the active `instruction:<definition>` refinement) and the local-services module answering
 //! `refinements.*` through the same request path; the lane records each prompt and completes with "done".
 
-mod services_support;
+use crate::services_support;
 
 use serde_json::{Value, json};
 use services::instruction_hook;

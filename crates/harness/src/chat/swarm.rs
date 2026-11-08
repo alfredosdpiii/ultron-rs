@@ -14,10 +14,11 @@
 use std::sync::LazyLock;
 
 use chord_delta::Seg;
-use durable::{ConversationId, Doc, DocDefinition, DocSemantics, Owner, Tx};
+use durable::{ConversationId, Doc, DocDefinition, DocSemantics, Owner, ROOT_CONVERSATION_ID, Tx};
 use serde_json::{Map, Value, json};
 
 use super::util::d;
+use super::{ChatHarness, SubmissionDraft, WhenBusy};
 use crate::scheduler::{HarnessError, Result};
 
 /// Recent work an agent keeps in the registry.
@@ -377,4 +378,114 @@ pub fn notes_write(tx: &mut Tx<'_>, text: &str, expect: Option<u64>) -> Result<V
     d(doc.set(&path(&["text"]), json!(text)))?;
     d(doc.set(&path(&["version"]), json!(version + 1)))?;
     Ok(json!({ "version": version + 1 }))
+}
+
+/// Who makes a shared-world request: the agent's `name` and its conversation in this runtime (`None`: an agent
+/// without one, which registers without a conversation), and, when the root is not a conversation of this runtime,
+/// where a wake addressed to it goes instead (`root_inbox(from, to, text)`).
+pub struct Caller<'a> {
+    pub name: String,
+    pub conversation: Option<ConversationId>,
+    pub root_inbox: Option<RootInbox<'a>>,
+}
+
+/// `(from, to, text)` of a message that wakes the root.
+pub type RootInbox<'a> = &'a dyn Fn(&str, &str, &str);
+
+/// Serve `kind` (one of [`super::host_ops::SWARM_KINDS`]) for `caller`. A `swarm.send` with `wake` wakes its
+/// recipient: the root through `root_inbox` when it has one, else a recipient with a conversation here gets the
+/// message as a follow-up input.
+pub fn serve(
+    chat: &ChatHarness,
+    kind: &str,
+    payload: &Map<String, Value>,
+    caller: &Caller,
+) -> std::result::Result<Value, String> {
+    let failed = |error: HarnessError| error.message();
+    let text = |key: &str| payload.get(key).and_then(Value::as_str);
+    let me = caller.name.as_str();
+    let now = chat.now();
+    let result = match kind {
+        "swarm.register" => {
+            let name = text("name").unwrap_or(me).to_owned();
+            chat.commit(|tx| register(tx, &name, caller.conversation, None, payload, now))
+        }
+        "swarm.agents" => chat.commit(agents),
+        "swarm.route" => {
+            let query = text("query").ok_or("swarm.route needs a query")?.to_owned();
+            chat.commit(|tx| route(tx, &query))
+        }
+        "swarm.send" => {
+            let to = text("to").ok_or("swarm.send needs a recipient")?.to_owned();
+            let body = text("text").ok_or("swarm.send needs text")?.to_owned();
+            let id = chat.commit(|tx| send(tx, me, &to, &body, now)).map_err(failed)?;
+            let wake = payload.get("wake").and_then(Value::as_bool).unwrap_or(false);
+            let woke = wake && wake_recipient(chat, caller, &to, &body).map_err(failed)?;
+            return Ok(json!({"id": id, "woke": woke}));
+        }
+        "swarm.inbox" => {
+            let all = payload.get("all").and_then(Value::as_bool).unwrap_or(false);
+            let mark = payload.get("mark").and_then(Value::as_bool).unwrap_or(true);
+            let name = text("name").unwrap_or(me).to_owned();
+            chat.commit(|tx| inbox(tx, &name, all, mark))
+        }
+        "board.add" => {
+            let title = text("title").ok_or("board.add needs a title")?.to_owned();
+            let detail = text("detail").map(str::to_owned);
+            chat.commit(|tx| board_add(tx, me, &title, detail.as_deref(), now))
+        }
+        "board.claim" | "board.update" => {
+            let id = payload
+                .get("id")
+                .and_then(Value::as_u64)
+                .ok_or("A board task id is a number")?;
+            if kind == "board.claim" {
+                chat.commit(|tx| board_claim(tx, me, id, now))
+            } else {
+                let (status, note) = (text("status").map(str::to_owned), text("note").map(str::to_owned));
+                chat.commit(|tx| board_update(tx, me, id, status.as_deref(), note.as_deref(), now))
+            }
+        }
+        "board.list" => {
+            let status = text("status").map(str::to_owned);
+            chat.commit(|tx| board_list(tx, status.as_deref()))
+        }
+        "notes.read" => chat.commit(notes_read),
+        "notes.append" => {
+            let line = text("text").ok_or("notes.append needs text")?.to_owned();
+            chat.commit(|tx| notes_append(tx, me, &line))
+        }
+        "notes.write" => {
+            let body = text("text").ok_or("notes.write needs text")?.to_owned();
+            let expect = payload.get("expect_version").and_then(Value::as_u64);
+            chat.commit(|tx| notes_write(tx, &body, expect))
+        }
+        other => return Err(format!("{other} is not one of the session's shared records")),
+    };
+    result.map_err(failed)
+}
+
+/// Wake the recipient `to` of a message from `caller`; returns whether one was woken.
+fn wake_recipient(chat: &ChatHarness, caller: &Caller, to: &str, body: &str) -> Result<bool> {
+    let agents = chat.commit(agents)?;
+    let target = agents.get(to).map(|entry| entry["conversation"].as_u64());
+    if let Some(root_inbox) = caller.root_inbox {
+        // The root: the name it registered, else `root` (until it registers another).
+        let root = target.map_or(to == "root", |conversation| {
+            conversation == Some(ROOT_CONVERSATION_ID.0)
+        });
+        if root {
+            root_inbox(&caller.name, to, body);
+            return Ok(true);
+        }
+    }
+    let Some(Some(target)) = target else {
+        return Ok(false);
+    };
+    let Some(handle) = chat.conversation(ConversationId(target))? else {
+        return Ok(false);
+    };
+    let draft = SubmissionDraft::input(format!("Message from {}: {body}", caller.name)).when_busy(WhenBusy::FollowUp);
+    handle.submit(draft)?;
+    Ok(true)
 }

@@ -13,7 +13,6 @@ use std::sync::{Arc, Mutex};
 use regex::Regex;
 
 use crate::github::{Error, PullRef};
-use crate::js::path_join;
 use crate::promotion::{CommitMessage, parse_commits};
 use crate::runner::{Env, RunOptions, RunResult, Runner};
 
@@ -258,7 +257,7 @@ impl CheckoutManager {
     }
 
     pub fn repo_dir(&self, r: &PullRef) -> String {
-        path_join(&[&self.git.cache, &r.host, &r.owner, &format!("{}.git", r.repo)])
+        jsrt::path::join(&[&self.git.cache, &r.host, &r.owner, &format!("{}.git", r.repo)])
     }
 
     fn lock(&self, dir: &str) -> Arc<Mutex<()>> {
@@ -282,7 +281,7 @@ impl CheckoutManager {
         let pull_ref = format!("refs/autoreview/pull/{}", r.number);
         let base_ref = format!("refs/autoreview/base/{}", r.number);
         let short: String = pull.head_sha.chars().take(7).collect();
-        let work_dir = path_join(&[
+        let work_dir = jsrt::path::join(&[
             &self.git.cache,
             "worktrees",
             &format!("{}-{}-{}-{short}-{}", r.owner, r.repo, r.number, random_hex(3)),

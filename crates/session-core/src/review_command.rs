@@ -2,9 +2,9 @@
 //! model to run Ultron's built-in review in one REPL cell and relay its report. The review itself is Python
 //! (`review_api`); nothing about it is in the system prompt of ordinary turns.
 //!
-//! The worker expands it where every client's text enters the session (agent-controller-provider.ts `toTextPrompt`:
-//! `prompt`, `steer`, `followUp` and `nextRun`), so the TUI, queued messages, `ultron -p "/review"` and RPC clients
-//! behave the same. Clients send `/review <args>` as typed.
+//! The session expands it where every prompt and queued message enters it (agent-controller-provider.ts
+//! `toTextPrompt`: `prompt`, `steer`, `followUp` and `nextRun`; `Core::user_text`), so the TUI, queued messages,
+//! `ultron -p "/review"` and RPC clients behave the same. Clients send `/review <args>` as typed.
 
 /// `reviewPrompt`: the model-facing prompt for `/review <args>`.
 pub fn review_prompt(args: &str) -> String {
@@ -55,33 +55,4 @@ pub fn expand_review_command(text: &str) -> String {
         return review_prompt(rest);
     }
     text.to_string()
-}
-
-/// A client's operation as the worker takes it: the text of a prompt or a queued message (`steer`, `followUp`,
-/// `nextRun`) with `/review` expanded; every other operation unchanged.
-pub fn expand_client_op(op: crate::core::Op) -> crate::core::Op {
-    use crate::core::Op;
-    match op {
-        Op::Prompt { message, images, queue } => Op::Prompt {
-            message: expand_review_command(&message),
-            images,
-            queue,
-        },
-        Op::PromptAndWait { message, images } => Op::PromptAndWait {
-            message: expand_review_command(&message),
-            images,
-        },
-        Op::Enqueue {
-            kind,
-            message,
-            images,
-            entry_id,
-        } => Op::Enqueue {
-            kind,
-            message: expand_review_command(&message),
-            images,
-            entry_id,
-        },
-        other => other,
-    }
 }

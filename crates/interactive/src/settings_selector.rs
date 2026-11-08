@@ -19,8 +19,7 @@ use tui::{truncate_to_width, visible_width, wrap_text_with_ansi};
 use crate::components::bold;
 use crate::lane::ModelInfo;
 
-const DEFAULT_CLAUDE_MODEL: &str = "claude-opus-5-5";
-const CLAUDE_CODE: &str = "claude-code";
+use config::providers::{CLAUDE_CODE, CLAUDE_CODE_DEFAULT_MODEL, CLAUDE_CODE_DEFAULT_REF};
 const CLEAR_OVERRIDE: &str = "__clear__";
 const GROUP_PREFIX: &str = "\u{0}group:";
 /// The Models row whose picker toggles models in a list (`rlm.raceModels`) instead of choosing one.
@@ -695,8 +694,8 @@ impl SettingsSelector {
                 "steering-mode",
                 "Steering mode",
                 "Enter while streaming queues steering messages. 'one-at-a-time': deliver one, wait for response. 'all': deliver all at once.",
-                c.str("steeringMode", "all"),
-                &["one-at-a-time", "all"],
+                c.str("steeringMode", config::keys::QUEUE_ALL),
+                &[config::keys::QUEUE_ONE_AT_A_TIME, config::keys::QUEUE_ALL],
             ),
             item(
                 "follow-up-mode",
@@ -705,8 +704,8 @@ impl SettingsSelector {
                     "{} queues follow-up messages until agent stops. 'one-at-a-time': deliver one, wait for response. 'all': deliver all at once.",
                     c.follow_up_key
                 ),
-                c.str("followUpMode", "all"),
-                &["one-at-a-time", "all"],
+                c.str("followUpMode", config::keys::QUEUE_ALL),
+                &[config::keys::QUEUE_ONE_AT_A_TIME, config::keys::QUEUE_ALL],
             ),
             item(
                 "transport",
@@ -1103,7 +1102,7 @@ impl SettingsSelector {
         let setting = |v: &Option<String>, fallback: String| v.as_ref().map_or(fallback, |v| format!("{v} (setting)"));
         // A session of the durable instance (its worker reports `durable.model`): a chosen model is saved there.
         let durable = c.get("durable").is_object().then(|| c.text("durable.model"));
-        let durable_default = format!("{CLAUDE_CODE}/{DEFAULT_CLAUDE_MODEL}");
+        let durable_default = CLAUDE_CODE_DEFAULT_REF.to_string();
         let session_saved = match &durable {
             Some(model) => format!(
                 "{} (durable.model)",
@@ -1186,27 +1185,24 @@ impl SettingsSelector {
                 "claudeCode.model",
                 "Claude Code root model",
                 "The model Claude Code itself runs (claude --model); ULTRON_CLAUDE_MODEL overrides it.",
-                setting(&cc_root, format!("{DEFAULT_CLAUDE_MODEL} (default)")),
-                with(plain("", &format!("Default ({DEFAULT_CLAUDE_MODEL})")), &claude),
+                setting(&cc_root, format!("{CLAUDE_CODE_DEFAULT_MODEL} (default)")),
+                with(plain("", &format!("Default ({CLAUDE_CODE_DEFAULT_MODEL})")), &claude),
                 alias(&cc_root),
             ),
             row(
                 "claudeCode.frameModel",
                 "Claude Code frame model",
                 "rlm.map / rlm.infer frames under `ultron claude`; ULTRON_CLAUDE_FRAME_MODEL overrides it.",
-                setting(&cc_frame, format!("{CLAUDE_CODE}/{DEFAULT_CLAUDE_MODEL} (default)")),
-                with(
-                    plain("", &format!("Default ({CLAUDE_CODE}/{DEFAULT_CLAUDE_MODEL})")),
-                    &all,
-                ),
+                setting(&cc_frame, format!("{CLAUDE_CODE_DEFAULT_REF} (default)")),
+                with(plain("", &format!("Default ({CLAUDE_CODE_DEFAULT_REF})")), &all),
                 cc_frame.clone(),
             ),
             row(
                 "claudeCode.childModel",
                 "Claude Code sub-agent model",
                 "Model of Claude Code sub-agents (children=claude); ULTRON_CLAUDE_CHILD_MODEL overrides it.",
-                setting(&cc_child, format!("{DEFAULT_CLAUDE_MODEL} (default)")),
-                with(plain("", &format!("Default ({DEFAULT_CLAUDE_MODEL})")), &claude),
+                setting(&cc_child, format!("{CLAUDE_CODE_DEFAULT_MODEL} (default)")),
+                with(plain("", &format!("Default ({CLAUDE_CODE_DEFAULT_MODEL})")), &claude),
                 alias(&cc_child),
             ),
             row(
@@ -1689,9 +1685,8 @@ impl SettingsSelector {
                 }
                 None
             }
-            (Some(ListAction::Changed(id, value)), SubKind::Warnings) => {
+            (Some(ListAction::Changed(_, value)), SubKind::Warnings) => {
                 self.warnings_extra = value == "true";
-                let _ = id;
                 self.stack.push(Sub::List { kind, list, header });
                 Some(SettingsEvent::Change(
                     "warnings".into(),

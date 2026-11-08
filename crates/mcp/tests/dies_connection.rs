@@ -32,7 +32,7 @@ fn gateway(root: &Path) -> Arc<Gateway> {
         env: ConnectionEnv {
             cwd,
             home: root.to_path_buf(),
-            client_version: mcp::gateway::client_version(),
+            client_version: config::version().to_string(),
             ..ConnectionEnv::default()
         },
         open_url: None,

@@ -1,8 +1,7 @@
 //! Project-isolated instances beside the global durable one (user requirement; TypeScript shares one server
 //! directory): private HOME, no ULTRON_SERVER_DIR unless a test sets it.
 
-#[path = "daemon_common/mod.rs"]
-mod common;
+use crate::daemon_common as common;
 
 use common::{Home, assert_none_mentioning, provider, text_reply};
 use serde_json::Value;

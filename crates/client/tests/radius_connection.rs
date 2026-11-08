@@ -3,8 +3,7 @@
 //! disconnect closes the relay (`1000 Pi client closed`) while the connection is still held, and the gateway
 //! closing the relay ends the connection.
 
-#[path = "../../server/tests/support/mod.rs"]
-mod support;
+use crate::support;
 
 use client::runtime::Connection;
 use protocol::{DEFAULT_MAX_FRAME_LENGTH, PROTOCOL_VERSION, ServerMessage, encode_server_message};

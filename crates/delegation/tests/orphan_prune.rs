@@ -112,3 +112,38 @@ fn delegation_startup_pruning_leaves_repositories_without_ultron_worktrees_alone
     assert!(admin.exists(), "git worktree prune ran");
     assert!(!cwd.join(".git").join(wt::WORKTREES_DIR).exists());
 }
+
+/// A record is replaced whole (written beside it, then renamed), and a save that cannot write reports its error
+/// and leaves the record that was there.
+#[test]
+fn delegation_worktree_record_saves_replace_the_file_or_fail_loudly() {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = tempfile::tempdir().unwrap();
+    let cwd = dir.path().canonicalize().unwrap();
+    repo(&cwd);
+    let mut record = worktree(&cwd, "session", "saved", false);
+    let records = Path::new(&record.common_dir).join(wt::WORKTREES_DIR);
+    let file = records.join(format!("{}.json", record.id));
+    record.state = "merged".into();
+    wt::save_record(&record).unwrap();
+    assert_eq!(
+        std::fs::read_to_string(&file).unwrap(),
+        format!("{}\n", wt::record_json(&record))
+    );
+    let leftovers: Vec<_> = std::fs::read_dir(&records)
+        .unwrap()
+        .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+        .filter(|name| name.contains(".tmp"))
+        .collect();
+    assert!(leftovers.is_empty(), "{leftovers:?}");
+    std::fs::set_permissions(&records, std::fs::Permissions::from_mode(0o500)).unwrap();
+    record.state = "conflict".into();
+    let failed = wt::save_record(&record);
+    std::fs::set_permissions(&records, std::fs::Permissions::from_mode(0o700)).unwrap();
+    assert!(failed.is_err());
+    assert!(
+        std::fs::read_to_string(&file)
+            .unwrap()
+            .contains("\"state\": \"merged\"")
+    );
+}

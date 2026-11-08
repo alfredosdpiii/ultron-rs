@@ -2,8 +2,7 @@
 //! environment (TS: the worker's `configureHttpDispatcher`, undici's `EnvHttpProxyAgent`), never through this test
 //! process's: the server is under `.invalid`, so only the 127.0.0.1 fake proxy can answer.
 
-#[path = "../../mcp/tests/support/fake_proxy.rs"]
-mod fake_proxy;
+use crate::fake_proxy;
 
 use fake_proxy::FakeProxy;
 use serde_json::json;

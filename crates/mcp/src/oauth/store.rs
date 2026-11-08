@@ -6,13 +6,13 @@
 //! masker whenever they are read or written.
 
 use super::OAuthError;
-use super::flow::{StateStore, normalized_url};
+use super::flow::normalized_url;
 use crate::connection::SecretSink;
 use serde_json::{Map, Value};
 use std::os::unix::fs::DirBuilderExt;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, SystemTime};
+use std::time::Duration;
 
 /// A refresh lock its holder stopped renewing (the process was killed) is taken over after this.
 const REFRESH_LOCK_STALE: Duration = Duration::from_secs(20);
@@ -44,7 +44,7 @@ fn parse_states(content: Option<&str>) -> Result<Map<String, Value>, OAuthError>
     let Some(content) = content.filter(|c| !c.trim().is_empty()) else {
         return Ok(Map::new());
     };
-    match crate::js_json::parse(content).map_err(OAuthError::Other)? {
+    match jsrt::json::parse(content).map_err(OAuthError::Other)? {
         Value::Object(map) => Ok(map),
         _ => Ok(Map::new()),
     }
@@ -122,18 +122,14 @@ impl CredentialStore {
                 .map_err(other)?;
         }
         if !self.path.exists() {
-            write_private(&self.path, "{}")?;
+            config::paths::write_private(&self.path, "{}").map_err(other)?;
         }
-        let _lock = config::lock::acquire(
-            &config::lock::lock_path_for(&self.path),
-            config::lock::SYNC_STALE,
-            config::lock::SYNC_ATTEMPTS,
-        )
-        .map_err(other)?;
+        let _lock =
+            config::lock::acquire(&config::lock::lock_path_for(&self.path), config::lock::SYNC).map_err(other)?;
         let current = std::fs::read_to_string(&self.path).ok();
         let (result, next) = change(current.as_deref())?;
         if let Some(next) = next {
-            write_private(&self.path, &next)?;
+            config::paths::write_private(&self.path, &next).map_err(other)?;
         }
         Ok(result)
     }
@@ -194,27 +190,19 @@ impl CredentialStore {
             .mode(0o700)
             .create(dir)
             .map_err(other)?;
-        let attempts = u32::try_from(REFRESH_LOCK_WAIT.as_millis() / 20).unwrap_or(u32::MAX);
-        let _lock = config::lock::acquire(&lock_path, self.refresh_stale, attempts).map_err(other)?;
-        let (stop, stopped) = std::sync::mpsc::channel::<()>();
-        let renew = self.refresh_renew;
-        let renewer = std::thread::spawn(move || {
-            while let Err(std::sync::mpsc::RecvTimeoutError::Timeout) = stopped.recv_timeout(renew) {
-                // A lost lock at worst lets two refreshes overlap (`onCompromised` is ignored there too).
-                if let Ok(lock) = std::fs::File::open(&lock_path) {
-                    let _ = lock.set_modified(SystemTime::now());
-                }
-            }
-        });
-        let result = run();
-        drop(stop);
-        let _ = renewer.join();
-        result
+        let options = config::lock::Options {
+            stale: self.refresh_stale,
+            retry: config::lock::Retry {
+                until: config::lock::Until::Tries(
+                    u32::try_from(REFRESH_LOCK_WAIT.as_millis() / 20).unwrap_or(u32::MAX),
+                ),
+                ..config::lock::SYNC.retry
+            },
+            update: Some(self.refresh_renew),
+        };
+        let _lock = config::lock::acquire(&lock_path, options).map_err(other)?;
+        run()
     }
-}
-
-fn write_private(path: &Path, content: &str) -> Result<(), OAuthError> {
-    config::paths::write_private(path, content).map_err(other)
 }
 
 /// One server's state in the credential file (`forServer`).
@@ -236,9 +224,10 @@ impl ServerStore {
     }
 }
 
-impl StateStore for ServerStore {
+/// Where a provider keeps a server's OAuth state (`McpOAuthStateStore`).
+impl ServerStore {
     /// The first server to load legacy state takes it over; others with the same URL sign in again.
-    fn load(&self) -> Result<Option<Value>, OAuthError> {
+    pub fn load(&self) -> Result<Option<Value>, OAuthError> {
         let (key, legacy) = (&self.key, &self.legacy);
         let state = self.store.with_lock(|current| {
             let mut states = parse_states(current)?;
@@ -255,7 +244,7 @@ impl StateStore for ServerStore {
         Ok(state)
     }
 
-    fn save(&self, state: &Value) -> Result<(), OAuthError> {
+    pub fn save(&self, state: &Value) -> Result<(), OAuthError> {
         self.store.remember(Some(state));
         self.store.with_lock(|current| {
             let mut states = parse_states(current)?;

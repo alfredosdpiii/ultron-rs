@@ -2,8 +2,8 @@
 //! rule's paths ends the lane's next cell result with the rule's skill, once per lane and skill. The session test runs
 //! the shipped runtime and the bundled pstack skills; the others drive the observer directly.
 
-mod p_session_support;
-mod reopen_support;
+use crate::p_session_support;
+use crate::reopen_support;
 
 use host::file_hooks::{CellChanges, CellObserver};
 use p_session_support::{text, tool, tool_results};

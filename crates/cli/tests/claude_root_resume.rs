@@ -4,8 +4,8 @@
 //! daemon and worker, a FAKE `claude` (crates/ai/fixtures/claude-subscription/claude.py; PATH is only its directory
 //! plus /usr/bin:/bin) and one fake upstream on loopback for both the Anthropic API and the subscription.
 
-mod common;
-mod executable_support;
+use crate::common;
+use crate::executable_support;
 
 use common::{Naming, Sandbox, assert_private_home, mock_server};
 use serde_json::{Value, json};

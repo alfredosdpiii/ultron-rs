@@ -8,7 +8,7 @@
 //! - the image budget (`ULTRON_CONTEXT_IMAGES`) replaces the oldest tool-result images of a request by a note;
 //! - the tool-round nudge (`ULTRON_TOOL_ROUNDS_NUDGE`) steers the root after its third tool round.
 
-mod p_session_support;
+use crate::p_session_support;
 
 use base64::Engine;
 use p_session_support::{Setup, actor, in_order, invalid, overloaded, text, tool, tool_results, user_texts};

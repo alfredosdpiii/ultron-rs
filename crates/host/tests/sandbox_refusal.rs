@@ -9,8 +9,7 @@
 //!   base/home              fake HOME: notes.txt, .ssh/id_test (hidden)
 //!   base/home/project      the project
 
-#[path = "../../sandbox/tests/backends_support/mod.rs"]
-mod backends_support;
+use crate::backends_support;
 
 use host::{AllowAll, Host};
 use kernel::{Kernel, KernelOptions, Status};

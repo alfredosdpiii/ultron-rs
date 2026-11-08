@@ -2,8 +2,10 @@
 //! once rather than once per file. A file that re-runs or exits its own test binary (`current_exe`,
 //! `process::exit`) stays a test binary of its own in Cargo.toml. `crates/workspace-checks` keeps both lists whole.
 
-// Support modules (`mod common;`) stay declared by each file that uses them, so each file also builds alone.
-#![allow(clippy::duplicate_mod)]
+// Support modules are declared here, once; the files reach them through `crate::`.
+
+#[path = "../../cli/tests/executable_support/mod.rs"]
+mod executable_support;
 
 #[path = "claude_parity.rs"]
 mod claude_parity;

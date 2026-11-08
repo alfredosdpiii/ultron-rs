@@ -23,11 +23,12 @@ use super::entries;
 use super::gate::{FINAL_TOOL_CHOICE, RequestGate, gate_run};
 use super::inbox::{At, apply_boundary, prepare_boundary, user_entry};
 use super::live::{GENERATION_KIND, append_assistant, convert_partial, end_run, hand_over, live, run_task};
-use super::models::{ModelRef, StreamRequest, is_context_overflow, is_retryable};
+use super::models::{ModelRef, StreamRequest, is_context_overflow};
 use super::prompt::{plan_system_entries, replay_sections};
 use super::throttle::Throttle;
 use super::util::{delete, from_value, get, owner, set, strict, to_value};
 use crate::scheduler::{HarnessError, NextState, Result, Task, TaskRuntime, completed};
+use ai::retry::is_retryable;
 
 const DEFAULT_POLL_AFTER_MS: u64 = 5000;
 

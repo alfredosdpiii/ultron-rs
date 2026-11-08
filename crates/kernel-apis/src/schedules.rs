@@ -10,10 +10,11 @@
 //! `every_ms`, `last_slot` and `pending_slot`, so a reopened module recomputes it) and is woken by every committed
 //! change; the model may still send `schedules.tick`.
 
-use crate::store::{DocumentStore, read_versioned};
+use crate::store::read_versioned;
 use crate::tasks::TaskHost;
 use crate::util::Clock;
 use kernel::Signal;
+use kernel::store::DocumentStore;
 use serde_json::{Map, Value, json};
 use std::collections::HashSet;
 use std::sync::{Arc, Mutex};
@@ -38,15 +39,6 @@ fn definition_key(value: Option<&Value>, name: &str) -> Result<String, String> {
         Some(text) if valid_definition(text) => Ok(text.to_string()),
         _ => Err(format!("{name} must be id@version")),
     }
-}
-
-/// `/^[^/\s]+\/[^/\s]+(?:\/[^/\s]+)*$/`
-fn valid_model(text: &str) -> bool {
-    let parts: Vec<&str> = text.split('/').collect();
-    parts.len() >= 2
-        && parts
-            .iter()
-            .all(|part| !part.is_empty() && !part.chars().any(|c| c.is_whitespace() || c == '\u{feff}'))
 }
 
 fn integer(value: Option<&Value>, name: &str, min: i64, max: i64) -> Result<i64, String> {
@@ -385,8 +377,7 @@ impl SchedulesModule {
         let max_runs = optional_integer(payload.get("max_runs"), "max_runs", 1)?;
         let model = match payload.get("model") {
             None | Some(Value::Null) => Value::Null,
-            Some(Value::String(model)) if valid_model(model) => model.clone().into(),
-            Some(_) => return Err("model must be provider/model".into()),
+            Some(model) => model_scope::model_ref(model)?.into(),
         };
         let goal_id = payload.get("goal_id").cloned().unwrap_or(Value::Null);
         self.update(document, |draft| {

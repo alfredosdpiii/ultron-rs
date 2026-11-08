@@ -9,12 +9,11 @@
 //! Environment lookups go through the provider env first, like the rest of `google_auth.rs`.
 
 use super::{
-    AUTH_RETRY, AUTH_USER_AGENT, DEFAULT_UNIVERSE, Fail, NO_RETRY, ResponseType, SCOPE, absolute, gaxios, io_message,
-    realpath, sign_rs256,
+    AUTH_RETRY, AUTH_USER_AGENT, DEFAULT_UNIVERSE, Fail, NO_RETRY, ResponseType, SCOPE, absolute, gaxios, realpath,
+    sign_rs256,
 };
 use crate::env::{ProviderEnv, provider_env_value};
 use crate::http::{HeaderMap, HttpRequest, Transport};
-use crate::jsutil::json_parse_error;
 use crate::oauth_flow::form_urlencode;
 use serde_json::{Map, Value, json};
 use std::time::Duration;
@@ -60,19 +59,6 @@ fn truthy_string(json: &Value, key: &str) -> Option<String> {
     camel_option(json, key)
         .filter(|v| jsrt::value::truthy(Some(v)))
         .map(|v| jsrt::value::string(Some(v)))
-}
-
-/// `encodeURIComponent`.
-fn encode_uri_component(text: &str) -> String {
-    let mut out = String::new();
-    for byte in text.bytes() {
-        if byte.is_ascii_alphanumeric() || b"-_.!~*'()".contains(&byte) {
-            out.push(byte as char);
-        } else {
-            out.push_str(&format!("%{byte:02X}"));
-        }
-    }
-    out
 }
 
 // ---------------------------------------------------------------------------------------------- external_account
@@ -383,14 +369,14 @@ fn file_subject_token(path: &str, format: &Format) -> Result<String, Fail> {
     match std::fs::symlink_metadata(&real) {
         Ok(meta) if meta.is_file() => {}
         Ok(_) => return Err(not_a_file(&shown, "")),
-        Err(e) => return Err(not_a_file(&shown, &io_message(&e, "lstat", &real))),
+        Err(e) => return Err(not_a_file(&shown, &jsrt::fs::error_message(&e, "lstat", &real))),
     }
-    let bytes = std::fs::read(&real).map_err(|e| Fail::new(io_message(&e, "open", &real)))?;
+    let bytes = std::fs::read(&real).map_err(|e| Fail::new(jsrt::fs::error_message(&e, "open", &real)))?;
     let text = String::from_utf8_lossy(&bytes).into_owned();
     let token = match format {
         Format::Text => Value::String(text),
         Format::Json(field) => {
-            if let Some(message) = json_parse_error(&text) {
+            if let Some(message) = jsrt::json::parse(&text).err() {
                 return Err(Fail::typed("SyntaxError", message));
             }
             let json: Value = serde_json::from_str(&text).unwrap_or(Value::Null);
@@ -644,7 +630,7 @@ pub fn aws_subject_token(
     request.insert("url".into(), json!(url));
     request.insert("method".into(), json!("POST"));
     request.insert("headers".into(), Value::Array(headers));
-    Ok(encode_uri_component(&Value::Object(request).to_string()))
+    Ok(jsrt::uri::encode_component(&Value::Object(request).to_string()))
 }
 
 // -------------------------------------------------------------------------------------------- pluggable executable
@@ -889,13 +875,13 @@ fn cached_response(path: &str) -> Result<Option<ExecutableResponse>, Fail> {
     if !std::fs::symlink_metadata(&real).is_ok_and(|m| m.is_file()) {
         return Ok(None);
     }
-    let text = std::fs::read(&real).map_err(|e| Fail::new(io_message(&e, "open", &real)))?;
+    let text = std::fs::read(&real).map_err(|e| Fail::new(jsrt::fs::error_message(&e, "open", &real)))?;
     let text = String::from_utf8_lossy(&text);
     if text.is_empty() {
         return Ok(None);
     }
     let invalid = || Fail::new(format!("The output file contained an invalid response: {text}"));
-    if json_parse_error(&text).is_some() {
+    if jsrt::json::parse(&text).is_err() {
         return Err(invalid());
     }
     let json: Value = serde_json::from_str(&text).unwrap_or(Value::Null);
@@ -957,7 +943,7 @@ async fn run_executable(
         return Err(executable_error(&output, &code));
     }
     let invalid = || Fail::new(format!("The executable returned an invalid response: {output}"));
-    if json_parse_error(&output).is_some() {
+    if jsrt::json::parse(&output).is_err() {
         return Err(invalid());
     }
     let json: Value = serde_json::from_str(&output).unwrap_or(Value::Null);

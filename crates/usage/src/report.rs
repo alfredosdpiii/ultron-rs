@@ -6,16 +6,17 @@
 //! renderer reads it.
 
 use crate::log::{EntryKind, LogEntry, LogUsage, SessionLog, log_usage, record};
-use crate::stats::{CELL_APIS, Cells, Stats, parse_session_stats};
+use crate::stats::{Cells, Stats, parse_session_stats};
 use delegation::lane_names::{LaneOwner, child_lane, frame_lane, parse_lane};
 use indexmap::{IndexMap, IndexSet};
 use serde_json::{Map, Value, json};
+use session_core::session_stats::CELL_APIS;
 use session_journal::ns;
 use std::collections::{HashMap, HashSet};
 
 pub const SESSION_REPORT_SCHEMA: &str = "ultron.session-report/1";
 /// Billed through a subscription login whatever the caller passes (session-report.ts `SUBSCRIPTION_PROVIDERS`).
-const SUBSCRIPTION_PROVIDERS: [&str; 1] = ["claude-code"];
+const SUBSCRIPTION_PROVIDERS: [&str; 1] = [config::providers::CLAUDE_CODE];
 const COUNTER_SLACK_MS: f64 = 1000.0;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -202,11 +203,10 @@ fn depth_verdict(level: f64, frames: f64, subagents: f64, nested: f64, typed: f6
 pub fn session_is_empty(log: &SessionLog) -> bool {
     log.entries.is_empty()
         && !log.values.keys().any(|address| {
-            address.starts_with("ultron.")
-                && address != "ultron.module/skills"
-                && !["ultron.session.name/", "ultron.lane.config/", "ultron.branch.tip/"]
-                    .iter()
-                    .any(|setup| address.starts_with(setup))
+            let (namespace, key) = address.split_once('/').unwrap_or((address, ""));
+            namespace.starts_with("ultron.")
+                && !(namespace == ns::MODULE && key == "skills")
+                && ![ns::SESSION_NAME, ns::LANE_CONFIG, ns::BRANCH_TIP].contains(&namespace)
         })
 }
 
@@ -432,7 +432,7 @@ pub fn build_session_report_with(log: &SessionLog, subscription_providers: &[Str
     } else if !log.values_of("ultron.claude-code.lanes").is_empty()
         || main_entries
             .iter()
-            .any(|e| e.kind == EntryKind::Assistant && e.provider.as_deref() == Some("claude-code"))
+            .any(|e| e.kind == EntryKind::Assistant && e.provider.as_deref() == Some(config::providers::CLAUDE_CODE))
     {
         "ultron --claude"
     } else {
@@ -835,7 +835,7 @@ pub fn build_session_report_with(log: &SessionLog, subscription_providers: &[Str
 
     // Depth: frames.
     let mut trace_by_id: IndexMap<String, &Map<String, Value>> = IndexMap::new();
-    for (key, value) in log.values_of(inference::TRACE_NAMESPACE) {
+    for (key, value) in log.values_of(ns::RLM_FRAMES) {
         if key == "index" {
             continue;
         }

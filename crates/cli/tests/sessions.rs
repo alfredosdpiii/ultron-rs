@@ -2,7 +2,7 @@
 //! from the first prompt and a model-made title, `-n`, `-r <name|id>`, and `ultron -r` listing this directory's
 //! sessions. Every run uses private ULTRON_CODING_AGENT_DIR / ULTRON_SERVER_DIR dirs and a scripted provider.
 
-mod common;
+use crate::common;
 
 use common::{Naming, Sandbox, anthropic_text, mock_server, session_files};
 use serde_json::{Value, json};

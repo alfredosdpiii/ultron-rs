@@ -5,7 +5,7 @@
 //! checked moments ago (models-store.json), so pi.dev is not asked; every other host goes through a loopback proxy
 //! that records any attempt, and the test asserts there was none.
 
-mod tui_harness;
+use crate::tui_harness;
 
 use serde_json::json;
 use std::io::{BufRead, BufReader};

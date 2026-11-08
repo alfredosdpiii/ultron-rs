@@ -55,7 +55,7 @@ fn keys() -> KeybindingsManager {
 }
 
 fn expand_key() -> String {
-    key_text(&keys(), "app.tools.expand", false)
+    key_text(&keys(), "app.tools.expand")
 }
 
 /// Renders every case of `section` with `make(case, theme)` at every width and compares with the recorded lines.
@@ -91,14 +91,19 @@ fn check(section: &str, make: Make) {
 fn interactive_key_text_matches_ts() {
     let f = fixture();
     let k = keys();
-    assert_eq!(key_text(&k, "app.tools.expand", false), s(&f["keys"]["expand"]));
-    assert_eq!(key_text(&k, "tui.select.cancel", false), s(&f["keys"]["cancel"]));
-    assert_eq!(key_text(&k, "app.interrupt", false), s(&f["keys"]["interrupt"]));
+    assert_eq!(key_text(&k, "app.tools.expand"), s(&f["keys"]["expand"]));
+    assert_eq!(key_text(&k, "tui.select.cancel"), s(&f["keys"]["cancel"]));
+    assert_eq!(key_text(&k, "app.interrupt"), s(&f["keys"]["interrupt"]));
     for row in f["keys"]["format"].as_array().unwrap() {
-        assert_eq!(format_key_text(row[0].as_str().unwrap(), false, false), s(&row[1]));
-        assert_eq!(format_key_text(row[0].as_str().unwrap(), true, false), s(&row[2]));
+        assert_eq!(format_key_text(row[0].as_str().unwrap(), false), s(&row[1]));
+        assert_eq!(format_key_text(row[0].as_str().unwrap(), true), s(&row[2]));
     }
-    assert_eq!(format_key_text("alt+x/Alt+y", true, true), "Option+X/Option+Y");
+    let alt = if jsrt::process::platform() == "darwin" {
+        "Option"
+    } else {
+        "Alt"
+    };
+    assert_eq!(format_key_text("alt+x/Alt+y", true), format!("{alt}+X/{alt}+Y"));
 }
 
 #[test]
@@ -299,7 +304,7 @@ fn interactive_tool_execution_matches_ts() {
 
 #[test]
 fn interactive_bash_execution_matches_ts() {
-    let cancel = key_text(&keys(), "tui.select.cancel", false);
+    let cancel = key_text(&keys(), "tui.select.cancel");
     check("bash", &|c, t| {
         let mut b = BashExecution::new(
             Rc::clone(t),

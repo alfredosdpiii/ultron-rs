@@ -4,7 +4,7 @@
 //! for text or a cursor that changed meanwhile is dropped (TS `isAutocompleteRequestCurrent`); the answer that is
 //! applied is exactly what the synchronous provider gives for the same input.
 
-mod support;
+use crate::support;
 
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};

@@ -10,8 +10,7 @@
 //!   `-c` / `-r` / `--fork`;
 //! - `--no-session --name x` keeps the name; `--skill` loads the skill; `-na` ignores the project's resources.
 
-#[path = "daemon_common/mod.rs"]
-mod common;
+use crate::daemon_common as common;
 
 use common::{HANG_GUARD, Home, assert_none_mentioning, provider, text_reply};
 use serde_json::{Value, json};

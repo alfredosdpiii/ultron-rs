@@ -85,7 +85,7 @@ pub fn rename_legacy(write: &mut Value) {
         }
     }
     rename(write.get_mut("namespace"));
-    if write["key"] == "durable"
+    if write["key"] == crate::ns::DURABLE_KEY
         && let Some(Value::Array(writes)) = write.pointer_mut("/value/writes")
     {
         for inner in writes {

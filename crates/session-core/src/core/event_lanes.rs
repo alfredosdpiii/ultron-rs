@@ -56,7 +56,7 @@ fn content(message: &Value) -> String {
 
 impl EventLanes for SessionLanes {
     fn execution(&self, lane: &str) -> Execution {
-        if lane == LANE {
+        if lane == MAIN_LANE {
             return match self.ask(LaneCall::Execution) {
                 Some(LaneAnswer::Execution(execution)) => execution,
                 _ => Execution::Other,
@@ -71,7 +71,7 @@ impl EventLanes for SessionLanes {
     }
 
     fn accept(&self, lane: &str, message: &Value, root: &str) -> Accepted {
-        if lane != LANE {
+        if lane != MAIN_LANE {
             return Accepted::Refused("child lanes are never re-invoked".into());
         }
         match self.ask(LaneCall::Accept {
@@ -84,7 +84,7 @@ impl EventLanes for SessionLanes {
     }
 
     fn steer(&self, lane: &str, message: &Value) -> Result<String, String> {
-        if lane == LANE {
+        if lane == MAIN_LANE {
             return match self.ask(LaneCall::Steer(message.clone())) {
                 Some(LaneAnswer::Queued(queued)) => queued,
                 _ => Err("the session is closing".into()),
@@ -110,7 +110,7 @@ impl EventLanes for SessionLanes {
     }
 
     fn next_run(&self, lane: &str, message: &Value) -> Result<String, String> {
-        if lane == LANE {
+        if lane == MAIN_LANE {
             return match self.ask(LaneCall::NextRun(message.clone())) {
                 Some(LaneAnswer::Queued(queued)) => queued,
                 _ => Err("the session is closing".into()),
@@ -122,7 +122,7 @@ impl EventLanes for SessionLanes {
     }
 
     fn cancel_queued(&self, lane: &str, entry: &str) -> Result<Cancelled, String> {
-        if lane == LANE {
+        if lane == MAIN_LANE {
             return match self.ask(LaneCall::CancelQueued(entry.to_string())) {
                 Some(LaneAnswer::Cancelled(cancelled)) => cancelled,
                 _ => Err("the session is closing".into()),
@@ -159,7 +159,7 @@ pub(super) fn install(
     let agents = stack.agents.clone();
     let mut options = DispatcherOptions::new(Arc::new(move |run: &str| {
         agents
-            .usage_root_for_lane(LANE, run)
+            .usage_root_for_lane(MAIN_LANE, run)
             .unwrap_or_else(|| format!("turn:{run}"))
     }));
     options.enabled = stack.events.enabled();
@@ -194,7 +194,7 @@ pub(super) fn install(
     // A job belongs to the lane that started it and to that lane's root turn.
     let (roots_children, roots_agents) = (children.clone(), stack.agents.clone());
     stack.host.set_roots(Arc::new(move |lane: &str| {
-        if lane == LANE {
+        if lane == MAIN_LANE {
             roots_children.current_root()
         } else {
             roots_children.usage_root_of_lane(lane, &roots_agents)
@@ -218,7 +218,7 @@ pub(super) fn install(
     // A detached REPL tool call's end is announced like a job's (`toolEvent`), under the root that started it.
     let (tool_roots_children, tool_roots_agents) = (children.clone(), stack.agents.clone());
     stack.tool_calls().set_roots(Arc::new(move |lane: &str| {
-        if lane == LANE {
+        if lane == MAIN_LANE {
             tool_roots_children.current_root()
         } else {
             tool_roots_children.usage_root_of_lane(lane, &tool_roots_agents)
@@ -239,7 +239,7 @@ pub(super) fn install(
                 status,
                 summary,
                 fetch,
-                lane: end.call["lane"].as_str().unwrap_or(LANE).into(),
+                lane: end.call["lane"].as_str().unwrap_or(MAIN_LANE).into(),
                 root_id: end.call["rootId"].as_str().map(str::to_string),
             });
         }));
@@ -247,10 +247,10 @@ pub(super) fn install(
     let (forward, events, agents) = (Arc::downgrade(&dispatcher), stack.events.clone(), stack.agents.clone());
     std::thread::spawn(move || {
         while !stop.is_cancelled() {
+            // Returns as soon as an end arrives; the wait only bounds how long a closed session keeps this thread.
+            let ends = events.recv(std::time::Duration::from_secs(1));
             let Some(dispatcher) = forward.upgrade() else { return };
-            forward_ends(&events, &children, &agents, &dispatcher);
-            drop(dispatcher);
-            std::thread::sleep(std::time::Duration::from_millis(50));
+            publish_ends(ends, &children, &agents, &dispatcher);
         }
     });
     dispatcher
@@ -263,7 +263,16 @@ fn forward_ends(
     agents: &delegation::agents::Agents,
     dispatcher: &Dispatcher,
 ) {
-    for mut event in events.drain_ends() {
+    publish_ends(events.recv(std::time::Duration::ZERO), children, agents, dispatcher);
+}
+
+fn publish_ends(
+    ends: Vec<RuntimeEvent>,
+    children: &DurableChildren,
+    agents: &delegation::agents::Agents,
+    dispatcher: &Dispatcher,
+) {
+    for mut event in ends {
         if event.root_id.is_none() {
             event.root_id = if event.kind == "child_done" {
                 children.usage_root_of_lane(&format!("{}{}", crate::subagents::LANE_PREFIX, event.id), agents)
@@ -341,15 +350,15 @@ impl Core {
         let running = self.run.is_some()
             || self.compacting.is_some()
             || self.lane.stack.host.running_jobs() > 0
-            || self.lane.stack.tool_calls().running(LANE, &|_| false) > 0
-            || !self.lane.stack.delegation.running(LANE).is_empty()
-            || self.lane.stack.agents.running_announced(LANE) > 0
-            || self.lane.stack.lanes.detached_running(LANE) > 0;
+            || self.lane.stack.tool_calls().running(MAIN_LANE, &|_| false) > 0
+            || !self.lane.stack.delegation.running(MAIN_LANE).is_empty()
+            || self.lane.stack.agents.running_announced(MAIN_LANE) > 0
+            || self.lane.stack.lanes.detached_running(MAIN_LANE) > 0;
         let stack = self.lane.stack.clone();
         forward_ends(&stack.events, &self.durable.children, &stack.agents, &self.events);
-        let active = running || self.events.pending_for(LANE) > 0;
+        let active = running || self.events.pending_for(MAIN_LANE) > 0;
         self.emit(WatchEvent::Activity {
-            lane: LANE.into(),
+            lane: MAIN_LANE.into(),
             active,
         });
         // A session quiet for a while keeps its tail now, not only when it closes (crate::auto_memory::IDLE_RETAIN).
@@ -368,14 +377,14 @@ impl Core {
             return json!({"pending": false, "jobs": 0, "tools": 0, "tasks": 0, "events": 0, "running": 0});
         }
         let aborted = |root: Option<&str>| events.root_aborted(root);
-        let jobs = self.lane.stack.host.running(LANE, &aborted);
-        let tools = self.lane.stack.tool_calls().running(LANE, &aborted);
+        let jobs = self.lane.stack.host.running(MAIN_LANE, &aborted);
+        let tools = self.lane.stack.tool_calls().running(MAIN_LANE, &aborted);
         // Subagents, typed tasks whose end is announced to the root (`task_done`), and detached root cells
         // (`cell_done`): each end re-invokes the root, so a print run waits for them.
-        let tasks = self.lane.stack.delegation.running(LANE).len()
-            + self.lane.stack.agents.running_announced(LANE)
-            + self.lane.stack.lanes.detached_running(LANE);
-        let pending = events.pending_for(LANE);
+        let tasks = self.lane.stack.delegation.running(MAIN_LANE).len()
+            + self.lane.stack.agents.running_announced(MAIN_LANE)
+            + self.lane.stack.lanes.detached_running(MAIN_LANE);
+        let pending = events.pending_for(MAIN_LANE);
         let running = usize::from(self.run.is_some());
         json!({
             "pending": jobs + tools + tasks + pending + running > 0,

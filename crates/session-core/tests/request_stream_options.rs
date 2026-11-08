@@ -99,8 +99,9 @@ fn stream(provider: &Provider) -> ai::AssistantMessage {
 }
 
 fn provider(server: &Arc<Server>, profile: &Profile) -> Provider {
-    Provider::with_router(ai::claude_subscription::fallback::global(), server.clone())
-        .with_live_settings(profile.reader.clone(), false)
+    Provider::new()
+        .with_live_settings(profile.reader.clone())
+        .with_transport(server.clone())
 }
 
 #[test]

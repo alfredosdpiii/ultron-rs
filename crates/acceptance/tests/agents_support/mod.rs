@@ -8,9 +8,9 @@
 use delegation::agents::{
     Adapter, AdapterRequest, Agents, AgentsOptions, LaneCheck, LaneMessage, LaneRelease, LaneReply, LaneRun, TaskEnd,
 };
-use delegation::task_store::DocumentStore;
 use delegation::usage::{Measurement, UsageLedger};
 use kernel::Signal;
+use kernel::store::DocumentStore;
 use kernel_apis::TaskHost;
 use serde_json::{Value, json};
 use std::sync::mpsc::Receiver;
@@ -47,10 +47,10 @@ impl Memory {
 }
 
 impl DocumentStore for Memory {
-    fn read(&mut self) -> Result<Option<Value>, String> {
+    fn read(&self) -> Result<Option<Value>, String> {
         Ok(lock(&self.value).clone())
     }
-    fn write(&mut self, document: &Value) -> Result<(), String> {
+    fn write(&self, document: &Value) -> Result<(), String> {
         let mut states = lock(&self.states);
         for task in document["tasks"].as_array().into_iter().flatten() {
             let (id, state) = (

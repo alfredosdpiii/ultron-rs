@@ -212,3 +212,27 @@ fn session_core_session_stats_save_on_their_own_after_a_change() {
     assert_eq!(document["usageLimitBlocks"], 1);
     assert_eq!(document["updatedAt"], 7);
 }
+
+/// A store that cannot be read is never written over (Rust-only: the TypeScript recorder counts from zero and
+/// overwrites the saved totals); the counters stay in memory.
+#[test]
+fn session_core_session_stats_never_overwrite_a_store_they_could_not_read() {
+    struct Unreadable(Mutex<usize>);
+    impl StatsStore for Unreadable {
+        fn read(&self) -> Result<Option<Value>, String> {
+            Err("EIO: i/o error".into())
+        }
+        fn write(&self, _document: &Value) -> Result<(), String> {
+            *self.0.lock().unwrap() += 1;
+            Ok(())
+        }
+    }
+    let stats = SessionStats::new("lane", Arc::new(|| 7), Duration::from_secs(1_000_000));
+    let store = Arc::new(Unreadable(Mutex::new(0)));
+    stats.attach(store.clone());
+    stats.usage_limit_block();
+    stats.flush();
+    stats.close();
+    assert_eq!(*store.0.lock().unwrap(), 0);
+    assert_eq!(stats.snapshot()["usageLimitBlocks"], 1);
+}

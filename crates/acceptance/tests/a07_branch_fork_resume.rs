@@ -10,7 +10,7 @@
 //! assistant entries, navigation moves the branch tip (the storage effect of `navigateTree` to an entry), and the
 //! refinement branch is the tip plus the entries on its path, the session worker's computation.
 
-mod services_support;
+use crate::services_support;
 
 use delegation::usage::UsageLedger;
 use kernel::Signal;

@@ -3,7 +3,7 @@
 //! Python kernel, against a scripted provider. Every run uses a private HOME, ULTRON_CODING_AGENT_DIR and
 //! ULTRON_SERVER_DIR under the system temp dir (asserted), never the user's.
 
-mod common;
+use crate::common;
 
 use common::{
     Naming, Sandbox, anthropic_text, anthropic_tool, assert_private_home, mock_server, routed_server,
@@ -63,7 +63,9 @@ fn assert_only_rlm(requests: &[Value]) {
             .map(|t| t["name"].as_str().unwrap())
             .collect();
         assert_eq!(names, ["rlm"], "the model's tool list");
-        assert!(cli::compose::only_rlm(request["body"]["tools"].as_array().unwrap()));
+        assert!(session_core::compose::only_rlm(
+            request["body"]["tools"].as_array().unwrap()
+        ));
     }
 }
 
@@ -404,7 +406,7 @@ fn cli_composition_cell_calls_the_memory_api_on_the_injected_backend() {
         session_root: root,
         metadata: created.metadata().clone(),
         mode: "print".into(),
-        services: cli::compose::Services {
+        services: session_core::compose::Services {
             memory: Some(bank.clone()),
             ..Default::default()
         },
@@ -532,7 +534,7 @@ fn cli_composition_auto_memory_recalls_before_a_user_message() {
         session_root: root,
         metadata: created.metadata().clone(),
         mode: "print".into(),
-        services: cli::compose::Services {
+        services: session_core::compose::Services {
             memory: Some(bank.clone()),
             ..Default::default()
         },
@@ -700,18 +702,18 @@ fn cli_composition_lane_declares_exactly_the_rlm_tool() {
         var: Arc::new(move |key| vars.iter().find(|(k, _)| k == key).map(|(_, v)| v.clone())),
         package: config::paths::normalize(&Path::new(env!("CARGO_MANIFEST_DIR")).join("../../packages/coding-agent")),
     };
-    let runtime = cli::compose::Runtime::new(
+    let runtime = session_core::compose::Runtime::new(
         &env,
         "print",
         sandbox.sessions_dir().join("lane"),
-        cli::compose::Services::default(),
+        session_core::compose::Services::default(),
     )
     .unwrap();
     assert!(runtime.diagnostics.is_empty(), "{:?}", runtime.diagnostics);
     let model = ai::models::builtin_model("anthropic", "claude-sonnet-4-5")
         .unwrap()
         .clone();
-    let lane = cli::lane::Lane::open(&runtime, &model, Some("test-key".into()), "lane-test").unwrap();
+    let lane = session_core::lane::Lane::open(&runtime, &model, Some("test-key".into()), "lane-test").unwrap();
     let tools: Vec<String> = lane.tools().iter().map(|t| t.tool().name.clone()).collect();
     assert_eq!(tools, ["rlm"]);
     let Some(ai::Message::System(system)) = lane.system_message(&runtime.system.current()) else {

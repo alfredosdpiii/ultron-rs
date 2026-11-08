@@ -5,12 +5,12 @@
 //! echoing predict adapter, reviewer lanes answering with the JSON text of their request, and the progress,
 //! schedules-and-goals and release-gate modules behind the same request path as a cell's.
 
-mod agents_support;
-mod services_support;
+use crate::agents_support;
+use crate::services_support;
 
 use agents_support::{Memory, aborted, adapter, definition, input_of};
-use delegation::task_store::DocumentStore;
-use kernel_apis::{MemoryDocumentStore, ProgressModule, SchedulesModule};
+use kernel::store::{DocumentStore, MemoryDocumentStore};
+use kernel_apis::{ProgressModule, SchedulesModule};
 use serde_json::{Value, json};
 use services::ReleaseGateModule;
 use services_support::{Host, Setup, build, rejects};
@@ -105,7 +105,7 @@ fn acceptance_a14_every_task_result_path_is_unverified_and_a_stored_verified_res
     for result in &results {
         assert_eq!(result["verification"], "unverified", "{result}");
     }
-    let mut reader = store.clone();
+    let reader = store.clone();
     let document = reader.read().unwrap().unwrap();
     for task in document["tasks"].as_array().unwrap() {
         assert_eq!(task["result"]["verification"], "unverified", "{task}");
@@ -117,7 +117,7 @@ fn acceptance_a14_every_task_result_path_is_unverified_and_a_stored_verified_res
         "id": "ultron-task-crashed", "key": "crashed", "fingerprint": "c".repeat(64),
         "definition": "rlm-child@1", "state": "running",
     });
-    let mut crashed = Memory::default();
+    let crashed = Memory::default();
     crashed.write(&json!({ "version": 1, "tasks": [running] })).unwrap();
     let reopened = build(Setup {
         tasks: Box::new(crashed),
@@ -135,7 +135,7 @@ fn acceptance_a14_every_task_result_path_is_unverified_and_a_stored_verified_res
     );
     reopened.close();
     // A journal claiming verified completion is rejected outright.
-    let mut forged = Memory::default();
+    let forged = Memory::default();
     let mut completed = running.clone();
     completed["state"] = json!("completed");
     completed["result"] = json!({ "status": "succeeded", "value": "done", "verification": "verified" });

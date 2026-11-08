@@ -1,6 +1,5 @@
 //! Shared test helpers: a scripted provider server and the format-4 journal normalization of
 //! `fixtures/print_mode.mjs` (`normalizeJournal`).
-#![allow(dead_code)]
 
 use serde_json::{Map, Value, json};
 use std::io::{BufRead, BufReader, Read, Write};

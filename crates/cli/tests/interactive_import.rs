@@ -4,7 +4,7 @@
 //! (client-tui-sessions.ts `importPiSessionFile`, server.ts `importPi`). The Pi file is the linear fixture of
 //! crates/session-core/fixtures/migration (TypeScript test ultron-migration.test.ts).
 
-mod tui_harness;
+use crate::tui_harness;
 
 use serde_json::Value;
 use tui_harness::{Mock, Tui};

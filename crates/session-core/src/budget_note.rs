@@ -2,10 +2,10 @@
 //! that a lane's work is charged to has left under its turn and token caps, appended to every `rlm` result of every
 //! lane in every mode (print, JSON, RPC and interactive sessions all run through the session actor).
 
-use crate::lane::MAIN;
 use crate::subagents::DurableChildren;
 use delegation::agents::Agents;
 use delegation::usage::{UsageLedger, budget_line};
+use session_journal::run::MAIN_LANE;
 use std::sync::Arc;
 
 /// The budget line for a cell result on `lane`; `None` when there is nothing to show.
@@ -17,7 +17,7 @@ pub type BudgetNote = Arc<dyn Fn(&str) -> Option<String> + Send + Sync>;
 pub fn budget_note(children: Arc<DurableChildren>, agents: Agents, usage: UsageLedger) -> BudgetNote {
     let explicit_token_cap = usage.limits().max_total_tokens.is_some();
     Arc::new(move |lane| {
-        let root = if lane == MAIN {
+        let root = if lane == MAIN_LANE {
             children.current_root()
         } else {
             children.usage_root_of_lane(lane, &agents)

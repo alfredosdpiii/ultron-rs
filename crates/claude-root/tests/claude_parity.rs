@@ -14,8 +14,7 @@
 //! - `schedule.every|at`, `rlm.spawn(keep=True)`, `rlm.ask` and the swarm are refused with a clear error;
 //! - each turn records a working-tree checkpoint, as native Ultron's root turns do.
 
-#[path = "../../cli/tests/executable_support/mod.rs"]
-mod executable_support;
+use crate::executable_support;
 
 use claude_root::control::ControlClient;
 use claude_root::mcp_protocol::serve;
@@ -675,7 +674,7 @@ fn claude_root_w25c_lokis_policy_reaches_the_root_prompt_and_claude_subagents() 
         root.git(&["log", "-1", "--format=%s"]) == "Add Loki guardrails"
     });
     server.close();
-    let note = claude_root::guide::loki_note_at(Some(&root.path("w"))).expect("Loki's policy note");
+    let note = loki::session_note(&root.path("w")).expect("Loki's policy note");
     // The launcher puts the policy in the root's prompt: a root without Ultron's hooks has it too.
     let prompt = print_config(&root, &vars);
     assert!(prompt.contains(&note), "{prompt}");

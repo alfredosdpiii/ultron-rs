@@ -3,7 +3,7 @@
 //! model fixes it: the next prompt runs on the selected one. Print mode and RPC, against a scripted Anthropic server
 //! on loopback; the session is a legacy (v3) file whose model is no longer in the catalog.
 
-mod common;
+use crate::common;
 
 use cli::rpc::client::{RpcClient, RpcClientOptions};
 use common::{Naming, Sandbox, anthropic_text, mock_server, normalize_journal, session_files};

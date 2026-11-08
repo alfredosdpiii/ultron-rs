@@ -3,8 +3,9 @@
 //! kernel runs the real runtime.py from a copy of its directory whose `autoreview_api.run_file` (the review cell's
 //! entry) is replaced by a probe that records what it finds. New in Rust: literal expectations.
 
+use ai::retry::RetryPolicy;
 use ai::{HttpRequest, HttpResponse, Model, Transport};
-use review::engine::{EngineOptions, KernelEngine, ModelResolver, RetryPolicy, ReviewEngine};
+use review::engine::{EngineOptions, KernelEngine, ModelResolver, ReviewEngine};
 use serde_json::{Value, json};
 use std::future::Future;
 use std::os::unix::fs::PermissionsExt;

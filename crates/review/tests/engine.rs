@@ -3,11 +3,12 @@
 //! transport, routed by the model each frame names. The command-level differential test against the TypeScript is
 //! crates/cli/tests/autoreview.rs.
 
+use ai::retry::{RetryPolicy, is_retryable_text};
 use ai::{Body, HttpRequest, HttpResponse, Model, Transport};
 use kernel::CellError;
 use review::engine::{
-    EngineOptions, KernelEngine, ModelResolver, RetryPolicy, RetryingTransport, ReviewEngine, SESSION_RETENTION,
-    finish_result, is_retryable_failure, pipeline_error, prune_sessions, review_cell,
+    EngineOptions, KernelEngine, ModelResolver, RetryingTransport, ReviewEngine, SESSION_RETENTION, finish_result,
+    pipeline_error, prune_sessions, review_cell,
 };
 use serde_json::{Value, json};
 use std::future::Future;
@@ -337,7 +338,7 @@ fn send(replies: Vec<(u16, &'static str)>, policy: RetryPolicy) -> (Result<(u16,
 #[test]
 fn review_engine_retries_transient_provider_failures_like_the_frame_harness() {
     let quick = RetryPolicy {
-        base_delay_ms: 1.0,
+        base_delay_ms: 1,
         ..RetryPolicy::default()
     };
     // A rate limit, then success: the frame sees only the success.
@@ -377,10 +378,10 @@ fn review_engine_retries_transient_provider_failures_like_the_frame_harness() {
     let policy = RetryPolicy::default();
     assert_eq!(
         (1..=7).map(|a| policy.delay_ms(a)).collect::<Vec<_>>(),
-        [2000.0, 4000.0, 8000.0, 16000.0, 32000.0, 60000.0, 60000.0]
+        [2000, 4000, 8000, 16000, 32000, 60000, 60000]
     );
-    assert!(is_retryable_failure("429 Too Many Requests"));
-    assert!(is_retryable_failure("upstream connect error"));
-    assert!(!is_retryable_failure("429 GoUsageLimitError"));
-    assert!(!is_retryable_failure(""));
+    assert!(is_retryable_text("429 Too Many Requests"));
+    assert!(is_retryable_text("upstream connect error"));
+    assert!(!is_retryable_text("429 GoUsageLimitError"));
+    assert!(!is_retryable_text(""));
 }

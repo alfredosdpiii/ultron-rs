@@ -1,6 +1,6 @@
 //! A23 (durable work): schedules fire on their own and exactly once, and the session goal keeps going, across a
 //! worker killed with SIGKILL. A child process (this test binary in a child role) owns the stores: the task journal
-//! (`delegation::agents::Agents` over a file), the schedules and goal documents (`kernel_apis::FileDocumentStore`)
+//! (`delegation::agents::Agents` over a file), the schedules and goal documents (`kernel::store::FileDocumentStore`)
 //! and the shell jobs journal. It is killed at a named phase; the parent reopens the same files through
 //! `kernel_apis::DurableWork`, the composition root's entry point, and checks what recovery did.
 //!
@@ -15,13 +15,12 @@ mod common;
 use agents_support::{Options, aborted, adapter};
 use common::HANG;
 use delegation::agents::Agents;
-use host::journal::FileJobJournal;
 use host::{AllowAll, Host};
+use kernel::store::{DocumentStore, FileDocumentStore};
 use kernel::{HostHandler, Kernel, KernelOptions, Signal, Status};
 use kernel_apis::goal::TaskGoalJobs;
 use kernel_apis::{
-    DocumentStore, DurableWork, DurableWorkOptions, FileDocumentStore, GoalDriver, GoalJobs, KernelApis,
-    ManualTickClock, SchedulesModule, TaskHost,
+    DurableWork, DurableWorkOptions, GoalDriver, GoalJobs, KernelApis, ManualTickClock, SchedulesModule, TaskHost,
 };
 use serde_json::{Map, Value, json};
 use std::path::{Path, PathBuf};
@@ -43,11 +42,11 @@ fn wait_for(what: &str, mut condition: impl FnMut() -> bool) {
 /// The task journal in one JSON file (the session value `ultron.rlm/tasks`).
 struct FileTasks(PathBuf);
 
-impl delegation::task_store::DocumentStore for FileTasks {
-    fn read(&mut self) -> Result<Option<Value>, String> {
+impl kernel::store::DocumentStore for FileTasks {
+    fn read(&self) -> Result<Option<Value>, String> {
         FileDocumentStore::new(&self.0).read()
     }
-    fn write(&mut self, document: &Value) -> Result<(), String> {
+    fn write(&self, document: &Value) -> Result<(), String> {
         FileDocumentStore::new(&self.0).write(document)
     }
 }
@@ -71,7 +70,7 @@ fn worker(dir: &Path, now: i64, phase: Phase) -> Worker {
             ..Options::default()
         },
         Box::new(FileTasks(dir.join("tasks.json"))),
-        Box::new(delegation::task_store::MemoryStore::default()),
+        Box::new(kernel::store::MemoryDocumentStore::default()),
     );
     let agents = fixture.agents.clone();
     let tasks: Arc<dyn TaskHost> = Arc::new(Phased {
@@ -82,7 +81,7 @@ fn worker(dir: &Path, now: i64, phase: Phase) -> Worker {
     let clock = ManualTickClock::new(now);
     let host = Arc::new(
         Host::new(dir, dir.join(".jobs"), dir, Box::new(AllowAll))
-            .with_journal(Arc::new(FileJobJournal::new(dir.join("jobs.json"))))
+            .with_journal(Arc::new(FileDocumentStore::new(dir.join("jobs.json"))))
             .unwrap(),
     );
     let schedules = Arc::new(SchedulesModule::new(

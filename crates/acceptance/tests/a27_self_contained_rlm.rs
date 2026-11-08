@@ -3,7 +3,7 @@
 //! (and a rejecting) host handler; the Rust host operations (crates/host) behind a recorder; and the `ultron` binary
 //! running the task as `rlm` cells.
 
-mod common;
+use crate::common;
 
 use common::{Install, Provider, Recorder, Reply, kernel_in, run, stdout_of, value};
 use host::cell::{CellFormat, cell_output};

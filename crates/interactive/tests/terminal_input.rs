@@ -8,16 +8,17 @@
 use std::rc::Rc;
 use std::sync::mpsc;
 
-mod support;
+use crate::support;
 use support::Sent;
 
 use interactive::app::{App, AppOptions};
 use interactive::history::PromptHistoryStore;
 use interactive::keybindings::Platform;
 use interactive::keybindings::native_app_keybindings;
-use interactive::lane::{LaneCommand, LaneEvent, ModelInfo, QueueKind, SessionOpened};
+use interactive::lane::{LaneCommand, LaneEvent, ModelInfo, SessionOpened};
 use interactive::qol::QolSettings;
 use interactive::run::{UiEvent, paint_loop_with};
+use protocol::watch::QueueKind;
 use serde_json::{Value, json};
 use theme::{ColorMode, builtin_theme_json, create_theme};
 use tui::KeyContext;

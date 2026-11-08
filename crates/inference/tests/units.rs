@@ -1,7 +1,7 @@
 //! Ported from packages/coding-agent/test/ultron-a47-a50-bounded-inference.test.ts (rlm.load, rlm.infer, A48, A49
 //! single-frame cases) with literal expectations, plus this host's own choices (delegation, refusals, cancellation).
 
-mod common;
+use crate::common;
 
 use common::{Scripted, model};
 use inference::Inference;

@@ -115,7 +115,7 @@ impl Mock {
                     let mut body = vec![0; length];
                     reader.read_exact(&mut body).unwrap();
                     let body = String::from_utf8_lossy(&body);
-                    let reply = if body.contains(cli::naming::SYSTEM) {
+                    let reply = if body.contains(session_core::naming::SYSTEM) {
                         titles.fetch_add(1, Ordering::SeqCst);
                         let (text, hold) = title.unwrap_or(("Untitled".into(), false));
                         if hold {

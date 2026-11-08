@@ -10,16 +10,16 @@ autotests = false
 [dependencies]
 ai = { path = "../ai" }
 base64 = "=0.23.1"
+config = { path = "../config" }
 fancy-regex = "=0.19.2"
-getrandom = "=0.4.3"
 host = { path = "../host" }
 jsrt = { path = "../jsrt" }
 kernel = { path = "../kernel" }
+model-scope = { path = "../model-scope" }
+protocol = { path = "../protocol" }
 resources = { path = "../resources" }
-serde = "=1.0.229"
 serde_json = { version = "=1.0.151", features = ["preserve_order"] }
 session-journal = { path = "../session-journal" }
-sha2 = "=0.10.9"
 tempfile = "=3.27.0"
 tokio = { version = "=1.53.2", features = ["rt", "time"] }
 yaml-rust2 = "=0.13.0"

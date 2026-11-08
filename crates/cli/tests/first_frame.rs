@@ -4,8 +4,8 @@
 //! and the Python interpreter of the RLM kernel blocks until released; the header must still be drawn. A paint path
 //! that awaited either would never draw it (the test then fails at its 120 s hang guard), whatever the machine load.
 
-mod executable_support;
-mod tui_harness;
+use crate::executable_support;
+use crate::tui_harness;
 
 use std::net::TcpListener;
 use std::sync::Arc;

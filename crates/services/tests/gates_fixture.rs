@@ -4,7 +4,8 @@
 //! text) after every step, across reopens, tampered, newer and corrupt documents and failing writes.
 
 use kernel::Signal;
-use kernel_apis::{ApiModule, DocumentStore, Request, TaskHost};
+use kernel::store::DocumentStore;
+use kernel_apis::{ApiModule, Request, TaskHost};
 use serde_json::{Value, json};
 use services::ReleaseGateModule;
 use std::path::Path;

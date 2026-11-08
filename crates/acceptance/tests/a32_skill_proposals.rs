@@ -4,7 +4,7 @@
 //! service, `LocalServices::worker`, over the session's own values in a real format-4 session journal, as
 //! `createWorkerServices` keeps them under `ultron.local`), with their literal expectations.
 
-mod services_support;
+use crate::services_support;
 
 use serde_json::{Value, json};
 use services::SessionValues;

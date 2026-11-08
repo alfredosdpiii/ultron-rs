@@ -3,12 +3,13 @@
 //! novelty by evidence key and hash, stall windows, owner/ancestor access, budget denials, verifier claims), and the
 //! reload table (pending verifier claims settle as unverified; invalid stored documents are refused).
 
-mod common;
-mod fake_tasks;
+use crate::common;
+use crate::fake_tasks;
 
 use common::{FIXED_NOW, Made, assert_area, fixture};
 use fake_tasks::FakeTasks;
-use kernel_apis::{ApiModule, DocumentStore, KernelApis, MemoryDocumentStore, ProgressModule};
+use kernel::store::{DocumentStore, MemoryDocumentStore};
+use kernel_apis::{ApiModule, KernelApis, ProgressModule};
 use serde_json::{Value, json};
 use std::path::Path;
 use std::sync::Arc;

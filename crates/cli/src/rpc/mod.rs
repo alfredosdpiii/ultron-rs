@@ -3,7 +3,7 @@
 //! `{id, type: "response", command, success, data | error}` line, and lane events stream as Pi session events.
 //!
 //! The command layer ([`handle`]) parses and validates commands and shapes responses; everything a command does
-//! to a session goes through [`RpcSession`]. [`remote`] is the session as `rpc-native.ts` reaches it: through this
+//! to a session goes through [`Remote`]. [`remote`] is the session as `rpc-native.ts` reaches it: through this
 //! process's server generation, attached to the session worker that runs it.
 
 pub mod client;
@@ -11,10 +11,13 @@ pub mod events;
 pub mod jsonl;
 pub mod remote;
 
+use protocol::watch::QueueKind;
 use serde_json::{Map, Value, json};
 use std::io::Write;
 use std::sync::mpsc::Receiver;
 use std::sync::{Arc, Mutex, PoisonError};
+
+use remote::Remote;
 
 /// The stdout line writer, shared by the command loop and the threads that answer later (bash).
 #[derive(Clone)]
@@ -34,13 +37,11 @@ impl Output {
 }
 
 /// What the command loop reacts to: a stdin record, the end of stdin, or an event of the session's own work.
-pub enum Input<E> {
+pub enum Input {
     Line(String),
     Eof,
-    Event(E),
+    Event(remote::Event),
 }
-
-pub use session_core::core::QueueKind;
 
 /// A command that answers after the handler returns (`bash`): it writes its response line itself.
 pub struct Reply {
@@ -56,76 +57,6 @@ impl Reply {
             Err(message) => failure(self.id.as_ref(), Some(&self.command), &message),
         });
     }
-}
-
-/// The session operations behind the RPC commands. Errors are the `error` text of the failed response.
-pub trait RpcSession {
-    /// The session's own work reporting back (run events, finished background commands).
-    type Event: Send + 'static;
-
-    fn deliver(&mut self, event: Self::Event, out: &Output);
-    /// Whether work is still in flight that must finish before the process exits.
-    fn busy(&self) -> bool;
-    /// Stdin ended: stop runs, then [`busy`](Self::busy) drains the rest.
-    fn input_ended(&mut self);
-    /// Release the session (delete `--no-session` files, stop the kernel).
-    fn close(&mut self);
-
-    fn is_running(&self) -> bool;
-    /// Start a run with this prompt; `agent_start` is emitted before this returns.
-    fn prompt(&mut self, message: String, images: Vec<Value>, out: &Output) -> Result<(), String>;
-    fn enqueue(&mut self, kind: QueueKind, message: String, images: Vec<Value>, out: &Output) -> Result<(), String>;
-    fn abort(&mut self);
-    /// Empty the queues; returns the texts that were queued.
-    fn clear_queue(&mut self, out: &Output) -> Value;
-    fn new_session(&mut self) -> Result<(), String>;
-    fn state(&self) -> Value;
-    fn available_models(&self) -> Vec<Value>;
-    /// Select a model from the available ones; returns it.
-    fn set_model(&mut self, provider: &str, model_id: &str) -> Result<Value, String>;
-    /// The next available model, or `None` with fewer than two.
-    fn cycle_model(&mut self) -> Result<Option<Value>, String>;
-    fn thinking_levels(&self) -> Vec<String>;
-    fn set_thinking_level(&mut self, level: &str, out: &Output) -> Result<(), String>;
-    fn cycle_thinking_level(&mut self, out: &Output) -> Result<Option<String>, String>;
-    fn set_queue_mode(&mut self, kind: QueueKind, mode: &str) -> Result<(), String>;
-    /// Compact; `reply` answers once the compaction ends, so `abort` and `get_state` are served meanwhile.
-    fn compact(&mut self, custom_instructions: Option<&str>, reply: Reply) -> Result<(), String>;
-    fn set_auto_compaction(&mut self, enabled: bool);
-    fn set_auto_retry(&mut self, enabled: bool);
-    fn abort_retry(&mut self);
-    fn bash(&mut self, command: String, exclude_from_context: bool, reply: Reply) -> Result<(), String>;
-    fn abort_bash(&mut self);
-    fn session_stats(&self) -> Value;
-    fn switch_session(&mut self, selector: &str) -> Result<(), String>;
-    /// Fork before a user message; returns its text.
-    fn fork(&mut self, entry_id: &str) -> Result<String, String>;
-    fn clone_session(&mut self) -> Result<(), String>;
-    fn fork_messages(&self) -> Vec<Value>;
-    /// Entries after `since` (all without it), and the leaf id.
-    fn entries(&self, since: Option<&str>) -> Result<(Vec<Value>, Value), String>;
-    fn tree(&self) -> (Value, Value);
-    fn last_assistant_text(&self) -> Option<String>;
-    fn set_session_name(&mut self, name: &str) -> Result<(), String>;
-    fn messages(&self) -> Vec<Value>;
-    fn commands(&self) -> Result<Vec<Value>, String>;
-    /// `/goal <args>`: the session goal's command (set, pause, resume, clear, check); returns its reply text.
-    fn goal(&mut self, args: &str) -> Result<String, String> {
-        let _ = args;
-        Err("/goal is not available in this session".into())
-    }
-    /// `/persona on|off|auto`, `/keepgoing on|off` (`command`: `persona` or `keepgoing`; empty `args` reports): the
-    /// session's persona toggle and keep-going mode (resources::keep_going); `{text, persona, effective, keepGoing}`.
-    fn persona(&mut self, command: &str, args: &str) -> Result<Value, String> {
-        let _ = (command, args);
-        Err("/persona is not available in this session".into())
-    }
-    /// A read-only inspection request (`agents.status`, `rlm.frames`, ...) through the session's inspector.
-    fn inspect(&mut self, request: &str, payload: Value) -> Result<Value, String>;
-    /// Write the session's active branch as an HTML page; returns the path written.
-    fn export_html(&mut self, output_path: Option<&str>) -> Result<String, String>;
-    /// Pi's `extension_ui_response`: the answer to a `/mcp` dialog of the worker.
-    fn extension_ui_response(&mut self, _id: &str, _answer: Value) {}
 }
 
 /// The arguments of a `/goal` prompt (`None`: not a `/goal` command).
@@ -185,8 +116,8 @@ fn queue_mode(mode: Option<&Value>) -> Result<&str, String> {
 }
 
 /// One command: `Ok(None)` when the response comes later (or was already written).
-fn run_command<S: RpcSession>(
-    session: &mut S,
+fn run_command(
+    session: &mut Remote,
     command: &Value,
     kind: &str,
     out: &Output,
@@ -214,10 +145,10 @@ fn run_command<S: RpcSession>(
                         return Err("Agent is already processing. Specify streamingBehavior ('steer' or 'followUp') to queue the message.".into());
                     }
                 };
-                session.enqueue(queue, message, images, out)?;
+                session.enqueue(queue, message, images)?;
                 return done(None);
             }
-            session.prompt(message, images, out)?;
+            session.prompt(message, images)?;
             done(None)
         }
         "steer" | "follow_up" => {
@@ -227,14 +158,14 @@ fn run_command<S: RpcSession>(
             } else {
                 QueueKind::FollowUp
             };
-            session.enqueue(queue, message, images, out)?;
+            session.enqueue(queue, message, images)?;
             done(None)
         }
         "abort" => {
             session.abort();
             done(None)
         }
-        "clear_queue" => done(Some(session.clear_queue(out))),
+        "clear_queue" => done(Some(session.clear_queue())),
         "new_session" => {
             session.new_session()?;
             done(Some(json!({"cancelled": false})))
@@ -249,10 +180,10 @@ fn run_command<S: RpcSession>(
         "get_available_models" => done(Some(json!({"models": session.available_models()}))),
         "set_thinking_level" => {
             let level = jsrt::value::string(command.get("level"));
-            session.set_thinking_level(&level, out)?;
+            session.set_thinking_level(&level)?;
             done(None)
         }
-        "cycle_thinking_level" => match session.cycle_thinking_level(out)? {
+        "cycle_thinking_level" => match session.cycle_thinking_level()? {
             Some(level) => done(Some(json!({"level": level}))),
             None => done(Some(Value::Null)),
         },
@@ -367,7 +298,7 @@ fn run_command<S: RpcSession>(
 
 /// `handleLine`: parse one record and answer it. Extension UI responses go to the session's worker (unknown ids are
 /// ignored there) and are not answered.
-pub fn handle_line<S: RpcSession>(session: &mut S, line: &str, out: &Output) {
+pub fn handle_line(session: &mut Remote, line: &str, out: &Output) {
     let command: Value = match serde_json::from_str(line) {
         Ok(command) => command,
         Err(error) => {
@@ -408,7 +339,7 @@ pub fn handle_line<S: RpcSession>(session: &mut S, line: &str, out: &Output) {
 }
 
 /// Serve commands until stdin ends, then let in-flight work finish and release the session.
-pub fn serve<S: RpcSession>(session: &mut S, inputs: &Receiver<Input<S::Event>>, out: &Output) {
+pub fn serve(session: &mut Remote, inputs: &Receiver<Input>, out: &Output) {
     let mut ended = false;
     while let Ok(input) = inputs.recv() {
         match input {

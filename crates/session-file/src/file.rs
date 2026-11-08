@@ -9,7 +9,8 @@ use serde_json::Value;
 use crate::context::{entry_type, field};
 use crate::env::Env;
 use crate::js;
-use crate::paths::{join, normalize_path, resolve_path};
+use crate::paths::{normalize_path, resolve_path};
+use jsrt::path::join;
 
 /// The session format version this crate writes.
 pub const CURRENT_SESSION_VERSION: u64 = 3;

@@ -214,8 +214,8 @@ fn cli_tui_login_openrouter_saves_what_typescript_returns() {
         case["answer"].as_str().unwrap().to_string()
     });
     assert_eq!(
-        ai::json::normalize_numbers(saved),
-        ai::json::normalize_numbers(case["result"]["credential"].clone())
+        jsrt::json::normalize_numbers(saved),
+        jsrt::json::normalize_numbers(case["result"]["credential"].clone())
     );
 }
 

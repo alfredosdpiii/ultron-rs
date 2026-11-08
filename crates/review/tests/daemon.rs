@@ -3,7 +3,7 @@
 //! ported against the fake hub and a scripted engine. Concurrency tests wait on events (a gate in the engine hook,
 //! the outcome channel); every deadline is a hang guard of at least 120 s. No network, no model calls.
 
-mod github_common;
+use crate::github_common;
 
 use std::collections::VecDeque;
 use std::os::unix::fs::PermissionsExt;

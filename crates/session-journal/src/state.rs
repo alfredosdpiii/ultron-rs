@@ -61,6 +61,46 @@ impl Write {
             key: key.into(),
         }
     }
+
+    /// The entry `id` under `parent` (`None`: the root) with `fields` (`type` first) after them.
+    pub fn entry(id: &str, parent: Option<&str>, mut fields: Map<String, Value>) -> Self {
+        let mut entry = Map::new();
+        entry.insert("id".into(), id.into());
+        entry.insert("parentId".into(), parent.map_or(Value::Null, Value::from));
+        entry.append(&mut fields);
+        Write::Entry(entry)
+    }
+
+    /// A message entry under `parent`.
+    pub fn message_entry(id: &str, parent: Option<&str>, message: Value) -> Self {
+        let mut fields = Map::new();
+        fields.insert("type".into(), "message".into());
+        fields.insert("message".into(), message);
+        Write::entry(id, parent, fields)
+    }
+
+    /// A custom entry (`appendCustomEntry`) under `parent`, with `data` when given.
+    pub fn custom_entry(id: &str, parent: Option<&str>, custom_type: &str, data: Option<Value>) -> Self {
+        let mut fields = Map::new();
+        fields.insert("type".into(), "custom".into());
+        fields.insert("customType".into(), custom_type.into());
+        if let Some(data) = data {
+            fields.insert("data".into(), data);
+        }
+        Write::entry(id, parent, fields)
+    }
+
+    /// A response's usage row (not an adjustment), counted for the entry `entry_id` when given.
+    pub fn usage(id: &str, usage: Value, entry_id: Option<&str>) -> Self {
+        let mut row = Map::new();
+        row.insert("id".into(), id.into());
+        row.insert("usage".into(), usage);
+        if let Some(entry_id) = entry_id {
+            row.insert("entryId".into(), entry_id.into());
+        }
+        row.insert("adjustment".into(), false.into());
+        Write::Usage(row)
+    }
 }
 
 /// `commitWrite`.

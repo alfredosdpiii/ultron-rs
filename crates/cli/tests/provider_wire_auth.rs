@@ -6,8 +6,7 @@
 //! Every process runs with private HOME, ULTRON_CODING_AGENT_DIR and ULTRON_SERVER_DIR; any non-loopback host goes
 //! to a closed loopback proxy port; nothing contacts a provider.
 
-#[path = "daemon_common/mod.rs"]
-mod common;
+use crate::daemon_common as common;
 
 use common::{HANG_GUARD, assert_no_processes};
 use serde_json::{Value, json};

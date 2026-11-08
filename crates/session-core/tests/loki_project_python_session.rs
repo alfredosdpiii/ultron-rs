@@ -5,11 +5,10 @@
 //! one asked (without it the engine would resolve imports with its own interpreter and leave no mark).
 //! The interpreter is a fake script that answers the engine's import probe and records that it ran.
 
-#[path = "../../cli/tests/executable_support/mod.rs"]
-mod executable_support;
+use crate::executable_support;
 
-mod p_session_support;
-mod reopen_support;
+use crate::p_session_support;
+use crate::reopen_support;
 
 use p_session_support::{text, tool, tool_results};
 use reopen_support::Home;

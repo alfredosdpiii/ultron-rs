@@ -11,7 +11,6 @@ pub mod extension_ui;
 pub mod instance;
 pub mod lane;
 pub mod lifecycle;
-mod lock;
 pub mod owner;
 pub mod paths;
 pub mod process;

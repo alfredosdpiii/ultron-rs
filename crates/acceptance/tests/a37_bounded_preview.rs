@@ -3,7 +3,7 @@
 //! expectations, against the real runtime.py under the Rust supervisor. Not ported: the "artifact range reads" half
 //! (`artifacts.put` / `artifacts.read` of NativeLocalServices has no Rust implementation yet).
 
-mod common;
+use crate::common;
 
 use common::{Recorder, kernel_in, run, value};
 use kernel::{ExecutionResult, Status};

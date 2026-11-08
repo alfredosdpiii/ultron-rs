@@ -1,6 +1,7 @@
 //! AGENTS.md / CLAUDE.md discovery (`loadProjectContextFiles` in core/resource-loader.ts).
 
-use crate::paths::{basename, canonicalize, dirname, join, resolve, resolve_path, strip_bom};
+use crate::paths::{canonicalize, resolve_path, strip_bom};
+use jsrt::path::{basename, dirname};
 use std::fs;
 use std::path::Path;
 
@@ -15,7 +16,7 @@ const CANDIDATES: [&str; 5] = ["AGENTS.override.md", "AGENTS.md", "AGENTS.MD", "
 
 fn load_from_dir(dir: &str) -> Option<ContextFile> {
     CANDIDATES.iter().find_map(|name| {
-        let path = join(dir, name);
+        let path = jsrt::path::join(&[dir, name]);
         if !fs::metadata(&path).ok()?.is_file() {
             return None;
         }
@@ -27,54 +28,20 @@ fn load_from_dir(dir: &str) -> Option<ContextFile> {
     })
 }
 
-/// (repo dir, common git dir) of the repository containing `cwd` (`findGitPaths`).
-fn find_git_paths(cwd: &str) -> Option<(String, String)> {
-    let mut dir = cwd.to_string();
-    loop {
-        let git = join(&dir, ".git");
-        if let Ok(meta) = fs::metadata(&git) {
-            if meta.is_file() {
-                let content = fs::read_to_string(&git).ok()?;
-                if let Some(target) = content.trim().strip_prefix("gitdir: ") {
-                    let git_dir = resolve(&dir, target.trim());
-                    if !Path::new(&join(&git_dir, "HEAD")).exists() {
-                        return None;
-                    }
-                    let common = match fs::read_to_string(join(&git_dir, "commondir")) {
-                        Ok(common) => resolve(&git_dir, common.trim()),
-                        Err(_) => git_dir,
-                    };
-                    return Some((dir, common));
-                }
-            } else if meta.is_dir() {
-                if !Path::new(&join(&git, "HEAD")).exists() {
-                    return None;
-                }
-                return Some((dir, git));
-            }
-        }
-        let parent = dirname(&dir);
-        if parent == dir {
-            return None;
-        }
-        dir = parent;
-    }
-}
-
 /// The main repo's context file that a nested linked worktree's own copy shadows (canonical path).
 fn find_shadowed(cwd: &str) -> Option<String> {
-    let (repo_dir, common_git_dir) = find_git_paths(cwd)?;
-    let common = canonicalize(&common_git_dir);
-    let worktree_root = canonicalize(&repo_dir);
+    let git = config::git::find_git_paths(Path::new(cwd))?;
+    let common = canonicalize(&git.common_git_dir.to_string_lossy());
+    let worktree_root = canonicalize(&git.repo_dir.to_string_lossy());
     let main_root = dirname(&common);
     if !worktree_root.starts_with(&format!("{main_root}/")) {
         return None;
     }
-    if canonicalize(&join(&main_root, ".git")) != common {
+    if canonicalize(&jsrt::path::join(&[&main_root, ".git"])) != common {
         return None;
     }
     let own = load_from_dir(&worktree_root)?;
-    Some(join(&main_root, basename(&own.path)))
+    Some(jsrt::path::join(&[&main_root, basename(&own.path)]))
 }
 
 /// The global context file from `agent_dir`, then one per ancestor of `cwd`, outermost first.

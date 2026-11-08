@@ -6,7 +6,7 @@ use std::time::{Duration, Instant};
 
 use tui::*;
 
-mod support;
+use crate::support;
 use support::latch::{HANG_GUARD, Latch};
 
 #[test]

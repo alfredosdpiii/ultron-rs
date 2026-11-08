@@ -4,8 +4,8 @@
 //! threshold compaction runs before the request, also across reopen; a manual compaction places its summary through
 //! a write submission. Range selection cases run on synthetic views.
 
-mod chat_support;
-mod support;
+use crate::chat_support;
+use crate::support;
 
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};

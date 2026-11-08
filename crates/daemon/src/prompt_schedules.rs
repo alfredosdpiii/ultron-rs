@@ -495,13 +495,8 @@ pub fn in_journal<T>(
         ),
         crate::owner::OwnerError::Io(error) => error.to_string(),
     })?;
-    let _lock = crate::lock::Lock::acquire(
-        path,
-        Duration::from_millis(2_000),
-        Duration::from_millis(25),
-        Duration::from_millis(4_000),
-    )
-    .map_err(|e| e.to_string())?;
+    let _lock = crate::paths::lock(path, Duration::from_millis(2_000), Duration::from_millis(4_000))
+        .map_err(|e| e.to_string())?;
     let metadata = session_journal::catalog::read_metadata(path)
         .ok_or_else(|| format!("Not a session file: {}", path.display()))?;
     let root = path

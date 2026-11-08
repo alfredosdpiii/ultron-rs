@@ -20,12 +20,12 @@ use std::path::Path;
 use regex::Regex;
 use serde_json::{Map, Value, json};
 
-use crate::js::path_join;
 use crate::prepare::{NODE_LOCKS, ToolchainEntry, ToolchainRequests, detect_ecosystems, environment_hash, find_mise};
 use crate::reviewer::{EnvironmentPreparer, PreparedEnvironment};
 use crate::runner::{RunOptions, RunResult, Runner};
 use crate::settings::Mise;
 use crate::state::to_json_1;
+use jsrt::path::{basename, dirname};
 
 /// `PrepareOptions` of prepare.ts.
 pub struct PrepareOptions<'a> {
@@ -129,19 +129,6 @@ fn failure_output(result: &RunResult) -> String {
     format!("...{tail}")
 }
 
-/// Node's `path.dirname` for the paths used here.
-fn dirname(path: &str) -> String {
-    match path.rfind('/') {
-        Some(0) => "/".into(),
-        Some(index) => path[..index].to_string(),
-        None => ".".into(),
-    }
-}
-
-fn basename(path: &str) -> &str {
-    path.rsplit('/').next().unwrap_or(path)
-}
-
 fn exists(path: &str) -> bool {
     Path::new(path).exists()
 }
@@ -238,7 +225,7 @@ fn system_or_managed(binary: &str, env: &HashMap<String, String>) -> Option<(Str
     let system = Regex::new(r"^/(usr|bin|sbin|lib)(/|$)").expect("static pattern");
     let path = env.get("PATH").map(String::as_str).unwrap_or("");
     for dir in path.split(':') {
-        let candidate = path_join(&[dir, binary]);
+        let candidate = jsrt::path::join(&[dir, binary]);
         if !exists(&candidate) {
             continue;
         }
@@ -249,7 +236,7 @@ fn system_or_managed(binary: &str, env: &HashMap<String, String>) -> Option<(Str
         if system.is_match(&real) {
             return Some((prefix, "system"));
         }
-        if basename(&dirname(&real)) == "bin" && exists(&path_join(&[&prefix, "lib"])) {
+        if basename(&dirname(&real)) == "bin" && exists(&jsrt::path::join(&[&prefix, "lib"])) {
             return Some((prefix, "mise"));
         }
     }
@@ -333,7 +320,7 @@ pub fn resolve_toolchain(
 }
 
 fn binary_of(entry: Option<&ToolchainEntry>, name: &str) -> Option<String> {
-    let path = path_join(&[&entry?.path, "bin", name]);
+    let path = jsrt::path::join(&[&entry?.path, "bin", name]);
     exists(&path).then_some(path)
 }
 
@@ -359,8 +346,8 @@ pub fn prepare_environment(repo_dir: &str, options: &PrepareOptions) -> Result<P
     let found = detect_ecosystems(repo);
     let (needs_python, needs_node) = (!found.python.is_empty(), !found.node.is_empty());
     let hash = environment_hash(repo, options.python.as_deref());
-    let dir = path_join(&[&options.cache_dir, "envs", &hash]);
-    let record_path = path_join(&[&dir, "toolchain.json"]);
+    let dir = jsrt::path::join(&[&options.cache_dir, "envs", &hash]);
+    let record_path = jsrt::path::join(&[&dir, "toolchain.json"]);
     if !options.force
         && exists(&record_path)
         && let Some(mut record) = ok_record(&record_path)
@@ -394,10 +381,13 @@ pub fn prepare_environment(repo_dir: &str, options: &PrepareOptions) -> Result<P
     failures.extend(toolchain_failures);
     let python = toolchain.iter().find(|entry| entry.tool == "python");
     let timeout_ms = options.timeout_ms.unwrap_or(900_000);
-    let local_bin = path_join(&[&options.home, ".local", "bin"]);
+    let local_bin = jsrt::path::join(&[&options.home, ".local", "bin"]);
     let env_path = env.get("PATH").cloned().unwrap_or_default();
     // The toolchain's bin directories first on PATH for the build tools below.
-    let mut path_parts: Vec<String> = toolchain.iter().map(|entry| path_join(&[&entry.path, "bin"])).collect();
+    let mut path_parts: Vec<String> = toolchain
+        .iter()
+        .map(|entry| jsrt::path::join(&[&entry.path, "bin"]))
+        .collect();
     path_parts.push(local_bin.clone());
     path_parts.push(env_path.clone());
     let run_env: BTreeMap<String, String> = [
@@ -427,7 +417,7 @@ pub fn prepare_environment(repo_dir: &str, options: &PrepareOptions) -> Result<P
         .split(':')
         .map(String::from)
         .chain(std::iter::once(local_bin))
-        .map(|item| path_join(&[&item, "uv"]))
+        .map(|item| jsrt::path::join(&[&item, "uv"]))
         .find(|candidate| exists(candidate));
 
     if needs_python {
@@ -436,7 +426,7 @@ pub fn prepare_environment(repo_dir: &str, options: &PrepareOptions) -> Result<P
                 "uv is not installed (https://docs.astral.sh/uv/): the Python environment was not prepared".into(),
             ),
             Some(uv) => {
-                let venv = path_join(&[&dir, ".venv"]);
+                let venv = jsrt::path::join(&[&dir, ".venv"]);
                 let python_arg = binary_of(python, "python3")
                     .or_else(|| binary_of(python, "python"))
                     .or_else(|| requests.python.clone().filter(|python| !python.is_empty()));
@@ -448,7 +438,7 @@ pub fn prepare_environment(repo_dir: &str, options: &PrepareOptions) -> Result<P
                 if created.code != 0 {
                     failures.push(format!("uv venv failed: {}", failure_output(&created)));
                 } else {
-                    let interpreter = path_join(&[&venv, "bin", "python"]);
+                    let interpreter = jsrt::path::join(&[&venv, "bin", "python"]);
                     let pip = |args: &[&str]| {
                         let mut argv = vec![
                             uv.clone(),
@@ -492,7 +482,7 @@ pub fn prepare_environment(repo_dir: &str, options: &PrepareOptions) -> Result<P
                     // The project's declared dependencies and extras, for an application that is not a buildable
                     // package. None when its pyproject.toml declares none (the editable failure stands alone).
                     let deps_only = |project: &str| -> Option<Result<(), String>> {
-                        let manifest = path_join(&[project, "pyproject.toml"]);
+                        let manifest = jsrt::path::join(&[project, "pyproject.toml"]);
                         let text = fs::read_to_string(&manifest).ok()?;
                         if !Regex::new(r"(?m)^\s*dependencies\s*=")
                             .expect("static pattern")
@@ -572,7 +562,7 @@ pub fn prepare_environment(repo_dir: &str, options: &PrepareOptions) -> Result<P
                         .filter(|name| name.contains('/') && manifest.is_match(name))
                     {
                         let sub = dirname(name);
-                        let project = path_join(&[repo_dir, &sub]);
+                        let project = jsrt::path::join(&[repo_dir, &sub]);
                         if poetry(&project) {
                             let result = install_poetry(&project);
                             if result.code == 0 {
@@ -609,7 +599,7 @@ pub fn prepare_environment(repo_dir: &str, options: &PrepareOptions) -> Result<P
                     let listed = Regex::new(r"requirements.*\.txt$|requirements/").expect("static pattern");
                     let requirements: Vec<&String> = found.python.iter().filter(|name| listed.is_match(name)).collect();
                     for file in &requirements {
-                        let result = pip(&["-r", &path_join(&[repo_dir, file])]);
+                        let result = pip(&["-r", &jsrt::path::join(&[repo_dir, file])]);
                         if result.code == 0 {
                             prepared.push(format!("python: uv pip install -r {file}"));
                             ok = true;
@@ -634,9 +624,9 @@ pub fn prepare_environment(repo_dir: &str, options: &PrepareOptions) -> Result<P
             ),
             Some(lock) => {
                 for name in ["package.json", lock, ".npmrc"] {
-                    let from = path_join(&[repo_dir, name]);
+                    let from = jsrt::path::join(&[repo_dir, name]);
                     if exists(&from) {
-                        let to = path_join(&[&dir, name]);
+                        let to = jsrt::path::join(&[&dir, name]);
                         fs::copy(&from, &to).map_err(|error| io_error("cannot copy", &from, error))?;
                     }
                 }
@@ -696,7 +686,7 @@ fn write_record(path: &str, text: &str) -> Result<(), String> {
 /// `cached` true.
 pub fn cached_environment(repo_dir: &str, cache_dir: &str, python: Option<&str>) -> Option<Prepared> {
     let hash = environment_hash(Path::new(repo_dir), python);
-    let record_path = path_join(&[cache_dir, "envs", &hash, "toolchain.json"]);
+    let record_path = jsrt::path::join(&[cache_dir, "envs", &hash, "toolchain.json"]);
     let mut record = ok_record(&record_path)?;
     record.insert("cached".into(), json!(true));
     Some(Prepared::from_record(Value::Object(record)))
@@ -744,12 +734,5 @@ mod tests {
         assert_eq!(compare_numeric("20.0", "20.0"), Equal);
         assert_eq!(compare_numeric("3.9", "3.10"), Less);
         assert_eq!(compare_numeric("1.0RC", "1.0rc"), Equal);
-    }
-
-    #[test]
-    fn review_prepare_env_dirname_like_node() {
-        assert_eq!(dirname("/usr/bin/env"), "/usr/bin");
-        assert_eq!(dirname("/usr"), "/");
-        assert_eq!(dirname("x"), ".");
     }
 }

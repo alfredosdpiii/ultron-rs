@@ -13,8 +13,10 @@ use serde_json::{Map, Value, json};
 use crate::paths::expand_tilde;
 use crate::settings::{Settings, model_ref, token_cap};
 
-/// `steeringMode` and `followUpMode`.
-pub const QUEUE_MODES: [&str; 2] = ["all", "one-at-a-time"];
+/// `steeringMode` and `followUpMode`: deliver every queued message at once, or one per turn (the default).
+pub const QUEUE_ALL: &str = "all";
+pub const QUEUE_ONE_AT_A_TIME: &str = "one-at-a-time";
+pub const QUEUE_MODES: [&str; 2] = [QUEUE_ALL, QUEUE_ONE_AT_A_TIME];
 /// `transport`: the preferred transport where a provider has several.
 pub const TRANSPORTS: [&str; 4] = ["sse", "websocket", "websocket-cached", "auto"];
 pub const CACHE_WARMING_MODES: [&str; 3] = ["off", "streaming", "idle"];

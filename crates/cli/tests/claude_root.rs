@@ -4,7 +4,7 @@
 //! started with, the JSON-RPC frames of `ultron mcp` sessions, control-socket answers, hook output and
 //! `ultron watch --list` must be equal after the generator's normalization.
 
-mod executable_support;
+use crate::executable_support;
 
 use regex::Regex;
 use serde_json::{Value, json};

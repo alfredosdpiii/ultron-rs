@@ -5,7 +5,7 @@
 //! reaches a provider; browser logins listen on a system-chosen port (`ULTRON_OAUTH_CALLBACK_PORT=0`) and the
 //! browser opener is a stub that only logs the address. Screens are normalized as the recording's are.
 
-mod tui_harness;
+use crate::tui_harness;
 
 use serde_json::Value;
 use tui_harness::{TempDir, Tui, normalize};

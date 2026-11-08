@@ -183,7 +183,7 @@ fn absolute(policy: &Policy, path: &str) -> PathBuf {
         Some(rest) => policy.home.join(rest),
         None => policy.cwd.join(path),
     };
-    crate::settings::normalize(&path)
+    jsrt::path::absolute(&path)
 }
 
 /// The sandbox's own /tmp (and the other private temp dirs): writes there never reach the host.

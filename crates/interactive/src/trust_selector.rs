@@ -148,9 +148,9 @@ impl Component for TrustSelector {
         lines.push(String::new());
         let hints = format!(
             "{}  {}  {}",
-            key_hint(&t, &format_key_text("↑↓", false, false), "navigate"),
-            key_hint(&t, &key_text(&self.keys, "tui.select.confirm", false), "save"),
-            key_hint(&t, &key_text(&self.keys, "tui.select.cancel", false), "cancel"),
+            key_hint(&t, &format_key_text("↑↓", false), "navigate"),
+            key_hint(&t, &key_text(&self.keys, "tui.select.confirm"), "save"),
+            key_hint(&t, &key_text(&self.keys, "tui.select.cancel"), "cancel"),
         );
         lines.extend(text(&hints));
         lines.push(String::new());

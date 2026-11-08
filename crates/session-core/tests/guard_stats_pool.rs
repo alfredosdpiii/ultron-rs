@@ -3,7 +3,7 @@
 //! worktree subagent has a host (and file hooks) of its own; the pool reports the sum, also after the subagent's
 //! lane is gone, and a cell's own `rlm.pool` request carries the same guards as the inspected pool.
 
-mod p_session_support;
+use crate::p_session_support;
 
 use p_session_support::{HANG, Setup, actor, text, tool};
 use serde_json::{Value, json};

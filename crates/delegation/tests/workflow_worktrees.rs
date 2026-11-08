@@ -5,7 +5,7 @@
 
 use delegation::agents::{Agents, AgentsOptions, LaneRunner};
 use delegation::host::{ChildRunner, Delegation, DelegationOptions};
-use delegation::task_store::MemoryStore;
+use kernel::store::MemoryDocumentStore;
 use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -88,7 +88,7 @@ fn setup(root: &Path, with_children: bool) -> Setup {
     let mut options = DelegationOptions::new(runner);
     options.workspace = Some(root.to_path_buf());
     let (delegation, _ends) = Delegation::new(options);
-    let mut agents = AgentsOptions::new(Box::new(MemoryStore::default()));
+    let mut agents = AgentsOptions::new(Box::new(MemoryDocumentStore::default()));
     // Worktree nodes never run as lanes of the workflow host.
     let lanes: LaneRunner = Arc::new(|run| Err(format!("lane run {} is not expected", run.lane)));
     agents.lanes = Some(lanes);

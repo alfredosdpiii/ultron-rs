@@ -8,8 +8,7 @@
 //!   child conversation is aborted, never resent;
 //! - a subagent's model turns are charged to the usage root of the turn that started it (the ledger counts them).
 
-#[path = "daemon_common/mod.rs"]
-mod common;
+use crate::daemon_common as common;
 
 use client::runtime::{CallError, Connection};
 use common::{HANG_GUARD, Home, assert_no_processes, processes_mentioning, text_reply};

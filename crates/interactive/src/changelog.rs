@@ -26,8 +26,7 @@ fn version_of(line: &str) -> Option<(u64, u64, u64)> {
             .and_then(|(n, l)| Some((n?, l)))
     };
     let (major, _) = num(parts.next()?)?;
-    let (minor, l) = num(parts.next()?)?;
-    let _ = l;
+    let (minor, _) = num(parts.next()?)?;
     let (patch, _) = num(parts.next()?)?;
     Some((major, minor, patch))
 }

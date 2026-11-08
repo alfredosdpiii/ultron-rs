@@ -11,26 +11,6 @@ use theme::{Fg, Theme};
 use tui::KeybindingsManager;
 use tui::{Component, Text};
 
-/// `UNREACHABLE_CALLBACK_STEP`.
-const UNREACHABLE_CALLBACK_STEP: &str = "copy that page's full address from the address bar and paste it here.";
-
-/// `unreachableCallbackHint`: what to do when the browser cannot load the login's localhost callback page.
-pub fn unreachable_callback_hint(reach: &str) -> String {
-    if reach == "local" {
-        return format!(
-            "If the browser ends on a page that can't be reached (localhost refused to connect), {UNREACHABLE_CALLBACK_STEP}"
-        );
-    }
-    let place = if reach == "container" {
-        "in a container"
-    } else {
-        "over SSH"
-    };
-    format!(
-        "Ultron is running {place}, so the browser on your computer may not reach this login's callback. If it ends on a page that can't be reached (localhost refused to connect) after you sign in, that is expected: {UNREACHABLE_CALLBACK_STEP}"
-    )
-}
-
 /// A hyperlinked label (OSC 8 with BEL, as the TypeScript writes it).
 fn link(url: &str, label: &str) -> String {
     format!("\x1b]8;;{url}\x07{label}\x1b]8;;\x07")
@@ -159,7 +139,7 @@ impl LoginDialog {
     }
 
     fn hint(&self, theme: &Theme, keybinding: &str, description: &str) -> String {
-        key_hint(theme, &key_text(&self.keys, keybinding, false), description)
+        key_hint(theme, &key_text(&self.keys, keybinding), description)
     }
 
     /// A question the provider's flow asks (`prompt`).
@@ -182,7 +162,7 @@ impl LoginDialog {
                 self.items.push(Item::Spacer);
                 self.line(theme.fg(Fg::Dim, message));
                 let color = if self.reach == "local" { Fg::Dim } else { Fg::Warning };
-                self.line(theme.fg(color, &unreachable_callback_hint(&self.reach)));
+                self.line(theme.fg(color, &config::browser::unreachable_callback_hint(&self.reach)));
                 self.items.push(Item::Input);
                 let hint = self.hint(theme, "tui.select.cancel", "to cancel");
                 self.line(format!("({hint})"));

@@ -8,11 +8,13 @@ publish.workspace = true
 autotests = false
 
 [dependencies]
-compaction = { path = "../compaction" }
+config = { path = "../config" }
 delegation = { path = "../delegation" }
+durable = { path = "../durable" }
+harness = { path = "../harness" }
 indexmap = "=2.14.2"
-inference = { path = "../inference" }
 jsrt = { path = "../jsrt" }
+protocol = { path = "../protocol" }
 serde_json = { version = "=1.0.151", features = ["preserve_order"] }
 session-core = { path = "../session-core" }
 session-journal = { path = "../session-journal" }

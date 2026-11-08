@@ -26,23 +26,11 @@ pub(super) struct RootBranches {
 }
 
 fn root_only(lane: &str) -> Result<(), String> {
-    if lane == LANE {
+    if lane == MAIN_LANE {
         Ok(())
     } else {
         Err(format!("ctx edits the root lane's context only (lane {lane})"))
     }
-}
-
-fn custom_entry(id: &str, parent: Option<&str>, waiting: &Value) -> Write {
-    let mut entry = Map::new();
-    entry.insert("id".into(), id.into());
-    entry.insert("parentId".into(), parent.map_or(Value::Null, Value::from));
-    entry.insert("type".into(), "custom".into());
-    entry.insert("customType".into(), waiting["customType"].clone());
-    if let Some(data) = waiting.get("data") {
-        entry.insert("data".into(), data.clone());
-    }
-    Write::Entry(entry)
 }
 
 /// The waiting entries as writes that place them on the branch after `tip` (and drop them from the waiting
@@ -51,7 +39,14 @@ pub(super) fn placement(session: &session_journal::Session, tip: Option<String>)
     let mut writes = Vec::new();
     let mut tip = tip;
     for waiting in session.state().scan_values(CONTEXT_PENDING, "") {
-        writes.push(custom_entry(&waiting.key, tip.as_deref(), &waiting.value));
+        let value = &waiting.value;
+        let custom_type = value["customType"].as_str().unwrap_or_default();
+        writes.push(Write::custom_entry(
+            &waiting.key,
+            tip.as_deref(),
+            custom_type,
+            value.get("data").cloned(),
+        ));
         writes.push(Write::delete(CONTEXT_PENDING, &waiting.key));
         tip = Some(waiting.key.clone());
     }
@@ -83,13 +78,13 @@ impl RootBranches {
             *running = false;
         }
         let mut session = lock_session(&self.session);
-        let tip = session.branch_tip(LANE).flatten();
+        let tip = session.branch_tip(MAIN_LANE).flatten();
         let (mut writes, placed) = placement(&session, tip.clone());
         if writes.is_empty() {
             return Ok(());
         }
         if let Some(placed) = placed.filter(|placed| Some(placed) != tip.as_ref()) {
-            writes.push(Write::set(BRANCH_TIP, LANE, placed.into()));
+            writes.push(Write::set(BRANCH_TIP, MAIN_LANE, placed.into()));
         }
         session.commit(&writes).map(drop)
     }
@@ -98,7 +93,7 @@ impl RootBranches {
 impl ContextBranches for RootBranches {
     fn entries(&self, lane: &str) -> Result<Vec<Value>, String> {
         root_only(lane)?;
-        lock_session(&self.session).branch_entries(LANE)
+        lock_session(&self.session).branch_entries(MAIN_LANE)
     }
 
     fn append_custom(&self, lane: &str, custom_type: &str, data: &Value) -> Result<String, String> {
@@ -110,10 +105,10 @@ impl ContextBranches for RootBranches {
         if *running {
             session.commit(&[Write::set(CONTEXT_PENDING, &id, waiting)])?;
         } else {
-            let tip = session.branch_tip(LANE).flatten();
+            let tip = session.branch_tip(MAIN_LANE).flatten();
             session.commit(&[
-                custom_entry(&id, tip.as_deref(), &waiting),
-                Write::set(BRANCH_TIP, LANE, id.clone().into()),
+                Write::custom_entry(&id, tip.as_deref(), custom_type, Some(data.clone())),
+                Write::set(BRANCH_TIP, MAIN_LANE, id.clone().into()),
             ])?;
         }
         Ok(id)
@@ -121,6 +116,6 @@ impl ContextBranches for RootBranches {
 
     fn tip_id(&self, lane: &str) -> Result<Option<String>, String> {
         root_only(lane)?;
-        Ok(lock_session(&self.session).branch_tip(LANE).flatten())
+        Ok(lock_session(&self.session).branch_tip(MAIN_LANE).flatten())
     }
 }

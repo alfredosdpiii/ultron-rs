@@ -53,16 +53,16 @@ pub fn options(env: &Env) -> session_core::stored_auth::OAuthOptions {
 
 /// `browserReach()` (utils/remote-browser.ts): `local`, `container` or `ssh`.
 pub fn browser_reach(env: &Env) -> String {
-    mcp::oauth::signin::browser_reach(&*env.var, &|path| std::path::Path::new(path).exists()).to_string()
+    config::browser::browser_reach(&*env.var, &|path| std::path::Path::new(path).exists()).to_string()
 }
 
 /// `openBrowser`: hand the address to the desktop's opener, never waiting on it. The opener is found on the run's
 /// own PATH (`env`), not this process's: a run whose environment has no PATH (a test's) opens nothing.
 pub fn open_browser(env: &Env, url: &str) {
-    mcp::gateway::browser_opener_with(
+    config::browser::browser_opener(
         (env.var)("PATH"),
         Some(env.home.display().to_string()),
-        mcp::gateway::opener_vars(&*env.var),
+        config::browser::opener_vars(&*env.var),
     )(url)
 }
 

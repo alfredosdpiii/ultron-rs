@@ -3,11 +3,11 @@
 //! text (key order included); invalid stored documents fail with the same messages; the env limits and the budget
 //! line match.
 
-use delegation::task_store::DocumentStore;
 use delegation::usage::{
     Measurement, Remaining, Reservation, ReserveRequest, UsageLedger, UsageLimits, UsageOptions, budget_line,
     limits_from_env,
 };
+use kernel::store::DocumentStore;
 use serde_json::{Map, Value, json};
 use std::path::Path;
 use std::sync::{Arc, Mutex};
@@ -20,10 +20,10 @@ fn fixture() -> Value {
 struct Shared(Arc<Mutex<Option<Value>>>);
 
 impl DocumentStore for Shared {
-    fn read(&mut self) -> Result<Option<Value>, String> {
+    fn read(&self) -> Result<Option<Value>, String> {
         Ok(self.0.lock().unwrap().clone())
     }
-    fn write(&mut self, document: &Value) -> Result<(), String> {
+    fn write(&self, document: &Value) -> Result<(), String> {
         *self.0.lock().unwrap() = Some(document.clone());
         Ok(())
     }

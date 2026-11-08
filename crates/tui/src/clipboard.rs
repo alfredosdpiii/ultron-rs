@@ -95,7 +95,7 @@ impl Clipboard for SystemClipboard {
         let vars = &self.vars;
         let var = |name: &str| vars.iter().find(|(k, _)| k == name).map(|(_, v)| v.clone());
         let env = crate::clipboard_copy::CopyEnv {
-            platform: crate::clipboard_copy::platform(),
+            platform: jsrt::process::platform(),
             var: &var,
             proc_version: std::fs::read_to_string("/proc/version").ok(),
         };
@@ -142,7 +142,7 @@ impl Clipboard for SystemClipboard {
         };
         let temp_file = || wsl_temp_file("png");
         let sources = ImageSources {
-            platform: crate::clipboard_copy::platform(),
+            platform: jsrt::process::platform(),
             var: &var,
             proc_version: proc_version.as_deref(),
             run: &mut run,

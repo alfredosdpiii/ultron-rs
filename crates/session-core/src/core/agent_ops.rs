@@ -14,7 +14,7 @@ impl Core {
         payload.insert("steer".into(), true.into());
         self.lane
             .stack
-            .cell_handler(LANE, None)
+            .cell_handler(MAIN_LANE, None)
             .handle("agent_message.send", payload, &kernel::Signal::new())
     }
 
@@ -53,7 +53,11 @@ impl Core {
         if let Some(timeout) = input.timeout_ms {
             kwargs.insert("timeout_ms".into(), timeout.into());
         }
-        let spawned = delegation.handle("rlm.spawn", json!({"prompt": input.prompt, "kwargs": kwargs}), LANE)?;
+        let spawned = delegation.handle(
+            "rlm.spawn",
+            json!({"prompt": input.prompt, "kwargs": kwargs}),
+            MAIN_LANE,
+        )?;
         Ok(json!({"id": spawned["rlm_child_id"], "revived": id, "name": spawned["name"]}))
     }
 

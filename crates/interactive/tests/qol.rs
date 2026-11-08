@@ -5,18 +5,19 @@ use std::rc::Rc;
 use std::sync::{Arc, Mutex, mpsc};
 use std::time::Duration;
 
-mod support;
+use crate::support;
 use support::Sent;
 
 use interactive::app::{App, AppOptions};
 use interactive::history::PromptHistoryStore;
 use interactive::keybindings::{Platform, app_keybindings};
-use interactive::lane::{LaneCommand, LaneEvent, ModelInfo, QueueKind, SessionOpened};
+use interactive::lane::{LaneCommand, LaneEvent, ModelInfo, SessionOpened};
 use interactive::notify::{Message, TurnOutcome};
 use interactive::qol::{GitSource, QolSettings, StatusSymbols};
 use interactive::run::{UiEvent, paint_loop};
 use interactive::status_git::GitSnapshot;
 use interactive::status_line::{GitCounts, Preset, SegmentId, SeparatorStyle};
+use protocol::watch::QueueKind;
 use serde_json::{Value, json};
 use theme::{ColorMode, Fg, Theme, builtin_theme_json, create_theme};
 use tui::KeybindingsManager;

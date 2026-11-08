@@ -296,14 +296,14 @@ pub fn prefix_ignore_pattern(line: &str, prefix: &str) -> Option<String> {
 
 /// `addIgnoreRules`: `.gitignore`, `.ignore` and `.fdignore` of `dir`, prefixed with its path under `root`.
 pub fn add_ignore_rules(ig: &mut Ignore, dir: &str, root: &str) {
-    let rel = crate::paths::relative(root, dir);
+    let rel = jsrt::path::relative(root, dir);
     let prefix = if rel.is_empty() {
         String::new()
     } else {
         format!("{rel}/")
     };
     for name in [".gitignore", ".ignore", ".fdignore"] {
-        let Ok(content) = std::fs::read_to_string(crate::paths::join(dir, name)) else {
+        let Ok(content) = std::fs::read_to_string(jsrt::path::join(&[dir, name])) else {
             continue;
         };
         let patterns: Vec<String> = content

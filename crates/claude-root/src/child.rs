@@ -279,7 +279,9 @@ pub fn run_claude_child(
     use std::os::unix::process::CommandExt;
     let model = child_claude_model(run.model.as_deref(), options.model)?;
     let cwd = run.cwd.clone().unwrap_or_else(|| options.cwd.to_string());
-    let dir = crate::temp_dir("ultron-child-", options.var)?;
+    let base = config::paths::tmpdir(options.var);
+    let dir =
+        config::paths::private_temp_dir(&base, "ultron-child-").map_err(|e| format!("{}: {e}", base.display()))?;
     let cleanup = scopeguard(dir.clone());
     let prompt_file = dir.join("system-prompt.md");
     config::paths::write_private(&prompt_file, &options.system_prompt).map_err(|e| e.to_string())?;

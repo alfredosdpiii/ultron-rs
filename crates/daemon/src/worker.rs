@@ -9,10 +9,10 @@ use crate::lane::Lane;
 use crate::lifecycle::{Hold, Lifecycle};
 use crate::watchdog::{Change, Progress};
 use base64::Engine;
+use protocol::watch::QueueKind;
 use serde_json::{Value, json};
 use session_core::compose::Services;
-use session_core::core::{Input, Op, OpenOptions, QueueKind};
-use session_core::review_command::expand_review_command;
+use session_core::core::{Input, Op, OpenOptions};
 use session_core::{ModelFlags, RunEnv};
 use std::collections::HashMap;
 use std::os::unix::net::UnixStream;
@@ -150,7 +150,7 @@ struct Shared {
     core: Sender<Input>,
     closing: Mutex<bool>,
     ready: Mutex<bool>,
-    _lock: Mutex<Option<crate::lock::Lock>>,
+    _lock: Mutex<Option<config::lock::LockGuard>>,
     _owner: Mutex<Option<crate::owner::OwnerLock>>,
     progress: Arc<Progress>,
     /// The `health` state of the operations service (crate::watchdog).
@@ -316,10 +316,9 @@ fn save_default_model(env: &RunEnv, model: &Value) {
 /// refused message is an answer, not a failure of the call.
 fn queue(core: &Sender<Input>, kind: QueueKind, args: &[Value]) -> ServiceResult {
     let request = request(args);
-    // `toTextPrompt`: every client's text enters here, so `/review` expands the same for all of them.
     let op = Op::Enqueue {
         kind,
-        message: expand_review_command(request["message"].as_str().unwrap_or_default()),
+        message: request["message"].as_str().unwrap_or_default().to_string(),
         images: request["images"].as_array().cloned().unwrap_or_default(),
         entry_id: None,
     };
@@ -334,7 +333,7 @@ pub fn queue_response(result: session_core::core::OpResult) -> Value {
         Err(message) => {
             let code = match message.as_str() {
                 session_core::core::EMPTY_QUEUED => "invalid_message",
-                "Session is closed" => "closed",
+                session_core::core::SESSION_CLOSED => "closed",
                 _ => "operation_failed",
             };
             json!({"accepted": false, "entryId": null, "error": {"code": code, "message": message}})
@@ -424,7 +423,7 @@ fn services(
                     call_core(&prompt_core, op)?,
                 )));
             }
-            let message = expand_review_command(typed);
+            let message = typed.to_string();
             let images = request(&args)["images"].as_array().cloned().unwrap_or_default();
             let lifecycle = prompt_lifecycle.lock().unwrap_or_else(|e| e.into_inner()).clone();
             let marker = format!("prompt-{}", jsrt::random::uuid_v4());
@@ -444,9 +443,7 @@ fn services(
             let recovered = call_core(&resume_core, Op::Recover)?.unwrap_or_default();
             let response = crate::session_control::resume_response(&recovered, resume_progress.run());
             if let Some(run) = response["operationId"].as_str() {
-                while resume_progress.run().as_deref() == Some(run) {
-                    std::thread::sleep(Duration::from_millis(25));
-                }
+                resume_progress.wait_until_not(run, None);
             }
             Ok(Some(response))
         })
@@ -572,18 +569,7 @@ fn services(
             let env = refresh_env.clone();
             crate::session_control::refresh_models(
                 &refresh_state,
-                || {
-                    // From the network unless offline (`PI_OFFLINE`), as the model runtime's refresh.
-                    if config::env::offline(&*env.var) {
-                        return Ok(Vec::new());
-                    }
-                    session_core::model_refresh::refresh_catalogs(
-                        &env,
-                        ai::model_refresh::DEFAULT_CATALOG_BASE_URL,
-                        &ai::model_refresh::management_user_agent(&crate::session_control::version()),
-                        false,
-                    )
-                },
+                || session_core::model_refresh::refresh_catalogs(&env, false),
                 || {
                     session_core::lane::available_models(&refresh_env)
                         .iter()
@@ -630,7 +616,7 @@ fn services(
             // `Models.select` and Ctrl+P (client-tui.ts `#cycleModel` selects through `Models.select`): the session's
             // new model becomes the saved default, whichever client switched it.
             let (selects, cycles) = (matches!(op, Op::SetModel { .. }), matches!(op, Op::CycleModel));
-            let answer = call_core(&op_core, session_core::review_command::expand_client_op(op))?;
+            let answer = call_core(&op_core, op)?;
             let chosen = match &answer {
                 Some(model) if selects => Some(model),
                 Some(cycled) if cycles => cycled.get("model"),
@@ -652,12 +638,11 @@ fn services(
                 return Ok(Some(json!({"aborted": false, "reason": "no run in progress"})));
             };
             call_core(&stuck_core, Op::Abort)?;
-            let deadline = Instant::now() + watch.abort_grace;
-            while Instant::now() < deadline {
-                if watch.progress.run().as_deref() != Some(run.as_str()) {
-                    return Ok(Some(json!({"aborted": true, "runId": run, "restarted": false})));
-                }
-                std::thread::sleep(Duration::from_millis(25));
+            if watch
+                .progress
+                .wait_until_not(&run, Some(Instant::now() + watch.abort_grace))
+            {
+                return Ok(Some(json!({"aborted": true, "runId": run, "restarted": false})));
             }
             if let Some(shared) = watch.shared.get().and_then(Weak::upgrade) {
                 std::thread::spawn(move || {
@@ -746,13 +731,8 @@ pub fn run(args: &[String], package: PathBuf) -> Result<(), String> {
         }
         crate::owner::OwnerError::Io(error) => fail(error.to_string()),
     })?;
-    let lock = crate::lock::Lock::acquire(
-        &path,
-        Duration::from_millis(2_000),
-        Duration::from_millis(25),
-        Duration::from_millis(8_000),
-    )
-    .map_err(|e| fail(e.to_string()))?;
+    let lock = crate::paths::lock(&path, Duration::from_millis(2_000), Duration::from_millis(8_000))
+        .map_err(|e| fail(e.to_string()))?;
     let env = RunEnv::process(PathBuf::from(metadata["cwd"].as_str().unwrap_or_default()), package);
     let run_env = env.clone();
     let control_context = crate::session_control::context(&env, &path);

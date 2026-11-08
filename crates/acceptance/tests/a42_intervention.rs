@@ -7,11 +7,12 @@
 //! `kernel_apis` family and progress modules, all through `g3_support::Host`; the lanes are the same controlled fakes
 //! (`Tasks::finish` is the prompt returning, the abort hook counts aborts).
 
-mod g3_support;
+use crate::g3_support;
 
 use g3_support::{Host, JournalStore, Tasks, rejects};
+use kernel::store::MemoryDocumentStore;
 use kernel_apis::family::{FamilyModule, FamilyOptions};
-use kernel_apis::{ApiModule, MemoryDocumentStore, ProgressModule};
+use kernel_apis::{ApiModule, ProgressModule};
 use serde_json::{Value, json};
 use std::collections::HashMap;
 use std::sync::Arc;

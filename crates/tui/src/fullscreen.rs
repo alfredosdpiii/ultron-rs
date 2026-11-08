@@ -439,7 +439,7 @@ impl FullscreenViewport {
                 if is_image_line(l) || visible_width(l) <= width {
                     l.clone()
                 } else {
-                    slice_by_column(l, 0, width, true)
+                    slice_by_column(l, 0, width)
                 }
             })
             .collect();
@@ -516,7 +516,7 @@ impl FullscreenViewport {
                 0,
                 visible_width(line),
             );
-            let text = slice_by_column(line, a, b.saturating_sub(a), true);
+            let text = slice_by_column(line, a, b.saturating_sub(a));
             lines.push(
                 strip_terminal_sequences(&text)
                     .trim_end_matches(string::is_space)
@@ -1179,9 +1179,9 @@ impl FullscreenViewport {
                 if b <= a {
                     return line;
                 }
-                let before = slice_by_column(&line, 0, a, true);
-                let selected = slice_by_column(&line, a, b - a, true);
-                let after = slice_by_column(&line, b, width.saturating_sub(b), true);
+                let before = slice_by_column(&line, 0, a);
+                let selected = slice_by_column(&line, a, b - a);
+                let after = slice_by_column(&line, b, width.saturating_sub(b));
                 format!("{before}{}{after}", selection_highlight(&selected))
             })
             .collect()
@@ -1372,7 +1372,7 @@ pub fn is_focus_report(data: &str) -> bool {
 // `vscode`, any case) keeps its own context menu, and every other platform keeps selection.
 
 /// Whether right-click paste is on (`process.platform === "win32"` and `TERM_PROGRAM` not `vscode`); `platform` is
-/// the Node platform name ([`crate::clipboard_copy::platform`]) and `var` reads the environment.
+/// the Node platform name ([`jsrt::process::platform`]) and `var` reads the environment.
 pub fn right_click_paste_enabled(platform: &str, var: &dyn Fn(&str) -> Option<String>) -> bool {
     platform == "win32" && var("TERM_PROGRAM").is_none_or(|program| program.to_lowercase() != "vscode")
 }

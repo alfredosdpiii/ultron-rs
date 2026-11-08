@@ -2,7 +2,7 @@
 //! extension's `user_bash`, in a real terminal (tmux). A Pi extension in the profile changes nothing (Pi extensions
 //! are not supported by ultron-rs).
 
-mod tui_harness;
+use crate::tui_harness;
 
 use tui_harness::{Mock, QUIET, TempDir, Tui};
 

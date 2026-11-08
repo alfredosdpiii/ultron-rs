@@ -13,7 +13,7 @@
 //! session file through the product's task journal after the process exits (the session is kept in a private
 //! session directory for that, where the TS runner used `--no-session`).
 
-mod live_support;
+use crate::live_support;
 
 use live_support::{LiveInstall, braced, has_word, number_in};
 use serde_json::{Value, json};

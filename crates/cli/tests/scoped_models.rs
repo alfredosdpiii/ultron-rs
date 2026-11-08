@@ -3,7 +3,7 @@
 //! toggle, clear all, filter and enable the filtered models, close, cycle twice inside the scope, reopen, save to
 //! settings). Every stable screen and the settings.json it leaves must match. Offline (PI_OFFLINE=1).
 
-mod tui_harness;
+use crate::tui_harness;
 
 use serde_json::Value;
 use tui_harness::{TempDir, Tui, normalize};

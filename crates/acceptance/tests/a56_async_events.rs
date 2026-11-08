@@ -7,7 +7,7 @@
 //! The `child_done` summary leads with the task definition and the verdict tag, as session-worker.ts `taskEvent`
 //! writes it (`rlm-child@1: [unverified] child found 3 files`, the TS test's literal).
 
-mod common;
+use crate::common;
 
 use common::{Install, Provider, Reply, Request};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};

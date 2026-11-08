@@ -13,9 +13,8 @@ use session_journal::Session;
 use session_journal::Write;
 use session_journal::ns::{BRANCH_TIP, LANE_STATE};
 use session_journal::ns::{OP_META, OP_RESULT, OP_STATE, OP_TOOL_ARGS, PENDING_ENTRY, PENDING_FRAMES};
+use session_journal::run::MAIN_LANE;
 use std::collections::BTreeMap;
-
-use session_journal::run::MAIN_LANE as LANE;
 
 /// `interruptedAssistantMessage`'s warning.
 pub const INTERRUPTED_ASSISTANT: &str = "Assistant request was interrupted. The preceding content is the latest committed partial; newer live output may be missing and the external outcome is unknown.";
@@ -57,20 +56,6 @@ pub struct Recovered {
     pub interrupted_calls: usize,
     /// Messages still waiting in the lane's inbox, in order.
     pub queued: Vec<Inboxed>,
-}
-
-fn entry(id: &str, parent: Option<&str>, message: Value) -> Write {
-    let mut map = Map::new();
-    map.insert("id".into(), id.into());
-    map.insert("parentId".into(), parent.map_or(Value::Null, Value::from));
-    map.insert("type".into(), "message".into());
-    map.insert("message".into(), message);
-    Write::Entry(map)
-}
-
-fn zero_usage() -> Value {
-    json!({"input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0, "totalTokens": 0,
-        "cost": {"input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0, "total": 0}})
 }
 
 /// The committed frame prefix of a response reduced to its text and thinking (`reduceAssistantMessageFrames`
@@ -118,16 +103,16 @@ pub fn interrupted_assistant(model: &Value, partial: Option<Value>) -> Value {
         json!({"role": "assistant", "content": [], "api": "unknown",
             "provider": model["provider"], "model": model["modelId"]})
     });
-    message["usage"] = zero_usage();
+    message["usage"] = session_journal::usage::empty_usage();
     message["stopReason"] = json!("error");
     message["errorMessage"] = json!(INTERRUPTED_ASSISTANT);
-    message["timestamp"] = json!(crate::lane::now_ms());
+    message["timestamp"] = json!(jsrt::date::now_ms());
     message
 }
 
 /// The lane's queued messages: inbox items whose pending entries are still stored.
 pub fn inbox(session: &Session) -> Vec<Inboxed> {
-    let state = session.value(LANE_STATE, LANE).cloned().unwrap_or(Value::Null);
+    let state = session.value(LANE_STATE, MAIN_LANE).cloned().unwrap_or(Value::Null);
     state["inbox"]
         .as_array()
         .into_iter()
@@ -155,7 +140,7 @@ fn depth(session: &Session, meta: &Value) -> u64 {
 
 /// Settle the lane's open operation, if any, in one transaction; report it and the inbox.
 pub fn settle(session: &mut Session) -> Result<Recovered, String> {
-    let lane_state = session.value(LANE_STATE, LANE).cloned().unwrap_or(Value::Null);
+    let lane_state = session.value(LANE_STATE, MAIN_LANE).cloned().unwrap_or(Value::Null);
     let Some(operation) = lane_state["currentOperationId"].as_str().map(str::to_string) else {
         return Ok(Recovered {
             queued: inbox(session),
@@ -166,7 +151,7 @@ pub fn settle(session: &mut Session) -> Result<Recovered, String> {
     let meta = session.value(OP_META, &operation).cloned().unwrap_or(Value::Null);
     let cancelled = state["control"]["status"] == "cancel_requested";
     let mut writes = Vec::new();
-    let mut tip = session.branch_tip(LANE).flatten();
+    let mut tip = session.branch_tip(MAIN_LANE).flatten();
     let mut interrupted_calls = 0;
     let at = state["at"].as_str().unwrap_or_default();
     match at {
@@ -181,7 +166,7 @@ pub fn settle(session: &mut Session) -> Result<Recovered, String> {
                 .collect();
             let model = &state["generationContext"]["configuration"]["model"];
             let message = interrupted_assistant(model, reduce_frames(&frames));
-            writes.push(entry(&response, tip.as_deref(), message));
+            writes.push(Write::message_entry(&response, tip.as_deref(), message));
             writes.push(Write::delete_list(PENDING_FRAMES, &key));
             tip = Some(response);
         }
@@ -206,10 +191,10 @@ pub fn settle(session: &mut Session) -> Result<Recovered, String> {
                         interrupted_calls += 1;
                         json!({"role": "toolResult", "toolCallId": block["id"], "toolName": block["name"],
                             "content": [{"type": "text", "text": INTERRUPTED_CELL}], "isError": true,
-                            "timestamp": crate::lane::now_ms()})
+                            "timestamp": jsrt::date::now_ms()})
                     }
                 };
-                writes.push(entry(&result_id, tip.as_deref(), result));
+                writes.push(Write::message_entry(&result_id, tip.as_deref(), result));
                 let args_key = format!(
                     "{operation}:{}:{}",
                     batch["turnId"].as_str().unwrap_or_default(),
@@ -233,13 +218,13 @@ pub fn settle(session: &mut Session) -> Result<Recovered, String> {
                 writes.push(Write::set(session_journal::ns::ENTRY_LABEL, &entry, json!(label)));
             }
             if tip.is_none() {
-                writes.push(Write::set(BRANCH_TIP, LANE, Value::Null));
+                writes.push(Write::set(BRANCH_TIP, MAIN_LANE, Value::Null));
             }
         }
         _ => {}
     }
     if let Some(tip) = &tip {
-        writes.push(Write::set(BRANCH_TIP, LANE, json!(tip)));
+        writes.push(Write::set(BRANCH_TIP, MAIN_LANE, json!(tip)));
     }
     // A run whose last answer committed and may finish had nothing left to do; so had an admitted navigation.
     let finished =
@@ -264,7 +249,7 @@ pub fn settle(session: &mut Session) -> Result<Recovered, String> {
     result.insert("fromTipId".into(), meta["sourceTipId"].clone());
     result.insert("tipId".into(), tip.clone().map_or(Value::Null, Value::from));
     result.insert("startedAt".into(), meta["startedAt"].clone());
-    result.insert("endedAt".into(), json!(crate::lane::now_ms()));
+    result.insert("endedAt".into(), json!(jsrt::date::now_ms()));
     // The inbox keeps the queued messages that are still pending.
     let queued = inbox(session);
     let kept: Vec<Value> = queued
@@ -289,7 +274,7 @@ pub fn settle(session: &mut Session) -> Result<Recovered, String> {
         Write::set(OP_RESULT, &operation, Value::Object(result)),
         Write::set(
             LANE_STATE,
-            LANE,
+            MAIN_LANE,
             json!({"currentOperationId": null, "lastOperationId": operation, "inbox": kept}),
         ),
     ]);

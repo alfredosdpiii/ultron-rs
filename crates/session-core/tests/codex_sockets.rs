@@ -4,7 +4,7 @@
 //! the Codex provider over an in-memory socket under the session's root provider session ID (read from its journal)
 //! and under an unrelated ID that must stay cached.
 
-mod p_session_support;
+use crate::p_session_support;
 
 use ai::http::{BoxFuture, HeaderMap};
 use ai::openai_codex_responses::{self, OpenAICodexResponsesOptions};
@@ -99,7 +99,7 @@ fn cache_socket(session: &str) -> Log {
         "cost": {"input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0}, "contextWindow": 1000, "maxTokens": 100,
     }))
     .unwrap();
-    let b64 = |v: Value| ai::oauth_flow::base64url(v.to_string().as_bytes());
+    let b64 = |v: Value| jsrt::base64::encode_url(v.to_string().as_bytes());
     let token = format!(
         "{}.{}.sig",
         b64(json!({"alg": "none"})),

@@ -111,7 +111,7 @@ impl<L: PrLookup> GitProbe<L> {
     }
 
     pub fn probe(&mut self) -> GitSnapshot {
-        let Some(git) = crate::footer_data::find_git_paths(&self.cwd) else {
+        let Some(git) = config::git::find_git_paths(&self.cwd) else {
             return GitSnapshot::default();
         };
         let branch = std::fs::read_to_string(&git.head_path)

@@ -14,34 +14,34 @@ use std::sync::Arc;
 /// re-persists its shell jobs, and the session's place in the resume list follows its last write).
 pub struct ModuleDocument(pub SessionDocument);
 
-impl kernel_apis::DocumentStore for ModuleDocument {
+impl kernel::store::DocumentStore for ModuleDocument {
     fn read(&self) -> Result<Option<serde_json::Value>, String> {
-        kernel_apis::DocumentStore::read(&self.0)
+        kernel::store::DocumentStore::read(&self.0)
     }
 
     fn write(&self, document: &serde_json::Value) -> Result<(), String> {
-        if kernel_apis::DocumentStore::read(&self.0)?.as_ref() == Some(document) {
+        if kernel::store::DocumentStore::read(&self.0)?.as_ref() == Some(document) {
             return Ok(());
         }
-        kernel_apis::DocumentStore::write(&self.0, document)
+        kernel::store::DocumentStore::write(&self.0, document)
     }
 }
 
 /// The shell jobs' journal as the session value `ultron.module/jobs`.
 pub struct ModuleJobJournal(pub ModuleDocument);
 
-impl host::journal::JobJournal for ModuleJobJournal {
+impl kernel::store::DocumentStore for ModuleJobJournal {
     fn read(&self) -> Result<Option<serde_json::Value>, String> {
-        kernel_apis::DocumentStore::read(&self.0)
+        kernel::store::DocumentStore::read(&self.0)
     }
 
     fn write(&self, document: &serde_json::Value) -> Result<(), String> {
         // A session that never ran a job keeps no journal.
         let empty = document["jobs"].as_array().is_some_and(Vec::is_empty);
-        if empty && kernel_apis::DocumentStore::read(&self.0)?.is_none() {
+        if empty && kernel::store::DocumentStore::read(&self.0)?.is_none() {
             return Ok(());
         }
-        kernel_apis::DocumentStore::write(&self.0, document)
+        kernel::store::DocumentStore::write(&self.0, document)
     }
 }
 
@@ -56,9 +56,9 @@ pub fn main_branch(values: &SessionValues) -> BranchSource {
     let session = values.session().clone();
     Arc::new(move || {
         let session = crate::durable_store::lock(&session);
-        let anchor = session.branch_tip(crate::lane::MAIN).flatten();
+        let anchor = session.branch_tip(session_journal::run::MAIN_LANE).flatten();
         let on_path: HashSet<String> = session
-            .branch_entries(crate::lane::MAIN)
+            .branch_entries(session_journal::run::MAIN_LANE)
             .unwrap_or_default()
             .iter()
             .filter_map(|entry| entry["id"].as_str().map(str::to_string))

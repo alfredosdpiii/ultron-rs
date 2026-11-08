@@ -9,13 +9,14 @@
 //! its prompts and replies `reply <n>`, and prompts can be held. The reset case runs the real runtime.py under the
 //! Rust kernel supervisor (`Kernel::reset_scratch`).
 
-mod agents_support;
-mod common;
+use crate::agents_support;
+use crate::common;
 
 use agents_support::{Fixture, Memory, Options, fixture, lock};
 use common::{kernel_in, null_handler, value};
+use kernel::store::MemoryDocumentStore;
 use kernel::{HostHandler, Signal, Status};
-use kernel_apis::{ApiModule, InstancesModule, KernelApis, MemoryDocumentStore};
+use kernel_apis::{ApiModule, InstancesModule, KernelApis};
 use serde_json::{Map, Value, json};
 use std::collections::HashMap;
 use std::sync::{Arc, Condvar, Mutex};

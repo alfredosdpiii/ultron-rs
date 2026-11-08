@@ -10,7 +10,7 @@
 //! reattaches to the same session and reads every record back through RPC `inspect` (`agents.status`,
 //! `gates.history`, `gates.list`, `instances.list`, `experiments.list`, `refinements.list`).
 
-mod live_support;
+use crate::live_support;
 
 use cli::rpc::client::RpcClient;
 use live_support::{LiveInstall, braced};

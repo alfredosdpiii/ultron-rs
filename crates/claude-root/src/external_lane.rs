@@ -12,13 +12,14 @@
 use jsrt::sync;
 use kernel_apis::TaskHost;
 use kernel_apis::context_control::ContextBranches;
-use serde_json::{Map, Value, json};
+use serde_json::{Value, json};
 use session_core::async_events::{RuntimeEvent, runtime_event_text_with};
 use session_core::compose::Stack;
 use session_core::durable_store::SharedSession;
-use session_core::lane::{Lane, MAIN};
+use session_core::lane::Lane;
 use session_journal::Write;
 use session_journal::ns::BRANCH_TIP;
+use session_journal::run::MAIN_LANE;
 use std::sync::{Arc, Mutex};
 
 /// The root's turns over a session stack.
@@ -27,7 +28,7 @@ pub struct LaneRootHost {
     /// The usage root of the turn now open (shell jobs and the budget line of root cells are charged to it).
     root: Arc<Mutex<Option<String>>>,
     /// Each turn's working-tree checkpoint, when the session records them.
-    checkpoints: Option<crate::checkpoints::TurnCheckpoints>,
+    checkpoints: Option<session_core::turn_checkpoints::TurnCheckpoints>,
 }
 
 impl LaneRootHost {
@@ -40,7 +41,7 @@ impl LaneRootHost {
     }
 
     /// This host recording a working-tree checkpoint as each turn starts.
-    pub fn with_checkpoints(mut self, checkpoints: crate::checkpoints::TurnCheckpoints) -> LaneRootHost {
+    pub fn with_checkpoints(mut self, checkpoints: session_core::turn_checkpoints::TurnCheckpoints) -> LaneRootHost {
         self.checkpoints = Some(checkpoints);
         self
     }
@@ -69,7 +70,7 @@ impl crate::external_root::RootHost for LaneRootHost {
     fn root_id_of_run(&self, turn: &str) -> String {
         self.stack
             .agents
-            .usage_root_for_lane(MAIN, turn)
+            .usage_root_for_lane(MAIN_LANE, turn)
             .unwrap_or_else(|| format!("turn:{turn}"))
     }
 
@@ -91,7 +92,7 @@ impl crate::external_root::RootHost for LaneRootHost {
 
     fn turn_started(&self, turn: &str) {
         if let Some(checkpoints) = &self.checkpoints {
-            checkpoints.turn_started(turn);
+            checkpoints.record("turn", turn);
         }
     }
 
@@ -103,7 +104,7 @@ impl crate::external_root::RootHost for LaneRootHost {
 
 /// `pendingRootNotifications`: subagents and root-level tasks the root started that have not ended.
 pub fn pending_root_notifications(stack: &Stack) -> u64 {
-    let subagents = stack.delegation.running(MAIN).len();
+    let subagents = stack.delegation.running(MAIN_LANE).len();
     let tasks = stack
         .agents
         .tasks()
@@ -120,7 +121,7 @@ pub struct ExternalBranches {
 }
 
 fn root_only(lane: &str) -> Result<(), String> {
-    if lane == MAIN {
+    if lane == MAIN_LANE {
         Ok(())
     } else {
         Err(format!("ctx edits the root lane's context only (lane {lane})"))
@@ -130,27 +131,24 @@ fn root_only(lane: &str) -> Result<(), String> {
 impl ContextBranches for ExternalBranches {
     fn entries(&self, lane: &str) -> Result<Vec<Value>, String> {
         root_only(lane)?;
-        sync::lock(&self.session).branch_entries(MAIN)
+        sync::lock(&self.session).branch_entries(MAIN_LANE)
     }
 
     fn append_custom(&self, lane: &str, custom_type: &str, data: &Value) -> Result<String, String> {
         root_only(lane)?;
         let mut session = sync::lock(&self.session);
         let id = session_journal::lock_clock(&session.clock()).next_id();
-        let tip = session.branch_tip(MAIN).flatten();
-        let mut entry = Map::new();
-        entry.insert("id".into(), id.clone().into());
-        entry.insert("parentId".into(), tip.map_or(Value::Null, Value::from));
-        entry.insert("type".into(), "custom".into());
-        entry.insert("customType".into(), custom_type.into());
-        entry.insert("data".into(), data.clone());
-        session.commit(&[Write::Entry(entry), Write::set(BRANCH_TIP, MAIN, id.clone().into())])?;
+        let tip = session.branch_tip(MAIN_LANE).flatten();
+        session.commit(&[
+            Write::custom_entry(&id, tip.as_deref(), custom_type, Some(data.clone())),
+            Write::set(BRANCH_TIP, MAIN_LANE, id.clone().into()),
+        ])?;
         Ok(id)
     }
 
     fn tip_id(&self, lane: &str) -> Result<Option<String>, String> {
         root_only(lane)?;
-        Ok(sync::lock(&self.session).branch_tip(MAIN).flatten())
+        Ok(sync::lock(&self.session).branch_tip(MAIN_LANE).flatten())
     }
 }
 
@@ -165,7 +163,7 @@ pub fn wire(lane: &Lane, session: SharedSession, host: &LaneRootHost, sink: Arc<
     let (usage, agents, root) = (stack.usage.clone(), stack.agents.clone(), host.root.clone());
     let explicit_token_cap = usage.limits().max_total_tokens.is_some();
     let _ = stack.budget_note.set(Arc::new(move |lane: &str| {
-        let root = if lane == MAIN {
+        let root = if lane == MAIN_LANE {
             sync::lock(&root).clone()
         } else {
             agents.usage_root_for_lane(lane, "")
@@ -175,9 +173,13 @@ pub fn wire(lane: &Lane, session: SharedSession, host: &LaneRootHost, sink: Arc<
     }));
     // A root's shell job belongs to the turn that started it.
     let roots = host.root.clone();
-    stack.host.set_roots(Arc::new(
-        move |lane: &str| if lane == MAIN { sync::lock(&roots).clone() } else { None },
-    ));
+    stack.host.set_roots(Arc::new(move |lane: &str| {
+        if lane == MAIN_LANE {
+            sync::lock(&roots).clone()
+        } else {
+            None
+        }
+    }));
     if !stack.events.enabled() {
         return;
     }
@@ -185,7 +187,7 @@ pub fn wire(lane: &Lane, session: SharedSession, host: &LaneRootHost, sink: Arc<
     // mask them (`maskCellOutput`).
     let (jobs, job_mask) = (sink.clone(), stack.mask());
     stack.host.on_job_end(Arc::new(move |end: host::JobEnd| {
-        if end.record.lane != MAIN {
+        if end.record.lane != MAIN_LANE {
             return;
         }
         let Some(event) = end.event() else { return };
@@ -206,7 +208,7 @@ pub fn wire(lane: &Lane, session: SharedSession, host: &LaneRootHost, sink: Arc<
     stack
         .tool_calls()
         .on_end(Arc::new(move |end: kernel_apis::ToolCallEnd| {
-            if end.call["lane"].as_str().unwrap_or(MAIN) != MAIN {
+            if end.call["lane"].as_str().unwrap_or(MAIN_LANE) != MAIN_LANE {
                 return;
             }
             let Some((id, status, summary, fetch)) = kernel_apis::tool_calls::tool_event(&end) else {
@@ -219,7 +221,7 @@ pub fn wire(lane: &Lane, session: SharedSession, host: &LaneRootHost, sink: Arc<
                     status,
                     summary,
                     fetch,
-                    lane: MAIN.into(),
+                    lane: MAIN_LANE.into(),
                     root_id: end.call["rootId"].as_str().map(str::to_string),
                 }],
                 &tool_mask,
@@ -235,8 +237,8 @@ pub fn async_pending(stack: &Stack, sink: &crate::root_sink::RootSink) -> Value 
         return json!({"pending": false, "jobs": 0, "tasks": 0, "events": 0});
     }
     let none = |_: Option<&str>| false;
-    let jobs = stack.host.running(MAIN, &none) as u64;
-    let tools = stack.tool_calls().running(MAIN, &none) as u64;
+    let jobs = stack.host.running(MAIN_LANE, &none) as u64;
+    let tools = stack.tool_calls().running(MAIN_LANE, &none) as u64;
     let tasks = pending_root_notifications(stack);
     let events = sink.pending() as u64;
     json!({

@@ -34,6 +34,11 @@ impl Platform {
             windows_keybindings: platform == "win32" || (platform == "linux" && wsl),
         }
     }
+
+    /// This process's platform (`process.platform`).
+    pub fn current(wsl: bool) -> Self {
+        Platform::new(jsrt::process::platform(), wsl)
+    }
 }
 
 /// `KEYBINDINGS` for a platform: the TUI bindings (some overridden in place), then the app bindings.

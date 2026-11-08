@@ -10,8 +10,8 @@
 #[path = "../../sandbox/tests/backends_support/mod.rs"]
 mod backends_support;
 
-use host::journal::FileJobJournal;
 use host::{AllowAll, Host};
+use kernel::store::FileDocumentStore;
 use kernel::{HostHandler, Signal};
 use sandbox::launcher::Mechanism;
 use serde_json::{Value, json};
@@ -54,7 +54,7 @@ fn host_in(base: &Path, mechanism: Mechanism) -> Host {
     } });
     Host::new(&project, project.join(".jobs"), &project, Box::new(AllowAll))
         .sandboxed_with_mechanism(&settings, &home, None, Some(mechanism))
-        .with_journal(Arc::new(FileJobJournal::new(base.join("jobs.json"))))
+        .with_journal(Arc::new(FileDocumentStore::new(base.join("jobs.json"))))
         .expect("journal")
 }
 

@@ -2,6 +2,7 @@
 //! the store of schedules, local services and prompt schedules. (TypeScript's `artifacts.*` host requests over the
 //! same store are not ported.)
 
+use kernel::store::DocumentStore;
 use serde_json::{Map, Value};
 use std::path::PathBuf;
 use std::sync::Mutex;
@@ -39,20 +40,19 @@ impl KeyedDocuments for MemoryKeyedDocuments {
 
 /// Documents in one JSON file (`{key: value}` in insertion order), replaced atomically on every write.
 pub struct FileKeyedDocuments {
-    store: crate::store::FileDocumentStore,
+    store: kernel::store::FileDocumentStore,
     guard: Mutex<()>,
 }
 
 impl FileKeyedDocuments {
     pub fn new(path: impl Into<PathBuf>) -> Self {
         FileKeyedDocuments {
-            store: crate::store::FileDocumentStore::new(path),
+            store: kernel::store::FileDocumentStore::new(path),
             guard: Mutex::new(()),
         }
     }
 
     fn read(&self) -> Result<Map<String, Value>, String> {
-        use crate::store::DocumentStore;
         match self.store.read()? {
             None => Ok(Map::new()),
             Some(Value::Object(map)) => Ok(map),
@@ -67,7 +67,6 @@ impl KeyedDocuments for FileKeyedDocuments {
         Ok(self.read()?.get(key).cloned())
     }
     fn set(&self, key: &str, value: &Value) -> Result<(), String> {
-        use crate::store::DocumentStore;
         let _guard = jsrt::sync::lock(&self.guard);
         let mut map = self.read()?;
         map.insert(key.into(), value.clone());

@@ -4,7 +4,7 @@
 //! is set only when the request (or its definition) names one (`LaneRun.model`), which the fixture records as the TS
 //! fake records `setModel`. The `rlm.spawn(model=...)` refusal is covered by crates/delegation/tests/spawn_model.rs.
 
-mod agents_support;
+use crate::agents_support;
 
 use agents_support::{Options, fixture, lock};
 use serde_json::json;

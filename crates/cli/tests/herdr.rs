@@ -3,9 +3,9 @@
 //! --print-config`. herdr is a FAKE unix socket in a temp dir (HERDR_* injected into the spawned ultron); the real
 //! herdr socket and the real `claude` are never used, no provider is reached (a scripted 127.0.0.1 server).
 
-mod common;
-mod executable_support;
-mod tui_harness;
+use crate::common;
+use crate::executable_support;
+use crate::tui_harness;
 
 use serde_json::{Value, json};
 use std::io::{BufRead, BufReader, Write};
@@ -156,7 +156,7 @@ fn cli_herdr_tui_session_lifecycle_reports_session_states_metadata_and_release()
             text_reply("Done."),
             text_reply("The tests pass.\n\nShould I also update the docs?"),
         ],
-        Some(("Herdr greeting chat".into(), false)),
+        Some("Herdr greeting chat".into()),
     );
     let tmp = TempDir::new();
     let tui = herdr_tui(&tmp.0, mock.port, &socket);

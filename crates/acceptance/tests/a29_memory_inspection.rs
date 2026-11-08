@@ -6,8 +6,9 @@
 //! TUI's `/memory`, `/agents`, ... commands (crates/daemon worker, `Op::Inspect`).
 
 use kernel::Signal;
+use kernel::store::MemoryDocumentStore;
+use kernel_apis::MemoryService;
 use kernel_apis::memory::MemoryBackend;
-use kernel_apis::{MemoryDocumentStore, MemoryService};
 use serde_json::{Map, Value, json};
 use std::sync::{Arc, Mutex};
 

@@ -4,7 +4,7 @@
 //! attributed to the cell that returns it, which collapse on return then rewrites with the task's line
 //! (`onTaskEnd` -> `contextControl.taskEnded`).
 
-mod p_session_support;
+use crate::p_session_support;
 
 use p_session_support::{Setup, actor, text, tool, tool_results, user_texts};
 use serde_json::Value;

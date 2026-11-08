@@ -16,8 +16,7 @@ use regex::Regex;
 use serde_json::{Value, json};
 use std::sync::OnceLock;
 
-/// The session value's namespace and key.
-pub const STATE_NAMESPACE: &str = "ultron.module";
+/// The session value's key in `ultron.module`.
 pub const STATE_KEY: &str = "persona";
 /// Continues allowed in one keep-going stretch.
 pub const MAX_CONTINUES: u32 = 100;
@@ -362,7 +361,7 @@ pub fn nudge_message(next: &Next, limits: Limits, timestamp: i64) -> Option<Valu
     };
     Some(json!({
         "role": "custom",
-        "customType": crate::persona::NUDGE_CUSTOM_TYPE,
+        "customType": protocol::custom_types::NUDGE,
         "content": text,
         "display": true,
         "details": {"nudge": n, "max": limits.max_continues, "keepGoing": true, "final": last},

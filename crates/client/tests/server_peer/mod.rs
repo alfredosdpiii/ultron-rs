@@ -4,7 +4,6 @@
 //! Mirrors `Server.accept/receive/dispatchMessage/finishHandshake/handleRequest/failProtocol` for
 //! server-scoped services. Calls are synchronous, so a request settles before the next message is
 //! read; a `cancel` therefore never finds an active request (TS aborts in-flight async calls).
-#![allow(dead_code)]
 
 use protocol::{
     ClientMessage, ClientMessageDecoder, PROTOCOL_VERSION, ProtocolError, RpcTarget, ServerMessage,
@@ -13,21 +12,12 @@ use protocol::{
 
 use protocol::{ServiceCall, parse_service_call};
 
-pub const INTERNAL_SERVER_ERROR_MESSAGE: &str = "Internal server error";
 const MAX_UINT32: usize = 0xffff_ffff;
 
-/// A failure raised by a service implementation.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum HostError {
-    /// A bounded, protocol-safe error (`ServerError` / `RemoteServiceError`): its code and message cross the wire.
-    Coded(ProtocolError),
-    /// Anything else: reported locally, sent as `internal_error`.
-    Internal(String),
-}
-
-/// One connection's server-scoped service endpoint.
+/// One connection's server-scoped service endpoint; its errors are bounded, protocol-safe ones (`ServerError` /
+/// `RemoteServiceError`) whose code and message cross the wire.
 pub trait ServerServices {
-    fn invoke(&mut self, call: &ServiceCall) -> Result<Option<protocol::Value>, HostError>;
+    fn invoke(&mut self, call: &ServiceCall) -> Result<Option<protocol::Value>, ProtocolError>;
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -88,10 +78,6 @@ impl<S: ServerServices> Connection<S> {
         }
     }
 
-    pub fn is_ready(&self) -> bool {
-        self.stage == Stage::Ready
-    }
-
     pub fn is_closed(&self) -> bool {
         self.stage == Stage::Closed
     }
@@ -113,15 +99,6 @@ impl<S: ServerServices> Connection<S> {
                 break;
             }
             self.dispatch(message, &mut out);
-        }
-        out
-    }
-
-    /// The handshake timer fired before the connection became ready.
-    pub fn handshake_timeout(&mut self) -> Vec<Output> {
-        let mut out = Vec::new();
-        if self.stage == Stage::AwaitingHello {
-            self.fail(ProtocolError::new("invalid_request", "Handshake timeout"), &mut out);
         }
         out
     }
@@ -184,13 +161,7 @@ impl<S: ServerServices> Connection<S> {
                 "Session is not attached to this client",
             ));
         }
-        self.services.invoke(call).map_err(|error| match error {
-            HostError::Coded(error) => error,
-            HostError::Internal(message) => {
-                self.reported.push(message);
-                ProtocolError::new("internal_error", INTERNAL_SERVER_ERROR_MESSAGE)
-            }
-        })
+        self.services.invoke(call)
     }
 
     fn send(&mut self, message: &ServerMessage, out: &mut Vec<Output>) -> bool {

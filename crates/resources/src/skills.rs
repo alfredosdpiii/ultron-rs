@@ -4,7 +4,8 @@
 use crate::Diagnostic;
 use crate::frontmatter;
 use crate::ignore::{Ignore, add_ignore_rules};
-use crate::paths::{basename, canonicalize, dirname, join, relative, resolve, resolve_path};
+use crate::paths::{canonicalize, resolve_path};
+use jsrt::path::{basename, dirname, relative, resolve};
 use std::collections::HashSet;
 use std::fs;
 use yaml_rust2::Yaml;
@@ -163,7 +164,7 @@ fn load_dir_with(dir: &str, source: &str, include_root_files: bool, ig: &mut Ign
     add_ignore_rules(ig, dir, root);
     let entries = sorted_entries(dir);
     if let Some((name, file_type)) = entries.iter().find(|(name, _)| name == "SKILL.md") {
-        let full = join(dir, name);
+        let full = jsrt::path::join(&[dir, name]);
         if kind(&full, file_type).is_some_and(|(_, is_file)| is_file) && !ig.ignores(&relative(root, &full)) {
             let (skill, diagnostics) = load_skill_from_file(&full, source);
             result.skills.extend(skill);
@@ -175,7 +176,7 @@ fn load_dir_with(dir: &str, source: &str, include_root_files: bool, ig: &mut Ign
         if name.starts_with('.') || name == "node_modules" {
             continue;
         }
-        let full = join(dir, name);
+        let full = jsrt::path::join(&[dir, name]);
         let Some((is_dir, is_file)) = kind(&full, file_type) else {
             continue;
         };
@@ -211,7 +212,7 @@ pub struct LoadSkillsOptions<'a> {
 pub fn load_skills(options: &LoadSkillsOptions) -> LoadSkillsResult {
     let cwd = resolve_path(options.cwd, "/", false);
     let agent_dir = resolve_path(options.agent_dir, &cwd, false);
-    let user_dir = join(&agent_dir, "skills");
+    let user_dir = jsrt::path::join(&[&agent_dir, "skills"]);
     let project_dir = resolve(&cwd, &format!("{}/skills", config::paths::CONFIG_DIR_NAME));
 
     let mut skills: Vec<Skill> = Vec::new();

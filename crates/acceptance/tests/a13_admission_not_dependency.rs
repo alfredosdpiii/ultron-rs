@@ -3,7 +3,7 @@
 //! skips its dependent even if a valid result arrives late.
 //! Port of packages/coding-agent/test/ultron-a13-admission-not-dependency.test.ts over the Rust typed-agent host.
 
-mod agents_support;
+use crate::agents_support;
 
 use agents_support::{Fixture, Memory, Options, adapter, fixture, lock, wait_for};
 use serde_json::{Value, json};

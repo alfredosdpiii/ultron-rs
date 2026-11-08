@@ -324,26 +324,12 @@ pub struct SearchBar {
 }
 
 /// `formatKey` of the search bar: `ctrl+g` -> `Ctrl+G`, `alt` is `Option` on macOS.
-pub fn format_bar_key(key: Option<&str>, darwin: bool) -> String {
-    let Some(key) = key else {
-        return "Unbound".into();
-    };
-    key.split('+')
-        .map(|part| {
-            if darwin && part.eq_ignore_ascii_case("alt") {
-                return "Option".to_string();
-            }
-            let mut chars = part.chars();
-            chars
-                .next()
-                .map_or(String::new(), |c| c.to_uppercase().chain(chars).collect())
-        })
-        .collect::<Vec<_>>()
-        .join("+")
+pub fn format_bar_key(key: Option<&str>) -> String {
+    key.map_or_else(|| "Unbound".into(), |key| crate::components::format_key_text(key, true))
 }
 
 impl SearchBar {
-    pub fn new(keys: &KeybindingsManager, darwin: bool, button_style: ButtonStyle) -> Self {
+    pub fn new(keys: &KeybindingsManager, button_style: ButtonStyle) -> Self {
         let first = |id: &str| keys.get_keys(id).into_iter().next();
         let input = Input::new(keys.clone()).with_options(
             Some(" "),
@@ -355,8 +341,8 @@ impl SearchBar {
             input,
             result: None,
             count: 0,
-            previous_key: format_bar_key(first("tui.altScreen.searchPrevious").as_deref(), darwin),
-            next_key: format_bar_key(first("tui.altScreen.searchNext").as_deref(), darwin),
+            previous_key: format_bar_key(first("tui.altScreen.searchPrevious").as_deref()),
+            next_key: format_bar_key(first("tui.altScreen.searchNext").as_deref()),
             button_style,
             hovered: None,
             buttons: None,
@@ -512,8 +498,8 @@ pub struct TranscriptSearch {
 
 impl TranscriptSearch {
     /// `rows`: every transcript row at the current width (scrollback then viewport). Opens at the bottom.
-    pub fn new(rows: Vec<String>, keys: KeybindingsManager, darwin: bool) -> Self {
-        let mut bar = SearchBar::new(&keys, darwin, Box::new(|t, _| t.to_string()));
+    pub fn new(rows: Vec<String>, keys: KeybindingsManager) -> Self {
+        let mut bar = SearchBar::new(&keys, Box::new(|t, _| t.to_string()));
         bar.set_focused(true);
         let mut body = ScrollBody::default();
         body.offset = usize::MAX / 2;

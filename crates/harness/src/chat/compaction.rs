@@ -19,11 +19,12 @@ use super::context::{ContextView, order_tool_results, read_context};
 use super::entries;
 use super::generation::{ensure_provider_session_id, read_agent};
 use super::live::{COMPACTION_KIND, add_compaction_status, compaction_status_index, live, remove_compaction_status};
-use super::models::{CompactionPolicy, ModelRef, StreamRequest, is_retryable};
+use super::models::{CompactionPolicy, ModelRef, StreamRequest};
 use super::submissions::{SubmissionDraft, admit_submission};
 use super::usage::{Bucket, record_usage};
 use super::util::{d, from_value, strict, to_value};
 use crate::scheduler::{HarnessError, NextState, Result, Task, TaskRuntime, completed};
+use ai::retry::is_retryable;
 
 /// Which threshold compaction preparation starts before its request.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -317,7 +318,7 @@ pub fn summary_plan(view: &ContextView, cut: usize) -> SummaryPlan {
 pub(crate) fn compaction_task(services: Arc<Services>) -> Task {
     let (select, summarize, retry) = (services.clone(), services.clone(), services);
     Task::define(COMPACTION_KIND, 1, |input| (DEFINITION.initial)(input))
-        .phase("select", move |task, runtime| select_phase(&select, task, runtime))
+        .phase("select", move |_, runtime| select_phase(&select, runtime))
         .phase("summarize", move |task, runtime| {
             summarize_phase(&summarize, task, runtime)
         })
@@ -366,7 +367,7 @@ fn fail(message: String, reason: &str) -> TaskOutcome {
     }
 }
 
-fn select_phase(services: &Services, task: &TaskRecord, runtime: &TaskRuntime) -> Result<()> {
+fn select_phase(services: &Services, runtime: &TaskRuntime) -> Result<()> {
     let conversation_id = runtime.conversation_id();
     let agent = read_agent(runtime)?;
     let settings = (services.settings)();
@@ -396,7 +397,6 @@ fn select_phase(services: &Services, task: &TaskRecord, runtime: &TaskRuntime) -
         tail,
         first_kept,
     };
-    let _ = task;
     runtime.commit(&runtime.ctx(), |_, _| {
         Ok(Some(NextState::Running {
             checkpoint: to_value(&CompactionCheckpoint::Summarize { request }),

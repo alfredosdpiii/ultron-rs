@@ -1,6 +1,6 @@
 //! Agent directory and per-user config paths (`config.ts`), plus Node's lexical path rules they rely on.
 
-use std::path::{Component, Path, PathBuf};
+use std::path::{Path, PathBuf};
 
 /// Project-local config directory (`.pi`, upstream-compatible).
 pub const CONFIG_DIR_NAME: &str = ".pi";
@@ -14,73 +14,27 @@ pub const ENV_SESSION_DIR: &str = "ULTRON_CODING_AGENT_SESSION_DIR";
 pub const ENV_SERVER_DIR: &str = "ULTRON_SERVER_DIR";
 pub const LEGACY_ENV_SERVER_DIR: &str = "PI_SERVER_DIR";
 
-/// Node's `path.normalize` for POSIX paths, without the trailing-slash rule.
+fn text(path: &Path) -> std::borrow::Cow<'_, str> {
+    path.to_string_lossy()
+}
+
+/// Node's `path.normalize` without the trailing slash (`path.resolve` for an absolute path).
 pub fn normalize(path: &Path) -> PathBuf {
-    let absolute = path.has_root();
-    let mut parts: Vec<&std::ffi::OsStr> = Vec::new();
-    for component in path.components() {
-        match component {
-            Component::Normal(part) => parts.push(part),
-            Component::ParentDir => {
-                if parts.last().is_some_and(|p| *p != "..") {
-                    parts.pop();
-                } else if !absolute {
-                    parts.push("..".as_ref());
-                }
-            }
-            Component::CurDir | Component::RootDir | Component::Prefix(_) => {}
-        }
+    let normalized = jsrt::path::normalize(&text(path));
+    match normalized.strip_suffix('/') {
+        Some(rest) if !rest.is_empty() => PathBuf::from(rest),
+        _ => PathBuf::from(normalized),
     }
-    let mut out = PathBuf::from(if absolute { "/" } else { "" });
-    for part in parts {
-        out.push(part);
-    }
-    if out.as_os_str().is_empty() {
-        out.push(".");
-    }
-    out
 }
 
 /// `normalizePath`: `~` and `~/x` expand to the home directory; `file://` URLs become paths.
 pub fn expand_tilde(input: &str, home: &Path) -> PathBuf {
-    if input == "~" {
-        return home.to_path_buf();
-    }
-    if let Some(rest) = input.strip_prefix("~/") {
-        return normalize(&home.join(rest));
-    }
-    if let Some(rest) = input.strip_prefix("file://") {
-        return PathBuf::from(percent_decode(rest));
-    }
-    PathBuf::from(input)
-}
-
-fn percent_decode(input: &str) -> String {
-    let bytes = input.as_bytes();
-    let mut out = Vec::with_capacity(bytes.len());
-    let mut i = 0;
-    while i < bytes.len() {
-        if bytes[i] == b'%'
-            && let Some(byte) = input.get(i + 1..i + 3).and_then(|h| u8::from_str_radix(h, 16).ok())
-        {
-            out.push(byte);
-            i += 3;
-            continue;
-        }
-        out.push(bytes[i]);
-        i += 1;
-    }
-    String::from_utf8_lossy(&out).into_owned()
+    PathBuf::from(jsrt::path::normalize_path(input, &text(home)))
 }
 
 /// `resolvePath(input, base)`: tilde expansion, then Node's `path.resolve`.
 pub fn resolve(input: &str, base: &Path, home: &Path) -> PathBuf {
-    let expanded = expand_tilde(input, home);
-    if expanded.is_absolute() {
-        normalize(&expanded)
-    } else {
-        normalize(&base.join(expanded))
-    }
+    PathBuf::from(jsrt::path::resolve_path(input, &text(base), &text(home)))
 }
 
 /// The user's agent directory: `$ULTRON_CODING_AGENT_DIR` (tilde-expanded) when set and non-empty, else
@@ -90,6 +44,17 @@ pub fn agent_dir(env: impl Fn(&str) -> Option<String>, home: &Path) -> PathBuf {
         Some(dir) if !dir.is_empty() => expand_tilde(&dir, home),
         _ => home.join(AGENT_CONFIG_DIR_NAME).join("agent"),
     }
+}
+
+/// `name.replace(/[^A-Za-z0-9._-]/g, "_")`.
+pub fn safe_file_name(name: &str) -> impl Iterator<Item = char> + '_ {
+    name.chars().map(|c| {
+        if c.is_ascii_alphanumeric() || "._-".contains(c) {
+            c
+        } else {
+            '_'
+        }
+    })
 }
 
 /// Files and directories under the agent directory.
@@ -131,6 +96,20 @@ impl AgentPaths {
     pub fn trust(&self) -> PathBuf {
         self.join("trust.json")
     }
+    /// The global MCP server configuration.
+    pub fn mcp(&self) -> PathBuf {
+        self.join("mcp.json")
+    }
+    /// The session store of the durable and explicit instances and of `ultron claude` without
+    /// `ULTRON_CODING_AGENT_SESSION_DIR`.
+    pub fn experimental_sessions_dir(&self) -> PathBuf {
+        self.join("experimental/sessions")
+    }
+    /// Where `ultron claude` remembers the Ultron session of a Claude Code session, by Claude Code's session id.
+    pub fn claude_session_map(&self, claude_session_id: &str) -> PathBuf {
+        let safe: String = safe_file_name(claude_session_id).collect();
+        self.join("claude-code/sessions").join(format!("{safe}.json"))
+    }
 }
 
 /// This process's executable for a command another process runs while this one lives (session workers, the inert
@@ -147,6 +126,29 @@ pub fn own_executable() -> std::io::Result<PathBuf> {
 /// own error then names it).
 pub fn running_image(exe: PathBuf, image: PathBuf, exists: &dyn Fn(&Path) -> bool) -> PathBuf {
     if !exists(&exe) && exists(&image) { image } else { exe }
+}
+
+/// `os.tmpdir()` of an environment: `TMPDIR` without its trailing slash, else `/tmp`.
+pub fn tmpdir(var: &dyn Fn(&str) -> Option<String>) -> PathBuf {
+    match var("TMPDIR").filter(|v| !v.is_empty()) {
+        Some(dir) if dir.len() > 1 => PathBuf::from(dir.trim_end_matches('/')),
+        Some(dir) => PathBuf::from(dir),
+        None => PathBuf::from("/tmp"),
+    }
+}
+
+/// `mkdtempSync(join(base, prefix))`: a new directory only this user can enter (0700), `prefix` plus six random hex
+/// digits.
+pub fn private_temp_dir(base: &Path, prefix: &str) -> std::io::Result<PathBuf> {
+    use std::os::unix::fs::DirBuilderExt;
+    loop {
+        let path = base.join(format!("{prefix}{}", jsrt::random::random_hex(3)));
+        match std::fs::DirBuilder::new().mode(0o700).create(&path) {
+            Ok(()) => return Ok(path),
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(e) => return Err(e),
+        }
+    }
 }
 
 /// Write `content` to `path`, created or truncated, readable only by the user (0600).

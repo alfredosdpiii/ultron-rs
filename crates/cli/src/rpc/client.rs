@@ -6,7 +6,7 @@ use serde_json::{Value, json};
 use std::io::{Read, Write};
 use std::os::unix::process::ExitStatusExt;
 use std::path::PathBuf;
-use std::process::{Child, ChildStdin, Command, Stdio};
+use std::process::{ChildStdin, Command, Stdio};
 use std::sync::mpsc::{Receiver, RecvTimeoutError, channel};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant};
@@ -34,7 +34,7 @@ enum Line {
 }
 
 pub struct RpcClient {
-    child: Child,
+    child: signals::child::Watched,
     stdin: Option<ChildStdin>,
     lines: Receiver<Line>,
     stderr: Arc<Mutex<String>>,
@@ -103,7 +103,7 @@ impl RpcClient {
         });
         let stdin = child.stdin.take();
         Ok(RpcClient {
-            child,
+            child: signals::child::Watched::new(child),
             stdin,
             lines,
             stderr,
@@ -122,7 +122,7 @@ impl RpcClient {
         if let Some(error) = &self.exit_error {
             return error.clone();
         }
-        let status = self.child.wait().ok();
+        let status = self.child.wait();
         let code = status.and_then(|s| s.code()).map_or("null".into(), |c| c.to_string());
         let signal = status.and_then(|s| s.signal()).map_or("null".into(), |s| s.to_string());
         let error = format!(
@@ -269,17 +269,10 @@ impl RpcClient {
     /// so a clean exit read as `None`.)
     pub fn stop(mut self) -> Option<i32> {
         drop(self.stdin.take());
-        let deadline = Instant::now() + STOP_HANG_GUARD;
-        loop {
-            if let Ok(Some(status)) = self.child.try_wait() {
-                return status.code();
-            }
-            if Instant::now() > deadline {
-                let _ = self.child.kill();
-                return self.child.wait().ok().and_then(|s| s.code());
-            }
-            std::thread::sleep(Duration::from_millis(20));
+        if !self.child.wait_timeout(STOP_HANG_GUARD) {
+            self.child.stop(signals::child::Stop::default());
         }
+        self.child.wait().and_then(|s| s.code())
     }
 
     /// Drain every remaining line until the agent closes stdout.

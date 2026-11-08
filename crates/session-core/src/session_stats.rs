@@ -245,7 +245,7 @@ pub fn parse_session_stats(saved: &Value) -> Option<Value> {
 
 /// What the store holds, read as `readVersioned` reads it.
 pub enum Stored {
-    /// Nothing usable (no value, not a stats document, or the store could not be read): count from zero.
+    /// Nothing usable (no value, or not a stats document): count from zero.
     Fresh,
     /// A stats document (an unversioned one reads as version 1).
     Document(Value),
@@ -392,7 +392,7 @@ impl SessionStats {
 
     /// A recorder on the system clock that saves 500 ms after a change.
     pub fn system(root: &str) -> SessionStats {
-        SessionStats::new(root, Arc::new(|| crate::lane::now_ms() as u64), DEFAULT_FLUSH)
+        SessionStats::new(root, Arc::new(|| jsrt::date::now_ms() as u64), DEFAULT_FLUSH)
     }
 
     /// Read the stored counters from `store` and keep counting on top of them (`#load`); changes made before are
@@ -408,8 +408,9 @@ impl SessionStats {
                 stored["root"] = state.document["root"].clone();
                 state.document = stored;
             }
-            Ok(Stored::Foreign) => state.foreign = true,
-            Ok(Stored::Fresh) | Err(_) => {}
+            // A store that could not be read is not overwritten either: its saved totals may be fine.
+            Ok(Stored::Foreign) | Err(_) => state.foreign = true,
+            Ok(Stored::Fresh) => {}
         }
         state.store = Some(store);
         let early = state.early.take().unwrap_or_default();

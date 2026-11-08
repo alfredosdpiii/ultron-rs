@@ -10,7 +10,7 @@ use std::rc::Rc;
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
-mod support;
+use crate::support;
 use support::Sent;
 
 use interactive::api_key_login::{ApiKeyLogin, Step};

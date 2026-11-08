@@ -1,22 +1,14 @@
-//! Working-tree checkpoints of the root lane's turns and the file-restoring rewind (Rust-only feature; see
-//! docs/rust-rewrite/features.md): each root user turn records the working tree as an unreferenced commit
-//! (crates/delegation `checkpoints`) under its prompt entry (crates/session-journal `checkpoints`), before the turn
-//! runs; [`Op::RestoreFiles`](super::Op::RestoreFiles) writes a checkpoint's files back after saving the current
-//! ones as another checkpoint.
-//!
-//! Settings: `checkpoints.enabled` (default true; only Git or jj working trees record anything),
-//! `checkpoints.maxFiles`, `checkpoints.maxFileBytes`. Off while the shell sandbox is on (`sandbox.mode` other than
-//! `off`): the checkpoint's Git runs on the host, outside the sandbox, and would obey hooks, filters and the
-//! fsmonitor that sandboxed code can write into the repository's config (Mirror disables checkpoints in a sandbox
-//! for the same reason).
+//! The root lane's working-tree checkpoints (crate::turn_checkpoints) and the file-restoring rewind:
+//! [`Op::RestoreFiles`](super::Op::RestoreFiles) writes a checkpoint's files back after saving the current ones as
+//! another checkpoint.
 
 use super::Core;
 use crate::durable_store::lock as lock_session;
-use crate::lane::now_ms;
-use delegation::checkpoints::{self as vcs, Capture, Checkpoint, Limits};
+use crate::turn_checkpoints::TurnCheckpoints;
+use delegation::checkpoints::{self as vcs, Checkpoint};
+use jsrt::date::now_ms;
 use serde_json::{Value, json};
 use session_journal::checkpoints::{self as stored, RESTORE_PREFIX};
-use std::path::PathBuf;
 
 /// A restore while a run streams.
 pub const RESTORE_WHILE_STREAMING: &str = "Wait for the current response to finish before restoring files.";
@@ -24,71 +16,20 @@ pub const RESTORE_WHILE_STREAMING: &str = "Wait for the current response to fini
 pub const RESTORE_IN_SANDBOX: &str =
     "Checkpoints are off while the shell sandbox is on (sandbox.mode): their Git would run outside the sandbox.";
 
-/// The first executable `name` on `path` (the session's PATH, never the process's).
-pub fn on_path(path: Option<&str>, name: &str) -> Option<PathBuf> {
-    use std::os::unix::fs::PermissionsExt;
-    std::env::split_paths(path?)
-        .map(|dir| dir.join(name))
-        .find(|candidate| {
-            std::fs::metadata(candidate).is_ok_and(|meta| meta.is_file() && meta.permissions().mode() & 0o111 != 0)
-        })
-}
-
 impl Core {
-    fn checkpoint_settings(&self) -> &Value {
-        &self.runtime.config.settings["checkpoints"]
+    fn checkpoints(&self) -> TurnCheckpoints {
+        TurnCheckpoints::of_lane(
+            self.session.clone(),
+            self.env.cwd.clone(),
+            &self.runtime.config.settings,
+            &self.lane,
+            (self.env.var)("PATH").as_deref(),
+        )
     }
 
-    fn checkpoint_limits(&self) -> Limits {
-        let settings = self.checkpoint_settings();
-        let defaults = Limits::default();
-        Limits {
-            max_files: settings["maxFiles"].as_u64().map_or(defaults.max_files, |n| n as usize),
-            max_file_bytes: settings["maxFileBytes"].as_u64().unwrap_or(defaults.max_file_bytes),
-        }
-    }
-
-    /// Whether the shell sandbox is on.
-    fn sandboxed(&self) -> bool {
-        self.lane
-            .stack
-            .host
-            .launcher()
-            .is_some_and(|launcher| launcher.mode != sandbox::settings::Mode::Off)
-    }
-
-    fn jj(&self) -> Option<PathBuf> {
-        on_path((self.env.var)("PATH").as_deref(), "jj")
-    }
-
-    /// Record the working tree for the root turn whose prompt is `prompt_entry` (before the turn runs). Never
-    /// fails the turn: a tree that could not be recorded keeps a note instead.
+    /// Record the working tree for the root turn whose prompt is `prompt_entry` (before the turn runs).
     pub(super) fn checkpoint_turn(&mut self, prompt_entry: &str) {
-        if self.checkpoint_settings()["enabled"] == false || self.sandboxed() || prompt_entry.is_empty() {
-            return;
-        }
-        let previous = stored::latest_taken(&lock_session(&self.session)).and_then(|v| Checkpoint::from_json(&v));
-        let captured = vcs::capture(
-            &self.env.cwd,
-            previous.as_ref(),
-            &self.checkpoint_limits(),
-            self.jj().as_deref(),
-        );
-        let mut value = match captured {
-            Ok(Capture::Outside) => return,
-            Ok(Capture::Taken(checkpoint)) => checkpoint.to_json(),
-            Ok(Capture::Unchanged(checkpoint)) => {
-                let mut value = checkpoint.to_json();
-                value["unchanged"] = json!(true);
-                value
-            }
-            Ok(Capture::Skipped(note)) | Err(note) => json!({"skipped": note}),
-        };
-        value["kind"] = json!("turn");
-        value["entryId"] = json!(prompt_entry);
-        value["createdAt"] = json!(now_ms());
-        // A checkpoint that cannot be stored costs the turn nothing.
-        let _ = stored::put(&mut lock_session(&self.session), prompt_entry, value);
+        self.checkpoints().record("entryId", prompt_entry);
     }
 
     /// [`Op::Checkpoints`](super::Op::Checkpoints): `{checkpoints: [{key, kind, entryId, commit, createdAt,
@@ -109,8 +50,7 @@ impl Core {
                 item
             })
             .collect();
-        let enabled = self.checkpoint_settings()["enabled"] != false && !self.sandboxed();
-        json!({"checkpoints": listed, "enabled": enabled})
+        json!({"checkpoints": listed, "enabled": self.checkpoints().enabled()})
     }
 
     /// [`Op::RestoreFiles`](super::Op::RestoreFiles): write the files of checkpoint `key`, else of the checkpoint
@@ -120,7 +60,8 @@ impl Core {
         if self.run.is_some() {
             return Err(RESTORE_WHILE_STREAMING.into());
         }
-        if self.sandboxed() {
+        let checkpoints = self.checkpoints();
+        if checkpoints.sandboxed {
             return Err(RESTORE_IN_SANDBOX.into());
         }
         let found = {
@@ -144,7 +85,7 @@ impl Core {
             return Err(format!("The files at this point were not recorded: {note}"));
         }
         let target = Checkpoint::from_json(&value).ok_or("The checkpoint record is incomplete")?;
-        let restored = vcs::restore(&self.env.cwd, &target, &self.checkpoint_limits(), self.jj().as_deref())?;
+        let restored = vcs::restore(&self.env.cwd, &target, &checkpoints.limits(), checkpoints.jj.as_deref())?;
         let short = |commit: &str| commit[..commit.len().min(12)].to_string();
         let already = target.vcs == "git" && restored.safety.tree == target.tree;
         if already {

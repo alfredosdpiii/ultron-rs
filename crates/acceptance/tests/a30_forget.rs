@@ -7,9 +7,10 @@
 //! `refinements.*` are the session worker's local services (`services::LocalServices::worker` over the session's
 //! `rlm-modules/<session>/local.json`, as `session_core::compose` builds them).
 
+use kernel::store::FileDocumentStore;
 use kernel::{HostHandler, Signal};
 use kernel_apis::memory::MemoryBackend;
-use kernel_apis::{FileDocumentStore, KernelApis, MemoryApi, MemoryService, worker_gate};
+use kernel_apis::{KernelApis, MemoryApi, MemoryService, worker_gate};
 use serde_json::{Map, Value, json};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};

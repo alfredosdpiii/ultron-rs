@@ -3,7 +3,7 @@
 //! finding new medium findings in code no commit had touched). Against the fake hub and a scripted engine, plus the
 //! engine's re-check through Python with a scripted frame.
 
-mod github_common;
+use crate::github_common;
 
 use github_common::*;
 use review::promotion::changed_new_lines;

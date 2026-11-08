@@ -12,7 +12,6 @@ ai = { path = "../ai" }
 config = { path = "../config" }
 delegation = { path = "../delegation" }
 durable = { path = "../durable" }
-getrandom = "=0.4.3"
 harness = { path = "../harness" }
 herdr = { path = "../herdr" }
 host = { path = "../host" }
@@ -21,13 +20,12 @@ jsrt = { path = "../jsrt" }
 kernel = { path = "../kernel" }
 kernel-apis = { path = "../kernel-apis" }
 loki = { path = "../loki" }
+mcp = { path = "../mcp" }
 regex = "=1.13.1"
 resources = { path = "../resources" }
 rustix = { version = "=1.1.5", features = ["process", "std"] }
-sandbox = { path = "../sandbox" }
 serde_json = { version = "=1.0.151", features = ["preserve_order"] }
 session-core = { path = "../session-core" }
-session-file = { path = "../session-file" }
 session-journal = { path = "../session-journal" }
 signals = { path = "../signals" }
 tokio = { version = "=1.53.2", features = ["rt", "time"] }

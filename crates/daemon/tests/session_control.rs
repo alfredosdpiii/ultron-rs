@@ -4,8 +4,9 @@
 
 use daemon::chord::{Member, Service, State};
 use daemon::session_control::{self, ControlContext};
+use protocol::watch::QueueKind;
 use serde_json::{Value, json};
-use session_core::core::{Op, OpResult, QueueKind};
+use session_core::core::{Op, OpResult};
 use std::path::Path;
 use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex};

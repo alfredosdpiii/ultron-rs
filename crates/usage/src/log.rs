@@ -2,9 +2,9 @@
 //! digest of each entry (who wrote it and what it used, never its text), the latest values of the namespaces the
 //! report reads, and every operation's lane and result.
 
-use crate::stats::{cell_apis, classify_nudge};
 use indexmap::IndexMap;
 use serde_json::{Map, Value};
+use session_core::session_stats::{cell_apis, classify_nudge};
 use session_journal::catalog::HeaderLine;
 use session_journal::ns;
 use std::io::{BufRead, BufReader};
@@ -98,12 +98,12 @@ struct DurableDigest {
     responses: Vec<(u64, String, LogUsage)>,
 }
 
-/// The root conversation of the durable runtime (`durable::ROOT_CONVERSATION_ID`).
-const ROOT_CONVERSATION: u64 = 1;
 /// A durable commit line: `{"kind":"list","op":"append","seq":N,"namespace":"ultron.module","key":"durable",...}`.
-const DURABLE_MARK: &str = r#""namespace":"ultron.module","key":"durable""#;
+static DURABLE_MARK: std::sync::LazyLock<String> =
+    std::sync::LazyLock::new(|| format!(r#""namespace":"{}","key":"{}""#, ns::MODULE, ns::DURABLE_KEY));
 
-/// Whether a list-append line is a durable commit: its namespace and key come within its first bytes.
+/// Whether a list-append line is a durable commit: its namespace and key come within its first bytes (as
+/// `state::commit_write` orders a list append's fields).
 fn is_durable_commit(line: &str) -> bool {
     let head = &line.as_bytes()[..line.len().min(160)];
     head.windows(DURABLE_MARK.len()).any(|w| w == DURABLE_MARK.as_bytes())
@@ -125,11 +125,11 @@ impl DurableDigest {
                         self.task_names.entry(id).or_insert_with(|| name.to_string());
                     }
                 }
-                Some("entry") if value["kind"] == "ultron.assistant" => {
+                Some("entry") if value["kind"] == harness::chat::entries::ASSISTANT => {
                     let Some(conversation) = value["conversationId"].as_u64() else {
                         continue;
                     };
-                    if conversation == ROOT_CONVERSATION {
+                    if conversation == durable::ROOT_CONVERSATION_ID.0 {
                         continue;
                     }
                     let message = &value["model"][0];
@@ -229,7 +229,7 @@ const KEPT_NAMESPACES: [&str; 9] = [
     ns::BRANCH_TIP,
     ns::TASKS,
     ns::USAGE,
-    inference::TRACE_NAMESPACE,
+    ns::RLM_FRAMES,
     ns::MEMORY_STATE,
     ns::MODULE,
     "ultron.claude-code.lanes",
@@ -358,7 +358,7 @@ fn digest_entry(write: &Map<String, Value>) -> Option<LogEntry> {
         }
         Some("custom") => {
             entry.kind = EntryKind::Custom;
-            if message.get("customType").and_then(Value::as_str) == Some(compaction::RECALLED_MEMORY_TYPE) {
+            if message.get("customType").and_then(Value::as_str) == Some(protocol::custom_types::RECALLED_MEMORY) {
                 let details = record(message.get("details"));
                 let field = |key: &str| details.and_then(|d| d.get(key));
                 entry.recall = Some(Recall {
@@ -449,15 +449,10 @@ pub fn file_times(path: &Path) -> Result<(f64, u64), LogError> {
 /// Read a native session file. Fails with [`LogError::Session`] for a file that is not one.
 pub fn read_session_log(path: &Path) -> Result<SessionLog, LogError> {
     let (modified_at, bytes) = file_times(path)?;
-    let mut header: Option<Header> = None;
+    let header = read_session_header(path)?;
     let mut log = SessionLog {
         path: path.to_path_buf(),
-        header: Header {
-            id: String::new(),
-            cwd: String::new(),
-            created_at: 0.0,
-            parent_session_id: None,
-        },
+        header,
         modified_at,
         bytes,
         entries: Vec::new(),
@@ -469,32 +464,18 @@ pub fn read_session_log(path: &Path) -> Result<SessionLog, LogError> {
         unreadable_lines: 0,
     };
     let mut durable = DurableDigest::default();
-    for_each_line(path, |line| {
-        if header.is_none() {
-            header = Some(parse_header(line, path)?);
-            return Ok(true);
-        }
-        // List appends are skipped unread (stream frames are most of a file), except the durable runtime's commits.
-        if line.is_empty() || (line.starts_with(r#"{"kind":"list""#) && !is_durable_commit(line)) {
-            return Ok(true);
-        }
-        let Ok(parsed) = serde_json::from_str::<Value>(line) else {
+    // List appends are skipped unread (stream frames are most of a file), except the durable runtime's commits.
+    let skip = |line: &str| line.starts_with(r#"{"kind":"list""#) && !is_durable_commit(line);
+    session_journal::catalog::scan_writes(path, skip, |writes| {
+        let Some(writes) = writes else {
             log.unreadable_lines += 1;
-            return Ok(true);
+            return;
         };
-        let mut writes = match parsed {
-            Value::Array(items) => items,
-            other => vec![other],
-        };
-        for write in &mut writes {
-            session_journal::codec::rename_legacy(write);
-            if let Some(item) = write.as_object() {
-                apply(&mut log, &mut durable, item);
-            }
+        for write in writes.iter().filter_map(Value::as_object) {
+            apply(&mut log, &mut durable, write);
         }
-        Ok(true)
-    })?;
-    log.header = header.ok_or_else(|| LogError::Session(format!("{} is empty", path.display())))?;
+    })
+    .map_err(|e| LogError::Io(jsrt::fs::error_message(&e, "open", path)))?;
     log.durable_responses = durable.resolve();
     Ok(log)
 }
@@ -504,7 +485,7 @@ fn apply(log: &mut SessionLog, durable: &mut DurableDigest, write: &Map<String, 
     if kind == Some("list") {
         if write.get("op").and_then(Value::as_str) == Some("append")
             && write.get("namespace").and_then(Value::as_str) == Some(ns::MODULE)
-            && write.get("key").and_then(Value::as_str) == Some("durable")
+            && write.get("key").and_then(Value::as_str) == Some(ns::DURABLE_KEY)
             && let Some(record) = write.get("value")
         {
             durable.commit(record);

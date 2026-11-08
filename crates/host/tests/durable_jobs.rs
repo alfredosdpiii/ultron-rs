@@ -7,8 +7,8 @@
 //!
 //! Every wait is on a condition (a file, a process ending), with a 120 s hang guard only.
 
-use host::journal::FileJobJournal;
 use host::{AllowAll, Host};
+use kernel::store::FileDocumentStore;
 use kernel::{HostHandler, Signal};
 use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
@@ -36,7 +36,7 @@ fn call(host: &Host, kind: &str, payload: Value) -> Value {
 
 fn host_in(dir: &Path) -> Host {
     Host::new(dir, dir.join(".jobs"), dir, Box::new(AllowAll))
-        .with_journal(Arc::new(FileJobJournal::new(dir.join("jobs.json"))))
+        .with_journal(Arc::new(FileDocumentStore::new(dir.join("jobs.json"))))
         .expect("journal")
 }
 

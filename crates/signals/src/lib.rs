@@ -5,6 +5,10 @@
 //! A role or mode installs its handler ([`set_handler`]); it runs on a fresh thread so it may wait (abort a turn,
 //! release workers). A second signal while a handler runs exits at once with the signal's exit code. Without a
 //! handler the process dies of the signal as it would have unblocked.
+//!
+//! [`child`] runs child processes with a timeout, cancel and stop.
+
+pub mod child;
 
 use nix::sys::signal::Signal;
 use signal_hook::iterator::Signals;

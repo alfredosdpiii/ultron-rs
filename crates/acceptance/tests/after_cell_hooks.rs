@@ -4,7 +4,7 @@
 //! lane's next cell result. Ported from ultron-loki.test.ts ("bash writes are caught after"). Under a turn cap the
 //! finding sits between the cell's text and the budget line (session-worker.ts `[withFindings(result), hint, line]`).
 
-mod common;
+use crate::common;
 
 use common::{Install, Provider, Reply, rpc_tool_results};
 use std::path::Path;

@@ -155,7 +155,7 @@ fn mcp_gateway_a_profile_without_mcp_servers_registers_no_gateway_tool() {
 /// `openBrowser` of utils/open-browser.ts: the launcher per platform, never a shell.
 #[test]
 fn mcp_gateway_open_browser_uses_the_platform_launcher_as_typescript() {
-    use mcp::gateway::browser_command;
+    use config::browser::browser_command;
     let url = "https://example.com/a?b=1&c=2";
     let s = |v: &[&str]| v.iter().map(|x| x.to_string()).collect::<Vec<_>>();
     assert_eq!(browser_command("darwin", url), ("open".to_string(), s(&[url])));
@@ -190,7 +190,7 @@ fn mcp_gateway_browser_opener_uses_only_the_given_path() {
     .unwrap();
     std::fs::set_permissions(&launcher, std::fs::Permissions::from_mode(0o755)).unwrap();
     let path = format!("{}:/usr/bin:/bin", bin.display());
-    let open = mcp::gateway::browser_opener_with(Some(path.clone()), Some("/h".into()), Vec::new());
+    let open = config::browser::browser_opener(Some(path.clone()), Some("/h".into()), Vec::new());
     let url = "https://example.com/signin?b=1&c=$(touch pwned)";
     open(url);
     let start = std::time::Instant::now();
@@ -207,8 +207,8 @@ fn mcp_gateway_browser_opener_uses_only_the_given_path() {
     std::fs::remove_file(&out).unwrap();
     let empty = dir.path().join("empty");
     std::fs::create_dir_all(&empty).unwrap();
-    mcp::gateway::browser_opener_with(Some(empty.display().to_string()), None, Vec::new())("https://example.com/x");
-    mcp::gateway::browser_opener_with(None, None, Vec::new())("https://example.com/y");
+    config::browser::browser_opener(Some(empty.display().to_string()), None, Vec::new())("https://example.com/x");
+    config::browser::browser_opener(None, None, Vec::new())("https://example.com/y");
     assert!(!out.exists());
 }
 
@@ -240,7 +240,7 @@ fn mcp_gateway_browser_opener_passes_only_the_given_desktop_vars() {
         "SECRET_TOKEN" => Some("nope".to_string()),
         _ => None,
     };
-    let desktop = mcp::gateway::opener_vars(&session);
+    let desktop = config::browser::opener_vars(&session);
     assert_eq!(
         desktop,
         vec![
@@ -248,7 +248,7 @@ fn mcp_gateway_browser_opener_passes_only_the_given_desktop_vars() {
             ("WAYLAND_DISPLAY".to_string(), "wayland-fake".to_string())
         ]
     );
-    mcp::gateway::browser_opener_with(Some(path), None, desktop)("https://example.com/d");
+    config::browser::browser_opener(Some(path), None, desktop)("https://example.com/d");
     let start = std::time::Instant::now();
     while !out.exists() {
         assert!(

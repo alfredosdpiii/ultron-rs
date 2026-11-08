@@ -141,20 +141,7 @@ fn file_session_id(path: &Path) -> String {
 
 /// The Ultron session of a Claude Code session (`ultron claude` remembers it by Claude Code's session id).
 fn claude_session_path(agent_dir: &Path, id: &str) -> Option<PathBuf> {
-    let safe: String = id
-        .chars()
-        .map(|c| {
-            if c.is_ascii_alphanumeric() || "._-".contains(c) {
-                c
-            } else {
-                '_'
-            }
-        })
-        .collect();
-    let path = agent_dir
-        .join("claude-code")
-        .join("sessions")
-        .join(format!("{safe}.json"));
+    let path = config::paths::AgentPaths::new(agent_dir).claude_session_map(id);
     let saved: Value = serde_json::from_str(&std::fs::read_to_string(path).ok()?).ok()?;
     let target = PathBuf::from(saved.get("path")?.as_str()?);
     target.exists().then_some(target)
@@ -237,7 +224,10 @@ pub fn run(args: &[String], env: &Env, out: &mut dyn std::io::Write, err: &mut d
 fn command(rest: &[String], env: &Env, lines: &mut Vec<String>) -> Result<(), Failure> {
     let options = parse(rest)?;
     let agent_dir = env.agent_dir();
-    let default_root = agent_dir.join("experimental").join("sessions").display().to_string();
+    let default_root = config::paths::AgentPaths::new(&agent_dir)
+        .experimental_sessions_dir()
+        .display()
+        .to_string();
     let root_input = options
         .sessions_root
         .clone()

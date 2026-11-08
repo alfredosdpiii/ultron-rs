@@ -60,7 +60,13 @@ fn session_journal_catalog_reads_only_the_header_line() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("s.jsonl");
     std::fs::write(&path, "first\nsecond\n").unwrap();
-    assert_eq!(catalog::first_line(&path).unwrap(), "first");
+    assert_eq!(
+        session_journal::io::first_line(&path).unwrap(),
+        ("first".to_string(), true)
+    );
     std::fs::write(&path, "unterminated").unwrap();
-    assert_eq!(catalog::first_line(&path).unwrap(), "unterminated");
+    assert_eq!(
+        session_journal::io::first_line(&path).unwrap(),
+        ("unterminated".to_string(), false)
+    );
 }

@@ -11,13 +11,13 @@ use crate::compose::{AgentStores, Stack, SubagentHost, child_setup};
 use crate::durable_store::{SharedSession, lock};
 use delegation::agents::{LaneReply, LaneRun, LaneRunner};
 use delegation::host::{ChildRun, ChildRunner, ChildWaiter, Reattached};
-use delegation::task_store::DocumentStore;
 use durable::{ConversationId, Cursor, ROOT_CONVERSATION_ID, TaskId, TaskQuery};
 use harness::chat::children::{CHILD_KIND, ChildInput, child_report, spawn_child};
 use harness::chat::{ChatHarness, ModelRef};
 use harness::scheduler::{Cancel, Ctx};
 use jsrt::sync;
 use kernel::Signal;
+use kernel::store::DocumentStore;
 use serde_json::Value;
 use services::SessionValues;
 use session_journal::Write;
@@ -60,11 +60,11 @@ pub fn value_store(session: &SharedSession, namespace: &str, key: &str) -> Box<d
 pub struct SessionUsageStore(pub SharedSession);
 
 impl DocumentStore for SessionUsageStore {
-    fn read(&mut self) -> Result<Option<Value>, String> {
+    fn read(&self) -> Result<Option<Value>, String> {
         Ok(lock(&self.0).value(USAGE_ROOT.namespace, USAGE_ROOT.key).cloned())
     }
 
-    fn write(&mut self, document: &Value) -> Result<(), String> {
+    fn write(&self, document: &Value) -> Result<(), String> {
         let mut session = lock(&self.0);
         let mut merged = document.clone();
         if let Some(stored) = session.value(USAGE_ROOT.namespace, USAGE_ROOT.key).cloned() {
@@ -247,7 +247,7 @@ impl DurableChildren {
     /// conversation starts afresh every turn): `root:<transcript entry>`; another conversation's is in the runtime:
     /// `<conversation>:<entry>`.
     pub fn fork_point(&self, lane: &str) -> Result<Option<String>, String> {
-        if lane == crate::lane::MAIN {
+        if lane == session_journal::run::MAIN_LANE {
             let entries = self.root_context()?;
             let messages: Vec<(String, Vec<Value>)> = entries
                 .iter()
@@ -289,7 +289,7 @@ impl DurableChildren {
         let session = self.values.get().ok_or("The session is not open")?.session();
         let session = lock(session);
         Ok(session_journal::context::build_context_entries(
-            &session.branch_entries(crate::lane::MAIN)?,
+            &session.branch_entries(session_journal::run::MAIN_LANE)?,
         ))
     }
 

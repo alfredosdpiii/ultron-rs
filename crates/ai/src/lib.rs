@@ -48,6 +48,7 @@ pub mod openai_responses;
 pub mod options;
 pub mod pi_messages;
 mod provider;
+pub mod retry;
 pub mod sse;
 pub mod transcript;
 pub mod types;

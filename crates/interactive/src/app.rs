@@ -37,7 +37,7 @@ use crate::header::StartupHeader;
 use crate::history::{PromptHistoryStore, TimedPrompt};
 use crate::history_search::{HistorySearchEvent, PromptHistorySearch};
 use crate::lane::{
-    AutoreviewRequest, BashResult, LaneCommand, LaneEvent, ModelInfo, PromptImage, QueueKind, Queued, SessionListing,
+    AutoreviewRequest, BashResult, LaneCommand, LaneEvent, ModelInfo, PromptImage, Queued, SessionListing,
 };
 use crate::model_hub::{ModelHub, ModelHubEvent};
 use crate::qol::{GitSource, NotifyFn, QolSettings, code_highlighter};
@@ -48,6 +48,7 @@ use crate::settings_selector::{SettingsEvent, SettingsInput, SettingsSelector, f
 use crate::transcript_picker::{PickerEvent, PickerMode, PickerOptions, TranscriptPicker};
 use crate::tree_selector::{FilterMode, TreeAction, TreeSelector};
 use protocol::pi_message::text as message_text;
+use protocol::watch::QueueKind;
 
 pub const RLM_PANE_AUTO_ENV: &str = "ULTRON_RLM_PANE_AUTO";
 
@@ -744,9 +745,9 @@ impl App {
             // `rlm` cells always use TS's highlighter (highlight.js Python); QoL highlighting covers code blocks.
             highlight: options.highlight,
             code_highlight: qol.highlight.then(|| code_highlighter(&theme)),
-            expand_key: key_text(&keys, "app.tools.expand", false),
+            expand_key: key_text(&keys, "app.tools.expand"),
             dequeue_key: key_display_text(&keys, "app.message.dequeue"),
-            interrupt_key: key_text(&keys, "app.interrupt", false),
+            interrupt_key: key_text(&keys, "app.interrupt"),
         };
         App {
             header: StartupHeader {
@@ -894,11 +895,11 @@ impl App {
     pub fn set_user_keybindings(&mut self, user: tui::UserBindings) {
         self.keys.set_user_bindings(user.clone());
         self.editor.set_user_keybindings(user);
-        self.chat.cancel_key = key_text(&self.keys, "tui.select.cancel", false);
+        self.chat.cancel_key = key_text(&self.keys, "tui.select.cancel");
     }
 
     fn with_cancel_key(mut self) -> Self {
-        self.chat.cancel_key = key_text(&self.keys, "tui.select.cancel", false);
+        self.chat.cancel_key = key_text(&self.keys, "tui.select.cancel");
         self
     }
 
@@ -4542,7 +4543,7 @@ impl App {
             // Every transcript row (scrollback and viewport) at the current width, rendered once.
             let width = self.cols.max(1);
             let rows = self.document(width);
-            let mut search = crate::transcript_search::TranscriptSearch::new(rows, self.keys.clone(), false);
+            let mut search = crate::transcript_search::TranscriptSearch::new(rows, self.keys.clone());
             let (t1, t2) = (Rc::clone(&self.theme), Rc::clone(&self.theme));
             search.set_styles(
                 Box::new(move |s| format!("\x1b[4m{}\x1b[24m", t1.fg(Fg::Accent, s))),
@@ -5055,7 +5056,7 @@ impl App {
                         .map_or(0, |b| b.iter().filter(|b| b["type"] == "toolCall").count());
                 }
                 Some("toolResult") => s.tool_results += 1,
-                Some("custom") if m["customType"] == crate::chat::NUDGE_CUSTOM_TYPE => s.auto_continues += 1,
+                Some("custom") if m["customType"] == protocol::custom_types::NUDGE => s.auto_continues += 1,
                 _ => {}
             }
         }
@@ -5236,7 +5237,7 @@ impl App {
                 lines.push(String::new());
                 lines.extend(Text::new(&t.fg(Fg::Text, &format!("Enter {method}")), 1, 0, None).render(width));
                 lines.extend(input.render(width));
-                let hint = |id: &str, d: &str| crate::components::key_hint(&t, &key_text(&self.keys, id, false), d);
+                let hint = |id: &str, d: &str| crate::components::key_hint(&t, &key_text(&self.keys, id), d);
                 lines.extend(
                     Text::new(
                         &format!(

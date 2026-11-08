@@ -2,7 +2,7 @@
 //! slash-commands-provider.ts `directExtensionCommand`): `/mcp status` shows the worker's notice in the status line,
 //! and `/mcp` opens the server menu, then the action menu, whose Connect answer connects the server.
 
-mod tui_harness;
+use crate::tui_harness;
 
 use std::path::Path;
 use tui_harness::{Mock, TempDir, Tui};

@@ -2,6 +2,7 @@
 //! validated client/server envelopes of protocol version 8.
 
 pub mod cbor;
+pub mod custom_types;
 pub mod framing;
 pub mod handshake;
 pub mod json;

@@ -4,7 +4,7 @@
 //! same provider requests, exit the same way, and leave the same session files: format-4 journals equal under
 //! `normalize_journal` (fixtures/journal.mjs). The canonical form is the generator's `canonical`, ported below.
 
-mod common;
+use crate::common;
 
 use cli::rpc::client::{RpcClient, RpcClientOptions};
 use serde_json::{Map, Value, json};

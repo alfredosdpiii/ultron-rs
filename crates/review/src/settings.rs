@@ -8,7 +8,7 @@ use indexmap::IndexMap;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
-use crate::js::{Num, clamp, path_join};
+use crate::js::{Num, clamp};
 
 pub const CACHE_DIR_ENV: &str = "ULTRON_AUTOREVIEW_CACHE_DIR";
 
@@ -507,7 +507,7 @@ pub struct AutoreviewPaths {
 }
 
 pub fn autoreview_paths(agent_dir: &str, env: &HashMap<String, String>, home: &str) -> AutoreviewPaths {
-    let dir = path_join(&[agent_dir, "autoreview"]);
+    let dir = jsrt::path::join(&[agent_dir, "autoreview"]);
     let set = |name: &str| {
         env.get(name)
             .map(|value| jsrt::string::trim(value))
@@ -516,15 +516,15 @@ pub fn autoreview_paths(agent_dir: &str, env: &HashMap<String, String>, home: &s
     let cache = match set(CACHE_DIR_ENV) {
         Some(cache) => cache.to_string(),
         None => {
-            let base = set("XDG_CACHE_HOME").map_or_else(|| path_join(&[home, ".cache"]), str::to_string);
-            path_join(&[&base, "ultron-autoreview"])
+            let base = set("XDG_CACHE_HOME").map_or_else(|| jsrt::path::join(&[home, ".cache"]), str::to_string);
+            jsrt::path::join(&[&base, "ultron-autoreview"])
         }
     };
     AutoreviewPaths {
-        state: path_join(&[&dir, "state.json"]),
-        logs: path_join(&[&dir, "logs"]),
-        dry_run: path_join(&[&dir, "dry-run"]),
-        knowledge: path_join(&[agent_dir, "knowledge", "graph.db"]),
+        state: jsrt::path::join(&[&dir, "state.json"]),
+        logs: jsrt::path::join(&[&dir, "logs"]),
+        dry_run: jsrt::path::join(&[&dir, "dry-run"]),
+        knowledge: jsrt::path::join(&[agent_dir, "knowledge", "graph.db"]),
         dir,
         cache,
     }

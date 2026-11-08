@@ -41,6 +41,20 @@ pub const INSPECTION_REQUESTS: [&str; 25] = [
     "usage.report",
 ];
 
+/// The inspections `ultron claude`'s watch viewer may make through its control socket (`READ_ONLY_INSPECTIONS` of
+/// claude/mcp-server.ts): the [`INSPECTION_REQUESTS`] the rlm-views poller sends, plus `async.pending` and
+/// `usage.report`.
+pub const VIEWER_INSPECTIONS: [&str; 8] = [
+    "agents.status",
+    "instances.list",
+    "rlm.pool",
+    "ctx.state",
+    "rlm.frames",
+    "progress.assess",
+    "async.pending",
+    "usage.report",
+];
+
 /// `inspect(request, payload)`: refuse anything but an inspection request, then ask `runtime` (none: the session
 /// has no Ultron runtime). A null payload is an empty one; any other non-object is refused.
 pub fn inspect(
@@ -59,4 +73,16 @@ pub fn inspect(
         _ => return Err("Inspection payload must be an object".into()),
     };
     runtime.handle(request, body, signal)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn session_core_viewer_inspections_are_inspection_requests() {
+        for request in VIEWER_INSPECTIONS {
+            assert!(INSPECTION_REQUESTS.contains(&request), "{request}");
+        }
+    }
 }

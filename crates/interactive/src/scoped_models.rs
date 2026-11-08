@@ -207,7 +207,7 @@ impl ScopedModelsSelector {
     }
 
     fn key(&self, keybinding: &str) -> String {
-        format_key_text(&self.keys.get_keys(keybinding).join("/"), true, false)
+        format_key_text(&self.keys.get_keys(keybinding).join("/"), true)
     }
 
     fn footer(&self) -> String {

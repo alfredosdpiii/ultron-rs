@@ -5,8 +5,7 @@
 //! `toolchain.json` text, the environment directory's files and the cache lookup compared exactly. Plus the daemon
 //! side: a review whose checkout has a lockfile gets the prepared environment as its test checkout.
 
-#[path = "github_common/mod.rs"]
-mod github_common;
+use crate::github_common;
 
 use std::collections::HashMap;
 use std::path::Path;
