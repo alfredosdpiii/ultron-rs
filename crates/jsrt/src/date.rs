@@ -292,6 +292,16 @@ mod tests {
         }
     }
 
+    /// Every stored date was written by `iso_string`, so every value it prints must parse back.
+    #[test]
+    fn jsrt_date_parse_reads_back_every_iso_string() {
+        let start = parse_date("2024-01-01T00:00:00.000Z").unwrap();
+        for hour in 0..(366 * 24) {
+            let ms = start + hour * 3_600_000 + (hour * 61_017) % 3_600_000;
+            assert_eq!(parse_date(&iso_string(ms)), Some(ms), "{}", iso_string(ms));
+        }
+    }
+
     #[test]
     fn jsrt_date_time_clip_is_the_range_a_date_holds() {
         assert_eq!(time_clip(1.9), Some(1));
