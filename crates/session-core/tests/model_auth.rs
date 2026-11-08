@@ -123,7 +123,7 @@ fn case(spec: &Value, port: u16) -> Case {
         cwd: tmp.path().join("cwd"),
         home: tmp.path().to_path_buf(),
         var: Arc::new(move |k| map.get(k).cloned()),
-        docs: tmp.path().join("docs"),
+        package: tmp.path().to_path_buf(),
     };
     Case {
         spec: spec.clone(),

@@ -36,8 +36,8 @@ fn main() {
             std::process::exit(1);
         }
     };
-    let ready_docs = || match source.ready() {
-        Ok(dir) => dir.join("docs"),
+    let ready_package = || match source.ready() {
+        Ok(dir) => dir,
         Err(message) => {
             eprintln!("{message}");
             std::process::exit(1);
@@ -46,7 +46,7 @@ fn main() {
     let env = cli::Env {
         cwd: std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
         var: std::sync::Arc::new(|k| std::env::var(k).ok()),
-        docs: source.dir().join("docs"),
+        package: source.dir().to_path_buf(),
         home,
     };
     match daemon::process::role(&argv) {
@@ -66,7 +66,7 @@ fn main() {
                 }
                 daemon::process::Role::SessionWorker => {
                     daemon::process::trace_startup("worker.entry");
-                    daemon::worker::run(args, ready_docs())
+                    daemon::worker::run(args, ready_package())
                 }
             };
             if let Err(message) = result {

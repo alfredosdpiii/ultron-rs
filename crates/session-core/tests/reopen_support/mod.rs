@@ -122,8 +122,8 @@ impl Home {
             cwd: self.cwd.clone(),
             home: self.root.clone(),
             var: Arc::new(move |key| all.iter().rev().find(|(k, _)| k == key).map(|(_, v)| v.clone())),
-            docs: config::paths::normalize(
-                &Path::new(env!("CARGO_MANIFEST_DIR")).join("../../packages/coding-agent/docs"),
+            package: config::paths::normalize(
+                &Path::new(env!("CARGO_MANIFEST_DIR")).join("../../packages/coding-agent"),
             ),
         };
         let repo = session_journal::SessionRepo::new(&self.sessions(), session_journal::SystemClock::shared());

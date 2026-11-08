@@ -9,8 +9,7 @@ use super::OAuthError;
 use super::flow::{StateStore, normalized_url};
 use crate::connection::SecretSink;
 use serde_json::{Map, Value};
-use std::io::Write;
-use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
+use std::os::unix::fs::DirBuilderExt;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime};
@@ -215,14 +214,7 @@ impl CredentialStore {
 }
 
 fn write_private(path: &Path, content: &str) -> Result<(), OAuthError> {
-    let mut file = std::fs::OpenOptions::new()
-        .write(true)
-        .create(true)
-        .truncate(true)
-        .mode(0o600)
-        .open(path)
-        .map_err(other)?;
-    file.write_all(content.as_bytes()).map_err(other)
+    config::paths::write_private(path, content).map_err(other)
 }
 
 /// One server's state in the credential file (`forServer`).

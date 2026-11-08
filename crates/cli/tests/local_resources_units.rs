@@ -107,7 +107,7 @@ fn cli_local_resources_resolve_matches_typescript_top_level_resources() {
             cwd: root.join("work"),
             home: root.join("home"),
             var: Arc::new(move |k| vars.get(k).cloned()),
-            docs: root.join("docs"),
+            package: root.to_path_buf(),
         };
         let mut settings = config::settings::SettingsManager::create(&root.join("work"), &root.join("agent"), false);
         settings.set_project_trusted(case["trust"] == true);
@@ -189,7 +189,7 @@ fn cli_local_resources_extensions_match_typescript_top_level() {
             cwd: root.join("work"),
             home: root.join("home"),
             var: Arc::new(move |k| vars.get(k).cloned()),
-            docs: root.join("docs"),
+            package: root.to_path_buf(),
         };
         let mut settings = config::settings::SettingsManager::create(&root.join("work"), &root.join("agent"), false);
         settings.set_project_trusted(case["trust"] == true);

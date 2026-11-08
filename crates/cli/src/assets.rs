@@ -50,8 +50,7 @@ pub const DEV_ASSETS: &str = "ULTRON_DEV_ASSETS";
 pub const PACKAGE_DIR: &str = "PI_PACKAGE_DIR";
 /// The file in an installed directory that names the hash it was installed from; written last.
 pub const MARKER: &str = ".ultron-assets";
-/// The runtime script, relative to the package directory.
-pub const RUNTIME: &str = "src/ultron/rlm/runtime.py";
+use session_core::RUNTIME_PY as RUNTIME;
 
 /// Where this run's package files come from: a live directory, or the embedded files installed under a base.
 #[derive(Clone, Debug, PartialEq, Eq)]

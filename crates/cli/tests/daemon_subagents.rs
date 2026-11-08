@@ -231,7 +231,7 @@ impl Drop for Server {
 }
 
 fn op(connection: &Connection, session: &RpcTarget, op: Value) -> Result<Option<Value>, CallError> {
-    connection.call(session.clone(), "ultron.session-ops", "op", json!([op]))
+    connection.call(session.clone(), protocol::names::SESSION_OPS, "op", json!([op]))
 }
 
 /// A new session, attached.
@@ -239,7 +239,7 @@ fn open(connection: &Connection) -> String {
     let created = connection
         .call(
             connection.server_target(),
-            "ultron.session-management",
+            protocol::names::SESSION_MANAGEMENT,
             "create",
             json!([{}]),
         )
@@ -249,7 +249,7 @@ fn open(connection: &Connection) -> String {
     connection
         .call(
             connection.server_target(),
-            "ultron.session-management",
+            protocol::names::SESSION_MANAGEMENT,
             "attach",
             json!([id]),
         )
@@ -265,7 +265,7 @@ fn prompt(connection: &Connection, message: &str) {
     connection
         .start(
             session,
-            "ultron.agent-controller",
+            protocol::names::AGENT_CONTROLLER,
             "prompt",
             json!([{"message": message, "images": null}]),
         )

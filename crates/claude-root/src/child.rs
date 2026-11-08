@@ -282,7 +282,7 @@ pub fn run_claude_child(
     let dir = crate::temp_dir("ultron-child-", options.var)?;
     let cleanup = scopeguard(dir.clone());
     let prompt_file = dir.join("system-prompt.md");
-    crate::write_private(&prompt_file, &options.system_prompt).map_err(|e| e.to_string())?;
+    config::paths::write_private(&prompt_file, &options.system_prompt).map_err(|e| e.to_string())?;
     let mcp_config = child_mcp_config(&options.server, run, &model, token, &cwd);
     let args = child_claude_args(
         &model,

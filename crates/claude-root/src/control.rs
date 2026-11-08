@@ -308,7 +308,7 @@ pub fn start_control_server(
 ) -> Result<ControlServer, String> {
     let mut server = listen(Path::new(&record.socket), handle)?;
     let registry = dir.join(format!("{}.json", safe_name(&record.name)));
-    crate::write_private(&registry, &format!("{}\n", record.to_json())).map_err(|e| e.to_string())?;
+    config::paths::write_private(&registry, &format!("{}\n", record.to_json())).map_err(|e| e.to_string())?;
     server.registry = Some(registry);
     Ok(server)
 }

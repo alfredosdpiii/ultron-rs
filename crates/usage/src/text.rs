@@ -2,7 +2,6 @@
 //! one-line-per-session table. A number the session did not keep prints as `not recorded` (`n/r` in the table), and
 //! a cost nobody reported as `unknown`: neither is ever printed as zero. Plain style only (the CLI prints no color).
 
-use crate::js::{pad_end, pad_start};
 use jsrt::localtime::Zone;
 use serde_json::{Map, Value};
 
@@ -812,4 +811,14 @@ pub fn render_session_table(reports: &[Value], options: &TextOptions) -> Vec<Str
         );
     }
     lines
+}
+
+/// `text.padEnd(width)`, in UTF-16 code units.
+fn pad_end(text: &str, width: usize) -> String {
+    format!("{text}{}", " ".repeat(width.saturating_sub(jsrt::utf16::len(text))))
+}
+
+/// `text.padStart(width)`, in UTF-16 code units.
+fn pad_start(text: &str, width: usize) -> String {
+    format!("{}{text}", " ".repeat(width.saturating_sub(jsrt::utf16::len(text))))
 }

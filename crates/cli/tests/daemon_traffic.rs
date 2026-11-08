@@ -196,7 +196,7 @@ fn transcript_projection(frames: &[(String, Value)], transcript: &str) -> (Vec<V
     let mut state = Value::Null;
     let mut events = Vec::new();
     for (_, frame) in frames {
-        let ops = if frame["type"] == "response" && frame["result"]["serviceId"] == "ultron.transcript" {
+        let ops = if frame["type"] == "response" && frame["result"]["serviceId"] == protocol::names::TRANSCRIPT {
             frame["result"]["instances"][0]["members"][0]["ops"].clone()
         } else if is_transcript_update(frame, Some(transcript)) {
             frame["update"]["ops"].clone()
@@ -239,13 +239,13 @@ fn transcript_projection(frames: &[(String, Value)], transcript: &str) -> (Vec<V
 /// Frames compared one to one: everything but the transcript updates, with the models snapshot reduced to its
 /// configuration and the transcript snapshot to its member shape.
 fn comparable(frames: &[(String, Value)]) -> Vec<(String, Value)> {
-    let transcript = subscription_for(frames, "ultron.transcript");
+    let transcript = subscription_for(frames, protocol::names::TRANSCRIPT);
     let kept = frames
         .iter()
         .filter(|(_, f)| !is_transcript_update(f, transcript.as_deref()))
         .map(|(dir, f)| {
             let mut f = f.clone();
-            if f["result"]["serviceId"] == "ultron.transcript"
+            if f["result"]["serviceId"] == protocol::names::TRANSCRIPT
                 && let Some(members) = f["result"]["instances"][0]["members"].as_array_mut()
             {
                 // The snapshot's entries come from the session store, compared by `transcript_projection`.
@@ -253,7 +253,7 @@ fn comparable(frames: &[(String, Value)]) -> Vec<(String, Value)> {
                     member["ops"] = json!("<transcript>");
                 }
             }
-            if f["result"]["serviceId"] == "ultron.models"
+            if f["result"]["serviceId"] == protocol::names::MODELS
                 && let Some(members) = f["result"]["instances"][0]["members"].as_array_mut()
             {
                 for member in members {
@@ -376,7 +376,7 @@ fn cli_daemon_traffic_matches_typescript() {
         // Transcript updates are compared by projection, so their count may differ: leave them out before
         // aligning the interleaving.
         let strip = |frames: &[(String, Value)]| -> Vec<(String, Value)> {
-            let transcript = subscription_for(frames, "ultron.transcript");
+            let transcript = subscription_for(frames, protocol::names::TRANSCRIPT);
             frames
                 .iter()
                 .filter(|(_, f)| !is_transcript_update(f, transcript.as_deref()))
@@ -393,8 +393,8 @@ fn cli_daemon_traffic_matches_typescript() {
         }
         assert_eq!(got_cmp.len(), want_cmp.len(), "{name} frame count");
         if let (Some(gt), Some(wt)) = (
-            subscription_for(&got, "ultron.transcript"),
-            subscription_for(&want, "ultron.transcript"),
+            subscription_for(&got, protocol::names::TRANSCRIPT),
+            subscription_for(&want, protocol::names::TRANSCRIPT),
         ) {
             let (g_events, g_final) = transcript_projection(&got, &gt);
             let (w_events, w_final) = transcript_projection(&want, &wt);

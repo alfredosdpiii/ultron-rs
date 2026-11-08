@@ -148,3 +148,16 @@ pub fn own_executable() -> std::io::Result<PathBuf> {
 pub fn running_image(exe: PathBuf, image: PathBuf, exists: &dyn Fn(&Path) -> bool) -> PathBuf {
     if !exists(&exe) && exists(&image) { image } else { exe }
 }
+
+/// Write `content` to `path`, created or truncated, readable only by the user (0600).
+pub fn write_private(path: &Path, content: &str) -> std::io::Result<()> {
+    use std::io::Write;
+    use std::os::unix::fs::OpenOptionsExt;
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .mode(0o600)
+        .open(path)?;
+    file.write_all(content.as_bytes())
+}

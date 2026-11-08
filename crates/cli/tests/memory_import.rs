@@ -104,8 +104,8 @@ impl Machine {
             cwd: cwd.to_path_buf(),
             home: self.home.clone(),
             var: Arc::new(move |key| all.iter().rev().find(|(k, _)| k == key).map(|(_, v)| v.clone())),
-            docs: config::paths::normalize(
-                &Path::new(env!("CARGO_MANIFEST_DIR")).join("../../packages/coding-agent/docs"),
+            package: config::paths::normalize(
+                &Path::new(env!("CARGO_MANIFEST_DIR")).join("../../packages/coding-agent"),
             ),
         }
     }

@@ -7,6 +7,7 @@
 use crate::Env;
 use crate::args::Args;
 use client::runtime::{ClientCommand, ClientResult, RunOptions, run_client_with};
+use client::session::{Start, Started};
 use daemon::server::{ServerOptions, start_foreground_server};
 use daemon::workers::WorkerModel;
 use protocol::Route;
@@ -15,6 +16,7 @@ use session_core::ModelFlags;
 pub use session_core::core::lane_config;
 pub use session_core::lane::{catalog_model, clock_lines, format_clock_utc, format_gap, rlm_tool, system_prompt};
 use session_journal::repo::Metadata;
+use std::sync::Arc;
 
 /// `traceStartup(label)` with the run's `ULTRON_STARTUP_TRACE` (crate::startup_trace's format).
 pub fn trace_startup(env: &Env, label: &str) {
@@ -47,38 +49,16 @@ pub struct Prompted {
 /// subscription limit reached; using API credits until <time>", or the switch back) on the assistant messages a
 /// session file gained after `offset` bytes.
 pub fn route_notices(path: &std::path::Path, offset: u64) -> Vec<String> {
-    use std::io::{Read, Seek, SeekFrom};
-    let mut text = String::new();
-    let read = std::fs::File::open(path).and_then(|mut file| {
-        file.seek(SeekFrom::Start(offset))?;
-        file.read_to_string(&mut text)
-    });
-    if read.is_err() {
-        return Vec::new();
-    }
     let mut notices = Vec::new();
-    for line in text.lines() {
-        let Ok(value) = serde_json::from_str::<serde_json::Value>(line) else {
-            continue;
-        };
-        let writes = value.as_array().cloned().unwrap_or_else(|| vec![value]);
-        for write in writes {
-            if write["type"] != "message" {
-                continue;
-            }
-            if let Some(notice) = interactive::lane::route_notice(&write["message"])
-                && !notices.contains(&notice)
-            {
-                notices.push(notice);
-            }
+    for write in session_journal::io::writes_after(path, offset) {
+        if write["type"] == "message"
+            && let Some(notice) = interactive::lane::route_notice(&write["message"])
+            && !notices.contains(&notice)
+        {
+            notices.push(notice);
         }
     }
     notices
-}
-
-/// The session file of `id` under the sessions root `root`.
-fn session_file(root: &std::path::Path, id: &str) -> Option<std::path::PathBuf> {
-    session_journal::catalog::find(root, id).map(|metadata| metadata.path)
 }
 
 /// The model flags of the command line.
@@ -212,24 +192,45 @@ pub fn client_command(parsed: &Args, target: &Target, prompt: Option<String>) ->
     command
 }
 
-/// The route a client run uses: a foreground generation of this process (returned, for the run to close); a client
-/// of the durable instance uses its detached server (activated when not running, never stopped by this run).
-pub fn open_route(
-    env: &Env,
-    options: &ServerOptions,
-) -> Result<(Route, Option<std::sync::Arc<daemon::server::RunningServer>>), String> {
-    if crate::durable_client::is_client(env) {
-        let route = crate::durable_client::activate(options)?;
-        trace_startup(env, "cli.server-attached");
-        return Ok((route, None));
-    }
-    let server = start_foreground_server(options).map_err(|e| e.to_string())?;
-    trace_startup(env, "cli.server-started");
-    let route = Route {
-        server_id: server.server_id.clone(),
-        path: server.endpoint_path.clone(),
+/// How a run brings its server up, and up again whenever it went away: a foreground generation of this process; a
+/// client of the durable instance activates the durable server instead (never stopped by this run).
+pub fn server_start(env: &Env, options: &ServerOptions) -> Start {
+    let options = options.clone();
+    let durable = crate::durable_client::is_client(env);
+    Arc::new(move || {
+        if durable {
+            let route = crate::durable_client::activate(&options)?;
+            return Ok(Started { route, stop: None });
+        }
+        let server = start_foreground_server(&options).map_err(|e| e.to_string())?;
+        let route = Route {
+            server_id: server.server_id.clone(),
+            path: server.endpoint_path.clone(),
+        };
+        Ok(Started {
+            route,
+            stop: Some(Arc::new(move || server.close())),
+        })
+    })
+}
+
+/// The run's first [`server_start`].
+pub fn open_route(env: &Env, start: &Start) -> Result<Started, String> {
+    let started = start()?;
+    let label = match crate::durable_client::is_client(env) {
+        true => "cli.server-attached",
+        false => "cli.server-started",
     };
-    Ok((route, Some(server)))
+    trace_startup(env, label);
+    Ok(started)
+}
+
+/// The session options every attach of a client of the durable instance carries (crate::durable_client): its own
+/// model flags, which a foreground server's workers already start on.
+pub fn session_options(env: &Env, options: &ServerOptions) -> Option<serde_json::Value> {
+    crate::durable_client::is_client(env)
+        .then(|| options.model.session_options())
+        .flatten()
 }
 
 /// How long a signalled print run waits for its aborted turn to end before it exits anyway (`PROMPT_ABORT_WAIT_MS`).
@@ -245,13 +246,14 @@ pub fn run_prompt(
     target: Target,
     on_event: Option<client::runtime::EventListener>,
 ) -> Result<Prompted, String> {
+    use std::sync::Mutex;
     use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
-    use std::sync::{Arc, Mutex};
     preflight(parsed, env, &target)?;
     let json_mode = parsed.mode.as_deref() == Some("json");
     let options = server_options(parsed, env, if json_mode { "json" } else { "print" })?;
-    let (route, own) = open_route(env, &options)?;
-    let servers = Arc::new(Mutex::new(own.into_iter().collect::<Vec<_>>()));
+    let start = server_start(env, &options);
+    let Started { route, stop } = open_route(env, &start)?;
+    let servers = Arc::new(Mutex::new(stop.into_iter().collect::<Vec<_>>()));
     let interrupt = Arc::new(AtomicBool::new(false));
     let code = Arc::new(AtomicI32::new(0));
     let (flag, signalled) = (interrupt.clone(), code.clone());
@@ -263,26 +265,16 @@ pub fn run_prompt(
         std::thread::sleep(PROMPT_ABORT_WAIT);
         std::process::exit(signals::exit_code(signal));
     }));
-    let (restarted, server_options) = (servers.clone(), options.clone());
-    let durable = crate::durable_client::is_client(env);
+    let restarted = servers.clone();
     let run_options = RunOptions {
-        // A client of the durable instance carries its own session options (crate::durable_client).
-        session_options: durable.then(|| options.model.session_options()).flatten(),
+        session_options: session_options(env, &options),
         on_event,
         interrupt: Some(interrupt.clone()),
+        // The server generation went away with its coordinator: start a new one (and coordinator).
         reconnect: Some(Arc::new(move || {
-            // The server generation went away with its coordinator: start a new one (and coordinator); a client of
-            // the durable instance activates the durable server again.
-            if durable {
-                return crate::durable_client::activate(&server_options);
-            }
-            let server = start_foreground_server(&server_options).map_err(|e| e.to_string())?;
-            let route = Route {
-                server_id: server.server_id.clone(),
-                path: server.endpoint_path.clone(),
-            };
-            restarted.lock().unwrap_or_else(|e| e.into_inner()).push(server);
-            Ok(route)
+            let started = start()?;
+            restarted.lock().unwrap_or_else(|e| e.into_inner()).extend(started.stop);
+            Ok(started.route)
         })),
     };
     // The session's file before the run: its route notices are read from what the run adds. An ephemeral session is
@@ -296,9 +288,14 @@ pub fn run_prompt(
     let ephemeral = std::mem::replace(&mut command.no_session, false);
     let result = run_client_with(&command, &route, &run_options);
     let notices = match &result {
-        Ok(ClientResult::Prompted { session_id, .. }) => session_file(&options.session_dir, session_id)
-            .map(|path| route_notices(&path, offset))
-            .unwrap_or_default(),
+        Ok(ClientResult::Prompted { session_id, .. }) => {
+            session_journal::catalog::find(&options.session_dir, session_id)
+                .ok()
+                .flatten()
+                .map(|m| m.path)
+                .map(|path| route_notices(&path, offset))
+                .unwrap_or_default()
+        }
         _ => Vec::new(),
     };
     if ephemeral
@@ -314,8 +311,8 @@ pub fn run_prompt(
         );
         connection.disconnect();
     }
-    for server in servers.lock().unwrap_or_else(|e| e.into_inner()).drain(..) {
-        server.close();
+    for stop in servers.lock().unwrap_or_else(|e| e.into_inner()).drain(..) {
+        stop();
     }
     if interrupt.load(Ordering::SeqCst) {
         std::process::exit(code.load(Ordering::SeqCst));
@@ -355,11 +352,11 @@ pub fn run_unprompted(parsed: &Args, env: &Env, target: Target) -> Result<String
         "print"
     };
     let options = server_options(parsed, env, mode)?;
-    let (route, server) = open_route(env, &options)?;
+    let Started { route, stop } = open_route(env, &server_start(env, &options))?;
     let command = client_command(parsed, &target, None);
     let result = run_client_with(&command, &route, &RunOptions::default());
-    if let Some(server) = server {
-        server.close();
+    if let Some(stop) = stop {
+        stop();
     }
     Ok(render_unprompted(&result?))
 }

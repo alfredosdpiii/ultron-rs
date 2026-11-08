@@ -27,7 +27,7 @@ fn env(dir: &Path, claude: &Path) -> RunEnv {
         cwd: dir.to_path_buf(),
         home: dir.to_path_buf(),
         var: Arc::new(move |k| map.get(k).cloned()),
-        docs: dir.join("docs"),
+        package: dir.to_path_buf(),
     }
 }
 

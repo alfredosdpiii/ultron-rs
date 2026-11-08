@@ -42,7 +42,7 @@ fn session_core_mcp_gateway_reaches_http_servers_through_the_session_proxy() {
         cwd,
         home,
         var: Arc::new(move |key| vars.iter().find(|(k, _)| k == key).map(|(_, v)| v.clone())),
-        docs: Path::new(env!("CARGO_MANIFEST_DIR")).join("../../packages/coding-agent/docs"),
+        package: Path::new(env!("CARGO_MANIFEST_DIR")).join("../../packages/coding-agent"),
     };
     let config = session_core::compose::Config::from_env(&env);
     let gateway = config.mcp_gateway();

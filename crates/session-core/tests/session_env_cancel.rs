@@ -70,7 +70,7 @@ fn stack(root: &Path) -> Arc<Stack> {
         cwd,
         home,
         var: Arc::new(move |key| vars.iter().find(|(k, _)| k == key).map(|(_, v)| v.clone())),
-        docs: config::paths::normalize(&Path::new(env!("CARGO_MANIFEST_DIR")).join("../../packages/coding-agent/docs")),
+        package: config::paths::normalize(&Path::new(env!("CARGO_MANIFEST_DIR")).join("../../packages/coding-agent")),
     };
     let runtime = Runtime::new(&env, "print", root.join("sessions"), Services::default()).unwrap();
     let model = ai::models::builtin_models("anthropic").next().unwrap().clone();

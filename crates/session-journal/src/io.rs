@@ -76,3 +76,24 @@ pub fn append(path: &Path, line: &str) -> Result<(), String> {
 pub fn mtime_ms(path: &Path) -> Option<f64> {
     fs::metadata(path).ok()?.modified().ok().map(jsrt::date::mtime_ms)
 }
+
+/// The writes of the transactions appended to a session file after its first `offset` bytes, in order (a line that
+/// is not JSON is skipped; none when the file cannot be read).
+pub fn writes_after(path: &Path, offset: u64) -> Vec<serde_json::Value> {
+    use std::io::{Read, Seek, SeekFrom};
+    let mut text = String::new();
+    let read = std::fs::File::open(path).and_then(|mut file| {
+        file.seek(SeekFrom::Start(offset))?;
+        file.read_to_string(&mut text)
+    });
+    if read.is_err() {
+        return Vec::new();
+    }
+    text.lines()
+        .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+        .flat_map(|value| match value {
+            serde_json::Value::Array(writes) => writes,
+            write => vec![write],
+        })
+        .collect()
+}

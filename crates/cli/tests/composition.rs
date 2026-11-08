@@ -389,7 +389,7 @@ fn cli_composition_cell_calls_the_memory_api_on_the_injected_backend() {
         cwd: sandbox.cwd.clone(),
         home: sandbox.root.clone(),
         var: Arc::new(move |key| vars.iter().find(|(k, _)| k == key).map(|(_, v)| v.clone())),
-        docs: config::paths::normalize(&Path::new(env!("CARGO_MANIFEST_DIR")).join("../../packages/coding-agent/docs")),
+        package: config::paths::normalize(&Path::new(env!("CARGO_MANIFEST_DIR")).join("../../packages/coding-agent")),
     };
     // The session actor (what the session worker runs) with the backend injected, in this process.
     let root = sandbox.sessions_dir();
@@ -518,7 +518,7 @@ fn cli_composition_auto_memory_recalls_before_a_user_message() {
         cwd: sandbox.cwd.clone(),
         home: sandbox.root.clone(),
         var: Arc::new(move |key| vars.iter().find(|(k, _)| k == key).map(|(_, v)| v.clone())),
-        docs: config::paths::normalize(&Path::new(env!("CARGO_MANIFEST_DIR")).join("../../packages/coding-agent/docs")),
+        package: config::paths::normalize(&Path::new(env!("CARGO_MANIFEST_DIR")).join("../../packages/coding-agent")),
     };
     let root = sandbox.sessions_dir();
     let repo = session_journal::SessionRepo::new(&root, session_journal::SystemClock::shared());
@@ -698,7 +698,7 @@ fn cli_composition_lane_declares_exactly_the_rlm_tool() {
         cwd: sandbox.cwd.clone(),
         home: sandbox.root.clone(),
         var: Arc::new(move |key| vars.iter().find(|(k, _)| k == key).map(|(_, v)| v.clone())),
-        docs: config::paths::normalize(&Path::new(env!("CARGO_MANIFEST_DIR")).join("../../packages/coding-agent/docs")),
+        package: config::paths::normalize(&Path::new(env!("CARGO_MANIFEST_DIR")).join("../../packages/coding-agent")),
     };
     let runtime = cli::compose::Runtime::new(
         &env,

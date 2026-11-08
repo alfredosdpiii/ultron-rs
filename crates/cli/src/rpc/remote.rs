@@ -1,5 +1,5 @@
 //! The RPC session as `rpc-native.ts` drives it: this process's server generation, the session attached through a
-//! [`Link`], every command an operation of the session worker (crates/session-core `Op`), and the run's progress
+//! [`SessionLink`], every command an operation of the session worker (crates/session-core `Op`), and the run's progress
 //! the transcript's lane-watch events translated to Pi's RPC events. New, switched, forked and cloned sessions are
 //! created by the server and re-attached, as TypeScript clients do.
 //!
@@ -16,8 +16,8 @@ use super::events::RpcEventTranslator;
 use super::{Input, Output, QueueKind, Reply, RpcSession};
 use crate::Env;
 use crate::args::Args;
-use crate::link::Link;
 use crate::print_mode::Target;
+use client::session::SessionLink;
 use protocol::watch::WatchEvent;
 use serde_json::{Value, json};
 use session_core::core::Op;
@@ -45,7 +45,7 @@ pub enum Event {
 /// `/mcp` dialogs and MCP notices from the worker reach this client as Pi's `extension_ui_request` lines
 /// (rpc-native.ts `uiLoop`); a different session starts again from its open dialogs.
 fn serve_extension_ui(
-    link: crate::link::LinkHandle,
+    link: client::session::LinkHandle,
     tx: Sender<Input<Event>>,
     stop: Arc<std::sync::atomic::AtomicBool>,
 ) {
@@ -83,7 +83,7 @@ fn serve_extension_ui(
 pub struct Remote<'a> {
     env: &'a Env,
     parsed: &'a Args,
-    link: Option<Link>,
+    link: Option<SessionLink>,
     tx: Sender<Input<Event>>,
     translator: RpcEventTranslator,
     running: bool,
@@ -102,20 +102,19 @@ pub struct Remote<'a> {
     command_reply: Option<Value>,
 }
 
-/// The session id of a `switch_session` selector: an id, or a session file whose header names one.
+/// The session id of a `switch_session` selector (rpc-native.ts `sessionIdFromSelector`): an id, or a session file
+/// whose native header names one.
 fn selector_id(env: &Env, selector: &str) -> Result<String, String> {
-    if !(selector.contains('/') || selector.contains('\\') || selector.ends_with(".jsonl")) {
+    if !crate::session::names_file(selector) {
         return Ok(selector.to_string());
     }
     let path = config::paths::normalize(&env.cwd.join(selector));
-    let line = crate::session::read_first_line(&path)?;
-    let invalid = || format!("Session file is not a valid ultron session: {selector}");
-    let header: Value = serde_json::from_str(&line).map_err(|_| invalid())?;
-    if header["type"] != "session" && header["kind"] != "header" {
-        return Err(invalid());
-    }
-    header["id"]
-        .as_str()
+    let header = crate::session::read_header(&path)?
+        .native()
+        .ok_or_else(|| format!("Session file is not a valid ultron session: {selector}"))?;
+    header
+        .get("id")
+        .and_then(Value::as_str)
         .map(str::to_string)
         .ok_or_else(|| format!("Session file has no ID: {selector}"))
 }
@@ -126,7 +125,7 @@ impl<'a> Remote<'a> {
             crate::print_mode::resolve_model(parsed, env)?;
         }
         let watch = tx.clone();
-        let link = Link::open(
+        let link = crate::link::open(
             parsed,
             env,
             &target,
@@ -165,7 +164,7 @@ impl<'a> Remote<'a> {
         self.command_reply.take()
     }
 
-    fn link(&self) -> Result<&Link, String> {
+    fn link(&self) -> Result<&SessionLink, String> {
         self.link.as_ref().ok_or_else(|| "The session is closed".to_string())
     }
 
@@ -388,7 +387,7 @@ impl RpcSession for Remote<'_> {
             let result = connection
                 .wait(&request)
                 .map(|data| Some(data.unwrap_or_default()))
-                .map_err(crate::link::fail);
+                .map_err(client::lost::message);
             // The command loop answers it: that thread holds the process's stdout.
             let _ = tx.send(Input::Event(Event::BashDone { reply, result, pending }));
         });
@@ -529,9 +528,8 @@ impl RpcSession for Remote<'_> {
         let id = described["sessionId"].as_str().unwrap_or_default().to_string();
         let created_at = described["sessionFile"]
             .as_str()
-            .and_then(|file| crate::session::read_first_line(std::path::Path::new(file)).ok())
-            .and_then(|line| serde_json::from_str::<Value>(&line).ok())
-            .and_then(|header| header["createdAt"].as_f64())
+            .and_then(|file| crate::session::read_header(std::path::Path::new(file)).ok()?.native())
+            .and_then(|header| header.get("createdAt")?.as_f64())
             .unwrap_or_else(|| jsrt::date::now_ms() as f64);
         let entries = described["entries"].as_array().cloned().unwrap_or_default();
         let cwd = self.env.cwd.display().to_string();

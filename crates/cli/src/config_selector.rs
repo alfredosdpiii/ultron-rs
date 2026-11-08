@@ -5,13 +5,11 @@
 
 use crate::Env;
 use config::settings::SettingsManager;
-use interactive::keybindings::Platform;
 use interactive::{bold, key_hint, key_text};
 use resources::paths::{basename, canonicalize, dirname, join, relative};
 use serde_json::{Map, Value};
 use session_core::local_resources::{LocalResources, PathMetadata, RESOURCE_TYPES, ResolvedPaths, ResourceType, Scope};
 use std::collections::HashMap;
-use std::io::Write;
 use std::rc::Rc;
 use theme::{Fg, Theme};
 use tui::Component;
@@ -226,14 +224,6 @@ pub struct ConfigSelector {
     keys: KeybindingsManager,
 }
 
-pub fn keybindings() -> KeybindingsManager {
-    KeybindingsManager::new(
-        interactive::keybindings::native_app_keybindings(Platform::new("linux", false)),
-        Vec::new(),
-        Default::default(),
-    )
-}
-
 impl ConfigSelector {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
@@ -247,6 +237,7 @@ impl ConfigSelector {
         write_scope: WriteScope,
         project_mode: bool,
         theme: Rc<Theme>,
+        keys: KeybindingsManager,
     ) -> Self {
         let groups = [
             build_groups(global, agent_dir, home),
@@ -260,7 +251,7 @@ impl ConfigSelector {
                 }
             }
         }
-        let mut search = Input::new(keybindings());
+        let mut search = Input::new(keys.clone());
         search.focused = true;
         let mut selector = Self {
             groups,
@@ -276,7 +267,7 @@ impl ConfigSelector {
             project_mode,
             inherited,
             theme,
-            keys: keybindings(),
+            keys,
         };
         selector.build_rows();
         selector.filtered = selector.rows.clone();
@@ -754,16 +745,6 @@ fn item_scope(item: &Item) -> Scope {
     item.metadata.scope
 }
 
-fn theme_for(env: &Env, settings: &SettingsManager) -> Result<Rc<Theme>, String> {
-    let caps = crate::terminal_settings::capabilities(env, settings);
-    Ok(Rc::new(crate::themes::resolve(
-        settings.theme_setting().as_deref(),
-        (env.var)("COLORFGBG").as_deref(),
-        &env.agent_dir().join("themes"),
-        tui::color_mode(&caps),
-    )))
-}
-
 /// Run the selector on the process terminal until it closes (`selectConfig`).
 pub fn select_config(
     env: &Env,
@@ -773,8 +754,9 @@ pub fn select_config(
     write_scope: WriteScope,
     project_mode: bool,
 ) -> Result<(), String> {
-    let theme = theme_for(env, &settings)?;
-    let (_, rows) = tui::size();
+    let theme = Rc::new(crate::themes::screen_theme(env, &settings));
+    let keys = crate::terminal_settings::screen_keys(env);
+    let (_, rows) = tui::MainScreen::size();
     let mut selector = ConfigSelector::new(
         global,
         project,
@@ -782,32 +764,24 @@ pub fn select_config(
         &resolved(&env.cwd.display().to_string(), env),
         &resolved(&env.agent_dir().display().to_string(), env),
         &env.home.display().to_string(),
-        rows.max(1) as usize,
+        rows,
         write_scope,
         project_mode,
         theme,
+        keys,
     );
     let input = tui::spawn_stdin_pump();
-    let mut terminal = tui::Terminal::new(std::io::stdout());
-    terminal.start(true).map_err(|e| e.to_string())?;
-    let _ = terminal.hide_cursor();
-    let mut renderer = tui::Renderer::new();
-    let mut cursor_row: i64 = 0;
-    let mut paint =
-        |selector: &mut ConfigSelector, renderer: &mut tui::Renderer, terminal: &mut tui::Terminal<std::io::Stdout>| {
-            let (w, h) = tui::size();
-            let (w, h) = (w.max(1) as usize, h.max(1) as usize);
-            if let Ok(out) = renderer.render(selector.render(w), w, h) {
-                track(&mut cursor_row, &out);
-                let _ = terminal.write(&out);
-            }
-        };
-    paint(&mut selector, &mut renderer, &mut terminal);
+    let mut screen = tui::MainScreen::start().map_err(|e| e.to_string())?;
+    let paint = |selector: &mut ConfigSelector, screen: &mut tui::MainScreen| {
+        let (width, _) = tui::MainScreen::size();
+        screen.paint(selector.render(width));
+    };
+    paint(&mut selector, &mut screen);
     loop {
         let data = match input.recv_timeout(std::time::Duration::from_millis(100)) {
             Ok(data) => data,
             Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
-                paint(&mut selector, &mut renderer, &mut terminal);
+                paint(&mut selector, &mut screen);
                 continue;
             }
             Err(_) => break,
@@ -815,64 +789,14 @@ pub fn select_config(
         if selector.handle_input(&data) != Action::None {
             break;
         }
-        paint(&mut selector, &mut renderer, &mut terminal);
+        paint(&mut selector, &mut screen);
     }
-    // `TuiMainScreen.stop`: below the last line, cursor shown, raw mode off.
-    let len = renderer.previous_lines().len() as i64;
-    if len > 0 {
-        let mut out = String::from(" ");
-        let diff = len - cursor_row;
-        if diff > 0 {
-            out.push_str(&format!("\x1b[{diff}B"));
-        } else if diff < 0 {
-            out.push_str(&format!("\x1b[{}A", -diff));
-        }
-        out.push_str("\r\n");
-        let _ = terminal.write(&out);
-    }
-    let _ = terminal.show_cursor();
-    let _ = terminal.stop();
-    let _ = std::io::stdout().flush();
+    screen.stop();
     Ok(())
 }
 
 fn resolved(path: &str, env: &Env) -> String {
     config::paths::resolve(path, &env.cwd, &env.home).display().to_string()
-}
-
-/// Advance `row` over the cursor moves of renderer output.
-fn track(row: &mut i64, out: &str) {
-    let bytes = out.as_bytes();
-    let mut i = 0;
-    while i < bytes.len() {
-        if bytes[i] == b'\n' {
-            *row += 1;
-            i += 1;
-            continue;
-        }
-        if bytes[i..].starts_with(b"\x1b[2J\x1b[H") {
-            *row = 0;
-            i += 7;
-            continue;
-        }
-        if bytes[i] == 0x1b && bytes.get(i + 1) == Some(&b'[') {
-            let mut j = i + 2;
-            while j < bytes.len() && bytes[j].is_ascii_digit() {
-                j += 1;
-            }
-            if j > i + 2 && j < bytes.len() {
-                let n: i64 = out[i + 2..j].parse().unwrap_or(0);
-                match bytes[j] {
-                    b'A' => *row -= n,
-                    b'B' => *row += n,
-                    _ => {}
-                }
-            }
-            i = j;
-            continue;
-        }
-        i += 1;
-    }
 }
 
 /// `handleConfigCommand` after its arguments: resolve global and project resources, then run the selector.

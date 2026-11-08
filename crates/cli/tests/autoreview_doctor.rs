@@ -66,7 +66,7 @@ fn run(base: &Path, args: &[&str], settings: Value, respond: Respond) -> Run {
             kernel::env::PYTHON_ENV => Some("/fake/python3".into()),
             _ => None,
         }),
-        docs: docs(),
+        package: docs().join(".."),
     };
     let runner = Arc::new(Fake {
         respond,

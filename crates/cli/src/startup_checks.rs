@@ -51,10 +51,7 @@ pub fn check_for_new_version(env: &Env, current: &str) -> Option<String> {
 /// `lastChangelogVersion` setting, records this build's version when it should, and returns the notice to show.
 pub fn startup_changelog(env: &Env) -> Option<StartupNotice> {
     let mut settings = config::settings::SettingsManager::create(&env.cwd, &env.agent_dir(), false);
-    let content = env
-        .docs
-        .parent()
-        .and_then(|dir| std::fs::read_to_string(dir.join("CHANGELOG.md")).ok());
+    let content = std::fs::read_to_string(env.package_file("CHANGELOG.md")).ok();
     let version = crate::version();
     let last = settings.last_changelog_version();
     let shown =

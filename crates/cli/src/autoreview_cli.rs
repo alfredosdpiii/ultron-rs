@@ -840,7 +840,7 @@ fn open_engine(
     let (model, api_key) = resolve(&reference)?;
     let options = EngineOptions {
         dir: dir.to_path_buf(),
-        runtime_path: config::paths::normalize(&env.docs.join("../src/ultron/rlm/runtime.py")),
+        runtime_path: env.runtime(),
         python: None,
         model,
         api_key,
@@ -1418,7 +1418,8 @@ fn doctor(
 ) -> Result<i32, Failure> {
     let runner = ov.runner();
     let python = kernel::env::python(|name| (env.var)(name));
-    let script = config::paths::normalize(&env.docs.join("../src/ultron/rlm/autoreview_tests.py"))
+    let script = env
+        .package_file("src/ultron/rlm/autoreview_tests.py")
         .display()
         .to_string();
     let last_line = |stdout: &str| stdout.trim().split('\n').next_back().unwrap_or_default().to_string();
@@ -1964,15 +1965,6 @@ fn daemon_command(
     Ok(0)
 }
 
-/// `install | uninstall`: the user service file is written or removed; enabling it is printed, never run.
-/// The platform name upstream uses (`process.platform`): `darwin` for macOS.
-pub fn platform() -> &'static str {
-    match std::env::consts::OS {
-        "macos" => "darwin",
-        other => other,
-    }
-}
-
 /// The user service that runs `ultron autoreview run` on `platform`, or None where neither systemd nor launchd
 /// applies (`ultron autoreview install`, `/autoreview on`).
 pub fn user_service(env: &Env, platform: &str) -> Result<Option<review::service::ServiceFile>, String> {
@@ -1993,8 +1985,9 @@ pub fn user_service(env: &Env, platform: &str) -> Result<Option<review::service:
     ))
 }
 
+/// `install | uninstall`: the user service file is written or removed; enabling it is printed, never run.
 fn service(parsed: &Parsed, config: &AutoreviewConfig, env: &Env, out: &mut dyn Write) -> Result<i32, Failure> {
-    let platform = platform();
+    let platform = jsrt::process::platform();
     let Some(file) = user_service(env, platform).map_err(Failure::Error)? else {
         return Err(Failure::Error(format!(
             "no user service on {platform}; run \"{APP_NAME} autoreview run\" under your own supervisor"

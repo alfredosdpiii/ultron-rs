@@ -18,6 +18,18 @@ pub fn resolve(setting: Option<&str>, colorfgbg: Option<&str>, custom_dir: &Path
     theme::create_theme(&json, mode, None).expect("resolve_theme returns a theme that resolves")
 }
 
+/// The theme `ultron setup` and `ultron config` draw with: the global settings' theme in the colors the terminal
+/// (and the `terminal.*` overrides) allow.
+pub fn screen_theme(env: &crate::Env, settings: &SettingsManager) -> Theme {
+    let caps = crate::terminal_settings::capabilities(env, settings);
+    resolve(
+        settings.theme_setting().as_deref(),
+        (env.var)("COLORFGBG").as_deref(),
+        &env.agent_dir().join("themes"),
+        tui::color_mode(&caps),
+    )
+}
+
 /// A theme file that did not load (`warning`) or a name already taken (`collision`): (type, path).
 pub type Diagnostic = (String, String);
 

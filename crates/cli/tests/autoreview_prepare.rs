@@ -38,7 +38,7 @@ fn env_for(base: &str) -> cli::Env {
             "HOME" => Some(home_text.clone()),
             _ => None,
         }),
-        docs: PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../packages/coding-agent/docs"),
+        package: PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../packages/coding-agent"),
     }
 }
 

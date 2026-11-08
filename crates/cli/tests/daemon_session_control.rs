@@ -59,7 +59,12 @@ fn wait_until(what: &str, mut done: impl FnMut() -> bool) {
 }
 
 fn management(connection: &Connection, member: &str, args: Value) -> Result<Option<Value>, CallError> {
-    connection.call(connection.server_target(), "ultron.session-management", member, args)
+    connection.call(
+        connection.server_target(),
+        protocol::names::SESSION_MANAGEMENT,
+        member,
+        args,
+    )
 }
 
 /// Create a session and attach this connection to it; returns its id.
@@ -86,7 +91,12 @@ fn cli_daemon_presentation_plugins_need_a_prepared_selection_per_client() {
     let server = start(&home);
     let connection = Connection::connect(&server.socket, SERVER_ID).unwrap();
     let plugins = |member: &str, args: Value| {
-        connection.call(connection.server_target(), "ultron.presentation-plugins", member, args)
+        connection.call(
+            connection.server_target(),
+            protocol::names::PRESENTATION_PLUGINS,
+            member,
+            args,
+        )
     };
     // `reload` before `prepareSession` throws a plain error: the client sees the internal error.
     assert_eq!(
@@ -120,7 +130,7 @@ fn cli_daemon_presentation_plugins_need_a_prepared_selection_per_client() {
             other
                 .call(
                     other.server_target(),
-                    "ultron.presentation-plugins",
+                    protocol::names::PRESENTATION_PLUGINS,
                     "reload",
                     json!([])
                 )
@@ -139,7 +149,7 @@ fn cli_daemon_session_control_settings_trust_debug_and_models_through_the_worker
     let session = connection.session_target().unwrap();
     let control = |member: &str, args: Value| {
         connection
-            .call(session.clone(), "ultron.session-control", member, args)
+            .call(session.clone(), protocol::names::SESSION_CONTROL, member, args)
             .map_err(code)
     };
     let read = control("readSettings", json!([])).unwrap().unwrap();
@@ -189,9 +199,9 @@ fn cli_daemon_session_control_settings_trust_debug_and_models_through_the_worker
         Some(json!({"cancelled": false}))
     );
     // `Models.refresh` (offline): the catalogue and the refresh status are published on `ultron.models`.
-    let models = connection.subscribe(session.clone(), "ultron.models").unwrap();
+    let models = connection.subscribe(session.clone(), protocol::names::MODELS).unwrap();
     connection
-        .call(session.clone(), "ultron.models", "refresh", json!([]))
+        .call(session.clone(), protocol::names::MODELS, "refresh", json!([]))
         .unwrap();
     wait_until("the refresh is published", || {
         connection
@@ -208,7 +218,7 @@ fn cli_daemon_session_control_settings_trust_debug_and_models_through_the_worker
     let selected = connection
         .call(
             session.clone(),
-            "ultron.models",
+            protocol::names::MODELS,
             "select",
             json!([{"provider": "anthropic", "modelId": "claude-haiku-4-5"}]),
         )
@@ -225,7 +235,7 @@ fn cli_daemon_session_control_settings_trust_debug_and_models_through_the_worker
     // Nothing interrupted, nothing queued: nothing to resume.
     assert_eq!(
         connection
-            .call(session.clone(), "ultron.agent-controller", "resume", json!([]))
+            .call(session.clone(), protocol::names::AGENT_CONTROLLER, "resume", json!([]))
             .unwrap(),
         Some(
             json!({"accepted": false, "operationId": null, "error": {"code": "nothing_to_resume",
@@ -243,7 +253,12 @@ fn cli_daemon_cancel_stops_waiting_and_aborts_the_bash_it_ran() {
     let session = connection.session_target().unwrap();
     // A long poll, cancelled: the server answers `cancelled` instead of waiting for the worker.
     let poll = connection
-        .start(session.clone(), "ultron.extension-ui", "poll", json!([0, 60_000]))
+        .start(
+            session.clone(),
+            protocol::names::EXTENSION_UI,
+            "poll",
+            json!([0, 60_000]),
+        )
         .unwrap();
     connection.cancel(session.clone(), &poll).unwrap();
     assert_eq!(
@@ -258,7 +273,7 @@ fn cli_daemon_cancel_stops_waiting_and_aborts_the_bash_it_ran() {
     let bash = connection
         .start(
             session.clone(),
-            "ultron.session-control",
+            protocol::names::SESSION_CONTROL,
             "bash",
             json!([command, false]),
         )
@@ -271,7 +286,12 @@ fn cli_daemon_cancel_stops_waiting_and_aborts_the_bash_it_ran() {
     );
     wait_until("the cancelled command is recorded", || {
         connection
-            .call(session.clone(), "ultron.session-ops", "op", json!([{"op": "messages"}]))
+            .call(
+                session.clone(),
+                protocol::names::SESSION_OPS,
+                "op",
+                json!([{"op": "messages"}]),
+            )
             .ok()
             .flatten()
             .and_then(|m| m.as_array().cloned())
@@ -280,7 +300,7 @@ fn cli_daemon_cancel_stops_waiting_and_aborts_the_bash_it_ran() {
     // The session still serves calls afterwards.
     assert!(
         connection
-            .call(session, "ultron.session-control", "getSettings", json!([]))
+            .call(session, protocol::names::SESSION_CONTROL, "getSettings", json!([]))
             .is_ok()
     );
 }
@@ -355,7 +375,7 @@ fn cli_daemon_an_active_request_id_cannot_be_reused() {
     raw.request(
         "attach",
         server_target,
-        json!({"serviceId": "ultron.session-management", "member": "attach", "args": [id]}),
+        json!({"serviceId": protocol::names::SESSION_MANAGEMENT, "member": "attach", "args": [id]}),
     );
     let attachment = loop {
         match raw.next() {
@@ -365,7 +385,7 @@ fn cli_daemon_an_active_request_id_cannot_be_reused() {
     };
     assert_eq!(raw.response(), ("attach".to_string(), Ok(None)));
     let session = RpcTarget::Session(attachment);
-    let poll = json!({"serviceId": "ultron.extension-ui", "member": "poll", "args": [0, 60_000]});
+    let poll = json!({"serviceId": protocol::names::EXTENSION_UI, "member": "poll", "args": [0, 60_000]});
     raw.request("dup", session.clone(), poll.clone());
     raw.request("dup", session.clone(), poll);
     assert_eq!(
@@ -386,7 +406,7 @@ fn cli_daemon_an_active_request_id_cannot_be_reused() {
     raw.request(
         "dup",
         session.clone(),
-        json!({"serviceId": "ultron.extension-ui", "member": "poll", "args": [0, 60_000]}),
+        json!({"serviceId": protocol::names::EXTENSION_UI, "member": "poll", "args": [0, 60_000]}),
     );
     assert_eq!(
         raw.response(),

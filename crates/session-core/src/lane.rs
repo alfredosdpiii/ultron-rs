@@ -278,7 +278,7 @@ pub fn system_prompt_with_resources(
 ) -> Result<(String, Vec<String>), String> {
     use resources::system_prompt::{BuildOptions, build_system_prompt};
     let agent_dir = env.agent_dir().display().to_string();
-    let bundled = crate::session_resources::bundled_skills(&env.docs.join("../skills"), &*env.var);
+    let bundled = crate::session_resources::bundled_skills(&env.skills(), &*env.var);
     let mut skills = crate::session_resources::skills(cwd, &agent_dir, extra, mode.no_skills, bundled.as_deref());
     let mut warnings = Vec::new();
     if !mode.no_skills {

@@ -84,15 +84,34 @@ pub struct RunEnv {
     pub cwd: PathBuf,
     pub home: PathBuf,
     pub var: VarLookup,
-    /// `getDocsPath()`: the `docs/` directory of the package files (`cli::assets`): the embedded files installed under
-    /// `<agent dir>/runtime/<version>-<hash>/`, or a live checkout in dev builds (`ULTRON_DEV_ASSETS`). Its parent holds
-    /// `skills/`, `src/ultron/rlm/runtime.py` and `CHANGELOG.md`; the CLI makes it ready before a session reads it.
-    pub docs: PathBuf,
+    /// The package files (`cli::assets`): the embedded files installed under `<agent dir>/runtime/<version>-<hash>/`,
+    /// or a live checkout in dev builds (`ULTRON_DEV_ASSETS`); the CLI makes them ready before a session reads them.
+    pub package: PathBuf,
 }
 
 impl RunEnv {
     pub fn agent_dir(&self) -> PathBuf {
         config::paths::agent_dir(|k| (self.var)(k), &self.home)
+    }
+
+    /// A file of the package (`getPackageDir()`-relative).
+    pub fn package_file(&self, relative: &str) -> PathBuf {
+        config::paths::normalize(&self.package.join(relative))
+    }
+
+    /// `getDocsPath()`.
+    pub fn docs(&self) -> PathBuf {
+        self.package_file("docs")
+    }
+
+    /// The bundled skills.
+    pub fn skills(&self) -> PathBuf {
+        self.package_file("skills")
+    }
+
+    /// The REPL's runtime, `src/ultron/rlm/runtime.py`.
+    pub fn runtime(&self) -> PathBuf {
+        self.package_file(RUNTIME_PY)
     }
 
     /// Whether the switch `name` is set to off ([`flag_off`]).
@@ -101,15 +120,18 @@ impl RunEnv {
     }
 
     /// This process's environment in `cwd`.
-    pub fn process(cwd: PathBuf, docs: PathBuf) -> RunEnv {
+    pub fn process(cwd: PathBuf, package: PathBuf) -> RunEnv {
         RunEnv {
             cwd,
             home: std::env::var_os("HOME").map(PathBuf::from).unwrap_or_default(),
             var: Arc::new(|k| std::env::var(k).ok()),
-            docs,
+            package,
         }
     }
 }
+
+/// The REPL's runtime script, relative to the package directory.
+pub const RUNTIME_PY: &str = "src/ultron/rlm/runtime.py";
 
 /// The model flags a session starts with (`--provider`, `--model`, `--api-key`, `--thinking`, `--models`).
 #[derive(Clone, Debug, Default, PartialEq)]

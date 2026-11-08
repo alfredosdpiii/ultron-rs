@@ -587,7 +587,7 @@ fn actor_full(replies: Vec<String>, summaries: Vec<String>, hold: bool, settings
         cwd: sandbox.cwd.clone(),
         home: sandbox.root.clone(),
         var: Arc::new(move |key| vars.iter().find(|(k, _)| k == key).map(|(_, v)| v.clone())),
-        docs: config::paths::normalize(&Path::new(env!("CARGO_MANIFEST_DIR")).join("../../packages/coding-agent/docs")),
+        package: config::paths::normalize(&Path::new(env!("CARGO_MANIFEST_DIR")).join("../../packages/coding-agent")),
     };
     let root = sandbox.sessions_dir();
     let repo = session_journal::SessionRepo::new(&root, session_journal::SystemClock::shared());

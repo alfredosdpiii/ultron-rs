@@ -1,9 +1,8 @@
 //! `auth.json` (`auth-storage.ts`): a JSON object of provider id to credential, `api_key` or `oauth`, locked with
 //! `proper-lockfile`'s `auth.json.lock` directory and written with mode 0600. No network refresh happens here.
 
-use std::fs::{self, OpenOptions};
-use std::io::{self, Write};
-use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
+use std::fs;
+use std::os::unix::fs::DirBuilderExt;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -17,16 +16,6 @@ pub type AuthData = Map<String, Value>;
 /// The async TypeScript lock (`withLockAsync`): stale after 30 s, retried for up to 30 s.
 const AUTH_STALE: Duration = Duration::from_secs(30);
 const AUTH_ATTEMPTS: u32 = 1500;
-
-fn write_private(path: &Path, text: &str) -> io::Result<()> {
-    let mut file = OpenOptions::new()
-        .write(true)
-        .create(true)
-        .truncate(true)
-        .mode(0o600)
-        .open(path)?;
-    file.write_all(text.as_bytes())
-}
 
 /// `auth.json` held under its lock (`FileAuthStorageBackend.withLockAsync`): the parent (0700) and an empty `{}`
 /// file (0600) are created when missing; dropping it releases the lock.
@@ -45,7 +34,7 @@ impl LockedAuthFile {
                 .map_err(|e| e.to_string())?;
         }
         if !path.exists() {
-            write_private(path, "{}").map_err(|e| e.to_string())?;
+            crate::paths::write_private(path, "{}").map_err(|e| e.to_string())?;
         }
         let lock = acquire(&lock_path_for(path), AUTH_STALE, AUTH_ATTEMPTS).map_err(|e| e.to_string())?;
         Ok(LockedAuthFile {
@@ -60,7 +49,7 @@ impl LockedAuthFile {
 
     /// Replace the file's text (mode 0600).
     pub fn write(&self, text: &str) -> Result<(), String> {
-        write_private(&self.path, text).map_err(|e| e.to_string())
+        crate::paths::write_private(&self.path, text).map_err(|e| e.to_string())
     }
 }
 

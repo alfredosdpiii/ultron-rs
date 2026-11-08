@@ -21,7 +21,7 @@ pub fn resolver(config: Arc<Config>) -> inference::ModelResolver {
             cwd: config.cwd.clone(),
             home: config.home.clone(),
             var: config.var.clone(),
-            docs: PathBuf::new(),
+            package: PathBuf::new(),
         };
         let key = crate::lane::api_key(&crate::ModelFlags::default(), &env, &model.provider);
         Ok((model, key))

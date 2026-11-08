@@ -358,6 +358,7 @@ dependencies = [
  "signals",
  "tempfile",
  "tokio",
+ "usage",
 ]
 
 [[package]]
@@ -412,6 +413,7 @@ dependencies = [
  "tokio",
  "tui",
  "url",
+ "usage",
  "websocket",
 ]
 
@@ -3540,6 +3542,21 @@ dependencies = [
  "idna",
  "percent-encoding",
  "serde",
+]
+
+[[package]]
+name = "usage"
+version = "0.1.0"
+dependencies = [
+ "compaction",
+ "delegation",
+ "indexmap",
+ "inference",
+ "jsrt",
+ "serde_json",
+ "session-core",
+ "session-journal",
+ "tempfile",
 ]
 
 [[package]]

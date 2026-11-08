@@ -136,13 +136,7 @@ fn set_project_trust(context: &ControlContext, updates: &Value) -> ServiceResult
 
 /// `process.platform-process.arch` as Node names them.
 pub fn platform() -> String {
-    let arch = match std::env::consts::ARCH {
-        "x86_64" => "x64",
-        "aarch64" => "arm64",
-        "x86" => "ia32",
-        other => other,
-    };
-    format!("{}-{arch}", std::env::consts::OS)
+    format!("{}-{}", jsrt::process::platform(), jsrt::process::arch())
 }
 
 /// This process's resident set size (`process.memoryUsage().rss`), from `/proc/self/status`.

@@ -18,12 +18,14 @@
 //! rerun finds the same keys: a record whose key is already indexed with the same text and fields is unchanged,
 //! one with other text is replaced. Notes over their type's cap, or holding a secret, are refused.
 
-use crate::memory::{MemoryError, MemoryService};
+use crate::memory::{MemoryBackend, MemoryError, MemoryService, worker_gate};
 use crate::memory_records::{MAX_SITUATION_BYTES, RecordIndex, Typed, content_cap};
+use crate::store::FileDocumentStore;
 use kernel::Signal;
 use serde_json::{Map, Value, json};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use yaml_rust2::{Yaml, YamlLoader};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -614,4 +616,71 @@ pub fn propose_payload(planned: &Planned) -> Map<String, Value> {
 /// Store one planned record (an `Add` or `Replace`) through `service`: the written operation, or why not.
 pub fn import_one(service: &MemoryService, planned: &Planned) -> Result<Value, MemoryError> {
     service.propose(&propose_payload(planned), &Signal::new())
+}
+
+/// The memory backend of one scope group (`None`: global notes; `Some`: a project's).
+pub type BackendFor<'a> = &'a dyn Fn(Option<&Path>) -> Result<Arc<dyn MemoryBackend>, String>;
+
+/// What became of one planned note.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Imported {
+    /// A new record (its memory id).
+    Stored(String),
+    /// The record that replaced the indexed one (its memory id).
+    Replaced(String),
+    Unchanged,
+    /// Not imported, and why.
+    Refused(String),
+    /// The write was taken but not stored (its operation state).
+    NotStored(String),
+    Failed(String),
+}
+
+/// Import every planned note: one memory service per scope group, over the one import `journal` (each loads what
+/// the previous one wrote). `each` hears every note's outcome, in order.
+pub fn import_all(
+    planned: &[Planned],
+    journal: &Path,
+    index: Arc<RecordIndex>,
+    backend_for: BackendFor<'_>,
+    each: &mut dyn FnMut(&Planned, Imported) -> Result<(), String>,
+) -> Result<(), String> {
+    let mut service: Option<(Option<PathBuf>, MemoryService)> = None;
+    for item in planned {
+        let outcome = match &item.action {
+            Action::Unchanged(_) => Imported::Unchanged,
+            Action::Refuse(reason) => Imported::Refused(reason.clone()),
+            Action::Add | Action::Replace(_) => {
+                if service.as_ref().is_none_or(|(project, _)| *project != item.project) {
+                    let memory = MemoryService::new(
+                        Arc::new(FileDocumentStore::new(journal)),
+                        backend_for(item.project.as_deref())?,
+                        worker_gate(),
+                    )
+                    .map_err(|e| e.to_string())?
+                    .with_records(index.clone());
+                    service = Some((item.project.clone(), memory));
+                }
+                let Some((_, memory)) = &service else {
+                    continue;
+                };
+                match import_one(memory, item) {
+                    Ok(op) if op["state"] == "sensitive" || op["state"] == "skipped" => {
+                        Imported::Refused("holds a secret or personal identifier".into())
+                    }
+                    Ok(op) if op["phase"] == "backend" => {
+                        let id = op["memoryId"].as_str().unwrap_or_default().to_string();
+                        match item.action {
+                            Action::Replace(_) => Imported::Replaced(id),
+                            _ => Imported::Stored(id),
+                        }
+                    }
+                    Ok(op) => Imported::NotStored(op["state"].as_str().unwrap_or("?").to_string()),
+                    Err(error) => Imported::Failed(error.to_string()),
+                }
+            }
+        };
+        each(item, outcome)?;
+    }
+    Ok(())
 }

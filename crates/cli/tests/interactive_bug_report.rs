@@ -18,7 +18,7 @@ use std::io::{BufRead, BufReader, Read, Write};
 use std::net::TcpListener;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
-use tui_harness::{Mock, TempDir, Tui, text_reply};
+use tui_harness::{Mock, QUIET, TempDir, Tui, text_reply};
 
 const MODEL: [&str; 2] = ["--model", "anthropic/claude-sonnet-4-5"];
 
@@ -351,17 +351,7 @@ fn cli_interactive_bug_report_failed_upload_offers_the_zip_and_cancel_and_offlin
 fn cli_interactive_easter_eggs_draw_pi_components() {
     let mock = Mock::start(Vec::new(), None);
     let tmp = TempDir::new();
-    let tui = Tui::start_at(
-        &tmp.0,
-        mock.port,
-        100,
-        50,
-        &MODEL,
-        &[
-            (session_core::core::AUTO_NAME_ENV, "off"),
-            (cli::interactive::SPLASH_ENV, "off"),
-        ],
-    );
+    let tui = Tui::start_at(&tmp.0, mock.port, 100, 50, &MODEL, &QUIET);
     tui.wait("Session:");
     tui.send_text("/dementedelves");
     tui.send_keys(&["Enter"]);

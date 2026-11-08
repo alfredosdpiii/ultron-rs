@@ -3,8 +3,8 @@
 //! and the ported `session-stats.test.ts` cases for cell APIs and steers.
 
 use cli::js::replace_first;
-use cli::usage::stats::{cell_apis, classify_nudge};
 use serde_json::json;
+use usage::stats::{cell_apis, classify_nudge};
 
 #[test]
 fn cli_js_replace_first_expands_dollar_patterns() {
@@ -88,7 +88,7 @@ fn cli_mcp_edit_keeps_indentation_and_js_key_order() {
 
 #[test]
 fn cli_usage_format_tokens_and_elapsed_match_report_text() {
-    use cli::usage::text::{format_elapsed, format_tokens};
+    use usage::text::{format_elapsed, format_tokens};
     let tokens: Vec<String> = [999.0, 999_949.0, 999_950.0, 99_949_999.0, 99_950_000.0, 1234.0]
         .into_iter()
         .map(format_tokens)
@@ -126,7 +126,7 @@ fn cli_export_derived_colors_follow_the_template_formula() {
 
 #[test]
 fn cli_usage_log_usage_matches_session_log() {
-    use cli::usage::log::log_usage;
+    use usage::log::log_usage;
     // logUsage({ input: 3, output: 4, cacheRead: -2 }): totals fall back to the sum of the positive parts.
     let usage = log_usage(Some(&json!({"input": 3, "output": 4, "cacheRead": -2}))).unwrap();
     assert_eq!((usage.total_tokens, usage.cache_read, usage.cost), (7.0, 0.0, None));
@@ -149,7 +149,7 @@ fn cli_usage_last_reads_its_count_like_number() {
         cwd: dir.path().to_path_buf(),
         home: dir.path().to_path_buf(),
         var: std::sync::Arc::new(|_| None),
-        docs: dir.path().join("docs"),
+        package: dir.path().to_path_buf(),
     };
     let refused = |count: &str| {
         let (mut out, mut err) = (Vec::new(), Vec::new());
@@ -162,7 +162,7 @@ fn cli_usage_last_reads_its_count_like_number() {
             count,
         ]
         .map(str::to_string);
-        let code = cli::usage::run(&args, &env, &mut out, &mut err);
+        let code = cli::usage_cli::run(&args, &env, &mut out, &mut err);
         let err = String::from_utf8_lossy(&err).into_owned();
         assert_eq!(
             code == Some(2),
@@ -192,7 +192,7 @@ fn cli_mcp_add_reads_the_callback_port_like_number() {
             cwd: dir.path().to_path_buf(),
             home: dir.path().to_path_buf(),
             var: std::sync::Arc::new(move |k| (k == config::paths::ENV_AGENT_DIR).then(|| agent_var.clone())),
-            docs: dir.path().join("docs"),
+            package: dir.path().to_path_buf(),
         };
         let args = [
             "mcp",

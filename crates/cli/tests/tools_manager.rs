@@ -19,7 +19,7 @@ fn env(vars: &[(&str, String)], agent: &Path) -> Env {
         cwd: agent.to_path_buf(),
         home: agent.to_path_buf(),
         var: Arc::new(move |k| map.get(k).cloned()),
-        docs: PathBuf::new(),
+        package: PathBuf::new(),
     }
 }
 

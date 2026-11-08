@@ -55,7 +55,7 @@ fn profile() -> (tempfile::TempDir, cli::Env) {
         cwd: tmp.path().to_path_buf(),
         home: tmp.path().to_path_buf(),
         var: Arc::new(move |k| (k == config::paths::ENV_AGENT_DIR).then(|| dir.clone())),
-        docs: tmp.path().join("docs"),
+        package: tmp.path().to_path_buf(),
     };
     (tmp, env)
 }
@@ -257,7 +257,7 @@ fn cli_tui_login_opens_the_browser_from_the_runs_own_path() {
             "PATH" => Some(path.clone()),
             _ => None,
         }),
-        docs: tmp.path().join("docs"),
+        package: tmp.path().to_path_buf(),
     };
     let seen = std::sync::Mutex::new((String::new(), String::new()));
     login_in(tmp, env, "openrouter", responses, |url, _| {

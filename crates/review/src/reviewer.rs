@@ -1118,15 +1118,7 @@ pub fn write_review_record(dir: &str, name: &str, record: &Value) -> std::io::Re
 }
 
 fn write_private(path: &str, text: &str) -> std::io::Result<()> {
-    use std::io::Write;
-    use std::os::unix::fs::OpenOptionsExt;
-    let mut file = std::fs::OpenOptions::new()
-        .write(true)
-        .create(true)
-        .truncate(true)
-        .mode(0o600)
-        .open(path)?;
-    file.write_all(text.as_bytes())
+    config::paths::write_private(std::path::Path::new(path), text)
 }
 
 fn review_input(head: &str, plan: &ReviewPlan) -> ReviewInput {

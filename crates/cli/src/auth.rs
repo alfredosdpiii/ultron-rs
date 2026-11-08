@@ -178,7 +178,7 @@ impl Credentials<'_> {
     /// `modelRuntime.getProvider`: a built-in provider, the Claude Code CLI, or one models.json defines.
     fn known(&self, provider: &str) -> bool {
         ai::models::builtin_providers().any(|p| p == provider)
-            || provider == "claude-code"
+            || provider == ai::claude_code::PROVIDER
             || session_core::lane::registry(self.env)
                 .config()
                 .provider(provider)
@@ -206,7 +206,7 @@ impl Credentials<'_> {
         provider: &str,
         min_validity: Option<f64>,
     ) -> Result<Option<(String, &'static str)>, Unsupported> {
-        if provider == "claude-code" {
+        if provider == ai::claude_code::PROVIDER {
             return Ok(None);
         }
         let stored = self.read(provider)?;
@@ -235,7 +235,7 @@ impl Credentials<'_> {
         {
             return Ok(self.oauth(provider).then_some("oauth"));
         }
-        if provider == "claude-code" {
+        if provider == ai::claude_code::PROVIDER {
             return Ok(None);
         }
         // `apiKey.check`: a stored key, else a models.json key that is a command or whose variables are all set,

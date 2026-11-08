@@ -123,7 +123,7 @@ fn cli_auth_for_builtin_and_models_json_providers_matches_typescript() {
             cwd: tmp.path().to_path_buf(),
             home: tmp.path().to_path_buf(),
             var: Arc::new(move |k| vars.get(k).cloned()),
-            docs: tmp.path().join("docs"),
+            package: tmp.path().to_path_buf(),
         };
         let stubs = Arc::new(Stubs {
             stubs: fixture[case["stubs"]

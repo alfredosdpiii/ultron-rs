@@ -204,7 +204,10 @@ fn cli_setup_core_probes_hindsight_health_over_http() {
         listener.local_addr().unwrap().port()
     };
     assert_eq!(
-        setup_core::probe_hindsight(&format!("http://127.0.0.1:{port}"), &setup_core::http_fetch()),
+        setup_core::probe_hindsight(
+            &format!("http://127.0.0.1:{port}"),
+            &setup_core::http_fetch_with(ai::net::ProxyEnv::default())
+        ),
         Err("connection refused".into())
     );
 }
@@ -432,7 +435,7 @@ impl Profile {
             cwd: self.root.clone(),
             home: self.root.clone(),
             var: Arc::new(move |k| map.get(k).cloned()),
-            docs: self.root.join("docs"),
+            package: self.root.to_path_buf(),
         }
     }
 

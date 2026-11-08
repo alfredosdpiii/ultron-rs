@@ -80,12 +80,9 @@ impl JsonlStorage {
                 state.apply(writes);
                 Ok(())
             });
-            if let Err(cause) = replay {
-                return Err(format!(
-                    "Invalid JSONL storage {}: line {}: {cause}",
-                    path.display(),
-                    index + 1
-                ));
+            // TypeScript keeps the cause out of the message (`{ cause }`).
+            if replay.is_err() {
+                return Err(format!("Invalid JSONL storage {}: line {}", path.display(), index + 1));
             }
         }
         if let Some(next) = codec::header_i64(&header, "nextSeq") {

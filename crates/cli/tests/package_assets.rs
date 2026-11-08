@@ -8,10 +8,11 @@
 mod common;
 mod daemon_common;
 
-use cli::assets::{self, FILES, HASH, MARKER, RUNTIME};
+use cli::assets::{self, FILES, HASH, MARKER};
 use common::{
     Naming, anthropic_text, anthropic_tool, assert_private_home, mock_server, session_files, tool_result_text,
 };
+use session_core::RUNTIME_PY as RUNTIME;
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
@@ -297,7 +298,7 @@ fn cli_package_copied_binary_runs_with_the_checkout_hidden() {
             cwd: library_cwd.clone(),
             home: outside.root.join("home"),
             var: Arc::new(move |k| (k == "COLORFGBG").then(|| fgbg.clone())),
-            docs: installed.join("docs"),
+            package: installed.to_path_buf(),
         };
         cli::export_html::export(&session.display().to_string(), Some(&file), &env).unwrap();
         assert_eq!(

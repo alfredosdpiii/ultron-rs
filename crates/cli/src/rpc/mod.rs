@@ -179,10 +179,9 @@ fn prompt_request(command: &Value, kind: &str) -> Result<(String, Vec<Value>), S
 
 /// `queueMode`.
 fn queue_mode(mode: Option<&Value>) -> Result<&str, String> {
-    match mode.and_then(Value::as_str) {
-        Some(mode @ ("all" | "one-at-a-time")) => Ok(mode),
-        _ => Err(format!("Invalid queue mode: {}", jsrt::value::string(mode))),
-    }
+    mode.and_then(Value::as_str)
+        .filter(|mode| config::keys::QUEUE_MODES.contains(mode))
+        .ok_or_else(|| format!("Invalid queue mode: {}", jsrt::value::string(mode)))
 }
 
 /// One command: `Ok(None)` when the response comes later (or was already written).

@@ -48,7 +48,7 @@ fn runtime(
         cwd,
         home,
         var: Arc::new(move |key| all.iter().rev().find(|(k, _)| k == key).map(|(_, v)| v.clone())),
-        docs: config::paths::normalize(&Path::new(env!("CARGO_MANIFEST_DIR")).join("../../packages/coding-agent/docs")),
+        package: config::paths::normalize(&Path::new(env!("CARGO_MANIFEST_DIR")).join("../../packages/coding-agent")),
     };
     let runtime = Runtime::new(&env, "print", root.join("sessions"), Services::default()).unwrap();
     (runtime, settings_path)

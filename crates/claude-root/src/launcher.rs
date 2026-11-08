@@ -390,7 +390,7 @@ pub fn run(
         socket: &socket.display().to_string(),
         var,
         date: crate::guide::utc_date(),
-        platform: crate::guide::platform(),
+        platform: jsrt::process::platform(),
         resources: &resources,
         bundled_skills: bundled.as_deref(),
         hints: kernel_apis::cell_hints::hints_enabled(var(kernel_apis::cell_hints::HINTS_ENV).as_deref()),
@@ -432,7 +432,7 @@ pub fn run(
         return Ok(0);
     };
     for (path, content) in &launch.files {
-        crate::write_private(path, content).map_err(|e| format!("{}: {e}", path.display()))?;
+        config::paths::write_private(path, content).map_err(|e| format!("{}: {e}", path.display()))?;
     }
     let interactive = !parsed.claude_args.iter().any(|a| a == "-p" || a == "--print");
     if parsed.watch && var("TMUX").is_some_and(|v| !v.is_empty()) {

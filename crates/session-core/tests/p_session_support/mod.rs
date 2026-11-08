@@ -181,7 +181,7 @@ pub fn actor(script: Script, setup: Setup) -> Actor {
         cwd: cwd.clone(),
         home: root.clone(),
         var: Arc::new(move |key| vars.iter().rev().find(|(k, _)| k == key).map(|(_, v)| v.clone())),
-        docs: config::paths::normalize(&Path::new(env!("CARGO_MANIFEST_DIR")).join("../../packages/coding-agent/docs")),
+        package: config::paths::normalize(&Path::new(env!("CARGO_MANIFEST_DIR")).join("../../packages/coding-agent")),
     };
     let sessions = agent_dir.join("experimental").join("sessions");
     let repo = session_journal::SessionRepo::new(&sessions, session_journal::SystemClock::shared());

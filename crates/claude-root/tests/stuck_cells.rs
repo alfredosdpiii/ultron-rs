@@ -100,7 +100,7 @@ impl Root {
             cwd: self.path("w"),
             home: self.path("h"),
             var: Arc::new(move |k: &str| vars.iter().find(|(n, _)| n == k).map(|(_, v)| v.clone())),
-            docs: repo().join("packages/coding-agent/docs"),
+            package: repo().join("packages/coding-agent"),
         }
     }
 
@@ -169,14 +169,7 @@ struct Server {
 
 impl Server {
     fn start(env: RunEnv) -> Server {
-        let (running, handlers) = start(
-            &[],
-            &claude_root::Ctx {
-                env,
-                session_report: None,
-            },
-        )
-        .unwrap();
+        let (running, handlers) = start(&[], &claude_root::Ctx { env }).unwrap();
         let (input, stdin) = std::io::pipe().unwrap();
         let (stdout, output) = std::io::pipe().unwrap();
         let serving = std::thread::spawn(move || {

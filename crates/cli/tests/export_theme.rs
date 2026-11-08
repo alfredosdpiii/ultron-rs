@@ -104,7 +104,7 @@ fn cli_export_theme_export_page_finds_registered_and_custom_themes() {
         cwd,
         home: root.0.join("home"),
         var: Arc::new(move |k| (k == config::paths::ENV_AGENT_DIR).then(|| agent_var.clone())),
-        docs: root.0.join("docs"),
+        package: root.0.to_path_buf(),
     };
     let cases = fixture["cases"].as_array().unwrap();
     for name in ["dark", "light", "ocean", "harbor", "missing"] {

@@ -48,7 +48,7 @@ fn cli_daemon_review_command_expands_for_every_client_entry_like_typescript() {
     let created = connection
         .call(
             connection.server_target(),
-            "ultron.session-management",
+            protocol::names::SESSION_MANAGEMENT,
             "create",
             json!([{}]),
         )
@@ -58,7 +58,7 @@ fn cli_daemon_review_command_expands_for_every_client_entry_like_typescript() {
     connection
         .call(
             connection.server_target(),
-            "ultron.session-management",
+            protocol::names::SESSION_MANAGEMENT,
             "attach",
             json!([id]),
         )
@@ -71,7 +71,7 @@ fn cli_daemon_review_command_expands_for_every_client_entry_like_typescript() {
         connection
             .call(
                 session.clone(),
-                "ultron.agent-controller",
+                protocol::names::AGENT_CONTROLLER,
                 member,
                 json!([{"message": text, "images": null}]),
             )
@@ -85,7 +85,7 @@ fn cli_daemon_review_command_expands_for_every_client_entry_like_typescript() {
     connection
         .call(
             session.clone(),
-            "ultron.session-ops",
+            protocol::names::SESSION_OPS,
             "op",
             json!([{"op": "enqueue", "kind": "nextRun", "message": "/review 12 --post"}]),
         )
@@ -126,7 +126,7 @@ fn cli_daemon_prompt_templates_expand_for_prompts_and_queued_messages() {
     let created = connection
         .call(
             connection.server_target(),
-            "ultron.session-management",
+            protocol::names::SESSION_MANAGEMENT,
             "create",
             json!([{}]),
         )
@@ -136,7 +136,7 @@ fn cli_daemon_prompt_templates_expand_for_prompts_and_queued_messages() {
     connection
         .call(
             connection.server_target(),
-            "ultron.session-management",
+            protocol::names::SESSION_MANAGEMENT,
             "attach",
             json!([id]),
         )
@@ -149,7 +149,7 @@ fn cli_daemon_prompt_templates_expand_for_prompts_and_queued_messages() {
         connection
             .call(
                 session.clone(),
-                "ultron.agent-controller",
+                protocol::names::AGENT_CONTROLLER,
                 member,
                 json!([{"message": text, "images": null}]),
             )

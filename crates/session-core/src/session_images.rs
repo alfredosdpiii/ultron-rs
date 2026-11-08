@@ -23,7 +23,7 @@ pub fn module(config: &Config, session_id: &str) -> ImagesModule {
         cwd: config.cwd.clone(),
         home: config.home.clone(),
         var: config.var.clone(),
-        docs: PathBuf::new(),
+        package: PathBuf::new(),
     };
     ImagesModule::new(ImagesConfig {
         default_model: setting("model"),

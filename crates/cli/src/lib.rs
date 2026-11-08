@@ -49,38 +49,18 @@ pub mod tools_manager;
 pub mod trace_cli;
 pub mod tui_login;
 pub mod update_cli;
-pub mod usage;
+pub mod usage_cli;
 pub mod watch;
 
 use args::{Args, DiagnosticKind, ListModels, normalize_session_name, parse_args};
 use print_mode::Target;
 use session_journal::catalog;
 use session_journal::names::{self, SessionListing};
-use session_journal::repo::Metadata;
 use session_journal::{SessionRepo, SystemClock};
 use std::io::Write;
 use std::path::Path;
 
 pub const HELP: &str = include_str!("help.txt");
-
-/// Subcommands the TypeScript entry handles before option parsing.
-const COMMANDS: [&str; 15] = [
-    "auth",
-    "setup",
-    "migrate",
-    "usage",
-    "autoreview",
-    "mcp",
-    "claude",
-    "hook",
-    "watch",
-    "guide",
-    "install",
-    "remove",
-    "update",
-    "list",
-    "config",
-];
 
 pub fn version() -> String {
     let package: serde_json::Value = serde_json::from_str(include_str!("../../../packages/coding-agent/package.json"))
@@ -102,18 +82,10 @@ pub fn instance(env: &Env, durable: bool) -> daemon::instance::Instance {
     daemon::instance::resolve(&*env.var, &env.home, &env.cwd, durable)
 }
 
-/// Make the package files under `env.docs`'s parent ready (installed and held in use) for a run that reads them;
+/// Make the package files (`env.package`) ready (installed and held in use) for a run that reads them;
 /// `--version`, `--help`, `--export` and the management subcommands never do (`cli::assets`).
 pub fn package_files(env: &Env) -> Result<(), String> {
     assets::package_dir(&*env.var, &env.home).map(|_| ())
-}
-
-/// `ultron mcp`'s `usage.report`: the session report of `path` as `/usage` builds it, the providers on a
-/// subscription login in `env` priced as notional (`subscriptionProviders`).
-pub fn mcp_session_report(path: &Path, env: &Env) -> Result<serde_json::Value, String> {
-    let log = usage::log::read_session_log(path).map_err(|e| e.message().to_string())?;
-    let providers = session_core::lane::subscription_providers(env);
-    Ok(usage::report::build_session_report_with(&log, &providers))
 }
 
 /// Run the CLI; returns the exit code.
@@ -127,89 +99,189 @@ pub fn run(argv: &[String], env: &Env, out: &mut dyn Write, err: &mut dyn Write)
     }
 }
 
+/// A subcommand's answer for the whole command line: its exit code, or `None` when the line is not that command
+/// after all (the line is then the next row's, or a prompt).
+type Run = fn(&[String], &Env, &mut dyn Write, &mut dyn Write) -> Option<Result<i32, String>>;
+
+/// A subcommand, in the order main.ts tries them before option parsing.
+struct Command {
+    /// The first arguments it answers; none: any line ([`experimental`], gated by `PI_EXPERIMENTAL`).
+    names: &'static [&'static str],
+    /// It reads the package files (`cli::assets`), made ready first.
+    package_files: bool,
+    /// The global `httpProxy` setting applies (`applyHttpProxySettings`): to this command and every one after it.
+    proxy: bool,
+    /// TypeScript handles the name before option parsing: a line this build does not answer is not implemented
+    /// rather than a prompt.
+    typescript: bool,
+    run: Run,
+}
+
+const COMMANDS: &[Command] = &[
+    // `runExperimentalCommand` (PI_EXPERIMENTAL=1): `ultron server` and `ultron client`.
+    Command {
+        names: &[],
+        package_files: false,
+        proxy: false,
+        typescript: false,
+        run: |argv, env, out, err| experimental::run(argv, env, out, err).map(Ok),
+    },
+    Command {
+        names: &["instances"],
+        package_files: false,
+        proxy: false,
+        typescript: false,
+        run: |_, env, out, _| Some(instances::list(env, out)),
+    },
+    Command {
+        names: &["durable"],
+        package_files: false,
+        proxy: false,
+        typescript: false,
+        run: |argv, env, out, err| Some(instances::durable(&argv[1..], env, out, err)),
+    },
+    // `ultron trace check <file>`: the resets of a request trace (`ULTRON_REQUEST_TRACE`).
+    Command {
+        names: &["trace"],
+        package_files: false,
+        proxy: false,
+        typescript: false,
+        run: |argv, _, out, err| Some(Ok(trace_cli::run(&argv[1..], out, err))),
+    },
+    Command {
+        names: &["autoreview"],
+        package_files: true,
+        proxy: false,
+        typescript: true,
+        run: |argv, env, out, err| autoreview_cli::run(argv, env, out, err).map(Ok),
+    },
+    Command {
+        names: &["auth"],
+        package_files: false,
+        proxy: false,
+        typescript: true,
+        run: |argv, env, out, err| auth::run(argv, env, out, err).map(Ok),
+    },
+    Command {
+        names: &["setup"],
+        package_files: false,
+        proxy: false,
+        typescript: true,
+        run: |argv, env, out, err| setup::run(argv, env, out, err).map(Ok),
+    },
+    Command {
+        names: &["migrate"],
+        package_files: false,
+        proxy: false,
+        typescript: true,
+        run: |argv, env, out, err| migrate::run(argv, env, out, err).map(Ok),
+    },
+    Command {
+        names: &["usage"],
+        package_files: false,
+        proxy: false,
+        typescript: true,
+        run: |argv, env, out, err| usage_cli::run(argv, env, out, err).map(Ok),
+    },
+    // `ultron mcp add|remove|list|login|logout`; bare `ultron mcp` is Ultron's own MCP server (below).
+    Command {
+        names: &["mcp"],
+        package_files: false,
+        proxy: false,
+        typescript: true,
+        run: |argv, env, out, err| mcp_cli::run(argv, env, out, err).map(Ok),
+    },
+    Command {
+        names: &["install", "remove", "uninstall", "update", "list"],
+        package_files: false,
+        proxy: true,
+        typescript: true,
+        run: |argv, env, out, err| update_cli::run_update(argv, env, out, err).map(Ok),
+    },
+    Command {
+        names: &["config"],
+        package_files: false,
+        proxy: true,
+        typescript: true,
+        run: |argv, env, out, err| update_cli::run_config(argv, env, out, err).map(Ok),
+    },
+    Command {
+        names: &["claude", "mcp", "hook", "guide"],
+        package_files: true,
+        proxy: true,
+        typescript: true,
+        run: |argv, env, out, err| claude_root::cli::run(argv, env, out, err).map(Ok),
+    },
+    Command {
+        names: &["watch"],
+        package_files: true,
+        proxy: true,
+        typescript: true,
+        run: |argv, env, out, err| {
+            let result = watch::run(&argv[1..], &env.cwd.display().to_string(), &*env.var, out);
+            Some(Ok(claude_root::cli::exit_code(result, err)))
+        },
+    },
+    // `ultron memory import ...` only: a bare `ultron memory` stays a prompt, as in TypeScript.
+    Command {
+        names: &["memory"],
+        package_files: false,
+        proxy: true,
+        typescript: false,
+        run: |argv, env, out, err| {
+            (argv.get(1).map(String::as_str) == Some("import")).then(|| memory_cli::run(&argv[1..], env, out, err))
+        },
+    },
+    // `ultron schedule list|wake|cancel <id>|--help` only: any other `ultron schedule ...` stays a prompt.
+    Command {
+        names: &["schedule"],
+        package_files: false,
+        proxy: true,
+        typescript: false,
+        run: |argv, env, out, err| schedule_cli::run(&argv[1..], env, out, err),
+    },
+    // `ultron service install|uninstall|status|restart|run|--help` only: any other `ultron service ...` stays a
+    // prompt.
+    Command {
+        names: &["service"],
+        package_files: false,
+        proxy: true,
+        typescript: false,
+        run: |argv, env, out, err| service_cli::run(&argv[1..], env, out, err),
+    },
+    Command {
+        names: &["sandbox"],
+        package_files: false,
+        proxy: true,
+        typescript: false,
+        run: |argv, env, out, err| Some(sandbox_cli::run(&argv[1..], env, out, err)),
+    },
+];
+
 fn run_inner(argv: &[String], env: &Env, out: &mut dyn Write, err: &mut dyn Write) -> Result<i32, String> {
     let io = |e: std::io::Error| e.to_string();
     // main.ts: `--offline` (or PI_OFFLINE) holds for every command, the subcommands included.
-    let offline = startup::offline_env(argv, env);
-    let env = &offline;
-    // `runExperimentalCommand` (PI_EXPERIMENTAL=1): `ultron server` and `ultron client`.
-    if let Some(code) = experimental::run(argv, env, out, err) {
-        return Ok(code);
+    let mut env = startup::offline_env(argv, env);
+    let mut proxied = false;
+    let first = argv.first().map(String::as_str);
+    for command in COMMANDS {
+        if command.proxy && !proxied {
+            env = startup::proxy_env(&env);
+            proxied = true;
+        }
+        if !command.names.is_empty() && !first.is_some_and(|name| command.names.contains(&name)) {
+            continue;
+        }
+        if command.package_files {
+            package_files(&env)?;
+        }
+        if let Some(result) = (command.run)(argv, &env, out, err) {
+            return result;
+        }
     }
-    match argv.first().map(String::as_str) {
-        Some("instances") => return instances::list(env, out),
-        Some("durable") => return instances::durable(&argv[1..], env, out, err),
-        // `ultron trace check <file>`: the resets of a request trace (`ULTRON_REQUEST_TRACE`).
-        Some("trace") => return Ok(trace_cli::run(&argv[1..], out, err)),
-        _ => {}
-    }
-    if argv.first().is_some_and(|a| a == "autoreview") {
-        package_files(env)?;
-    }
-    if let Some(code) = autoreview_cli::run(argv, env, out, err) {
-        return Ok(code);
-    }
-    if let Some(code) = auth::run(argv, env, out, err) {
-        return Ok(code);
-    }
-    if let Some(code) = setup::run(argv, env, out, err) {
-        return Ok(code);
-    }
-    if let Some(code) = migrate::run(argv, env, out, err) {
-        return Ok(code);
-    }
-    if let Some(code) = usage::run(argv, env, out, err) {
-        return Ok(code);
-    }
-    if let Some(code) = mcp_cli::run(argv, env, out, err) {
-        return Ok(code);
-    }
-    // `applyHttpProxySettings`: the global `httpProxy` setting, for the package commands and every run below.
-    let proxied = startup::proxy_env(env);
-    let env = &proxied;
-    if let Some(code) = update_cli::run_update(argv, env, out, err) {
-        return Ok(code);
-    }
-    if let Some(code) = update_cli::run_config(argv, env, out, err) {
-        return Ok(code);
-    }
-    // `ultron claude|mcp|hook|watch|guide` (bare `ultron mcp` is Ultron's own MCP server for Claude Code).
-    if argv
-        .first()
-        .is_some_and(|a| ["claude", "mcp", "hook", "watch", "guide"].contains(&a.as_str()))
-    {
-        package_files(env)?;
-    }
-    // `ultron mcp` answers `usage.report` inspections with the report `/usage` shows: a subscription login's costs
-    // are notional.
-    if let Some(code) = claude_root::cli::run(argv, env, mcp_session_report, out, err) {
-        return Ok(code);
-    }
-    if argv.first().is_some_and(|a| a == "watch") {
-        let result = watch::run(&argv[1..], &env.cwd.display().to_string(), &*env.var, out);
-        return Ok(claude_root::cli::exit_code(result, err));
-    }
-    // `ultron memory import ...` only: a bare `ultron memory` stays a prompt, as in TypeScript.
-    if argv.first().is_some_and(|a| a == "memory") && argv.get(1).is_some_and(|a| a == "import") {
-        return memory_cli::run(&argv[1..], env, out, err);
-    }
-    // `ultron schedule list|wake|cancel <id>|--help` only: any other `ultron schedule ...` stays a prompt.
-    if argv.first().is_some_and(|a| a == "schedule")
-        && let Some(result) = schedule_cli::run(&argv[1..], env, out, err)
-    {
-        return result;
-    }
-    // `ultron service install|uninstall|status|restart|run|--help` only: any other `ultron service ...` stays a prompt.
-    if argv.first().is_some_and(|a| a == "service")
-        && let Some(result) = service_cli::run(&argv[1..], env, out, err)
-    {
-        return result;
-    }
-    if argv.first().is_some_and(|a| a == "sandbox") {
-        return sandbox_cli::run(&argv[1..], env, out, err);
-    }
-    if let Some(command) = argv.first().filter(|a| COMMANDS.contains(&a.as_str())) {
-        return Err(format!("`ultron {command}` is not implemented in the Rust build yet"));
+    let env = &env;
+    if let Some(name) = first.filter(|name| COMMANDS.iter().any(|c| c.typescript && c.names.contains(name))) {
+        return Err(format!("`ultron {name}` is not implemented in the Rust build yet"));
     }
     // `ultron acp [options]`: an Agent Client Protocol agent on stdio (crate::acp); the options are the session's.
     let acp = argv.first().is_some_and(|a| a == "acp");
@@ -262,7 +334,7 @@ fn run_inner(argv: &[String], env: &Env, out: &mut dyn Write, err: &mut dyn Writ
         }
         package_files(env)?;
         let models = list_models::available_models(env);
-        out.write_all(list_models::render(&models, search, &env.docs).as_bytes())
+        out.write_all(list_models::render(&models, search, &env.docs()).as_bytes())
             .map_err(io)?;
         return Ok(0);
     }
@@ -504,18 +576,6 @@ pub fn render_session_list(sessions: &[SessionListing], cwd: &str) -> String {
     out
 }
 
-/// The session metadata of `id` among every session (`resolveSession` of the server).
-pub(crate) fn session_by_id(repo: &SessionRepo, id: &str) -> Result<Option<Metadata>, String> {
-    let matches: Vec<Metadata> = repo.list(None).into_iter().filter(|m| m.id == id).collect();
-    match matches.len() {
-        0 => Ok(None),
-        1 => Ok(matches.into_iter().next()),
-        _ => Err(format!(
-            "Session {id} is ambiguous: more than one session file has this id"
-        )),
-    }
-}
-
 /// The checks `runNativeUltronCommand` makes before it starts a server, and its session selection.
 fn native_command(parsed: &Args, env: &Env, prompted: bool, terminal: bool) -> Result<Selection, String> {
     if parsed.fork.is_some()
@@ -550,14 +610,14 @@ fn native_command(parsed: &Args, env: &Env, prompted: bool, terminal: bool) -> R
     }
     let cwd = env.cwd.display().to_string();
     let open_or_new = |id: String| -> Result<Selection, String> {
-        Ok(Selection::Target(match session_by_id(&repo, &id)? {
+        Ok(Selection::Target(match catalog::find(&session_dir, &id)? {
             Some(metadata) => Target::Open(metadata),
             None => Target::New { id: Some(id) },
         }))
     };
     if let Some(fork) = &parsed.fork {
         let id = session::session_id_from_selector(fork, &sessions, &env.cwd)?;
-        let metadata = session_by_id(&repo, &id)?.ok_or_else(|| format!("Unknown session: {id}"))?;
+        let metadata = catalog::find(&session_dir, &id)?.ok_or_else(|| format!("Unknown session: {id}"))?;
         return Ok(Selection::Target(Target::Fork(metadata)));
     }
     if let Some(id) = &parsed.session_id {

@@ -60,7 +60,7 @@ fn attach(connection: &Connection) -> protocol::RpcTarget {
     let created = connection
         .call(
             connection.server_target(),
-            "ultron.session-management",
+            protocol::names::SESSION_MANAGEMENT,
             "create",
             json!([{}]),
         )
@@ -70,7 +70,7 @@ fn attach(connection: &Connection) -> protocol::RpcTarget {
     connection
         .call(
             connection.server_target(),
-            "ultron.session-management",
+            protocol::names::SESSION_MANAGEMENT,
             "attach",
             json!([id]),
         )
@@ -95,7 +95,7 @@ impl UiClient<'_> {
             .connection
             .call(
                 self.session.clone(),
-                "ultron.extension-ui",
+                protocol::names::EXTENSION_UI,
                 "poll",
                 json!([self.cursor, 1000]),
             )
@@ -153,7 +153,12 @@ fn cli_daemon_mcp_command_and_notices_reach_the_client() {
             "message": "MCP server \"issues\" requires sign-in. Run /mcp to sign in.", "notifyType": "warning"})
     );
     let listed = connection
-        .call(session.clone(), "ultron.legacy-extension-commands", "list", json!([]))
+        .call(
+            session.clone(),
+            protocol::names::LEGACY_EXTENSION_COMMANDS,
+            "list",
+            json!([]),
+        )
         .unwrap()
         .unwrap();
     assert_eq!(listed[0]["name"], "mcp");
@@ -161,7 +166,7 @@ fn cli_daemon_mcp_command_and_notices_reach_the_client() {
     let ran = connection
         .call(
             session.clone(),
-            "ultron.legacy-extension-commands",
+            protocol::names::LEGACY_EXTENSION_COMMANDS,
             "run",
             json!(["mcp", "status"]),
         )
@@ -177,7 +182,7 @@ fn cli_daemon_mcp_command_and_notices_reach_the_client() {
     let menu = connection
         .start(
             session.clone(),
-            "ultron.legacy-extension-commands",
+            protocol::names::LEGACY_EXTENSION_COMMANDS,
             "run",
             json!(["mcp", ""]),
         )
@@ -191,7 +196,7 @@ fn cli_daemon_mcp_command_and_notices_reach_the_client() {
     connection
         .call(
             session.clone(),
-            "ultron.extension-ui",
+            protocol::names::EXTENSION_UI,
             "respond",
             json!([servers["id"], {"value": "beta \u{2014} not connected"}]),
         )
@@ -202,7 +207,7 @@ fn cli_daemon_mcp_command_and_notices_reach_the_client() {
     connection
         .call(
             session.clone(),
-            "ultron.extension-ui",
+            protocol::names::EXTENSION_UI,
             "respond",
             json!([actions["id"], {"value": "Connect"}]),
         )
@@ -211,7 +216,12 @@ fn cli_daemon_mcp_command_and_notices_reach_the_client() {
     assert_eq!(connected["message"], "Connected to beta (2 tools).");
     assert_eq!(connection.wait(&menu).unwrap(), Some(json!({"notifications": []})));
     let unknown = connection
-        .call(session, "ultron.legacy-extension-commands", "run", json!(["nope", ""]))
+        .call(
+            session,
+            protocol::names::LEGACY_EXTENSION_COMMANDS,
+            "run",
+            json!(["nope", ""]),
+        )
         .unwrap_err();
     // A plain error of a service crosses the wire as an internal error, as TypeScript's `Unknown extension command`.
     assert!(format!("{unknown:?}").contains("Internal server error"), "{unknown:?}");

@@ -5,8 +5,10 @@
 
 use crate::js::replace_first;
 use serde_json::{Map, Value, json};
-use std::collections::{HashMap, HashSet};
-use std::path::{Path, PathBuf};
+use session_journal::catalog::HeaderLine;
+use session_journal::codec::{self, ParsedHeader};
+use session_journal::{JsonlStorage, ns};
+use std::path::Path;
 
 pub const SHARE_VIEWER_URL_ENV: &str = "PI_SHARE_VIEWER_URL";
 
@@ -205,139 +207,6 @@ pub fn share_viewer_url(var: &dyn Fn(&str) -> Option<String>, gist_id: &str) -> 
     format!("{base}#{gist_id}")
 }
 
-/// `isNativeSessionFile`: the first line parses as an object with `kind: "header"`.
-pub fn is_native_session_file(path: &Path) -> bool {
-    let Ok(first) = session_journal::catalog::first_line(path) else {
-        return false;
-    };
-    serde_json::from_str::<Value>(&first).is_ok_and(|v| v.get("kind").and_then(Value::as_str) == Some("header"))
-}
-
-fn safe_integer_at_least(value: Option<&Value>, minimum: f64) -> bool {
-    value
-        .and_then(jsrt::number::safe_integer)
-        .is_some_and(|n| n as f64 >= minimum)
-}
-
-/// `isJsonlStorageHeader`.
-fn is_v4_header(value: &Value) -> bool {
-    let Some(h) = value.as_object() else { return false };
-    let optional_string = |k: &str| h.get(k).is_none_or(Value::is_string);
-    h.get("kind").and_then(Value::as_str) == Some("header")
-        && h.get("v").and_then(Value::as_f64) == Some(4.0)
-        && h.get("id").is_some_and(Value::is_string)
-        && h.get("cwd").is_some_and(Value::is_string)
-        && safe_integer_at_least(h.get("storageVersion"), 1.0)
-        && safe_integer_at_least(h.get("createdAt"), 0.0)
-        && (h.get("nextSeq").is_none() || safe_integer_at_least(h.get("nextSeq"), 1.0))
-        && optional_string("parentSessionId")
-        && optional_string("legacyParentSessionPath")
-}
-
-/// A transaction's writes, validated as `parseJsonlTransaction` and `validateCommittedWrites` do.
-fn parse_transaction(line: &str, state: &mut ReplayState) -> Result<Vec<Map<String, Value>>, ()> {
-    let value: Value = serde_json::from_str(line).map_err(|_| ())?;
-    let items = match value {
-        Value::Array(items) => items,
-        other => vec![other],
-    };
-    let mut writes = Vec::new();
-    for mut item in items {
-        session_journal::codec::rename_legacy(&mut item);
-        let Value::Object(write) = item else { return Err(()) };
-        if !safe_integer_at_least(write.get("seq"), 1.0) {
-            return Err(());
-        }
-        let op = write.get("op").and_then(Value::as_str);
-        match write.get("kind").and_then(Value::as_str) {
-            Some("entry") if safe_integer_at_least(write.get("timestamp"), 0.0) => {}
-            Some("usage") => {}
-            Some("value") if matches!(op, Some("set" | "delete")) => {}
-            Some("list") if matches!(op, Some("append" | "delete")) => {}
-            _ => return Err(()),
-        }
-        writes.push(write);
-    }
-    let mut previous = state.next_seq - 1.0;
-    let mut ids: HashSet<String> = HashSet::new();
-    let mut entry_ids: HashSet<String> = HashSet::new();
-    for write in &writes {
-        let seq = write["seq"].as_f64().unwrap_or(0.0);
-        if seq <= previous {
-            return Err(());
-        }
-        previous = seq;
-        let kind = write["kind"].as_str();
-        if kind != Some("entry") && kind != Some("usage") {
-            continue;
-        }
-        let id = write
-            .get("id")
-            .map(|v| jsrt::value::string(Some(v)))
-            .unwrap_or_else(|| "undefined".into());
-        if state.ids.contains(&id) || ids.contains(&id) {
-            return Err(());
-        }
-        if kind == Some("entry") {
-            match write.get("parentId") {
-                Some(Value::Null) => {}
-                parent => {
-                    let parent = jsrt::value::string(parent);
-                    if !state.entries.contains_key(&parent) && !entry_ids.contains(&parent) {
-                        return Err(());
-                    }
-                }
-            }
-        }
-        ids.insert(id.clone());
-        if kind == Some("entry") {
-            entry_ids.insert(id);
-        }
-    }
-    Ok(writes)
-}
-
-#[derive(Default)]
-struct ReplayState {
-    next_seq: f64,
-    ids: HashSet<String>,
-    entries: HashMap<String, Map<String, Value>>,
-    values: HashMap<(String, String), Value>,
-}
-
-impl ReplayState {
-    fn apply(&mut self, writes: Vec<Map<String, Value>>) {
-        for mut write in writes {
-            let seq = write["seq"].as_f64().unwrap_or(0.0);
-            match write["kind"].as_str() {
-                Some("entry") => {
-                    write.shift_remove("kind");
-                    let id = jsrt::value::string(Some(&write["id"]));
-                    self.ids.insert(id.clone());
-                    self.entries.insert(id, write);
-                }
-                Some("usage") => {
-                    self.ids.insert(jsrt::value::string(Some(&write["id"])));
-                }
-                Some("value") => {
-                    let key = (
-                        jsrt::value::string(Some(&write["namespace"])),
-                        jsrt::value::string(Some(&write["key"])),
-                    );
-                    if write["op"].as_str() == Some("delete") {
-                        self.values.remove(&key);
-                    } else {
-                        self.values
-                            .insert(key, write.get("value").cloned().unwrap_or(Value::Null));
-                    }
-                }
-                _ => {}
-            }
-            self.next_seq = seq + 1.0;
-        }
-    }
-}
-
 fn iso(value: Option<&Value>) -> Value {
     Value::String(jsrt::date::iso_string(
         value.and_then(Value::as_f64).unwrap_or(0.0) as i64
@@ -398,93 +267,38 @@ fn to_session_entry(entry: &Map<String, Value>) -> Value {
 /// The session data of a native session file's `main` branch (`exportNativeSessionFile` up to `generateHtml`).
 /// A torn last line is dropped from the file, as opening the session does.
 fn native_session_data(path: &Path) -> Result<Value, String> {
-    let shown = path.display();
     // `repo.list()` finds the file only when its header is a format-4 header.
-    let content = std::fs::read_to_string(path).map_err(|e| e.to_string())?;
-    let header: Option<Value> = content
-        .find('\n')
-        .and_then(|end| serde_json::from_str(&content[..end]).ok())
-        .filter(is_v4_header);
-    let listed = path.extension().is_some_and(|e| e == "jsonl") && path.is_file();
-    let Some(header) = header.filter(|_| listed) else {
-        return Err(format!("Session is not in its session directory: {shown}"));
-    };
-    let (lines, torn): (Vec<&str>, bool) = match content.strip_suffix('\n') {
-        Some(body) => (body.split('\n').collect(), false),
-        None => {
-            let last = content.rfind('\n').unwrap_or(0);
-            (content[..last].split('\n').collect(), true)
-        }
-    };
-    let id = header["id"].as_str().unwrap_or_default();
-    if header["storageVersion"].as_f64() != Some(1.0) {
-        return Err(format!(
-            "Session {id} uses unsupported storage version {}",
-            jsrt::value::string(Some(&header["storageVersion"]))
-        ));
+    let listed = path.extension().is_some_and(|e| e == "jsonl")
+        && path.is_file()
+        && session_journal::catalog::first_line(path)
+            .is_ok_and(|line| matches!(codec::parse_header(&line), Ok(ParsedHeader::V4(_))));
+    if !listed {
+        return Err(format!("Session is not in its session directory: {}", path.display()));
     }
-    let mut state = ReplayState {
-        next_seq: 1.0,
-        ..ReplayState::default()
-    };
-    for (index, line) in lines.iter().enumerate().skip(1) {
-        let writes = parse_transaction(line, &mut state)
-            .map_err(|()| format!("Invalid JSONL storage {shown}: line {}", index + 1))?;
-        state.apply(writes);
-    }
-    if torn {
-        let tmp = PathBuf::from(format!("{}.tmp", path.display()));
-        std::fs::write(&tmp, format!("{}\n", lines.join("\n"))).map_err(|e| e.to_string())?;
-        std::fs::rename(&tmp, path).map_err(|e| e.to_string())?;
-    }
-    let mut entries: Vec<Value> = Vec::new();
-    if let Some(tip) = state.values.get(&("ultron.branch.tip".to_string(), "main".to_string()))
-        && let Some(start) = tip.as_str()
-    {
-        let mut path_entries = Vec::new();
-        let mut current = state
-            .entries
-            .get(start)
-            .ok_or_else(|| format!("Unknown branch start: {start}"))?;
-        loop {
-            path_entries.push(current);
-            match current.get("parentId") {
-                Some(Value::Null) | None => break,
-                Some(parent) => {
-                    current = state
-                        .entries
-                        .get(&jsrt::value::string(Some(parent)))
-                        .ok_or_else(|| "Corrupt branch: missing parent".to_string())?;
-                }
-            }
-        }
-        path_entries.reverse();
-        entries = path_entries.into_iter().map(to_session_entry).collect();
-    }
-    let tip_id = path_tip(&entries);
-    Ok(json!({
-        "header": {
-            "type": "session",
-            "version": 3,
-            "id": header["id"],
-            "timestamp": iso(header.get("createdAt")),
-            "cwd": header["cwd"],
-        },
-        "entries": entries,
-        "leafId": tip_id,
-    }))
+    let storage = JsonlStorage::open(path, &mut session_journal::SystemClock)?;
+    let state = storage.state();
+    let tip = state
+        .value(ns::BRANCH_TIP, session_journal::run::MAIN_LANE)
+        .and_then(|tip| tip.value.as_str());
+    let entries: Vec<Value> = state.branch_path_refs(tip)?.into_iter().cloned().collect();
+    let header = storage.header();
+    Ok(native_entries_data(
+        header.get("id").and_then(Value::as_str).unwrap_or_default(),
+        header.get("cwd").and_then(Value::as_str).unwrap_or_default(),
+        header.get("createdAt").and_then(Value::as_f64).unwrap_or(0.0),
+        &entries,
+    ))
 }
 
-/// `toSessionData` of native-export.ts: the session data of native entries (active branch, oldest first), as the
-/// RPC `export_html` command renders a running session's transcript.
+/// `toSessionData` of native-export.ts: the session data of a branch's native entries (oldest first, so the last is
+/// its tip); an entry of another type is `null`, as its `flatMap` keeps it.
 pub fn native_entries_data(id: &str, cwd: &str, created_at: f64, entries: &[Value]) -> Value {
+    let tip_id = entries.last().and_then(|e| e.get("id")).cloned().unwrap_or(Value::Null);
+    let empty = Map::new();
     let entries: Vec<Value> = entries
         .iter()
-        .filter_map(Value::as_object)
-        .map(to_session_entry)
-        .filter(|entry| !entry.is_null())
+        .map(|entry| to_session_entry(entry.as_object().unwrap_or(&empty)))
         .collect();
-    let tip_id = path_tip(&entries);
     json!({
         "header": {"type": "session", "version": 3, "id": id, "timestamp": iso(Some(&json!(created_at))), "cwd": cwd},
         "entries": entries,
@@ -505,13 +319,8 @@ pub fn write_native_session_html(
         _ => format!("ultron-session-{id}.html"),
     };
     let html = generate_html(data, (env.var)("COLORFGBG").as_deref());
-    std::fs::write(env.cwd.join(&target), html)
-        .map_err(|e| crate::usage::log::io_message(&e, "open", Path::new(&target)))?;
+    std::fs::write(env.cwd.join(&target), html).map_err(|e| jsrt::fs::error_message(&e, "open", Path::new(&target)))?;
     Ok(target)
-}
-
-fn path_tip(entries: &[Value]) -> Value {
-    entries.last().and_then(|e| e.get("id")).cloned().unwrap_or(Value::Null)
 }
 
 /// The session data of a Pi session file (`exportFromFile`).
@@ -530,7 +339,8 @@ fn pi_session_data(path: &Path) -> Result<Value, String> {
 pub fn export(input: &str, output: Option<&str>, env: &crate::Env) -> Result<String, String> {
     let resolved = config::paths::resolve(input, &env.cwd, &env.home);
     let colorfgbg = (env.var)("COLORFGBG");
-    let (data, default_name) = if is_native_session_file(&resolved) {
+    let native = HeaderLine::read(&resolved).is_ok_and(|header| header.native().is_some());
+    let (data, default_name) = if native {
         let path = config::paths::normalize(&env.cwd.join(input));
         let stem = file_stem(&path);
         (native_session_data(&path)?, format!("ultron-session-{stem}.html"))
@@ -548,8 +358,7 @@ pub fn export(input: &str, output: Option<&str>, env: &crate::Env) -> Result<Str
         _ => default_name,
     };
     let html = generate_html(&data, colorfgbg.as_deref());
-    std::fs::write(env.cwd.join(&target), html)
-        .map_err(|e| crate::usage::log::io_message(&e, "open", Path::new(&target)))?;
+    std::fs::write(env.cwd.join(&target), html).map_err(|e| jsrt::fs::error_message(&e, "open", Path::new(&target)))?;
     Ok(target)
 }
 

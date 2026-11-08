@@ -224,7 +224,7 @@ impl Config {
             settings,
             loki,
             loki_root,
-            runtime_path: config::paths::normalize(&env.docs.join("../src/ultron/rlm/runtime.py")),
+            runtime_path: env.runtime(),
             skills_dir,
             mask_secrets: (env.var)(MASK_SECRETS_ENV),
             output_bytes: (env.var)(kernel::env::RLM_OUTPUT_BYTES_ENV),
@@ -299,7 +299,7 @@ impl Config {
             cwd: self.cwd.clone(),
             home: self.home.clone(),
             var: self.var.clone(),
-            docs: PathBuf::new(),
+            package: PathBuf::new(),
         };
         crate::lane::catalog_model(provider, id, &env).ok()
     }
@@ -311,7 +311,7 @@ impl Config {
             cwd: self.cwd.clone(),
             home: self.home.clone(),
             var: self.var.clone(),
-            docs: PathBuf::new(),
+            package: PathBuf::new(),
         };
         Value::Array(
             crate::lane::available_models(&env)

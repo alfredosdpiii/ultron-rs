@@ -98,7 +98,7 @@ fn guide(args: &[String], ctx: &Ctx, out: &mut dyn Write) -> Result<i32, Failure
         apis = crate::guide::runtime_apis(&env);
         GuideOptions {
             cwd: Some(dir.clone()),
-            platform: Some(crate::guide::platform().into()),
+            platform: Some(jsrt::process::platform().into()),
             date: Some(crate::guide::utc_date()),
             allowance: None,
             resources: Some(&resources),
@@ -136,20 +136,11 @@ fn dispatch(argv: &[String], ctx: &Ctx, out: &mut dyn Write, err: &mut dyn Write
 }
 
 /// Run one of [`CLAUDE_COMMANDS`] (`argv[0]` is the command); `None` when `argv` is not one of them.
-pub fn run(
-    argv: &[String],
-    env: &RunEnv,
-    session_report: crate::mcp_server::SessionReport,
-    out: &mut dyn Write,
-    err: &mut dyn Write,
-) -> Option<i32> {
+pub fn run(argv: &[String], env: &RunEnv, out: &mut dyn Write, err: &mut dyn Write) -> Option<i32> {
     if !argv.first().is_some_and(|c| CLAUDE_COMMANDS.contains(&c.as_str())) {
         return None;
     }
-    let ctx = Ctx {
-        env: env.clone(),
-        session_report: Some(session_report),
-    };
+    let ctx = Ctx { env: env.clone() };
     Some(report(dispatch(argv, &ctx, out, err), err))
 }
 

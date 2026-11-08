@@ -149,7 +149,7 @@ impl Root {
             cwd: self.path("w"),
             home: self.path("h"),
             var: Arc::new(move |k: &str| vars.iter().find(|(n, _)| n == k).map(|(_, v)| v.clone())),
-            docs: repo().join("packages/coding-agent/docs"),
+            package: repo().join("packages/coding-agent"),
         }
     }
 
@@ -198,14 +198,7 @@ struct Server {
 impl Server {
     fn start(args: &[&str], env: RunEnv) -> Server {
         let argv: Vec<String> = args.iter().map(|a| a.to_string()).collect();
-        let (running, handlers) = start(
-            &argv,
-            &claude_root::Ctx {
-                env,
-                session_report: None,
-            },
-        )
-        .unwrap();
+        let (running, handlers) = start(&argv, &claude_root::Ctx { env }).unwrap();
         let (input, stdin) = std::io::pipe().unwrap();
         let (stdout, output) = std::io::pipe().unwrap();
         let serving = std::thread::spawn(move || {
@@ -586,10 +579,7 @@ fn print_config(root: &Root, extra: &[(&str, &str)]) -> String {
     let path = format!("{}:/usr/bin:/bin", root.path("bin").display());
     let mut vars: Vec<(&str, &str)> = vec![("PATH", &path)];
     vars.extend(extra);
-    let ctx = claude_root::Ctx {
-        env: root.env(&vars),
-        session_report: None,
-    };
+    let ctx = claude_root::Ctx { env: root.env(&vars) };
     let (mut out, mut err) = (Vec::new(), Vec::new());
     let args = ["--print-config".to_string(), "-p".into(), "hi".into()];
     assert_eq!(claude_root::launcher::run(&args, &ctx, &mut out, &mut err), Ok(0));

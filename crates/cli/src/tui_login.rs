@@ -53,49 +53,17 @@ pub fn options(env: &Env) -> session_core::stored_auth::OAuthOptions {
 
 /// `browserReach()` (utils/remote-browser.ts): `local`, `container` or `ssh`.
 pub fn browser_reach(env: &Env) -> String {
-    let set = |name: &str| (env.var)(name).is_some_and(|v| !v.trim().is_empty());
-    if set(ai::oauth_flow::OAUTH_CALLBACK_HOST_ENV) || set(ai::oauth_flow::LEGACY_OAUTH_CALLBACK_HOST_ENV) {
-        return "local".into();
-    }
-    let container = set("container")
-        || set("KUBERNETES_SERVICE_HOST")
-        || std::path::Path::new("/.dockerenv").exists()
-        || std::path::Path::new("/run/.containerenv").exists()
-        || std::fs::read_to_string("/proc/1/cgroup").is_ok_and(|cgroup| {
-            ["docker", "containerd", "kubepods", "libpod", "lxc"]
-                .iter()
-                .any(|marker| cgroup.contains(marker))
-        });
-    if container {
-        return "container".into();
-    }
-    if set("SSH_CONNECTION") || set("SSH_TTY") {
-        "ssh".into()
-    } else {
-        "local".into()
-    }
+    mcp::oauth::signin::browser_reach(&*env.var, &|path| std::path::Path::new(path).exists()).to_string()
 }
 
 /// `openBrowser`: hand the address to the desktop's opener, never waiting on it. The opener is found on the run's
 /// own PATH (`env`), not this process's: a run whose environment has no PATH (a test's) opens nothing.
-fn open_browser(env: &Env, url: &str) {
-    let name = if cfg!(target_os = "macos") { "open" } else { "xdg-open" };
-    let Some(path) = (env.var)("PATH") else {
-        return;
-    };
-    let Some(opener) = std::env::split_paths(&path)
-        .map(|dir| dir.join(name))
-        .find(|candidate| candidate.is_file())
-    else {
-        return;
-    };
-    let _ = std::process::Command::new(opener)
-        .arg(url)
-        .env("PATH", &path)
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .spawn();
+pub fn open_browser(env: &Env, url: &str) {
+    mcp::gateway::browser_opener_with(
+        (env.var)("PATH"),
+        Some(env.home.display().to_string()),
+        mcp::gateway::opener_vars(&*env.var),
+    )(url)
 }
 
 type Send = Arc<dyn Fn(LaneEvent) + std::marker::Send + Sync>;

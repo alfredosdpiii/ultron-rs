@@ -32,7 +32,7 @@ fn cli_daemon_next_run_waits_for_the_next_prompt_and_queue_members_answer_like_t
     let created = connection
         .call(
             connection.server_target(),
-            "ultron.session-management",
+            protocol::names::SESSION_MANAGEMENT,
             "create",
             json!([{}]),
         )
@@ -42,7 +42,7 @@ fn cli_daemon_next_run_waits_for_the_next_prompt_and_queue_members_answer_like_t
     connection
         .call(
             connection.server_target(),
-            "ultron.session-management",
+            protocol::names::SESSION_MANAGEMENT,
             "attach",
             json!([id]),
         )
@@ -53,7 +53,12 @@ fn cli_daemon_next_run_waits_for_the_next_prompt_and_queue_members_answer_like_t
     let session = connection.session_target().unwrap();
     let controller = |member: &str, request: Value| {
         connection
-            .call(session.clone(), "ultron.agent-controller", member, json!([request]))
+            .call(
+                session.clone(),
+                protocol::names::AGENT_CONTROLLER,
+                member,
+                json!([request]),
+            )
             .unwrap()
             .unwrap()
     };
@@ -73,7 +78,12 @@ fn cli_daemon_next_run_waits_for_the_next_prompt_and_queue_members_answer_like_t
     }
     // Nothing runs for it.
     let state = connection
-        .call(session.clone(), "ultron.session-ops", "op", json!([{"op": "state"}]))
+        .call(
+            session.clone(),
+            protocol::names::SESSION_OPS,
+            "op",
+            json!([{"op": "state"}]),
+        )
         .unwrap()
         .unwrap();
     assert_eq!(state["pendingMessageCount"], 1, "{state}");

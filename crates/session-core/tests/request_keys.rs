@@ -169,7 +169,7 @@ fn session(
         cwd: cwd.clone(),
         home: root.clone(),
         var: Arc::new(move |key| all.iter().rev().find(|(k, _)| k == key).map(|(_, v)| v.clone())),
-        docs: config::paths::normalize(&Path::new(env!("CARGO_MANIFEST_DIR")).join("../../packages/coding-agent/docs")),
+        package: config::paths::normalize(&Path::new(env!("CARGO_MANIFEST_DIR")).join("../../packages/coding-agent")),
     };
     let sessions = agent_dir.join("experimental").join("sessions");
     let repo = session_journal::SessionRepo::new(&sessions, session_journal::SystemClock::shared());
@@ -260,7 +260,7 @@ fn private_env(dir: &Path, vars: &[(&str, &str)]) -> RunEnv {
         cwd: dir.to_path_buf(),
         home: dir.join("home"),
         var: Arc::new(move |k| map.get(k).cloned()),
-        docs: dir.join("docs"),
+        package: dir.to_path_buf(),
     }
 }
 

@@ -5,8 +5,8 @@
 //! The report is a `serde_json::Value` in the TypeScript field order: `ultron usage --json` prints it and the text
 //! renderer reads it.
 
-use super::log::{EntryKind, LogEntry, LogUsage, SessionLog, log_usage, record};
-use super::stats::{CELL_APIS, Cells, Stats, parse_session_stats};
+use crate::log::{EntryKind, LogEntry, LogUsage, SessionLog, log_usage, record};
+use crate::stats::{CELL_APIS, Cells, Stats, parse_session_stats};
 use delegation::lane_names::{LaneOwner, child_lane, frame_lane, parse_lane};
 use indexmap::{IndexMap, IndexSet};
 use serde_json::{Map, Value, json};

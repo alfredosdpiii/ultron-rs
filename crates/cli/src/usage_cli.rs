@@ -2,16 +2,12 @@
 //! file, or a table of the most recent sessions. It only reads session files: no model call, no server, nothing
 //! written.
 
-pub mod log;
-pub mod report;
-pub mod stats;
-pub mod text;
-
 use crate::Env;
 use jsrt::localtime::Zone;
-use log::{LogError, read_session_header, read_session_log};
 use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
+use usage::log::{LogError, read_session_header, read_session_log};
+use usage::{report, text};
 
 pub const SESSION_REPORT_LIST_SCHEMA: &str = "ultron.session-report-list/1";
 

@@ -12,6 +12,12 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
 
+/// The environment that keeps a TUI test's screen still: no automatic session names, no startup splash.
+pub const QUIET: [(&str, &str); 2] = [
+    (session_core::core::AUTO_NAME_ENV, "off"),
+    (cli::interactive::SPLASH_ENV, "off"),
+];
+
 /// A scripted reply: SSE chunks, optionally held after `hold_after` chunks until released.
 #[derive(Clone)]
 pub struct Reply {

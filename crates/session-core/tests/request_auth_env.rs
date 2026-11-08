@@ -46,7 +46,7 @@ fn case(spec: &Value) -> Case {
         cwd: tmp.path().to_path_buf(),
         home: tmp.path().join("home"),
         var: Arc::new(move |k| map.get(k).cloned()),
-        docs: tmp.path().join("docs"),
+        package: tmp.path().to_path_buf(),
     };
     Case {
         spec: spec.clone(),

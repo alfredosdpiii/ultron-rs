@@ -289,7 +289,7 @@ mod tests {
             cwd: PathBuf::from("/nonexistent-cwd"),
             home: PathBuf::from("/nonexistent-home"),
             var: Arc::new(move |key| vars.iter().find(|(k, _)| k == key).map(|(_, v)| v.clone())),
-            docs: PathBuf::new(),
+            package: PathBuf::new(),
         }
     }
 

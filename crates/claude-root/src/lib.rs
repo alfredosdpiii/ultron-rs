@@ -32,7 +32,7 @@ pub mod unavailable;
 pub mod worker_root;
 
 use session_core::RunEnv;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 /// `<model>` of a `claude-code/<model>` reference.
 pub(crate) fn claude_code_id(model: &str) -> Option<&str> {
@@ -48,19 +48,16 @@ pub(crate) fn claude_code_ref(id: &str) -> String {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct UsageError(pub String);
 
-/// What a command sees: the process environment and locations, and what the CLI (which owns the session report)
-/// provides.
+/// What a command sees: the process environment and locations.
 pub struct Ctx {
     pub env: RunEnv,
-    /// Answers `ultron mcp`'s `usage.report` inspections; `None`: the report is not available.
-    pub session_report: Option<mcp_server::SessionReport>,
 }
 
 impl Ctx {
     /// The bundled skills directory (`<package>/skills`), unless `ULTRON_BUNDLED_SKILLS` turns it off.
     pub fn bundled_skills(&self) -> Option<PathBuf> {
         guide::bundled_skills_enabled((self.env.var)(session_core::session_resources::BUNDLED_SKILLS_ENV).as_deref())
-            .then(|| config::paths::normalize(&self.env.docs.join("../skills")))
+            .then(|| self.env.skills())
     }
 }
 
@@ -86,17 +83,4 @@ pub fn temp_dir(prefix: &str, var: &dyn Fn(&str) -> Option<String>) -> Result<Pa
         }
     }
     Err(format!("could not create a temp directory in {}", base.display()))
-}
-
-/// Write `content` to a new owner-only file.
-pub fn write_private(path: &Path, content: &str) -> std::io::Result<()> {
-    use std::io::Write;
-    use std::os::unix::fs::OpenOptionsExt;
-    let mut file = std::fs::OpenOptions::new()
-        .write(true)
-        .create(true)
-        .truncate(true)
-        .mode(0o600)
-        .open(path)?;
-    file.write_all(content.as_bytes())
 }

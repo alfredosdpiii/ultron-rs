@@ -49,7 +49,7 @@ fn case_env(case: &Value, root: &Path) -> cli::Env {
         cwd: root.to_path_buf(),
         home: root.to_path_buf(),
         var: Arc::new(move |k| vars.get(k).cloned()),
-        docs: root.join("docs"),
+        package: root.to_path_buf(),
     }
 }
 

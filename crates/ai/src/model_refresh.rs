@@ -36,17 +36,7 @@ pub const DEFAULT_CATALOG_BASE_URL: &str = "https://pi.dev";
 /// `getPiUserAgent(VERSION)`, the user agent of management requests: `pi/<version> (<platform>; <runtime>; <arch>)`
 /// with Node's platform and arch names. The runtime is `rust` (TypeScript reports `node/<version>`).
 pub fn management_user_agent(version: &str) -> String {
-    let platform = match std::env::consts::OS {
-        "macos" => "darwin",
-        "windows" => "win32",
-        other => other,
-    };
-    let arch = match std::env::consts::ARCH {
-        "x86_64" => "x64",
-        "aarch64" => "arm64",
-        "x86" => "ia32",
-        other => other,
-    };
+    let (platform, arch) = (jsrt::process::platform(), jsrt::process::arch());
     format!("pi/{version} ({platform}; rust; {arch})")
 }
 

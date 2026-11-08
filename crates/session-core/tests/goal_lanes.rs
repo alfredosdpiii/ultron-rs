@@ -61,7 +61,7 @@ fn session_core_schedules_and_goal_reach_every_lane_and_the_goal_admits_only_the
         cwd,
         home,
         var: Arc::new(move |key| vars.iter().find(|(k, _)| k == key).map(|(_, v)| v.clone())),
-        docs: config::paths::normalize(&Path::new(env!("CARGO_MANIFEST_DIR")).join("../../packages/coding-agent/docs")),
+        package: config::paths::normalize(&Path::new(env!("CARGO_MANIFEST_DIR")).join("../../packages/coding-agent")),
     };
     let runtime = Runtime::new(&env, "print", root.join("sessions"), Services::default()).unwrap();
     let model = ai::models::builtin_model("anthropic", "claude-sonnet-4-5")

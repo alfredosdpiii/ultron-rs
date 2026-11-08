@@ -5,6 +5,7 @@
 pub mod lost;
 pub mod radius;
 pub mod runtime;
+pub mod session;
 
 use std::collections::VecDeque;
 use std::fmt;

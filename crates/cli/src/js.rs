@@ -1,15 +1,5 @@
-//! JavaScript semantics the ported subcommands print with that `jsrt` does not hold: `padEnd` / `padStart` in UTF-16
-//! code units, and `String.prototype.replace` with a string pattern.
-
-/// `text.padEnd(width)`.
-pub fn pad_end(text: &str, width: usize) -> String {
-    format!("{text}{}", " ".repeat(width.saturating_sub(jsrt::utf16::len(text))))
-}
-
-/// `text.padStart(width)`.
-pub fn pad_start(text: &str, width: usize) -> String {
-    format!("{}{text}", " ".repeat(width.saturating_sub(jsrt::utf16::len(text))))
-}
+//! JavaScript semantics the ported subcommands print with that `jsrt` does not hold: `String.prototype.replace` with a
+//! string pattern.
 
 /// `haystack.replace(pattern, replacement)` with a string pattern: the first occurrence only, and the replacement's
 /// `$$`, `$&`, `` $` `` and `$'` patterns expanded.

@@ -195,17 +195,7 @@ pub fn adjust_max_tokens_for_thinking(
 
 /// `pi (<platform> <release>; <arch>)`, with Node's platform and arch names.
 pub fn pi_user_agent() -> String {
-    let platform = match std::env::consts::OS {
-        "macos" => "darwin",
-        "windows" => "win32",
-        other => other,
-    };
-    let arch = match std::env::consts::ARCH {
-        "x86_64" => "x64",
-        "aarch64" => "arm64",
-        "x86" => "ia32",
-        other => other,
-    };
+    let (platform, arch) = (jsrt::process::platform(), jsrt::process::arch());
     let release = std::fs::read_to_string("/proc/sys/kernel/osrelease")
         .map(|r| r.trim().to_string())
         .unwrap_or_default();

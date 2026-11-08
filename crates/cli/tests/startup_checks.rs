@@ -15,7 +15,7 @@ fn env_in(root: &Path) -> Env {
         cwd: root.join("cwd"),
         home: root.join("home"),
         var: Arc::new(move |k| (k == config::paths::ENV_AGENT_DIR).then(|| agent.clone())),
-        docs: root.join("pkg/docs"),
+        package: root.join("pkg"),
     }
 }
 

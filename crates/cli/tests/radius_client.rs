@@ -330,7 +330,7 @@ fn env_without_experimental() -> cli::Env {
     cli::Env {
         cwd: PathBuf::from("/"),
         var: std::sync::Arc::new(|_| None),
-        docs: PathBuf::new(),
+        package: PathBuf::new(),
         home: PathBuf::new(),
     }
 }

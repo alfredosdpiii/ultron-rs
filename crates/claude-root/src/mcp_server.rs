@@ -405,7 +405,7 @@ fn open_runtime(
             let _ = session.set_name(Some(&name));
             let metadata = session.metadata().clone();
             if let Some(id) = claude_session_id.filter(|_| !args.child) {
-                crate::write_private(
+                config::paths::write_private(
                     &session_map_path(&agent_dir, id),
                     &format!("{}\n", jsrt::json::stringify(&metadata_json(&metadata))),
                 )
@@ -725,7 +725,6 @@ struct Startup {
 pub struct Server {
     args: McpServerArgs,
     env: RunEnv,
-    session_report: Option<SessionReport>,
     name: String,
     record: ServerRecord,
     resolved: Resolved,
@@ -825,11 +824,11 @@ impl Server {
                     // The worker answers these itself (session-worker.ts `inspect`).
                     "rlm.pool" => Ok(stack.pool_stats()),
                     "async.pending" => Ok(crate::external_lane::async_pending(stack, &opened.sink)),
+                    // The report `/usage` shows: a subscription login's costs are notional.
                     "usage.report" => {
-                        let report = self.session_report.ok_or("the session report is not available")?;
                         // The counters still in memory go to the session file first.
                         stack.stats.flush();
-                        report(&opened.session_path, &self.env)
+                        usage::session_report(&opened.session_path, &self.env)
                     }
                     _ => stack
                         .cell_handler(MAIN, None)
@@ -1223,10 +1222,6 @@ impl McpHandlers for Handlers {
     }
 }
 
-/// Builds the session report (`usage.report`) from a session file, in the server's environment (which logins are
-/// subscriptions); the CLI, which owns the report, passes it in ([`Ctx::session_report`]).
-pub type SessionReport = fn(&Path, &RunEnv) -> Result<Value, String>;
-
 /// What a running server holds: shut down once, by Claude Code disconnecting or by a signal.
 pub struct Running {
     pub server: Arc<Server>,
@@ -1366,7 +1361,6 @@ pub fn start(argv: &[String], ctx: &Ctx) -> Result<(Arc<Running>, Arc<Handlers>)
         hints: kernel_apis::cell_hints::hints_enabled(var(kernel_apis::cell_hints::HINTS_ENV).as_deref()),
         args: args.clone(),
         env: env.clone(),
-        session_report: ctx.session_report,
         name,
         record: record.clone(),
         resolved: resolved.clone(),
@@ -1476,7 +1470,6 @@ fn claude_subagents(
     };
     let ctx = crate::Ctx {
         env: server.env.clone(),
-        session_report: server.session_report,
     };
     let bundled = ctx.bundled_skills();
     // Subagents get the context files, skills, SYSTEM.md and APPEND_SYSTEM.md native Ultron loads here, read once,
@@ -1499,7 +1492,7 @@ fn claude_subagents(
                     Audience::ClaudeChild,
                     &GuideOptions {
                         cwd: Some(cwd.clone()),
-                        platform: Some(crate::guide::platform().into()),
+                        platform: Some(jsrt::process::platform().into()),
                         date: Some(crate::guide::utc_date()),
                         allowance: Some(u64::from(run.allowance)),
                         resources: Some(&resources),
@@ -1596,7 +1589,7 @@ mod tests {
             cwd: root.to_path_buf(),
             home: root.to_path_buf(),
             var: Arc::new(move |k: &str| vars.iter().find(|(n, _)| n == k).map(|(_, v)| v.clone())),
-            docs: root.join("docs"),
+            package: root.to_path_buf(),
         }
     }
 

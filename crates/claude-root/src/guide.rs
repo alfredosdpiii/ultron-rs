@@ -393,15 +393,6 @@ pub fn runtime_guide(audience: Audience, options: &GuideOptions, hints: bool) ->
     }
 }
 
-/// `process.platform` of this build.
-pub fn platform() -> &'static str {
-    match std::env::consts::OS {
-        "macos" => "darwin",
-        "windows" => "win32",
-        other => other,
-    }
-}
-
 /// Today's date in UTC (`new Date().toISOString().slice(0, 10)`).
 pub fn utc_date() -> String {
     jsrt::date::iso_string(jsrt::date::now_ms())[..10].to_string()

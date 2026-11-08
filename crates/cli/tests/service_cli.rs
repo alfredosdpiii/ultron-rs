@@ -75,7 +75,10 @@ fn cli_service_installs_reports_restarts_and_removes_the_durable_unit_with_the_i
     let path = home.root.join("xdg/systemd/user").join(&name);
     let unit = std::fs::read_to_string(&path).unwrap();
     assert!(out.starts_with(&format!("Wrote {}:\n{unit}", path.display())), "{out}");
-    let exe = env!("CARGO_BIN_EXE_ultron");
+    // The unit names `current_exe()`, which is absolute and resolved, as `CARGO_BIN_EXE_*` under a relative
+    // `CARGO_TARGET_DIR` is not.
+    let exe = std::fs::canonicalize(env!("CARGO_BIN_EXE_ultron")).unwrap();
+    let exe = exe.display();
     assert_eq!(
         unit,
         format!(
@@ -169,7 +172,7 @@ fn cli_service_finds_systemctl_and_the_unit_dir_only_through_the_injected_env() 
         cwd: home.cwd(),
         home: home.root.join("injected-home"),
         var: std::sync::Arc::new(move |key| vars.iter().find(|(k, _)| *k == key).map(|(_, v)| v.clone())),
-        docs: home.root.join("docs"),
+        package: home.root.to_path_buf(),
     };
     let fake = env(vec![("PATH", format!("{}:{}", empty.display(), bin.display()))]);
     assert_eq!(cli::service_cli::systemctl(&fake), Some(bin.join("systemctl")));

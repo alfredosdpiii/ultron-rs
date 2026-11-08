@@ -677,3 +677,86 @@ pub fn capabilities(
     }
     caps
 }
+
+/// [`capabilities`] with the tmux probe asked only when its answer decides something: inside tmux (`TMUX`, or a
+/// `TERM` starting with tmux) with neither `PI_HYPERLINKS` nor the hyperlinks override set (`detectCapabilities`).
+pub fn probed_capabilities(
+    env: &dyn Fn(&str) -> Option<String>,
+    overrides: &CapabilityOverrides,
+    tmux_probe: &dyn Fn() -> bool,
+) -> Capabilities {
+    let in_tmux =
+        env("TMUX").is_some_and(|v| !v.is_empty()) || env("TERM").is_some_and(|t| t.to_lowercase().starts_with("tmux"));
+    let decided = matches!(env(HYPERLINKS_ENV).as_deref(), Some("1" | "0")) || overrides.hyperlinks.is_some();
+    capabilities(env, false, in_tmux && !decided && tmux_probe(), overrides)
+}
+
+/// What `probeTmuxHyperlinks` reads: whether `client_termfeatures` lists `hyperlinks`.
+pub fn termfeatures_list_hyperlinks(termfeatures: &str) -> bool {
+    termfeatures.split(',').any(|feature| feature.trim() == "hyperlinks")
+}
+
+/// The variables the tmux probe passes on (the client finds its server through `TMUX` / `TMUX_TMPDIR`).
+const TMUX_PROBE_ENV: [&str; 8] = [
+    "PATH",
+    "HOME",
+    "TMUX",
+    "TMUX_TMPDIR",
+    "TMPDIR",
+    "TERM",
+    "LANG",
+    "LC_ALL",
+];
+/// `execSync(..., { timeout: 250 })`.
+pub const TMUX_PROBE_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(250);
+
+/// `probeTmuxHyperlinks`: `tmux display-message -p '#{client_termfeatures}'` (tmux from the run's PATH only, with
+/// a cleared environment but the variables above), at most `timeout`; any failure is `false`.
+pub fn tmux_forwards_hyperlinks(env: &dyn Fn(&str) -> Option<String>, timeout: std::time::Duration) -> bool {
+    use std::process::{Command, Stdio};
+    let Some(path) = env("PATH") else {
+        return false;
+    };
+    let Some(tmux) = std::env::split_paths(&path)
+        .map(|dir| dir.join("tmux"))
+        .find(|p| p.is_file())
+    else {
+        return false;
+    };
+    let mut command = Command::new(tmux);
+    command
+        .args(["display-message", "-p", "#{client_termfeatures}"])
+        .env_clear()
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null());
+    for name in TMUX_PROBE_ENV {
+        if let Some(value) = env(name) {
+            command.env(name, value);
+        }
+    }
+    let Ok(mut child) = command.spawn() else {
+        return false;
+    };
+    let Some(mut stdout) = child.stdout.take() else {
+        let _ = child.kill();
+        let _ = child.wait();
+        return false;
+    };
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let mut text = String::new();
+        let _ = std::io::Read::read_to_string(&mut stdout, &mut text);
+        let _ = tx.send(text);
+    });
+    let Ok(text) = rx.recv_timeout(timeout) else {
+        // Our own child only.
+        let _ = child.kill();
+        let _ = child.wait();
+        return false;
+    };
+    match child.wait() {
+        Ok(status) if status.success() => termfeatures_list_hyperlinks(&text),
+        _ => false,
+    }
+}

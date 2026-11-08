@@ -17,7 +17,7 @@ fn run(args: &[&str], cwd: &Path) -> (i32, String, String) {
             config::env::OFFLINE_ENV => Some("1".into()),
             _ => None,
         }),
-        docs: cwd.join("docs"),
+        package: cwd.to_path_buf(),
     };
     let argv: Vec<String> = args.iter().map(|a| a.to_string()).collect();
     let (mut out, mut err) = (Vec::new(), Vec::new());

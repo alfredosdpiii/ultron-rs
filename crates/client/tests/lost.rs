@@ -53,7 +53,7 @@ fn client_lost_recognizes_transport_and_worker_loss_only() {
         .is_none()
     );
     assert_eq!(
-        message(&server("model_not_found", "Model not found: test/none")),
+        message(server("model_not_found", "Model not found: test/none")),
         "Model not found: test/none"
     );
     for status in [
@@ -77,7 +77,7 @@ fn client_lost_recognizes_transport_and_worker_loss_only() {
 
 #[test]
 fn client_lost_clear_message_is_not_wrapped_twice() {
-    let once = message(&CallError::Disconnected("Unix connection is closed".into()));
-    assert_eq!(message(&CallError::Disconnected(once.clone())), once);
+    let once = message(CallError::Disconnected("Unix connection is closed".into()));
+    assert_eq!(message(CallError::Disconnected(once.clone())), once);
     assert_eq!(friendly_status(&format!("Error: {once}")), format!("Error: {once}"));
 }

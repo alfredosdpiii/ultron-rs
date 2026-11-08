@@ -26,7 +26,7 @@ fn env_for(dir: &Path) -> cli::Env {
             "HOME" => Some(home.display().to_string()),
             _ => None,
         }),
-        docs: PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../packages/coding-agent/docs"),
+        package: PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../packages/coding-agent"),
     }
 }
 

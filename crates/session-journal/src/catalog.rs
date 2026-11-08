@@ -54,6 +54,42 @@ pub fn first_line(path: &Path) -> std::io::Result<String> {
     Ok(String::from_utf8_lossy(&line).into_owned())
 }
 
+/// What a file's first line says it is, as the selectors and readers that take any file check it (loosely: a
+/// native header is any object with `kind: "header"`, a Pi header any object with `type: "session"`).
+pub enum HeaderLine {
+    Native(Map<String, Value>),
+    Pi(Map<String, Value>),
+    /// JSON, but neither.
+    Other,
+    NotJson,
+}
+
+impl HeaderLine {
+    pub fn parse(line: &str) -> HeaderLine {
+        match serde_json::from_str::<Value>(line) {
+            Err(_) => HeaderLine::NotJson,
+            Ok(Value::Object(map)) if map.get("kind").and_then(Value::as_str) == Some("header") => {
+                HeaderLine::Native(map)
+            }
+            Ok(Value::Object(map)) if map.get("type").and_then(Value::as_str) == Some("session") => HeaderLine::Pi(map),
+            Ok(_) => HeaderLine::Other,
+        }
+    }
+
+    /// The first line of `path`.
+    pub fn read(path: &Path) -> std::io::Result<HeaderLine> {
+        first_line(path).map(|line| HeaderLine::parse(&line))
+    }
+
+    /// The header of a native session file.
+    pub fn native(self) -> Option<Map<String, Value>> {
+        match self {
+            HeaderLine::Native(header) => Some(header),
+            _ => None,
+        }
+    }
+}
+
 pub(crate) fn metadata_from_header(header: &Map<String, Value>, path: &Path, modified_at: f64) -> Metadata {
     Metadata {
         id: codec::header_str(header, "id").unwrap_or("").into(),
@@ -137,10 +173,17 @@ pub fn list(root: &Path, cwd: Option<&str>) -> Vec<Metadata> {
     found
 }
 
-/// The session `id` under `root`, if one file has it.
-pub fn find(root: &Path, id: &str) -> Option<Metadata> {
-    session_files(root)
+/// The session `id` under `root` (`resolveSession` of the server): none, or an error when more than one file has it.
+pub fn find(root: &Path, id: &str) -> Result<Option<Metadata>, String> {
+    let files = session_files(root);
+    let mut found = files
         .iter()
         .filter_map(|path| read_metadata(path))
-        .find(|metadata| metadata.id == id)
+        .filter(|metadata| metadata.id == id);
+    match (found.next(), found.next()) {
+        (Some(_), Some(_)) => Err(format!(
+            "Session {id} is ambiguous: more than one session file has this id"
+        )),
+        (only, _) => Ok(only),
+    }
 }

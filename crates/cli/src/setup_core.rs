@@ -116,107 +116,29 @@ pub struct LokiAnalyzerCheck {
     pub hint: &'static str,
 }
 
-/// `LOKI_ANALYZERS`: name, language, command, args, hint.
-pub const LOKI_ANALYZERS: [(&str, &str, &str, &[&str], &str); 8] = [
-    (
-        "ruff",
-        "Python",
-        "ruff",
-        &["--version"],
-        "uv tool install ruff (or pipx install ruff)",
-    ),
-    (
-        "mypy",
-        "Python types",
-        "mypy",
-        &["--version"],
-        "uv tool install mypy (or pipx install mypy)",
-    ),
-    (
-        "tsc",
-        "TypeScript types",
-        "tsc",
-        &["--version"],
-        "npm i -D typescript in the project (node_modules/.bin/tsc is used when present)",
-    ),
-    (
-        "oxlint",
-        "JavaScript/TypeScript",
-        "oxlint",
-        &["--version"],
-        "npm i -D oxlint @oxlint/plugins in the project (node_modules/.bin/oxlint is used when present)",
-    ),
-    (
-        "golangci-lint",
-        "Go",
-        "golangci-lint",
-        &["--version"],
-        "https://golangci-lint.run/welcome/install/",
-    ),
-    (
-        "clippy",
-        "Rust",
-        "cargo",
-        &["clippy", "--version"],
-        "rustup component add clippy",
-    ),
-    (
-        "credo",
-        "Elixir",
-        "mix",
-        &["--version"],
-        "install Elixir, then add {:credo, only: [:dev, :test]} to the project's mix.exs deps",
-    ),
-    (
-        "sobelow",
-        "Phoenix security",
-        "mix",
-        &["--version"],
-        "install Elixir, then add {:sobelow, only: [:dev, :test]} to the project's mix.exs deps",
-    ),
-];
-
 /// Which of Loki's analyzers are on PATH (one probe per distinct command line).
 pub fn check_loki_analyzers(probe: &ProbeCommand) -> Vec<LokiAnalyzerCheck> {
     let mut cache: Vec<(String, bool)> = Vec::new();
-    LOKI_ANALYZERS
+    loki::analyzers::ANALYZERS
         .iter()
-        .map(|(name, language, command, args, hint)| {
-            let key = format!("{command} {}", args.join(" "));
+        .map(|analyzer| {
+            let key = format!("{} {}", analyzer.command, analyzer.args.join(" "));
             let found = match cache.iter().find(|(k, _)| *k == key) {
                 Some((_, found)) => *found,
                 None => {
-                    let found = probe(command, args).is_some();
+                    let found = probe(analyzer.command, analyzer.args).is_some();
                     cache.push((key, found));
                     found
                 }
             };
             LokiAnalyzerCheck {
-                name,
-                language,
+                name: analyzer.name,
+                language: analyzer.language,
                 found,
-                hint,
+                hint: analyzer.install_hint,
             }
         })
         .collect()
-}
-
-/// `bundledLokiVersion` of the pinned engine this build carries (its VERSION.json): `<version> (<commit 12>)`.
-pub fn bundled_loki_version_from(pin: &str) -> Option<String> {
-    let pin: Value = serde_json::from_str(pin).ok()?;
-    let version = pin["version"].as_str()?;
-    let commit = pin["source"]["commit"]
-        .as_str()
-        .map(|c| format!(" ({})", c.chars().take(12).collect::<String>()))
-        .unwrap_or_default();
-    Some(format!("{version}{commit}"))
-}
-
-/// The Loki engine version bundled with this build.
-pub fn bundled_loki_version() -> Option<String> {
-    bundled_loki_version_from(include_str!(
-        "../../../packages/coding-agent/src/ultron/loki-engine/VERSION.json"
-    ))
 }
 
 // ----------------------------------------------------------------------------------------------------- secret files
@@ -252,104 +174,15 @@ pub fn validate_provider_id(value: &str) -> Option<String> {
     (!ok).then(|| "Use lowercase letters, digits, '.', '_' or '-' (e.g. my-proxy)".into())
 }
 
-/// A WHATWG URL's parts as `new URL()` gives them, for the cases setup needs: the scheme (lowercase), and for
-/// http(s) the hostname (lowercase) and explicit port. `None` when `new URL()` throws.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct UrlParts {
-    pub scheme: String,
-    pub host: String,
-    pub port: Option<u16>,
-    /// Path and query (`/` when empty), for requests.
-    pub path: String,
-}
-
-pub fn parse_url(value: &str) -> Option<UrlParts> {
-    let value = value.trim_matches(|c: char| c <= ' ');
-    let colon = value.find(':')?;
-    let scheme = &value[..colon];
-    let mut chars = scheme.chars();
-    if !chars.next().is_some_and(|c| c.is_ascii_alphabetic())
-        || !chars.all(|c| c.is_ascii_alphanumeric() || matches!(c, '+' | '-' | '.'))
-    {
-        return None;
-    }
-    let scheme = scheme.to_ascii_lowercase();
-    let rest = &value[colon + 1..];
-    if !matches!(scheme.as_str(), "http" | "https" | "ws" | "wss" | "ftp" | "file") {
-        // A non-special scheme: any text after it is an opaque path.
-        return Some(UrlParts {
-            scheme,
-            host: String::new(),
-            port: None,
-            path: rest.to_string(),
-        });
-    }
-    let rest = rest.trim_start_matches(['/', '\\']);
-    let end = rest.find(['/', '\\', '?', '#']).unwrap_or(rest.len());
-    let (authority, path) = (&rest[..end], &rest[end..]);
-    let authority = authority.rsplit_once('@').map_or(authority, |(_, host)| host);
-    let (host, port) = if let Some(stripped) = authority.strip_prefix('[') {
-        let close = stripped.find(']')?;
-        let host = &authority[..close + 2];
-        let after = &stripped[close + 1..];
-        (host, after.strip_prefix(':'))
-    } else {
-        match authority.rsplit_once(':') {
-            Some((host, port)) => (host, Some(port)),
-            None => (authority, None),
-        }
-    };
-    if scheme == "file" {
-        return Some(UrlParts {
-            scheme,
-            host: host.to_ascii_lowercase(),
-            port: None,
-            path: path.to_string(),
-        });
-    }
-    if host.is_empty() || host.chars().any(|c| c <= ' ' || "<>^|%".contains(c)) {
-        return None;
-    }
-    let port = match port {
-        None | Some("") => None,
-        Some(p) => {
-            if !p.chars().all(|c| c.is_ascii_digit()) {
-                return None;
-            }
-            let n: u32 = p.parse().ok()?;
-            if n > 65535 {
-                return None;
-            }
-            let default = match scheme.as_str() {
-                "http" | "ws" => 80,
-                "https" | "wss" => 443,
-                _ => 21,
-            };
-            (n != default).then_some(n as u16)
-        }
-    };
-    let path = path.split('#').next().unwrap_or("");
-    Some(UrlParts {
-        scheme,
-        host: host.to_ascii_lowercase(),
-        port,
-        path: if path.is_empty() || path.starts_with('?') {
-            format!("/{path}")
-        } else {
-            path.replace('\\', "/")
-        },
-    })
-}
-
 /// `validateBaseUrl`.
 pub fn validate_base_url(value: &str) -> Option<String> {
     if value.split("://").count() > 2 {
         return Some("That looks like two URLs run together; enter one".into());
     }
-    match parse_url(value.trim()) {
-        Some(url) if url.scheme == "http" || url.scheme == "https" => None,
-        Some(_) => Some("The URL must start with http:// or https://".into()),
-        None => Some("Not a valid URL (e.g. http://localhost:11434/v1)".into()),
+    match url::Url::parse(value.trim()) {
+        Ok(url) if url.scheme() == "http" || url.scheme() == "https" => None,
+        Ok(_) => Some("The URL must start with http:// or https://".into()),
+        Err(_) => Some("Not a valid URL (e.g. http://localhost:11434/v1)".into()),
     }
 }
 
@@ -459,20 +292,13 @@ pub struct FetchResponse {
 /// A GET; `Err` is why no response came, as `describeFetchError` words it.
 pub type Fetch = Arc<dyn Fn(&FetchRequest) -> Result<FetchResponse, String> + Send + Sync>;
 
-/// The real fetch without proxies: plain HTTP over a socket (so a refused connection reads as Node's errno does),
-/// HTTPS through the provider transport.
-pub fn http_fetch() -> Fetch {
-    http_fetch_with(ai::net::ProxyEnv::default())
-}
-
-/// [`http_fetch`] with the run's proxies (Pi's `EnvHttpProxyAgent`): a URL they proxy goes through the proxy.
+/// The real fetch with the run's proxies (Pi's `EnvHttpProxyAgent`): plain HTTP over a socket (so a refused
+/// connection reads as Node's errno does), HTTPS and a URL the proxies take through the provider transport.
 pub fn http_fetch_with(proxy: ai::net::ProxyEnv) -> Fetch {
     Arc::new(move |request: &FetchRequest| {
-        let url = parse_url(&request.url).ok_or_else(|| format!("Failed to parse URL from {}", request.url))?;
-        let proxied = reqwest::Url::parse(&request.url)
-            .ok()
-            .is_some_and(|parsed| proxy.proxy_for(&parsed).is_some());
-        match url.scheme.as_str() {
+        let url = url::Url::parse(&request.url).map_err(|_| format!("Failed to parse URL from {}", request.url))?;
+        let proxied = proxy.proxy_for(&url).is_some();
+        match url.scheme() {
             "http" if !proxied => plain_get(&url, request),
             "http" | "https" => transport_get(request, &proxy),
             _ => Err("fetch failed".into()),
@@ -480,11 +306,12 @@ pub fn http_fetch_with(proxy: ai::net::ProxyEnv) -> Fetch {
     })
 }
 
-fn plain_get(url: &UrlParts, request: &FetchRequest) -> Result<FetchResponse, String> {
+fn plain_get(url: &url::Url, request: &FetchRequest) -> Result<FetchResponse, String> {
     use std::net::ToSocketAddrs;
     let deadline = Instant::now() + request.timeout;
-    let host = url.host.trim_start_matches('[').trim_end_matches(']');
-    let port = url.port.unwrap_or(80);
+    let host_name = url.host_str().unwrap_or_default();
+    let host = host_name.trim_start_matches('[').trim_end_matches(']');
+    let port = url.port().unwrap_or(80);
     let addrs: Vec<_> = (host, port)
         .to_socket_addrs()
         .map_err(|_| "host not found".to_string())?
@@ -518,13 +345,13 @@ fn plain_get(url: &UrlParts, request: &FetchRequest) -> Result<FetchResponse, St
         .max(Duration::from_millis(1));
     let _ = stream.set_read_timeout(Some(left));
     let _ = stream.set_write_timeout(Some(left));
-    let host_header = match url.port {
-        Some(port) => format!("{}:{port}", url.host),
-        None => url.host.clone(),
+    let host_header = match url.port() {
+        Some(port) => format!("{host_name}:{port}"),
+        None => host_name.to_string(),
     };
     let mut head = format!(
         "GET {} HTTP/1.1\r\nhost: {host_header}\r\nconnection: close\r\naccept: */*\r\n",
-        url.path
+        &url[url::Position::BeforePath..url::Position::AfterQuery]
     );
     for (name, value) in &request.headers {
         head.push_str(&format!("{name}: {value}\r\n"));
@@ -767,15 +594,18 @@ pub fn format_command(command: &str, args: &[String]) -> String {
 
 /// `hindsightPort`: the URL's port, else its scheme's default; 8888 for a URL that does not parse.
 pub fn hindsight_port(url: &str) -> u16 {
-    match parse_url(url) {
-        Some(parts) => parts.port.unwrap_or(if parts.scheme == "https" { 443 } else { 80 }),
-        None => 8888,
+    match url::Url::parse(url) {
+        Ok(parsed) => parsed
+            .port()
+            .unwrap_or(if parsed.scheme() == "https" { 443 } else { 80 }),
+        Err(_) => 8888,
     }
 }
 
 /// `isLocalUrl`.
 pub fn is_local_url(url: &str) -> bool {
-    parse_url(url).is_some_and(|parts| ["localhost", "127.0.0.1", "::1", "[::1]"].contains(&parts.host.as_str()))
+    url::Url::parse(url)
+        .is_ok_and(|parsed| ["localhost", "127.0.0.1", "::1", "[::1]"].contains(&parsed.host_str().unwrap_or_default()))
 }
 
 /// `probeHindsight`: GET `<url>/health`; the reason it is not reachable.

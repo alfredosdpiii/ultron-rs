@@ -5,14 +5,14 @@
 //! working directory, and the `ultron.bug-report` entry that records it in the session.
 
 use crate::Env;
-use crate::link::Link;
+use client::session::SessionLink;
 use serde_json::{Map, Value, json};
 use session_core::core::Op;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
-use telemetry::bug_report::{BugReportBundle, BugReportFile};
+use telemetry::bug_report::BugReportBundle;
 
 /// What the user chose in the dialogs.
 #[derive(Clone, Debug, PartialEq)]
@@ -44,22 +44,6 @@ pub fn gateway_host(gateway: &str) -> String {
     }
 }
 
-/// Node's `process.platform` and `process.arch` names for this build.
-fn node_platform() -> (&'static str, &'static str) {
-    let platform = match std::env::consts::OS {
-        "macos" => "darwin",
-        "windows" => "win32",
-        other => other,
-    };
-    let arch = match std::env::consts::ARCH {
-        "x86_64" => "x64",
-        "aarch64" => "arm64",
-        "x86" => "ia32",
-        other => other,
-    };
-    (platform, arch)
-}
-
 /// The host details `collectEnvironment` reads (`os.release()`, `os.version()` from the kernel). The Rust build runs
 /// no Node: the runtime names the build.
 fn host() -> telemetry::bug_report::Host {
@@ -68,7 +52,7 @@ fn host() -> telemetry::bug_report::Host {
             .map(|s| s.trim().to_string())
             .unwrap_or_default()
     };
-    let (platform, arch) = node_platform();
+    let (platform, arch) = (jsrt::process::platform(), jsrt::process::arch());
     telemetry::bug_report::Host {
         version: crate::version(),
         runtime: "rust".into(),
@@ -285,7 +269,7 @@ pub fn provider_info(env: &Env, provider: &str, runtime_key: bool) -> telemetry:
 }
 
 /// `buildBundle`: the report of the attached session as the user chose it.
-pub fn build_bundle(link: &Link, env: &Env, request: &Request) -> Result<BugReportBundle, String> {
+pub fn build_bundle(link: &SessionLink, env: &Env, request: &Request) -> Result<BugReportBundle, String> {
     let now = jsrt::date::now_ms();
     let described = link.op(&Op::Describe)?.unwrap_or_default();
     let state = link.op(&Op::State)?.unwrap_or_default();
@@ -355,24 +339,6 @@ pub fn build_bundle(link: &Link, env: &Env, request: &Request) -> Result<BugRepo
     })
 }
 
-/// The multipart body `FormData` sends: one file part per bundle file.
-fn multipart(files: &[BugReportFile], boundary: &str) -> Vec<u8> {
-    let mut body = Vec::new();
-    for file in files {
-        body.extend_from_slice(
-            format!(
-                "--{boundary}\r\nContent-Disposition: form-data; name=\"{0}\"; filename=\"{0}\"\r\nContent-Type: {1}\r\n\r\n",
-                file.name, file.content_type
-            )
-            .as_bytes(),
-        );
-        body.extend_from_slice(file.data.as_bytes());
-        body.extend_from_slice(b"\r\n");
-    }
-    body.extend_from_slice(format!("--{boundary}--\r\n").as_bytes());
-    body
-}
-
 /// `uploadBugReport`: the bundle as multipart form data to `<gateway>/v1/bug-reports`, anonymously or as the Radius
 /// account (`token`). `Ok(None)` when `cancel` was set first (nothing more is reported).
 pub fn upload(
@@ -385,7 +351,7 @@ pub fn upload(
         .and_then(|base| base.join("/v1/bug-reports"))
         .map_err(|e| e.to_string())?;
     let boundary = format!("----ultron-bug-report-{}", jsrt::random::uuid_v4());
-    let body = multipart(&telemetry::bug_report::bug_report_files(bundle), &boundary);
+    let body = telemetry::bug_report::multipart(bundle, &boundary);
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
@@ -413,37 +379,8 @@ pub fn upload(
             answer = work => answer?,
             () = cancelled => return Ok(None),
         };
-        upload_answer(status.as_u16(), status.canonical_reason().unwrap_or(""), &text).map(Some)
+        telemetry::bug_report::upload_answer(status.as_u16(), status.canonical_reason().unwrap_or(""), &text).map(Some)
     })
-}
-
-/// What `uploadBugReport` makes of the gateway's answer: the report id, or its error.
-pub fn upload_answer(status: u16, status_text: &str, body: &str) -> Result<String, String> {
-    let json: Value = serde_json::from_str(body).unwrap_or(Value::Null);
-    let ok = (200..300).contains(&status);
-    if ok
-        && json["ok"] == true
-        && let Some(id) = json["bug_report"]["id"].as_str()
-    {
-        return Ok(id.to_string());
-    }
-    let truthy = |v: &Value| jsrt::value::truthy(Some(v));
-    let detail = (json.is_object() && !truthy(&json["ok"]))
-        .then(|| {
-            [&json["description"], &json["error"]]
-                .into_iter()
-                .find(|v| truthy(v))
-                .map(|v| v.as_str().map_or_else(|| v.to_string(), str::to_string))
-        })
-        .flatten();
-    let shown = detail.unwrap_or_else(|| {
-        if status_text.is_empty() {
-            status.to_string()
-        } else {
-            status_text.to_string()
-        }
-    });
-    Err(format!("Bug report upload failed: {shown}"))
 }
 
 /// `exportZip`'s archive: `pi-bug-report-<id>.zip` in `cwd`, stamped with the local time now.
@@ -539,7 +476,7 @@ impl Reporter {
     /// and answers through `answer` (nothing after a cancel).
     pub fn deliver(
         &self,
-        link: &Link,
+        link: &SessionLink,
         env: &Env,
         request: interactive::lane::BugReportRequest,
         op: Arc<dyn Fn(Op) -> Result<Option<Value>, String> + Send + Sync>,

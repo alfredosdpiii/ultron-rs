@@ -20,7 +20,7 @@ fn env_for(root: &std::path::Path, vars: HashMap<String, String>) -> Env {
             config::env::OFFLINE_ENV => Some("1".into()),
             other => vars.get(other).cloned(),
         }),
-        docs: PathBuf::new(),
+        package: PathBuf::new(),
     }
 }
 

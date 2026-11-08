@@ -2,10 +2,10 @@
 //! from its `ultron.assistant` entry (model, input/output/cache split, cost); the host's ledger only adds what the records
 //! lack, as a totals-only row; a session without durable records reports from the ledger as before.
 
-use cli::usage::log::read_session_log;
-use cli::usage::report::{DURABLE_CHILDREN_MODEL, build_session_report};
 use serde_json::{Value, json};
 use std::path::Path;
+use usage::log::read_session_log;
+use usage::report::{DURABLE_CHILDREN_MODEL, build_session_report};
 
 fn usage(input: u64, output: u64, cache_read: u64, cost: f64) -> Value {
     json!({"input": input, "output": output, "cacheRead": cache_read, "cacheWrite": 0,
@@ -74,7 +74,7 @@ fn models(report: &Value) -> Vec<(String, [f64; 6], f64)> {
 }
 
 #[test]
-fn cli_usage_durable_children_are_reported_per_model_with_their_split() {
+fn usage_durable_children_are_reported_per_model_with_their_split() {
     let dir = tempfile::tempdir().unwrap();
     let mut lines = root_lines();
     lines.extend([
@@ -174,7 +174,7 @@ fn cli_usage_durable_children_are_reported_per_model_with_their_split() {
 }
 
 #[test]
-fn cli_usage_ledger_turns_beyond_the_durable_records_stay_a_totals_row() {
+fn usage_ledger_turns_beyond_the_durable_records_stay_a_totals_row() {
     let dir = tempfile::tempdir().unwrap();
     let mut lines = root_lines();
     lines.extend([
@@ -216,7 +216,7 @@ fn cli_usage_ledger_turns_beyond_the_durable_records_stay_a_totals_row() {
 /// A session written before the durable records (or by a host without them): the ledger's turns beyond the
 /// transcript are its children's usage, a totals-only row as before.
 #[test]
-fn cli_usage_a_session_without_durable_records_reports_children_from_the_ledger() {
+fn usage_a_session_without_durable_records_reports_children_from_the_ledger() {
     let dir = tempfile::tempdir().unwrap();
     let mut lines = root_lines();
     lines.push(ledger(3, 15.0 + 30.0, 0.5 + 0.3));

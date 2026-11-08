@@ -3,11 +3,11 @@
 //! `#handleAttachmentState`, `#handleLocalConnectionState`), including when the session is shown again.
 
 use cli::interactive::recovery_events;
-use cli::link::{
+use client::radius::ConnectionState;
+use client::session::{
     RemoteSelection, Selected, connection_event, radius_attachment_event, radius_connection_event,
     select_remote_session,
 };
-use client::radius::ConnectionState;
 use interactive::lane::LaneEvent;
 use serde_json::json;
 

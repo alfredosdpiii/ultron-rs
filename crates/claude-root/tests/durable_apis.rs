@@ -74,7 +74,7 @@ impl Root {
             cwd: self.path("w"),
             home: self.path("h"),
             var: Arc::new(move |k: &str| vars.iter().find(|(n, _)| n == k).map(|(_, v)| v.clone())),
-            docs: repo().join("packages/coding-agent/docs"),
+            package: repo().join("packages/coding-agent"),
         }
     }
 }
@@ -103,14 +103,7 @@ impl Server {
     /// A server on `env` with exactly `argv`.
     fn launch(env: RunEnv, argv: &[&str]) -> Server {
         let argv: Vec<String> = argv.iter().map(|a| a.to_string()).collect();
-        let (running, handlers) = start(
-            &argv,
-            &claude_root::Ctx {
-                env,
-                session_report: None,
-            },
-        )
-        .unwrap();
+        let (running, handlers) = start(&argv, &claude_root::Ctx { env }).unwrap();
         let (input, stdin) = std::io::pipe().unwrap();
         let (stdout, output) = std::io::pipe().unwrap();
         let serving = std::thread::spawn(move || {

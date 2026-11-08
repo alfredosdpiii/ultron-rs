@@ -680,7 +680,7 @@ fn services(
 type LifecycleRef = Arc<Mutex<Option<Arc<Lifecycle>>>>;
 
 /// `runSessionWorkerWithHarness`: run until retirement, release or shutdown; never returns on success.
-pub fn run(args: &[String], docs: PathBuf) -> Result<(), String> {
+pub fn run(args: &[String], package: PathBuf) -> Result<(), String> {
     let [argument] = args else {
         return Err("Session worker requires one options argument".into());
     };
@@ -753,7 +753,7 @@ pub fn run(args: &[String], docs: PathBuf) -> Result<(), String> {
         Duration::from_millis(8_000),
     )
     .map_err(|e| fail(e.to_string()))?;
-    let env = RunEnv::process(PathBuf::from(metadata["cwd"].as_str().unwrap_or_default()), docs);
+    let env = RunEnv::process(PathBuf::from(metadata["cwd"].as_str().unwrap_or_default()), package);
     let run_env = env.clone();
     let control_context = crate::session_control::context(&env, &path);
     let session_metadata = session_journal::catalog::read_metadata(&path)

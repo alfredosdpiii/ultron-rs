@@ -22,7 +22,7 @@ fn env(dir: &Path, credential: serde_json::Value) -> RunEnv {
         cwd: dir.to_path_buf(),
         home: dir.to_path_buf(),
         var: Arc::new(move |k| (k == config::paths::ENV_AGENT_DIR).then(|| agent_dir.clone())),
-        docs: dir.join("docs"),
+        package: dir.to_path_buf(),
     }
 }
 

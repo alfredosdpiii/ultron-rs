@@ -149,7 +149,7 @@ impl Drop for Server {
 }
 
 fn op(connection: &Connection, session: &RpcTarget, op: Value) -> Result<Option<Value>, CallError> {
-    connection.call(session.clone(), "ultron.session-ops", "op", json!([op]))
+    connection.call(session.clone(), protocol::names::SESSION_OPS, "op", json!([op]))
 }
 
 /// The session's messages as `role: text` lines, in commit order.
@@ -203,7 +203,7 @@ fn run_scenario(scenario: &Value) {
     let created = connection
         .call(
             connection.server_target(),
-            "ultron.session-management",
+            protocol::names::SESSION_MANAGEMENT,
             "create",
             json!([{}]),
         )
@@ -213,7 +213,7 @@ fn run_scenario(scenario: &Value) {
     connection
         .call(
             connection.server_target(),
-            "ultron.session-management",
+            protocol::names::SESSION_MANAGEMENT,
             "attach",
             json!([id]),
         )
@@ -225,7 +225,7 @@ fn run_scenario(scenario: &Value) {
     let _prompting = connection
         .start(
             session.clone(),
-            "ultron.agent-controller",
+            protocol::names::AGENT_CONTROLLER,
             "prompt",
             json!([{"message": scenario["prompt"], "images": null}]),
         )

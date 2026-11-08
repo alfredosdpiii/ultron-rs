@@ -149,7 +149,7 @@ fn cli_daemon_schedules_fire_restart_collapse_and_cancel_through_the_product() {
     let created = connection
         .call(
             connection.server_target(),
-            "ultron.session-management",
+            protocol::names::SESSION_MANAGEMENT,
             "create",
             json!([{}]),
         )
@@ -159,7 +159,7 @@ fn cli_daemon_schedules_fire_restart_collapse_and_cancel_through_the_product() {
     connection
         .call(
             connection.server_target(),
-            "ultron.session-management",
+            protocol::names::SESSION_MANAGEMENT,
             "attach",
             json!([id]),
         )
@@ -171,7 +171,7 @@ fn cli_daemon_schedules_fire_restart_collapse_and_cancel_through_the_product() {
     let answered = connection
         .call(
             session,
-            "ultron.agent-controller",
+            protocol::names::AGENT_CONTROLLER,
             "prompt",
             json!([{"message": "watch the build", "images": null}]),
         )

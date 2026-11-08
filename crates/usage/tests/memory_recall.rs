@@ -2,12 +2,12 @@
 //! messages, session-core auto_memory) reports them, and does not say Hindsight was not configured; a session with
 //! no memory at all reports as before.
 
-use cli::usage::log::read_session_log;
-use cli::usage::report::build_session_report;
-use cli::usage::text::{TextOptions, render_session_report};
 use jsrt::localtime::Zone;
 use serde_json::{Value, json};
 use std::path::Path;
+use usage::log::read_session_log;
+use usage::report::build_session_report;
+use usage::text::{TextOptions, render_session_report};
 
 fn recall(id: &str, ids: &[&str], digest: Option<&str>, stale: u64) -> Value {
     let mut details = json!({"ids": ids, "scopes": ids.iter().map(|_| "project").collect::<Vec<_>>()});
@@ -46,7 +46,7 @@ fn memory_lines(dir: &Path, lines: &[Value]) -> (Value, Vec<String>) {
 }
 
 #[test]
-fn cli_usage_reports_automatic_recalls() {
+fn usage_reports_automatic_recalls() {
     let dir = tempfile::tempdir().unwrap();
     let (memory, lines) = memory_lines(
         dir.path(),
@@ -74,7 +74,7 @@ fn cli_usage_reports_automatic_recalls() {
 }
 
 #[test]
-fn cli_usage_without_memory_reports_as_before() {
+fn usage_without_memory_reports_as_before() {
     let dir = tempfile::tempdir().unwrap();
     let (memory, lines) = memory_lines(dir.path(), &[]);
     assert_eq!(memory, json!({"operations": null}));

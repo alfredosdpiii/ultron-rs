@@ -55,7 +55,7 @@ fn run_env(dir: &std::path::Path, vars: &Map<String, Value>) -> RunEnv {
         cwd: dir.to_path_buf(),
         home: dir.join("home"),
         var: Arc::new(move |k| map.get(k).cloned()),
-        docs: dir.join("docs"),
+        package: dir.to_path_buf(),
     }
 }
 

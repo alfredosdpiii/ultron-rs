@@ -439,8 +439,7 @@ impl Server {
         }
         let env = self.env_for(&cwd);
         let dir = crate::session::session_directory(self.parsed.session_dir.as_deref(), env);
-        let repo = session_journal::SessionRepo::new(&dir, session_journal::SystemClock::shared());
-        let metadata = crate::session_by_id(&repo, &id)
+        let metadata = session_journal::catalog::find(&dir, &id)
             .map_err(|e| RpcError::new(INTERNAL_ERROR, e))?
             .ok_or_else(|| RpcError::session_not_found(&id))?;
         let (index, attached) = self.open(&cwd, Target::Open(metadata))?;

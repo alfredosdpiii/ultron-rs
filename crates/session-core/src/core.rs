@@ -251,6 +251,13 @@ pub enum Op {
     },
 }
 
+/// The JSON request a client sends for an operation ([`Op::to_json`]).
+impl From<&Op> for Value {
+    fn from(op: &Op) -> Value {
+        op.to_json()
+    }
+}
+
 impl Op {
     /// The operation a JSON request names (`{op, ...}`), as clients send it over the worker's control service.
     pub fn from_json(value: &Value) -> Result<Op, String> {

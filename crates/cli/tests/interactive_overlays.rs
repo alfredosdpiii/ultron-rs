@@ -6,14 +6,9 @@
 mod tui_harness;
 
 use serde_json::json;
-use tui_harness::{Mock, Reply, Tui, sse, text_reply};
+use tui_harness::{Mock, QUIET, Reply, Tui, sse, text_reply};
 
 const MODEL: [&str; 2] = ["--model", "anthropic/claude-sonnet-4-5"];
-const QUIET: [(&str, &str); 2] = [
-    (session_core::core::AUTO_NAME_ENV, "off"),
-    (cli::interactive::SPLASH_ENV, "off"),
-];
-
 /// An Anthropic stream that fails mid-turn (an `error` event).
 fn error_reply() -> Reply {
     let start = json!({"type": "message_start", "message": {"id": "msg_e", "type": "message", "role": "assistant", "model": "claude-sonnet-4-5", "content": [], "stop_reason": null, "usage": {"input_tokens": 10, "output_tokens": 1}}});

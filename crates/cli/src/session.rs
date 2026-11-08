@@ -1,7 +1,7 @@
 //! Native session discovery and selectors from packages/coding-agent/src/native-command.ts.
 
 use crate::Env;
-use serde_json::Value;
+use session_journal::catalog::HeaderLine;
 use session_journal::repo::Metadata;
 use std::path::{Path, PathBuf};
 
@@ -24,30 +24,26 @@ pub fn session_directory_of(session_dir: Option<&str>, env: &Env, instance: &dae
     resolve(&env.cwd, &dir)
 }
 
-/// The first line of a file (without its newline), with Node's error text when it cannot be opened.
-pub fn read_first_line(path: &Path) -> Result<String, String> {
-    session_journal::catalog::first_line(path).map_err(|e| match e.kind() {
-        std::io::ErrorKind::NotFound => format!("ENOENT: no such file or directory, open '{}'", path.display()),
-        _ => e.to_string(),
-    })
+/// Whether a session selector names a session file rather than an id (`sessionIdFromSelector`): it has a path
+/// separator or ends in `.jsonl`.
+pub fn names_file(selector: &str) -> bool {
+    selector.contains('/') || selector.contains('\\') || selector.ends_with(".jsonl")
 }
 
-/// `sessionIdFromSelector`: a path (contains a separator or ends in `.jsonl`) names a session file whose header id is
-/// taken; otherwise an exact id, else a unique id prefix, among `sessions`.
+/// The first line of a session file, with Node's error text when it cannot be read.
+pub fn read_header(path: &Path) -> Result<HeaderLine, String> {
+    HeaderLine::read(path).map_err(|e| jsrt::fs::error_message(&e, "open", path))
+}
+
+/// `sessionIdFromSelector`: a path ([`names_file`]) names a session file whose header id is taken; otherwise an
+/// exact id, else a unique id prefix, among `sessions`.
 pub fn session_id_from_selector(selector: &str, sessions: &[Metadata], cwd: &Path) -> Result<String, String> {
-    if selector.contains('/') || selector.contains('\\') || selector.ends_with(".jsonl") {
+    if names_file(selector) {
         let path = resolve(cwd, selector);
-        let line = read_first_line(&path)?;
-        let invalid = || format!("Session file is not a valid ultron session: {}", path.display());
-        let value: Value = serde_json::from_str(&line).map_err(|_| invalid())?;
-        if value.get("kind").and_then(Value::as_str) != Some("header") {
-            return Err(invalid());
-        }
-        return value
-            .get("id")
-            .and_then(Value::as_str)
-            .map(str::to_string)
-            .ok_or_else(invalid);
+        return read_header(&path)?
+            .native()
+            .and_then(|header| Some(header.get("id")?.as_str()?.to_string()))
+            .ok_or_else(|| format!("Session file is not a valid ultron session: {}", path.display()));
     }
     if let Some(exact) = sessions.iter().find(|s| s.id == selector) {
         return Ok(exact.id.clone());

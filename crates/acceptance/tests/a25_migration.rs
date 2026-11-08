@@ -333,7 +333,7 @@ fn acceptance_a25_migrate_ignores_other_commands_prints_usage_and_rejects_bad_ar
         cwd: root.path().to_path_buf(),
         home: root.path().to_path_buf(),
         var: std::sync::Arc::new(|_| None),
-        docs: root.path().to_path_buf(),
+        package: root.path().to_path_buf(),
     };
     let run = |args: &[&str]| {
         let argv: Vec<String> = args.iter().map(|a| a.to_string()).collect();

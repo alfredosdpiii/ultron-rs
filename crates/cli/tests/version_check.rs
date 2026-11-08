@@ -81,7 +81,7 @@ fn cli_startup_version_check_matches_ts_check_for_new_version() {
             cwd: PathBuf::from("/nonexistent"),
             home: PathBuf::from("/nonexistent"),
             var: Arc::new(move |k| vars.get(k).cloned()),
-            docs: PathBuf::new(),
+            package: PathBuf::new(),
         };
         let newer = cli::startup_checks::check_for_new_version(&env, current);
         assert_eq!(json!(newer), case["newer"], "{case}");
@@ -103,7 +103,7 @@ fn cli_startup_version_check_defaults_to_the_npm_registry() {
         cwd: PathBuf::from("/nonexistent"),
         home: PathBuf::from("/nonexistent"),
         var: Arc::new(|_| None),
-        docs: PathBuf::new(),
+        package: PathBuf::new(),
     };
     assert_eq!(
         cli::startup_checks::latest_version_url(&env),

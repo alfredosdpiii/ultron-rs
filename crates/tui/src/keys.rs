@@ -303,6 +303,19 @@ pub struct KeyContext {
     pub windows_terminal: bool,
 }
 
+impl KeyContext {
+    /// The state a TUI starts with: Kitty off until the terminal confirms it, Windows Terminal from the
+    /// environment (`isWindowsTerminalSession()`: `WT_SESSION` set and none of `SSH_CONNECTION`, `SSH_CLIENT`,
+    /// `SSH_TTY`; a raw BS byte is then Ctrl+Backspace).
+    pub fn from_env(env: &dyn Fn(&str) -> Option<String>) -> KeyContext {
+        let set = |name: &str| env(name).is_some_and(|v| !v.is_empty());
+        KeyContext {
+            kitty_active: false,
+            windows_terminal: set("WT_SESSION") && !set("SSH_CONNECTION") && !set("SSH_CLIENT") && !set("SSH_TTY"),
+        }
+    }
+}
+
 /// Key identifier (`ctrl+shift+a`, `pageUp`, ...) for one input sequence.
 pub fn parse_key(data: &str, ctx: KeyContext) -> Option<String> {
     if let Some(k) = parse_kitty(data) {

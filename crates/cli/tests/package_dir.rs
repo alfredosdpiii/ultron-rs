@@ -11,7 +11,7 @@ fn cli_pi_package_dir_selects_the_package_directory_like_ts() {
     let tmp = tempfile::tempdir().unwrap();
     let home = std::fs::canonicalize(tmp.path()).unwrap().join("home");
     std::fs::create_dir_all(home.join("pkg/src/ultron/rlm")).unwrap();
-    std::fs::write(home.join("pkg").join(assets::RUNTIME), "").unwrap();
+    std::fs::write(home.join("pkg").join(session_core::RUNTIME_PY), "").unwrap();
     std::fs::create_dir_all(home.join("empty")).unwrap();
     let abs = |v: &str| v.replace("<home>", &home.display().to_string());
     let rel = |p: &std::path::Path| p.display().to_string().replace(&home.display().to_string(), "<home>");
@@ -33,7 +33,7 @@ fn cli_pi_package_dir_selects_the_package_directory_like_ts() {
                     "{case}"
                 );
                 assert_eq!(
-                    rel(&dir.join(assets::RUNTIME)),
+                    rel(&dir.join(session_core::RUNTIME_PY)),
                     case["runtime"]["value"].as_str().unwrap(),
                     "{case}"
                 );

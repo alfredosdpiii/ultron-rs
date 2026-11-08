@@ -83,7 +83,7 @@ fn run_env(root: &Path) -> RunEnv {
         cwd: root.join("work"),
         home: root.join("home"),
         var: Arc::new(move |key| vars.iter().find(|(k, _)| k == key).map(|(_, v)| v.clone())),
-        docs: root.join("docs"),
+        package: root.to_path_buf(),
     }
 }
 

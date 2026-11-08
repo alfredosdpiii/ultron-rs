@@ -434,7 +434,7 @@ fn session_core_opening_a_session_prunes_orphan_worktrees() {
         cwd: cwd.clone(),
         home: root.clone(),
         var: Arc::new(move |key| vars.iter().find(|(k, _)| k == key).map(|(_, v)| v.clone())),
-        docs: config::paths::normalize(&Path::new(env!("CARGO_MANIFEST_DIR")).join("../../packages/coding-agent/docs")),
+        package: config::paths::normalize(&Path::new(env!("CARGO_MANIFEST_DIR")).join("../../packages/coding-agent")),
     };
     let runtime = session_core::compose::Runtime::new(
         &env,

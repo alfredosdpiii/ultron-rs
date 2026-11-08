@@ -505,3 +505,50 @@ pub fn write_bug_report_archive(
     let entries: Vec<(&str, &[u8])> = files.iter().map(|f| (f.name.as_str(), f.data.as_bytes())).collect();
     std::fs::write(path, crate::zip::create_zip_archive(&entries, at))
 }
+
+/// The multipart body `uploadBugReport`'s `FormData` sends: one file part per bundle file.
+pub fn multipart(bundle: &BugReportBundle, boundary: &str) -> Vec<u8> {
+    let mut body = Vec::new();
+    for file in bug_report_files(bundle) {
+        body.extend_from_slice(
+            format!(
+                "--{boundary}\r\nContent-Disposition: form-data; name=\"{0}\"; filename=\"{0}\"\r\nContent-Type: {1}\r\n\r\n",
+                file.name, file.content_type
+            )
+            .as_bytes(),
+        );
+        body.extend_from_slice(file.data.as_bytes());
+        body.extend_from_slice(b"\r\n");
+    }
+    body.extend_from_slice(format!("--{boundary}--\r\n").as_bytes());
+    body
+}
+
+/// What `uploadBugReport` makes of the gateway's answer: the report id, or its error.
+pub fn upload_answer(status: u16, status_text: &str, body: &str) -> Result<String, String> {
+    let json: Value = serde_json::from_str(body).unwrap_or(Value::Null);
+    let ok = (200..300).contains(&status);
+    if ok
+        && json["ok"] == true
+        && let Some(id) = json["bug_report"]["id"].as_str()
+    {
+        return Ok(id.to_string());
+    }
+    let truthy = |v: &Value| jsrt::value::truthy(Some(v));
+    let detail = (json.is_object() && !truthy(&json["ok"]))
+        .then(|| {
+            [&json["description"], &json["error"]]
+                .into_iter()
+                .find(|v| truthy(v))
+                .map(|v| v.as_str().map_or_else(|| v.to_string(), str::to_string))
+        })
+        .flatten();
+    let shown = detail.unwrap_or_else(|| {
+        if status_text.is_empty() {
+            status.to_string()
+        } else {
+            status_text.to_string()
+        }
+    });
+    Err(format!("Bug report upload failed: {shown}"))
+}

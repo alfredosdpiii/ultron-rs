@@ -187,7 +187,7 @@ fn create(connection: &Connection) -> String {
     let created = connection
         .call(
             connection.server_target(),
-            "ultron.session-management",
+            protocol::names::SESSION_MANAGEMENT,
             "create",
             json!([{}]),
         )
@@ -199,7 +199,7 @@ fn create(connection: &Connection) -> String {
 fn attach(connection: &Connection, id: &str) -> Result<RpcTarget, CallError> {
     connection.call(
         connection.server_target(),
-        "ultron.session-management",
+        protocol::names::SESSION_MANAGEMENT,
         "attach",
         json!([id]),
     )?;
@@ -208,7 +208,7 @@ fn attach(connection: &Connection, id: &str) -> Result<RpcTarget, CallError> {
 }
 
 fn op(connection: &Connection, session: &RpcTarget, op: Value) -> Result<Option<Value>, CallError> {
-    connection.call(session.clone(), "ultron.session-ops", "op", json!([op]))
+    connection.call(session.clone(), protocol::names::SESSION_OPS, "op", json!([op]))
 }
 
 /// The pid of the internal process of `role` whose command line mentions `needle` (and the test's root).
@@ -306,7 +306,7 @@ fn cli_durable_killed_worker_restarts_by_itself_and_runs_the_queued_follow_up() 
     let prompting = connection
         .start(
             session.clone(),
-            "ultron.agent-controller",
+            protocol::names::AGENT_CONTROLLER,
             "prompt",
             json!([{"message": "first", "images": null}]),
         )
@@ -386,7 +386,7 @@ fn cli_durable_busy_worker_without_clients_is_restarted_and_finishes() {
     connection
         .start(
             session,
-            "ultron.agent-controller",
+            protocol::names::AGENT_CONTROLLER,
             "prompt",
             json!([{"message": "solo", "images": null}]),
         )
@@ -397,7 +397,7 @@ fn cli_durable_busy_worker_without_clients_is_restarted_and_finishes() {
     connection
         .call(
             connection.server_target(),
-            "ultron.session-management",
+            protocol::names::SESSION_MANAGEMENT,
             "detach",
             json!([]),
         )
@@ -429,7 +429,7 @@ fn cli_durable_worker_that_stops_answering_heartbeats_is_killed_and_restarted() 
     connection
         .start(
             session,
-            "ultron.agent-controller",
+            protocol::names::AGENT_CONTROLLER,
             "prompt",
             json!([{"message": "hang", "images": null}]),
         )
@@ -516,7 +516,7 @@ fn cli_durable_stuck_run_is_reported_and_aborted_through_session_ops() {
     let prompting = connection
         .start(
             session.clone(),
-            "ultron.agent-controller",
+            protocol::names::AGENT_CONTROLLER,
             "prompt",
             json!([{"message": "slow", "images": null}]),
         )
@@ -524,7 +524,7 @@ fn cli_durable_stuck_run_is_reported_and_aborted_through_session_ops() {
     provider.wait_for(1, "the turn reached the provider");
     let health = |connection: &Connection| {
         connection
-            .call(session.clone(), "ultron.session-ops", "checkHealth", json!([]))
+            .call(session.clone(), protocol::names::SESSION_OPS, "checkHealth", json!([]))
             .unwrap()
             .unwrap()
     };
@@ -540,7 +540,7 @@ fn cli_durable_stuck_run_is_reported_and_aborted_through_session_ops() {
         std::fs::read_to_string(&log_path).is_ok_and(|l| l.contains("made no progress"))
     });
     let aborted = connection
-        .call(session.clone(), "ultron.session-ops", "abortStuck", json!([]))
+        .call(session.clone(), protocol::names::SESSION_OPS, "abortStuck", json!([]))
         .unwrap()
         .unwrap();
     assert_eq!(aborted["aborted"], true);
@@ -551,7 +551,7 @@ fn cli_durable_stuck_run_is_reported_and_aborted_through_session_ops() {
     assert_eq!(health(&connection)["running"], false);
     assert_eq!(results(&session_file(&home, &id)), [("aborted".to_string(), None)]);
     let nothing = connection
-        .call(session, "ultron.session-ops", "abortStuck", json!([]))
+        .call(session, protocol::names::SESSION_OPS, "abortStuck", json!([]))
         .unwrap()
         .unwrap();
     assert_eq!(nothing, json!({"aborted": false, "reason": "no run in progress"}));
@@ -771,7 +771,7 @@ fn prompted(home: &Home, env: &[(&str, &str)], message: &str) -> Prompted {
     let prompting = connection
         .start(
             session,
-            "ultron.agent-controller",
+            protocol::names::AGENT_CONTROLLER,
             "prompt",
             json!([{"message": message, "images": null}]),
         )
@@ -994,7 +994,7 @@ fn cli_durable_a_signalled_worker_hands_its_running_shell_job_to_its_successor()
         .connection
         .start(
             session,
-            "ultron.agent-controller",
+            protocol::names::AGENT_CONTROLLER,
             "prompt",
             json!([{"message": "check the job", "images": null}]),
         )

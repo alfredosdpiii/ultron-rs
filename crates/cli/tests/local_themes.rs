@@ -67,7 +67,7 @@ fn profile(root: &Path) -> cli::Env {
         cwd: root.join("cwd"),
         home: root.to_path_buf(),
         var: Arc::new(move |k| vars.iter().find(|(n, _)| n == k).map(|(_, v)| v.clone())),
-        docs: std::path::PathBuf::new(),
+        package: std::path::PathBuf::new(),
     }
 }
 

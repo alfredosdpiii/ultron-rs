@@ -2,9 +2,10 @@
 //! digest of each entry (who wrote it and what it used, never its text), the latest values of the namespaces the
 //! report reads, and every operation's lane and result.
 
-use super::stats::{cell_apis, classify_nudge};
+use crate::stats::{cell_apis, classify_nudge};
 use indexmap::IndexMap;
 use serde_json::{Map, Value};
+use session_journal::catalog::HeaderLine;
 use session_journal::ns;
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
@@ -374,25 +375,27 @@ fn digest_entry(write: &Map<String, Value>) -> Option<LogEntry> {
 
 fn parse_header(line: &str, path: &Path) -> Result<Header, LogError> {
     let shown = path.display();
-    let value: Value = serde_json::from_str(line)
-        .map_err(|_| LogError::Session(format!("{shown} is not a session file (its first line is not JSON)")))?;
-    let header = value.as_object();
-    if let Some(h) = header
-        && h.get("type").and_then(Value::as_str) == Some("session")
-        && let Some(version) = h.get("version")
-    {
-        return Err(LogError::Session(format!(
-            "{shown} is a Pi-format session (version {}); only native Ultron sessions are reported",
-            jsrt::value::string(Some(version))
-        )));
-    }
-    let header = header
-        .filter(|h| h.get("kind").and_then(Value::as_str) == Some("header"))
-        .and_then(|h| Some((h, h.get("id")?.as_str()?, h.get("cwd")?.as_str()?)));
-    let Some((h, id, cwd)) = header else {
-        return Err(LogError::Session(format!(
-            "{shown} is not a native Ultron session file"
-        )));
+    let not_native = || LogError::Session(format!("{shown} is not a native Ultron session file"));
+    let h = match HeaderLine::parse(line) {
+        HeaderLine::NotJson => {
+            return Err(LogError::Session(format!(
+                "{shown} is not a session file (its first line is not JSON)"
+            )));
+        }
+        HeaderLine::Pi(h) if h.contains_key("version") => {
+            return Err(LogError::Session(format!(
+                "{shown} is a Pi-format session (version {}); only native Ultron sessions are reported",
+                jsrt::value::string(h.get("version"))
+            )));
+        }
+        HeaderLine::Native(h) => h,
+        HeaderLine::Pi(_) | HeaderLine::Other => return Err(not_native()),
+    };
+    let (Some(id), Some(cwd)) = (
+        h.get("id").and_then(Value::as_str),
+        h.get("cwd").and_then(Value::as_str),
+    ) else {
+        return Err(not_native());
     };
     Ok(Header {
         id: id.to_string(),
@@ -404,7 +407,7 @@ fn parse_header(line: &str, path: &Path) -> Result<Header, LogError> {
 
 /// Lines as `readline` yields them: split on `\n` (a `\r` before it dropped), the last one even without a newline.
 fn for_each_line(path: &Path, mut each: impl FnMut(&str) -> Result<bool, LogError>) -> Result<(), LogError> {
-    let file = std::fs::File::open(path).map_err(|e| LogError::Io(io_message(&e, "open", path)))?;
+    let file = std::fs::File::open(path).map_err(|e| LogError::Io(jsrt::fs::error_message(&e, "open", path)))?;
     let mut reader = BufReader::new(file);
     let mut buffer = Vec::new();
     loop {
@@ -427,17 +430,6 @@ fn for_each_line(path: &Path, mut each: impl FnMut(&str) -> Result<bool, LogErro
     }
 }
 
-/// Node's error text for a failed file operation.
-pub fn io_message(error: &std::io::Error, call: &str, path: &Path) -> String {
-    match error.kind() {
-        std::io::ErrorKind::NotFound => {
-            format!("ENOENT: no such file or directory, {call} '{}'", path.display())
-        }
-        std::io::ErrorKind::PermissionDenied => format!("EACCES: permission denied, {call} '{}'", path.display()),
-        _ => error.to_string(),
-    }
-}
-
 /// Read only a session file's header (its first line).
 pub fn read_session_header(path: &Path) -> Result<Header, LogError> {
     let mut header = None;
@@ -450,7 +442,7 @@ pub fn read_session_header(path: &Path) -> Result<Header, LogError> {
 
 /// File modification time in milliseconds (`Math.round(stat.mtimeMs)`) and size.
 pub fn file_times(path: &Path) -> Result<(f64, u64), LogError> {
-    let meta = std::fs::metadata(path).map_err(|e| LogError::Io(io_message(&e, "stat", path)))?;
+    let meta = std::fs::metadata(path).map_err(|e| LogError::Io(jsrt::fs::error_message(&e, "stat", path)))?;
     Ok((meta.modified().map_or(0.0, jsrt::date::mtime_ms).round(), meta.len()))
 }
 

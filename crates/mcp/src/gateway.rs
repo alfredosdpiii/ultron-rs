@@ -206,15 +206,6 @@ pub fn browser_command(platform: &str, target: &str) -> (String, Vec<String>) {
     }
 }
 
-/// Node's `process.platform` for this build.
-fn node_platform() -> &'static str {
-    match std::env::consts::OS {
-        "macos" => "darwin",
-        "windows" => "win32",
-        other => other,
-    }
-}
-
 pub type UrlOpener = Arc<dyn Fn(&str) + Send + Sync>;
 
 /// The session variables a browser launcher needs to reach the desktop (xdg-open finds the display and the
@@ -243,7 +234,7 @@ pub fn opener_vars(var: &dyn Fn(&str) -> Option<String>) -> Vec<(String, String)
 /// [`opener_vars`]) in its environment; a missing launcher opens nothing.
 pub fn browser_opener_with(path: Option<String>, home: Option<String>, desktop: Vec<(String, String)>) -> UrlOpener {
     Arc::new(move |url: &str| {
-        let (name, args) = browser_command(node_platform(), url);
+        let (name, args) = browser_command(jsrt::process::platform(), url);
         let Some(launcher) = path.as_deref().and_then(|path| {
             std::env::split_paths(path)
                 .map(|dir| dir.join(&name))

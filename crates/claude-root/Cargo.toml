@@ -31,6 +31,7 @@ session-file = { path = "../session-file" }
 session-journal = { path = "../session-journal" }
 signals = { path = "../signals" }
 tokio = { version = "=1.53.2", features = ["rt", "time"] }
+usage = { path = "../usage" }
 
 [dev-dependencies]
 hindsight = { path = "../hindsight" }

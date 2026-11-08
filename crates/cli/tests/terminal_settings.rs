@@ -17,7 +17,7 @@ fn env_with(vars: HashMap<String, String>, home: PathBuf) -> Env {
         cwd: home.clone(),
         home,
         var: Arc::new(move |k| vars.get(k).cloned()),
-        docs: PathBuf::new(),
+        package: PathBuf::new(),
     }
 }
 
@@ -105,7 +105,10 @@ fn env_of(pairs: &[(&str, &str)], home: PathBuf) -> Env {
 #[test]
 fn cli_terminal_settings_windows_terminal_session_needs_wt_session_without_ssh() {
     let home = PathBuf::from("/nonexistent");
-    let wt = |pairs: &[(&str, &str)]| cli::terminal_settings::key_context(&env_of(pairs, home.clone()));
+    let wt = |pairs: &[(&str, &str)]| {
+        let env = env_of(pairs, home.clone());
+        tui::KeyContext::from_env(&|k| (env.var)(k))
+    };
     assert!(wt(&[("WT_SESSION", "abc")]).windows_terminal);
     assert!(!wt(&[("WT_SESSION", "abc")]).kitty_active);
     assert!(!wt(&[]).windows_terminal);
@@ -114,6 +117,10 @@ fn cli_terminal_settings_windows_terminal_session_needs_wt_session_without_ssh()
         assert!(!wt(&[("WT_SESSION", "abc"), (ssh, "x")]).windows_terminal, "{ssh}");
         assert!(wt(&[("WT_SESSION", "abc"), (ssh, "")]).windows_terminal, "{ssh}");
     }
+}
+
+fn tmux_probe(env: &Env, timeout: std::time::Duration) -> bool {
+    tui::tmux_forwards_hyperlinks(&|k| (env.var)(k), timeout)
 }
 
 /// A fake `tmux` in its own directory: prints `features`, records its arguments and environment.
@@ -146,38 +153,32 @@ fn cli_terminal_settings_tmux_probe_reads_client_termfeatures() {
         dir.path().to_path_buf(),
     );
     let hang = Duration::from_secs(120);
-    assert!(cli::terminal_settings::tmux_forwards_hyperlinks_within(&env, hang));
+    assert!(tmux_probe(&env, hang));
     assert_eq!(
         std::fs::read_to_string(&record).unwrap(),
         "display-message|-p|#{client_termfeatures}|TMUX=/tmp/fake-socket,1,0 DISPLAY="
     );
     let bin = fake_tmux(dir.path(), "echo '256,RGB,title'");
     let env = env_of(&[("PATH", &bin.display().to_string())], dir.path().to_path_buf());
-    assert!(!cli::terminal_settings::tmux_forwards_hyperlinks_within(&env, hang));
+    assert!(!tmux_probe(&env, hang));
     let bin = fake_tmux(dir.path(), "echo hyperlinks; exit 1");
     let env = env_of(&[("PATH", &bin.display().to_string())], dir.path().to_path_buf());
-    assert!(!cli::terminal_settings::tmux_forwards_hyperlinks_within(&env, hang));
+    assert!(!tmux_probe(&env, hang));
     // No tmux on the run's PATH.
     let empty = dir.path().join("empty");
     std::fs::create_dir_all(&empty).unwrap();
     let env = env_of(&[("PATH", &empty.display().to_string())], dir.path().to_path_buf());
-    assert!(!cli::terminal_settings::tmux_forwards_hyperlinks_within(&env, hang));
-    assert!(!cli::terminal_settings::tmux_forwards_hyperlinks_within(
-        &env_of(&[], dir.path().to_path_buf()),
-        hang
-    ));
+    assert!(!tmux_probe(&env, hang));
+    assert!(!tmux_probe(&env_of(&[], dir.path().to_path_buf()), hang));
     // A tmux that never answers is given up on (`timeout`): `exec` keeps the child the process we spawned.
     let bin = fake_tmux(dir.path(), "exec sleep 600");
     let env = env_of(
         &[("PATH", &format!("{}:/usr/bin:/bin", bin.display()))],
         dir.path().to_path_buf(),
     );
-    assert!(!cli::terminal_settings::tmux_forwards_hyperlinks_within(
-        &env,
-        Duration::from_millis(50)
-    ));
-    assert!(cli::terminal_settings::termfeatures_list_hyperlinks("hyperlinks"));
-    assert!(!cli::terminal_settings::termfeatures_list_hyperlinks("hyperlinks2,RGB"));
+    assert!(!tmux_probe(&env, Duration::from_millis(50)));
+    assert!(tui::termfeatures_list_hyperlinks("hyperlinks"));
+    assert!(!tui::termfeatures_list_hyperlinks("hyperlinks2,RGB"));
 }
 
 /// `detectCapabilities`: the tmux probe runs only inside tmux (`TMUX`, or `TERM` starting with tmux) when neither
@@ -188,14 +189,16 @@ fn cli_terminal_settings_capabilities_probe_tmux_only_when_undecided() {
     let agent = dir.path().join("agent");
     std::fs::create_dir_all(&agent).unwrap();
     let probes = std::cell::Cell::new(0);
-    let probe = |_: &Env| {
+    let probe = || {
         probes.set(probes.get() + 1);
         true
     };
     let caps = |pairs: &[(&str, &str)], settings: Value| {
         std::fs::write(agent.join("settings.json"), settings.to_string()).unwrap();
         let manager = SettingsManager::create(dir.path(), &agent, false);
-        cli::terminal_settings::capabilities_with(&env_of(pairs, dir.path().to_path_buf()), &manager, &probe)
+        let env = env_of(pairs, dir.path().to_path_buf());
+        let overrides = cli::terminal_settings::overrides(&manager);
+        tui::probed_capabilities(&|k| (env.var)(k), &overrides, &probe)
     };
     assert!(caps(&[("TMUX", "/s,1,0")], json!({})).hyperlinks);
     assert_eq!(probes.get(), 1);

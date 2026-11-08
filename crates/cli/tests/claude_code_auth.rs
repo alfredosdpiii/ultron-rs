@@ -72,7 +72,7 @@ fn cli_auth_check_claude_code_matches_typescript() {
             cwd: root.to_path_buf(),
             home: root.to_path_buf(),
             var: Arc::new(move |k| vars.get(k).cloned()),
-            docs: root.join("docs"),
+            package: root.to_path_buf(),
         };
         let options = OAuthOptions {
             transport: Arc::new(Refuse),

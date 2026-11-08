@@ -11,5 +11,6 @@ pub mod keys;
 pub mod lock;
 pub mod models_store;
 pub mod paths;
+pub mod profile_backup;
 pub mod settings;
 pub mod trust;

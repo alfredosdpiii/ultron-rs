@@ -88,7 +88,7 @@ fn replay(case: &Value) -> Vec<String> {
             cwd: root.join("work"),
             home: root.clone(),
             var: Arc::new(move |k| vars.get(k).cloned()),
-            docs: root.join("docs"),
+            package: root.to_path_buf(),
         };
         let (mut out, mut err) = (Vec::new(), Vec::new());
         let endpoints = cli::update_cli::Endpoints {
@@ -157,7 +157,7 @@ fn cli_self_update_package_commands_and_targets_are_not_supported() {
         cwd: root.clone(),
         home: root.clone(),
         var: Arc::new(move |k| (k == config::paths::ENV_AGENT_DIR).then(|| agent.clone())),
-        docs: root.join("docs"),
+        package: root.to_path_buf(),
     };
     let (port, count) = registry(vec![json!({"status": 200, "body": {"version": "999.0.0"}})]);
     let endpoints = cli::update_cli::Endpoints {
@@ -228,7 +228,7 @@ fn cli_self_update_points_the_binary_at_the_release_download() {
             cwd: root.clone(),
             home: root.clone(),
             var: Arc::new(move |k| (k == config::paths::ENV_AGENT_DIR).then(|| agent.clone())),
-            docs: root.join("docs"),
+            package: root.to_path_buf(),
         };
         let (mut out, mut err) = (Vec::new(), Vec::new());
         let endpoints = cli::update_cli::Endpoints {

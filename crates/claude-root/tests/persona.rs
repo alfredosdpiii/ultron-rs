@@ -39,7 +39,7 @@ fn env(root: &Path, settings: Value) -> RunEnv {
         cwd,
         home,
         var: Arc::new(move |k: &str| vars.iter().find(|(n, _)| n == k).map(|(_, v)| v.clone())),
-        docs: bundled().join("../docs"),
+        package: bundled().join(".."),
     }
 }
 

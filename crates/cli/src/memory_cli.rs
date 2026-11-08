@@ -3,18 +3,15 @@
 //! checked for secrets as `memory.propose` checks a write. `--dry-run` prints the plan and writes nothing.
 
 use crate::Env;
-use kernel_apis::memory_import::{self, Action, Harness, Planned};
+use kernel_apis::MemoryBackend;
+use kernel_apis::memory_import::{self, Action, Harness, Imported, Planned};
 use kernel_apis::memory_records::RecordIndex;
-use kernel_apis::{FileDocumentStore, MemoryBackend, MemoryService, worker_gate};
 use serde_json::{Map, Value};
 use std::io::Write;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::Arc;
 
 pub const USAGE: &str = "Usage: ultron memory import --from claude-code|codex [--dry-run]\n\nImports the memory notes another harness keeps as typed Ultron memory records:\n  claude-code  every ~/.claude/projects/<project>/memory/*.md note (CLAUDE_CONFIG_DIR moves ~/.claude)\n  codex        ~/.codex/memories/memory_summary.md and MEMORY.md (CODEX_HOME moves ~/.codex)\nEach record keeps its source file; a note holding a secret is refused. Running it again replaces changed notes\nand leaves unchanged ones. --dry-run prints what would be imported and writes nothing.\n";
-
-/// Builds the memory backend of one scope group (`None`: global notes; `Some`: a project's).
-pub type BackendFor<'a> = &'a dyn Fn(Option<&Path>) -> Result<Arc<dyn MemoryBackend>, String>;
 
 fn scope_tags(env: &Env, project: Option<&Path>) -> Map<String, Value> {
     let cwd = project.unwrap_or(&env.cwd);
@@ -32,17 +29,6 @@ pub fn run(argv: &[String], env: &Env, out: &mut dyn Write, err: &mut dyn Write)
             hindsight::HindsightBackend::new(options).map_err(|e| e.to_string())?,
         ))
     };
-    run_with(argv, env, &backend, out, err)
-}
-
-/// [`run`] over `backend` (tests inject one).
-pub fn run_with(
-    argv: &[String],
-    env: &Env,
-    backend: BackendFor<'_>,
-    out: &mut dyn Write,
-    err: &mut dyn Write,
-) -> Result<i32, String> {
     let io = |e: std::io::Error| e.to_string();
     let usage = |err: &mut dyn Write, message: &str| -> Result<i32, String> {
         writeln!(err, "Error: {message}").map_err(io)?;
@@ -115,70 +101,34 @@ pub fn run_with(
         return Ok(0);
     }
     let journal = agent_dir.join("memory").join("import-journal.json");
-    let mut service: Option<(Option<PathBuf>, MemoryService)> = None;
     let (mut imported, mut replaced, mut unchanged, mut refused, mut failed) = (0, 0, 0, 0, 0);
-    for item in &planned {
-        match &item.action {
-            Action::Unchanged(_) => {
-                unchanged += 1;
-                continue;
-            }
-            Action::Refuse(reason) => {
+    memory_import::import_all(&planned, &journal, index, &backend, &mut |item, outcome| {
+        let shown = describe(item, &env.home);
+        match outcome {
+            Imported::Unchanged => unchanged += 1,
+            Imported::Refused(reason) => {
                 refused += 1;
-                writeln!(out, "  refused ({reason}): {}", describe(item, &env.home)).map_err(io)?;
-                continue;
+                writeln!(out, "  refused ({reason}): {shown}").map_err(io)?;
             }
-            Action::Add | Action::Replace(_) => {}
-        }
-        // One service per scope group, over the one import journal (each loads what the previous one wrote).
-        if service.as_ref().is_none_or(|(project, _)| *project != item.project) {
-            let memory = MemoryService::new(
-                Arc::new(FileDocumentStore::new(&journal)),
-                backend(item.project.as_deref())?,
-                worker_gate(),
-            )
-            .map_err(|e| e.to_string())?
-            .with_records(index.clone());
-            service = Some((item.project.clone(), memory));
-        }
-        let Some((_, memory)) = &service else {
-            continue;
-        };
-        match memory_import::import_one(memory, item) {
-            Ok(op) if op["state"] == "sensitive" || op["state"] == "skipped" => {
-                refused += 1;
-                writeln!(
-                    out,
-                    "  refused (holds a secret or personal identifier): {}",
-                    describe(item, &env.home)
-                )
-                .map_err(io)?;
+            Imported::Stored(id) => {
+                imported += 1;
+                writeln!(out, "  stored {id}: {shown}").map_err(io)?;
             }
-            Ok(op) if op["phase"] == "backend" => {
-                if matches!(item.action, Action::Replace(_)) {
-                    replaced += 1;
-                } else {
-                    imported += 1;
-                }
-                let id = op["memoryId"].as_str().unwrap_or_default();
-                writeln!(out, "  stored {id}: {}", describe(item, &env.home)).map_err(io)?;
+            Imported::Replaced(id) => {
+                replaced += 1;
+                writeln!(out, "  stored {id}: {shown}").map_err(io)?;
             }
-            Ok(op) => {
+            Imported::NotStored(state) => {
                 failed += 1;
-                writeln!(
-                    err,
-                    "  not stored ({}): {}",
-                    op["state"].as_str().unwrap_or("?"),
-                    describe(item, &env.home)
-                )
-                .map_err(io)?;
+                writeln!(err, "  not stored ({state}): {shown}").map_err(io)?;
             }
-            Err(error) => {
+            Imported::Failed(error) => {
                 failed += 1;
-                writeln!(err, "  failed ({error}): {}", describe(item, &env.home)).map_err(io)?;
+                writeln!(err, "  failed ({error}): {shown}").map_err(io)?;
             }
         }
-    }
+        Ok(())
+    })?;
     writeln!(
         out,
         "Imported {imported}, replaced {replaced}, unchanged {unchanged}, refused {refused}, failed {failed} ({} notes from {}).",

@@ -61,7 +61,7 @@ fn env(root: &Path, vars: &[(&str, String)]) -> cli::Env {
         cwd: root.join("work"),
         home: root.to_path_buf(),
         var: Arc::new(move |k| map.get(k).cloned()),
-        docs: root.join("docs"),
+        package: root.to_path_buf(),
     }
 }
 

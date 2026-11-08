@@ -1449,6 +1449,6 @@ pub fn create_setup_deps(env: &Env) -> SetupDeps {
         run_docker: run_docker(path),
         hindsight_wait: Duration::from_secs(5 * 60),
         hindsight_interval: Duration::from_secs(3),
-        loki_version: setup_core::bundled_loki_version(),
+        loki_version: Some(loki::analyzers::bundled_version()),
     }
 }

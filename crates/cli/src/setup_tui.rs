@@ -8,19 +8,16 @@ use crate::Env;
 use crate::setup_wizard::{Choice, InputOptions, LoginOutcome, SetupQuit, SetupUi, Tone};
 use ai::auth::{AuthEvent, AuthInteraction, AuthPrompt};
 use ai::http::{AbortSignal, BoxFuture};
-use interactive::keybindings::Platform;
 use interactive::lane::{LoginEvent, LoginPrompt};
 use interactive::login_dialog::{DialogAction, LoginDialog};
 use interactive::selectors::{AuthProvider, AuthSelector};
 use interactive::{bold, key_hint, key_text};
-use std::io::Write;
 use std::rc::Rc;
 use std::sync::Arc;
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 use std::time::Duration;
 use theme::{Fg, Theme};
 use tui::KeybindingsManager;
-use tui::Renderer;
 use tui::{Component, Text};
 use tui::{Loader, SelectEvent, SelectItem, SelectList, SelectListTheme};
 
@@ -46,70 +43,13 @@ static INPUT_PUMP: std::sync::Once = std::sync::Once::new();
 static INPUT_PAUSED: std::sync::LazyLock<Arc<std::sync::atomic::AtomicBool>> =
     std::sync::LazyLock::new(|| Arc::new(std::sync::atomic::AtomicBool::new(false)));
 
-/// The terminal: raw mode, the main-screen renderer, and the hardware cursor row it leaves (for `stop`).
+/// The setup screen: the main screen, the input it reads, and how it draws.
 struct Screen {
-    out: tui::Terminal<std::io::Stdout>,
-    renderer: Renderer,
-    /// Where the hardware cursor is, as a row of the document (`hardwareCursorRow`).
-    cursor_row: i64,
+    main: tui::MainScreen,
     events: Receiver<Ev>,
     sender: Sender<Ev>,
     theme: Rc<Theme>,
     keys: KeybindingsManager,
-}
-
-fn keys() -> KeybindingsManager {
-    KeybindingsManager::new(
-        interactive::keybindings::native_app_keybindings(Platform::new("linux", false)),
-        Vec::new(),
-        Default::default(),
-    )
-}
-
-fn theme(env: &Env) -> Rc<Theme> {
-    let settings = config::settings::SettingsManager::create(&env.cwd, &env.agent_dir(), false);
-    let caps = crate::terminal_settings::capabilities(env, &settings);
-    Rc::new(crate::themes::resolve(
-        settings.theme_setting().as_deref(),
-        (env.var)("COLORFGBG").as_deref(),
-        &env.agent_dir().join("themes"),
-        tui::color_mode(&caps),
-    ))
-}
-
-/// Advance `row` over the cursor moves of renderer output (`\x1b[nA`, `\x1b[nB`, CRLF, a clear to home).
-fn track(row: &mut i64, out: &str) {
-    let bytes = out.as_bytes();
-    let mut i = 0;
-    while i < bytes.len() {
-        if bytes[i] == b'\n' {
-            *row += 1;
-            i += 1;
-            continue;
-        }
-        if bytes[i..].starts_with(b"\x1b[2J\x1b[H") {
-            *row = 0;
-            i += 7;
-            continue;
-        }
-        if bytes[i] == 0x1b && bytes.get(i + 1) == Some(&b'[') {
-            let mut j = i + 2;
-            while j < bytes.len() && bytes[j].is_ascii_digit() {
-                j += 1;
-            }
-            if j > i + 2 && j < bytes.len() {
-                let n: i64 = out[i + 2..j].parse().unwrap_or(0);
-                match bytes[j] {
-                    b'A' => *row -= n,
-                    b'B' => *row += n,
-                    _ => {}
-                }
-            }
-            i = j;
-            continue;
-        }
-        i += 1;
-    }
 }
 
 impl Screen {
@@ -138,31 +78,18 @@ impl Screen {
                 }
             });
         });
-        let mut out = tui::Terminal::new(std::io::stdout());
-        out.start(true)?;
-        out.hide_cursor()?;
+        let settings = config::settings::SettingsManager::create(&env.cwd, &env.agent_dir(), false);
         Ok(Screen {
-            out,
-            renderer: Renderer::new(),
-            cursor_row: 0,
+            main: tui::MainScreen::start()?,
             events,
             sender,
-            theme: theme(env),
-            keys: keys(),
+            theme: Rc::new(crate::themes::screen_theme(env, &settings)),
+            keys: crate::terminal_settings::screen_keys(env),
         })
     }
 
-    fn size() -> (usize, usize) {
-        let (w, h) = tui::size();
-        (w.max(1) as usize, h.max(1) as usize)
-    }
-
     fn paint(&mut self, lines: Vec<String>) {
-        let (width, height) = Self::size();
-        if let Ok(out) = self.renderer.render(lines, width, height) {
-            track(&mut self.cursor_row, &out);
-            let _ = self.out.write(&out);
-        }
+        self.main.paint(lines);
     }
 
     fn next(&self, timeout: Duration) -> Option<Ev> {
@@ -173,24 +100,10 @@ impl Screen {
         }
     }
 
-    /// `TuiMainScreen.stop`: below the last line, cursor shown, raw mode off.
+    /// Hand the terminal back (the input reader pauses until a setup screen starts again).
     fn stop(&mut self) {
         INPUT_PAUSED.store(true, std::sync::atomic::Ordering::SeqCst);
-        let len = self.renderer.previous_lines().len() as i64;
-        if len > 0 {
-            let mut out = String::from(" ");
-            let diff = len - self.cursor_row;
-            if diff > 0 {
-                out.push_str(&format!("\x1b[{diff}B"));
-            } else if diff < 0 {
-                out.push_str(&format!("\x1b[{}A", -diff));
-            }
-            out.push_str("\r\n");
-            let _ = self.out.write(&out);
-        }
-        let _ = self.out.show_cursor();
-        let _ = self.out.stop();
-        let _ = std::io::stdout().flush();
+        self.main.stop();
     }
 }
 
@@ -426,7 +339,7 @@ impl TuiSetupUi {
     }
 
     fn paint(&mut self, slot: Slot) {
-        let (width, _) = Screen::size();
+        let (width, _) = tui::MainScreen::size();
         let t = Rc::clone(&self.screen.theme);
         let mut lines = Text::new(&t.fg(Fg::Accent, &bold("Ultron setup")), 1, 0, None).render(width);
         for entry in &self.transcript {
@@ -785,27 +698,6 @@ struct Interaction {
     env: Env,
 }
 
-/// `openBrowser` on the run's own PATH; never waits on the opener.
-fn open_browser(env: &Env, url: &str) {
-    let name = if cfg!(target_os = "macos") { "open" } else { "xdg-open" };
-    let Some(path) = (env.var)("PATH") else {
-        return;
-    };
-    let Some(opener) = std::env::split_paths(&path)
-        .map(|dir| dir.join(name))
-        .find(|candidate| candidate.is_file())
-    else {
-        return;
-    };
-    let _ = std::process::Command::new(opener)
-        .arg(url)
-        .env("PATH", &path)
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .spawn();
-}
-
 impl AuthInteraction for Interaction {
     fn prompt<'a>(&'a self, prompt: AuthPrompt, cancel: Option<AbortSignal>) -> BoxFuture<'a, Result<String, String>> {
         Box::pin(async move {
@@ -852,7 +744,7 @@ impl AuthInteraction for Interaction {
         let view = match event {
             AuthEvent::AuthUrl { url, instructions } => {
                 if self.reach == "local" {
-                    open_browser(&self.env, &url);
+                    crate::tui_login::open_browser(&self.env, &url);
                 }
                 LoginEvent::AuthUrl { url, instructions }
             }
@@ -915,7 +807,7 @@ pub fn show_startup_selector(env: &Env, title: &str, options: &[&str]) -> std::i
     let mut screen = Screen::start(env)?;
     let mut index = 0usize;
     let answer = loop {
-        let (width, _) = Screen::size();
+        let (width, _) = tui::MainScreen::size();
         let t = Rc::clone(&screen.theme);
         let mut lines = vec![border(&t, width), String::new()];
         lines.extend(Text::new(&t.fg(Fg::Accent, &bold(title)), 1, 0, None).render(width));

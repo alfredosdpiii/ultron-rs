@@ -8,8 +8,8 @@
 
 use crate::Env;
 use crate::args::Args;
-use crate::link::Link;
 use crate::print_mode::Target;
+use client::session::SessionLink as Link;
 use interactive::app::{App, AppOptions};
 use interactive::history::{PROMPT_HISTORY_FILE, PromptHistoryStore};
 use interactive::keybindings::native_app_keybindings;
@@ -70,11 +70,11 @@ enum Command {
 
 /// `importPiSessionFile` (client-tui-sessions.ts): this process reads the Pi file and the server imports its text
 /// (the server may run elsewhere); the answer says what was imported and where to switch.
-pub fn import_pi(link: &crate::link::Link, path: &str) -> LaneEvent {
+pub fn import_pi(link: &Link, path: &str) -> LaneEvent {
     let content = match std::fs::read_to_string(path) {
         Ok(content) => content,
         Err(error) => {
-            let message = crate::usage::log::io_message(&error, "open", std::path::Path::new(path));
+            let message = jsrt::fs::error_message(&error, "open", std::path::Path::new(path));
             return LaneEvent::Status(format!("Error: Failed to import session: {message}"));
         }
     };
@@ -424,7 +424,7 @@ fn link_thread(
             Command::WorkerStopped => {
                 if link
                     .remote_route()
-                    .is_some_and(|route| matches!(route, crate::link::RemoteRoute::Radius { .. }))
+                    .is_some_and(|route| matches!(route, client::session::RemoteRoute::Radius { .. }))
                 {
                     continue;
                 }
@@ -554,8 +554,8 @@ fn link_thread(
                 );
                 let ui = ui.clone();
                 std::thread::spawn(move || {
-                    let result =
-                        started.and_then(|(connection, request)| connection.wait(&request).map_err(crate::link::fail));
+                    let result = started
+                        .and_then(|(connection, request)| connection.wait(&request).map_err(client::lost::message));
                     let event = LaneEvent::BashDone(result.map(|value| bash_result(&value.unwrap_or_default())));
                     let _ = ui.send(UiEvent::Lane(event));
                 });
@@ -570,8 +570,8 @@ fn link_thread(
                 let ui = ui.clone();
                 std::thread::spawn(move || {
                     // Success shows through the lane's `entry_added` of the compaction entry.
-                    let result =
-                        started.and_then(|(connection, request)| connection.wait(&request).map_err(crate::link::fail));
+                    let result = started
+                        .and_then(|(connection, request)| connection.wait(&request).map_err(client::lost::message));
                     if let Err(error) = result {
                         let error = error
                             .strip_prefix("session_operation_failed: ")
@@ -675,7 +675,7 @@ fn link_thread(
                                 send(LaneEvent::Status(notification.as_str().unwrap_or_default().to_string()));
                             }
                         }
-                        Err(error) => send(LaneEvent::Status(format!("Error: {}", crate::link::fail(error)))),
+                        Err(error) => send(LaneEvent::Status(format!("Error: {}", client::lost::message(error)))),
                     }
                 });
             }
@@ -747,7 +747,7 @@ fn link_thread(
                     json!([{"targetId": target, "summarize": summarize, "label": null, "customInstructions": instructions}]),
                 );
                 let result = started
-                    .and_then(|(connection, request)| connection.wait(&request).map_err(crate::link::fail))
+                    .and_then(|(connection, request)| connection.wait(&request).map_err(client::lost::message))
                     .map_err(|error| {
                         error
                             .strip_prefix("session_operation_failed: ")
@@ -832,7 +832,7 @@ fn link_thread(
             }
             Command::Lane(LaneCommand::TerminalTheme(theme)) => {
                 // The session's `diagram` `auto` theme follows it; the link tells every session it attaches later.
-                if let Err(error) = link.set_terminal_theme(&theme) {
+                if let Err(error) = link.keep_op(&Op::SetTerminalTheme { theme: theme.clone() }) {
                     send(LaneEvent::Status(format!("Error: {error}")));
                 }
                 terminal_theme = Some(theme);
@@ -863,10 +863,10 @@ fn link_thread(
             Command::Lane(LaneCommand::Changelog) => {
                 // `getChangelogPath()`: the package's CHANGELOG.md beside its docs. Lexing it takes a while, so on
                 // its own thread: neither the UI nor the session's other commands wait for it.
-                let path = catalog_env.docs.parent().map(|p| p.join("CHANGELOG.md"));
+                let path = catalog_env.package_file("CHANGELOG.md");
                 let ui = ui.clone();
                 std::thread::spawn(move || {
-                    let content = path.and_then(|p| std::fs::read_to_string(p).ok());
+                    let content = std::fs::read_to_string(path).ok();
                     let tokens = interactive::changelog::changelog_tokens(content.as_deref());
                     let _ = ui.send(UiEvent::Lane(LaneEvent::Changelog(tokens)));
                 });
@@ -880,7 +880,7 @@ fn link_thread(
                 let ui = ui.clone();
                 std::thread::spawn(move || {
                     let result = started
-                        .and_then(|(connection, request)| connection.wait(&request).map_err(crate::link::fail))
+                        .and_then(|(connection, request)| connection.wait(&request).map_err(client::lost::message))
                         .map(|text| text.and_then(|t| t.as_str().map(str::to_string)).unwrap_or_default())
                         .map_err(|e| {
                             e.strip_prefix("session_operation_failed: ")
@@ -1097,7 +1097,7 @@ fn link_thread(
             Command::Lane(LaneCommand::Autoreview(request)) => send(crate::autoreview_toggle::autoreview(
                 request,
                 &catalog_env,
-                crate::autoreview_cli::platform(),
+                jsrt::process::platform(),
                 &crate::autoreview_toggle::run_command,
             )),
             Command::Lane(LaneCommand::ReadTrust) => send(match read_trust(&link) {
@@ -1163,7 +1163,7 @@ fn session_call(link: &Link, service: &str, member: &str, args: Value) -> Result
     connection
         .session_target()
         .and_then(|target| connection.call(target, service, member, args))
-        .map_err(crate::link::fail)
+        .map_err(client::lost::message)
 }
 
 /// `/trust`: the worker's `readSettings` and the trust choices for its cwd (`getProjectTrustOptions`).
@@ -1282,7 +1282,7 @@ fn reload_plugins(link: &Link) -> Result<(), String> {
             "reload",
             json!([]),
         )
-        .map_err(crate::link::fail)?
+        .map_err(client::lost::message)?
         .unwrap_or(Value::Null);
     session_call(link, protocol::names::SESSION_PLUGINS, "reload", json!([]))?;
     apply_presentation_plugins(&data)
@@ -1583,11 +1583,11 @@ fn catalog(env: &Env) -> Vec<ModelInfo> {
 fn session_op_runner(link: &Link) -> Arc<dyn Fn(Op) -> Result<Option<Value>, String> + Send + Sync> {
     let connection = link.connection();
     Arc::new(move |op: Op| {
-        let session = connection.session_target().map_err(crate::link::fail)?;
+        let session = connection.session_target().map_err(client::lost::message)?;
         let request = connection
             .start(session, protocol::names::SESSION_OPS, "op", json!([op.to_json()]))
-            .map_err(crate::link::fail)?;
-        connection.wait(&request).map_err(crate::link::fail)
+            .map_err(client::lost::message)?;
+        connection.wait(&request).map_err(client::lost::message)
     })
 }
 
@@ -1597,11 +1597,11 @@ fn start_call(
     member: &str,
     args: Value,
 ) -> Result<(Arc<client::runtime::Connection>, String), String> {
-    let session = link.connection().session_target().map_err(crate::link::fail)?;
+    let session = link.connection().session_target().map_err(client::lost::message)?;
     let request = link
         .connection()
         .start(session, service, member, args)
-        .map_err(crate::link::fail)?;
+        .map_err(client::lost::message)?;
     Ok((link.connection(), request))
 }
 
@@ -1672,17 +1672,17 @@ fn usage_report(link: &Link, env: &Env) -> Result<String, String> {
     let file = described["sessionFile"]
         .as_str()
         .ok_or("The Session worker returned no session report")?;
-    let log = crate::usage::log::read_session_log(std::path::Path::new(file)).map_err(|e| e.message().to_string())?;
+    let log = usage::log::read_session_log(std::path::Path::new(file)).map_err(|e| e.message().to_string())?;
     let providers = session_core::lane::subscription_providers(env);
-    let report = crate::usage::report::build_session_report_with(&log, &providers);
+    let report = usage::report::build_session_report_with(&log, &providers);
     let zone = jsrt::localtime::Zone::from_env(std::env::var("TZ").ok().as_deref());
     let home = std::env::var("HOME").unwrap_or_default();
-    let options = crate::usage::text::TextOptions {
+    let options = usage::text::TextOptions {
         utc: false,
         home: &home,
         zone: &zone,
     };
-    Ok(crate::usage::text::render_session_report(&report, &options).join("\n"))
+    Ok(usage::text::render_session_report(&report, &options).join("\n"))
 }
 
 /// `selectInteractiveSession` for `ultron -r`: this directory's sessions as a numbered list (with their names), read
@@ -1730,7 +1730,7 @@ pub fn run_interactive(parsed: &Args, env: &Env, target: Target) -> Result<i32, 
     run_tui(
         parsed,
         env,
-        Box::new(move |watch| Link::open(&open_args, &open_env, &target, "interactive", watch)),
+        Box::new(move |watch| crate::link::open(&open_args, &open_env, &target, "interactive", watch)),
     )
 }
 
@@ -1741,8 +1741,8 @@ pub fn run_interactive(parsed: &Args, env: &Env, target: Target) -> Result<i32, 
 pub fn run_remote_interactive(
     parsed: &Args,
     env: &Env,
-    route: crate::link::RemoteRoute,
-    selection: crate::link::RemoteSelection,
+    route: client::session::RemoteRoute,
+    selection: client::session::RemoteSelection,
 ) -> Result<i32, String> {
     run_tui(
         parsed,
@@ -1756,7 +1756,7 @@ pub fn run_remote_interactive(
 pub fn is_worker_restart(event: &Value) -> bool {
     event["type"] == "connection"
         && event["state"] == "reconnecting"
-        && event["message"] == crate::link::WORKER_RESTARTED
+        && event["message"] == client::session::WORKER_RESTARTED
 }
 
 /// What a remote link's recovery events show (client-tui.ts `#handleConnectionState`, `#handleAttachmentState`,
@@ -1864,7 +1864,7 @@ pub fn presentation_settings(parsed: &Args, settings: &serde_json::Map<String, V
 fn run_tui(
     parsed: &Args,
     env: &Env,
-    open_link: Box<dyn FnOnce(crate::link::WatchSink) -> Result<Link, String>>,
+    open_link: Box<dyn FnOnce(client::session::WatchSink) -> Result<Link, String>>,
 ) -> Result<i32, String> {
     let model = crate::print_mode::resolve_model(parsed, env).ok();
     let models = catalog(env);
@@ -1891,7 +1891,7 @@ fn run_tui(
     });
     let platform = crate::terminal_settings::platform(env);
     let user_keys = user_keybindings(&env.agent_dir(), platform);
-    let key_context = crate::terminal_settings::key_context(env);
+    let key_context = tui::KeyContext::from_env(&|k| (env.var)(k));
     let keys = || KeybindingsManager::new(native_app_keybindings(platform), user_keys.clone(), key_context);
     // `ensureTool("fd")` before the TUI starts (client-tui.ts `runClientTui`).
     let fd_path = crate::tools_manager::ensure_fd(env, crate::tools_manager::GITHUB);
@@ -2283,7 +2283,7 @@ mod tests {
     #[test]
     fn cli_interactive_watch_events_become_tui_events() {
         // Only the link's report of a worker restart starts the TUI's recovery (not a lost server or a rejoin).
-        use crate::link::{WORKER_RESTARTED, connection_event};
+        use client::session::{WORKER_RESTARTED, connection_event};
         assert!(is_worker_restart(&connection_event(
             "reconnecting",
             Some(WORKER_RESTARTED)

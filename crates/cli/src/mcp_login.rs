@@ -9,7 +9,7 @@ use mcp::connection::{Connection, ConnectionEnv, ServerState};
 use mcp::oauth::OAuthError;
 use mcp::oauth::store::CredentialStore;
 use std::collections::HashMap;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -31,34 +31,6 @@ pub fn connection_env(env: &Env, agent_dir: &Path) -> ConnectionEnv {
     }
 }
 
-/// The browser launcher for this platform, looked up on `path` (the run's `PATH`): `open` on macOS, else `xdg-open`.
-pub fn browser_launcher(path: Option<&str>) -> Option<PathBuf> {
-    let name = if cfg!(target_os = "macos") { "open" } else { "xdg-open" };
-    std::env::split_paths(path?)
-        .map(|dir| dir.join(name))
-        .find(|candidate| candidate.is_file())
-}
-
-/// `openBrowser`: start the launcher on `url`, detached; a launcher that is missing or fails is ignored.
-fn open_browser(env: &Env, url: &str) {
-    let path = (env.var)("PATH");
-    let Some(launcher) = browser_launcher(path.as_deref()) else {
-        return;
-    };
-    let mut command = std::process::Command::new(launcher);
-    command
-        .arg(url)
-        .env_clear()
-        .env("PATH", path.unwrap_or_default())
-        .env("HOME", &env.home)
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null());
-    if let Ok(mut child) = command.spawn() {
-        std::thread::spawn(move || child.wait());
-    }
-}
-
 /// The sign-in prompt of the command: the URL on stdout and in the browser; in a terminal the pasted redirect URL
 /// may finish the sign-in, otherwise only the browser's callback can, until `timeout`.
 struct Prompt<'a> {
@@ -74,7 +46,7 @@ impl mcp::oauth::signin::SignInPrompt for Prompt<'_> {
         let mut out = std::io::stdout();
         let _ = writeln!(out, "Sign in to MCP server \"{}\" in your browser:\n{url}", self.name);
         let _ = out.flush();
-        open_browser(self.env, url);
+        crate::tui_login::open_browser(self.env, url);
     }
 
     fn prompt_for_redirect_url(&self, cancel: &mcp::CancelToken) -> Option<String> {
@@ -252,16 +224,5 @@ mod tests {
                 "{bad}"
             );
         }
-    }
-
-    #[test]
-    fn cli_mcp_login_finds_the_browser_only_on_the_given_path() {
-        let dir = tempfile::tempdir().unwrap();
-        assert_eq!(browser_launcher(None), None);
-        assert_eq!(browser_launcher(Some(&dir.path().display().to_string())), None);
-        let name = if cfg!(target_os = "macos") { "open" } else { "xdg-open" };
-        std::fs::write(dir.path().join(name), "").unwrap();
-        let path = format!("/nonexistent-dir:{}", dir.path().display());
-        assert_eq!(browser_launcher(Some(&path)), Some(dir.path().join(name)));
     }
 }

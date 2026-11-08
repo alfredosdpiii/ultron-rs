@@ -21,6 +21,7 @@ mod keybindings_file;
 mod keyboard_protocol;
 mod keys;
 mod latex;
+mod main_screen;
 mod markdown;
 mod marked;
 mod mouse;
@@ -73,10 +74,11 @@ pub use highlight::{
 };
 pub use image::{
     Capabilities, CapabilityOverrides, DEFAULT_CELL, DELETE_ALL_KITTY_IMAGES, DELETE_ALL_KITTY_PLACEMENTS, Dimensions,
-    HYPERLINKS_ENV, Image, ImageProtocol, KittyImageMetadata, RenderOptions, allocate_image_id,
+    HYPERLINKS_ENV, Image, ImageProtocol, KittyImageMetadata, RenderOptions, TMUX_PROBE_TIMEOUT, allocate_image_id,
     calculate_image_cell_size, capabilities, color_mode, crop_kitty_image_line, delete_kitty_image,
     detect_capabilities, encode_iterm2, encode_kitty, hyperlink, image_dimensions, image_fallback,
-    kitty_image_metadata, kitty_image_placement, register_kitty_image_metadata, render_image,
+    kitty_image_metadata, kitty_image_placement, probed_capabilities, register_kitty_image_metadata, render_image,
+    termfeatures_list_hyperlinks, tmux_forwards_hyperlinks,
 };
 pub use input::{Input, InputEvent};
 pub use keybindings::{KeybindingDefinition, KeybindingsManager, UserBindings, tui_keybindings};
@@ -84,6 +86,7 @@ pub use keybindings_file::{keybindings_path, load_user_bindings, migrate_keybind
 pub use keyboard_protocol::{KeyboardProtocol, NegotiationSequence, parse_negotiation_sequence};
 pub use keys::{KeyContext, decode_printable_key, is_key_release, matches_key, parse_key};
 pub use latex::render_latex;
+pub use main_screen::MainScreen;
 pub use markdown::{
     DefaultTextStyle, HighlightFn, ListItem, Markdown, MarkdownOptions, MarkdownTheme, Token,
     trim_partial_closing_fences,

@@ -107,7 +107,7 @@ impl Case {
             cwd: root.to_path_buf(),
             home: root.join("home"),
             var: Arc::new(move |k| vars.get(k).cloned()),
-            docs: PathBuf::from(docs()),
+            package: PathBuf::from(docs()).join(".."),
         }
     }
 }

@@ -42,8 +42,17 @@ fn session_journal_catalog_lists_v4_and_legacy_v3_sessions_of_a_cwd_newest_first
     let ids = |listed: Vec<session_journal::Metadata>| listed.into_iter().map(|m| m.id).collect::<Vec<_>>();
     assert_eq!(ids(catalog::list(dir.path(), Some("/w"))), ["v3", "v4"]);
     assert!(catalog::list(dir.path(), Some("/elsewhere")).is_empty());
-    assert_eq!(catalog::find(dir.path(), "v4").map(|m| m.path), Some(v4));
-    assert!(catalog::find(dir.path(), "missing").is_none());
+    assert_eq!(
+        catalog::find(dir.path(), "v4").unwrap().map(|m| m.path),
+        Some(v4.clone())
+    );
+    assert_eq!(catalog::find(dir.path(), "missing"), Ok(None));
+    // Two files with one id (a copied session) make the id ambiguous.
+    std::fs::copy(&v4, folder.join("copy.jsonl")).unwrap();
+    assert_eq!(
+        catalog::find(dir.path(), "v4"),
+        Err("Session v4 is ambiguous: more than one session file has this id".to_string())
+    );
 }
 
 #[test]

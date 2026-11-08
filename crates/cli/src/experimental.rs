@@ -6,8 +6,8 @@
 //! (`runClientTui`), else a listing, an attachment or one prompted turn (`runClient`).
 
 use crate::Env;
-use crate::link::{RemoteRoute, RemoteSelection};
 use client::runtime::ClientResult;
+use client::session::{RemoteRoute, RemoteSelection};
 use daemon::server::{ServerOptions, activate_server, start_foreground_server};
 use daemon::workers::WorkerModel;
 use protocol::Route;
@@ -799,7 +799,8 @@ pub fn choose_server(
 
 /// A server's session summaries (its `ultron.session-directory` state).
 fn server_sessions(route: &Route) -> Result<Vec<Value>, String> {
-    let connection = client::runtime::Connection::connect(&route.path, &route.server_id).map_err(crate::link::fail)?;
+    let connection =
+        client::runtime::Connection::connect(&route.path, &route.server_id).map_err(client::lost::message)?;
     let sessions = connection
         .subscribe(connection.server_target(), protocol::names::SESSION_DIRECTORY)
         .map(|subscription| {
@@ -808,7 +809,7 @@ fn server_sessions(route: &Route) -> Result<Vec<Value>, String> {
                 .and_then(|state| state["sessions"].as_array().cloned())
                 .unwrap_or_default()
         })
-        .map_err(crate::link::fail);
+        .map_err(client::lost::message);
     connection.disconnect();
     sessions
 }
@@ -851,7 +852,7 @@ pub fn run_client(command: &ClientCommand, env: &Env, out: &mut dyn Write) -> Re
         };
         return crate::interactive::run_remote_interactive(&crate::args::Args::default(), env, route, selection);
     }
-    let connection = route.connect().map_err(crate::link::fail)?;
+    let connection = route.connect().map_err(client::lost::message)?;
     // The text of the assistant message streaming now: a rejoined prompt prints the rest of its answer.
     let streamed = Arc::new(std::sync::Mutex::new(None::<String>));
     let streaming = streamed.clone();

@@ -6,21 +6,12 @@
 mod tui_harness;
 
 use std::os::unix::fs::PermissionsExt;
-use tui_harness::{Mock, Tui};
+use tui_harness::{Mock, QUIET, Tui};
 
 #[test]
 fn cli_interactive_trust_debug_and_reload_work_through_the_worker() {
     let mock = Mock::start(Vec::new(), None);
-    let tui = Tui::start(
-        mock.port,
-        100,
-        30,
-        &["--model", "anthropic/claude-sonnet-4-5"],
-        &[
-            (session_core::core::AUTO_NAME_ENV, "off"),
-            (cli::interactive::SPLASH_ENV, "off"),
-        ],
-    );
+    let tui = Tui::start(mock.port, 100, 30, &["--model", "anthropic/claude-sonnet-4-5"], &QUIET);
     tui.wait("Session:");
     let agent = tui.root.join("agent");
     let cwd = tui.root.join("cwd").canonicalize().unwrap();

@@ -5,13 +5,13 @@
 //! Pro/Max, OpenAI Codex, GitHub Copilot, xAI, Kimi, Meta), never an API key or a non-subscription OAuth
 //! (OpenRouter), and always `claude-subscription`.
 
-use cli::usage::log::read_session_log;
-use cli::usage::report::{build_session_report, build_session_report_with};
 use serde_json::{Value, json};
 use session_core::RunEnv;
 use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Arc;
+use usage::log::read_session_log;
+use usage::report::{build_session_report, build_session_report_with};
 
 /// rootOnlySession: one root response on provider `priced`, $0.10.
 fn session(dir: &Path) -> std::path::PathBuf {
@@ -63,7 +63,7 @@ fn env(dir: &Path, vars: &[(&str, String)]) -> RunEnv {
         cwd: dir.join("cwd"),
         home: dir.to_path_buf(),
         var: Arc::new(move |k| map.get(k).cloned()),
-        docs: dir.join("docs"),
+        package: dir.to_path_buf(),
     }
 }
 
@@ -103,7 +103,7 @@ fn cli_usage_command_prices_an_oauth_subscription_login_as_notional() {
         let (mut out, mut err) = (Vec::new(), Vec::new());
         let args = ["usage", "--json", &path.display().to_string()].map(str::to_string);
         assert_eq!(
-            cli::usage::run(&args, env, &mut out, &mut err),
+            cli::usage_cli::run(&args, env, &mut out, &mut err),
             Some(0),
             "{}",
             String::from_utf8_lossy(&err)
@@ -156,7 +156,7 @@ fn cli_usage_mcp_report_prices_the_servers_subscription_logins_as_notional() {
         .unwrap()
         .replace("\"priced\"", "\"anthropic\"");
     std::fs::write(&path, text).unwrap();
-    let report = cli::mcp_session_report(&path, &env(dir.path(), &[])).unwrap();
+    let report = usage::session_report(&path, &env(dir.path(), &[])).unwrap();
     let cost = &report["usage"]["total"]["cost"];
     assert_eq!(cost["reportedUsd"], Value::Null, "{cost}");
     assert!((cost["subscriptionUsd"].as_f64().unwrap() - 0.1).abs() < 1e-9, "{cost}");
@@ -167,9 +167,9 @@ fn cli_usage_mcp_report_prices_the_servers_subscription_logins_as_notional() {
         json!({"anthropic": {"type": "api_key", "key": "fake-anthropic-key"}}).to_string(),
     )
     .unwrap();
-    let report = cli::mcp_session_report(&path, &env).unwrap();
+    let report = usage::session_report(&path, &env).unwrap();
     let cost = &report["usage"]["total"]["cost"];
     assert!((cost["reportedUsd"].as_f64().unwrap() - 0.1).abs() < 1e-9, "{cost}");
     assert_eq!(cost["subscriptionUsd"], Value::Null, "{cost}");
-    assert!(cli::mcp_session_report(&dir.path().join("missing.jsonl"), &env).is_err());
+    assert!(usage::session_report(&dir.path().join("missing.jsonl"), &env).is_err());
 }

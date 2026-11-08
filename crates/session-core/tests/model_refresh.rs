@@ -219,7 +219,7 @@ fn profile(spec: &Value, ports: (u16, u16)) -> Profile {
             cwd: tmp.path().join("cwd"),
             home: tmp.path().to_path_buf(),
             var: Arc::new(move |k| map.get(k).cloned()),
-            docs: tmp.path().join("docs"),
+            package: tmp.path().to_path_buf(),
         },
         agent,
         _tmp: tmp,

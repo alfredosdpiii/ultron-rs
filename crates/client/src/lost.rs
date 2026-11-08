@@ -39,7 +39,8 @@ pub fn describe(error: &CallError) -> Option<String> {
 }
 
 /// `clientErrorMessage`: the error's message, the clear lost-server message when the server or worker went away.
-pub fn message(error: &CallError) -> String {
+pub fn message(error: impl std::borrow::Borrow<CallError>) -> String {
+    let error = error.borrow();
     describe(error).unwrap_or_else(|| error.to_string())
 }
 
