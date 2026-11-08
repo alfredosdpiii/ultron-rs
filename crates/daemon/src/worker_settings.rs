@@ -649,6 +649,101 @@ pub fn apply(
                 Applied::Restart
             };
         }
+        // Rust-only, global: the judge seat (crates/judge), read at each `judge.decide`.
+        "judge.provider" => {
+            let order = match value {
+                Value::Null => None,
+                Value::Array(items) => {
+                    let mut order: Vec<Value> = Vec::new();
+                    for item in items {
+                        let name = one_of(key, item, &config::keys::JUDGE_BACKENDS)?;
+                        if !order.contains(&json!(name)) {
+                            order.push(json!(name));
+                        }
+                    }
+                    Some(Value::Array(order))
+                }
+                _ => return Err(format!("{key} must be a list of jev, d1 (or null for both, Jev first)")),
+            };
+            nested(settings, "judge", "provider", order);
+            applied = Applied::Live;
+        }
+        "judge.d1.url" => {
+            let url = match value {
+                Value::Null => None,
+                value => {
+                    let url = string(key, Some(value))?;
+                    let url = url.trim().trim_end_matches('/');
+                    let host = url.strip_prefix("http://").or_else(|| url.strip_prefix("https://"));
+                    if host.is_none_or(|host| host.is_empty() || host.contains(char::is_whitespace)) {
+                        return Err(format!("{key} must be an http(s) URL"));
+                    }
+                    Some(json!(url))
+                }
+            };
+            let mut d1 = get(settings, &["judge", "d1"])
+                .and_then(Value::as_object)
+                .cloned()
+                .unwrap_or_default();
+            match url {
+                Some(url) => d1.insert("url".into(), url),
+                None => d1.shift_remove("url"),
+            };
+            nested(settings, "judge", "d1", (!d1.is_empty()).then_some(Value::Object(d1)));
+            applied = Applied::Live;
+        }
+        "judge.model" => {
+            let model = match value {
+                Value::Null => None,
+                value => Some(json!(string(key, Some(value))?.trim())),
+            };
+            nested(settings, "judge", "model", model);
+            applied = Applied::Live;
+        }
+        "judge.escalateModel" | "judge.fallbackModel" => {
+            nested(settings, "judge", &key["judge.".len()..], opt(model_value(key, value)?));
+            applied = Applied::Live;
+        }
+        "judge.thresholds" => {
+            let unit = |v: &Value| v.as_f64().is_some_and(|n| (0.0..=1.0).contains(&n));
+            let valid = value.is_null()
+                || value.as_object().is_some_and(|map| {
+                    map.values()
+                        .all(|v| unit(v) || v.as_object().is_some_and(|kind| kind.values().all(unit)))
+                });
+            if !valid {
+                return Err(format!(
+                    "{key} must map backends (and kinds to backends) to numbers from 0 to 1 (or null to clear it)"
+                ));
+            }
+            nested(
+                settings,
+                "judge",
+                "thresholds",
+                (!value.is_null()).then(|| value.clone()),
+            );
+            applied = Applied::Live;
+        }
+        "judge.budgetUsd" => {
+            let budget = match value {
+                Value::Null => None,
+                value => Some(json!(value.as_f64().filter(|n| n.is_finite() && *n > 0.0).ok_or_else(
+                    || { format!("{key} must be a positive number of US dollars (or null to clear it)") }
+                )?)),
+            };
+            nested(settings, "judge", "budgetUsd", budget);
+            applied = Applied::Live;
+        }
+        "judge.maxCalls" => {
+            let cap = match value {
+                Value::Null => None,
+                value => Some(json!(config::settings::token_cap(Some(value)).ok_or_else(|| {
+                    format!("{key} must be a positive whole number (or null to clear it)")
+                })?)),
+            };
+            nested(settings, "judge", "maxCalls", cap);
+            applied = Applied::Live;
+        }
         "claudeCode.frameModel" => nested(settings, "claudeCode", "frameModel", opt(model_value(key, value)?)),
         "claudeCode.ultronChildModel" => nested(
             settings,

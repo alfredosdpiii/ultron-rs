@@ -1,151 +1,69 @@
-"""Find and read Ultron session files from the REPL (read-only).
+"""Find and read Ultron sessions from the REPL (read-only), through the `sessions` API.
 
-Load with `s = runpy.run_path(f"{skill_dir}/scripts/sessions.py")`, then call `s["session_files"](...)` and
-`s["read_session"](path)`.
+Load with `s = runpy.run_path(f"{skill_dir}/scripts/sessions.py", init_globals={"sessions": sessions})`, then
+`await s["session_files"](...)`, `await s["grep_sessions"](rows, pattern)` and `await s["read_session"](row)`.
 
-Two layouts exist, both one directory per working directory (`--<cwd with / and : as ->--`):
-- native Ultron sessions: `<agent dir>/experimental/sessions/` (or ULTRON_CODING_AGENT_SESSION_DIR), each line a
-  storage record or a list of them; messages are `{"kind": "entry", "type": "message", "message": {...}}`, and the
-  main conversation is the parent chain from the last `pi.branch.tip` value for lane `main` (other lanes in the same
-  file are inference frames);
-- Pi-format sessions: `<agent dir>/sessions/`, each line one entry (`{"type": "message", "message": {...}}`).
+The host reads every session store this session can see (this project's, the agent dir's `experimental/sessions/`
+and Pi-format `sessions/`, one folder per working directory) and follows each session's main conversation (the
+branch of lane `main`; inference-frame lanes in the same file are left out). For a turn-level search, call the API
+itself: `await sessions.search(pattern, days=7)` returns hits with a `span` that `await sessions.read(span,
+around=n)` reads back; cite findings by their span.
 """
 
-import json
-import os
-import re
-import time
-from pathlib import Path
+
+def _api():
+    api = globals().get("sessions")
+    if api is None:
+        raise RuntimeError('load sessions.py with init_globals={"sessions": sessions}')
+    return api
 
 
-def agent_dir():
-    return Path(os.path.expanduser(os.environ.get("ULTRON_CODING_AGENT_DIR") or "~/.ultron/agent"))
+def _id(session):
+    return session["id"] if isinstance(session, dict) else session
 
 
-def session_roots():
-    """Directories that hold per-cwd session folders, existing ones only."""
-    roots = []
-    custom = os.environ.get("ULTRON_CODING_AGENT_SESSION_DIR")
-    if custom:
-        roots.append(Path(os.path.expanduser(custom)))
-    roots += [agent_dir() / "experimental" / "sessions", agent_dir() / "sessions"]
-    return [root for root in roots if root.is_dir()]
-
-
-def cwd_folder(cwd=None):
-    """The folder name a working directory's sessions are stored under."""
-    resolved = os.path.abspath(cwd or os.getcwd())
-    return "--" + re.sub(r"[/\\:]", "-", resolved.lstrip("/\\")) + "--"
-
-
-def session_files(cwd=None, days=7, all_projects=False):
-    """Session files modified in the last `days` days, newest first by real modification time.
+async def session_files(cwd=None, days=7, all_projects=False, limit=200):
+    """Sessions modified in the last `days` days, newest first: `[{id, cwd, path, created, modified, parent, name,
+    first_message, messages, current}]` (`current` marks this session, `parent` a subagent's session).
 
     Scoped to one working directory (default: the current one) unless `all_projects` is True.
     """
-    cutoff = time.time() - days * 86400
-    pattern = "*/*.jsonl" if all_projects else f"{cwd_folder(cwd)}/*.jsonl"
-    files = [path for root in session_roots() for path in root.glob(pattern)]
-    files = [(path.stat().st_mtime, path) for path in files]
-    return [path for mtime, path in sorted(files, reverse=True) if mtime >= cutoff]
+    return await _api().list(cwd="all" if all_projects else cwd, days=days, limit=limit)
 
 
-def _text(content, tool_chars):
-    if isinstance(content, str):
-        return content
-    parts = []
-    for part in content or []:
-        if not isinstance(part, dict):
-            continue
-        kind = part.get("type")
-        if kind == "text":
-            parts.append(part.get("text", ""))
-        elif kind == "toolCall":
-            args = part.get("arguments") or {}
-            body = args.get("code") or args.get("command") or json.dumps(args)[:tool_chars]
-            parts.append(f"[{part.get('name')}]\n{body}")
-        elif kind == "image":
-            parts.append("[image]")
-    return "\n".join(parts)
+async def read_session(session, tool_chars=2000, limit=1000):
+    """{path, id, cwd, parent, name, current, span, truncated, messages: [{role, text, tool, ts, entry}]} for the
+    session's main conversation (`session`: a row of `session_files`, or an id).
 
-
-def _message(message, tool_chars):
-    role = message.get("role")
-    text = _text(message.get("content"), tool_chars)
-    if role == "toolResult":
-        text = text[:tool_chars] + ("..." if len(text) > tool_chars else "")
-    return {"role": role, "text": text, "tool": message.get("toolName")}
-
-
-def read_session(path, tool_chars=2000):
-    """{path, id, cwd, parent, name, messages: [{role, text, tool, ts}]} for the session's main conversation.
-
-    Tool results are cut to `tool_chars`; thinking is left out. `parent` is set for a subagent's own session file.
+    Tool results are cut to `tool_chars`; thinking is left out; at most `limit` messages (`truncated` says more
+    were left). `parent` is set for a subagent's own session.
     """
-    header = {}
-    entries = {}
-    parents = {}
-    order = []
-    tips = {}
-    name = None
-    with open(path, encoding="utf-8", errors="replace") as handle:
-        for line in handle:
-            try:
-                record = json.loads(line)
-            except ValueError:
-                continue  # a torn last line
-            for item in record if isinstance(record, list) else [record]:
-                if not isinstance(item, dict):
-                    continue
-                if "id" in item and "parentId" in item:
-                    parents[item["id"]] = item["parentId"]
-                if item.get("kind") == "header" or item.get("type") == "session":
-                    header = item
-                elif item.get("type") == "session_info":
-                    name = item.get("name") or name
-                elif item.get("namespace") == "pi.branch.tip":
-                    tips[item.get("key")] = item.get("value")
-                elif item.get("type") == "message" and isinstance(item.get("message"), dict):
-                    entries[item.get("id")] = item
-                    order.append(item.get("id"))
-    def chain(tip):
-        found, seen = [], set()
-        while tip in parents and tip not in seen:
-            seen.add(tip)
-            if tip in entries:
-                found.append(tip)
-            tip = parents[tip]
-        return list(reversed(found))
-
-    if tips.get("main") in parents:
-        ids = chain(tips["main"])
-    else:  # no main tip: drop the inference-frame lanes, keep the rest in file order
-        frames = {i for key, tip in tips.items() if key != "main" for i in chain(tip)}
-        ids = [i for i in order if i not in frames]
-    messages = []
-    for entry_id in ids:
-        item = entries[entry_id]
-        message = _message(item["message"], tool_chars)
-        message["ts"] = item.get("timestamp")
-        messages.append(message)
+    read = await _api().read(session=_id(session), tool_chars=tool_chars, limit=limit)
+    meta = read["session"]
     return {
-        "path": str(path),
-        "id": header.get("id"),
-        "cwd": header.get("cwd"),
-        "parent": header.get("parentSession") or header.get("parentSessionId"),
-        "name": name,
-        "messages": messages,
+        "path": meta["path"],
+        "id": meta["id"],
+        "cwd": meta["cwd"],
+        "parent": meta["parent"],
+        "name": meta["name"],
+        "current": meta["current"],
+        "span": read["span"],
+        "truncated": read["truncated"],
+        "messages": [
+            {"role": e["role"], "text": e["text"], "tool": e["tool"], "ts": e["timestamp"], "entry": e["id"]}
+            for e in read["entries"]
+        ],
     }
 
 
-def grep_sessions(files, pattern, flags=re.I):
-    """[(path, count)] of files whose raw text matches `pattern`, most matches first."""
-    found = []
-    for path in files:
-        try:
-            count = len(re.findall(pattern, Path(path).read_text(encoding="utf-8", errors="replace"), flags))
-        except OSError:
-            continue
-        if count:
-            found.append((str(path), count))
-    return sorted(found, key=lambda item: -item[1])
+async def grep_sessions(files, pattern, limit=1000):
+    """[(id, count)] of the sessions among `files` (rows or ids) whose conversation matches the regex `pattern`
+    (case-insensitive), most matches first; at most `limit` matching messages are counted."""
+    ids = [_id(f) for f in files]
+    if not ids:
+        return []
+    found = await _api().search(pattern, sessions=ids, cwd="all", limit=limit, per_session=limit)
+    counts = {}
+    for hit in found["hits"]:
+        counts[hit["session"]] = counts.get(hit["session"], 0) + hit["matches"]
+    return sorted(counts.items(), key=lambda item: -item[1])

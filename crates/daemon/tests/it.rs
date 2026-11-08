@@ -26,3 +26,5 @@ mod watchdog;
 mod worker_settings;
 #[path = "worker_settings_claude_code_children.rs"]
 mod worker_settings_claude_code_children;
+#[path = "worker_settings_judge.rs"]
+mod worker_settings_judge;

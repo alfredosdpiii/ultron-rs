@@ -28,13 +28,13 @@ Only the current project's sessions unless the user names others: reading other 
 ```python
 import runpy
 skill_dir = "..."  # this skill's directory: "References are relative to <dir>" above
-s = runpy.run_path(f"{skill_dir}/../recall/scripts/sessions.py")
-files = s["session_files"](days=28)[1:]  # skip this session
+s = runpy.run_path(f"{skill_dir}/../recall/scripts/sessions.py", init_globals={"sessions": sessions})
+files = [f for f in await s["session_files"](days=28) if not f["current"]]  # skip this session
 slices = [files[i::3] for i in range(3)] if len(files) >= 6 else [files]
-def user_turns(paths):
+async def user_turns(rows):
     out = []
-    for p in paths:
-        x = s["read_session"](p, tool_chars=300)
+    for row in rows:
+        x = await s["read_session"](row, tool_chars=300)
         if x["messages"] and not x["parent"]:
             out += [f"[{x['id']}] {m['text'][:1500]}" for m in x["messages"] if m["role"] == "user"]
     return "\n\n".join(out)
@@ -44,7 +44,7 @@ found = await rlm.map(
     "format, 'dumb it down' corrections), delegation habits (subagents, models, parallelism), verification "
     "posture (what 'done' means), code and prose discipline, process conventions (worktrees, commits, PRs), "
     "meta preferences (fixing skills mid-task). Only patterns with evidence; quote it.",
-    [await rlm.load(text=user_turns(sl)) for sl in slices], contract=SIGNALS)
+    [await rlm.load(text=await user_turns(sl)) for sl in slices], contract=SIGNALS)
 ```
 
 Cross-check across slices. A pattern in 2+ slices is high-confidence; a lone signal is weak and usually dropped. Also check `await memory.prepare("user preferences", scope="global")` for kept facts; if it raises, skip it.

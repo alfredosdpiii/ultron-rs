@@ -16,6 +16,8 @@ mod legacy_names;
 mod listing_order;
 #[path = "names_and_run.rs"]
 mod names_and_run;
+#[path = "search.rs"]
+mod search;
 #[path = "storage_fixture.rs"]
 mod storage_fixture;
 #[path = "torn_tail.rs"]

@@ -6,7 +6,8 @@
 //!
 //! Legacy Pi v3 files (`crates/session-file`) are read as format-4 writes and upgraded in place by their first
 //! commit. [`run`] writes the harness operation journal of a prompted run; [`names`] lists sessions with their
-//! names and resolves `--resume <name|id>`.
+//! names and resolves `--resume <name|id>`. [`search`] lists, greps and reads stored sessions read-only, citing
+//! what it finds as spans (`session://<id>#<from>..<to>`).
 
 pub mod catalog;
 pub mod checkpoints;
@@ -19,6 +20,7 @@ pub mod names;
 pub mod ns;
 pub mod repo;
 pub mod run;
+pub mod search;
 pub mod session;
 pub mod state;
 pub mod storage;

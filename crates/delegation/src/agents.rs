@@ -16,6 +16,7 @@
 use crate::DEFAULT_TIMEOUT_MS;
 use crate::contract::Brief;
 use crate::definitions::{Definition, DefinitionRegistry, Strategy};
+use crate::estimate::{Pricing, Unit};
 use crate::task_store::TaskJournal;
 use crate::usage::{Measurement, Reservation, ReserveRequest, UsageLedger};
 use crate::verdict::{MAX_VERDICT_REJECTIONS, validate_verdict};
@@ -165,6 +166,8 @@ pub struct AgentsOptions {
     /// Charge each root turn to a usage root of its own (see [`Agents::begin_root_turn`]).
     pub root_turns: bool,
     pub now: Clock,
+    /// Model prices for `budget.estimate` and the stop-line of workflow nodes; without it nothing is priced.
+    pub pricing: Option<Pricing>,
 }
 
 impl AgentsOptions {
@@ -188,6 +191,7 @@ impl AgentsOptions {
             unpin_lane: None,
             root_turns: false,
             now: Arc::new(|| jsrt::date::now_ms() as f64),
+            pricing: None,
         }
     }
 }
@@ -206,6 +210,8 @@ struct TaskRequest {
     usage_root: Option<String>,
     /// The delegation brief (role, instruction, contract, hop) whose contract the result must meet.
     brief: Option<Brief>,
+    /// What the task is expected to cost (a workflow node's estimate): its admission is checked against the stop-line.
+    estimate_usd: Option<f64>,
 }
 
 #[derive(Default)]
@@ -290,6 +296,7 @@ struct Inner {
     unpin_lane: Option<LaneRelease>,
     root_turns: bool,
     now: Clock,
+    pricing: Option<Pricing>,
     events: Mutex<Sender<TaskEnd>>,
     /// The subagent host, for `rlm-child@1` workflow nodes with `worktree=True` / `"auto"` (`workflowTask` +
     /// `newWorktree` of native-host.ts). It owns worktrees: their creation, setup, commit at the end, `rlm.merge` and
@@ -522,6 +529,7 @@ impl Agents {
                 worktree_children: std::sync::OnceLock::new(),
                 root_turns: options.root_turns,
                 now: options.now,
+                pricing: options.pricing,
                 events: Mutex::new(sender),
             }),
         };
@@ -782,6 +790,7 @@ impl Agents {
                 model_backed: Some(strategy != Strategy::Deterministic),
                 request_key: Some(key.clone()),
                 timeout_ms: (!request.untimed).then_some(request.timeout_ms as f64),
+                estimated_cost_usd: request.estimate_usd,
                 ..ReserveRequest::default()
             })?),
             None => None,
@@ -1758,7 +1767,65 @@ impl Agents {
                 }
                 self.run_workflow(nodes, cell, parent)
             }
+            Request::BudgetEstimate => self.estimate(&payload, parent),
         }
+    }
+
+    /// `budget.estimate`: a plan's cost (`{plan}`), or a workflow's (`{workflow: {nodes, key?}}`, validated as
+    /// `workflows.run` validates it), beside the cost cap and call ceilings of the caller's root.
+    fn estimate(&self, payload: &Map<String, Value>, parent: Option<&str>) -> Result<Value, String> {
+        jsrt::payload::fields(payload, &["plan", "workflow"])?;
+        let units = match (payload.get("plan"), payload.get("workflow")) {
+            (Some(plan), None) => crate::estimate::parse_plan(plan)?,
+            (None, Some(Value::Object(workflow))) => self.workflow_units(&self.workflow(workflow)?),
+            _ => return Err("budget.estimate takes a plan or a workflow ({nodes}), not both".into()),
+        };
+        let status = match &self.inner.usage {
+            Some(usage) => {
+                let root = self.status_root(&self.state(), parent);
+                Some(usage.status(root.as_deref())?)
+            }
+            None => None,
+        };
+        Ok(crate::estimate::estimate(
+            &units,
+            self.inner.pricing.as_ref(),
+            status.as_ref(),
+        ))
+    }
+
+    /// The model work of a node: a subagent (`child`), a frame, one completion (`chat`), or none (deterministic).
+    fn node_unit(&self, node: &Node, calls: u64) -> Option<Unit> {
+        let kind = match self.definition(&node.definition).ok()?.strategy() {
+            Strategy::Deterministic => return None,
+            Strategy::Predict => "chat",
+            Strategy::Rlm if node.definition == "rlm-frame@1" => "frame",
+            Strategy::Rlm => "child",
+        };
+        let mut unit = Unit::new(kind, calls, node.model.clone());
+        unit.node = Some(node.id.clone());
+        Some(unit)
+    }
+
+    /// A workflow's units: each node once, a revision loop's node and reviewer once per round at most.
+    fn workflow_units(&self, nodes: &[Node]) -> Vec<Unit> {
+        let rounds = |id: &str| {
+            nodes
+                .iter()
+                .find_map(|n| n.revise.as_ref().filter(|r| n.id == id || r.0 == id).map(|r| r.3))
+                .unwrap_or(1)
+        };
+        nodes
+            .iter()
+            .filter_map(|node| self.node_unit(node, rounds(&node.id)))
+            .collect()
+    }
+
+    /// What one run of `node` is expected to cost, when its model has a price.
+    fn node_estimate(&self, node: &Node) -> Option<f64> {
+        let unit = self.node_unit(node, 1)?;
+        let pricing = self.inner.pricing.as_ref()?;
+        crate::estimate::call_cost(&unit, &pricing(&unit.kind, unit.model.as_deref()))
     }
 
     /// Run `rlm-child@1` workflow nodes with `worktree=True` / `"auto"` as subagents of `children` (set once).
@@ -2355,7 +2422,20 @@ impl Agents {
             (None, Some(_)) => Some(Value::Bool(false)),
             (None, None) => None,
         };
+        let estimate = self.node_estimate(node);
         if let (Some(mode), Some(children)) = (&subagent, self.inner.worktree_children.get()) {
+            // The subagent host admits it outside this ledger: the stop-line is checked here first.
+            if let (Some(usage), Some(estimate)) = (&self.inner.usage, estimate) {
+                let root = self.status_root(&self.state(), parent);
+                let unit = format!("workflow node {}", node.id);
+                match usage.stop_line(root.as_deref(), estimate, &unit) {
+                    Ok(None) => {}
+                    Ok(Some(reason)) | Err(reason) => {
+                        signal_admitted();
+                        return failed(format!("Admission refused: {reason}"));
+                    }
+                }
+            }
             // A worktree node branches from the caller's tree as it is when the node starts; a node with a contract
             // runs as a subagent so that the subagent host checks it.
             let base = input["prompt"].as_str().unwrap_or_default().to_string();
@@ -2388,6 +2468,7 @@ impl Agents {
             workflow: Some(json!({ "run": run, "node": node.id, "dependsOn": node.depends_on,
                                    "join": if node.join_any { "any" } else { "all" } })),
             brief,
+            estimate_usd: estimate,
             ..TaskRequest::default()
         };
         let spawned = self.spawn_task(request, cell, parent, None);
@@ -2831,6 +2912,7 @@ enum Request {
     Task,
     Finish,
     WorkflowsRun,
+    BudgetEstimate,
 }
 
 impl Request {
@@ -2847,6 +2929,7 @@ impl Request {
             "agents.inspect" | "agents.result" | "agents.cancel" => Request::Task,
             "rlm.finish" => Request::Finish,
             "workflows.run" => Request::WorkflowsRun,
+            "budget.estimate" => Request::BudgetEstimate,
             _ => return None,
         })
     }

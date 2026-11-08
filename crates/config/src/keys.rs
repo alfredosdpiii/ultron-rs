@@ -2,7 +2,7 @@
 //! `getShellPath`, `getShellCommandPrefix`, `getThinkingBudgets`, `getWebSocketConnectTimeoutMs`,
 //! `getTerminalCapabilityOverrides`, `getCodeBlockIndent`, `getWarnings`, `getRlmModelSettings`, `getReviewModel`,
 //! `getWorktreeSettings`, `getHttpIdleTimeoutMs`, `getProviderRetrySettings`, `getShowHardwareCursor`,
-//! `getClearOnShrink`, session-worker.ts `providerRequestOptions`), over a settings object so a composed session
+//! `getClearOnShrink`, session-worker.ts `providerRequestOptions`; Rust-only: [`judge_settings`]), over a settings object so a composed session
 //! (which keeps its settings as JSON) reads them as a [`crate::settings::SettingsManager`] does; plus the value sets
 //! of the enumerated settings, which `/settings` offers and validates.
 
@@ -300,4 +300,97 @@ pub fn rlm_model_settings(global: &Settings) -> RlmModelSettings {
 /// `getReviewModel`: `review.model` of the global settings.
 pub fn review_model(global: &Settings) -> Option<String> {
     model_ref(object(global.get("review"))?.get("model"))
+}
+
+/// The judge seat's backends, in the order `judge.provider` may name them.
+pub const JUDGE_BACKENDS: [&str; 2] = ["jev", "d1"];
+/// `judge.model` when unset: the newest Jev.
+pub const JUDGE_DEFAULT_MODEL: &str = "jev-latest";
+/// `judge.maxCalls` when unset: backend calls one judge seat (a session, a bench run) may make.
+pub const JUDGE_DEFAULT_MAX_CALLS: u64 = 1000;
+
+/// `judge.*` (Rust only, global only: it points at services and spends money): the judge seat's backends and limits.
+#[derive(Clone, Debug, PartialEq)]
+pub struct JudgeSettings {
+    /// `judge.provider`: the backends tried in order (`jev`, `d1`); default both, Jev first. Unknown names are dropped.
+    pub providers: Vec<String>,
+    /// `judge.d1.url`: the d1 server (`<url>/decide`); unset, d1 is not configured.
+    pub d1_url: Option<String>,
+    /// `judge.model`: the Jev model asked for.
+    pub model: String,
+    /// `judge.escalateModel`: the `provider/model` a low-confidence verdict is escalated to.
+    pub escalate_model: Option<String>,
+    /// `judge.fallbackModel`: the `provider/model` asked when no judge backend answers.
+    pub fallback_model: Option<String>,
+    /// `judge.thresholds`: `{<backend>: n}` defaults and `{<kind>: {<backend>: n}}` overrides, each in 0..=1.
+    pub thresholds: Map<String, Value>,
+    /// `judge.budgetUsd`: the USD one seat may spend; unset, no cap (spend is still recorded).
+    pub budget_usd: Option<f64>,
+    /// `judge.maxCalls`: the backend calls one seat may make.
+    pub max_calls: u64,
+}
+
+/// A confidence threshold: a number in 0..=1.
+fn threshold(value: &Value) -> Option<f64> {
+    value.as_f64().filter(|n| (0.0..=1.0).contains(n))
+}
+
+/// `judge.thresholds` with every invalid entry dropped.
+fn judge_thresholds(value: Option<&Value>) -> Map<String, Value> {
+    let mut out = Map::new();
+    for (key, value) in object(value).into_iter().flatten() {
+        if let Some(n) = threshold(value) {
+            out.insert(key.clone(), json!(n));
+        } else if let Some(kind) = value.as_object() {
+            let valid: Map<String, Value> = kind
+                .iter()
+                .filter_map(|(backend, n)| threshold(n).map(|n| (backend.clone(), json!(n))))
+                .collect();
+            if !valid.is_empty() {
+                out.insert(key.clone(), Value::Object(valid));
+            }
+        }
+    }
+    out
+}
+
+/// `judge.*` of the global settings (a repository cannot point the judge at a service or spend on it).
+pub fn judge_settings(global: &Settings) -> JudgeSettings {
+    let configured = object(global.get("judge"));
+    let field = |key: &str| configured.and_then(|c| c.get(key));
+    let providers = match field("provider").and_then(Value::as_array) {
+        Some(names) => {
+            let mut picked: Vec<String> = Vec::new();
+            for name in names.iter().filter_map(Value::as_str) {
+                if JUDGE_BACKENDS.contains(&name) && !picked.iter().any(|p| p == name) {
+                    picked.push(name.to_string());
+                }
+            }
+            picked
+        }
+        None => JUDGE_BACKENDS.iter().map(|b| b.to_string()).collect(),
+    };
+    let d1_url = object(field("d1"))
+        .and_then(|d1| d1.get("url"))
+        .and_then(Value::as_str)
+        .map(|url| jsrt::string::trim(url).trim_end_matches('/').to_string())
+        .filter(|url| !url.is_empty());
+    let model = field("model")
+        .and_then(Value::as_str)
+        .map(jsrt::string::trim)
+        .filter(|m| !m.is_empty())
+        .unwrap_or(JUDGE_DEFAULT_MODEL)
+        .to_string();
+    JudgeSettings {
+        providers,
+        d1_url,
+        model,
+        escalate_model: model_ref(field("escalateModel")),
+        fallback_model: model_ref(field("fallbackModel")),
+        thresholds: judge_thresholds(field("thresholds")),
+        budget_usd: field("budgetUsd")
+            .and_then(Value::as_f64)
+            .filter(|n| n.is_finite() && *n > 0.0),
+        max_calls: token_cap(field("maxCalls")).unwrap_or(JUDGE_DEFAULT_MAX_CALLS),
+    }
 }

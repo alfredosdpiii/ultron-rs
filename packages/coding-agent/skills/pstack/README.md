@@ -10,7 +10,10 @@ pstack is MIT licensed; its license is [LICENSE](LICENSE) in this directory, and
 source. Changes from the original: Cursor-only mechanics replaced or removed, `poteto-mode` renamed `rigor`, the
 three orchestration playbooks merged into one, and `setup-pstack`, `poteto-help` and `make-bot-ui` left out (Ultron's
 model settings and `/skill:` commands cover the first two; the third needs Grok Bot). `statechart`'s scripts are
-upstream's unchanged, without their test suite; they need Node, and install TLC and Java on first use; rendering a chart follows `statechart/references/render.md`.
+upstream's, without their test suite, plus a Quint front end (`quint.ts`: a `.qnt` spec is compiled to TLA+ first) and
+a `--checker tla-ts` option, with its own test in `scripts/test/`; they need Node, and install TLC and Java on first use
+(Quint and tla-ts from npm's cache, at the versions `scripts/package.json` pins); rendering a chart follows
+`statechart/references/render.md`.
 
 ## Use
 

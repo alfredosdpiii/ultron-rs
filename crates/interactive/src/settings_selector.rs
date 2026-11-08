@@ -81,6 +81,42 @@ fn token_cap_value(label: &str) -> Value {
         .map_or(Value::Null, |n| Value::from(n * scale))
 }
 
+/// `judge.provider` choices (`judge.provider`), as `/settings` shows them.
+const JUDGE_ORDERS: [&str; 5] = ["jev, d1", "d1, jev", "jev", "d1", "none"];
+const JUDGE_BUDGETS: [&str; 5] = ["off", "$0.10", "$1", "$5", "$20"];
+
+/// A saved `judge.provider` as a choice: unset is both, Jev first.
+fn judge_order(value: &Value) -> String {
+    match value.as_array() {
+        None => JUDGE_ORDERS[0].into(),
+        Some(names) if names.is_empty() => "none".into(),
+        Some(names) => names.iter().filter_map(Value::as_str).collect::<Vec<_>>().join(", "),
+    }
+}
+
+/// What a `judge.provider` choice saves.
+fn judge_order_value(label: &str) -> Value {
+    let names: Vec<&str> = label.split(", ").filter(|n| *n != "none").collect();
+    Value::from(names)
+}
+
+/// A saved `judge.budgetUsd` as a choice.
+fn budget_label(value: &Value) -> String {
+    match value.as_f64().filter(|n| *n > 0.0) {
+        Some(usd) if usd < 1.0 => format!("${usd:.2}"),
+        Some(usd) => format!("${usd}"),
+        None => "off".into(),
+    }
+}
+
+/// What a `judge.budgetUsd` choice saves: off removes the key.
+fn budget_value(label: &str) -> Value {
+    label
+        .strip_prefix('$')
+        .and_then(|n| n.parse::<f64>().ok())
+        .map_or(Value::Null, Value::from)
+}
+
 /// A token-cap row; a saved count that is not one of the choices is offered after off.
 fn token_cap_item(id: &str, label: &str, description: &str, saved: &Value, choices: &[&str]) -> Item {
     let current = format_token_cap(saved);
@@ -930,6 +966,31 @@ impl SettingsSelector {
                     &MAP_TOKEN_CAPS,
                 ),
             );
+            items.insert(
+                at + 3,
+                item(
+                    "judge-provider",
+                    "Judge backends",
+                    "Who answers judge.decide, in order: Jev (TypeSafe key), d1 (judge.d1.url and key); `ultron setup` sets them up. Models: the judge's fallback and escalation models.",
+                    judge_order(c.get("judge.provider")),
+                    &JUDGE_ORDERS,
+                ),
+            );
+            let budget = budget_label(c.get("judge.budgetUsd"));
+            let mut budgets = JUDGE_BUDGETS.to_vec();
+            if !budgets.contains(&budget.as_str()) {
+                budgets.insert(1, &budget);
+            }
+            items.insert(
+                at + 4,
+                item(
+                    "judge-budget",
+                    "Judge budget",
+                    "USD the judge may spend in a session (Jev and the fallback and escalation models; d1 is free). Off: no cap, spend is still recorded.",
+                    budget.clone(),
+                    &budgets,
+                ),
+            );
         }
         let mut at = 1;
         if c.supports_images {
@@ -1217,6 +1278,35 @@ impl SettingsSelector {
                 cc_ultron.clone(),
             ),
         ];
+        // Rust-only: the judge seat's chat models (crates/judge), before the Claude Code mode rows.
+        if c.rust_rows
+            && let Some(at) = rows.iter().position(|r| r.id == "claude-code-heading")
+        {
+            let fallback = c.text("judge.fallbackModel");
+            let escalate = c.text("judge.escalateModel");
+            rows.insert(
+                at,
+                row(
+                    "judge.fallbackModel",
+                    "Judge fallback model",
+                    "judge.decide when neither Jev nor d1 answers; none: the verdict abstains.",
+                    setting(&fallback, "none".into()),
+                    with(plain("", "None"), &all),
+                    fallback.clone(),
+                ),
+            );
+            rows.insert(
+                at + 1,
+                row(
+                    "judge.escalateModel",
+                    "Judge escalation model",
+                    "judge.decide answers under their confidence threshold go to it; it must be of another family than the model that answered. Default: the cheapest model of the session model's family.",
+                    setting(&escalate, "cheapest of the session's family".into()),
+                    with(plain("", "Default (cheapest of the session's family)"), &all),
+                    escalate.clone(),
+                ),
+            );
+        }
         if let Some(model) = durable {
             rows.insert(
                 1,
@@ -1977,6 +2067,8 @@ impl SettingsSelector {
             ),
             "request-token-cap" => ("rootBudget.maxTotalTokens", token_cap_value(value)),
             "map-token-cap" => ("rlm.mapTokens", token_cap_value(value)),
+            "judge-provider" => ("judge.provider", judge_order_value(value)),
+            "judge-budget" => ("judge.budgetUsd", budget_value(value)),
             other => (other, value.into()),
         };
         set_path(&mut self.input.settings, key, v.clone());

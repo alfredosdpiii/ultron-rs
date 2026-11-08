@@ -863,6 +863,15 @@ impl Runtime {
             config.agent_dir.clone(),
             config.project_trusted,
         ));
+        // `--api-key` is a runtime key of the starting model's provider only (`setRuntimeApiKey`); every request
+        // resolves its provider's key when it is sent (crate::request_keys).
+        let keys = crate::request_keys::Keys::new(
+            api_key.map(|key| (model.provider.clone(), key)),
+            config.provider_token.clone(),
+        );
+        let root_model = Arc::new(Mutex::new(model.clone()));
+        // `judge.decide` settles in the session's usage ledger, built with the stack below.
+        let judge_ledger: Arc<std::sync::OnceLock<UsageLedger>> = Arc::default();
         let apis = ApiModules {
             local: Arc::new(services::LocalServicesModule {
                 services: local,
@@ -874,6 +883,13 @@ impl Runtime {
             hints: Arc::new(HintsModule::new(modules("hints"))),
             images: Arc::new(crate::session_images::module(&config, session_id)),
             diagram: Arc::new(crate::session_diagrams::module(&config, session_id, images.clone())),
+            judge: Arc::new(crate::session_judge::module(
+                &config,
+                root_model.clone(),
+                keys.clone(),
+                values.clone(),
+                judge_ledger.clone(),
+            )),
             schedule: Arc::new(kernel_apis::prompt_schedule::ScheduleModule::new(
                 match &values {
                     Some(values) => Box::new(values.keyed(kernel_apis::prompt_schedule::NAMESPACE)),
@@ -899,6 +915,7 @@ impl Runtime {
                 modules("family"),
                 kernel_apis::FamilyOptions::default(),
             )),
+            sessions: Arc::new(session_search(&config, &self.sessions_dir, session_id)),
         };
         // Situational hints (`ULTRON_HINTS=on`): what a cell did, observed per lane, ends its result with one line.
         let var = |key: &str| (config.var)(key);
@@ -925,13 +942,6 @@ impl Runtime {
         let sessions_dir = self.sessions_dir.clone();
         let services = self.services.clone();
         let model = model.clone();
-        // `--api-key` is a runtime key of the starting model's provider only (`setRuntimeApiKey`); every request
-        // resolves its provider's key when it is sent (crate::request_keys).
-        let keys = crate::request_keys::Keys::new(
-            api_key.map(|key| (model.provider.clone(), key)),
-            config.provider_token.clone(),
-        );
-        let root_model = Arc::new(Mutex::new(model.clone()));
         // One request stack for every lane's frames (built once: an HTTP client is not free, and a handler is made
         // per cell); it reads the settings per request.
         let frame_stream = crate::request_keys::lane_stream(config.settings_reader(), keys.clone());
@@ -989,6 +999,7 @@ impl Runtime {
                 crate::frames::frame_runner(frames.clone()),
                 &stats,
             );
+            let _ = judge_ledger.set(usage.clone());
             frames.set_tasks(Arc::new(crate::frames::StackFrameTasks {
                 agents: agents.clone(),
                 usage: usage.clone(),
@@ -1324,11 +1335,31 @@ struct ApiModules {
     hints: Arc<HintsModule>,
     images: Arc<kernel_apis::ImagesModule>,
     diagram: Arc<diagram::DiagramModule>,
+    judge: Arc<judge::JudgeModule>,
     schedule: Arc<kernel_apis::prompt_schedule::ScheduleModule>,
     tools: Arc<kernel_apis::ToolCalls>,
     instances: Arc<kernel_apis::InstancesModule>,
     progress: Arc<kernel_apis::ProgressModule>,
     family: Arc<kernel_apis::FamilyModule>,
+    sessions: Arc<kernel_apis::SessionsModule>,
+}
+
+/// `sessions.*` of session `session_id`: its own session root (the parent of the cwd's `sessions_dir`) first, then
+/// the profile's native and Pi-format stores.
+fn session_search(config: &Config, sessions_dir: &Path, session_id: &str) -> kernel_apis::SessionsModule {
+    let paths = config::paths::AgentPaths::new(&config.agent_dir);
+    let roots = sessions_dir
+        .parent()
+        .map(Path::to_path_buf)
+        .into_iter()
+        .chain([paths.experimental_sessions_dir(), paths.sessions_dir()])
+        .collect();
+    kernel_apis::SessionsModule::new(
+        roots,
+        session_id,
+        &config.cwd.display().to_string(),
+        kernel_apis::util::system_clock(),
+    )
 }
 
 /// A worktree subagent's lane: its working directory, extra environment and host.
@@ -1552,12 +1583,14 @@ impl Stack {
             .with(self.apis.hints.clone())
             .with(self.apis.images.clone())
             .with(self.apis.diagram.clone())
+            .with(self.apis.judge.clone())
             .with(self.apis.schedule.clone())
             .with(self.apis.tools.clone())
             .with(self.apis.local.clone())
             .with(self.apis.gates.clone())
             .with(self.apis.instances.clone())
             .with(self.apis.progress.clone())
+            .with(self.apis.sessions.clone())
             .with(Arc::new(crate::agent_hub::Family::new(
                 self.apis.family.clone(),
                 self.delegation.clone(),
@@ -1863,6 +1896,7 @@ fn typed_agents(
     options.frames = Some(frames);
     options.root_turns = true;
     options.refinements = refinements;
+    options.pricing = Some(crate::budget_pricing::pricing(config, root_model.clone()));
     // The session goal follows its runs' ends; the root's context control attributes each root-level task's
     // result to the cell that returns it (collapse on return).
     let context_stack = stack.clone();

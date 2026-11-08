@@ -638,3 +638,32 @@ fn session_core_spawn_contract_a_retried_child_needs_a_verdict_of_its_own() {
         "{child}"
     );
 }
+
+/// F3: `workflows.run` returns the graph's `budget.estimate` with its outcomes (`r.estimate`, made before any node
+/// started), and `budget.estimate(plan)` prices units on the session's model from the catalog.
+#[test]
+fn session_core_workflows_run_returns_the_estimate_and_budget_estimate_prices_a_plan() {
+    let out = std::path::PathBuf::from(RESULT);
+    let cell = format!(
+        "import json\nr = await workflows.run([{{'id': 'a', 'definition': 'identity@1', 'input': {{'n': 1}}}}, {{'id': 'c', 'definition': 'rlm-child@1', 'input': {{'prompt': 'CHILD: estimated'}}}}])\nest = await budget.estimate({{'kind': 'chat', 'calls': 2, 'input_tokens': 1000, 'output_tokens': 10}})\nout = {{'child': {{'nodes': dict(r), 'workflow': r.estimate, 'error': r.estimate_error, 'plan': est, 'doc': budget.estimate.__doc__}}}}\nopen({}, 'w').write(json.dumps(out))\nprint('written')",
+        json!(out.display().to_string())
+    );
+    let r = run_cell(cell, &out, false, |_, has_results| match has_results {
+        false => text("child done"),
+        true => text("child done"),
+    });
+    let got = &r.out["child"];
+    assert_eq!(got["nodes"]["a"]["status"], "succeeded", "{got}");
+    assert_eq!(got["error"], Value::Null, "{got}");
+    let units = got["workflow"]["units"].as_array().unwrap();
+    assert_eq!(units.len(), 1, "only the child node calls a model: {got}");
+    assert_eq!(units[0]["node"], "c");
+    assert_eq!(units[0]["kind"], "child");
+    assert!(units[0]["model"].is_string(), "{got}");
+    let plan = &got["plan"];
+    assert_eq!(plan["units"][0]["requests"], 2, "{plan}");
+    assert_eq!(plan["units"][0]["input_tokens"], 2000, "{plan}");
+    assert_eq!(plan["units"][0]["assumed"], json!(["requests"]), "{plan}");
+    assert!(plan["budget"].is_object(), "{plan}");
+    assert!(got["doc"].as_str().unwrap().contains("never guessed"), "{got}");
+}

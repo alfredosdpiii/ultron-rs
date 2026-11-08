@@ -4,13 +4,19 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { parseArgs } from "node:util";
-import { killGroup, messageOf } from "./run.ts";
+import { CHECKERS, killGroup, messageOf } from "./run.ts";
 
-const USAGE = `Usage: statechart SPEC.tla [--config FILE] [--view FILE] [--out DIR]
+const USAGE = `Usage: statechart SPEC.tla|SPEC.qnt [--config FILE] [--main MODULE] [--checker tlc|tla-ts]
+                  [--view FILE] [--out DIR]
 
 Checks SPEC.tla with TLC and draws its state graph as Mermaid. Above 500 states, the chart
 draws only the paths to the rules that break, and with no rule broken there is no chart.mmd.
+A Quint SPEC.qnt is compiled to TLA+ first (quint compile --target tlaplus), and the config,
+view and report use the names in that TLA+.
   --config FILE  TLC config. Default: SPEC.cfg beside the spec.
+  --main MODULE  The Quint module to compile. Default: the one named after SPEC.qnt.
+  --checker NAME tlc (default): TLC on Java. tla-ts: tla-ts, which needs no Java, and gives
+                 TLC's verdicts and state graph. Compiling Quint needs Java either way.
   --view FILE    A module that exports state(vars) and, if you want, step(action, from, to),
                  group(vars), colors, and title. state() returns a string for a flat chart, an
                  array for parent states, or an object for regions. Default: each state's values.
@@ -36,11 +42,20 @@ let specFile;
 try {
   const args = parseArgs({
     allowPositionals: true,
-    options: { config: { type: "string" }, view: { type: "string" }, out: { type: "string" } },
+    options: {
+      config: { type: "string" },
+      main: { type: "string" },
+      checker: { type: "string", default: "tlc" },
+      view: { type: "string" },
+      out: { type: "string" },
+    },
   });
   flags = args.values;
   [specFile] = args.positionals;
-  if (args.positionals.length !== 1) throw new Error("Give one SPEC.tla.");
+  if (args.positionals.length !== 1) throw new Error("Give one SPEC.tla or SPEC.qnt.");
+  if (!(CHECKERS as readonly string[]).includes(flags.checker))
+    throw new Error(`--checker is ${CHECKERS.join(" or ")}.`);
+  if (flags.main && !specFile.endsWith(".qnt")) throw new Error("--main is for a Quint SPEC.qnt.");
 } catch (error) {
   console.error(`${messageOf(error)}\n\n${USAGE}`);
   process.exit(2);
@@ -50,10 +65,10 @@ const codeOf = (error: unknown) =>
   error instanceof Error && "code" in error ? error.code : undefined;
 
 try {
-  const configFile = flags.config ?? specFile.replace(/\.tla$/, ".cfg");
+  const configFile = flags.config ?? specFile.replace(/\.(tla|qnt)$/, ".cfg");
   if (!fs.existsSync(configFile))
     throw new Error(`Cannot find the TLC config ${configFile}. Pass --config FILE.`);
-  const out = flags.out ?? specFile.replace(/\.tla$/, "-chart");
+  const out = flags.out ?? specFile.replace(/\.(tla|qnt)$/, "-chart");
   let entries: string[] = [];
   let dest: string;
   try {
@@ -105,6 +120,8 @@ try {
         stage,
         specFile,
         configFile,
+        flags.checker,
+        flags.main ?? "",
         ...(flags.view ? [flags.view] : []),
       ],
       {

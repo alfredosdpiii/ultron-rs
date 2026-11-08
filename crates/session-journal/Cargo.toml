@@ -9,6 +9,7 @@ autotests = false
 
 [dependencies]
 config = { path = "../config" }
+fancy-regex = "=0.19.2"
 jsrt = { path = "../jsrt" }
 serde_json = { version = "=1.0.151", features = ["float_roundtrip", "preserve_order"] }
 

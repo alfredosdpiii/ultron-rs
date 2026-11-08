@@ -61,6 +61,16 @@ class Agents:
         return await self._bridge.request('agents.status')
 
 
+class WorkflowResult(dict):
+    """A workflow's {node_id: outcome}, with `.estimate`: the budget.estimate of the graph made before it started
+    (None when the host could not price it; then `.estimate_error` says why)."""
+
+    def __init__(self, outcomes, estimate=None, estimate_error=None):
+        super().__init__(outcomes)
+        self.estimate = estimate
+        self.estimate_error = estimate_error
+
+
 class Workflows:
     """`await workflows.run(nodes)` validates an agent graph and runs it (see `help(workflows.run)`)."""
 
@@ -89,8 +99,18 @@ class Workflows:
 
         key: optional workflow key; nodes default to key "<key>:<node>" and loop rounds to
         "<node key>:round-<n>", so a rerun reuses completed tasks and rounds.
+
+        The result also carries `.estimate`: the graph's budget.estimate, made before any node started (see
+        `help(budget.estimate)`). With a cost cap, a node whose estimate would cross what is left of it fails
+        with "Admission refused: Usage cost stop-line ..." instead of starting.
         """
         payload = {'nodes': nodes}
         if key is not None:
             payload['key'] = key
-        return await self._bridge.request('workflows.run', payload)
+        estimate, error = None, None
+        try:
+            estimate = await self._bridge.request('budget.estimate', {'workflow': {'nodes': nodes}})
+        except Exception as failure:  # the run itself reports an invalid graph
+            error = str(failure)
+        outcomes = await self._bridge.request('workflows.run', payload)
+        return WorkflowResult(outcomes, estimate, error)

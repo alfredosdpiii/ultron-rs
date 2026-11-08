@@ -167,6 +167,8 @@ fn replay(name: &str) {
         ("COLORTERM", "truecolor".into()),
         ("LANG", "C.UTF-8".into()),
         (config::env::OFFLINE_ENV, "1".into()),
+        // The TypeScript wizard's screens: no judge seat step (Rust only).
+        (interactive::qol::PARITY_ENV, "1".into()),
     ];
     let script = root.join("run.sh");
     std::fs::write(
@@ -333,6 +335,8 @@ fn drive(steps: &[Step]) -> (Vec<String>, TempDir) {
         ("TERM", "xterm-256color".into()),
         ("LANG", "C.UTF-8".into()),
         (config::env::OFFLINE_ENV, "1".into()),
+        // The TypeScript wizard's screens: no judge seat step (Rust only).
+        (interactive::qol::PARITY_ENV, "1".into()),
     ];
     let script = root.join("run.sh");
     std::fs::write(

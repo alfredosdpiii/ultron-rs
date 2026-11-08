@@ -6,6 +6,8 @@
 mod agent_child;
 #[path = "agents_fixture.rs"]
 mod agents_fixture;
+#[path = "budget_estimate.rs"]
+mod budget_estimate;
 #[path = "contracts.rs"]
 mod contracts;
 #[path = "fork.rs"]
@@ -36,6 +38,8 @@ mod spawn_model;
 mod spawn_worktrees;
 #[path = "task_store.rs"]
 mod task_store;
+#[path = "usage_ceilings.rs"]
+mod usage_ceilings;
 #[path = "usage_fixture.rs"]
 mod usage_fixture;
 #[path = "usage_reinvoke.rs"]

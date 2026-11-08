@@ -1,5 +1,5 @@
-//! `ultron setup` (cli/setup/wizard.ts): a guided first configuration in five steps (environment, provider and
-//! model, Hindsight, Loki guardrails, summary). Every step can be skipped with Esc and the wizard can be run again;
+//! `ultron setup` (cli/setup/wizard.ts): a guided first configuration in six steps (environment, provider and
+//! model, Hindsight, the judge seat (Rust only), Loki guardrails, summary). Every step can be skipped with Esc and the wizard can be run again;
 //! nothing is overwritten without asking, and secrets are read masked and never printed. The questions go through
 //! [`SetupUi`], so the flow is the same in the terminal (`setup_tui`) and in tests.
 
@@ -120,6 +120,8 @@ pub struct ModelTestResult {
 
 pub type TestModel = Arc<dyn Fn(&Env, &Model) -> ModelTestResult + Send + Sync>;
 pub type RunDocker = Arc<dyn Fn(&[String], &[(String, String)]) -> (bool, String) + Send + Sync>;
+/// One real call to a judge backend (`jev`, `d1`) of the profile: what answered and how fast, or why nothing did.
+pub type ProbeJudge = Arc<dyn Fn(&Env, &str) -> Result<String, String> + Send + Sync>;
 
 pub struct SetupDeps {
     /// The profile: its agent dir holds settings.json, auth.json and models.json; `var` is the environment.
@@ -139,6 +141,8 @@ pub struct SetupDeps {
     pub hindsight_interval: Duration,
     /// The Loki engine version bundled with this installation, when it has one.
     pub loki_version: Option<String>,
+    /// The judge seat step's probe; `None` leaves the step out (the TypeScript-parity build, `ULTRON_TUI_PARITY=1`).
+    pub probe_judge: Option<ProbeJudge>,
 }
 
 impl SetupDeps {
@@ -215,10 +219,11 @@ impl ProfileRuntime {
     }
 }
 
-const STEPS: usize = 5;
-
-fn step_title(index: usize, title: &str) -> String {
-    format!("Step {index}/{STEPS}: {title}")
+/// `Step n/total: title`; without the judge step (the TypeScript-parity build) the later steps move up one.
+fn step_title(deps: &SetupDeps, index: usize, title: &str) -> String {
+    let judge = usize::from(deps.probe_judge.is_some());
+    let (index, total) = (if index > 4 { index - 1 + judge } else { index }, 5 + judge);
+    format!("Step {index}/{total}: {title}")
 }
 
 fn describe(model: &Model) -> String {
@@ -240,6 +245,9 @@ pub fn run_setup_wizard<U: SetupUi>(ui: &mut U, deps: &mut SetupDeps) -> SetupRe
         lines.push(model_line);
         model_ready = ready;
         lines.push(hindsight_step(ui, deps)?);
+        if deps.probe_judge.is_some() {
+            lines.push(judge_step(ui, deps)?);
+        }
         lines.push(loki_step(ui, deps)?);
         completed = true;
         Ok(())
@@ -261,7 +269,7 @@ pub fn run_setup_wizard<U: SetupUi>(ui: &mut U, deps: &mut SetupDeps) -> SetupRe
 // ------------------------------------------------------------------------------------------------- 1. environment
 
 fn environment_step<U: SetupUi>(ui: &mut U, deps: &SetupDeps) {
-    ui.heading(&step_title(1, "Environment"));
+    ui.heading(&step_title(deps, 1, "Environment"));
     for check in setup_core::check_environment(&deps.probe, &deps.python) {
         let mark = if check.ok {
             "✓"
@@ -303,7 +311,7 @@ fn load_runtime<U: SetupUi>(ui: &mut U, deps: &SetupDeps, message: &str) -> Resu
 }
 
 fn provider_step<U: SetupUi>(ui: &mut U, deps: &mut SetupDeps) -> Result<(SummaryLine, bool), SetupQuit> {
-    ui.heading(&step_title(2, PROVIDER_STEP));
+    ui.heading(&step_title(deps, 2, PROVIDER_STEP));
     let mut runtime = load_runtime(ui, deps, "Loading providers…")?;
     let current = current_default_model(&runtime, &deps.settings);
     if let Some(current) = &current {
@@ -817,7 +825,7 @@ fn probe<U: SetupUi>(
 }
 
 fn hindsight_step<U: SetupUi>(ui: &mut U, deps: &mut SetupDeps) -> Result<SummaryLine, SetupQuit> {
-    ui.heading(&step_title(3, "Hindsight memory server"));
+    ui.heading(&step_title(deps, 3, "Hindsight memory server"));
     ui.note(
         "Hindsight stores what the model keeps on purpose (memory.propose) and returns it when the model asks (memory.prepare).",
         Tone::Info,
@@ -1145,7 +1153,195 @@ fn install_with_docker<U: SetupUi>(ui: &mut U, deps: &SetupDeps, url: &str) -> R
     Ok(Some(true))
 }
 
-// ----------------------------------------------------------------------------------------------------------- 4. Loki
+// ---------------------------------------------------------------------------------------------------- 4. judge seat
+
+const JUDGE: &str = "Judge";
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum JudgeAction {
+    JevKey,
+    D1,
+    Check,
+    Done,
+}
+
+/// Where a judge service's key comes from now, as the step shows it (never the key).
+fn key_origin(deps: &SetupDeps, service: &str, variable: &str) -> &'static str {
+    if deps.var(variable).is_some_and(|v| !jsrt::string::trim(&v).is_empty()) {
+        "from the environment"
+    } else if judge::keys::service_key(
+        service,
+        &|_| None,
+        &config::paths::AgentPaths::new(deps.agent_dir()).auth(),
+    )
+    .is_some()
+    {
+        "in auth.json"
+    } else {
+        "not set"
+    }
+}
+
+/// Probe the configured judge backends; each outcome as a note, and as the summary's detail.
+fn probe_judge<U: SetupUi>(ui: &mut U, deps: &SetupDeps, backends: &[&str]) -> Result<Vec<String>, SetupQuit> {
+    let mut outcomes = Vec::new();
+    for backend in backends {
+        let Some(probe) = deps.probe_judge.clone() else {
+            break;
+        };
+        let (env, name) = (deps.env.clone(), backend.to_string());
+        let label = if *backend == "jev" { "Jev" } else { "d1" };
+        match ui.busy(&format!("Asking {label} one question…"), move || probe(&env, &name))? {
+            Ok(answered) => {
+                ui.note(&format!("✓ {label}: {answered}."), Tone::Success);
+                outcomes.push(format!("{backend} ok"));
+            }
+            Err(reason) => {
+                ui.note(&format!("✗ {label} did not answer ({reason})."), Tone::Warning);
+                outcomes.push(format!("{backend} not answering"));
+            }
+        }
+    }
+    Ok(outcomes)
+}
+
+fn judge_step<U: SetupUi>(ui: &mut U, deps: &mut SetupDeps) -> Result<SummaryLine, SetupQuit> {
+    ui.heading(&step_title(deps, 4, "Judge seat (Jev, d1)"));
+    ui.note(
+        "The judge answers closed questions (is this memory still true? does this code show the finding?) for batch and background work, never on every turn: Jev (TypeSafe) first, a d1 server when Jev cannot. Keys go to auth.json and are never shown.",
+        Tone::Info,
+    );
+    let mut changed = Vec::new();
+    loop {
+        let jev = key_origin(deps, judge::keys::TYPESAFE, "TYPESAFE_API_KEY");
+        let d1_key = key_origin(deps, judge::keys::D1, "ULTRON_D1_KEY");
+        let d1_url = config::keys::judge_settings(deps.settings.global_settings()).d1_url;
+        ui.note(
+            &format!(
+                "Jev key: {jev}. d1: {}, key {d1_key}.",
+                d1_url
+                    .as_deref()
+                    .map_or("no server".to_string(), |u| format!("server {u}"))
+            ),
+            Tone::Dim,
+        );
+        let mut configured = Vec::new();
+        if jev != "not set" {
+            configured.push("jev");
+        }
+        if d1_url.is_some() && d1_key != "not set" {
+            configured.push("d1");
+        }
+        let mut choices = vec![
+            (
+                Choice::described("Set the Jev key", "a TypeSafe API key"),
+                JudgeAction::JevKey,
+            ),
+            (
+                Choice::described("Set the d1 server", "its URL and key"),
+                JudgeAction::D1,
+            ),
+        ];
+        if !configured.is_empty() {
+            choices.push((
+                Choice::described("Check the configured backends", "one real question each"),
+                JudgeAction::Check,
+            ));
+        }
+        choices.push((
+            Choice::new(if changed.is_empty() { "Skip" } else { "Done" }),
+            JudgeAction::Done,
+        ));
+        match pick(ui, "Judge seat", &choices, None)? {
+            None | Some(JudgeAction::Done) => break,
+            Some(JudgeAction::Check) => {
+                let outcomes = probe_judge(ui, deps, &configured)?;
+                if changed.is_empty() {
+                    return Ok(line(JUDGE, "unchanged", outcomes.join(", ")));
+                }
+            }
+            Some(JudgeAction::JevKey) => {
+                let Some(key) = ui.input(
+                    "TypeSafe API key",
+                    InputOptions {
+                        secret: true,
+                        validate: Some(Box::new(|value: &str| {
+                            jsrt::string::trim(value)
+                                .is_empty()
+                                .then(|| "Paste the key, or press Esc to go back".to_string())
+                        })),
+                        ..Default::default()
+                    },
+                )?
+                else {
+                    continue;
+                };
+                let auth = config::paths::AgentPaths::new(deps.agent_dir()).auth();
+                match judge::keys::save_key(&auth, judge::keys::TYPESAFE, &key) {
+                    Ok(()) => {
+                        ui.note("✓ Saved the TypeSafe key in auth.json.", Tone::Success);
+                        changed.push("jev");
+                        probe_judge(ui, deps, &["jev"])?;
+                    }
+                    Err(error) => ui.note(&format!("✗ Could not save the key: {error}"), Tone::Error),
+                }
+            }
+            Some(JudgeAction::D1) => {
+                let Some(url) = ui.input(
+                    "d1 server URL",
+                    InputOptions {
+                        initial: Some(d1_url.clone().unwrap_or_default()),
+                        description: Some("For example a tailscale serve address of the machine running d1.".into()),
+                        validate: Some(Box::new(setup_core::validate_base_url)),
+                        ..Default::default()
+                    },
+                )?
+                else {
+                    continue;
+                };
+                let url = jsrt::string::trim(&url).trim_end_matches('/').to_string();
+                let mut d1 = deps
+                    .settings
+                    .global_settings()
+                    .get("judge")
+                    .and_then(|j| j.get("d1"))
+                    .and_then(Value::as_object)
+                    .cloned()
+                    .unwrap_or_default();
+                d1.insert("url".into(), Value::String(url.clone()));
+                deps.settings.set_global_nested("judge", "d1", Some(Value::Object(d1)));
+                ui.note(&format!("✓ Saved judge.d1.url ({url})."), Tone::Success);
+                let key = ui.input(
+                    if d1_key == "not set" {
+                        "d1 key"
+                    } else {
+                        "d1 key (Esc keeps the current one)"
+                    },
+                    InputOptions {
+                        secret: true,
+                        ..Default::default()
+                    },
+                )?;
+                if let Some(key) = key.filter(|k| !jsrt::string::trim(k).is_empty()) {
+                    let auth = config::paths::AgentPaths::new(deps.agent_dir()).auth();
+                    match judge::keys::save_key(&auth, judge::keys::D1, &key) {
+                        Ok(()) => ui.note("✓ Saved the d1 key in auth.json.", Tone::Success),
+                        Err(error) => ui.note(&format!("✗ Could not save the key: {error}"), Tone::Error),
+                    }
+                }
+                changed.push("d1");
+                probe_judge(ui, deps, &["d1"])?;
+            }
+        }
+    }
+    Ok(if changed.is_empty() {
+        line(JUDGE, "skipped", "Jev and d1 unchanged")
+    } else {
+        line(JUDGE, "configured", changed.join(", "))
+    })
+}
+
+// ----------------------------------------------------------------------------------------------------------- 5. Loki
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum LokiAction {
@@ -1177,7 +1373,7 @@ pub fn describe_loki(settings: &Map<String, Value>) -> String {
 }
 
 fn loki_step<U: SetupUi>(ui: &mut U, deps: &mut SetupDeps) -> Result<SummaryLine, SetupQuit> {
-    ui.heading(&step_title(4, "Loki guardrails"));
+    ui.heading(&step_title(deps, 5, "Loki guardrails"));
     ui.note(
         "Loki checks every file the agent writes with deterministic rules and real analyzers: edit() and write() are checked before the file changes, other writes after the cell.",
         Tone::Info,
@@ -1288,10 +1484,10 @@ fn loki_step<U: SetupUi>(ui: &mut U, deps: &mut SetupDeps) -> Result<SummaryLine
     Ok(line("Loki", "configured", describe_loki(&current)))
 }
 
-// -------------------------------------------------------------------------------------------------------- 5. summary
+// -------------------------------------------------------------------------------------------------------- 6. summary
 
 fn summary_step<U: SetupUi>(ui: &mut U, deps: &SetupDeps, lines: &[SummaryLine], completed: bool) {
-    ui.heading(&step_title(5, "Summary"));
+    ui.heading(&step_title(deps, 6, "Summary"));
     for l in lines {
         let tone = match l.status {
             "configured" => Tone::Success,
@@ -1441,5 +1637,11 @@ pub fn create_setup_deps(env: &Env) -> SetupDeps {
         hindsight_wait: Duration::from_secs(5 * 60),
         hindsight_interval: Duration::from_secs(3),
         loki_version: Some(loki::analyzers::bundled_version()),
+        probe_judge: ((env.var)(interactive::qol::PARITY_ENV).as_deref().map(str::trim) != Some("1")).then(|| {
+            Arc::new(|env: &Env, backend: &str| {
+                let seat = crate::judge_cli::seat(env, false, None)?;
+                judge::bench::probe(&seat, backend, &kernel::Signal::new())
+            }) as ProbeJudge
+        }),
     }
 }

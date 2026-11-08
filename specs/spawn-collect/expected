@@ -1,0 +1,4 @@
+code_one_restart NeverReplayed=holds OneResult=holds KeepsRunning=holds
+code_two_restarts NeverReplayed=holds OneResult=breaks KeepsRunning=breaks
+broken_replay NeverReplayed=breaks
+fix_two_restarts NeverReplayed=holds OneResult=holds KeepsRunning=holds

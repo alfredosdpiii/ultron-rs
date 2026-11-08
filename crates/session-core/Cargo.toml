@@ -10,6 +10,7 @@ autotests = false
 [dependencies]
 agent = { path = "../agent" }
 ai = { path = "../ai" }
+blocking-http = { path = "../blocking-http" }
 compaction = { path = "../compaction" }
 config = { path = "../config" }
 delegation = { path = "../delegation" }
@@ -22,6 +23,7 @@ indexmap = "=2.14.2"
 inference = { path = "../inference" }
 jsonschema = { path = "../jsonschema" }
 jsrt = { path = "../jsrt" }
+judge = { path = "../judge" }
 kernel = { path = "../kernel" }
 kernel-apis = { path = "../kernel-apis" }
 lanes = { path = "../lanes" }

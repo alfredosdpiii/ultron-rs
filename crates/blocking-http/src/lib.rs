@@ -1,5 +1,6 @@
-//! The HTTP exchange under the Hindsight client: one request, its status and (for a 2xx answer) its body read up to
-//! a size limit, cancelled by a signal or a deadline. [`ReqwestTransport`] is the real one.
+//! One blocking HTTP exchange, for callers on host request threads (the Hindsight client, the judge seat): a request,
+//! its status, its `retry-after` header and (for a 2xx answer) its body read up to a size limit, cancelled by a signal
+//! or a deadline. [`ReqwestTransport`] is the real one.
 
 use kernel::Signal;
 use std::sync::mpsc;
@@ -14,10 +15,12 @@ pub struct HttpRequest {
     pub body: Option<Vec<u8>>,
 }
 
-/// A status and, for a 2xx status only, the whole body (empty when there is none). A non-2xx body is never read.
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// A status, its `retry-after` header (as sent, any status) and, for a 2xx status only, the whole body (empty when
+/// there is none). A non-2xx body is never read.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct HttpResponse {
     pub status: u16,
+    pub retry_after: Option<String>,
     pub body: Vec<u8>,
 }
 
@@ -57,7 +60,7 @@ impl ReqwestTransport {
     pub fn new() -> Result<Self, String> {
         let runtime = tokio::runtime::Builder::new_multi_thread()
             .worker_threads(1)
-            .thread_name("hindsight-http")
+            .thread_name("blocking-http")
             .enable_all()
             .build()
             .map_err(|e| e.to_string())?;
@@ -104,9 +107,14 @@ async fn exchange(
     }
     let mut response = builder.send().await.map_err(|_| TransportError::Failed)?;
     let status = response.status().as_u16();
+    let retry_after = response
+        .headers()
+        .get(reqwest::header::RETRY_AFTER)
+        .map(|value| String::from_utf8_lossy(value.as_bytes()).into_owned());
     if !(200..300).contains(&status) {
         return Ok(HttpResponse {
             status,
+            retry_after,
             body: Vec::new(),
         });
     }
@@ -122,7 +130,11 @@ async fn exchange(
         }
         body.extend_from_slice(&chunk);
     }
-    Ok(HttpResponse { status, body })
+    Ok(HttpResponse {
+        status,
+        retry_after,
+        body,
+    })
 }
 
 impl Transport for ReqwestTransport {

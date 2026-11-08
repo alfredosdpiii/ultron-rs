@@ -5,16 +5,19 @@ import { pathToFileURL } from "node:url";
 import { inspect } from "node:util";
 import { checkView } from "./frontends/view.ts";
 import { compile } from "./pipeline.ts";
-import { check, messageOf } from "./run.ts";
+import { type CheckerName, check, messageOf } from "./run.ts";
 
-const [stage, specFile, configFile, viewFile] = process.argv.slice(2);
+const [stage, specFile, configFile, checker, main, viewFile] = process.argv.slice(2);
 
 try {
   const view = checkView(
     viewFile ? await import(pathToFileURL(path.resolve(viewFile)).href) : {},
     inspect,
   );
-  const { files, exit } = compile(await check(specFile, configFile), view);
+  const { files, exit } = compile(
+    await check(specFile, configFile, { checker: checker as CheckerName, main: main || undefined }),
+    view,
+  );
   const draft = path.join(stage, "draft");
   fs.mkdirSync(draft);
   for (const [name, parts] of files) {

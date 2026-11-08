@@ -21,6 +21,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 from agents_api import Agents, Workflows
+from budget_api import BudgetEstimator
 from memory_api import Memory, Refinements
 from family_api import AgentMessages
 from progress_api import Progress
@@ -40,6 +41,8 @@ from swarm_api import install as install_swarm
 from images_api import install as install_images
 from schedule_api import Schedule
 from diagram_api import Diagram
+from sessions_api import Sessions
+from judge_api import Judge
 import waits
 from tools_api import Mcp, McpError, ToolCall, ToolError, ToolResult, Tools
 from worktree_api import Worktrees, worktree_path
@@ -949,6 +952,7 @@ class RuntimeState:
         self.namespace["ShellJob"] = ShellJob
         self.namespace["agents"] = Agents(self.bridge)
         self.namespace["workflows"] = Workflows(self.bridge)
+        self.namespace["budget"] = BudgetEstimator(self.bridge)
         self.namespace["memory"] = Memory(self.bridge)
         self.namespace["refinements"] = Refinements(self.bridge)
         self.namespace["progress"] = Progress(self.bridge)
@@ -2007,6 +2011,8 @@ install_swarm(RLMNamespace, _STATE.namespace, _STATE.bridge)
 install_images(RLMNamespace)
 _STATE.namespace["schedule"] = Schedule(_STATE.bridge)
 _STATE.namespace["diagram"] = Diagram(_STATE.bridge)
+_STATE.namespace["sessions"] = Sessions(_STATE.bridge)
+_STATE.namespace["judge"] = Judge(_STATE.bridge)
 _STATE.bindings = {name: value for name, value in _STATE.namespace.items() if name != "state"}
 
 

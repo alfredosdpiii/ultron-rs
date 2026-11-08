@@ -39,6 +39,7 @@ import {
 } from "./ir.ts";
 import { addPast, deadEnds, finder, lasso, mark } from "./passes/annotate.ts";
 import { pathGraph } from "./passes/paths.ts";
+import { compileQuint } from "./quint.ts";
 
 export function* fileLines(file: string) {
   const fd = fs.openSync(file, "r");
@@ -64,9 +65,15 @@ export function* fileLines(file: string) {
   }
 }
 
-const TLC_TOOL =
-  "http:tla2tools[url=https://github.com/tlaplus/tlaplus/releases/download/v1.7.4/tla2tools.jar,checksum=sha256:936a262061c914694dfd669a543be24573c45d5aa0ff20a8b96b23d01e050e88]@1.7.4";
+const TLC_VERSION = "1.7.4";
+const TLC_TOOL = `http:tla2tools[url=https://github.com/tlaplus/tlaplus/releases/download/v${TLC_VERSION}/tla2tools.jar,checksum=sha256:936a262061c914694dfd669a543be24573c45d5aa0ff20a8b96b23d01e050e88]@${TLC_VERSION}`;
 const JAVA_TOOL = "java@temurin-25";
+// The npm tools are pinned in package.json, which is also what `npm install` reads for the tests.
+const PINS: { [name: string]: string } = JSON.parse(
+  fs.readFileSync(path.join(import.meta.dirname, "package.json"), "utf8"),
+).optionalDependencies;
+export const CHECKERS = ["tlc", "tla-ts"] as const;
+export type CheckerName = (typeof CHECKERS)[number];
 export const PINNED_FLAGS = ["-workers", "1", "-fp", "0", "-lncheck", "final"];
 
 type ChildResult = {
@@ -190,26 +197,79 @@ const runToFiles = (
     });
   });
 
-async function findTlc(cwd: string) {
-  const { TLA2TOOLS, JAVA } = process.env;
-  if (TLA2TOOLS) return { jar: TLA2TOOLS, java: JAVA || "java" };
-  const mise = (...args: string[]) =>
-    runChild("mise", args, { cwd, env: { ...process.env, MISE_CEILING_PATHS: cwd } });
-  const where = () =>
-    Promise.all([mise("where", TLC_TOOL), mise("which", "java", "--tool", JAVA_TOOL)]);
-  let found = await where();
-  if (found.some((r) => r.status !== 0)) {
-    const r = await mise("install", JAVA_TOOL, TLC_TOOL);
-    if (r.status !== 0)
+const mise = (cwd: string, ...args: string[]) =>
+  runChild("mise", args, { cwd, env: { ...process.env, MISE_CEILING_PATHS: cwd } });
+
+async function miseTool(cwd: string, tool: string, query: string[], instead: string) {
+  let r = await mise(cwd, ...query);
+  if (r.status !== 0) {
+    const installed = await mise(cwd, "install", tool);
+    if (installed.status !== 0)
       throw new Error(
-        `Cannot find TLC: mise install failed: ${r.error?.message ?? r.stderr.trim()}\nOr set TLA2TOOLS to the path of tla2tools.jar, and JAVA to a java binary (Java 11 or later).`,
+        `Cannot find ${tool}: mise install failed: ${installed.error?.message ?? installed.stderr.trim()}\n${instead}`,
       );
-    found = await where();
+    r = await mise(cwd, ...query);
   }
-  return {
-    jar: path.join(found[0].stdout.trim(), "tla2tools.jar"),
-    java: JAVA || found[1].stdout.trim(),
-  };
+  return r.stdout.trim();
+}
+
+const findJava = async (cwd: string) =>
+  process.env.JAVA ||
+  (process.env.TLA2TOOLS
+    ? "java"
+    : await miseTool(
+        cwd,
+        JAVA_TOOL,
+        ["which", "java", "--tool", JAVA_TOOL],
+        "Or set JAVA to a java binary (Java 11 or later).",
+      ));
+
+// The path of an npm package's command, at the version package.json pins, from npm's cache.
+async function npmTool(cwd: string, name: string, command: string, variable: string) {
+  const spec = `${name}@${PINS[name]}`;
+  const r = await runChild(
+    "npm",
+    ["exec", "--yes", `--package=${spec}`, "--", "sh", "-c", `command -v ${command}`],
+    { cwd, env: process.env },
+  );
+  if (r.status !== 0)
+    throw new Error(
+      `Cannot install ${spec} with npm: ${r.error?.message ?? r.stderr.trim()}\nOr set ${variable} to the path of ${command}.`,
+    );
+  return r.stdout.trim();
+}
+
+// A checker runs as `file ...args <TLC's java arguments> <main class> ...`: TLC on Java, or tla-ts,
+// which takes TLC's command line and reproduces the TLC version it is given.
+async function findChecker(cwd: string, name: CheckerName) {
+  if (name === "tla-ts")
+    return {
+      file: process.env.TLA_TS || (await npmTool(cwd, "tla-ts", "tla-ts", "TLA_TS")),
+      args: [`-Dtla-ts.tlc=${TLC_VERSION}`],
+    };
+  const java = await findJava(cwd);
+  const jar =
+    process.env.TLA2TOOLS ||
+    path.join(
+      await miseTool(
+        cwd,
+        TLC_TOOL,
+        ["where", TLC_TOOL],
+        "Or set TLA2TOOLS to the path of tla2tools.jar, and JAVA to a java binary (Java 11 or later).",
+      ),
+      "tla2tools.jar",
+    );
+  return { file: java, args: ["-cp", jar] };
+}
+
+// Quint's compiler starts Apalache, which runs on the java that TLC would use.
+async function quintToTla(specFile: string, dir: string, main: string | undefined) {
+  const quint = process.env.QUINT || (await npmTool(dir, "@informalsystems/quint", "quint", "QUINT"));
+  const java = await findJava(dir);
+  const env = java.includes("/")
+    ? { ...process.env, PATH: `${path.dirname(java)}${path.delimiter}${process.env.PATH ?? ""}` }
+    : process.env;
+  return compileQuint(specFile, dir, main, (args, cwd) => runChild(quint, args, { cwd, env }));
 }
 
 const exitClass = (status: number | null) =>
@@ -267,13 +327,20 @@ function* only(marks: Iterable<Mark>, rules: Set<string>) {
   }
 }
 
-export async function check(specFile: string, configFile: string): Promise<CheckResult> {
+export async function check(
+  specFile: string,
+  configFile: string,
+  options: { checker: CheckerName; main?: string },
+): Promise<CheckResult> {
   const cfg = readConfig({ file: configFile, text: fs.readFileSync(configFile, "utf8") });
   const checks = readChecks({ configFile, config: cfg });
-  const folder = path.dirname(path.resolve(specFile));
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "statechart-"));
   try {
-    const tlc = await findTlc(dir);
+    const tlaFile = specFile.endsWith(".qnt")
+      ? await quintToTla(specFile, dir, options.main)
+      : path.resolve(specFile);
+    const folder = path.dirname(tlaFile);
+    const tlc = await findChecker(dir, options.checker);
     const config = (name: string, sections: ConfigSection[], extra: string[]) => {
       fs.writeFileSync(path.join(dir, `${name}.cfg`), configText(sections, extra));
       return [`-metadir`, path.join(dir, `meta-${name}`), "-config", path.join(dir, `${name}.cfg`)];
@@ -282,13 +349,12 @@ export async function check(specFile: string, configFile: string): Promise<Check
       const tmp = path.join(dir, `tmp-${name}`);
       fs.mkdirSync(tmp);
       return runToFiles(
-        tlc.java,
+        tlc.file,
         [
+          ...tlc.args,
           `-Djava.io.tmpdir=${tmp}`,
           `-DTLA-Library=${folder}`,
           ...jvm,
-          "-cp",
-          tlc.jar,
           main,
           ...args,
         ],
@@ -302,13 +368,13 @@ export async function check(specFile: string, configFile: string): Promise<Check
     const xml = await runJava(
       "sany",
       "tla2sany.xml.XMLExporter",
-      ["-o", "-I", folder, path.resolve(specFile)],
+      ["-o", "-I", folder, tlaFile],
       ["-XX:TieredStopAtLevel=1"],
     );
     if (xml.status !== 0)
       throw new Error(`SANY could not read ${specFile} (exit ${xml.status}):\n${tail(xml)}`);
     const sany = readSany(fs.readFileSync(xml.stdout, "utf8"));
-    const module = path.basename(specFile, ".tla");
+    const module = path.basename(tlaFile, ".tla");
     const spec = { ...readSpec({ module, sany, checks }), folder };
     const rules = stateRules(spec);
     const all = [...rules];

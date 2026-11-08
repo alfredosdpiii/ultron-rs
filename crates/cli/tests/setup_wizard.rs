@@ -462,6 +462,10 @@ fn deps(profile: &Profile, vars: &[(&str, &str)]) -> (SetupDeps, Tested) {
         hindsight_wait: Duration::from_millis(50),
         hindsight_interval: Duration::from_millis(5),
         loki_version: None,
+        probe_judge: Some(Arc::new(|_: &cli::Env, backend: &str| match backend {
+            "jev" => Ok("jev-1.13 answered in 210 ms".into()),
+            _ => Err("timed out after 15 s".into()),
+        })),
     };
     (deps, tested)
 }
@@ -491,6 +495,7 @@ fn cli_setup_wizard_configures_a_custom_endpoint_and_the_default_model() {
     steps.extend([
         Step::Select("Set up Hindsight", "manual install"),
         Step::Select("Check again", "Continue without"),
+        Step::Select("^Judge seat$", "^Skip$"),
         Step::Select("^Loki guardrails$", "^Keep"),
     ]);
     let mut ui = ScriptedUi::new(steps);
@@ -515,12 +520,13 @@ fn cli_setup_wizard_configures_a_custom_endpoint_and_the_default_model() {
         "The endpoint lists 2 models: m1, m2",
         "✓ Live test passed in 0.4s: \"ok\"",
         "pip install hindsight-api",
-        "# Step 1/5: Environment",
+        "# Step 1/6: Environment",
         "✓ python3: Python 3.12.0",
         "– Docker: not found (only needed to install Hindsight)",
-        "# Step 3/5: Hindsight memory server",
-        "# Step 4/5: Loki guardrails",
-        "# Step 5/5: Summary",
+        "# Step 3/6: Hindsight memory server",
+        "# Step 4/6: Judge seat (Jev, d1)",
+        "# Step 5/6: Loki guardrails",
+        "# Step 6/6: Summary",
         "Provider and model: configured — proxy/m2, live test passed",
         "Hindsight: skipped — manual install instructions shown",
     ] {
@@ -533,6 +539,7 @@ fn cli_setup_wizard_configures_a_custom_endpoint_and_the_default_model() {
         [
             ("Provider and model".to_string(), "configured"),
             ("Hindsight".to_string(), "skipped"),
+            ("Judge".to_string(), "skipped"),
             ("Loki".to_string(), "unchanged")
         ]
     );
@@ -545,6 +552,7 @@ fn cli_setup_wizard_keeps_a_working_setup_and_asks_before_replacing_a_provider()
     let mut steps = custom_endpoint();
     steps.extend([
         Step::Select("Set up Hindsight", "esc"),
+        Step::Select("^Judge seat$", "^Skip$"),
         Step::Select("^Loki guardrails$", "esc"),
     ]);
     run_setup_wizard(&mut ScriptedUi::new(steps), &mut first);
@@ -559,6 +567,7 @@ fn cli_setup_wizard_keeps_a_working_setup_and_asks_before_replacing_a_provider()
         Step::Input("short name", "esc"),
         Step::Select("reach a model", "^Keep proxy/m2$"),
         Step::Select("Set up Hindsight", "^Skip$"),
+        Step::Select("^Judge seat$", "^Skip$"),
         Step::Select("^Loki guardrails$", "^Keep"),
     ]);
     let result = run_setup_wizard(&mut ui, &mut second);
@@ -645,6 +654,7 @@ fn cli_setup_wizard_installs_hindsight_with_docker_passing_the_key_through_the_e
         Step::Input("API key for Anthropic", "sk-ant-hindsight"),
         Step::Input("Model for Hindsight", ""),
         Step::Select("Run it now", "Run docker"),
+        Step::Select("^Judge seat$", "^Skip$"),
         Step::Select("^Loki guardrails$", "^Keep"),
     ]);
     let result = run_setup_wizard(&mut ui, &mut deps);
@@ -682,6 +692,7 @@ fn cli_setup_wizard_detects_a_running_hindsight_and_saves_a_custom_url() {
         Step::Select("reach a model", "Skip"),
         Step::Select("Set up Hindsight", "set its URL"),
         Step::Input("Hindsight URL", "http://mem.local:9000/"),
+        Step::Select("^Judge seat$", "^Skip$"),
         Step::Select("^Loki guardrails$", "^Keep"),
     ]);
     let result = run_setup_wizard(&mut ui, &mut first);
@@ -700,6 +711,7 @@ fn cli_setup_wizard_detects_a_running_hindsight_and_saves_a_custom_url() {
     let mut again = ScriptedUi::new(vec![
         Step::Select("reach a model", "Skip"),
         Step::Select("^Hindsight$", "Use it"),
+        Step::Select("^Judge seat$", "^Skip$"),
         Step::Select("^Loki guardrails$", "^Keep"),
     ]);
     let second = run_setup_wizard(&mut again, &mut second);
@@ -721,6 +733,7 @@ fn cli_setup_wizard_shows_loki_analyzers_and_saves_its_toggles() {
     let mut ui = ScriptedUi::new(vec![
         Step::Select("reach a model", "Skip"),
         Step::Select("Set up Hindsight", "^Skip$"),
+        Step::Select("^Judge seat$", "^Skip$"),
         Step::Select("^Loki guardrails$", "^Turn auto-commit off$"),
         Step::Select("^Loki guardrails$", "^Advise only"),
         Step::Select("^Loki guardrails$", "^Keep"),
@@ -758,6 +771,7 @@ fn cli_setup_wizard_turns_memory_off_and_back_on() {
     let mut ui = ScriptedUi::new(vec![
         Step::Select("reach a model", "Skip"),
         Step::Select("Set up Hindsight", "Turn memory off"),
+        Step::Select("^Judge seat$", "^Skip$"),
         Step::Select("^Loki guardrails$", "^Turn Loki off$"),
         Step::Select("^Loki guardrails$", "^Keep Loki off$"),
     ]);
@@ -766,11 +780,12 @@ fn cli_setup_wizard_turns_memory_off_and_back_on() {
     assert_eq!(profile.settings()["hindsightUrl"], "off");
     assert_eq!(profile.settings()["loki"]["mode"], "off");
     assert_eq!(result.lines[1].detail, "off");
-    assert_eq!(result.lines[2].detail, "off");
+    assert_eq!(result.lines[3].detail, "off");
     let (mut again, _) = deps_again(&profile);
     let mut ui = ScriptedUi::new(vec![
         Step::Select("reach a model", "Skip"),
         Step::Select("Turn memory on", "No, leave it off"),
+        Step::Select("^Judge seat$", "^Skip$"),
         Step::Select("^Loki guardrails$", "^Turn Loki on$"),
         Step::Select("^Loki guardrails$", "^Keep these"),
     ]);
@@ -780,7 +795,92 @@ fn cli_setup_wizard_turns_memory_off_and_back_on() {
         (result.lines[1].status, result.lines[1].detail.as_str()),
         ("unchanged", "off")
     );
-    assert_eq!(result.lines[2].status, "configured");
+    assert_eq!(result.lines[3].status, "configured");
+}
+
+/// The judge seat step: the Jev key and the d1 server's URL and key are saved (keys to auth.json, read masked and
+/// never shown), each backend is probed once (the fake answers for Jev, times out for d1), and the summary says what
+/// changed.
+#[test]
+fn cli_setup_wizard_sets_up_the_judge_seat_and_probes_it() {
+    let profile = Profile::new();
+    let (mut deps, _) = deps(&profile, &[]);
+    let probed: Arc<Mutex<Vec<String>>> = Arc::default();
+    let log = probed.clone();
+    let real = deps.probe_judge.clone().unwrap();
+    deps.probe_judge = Some(Arc::new(move |env: &cli::Env, backend: &str| {
+        log.lock().unwrap().push(backend.to_string());
+        real(env, backend)
+    }));
+    let jev_key = ["ts", "-fake-", "judge-key"].concat();
+    let d1_key = ["d1", "-fake-", "key"].concat();
+    let jev_key: &'static str = Box::leak(jev_key.into_boxed_str());
+    let d1_key: &'static str = Box::leak(d1_key.into_boxed_str());
+    let mut ui = ScriptedUi::new(vec![
+        Step::Select("reach a model", "Skip"),
+        Step::Select("Set up Hindsight", "^Skip$"),
+        Step::Select("^Judge seat$", "^Set the Jev key$"),
+        Step::Input("^TypeSafe API key$", jev_key),
+        Step::Select("^Judge seat$", "^Set the d1 server$"),
+        Step::Input("^d1 server URL$", "http://mini.tail.example:18091/"),
+        Step::Input("^d1 key$", d1_key),
+        Step::Select("^Judge seat$", "^Check the configured backends$"),
+        Step::Select("^Judge seat$", "^Done$"),
+        Step::Select("^Loki guardrails$", "^Keep"),
+    ]);
+    let result = run_setup_wizard(&mut ui, &mut deps);
+    assert!(ui.steps.is_empty());
+    assert_eq!(*probed.lock().unwrap(), ["jev", "d1", "jev", "d1"]);
+    let auth: Value =
+        serde_json::from_str(&std::fs::read_to_string(profile.agent().join("auth.json")).unwrap()).unwrap();
+    assert_eq!(auth["typesafe"], json!({"type": "api_key", "key": jev_key}));
+    assert_eq!(auth["d1"], json!({"type": "api_key", "key": d1_key}));
+    assert_eq!(
+        profile.settings()["judge"],
+        json!({"d1": {"url": "http://mini.tail.example:18091"}})
+    );
+    let text = ui.text();
+    for expected in [
+        "# Step 4/6: Judge seat (Jev, d1)",
+        "Jev key: not set. d1: no server, key not set.",
+        "✓ Saved the TypeSafe key in auth.json.",
+        "✓ Jev: jev-1.13 answered in 210 ms.",
+        "✓ Saved judge.d1.url (http://mini.tail.example:18091).",
+        "✗ d1 did not answer (timed out after 15 s).",
+        "Jev key: in auth.json. d1: server http://mini.tail.example:18091, key in auth.json.",
+        "Judge: configured — jev, d1",
+    ] {
+        assert!(text.contains(expected), "missing {expected}:\n{text}");
+    }
+    assert_eq!(ui.secrets, [jev_key, d1_key]);
+    assert!(!text.contains(jev_key) && !text.contains(d1_key), "{text}");
+    assert_eq!(
+        statuses(&result.lines)[1..],
+        [
+            ("Hindsight".to_string(), "skipped"),
+            ("Judge".to_string(), "configured"),
+            ("Loki".to_string(), "unchanged")
+        ]
+    );
+}
+
+/// A key in the environment is reported as such (and overrides auth.json); with nothing changed, checking reports
+/// the probes as the step's detail.
+#[test]
+fn cli_setup_wizard_judge_step_checks_an_environment_key() {
+    let profile = Profile::new();
+    let (mut deps, _) = deps(&profile, &[("TYPESAFE_API_KEY", "ts-env-fake")]);
+    let mut ui = ScriptedUi::new(vec![
+        Step::Select("reach a model", "Skip"),
+        Step::Select("Set up Hindsight", "^Skip$"),
+        Step::Select("^Judge seat$", "^Check the configured backends$"),
+        Step::Select("^Loki guardrails$", "^Keep"),
+    ]);
+    let result = run_setup_wizard(&mut ui, &mut deps);
+    assert!(ui.steps.is_empty());
+    assert!(ui.text().contains("Jev key: from the environment."), "{}", ui.text());
+    let judge = result.lines.iter().find(|l| l.step == "Judge").unwrap();
+    assert_eq!((judge.status, judge.detail.as_str()), ("unchanged", "jev ok"));
 }
 
 fn deps_again(profile: &Profile) -> (SetupDeps, Tested) {

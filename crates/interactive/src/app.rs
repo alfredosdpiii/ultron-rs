@@ -3478,6 +3478,7 @@ impl App {
                     "review.model" => Some("the next /review"),
                     "rlm.childModel" => Some("the next sub-agent"),
                     "rlm.raceModels" => Some("the next race"),
+                    "judge.escalateModel" | "judge.fallbackModel" => Some("the next judge.decide"),
                     _ => None,
                 };
                 let when = match next {

@@ -62,9 +62,10 @@ changed. Cite only principles whose leaf you read this session.
 - The user corrects a mistake agents have made before in this repo → `../correct/SKILL.md`, so the next one cannot.
 - A benchmark, a measured speedup or regression → `../benchmark-checklist/SKILL.md` before you report or act on it.
 - The user asks for formal verification, or a race, retry, state machine, parser or other invariant that tests rarely
-  reach → `../create-formal-verification-skill/SKILL.md` (TLA+ by default for ordering and concurrency, read with
-  `../statechart/SKILL.md`; Bend for pure logic with laws). The project has a verify skill and the change touches its
-  covered code → run it. Merges or refactors that skipped it → `../maintain-formal-verification-skill/SKILL.md`.
+  reach → `../create-formal-verification-skill/SKILL.md` (Quint (compiled to TLA+) by default for ordering and
+  concurrency, TLA+ directly when preferred, read with `../statechart/SKILL.md`; Bend for pure logic with laws). The
+  project has a verify skill and the change touches its covered code → run it. Merges or refactors that skipped it →
+  `../maintain-formal-verification-skill/SKILL.md`.
 - Any PR-status request ("babysit this", "get it green", "check on PR X", "address the review comments") →
   `playbooks/babysit.md`. Opening a PR never starts one.
 - Land or ship a green stack → `playbooks/shipping.md`. Green is not safe.
@@ -80,8 +81,8 @@ The rest of the bundled skills, for what the user asks or the moment calls for:
 - Explain so the user understands → `../teach/SKILL.md` (it runs how and why). A picture says it better → a terminal
   diagram with `../../humanlayer/diagram-it/SKILL.md`, a page with `../../qingyuna/answer-me-with-html/SKILL.md`, an
   illustrated figure with `../../wheresryan/anatomy/SKILL.md`.
-- Show a PM, designer or reviewer how the system moves between states, or turn an agreed chart into a TLA+ skeleton →
-  `../statechart/SKILL.md`.
+- Show a PM, designer or reviewer how the system moves between states, or turn an agreed chart into a Quint or TLA+
+  skeleton → `../statechart/SKILL.md`.
 - Catch the user up on this session → `../ketchup/SKILL.md` (`../ketchup-video/SKILL.md` as a video); on their work
   across sessions → `../recall/SKILL.md`; on one prior session to resume → `playbooks/session-pickup.md`.
 - The user found your last reply hard to follow → `../bro/SKILL.md`.

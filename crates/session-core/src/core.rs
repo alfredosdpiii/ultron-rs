@@ -851,18 +851,25 @@ fn lane_config_resolving(
     Ok((config, model, false))
 }
 
-/// Apply a naming response: its usage as a row of its own, and its title while the name is still automatic.
-pub fn record_naming(session: &mut Session, response: &AssistantMessage) -> Result<(), String> {
+/// Commit `usage` (an `ai::Usage` as JSON) as a usage row of its own, outside any turn, with `details` saying what
+/// spent it (`details.source`: `session-naming`, `judge`).
+pub fn record_usage_row(session: &mut Session, usage: Value, details: Value) -> Result<(), String> {
     let id = session_journal::lock_clock(&session.clock()).next_id();
-    let usage = serde_json::to_value(&response.usage).map_err(|e| e.to_string())?;
     let mut row = Write::usage(&id, usage, None);
     if let Write::Usage(fields) = &mut row {
-        fields.insert(
-            "details".into(),
-            json!({"source": "session-naming", "model": format!("{}/{}", response.provider, response.model)}),
-        );
+        fields.insert("details".into(), details);
     }
-    session.commit(&[row])?;
+    session.commit(&[row]).map(|_| ())
+}
+
+/// Apply a naming response: its usage as a row of its own, and its title while the name is still automatic.
+pub fn record_naming(session: &mut Session, response: &AssistantMessage) -> Result<(), String> {
+    let usage = serde_json::to_value(&response.usage).map_err(|e| e.to_string())?;
+    record_usage_row(
+        session,
+        usage,
+        json!({"source": "session-naming", "model": format!("{}/{}", response.provider, response.model)}),
+    )?;
     if let Some(title) = naming::title_of(response) {
         names::replace_auto_name(session, &title)?;
     }

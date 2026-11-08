@@ -50,6 +50,7 @@ fn limits(options: &Value) -> UsageLimits {
         max_total_tokens: integer("maxTotalTokens"),
         max_total_turns: integer("maxTotalTurns"),
         default_max_total_tokens: integer("defaultMaxTotalTokens"),
+        ..UsageLimits::default()
     }
 }
 
@@ -64,6 +65,7 @@ fn request(value: &Value) -> ReserveRequest {
         timeout_ms: float(&value["timeoutMs"]),
         deadline_at: float(&value["deadlineAt"]),
         model_backed: value["modelBacked"].as_bool(),
+        ..ReserveRequest::default()
     }
 }
 

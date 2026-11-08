@@ -21,6 +21,7 @@ pub mod herdr_report;
 pub mod instances;
 pub mod interactive;
 pub mod js;
+pub mod judge_cli;
 pub mod line_input;
 pub mod link;
 pub mod list_models;
@@ -236,6 +237,14 @@ const COMMANDS: &[Command] = &[
         proxy: true,
         typescript: false,
         run: |argv, env, out, err| service_cli::run(&argv[1..], env, out, err),
+    },
+    // `ultron judge bench|--help` only: any other `ultron judge ...` stays a prompt.
+    Command {
+        names: &["judge"],
+        package_files: false,
+        proxy: true,
+        typescript: false,
+        run: |argv, env, out, err| judge_cli::run(&argv[1..], env, out, err),
     },
     Command {
         names: &["sandbox"],

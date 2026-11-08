@@ -1,0 +1,5 @@
+code OneRunPerSlot=holds OneDeliveryInFlight=holds
+faults OneRunPerSlot=breaks OneDeliveryInFlight=holds
+broken_check_due OneRunPerSlot=breaks
+broken_unlocked OneRunPerSlot=breaks
+broken_in_flight OneDeliveryInFlight=breaks

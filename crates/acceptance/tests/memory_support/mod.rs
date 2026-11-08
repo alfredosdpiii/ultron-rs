@@ -329,6 +329,7 @@ impl Transport for FakeHindsight {
         let (status, value) = self.fetch(&request.method, &path, body.as_ref());
         Ok(HttpResponse {
             status,
+            retry_after: None,
             body: if (200..300).contains(&status) {
                 value.to_string().into_bytes()
             } else {

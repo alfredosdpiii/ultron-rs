@@ -7,6 +7,7 @@ pub mod checkpoints;
 pub mod child;
 pub mod contract;
 pub mod definitions;
+pub mod estimate;
 pub mod fork;
 pub mod git_baseline;
 pub mod host;

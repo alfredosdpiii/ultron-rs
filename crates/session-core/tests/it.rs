@@ -81,6 +81,8 @@ mod idle_queue;
 mod images_api;
 #[path = "initial_model.rs"]
 mod initial_model;
+#[path = "judge_api.rs"]
+mod judge_api;
 #[path = "keep_going.rs"]
 mod keep_going;
 #[path = "kept_contracts.rs"]
@@ -153,6 +155,8 @@ mod session_resources;
 mod session_stats;
 #[path = "session_stats_run.rs"]
 mod session_stats_run;
+#[path = "sessions_api.rs"]
+mod sessions_api;
 #[path = "shared_memory.rs"]
 mod shared_memory;
 #[path = "situational_skills.rs"]

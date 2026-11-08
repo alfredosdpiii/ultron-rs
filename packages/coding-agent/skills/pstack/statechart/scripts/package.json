@@ -7,5 +7,9 @@
   },
   "devDependencies": {
     "fast-check": "4.5.3"
+  },
+  "optionalDependencies": {
+    "@informalsystems/quint": "0.33.1",
+    "tla-ts": "0.0.8"
   }
 }

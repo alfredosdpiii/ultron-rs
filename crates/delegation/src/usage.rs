@@ -9,6 +9,7 @@
 use jsrt::{json, sync};
 use kernel::store::{DocumentStore, MemoryDocumentStore};
 use serde_json::{Map, Value, json};
+use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 
 pub const MAX_ADMITTED_TASKS_ENV: &str = "ULTRON_MAX_ADMITTED_TASKS";
@@ -16,9 +17,14 @@ pub const MAX_COST_USD_ENV: &str = "ULTRON_MAX_COST_USD";
 pub const MAX_TOTAL_TOKENS_ENV: &str = "ULTRON_MAX_TOTAL_TOKENS";
 pub const MAX_TOTAL_TURNS_ENV: &str = "ULTRON_MAX_TOTAL_TURNS";
 pub const MAX_WALL_MS_ENV: &str = "ULTRON_MAX_WALL_MS";
+/// Per-kind call ceilings: `ULTRON_MAX_TASK_CALLS`, `ULTRON_MAX_MODEL_CALLS` (a positive integer, or off).
+pub const MAX_TASK_CALLS_ENV: &str = "ULTRON_MAX_TASK_CALLS";
+pub const MAX_MODEL_CALLS_ENV: &str = "ULTRON_MAX_MODEL_CALLS";
 
 /// Kinds a stored ledger may hold (`jev` calls of older sessions still count as calls).
 const STORED_KINDS: [&str; 3] = ["task", "model", "jev"];
+/// Kinds a reservation may have, with the variable of each one's call ceiling.
+const RESERVABLE_KINDS: [(&str, &str); 2] = [("task", MAX_TASK_CALLS_ENV), ("model", MAX_MODEL_CALLS_ENV)];
 const STATUSES: [&str; 4] = ["succeeded", "failed", "cancelled", "unknown"];
 pub const DEFAULT_ROOT_ID: &str = "ultron-root";
 pub const DEFAULT_DETAILED_ROOTS: usize = 50;
@@ -40,11 +46,15 @@ pub struct UsageLimits {
     pub max_total_tokens: Option<u64>,
     pub max_total_turns: Option<u64>,
     pub default_max_total_tokens: Option<u64>,
+    /// Per-kind call ceilings of a root (kind -> calls admitted, open or settled); a kind not listed has none.
+    pub max_calls: BTreeMap<String, u64>,
 }
 
 /// `nativeUsageLimitsFromEnv(env, settings)`: `settings` is `rootBudget` ({maxTotalTokens?, maxTotalTurns?}). Rust
 /// adds `maxTotalTokens: "off"` (any case, or none/unlimited): no token cap, as `ULTRON_MAX_TOTAL_TOKENS=off`; a set
 /// variable still wins. Unset is TypeScript's default cap; the app passes `"off"` for it ([`root_budget_settings`]).
+/// Rust adds per-kind call ceilings: `maxCalls: {task?, model?}` (positive integers), each overridden by its variable
+/// ([`MAX_TASK_CALLS_ENV`], [`MAX_MODEL_CALLS_ENV`]; `off` removes it).
 pub fn limits_from_env(var: &dyn Fn(&str) -> Option<String>, settings: &Value) -> UsageLimits {
     let unlimited = |raw: &str| ["none", "off", "unlimited"].contains(&raw.to_lowercase().as_str());
     // The variable's value, None when it is off, else the fallback (None: off).
@@ -97,6 +107,15 @@ pub fn limits_from_env(var: &dyn Fn(&str) -> Option<String>, settings: &Value) -
     }
     if let Some(n) = turns.filter(|n| *n > 0) {
         limits.max_total_turns = Some(n);
+    }
+    for (kind, name) in RESERVABLE_KINDS {
+        let set = settings["maxCalls"][kind]
+            .as_f64()
+            .filter(|n| jsrt::number::is_safe_integer(*n) && *n >= 1.0)
+            .map(|n| n as u64);
+        if let Some(ceiling) = integer(name, set, 1) {
+            limits.max_calls.insert(kind.into(), ceiling);
+        }
     }
     limits
 }
@@ -173,6 +192,9 @@ pub struct ReserveRequest {
     pub deadline_at: Option<f64>,
     /// Whether admitted work calls a model (the cost cap applies); tasks default to true.
     pub model_backed: Option<bool>,
+    /// What the unit is expected to cost (`budget.estimate`): with a cost cap, the unit is refused when the root's
+    /// spend plus this would cross it (the stop-line). None: only the spent cap applies.
+    pub estimated_cost_usd: Option<f64>,
 }
 
 impl ReserveRequest {
@@ -579,6 +601,12 @@ fn reservations_of(root: &Value) -> &[Value] {
     root["reservations"].as_array().map_or(&[], Vec::as_slice)
 }
 
+/// Reservations and calls of `kind` in `root`.
+fn calls_of_kind(root: &Value, kind: &str) -> u64 {
+    let of_kind = |list: &[Value]| list.iter().filter(|item| item["kind"] == kind).count() as u64;
+    of_kind(reservations_of(root)) + of_kind(calls_of(root))
+}
+
 impl UsageLedger {
     /// A ledger over the session value `ultron.usage/root` (any [`DocumentStore`]).
     pub fn new(store: Box<dyn DocumentStore>, options: UsageOptions) -> Result<Self, String> {
@@ -783,6 +811,52 @@ impl UsageLedger {
         None
     }
 
+    /// The kind's call ceiling, when `root` has reached it: every reservation and call of the kind counts.
+    fn call_ceiling(&self, root: &Value, kind: &str) -> Option<String> {
+        let ceiling = *self.limits.max_calls.get(kind)?;
+        let used = calls_of_kind(root, kind);
+        let variable = RESERVABLE_KINDS.iter().find(|(k, _)| *k == kind).map_or("", |(_, v)| v);
+        (used >= ceiling).then(|| {
+            format!(
+                "Usage call ceiling reached for root {}: {used} of {ceiling} {kind} calls admitted (rootBudget.maxCalls.{kind}, {variable}). No further {kind} calls are admitted for this root; answer with what you have.",
+                root["rootId"].as_str().unwrap_or_default()
+            )
+        })
+    }
+
+    /// The stop-line: with a cost cap, a unit expected to cost `estimate` is refused when the root's spend plus the
+    /// estimate would cross the cap. The refusal is the unit's receipt: its estimate, the spend, the cap, what is left.
+    fn crosses(&self, root: &Value, estimate: Option<f64>, unit: &str) -> Option<String> {
+        let cap = self.limits.max_cost_usd?;
+        let estimate = estimate.filter(|e| e.is_finite() && *e > 0.0)?;
+        let spent = self.spend(root, true)["spentUsd"].as_f64().unwrap_or(0.0);
+        let usd = |n: f64| jsrt::number::to_string((n * 1e6).round() / 1e6);
+        (spent + estimate > cap).then(|| {
+            format!(
+                "Usage cost stop-line for root {}: {unit} is estimated at ${}, and ${} of the ${} cap is spent (${} left), so it would cross the cap (ULTRON_MAX_COST_USD); it was not started. Plan smaller work or ask the user to raise the cap.",
+                root["rootId"].as_str().unwrap_or_default(),
+                usd(estimate),
+                usd(spent),
+                usd(cap),
+                usd((cap - spent).max(0.0))
+            )
+        })
+    }
+
+    /// The stop-line for work admitted outside this ledger (a workflow's subagent node): the refusal text when
+    /// `estimate` would cross the cost cap of `root_id`. A refusal is reported like a refused reservation.
+    pub fn stop_line(&self, root_id: Option<&str>, estimate: f64, unit: &str) -> Result<Option<String>, String> {
+        let id = root_id.unwrap_or(&self.root_id).to_string();
+        let crossing = self.step(|state| {
+            let root = state.document["roots"]
+                .get(&id)
+                .cloned()
+                .unwrap_or_else(|| empty_root(&id));
+            Ok(self.crosses(&root, Some(estimate), unit))
+        })?;
+        Ok(crossing.map(|reason| self.refused(reason)))
+    }
+
     fn mint(state: &mut State, prefix: &str) -> String {
         format!("{prefix}{}", (state.ids)())
     }
@@ -797,7 +871,7 @@ impl UsageLedger {
             if !state.document["roots"][&root_id]["imported"].is_null() {
                 return Err(format!("Usage root {root_id} is an imported history root"));
             }
-            if request.kind != "task" && request.kind != "model" {
+            if !RESERVABLE_KINDS.iter().any(|(kind, _)| *kind == request.kind) {
                 return Err("Invalid usage kind".into());
             }
             if request.request_key.as_ref().is_some_and(|k| k.trim().is_empty()) {
@@ -845,6 +919,13 @@ impl UsageLedger {
             let model_work = request.kind == "model" || request.model_backed != Some(false);
             if model_work && let Some(exhausted) = self.exhaustion(&root) {
                 return Err(self.refused(exhausted.reason));
+            }
+            if let Some(reached) = self.call_ceiling(&root, &request.kind) {
+                return Err(self.refused(reached));
+            }
+            let unit = format!("this {}", request.kind);
+            if model_work && let Some(crossing) = self.crosses(&root, request.estimated_cost_usd, &unit) {
+                return Err(self.refused(crossing));
             }
             let asked = request.deadline_at.or_else(|| request.timeout_ms.map(|t| now + t));
             let deadline = match (asked, root_deadline) {
@@ -932,7 +1013,7 @@ impl UsageLedger {
             let deadline = root["deadlineAt"].as_f64();
             let cap = self.token_cap(&root);
             let limit = |n: Option<u64>| n.map_or(Value::Null, |n| json::number(n as f64));
-            Ok(json!({
+            let mut status = json!({
                 "rootId": root_id,
                 "limits": {
                     "maxAdmittedTasks": limit(self.limits.max_admitted_tasks),
@@ -956,7 +1037,17 @@ impl UsageLedger {
                 "usage": totals(calls_of(&root)),
                 "reservations": root["reservations"],
                 "session": self.session_totals(&state.document),
-            }))
+            });
+            // Call ceilings (Rust only) show beside the other limits, with what the root has used of each.
+            if !self.limits.max_calls.is_empty() {
+                status["limits"]["maxCalls"] = json!(self.limits.max_calls);
+                status["calls"] = RESERVABLE_KINDS
+                    .iter()
+                    .map(|(kind, _)| (kind.to_string(), json!(calls_of_kind(&root, kind))))
+                    .collect::<Map<String, Value>>()
+                    .into();
+            }
+            Ok(status)
         })
     }
 

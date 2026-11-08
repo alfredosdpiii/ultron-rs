@@ -6,6 +6,7 @@
 //! - `memory.*`: prepare / propose / correct / get / forget / why / list over a Hindsight-shaped backend, ported from
 //!   `ultron/memory.ts` and the dispatch of `ultron/worker-services.ts`;
 //! - `images.*`: image generation through the OpenRouter images API, saved to files ([`images`]);
+//! - `sessions.*`: stored sessions listed, grepped and read as spans, read-only ([`sessions`]);
 //! - `hints.*`: per-lane hint mutes (`ultron/rlm/hints.ts`), and [`cell_hints`], the situational hints a cell's
 //!   result ends with;
 //! - `tools.*`: extension tool calls from the REPL, detached after `yield_after` (`ultron/rlm/extension-tools.ts`);
@@ -34,6 +35,7 @@ pub mod progress;
 pub mod prompt_schedule;
 pub mod schedule_tick;
 pub mod schedules;
+pub mod sessions;
 pub mod skills;
 pub mod store;
 pub mod tasks;
@@ -57,6 +59,7 @@ pub use memory::{MemoryApi, MemoryBackend, MemoryError, MemoryService, worker_ga
 pub use progress::ProgressModule;
 pub use schedule_tick::{ManualTickClock, ScheduleTicker, TickClock};
 pub use schedules::SchedulesModule;
+pub use sessions::SessionsModule;
 pub use skills::{SkillLoader, SkillSource, SkillsModule};
 pub use tasks::{RootOnly, TaskHost};
 pub use tool_calls::{ToolCallEnd, ToolCalls, ToolInfo, ToolRunner};

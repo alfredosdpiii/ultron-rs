@@ -17,36 +17,34 @@ Keep it tight and on-topic. Read only what the in-scope threads need, then stop.
 
 Your context lives in two records. Your own session history holds what you did and decided. The shared record holds everything that happened around the same code under other names: the symptoms users keep reporting, the fixes that shipped and got reverted, the errors still firing in prod. That second record is what the **why** skill (`../why/SKILL.md`) searches, across source control, the issue tracker, team chat, long-form docs, and error tracking. A feature with a long bug tail keeps most of its story there, so don't reconstruct it from your sessions alone.
 
-Sessions are JSONL files, one folder per working directory, under the agent dir (`ULTRON_CODING_AGENT_DIR`, default `~/.ultron/agent`): `experimental/sessions/` for native Ultron sessions and `sessions/` for Pi-format ones. `scripts/sessions.py` (in this skill's directory) finds and parses both; read its docstring once.
+Read sessions through the REPL's `sessions` API (read-only; `help(sessions)` once): `sessions.list`, `sessions.search` (a regex or terms over each session's main conversation, newest session first) and `sessions.read` (a span of turns). Every hit carries a span, `session://<id>#<from>..<to>`; cite session findings by it. `scripts/sessions.py` (in this skill's directory) wraps the same API in whole-session helpers.
 
 1. Classify, then route. Resuming one specific prior session is `/resume`, not this. Turning habits into a durable skill is `../automate-me/SKILL.md`. A human-readable summary of your work is a different task. Recall loads working context across recent sessions before you act. If the user already gave you a full state capsule (paths, branch, the change), use it and skip the mining.
 2. Lock the scope before searching. Pin the window ("recent" is a real range, default the last 7 days), the topic if named, and the workspace (default the current working directory. Never read another project's sessions without being asked). State the scope back. Never quietly turn "all" into "recent N".
 3. Mine your session history yourself, in the REPL. Order candidates by real modification time, grep the topic first, and read only the matching sessions and only their relevant regions. Skip the current session plus obvious noise: subagent sessions (`parent` set), sessions with no messages (inference frames only), and eval or test runs. Long matches go to `rlm.map` frames, one session region per frame, each returning the same schema. Raw transcripts stay in variables; only findings reach your context.
 
 ```python
-import runpy, re
-skill_dir = "..."  # this skill's directory: "References are relative to <dir>" above
-s = runpy.run_path(f"{skill_dir}/scripts/sessions.py")
-files = s["session_files"](days=7)  # current project; newest first by mtime
-hits = s["grep_sessions"](files[1:], r"retry|backoff")  # files[0] is usually this session
-print(len(files), "sessions;", hits[:10])
-sessions = [s["read_session"](p) for p, _ in hits[:12]]
-sessions = [x for x in sessions if x["messages"] and not x["parent"]]
+rows = {r["id"]: r for r in await sessions.list(days=7, limit=1000)}  # current project, newest first
+found = await sessions.search(r"retry|backoff", days=7, per_session=40, limit=1000)
+by_session = {}
+for hit in found["hits"]:
+    row = rows.get(hit["session"])
+    if row and not row["current"] and not row["parent"]:  # skip this session and subagents
+        by_session.setdefault(hit["session"], []).append(hit["entry"])
+print(len(rows), "sessions;", {i: len(e) for i, e in by_session.items()}, "truncated" if found["truncated"] else "")
 regions = []
-for x in sessions:
-    text = "\n\n".join(f"[{m['role']}] {m['text']}" for m in x["messages"])
-    h = await rlm.load(text=text, label=x["id"])
-    spots = h.search(r"(?i)retry|backoff", limit=40)
-    if spots:  # one region per session: from the first to the last match, with margin
-        regions.append((x["id"], h.lines(max(spots[0]["line"] - 40, 0), spots[-1]["line"] + 40)))
+for sid, entries in list(by_session.items())[:12]:  # one region per session: first to last match, with margin
+    span = await sessions.read(session=sid, from_entry=entries[0], to_entry=entries[-1], around=6, tool_chars=1500)
+    text = "\n\n".join(f"[{m['role']}] {m['text']}" for m in span["entries"])
+    regions.append((span["span"], text))
 THREAD = {"topic": str, "goal": str, "decisions": list[str], "open_threads": list[str],
           "struggles": list[str], "artifacts": list[str]}
 briefs = await rlm.map(
     "From this session excerpt, extract the user's goal, decisions, open threads, struggles and corrections, "
     "and artifacts (PRs, tickets, branches, files) about: retry/backoff. Quote, don't guess.",
-    [view for _, view in regions], contract=THREAD)
+    [text for _, text in regions], contract=THREAD)
 state["recall"] = {"scope": "last 7 days, this project, topic retry/backoff",
-                   "threads": [dict(b, session=i) for (i, _), b in zip(regions, briefs) if b]}
+                   "threads": [dict(b, span=i) for (i, _), b in zip(regions, briefs) if b]}
 ```
 
 Set the frames' `thinking=` per rigor's "Match the effort to the job" (`../rigor/SKILL.md`). For one or two sessions, skip the frames and read the matching regions directly (`print(view)`).
@@ -64,6 +62,6 @@ Lead with the capsule, then the thread status, then the problems, then the next 
 - **Problems.** At most 5, the recurring ones. Include the symptoms users keep reporting and any fix that shipped and was reverted, so the next attempt starts where the last one failed.
 - **Next move.** The single most useful next action, concrete.
 
-An adjacent feature or ticket stays out unless it blocks this one. When the capsule and thread lines outgrow a screen, cut detail before you cut threads. Write the brief through the **unslop** skill (`../unslop/SKILL.md`), cite session findings by session id and shared-record findings by their source (PR #, ticket ID, chat permalink, error-tracker issue), and sanitize private context before any public output.
+An adjacent feature or ticket stays out unless it blocks this one. When the capsule and thread lines outgrow a screen, cut detail before you cut threads. Write the brief through the **unslop** skill (`../unslop/SKILL.md`), cite session findings by their span (`session://<id>#<from>..<to>`) and shared-record findings by their source (PR #, ticket ID, chat permalink, error-tracker issue), and sanitize private context before any public output.
 
 **Reply:** the brief, to the contract above.

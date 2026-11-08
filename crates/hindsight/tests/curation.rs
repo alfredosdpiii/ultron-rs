@@ -24,6 +24,7 @@ impl Transport for Recorder {
         let (status, body) = self.answers.lock().unwrap().remove(0);
         Ok(HttpResponse {
             status,
+            retry_after: None,
             body: if (200..300).contains(&status) {
                 body.to_string().into_bytes()
             } else {

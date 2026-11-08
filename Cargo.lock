@@ -248,6 +248,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "blocking-http"
+version = "0.1.0"
+dependencies = [
+ "kernel",
+ "reqwest",
+ "tokio",
+]
+
+[[package]]
 name = "bumpalo"
 version = "3.20.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -368,6 +377,7 @@ dependencies = [
  "agent",
  "ai",
  "base64 0.23.1",
+ "blocking-http",
  "chord-delta",
  "claude-root",
  "client",
@@ -382,6 +392,7 @@ dependencies = [
  "inference",
  "interactive",
  "jsrt",
+ "judge",
  "kernel",
  "kernel-apis",
  "knowledge",
@@ -1140,14 +1151,13 @@ dependencies = [
 name = "hindsight"
 version = "0.1.0"
 dependencies = [
+ "blocking-http",
  "config",
  "jsrt",
  "kernel",
  "kernel-apis",
  "regex",
- "reqwest",
  "serde_json",
- "tokio",
  "url",
 ]
 
@@ -1606,6 +1616,22 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2",
+]
+
+[[package]]
+name = "judge"
+version = "0.1.0"
+dependencies = [
+ "ai",
+ "blocking-http",
+ "config",
+ "delegation",
+ "jsrt",
+ "kernel",
+ "kernel-apis",
+ "serde_json",
+ "tempfile",
+ "tokio",
 ]
 
 [[package]]
@@ -2777,6 +2803,7 @@ dependencies = [
  "agent",
  "ai",
  "base64 0.23.1",
+ "blocking-http",
  "compaction",
  "config",
  "delegation",
@@ -2789,6 +2816,7 @@ dependencies = [
  "inference",
  "jsonschema",
  "jsrt",
+ "judge",
  "kernel",
  "kernel-apis",
  "lanes",
@@ -2825,6 +2853,7 @@ name = "session-journal"
 version = "0.1.0"
 dependencies = [
  "config",
+ "fancy-regex 0.19.2",
  "jsrt",
  "serde_json",
  "tempfile",

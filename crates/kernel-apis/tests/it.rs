@@ -39,6 +39,8 @@ mod progress;
 mod prompt_schedule;
 #[path = "schedules.rs"]
 mod schedules;
+#[path = "sessions.rs"]
+mod sessions;
 #[path = "skills_invoke.rs"]
 mod skills_invoke;
 #[path = "tool_gate.rs"]

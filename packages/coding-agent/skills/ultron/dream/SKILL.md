@@ -20,9 +20,9 @@ quote is a guess; drop it.
 
 Keep raw text in variables; only findings reach your context.
 
-- **Sessions since the last dream.** `runpy.run_path` the recall skill's `scripts/sessions.py` (`pstack/recall` in
-  the bundled skills directory), then `session_files(days=1, all_projects=True)`; skip this session, subagent
-  sessions (`parent` set) and sessions with no user message. Look for: a correction the user made, a command that
+- **Sessions since the last dream.** `await sessions.list(cwd="all", days=1)`, then `await sessions.read(session=id)`
+  for each (or `sessions.search` for a signal across them); skip this session (`current`), subagent sessions
+  (`parent` set) and sessions with no user message. Cite what you find by its span (`session://<id>#<from>..<to>`). Look for: a correction the user made, a command that
   failed then worked, an approach the user rejected, a procedure repeated by hand in two or more sessions.
 - **Autoreview.** Each reviewed repository has a learned guide (Hindsight mental model `autoreview-<id>`) and raw
   finding fates in the `ultron-autoreview` bank. Read with `bash` and `curl` against the Hindsight URL

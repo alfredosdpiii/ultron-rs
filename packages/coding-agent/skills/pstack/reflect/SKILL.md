@@ -17,15 +17,15 @@ Invoke when the user says "reflect" or "/reflect". Skip when the session is triv
 
 ## 1. Get the transcript
 
-Read your own session file: it has every user message, cell and result in full. `scripts/sessions.py` from the recall skill (`../recall/scripts/sessions.py`) finds and parses it. The newest file for this working directory is usually this session; confirm that its first user message is this conversation's opening prompt. Never glob across other projects' sessions.
+Read your own session: it has every user message, cell and result in full. `await sessions.read()` returns this session's conversation; `scripts/sessions.py` from the recall skill (`../recall/scripts/sessions.py`) wraps it in the transcript shape below. Never read other projects' sessions.
 
 ```python
 import runpy
 skill_dir = "..."  # this skill's directory: "References are relative to <dir>" above
-s = runpy.run_path(f"{skill_dir}/../recall/scripts/sessions.py")
-files = s["session_files"](days=2)
-session = s["read_session"](files[0], tool_chars=1500)
-print(files[0], session["messages"][0]["text"][:200])
+s = runpy.run_path(f"{skill_dir}/../recall/scripts/sessions.py", init_globals={"sessions": sessions})
+current = [f for f in await s["session_files"](days=2) if f["current"]]
+session = await s["read_session"](current[0], tool_chars=1500)
+print(session["id"], session["messages"][0]["text"][:200])
 transcript = "\n\n".join(f"[{i} {m['role']}] {m['text']}" for i, m in enumerate(session["messages"]))
 h = await rlm.load(text=transcript, label="session")
 print(h.size)

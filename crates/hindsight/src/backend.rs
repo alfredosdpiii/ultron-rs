@@ -7,7 +7,7 @@
 //! caller's signal ABORTED. With `ensure_bank` the bank is created (idempotent PUT `{}`) before the first call; a
 //! failed creation is retried on the next call rather than remembered.
 
-use crate::transport::{HttpRequest, ReqwestTransport, Transport, TransportError};
+use blocking_http::{HttpRequest, ReqwestTransport, Transport, TransportError};
 use jsrt::utf16;
 use kernel::Signal;
 use kernel_apis::MemoryBackend;

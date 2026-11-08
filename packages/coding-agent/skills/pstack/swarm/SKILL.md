@@ -65,12 +65,20 @@ Then reply in two lines."""
 
 slices = [{"name": "auth", "brief": "..."}, {"name": "billing", "brief": "..."}]  # or N copies of one brief
 writes = False  # True when workers edit files
+# The projected cost, before anything starts (help(budget.estimate)); it goes in the report.
+est = await budget.estimate({"kind": "child", "calls": len(slices), "model": model})
+state["swarm_estimate"] = est
+print(f"estimate ${est['cost_usd']} for {len(slices)} workers", "" if est["complete"] else f"unpriced: {est['unpriced']}")
+if est.get("budget", {}).get("fits") is False:
+    raise RuntimeError(f"swarm estimate is over the cost cap: {est['budget']}")  # tell the user; do not fan out
 hs = await asyncio.gather(*[
     rlm.spawn(s["brief"] + FINISH, name=f"swarm-{s['name']}", model=model, worktree=writes) for s in slices
 ])
 ```
 
-Spawn all N at once. Do only work no worker owns while they run; never check on their files or logs.
+When the estimate does not fit the cost cap, shrink the swarm (fewer slices, a cheaper model) or ask the user;
+never start part of it hoping it fits. Spawn all N at once. Do only work no worker owns while they run; never check
+on their files or logs.
 
 ## Phase C: Aggregate
 
@@ -139,4 +147,4 @@ Do not paste raw worker replies.
 ## Phase D: Report
 
 One reply: the result table (slice or arm, verdict, issue count), one-line evidenced issues, gaps and dropouts, the
-race rule when used, and what was merged.
+race rule when used, what was merged, and the estimate from Phase B beside the spend (`(await agents.status())["spend"]`).

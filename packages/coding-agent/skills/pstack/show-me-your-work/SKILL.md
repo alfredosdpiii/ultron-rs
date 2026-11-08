@@ -82,18 +82,14 @@ Commit it only when the work is ambitious enough that a reviewer needs the trail
 At the end of the run, before handing back, check the log told the truth against what this run actually did.
 
 - **Recent turns:** `h = await ctx.history(limit=200)` lists what is still in your context (`h["items"]`, each with `id`, `kind`, `preview`); `await ctx.get(id)` gives one item in full.
-- **The whole run, past compaction:** this session's file. `../recall/scripts/sessions.py` finds and parses Ultron's session files (native sessions under the agent dir's `experimental/sessions/`, Pi-format ones under `sessions/`, one folder per working directory). Several sessions can share a project, so pick the file that contains this run's own text (its first user message, a row you logged), not just the newest. Never read other projects' sessions: they are unrelated private chats.
+- **The whole run, past compaction:** a session's conversation, through the `sessions` API (`../recall/scripts/sessions.py` wraps it in whole-session helpers). This run may have started in an earlier session of the project, so pick the session that contains this run's own text (its first user message, a row you logged): `sessions.search` finds it. Never read other projects' sessions: they are unrelated private chats.
 
 ```python
 import runpy
-s = runpy.run_path(f"{skill_dir}/../recall/scripts/sessions.py")  # skill_dir: the directory named in "References are relative to"
+s = runpy.run_path(f"{skill_dir}/../recall/scripts/sessions.py", init_globals={"sessions": sessions})  # skill_dir: the directory named in "References are relative to"
 marker = "a phrase only this run wrote"
-transcript = None
-for path in s["session_files"](days=2):
-    session = s["read_session"](path)
-    if any(marker in m["text"] for m in session["messages"]):
-        transcript = session
-        break
+hits = (await sessions.search(terms=[marker], days=2, per_session=1))["hits"]
+transcript = await s["read_session"](hits[0]["session"]) if hits else None
 ```
 
 Walk this run's rows against the transcript. Each stretch of them begins at one of this run's `start` rows, or at the first row if this run created the log, and ends at the next `start` row of another run:
