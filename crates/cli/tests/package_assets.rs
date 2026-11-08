@@ -121,6 +121,8 @@ impl Outside {
     fn private(&self, command: &mut Command) {
         command
             .env_clear()
+            .env("ULTRON_HINDSIGHT_URL", "off")
+            .env("ULTRON_MEMORANTADO_URL", "off")
             .current_dir(&self.cwd)
             .env("PATH", self.root.join("tools"))
             .env("HOME", self.root.join("home"))

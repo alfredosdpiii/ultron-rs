@@ -17,6 +17,16 @@ pub struct Rates {
     pub output: f64,
 }
 
+impl Rates {
+    /// `model`'s catalog (or models.json) rates.
+    pub fn of(model: &ai::Model) -> Rates {
+        Rates {
+            input: model.cost.input,
+            output: model.cost.output,
+        }
+    }
+}
+
 /// The model a unit runs on and its rates (None: the model is unknown or the catalog has no price for it).
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Priced {

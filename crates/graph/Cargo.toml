@@ -14,6 +14,7 @@ jsrt = { path = "../jsrt" }
 kernel = { path = "../kernel" }
 kernel-apis = { path = "../kernel-apis" }
 knowledge = { path = "../knowledge" }
+memorantado = { path = "../memorantado" }
 serde_json = { version = "=1.0.151", features = ["preserve_order"] }
 
 [dev-dependencies]

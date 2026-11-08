@@ -122,6 +122,23 @@ impl AgentPaths {
     pub fn skill_proposals(&self) -> PathBuf {
         self.join("skill-proposals")
     }
+    /// `ultron optimize`'s points and proposals (optimize::store).
+    pub fn optimize(&self) -> PathBuf {
+        self.join("optimize")
+    }
+    /// What a cell may not write: the user's settings, keys and skills, the skills waiting for the user's
+    /// approval, the detected memory backend and `ultron optimize`'s proposals (host::file_hooks
+    /// `FileHooks::protect`).
+    pub fn protected(&self) -> Vec<PathBuf> {
+        vec![
+            self.settings(),
+            self.auth(),
+            self.skills_dir(),
+            self.skill_proposals(),
+            self.memory_backend(),
+            self.optimize(),
+        ]
+    }
     /// The memory backend detected once when `memory.backend` is unset (memorantado::resolve), kept so a later
     /// outage pauses memory instead of switching stores.
     pub fn memory_backend(&self) -> PathBuf {

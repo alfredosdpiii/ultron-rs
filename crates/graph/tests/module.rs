@@ -4,7 +4,6 @@
 
 use crate::fakes::{FakeHttp, git, password, write};
 use config::keys::neo4j_settings;
-use graph::MemorantadoSettings;
 use graph::{KnowledgeModule, Mirrors};
 use kernel::Signal;
 use kernel_apis::{ApiModule, Request, RootOnly};
@@ -44,7 +43,9 @@ fn world() -> World {
         root.join("src"),
         Arc::new(move || source.lock().unwrap().clone()),
         Arc::new(move || Ok(transport.clone() as Arc<dyn blocking_http::Transport>)),
-        Arc::new(|| Some(password())),
+        Arc::new(|_: &str| Ok(Some(password()))),
+        // The session's judge issued one receipt, for d1.
+        Arc::new(|receipt: &str| (receipt == "judge:7").then(|| ("d1".to_string(), "d1-2b".to_string()))),
     );
     World {
         _dir: dir,
@@ -57,7 +58,7 @@ fn world() -> World {
 
 fn with_neo4j(world: &World) {
     world.mirrors.lock().unwrap().neo4j = neo4j_settings(
-        json!({"graph": {"neo4j": {"url": "http://neo4j.test"}}})
+        json!({"graph": {"neo4j": {"url": "https://neo4j.test"}}})
             .as_object()
             .unwrap(),
     );
@@ -103,7 +104,8 @@ fn knowledge_relations_checks_its_payload() {
         outside.path().to_path_buf(),
         Arc::new(Mirrors::default),
         Arc::new(|| Err("unused".into())),
-        Arc::new(|| None),
+        Arc::new(|_: &str| Ok(None)),
+        Arc::new(|_: &str| None),
     );
     let error = call(&module, "knowledge.relations", json!({})).unwrap_err();
     assert!(error.starts_with("knowledge needs a git repository"), "{error}");
@@ -150,11 +152,35 @@ fn knowledge_relations_answers_settled_and_pending_and_settles_verdicts() {
 
     with_neo4j(&w);
     let id = pending[0]["id"].clone();
+    // A verdict the model only says a judge gave (no receipt, or one this session's judge never issued for that
+    // backend) is kept as the model's.
+    for receipt in [json!(null), json!("judge:99"), json!("judge:7")] {
+        let backend = if receipt == "judge:7" { "jev" } else { "d1" };
+        let claimed = call(
+            &w.module,
+            "knowledge.settle",
+            json!({"rev": rev, "verdicts": [{"id": id, "status": "review", "backend": backend, "rung": "first",
+                "model": "m", "confidence": 0.91, "receipt": receipt}]}),
+        )
+        .unwrap();
+        assert_eq!(claimed["settled"], 1);
+        let level =
+            &call(&w.module, "knowledge.relations", json!({"kinds": ["reads_config"]})).unwrap()["relations"][1];
+        assert_eq!(
+            (
+                level["checked_by"].clone(),
+                level["rung"].clone(),
+                level["model"].clone()
+            ),
+            (json!("model"), json!(null), json!(null)),
+            "{receipt}"
+        );
+    }
     let settled = call(
         &w.module,
         "knowledge.settle",
         json!({"rev": rev, "verdicts": [{"id": id, "status": "accepted", "backend": "d1", "rung": "first",
-            "model": "d1-2b", "confidence": 0.91}]}),
+            "model": "d1-2b", "confidence": 0.91, "receipt": "judge:7"}]}),
     )
     .unwrap();
     assert_eq!(settled, json!({"settled": 1, "mirror": {"mirrored": 1}}));
@@ -197,7 +223,7 @@ fn knowledge_a_mirror_that_fails_is_reported_and_the_request_succeeds() {
     let found = call(&w.module, "knowledge.relations", json!({})).unwrap();
     assert_eq!(
         found["mirror"],
-        json!({"error": "Neo4j at http://neo4j.test could not be reached"})
+        json!({"error": "Neo4j at https://neo4j.test could not be reached"})
     );
     assert_eq!(found["relations"].as_array().unwrap().len(), 2);
 }
@@ -215,8 +241,8 @@ fn knowledge_mirror_rewrites_relations_and_memories() {
     let empty = call(&w.module, "knowledge.mirror", json!({})).unwrap();
     assert_eq!(empty, json!({"relations": 0, "errors": []}));
     call(&w.module, "knowledge.relations", json!({"paths": ["src"]})).unwrap();
-    w.mirrors.lock().unwrap().memorantado = Some(MemorantadoSettings {
-        url: "http://mem.test/api".into(),
+    w.mirrors.lock().unwrap().memorantado = Some(memorantado::Endpoint {
+        url: "http://mem.test".into(),
         project: "ultron".into(),
     });
     *w.http.memories.lock().unwrap() = vec![json!({"id": 7, "status": "active", "kind": "gotcha", "subject": "s",

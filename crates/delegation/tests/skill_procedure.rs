@@ -219,31 +219,40 @@ fn procedure_proposals_wait_for_the_users_approval_and_are_checked_again() {
     );
     // Nothing is published until approval; an edit that breaks the procedure is refused then.
     assert!(!skills.exists());
-    std::fs::write(
-        dir.join(&id).join("SKILL.md"),
-        "---\nname: flaky\ndescription: d\n---\n",
-    )
-    .unwrap();
+    let sha = |text: &str| jsrt::hash::sha256_hex(text.as_bytes());
+    let broken = "---\nname: flaky\ndescription: d\n---\n";
+    std::fs::write(dir.join(&id).join("SKILL.md"), broken).unwrap();
     assert_eq!(
-        proposals::approve(&dir, &id, &skills, 7).unwrap_err(),
+        proposals::approve(&dir, &id, &skills, 7, &sha(broken)).unwrap_err(),
         "a proposed skill needs a procedure: in its frontmatter"
     );
-    std::fs::write(dir.join(&id).join("SKILL.md"), skill_md("flaky", "cargo test -q")).unwrap();
-    let published = proposals::approve(&dir, &id, &skills, 8).unwrap();
+    // The approval is of the content the user was shown: an edit after that is refused.
+    let edited = skill_md("flaky", "cargo test -q");
+    std::fs::write(dir.join(&id).join("SKILL.md"), &edited).unwrap();
+    let now = sha(&edited);
+    assert_eq!(
+        proposals::approve(&dir, &id, &skills, 8, &sha(broken)).unwrap_err(),
+        format!(
+            "Skill proposal {id} changed after it was shown (sha256 now {}); run approve again to see it",
+            &now[..12]
+        )
+    );
+    assert!(!skills.exists());
+    let published = proposals::approve(&dir, &id, &skills, 8, &now).unwrap();
     assert_eq!(published["state"], "published");
     assert_eq!(
         std::fs::read_to_string(skills.join("flaky/SKILL.md")).unwrap(),
         skill_md("flaky", "cargo test -q")
     );
     assert_eq!(
-        proposals::approve(&dir, &id, &skills, 9).unwrap_err(),
+        proposals::approve(&dir, &id, &skills, 9, &now).unwrap_err(),
         format!("Skill proposal {id} is published")
     );
     // A second proposal of the same name never overwrites the published skill.
     let again = proposals::propose(&dir, "flaky", &skill_md("flaky", "false"), &evidence, None, 10).unwrap();
     let again = again["id"].as_str().unwrap();
     assert!(
-        proposals::approve(&dir, again, &skills, 11)
+        proposals::approve(&dir, again, &skills, 11, &sha(&skill_md("flaky", "false")))
             .unwrap_err()
             .ends_with("exists; remove it or rename the proposal first")
     );

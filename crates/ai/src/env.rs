@@ -63,11 +63,6 @@ fn api_key_env_vars(provider: &str) -> Option<&'static [&'static str]> {
         "xiaomi-token-plan-cn" => &["XIAOMI_TOKEN_PLAN_CN_API_KEY"],
         "xiaomi-token-plan-ams" => &["XIAOMI_TOKEN_PLAN_AMS_API_KEY"],
         "xiaomi-token-plan-sgp" => &["XIAOMI_TOKEN_PLAN_SGP_API_KEY"],
-        // The judge seat's services (crates/judge): TypeSafe's Jev and a d1 server.
-        "typesafe" => &["TYPESAFE_API_KEY"],
-        "d1" => &["ULTRON_D1_KEY"],
-        // The knowledge graph's optional Neo4j mirror (crates/graph): the password of `graph.neo4j.user`.
-        "neo4j" => &["NEO4J_PASSWORD"],
         _ => return None,
     })
 }

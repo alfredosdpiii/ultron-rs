@@ -193,7 +193,7 @@ fn judge(run: &mut Run) -> Result<Vec<Measured>, String> {
         (Recording::parse(&text)?, "offline")
     };
     let replay = Arc::new(Replay::new(set.clone(), recording.clone())?);
-    let none: judge::backend::KeySource = Arc::new(|| None);
+    let none: judge::backend::KeySource = Arc::new(|_: &str| Ok(None));
     let current = judge::Seat::new(
         crate::judge_cli::settings(run.env),
         judge::SeatDeps::new(replay.clone(), none.clone(), none),
@@ -366,7 +366,7 @@ fn optimize(args: &[String], env: &Env, out: &mut dyn Write, err: &mut dyn Write
         Some(file) => Some(read_variants(&env.cwd.join(file))?),
         None => None,
     };
-    let store = Store::new(env.agent_dir().join("optimize"));
+    let store = Store::new(config::paths::AgentPaths::new(env.agent_dir()).optimize());
     let now = jsrt::date::now_ms();
     let mut run = Run {
         options: &options,
@@ -409,8 +409,8 @@ fn optimize(args: &[String], env: &Env, out: &mut dyn Write, err: &mut dyn Write
         writeln!(
             out,
             "Kept in {}",
-            env.agent_dir()
-                .join("optimize")
+            config::paths::AgentPaths::new(env.agent_dir())
+                .optimize()
                 .join(&options.pipeline)
                 .join("points.jsonl")
                 .display()

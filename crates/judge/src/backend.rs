@@ -16,9 +16,41 @@ pub const JEV_TIMEOUT: Duration = Duration::from_secs(10);
 /// d1's first call of a seat (the model may be loading: measured 6 s cold), and every call after one succeeded.
 pub const D1_COLD_TIMEOUT: Duration = Duration::from_secs(15);
 pub const D1_WARM_TIMEOUT: Duration = Duration::from_secs(3);
-const NO_JEV_KEY: &str = "no TypeSafe key (TYPESAFE_API_KEY or auth.json \"typesafe\")";
+/// The wire format's parts that tell the backends apart: Jev's path ends so and its state is `state`; d1's path is
+/// `<url>/decide` and its state is `text`.
+const JEV_PATH: &str = "/systemone";
+const JEV_STATE: &str = "state";
+const D1_PATH: &str = "/decide";
+const D1_STATE: &str = "text";
+
+/// A request a seat sent, read back: its backend (`jev` or `d1`), the state it judged and its body (the questions
+/// are `body["questions"]`). For transports that record or replay the seat's calls (optimize).
+pub fn wire_case(request: &HttpRequest) -> Option<(&'static str, String, Value)> {
+    let body: Value = serde_json::from_slice(request.body.as_deref()?).ok()?;
+    let (backend, field) = if request.url.ends_with(JEV_PATH) {
+        ("jev", JEV_STATE)
+    } else if request.url.ends_with(D1_PATH) {
+        ("d1", D1_STATE)
+    } else {
+        return None;
+    };
+    let state = body[field].as_str()?.to_string();
+    Some((backend, state, body))
+}
+
+/// A System One answer body as the backends read it ([`reply`]): `answers` by question name, the `usage`, the
+/// `model` when known.
+pub fn wire_reply(answers: serde_json::Map<String, Value>, usage: &Value, model: Option<&str>) -> Value {
+    let mut reply = json!({"answers": answers, "usage": usage});
+    if let Some(model) = model {
+        reply["model"] = json!(model);
+    }
+    reply
+}
+
+const NO_JEV_KEY: &str = "no TypeSafe key (TYPESAFE_API_KEY or auth.json \"judge:typesafe\")";
 const NO_D1_URL: &str = "no d1 server (judge.d1.url)";
-const NO_D1_KEY: &str = "no d1 key (ULTRON_D1_KEY or auth.json \"d1\")";
+const NO_D1_KEY: &str = "no d1 key (ULTRON_D1_KEY or auth.json \"judge:d1\")";
 /// The largest answer read.
 const MAX_RESPONSE_BYTES: usize = 1 << 20;
 
@@ -82,42 +114,24 @@ pub trait Backend: Send + Sync {
     fn call(&self, state: &str, questions: &[Question], signal: &Signal) -> Result<Reply, Failure>;
 }
 
-/// A key read when a call is made, so a key saved during a session applies to its next call.
-pub type KeySource = Arc<dyn Fn() -> Option<String> + Send + Sync>;
+/// A key for the URL a call goes to, read when the call is made (a key saved during a session applies to its next
+/// call; one saved for another server, or a URL that is not https, is refused: [`config::auth::service_key`]).
+pub type KeySource = config::auth::ServiceKeySource;
 
-/// `retry-after` as a delay from `now_ms`: whole seconds, or an HTTP date (a past date is no wait).
+/// The key `source` gives for `url`: `Err` (why) when there is none or it must not go there.
+fn key_for(source: &KeySource, url: &str, none: &str) -> Result<String, String> {
+    source(url)?.ok_or_else(|| none.to_string())
+}
+
+/// `retry-after` as a delay from `now_ms`: whole seconds, or an HTTP date (a past date is no wait;
+/// [`ai::http::parse_http_date`], the model providers' reading).
 pub fn retry_after(value: Option<&str>, now_ms: i64) -> Option<Duration> {
     let value = jsrt::string::trim(value?);
     if let Ok(seconds) = value.parse::<u64>() {
         return Some(Duration::from_secs(seconds));
     }
-    let at = http_date(value)?;
+    let at = ai::http::parse_http_date(value)?;
     Some(Duration::from_millis((at - now_ms).max(0) as u64))
-}
-
-/// An HTTP date (RFC 9110 IMF-fixdate, `Sun, 06 Nov 1994 08:49:37 GMT`) as ms since the epoch.
-fn http_date(text: &str) -> Option<i64> {
-    const MONTHS: [&str; 12] = [
-        "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
-    ];
-    let parts: Vec<&str> = text.split_whitespace().collect();
-    let [weekday, day, month, year, time, "GMT"] = parts.as_slice() else {
-        return None;
-    };
-    if !weekday.ends_with(',') {
-        return None;
-    }
-    let month = MONTHS.iter().position(|m| m == month)? as u32 + 1;
-    let (day, year) = (day.parse::<u32>().ok()?, year.parse::<i64>().ok()?);
-    let clock: Vec<i64> = time.split(':').map(|n| n.parse().ok()).collect::<Option<_>>()?;
-    let [hour, minute, second] = clock.as_slice() else {
-        return None;
-    };
-    if !(1..=31).contains(&day) || *hour > 23 || *minute > 59 || *second > 60 {
-        return None;
-    }
-    let seconds = jsrt::date::days_from_civil(year, month, day) * 86_400 + hour * 3600 + minute * 60 + second;
-    Some(seconds * 1000)
 }
 
 /// POST `body` as JSON with a bearer key; the JSON answer of a 2xx status.
@@ -203,12 +217,12 @@ impl Backend for Jev {
     }
 
     fn ready(&self) -> Result<(), String> {
-        (self.key)().map(|_| ()).ok_or_else(|| NO_JEV_KEY.into())
+        key_for(&self.key, &self.url, NO_JEV_KEY).map(drop)
     }
 
     fn call(&self, state: &str, questions: &[Question], signal: &Signal) -> Result<Reply, Failure> {
-        let key = (self.key)().ok_or_else(|| Failure::Unavailable(NO_JEV_KEY.into()))?;
-        let body = json!({"state": state, "model": self.model, "questions": question::wire_questions(questions)});
+        let key = key_for(&self.key, &self.url, NO_JEV_KEY).map_err(Failure::Unavailable)?;
+        let body = json!({JEV_STATE: state, "model": self.model, "questions": question::wire_questions(questions)});
         let answer = post_json(&*self.transport, &self.url, &key, &body, self.timeout, signal)?;
         let usage = &answer["usage"];
         let priced = self
@@ -255,8 +269,8 @@ impl Backend for D1 {
     }
 
     fn ready(&self) -> Result<(), String> {
-        self.url.as_ref().ok_or(NO_D1_URL)?;
-        (self.key)().map(|_| ()).ok_or_else(|| NO_D1_KEY.into())
+        let url = self.url.as_ref().ok_or(NO_D1_URL)?;
+        key_for(&self.key, url, NO_D1_KEY).map(drop)
     }
 
     fn call(&self, state: &str, questions: &[Question], signal: &Signal) -> Result<Reply, Failure> {
@@ -264,15 +278,22 @@ impl Backend for D1 {
             .url
             .as_ref()
             .ok_or_else(|| Failure::Unavailable(NO_D1_URL.into()))?;
-        let key = (self.key)().ok_or_else(|| Failure::Unavailable(NO_D1_KEY.into()))?;
+        let key = key_for(&self.key, url, NO_D1_KEY).map_err(Failure::Unavailable)?;
         let timeout = if self.warm.load(Ordering::SeqCst) {
             D1_WARM_TIMEOUT
         } else {
             D1_COLD_TIMEOUT
         };
-        let body = json!({"text": state, "questions": question::wire_questions(questions)});
-        let answered = post_json(&*self.transport, &format!("{url}/decide"), &key, &body, timeout, signal)
-            .and_then(|answer| reply(&answer, questions, "d1", Some(0.0)));
+        let body = json!({D1_STATE: state, "questions": question::wire_questions(questions)});
+        let answered = post_json(
+            &*self.transport,
+            &format!("{url}{D1_PATH}"),
+            &key,
+            &body,
+            timeout,
+            signal,
+        )
+        .and_then(|answer| reply(&answer, questions, "d1", Some(0.0)));
         self.warm.store(answered.is_ok(), Ordering::SeqCst);
         answered
     }

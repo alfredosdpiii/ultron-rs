@@ -336,6 +336,8 @@ impl Install {
         let mut command = std::process::Command::new(env!("CARGO_BIN_EXE_ultron-acceptance"));
         command
             .env_clear()
+            .env("ULTRON_HINDSIGHT_URL", "off")
+            .env("ULTRON_MEMORANTADO_URL", "off")
             .args(["-p", "--no-session", "--model", MODEL, prompt])
             .current_dir(self.project())
             .env("PATH", std::env::var("PATH").unwrap_or_default())
@@ -381,6 +383,7 @@ fn base_env(install: &Install, env: &[(&str, &str)]) -> Vec<(String, String)> {
         ),
         ("GROQ_API_KEY".into(), "test-groq".into()),
         (hindsight::resolve::HINDSIGHT_URL_ENV.into(), "off".into()),
+        ("ULTRON_MEMORANTADO_URL".into(), "off".into()),
         (config::env::OFFLINE_ENV.into(), "1".into()),
         ("NO_COLOR".into(), "1".into()),
         ("TZ".into(), "UTC".into()),

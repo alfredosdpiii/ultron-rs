@@ -26,6 +26,7 @@ fn env(sandbox: &common::Sandbox) -> cli::Env {
         ),
         ("ANTHROPIC_API_KEY".into(), "test-key".into()),
         (hindsight::resolve::HINDSIGHT_URL_ENV.into(), "off".into()),
+        ("ULTRON_MEMORANTADO_URL".into(), "off".into()),
         (config::env::OFFLINE_ENV.into(), "1".into()),
     ];
     cli::Env {

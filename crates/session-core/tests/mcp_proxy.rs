@@ -29,6 +29,8 @@ fn session_core_mcp_gateway_reaches_http_servers_through_the_session_proxy() {
     )
     .unwrap();
     let vars: Vec<(String, String)> = vec![
+        ("ULTRON_HINDSIGHT_URL".into(), "off".into()),
+        ("ULTRON_MEMORANTADO_URL".into(), "off".into()),
         ("HOME".into(), home.display().to_string()),
         (config::paths::ENV_AGENT_DIR.into(), agent.display().to_string()),
         (

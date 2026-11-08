@@ -56,6 +56,7 @@ fn session_core_schedules_and_goal_reach_every_lane_and_the_goal_admits_only_the
             root.join("server").display().to_string(),
         ),
         (hindsight::resolve::HINDSIGHT_URL_ENV.into(), "off".into()),
+        ("ULTRON_MEMORANTADO_URL".into(), "off".into()),
     ];
     let env = RunEnv {
         cwd,

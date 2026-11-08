@@ -21,7 +21,7 @@ fn daemon_worker_settings_judge_keys_are_saved_globally_and_checked() {
     let mut apply = |key: &str, value: Value| worker_settings::apply(&mut settings, key, &value, None);
     for (key, value) in [
         ("judge.provider", json!(["d1", "jev", "d1"])),
-        ("judge.d1.url", json!(" http://mini.tail.example:18091/ ")),
+        ("judge.d1.url", json!(" https://mini.tail.example:18091/ ")),
         ("judge.model", json!("jev-1.13")),
         ("judge.escalateModel", json!("anthropic/claude-haiku-5-5")),
         ("judge.fallbackModel", json!("openai/gpt-5-mini")),
@@ -34,7 +34,7 @@ fn daemon_worker_settings_judge_keys_are_saved_globally_and_checked() {
     }
     assert_eq!(
         saved(&agent),
-        json!({"provider": ["d1", "jev"], "d1": {"url": "http://mini.tail.example:18091"}, "model": "jev-1.13",
+        json!({"provider": ["d1", "jev"], "d1": {"url": "https://mini.tail.example:18091"}, "model": "jev-1.13",
             "escalateModel": "anthropic/claude-haiku-5-5", "fallbackModel": "openai/gpt-5-mini",
             "thresholds": {"jev": 0.8, "memory": {"d1": 0.9}}, "budgetUsd": 2.5, "maxCalls": 200})
     );
@@ -54,6 +54,11 @@ fn daemon_worker_settings_judge_keys_are_saved_globally_and_checked() {
             "judge.d1.url",
             json!("ftp://mini"),
             "judge.d1.url must be an http(s) URL",
+        ),
+        (
+            "judge.d1.url",
+            json!("http://mini.tail.example:18091"),
+            "judge.d1.url: http://mini.tail.example:18091 is not https: a credential goes over plain http only to this machine",
         ),
         (
             "judge.escalateModel",
@@ -136,5 +141,28 @@ fn daemon_worker_settings_memory_backend_is_saved_globally_and_checked() {
     );
     apply("memory.backend", Value::Null).unwrap();
     assert_eq!(memory(&agent), json!({}));
+    assert!(!cwd.join(".pi/settings.json").exists());
+}
+
+#[test]
+fn daemon_worker_settings_result_footer_is_saved_globally_and_checked() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (agent, cwd) = (tmp.path().join("agent"), tmp.path().join("cwd"));
+    std::fs::create_dir_all(&agent).unwrap();
+    std::fs::create_dir_all(cwd.join(".pi")).unwrap();
+    let mut settings = SettingsManager::create(&cwd, &agent, true);
+    let mut apply = |key: &str, value: Value| worker_settings::apply(&mut settings, key, &value, None);
+    let rlm = |agent: &std::path::Path| {
+        serde_json::from_str::<Value>(&std::fs::read_to_string(agent.join("settings.json")).unwrap()).unwrap()["rlm"]
+            .clone()
+    };
+    assert_eq!(apply("rlm.resultFooter", json!(true)).unwrap().0, Applied::Restart);
+    assert_eq!(rlm(&agent), json!({"resultFooter": true}));
+    assert_eq!(
+        apply("rlm.resultFooter", json!("yes")).unwrap_err(),
+        "rlm.resultFooter must be true or false"
+    );
+    apply("rlm.resultFooter", Value::Null).unwrap();
+    assert_eq!(rlm(&agent)["resultFooter"], Value::Null);
     assert!(!cwd.join(".pi/settings.json").exists());
 }

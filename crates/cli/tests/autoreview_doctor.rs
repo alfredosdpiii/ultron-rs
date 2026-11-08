@@ -63,6 +63,7 @@ fn run(base: &Path, args: &[&str], settings: Value, respond: Respond) -> Run {
             config::paths::ENV_AGENT_DIR => Some(agent_text.clone()),
             review::settings::CACHE_DIR_ENV => Some(cache.clone()),
             hindsight::resolve::HINDSIGHT_URL_ENV => Some("off".into()),
+            "ULTRON_MEMORANTADO_URL" => Some("off".into()),
             kernel::env::PYTHON_ENV => Some("/fake/python3".into()),
             _ => None,
         }),

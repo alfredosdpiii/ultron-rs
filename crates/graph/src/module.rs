@@ -10,7 +10,6 @@
 //! When `graph.neo4j.url` is set, `relations` and `settle` also mirror what they accepted (and remove what the
 //! judge refused); a mirror that fails is reported in the reply (`mirror.error`) and the request still succeeds.
 
-use crate::memory::{Memorantado, MemorantadoSettings};
 use crate::neo4j::{Neo4j, Password};
 use blocking_http::Transport;
 use config::keys::Neo4jSettings;
@@ -28,7 +27,7 @@ use std::sync::{Arc, Mutex};
 pub struct Mirrors {
     pub neo4j: Option<Neo4jSettings>,
     /// Set when memory lives in memorantado (the session's backend choice).
-    pub memorantado: Option<MemorantadoSettings>,
+    pub memorantado: Option<memorantado::Endpoint>,
 }
 
 pub type MirrorSource = Arc<dyn Fn() -> Mirrors + Send + Sync>;
@@ -39,6 +38,10 @@ pub type TransportFactory = Arc<dyn Fn() -> Result<Arc<dyn Transport>, String> +
 pub const MAX_PATHS: usize = 200;
 pub const MAX_VERDICTS: usize = 2000;
 
+/// The backend and model of a judge receipt (`judge:<call id>`) when this session's judge seat issued it for a
+/// settled verdict (judge::JudgeModule::issued).
+pub type IssuedReceipts = Arc<dyn Fn(&str) -> Option<(String, String)> + Send + Sync>;
+
 pub struct KnowledgeModule {
     db: PathBuf,
     cwd: PathBuf,
@@ -46,6 +49,7 @@ pub struct KnowledgeModule {
     build: TransportFactory,
     transport: Mutex<Option<Arc<dyn Transport>>>,
     password: Password,
+    issued: IssuedReceipts,
 }
 
 /// The repository of the session directory: (its stable name in the store, its top-level directory).
@@ -147,9 +151,13 @@ fn relation_json(relation: &Relation) -> Value {
     })
 }
 
+/// `checked_by` of a verdict no judge receipt of this session vouches for.
+pub const MODEL_CHECKED: &str = "model";
+
 fn settlement(value: &Value) -> Result<Settlement, String> {
     let invalid = || {
-        "knowledge.settle verdicts are {id, status: accepted|rejected|review, backend, rung, model, confidence}"
+        "knowledge.settle verdicts are {id, status: accepted|rejected|review, backend, rung, model, confidence, \
+         receipt}"
             .to_string()
     };
     let text = |key: &str| value.get(key).and_then(Value::as_str).map(str::to_string);
@@ -164,13 +172,15 @@ fn settlement(value: &Value) -> Result<Settlement, String> {
 }
 
 impl KnowledgeModule {
-    /// The module over the store at `db`, for the repository of `cwd`. `password` is Neo4j's (env or auth.json).
+    /// The module over the store at `db`, for the repository of `cwd`. `password` is Neo4j's (env or auth.json);
+    /// `issued` tells a verdict the session's judge gave from one the model only names.
     pub fn new(
         db: PathBuf,
         cwd: PathBuf,
         mirrors: MirrorSource,
         build: TransportFactory,
         password: Password,
+        issued: IssuedReceipts,
     ) -> KnowledgeModule {
         KnowledgeModule {
             db,
@@ -179,7 +189,24 @@ impl KnowledgeModule {
             build,
             transport: Mutex::new(None),
             password,
+            issued,
         }
+    }
+
+    /// `verdict` as it is kept: the judge's backend and model when its `receipt` is one this session's judge issued
+    /// for that backend, else checked by the model (what a cell says a judge decided is not taken as the judge's).
+    fn vouched(&self, mut verdict: Settlement, receipt: Option<&str>) -> Settlement {
+        match receipt.and_then(|id| (self.issued)(id)) {
+            Some((backend, model)) if verdict.backend.as_deref() == Some(backend.as_str()) => {
+                verdict.model = Some(model);
+            }
+            _ => {
+                verdict.backend = Some(MODEL_CHECKED.into());
+                verdict.rung = None;
+                verdict.model = None;
+            }
+        }
+        verdict
     }
 
     fn transport(&self) -> Result<Arc<dyn Transport>, String> {
@@ -264,9 +291,10 @@ impl KnowledgeModule {
             .and_then(Value::as_str)
             .ok_or("knowledge.settle rev must be the commit knowledge.relations answered")?;
         let verdicts = match request.payload.get("verdicts") {
-            Some(Value::Array(items)) if items.len() <= MAX_VERDICTS => {
-                items.iter().map(settlement).collect::<Result<Vec<_>, _>>()?
-            }
+            Some(Value::Array(items)) if items.len() <= MAX_VERDICTS => items
+                .iter()
+                .map(|item| Ok(self.vouched(settlement(item)?, item.get("receipt").and_then(Value::as_str))))
+                .collect::<Result<Vec<_>, String>>()?,
             _ => {
                 return Err(format!(
                     "knowledge.settle verdicts must be a list of at most {MAX_VERDICTS}"
@@ -335,11 +363,12 @@ impl KnowledgeModule {
             }
             Err(error) => errors.push(format!("relations: {error}")),
         }
-        if let Some(settings) = mirrors.memorantado {
-            let memorantado = Memorantado::new(self.transport()?, settings);
-            let mirrored = memorantado
-                .read(request.signal)
-                .and_then(|graph| neo4j.replace_memories(memorantado.project(), &graph, request.signal));
+        if let Some(endpoint) = mirrors.memorantado {
+            let mirrored = endpoint
+                .graph_backend(Some(self.transport()?))
+                .map_err(|e| e.to_string())
+                .and_then(|memorantado| memorantado.project_graph(request.signal))
+                .and_then(|graph| neo4j.replace_memories(&endpoint.project, &graph, request.signal));
             match mirrored {
                 Ok(count) => {
                     out.insert("memories".into(), json!(count));

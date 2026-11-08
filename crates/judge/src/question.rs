@@ -59,7 +59,7 @@ impl Answer {
     }
 }
 
-const MAX_QUESTIONS: usize = 16;
+pub const MAX_QUESTIONS: usize = 16;
 const MAX_LABELS: usize = 32;
 
 fn text(value: Option<&Value>, what: &str) -> Result<String, String> {

@@ -29,6 +29,8 @@ impl Machine {
 
     fn env(&self, vars: &[(&str, String)]) -> cli::Env {
         let mut all: Vec<(String, String)> = vec![
+            ("ULTRON_HINDSIGHT_URL".into(), "off".into()),
+            ("ULTRON_MEMORANTADO_URL".into(), "off".into()),
             ("HOME".into(), self.home.display().to_string()),
             (config::paths::ENV_AGENT_DIR.into(), self.agent().display().to_string()),
             (

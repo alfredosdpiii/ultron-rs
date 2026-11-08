@@ -460,3 +460,168 @@ pub fn read_stored_credential(path: &Path, provider: &str) -> Option<Value> {
     let content = fs::read_to_string(path).ok()?;
     parse(&content).ok()?.get(provider).cloned()
 }
+
+/// The authority of `url` (`host[:port]`, lowercased, without `user:pass@`) and its scheme; `None` when `url` is
+/// not `scheme://authority...`.
+fn authority(url: &str) -> Option<(String, String)> {
+    let (scheme, rest) = jsrt::string::trim(url).split_once("://")?;
+    let end = rest.find(['/', '?', '#']).unwrap_or(rest.len());
+    let authority = rest[..end].rsplit_once('@').map_or(&rest[..end], |(_, host)| host);
+    (!scheme.is_empty() && !authority.is_empty()).then(|| (scheme.to_ascii_lowercase(), authority.to_ascii_lowercase()))
+}
+
+/// `scheme://host[:port]` of `url`, the part a stored key is bound to.
+pub fn url_origin(url: &str) -> Option<String> {
+    authority(url).map(|(scheme, authority)| format!("{scheme}://{authority}"))
+}
+
+/// `url` without its `user:pass@`, for messages.
+pub fn display_url(url: &str) -> String {
+    match jsrt::string::trim(url).split_once("://") {
+        Some((scheme, rest)) => {
+            let end = rest.find(['/', '?', '#']).unwrap_or(rest.len());
+            match rest[..end].rsplit_once('@') {
+                Some((_, host)) => format!("{scheme}://{host}{}", &rest[end..]),
+                None => url.to_string(),
+            }
+        }
+        None => url.to_string(),
+    }
+}
+
+/// A service a credential may be sent to: https, or plain http to this machine only (`localhost`, `127.0.0.0/8`,
+/// `[::1]`).
+pub fn secure_url(url: &str) -> Result<(), String> {
+    let (scheme, authority) = authority(url).ok_or_else(|| format!("{} is not a URL", display_url(url)))?;
+    let host = match authority.strip_prefix('[') {
+        Some(v6) => v6.split(']').next().unwrap_or_default().to_string(),
+        None => authority
+            .rsplit_once(':')
+            .map_or(authority.as_str(), |(host, _)| host)
+            .to_string(),
+    };
+    let loopback =
+        host == "localhost" || host == "::1" || host.parse::<std::net::Ipv4Addr>().is_ok_and(|ip| ip.is_loopback());
+    match scheme.as_str() {
+        "https" => Ok(()),
+        "http" if loopback => Ok(()),
+        _ => Err(format!(
+            "{} is not https: a credential goes over plain http only to this machine",
+            display_url(url)
+        )),
+    }
+}
+
+/// A service's credential (a judge backend's key, the Neo4j mirror's password): its environment variable and its
+/// auth.json entry, named so that no model provider can use it (a provider's keys are looked up by provider id).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ServiceKey {
+    pub entry: &'static str,
+    pub env: &'static str,
+}
+
+/// TypeSafe's Jev.
+pub const TYPESAFE_KEY: ServiceKey = ServiceKey {
+    entry: "judge:typesafe",
+    env: "TYPESAFE_API_KEY",
+};
+/// A d1 server.
+pub const D1_KEY: ServiceKey = ServiceKey {
+    entry: "judge:d1",
+    env: "ULTRON_D1_KEY",
+};
+/// The password of `graph.neo4j.user`.
+pub const NEO4J_PASSWORD: ServiceKey = ServiceKey {
+    entry: "graph:neo4j",
+    env: "NEO4J_PASSWORD",
+};
+
+/// Where a service's credential comes from now (never the credential itself).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum KeyOrigin {
+    Env,
+    /// In auth.json, bound to this origin.
+    Stored(String),
+    Unset,
+}
+
+/// A credential that is not empty.
+fn given(value: Option<String>) -> Option<String> {
+    value.filter(|v| !jsrt::string::trim(v).is_empty())
+}
+
+/// The stored entry of `key`: its value (an `api_key`, `$VAR` or `!command` resolved) and the origin it was saved
+/// for.
+fn stored(key: &ServiceKey, auth_path: &Path) -> Option<(String, Option<String>)> {
+    let stored = AuthStorage::create(auth_path).read(key.entry).ok()??;
+    let value = given(stored.get("key").and_then(Value::as_str).map(str::to_string))
+        .filter(|_| stored.get("type").and_then(Value::as_str) == Some("api_key"))?;
+    Some((value, stored.get("origin").and_then(Value::as_str).map(str::to_string)))
+}
+
+/// Where `key` comes from now: its environment variable, else its auth.json entry.
+pub fn key_origin(key: &ServiceKey, var: &dyn Fn(&str) -> Option<String>, auth_path: &Path) -> KeyOrigin {
+    if given(var(key.env)).is_some() {
+        return KeyOrigin::Env;
+    }
+    match stored(key, auth_path) {
+        Some((_, origin)) => KeyOrigin::Stored(origin.unwrap_or_default()),
+        None => KeyOrigin::Unset,
+    }
+}
+
+/// `key` for a request to `url`, read now: its environment variable, else its auth.json entry when that was saved
+/// for `url`'s origin. `Err` when the credential must not go to `url`: it is not https (and not this machine), or
+/// the stored one was saved for another server. `Ok(None)`: there is none.
+pub fn service_key(
+    key: &ServiceKey,
+    var: &dyn Fn(&str) -> Option<String>,
+    auth_path: &Path,
+    url: &str,
+) -> Result<Option<String>, String> {
+    let from_env = given(var(key.env));
+    let stored = match from_env {
+        Some(_) => None,
+        None => stored(key, auth_path),
+    };
+    if from_env.is_none() && stored.is_none() {
+        return Ok(None);
+    }
+    secure_url(url)?;
+    if let Some(value) = from_env {
+        return Ok(Some(value));
+    }
+    let (value, origin) = stored.expect("checked above");
+    let target = url_origin(url);
+    if origin.is_none() || origin != target {
+        return Err(format!(
+            "the {} credential in auth.json was saved for {}, not {} (save it again for this server with `ultron setup`, or set {})",
+            key.entry,
+            origin.as_deref().unwrap_or("no server"),
+            target.as_deref().unwrap_or(url),
+            key.env
+        ));
+    }
+    Ok(Some(value))
+}
+
+/// An environment's lookup, shared across threads.
+pub type Vars = std::sync::Arc<dyn Fn(&str) -> Option<String> + Send + Sync>;
+
+/// A service's credential for the URL a request goes to ([`service_key`]), read at each request.
+pub type ServiceKeySource = std::sync::Arc<dyn Fn(&str) -> Result<Option<String>, String> + Send + Sync>;
+
+/// [`service_key`] of `key` with the environment `var` and the auth.json at `auth_path`.
+pub fn service_key_source(key: ServiceKey, var: Vars, auth_path: PathBuf) -> ServiceKeySource {
+    std::sync::Arc::new(move |url: &str| service_key(&key, &*var, &auth_path, url))
+}
+
+/// Save `value` as `key`'s auth.json credential, bound to `url`'s origin (the setup wizard).
+pub fn save_service_key(auth_path: &Path, key: &ServiceKey, value: &str, url: &str) -> Result<(), String> {
+    let origin = url_origin(url).ok_or_else(|| format!("{} is not a URL", display_url(url)))?;
+    AuthStorage::create(auth_path)
+        .modify(key.entry, |_| {
+            Some(serde_json::json!({"type": "api_key", "key": jsrt::string::trim(value), "origin": origin}))
+        })
+        .map(|_| ())
+}

@@ -328,7 +328,7 @@ pub(crate) fn until_http_date_ms(text: &str) -> Option<f64> {
 /// `Date.parse` of the IMF-fixdate a `retry-after` header holds (`Sun, 06 Nov 1994 08:49:37 GMT`); `None` (NaN) for
 /// anything else. Only the literal `GMT` zone is read: RFC 9110 senders write no other, and V8 would apply the offset
 /// of a named zone such as `PST`.
-pub(crate) fn parse_http_date(text: &str) -> Option<i64> {
+pub fn parse_http_date(text: &str) -> Option<i64> {
     const MONTHS: [&str; 12] = [
         "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
     ];

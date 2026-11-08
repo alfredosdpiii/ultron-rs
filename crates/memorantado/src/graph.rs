@@ -1,22 +1,23 @@
-//! memorantado's memory relations, read for the mirror: every memory of the project (active, superseded and
-//! invalidated), which memory superseded which (`supersedesId`), and the open conflicts between them. Only read:
-//! nothing here writes to memorantado.
-//!
-//! A small adapter over memorantado's REST list endpoints (`GET <url>/semantic-memories`, `GET
-//! <url>/memory-conflicts`) until the memory backend exposes a list of its own.
+//! memorantado's memory relations, read for the knowledge graph's Neo4j mirror (crates/graph): every memory of the
+//! project (active, superseded and invalidated), which memory superseded which (`supersedesId`), and the open
+//! conflicts between them. Only read: nothing here writes to memorantado.
 
-use blocking_http::{HttpRequest, Transport, TransportError};
+use crate::backend::{MemorantadoBackend, MemorantadoOptions};
+use crate::resolve::Endpoint;
+use blocking_http::Transport;
 use kernel::Signal;
-use serde_json::Value;
+use kernel_apis::MemoryError;
+use serde_json::{Map, Value};
 use std::sync::Arc;
 use std::time::Duration;
 
+/// A list request's deadline and the largest answer read.
 pub const TIMEOUT: Duration = Duration::from_secs(10);
 pub const MAX_BYTES: usize = 8 * 1024 * 1024;
 /// Memories asked for per page, and at most in all.
 pub const PAGE: usize = 500;
 pub const MAX_MEMORIES: usize = 20_000;
-/// Characters of a memory's content kept in the mirror.
+/// Characters of a memory's content kept.
 pub const CONTENT_CHARS: usize = 300;
 
 #[derive(Clone, Debug, PartialEq)]
@@ -40,61 +41,35 @@ pub struct MemoryGraph {
     pub conflicts: Vec<(i64, i64, String)>,
 }
 
-/// The memorantado memory lives in, as the session chose it (memorantado::resolve): its REST API and project.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct MemorantadoSettings {
-    /// Its REST API (`<url>/semantic-memories`).
-    pub url: String,
-    pub project: String,
+impl Endpoint {
+    /// A client for [`MemorantadoBackend::project_graph`] (no scope: it lists the whole project), over `transport`
+    /// (`None`: a real one).
+    pub fn graph_backend(&self, transport: Option<Arc<dyn Transport>>) -> Result<MemorantadoBackend, MemoryError> {
+        MemorantadoBackend::new(MemorantadoOptions {
+            timeout: TIMEOUT,
+            max_response_bytes: MAX_BYTES,
+            transport,
+            ..MemorantadoOptions::new(&self.url, &self.project, Map::new())
+        })
+    }
 }
 
-pub struct Memorantado {
-    transport: Arc<dyn Transport>,
-    settings: MemorantadoSettings,
-}
-
-impl Memorantado {
-    pub fn new(transport: Arc<dyn Transport>, settings: MemorantadoSettings) -> Memorantado {
-        Memorantado { transport, settings }
-    }
-
-    pub fn project(&self) -> &str {
-        &self.settings.project
-    }
-
-    fn get(&self, path_and_query: &str, signal: &Signal) -> Result<Value, String> {
-        let request = HttpRequest {
-            method: "GET".into(),
-            url: format!("{}{path_and_query}", self.settings.url),
-            headers: vec![("accept".into(), "application/json".into())],
-            body: None,
-        };
-        let response = self
-            .transport
-            .send(request, MAX_BYTES, TIMEOUT, signal)
-            .map_err(|error| match error {
-                TransportError::Timeout => format!("memorantado did not answer within {}s", TIMEOUT.as_secs()),
-                TransportError::Aborted => "the memorantado request was cancelled".to_string(),
-                TransportError::TooLarge => "memorantado's answer was too large".to_string(),
-                TransportError::Failed => format!("memorantado at {} could not be reached", self.settings.url),
-            })?;
-        if !(200..300).contains(&response.status) {
-            return Err(format!("memorantado answered HTTP {}", response.status));
-        }
-        serde_json::from_slice(&response.body).map_err(|_| "memorantado's answer is not JSON".to_string())
-    }
-
-    /// The project's memories and the links between them.
-    pub fn read(&self, signal: &Signal) -> Result<MemoryGraph, String> {
-        let project = jsrt::uri::encode_component(&self.settings.project);
+impl MemorantadoBackend {
+    /// The project's memories (at most [`MAX_MEMORIES`], their content cut at [`CONTENT_CHARS`]) and the links
+    /// between them, page by page.
+    pub fn project_graph(&self, signal: &Signal) -> Result<MemoryGraph, String> {
         let mut graph = MemoryGraph::default();
         'statuses: for status in ["active", "superseded", "invalidated"] {
             let mut offset = 0;
             loop {
-                let page = self.get(
-                    &format!("/semantic-memories?project={project}&status={status}&limit={PAGE}&offset={offset}"),
-                    signal,
-                )?;
+                let query = [
+                    ("status", status.to_string()),
+                    ("limit", PAGE.to_string()),
+                    ("offset", offset.to_string()),
+                ];
+                let page = self
+                    .call("GET", "/semantic-memories", &query, None, false, signal)?
+                    .unwrap_or(Value::Null);
                 let items = page.as_array().ok_or("memorantado's memory list is not a list")?;
                 for item in items {
                     let Some(id) = item["id"].as_i64() else { continue };
@@ -127,7 +102,9 @@ impl Memorantado {
                 offset += PAGE;
             }
         }
-        let conflicts = self.get(&format!("/memory-conflicts?project={project}"), signal)?;
+        let conflicts = self
+            .call("GET", "/memory-conflicts", &[], None, false, signal)?
+            .unwrap_or(Value::Null);
         for conflict in conflicts.as_array().into_iter().flatten() {
             if let (Some(a), Some(b)) = (conflict["memoryId"].as_i64(), conflict["conflictingId"].as_i64()) {
                 let reason = conflict["reason"].as_str().unwrap_or_default().to_string();

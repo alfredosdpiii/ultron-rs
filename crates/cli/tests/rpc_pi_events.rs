@@ -104,6 +104,7 @@ fn cli_rpc_pi_events_bash_updates_and_session_info() {
         (config::paths::ENV_SERVER_DIR, root.join("server").display().to_string()),
         ("ANTHROPIC_API_KEY", "test-key".into()),
         (hindsight::resolve::HINDSIGHT_URL_ENV, "off".into()),
+        ("ULTRON_MEMORANTADO_URL", "off".into()),
         (config::env::OFFLINE_ENV, "1".into()),
         ("NO_COLOR", "1".into()),
         ("TZ", "UTC".into()),

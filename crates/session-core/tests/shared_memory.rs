@@ -101,7 +101,8 @@ impl Machine {
         std::fs::create_dir_all(&cwd).unwrap();
         let mut all: Vec<(String, String)> = vec![
             ("HOME".into(), self.home().display().to_string()),
-            // These sessions remember on Hindsight: a memorantado the machine runs is never probed.
+            // These sessions remember on Hindsight (each test names its server): a memorantado the machine runs is
+            // never probed unless a test sets its own URL, which wins over this default.
             ("ULTRON_MEMORANTADO_URL".into(), "off".into()),
             (
                 config::paths::ENV_AGENT_DIR.into(),
@@ -116,7 +117,7 @@ impl Machine {
         let env = RunEnv {
             cwd,
             home: self.home(),
-            var: Arc::new(move |key| all.iter().find(|(k, _)| k == key).map(|(_, v)| v.clone())),
+            var: Arc::new(move |key| all.iter().rev().find(|(k, _)| k == key).map(|(_, v)| v.clone())),
             package: config::paths::normalize(
                 &Path::new(env!("CARGO_MANIFEST_DIR")).join("../../packages/coding-agent"),
             ),

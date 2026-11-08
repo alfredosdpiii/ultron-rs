@@ -230,7 +230,7 @@ impl Transport for Live {
 fn a_live_run_is_recorded_and_replays_to_the_same_answers() {
     let set = set();
     let recorder = Arc::new(Recorder::new(Arc::new(Live), set.clone()));
-    let key: judge::backend::KeySource = Arc::new(|| Some(["fake", "-key"].concat()));
+    let key: judge::backend::KeySource = Arc::new(|_: &str| Ok(Some(["fake", "-key"].concat())));
     let mut deps = SeatDeps::new(recorder.clone(), key.clone(), key);
     deps.jev_url = "http://jev.test/v1/systemone".into();
     let settings = config::keys::judge_settings(

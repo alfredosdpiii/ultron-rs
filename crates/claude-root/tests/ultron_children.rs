@@ -51,6 +51,8 @@ impl Root {
     fn env(&self, extra: &[(&str, &str)]) -> RunEnv {
         let p = |s: &str| self.path(s).display().to_string();
         let mut vars: Vec<(String, String)> = vec![
+            ("ULTRON_HINDSIGHT_URL".into(), "off".into()),
+            ("ULTRON_MEMORANTADO_URL".into(), "off".into()),
             ("PATH".into(), "/usr/bin:/bin".into()),
             ("HOME".into(), p("h")),
             (config::paths::ENV_AGENT_DIR.into(), p("a")),

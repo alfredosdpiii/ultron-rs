@@ -41,6 +41,8 @@ impl Root {
         command
             .args(args)
             .env_clear()
+            .env("ULTRON_HINDSIGHT_URL", "off")
+            .env("ULTRON_MEMORANTADO_URL", "off")
             .current_dir(self.root.join("cwd"))
             .env("PATH", "/usr/bin:/bin")
             .env("HOME", &self.root)

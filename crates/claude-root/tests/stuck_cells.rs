@@ -93,6 +93,7 @@ impl Root {
             ),
             (session_core::compose::LOKI_ENV.into(), "off".into()),
             (hindsight::resolve::HINDSIGHT_URL_ENV.into(), "off".into()),
+            ("ULTRON_MEMORANTADO_URL".into(), "off".into()),
             (kernel::env::PYTHON_ENV.into(), python()),
             (config::env::OFFLINE_ENV.into(), "1".into()),
         ];

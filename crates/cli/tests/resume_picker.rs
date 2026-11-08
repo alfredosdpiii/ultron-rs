@@ -60,6 +60,8 @@ fn cli_native_prompted_resume_on_a_terminal_asks_which_session() {
         let output = Command::new(env!("CARGO_BIN_EXE_ultron"))
             .args(["-p", "--model", MODEL, prompt])
             .env_clear()
+            .env("ULTRON_HINDSIGHT_URL", "off")
+            .env("ULTRON_MEMORANTADO_URL", "off")
             .current_dir(root.join("cwd"))
             .env("PATH", "/usr/bin:/bin")
             .env("HOME", &root)

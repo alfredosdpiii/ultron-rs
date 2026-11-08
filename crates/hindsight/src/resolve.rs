@@ -18,22 +18,15 @@ pub const HINDSIGHT_URL_ENV: &str = "ULTRON_HINDSIGHT_URL";
 pub const DEFAULT_HINDSIGHT_URL: &str = "http://localhost:8888";
 const DEFAULT_BANK: &str = "ultron";
 
-fn off(value: &str) -> bool {
-    matches!(value.to_lowercase().as_str(), "off" | "none" | "0" | "false")
-}
-
 fn trimmed(value: Option<&str>) -> Option<&str> {
     value.map(jsrt::string::trim).filter(|v| !v.is_empty())
 }
 
 /// `hindsightUrl(configured, setting)` of session-worker.ts, also `hindsightUrlFrom(env, setting, DEFAULT)` of
-/// autoreview/lessons.ts: the environment, else the setting, else the default; off: `None`.
+/// autoreview/lessons.ts: the environment, else the setting, else the default; off: `None`
+/// ([`config::settings::service_url`]).
 pub fn hindsight_url(env: Option<&str>, setting: Option<&str>) -> Option<String> {
-    match trimmed(env).or_else(|| trimmed(setting)) {
-        None => Some(DEFAULT_HINDSIGHT_URL.into()),
-        Some(value) if off(value) => None,
-        Some(value) => Some(value.into()),
-    }
+    config::settings::service_url(env, setting, DEFAULT_HINDSIGHT_URL)
 }
 
 /// Where [`resolve`] found the URL.

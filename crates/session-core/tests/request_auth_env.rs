@@ -42,6 +42,9 @@ fn case(spec: &Value) -> Case {
         .map(|(k, v)| (k.clone(), v.as_str().unwrap().to_string()))
         .collect();
     map.insert(config::paths::ENV_AGENT_DIR.into(), agent.display().to_string());
+    for name in ["ULTRON_HINDSIGHT_URL", "ULTRON_MEMORANTADO_URL"] {
+        map.entry(name.into()).or_insert_with(|| "off".into());
+    }
     let env = RunEnv {
         cwd: tmp.path().to_path_buf(),
         home: tmp.path().join("home"),

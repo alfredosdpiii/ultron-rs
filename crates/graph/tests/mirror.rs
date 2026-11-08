@@ -3,8 +3,7 @@
 
 use crate::fakes::{FakeHttp, password, serve};
 use config::keys::{Neo4jSettings, neo4j_settings};
-use graph::MemorantadoSettings;
-use graph::{Memorantado, Neo4j};
+use graph::Neo4j;
 use kernel::Signal;
 use knowledge::relations::{Kind, Relation};
 use serde_json::json;
@@ -42,8 +41,8 @@ fn neo4j(http: &Arc<FakeHttp>, with_password: bool) -> Neo4j {
     let secret = with_password.then(password);
     Neo4j::new(
         http.clone(),
-        settings("http://neo4j.test:7474"),
-        Arc::new(move || secret.clone()),
+        settings("https://neo4j.test:7474"),
+        Arc::new(move |_: &str| Ok(secret.clone())),
     )
 }
 
@@ -82,7 +81,7 @@ fn graph_relations_are_merged_one_statement_per_kind_with_basic_auth() {
     assert_eq!(mirrored, 3);
     let seen = http.seen();
     assert_eq!(seen.len(), 2);
-    assert_eq!(seen[0].url, "http://neo4j.test:7474/db/neo4j/query/v2");
+    assert_eq!(seen[0].url, "https://neo4j.test:7474/db/neo4j/query/v2");
     assert_eq!(
         seen[0].authorization.as_deref(),
         Some(format!("Basic {}", jsrt::base64::encode(format!("neo4j:{}", password()))).as_str())
@@ -132,14 +131,32 @@ fn graph_neo4j_failures_are_text_without_the_password() {
     let error = neo4j(&http, true)
         .run("RETURN 1", json!({}), &Signal::new())
         .unwrap_err();
-    assert_eq!(error, "Neo4j at http://neo4j.test:7474 could not be reached");
+    assert_eq!(error, "Neo4j at https://neo4j.test:7474 could not be reached");
     assert!(!error.contains(&password()));
-    let mut bad = settings("http://neo4j.test");
+    let none: graph::neo4j::Password = Arc::new(|_: &str| Ok(None));
+    let mut bad = settings("https://neo4j.test");
     bad.database = "a/b".into();
-    let error = Neo4j::new(http.clone(), bad, Arc::new(|| None))
+    let error = Neo4j::new(http.clone(), bad, none.clone())
         .run("RETURN 1", json!({}), &Signal::new())
         .unwrap_err();
     assert_eq!(error, "graph.neo4j.database \"a/b\" is not a database name");
+    // Plain http goes only to this machine; a URL's `user:pass@` is never shown.
+    let sent = http.seen().len();
+    let error = Neo4j::new(http.clone(), settings("http://neo4j:hunter2@neo4j.test:7474"), none)
+        .run("RETURN 1", json!({}), &Signal::new())
+        .unwrap_err();
+    assert_eq!(
+        error,
+        "graph.neo4j.url: http://neo4j.test:7474 is not https: a credential goes over plain http only to this machine"
+    );
+    assert_eq!(http.seen().len(), sent);
+    // A password the source refuses for this server (saved for another one) stops the request.
+    let refused: graph::neo4j::Password = Arc::new(|url: &str| Err(format!("not for {url}")));
+    let error = Neo4j::new(http.clone(), settings("https://neo4j.test"), refused)
+        .run("RETURN 1", json!({}), &Signal::new())
+        .unwrap_err();
+    assert_eq!(error, "Neo4j: not for https://neo4j.test");
+    assert_eq!(http.seen().len(), sent);
 }
 
 #[test]
@@ -182,12 +199,15 @@ fn graph_memorantado_is_read_page_by_page_and_mirrored_with_its_links() {
         json!({"id": 1, "memoryId": 2, "conflictingId": 3, "reason": "exclusive",
         "resolutionStatus": "open"}),
     ];
-    let settings = MemorantadoSettings {
-        url: "http://mem.test/api".into(),
+    let endpoint = memorantado::Endpoint {
+        url: "http://mem.test".into(),
         project: "my shop".into(),
     };
-    let memorantado = Memorantado::new(http.clone(), settings);
-    let graph = memorantado.read(&Signal::new()).unwrap();
+    let graph = endpoint
+        .graph_backend(Some(http.clone()))
+        .unwrap()
+        .project_graph(&Signal::new())
+        .unwrap();
     assert_eq!(graph.memories.len(), 502);
     assert_eq!(graph.memories[0].content.len(), 300);
     assert_eq!(graph.supersedes, [(1, 600)]);
@@ -196,11 +216,11 @@ fn graph_memorantado_is_read_page_by_page_and_mirrored_with_its_links() {
     assert_eq!(
         urls,
         [
-            "http://mem.test/api/semantic-memories?project=my%20shop&status=active&limit=500&offset=0",
-            "http://mem.test/api/semantic-memories?project=my%20shop&status=active&limit=500&offset=500",
-            "http://mem.test/api/semantic-memories?project=my%20shop&status=superseded&limit=500&offset=0",
-            "http://mem.test/api/semantic-memories?project=my%20shop&status=invalidated&limit=500&offset=0",
-            "http://mem.test/api/memory-conflicts?project=my%20shop",
+            "http://mem.test/api/semantic-memories?project=my+shop&status=active&limit=500&offset=0",
+            "http://mem.test/api/semantic-memories?project=my+shop&status=active&limit=500&offset=500",
+            "http://mem.test/api/semantic-memories?project=my+shop&status=superseded&limit=500&offset=0",
+            "http://mem.test/api/semantic-memories?project=my+shop&status=invalidated&limit=500&offset=0",
+            "http://mem.test/api/memory-conflicts?project=my+shop",
         ]
     );
     // Only read: every request to memorantado is a GET.
@@ -230,7 +250,11 @@ fn graph_neo4j_over_http_posts_the_query_api() {
     let (base, seen) = serve();
     let transport = Arc::new(blocking_http::ReqwestTransport::new().unwrap());
     let secret = password();
-    let neo4j = Neo4j::new(transport, settings(&base), Arc::new(move || Some(secret.clone())));
+    let neo4j = Neo4j::new(
+        transport,
+        settings(&base),
+        Arc::new(move |_: &str| Ok(Some(secret.clone()))),
+    );
     neo4j
         .upsert_relations(
             "local:/r",

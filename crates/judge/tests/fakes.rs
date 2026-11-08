@@ -21,7 +21,7 @@ pub fn fake_key(name: &str) -> String {
 
 pub fn key(value: Option<&str>) -> KeySource {
     let value = value.map(fake_key);
-    Arc::new(move || value.clone())
+    Arc::new(move |_: &str| Ok(value.clone()))
 }
 
 /// One request as the fake saw it.

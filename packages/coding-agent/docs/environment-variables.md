@@ -81,7 +81,7 @@ These variables are read by Pi itself:
 | `PI_CODING_AGENT_DIR` | Override the config directory; default is `~/.pi/agent` |
 | `PI_CODING_AGENT_SESSION_DIR` | Override session storage; overridden by `--session-dir` |
 | `PI_PACKAGE_DIR` | Override the package directory, useful for Nix/Guix store paths |
-| `PI_OFFLINE` | Disable automatic network activity, including model catalog refreshes |
+| `PI_OFFLINE` | Disable automatic network activity, including model catalog refreshes and the detection of a local memorantado server (a backend chosen in `memory.backend` is still used) |
 | `PI_SKIP_VERSION_CHECK`, `ULTRON_SKIP_VERSION_CHECK` | Disable the automatic startup update check (a request to `registry.npmjs.org/ultron-agent/latest`); `ultron update` still checks |
 | `ULTRON_LOKI` | Loki guardrails: `off` disables them, `advise` reports without blocking, anything else is on (the default); overrides the `loki.mode` setting |
 | `ULTRON_LOKI_AUTOINIT`, `ULTRON_LOKI_AUTOCOMMIT` | `off` stops Ultron from creating `.loki/` in a repository, or from committing the `.loki/` it created |
@@ -92,8 +92,8 @@ These variables are read by Pi itself:
 | `ULTRON_MEMORANTADO_URL` | The memorantado memory server (overrides the `memorantadoUrl` setting); `off` turns it off. See [memory backend](settings.md#memory-backend-ultron) |
 | `ULTRON_MEMORANTADO_PROJECT` | The memorantado project memory lives in (default `ultron`) |
 | `ULTRON_MAX_TASK_CALLS`, `ULTRON_MAX_MODEL_CALLS` | Sub-agent tasks and model calls one request may admit (a count, or `off`); override `rootBudget.maxCalls.task` and `.model` |
-| `TYPESAFE_API_KEY`, `ULTRON_D1_KEY` | Keys of the judge seat's backends, Jev and d1 (else auth.json `typesafe`, `d1`). See [judge seat](settings.md#judge-seat-ultron) |
-| `NEO4J_PASSWORD` | Password of the knowledge graph's Neo4j mirror (else auth.json `neo4j`) |
+| `TYPESAFE_API_KEY`, `ULTRON_D1_KEY` | Keys of the judge seat's backends, Jev and d1 (else auth.json `judge:typesafe`, `judge:d1`, each bound to the server it was saved for). See [judge seat](settings.md#judge-seat-ultron) |
+| `NEO4J_PASSWORD` | Password of the knowledge graph's Neo4j mirror (else auth.json `graph:neo4j`, bound to its server) |
 | `ULTRON_RLM_FRAME_MODEL` | Default model (`provider/model`, e.g. `claude-code/haiku`) of `rlm.infer`/`rlm.map` frames that give none and run no code |
 | `ULTRON_CLAUDE_CODE_BIN` | The `claude` executable used by the `claude-code` provider (default: `claude` on `PATH`) |
 | `ULTRON_CLAUDE_CODE_CONCURRENCY` | Most `claude-code` calls running at once (default 4) |

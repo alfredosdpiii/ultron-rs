@@ -7,11 +7,11 @@
 //! `(:Memory {source: "memorantado", project, id, key, kind, subject, status, content, tags})` with `SUPERSEDES` and
 //! `CONFLICTS_WITH {reason}` between them.
 
-use crate::memory::MemoryGraph;
 use blocking_http::{HttpRequest, Transport, TransportError};
 use config::keys::Neo4jSettings;
 use kernel::Signal;
 use knowledge::relations::{Kind, Relation};
+use memorantado::MemoryGraph;
 use serde_json::{Value, json};
 use std::sync::Arc;
 use std::time::Duration;
@@ -22,8 +22,9 @@ pub const MAX_BYTES: usize = 1024 * 1024;
 /// Rows sent in one statement.
 pub const BATCH: usize = 500;
 
-/// The password of `graph.neo4j.user`, read at each request; none when Neo4j runs without authentication.
-pub type Password = Arc<dyn Fn() -> Option<String> + Send + Sync>;
+/// The password of `graph.neo4j.user` for the server a request goes to, read at each request
+/// ([`config::auth::service_key`]); none when Neo4j runs without authentication.
+pub type Password = config::auth::ServiceKeySource;
 
 pub struct Neo4j {
     transport: Arc<dyn Transport>,
@@ -67,11 +68,13 @@ impl Neo4j {
         if !valid_database(database) {
             return Err(format!("graph.neo4j.database {database:?} is not a database name"));
         }
+        let shown = config::auth::display_url(&self.settings.url);
+        config::auth::secure_url(&self.settings.url).map_err(|why| format!("graph.neo4j.url: {why}"))?;
         let mut headers = vec![
             ("content-type".to_string(), "application/json".to_string()),
             ("accept".to_string(), "application/json".to_string()),
         ];
-        if let Some(password) = (self.password)() {
+        if let Some(password) = (self.password)(&self.settings.url).map_err(|why| format!("Neo4j: {why}"))? {
             let credentials = jsrt::base64::encode(format!("{}:{password}", self.settings.user));
             headers.push(("authorization".to_string(), format!("Basic {credentials}")));
         }
@@ -92,7 +95,7 @@ impl Neo4j {
                 TransportError::Timeout => format!("Neo4j did not answer within {}s", TIMEOUT.as_secs()),
                 TransportError::Aborted => "the Neo4j request was cancelled".to_string(),
                 TransportError::TooLarge => "Neo4j's answer was too large".to_string(),
-                TransportError::Failed => format!("Neo4j at {} could not be reached", self.settings.url),
+                TransportError::Failed => format!("Neo4j at {shown} could not be reached"),
             })?;
         match response.status {
             200..=299 => {}

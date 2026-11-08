@@ -3,9 +3,10 @@
 //! 1. Before a write (blocking): the kernel's `edit()`/`write()` send each proposed write to the host before touching
 //!    the file (`files.before_write`). A guard that blocks makes `write()` raise ValueError with its diagnostic
 //!    (runtime.py `_check_write`); a guard that fails lets the write proceed with a visible note: it fails open,
-//!    never silently. A guard that asks (a borderline case) lets it proceed too: its question goes to the hooks'
-//!    asker (the judge seat) on a thread of its own, and the answer comes with a later cell result; with no asker,
-//!    the note tells the model to ask the user.
+//!    never silently.
+//!    Before any guard, a write into a protected path ([`FileHooks::protect`]: the profile's settings, keys and
+//!    skills, which are the user's to change) is blocked, and so is a shell command that may write files and names
+//!    one.
 //! 2. After a cell (advisory): files a cell changed by other means (`bash('sed -i ...')`, `Path.write_text`) are found
 //!    by comparing workspace snapshots taken between cells, minus the checked writes whose content is unchanged.
 //!    Guards' `after_cell_changes` run in the background, so a cell returns as fast as before, and what they report
@@ -23,18 +24,12 @@ use std::sync::mpsc::{Sender, channel};
 use std::sync::{Arc, Condvar, LazyLock, Mutex, PoisonError};
 use std::time::Duration;
 
-/// A guard's answer: block with a reason, allow with an optional note, or ask (a borderline case: the write is
-/// made, and the question is settled off the write path, by the hooks' [`Asker`] or else by the user).
+/// A guard's answer: block with a reason, or allow with an optional note.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Verdict {
     Block(String),
     Allow(Option<String>),
-    Ask(String),
 }
-
-/// Settles a guard's question about a write that was made: `Ok(true)` it should not stand, `Ok(false)` it may,
-/// `Err(why)` it could not be settled (the user then decides). Runs on a thread of its own, never on the write path.
-pub type Asker = Arc<dyn Fn(&str) -> Result<bool, String> + Send + Sync>;
 
 /// Files one cell changed (absolute paths).
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -408,7 +403,6 @@ struct Inner {
     guards: Mutex<Vec<Registered>>,
     observers: Mutex<Vec<Arc<dyn CellObserver>>>,
     on_record: Mutex<Option<OnRecord>>,
-    asker: Mutex<Option<Asker>>,
     now: Mutex<Clock>,
     snapshot: Option<Snapshotter>,
     /// Checked writes since the last after-cell snapshot: absolute path -> sha256 of the checked content.
@@ -419,11 +413,23 @@ struct Inner {
     baseline: Mutex<Option<Snapshot>>,
     /// Files changed outside the cells, left out of their changes ([`FileHooks::ignore_outside`]).
     outside: Mutex<Option<OutsideChanges>>,
+    /// Paths no cell may write ([`FileHooks::protect`]), and how a shell command names each.
+    protected: Mutex<Vec<Protected>>,
     /// After-cell checks queued or running, and the worker that runs them one at a time.
     queued: Mutex<usize>,
     idle: Condvar,
     worker: Mutex<Option<Sender<String>>>,
 }
+
+/// A protected file or directory: its absolute path, and the text a shell command names it by (its path from the
+/// home directory when it is inside it, which `~/`, `$HOME/` and absolute forms all contain).
+struct Protected {
+    path: PathBuf,
+    named: String,
+}
+
+/// Who blocks a write into a protected path, in its reason and guard records.
+const PROTECTOR: &str = "Ultron";
 
 /// `diffSnapshots`: added, modified and deleted paths (each sorted), and whether both pictures were complete.
 pub fn diff_snapshots(before: &Snapshot, after: &Snapshot) -> (Vec<String>, Vec<String>, Vec<String>, bool) {
@@ -462,7 +468,6 @@ impl FileHooks {
                 guards: Mutex::new(Vec::new()),
                 observers: Mutex::new(Vec::new()),
                 on_record: Mutex::new(None),
-                asker: Mutex::new(None),
                 now: Mutex::new({
                     let started = std::time::Instant::now();
                     Arc::new(move || started.elapsed().as_millis() as u64)
@@ -472,6 +477,7 @@ impl FileHooks {
                 pending: Mutex::new(HashMap::new()),
                 baseline: Mutex::new(None),
                 outside: Mutex::new(None),
+                protected: Mutex::new(Vec::new()),
                 queued: Mutex::new(0),
                 idle: Condvar::new(),
                 worker: Mutex::new(None),
@@ -499,6 +505,56 @@ impl FileHooks {
         });
     }
 
+    /// No cell writes `paths` (files, or directories with everything in them) through `write()`/`edit()` or a
+    /// shell command that names one: they are the user's to change (the profile's settings, keys and skills).
+    /// `home` is the home directory a command may name them from.
+    pub fn protect(&self, paths: Vec<PathBuf>, home: &Path) {
+        let mut protected = Vec::new();
+        for path in paths {
+            let named = path.strip_prefix(home).unwrap_or(&path).to_string_lossy().into_owned();
+            // Through a symlinked home or profile, too.
+            if let Ok(real) = std::fs::canonicalize(&path).or_else(|_| {
+                let parent = std::fs::canonicalize(path.parent().unwrap_or(&path))?;
+                Ok::<_, std::io::Error>(parent.join(path.file_name().unwrap_or_default()))
+            }) && real != path
+            {
+                protected.push(Protected {
+                    path: real,
+                    named: named.clone(),
+                });
+            }
+            protected.push(Protected { path, named });
+        }
+        *sync::lock(&self.inner.protected) = protected;
+    }
+
+    /// The protected path `path` is in, if any (as written, and with its existing part's symlinks resolved).
+    fn protected_by(&self, path: &Path) -> Option<PathBuf> {
+        let real = path
+            .ancestors()
+            .find_map(|existing| {
+                let resolved = std::fs::canonicalize(existing).ok()?;
+                Some(resolved.join(path.strip_prefix(existing).ok()?))
+            })
+            .unwrap_or_else(|| path.to_path_buf());
+        sync::lock(&self.inner.protected)
+            .iter()
+            .find(|p| {
+                [path, real.as_path()]
+                    .iter()
+                    .any(|candidate| candidate.starts_with(&p.path))
+            })
+            .map(|p| p.path.clone())
+    }
+
+    /// The protected path a shell command that may write files names, if any.
+    fn protected_in_command(&self, command: &str) -> Option<PathBuf> {
+        sync::lock(&self.inner.protected)
+            .iter()
+            .find(|p| command.contains(&p.named))
+            .map(|p| p.path.clone())
+    }
+
     /// `observer` sees what each cell changed (after the guards); its lines go with the lane's next cell result.
     pub fn observe(&self, observer: Arc<dyn CellObserver>) {
         sync::lock(&self.inner.observers).push(observer);
@@ -513,45 +569,6 @@ impl FileHooks {
     /// Every guard outcome goes to `on_record` (ULTRON_LOKI_LOG).
     pub fn on_record(&self, on_record: OnRecord) {
         *sync::lock(&self.inner.on_record) = Some(on_record);
-    }
-
-    /// Guards' questions ([`Verdict::Ask`]) go to `asker` (the session's judge seat); without one, to the user.
-    pub fn on_ask(&self, asker: Asker) {
-        *sync::lock(&self.inner.asker) = Some(asker);
-    }
-
-    /// A guard's question about a write that is made on `lane`: settled in the background, its answer delivered with
-    /// a later cell result of the lane ([`Self::settled`] waits for it). Returns the note for the write itself.
-    fn ask(&self, name: &str, lane: &str, target: &str, question: &str) -> String {
-        let Some(asker) = sync::lock(&self.inner.asker).clone() else {
-            return format!("[{name}] {question} It was written; ask the user whether it should stay ({target}).");
-        };
-        *sync::lock(&self.inner.queued) += 1;
-        let note = format!(
-            "[{name}] {question} It was written; the judge is asked, and its answer comes with a later cell result."
-        );
-        let (inner, name, lane, target, question) = (
-            self.inner.clone(),
-            name.to_string(),
-            lane.to_string(),
-            target.to_string(),
-            question.to_string(),
-        );
-        std::thread::spawn(move || {
-            let line = match asker(&question) {
-                Ok(true) => format!(
-                    "[{name}] The judge answered the question about {target}: it should not stand. {question} Undo or fix it."
-                ),
-                Ok(false) => format!("[{name}] The judge cleared {target}."),
-                Err(why) => format!(
-                    "[{name}] The judge could not settle {target} ({why}): {question} Ask the user whether it should stay."
-                ),
-            };
-            sync::lock(&inner.pending).entry(lane).or_default().push(line);
-            *sync::lock(&inner.queued) -= 1;
-            inner.idle.notify_all();
-        });
-        note
     }
 
     /// The clock guard times are measured with (tests).
@@ -627,7 +644,7 @@ impl FileHooks {
         }
     }
 
-    /// Wait for the after-cell checks and the guards' questions already started.
+    /// Wait for the after-cell checks already started.
     pub fn settled(&self) {
         let mut queued = sync::lock(&self.inner.queued);
         while *queued > 0 {
@@ -653,6 +670,25 @@ impl FileHooks {
     /// A path for notes: relative to the session directory when inside it.
     fn display(&self, path: &Path) -> String {
         self.inner.display(path)
+    }
+
+    /// The refusal of a write into `protected` (recorded like a guard's block).
+    fn refuse_protected(&self, lane: &str, phase: &'static str, protected: &Path) -> String {
+        let reason = format!(
+            "[{PROTECTOR}] {} is the user's to change (the profile's settings, keys and skills): a cell may not write \
+             it. Ask the user to make the change.",
+            protected.display()
+        );
+        self.inner.record(GuardRecord {
+            guard: PROTECTOR.into(),
+            phase,
+            outcome: "blocked",
+            ms: 0,
+            paths: vec![protected.display().to_string()],
+            lane: lane.to_string(),
+            detail: Some(reason.clone()),
+        });
+        reason
     }
 
     fn guards(&self) -> Vec<Registered> {
@@ -872,6 +908,12 @@ impl Guard for FileHooks {
         {
             return Some(reason);
         }
+        if let Some(path) = may_write_files(command)
+            .then(|| self.protected_in_command(command))
+            .flatten()
+        {
+            return Some(self.refuse_protected(lane, "before_shell", &path));
+        }
         let guards: Vec<Registered> = self
             .guards()
             .into_iter()
@@ -917,11 +959,6 @@ impl Guard for FileHooks {
                     ("blocked", Some(format!("[{name}] {reason}")))
                 }
                 Answer::Value(Verdict::Allow(_)) => ("allowed", None),
-                Answer::Value(Verdict::Ask(question)) => {
-                    // The command runs; the question is settled after it, like a write's.
-                    self.ask(&name, lane, &format!("the command `{display}`"), &question);
-                    ("asked", None)
-                }
             };
             drop(stats);
             self.inner.record(GuardRecord {
@@ -941,6 +978,10 @@ impl Guard for FileHooks {
     /// `beforeWrite` of one proposed write on `lane`: every enabled guard, in parallel, each within its time limit.
     fn before_write(&self, lane: &str, path: &str, content: &str) -> Value {
         let path = resolve_lexical(&self.inner.cwd, path);
+        if let Some(protected) = self.protected_by(&path) {
+            let reason = self.refuse_protected(lane, "before_write", &protected);
+            return json!({ "blocked": true, "reason": reason, "notes": [] });
+        }
         let display = self.display(&path);
         let calls: Vec<(Registered, u64, Option<Duration>, Pending)> = self
             .guards()
@@ -998,10 +1039,6 @@ impl Guard for FileHooks {
                     ("allowed", None, Some(format!("[{name}] {message}")))
                 }
                 Answer::Value(Verdict::Allow(_)) => ("allowed", None, None),
-                Answer::Value(Verdict::Ask(question)) => {
-                    let note = self.ask(&name, lane, &format!("the write to {display}"), &question);
-                    ("asked", None, Some(note))
-                }
             };
             drop(stats);
             self.inner.record(GuardRecord {

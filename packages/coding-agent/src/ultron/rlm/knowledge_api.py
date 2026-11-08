@@ -31,7 +31,7 @@ import urllib.parse
 from dataclasses import dataclass
 from typing import Any
 
-from judge_api import Judge
+from judge_api import MAX_QUESTIONS, Judge
 
 #: The store schema this reader understands (`knowledge::SCHEMA_VERSION`): 2 added the review notes, 3 the rules
 #: (who wrote a note, whether this reviewer missed it, the fates of the findings that cited it), 4 the graph
@@ -426,8 +426,8 @@ def construct_label(kind: str) -> str:
 #: The relation kinds `knowledge.relations` reads (crates/knowledge `relations::Kind`).
 RELATION_KINDS = ("reads_config", "serves_route", "touches_table", "tests")
 
-#: Proposed relations asked of the judge in one `judge.decide` (it takes at most 16 questions).
-JUDGE_BATCH = 16
+#: Proposed relations asked of the judge in one `judge.decide`: as many questions as it takes.
+JUDGE_BATCH = MAX_QUESTIONS
 
 
 class KnowledgeApi:
@@ -528,7 +528,7 @@ class KnowledgeApi:
                         status = "accepted" if answer["value"] is True else "rejected"
                     verdicts.append({"id": item["id"], "status": status, "backend": verdict["backend"],
                                      "rung": verdict["rung"], "model": verdict["model"],
-                                     "confidence": answer.get("confidence")})
+                                     "confidence": answer.get("confidence"), "receipt": verdict["receipt"]})
         return verdicts
 
     async def mirror(self) -> dict[str, Any]:

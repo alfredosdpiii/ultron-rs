@@ -278,6 +278,8 @@ fn cli_rpc_mode_relays_mcp_notices_as_extension_ui_requests() {
                 home.server_dir().display().to_string(),
             ),
             ("ANTHROPIC_API_KEY".into(), "test-key".into()),
+            ("ULTRON_HINDSIGHT_URL".into(), "off".into()),
+            ("ULTRON_MEMORANTADO_URL".into(), "off".into()),
         ],
         provider: Some("anthropic".into()),
         model: Some("claude-sonnet-4-5".into()),

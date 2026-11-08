@@ -3,8 +3,8 @@
 //! answer that differs is a dispute, escalated to another family like an unsure one. The seat follows the global `judge.*` settings as they
 //! are at each call, keeping its call and spend counts across a change.
 
-use crate::question::{Question, parse_questions};
-use crate::seat::{Seat, Verdict};
+use crate::question::parse_questions;
+use crate::seat::Seat;
 use config::keys::JudgeSettings;
 use kernel_apis::{ApiModule, Request};
 use serde_json::Value;
@@ -22,7 +22,13 @@ pub struct JudgeModule {
     settings: SettingsSource,
     build: SeatFactory,
     seat: Mutex<Option<Arc<Seat>>>,
+    /// The settled verdicts' receipts (`judge:<call id>` -> backend, model), so a caller can show a verdict came
+    /// from this seat ([`JudgeModule::issued`]); the newest [`MAX_ISSUED`].
+    issued: Mutex<std::collections::VecDeque<(String, String, String)>>,
 }
+
+/// Receipts of settled verdicts a module remembers.
+pub const MAX_ISSUED: usize = 4096;
 
 impl JudgeModule {
     pub fn new(settings: SettingsSource, build: SeatFactory) -> JudgeModule {
@@ -30,7 +36,17 @@ impl JudgeModule {
             settings,
             build,
             seat: Mutex::new(None),
+            issued: Mutex::default(),
         }
+    }
+
+    /// The backend and model of `receipt` when this module's seat issued it for a settled verdict.
+    pub fn issued(&self, receipt: &str) -> Option<(String, String)> {
+        let issued = self.issued.lock().unwrap_or_else(|e| e.into_inner());
+        issued
+            .iter()
+            .find(|(id, _, _)| id == receipt)
+            .map(|(_, backend, model)| (backend.clone(), model.clone()))
     }
 
     /// The seat for the settings now: the same one while they are unchanged.
@@ -101,20 +117,15 @@ impl JudgeModule {
         {
             return Err(format!("judge.decide expect names no question: {name}"));
         }
-        Ok(self.decide_now(state, &questions, kind, expect, signal)?.to_json(kind))
-    }
-
-    /// One decision through the seat of the settings now, for host code off a turn's path (a borderline Loki write):
-    /// what `judge.decide` serves, without its argument checks.
-    pub fn decide_now(
-        &self,
-        state: &str,
-        questions: &[Question],
-        kind: Option<&str>,
-        expect: &[(String, Value)],
-        signal: &kernel::Signal,
-    ) -> Result<Verdict, String> {
-        Ok(self.seat()?.decide_expecting(state, questions, kind, expect, signal))
+        let verdict = self.seat()?.decide_expecting(state, &questions, kind, expect, signal);
+        if let Some(receipt) = verdict.answered_by().filter(|_| verdict.settled()) {
+            let mut issued = self.issued.lock().unwrap_or_else(|e| e.into_inner());
+            if issued.len() == MAX_ISSUED {
+                issued.pop_front();
+            }
+            issued.push_back((receipt.id.clone(), receipt.backend.clone(), receipt.model.clone()));
+        }
+        Ok(verdict.to_json(kind))
     }
 }
 

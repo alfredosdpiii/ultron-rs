@@ -68,6 +68,8 @@ fn materialize(case: &Value) -> Root {
 
 fn run_env(root: &Path) -> RunEnv {
     let vars: Vec<(String, String)> = vec![
+        ("ULTRON_HINDSIGHT_URL".into(), "off".into()),
+        ("ULTRON_MEMORANTADO_URL".into(), "off".into()),
         ("HOME".into(), root.join("home").display().to_string()),
         (
             config::paths::ENV_AGENT_DIR.into(),
@@ -316,6 +318,8 @@ fn session_core_resources_ignore_settings_packages_and_keep_local_ones() {
     )
     .unwrap();
     let vars: Vec<(String, String)> = vec![
+        ("ULTRON_HINDSIGHT_URL".into(), "off".into()),
+        ("ULTRON_MEMORANTADO_URL".into(), "off".into()),
         ("HOME".into(), root.root.join("home").display().to_string()),
         (config::paths::ENV_AGENT_DIR.into(), root.agent()),
         ("PATH".into(), root.root.join("bin").display().to_string()),

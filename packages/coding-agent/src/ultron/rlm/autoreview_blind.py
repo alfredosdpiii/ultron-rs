@@ -78,7 +78,7 @@ async def check(rlm: Any, findings: list[dict[str, Any]], material: Callable[[di
             break
         out["asked"] += 1
         answer = ((verdict.get("answers") or {}).get("shown") or {}).get("value")
-        if rung in ("first", "escalated") and isinstance(answer, bool):
+        if verdict.get("settled") and isinstance(answer, bool):
             finding["blind"] = "supported" if answer else "refuted"
         else:
             finding["blind"] = "review"

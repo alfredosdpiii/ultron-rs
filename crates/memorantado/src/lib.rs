@@ -3,8 +3,10 @@
 //! evidence that Hindsight lacks. HTTP goes through [`blocking_http`]; [`ReqwestTransport`] is real.
 
 mod backend;
+pub mod graph;
 pub mod resolve;
 
-pub use backend::{BRIEF_WRITER, MemorantadoBackend, MemorantadoOptions, PAUSE, PAUSE_AFTER};
+pub use backend::{BRIEF_WRITER, MemorantadoBackend, MemorantadoOptions};
 pub use blocking_http::{HttpRequest, HttpResponse, ReqwestTransport, Transport, TransportError};
+pub use graph::{MemoryGraph, MemoryNode};
 pub use resolve::{Backend, Choice, DEFAULT_MEMORANTADO_URL, Endpoint, Hindsight};

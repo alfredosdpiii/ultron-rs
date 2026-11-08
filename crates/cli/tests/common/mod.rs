@@ -353,6 +353,8 @@ impl Sandbox {
         let mut command = std::process::Command::new(env!("CARGO_BIN_EXE_ultron"));
         command
             .env_clear()
+            .env("ULTRON_HINDSIGHT_URL", "off")
+            .env("ULTRON_MEMORANTADO_URL", "off")
             .current_dir(&self.cwd)
             .env("PATH", std::env::var("PATH").unwrap_or_default())
             .env("HOME", &self.root)

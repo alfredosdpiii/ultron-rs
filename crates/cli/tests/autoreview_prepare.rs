@@ -34,6 +34,7 @@ fn env_for(base: &str) -> cli::Env {
             config::paths::ENV_AGENT_DIR => Some(format!("{base}/agent")),
             review::settings::CACHE_DIR_ENV => Some(format!("{base}/cache")),
             hindsight::resolve::HINDSIGHT_URL_ENV => Some("off".into()),
+            "ULTRON_MEMORANTADO_URL" => Some("off".into()),
             "HOME" => Some(home_text.clone()),
             _ => None,
         }),

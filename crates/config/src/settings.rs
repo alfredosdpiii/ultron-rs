@@ -215,6 +215,25 @@ pub fn token_cap(value: Option<&Value>) -> Option<u64> {
         .map(|n| n as u64)
 }
 
+/// A local service's URL (Hindsight, memorantado): the environment, else the global setting, else `default`; blank
+/// values are unset, and "off", "none", "0" or "false" (any case) turn the service off (`None`).
+pub fn service_url(env: Option<&str>, setting: Option<&str>, default: &str) -> Option<String> {
+    fn given(value: Option<&str>) -> Option<&str> {
+        value.map(jsrt::string::trim).filter(|v| !v.is_empty())
+    }
+    match given(env).or_else(|| given(setting)) {
+        None => Some(default.into()),
+        Some(value)
+            if ["off", "none", "0", "false"]
+                .iter()
+                .any(|off| value.eq_ignore_ascii_case(off)) =>
+        {
+            None
+        }
+        Some(value) => Some(value.into()),
+    }
+}
+
 pub struct SettingsManager {
     paths: [PathBuf; 2],
     global: Settings,

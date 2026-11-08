@@ -4,7 +4,6 @@
 
 use crate::Env;
 use config::keys::JudgeSettings;
-use judge::keys::{D1, TYPESAFE, key_source};
 use judge::{DispatchChat, Seat, SeatDeps};
 use std::io::Write;
 use std::sync::Arc;
@@ -27,7 +26,7 @@ Options:
   --limit <n>        Only the first n cases.
   --max-calls <n>    Stop after n calls in all (default: judge.maxCalls).
 
-Keys: TYPESAFE_API_KEY or auth.json \"typesafe\" (Jev), ULTRON_D1_KEY or auth.json \"d1\" with the judge.d1.url
+Keys: TYPESAFE_API_KEY or auth.json \"judge:typesafe\" (Jev), ULTRON_D1_KEY or auth.json \"judge:d1\" with the judge.d1.url
 setting (d1). judge.budgetUsd applies. A backend stops at its first failure.
 ";
 
@@ -53,11 +52,7 @@ pub fn settings(env: &Env) -> JudgeSettings {
 /// escalation models on the profile's models and keys.
 pub fn deps(env: &Env, chat: bool, transport: Arc<dyn blocking_http::Transport>) -> SeatDeps {
     let auth = config::paths::AgentPaths::new(env.agent_dir()).auth();
-    let mut deps = SeatDeps::new(
-        transport,
-        key_source(TYPESAFE, env.var.clone(), auth.clone()),
-        key_source(D1, env.var.clone(), auth),
-    );
+    let mut deps = SeatDeps::with_profile_keys(transport, env.var.clone(), auth);
     if chat {
         let (models, keys) = (env.clone(), env.clone());
         deps.chat = Some(Arc::new(DispatchChat {

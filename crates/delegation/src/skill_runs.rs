@@ -330,7 +330,8 @@ impl SkillRuns {
         let rung = verdict["rung"].as_str().unwrap_or("abstained");
         let summary = json!({"rung": rung, "backend": verdict["backend"], "model": verdict["model"],
                              "answers": verdict["answers"], "reason": verdict["reason"], "pass": pass});
-        if rung == "review" || rung == "abstained" {
+        // judge::Verdict `settled`: a first or escalated answer.
+        if verdict["settled"] != true {
             return Ok(Decision::Review(summary));
         }
         let holds = pass

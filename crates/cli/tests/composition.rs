@@ -376,6 +376,8 @@ fn cli_composition_cell_calls_the_memory_api_on_the_injected_backend() {
     let sandbox = sandbox(port);
     let bank = Arc::new(FakeBank::default());
     let vars: Vec<(String, String)> = vec![
+        ("ULTRON_HINDSIGHT_URL".into(), "off".into()),
+        ("ULTRON_MEMORANTADO_URL".into(), "off".into()),
         ("HOME".into(), sandbox.root.display().to_string()),
         (
             config::paths::ENV_AGENT_DIR.into(),
@@ -505,6 +507,8 @@ fn cli_composition_auto_memory_recalls_before_a_user_message() {
     .unwrap();
     let bank = Arc::new(RecallBank::default());
     let vars: Vec<(String, String)> = vec![
+        ("ULTRON_HINDSIGHT_URL".into(), "off".into()),
+        ("ULTRON_MEMORANTADO_URL".into(), "off".into()),
         ("HOME".into(), sandbox.root.display().to_string()),
         (
             config::paths::ENV_AGENT_DIR.into(),
@@ -689,6 +693,8 @@ fn cli_composition_lane_declares_exactly_the_rlm_tool() {
     .unwrap();
     std::fs::write(installed.join("index.ts"), "export default function () {}").unwrap();
     let vars: Vec<(String, String)> = vec![
+        ("ULTRON_HINDSIGHT_URL".into(), "off".into()),
+        ("ULTRON_MEMORANTADO_URL".into(), "off".into()),
         ("HOME".into(), sandbox.root.display().to_string()),
         (
             config::paths::ENV_AGENT_DIR.into(),

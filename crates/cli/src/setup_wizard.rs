@@ -1282,20 +1282,17 @@ enum JudgeAction {
     Done,
 }
 
-/// Where a judge service's key comes from now, as the step shows it (never the key).
-fn key_origin(deps: &SetupDeps, service: &str, variable: &str) -> &'static str {
-    if deps.var(variable).is_some_and(|v| !jsrt::string::trim(&v).is_empty()) {
-        "from the environment"
-    } else if judge::keys::service_key(
-        service,
-        &|_| None,
-        &config::paths::AgentPaths::new(deps.agent_dir()).auth(),
-    )
-    .is_some()
-    {
-        "in auth.json"
-    } else {
-        "not set"
+/// Where a judge service's key comes from now, as the step shows it (never the key): `url` is the server it goes
+/// to, and a stored key saved for another server does not count.
+fn key_origin(deps: &SetupDeps, key: config::auth::ServiceKey, url: Option<&str>) -> &'static str {
+    let auth = config::paths::AgentPaths::new(deps.agent_dir()).auth();
+    match config::auth::key_origin(&key, &|name| deps.var(name), &auth) {
+        config::auth::KeyOrigin::Env => "from the environment",
+        config::auth::KeyOrigin::Stored(origin) if url.and_then(config::auth::url_origin).as_ref() == Some(&origin) => {
+            "in auth.json"
+        }
+        config::auth::KeyOrigin::Stored(_) => "in auth.json for another server",
+        config::auth::KeyOrigin::Unset => "not set",
     }
 }
 
@@ -1330,9 +1327,10 @@ fn judge_step<U: SetupUi>(ui: &mut U, deps: &mut SetupDeps) -> Result<SummaryLin
     );
     let mut changed = Vec::new();
     loop {
-        let jev = key_origin(deps, judge::keys::TYPESAFE, "TYPESAFE_API_KEY");
-        let d1_key = key_origin(deps, judge::keys::D1, "ULTRON_D1_KEY");
         let d1_url = config::keys::judge_settings(deps.settings.global_settings()).d1_url;
+        let jev = key_origin(deps, config::auth::TYPESAFE_KEY, Some(judge::backend::JEV_URL));
+        let d1_key = key_origin(deps, config::auth::D1_KEY, d1_url.as_deref());
+        let usable = |origin: &str| matches!(origin, "from the environment" | "in auth.json");
         ui.note(
             &format!(
                 "Jev key: {jev}. d1: {}, key {d1_key}.",
@@ -1343,10 +1341,10 @@ fn judge_step<U: SetupUi>(ui: &mut U, deps: &mut SetupDeps) -> Result<SummaryLin
             Tone::Dim,
         );
         let mut configured = Vec::new();
-        if jev != "not set" {
+        if usable(jev) {
             configured.push("jev");
         }
-        if d1_url.is_some() && d1_key != "not set" {
+        if d1_url.is_some() && usable(d1_key) {
             configured.push("d1");
         }
         let mut choices = vec![
@@ -1394,7 +1392,8 @@ fn judge_step<U: SetupUi>(ui: &mut U, deps: &mut SetupDeps) -> Result<SummaryLin
                     continue;
                 };
                 let auth = config::paths::AgentPaths::new(deps.agent_dir()).auth();
-                match judge::keys::save_key(&auth, judge::keys::TYPESAFE, &key) {
+                match config::auth::save_service_key(&auth, &config::auth::TYPESAFE_KEY, &key, judge::backend::JEV_URL)
+                {
                     Ok(()) => {
                         ui.note("✓ Saved the TypeSafe key in auth.json.", Tone::Success);
                         changed.push("jev");
@@ -1409,7 +1408,11 @@ fn judge_step<U: SetupUi>(ui: &mut U, deps: &mut SetupDeps) -> Result<SummaryLin
                     InputOptions {
                         initial: Some(d1_url.clone().unwrap_or_default()),
                         description: Some("For example a tailscale serve address of the machine running d1.".into()),
-                        validate: Some(Box::new(setup_core::validate_base_url)),
+                        // Its key goes there: https, or plain http to this machine only.
+                        validate: Some(Box::new(|value: &str| {
+                            setup_core::validate_base_url(value)
+                                .or_else(|| config::auth::secure_url(jsrt::string::trim(value)).err())
+                        })),
                         ..Default::default()
                     },
                 )?
@@ -1428,11 +1431,13 @@ fn judge_step<U: SetupUi>(ui: &mut U, deps: &mut SetupDeps) -> Result<SummaryLin
                 d1.insert("url".into(), Value::String(url.clone()));
                 deps.settings.set_global_nested("judge", "d1", Some(Value::Object(d1)));
                 ui.note(&format!("✓ Saved judge.d1.url ({url})."), Tone::Success);
+                // A stored key is bound to the server it was saved for: a new server needs it entered again.
+                let kept = key_origin(deps, config::auth::D1_KEY, Some(&url));
                 let key = ui.input(
-                    if d1_key == "not set" {
-                        "d1 key"
-                    } else {
+                    if usable(kept) {
                         "d1 key (Esc keeps the current one)"
+                    } else {
+                        "d1 key"
                     },
                     InputOptions {
                         secret: true,
@@ -1441,7 +1446,7 @@ fn judge_step<U: SetupUi>(ui: &mut U, deps: &mut SetupDeps) -> Result<SummaryLin
                 )?;
                 if let Some(key) = key.filter(|k| !jsrt::string::trim(k).is_empty()) {
                     let auth = config::paths::AgentPaths::new(deps.agent_dir()).auth();
-                    match judge::keys::save_key(&auth, judge::keys::D1, &key) {
+                    match config::auth::save_service_key(&auth, &config::auth::D1_KEY, &key, &url) {
                         Ok(()) => ui.note("✓ Saved the d1 key in auth.json.", Tone::Success),
                         Err(error) => ui.note(&format!("✗ Could not save the key: {error}"), Tone::Error),
                     }
@@ -1760,13 +1765,7 @@ pub fn create_setup_deps(env: &Env) -> SetupDeps {
                 judge::bench::probe(&seat, backend, &kernel::Signal::new())
             }) as ProbeJudge
         }),
-        probe_memorantado: ((env.var)(interactive::qol::PARITY_ENV).as_deref().map(str::trim) != Some("1")).then(
-            || {
-                Arc::new(|url: &str| {
-                    memorantado::ReqwestTransport::new()
-                        .is_ok_and(|transport| memorantado::resolve::answers(&transport, url))
-                }) as ProbeMemorantado
-            },
-        ),
+        probe_memorantado: ((env.var)(interactive::qol::PARITY_ENV).as_deref().map(str::trim) != Some("1"))
+            .then(|| Arc::new(memorantado::resolve::probe) as ProbeMemorantado),
     }
 }

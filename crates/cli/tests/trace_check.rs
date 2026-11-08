@@ -14,6 +14,7 @@ fn run(args: &[&str], cwd: &Path) -> (i32, String, String) {
             "HOME" => Some(root.display().to_string()),
             config::paths::ENV_AGENT_DIR => Some(root.join("agent").display().to_string()),
             config::paths::ENV_SERVER_DIR => Some(root.join("server").display().to_string()),
+            "ULTRON_HINDSIGHT_URL" | "ULTRON_MEMORANTADO_URL" => Some("off".into()),
             config::env::OFFLINE_ENV => Some("1".into()),
             _ => None,
         }),

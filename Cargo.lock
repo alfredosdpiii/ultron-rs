@@ -1053,6 +1053,7 @@ dependencies = [
  "kernel",
  "kernel-apis",
  "knowledge",
+ "memorantado",
  "serde_json",
  "tempfile",
 ]
@@ -1644,7 +1645,7 @@ dependencies = [
  "ai",
  "blocking-http",
  "config",
- "delegation",
+ "host",
  "jsrt",
  "kernel",
  "kernel-apis",

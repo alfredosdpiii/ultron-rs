@@ -36,11 +36,11 @@ pub enum Choice {
 }
 
 impl Choice {
+    /// The backend `text` names ([`config::keys::memory_backend_name`]).
     pub fn parse(text: &str) -> Option<Choice> {
-        match jsrt::string::trim(text).to_ascii_lowercase().as_str() {
+        match config::keys::memory_backend_name(text)? {
             "memorantado" => Some(Choice::Memorantado),
-            "hindsight" => Some(Choice::Hindsight),
-            _ => None,
+            _ => Some(Choice::Hindsight),
         }
     }
 
@@ -56,18 +56,9 @@ fn trimmed(value: Option<&str>) -> Option<&str> {
     value.map(jsrt::string::trim).filter(|v| !v.is_empty())
 }
 
-fn off(value: &str) -> bool {
-    matches!(value.to_ascii_lowercase().as_str(), "off" | "none" | "0" | "false")
-}
-
 /// The global `memory.backend` setting, when it names a backend.
 pub fn choice(manager: &config::settings::SettingsManager) -> Option<Choice> {
-    manager
-        .global_settings()
-        .get("memory")
-        .and_then(|memory| memory.get("backend"))
-        .and_then(Value::as_str)
-        .and_then(Choice::parse)
+    config::keys::memory_backend(manager.global_settings()).and_then(Choice::parse)
 }
 
 /// The global `memorantadoUrl` setting, trimmed, when a non-blank string.
@@ -75,13 +66,10 @@ pub fn setting_url(manager: &config::settings::SettingsManager) -> Option<String
     trimmed(manager.global_settings().get(URL_SETTING).and_then(Value::as_str)).map(String::from)
 }
 
-/// The environment, else the setting, else the default; off: `None`.
+/// The environment, else the setting, else the default, without a trailing `/`; off: `None`
+/// ([`config::settings::service_url`]).
 pub fn memorantado_url(env: Option<&str>, setting: Option<&str>) -> Option<String> {
-    match trimmed(env).or_else(|| trimmed(setting)) {
-        None => Some(DEFAULT_MEMORANTADO_URL.into()),
-        Some(value) if off(value) => None,
-        Some(value) => Some(value.trim_end_matches('/').into()),
-    }
+    config::settings::service_url(env, setting, DEFAULT_MEMORANTADO_URL).map(|url| url.trim_end_matches('/').into())
 }
 
 /// Whether a memorantado server answers at `url` (`GET /api/health` is `{status: "ok"}`), within [`PROBE_TIMEOUT`].
@@ -98,6 +86,11 @@ pub fn answers(transport: &dyn Transport, url: &str) -> bool {
         .filter(|response| (200..300).contains(&response.status))
         .and_then(|response| serde_json::from_slice::<Value>(&response.body).ok())
         .is_some_and(|health| health["status"] == "ok")
+}
+
+/// [`answers`] over a fresh HTTP client (a client that cannot be built: no answer).
+pub fn probe(url: &str) -> bool {
+    blocking_http::ReqwestTransport::new().is_ok_and(|transport| answers(&transport, url))
 }
 
 /// The Hindsight server a process resolved (hindsight::resolve), as the backend choice needs it.
@@ -169,7 +162,8 @@ impl Endpoint {
     /// (unless `hindsight` is off: memory turned off), is memorantado whether or not it answers (`up` says; an
     /// outage pauses memory), or no memory when memorantado is turned off; `hindsight` is Hindsight. Unset and
     /// never detected, a Hindsight server set explicitly is Hindsight; else memorantado is used when `answers`
-    /// says its server is up, and the choice is kept; otherwise Hindsight.
+    /// says its server is up, and the choice is kept; otherwise Hindsight. Offline (`PI_OFFLINE`), nothing is
+    /// detected: memorantado is used only when chosen.
     pub fn choose(
         var: &dyn Fn(&str) -> Option<String>,
         manager: &config::settings::SettingsManager,
@@ -190,7 +184,7 @@ impl Endpoint {
             Some(Choice::Hindsight) => Backend::Hindsight,
             None if hindsight == Hindsight::Off => Backend::Off,
             None if remembered(agent_dir) == Some(Choice::Memorantado) => chosen(configured),
-            None if hindsight == Hindsight::Set => Backend::Hindsight,
+            None if hindsight == Hindsight::Set || config::env::offline(var) => Backend::Hindsight,
             None => match configured {
                 Some(endpoint) if answers(&endpoint.url) => {
                     remember(agent_dir, Choice::Memorantado);

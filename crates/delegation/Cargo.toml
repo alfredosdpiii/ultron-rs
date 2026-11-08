@@ -9,6 +9,7 @@ autotests = false
 
 [dependencies]
 agent = { path = "../agent" }
+ai = { path = "../ai" }
 harness = { path = "../harness" }
 host = { path = "../host" }
 jsonschema = { path = "../jsonschema" }
@@ -26,7 +27,6 @@ signals = { path = "../signals" }
 tokio = { version = "=1.53.2", features = ["rt", "time"] }
 
 [dev-dependencies]
-ai = { path = "../ai" }
 config = { path = "../config" }
 tempfile = "=3.27.0"
 

@@ -25,35 +25,26 @@ pub fn run(argv: &[String], env: &Env, out: &mut dyn Write, err: &mut dyn Write)
     }
     let agent_dir = env.agent_dir();
     let var = |key: &str| (env.var)(key);
-    let endpoint = || hindsight::Endpoint::from_env(&var, &env.cwd, &agent_dir);
-    // The backend sessions use (as compose chooses it): memorantado once chosen, even when it is down, so an import
-    // never lands in Hindsight instead.
-    let chosen = || {
-        let settings = config::settings::SettingsManager::create(&env.cwd, &agent_dir, false);
-        let explicit = hindsight::resolve::resolve_in(&var, &settings).1 != hindsight::resolve::Source::Default;
-        let hindsight = match endpoint() {
-            None => memorantado::Hindsight::Off,
-            Some(_) if explicit => memorantado::Hindsight::Set,
-            Some(_) => memorantado::Hindsight::Default,
-        };
-        memorantado::Endpoint::choose(&var, &settings, &agent_dir, hindsight, &|url| {
-            memorantado::ReqwestTransport::new().is_ok_and(|t| memorantado::resolve::answers(&t, url))
-        })
-    };
+    // The backend sessions use: memorantado once chosen, even when it is down, so an import never lands in Hindsight
+    // instead.
     let backend = |project: Option<&Path>| -> Result<Arc<dyn MemoryBackend>, String> {
-        match chosen() {
+        let settings = config::settings::SettingsManager::create(&env.cwd, &agent_dir, false);
+        let chosen = session_core::compose::memory_backend(&var, &settings, &agent_dir);
+        match chosen.backend {
             memorantado::Backend::Memorantado { endpoint, up: true } => {
                 return Ok(Arc::new(
                     endpoint.backend(scope_tags(env, project)).map_err(|e| e.to_string())?,
                 ));
             }
             memorantado::Backend::Memorantado { endpoint, up: false } => return Err(endpoint.paused_notice()),
-            memorantado::Backend::Off if endpoint().is_some() => {
+            memorantado::Backend::Off if chosen.hindsight.is_some() => {
                 return Err("memorantado, the memory backend, is turned off (ULTRON_MEMORANTADO_URL).".into());
             }
             memorantado::Backend::Off | memorantado::Backend::Hindsight => {}
         }
-        let endpoint = endpoint().ok_or("Hindsight is not configured. Set ULTRON_HINDSIGHT_URL.")?;
+        let endpoint = chosen
+            .hindsight
+            .ok_or("Hindsight is not configured. Set ULTRON_HINDSIGHT_URL.")?;
         let mut options = hindsight::HindsightOptions::new(&endpoint.url, &endpoint.bank, scope_tags(env, project));
         options.ensure_bank = true;
         Ok(Arc::new(

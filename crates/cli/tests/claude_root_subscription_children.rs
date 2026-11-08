@@ -160,6 +160,8 @@ fn start(root: &Path, paid: u16, args: &[&str]) -> (Server, PathBuf, PathBuf) {
         .args(args)
         .current_dir(root.join("w"))
         .env_clear()
+        .env("ULTRON_HINDSIGHT_URL", "off")
+        .env("ULTRON_MEMORANTADO_URL", "off")
         .env("PATH", "/usr/bin:/bin")
         .env("HOME", p("h"))
         .env(config::paths::ENV_AGENT_DIR, p("a"))

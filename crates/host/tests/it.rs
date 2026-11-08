@@ -19,8 +19,6 @@ mod bash_notes;
 mod cell;
 #[path = "fixture.rs"]
 mod fixture;
-#[path = "guard_ask.rs"]
-mod guard_ask;
 #[path = "guard_stats.rs"]
 mod guard_stats;
 #[path = "journal.rs"]
@@ -33,6 +31,8 @@ mod loki;
 mod loki_project_python;
 #[path = "loki_timeout.rs"]
 mod loki_timeout;
+#[path = "protected_paths.rs"]
+mod protected_paths;
 #[path = "sandbox_launch_env.rs"]
 mod sandbox_launch_env;
 #[path = "sandbox_no_base_env.rs"]

@@ -55,6 +55,8 @@ impl Root {
         command
             .args(args)
             .env_clear()
+            .env("ULTRON_HINDSIGHT_URL", "off")
+            .env("ULTRON_MEMORANTADO_URL", "off")
             .current_dir(self.root.join("cwd"))
             .env("PATH", "/usr/bin:/bin")
             .env("HOME", &self.root)
@@ -273,6 +275,7 @@ fn cli_custom_provider_rpc_lists_and_selects_custom_models() {
             root.root.join("server").display().to_string(),
         ),
         (hindsight::resolve::HINDSIGHT_URL_ENV, "off".into()),
+        ("ULTRON_MEMORANTADO_URL", "off".into()),
         (config::env::OFFLINE_ENV, "1".into()),
         ("STUB_KEY", "stub-key-123".into()),
         ("NO_COLOR", "1".into()),

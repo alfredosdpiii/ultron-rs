@@ -61,6 +61,9 @@ fn session_core_header_templates_see_the_stored_credential_env_like_typescript()
             .map(|(k, v)| (k.clone(), v.as_str().unwrap().to_string()))
             .collect();
         map.insert(config::paths::ENV_AGENT_DIR.into(), agent.display().to_string());
+        for name in ["ULTRON_HINDSIGHT_URL", "ULTRON_MEMORANTADO_URL"] {
+            map.entry(name.into()).or_insert_with(|| "off".into());
+        }
         map.insert(config::env::OFFLINE_ENV.into(), "1".into());
         let env = RunEnv {
             cwd: tmp.path().to_path_buf(),

@@ -1,16 +1,14 @@
 //! `judge.decide` for a session ([`judge`]): the global `judge.*` settings read at each call, the TypeSafe and d1
 //! keys from the session's environment and the profile's auth.json, the chat rung on the session's models and
 //! provider keys, the default escalation family from the root lane's model, and every call settled in the session's
-//! usage ledger and written as a session usage row (`details.source = "judge"`). Loki's borderline writes are put to
-//! the same seat, off the write path ([`loki_asker`]).
+//! usage ledger and written as a session usage row (`details.source = "judge"`).
 
 use crate::compose::Config;
 use crate::request_keys::Keys;
 use ai::{Cost, Model, Usage};
-use delegation::usage::UsageLedger;
-use judge::keys::{D1, TYPESAFE, key_source};
+use delegation::usage::{Measurement, Reservation, ReserveRequest, UsageLedger};
 use judge::seat::{OnReceipt, Receipt};
-use judge::{DispatchChat, JudgeModule, Rung, Seat, SeatDeps};
+use judge::{DispatchChat, JudgeModule, Seat, SeatDeps};
 use serde_json::json;
 use std::sync::{Arc, Mutex, OnceLock};
 
@@ -50,6 +48,37 @@ fn usage_row(values: &services::SessionValues, receipt: &Receipt) {
     let _ = crate::core::record_usage_row(&mut session, usage, details);
 }
 
+/// The session's usage ledger as the judge seat reserves and settles its calls in it: each a `model` call keyed by
+/// its receipt id.
+pub struct SessionLedger(pub UsageLedger);
+
+impl judge::SpendLedger for SessionLedger {
+    fn cost_cap(&self) -> Option<f64> {
+        self.0.limits().max_cost_usd
+    }
+
+    fn reserve(&self, id: &str) -> Result<serde_json::Value, String> {
+        self.0
+            .reserve(&ReserveRequest::model(id))
+            .map(|reservation| reservation.0)
+    }
+
+    fn settle(&self, reservation: &serde_json::Value, status: &str, spend: &judge::Spend, wall_ms: f64) {
+        let total = spend.input_tokens.zip(spend.output_tokens).map(|(i, o)| (i + o) as f64);
+        let measured = Measurement {
+            input_tokens: spend.input_tokens.map(|n| n as f64),
+            output_tokens: spend.output_tokens.map(|n| n as f64),
+            total_tokens: total,
+            cost: spend.cost,
+            wall_ms: Some(wall_ms),
+        };
+        // A ledger that cannot record is the session's to report; the decision stands.
+        let _ = self
+            .0
+            .settle(&Reservation(reservation.clone()), Some(status), Some(&measured));
+    }
+}
+
 /// The judge module of a session. `ledger` is the session's usage ledger, set once the stack has built it; `rows` the
 /// session whose usage rows record each call (none written while it is unset).
 pub fn module(
@@ -72,11 +101,7 @@ pub fn module(
         Arc::new(move |settings| {
             let transport = Arc::new(blocking_http::ReqwestTransport::new()?);
             let models = config.clone();
-            let mut deps = SeatDeps::new(
-                transport,
-                key_source(TYPESAFE, config.var.clone(), auth.clone()),
-                key_source(D1, config.var.clone(), auth.clone()),
-            );
+            let mut deps = SeatDeps::with_profile_keys(transport, config.var.clone(), auth.clone());
             deps.chat = Some(Arc::new(DispatchChat {
                 models: Arc::new(move |provider: &str, id: &str| models.model(provider, id)),
                 keys: keys.request_keys(),
@@ -84,7 +109,9 @@ pub fn module(
             }));
             let model = jsrt::sync::lock(&root_model).clone();
             deps.session_model = Some(format!("{}/{}", model.provider, model.id));
-            deps.ledger = ledger.get().cloned();
+            deps.ledger = ledger
+                .get()
+                .map(|ledger| Arc::new(SessionLedger(ledger.clone())) as Arc<dyn judge::SpendLedger>);
             deps.on_receipt = on_receipt.clone();
             Ok(Seat::new(settings, deps))
         }),
@@ -97,53 +124,55 @@ pub fn decider(module: Arc<JudgeModule>) -> kernel_apis::memory::Decide {
     Arc::new(move |state, questions, kind, signal| module.decide_json(state, questions, Some(kind), &[], signal))
 }
 
-/// Loki's questions about borderline writes ([`host::file_hooks::Verdict::Ask`]) put to the session's judge seat
-/// (`slot`, set once the session's modules are built), on the hooks' own thread: `Ok(true)` the write should not
-/// stand. An answer the seat is not sure of (review, abstained) is not one: the user decides.
-pub fn loki_asker(slot: Arc<OnceLock<Arc<JudgeModule>>>) -> host::file_hooks::Asker {
-    Arc::new(move |question: &str| {
-        let module = slot.get().ok_or("the session's judge seat is not ready")?;
-        let questions = judge::question::parse_questions(&json!({"refuse": {
-            "type": "yesno",
-            "instructions": "The text is a guardrail's question about a file write that was just made. Answer yes \
-                             when the write should not stand as written, no when it may.",
-        }}))?;
-        let verdict = module.decide_now(question, &questions, Some("loki.ask"), &[], &kernel::Signal::new())?;
-        match (verdict.rung, verdict.answers.first()) {
-            (Rung::First | Rung::Escalated, Some((_, answer))) => answer
-                .value
-                .as_bool()
-                .ok_or_else(|| "the judge's answer was not yes or no".into()),
-            _ => Err(verdict.reason.unwrap_or_else(|| "the judge was not sure".into())),
-        }
-    })
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use delegation::usage::UsageLimits;
+    use judge::SpendLedger;
 
+    /// Each judge call is a `model` call of the session's ledger under its receipt id, settled with its status,
+    /// tokens and cost; the ledger's cost cap is what the seat reads.
     #[test]
-    fn session_core_loki_asker_leaves_an_unsettled_question_to_the_user() {
-        let slot: Arc<OnceLock<Arc<JudgeModule>>> = Arc::default();
-        let asker = loki_asker(slot.clone());
+    fn session_core_judge_calls_are_settled_in_the_session_usage_ledger() {
+        let limits = UsageLimits {
+            max_cost_usd: Some(0.5),
+            ..UsageLimits::default()
+        };
+        let ledger = UsageLedger::in_memory(limits);
+        let session = SessionLedger(ledger.clone());
+        assert_eq!(session.cost_cap(), Some(0.5));
+        let spend = judge::Spend {
+            input_tokens: Some(400),
+            output_tokens: Some(42),
+            cost: Some(0.0003),
+        };
+        let reservation = session.reserve("judge:1").unwrap();
+        session.settle(&reservation, "succeeded", &spend, 12.0);
+        let failed = session.reserve("judge:2").unwrap();
+        session.settle(&failed, "failed", &judge::Spend::default(), 3.0);
+        let document = ledger.document().unwrap();
+        let calls = document["roots"][delegation::usage::DEFAULT_ROOT_ID]["calls"]
+            .as_array()
+            .cloned()
+            .unwrap();
+        let seen: Vec<(String, String, String)> = calls
+            .iter()
+            .map(|c| {
+                (
+                    c["kind"].to_string(),
+                    c["requestKey"].to_string(),
+                    c["status"].to_string(),
+                )
+            })
+            .collect();
         assert_eq!(
-            asker("Is it real?"),
-            Err("the session's judge seat is not ready".into())
+            seen,
+            [
+                ("\"model\"".into(), "\"judge:1\"".into(), "\"succeeded\"".into()),
+                ("\"model\"".into(), "\"judge:2\"".into(), "\"failed\"".into()),
+            ]
         );
-        // A seat with no backend abstains: not an answer, so the user decides.
-        let module = JudgeModule::new(
-            Arc::new(|| config::keys::judge_settings(json!({"judge": {"provider": []}}).as_object().unwrap())),
-            Arc::new(|settings| {
-                let none: judge::backend::KeySource = Arc::new(|| None);
-                let deps = SeatDeps::new(Arc::new(blocking_http::ReqwestTransport::new()?), none.clone(), none);
-                Ok(Seat::new(settings, deps))
-            }),
-        );
-        let _ = slot.set(Arc::new(module));
-        assert_eq!(
-            asker("Is it real?"),
-            Err("no judge backend is configured (judge.provider, judge.fallbackModel)".into())
-        );
+        assert_eq!(calls[0]["usage"]["cost"].as_f64(), Some(0.0003));
+        assert_eq!(calls[0]["usage"]["totalTokens"].as_f64(), Some(442.0));
     }
 }

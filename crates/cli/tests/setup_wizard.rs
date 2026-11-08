@@ -823,7 +823,7 @@ fn cli_setup_wizard_sets_up_the_judge_seat_and_probes_it() {
         Step::Select("^Judge seat$", "^Set the Jev key$"),
         Step::Input("^TypeSafe API key$", jev_key),
         Step::Select("^Judge seat$", "^Set the d1 server$"),
-        Step::Input("^d1 server URL$", "http://mini.tail.example:18091/"),
+        Step::Input("^d1 server URL$", "https://mini.tail.example:18091/"),
         Step::Input("^d1 key$", d1_key),
         Step::Select("^Judge seat$", "^Check the configured backends$"),
         Step::Select("^Judge seat$", "^Done$"),
@@ -834,11 +834,18 @@ fn cli_setup_wizard_sets_up_the_judge_seat_and_probes_it() {
     assert_eq!(*probed.lock().unwrap(), ["jev", "d1", "jev", "d1"]);
     let auth: Value =
         serde_json::from_str(&std::fs::read_to_string(profile.agent().join("auth.json")).unwrap()).unwrap();
-    assert_eq!(auth["typesafe"], json!({"type": "api_key", "key": jev_key}));
-    assert_eq!(auth["d1"], json!({"type": "api_key", "key": d1_key}));
+    // Under names no model provider uses, each bound to the server it was saved for.
+    assert_eq!(
+        auth["judge:typesafe"],
+        json!({"type": "api_key", "key": jev_key, "origin": "https://api.typesafe.ai"})
+    );
+    assert_eq!(
+        auth["judge:d1"],
+        json!({"type": "api_key", "key": d1_key, "origin": "https://mini.tail.example:18091"})
+    );
     assert_eq!(
         profile.settings()["judge"],
-        json!({"d1": {"url": "http://mini.tail.example:18091"}})
+        json!({"d1": {"url": "https://mini.tail.example:18091"}})
     );
     let text = ui.text();
     for expected in [
@@ -846,9 +853,9 @@ fn cli_setup_wizard_sets_up_the_judge_seat_and_probes_it() {
         "Jev key: not set. d1: no server, key not set.",
         "✓ Saved the TypeSafe key in auth.json.",
         "✓ Jev: jev-1.13 answered in 210 ms.",
-        "✓ Saved judge.d1.url (http://mini.tail.example:18091).",
+        "✓ Saved judge.d1.url (https://mini.tail.example:18091).",
         "✗ d1 did not answer (timed out after 15 s).",
-        "Jev key: in auth.json. d1: server http://mini.tail.example:18091, key in auth.json.",
+        "Jev key: in auth.json. d1: server https://mini.tail.example:18091, key in auth.json.",
         "Judge: configured — jev, d1",
     ] {
         assert!(text.contains(expected), "missing {expected}:\n{text}");

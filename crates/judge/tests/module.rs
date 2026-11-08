@@ -1,7 +1,7 @@
 //! `judge.decide` as the REPL sends it: payload checks, the verdict's keys, and a seat rebuilt for changed settings
 //! keeping the session's call count. Also the settings reader and the services' keys.
 
-use crate::fakes::{FakeTransport, fake_key, jev_yes_no, key, ok};
+use crate::fakes::{FakeTransport, jev_yes_no, key, ok};
 use config::keys::{JudgeSettings, judge_settings};
 use judge::JudgeModule;
 use judge::seat::{Seat, SeatDeps};
@@ -94,6 +94,8 @@ fn judge_decide_returns_the_verdict_and_keeps_the_call_count_across_a_settings_c
             "rung",
             "abstained",
             "review",
+            "settled",
+            "receipt",
             "reason",
             "kind",
             "calls",
@@ -146,25 +148,4 @@ fn judge_settings_read_the_global_judge_object() {
         json!({"jev": 0.8, "memory": {"jev": 0.9}})
     );
     assert_eq!((read.budget_usd, read.max_calls), (Some(0.5), 20));
-}
-
-#[test]
-fn judge_keys_come_from_the_environment_then_auth_json() {
-    let dir = tempfile::tempdir().unwrap();
-    let auth = dir.path().join("auth.json");
-    let none = |_: &str| None;
-    assert_eq!(judge::keys::service_key("typesafe", &none, &auth), None);
-    judge::keys::save_key(&auth, "typesafe", &format!(" {} ", fake_key("stored"))).unwrap();
-    assert_eq!(
-        judge::keys::service_key("typesafe", &none, &auth),
-        Some(fake_key("stored"))
-    );
-    let env_key = fake_key("env");
-    let env = |name: &str| (name == "TYPESAFE_API_KEY").then(|| env_key.clone());
-    assert_eq!(judge::keys::service_key("typesafe", &env, &auth), Some(fake_key("env")));
-    let d1 = |name: &str| (name == "ULTRON_D1_KEY").then(|| fake_key("d1"));
-    assert_eq!(judge::keys::service_key("d1", &d1, &auth), Some(fake_key("d1")));
-    // An OAuth entry is no key.
-    std::fs::write(&auth, r#"{"d1": {"type": "oauth", "access": "x"}}"#).unwrap();
-    assert_eq!(judge::keys::service_key("d1", &none, &auth), None);
 }

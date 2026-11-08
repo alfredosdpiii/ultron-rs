@@ -15,21 +15,17 @@
 //!
 //! Errors are memory error codes only, as Hindsight's client: HTTP_ERROR for a non-2xx answer or no answer,
 //! INVALID_RESPONSE for a body that is not JSON, TIMEOUT, ABORTED, RESPONSE_TOO_LARGE. An outage pauses the client:
-//! after [`PAUSE_AFTER`] calls in a row got no answer, calls fail at once (HTTP_ERROR) for [`PAUSE`], so a server
-//! that is down costs a session no timeouts.
+//! after [`OUTAGE_PAUSE_AFTER`] calls in a row got no answer, calls fail at once (HTTP_ERROR) for [`OUTAGE_PAUSE`],
+//! so a server that is down costs a session no timeouts.
 
 use blocking_http::{HttpRequest, ReqwestTransport, Transport, TransportError};
 use kernel::Signal;
 use kernel_apis::MemoryBackend;
-use kernel_apis::memory::{ErrorCode, MemoryError};
+use kernel_apis::memory::{ErrorCode, MemoryError, OUTAGE_PAUSE, OUTAGE_PAUSE_AFTER};
 use serde_json::{Map, Value, json};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-/// Calls in a row without an answer that pause the client.
-pub const PAUSE_AFTER: u32 = 3;
-/// How long a paused client fails at once.
-pub const PAUSE: Duration = Duration::from_secs(60);
 /// Who writes the briefs read as mental models.
 pub const BRIEF_WRITER: &str = "dreaming";
 
@@ -183,7 +179,7 @@ impl MemorantadoBackend {
 
     /// One call: `<api><path>?project=<project>&<query>`, a JSON body (with `project`) for POST; `Ok(None)` for a
     /// 404 when `missing_ok`.
-    fn call(
+    pub(crate) fn call(
         &self,
         method: &str,
         path: &str,
@@ -222,9 +218,9 @@ impl MemorantadoBackend {
             match &sent {
                 Err(TransportError::Failed | TransportError::Timeout) => {
                     outage.misses += 1;
-                    if outage.misses >= PAUSE_AFTER {
+                    if outage.misses >= OUTAGE_PAUSE_AFTER {
                         outage.misses = 0;
-                        outage.until = Some(Instant::now() + PAUSE);
+                        outage.until = Some(Instant::now() + OUTAGE_PAUSE);
                     }
                 }
                 _ => *outage = Outage::default(),

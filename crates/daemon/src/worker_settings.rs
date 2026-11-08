@@ -17,9 +17,6 @@ use model_scope::{DEFAULT_THINKING_LEVEL, THINKING_LEVELS};
 use serde_json::{Map, Value, json};
 use std::path::Path;
 
-/// `memory.backend`'s values (unset: detected).
-const MEMORY_BACKENDS: [&str; 2] = ["memorantado", "hindsight"];
-
 /// The worker's environment, by variable name.
 pub type Env<'a> = &'a dyn Fn(&str) -> Option<String>;
 
@@ -636,6 +633,15 @@ pub fn apply(
             nested(settings, "rlm", "raceModels", models.map(Value::Array));
             applied = Applied::Live;
         }
+        // Rust-only, global: REPL result footers (config::keys::result_footer), read when a session starts.
+        "rlm.resultFooter" => {
+            let on = match value {
+                Value::Null => None,
+                value => Some(json!(bool_value(key, value)?)),
+            };
+            nested(settings, "rlm", "resultFooter", on);
+            applied = Applied::Restart;
+        }
         // Rust-only token caps: `rlm.mapTokens` is read for every frame, `rootBudget` when the session starts.
         "rlm.mapTokens" | "rootBudget.maxTotalTokens" => {
             let cap = match value {
@@ -681,6 +687,8 @@ pub fn apply(
                     if host.is_none_or(|host| host.is_empty() || host.contains(char::is_whitespace)) {
                         return Err(format!("{key} must be an http(s) URL"));
                     }
+                    // Its key goes there: https, or plain http to this machine only.
+                    config::auth::secure_url(url).map_err(|why| format!("{key}: {why}"))?;
                     Some(json!(url))
                 }
             };
@@ -780,7 +788,7 @@ pub fn apply(
         "memory.backend" => {
             let backend = match value {
                 Value::Null => None,
-                value => Some(json!(one_of(key, value, &MEMORY_BACKENDS)?)),
+                value => Some(json!(one_of(key, value, &config::keys::MEMORY_BACKENDS)?)),
             };
             nested(settings, "memory", "backend", backend);
             applied = Applied::Restart;

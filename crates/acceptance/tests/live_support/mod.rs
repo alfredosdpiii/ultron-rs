@@ -119,6 +119,7 @@ impl LiveInstall {
                 self.server().display().to_string(),
             ),
             (hindsight::resolve::HINDSIGHT_URL_ENV.into(), "off".into()),
+            ("ULTRON_MEMORANTADO_URL".into(), "off".into()),
             ("NO_COLOR".into(), "1".into()),
         ];
         if let Ok(python) = std::env::var(kernel::env::PYTHON_ENV) {

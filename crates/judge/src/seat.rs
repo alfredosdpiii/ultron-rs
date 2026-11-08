@@ -19,11 +19,23 @@ use crate::question::{Answer, Question};
 use ai::retry::RetryPolicy;
 use blocking_http::Transport;
 use config::keys::JudgeSettings;
-use delegation::usage::{Measurement, ReserveRequest, UsageLedger};
 use kernel::Signal;
 use serde_json::{Map, Value, json};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
+
+/// Where the seat reserves and settles each call it sends: the session's usage ledger (session_core
+/// `session_judge::SessionLedger` over delegation's `UsageLedger`), so judge calls count against the session's limits.
+pub trait SpendLedger: Send + Sync {
+    /// The ledger's cost cap in USD, if it has one.
+    fn cost_cap(&self) -> Option<f64>;
+    /// Admits the call `id` (`judge:<call id>`, a `model` call); `Err` (why) when a limit refuses it. The
+    /// reservation is what [`SpendLedger::settle`] is given back.
+    fn reserve(&self, id: &str) -> Result<Value, String>;
+    /// Settles a reserved call: `status` succeeded, failed or cancelled, what it spent and how long it took. A
+    /// ledger that cannot record keeps that to itself: the decision stands.
+    fn settle(&self, reservation: &Value, status: &str, spend: &Spend, wall_ms: f64);
+}
 
 /// Confidence under which a backend's answer is escalated when `judge.thresholds` names none (from the judge
 /// benchmark: Jev's wrong answers were all under 0.75, d1's under 0.85).
@@ -120,6 +132,20 @@ pub struct Verdict {
 }
 
 impl Verdict {
+    /// Whether the answers stand: a first or escalated answer, not one left for review or an abstention. The one
+    /// rule every caller (dreaming, skill procedures, knowledge) reads, as `settled` in [`Verdict::to_json`].
+    pub fn settled(&self) -> bool {
+        matches!(self.rung, Rung::First | Rung::Escalated)
+    }
+
+    /// The receipt of the call whose answers these are.
+    pub fn answered_by(&self) -> Option<&Receipt> {
+        self.receipts
+            .iter()
+            .rev()
+            .find(|r| r.status == "succeeded" && Some(&r.backend) == self.backend.as_ref())
+    }
+
     /// What `judge.decide` returns.
     pub fn to_json(&self, kind: Option<&str>) -> Value {
         let answers: Map<String, Value> = self.answers.iter().map(|(n, a)| (n.clone(), a.to_json())).collect();
@@ -135,6 +161,8 @@ impl Verdict {
             "rung": self.rung.name(),
             "abstained": self.rung == Rung::Abstained,
             "review": self.rung == Rung::Review,
+            "settled": self.settled(),
+            "receipt": self.answered_by().map(|r| r.id.clone()),
             "reason": self.reason,
             "kind": kind,
             "calls": sent.len(),
@@ -156,7 +184,7 @@ pub struct SeatDeps {
     pub chat: Option<Arc<dyn ChatModel>>,
     /// The session's `provider/model`: the family the default escalation model comes from.
     pub session_model: Option<String>,
-    pub ledger: Option<UsageLedger>,
+    pub ledger: Option<Arc<dyn SpendLedger>>,
     pub on_receipt: Option<OnReceipt>,
     /// Jev's endpoint ([`JEV_URL`]; a test server in tests).
     pub jev_url: String,
@@ -175,6 +203,21 @@ impl SeatDeps {
             jev_url: JEV_URL.into(),
         }
     }
+
+    /// [`SeatDeps::new`] with the TypeSafe and d1 keys of a profile: the environment `var`, else the auth.json at
+    /// `auth_path` (config::auth `TYPESAFE_KEY`, `D1_KEY`), read at each call.
+    pub fn with_profile_keys(
+        transport: Arc<dyn Transport>,
+        var: config::auth::Vars,
+        auth_path: std::path::PathBuf,
+    ) -> SeatDeps {
+        use config::auth::{D1_KEY, TYPESAFE_KEY, service_key_source};
+        SeatDeps::new(
+            transport,
+            service_key_source(TYPESAFE_KEY, var.clone(), auth_path.clone()),
+            service_key_source(D1_KEY, var, auth_path),
+        )
+    }
 }
 
 #[derive(Default)]
@@ -190,7 +233,7 @@ pub struct Seat {
     backends: Vec<Arc<dyn Backend>>,
     fallback: Option<Arc<dyn Backend>>,
     escalate: Option<Arc<dyn Backend>>,
-    ledger: Option<UsageLedger>,
+    ledger: Option<Arc<dyn SpendLedger>>,
     on_receipt: Option<OnReceipt>,
     spent: Arc<Mutex<Spent>>,
 }
@@ -307,7 +350,7 @@ impl Seat {
         // an unpriced Jev is passed over.
         if backend.name() == "jev"
             && self.settings.jev_price_per_mtok.is_none()
-            && let Some(cap) = self.ledger.as_ref().and_then(|l| l.limits().max_cost_usd)
+            && let Some(cap) = self.ledger.as_ref().and_then(|l| l.cost_cap())
         {
             return Ok(Err(format!(
                 "the session's cost cap (${cap}, max_cost_usd) needs priced calls, and Jev reports no cost (set judge.jev.pricePerMTok)"
@@ -368,7 +411,7 @@ impl Seat {
                 return Ok(None);
             }
             let reservation = match &self.ledger {
-                Some(ledger) => Some(ledger.reserve(&ReserveRequest::model(id)).map_err(Stop::Refused)?),
+                Some(ledger) => Some(ledger.reserve(&id).map_err(Stop::Refused)?),
                 None => None,
             };
             let started = Instant::now();
@@ -401,17 +444,7 @@ impl Seat {
                     "failed" => "failed",
                     _ => "cancelled",
                 };
-                let spend = &receipt.spend;
-                let total = spend.input_tokens.zip(spend.output_tokens).map(|(i, o)| (i + o) as f64);
-                let measured = Measurement {
-                    input_tokens: spend.input_tokens.map(|n| n as f64),
-                    output_tokens: spend.output_tokens.map(|n| n as f64),
-                    total_tokens: total,
-                    cost: spend.cost,
-                    wall_ms: Some(receipt.ms),
-                };
-                // A ledger that cannot record is the session's to report; the decision stands.
-                let _ = ledger.settle(reservation, Some(status), Some(&measured));
+                ledger.settle(reservation, status, &receipt.spend, receipt.ms);
             }
             if sent {
                 let mut spent = self.spent();
@@ -478,7 +511,9 @@ impl Seat {
     }
 
     /// [`Seat::decide`] by a caller that already holds an answer (`expect`: question name and value, such as a
-    /// verifier's): a first answer that differs is a dispute, escalated like an unsure one.
+    /// verifier's): a first answer that differs is a dispute, escalated like an unsure one. Every backend (Jev, d1,
+    /// the fallback and escalation models) sees `state` with its secrets redacted (host::secrets, the rules cell
+    /// output is masked with): a quoted `.env` line or a key in a check's output never leaves the machine.
     pub fn decide_expecting(
         &self,
         state: &str,
@@ -487,6 +522,8 @@ impl Seat {
         expect: &[(String, Value)],
         signal: &Signal,
     ) -> Verdict {
+        let (state, _) = host::secrets::SecretDetector::shipped().redact_counted(state);
+        let state = state.as_str();
         let mut receipts = Vec::new();
         let abstain = |reason: String, receipts: Vec<Receipt>| Verdict {
             answers: Vec::new(),

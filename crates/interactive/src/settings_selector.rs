@@ -101,7 +101,11 @@ fn judge_order_value(label: &str) -> Value {
 }
 
 /// `memory.backend` choices: detect (unset), then the backends.
-const MEMORY_BACKENDS: [&str; 3] = ["detect", "memorantado", "hindsight"];
+const MEMORY_BACKENDS: [&str; 3] = [
+    "detect",
+    config::keys::MEMORY_BACKENDS[0],
+    config::keys::MEMORY_BACKENDS[1],
+];
 
 /// A saved `judge.budgetUsd` as a choice.
 fn budget_label(value: &Value) -> String {
@@ -1004,6 +1008,16 @@ impl SettingsSelector {
                         .filter(|b| MEMORY_BACKENDS.contains(&b.as_str()))
                         .unwrap_or_else(|| MEMORY_BACKENDS[0].into()),
                     &MEMORY_BACKENDS,
+                ),
+            );
+            items.insert(
+                at + 6,
+                item(
+                    "result-footer",
+                    "REPL result footer",
+                    "End each rlm result with [t+<time since the session started> ctx <tokens>], and tell the model so (applies to new sessions)",
+                    b("rlm.resultFooter", false),
+                    &["true", "false"],
                 ),
             );
         }
@@ -2082,6 +2096,7 @@ impl SettingsSelector {
             ),
             "request-token-cap" => ("rootBudget.maxTotalTokens", token_cap_value(value)),
             "map-token-cap" => ("rlm.mapTokens", token_cap_value(value)),
+            "result-footer" => ("rlm.resultFooter", b),
             "judge-provider" => ("judge.provider", judge_order_value(value)),
             "judge-budget" => ("judge.budgetUsd", budget_value(value)),
             "memory-backend" => (
@@ -2365,6 +2380,27 @@ mod tests {
             ("3M", &["off".to_string(), "3M".to_string()][..])
         );
         assert_eq!(row(&s, "map-token-cap").0, "off");
+    }
+
+    /// `rlm.resultFooter`: off unless set; the row saves a boolean.
+    #[test]
+    fn settings_result_footer_row() {
+        let value = |s: &SettingsSelector| {
+            s.list
+                .items
+                .iter()
+                .find(|it| it.id == "result-footer")
+                .unwrap()
+                .value
+                .clone()
+        };
+        let mut s = selector(json!({}));
+        assert_eq!(value(&s), "false");
+        assert_eq!(
+            s.main_change("result-footer", "true"),
+            SettingsEvent::Change("rlm.resultFooter".into(), json!(true))
+        );
+        assert_eq!(value(&selector(json!({"rlm": {"resultFooter": true}}))), "true");
     }
 
     /// `memory.backend`: unset shows detect; a backend saves its name, detect removes the key.

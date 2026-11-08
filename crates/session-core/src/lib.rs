@@ -81,7 +81,7 @@ pub fn flag_off(value: Option<&str>) -> bool {
     value.is_some_and(|v| matches!(v.trim().to_lowercase().as_str(), "off" | "0" | "false"))
 }
 
-pub type VarLookup = Arc<dyn Fn(&str) -> Option<String> + Send + Sync>;
+pub type VarLookup = config::auth::Vars;
 
 /// The process environment and locations a session sees.
 #[derive(Clone)]

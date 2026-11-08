@@ -662,9 +662,10 @@ pub mod proposals {
         Ok((record, content))
     }
 
-    /// The user's approval: check the SKILL.md again (it may have been edited) and publish it as
-    /// `<skills_dir>/<name>/SKILL.md`, never over an existing skill.
-    pub fn approve(dir: &Path, id: &str, skills_dir: &Path, at: i64) -> Result<Value, String> {
+    /// The user's approval of the SKILL.md whose sha256 they were shown (`shown`): check it again and publish it as
+    /// `<skills_dir>/<name>/SKILL.md`, never over an existing skill. Content that changed since it was shown is
+    /// refused.
+    pub fn approve(dir: &Path, id: &str, skills_dir: &Path, at: i64, shown: &str) -> Result<Value, String> {
         let (path, mut record) = read(dir, id)?;
         if record["state"] != "proposed" {
             return Err(format!(
@@ -674,6 +675,13 @@ pub mod proposals {
         }
         let name = record["name"].as_str().unwrap_or_default().to_string();
         let content = std::fs::read_to_string(path.join(SKILL)).map_err(|e| format!("{}: {e}", path.display()))?;
+        let digest = jsrt::hash::sha256_hex(content.as_bytes());
+        if digest != shown {
+            return Err(format!(
+                "Skill proposal {id} changed after it was shown (sha256 now {}); run approve again to see it",
+                &digest[..12]
+            ));
+        }
         check_content(&name, &content)?;
         let target = skills_dir.join(&name);
         if target.join(SKILL).exists() {
@@ -687,7 +695,7 @@ pub mod proposals {
         record["state"] = json!("published");
         record["published_at"] = json!(at);
         record["path"] = json!(target.join(SKILL).display().to_string());
-        record["sha256"] = json!(jsrt::hash::sha256_hex(content.as_bytes()));
+        record["sha256"] = json!(digest);
         write(&path, &record)?;
         Ok(record)
     }

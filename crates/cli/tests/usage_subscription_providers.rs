@@ -59,6 +59,9 @@ fn env(dir: &Path, vars: &[(&str, String)]) -> RunEnv {
     std::fs::write(agent.join("auth.json"), auth.to_string()).unwrap();
     let mut map: HashMap<String, String> = vars.iter().map(|(k, v)| (k.to_string(), v.clone())).collect();
     map.insert(config::paths::ENV_AGENT_DIR.into(), agent.display().to_string());
+    for name in ["ULTRON_HINDSIGHT_URL", "ULTRON_MEMORANTADO_URL"] {
+        map.entry(name.into()).or_insert_with(|| "off".into());
+    }
     map.insert("PATH".into(), dir.join("empty-path").display().to_string());
     RunEnv {
         cwd: dir.join("cwd"),

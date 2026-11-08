@@ -143,3 +143,15 @@ fn judge_chat_rung_answers_through_a_closed_schema() {
         assert!(chat_answers(&questions, &bad).is_err(), "{bad}");
     }
 }
+
+/// The REPL client batches as many questions as `judge.decide` takes: its `MAX_QUESTIONS` is the seat's.
+#[test]
+fn judge_python_client_knows_the_question_limit() {
+    let client = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../packages/coding-agent/src/ultron/rlm/judge_api.py"),
+    )
+    .unwrap();
+    let line = format!("\nMAX_QUESTIONS = {}\n", judge::question::MAX_QUESTIONS);
+    assert!(client.contains(&line), "judge_api.py lacks {line:?}");
+}

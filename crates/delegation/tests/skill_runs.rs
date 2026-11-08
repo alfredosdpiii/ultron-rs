@@ -179,7 +179,7 @@ impl Fixture {
 const TDD: &str = "  inputs:\n    test: the test command\n  segments:\n    - name: failing-test\n      goal: Write a failing test.\n      writes: [\"tests/**\"]\n      check: {run: \"{{test}}\", expect: fail}\n    - name: right-reason\n      goal: Why it fails.\n      writes: []\n      judge: {kind: skill.demo, questions: {why: {type: yesno, instructions: Right reason?}}, pass: {why: true}}\n    - name: fix\n      goal: Fix it.\n      writes: [\"src/**\"]\n      check: \"{{test}}\"\n";
 
 fn yes() -> Value {
-    json!({"rung": "first", "backend": "d1", "model": "d1-2b", "answers": {"why": {"value": true, "confidence": 0.95}}})
+    json!({"rung": "first", "settled": true, "backend": "d1", "model": "d1-2b", "answers": {"why": {"value": true, "confidence": 0.95}}})
 }
 
 #[test]
@@ -376,7 +376,7 @@ fn skill_runs_the_cell_observer_reports_changes_outside_the_boundary_and_fails_t
 
 #[test]
 fn skill_runs_an_unsure_judge_stops_the_run_for_a_person() {
-    let unsure = json!({"rung": "review", "backend": "d1", "answers": {"why": {"value": true, "confidence": 0.5}}, "reason": "below threshold"});
+    let unsure = json!({"rung": "review", "settled": false, "backend": "d1", "answers": {"why": {"value": true, "confidence": 0.5}}, "reason": "below threshold"});
     let f = fixture(skill("demo", TDD), unsure);
     let run = f
         .call("procedure.start", json!({"name": "demo", "input": {"test": "false"}}))
@@ -393,7 +393,7 @@ fn skill_runs_an_unsure_judge_stops_the_run_for_a_person() {
     );
     assert_eq!(f.records()[0]["outcome"], "needs_review");
     // A "no" from a sure judge is a failed try instead.
-    let no = json!({"rung": "first", "answers": {"why": {"value": false, "confidence": 0.9}}});
+    let no = json!({"rung": "first", "settled": true, "answers": {"why": {"value": false, "confidence": 0.9}}});
     let f = fixture(skill("demo", TDD), no);
     let run = f
         .call("procedure.start", json!({"name": "demo", "input": {"test": "false"}}))

@@ -40,10 +40,10 @@ use protocol::custom_types::RECALLED_MEMORY;
 // Hindsight's local cross-encoder takes 1-6 s on a loaded machine; 2 s timed out nearly every recall.
 pub const RECALL_TIMEOUT: Duration = Duration::from_secs(5);
 /// After [`PAUSE_AFTER`] failed or slow recalls in a row, how long recall is skipped (a server that is down costs
-/// no turn its timeout).
-pub const PAUSE: Duration = Duration::from_secs(60);
+/// no turn its timeout): the memory clients' own outage pause.
+pub use kernel_apis::memory::OUTAGE_PAUSE as PAUSE;
 /// Failed or slow recalls in a row that pause recall: one slow answer is load, not an outage.
-pub const PAUSE_AFTER: u32 = 3;
+pub use kernel_apis::memory::OUTAGE_PAUSE_AFTER as PAUSE_AFTER;
 /// The most memories one message opens with.
 pub const RECALL_LIMIT: usize = 6;
 /// A message shorter than this many words recalls nothing ("yes", "go on").

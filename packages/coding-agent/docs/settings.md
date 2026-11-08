@@ -57,6 +57,14 @@ Both are off unless set; `/settings` lists them as "Request token cap" and "rlm.
 |---|---|---|---|
 | `rootBudget.maxTotalTokens` | positive integer \| `"off"` | off | Tokens one request (a root turn, with its sub-agents and frames) may spend before more model work is refused. Read when a session starts. `ULTRON_MAX_TOTAL_TOKENS` (a count, or `off`) overrides it. |
 | `rlm.mapTokens` | positive integer \| `"off"` | off | Token budget of an `rlm.map` that sets no `budget=Budget(tokens=...)`; frames past it come back `Incomplete`. Applies to the next map. `ULTRON_RLM_MAP_TOKENS` overrides it. |
+
+### REPL result footer (Ultron)
+
+Global only. `/settings` shows it as "REPL result footer".
+
+| Setting | Type | Default | Description |
+|---|---|---|---|
+| `rlm.resultFooter` | boolean | `false` | Each rlm result ends with `[t+<time since the session started> ctx <tokens of the request that ran it>]`, and the runtime guide tells the model so. Applies to new sessions; not with the TypeScript guide (`ULTRON_GUIDE=ts`). |
 | `rootBudget.maxCalls.task` | positive integer | none | Sub-agent tasks one request may admit before more are refused. Read when a session starts. `ULTRON_MAX_TASK_CALLS` (a count, or `off`) overrides it. Not in `/settings`. |
 | `rootBudget.maxCalls.model` | positive integer | none | Model calls one request may admit. Read when a session starts. `ULTRON_MAX_MODEL_CALLS` (a count, or `off`) overrides it. Not in `/settings`. |
 
@@ -64,14 +72,17 @@ Both are off unless set; `/settings` lists them as "Request token cap" and "rlm.
 
 `judge.decide` answers closed questions (yes/no, a choice, a number) with a small judge model. Global settings only:
 they point at services and spend money. `ultron setup` sets up the backends and their keys (`TYPESAFE_API_KEY` or
-auth.json `typesafe` for Jev, `ULTRON_D1_KEY` or auth.json `d1` for d1); keys are never settings. `/settings` shows
+auth.json `judge:typesafe` for Jev, `ULTRON_D1_KEY` or auth.json `judge:d1` for d1); keys are never settings. A key
+saved in auth.json is bound to the server it was saved for (its `origin`): pointed at another server, it is not
+sent, and a key goes over plain http only to this machine (localhost, 127.0.0.0/8, ::1). Before any backend is asked,
+secrets in the text it judges are redacted with the rules cell output is masked with. `/settings` shows
 "Judge backends", "Judge budget" and, under Models, the fallback and escalation models; every key below is applied
 by the session worker and read at each `judge.decide`.
 
 | Setting | Type | Default | Description |
 |---|---|---|---|
 | `judge.provider` | `("jev" \| "d1")[]` | `["jev", "d1"]` | Backends tried in order; a backend without a key, an error, a timeout or an unknown cost moves to the next. `[]` turns them off. |
-| `judge.d1.url` | URL | none | The d1 server (`<url>/decide`); unset, d1 is not configured. |
+| `judge.d1.url` | URL | none | The d1 server (`<url>/decide`); unset, d1 is not configured. https, or http to this machine only. |
 | `judge.model` | string | `"jev-latest"` | The Jev model asked for. |
 | `judge.fallbackModel` | `provider/model` | none | Asked when no backend answers; unset, the verdict abstains. |
 | `judge.escalateModel` | `provider/model` | none | Answers under their confidence threshold go to it; it must be of another model family than the one that answered. Unset, they come back for review. |
@@ -97,11 +108,12 @@ backend".
 Global settings only. When `graph.neo4j.url` is set, the relations `knowledge.relations` accepts, and, when memory
 lives in memorantado (set or detected), memorantado's memories with their `supersedes` and conflict links, are
 mirrored to Neo4j. The knowledge store stays the source of truth; a mirror that fails is reported and never fails the
-call. The password is `NEO4J_PASSWORD`, else auth.json `neo4j`; never a setting. Not in `/settings`.
+call. The password is `NEO4J_PASSWORD`, else auth.json `graph:neo4j` (`{"type": "api_key", "key": ..., "origin":
+"https://<host>[:port]"}`: it is sent only to that server); never a setting. Not in `/settings`.
 
 | Setting | Type | Default | Description |
 |---|---|---|---|
-| `graph.neo4j.url` | URL | none | Neo4j's HTTP endpoint (`<url>/db/<database>/query/v2`); unset, no mirror. |
+| `graph.neo4j.url` | URL | none | Neo4j's HTTP endpoint (`<url>/db/<database>/query/v2`); unset, no mirror. https, or http to this machine only. |
 | `graph.neo4j.database` | string | `"neo4j"` | The database. |
 | `graph.neo4j.user` | string | `"neo4j"` | The user. |
 

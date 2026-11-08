@@ -85,7 +85,8 @@ fn quotes(items: &[(&str, &str)]) -> Value {
 }
 
 fn verdict(name: &str, value: Value, rung: &str) -> Value {
-    json!({"answers": {name: {"value": value, "confidence": 0.9}}, "rung": rung})
+    let settled = matches!(rung, "first" | "escalated");
+    json!({"answers": {name: {"value": value, "confidence": 0.9}}, "rung": rung, "settled": settled})
 }
 
 fn p(value: Value) -> Map<String, Value> {

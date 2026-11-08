@@ -177,7 +177,7 @@ print(json.dumps({'findings': [[f['file'], f['line'], f['source'], f['verificati
 #[test]
 fn review_static_stage_drops_contradicted_findings_and_the_blind_check_refutes_after_escalation() {
     let (dir, base, head) = repository();
-    let judge = "JUDGE = {'rung': 'escalated', 'reason': 'disputed: shown is false, the caller holds true',\n\
+    let judge = "JUDGE = {'rung': 'escalated', 'settled': True, 'reason': 'disputed: shown is false, the caller holds true',\n\
                  \x20        'answers': {'shown': {'value': False, 'confidence': 0.9}},\n\
                  \x20        'receipts': [{'status': 'succeeded', 'cost_usd': None}, {'status': 'succeeded', 'cost_usd': 0.002}]}\n";
     let got = engine(dir.path(), &base, &head, &format!("{RLM}{judge}{RUN}"));
@@ -233,7 +233,7 @@ fn review_static_stage_drops_contradicted_findings_and_the_blind_check_refutes_a
 #[test]
 fn review_blind_check_without_a_judge_leaves_the_verdicts_and_says_why() {
     let (dir, base, head) = repository();
-    let judge = "JUDGE = {'rung': 'abstained', 'reason': 'no judge backend is configured (judge.provider, judge.fallbackModel)',\n\
+    let judge = "JUDGE = {'rung': 'abstained', 'settled': False, 'reason': 'no judge backend is configured (judge.provider, judge.fallbackModel)',\n\
                  \x20        'answers': {}, 'receipts': []}\n";
     let got = engine(dir.path(), &base, &head, &format!("{RLM}{judge}{RUN}"));
     let findings = got["findings"].as_array().unwrap();

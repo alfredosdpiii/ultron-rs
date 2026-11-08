@@ -162,24 +162,6 @@ impl Recording {
     }
 }
 
-/// Which backend a seat request is for, and its case text.
-fn request_of(request: &HttpRequest) -> Option<(&'static str, Value)> {
-    let body: Value = serde_json::from_slice(request.body.as_deref()?).ok()?;
-    if request.url.ends_with("/systemone") {
-        Some(("jev", body))
-    } else if request.url.ends_with("/decide") {
-        Some(("d1", body))
-    } else {
-        None
-    }
-}
-
-fn case_text(backend: &str, body: &Value) -> Option<String> {
-    body[if backend == "jev" { "state" } else { "text" }]
-        .as_str()
-        .map(str::to_string)
-}
-
 /// The judge seat's HTTP answered from a recording: a case the recording lacks gets no answer (a failed call).
 pub struct Replay {
     set: Arc<JudgeSet>,
@@ -205,10 +187,8 @@ impl Replay {
 
 impl Transport for Replay {
     fn send(&self, request: HttpRequest, _: usize, _: Duration, _: &Signal) -> Result<HttpResponse, TransportError> {
-        let (backend, body) = request_of(&request).ok_or(TransportError::Failed)?;
-        let case = case_text(backend, &body)
-            .and_then(|text| self.set.case_of(&text))
-            .ok_or(TransportError::Failed)?;
+        let (backend, text, body) = judge::backend::wire_case(&request).ok_or(TransportError::Failed)?;
+        let case = self.set.case_of(&text).ok_or(TransportError::Failed)?;
         let call = self.recording.find(backend, case).ok_or(TransportError::Failed)?;
         let name = body["questions"]
             .as_object()
@@ -216,10 +196,7 @@ impl Transport for Replay {
             .ok_or(TransportError::Failed)?;
         let mut answers = Map::new();
         answers.insert(name.clone(), call.answer.clone());
-        let mut reply = json!({"answers": answers, "usage": call.usage});
-        if let Some(model) = &call.model {
-            reply["model"] = json!(model);
-        }
+        let reply = judge::backend::wire_reply(answers, &call.usage, call.model.as_deref());
         jsrt::sync::lock(&self.served).push(call.ms);
         Ok(HttpResponse {
             status: 200,
@@ -264,8 +241,8 @@ impl Transport for Recorder {
         timeout: Duration,
         signal: &Signal,
     ) -> Result<HttpResponse, TransportError> {
-        let asked = request_of(&request)
-            .and_then(|(backend, body)| Some((backend, self.set.case_of(&case_text(backend, &body)?)?)));
+        let asked = judge::backend::wire_case(&request)
+            .and_then(|(backend, text, _)| Some((backend, self.set.case_of(&text)?)));
         let started = Instant::now();
         let response = self.inner.send(request, max_bytes, timeout, signal)?;
         let ms = started.elapsed().as_secs_f64() * 1000.0;
@@ -318,7 +295,7 @@ pub fn replay_seat(config: &Value, replay: Arc<Replay>) -> Seat {
     let mut judge = config.clone();
     judge["d1"] = json!({"url": REPLAY_D1_URL});
     let settings = config::keys::judge_settings(json!({"judge": judge}).as_object().expect("an object"));
-    let key: judge::backend::KeySource = Arc::new(|| Some("replay".to_string()));
+    let key: judge::backend::KeySource = Arc::new(|_: &str| Ok(Some("replay".to_string())));
     let mut deps = SeatDeps::new(replay, key.clone(), key);
     deps.jev_url = REPLAY_JEV_URL.into();
     Seat::new(settings, deps)
@@ -339,11 +316,8 @@ pub fn decide_all(seat: &Seat, set: &JudgeSet, signal: &Signal) -> Vec<Verdict> 
 /// Catalog rates of a `provider/model`, when the catalog prices it.
 fn catalog_rates(model: &str) -> Option<Rates> {
     let (provider, id) = model.split_once('/')?;
-    let cost = &ai::models::builtin_model(provider, id)?.cost;
-    (cost.input > 0.0 || cost.output > 0.0).then_some(Rates {
-        input: cost.input,
-        output: cost.output,
-    })
+    let rates = Rates::of(ai::models::builtin_model(provider, id)?);
+    (rates.input > 0.0 || rates.output > 0.0).then_some(rates)
 }
 
 fn percentile(sorted: &[f64], q: f64) -> f64 {

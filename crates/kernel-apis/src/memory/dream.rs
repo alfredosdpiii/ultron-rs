@@ -53,10 +53,9 @@ fn contradiction_question() -> Value {
     }})
 }
 
-/// The answer to `name` when the verdict settled it (its first backend, or the escalation), else `None` (review,
-/// abstained).
+/// The answer to `name` when the verdict settled it (judge::Verdict `settled`), else `None` (review, abstained).
 fn settled<'a>(verdict: &'a Value, name: &str) -> Option<&'a Value> {
-    matches!(verdict["rung"].as_str(), Some("first" | "escalated")).then(|| &verdict["answers"][name]["value"])
+    (verdict["settled"] == true).then(|| &verdict["answers"][name]["value"])
 }
 
 fn quotes_of(metadata: &Value) -> Vec<Quote> {

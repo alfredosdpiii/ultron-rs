@@ -11,7 +11,6 @@
 pub mod backend;
 pub mod bench;
 pub mod chat;
-pub mod keys;
 pub mod module;
 pub mod question;
 pub mod seat;
@@ -20,4 +19,4 @@ pub use backend::{Backend, D1, Failure, Jev, Reply, Spend};
 pub use chat::{Chat, ChatModel, DispatchChat};
 pub use module::JudgeModule;
 pub use question::{Answer, Kind, Question};
-pub use seat::{Receipt, Rung, Seat, SeatDeps, Verdict};
+pub use seat::{Receipt, Rung, Seat, SeatDeps, SpendLedger, Verdict};

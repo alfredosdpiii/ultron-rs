@@ -280,6 +280,8 @@ impl World {
             .args(args)
             .current_dir(&self.work)
             .env_clear()
+            .env("ULTRON_HINDSIGHT_URL", "off")
+            .env("ULTRON_MEMORANTADO_URL", "off")
             // No `claude` on PATH: the recommended Claude Code model must not lead the fallback chain.
             .env("PATH", "/usr/bin:/bin")
             .env("HOME", &self.work)
@@ -289,6 +291,7 @@ impl World {
             .env("XDG_RUNTIME_DIR", self.work.join("run"))
             .env(session_core::compose::LOKI_ENV, "off")
             .env(hindsight::resolve::HINDSIGHT_URL_ENV, "off")
+            .env("ULTRON_MEMORANTADO_URL", "off")
             .env("GROQ_API_KEY", "stub-key")
             .env("GIT_CONFIG_GLOBAL", "/dev/null")
             .env("GIT_CONFIG_NOSYSTEM", "1");
@@ -864,6 +867,8 @@ fn cli_autoreview_install_and_uninstall_service() {
             .args(["autoreview", command])
             .current_dir(&home)
             .env_clear()
+            .env("ULTRON_HINDSIGHT_URL", "off")
+            .env("ULTRON_MEMORANTADO_URL", "off")
             .env("PATH", "/usr/bin:/bin")
             .env("HOME", &home)
             .env(config::paths::ENV_AGENT_DIR, home.join("agent"))
@@ -944,6 +949,8 @@ fn cli_autoreview_custom_provider_models_resolve() {
         .args(&args)
         .current_dir(&world.work)
         .env_clear()
+        .env("ULTRON_HINDSIGHT_URL", "off")
+        .env("ULTRON_MEMORANTADO_URL", "off")
         .env("PATH", "/usr/bin:/bin")
         .env("HOME", &world.work)
         .env("TZ", "UTC")
@@ -952,6 +959,7 @@ fn cli_autoreview_custom_provider_models_resolve() {
         .env("XDG_RUNTIME_DIR", world.work.join("run"))
         .env(session_core::compose::LOKI_ENV, "off")
         .env(hindsight::resolve::HINDSIGHT_URL_ENV, "off")
+        .env("ULTRON_MEMORANTADO_URL", "off")
         .env("REV_KEY", "rev-key-1")
         .env("GIT_CONFIG_GLOBAL", "/dev/null")
         .env("GIT_CONFIG_NOSYSTEM", "1");

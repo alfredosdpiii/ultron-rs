@@ -308,6 +308,23 @@ pub fn review_model(global: &Settings) -> Option<String> {
     model_ref(object(global.get("review"))?.get("model"))
 }
 
+/// `memory.backend` (Rust only, global only: it points at a service): the memory backends a profile may choose.
+pub const MEMORY_BACKENDS: [&str; 2] = ["memorantado", "hindsight"];
+
+/// The memory backend `text` names (trimmed, any case), when it names one.
+pub fn memory_backend_name(text: &str) -> Option<&'static str> {
+    let text = jsrt::string::trim(text);
+    MEMORY_BACKENDS.into_iter().find(|name| name.eq_ignore_ascii_case(text))
+}
+
+/// `memory.backend` of the global settings, when it names a backend.
+pub fn memory_backend(global: &Settings) -> Option<&'static str> {
+    object(global.get("memory"))?
+        .get("backend")?
+        .as_str()
+        .and_then(memory_backend_name)
+}
+
 /// The judge seat's backends, in the order `judge.provider` may name them.
 pub const JUDGE_BACKENDS: [&str; 2] = ["jev", "d1"];
 /// `judge.model` when unset: the newest Jev.

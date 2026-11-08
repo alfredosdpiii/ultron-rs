@@ -23,6 +23,12 @@ use std::collections::{HashMap, HashSet};
 use std::path::{Component, Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
+/// A memory server's outage: after this many calls in a row without an answer (or, for automatic recall, too slow
+/// to wait for), calls stop for [`OUTAGE_PAUSE`], so a server that is down costs a session no timeouts. One
+/// threshold for the memorantado client and automatic recall alike (session_core::auto_memory).
+pub const OUTAGE_PAUSE_AFTER: u32 = 3;
+pub const OUTAGE_PAUSE: std::time::Duration = std::time::Duration::from_secs(60);
+
 /// A Hindsight-shaped document backend. An `Err` whose text is a memory error code (for example "HTTP_ERROR")
 /// reports that code; any other text is an OPERATION_ERROR.
 pub trait MemoryBackend: Send + Sync {

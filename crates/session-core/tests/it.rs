@@ -129,6 +129,8 @@ mod persona;
 mod prompt_budget;
 #[path = "prompt_schedules.rs"]
 mod prompt_schedules;
+#[path = "protected_profile.rs"]
+mod protected_profile;
 #[path = "provider_headers.rs"]
 mod provider_headers;
 #[path = "provider_routes.rs"]

@@ -21,6 +21,14 @@ The agent directory is shown as `<agent-dir>` below. Set its location with the `
 | `<agent-dir>/skills/` | User [skills](skills.md) and supporting files. |
 | `<agent-dir>/prompts/` | User [prompt templates](prompt-templates.md) exposed as slash commands. |
 | `<agent-dir>/themes/` | User [theme](themes.md) files. |
+| `<agent-dir>/skill-proposals/` | Ultron: procedure skills waiting for `ultron skills approve` (at a terminal, after you confirm the content hash it shows). |
+| `<agent-dir>/memory-backend` | Ultron: the memory backend detected once (`memory.backend` unset). |
+| `<agent-dir>/optimize/` | Ultron: `ultron optimize` points and proposals. |
+
+In Ultron, a cell cannot write `settings.json`, `auth.json`, `skills/`, `skill-proposals/`, `memory-backend` or
+`optimize/` through `write()`/`edit()` or a shell command that names them: they are yours to change. Global settings
+such as `rlm.resultFooter` (the REPL result footer, see [settings](settings.md#repl-result-footer-ultron)) are changed
+with `/settings`.
 
 ## Project `.pi` directory
 

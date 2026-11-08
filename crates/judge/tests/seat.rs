@@ -4,10 +4,10 @@
 use crate::fakes::{FakeChat, FakeTransport, d1_choice, fake_key, jev_yes_no, key, ok, status};
 use blocking_http::TransportError;
 use config::keys::{JudgeSettings, judge_settings};
-use delegation::usage::{UsageLedger, UsageLimits};
 use judge::chat::{default_escalate_model, family};
 use judge::question::{Question, parse_questions};
 use judge::seat::{Receipt, Rung, Seat, SeatDeps};
+use judge::{Spend, SpendLedger};
 use kernel::Signal;
 use serde_json::{Value, json};
 use std::sync::{Arc, Mutex};
@@ -29,6 +29,35 @@ fn choice() -> Vec<Question> {
     .unwrap()
 }
 
+/// A usage ledger: what was reserved and settled, an optional cost cap, and a refusal once `admit` calls were.
+#[derive(Default)]
+struct Ledger {
+    cap: Option<f64>,
+    admit: Option<usize>,
+    reserved: Mutex<Vec<String>>,
+    settled: Mutex<Vec<(String, String, Option<f64>)>>,
+}
+
+impl SpendLedger for Ledger {
+    fn cost_cap(&self) -> Option<f64> {
+        self.cap
+    }
+
+    fn reserve(&self, id: &str) -> Result<Value, String> {
+        let mut reserved = self.reserved.lock().unwrap();
+        if self.admit.is_some_and(|admit| reserved.len() >= admit) {
+            return Err("the session's cost cap is reached (max_cost_usd)".into());
+        }
+        reserved.push(id.to_string());
+        Ok(json!({"id": id}))
+    }
+
+    fn settle(&self, reservation: &Value, status: &str, spend: &Spend, _wall_ms: f64) {
+        let id = reservation["id"].as_str().unwrap().to_string();
+        self.settled.lock().unwrap().push((id, status.to_string(), spend.cost));
+    }
+}
+
 struct Rig {
     transport: Arc<FakeTransport>,
     chat: Arc<FakeChat>,
@@ -36,7 +65,7 @@ struct Rig {
     seat: Seat,
 }
 
-fn rig_with(judge: Value, jev_key: Option<&str>, chat: Vec<Result<Value, String>>, ledger: Option<UsageLedger>) -> Rig {
+fn rig_with(judge: Value, jev_key: Option<&str>, chat: Vec<Result<Value, String>>, ledger: Option<Arc<Ledger>>) -> Rig {
     let transport = Arc::new(FakeTransport::default());
     let chat = FakeChat::answering(chat);
     let receipts: Arc<Mutex<Vec<Receipt>>> = Arc::default();
@@ -44,7 +73,7 @@ fn rig_with(judge: Value, jev_key: Option<&str>, chat: Vec<Result<Value, String>
     let mut deps = SeatDeps::new(transport.clone(), key(jev_key), key(Some("d1")));
     deps.chat = Some(chat.clone());
     deps.jev_url = "http://jev.test/v1/systemone".into();
-    deps.ledger = ledger;
+    deps.ledger = ledger.map(|ledger| ledger as Arc<dyn SpendLedger>);
     deps.on_receipt = Some(Arc::new(move |r: &Receipt| log.lock().unwrap().push(r.clone())));
     let seat = Seat::new(settings(judge), deps);
     Rig {
@@ -401,7 +430,7 @@ fn judge_call_ceiling_stops_the_seat() {
 
 #[test]
 fn judge_settles_every_call_in_the_usage_ledger() {
-    let ledger = UsageLedger::in_memory(UsageLimits::default());
+    let ledger = Arc::new(Ledger::default());
     let r = rig_with(
         json!({"d1": {"url": D1}}),
         Some("jev"),
@@ -412,29 +441,25 @@ fn judge_settles_every_call_in_the_usage_ledger() {
     r.transport
         .script("/decide", vec![ok(json!({"answers": {"q": {"noul": 0.99}}}))]);
     let verdict = r.seat.decide("s", &yes_no(), None, &Signal::new());
-    let document = ledger.document().unwrap();
-    let calls = document["roots"][delegation::usage::DEFAULT_ROOT_ID]["calls"]
-        .as_array()
-        .cloned()
-        .unwrap_or_default();
-    assert_eq!(calls.len(), 2, "{document}");
-    for (call, receipt) in calls.iter().zip(&verdict.receipts) {
-        assert_eq!(call["kind"], "model");
-        assert_eq!(call["requestKey"], receipt.id.as_str());
+    let settled = ledger.settled.lock().unwrap().clone();
+    assert_eq!(settled.len(), 2, "{settled:?}");
+    for ((id, _, _), receipt) in settled.iter().zip(&verdict.receipts) {
+        assert_eq!(id, &receipt.id);
         assert!(receipt.id.starts_with("judge:"));
     }
-    assert_eq!(calls[0]["status"], "failed");
-    assert_eq!(calls[1]["status"], "succeeded");
-    assert_eq!(calls[1]["usage"]["cost"], 0.0);
+    assert_eq!((settled[0].1.as_str(), settled[0].2), ("failed", None));
+    // d1 is free: its answer costs zero, never an unpriced call.
+    assert_eq!((settled[1].1.as_str(), settled[1].2), ("succeeded", Some(0.0)));
 }
 
 #[test]
 fn judge_stops_when_the_session_ledger_refuses_and_skips_jev_under_its_cost_cap() {
-    let limits = UsageLimits {
-        max_cost_usd: Some(0.001),
-        ..UsageLimits::default()
-    };
-    let ledger = UsageLedger::in_memory(limits);
+    // A cost cap; the ledger refuses the third call (the chat model's spend went over the cap).
+    let ledger = Arc::new(Ledger {
+        cap: Some(0.001),
+        admit: Some(2),
+        ..Ledger::default()
+    });
     let r = rig_with(
         json!({"d1": {"url": D1}, "fallbackModel": "openai/gpt-5-mini"}),
         Some("jev"),
@@ -528,15 +553,15 @@ fn judge_a_first_answer_that_disputes_the_callers_is_escalated_like_an_unsure_on
 
 #[test]
 fn judge_jev_priced_by_its_tokens_counts_toward_budgets_and_the_session_cap() {
-    let limits = UsageLimits {
-        max_cost_usd: Some(1.0),
-        ..UsageLimits::default()
-    };
+    let ledger = Arc::new(Ledger {
+        cap: Some(1.0),
+        ..Ledger::default()
+    });
     let r = rig_with(
         json!({"jev": {"pricePerMTok": 2.0}, "budgetUsd": 1.0}),
         Some("jev"),
         Vec::new(),
-        Some(UsageLedger::in_memory(limits)),
+        Some(ledger),
     );
     r.transport.script(
         "/systemone",
@@ -574,4 +599,20 @@ fn judge_retry_after_reads_seconds_and_http_dates() {
     assert_eq!(retry_after(Some(" 7 "), now), Some(Duration::from_secs(7)));
     assert_eq!(retry_after(Some("soon"), now), None);
     assert_eq!(retry_after(None, now), None);
+}
+
+/// No backend sees a secret in the state: it is redacted before Jev (or d1, or a model) is asked.
+#[test]
+fn judge_state_is_sent_with_its_secrets_redacted() {
+    let r = rig(json!({}));
+    r.transport.script("/systemone", vec![ok(jev_yes_no(0.97, None))]);
+    let token = ["ghp_FAKE", "0a1B2c3D", "4e5F6g7H", "8i9J0k1L", "2m3N4o5P"].concat();
+    let state = format!("QUOTE (.env): GITHUB_TOKEN={token}\nCLAIM: the token is set");
+    r.seat.decide(&state, &yes_no(), Some("memory"), &Signal::new());
+    let sent = r.transport.sent();
+    assert_eq!(
+        sent[0].body["state"],
+        "QUOTE (.env): GITHUB_TOKEN=[REDACTED:github_token]\nCLAIM: the token is set"
+    );
+    assert!(!sent[0].body.to_string().contains(&token));
 }

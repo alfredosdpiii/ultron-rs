@@ -9,23 +9,28 @@ from typing import Any
 
 _TYPES = ("choice", "yesno", "score", "number")
 
+#: Questions one `judge.decide` takes at most: crates/judge `question::MAX_QUESTIONS` (a judge test checks they agree).
+MAX_QUESTIONS = 16
+
 
 class Judge:
     """Decisions over evidence, for batch and background work (checking memories, findings, relations), not for every
     turn. `v = await judge.decide(state, questions, kind="memory")`:
 
     - `state`: the text to judge (a claim and its evidence); a dict or list is sent as JSON.
-    - `questions`: `{name: spec}`, 1 to 16, each with `instructions` and a `type`:
+    - `questions`: `{name: spec}`, 1 to `MAX_QUESTIONS` (16), each with `instructions` and a `type`:
       `{"type": "choice", "criteria": {label: description, ...}, "multiple": False}` (2 to 32 labels),
       `{"type": "yesno"}`, `{"type": "score", "levels": [description, ...]}` (answered 1..n),
       `{"type": "number", "range": [lo, hi], "step": s}`.
     - `kind`: a short name for the decision ("memory", "finding"); it picks the confidence thresholds
       (`judge.thresholds`) and labels the receipts.
 
-    The verdict: `{"answers": {name: {"value", "confidence", "probabilities"?}}, "rung", "backend", "model",
-    "abstained", "review", "reason", "calls", "cost_usd", "receipts"}`. `rung` is "first" (sure enough),
-    "escalated" (another family's model answered), "review" (still unsure: the answers are the first backend's,
-    for a person to settle) or "abstained" (no backend answered: `answers` is empty and `reason` says why).
+    The verdict: `{"answers": {name: {"value", "confidence", "probabilities"?}}, "rung", "settled", "backend",
+    "model", "abstained", "review", "reason", "calls", "cost_usd", "receipt", "receipts"}`. `rung` is "first" (sure
+    enough), "escalated" (another family's model answered), "review" (still unsure: the answers are the first
+    backend's, for a person to settle) or "abstained" (no backend answered: `answers` is empty and `reason` says
+    why); `settled` is True for "first" and "escalated", when the answers stand. `receipt` is the id of the call
+    that answered (None when none did); a verdict recorded elsewhere (`knowledge`) names it.
     `cost_usd` is what the calls that answered cost (None when one did not report it; failed calls are
     in `receipts`). Every call is a receipt and a session usage row;
     the seat stops at `judge.maxCalls` and `judge.budgetUsd`. Raises ValueError for invalid arguments.

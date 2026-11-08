@@ -277,6 +277,8 @@ fn cli_herdr_durable_tui_resumes_through_ultron_durable() {
         .args(["durable", "stop"])
         .current_dir(tmp.0.join("cwd"))
         .env_clear()
+        .env("ULTRON_HINDSIGHT_URL", "off")
+        .env("ULTRON_MEMORANTADO_URL", "off")
         .env("PATH", "/usr/bin:/bin")
         .env("HOME", &tmp.0)
         .env(config::paths::ENV_AGENT_DIR, tmp.0.join("agent"))
@@ -439,6 +441,8 @@ fn command(root: &Path, args: &[&str], env: &[(String, String)]) -> Command {
         .args(args)
         .current_dir(root.join("w"))
         .env_clear()
+        .env("ULTRON_HINDSIGHT_URL", "off")
+        .env("ULTRON_MEMORANTADO_URL", "off")
         .envs(env.iter().map(|(k, v)| (k.as_str(), v.as_str())));
     command
 }

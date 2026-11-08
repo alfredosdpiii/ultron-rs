@@ -127,6 +127,8 @@ impl World {
             .args(&args)
             .current_dir(&self.work)
             .env_clear()
+            .env("ULTRON_HINDSIGHT_URL", "off")
+            .env("ULTRON_MEMORANTADO_URL", "off")
             .env("PATH", format!("{}:/usr/bin:/bin", self.work.join("bin").display()))
             .env("HOME", &self.work)
             .env("TZ", "UTC")
@@ -136,6 +138,7 @@ impl World {
             .env("TMPDIR", self.work.join("run"))
             .env(session_core::compose::LOKI_ENV, "off")
             .env(hindsight::resolve::HINDSIGHT_URL_ENV, "off")
+            .env("ULTRON_MEMORANTADO_URL", "off")
             .env("FAKE_CLAUDE_LOG", self.log())
             .env("GIT_CONFIG_GLOBAL", "/dev/null")
             .env("GIT_CONFIG_NOSYSTEM", "1");

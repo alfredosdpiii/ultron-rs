@@ -62,6 +62,8 @@ impl Root {
             .args(args.iter().map(|a| self.sub(a)))
             .current_dir(self.dir.path().join("w"))
             .env_clear()
+            .env("ULTRON_HINDSIGHT_URL", "off")
+            .env("ULTRON_MEMORANTADO_URL", "off")
             .env("PATH", format!("{}:/usr/bin:/bin", p("bin")))
             .env("HOME", p("h"))
             .env(config::paths::ENV_AGENT_DIR, p("a"))

@@ -4,7 +4,8 @@
 use crate::fake::FakeMemorantado;
 use kernel::Signal;
 use kernel_apis::MemoryBackend;
-use memorantado::{MemorantadoBackend, MemorantadoOptions, PAUSE_AFTER};
+use kernel_apis::memory::OUTAGE_PAUSE_AFTER as PAUSE_AFTER;
+use memorantado::{MemorantadoBackend, MemorantadoOptions};
 use serde_json::{Value, json};
 use std::sync::Arc;
 

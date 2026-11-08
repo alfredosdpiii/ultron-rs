@@ -16,6 +16,8 @@ mod js_values;
 mod lock;
 #[path = "ported.rs"]
 mod ported;
+#[path = "service_keys.rs"]
+mod service_keys;
 #[path = "settings_keys.rs"]
 mod settings_keys;
 #[path = "worker_settings.rs"]

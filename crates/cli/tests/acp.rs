@@ -176,6 +176,7 @@ impl Acp {
             .args(["--model", "anthropic/claude-sonnet-4-5"])
             .args(args)
             .env(hindsight::resolve::HINDSIGHT_URL_ENV, "off")
+            .env("ULTRON_MEMORANTADO_URL", "off")
             .env(config::env::OFFLINE_ENV, "1")
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())

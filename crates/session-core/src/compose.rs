@@ -388,6 +388,7 @@ impl Config {
     fn file_hooks_in(&self, cwd: &Path, record: Option<OnRecord>) -> FileHooks {
         let mut hooks = FileHooks::with_snapshots(cwd, workspace_snapshotter());
         hooks.ignore_outside(self.outside_changes.clone());
+        hooks.protect(config::paths::AgentPaths::new(&self.agent_dir).protected(), &self.home);
         match (
             crate::guard_log::loki_log((self.var)(crate::guard_log::LOKI_LOG_ENV).as_deref()),
             record,
@@ -692,6 +693,45 @@ pub struct Runtime {
     pub memory_explicit: bool,
 }
 
+/// The memory backend a process uses ([`memory_backend`]).
+pub struct MemoryChoice {
+    pub backend: memorantado::Backend,
+    /// The Hindsight server resolved from `ULTRON_HINDSIGHT_URL` and `hindsightUrl` (`None`: off), whichever backend
+    /// was chosen.
+    pub hindsight: Option<hindsight::Endpoint>,
+    /// Memory was configured on purpose (a server set, or `memory.backend`), not only the defaults.
+    pub explicit: bool,
+}
+
+/// The memory backend of a process with `var` and the settings of `manager` (profile `agent_dir`):
+/// [`memorantado::Endpoint::choose`] over the Hindsight server resolved the same way, probing memorantado over HTTP.
+/// Sessions and `ultron memory` both choose through it.
+pub fn memory_backend(
+    var: &dyn Fn(&str) -> Option<String>,
+    manager: &config::settings::SettingsManager,
+    agent_dir: &Path,
+) -> MemoryChoice {
+    let (url, source) = hindsight::resolve::resolve_in(var, manager);
+    let hindsight_set = source != hindsight::resolve::Source::Default;
+    let hindsight = hindsight::Endpoint::at(url, var);
+    let resolved = match (&hindsight, hindsight_set) {
+        (None, _) => memorantado::Hindsight::Off,
+        (Some(_), false) => memorantado::Hindsight::Default,
+        (Some(_), true) => memorantado::Hindsight::Set,
+    };
+    let backend = memorantado::Endpoint::choose(var, manager, agent_dir, resolved, &memorantado::resolve::probe);
+    let explicit = hindsight_set
+        || (backend.memorantado().is_some()
+            && (memorantado::resolve::choice(manager) == Some(memorantado::Choice::Memorantado)
+                || var(memorantado::resolve::MEMORANTADO_URL_ENV).is_some()
+                || memorantado::resolve::setting_url(manager).is_some()));
+    MemoryChoice {
+        backend,
+        hindsight,
+        explicit,
+    }
+}
+
 impl Runtime {
     /// Read the settings and the local resources for `cwd` (`mode`: "print", "json" or "rpc") and build the root
     /// system prompt.
@@ -712,17 +752,11 @@ impl Runtime {
             .extend(services.session.skill_paths.iter().cloned());
         services.resources = Arc::new(resolved);
         let mut diagnostics: Vec<String> = Vec::new();
-        let (hindsight_url, source) = hindsight::resolve::resolve_in(&*env.var, &manager);
-        let hindsight_explicit = source != hindsight::resolve::Source::Default;
-        let hindsight = hindsight::Endpoint::at(hindsight_url, &*env.var);
-        let resolved = match (&hindsight, hindsight_explicit) {
-            (None, _) => memorantado::Hindsight::Off,
-            (Some(_), false) => memorantado::Hindsight::Default,
-            (Some(_), true) => memorantado::Hindsight::Set,
-        };
-        let backend = memorantado::Endpoint::choose(&*env.var, &manager, &config.agent_dir, resolved, &|url| {
-            blocking_http::ReqwestTransport::new().is_ok_and(|transport| memorantado::resolve::answers(&transport, url))
-        });
+        let MemoryChoice {
+            backend,
+            hindsight,
+            explicit: memory_explicit,
+        } = memory_backend(&*env.var, &manager, &config.agent_dir);
         // Once memorantado is the backend, Hindsight is never written: an outage pauses memory, with a notice.
         let memory_notice = match &backend {
             memorantado::Backend::Memorantado { endpoint, up: false } => Some(endpoint.paused_notice()),
@@ -731,10 +765,6 @@ impl Runtime {
         diagnostics.extend(memory_notice.clone());
         let hindsight = hindsight.filter(|_| backend == memorantado::Backend::Hindsight);
         let memorantado = backend.memorantado().cloned();
-        let memorantado_explicit = memorantado.is_some()
-            && (memorantado::resolve::choice(&manager) == Some(memorantado::Choice::Memorantado)
-                || (env.var)(memorantado::resolve::MEMORANTADO_URL_ENV).is_some()
-                || memorantado::resolve::setting_url(&manager).is_some());
         // The `mcp` gateway lives in the REPL: the runtime guide lists it with its servers (`mcpServerNames`).
         let runtime_guide = resources::runtime_guide::RuntimeGuideOptions {
             // Topic pages are memorantado's (its dreaming writes them); an injected backend is neither.
@@ -764,7 +794,7 @@ impl Runtime {
             hindsight,
             memorantado,
             memory_notice,
-            memory_explicit: hindsight_explicit || memorantado_explicit,
+            memory_explicit,
         })
     }
 
@@ -819,18 +849,9 @@ impl Runtime {
             .chain(self.situational_skills())
             .chain(Some(skill_runs.clone() as Arc<dyn host::file_hooks::CellObserver>))
             .collect();
-        // Loki's borderline writes go to the session's judge seat, set once the modules below are built.
-        let judge_slot: Arc<std::sync::OnceLock<Arc<judge::JudgeModule>>> = Arc::default();
         let host = Arc::new(
-            self.host_in(
-                &config.cwd,
-                session_id,
-                "bash",
-                Some(&stats),
-                observers,
-                Some(crate::session_judge::loki_asker(judge_slot.clone())),
-            )?
-            .with_journal(jobs)?,
+            self.host_in(&config.cwd, session_id, "bash", Some(&stats), observers)?
+                .with_journal(jobs)?,
         );
         crate::guard_log::loki_setup(&config);
         // `createSessionModuleStore(session, name)`: the session value `ultron.module/<name>`.
@@ -942,17 +963,13 @@ impl Runtime {
         if let Some(values) = &values {
             let _ = judge_rows.set(values.clone());
         }
-        let judge = judge_slot
-            .get_or_init(|| {
-                Arc::new(crate::session_judge::module(
-                    &config,
-                    root_model.clone(),
-                    keys.clone(),
-                    judge_rows.clone(),
-                    judge_ledger.clone(),
-                ))
-            })
-            .clone();
+        let judge = Arc::new(crate::session_judge::module(
+            &config,
+            root_model.clone(),
+            keys.clone(),
+            judge_rows.clone(),
+            judge_ledger.clone(),
+        ));
         let skills = Arc::new(SkillsModule::new(modules("skills"), loader, clock.clone(), Some(code)));
         // A skill procedure's `check` commands run as spawn contract checks do, with the stack's check runner.
         let skill_checks: Arc<std::sync::OnceLock<delegation::spawn_contract::CheckRunner>> = Arc::default();
@@ -984,8 +1001,12 @@ impl Runtime {
             hints: Arc::new(HintsModule::new(modules("hints"))),
             images: Arc::new(crate::session_images::module(&config, session_id)),
             diagram: Arc::new(crate::session_diagrams::module(&config, session_id, images.clone())),
+            knowledge: Arc::new(crate::session_knowledge::module(
+                &config,
+                self.memorantado.clone(),
+                judge.clone(),
+            )),
             judge,
-            knowledge: Arc::new(crate::session_knowledge::module(&config, self.memorantado.clone())),
             schedule: Arc::new(kernel_apis::prompt_schedule::ScheduleModule::new(
                 match &values {
                     Some(values) => Box::new(values.keyed(kernel_apis::prompt_schedule::NAMESPACE)),
@@ -1296,7 +1317,6 @@ impl Runtime {
         cwd: &Path,
         stats: Option<&Arc<SessionStats>>,
         observers: Vec<Arc<dyn host::file_hooks::CellObserver>>,
-        asker: Option<host::file_hooks::Asker>,
     ) -> FileHooks {
         let record = stats.map(|stats| {
             let stats = stats.clone();
@@ -1312,9 +1332,6 @@ impl Runtime {
         let hooks = self.config.file_hooks_in(cwd, record);
         for observer in observers {
             hooks.observe(observer);
-        }
-        if let Some(asker) = asker {
-            hooks.on_ask(asker);
         }
         hooks
     }
@@ -1377,7 +1394,6 @@ impl Runtime {
         spill: &str,
         stats: Option<&Arc<SessionStats>>,
         observers: Vec<Arc<dyn host::file_hooks::CellObserver>>,
-        asker: Option<host::file_hooks::Asker>,
     ) -> Result<Host, String> {
         let config = &self.config;
         let jobs_dir = self.sessions_dir.join("rlm-jobs").join(session_id);
@@ -1397,7 +1413,7 @@ impl Runtime {
             cwd,
             jobs_dir,
             spill_dir,
-            Box::new(self.file_hooks_in(cwd, stats, observers, asker)),
+            Box::new(self.file_hooks_in(cwd, stats, observers)),
         )
         .with_shell_path(shell_path)
         // The session's environment, never the server's: its PATH finds the shell, the sandbox and the tools.
@@ -2187,9 +2203,6 @@ pub fn child_setup(stack: &Stack, run: &ChildRun) -> ChildSetup {
             &lane_dir(&run.lane_name),
             Some(&stack.stats),
             Vec::new(),
-            Some(crate::session_judge::loki_asker(Arc::new(
-                stack.apis.judge.clone().into(),
-            ))),
         );
         match host {
             Ok(host) => {
