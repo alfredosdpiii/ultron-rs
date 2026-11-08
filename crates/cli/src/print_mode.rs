@@ -276,13 +276,13 @@ pub fn run_prompt(
     let interrupt = Arc::new(AtomicBool::new(false));
     let code = Arc::new(AtomicI32::new(0));
     let (flag, signalled) = (interrupt.clone(), code.clone());
-    daemon::signals::set_handler(Arc::new(move |signal| {
-        signalled.store(daemon::signals::exit_code(signal), Ordering::SeqCst);
+    signals::set_handler(Arc::new(move |signal| {
+        signalled.store(signals::exit_code(signal), Ordering::SeqCst);
         flag.store(true, Ordering::SeqCst);
         herdr::release_active();
         // Never hang the exit on the aborted turn.
         std::thread::sleep(PROMPT_ABORT_WAIT);
-        std::process::exit(daemon::signals::exit_code(signal));
+        std::process::exit(signals::exit_code(signal));
     }));
     let (restarted, server_options) = (servers.clone(), options.clone());
     let durable = crate::durable_client::is_client(env);
@@ -336,7 +336,7 @@ pub fn run_prompt(
     if interrupt.load(Ordering::SeqCst) {
         std::process::exit(code.load(Ordering::SeqCst));
     }
-    daemon::signals::clear_handler();
+    signals::clear_handler();
     match result.map_err(|e| daemon::lost::describe(&e).unwrap_or(e))? {
         ClientResult::Prompted {
             server_id,

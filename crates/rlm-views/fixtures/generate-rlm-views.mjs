@@ -1,11 +1,11 @@
-// Generates crates/interactive/fixtures/rlm_views.json from packages/coding-agent's live RLM views
+// Generates crates/rlm-views/fixtures/rlm_views.json from packages/coding-agent's live RLM views
 // (experimental/rlm-visualizer.ts, rlm-graph.ts, rlm-focus.ts, rlm-pane.ts; TypeScript, this checkout). Each case is a
 // snapshot in its wire form (the inspection payloads `agents.status`, `instances.list`, `rlm.pool`, `rlm.frames`,
 // `ctx.state` plus the transcript-derived turn and cells), built into an RlmSnapshot through the TypeScript parsers,
 // then drawn with PLAIN_STYLE: the graph's nodes, the footer summary, the docked panel, the focus view (default state
 // and with a node's details open), the RLM pane for every run, and the wave summary, at several widths. The default
-// keybindings supply the focus and pane hints. crates/interactive/tests/rlm_views.rs replays every case.
-// Usage: node crates/interactive/fixtures/generate-rlm-views.mjs   (deterministic; output is written next to this file)
+// keybindings supply the focus and pane hints. crates/rlm-views/tests/rlm_views.rs replays every case.
+// Usage: node crates/rlm-views/fixtures/generate-rlm-views.mjs   (deterministic; output is written next to this file)
 import { writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";

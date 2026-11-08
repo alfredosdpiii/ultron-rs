@@ -2438,7 +2438,7 @@ fn run_tui(
     });
     // `rlm` cells as the TS client highlights them (highlight.js's Python grammar, theme.ts `highlightCode`); the
     // syntect highlighter of the QoL settings replaces it when that is on.
-    let highlight = interactive::rlm::highlight::rlm_highlighter(&theme);
+    let highlight = interactive::rlm_highlight::rlm_highlighter(&theme);
     let options = AppOptions {
         theme,
         keys: keys(),
@@ -2466,14 +2466,14 @@ fn run_tui(
     // process exits with the signal's code.
     let (code, end) = (signalled.clone(), std::sync::Mutex::new(ui_tx.clone()));
     let signal_herdr = herdr.clone();
-    daemon::signals::set_handler(Arc::new(move |signal| {
-        code.store(daemon::signals::exit_code(signal), std::sync::atomic::Ordering::SeqCst);
+    signals::set_handler(Arc::new(move |signal| {
+        code.store(signals::exit_code(signal), std::sync::atomic::Ordering::SeqCst);
         if let Some(herdr) = &signal_herdr {
             herdr.release();
         }
         let _ = end.lock().unwrap_or_else(|e| e.into_inner()).send(UiEvent::InputClosed);
         std::thread::sleep(crate::print_mode::PROMPT_ABORT_WAIT);
-        std::process::exit(daemon::signals::exit_code(signal));
+        std::process::exit(signals::exit_code(signal));
     }));
     app.set_hide_thinking(hide_thinking);
     app.set_enabled_models(enabled_models);

@@ -9,7 +9,7 @@ autotests = false
 
 [dependencies]
 ai = { path = "../ai" }
-mcp = { path = "../mcp" }
+jsonschema = { path = "../jsonschema" }
 serde = { version = "=1.0.229", features = ["derive"] }
 serde_json = { version = "=1.0.151", features = ["float_roundtrip", "preserve_order"] }
 

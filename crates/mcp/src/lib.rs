@@ -14,7 +14,6 @@ pub mod config;
 pub mod connection;
 pub mod content;
 pub mod edit;
-pub mod formats;
 pub mod gateway;
 pub mod http;
 pub mod js_json;
@@ -26,8 +25,6 @@ pub mod resolve;
 pub mod results;
 pub mod runtime;
 pub mod stdio;
-mod typebox_convert;
-pub mod validation;
 
 pub use client::{CancelToken, Client, ClientOptions, ConnState, RequestOptions};
 pub use jsonrpc::Error;

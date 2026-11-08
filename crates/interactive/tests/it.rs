@@ -33,8 +33,6 @@ mod footer_data;
 mod fullscreen_viewport;
 #[path = "history_search.rs"]
 mod history_search;
-#[path = "idle_kernel_strip.rs"]
-mod idle_kernel_strip;
 #[path = "inspection.rs"]
 mod inspection;
 #[path = "keybindings_reload.rs"]
@@ -65,10 +63,6 @@ mod restore_files;
 mod retry;
 #[path = "rlm_highlight.rs"]
 mod rlm_highlight;
-#[path = "rlm_views.rs"]
-mod rlm_views;
-#[path = "running_work.rs"]
-mod running_work;
 #[path = "split_images.rs"]
 mod split_images;
 #[path = "startup_env_fallbacks.rs"]

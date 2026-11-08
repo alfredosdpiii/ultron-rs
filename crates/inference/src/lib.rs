@@ -12,7 +12,6 @@
 
 mod map;
 pub mod payload;
-pub mod schema;
 mod session;
 mod trace;
 
@@ -361,6 +360,24 @@ fn strip_fence(text: &str) -> &str {
     &inner[start..]
 }
 
+/// typebox `Errors(contract, value)` as `parseReply` words them: `"<instancePath or value> <message>"`.
+pub fn contract_errors(contract: &Value, value: &Value) -> Vec<String> {
+    jsonschema::errors(contract, value)
+        .into_iter()
+        .map(|e| {
+            format!(
+                "{} {}",
+                if e.instance_path.is_empty() {
+                    "value"
+                } else {
+                    &e.instance_path
+                },
+                e.message
+            )
+        })
+        .collect()
+}
+
 /// `parseReply`: the contract-valid value, or the reason to re-ask.
 fn parse_reply(text: &str, contract: &Value) -> Result<Value, String> {
     let cleaned = js_trim(strip_fence(js_trim(text)));
@@ -376,7 +393,7 @@ fn parse_reply(text: &str, contract: &Value) -> Result<Value, String> {
         return Ok(Value::String(cleaned.to_string()));
     }
     let parsed = parsed.ok_or("the reply is not JSON")?;
-    let errors = schema::errors(contract, &parsed);
+    let errors = contract_errors(contract, &parsed);
     if errors.is_empty() {
         return Ok(parsed);
     }
@@ -710,8 +727,8 @@ impl Inference {
             .cloned()
             .map(js_normalize);
         if let Some(contract) = &contract {
-            schema::validate_schema(contract, "$.contract")?;
-            if let Some(at) = schema::unchecked_keyword(contract, "$.contract") {
+            jsonschema::validate_json_schema(contract, "$.contract")?;
+            if let Some(at) = jsonschema::unchecked_keyword(contract, "$.contract") {
                 return Err(format!("{at}: this contract keyword is not checked by this host yet"));
             }
         }

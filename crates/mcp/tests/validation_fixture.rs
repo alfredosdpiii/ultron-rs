@@ -37,8 +37,7 @@ fn mcp_validation_gateway_schema_is_the_typescript_one() {
 #[test]
 fn mcp_validation_prepare_tool_arguments_matches_typescript() {
     for case in fixture()["prepared"].as_array().unwrap() {
-        let got =
-            mcp::validation::prepare_tool_arguments("mcp", &gateway_parameters(), case["params"].as_object().unwrap());
+        let got = jsonschema::prepare_tool_arguments("mcp", &gateway_parameters(), case["params"].as_object().unwrap());
         assert_eq!(outcome(got.map(Value::Object)), expected(case), "{}", case["params"]);
     }
 }
@@ -78,7 +77,7 @@ fn mcp_validation_required_and_enum_match_typescript() {
     let schemas = fixture()["schemas"].as_array().unwrap();
     for case in fixture()["schemaCases"].as_array().unwrap() {
         let schema = &schemas[case["schema"].as_u64().unwrap() as usize];
-        let got = mcp::validation::prepare_tool_arguments("probe", schema, case["params"].as_object().unwrap());
+        let got = jsonschema::prepare_tool_arguments("probe", schema, case["params"].as_object().unwrap());
         assert_eq!(outcome(got.map(Value::Object)), expected(case), "{}", case["params"]);
     }
 }
@@ -88,7 +87,7 @@ fn mcp_validation_formats_match_typebox() {
     for case in fixture()["formatCases"].as_array().unwrap() {
         let (format, value) = (case["format"].as_str().unwrap(), case["value"].as_str().unwrap());
         assert_eq!(
-            mcp::formats::matches(format, value),
+            jsonschema::formats::matches(format, value),
             case["ok"] == true,
             "{format} {value:?}"
         );
@@ -100,7 +99,7 @@ fn mcp_validation_patterns_match_ecmascript() {
     for case in fixture()["patternCases"].as_array().unwrap() {
         let (pattern, value) = (case["pattern"].as_str().unwrap(), case["value"].as_str().unwrap());
         let schema = json!({ "type": "object", "properties": { "v": { "type": "string", "pattern": pattern } } });
-        let got = mcp::validation::prepare_tool_arguments("probe", &schema, json!({ "v": value }).as_object().unwrap());
+        let got = jsonschema::prepare_tool_arguments("probe", &schema, json!({ "v": value }).as_object().unwrap());
         assert_eq!(got.is_ok(), case["ok"] == true, "{pattern} {value:?}");
         if let Err(error) = got {
             assert_eq!(error.split('\n').nth(1), case["err"].as_str(), "{pattern} {value:?}");

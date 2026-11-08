@@ -1,4 +1,4 @@
-//! The string formats TypeBox registers (`typebox/build/format`), as `prepareToolArguments` checks them: the same
+//! The string formats TypeBox registers (`typebox/build/format`), as `Check` and `prepareToolArguments` test them: the same
 //! regular expressions (ASCII, case-insensitive where TypeBox's are) and the same procedural checks (dates and times,
 //! IRIs through WHATWG URL parsing, hostnames and IDN hostnames label by label, punycode). An unknown format passes.
 //! Also the ECMAScript (`u` flag) regular expressions of `pattern`, approximated on fancy-regex.
@@ -130,7 +130,8 @@ pub fn is_date(value: &str) -> bool {
 /// `IsTime` (time zone required): leap seconds only at 23:59:60 UTC.
 pub fn is_time(value: &str) -> bool {
     let b = value.as_bytes();
-    if b.len() < 8 || b[2] != b':' || b[5] != b':' {
+    // A multibyte character across byte 8 (`00:00:0é`) is not a time, and must not split the slice below.
+    if b.len() < 8 || b[2] != b':' || b[5] != b':' || !value.is_char_boundary(8) {
         return false;
     }
     let (Some(hr), Some(min), Some(sec)) = (digits(&value[..2]), digits(&value[3..5]), digits(&value[6..8])) else {

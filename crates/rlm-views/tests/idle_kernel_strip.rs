@@ -3,8 +3,8 @@
 //! `createUltronRlmTool(...).poolStats()` and `renderKernelStrip`). The pool reporting 0 live kernels is checked in
 //! crates/delegation/tests/idle_pool.rs and crates/session-core/tests/idle_kernel_count.rs.
 
-use interactive::rlm::graph::render_kernel_strip;
-use interactive::rlm::visualizer::{RlmSnapshot, RlmStyle, parse_pool};
+use rlm_views::graph::render_kernel_strip;
+use rlm_views::visualizer::{RlmSnapshot, RlmStyle, parse_pool};
 use serde_json::Value;
 
 #[test]

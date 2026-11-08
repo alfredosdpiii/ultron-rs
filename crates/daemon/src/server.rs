@@ -653,7 +653,7 @@ pub fn run_server_process(args: &[String], relay: Option<server::radius_relay::R
     .map_err(|e| e.to_string())?;
     // A signal closes the generation (busy workers keep running detached) and removes its endpoint.
     let signalled = server.clone();
-    crate::signals::set_handler(Arc::new(move |_| {
+    signals::set_handler(Arc::new(move |_| {
         signalled.close();
         std::process::exit(0);
     }));
@@ -667,7 +667,7 @@ pub fn serve(options: &ServerOptions) -> Result<(), String> {
     durable_home(&options.directory);
     let server = start_foreground_server(options).map_err(|e| e.to_string())?;
     let signalled = server.clone();
-    crate::signals::set_handler(Arc::new(move |_| {
+    signals::set_handler(Arc::new(move |_| {
         signalled.close();
         std::process::exit(0);
     }));

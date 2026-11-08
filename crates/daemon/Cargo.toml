@@ -19,17 +19,16 @@ getrandom = "=0.4.3"
 harness = { path = "../harness" }
 kernel-apis = { path = "../kernel-apis" }
 mcp = { path = "../mcp" }
-nix = { version = "=0.31.3", features = ["signal"] }
 protocol = { path = "../protocol" }
 resources = { path = "../resources" }
 rustix = { version = "=1.1.5", features = ["process", "std"] }
 serde_json = { version = "=1.0.151", features = ["float_roundtrip", "preserve_order"] }
-signal-hook = { version = "=0.4.6", default-features = false, features = ["iterator"] }
 server = { path = "../server" }
 session-core = { path = "../session-core" }
 session-file = { path = "../session-file" }
 session-journal = { path = "../session-journal" }
 sha2 = "=0.10.9"
+signals = { path = "../signals" }
 
 [dev-dependencies]
 tempfile = "=3.27.0"
@@ -40,10 +39,6 @@ workspace = true
 [[test]]
 name = "it"
 path = "tests/it.rs"
-
-[[test]]
-name = "signals"
-path = "tests/signals.rs"
 
 # Sets the process-wide settings defaults once: in `it` it leaked into every later settings test.
 [[test]]

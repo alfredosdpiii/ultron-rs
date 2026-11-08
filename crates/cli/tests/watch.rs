@@ -1,14 +1,14 @@
-//! `ultron watch` frames against packages/coding-agent ultron/claude/watch.ts (`renderWatchFrame`), replayed from
-//! fixtures/watch.json (`node crates/claude-root/fixtures/generate-watch.mjs`), and `--once --plain` end to end over
+//! `ultron watch` (crates/cli/src/watch.rs) frames against packages/coding-agent ultron/claude/watch.ts (`renderWatchFrame`), replayed from
+//! fixtures/watch.json (`node crates/cli/fixtures/generate-watch.mjs`), and `--once --plain` end to end over
 //! a fake control socket.
 
 use std::sync::Arc;
 
 use claude_root::control::{ControlHandler, listen};
-use claude_root::watch::{render_watch_frame, run, strip_ansi};
-use interactive::rlm::RlmSnapshot;
-use interactive::rlm::pane::RlmPane;
-use interactive::rlm::visualizer::RlmStyle;
+use cli::watch::{parse_watch_args, render_watch_frame, run, strip_ansi};
+use rlm_views::RlmSnapshot;
+use rlm_views::pane::RlmPane;
+use rlm_views::visualizer::RlmStyle;
 use serde_json::{Value, json};
 
 fn keys() -> tui::keybindings::KeybindingsManager {
@@ -20,7 +20,7 @@ fn keys() -> tui::keybindings::KeybindingsManager {
 }
 
 #[test]
-fn claude_root_watch_frames_match_typescript() {
+fn cli_watch_frames_match_typescript() {
     let fixture: Value = serde_json::from_str(include_str!("../fixtures/watch.json")).unwrap();
     let cases = fixture["cases"].as_array().unwrap();
     assert!(cases.len() >= 18);
@@ -55,7 +55,7 @@ fn claude_root_watch_frames_match_typescript() {
 }
 
 #[test]
-fn claude_root_watch_strips_csi_and_osc() {
+fn cli_watch_strips_csi_and_osc() {
     assert_eq!(
         strip_ansi("\x1b[1m\x1b[38;5;2mUltron\x1b[39m\x1b[22m \x1b]8;;http://x\x07link\x1b]8;;\x07"),
         "Ultron link"
@@ -63,7 +63,7 @@ fn claude_root_watch_strips_csi_and_osc() {
 }
 
 #[test]
-fn claude_root_watch_once_plain_draws_the_session_over_its_socket() {
+fn cli_watch_once_plain_draws_the_session_over_its_socket() {
     let dir = tempfile::tempdir().unwrap();
     let socket = dir.path().join("watch.sock");
     let handler: ControlHandler = Arc::new(|request| match request["op"].as_str().unwrap_or("") {
@@ -100,4 +100,10 @@ fn claude_root_watch_once_plain_draws_the_session_over_its_socket() {
         "{text}"
     );
     assert!(!text.contains('\x1b'), "{text}");
+}
+
+#[test]
+fn cli_watch_refuses_unknown_options() {
+    let args = ["--nope".to_string()];
+    assert!(parse_watch_args(&args).unwrap_err().contains("unknown option"));
 }

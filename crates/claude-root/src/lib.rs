@@ -1,7 +1,8 @@
 //! Claude Code as the root agent of Ultron (packages/coding-agent/src/ultron/claude): `ultron claude` (the
 //! launcher), `ultron mcp` (Ultron's REPL as the one MCP server Claude Code talks to, exposing exactly the `rlm`
-//! tool), `ultron hook` (Claude Code hook commands), `ultron watch` and `ultron guide`, plus the `--claude`
-//! root-model selection of the session worker.
+//! tool), `ultron hook` (Claude Code hook commands) and `ultron guide`, plus the `--claude` root-model selection of
+//! the session worker. `ultron watch`, the terminal viewer of a running `ultron mcp`, is crates/cli's (`cli::watch`):
+//! it is a client of this crate's control socket ([`control`]) drawn with the TUI, which this crate does not need.
 //!
 //! RLM-first: Claude Code sees one tool, `mcp__ultron__rlm`; every capability is a kernel API reached from a cell.
 
@@ -28,7 +29,6 @@ pub mod settings;
 pub mod shared_world;
 pub mod typed_agents;
 pub mod unavailable;
-pub mod watch;
 pub mod worker_root;
 
 use session_core::RunEnv;

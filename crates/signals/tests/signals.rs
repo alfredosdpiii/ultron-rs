@@ -1,13 +1,13 @@
-//! `daemon::signals`: children of a process that installed the handlers see default signal handling (nothing
+//! `signals`: children of a process that installed the handlers see default signal handling (nothing
 //! blocked: a `timeout` or a test's SIGTERM reaches them), and a signal still reaches the handler. Its own test
 //! binary: `install` is once per process.
 
-use daemon::signals::{Sig, install, received, set_handler};
+use signals::{Sig, install, received, set_handler};
 use std::sync::{Arc, Mutex, mpsc};
 use std::time::Duration;
 
 #[test]
-fn daemon_signals_leave_children_unblocked_and_reach_the_handler() {
+fn signals_leave_children_unblocked_and_reach_the_handler() {
     install().unwrap();
     let status = std::process::Command::new("grep")
         .args(["SigBlk", "/proc/self/status"])

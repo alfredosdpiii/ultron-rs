@@ -12,7 +12,6 @@ pub mod git_baseline;
 pub mod host;
 pub mod kernel_pool;
 pub mod lanes;
-pub mod schema;
 pub mod spawn_contract;
 pub mod task_store;
 pub mod usage;

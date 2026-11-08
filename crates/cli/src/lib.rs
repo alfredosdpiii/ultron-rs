@@ -51,6 +51,7 @@ pub mod trace_cli;
 pub mod tui_login;
 pub mod update_cli;
 pub mod usage;
+pub mod watch;
 
 use args::{Args, DiagnosticKind, ListModels, normalize_session_name, parse_args};
 use print_mode::Target;
@@ -184,6 +185,10 @@ fn run_inner(argv: &[String], env: &Env, out: &mut dyn Write, err: &mut dyn Writ
     claude_root::mcp_server::set_session_report(mcp_session_report);
     if let Some(code) = claude_root::cli::run(argv, env, out, err) {
         return Ok(code);
+    }
+    if argv.first().is_some_and(|a| a == "watch") {
+        let result = watch::run(&argv[1..], &env.cwd.display().to_string(), &*env.var, out);
+        return Ok(claude_root::cli::exit_code(result, err));
     }
     // `ultron memory import ...` only: a bare `ultron memory` stays a prompt, as in TypeScript.
     if argv.first().is_some_and(|a| a == "memory") && argv.get(1).is_some_and(|a| a == "import") {

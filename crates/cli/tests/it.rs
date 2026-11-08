@@ -241,3 +241,5 @@ mod usage_subscription_providers;
 mod user_keybindings;
 #[path = "version_check.rs"]
 mod version_check;
+#[path = "watch.rs"]
+mod watch;

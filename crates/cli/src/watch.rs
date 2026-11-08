@@ -3,18 +3,16 @@
 //! true}`, `instances.list`, `rlm.pool`, `ctx.state`, `rlm.frames`) plus the root cells Claude Code ran, and draws
 //! them with the TUI's RLM views: a header, the docked RLM panel, then the RLM pane. `--once` prints one frame.
 
-use crate::control::{ControlClient, ServerQuery, control_dir, find_server, list_servers};
-use interactive::rlm::RlmSnapshot;
-use interactive::rlm::pane::RlmPane;
-use interactive::rlm::visualizer::{Color, RlmClock, RlmStyle};
+use claude_root::control::{ControlClient, ServerQuery, control_dir, find_server, list_servers};
+use rlm_views::pane::RlmPane;
+use rlm_views::visualizer::{Color, RlmClock, RlmStyle, RlmTurn, parse_cell};
+use rlm_views::{RlmPoller, RlmSnapshot, WATCH_FRAME_LIMIT};
 use serde_json::{Map, Value, json};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 /// `POLL_MS`.
 const POLL: Duration = Duration::from_millis(500);
-/// `RLM_FRAME_LIMIT`.
-const RLM_FRAME_LIMIT: u64 = 20;
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct WatchArgs {
@@ -124,6 +122,7 @@ pub fn run(
     let socket = resolve_socket(&parsed, cwd, var, &dir)?;
     let mut client = ControlClient::connect(&socket, Duration::from_secs(5))?;
     let mut clock = RlmClock::new();
+    let mut poller = RlmPoller::new(WATCH_FRAME_LIMIT);
     let keys = tui::keybindings::KeybindingsManager::new(
         tui::qol_keys::native_app_keybindings(tui::keybindings::Platform::new("linux", false)),
         Vec::new(),
@@ -135,7 +134,7 @@ pub fn run(
     } else {
         RlmStyle::themed(std::rc::Rc::new(watch_theme(cwd, var)))
     };
-    let (snapshot, status) = poll_snapshot(&mut client, &mut clock, epoch_ms());
+    let (snapshot, status) = poll_snapshot(&mut client, &mut poller, &mut clock, epoch_ms());
     if parsed.once {
         let mut pane = RlmPane::new();
         let width = parsed.width.map_or_else(terminal_width, |w| w as usize);
@@ -146,7 +145,7 @@ pub fn run(
             .map_err(|e| e.to_string())?;
         return Ok(0);
     }
-    live(client, clock, keys, style, snapshot, status)?;
+    live(client, poller, clock, keys, style, snapshot, status)?;
     Ok(0)
 }
 
@@ -184,24 +183,26 @@ pub fn strip_ansi(text: &str) -> String {
     pattern.replace_all(text, "").into_owned()
 }
 
-/// `pollSnapshot`: one poll of a session, everything a frame is drawn from (`now`: ms since the epoch). A failed
-/// inspection leaves its part empty; a failed `agents.status` (or the server's own error) shows as the error.
-pub fn poll_snapshot(client: &mut ControlClient, clock: &mut RlmClock, now: f64) -> (RlmSnapshot, Value) {
+/// `pollSnapshot`: one poll of a session, everything a frame is drawn from (`now`: ms since the epoch): the server's
+/// status, the inspections ([`RlmPoller`], at watch.ts's frame limit) and the root cells Claude Code ran. A failed
+/// `rlm.pool` or `ctx.state` leaves its part empty, a failed `rlm.frames` or `instances.list` keeps the last answer;
+/// a failed `agents.status` (or the server's own error) shows as the error.
+pub fn poll_snapshot(
+    client: &mut ControlClient,
+    poller: &mut RlmPoller,
+    clock: &mut RlmClock,
+    now: f64,
+) -> (RlmSnapshot, Value) {
     let timeout = Duration::from_secs(10);
-    let inspect = |client: &mut ControlClient, request: &str, payload: Value| {
+    let status = client
+        .request("status", Map::new(), timeout)
+        .unwrap_or_else(|_| json!({}));
+    poller.poll(&mut |request, payload| {
         let mut fields = Map::new();
         fields.insert("request".into(), request.into());
         fields.insert("payload".into(), payload);
         client.request("inspect", fields, timeout)
-    };
-    let status = client
-        .request("status", Map::new(), timeout)
-        .unwrap_or_else(|_| json!({}));
-    let agents = inspect(client, "agents.status", json!({"graph": true}));
-    let instances = inspect(client, "instances.list", json!({}));
-    let pool = inspect(client, "rlm.pool", json!({}));
-    let context = inspect(client, "ctx.state", json!({}));
-    let frames = inspect(client, "rlm.frames", json!({"limit": RLM_FRAME_LIMIT}));
+    });
     let records = client.request("cells", Map::new(), timeout).ok();
     let cells: Vec<Value> = records
         .as_ref()
@@ -222,24 +223,20 @@ pub fn poll_snapshot(client: &mut ControlClient, clock: &mut RlmClock, now: f64)
             Value::Object(out)
         })
         .collect();
-    let error = match &agents {
-        Err(error) => Some(error.clone()),
-        Ok(_) => status["error"].as_str().map(str::to_string),
-    };
-    let wire = json!({
-        "now": now,
-        "agentsStatus": agents.unwrap_or(Value::Null),
-        "instances": instances.unwrap_or(Value::Null),
-        "pool": pool.unwrap_or(Value::Null),
-        "ctx": context.unwrap_or(Value::Null),
-        "frames": frames.unwrap_or(Value::Null),
-        "rootCell": cells.last().cloned().unwrap_or(Value::Null),
-        "cells": cells[cells.len().saturating_sub(12)..].to_vec(),
-        "turn": cells.first().map_or(Value::Null, |c| json!({"startedAt": c["startedAt"]})),
-        "error": error,
+    let turn = cells.first().map(|c| RlmTurn {
+        started_at: c["startedAt"].as_f64().filter(|t| t.is_finite()),
+        prompt: None,
     });
-    let mut snapshot = RlmSnapshot::from_wire(&wire);
-    snapshot.timing = clock.timings(&snapshot.tasks, snapshot.usage.as_ref(), now);
+    let root_cell = cells.last().and_then(parse_cell);
+    let shown = cells[cells.len().saturating_sub(12)..]
+        .iter()
+        .filter_map(parse_cell)
+        .collect();
+    let listing = poller.status().cloned().unwrap_or_default();
+    let mut snapshot = poller.snapshot(listing, clock, now, root_cell, shown, turn);
+    if snapshot.error.is_none() {
+        snapshot.error = status["error"].as_str().map(str::to_string);
+    }
     (snapshot, status)
 }
 
@@ -297,17 +294,16 @@ pub fn render_watch_frame(
     pane_height: usize,
 ) -> Vec<String> {
     let header = tui::utils::truncate_to_width(&header_line(status, style), width.max(1), "…", false);
-    let options = interactive::rlm::graph::RlmViewOptions {
+    let options = rlm_views::graph::RlmViewOptions {
         style: style.clone(),
         spinner_frame: (snapshot.now / 100.0).floor() as i64,
         ..Default::default()
     };
     let max_rows = 6usize.max((height as f64 * 0.4).floor() as usize);
-    let dock: Vec<String> =
-        interactive::rlm::render_rlm_dock(snapshot, width.saturating_sub(2).max(1), &options, max_rows)
-            .into_iter()
-            .map(|line| format!(" {line}"))
-            .collect();
+    let dock: Vec<String> = rlm_views::render_rlm_dock(snapshot, width.saturating_sub(2).max(1), &options, max_rows)
+        .into_iter()
+        .map(|line| format!(" {line}"))
+        .collect();
     let rest = 6usize.max(height.saturating_sub(dock.len() + 2));
     let pane_lines = pane.render(keys, snapshot, width, pane_height, focused, None, style);
     let mut lines = vec![header];
@@ -320,6 +316,7 @@ pub fn render_watch_frame(
 /// The live view: the alternate screen, a poll every 500 ms, the pane's keys; `q` or Ctrl+C quits.
 fn live(
     mut client: ControlClient,
+    mut poller: RlmPoller,
     mut clock: RlmClock,
     keys: tui::keybindings::KeybindingsManager,
     style: RlmStyle,
@@ -356,14 +353,12 @@ fn live(
             match input.recv_timeout(wait) {
                 Ok(data) if data == "q" || data == "\u{3}" => return Ok(()),
                 Ok(data) => {
-                    if pane.handle_input(&keys, &data, &snapshot, pane_height)
-                        == interactive::rlm::pane::PaneEvent::Close
-                    {
+                    if pane.handle_input(&keys, &data, &snapshot, pane_height) == rlm_views::pane::PaneEvent::Close {
                         return Ok(());
                     }
                 }
                 Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
-                    (snapshot, status) = poll_snapshot(&mut client, &mut clock, epoch_ms());
+                    (snapshot, status) = poll_snapshot(&mut client, &mut poller, &mut clock, epoch_ms());
                     next_poll = std::time::Instant::now() + POLL;
                 }
                 Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => return Ok(()),

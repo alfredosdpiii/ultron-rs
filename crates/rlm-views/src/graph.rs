@@ -13,7 +13,7 @@ use super::visualizer::{
     render_context_lines, short_id,
 };
 use super::{flat, js_num};
-use crate::components::js_to_fixed;
+use crate::js_to_fixed;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum GraphStatus {

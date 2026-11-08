@@ -17,17 +17,13 @@ use crate::catalog::{self, Meta};
 use crate::chord::{Service, ServiceError};
 use crate::routed::Hub;
 use kernel_apis::TickClock;
-use kernel_apis::prompt_schedule::{NAMESPACE, Schedule};
+use kernel_apis::prompt_schedule::{MAX_SLEEP, NAMESPACE, RETRY_MS, Schedule, scan_journal};
 use serde_json::{Value, json};
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, Weak};
 use std::time::Duration;
 
-/// A delivery that failed (the worker could not start, the session is open elsewhere) is tried again after this.
-pub const RETRY_MS: i64 = 60_000;
-/// The longest the timer sleeps before it reads the clock again (a suspended machine, a changed wall clock).
-pub const MAX_SLEEP: Duration = Duration::from_secs(300);
 /// The last delivery failure of each pending slot, in the instance directory: `{sessionId: {scheduleId: {error, at,
 /// due}}}`. An entry whose `due` is no longer the schedule's next slot is stale.
 pub const ERRORS_FILE: &str = "schedule-errors.json";
@@ -374,43 +370,6 @@ fn write_error(path: &Path, session: &str, id: &str, failure: Option<(&str, i64,
     if std::fs::write(&temp, format!("{value}\n")).is_ok() && std::fs::rename(&temp, path).is_err() {
         let _ = std::fs::remove_file(&temp);
     }
-}
-
-/// The schedules a session journal holds (its own: values copied from another session by a fork are left out), in
-/// creation order, read without opening the session (its worker may be writing it): complete lines only.
-pub fn scan_journal(path: &Path) -> Vec<Schedule> {
-    let Some(meta) = session_journal::repo::read_metadata(path) else {
-        return Vec::new();
-    };
-    let Ok(content) = std::fs::read_to_string(path) else {
-        return Vec::new();
-    };
-    if !content.contains(NAMESPACE) {
-        return Vec::new();
-    }
-    let mut values: Vec<(String, Value)> = Vec::new();
-    for line in session_journal::io::complete_lines(&content).into_iter().skip(1) {
-        let Ok(writes) = session_journal::codec::parse_transaction(line) else {
-            continue;
-        };
-        for write in writes {
-            if write["kind"] != "value" || write["namespace"] != NAMESPACE {
-                continue;
-            }
-            let Some(key) = write["key"].as_str() else { continue };
-            values.retain(|(k, _)| k != key);
-            if write["op"] == "set" {
-                values.push((key.to_string(), write["value"].clone()));
-            }
-        }
-    }
-    let mut found: Vec<Schedule> = values
-        .iter()
-        .filter_map(|(_, value)| Schedule::from_json(value))
-        .filter(|s| s.session_id == meta.id)
-        .collect();
-    found.sort_by(|a, b| a.created_at.cmp(&b.created_at).then(a.id.cmp(&b.id)));
-    found
 }
 
 /// Every session of `session_dir` with schedules, and its schedules.

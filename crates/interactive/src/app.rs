@@ -64,8 +64,6 @@ pub const RLM_PANE_MIN_COLUMNS: usize = 120;
 /// RLM polls while an RLM view (or the live wave summary) shows, and while nothing does (`RLM_POLL_*_MS`).
 const RLM_POLL_VISIBLE: Duration = Duration::from_millis(1000);
 const RLM_POLL_HIDDEN: Duration = Duration::from_millis(5000);
-/// Frame summaries fetched per poll (`RLM_FRAME_LIMIT`).
-const RLM_FRAME_LIMIT: u64 = 200;
 
 /// Suspends the process until it is continued (`suspendTui`); `Err` is shown in the status line.
 pub type SuspendHook = Box<dyn FnMut() -> Result<(), String>>;
@@ -180,7 +178,7 @@ enum Panel {
     PiSessions(Box<SessionSelector>),
     Settings(Box<SettingsSelector>),
     /// The full-screen RLM graph (`RlmGraphFocus`) in the editor's place.
-    RlmFocus(Box<crate::rlm::RlmGraphFocus>),
+    RlmFocus(Box<rlm_views::RlmGraphFocus>),
     Logout(Box<crate::selectors::AuthSelector>),
     /// `/trust`: the project trust selector.
     Trust(Box<crate::trust_selector::TrustSelector>),
@@ -221,33 +219,6 @@ enum Panel {
     /// `/bug`'s dialogs and loaders.
     BugReport(Box<crate::bug_report::BugFlow>),
 }
-
-/// The RLM inspections polled besides the subagent listing (`#refreshRlm`).
-#[derive(Default)]
-struct RlmPoll {
-    frames: Vec<crate::rlm::visualizer::RlmFrame>,
-    pool: Option<crate::rlm::visualizer::RlmPool>,
-    context: Option<crate::rlm::visualizer::RlmContextState>,
-    retained: std::collections::HashSet<String>,
-    last: Option<Instant>,
-    /// `agents.status {graph: true}`: the session's tasks, usage, limits, jobs, tool calls and workflows.
-    status: Option<crate::rlm::visualizer::AgentsStatus>,
-    /// The last failure of `agents.status` (cleared by the next answer).
-    error: Option<String>,
-    /// The worker rejected `agents.status {graph: true}` (`#graphListing` false): the plain listing is polled.
-    plain_listing: bool,
-    /// `progress.assess` of running tasks, polled only while the docked panel or the graph shows.
-    progress: std::collections::HashMap<String, crate::rlm::visualizer::RlmProgress>,
-    /// The assessment round in flight: its number, the answers so far and how many are still out.
-    assessing: (
-        u64,
-        std::collections::HashMap<String, crate::rlm::visualizer::RlmProgress>,
-        usize,
-    ),
-}
-
-/// Running tasks assessed per poll (`RLM_MAX_ASSESSED`).
-const RLM_MAX_ASSESSED: usize = 8;
 
 /// `nextModel` (client-tui-actions.ts): the next model in the `enabledModels` scope when it selects any
 /// (`resolveModelScopeFromModels`: globs, fuzzy ids and names, `:<thinking>` suffixes accepted and not applied,
@@ -551,7 +522,7 @@ pub struct App {
     rlm_visible: bool,
     /// The last subagent listing (`rlm.list_subagents`).
     rlm_agents: Value,
-    rlm_clock: crate::rlm::RlmClock,
+    rlm_clock: rlm_views::RlmClock,
     /// `/mcp` dialogs not shown yet: they share the selector, so they are answered in order.
     extension_dialogs: std::collections::VecDeque<Value>,
     /// A `/mcp` dialog is open.
@@ -600,18 +571,21 @@ pub struct App {
     /// Where a pasted clipboard image is saved (`tmpdir()`).
     temp_dir: std::path::PathBuf,
     /// The RLM pane (`app.rlm.pane`): open beside the chat on wide terminals; focused takes the keys.
-    rlm_pane: crate::rlm::pane::RlmPane,
+    rlm_pane: rlm_views::pane::RlmPane,
     rlm_pane_open: bool,
     rlm_pane_focused: bool,
     /// Runs the pane already opened for (or showed while open), and `op:<id>` for turns in which the user closed it.
     rlm_pane_handled: std::collections::HashSet<String>,
     /// `rlmPaneAutoOpen` (and not `ULTRON_RLM_PANE_AUTO=off`).
     rlm_pane_auto: bool,
-    rlm_poll: RlmPoll,
+    /// The RLM inspections polled besides the subagent listing (`#refreshRlm`).
+    rlm_poll: rlm_views::RlmPoller,
+    /// When the RLM inspections were last polled (`None`: poll on the next pass).
+    rlm_polled: Option<Instant>,
     /// The wave summary showed at the last poll (it polls at the visible rate while it does).
     wave_active: bool,
     /// The root lane's detached cells (`rlm.detached`), for the running-work panel.
-    detached_cells: Vec<crate::rlm::DetachedCell>,
+    detached_cells: Vec<rlm_views::DetachedCell>,
     /// The running-work panel had something to show at the last poll (it polls at the visible rate while it does).
     work_active: bool,
     /// The running operation's start, ms since the epoch (the pane's auto-open counts runs from it).
@@ -896,7 +870,7 @@ impl App {
             cols: 80,
             rlm_visible: false,
             rlm_agents: Value::Null,
-            rlm_clock: crate::rlm::RlmClock::new(),
+            rlm_clock: rlm_views::RlmClock::new(),
             clock: Box::new(Instant::now),
             editor_keys,
             theme_controller: None,
@@ -925,12 +899,13 @@ impl App {
             render_debug: None,
             termux: false,
             temp_dir: std::env::temp_dir(),
-            rlm_pane: crate::rlm::pane::RlmPane::new(),
+            rlm_pane: rlm_views::pane::RlmPane::new(),
             rlm_pane_open: false,
             rlm_pane_focused: false,
             rlm_pane_handled: std::collections::HashSet::new(),
             rlm_pane_auto: true,
-            rlm_poll: RlmPoll::default(),
+            rlm_poll: rlm_views::RlmPoller::new(rlm_views::TUI_FRAME_LIMIT),
+            rlm_polled: None,
             wave_active: false,
             detached_cells: Vec::new(),
             work_active: false,
@@ -1913,7 +1888,7 @@ impl App {
                 self.turn_started = Some(Instant::now());
                 // A woken turn may start with work's ends (`cell_done`, `child_done`): the running-work panel
                 // reads them on the next pass.
-                self.rlm_poll.last = None;
+                self.rlm_polled = None;
                 self.chat.set_working(true);
             }
             LaneEvent::Streaming(message) => self.chat.set_streaming(&message),
@@ -1939,7 +1914,7 @@ impl App {
                 self.turn_ended(error.is_some());
                 self.operation = None;
                 // What the turn left running in the background shows on the next pass.
-                self.rlm_poll.last = None;
+                self.rlm_polled = None;
                 self.chat.set_working(false);
                 self.chat.set_queues(Vec::new());
                 self.status = error.map(|e| format!("Operation failed: {e}")).unwrap_or_default();
@@ -2526,7 +2501,7 @@ impl App {
             }
             let snapshot = self.rlm_snapshot();
             let height = self.rows;
-            if self.rlm_pane.handle_input(&self.keys, data, &snapshot, height) == crate::rlm::pane::PaneEvent::Close {
+            if self.rlm_pane.handle_input(&self.keys, data, &snapshot, height) == rlm_views::pane::PaneEvent::Close {
                 self.close_rlm_pane();
             }
             return;
@@ -3546,9 +3521,9 @@ impl App {
                     return;
                 };
                 match focus.handle_input(&self.keys, data, &snapshot, height) {
-                    crate::rlm::focus::FocusEvent::Exit => self.panel = None,
+                    rlm_views::focus::FocusEvent::Exit => self.panel = None,
                     // `loadTrace`: the frame's trace (`rlm.frames {id}`), answered as an inspection.
-                    crate::rlm::focus::FocusEvent::LoadTrace { key, trace_id } => self.client.rlm_inspect(
+                    rlm_views::focus::FocusEvent::LoadTrace { key, trace_id } => self.client.rlm_inspect(
                         &format!("trace:{key}"),
                         "rlm.frames",
                         serde_json::json!({ "id": trace_id }),
@@ -4120,17 +4095,13 @@ impl App {
     /// `#refreshRlm`: poll the read-only inspections the RLM views draw from (the subagents, recent frames, the
     /// kernel pool, the context state, retained instances); answers arrive as lane events.
     fn refresh_rlm(&mut self) {
-        self.rlm_poll.last = Some(self.now());
+        self.rlm_polled = Some(self.now());
         // The `rlm.spawn` subagents: the Rust worker keeps them in a task journal of their own, which
         // `agents.status` does not list (TypeScript's one task host lists both).
         self.client.rlm_status();
-        self.inspect_agents_status();
-        self.client
-            .rlm_inspect("frames", "rlm.frames", serde_json::json!({ "limit": RLM_FRAME_LIMIT }));
-        self.client.rlm_inspect("pool", "rlm.pool", serde_json::json!({}));
-        self.client.rlm_inspect("context", "ctx.state", serde_json::json!({}));
-        self.client
-            .rlm_inspect("instances", "instances.list", serde_json::json!({}));
+        let client = &self.client;
+        self.rlm_poll
+            .refresh(&mut |i| client.rlm_inspect(&i.tag, i.request, i.payload));
         self.client
             .rlm_inspect("detached", "rlm.detached", serde_json::json!({}));
     }
@@ -4147,8 +4118,7 @@ impl App {
         let now = self.now();
         if self.session_id.is_none()
             || self
-                .rlm_poll
-                .last
+                .rlm_polled
                 .is_some_and(|last| now.saturating_duration_since(last) < interval)
         {
             return false;
@@ -4157,32 +4127,9 @@ impl App {
         true
     }
 
-    /// `agents.status {graph: true}`, or the plain listing once the worker rejected the graph field.
-    fn inspect_agents_status(&mut self) {
-        let payload = if self.rlm_poll.plain_listing {
-            serde_json::json!({})
-        } else {
-            serde_json::json!({ "graph": true })
-        };
-        self.client.rlm_inspect("agents", "agents.status", payload);
-    }
-
-    /// `agents.status`'s answer (`#refreshRlm`): a worker that rejects `{graph: true}` is asked for the plain
-    /// listing at once; then the running tasks' progress is assessed.
-    fn agents_status_inspected(&mut self, result: Result<Value, String>) {
-        match result {
-            Ok(value) => {
-                self.rlm_poll.status = Some(crate::rlm::visualizer::parse_agents_status(&value));
-                self.rlm_poll.error = None;
-            }
-            Err(error) => {
-                if !self.rlm_poll.plain_listing && error.contains("Unknown payload field") {
-                    self.rlm_poll.plain_listing = true;
-                    self.inspect_agents_status();
-                }
-                self.rlm_poll.error = Some(error);
-            }
-        }
+    /// After `agents.status`'s answer (`#refreshRlm`): the running tasks' progress is assessed, and the pane, the
+    /// wave summary and the running-work panel follow the new listing.
+    fn agents_status_inspected(&mut self) {
         self.assess_progress();
         self.auto_open_rlm_pane();
         self.wave_active = !self.wave_summary(200).is_empty();
@@ -4190,59 +4137,27 @@ impl App {
     }
 
     /// "Progress assessments are cheap host reads; only fetch them for a few running tasks while visible": while the
-    /// docked panel or the graph shows, `progress.assess` of the first [`RLM_MAX_ASSESSED`] running tasks; else none.
+    /// docked panel or the graph shows, `progress.assess` of the first [`rlm_views::MAX_ASSESSED`] running tasks; else none.
     fn assess_progress(&mut self) {
-        let round = self.rlm_poll.assessing.0 + 1;
-        self.rlm_poll.assessing = (round, std::collections::HashMap::new(), 0);
-        if !(self.rlm_visible || matches!(self.panel, Some(Panel::RlmFocus(_)))) {
-            self.rlm_poll.progress.clear();
-            return;
-        }
-        let running: Vec<String> = self
-            .rlm_status()
-            .tasks
-            .into_iter()
-            .filter(|task| crate::rlm::visualizer::is_active_state(&task.state))
-            .take(RLM_MAX_ASSESSED)
-            .map(|task| task.id)
-            .collect();
-        if running.is_empty() {
-            self.rlm_poll.progress.clear();
-            return;
-        }
-        self.rlm_poll.assessing.2 = running.len();
-        for id in running {
-            self.client.rlm_inspect(
-                &format!("progress:{round}:{id}"),
-                "progress.assess",
-                serde_json::json!({ "task_id": id }),
-            );
-        }
-    }
-
-    /// One `progress.assess` answer of round `round`; the round's assessments replace the shown ones when the last
-    /// answer arrives (a failed or unreadable one is left out).
-    fn progress_inspected(&mut self, round: u64, id: &str, result: Result<Value, String>) {
-        let (current, answers, left) = &mut self.rlm_poll.assessing;
-        if *current != round || *left == 0 {
-            return;
-        }
-        if let Some(progress) = result
-            .ok()
-            .and_then(|value| crate::rlm::visualizer::parse_progress(&value))
-        {
-            answers.insert(id.to_string(), progress);
-        }
-        *left -= 1;
-        if *left == 0 {
-            self.rlm_poll.progress = std::mem::take(answers);
-        }
+        let running: Vec<String> = if self.rlm_visible || matches!(self.panel, Some(Panel::RlmFocus(_))) {
+            self.rlm_status()
+                .tasks
+                .into_iter()
+                .filter(|task| rlm_views::visualizer::is_active_state(&task.state))
+                .map(|task| task.id)
+                .collect()
+        } else {
+            Vec::new()
+        };
+        let client = &self.client;
+        self.rlm_poll
+            .assess(&running, &mut |i| client.rlm_inspect(&i.tag, i.request, i.payload));
     }
 
     /// The session's work as the RLM views list it: `agents.status`, then the subagents it does not list.
-    fn rlm_status(&self) -> crate::rlm::visualizer::AgentsStatus {
-        use crate::rlm::visualizer::parse_agents_status;
-        let mut status = self.rlm_poll.status.clone().unwrap_or_default();
+    fn rlm_status(&self) -> rlm_views::visualizer::AgentsStatus {
+        use rlm_views::visualizer::parse_agents_status;
+        let mut status = self.rlm_poll.status().cloned().unwrap_or_default();
         let subagents = parse_agents_status(&serde_json::json!({"tasks": self.rlm_agents["subagents"]}));
         for task in subagents.tasks {
             if !status.tasks.iter().any(|known| known.id == task.id) {
@@ -4254,15 +4169,6 @@ impl App {
 
     /// An RLM inspection's answer (`#refreshRlm`): a failed one leaves the pool and context unknown.
     fn rlm_inspected(&mut self, tag: &str, result: Result<Value, String>) {
-        use crate::rlm::visualizer::{parse_context_state, parse_frames, parse_pool, parse_retained};
-        if tag == "agents" {
-            return self.agents_status_inspected(result);
-        }
-        if let Some((round, id)) = tag.strip_prefix("progress:").and_then(|rest| rest.split_once(':')) {
-            let round = round.parse().unwrap_or_default();
-            let id = id.to_string();
-            return self.progress_inspected(round, &id, result);
-        }
         if let Some(key) = tag.strip_prefix("trace:") {
             if let Some(Panel::RlmFocus(focus)) = self.panel.as_mut() {
                 match &result {
@@ -4272,44 +4178,44 @@ impl App {
             }
             return;
         }
-        match (tag, result) {
-            ("frames", Ok(value)) => self.rlm_poll.frames = parse_frames(&value),
-            ("pool", result) => self.rlm_poll.pool = result.ok().and_then(|v| parse_pool(&v)),
-            ("context", result) => self.rlm_poll.context = result.ok().and_then(|v| parse_context_state(&v)),
-            ("instances", Ok(value)) => self.rlm_poll.retained = parse_retained(&value),
-            // A worker without `rlm.detached` lists no detached cells.
-            ("detached", result) => {
-                self.detached_cells = result
-                    .ok()
-                    .map(|v| crate::rlm::parse_detached_cells(&v))
-                    .unwrap_or_default();
-                self.update_work_active();
-            }
-            _ => {}
+        // A worker without `rlm.detached` lists no detached cells.
+        if tag == "detached" {
+            self.detached_cells = result
+                .ok()
+                .map(|v| rlm_views::parse_detached_cells(&v))
+                .unwrap_or_default();
+            return self.update_work_active();
+        }
+        let client = &self.client;
+        let answered = self
+            .rlm_poll
+            .answer(tag, result, &mut |i| client.rlm_inspect(&i.tag, i.request, i.payload));
+        if answered == rlm_views::Answered::Agents {
+            self.agents_status_inspected();
         }
     }
 
     /// Whether the running-work panel has something to show (it then polls at the visible rate).
     fn update_work_active(&mut self) {
         let status = self.rlm_status();
-        self.work_active = crate::rlm::running::any_running_work(&status.tasks, &status.jobs, &self.detached_cells);
+        self.work_active = rlm_views::running::any_running_work(&status.tasks, &status.jobs, &self.detached_cells);
     }
 
     /// The running-work panel under the transcript, one column in: the session's running shell jobs, subagents and
     /// tasks, and detached cells. Hidden while the docked RLM panel or the graph shows (they list the same work).
-    fn running_work_lines(&self, snapshot: Option<&crate::rlm::RlmSnapshot>, width: usize) -> Vec<String> {
+    fn running_work_lines(&self, snapshot: Option<&rlm_views::RlmSnapshot>, width: usize) -> Vec<String> {
         let Some(snapshot) = snapshot else { return Vec::new() };
         if self.rlm_visible || matches!(self.panel, Some(Panel::RlmFocus(_))) {
             return Vec::new();
         }
-        let work = crate::rlm::running_work(snapshot, &self.detached_cells);
-        let style = crate::rlm::RlmStyle::themed(Rc::clone(&self.theme));
-        crate::rlm::render_running_work(
+        let work = rlm_views::running_work(snapshot, &self.detached_cells);
+        let style = rlm_views::RlmStyle::themed(Rc::clone(&self.theme));
+        rlm_views::render_running_work(
             &work,
             width.saturating_sub(2).max(1),
             &style,
             snapshot.now,
-            crate::rlm::running::RUNNING_WORK_MAX_LINES,
+            rlm_views::running::RUNNING_WORK_MAX_LINES,
         )
         .into_iter()
         .map(|line| format!(" {line}"))
@@ -4360,7 +4266,7 @@ impl App {
     /// wide enough to split, on the chat screen with the graph closed; a pane the user closed stays closed for the
     /// rest of that turn and for the runs it already showed. It never closes the pane.
     fn auto_open_rlm_pane(&mut self) {
-        use crate::rlm::pane::{RunKind, build_dag_runs, pane_work_runs};
+        use rlm_views::pane::{RunKind, build_dag_runs, pane_work_runs};
         let snapshot = self.rlm_snapshot();
         let runs = build_dag_runs(&snapshot);
         let ids: Vec<String> = pane_work_runs(&runs, self.operation_started_ms)
@@ -4406,9 +4312,9 @@ impl App {
             return Vec::new();
         }
         let snapshot = self.rlm_snapshot();
-        let runs = crate::rlm::pane::build_dag_runs(&snapshot);
-        let style = crate::rlm::RlmStyle::themed(Rc::clone(&self.theme));
-        crate::rlm::pane::render_wave_summary(&runs, width.saturating_sub(2).max(1), &style, snapshot.now, 4)
+        let runs = rlm_views::pane::build_dag_runs(&snapshot);
+        let style = rlm_views::RlmStyle::themed(Rc::clone(&self.theme));
+        rlm_views::pane::render_wave_summary(&runs, width.saturating_sub(2).max(1), &style, snapshot.now, 4)
             .into_iter()
             .map(|line| format!(" {line}"))
             .collect()
@@ -4419,7 +4325,7 @@ impl App {
         if matches!(self.panel, Some(Panel::RlmFocus(_))) {
             return;
         }
-        self.panel = Some(Panel::RlmFocus(Box::new(crate::rlm::RlmGraphFocus::new())));
+        self.panel = Some(Panel::RlmFocus(Box::new(rlm_views::RlmGraphFocus::new())));
         self.editor.focused = false;
         self.refresh_rlm();
     }
@@ -4431,8 +4337,8 @@ impl App {
     }
 
     /// `#buildRlmSnapshot`: the session's subagents (polled) and the root turn's `rlm` cells (the transcript).
-    fn rlm_snapshot(&mut self) -> crate::rlm::RlmSnapshot {
-        use crate::rlm::visualizer::{RunningTool, TranscriptView, extract_root_cell, extract_turn};
+    fn rlm_snapshot(&mut self) -> rlm_views::RlmSnapshot {
+        use rlm_views::visualizer::{RunningTool, TranscriptView, extract_root_cell, extract_turn};
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map_or(0.0, |d| d.as_millis() as f64);
@@ -4469,32 +4375,13 @@ impl App {
         let (turn, cells) = extract_turn(Some(&view), &mut self.rlm_clock, now, 30);
         let root_cell = extract_root_cell(Some(&view), &mut self.rlm_clock, now);
         let status = self.rlm_status();
-        let timing = self.rlm_clock.timings(&status.tasks, status.usage.as_ref(), now);
-        crate::rlm::RlmSnapshot {
-            now,
-            tasks: status.tasks,
-            usage: status.usage,
-            limits: status.limits,
-            jobs: status.jobs,
-            tool_calls: status.tool_calls,
-            workflows: status.workflows,
-            truncated_tasks: status.truncated_tasks,
-            timing,
-            root_cell,
-            cells,
-            turn,
-            frames: self.rlm_poll.frames.clone(),
-            pool: self.rlm_poll.pool.clone(),
-            context: self.rlm_poll.context.clone(),
-            retained: self.rlm_poll.retained.clone(),
-            progress: self.rlm_poll.progress.clone(),
-            error: self.rlm_poll.error.clone(),
-        }
+        self.rlm_poll
+            .snapshot(status, &mut self.rlm_clock, now, root_cell, cells, turn)
     }
 
-    fn rlm_options(&self) -> crate::rlm::graph::RlmViewOptions {
-        crate::rlm::graph::RlmViewOptions {
-            style: crate::rlm::RlmStyle::themed(Rc::clone(&self.theme)),
+    fn rlm_options(&self) -> rlm_views::graph::RlmViewOptions {
+        rlm_views::graph::RlmViewOptions {
+            style: rlm_views::RlmStyle::themed(Rc::clone(&self.theme)),
             spinner_frame: (self.ticks * 80 / 100) as i64,
             focus_key: self.keys.get_keys("app.rlm.focus").first().cloned(),
             ..Default::default()
@@ -5259,7 +5146,7 @@ impl App {
         {
             let inner = width.saturating_sub(2).max(1);
             status.extend(
-                crate::rlm::render_rlm_dock(snapshot, inner, &options, usize::MAX)
+                rlm_views::render_rlm_dock(snapshot, inner, &options, usize::MAX)
                     .into_iter()
                     .map(|l| format!(" {l}")),
             );
@@ -5275,7 +5162,7 @@ impl App {
         // `#renderRuntimeLine`: one RLM line under the footer while the panel and the graph are hidden.
         let runtime_line = match &snapshot {
             Some(snapshot) if !self.rlm_visible && !rlm_focus => {
-                crate::rlm::render_rlm_footer(snapshot, width.max(1), &options)
+                rlm_views::render_rlm_footer(snapshot, width.max(1), &options)
             }
             _ => None,
         };
@@ -5400,7 +5287,7 @@ impl App {
             return main;
         }
         let snapshot = self.rlm_snapshot();
-        let style = crate::rlm::RlmStyle::themed(Rc::clone(&self.theme));
+        let style = rlm_views::RlmStyle::themed(Rc::clone(&self.theme));
         let toggle = self.keys.get_keys("app.rlm.pane").first().cloned();
         let mut side = self.rlm_pane.render(
             &self.keys,

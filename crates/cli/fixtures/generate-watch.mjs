@@ -1,9 +1,9 @@
-// Generates crates/claude-root/fixtures/watch.json from packages/coding-agent's `ultron watch` frame
+// Generates crates/cli/fixtures/watch.json from packages/coding-agent's `ultron watch` frame
 // (ultron/claude/watch.ts renderWatchFrame, with experimental/rlm-pane.ts and rlm-graph.ts; TypeScript, this checkout).
-// The snapshots are the wire cases of crates/interactive/fixtures/rlm_views.json, built through the TypeScript parsers;
+// The snapshots are the wire cases of crates/rlm-views/fixtures/rlm_views.json, built through the TypeScript parsers;
 // each is drawn with PLAIN_STYLE as `ultron watch --once` draws it (pane height 30, unfocused) for several server
-// statuses and terminal sizes. Date.now is the snapshot's time. crates/claude-root/tests/watch.rs replays every case.
-// Usage: node crates/claude-root/fixtures/generate-watch.mjs   (deterministic, offline)
+// statuses and terminal sizes. Date.now is the snapshot's time. crates/cli/tests/watch.rs replays every case.
+// Usage: node crates/cli/fixtures/generate-watch.mjs   (deterministic, offline)
 import "../../cli/fixtures/offline-guard.mjs";
 import { readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
@@ -16,7 +16,7 @@ const P = await ca("experimental/rlm-pane.ts");
 const W = await ca("ultron/claude/watch.ts");
 const { KeybindingsManager } = await ca("core/keybindings.ts");
 const keybindings = new KeybindingsManager({});
-const views = JSON.parse(readFileSync(join(here, "../../interactive/fixtures/rlm_views.json"), "utf8"));
+const views = JSON.parse(readFileSync(join(here, "../../rlm-views/fixtures/rlm_views.json"), "utf8"));
 
 function snapshot(w) {
 	const status = V.parseAgentsStatus(w.agentsStatus);

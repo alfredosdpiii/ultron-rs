@@ -21,7 +21,6 @@ pub mod routed;
 pub mod server;
 pub mod session_commands;
 pub mod session_control;
-pub mod signals;
 pub mod sockets;
 pub mod watchdog;
 pub mod wire;

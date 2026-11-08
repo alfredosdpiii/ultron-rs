@@ -1,12 +1,12 @@
-//! The running-work panel (crates/interactive/src/rlm/running.rs): the session's running shell jobs, subagents,
+//! The running-work panel (crates/rlm-views/src/running.rs): the session's running shell jobs, subagents,
 //! tasks and detached cells, one line each under the transcript, capped with a `+N more` tail; no lines while
 //! nothing runs.
 
-use interactive::rlm::running::{
+use rlm_views::running::{
     DetachedCell, RUNNING_WORK_MAX_LINES, WorkKind, any_running_work, parse_detached_cells, render_running_work,
     running_work,
 };
-use interactive::rlm::visualizer::{RlmSnapshot, RlmStyle, parse_agents_status};
+use rlm_views::visualizer::{RlmSnapshot, RlmStyle, parse_agents_status};
 use serde_json::{Value, json};
 use tui::utils::{strip_terminal_sequences, visible_width};
 

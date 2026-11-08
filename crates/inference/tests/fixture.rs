@@ -2,12 +2,12 @@
 //! (NativeRlmHost + InferenceRuntime of inference.ts) serving the real runtime.py: the same cells run through
 //! crates/kernel with `Inference` (frames call crates/ai's openai-completions provider over a scripted transport)
 //! and must print and return the same, and send the same prompts with the same output caps, request by request.
-//! The typebox Check/Errors and validateJsonSchema tables of the fixture are replayed against `schema`.
+//! The typebox Check/Errors and validateJsonSchema tables of the fixture are replayed against `jsonschema`.
 
 mod common;
 
 use common::{Scripted, model};
-use inference::{Inference, schema};
+use inference::{Inference, contract_errors};
 use kernel::{Kernel, KernelOptions};
 use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
@@ -130,7 +130,7 @@ fn inference_infer_cells_match_typescript_host() {
 #[test]
 fn inference_contract_errors_match_typebox() {
     for case in fixture()["checks"].as_array().unwrap() {
-        let errors = schema::errors(&case["schema"], &case["value"]);
+        let errors = contract_errors(&case["schema"], &case["value"]);
         assert_eq!(errors.is_empty(), case["ok"].as_bool().unwrap(), "{case}");
         assert_eq!(json!(errors), case["errors"], "{case}");
     }
@@ -139,7 +139,7 @@ fn inference_contract_errors_match_typebox() {
 #[test]
 fn inference_contract_schema_validation_matches_typescript() {
     for case in fixture()["schemas"].as_array().unwrap() {
-        let result = schema::validate_schema(&case["schema"], "$.contract");
+        let result = jsonschema::validate_json_schema(&case["schema"], "$.contract");
         match case.get("error") {
             Some(error) => assert_eq!(result, Err(error.as_str().unwrap().to_string()), "{case}"),
             None => assert_eq!(result, Ok(()), "{case}"),

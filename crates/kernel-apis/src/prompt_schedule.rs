@@ -15,7 +15,7 @@ use crate::schedule_tick::{SystemTickClock, TickClock};
 use crate::util::{iso, lock};
 use crate::{ApiModule, Request};
 use serde_json::{Map, Value, json};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -34,6 +34,11 @@ pub const MAX_RUNS: u64 = 100_000;
 /// looks at it every [`FILE_CLOCK_POLL`]). Never set in the product.
 pub const CLOCK_FILE_ENV: &str = "__ULTRON_SCHEDULE_CLOCK_FILE";
 pub const FILE_CLOCK_POLL: Duration = Duration::from_millis(20);
+/// A due schedule whose delivery failed (the worker could not start, the session is open elsewhere) is tried again
+/// after this, by the server's timer (crates/daemon `prompt_schedules`) and by `ultron mcp`'s (crates/claude-root).
+pub const RETRY_MS: i64 = 60_000;
+/// The longest a schedule timer sleeps before it reads the clock again (a suspended machine, a changed wall clock).
+pub const MAX_SLEEP: Duration = Duration::from_secs(300);
 
 const SECOND_MS: i64 = 1000;
 const MINUTE_MS: i64 = 60 * SECOND_MS;
@@ -560,4 +565,41 @@ impl ApiModule for ScheduleModule {
             other => Err(format!("Unknown schedule request: {other}")),
         }
     }
+}
+
+/// The schedules a session journal holds (its own: values copied from another session by a fork are left out), in
+/// creation order, read without opening the session (its worker may be writing it): complete lines only.
+pub fn scan_journal(path: &Path) -> Vec<Schedule> {
+    let Some(meta) = session_journal::repo::read_metadata(path) else {
+        return Vec::new();
+    };
+    let Ok(content) = std::fs::read_to_string(path) else {
+        return Vec::new();
+    };
+    if !content.contains(NAMESPACE) {
+        return Vec::new();
+    }
+    let mut values: Vec<(String, Value)> = Vec::new();
+    for line in session_journal::io::complete_lines(&content).into_iter().skip(1) {
+        let Ok(writes) = session_journal::codec::parse_transaction(line) else {
+            continue;
+        };
+        for write in writes {
+            if write["kind"] != "value" || write["namespace"] != NAMESPACE {
+                continue;
+            }
+            let Some(key) = write["key"].as_str() else { continue };
+            values.retain(|(k, _)| k != key);
+            if write["op"] == "set" {
+                values.push((key.to_string(), write["value"].clone()));
+            }
+        }
+    }
+    let mut found: Vec<Schedule> = values
+        .iter()
+        .filter_map(|(_, value)| Schedule::from_json(value))
+        .filter(|s| s.session_id == meta.id)
+        .collect();
+    found.sort_by(|a, b| a.created_at.cmp(&b.created_at).then(a.id.cmp(&b.id)));
+    found
 }

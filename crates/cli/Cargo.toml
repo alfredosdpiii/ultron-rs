@@ -43,7 +43,10 @@ session-journal = { path = "../session-journal" }
 inference = { path = "../inference" }
 mcp = { path = "../mcp" }
 protocol = { path = "../protocol" }
+regex = "=1.13.1"
+rlm-views = { path = "../rlm-views" }
 session-file = { path = "../session-file" }
+signals = { path = "../signals" }
 telemetry = { path = "../telemetry" }
 sha2 = "=0.10.9"
 serde_json = { version = "=1.0.151", features = ["preserve_order"] }
@@ -56,7 +59,6 @@ sha2 = "=0.10.9"
 [dev-dependencies]
 chord-delta = { path = "../chord-delta" }
 kernel = { path = "../kernel" }
-regex = "=1.13.1"
 rustix = { version = "=1.1.5", features = ["net", "process", "std"] }
 ring = "=0.17.14"
 tempfile = "=3.27.0"

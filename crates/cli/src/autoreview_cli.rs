@@ -2011,9 +2011,9 @@ fn daemon_command(
     }
     let _ = review::daemon::record_daemon_start(&store, std::process::id(), now_ms(), None);
     let stopper = daemon.stopper();
-    daemon::signals::set_handler(Arc::new(move |_| stopper.stop()));
+    signals::set_handler(Arc::new(move |_| stopper.stop()));
     daemon.run();
-    daemon::signals::clear_handler();
+    signals::clear_handler();
     let _ = review::daemon::record_daemon_stop(&store);
     log("autoreview stopped");
     lock.release();

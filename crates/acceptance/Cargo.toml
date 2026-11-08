@@ -20,6 +20,7 @@ mimalloc = { version = "=0.1.52", default-features = false }
 cli = { path = "../cli" }
 config = { path = "../config" }
 daemon = { path = "../daemon" }
+signals = { path = "../signals" }
 
 [dev-dependencies]
 ai = { path = "../ai" }

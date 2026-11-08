@@ -1,15 +1,13 @@
-//! The server's schedule timer (crate::prompt_schedules; a Rust-only feature, literal expectations) on a manual
+//! The server's schedule timer (crate::prompt_schedules over kernel_apis::prompt_schedule; a Rust-only feature, literal expectations) on a manual
 //! clock with a recording delivery: the journals are read on start (only a session's own values, last write per id),
 //! a schedule whose slots were missed fires once, the timer sleeps until the earliest due time (one look at the
 //! clock per wake-up), a failed delivery waits [`RETRY_MS`], a gone session is dropped, workers' reports replace
 //! what it holds, and a journal cancel without a server takes the session's locks.
 
 use daemon::catalog::Meta;
-use daemon::prompt_schedules::{
-    Deliver, Delivery, RETRY_MS, Scheduler, cancel_in_journal, fire_call, scan_journal, scan_sessions,
-};
+use daemon::prompt_schedules::{Deliver, Delivery, Scheduler, cancel_in_journal, fire_call, scan_sessions};
 use kernel_apis::ManualTickClock;
-use kernel_apis::prompt_schedule::{Kind, NAMESPACE, Schedule, State};
+use kernel_apis::prompt_schedule::{Kind, NAMESPACE, RETRY_MS, Schedule, State, scan_journal};
 use serde_json::{Value, json};
 use session_journal::{SessionRepo, SystemClock, Write};
 use std::path::Path;

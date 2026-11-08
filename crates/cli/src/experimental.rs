@@ -594,7 +594,7 @@ pub fn run_server(command: &ServerCommand, env: &Env, out: &mut dyn Write) -> Re
     ));
     let server = start_foreground_server(&options).map_err(io)?;
     let stop = std::sync::Mutex::new(events.clone());
-    daemon::signals::set_handler(Arc::new(move |_| {
+    signals::set_handler(Arc::new(move |_| {
         let _ = stop.lock().unwrap_or_else(|e| e.into_inner()).send(ServerEvent::Stop);
     }));
     let closed = server.clone();
@@ -630,7 +630,7 @@ pub fn run_server(command: &ServerCommand, env: &Env, out: &mut dyn Write) -> Re
             Ok(ServerEvent::Stop) | Err(_) => stopped = true,
         }
     }
-    daemon::signals::clear_handler();
+    signals::clear_handler();
     server.close();
     Ok(0)
 }

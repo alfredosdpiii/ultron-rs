@@ -1,23 +1,23 @@
-//! The live RLM views (crates/interactive/src/rlm): replays `fixtures/rlm_views.json`, recorded from the TypeScript
+//! The live RLM views (crates/rlm-views): replays `fixtures/rlm_views.json`, recorded from the TypeScript
 //! rlm-visualizer.ts / rlm-graph.ts / rlm-focus.ts / rlm-pane.ts by `fixtures/generate-rlm-views.mjs`, and ports
 //! experimental-rlm-visualizer.test.ts and experimental-rlm-pane.test.ts with their literal expectations.
 
 use std::collections::{HashMap, HashSet};
 
-use interactive::rlm::RlmGraphFocus;
-use interactive::rlm::focus::{
+use rlm_views::RlmGraphFocus;
+use rlm_views::focus::{
     FocusAction, FocusRenderOptions, FocusState, apply_focus_action, render_focus_view, selected_row,
 };
-use interactive::rlm::graph::{
+use rlm_views::graph::{
     CollapseState, GraphNode, GraphStatus, RlmViewOptions, RowRenderOptions, bar, budget_gauges, build_rlm_graph,
     format_cost, format_tokens, frame_trace_details, layout_graph, render_gauges, render_graph_row,
     render_kernel_strip, render_rlm_dock, render_rlm_footer, window_rows,
 };
-use interactive::rlm::pane::{
+use rlm_views::pane::{
     DagAction, DagRenderOptions, RlmPaneState, apply_dag_action, build_dag_runs, compute_waves, pane_work_runs,
     prompt_of, render_rlm_pane, render_wave_summary, rlm_pane_hints, selected_node, wave_geometry,
 };
-use interactive::rlm::visualizer::{
+use rlm_views::visualizer::{
     CellStatus, RlmClock, RlmSnapshot, RlmStyle, RunningTool, TranscriptView, extract_root_cell, extract_turn,
     format_duration, parse_agents_status, parse_frames, parse_pool, parse_retained, short_id,
 };
@@ -146,7 +146,7 @@ fn interactive_rlm_views_replay_typescript_fixture() {
             &render_rlm_dock(&snap, 80, &RlmViewOptions::default(), 12),
             &case["dockDefault"],
         );
-        let hints = interactive::rlm::focus_hints(&keys);
+        let hints = rlm_views::focus_hints(&keys);
         for (size, want) in case["focus"].as_object().unwrap() {
             let (w, h) = size.split_once('x').unwrap();
             let view = render_focus_view(
@@ -184,7 +184,7 @@ fn interactive_rlm_views_replay_typescript_fixture() {
         let runs_json: Vec<Value> = runs
             .iter()
             .map(|r| {
-                json!({"key": r.key, "kind": match r.kind { interactive::rlm::pane::RunKind::Turn => "turn", _ => "workflow" },
+                json!({"key": r.key, "kind": match r.kind { rlm_views::pane::RunKind::Turn => "turn", _ => "workflow" },
                     "id": r.id, "title": r.title, "waves": r.waves,
                     "edges": r.edges.iter().map(|(a, b)| json!([a, b])).collect::<Vec<_>>(), "status": r.status.name()})
             })
@@ -231,7 +231,7 @@ fn interactive_rlm_views_replay_typescript_fixture() {
             &render_wave_summary(&runs, 80, &plain(), snap.now, 3),
             &case["waveSummary3"],
         );
-        let keys_of = |list: Vec<&interactive::rlm::DagRun>| list.iter().map(|r| r.key.clone()).collect::<Vec<_>>();
+        let keys_of = |list: Vec<&rlm_views::DagRun>| list.iter().map(|r| r.key.clone()).collect::<Vec<_>>();
         assert_eq!(
             keys_of(pane_work_runs(&runs, None)),
             strings(&case["paneWork"]),
@@ -245,7 +245,7 @@ fn interactive_rlm_views_replay_typescript_fixture() {
     }
 }
 
-fn cell_json(c: &interactive::rlm::visualizer::RlmRootCell) -> Value {
+fn cell_json(c: &rlm_views::visualizer::RlmRootCell) -> Value {
     let mut v = json!({"toolCallId": c.tool_call_id, "code": c.code, "status": match c.status {
         CellStatus::Running => "running", CellStatus::Ok => "ok", CellStatus::Error => "error" }});
     if let Some(s) = c.started_at {
@@ -353,7 +353,7 @@ fn interactive_rlm_formats_replay_typescript() {
         assert_eq!(short_id(row[0].as_str().unwrap()), row[1], "{row}");
     }
     let keys = keys();
-    assert_eq!(interactive::rlm::focus_hints(&keys), f["focusHints"]);
+    assert_eq!(rlm_views::focus_hints(&keys), f["focusHints"]);
     assert_eq!(json!(rlm_pane_hints(&keys)), f["paneHints"]);
 }
 
@@ -960,7 +960,7 @@ fn interactive_rlm_focus_hints_follow_the_bindings() {
         Default::default(),
     );
     assert_eq!(
-        interactive::rlm::focus_hints(&k),
+        rlm_views::focus_hints(&k),
         "up/k down/j move · enter details · c collapse · escape back"
     );
 }
@@ -974,12 +974,12 @@ fn interactive_rlm_focus_component_keys_exit_and_trace_loading() {
     let mut focus = RlmGraphFocus::new();
     assert_eq!(
         focus.handle_input(&keys, "\x1b[B", &snap, 20),
-        interactive::rlm::focus::FocusEvent::Render
+        rlm_views::focus::FocusEvent::Render
     );
     assert_eq!(focus.state.selected_key.as_deref(), Some("frames:frame-aaaaaaaa1"));
     assert_eq!(
         focus.handle_input(&keys, "\r", &snap, 20),
-        interactive::rlm::focus::FocusEvent::LoadTrace {
+        rlm_views::focus::FocusEvent::LoadTrace {
             key: "frames:frame-aaaaaaaa1".into(),
             trace_id: "frame-aaaaaaaa1".into()
         }
@@ -989,11 +989,11 @@ fn interactive_rlm_focus_component_keys_exit_and_trace_loading() {
     assert!(lines.iter().any(|l| l.contains("┆ model     p/m")), "{lines:?}");
     assert_eq!(
         focus.handle_input(&keys, "x", &snap, 20),
-        interactive::rlm::focus::FocusEvent::Ignored
+        rlm_views::focus::FocusEvent::Ignored
     );
     assert_eq!(
         focus.handle_input(&keys, "\x1b", &snap, 20),
-        interactive::rlm::focus::FocusEvent::Exit
+        rlm_views::focus::FocusEvent::Exit
     );
 }
 
@@ -1066,7 +1066,7 @@ fn interactive_rlm_parses_payloads_defensively() {
     ]}));
     assert_eq!(frames.len(), 1);
     let f = &frames[0];
-    assert_eq!(f.task_id, interactive::rlm::visualizer::Tri::Null);
+    assert_eq!(f.task_id, rlm_views::visualizer::Tri::Null);
     assert_eq!(
         (f.kind.as_deref(), f.batch, f.lane.as_deref()),
         (Some("map"), Some(3.0), None)
@@ -1084,7 +1084,7 @@ fn interactive_rlm_clock_uses_admission_freezes_and_omits_unknown_starts() {
     let tasks =
         parse_agents_status(&json!({"tasks": [task("a", "running", json!({})), task("b", "completed", json!({}))]}))
             .tasks;
-    let usage = interactive::rlm::visualizer::RlmUsage::from_json(
+    let usage = rlm_views::visualizer::RlmUsage::from_json(
         &json!({"reservations": [{"taskId": "ultron-task-a", "admittedAt": 100}]}),
     );
     let first = clock.timings(&tasks, usage.as_ref(), 500.0);
@@ -1225,10 +1225,10 @@ const HINTS: [&str; 7] = [
     "q/Esc Close",
 ];
 
-fn workflow_runs(snapshot: &RlmSnapshot) -> Vec<interactive::rlm::DagRun> {
+fn workflow_runs(snapshot: &RlmSnapshot) -> Vec<rlm_views::DagRun> {
     build_dag_runs(snapshot)
         .into_iter()
-        .filter(|r| r.kind == interactive::rlm::pane::RunKind::Workflow)
+        .filter(|r| r.kind == rlm_views::pane::RunKind::Workflow)
         .collect()
 }
 
@@ -1250,7 +1250,7 @@ fn pane(width: usize, state: &RlmPaneState, height: usize, snapshot: &RlmSnapsho
 #[test]
 fn interactive_rlm_pane_work_runs_live_or_from_the_running_turn() {
     let live = reference();
-    let keys_of = |runs: Vec<&interactive::rlm::DagRun>| runs.iter().map(|r| r.key.clone()).collect::<Vec<_>>();
+    let keys_of = |runs: Vec<&rlm_views::DagRun>| runs.iter().map(|r| r.key.clone()).collect::<Vec<_>>();
     assert_eq!(
         keys_of(pane_work_runs(&build_dag_runs(&live), None)),
         ["turn", "workflow:wf-01a07520"]
@@ -1365,7 +1365,7 @@ fn interactive_rlm_pane_waves_wrap_and_fit_every_width() {
 #[test]
 fn interactive_rlm_pane_cuts_long_names_and_texts() {
     let mut long = reference();
-    long.workflows[0].nodes = vec![interactive::rlm::visualizer::RlmWorkflowNode {
+    long.workflows[0].nodes = vec![rlm_views::visualizer::RlmWorkflowNode {
         id: "a-very-long-node-name-that-cannot-fit-in-any-box".into(),
         definition: "x@1".into(),
         join: "all".into(),
@@ -1506,10 +1506,10 @@ fn interactive_rlm_pane_navigation_wraps_folds_and_toggles_details() {
 #[test]
 fn interactive_rlm_pane_scrolls_keeps_selection_in_view_and_switches_runs() {
     let mut snap = reference();
-    snap.workflows.push(interactive::rlm::visualizer::RlmWorkflowRun {
+    snap.workflows.push(rlm_views::visualizer::RlmWorkflowRun {
         run: "wf-22222222".into(),
         started_at: Some(NOW - 5000.0),
-        nodes: vec![interactive::rlm::visualizer::RlmWorkflowNode {
+        nodes: vec![rlm_views::visualizer::RlmWorkflowNode {
             id: "solo".into(),
             definition: "x@1".into(),
             join: "all".into(),
@@ -1590,7 +1590,7 @@ fn interactive_rlm_turn_runs_cells_frontiers_tool_nodes_and_nesting() {
     }));
     let runs = build_dag_runs(&snap);
     let run = &runs[0];
-    assert_eq!(run.kind, interactive::rlm::pane::RunKind::Turn);
+    assert_eq!(run.kind, rlm_views::pane::RunKind::Turn);
     assert_eq!(
         run.waves,
         [
@@ -1691,26 +1691,17 @@ fn interactive_rlm_wave_summary_active_run_bounded() {
 fn interactive_rlm_pane_component_keys_and_render() {
     let keys = keys();
     let snap = reference();
-    let mut pane = interactive::rlm::RlmPane::new();
+    let mut pane = rlm_views::RlmPane::new();
     let first = pane.render(&keys, &snap, 50, 30, false, Some("alt+w"), &plain());
     assert_eq!(first.len(), 30);
     assert!(first.iter().all(|l| l.starts_with(' ')));
     assert!(first.iter().any(|l| l.contains("alt+w focus")));
-    assert_eq!(
-        pane.handle_input(&keys, "n", &snap, 30),
-        interactive::rlm::PaneEvent::Render
-    );
+    assert_eq!(pane.handle_input(&keys, "n", &snap, 30), rlm_views::PaneEvent::Render);
     let moved = pane.render(&keys, &snap, 50, 30, true, Some("alt+w"), &plain());
     assert_ne!(moved, first);
     assert!(moved.iter().any(|l| l.contains("alt+w chat")));
-    assert_eq!(
-        pane.handle_input(&keys, "z", &snap, 30),
-        interactive::rlm::PaneEvent::Ignored
-    );
-    assert_eq!(
-        pane.handle_input(&keys, "q", &snap, 30),
-        interactive::rlm::PaneEvent::Close
-    );
+    assert_eq!(pane.handle_input(&keys, "z", &snap, 30), rlm_views::PaneEvent::Ignored);
+    assert_eq!(pane.handle_input(&keys, "q", &snap, 30), rlm_views::PaneEvent::Close);
 }
 
 // ---- added for mutations that survived the ported tests (values recorded from the TypeScript) ----
@@ -1733,7 +1724,7 @@ fn interactive_rlm_waves_cut_a_cycle_where_it_is_entered() {
 fn interactive_rlm_clock_freezes_a_cancelled_task() {
     let mut clock = RlmClock::new();
     let running = parse_agents_status(&json!({"tasks": [task("a", "running", json!({}))]})).tasks;
-    let usage = interactive::rlm::visualizer::RlmUsage::from_json(
+    let usage = rlm_views::visualizer::RlmUsage::from_json(
         &json!({"reservations": [{"taskId": "ultron-task-a", "admittedAt": 100}]}),
     );
     clock.timings(&running, usage.as_ref(), 500.0);

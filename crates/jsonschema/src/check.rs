@@ -1,231 +1,17 @@
-//! JSON Schema for typed agent definitions: the meta-check of `validateJsonSchema` (definition-registry.ts) and
-//! typebox 1.3's `Value.Check` / `Value.Errors` (the validator the registry checks inputs and outputs with), with
-//! typebox's keyword order, error messages and its eight-errors-per-context cap.
-//!
-//! Checked like typebox: every keyword the meta-check accepts, the formats `date`, `time`, `date-time`, `email`,
-//! `uuid`, `ipv4`, `duration` and `json-pointer`, and string lengths in typebox's grapheme count. Refused at
-//! registration instead of being checked differently ([`unchecked_keyword`]): `unevaluatedProperties`,
-//! `unevaluatedItems` (evaluated-key tracking) and the formats typebox checks with grammars not ported here
-//! (`hostname`, `ipv6`, `uri`, ...). Unknown format names pass, as in typebox.
+//! typebox 1.3's `Value.Check` / `Value.Errors` (`typebox/build/schema/engine`): every keyword evaluated in
+//! typebox's order, its `en_US` messages, and its eight-errors-per-call cap (`Settings.maxErrors`, which the
+//! compiled validator of `validateToolArguments` uses too). Strings are measured in typebox's grapheme count,
+//! `pattern` and `patternProperties` are ECMAScript `u` regular expressions ([`crate::formats::js_regex`]), and
+//! `format` is every format typebox registers ([`crate::formats`]). Object keys are visited in JavaScript property
+//! order. Not evaluated: `$ref`/`$dynamicRef` (refused by the meta-check) and `unevaluated*` (refused by
+//! [`crate::unchecked_keyword`]).
 
-use fancy_regex::Regex;
+use crate::formats::{self, js_regex};
 use serde_json::{Map, Value, json};
+use session_file::js::{number_to_string, object_entries};
 
-const TYPES: [&str; 7] = ["null", "boolean", "object", "array", "number", "integer", "string"];
 /// typebox `Settings.maxErrors`.
 const MAX_ERRORS: usize = 8;
-/// Formats typebox registers whose checks are not ported: a schema naming one is refused at registration.
-const UNPORTED_FORMATS: [&str; 13] = [
-    "hostname",
-    "idn-email",
-    "idn-hostname",
-    "ipv6",
-    "iri-reference",
-    "iri",
-    "json-pointer-uri-fragment",
-    "regex",
-    "relative-json-pointer",
-    "uri-reference",
-    "uri-template",
-    "uri",
-    "url",
-];
-
-fn failure(path: &str, detail: &str) -> String {
-    format!("Invalid JSON schema at {path}: {detail}")
-}
-
-fn non_negative_integer(value: &Value) -> bool {
-    value
-        .as_f64()
-        .is_some_and(|n| n >= 0.0 && n.fract() == 0.0 && n <= 9_007_199_254_740_991.0)
-}
-
-fn string_array(value: &Value, path: &str) -> Result<(), String> {
-    let Some(items) = value
-        .as_array()
-        .filter(|items| items.iter().all(|i| i.as_str().is_some_and(|s| !s.is_empty())))
-    else {
-        return Err(failure(path, "must be an array of nonempty strings"));
-    };
-    if items.iter().enumerate().any(|(i, item)| items[..i].contains(item)) {
-        return Err(failure(path, "must not contain duplicates"));
-    }
-    Ok(())
-}
-
-fn schema_map(value: &Value, path: &str) -> Result<(), String> {
-    let map = value.as_object().ok_or_else(|| failure(path, "must be an object"))?;
-    map.iter()
-        .try_for_each(|(key, nested)| validate_json_schema(nested, &format!("{path}.{key}")))
-}
-
-fn schema_list(value: &Value, path: &str) -> Result<(), String> {
-    let items = value
-        .as_array()
-        .filter(|items| !items.is_empty())
-        .ok_or_else(|| failure(path, "must be a nonempty schema array"))?;
-    items
-        .iter()
-        .enumerate()
-        .try_for_each(|(index, nested)| validate_json_schema(nested, &format!("{path}[{index}]")))
-}
-
-/// `validateJsonSchema(value, path)` of definition-registry.ts. JSON cannot be cyclic.
-pub fn validate_json_schema(value: &Value, path: &str) -> Result<(), String> {
-    // typebox's IsSchema takes an array too; its entries are then read as keywords named by index.
-    if let Some(items) = value.as_array() {
-        return match items.is_empty() {
-            true => Ok(()),
-            false => Err(failure(&format!("{path}.0"), "is not a supported JSON Schema keyword")),
-        };
-    }
-    let schema = value
-        .as_object()
-        .ok_or_else(|| failure(path, "must be a JSON schema object"))?;
-    for (keyword, item) in schema {
-        let at = format!("{path}.{keyword}");
-        match keyword.as_str() {
-            "$schema" | "$id" | "$anchor" | "$dynamicAnchor" | "$comment" | "title" | "description" | "format"
-            | "pattern" | "contentEncoding" | "contentMediaType" => {
-                let Some(text) = item.as_str() else {
-                    return Err(failure(&at, "must be a string"));
-                };
-                if keyword == "pattern" && Regex::new(text).is_err() {
-                    return Err(failure(&at, "must be a valid regular expression"));
-                }
-            }
-            "$ref" | "$dynamicRef" => return Err(failure(&at, "references are not supported for runtime definitions")),
-            "$defs" | "definitions" | "properties" | "patternProperties" | "dependentSchemas" => schema_map(item, &at)?,
-            "type" => match item {
-                Value::String(name) if TYPES.contains(&name.as_str()) => {}
-                Value::String(_) => return Err(failure(&at, "contains an unknown type")),
-                Value::Array(names) => {
-                    if names.is_empty() || names.iter().any(|n| !n.as_str().is_some_and(|n| TYPES.contains(&n))) {
-                        return Err(failure(&at, "must contain only JSON Schema types"));
-                    }
-                    if names.iter().enumerate().any(|(i, n)| names[..i].contains(n)) {
-                        return Err(failure(&at, "must not contain duplicate types"));
-                    }
-                }
-                _ => return Err(failure(&at, "must be a JSON Schema type or array of types")),
-            },
-            "required" => string_array(item, &at)?,
-            "enum" => {
-                if !item.as_array().is_some_and(|items| !items.is_empty()) {
-                    return Err(failure(&at, "must be a nonempty JSON array"));
-                }
-            }
-            "const" => {}
-            "items" | "additionalItems" => {
-                if !item.is_boolean() {
-                    validate_json_schema(item, &at)?;
-                }
-            }
-            "prefixItems" => {
-                let items = item.as_array().ok_or_else(|| failure(&at, "must be an array"))?;
-                for (index, nested) in items.iter().enumerate() {
-                    validate_json_schema(nested, &format!("{path}.prefixItems[{index}]"))?;
-                }
-            }
-            "additionalProperties"
-            | "unevaluatedProperties"
-            | "propertyNames"
-            | "contains"
-            | "not"
-            | "if"
-            | "then"
-            | "else"
-            | "unevaluatedItems" => {
-                if !(item.is_boolean() && (keyword == "additionalProperties" || keyword == "unevaluatedProperties")) {
-                    validate_json_schema(item, &at)?;
-                }
-            }
-            "allOf" | "anyOf" | "oneOf" => schema_list(item, &at)?,
-            "dependentRequired" => {
-                let map = item.as_object().ok_or_else(|| failure(&at, "must be an object"))?;
-                map.iter()
-                    .try_for_each(|(key, nested)| string_array(nested, &format!("{at}.{key}")))?;
-            }
-            "dependencies" => {
-                let map = item.as_object().ok_or_else(|| failure(&at, "must be an object"))?;
-                for (key, nested) in map {
-                    let at = format!("{at}.{key}");
-                    if nested.is_array() {
-                        string_array(nested, &at)?;
-                    } else {
-                        validate_json_schema(nested, &at)?;
-                    }
-                }
-            }
-            "minLength" | "maxLength" | "minItems" | "maxItems" | "minContains" | "maxContains" | "minProperties"
-            | "maxProperties" => {
-                if !non_negative_integer(item) {
-                    return Err(failure(&at, "must be a nonnegative integer"));
-                }
-            }
-            "minimum" | "maximum" | "exclusiveMinimum" | "exclusiveMaximum" => {
-                if !item.is_number() {
-                    return Err(failure(&at, "must be a finite number"));
-                }
-            }
-            "multipleOf" => {
-                if !item.as_f64().is_some_and(|n| n > 0.0) {
-                    return Err(failure(&at, "must be a positive finite number"));
-                }
-            }
-            "uniqueItems" | "readOnly" | "writeOnly" | "deprecated" => {
-                if !item.is_boolean() {
-                    return Err(failure(&at, "must be a boolean"));
-                }
-            }
-            "examples" => {
-                if !item.is_array() {
-                    return Err(failure(&at, "must be a JSON array"));
-                }
-            }
-            _ if keyword.starts_with("x-") => {}
-            _ => return Err(failure(&at, "is not a supported JSON Schema keyword")),
-        }
-    }
-    Ok(())
-}
-
-/// The first keyword (as `<path>.<keyword>`) this checker would evaluate differently from typebox, if any.
-pub fn unchecked_keyword(schema: &Value, path: &str) -> Option<String> {
-    let map = schema.as_object()?;
-    map.iter().find_map(|(keyword, item)| {
-        let at = format!("{path}.{keyword}");
-        match keyword.as_str() {
-            "unevaluatedProperties" | "unevaluatedItems" => Some(at),
-            "format" if item.as_str().is_some_and(|f| UNPORTED_FORMATS.contains(&f)) => Some(at),
-            "properties" | "patternProperties" | "$defs" | "definitions" | "dependentSchemas" | "dependencies" => item
-                .as_object()?
-                .iter()
-                .find_map(|(key, nested)| unchecked_keyword(nested, &format!("{at}.{key}"))),
-            "allOf" | "anyOf" | "oneOf" | "prefixItems" => item
-                .as_array()?
-                .iter()
-                .enumerate()
-                .find_map(|(index, nested)| unchecked_keyword(nested, &format!("{at}[{index}]"))),
-            "items" if item.is_array() => item
-                .as_array()?
-                .iter()
-                .enumerate()
-                .find_map(|(index, nested)| unchecked_keyword(nested, &format!("{at}[{index}]"))),
-            "items"
-            | "additionalItems"
-            | "additionalProperties"
-            | "propertyNames"
-            | "contains"
-            | "not"
-            | "if"
-            | "then"
-            | "else" => unchecked_keyword(item, &at),
-            _ => None,
-        }
-    })
-}
 
 /// One typebox validation error (`TLocalizedValidationError` without `schemaPath`).
 #[derive(Clone, Debug, PartialEq)]
@@ -307,10 +93,9 @@ impl Context {
 
 /// A JavaScript number as a template literal prints it.
 fn js_number(value: &Value) -> String {
-    match value.as_f64() {
-        Some(n) if n.fract() == 0.0 && n.abs() < 1e21 => format!("{}", n as i64),
-        Some(n) => format!("{n}"),
-        None => value.to_string(),
+    match value {
+        Value::Number(n) => number_to_string(n),
+        other => other.to_string(),
     }
 }
 
@@ -411,6 +196,8 @@ fn type_matches(name: &str, value: &Value) -> bool {
         "number" => value.is_number(),
         "null" => value.is_null(),
         "string" => value.is_string(),
+        // typebox's own type names, which no JSON value has.
+        "bigint" | "constructor" | "function" | "symbol" | "undefined" | "void" => false,
         _ => true,
     }
 }
@@ -474,93 +261,9 @@ fn multiple_of(dividend: f64, divisor: f64) -> bool {
     modulo.abs().min((modulo - divisor).abs()).min((modulo + divisor).abs()) < 1e-10
 }
 
+/// `new RegExp(pattern, "u").test(text)` (typebox's `UnicodeRegExp`); a pattern that does not compile matches nothing.
 fn regex_test(pattern: &str, text: &str) -> bool {
-    Regex::new(pattern).is_ok_and(|regex| regex.is_match(text).unwrap_or(false))
-}
-
-fn leap_year(year: u32) -> bool {
-    year.is_multiple_of(4) && (!year.is_multiple_of(100) || year.is_multiple_of(400))
-}
-
-fn is_date(text: &str) -> bool {
-    let bytes = text.as_bytes();
-    if bytes.len() != 10 || bytes[4] != b'-' || bytes[7] != b'-' {
-        return false;
-    }
-    let digits = |range: std::ops::Range<usize>| -> Option<u32> {
-        bytes[range.clone()]
-            .iter()
-            .all(u8::is_ascii_digit)
-            .then(|| text[range].parse().ok())
-            .flatten()
-    };
-    let (Some(year), Some(month), Some(day)) = (digits(0..4), digits(5..7), digits(8..10)) else {
-        return false;
-    };
-    const DAYS: [u32; 13] = [0, 31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
-    (1..=12).contains(&month)
-        && day >= 1
-        && day
-            <= if month == 2 && leap_year(year) {
-                29
-            } else {
-                DAYS[month as usize]
-            }
-}
-
-fn is_time(text: &str) -> bool {
-    let Ok(regex) = Regex::new(r"^(\d\d):(\d\d):(\d\d)(?:\.\d+)?(?:([Zz])|([+-])(\d\d):(\d\d))?$") else {
-        return false;
-    };
-    let Ok(Some(found)) = regex.captures(text) else {
-        return false;
-    };
-    let number = |index: usize| -> i64 { found.get(index).and_then(|m| m.as_str().parse().ok()).unwrap_or(0) };
-    let zulu = found.get(4).is_some();
-    let sign = found.get(5).map(|m| m.as_str());
-    if !zulu && sign.is_none() {
-        return false;
-    }
-    let (hour, minute, second) = (number(1), number(2), number(3));
-    if hour > 23 || minute > 59 || second > 60 {
-        return false;
-    }
-    if sign.is_some() && (number(6) > 23 || number(7) > 59) {
-        return false;
-    }
-    if second < 60 {
-        return true;
-    }
-    let direction = if sign == Some("-") { -1 } else { 1 };
-    let total = (hour * 60 + minute) - direction * (number(6) * 60 + number(7));
-    (total % 1440 + 1440) % 1440 == 1439
-}
-
-/// typebox `Format.Test` for the ported formats; unknown names pass.
-fn format_matches(format: &str, text: &str) -> bool {
-    match format {
-        "date" => is_date(text),
-        "time" => is_time(text),
-        "date-time" => {
-            let parts: Vec<&str> = text.split(['T', 't']).collect();
-            parts.len() == 2 && is_date(parts[0]) && is_time(parts[1])
-        }
-        "email" => regex_test(
-            r#"(?i)^(?:[a-z0-9!#$%&'*+/=?^_`{|}~-]+(?:\.[a-z0-9!#$%&'*+/=?^_`{|}~-]+)*|"(?:[^"\\]|\\[\x20-\x7e])*")@(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)*|\[(?:IPv6:[a-f0-9:]+|(?:25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])(?:\.(?:25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])){3})\])$"#,
-            text,
-        ),
-        "uuid" => regex_test(r"(?i)^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$", text),
-        "ipv4" => regex_test(
-            r"^(?:(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)\.){3}(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)$",
-            text,
-        ),
-        "duration" => regex_test(
-            r"^P((\d+Y(\d+M(\d+D)?)?|\d+M(\d+D)?|\d+D)(T(\d+H(\d+M(\d+S)?)?|\d+M(\d+S)?|\d+S))?|T(\d+H(\d+M(\d+S)?)?|\d+M(\d+S)?|\d+S)|\d+W)$",
-            text,
-        ),
-        "json-pointer" => regex_test(r"^(?:/(?:[^~/]|~0|~1)*)*$", text),
-        _ => true,
-    }
+    js_regex(pattern).is_some_and(|regex| regex.is_match(text).unwrap_or(false))
 }
 
 /// `GetPropertiesPattern`: a key covered by `properties` or a `patternProperties` pattern.
@@ -701,7 +404,7 @@ fn eval_object(schema: &Map<String, Value>, object: &Map<String, Value>, path: &
     }
     if let Some(additional) = schema.get("additionalProperties") {
         let mut rejected = Vec::new();
-        for (key, item) in object {
+        for (key, item) in object_entries(object) {
             if !declared(schema, key) && !eval(additional, item, &format!("{path}/{key}"), context) {
                 rejected.push(key.clone());
             }
@@ -768,7 +471,7 @@ fn eval_object(schema: &Map<String, Value>, object: &Map<String, Value>, path: &
     }
     if let Some(patterns) = schema.get("patternProperties").and_then(Value::as_object) {
         for (pattern, nested) in patterns {
-            for (key, item) in object {
+            for (key, item) in object_entries(object) {
                 if regex_test(pattern, key) {
                     ok &= eval(nested, item, &format!("{path}/{key}"), context);
                 }
@@ -784,7 +487,7 @@ fn eval_object(schema: &Map<String, Value>, object: &Map<String, Value>, path: &
     }
     if let Some(names) = schema.get("propertyNames") {
         let mut rejected = Vec::new();
-        for key in object.keys() {
+        for (key, _) in object_entries(object) {
             if !eval(names, &Value::String(key.clone()), &format!("{path}/{key}"), context) {
                 rejected.push(key.clone());
             }
@@ -915,7 +618,7 @@ fn eval_string(schema: &Map<String, Value>, text: &str, path: &str, context: &mu
         ok &= context.add("minLength", path, json!({ "limit": limit }));
     }
     if let Some(format) = schema.get("format").and_then(Value::as_str)
-        && !format_matches(format, text)
+        && !formats::matches(format, text)
     {
         ok &= context.add("format", path, json!({ "format": format }));
     }

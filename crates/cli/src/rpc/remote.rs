@@ -267,7 +267,7 @@ impl RpcSession for Remote<'_> {
     fn input_ended(&mut self) {
         // Leaving is not an abort (TS: a root turn in flight when its client closes stdin runs to completion): the
         // session is released at once and a busy worker keeps its work running detached.
-        if daemon::signals::received().is_some() {
+        if signals::received().is_some() {
             return;
         }
         self.close();
@@ -574,8 +574,8 @@ pub fn run(
     // with the signal's code.
     let signalled = Arc::new(std::sync::atomic::AtomicI32::new(0));
     let (code, end) = (signalled.clone(), std::sync::Mutex::new(tx.clone()));
-    daemon::signals::set_handler(Arc::new(move |signal| {
-        let exit = daemon::signals::exit_code(signal);
+    signals::set_handler(Arc::new(move |signal| {
+        let exit = signals::exit_code(signal);
         code.store(exit, Ordering::SeqCst);
         herdr::release_active();
         // Leaving RPC on a signal releases the session without aborting the running turn (as in TS): a busy worker
@@ -585,7 +585,7 @@ pub fn run(
             .unwrap_or_else(|e| e.into_inner())
             .send(Input::Event(Event::Signal(exit)));
         std::thread::sleep(crate::print_mode::PROMPT_ABORT_WAIT);
-        std::process::exit(daemon::signals::exit_code(signal));
+        std::process::exit(signals::exit_code(signal));
     }));
     let reader = std::thread::spawn(move || {
         for line in super::jsonl::JsonlLines::new(input) {
@@ -608,6 +608,6 @@ pub fn run(
     Ok(if code != 0 {
         code
     } else {
-        daemon::signals::received().map_or(0, daemon::signals::exit_code)
+        signals::received().map_or(0, signals::exit_code)
     })
 }

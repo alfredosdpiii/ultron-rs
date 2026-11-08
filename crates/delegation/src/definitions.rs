@@ -3,9 +3,9 @@
 //! document replaced whole, a failed write poisons the registry), and the input/output contract checks every
 //! strategy shares, with the schema error detail of definitions derived from Python agent classes.
 
-use crate::schema::{self, unchecked_keyword, validate_json_schema};
 use crate::task_store::TaskStore;
 use harness::task_store::task_fingerprint;
+use jsonschema::{unchecked_keyword, validate_json_schema};
 use serde_json::{Map, Value, json};
 
 /// Schema keyword marking a definition derived from a Python agent class (`agent_class_api.py`).
@@ -240,7 +240,7 @@ fn descriptor_shape(value: &Value) -> bool {
         return false;
     }
     let text = |key: &str| map.get(key).and_then(Value::as_str);
-    let nonempty = |key: &str| text(key).is_some_and(|t| schema::grapheme_count(t) >= 1);
+    let nonempty = |key: &str| text(key).is_some_and(|t| jsonschema::grapheme_count(t) >= 1);
     text("id").is_some_and(is_lower_id)
         && text("version").is_some_and(|v| !v.is_empty() && v.bytes().all(|b| b.is_ascii_digit()))
         && text("strategy").is_some_and(|s| ["deterministic", "predict", "rlm"].contains(&s))
@@ -269,7 +269,7 @@ pub fn validate_definition(value: &Value) -> Result<Map<String, Value>, String> 
     ] {
         if let Some(at) = unchecked_keyword(schema, path) {
             return Err(format!(
-                "Invalid JSON schema at {at}: is not checked by this host (unevaluated keywords and the formats hostname, ipv6, uri, iri, url, regex and json-pointer fragments are not supported)"
+                "Invalid JSON schema at {at}: is not checked by this host (unevaluatedProperties and unevaluatedItems are not supported)"
             ));
         }
     }
@@ -442,11 +442,11 @@ impl DefinitionRegistry {
     }
 
     pub fn is_valid_input(&self, definition: &Definition, value: &Value) -> bool {
-        schema::check(definition.input_schema(), value)
+        jsonschema::check(definition.input_schema(), value)
     }
 
     pub fn is_valid_output(&self, definition: &Definition, value: &Value) -> bool {
-        schema::check(definition.output_schema(), value)
+        jsonschema::check(definition.output_schema(), value)
     }
 
     /// `validationError(definition, value, direction)`'s message.
@@ -481,7 +481,7 @@ impl DefinitionRegistry {
 /// `schemaErrorDetail`: up to three distinct `"$.path message (allowed)"` lines, at most 600 UTF-16 units.
 pub fn schema_error_detail(schema: &Value, value: &Value) -> String {
     let mut lines: Vec<String> = Vec::new();
-    for error in schema::errors(schema, value) {
+    for error in jsonschema::errors(schema, value) {
         if error.keyword == "boolean" {
             continue;
         }

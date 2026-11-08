@@ -1,4 +1,6 @@
-//! `ultron claude|mcp|hook|watch|guide` (claude/cli.ts): the dispatch main.ts does for these commands.
+//! `ultron claude|mcp|hook|guide` (claude/cli.ts): the dispatch main.ts does for these commands. `ultron watch`, the
+//! terminal viewer of a running `ultron mcp`, is the cli crate's (it draws with the TUI); it reports failures with
+//! [`exit_code`].
 
 use crate::guide::{Audience, GuideOptions, ResourceFlags};
 use crate::{Ctx, UsageError};
@@ -6,7 +8,7 @@ use session_core::RunEnv;
 use std::io::{IsTerminal, Write};
 use std::path::PathBuf;
 
-pub const CLAUDE_COMMANDS: [&str; 5] = ["claude", "mcp", "hook", "watch", "guide"];
+pub const CLAUDE_COMMANDS: [&str; 4] = ["claude", "mcp", "hook", "guide"];
 
 pub const GUIDE_HELP: &str =
     "Usage: ultron guide [--for ultron|claude|claude-child] [--cwd <dir>] [--no-context-files] [--no-skills]
@@ -119,12 +121,6 @@ fn dispatch(argv: &[String], ctx: &Ctx, out: &mut dyn Write, err: &mut dyn Write
             let tty = stdin.is_terminal();
             Ok(crate::hooks::run(rest, &mut stdin.lock(), tty, &*ctx.env.var, out, err))
         }
-        "watch" => Ok(crate::watch::run(
-            rest,
-            &ctx.env.cwd.display().to_string(),
-            &*ctx.env.var,
-            out,
-        )?),
         "mcp" => {
             let stdin = std::io::stdin();
             Ok(crate::mcp_server::run(
@@ -145,7 +141,11 @@ pub fn run(argv: &[String], env: &RunEnv, out: &mut dyn Write, err: &mut dyn Wri
         return None;
     }
     let ctx = Ctx { env: env.clone() };
-    Some(match dispatch(argv, &ctx, out, err) {
+    Some(report(dispatch(argv, &ctx, out, err), err))
+}
+
+fn report(result: Result<i32, Failure>, err: &mut dyn Write) -> i32 {
+    match result {
         Ok(code) => code,
         Err(Failure::Usage(message)) => {
             let _ = writeln!(err, "Error: {message}");
@@ -155,5 +155,11 @@ pub fn run(argv: &[String], env: &RunEnv, out: &mut dyn Write, err: &mut dyn Wri
             let _ = writeln!(err, "Error: {message}");
             if usage_message(&message) { 2 } else { 1 }
         }
-    })
+    }
+}
+
+/// The exit code of one of these commands' results, as claude/cli.ts's catch gives it: the code, or `Error: <message>`
+/// on `err` and 2 for a usage message, else 1.
+pub fn exit_code(result: Result<i32, String>, err: &mut dyn Write) -> i32 {
+    report(result.map_err(Failure::Other), err)
 }

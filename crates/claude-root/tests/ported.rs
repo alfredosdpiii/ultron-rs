@@ -15,7 +15,6 @@ use claude_root::launcher::{LaunchInput, LauncherOptions, build_claude_launch, p
 use claude_root::mcp_protocol::{McpHandlers, McpPrompt, McpResource, serve};
 use claude_root::mcp_server::parse_mcp_args;
 use claude_root::self_cmd::{SelfCommand, shell_quote};
-use claude_root::watch::parse_watch_args;
 use claude_root::worker_root::{claude_root_requested, prepare_claude_root};
 use serde_json::{Map, Value, json};
 use std::collections::BTreeSet;
@@ -454,11 +453,6 @@ fn claude_root_mcp_server_flags_are_checked() {
             .unwrap_err()
             .0
             .contains("claude or ultron")
-    );
-    assert!(
-        parse_watch_args(&strings(&["--nope"]))
-            .unwrap_err()
-            .contains("unknown option")
     );
     // JS Number(): blanks are 0, hex works, fractions are refused.
     assert_eq!(parse_mcp_args(&strings(&["--level", " "])).unwrap().level, 0);

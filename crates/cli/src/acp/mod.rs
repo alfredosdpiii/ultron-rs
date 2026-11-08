@@ -668,8 +668,8 @@ pub fn run(
 ) -> Result<i32, String> {
     let (tx, rx): (Sender<Input>, Receiver<Input>) = channel();
     let signal_tx = Mutex::new(tx.clone());
-    daemon::signals::set_handler(Arc::new(move |signal| {
-        let code = daemon::signals::exit_code(signal);
+    signals::set_handler(Arc::new(move |signal| {
+        let code = signals::exit_code(signal);
         let _ = signal_tx
             .lock()
             .unwrap_or_else(PoisonError::into_inner)

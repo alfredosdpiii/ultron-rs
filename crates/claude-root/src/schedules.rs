@@ -1,7 +1,7 @@
 //! Scheduled prompts under `ultron claude` (`schedule.every`, `schedule.at`; kernel_apis::prompt_schedule).
 //!
 //! In a native session the Ultron server's timer fires a due schedule and the session actor starts a turn with its
-//! prompt (daemon::prompt_schedules). Claude Code's session has no Ultron server, so this server keeps the timer:
+//! prompt (crates/daemon `prompt_schedules`). Claude Code's session has no Ultron server, so this server keeps the timer:
 //! one thread sleeps until the earliest due time (on the schedules' own clock; a change to the schedules wakes it),
 //! records the run (`fire_with`: missed slots collapse into one run, the next slot is after now) and puts the prompt
 //! in the root's inbox as a `<scheduled_prompt>` line. While Claude Code is idle the wait-events hook
@@ -10,7 +10,7 @@
 //!
 //! The schedules fire only while Claude Code runs (this server is the process it starts for its session). They are
 //! kept as session values of their own namespace, [`NAMESPACE`], not `ultron.schedule`: the Ultron server's timer
-//! reads only that one from the session journals (daemon::prompt_schedules::scan_journal), so it never fires a Claude
+//! reads only that one from the session journals (kernel_apis::prompt_schedule::scan_journal), so it never fires a Claude
 //! Code session's schedule as a native turn on Claude's session. `claude --resume` reopens the same Ultron session,
 //! and its server's timer finds the schedules again: the slots missed while Claude Code was down collapse into one
 //! run (`fire_with`), as for a timer that slept through them.
@@ -23,8 +23,8 @@ use session_core::durable_store::{SharedSession, lock};
 use std::collections::HashMap;
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
 
-/// A delivery that failed is tried again after this (daemon::prompt_schedules::RETRY_MS).
-pub const RETRY_MS: i64 = daemon::prompt_schedules::RETRY_MS;
+/// A delivery that failed is tried again after this (the server's timer waits as long).
+pub const RETRY_MS: i64 = kernel_apis::prompt_schedule::RETRY_MS;
 
 /// Where a Claude Code session's schedules are kept (session values; never `ultron.schedule`).
 pub const NAMESPACE: &str = "ultron.claude.schedule";
@@ -161,7 +161,7 @@ impl ScheduleTimer {
             let _woken = match (earliest, limit) {
                 (Some(_), Some(limit)) => {
                     self.bell
-                        .wait_timeout(state, limit.min(daemon::prompt_schedules::MAX_SLEEP))
+                        .wait_timeout(state, limit.min(kernel_apis::prompt_schedule::MAX_SLEEP))
                         .unwrap_or_else(PoisonError::into_inner)
                         .0
                 }

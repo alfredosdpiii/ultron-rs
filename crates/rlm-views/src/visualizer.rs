@@ -9,7 +9,7 @@ use serde_json::Value;
 use tui::theme::Theme;
 
 use super::{flat, js_slice};
-use crate::components::{bold, fg};
+use crate::{bold, fg};
 
 /// A task's result (`agents.status`).
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -449,7 +449,7 @@ pub fn short_id(id: &str) -> String {
 
 /// `formatDuration`.
 pub fn format_duration(ms: f64) -> String {
-    use crate::components::js_to_fixed;
+    use crate::js_to_fixed;
     if ms < 1000.0 {
         return format!("{}ms", super::js_num(ms.round()));
     }

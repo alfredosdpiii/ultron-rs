@@ -3,8 +3,8 @@
 //! the corpus, and the registry's register / list / stored hashes / reload / validation errors.
 
 use delegation::definitions::DefinitionRegistry;
-use delegation::schema::{check, errors, validate_json_schema};
 use delegation::task_store::TaskStore;
+use jsonschema::{check, errors, validate_json_schema};
 use serde_json::{Value, json};
 use std::path::Path;
 use std::sync::{Arc, Mutex};

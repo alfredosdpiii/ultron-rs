@@ -13,7 +13,7 @@ use serde_json::Value;
 
 use std::sync::Arc;
 
-use mcp::validation::validate_tool_arguments;
+use jsonschema::validate_tool_arguments;
 
 use crate::types::{
     AgentContext, AgentEvent, AgentLoopConfig, AgentMessage, AgentTool, AgentToolResult, BeforeToolCallContext,

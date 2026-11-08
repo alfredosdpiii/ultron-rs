@@ -922,7 +922,7 @@ pub fn run(args: &[String], docs: PathBuf) -> Result<(), String> {
     }
     // A signal stops the session (its run stays open in the journal; the next worker recovers it) and exits.
     let signalled = Arc::downgrade(&shared);
-    crate::signals::set_handler(Arc::new(move |_| {
+    signals::set_handler(Arc::new(move |_| {
         if let Some(shared) = signalled.upgrade() {
             shared.hand_over_and_exit(0);
         }

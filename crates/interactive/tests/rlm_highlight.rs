@@ -3,7 +3,7 @@
 
 use std::rc::Rc;
 
-use interactive::rlm::highlight::{highlight_code, rlm_highlighter};
+use interactive::rlm_highlight::{highlight_code, rlm_highlighter};
 use serde_json::Value;
 use tui::hljs::Token;
 use tui::theme::{ColorMode, Theme, builtin_theme_json, create_theme};

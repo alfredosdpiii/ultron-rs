@@ -23,6 +23,7 @@ dependencies = [
  "session-core",
  "session-file",
  "session-journal",
+ "signals",
  "tempfile",
 ]
 
@@ -37,7 +38,7 @@ name = "agent"
 version = "0.1.0"
 dependencies = [
  "ai",
- "mcp",
+ "jsonschema",
  "serde",
  "serde_json",
  "tokio",
@@ -327,7 +328,6 @@ dependencies = [
  "agent",
  "ai",
  "config",
- "daemon",
  "delegation",
  "durable",
  "getrandom 0.4.3",
@@ -335,7 +335,6 @@ dependencies = [
  "herdr",
  "host",
  "indexmap",
- "interactive",
  "kernel",
  "kernel-apis",
  "loki",
@@ -347,9 +346,9 @@ dependencies = [
  "session-core",
  "session-file",
  "session-journal",
+ "signals",
  "tempfile",
  "tokio",
- "tui",
 ]
 
 [[package]]
@@ -385,6 +384,7 @@ dependencies = [
  "resources",
  "review",
  "ring",
+ "rlm-views",
  "rustix",
  "sandbox",
  "serde_json",
@@ -393,6 +393,7 @@ dependencies = [
  "session-file",
  "session-journal",
  "sha2",
+ "signals",
  "telemetry",
  "tempfile",
  "tokio",
@@ -579,7 +580,6 @@ dependencies = [
  "harness",
  "kernel-apis",
  "mcp",
- "nix",
  "protocol",
  "resources",
  "rustix",
@@ -589,7 +589,7 @@ dependencies = [
  "session-file",
  "session-journal",
  "sha2",
- "signal-hook",
+ "signals",
  "tempfile",
 ]
 
@@ -611,9 +611,9 @@ version = "0.1.0"
 dependencies = [
  "agent",
  "ai",
- "fancy-regex 0.19.2",
  "getrandom 0.4.3",
  "harness",
+ "jsonschema",
  "kernel",
  "kernel-apis",
  "regex",
@@ -1445,6 +1445,7 @@ dependencies = [
  "ai",
  "getrandom 0.4.3",
  "host",
+ "jsonschema",
  "kernel",
  "serde_json",
  "tempfile",
@@ -1460,6 +1461,7 @@ dependencies = [
  "fancy-regex 0.19.2",
  "image",
  "model-scope",
+ "rlm-views",
  "rustix",
  "serde_json",
  "session-file",
@@ -1549,6 +1551,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "jsonschema"
+version = "0.1.0"
+dependencies = [
+ "config",
+ "fancy-regex 0.19.2",
+ "icu_normalizer",
+ "regex",
+ "serde_json",
+ "session-file",
+ "url",
+]
+
+[[package]]
 name = "kernel"
 version = "0.1.0"
 dependencies = [
@@ -1577,6 +1592,7 @@ dependencies = [
  "serde",
  "serde_json",
  "session-file",
+ "session-journal",
  "sha2",
  "tempfile",
  "tokio",
@@ -1708,10 +1724,8 @@ dependencies = [
  "ai",
  "base64 0.23.1",
  "config",
- "fancy-regex 0.19.2",
  "getrandom 0.4.3",
- "icu_normalizer",
- "regex",
+ "jsonschema",
  "reqwest",
  "rustix",
  "serde_json",
@@ -2365,6 +2379,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "rlm-views"
+version = "0.1.0"
+dependencies = [
+ "fancy-regex 0.19.2",
+ "serde_json",
+ "tui",
+]
+
+[[package]]
 name = "roxmltree"
 version = "0.20.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2685,6 +2708,7 @@ dependencies = [
  "host",
  "indexmap",
  "inference",
+ "jsonschema",
  "kernel",
  "kernel-apis",
  "loki",
@@ -2756,6 +2780,14 @@ checksum = "c4db69cba1110affc0e9f7bcd48bbf87b3f4fc7c61fc9155afd4c469eb3d6c1b"
 dependencies = [
  "errno",
  "libc",
+]
+
+[[package]]
+name = "signals"
+version = "0.1.0"
+dependencies = [
+ "nix",
+ "signal-hook",
 ]
 
 [[package]]

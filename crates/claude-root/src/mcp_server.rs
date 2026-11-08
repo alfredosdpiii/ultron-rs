@@ -1290,14 +1290,14 @@ pub fn run(
 ) -> Result<i32, String> {
     let (running, handlers) = start(argv, ctx)?;
     let signalled = running.clone();
-    daemon::signals::set_handler(Arc::new(move |_| {
+    signals::set_handler(Arc::new(move |_| {
         signalled.shutdown();
         std::process::exit(0);
     }));
     serve(handlers, stdin, stdout);
     // Claude Code closed the connection: shut down (running subagents and jobs stop with the host).
     running.shutdown();
-    daemon::signals::clear_handler();
+    signals::clear_handler();
     Ok(0)
 }
 

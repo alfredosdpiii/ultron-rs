@@ -10,10 +10,8 @@ autotests = false
 agent = { path = "../agent" }
 ai = { path = "../ai" }
 config = { path = "../config" }
-daemon = { path = "../daemon" }
 delegation = { path = "../delegation" }
 durable = { path = "../durable" }
-interactive = { path = "../interactive" }
 getrandom = "=0.4.3"
 harness = { path = "../harness" }
 herdr = { path = "../herdr" }
@@ -30,7 +28,7 @@ serde_json = { version = "=1.0.151", features = ["preserve_order"] }
 session-core = { path = "../session-core" }
 session-file = { path = "../session-file" }
 session-journal = { path = "../session-journal" }
-tui = { path = "../tui" }
+signals = { path = "../signals" }
 tokio = { version = "=1.53.2", features = ["rt", "time"] }
 
 [dev-dependencies]

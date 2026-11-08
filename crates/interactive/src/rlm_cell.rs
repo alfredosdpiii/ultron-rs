@@ -2,7 +2,7 @@
 //! Python with a line-number gutter and its output. Collapsed, the code shows its first lines and the output its last
 //! visual lines, each with an expand-key hint; expanded, both are shown in full, then the diff of every file the cell
 //! wrote (`details.fileChanges`, Rust-only; collapsed, nothing of it is drawn). Syntax highlighting is injected
-//! (`highlightCode(code, "python")` in TS); the product's is [`crate::rlm::highlight::rlm_highlighter`].
+//! (`highlightCode(code, "python")` in TS); the product's is [`crate::rlm_highlight::rlm_highlighter`].
 
 use std::rc::Rc;
 

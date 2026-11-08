@@ -8,8 +8,7 @@
 use serde_json::Value;
 use session_file::js::{format_f64, to_number};
 
-use crate::js_json::js_number;
-use crate::validation::valid;
+use crate::tool::{js_number, valid};
 
 const MAX_SAFE: f64 = 9_007_199_254_740_991.0;
 

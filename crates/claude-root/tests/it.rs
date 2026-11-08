@@ -27,5 +27,3 @@ mod subscription_root;
 mod ultron_child_model;
 #[path = "ultron_children.rs"]
 mod ultron_children;
-#[path = "watch.rs"]
-mod watch;

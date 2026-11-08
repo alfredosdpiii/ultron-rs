@@ -946,7 +946,7 @@ fn claude_root_schedules_survive_claude_resume_and_the_missed_slots_fire_once() 
             .unwrap()
             .contains("ultron.claude.schedule")
     );
-    assert!(daemon::prompt_schedules::scan_journal(&session_path).is_empty());
+    assert!(kernel_apis::prompt_schedule::scan_journal(&session_path).is_empty());
     // Claude Code is down for five slots; `claude --resume` reopens the session, and its schedule.
     std::fs::write(&clock, "300000").unwrap();
     let mut server = Server::start(&root, port, &env, &[]);

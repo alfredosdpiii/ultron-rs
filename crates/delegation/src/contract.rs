@@ -13,7 +13,7 @@
 //! The model writes the brief (a kernel API payload); the host stamps the hop, so a child cannot claim to be
 //! shallower than it is.
 
-use crate::schema::json_equal;
+use jsonschema::json_equal;
 use serde_json::{Map, Value, json};
 
 /// Most checks one contract may list.

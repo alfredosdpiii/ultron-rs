@@ -15,10 +15,10 @@
 
 use crate::contract::Brief;
 use crate::definitions::{Definition, DefinitionRegistry, Strategy, is_model};
-use crate::schema::json_equal;
 use crate::task_store::{TaskJournal, TaskStore, task_fingerprint, uuid_v4};
 use crate::usage::{Measurement, Reservation, ReserveRequest, UsageLedger, number};
 use crate::verdict::{MAX_VERDICT_REJECTIONS, validate_verdict};
+use jsonschema::json_equal;
 use kernel::{HostHandler, Signal};
 use serde_json::{Map, Value, json};
 use std::collections::HashMap;

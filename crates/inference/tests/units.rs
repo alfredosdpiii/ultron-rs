@@ -254,11 +254,11 @@ fn inference_refuses_what_this_host_cannot_run() {
     let pattern = call(
         &handler,
         "rlm.infer",
-        json!({"task": "t", "contract": {"type": "string", "pattern": "^x"}}),
+        json!({"task": "t", "contract": {"type": "object", "unevaluatedProperties": false}}),
     );
     assert_eq!(
         pattern,
-        Err("$.contract.pattern: this contract keyword is not checked by this host yet".to_string())
+        Err("$.contract.unevaluatedProperties: this contract keyword is not checked by this host yet".to_string())
     );
     let other = call(&handler, "rlm.infer", json!({"task": "t", "model": "other/model"})).unwrap();
     assert_eq!(

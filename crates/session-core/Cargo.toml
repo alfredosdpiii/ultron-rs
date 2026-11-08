@@ -20,6 +20,7 @@ hindsight = { path = "../hindsight" }
 indexmap = "=2.14.2"
 host = { path = "../host" }
 inference = { path = "../inference" }
+jsonschema = { path = "../jsonschema" }
 kernel = { path = "../kernel" }
 kernel-apis = { path = "../kernel-apis" }
 loki = { path = "../loki" }

@@ -436,7 +436,7 @@ fn interactive_rlm_cell_matches_ts() {
             for (w, want) in ws.iter().zip(per_width.as_array().unwrap()) {
                 total += 1;
                 let hl = hl.clone();
-                let product = interactive::rlm::highlight::rlm_highlighter(theme);
+                let product = interactive::rlm_highlight::rlm_highlighter(theme);
                 let highlight: interactive::rlm_cell::Highlighter = Rc::new(move |code: &str| {
                     assert_eq!(code, s(&hl["input"]), "rlm[{ci}] highlighter input");
                     let lines = product(code);

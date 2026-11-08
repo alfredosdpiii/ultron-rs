@@ -72,7 +72,7 @@ fn agent_validate_tool_arguments_matches_typescript() {
     assert_eq!(cases.len(), 53);
     for case in cases {
         let name = case["schema"].as_str().unwrap();
-        let actual = mcp::validation::validate_tool_arguments(name, &schemas[name], &case["args"]);
+        let actual = jsonschema::validate_tool_arguments(name, &schemas[name], &case["args"]);
         let label = format!("{name} {}", case["args"]);
         match (&actual, case.get("ok")) {
             (Ok(args), Some(expected)) => {

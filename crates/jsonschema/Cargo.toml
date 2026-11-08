@@ -1,0 +1,24 @@
+[package]
+name = "jsonschema"
+version = "0.1.0"
+description = "TypeBox's JSON-schema checking as the TypeScript product runs it: the definition-registry meta-check, Check/Errors (keyword order, en_US messages, the eight-error cap), the registered string formats, Value.Convert, and tool-argument preparation and validation"
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+autotests = false
+
+[dependencies]
+config = { path = "../config" }
+fancy-regex = "=0.19.2"
+icu_normalizer = "=2.3.0"
+regex = "=1.13.1"
+serde_json = { version = "=1.0.151", features = ["preserve_order"] }
+session-file = { path = "../session-file" }
+url = "=2.5.8"
+
+[lints]
+workspace = true
+
+[[test]]
+name = "it"
+path = "tests/it.rs"

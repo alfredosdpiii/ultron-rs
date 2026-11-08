@@ -22,8 +22,8 @@
 //! child up to N more times with the failures appended to its brief; `{"review": brief}` spawns a reviewer child
 //! (named `<name>-review`) with the brief, the result and the failures, its handle in `check.contract.hop`.
 
-use crate::schema::{errors as schema_errors, unchecked_keyword, validate_json_schema};
 use crate::workspace::WorkspaceDiff;
+use jsonschema::{errors as schema_errors, unchecked_keyword, validate_json_schema};
 use kernel::Signal;
 use kernel_apis::memory_records::Glob;
 use serde_json::{Map, Value, json};

@@ -57,7 +57,7 @@ impl ToolRunner for SessionTools {
         };
         // `prepareToolArguments`: validated and coerced against the tool's schema, as the harness does for a model's
         // call; a failure fails the call with TypeBox's message.
-        let params = mcp::validation::prepare_tool_arguments(name, &tool.parameters, params)?;
+        let params = jsonschema::prepare_tool_arguments(name, &tool.parameters, params)?;
         let token = mcp::CancelToken::new();
         let (watched, signal) = (token.clone(), cancel.clone());
         let (done_tx, done) = std::sync::mpsc::channel::<()>();

@@ -11,7 +11,7 @@ static ALLOCATOR: mimalloc::MiMalloc = mimalloc::MiMalloc;
 fn main() {
     // Before any thread starts: SIGINT/SIGTERM/SIGHUP are read on a thread of their own (crates/daemon `signals`);
     // without a handler they act as they would have.
-    if let Err(error) = daemon::signals::install() {
+    if let Err(error) = signals::install() {
         eprintln!("Signal handling unavailable: {error}");
     }
     let argv: Vec<String> = std::env::args().skip(1).collect();

@@ -1,0 +1,20 @@
+[package]
+name = "signals"
+version = "0.1.0"
+description = "Process signal handling without unsafe: SIGINT, SIGTERM and SIGHUP caught and dispatched to the running mode's handler, never blocked (children inherit default handling)"
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+autotests = false
+
+[dependencies]
+nix = { version = "=0.31.3", features = ["signal"] }
+signal-hook = { version = "=0.4.6", default-features = false, features = ["iterator"] }
+
+[lints]
+workspace = true
+
+# `install` is once per process: its own test binary.
+[[test]]
+name = "signals"
+path = "tests/signals.rs"
