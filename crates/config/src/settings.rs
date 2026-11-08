@@ -284,6 +284,12 @@ impl SettingsManager {
         }
     }
 
+    /// The session worker's settings: the project's are loaded when [`crate::trust::worker_project_trusted`] says so.
+    pub fn for_worker(cwd: &Path, agent_dir: &Path, home: &Path) -> SettingsManager {
+        let trusted = crate::trust::worker_project_trusted(cwd, agent_dir, home);
+        SettingsManager::create(cwd, agent_dir, trusted)
+    }
+
     pub fn path(&self, scope: Scope) -> &Path {
         &self.paths[scope.index()]
     }
@@ -439,12 +445,9 @@ impl SettingsManager {
         self.patch_global_object(field, &[(key, value)]);
     }
 
-    /// `setAutoreviewSettings`: each patched key is merged into the file's current `autoreview` object.
-    pub fn set_autoreview_settings(&mut self, patch: &[(&str, Option<Value>)]) {
-        self.patch_global_object("autoreview", patch);
-    }
-
-    fn patch_global_object(&mut self, field: &str, patch: &[(&str, Option<Value>)]) {
+    /// Merge each patched key into the file's current `field` object (`null` removes it) and write it
+    /// (`setAutoreviewSettings`).
+    pub fn patch_global_object(&mut self, field: &str, patch: &[(&str, Option<Value>)]) {
         let mut current = match self.global.get(field) {
             Some(Value::Object(map)) => map.clone(),
             _ => Map::new(),
@@ -458,18 +461,6 @@ impl SettingsManager {
         }
         self.global.insert(field.to_string(), Value::Object(current));
         self.save(Scope::Global);
-    }
-
-    /// `setLokiSettings`: the validated current settings with `patch` on top, replacing the whole object.
-    pub fn set_loki_settings(&mut self, patch: &[(&str, Option<Value>)]) {
-        let mut loki = self.loki_settings();
-        for (key, value) in patch {
-            match value {
-                Some(v) => loki.insert(key.to_string(), v.clone()),
-                None => loki.shift_remove(*key),
-            };
-        }
-        self.set_global("loki", Some(Value::Object(loki)));
     }
 
     pub fn set_model_thinking_level(&mut self, provider: &str, model_id: &str, level: &str) {
@@ -566,6 +557,17 @@ impl SettingsManager {
         let dir = Self::truthy(self.settings.get("sessionDir"))?.as_str()?;
         Some(expand_tilde(dir, home))
     }
+    /// `getLastChangelogVersion` (merged: a project value is seen too).
+    pub fn last_changelog_version(&self) -> Option<String> {
+        self.settings
+            .get("lastChangelogVersion")
+            .and_then(Value::as_str)
+            .map(str::to_string)
+    }
+    /// `setLastChangelogVersion`: written to the global settings.
+    pub fn set_last_changelog_version(&mut self, version: &str) {
+        self.set_global("lastChangelogVersion", Some(version.into()));
+    }
     /// Global only: a repository cannot pick its own trust default.
     pub fn default_project_trust(&self) -> &'static str {
         match self.global.get("defaultProjectTrust").and_then(Value::as_str) {
@@ -595,193 +597,5 @@ impl SettingsManager {
     /// Save `provider/id` as `durable.model` (a model chosen in a durable session), leaving the other `durable` keys.
     pub fn set_durable_model(&mut self, provider: &str, id: &str) {
         self.set_global_nested("durable", "model", Some(Value::String(format!("{provider}/{id}"))));
-    }
-
-    /// Global only `loki` settings, dropping invalid values.
-    pub fn loki_settings(&self) -> Settings {
-        let mut out = Map::new();
-        let Some(Value::Object(configured)) = self.global.get("loki") else {
-            return out;
-        };
-        if let Some(mode) = configured
-            .get("mode")
-            .and_then(Value::as_str)
-            .filter(|m| ["on", "advise", "off"].contains(m))
-        {
-            out.insert("mode".into(), mode.into());
-        }
-        for key in ["autoInit", "autoCommit"] {
-            if let Some(Value::Bool(b)) = configured.get(key) {
-                out.insert(key.into(), (*b).into());
-            }
-        }
-        if let Some(Value::Array(items)) = configured.get("ignoreRepos") {
-            let repos: Vec<Value> = items
-                .iter()
-                .filter(|v| v.as_str().is_some_and(|s| !jsrt::string::trim(s).is_empty()))
-                .cloned()
-                .collect();
-            out.insert("ignoreRepos".into(), Value::Array(repos));
-        }
-        out
-    }
-
-    /// Global only `autoreview` settings, dropping invalid values (`getAutoreviewSettings`).
-    pub fn autoreview_settings(&self) -> Settings {
-        let mut out = Map::new();
-        let Some(Value::Object(c)) = self.global.get("autoreview") else {
-            return out;
-        };
-        let strings = |key: &str| -> Option<Value> {
-            let items: Vec<Value> = c
-                .get(key)?
-                .as_array()?
-                .iter()
-                .filter_map(Value::as_str)
-                .filter(|s| !jsrt::string::trim(s).is_empty())
-                .map(|s| jsrt::string::trim(s).into())
-                .collect();
-            (!items.is_empty()).then_some(Value::Array(items))
-        };
-        let count = |key: &str| -> Option<Value> {
-            let n = c.get(key)?.as_f64()?;
-            (n.is_finite() && n > 0.0).then(|| jsrt::json::number(n.floor()))
-        };
-        let flag = |key: &str| c.get(key).filter(|v| v.is_boolean()).cloned();
-        let one_of = |key: &str, options: &[&str]| -> Option<Value> {
-            c.get(key)?.as_str().filter(|s| options.contains(s)).map(Value::from)
-        };
-        let model = |key: &str| model_ref(c.get(key)).map(Value::from);
-        let zero = |key: &str| c.get(key).and_then(Value::as_f64) == Some(0.0);
-        let mut put = |key: &str, value: Option<Value>| {
-            if let Some(v) = value {
-                out.insert(key.into(), v);
-            }
-        };
-        let modes = ["fast", "deep", "both", "compiled", "hybrid"];
-        put("enabled", flag("enabled"));
-        put("accounts", strings("accounts"));
-        put("pollSeconds", count("pollSeconds"));
-        put("concurrency", count("concurrency"));
-        put("model", model("model"));
-        put("verifyModel", model("verifyModel"));
-        put("budget", count("budget"));
-        put("frameConcurrency", count("frameConcurrency"));
-        put("thinking", one_of("thinking", &model_scope::THINKING_LEVELS));
-        put(
-            "verifyThinking",
-            one_of("verifyThinking", &model_scope::THINKING_LEVELS),
-        );
-        put("deadlineSeconds", zero("deadlineSeconds").then(|| 0.into()));
-        put("deadlineSeconds", count("deadlineSeconds"));
-        put("frameTimeoutSeconds", count("frameTimeoutSeconds"));
-        put("mode", one_of("mode", &modes));
-        put("verifyCandidates", count("verifyCandidates"));
-        put("verifyBatch", count("verifyBatch"));
-        put("systemPrefix", flag("systemPrefix"));
-        put("overlap", flag("overlap"));
-        if let Some(Value::Object(limits)) = c.get("modelConcurrency") {
-            let mut parsed = Map::new();
-            for (name, limit) in limits {
-                let n = limit.as_f64().filter(|n| n.is_finite() && *n > 0.0);
-                if let Some(n) = n.filter(|_| name.contains('/')) {
-                    parsed.insert(name.clone(), jsrt::json::number(n.floor()));
-                }
-            }
-            put(
-                "modelConcurrency",
-                (!parsed.is_empty()).then_some(Value::Object(parsed)),
-            );
-        }
-        put("deepModel", model("deepModel"));
-        put("deepThinking", one_of("deepThinking", &model_scope::THINKING_LEVELS));
-        put("planModel", model("planModel"));
-        put("planThinking", one_of("planThinking", &model_scope::THINKING_LEVELS));
-        put("askModel", model("askModel"));
-        put("askThinking", one_of("askThinking", &model_scope::THINKING_LEVELS));
-        put("planStyle", one_of("planStyle", &["cell", "frame"]));
-        put("planCells", count("planCells"));
-        put("deepRounds", count("deepRounds"));
-        put(
-            "referenceView",
-            one_of("referenceView", &["investigators", "all", "none"]),
-        );
-        put(
-            "blockAt",
-            one_of("blockAt", &["critical", "high", "medium", "low", "nit"]),
-        );
-        put("maxComments", zero("maxComments").then(|| 0.into()));
-        put("maxComments", count("maxComments"));
-        put("runTests", flag("runTests"));
-        put("testOwners", strings("testOwners"));
-        put("testRuns", count("testRuns"));
-        put("testTimeoutSeconds", count("testTimeoutSeconds"));
-        if let Some(Value::Object(env)) = c.get("testEnv") {
-            let mut parsed = Map::new();
-            for (repo, dir) in env {
-                if let Some(dir) = dir.as_str().map(jsrt::string::trim).filter(|d| !d.is_empty()) {
-                    parsed.insert(repo.to_lowercase(), dir.into());
-                }
-            }
-            put("testEnv", (!parsed.is_empty()).then_some(Value::Object(parsed)));
-        }
-        put("checkoutRoots", strings("checkoutRoots"));
-        put("guides", strings("guides"));
-        put(
-            "testImage",
-            c.get("testImage")
-                .and_then(Value::as_str)
-                .map(jsrt::string::trim)
-                .filter(|s| !s.is_empty())
-                .map(Value::from),
-        );
-        put("prepareEnvs", flag("prepareEnvs"));
-        let mise = match c.get("mise") {
-            Some(Value::Bool(b)) => Some(Value::Bool(*b)),
-            Some(Value::String(s)) if !jsrt::string::trim(s).is_empty() => Some(jsrt::string::trim(s).into()),
-            _ => None,
-        };
-        put("mise", mise);
-        put("dryRun", flag("dryRun"));
-        put("ack", flag("ack"));
-        put("ackLines", strings("ackLines"));
-        let ack_art = match c.get("ackArt") {
-            Some(Value::Bool(false)) => Some(Value::Bool(false)),
-            Some(Value::String(s)) if !jsrt::string::trim(s).is_empty() => Some(s.as_str().into()),
-            _ => None,
-        };
-        put("ackArt", ack_art);
-        put("signature", flag("signature"));
-        put("learn", flag("learn"));
-        put("skipBots", flag("skipBots"));
-        // `ban`: reviewing account (login, `host/login` or `*`) to the logins it never reviews; keys and logins
-        // trimmed, anything but a list of logins dropped.
-        if let Some(Value::Object(ban)) = c.get("ban") {
-            let mut parsed = Map::new();
-            for (key, logins) in ban {
-                let key = jsrt::string::trim(key);
-                let Some(logins) = logins.as_array().filter(|_| !key.is_empty()) else {
-                    continue;
-                };
-                let logins: Vec<Value> = logins
-                    .iter()
-                    .filter_map(Value::as_str)
-                    .map(jsrt::string::trim)
-                    .filter(|login| !login.is_empty())
-                    .map(Value::from)
-                    .collect();
-                if logins.is_empty() {
-                    continue;
-                }
-                match parsed.get_mut(key) {
-                    Some(Value::Array(known)) => known.extend(logins),
-                    _ => {
-                        parsed.insert(key.to_string(), Value::Array(logins));
-                    }
-                }
-            }
-            put("ban", (!parsed.is_empty()).then_some(Value::Object(parsed)));
-        }
-        out
     }
 }

@@ -96,8 +96,8 @@ fn applied(settings: Value, env: &[(&str, &str)]) -> (bool, bool) {
 #[test]
 fn interactive_startup_hardware_cursor_and_clear_on_shrink_fall_back_to_the_pi_env_vars() {
     let on = [
-        (config::worker_settings_keys::HARDWARE_CURSOR_ENV, "1"),
-        (config::worker_settings_keys::CLEAR_ON_SHRINK_ENV, "1"),
+        (config::keys::HARDWARE_CURSOR_ENV, "1"),
+        (config::keys::CLEAR_ON_SHRINK_ENV, "1"),
     ];
     assert_eq!(applied(json!({}), &[]), (false, false));
     assert_eq!(applied(json!({}), &on), (true, true));
@@ -106,18 +106,18 @@ fn interactive_startup_hardware_cursor_and_clear_on_shrink_fall_back_to_the_pi_e
         applied(
             json!({}),
             &[
-                (config::worker_settings_keys::HARDWARE_CURSOR_ENV, "true"),
-                (config::worker_settings_keys::CLEAR_ON_SHRINK_ENV, "yes")
+                (config::keys::HARDWARE_CURSOR_ENV, "true"),
+                (config::keys::CLEAR_ON_SHRINK_ENV, "yes")
             ]
         ),
         (false, false)
     );
     assert_eq!(
-        applied(json!({}), &[(config::worker_settings_keys::HARDWARE_CURSOR_ENV, "1")]),
+        applied(json!({}), &[(config::keys::HARDWARE_CURSOR_ENV, "1")]),
         (true, false)
     );
     assert_eq!(
-        applied(json!({}), &[(config::worker_settings_keys::CLEAR_ON_SHRINK_ENV, "1")]),
+        applied(json!({}), &[(config::keys::CLEAR_ON_SHRINK_ENV, "1")]),
         (false, true)
     );
     // A setting wins over the environment, either way.

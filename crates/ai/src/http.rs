@@ -2,6 +2,7 @@
 //! (`utils/provider-retry.ts`, `utils/error-body.ts`, and the error construction of the pinned OpenAI/Anthropic SDKs).
 
 use crate::json::parse_json;
+use crate::provider::{ProviderError, REQUEST_ABORTED};
 use serde_json::Value;
 use std::collections::BTreeMap;
 use std::future::Future;
@@ -168,6 +169,12 @@ pub(crate) struct Failure {
     pub raw_metadata: Option<String>,
 }
 
+impl ProviderError for Failure {
+    fn plain(message: String) -> Self {
+        Failure::plain(message)
+    }
+}
+
 impl Failure {
     pub fn plain(message: impl Into<String>) -> Self {
         Failure {
@@ -285,7 +292,7 @@ pub(crate) struct RetryOptions {
     pub timeout_ms: Option<u64>,
 }
 
-const DEFAULT_MAX_RETRY_DELAY_MS: f64 = 60_000.0;
+pub(crate) const DEFAULT_MAX_RETRY_DELAY_MS: f64 = 60_000.0;
 
 fn is_retryable(failure: &Failure) -> bool {
     match failure.header("x-should-retry") {
@@ -297,50 +304,6 @@ fn is_retryable(failure: &Failure) -> bool {
         None => true,
         Some(status) => matches!(status, 408 | 409 | 429) || status >= 500,
     }
-}
-
-/// `Number.parseFloat`: the longest numeric prefix after leading whitespace.
-fn parse_float(text: &str) -> Option<f64> {
-    let text = text.trim_start();
-    let mut end = 0;
-    let mut seen_digit = false;
-    let mut seen_dot = false;
-    let mut seen_exp = false;
-    let bytes = text.as_bytes();
-    while end < bytes.len() {
-        let b = bytes[end];
-        let ok = match b {
-            b'0'..=b'9' => {
-                seen_digit = true;
-                true
-            }
-            b'+' | b'-' => end == 0 || matches!(bytes[end - 1], b'e' | b'E'),
-            b'.' if !seen_dot && !seen_exp => {
-                seen_dot = true;
-                true
-            }
-            b'e' | b'E' if seen_digit && !seen_exp => {
-                seen_exp = true;
-                true
-            }
-            _ => false,
-        };
-        if !ok {
-            break;
-        }
-        end += 1;
-    }
-    let mut candidate = &text[..end];
-    while !candidate.is_empty() {
-        if let Ok(value) = candidate.parse::<f64>() {
-            return Some(value);
-        }
-        candidate = &candidate[..candidate.len() - 1];
-    }
-    if text.starts_with("Infinity") || text.starts_with("+Infinity") {
-        return Some(f64::INFINITY);
-    }
-    None
 }
 
 fn validate_delay(delay_ms: f64, max: Option<f64>, message: &str) -> Result<f64, Failure> {
@@ -388,14 +351,17 @@ fn retry_delay_ms(failure: &Failure, retry_index: u32, max: Option<f64>) -> Resu
     if let Some(value) = failure
         .header("retry-after-ms")
         .filter(|v| !v.is_empty())
-        .and_then(parse_float)
+        .map(jsrt::number::parse_float)
+        .filter(|v| !v.is_nan())
     {
         return validate_delay(value, max, &failure.message);
     }
     if let Some(retry_after) = failure.header("retry-after").filter(|v| !v.is_empty()) {
-        let delay = match parse_float(retry_after) {
-            Some(seconds) => seconds * 1000.0,
-            None => until_http_date_ms(retry_after).unwrap_or(0.0),
+        let seconds = jsrt::number::parse_float(retry_after);
+        let delay = if seconds.is_nan() {
+            until_http_date_ms(retry_after).unwrap_or(0.0)
+        } else {
+            seconds * 1000.0
         };
         return validate_delay(delay, max, &failure.message);
     }
@@ -411,10 +377,6 @@ fn jitter() -> f64 {
     f64::from(nanos % 1_000_000) / 1_000_000.0
 }
 
-fn abort_failure() -> Failure {
-    Failure::plain("Request aborted")
-}
-
 /// Send `request` and turn a non-2xx response into the SDK's `APIError`, retrying like `retryProviderRequest`.
 pub(crate) async fn send_with_retry(
     transport: &dyn Transport,
@@ -424,28 +386,21 @@ pub(crate) async fn send_with_retry(
     signal: Option<&AbortSignal>,
 ) -> Result<HttpResponse, Failure> {
     let max_retries = retry.max_retries.unwrap_or(0);
-    let mut remaining = max_retries;
-    loop {
-        let attempt = send_once(transport, request, sdk, retry.timeout_ms, signal).await;
-        let failure = match attempt {
-            Ok(response) => return Ok(response),
-            Err(failure) => failure,
-        };
-        if is_aborted(signal) {
-            return Err(abort_failure());
-        }
-        if remaining == 0 || !failure.api || !is_retryable(&failure) {
-            return Err(failure);
-        }
-        let retry_index = max_retries - remaining;
-        remaining -= 1;
-        let delay = retry_delay_ms(&failure, retry_index, retry.max_retry_delay_ms)?;
-        let sleep = tokio::time::sleep(Duration::from_secs_f64(delay.max(0.0) / 1000.0));
-        tokio::select! {
-            () = sleep => {}
-            () = cancelled(signal) => return Err(abort_failure()),
-        }
-    }
+    crate::provider::retry(
+        signal,
+        || Failure::plain(REQUEST_ABORTED),
+        |_| send_once(transport, request, sdk, retry.timeout_ms, signal),
+        |failure, retry_index| {
+            if is_aborted(signal) {
+                return Err(Failure::plain(REQUEST_ABORTED));
+            }
+            if retry_index >= max_retries || !failure.api || !is_retryable(&failure) {
+                return Err(failure);
+            }
+            retry_delay_ms(&failure, retry_index, retry.max_retry_delay_ms)
+        },
+    )
+    .await
 }
 
 async fn send_once(
@@ -601,40 +556,15 @@ pub(crate) fn join_url(base: &str, path: &str) -> String {
     }
 }
 
-/// `DEFAULT_HTTP_IDLE_TIMEOUT_MS` of `core/http-dispatcher.ts`: five minutes.
-pub const DEFAULT_HTTP_IDLE_TIMEOUT: Duration = Duration::from_millis(300_000);
-
-/// `parseHttpIdleTimeoutMs` of the `httpIdleTimeoutMs` setting: a non-negative number of milliseconds (floored), a
-/// numeric string, or `"disabled"` (0). `None` for anything else.
-pub fn parse_http_idle_timeout_ms(value: &Value) -> Option<u64> {
-    match value {
-        Value::String(text) => {
-            let trimmed = text.trim();
-            if trimmed.eq_ignore_ascii_case("disabled") {
-                return Some(0);
-            }
-            if trimmed.is_empty() {
-                return None;
-            }
-            trimmed
-                .parse::<f64>()
-                .ok()
-                .and_then(|n| parse_http_idle_timeout_ms(&serde_json::json!(n)))
-        }
-        Value::Number(n) => n
-            .as_f64()
-            .filter(|n| n.is_finite() && *n >= 0.0)
-            .map(|n| n.floor() as u64),
-        _ => None,
-    }
-}
+/// `DEFAULT_HTTP_IDLE_TIMEOUT_MS` of `core/http-dispatcher.ts`.
+pub const DEFAULT_HTTP_IDLE_TIMEOUT: Duration = Duration::from_millis(config::keys::DEFAULT_HTTP_IDLE_TIMEOUT_MS);
 
 /// The idle timeout a `httpIdleTimeoutMs` setting selects (`None`: disabled; an invalid or missing setting is the
 /// default).
 pub fn http_idle_timeout(setting: Option<&Value>) -> Option<Duration> {
-    match setting.and_then(parse_http_idle_timeout_ms) {
-        Some(0) => None,
-        Some(ms) => Some(Duration::from_millis(ms)),
+    match setting.and_then(config::keys::parse_timeout_ms) {
+        Some(0.0) => None,
+        Some(ms) => Some(Duration::from_millis(ms as u64)),
         None => Some(DEFAULT_HTTP_IDLE_TIMEOUT),
     }
 }

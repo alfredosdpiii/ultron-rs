@@ -3,7 +3,7 @@
 
 use std::path::{Path, PathBuf};
 
-use serde_json::Value;
+use serde_json::{Map, Value};
 
 use crate::auth::{parse_data, with_locked_file};
 
@@ -14,6 +14,23 @@ pub struct ModelsStore {
 impl ModelsStore {
     pub fn new(path: impl Into<PathBuf>) -> Self {
         ModelsStore { path: path.into() }
+    }
+
+    /// The store of the agent directory whose `models.json` is `models_json`.
+    pub fn beside(models_json: &Path) -> Self {
+        ModelsStore::new(models_json.with_file_name("models-store.json"))
+    }
+
+    /// Every stored entry as the file has it now, read without the lock: a missing or malformed file is empty, so a
+    /// registry restoring its catalogs never fails on (or creates) the store.
+    pub fn snapshot(&self) -> Map<String, Value> {
+        match std::fs::read_to_string(&self.path)
+            .ok()
+            .and_then(|text| serde_json::from_str(text.trim_start_matches('\u{feff}')).ok())
+        {
+            Some(Value::Object(stored)) => stored,
+            _ => Map::new(),
+        }
     }
 
     pub fn path(&self) -> &Path {

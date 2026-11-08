@@ -28,6 +28,7 @@ pub mod registry;
 pub mod rules;
 pub mod run;
 pub mod scan;
+pub mod settings;
 pub mod shell;
 pub mod slop;
 pub mod text;

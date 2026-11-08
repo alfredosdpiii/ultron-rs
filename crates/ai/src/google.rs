@@ -8,12 +8,12 @@ use crate::google_shared::{
     resolve_google_function_calling_mode, resolve_google_thinking_level, retain_thought_signature,
     supports_google_strict_tool_sampling, to_google_thinking_level, uses_google_thinking_level,
 };
-use crate::http::{
-    Failure, HeaderBuilder, Read, RetryOptions, cancelled, format_provider_error, is_aborted, read_chunk,
-};
+use crate::http::{Failure, HeaderBuilder, RetryOptions, cancelled, format_provider_error, is_aborted};
 use crate::json::parse_json;
 use crate::models::{calculate_cost, clamp_thinking_level};
 use crate::options::{SimpleStreamOptions, StreamOptions, ThinkingBudgets, build_base_options, pi_user_agent};
+use crate::provider::{ProviderError, REQUEST_ABORTED, REQUEST_WAS_ABORTED, Run, UNKNOWN_ERROR, next_chunk};
+use crate::sse::frame_boundary;
 use crate::transcript::{collapse_system_messages, current_tools, initial_system_message, system_message_text};
 use crate::types::{
     AssistantContent, AssistantMessage, AssistantMessageEvent, EventSink, Model, StopReason, TextContent,
@@ -23,7 +23,6 @@ use crate::{AbortSignal, HttpRequest, HttpResponse, Transport};
 use serde::Deserialize;
 use serde_json::{Map, Value, json};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::Duration;
 
 #[derive(Clone, Debug, Default, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -105,7 +104,7 @@ pub fn build_params(
         _ => {}
     }
     if is_aborted(options.base.signal()) {
-        return Err("Request aborted".into());
+        return Err(REQUEST_ABORTED.into());
     }
     Ok(json!({ "model": model.id, "contents": contents, "config": config }))
 }
@@ -234,9 +233,7 @@ pub(crate) async fn stream_endpoint(
     sink: &mut EventSink<'_>,
 ) -> AssistantMessage {
     let context = collapse_system_messages(context);
-    let mut run = Run {
-        output: AssistantMessage::pending(model, jsrt::date::now_ms()),
-        sink,
+    let state = GoogleStream {
         current: None,
         tool_calls: if label == "Google Vertex" {
             &VERTEX_TOOL_CALLS
@@ -244,28 +241,16 @@ pub(crate) async fn stream_endpoint(
             &GEMINI_TOOL_CALLS
         },
     };
-    let signal = options.base.signal();
-    match drive(&mut run, model, &context, options, endpoint, label, transport).await {
-        Ok(()) => {
-            let reason = run.output.stop_reason;
-            run.emit(|message| AssistantMessageEvent::Done { reason, message });
-        }
-        Err(failure) => {
-            run.output.stop_reason = if is_aborted(signal) {
-                StopReason::Aborted
-            } else {
-                StopReason::Error
-            };
-            run.output.error_message = Some(format_provider_error(&failure, None));
-            let reason = run.output.stop_reason;
-            run.emit(|error| AssistantMessageEvent::Error { reason, error });
-        }
-    }
-    run.output
+    let mut run = Run::new(AssistantMessage::pending(model, jsrt::date::now_ms()), sink, state);
+    let result = drive(&mut run, model, &context, options, endpoint, label, transport).await;
+    run.end(
+        result.map_err(|failure| format_provider_error(&failure, None)),
+        options.base.signal(),
+    )
 }
 
 async fn drive(
-    run: &mut Run<'_, '_>,
+    run: &mut Run<'_, '_, GoogleStream>,
     model: &Model,
     context: &TranscriptContext,
     options: &GoogleOptions,
@@ -297,7 +282,7 @@ async fn drive(
         // `NodeAuth.addGoogleAuthHeaders`: a header the caller already set wins.
         let auth = tokio::select! {
             auth = crate::google_auth::request_headers(env.as_ref(), transport) => auth.map_err(Failure::plain)?,
-            () = cancelled(signal) => return Err(Failure::plain("Request aborted")),
+            () = cancelled(signal) => return Err(Failure::plain(REQUEST_ABORTED)),
         };
         headers.entry("authorization".into()).or_insert(auth.authorization);
         if let Some(project) = auth.user_project {
@@ -325,17 +310,17 @@ async fn drive(
         body: serde_json::to_string(&params_to_wire(&params, endpoint.vertex)).unwrap_or_default(),
     };
     let mut response = send_with_google_retry(transport, &request, base.retry(), signal).await?;
-    run.emit(|partial| AssistantMessageEvent::Start { partial });
+    run.start();
     read_google_stream(&mut response, signal, |chunk| run.handle(chunk, model)).await?;
     run.close_block();
     if is_aborted(signal) {
-        return Err(Failure::plain("Request was aborted"));
+        return Err(Failure::plain(REQUEST_WAS_ABORTED));
     }
     match run.output.stop_reason {
         StopReason::Pending => Err(Failure::plain(format!("{label} stream ended without a finish reason"))),
         StopReason::Aborted | StopReason::Error => Err(Failure::plain(match &run.output.raw_stop_reason {
             Some(raw) => format!("Provider stopped with: {raw}"),
-            None => "An unknown error occurred".into(),
+            None => UNKNOWN_ERROR.into(),
         })),
         _ => Ok(()),
     }
@@ -350,7 +335,7 @@ async fn send_once(
 ) -> Result<HttpResponse, Failure> {
     let sent = tokio::select! {
         sent = transport.send(request.clone()) => sent,
-        () = cancelled(signal) => return Err(Failure::plain("This operation was aborted")),
+        () = cancelled(signal) => return Err(Failure::aborted()),
     };
     let mut response = sent.map_err(|_| Failure::plain("fetch failed"))?;
     if (200..300).contains(&response.status) {
@@ -388,27 +373,23 @@ async fn send_with_google_retry(
     signal: Option<&AbortSignal>,
 ) -> Result<HttpResponse, Failure> {
     let max_retries = retry.max_retries.unwrap_or(0);
-    let mut retry_index = 0;
-    loop {
-        let failure = match send_once(transport, request, signal).await {
-            Ok(response) => return Ok(response),
-            Err(failure) => failure,
-        };
-        if is_aborted(signal) {
-            return Err(Failure::plain("Request aborted"));
-        }
-        let retryable = failure.status.is_some_and(|s| matches!(s, 408 | 409 | 429) || s >= 500);
-        if retry_index >= max_retries || !failure.api || !retryable {
-            return Err(failure);
-        }
-        // ponytail: upstream also applies up to 25% jitter; the delay is not observable beyond timing.
-        let delay = (0.5 * 2f64.powi(retry_index as i32)).min(8.0);
-        retry_index += 1;
-        tokio::select! {
-            () = tokio::time::sleep(Duration::from_secs_f64(delay)) => {}
-            () = cancelled(signal) => return Err(Failure::plain("Request aborted")),
-        }
-    }
+    crate::provider::retry(
+        signal,
+        || Failure::plain(REQUEST_ABORTED),
+        |_| send_once(transport, request, signal),
+        |failure, retry_index| {
+            if is_aborted(signal) {
+                return Err(Failure::plain(REQUEST_ABORTED));
+            }
+            let retryable = failure.status.is_some_and(|s| matches!(s, 408 | 409 | 429) || s >= 500);
+            if retry_index >= max_retries || !failure.api || !retryable {
+                return Err(failure);
+            }
+            // ponytail: upstream also applies up to 25% jitter; the delay is not observable beyond timing.
+            Ok((0.5 * 2f64.powi(retry_index as i32)).min(8.0) * 1000.0)
+        },
+    )
+    .await
 }
 
 /// The SDK's `processStreamResponse`: events split on `\n\n`, `\r\r` or `\r\n\r\n`; `data:` events parse as JSON. A
@@ -419,17 +400,8 @@ async fn read_google_stream(
     mut handle: impl FnMut(&Value) -> Result<(), Failure>,
 ) -> Result<(), Failure> {
     let mut buffer: Vec<u8> = Vec::new();
-    loop {
-        // A body errored by the abort rejects the next read.
-        if is_aborted(signal) {
-            return Err(Failure::plain("This operation was aborted"));
-        }
-        let chunk = match read_chunk(response.body.as_mut(), signal).await {
-            Read::Chunk(bytes) => bytes,
-            Read::End => break,
-            Read::Aborted => return Err(Failure::plain("This operation was aborted")),
-            Read::Failed(error) => return Err(Failure::plain(error)),
-        };
+    // A body errored by the abort rejects the next read.
+    while let Some(chunk) = next_chunk::<Failure>(response.body.as_mut(), signal).await? {
         if let Ok(Value::Object(object)) = serde_json::from_slice::<Value>(&chunk)
             && let Some(error) = object.get("error")
         {
@@ -450,7 +422,7 @@ async fn read_google_stream(
             }
         }
         buffer.extend_from_slice(&chunk);
-        while let Some((at, len)) = next_delimiter(&buffer) {
+        while let Some((at, len)) = frame_boundary(&buffer, &["\n\n", "\r\r", "\r\n\r\n"]) {
             let event = String::from_utf8_lossy(&buffer[..at]).into_owned();
             buffer.drain(..at + len);
             let event = event.trim();
@@ -468,29 +440,15 @@ async fn read_google_stream(
     Ok(())
 }
 
-fn next_delimiter(buffer: &[u8]) -> Option<(usize, usize)> {
-    [&b"\n\n"[..], b"\r\r", b"\r\n\r\n"]
-        .iter()
-        .filter_map(|d| buffer.windows(d.len()).position(|w| w == *d).map(|at| (at, d.len())))
-        .min_by_key(|(at, _)| *at)
-}
-
-struct Run<'s, 'e> {
-    output: AssistantMessage,
-    sink: &'s mut EventSink<'e>,
+struct GoogleStream {
     /// Index of the open text or thinking block.
     current: Option<usize>,
     tool_calls: &'static AtomicU64,
 }
 
-impl Run<'_, '_> {
-    fn emit(&mut self, event: impl FnOnce(AssistantMessage) -> AssistantMessageEvent) {
-        let event = event(self.output.clone());
-        (self.sink)(&event);
-    }
-
+impl Run<'_, '_, GoogleStream> {
     fn close_block(&mut self) {
-        let Some(index) = self.current.take() else { return };
+        let Some(index) = self.state.current.take() else { return };
         match self.output.content[index].clone() {
             AssistantContent::Text(t) => self.emit(|partial| AssistantMessageEvent::TextEnd {
                 content_index: index,
@@ -526,6 +484,7 @@ impl Run<'_, '_> {
             if let Some(text) = part.get("text").and_then(Value::as_str) {
                 let thinking = part.get("thought") == Some(&Value::Bool(true));
                 let open_kind = self
+                    .state
                     .current
                     .map(|i| matches!(self.output.content[i], AssistantContent::Thinking(_)));
                 if open_kind != Some(thinking) {
@@ -537,7 +496,7 @@ impl Run<'_, '_> {
                             thinking_signature: None,
                             redacted: None,
                         }));
-                        self.current = Some(index);
+                        self.state.current = Some(index);
                         self.emit(|partial| AssistantMessageEvent::ThinkingStart {
                             content_index: index,
                             partial,
@@ -547,7 +506,7 @@ impl Run<'_, '_> {
                             text: String::new(),
                             text_signature: None,
                         }));
-                        self.current = Some(index);
+                        self.state.current = Some(index);
                         self.emit(|partial| AssistantMessageEvent::TextStart {
                             content_index: index,
                             partial,
@@ -593,7 +552,7 @@ impl Run<'_, '_> {
                     _ => format!(
                         "{name}_{}_{}",
                         jsrt::date::now_ms(),
-                        self.tool_calls.fetch_add(1, Ordering::Relaxed) + 1
+                        self.state.tool_calls.fetch_add(1, Ordering::Relaxed) + 1
                     ),
                 };
                 let arguments = call
@@ -728,12 +687,7 @@ pub(crate) fn simple_options(
 /// `getGoogleBudget`: a custom budget, else the per-family default, else `-1` (dynamic). Vertex has no 2.5-flash-lite
 /// row (`lite_budgets: false`), so those models take the 2.5-flash budgets.
 pub fn google_budget(model: &Model, level: &str, custom: Option<&ThinkingBudgets>, lite_budgets: bool) -> i64 {
-    let custom = custom.and_then(|b| match level {
-        "minimal" => b.minimal,
-        "low" => b.low,
-        "medium" => b.medium,
-        _ => b.high,
-    });
+    let custom = custom.and_then(|b| b.level(level));
     if let Some(budget) = custom {
         return budget as i64;
     }

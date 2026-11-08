@@ -1,9 +1,8 @@
 //! Settings values printed, trimmed and rewritten as JavaScript does (through `jsrt`); expected values from node.
 
+use config::keys::{http_idle_timeout_ms, parse_timeout_ms, websocket_connect_timeout_ms};
 use config::models_store::ModelsStore;
 use config::settings::{Settings, model_ref};
-use config::settings_keys::websocket_connect_timeout_ms;
-use config::worker_settings_keys::http_idle_timeout_ms;
 use serde_json::{Value, json};
 
 fn settings(key: &str, value: Value) -> Settings {
@@ -23,6 +22,35 @@ fn config_invalid_setting_errors_print_values_like_js_string() {
         http_idle_timeout_ms(&settings("httpIdleTimeoutMs", json!([1, null, [2, 3]]))),
         Err("Invalid httpIdleTimeoutMs setting: 1,,2,3".into())
     );
+    // A present `null` is invalid, as `parseTimeoutSetting` throws for any value but `undefined` (the daemon's
+    // `/settings` copy read it as the default).
+    assert_eq!(
+        http_idle_timeout_ms(&settings("httpIdleTimeoutMs", Value::Null)),
+        Err("Invalid httpIdleTimeoutMs setting: null".into())
+    );
+}
+
+/// `parseHttpIdleTimeoutMs` (every timeout setting): literal cases; a string is read as `Number(text)`.
+#[test]
+fn config_timeout_settings_parse_like_typescript() {
+    let cases = [
+        (json!(30_000), Some(30_000.0)),
+        (json!(1.9), Some(1.0)),
+        (json!(0), Some(0.0)),
+        (json!(-1), None),
+        (json!(" 1500 "), Some(1500.0)),
+        (json!("0x10"), Some(16.0)),
+        (json!("1e3"), Some(1000.0)),
+        (json!("Disabled"), Some(0.0)),
+        (json!(""), None),
+        (json!("soon"), None),
+        (json!("Infinity"), None),
+        (json!(true), None),
+        (json!(null), None),
+    ];
+    for (value, expected) in cases {
+        assert_eq!(parse_timeout_ms(&value), expected, "{value}");
+    }
 }
 
 #[test]

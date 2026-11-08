@@ -38,10 +38,10 @@ impl RequestSettings {
             return RequestSettings::default();
         };
         RequestSettings {
-            thinking_budgets: config::settings_keys::thinking_budgets(settings)
+            thinking_budgets: config::keys::thinking_budgets(settings)
                 .and_then(|budgets| serde_json::from_value(budgets.clone()).ok()),
-            websocket_connect_timeout_ms: config::settings_keys::websocket_connect_timeout_ms(settings),
-            stream: config::worker_settings_keys::provider_request_options(settings).map(Some),
+            websocket_connect_timeout_ms: config::keys::websocket_connect_timeout_ms(settings),
+            stream: config::keys::provider_request_options(settings).map(Some),
             transport: settings.get("transport").and_then(Value::as_str).map(str::to_string),
         }
     }

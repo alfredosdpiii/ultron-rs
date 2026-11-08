@@ -3,10 +3,11 @@
 //! response is an SSE stream of serialized assistant-message events ending in `done` or `error`.
 
 use crate::env::provider_env_value;
-use crate::http::{AbortSignal, HttpRequest, HttpResponse, Read, Transport, cancelled, is_aborted, read_chunk};
+use crate::http::{AbortSignal, HttpRequest, HttpResponse, Transport, cancelled, is_aborted};
 use crate::json::{parse_json, parse_streaming_json};
 use crate::jsutil::Utf8Stream;
 use crate::options::{SimpleStreamOptions, StreamOptions};
+use crate::provider::{ProviderError, next_chunk};
 use crate::types::{
     AssistantContent, AssistantMessage, AssistantMessageDiagnostic, AssistantMessageEvent, CacheRetention,
     DiagnosticErrorInfo, EventSink, Model, StopReason, TextContent, ThinkingContent, ToolCall, TranscriptContext,
@@ -33,6 +34,12 @@ pub struct PiMessagesOptions {
 struct Failure {
     message: String,
     response: Option<(Option<String>, Map<String, Value>)>,
+}
+
+impl ProviderError for Failure {
+    fn plain(message: String) -> Self {
+        Failure::plain(message)
+    }
 }
 
 impl Failure {
@@ -335,14 +342,9 @@ async fn read_events(
     let mut buffer = String::new();
     loop {
         // The body errors once the request is aborted; frames already read are still delivered.
-        if is_aborted(signal) {
-            return Err(Failure::plain("This operation was aborted"));
-        }
-        let (text, done) = match read_chunk(response.body.as_mut(), signal).await {
-            Read::Chunk(bytes) => (decoder.push(&bytes), false),
-            Read::End => (decoder.finish(), true),
-            Read::Aborted => return Err(Failure::plain("This operation was aborted")),
-            Read::Failed(error) => return Err(Failure::plain(error)),
+        let (text, done) = match next_chunk::<Failure>(response.body.as_mut(), signal).await? {
+            Some(bytes) => (decoder.push(&bytes), false),
+            None => (decoder.finish(), true),
         };
         buffer.push_str(&text);
         buffer = buffer.replace("\r\n", "\n");
@@ -452,11 +454,11 @@ async fn drive(
         body: serde_json::to_string(&body).unwrap_or_default(),
     };
     if is_aborted(signal) {
-        return Err(Failure::plain("This operation was aborted"));
+        return Err(Failure::aborted());
     }
     let sent = tokio::select! {
         sent = transport.send(request) => sent,
-        () = cancelled(signal) => return Err(Failure::plain("This operation was aborted")),
+        () = cancelled(signal) => return Err(Failure::aborted()),
     };
     let mut response = sent.map_err(Failure::plain)?;
     if !(200..300).contains(&response.status) {

@@ -7,13 +7,14 @@ use crate::constrained::{
     resolve_grammar_constrained_sampling, resolve_json_schema_strict_sampling,
 };
 use crate::http::{
-    Failure, HeaderBuilder, HttpRequest, Sdk, Transport, format_provider_error, has_header, is_aborted, join_url,
-    send_with_retry,
+    Failure, HeaderBuilder, HttpRequest, Sdk, Transport, format_provider_error, join_url, send_with_retry,
 };
 use crate::json::{parse_json, parse_streaming_json, short_hash};
 use crate::models::{calculate_cost, clamp_thinking_level};
-use crate::openai_completions::read_openai_stream;
+use crate::openai_completions::client_api_key;
 use crate::options::{SimpleStreamOptions, StreamOptions, build_base_options, pi_user_agent};
+use crate::provider::Run;
+use crate::sse::read_openai_stream;
 use crate::transcript::{
     declared_tools, render_system_message_update, resolve_transcript, resolve_transcript_tools, system_message_text,
     transform_messages,
@@ -75,17 +76,6 @@ impl Compat {
             supports_max_output_tokens: flag("supportsMaxOutputTokens", true),
         }
     }
-}
-
-fn client_api_key(model: &Model, options: &StreamOptions) -> Result<String, String> {
-    if let Some(key) = options.api_key.as_ref().filter(|k| !k.is_empty()) {
-        return Ok(key.clone());
-    }
-    let headers = options.headers.as_ref();
-    if has_header(headers, "authorization") || has_header(headers, "cf-aig-authorization") {
-        return Ok("unused".into());
-    }
-    Err(format!("No API key for provider: {}", model.provider))
 }
 
 /// `String(value)` for an optional JSON field (`undefined` when absent).
@@ -488,10 +478,7 @@ fn build_params(
     if retention != CacheRetention::None
         && let Some(session) = &base.session_id
     {
-        params.insert(
-            "prompt_cache_key".into(),
-            json!(session.chars().take(64).collect::<String>()),
-        );
+        params.insert("prompt_cache_key".into(), json!(clamp_prompt_cache_key(session)));
     }
     let long = retention == CacheRetention::Long && compat.supports_long_cache_retention;
     if long && !compat.supports_explicit_prompt_cache_mode {
@@ -608,34 +595,25 @@ struct ToolScratch {
 }
 
 /// `processResponsesStream` state.
-pub(crate) struct ResponsesRun<'s, 'e> {
-    pub output: AssistantMessage,
-    sink: &'s mut EventSink<'e>,
+/// `api/openai-prompt-cache.ts`: an OpenAI prompt cache key is at most 64 characters (code points).
+pub(crate) fn clamp_prompt_cache_key(key: &str) -> String {
+    key.chars().take(64).collect()
+}
+
+/// The Responses API event stream the OpenAI, Azure and Codex providers read.
+pub(crate) type ResponsesRun<'s, 'e> = Run<'s, 'e, ResponsesStream>;
+
+#[derive(Default)]
+pub(crate) struct ResponsesStream {
     slots: HashMap<i64, (SlotKind, usize)>,
     scratch: HashMap<usize, ToolScratch>,
     reasoning_by_id: HashMap<String, usize>,
     saw_terminal: bool,
 }
 
-impl<'s, 'e> ResponsesRun<'s, 'e> {
-    pub fn new(output: AssistantMessage, sink: &'s mut EventSink<'e>) -> Self {
-        ResponsesRun {
-            output,
-            sink,
-            slots: HashMap::new(),
-            scratch: HashMap::new(),
-            reasoning_by_id: HashMap::new(),
-            saw_terminal: false,
-        }
-    }
-
-    pub(crate) fn emit(&mut self, event: impl FnOnce(AssistantMessage) -> AssistantMessageEvent) {
-        let event = event(self.output.clone());
-        (self.sink)(&event);
-    }
-
+impl ResponsesRun<'_, '_> {
     fn slot(&self, output_index: Option<i64>, kind: SlotKind) -> Option<usize> {
-        let (slot_kind, position) = *self.slots.get(&output_index?)?;
+        let (slot_kind, position) = *self.state.slots.get(&output_index?)?;
         (slot_kind == kind).then_some(position)
     }
 
@@ -718,10 +696,10 @@ impl<'s, 'e> ResponsesRun<'s, 'e> {
         self.output.content.push(block);
         let position = self.output.content.len() - 1;
         if let Some(scratch) = scratch {
-            self.scratch.insert(position, scratch);
+            self.state.scratch.insert(position, scratch);
         }
         if let Some(index) = output_index {
-            self.slots.insert(index, (kind, position));
+            self.state.slots.insert(index, (kind, position));
         }
         self.emit(|partial| match kind {
             SlotKind::Thinking => AssistantMessageEvent::ThinkingStart {
@@ -741,7 +719,7 @@ impl<'s, 'e> ResponsesRun<'s, 'e> {
     }
 
     fn custom_input(&mut self, position: usize) -> String {
-        let Some((property, _)) = self.scratch.get(&position).and_then(|s| s.custom.as_ref()) else {
+        let Some((property, _)) = self.state.scratch.get(&position).and_then(|s| s.custom.as_ref()) else {
             return String::new();
         };
         let property = property.clone();
@@ -754,7 +732,7 @@ impl<'s, 'e> ResponsesRun<'s, 'e> {
     }
 
     fn append_custom(&mut self, position: usize, next: &str, close: bool) -> Result<Option<String>, String> {
-        let Some((property, buffer)) = self.scratch.get_mut(&position).and_then(|s| s.custom.as_mut()) else {
+        let Some((property, buffer)) = self.state.scratch.get_mut(&position).and_then(|s| s.custom.as_mut()) else {
             return Ok(None);
         };
         let delta = buffer.append(property, next, close)?;
@@ -774,11 +752,14 @@ impl<'s, 'e> ResponsesRun<'s, 'e> {
     }
 
     fn has_partial_json(&self, position: usize) -> bool {
-        self.scratch.get(&position).is_some_and(|s| s.partial_json.is_some())
+        self.state
+            .scratch
+            .get(&position)
+            .is_some_and(|s| s.partial_json.is_some())
     }
 
     fn has_custom(&self, position: usize) -> bool {
-        self.scratch.get(&position).is_some_and(|s| s.custom.is_some())
+        self.state.scratch.get(&position).is_some_and(|s| s.custom.is_some())
     }
 
     fn append_text(&mut self, position: usize, delta: &str) {
@@ -790,7 +771,7 @@ impl<'s, 'e> ResponsesRun<'s, 'e> {
     }
 
     fn finalize(&mut self, response: &Value, model: &Model, pricing: TierPricing<'_>) -> Result<(), String> {
-        self.saw_terminal = true;
+        self.state.saw_terminal = true;
         for item in response.get("output").and_then(Value::as_array).into_iter().flatten() {
             let Some(encrypted) = item
                 .get("encrypted_content")
@@ -801,7 +782,7 @@ impl<'s, 'e> ResponsesRun<'s, 'e> {
             if str_field(item, "type") != Some("reasoning") {
                 continue;
             }
-            let Some(&position) = self.reasoning_by_id.get(&js_str(item.get("id"))) else {
+            let Some(&position) = self.state.reasoning_by_id.get(&js_str(item.get("id"))) else {
                 continue;
             };
             let AssistantContent::Thinking(block) = &mut self.output.content[position] else {
@@ -939,6 +920,7 @@ impl<'s, 'e> ResponsesRun<'s, 'e> {
                 };
                 let text = delta();
                 let partial = self
+                    .state
                     .scratch
                     .get_mut(&position)
                     .and_then(|s| s.partial_json.as_mut())
@@ -957,6 +939,7 @@ impl<'s, 'e> ResponsesRun<'s, 'e> {
                 };
                 let arguments = str_field(event, "arguments").unwrap_or_default().to_string();
                 let slot = self
+                    .state
                     .scratch
                     .get_mut(&position)
                     .and_then(|s| s.partial_json.as_mut())
@@ -992,7 +975,7 @@ impl<'s, 'e> ResponsesRun<'s, 'e> {
             "response.output_item.done" => {
                 let item = &event["item"];
                 self.apply_phase(item);
-                let slot = match output_index.and_then(|i| self.slots.get(&i).copied()) {
+                let slot = match output_index.and_then(|i| self.state.slots.get(&i).copied()) {
                     Some(slot) => Some(slot),
                     None => self.create_slot(output_index, item, grammar),
                 };
@@ -1022,7 +1005,7 @@ impl<'s, 'e> ResponsesRun<'s, 'e> {
                             }
                             block.thinking_signature = Some(jsrt::json::stringify(item));
                         }
-                        self.reasoning_by_id.insert(js_str(item.get("id")), position);
+                        self.state.reasoning_by_id.insert(js_str(item.get("id")), position);
                         let AssistantContent::Thinking(block) = &self.output.content[position] else {
                             return Ok(());
                         };
@@ -1070,6 +1053,7 @@ impl<'s, 'e> ResponsesRun<'s, 'e> {
                     }
                     ("function_call", SlotKind::ToolCall) if self.has_partial_json(position) => {
                         let partial = self
+                            .state
                             .scratch
                             .remove(&position)
                             .and_then(|s| s.partial_json)
@@ -1097,7 +1081,7 @@ impl<'s, 'e> ResponsesRun<'s, 'e> {
                         };
                         let appended = self.append_custom(position, &input, true)?;
                         self.push_tool_delta(position, appended);
-                        self.scratch.remove(&position);
+                        self.state.scratch.remove(&position);
                         let call = self.call(position);
                         if let Some(namespace) = item.get("namespace").filter(|n| !n.is_null()) {
                             call.namespace = Some(js_str(Some(namespace)));
@@ -1112,7 +1096,7 @@ impl<'s, 'e> ResponsesRun<'s, 'e> {
                     _ => return Ok(()),
                 }
                 if let Some(index) = output_index {
-                    self.slots.remove(&index);
+                    self.state.slots.remove(&index);
                 }
             }
             "response.completed" | "response.incomplete" => self.finalize(&event["response"], model, pricing)?,
@@ -1124,7 +1108,7 @@ impl<'s, 'e> ResponsesRun<'s, 'e> {
                 ));
             }
             "response.failed" => {
-                self.saw_terminal = true;
+                self.state.saw_terminal = true;
                 let response = &event["response"];
                 self.output.raw_stop_reason = str_field(response, "status").map(str::to_string);
                 let error = response.get("error").filter(|e| !e.is_null());
@@ -1152,8 +1136,9 @@ impl<'s, 'e> ResponsesRun<'s, 'e> {
         Ok(())
     }
 
-    pub fn end(&self) -> Result<(), String> {
-        if self.saw_terminal {
+    /// Whether the stream reached its terminal response event.
+    pub fn terminated(&self) -> Result<(), String> {
+        if self.state.saw_terminal {
             Ok(())
         } else {
             Err("OpenAI Responses stream ended before a terminal response event".into())
@@ -1208,33 +1193,20 @@ pub async fn stream(
     let compat = Compat::of(model);
     let context = resolve_transcript(context, compat.supports_mid_convo_system_messages);
     let now = jsrt::date::now_ms();
-    let mut run = ResponsesRun::new(AssistantMessage::pending(model, now), sink);
-    let signal = options.base.signal();
-    match drive(&mut run, model, &context, options, &compat, transport, now).await {
-        Ok(()) => {
-            let reason = run.output.stop_reason;
-            run.emit(|message| AssistantMessageEvent::Done { reason, message });
+    let mut run = Run::new(AssistantMessage::pending(model, now), sink, ResponsesStream::default());
+    let result = drive(&mut run, model, &context, options, &compat, transport, now).await;
+    let prefix = format!(
+        "{} API error",
+        if model.provider == "openai" {
+            "OpenAI"
+        } else {
+            model.provider.as_str()
         }
-        Err(failure) => {
-            run.output.stop_reason = if is_aborted(signal) {
-                StopReason::Aborted
-            } else {
-                StopReason::Error
-            };
-            let prefix = format!(
-                "{} API error",
-                if model.provider == "openai" {
-                    "OpenAI"
-                } else {
-                    model.provider.as_str()
-                }
-            );
-            run.output.error_message = Some(format_provider_error(&failure, Some(&prefix)));
-            let reason = run.output.stop_reason;
-            run.emit(|error| AssistantMessageEvent::Error { reason, error });
-        }
-    }
-    run.output
+    );
+    run.end(
+        result.map_err(|failure| format_provider_error(&failure, Some(&prefix))),
+        options.base.signal(),
+    )
 }
 
 async fn drive(
@@ -1270,27 +1242,16 @@ async fn drive(
         body: serde_json::to_string(&params).unwrap_or_default(),
     };
     let mut response = send_with_retry(transport, &request, Sdk::OpenAi, base.retry(), signal).await?;
-    run.emit(|partial| AssistantMessageEvent::Start { partial });
+    run.start();
     let tier = options.service_tier.as_deref();
     read_openai_stream(&mut response, signal, |event| {
         run.handle(event, model, &grammar, TierPricing::Response(tier))
             .map_err(Failure::plain)
     })
     .await?;
-    run.end().map_err(Failure::plain)?;
-    if is_aborted(signal) {
-        return Err(Failure::plain("Request was aborted"));
-    }
-    match run.output.stop_reason {
-        StopReason::Pending => Err(Failure::plain("OpenAI Responses stream ended without a stop reason")),
-        StopReason::Aborted | StopReason::Error => {
-            let message = run.output.error_message.clone().filter(|m| !m.is_empty());
-            Err(Failure::plain(
-                message.unwrap_or_else(|| "An unknown error occurred".into()),
-            ))
-        }
-        _ => Ok(()),
-    }
+    run.terminated().map_err(Failure::plain)?;
+    run.stopped(signal, "OpenAI Responses stream ended without a stop reason")
+        .map_err(Failure::plain)
 }
 
 /// `streamSimple`: reasoning clamped to the model's supported levels and sent as `reasoningEffort`.

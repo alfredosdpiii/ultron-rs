@@ -1,14 +1,14 @@
 //! A WebSocket client with the behavior Node's `WebSocket` (undici) shows the providers: an HTTP/1.1 upgrade
-//! (`ws:`/`wss:`) carrying the request's headers, then RFC 6455 messages ([`protocol::websocket`]). Every handshake
+//! (`ws:`/`wss:`) carrying the request's headers, then RFC 6455 messages ([`websocket`]). Every handshake
 //! failure (refused, a status other than 101, a wrong `Sec-WebSocket-Accept`, an extension nobody offered) is an
 //! `error` event without details, as undici reports it; a connection lost without a close frame is an `error`, then a
 //! 1006 closure; a close frame is echoed. Pings are answered. No extension (permessage-deflate) is offered.
 
 use crate::http::{BoxFuture, HeaderMap};
-use protocol::websocket::{Message, MessageDecoder, accept_key, encode_message};
 use std::collections::VecDeque;
 use std::time::Duration;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, ReadHalf, WriteHalf};
+use websocket::{Message, MessageDecoder, accept_key, encode_message};
 
 /// What `new WebSocket(...)` throws where the runtime has none.
 pub const NO_WEBSOCKET: &str = "WebSocket transport is not available in this runtime";

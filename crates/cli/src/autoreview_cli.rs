@@ -700,15 +700,9 @@ struct Saved {
 fn saved_settings(env: &Env) -> Saved {
     let agent_dir = env.agent_dir();
     let manager = config::settings::SettingsManager::create(&env.cwd, &agent_dir, false);
-    let raw = Value::Object(manager.autoreview_settings());
+    let raw = Value::Object(review::settings::saved(manager.global_settings()));
     let autoreview: AutoreviewSettings = serde_json::from_value(raw.clone()).unwrap_or_default();
-    let global = manager.global_settings();
-    let rlm = global.get("rlm").and_then(Value::as_object);
-    let frame_thinking = rlm
-        .and_then(|rlm| rlm.get("frameThinking"))
-        .and_then(Value::as_str)
-        .filter(|level| model_scope::THINKING_LEVELS.contains(level))
-        .map(str::to_string);
+    let rlm = config::keys::rlm_model_settings(manager.global_settings());
     let text = |value: Option<&Value>| value.and_then(Value::as_str).map(str::to_string);
     let retry = manager.retry_settings();
     let number = |key: &str, default: f64| retry[key].as_f64().unwrap_or(default);
@@ -720,16 +714,11 @@ fn saved_settings(env: &Env) -> Saved {
             max_delay_ms: number("maxAgentDelayMs", 60_000.0),
         },
         enabled: raw.get("enabled").and_then(Value::as_bool),
-        fallbacks_review_model: global
-            .get("review")
-            .and_then(Value::as_object)
-            .and_then(|review| config::settings::model_ref(review.get("model"))),
-        frame_model: rlm.and_then(|rlm| config::settings::model_ref(rlm.get("frameModel"))),
-        frame_thinking,
-        child_model: rlm
-            .and_then(|rlm| config::settings::model_ref(rlm.get("childModel")))
-            .filter(|model| !model.starts_with("claude-code/")),
-        map_tokens: config::settings::token_cap(rlm.and_then(|rlm| rlm.get("mapTokens"))),
+        fallbacks_review_model: config::keys::review_model(manager.global_settings()),
+        frame_model: rlm.frame_model,
+        frame_thinking: rlm.frame_thinking,
+        child_model: rlm.child_model.filter(|model| !model.starts_with("claude-code/")),
+        map_tokens: rlm.map_tokens,
         default_provider: text(manager.default_provider().as_ref()),
         default_model: text(manager.default_model().as_ref()),
         autoreview,
@@ -1804,7 +1793,7 @@ fn ban_loader(env: &Env) -> review::ban::BanLoader {
             return None;
         }
         Some(review::ban::BanList::from_value(
-            manager.autoreview_settings().get("ban"),
+            review::settings::saved(manager.global_settings()).get("ban"),
         ))
     })
 }

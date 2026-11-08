@@ -8,7 +8,6 @@
 //! condition variables with a 120 s hang guard; nothing sleeps.
 #![allow(dead_code)]
 
-use protocol::websocket::{Message, MessageDecoder, accept_key, encode_message};
 use serde_json::{Value, json};
 use server::radius_relay::{encode_relay_data_frame, parse_relay_data_frame};
 use std::collections::HashMap;
@@ -16,6 +15,7 @@ use std::io::{Read, Write};
 use std::net::{Shutdown, TcpListener, TcpStream};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
+use websocket::{Message, MessageDecoder, accept_key, encode_message};
 
 pub const HANG_GUARD: Duration = Duration::from_secs(120);
 const HOST: &str = "pi-session-relay.host.v1";

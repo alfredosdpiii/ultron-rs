@@ -5,7 +5,7 @@ use ai::http::{AbortSignal, Body, BoxFuture, HeaderMap, HttpRequest, HttpRespons
 use ai::images::{
     AssistantImages, EnvLookup, ImagesApi, ImagesAuth, ImagesAuthOverrides, ImagesAuthResult, ImagesContent,
     ImagesContext, ImagesModel, ImagesModels, ImagesOptions, ImagesProvider, ImagesStopReason, generate_images,
-    image_model, image_models, image_providers, images_api_provider, register_images_api_provider,
+    image_model, image_models, image_providers,
 };
 use ai::types::{ImageContent, ModelCost, TextContent};
 use indexmap::IndexMap;
@@ -244,31 +244,6 @@ fn context() -> ImagesContext {
             text_signature: None,
         })],
     }
-}
-
-#[tokio::test]
-async fn ai_images_registry_dispatches_by_api_and_rejects_mismatches() {
-    let calls = Calls::default();
-    register_images_api_provider("test-images", Arc::new(RecordingApi(calls.clone())));
-    let model = test_model("p1", "m");
-    let result = generate_images(&model, &context(), &ImagesOptions::default(), &Mock::default())
-        .await
-        .unwrap();
-    assert_eq!(result.stop_reason, ImagesStopReason::Stop);
-    assert_eq!(calls.lock().unwrap().len(), 1);
-
-    let other = ImagesModel {
-        api: "openrouter-images".into(),
-        ..model
-    };
-    let registered = images_api_provider("test-images").unwrap();
-    let error = registered
-        .generate_images(&other, &context(), &ImagesOptions::default(), &Mock::default())
-        .await
-        .unwrap_err();
-    assert_eq!(error, "Mismatched api: openrouter-images expected test-images");
-    assert_eq!(calls.lock().unwrap().len(), 1);
-    assert!(images_api_provider("never-registered").is_none());
 }
 
 // ---------------------------------------------------------------------------------------------- ImagesModels

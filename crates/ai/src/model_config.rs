@@ -5,13 +5,9 @@
 //! Evidence: `fixtures/generate-model-config.mjs` runs the TypeScript loader over files in a temp dir and records
 //! errors and providers; `tests/model_config.rs` replays them.
 
-use crate::types::Model;
-use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
-use std::collections::HashMap;
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
 
 /// One immutable load of models.json: raw provider objects (keys in JavaScript property order) and the load error.
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -728,55 +724,4 @@ fn models_config_schema() -> Schema {
         opt("modelOverrides", record(model_override())),
     ]);
     Schema::Obj(vec![req("providers", record(provider))])
-}
-
-// ---------------------------------------------------------------------------------------------------------------
-// models-store.ts and model-catalog.ts
-// ---------------------------------------------------------------------------------------------------------------
-
-/// A persisted dynamic catalog (`ModelsStoreEntry`).
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ModelsStoreEntry {
-    pub models: Vec<Model>,
-    /// Unix timestamp from the remote catalog's Last-Modified header.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub last_modified: Option<f64>,
-    /// Unix timestamp of the last completed remote check.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub checked_at: Option<f64>,
-    /// The remote catalog's ETag, quotes included, echoed back as If-None-Match.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub etag: Option<String>,
-}
-
-/// Persistent model catalogs keyed by provider id.
-pub trait ModelsStore: Send + Sync {
-    fn read(&self, provider_id: &str) -> Option<ModelsStoreEntry>;
-    fn write(&self, provider_id: &str, entry: &ModelsStoreEntry);
-    fn delete(&self, provider_id: &str);
-}
-
-/// `InMemoryModelsStore`: entries are copied in and out, so callers never share state with the store.
-#[derive(Default)]
-pub struct InMemoryModelsStore {
-    entries: Mutex<HashMap<String, ModelsStoreEntry>>,
-}
-
-impl ModelsStore for InMemoryModelsStore {
-    fn read(&self, provider_id: &str) -> Option<ModelsStoreEntry> {
-        self.entries.lock().ok()?.get(provider_id).cloned()
-    }
-
-    fn write(&self, provider_id: &str, entry: &ModelsStoreEntry) {
-        if let Ok(mut entries) = self.entries.lock() {
-            entries.insert(provider_id.to_owned(), entry.clone());
-        }
-    }
-
-    fn delete(&self, provider_id: &str) {
-        if let Ok(mut entries) = self.entries.lock() {
-            entries.remove(provider_id);
-        }
-    }
 }

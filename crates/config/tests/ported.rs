@@ -29,16 +29,19 @@ fn config_ported_stale_autoreview_worker_keeps_other_process_keys() {
     fs::write(&path, r#"{"autoreview":{"model":"p/m"}}"#).expect("seed");
     let mut picker = SettingsManager::create(&project, &agent, true);
     let mut stale = SettingsManager::create(&project, &agent, true);
-    picker.set_autoreview_settings(&[
-        ("enabled", Some(true.into())),
-        ("accounts", Some(json!(["github.com/me"]))),
-    ]);
-    stale.set_autoreview_settings(&[("ack", Some(false.into()))]);
+    picker.patch_global_object(
+        "autoreview",
+        &[
+            ("enabled", Some(true.into())),
+            ("accounts", Some(json!(["github.com/me"]))),
+        ],
+    );
+    stale.patch_global_object("autoreview", &[("ack", Some(false.into()))]);
     assert_eq!(
         read_json(&path)["autoreview"],
         json!({ "model": "p/m", "enabled": true, "accounts": ["github.com/me"], "ack": false })
     );
-    picker.set_autoreview_settings(&[("accounts", None)]);
+    picker.patch_global_object("autoreview", &[("accounts", None)]);
     assert_eq!(
         read_json(&path)["autoreview"],
         json!({ "model": "p/m", "enabled": true, "ack": false })

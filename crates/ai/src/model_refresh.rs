@@ -162,7 +162,7 @@ async fn fetch(transport: &dyn Transport, request: HttpRequest, timeout: Option<
     match timeout {
         Some(limit) => tokio::time::timeout(limit, work)
             .await
-            .map_err(|_| "The operation was aborted due to timeout".to_string())?,
+            .map_err(|_| crate::provider::OPERATION_TIMED_OUT.to_string())?,
         None => work.await,
     }
 }

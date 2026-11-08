@@ -2318,7 +2318,7 @@ fn run_tui(
     // paints.
     interactive::render_settings::set(interactive::render_settings::RenderSettings {
         hyperlinks: caps.hyperlinks,
-        code_block_indent: Some(settings.code_block_indent()),
+        code_block_indent: Some(config::keys::code_block_indent(settings.settings())),
     });
     let platform = crate::terminal_settings::platform(env);
     let user_keys = user_keybindings(&env.agent_dir(), platform);

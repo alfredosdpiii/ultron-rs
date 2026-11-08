@@ -15,11 +15,8 @@ use crate::options::{ProviderHeaders, SimpleStreamOptions};
 use crate::types::Model;
 use config::auth::{TemplatePart, parse_template};
 use serde_json::{Map, Value, json};
-use std::io::Read;
 use std::path::Path;
-use std::process::{Command, Stdio};
 use std::sync::Arc;
-use std::time::Duration;
 
 /// An environment variable lookup.
 pub type Lookup<'a> = &'a dyn Fn(&str) -> Option<String>;
@@ -275,13 +272,7 @@ impl ModelRegistry {
     /// a missing file is an empty one.
     pub fn load(path: &Path, home: &Path) -> Self {
         let mut registry = Self::new(ModelConfig::load_with_home(path.to_str(), home));
-        let store = path.parent().map(|dir| dir.join("models-store.json"));
-        if let Some(Value::Object(stored)) = store
-            .and_then(|store| std::fs::read_to_string(store).ok())
-            .and_then(|text| serde_json::from_str(text.trim_start_matches('\u{feff}')).ok())
-        {
-            registry.stored = stored;
-        }
+        registry.stored = config::models_store::ModelsStore::beside(path).snapshot();
         registry
     }
 
@@ -932,53 +923,13 @@ fn env_value(name: &str, lookup: Lookup<'_>) -> Option<String> {
     lookup(name).filter(|v| !v.is_empty())
 }
 
-/// How long a `!command` may run.
-const COMMAND_TIMEOUT: Duration = Duration::from_secs(10);
-
-/// `execSync(command)` through `/bin/sh -c` with stdin and stderr ignored, for at most ten seconds: trimmed stdout,
-/// or None when it fails, times out or prints nothing.
-fn run_command(command: &str) -> Option<String> {
-    let mut child = Command::new("/bin/sh")
-        .arg("-c")
-        .arg(command)
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .spawn()
-        .ok()?;
-    let mut stdout = child.stdout.take()?;
-    let (tx, rx) = std::sync::mpsc::channel();
-    std::thread::spawn(move || {
-        let mut out = Vec::new();
-        let _ = stdout.read_to_end(&mut out);
-        let _ = tx.send(out);
-    });
-    let Ok(out) = rx.recv_timeout(COMMAND_TIMEOUT) else {
-        let _ = child.kill();
-        let _ = child.wait();
-        return None;
-    };
-    if !child.wait().ok()?.success() {
-        return None;
-    }
-    let text = String::from_utf8_lossy(&out).trim().to_string();
-    (!text.is_empty()).then_some(text)
-}
-
 /// `resolveConfigValueUncached`: `!command` output, or the template with its variables filled (None when one is
 /// unset or empty).
 pub fn resolve_config_value(config: &str, lookup: Lookup<'_>) -> Option<String> {
-    if let Some(command) = config.strip_prefix('!') {
-        return run_command(command);
+    match config.strip_prefix('!') {
+        Some(command) => config::auth::command_output(command),
+        None => config::auth::fill_template(config, lookup),
     }
-    let mut out = String::new();
-    for part in parse_template(config) {
-        match part {
-            TemplatePart::Literal(text) => out.push_str(&text),
-            TemplatePart::Env(name) => out.push_str(&env_value(&name, lookup)?),
-        }
-    }
-    Some(out)
 }
 
 /// `resolveConfigValueOrThrow`, with its messages.

@@ -3,6 +3,10 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 
+/// The key [`env_api_key`] reports for configured ambient AWS or Google credentials: the provider is configured, but
+/// its requests carry no API key (TypeScript `getAuth` resolves with no `apiKey`).
+pub const AMBIENT_CREDENTIALS: &str = "<authenticated>";
+
 /// Provider-scoped environment overrides; they take precedence over the process environment.
 pub type ProviderEnv = HashMap<String, String>;
 
@@ -111,7 +115,7 @@ pub fn env_api_key_in(provider: &str, source: &EnvSource<'_>) -> Option<String> 
                 .is_some_and(|home| (source.exists)(&home.join(".config/gcloud/application_default_credentials.json"))),
         };
         if credentials && (has("GOOGLE_CLOUD_PROJECT") || has("GCLOUD_PROJECT")) && has("GOOGLE_CLOUD_LOCATION") {
-            return Some("<authenticated>".into());
+            return Some(AMBIENT_CREDENTIALS.into());
         }
     }
     if provider == "amazon-bedrock"
@@ -122,7 +126,7 @@ pub fn env_api_key_in(provider: &str, source: &EnvSource<'_>) -> Option<String> 
             || has("AWS_CONTAINER_CREDENTIALS_FULL_URI")
             || has("AWS_WEB_IDENTITY_TOKEN_FILE"))
     {
-        return Some("<authenticated>".into());
+        return Some(AMBIENT_CREDENTIALS.into());
     }
     None
 }

@@ -13,23 +13,24 @@ pub use websocket::{
 
 use crate::constrained::grammar_tool_input_properties;
 use crate::http::{
-    AbortSignal, Body, HeaderBuilder, HttpRequest, HttpResponse, Read, Transport, cancelled, is_aborted, read_chunk,
+    AbortSignal, Body, DEFAULT_MAX_RETRY_DELAY_MS, HeaderBuilder, HttpRequest, HttpResponse, Transport, cancelled,
+    is_aborted,
 };
 use crate::json::parse_json;
 use crate::jsutil::{Utf8Stream, latin1};
 use crate::models::clamp_thinking_level;
-use crate::openai_prompt_cache::clamp_openai_prompt_cache_key;
 use crate::openai_responses::{
-    ConvertOptions, OPENAI_TOOL_CALL_PROVIDERS, ResponsesRun, TierPricing, ToolOptions, convert_responses_messages,
-    convert_responses_tools,
+    ConvertOptions, OPENAI_TOOL_CALL_PROVIDERS, ResponsesRun, ResponsesStream, TierPricing, ToolOptions,
+    convert_responses_messages, convert_responses_tools,
 };
 use crate::options::{SimpleStreamOptions, StreamOptions, build_base_options, pi_user_agent};
+use crate::provider::{ProviderError, REQUEST_WAS_ABORTED, next_chunk};
 use crate::transcript::{
     declared_tools, initial_system_message, resolve_transcript, resolve_transcript_tools, system_message_text,
 };
 use crate::types::{
-    AssistantMessage, AssistantMessageDiagnostic, AssistantMessageEvent, CacheRetention, DiagnosticErrorInfo,
-    EventSink, Mapped, Model, StopReason, TranscriptContext,
+    AssistantMessage, AssistantMessageDiagnostic, CacheRetention, DiagnosticErrorInfo, EventSink, Mapped, Model,
+    TranscriptContext,
 };
 use indexmap::IndexMap;
 use serde::Deserialize;
@@ -39,7 +40,6 @@ use std::time::Duration;
 const DEFAULT_CODEX_BASE_URL: &str = "https://chatgpt.com/backend-api";
 const JWT_CLAIM_PATH: &str = "https://api.openai.com/auth";
 const BASE_DELAY_MS: f64 = 1000.0;
-const DEFAULT_MAX_RETRY_DELAY_MS: f64 = 60_000.0;
 const CODEX_RESPONSE_STATUSES: &[&str] = &[
     "completed",
     "incomplete",
@@ -269,12 +269,29 @@ enum CodexError {
         message: String,
         code: u16,
     },
+    /// A non-2xx SSE response, until the retry loop decides on it.
+    Status {
+        status: u16,
+        headers: crate::http::HeaderMap,
+        text: String,
+    },
+}
+
+impl ProviderError for CodexError {
+    fn plain(message: String) -> Self {
+        CodexError::Plain(message)
+    }
+
+    fn aborted() -> Self {
+        aborted_error()
+    }
 }
 
 impl CodexError {
     fn message(&self) -> &str {
         match self {
             CodexError::Plain(m) | CodexError::RetryDelay(m) | CodexError::Protocol(m) => m,
+            CodexError::Status { text, .. } => text,
             CodexError::Api { message, .. } | CodexError::Closed { message, .. } => message,
         }
     }
@@ -294,7 +311,7 @@ impl CodexError {
     /// `extractDiagnosticError`.
     fn diagnostic(&self) -> DiagnosticErrorInfo {
         let (name, code) = match self {
-            CodexError::Plain(_) | CodexError::RetryDelay(_) => ("Error", None),
+            CodexError::Plain(_) | CodexError::RetryDelay(_) | CodexError::Status { .. } => ("Error", None),
             CodexError::Api { code, .. } => ("CodexApiError", code.as_ref().map(|c| json!(c))),
             CodexError::Protocol(_) => ("CodexProtocolError", None),
             CodexError::Closed { code, .. } => ("WebSocketCloseError", Some(json!(code))),
@@ -309,7 +326,7 @@ impl CodexError {
 }
 
 fn aborted_error() -> CodexError {
-    CodexError::Plain("Request was aborted".into())
+    CodexError::Plain(REQUEST_WAS_ABORTED.into())
 }
 
 fn is_terminal_rate_limit_error(text: &str) -> bool {
@@ -367,16 +384,6 @@ fn validate_retry_delay_ms(delay_ms: f64, max: Option<f64>) -> Result<f64, Codex
         )));
     }
     Ok(delay_ms)
-}
-
-async fn sleep(ms: f64, signal: Option<&AbortSignal>) -> Result<(), CodexError> {
-    if is_aborted(signal) {
-        return Err(aborted_error());
-    }
-    tokio::select! {
-        () = tokio::time::sleep(Duration::from_secs_f64(ms.max(0.0) / 1000.0)) => Ok(()),
-        () = cancelled(signal) => Err(aborted_error()),
-    }
 }
 
 fn status_text(status: u16) -> String {
@@ -547,14 +554,9 @@ async fn process_stream(
     let mut sse = CodexSse::default();
     let body: &mut dyn Body = response.body.as_mut();
     'read: loop {
-        if is_aborted(signal) {
-            return Err(aborted_error());
-        }
-        let (text, done) = match read_chunk(body, signal).await {
-            Read::Chunk(bytes) => (sse.decoder.push(&bytes), false),
-            Read::End => (sse.decoder.finish(), true),
-            Read::Aborted => return Err(aborted_error()),
-            Read::Failed(error) => return Err(CodexError::Plain(error)),
+        let (text, done) = match next_chunk::<CodexError>(body, signal).await? {
+            Some(bytes) => (sse.decoder.push(&bytes), false),
+            None => (sse.decoder.finish(), true),
         };
         if is_aborted(signal) {
             return Err(aborted_error());
@@ -573,7 +575,7 @@ async fn process_stream(
             break;
         }
     }
-    run.end().map_err(CodexError::Plain)
+    run.terminated().map_err(CodexError::Plain)
 }
 
 // ----------------------------------------------------------------------------------------------------- the request
@@ -593,25 +595,12 @@ pub async fn stream(
     let now = jsrt::date::now_ms();
     let mut output = AssistantMessage::pending(model, now);
     output.api = "openai-codex-responses".into();
-    let mut run = ResponsesRun::new(output, sink);
-    let signal = options.base.signal();
-    match drive(&mut run, model, &context, options, transport, now).await {
-        Ok(()) => {
-            let reason = run.output.stop_reason;
-            run.emit(|message| AssistantMessageEvent::Done { reason, message });
-        }
-        Err(error) => {
-            run.output.stop_reason = if is_aborted(signal) {
-                StopReason::Aborted
-            } else {
-                StopReason::Error
-            };
-            run.output.error_message = Some(error.message().to_string());
-            let reason = run.output.stop_reason;
-            run.emit(|error| AssistantMessageEvent::Error { reason, error });
-        }
-    }
-    run.output
+    let mut run = ResponsesRun::new(output, sink, ResponsesStream::default());
+    let result = drive(&mut run, model, &context, options, transport, now).await;
+    run.end(
+        result.map_err(|error| error.message().to_string()),
+        options.base.signal(),
+    )
 }
 
 async fn drive(
@@ -640,7 +629,7 @@ async fn drive(
     } else {
         base.session_id.as_deref()
     };
-    let codex_session_id = cache_session_id.map(clamp_openai_prompt_cache_key);
+    let codex_session_id = cache_session_id.map(crate::openai_responses::clamp_prompt_cache_key);
     let mut body = Value::Object(
         build_request_body(model, context, options, codex_session_id.as_deref(), &grammar, now)
             .map_err(CodexError::Plain)?,
@@ -688,12 +677,7 @@ async fn drive(
             let attempt =
                 websocket::process_websocket_stream(run, transport, &request, &mut started, &mut start_emitted).await;
             let error = match attempt {
-                Ok(()) => {
-                    if is_aborted(signal) {
-                        return Err(aborted_error());
-                    }
-                    return assert_successful(&run.output);
-                }
+                Ok(()) => return run.stopped(signal, CODEX_NO_STOP_REASON).map_err(CodexError::Plain),
                 Err(error) => error,
             };
             let aborted = is_aborted(signal);
@@ -756,7 +740,7 @@ async fn drive(
     };
     let mut response = send_with_codex_retry(transport, &request, base, http_timeout_ms, signal).await?;
     if !start_emitted {
-        run.emit(|partial| AssistantMessageEvent::Start { partial });
+        run.start();
     }
     process_stream(
         run,
@@ -767,26 +751,11 @@ async fn drive(
         signal,
     )
     .await?;
-    if is_aborted(signal) {
-        return Err(aborted_error());
-    }
-    assert_successful(&run.output)
+    run.stopped(signal, CODEX_NO_STOP_REASON).map_err(CodexError::Plain)
 }
 
-/// `assertSuccessfulOutput`.
-fn assert_successful(output: &AssistantMessage) -> Result<(), CodexError> {
-    match output.stop_reason {
-        StopReason::Pending => Err(CodexError::Plain("Codex stream ended without a stop reason".into())),
-        StopReason::Error | StopReason::Aborted => Err(CodexError::Plain(
-            output
-                .error_message
-                .clone()
-                .filter(|m| !m.is_empty())
-                .unwrap_or_else(|| "An unknown error occurred".into()),
-        )),
-        _ => Ok(()),
-    }
-}
+/// `assertSuccessfulOutput`'s message for a stream that set no stop reason.
+const CODEX_NO_STOP_REASON: &str = "Codex stream ended without a stop reason";
 
 async fn read_text(response: &mut HttpResponse) -> String {
     let mut decoder = Utf8Stream::default();
@@ -830,46 +799,46 @@ async fn send_with_codex_retry(
     signal: Option<&AbortSignal>,
 ) -> Result<HttpResponse, CodexError> {
     let max_retries = base.max_retries.unwrap_or(0);
-    let mut attempt: u32 = 0;
-    loop {
+    let send = |_| async {
         if is_aborted(signal) {
             return Err(aborted_error());
         }
-        let outcome: Result<Option<HttpResponse>, CodexError> = async {
-            let mut response = send_once(transport, request, timeout_ms, signal).await?;
-            if (200..300).contains(&response.status) {
-                return Ok(Some(response));
-            }
-            let text = read_text(&mut response).await;
-            if attempt < max_retries && is_retryable_error(response.status, &text) {
-                let delay = match retry_after_delay_ms(&response.headers) {
-                    None => BASE_DELAY_MS * 2f64.powi(attempt as i32),
-                    Some(delay) => validate_retry_delay_ms(delay, base.max_retry_delay_ms)?,
-                };
-                sleep(delay, signal).await?;
-                return Ok(None);
-            }
-            let (message, friendly) = parse_error_response(response.status, &text, jsrt::date::now_ms());
-            Err(CodexError::Plain(friendly.unwrap_or(message)))
+        let mut response = send_once(transport, request, timeout_ms, signal).await?;
+        if (200..300).contains(&response.status) {
+            return Ok(response);
         }
-        .await;
-        match outcome {
-            Ok(Some(response)) => return Ok(response),
-            Ok(None) => {}
-            Err(error) => {
-                if error.message() == "Request was aborted" {
-                    return Err(aborted_error());
+        let text = read_text(&mut response).await;
+        Err(CodexError::Status {
+            status: response.status,
+            headers: response.headers,
+            text,
+        })
+    };
+    crate::provider::retry(signal, aborted_error, send, |error, attempt| {
+        let error = match error {
+            CodexError::Status { status, headers, text } => {
+                if attempt < max_retries && is_retryable_error(status, &text) {
+                    return match retry_after_delay_ms(&headers) {
+                        None => Ok(BASE_DELAY_MS * 2f64.powi(attempt as i32)),
+                        Some(delay) => validate_retry_delay_ms(delay, base.max_retry_delay_ms),
+                    };
                 }
-                let retryable = !matches!(error, CodexError::RetryDelay(_)) && !error.message().contains("usage limit");
-                if attempt < max_retries && retryable {
-                    sleep(BASE_DELAY_MS * 2f64.powi(attempt as i32), signal).await?;
-                } else {
-                    return Err(error);
-                }
+                let (message, friendly) = parse_error_response(status, &text, jsrt::date::now_ms());
+                CodexError::Plain(friendly.unwrap_or(message))
             }
+            error => error,
+        };
+        if error.message() == REQUEST_WAS_ABORTED {
+            return Err(aborted_error());
         }
-        attempt += 1;
-    }
+        let retryable = !matches!(error, CodexError::RetryDelay(_)) && !error.message().contains("usage limit");
+        if attempt < max_retries && retryable {
+            Ok(BASE_DELAY_MS * 2f64.powi(attempt as i32))
+        } else {
+            Err(error)
+        }
+    })
+    .await
 }
 
 /// `streamSimple`: reasoning clamped to the model's levels and sent as `reasoningEffort`.

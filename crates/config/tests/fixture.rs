@@ -69,7 +69,7 @@ fn view(m: &mut SettingsManager, home: &Path, cwd: &Path) -> Value {
         "steeringMode": m.steering_mode(), "followUpMode": m.follow_up_mode(), "transport": m.transport(),
         "compactionEnabled": m.compaction_enabled(), "retry": m.retry_settings(), "branchSummary": m.branch_summary_settings(),
         "sessionDir": opt(m.session_dir(home).map(|p| p.to_string_lossy().into_owned())),
-        "defaultProjectTrust": m.default_project_trust(), "autoreview": m.autoreview_settings(), "loki": m.loki_settings(),
+        "defaultProjectTrust": m.default_project_trust(), "autoreview": review::settings::saved(m.global_settings()), "loki": loki::settings::saved(m.global_settings()),
         "defaultProvider": opt(m.default_provider()), "defaultModel": opt(m.default_model()), "errors": errors,
         "projectDirExists": cwd.join(".pi").exists(),
     })
@@ -81,8 +81,11 @@ fn run_step(m: &mut SettingsManager, step: &Value, home: &Path, cwd: &Path) -> V
     match step["op"].as_str().expect("op") {
         "view" => return view(m, home, cwd),
         "reload" => m.reload(),
-        "setAutoreviewSettings" => m.set_autoreview_settings(&borrowed(&patch(step))),
-        "setLokiSettings" => m.set_loki_settings(&borrowed(&patch(step))),
+        "setAutoreviewSettings" => m.patch_global_object(review::settings::KEY, &borrowed(&patch(step))),
+        "setLokiSettings" => {
+            let loki = loki::settings::patched(m.global_settings(), &borrowed(&patch(step)));
+            m.set_global(loki::settings::KEY, Some(loki));
+        }
         "setDefaultModelAndProvider" => {
             m.set_global("defaultProvider", Some(s("provider").into()));
             m.set_global("defaultModel", Some(s("model").into()));
@@ -173,7 +176,7 @@ fn config_settings_concurrent_writers_keep_every_key() {
             std::thread::spawn(move || {
                 let mut m = SettingsManager::create(&cwd, &agent, true);
                 for i in 0..writes {
-                    m.set_autoreview_settings(&[(&format!("{tag}{i}"), Some(i.into()))]);
+                    m.patch_global_object("autoreview", &[(&format!("{tag}{i}"), Some(i.into()))]);
                 }
                 m.drain_errors()
             })

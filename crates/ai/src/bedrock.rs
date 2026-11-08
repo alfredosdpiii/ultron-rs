@@ -13,14 +13,15 @@ use crate::aws::{
 use crate::aws_credentials::{ChainInput, CredentialError, default_credentials, profile_config_value};
 use crate::constrained::{json_schema_tool_parameters, resolve_json_schema_strict_sampling};
 use crate::env::provider_env_value;
-use crate::http::{AbortSignal, HttpRequest, HttpResponse, Read, Transport, cancelled, is_aborted, read_chunk};
+use crate::http::{AbortSignal, HttpRequest, HttpResponse, Transport, cancelled, is_aborted};
 use crate::json::{parse_json, parse_streaming_json};
 use crate::jsutil::json_parse_error;
 use crate::models::calculate_cost;
 use crate::options::{
     SimpleStreamOptions, StreamOptions, ThinkingBudgets, adjust_max_tokens_for_thinking, build_base_options,
-    clamp_max_tokens_to_context, clamp_reasoning,
+    clamp_max_tokens_to_context,
 };
+use crate::provider::{ProviderError, REQUEST_ABORTED, Run, next_chunk};
 use crate::transcript::{
     collapse_system_messages, current_tools, initial_system_message, system_message_text, transform_messages,
 };
@@ -32,7 +33,6 @@ use crate::types::{
 use indexmap::IndexMap;
 use serde::Deserialize;
 use serde_json::{Map, Value, json};
-use std::time::Duration;
 
 const EMPTY_TEXT_PLACEHOLDER: &str = "<empty>";
 const REDACTED_THINKING_PLACEHOLDER: &str = "[Reasoning redacted]";
@@ -74,6 +74,16 @@ struct BedrockError {
     request_id: Option<String>,
     /// Classified as transient by the SDK retry strategy without a status (connection failures).
     transient: bool,
+}
+
+impl ProviderError for BedrockError {
+    fn plain(message: String) -> Self {
+        BedrockError::plain(message)
+    }
+
+    fn aborted() -> Self {
+        abort_error()
+    }
 }
 
 impl BedrockError {
@@ -386,10 +396,6 @@ fn effort_for(model: &Model, level: &str) -> String {
 
 // ------------------------------------------------------------------------------------------------- request body
 
-fn cache_retention(options: &StreamOptions) -> CacheRetention {
-    options.cache_retention()
-}
-
 fn cache_point(retention: CacheRetention) -> Value {
     if retention == CacheRetention::Long {
         json!({"cachePoint": {"type": "default", "ttl": "1h"}})
@@ -667,22 +673,10 @@ fn additional_fields(model: &Model, options: &BedrockOptions) -> Option<Value> {
         result.insert("thinking".into(), Value::Object(thinking));
         result.insert("output_config".into(), json!({"effort": effort_for(model, level)}));
     } else {
-        let budgets = options.thinking_budgets.unwrap_or_default();
-        let custom = match level {
-            "minimal" => budgets.minimal,
-            "low" => budgets.low,
-            "medium" => budgets.medium,
-            _ => budgets.high,
-        };
-        let default = match level {
-            "minimal" => 1024,
-            "low" => 2048,
-            "medium" => 8192,
-            _ => 16384,
-        };
+        let budget = crate::options::thinking_budget_for_level(level, options.thinking_budgets.as_ref());
         let mut thinking = Map::new();
         thinking.insert("type".into(), json!("enabled"));
-        thinking.insert("budget_tokens".into(), json!(custom.unwrap_or(default)));
+        thinking.insert("budget_tokens".into(), json!(budget));
         if let Some(display) = &display {
             thinking.insert("display".into(), json!(display));
         }
@@ -701,7 +695,7 @@ fn command_input(
     options: &BedrockOptions,
 ) -> Result<Map<String, Value>, String> {
     let base = &options.base;
-    let retention = cache_retention(base);
+    let retention = base.cache_retention();
     let max_tokens = base
         .max_tokens
         .or(is_anthropic_claude_model(model).then_some(model.max_tokens));
@@ -1061,24 +1055,17 @@ struct Block {
     redacted_chunks: Option<Vec<u8>>,
 }
 
-struct Run<'s, 'e> {
-    output: AssistantMessage,
+struct ConverseStream {
     blocks: Vec<Block>,
-    sink: &'s mut EventSink<'e>,
 }
 
-impl Run<'_, '_> {
-    fn emit(&mut self, event: impl FnOnce(AssistantMessage) -> AssistantMessageEvent) {
-        let event = event(self.output.clone());
-        (self.sink)(&event);
-    }
-
+impl Run<'_, '_, ConverseStream> {
     fn position(&self, index: i64) -> Option<usize> {
-        self.blocks.iter().position(|b| b.index == Some(index))
+        self.state.blocks.iter().position(|b| b.index == Some(index))
     }
 
     fn finalize(&mut self, position: usize) {
-        let block = &mut self.blocks[position];
+        let block = &mut self.state.blocks[position];
         block.index = None;
         block.partial_json = None;
         if let Some(bytes) = block.redacted_chunks.take()
@@ -1089,14 +1076,14 @@ impl Run<'_, '_> {
     }
 
     fn finalize_all(&mut self) {
-        for position in 0..self.blocks.len() {
+        for position in 0..self.state.blocks.len() {
             self.finalize(position);
         }
     }
 
     fn push(&mut self, content: AssistantContent, block: Block) -> usize {
         self.output.content.push(content);
-        self.blocks.push(block);
+        self.state.blocks.push(block);
         self.output.content.len() - 1
     }
 
@@ -1146,7 +1133,7 @@ impl Run<'_, '_> {
                 let Some(position) = self.position(index) else {
                     return Ok(());
                 };
-                self.blocks[position].index = None;
+                self.state.blocks[position].index = None;
                 match &self.output.content[position] {
                     AssistantContent::Text(text) => {
                         let content = text.text.clone();
@@ -1169,7 +1156,7 @@ impl Run<'_, '_> {
                         });
                     }
                     AssistantContent::ToolCall(_) => {
-                        let json_text = self.blocks[position].partial_json.take().unwrap_or_default();
+                        let json_text = self.state.blocks[position].partial_json.take().unwrap_or_default();
                         let arguments = parse_streaming_json(&json_text);
                         let AssistantContent::ToolCall(call) = &mut self.output.content[position] else {
                             unreachable!()
@@ -1275,7 +1262,7 @@ impl Run<'_, '_> {
                 .and_then(Value::as_str)
                 .unwrap_or_default()
                 .to_string();
-            let buffer = self.blocks[p].partial_json.get_or_insert_with(String::new);
+            let buffer = self.state.blocks[p].partial_json.get_or_insert_with(String::new);
             buffer.push_str(&input);
             let arguments = parse_streaming_json(buffer);
             if let AssistantContent::ToolCall(call) = &mut self.output.content[p] {
@@ -1350,7 +1337,7 @@ impl Run<'_, '_> {
                             partial,
                         });
                     }
-                    self.blocks[p]
+                    self.state.blocks[p]
                         .redacted_chunks
                         .get_or_insert_with(Vec::new)
                         .extend(bytes);
@@ -1372,7 +1359,7 @@ async fn read_body_text(response: &mut HttpResponse) -> String {
 fn abort_error() -> BedrockError {
     BedrockError {
         name: "AbortError".into(),
-        message: "Request aborted".into(),
+        message: REQUEST_ABORTED.into(),
         ..Default::default()
     }
 }
@@ -1396,19 +1383,14 @@ impl OpenStream {
             if self.done {
                 return Ok(None);
             }
-            if is_aborted(signal) {
-                return Err(abort_error());
-            }
-            match read_chunk(self.response.body.as_mut(), signal).await {
-                Read::Chunk(bytes) => self
+            match next_chunk::<BedrockError>(self.response.body.as_mut(), signal).await? {
+                Some(bytes) => self
                     .pending
                     .extend(self.decoder.push(&bytes).map_err(BedrockError::plain)?),
-                Read::End => {
+                None => {
                     self.done = true;
                     self.decoder.finish().map_err(BedrockError::plain)?;
                 }
-                Read::Aborted => return Err(abort_error()),
-                Read::Failed(error) => return Err(BedrockError::plain(error)),
             }
         }
     }
@@ -1472,21 +1454,19 @@ async fn send_with_retry(
 ) -> Result<OpenStream, BedrockError> {
     let signal = options.base.signal();
     let attempts = max_attempts(options);
-    let mut retries = 0;
-    loop {
-        match attempt(transport, request, signal).await {
-            Ok(stream) => return Ok(stream),
-            Err(error) if retries + 1 < attempts && error.retryable() && !is_aborted(signal) => {
-                let delay = backoff_delay_ms(retries, error.throttling());
-                tokio::select! {
-                    () = tokio::time::sleep(Duration::from_millis(delay)) => {}
-                    () = cancelled(signal) => return Err(abort_error()),
-                }
-                retries += 1;
+    crate::provider::retry(
+        signal,
+        abort_error,
+        |_| attempt(transport, request, signal),
+        |error, retries| {
+            if retries + 1 < attempts && error.retryable() && !is_aborted(signal) {
+                Ok(backoff_delay_ms(retries, error.throttling()) as f64)
+            } else {
+                Err(error)
             }
-            Err(error) => return Err(error),
-        }
-    }
+        },
+    )
+    .await
 }
 
 /// Stream one Converse response; failures end with an `error` event and a `bedrock_response_failure` diagnostic.
@@ -1500,42 +1480,24 @@ pub async fn stream(
     let context = collapse_system_messages(context);
     let mut output = AssistantMessage::pending(model, jsrt::date::now_ms());
     output.api = "bedrock-converse-stream".into();
-    let mut run = Run {
-        output,
-        blocks: Vec::new(),
-        sink,
-    };
+    let mut run = Run::new(output, sink, ConverseStream { blocks: Vec::new() });
     let mut response_id: Option<String> = None;
     let result = drive(&mut run, model, &context, options, transport, &mut response_id).await;
     let signal = options.base.signal();
-    match result {
-        Ok(()) => {
-            run.finalize_all();
-            let reason = run.output.stop_reason;
-            run.emit(|message| AssistantMessageEvent::Done { reason, message });
+    run.finalize_all();
+    let result = result.map_err(|error| {
+        if !is_aborted(signal)
+            && let Some(diagnostic) = failure_diagnostic(&error, response_id.as_deref())
+        {
+            run.output.diagnostics.get_or_insert_with(Vec::new).push(diagnostic);
         }
-        Err(error) => {
-            run.finalize_all();
-            run.output.stop_reason = if is_aborted(signal) {
-                StopReason::Aborted
-            } else {
-                StopReason::Error
-            };
-            run.output.error_message = Some(format_error(&error));
-            if run.output.stop_reason == StopReason::Error
-                && let Some(diagnostic) = failure_diagnostic(&error, response_id.as_deref())
-            {
-                run.output.diagnostics.get_or_insert_with(Vec::new).push(diagnostic);
-            }
-            let reason = run.output.stop_reason;
-            run.emit(|error| AssistantMessageEvent::Error { reason, error });
-        }
-    }
-    run.output
+        format_error(&error)
+    });
+    run.end(result, signal)
 }
 
 async fn drive(
-    run: &mut Run<'_, '_>,
+    run: &mut Run<'_, '_, ConverseStream>,
     model: &Model,
     context: &TranscriptContext,
     options: &BedrockOptions,
@@ -1610,20 +1572,8 @@ async fn drive(
             }
         }
     }
-    if is_aborted(signal) {
-        return Err(BedrockError::plain("Request was aborted"));
-    }
-    match run.output.stop_reason {
-        StopReason::Pending => Err(BedrockError::plain("Bedrock stream ended without a stop reason")),
-        StopReason::Error | StopReason::Aborted => Err(BedrockError::plain(
-            run.output
-                .error_message
-                .clone()
-                .filter(|m| !m.is_empty())
-                .unwrap_or_else(|| "An unknown error occurred".into()),
-        )),
-        _ => Ok(()),
-    }
+    run.stopped(signal, "Bedrock stream ended without a stop reason")
+        .map_err(BedrockError::plain)
 }
 
 /// `streamSimple`: Claude budget models get their thinking budget fitted into `maxTokens`; adaptive Claude and other
@@ -1661,15 +1611,8 @@ pub async fn stream_simple(
         );
         let max_tokens = clamp_max_tokens_to_context(model, context, adjusted);
         bedrock.base.max_tokens = Some(max_tokens);
-        let mut budgets = options.thinking_budgets.unwrap_or_default();
-        let fitted = budget.min(max_tokens.saturating_sub(1024));
-        match clamp_reasoning(&level) {
-            "minimal" => budgets.minimal = Some(fitted),
-            "low" => budgets.low = Some(fitted),
-            "medium" => budgets.medium = Some(fitted),
-            _ => budgets.high = Some(fitted),
-        }
-        bedrock.thinking_budgets = Some(budgets);
+        let budgets = options.thinking_budgets.unwrap_or_default();
+        bedrock.thinking_budgets = Some(budgets.fitted(&level, budget, max_tokens));
     }
     stream(model, context, &bedrock, transport, sink).await
 }

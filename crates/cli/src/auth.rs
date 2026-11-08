@@ -338,7 +338,7 @@ fn check(
             _ => credentials
                 .resolve(&provider, None)?
                 .map(|(c, _)| c)
-                .filter(|c| c != "<authenticated>"),
+                .filter(|c| c != ai::env::AMBIENT_CREDENTIALS),
         };
         Ok(match credential {
             Some(c) => (ready, Some(c)),
@@ -432,7 +432,7 @@ fn print_credential(
             .resolve(id, min)
             .map_err(failed)?
             .map(|(c, _)| c)
-            .filter(|c| c != "<authenticated>")
+            .filter(|c| c != ai::env::AMBIENT_CREDENTIALS)
         {
             found.push((id.clone(), value));
         }

@@ -7,17 +7,18 @@
 //! operations. Evidence: `fixtures/generate-worker-settings.mjs` records the TypeScript over a recording harness;
 //! `tests/worker_settings.rs` replays it.
 
+use config::keys::{
+    CACHE_WARMING_MODES, DISABLED_REQUEST_TIMEOUT_MS, DOUBLE_ESCAPE_ACTIONS, FULLSCREEN_EXIT_OUTPUTS,
+    FULLSCREEN_SCROLLBARS, MERMAID_MODES, PROJECT_TRUST_DEFAULTS, QUEUE_MODES, TRANSPORTS, TREE_FILTER_MODES,
+    TUI_MODES,
+};
 use config::settings::SettingsManager;
+use model_scope::{DEFAULT_THINKING_LEVEL, THINKING_LEVELS};
 use serde_json::{Map, Value, json};
 use std::path::Path;
 
 /// The worker's environment, by variable name.
 pub type Env<'a> = &'a dyn Fn(&str) -> Option<String>;
-
-/// The thinking level Pi uses without a setting (`DEFAULT_THINKING_LEVEL`).
-pub const DEFAULT_THINKING_LEVEL: &str = "medium";
-/// `DEFAULT_HTTP_IDLE_TIMEOUT_MS`.
-pub const DEFAULT_HTTP_IDLE_TIMEOUT_MS: u64 = 300_000;
 
 /// What the running session reports for the settings it holds live (the harness's compaction, retry and queues).
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -106,21 +107,6 @@ fn text(value: Option<&Value>) -> Option<String> {
     (!t.is_empty()).then(|| t.to_string())
 }
 
-/// `getHttpIdleTimeoutMs`: an invalid setting is an error, as the TypeScript getter throws.
-pub fn http_idle_timeout_ms(settings: &SettingsManager) -> Result<u64, String> {
-    match settings.settings().get("httpIdleTimeoutMs") {
-        None => Ok(DEFAULT_HTTP_IDLE_TIMEOUT_MS),
-        Some(value) => match ai::http::parse_http_idle_timeout_ms(value) {
-            Some(ms) => Ok(ms),
-            None if value.is_null() => Ok(DEFAULT_HTTP_IDLE_TIMEOUT_MS),
-            None => Err(format!(
-                "Invalid httpIdleTimeoutMs setting: {}",
-                jsrt::value::string(Some(value))
-            )),
-        },
-    }
-}
-
 fn one_of_or(value: Option<&Value>, allowed: &[&str], default: &str) -> Value {
     match value.and_then(Value::as_str) {
         Some(v) if allowed.contains(&v) => v.into(),
@@ -130,7 +116,7 @@ fn one_of_or(value: Option<&Value>, allowed: &[&str], default: &str) -> Value {
 
 /// `autoreviewValues`: reviews on, the acknowledgement comment, its art.
 fn autoreview_values(settings: &SettingsManager, values: &mut Map<String, Value>) {
-    let saved = settings.autoreview_settings();
+    let saved = review::settings::saved(settings.global_settings());
     let art = match saved.get("ackArt") {
         None => "logo",
         Some(Value::String(s)) if s == "logo" => "logo",
@@ -160,14 +146,13 @@ pub fn values(settings: &SettingsManager, live: &Live, env: Env) -> Result<Map<S
         "transport",
         get(settings, &["transport"]).cloned().unwrap_or("auto".into()),
     );
-    put("httpIdleTimeoutMs", json!(http_idle_timeout_ms(settings)?));
+    put(
+        "httpIdleTimeoutMs",
+        json!(config::keys::http_idle_timeout_ms(settings.settings())?),
+    );
     put(
         "cacheWarming",
-        one_of_or(
-            global(settings, "cacheWarming"),
-            &["off", "streaming", "idle"],
-            "streaming",
-        ),
+        one_of_or(global(settings, "cacheWarming"), &CACHE_WARMING_MODES, "streaming"),
     );
     put(
         "modelThinkingLevels",
@@ -212,7 +197,7 @@ pub fn values(settings: &SettingsManager, live: &Live, env: Env) -> Result<Map<S
     put("enableSkillCommands", bool_or(settings, &["enableSkillCommands"], true));
     put(
         "markdown.mermaid",
-        one_of_or(get(settings, &["markdown", "mermaid"]), &["off", "final"], "streaming"),
+        one_of_or(get(settings, &["markdown", "mermaid"]), &MERMAID_MODES, "streaming"),
     );
     put(
         "showCacheMissNotices",
@@ -236,17 +221,13 @@ pub fn values(settings: &SettingsManager, live: &Live, env: Env) -> Result<Map<S
     );
     put(
         "treeFilterMode",
-        one_of_or(
-            get(settings, &["treeFilterMode"]),
-            &["default", "no-tools", "user-only", "labeled-only", "all"],
-            "default",
-        ),
+        one_of_or(get(settings, &["treeFilterMode"]), &TREE_FILTER_MODES, "default"),
     );
     put(
         "showHardwareCursor",
         get(settings, &["showHardwareCursor"])
             .cloned()
-            .unwrap_or_else(|| json!(env(config::worker_settings_keys::HARDWARE_CURSOR_ENV).as_deref() == Some("1"))),
+            .unwrap_or_else(|| json!(env(config::keys::HARDWARE_CURSOR_ENV).as_deref() == Some("1"))),
     );
     put(
         "editorPaddingX",
@@ -268,23 +249,24 @@ pub fn values(settings: &SettingsManager, live: &Live, env: Env) -> Result<Map<S
         "terminal.clearOnShrink",
         get(settings, &["terminal", "clearOnShrink"])
             .cloned()
-            .unwrap_or_else(|| json!(env(config::worker_settings_keys::CLEAR_ON_SHRINK_ENV).as_deref() == Some("1"))),
+            .unwrap_or_else(|| json!(env(config::keys::CLEAR_ON_SHRINK_ENV).as_deref() == Some("1"))),
     );
     put(
         "terminal.showTerminalProgress",
         bool_or(settings, &["terminal", "showTerminalProgress"], false),
     );
-    put(
-        "tuiMode",
-        one_of_or(get(settings, &["tuiMode"]), &["fullscreen"], "regular"),
-    );
+    put("tuiMode", one_of_or(get(settings, &["tuiMode"]), &TUI_MODES, "regular"));
     put(
         "fullscreenExitOutput",
-        one_of_or(get(settings, &["fullscreenExitOutput"]), &["resume-hint"], "transcript"),
+        one_of_or(
+            get(settings, &["fullscreenExitOutput"]),
+            &FULLSCREEN_EXIT_OUTPUTS,
+            "transcript",
+        ),
     );
     put(
         "fullscreenScrollbar",
-        one_of_or(get(settings, &["fullscreenScrollbar"]), &["always", "hidden"], "auto"),
+        one_of_or(get(settings, &["fullscreenScrollbar"]), &FULLSCREEN_SCROLLBARS, "auto"),
     );
     put(
         "fullscreenCopyOnSelect",
@@ -296,26 +278,15 @@ pub fn values(settings: &SettingsManager, live: &Live, env: Env) -> Result<Map<S
         get(settings, &["enabledModels"]).cloned().unwrap_or(Value::Null),
     );
     // `modelSettingValues`: global only.
-    let object = |field: &str| global(settings, field).and_then(Value::as_object);
-    let rlm = object("rlm");
-    let child = config::settings::model_ref(rlm.and_then(|r| r.get("childModel")));
-    let frame_thinking = rlm
-        .and_then(|r| r.get("frameThinking"))
-        .and_then(Value::as_str)
-        .filter(|l| model_scope::THINKING_LEVELS.contains(l));
-    put(
-        "rlm.frameModel",
-        json!(config::settings::model_ref(rlm.and_then(|r| r.get("frameModel")))),
-    );
-    put("rlm.childModel", json!(child));
-    put("rlm.frameThinking", json!(frame_thinking));
+    let rlm = config::keys::rlm_model_settings(settings.global_settings());
+    put("rlm.frameModel", json!(rlm.frame_model));
+    put("rlm.childModel", json!(rlm.child_model));
+    put("rlm.frameThinking", json!(rlm.frame_thinking));
     put(
         "review.model",
-        json!(config::settings::model_ref(
-            object("review").and_then(|r| r.get("model"))
-        )),
+        json!(config::keys::review_model(settings.global_settings())),
     );
-    let claude = object("claudeCode");
+    let claude = global(settings, "claudeCode").and_then(Value::as_object);
     for key in ["frameModel", "childModel", "ultronChildModel", "model"] {
         put(
             &format!("claudeCode.{key}"),
@@ -371,7 +342,7 @@ fn string(key: &str, value: Option<&Value>) -> Result<String, String> {
 
 fn thinking(key: &str, value: Option<&Value>) -> Result<String, String> {
     let level = string(key, value)?;
-    if !model_scope::THINKING_LEVELS.contains(&level.as_str()) {
+    if !THINKING_LEVELS.contains(&level.as_str()) {
         return Err(format!("{key}: invalid thinking level {level}"));
     }
     Ok(level)
@@ -450,7 +421,7 @@ pub fn apply(
             applied = Applied::Live;
         }
         "steeringMode" | "followUpMode" => {
-            let mode = one_of(key, value, &["all", "one-at-a-time"])?;
+            let mode = one_of(key, value, &QUEUE_MODES)?;
             set(settings, key, json!(mode));
             changes.push(if key == "steeringMode" {
                 Change::SteeringMode(mode)
@@ -460,7 +431,7 @@ pub fn apply(
             applied = Applied::Live;
         }
         "transport" => {
-            let transport = one_of(key, value, &["sse", "websocket", "websocket-cached", "auto"])?;
+            let transport = one_of(key, value, &TRANSPORTS)?;
             set(settings, key, json!(transport));
             changes.push(Change::Transport(transport));
             applied = Applied::Live;
@@ -472,7 +443,7 @@ pub fn apply(
             // Model requests carry the idle timeout unless `retry.provider.timeoutMs` pins one.
             if get(settings, &["retry", "provider", "timeoutMs"]).is_none() {
                 changes.push(Change::StreamTimeout(if timeout == 0 {
-                    2_147_483_647
+                    DISABLED_REQUEST_TIMEOUT_MS
                 } else {
                     timeout
                 }));
@@ -480,7 +451,7 @@ pub fn apply(
             applied = Applied::Live;
         }
         // Saved for Pi; the Ultron worker does not warm provider caches.
-        "cacheWarming" => set(settings, key, json!(one_of(key, value, &["off", "streaming", "idle"])?)),
+        "cacheWarming" => set(settings, key, json!(one_of(key, value, &CACHE_WARMING_MODES)?)),
         "modelThinkingLevel" => {
             let target = record(key, value)?;
             let provider = string(key, target.get("provider"))?;
@@ -532,7 +503,7 @@ pub fn apply(
             nested(settings, "terminal", "imageWidthCells", Some(floor_int(width)));
         }
         "markdown.mermaid" => {
-            let mode = one_of(key, value, &["off", "final", "streaming"])?;
+            let mode = one_of(key, value, &MERMAID_MODES)?;
             nested(settings, "markdown", "mermaid", Some(json!(mode)));
         }
         // The worker renders its system prompt again on the next request.
@@ -554,13 +525,16 @@ pub fn apply(
         }
         "autoreview.enabled" | "autoreview.ack" => {
             let flag = bool_value(key, value)?;
-            settings.set_autoreview_settings(&[(&key["autoreview.".len()..], Some(json!(flag)))]);
+            settings.patch_global_object(
+                review::settings::KEY,
+                &[(&key["autoreview.".len()..], Some(json!(flag)))],
+            );
             applied = Applied::Live;
         }
         "autoreview.ackArt" => {
             let art = one_of(key, value, &["logo", "none"])?;
             let art = if art == "none" { json!(false) } else { json!("logo") };
-            settings.set_autoreview_settings(&[("ackArt", Some(art))]);
+            settings.patch_global_object(review::settings::KEY, &[("ackArt", Some(art))]);
             applied = Applied::Live;
         }
         "autoreview" => {
@@ -586,23 +560,15 @@ pub fn apply(
                     _ => return Err(format!("{key}.{name} cannot be set this way")),
                 }
             }
-            settings.set_autoreview_settings(&next);
+            settings.patch_global_object(review::settings::KEY, &next);
             applied = Applied::Live;
         }
         "defaultProjectTrust" => {
-            set(settings, key, json!(one_of(key, value, &["ask", "always", "never"])?));
+            set(settings, key, json!(one_of(key, value, &PROJECT_TRUST_DEFAULTS)?));
             applied = Applied::Restart;
         }
-        "doubleEscapeAction" => set(settings, key, json!(one_of(key, value, &["fork", "tree", "none"])?)),
-        "treeFilterMode" => set(
-            settings,
-            key,
-            json!(one_of(
-                key,
-                value,
-                &["default", "no-tools", "user-only", "labeled-only", "all"]
-            )?),
-        ),
+        "doubleEscapeAction" => set(settings, key, json!(one_of(key, value, &DOUBLE_ESCAPE_ACTIONS)?)),
+        "treeFilterMode" => set(settings, key, json!(one_of(key, value, &TREE_FILTER_MODES)?)),
         "editorPaddingX" => {
             let padding = int(key, value, 0.0)?.clamp(0.0, 3.0);
             set(settings, key, floor_int(padding));
@@ -615,13 +581,9 @@ pub fn apply(
             let visible = int(key, value, 1.0)?.clamp(3.0, 20.0);
             set(settings, key, floor_int(visible));
         }
-        "tuiMode" => set(settings, key, json!(one_of(key, value, &["regular", "fullscreen"])?)),
-        "fullscreenExitOutput" => set(
-            settings,
-            key,
-            json!(one_of(key, value, &["transcript", "resume-hint"])?),
-        ),
-        "fullscreenScrollbar" => set(settings, key, json!(one_of(key, value, &["hidden", "auto", "always"])?)),
+        "tuiMode" => set(settings, key, json!(one_of(key, value, &TUI_MODES)?)),
+        "fullscreenExitOutput" => set(settings, key, json!(one_of(key, value, &FULLSCREEN_EXIT_OUTPUTS)?)),
+        "fullscreenScrollbar" => set(settings, key, json!(one_of(key, value, &FULLSCREEN_SCROLLBARS)?)),
         "warnings" => {
             let warnings = record(key, value)?;
             let next = match warnings.get("anthropicExtraUsage") {
@@ -639,7 +601,7 @@ pub fn apply(
         "rlm.frameThinking" => {
             let level = match value {
                 Value::Null => None,
-                value => Some(one_of(key, value, &model_scope::THINKING_LEVELS)?),
+                value => Some(one_of(key, value, &THINKING_LEVELS)?),
             };
             nested(settings, "rlm", "frameThinking", opt(level));
             applied = Applied::Live;

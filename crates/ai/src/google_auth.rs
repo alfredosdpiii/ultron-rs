@@ -658,7 +658,7 @@ async fn gaxios(
         let sent = match policy.timeout {
             Some(limit) => match tokio::time::timeout(limit, transport.send(request.clone())).await {
                 Ok(sent) => sent,
-                Err(_) => Err("The operation was aborted due to timeout".into()),
+                Err(_) => Err(crate::provider::OPERATION_TIMED_OUT.into()),
             },
             None => transport.send(request.clone()).await,
         };

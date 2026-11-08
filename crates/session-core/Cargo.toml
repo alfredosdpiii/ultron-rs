@@ -28,6 +28,7 @@ kernel-apis = { path = "../kernel-apis" }
 lanes = { path = "../lanes" }
 loki = { path = "../loki" }
 mcp = { path = "../mcp" }
+model-scope = { path = "../model-scope" }
 regex = "=1.13.1"
 resources = { path = "../resources" }
 sandbox = { path = "../sandbox" }

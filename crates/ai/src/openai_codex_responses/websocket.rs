@@ -686,5 +686,5 @@ async fn read_response(
             break;
         }
     }
-    run.end().map_err(CodexError::Plain)
+    run.terminated().map_err(CodexError::Plain)
 }

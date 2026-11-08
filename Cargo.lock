@@ -67,7 +67,6 @@ dependencies = [
  "jsrt",
  "kernel",
  "model-scope",
- "protocol",
  "rcgen",
  "reqwest",
  "ring",
@@ -79,6 +78,7 @@ dependencies = [
  "tempfile",
  "tokio",
  "tokio-rustls",
+ "websocket",
 ]
 
 [[package]]
@@ -411,6 +411,7 @@ dependencies = [
  "tokio",
  "tui",
  "url",
+ "websocket",
 ]
 
 [[package]]
@@ -424,6 +425,7 @@ dependencies = [
  "server",
  "tempfile",
  "tokio",
+ "websocket",
 ]
 
 [[package]]
@@ -486,7 +488,9 @@ name = "config"
 version = "0.1.0"
 dependencies = [
  "jsrt",
+ "loki",
  "model-scope",
+ "review",
  "serde_json",
  "tempfile",
 ]
@@ -600,6 +604,7 @@ dependencies = [
  "model-scope",
  "protocol",
  "resources",
+ "review",
  "rustix",
  "serde_json",
  "server",
@@ -2427,6 +2432,7 @@ dependencies = [
  "jsrt",
  "kernel",
  "knowledge",
+ "model-scope",
  "regex",
  "ring",
  "serde",
@@ -2762,6 +2768,7 @@ dependencies = [
  "serde_json",
  "tempfile",
  "tokio",
+ "websocket",
 ]
 
 [[package]]
@@ -2802,6 +2809,7 @@ dependencies = [
  "lanes",
  "loki",
  "mcp",
+ "model-scope",
  "regex",
  "resources",
  "sandbox",
@@ -3760,6 +3768,14 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b96554aa2acc8ccdb7e1c9a58a7a68dd5d13bccc69cd124cb09406db612a1c9b"
 dependencies = [
  "rustls-pki-types",
+]
+
+[[package]]
+name = "websocket"
+version = "0.1.0"
+dependencies = [
+ "jsrt",
+ "ring",
 ]
 
 [[package]]

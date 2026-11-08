@@ -296,8 +296,8 @@ impl FetchError {
     pub fn message(&self) -> String {
         match self {
             FetchError::Network(message) => message.clone(),
-            FetchError::Aborted => "This operation was aborted".into(),
-            FetchError::Timeout => "The operation was aborted due to timeout".into(),
+            FetchError::Aborted => crate::provider::OPERATION_ABORTED.into(),
+            FetchError::Timeout => crate::provider::OPERATION_TIMED_OUT.into(),
         }
     }
 }

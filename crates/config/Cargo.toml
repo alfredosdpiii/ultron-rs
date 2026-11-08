@@ -16,6 +16,8 @@ serde_json = { version = "=1.0.151", features = ["preserve_order"] }
 workspace = true
 
 [dev-dependencies]
+loki = { path = "../loki" }
+review = { path = "../review" }
 tempfile = "=3.27.0"
 
 [[test]]

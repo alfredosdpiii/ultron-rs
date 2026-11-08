@@ -7,10 +7,9 @@
 pub mod auth;
 pub mod env;
 pub mod json;
+pub mod keys;
 pub mod lock;
 pub mod models_store;
 pub mod paths;
 pub mod settings;
-pub mod settings_keys;
 pub mod trust;
-pub mod worker_settings_keys;

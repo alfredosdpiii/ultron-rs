@@ -105,7 +105,7 @@ impl KimiCodingOAuth {
                 let delay = Duration::from_millis(1000 * 2u64.pow(attempt - 1));
                 tokio::select! {
                     () = tokio::time::sleep(delay) => {}
-                    () = crate::http::cancelled(signal) => return Err("This operation was aborted".into()),
+                    () = crate::http::cancelled(signal) => return Err(crate::provider::OPERATION_ABORTED.into()),
                 }
             }
             if is_aborted(signal) {

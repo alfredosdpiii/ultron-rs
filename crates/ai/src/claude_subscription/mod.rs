@@ -34,6 +34,7 @@ pub mod setup;
 pub mod usage;
 
 use crate::options::SimpleStreamOptions;
+use crate::provider::Run;
 use crate::transcript::{current_tools, system_message_text, transform_messages};
 use crate::types::{
     AssistantContent, AssistantMessage, AssistantMessageDiagnostic, AssistantMessageEvent, DiagnosticErrorInfo,
@@ -263,27 +264,20 @@ fn number(value: &Value) -> u64 {
 }
 
 /// Emits events into the in-progress message.
-struct Emitter<'s, 'e> {
-    output: AssistantMessage,
-    sink: &'s mut EventSink<'e>,
+struct SubscriptionStream {
     /// Native block index (or arrival order) -> content index, kind.
     streamed: Vec<(Option<u64>, &'static str, usize)>,
 }
 
-impl Emitter<'_, '_> {
-    fn emit(&mut self, make: impl FnOnce(AssistantMessage) -> AssistantMessageEvent) {
-        let event = make(self.output.clone());
-        (self.sink)(&event);
-    }
-
+impl Run<'_, '_, SubscriptionStream> {
     fn delta(&mut self, delta: Delta) {
         let (index, kind, text) = match delta {
             Delta::Text(index, text) => (index, "text", text),
             Delta::Thinking(index, text) => (index, "thinking", text),
         };
         let existing = match index {
-            Some(_) => self.streamed.iter().find(|(i, k, _)| *i == index && *k == kind),
-            None => self.streamed.last().filter(|(i, k, _)| i.is_none() && *k == kind),
+            Some(_) => self.state.streamed.iter().find(|(i, k, _)| *i == index && *k == kind),
+            None => self.state.streamed.last().filter(|(i, k, _)| i.is_none() && *k == kind),
         };
         let at = match existing {
             Some((_, _, at)) => *at,
@@ -301,7 +295,7 @@ impl Emitter<'_, '_> {
                         redacted: None,
                     })
                 });
-                self.streamed.push((index, kind, at));
+                self.state.streamed.push((index, kind, at));
                 if kind == "text" {
                     self.emit(|partial| AssistantMessageEvent::TextStart {
                         content_index: at,
@@ -505,7 +499,7 @@ fn complete(output: &mut AssistantMessage, response: &NativeResponse) {
             response
                 .refusal
                 .clone()
-                .unwrap_or_else(|| "The model refused to complete the request".into()),
+                .unwrap_or_else(|| crate::anthropic::REFUSAL_TEXT.into()),
         );
     }
     let carrier = history::carrier(response.assistants.clone(), history::projection(output));
@@ -555,12 +549,8 @@ async fn run_with(
 ) -> AssistantMessage {
     let mut output = AssistantMessage::pending(model, jsrt::date::now_ms());
     output.stop_reason = StopReason::Stop;
-    let mut emitter = Emitter {
-        output,
-        sink,
-        streamed: Vec::new(),
-    };
-    emitter.emit(|partial| AssistantMessageEvent::Start { partial });
+    let mut emitter = Run::new(output, sink, SubscriptionStream { streamed: Vec::new() });
+    emitter.start();
     let signal = options.base.signal.clone();
     let mut rate_limits = None;
     let result = match (prepared, setup) {

@@ -1,8 +1,10 @@
 //! `streamSimple` by `model.api` over every ported API implementation (the API registry of `providers/all.ts`), with
-//! Cloudflare placeholders materialized from the request env first. `Err` is a setup failure that upstream throws
+//! Cloudflare placeholders materialized from the request env first. The Claude subscription and Claude Code calls go
+//! through the caller's [`Router`] (its hold state is the caller's: the process's, or a session provider's). `Err` is a setup failure that upstream throws
 //! synchronously (for example a missing API key in `streamSimple`).
 
 use crate::claude_code_cli::{self, ClaudeCodeOptions};
+use crate::claude_subscription::fallback::Router;
 use crate::cloudflare::resolve_cloudflare_model;
 use crate::http::Transport;
 use crate::options::SimpleStreamOptions;
@@ -29,6 +31,7 @@ pub const APIS: &[&str] = &[
 ];
 
 pub async fn stream_simple(
+    router: &Router,
     model: &Model,
     context: &TranscriptContext,
     options: &SimpleStreamOptions,
@@ -67,7 +70,6 @@ pub async fn stream_simple(
         "pi-messages" => Ok(pi_messages::stream_simple(model, context, options, transport, sink).await),
         "claude-code-cli" => {
             // With tools: the Claude subscription, for every caller (session lanes, inference frames with depth).
-            let router = crate::claude_subscription::fallback::global();
             if let Some(message) = router.stream_claude_code(model, context, options, sink).await {
                 return Ok(message);
             }
@@ -78,9 +80,7 @@ pub async fn stream_simple(
             Ok(claude_code_cli::stream_simple(model, context, &options, sink).await)
         }
         // Subscription first, API credits when the plan is out of usage (`claude_subscription::fallback`).
-        "claude-subscription" => {
-            Ok(crate::claude_subscription::fallback::stream_simple(model, context, options, transport, sink).await)
-        }
+        "claude-subscription" => Ok(router.stream(model, context, options, transport, sink).await),
         other => Err(format!("No API implementation for \"{other}\"")),
     }
 }

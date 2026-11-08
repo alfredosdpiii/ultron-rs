@@ -218,7 +218,10 @@ impl Config {
         // The worker's settings (`workerProjectTrusted`): a trusted project's `.pi/settings.json` applies too.
         let manager = config::settings::SettingsManager::for_worker(&env.cwd, &agent_dir, &env.home);
         let settings = Value::Object(manager.settings().clone());
-        let loki = loki_mode((env.var)(LOKI_ENV).as_deref(), &manager.loki_settings());
+        let loki = loki_mode(
+            (env.var)(LOKI_ENV).as_deref(),
+            &loki::settings::saved(manager.global_settings()),
+        );
         let loki_root = (loki != LokiMode::Off).then(|| git_root(&env.cwd).unwrap_or_else(|| env.cwd.clone()));
         let skills_dir = (env.var)(kernel::env::CODE_SKILLS_DIR_ENV)
             .map(|dir| dir.trim().to_string())
@@ -331,7 +334,7 @@ impl Config {
 
     /// `rlm.race_models`: `rlm.raceModels` (/settings -> Models) read now, keeping the refs that name a known model.
     pub fn race_models(&self) -> Value {
-        let picked = (self.settings_reader())().rlm_model_settings().race_models;
+        let picked = config::keys::rlm_model_settings((self.settings_reader())().global_settings()).race_models;
         picked
             .into_iter()
             .filter(|spec| spec.split_once('/').is_some_and(|(p, id)| self.model(p, id).is_some()))
@@ -1028,7 +1031,7 @@ impl Runtime {
             // applies to the next subagent.
             let settings = config.settings_reader();
             options.worktree_setup = Arc::new(move || {
-                let configured = settings().worktree_settings();
+                let configured = config::keys::worktree_settings(settings().settings());
                 Some(delegation::worktrees::WorktreeSetup {
                     link: configured.link,
                     copy: configured.copy,
@@ -1049,7 +1052,9 @@ impl Runtime {
             // Read per spawn, as session-worker.ts passes it: `rlm.childModel` (/settings -> Models), so a changed
             // setting applies to the next subagent.
             let settings = config.settings_reader();
-            delegation.set_child_model(Arc::new(move || settings().rlm_model_settings().child_model));
+            delegation.set_child_model(Arc::new(move || {
+                config::keys::rlm_model_settings(settings().global_settings()).child_model
+            }));
             // Worktrees of sessions that ended without cleaning up (a crash): pruned in the background, their work
             // kept on its branch (native-host.ts `loadTasks`).
             let pruning = delegation.clone();
@@ -1272,7 +1277,7 @@ impl Runtime {
         let shell_path = config
             .settings
             .as_object()
-            .and_then(|settings| config::settings_keys::shell_path(settings, &config.home));
+            .and_then(|settings| config::keys::shell_path(settings, &config.home));
         Ok(Host::new(
             cwd,
             jobs_dir,
@@ -1512,12 +1517,12 @@ impl Stack {
         let settings = self.config.settings_reader();
         let models = move || {
             let settings = settings();
-            let rlm = settings.rlm_model_settings();
+            let rlm = config::keys::rlm_model_settings(settings.global_settings());
             inference::ModelSettings {
                 frame_model: rlm.frame_model,
                 frame_thinking: rlm.frame_thinking,
                 child_model: rlm.child_model,
-                review_model: settings.review_model(),
+                review_model: config::keys::review_model(settings.global_settings()),
                 map_tokens: rlm.map_tokens,
             }
         };

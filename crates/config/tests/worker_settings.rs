@@ -1,12 +1,12 @@
 //! Replays crates/config/fixtures/worker-settings.json (settings-manager.ts getters, session-worker.ts
 //! `providerRequestOptions` and worker-settings.ts `workerProjectTrusted`, recorded by
-//! fixtures/generate-worker-settings.mjs) against `config::worker_settings_keys` and `config::trust`.
+//! fixtures/generate-worker-settings.mjs) against `config::keys` and `config::trust`.
 
 use std::fs;
 use std::path::Path;
 
+use config::keys::{self, ProviderRetrySettings, RlmModelSettings, WorktreeSettings};
 use config::settings::{Settings, SettingsManager, migrate};
-use config::worker_settings_keys::{self as keys, ProviderRetrySettings, RlmModelSettings, WorktreeSettings};
 use serde_json::{Map, Value, json};
 
 fn fixture() -> Value {
@@ -87,24 +87,28 @@ fn config_worker_settings_getters_match_ts() {
         {
             expected["value"]["childModel"] = json!(child);
         }
-        assert_eq!(ok(rlm_json(m.rlm_model_settings())), expected, "{label}");
         assert_eq!(
-            ok(m.review_model().map_or(Value::Null, Value::from)),
+            ok(rlm_json(keys::rlm_model_settings(m.global_settings()))),
+            expected,
+            "{label}"
+        );
+        assert_eq!(
+            ok(keys::review_model(m.global_settings()).map_or(Value::Null, Value::from)),
             case["reviewModel"],
             "{label}"
         );
         assert_eq!(
-            ok(worktree_json(m.worktree_settings())),
+            ok(worktree_json(keys::worktree_settings(m.settings()))),
             case["worktreeSettings"],
             "{label}"
         );
         assert_eq!(
-            ok(retry_json(m.provider_retry_settings())),
+            ok(retry_json(keys::provider_retry_settings(m.settings()))),
             case["providerRetrySettings"],
             "{label}"
         );
         assert_eq!(
-            result(m.http_idle_timeout_ms().map(Value::from)),
+            result(keys::http_idle_timeout_ms(m.settings()).map(Value::from)),
             case["httpIdleTimeoutMs"],
             "{label}"
         );
@@ -114,7 +118,7 @@ fn config_worker_settings_getters_match_ts() {
             "{label}"
         );
         assert_eq!(
-            result(m.provider_request_options()),
+            result(keys::provider_request_options(m.settings())),
             case["providerRequestOptions"],
             "{label}"
         );
@@ -123,12 +127,12 @@ fn config_worker_settings_getters_match_ts() {
             let env = terminal["env"].as_object().unwrap().clone();
             let var = move |key: &str| env.get(key).and_then(Value::as_str).map(str::to_string);
             assert_eq!(
-                ok(m.show_hardware_cursor(&var).into()),
+                ok(keys::show_hardware_cursor(m.settings(), &var).into()),
                 terminal["showHardwareCursor"],
                 "{label} {terminal}"
             );
             assert_eq!(
-                ok(m.clear_on_shrink(&var).into()),
+                ok(keys::clear_on_shrink(m.settings(), &var).into()),
                 terminal["clearOnShrink"],
                 "{label} {terminal}"
             );
@@ -200,33 +204,33 @@ fn config_worker_project_trust_decides_which_settings_apply_like_ts() {
             "{name}"
         );
         assert_eq!(
-            result(m.http_idle_timeout_ms().map(Value::from)),
+            result(keys::http_idle_timeout_ms(m.settings()).map(Value::from)),
             scenario["httpIdleTimeoutMs"],
             "{name}"
         );
         assert_eq!(
-            ok(m.thinking_budgets().cloned().unwrap_or(Value::Null)),
+            ok(keys::thinking_budgets(m.settings()).cloned().unwrap_or(Value::Null)),
             scenario["thinkingBudgets"],
             "{name}"
         );
         assert_eq!(ok(m.transport()), scenario["transport"], "{name}");
         assert_eq!(
-            result(m.provider_request_options()),
+            result(keys::provider_request_options(m.settings())),
             scenario["providerRequestOptions"],
             "{name}"
         );
         assert_eq!(
-            ok(rlm_json(m.rlm_model_settings())),
+            ok(rlm_json(keys::rlm_model_settings(m.global_settings()))),
             scenario["rlmModelSettings"],
             "{name}"
         );
         assert_eq!(
-            ok(m.review_model().map_or(Value::Null, Value::from)),
+            ok(keys::review_model(m.global_settings()).map_or(Value::Null, Value::from)),
             scenario["reviewModel"],
             "{name}"
         );
         assert_eq!(
-            ok(worktree_json(m.worktree_settings())),
+            ok(worktree_json(keys::worktree_settings(m.settings()))),
             scenario["worktreeSettings"],
             "{name}"
         );
@@ -238,8 +242,7 @@ fn config_worker_project_trust_decides_which_settings_apply_like_ts() {
 fn config_rlm_map_tokens_setting() {
     let dir = tempfile::tempdir().unwrap();
     let map_tokens = |value: Value| {
-        manager(dir.path(), &json!({"rlm": {"mapTokens": value}}))
-            .rlm_model_settings()
+        keys::rlm_model_settings(manager(dir.path(), &json!({"rlm": {"mapTokens": value}})).global_settings())
             .map_tokens
     };
     assert_eq!(map_tokens(json!(2_000_000)), Some(2_000_000));
@@ -253,7 +256,10 @@ fn config_rlm_map_tokens_setting() {
     ] {
         assert_eq!(map_tokens(none.clone()), None, "{none}");
     }
-    assert_eq!(manager(dir.path(), &json!({})).rlm_model_settings().map_tokens, None);
+    assert_eq!(
+        keys::rlm_model_settings(manager(dir.path(), &json!({})).global_settings()).map_tokens,
+        None
+    );
 }
 
 /// `rlm.raceModels`: an array of `provider/model` refs; invalid entries are dropped, anything else is none.
@@ -261,8 +267,7 @@ fn config_rlm_map_tokens_setting() {
 fn config_rlm_race_models_setting() {
     let dir = tempfile::tempdir().unwrap();
     let race_models = |value: Value| {
-        manager(dir.path(), &json!({"rlm": {"raceModels": value}}))
-            .rlm_model_settings()
+        keys::rlm_model_settings(manager(dir.path(), &json!({"rlm": {"raceModels": value}})).global_settings())
             .race_models
     };
     assert_eq!(
@@ -278,8 +283,7 @@ fn config_rlm_race_models_setting() {
     );
     assert!(race_models(json!("anthropic/claude-opus-5")).is_empty());
     assert!(
-        manager(dir.path(), &json!({}))
-            .rlm_model_settings()
+        keys::rlm_model_settings(manager(dir.path(), &json!({})).global_settings())
             .race_models
             .is_empty()
     );

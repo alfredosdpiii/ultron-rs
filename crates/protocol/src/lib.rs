@@ -5,7 +5,6 @@ pub mod cbor;
 pub mod framing;
 pub mod message;
 pub mod service;
-pub mod websocket;
 
 pub use cbor::{CborError, CborOptions, Value, decode_cbor, encode_cbor};
 pub use framing::{DEFAULT_MAX_FRAME_LENGTH, FrameDecoder, FrameError, MAX_SERVER_FRAME_LENGTH, encode_frame};

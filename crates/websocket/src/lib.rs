@@ -1,17 +1,17 @@
 //! RFC 6455 WebSocket framing without I/O: frame encoding (masked as a client sends, unmasked as a server sends), a
 //! decoder that reassembles fragmented messages and validates frames, close payloads, and the handshake's
-//! `Sec-WebSocket-Accept` value (SHA-1 and base64 included, so the codec has no dependencies). The Radius relay's host
-//! and client (crates/server, crates/client) speak it over an upgraded HTTP connection; tests use it for fake relays.
+//! `Sec-WebSocket-Accept` value. The Radius relay's host and client (crates/server, crates/client) and the providers'
+//! WebSocket client (crates/ai) speak it over an upgraded HTTP connection; tests use it for fake relays and servers.
 
 /// The GUID appended to `Sec-WebSocket-Key` for `Sec-WebSocket-Accept`.
-pub const ACCEPT_GUID: &str = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
+const ACCEPT_GUID: &str = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
 
-pub const OPCODE_CONTINUATION: u8 = 0x0;
-pub const OPCODE_TEXT: u8 = 0x1;
-pub const OPCODE_BINARY: u8 = 0x2;
+const OPCODE_CONTINUATION: u8 = 0x0;
+const OPCODE_TEXT: u8 = 0x1;
+const OPCODE_BINARY: u8 = 0x2;
 pub const OPCODE_CLOSE: u8 = 0x8;
 pub const OPCODE_PING: u8 = 0x9;
-pub const OPCODE_PONG: u8 = 0xa;
+const OPCODE_PONG: u8 = 0xa;
 
 /// A whole message (fragments reassembled) or a control frame.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -228,56 +228,9 @@ fn finish(opcode: u8, payload: Vec<u8>) -> Result<Message, String> {
 
 /// `Sec-WebSocket-Accept` for a `Sec-WebSocket-Key`.
 pub fn accept_key(key: &str) -> String {
-    jsrt::base64::encode(sha1(format!("{key}{ACCEPT_GUID}").as_bytes()))
-}
-
-// ponytail: ai/src/websocket.rs still imports `protocol::websocket::base64`; drop once it calls jsrt.
-pub use jsrt::base64::encode as base64;
-
-/// SHA-1 (FIPS 180-4); only for the handshake's accept value.
-pub fn sha1(data: &[u8]) -> [u8; 20] {
-    let mut h: [u32; 5] = [0x67452301, 0xEFCDAB89, 0x98BADCFE, 0x10325476, 0xC3D2E1F0];
-    let mut message = data.to_vec();
-    message.push(0x80);
-    while message.len() % 64 != 56 {
-        message.push(0);
-    }
-    message.extend_from_slice(&((data.len() as u64) * 8).to_be_bytes());
-    for block in message.chunks(64) {
-        let mut w = [0u32; 80];
-        for (i, word) in block.chunks(4).enumerate() {
-            w[i] = u32::from_be_bytes([word[0], word[1], word[2], word[3]]);
-        }
-        for i in 16..80 {
-            w[i] = (w[i - 3] ^ w[i - 8] ^ w[i - 14] ^ w[i - 16]).rotate_left(1);
-        }
-        let [mut a, mut b, mut c, mut d, mut e] = h;
-        for (i, word) in w.iter().enumerate() {
-            let (f, k) = match i {
-                0..=19 => ((b & c) | (!b & d), 0x5A827999),
-                20..=39 => (b ^ c ^ d, 0x6ED9EBA1),
-                40..=59 => ((b & c) | (b & d) | (c & d), 0x8F1BBCDC),
-                _ => (b ^ c ^ d, 0xCA62C1D6),
-            };
-            let t = a
-                .rotate_left(5)
-                .wrapping_add(f)
-                .wrapping_add(e)
-                .wrapping_add(k)
-                .wrapping_add(*word);
-            e = d;
-            d = c;
-            c = b.rotate_left(30);
-            b = a;
-            a = t;
-        }
-        for (slot, value) in h.iter_mut().zip([a, b, c, d, e]) {
-            *slot = slot.wrapping_add(value);
-        }
-    }
-    let mut out = [0u8; 20];
-    for (i, word) in h.iter().enumerate() {
-        out[i * 4..i * 4 + 4].copy_from_slice(&word.to_be_bytes());
-    }
-    out
+    let digest = ring::digest::digest(
+        &ring::digest::SHA1_FOR_LEGACY_USE_ONLY,
+        format!("{key}{ACCEPT_GUID}").as_bytes(),
+    );
+    jsrt::base64::encode(digest.as_ref())
 }

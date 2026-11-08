@@ -344,7 +344,7 @@ pub fn registry(env: &Env) -> ModelRegistry {
         .ok()
         .and_then(|text| config::json::parse(text.trim_start_matches('\u{feff}')).ok())
     {
-        let store = config::models_store::ModelsStore::new(models.with_file_name("models-store.json"));
+        let store = config::models_store::ModelsStore::beside(&models);
         registry.import_legacy_radius(&credentials, &store, now_ms());
     }
     registry
@@ -581,7 +581,7 @@ fn initial_level(all: &serde_json::Map<String, Value>, model: &Model) -> String 
         .and_then(|levels| levels.get(format!("{}/{}", model.provider, model.id)))
         .and_then(Value::as_str)
         .or_else(|| all.get("defaultThinkingLevel").and_then(Value::as_str))
-        .unwrap_or(ai::model_resolver::DEFAULT_THINKING_LEVEL)
+        .unwrap_or(model_scope::DEFAULT_THINKING_LEVEL)
         .to_string()
 }
 
@@ -910,19 +910,11 @@ impl StreamFn for Provider {
             };
             let model = routed.as_ref().unwrap_or(model);
             let options = prepared.as_ref().unwrap_or(options);
-            // `claude-code/<id>` with tools: this provider's router, on the subscription only (`dispatch` would use
-            // the process's).
-            if let Some(message) = self.router.stream_claude_code(model, context, options, sink).await {
-                return message;
-            }
-            let transport = &*transport;
-            let result = match model.api.as_str() {
-                // The process's (or the embedder's) router: subscription first, API credits when out of usage.
-                "claude-subscription" => Ok(self.router.stream(model, context, options, transport, sink).await),
-                // Every other API the TypeScript session streams (`streamSimple` over the API registry).
-                _ => ai::dispatch::stream_simple(model, context, options, transport, sink).await,
-            };
-            result.unwrap_or_else(|e| error_message(model, e))
+            // Every API the TypeScript session streams (`streamSimple` over the API registry), the Claude ones through
+            // this provider's router.
+            ai::dispatch::stream_simple(&self.router, model, context, options, &*transport, sink)
+                .await
+                .unwrap_or_else(|e| error_message(model, e))
         })
     }
 }

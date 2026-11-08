@@ -723,7 +723,7 @@ impl SettingsSelector {
                 "Transport",
                 "Preferred transport for providers that support multiple transports",
                 c.str("transport", "auto"),
-                &["sse", "websocket", "websocket-cached", "auto"],
+                &config::keys::TRANSPORTS,
             ),
             item(
                 "http-idle-timeout",
@@ -737,7 +737,7 @@ impl SettingsSelector {
                 "Cache warming",
                 "off; streaming while the agent runs; idle also between runs while continuation stays profitable",
                 c.str("cacheWarming", "streaming"),
-                &["off", "streaming", "idle"],
+                &config::keys::CACHE_WARMING_MODES,
             ),
             item(
                 "hide-thinking",
@@ -751,7 +751,7 @@ impl SettingsSelector {
                 "Mermaid diagrams",
                 "Render Mermaid code blocks as Unicode diagrams",
                 c.str("markdown.mermaid", "streaming"),
-                &["off", "final", "streaming"],
+                &config::keys::MERMAID_MODES,
             ),
             item(
                 "cache-miss-notices",
@@ -841,7 +841,7 @@ impl SettingsSelector {
                 "Tree filter mode",
                 "Default filter when opening /tree",
                 c.str("treeFilterMode", "default"),
-                &["default", "no-tools", "user-only", "labeled-only", "all"],
+                &config::keys::TREE_FILTER_MODES,
             ),
             Item {
                 sub: Some(SubKind::Warnings),
@@ -871,14 +871,14 @@ impl SettingsSelector {
                 "TUI mode",
                 "Interface layout; regular keeps the finished transcript in the terminal's scrollback",
                 c.str("tuiMode", "fullscreen"),
-                &["regular", "fullscreen"],
+                &config::keys::TUI_MODES,
             ),
             item(
                 "fullscreen-exit-output",
                 "Fullscreen exit output",
                 "Print the transcript or only a session resume hint when exiting fullscreen mode",
                 c.str("fullscreenExitOutput", "transcript"),
-                &["transcript", "resume-hint"],
+                &config::keys::FULLSCREEN_EXIT_OUTPUTS,
             ),
             item(
                 "fullscreen-scrollbar",

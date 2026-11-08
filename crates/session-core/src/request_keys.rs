@@ -17,10 +17,6 @@ use std::pin::pin;
 use std::sync::Arc;
 use std::task::Poll;
 
-/// The key `env_api_key_in` reports for configured ambient AWS or Google credentials: the provider is configured,
-/// but its requests carry no API key (TypeScript `getAuth` resolves with no `apiKey`).
-pub const AMBIENT_CREDENTIALS: &str = "<authenticated>";
-
 /// Resolves a provider's own credentials (auth.json, models.json, the environment) now.
 pub type ProviderCredentials = Arc<dyn Fn(&str) -> Option<String> + Send + Sync>;
 
@@ -58,7 +54,7 @@ impl Keys {
 
     /// The API key a request of `provider` sends: [`Keys::key`] without the ambient-credentials marker.
     pub fn request_key(&self, provider: &str) -> Option<String> {
-        self.key(provider).filter(|key| key != AMBIENT_CREDENTIALS)
+        self.key(provider).filter(|key| key != ai::env::AMBIENT_CREDENTIALS)
     }
 
     /// [`Keys::request_key`] as a provider-key function.

@@ -1,5 +1,21 @@
 //! Server-sent event decoding shared by the Anthropic client (`iterateSseMessages`) and the OpenAI SDK
-//! (`_iterSSEMessages`): lines end at LF, CRLF or CR; `event:`/`data:` fields; a blank line ends an event.
+//! (`_iterSSEMessages`): lines end at LF, CRLF or CR; `event:`/`data:` fields; a blank line ends an event. Also the
+//! OpenAI SDK's stream of JSON events the Chat Completions and Responses providers read.
+
+use crate::http::{AbortSignal, Failure, HttpResponse, Read, Sdk, is_aborted, read_chunk};
+use crate::json::parse_json;
+use serde_json::{Value, json};
+
+/// The earliest frame boundary in `buffer` (its offset and length): at each offset, the first of `separators` that
+/// starts there. The providers that split frames themselves differ only in which blank lines end one.
+pub(crate) fn frame_boundary(buffer: &[u8], separators: &[&str]) -> Option<(usize, usize)> {
+    (0..buffer.len()).find_map(|at| {
+        separators
+            .iter()
+            .find(|sep| buffer[at..].starts_with(sep.as_bytes()))
+            .map(|sep| (at, sep.len()))
+    })
+}
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct ServerSentEvent {
@@ -95,4 +111,56 @@ impl SseDecoder {
         }
         None
     }
+}
+
+/// The OpenAI SDK stream: JSON per `data:` event until `[DONE]`; a body with `error` throws an API error. An abort ends
+/// the stream quietly, as the SDK does.
+pub(crate) async fn read_openai_stream(
+    response: &mut HttpResponse,
+    signal: Option<&AbortSignal>,
+    mut handle: impl FnMut(&Value) -> Result<(), Failure>,
+) -> Result<(), Failure> {
+    let headers = response.headers.clone();
+    let mut decoder = SseDecoder::default();
+    let mut done = false;
+    let mut process = |events: Vec<ServerSentEvent>, done: &mut bool| -> Result<(), Failure> {
+        for sse in events {
+            if *done {
+                continue;
+            }
+            if sse.data.starts_with("[DONE]") {
+                *done = true;
+                continue;
+            }
+            if sse.event.as_deref().is_some_and(|e| e.starts_with("thread.")) {
+                continue;
+            }
+            let data = parse_json(&sse.data).map_err(|e| Failure::plain(e.to_string()))?;
+            if let Some(error) = data.get("error").filter(|e| jsrt::value::truthy(Some(e))) {
+                return Err(Failure::api(
+                    Sdk::OpenAi,
+                    None,
+                    Some(headers.clone()),
+                    Some(json!({ "error": error })),
+                    None,
+                ));
+            }
+            handle(&data)?;
+        }
+        Ok(())
+    };
+    loop {
+        match read_chunk(response.body.as_mut(), signal).await {
+            Read::Chunk(bytes) => {
+                process(decoder.push(&bytes), &mut done)?;
+                if is_aborted(signal) {
+                    return Ok(());
+                }
+            }
+            Read::End => break,
+            Read::Aborted => return Ok(()),
+            Read::Failed(error) => return Err(Failure::plain(error)),
+        }
+    }
+    process(decoder.finish(false), &mut done)
 }

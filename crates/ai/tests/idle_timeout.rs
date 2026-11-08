@@ -2,7 +2,7 @@
 //! `bodyTimeout` both take it, so a server that stalls before its headers or between two body chunks fails the
 //! request; 0 (`"disabled"`) waits forever; the default is five minutes. Literal cases of `parseHttpIdleTimeoutMs`.
 
-use ai::http::{DEFAULT_HTTP_IDLE_TIMEOUT, HttpRequest, Transport, http_idle_timeout, parse_http_idle_timeout_ms};
+use ai::http::{DEFAULT_HTTP_IDLE_TIMEOUT, HttpRequest, Transport, http_idle_timeout};
 use ai::{AssistantMessageEvent, Model, ReqwestTransport, StopReason, TranscriptContext};
 use serde_json::{Value, json};
 use std::io::{Read, Write};
@@ -14,27 +14,17 @@ static PROVIDERS: LazyLock<Value> =
     LazyLock::new(|| serde_json::from_str(include_str!("../fixtures/providers.json")).expect("providers parse"));
 
 #[test]
-fn ai_http_idle_timeout_setting_parses_like_typescript() {
-    let cases = [
-        (json!(30_000), Some(30_000)),
-        (json!(1.9), Some(1)),
-        (json!(0), Some(0)),
-        (json!(-1), None),
-        (json!(" 1500 "), Some(1500)),
-        (json!("Disabled"), Some(0)),
-        (json!(""), None),
-        (json!("soon"), None),
-        (json!(true), None),
-        (json!(null), None),
-    ];
-    for (value, expected) in cases {
-        assert_eq!(parse_http_idle_timeout_ms(&value), expected, "{value}");
-    }
+fn ai_http_idle_timeout_setting_selects_the_dispatcher_timeout() {
     assert_eq!(DEFAULT_HTTP_IDLE_TIMEOUT, Duration::from_millis(300_000));
     assert_eq!(http_idle_timeout(None), Some(DEFAULT_HTTP_IDLE_TIMEOUT));
     assert_eq!(http_idle_timeout(Some(&json!("x"))), Some(DEFAULT_HTTP_IDLE_TIMEOUT));
     assert_eq!(http_idle_timeout(Some(&json!(0))), None);
     assert_eq!(http_idle_timeout(Some(&json!(250))), Some(Duration::from_millis(250)));
+    assert_eq!(
+        http_idle_timeout(Some(&json!(" 1500 "))),
+        Some(Duration::from_millis(1500))
+    );
+    assert_eq!(http_idle_timeout(Some(&json!("Disabled"))), None);
 }
 
 /// A server that answers one request with `head` (status line and headers, or nothing), then `chunks` (each

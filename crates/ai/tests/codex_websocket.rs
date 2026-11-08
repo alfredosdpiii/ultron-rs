@@ -10,12 +10,12 @@ use ai::openai_codex_responses::{self, OpenAICodexResponsesOptions};
 use ai::options::pi_user_agent;
 use ai::websocket::WebSocketConnection;
 use ai::{AbortSignal, AssistantMessageEvent, Body, HttpRequest, HttpResponse, Model, TranscriptContext, Transport};
-use protocol::websocket::{Message, MessageDecoder, OPCODE_PING, accept_key, close_payload, encode_message};
 use serde_json::{Map, Value, json};
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::sync::{Arc, Condvar, LazyLock, Mutex};
 use std::time::{Duration, Instant};
+use websocket::{Message, MessageDecoder, OPCODE_PING, accept_key, close_payload, encode_message};
 
 static FIXTURE: LazyLock<Value> =
     LazyLock::new(|| serde_json::from_str(include_str!("../fixtures/codex-websocket.json")).unwrap());
@@ -181,7 +181,7 @@ fn serve(mut stream: TcpStream, index: usize, script: Value, log: Arc<Log>) {
                         continue;
                     }
                     if turn["ping"] == true {
-                        let _ = stream.write_all(&protocol::websocket::encode_frame(OPCODE_PING, b"hb", None));
+                        let _ = stream.write_all(&websocket::encode_frame(OPCODE_PING, b"hb", None));
                     }
                     for event in turn["events"].as_array().into_iter().flatten() {
                         let text = match event {
@@ -203,8 +203,8 @@ fn serve(mut stream: TcpStream, index: usize, script: Value, log: Arc<Log>) {
                             closed = true;
                             let code = close[0].as_u64().map(|c| c as u16);
                             let reason = close.get(1).and_then(Value::as_str).unwrap_or_default();
-                            let _ = stream.write_all(&protocol::websocket::encode_frame(
-                                protocol::websocket::OPCODE_CLOSE,
+                            let _ = stream.write_all(&websocket::encode_frame(
+                                websocket::OPCODE_CLOSE,
                                 &close_payload(code, reason),
                                 None,
                             ));

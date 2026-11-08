@@ -13,9 +13,6 @@ use crate::types::Model;
 
 use model_scope::is_valid_thinking_level;
 
-/// `DEFAULT_THINKING_LEVEL` (core/defaults.ts).
-pub const DEFAULT_THINKING_LEVEL: &str = "medium";
-
 /// `defaultModelPerProvider`: the model a fallback prefers for each known provider, in declaration order.
 pub const DEFAULT_MODEL_PER_PROVIDER: &[(&str, &str)] = &[
     ("amazon-bedrock", "us.anthropic.claude-opus-4-6-v1"),
@@ -73,14 +70,6 @@ pub fn is_claude_code_model(model: &Model) -> bool {
     model.api == "claude-code-cli"
 }
 
-fn same(a: &Model, b: &Model) -> bool {
-    a.id == b.id && a.provider == b.provider
-}
-
-fn reference(model: &Model) -> String {
-    format!("{}/{}", model.provider, model.id)
-}
-
 impl model_scope::ScopeModel for Model {
     fn provider(&self) -> &str {
         &self.provider
@@ -91,8 +80,10 @@ impl model_scope::ScopeModel for Model {
     fn name(&self) -> &str {
         &self.name
     }
-    fn is_claude_code(&self) -> bool {
-        is_claude_code_model(self)
+    /// Claude Code CLI models, and the Claude subscription's, whose ids are Anthropic's own (TypeScript has no
+    /// `claude-subscription`, so a bare Claude id there matches the `anthropic` model alone).
+    fn full_reference_only(&self) -> bool {
+        is_claude_code_model(self) || self.provider == crate::claude_subscription::catalog::PROVIDER
     }
 }
 
@@ -219,7 +210,7 @@ pub fn resolve_cli_model(
         inferred = true;
     }
     let lower = cli_model.to_lowercase();
-    let raw_exact = |m: &&Model| m.id.to_lowercase() == lower || reference(m).to_lowercase() == lower;
+    let raw_exact = |m: &&Model| m.id.to_lowercase() == lower || model_scope::reference(*m).to_lowercase() == lower;
     if provider.is_none() {
         let exact: Vec<&Model> = models.iter().filter(raw_exact).collect();
         if exact.len() == 1 {
@@ -230,7 +221,7 @@ pub fn resolve_cli_model(
             if authenticated.len() == 1 {
                 return CliModel::found(authenticated[0]);
             }
-            let mut refs: Vec<String> = exact.iter().map(|m| reference(m)).collect();
+            let mut refs: Vec<String> = exact.iter().map(|m| model_scope::reference(*m)).collect();
             refs.sort_by(|a, b| jsrt::collate::locale_compare(a, b));
             let hint = if authenticated.is_empty() {
                 "No matching provider is authenticated."
@@ -265,7 +256,7 @@ pub fn resolve_cli_model(
         if inferred && !has_auth(&model.provider) {
             let authenticated: Vec<&Model> = models
                 .iter()
-                .filter(|m| m.id.to_lowercase() == lower && !same(m, model))
+                .filter(|m| m.id.to_lowercase() == lower && !model_scope::same(*m, model))
                 .filter(|m| has_auth(&m.provider))
                 .collect();
             if authenticated.len() == 1 {
@@ -370,7 +361,7 @@ pub fn find_initial_model(
             .clone()
             .or_else(|| settings.per_model(&first.model.provider, &first.model.id))
             .or_else(|| settings.default_thinking_level.clone())
-            .unwrap_or_else(|| DEFAULT_THINKING_LEVEL.into());
+            .unwrap_or_else(|| model_scope::DEFAULT_THINKING_LEVEL.into());
         return (Some(first.model.clone()), thinking);
     }
     if let (Some(provider), Some(id)) = (&settings.default_provider, &settings.default_model_id)
@@ -380,7 +371,7 @@ pub fn find_initial_model(
         let thinking = settings
             .per_model(provider, id)
             .or_else(|| settings.default_thinking_level.clone())
-            .unwrap_or_else(|| DEFAULT_THINKING_LEVEL.into());
+            .unwrap_or_else(|| model_scope::DEFAULT_THINKING_LEVEL.into());
         return (Some(found.clone()), thinking);
     }
     let available: Vec<&Model> = available.iter().filter(|m| !is_claude_code_model(m)).collect();
@@ -393,5 +384,5 @@ pub fn find_initial_model(
                 .find(|m| m.provider == *provider && m.id == *id)
         })
         .or(available.first().copied());
-    (chosen.cloned(), DEFAULT_THINKING_LEVEL.into())
+    (chosen.cloned(), model_scope::DEFAULT_THINKING_LEVEL.into())
 }

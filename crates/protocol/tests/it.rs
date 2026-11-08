@@ -9,5 +9,3 @@
 mod fixture;
 #[path = "ported.rs"]
 mod ported;
-#[path = "websocket.rs"]
-mod websocket;

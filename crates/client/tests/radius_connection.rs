@@ -7,10 +7,10 @@
 mod support;
 
 use client::runtime::Connection;
-use protocol::websocket::Message;
 use protocol::{DEFAULT_MAX_FRAME_LENGTH, PROTOCOL_VERSION, ServerMessage, encode_server_message};
 use server::radius_relay::{RelayAuth, RelayAuthResolver};
 use support::gateway::{Gateway, HANG_GUARD};
+use websocket::Message;
 
 const SERVER_ID: &str = "00000000-0000-4000-8000-000000000001";
 

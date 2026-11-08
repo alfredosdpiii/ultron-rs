@@ -16,9 +16,8 @@ use crate::types::{Cost, ImageContent, ModelCost, TextContent, Usage};
 use indexmap::IndexMap;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
-use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, LazyLock, Mutex, RwLock};
+use std::sync::{Arc, LazyLock, Mutex};
 
 /// `ImagesModel`: a model without the chat-only fields, plus its output modalities.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -179,69 +178,17 @@ impl ImagesApi for OpenRouterImages {
     }
 }
 
-/// A registered API: `generate_images` rejects a model of another api (`wrapGenerateImages`).
-#[derive(Clone)]
-pub struct RegisteredImagesApi {
-    api: String,
-    implementation: Arc<dyn ImagesApi>,
-}
-
-impl RegisteredImagesApi {
-    pub async fn generate_images(
-        &self,
-        model: &ImagesModel,
-        context: &ImagesContext,
-        options: &ImagesOptions,
-        transport: &dyn Transport,
-    ) -> Result<AssistantImages, String> {
-        if model.api != self.api {
-            return Err(format!("Mismatched api: {} expected {}", model.api, self.api));
-        }
-        Ok(self
-            .implementation
-            .generate_images(model, context, options, transport)
-            .await)
-    }
-}
-
-static REGISTRY: LazyLock<RwLock<HashMap<String, RegisteredImagesApi>>> = LazyLock::new(|| {
-    let mut map = HashMap::new();
-    map.insert(
-        "openrouter-images".to_string(),
-        RegisteredImagesApi {
-            api: "openrouter-images".into(),
-            implementation: Arc::new(OpenRouterImages),
-        },
-    );
-    RwLock::new(map)
-});
-
-/// `registerImagesApiProvider`: registers (or replaces) the implementation for `api`.
-pub fn register_images_api_provider(api: &str, implementation: Arc<dyn ImagesApi>) {
-    REGISTRY.write().unwrap_or_else(|e| e.into_inner()).insert(
-        api.to_string(),
-        RegisteredImagesApi {
-            api: api.to_string(),
-            implementation,
-        },
-    );
-}
-
-/// `getImagesApiProvider`.
-pub fn images_api_provider(api: &str) -> Option<RegisteredImagesApi> {
-    REGISTRY.read().unwrap_or_else(|e| e.into_inner()).get(api).cloned()
-}
-
-/// `generateImages` of `images.ts`: dispatch by `model.api`. `Err` when no implementation is registered.
+/// `generateImages` of `images.ts`: dispatch by `model.api`. `Err` for an api without an implementation.
 pub async fn generate_images(
     model: &ImagesModel,
     context: &ImagesContext,
     options: &ImagesOptions,
     transport: &dyn Transport,
 ) -> Result<AssistantImages, String> {
-    let provider =
-        images_api_provider(&model.api).ok_or_else(|| format!("No API provider registered for api: {}", model.api))?;
-    provider.generate_images(model, context, options, transport).await
+    match model.api.as_str() {
+        "openrouter-images" => Ok(openrouter_generate_images(model, context, options, transport).await),
+        api => Err(format!("No API provider registered for api: {api}")),
+    }
 }
 
 // ---------------------------------------------------------------------------------------------- OpenRouter images

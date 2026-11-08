@@ -462,8 +462,7 @@ async fn resolve_assume_role(
         )));
     }
     let without_role = is_credential_source_without_role_arn(Some(data));
-    if !without_role && let Some(serial) = data.get("mfa_serial").filter(|s| !s.is_empty()) {
-        let _ = serial;
+    if !without_role && data.get("mfa_serial").is_some_and(|s| !s.is_empty()) {
         return Err(CredentialError::stop(format!(
             "Profile {name} requires multi-factor authentication, but no MFA code callback was provided."
         )));
@@ -1424,49 +1423,11 @@ async fn from_instance_metadata(input: &ChainInput<'_>) -> Result<AwsCredentials
         .ok_or_else(|| CredentialError::next("Invalid response received from instance metadata service."))
 }
 
-// ------------------------------------------------------------------------------------------------------ SHA-1
-
 /// SHA-1 hex digest (the SSO cache file name).
 pub fn sha1_hex(data: &[u8]) -> String {
-    let mut h: [u32; 5] = [0x6745_2301, 0xEFCD_AB89, 0x98BA_DCFE, 0x1032_5476, 0xC3D2_E1F0];
-    let mut message = data.to_vec();
-    let bit_len = (data.len() as u64).wrapping_mul(8);
-    message.push(0x80);
-    while message.len() % 64 != 56 {
-        message.push(0);
-    }
-    message.extend_from_slice(&bit_len.to_be_bytes());
-    for block in message.chunks(64) {
-        let mut w = [0u32; 80];
-        for (i, word) in block.chunks(4).enumerate() {
-            w[i] = u32::from_be_bytes([word[0], word[1], word[2], word[3]]);
-        }
-        for i in 16..80 {
-            w[i] = (w[i - 3] ^ w[i - 8] ^ w[i - 14] ^ w[i - 16]).rotate_left(1);
-        }
-        let [mut a, mut b, mut c, mut d, mut e] = h;
-        for (i, word) in w.iter().enumerate() {
-            let (f, k) = match i {
-                0..=19 => ((b & c) | (!b & d), 0x5A82_7999),
-                20..=39 => (b ^ c ^ d, 0x6ED9_EBA1),
-                40..=59 => ((b & c) | (b & d) | (c & d), 0x8F1B_BCDC),
-                _ => (b ^ c ^ d, 0xCA62_C1D6),
-            };
-            let temp = a
-                .rotate_left(5)
-                .wrapping_add(f)
-                .wrapping_add(e)
-                .wrapping_add(k)
-                .wrapping_add(*word);
-            e = d;
-            d = c;
-            c = b.rotate_left(30);
-            b = a;
-            a = temp;
-        }
-        for (slot, value) in h.iter_mut().zip([a, b, c, d, e]) {
-            *slot = slot.wrapping_add(value);
-        }
-    }
-    h.iter().map(|v| format!("{v:08x}")).collect()
+    ring::digest::digest(&ring::digest::SHA1_FOR_LEGACY_USE_ONLY, data)
+        .as_ref()
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect()
 }

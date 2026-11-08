@@ -12,7 +12,6 @@
 
 use crate::radius_ws::{self, WsConnection, WsEvent, WsWriter};
 use jsrt::sync;
-use protocol::websocket::Message;
 use serde_json::{Value, json};
 use std::collections::HashMap;
 use std::future::Future;
@@ -21,6 +20,7 @@ use std::pin::Pin;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, Weak};
 use tokio::sync::Notify;
+use websocket::Message;
 
 pub const RADIUS_RELAY_HOST_SUBPROTOCOL: &str = "pi-session-relay.host.v1";
 pub const RADIUS_RELAY_CLIENT_SUBPROTOCOL: &str = "pi-session-relay.client.v1";

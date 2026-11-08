@@ -1,17 +1,17 @@
 //! The Radius relay's WebSocket client, as the TypeScript relay uses undici's `WebSocket`: an HTTP/1.1 upgrade
 //! (`ws:`/`wss:` over reqwest, no proxy, no extensions) offering one subprotocol and an `authorization` header, then
-//! RFC 6455 messages ([`protocol::websocket`]). Every handshake failure (refused, a status other than 101, a wrong
+//! RFC 6455 messages ([`websocket`]). Every handshake failure (refused, a status other than 101, a wrong
 //! `Sec-WebSocket-Accept`, a missing or different subprotocol) is undici's detail-less failure, which the relay
 //! reports as `Radius WebSocket connection failed`. A connection lost without a close frame is an error event
 //! (undici's), then a 1006 closure. Pings are answered; sends go through one ordered writer with the relay's
 //! pending-byte limit (`OrderedWebSocketWriter`).
 
-use protocol::websocket::{Message, MessageDecoder, accept_key, encode_message};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::Duration;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, ReadHalf, WriteHalf};
 use tokio::sync::mpsc;
+use websocket::{Message, MessageDecoder, accept_key, encode_message};
 
 /// `webSocketError` for an undici error event without details.
 pub const CONNECTION_FAILED: &str = "Radius WebSocket connection failed";

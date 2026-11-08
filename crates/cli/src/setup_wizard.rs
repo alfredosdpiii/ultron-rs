@@ -746,7 +746,7 @@ fn choose_thinking<U: SetupUi>(ui: &mut U, deps: &SetupDeps, model: &Model) -> R
         .settings()
         .get("defaultThinkingLevel")
         .and_then(Value::as_str)
-        .unwrap_or(ai::model_resolver::DEFAULT_THINKING_LEVEL)
+        .unwrap_or(model_scope::DEFAULT_THINKING_LEVEL)
         .to_string();
     let mut choices = vec![(Choice::new(format!("Keep {current}")), None)];
     choices.extend(
@@ -1236,7 +1236,7 @@ fn loki_step<U: SetupUi>(ui: &mut U, deps: &mut SetupDeps) -> Result<SummaryLine
             Tone::Dim,
         );
     }
-    let initial = deps.settings.loki_settings();
+    let initial = loki::settings::saved(deps.settings.global_settings());
     let mut current = initial.clone();
     loop {
         ui.note(&format!("Loki: {}.", describe_loki(&current)), Tone::Info);
@@ -1300,7 +1300,8 @@ fn loki_step<U: SetupUi>(ui: &mut U, deps: &mut SetupDeps) -> Result<SummaryLine
         return Ok(line("Loki", "unchanged", describe_loki(&current)));
     }
     let patch: Vec<(&str, Option<Value>)> = current.iter().map(|(k, v)| (k.as_str(), Some(v.clone()))).collect();
-    deps.settings.set_loki_settings(&patch);
+    let loki = loki::settings::patched(deps.settings.global_settings(), &patch);
+    deps.settings.set_global(loki::settings::KEY, Some(loki));
     Ok(line("Loki", "configured", describe_loki(&current)))
 }
 

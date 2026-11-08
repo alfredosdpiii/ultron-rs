@@ -10,12 +10,12 @@ use client::radius::{
     AttachmentState, ByteTransportHandlers, Cancellation, ConnectionState, RadiusClientReconnect, ReconnectClient,
     RecoveryView, attachment_state_view, connect_radius_client_transport, connection_state_view,
 };
-use protocol::websocket::Message;
 use serde_json::{Value, json};
 use server::radius_relay::{RelayAuth, RelayAuthResolver};
 use std::sync::mpsc::{Receiver, Sender, channel};
 use std::sync::{Arc, LazyLock, Mutex, OnceLock};
 use support::gateway::{Gateway, HANG_GUARD, hex, unhex};
+use websocket::Message;
 
 static FIXTURE: LazyLock<Value> = LazyLock::new(|| {
     serde_json::from_str(include_str!("../../server/fixtures/radius-relay.json")).expect("fixture parses")

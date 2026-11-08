@@ -39,10 +39,7 @@ pub fn refresh_catalogs(
     force: bool,
 ) -> Result<Vec<(String, String)>, String> {
     let registry = lane::registry(env);
-    let store_path = config::paths::AgentPaths::new(env.agent_dir())
-        .models()
-        .with_file_name("models-store.json");
-    let store = config::models_store::ModelsStore::new(store_path);
+    let store = config::models_store::ModelsStore::beside(&config::paths::AgentPaths::new(env.agent_dir()).models());
     let transport: Arc<dyn ai::Transport> = Arc::new(ai::ReqwestTransport::for_env(&*env.var, None));
     let builtin: Vec<&str> = ai::models::builtin_providers().collect();
     let providers: Vec<String> = registry

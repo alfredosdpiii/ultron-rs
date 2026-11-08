@@ -10,7 +10,7 @@ use std::time::Duration;
 use serde_json::{Map, Value};
 
 use crate::json::parse;
-use crate::lock::{acquire, lock_path_for};
+use crate::lock::{LockGuard, acquire, lock_path_for};
 
 pub type AuthData = Map<String, Value>;
 
@@ -28,27 +28,51 @@ fn write_private(path: &Path, text: &str) -> io::Result<()> {
     file.write_all(text.as_bytes())
 }
 
-/// `FileAuthStorageBackend.withLockAsync`: create the parent (0700) and an empty `{}` file (0600) if missing, then
-/// run `f` on the file's text under the lock; `Some(next)` is written before the lock is released.
+/// `auth.json` held under its lock (`FileAuthStorageBackend.withLockAsync`): the parent (0700) and an empty `{}`
+/// file (0600) are created when missing; dropping it releases the lock.
+pub struct LockedAuthFile {
+    path: PathBuf,
+    _lock: LockGuard,
+}
+
+impl LockedAuthFile {
+    pub fn open(path: &Path) -> Result<Self, String> {
+        if let Some(dir) = path.parent().filter(|d| !d.exists()) {
+            fs::DirBuilder::new()
+                .recursive(true)
+                .mode(0o700)
+                .create(dir)
+                .map_err(|e| e.to_string())?;
+        }
+        if !path.exists() {
+            write_private(path, "{}").map_err(|e| e.to_string())?;
+        }
+        let lock = acquire(&lock_path_for(path), AUTH_STALE, AUTH_ATTEMPTS).map_err(|e| e.to_string())?;
+        Ok(LockedAuthFile {
+            path: path.to_path_buf(),
+            _lock: lock,
+        })
+    }
+
+    pub fn read(&self) -> Result<String, String> {
+        fs::read_to_string(&self.path).map_err(|e| e.to_string())
+    }
+
+    /// Replace the file's text (mode 0600).
+    pub fn write(&self, text: &str) -> Result<(), String> {
+        write_private(&self.path, text).map_err(|e| e.to_string())
+    }
+}
+
+/// Run `f` on the file's text under the lock; `Some(next)` is written before the lock is released.
 pub(crate) fn with_locked_file<T>(
     path: &Path,
     f: impl FnOnce(&str) -> Result<(T, Option<String>), String>,
 ) -> Result<T, String> {
-    if let Some(dir) = path.parent().filter(|d| !d.exists()) {
-        fs::DirBuilder::new()
-            .recursive(true)
-            .mode(0o700)
-            .create(dir)
-            .map_err(|e| e.to_string())?;
-    }
-    if !path.exists() {
-        write_private(path, "{}").map_err(|e| e.to_string())?;
-    }
-    let _lock = acquire(&lock_path_for(path), AUTH_STALE, AUTH_ATTEMPTS).map_err(|e| e.to_string())?;
-    let current = fs::read_to_string(path).map_err(|e| e.to_string())?;
-    let (result, next) = f(&current)?;
+    let file = LockedAuthFile::open(path)?;
+    let (result, next) = f(&file.read()?)?;
     if let Some(next) = next {
-        write_private(path, &next).map_err(|e| e.to_string())?;
+        file.write(&next)?;
     }
     Ok(result)
 }
@@ -256,9 +280,10 @@ const COMMAND_TIMEOUT: Duration = Duration::from_secs(10);
 static COMMAND_CACHE: std::sync::Mutex<Option<std::collections::HashMap<String, Option<String>>>> =
     std::sync::Mutex::new(None);
 
-/// `executeWithDefaultShell`: `/bin/sh -c <command>` with stdin and stderr ignored; its trimmed stdout, or `None`
-/// when it fails, times out, or prints nothing.
-fn run_command(command: &str) -> Option<String> {
+/// `executeWithDefaultShell`: `/bin/sh -c <command>` with stdin and stderr ignored, for at most ten seconds; its
+/// trimmed stdout, or `None` when it fails, times out, or prints nothing. Uncached (models.json values,
+/// `resolveConfigValueUncached`); [`command_value`] caches it.
+pub fn command_output(command: &str) -> Option<String> {
     use std::io::Read;
     use std::process::{Command, Stdio};
     let mut child = Command::new("/bin/sh")
@@ -299,7 +324,7 @@ pub fn command_value(command: &str) -> Option<String> {
     {
         return cached.clone();
     }
-    let value = run_command(command);
+    let value = command_output(command);
     COMMAND_CACHE
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -317,20 +342,22 @@ pub fn clear_command_cache() {
 /// with its variables filled; `None` when the command fails or prints nothing, or a referenced variable is unset or
 /// empty.
 pub fn resolve_config_value(config: &str, env: &dyn Fn(&str) -> Option<String>) -> Result<Option<String>, String> {
-    if let Some(command) = config.strip_prefix('!') {
-        return Ok(command_value(command));
+    match config.strip_prefix('!') {
+        Some(command) => Ok(command_value(command)),
+        None => Ok(fill_template(config, env)),
     }
+}
+
+/// A template with its variables filled; `None` when a referenced variable is unset or empty.
+pub fn fill_template(config: &str, env: &dyn Fn(&str) -> Option<String>) -> Option<String> {
     let mut out = String::new();
     for part in parse_template(config) {
         match part {
             TemplatePart::Literal(s) => out.push_str(&s),
-            TemplatePart::Env(name) => match env(&name).filter(|v| !v.is_empty()) {
-                Some(v) => out.push_str(&v),
-                None => return Ok(None),
-            },
+            TemplatePart::Env(name) => out.push_str(&env(&name).filter(|v| !v.is_empty())?),
         }
     }
-    Ok(Some(out))
+    Some(out)
 }
 
 /// `ReadOnlyAuthStorage`'s validation: every entry an `api_key` (string key, string env map) or a complete `oauth`

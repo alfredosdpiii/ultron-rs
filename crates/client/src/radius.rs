@@ -6,7 +6,6 @@
 //! (`client-tui.ts` `#handleConnectionState` / `#handleAttachmentState`).
 
 use jsrt::sync;
-use protocol::websocket::Message;
 use server::radius_relay::{
     MAX_PENDING_BYTES, RADIUS_RELAY_CLIENT_SUBPROTOCOL, RelayAuthResolver, relay_web_socket_url,
 };
@@ -16,6 +15,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::Duration;
+use websocket::Message;
 
 const CLIENT_RETRY_INITIAL_MS: u64 = 1_000;
 const CLIENT_RETRY_MAX_MS: u64 = 30_000;

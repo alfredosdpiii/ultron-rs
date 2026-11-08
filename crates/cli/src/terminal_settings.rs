@@ -11,7 +11,7 @@ use crate::Env;
 
 /// The settings' overrides in the TUI's terms.
 pub fn overrides(settings: &SettingsManager) -> CapabilityOverrides {
-    let o = settings.terminal_capability_overrides();
+    let o = config::keys::terminal_capability_overrides(settings.settings());
     CapabilityOverrides {
         images: o.images.map(|protocol| match protocol {
             Some("kitty") => Some(ImageProtocol::Kitty),

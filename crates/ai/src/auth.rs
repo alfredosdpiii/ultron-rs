@@ -250,7 +250,7 @@ impl AuthError {
 
     pub fn message(&self) -> String {
         match self {
-            Self::Aborted => "This operation was aborted".into(),
+            Self::Aborted => crate::provider::OPERATION_ABORTED.into(),
             Self::Models(error) => error.message.clone(),
         }
     }
@@ -936,9 +936,6 @@ pub struct FileCredentialStore {
     local: tokio::sync::Mutex<()>,
 }
 
-const AUTH_LOCK_STALE: Duration = Duration::from_secs(30);
-const AUTH_LOCK_ATTEMPTS: u32 = 1500;
-
 impl FileCredentialStore {
     pub fn new(path: impl Into<PathBuf>) -> Self {
         FileCredentialStore {
@@ -958,18 +955,6 @@ impl FileCredentialStore {
 
 fn parse_credential(value: Value, provider_id: &str) -> Result<Credential, String> {
     serde_json::from_value(value).map_err(|_| format!("Invalid auth.json credential for provider \"{provider_id}\""))
-}
-
-fn write_private(path: &Path, text: &str) -> std::io::Result<()> {
-    use std::io::Write;
-    use std::os::unix::fs::OpenOptionsExt;
-    let mut file = std::fs::OpenOptions::new()
-        .write(true)
-        .create(true)
-        .truncate(true)
-        .mode(0o600)
-        .open(path)?;
-    file.write_all(text.as_bytes())
 }
 
 impl CredentialStore for FileCredentialStore {
@@ -1009,25 +994,11 @@ impl CredentialStore for FileCredentialStore {
             let store = |e: String| StoreError::Store(e);
             let _local = self.local.lock().await;
             let path = self.path.clone();
-            if let Some(dir) = path.parent().filter(|d| !d.exists()) {
-                use std::os::unix::fs::DirBuilderExt;
-                std::fs::DirBuilder::new()
-                    .recursive(true)
-                    .mode(0o700)
-                    .create(dir)
-                    .map_err(|e| store(e.to_string()))?;
-            }
-            if !path.exists() {
-                write_private(&path, "{}").map_err(|e| store(e.to_string()))?;
-            }
-            let lock_path = config::lock::lock_path_for(&path);
-            let guard = tokio::task::spawn_blocking(move || {
-                config::lock::acquire(&lock_path, AUTH_LOCK_STALE, AUTH_LOCK_ATTEMPTS)
-            })
-            .await
-            .map_err(|e| store(e.to_string()))?
-            .map_err(|e| store(e.to_string()))?;
-            let text = std::fs::read_to_string(&path).map_err(|e| store(e.to_string()))?;
+            let file = tokio::task::spawn_blocking(move || config::auth::LockedAuthFile::open(&path))
+                .await
+                .map_err(|e| store(e.to_string()))?
+                .map_err(store)?;
+            let text = file.read().map_err(store)?;
             let mut data = if text.trim().is_empty() {
                 Map::new()
             } else {
@@ -1049,13 +1020,13 @@ impl CredentialStore for FileCredentialStore {
                         provider_id.to_string(),
                         serde_json::to_value(&next).map_err(|e| store(e.to_string()))?,
                     );
-                    write_private(&path, &jsrt::json::stringify_pretty(&Value::Object(data)))
-                        .map_err(|e| store(e.to_string()))?;
+                    file.write(&jsrt::json::stringify_pretty(&Value::Object(data)))
+                        .map_err(store)?;
                     Some(next)
                 }
                 None => current,
             };
-            drop(guard);
+            drop(file);
             Ok(result)
         }))
     }
@@ -1191,7 +1162,7 @@ async fn resolve_stored_oauth(
                     oauth.refresh(&current, Some(refresh_signal)),
                 )
                 .await
-                .unwrap_or_else(|_| Err("The operation was aborted due to timeout".into()));
+                .unwrap_or_else(|_| Err(crate::provider::OPERATION_TIMED_OUT.into()));
                 result.map(|c| Some(Credential::OAuth(c))).map_err(|e| {
                     AuthError::models(
                         ModelsErrorCode::OAuth,

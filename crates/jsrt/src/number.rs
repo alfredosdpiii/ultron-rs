@@ -178,10 +178,65 @@ pub fn parse(text: &str) -> f64 {
     }
 }
 
+/// `Number.parseFloat`: the longest decimal prefix after leading whitespace, a signed `Infinity` included; `NaN`
+/// without one.
+pub fn parse_float(text: &str) -> f64 {
+    let t = text.trim_start();
+    let bytes = t.as_bytes();
+    let mut i = usize::from(matches!(bytes.first(), Some(b'+' | b'-')));
+    if t[i..].starts_with("Infinity") {
+        return if bytes.first() == Some(&b'-') {
+            f64::NEG_INFINITY
+        } else {
+            f64::INFINITY
+        };
+    }
+    let digits = |i: &mut usize| {
+        let start = *i;
+        while bytes.get(*i).is_some_and(u8::is_ascii_digit) {
+            *i += 1;
+        }
+        *i > start
+    };
+    let mut any = digits(&mut i);
+    if bytes.get(i) == Some(&b'.') {
+        let mut j = i + 1;
+        if digits(&mut j) || any {
+            any = true;
+            i = j;
+        }
+    }
+    if !any {
+        return f64::NAN;
+    }
+    if matches!(bytes.get(i), Some(b'e' | b'E')) {
+        let mut j = i + 1;
+        if matches!(bytes.get(j), Some(b'+' | b'-')) {
+            j += 1;
+        }
+        if digits(&mut j) {
+            i = j;
+        }
+    }
+    t[..i].trim_end_matches('.').parse().unwrap_or(f64::NAN)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn jsrt_number_parse_float_matches_number_parse_float() {
+        assert_eq!(parse_float("1.5"), 1.5);
+        assert_eq!(parse_float("  2s"), 2.0);
+        assert_eq!(parse_float("1e3x"), 1000.0);
+        assert_eq!(parse_float(".5"), 0.5);
+        assert_eq!(parse_float("5."), 5.0);
+        assert_eq!(parse_float("-Infinity"), f64::NEG_INFINITY);
+        assert!(parse_float("Thu, 01 Jan").is_nan());
+        assert!(parse_float(".").is_nan());
+    }
 
     // Literals printed by node 26.
 

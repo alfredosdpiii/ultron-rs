@@ -7,8 +7,8 @@ use crate::constrained::{
     resolve_grammar_constrained_sampling, resolve_json_schema_strict_sampling,
 };
 use crate::http::{
-    Failure, HeaderBuilder, HttpRequest, Read, Sdk, Transport, format_provider_error, has_header, is_aborted, join_url,
-    read_chunk, send_with_retry,
+    Failure, HeaderBuilder, HttpRequest, Sdk, Transport, format_provider_error, has_header, is_aborted, join_url,
+    send_with_retry,
 };
 use crate::json::{parse_json, parse_streaming_json, short_hash};
 use crate::models::{calculate_cost, clamp_thinking_level};
@@ -16,7 +16,8 @@ use crate::options::{
     SimpleStreamOptions, StreamOptions, ThinkingBudgets, build_base_options, clamp_thinking_budget_to_answer_room,
     pi_user_agent, thinking_budget_for_level,
 };
-use crate::sse::{ServerSentEvent, SseDecoder};
+use crate::provider::{REQUEST_WAS_ABORTED, Run};
+use crate::sse::read_openai_stream;
 use crate::transcript::{
     declared_tools, render_system_message_update, resolve_transcript, resolve_transcript_tools, system_message_text,
     transform_messages,
@@ -190,7 +191,9 @@ impl Compat {
     }
 }
 
-fn client_api_key(model: &Model, options: &StreamOptions) -> Result<String, String> {
+/// The OpenAI SDK client's `apiKey`: the caller's, else a placeholder when an authorization header carries the
+/// credential; no key and no header fails as the providers throw.
+pub(crate) fn client_api_key(model: &Model, options: &StreamOptions) -> Result<String, String> {
     if let Some(key) = options.api_key.as_ref().filter(|k| !k.is_empty()) {
         return Ok(key.clone());
     }
@@ -937,9 +940,7 @@ struct ToolScratch {
     stream_index: Option<i64>,
 }
 
-struct Run<'s, 'e> {
-    output: AssistantMessage,
-    sink: &'s mut EventSink<'e>,
+struct CompletionsStream {
     scratch: Vec<ToolScratch>,
     text_block: Option<usize>,
     thinking_block: Option<usize>,
@@ -949,15 +950,10 @@ struct Run<'s, 'e> {
     reasoning_details: Option<Vec<Value>>,
 }
 
-impl Run<'_, '_> {
-    fn emit(&mut self, event: impl FnOnce(AssistantMessage) -> AssistantMessageEvent) {
-        let event = event(self.output.clone());
-        (self.sink)(&event);
-    }
-
+impl Run<'_, '_, CompletionsStream> {
     fn push(&mut self, block: AssistantContent, scratch: ToolScratch) -> usize {
         self.output.content.push(block);
-        self.scratch.push(scratch);
+        self.state.scratch.push(scratch);
         self.output.content.len() - 1
     }
 
@@ -969,7 +965,7 @@ impl Run<'_, '_> {
     }
 
     fn custom_input(&mut self, position: usize) -> String {
-        let Some((property, _)) = &self.scratch[position].custom else {
+        let Some((property, _)) = &self.state.scratch[position].custom else {
             return String::new();
         };
         let property = property.clone();
@@ -982,7 +978,7 @@ impl Run<'_, '_> {
     }
 
     fn append_custom(&mut self, position: usize, next: &str, close: bool) -> Result<Option<String>, String> {
-        let Some((property, buffer)) = &mut self.scratch[position].custom else {
+        let Some((property, buffer)) = &mut self.state.scratch[position].custom else {
             return Ok(None);
         };
         let delta = buffer.append(property, next, close)?;
@@ -993,14 +989,14 @@ impl Run<'_, '_> {
 
     fn apply_reasoning_details(&mut self, position: usize) {
         if let (Some(details), AssistantContent::Thinking(block)) =
-            (&self.reasoning_details, &mut self.output.content[position])
+            (&self.state.reasoning_details, &mut self.output.content[position])
         {
             block.thinking_signature = Some(jsrt::json::stringify(&Value::Array(details.clone())));
         }
     }
 
     fn ensure_text(&mut self) -> usize {
-        if let Some(position) = self.text_block {
+        if let Some(position) = self.state.text_block {
             return position;
         }
         let position = self.push(
@@ -1010,7 +1006,7 @@ impl Run<'_, '_> {
             }),
             ToolScratch::default(),
         );
-        self.text_block = Some(position);
+        self.state.text_block = Some(position);
         self.emit(|partial| AssistantMessageEvent::TextStart {
             content_index: position,
             partial,
@@ -1019,7 +1015,7 @@ impl Run<'_, '_> {
     }
 
     fn ensure_thinking(&mut self, signature: &str) -> usize {
-        if let Some(position) = self.thinking_block {
+        if let Some(position) = self.state.thinking_block {
             return position;
         }
         let block = ThinkingContent {
@@ -1028,7 +1024,7 @@ impl Run<'_, '_> {
             redacted: None,
         };
         let position = self.push(AssistantContent::Thinking(block), ToolScratch::default());
-        self.thinking_block = Some(position);
+        self.state.thinking_block = Some(position);
         self.emit(|partial| AssistantMessageEvent::ThinkingStart {
             content_index: position,
             partial,
@@ -1049,11 +1045,11 @@ impl Run<'_, '_> {
             .unwrap_or_default()
             .to_string();
         let id = present("id").and_then(Value::as_str).map(str::to_string);
-        let mut position = stream_index.and_then(|i| self.by_index.get(&i).copied());
+        let mut position = stream_index.and_then(|i| self.state.by_index.get(&i).copied());
         if position.is_none()
             && let Some(id) = &id
         {
-            position = self.by_id.get(id).copied();
+            position = self.state.by_id.get(id).copied();
         }
         let position = match position {
             Some(position) => position,
@@ -1077,10 +1073,10 @@ impl Run<'_, '_> {
                 };
                 let position = self.push(AssistantContent::ToolCall(call), scratch);
                 if let Some(index) = stream_index {
-                    self.by_index.insert(index, position);
+                    self.state.by_index.insert(index, position);
                 }
                 if let Some(id) = &id {
-                    self.by_id.insert(id.clone(), position);
+                    self.state.by_id.insert(id.clone(), position);
                 }
                 self.emit(|partial| AssistantMessageEvent::ToolCallStart {
                     content_index: position,
@@ -1089,23 +1085,23 @@ impl Run<'_, '_> {
                 position
             }
         };
-        if let (Some(index), None) = (stream_index, self.scratch[position].stream_index) {
-            self.scratch[position].stream_index = Some(index);
-            self.by_index.insert(index, position);
+        if let (Some(index), None) = (stream_index, self.state.scratch[position].stream_index) {
+            self.state.scratch[position].stream_index = Some(index);
+            self.state.by_index.insert(index, position);
         }
         if let Some(id) = &id {
-            self.by_id.insert(id.clone(), position);
+            self.state.by_id.insert(id.clone(), position);
         }
         let call = self.call(position);
         if call.name.is_empty() && !name.is_empty() {
             call.name = name;
         }
-        if custom.is_some() && function.is_none() && self.scratch[position].custom.is_none() {
+        if custom.is_some() && function.is_none() && self.state.scratch[position].custom.is_none() {
             let call_name = self.call(position).name.clone();
             let property = grammar.get(&call_name).cloned().unwrap_or_else(|| "input".into());
             self.call(position).arguments = json!({ property.clone(): "" });
-            self.scratch[position].custom = Some((property, GrammarInputBuffer::default()));
-            self.scratch[position].partial_args = None;
+            self.state.scratch[position].custom = Some((property, GrammarInputBuffer::default()));
+            self.state.scratch[position].partial_args = None;
         }
         position
     }
@@ -1150,7 +1146,7 @@ impl Run<'_, '_> {
             if message.is_some() {
                 self.output.error_message = message;
             }
-            self.has_finish_reason = true;
+            self.state.has_finish_reason = true;
         }
         let Some(delta) = choice.get("delta").filter(|d| jsrt::value::truthy(Some(d))) else {
             return Ok(());
@@ -1201,7 +1197,7 @@ impl Run<'_, '_> {
                     && self.call(position).id.is_empty()
                 {
                     self.call(position).id = id.to_string();
-                    self.by_id.insert(id.to_string(), position);
+                    self.state.by_id.insert(id.to_string(), position);
                 }
                 let name = call_delta
                     .pointer("/function/name")
@@ -1220,7 +1216,9 @@ impl Run<'_, '_> {
                     .filter(|a| !a.is_empty())
                 {
                     text = arguments.to_string();
-                    let partial = self.scratch[position].partial_args.get_or_insert_with(String::new);
+                    let partial = self.state.scratch[position]
+                        .partial_args
+                        .get_or_insert_with(String::new);
                     partial.push_str(arguments);
                     let parsed = parse_streaming_json(partial);
                     self.call(position).arguments = parsed;
@@ -1245,7 +1243,7 @@ impl Run<'_, '_> {
         if let Some(details) = delta.get("reasoning_details").and_then(Value::as_array) {
             for detail in details.iter().filter(|d| is_reasoning_detail(d)) {
                 self.ensure_thinking("");
-                append_reasoning_detail(self.reasoning_details.get_or_insert_with(Vec::new), detail);
+                append_reasoning_detail(self.state.reasoning_details.get_or_insert_with(Vec::new), detail);
             }
         }
         Ok(())
@@ -1275,7 +1273,7 @@ impl Run<'_, '_> {
                     });
                 }
                 AssistantContent::ToolCall(_) => {
-                    if self.scratch[position].custom.is_some() {
+                    if self.state.scratch[position].custom.is_some() {
                         let input = self.custom_input(position);
                         if let Some(delta) = self.append_custom(position, &input, true).map_err(Failure::plain)? {
                             self.emit(|partial| AssistantMessageEvent::ToolCallDelta {
@@ -1285,8 +1283,9 @@ impl Run<'_, '_> {
                             });
                         }
                     } else {
-                        let parsed =
-                            parse_streaming_json(self.scratch[position].partial_args.as_deref().unwrap_or_default());
+                        let parsed = parse_streaming_json(
+                            self.state.scratch[position].partial_args.as_deref().unwrap_or_default(),
+                        );
                         self.call(position).arguments = parsed;
                     }
                     let tool_call = self.call(position).clone();
@@ -1313,9 +1312,7 @@ pub async fn stream(
     let compat = Compat::of(model);
     let context = resolve_transcript(context, compat.supports_mid_convo_system_messages);
     let now = jsrt::date::now_ms();
-    let mut run = Run {
-        output: AssistantMessage::pending(model, now),
-        sink,
+    let state = CompletionsStream {
         scratch: Vec::new(),
         text_block: None,
         thinking_block: None,
@@ -1324,36 +1321,26 @@ pub async fn stream(
         by_id: HashMap::new(),
         reasoning_details: None,
     };
-    let signal = options.base.signal();
-    match drive(&mut run, model, &context, options, &compat, transport, now).await {
-        Ok(()) => {
-            let reason = run.output.stop_reason;
-            run.emit(|message| AssistantMessageEvent::Done { reason, message });
-        }
-        Err(failure) => {
-            for position in 0..run.output.content.len() {
-                run.apply_reasoning_details(position);
-            }
-            run.output.stop_reason = if is_aborted(signal) {
-                StopReason::Aborted
-            } else {
-                StopReason::Error
-            };
-            let mut message = format_provider_error(&failure, None);
-            if let Some(raw) = failure
-                .raw_metadata
-                .as_ref()
-                .filter(|raw| !message.contains(raw.as_str()))
-            {
-                message.push('\n');
-                message.push_str(raw);
-            }
-            run.output.error_message = Some(message);
-            let reason = run.output.stop_reason;
-            run.emit(|error| AssistantMessageEvent::Error { reason, error });
+    let mut run = Run::new(AssistantMessage::pending(model, now), sink, state);
+    let result = drive(&mut run, model, &context, options, &compat, transport, now).await;
+    if result.is_err() {
+        for position in 0..run.output.content.len() {
+            run.apply_reasoning_details(position);
         }
     }
-    run.output
+    let result = result.map_err(|failure| {
+        let mut message = format_provider_error(&failure, None);
+        if let Some(raw) = failure
+            .raw_metadata
+            .as_ref()
+            .filter(|raw| !message.contains(raw.as_str()))
+        {
+            message.push('\n');
+            message.push_str(raw);
+        }
+        message
+    });
+    run.end(result, options.base.signal())
 }
 
 fn client_headers(
@@ -1394,60 +1381,8 @@ fn client_headers(
     headers
 }
 
-/// The OpenAI SDK stream: JSON per `data:` event until `[DONE]`; a body with `error` throws an API error. An abort ends
-/// the stream quietly, as the SDK does.
-pub(crate) async fn read_openai_stream(
-    response: &mut crate::http::HttpResponse,
-    signal: Option<&crate::http::AbortSignal>,
-    mut handle: impl FnMut(&Value) -> Result<(), Failure>,
-) -> Result<(), Failure> {
-    let headers = response.headers.clone();
-    let mut decoder = SseDecoder::default();
-    let mut done = false;
-    let mut process = |events: Vec<ServerSentEvent>, done: &mut bool| -> Result<(), Failure> {
-        for sse in events {
-            if *done {
-                continue;
-            }
-            if sse.data.starts_with("[DONE]") {
-                *done = true;
-                continue;
-            }
-            if sse.event.as_deref().is_some_and(|e| e.starts_with("thread.")) {
-                continue;
-            }
-            let data = parse_json(&sse.data).map_err(|e| Failure::plain(e.to_string()))?;
-            if let Some(error) = data.get("error").filter(|e| jsrt::value::truthy(Some(e))) {
-                return Err(Failure::api(
-                    Sdk::OpenAi,
-                    None,
-                    Some(headers.clone()),
-                    Some(json!({ "error": error })),
-                    None,
-                ));
-            }
-            handle(&data)?;
-        }
-        Ok(())
-    };
-    loop {
-        match read_chunk(response.body.as_mut(), signal).await {
-            Read::Chunk(bytes) => {
-                process(decoder.push(&bytes), &mut done)?;
-                if is_aborted(signal) {
-                    return Ok(());
-                }
-            }
-            Read::End => break,
-            Read::Aborted => return Ok(()),
-            Read::Failed(error) => return Err(Failure::plain(error)),
-        }
-    }
-    process(decoder.finish(false), &mut done)
-}
-
 async fn drive(
-    run: &mut Run<'_, '_>,
+    run: &mut Run<'_, '_, CompletionsStream>,
     model: &Model,
     context: &TranscriptContext,
     options: &OpenAICompletionsOptions,
@@ -1480,13 +1415,13 @@ async fn drive(
         body: serde_json::to_string(&params).unwrap_or_default(),
     };
     let mut response = send_with_retry(transport, &request, Sdk::OpenAi, base.retry(), signal).await?;
-    run.emit(|partial| AssistantMessageEvent::Start { partial });
+    run.start();
     read_openai_stream(&mut response, signal, |chunk| run.handle_chunk(chunk, model, &grammar)).await?;
     run.finish_blocks()?;
     if is_aborted(signal) || run.output.stop_reason == StopReason::Aborted {
-        return Err(Failure::plain("Request was aborted"));
+        return Err(Failure::plain(REQUEST_WAS_ABORTED));
     }
-    if !run.has_finish_reason && !compat.supports_finish_reason {
+    if !run.state.has_finish_reason && !compat.supports_finish_reason {
         let has_calls = run
             .output
             .content
@@ -1504,7 +1439,8 @@ async fn drive(
             message.unwrap_or_else(|| "Provider returned an error stop reason".into()),
         ));
     }
-    if (compat.supports_finish_reason && !run.has_finish_reason) || run.output.stop_reason == StopReason::Pending {
+    if (compat.supports_finish_reason && !run.state.has_finish_reason) || run.output.stop_reason == StopReason::Pending
+    {
         return Err(Failure::plain("Stream ended without finish_reason"));
     }
     Ok(())

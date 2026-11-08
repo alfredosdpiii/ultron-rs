@@ -127,7 +127,15 @@ impl agent::StreamFn for EnvStream {
                 Ok((routed, prepared)) => {
                     let model = routed.as_ref().unwrap_or(model);
                     let options = prepared.as_ref().unwrap_or(&options);
-                    ai::dispatch::stream_simple(model, context, options, &*self.transport, sink).await
+                    ai::dispatch::stream_simple(
+                        &ai::claude_subscription::fallback::global(),
+                        model,
+                        context,
+                        options,
+                        &*self.transport,
+                        sink,
+                    )
+                    .await
                 }
                 Err(error) => Err(error),
             };

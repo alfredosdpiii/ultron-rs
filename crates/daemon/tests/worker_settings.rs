@@ -193,7 +193,7 @@ fn daemon_worker_settings_invalid_idle_timeout_prints_like_string_of_value() {
         .unwrap();
         let settings = SettingsManager::create(&cwd, &agent, false);
         assert_eq!(
-            worker_settings::http_idle_timeout_ms(&settings),
+            config::keys::http_idle_timeout_ms(settings.settings()),
             Err(format!("Invalid httpIdleTimeoutMs setting: {shown}"))
         );
     }

@@ -37,7 +37,9 @@ fn daemon_worker_settings_save_claude_code_sub_agent_models() {
     let values = worker_settings::values(&settings, &live(), &|_: &str| None).unwrap();
     assert_eq!(values["rlm.childModel"], "claude-code/claude-sonnet-5-5");
     assert_eq!(
-        settings.rlm_model_settings().child_model.as_deref(),
+        config::keys::rlm_model_settings(settings.global_settings())
+            .child_model
+            .as_deref(),
         Some("claude-code/claude-sonnet-5-5")
     );
 }

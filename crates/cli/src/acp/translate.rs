@@ -13,7 +13,7 @@ use std::path::{Path, PathBuf};
 /// The ACP protocol version spoken (schema v1).
 pub const PROTOCOL_VERSION: u64 = 1;
 /// The default refusal text of the Anthropic provider (`ai::anthropic`), the only refusal the stream can tell apart.
-pub const REFUSAL_TEXT: &str = "The model refused to complete the request";
+use ai::anthropic::REFUSAL_TEXT;
 /// Diff text larger than this is not sent (the location is).
 pub const MAX_DIFF_BYTES: usize = 256 * 1024;
 /// A tool call title is the cell's first code line, cut to this many characters.

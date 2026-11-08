@@ -2933,7 +2933,7 @@ impl Core {
             .config
             .settings
             .as_object()
-            .and_then(config::settings_keys::shell_command_prefix);
+            .and_then(config::keys::shell_command_prefix);
         std::thread::spawn(move || {
             // Off the actor: the actor keeps serving while the command runs.
             let result = user_bash::run(&host, &command, prefix.as_deref(), &signal, &mut |delta| {

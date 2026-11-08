@@ -81,7 +81,7 @@ pub fn startup_changelog(env: &Env) -> Option<StartupNotice> {
 /// stored credential's type (`checkAuth`) or, for a key, whether it is an OAuth token (`getAuth`).
 pub fn subscription_auth_warns(env: &Env, provider: &str) -> bool {
     let settings = config::settings::SettingsManager::create(&env.cwd, &env.agent_dir(), false);
-    let enabled = settings.anthropic_extra_usage_warning();
+    let enabled = config::keys::anthropic_extra_usage_warning(settings.settings());
     if !enabled || provider != "anthropic" {
         return false;
     }

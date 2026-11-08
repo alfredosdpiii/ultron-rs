@@ -10,7 +10,6 @@
 
 mod support;
 
-use protocol::websocket::Message;
 use serde_json::{Value, json};
 use server::radius_relay::{
     AuthInput, HostControl, RadiusRelayAuthResolver, RadiusRelayHost, RelayAccept, RelayAuth, RelayAuthResolver,
@@ -21,6 +20,7 @@ use server::radius_relay::{
 use std::sync::mpsc::{Receiver, Sender, channel};
 use std::sync::{Arc, Condvar, LazyLock, Mutex};
 use support::gateway::{Gateway, GatewaySocket, HANG_GUARD, hex, unhex};
+use websocket::Message;
 
 static FIXTURE: LazyLock<Value> =
     LazyLock::new(|| serde_json::from_str(include_str!("../fixtures/radius-relay.json")).expect("fixture parses"));
@@ -450,7 +450,7 @@ fn server_radius_relay_rejects_a_different_subprotocol() {
             .to_string();
         let response = format!(
             "HTTP/1.1 101 Switching Protocols\r\nupgrade: websocket\r\nconnection: Upgrade\r\nsec-websocket-accept: {}\r\nsec-websocket-protocol: other\r\n\r\n",
-            protocol::websocket::accept_key(&key)
+            websocket::accept_key(&key)
         );
         stream.write_all(response.as_bytes()).unwrap();
     });

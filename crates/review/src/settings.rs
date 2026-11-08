@@ -6,11 +6,15 @@ use std::collections::HashMap;
 
 use indexmap::IndexMap;
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
+use serde_json::{Map, Value};
 
 use crate::js::{Num, clamp, path_join};
 
 pub const CACHE_DIR_ENV: &str = "ULTRON_AUTOREVIEW_CACHE_DIR";
+
+/// The global settings key the saved settings live under; written with
+/// [`config::settings::SettingsManager::patch_global_object`].
+pub const KEY: &str = "autoreview";
 
 pub const DEFAULT_POLL_SECONDS: f64 = 45.0;
 pub const MIN_POLL_SECONDS: f64 = 20.0;
@@ -524,4 +528,163 @@ pub fn autoreview_paths(agent_dir: &str, env: &HashMap<String, String>, home: &s
         dir,
         cache,
     }
+}
+
+/// The saved `autoreview` settings of the global settings (`getAutoreviewSettings`), dropping invalid values.
+pub fn saved(global: &Map<String, Value>) -> Map<String, Value> {
+    let mut out = Map::new();
+    let Some(Value::Object(c)) = global.get(KEY) else {
+        return out;
+    };
+    let strings = |key: &str| -> Option<Value> {
+        let items: Vec<Value> = c
+            .get(key)?
+            .as_array()?
+            .iter()
+            .filter_map(Value::as_str)
+            .filter(|s| !jsrt::string::trim(s).is_empty())
+            .map(|s| jsrt::string::trim(s).into())
+            .collect();
+        (!items.is_empty()).then_some(Value::Array(items))
+    };
+    let count = |key: &str| -> Option<Value> {
+        let n = c.get(key)?.as_f64()?;
+        (n.is_finite() && n > 0.0).then(|| jsrt::json::number(n.floor()))
+    };
+    let flag = |key: &str| c.get(key).filter(|v| v.is_boolean()).cloned();
+    let one_of = |key: &str, options: &[&str]| -> Option<Value> {
+        c.get(key)?.as_str().filter(|s| options.contains(s)).map(Value::from)
+    };
+    let model = |key: &str| config::settings::model_ref(c.get(key)).map(Value::from);
+    let zero = |key: &str| c.get(key).and_then(Value::as_f64) == Some(0.0);
+    let mut put = |key: &str, value: Option<Value>| {
+        if let Some(v) = value {
+            out.insert(key.into(), v);
+        }
+    };
+    let modes = ["fast", "deep", "both", "compiled", "hybrid"];
+    put("enabled", flag("enabled"));
+    put("accounts", strings("accounts"));
+    put("pollSeconds", count("pollSeconds"));
+    put("concurrency", count("concurrency"));
+    put("model", model("model"));
+    put("verifyModel", model("verifyModel"));
+    put("budget", count("budget"));
+    put("frameConcurrency", count("frameConcurrency"));
+    put("thinking", one_of("thinking", &model_scope::THINKING_LEVELS));
+    put(
+        "verifyThinking",
+        one_of("verifyThinking", &model_scope::THINKING_LEVELS),
+    );
+    put("deadlineSeconds", zero("deadlineSeconds").then(|| 0.into()));
+    put("deadlineSeconds", count("deadlineSeconds"));
+    put("frameTimeoutSeconds", count("frameTimeoutSeconds"));
+    put("mode", one_of("mode", &modes));
+    put("verifyCandidates", count("verifyCandidates"));
+    put("verifyBatch", count("verifyBatch"));
+    put("systemPrefix", flag("systemPrefix"));
+    put("overlap", flag("overlap"));
+    if let Some(Value::Object(limits)) = c.get("modelConcurrency") {
+        let mut parsed = Map::new();
+        for (name, limit) in limits {
+            let n = limit.as_f64().filter(|n| n.is_finite() && *n > 0.0);
+            if let Some(n) = n.filter(|_| name.contains('/')) {
+                parsed.insert(name.clone(), jsrt::json::number(n.floor()));
+            }
+        }
+        put(
+            "modelConcurrency",
+            (!parsed.is_empty()).then_some(Value::Object(parsed)),
+        );
+    }
+    put("deepModel", model("deepModel"));
+    put("deepThinking", one_of("deepThinking", &model_scope::THINKING_LEVELS));
+    put("planModel", model("planModel"));
+    put("planThinking", one_of("planThinking", &model_scope::THINKING_LEVELS));
+    put("askModel", model("askModel"));
+    put("askThinking", one_of("askThinking", &model_scope::THINKING_LEVELS));
+    put("planStyle", one_of("planStyle", &["cell", "frame"]));
+    put("planCells", count("planCells"));
+    put("deepRounds", count("deepRounds"));
+    put(
+        "referenceView",
+        one_of("referenceView", &["investigators", "all", "none"]),
+    );
+    put(
+        "blockAt",
+        one_of("blockAt", &["critical", "high", "medium", "low", "nit"]),
+    );
+    put("maxComments", zero("maxComments").then(|| 0.into()));
+    put("maxComments", count("maxComments"));
+    put("runTests", flag("runTests"));
+    put("testOwners", strings("testOwners"));
+    put("testRuns", count("testRuns"));
+    put("testTimeoutSeconds", count("testTimeoutSeconds"));
+    if let Some(Value::Object(env)) = c.get("testEnv") {
+        let mut parsed = Map::new();
+        for (repo, dir) in env {
+            if let Some(dir) = dir.as_str().map(jsrt::string::trim).filter(|d| !d.is_empty()) {
+                parsed.insert(repo.to_lowercase(), dir.into());
+            }
+        }
+        put("testEnv", (!parsed.is_empty()).then_some(Value::Object(parsed)));
+    }
+    put("checkoutRoots", strings("checkoutRoots"));
+    put("guides", strings("guides"));
+    put(
+        "testImage",
+        c.get("testImage")
+            .and_then(Value::as_str)
+            .map(jsrt::string::trim)
+            .filter(|s| !s.is_empty())
+            .map(Value::from),
+    );
+    put("prepareEnvs", flag("prepareEnvs"));
+    let mise = match c.get("mise") {
+        Some(Value::Bool(b)) => Some(Value::Bool(*b)),
+        Some(Value::String(s)) if !jsrt::string::trim(s).is_empty() => Some(jsrt::string::trim(s).into()),
+        _ => None,
+    };
+    put("mise", mise);
+    put("dryRun", flag("dryRun"));
+    put("ack", flag("ack"));
+    put("ackLines", strings("ackLines"));
+    let ack_art = match c.get("ackArt") {
+        Some(Value::Bool(false)) => Some(Value::Bool(false)),
+        Some(Value::String(s)) if !jsrt::string::trim(s).is_empty() => Some(s.as_str().into()),
+        _ => None,
+    };
+    put("ackArt", ack_art);
+    put("signature", flag("signature"));
+    put("learn", flag("learn"));
+    put("skipBots", flag("skipBots"));
+    // `ban`: reviewing account (login, `host/login` or `*`) to the logins it never reviews; keys and logins
+    // trimmed, anything but a list of logins dropped.
+    if let Some(Value::Object(ban)) = c.get("ban") {
+        let mut parsed = Map::new();
+        for (key, logins) in ban {
+            let key = jsrt::string::trim(key);
+            let Some(logins) = logins.as_array().filter(|_| !key.is_empty()) else {
+                continue;
+            };
+            let logins: Vec<Value> = logins
+                .iter()
+                .filter_map(Value::as_str)
+                .map(jsrt::string::trim)
+                .filter(|login| !login.is_empty())
+                .map(Value::from)
+                .collect();
+            if logins.is_empty() {
+                continue;
+            }
+            match parsed.get_mut(key) {
+                Some(Value::Array(known)) => known.extend(logins),
+                _ => {
+                    parsed.insert(key.to_string(), Value::Array(logins));
+                }
+            }
+        }
+        put("ban", (!parsed.is_empty()).then_some(Value::Object(parsed)));
+    }
+    out
 }

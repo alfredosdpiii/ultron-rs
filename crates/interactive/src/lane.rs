@@ -27,9 +27,10 @@ impl model_scope::ScopeModel for ModelInfo {
     fn name(&self) -> &str {
         &self.name
     }
-    /// The Claude Code CLI provider's models (`claude-code`, all on its `claude-code-cli` API).
-    fn is_claude_code(&self) -> bool {
-        self.provider == "claude-code"
+    /// The Claude Code CLI provider's models (`claude-code`, all on its `claude-code-cli` API) and the Claude
+    /// subscription's, whose ids are Anthropic's own.
+    fn full_reference_only(&self) -> bool {
+        self.provider == "claude-code" || self.provider == "claude-subscription"
     }
 }
 

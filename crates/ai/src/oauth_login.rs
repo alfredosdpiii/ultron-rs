@@ -766,7 +766,7 @@ async fn send_with_rate_limit_retry(
         }
         let mut delay = 500.0 * f64::from(2u32.pow(retry));
         if let Some(retry_after) = reply.headers.get("retry-after").filter(|v| !v.is_empty()) {
-            let seconds = js_parse_float(retry_after);
+            let seconds = jsrt::number::parse_float(retry_after);
             delay = if seconds.is_nan() {
                 crate::http::parse_http_date(retry_after).map_or(f64::NAN, |at| at as f64 - env.now_ms())
             } else {
@@ -780,7 +780,7 @@ async fn send_with_rate_limit_retry(
         if delay >= deadline - env.now_ms() {
             return Ok(reply);
         }
-        abortable_sleep(env, delay, Some(&ctx.signal), "This operation was aborted")
+        abortable_sleep(env, delay, Some(&ctx.signal), crate::provider::OPERATION_ABORTED)
             .await
             .map_err(|_| SendError::Aborted)?;
         retry += 1;
@@ -830,68 +830,4 @@ async fn enable_copilot_models(
         }
     }
     Ok(enabled)
-}
-
-/// `Number.parseFloat`: the longest decimal prefix after leading whitespace, `Infinity` included; NaN without one.
-fn js_parse_float(text: &str) -> f64 {
-    let t = text.trim_start();
-    let bytes = t.as_bytes();
-    let mut i = usize::from(matches!(bytes.first(), Some(b'+' | b'-')));
-    if t[i..].starts_with("Infinity") {
-        return if bytes.first() == Some(&b'-') {
-            f64::NEG_INFINITY
-        } else {
-            f64::INFINITY
-        };
-    }
-    let digits = |i: &mut usize| {
-        let start = *i;
-        while bytes.get(*i).is_some_and(u8::is_ascii_digit) {
-            *i += 1;
-        }
-        *i > start
-    };
-    let mut any = digits(&mut i);
-    if bytes.get(i) == Some(&b'.') {
-        let mut j = i + 1;
-        if digits(&mut j) || any {
-            any = true;
-            i = j;
-        }
-    }
-    if !any {
-        return f64::NAN;
-    }
-    if matches!(bytes.get(i), Some(b'e' | b'E')) {
-        let mut j = i + 1;
-        if matches!(bytes.get(j), Some(b'+' | b'-')) {
-            j += 1;
-        }
-        if digits(&mut j) {
-            i = j;
-        }
-    }
-    t[..i].trim_end_matches('.').parse().unwrap_or(f64::NAN)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn js_number_parsing_matches_javascript() {
-        assert_eq!(js_parse_float("1.5"), 1.5);
-        assert_eq!(js_parse_float("  2s"), 2.0);
-        assert_eq!(js_parse_float("1e3x"), 1000.0);
-        assert_eq!(js_parse_float(".5"), 0.5);
-        assert_eq!(js_parse_float("5."), 5.0);
-        assert_eq!(js_parse_float("-Infinity"), f64::NEG_INFINITY);
-        assert!(js_parse_float("Thu, 01 Jan").is_nan());
-        assert!(js_parse_float(".").is_nan());
-        // The device-code `interval` string is `Number(text)`.
-        assert_eq!(jsrt::number::parse(" 5 "), 5.0);
-        assert_eq!(jsrt::number::parse(""), 0.0);
-        assert!(jsrt::number::parse("soon").is_nan());
-        assert!(jsrt::number::parse("5s").is_nan());
-    }
 }

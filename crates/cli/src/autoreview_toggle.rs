@@ -68,7 +68,7 @@ pub fn autoreview(request: AutoreviewRequest, env: &Env, platform: &str, run: Ru
     let mut settings = config::settings::SettingsManager::create(&env.cwd, &env.agent_dir(), false);
     match request {
         AutoreviewRequest::Status => {
-            let saved = settings.autoreview_settings();
+            let saved = review::settings::saved(settings.global_settings());
             let accounts: Vec<&str> = saved
                 .get("accounts")
                 .and_then(Value::as_array)
@@ -104,7 +104,7 @@ pub fn autoreview(request: AutoreviewRequest, env: &Env, platform: &str, run: Ru
             ),
         },
         AutoreviewRequest::Off => {
-            settings.set_autoreview_settings(&[("enabled", Some(Value::Bool(false)))]);
+            settings.patch_global_object(review::settings::KEY, &[("enabled", Some(Value::Bool(false)))]);
             let mut notes = Vec::new();
             if let Some(file) = service.filter(|file| std::path::Path::new(&file.path).exists()) {
                 for line in &file.disable {
@@ -125,10 +125,13 @@ pub fn autoreview(request: AutoreviewRequest, env: &Env, platform: &str, run: Ru
             ))
         }
         AutoreviewRequest::On { accounts, reviewing_as } => {
-            settings.set_autoreview_settings(&[
-                ("enabled", Some(Value::Bool(true))),
-                ("accounts", accounts.map(|accounts| json!(accounts))),
-            ]);
+            settings.patch_global_object(
+                review::settings::KEY,
+                &[
+                    ("enabled", Some(Value::Bool(true))),
+                    ("accounts", accounts.map(|accounts| json!(accounts))),
+                ],
+            );
             let Some(file) = service else {
                 return status(format!(
                     "Autoreview on, reviewing as {reviewing_as}. No user service on {platform}: run {APP_NAME} autoreview run under your own supervisor"

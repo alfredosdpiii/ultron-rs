@@ -14,7 +14,7 @@ impl ScopeModel for M {
     fn name(&self) -> &str {
         self.0
     }
-    fn is_claude_code(&self) -> bool {
+    fn full_reference_only(&self) -> bool {
         false
     }
 }

@@ -7,6 +7,7 @@
 //! A request whose transcript declares tools fails before any process starts (no tool runner is registered here).
 
 use crate::options::{SimpleStreamOptions, StreamOptions};
+use crate::provider::Run;
 use crate::transcript::{current_system_message, current_tools, system_message_text};
 use crate::types::{
     AssistantContent, AssistantMessage, AssistantMessageDiagnostic, AssistantMessageEvent, DiagnosticErrorInfo,
@@ -423,7 +424,7 @@ async fn acquire(limit: u64, signal: Option<&crate::http::AbortSignal>) -> Resul
         }
         tokio::select! {
             () = notified => {}
-            () = crate::http::cancelled(signal) => return Err("This operation was aborted".into()),
+            () = crate::http::cancelled(signal) => return Err(crate::provider::OPERATION_ABORTED.into()),
         }
     }
 }
@@ -1099,9 +1100,7 @@ pub struct ClaudeCodeOptions {
     pub json_schema: Option<Value>,
 }
 
-struct RequestRun<'s, 'e> {
-    output: AssistantMessage,
-    sink: &'s mut EventSink<'e>,
+struct CliStream {
     blocks: HashMap<i64, usize>,
     streamed: HashSet<String>,
     rate_limit: Option<RateLimitInfo>,
@@ -1114,15 +1113,10 @@ enum RunError {
     Failed { message: String, usage_limit: bool },
 }
 
-impl RequestRun<'_, '_> {
-    fn emit(&mut self, event: impl FnOnce(AssistantMessage) -> AssistantMessageEvent) {
-        let event = event(self.output.clone());
-        (self.sink)(&event);
-    }
-
+impl Run<'_, '_, CliStream> {
     fn warn(&mut self, message: String) {
-        if !self.warnings.contains(&message) {
-            self.warnings.push(message);
+        if !self.state.warnings.contains(&message) {
+            self.state.warnings.push(message);
         }
     }
 
@@ -1156,9 +1150,9 @@ impl RequestRun<'_, '_> {
     fn on_stream_event(&mut self, event: &Value, structured: bool) {
         let kind = event.get("type").and_then(Value::as_str).unwrap_or_default();
         if kind == "message_start" {
-            self.blocks.clear();
+            self.state.blocks.clear();
             if let Some(id) = event.pointer("/message/id").and_then(Value::as_str) {
-                self.streamed.insert(id.to_string());
+                self.state.streamed.insert(id.to_string());
                 self.output.response_id = Some(id.to_string());
             }
             if let Some(model) = event.pointer("/message/model").and_then(Value::as_str)
@@ -1177,7 +1171,7 @@ impl RequestRun<'_, '_> {
                         text_signature: None,
                     }));
                     let index = self.output.content.len() - 1;
-                    self.blocks.insert(cli_index, index);
+                    self.state.blocks.insert(cli_index, index);
                     self.emit(|partial| AssistantMessageEvent::TextStart {
                         content_index: index,
                         partial,
@@ -1190,7 +1184,7 @@ impl RequestRun<'_, '_> {
                         redacted: None,
                     }));
                     let index = self.output.content.len() - 1;
-                    self.blocks.insert(cli_index, index);
+                    self.state.blocks.insert(cli_index, index);
                     self.emit(|partial| AssistantMessageEvent::ThinkingStart {
                         content_index: index,
                         partial,
@@ -1200,7 +1194,7 @@ impl RequestRun<'_, '_> {
             }
             return;
         }
-        let Some(&index) = self.blocks.get(&cli_index) else {
+        let Some(&index) = self.state.blocks.get(&cli_index) else {
             return;
         };
         if kind == "content_block_delta" {
@@ -1234,7 +1228,7 @@ impl RequestRun<'_, '_> {
                 _ => {}
             }
         } else if kind == "content_block_stop" {
-            self.blocks.remove(&cli_index);
+            self.state.blocks.remove(&cli_index);
             match &self.output.content[index] {
                 AssistantContent::Text(text) => {
                     let content = text.text.clone();
@@ -1265,7 +1259,7 @@ impl RequestRun<'_, '_> {
             return;
         }
         if let Some(id) = message.get("id").and_then(Value::as_str)
-            && self.streamed.contains(id)
+            && self.state.streamed.contains(id)
         {
             return;
         }
@@ -1283,9 +1277,9 @@ impl RequestRun<'_, '_> {
 
     fn finish(&mut self, result: &Value, plan: &PlannedRequest) -> Option<Failure> {
         self.output.usage = usage_from_result(result);
-        self.usage_known = true;
+        self.state.usage_known = true;
         if result.get("is_error") == Some(&json!(true)) {
-            return match classify_failure(result, self.rate_limit.as_ref()) {
+            return match classify_failure(result, self.state.rate_limit.as_ref()) {
                 Failure::Length => {
                     self.output.stop_reason = StopReason::Length;
                     self.output.raw_stop_reason = Some("max_output_tokens".into());
@@ -1336,7 +1330,7 @@ impl RequestRun<'_, '_> {
     ) -> Result<Option<Failure>, RunError> {
         if crate::http::is_aborted(signal) {
             child.kill();
-            return Err(RunError::Aborted("Request was aborted".into()));
+            return Err(RunError::Aborted(crate::provider::REQUEST_WAS_ABORTED.into()));
         }
         child.send(&plan.message);
         loop {
@@ -1344,7 +1338,7 @@ impl RequestRun<'_, '_> {
                 event = child.events.recv() => event,
                 () = crate::http::cancelled(signal) => {
                     child.kill();
-                    return Err(RunError::Aborted("Request was aborted".into()));
+                    return Err(RunError::Aborted(crate::provider::REQUEST_WAS_ABORTED.into()));
                 }
                 () = tokio::time::sleep_until(tokio::time::Instant::from_std(deadline)) => {
                     child.kill();
@@ -1385,9 +1379,9 @@ impl RequestRun<'_, '_> {
                 (Some("assistant"), _) => self.on_assistant(&event, plan.structured),
                 (Some("rate_limit_event"), _) => {
                     if let Some(info) = rate_limit_info(&event) {
-                        self.rate_limit = Some(info);
+                        self.state.rate_limit = Some(info);
                     }
-                    if let Some(info) = self.rate_limit.clone()
+                    if let Some(info) = self.state.rate_limit.clone()
                         && info.status.as_deref() == Some("allowed_warning")
                     {
                         self.warn(format!(
@@ -1466,22 +1460,22 @@ pub async fn stream_simple(
 ) -> AssistantMessage {
     let mut output = AssistantMessage::pending(model, jsrt::date::now_ms());
     output.stop_reason = StopReason::Stop;
-    let mut run = RequestRun {
-        output,
-        sink,
+    let state = CliStream {
         blocks: HashMap::new(),
         streamed: HashSet::new(),
         rate_limit: None,
         usage_known: false,
         warnings: Vec::new(),
     };
+    let mut run = Run::new(output, sink, state);
     let mut spawned = false;
     let result = drive(&mut run, model, context, options, &mut spawned).await;
     match result {
         Ok(()) => {
-            if !run.warnings.is_empty() {
+            if !run.state.warnings.is_empty() {
                 run.output.diagnostics = Some(
-                    run.warnings
+                    run.state
+                        .warnings
                         .iter()
                         .map(|w| diagnostic("claude_code_warning", w))
                         .collect(),
@@ -1507,6 +1501,7 @@ pub async fn stream_simple(
             };
             run.output.error_message = Some(message.clone());
             let mut diagnostics: Vec<AssistantMessageDiagnostic> = run
+                .state
                 .warnings
                 .iter()
                 .map(|w| diagnostic("claude_code_warning", w))
@@ -1517,7 +1512,7 @@ pub async fn stream_simple(
             if !diagnostics.is_empty() {
                 run.output.diagnostics = Some(diagnostics);
             }
-            if spawned && !run.usage_known {
+            if spawned && !run.state.usage_known {
                 run.output.usage.cost.total = f64::NAN;
             }
             let reason = run.output.stop_reason;
@@ -1528,7 +1523,7 @@ pub async fn stream_simple(
 }
 
 async fn drive(
-    run: &mut RequestRun<'_, '_>,
+    run: &mut Run<'_, '_, CliStream>,
     model: &Model,
     context: &TranscriptContext,
     options: &ClaudeCodeOptions,
@@ -1541,7 +1536,7 @@ async fn drive(
         usage_limit: false,
     };
     if crate::http::is_aborted(signal) {
-        return Err(RunError::Aborted("This operation was aborted".into()));
+        return Err(RunError::Aborted(crate::provider::OPERATION_ABORTED.into()));
     }
     let tools: Vec<String> = current_tools(&context.messages).into_iter().map(|t| t.name).collect();
     if !tools.is_empty() {
@@ -1561,7 +1556,7 @@ async fn drive(
         run.warn(warning.clone());
     }
     if crate::http::is_aborted(signal) {
-        return Err(RunError::Aborted("This operation was aborted".into()));
+        return Err(RunError::Aborted(crate::provider::OPERATION_ABORTED.into()));
     }
     let default_max_tokens = model.max_tokens;
     let mut request = payload(model, context, options);
@@ -1570,7 +1565,7 @@ async fn drive(
     }
     let _permit = acquire(config.concurrency, signal).await.map_err(RunError::Aborted)?;
     let deadline = Instant::now() + Duration::from_millis(config.timeout_ms);
-    run.emit(|partial| AssistantMessageEvent::Start { partial });
+    run.start();
     let mut use_schema_flag = true;
     loop {
         let plan = plan_request(

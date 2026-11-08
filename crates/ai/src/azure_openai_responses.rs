@@ -4,17 +4,16 @@
 
 use crate::constrained::grammar_tool_input_properties;
 use crate::env::provider_env_value;
-use crate::http::{
-    Failure, HeaderBuilder, HttpRequest, Sdk, Transport, format_provider_error, is_aborted, send_with_retry,
-};
+use crate::http::{Failure, HeaderBuilder, HttpRequest, Sdk, Transport, format_provider_error, send_with_retry};
 use crate::models::clamp_thinking_level;
-use crate::openai_completions::read_openai_stream;
 use crate::openai_responses::{
-    ConvertOptions, ResponsesRun, TierPricing, ToolOptions, convert_responses_messages, convert_responses_tools,
+    ConvertOptions, ResponsesRun, ResponsesStream, TierPricing, ToolOptions, convert_responses_messages,
+    convert_responses_tools,
 };
 use crate::options::{SimpleStreamOptions, StreamOptions, build_base_options, pi_user_agent};
+use crate::sse::read_openai_stream;
 use crate::transcript::{declared_tools, resolve_transcript, resolve_transcript_tools};
-use crate::types::{AssistantMessage, AssistantMessageEvent, EventSink, Mapped, Model, StopReason, TranscriptContext};
+use crate::types::{AssistantMessage, EventSink, Mapped, Model, TranscriptContext};
 use indexmap::IndexMap;
 use serde::Deserialize;
 use serde_json::{Map, Value, json};
@@ -176,7 +175,7 @@ fn build_params(
     if let Some(session) = &base.session_id {
         params.insert(
             "prompt_cache_key".into(),
-            json!(crate::openai_prompt_cache::clamp_openai_prompt_cache_key(session)),
+            json!(crate::openai_responses::clamp_prompt_cache_key(session)),
         );
     }
     params.insert("store".into(), json!(false));
@@ -234,25 +233,12 @@ pub async fn stream(
     let now = jsrt::date::now_ms();
     let mut output = AssistantMessage::pending(model, now);
     output.api = "azure-openai-responses".into();
-    let mut run = ResponsesRun::new(output, sink);
-    let signal = options.base.signal();
-    match drive(&mut run, model, &context, options, transport, now).await {
-        Ok(()) => {
-            let reason = run.output.stop_reason;
-            run.emit(|message| AssistantMessageEvent::Done { reason, message });
-        }
-        Err(failure) => {
-            run.output.stop_reason = if is_aborted(signal) {
-                StopReason::Aborted
-            } else {
-                StopReason::Error
-            };
-            run.output.error_message = Some(format_provider_error(&failure, Some("Azure OpenAI API error")));
-            let reason = run.output.stop_reason;
-            run.emit(|error| AssistantMessageEvent::Error { reason, error });
-        }
-    }
-    run.output
+    let mut run = ResponsesRun::new(output, sink, ResponsesStream::default());
+    let result = drive(&mut run, model, &context, options, transport, now).await;
+    run.end(
+        result.map_err(|failure| format_provider_error(&failure, Some("Azure OpenAI API error"))),
+        options.base.signal(),
+    )
 }
 
 async fn drive(
@@ -297,29 +283,15 @@ async fn drive(
         body: serde_json::to_string(&params).unwrap_or_default(),
     };
     let mut response = send_with_retry(transport, &request, Sdk::OpenAi, base.retry(), signal).await?;
-    run.emit(|partial| AssistantMessageEvent::Start { partial });
+    run.start();
     read_openai_stream(&mut response, signal, |event| {
         run.handle(event, model, &grammar, TierPricing::None)
             .map_err(Failure::plain)
     })
     .await?;
-    run.end().map_err(Failure::plain)?;
-    if is_aborted(signal) {
-        return Err(Failure::plain("Request was aborted"));
-    }
-    match run.output.stop_reason {
-        StopReason::Pending => Err(Failure::plain(
-            "Azure OpenAI Responses stream ended without a stop reason",
-        )),
-        StopReason::Aborted | StopReason::Error => Err(Failure::plain(
-            run.output
-                .error_message
-                .clone()
-                .filter(|m| !m.is_empty())
-                .unwrap_or_else(|| "An unknown error occurred".into()),
-        )),
-        _ => Ok(()),
-    }
+    run.terminated().map_err(Failure::plain)?;
+    run.stopped(signal, "Azure OpenAI Responses stream ended without a stop reason")
+        .map_err(Failure::plain)
 }
 
 /// `streamSimple`: reasoning clamped to the model's levels and sent as `reasoningEffort`.

@@ -83,17 +83,6 @@ pub fn global() -> Arc<Router> {
     GLOBAL.clone()
 }
 
-/// One `claude-subscription` call through the process's router.
-pub async fn stream_simple(
-    model: &Model,
-    context: &TranscriptContext,
-    options: &SimpleStreamOptions,
-    transport: &dyn Transport,
-    sink: &mut EventSink<'_>,
-) -> AssistantMessage {
-    GLOBAL.stream(model, context, options, transport, sink).await
-}
-
 /// Holds `Start` until content arrives and the terminal event until the call is decided, so a call that failed
 /// before any output can be replaced without the sink seeing it, and the terminal event carries the final message.
 struct Gate<'s, 'e> {
@@ -305,7 +294,7 @@ impl Router {
     /// The fallback's API key: `ANTHROPIC_API_KEY` (the request's env, then the process's), else the auth store's
     /// `anthropic` api_key credential. Never an OAuth token: that is the subscription again.
     fn api_key(&self, options: &SimpleStreamOptions, agent_dir: &std::path::Path) -> Option<String> {
-        let usable = |key: &String| !key.trim().is_empty() && !key.contains("sk-ant-oat");
+        let usable = |key: &String| !key.trim().is_empty() && !crate::anthropic::is_oauth_token(key);
         let name = crate::env::ANTHROPIC_API_KEY_ENV;
         let request = options.base.env.as_ref().and_then(|env| env.get(name)).cloned();
         if let Some(key) = request.or_else(|| (self.options.env)(name)).filter(usable) {

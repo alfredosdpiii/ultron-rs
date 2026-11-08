@@ -1,11 +1,11 @@
 //! Replays crates/config/fixtures/settings-keys.json (settings-manager.ts getters recorded by
-//! fixtures/generate-settings-keys.mjs) against `config::settings_keys`.
+//! fixtures/generate-settings-keys.mjs) against `config::keys`.
 
 use std::fs;
 use std::path::Path;
 
+use config::keys::{self, CapabilityOverrides};
 use config::settings::SettingsManager;
-use config::settings_keys::{self as keys, CapabilityOverrides};
 use serde_json::{Map, Value, json};
 
 fn fixture() -> Value {

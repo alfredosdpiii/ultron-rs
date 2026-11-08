@@ -63,7 +63,7 @@ impl LokiNotice {
             return LokiNotice::known(None);
         }
         let settings = config::settings::SettingsManager::for_worker(&config.cwd, &config.agent_dir, &config.home);
-        let settings = Value::Object(settings.loki_settings());
+        let settings = Value::Object(loki::settings::saved(settings.global_settings()));
         let (cwd, home, var) = (config.cwd.clone(), config.home.clone(), config.var.clone());
         let lookup = move |key: &str| var(key);
         let context = loki::auto_setup::SetupContext {

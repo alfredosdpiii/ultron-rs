@@ -17,18 +17,15 @@ pub trait ScopeModel {
     fn provider(&self) -> &str;
     fn id(&self) -> &str;
     fn name(&self) -> &str;
-    /// `isClaudeCodeModel`: Claude Code CLI models answer only to their full `claude-code/<id>` reference.
-    fn is_claude_code(&self) -> bool;
-    /// Answers only to its full `provider/id` reference, never to a bare id, partial match or id glob: Claude Code
-    /// CLI models (`isClaudeCodeModel`), and the Claude subscription's, whose ids are Anthropic's own (TypeScript has
-    /// no `claude-subscription`, so a bare Claude id there matches the `anthropic` model alone).
-    fn full_reference_only(&self) -> bool {
-        self.is_claude_code() || self.provider() == "claude-subscription"
-    }
+    /// Answers only to its full `provider/id` reference, never to a bare id, partial match or id glob (Claude Code
+    /// CLI models, `isClaudeCodeModel`; the model's owner says which).
+    fn full_reference_only(&self) -> bool;
 }
 
 /// `isValidThinkingLevel` (cli/args.ts).
 pub const THINKING_LEVELS: [&str; 7] = ["off", "minimal", "low", "medium", "high", "xhigh", "max"];
+/// `DEFAULT_THINKING_LEVEL` (core/defaults.ts): the level without a setting.
+pub const DEFAULT_THINKING_LEVEL: &str = "medium";
 
 pub fn is_valid_thinking_level(level: &str) -> bool {
     THINKING_LEVELS.contains(&level)
@@ -52,7 +49,8 @@ pub fn same<M: ScopeModel>(a: &M, b: &M) -> bool {
     a.id() == b.id() && a.provider() == b.provider()
 }
 
-fn reference<M: ScopeModel>(model: &M) -> String {
+/// `provider/id`.
+pub fn reference<M: ScopeModel>(model: &M) -> String {
     format!("{}/{}", model.provider(), model.id())
 }
 

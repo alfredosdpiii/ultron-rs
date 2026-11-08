@@ -5,8 +5,6 @@
 // Support modules (`mod common;`) stay declared by each file that uses them, so each file also builds alone.
 #![allow(clippy::duplicate_mod)]
 
-#[path = "autoreview_ban.rs"]
-mod autoreview_ban;
 #[path = "command_values.rs"]
 mod command_values;
 #[path = "durable_model.rs"]

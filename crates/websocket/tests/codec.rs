@@ -1,24 +1,19 @@
 //! RFC 6455 framing with the RFC's own literal examples (section 1.3 handshake, section 5.7 frames), plus the
 //! decoder's protocol checks.
 
-use protocol::websocket::{Message, MessageDecoder, accept_key, encode_frame, encode_message, sha1};
+use websocket::{Message, MessageDecoder, accept_key, encode_frame, encode_message};
 
 fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 
 #[test]
-fn protocol_websocket_accept_key_is_the_rfc_example() {
+fn websocket_accept_key_is_the_rfc_example() {
     assert_eq!(accept_key("dGhlIHNhbXBsZSBub25jZQ=="), "s3pPLMBiTxaQ9kYGzzhZRbK+xOo=");
-    assert_eq!(hex(&sha1(b"abc")), "a9993e364706816aba3e25717850c26c9cd0d89d");
-    assert_eq!(
-        hex(&sha1(&[b'a'; 1_000_000])),
-        "34aa973cd4c4daa4f61eeb2bdbad27316534016f"
-    );
 }
 
 #[test]
-fn protocol_websocket_frames_are_the_rfc_examples() {
+fn websocket_frames_are_the_rfc_examples() {
     assert_eq!(
         hex(&encode_message(&Message::Text("Hello".into()), None)),
         "810548656c6c6f"
@@ -47,7 +42,7 @@ fn protocol_websocket_frames_are_the_rfc_examples() {
 }
 
 #[test]
-fn protocol_websocket_decoder_reassembles_and_unmasks() {
+fn websocket_decoder_reassembles_and_unmasks() {
     let mut client = MessageDecoder::client(1 << 20);
     // A fragmented unmasked text message ("Hel" + "lo"), split mid-frame, with a ping between the fragments.
     let bytes = [
@@ -72,7 +67,7 @@ fn protocol_websocket_decoder_reassembles_and_unmasks() {
 }
 
 #[test]
-fn protocol_websocket_decoder_rejects_protocol_violations() {
+fn websocket_decoder_rejects_protocol_violations() {
     let push = |mut decoder: MessageDecoder, bytes: &[u8]| decoder.push(bytes).unwrap_err();
     // A server must not mask; a client must.
     assert!(

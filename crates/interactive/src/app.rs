@@ -994,12 +994,12 @@ impl App {
     pub fn apply_startup_settings(&mut self, settings: &Value, var: &dyn Fn(&str) -> Option<String>) {
         // `getShowHardwareCursor`: the setting, else (`??`) `PI_HARDWARE_CURSOR=1`.
         self.show_hardware_cursor = match &settings["showHardwareCursor"] {
-            Value::Null => var(config::worker_settings_keys::HARDWARE_CURSOR_ENV).as_deref() == Some("1"),
+            Value::Null => var(config::keys::HARDWARE_CURSOR_ENV).as_deref() == Some("1"),
             value => jsrt::value::truthy(Some(value)),
         };
         // `getClearOnShrink`: a present setting (even null), else `PI_CLEAR_ON_SHRINK=1`.
         self.clear_on_shrink = match settings["terminal"].get("clearOnShrink") {
-            None => var(config::worker_settings_keys::CLEAR_ON_SHRINK_ENV).as_deref() == Some("1"),
+            None => var(config::keys::CLEAR_ON_SHRINK_ENV).as_deref() == Some("1"),
             Some(value) => jsrt::value::truthy(Some(value)),
         };
         if let Some(action) = settings["doubleEscapeAction"].as_str() {

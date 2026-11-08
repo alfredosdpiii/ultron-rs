@@ -3,10 +3,11 @@
 //! Evidence: `fixtures/generate-more.mjs` records the TypeScript provider; `tests/providers_more.rs` replays it.
 
 use crate::constrained::{json_schema_tool_parameters, resolve_json_schema_strict_sampling};
-use crate::http::{HeaderBuilder, Read, cancelled, is_aborted, read_chunk, truncate_error_text};
+use crate::http::{HeaderBuilder, cancelled, is_aborted, truncate_error_text};
 use crate::json::{parse_json, parse_streaming_json, short_hash};
 use crate::models::{calculate_cost, clamp_thinking_level};
 use crate::options::{SimpleStreamOptions, StreamOptions, build_base_options, pi_user_agent};
+use crate::provider::{ProviderError, Run, next_chunk};
 use crate::transcript::{
     current_tools, render_system_message_update, resolve_transcript, system_message_text, transform_messages,
 };
@@ -382,6 +383,12 @@ struct MistralError {
     body: Option<String>,
 }
 
+impl ProviderError for MistralError {
+    fn plain(message: String) -> Self {
+        MistralError::plain(message)
+    }
+}
+
 impl MistralError {
     fn plain(message: impl Into<String>) -> Self {
         MistralError {
@@ -405,9 +412,7 @@ impl MistralError {
     }
 }
 
-const ABORTED: &str = "This operation was aborted";
 /// `AbortSignal.timeout`'s reason (a `TimeoutError` DOMException) when the request outlives its limit.
-const TIMED_OUT: &str = "The operation was aborted due to timeout";
 /// The request's limit without `timeoutMs`.
 const DEFAULT_TIMEOUT_MS: u64 = 60_000;
 
@@ -423,34 +428,17 @@ pub async fn stream(
         context,
         model.compat_bool("supportsMidConvoSystemMessages").unwrap_or(false),
     );
-    let mut run = Run {
-        output: AssistantMessage::pending(model, jsrt::date::now_ms()),
-        sink,
+    let state = MistralStream {
         current: None,
         tools: IndexMap::new(),
     };
-    let signal = options.base.signal();
-    match drive(&mut run, model, &context, options, transport).await {
-        Ok(()) => {
-            let reason = run.output.stop_reason;
-            run.emit(|message| AssistantMessageEvent::Done { reason, message });
-        }
-        Err(error) => {
-            run.output.stop_reason = if is_aborted(signal) {
-                StopReason::Aborted
-            } else {
-                StopReason::Error
-            };
-            run.output.error_message = Some(error.format());
-            let reason = run.output.stop_reason;
-            run.emit(|error| AssistantMessageEvent::Error { reason, error });
-        }
-    }
-    run.output
+    let mut run = Run::new(AssistantMessage::pending(model, jsrt::date::now_ms()), sink, state);
+    let result = drive(&mut run, model, &context, options, transport).await;
+    run.end(result.map_err(|error| error.format()), options.base.signal())
 }
 
 async fn drive(
-    run: &mut Run<'_, '_>,
+    run: &mut Run<'_, '_, MistralStream>,
     model: &Model,
     context: &TranscriptContext,
     options: &MistralOptions,
@@ -504,7 +492,7 @@ async fn drive(
     let exchange = async {
         let sent = tokio::select! {
             sent = transport.send(request) => sent,
-            () = cancelled(signal) => return Err(MistralError::plain(ABORTED)),
+            () = cancelled(signal) => return Err(MistralError::aborted()),
         };
         let mut response = sent.map_err(|_| MistralError::plain("fetch failed"))?;
         if !(200..300).contains(&response.status) {
@@ -519,43 +507,22 @@ async fn drive(
                 body: Some(String::from_utf8_lossy(&bytes).into_owned()),
             });
         }
-        run.emit(|partial| AssistantMessageEvent::Start { partial });
+        run.start();
         read_mistral_events(&mut response, signal.cloned(), |event| run.handle(event, model)).await
     };
     match tokio::time::timeout(limit, exchange).await {
         Ok(result) => result?,
-        Err(_) => return Err(MistralError::plain(TIMED_OUT)),
+        Err(_) => return Err(MistralError::plain(crate::provider::OPERATION_TIMED_OUT)),
     }
     run.finish();
-    if is_aborted(signal) {
-        return Err(MistralError::plain("Request was aborted"));
-    }
-    match run.output.stop_reason {
-        StopReason::Pending => Err(MistralError::plain("Mistral stream ended without a finish reason")),
-        StopReason::Aborted | StopReason::Error => Err(MistralError::plain(
-            run.output
-                .error_message
-                .clone()
-                .filter(|m| !m.is_empty())
-                .unwrap_or_else(|| "An unknown error occurred".into()),
-        )),
-        _ => Ok(()),
-    }
+    run.stopped(signal, "Mistral stream ended without a finish reason")
+        .map_err(MistralError::plain)
 }
 
 /// `findMistralEventBoundary`: the earliest blank-line separator in any newline convention.
-fn event_boundary(buffer: &str) -> Option<(usize, usize)> {
-    const SEPARATORS: [&str; 8] = [
-        "\r\n\r\n", "\r\n\r", "\r\n\n", "\r\r\n", "\n\r\n", "\r\r", "\n\r", "\n\n",
-    ];
-    let bytes = buffer.as_bytes();
-    (0..bytes.len()).find_map(|at| {
-        SEPARATORS
-            .iter()
-            .find(|sep| bytes[at..].starts_with(sep.as_bytes()))
-            .map(|sep| (at, sep.len()))
-    })
-}
+const EVENT_SEPARATORS: [&str; 8] = [
+    "\r\n\r\n", "\r\n\r", "\r\n\n", "\r\r\n", "\n\r\n", "\r\r", "\n\r", "\n\n",
+];
 
 enum Parsed {
     Event(Value),
@@ -596,21 +563,12 @@ async fn read_mistral_events(
     let mut bytes: Vec<u8> = Vec::new();
     let mut buffer = String::new();
     loop {
+        let chunk = next_chunk::<MistralError>(response.body.as_mut(), signal).await?;
         if is_aborted(signal) {
-            return Err(MistralError::plain(ABORTED));
+            return Err(MistralError::aborted());
         }
-        let done = match read_chunk(response.body.as_mut(), signal).await {
-            Read::Chunk(chunk) => {
-                bytes.extend_from_slice(&chunk);
-                false
-            }
-            Read::End => true,
-            Read::Aborted => return Err(MistralError::plain(ABORTED)),
-            Read::Failed(error) => return Err(MistralError::plain(error)),
-        };
-        if is_aborted(signal) {
-            return Err(MistralError::plain(ABORTED));
-        }
+        let done = chunk.is_none();
+        bytes.extend(chunk.into_iter().flatten());
         // Decode the complete UTF-8 prefix; an incomplete trailing character waits for the next chunk.
         let valid = match std::str::from_utf8(&bytes) {
             Ok(text) => text.len(),
@@ -619,7 +577,7 @@ async fn read_mistral_events(
         };
         buffer.push_str(&String::from_utf8_lossy(&bytes[..valid]));
         bytes.drain(..valid);
-        while let Some((at, len)) = event_boundary(&buffer) {
+        while let Some((at, len)) = crate::sse::frame_boundary(buffer.as_bytes(), &EVENT_SEPARATORS) {
             let raw = buffer[..at].to_string();
             buffer.drain(..at + len);
             match parse_event(&raw)? {
@@ -664,22 +622,15 @@ fn map_stop_reason(reason: &str) -> (StopReason, Option<String>) {
     }
 }
 
-struct Run<'s, 'e> {
-    output: AssistantMessage,
-    sink: &'s mut EventSink<'e>,
+struct MistralStream {
     current: Option<usize>,
     /// Tool blocks by stream key (`index`, else id) with their accumulated argument text.
     tools: IndexMap<String, (usize, String)>,
 }
 
-impl Run<'_, '_> {
-    fn emit(&mut self, event: impl FnOnce(AssistantMessage) -> AssistantMessageEvent) {
-        let event = event(self.output.clone());
-        (self.sink)(&event);
-    }
-
+impl Run<'_, '_, MistralStream> {
     fn close_block(&mut self) {
-        let Some(index) = self.current.take() else { return };
+        let Some(index) = self.state.current.take() else { return };
         match self.output.content[index].clone() {
             AssistantContent::Text(t) => self.emit(|partial| AssistantMessageEvent::TextEnd {
                 content_index: index,
@@ -697,12 +648,13 @@ impl Run<'_, '_> {
 
     fn push_text(&mut self, delta: &str, thinking: bool) {
         let open = self
+            .state
             .current
             .map(|i| matches!(self.output.content[i], AssistantContent::Thinking(_)));
         if open != Some(thinking) {
             self.close_block();
             let index = self.output.content.len();
-            self.current = Some(index);
+            self.state.current = Some(index);
             if thinking {
                 self.output.content.push(AssistantContent::Thinking(ThinkingContent {
                     thinking: String::new(),
@@ -822,7 +774,7 @@ impl Run<'_, '_> {
                 Some(i) => format!("index:{i}"),
                 None => format!("id:{call_id}"),
             };
-            if !self.tools.contains_key(&key) {
+            if !self.state.tools.contains_key(&key) {
                 let name = call
                     .pointer("/function/name")
                     .and_then(Value::as_str)
@@ -835,7 +787,7 @@ impl Run<'_, '_> {
                     thought_signature: None,
                     namespace: None,
                 }));
-                self.tools.insert(key.clone(), (index, String::new()));
+                self.state.tools.insert(key.clone(), (index, String::new()));
                 self.emit(|partial| AssistantMessageEvent::ToolCallStart {
                     content_index: index,
                     partial,
@@ -847,6 +799,7 @@ impl Run<'_, '_> {
                 _ => "{}".to_string(),
             };
             let (index, partial_args) = self
+                .state
                 .tools
                 .get_mut(&key)
                 .map(|(i, p)| (*i, p))
@@ -866,7 +819,7 @@ impl Run<'_, '_> {
 
     fn finish(&mut self) {
         self.close_block();
-        let tools: Vec<(usize, String)> = self.tools.values().cloned().collect();
+        let tools: Vec<(usize, String)> = self.state.tools.values().cloned().collect();
         for (index, partial_args) in tools {
             let AssistantContent::ToolCall(block) = &mut self.output.content[index] else {
                 continue;

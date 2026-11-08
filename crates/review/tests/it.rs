@@ -41,5 +41,7 @@ mod review_record;
 mod rules;
 #[path = "service.rs"]
 mod service;
+#[path = "settings_ban.rs"]
+mod settings_ban;
 #[path = "state_writes.rs"]
 mod state_writes;

@@ -5,7 +5,6 @@
 
 #![allow(dead_code)]
 
-use protocol::websocket::{Message, MessageDecoder, accept_key, encode_message};
 use serde_json::{Value, json};
 use std::io::{Read, Write};
 use std::net::{Shutdown, TcpListener, TcpStream};
@@ -13,6 +12,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, Sender, channel};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
+use websocket::{Message, MessageDecoder, accept_key, encode_message};
 
 pub const HANG_GUARD: Duration = Duration::from_secs(120);
 pub const PONG: &str = r#"{"version":1,"type":"pong"}"#;

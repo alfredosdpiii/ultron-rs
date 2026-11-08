@@ -441,7 +441,15 @@ impl Engine {
                 Box::pin(async move {
                     let model = routed.as_ref().unwrap_or(&self.model);
                     let options = prepared.as_ref().unwrap_or(options);
-                    ai::dispatch::stream_simple(model, context, options, transport, sink).await
+                    ai::dispatch::stream_simple(
+                        &ai::claude_subscription::fallback::global(),
+                        model,
+                        context,
+                        options,
+                        transport,
+                        sink,
+                    )
+                    .await
                 })
             }
         };

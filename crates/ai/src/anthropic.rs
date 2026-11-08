@@ -4,8 +4,7 @@
 
 use crate::constrained::{json_schema_tool_parameters, resolve_json_schema_strict_sampling};
 use crate::http::{
-    Failure, HeaderBuilder, HttpRequest, Read, Sdk, Transport, has_header, is_aborted, join_url, read_chunk,
-    send_with_retry,
+    Failure, HeaderBuilder, HttpRequest, Sdk, Transport, has_header, is_aborted, join_url, send_with_retry,
 };
 use crate::json::{parse_json_with_repair, parse_streaming_json};
 use crate::models::calculate_cost;
@@ -13,6 +12,7 @@ use crate::options::{
     SimpleStreamOptions, StreamOptions, adjust_max_tokens_for_thinking, build_base_options,
     clamp_max_tokens_to_context, pi_user_agent,
 };
+use crate::provider::{REQUEST_WAS_ABORTED, Run, next_chunk};
 use crate::sse::{ServerSentEvent, SseDecoder};
 use crate::transcript::{
     current_tools, declared_tools, has_tool_redefinitions, initial_system_message, render_system_message_update,
@@ -60,6 +60,14 @@ const MESSAGE_EVENTS: &[&str] = &[
     "content_block_delta",
     "content_block_stop",
 ];
+
+/// The error message of a refusal stop without one of its own.
+pub const REFUSAL_TEXT: &str = "The model refused to complete the request";
+
+/// Whether an Anthropic key is a Claude subscription OAuth token (`sk-ant-oat…`), not an API key.
+pub fn is_oauth_token(key: &str) -> bool {
+    key.contains("sk-ant-oat")
+}
 
 /// `AnthropicOptions`.
 #[derive(Clone, Default, Deserialize)]
@@ -236,7 +244,7 @@ fn client_headers(
         .set("Accept", "application/json")
         .set("anthropic-dangerous-direct-browser-access", "true")
         .set("anthropic-version", "2023-06-01");
-    let oauth = model.provider != "github-copilot" && api_key.is_some_and(|k| k.contains("sk-ant-oat"));
+    let oauth = model.provider != "github-copilot" && api_key.is_some_and(is_oauth_token);
     if model.provider == "github-copilot" || oauth {
         if let Some(key) = api_key {
             headers.set("Authorization", format!("Bearer {key}"));
@@ -757,14 +765,7 @@ fn stop_reason(reason: &str, details: Option<&Value>) -> Result<(StopReason, Opt
                 .and_then(|d| d.get("explanation"))
                 .and_then(Value::as_str)
                 .filter(|e| !e.is_empty());
-            (
-                StopReason::Error,
-                Some(
-                    explanation
-                        .unwrap_or("The model refused to complete the request")
-                        .to_string(),
-                ),
-            )
+            (StopReason::Error, Some(explanation.unwrap_or(REFUSAL_TEXT).to_string()))
         }
         "sensitive" => (StopReason::Error, Some("Provider stopped with: sensitive".into())),
         other => return Err(format!("Unhandled stop reason: {other}")),
@@ -776,9 +777,7 @@ fn tokens(value: Option<&Value>) -> u64 {
     value.and_then(Value::as_u64).unwrap_or(0)
 }
 
-struct Run<'s, 'e> {
-    output: AssistantMessage,
-    sink: &'s mut EventSink<'e>,
+struct MessagesStream {
     /// Upstream's per-block `index` (Anthropic content index), cleared on `content_block_stop`.
     indices: Vec<Option<u64>>,
     /// Upstream's per-tool-call `partialJson` scratch buffer.
@@ -790,27 +789,22 @@ struct Run<'s, 'e> {
     saw_stop: bool,
 }
 
-impl Run<'_, '_> {
-    fn emit(&mut self, event: impl FnOnce(AssistantMessage) -> AssistantMessageEvent) {
-        let event = event(self.output.clone());
-        (self.sink)(&event);
-    }
-
+impl Run<'_, '_, MessagesStream> {
     fn cost(&mut self, model: &Model) {
         let mut usage_model = model.clone();
-        usage_model.cost = self.usage_cost.clone();
-        usage_model.id = self.usage_model_id.clone();
+        usage_model.cost = self.state.usage_cost.clone();
+        usage_model.id = self.state.usage_model_id.clone();
         calculate_cost(&usage_model, &mut self.output.usage);
     }
 
     fn block_position(&self, index: Option<u64>) -> Option<usize> {
-        index.and_then(|index| self.indices.iter().position(|i| *i == Some(index)))
+        index.and_then(|index| self.state.indices.iter().position(|i| *i == Some(index)))
     }
 
     fn push_block(&mut self, block: AssistantContent, index: Option<u64>) -> usize {
         self.output.content.push(block);
-        self.indices.push(index);
-        self.partial_json.push(String::new());
+        self.state.indices.push(index);
+        self.state.partial_json.push(String::new());
         self.output.content.len() - 1
     }
 
@@ -836,11 +830,11 @@ impl Run<'_, '_> {
         let index = event.get("index").and_then(Value::as_u64);
         match event.get("type").and_then(Value::as_str).unwrap_or_default() {
             "message_start" => {
-                self.saw_start = true;
+                self.state.saw_start = true;
                 let message = &event["message"];
                 self.output.response_id = message.get("id").and_then(Value::as_str).map(str::to_string);
                 if let Some(Value::Array(t)) = message.get("input_transformations") {
-                    self.transformations = Some(t.clone());
+                    self.state.transformations = Some(t.clone());
                 }
                 let response_model = message
                     .get("model")
@@ -859,7 +853,7 @@ impl Run<'_, '_> {
                         })
                         .and_then(|f| serde_json::from_value::<ModelCost>(f["cost"].clone()).ok())
                 };
-                (self.usage_cost, self.usage_model_id) = match fallback_cost {
+                (self.state.usage_cost, self.state.usage_model_id) = match fallback_cost {
                     Some(cost) => (cost, response_model),
                     None => (model.cost.clone(), model.id.clone()),
                 };
@@ -873,7 +867,7 @@ impl Run<'_, '_> {
                 u.total_tokens = u.input + u.output + u.cache_read + u.cache_write;
                 self.cost(model);
             }
-            "message_stop" => self.saw_stop = true,
+            "message_stop" => self.state.saw_stop = true,
             "content_block_start" => {
                 let block = &event["content_block"];
                 let text = |key: &str| block.get(key).and_then(Value::as_str).unwrap_or_default().to_string();
@@ -976,8 +970,8 @@ impl Run<'_, '_> {
                     }
                     ("input_json_delta", AssistantContent::ToolCall(call)) => {
                         let json = field("partial_json");
-                        self.partial_json[position].push_str(&json);
-                        call.arguments = parse_streaming_json(&self.partial_json[position]);
+                        self.state.partial_json[position].push_str(&json);
+                        call.arguments = parse_streaming_json(&self.state.partial_json[position]);
                         self.emit(|partial| AssistantMessageEvent::ToolCallDelta {
                             content_index: position,
                             delta: json,
@@ -997,7 +991,7 @@ impl Run<'_, '_> {
                 let Some(position) = self.block_position(index) else {
                     return Ok(());
                 };
-                self.indices[position] = None;
+                self.state.indices[position] = None;
                 match &mut self.output.content[position] {
                     AssistantContent::Text(block) => {
                         let content = block.text.clone();
@@ -1016,7 +1010,7 @@ impl Run<'_, '_> {
                         });
                     }
                     AssistantContent::ToolCall(call) => {
-                        call.arguments = parse_streaming_json(&self.partial_json[position]);
+                        call.arguments = parse_streaming_json(&self.state.partial_json[position]);
                         let tool_call = call.clone();
                         self.emit(|partial| AssistantMessageEvent::ToolCallEnd {
                             content_index: position,
@@ -1028,7 +1022,7 @@ impl Run<'_, '_> {
             }
             "message_delta" => {
                 if let Some(Value::Array(t)) = event.get("input_transformations") {
-                    self.transformations = Some(t.clone());
+                    self.state.transformations = Some(t.clone());
                 }
                 if let Some(reason) = event
                     .pointer("/delta/stop_reason")
@@ -1083,9 +1077,7 @@ pub async fn stream(
     let context = resolve_transcript(context, compat.mid_convo_system_messages);
     let tools = current_tools(&context.messages);
     let now = jsrt::date::now_ms();
-    let mut run = Run {
-        output: AssistantMessage::pending(model, now),
-        sink,
+    let state = MessagesStream {
         indices: Vec::new(),
         partial_json: Vec::new(),
         usage_cost: model.cost.clone(),
@@ -1094,32 +1086,17 @@ pub async fn stream(
         saw_start: false,
         saw_stop: false,
     };
+    let mut run = Run::new(AssistantMessage::pending(model, now), sink, state);
     if compat.managed_effort {
         run.output.provider_thinking_level = Some(options.effort.clone().unwrap_or_else(|| "high".into()));
     }
     let signal = options.base.signal();
     let result = drive(&mut run, model, &context, options, transport, &tools, now).await;
-    match result {
-        Ok(()) => {
-            let reason = run.output.stop_reason;
-            run.emit(|message| AssistantMessageEvent::Done { reason, message });
-        }
-        Err(failure) => {
-            run.output.stop_reason = if is_aborted(signal) {
-                StopReason::Aborted
-            } else {
-                StopReason::Error
-            };
-            run.output.error_message = Some(failure.message);
-            let reason = run.output.stop_reason;
-            run.emit(|error| AssistantMessageEvent::Error { reason, error });
-        }
-    }
-    run.output
+    run.end(result.map_err(|failure| failure.message), signal)
 }
 
 async fn drive(
-    run: &mut Run<'_, '_>,
+    run: &mut Run<'_, '_, MessagesStream>,
     model: &Model,
     context: &TranscriptContext,
     options: &AnthropicOptions,
@@ -1157,44 +1134,29 @@ async fn drive(
         body: serde_json::to_string(&params).unwrap_or_default(),
     };
     let mut response = send_with_retry(transport, &request, Sdk::Anthropic, base.retry(), signal).await?;
-    run.emit(|partial| AssistantMessageEvent::Start { partial });
+    run.start();
 
     let mut decoder = SseDecoder::default();
     loop {
         if is_aborted(signal) {
-            return Err(Failure::plain("Request was aborted"));
+            return Err(Failure::plain(REQUEST_WAS_ABORTED));
         }
-        match read_chunk(response.body.as_mut(), signal).await {
-            Read::Chunk(bytes) => {
-                for sse in decoder.push(&bytes) {
-                    run.handle_sse(&sse, model, oauth, tools).map_err(Failure::plain)?;
-                }
-            }
-            Read::End => break,
-            Read::Aborted => return Err(Failure::plain("This operation was aborted")),
-            Read::Failed(error) => return Err(Failure::plain(error)),
+        let Some(bytes) = next_chunk::<Failure>(response.body.as_mut(), signal).await? else {
+            break;
+        };
+        for sse in decoder.push(&bytes) {
+            run.handle_sse(&sse, model, oauth, tools).map_err(Failure::plain)?;
         }
     }
     for sse in decoder.finish(true) {
         run.handle_sse(&sse, model, oauth, tools).map_err(Failure::plain)?;
     }
-    if run.saw_start && !run.saw_stop {
+    if run.state.saw_start && !run.state.saw_stop {
         return Err(Failure::plain("Anthropic stream ended before message_stop"));
     }
-    if is_aborted(signal) {
-        return Err(Failure::plain("Request was aborted"));
-    }
-    match run.output.stop_reason {
-        StopReason::Pending => return Err(Failure::plain("Anthropic stream ended without a stop reason")),
-        StopReason::Aborted | StopReason::Error => {
-            let message = run.output.error_message.clone().filter(|m| !m.is_empty());
-            return Err(Failure::plain(
-                message.unwrap_or_else(|| "An unknown error occurred".into()),
-            ));
-        }
-        _ => {}
-    }
-    if let Some(transformations) = run.transformations.take().filter(|t| !t.is_empty()) {
+    run.stopped(signal, "Anthropic stream ended without a stop reason")
+        .map_err(Failure::plain)?;
+    if let Some(transformations) = run.state.transformations.take().filter(|t| !t.is_empty()) {
         let list: Vec<Value> = transformations
             .iter()
             .map(|t| {
@@ -1268,7 +1230,8 @@ pub async fn stream_simple(
             let max_tokens = clamp_max_tokens_to_context(model, context, adjusted);
             anthropic.base.max_tokens = Some(max_tokens);
             anthropic.thinking_enabled = Some(true);
-            anthropic.thinking_budget_tokens = Some(budget.min(max_tokens.saturating_sub(1024)));
+            anthropic.thinking_budget_tokens =
+                Some(crate::options::clamp_thinking_budget_to_answer_room(budget, max_tokens));
         }
     }
     Ok(stream(model, context, &anthropic, transport, sink).await)

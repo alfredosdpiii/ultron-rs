@@ -104,7 +104,7 @@ pub(crate) enum SendError {
 impl SendError {
     pub fn message(&self) -> String {
         match self {
-            Self::Aborted => "This operation was aborted".into(),
+            Self::Aborted => crate::provider::OPERATION_ABORTED.into(),
             Self::Network(message) => message.clone(),
         }
     }

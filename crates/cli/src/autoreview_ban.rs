@@ -22,7 +22,7 @@ fn manager(env: &Env) -> config::settings::SettingsManager {
 
 /// The bans the global settings hold now.
 pub fn current(env: &Env) -> BanList {
-    BanList::from_value(manager(env).autoreview_settings().get("ban"))
+    BanList::from_value(review::settings::saved(manager(env).global_settings()).get("ban"))
 }
 
 /// One line per account key: `  <key>: <login>, <login>`; `none` when there is no ban.
@@ -111,7 +111,10 @@ pub fn change(env: &Env, login: &str, account: Option<&str>, add: bool) -> Resul
         };
         return Err(Refused::Error(format!("{login} is not banned for {target}{hint}")));
     }
-    settings.set_autoreview_settings(&[("ban", (!ban.is_empty()).then_some(Value::Object(ban)))]);
+    settings.patch_global_object(
+        review::settings::KEY,
+        &[("ban", (!ban.is_empty()).then_some(Value::Object(ban)))],
+    );
     if let Some(error) = settings.drain_errors().into_iter().next() {
         return Err(Refused::Error(format!(
             "{} was not written: {}",

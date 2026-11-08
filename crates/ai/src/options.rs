@@ -50,6 +50,34 @@ pub struct ThinkingBudgets {
     pub high: Option<u64>,
 }
 
+impl ThinkingBudgets {
+    /// The custom budget of `level` (`xhigh` and `max` read `high`).
+    pub fn level(&self, level: &str) -> Option<u64> {
+        match clamp_reasoning(level) {
+            "minimal" => self.minimal,
+            "low" => self.low,
+            "medium" => self.medium,
+            _ => self.high,
+        }
+    }
+
+    fn set_level(&mut self, level: &str, budget: u64) {
+        let slot = match clamp_reasoning(level) {
+            "minimal" => &mut self.minimal,
+            "low" => &mut self.low,
+            "medium" => &mut self.medium,
+            _ => &mut self.high,
+        };
+        *slot = Some(budget);
+    }
+
+    /// These budgets with `level`'s fitted into `max_tokens` with room for an answer.
+    pub(crate) fn fitted(mut self, level: &str, budget: u64, max_tokens: u64) -> Self {
+        self.set_level(level, clamp_thinking_budget_to_answer_room(budget, max_tokens));
+        self
+    }
+}
+
 /// Options of `streamSimple()`: provider-neutral reasoning and tool choice.
 #[derive(Clone, Default, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -134,13 +162,13 @@ pub fn clamp_reasoning(level: &str) -> &str {
 }
 
 pub fn thinking_budget_for_level(level: &str, custom: Option<&ThinkingBudgets>) -> u64 {
-    let custom = custom.copied().unwrap_or_default();
-    match clamp_reasoning(level) {
-        "minimal" => custom.minimal.unwrap_or(1024),
-        "low" => custom.low.unwrap_or(2048),
-        "medium" => custom.medium.unwrap_or(8192),
-        _ => custom.high.unwrap_or(16384),
-    }
+    let default = match clamp_reasoning(level) {
+        "minimal" => 1024,
+        "low" => 2048,
+        "medium" => 8192,
+        _ => 16384,
+    };
+    custom.and_then(|c| c.level(level)).unwrap_or(default)
 }
 
 pub fn clamp_thinking_budget_to_answer_room(budget: u64, ceiling: u64) -> u64 {
