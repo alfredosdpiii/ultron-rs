@@ -5,6 +5,7 @@
 //! ULTRON_CODING_AGENT_DIR / ULTRON_SERVER_DIR), and every stable screen (and file the scenario names) must equal
 //! the TypeScript one after the same normalization.
 
+use crate::recorded_version;
 use crate::tui_harness;
 
 use serde_json::Value;
@@ -81,18 +82,25 @@ fn replay_with(name: &str, divergences: &[(&str, &str)]) {
 
 /// Replay `name`, comparing each screen with `compare(got, want)` instead of exactly.
 fn replay_compare(name: &str, compare: &dyn Fn(&str, &str)) {
-    replay_full(name, &[], None, Some(compare));
+    replay_full(name, &[], None, Some(compare), &[]);
 }
 
 /// Replay `name`; `divergences` are whole rows whose recorded text is replaced by the Rust one before comparing;
 /// `last`, when given, checks the final screen instead of comparing it (a step whose outcome is Rust's own).
 fn replay_checked(name: &str, divergences: &[(&str, &str)], last: Option<&dyn Fn(&str)>) {
-    replay_full(name, divergences, last, None);
+    replay_full(name, divergences, last, None, &[]);
 }
 
 type Compare<'a> = dyn Fn(&str, &str) + 'a;
 
-fn replay_full(name: &str, divergences: &[(&str, &str)], last: Option<&dyn Fn(&str)>, compare: Option<&Compare<'_>>) {
+/// `extra_env` is added to the TUI's environment after the scenario's own.
+fn replay_full(
+    name: &str,
+    divergences: &[(&str, &str)],
+    last: Option<&dyn Fn(&str)>,
+    compare: Option<&Compare<'_>>,
+    extra_env: &[(&str, &str)],
+) {
     let scenario = fixture()["scenarios"]
         .as_array()
         .unwrap()
@@ -110,6 +118,7 @@ fn replay_full(name: &str, divergences: &[(&str, &str)], last: Option<&dyn Fn(&s
     for (k, v) in scenario["env"].as_object().into_iter().flatten() {
         env.push((k.as_str(), v.as_str().unwrap()));
     }
+    env.extend_from_slice(extra_env);
     // Files the scenario starts with (its `files`, relative to the temp root).
     let tmp = TempDir::new();
     for (path, content) in scenario["files"].as_object().into_iter().flatten() {
@@ -144,9 +153,8 @@ fn replay_full(name: &str, divergences: &[(&str, &str)], last: Option<&dyn Fn(&s
             check(&got);
             continue;
         }
+        let want = recorded_version::current(want.as_str().unwrap());
         let want = want
-            .as_str()
-            .unwrap()
             .split('\n')
             .map(|row| {
                 divergences
@@ -206,7 +214,7 @@ macro_rules! parity {
 
         #[test]
         fn cli_interactive_cmds_fixture_has_a_test_per_scenario() {
-            let tested = [$($name,)* "usage", "logout", "login-api-key", "rlm-panel", "settings-models"];
+            let tested = [$($name,)* "usage", "logout", "login-api-key", "rlm-panel", "settings-models", "changelog"];
             for scenario in fixture()["scenarios"].as_array().unwrap() {
                 let name = scenario["name"].as_str().unwrap();
                 assert!(tested.contains(&name), "scenario {name} has no parity test");
@@ -247,7 +255,6 @@ parity! {
     cli_interactive_review_expands_like_ts => "review",
     cli_interactive_logout_without_credentials_like_ts => "logout-empty",
     cli_interactive_share_without_gh_login_like_ts => "share-no-gh",
-    cli_interactive_changelog_like_ts => "changelog",
     cli_interactive_external_editor_like_ts => "external-editor",
     cli_interactive_external_editor_missing_like_ts => "external-editor-missing",
     cli_interactive_external_editor_failure_keeps_text_like_ts => "external-editor-fails",
@@ -291,6 +298,7 @@ fn cli_interactive_settings_models_like_ts() {
         ],
         None,
         Some(&compare),
+        &[],
     );
 }
 
@@ -358,4 +366,31 @@ fn cli_interactive_rlm_views_like_ts() {
 #[test]
 fn cli_interactive_usage_matches_ts() {
     replay("usage");
+}
+
+/// `/changelog` shows the package's CHANGELOG.md, oldest entry first, scrolled to the newest. TypeScript was recorded
+/// when the recorded version was the newest release, so the TUI reads a package directory whose CHANGELOG.md is the
+/// current one without the releases made since (docs, skills and the runtime are the checkout's): every entry
+/// TypeScript showed is compared byte for byte. The newer entries' parse and lexing are checked by
+/// crates/interactive/tests/changelog.rs.
+#[test]
+fn cli_interactive_changelog_like_ts() {
+    let checkout = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../packages/coding-agent");
+    let package = TempDir::new();
+    for dir in ["docs", "skills", "src"] {
+        std::os::unix::fs::symlink(checkout.join(dir), package.0.join(dir)).unwrap();
+    }
+    let changelog = std::fs::read_to_string(checkout.join("CHANGELOG.md")).unwrap();
+    let first_entry = changelog.find("\n## [").unwrap() + 1;
+    let recorded_entry = changelog
+        .find(&format!("\n## [{}]", recorded_version::recorded()))
+        .unwrap()
+        + 1;
+    std::fs::write(
+        package.0.join("CHANGELOG.md"),
+        format!("{}{}", &changelog[..first_entry], &changelog[recorded_entry..]),
+    )
+    .unwrap();
+    let dir = package.0.display().to_string();
+    replay_full("changelog", &[], None, None, &[(cli::assets::PACKAGE_DIR, &dir)]);
 }

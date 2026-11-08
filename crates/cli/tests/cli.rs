@@ -1,6 +1,7 @@
 //! Differential tests against crates/cli/fixtures/cli.json, recorded from the TypeScript CLI by
 //! crates/cli/fixtures/generate.mjs.
 
+use crate::recorded_version;
 use cli::args::parse_args;
 use cli::list_models::format_token_count;
 use jsrt::collate::locale_compare;
@@ -81,9 +82,24 @@ fn cli_format_token_count_keeps_to_fixed_below_the_tie() {
     assert_eq!(format_token_count(1_450_000), "1.4M");
 }
 
+/// The product version is an `x.y.z` no older than TypeScript's `VERSION` when the fixtures were recorded (cli.json's
+/// `version`); the recordings' printed version is compared as this one.
 #[test]
-fn cli_version_matches_typescript() {
-    assert_eq!(config::version(), fixture()["version"].as_str().unwrap());
+fn cli_version_is_the_recorded_typescript_version_or_newer() {
+    let triple = |version: &str| -> Vec<u64> {
+        let parts: Vec<u64> = version
+            .split('.')
+            .map(|p| p.parse().unwrap_or_else(|_| panic!("{version} is not x.y.z")))
+            .collect();
+        assert_eq!(parts.len(), 3, "{version} is not x.y.z");
+        parts
+    };
+    assert!(
+        triple(config::version()) >= triple(recorded_version::recorded()),
+        "{} is older than the recorded {}",
+        config::version(),
+        recorded_version::recorded()
+    );
 }
 
 /// The help's command lines after TypeScript's `autoreview` line: the subcommands only the Rust build dispatches
@@ -320,7 +336,7 @@ fn cli_binary_matches_typescript_cli() {
         };
         assert_eq!(
             sub(&output.stdout),
-            with_rust_commands(case["stdout"].as_str().unwrap()),
+            with_rust_commands(&recorded_version::current(case["stdout"].as_str().unwrap())),
             "stdout of {args:?}"
         );
         assert_eq!(

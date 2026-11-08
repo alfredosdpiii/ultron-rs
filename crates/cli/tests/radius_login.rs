@@ -4,6 +4,7 @@
 //! token), offline (PI_OFFLINE=1). Every stable screen, the saved `auth.json` and the gateway's distinct requests
 //! must equal the TypeScript ones after the same normalization.
 
+use crate::recorded_version;
 use crate::tui_harness;
 
 use serde_json::{Value, json};
@@ -184,7 +185,7 @@ fn replay(name: &str) {
         .as_array()
         .unwrap()
         .iter()
-        .map(|c| c.as_str().unwrap().to_string())
+        .map(|c| recorded_version::current(c.as_str().unwrap()))
         .collect();
     for (index, (got, want)) in screens.iter().zip(&expected).enumerate() {
         assert_eq!(got, want, "{name} step {}", index + 1);

@@ -5,6 +5,7 @@
 //! screen must equal the TypeScript one after the same normalization (temp paths, ids, spinner frames).
 //! Rust-only tests cover the user requirements that differ from TypeScript (session names, the resume picker).
 
+use crate::recorded_version;
 use crate::tui_harness::{Mock, TempDir, Tui, replies, text_reply};
 use serde_json::Value;
 use std::path::{Path, PathBuf};
@@ -50,7 +51,8 @@ fn replay(name: &str) {
         if let Some(keys) = step["keys"].as_array() {
             tui.send_keys(&keys.iter().map(|k| k.as_str().unwrap()).collect::<Vec<_>>());
         }
-        let want = want.as_str().unwrap();
+        let want = recorded_version::current(want.as_str().unwrap());
+        let want = want.as_str();
         let got = tui.wait_screen(tui.wait(step["wait"].as_str().unwrap()), want);
         if got != want {
             let diff: Vec<String> = got

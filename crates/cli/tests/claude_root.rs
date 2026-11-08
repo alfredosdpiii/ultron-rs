@@ -5,6 +5,7 @@
 //! `ultron watch --list` must be equal after the generator's normalization.
 
 use crate::executable_support;
+use crate::recorded_version;
 
 use regex::Regex;
 use serde_json::{Value, json};
@@ -393,7 +394,16 @@ fn run_mcp(case: &Value) -> Vec<String> {
             writeln!(stdin, "{}", root.sub(&line)).unwrap();
         }
         stdin.flush().unwrap();
-        let want = step["receive"].as_array().unwrap();
+        let want: Vec<Value> = step["receive"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|message| {
+                let mut message = message.clone();
+                recorded_version::current_at(&mut message, "/result/serverInfo/version");
+                message
+            })
+            .collect();
         let keys: Vec<String> = want
             .iter()
             .map(|m| {
@@ -408,7 +418,7 @@ fn run_mcp(case: &Value) -> Vec<String> {
         while !keys.iter().all(|k| responses.lock().unwrap().contains_key(k)) && Instant::now() < deadline {
             let _ = wake.recv_timeout(Duration::from_millis(200));
         }
-        for (key, want) in keys.iter().zip(want) {
+        for (key, want) in keys.iter().zip(&want) {
             received += 1;
             let got = responses
                 .lock()

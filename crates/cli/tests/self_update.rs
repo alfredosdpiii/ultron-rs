@@ -4,6 +4,9 @@
 //! of registry requests. The package commands and `update`'s package targets are not supported by ultron-rs (Pi
 //! packages): literal expectations.
 
+#[path = "recorded_version/mod.rs"]
+mod recorded_version;
+
 use serde_json::{Value, json};
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Read, Write};
@@ -82,7 +85,16 @@ fn replay(case: &Value) -> Vec<String> {
         .collect();
     let (stdout, stderr, status, requests) = if let Some(stubs) = case["stubs"].as_array() {
         // In process, with the registry URL pointed at the stand-in.
-        let (port, count) = registry(stubs.clone());
+        // A stub that answers with the recorded version says the registry's latest is the running one.
+        let stubs = stubs
+            .iter()
+            .map(|stub| {
+                let mut stub = stub.clone();
+                recorded_version::current_at(&mut stub, "/body/version");
+                stub
+            })
+            .collect();
+        let (port, count) = registry(stubs);
         let vars = env.clone();
         let run_env = cli::Env {
             cwd: root.join("work"),
@@ -124,7 +136,8 @@ fn replay(case: &Value) -> Vec<String> {
             diffs.push(format!("{} {what}: rust {got}, ts {want}", case["name"]));
         }
     };
-    check("stdout", json!(sub(&stdout)), &case["stdout"]);
+    let want_stdout = json!(recorded_version::current(case["stdout"].as_str().unwrap()));
+    check("stdout", json!(sub(&stdout)), &want_stdout);
     check("stderr", json!(sub(&stderr)), &case["stderr"]);
     check("status", json!(status), &case["status"]);
     check("requests", json!(requests), &case["requests"]);

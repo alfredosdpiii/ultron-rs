@@ -38,7 +38,8 @@ fn interactive_changelog_entries_match_ts() {
     let content = include_str!("../../../packages/coding-agent/CHANGELOG.md");
     let fixture = fixture();
     // The released versions and the newest entries pin the parse; the recorded `content` length is not compared,
-    // since every edit under [Unreleased] changes it and the recording script is gone.
+    // since every edit under [Unreleased] changes it and the recording script is gone. Releases made since the
+    // recording come first, each newer than the next; below them the recorded releases are parsed as recorded.
     let entries = parse(content);
     let versions: Vec<String> = entries
         .iter()
@@ -50,8 +51,22 @@ fn interactive_changelog_entries_match_ts() {
         .iter()
         .map(|v| v.as_str().unwrap().to_string())
         .collect();
-    assert_eq!(versions, want);
-    for (entry, want) in entries.iter().zip(fixture["changelog"]["newest"].as_array().unwrap()) {
+    let since = versions
+        .len()
+        .checked_sub(want.len())
+        .expect("no recorded release is dropped");
+    assert_eq!(versions[since..], want[..]);
+    assert!(
+        entries[..=since]
+            .windows(2)
+            .all(|pair| pair[0].version > pair[1].version),
+        "the releases since the recording are newest first, above it: {:?}",
+        &versions[..=since]
+    );
+    for (entry, want) in entries[since..]
+        .iter()
+        .zip(fixture["changelog"]["newest"].as_array().unwrap())
+    {
         assert_eq!(normalize_links(&entry.content, entry.version), want.as_str().unwrap());
     }
 }
@@ -73,10 +88,14 @@ fn interactive_changelog_oldest_first_and_empty_notice() {
 #[test]
 fn interactive_changelog_lexed_per_entry_matches_the_whole_document() {
     // The newest 20 releases of the real CHANGELOG.md (lists, code, links, nested items), lexed entry by entry on
-    // several threads, give the tokens of the joined document that MarkdownNotice lexed.
+    // several threads, give the tokens of the joined document that MarkdownNotice lexed. The sample ends where the
+    // 21st release heading starts, with or without an [Unreleased] section above the releases.
     let content = include_str!("../../../packages/coding-agent/CHANGELOG.md");
-    let mut starts = content.match_indices("\n## [").map(|(i, _)| i + 1);
-    let end = starts.nth(21).unwrap();
+    let mut releases = content
+        .match_indices("\n## [")
+        .map(|(i, _)| i + 1)
+        .filter(|&start| content[start + "## [".len()..].starts_with(|c: char| c.is_ascii_digit()));
+    let end = releases.nth(20).unwrap();
     let sample = &content[..end];
     assert_eq!(parse(sample).len(), 20);
     assert_eq!(

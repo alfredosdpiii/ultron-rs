@@ -3,6 +3,7 @@
 //! server dir, cwd `work`, TZ=UTC unless the case sets it) with the same files and modification times; stdout,
 //! stderr, exit code and the collected files must match.
 
+use crate::recorded_version;
 use serde_json::Value;
 use std::path::Path;
 use std::process::Command;
@@ -90,7 +91,7 @@ fn replay(case: &Value) -> Vec<String> {
         &args,
         "stdout",
         &sub(&String::from_utf8_lossy(&output.stdout)),
-        &rust_divergences(case["stdout"].as_str().unwrap()),
+        &rust_divergences(&recorded_version::current(case["stdout"].as_str().unwrap())),
     );
     compare(
         &mut diffs,

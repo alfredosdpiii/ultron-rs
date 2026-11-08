@@ -5,6 +5,7 @@
 //! reaches a provider; browser logins listen on a system-chosen port (`ULTRON_OAUTH_CALLBACK_PORT=0`) and the
 //! browser opener is a stub that only logs the address. Screens are normalized as the recording's are.
 
+use crate::recorded_version;
 use crate::tui_harness;
 
 use serde_json::Value;
@@ -85,11 +86,11 @@ fn replay(name: &str) {
         }
         screens.push(mask_url(&normalize(&screen, &root)));
     }
-    let expected: Vec<&str> = scenario["captures"]
+    let expected: Vec<String> = scenario["captures"]
         .as_array()
         .unwrap()
         .iter()
-        .map(|c| c.as_str().unwrap())
+        .map(|c| recorded_version::current(c.as_str().unwrap()))
         .collect();
     assert_eq!(screens.len(), expected.len(), "{name}");
     for (index, (got, want)) in screens.iter().zip(&expected).enumerate() {

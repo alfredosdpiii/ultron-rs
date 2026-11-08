@@ -3,6 +3,7 @@
 //! toggle, clear all, filter and enable the filtered models, close, cycle twice inside the scope, reopen, save to
 //! settings). Every stable screen and the settings.json it leaves must match. Offline (PI_OFFLINE=1).
 
+use crate::recorded_version;
 use crate::tui_harness;
 
 use serde_json::Value;
@@ -44,11 +45,11 @@ fn cli_scoped_models_selector_and_cycling_like_ts() {
         }
         screens.push(normalize(&screen, &root));
     }
-    let expected: Vec<&str> = scenario["captures"]
+    let expected: Vec<String> = scenario["captures"]
         .as_array()
         .unwrap()
         .iter()
-        .map(|c| c.as_str().unwrap())
+        .map(|c| recorded_version::current(c.as_str().unwrap()))
         .collect();
     assert_eq!(screens.len(), expected.len());
     for (index, (got, want)) in screens.iter().zip(&expected).enumerate() {
