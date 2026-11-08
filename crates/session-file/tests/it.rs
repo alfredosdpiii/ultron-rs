@@ -5,8 +5,6 @@
 // Support modules (`mod common;`) stay declared by each file that uses them, so each file also builds alone.
 #![allow(clippy::duplicate_mod)]
 
-#[path = "diff.rs"]
-mod diff;
 #[path = "fixture.rs"]
 mod fixture;
 #[path = "upstream.rs"]

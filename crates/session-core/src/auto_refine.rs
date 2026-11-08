@@ -75,12 +75,8 @@ fn active(records: &[Value]) -> Vec<Value> {
     records
         .iter()
         .filter(|record| record["state"] == "active")
-        .map(|record| json!({"id": record["id"], "version": record["version"], "text": text(&record["content"])}))
+        .map(services::refinement_view)
         .collect()
-}
-
-fn text(content: &Value) -> String {
-    content.as_str().map_or_else(|| content.to_string(), str::to_string)
 }
 
 /// Whether automatic refinement is on for a session (`refine.auto`, default on), and when it last proposed.
@@ -92,7 +88,7 @@ pub struct AutoRefine {
 impl AutoRefine {
     /// From the merged `settings` (`refine.auto`) and `ULTRON_AUTO_REFINE` (`off`, `0`, `false`: off).
     pub fn new(settings: &Value, env: Option<&str>) -> AutoRefine {
-        let env_off = env.is_some_and(|v| ["off", "0", "false"].contains(&v.trim().to_lowercase().as_str()));
+        let env_off = crate::flag_off(env);
         AutoRefine {
             on: !env_off && settings["refine"]["auto"].as_bool().unwrap_or(true),
             last_pass: Mutex::new(None),
@@ -112,18 +108,9 @@ impl AutoRefine {
 
 /// The refinement ids the context shows since its last compaction (`None`: no refinements message since).
 pub fn shown(entries: &[Value]) -> Option<Vec<String>> {
-    let mut shown = None;
-    for entry in entries {
-        if entry["type"] == "compaction" {
-            shown = None;
-        }
-        let message = &entry["message"];
-        if entry["type"] == "message" && message["role"] == "custom" && message["customType"] == REFINEMENTS_TYPE {
-            let ids = message["details"]["ids"].as_array().into_iter().flatten();
-            shown = Some(ids.filter_map(|id| id.as_str().map(str::to_string)).collect());
-        }
-    }
-    shown
+    let details = *session_journal::context::custom_details_since_compaction(entries, REFINEMENTS_TYPE).last()?;
+    let ids = details["ids"].as_array().into_iter().flatten();
+    Some(ids.filter_map(|id| id.as_str().map(str::to_string)).collect())
 }
 
 /// The message that tells the context which refinements are active, when that differs from what it `shown`.
@@ -227,7 +214,10 @@ fn prompt(summary: &str, records: &[Value]) -> String {
     let active = serde_json::to_string_pretty(&active(records)).unwrap_or_default();
     let history: Vec<Value> = records[records.len().saturating_sub(HISTORY_LIMIT)..]
         .iter()
-        .map(|r| json!({"id": r["id"], "state": r["state"], "text": text(&r["content"])}))
+        .map(|r| {
+            let view = services::refinement_view(r);
+            json!({"id": view["id"], "state": r["state"], "text": view["text"]})
+        })
         .collect();
     let history = serde_json::to_string_pretty(&history).unwrap_or_default();
     format!(

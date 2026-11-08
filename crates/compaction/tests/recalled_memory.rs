@@ -1,8 +1,9 @@
 //! compaction::convert_for_summary (Rust-only): a summary's conversation leaves out recalled long-term memory, so
 //! what was recalled is never summarized, and kept, again; every other message converts as `convert_to_llm` does.
 
-use compaction::{RECALLED_MEMORY_TYPE, REFINEMENTS_TYPE, convert_for_summary, convert_to_llm, serialize_conversation};
+use compaction::{RECALLED_MEMORY_TYPE, REFINEMENTS_TYPE, convert_for_summary, serialize_conversation};
 use serde_json::json;
+use session_journal::context::convert_to_llm;
 
 #[test]
 fn compaction_summary_input_leaves_out_recalled_memory() {

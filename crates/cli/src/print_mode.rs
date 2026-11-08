@@ -12,9 +12,7 @@ use daemon::workers::WorkerModel;
 use serde_json::json;
 use session_core::ModelFlags;
 pub use session_core::core::lane_config;
-pub use session_core::lane::{
-    catalog_model, clock_lines, format_clock_utc, format_gap, rlm_tool, session_directory_name, system_prompt,
-};
+pub use session_core::lane::{catalog_model, clock_lines, format_clock_utc, format_gap, rlm_tool, system_prompt};
 use session_journal::repo::Metadata;
 
 /// `traceStartup(label)` with the run's `ULTRON_STARTUP_TRACE` (crate::startup_trace's format).
@@ -77,17 +75,9 @@ pub fn route_notices(path: &std::path::Path, offset: u64) -> Vec<String> {
     notices
 }
 
-/// The session file of `id` in the sessions directory `root` or one of its per-directory folders.
+/// The session file of `id` under the sessions root `root`.
 fn session_file(root: &std::path::Path, id: &str) -> Option<std::path::PathBuf> {
-    let entries: Vec<std::path::PathBuf> = std::fs::read_dir(root).ok()?.flatten().map(|e| e.path()).collect();
-    let nested = entries
-        .iter()
-        .filter_map(|dir| std::fs::read_dir(dir).ok())
-        .flat_map(|files| files.flatten().map(|file| file.path()));
-    entries.iter().cloned().chain(nested).find(|path| {
-        path.extension().is_some_and(|e| e == "jsonl")
-            && session_journal::repo::read_metadata(path).is_some_and(|m| m.id == id)
-    })
+    session_journal::catalog::find(root, id).map(|metadata| metadata.path)
 }
 
 /// The model flags of the command line.

@@ -383,7 +383,7 @@ fn session_core_w18s_workspace_checks_after_a_restart_outside_git_still_fail_clo
 }
 
 /// A persistent child (`keep=True`) with workspace checks spawned by one worker and first collected by the next
-/// (wave 41, crate::kept_contracts): the next worker has no snapshot of the spawn, so its check compares with the
+/// (crate::kept_contracts): the next worker has no snapshot of the spawn, so its check compares with the
 /// Git baseline the session kept with the contract (`ultron.kept-contracts`).
 #[test]
 fn session_core_w18s_a_kept_childs_workspace_checks_after_a_restart_use_the_kept_git_baseline() {

@@ -14,7 +14,7 @@ use p_session_support::{HANG, in_order, overloaded, text};
 use reopen_support::{Home, Worker};
 use serde_json::{Value, json};
 use session_core::core::{Input, Op};
-use session_journal::run::OP_STATE;
+use session_journal::ns::OP_STATE;
 use std::sync::mpsc::channel;
 use std::sync::{Arc, LazyLock, Mutex};
 

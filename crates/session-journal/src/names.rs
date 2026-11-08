@@ -6,13 +6,14 @@
 //! name is automatic exactly while the two agree, so a name set later by any writer (`-n`, `/name`, the TypeScript
 //! product) is the user's and is never replaced.
 
-use crate::repo::{Metadata, SessionRepo, absolute, read_metadata};
-use crate::session::{SESSION_NAME, Session};
+use crate::catalog;
+use crate::ns::SESSION_NAME;
+use crate::repo::{Metadata, SessionRepo};
+use crate::session::Session;
 use crate::state::Write;
 use serde_json::{Value, json};
 use std::path::Path;
 
-pub const AUTO_NAME_NAMESPACE: &str = "ultron.module";
 pub const AUTO_NAME_KEY: &str = "session-name";
 /// Longest automatic name from a prompt, in characters (before the ellipsis).
 pub const AUTO_NAME_MAX: usize = 50;
@@ -99,7 +100,7 @@ pub fn clean_title(reply: &str) -> Option<String> {
 /// The automatic name currently recorded, if any.
 fn recorded_automatic(session: &Session) -> Option<String> {
     session
-        .value(AUTO_NAME_NAMESPACE, AUTO_NAME_KEY)
+        .value(crate::ns::MODULE, AUTO_NAME_KEY)
         .and_then(|v| v.get("automatic"))
         .and_then(Value::as_str)
         .map(str::to_string)
@@ -119,8 +120,8 @@ pub fn set_user_name(session: &mut Session, name: Option<&str>) -> Result<Option
         Some(name) => Write::set(SESSION_NAME, "", name.clone().into()),
         None => Write::delete(SESSION_NAME, ""),
     }];
-    if session.value(AUTO_NAME_NAMESPACE, AUTO_NAME_KEY).is_some() {
-        writes.push(Write::delete(AUTO_NAME_NAMESPACE, AUTO_NAME_KEY));
+    if session.value(crate::ns::MODULE, AUTO_NAME_KEY).is_some() {
+        writes.push(Write::delete(crate::ns::MODULE, AUTO_NAME_KEY));
     }
     session.commit(&writes)?;
     Ok(name)
@@ -130,7 +131,7 @@ fn write_automatic(session: &mut Session, name: &str) -> Result<(), String> {
     session.commit(&[
         Write::set(SESSION_NAME, "", name.into()),
         Write::set(
-            AUTO_NAME_NAMESPACE,
+            crate::ns::MODULE,
             AUTO_NAME_KEY,
             json!({"version": 1, "automatic": name}),
         ),
@@ -197,7 +198,7 @@ fn search_text(content: &Value) -> String {
         Value::Array(blocks) if !blocks.iter().any(Value::is_null) => blocks
             .iter()
             .filter(|b| b["type"] == "text")
-            .map(|b| session_file::js::join_string(b.get("text")))
+            .map(|b| crate::context::join_string(b.get("text")))
             .collect::<Vec<_>>()
             .join(" "),
         _ => String::new(),
@@ -246,7 +247,7 @@ pub fn session_details(text: &str) -> SessionDetails {
                     .flatten();
                 continue;
             }
-            if kind == Some("value") && m["namespace"] == AUTO_NAME_NAMESPACE && m["key"] == AUTO_NAME_KEY {
+            if kind == Some("value") && m["namespace"] == crate::ns::MODULE && m["key"] == AUTO_NAME_KEY {
                 automatic = (m["op"] == "set")
                     .then(|| m["value"]["automatic"].as_str().map(str::to_string))
                     .flatten();
@@ -304,48 +305,15 @@ pub fn listing(metadata: Metadata) -> SessionListing {
 
 /// The sessions of `cwd` under `root`, most recently modified first (then newest created, then id).
 pub fn list_sessions(root: &Path, cwd: &str) -> Vec<SessionListing> {
-    let cwd = absolute(cwd);
-    let mut found: Vec<SessionListing> = Vec::new();
-    let Ok(directories) = std::fs::read_dir(root) else {
-        return found;
-    };
-    for directory in directories
-        .flatten()
-        .filter(|e| e.file_type().is_ok_and(|t| t.is_dir()))
-    {
-        let Ok(files) = std::fs::read_dir(directory.path()) else {
-            continue;
-        };
-        for file in files.flatten() {
-            if !file.file_type().is_ok_and(|t| t.is_file()) || !file.file_name().to_string_lossy().ends_with(".jsonl") {
-                continue;
-            }
-            if let Some(metadata) = read_metadata(&file.path())
-                && metadata.cwd == cwd
-            {
-                found.push(listing(metadata));
-            }
-        }
-    }
-    sort_newest(&mut found);
-    found
-}
-
-fn sort_newest(sessions: &mut [SessionListing]) {
-    sessions.sort_by(|l, r| {
-        r.metadata
-            .modified_at
-            .total_cmp(&l.metadata.modified_at)
-            .then(r.metadata.created_at.cmp(&l.metadata.created_at))
-            .then_with(|| l.metadata.id.cmp(&r.metadata.id))
-    });
+    catalog::list(root, Some(cwd)).into_iter().map(listing).collect()
 }
 
 /// Every session under `root` (any cwd), most recently modified first.
 pub fn list_all_sessions(repo: &SessionRepo) -> Vec<SessionListing> {
-    let mut found: Vec<SessionListing> = repo.list(None).into_iter().map(listing).collect();
-    sort_newest(&mut found);
-    found
+    catalog::list(Path::new(repo.root()), None)
+        .into_iter()
+        .map(listing)
+        .collect()
 }
 
 fn describe(session: &SessionListing) -> String {

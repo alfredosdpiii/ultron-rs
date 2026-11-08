@@ -36,7 +36,7 @@ fn disable_naming(sandbox: &Sandbox) {
 fn listings(sandbox: &Sandbox) -> Vec<names::SessionListing> {
     session_files(&sandbox.sessions_dir())
         .into_iter()
-        .map(|p| names::listing(session_journal::repo::read_metadata(&p).unwrap()))
+        .map(|p| names::listing(session_journal::catalog::read_metadata(&p).unwrap()))
         .collect()
 }
 

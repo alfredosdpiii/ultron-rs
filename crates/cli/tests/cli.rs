@@ -364,7 +364,7 @@ fn cli_session_selector_resolves_native_sessions() {
     std::fs::create_dir_all(dir.join("a")).unwrap();
     let header = |id: &str, cwd: &Path| {
         format!(
-            r#"{{"kind":"header","id":"{id}","createdAt":1,"cwd":"{}"}}"#,
+            r#"{{"v":4,"kind":"header","id":"{id}","storageVersion":1,"createdAt":1,"cwd":"{}"}}"#,
             cwd.display()
         ) + "\n{}\n"
     };
@@ -372,7 +372,7 @@ fn cli_session_selector_resolves_native_sessions() {
     std::fs::write(dir.join("a/two.jsonl"), header("abd456", &cwd)).unwrap();
     std::fs::write(dir.join("a/other.jsonl"), header("abz789", Path::new("/elsewhere"))).unwrap();
     std::fs::write(dir.join("a/notes.txt"), header("abq000", &cwd)).unwrap();
-    let sessions = cli::session::list_native_sessions(&dir, &cwd).unwrap();
+    let sessions = session_journal::catalog::list(&dir, Some(&cwd.display().to_string()));
     let mut ids: Vec<&str> = sessions.iter().map(|s| s.id.as_str()).collect();
     ids.sort();
     assert_eq!(ids, ["abc123", "abd456"]);
@@ -382,9 +382,5 @@ fn cli_session_selector_resolves_native_sessions() {
     assert_eq!(select("ab"), Err("No native session found matching 'ab'".to_string()));
     assert_eq!(select("abz"), Err("No native session found matching 'abz'".to_string()));
     assert_eq!(select("../sessions/a/other.jsonl"), Ok("abz789".to_string()));
-    assert!(
-        cli::session::list_native_sessions(&tmp.path().join("missing"), &cwd)
-            .unwrap()
-            .is_empty()
-    );
+    assert!(session_journal::catalog::list(&tmp.path().join("missing"), None).is_empty());
 }

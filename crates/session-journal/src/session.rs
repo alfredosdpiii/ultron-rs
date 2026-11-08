@@ -3,17 +3,12 @@
 
 use crate::context;
 use crate::fork::{ForkInput, ForkOptions};
+use crate::ns::{BRANCH_TIP, ENTRY_LABEL, SESSION_NAME};
 use crate::repo::{Metadata, SessionRepo};
 use crate::state::{CommitResult, State, Write};
 use crate::storage::JsonlStorage;
-use crate::{SharedClock, lock};
+use crate::{SharedClock, lock_clock};
 use serde_json::{Map, Value};
-
-pub const SESSION_NAME: &str = "ultron.session.name";
-pub const ENTRY_LABEL: &str = "ultron.entry.label";
-pub const BRANCH_TIP: &str = "ultron.branch.tip";
-pub const LANE_CONFIG: &str = "ultron.lane.config";
-pub const LANE_STATE: &str = "ultron.lane.state";
 
 /// An open session.
 pub struct Session {
@@ -67,7 +62,7 @@ impl Session {
                 return Err("Cannot persist a pending assistant message".into());
             }
         }
-        self.storage.commit(writes, &mut *lock(&self.clock))
+        self.storage.commit(writes, &mut *lock_clock(&self.clock))
     }
 
     /// `getName`.
@@ -110,7 +105,7 @@ impl Session {
         let tip = self
             .branch_tip(branch)
             .ok_or_else(|| format!("Unknown branch: {branch}"))?;
-        let id = lock(&self.clock).next_id();
+        let id = lock_clock(&self.clock).next_id();
         let mut entry = Map::new();
         entry.insert("id".into(), id.clone().into());
         entry.insert("parentId".into(), tip.map_or(Value::Null, Value::from));
@@ -125,7 +120,7 @@ impl Session {
         let tip = self
             .branch_tip(branch)
             .ok_or_else(|| format!("Unknown branch: {branch}"))?;
-        let id = lock(&self.clock).next_id();
+        let id = lock_clock(&self.clock).next_id();
         let mut entry = Map::new();
         entry.insert("id".into(), id.clone().into());
         entry.insert("parentId".into(), tip.map_or(Value::Null, Value::from));

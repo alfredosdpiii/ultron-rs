@@ -1,18 +1,17 @@
-//! The JavaScript semantics the journal shares with session-file through `jsrt`: one process-wide `uuidv7()`
+//! The JavaScript semantics the journal shares with the workspace through `jsrt`: one process-wide `uuidv7()`
 //! sequence, `String(value)` in codec errors, and Node's `mtimeMs`.
 
 use serde_json::json;
-use session_file::Env;
 use session_journal::codec::parse_transaction;
 use session_journal::{Clock, SystemClock};
 
 #[test]
-fn session_journal_ids_share_the_session_file_uuidv7_sequence() {
+fn session_journal_ids_share_the_process_uuidv7_sequence() {
     // Upstream has one module-global `uuidv7()` generator, so a session id and the entry ids written after it sort in
     // creation order even within one millisecond; two generators with their own random sequences did not.
     let mut ids = Vec::new();
     for _ in 0..64 {
-        ids.push(session_file::SystemEnv.session_id());
+        ids.push(jsrt::random::uuid_v7(jsrt::date::now_ms()));
         ids.push(SystemClock.next_id());
     }
     assert!(ids.windows(2).all(|pair| pair[0] < pair[1]), "{ids:?}");

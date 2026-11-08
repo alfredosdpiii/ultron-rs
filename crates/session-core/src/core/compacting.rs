@@ -8,7 +8,8 @@
 //! `session_before_compact` and `session_compact`, are not supported by ultron-rs.)
 
 use super::*;
-use crate::compaction_op::{self, SummaryRetry};
+use crate::compaction_op;
+use harness::chat::models::RetryPolicy;
 
 /// The error a cancelled compaction ends with (AgentSession: `Compaction cancelled`).
 pub(super) const CANCELLED: &str = "Compaction cancelled";
@@ -107,7 +108,7 @@ impl Summarizer {
         &self,
         messages: &[Value],
         hint: Option<&str>,
-        retry: SummaryRetry,
+        retry: RetryPolicy,
         signal: &AbortSignal,
     ) -> Result<String, String> {
         let runtime = tokio::runtime::Builder::new_current_thread()
@@ -125,7 +126,7 @@ impl Summarizer {
                 now_ms(),
             );
             let response = runtime.block_on(self.stream(request, signal));
-            if !signal.aborted() && attempt < retry.max_attempts && harness::chat::models::is_retryable(&response) {
+            if !signal.aborted() && attempt < retry.max_attempts() && harness::chat::models::is_retryable(&response) {
                 let delay = i64::try_from(retry.delay_ms(attempt)).unwrap_or(i64::MAX);
                 wait_until(now_ms().saturating_add(delay), signal);
                 attempt += 1;
@@ -341,8 +342,8 @@ impl Core {
 
     /// The retry policy of a summary attempt (`normalizedRetryPolicy`): settings.json's `retry`, off when this
     /// session turned automatic retries off.
-    pub(super) fn summary_retry(&self) -> SummaryRetry {
-        SummaryRetry::from_settings(&self.runtime.config.settings["retry"], self.auto_retry)
+    pub(super) fn summary_retry(&self) -> RetryPolicy {
+        RetryPolicy::from_settings(&self.runtime.config.settings["retry"], self.auto_retry)
     }
 
     /// The summary attempts of operation `run_id`'s task `step` (`runStructuralGeneration` and its retries): each
@@ -353,7 +354,7 @@ impl Core {
     pub(super) fn summary_attempts<T: Send + 'static>(
         &mut self,
         signal: &AbortSignal,
-        retry: SummaryRetry,
+        retry: RetryPolicy,
         ids: (&str, &str),
         source: Value,
         attempt: AttemptFn<T>,
@@ -372,7 +373,7 @@ impl Core {
     fn attempt_loop<T: Send + 'static>(
         &mut self,
         signal: &AbortSignal,
-        retry: SummaryRetry,
+        retry: RetryPolicy,
         (run_id, step): (&str, &str),
         source: &Value,
         attempt: AttemptFn<T>,
@@ -388,7 +389,7 @@ impl Core {
             }
             let error = match &result {
                 Err(error)
-                    if number < retry.max_attempts
+                    if number < retry.max_attempts()
                         && last.as_ref().is_some_and(harness::chat::models::is_retryable) =>
                 {
                     error.clone()
@@ -431,7 +432,7 @@ impl Core {
                 ("runId", json!(run_id)),
                 ("step", json!(step)),
                 ("attempt", json!(number + 1)),
-                ("maxAttempts", json!(retry.max_attempts)),
+                ("maxAttempts", json!(retry.max_attempts())),
                 ("delayMs", json!(delay)),
                 ("notBefore", json!(not_before)),
                 ("errorMessage", json!(error)),
@@ -444,7 +445,7 @@ impl Core {
                 .unwrap_or_else(|| error.clone());
             self.emit(json!({
                 "type": "summarization_retry_scheduled", "lane": LANE, "attempt": number,
-                "maxAttempts": retry.max_attempts - 1, "delayMs": delay, "errorMessage": provider_error,
+                "maxAttempts": retry.max_attempts() - 1, "delayMs": delay, "errorMessage": provider_error,
             }));
             let cancel = signal.clone();
             let _ = self.off_actor(move || wait_until(not_before, &cancel));

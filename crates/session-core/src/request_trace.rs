@@ -24,8 +24,6 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, PoisonError};
 
 pub const TRACE_ENV: &str = "ULTRON_REQUEST_TRACE";
-/// The root conversation's lane.
-pub const ROOT_LANE: &str = "main";
 
 /// How a request relates to the previous request of its lane.
 #[derive(Clone, Debug, PartialEq, Eq)]

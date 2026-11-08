@@ -231,21 +231,6 @@ fn cli_format_clock_utc_matches_format_clock() {
 }
 
 #[test]
-fn cli_session_directory_name_matches_jsonl_repo() {
-    // sessionDirectoryName (packages/agent/src/harness/session/jsonl/repo.ts), values from node.
-    for (cwd, want) in [
-        ("/home/u/p", "--home-u-p--"),
-        ("/", "----"),
-        ("C:\\Users\\x", "--C--Users-x--"),
-        ("/a:b/c", "--a-b-c--"),
-        ("rel/x", "--rel-x--"),
-        ("//double", "---double--"),
-    ] {
-        assert_eq!(cli::print_mode::session_directory_name(cwd), want, "{cwd}");
-    }
-}
-
-#[test]
 fn cli_clock_lines_match_with_clock_lines() {
     // formatGap and withClockLines (packages/coding-agent/src/ultron/clock-context.ts), values from node.
     for (ms, want) in [

@@ -1,4 +1,4 @@
-//! Contracts of persistent children (wave 41, crate::kept_contracts): `rlm.spawn(brief, name=..., keep=True,
+//! Contracts of persistent children (crate::kept_contracts): `rlm.spawn(brief, name=..., keep=True,
 //! contract=..., hop=...)` from the root REPL of a real session (the session actor, its durable runtime and kernels)
 //! against a scripted provider on loopback. Each answer of the kept child is held to its contract as a one-shot
 //! child's end is: the first when `rlm.collect` reports it, each `rlm.ask` answer as it arrives; a retry hop asks it

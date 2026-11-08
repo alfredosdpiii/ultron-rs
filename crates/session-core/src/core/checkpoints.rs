@@ -127,7 +127,7 @@ impl Core {
             let session = lock_session(&self.session);
             match (&key, &entry_id) {
                 (Some(key), _) => session
-                    .value(stored::CHECKPOINTS, key)
+                    .value(session_journal::ns::CHECKPOINTS, key)
                     .cloned()
                     .map(|value| (key.clone(), value)),
                 (None, Some(entry)) => stored::for_entry(&session, entry),

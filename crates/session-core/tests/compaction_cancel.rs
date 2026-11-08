@@ -5,10 +5,10 @@
 
 use serde_json::{Map, Value, json};
 use session_core::compaction_op::{self, CompactionOp};
-use session_core::op_journal::OP_PREPARATION;
 use session_core::recovery::settle;
-use session_journal::run::{OP_META, OP_RESULT, OP_STATE};
-use session_journal::session::{BRANCH_TIP, LANE_STATE};
+use session_journal::ns::OP_PREPARATION;
+use session_journal::ns::{BRANCH_TIP, LANE_STATE};
+use session_journal::ns::{OP_META, OP_RESULT, OP_STATE};
 use session_journal::{Session, SessionRepo, TestClock, Write};
 
 fn repo(dir: &std::path::Path) -> SessionRepo {
@@ -56,7 +56,7 @@ fn session_core_compaction_cancel_journaled_before_a_kill_settles_aborted() {
     let dir = tempfile::tempdir().unwrap();
     let (mut session, tip) = session(dir.path());
     let mut op = CompactionOp::begin(&mut session, &preparation(&tip), &[json!({"role": "user"})], None).unwrap();
-    op.request(&mut session, session_core::compaction_op::SummaryRetry::default())
+    op.request(&mut session, harness::chat::models::RetryPolicy::default())
         .unwrap();
     let operation = current_operation(&session).as_str().unwrap().to_string();
     compaction_op::request_cancel(&mut session, 5).unwrap();
@@ -95,7 +95,7 @@ fn session_core_compaction_killed_without_a_cancel_settles_failed_and_drops_its_
     let dir = tempfile::tempdir().unwrap();
     let (mut session, tip) = session(dir.path());
     let mut op = CompactionOp::begin(&mut session, &preparation(&tip), &[], Some("short")).unwrap();
-    op.request(&mut session, session_core::compaction_op::SummaryRetry::default())
+    op.request(&mut session, harness::chat::models::RetryPolicy::default())
         .unwrap();
     let operation = current_operation(&session).as_str().unwrap().to_string();
     assert_eq!(preparations(&session), 1);
@@ -163,8 +163,8 @@ fn session_core_compaction_cancel_during_the_hook_then_a_kill_settles_aborted() 
 /// 2^(attempt-1)` capped at `maxAgentDelayMs`; `maxRetries + 1` attempts, one when retries are off.
 #[test]
 fn session_core_compaction_summary_retry_policy_matches_the_harness() {
-    use session_core::compaction_op::SummaryRetry;
-    let policy = SummaryRetry::default();
+    use harness::chat::models::RetryPolicy;
+    let policy = RetryPolicy::default();
     assert_eq!(
         (
             policy.delay_ms(1),
@@ -176,17 +176,20 @@ fn session_core_compaction_summary_retry_policy_matches_the_harness() {
         (2000, 4000, 8000, 60000, 60000)
     );
     assert_eq!(
-        policy.value(),
+        policy.journal_value(),
         json!({"maxAttempts": 4, "baseDelayMs": 2000, "maxAgentDelayMs": 60000})
     );
-    assert_eq!(SummaryRetry::from_settings(&Value::Null, true), policy);
-    let custom = SummaryRetry::from_settings(&json!({"maxRetries": 1, "baseDelayMs": 5, "maxAgentDelayMs": 7}), true);
-    assert_eq!((custom.max_attempts, custom.delay_ms(1), custom.delay_ms(2)), (2, 5, 7));
+    assert_eq!(RetryPolicy::from_settings(&Value::Null, true), policy);
+    let custom = RetryPolicy::from_settings(&json!({"maxRetries": 1, "baseDelayMs": 5, "maxAgentDelayMs": 7}), true);
     assert_eq!(
-        SummaryRetry::from_settings(&json!({"enabled": false}), true).max_attempts,
+        (custom.max_attempts(), custom.delay_ms(1), custom.delay_ms(2)),
+        (2, 5, 7)
+    );
+    assert_eq!(
+        RetryPolicy::from_settings(&json!({"enabled": false}), true).max_attempts(),
         1
     );
-    assert_eq!(SummaryRetry::from_settings(&json!({}), false).max_attempts, 1);
+    assert_eq!(RetryPolicy::from_settings(&json!({}), false).max_attempts(), 1);
 }
 
 /// A retryable failed attempt journals its usage row and `summary.retry_wait` (`nextAttempt`, `notBefore`,
@@ -195,12 +198,12 @@ fn session_core_compaction_summary_retry_policy_matches_the_harness() {
 /// (`interrupted`), or `aborted` after a cancel request, with nothing moved and the preparation removed.
 #[test]
 fn session_core_compaction_retry_wait_journal_and_kill() {
-    use session_core::compaction_op::SummaryRetry;
+    use harness::chat::models::RetryPolicy;
     let dir = tempfile::tempdir().unwrap();
     let (mut session, tip) = session(dir.path());
     let mut op = CompactionOp::begin(&mut session, &preparation(&tip), &[], None).unwrap();
     let operation = current_operation(&session).as_str().unwrap().to_string();
-    op.request(&mut session, SummaryRetry::default()).unwrap();
+    op.request(&mut session, RetryPolicy::default()).unwrap();
     let first_usage = session.value(OP_STATE, &operation).unwrap()["request"]["usageId"].clone();
     op.retry_wait(&mut session, Some(&json!({"totalTokens": 0})), "Overloaded", 1234)
         .unwrap();
@@ -247,7 +250,7 @@ fn session_core_compaction_retry_wait_journal_and_kill() {
         let (mut session, tip) = self::session(dir.path());
         let mut op = CompactionOp::begin(&mut session, &preparation(&tip), &[], None).unwrap();
         let operation = current_operation(&session).as_str().unwrap().to_string();
-        op.request(&mut session, SummaryRetry::default()).unwrap();
+        op.request(&mut session, RetryPolicy::default()).unwrap();
         op.retry_wait(&mut session, None, "Overloaded", 1234).unwrap();
         if cancel {
             compaction_op::request_cancel(&mut session, 5).unwrap();

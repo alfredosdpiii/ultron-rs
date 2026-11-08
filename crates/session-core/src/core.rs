@@ -27,16 +27,17 @@ use agent::{AgentEvent, StreamFn};
 use ai::{AbortSignal, AssistantMessage, Message, Model, SimpleStreamOptions, StreamOptions};
 use serde_json::{Map, Value, json};
 use session_file::SessionManager;
+use session_journal::ns::PENDING_ENTRY;
+use session_journal::ns::{BRANCH_TIP, LANE_CONFIG, LANE_STATE};
 use session_journal::repo::Metadata;
-use session_journal::run::{self, PENDING_ENTRY};
-use session_journal::session::{BRANCH_TIP, LANE_CONFIG, LANE_STATE};
+use session_journal::run::{self};
 use session_journal::{Session, SessionRepo, SystemClock, Write, names};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::Sender;
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 
-pub const LANE: &str = "main";
+pub const LANE: &str = session_journal::run::MAIN_LANE;
 
 /// `InvalidMessage` (`reason: "empty"`) of a queued message without text or image (lane.ts `enqueue`).
 pub const EMPTY_QUEUED: &str = "Queued input must contain text or an image";
@@ -691,7 +692,6 @@ pub struct Core {
     announced_usage: usize,
     /// Queued messages committed with the generation that takes them, until their `message_end` arrives.
     taken: Vec<String>,
-    run_ids: session_file::Uuidv7,
     auto_name: bool,
     /// What opening the session settled (crate::recovery), until [`Op::Recover`] acts on it.
     recovered: Option<crate::recovery::Recovered>,
@@ -821,7 +821,7 @@ fn lane_config_resolving(
 ) -> Result<(Value, Model, bool), String> {
     let stored = session
         .as_ref()
-        .and_then(|s| s.value(session_journal::session::LANE_CONFIG, "main").cloned());
+        .and_then(|s| s.value(session_journal::ns::LANE_CONFIG, "main").cloned());
     // Without --model a resumed session restores its own model; a new one starts on the settings' default
     // (sdk.ts: restore from the session first, then `findInitialModel`).
     // A `--model <pattern>:<thinking>` suffix or a scoped pattern's level names the thinking level unless
@@ -938,7 +938,7 @@ impl Core {
         let durable_records = crate::durable_store::has_records(&session)
             && open_operation.as_ref().is_none_or(|operation| {
                 session
-                    .value(session_journal::run::OP_META, operation)
+                    .value(session_journal::ns::OP_META, operation)
                     .is_none_or(|meta| meta["intent"]["kind"].as_str().is_none_or(|kind| kind == "run"))
             });
         let recovered = match &open_operation {
@@ -949,7 +949,7 @@ impl Core {
             },
         };
         let resume = open_operation.filter(|_| durable_records);
-        let sessions_dir = session_root.join(lane::session_directory_name(&metadata.cwd));
+        let sessions_dir = session_root.join(session_journal::catalog::session_directory_name(&metadata.cwd));
         let trace = |label: &str| {
             crate::startup_trace::trace_startup((env.var)(crate::startup_trace::TRACE_ENV).as_deref(), label)
         };
@@ -966,7 +966,8 @@ impl Core {
         let session_id = session.id().to_string();
         let session: SharedSession = Arc::new(Mutex::new(session));
         // The host modules' documents are values of the session (crate::session_modules).
-        runtime.services.values = Some(crate::session_modules::session_values(&session));
+        let values = crate::session_modules::session_values(&session);
+        runtime.services.values = Some(values.clone());
         // Subagents run as child conversations of the durable runtime; their task journal is in the session.
         let children = crate::subagents::DurableChildren::new();
         let unfinished = crate::subagents::unfinished(&session);
@@ -976,7 +977,7 @@ impl Core {
             &model,
             flags.api_key.clone(),
             &session_id,
-            Some(children.host(session.clone())),
+            Some(children.host(values)),
         )?;
         trace("worker.host");
         // The runtime counters are the session value `ultron.module/stats` (counting continues from a resumed one).
@@ -986,12 +987,14 @@ impl Core {
         let branches = Arc::new(context_lane::RootBranches::new(session.clone()));
         // One module answers `ctx.*` from every lane's kernel; each lane edits its own branch.
         let child_context = Arc::new(context_children::ChildContext::new(children.clone(), session.clone()));
-        let context = Arc::new(kernel_apis::ContextControl::new(Arc::new(
-            context_children::LaneBranches {
+        // `ULTRON_COMPACTION_TRIM` of the session's environment, as every other session switch.
+        let context = Arc::new(
+            kernel_apis::ContextControl::new(Arc::new(context_children::LaneBranches {
                 root: branches.clone(),
                 children: child_context.clone(),
-            },
-        )));
+            }))
+            .with_trim(!env.flag_off(kernel_apis::context_control::COMPACTION_TRIM_ENV)),
+        );
         child_context.observe(&context);
         let _ = lane.stack.context.set(context.clone());
         // Requests read the settings as they are now (crate::request_settings): the stream options, transport and
@@ -1127,7 +1130,6 @@ impl Core {
             announced_usage,
             announced,
             taken: Vec::new(),
-            run_ids: session_file::Uuidv7::default(),
             auto_name,
             recovered: Some(recovered),
             durable,
@@ -1781,8 +1783,8 @@ impl Core {
         let lane_state = self.lane_state();
         let committed = lock_session(&self.session).commit(&[
             Write::Entry(entry),
-            Write::set(session_journal::session::BRANCH_TIP, LANE, id.into()),
-            Write::set(session_journal::session::LANE_STATE, LANE, lane_state),
+            Write::set(session_journal::ns::BRANCH_TIP, LANE, id.into()),
+            Write::set(session_journal::ns::LANE_STATE, LANE, lane_state),
         ]);
         if committed.is_ok() {
             self.announce();
@@ -1843,11 +1845,8 @@ impl Core {
         }
         // A successor takes the session: what this worker's hosts would still journal (a subagent's wait failing
         // as the runtime closes) is dropped, so its tasks stay unfinished for the successor to reattach.
-        if hand_over {
-            self.durable.children.hand_over();
-            if let Some(values) = &self.runtime.services.values {
-                values.hand_over();
-            }
+        if hand_over && let Some(values) = &self.runtime.services.values {
+            values.hand_over();
         }
         // The durable runtime stops without settling anything: a run in progress resumes when the session opens.
         self.durable.stop.abort();
@@ -2155,7 +2154,7 @@ impl Core {
                     .ok_or_else(|| "Cannot clone session: no current entry selected".to_string())
             }
             Op::Forked { target } => {
-                let metadata = session_journal::repo::read_metadata(Path::new(&target))
+                let metadata = session_journal::catalog::read_metadata(Path::new(&target))
                     .ok_or_else(|| format!("Not a session file: {target}"))?;
                 let mut session = self.repo.open(&metadata)?;
                 session.commit(&[Write::set(
@@ -2255,7 +2254,7 @@ impl Core {
         let (attempt, step) = (journal.attempt(), journal.step_id().to_string());
         let error = answer.stop_reason == ai::StopReason::Error;
         if error
-            && attempt < policy.max_attempts
+            && attempt < policy.max_attempts()
             && harness::chat::models::is_retryable(answer)
             && !harness::chat::models::is_context_overflow(answer)
         {
@@ -2267,7 +2266,7 @@ impl Core {
                 .unwrap_or_else(|| "Assistant request failed".into());
             run.journal.schedule_retry(not_before, message.clone());
             return Some(RetryNote::Scheduled(json!({
-                "step": step, "attempt": attempt + 1, "maxAttempts": policy.max_attempts, "delayMs": delay,
+                "step": step, "attempt": attempt + 1, "maxAttempts": policy.max_attempts(), "delayMs": delay,
                 "notBefore": not_before, "errorMessage": message,
             })));
         }
@@ -2399,8 +2398,6 @@ impl Core {
         Value::Object(state)
     }
 
-    /// Start a run of `message`; `waiter` is answered when it ends. On failure the waiter comes back with the error.
-    #[allow(clippy::result_large_err)]
     /// The `ultron.memory` message a run of the user message `text` opens with, when automatic recall finds
     /// memories the context does not show yet (crate::auto_memory).
     fn recalled_memory(&self, text: &str) -> Option<Value> {
@@ -2514,15 +2511,16 @@ impl Core {
         }
     }
 
+    /// Start a run of `message`; `waiter` is answered when it ends. On failure the waiter comes back with the error.
     fn prompt(&mut self, message: String, images: Vec<Value>, waiter: Option<Reply>) -> Result<(), (String, Reply)> {
         self.prompt_with(user_message(message, images), waiter, true)
     }
 
     /// Start a run of the user message `prompt` (see [`Core::prompt`]).
-    #[allow(clippy::result_large_err)]
     ///
     /// `take_queued`: the admission also takes the steering and follow-up messages queued while the lane was idle
     /// (by the queue modes); messages queued for the next run are always taken.
+    #[allow(clippy::result_large_err)]
     fn prompt_with(&mut self, prompt: Value, waiter: Option<Reply>, take_queued: bool) -> Result<(), (String, Reply)> {
         let fail = |error: String, waiter: Option<Reply>| -> Result<(), (String, Reply)> {
             match waiter {
@@ -2545,8 +2543,7 @@ impl Core {
             && !continuation
             && prompt["role"] != "custom"
             && self.runtime.mode != "rpc"
-            && !(self.env.var)(AUTO_NAME_ENV)
-                .is_some_and(|v| matches!(v.trim().to_lowercase().as_str(), "off" | "0" | "false"));
+            && !self.env.flag_off(AUTO_NAME_ENV);
         let named = if auto_name {
             names::apply_auto_name(&mut lock_session(&self.session), &text)
         } else {
@@ -2578,57 +2575,22 @@ impl Core {
             Ok(None) => {}
             Err(error) => return fail(error, waiter),
         }
-        // Loki's setup note opens the first root turn that follows it (`installLokiNotice`).
-        if let Some(text) = self.loki_notice.take(crate::loki_notice::NOTICE_WAIT) {
-            let message = crate::loki_notice::notice_message(&text, now_ms() as u64);
-            for kind in ["message_start", "message_end"] {
-                self.emit(event(vec![
-                    ("type", json!(kind)),
-                    ("lane", json!(LANE)),
-                    ("message", message.clone()),
-                ]));
-            }
-            if let Err(error) = self.append(message) {
-                return fail(error, waiter);
-            }
+        // The messages the run opens with: Loki's setup note for the first root turn that follows it
+        // (`installLokiNotice`); for a user message, the long-term memory recalled for it (crate::auto_memory), in
+        // engineering mode the rigor playbook that fits it (crate::playbook_route), and the active instruction
+        // refinements when the context does not show them as they are (crate::auto_refine).
+        let mut opening: Vec<Value> = self
+            .loki_notice
+            .take(crate::loki_notice::NOTICE_WAIT)
+            .map(|text| crate::loki_notice::notice_message(&text, now_ms() as u64))
+            .into_iter()
+            .collect();
+        if prompt["role"] == "user" && !continuation {
+            opening.extend(self.recalled_memory(&text));
+            opening.extend(self.routed_playbook(&text));
+            opening.extend(self.refinements_message());
         }
-        // Long-term memory recalled for a user message opens its run (crate::auto_memory).
-        if prompt["role"] == "user"
-            && !continuation
-            && let Some(message) = self.recalled_memory(&text)
-        {
-            for kind in ["message_start", "message_end"] {
-                self.emit(event(vec![
-                    ("type", json!(kind)),
-                    ("lane", json!(LANE)),
-                    ("message", message.clone()),
-                ]));
-            }
-            if let Err(error) = self.append(message) {
-                return fail(error, waiter);
-            }
-        }
-        // In engineering mode the rigor playbook that fits a user message opens its run (crate::playbook_route).
-        if prompt["role"] == "user"
-            && !continuation
-            && let Some(message) = self.routed_playbook(&text)
-        {
-            for kind in ["message_start", "message_end"] {
-                self.emit(event(vec![
-                    ("type", json!(kind)),
-                    ("lane", json!(LANE)),
-                    ("message", message.clone()),
-                ]));
-            }
-            if let Err(error) = self.append(message) {
-                return fail(error, waiter);
-            }
-        }
-        // The active instruction refinements, when the context does not show them as they are (crate::auto_refine).
-        if prompt["role"] == "user"
-            && !continuation
-            && let Some(message) = self.refinements_message()
-        {
+        for message in opening {
             for kind in ["message_start", "message_end"] {
                 self.emit(event(vec![
                     ("type", json!(kind)),
@@ -2656,7 +2618,7 @@ impl Core {
         if let Some(items) = inbox.as_array_mut() {
             items.retain(|item| !captured.iter().any(|(id, _)| item["entryId"] == id.as_str()));
         }
-        let mut journal = match RunJournal::admit_capturing(
+        let mut journal = match RunJournal::admit(
             Some(&mut lock_session(&self.session)),
             lane_config,
             prompt.clone(),
@@ -2693,7 +2655,7 @@ impl Core {
         }
         // Work the turn admits is charged to a usage root of its own; the ledger counts its responses.
         journal.ledger_counts_turns();
-        journal.set_retry_policy(self.summary_retry().value());
+        journal.set_retry_policy(self.summary_retry().journal_value());
         if let Some(options) = self.provider.stream_options() {
             journal.set_stream_options(options);
         }
@@ -2730,9 +2692,7 @@ impl Core {
             }
         };
         let signal = AbortSignal::new();
-        let mut random = [0u8; 16];
-        let _ = getrandom_fill(&mut random);
-        let id = self.run_ids.next(now_ms(), random);
+        let id = jsrt::random::uuid_v7(now_ms());
         self.branches.run_started();
         // Per-turn guard times start from zero (`fileHooks.beginTurn()` on the root lane's `run_start`), and a
         // session in which the root ran keeps its counters, even when they are all zero.
@@ -2788,8 +2748,7 @@ impl Core {
         if self.run.is_some() {
             return answer(false, Value::Null, "a run is in progress");
         }
-        let resume_off = (self.env.var)(RECOVERY_RESUME_ENV)
-            .is_some_and(|v| matches!(v.trim().to_lowercase().as_str(), "off" | "0" | "false"));
+        let resume_off = self.env.flag_off(RECOVERY_RESUME_ENV);
         // The interrupted run continues first; queued messages stay queued and the loop delivers them as it would
         // have (steering during the run, follow-ups when it would end). Without one, the first queued message runs.
         // A message queued for the next run waits for one; it never starts it.
@@ -2950,16 +2909,6 @@ impl Core {
             });
         });
     }
-}
-
-fn getrandom_fill(bytes: &mut [u8; 16]) -> Result<(), String> {
-    let seed = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_nanos())
-        .unwrap_or(0)
-        ^ u128::from(std::process::id());
-    bytes.copy_from_slice(&seed.to_le_bytes());
-    Ok(())
 }
 
 /// Start an actor for `options` on its own thread; returns its input, or the open error.

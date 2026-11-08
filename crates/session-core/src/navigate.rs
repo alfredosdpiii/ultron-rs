@@ -16,11 +16,12 @@
 
 use super::compacting::{AttemptFn, RetryStep, Summarizer};
 use super::{Core, LANE, event};
-use crate::compaction_op::{CompactionOp, ENTRY_LABEL};
+use crate::compaction_op::CompactionOp;
 use crate::durable_store::lock as lock_session;
 use crate::lane::now_ms;
 use serde_json::{Map, Value, json};
 use session_journal::Write;
+use session_journal::ns::ENTRY_LABEL;
 use std::sync::Arc;
 
 /// Tokens kept free when choosing branch history to summarize (upstream default).

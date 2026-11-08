@@ -21,8 +21,7 @@ pub mod validation;
 
 pub use gates::ReleaseGateModule;
 pub use local::{
-    Branch, BranchSource, BranchedLocalServices, LocalOptions, LocalServices, LocalServicesModule, instruction_hook,
-    instruction_hook_on,
+    Branch, BranchSource, LocalOptions, LocalServices, LocalServicesModule, instruction_hook, refinement_view,
 };
 pub use session_values::{SessionDocument, SessionKeyed, SessionValues};
 pub use validation::{validate_refinement_content, worker_validator};

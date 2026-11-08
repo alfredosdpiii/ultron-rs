@@ -18,7 +18,7 @@ fn services_instruction_hook_yields_the_active_instruction_of_a_definition_and_n
         Box::new(MemoryKeyedDocuments::default()),
         LocalOptions::default(),
     ));
-    let hook = instruction_hook(services.clone());
+    let hook = instruction_hook(services.clone(), None);
     assert_eq!(hook("rlm-child").unwrap(), Vec::<Value>::new());
     let propose = |target: &str, content: Value| {
         let id = services

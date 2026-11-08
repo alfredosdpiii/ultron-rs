@@ -1,10 +1,10 @@
 //! `diffWords` from jsdiff 8.0.4 (BSD-3-Clause, Copyright (c) 2009-2015 Kevin Decker): Myers diff over word tokens that
-//! carry their surrounding whitespace ([`session_file::diff::diff_tokens`]), then the whitespace dedupe pass. No options
+//! carry their surrounding whitespace ([`jsrt::diff::diff_tokens`]), then the whitespace dedupe pass. No options
 //! (no ignoreCase, no segmenter).
 
 use jsrt::string;
 
-pub use session_file::diff::Change;
+pub use jsrt::diff::Change;
 
 fn word_char(c: char) -> bool {
     c.is_ascii_alphanumeric()
@@ -182,7 +182,7 @@ fn dedupe(changes: &mut [Change], start: Option<usize>, del: Option<usize>, ins:
 /// `diffWords(old, new)`.
 pub fn diff_words(old: &str, new: &str) -> Vec<Change> {
     let (old, new) = (tokenize(old), tokenize(new));
-    let mut changes = session_file::diff::diff_tokens(&old, &new, equals, join);
+    let mut changes = jsrt::diff::diff_tokens(&old, &new, equals, join);
     let (mut keep, mut ins, mut del) = (None, None, None);
     for i in 0..changes.len() {
         if changes[i].added {

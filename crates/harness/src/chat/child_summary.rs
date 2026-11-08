@@ -4,7 +4,6 @@
 //! summarizes that turn's prefix on its own; the files read and modified (from `read`/`write`/`edit` calls and the
 //! previous compaction's lists) end the summary.
 
-use ai::{Message, UserContent, UserMessageContent};
 use compaction::{CompactOptions, FileOperations, SummaryRequest};
 use serde_json::Value;
 
@@ -60,37 +59,21 @@ pub fn summary_requests(plan: &SummaryPlan, reserve_tokens: u64, options: &Compa
 
 /// `generateTurnPrefixSummary`'s request: the prefix as a conversation, half the reserve.
 fn turn_prefix_request(messages: &[Value], reserve_tokens: u64, options: &CompactOptions<'_>) -> SummaryRequest {
-    let conversation = compaction::serialize_conversation(&compaction::convert_to_llm(messages));
+    let conversation = compaction::serialize_conversation(&session_journal::context::convert_to_llm(messages));
     let prompt = format!("<conversation>\n{conversation}\n</conversation>\n\n{TURN_PREFIX_SUMMARIZATION_PROMPT}");
-    // The shape (system prompt, budget, reasoning, session) is the crate's turn-prefix request; only the text differs.
-    let mut request = compaction::turn_prefix_request(messages, reserve_tokens, options);
-    for message in &mut request.context.messages {
-        if let Message::User(user) = message {
-            user.content = UserMessageContent::Blocks(vec![UserContent::Text(ai::TextContent {
-                text: prompt.clone(),
-                text_signature: None,
-            })]);
-        }
-    }
-    request
+    compaction::turn_prefix_request_of(prompt, reserve_tokens, options)
 }
 
 /// The summary from the responses' texts, in request order, with the file lists appended; and those lists.
 pub fn compose_summary(plan: &SummaryPlan, texts: &[String]) -> (String, Vec<String>, Vec<String>) {
     let split = plan.split && !plan.prefix.is_empty();
     let mut summary = if split {
-        let (history, prefix) = if plan.history.is_empty() {
-            (
-                "No prior history.".to_string(),
-                texts.first().cloned().unwrap_or_default(),
-            )
+        let text = |i: usize| texts.get(i).map_or("", String::as_str);
+        if plan.history.is_empty() {
+            compaction::split_turn_summary(compaction::NO_PRIOR_HISTORY, text(0))
         } else {
-            (
-                texts.first().cloned().unwrap_or_default(),
-                texts.get(1).cloned().unwrap_or_default(),
-            )
-        };
-        format!("{history}\n\n---\n\n**Turn Context (split turn):**\n\n{prefix}")
+            compaction::split_turn_summary(text(0), text(1))
+        }
     } else {
         texts.first().cloned().unwrap_or_default()
     };

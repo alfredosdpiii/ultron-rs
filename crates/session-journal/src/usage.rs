@@ -2,8 +2,7 @@
 
 use serde_json::{Map, Value, json};
 
-// ponytail: kept as a re-export for session-core's op_journal and run.rs; new code calls `jsrt::json::number`.
-pub use jsrt::json::number as num;
+use jsrt::json::number as num;
 
 fn field(value: &Value, key: &str) -> f64 {
     value.get(key).and_then(Value::as_f64).unwrap_or(0.0)

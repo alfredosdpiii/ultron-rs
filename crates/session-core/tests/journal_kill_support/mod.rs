@@ -4,7 +4,7 @@
 #![allow(dead_code)]
 
 use session_core::durable_store::{SharedSession, stored_commits};
-use session_journal::repo::read_metadata;
+use session_journal::catalog::read_metadata;
 use session_journal::{Session, SessionRepo, SystemClock};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};

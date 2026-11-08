@@ -70,21 +70,10 @@ pub fn route(text: &str) -> Option<(&'static str, &'static str)> {
 
 /// Playbooks shown on the branch since its last compaction.
 pub fn shown(entries: &[Value]) -> Vec<String> {
-    let mut shown = Vec::new();
-    for entry in entries {
-        if entry["type"] == "compaction" {
-            shown.clear();
-        }
-        let message = &entry["message"];
-        if entry["type"] == "message"
-            && message["role"] == "custom"
-            && message["customType"] == PLAYBOOK_CUSTOM_TYPE
-            && let Some(name) = message["details"]["playbook"].as_str()
-        {
-            shown.push(name.to_string());
-        }
-    }
-    shown
+    session_journal::context::custom_details_since_compaction(entries, PLAYBOOK_CUSTOM_TYPE)
+        .into_iter()
+        .filter_map(|details| details["playbook"].as_str().map(str::to_string))
+        .collect()
 }
 
 /// The message that opens a run of `text`: the fitting playbook from `rigor_dir` (the rigor skill's directory),

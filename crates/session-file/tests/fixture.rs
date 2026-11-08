@@ -9,10 +9,9 @@ use std::time::{Duration, UNIX_EPOCH};
 
 use serde_json::{Map, Value, json};
 use session_file::{
-    Env, Error, Leaf, NewSessionOptions, SessionManager, SessionTree, Uuidv7, build_context_entries,
-    build_session_context, default_session_dir, find_most_recent_session, find_session_by_id, list_all_sessions,
-    list_sessions, load_entries_from_file, migrate_session_entries, migrate_sessions_from_agent_root,
-    parse_session_entries,
+    Env, Error, Leaf, NewSessionOptions, SessionManager, SessionTree, build_context_entries, build_session_context,
+    default_session_dir, find_most_recent_session, find_session_by_id, list_all_sessions, list_sessions,
+    load_entries_from_file, migrate_session_entries, migrate_sessions_from_agent_root, parse_session_entries,
 };
 
 const FIXTURE: &str = include_str!("../fixtures/session-manager.json");
@@ -24,7 +23,7 @@ struct State {
     queue: VecDeque<String>,
     counter: u64,
     random_calls: u64,
-    uuid: Uuidv7,
+    uuid: jsrt::random::Uuidv7,
     agent_dir: String,
 }
 
@@ -49,7 +48,7 @@ impl Env for FixtureEnv {
         let k = s.random_calls;
         let bytes: [u8; 16] = std::array::from_fn(|i| ((k * 31 + i as u64 * 7) & 0xff) as u8);
         let now = s.clock;
-        s.uuid.next(now, bytes)
+        s.uuid.generate(None, now, bytes)
     }
     fn agent_dir(&self) -> String {
         self.0.borrow().agent_dir.clone()

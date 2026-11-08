@@ -116,36 +116,16 @@ struct SessionFile {
 
 /// Every session file under the sessions root (one directory per working directory), newest first.
 fn list_session_files(root: &Path) -> Vec<SessionFile> {
-    let mut files = Vec::new();
-    let Ok(entries) = std::fs::read_dir(root) else {
-        return files;
-    };
-    let mut directories: Vec<PathBuf> = entries
-        .flatten()
-        .filter(|e| e.file_type().is_ok_and(|t| t.is_dir()))
-        .map(|e| e.path())
+    let mut files: Vec<SessionFile> = session_journal::catalog::session_files(root)
+        .into_iter()
+        .filter_map(|path| {
+            let modified_at = std::fs::metadata(&path)
+                .ok()?
+                .modified()
+                .map_or(0.0, jsrt::date::mtime_ms);
+            Some(SessionFile { path, modified_at })
+        })
         .collect();
-    directories.sort();
-    for directory in directories {
-        let Ok(names) = std::fs::read_dir(&directory) else {
-            continue;
-        };
-        for entry in names.flatten() {
-            let name = entry.file_name().to_string_lossy().into_owned();
-            if !name.ends_with(".jsonl") {
-                continue;
-            }
-            let path = directory.join(&name);
-            if let Ok(meta) = std::fs::metadata(&path)
-                && meta.is_file()
-            {
-                files.push(SessionFile {
-                    modified_at: meta.modified().map_or(0.0, jsrt::date::mtime_ms),
-                    path,
-                });
-            }
-        }
-    }
     files.sort_by(|a, b| {
         b.modified_at
             .partial_cmp(&a.modified_at)

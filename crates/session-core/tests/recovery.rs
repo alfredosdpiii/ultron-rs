@@ -5,13 +5,14 @@
 //! cell replay) and hands back queued messages.
 
 use serde_json::{Value, json};
-use session_core::op_journal::Run;
 use session_core::recovery::{
     CONTINUE_PROMPT, INTERRUPTED_ASSISTANT, INTERRUPTED_CELL, MAX_RECOVERY_DEPTH, RECOVERY_DEPTH, Recovered,
     interrupted_assistant, reduce_frames, settle,
 };
-use session_journal::run::{self, OP_META, OP_RESULT, OP_STATE, OP_TOOL_ARGS, PENDING_ENTRY, PENDING_FRAMES};
-use session_journal::session::LANE_STATE;
+use session_journal::ns::LANE_STATE;
+use session_journal::ns::{OP_META, OP_RESULT, OP_STATE, OP_TOOL_ARGS, PENDING_ENTRY, PENDING_FRAMES};
+use session_journal::run::Run;
+use session_journal::run::{self};
 use session_journal::{Session, SessionRepo, TestClock, Write};
 
 fn repo(dir: &std::path::Path) -> SessionRepo {

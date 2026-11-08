@@ -15,14 +15,14 @@
 //! the events anchored on the caller's conversation branch (A07). Experiments are append-only, and only runs on
 //! the same frozen fixture compare. Calls serialize; a failed write makes the service unusable until reopened.
 
+use delegation::agents::RefinementsHook;
 use kernel_apis::artifacts::KeyedDocuments;
 use kernel_apis::store::read_versioned;
 use kernel_apis::util::{Clock, system_clock};
 use serde_json::{Map, Value, json};
+use session_journal::ns::{EXPERIMENTS, REFINEMENTS};
 use std::sync::{Arc, Mutex};
 
-const REFINEMENT_KEY: &str = "ultron.refinements";
-const EXPERIMENT_KEY: &str = "ultron.experiments";
 const KINDS: [&str; 4] = ["observation", "instruction", "skill", "agent"];
 const PROTECTED_NAMES: [&str; 3] = ["agents.md", "security", "policy"];
 /// Name segments of human-owned authority: trusted instructions, security policy, grants, the acceptance instrument,
@@ -77,8 +77,6 @@ pub type Validator = Arc<dyn Fn(&str, &Value) -> Result<bool, String> + Send + S
 pub type Ids = Arc<dyn Fn() -> String + Send + Sync>;
 /// Whether an anchor lies on the conversation branch in use.
 pub type OnBranch = Arc<dyn Fn(&str) -> bool + Send + Sync>;
-/// Active refinements of a definition id as `[{id, version, text}]` (`delegation::agents::RefinementsHook`).
-pub type Hook = Arc<dyn Fn(&str) -> Result<Vec<Value>, String> + Send + Sync>;
 
 /// `NativeLocalServicesOptions` for refinements and experiments.
 #[derive(Clone)]
@@ -196,7 +194,7 @@ fn escalation(value: &Value) -> Option<String> {
 }
 
 /// `sameJson`: deep equality with object keys in any order (numbers compare as JavaScript numbers).
-pub fn same_json(left: &Value, right: &Value) -> bool {
+fn same_json(left: &Value, right: &Value) -> bool {
     match (left, right) {
         (Value::Number(a), Value::Number(b)) => a.as_f64() == b.as_f64(),
         (Value::Array(a), Value::Array(b)) => a.len() == b.len() && a.iter().zip(b).all(|(x, y)| same_json(x, y)),
@@ -574,10 +572,10 @@ impl LocalServices {
     }
 
     fn records(&self, branch: Option<&Branch>) -> Result<(Vec<Record>, Vec<Value>), String> {
-        let saved = self.documents.get(REFINEMENT_KEY)?;
+        let saved = self.documents.get(REFINEMENTS.key)?;
         let mut records = Vec::new();
         let mut events = Vec::new();
-        if let Some(stored) = read_versioned("ultron.local/ultron.refinements", saved, "formatVersion")? {
+        if let Some(stored) = read_versioned(&REFINEMENTS.address(), saved, REFINEMENTS.version_field)? {
             let replay = (|| -> Result<(), String> {
                 let document = fields(&stored, &["formatVersion", "events"], &[])?;
                 let list = document["events"].as_array();
@@ -682,7 +680,7 @@ impl LocalServices {
         }
         let mut next = events;
         next.push(event);
-        persist(REFINEMENT_KEY, &json!({"formatVersion": 1, "events": next}))?;
+        persist(REFINEMENTS.key, &json!({"formatVersion": 1, "events": next}))?;
         Ok(result.json())
     }
 
@@ -692,9 +690,9 @@ impl LocalServices {
         payload: &Value,
         persist: &mut dyn FnMut(&str, &Value) -> Result<(), String>,
     ) -> Result<Value, String> {
-        let saved = self.documents.get(EXPERIMENT_KEY)?;
+        let saved = self.documents.get(EXPERIMENTS.key)?;
         let mut runs: Vec<Value> = Vec::new();
-        if let Some(stored) = read_versioned("ultron.local/ultron.experiments", saved, "formatVersion")? {
+        if let Some(stored) = read_versioned(&EXPERIMENTS.address(), saved, EXPERIMENTS.version_field)? {
             let document = fields(&stored, &["formatVersion", "runs"], &[])?;
             let list = document["runs"].as_array();
             if document["formatVersion"].as_f64() != Some(1.0) || list.is_none() {
@@ -722,7 +720,7 @@ impl LocalServices {
                 let value = Value::Object(value);
                 experiment(&value)?;
                 runs.push(value.clone());
-                persist(EXPERIMENT_KEY, &json!({"formatVersion": 1, "runs": runs}))?;
+                persist(EXPERIMENTS.key, &json!({"formatVersion": 1, "runs": runs}))?;
                 Ok(value)
             }
             _ => {
@@ -747,52 +745,33 @@ impl LocalServices {
 /// path, read when a request is made.
 pub type BranchSource = Arc<dyn Fn() -> Branch + Send + Sync>;
 
-/// The active instruction refinements of a definition id as a typed-agent host's refinement hook
-/// (`refinements` of `NativeHostOptions`): `[{id, version, text}]` of `instruction:<definition id>` on the branch
-/// `branch` names (every event without one); text content as is, other content as its JSON.
-pub fn instruction_hook(services: Arc<LocalServices>) -> Hook {
-    instruction_hook_on(services, None)
+/// An active refinement record as prompts show it: `{id, version, text}`, text content as is, other content as its
+/// JSON.
+pub fn refinement_view(record: &Value) -> Value {
+    let text = match &record["content"] {
+        Value::String(text) => text.clone(),
+        other => jsrt::json::stringify(other),
+    };
+    json!({"id": record["id"], "version": record["version"], "text": text})
 }
 
-/// [`instruction_hook`] following `branch` (`mainBranch`).
-pub fn instruction_hook_on(services: Arc<LocalServices>, branch: Option<BranchSource>) -> Hook {
+/// The active instruction refinements of a definition id as a typed-agent host's refinement hook
+/// (`refinements` of `NativeHostOptions`): `[{id, version, text}]` of `instruction:<definition id>` on the branch
+/// `branch` names (`mainBranch`; every event without one).
+pub fn instruction_hook(services: Arc<LocalServices>, branch: Option<BranchSource>) -> RefinementsHook {
     Arc::new(move |definition: &str| {
         let branch = branch.as_ref().map(|source| source());
         let current = services.current("instruction", &format!("instruction:{definition}"), branch.as_ref())?;
-        Ok(current
-            .map(|record| {
-                let text = match &record["content"] {
-                    Value::String(text) => text.clone(),
-                    other => jsrt::json::stringify(other),
-                };
-                vec![json!({"id": record["id"], "version": record["version"], "text": text})]
-            })
-            .unwrap_or_default())
+        Ok(current.map(|record| vec![refinement_view(&record)]).unwrap_or_default())
     })
 }
 
-/// `refinements.*` and `experiments.*` as a host module, every refinement event applied.
+/// `refinements.*` and `experiments.*` as a host module. With a `branch`, refinements follow the conversation branch
+/// (session-worker.ts `branchedServices`): a change is anchored at the main lane's tip and read back only while that
+/// anchor is on the branch in use; without one every refinement event applies.
 pub struct LocalServicesModule {
     pub services: Arc<LocalServices>,
-}
-
-/// [`LocalServicesModule`] whose refinements follow the conversation branch (session-worker.ts `branchedServices`):
-/// a change is anchored at the main lane's tip and read back only while that anchor is on the branch in use.
-pub struct BranchedLocalServices {
-    pub services: Arc<LocalServices>,
-    pub branch: BranchSource,
-}
-
-impl kernel_apis::ApiModule for BranchedLocalServices {
-    fn prefixes(&self) -> &[&str] {
-        &["refinements.", "experiments."]
-    }
-
-    fn handle(&self, request: &kernel_apis::Request<'_>) -> Result<Value, String> {
-        let branch = request.kind.starts_with("refinements.").then(|| (self.branch)());
-        self.services
-            .handle(request.kind, &Value::Object(request.payload.clone()), branch.as_ref())
-    }
+    pub branch: Option<BranchSource>,
 }
 
 impl kernel_apis::ApiModule for LocalServicesModule {
@@ -801,7 +780,11 @@ impl kernel_apis::ApiModule for LocalServicesModule {
     }
 
     fn handle(&self, request: &kernel_apis::Request<'_>) -> Result<Value, String> {
+        let branch = match &self.branch {
+            Some(source) if request.kind.starts_with("refinements.") => Some(source()),
+            _ => None,
+        };
         self.services
-            .handle(request.kind, &Value::Object(request.payload.clone()), None)
+            .handle(request.kind, &Value::Object(request.payload.clone()), branch.as_ref())
     }
 }

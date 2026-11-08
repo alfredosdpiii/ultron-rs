@@ -8,6 +8,7 @@
 //! commit. [`run`] writes the harness operation journal of a prompted run; [`names`] lists sessions with their
 //! names and resolves `--resume <name|id>`.
 
+pub mod catalog;
 pub mod checkpoints;
 pub mod codec;
 pub mod context;
@@ -15,6 +16,7 @@ pub mod fork;
 pub mod io;
 pub mod legacy_v3;
 pub mod names;
+pub mod ns;
 pub mod repo;
 pub mod run;
 pub mod session;
@@ -41,13 +43,9 @@ pub trait Clock: Send {
 
 pub type SharedClock = Arc<Mutex<dyn Clock>>;
 
-pub(crate) fn lock(clock: &SharedClock) -> MutexGuard<'_, dyn Clock + 'static> {
-    jsrt::sync::lock(clock)
-}
-
 /// Lock a shared clock (a poisoned lock is still usable: the clock has no invariants to break).
 pub fn lock_clock(clock: &SharedClock) -> MutexGuard<'_, dyn Clock + 'static> {
-    lock(clock)
+    jsrt::sync::lock(clock)
 }
 
 /// The system clock with the process-wide UUIDv7 generator and OS randomness.

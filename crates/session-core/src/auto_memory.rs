@@ -194,21 +194,14 @@ pub fn worth_recalling(text: &str) -> bool {
 /// (a compaction summarizes them away, so they may be shown again).
 pub fn shown(entries: &[Value]) -> Shown {
     let mut shown = Shown::default();
-    for entry in entries {
-        if entry["type"] == "compaction" {
-            shown = Shown::default();
-        }
-        let message = &entry["message"];
-        if entry["type"] == "message" && message["role"] == "custom" && message["customType"] == MEMORY_CUSTOM_TYPE {
-            let details = &message["details"];
-            for id in details["ids"].as_array().into_iter().flatten() {
-                if let Some(id) = id.as_str() {
-                    shown.ids.insert(id.to_string());
-                }
+    for details in session_journal::context::custom_details_since_compaction(entries, MEMORY_CUSTOM_TYPE) {
+        for id in details["ids"].as_array().into_iter().flatten() {
+            if let Some(id) = id.as_str() {
+                shown.ids.insert(id.to_string());
             }
-            // A string before the user's brief, the list of brief ids since.
-            shown.digest |= details["digest"].is_string() || details["digest"].is_array();
         }
+        // A string before the user's brief, the list of brief ids since.
+        shown.digest |= details["digest"].is_string() || details["digest"].is_array();
     }
     shown
 }

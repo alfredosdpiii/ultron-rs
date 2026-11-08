@@ -947,7 +947,7 @@ fn link_thread(
                 }
             }
             Command::Resume(path) => {
-                let id = session_journal::repo::read_metadata(std::path::Path::new(&path)).map(|m| m.id);
+                let id = session_journal::catalog::read_metadata(std::path::Path::new(&path)).map(|m| m.id);
                 match id
                     .ok_or_else(|| format!("Not a session file: {path}"))
                     .and_then(|id| link.attach(&id))
@@ -1126,7 +1126,7 @@ fn link_thread(
             },
             Command::DeleteSession(path) => {
                 // Through the server, which closes the session's worker first (client-tui-sessions.ts).
-                let id = session_journal::repo::read_metadata(std::path::Path::new(&path)).map(|m| m.id);
+                let id = session_journal::catalog::read_metadata(std::path::Path::new(&path)).map(|m| m.id);
                 let result = match id {
                     Some(id) if id == link.session_id() => Err("Cannot delete the currently active session".into()),
                     Some(id) => link.remove(&id).map_err(|e| format!("Failed to delete: {e}")),
@@ -1139,7 +1139,7 @@ fn link_thread(
             }
             Command::ImportPi(path) => send(import_pi(&link, &path)),
             Command::RenameSession(path, new_name) => {
-                let id = session_journal::repo::read_metadata(std::path::Path::new(&path)).map(|m| m.id);
+                let id = session_journal::catalog::read_metadata(std::path::Path::new(&path)).map(|m| m.id);
                 let renamed = match id {
                     Some(id) if id == link.session_id() => link.op(&Op::SetName { name: new_name }).map(|_| ()),
                     Some(id) => link.rename(&id, &new_name),

@@ -12,7 +12,7 @@ use harness::chat::{
     SubmissionAbort, SubmissionDraft, ToolExecution, WhenBusy,
 };
 use harness::scheduler::{Cancel, Ctx, Registry};
-use session_journal::run::{OP_META, OP_STATE};
+use session_journal::ns::{OP_META, OP_STATE};
 use std::sync::atomic::{AtomicBool, Ordering};
 
 /// A round whose answer the transcript holds: its calls `(id, name)`, and the results reported before a restart.
@@ -32,18 +32,6 @@ pub(super) struct Durable {
     pub stop: Cancel,
     /// The subagents running as child conversations (their usage root follows the root turn).
     pub children: Arc<crate::subagents::DurableChildren>,
-}
-
-/// The durable generation's retry policy: the same attempts and delays the operation journal records
-/// (`crate::compaction_op::SummaryRetry::from_settings`).
-fn retry_policy(settings: &Value, enabled: bool) -> RetryPolicy {
-    let policy = crate::compaction_op::SummaryRetry::from_settings(settings, enabled);
-    RetryPolicy {
-        enabled: policy.max_attempts > 1,
-        max_retries: policy.max_attempts - 1,
-        base_delay_ms: policy.base_delay_ms,
-        max_delay_ms: policy.max_delay_ms,
-    }
 }
 
 fn harness_error(error: harness::scheduler::HarnessError) -> String {
@@ -95,7 +83,7 @@ pub(super) fn open_durable(
                 .stream_options()
                 .and_then(|options| options.as_object().cloned())
                 .unwrap_or_default(),
-            retry: retry_policy(&retry_settings, retry.load(Ordering::SeqCst)),
+            retry: RetryPolicy::from_settings(&retry_settings, retry.load(Ordering::SeqCst)),
             compaction: CompactionPolicy {
                 enabled: false,
                 ..CompactionPolicy::default()
@@ -491,7 +479,7 @@ impl Core {
         };
         // At the checkpoint, or in a compaction there that a dead worker left (it compacts again).
         lock_session(&self.session)
-            .value(session_journal::run::OP_STATE, &operation)
+            .value(session_journal::ns::OP_STATE, &operation)
             .is_some_and(|state| {
                 let continuation = match state["at"].as_str() {
                     Some("checkpoint") => &state["continuation"],
@@ -640,8 +628,8 @@ impl Core {
             return Ok(());
         };
         let system = serde_json::to_value(&system).map_err(|error| error.to_string())?;
-        compaction::prompt_budget::check_prompt_budget(
-            compaction::prompt_budget::PromptSize::of(&system),
+        crate::prompt_budget::check_prompt_budget(
+            crate::prompt_budget::PromptSize::of(&system),
             self.model.context_window,
             &self.compaction_settings(),
             &format!("{}/{}", self.model.provider, self.model.id),
@@ -680,7 +668,7 @@ impl Core {
         if let Err(error) = self.checkpoint_compaction() {
             return answer.give(Err(StartError::Checkpoint(error)));
         }
-        // The prompt budget (compaction::prompt_budget): a system prompt and tool schemas that leave the
+        // The prompt budget (crate::prompt_budget): a system prompt and tool schemas that leave the
         // conversation no room under the compaction threshold fail the run before any request.
         if let Err(error) = self.prompt_budget() {
             return answer.give(Err(StartError::Checkpoint(error)));
@@ -783,13 +771,11 @@ impl Core {
             .unwrap_or(Value::Null);
         let cancelled = state["control"]["status"] == "cancel_requested";
         // An overflow compaction the worker died in compacts again at the next checkpoint, before the request.
-        let resume_overflow = crate::op_journal::Run::open_compaction(&lock_session(&self.session), operation_id)
+        let resume_overflow = session_journal::run::Run::open_compaction(&lock_session(&self.session), operation_id)
             .filter(|open| open.reason == "overflow")
             .map(|open| open.resume_after);
         journal.ledger_counts_turns();
-        let mut random = [0u8; 16];
-        let _ = getrandom_fill(&mut random);
-        let id = self.run_ids.next(now_ms(), random);
+        let id = jsrt::random::uuid_v7(now_ms());
         let source_tip = meta["sourceTipId"].as_str().map(str::to_string);
         let unreported = journal.run().map(|r| r.unreported_calls()).unwrap_or_default();
         let submission = self

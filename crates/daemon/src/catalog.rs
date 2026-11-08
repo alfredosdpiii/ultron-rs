@@ -77,14 +77,9 @@ impl From<Metadata> for Meta {
     }
 }
 
-/// `sessionDirectoryName`: the cwd without its leading separator, separators and colons as dashes, between `--`.
-pub fn session_directory_name(cwd: &str) -> String {
-    session_journal::repo::session_directory_name(cwd)
-}
-
 /// The metadata a session file's header line gives, for either header format.
 pub fn read_meta(path: &Path) -> Option<Meta> {
-    session_journal::repo::read_metadata(path).map(Meta::from)
+    session_journal::catalog::read_metadata(path).map(Meta::from)
 }
 
 fn repo(root: &Path) -> SessionRepo {

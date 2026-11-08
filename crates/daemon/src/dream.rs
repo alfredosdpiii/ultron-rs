@@ -125,7 +125,7 @@ fn create_session(instance_dir: &Path, session_dir: &Path, cwd: &Path) -> Result
     let repo = session_journal::SessionRepo::new(session_dir, session_journal::SystemClock::shared());
     let mut session = repo.create(&cwd.display().to_string(), None, None)?;
     session.commit(&[session_journal::Write::set(
-        session_journal::session::SESSION_NAME,
+        session_journal::ns::SESSION_NAME,
         "",
         SESSION_NAME.into(),
     )])?;

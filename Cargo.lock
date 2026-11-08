@@ -481,6 +481,7 @@ dependencies = [
  "jsrt",
  "serde_json",
  "session-file",
+ "session-journal",
 ]
 
 [[package]]
@@ -1097,9 +1098,11 @@ dependencies = [
  "indexmap",
  "jsrt",
  "kernel",
+ "model-scope",
  "regex",
  "serde",
  "serde_json",
+ "session-journal",
  "sha2",
 ]
 
@@ -1516,7 +1519,6 @@ dependencies = [
  "rlm-views",
  "rustix",
  "serde_json",
- "session-file",
  "theme",
  "tui",
  "unicode-segmentation",
@@ -1655,7 +1657,6 @@ dependencies = [
  "resources",
  "serde",
  "serde_json",
- "session-file",
  "session-journal",
  "sha2",
  "tempfile",
@@ -2827,7 +2828,6 @@ name = "session-file"
 version = "0.1.0"
 dependencies = [
  "config",
- "getrandom 0.4.3",
  "indexmap",
  "jsrt",
  "serde_json",
@@ -2838,10 +2838,9 @@ dependencies = [
 name = "session-journal"
 version = "0.1.0"
 dependencies = [
- "getrandom 0.4.3",
+ "config",
  "jsrt",
  "serde_json",
- "session-file",
  "tempfile",
 ]
 

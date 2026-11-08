@@ -486,7 +486,7 @@ pub fn in_journal<T>(
 ) -> Result<T, String> {
     let _owner = crate::owner::OwnerLock::acquire(path, Duration::from_millis(500)).map_err(|error| match error {
         crate::owner::OwnerError::InUse { pid } => crate::worker::session_in_use(
-            &session_journal::repo::read_metadata(path)
+            &session_journal::catalog::read_metadata(path)
                 .map(|m| m.id)
                 .unwrap_or_default(),
             pid,
@@ -500,8 +500,8 @@ pub fn in_journal<T>(
         Duration::from_millis(4_000),
     )
     .map_err(|e| e.to_string())?;
-    let metadata =
-        session_journal::repo::read_metadata(path).ok_or_else(|| format!("Not a session file: {}", path.display()))?;
+    let metadata = session_journal::catalog::read_metadata(path)
+        .ok_or_else(|| format!("Not a session file: {}", path.display()))?;
     let root = path
         .parent()
         .and_then(Path::parent)

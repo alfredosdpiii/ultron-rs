@@ -10,6 +10,7 @@ use super::stats::{CELL_APIS, Cells, Stats, parse_session_stats};
 use delegation::lane_names::{LaneOwner, child_lane, frame_lane, parse_lane};
 use indexmap::{IndexMap, IndexSet};
 use serde_json::{Map, Value, json};
+use session_journal::ns;
 use std::collections::{HashMap, HashSet};
 
 pub const SESSION_REPORT_SCHEMA: &str = "ultron.session-report/1";
@@ -234,7 +235,7 @@ fn definition_name(definition: Option<&Value>) -> String {
 }
 
 fn tasks_of(log: &SessionLog) -> Vec<Task> {
-    let list = record(log.value("ultron.tasks", "root"))
+    let list = record(log.value(ns::TASKS, "root"))
         .and_then(|t| t.get("tasks"))
         .and_then(Value::as_array);
     list.into_iter()
@@ -362,7 +363,7 @@ pub fn build_session_report_with(log: &SessionLog, subscription_providers: &[Str
             tree_lane.insert(root, lane.to_string());
         }
     };
-    for (lane, tip) in log.values_of("ultron.branch.tip") {
+    for (lane, tip) in log.values_of(ns::BRANCH_TIP) {
         claim(tip.as_str(), lane, &mut root_ids);
     }
     for result in &log.results {
@@ -378,7 +379,7 @@ pub fn build_session_report_with(log: &SessionLog, subscription_providers: &[Str
         .map(|entry| tree_lane.get(&tree_root(&entry.id, &mut root_ids)).cloned())
         .collect();
     let mut lane_models: HashMap<&str, String> = HashMap::new();
-    for (lane, config) in log.values_of("ultron.lane.config") {
+    for (lane, config) in log.values_of(ns::LANE_CONFIG) {
         if let Some(model) = model_name(config) {
             lane_models.insert(lane, model);
         }
@@ -397,10 +398,9 @@ pub fn build_session_report_with(log: &SessionLog, subscription_providers: &[Str
         .iter()
         .filter(|r| r.kind == "run" && log.operations.get(&r.operation_id).map(|o| o.lane.as_str()) == Some("main"))
         .collect();
-    let name = log.value("ultron.session.name", "").and_then(Value::as_str);
+    let name = log.value(ns::SESSION_NAME, "").and_then(Value::as_str);
     let empty_roots = Map::new();
-    let usage_roots =
-        record(record(log.value("ultron.usage", "root")).and_then(|u| u.get("roots"))).unwrap_or(&empty_roots);
+    let usage_roots = record(record(log.value(ns::USAGE, "root")).and_then(|u| u.get("roots"))).unwrap_or(&empty_roots);
     let external_marks = name == Some("claude code")
         || name.is_some_and(|n| n.starts_with("claude subagent ("))
         || usage_roots.keys().any(|id| id.starts_with("turn:cc-"));
@@ -423,7 +423,7 @@ pub fn build_session_report_with(log: &SessionLog, subscription_providers: &[Str
         happened(root.get("startedAt").and_then(Value::as_f64));
     }
     let nothing_ran = first_activity == f64::INFINITY && tasks.is_empty() && !external_marks;
-    let stats: Option<Stats> = parse_session_stats(log.value("ultron.module", "stats"))
+    let stats: Option<Stats> = parse_session_stats(log.value(ns::MODULE, "stats"))
         .or_else(|| nothing_ran.then(|| Stats::empty(log.header.created_at)));
     let mode = if stats.as_ref().is_some_and(|s| s.external)
         || (stats.is_none() && main_entries.is_empty() && external_marks)
@@ -987,7 +987,7 @@ pub fn build_session_report_with(log: &SessionLog, subscription_providers: &[Str
 
     // Guardrails.
     let mut hints: IndexMap<String, f64> = IndexMap::new();
-    if let Some(lanes) = record(record(log.value("ultron.module", "hints")).and_then(|h| h.get("lanes"))) {
+    if let Some(lanes) = record(record(log.value(ns::MODULE, "hints")).and_then(|h| h.get("lanes"))) {
         for lane in lanes.values() {
             if let Some(fired) = record(lane.get("fired")) {
                 for (tag, n) in fired {
@@ -1026,7 +1026,7 @@ pub fn build_session_report_with(log: &SessionLog, subscription_providers: &[Str
     };
 
     // Memory.
-    let memory = record(log.value("ultron.memory.state", "root"))
+    let memory = record(log.value(ns::MEMORY_STATE, "root"))
         .and_then(|m| m.get("operations"))
         .and_then(Value::as_array)
         .filter(|ops| !ops.is_empty());

@@ -135,7 +135,7 @@ fn daemon_prompt_schedules_scan_reads_only_the_sessions_own_last_values() {
     // The probe's own values: a later write replaces, a delete removes.
     let repo = SessionRepo::new(dir.path(), SystemClock::shared());
     let mut session = repo
-        .open(&session_journal::repo::read_metadata(&probe.path).unwrap())
+        .open(&session_journal::catalog::read_metadata(&probe.path).unwrap())
         .unwrap();
     for (key, value) in [
         ("sch-1", own("sch-1", T0, State::Active)),
@@ -183,7 +183,7 @@ fn daemon_prompt_schedules_missed_slots_fire_once_on_start_then_wait_for_the_nex
     let probe = session_with(dir.path(), &[]);
     let repo = SessionRepo::new(dir.path(), SystemClock::shared());
     let mut session = repo
-        .open(&session_journal::repo::read_metadata(&probe.path).unwrap())
+        .open(&session_journal::catalog::read_metadata(&probe.path).unwrap())
         .unwrap();
     // Due five hours ago (the server was down), and one not due yet.
     for s in [
@@ -271,7 +271,7 @@ fn daemon_prompt_schedules_cancel_in_journal_takes_the_locks_and_writes_the_canc
     let probe = session_with(dir.path(), &[]);
     let repo = SessionRepo::new(dir.path(), SystemClock::shared());
     let mut session = repo
-        .open(&session_journal::repo::read_metadata(&probe.path).unwrap())
+        .open(&session_journal::catalog::read_metadata(&probe.path).unwrap())
         .unwrap();
     let active = schedule("sch-1", &probe.id, Some(T0 + HOUR), State::Active);
     session
@@ -300,7 +300,7 @@ fn daemon_prompt_schedules_hold_the_server_while_any_is_pending_and_keep_the_las
     let dir = tempfile::tempdir().unwrap();
     let probe = session_with(dir.path(), &[]);
     let mut session = SessionRepo::new(dir.path(), SystemClock::shared())
-        .open(&session_journal::repo::read_metadata(&probe.path).unwrap())
+        .open(&session_journal::catalog::read_metadata(&probe.path).unwrap())
         .unwrap();
     let pending = schedule("sch-1", &probe.id, Some(T0), State::Active);
     session

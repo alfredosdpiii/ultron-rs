@@ -100,13 +100,7 @@ pub fn retry_policy(settings: &config::settings::SettingsManager) -> RetryPolicy
         .get("retry")
         .cloned()
         .unwrap_or(serde_json::Value::Null);
-    let policy = crate::compaction_op::SummaryRetry::from_settings(&retry, true);
-    RetryPolicy {
-        enabled: policy.max_attempts > 1,
-        max_retries: policy.max_attempts - 1,
-        base_delay_ms: policy.base_delay_ms,
-        max_delay_ms: policy.max_delay_ms,
-    }
+    RetryPolicy::from_settings(&retry, true)
 }
 
 /// A stream that asks again after a transient provider error (`isRetryableAssistantError`), up to the policy's

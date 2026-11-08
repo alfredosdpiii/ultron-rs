@@ -109,7 +109,7 @@ pub fn clock_zone(env: &Env) -> jsrt::localtime::Zone {
 
 /// `clockContextEnabled`: `ULTRON_CLOCK_CONTEXT=off|0|false` disables clock lines.
 pub fn clock_enabled(env: &Env) -> bool {
-    !(env.var)(CLOCK_CONTEXT_ENV).is_some_and(|v| matches!(v.trim().to_lowercase().as_str(), "off" | "0" | "false"))
+    !env.flag_off(CLOCK_CONTEXT_ENV)
 }
 
 /// The clock lines of `withClockLines` as `(index, text, timestamp)`: one before each user message that opens the
@@ -148,7 +148,7 @@ fn is_compaction_summary(message: &Value) -> bool {
         Value::Array(blocks) => blocks.first().and_then(|block| block["text"].as_str()),
         _ => None,
     };
-    text.is_some_and(|text| text.starts_with(compaction::COMPACTION_SUMMARY_PREFIX))
+    text.is_some_and(|text| text.starts_with(session_journal::context::COMPACTION_SUMMARY_PREFIX))
 }
 
 /// One clock line (a user message) per [`clock_texts`] entry, with the index of the message it precedes, in UTC.
@@ -196,7 +196,7 @@ pub fn with_clock_lines_in(messages: &[Value], zone: &jsrt::localtime::Zone) -> 
 /// Session messages as the model sees them (`convertToLlm`): custom roles become user messages, excluded bash runs
 /// are dropped.
 pub fn to_llm(messages: &[Value]) -> Vec<Message> {
-    compaction::convert_to_llm(messages)
+    session_journal::context::convert_to_llm(messages)
         .into_iter()
         .filter_map(|m| serde_json::from_value(m).ok())
         .collect()
@@ -1290,12 +1290,6 @@ impl Rlm {
     }
 }
 
-/// `sessionDirectoryName` of the JSONL session repo: the cwd without its leading separator, separators and colons
-/// as dashes, between `--`.
-pub fn session_directory_name(cwd: &str) -> String {
-    session_journal::repo::session_directory_name(cwd)
-}
-
 /// One session's root lane: the `rlm` tool over the "main" REPL lane of the session's host stack.
 pub struct Lane {
     /// The host operations (shell, writes) behind the stack, for host-side commands such as RPC `bash`.
@@ -1357,7 +1351,7 @@ impl Lane {
 }
 
 /// The root lane's name.
-pub const MAIN: &str = "main";
+pub const MAIN: &str = session_journal::run::MAIN_LANE;
 
 /// The result of a call whose cell keeps running detached: how its end reaches a lane the host wakes (`woken`: the
 /// end starts a new turn) or one nothing wakes (the end is reported with a later result; stop it or check on it).

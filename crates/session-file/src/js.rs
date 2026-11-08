@@ -3,14 +3,6 @@
 
 use serde_json::Value;
 
-// ponytail: re-exports kept for the crates that still import them from here; they move to `jsrt` directly.
-pub use jsrt::date::{iso_string, parse_date};
-pub use jsrt::json::{object_entries, stringify};
-pub use jsrt::number::json_to_string as number_to_string;
-pub use jsrt::string::trim;
-pub use jsrt::value::number as to_number;
-pub use jsrt::value::truthy;
-
 /// `Number.prototype.toString()` for a double; non-finite values become `null` as in JSON.
 pub fn format_f64(f: f64) -> String {
     if f.is_finite() {

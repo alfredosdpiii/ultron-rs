@@ -8,8 +8,7 @@
 
 use super::*;
 use crate::async_events::{
-    Accepted, Cancelled, Dispatcher, DispatcherOptions, EventLanes, Execution, RuntimeEvent, async_events_enabled,
-    max_event_runs_from_env,
+    Accepted, Cancelled, Dispatcher, DispatcherOptions, EventLanes, Execution, RuntimeEvent, max_event_runs_from_env,
 };
 use crate::subagents::DurableChildren;
 use harness::chat::{ChatHarness, SubmissionDraft, WhenBusy};
@@ -163,8 +162,7 @@ pub(super) fn install(
             .usage_root_for_lane(LANE, run)
             .unwrap_or_else(|| format!("turn:{run}"))
     }));
-    options.enabled =
-        stack.events.enabled() && async_events_enabled((env.var)(crate::async_events::ASYNC_EVENTS_ENV).as_deref());
+    options.enabled = stack.events.enabled();
     options.max_runs = max_event_runs_from_env((env.var)(ASYNC_EVENTS_MAX_RUNS_ENV).as_deref());
     // With events on, the dispatcher re-invokes the idle root when its work ends: the root lane is woken
     // (crate::wake), so its rlm.collect never waits; without them it waits in its cell like every other lane.

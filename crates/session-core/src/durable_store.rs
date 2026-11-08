@@ -16,7 +16,6 @@ use session_journal::{Session, Write};
 use std::sync::{Arc, Mutex, MutexGuard};
 
 /// The namespace and list key the durable records live under.
-pub const NAMESPACE: &str = "ultron.module";
 pub const KEY: &str = "durable";
 
 /// The session journal, shared by the session actor and the durable runtime's commits.
@@ -37,7 +36,7 @@ fn failed(message: impl Into<String>) -> StorageError {
 pub fn stored_commits(session: &Session) -> Result<Vec<(u64, Vec<StorageWrite>)>, StorageError> {
     session
         .state()
-        .read_list(NAMESPACE, KEY)
+        .read_list(session_journal::ns::MODULE, KEY)
         .into_iter()
         .map(|element| {
             let seq = element.value["seq"]
@@ -64,7 +63,7 @@ pub fn open(session: SharedSession, observer: Option<Observer>) -> Result<Memory
             "writes": serde_json::to_value(&prepared.writes).map_err(|e| failed(e.to_string()))?,
         });
         lock(&session)
-            .commit(&[Write::append(NAMESPACE, KEY, record)])
+            .commit(&[Write::append(session_journal::ns::MODULE, KEY, record)])
             .map_err(failed)?;
         if let Some(observer) = &observer {
             observer(&prepared.writes);
@@ -75,5 +74,5 @@ pub fn open(session: SharedSession, observer: Option<Observer>) -> Result<Memory
 
 /// Whether a session file holds durable runtime records.
 pub fn has_records(session: &Session) -> bool {
-    !session.state().read_list(NAMESPACE, KEY).is_empty()
+    !session.state().read_list(session_journal::ns::MODULE, KEY).is_empty()
 }

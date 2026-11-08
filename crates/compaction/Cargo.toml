@@ -13,6 +13,7 @@ indexmap = "=2.14.2"
 jsrt = { path = "../jsrt" }
 serde_json = { version = "=1.0.151", features = ["float_roundtrip", "preserve_order"] }
 session-file = { path = "../session-file" }
+session-journal = { path = "../session-journal" }
 
 [lints]
 workspace = true

@@ -5,7 +5,9 @@
 
 use crate::Clock;
 use crate::codec::{self, JSONL_FORMAT_VERSION, JSONL_STORAGE_VERSION, ParsedHeader};
-use crate::usage::{add_usage, empty_usage, num};
+use crate::ns::{BRANCH_TIP, ENTRY_LABEL, LANE_CONFIG, LANE_STATE, SESSION_NAME};
+use crate::usage::{add_usage, empty_usage};
+use jsrt::json::number as num;
 use serde_json::{Map, Value, json};
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
@@ -265,7 +267,7 @@ impl LegacyV3Source {
     ) -> Result<Vec<Value>, String> {
         let mut values = Vec::new();
         if let Some(name) = name.filter(|n| jsrt::value::truthy(Some(n))) {
-            values.push(set_value("ultron.session.name", "", name, seq));
+            values.push(set_value(SESSION_NAME, "", name, seq));
             seq += 1;
         }
         let mut labels: Vec<(String, Value)> = Vec::new();
@@ -285,20 +287,15 @@ impl LegacyV3Source {
             }
         }
         for (target, label) in labels {
-            values.push(set_value("ultron.entry.label", &target, label, seq));
+            values.push(set_value(ENTRY_LABEL, &target, label, seq));
             seq += 1;
         }
-        values.push(set_value(
-            "ultron.branch.tip",
-            "main",
-            self.resolve_value(final_id)?,
-            seq,
-        ));
+        values.push(set_value(BRANCH_TIP, "main", self.resolve_value(final_id)?, seq));
         seq += 1;
         if let Some(configuration) = self.selected_configuration(final_id) {
-            values.push(set_value("ultron.lane.config", "main", configuration, seq));
+            values.push(set_value(LANE_CONFIG, "main", configuration, seq));
             values.push(set_value(
-                "ultron.lane.state",
+                LANE_STATE,
                 "main",
                 json!({"currentOperationId": null, "lastOperationId": null, "inbox": []}),
                 seq + 1,

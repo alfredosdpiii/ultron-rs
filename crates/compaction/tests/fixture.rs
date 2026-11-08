@@ -9,12 +9,13 @@ use ai::transcript::ContextUsageEstimate;
 use ai::{AssistantMessage, Model, Usage};
 use compaction::{
     BranchSummaryError, BranchSummaryOptions, CompactOptions, CompactionSettings, FileOperations, SummaryRequest,
-    collect_entries_for_branch_summary, compact, compute_file_lists, convert_to_llm, estimate_context_tokens,
+    collect_entries_for_branch_summary, compact, compute_file_lists, estimate_context_tokens,
     estimate_projected_context_tokens, estimate_tokens, find_cut_point, find_turn_start_index, format_file_operations,
     generate_branch_summary, prepare_branch_entries, prepare_compaction, serialize_conversation, should_compact,
 };
 use serde_json::{Value, json};
 use session_file::{Env, Leaf, SessionManager, build_session_projection};
+use session_journal::context::convert_to_llm;
 
 fn fixture() -> Value {
     let text = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/fixtures/compaction.json")).unwrap();

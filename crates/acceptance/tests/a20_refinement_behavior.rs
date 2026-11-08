@@ -44,8 +44,8 @@ fn acceptance_a20_activation_reaches_later_model_runs_a_new_version_supersedes_i
     ));
     let host = build(Setup {
         script: Some(Arc::new(|_, _, _| Ok("done".into()))),
-        refinements: Some(instruction_hook(services.clone())),
-        modules: vec![Arc::new(LocalServicesModule { services })],
+        refinements: Some(instruction_hook(services.clone(), None)),
+        modules: vec![Arc::new(LocalServicesModule { services, branch: None })],
         ..Setup::default()
     });
 

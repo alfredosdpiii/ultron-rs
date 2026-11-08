@@ -106,6 +106,38 @@ impl Default for RetryPolicy {
 }
 
 impl RetryPolicy {
+    /// `normalizedRetryPolicy` of settings.json's `retry` object (missing members take their defaults):
+    /// `retry.enabled ? retry.maxRetries + 1 : 1` attempts; `enabled` false turns retries off for this session.
+    pub fn from_settings(retry: &serde_json::Value, enabled: bool) -> RetryPolicy {
+        let defaults = RetryPolicy::default();
+        let number = |key: &str, default: u64| retry[key].as_u64().unwrap_or(default);
+        let max_retries = if enabled && retry["enabled"] != false {
+            number("maxRetries", defaults.max_retries)
+        } else {
+            0
+        };
+        RetryPolicy {
+            enabled: max_retries > 0,
+            max_retries,
+            base_delay_ms: number("baseDelayMs", defaults.base_delay_ms),
+            max_delay_ms: number("maxAgentDelayMs", defaults.max_delay_ms),
+        }
+    }
+
+    /// Attempts in all, the first included.
+    pub fn max_attempts(&self) -> u64 {
+        if self.enabled { self.max_retries + 1 } else { 1 }
+    }
+
+    /// The policy as an operation journal records it (`{maxAttempts, baseDelayMs, maxAgentDelayMs}`).
+    pub fn journal_value(&self) -> serde_json::Value {
+        serde_json::json!({
+            "maxAttempts": self.max_attempts(),
+            "baseDelayMs": self.base_delay_ms,
+            "maxAgentDelayMs": self.max_delay_ms,
+        })
+    }
+
     /// `retryDelayMs`: `baseDelayMs * 2^(attempt-1)`, capped.
     pub fn delay_ms(&self, attempt: u64) -> u64 {
         let factor = 1u64.checked_shl(attempt.saturating_sub(1) as u32).unwrap_or(u64::MAX);

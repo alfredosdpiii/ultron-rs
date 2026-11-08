@@ -5,6 +5,7 @@
 use crate::codec::{self, ParsedHeader};
 use crate::io;
 use crate::legacy_v3::LegacyV3Source;
+use crate::ns::{BRANCH_TIP, ENTRY_LABEL, LANE_CONFIG, LANE_STATE, OP_RESULT, SESSION_NAME};
 use crate::state::{seq_of, str_of};
 use serde_json::{Map, Value, json};
 use std::collections::{HashMap, HashSet};
@@ -104,9 +105,9 @@ pub fn project_current_state(
         Plan::Branch { branch, .. } => str_of(w, "key") == branch,
     };
     Ok(match namespace {
-        "ultron.session.name" => Some(write.clone()),
-        "ultron.entry.label" => copied(key).then(|| write.clone()),
-        "ultron.branch.tip" => match plan {
+        SESSION_NAME => Some(write.clone()),
+        ENTRY_LABEL => copied(key).then(|| write.clone()),
+        BRANCH_TIP => match plan {
             Plan::Tree => Some(write.clone()),
             Plan::Branch {
                 branch,
@@ -117,13 +118,13 @@ pub fn project_current_state(
                 w
             }),
         },
-        "ultron.lane.config" => branch_scoped(write).then(|| write.clone()),
-        "ultron.lane.state" => branch_scoped(write).then(|| {
+        LANE_CONFIG => branch_scoped(write).then(|| write.clone()),
+        LANE_STATE => branch_scoped(write).then(|| {
             let mut w = write.clone();
             w["value"] = json!({"currentOperationId": null, "lastOperationId": null, "inbox": []});
             w
         }),
-        "ultron.result" => None,
+        OP_RESULT => None,
         _ if namespace.starts_with("ultron.op.") || namespace.starts_with("ultron.pending.") => None,
         _ => matches!(plan, Plan::Tree).then(|| write.clone()),
     })
@@ -165,23 +166,23 @@ impl Index {
                     }
                     let lane = str_of(write, "key").to_string();
                     match str_of(write, "namespace") {
-                        "ultron.branch.tip" if set => {
+                        BRANCH_TIP if set => {
                             self.branch_tips
                                 .insert(lane, write["value"].as_str().map(str::to_string));
                         }
-                        "ultron.branch.tip" => {
+                        BRANCH_TIP => {
                             self.branch_tips.remove(&lane);
                         }
-                        "ultron.lane.config" if set => {
+                        LANE_CONFIG if set => {
                             self.lane_configs.insert(lane);
                         }
-                        "ultron.lane.config" => {
+                        LANE_CONFIG => {
                             self.lane_configs.remove(&lane);
                         }
-                        "ultron.lane.state" if set => {
+                        LANE_STATE if set => {
                             self.lane_states.insert(lane);
                         }
-                        "ultron.lane.state" => {
+                        LANE_STATE => {
                             self.lane_states.remove(&lane);
                         }
                         _ => {}

@@ -8,11 +8,11 @@
 //!
 //! Value: `{kind, entryId, vcs, root, head, commit, tree?, excluded, createdAt, skipped?, restoredTo?}`.
 
+use crate::ns::CHECKPOINTS;
 use crate::session::Session;
 use crate::state::Write;
 use serde_json::Value;
 
-pub const CHECKPOINTS: &str = "ultron.checkpoint";
 pub const RESTORE_PREFIX: &str = "restore:";
 
 /// Record checkpoint `key`.

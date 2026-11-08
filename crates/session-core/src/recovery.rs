@@ -11,11 +11,11 @@
 use serde_json::{Map, Value, json};
 use session_journal::Session;
 use session_journal::Write;
-use session_journal::run::{OP_META, OP_RESULT, OP_STATE, OP_TOOL_ARGS, PENDING_ENTRY, PENDING_FRAMES};
-use session_journal::session::{BRANCH_TIP, LANE_STATE};
+use session_journal::ns::{BRANCH_TIP, LANE_STATE};
+use session_journal::ns::{OP_META, OP_RESULT, OP_STATE, OP_TOOL_ARGS, PENDING_ENTRY, PENDING_FRAMES};
 use std::collections::BTreeMap;
 
-const LANE: &str = "main";
+use session_journal::run::MAIN_LANE as LANE;
 
 /// `interruptedAssistantMessage`'s warning.
 pub const INTERRUPTED_ASSISTANT: &str = "Assistant request was interrupted. The preceding content is the latest committed partial; newer live output may be missing and the external outcome is unknown.";
@@ -230,7 +230,7 @@ pub fn settle(session: &mut Session) -> Result<Recovered, String> {
                 .map(str::to_string)
                 .or_else(|| tip.clone());
             if let (Some(entry), Some(label)) = (labelled, state["label"].as_str()) {
-                writes.push(Write::set(crate::compaction_op::ENTRY_LABEL, &entry, json!(label)));
+                writes.push(Write::set(session_journal::ns::ENTRY_LABEL, &entry, json!(label)));
             }
             if tip.is_none() {
                 writes.push(Write::set(BRANCH_TIP, LANE, Value::Null));
@@ -274,14 +274,14 @@ pub fn settle(session: &mut Session) -> Result<Recovered, String> {
     // A compaction's preparation goes with its operation (`operationCleanupWrites`).
     let preparations: Vec<String> = session
         .state()
-        .scan_values(crate::op_journal::OP_PREPARATION, &format!("{operation}:"))
+        .scan_values(session_journal::ns::OP_PREPARATION, &format!("{operation}:"))
         .into_iter()
         .map(|stored| stored.key.clone())
         .collect();
     writes.extend(
         preparations
             .iter()
-            .map(|key| Write::delete(crate::op_journal::OP_PREPARATION, key)),
+            .map(|key| Write::delete(session_journal::ns::OP_PREPARATION, key)),
     );
     writes.extend([
         Write::delete(OP_META, &operation),

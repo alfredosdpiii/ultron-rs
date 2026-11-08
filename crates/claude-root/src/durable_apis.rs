@@ -88,9 +88,9 @@ pub fn open(
     sink: Arc<RootSink>,
 ) -> Result<Arc<DurableApis>, String> {
     let stack = lane.stack.clone();
-    // The children's session (their contracts are values of it, session_core::kept_contracts). Its subagent host
-    // is not used: this server's subagents are Claude Code processes or in-memory loops.
-    drop(children.host(session.clone()));
+    // The children's session (their contracts are values of it, session_core::kept_contracts). This server's
+    // subagents are Claude Code processes or in-memory loops.
+    children.attach_session(session);
     let storage = session_core::durable_store::open(session.clone(), None).map_err(|e| e.message().to_string())?;
     // Nothing reaches an actor: the root conversation never runs, and children's requests never use the bridge.
     let bridge = Bridge::new(Arc::new(|_| {}));
@@ -98,27 +98,19 @@ pub fn open(
         Arc::new(session_core::lane::Provider::new().with_live_settings(runtime.config.settings_reader(), true));
     let stream_provider = provider.clone();
     let retry = runtime.config.settings["retry"].clone();
-    let settings: harness::chat::SettingsSource = Arc::new(move || {
-        let policy = session_core::compaction_op::SummaryRetry::from_settings(&retry, true);
-        Settings {
-            stream: stream_provider
-                .stream_options()
-                .and_then(|options| options.as_object().cloned())
-                .unwrap_or_default(),
-            retry: RetryPolicy {
-                enabled: policy.max_attempts > 1,
-                max_retries: policy.max_attempts - 1,
-                base_delay_ms: policy.base_delay_ms,
-                max_delay_ms: policy.max_delay_ms,
-            },
-            compaction: CompactionPolicy {
-                enabled: false,
-                ..CompactionPolicy::default()
-            },
-            partial_interval_ms: NO_PARTIALS_MS,
-            follow_up_after_steer: true,
-            ..Settings::default()
-        }
+    let settings: harness::chat::SettingsSource = Arc::new(move || Settings {
+        stream: stream_provider
+            .stream_options()
+            .and_then(|options| options.as_object().cloned())
+            .unwrap_or_default(),
+        retry: RetryPolicy::from_settings(&retry, true),
+        compaction: CompactionPolicy {
+            enabled: false,
+            ..CompactionPolicy::default()
+        },
+        partial_interval_ms: NO_PARTIALS_MS,
+        follow_up_after_steer: true,
+        ..Settings::default()
     });
     let (catalog_env, key_env) = (env.clone(), env.clone());
     // Requests of no conversation carry this provider session: every request is a child's.

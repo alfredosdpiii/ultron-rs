@@ -19,15 +19,14 @@ use harness::scheduler::{Cancel, Ctx};
 use jsrt::sync;
 use kernel::Signal;
 use serde_json::Value;
+use services::SessionValues;
 use session_journal::Write;
+use session_journal::ns::{self, DEFINITIONS_ROOT, TASKS_ROOT, USAGE_ROOT};
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock, Weak};
 use std::time::Duration;
 
 /// Where the TypeScript product keeps the task journal of a session's task host.
-pub const TASKS_NAMESPACE: &str = "ultron.tasks";
-pub const TASKS_KEY: &str = "root";
 /// The lane a subagent task's cells run in (`ultron.rlm-child.<task id>`), which its child task is named after.
 pub use delegation::lane_names::CHILD_LANE_PREFIX as LANE_PREFIX;
 /// The lane of another root conversation of the session (`ultron.conversation.<id>`).
@@ -49,30 +48,10 @@ pub fn subagent_name(session: &SharedSession, task_id: &str) -> Option<String> {
         .map(str::to_string)
 }
 
-/// A document kept as one session value (`createSessionTaskStore`, `createSessionDefinitionStore`).
-pub struct SessionValueStore {
-    pub session: SharedSession,
-    pub namespace: &'static str,
-    pub key: &'static str,
-    /// Set once the worker hands the session to a successor: the journal is the successor's from then on, so
-    /// what this worker's hosts would still record (a waiter's "Harness is closed" as the closing runtime fails its
-    /// wait) is dropped, and the successor finds its tasks unfinished and reattaches them.
-    pub handed_over: Option<Arc<AtomicBool>>,
-}
-
-impl DocumentStore for SessionValueStore {
-    fn read(&mut self) -> Result<Option<Value>, String> {
-        Ok(lock(&self.session).value(self.namespace, self.key).cloned())
-    }
-
-    fn write(&mut self, document: &Value) -> Result<(), String> {
-        if self.handed_over.as_ref().is_some_and(|h| h.load(Ordering::SeqCst)) {
-            return Ok(());
-        }
-        lock(&self.session)
-            .commit(&[Write::set(self.namespace, self.key, document.clone())])
-            .map(drop)
-    }
+/// A document kept as one session value (`createSessionTaskStore`, `createSessionDefinitionStore`) of a session no
+/// worker hands over (an `ultron claude` server's).
+pub fn value_store(session: &SharedSession, namespace: &str, key: &str) -> Box<dyn DocumentStore> {
+    Box::new(services::SessionValues::shared(session.clone()).document(namespace, key))
 }
 
 /// The usage ledger's document (`ultron.usage` / `root`), which the operation journal also writes: each run counts
@@ -82,13 +61,13 @@ pub struct SessionUsageStore(pub SharedSession);
 
 impl DocumentStore for SessionUsageStore {
     fn read(&mut self) -> Result<Option<Value>, String> {
-        Ok(lock(&self.0).value(USAGE_NAMESPACE, USAGE_KEY).cloned())
+        Ok(lock(&self.0).value(USAGE_ROOT.namespace, USAGE_ROOT.key).cloned())
     }
 
     fn write(&mut self, document: &Value) -> Result<(), String> {
         let mut session = lock(&self.0);
         let mut merged = document.clone();
-        if let Some(stored) = session.value(USAGE_NAMESPACE, USAGE_KEY).cloned() {
+        if let Some(stored) = session.value(USAGE_ROOT.namespace, USAGE_ROOT.key).cloned() {
             let count = |root: &Value| root["turns"]["count"].as_f64().unwrap_or(0.0);
             for (id, root) in stored["roots"].as_object().into_iter().flatten() {
                 match merged["roots"].get(id) {
@@ -99,20 +78,17 @@ impl DocumentStore for SessionUsageStore {
             }
         }
         session
-            .commit(&[Write::set(USAGE_NAMESPACE, USAGE_KEY, merged)])
+            .commit(&[Write::set(USAGE_ROOT.namespace, USAGE_ROOT.key, merged)])
             .map(drop)
     }
 }
-
-const USAGE_NAMESPACE: &str = "ultron.usage";
-const USAGE_KEY: &str = "root";
 
 /// The subagent tasks the stored journal holds unfinished (read before the host reopens it, which records them
 /// interrupted).
 pub fn unfinished(session: &SharedSession) -> Vec<String> {
     let session = lock(session);
     session
-        .value(TASKS_NAMESPACE, TASKS_KEY)
+        .value(TASKS_ROOT.namespace, TASKS_ROOT.key)
         .and_then(|document| document["tasks"].as_array().cloned())
         .unwrap_or_default()
         .iter()
@@ -134,21 +110,15 @@ pub struct DurableChildren {
     systems: Mutex<HashMap<String, String>>,
     /// The usage root of the root turn in progress: a subagent it starts is charged to it.
     root: Mutex<Option<String>>,
-    /// The worker handed the session over (`SessionValueStore::handed_over`).
-    handed_over: Arc<AtomicBool>,
-    /// The session whose transcript is the root lane's history (a forked child of the root starts on it).
-    session: OnceLock<SharedSession>,
+    /// The session's values: its transcript is the root lane's history (a forked child of the root starts on it),
+    /// and its hand-over to a successor stops what this worker's hosts would still record (a waiter's "Harness is
+    /// closed" as the closing runtime fails its wait), so the successor finds its tasks unfinished and reattaches them.
+    values: OnceLock<SessionValues>,
 }
 
 impl DurableChildren {
     pub fn new() -> Arc<DurableChildren> {
         Arc::new(DurableChildren::default())
-    }
-
-    /// The worker hands the session over: from now on its task journals are the successor's. Called before the
-    /// runtime closes, which ends every wait on it.
-    pub fn hand_over(&self) {
-        self.handed_over.store(true, Ordering::SeqCst);
     }
 
     /// The runtime the children run in, once it is open.
@@ -161,28 +131,28 @@ impl DurableChildren {
         self.chat.get().cloned()
     }
 
-    /// The subagent host of a session: its journal in `session`, its children run durably.
-    pub fn host(self: &Arc<Self>, session: SharedSession) -> SubagentHost {
-        let _ = self.session.set(session.clone());
+    /// The children's records are values of `session`, which no worker hands over (an `ultron claude` server's,
+    /// whose subagents are not these children).
+    pub fn attach_session(&self, session: &SharedSession) {
+        let _ = self.values.set(services::SessionValues::shared(session.clone()));
+    }
+
+    /// The subagent host of a session: its journal in the session's `values`, its children run durably.
+    pub fn host(self: &Arc<Self>, values: SessionValues) -> SubagentHost {
+        let session = values.session().clone();
+        let _ = self.values.set(values.clone());
         let children = self.clone();
         let lanes = self.clone();
-        let value = |namespace, key| {
-            Box::new(SessionValueStore {
-                session: session.clone(),
-                namespace,
-                key,
-                handed_over: Some(self.handed_over.clone()),
-            }) as Box<dyn DocumentStore>
-        };
+        let value = |namespace, key| Box::new(values.document(namespace, key)) as Box<dyn DocumentStore>;
         SubagentHost {
-            store: value(TASKS_NAMESPACE, TASKS_KEY),
+            store: value(TASKS_ROOT.namespace, TASKS_ROOT.key),
             runner: Box::new(move |stack: Weak<Stack>| -> ChildRunner {
                 Arc::new(move |run: ChildRun| children.run(&stack, run))
             }),
             agents: Some(AgentStores {
                 // One host per journal: the typed agents' tasks are a document of their own beside the subagents'.
-                tasks: value(TASKS_NAMESPACE, "agents"),
-                definitions: value("ultron.definitions", "root"),
+                tasks: value(ns::TASKS, "agents"),
+                definitions: value(DEFINITIONS_ROOT.namespace, DEFINITIONS_ROOT.key),
                 usage: Box::new(SessionUsageStore(session.clone())),
                 lanes: Box::new(move |stack: Weak<Stack>| -> LaneRunner {
                     Arc::new(move |run: LaneRun| lanes.run_lane(&stack, run))
@@ -198,9 +168,10 @@ impl DurableChildren {
         let stack = stack.upgrade().ok_or("The session is closed")?;
         let setup = child_setup(&stack, &run);
         sync::lock(&self.systems).insert(run.lane_name.clone(), setup.system);
-        if let Some(session) = self.session.get()
-            && !self.handed_over.load(Ordering::SeqCst)
+        if let Some(values) = self.values.get()
+            && !values.handed_over()
         {
+            let session = values.session();
             let mut writes = vec![Write::set(NAMES_NAMESPACE, &run.task_id, run.name.clone().into())];
             // Kept before the child conversation exists, so a worker that dies after starting it leaves both.
             if let Some(contract) = run.host.contract_of(&run.task_id) {
@@ -315,7 +286,7 @@ impl DurableChildren {
 
     /// The root lane's context entries (from its newest compaction), as the next root request would build them.
     fn root_context(&self) -> Result<Vec<Value>, String> {
-        let session = self.session.get().ok_or("The session is not open")?;
+        let session = self.values.get().ok_or("The session is not open")?.session();
         let session = lock(session);
         Ok(session_journal::context::build_context_entries(
             &session.branch_entries(crate::lane::MAIN)?,
@@ -396,7 +367,7 @@ impl DurableChildren {
 
     /// The session whose values these children's records are, once [`DurableChildren::host`] gave it.
     pub fn session(&self) -> Option<SharedSession> {
-        self.session.get().cloned()
+        self.values.get().map(|values| values.session().clone())
     }
 
     /// The persistent child (`keep=True`, unfinished) whose cells run on `lane` (its name), as its REPL id.
@@ -492,9 +463,8 @@ impl DurableChildren {
             let chat = chat.clone();
             let (lanes, lane) = (stack.lanes.clone(), input.name.clone());
             let contract = self
-                .session
-                .get()
-                .and_then(|session| lock(session).value(CONTRACTS_NAMESPACE, id).cloned());
+                .session()
+                .and_then(|session| lock(&session).value(CONTRACTS_NAMESPACE, id).cloned());
             Some(Reattached {
                 waiter: Box::new(move |signal: Signal| {
                     let reply = wait_child(&chat, task, &signal);
@@ -526,9 +496,8 @@ impl DurableChildren {
         let run = ChildRun {
             task_id: id.to_string(),
             name: self
-                .session
-                .get()
-                .and_then(|session| subagent_name(session, id))
+                .session()
+                .and_then(|session| subagent_name(&session, id))
                 .unwrap_or_default(),
             lane_name: input.name.clone(),
             prompt: input.prompt.clone(),

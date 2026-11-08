@@ -10,7 +10,6 @@
 //! newer or older writers survive a load/rewrite unchanged.
 
 mod context;
-pub mod diff;
 mod env;
 mod file;
 pub mod js;
@@ -21,7 +20,7 @@ pub use context::{
     Leaf, ProjectedEntry, SessionContext, SessionProjection, build_context_entries, build_session_context,
     build_session_projection, current_system_message, current_tools, entry_messages,
 };
-pub use env::{Env, SystemEnv, Uuidv7};
+pub use env::{Env, SystemEnv};
 pub use file::{
     CURRENT_SESSION_VERSION, HeaderScanError, MAX_SESSION_HEADER_SCAN_BYTES, SessionInfo, default_session_dir,
     default_session_dir_path, find_most_recent_session, find_session_by_id, list_all_sessions, list_sessions,

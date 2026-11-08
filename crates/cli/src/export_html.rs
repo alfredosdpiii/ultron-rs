@@ -207,10 +207,10 @@ pub fn share_viewer_url(var: &dyn Fn(&str) -> Option<String>, gist_id: &str) -> 
 
 /// `isNativeSessionFile`: the first line parses as an object with `kind: "header"`.
 pub fn is_native_session_file(path: &Path) -> bool {
-    let Ok(bytes) = std::fs::read(path) else { return false };
-    let text = String::from_utf8_lossy(&bytes);
-    let first = text.split('\n').next().unwrap_or("");
-    serde_json::from_str::<Value>(first).is_ok_and(|v| v.get("kind").and_then(Value::as_str) == Some("header"))
+    let Ok(first) = session_journal::catalog::first_line(path) else {
+        return false;
+    };
+    serde_json::from_str::<Value>(&first).is_ok_and(|v| v.get("kind").and_then(Value::as_str) == Some("header"))
 }
 
 fn safe_integer_at_least(value: Option<&Value>, minimum: f64) -> bool {

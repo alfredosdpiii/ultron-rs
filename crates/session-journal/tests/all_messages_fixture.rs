@@ -3,8 +3,8 @@
 //! every user and assistant message's text, for a format-4 journal and a Pi v3 file alike.
 
 use serde_json::Value;
+use session_journal::catalog::read_metadata;
 use session_journal::names::{self, session_details};
-use session_journal::repo::read_metadata;
 
 fn fixture() -> Vec<Value> {
     serde_json::from_str(include_str!("../fixtures/all-messages.json")).unwrap()

@@ -8,7 +8,6 @@
 
 mod branch;
 mod bug_summary;
-pub mod prompt_budget;
 
 use std::collections::HashSet;
 
@@ -21,12 +20,13 @@ use indexmap::IndexSet;
 use jsrt::utf16;
 use serde_json::Value;
 use session_file::{Leaf, ProjectedEntry, SessionProjection, build_session_projection, current_system_message, js};
+use session_journal::context::convert_to_llm;
 
 pub use branch::{
-    BRANCH_SUMMARY_PREAMBLE, BranchPreparation, BranchSummary, BranchSummaryError, BranchSummaryOptions,
-    collect_entries_for_branch_summary, generate_branch_summary, prepare_branch_entries,
+    BranchPreparation, BranchSummary, BranchSummaryError, BranchSummaryOptions, collect_entries_for_branch_summary,
+    generate_branch_summary, prepare_branch_entries,
 };
-pub use bug_summary::{BUG_SUMMARY_INSTRUCTIONS, BUG_SUMMARY_SYSTEM_PROMPT, bug_summary_request, bug_summary_text};
+pub use bug_summary::{bug_summary_request, bug_summary_text};
 
 // ============================================================================
 // Shared utilities (utils.ts)
@@ -197,46 +197,6 @@ pub fn serialize_conversation(messages: &[Value]) -> String {
     parts.join("\n\n")
 }
 
-pub const COMPACTION_SUMMARY_PREFIX: &str =
-    "The conversation history before this point was compacted into the following summary:\n\n<summary>\n";
-pub const COMPACTION_SUMMARY_SUFFIX: &str = "\n</summary>";
-pub const BRANCH_SUMMARY_PREFIX: &str =
-    "The following is a summary of a branch that this conversation came back from:\n\n<summary>\n";
-pub const BRANCH_SUMMARY_SUFFIX: &str = "</summary>";
-
-/// `bashExecutionToText`.
-fn bash_execution_to_text(message: &Value) -> String {
-    let output = js::join_string(message.get("output"));
-    let mut text = format!("Ran `{}`\n", js::join_string(message.get("command")));
-    if output.is_empty() {
-        text.push_str("(no output)");
-    } else {
-        text.push_str(&format!("```\n{output}\n```"));
-    }
-    let exit_code = message.get("exitCode").filter(|c| !c.is_null());
-    if jsrt::value::truthy(message.get("cancelled")) {
-        text.push_str("\n\n(command cancelled)");
-    } else if let Some(code) = exit_code.filter(|c| c.as_f64() != Some(0.0)) {
-        text.push_str(&format!("\n\nCommand exited with code {}", jsrt::json::stringify(code)));
-    }
-    if jsrt::value::truthy(message.get("truncated")) && jsrt::value::truthy(message.get("fullOutputPath")) {
-        text.push_str(&format!(
-            "\n\n[Output truncated. Full output: {}]",
-            js::join_string(message.get("fullOutputPath"))
-        ));
-    }
-    text
-}
-
-fn text_user(text: String, timestamp: Option<&Value>) -> Value {
-    let mut message = serde_json::json!({ "role": "user", "content": [{ "type": "text", "text": text }] });
-    if let Some(timestamp) = timestamp {
-        message["timestamp"] = timestamp.clone();
-    }
-    message
-}
-
-/// `convertToLlm`: custom agent messages become user messages; `!!` bash executions are dropped.
 /// The custom message type of recalled long-term memory (session-core `auto_memory`).
 pub const RECALLED_MEMORY_TYPE: &str = "ultron.memory";
 /// The custom message type of the active instruction refinements (session-core `auto_refine`).
@@ -260,44 +220,7 @@ pub fn convert_for_summary(messages: &[Value]) -> Vec<Value> {
     convert_to_llm(&kept)
 }
 
-pub fn convert_to_llm(messages: &[Value]) -> Vec<Value> {
-    messages
-        .iter()
-        .filter_map(|m| match role(m) {
-            Some("bashExecution") if jsrt::value::truthy(m.get("excludeFromContext")) => None,
-            Some("bashExecution") => Some(text_user(bash_execution_to_text(m), m.get("timestamp"))),
-            Some("custom") => {
-                let content = match m.get("content") {
-                    Some(Value::String(text)) => serde_json::json!([{ "type": "text", "text": text }]),
-                    other => other.cloned().unwrap_or(Value::Null),
-                };
-                let mut message = serde_json::json!({ "role": "user", "content": content });
-                if let Some(timestamp) = m.get("timestamp") {
-                    message["timestamp"] = timestamp.clone();
-                }
-                Some(message)
-            }
-            Some("branchSummary") => Some(text_user(
-                format!(
-                    "{BRANCH_SUMMARY_PREFIX}{}{BRANCH_SUMMARY_SUFFIX}",
-                    js::join_string(m.get("summary"))
-                ),
-                m.get("timestamp"),
-            )),
-            Some("compactionSummary") => Some(text_user(
-                format!(
-                    "{COMPACTION_SUMMARY_PREFIX}{}{COMPACTION_SUMMARY_SUFFIX}",
-                    js::join_string(m.get("summary"))
-                ),
-                m.get("timestamp"),
-            )),
-            Some("system" | "user" | "assistant" | "toolResult") => Some(m.clone()),
-            _ => None,
-        })
-        .collect()
-}
-
-pub const SUMMARIZATION_SYSTEM_PROMPT: &str = "You are a context summarization assistant. Your task is to read a conversation between a user and an AI assistant, then produce a structured summary following the exact format specified.
+const SUMMARIZATION_SYSTEM_PROMPT: &str = "You are a context summarization assistant. Your task is to read a conversation between a user and an AI assistant, then produce a structured summary following the exact format specified.
 
 Do NOT continue the conversation. Do NOT respond to any questions in the conversation. ONLY output the structured summary.";
 
@@ -909,7 +832,7 @@ fn summary_max_tokens(fraction: f64, reserve_tokens: u64, model: &Model) -> u64 
 
 /// `getSummarizationFailure`: why a response must not become a checkpoint (an error, or a length stop that left
 /// the summary incomplete).
-pub fn summarization_failure(response: &AssistantMessage, label: &str) -> Option<String> {
+pub(crate) fn summarization_failure(response: &AssistantMessage, label: &str) -> Option<String> {
     match response.stop_reason {
         StopReason::Error => Some(format!(
             "{label} failed: {}",
@@ -1004,7 +927,21 @@ pub fn history_summary_request(
 pub fn turn_prefix_request(messages: &[Value], reserve_tokens: u64, options: &CompactOptions<'_>) -> SummaryRequest {
     let conversation = serialize_conversation(&convert_for_summary(messages));
     let prompt = format!("# Conversation\n{conversation}\n\n# Instructions\n{TURN_PREFIX_SUMMARIZATION_PROMPT}");
+    turn_prefix_request_of(prompt, reserve_tokens, options)
+}
+
+/// A turn prefix summary request asking `prompt`: the summary request's shape (system prompt, reasoning, session)
+/// with half the reserve as its budget.
+pub fn turn_prefix_request_of(prompt: String, reserve_tokens: u64, options: &CompactOptions<'_>) -> SummaryRequest {
     options.request(prompt, summary_max_tokens(0.5, reserve_tokens, options.model))
+}
+
+/// The history summary a split turn uses when nothing before the turn was summarized.
+pub const NO_PRIOR_HISTORY: &str = "No prior history.";
+
+/// The summary of a split turn: the history's summary, then the turn prefix's.
+pub fn split_turn_summary(history: &str, prefix: &str) -> String {
+    format!("{history}\n\n---\n\n**Turn Context (split turn):**\n\n{prefix}")
 }
 
 /// `CompactionResult`; `details` holds the file lists.
@@ -1077,7 +1014,7 @@ pub async fn compact(
             (
                 prep.previous_summary
                     .clone()
-                    .unwrap_or_else(|| "No prior history.".to_string()),
+                    .unwrap_or_else(|| NO_PRIOR_HISTORY.to_string()),
                 None,
             )
         } else {
@@ -1090,10 +1027,7 @@ pub async fn compact(
             Some(history_usage) => combine_usage(&history_usage, &prefix_usage),
             None => prefix_usage,
         };
-        (
-            format!("{history_text}\n\n---\n\n**Turn Context (split turn):**\n\n{prefix_text}"),
-            usage,
-        )
+        (split_turn_summary(&history_text, &prefix_text), usage)
     } else {
         summarize(history(), "Summarization", &mut call).await?
     };

@@ -37,10 +37,8 @@ impl ReminderSettings {
     /// From `ULTRON_CONTEXT_REMINDER` (`off`, `0`, `false`: disabled) and `ULTRON_CONTEXT_REMINDER_TOKENS` (a
     /// non-negative integer; anything else keeps the default margin).
     pub fn from_vars(reminder: Option<&str>, tokens: Option<&str>) -> ReminderSettings {
-        let enabled =
-            !reminder.is_some_and(|value| matches!(value.trim().to_ascii_lowercase().as_str(), "off" | "0" | "false"));
         ReminderSettings {
-            enabled,
+            enabled: !crate::flag_off(reminder),
             margin: tokens.and_then(|value| value.trim().parse::<u64>().ok()),
         }
     }

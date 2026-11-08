@@ -123,6 +123,7 @@ fn services(store: &Path, bank: &Hindsight) -> impl Fn(&str, Value) -> Result<Va
         .with(Arc::new(MemoryApi { service: Some(service) }))
         .with(Arc::new(services::LocalServicesModule {
             services: Arc::new(local),
+            branch: None,
         }));
     move |kind: &str, payload: Value| worker.handle(kind, payload.as_object().unwrap().clone(), &Signal::new())
 }

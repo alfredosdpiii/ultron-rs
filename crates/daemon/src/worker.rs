@@ -759,7 +759,7 @@ pub fn run(args: &[String], docs: PathBuf) -> Result<(), String> {
     let env = RunEnv::process(PathBuf::from(metadata["cwd"].as_str().unwrap_or_default()), docs);
     let run_env = env.clone();
     let control_context = crate::session_control::context(&env, &path);
-    let session_metadata = session_journal::repo::read_metadata(&path)
+    let session_metadata = session_journal::catalog::read_metadata(&path)
         .ok_or_else(|| fail(format!("Not a session file: {}", path.display())))?;
     let session_root = PathBuf::from(options.session_dir.clone());
     // The actor reports no event while it opens; the transcript state starts at its snapshot.

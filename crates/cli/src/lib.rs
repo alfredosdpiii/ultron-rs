@@ -54,6 +54,7 @@ pub mod watch;
 
 use args::{Args, DiagnosticKind, ListModels, normalize_session_name, parse_args};
 use print_mode::Target;
+use session_journal::catalog;
 use session_journal::names::{self, SessionListing};
 use session_journal::repo::Metadata;
 use session_journal::{SessionRepo, SystemClock};
@@ -542,8 +543,8 @@ fn native_command(parsed: &Args, env: &Env, prompted: bool, terminal: bool) -> R
     let durable = durable_client::is_client(env);
     let sessions = match (needs_sessions, durable) {
         (false, _) => Vec::new(),
-        (true, false) => session::list_native_sessions(&session_dir, &env.cwd)?,
-        (true, true) => session::list_all_native_sessions(&session_dir)?,
+        (true, false) => catalog::list(&session_dir, Some(&env.cwd.display().to_string())),
+        (true, true) => catalog::list(&session_dir, None),
     };
     if parsed.fork.is_some() && parsed.no_session {
         return Err("--fork cannot be combined with --no-session".into());

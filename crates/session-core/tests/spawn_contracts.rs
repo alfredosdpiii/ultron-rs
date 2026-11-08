@@ -575,7 +575,7 @@ fn session_core_spawn_contract_help_documents_the_options_and_keep_takes_them() 
     ] {
         assert!(doc.contains(needle), "{needle}: {doc}");
     }
-    // A persistent child takes a contract too (wave 41; crate::kept_contracts).
+    // A persistent child takes a contract too (crate::kept_contracts).
     assert_eq!(r.out["child"]["keep"], "spawned");
 }
 

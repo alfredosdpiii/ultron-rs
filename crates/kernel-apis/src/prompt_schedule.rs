@@ -575,7 +575,7 @@ impl ApiModule for ScheduleModule {
 /// The schedules a session journal holds (its own: values copied from another session by a fork are left out), in
 /// creation order, read without opening the session (its worker may be writing it): complete lines only.
 pub fn scan_journal(path: &Path) -> Vec<Schedule> {
-    let Some(meta) = session_journal::repo::read_metadata(path) else {
+    let Some(meta) = session_journal::catalog::read_metadata(path) else {
         return Vec::new();
     };
     let Ok(content) = std::fs::read_to_string(path) else {

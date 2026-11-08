@@ -18,7 +18,6 @@ kernel = { path = "../kernel" }
 resources = { path = "../resources" }
 serde = "=1.0.229"
 serde_json = { version = "=1.0.151", features = ["preserve_order"] }
-session-file = { path = "../session-file" }
 session-journal = { path = "../session-journal" }
 sha2 = "=0.10.9"
 tempfile = "=3.27.0"

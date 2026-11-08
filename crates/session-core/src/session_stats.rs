@@ -25,7 +25,6 @@ use std::time::Duration;
 
 /// The module name: the session value `ultron.module/stats`.
 pub const SESSION_STATS_MODULE: &str = "stats";
-const NAMESPACE: &str = "ultron.module";
 const STATS_VERSION: u64 = 1;
 /// Distinct host request types kept (later ones are not added), and task ids kept per map (the newest).
 const MAX_KEYS: usize = 200;
@@ -281,12 +280,18 @@ pub struct SessionStore(pub SharedSession);
 
 impl StatsStore for SessionStore {
     fn read(&self) -> Result<Option<Value>, String> {
-        Ok(lock_session(&self.0).value(NAMESPACE, SESSION_STATS_MODULE).cloned())
+        Ok(lock_session(&self.0)
+            .value(session_journal::ns::MODULE, SESSION_STATS_MODULE)
+            .cloned())
     }
 
     fn write(&self, document: &Value) -> Result<(), String> {
         lock_session(&self.0)
-            .commit(&[Write::set(NAMESPACE, SESSION_STATS_MODULE, document.clone())])
+            .commit(&[Write::set(
+                session_journal::ns::MODULE,
+                SESSION_STATS_MODULE,
+                document.clone(),
+            )])
             .map(|_| ())
     }
 }

@@ -282,7 +282,7 @@ impl Actor {
     pub fn op_states(&self) -> Vec<Value> {
         self.writes()
             .into_iter()
-            .filter(|w| w["namespace"] == session_journal::run::OP_STATE && w["op"] == "set")
+            .filter(|w| w["namespace"] == session_journal::ns::OP_STATE && w["op"] == "set")
             .map(|w| w["value"].clone())
             .collect()
     }

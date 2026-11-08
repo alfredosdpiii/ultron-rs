@@ -251,7 +251,7 @@ impl Fixture {
     fn results(&self) -> Vec<(String, String)> {
         self.writes()
             .iter()
-            .filter(|w| w["namespace"] == session_journal::run::OP_RESULT && w["op"] == "set")
+            .filter(|w| w["namespace"] == session_journal::ns::OP_RESULT && w["op"] == "set")
             .map(|w| {
                 let text = |key: &str| w["value"][key].as_str().unwrap_or_default().to_string();
                 (text("kind"), text("status"))
@@ -289,7 +289,7 @@ impl Fixture {
         std::fs::create_dir_all(&copy).unwrap();
         let path = copy.join(files[0].file_name().unwrap());
         std::fs::copy(&files[0], &path).unwrap();
-        let metadata = session_journal::repo::read_metadata(&path).unwrap();
+        let metadata = session_journal::catalog::read_metadata(&path).unwrap();
         let repo = session_journal::SessionRepo::new(&self.root.join("killed"), session_journal::SystemClock::shared());
         let mut session = repo.open(&metadata).unwrap();
         let recovered = session_core::recovery::settle(&mut session).unwrap();
@@ -517,7 +517,7 @@ fn cli_rpc_compaction_compact_during_a_run_recovers_and_cancels() {
         "{entry}"
     );
     let operation = recovered.operation_id.unwrap();
-    let result = session.value(session_journal::run::OP_RESULT, &operation).unwrap();
+    let result = session.value(session_journal::ns::OP_RESULT, &operation).unwrap();
     assert_eq!(
         (&result["kind"], &result["error"]["code"]),
         (&json!("compaction"), &json!("interrupted"))
@@ -687,12 +687,12 @@ impl Actor {
         let writes = self.writes();
         let states = writes
             .iter()
-            .filter(|w| w["namespace"] == session_journal::run::OP_STATE && w["key"] == id && w["op"] == "set")
+            .filter(|w| w["namespace"] == session_journal::ns::OP_STATE && w["key"] == id && w["op"] == "set")
             .map(|w| w["value"]["at"].as_str().unwrap().to_string())
             .collect();
         let result = writes
             .iter()
-            .rfind(|w| w["namespace"] == session_journal::run::OP_RESULT && w["key"] == id)
+            .rfind(|w| w["namespace"] == session_journal::ns::OP_RESULT && w["key"] == id)
             .map_or(Value::Null, |w| w["value"].clone());
         (states, result)
     }
@@ -718,7 +718,7 @@ impl Actor {
         std::fs::create_dir_all(&copy).unwrap();
         let path = copy.join(files[0].file_name().unwrap());
         std::fs::copy(&files[0], &path).unwrap();
-        let metadata = session_journal::repo::read_metadata(&path).unwrap();
+        let metadata = session_journal::catalog::read_metadata(&path).unwrap();
         let repo = session_journal::SessionRepo::new(&self.root.join("killed"), session_journal::SystemClock::shared());
         let mut session = repo.open(&metadata).unwrap();
         let recovered = session_core::recovery::settle(&mut session).unwrap();
@@ -787,7 +787,7 @@ fn cli_rpc_compaction_branch_summary_is_compacting_and_abortable() {
     assert_eq!(recovered.status.as_deref(), Some("failed"));
     assert!(!recovered.resume);
     let result = session
-        .value(session_journal::run::OP_RESULT, &recovered.operation_id.unwrap())
+        .value(session_journal::ns::OP_RESULT, &recovered.operation_id.unwrap())
         .unwrap()
         .clone();
     assert_eq!(
@@ -998,7 +998,7 @@ fn cli_rpc_compaction_navigation_resolves_a_selected_user_message() {
     let state = a
         .writes()
         .into_iter()
-        .find(|w| w["namespace"] == session_journal::run::OP_STATE && w["key"] == operation.as_str())
+        .find(|w| w["namespace"] == session_journal::ns::OP_STATE && w["key"] == operation.as_str())
         .unwrap()["value"]
         .clone();
     assert_eq!(
@@ -1061,7 +1061,7 @@ impl Actor {
         let id = self
             .writes()
             .iter()
-            .rfind(|w| w["namespace"] == session_journal::run::OP_RESULT)
+            .rfind(|w| w["namespace"] == session_journal::ns::OP_RESULT)
             .map(|w| w["key"].as_str().unwrap().to_string())
             .unwrap();
         let (states, result) = self.operation_trace(&id);
@@ -1114,7 +1114,7 @@ fn cli_rpc_compaction_manual_summary_retries_a_transient_error() {
     let waiting = a
         .writes()
         .into_iter()
-        .find(|w| w["namespace"] == session_journal::run::OP_STATE && w["value"]["at"] == "summary.retry_wait")
+        .find(|w| w["namespace"] == session_journal::ns::OP_STATE && w["value"]["at"] == "summary.retry_wait")
         .unwrap()["value"]
         .clone();
     assert_eq!(waiting["nextAttempt"], 2);
@@ -1165,7 +1165,7 @@ fn cli_rpc_compaction_retry_wait_is_recoverable_and_abortable() {
     let (recovered, session) = a.settled_copy();
     assert_eq!(recovered.status.as_deref(), Some("failed"));
     let result = session
-        .value(session_journal::run::OP_RESULT, &recovered.operation_id.unwrap())
+        .value(session_journal::ns::OP_RESULT, &recovered.operation_id.unwrap())
         .unwrap()
         .clone();
     assert_eq!(
@@ -1225,7 +1225,7 @@ fn cli_rpc_compaction_branch_summary_and_run_compaction_retry() {
     let summary_states: Vec<Value> = a
         .writes()
         .into_iter()
-        .filter(|w| w["namespace"] == session_journal::run::OP_STATE && w["key"] == operation.as_str())
+        .filter(|w| w["namespace"] == session_journal::ns::OP_STATE && w["key"] == operation.as_str())
         .map(|w| w["value"].clone())
         .filter(|v| v["at"].as_str().is_some_and(|at| at.starts_with("summary.")))
         .collect();

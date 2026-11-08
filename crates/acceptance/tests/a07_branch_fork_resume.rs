@@ -20,7 +20,7 @@ use serde_json::{Map, Value, json};
 use services::local::{Branch, LocalServices, LocalServicesModule};
 use services::{SessionValues, instruction_hook};
 use services_support::{Host, Setup, build, rejects};
-use session_journal::session::BRANCH_TIP;
+use session_journal::ns::BRANCH_TIP;
 use session_journal::{ForkOptions, Metadata, SessionRepo, SystemClock, Write};
 use std::collections::HashSet;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -192,12 +192,15 @@ impl Env {
                 effects.lock().unwrap().push(request.input.clone());
                 Ok(request.input.clone())
             })),
-            refinements: Some(instruction_hook(local.clone())),
+            refinements: Some(instruction_hook(local.clone(), None)),
             modules: vec![
                 Arc::new(ProgressModule::new(Arc::new(
                     values.document("ultron.module", "progress"),
                 ))),
-                Arc::new(LocalServicesModule { services: local }),
+                Arc::new(LocalServicesModule {
+                    services: local,
+                    branch: None,
+                }),
                 Arc::new(MemoryApi { service: Some(memory) }),
             ],
             ..Setup::default()

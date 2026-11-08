@@ -10,11 +10,11 @@ use serde_json::Value;
 
 use crate::{SummaryRequest, convert_to_llm, estimate_tokens, has_tool_call, response_text, serialize_conversation};
 
-pub const BUG_SUMMARY_SYSTEM_PROMPT: &str = "You are helping a user file a bug report about pi, the coding agent they are talking to. You will be shown the conversation transcript. Write a report for the pi developers describing what the user was doing and what went wrong.
+const BUG_SUMMARY_SYSTEM_PROMPT: &str = "You are helping a user file a bug report about pi, the coding agent they are talking to. You will be shown the conversation transcript. Write a report for the pi developers describing what the user was doing and what went wrong.
 
 Do NOT continue the conversation. Do NOT respond to any questions in the conversation. ONLY output the report.";
 
-pub const BUG_SUMMARY_INSTRUCTIONS: &str = "Write the bug report in Markdown with these sections:
+const BUG_SUMMARY_INSTRUCTIONS: &str = "Write the bug report in Markdown with these sections:
 
 ## What the user was doing
 One short paragraph.

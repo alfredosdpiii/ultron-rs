@@ -9,22 +9,22 @@
 //! - [`pi_view`] / [`view`]: the session as Pi entries and Pi's read views (tree, messages, stats);
 //! - [`core`]: the session actor that owns all of it and reports lane-watch events.
 
-pub mod agent_hub;
-pub mod agents;
+mod agent_hub;
+mod agents;
 pub mod async_events;
 pub mod auto_compaction;
 pub mod auto_memory;
 pub mod auto_refine;
-pub mod budget_note;
+mod budget_note;
 pub mod cell_file_changes;
 pub mod commands;
 pub mod compaction_op;
 pub mod compose;
 pub mod context_reminder;
-pub mod contract_checks;
+mod contract_checks;
 pub mod core;
 pub mod durable_store;
-pub mod format_version;
+mod format_version;
 pub mod frame_models;
 pub mod frames;
 pub mod guard_log;
@@ -32,7 +32,7 @@ pub mod inspect;
 pub mod journal;
 pub mod kept_contracts;
 pub mod lane;
-pub mod lane_reuse;
+mod lane_reuse;
 pub mod local_resources;
 pub mod loki_notice;
 pub mod memory_children;
@@ -40,9 +40,9 @@ pub mod migration;
 pub mod model_refresh;
 pub mod naming;
 pub mod nudge;
-pub mod op_journal;
-pub mod pi_view;
-pub mod playbook_route;
+mod pi_view;
+mod playbook_route;
+mod prompt_budget;
 pub mod recovery;
 pub mod request_keys;
 pub mod request_layer;
@@ -51,11 +51,11 @@ pub mod request_trace;
 pub mod review_command;
 pub mod session_diagrams;
 pub mod session_flags;
-pub mod session_images;
-pub mod session_modules;
+mod session_images;
+mod session_modules;
 pub mod session_resources;
 pub mod session_stats;
-pub mod session_tools;
+mod session_tools;
 pub mod situational_skills;
 pub mod startup_trace;
 pub mod stored_auth;
@@ -68,6 +68,12 @@ pub mod wake;
 
 use std::path::PathBuf;
 use std::sync::Arc;
+
+/// A session switch's "off": `off`, `0` or `false`, in any case and with surrounding space (the TypeScript
+/// `["off", "0", "false"].includes(value.trim().toLowerCase())`).
+pub fn flag_off(value: Option<&str>) -> bool {
+    value.is_some_and(|v| matches!(v.trim().to_lowercase().as_str(), "off" | "0" | "false"))
+}
 
 /// An environment variable lookup usable from any thread.
 pub type VarLookup = Arc<dyn Fn(&str) -> Option<String> + Send + Sync>;
@@ -87,6 +93,11 @@ pub struct RunEnv {
 impl RunEnv {
     pub fn agent_dir(&self) -> PathBuf {
         config::paths::agent_dir(|k| (self.var)(k), &self.home)
+    }
+
+    /// Whether the switch `name` is set to off ([`flag_off`]).
+    pub fn flag_off(&self, name: &str) -> bool {
+        flag_off((self.var)(name).as_deref())
     }
 
     /// This process's environment in `cwd`.

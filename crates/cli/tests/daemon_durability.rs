@@ -280,7 +280,7 @@ fn transcript(path: &Path) -> Vec<String> {
 fn results(path: &Path) -> Vec<(String, Option<String>)> {
     writes(path)
         .iter()
-        .filter(|w| w["namespace"] == session_journal::run::OP_RESULT && w["op"] == "set")
+        .filter(|w| w["namespace"] == session_journal::ns::OP_RESULT && w["op"] == "set")
         .map(|w| {
             (
                 w["value"]["status"].as_str().unwrap_or_default().to_string(),

@@ -46,7 +46,8 @@ impl SessionValues {
         }
     }
 
-    fn handed_over(&self) -> bool {
+    /// Whether the session was handed to a successor ([`SessionValues::hand_over`]).
+    pub fn handed_over(&self) -> bool {
         self.handed_over
             .as_ref()
             .is_some_and(|flag| flag.load(Ordering::SeqCst))

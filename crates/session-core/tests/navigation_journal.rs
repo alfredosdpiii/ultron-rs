@@ -7,11 +7,12 @@
 //! navigation commits.
 
 use serde_json::{Map, Value, json};
-use session_core::compaction_op::{CompactionOp, ENTRY_LABEL, request_cancel};
-use session_core::op_journal::OP_PREPARATION;
+use session_core::compaction_op::{CompactionOp, request_cancel};
 use session_core::recovery::settle;
-use session_journal::run::{OP_META, OP_RESULT, OP_STATE};
-use session_journal::session::{BRANCH_TIP, LANE_STATE};
+use session_journal::ns::ENTRY_LABEL;
+use session_journal::ns::OP_PREPARATION;
+use session_journal::ns::{BRANCH_TIP, LANE_STATE};
+use session_journal::ns::{OP_META, OP_RESULT, OP_STATE};
 use session_journal::{Session, SessionRepo, TestClock, Write};
 
 fn repo(dir: &std::path::Path) -> SessionRepo {
@@ -99,7 +100,7 @@ fn session_core_navigation_journal_commits_the_summary_under_the_target() {
     )
     .unwrap();
     let operation = op.operation_id().to_string();
-    op.request(&mut session, session_core::compaction_op::SummaryRetry::default())
+    op.request(&mut session, harness::chat::models::RetryPolicy::default())
         .unwrap();
     let state = session.value(OP_STATE, &operation).unwrap();
     assert_eq!(state["at"], "summary.effect_pending");
@@ -230,7 +231,7 @@ fn session_core_navigation_journal_interrupted_summary_settles_without_moving() 
                 "cancel_requested"
             );
         } else {
-            op.request(&mut session, session_core::compaction_op::SummaryRetry::default())
+            op.request(&mut session, harness::chat::models::RetryPolicy::default())
                 .unwrap();
         }
         drop(op);
@@ -256,12 +257,12 @@ fn session_core_navigation_journal_interrupted_summary_settles_without_moving() 
 /// summary; killed during the wait it settles `failed` (`interrupted`) without moving.
 #[test]
 fn session_core_navigation_journal_retry_wait_then_retry_or_kill() {
-    use session_core::compaction_op::SummaryRetry;
+    use harness::chat::models::RetryPolicy;
     let dir = tempfile::tempdir().unwrap();
     let (mut session, target, _) = session(dir.path());
     let mut op = CompactionOp::begin_navigation(&mut session, Some(&target), &preparation(), None, None).unwrap();
     let operation = op.operation_id().to_string();
-    op.request(&mut session, SummaryRetry::default()).unwrap();
+    op.request(&mut session, RetryPolicy::default()).unwrap();
     op.retry_wait(&mut session, None, "Overloaded", 99).unwrap();
     assert_eq!(session.value(OP_STATE, &operation).unwrap()["at"], "summary.retry_wait");
     assert_eq!(
@@ -279,7 +280,7 @@ fn session_core_navigation_journal_retry_wait_then_retry_or_kill() {
     let (mut session, target, tip) = self::session(dir.path());
     let mut op = CompactionOp::begin_navigation(&mut session, Some(&target), &preparation(), None, None).unwrap();
     let operation = op.operation_id().to_string();
-    op.request(&mut session, SummaryRetry::default()).unwrap();
+    op.request(&mut session, RetryPolicy::default()).unwrap();
     op.retry_wait(&mut session, None, "Overloaded", 99).unwrap();
     drop(op);
     let mut session = reopen(dir.path(), session);

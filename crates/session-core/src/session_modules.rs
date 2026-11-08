@@ -10,9 +10,6 @@ use services::{Branch, BranchSource, SessionDocument, SessionValues};
 use std::collections::HashSet;
 use std::sync::Arc;
 
-/// `createSessionModuleStore`'s namespace.
-pub const MODULE_NAMESPACE: &str = "ultron.module";
-
 /// A module's document as a session value; a write that changes nothing is not journaled (opening a session
 /// re-persists its shell jobs, and the session's place in the resume list follows its last write).
 pub struct ModuleDocument(pub SessionDocument);

@@ -5,14 +5,13 @@
 //! the tip and records the result. A navigation without a summary is admitted at `navigation.ready_to_commit` and
 //! committed by its own terminal transaction (`commitNavigation`).
 
+use harness::chat::models::RetryPolicy;
 use serde_json::{Map, Value, json};
-use session_journal::run::{OP_META, OP_RESULT, OP_STATE, default_settings};
-use session_journal::session::{BRANCH_TIP, LANE_CONFIG, LANE_STATE};
+use session_journal::ns::{
+    BRANCH_TIP, ENTRY_LABEL, LANE_CONFIG, LANE_STATE, OP_META, OP_PREPARATION, OP_RESULT, OP_STATE,
+};
+use session_journal::run::default_settings;
 use session_journal::{Session, Write};
-
-const OP_PREPARATION: &str = "ultron.op.preparation";
-/// Where native sessions keep entry labels (`entryLabel` in harness session/values.ts).
-pub const ENTRY_LABEL: &str = "ultron.entry.label";
 
 fn mint(session: &Session) -> String {
     session_journal::lock_clock(&session.clock()).next_id()
@@ -41,51 +40,6 @@ pub fn prepared_value(
     })
 }
 
-/// The harness's normalized retry policy of a summary (`summaryContext.retryPolicy`, `normalizedRetryPolicy`):
-/// `retry.enabled ? retry.maxRetries + 1 : 1` attempts, delays `baseDelayMs * 2^(attempt-1)` capped at
-/// `maxAgentDelayMs` (pi-ai `retryDelayMs`).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct SummaryRetry {
-    pub max_attempts: u64,
-    pub base_delay_ms: u64,
-    pub max_delay_ms: u64,
-}
-
-impl Default for SummaryRetry {
-    fn default() -> Self {
-        SummaryRetry {
-            max_attempts: 4,
-            base_delay_ms: 2000,
-            max_delay_ms: 60_000,
-        }
-    }
-}
-
-impl SummaryRetry {
-    /// From settings.json's `retry` object (missing members take their defaults); `enabled`: on for this session.
-    pub fn from_settings(retry: &Value, enabled: bool) -> SummaryRetry {
-        let number = |key: &str, default: u64| retry[key].as_u64().unwrap_or(default);
-        let on = enabled && retry["enabled"] != false;
-        SummaryRetry {
-            max_attempts: if on { number("maxRetries", 3) + 1 } else { 1 },
-            base_delay_ms: number("baseDelayMs", 2000),
-            max_delay_ms: number("maxAgentDelayMs", 60_000),
-        }
-    }
-
-    pub fn value(&self) -> Value {
-        json!({"maxAttempts": self.max_attempts, "baseDelayMs": self.base_delay_ms, "maxAgentDelayMs": self.max_delay_ms})
-    }
-
-    /// `retryDelayMs(policy, attempt)`: the wait after failed attempt `attempt` (1-based).
-    pub fn delay_ms(&self, attempt: u64) -> u64 {
-        let factor = 1u64
-            .checked_shl(attempt.saturating_sub(1).min(63) as u32)
-            .unwrap_or(u64::MAX);
-        self.base_delay_ms.saturating_mul(factor).min(self.max_delay_ms)
-    }
-}
-
 /// One structural operation in progress: a compaction, or a navigation (with or without a branch summary).
 pub struct CompactionOp {
     /// `compaction` or `navigation` (the intent and the result's kind).
@@ -101,7 +55,7 @@ pub struct CompactionOp {
     usage_id: String,
     /// The summary attempt in progress (1-based) and the policy it retries under.
     attempt: u64,
-    retry: SummaryRetry,
+    retry: RetryPolicy,
     source_tip: Option<String>,
     started_at: i64,
     last_operation_id: Value,
@@ -174,7 +128,7 @@ impl CompactionOp {
             result_entry_id: String::new(),
             usage_id: String::new(),
             attempt: 1,
-            retry: SummaryRetry::default(),
+            retry: RetryPolicy::default(),
             operation_id,
             task_id,
         };
@@ -208,7 +162,7 @@ impl CompactionOp {
             result_entry_id: String::new(),
             usage_id: String::new(),
             attempt: 1,
-            retry: SummaryRetry::default(),
+            retry: RetryPolicy::default(),
             operation_id: String::new(),
             task_id: String::new(),
         }
@@ -370,15 +324,15 @@ impl CompactionOp {
 
     /// Prepare the summary request under `retry`: `summary.ready`, `summary.effect_pending`, and the request with
     /// its usage id.
-    pub fn request(&mut self, session: &mut Session, retry: SummaryRetry) -> Result<(), String> {
+    pub fn request(&mut self, session: &mut Session, retry: RetryPolicy) -> Result<(), String> {
         self.result_entry_id = mint(session);
         self.retry = retry;
         self.attempt = 1;
         self.summary_context = json!({
             "resultEntryId": self.result_entry_id,
             "configuration": session.value(LANE_CONFIG, "main").cloned().unwrap_or(Value::Null),
-            "streamOptions": {"timeoutMs": 300000, "maxRetryDelayMs": 60000, "deferred": false},
-            "retryPolicy": retry.value(),
+            "streamOptions": session_journal::run::summary_stream_options(),
+            "retryPolicy": retry.journal_value(),
         });
         self.attempt_states(session)
     }

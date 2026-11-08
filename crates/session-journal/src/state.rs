@@ -2,7 +2,8 @@
 //! values, lists, usage rows, stats), commit preparation and validation. Writes and entries are JSON objects in the
 //! key order TypeScript writes them, so a replayed line serializes back to the same bytes.
 
-use crate::usage::{add_usage, empty_usage, num};
+use crate::usage::{add_usage, empty_usage};
+use jsrt::json::number as num;
 use serde_json::{Map, Value, json};
 use std::collections::{BTreeMap, HashMap, HashSet};
 

@@ -51,17 +51,6 @@ pub const LOKI_TIMEOUT_MS_ENV: &str = "ULTRON_LOKI_TIMEOUT_MS";
 pub const MASK_SECRETS_ENV: &str = "ULTRON_MASK_SECRETS";
 pub const READ_HANDLE_BYTES_ENV: &str = "ULTRON_READ_HANDLE_BYTES";
 
-/// Host requests the subagent host serves.
-const DELEGATION_REQUESTS: [&str; 7] = [
-    "rlm.spawn",
-    "rlm.finish",
-    "rlm.list_subagents",
-    "rlm.collect",
-    "rlm.results",
-    "rlm.delete_subagent",
-    "rlm.merge",
-];
-
 /// What a cell's `ext.call` / `ext.list` (runtime.py's Pi extension functions) is answered.
 pub const EXTENSIONS_UNSUPPORTED: &str = "Pi extensions are not supported by ultron-rs";
 
@@ -731,9 +720,7 @@ impl Runtime {
         let values = self.services.values.clone();
         let jobs: Arc<dyn host::journal::JobJournal> = match &values {
             Some(values) => Arc::new(crate::session_modules::ModuleJobJournal(
-                crate::session_modules::ModuleDocument(
-                    values.document(crate::session_modules::MODULE_NAMESPACE, "jobs"),
-                ),
+                crate::session_modules::ModuleDocument(values.document(session_journal::ns::MODULE, "jobs")),
             )),
             None => Arc::new(host::journal::FileJobJournal::new(
                 config.session_dir("rlm-modules", session_id).join("jobs.json"),
@@ -762,7 +749,7 @@ impl Runtime {
         let modules = |name: &str| -> Arc<dyn kernel_apis::DocumentStore> {
             match &values {
                 Some(values) => Arc::new(crate::session_modules::ModuleDocument(
-                    values.document(crate::session_modules::MODULE_NAMESPACE, name),
+                    values.document(session_journal::ns::MODULE, name),
                 )),
                 None => Arc::new(FileDocumentStore::new(
                     config
@@ -790,9 +777,10 @@ impl Runtime {
             Some(backend) => Some(
                 MemoryService::new(
                     match &values {
-                        Some(values) => Arc::new(crate::session_modules::ModuleDocument(
-                            values.document("ultron.memory.state", "root"),
-                        )),
+                        Some(values) => Arc::new(crate::session_modules::ModuleDocument(values.document(
+                            session_journal::ns::MEMORY_ROOT.namespace,
+                            session_journal::ns::MEMORY_ROOT.key,
+                        ))),
                         None => modules("memory"),
                     },
                     backend.clone(),
@@ -820,7 +808,7 @@ impl Runtime {
         // one keyed document file, release gates in their module document. Active instruction refinements reach
         // later typed-agent prompts through the host's refinement hook.
         let local = Arc::new(services::LocalServices::worker(match &values {
-            Some(values) => Box::new(values.keyed("ultron.local")),
+            Some(values) => Box::new(values.keyed(session_journal::ns::LOCAL)),
             None => Box::new(kernel_apis::artifacts::FileKeyedDocuments::new(
                 config.session_dir("rlm-modules", session_id).join("local.json"),
             )),
@@ -828,7 +816,7 @@ impl Runtime {
         // Refinements follow the conversation branch (`mainBranch`): anchored at the main lane's tip, read back only
         // while the anchor is on the branch in use (A07).
         let branch = values.as_ref().map(crate::session_modules::main_branch);
-        let refinements = services::instruction_hook_on(local.clone(), branch.clone());
+        let refinements = services::instruction_hook(local.clone(), branch.clone());
         let ledger = crate::auto_refine::Ledger {
             services: local.clone(),
             branch: branch.clone(),
@@ -852,13 +840,10 @@ impl Runtime {
             config.project_trusted,
         ));
         let apis = ApiModules {
-            local: match branch {
-                Some(branch) => Arc::new(services::BranchedLocalServices {
-                    services: local,
-                    branch,
-                }),
-                None => Arc::new(services::LocalServicesModule { services: local }),
-            },
+            local: Arc::new(services::LocalServicesModule {
+                services: local,
+                branch,
+            }),
             gates: Arc::new(services::ReleaseGateModule::new(modules("release-gates"), None)),
             skills: Arc::new(SkillsModule::new(modules("skills"), loader, clock.clone(), Some(code))),
             memory: Arc::new(MemoryApi { service: memory }),
@@ -2240,7 +2225,7 @@ impl HostHandler for Router {
             }
             return Ok(Value::Null);
         }
-        if DELEGATION_REQUESTS.contains(&kind) || kind.starts_with("rlm.worktrees.") {
+        if Delegation::serves(kind) {
             return self.delegation.handle(kind, payload, signal);
         }
         // runtime.py's `ext` (Pi extension functions): Pi extensions are not supported by ultron-rs.

@@ -1,9 +1,10 @@
 //! The vocabulary of the harness operation journal of a run on lane `main` (the TypeScript drive's
-//! `harness/runtime/lane.ts`, `drive/{checkpoint,generation,response,tools,terminal}.ts`): its session value
-//! namespaces, the lane configuration ([`ensure_lane`]) and default run settings, and the assistant frame encoder.
-//! The journal itself is written by `session_core::op_journal::Run`.
+//! `harness/runtime/lane.ts`, `drive/{checkpoint,generation,response,tools,terminal}.ts`): the
+//! lane configuration ([`ensure_lane`]), the default run settings, the assistant frame encoder, and the journal itself
+//! ([`Run`]).
 
-use crate::session::{BRANCH_TIP, LANE_CONFIG, LANE_STATE, Session};
+use crate::ns::{BRANCH_TIP, LANE_CONFIG, LANE_STATE};
+use crate::session::Session;
 use crate::state::Write;
 use serde_json::{Map, Value, json};
 
@@ -14,7 +15,32 @@ pub const OP_TOOL_ARGS: &str = "ultron.op.tool_args";
 pub const PENDING_ENTRY: &str = "ultron.pending.entry";
 pub const PENDING_TOOL_OUTPUT: &str = "ultron.pending.tool_output";
 pub const PENDING_FRAMES: &str = "ultron.pending.assistant_frame";
-pub const ULTRON_USAGE: &str = "ultron.usage";
+pub const USAGE: &str = "ultron.usage";
+
+mod journal;
+
+/// The root lane of a session: the lane every prompted run journals on.
+pub const MAIN_LANE: &str = "main";
+
+pub use journal::{OpenCompaction, Run};
+
+/// A generation's default `streamOptions` (`providerRequestOptions` of absent settings); a session sets the ones its
+/// settings name ([`Run::set_stream_options`]).
+pub fn stream_options() -> Value {
+    json!({"timeoutMs": 300000, "maxRetryDelayMs": 60000})
+}
+
+/// A summary request's `streamOptions`: the defaults, never deferred.
+pub fn summary_stream_options() -> Value {
+    let mut options = stream_options();
+    options["deferred"] = false.into();
+    options
+}
+
+/// The default `retryPolicy` of a generation (4 attempts from 2000 ms; `normalizedRetryPolicy` of absent settings).
+fn retry_policy() -> Value {
+    json!({"maxAttempts": 4, "baseDelayMs": 2000, "maxAgentDelayMs": 60000})
+}
 
 /// `LaneConfiguration`.
 pub fn lane_config(provider: &str, model_id: &str, thinking_level: &str, tools: &[&str]) -> Value {
@@ -37,16 +63,16 @@ fn idle_lane() -> Value {
 /// configuration and an idle state in one transaction. A resumed session keeps its stored model and thinking
 /// level; only the active tool names follow this run (rewritten when they differ).
 pub fn ensure_lane(session: &mut Session, wanted: &Value) -> Result<Value, String> {
-    let stored = session.value(LANE_CONFIG, "main").cloned();
-    let has_tip = session.branch_tip("main").is_some();
+    let stored = session.value(LANE_CONFIG, MAIN_LANE).cloned();
+    let has_tip = session.branch_tip(MAIN_LANE).is_some();
     match stored {
         None => {
             let mut writes = Vec::new();
             if !has_tip {
-                writes.push(Write::set(BRANCH_TIP, "main", Value::Null));
+                writes.push(Write::set(BRANCH_TIP, MAIN_LANE, Value::Null));
             }
-            writes.push(Write::set(LANE_CONFIG, "main", wanted.clone()));
-            writes.push(Write::set(LANE_STATE, "main", idle_lane()));
+            writes.push(Write::set(LANE_CONFIG, MAIN_LANE, wanted.clone()));
+            writes.push(Write::set(LANE_STATE, MAIN_LANE, idle_lane()));
             session.commit(&writes)?;
             Ok(wanted.clone())
         }
@@ -54,7 +80,7 @@ pub fn ensure_lane(session: &mut Session, wanted: &Value) -> Result<Value, Strin
             let mut config = stored.clone();
             config["activeToolNames"] = wanted["activeToolNames"].clone();
             if config != stored {
-                session.commit(&[Write::set(LANE_CONFIG, "main", config.clone())])?;
+                session.commit(&[Write::set(LANE_CONFIG, MAIN_LANE, config.clone())])?;
             }
             Ok(config)
         }

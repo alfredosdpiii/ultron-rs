@@ -224,8 +224,7 @@ pub fn prompt_source_info(
 /// `defaultBundledSkillPaths`: the bundled skills directory `dir`, unless `ULTRON_BUNDLED_SKILLS` is `off`, `0` or
 /// `false`.
 pub fn bundled_skills(dir: &Path, var: &dyn Fn(&str) -> Option<String>) -> Option<String> {
-    let raw = var(BUNDLED_SKILLS_ENV).map(|v| v.trim().to_lowercase());
-    if matches!(raw.as_deref(), Some("off" | "0" | "false")) {
+    if crate::flag_off(var(BUNDLED_SKILLS_ENV).as_deref()) {
         return None;
     }
     Some(config::paths::normalize(dir).display().to_string())

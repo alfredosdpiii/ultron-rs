@@ -2,11 +2,11 @@
 //! with its prompt, each turn's stream is journaled as it arrives, assistant messages and tool results commit as
 //! entries, and the run finishes with its outcome. Print, JSON and RPC runs write the same records.
 
-use crate::op_journal::Run;
 use agent::AgentEvent;
 use ai::{AssistantMessageEvent, Message};
 use serde_json::{Value, json};
 use session_journal::Session;
+use session_journal::run::Run;
 
 /// One run's journal writer. A failed write stops further writes and is reported when the run ends.
 pub struct RunJournal {
@@ -20,30 +20,10 @@ pub struct RunJournal {
 }
 
 impl RunJournal {
-    /// Admit a run of `prompt` with the lane `config` (`--no-session` runs pass no session and journal nothing).
+    /// Admit a run of `prompt` with the lane `config` and the operation's `settings`, placing the queued messages the
+    /// admission takes (`(entryId, message)`) before the prompt and leaving `inbox` in the lane's state (see
+    /// [`Run::admit_with`]). `--no-session` runs pass no session and journal nothing.
     pub fn admit(
-        session: Option<&mut Session>,
-        config: Value,
-        prompt: Value,
-        model: (u64, u64),
-    ) -> Result<Self, String> {
-        Self::admit_with_settings(session, config, prompt, model, session_journal::run::default_settings())
-    }
-
-    /// [`RunJournal::admit`] with the operation's `settings` (its compaction settings as the run uses them).
-    pub fn admit_with_settings(
-        session: Option<&mut Session>,
-        config: Value,
-        prompt: Value,
-        model: (u64, u64),
-        settings: Value,
-    ) -> Result<Self, String> {
-        Self::admit_capturing(session, config, prompt, model, settings, &[], json!([]))
-    }
-
-    /// [`RunJournal::admit_with_settings`] placing the queued messages the admission takes (`(entryId, message)`)
-    /// before the prompt and leaving `inbox` in the lane's state (see [`Run::admit_with`]).
-    pub fn admit_capturing(
         session: Option<&mut Session>,
         config: Value,
         prompt: Value,
@@ -260,11 +240,11 @@ impl RunJournal {
     pub fn compaction_request(
         &mut self,
         session: &mut Session,
-        retry: &crate::compaction_op::SummaryRetry,
+        retry: &harness::chat::models::RetryPolicy,
     ) -> Option<String> {
         let mut id = None;
         self.apply(session, |run, s| {
-            id = Some(run.compaction_request(s, retry)?);
+            id = Some(run.compaction_request(s, retry.journal_value())?);
             Ok(())
         });
         id

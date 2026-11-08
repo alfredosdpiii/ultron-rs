@@ -11,7 +11,7 @@ use p_session_support::{in_order, text, user_texts};
 use reopen_support::Home;
 use serde_json::{Value, json};
 use session_core::core::{Op, QueueKind};
-use session_journal::session::LANE_STATE;
+use session_journal::ns::LANE_STATE;
 use std::collections::HashMap;
 
 fn fixture() -> Value {

@@ -22,7 +22,7 @@ pub fn details(host: &Host, lane: &str, mask: &dyn Fn(&str) -> String) -> Value 
                 host::file_hooks::inside(host.cwd(), &write.path).unwrap_or_else(|| write.path.display().to_string());
             let mut change = json!({ "path": path, "created": write.created, "diff": null });
             if let Some((before, after)) = &write.texts {
-                let (diff, _) = session_file::diff::generate_diff_string(before, after, CONTEXT_LINES);
+                let (diff, _) = jsrt::diff::generate_diff_string(before, after, CONTEXT_LINES);
                 let diff = mask(&diff);
                 let lines: Vec<&str> = diff.split('\n').collect();
                 change["diff"] = json!(lines[..lines.len().min(MAX_DIFF_LINES)].join("\n"));

@@ -18,7 +18,7 @@ use session_core::compose::Stack;
 use session_core::durable_store::SharedSession;
 use session_core::lane::{Lane, MAIN};
 use session_journal::Write;
-use session_journal::session::BRANCH_TIP;
+use session_journal::ns::BRANCH_TIP;
 use std::sync::{Arc, Mutex};
 
 /// The root's turns over a session stack.

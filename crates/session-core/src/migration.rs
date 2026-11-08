@@ -23,7 +23,7 @@ use delegation::task_store::DocumentStore;
 use delegation::usage::{Measurement, UsageLedger, UsageOptions};
 use serde_json::{Map, Value, json};
 use session_file::{Leaf, SessionManager, SystemEnv, build_context_entries, build_session_context, entry_messages, js};
-use session_journal::session::{BRANCH_TIP, ENTRY_LABEL, LANE_CONFIG, LANE_STATE, SESSION_NAME};
+use session_journal::ns::{BRANCH_TIP, ENTRY_LABEL, LANE_CONFIG, LANE_STATE, SESSION_NAME, USAGE_ROOT};
 use session_journal::{Clock, SessionRepo, SharedClock, SystemClock, Write};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
@@ -34,8 +34,6 @@ pub const PI_OMITTED_MESSAGE_CUSTOM_TYPE: &str = "pi-import:omitted-message";
 pub const PI_LEAF_MARKER_CUSTOM_TYPE: &str = "ultron:pi-leaf";
 pub const PI_ORIGINAL: &str = "ultron.pi.original";
 pub const PI_COPY_OF: &str = "ultron.pi.copyOf";
-const USAGE_NAMESPACE: &str = "ultron.usage";
-const USAGE_KEY: &str = "root";
 /// Pi's `CURRENT_SESSION_VERSION`.
 const PI_SESSION_VERSION: u64 = 3;
 
@@ -84,7 +82,7 @@ fn type_of(entry: &Value) -> &str {
 fn parse_timestamp(value: Option<&Value>, fallback: i64) -> i64 {
     value
         .and_then(Value::as_str)
-        .and_then(js::parse_date)
+        .and_then(jsrt::date::parse_date)
         .unwrap_or(fallback)
 }
 
@@ -556,7 +554,7 @@ fn reproduces_pi_entry(original: &Value, native: &Map<String, Value>, timestamp:
         "parentId".into(),
         native.get("parentId").cloned().unwrap_or(Value::Null),
     );
-    base.insert("timestamp".into(), json!(js::iso_string(timestamp)));
+    base.insert("timestamp".into(), json!(jsrt::date::iso_string(timestamp)));
     native_to_pi_entry(&Value::Object(entry), &base) == *original
 }
 
@@ -678,7 +676,9 @@ pub fn import_pi_session_with(
     sessions_root: &Path,
     hook: CommitHook<'_>,
 ) -> Result<ImportResult, ImportError> {
-    let pi_path = PathBuf::from(session_journal::repo::absolute(&pi_session_path.display().to_string()));
+    let pi_path = PathBuf::from(session_journal::catalog::absolute(
+        &pi_session_path.display().to_string(),
+    ));
     let shown = pi_path.display().to_string();
     let file_entries = session_file::load_entries_from_file(&shown).unwrap_or_default();
     let header = match file_entries.first() {
@@ -783,7 +783,10 @@ pub fn import_pi_session_with(
             ledger.import_history(&usage_root, "pi", &calls)?;
             let document = captured.lock().unwrap_or_else(PoisonError::into_inner).take();
             if let Some(document) = document {
-                commit(&mut session, &[Write::set(USAGE_NAMESPACE, USAGE_KEY, document)])?;
+                commit(
+                    &mut session,
+                    &[Write::set(USAGE_ROOT.namespace, USAGE_ROOT.key, document)],
+                )?;
             }
         }
 
@@ -862,7 +865,7 @@ fn pi_labels_of(entries: &[Value]) -> Vec<(String, String)> {
         let target = str_of(entry, "targetId").unwrap_or_default().to_string();
         let label = entry
             .get("label")
-            .filter(|l| js::truthy(Some(l)))
+            .filter(|l| jsrt::value::truthy(Some(l)))
             .and_then(Value::as_str);
         match label {
             Some(label) => match labels.iter_mut().find(|(t, _)| *t == target) {
@@ -881,7 +884,7 @@ fn pi_name_of(entries: &[Value]) -> Option<String> {
     entry
         .get("name")
         .and_then(Value::as_str)
-        .map(js::trim)
+        .map(jsrt::string::trim)
         .filter(|name| !name.is_empty())
         .map(str::to_string)
 }
@@ -891,7 +894,7 @@ fn pi_name_of(entries: &[Value]) -> Option<String> {
 /// labels, the name, and the `main` lane's model and thinking level that differ from what the entries say are
 /// appended after it.
 pub fn export_native_session_to_pi(session_path: &Path, output_path: &Path) -> Result<ExportResult, String> {
-    let path = PathBuf::from(session_journal::repo::absolute(&session_path.display().to_string()));
+    let path = PathBuf::from(session_journal::catalog::absolute(&session_path.display().to_string()));
     let root = path.parent().and_then(Path::parent).unwrap_or(Path::new("/"));
     let repo = SessionRepo::new(root, SystemClock::shared());
     let metadata = repo
@@ -910,7 +913,7 @@ pub fn export_native_session_to_pi(session_path: &Path, output_path: &Path) -> R
         .iter()
         .filter_map(|e| e["timestamp"].as_i64())
         .fold(metadata.created_at, i64::max);
-    let mut stamp = json!(js::iso_string(newest));
+    let mut stamp = json!(jsrt::date::iso_string(newest));
     let mut leaf: Option<String> = entries.last().map(|e| id_of(e).to_string());
     let mut append = |entries: &mut Vec<Value>, leaf: &mut Option<String>, stamp: &Value, entry: Value, kind: &str| {
         let mut id = format!("ultron-{kind}");
@@ -1020,9 +1023,9 @@ pub fn export_native_session_to_pi(session_path: &Path, output_path: &Path) -> R
 
     let header = json!({
         "type": "session", "version": PI_SESSION_VERSION, "id": metadata.id,
-        "timestamp": js::iso_string(metadata.created_at), "cwd": metadata.cwd,
+        "timestamp": jsrt::date::iso_string(metadata.created_at), "cwd": metadata.cwd,
     });
-    let output = PathBuf::from(session_journal::repo::absolute(&output_path.display().to_string()));
+    let output = PathBuf::from(session_journal::catalog::absolute(&output_path.display().to_string()));
     if let Some(parent) = output.parent() {
         std::fs::create_dir_all(parent).map_err(|e| format!("{}: {e}", parent.display()))?;
     }

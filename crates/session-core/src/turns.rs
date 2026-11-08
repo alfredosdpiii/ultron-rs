@@ -583,7 +583,7 @@ impl TurnModels {
         let message = runtime()?.block_on(self.provider.stream(model, &llm, &options, &mut sink));
         drop(bridged);
         if let Some((trace, session)) = &self.trace {
-            trace.record(session, crate::request_trace::ROOT_LANE, model, &llm, &message);
+            trace.record(session, crate::lane::MAIN, model, &llm, &message);
         }
         // The ledger counts the response before its entry commits and before the next request or cell is gated, as
         // the TypeScript drive's `after_response` does; a response a closing worker drops is not counted (the

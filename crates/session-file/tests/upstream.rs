@@ -5,7 +5,7 @@ use std::fs;
 
 use serde_json::{Value, json};
 use session_file::{
-    Env, Leaf, NewSessionOptions, SessionManager, SystemEnv, Uuidv7, build_context_entries, build_session_context,
+    Env, Leaf, NewSessionOptions, SessionManager, SystemEnv, build_context_entries, build_session_context,
     find_most_recent_session, list_all_sessions, list_sessions, load_entries_from_file, migrate_session_entries,
 };
 
@@ -988,21 +988,6 @@ fn session_file_trim_and_number_coercion_follow_javascript() {
             Some(3.0)
         ]
     );
-}
-
-#[test]
-fn session_file_uuid_v7_is_monotonic_and_versioned() {
-    let mut g = Uuidv7::default();
-    let a = g.next(1_735_787_045_678, [0x11; 16]);
-    let b = g.next(1_735_787_045_000, [0x22; 16]);
-    assert!(is_uuid_v7(&a) && is_uuid_v7(&b));
-    assert_eq!(&a[..13], "019424f8-632e");
-    assert_eq!(
-        &b[..13],
-        "019424f8-632e",
-        "clock going backwards keeps the last timestamp"
-    );
-    assert!(b > a);
 }
 
 #[test]

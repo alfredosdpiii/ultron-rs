@@ -606,6 +606,20 @@ impl Delegation {
         }
     }
 
+    /// The host requests [`Delegation::handle_with`] answers.
+    pub fn serves(kind: &str) -> bool {
+        matches!(
+            kind,
+            "rlm.spawn"
+                | "rlm.finish"
+                | "rlm.list_subagents"
+                | "rlm.collect"
+                | "rlm.results"
+                | "rlm.delete_subagent"
+                | "rlm.merge"
+        ) || kind.starts_with("rlm.worktrees.")
+    }
+
     /// Serve one host request from `lane`.
     pub fn handle(&self, kind: &str, payload: Value, lane: &str) -> Result<Value, String> {
         self.handle_with(kind, payload, lane, &CellContext::default())

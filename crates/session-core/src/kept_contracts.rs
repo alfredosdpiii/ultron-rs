@@ -1,4 +1,4 @@
-//! Contracts for persistent children (wave 41): `rlm.spawn(brief, name=..., keep=True, role=, contract=, hop=)`.
+//! Contracts for persistent children: `rlm.spawn(brief, name=..., keep=True, role=, contract=, hop=)`.
 //! A kept child answers more than once (its brief, then each `rlm.ask`), so each answer is held to its contract as a
 //! one-shot child's end is (`delegation::spawn_contract::enforce`): `returns` against its latest `rlm.finish`
 //! verdict, the host's checks in the session's working directory under the session's sandbox, and the hop (a
@@ -11,7 +11,7 @@
 //!   they fail closed. Changes are cumulative since the spawn.
 //! - A kept child records its verdict with `rlm.finish` as a one-shot child does; each question starts it afresh,
 //!   with the same bound on rejected finishes (`MAX_VERDICT_REJECTIONS`, the same messages).
-//! - Its answers share one attempt limit, as a one-shot child's runs do (wave 43): each failed check run is an
+//! - Its answers share one attempt limit, as a one-shot child's runs do: each failed check run is an
 //!   attempt, a `{"retry": N}` hop allows N + 1 of them in all (any other hop one), and a retry runs only while
 //!   attempts are left. Once they are used up the last failure is final: every later answer reports it
 //!   (`contract_failed`) without re-running the checks, and `rlm.finish` says the limit is reached.

@@ -54,9 +54,7 @@ fn parse_model(value: Option<&Value>) -> Result<Option<ModelRef>, String> {
     match value {
         None | Some(Value::Null) => Ok(None),
         Some(Value::String(text)) => match text.split_once('/') {
-            Some((provider, model)) if !provider.is_empty() && !model.is_empty() => {
-                Ok(Some(ModelRef::new(provider, model)))
-            }
+            Some((provider, model)) if model_scope::is_model_ref(text) => Ok(Some(ModelRef::new(provider, model))),
             _ => Err(format!("rlm.spawn model must be provider/model, got {text}")),
         },
         Some(other) => Err(format!("rlm.spawn model must be a string, got {other}")),

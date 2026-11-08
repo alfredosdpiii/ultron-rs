@@ -1,4 +1,4 @@
-//! The prompt budget check before each root request (compaction::prompt_budget wired in the session actor's
+//! The prompt budget check before each root request (session_core prompt_budget wired in the session actor's
 //! generation), through a real session against a scripted provider on loopback: a huge AGENTS.md makes the system
 //! prompt leave the conversation less than `compaction.reserveTokens` below the threshold, so the run fails before
 //! any request with an error naming the sizes; turning auto-compaction off (only the window limits then) lets the

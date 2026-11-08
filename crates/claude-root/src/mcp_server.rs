@@ -431,7 +431,7 @@ fn open_runtime(
     let session: session_core::durable_store::SharedSession = Arc::new(Mutex::new(session));
     let model = frame_model(&resolved.frame_model, env)?;
     let api_key = session_core::lane::api_key(&session_core::ModelFlags::default(), env, &model.provider);
-    let sessions_dir = session_root.join(session_core::lane::session_directory_name(&metadata.cwd));
+    let sessions_dir = session_root.join(session_journal::catalog::session_directory_name(&metadata.cwd));
     // A root server fires its session's schedules itself (crate::schedules); the module tells it of each change.
     let timer = (!args.child).then(crate::schedules::ScheduleTimer::new);
     let schedules = timer.as_ref().map(|timer| {
@@ -1478,7 +1478,8 @@ fn claude_subagents(
     roots: Arc<crate::child_usage::ChildRoots>,
     typed_lanes: Option<session_core::compose::AgentLanes>,
 ) -> Result<SubagentHost, String> {
-    use session_core::subagents::{SessionUsageStore, SessionValueStore, TASKS_KEY, TASKS_NAMESPACE};
+    use session_core::subagents::{SessionUsageStore, value_store};
+    use session_journal::ns::{self, DEFINITIONS_ROOT, TASKS_ROOT};
     let var = server.env.var.clone();
     let self_cmd = crate::self_cmd::self_command(&*var)?;
     let settings = crate::settings::ClaudeCodeSettings::load(&server.env.cwd, &server.env.agent_dir());
@@ -1497,16 +1498,9 @@ fn claude_subagents(
     let apis = server.apis.clone();
     let loki_root = runtime.config.loki_root.clone();
     let server = server.clone();
-    let value = |namespace: &'static str, key: &'static str| {
-        Box::new(SessionValueStore {
-            session: session.clone(),
-            namespace,
-            key,
-            handed_over: None,
-        }) as Box<dyn delegation::task_store::DocumentStore>
-    };
+    let value = |namespace: &str, key: &str| value_store(&session, namespace, key);
     Ok(SubagentHost {
-        store: value(TASKS_NAMESPACE, TASKS_KEY),
+        store: value(TASKS_ROOT.namespace, TASKS_ROOT.key),
         runner: Box::new(move |stack: std::sync::Weak<session_core::compose::Stack>| {
             Arc::new(move |run: delegation::host::ChildRun| {
                 let cwd = run.cwd.clone().unwrap_or_else(|| server.env.cwd.display().to_string());
@@ -1582,8 +1576,8 @@ fn claude_subagents(
         }),
         agents: Some(session_core::compose::AgentStores {
             // One host per journal: the typed agents' tasks are a document of their own beside the subagents'.
-            tasks: value(TASKS_NAMESPACE, "agents"),
-            definitions: value("ultron.definitions", "root"),
+            tasks: value(ns::TASKS, "agents"),
+            definitions: value(DEFINITIONS_ROOT.namespace, DEFINITIONS_ROOT.key),
             usage: Box::new(SessionUsageStore(session.clone())),
             // Typed `rlm` definitions run on a root server's durable runtime (crate::typed_agents); a Claude Code
             // subagent's server has none.

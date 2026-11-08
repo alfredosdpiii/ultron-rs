@@ -124,7 +124,7 @@ pub fn prepare_branch_entries(entries: &[Value], token_budget: i64) -> BranchPre
     }
 }
 
-pub const BRANCH_SUMMARY_PREAMBLE: &str =
+const BRANCH_SUMMARY_PREAMBLE: &str =
     "The user explored a different conversation branch before returning here.\nSummary of that exploration:\n\n";
 
 const BRANCH_SUMMARY_PROMPT: &str =

@@ -550,7 +550,7 @@ mod migration {
         export_native_session_to_pi, import_pi_session, import_pi_session_with, native_session_id_for_pi_session,
     };
     use session_file::{Leaf, SessionManager, SystemEnv};
-    use session_journal::session::{BRANCH_TIP, ENTRY_LABEL, LANE_CONFIG};
+    use session_journal::ns::{BRANCH_TIP, ENTRY_LABEL, LANE_CONFIG};
     use session_journal::{Session, SessionRepo, SystemClock, Write};
     use std::os::unix::fs::PermissionsExt;
     use std::path::{Path, PathBuf};

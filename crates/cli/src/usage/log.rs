@@ -5,6 +5,7 @@
 use super::stats::{cell_apis, classify_nudge};
 use indexmap::IndexMap;
 use serde_json::{Map, Value};
+use session_journal::ns;
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
 
@@ -222,14 +223,14 @@ impl LogError {
 }
 
 const KEPT_NAMESPACES: [&str; 9] = [
-    "ultron.session.name",
-    "ultron.lane.config",
-    "ultron.branch.tip",
-    "ultron.tasks",
-    "ultron.usage",
+    ns::SESSION_NAME,
+    ns::LANE_CONFIG,
+    ns::BRANCH_TIP,
+    ns::TASKS,
+    ns::USAGE,
     inference::TRACE_NAMESPACE,
-    "ultron.memory.state",
-    "ultron.module",
+    ns::MEMORY_STATE,
+    ns::MODULE,
     "ultron.claude-code.lanes",
 ];
 
@@ -510,7 +511,7 @@ fn apply(log: &mut SessionLog, durable: &mut DurableDigest, write: &Map<String, 
     let kind = write.get("kind").and_then(Value::as_str);
     if kind == Some("list") {
         if write.get("op").and_then(Value::as_str) == Some("append")
-            && write.get("namespace").and_then(Value::as_str) == Some("ultron.module")
+            && write.get("namespace").and_then(Value::as_str) == Some(ns::MODULE)
             && write.get("key").and_then(Value::as_str) == Some("durable")
             && let Some(record) = write.get("value")
         {
@@ -543,7 +544,7 @@ fn apply(log: &mut SessionLog, durable: &mut DurableDigest, write: &Map<String, 
     };
     let op = write.get("op").and_then(Value::as_str);
     let value = record(write.get("value"));
-    if namespace == "ultron.op.meta" {
+    if namespace == ns::OP_META {
         if op == Some("set")
             && let Some(v) = value
             && let Some(lane) = v.get("lane").and_then(Value::as_str)
@@ -563,7 +564,7 @@ fn apply(log: &mut SessionLog, durable: &mut DurableDigest, write: &Map<String, 
         }
         return;
     }
-    if namespace == "ultron.result" {
+    if namespace == ns::OP_RESULT {
         if op == Some("set")
             && let Some(v) = value
         {

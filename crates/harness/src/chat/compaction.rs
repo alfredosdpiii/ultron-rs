@@ -265,10 +265,10 @@ pub fn summary_plan(view: &ContextView, cut: usize) -> SummaryPlan {
         let content = &head.model.as_ref()?.first()?["content"];
         let text = content.as_str().or_else(|| content[0]["text"].as_str())?.to_string();
         let text = text
-            .strip_prefix(compaction::COMPACTION_SUMMARY_PREFIX)
+            .strip_prefix(session_journal::context::COMPACTION_SUMMARY_PREFIX)
             .unwrap_or(&text);
         Some(
-            text.strip_suffix(compaction::COMPACTION_SUMMARY_SUFFIX)
+            text.strip_suffix(session_journal::context::COMPACTION_SUMMARY_SUFFIX)
                 .unwrap_or(text)
                 .to_string(),
         )
@@ -637,8 +637,8 @@ fn place_summary(
     remove_compaction_status(live, runtime.task_id())?;
     let text = format!(
         "{}{summary}{}",
-        compaction::COMPACTION_SUMMARY_PREFIX,
-        compaction::COMPACTION_SUMMARY_SUFFIX
+        session_journal::context::COMPACTION_SUMMARY_PREFIX,
+        session_journal::context::COMPACTION_SUMMARY_SUFFIX
     );
     let now = runtime.now()?;
     let reason = current.input["reason"].clone();

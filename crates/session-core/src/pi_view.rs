@@ -219,7 +219,7 @@ pub(crate) fn native_session_as_pi(session: &Session, lane: &str, tip_items: boo
             pi_id_of(&produced, str_of(entry, "parentId")).map_or(Value::Null, Value::from),
         );
         let timestamp = entry["timestamp"].as_i64().unwrap_or(0);
-        base.insert("timestamp".into(), js::iso_string(timestamp).into());
+        base.insert("timestamp".into(), jsrt::date::iso_string(timestamp).into());
         let items = if let Some(original) = original.get(id) {
             vec![original.clone()]
         } else if str_of(entry, "type") == Some("compaction") {
@@ -269,7 +269,7 @@ pub fn pi_manager(session: &Session) -> SessionManager {
     let (entries, leaf) = native_entries_to_pi(session);
     let cwd = session.metadata().cwd.clone();
     let header = json!({
-        "type": "session", "version": 3, "id": session.id(), "timestamp": js::iso_string(0), "cwd": cwd,
+        "type": "session", "version": 3, "id": session.id(), "timestamp": jsrt::date::iso_string(0), "cwd": cwd,
     });
     let mut manager = SessionManager::in_memory(
         Box::new(SystemEnv),

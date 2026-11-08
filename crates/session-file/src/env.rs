@@ -30,20 +30,9 @@ impl Env for SystemEnv {
     }
 
     fn agent_dir(&self) -> String {
-        match std::env::var(config::paths::ENV_AGENT_DIR) {
-            Ok(dir) if !dir.is_empty() => crate::paths::normalize_path(&dir),
-            _ => crate::paths::join(&[&crate::paths::home_dir(), ".ultron", "agent"]),
-        }
-    }
-}
-
-/// An owned `uuidv7()` generator (fixtures and test clocks); the process-wide one is [`jsrt::random::uuid_v7`].
-#[derive(Debug, Default)]
-pub struct Uuidv7(jsrt::random::Uuidv7);
-
-impl Uuidv7 {
-    /// The next id at `now_ms` (clamped to never go backwards) with fresh random bytes.
-    pub fn next(&mut self, now_ms: i64, bytes: [u8; 16]) -> String {
-        self.0.generate(None, now_ms, bytes)
+        let home = crate::paths::home_dir();
+        config::paths::agent_dir(|name| std::env::var(name).ok(), std::path::Path::new(&home))
+            .display()
+            .to_string()
     }
 }

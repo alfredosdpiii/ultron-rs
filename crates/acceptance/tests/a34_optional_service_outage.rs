@@ -169,6 +169,7 @@ fn build_host(stores: &Stores, effects: &Arc<Mutex<Vec<String>>>, calls: &Arc<Mu
             Arc::new(MemoryApi { service: Some(memory) }),
             Arc::new(LocalServicesModule {
                 services: Arc::new(local),
+                branch: None,
             }),
         ],
         ..Setup::default()

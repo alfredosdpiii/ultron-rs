@@ -48,6 +48,7 @@ fn local_host(validate: Option<Validator>) -> impl Fn(&Path) -> Made {
             handler: KernelApis::new(inner(Arc::new(AtomicI64::new(FIXED_NOW))))
                 .with(Arc::new(LocalServicesModule {
                     services: Arc::new(services),
+                    branch: None,
                 }))
                 .with(Arc::new(ReleaseGateModule::new(gates.clone(), Some(fixed(FIXED_NOW))))),
             env: Vec::new(),

@@ -2,32 +2,20 @@
 //! commits it, plus [`Run::reopen`]: the durable runtime resumes an operation a dead worker left open, so its journal
 //! continues from the stored state instead of being settled as interrupted.
 
-use serde_json::{Map, Value, json};
-use session_journal::run::{
-    FrameEncoder, OP_META, OP_RESULT, OP_STATE, OP_TOOL_ARGS, PENDING_ENTRY, PENDING_FRAMES, PENDING_TOOL_OUTPUT,
-    ULTRON_USAGE,
+use super::{FrameEncoder, MAIN_LANE, retry_policy, stream_options, summary_stream_options};
+use crate::ns::{
+    BRANCH_TIP, LANE_CONFIG, LANE_STATE, OP_META, OP_PREPARATION, OP_RESULT, OP_STATE, OP_TOOL_ARGS, PENDING_ENTRY,
+    PENDING_FRAMES, PENDING_TOOL_OUTPUT, USAGE,
 };
+use serde_json::{Map, Value, json};
 
-/// A compaction's durable preparation (`ultron.op.preparation`, keyed `<operation>:<task>`).
-pub const OP_PREPARATION: &str = "ultron.op.preparation";
-use session_journal::session::{BRANCH_TIP, LANE_STATE};
-use session_journal::usage::num;
-use session_journal::{Session, Write, lock_clock};
+use crate::{Session, Write, lock_clock};
+use jsrt::json::number as num;
 use std::time::{Duration, Instant};
 
 /// How long a streamed delta waits for the ones after it before it commits: a frame per token cost a journal line of
 /// ~250 bytes to carry a few characters. A worker killed mid-stream loses at most this much of the partial answer.
 const FRAME_WINDOW: Duration = Duration::from_millis(100);
-
-/// Default stream options and retry policy of a generation (`timeoutMs` 300000, 4 attempts from 2000 ms); a session
-/// sets the ones its settings name ([`Run::set_stream_options`]).
-fn stream_options() -> Value {
-    json!({"timeoutMs": 300000, "maxRetryDelayMs": 60000})
-}
-
-fn retry_policy() -> Value {
-    json!({"maxAttempts": 4, "baseDelayMs": 2000, "maxAgentDelayMs": 60000})
-}
 
 #[derive(Clone, Debug)]
 struct ToolCallState {
@@ -147,9 +135,9 @@ impl Run {
             .unwrap_or_else(|| now(session));
         let operation_id = mint(session);
         let prompt_id = mint(session);
-        let source_tip = session.branch_tip("main").flatten();
+        let source_tip = session.branch_tip(MAIN_LANE).flatten();
         let last_operation_id = session
-            .value(LANE_STATE, "main")
+            .value(LANE_STATE, MAIN_LANE)
             .and_then(|s| s.get("lastOperationId").cloned())
             .unwrap_or(Value::Null);
         let run = Run {
@@ -184,7 +172,7 @@ impl Run {
             retry_waiting: None,
         };
         let meta = json!({
-            "operationId": operation_id, "lane": "main", "sourceTipId": source_tip, "startedAt": started_at,
+            "operationId": operation_id, "lane": MAIN_LANE, "sourceTipId": source_tip, "startedAt": started_at,
             "intent": {"kind": "run", "promptEntryIds": [prompt_id]},
         });
         let starting = json!({
@@ -199,10 +187,10 @@ impl Run {
         writes.push(entry(&prompt_id, parent.as_deref(), prompt));
         writes.extend(captured.iter().map(|(id, _)| Write::delete(PENDING_ENTRY, id)));
         writes.extend([
-            Write::set(BRANCH_TIP, "main", prompt_id.clone().into()),
+            Write::set(BRANCH_TIP, MAIN_LANE, prompt_id.clone().into()),
             Write::set(OP_META, &operation_id, meta),
             Write::set(OP_STATE, &operation_id, starting),
-            Write::set(LANE_STATE, "main", run.lane_state(true)),
+            Write::set(LANE_STATE, MAIN_LANE, run.lane_state(true)),
         ]);
         session.commit(&writes)?;
         let checkpoint = run.checkpoint(json!({"kind": "need_assistant", "overflowRecoveryUsed": false}));
@@ -224,7 +212,7 @@ impl Run {
             .ok_or_else(|| format!("Operation {operation_id} is not open"))?;
         let state = session.value(OP_STATE, operation_id).cloned().unwrap_or(Value::Null);
         let lane = session
-            .value(LANE_STATE, "main")
+            .value(LANE_STATE, MAIN_LANE)
             .cloned()
             .unwrap_or_else(|| json!({"inbox": []}));
         let text = |value: &Value| value.as_str().map(str::to_string);
@@ -234,10 +222,7 @@ impl Run {
             .unwrap_or_default()
             .to_string();
         let config = match &context["configuration"] {
-            Value::Null => session
-                .value(session_journal::session::LANE_CONFIG, "main")
-                .cloned()
-                .unwrap_or(Value::Null),
+            Value::Null => session.value(LANE_CONFIG, MAIN_LANE).cloned().unwrap_or(Value::Null),
             config => config.clone(),
         };
         let batch = &state["batch"];
@@ -283,10 +268,7 @@ impl Run {
         Ok(Run {
             operation_id: operation_id.to_string(),
             config,
-            settings: state
-                .get("settings")
-                .cloned()
-                .unwrap_or_else(session_journal::run::default_settings),
+            settings: state.get("settings").cloned().unwrap_or_else(super::default_settings),
             source_tip: text(&meta["sourceTipId"]),
             started_at: meta["startedAt"].as_i64().unwrap_or(0),
             last_operation_id: lane.get("lastOperationId").cloned().unwrap_or(Value::Null),
@@ -514,7 +496,7 @@ impl Run {
         ready.insert("nextAttempt".into(), 1.into());
         let mut writes = before;
         writes.push(Write::set(OP_STATE, &self.operation_id, Value::Object(ready)));
-        writes.push(Write::set(LANE_STATE, "main", self.lane_state(true)));
+        writes.push(Write::set(LANE_STATE, MAIN_LANE, self.lane_state(true)));
         session.commit(&writes)?;
         Ok(())
     }
@@ -584,7 +566,7 @@ impl Run {
     /// Count the response in the Ultron usage ledger (`ultron.usage/root`, root `turn:<operation>`).
     pub fn record_turn(&mut self, session: &mut Session, message: &Value) -> Result<(), String> {
         let mut document = session
-            .value(ULTRON_USAGE, "root")
+            .value(USAGE, "root")
             .cloned()
             .unwrap_or_else(|| json!({"version": 1, "roots": {}}));
         let root_id = format!("turn:{}", self.operation_id);
@@ -611,14 +593,14 @@ impl Run {
             document["roots"] = json!({});
         }
         document["roots"][&root_id] = root;
-        session.commit(&[Write::set(ULTRON_USAGE, "root", document)])?;
+        session.commit(&[Write::set(USAGE, "root", document)])?;
         Ok(())
     }
 
     /// Commit the settled response with its usage row; the next state is the tool batch when it calls tools,
     /// else a checkpoint that may finish. Returns whether tools follow.
     pub fn commit_assistant(&mut self, session: &mut Session, message: Value) -> Result<bool, String> {
-        let tip = session.branch_tip("main").flatten();
+        let tip = session.branch_tip(MAIN_LANE).flatten();
         let id = self.response_entry_id.clone();
         let mut usage_row = Map::new();
         usage_row.insert("id".into(), self.usage_id.clone().into());
@@ -676,7 +658,7 @@ impl Run {
         let mut all = vec![
             entry(&id, tip.as_deref(), message),
             Write::Usage(usage_row),
-            Write::set(BRANCH_TIP, "main", id.clone().into()),
+            Write::set(BRANCH_TIP, MAIN_LANE, id.clone().into()),
             Write::delete_list(PENDING_FRAMES, &self.frames_key()),
         ];
         if let Some((not_before, error_message)) = retry {
@@ -787,24 +769,20 @@ impl Run {
             .commit(&[
                 preparation,
                 Write::set(OP_STATE, &self.operation_id, deciding),
-                Write::set(LANE_STATE, "main", self.lane_state(true)),
+                Write::set(LANE_STATE, MAIN_LANE, self.lane_state(true)),
             ])
             .map(drop)
     }
 
     /// The summary request is prepared: `summary.ready`, `summary.effect_pending`, then the request with its usage
     /// id. Returns the compaction entry's id.
-    pub fn compaction_request(
-        &mut self,
-        session: &mut Session,
-        retry: &crate::compaction_op::SummaryRetry,
-    ) -> Result<String, String> {
+    pub fn compaction_request(&mut self, session: &mut Session, retry_policy: Value) -> Result<String, String> {
         let result_entry_id = mint(session);
         let context = json!({
             "resultEntryId": result_entry_id,
             "configuration": self.config,
-            "streamOptions": {"timeoutMs": 300000, "maxRetryDelayMs": 60000, "deferred": false},
-            "retryPolicy": retry.value(),
+            "streamOptions": summary_stream_options(),
+            "retryPolicy": retry_policy,
         });
         if let Some(compaction) = self.compaction.as_mut() {
             compaction.summary_context = context;
@@ -955,7 +933,7 @@ impl Run {
         result_entry_id: &str,
         mut entry: Map<String, Value>,
     ) -> Result<(), String> {
-        let tip = session.branch_tip("main").flatten();
+        let tip = session.branch_tip(MAIN_LANE).flatten();
         let mut full = Map::new();
         full.insert("id".into(), result_entry_id.into());
         full.insert("parentId".into(), tip.map_or(Value::Null, Value::from));
@@ -966,9 +944,9 @@ impl Run {
         session
             .commit(&[
                 Write::Entry(full),
-                Write::set(BRANCH_TIP, "main", result_entry_id.into()),
+                Write::set(BRANCH_TIP, MAIN_LANE, result_entry_id.into()),
                 Write::set(OP_STATE, &self.operation_id, resumed),
-                Write::set(LANE_STATE, "main", self.lane_state(true)),
+                Write::set(LANE_STATE, MAIN_LANE, self.lane_state(true)),
             ])
             .map(drop)
     }
@@ -991,7 +969,7 @@ impl Run {
             row.insert("adjustment".into(), false.into());
             writes.push(Write::Usage(row));
         }
-        let tip = session.branch_tip("main").flatten();
+        let tip = session.branch_tip(MAIN_LANE).flatten();
         let mut full = Map::new();
         full.insert("id".into(), result_entry_id.clone().into());
         full.insert("parentId".into(), tip.map_or(Value::Null, Value::from));
@@ -1001,9 +979,9 @@ impl Run {
         self.compaction = None;
         writes.extend([
             Write::Entry(full),
-            Write::set(BRANCH_TIP, "main", result_entry_id.clone().into()),
+            Write::set(BRANCH_TIP, MAIN_LANE, result_entry_id.clone().into()),
             Write::set(OP_STATE, &self.operation_id, resumed),
-            Write::set(LANE_STATE, "main", self.lane_state(true)),
+            Write::set(LANE_STATE, MAIN_LANE, self.lane_state(true)),
         ]);
         session.commit(&writes)?;
         Ok(result_entry_id)
@@ -1028,7 +1006,7 @@ impl Run {
         let mut writes = placement;
         writes.extend([
             Write::set(OP_STATE, &self.operation_id, resumed),
-            Write::set(LANE_STATE, "main", self.lane_state(true)),
+            Write::set(LANE_STATE, MAIN_LANE, self.lane_state(true)),
         ]);
         session.commit(&writes)?;
         Ok(true)
@@ -1111,7 +1089,7 @@ impl Run {
             return Ok(());
         }
         let mut writes = Vec::new();
-        let mut tip = session.branch_tip("main").flatten();
+        let mut tip = session.branch_tip(MAIN_LANE).flatten();
         for call in &self.calls {
             writes.push(entry(
                 &call.result_entry_id,
@@ -1122,7 +1100,7 @@ impl Run {
             tip = Some(call.result_entry_id.clone());
         }
         let last = tip.unwrap_or_default();
-        writes.push(Write::set(BRANCH_TIP, "main", last.clone().into()));
+        writes.push(Write::set(BRANCH_TIP, MAIN_LANE, last.clone().into()));
         for call in &self.calls {
             let key = format!("{}:{}:{}", self.operation_id, self.step_id, call.source_index);
             writes.push(Write::delete(OP_TOOL_ARGS, &key));
@@ -1149,7 +1127,7 @@ impl Run {
         state["control"] = self.control.clone();
         session.commit(&[
             Write::set(OP_STATE, &self.operation_id, state),
-            Write::set(LANE_STATE, "main", self.lane_state(true)),
+            Write::set(LANE_STATE, MAIN_LANE, self.lane_state(true)),
         ])?;
         Ok(())
     }
@@ -1208,7 +1186,7 @@ impl Run {
         );
         // The error answer committing with this transaction is the tip it leaves.
         let tip = match self.error_answer.is_empty() {
-            true => session.branch_tip("main").flatten(),
+            true => session.branch_tip(MAIN_LANE).flatten(),
             false => Some(self.assistant_entry_id.clone()),
         };
         result.insert("tipId".into(), tip.map_or(Value::Null, Value::from));
@@ -1222,7 +1200,7 @@ impl Run {
         writes.extend(self.preparations.iter().map(|key| Write::delete(OP_PREPARATION, key)));
         writes.extend([
             Write::set(OP_RESULT, &self.operation_id, Value::Object(result)),
-            Write::set(LANE_STATE, "main", self.lane_state(false)),
+            Write::set(LANE_STATE, MAIN_LANE, self.lane_state(false)),
         ]);
         session.commit(&writes)?;
         Ok(())

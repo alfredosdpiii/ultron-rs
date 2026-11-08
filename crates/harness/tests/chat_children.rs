@@ -414,6 +414,11 @@ fn harness_chat_children_reject_bad_spawns_and_unknown_children() {
                     "rlm.spawn",
                     json!({ "prompt": "brief", "kwargs": { "name": "c", "model": "faux" } }),
                 ),
+                // The `provider/model` rule of every other spawn path (model_scope::is_model_ref): no blank part.
+                (
+                    "rlm.spawn",
+                    json!({ "prompt": "brief", "kwargs": { "name": "c", "model": "faux/a b" } }),
+                ),
                 ("rlm.collect", json!({ "selectors": ["999999"] })),
                 ("rlm.cancel", json!({ "selector": "nope" })),
             ] {
@@ -431,6 +436,7 @@ fn harness_chat_children_reject_bad_spawns_and_unknown_children() {
                 "rlm.spawn prompt must be a non-empty string",
                 "rlm.spawn name must be a non-empty string",
                 "rlm.spawn model must be provider/model, got faux",
+                "rlm.spawn model must be provider/model, got faux/a b",
                 "Unknown subagent 999999",
                 "Unknown subagent nope",
             ]

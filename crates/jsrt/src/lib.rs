@@ -14,10 +14,12 @@
 //! - [`collate`]: `localeCompare` (ICU root collation) for the names the TUI and catalogs sort.
 //! - [`base64`], [`hash`], [`random`]: `btoa`/`atob`/`Buffer.from`, sha256 hex and HMAC, `randomUUID` and UUIDv7.
 //! - [`sync`]: a poison-free `Mutex::lock`; [`payload`]: the "Unknown payload field" check.
+//! - [`diff`]: jsdiff's Myers diff, `diffLines` and the edit tool's `generateDiffString`.
 
 pub mod base64;
 pub mod collate;
 pub mod date;
+pub mod diff;
 pub mod hash;
 pub mod json;
 pub mod localtime;

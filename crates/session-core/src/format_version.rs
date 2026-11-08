@@ -3,37 +3,23 @@
 //! the open, naming the value and its version, before any of it is loaded, settled or rewritten.
 
 use session_journal::Session;
+use session_journal::ns;
 
-/// Session values checked when a session resumes (`SINGLE_VALUES`); artifacts are checked when read.
-const SINGLE_VALUES: [(&str, &str, &str); 7] = [
-    ("ultron.tasks", "root", "version"),
-    ("ultron.definitions", "root", "version"),
-    ("ultron.usage", "root", "version"),
-    ("ultron.memory.state", "root", "version"),
-    ("ultron.local", "ultron.refinements", "formatVersion"),
-    ("ultron.local", "ultron.experiments", "formatVersion"),
-    ("ultron.local", "ultron.artifact-refs", "formatVersion"),
-];
-
-/// Version field of each `ultron.module` document (`moduleField`).
-fn module_field(key: &str) -> &'static str {
-    if key == "skills" { "format" } else { "version" }
-}
-
-/// `assertSessionFormatsReadable`: the error of the first value in an unknown format version.
+/// `assertSessionFormatsReadable`: the error of the first value in an unknown format version. Artifacts are checked
+/// when read.
 pub fn assert_session_formats_readable(session: &Session) -> Result<(), String> {
-    for (namespace, key, field) in SINGLE_VALUES {
+    for document in ns::VERSIONED {
         kernel_apis::store::read_versioned(
-            &format!("{namespace}/{key}"),
-            session.value(namespace, key).cloned(),
-            field,
+            &document.address(),
+            session.value(document.namespace, document.key).cloned(),
+            document.version_field,
         )?;
     }
-    for stored in session.state().scan_values("ultron.module", "") {
+    for stored in session.state().scan_values(ns::MODULE, "") {
         kernel_apis::store::read_versioned(
-            &format!("ultron.module/{}", stored.key),
+            &format!("{}/{}", ns::MODULE, stored.key),
             Some(stored.value.clone()),
-            module_field(&stored.key),
+            ns::module_version_field(&stored.key),
         )?;
     }
     Ok(())

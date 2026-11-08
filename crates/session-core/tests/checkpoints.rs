@@ -49,7 +49,7 @@ fn read(cwd: &Path, name: &str) -> Option<String> {
 fn checkpoints(a: &Actor) -> Vec<Value> {
     a.writes()
         .into_iter()
-        .filter(|w| w["namespace"] == session_journal::checkpoints::CHECKPOINTS && w["op"] == "set")
+        .filter(|w| w["namespace"] == session_journal::ns::CHECKPOINTS && w["op"] == "set")
         .collect()
 }
 

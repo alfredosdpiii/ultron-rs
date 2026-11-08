@@ -223,6 +223,23 @@ pub fn project_context_entries(entries: &[Value], projectors: &[(&str, EntryProj
         .collect()
 }
 
+/// The `details` of each custom message of `custom_type` on the branch `entries` since its last compaction, oldest
+/// first: what the context still shows of a feature that adds a message once (recalled memory, a playbook, the active
+/// refinements).
+pub fn custom_details_since_compaction<'a>(entries: &'a [Value], custom_type: &str) -> Vec<&'a Value> {
+    let mut shown = Vec::new();
+    for entry in entries {
+        if entry["type"] == "compaction" {
+            shown.clear();
+        }
+        let message = &entry["message"];
+        if entry["type"] == "message" && message["role"] == "custom" && message["customType"] == custom_type {
+            shown.push(&message["details"]);
+        }
+    }
+    shown
+}
+
 pub const COMPACTION_SUMMARY_PREFIX: &str =
     "The conversation history before this point was compacted into the following summary:\n\n<summary>\n";
 pub const COMPACTION_SUMMARY_SUFFIX: &str = "\n</summary>";
@@ -230,57 +247,78 @@ pub const BRANCH_SUMMARY_PREFIX: &str =
     "The following is a summary of a branch that this conversation came back from:\n\n<summary>\n";
 pub const BRANCH_SUMMARY_SUFFIX: &str = "</summary>";
 
-fn text_user(text: String, timestamp: &Value) -> Value {
-    json!({"role": "user", "content": [{"type": "text", "text": text}], "timestamp": timestamp})
+fn text_user(text: String, timestamp: Option<&Value>) -> Value {
+    let mut message = json!({"role": "user", "content": [{"type": "text", "text": text}]});
+    if let Some(timestamp) = timestamp {
+        message["timestamp"] = timestamp.clone();
+    }
+    message
+}
+
+/// `String(value)` as `Array.prototype.join` applies it: `null` and `undefined` become "".
+pub(crate) fn join_string(value: Option<&Value>) -> String {
+    match value {
+        None | Some(Value::Null) => String::new(),
+        value => jsrt::value::string(value),
+    }
 }
 
 /// `bashExecutionToText`.
-fn bash_execution_text(m: &Value) -> String {
-    let mut text = format!("Ran `{}`\n", str_of(m, "command"));
-    let output = str_of(m, "output");
+fn bash_execution_to_text(message: &Value) -> String {
+    let output = join_string(message.get("output"));
+    let mut text = format!("Ran `{}`\n", join_string(message.get("command")));
     if output.is_empty() {
         text.push_str("(no output)");
     } else {
         text.push_str(&format!("```\n{output}\n```"));
     }
-    if m["cancelled"] == true {
+    let exit_code = message.get("exitCode").filter(|c| !c.is_null());
+    if jsrt::value::truthy(message.get("cancelled")) {
         text.push_str("\n\n(command cancelled)");
-    } else if let Some(code) = m["exitCode"].as_i64().filter(|c| *c != 0) {
-        text.push_str(&format!("\n\nCommand exited with code {code}"));
+    } else if let Some(code) = exit_code.filter(|c| c.as_f64() != Some(0.0)) {
+        text.push_str(&format!("\n\nCommand exited with code {}", jsrt::json::stringify(code)));
     }
-    if m["truncated"] == true && !str_of(m, "fullOutputPath").is_empty() {
+    if jsrt::value::truthy(message.get("truncated")) && jsrt::value::truthy(message.get("fullOutputPath")) {
         text.push_str(&format!(
             "\n\n[Output truncated. Full output: {}]",
-            str_of(m, "fullOutputPath")
+            join_string(message.get("fullOutputPath"))
         ));
     }
     text
 }
 
-/// `convertToLlm`: agent messages as provider messages (custom roles become user messages).
+/// `convertToLlm`: agent messages as provider messages: custom messages become user messages, summaries user text,
+/// `!!` bash executions are dropped.
 pub fn convert_to_llm(messages: &[Value]) -> Vec<Value> {
     messages
         .iter()
         .filter_map(|m| match str_of(m, "role") {
-            "bashExecution" if m["excludeFromContext"] == true => None,
-            "bashExecution" => Some(text_user(bash_execution_text(m), &m["timestamp"])),
+            "bashExecution" if jsrt::value::truthy(m.get("excludeFromContext")) => None,
+            "bashExecution" => Some(text_user(bash_execution_to_text(m), m.get("timestamp"))),
             "custom" => {
-                let content = match &m["content"] {
-                    Value::String(text) => json!([{"type": "text", "text": text}]),
-                    other => other.clone(),
+                let content = match m.get("content") {
+                    Some(Value::String(text)) => json!([{"type": "text", "text": text}]),
+                    other => other.cloned().unwrap_or(Value::Null),
                 };
-                Some(json!({"role": "user", "content": content, "timestamp": m["timestamp"]}))
+                let mut message = json!({"role": "user", "content": content});
+                if let Some(timestamp) = m.get("timestamp") {
+                    message["timestamp"] = timestamp.clone();
+                }
+                Some(message)
             }
             "branchSummary" => Some(text_user(
-                format!("{BRANCH_SUMMARY_PREFIX}{}{BRANCH_SUMMARY_SUFFIX}", str_of(m, "summary")),
-                &m["timestamp"],
+                format!(
+                    "{BRANCH_SUMMARY_PREFIX}{}{BRANCH_SUMMARY_SUFFIX}",
+                    join_string(m.get("summary"))
+                ),
+                m.get("timestamp"),
             )),
             "compactionSummary" => Some(text_user(
                 format!(
                     "{COMPACTION_SUMMARY_PREFIX}{}{COMPACTION_SUMMARY_SUFFIX}",
-                    str_of(m, "summary")
+                    join_string(m.get("summary"))
                 ),
-                &m["timestamp"],
+                m.get("timestamp"),
             )),
             "system" | "user" | "assistant" | "toolResult" => Some(m.clone()),
             _ => None,
