@@ -43,7 +43,7 @@ pub fn status_extras(host: &host::Host, tool_calls: &kernel_apis::ToolCalls, lan
                 "id": job.id,
                 "lane": job.lane,
                 "command": js_head(&job.command, 200),
-                "status": job.status,
+                "status": job.status.as_str(),
                 "exitCode": job.exit_code,
                 "startedAt": job.started_at,
                 "endedAt": job.ended_at,

@@ -27,14 +27,17 @@ from progress_api import Progress
 from skills_api import Skills
 from schedules_api import Goals, Schedules
 from instances_api import Instances
-# No `grants` namespace: there is no grant system (TypeScript imports grants_api.Grants here).
+from lanes_api import child_selectors, install as install_lanes
 from release_gate_api import ReleaseGates
 import agent_class_api
 from context_api import Context
+from ext_api import install as install_extensions
 from infer_api import install as install_inference
 from hints_api import Hints
 from goal_api import Goal
 from secret_patterns import REDACTION_MARKER
+from swarm_api import install as install_swarm
+import waits
 from tools_api import Mcp, McpError, ToolCall, ToolError, ToolResult, Tools
 from worktree_api import Worktrees, worktree_path
 
@@ -358,7 +361,7 @@ class BashOutput(str):
         text = output.strip()
         running = job is not None and job.running
         if running:
-            events = _async_events_enabled()
+            events = waits.async_events_enabled()
             waited_text = f" after {waited:g} s" if waited is not None else ""
             text += (
                 f"\n[still running as job {job.id}{waited_text}; its completion will arrive as a runtime event, "
@@ -487,41 +490,6 @@ class ShellJob:
         return str(self)
 
 
-_JOB_MAX_WAIT_SECONDS = 3600
-# How long a plain `await bash(cmd)` waits before a slow command continues as a host job (ULTRON_BASH_YIELD_AFTER).
-_DEFAULT_BASH_YIELD_AFTER = 30.0
-
-
-class _Default:
-    """Marker for an argument left out (distinct from an explicit None)."""
-
-    def __repr__(self) -> str:
-        return "default"
-
-
-_DEFAULT = _Default()
-
-
-def _async_events_enabled() -> bool:
-    return os.environ.get("ULTRON_ASYNC_EVENTS", "").strip().lower() not in ("off", "0", "false", "no")
-
-
-def _default_yield_after() -> float | None:
-    """ULTRON_BASH_YIELD_AFTER seconds (default 30); 0 or "off" makes plain bash block until the command ends."""
-    raw = os.environ.get("ULTRON_BASH_YIELD_AFTER", "").strip().lower()
-    if raw == "":
-        return _DEFAULT_BASH_YIELD_AFTER
-    if raw in ("off", "none", "false", "no"):
-        return None
-    try:
-        value = float(raw)
-    except ValueError:
-        return _DEFAULT_BASH_YIELD_AFTER
-    if not math.isfinite(value) or value < 0:
-        return _DEFAULT_BASH_YIELD_AFTER
-    return None if value == 0 else min(value, _JOB_MAX_WAIT_SECONDS)
-
-
 # Outside a work tree `git diff` prints its whole option list (about 130 lines, 7 KB) after the one line that
 # matters; every later turn re-reads it. Keep the warning and drop the list.
 _GIT_DIFF_USAGE = re.compile(
@@ -536,7 +504,7 @@ def _quiet_git_usage(output: str) -> str:
     return _GIT_DIFF_USAGE.sub("(not a git work tree: no diff; compare against the text you read instead)\n", output)
 
 
-async def bash(command: str, timeout: float | None = None, yield_after: Any = _DEFAULT) -> Any:
+async def bash(command: str, timeout: float | None = None, yield_after: Any = waits.DEFAULT) -> Any:
     """Run a shell command in the working directory.
 
     Args:
@@ -561,12 +529,12 @@ async def bash(command: str, timeout: float | None = None, yield_after: Any = _D
     if timeout is not None and (isinstance(timeout, bool) or not isinstance(timeout, (int, float)) or timeout <= 0):
         raise ValueError("bash timeout must be a positive number of seconds")
     auto: float | None = None
-    if yield_after is _DEFAULT:
-        auto = _default_yield_after()
+    if yield_after is waits.DEFAULT:
+        auto = waits.setting("ULTRON_BASH_YIELD_AFTER")
     elif yield_after is not None:
         if isinstance(yield_after, bool) or not isinstance(yield_after, (int, float)) or yield_after < 0:
             raise ValueError("bash yield_after must be a non-negative number of seconds")
-        job_payload: dict[str, Any] = {"command": command, "yield_after": min(float(yield_after), _JOB_MAX_WAIT_SECONDS)}
+        job_payload: dict[str, Any] = {"command": command, "yield_after": min(float(yield_after), waits.MAX_WAIT_SECONDS)}
         if timeout is not None:
             job_payload["timeout"] = timeout
         return ShellJob(_STATE.bridge, await _STATE.bridge.request("shell.run", job_payload))
@@ -985,7 +953,6 @@ class RuntimeState:
         self.namespace["schedules"] = Schedules(self.bridge)
         self.namespace["goals"] = Goals(self.bridge)
         self.namespace["instances"] = Instances(self.bridge)
-        # No "grants" (see the imports); the line count stays, so recorded tracebacks keep their lines.
         self.namespace["gates"] = ReleaseGates(self.bridge)
         self.namespace["ctx"] = Context(self.bridge)
         self.namespace["preview"] = preview
@@ -2026,12 +1993,6 @@ def _error_preview(error: BaseException) -> dict[str, Any]:
 
 _STATE = RuntimeState()
 
-# The lane API, `ext` and the swarm API are installed here, after everything above, so the line numbers that recorded tracebacks
-# and the feature inventory name stay put.
-from ext_api import install as install_extensions  # noqa: E402
-from lanes_api import child_selectors, install as install_lanes  # noqa: E402
-from swarm_api import install as install_swarm  # noqa: E402
-
 install_lanes(RLMNamespace)
 install_extensions(_STATE.namespace, _STATE.bridge)
 install_swarm(RLMNamespace, _STATE.namespace, _STATE.bridge)
@@ -2141,11 +2102,6 @@ async def handle_request(frame: dict[str, Any]) -> None:
         async with _STATE.execution_lock:
             _STATE.reset_scratch()
         emit("done", id=request_id, status="ok")
-    elif request_type == "list_names":
-        emit("done", id=request_id, status="ok", names=sorted(name for name in _STATE.namespace if not name.startswith("__")))
-    elif request_type == "shutdown":
-        emit("done", id=request_id, status="ok")
-        raise SystemExit(0)
     else:
         detail = _text_preview(request_type) if isinstance(request_type, str) else _result_preview(request_type)
         emit("done", id=request_id, status="error", error=_text_preview("unknown request: " + detail))
@@ -2305,7 +2261,6 @@ def _bash_exit_lines(exit_code: int | None, notes: dict[str, Any]) -> str:
     return (f"\n{sandbox_note}" if sandbox_note else "") + f"\n[{_exit_words(exit_code, notes.get('exit_note'))}]"
 
 
-# Below every frozen fixture's traceback line (crates/kernel and crates/cli fixtures pin runtime.py line numbers).
 def _matching_models(result: Any, query: str, limit: int) -> list[dict[str, Any]]:
     """The host's model list filtered to those whose provider, id or name holds every word of `query`."""
     words = query.lower().split()

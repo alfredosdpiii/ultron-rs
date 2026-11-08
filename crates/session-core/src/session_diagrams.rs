@@ -1,4 +1,4 @@
-//! `diagram.mermaid` for a session ([`kernel_apis::diagram`]): node from the session environment's `PATH`, Pele
+//! `diagram.mermaid` for a session ([`diagram`]): node from the session environment's `PATH`, Pele
 //! unpacked under `<agent dir>/cache`, diagrams saved to `<agent dir>/rlm-output/<session id>/diagrams`, the theme
 //! from the `theme` setting (read at each call), the terminal appearance the attached TUI reported (OSC 11) and
 //! the session's `COLORFGBG`, and shown diagrams handed to the
@@ -7,7 +7,7 @@
 
 use crate::compose::Config;
 use crate::view_images::ViewImages;
-use kernel_apis::diagram::{DiagramConfig, DiagramModule, NODE_TIMEOUT, ShownDiagram, ThemeInputs};
+use diagram::{DiagramConfig, DiagramModule, NODE_TIMEOUT, ShownDiagram, ThemeInputs};
 use serde_json::{Map, Value, json};
 use std::sync::Arc;
 

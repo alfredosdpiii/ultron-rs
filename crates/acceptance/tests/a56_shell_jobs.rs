@@ -329,7 +329,11 @@ fn acceptance_a56_the_journal_stays_small_and_survives_a_worker_restart() {
         0,
     )
     .unwrap();
-    let finished = restored.records.iter().find(|r| r.status == "completed").unwrap();
+    let finished = restored
+        .records
+        .iter()
+        .find(|r| r.status.as_str() == "completed")
+        .unwrap();
     assert_eq!(host::journal::job_summary(finished, 240), "exit 0; kept-output");
     std::fs::write(cwd.join("go"), "").unwrap();
     assert_eq!(ok(&k, "(await running.result()).status"), "'completed'");

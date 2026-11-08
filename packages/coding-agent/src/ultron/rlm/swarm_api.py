@@ -13,9 +13,7 @@ from __future__ import annotations
 import copy
 from typing import Any
 
-
-def _payload(**fields: Any) -> dict[str, Any]:
-    return {key: value for key, value in fields.items() if value is not None}
+from payload_fields import given
 
 
 class _KeepBridge:
@@ -79,7 +77,7 @@ class Swarm:
 
     async def register(self, name: str | None = None, *, topics: Any = None, files: Any = None,
                        work: str | None = None, summary: str | None = None) -> dict[str, Any]:
-        return await self._bridge.request("swarm.register", _payload(
+        return await self._bridge.request("swarm.register", given(
             name=name, topics=list(topics) if topics is not None else None,
             files=list(files) if files is not None else None, work=work, summary=summary))
 
@@ -104,16 +102,16 @@ class Board:
         self._bridge = bridge
 
     async def add(self, title: str, detail: str | None = None) -> dict[str, Any]:
-        return await self._bridge.request("board.add", _payload(title=title, detail=detail))
+        return await self._bridge.request("board.add", given(title=title, detail=detail))
 
     async def claim(self, task_id: int) -> dict[str, Any]:
         return await self._bridge.request("board.claim", {"id": task_id})
 
     async def update(self, task_id: int, *, status: str | None = None, note: str | None = None) -> dict[str, Any]:
-        return await self._bridge.request("board.update", _payload(id=task_id, status=status, note=note))
+        return await self._bridge.request("board.update", given(id=task_id, status=status, note=note))
 
     async def list(self, status: str | None = None) -> list[dict[str, Any]]:
-        return await self._bridge.request("board.list", _payload(status=status))
+        return await self._bridge.request("board.list", given(status=status))
 
 
 class Notes:
@@ -130,7 +128,7 @@ class Notes:
         return await self._bridge.request("notes.append", {"text": text})
 
     async def write(self, text: str, expect_version: int | None = None) -> dict[str, Any]:
-        return await self._bridge.request("notes.write", _payload(text=text, expect_version=expect_version))
+        return await self._bridge.request("notes.write", given(text=text, expect_version=expect_version))
 
 
 def install(rlm_class: Any, namespace: dict[str, Any], bridge: Any) -> None:

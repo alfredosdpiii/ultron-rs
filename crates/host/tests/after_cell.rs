@@ -8,7 +8,9 @@ use host::Guard;
 use host::file_hooks::{
     AfterCellReport, AfterOutcome, CellChanges, FileHooks, FileWriteGuard, OutsideChanges, Snapshot, Snapshotter,
 };
-use host::loki_guard::{LokiGuard, LokiMode, LokiReport, classify_loki_text, parse_loki_report};
+use host::loki_guard::{LokiGuard, LokiMode};
+use loki::CheckError;
+use loki::run::Report;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -80,7 +82,7 @@ fn host_after_cell_changes_reach_the_guards_and_findings_come_with_the_next_cell
     // Cell 1: a shell write and a checked edit.
     hooks.cell_started("main");
     std::fs::write(root.join("notes.txt"), "beta\n").unwrap();
-    let verdict = hooks.before_write("app.py", "VALUE = 3\n");
+    let verdict = hooks.before_write("main", "app.py", "VALUE = 3\n");
     assert_eq!(verdict["blocked"], false);
     std::fs::write(root.join("app.py"), "VALUE = 3\n").unwrap();
     hooks.cell_ended("main");
@@ -105,7 +107,7 @@ fn host_after_cell_changes_reach_the_guards_and_findings_come_with_the_next_cell
     assert_eq!(reports.lock().unwrap().len(), 1);
     // A checked write changed again afterwards is an unchecked file; a deletion is reported as deleted.
     hooks.cell_started("main");
-    let _ = hooks.before_write("app.py", "VALUE = 4\n");
+    let _ = hooks.before_write("main", "app.py", "VALUE = 4\n");
     std::fs::write(root.join("app.py"), "VALUE = 5\n").unwrap();
     std::fs::remove_file(root.join("notes.txt")).unwrap();
     hooks.cell_ended("main");
@@ -288,91 +290,11 @@ fn host_after_cell_findings_are_capped_at_6000_characters() {
     );
 }
 
-#[test]
-fn host_loki_reports_keep_their_tiers() {
-    let report = parse_loki_report(
-        &serde_json::json!({
-            "loki": "0.1.3", "command": "hook", "status": "blocked",
-            "blocking": [{"text": "app.py:3: python-ast: stub body in todo", "path": "app.py", "line": 3}],
-            "advisory": [{"text": "app.py:9: loki/slop-complexity: f cyclomatic complexity 9 -> 11 (> 10)"}, {"line": 1}],
-            "not_checked": ["NOT CHECKED python: missing ruff"],
-        })
-        .to_string(),
-    );
-    assert_eq!(
-        report,
-        Some(LokiReport {
-            blocking: vec!["app.py:3: python-ast: stub body in todo".into()],
-            advisory: vec!["app.py:9: loki/slop-complexity: f cyclomatic complexity 9 -> 11 (> 10)".into()],
-            not_checked: vec!["NOT CHECKED python: missing ruff".into()],
-            error: None,
-        })
-    );
-    assert_eq!(
-        parse_loki_report(r#"{"status": "error", "blocking": [], "error": "invalid hook input: x"}"#),
-        Some(LokiReport {
-            error: Some("invalid hook input: x".into()),
-            ..LokiReport::default()
-        })
-    );
-    for not_a_report in [
-        r#"{"hookSpecificOutput": {}}"#,
-        "[]",
-        "loki: post-write check failed",
-        "",
-    ] {
-        assert_eq!(parse_loki_report(not_a_report), None);
-    }
-    assert_eq!(
-        classify_loki_text(
-            "loki: post-write check failed; files are already changed.\napp.py:3: python-ast: stub body in todo\napp.py:9: loki/slop-complexity: f cyclomatic complexity 9 -> 11 (> 10); split it into smaller functions\nNOT CHECKED python: missing ruff\n",
-            true
-        ),
-        LokiReport {
-            blocking: vec!["app.py:3: python-ast: stub body in todo".into()],
-            advisory: vec![
-                "app.py:9: loki/slop-complexity: f cyclomatic complexity 9 -> 11 (> 10); split it into smaller functions"
-                    .into()
-            ],
-            not_checked: vec!["NOT CHECKED python: missing ruff".into()],
-            error: None,
-        }
-    );
-    assert_eq!(
-        classify_loki_text(
-            "loki: post-write check failed; files are already changed.\na.ts:1: loki/xss: x\nloki: advisory (not blocking):\na.ts:2: something new\nNOT CHECKED typescript: missing oxlint",
-            true
-        ),
-        LokiReport {
-            blocking: vec!["a.ts:1: loki/xss: x".into()],
-            advisory: vec!["a.ts:2: something new".into()],
-            not_checked: vec!["NOT CHECKED typescript: missing oxlint".into()],
-            error: None,
-        }
-    );
-    assert_eq!(
-        classify_loki_text(
-            "copy.py:1: loki/slop-duplication: lines 1-10 duplicate lib.py:1-10",
-            false
-        ),
-        LokiReport {
-            advisory: vec!["copy.py:1: loki/slop-duplication: lines 1-10 duplicate lib.py:1-10".into()],
-            ..LokiReport::default()
-        }
-    );
-    assert_eq!(
-        classify_loki_text("loki: invalid hook input: bad path", true)
-            .error
-            .as_deref(),
-        Some("loki: invalid hook input: bad path")
-    );
-}
-
 /// The stand-in engine of ultron-loki.test.ts: each cell writes `file` and the engine answers the scripted report.
 struct StandIn {
     root: PathBuf,
     hooks: FileHooks,
-    answer: Arc<Mutex<loki::run::Outcome>>,
+    answer: Arc<Mutex<Result<Report, CheckError>>>,
     calls: Arc<Mutex<Vec<Vec<String>>>>,
     cell: usize,
 }
@@ -384,11 +306,7 @@ const NO_RUFF: &str = "NOT CHECKED python: missing ruff";
 
 impl StandIn {
     fn new(dir: &Path) -> StandIn {
-        let answer = Arc::new(Mutex::new(loki::run::Outcome {
-            status: 0,
-            stdout: String::new(),
-            stderr: String::new(),
-        }));
+        let answer = Arc::new(Mutex::new(Ok(Report::default())));
         let calls: Arc<Mutex<Vec<Vec<String>>>> = Arc::default();
         let (scripted, seen) = (answer.clone(), calls.clone());
         let guard = LokiGuard::new(dir, LokiMode::On).with_hook(Arc::new(move |_: &Path, files: &[String]| {
@@ -407,25 +325,13 @@ impl StandIn {
     }
 
     fn json(&mut self, blocking: &[&str], advisory: &[&str], not_checked: &[&str], file: &str) -> Option<String> {
-        let text = |list: &[&str]| {
-            list.iter()
-                .map(|t| serde_json::json!({ "text": t }))
-                .collect::<Vec<_>>()
-        };
-        let report = serde_json::json!({
-            "status": if blocking.is_empty() { "passed" } else { "blocked" },
-            "blocking": text(blocking), "advisory": text(advisory), "not_checked": not_checked,
-        });
-        self.run(
-            if blocking.is_empty() { 0 } else { 2 },
-            report.to_string(),
-            String::new(),
-            file,
-        )
+        let lines = |list: &[&str]| list.iter().map(|t| t.to_string()).collect::<Vec<_>>();
+        let warnings = lines(advisory).into_iter().chain(lines(not_checked)).collect();
+        self.run(Ok(Report::new(lines(blocking), warnings)), file)
     }
 
-    fn run(&mut self, status: u8, stdout: String, stderr: String, file: &str) -> Option<String> {
-        *self.answer.lock().unwrap() = loki::run::Outcome { status, stdout, stderr };
+    fn run(&mut self, answer: Result<Report, CheckError>, file: &str) -> Option<String> {
+        *self.answer.lock().unwrap() = answer;
         self.hooks.cell_started("main");
         self.cell += 1;
         std::fs::write(self.root.join(file), format!("VALUE = {}\n", self.cell)).unwrap();
@@ -515,41 +421,13 @@ fn host_loki_after_cell_advisories_never_say_fix_and_notes_are_said_once() {
 }
 
 #[test]
-fn host_loki_after_cell_text_reports_and_engine_errors() {
+fn host_loki_after_cell_engine_errors_and_policy_pause() {
     let (_dir, mut session) = stand_in();
-    let told = session.run(
-        2,
-        String::new(),
-        format!("loki: post-write check failed; files are already changed.\n{STUB}\n{HOTSPOT}\n{NO_RUFF}\n"),
-        "app.py",
-    );
-    assert_eq!(
-        told.as_deref(),
-        Some(
-            [
-                "[Loki] 1 new finding from this cell's changes; fix these:",
-                STUB,
-                "FYI (advisory, not blocking; no change required):",
-                HOTSPOT,
-                "not checked in this session (said once): python: missing ruff",
-            ]
-            .join("\n")
-            .as_str()
-        )
-    );
-    assert_eq!(session.run(0, String::new(), format!("{NO_RUFF}\n"), "app.py"), None);
     assert_eq!(
         session
-            .run(
-                2,
-                String::new(),
-                "loki: invalid hook input: git: cannot resolve HEAD\n".into(),
-                "app.py"
-            )
+            .run(Err(CheckError::Value("git: cannot resolve HEAD".into())), "app.py")
             .as_deref(),
-        Some(
-            "[Loki] Loki could not check the files this cell changed: loki: invalid hook input: git: cannot resolve HEAD"
-        )
+        Some("[Loki] Loki could not check the files this cell changed: invalid hook input: git: cannot resolve HEAD")
     );
     // An uncommitted .loki/ pauses post-write checks, said once.
     let paused = session.json(&[".loki/loki.json: protected content changed"], &[], &[], "app.py");
@@ -573,11 +451,7 @@ fn host_loki_after_cell_checks_at_most_40_files_inside_the_repository() {
         std::fs::write(session.root.join(format!("f{n:02}.py")), "x = 1\n").unwrap();
     }
     std::fs::write(outside.path().join("elsewhere.py"), "x").unwrap();
-    *session.answer.lock().unwrap() = loki::run::Outcome {
-        status: 0,
-        stdout: r#"{"status": "passed", "blocking": [], "advisory": [], "not_checked": []}"#.into(),
-        stderr: String::new(),
-    };
+    *session.answer.lock().unwrap() = Ok(Report::default());
     session.hooks.cell_ended("main");
     session.hooks.settled();
     assert_eq!(
@@ -642,11 +516,7 @@ fn host_loki_outside_a_repository_runs_only_before_write_checks() {
         .with_post_write(false)
         .with_hook(Arc::new(move |_: &Path, _: &[String]| {
             *counter.lock().unwrap() += 1;
-            loki::run::Outcome {
-                status: 2,
-                stdout: String::new(),
-                stderr: "x.py:1: rule: finding\n".into(),
-            }
+            Ok(Report::new(vec!["x.py:1: rule: finding".into()], vec![]))
         }));
     let mut hooks = FileHooks::with_snapshots(&root, snapshotter());
     hooks.add(Box::new(guard));

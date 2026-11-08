@@ -14,9 +14,7 @@ const WRITE_DATA_EXTRA: [&str; 4] = [".patch", ".diff", ".out", ".err"];
 const WRITE_SINKS: [&str; 4] = ["/dev/null", "/dev/stdout", "/dev/stderr", "/dev/tty"];
 const COMMAND_PREFIXES: [&str; 7] = ["sudo", "env", "command", "time", "nice", "nohup", "exec"];
 
-fn invalid(message: impl Into<String>) -> CheckError {
-    CheckError::Value(message.into())
-}
+use crate::invalid;
 
 /// `shlex.shlex(s, posix=True, punctuation_chars=True)` with `whitespace_split`;
 /// `comments` keeps the default `#` commenter.
@@ -786,22 +784,35 @@ pub fn shell_writes(root: &Path, payload: &Value, base: &Path) -> Result<Option<
     shell_writes_violation(payload.get("command").unwrap_or(&Value::Null), &root, &cwd, base)
 }
 
-/// The exit status and stderr of `shell` and `shell-writes` for a check result: loki.py reports `ValueError` and
-/// `OSError` as invalid shell input; another exception escapes as a guard error.
-pub fn shell_report(result: Result<Option<String>, CheckError>) -> (u8, String) {
+/// Why a check result refuses: the refusal itself, or (as loki.py reports them) a `ValueError` or `OSError` as
+/// invalid shell input and another exception as a guard error. None: allowed.
+fn refusal(result: Result<Option<String>, CheckError>) -> Option<String> {
     match result {
-        Ok(None) => (0, String::new()),
-        Ok(Some(reason)) => (2, format!("{reason}\n")),
-        Err(error @ CheckError::Value(_)) => (2, format!("loki: invalid shell input: {}\n", error.message())),
-        Err(error) if error.is_os() => (2, format!("loki: invalid shell input: {}\n", error.message())),
-        Err(error) => (2, format!("loki: {}\n", error.describe())),
+        Ok(reason) => reason,
+        Err(error @ CheckError::Value(_)) => Some(format!("loki: invalid shell input: {}", error.message())),
+        Err(error) if error.is_os() => Some(format!("loki: invalid shell input: {}", error.message())),
+        Err(error) => Some(format!("loki: {}", error.describe())),
     }
 }
 
-/// `shell-writes` as the host runs it: the engine with the project root as its working directory (Ultron's
-/// `beforeShell` spawns it with `cwd: root`). Exit status and stderr.
-pub fn run_shell_writes(root: &Path, payload: &Value) -> (u8, String) {
-    shell_report(shell_writes(root, payload, &resolve(root)))
+/// The exit status and stderr of `shell` and `shell-writes` for a check result.
+pub fn shell_report(result: Result<Option<String>, CheckError>) -> (u8, String) {
+    match refusal(result) {
+        None => (0, String::new()),
+        Some(text) => (2, format!("{text}\n")),
+    }
+}
+
+/// `shell-writes` in-process, as a host runs it: with the project root as the engine's working directory (Ultron's
+/// `beforeShell` spawns it with `cwd: root`), why `command` run in `cwd` is refused, or None.
+pub fn command_refusal(root: &Path, command: &str, cwd: &Path) -> Option<String> {
+    let root = resolve(root);
+    let cwd = if cwd.as_os_str().is_empty() {
+        root.clone()
+    } else {
+        resolve(cwd)
+    };
+    refusal(shell_writes_violation(&Value::from(command), &root, &cwd, &root))
 }
 
 /// `event_path`: `~/.local/state/loki/<sha256(root)>/events.jsonl`.

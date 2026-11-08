@@ -1,30 +1,77 @@
-//! The `loki` commands as library calls: what loki.py's `main` prints and returns, for a host that runs the engine
-//! in-process instead of as `python loki.py ...`.
+//! The `loki` checks as library calls, for a host that runs the engine in-process instead of as
+//! `python loki.py ...`: each returns a [`Report`] or the [`CheckError`] that stopped it; `main.rs` renders them.
 
 use crate::config::{self, Config};
-use crate::{CheckError, MAX_VIOLATIONS, hook_report, protect_path, py, resolve};
+use crate::{CheckError, MAX_VIOLATIONS, hook_report, protect_path, resolve};
 use serde_json::Value;
 use std::path::{Path, PathBuf};
 
-/// A command's exit status and output streams.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Outcome {
-    pub status: u8,
-    pub stdout: String,
-    pub stderr: String,
+/// What a finished check found: findings that block, then warnings (advisories and `NOT CHECKED` notes, in the
+/// order the checks made them, each once). Blocking findings stop at [`MAX_VIOLATIONS`].
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Report {
+    pub blocking: Vec<String>,
+    pub warnings: Vec<String>,
 }
 
-/// A check that could not run: `loki: <error>` on stderr, the error report on stdout for `--format json`.
-pub fn fail(command: &str, error: &CheckError, json: bool) -> Outcome {
-    let text = error.describe();
-    Outcome {
-        status: 2,
-        stdout: if json {
-            format!("{}\n", py::dumps(&hook_report(command, &[], &[], Some(&text))))
-        } else {
-            String::new()
-        },
-        stderr: format!("loki: {text}\n"),
+const NOT_CHECKED: &str = "NOT CHECKED";
+/// The line a failed check puts between its blocking findings and its advisories.
+const ADVISORY_LABEL: &str = "loki: advisory (not blocking):";
+
+impl Report {
+    pub fn new(mut blocking: Vec<String>, mut warnings: Vec<String>) -> Self {
+        blocking.truncate(MAX_VIOLATIONS);
+        let mut seen = Vec::new();
+        warnings.retain(|w| {
+            !seen.contains(w) && {
+                seen.push(w.clone());
+                true
+            }
+        });
+        Report { blocking, warnings }
+    }
+
+    pub fn blocked(&self) -> bool {
+        !self.blocking.is_empty()
+    }
+
+    /// Blocked only by changes to the `.loki/` policy itself (see [`crate::git::is_policy_change`]).
+    pub fn blocked_by_policy_changes(&self) -> bool {
+        self.blocked()
+            && self
+                .blocking
+                .iter()
+                .all(|finding| crate::git::is_policy_change(finding))
+    }
+
+    /// Warnings that are findings, not missing coverage.
+    pub fn advisory(&self) -> impl Iterator<Item = &String> {
+        self.warnings.iter().filter(|w| !w.starts_with(NOT_CHECKED))
+    }
+
+    /// Checks that could not run (`NOT CHECKED ...`).
+    pub fn not_checked(&self) -> impl Iterator<Item = &String> {
+        self.warnings.iter().filter(|w| w.starts_with(NOT_CHECKED))
+    }
+
+    /// What a blocked check says: the blocking findings, then (labelled) the advisories, then the unchecked notes,
+    /// at most [`MAX_VIOLATIONS`] lines.
+    pub fn refusal_lines(&self) -> Vec<String> {
+        let advisory: Vec<&String> = self.advisory().collect();
+        let label = (!advisory.is_empty()).then(|| ADVISORY_LABEL.to_string());
+        self.blocking
+            .iter()
+            .cloned()
+            .chain(label)
+            .chain(advisory.into_iter().cloned())
+            .chain(self.not_checked().cloned())
+            .take(MAX_VIOLATIONS)
+            .collect()
+    }
+
+    /// The `--format json` document of `command`.
+    pub fn json(&self, command: &str) -> Value {
+        hook_report(command, &self.blocking, &self.warnings, None)
     }
 }
 
@@ -49,23 +96,22 @@ pub fn load(root: &Path) -> Result<Config, CheckError> {
     })
 }
 
-/// `loki --root ROOT protect --file F... [--preview HOST] [--format json]`: refuse protected or out-of-root
-/// targets, then preview the write. `payload` reads the preview envelope (stdin), only when `preview` is set.
-pub fn protect(
-    root: &Path,
-    files: &[String],
-    preview: Option<&str>,
-    json: bool,
-    payload: impl FnOnce() -> Result<Value, CheckError>,
-) -> Outcome {
+/// A write's preview: the harness `mode` (`ultron`, `claude`, ...) and its envelope.
+pub type Preview<'a> = (&'a str, &'a Value);
+
+/// `loki --root ROOT protect --file F... [--preview HOST]`: refuse protected or out-of-root targets, then preview
+/// the write.
+pub fn protect(root: &Path, files: &[String], preview: Option<Preview>) -> Result<Report, CheckError> {
     let root = resolve(root);
-    match load(&root) {
-        Ok(config) => protect_with(&root, &config, files, preview, json, payload),
-        Err(error) => {
-            failure_evidence(&error, "invalid-policy");
-            fail("protect", &error, json)
-        }
-    }
+    let config = load(&root).inspect_err(|error| failure_evidence(error, "invalid-policy"))?;
+    protect_with(&root, &config, files, preview)
+}
+
+/// [`protect`] of a host's write of `content` to `file` (relative to `root`): the preview checks the content the
+/// file would have.
+pub fn protect_write(root: &Path, file: &str, content: &str) -> Result<Report, CheckError> {
+    let envelope = serde_json::json!({"tool_name": "write", "tool_input": {"content": content}});
+    protect(root, &[file.to_string()], Some(("ultron", &envelope)))
 }
 
 /// [`protect`] with the policy already loaded from the resolved `root`.
@@ -73,16 +119,10 @@ pub fn protect_with(
     root: &Path,
     config: &Config,
     files: &[String],
-    preview: Option<&str>,
-    json: bool,
-    payload: impl FnOnce() -> Result<Value, CheckError>,
-) -> Outcome {
-    let checked = || -> Result<(Vec<String>, Vec<String>), CheckError> {
+    preview: Option<Preview>,
+) -> Result<Report, CheckError> {
+    let checked = || -> Result<Report, CheckError> {
         let deadline = crate::proc::Deadline::after(20.0);
-        let payload = match preview {
-            Some(_) => Some(payload()?),
-            None => None,
-        };
         let paths = file_paths(files)?;
         crate::evidence::targets(&paths);
         let mut warnings = Vec::new();
@@ -90,20 +130,14 @@ pub fn protect_with(
             root,
             config,
             &paths,
-            payload.as_ref(),
-            preview.unwrap_or(""),
+            preview.map(|(_, payload)| payload),
+            preview.map_or("", |(mode, _)| mode),
             deadline,
             &mut warnings,
         )?;
-        Ok((messages, warnings))
+        Ok(Report::new(messages, warnings))
     };
-    match checked() {
-        Ok((messages, warnings)) => report("protect", &messages, warnings, json, false),
-        Err(error) => {
-            failure_evidence(&error, "invalid-input");
-            fail("protect", &error, json)
-        }
-    }
+    checked().inspect_err(|error| failure_evidence(error, "invalid-input"))
 }
 
 /// The `--file` arguments, validated, without repeats.
@@ -171,7 +205,7 @@ pub fn hook_violations(
             } else {
                 warnings.extend(notes);
             }
-            let strict = std::env::var("LOKI_STRICT").as_deref() == Ok("1");
+            let strict = crate::strict();
             let mut batch = crate::hook::Batch::default();
             for target in &targets {
                 messages.extend(crate::hook::check_file(
@@ -183,41 +217,26 @@ pub fn hook_violations(
     Ok(messages)
 }
 
-/// `loki --root ROOT hook --file F... [--format json]`: the post-write check of written files, as the command
-/// prints and returns it.
-pub fn hook(root: &Path, files: &[String], json: bool) -> Outcome {
-    hook_with_python(root, files, json, None)
-}
-
-/// [`hook`] with the project's interpreter (`LOKI_PYTHON` of the engine's environment), which import checks ask.
-pub fn hook_with_python(root: &Path, files: &[String], json: bool, python: Option<&str>) -> Outcome {
+/// `loki --root ROOT hook --file F... [--python P]`: the post-write check of written files. `python` is the
+/// project's interpreter (`LOKI_PYTHON` of the engine's environment), which import checks ask.
+pub fn hook(root: &Path, files: &[String], python: Option<&str>) -> Result<Report, CheckError> {
     let root = resolve(root);
-    let config = match load(&root) {
-        Ok(config) => config,
-        Err(error) => {
-            failure_evidence(&error, "invalid-policy");
-            return fail("hook", &error, json);
-        }
-    };
+    let config = load(&root).inspect_err(|error| failure_evidence(error, "invalid-policy"))?;
     let mut warnings = Vec::new();
-    let checked = file_paths(files).and_then(|paths| {
-        crate::evidence::targets(&paths);
-        hook_violations(
-            &root,
-            &config,
-            &paths,
-            python,
-            crate::proc::Deadline::after(20.0),
-            &mut warnings,
-        )
-    });
-    match checked {
-        Ok(messages) => report("hook", &messages, warnings, json, false),
-        Err(error) => {
-            failure_evidence(&error, "invalid-input");
-            fail("hook", &error, json)
-        }
-    }
+    file_paths(files)
+        .and_then(|paths| {
+            crate::evidence::targets(&paths);
+            hook_violations(
+                &root,
+                &config,
+                &paths,
+                python,
+                crate::proc::Deadline::after(20.0),
+                &mut warnings,
+            )
+        })
+        .map(|messages| Report::new(messages, warnings))
+        .inspect_err(|error| failure_evidence(error, "invalid-input"))
 }
 
 /// The protected-path refusals for `paths`.
@@ -246,67 +265,4 @@ pub fn protect_violations(
         )?);
     }
     Ok(messages)
-}
-
-/// What `protect` and `hook` print for a finished check: the JSON report for `--format json`, blocking messages
-/// (then advisories and unchecked notes) on stderr with status 2, else the warnings, which a `--harness` run also
-/// hands back as hook context.
-pub fn report(command: &str, messages: &[String], mut warnings: Vec<String>, json: bool, harness: bool) -> Outcome {
-    let mut seen = Vec::new();
-    warnings.retain(|w| {
-        !seen.contains(w) && {
-            seen.push(w.clone());
-            true
-        }
-    });
-    let mut stdout = if json {
-        format!("{}\n", py::dumps(&hook_report(command, messages, &warnings, None)))
-    } else {
-        String::new()
-    };
-    if !messages.is_empty() {
-        let prefix = if command == "hook" {
-            "loki: post-write check failed; files are already changed.\n"
-        } else {
-            ""
-        };
-        let advisory: Vec<&String> = warnings.iter().filter(|w| !w.starts_with("NOT CHECKED")).collect();
-        let unchecked = warnings.iter().filter(|w| w.starts_with("NOT CHECKED"));
-        let label = (!advisory.is_empty()).then(|| "loki: advisory (not blocking):".to_string());
-        let lines: Vec<String> = messages
-            .iter()
-            .cloned()
-            .chain(label)
-            .chain(advisory.into_iter().cloned())
-            .chain(unchecked.cloned())
-            .take(MAX_VIOLATIONS)
-            .collect();
-        return Outcome {
-            status: 2,
-            stdout,
-            stderr: format!("{prefix}{}\n", lines.join("\n")),
-        };
-    }
-    if warnings.is_empty() {
-        return Outcome {
-            status: 0,
-            stdout,
-            stderr: String::new(),
-        };
-    }
-    let text = warnings.join("\n");
-    if harness {
-        let event = if command == "protect" {
-            "PreToolUse"
-        } else {
-            "PostToolUse"
-        };
-        let context = serde_json::json!({"hookSpecificOutput": {"hookEventName": event, "additionalContext": text}});
-        stdout.push_str(&format!("{}\n", py::dumps(&context)));
-    }
-    Outcome {
-        status: 0,
-        stdout,
-        stderr: format!("{text}\n"),
-    }
 }

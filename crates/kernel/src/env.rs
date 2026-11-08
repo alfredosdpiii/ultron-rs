@@ -21,6 +21,12 @@ pub const WORKTREE_ENV: &str = "ULTRON_WORKTREE";
 pub const PARENT_REPO_ENV: &str = "ULTRON_PARENT_REPO";
 pub const WORKTREE_BRANCH_ENV: &str = "ULTRON_WORKTREE_BRANCH";
 
+/// Whether this process runs inside an Ultron kernel (a cell's command or a program it started): the kernel puts
+/// its resource limits, `ULTRON_RLM_MAX_MEMORY_MB` among them, in every kernel's environment.
+pub fn inside_kernel(var: impl Fn(&str) -> Option<String>) -> bool {
+    var(RLM_MAX_MEMORY_MB_ENV).is_some()
+}
+
 /// kernel.ts: the interpreter the kernel runs, `ULTRON_PYTHON ?? (linux && /usr/bin/python3 exists ?
 /// "/usr/bin/python3" : "python3")`.
 pub fn python(var: impl Fn(&str) -> Option<String>) -> String {

@@ -210,7 +210,7 @@ pub(super) fn install(
         dispatcher.publish(RuntimeEvent {
             kind: event["kind"].as_str().unwrap_or("job_done").into(),
             id: end.record.id.clone(),
-            status: end.record.status.clone(),
+            status: end.record.status.as_str().into(),
             summary: event["summary"].as_str().unwrap_or_default().into(),
             fetch: event["fetch"].as_str().unwrap_or_default().into(),
             lane: end.record.lane.clone(),

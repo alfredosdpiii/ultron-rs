@@ -5,7 +5,7 @@
 //! snapshots, test integrity, lockfile and dependency policy, written slop and the
 //! per-language analyzers), `scan`, `slop`, `init` (with and without `--minimal`), `context`, `shell`,
 //! `shell-writes` and `explain`. Python source is parsed by CPython (`pyast`), as
-//! loki.py does. Checks that are not ported refuse with a guard error.
+//! loki.py does.
 
 pub mod apply;
 pub mod auto_setup;
@@ -43,8 +43,13 @@ pub const VERSION: &str = "0.1.9";
 pub const MAX_VIOLATIONS: usize = 40;
 const PREVIEW_LIMIT: usize = 4 * 1024 * 1024;
 
+/// `LOKI_STRICT=1`: a check that cannot run (`NOT CHECKED ...`) blocks instead of warning.
+pub fn strict() -> bool {
+    std::env::var("LOKI_STRICT").as_deref() == Ok("1")
+}
+
 /// An error raised by a check: loki.py's `ValueError` or another exception type.
-#[derive(Debug)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CheckError {
     Value(String),
     Guard(String, String),
@@ -72,10 +77,6 @@ impl CheckError {
         }
     }
 
-    pub fn not_ported(what: &str) -> Self {
-        CheckError::Guard("NotPorted".into(), format!("{what} is not ported to the Rust engine"))
-    }
-
     /// `prefix: error` as loki.py prints it after `loki: `.
     pub fn describe(&self) -> String {
         match self {
@@ -83,6 +84,11 @@ impl CheckError {
             CheckError::Guard(kind, m) => format!("guard error: {kind}: {m}"),
         }
     }
+}
+
+/// A check's `ValueError`.
+pub(crate) fn invalid(message: impl Into<String>) -> CheckError {
+    CheckError::Value(message.into())
 }
 
 const OS_KINDS: [&str; 7] = [
@@ -247,12 +253,39 @@ pub fn protect_path_with(
     }
     if relatives.iter().any(|r| patterns.iter().any(|p| path_matches(r, p))) {
         evidence::finding("protected-path", Some(&relatives[0]));
-        return Ok(Some(format!(
-            "loki: protected file: {} (set LOKI_ALLOW_PROTECTED=1 to override)",
-            relatives[0]
-        )));
+        return Ok(Some(format!("{PROTECTED_FILE}{}{PROTECTED_FILE_HINT}", relatives[0])));
     }
     Ok(None)
+}
+
+const PROTECTED_FILE: &str = "loki: protected file: ";
+const PROTECTED_FILE_HINT: &str = " (set LOKI_ALLOW_PROTECTED=1 to override)";
+
+static FINDING_PATH: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^([^:\s][^:\n]*?)(?::\d+)?: ").expect("static pattern"));
+
+/// A finding's file and its identity without the line number, which moves as the file is edited. The engine's own
+/// `loki: ...` lines name no file at their start: a protected-file refusal belongs to the file it names, the others
+/// to no file. A tool or engine prefix (`git: ...`, `typescript: ...`) names no file either, so a prefix with no
+/// `.` or `/` that is no file under `root` is none. No file: an empty path.
+pub fn finding_key(root: &Path, finding: &str) -> (String, String) {
+    if finding.starts_with("loki: ") {
+        let path = finding
+            .strip_prefix(PROTECTED_FILE)
+            .map(|named| named.split(PROTECTED_FILE_HINT).next().unwrap_or(named));
+        return (path.unwrap_or_default().to_string(), finding.to_string());
+    }
+    match FINDING_PATH.captures(finding) {
+        Some(found) if !found[1].contains(['.', '/']) && !root.join(&found[1]).exists() => {
+            (String::new(), finding.to_string())
+        }
+        Some(found) => {
+            let path = found[1].to_string();
+            let rest = &finding[found[0].len()..];
+            (path.clone(), format!("{path}: {rest}"))
+        }
+        None => (String::new(), finding.to_string()),
+    }
 }
 
 /// `preview_changes`: the exact post-write content of a host write or edit.
@@ -560,7 +593,7 @@ pub fn preview_violations(
                 ""
             };
             let message = format!("NOT CHECKED pre-write content: {}{suffix}", error.message());
-            if std::env::var("LOKI_STRICT").as_deref() == Ok("1") {
+            if crate::strict() {
                 violations.push(message);
                 return Ok(violations);
             }

@@ -1,20 +1,20 @@
-//! `diagram.mermaid` (kernel_apis::diagram and diagram_svg), new in Rust (no TypeScript reference): literal
+//! `diagram.mermaid` (diagram and diagram::svg), new in Rust (no TypeScript reference): literal
 //! expectations. Pele's CSS variables flattened to Ultron theme colours (nested definitions, missing fallbacks,
 //! `color-mix`), the theme choice, the PNG drawn with those colours at 2x, and the module through `KernelApis` with a
 //! fake `node` on the injected session PATH (it records its argument, stdin and environment and prints canned Pele
 //! JSON). Fonts: an empty font database, so no test depends on the system's fonts. One end-to-end test runs the
 //! real node with the vendored Pele, only with `ULTRON_MERMAID_TEST_NODE=1`.
 
-use kernel::{HostHandler, Signal};
-use kernel_apis::KernelApis;
-use kernel_apis::diagram::{
-    DiagramConfig, DiagramModule, NO_NODE, PELE_JS, RUNNER, ShowDiagram, ShownDiagram, ThemeInputs, find_node,
-    install_pele, output_paths, parse_runner_output, pele_dir_name, slug,
-};
-use kernel_apis::diagram_svg::{
+use diagram::svg::{
     DiagramPalette, VarScope, color_mix, custom_properties, flatten_svg, font_database, palette_from_theme,
     pick_family, rasterize, select_palette, select_palette_for_terminal,
 };
+use diagram::{
+    DiagramConfig, DiagramModule, NO_NODE, PELE_JS, RUNNER, ShowDiagram, ShownDiagram, ThemeInputs, find_node,
+    install_pele, output_paths, parse_runner_output, pele_dir_name, slug,
+};
+use kernel::{HostHandler, Signal};
+use kernel_apis::KernelApis;
 use resvg::tiny_skia::Pixmap;
 use resvg::usvg::fontdb;
 use serde_json::{Map, Value, json};
@@ -42,7 +42,7 @@ const SVG: &str = concat!(
 );
 
 #[test]
-fn kernel_apis_diagram_palette_maps_the_ultron_theme_tokens() {
+fn diagram_palette_maps_the_ultron_theme_tokens() {
     let dark = dark();
     assert!(dark.dark);
     assert_eq!(
@@ -84,7 +84,7 @@ fn kernel_apis_diagram_palette_maps_the_ultron_theme_tokens() {
 }
 
 #[test]
-fn kernel_apis_diagram_theme_follows_the_setting_and_the_terminal() {
+fn diagram_theme_follows_the_setting_and_the_terminal() {
     let dir = tempfile::tempdir().unwrap();
     let none = dir.path();
     // Unset: COLORFGBG's background (15 is white), else dark.
@@ -137,7 +137,7 @@ fn kernel_apis_diagram_theme_follows_the_setting_and_the_terminal() {
 /// `auto` with the terminal's appearance known (what the attached TUI detected through OSC 11): it wins over
 /// `COLORFGBG`, which wins over dark; an explicit theme or a named setting still wins over both.
 #[test]
-fn kernel_apis_diagram_auto_theme_follows_the_detected_terminal_before_colorfgbg() {
+fn diagram_auto_theme_follows_the_detected_terminal_before_colorfgbg() {
     let dir = tempfile::tempdir().unwrap();
     let none = dir.path();
     let theme = |requested: &str, setting: Option<&str>, terminal: Option<&str>, colorfgbg: Option<&str>| {
@@ -160,7 +160,7 @@ fn kernel_apis_diagram_auto_theme_follows_the_detected_terminal_before_colorfgbg
 }
 
 #[test]
-fn kernel_apis_diagram_var_resolution_handles_nesting_definitions_and_missing_fallbacks() {
+fn diagram_var_resolution_handles_nesting_definitions_and_missing_fallbacks() {
     let palette = dark();
     let scope = VarScope {
         palette: &palette,
@@ -191,7 +191,7 @@ fn kernel_apis_diagram_var_resolution_handles_nesting_definitions_and_missing_fa
 }
 
 #[test]
-fn kernel_apis_diagram_color_mix_follows_css_weights() {
+fn diagram_color_mix_follows_css_weights() {
     assert_eq!(color_mix("in srgb,#000000 50%,#ffffff").as_deref(), Some("#808080"));
     assert_eq!(color_mix("in srgb,#ff0000 25%,#0000ff").as_deref(), Some("#4000bf"));
     assert_eq!(color_mix("in srgb,#ff0000,#0000ff 25%").as_deref(), Some("#bf0040"));
@@ -206,7 +206,7 @@ fn kernel_apis_diagram_color_mix_follows_css_weights() {
 }
 
 #[test]
-fn kernel_apis_diagram_flatten_leaves_no_variables_and_keeps_labels() {
+fn diagram_flatten_leaves_no_variables_and_keeps_labels() {
     let flat = flatten_svg(SVG, &dark());
     assert!(!flat.contains("var(--_") && !flat.contains("--_"), "{flat}");
     assert!(!flat.contains("color-mix"), "{flat}");
@@ -242,7 +242,7 @@ fn no_fonts() -> Arc<fontdb::Database> {
 }
 
 #[test]
-fn kernel_apis_diagram_png_is_drawn_at_twice_the_size_in_theme_colours() {
+fn diagram_png_is_drawn_at_twice_the_size_in_theme_colours() {
     let palette = dark();
     let png = rasterize(&flatten_svg(SVG, &palette), 2.0, palette.background(), no_fonts()).unwrap();
     assert_eq!((png.width, png.height), (240, 120));
@@ -265,7 +265,7 @@ fn kernel_apis_diagram_png_is_drawn_at_twice_the_size_in_theme_colours() {
 }
 
 #[test]
-fn kernel_apis_diagram_font_fallback_prefers_common_families() {
+fn diagram_font_fallback_prefers_common_families() {
     let have = |names: &[&str]| names.iter().map(|n| n.to_string()).collect::<Vec<_>>();
     assert_eq!(
         pick_family(
@@ -290,7 +290,7 @@ fn kernel_apis_diagram_font_fallback_prefers_common_families() {
 }
 
 #[test]
-fn kernel_apis_diagram_slugs_paths_and_runner_answers() {
+fn diagram_slugs_paths_and_runner_answers() {
     assert_eq!(slug("flowchart LR\n  a --> b", "flowchart"), "flowchart");
     assert_eq!(
         slug("---\ntitle: Build & Deploy!\n---\nflowchart LR\n a-->b", "flowchart"),
@@ -338,7 +338,7 @@ fn kernel_apis_diagram_slugs_paths_and_runner_answers() {
 }
 
 #[test]
-fn kernel_apis_diagram_pele_is_unpacked_once_under_a_content_addressed_name() {
+fn diagram_pele_is_unpacked_once_under_a_content_addressed_name() {
     let note = include_str!("../assets/pele/VERSION");
     let sha = jsrt::hash::sha256_hex(PELE_JS);
     assert!(
@@ -383,7 +383,7 @@ fn kernel_apis_diagram_pele_is_unpacked_once_under_a_content_addressed_name() {
 }
 
 #[test]
-fn kernel_apis_diagram_node_is_found_on_the_given_path_only() {
+fn diagram_node_is_found_on_the_given_path_only() {
     let dir = tempfile::tempdir().unwrap();
     let (a, b) = (dir.path().join("a"), dir.path().join("b"));
     std::fs::create_dir_all(&a).unwrap();
@@ -484,7 +484,7 @@ impl Setup {
 }
 
 #[test]
-fn kernel_apis_diagram_mermaid_runs_node_from_the_session_path_and_saves_themed_files() {
+fn diagram_mermaid_runs_node_from_the_session_path_and_saves_themed_files() {
     let s = setup("/usr/bin/cat \"$HOME/answer.json\"");
     s.answer(&json!({"ok": true, "type": "flowchart", "mermaidType": "flowchart-v2", "svg": SVG, "width": 120, "height": 60}));
     let text = "flowchart LR\n  a --> b\n";
@@ -552,7 +552,7 @@ fn kernel_apis_diagram_mermaid_runs_node_from_the_session_path_and_saves_themed_
 }
 
 #[test]
-fn kernel_apis_diagram_mermaid_errors_reach_the_cell() {
+fn diagram_mermaid_errors_reach_the_cell() {
     let s = setup("/usr/bin/cat \"$HOME/answer.json\"");
     s.answer(&json!({"ok": false, "error": "Unexpected token '-->'", "line": 2, "column": 3}));
     let config = || s.config(Some(s.session_path()));
@@ -614,7 +614,7 @@ fn kernel_apis_diagram_mermaid_errors_reach_the_cell() {
 }
 
 #[test]
-fn kernel_apis_diagram_mermaid_stops_a_node_past_its_timeout() {
+fn diagram_mermaid_stops_a_node_past_its_timeout() {
     // The fake writes its pid, then waits on a fifo nobody opens: only the timeout ends it.
     let s = setup("echo $$ > \"$HOME/pid\"\n/usr/bin/mkfifo \"$HOME/never\"\nexec /usr/bin/cat \"$HOME/never\"");
     let mut config = s.config(Some(s.session_path()));
@@ -633,7 +633,7 @@ fn kernel_apis_diagram_mermaid_stops_a_node_past_its_timeout() {
 
 /// The real thing: node from this process's PATH with the vendored Pele (opt-in).
 #[test]
-fn kernel_apis_diagram_mermaid_renders_with_real_node_and_pele() {
+fn diagram_mermaid_renders_with_real_node_and_pele() {
     if std::env::var("ULTRON_MERMAID_TEST_NODE").as_deref() != Ok("1") {
         eprintln!("skipped: set ULTRON_MERMAID_TEST_NODE=1 to run node with the vendored Pele");
         return;
@@ -692,10 +692,10 @@ fn kernel_apis_diagram_mermaid_renders_with_real_node_and_pele() {
         assert_eq!(result["type"], kind, "{text}");
         let svg = std::fs::read_to_string(result["svg_path"].as_str().unwrap()).unwrap();
         assert!(!svg.contains("var(") && !svg.contains("color-mix"), "{kind}: {svg}");
-        // Every label reads against what is under it (kernel_apis::diagram_contrast).
+        // Every label reads against what is under it (diagram::contrast).
         let palette = select_palette("dark", None, None, Path::new("/nonexistent")).unwrap();
-        for label in kernel_apis::diagram_contrast::label_backdrops(&svg, &palette) {
-            let ratio = kernel_apis::diagram_contrast::contrast(label.drawn, label.backdrop);
+        for label in diagram::contrast::label_backdrops(&svg, &palette) {
+            let ratio = diagram::contrast::contrast(label.drawn, label.backdrop);
             assert!(ratio >= 4.5, "{kind}: {label:?} {ratio:.2}");
         }
         let png = std::fs::read(result["png_path"].as_str().unwrap()).unwrap();

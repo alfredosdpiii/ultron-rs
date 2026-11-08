@@ -3,6 +3,7 @@
 //! applied to a real check: a Python file's check runs the CPython parser helper, which no process starts within
 //! 1 ms, so a 1 ms limit always lets that write through unchecked, and no limit always lets the check decide.
 
+use host::Guard;
 use host::file_hooks::FileHooks;
 use host::loki_guard::{LokiGuard, LokiMode, loki_timeout};
 use std::time::Duration;
@@ -28,7 +29,7 @@ fn check(limit: Option<Duration>, file: &str, content: &str) -> (serde_json::Val
     let root = dir.path().canonicalize().unwrap();
     let mut hooks = FileHooks::new(&root);
     hooks.add(Box::new(LokiGuard::new(&root, LokiMode::On).with_timeout(limit)));
-    let verdict = hooks.before_write_on("main", file, content);
+    let verdict = hooks.before_write("main", file, content);
     (verdict, hooks.stats()[0].unchecked)
 }
 

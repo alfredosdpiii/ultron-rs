@@ -23,6 +23,7 @@ inference = { path = "../inference" }
 jsonschema = { path = "../jsonschema" }
 jsrt = { path = "../jsrt" }
 kernel = { path = "../kernel" }
+diagram = { path = "../diagram" }
 kernel-apis = { path = "../kernel-apis" }
 lanes = { path = "../lanes" }
 loki = { path = "../loki" }

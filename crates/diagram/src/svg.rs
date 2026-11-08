@@ -1,4 +1,4 @@
-//! The pure half of `diagram.mermaid` ([`crate::diagram`]): Ultron theme colours for Pele's CSS variables, the SVG
+//! The pure half of `diagram.mermaid` ([`crate`]): Ultron theme colours for Pele's CSS variables, the SVG
 //! with every `var()` (and `color-mix()`) replaced by a concrete colour, and the PNG rasterization (resvg).
 //!
 //! Pele colours its SVG with CSS custom properties: the root element's style defines `--_bg:var(--pele-bg,#fff)` and

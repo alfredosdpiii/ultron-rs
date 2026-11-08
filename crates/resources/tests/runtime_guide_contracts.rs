@@ -42,7 +42,7 @@ fn resources_runtime_guide_points_at_schedule_only_with_the_rust_apis() {
     assert_eq!(rust.len() - rust.replace(line, "").len(), line.len());
 }
 
-/// `diagram.mermaid` (kernel_apis::diagram, Rust host only) is the last pointer line of the Rust guide; the
+/// `diagram.mermaid` (the diagram crate, Rust host only) is the last pointer line of the Rust guide; the
 /// TypeScript guide never names it.
 #[test]
 fn resources_runtime_guide_points_at_diagram_mermaid_only_with_the_rust_apis() {

@@ -140,12 +140,36 @@ pub fn normalize_numbers(value: Value) -> Value {
     }
 }
 
+/// `preview(value, limit)`: a string as is, anything else as `JSON.stringify`, whitespace collapsed
+/// ([`crate::string::flatten`]), cut to `limit` UTF-16 units with an ellipsis.
+pub fn preview(value: &Value, limit: usize) -> String {
+    let text = match value {
+        Value::String(text) => text.clone(),
+        other => stringify(other),
+    };
+    let flat = crate::string::flatten(&text);
+    if crate::utf16::len(&flat) > limit {
+        format!("{}…", crate::utf16::head(&flat, limit.saturating_sub(1)))
+    } else {
+        flat
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use serde_json::json;
 
     // Literals printed by node 26.
+
+    #[test]
+    fn jsrt_json_preview_counts_utf16_units() {
+        // `"😀😀ab".length` is 6: four units of emoji, then two letters.
+        assert_eq!(preview(&json!("😀😀ab"), 6), "😀😀ab");
+        assert_eq!(preview(&json!("😀😀abc"), 6), "😀😀a…");
+        assert_eq!(preview(&json!({"a": " x\n\ty "}), 100), r#"{"a":" x\n\ty "}"#);
+        assert_eq!(preview(&json!(" a \n b "), 100), "a b");
+    }
 
     #[test]
     fn jsrt_json_numbers_serialize_like_json_stringify() {

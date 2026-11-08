@@ -25,7 +25,7 @@ pub mod shell_env;
 pub mod text;
 pub mod view_image;
 
-use journal::{JobJournal, JobRecord};
+use journal::{JobJournal, JobRecord, Status};
 use jsrt::sync;
 use kernel::{HostHandler, Signal};
 use serde_json::{Map, Value, json};
@@ -52,21 +52,13 @@ const POLL: Duration = Duration::from_millis(10);
 
 /// The before-write and before-shell guards (Loki). The default allows everything.
 pub trait Guard: Send + Sync {
-    /// `Some(reason)` blocks the command: "bash command was not run: {reason}".
-    fn before_shell(&self, _command: &str) -> Option<String> {
+    /// A command of the cell on `lane`: `Some(reason)` blocks it, "bash command was not run: {reason}".
+    fn before_shell(&self, _lane: &str, _command: &str) -> Option<String> {
         None
     }
-    /// [`Self::before_shell`] for a command of the cell on `lane`.
-    fn before_shell_on(&self, _lane: &str, command: &str) -> Option<String> {
-        self.before_shell(command)
-    }
-    /// One result per proposed write: `{blocked, reason?, notes?}` as runtime.py reads it.
-    fn before_write(&self, _path: &str, _content: &str) -> Value {
+    /// A write of the cell on `lane`: `{blocked, reason?, notes?}` as runtime.py reads it.
+    fn before_write(&self, _lane: &str, _path: &str, _content: &str) -> Value {
         json!({ "blocked": false })
-    }
-    /// [`Self::before_write`] for a write of the cell on `lane`.
-    fn before_write_on(&self, _lane: &str, path: &str, content: &str) -> Value {
-        self.before_write(path, content)
     }
     /// Each file-hook guard's statistics (`fileHooks.stats()`), for `rlm.pool`.
     fn guard_stats(&self) -> Vec<Value> {
@@ -172,45 +164,6 @@ impl Shared {
     }
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-enum Status {
-    Running,
-    Completed,
-    Failed,
-    Cancelled,
-    TimedOut,
-    /// A TypeScript journal's running job after a restart (no process to follow).
-    Interrupted,
-    /// Its process ended while no worker followed it and left no exit status.
-    Lost,
-}
-
-impl Status {
-    fn name(self) -> &'static str {
-        match self {
-            Status::Running => "running",
-            Status::Completed => "completed",
-            Status::Failed => "failed",
-            Status::Cancelled => "cancelled",
-            Status::TimedOut => "timed_out",
-            Status::Interrupted => "interrupted",
-            Status::Lost => "lost",
-        }
-    }
-
-    fn from_name(name: &str) -> Status {
-        match name {
-            "running" => Status::Running,
-            "completed" => Status::Completed,
-            "cancelled" => Status::Cancelled,
-            "timed_out" => Status::TimedOut,
-            "interrupted" => Status::Interrupted,
-            "lost" => Status::Lost,
-            _ => Status::Failed,
-        }
-    }
-}
-
 struct Record {
     status: Status,
     exit_code: Option<i32>,
@@ -296,7 +249,7 @@ fn job_record(job: &Job, tail: bool) -> JobRecord {
         command: job.command.clone(),
         cwd: job.cwd.clone(),
         timeout: job.timeout,
-        status: record.status.name().into(),
+        status: record.status,
         exit_code: record.exit_code.map(i64::from),
         started_at: record.started_at,
         ended_at: record.ended_at,
@@ -616,7 +569,7 @@ impl Host {
                     // The record names its own spill file; the keeper's files sit next to it.
                     Path::new(&saved.output_path).parent().unwrap_or(&self.jobs_dir),
                     Record {
-                        status: Status::from_name(&saved.status),
+                        status: saved.status,
                         exit_code: saved.exit_code.and_then(|code| i32::try_from(code).ok()),
                         started_at: saved.started_at,
                         ended_at: saved.ended_at,
@@ -626,7 +579,7 @@ impl Host {
                         error: saved.error.clone(),
                     },
                 ));
-                if saved.status == "running" {
+                if saved.status == Status::Running {
                     let pid = saved.pid.and_then(|pid| i32::try_from(pid).ok());
                     *sync::lock(&job.process) = pid.map(|pid| (pid, saved.pid_start));
                     adopted.push(job.clone());
@@ -738,10 +691,6 @@ impl Host {
         payload: Map<String, Value>,
         signal: &Signal,
     ) -> Result<Value, String> {
-        self.dispatch(lane, kind, payload, signal)
-    }
-
-    fn dispatch(&self, lane: &str, kind: &str, payload: Map<String, Value>, signal: &Signal) -> Result<Value, String> {
         if kind == "files.before_write" {
             // session-worker.ts `proposedWrites`.
             let writes = match payload.get("writes") {
@@ -760,7 +709,7 @@ impl Host {
             let results: Vec<Value> = proposed
                 .into_iter()
                 .map(|(path, content)| {
-                    let result = self.guard.before_write_on(lane, path, content);
+                    let result = self.guard.before_write(lane, path, content);
                     if result["blocked"] != true {
                         let path = file_hooks::resolve_lexical(&self.cwd, path);
                         self.shared.writes.record(lane, &path, content);
@@ -772,7 +721,7 @@ impl Host {
         }
         if matches!(kind, "bash" | "shell.run")
             && let Some(Value::String(command)) = payload.get("command")
-            && let Some(reason) = self.guard.before_shell_on(lane, command)
+            && let Some(reason) = self.guard.before_shell(lane, command)
         {
             return Err(format!("bash command was not run: {reason}"));
         }
@@ -805,7 +754,7 @@ impl Host {
             "bash" if payload.contains_key("yield_after") => self.shell_bash(lane, &payload, signal),
             "bash" => self.blocking_bash(&payload, signal, &mut |_| {}),
             "shell.run" => {
-                jsrt::payload::fields(&payload, &["command", "timeout", "yield_after"])?;
+                kernel::ops::fields(kind, &payload)?;
                 let command = command_of(&payload)?;
                 let timeout = timeout_of(payload.get("timeout"))?;
                 let yield_after = wait_seconds(payload.get("yield_after"), "yield_after")?.unwrap_or(0.0);
@@ -814,7 +763,7 @@ impl Host {
                 Ok(snapshot(&job))
             }
             "shell.result" => {
-                jsrt::payload::fields(&payload, &["id", "wait"])?;
+                kernel::ops::fields(kind, &payload)?;
                 let job = self.find(lane, payload.get("id"))?;
                 // TS validates `wait` only while the job runs.
                 if sync::lock(&job.record).status == Status::Running {
@@ -823,23 +772,23 @@ impl Host {
                 Ok(snapshot(&job))
             }
             "shell.get" => {
-                jsrt::payload::fields(&payload, &["id"])?;
+                kernel::ops::fields(kind, &payload)?;
                 let job = self.find(lane, payload.get("id"))?;
                 Ok(snapshot(&job))
             }
             "shell.cancel" => {
-                jsrt::payload::fields(&payload, &["id"])?;
+                kernel::ops::fields(kind, &payload)?;
                 let job = self.find(lane, payload.get("id"))?;
                 cancel(&job, StopReason::Cancelled);
                 Ok(snapshot(&job))
             }
             "shell.read" => {
-                jsrt::payload::fields(&payload, &["id", "cursor", "max_bytes"])?;
+                kernel::ops::fields(kind, &payload)?;
                 let job = self.find(lane, payload.get("id"))?;
                 read_output(&job, payload.get("cursor"), payload.get("max_bytes"))
             }
             "shell.list" => {
-                jsrt::payload::fields(&payload, &[])?;
+                kernel::ops::fields(kind, &payload)?;
                 let jobs = sync::lock(&self.shared.jobs).clone();
                 Ok(Value::Array(
                     jobs.iter()
@@ -862,7 +811,7 @@ impl Host {
     /// blocking bash, each cleaned output chunk passed to `on_chunk` as it arrives (bash-executor.ts `onChunk`, which
     /// AgentSession streams as `bash_execution_update`).
     pub fn user_bash(&self, command: &str, signal: &Signal, on_chunk: &mut dyn FnMut(&str)) -> Result<Value, String> {
-        if let Some(reason) = self.guard.before_shell(command) {
+        if let Some(reason) = self.guard.before_shell(kernel::ROOT_LANE, command) {
             return Err(format!("bash command was not run: {reason}"));
         }
         let mut payload = Map::new();
@@ -960,7 +909,7 @@ impl Host {
 
     /// Plain `await bash(cmd)` with a yield_after: wait like the blocking bash, then leave a slow command running.
     fn shell_bash(&self, lane: &str, payload: &Map<String, Value>, signal: &Signal) -> Result<Value, String> {
-        jsrt::payload::fields(payload, &["command", "timeout", "yield_after"])?;
+        kernel::ops::fields("bash", payload)?;
         let command = command_of(payload)?;
         let timeout = timeout_of(payload.get("timeout"))?;
         let yield_after = wait_seconds(payload.get("yield_after"), "yield_after")?;
@@ -1375,7 +1324,7 @@ fn snapshot(job: &Job) -> Value {
         "id": job.id,
         "lane": job.lane,
         "command": job.command,
-        "status": record.status.name(),
+        "status": record.status.as_str(),
         "running": record.status == Status::Running,
         "exit_code": record.exit_code,
         "ok": record.status == Status::Completed && record.exit_code == Some(0),
@@ -1439,13 +1388,12 @@ fn read_output(job: &Job, cursor: Option<&Value>, max_bytes: Option<&Value>) -> 
 
 impl HostHandler for Host {
     fn handle(&self, kind: &str, payload: Map<String, Value>, signal: &Signal) -> Result<Value, String> {
-        self.dispatch("main", kind, payload, signal)
+        self.handle_lane(kernel::ROOT_LANE, kind, payload, signal)
     }
 }
 
-/// The root lane sees every job; a child lane sees its own.
 fn visible(job: &Job, lane: &str) -> bool {
-    lane == "main" || job.lane == lane
+    kernel::sees(lane, &job.lane)
 }
 
 impl Drop for Host {

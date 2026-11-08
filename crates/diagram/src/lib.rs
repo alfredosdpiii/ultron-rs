@@ -2,8 +2,8 @@
 //!
 //! The host runs `node` (found on the session environment's `PATH`, never this process's) with a small runner and
 //! the vendored Pele 1.7.0 (MIT, `assets/pele/`), which turn the text into an SVG; Pele's CSS variables become the
-//! current Ultron theme's colours ([`crate::diagram_svg`]), labels too dark or light for what is under them are
-//! recoloured ([`crate::diagram_contrast`]), and resvg draws the PNG at twice the SVG's size. Both
+//! current Ultron theme's colours ([`svg`]), labels too dark or light for what is under them are
+//! recoloured ([`contrast`]), and resvg draws the PNG at twice the SVG's size. Both
 //! files are saved (the session's `diagrams/` output directory, or `path`). Shown, the PNG reaches the cell's tool
 //! result for the TUI to draw inline; only with `to_model` does the model get the image itself, otherwise one line
 //! `diagram: <png path> (WxH)`.
@@ -11,8 +11,10 @@
 //! Pele is embedded in the binary and written to `<cache dir>/pele-<sha256 prefix>/` on first use; nothing is ever
 //! installed from a registry at run time.
 
-use crate::diagram_svg::{self, DiagramPalette};
-use crate::{ApiModule, Request};
+pub mod contrast;
+pub mod svg;
+
+use kernel_apis::{ApiModule, Request};
 use resvg::usvg::fontdb;
 use serde_json::{Value, json};
 use std::io::{Read, Write};
@@ -20,13 +22,14 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
+use svg::DiagramPalette;
 
 /// Pele 1.7.0's `dist/pele.js` (see `assets/pele/VERSION`).
 pub const PELE_JS: &[u8] = include_bytes!("../assets/pele/pele.js");
 /// Pele's MIT license, written beside it.
 pub const PELE_LICENSE: &[u8] = include_bytes!("../assets/pele/LICENSE");
 /// The runner node runs: Mermaid text on stdin, one JSON line on stdout.
-pub const RUNNER: &[u8] = include_bytes!("diagram_runner.mjs");
+pub const RUNNER: &[u8] = include_bytes!("runner.mjs");
 /// How long node may take.
 pub const NODE_TIMEOUT: Duration = Duration::from_secs(20);
 /// At most this much of node's output is read (Pele's own SVG limit is 4,000,000 characters).
@@ -349,7 +352,7 @@ impl DiagramModule {
 
     fn palette(&self, requested: &str) -> Result<DiagramPalette, String> {
         let inputs = (self.config.theme)();
-        diagram_svg::select_palette_for_terminal(
+        svg::select_palette_for_terminal(
             requested,
             inputs.setting.as_deref(),
             inputs.terminal.as_deref(),
@@ -359,7 +362,7 @@ impl DiagramModule {
     }
 
     fn mermaid(&self, request: &Request<'_>) -> Result<Value, String> {
-        jsrt::payload::fields(request.payload, &["text", "theme", "show", "to_model", "path"])?;
+        kernel::ops::fields(request.kind, request.payload)?;
         let text = match request.payload.get("text") {
             Some(Value::String(text)) if !text.trim().is_empty() => text.as_str(),
             _ => return Err("diagram.mermaid text must be a non-empty string".into()),
@@ -377,11 +380,11 @@ impl DiagramModule {
         };
         let palette = self.palette(theme)?;
         let output = self.render(text, request.signal)?;
-        let svg = diagram_svg::flatten_svg(&output.svg, &palette);
+        let svg = svg::flatten_svg(&output.svg, &palette);
         // Labels Pele coloured for its own palette stay readable on the Ultron theme's fills.
-        let svg = crate::diagram_contrast::ensure_contrast(&svg, &palette);
-        let fonts = self.config.fonts.clone().unwrap_or_else(diagram_svg::system_fonts);
-        let png = diagram_svg::rasterize(&svg, PNG_SCALE, palette.background(), fonts)?;
+        let svg = crate::contrast::ensure_contrast(&svg, &palette);
+        let fonts = self.config.fonts.clone().unwrap_or_else(svg::system_fonts);
+        let png = svg::rasterize(&svg, PNG_SCALE, palette.background(), fonts)?;
         let (svg_path, png_path) = output_paths(path.as_deref(), &self.config.out_dir, &slug(text, &output.kind));
         for (file, bytes) in [(&svg_path, svg.as_bytes()), (&png_path, png.data.as_slice())] {
             if let Some(parent) = file.parent() {

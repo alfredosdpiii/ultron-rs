@@ -121,12 +121,19 @@ fn loki_protect_matches_loki_py_corpus() {
 fn loki_protect_reports_at_most_forty_violations_like_loki_py() {
     let dir = tempfile::tempdir().unwrap();
     let files: Vec<String> = (0..45).map(|i| format!(".loki/f{i}")).collect();
-    let outcome = loki::run::protect(dir.path(), &files, None, false, || unreachable!("no preview"));
-    let expected: String = (0..40)
-        .map(|i| format!("loki: protected file: .loki/f{i} (set LOKI_ALLOW_PROTECTED=1 to override)\n"))
+    let report = loki::run::protect(dir.path(), &files, None).unwrap();
+    let expected: Vec<String> = (0..40)
+        .map(|i| format!("loki: protected file: .loki/f{i} (set LOKI_ALLOW_PROTECTED=1 to override)"))
         .collect();
-    assert_eq!(
-        (outcome.status, outcome.stdout.as_str(), outcome.stderr.as_str()),
-        (2, "", expected.as_str())
-    );
+    assert_eq!(report.refusal_lines(), expected);
+}
+
+/// `loki::VERSION` is the version of the loki.py this engine ports (its VERSION.json, which `ultron setup` reports).
+#[test]
+fn loki_version_is_the_ported_loki_py_version() {
+    let manifest: Value = serde_json::from_str(include_str!(
+        "../../../packages/coding-agent/src/ultron/loki-engine/VERSION.json"
+    ))
+    .unwrap();
+    assert_eq!(manifest["version"], loki::VERSION);
 }

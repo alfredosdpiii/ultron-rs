@@ -13,9 +13,7 @@ use std::collections::{BTreeSet, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::{LazyLock, Mutex};
 
-fn invalid(message: impl Into<String>) -> CheckError {
-    CheckError::Value(message.into())
-}
+use crate::invalid;
 
 macro_rules! re {
     ($name:ident, $pattern:expr) => {
@@ -360,7 +358,7 @@ pub fn write_guardrail_violations(
 ) -> Result<Vec<String>, CheckError> {
     if let Some(gap) = git::repository_gap(root, deadline)? {
         let message = format!("NOT CHECKED repository changes: {gap}");
-        if std::env::var("LOKI_STRICT").as_deref() == Ok("1") {
+        if crate::strict() {
             return Ok(vec![message]);
         }
         if let Some(warnings) = warnings.as_deref_mut() {
@@ -1742,14 +1740,14 @@ mod tests {
         git(&root, &["commit", "-q", "-m", "base"]);
         write(&root, "a.py", b"x = 2\n");
         write(&root, "big.bin", &vec![b'x'; git::SNAPSHOT_LIMIT + 1]);
-        let outcome = crate::run::hook(&root, &[source.to_string_lossy().into_owned()], true);
-        assert_eq!(outcome.status, 0, "{}", outcome.stderr);
+        let report = crate::run::hook(&root, &[source.to_string_lossy().into_owned()], None).unwrap();
+        assert!(!report.blocked(), "{report:?}");
         assert!(
-            outcome
-                .stdout
-                .contains("NOT CHECKED python ruff: git: snapshot content exceeds 64 MiB"),
-            "{}",
-            outcome.stdout
+            report
+                .warnings
+                .iter()
+                .any(|w| w.contains("NOT CHECKED python ruff: git: snapshot content exceeds 64 MiB")),
+            "{report:?}"
         );
     }
 }

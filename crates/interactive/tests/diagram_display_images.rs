@@ -1,4 +1,4 @@
-//! A shown `diagram.mermaid` (kernel_apis::diagram in the engine): the PNG reaches the TUI in the `rlm` result's
+//! A shown `diagram.mermaid` (the diagram crate in the engine): the PNG reaches the TUI in the `rlm` result's
 //! `details.displayImages`, never in the content the model saw, and the chat draws it inline after the result's own
 //! content like any tool image. New in Rust: literal expectations.
 

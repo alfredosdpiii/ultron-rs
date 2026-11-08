@@ -1,16 +1,14 @@
-//! Diagram labels stay readable on the Ultron theme (kernel_apis::diagram_contrast), through `diagram.mermaid`
+//! Diagram labels stay readable on the Ultron theme (diagram::contrast), through `diagram.mermaid`
 //! itself: a fake `node` on the injected session PATH answers the SVG the vendored Pele rendered for one sample of
 //! each diagram kind (fixtures/diagrams.json, recorded by fixtures/generate-diagrams.mjs), the module flattens and
 //! fixes it, and the saved SVG is checked. The default suite never runs node; the opt-in real-node test in
 //! tests/diagram.rs (`ULTRON_MERMAID_TEST_NODE=1`) runs the same check on Pele's live output.
 
+use diagram::contrast::{LabelColor, contrast, ensure_contrast_report, label_backdrops, parse_rgb, readable_color};
+use diagram::svg::{DiagramPalette, flatten_svg, select_palette};
+use diagram::{DiagramConfig, DiagramModule, ShowDiagram, ThemeInputs};
 use kernel::{HostHandler, Signal};
 use kernel_apis::KernelApis;
-use kernel_apis::diagram::{DiagramConfig, DiagramModule, ShowDiagram, ThemeInputs};
-use kernel_apis::diagram_contrast::{
-    LabelColor, contrast, ensure_contrast_report, label_backdrops, parse_rgb, readable_color,
-};
-use kernel_apis::diagram_svg::{DiagramPalette, flatten_svg, select_palette};
 use resvg::usvg::fontdb;
 use serde_json::{Map, Value, json};
 use std::os::unix::fs::PermissionsExt;
@@ -108,7 +106,7 @@ fn failing(labels: &[LabelColor]) -> Vec<String> {
 /// Every label of every diagram kind, in both built-in themes, reaches 4.5:1 against what is under it in the SVG
 /// `diagram.mermaid` saves; Pele's own colours did not (the dark pie's percentages among them).
 #[test]
-fn kernel_apis_diagram_contrast_every_label_of_every_kind_is_readable_in_both_themes() {
+fn diagram_contrast_every_label_of_every_kind_is_readable_in_both_themes() {
     let s = setup();
     let mut before = Vec::new();
     for theme in ["dark", "light"] {
@@ -145,7 +143,7 @@ fn kernel_apis_diagram_contrast_every_label_of_every_kind_is_readable_in_both_th
 /// A dark theme with dark series colours (the reported case): Pele draws the percentages in the page colour, dark
 /// on dark slices; they get the theme's text colour.
 #[test]
-fn kernel_apis_diagram_contrast_dark_percentages_on_dark_slices_get_the_text_colour() {
+fn diagram_contrast_dark_percentages_on_dark_slices_get_the_text_colour() {
     let s = setup();
     let custom = s.root.join("themes");
     std::fs::create_dir_all(&custom).unwrap();
@@ -184,7 +182,7 @@ fn kernel_apis_diagram_contrast_dark_percentages_on_dark_slices_get_the_text_col
 /// The pie's percentages, checked by geometry rather than by the module's own sampling: each label inside a slice
 /// (the angle of its position from the centre) against that slice's fill.
 #[test]
-fn kernel_apis_diagram_contrast_pie_percentages_contrast_with_their_own_slice() {
+fn diagram_contrast_pie_percentages_contrast_with_their_own_slice() {
     let s = setup();
     let pie = samples().into_iter().find(|s| s["type"] == "pie").unwrap();
     for theme in ["dark", "light"] {
@@ -247,7 +245,7 @@ fn attr(tag: &str, name: &str) -> String {
 /// The colour choice: a readable colour is kept; otherwise the theme's text colour, else its page colour, else black
 /// or white; and a translucent fill is judged as drawn.
 #[test]
-fn kernel_apis_diagram_contrast_picks_the_text_then_page_colour_then_black_or_white() {
+fn diagram_contrast_picks_the_text_then_page_colour_then_black_or_white() {
     // WCAG's own reference values: black on white 21:1, #767676 on white 4.54:1.
     assert!((contrast((0, 0, 0), (255, 255, 255)) - 21.0).abs() < 1e-9);
     assert!((contrast((0x76, 0x76, 0x76), (255, 255, 255)) - 4.54).abs() < 0.005);
@@ -293,7 +291,7 @@ fn kernel_apis_diagram_contrast_picks_the_text_then_page_colour_then_black_or_wh
 /// A label's box follows its anchor: centred (`middle`) or ending (`end`) on its `x`, so the backdrop is the shape it
 /// sits on, not the page beside it.
 #[test]
-fn kernel_apis_diagram_contrast_label_boxes_follow_the_text_anchor() {
+fn diagram_contrast_label_boxes_follow_the_text_anchor() {
     let dark = palette("dark");
     let navy = parse_rgb("#202a60").unwrap();
     let svg = concat!(

@@ -471,7 +471,7 @@ impl ProgressModule {
 
     fn report(&self, request: &Request<'_>) -> Result<Value, String> {
         let payload = request.payload;
-        jsrt::payload::fields(payload, &["task_id", "summary", "evidence", "metrics"])?;
+        kernel::ops::fields(request.kind, payload)?;
         let caller = request.caller_task;
         let task_id = match payload.get("task_id").filter(|value| !value.is_null()) {
             None => caller.map(str::to_string),
@@ -605,10 +605,7 @@ impl ProgressModule {
 
     fn reassess(&self, request: &Request<'_>) -> Result<Value, String> {
         let payload = request.payload;
-        jsrt::payload::fields(
-            payload,
-            &["task_id", "extend_budget", "claim", "verifier", "verifier_input"],
-        )?;
+        kernel::ops::fields(request.kind, payload)?;
         let task_id = task_id_field(payload.get("task_id"))?;
         let present = |key: &str| payload.get(key).filter(|value| !value.is_null());
         let extend = present("extend_budget");
@@ -708,7 +705,7 @@ impl ProgressModule {
     }
 
     fn history(&self, request: &Request<'_>) -> Result<Value, String> {
-        jsrt::payload::fields(request.payload, &["task_id"])?;
+        kernel::ops::fields(request.kind, request.payload)?;
         let task_id = task_id_field(request.payload.get("task_id"))?;
         let (task, all) = Self::find_task(request.host, &task_id)?;
         Self::owner_or_ancestor(request.caller_task, &task, &all)?;
@@ -729,7 +726,7 @@ impl ProgressModule {
     }
 
     fn assess_request(&self, request: &Request<'_>) -> Result<Value, String> {
-        jsrt::payload::fields(request.payload, &["task_id"])?;
+        kernel::ops::fields(request.kind, request.payload)?;
         let task_id = task_id_field(request.payload.get("task_id"))?;
         let (task, all) = Self::find_task(request.host, &task_id)?;
         Self::owner_or_ancestor(request.caller_task, &task, &all)?;

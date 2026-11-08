@@ -135,7 +135,7 @@ impl ApiModule for InstancesModule {
         let payload = request.payload;
         match request.kind {
             "instances.retain" => {
-                jsrt::payload::fields(payload, &["task_id"])?;
+                kernel::ops::fields("instances.retain", payload)?;
                 let task_id = text(payload.get("task_id"), "task_id")?;
                 let existing = current["instances"]
                     .as_array()
@@ -185,7 +185,7 @@ impl ApiModule for InstancesModule {
                 Ok(Self::with_pinned(record, pinned))
             }
             "instances.invoke" => {
-                jsrt::payload::fields(payload, &["id", "input", "key"])?;
+                kernel::ops::fields("instances.invoke", payload)?;
                 let index = find_index(&current, payload.get("id"))?;
                 let instance = current["instances"][index].clone();
                 assert_owner(&instance, caller)?;
@@ -233,7 +233,7 @@ impl ApiModule for InstancesModule {
                 Ok(json!({"instance_id": instance["id"], "task_id": task["id"]}))
             }
             "instances.close" => {
-                jsrt::payload::fields(payload, &["id"])?;
+                kernel::ops::fields("instances.close", payload)?;
                 let index = find_index(&current, payload.get("id"))?;
                 let instance = current["instances"][index].clone();
                 assert_owner(&instance, caller)?;
@@ -249,14 +249,14 @@ impl ApiModule for InstancesModule {
                 Ok(closed)
             }
             "instances.get" => {
-                jsrt::payload::fields(payload, &["id"])?;
+                kernel::ops::fields("instances.get", payload)?;
                 let index = find_index(&current, payload.get("id"))?;
                 let instance = current["instances"][index].clone();
                 assert_owner(&instance, caller)?;
                 Ok(instance)
             }
             "instances.list" => {
-                jsrt::payload::fields(payload, &[])?;
+                kernel::ops::fields("instances.list", payload)?;
                 Ok(Value::Array(
                     current["instances"]
                         .as_array()

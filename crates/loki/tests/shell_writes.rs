@@ -77,7 +77,8 @@ fn compare(run: impl Fn(&Path, &Value) -> (i64, String)) {
 #[test]
 fn loki_shell_writes_library_matches_loki_py_corpus() {
     compare(|root, payload| {
-        let (status, stderr) = loki::shell::run_shell_writes(root, payload);
+        let (status, stderr) =
+            loki::shell::shell_report(loki::shell::shell_writes(root, payload, &loki::resolve(root)));
         (i64::from(status), stderr)
     });
 }
@@ -187,12 +188,8 @@ fn loki_shell_writes_dot_dot_source_name_matches_loki_py() {
         ("cp -t . /", "loki: directory target is not a file: <ROOT>\n"),
         ("cp x ..", ""),
     ] {
-        let (status, stderr) = loki::shell::run_shell_writes(&root, &json!({ "command": command }));
-        let stderr = stderr.replace(root.to_str().unwrap(), "<ROOT>");
-        assert_eq!(
-            (status, stderr.as_str()),
-            (if expected.is_empty() { 0 } else { 2 }, expected),
-            "{command}"
-        );
+        let refused = loki::shell::command_refusal(&root, command, &root)
+            .map(|text| format!("{}\n", text.replace(root.to_str().unwrap(), "<ROOT>")));
+        assert_eq!(refused.as_deref().unwrap_or_default(), expected, "{command}");
     }
 }

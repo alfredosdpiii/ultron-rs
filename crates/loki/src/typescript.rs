@@ -172,9 +172,7 @@ if (process.argv[1] === '--serve') {
 }
 "#;
 
-fn invalid(message: impl Into<String>) -> CheckError {
-    CheckError::Value(message.into())
-}
+use crate::invalid;
 
 /// The project's `typescript.js`, else the one beside `tsc` on PATH.
 pub fn typescript_compiler(root: &Path) -> Option<PathBuf> {
@@ -528,7 +526,7 @@ pub fn typescript_findings(
         .iter()
         .map(|n| format!("NOT CHECKED typescript types: {n}"))
         .collect();
-    if std::env::var("LOKI_STRICT").as_deref() == Ok("1") {
+    if crate::strict() {
         return Ok(findings.into_iter().chain(messages).collect());
     }
     warnings.extend(messages);

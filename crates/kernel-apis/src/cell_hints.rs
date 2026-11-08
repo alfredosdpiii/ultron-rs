@@ -388,7 +388,7 @@ impl CellHints {
         let woken = jsrt::sync::lock(&self.woken).clone();
         match woken {
             Some(woken) => woken(lane),
-            None => lane == "main" && !self.options.next_call_root,
+            None => lane == kernel::ROOT_LANE && !self.options.next_call_root,
         }
     }
 

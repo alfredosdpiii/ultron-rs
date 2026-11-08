@@ -145,13 +145,6 @@ fn score(skill: &Skill, terms: &[String], query: &str) -> Option<Value> {
     (total > 0).then(|| json!({"name": skill.name, "version": skill.version, "score": total, "matches": matches}))
 }
 
-fn nonempty_string(value: Option<&Value>, name: &str) -> Result<String, String> {
-    match value.and_then(Value::as_str) {
-        Some(text) if !jsrt::string::trim(text).is_empty() => Ok(text.to_string()),
-        _ => Err(format!("{name} must be a nonempty string")),
-    }
-}
-
 fn version_string(value: Option<&Value>) -> Result<String, String> {
     match value.and_then(Value::as_str) {
         Some(text) if text.len() == 64 && text.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)) => {
@@ -388,12 +381,12 @@ impl SkillsModule {
     ) -> Result<Value, String> {
         match kind {
             "skills.refresh" => {
-                jsrt::payload::fields(payload, &[])?;
+                kernel::ops::fields("skills.refresh", payload)?;
                 let _exclusive = jsrt::sync::lock(&self.exclusive);
                 self.refresh_locked()
             }
             "skills.list" => {
-                jsrt::payload::fields(payload, &[])?;
+                kernel::ops::fields("skills.list", payload)?;
                 let snapshot = self.current()?;
                 let skills: Vec<Value> = snapshot
                     .skills
@@ -405,8 +398,8 @@ impl SkillsModule {
             "skills.select" => self.select(payload, caller),
             "skills.load" => self.load(payload, caller),
             "skills.why" => {
-                jsrt::payload::fields(payload, &["decision_id"])?;
-                let id = nonempty_string(payload.get("decision_id"), "decision_id")?;
+                kernel::ops::fields("skills.why", payload)?;
+                let id = jsrt::payload::nonempty_string(payload.get("decision_id"), "decision_id")?;
                 let document = read_document(self.store.read()?)?;
                 document["decisions"]
                     .as_array()
@@ -419,7 +412,7 @@ impl SkillsModule {
                 self.change_code(kind, payload, caller, signal)
             }
             "skills.code_list" => {
-                jsrt::payload::fields(payload, &["kind", "family"])?;
+                kernel::ops::fields("skills.code_list", payload)?;
                 let filter_kind = match payload.get("kind") {
                     None => None,
                     Some(Value::String(kind)) if kind == "code" || kind == "policy" => Some(kind.as_str()),
@@ -427,12 +420,12 @@ impl SkillsModule {
                 };
                 let family = match payload.get("family") {
                     None => None,
-                    value => Some(nonempty_string(value, "family")?),
+                    value => Some(jsrt::payload::nonempty_string(value, "family")?),
                 };
                 Ok(Value::Array(self.code_skills()?.list(filter_kind, family.as_deref())))
             }
             "skills.code_history" => {
-                jsrt::payload::fields(payload, &["name"])?;
+                kernel::ops::fields("skills.code_history", payload)?;
                 self.code_skills()?.history(payload.get("name"))
             }
             _ => Err(format!("Unsupported skills request: {kind}")),
@@ -449,8 +442,8 @@ impl SkillsModule {
         host: &dyn TaskHost,
         signal: &Signal,
     ) -> Result<Value, String> {
-        jsrt::payload::fields(payload, &["name", "version", "input"])?;
-        let name = nonempty_string(payload.get("name"), "name")?;
+        kernel::ops::fields("skills.invoke", payload)?;
+        let name = jsrt::payload::nonempty_string(payload.get("name"), "name")?;
         let version = version_string(payload.get("version"))?;
         let Some(input) = payload.get("input") else {
             return Err("input must be JSON".into());
@@ -605,8 +598,8 @@ impl SkillsModule {
     }
 
     fn select(&self, payload: &Map<String, Value>, caller: Option<&str>) -> Result<Value, String> {
-        jsrt::payload::fields(payload, &["query", "limit"])?;
-        let query = nonempty_string(payload.get("query"), "query")?;
+        kernel::ops::fields("skills.select", payload)?;
+        let query = jsrt::payload::nonempty_string(payload.get("query"), "query")?;
         if jsrt::utf16::len(&query) > MAX_QUERY_CHARS {
             return Err(format!("query must be at most {MAX_QUERY_CHARS} characters"));
         }
@@ -662,8 +655,8 @@ impl SkillsModule {
     }
 
     fn load(&self, payload: &Map<String, Value>, caller: Option<&str>) -> Result<Value, String> {
-        jsrt::payload::fields(payload, &["name", "version"])?;
-        let name = nonempty_string(payload.get("name"), "name")?;
+        kernel::ops::fields("skills.load", payload)?;
+        let name = jsrt::payload::nonempty_string(payload.get("name"), "name")?;
         let version = match payload.get("version") {
             None => None,
             value => Some(version_string(value)?),

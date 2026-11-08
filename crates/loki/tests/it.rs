@@ -11,6 +11,8 @@ mod auto_setup;
 mod daemon;
 #[path = "differential.rs"]
 mod differential;
+#[path = "findings.rs"]
+mod findings;
 #[path = "hook_differential.rs"]
 mod hook_differential;
 #[path = "init_differential.rs"]

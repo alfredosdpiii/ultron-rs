@@ -9,6 +9,8 @@
 mod base_env;
 #[path = "fixture.rs"]
 mod fixture;
+#[path = "ops.rs"]
+mod ops;
 #[path = "process.rs"]
 mod process;
 #[path = "snapshot.rs"]

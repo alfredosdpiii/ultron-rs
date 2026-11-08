@@ -668,6 +668,19 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9e9de72ce2ad1f90dc62fa25f0f430ef85eb4b0d8fa0be4f30373bc40a21d28e"
 
 [[package]]
+name = "diagram"
+version = "0.1.0"
+dependencies = [
+ "jsrt",
+ "kernel",
+ "kernel-apis",
+ "resvg",
+ "serde_json",
+ "tempfile",
+ "theme",
+]
+
+[[package]]
 name = "digest"
 version = "0.10.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1635,14 +1648,12 @@ dependencies = [
  "jsrt",
  "kernel",
  "resources",
- "resvg",
  "serde",
  "serde_json",
  "session-file",
  "session-journal",
  "sha2",
  "tempfile",
- "theme",
  "tokio",
  "yaml-rust2",
 ]
@@ -2777,6 +2788,7 @@ dependencies = [
  "compaction",
  "config",
  "delegation",
+ "diagram",
  "durable",
  "harness",
  "hindsight",

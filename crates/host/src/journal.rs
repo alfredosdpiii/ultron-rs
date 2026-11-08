@@ -56,6 +56,46 @@ pub const JOURNAL_NAMESPACE: &str = "ultron.module/jobs";
 const JOURNAL_VERSION: u64 = 1;
 const JOB_TEXT_BYTES: u64 = 16 * 1024;
 
+/// A shell job's state, as journals and replies name it.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Status {
+    Running,
+    Completed,
+    Failed,
+    Cancelled,
+    TimedOut,
+    /// A TypeScript journal's running job after a restart (no process to follow).
+    Interrupted,
+    /// Its process ended while no worker followed it and left no exit status.
+    Lost,
+}
+
+impl Status {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Status::Running => "running",
+            Status::Completed => "completed",
+            Status::Failed => "failed",
+            Status::Cancelled => "cancelled",
+            Status::TimedOut => "timed_out",
+            Status::Interrupted => "interrupted",
+            Status::Lost => "lost",
+        }
+    }
+
+    fn from_name(name: &str) -> Status {
+        match name {
+            "running" => Status::Running,
+            "completed" => Status::Completed,
+            "cancelled" => Status::Cancelled,
+            "timed_out" => Status::TimedOut,
+            "interrupted" => Status::Interrupted,
+            "lost" => Status::Lost,
+            _ => Status::Failed,
+        }
+    }
+}
+
 /// One journaled job (camelCase on the wire, as TypeScript stores it).
 #[derive(Clone, Debug, PartialEq)]
 pub struct JobRecord {
@@ -65,7 +105,7 @@ pub struct JobRecord {
     pub command: String,
     pub cwd: String,
     pub timeout: Option<f64>,
-    pub status: String,
+    pub status: Status,
     pub exit_code: Option<i64>,
     pub started_at: u64,
     pub ended_at: Option<u64>,
@@ -104,7 +144,7 @@ impl JobRecord {
             command: text_of(value, "command"),
             cwd: text_of(value, "cwd"),
             timeout: value.get("timeout").and_then(Value::as_f64),
-            status: text_of(value, "status"),
+            status: Status::from_name(&text_of(value, "status")),
             exit_code: value.get("exitCode").and_then(Value::as_i64),
             started_at: int_of(value, "startedAt").unwrap_or(0),
             ended_at: int_of(value, "endedAt"),
@@ -126,7 +166,7 @@ impl JobRecord {
             "command": self.command,
             "cwd": self.cwd,
             "timeout": self.timeout.map(js_number),
-            "status": self.status,
+            "status": self.status.as_str(),
             "exitCode": self.exit_code,
             "startedAt": self.started_at,
             "endedAt": self.ended_at,
@@ -217,9 +257,9 @@ pub fn restore_durable(saved: Option<&Value>, now: u64) -> Result<Restored, Stri
             if job.tail.is_empty() {
                 job.tail = file_tail(&job);
             }
-            if job.status == "running" && job.pid.is_none() {
+            if job.status == Status::Running && job.pid.is_none() {
                 changed = true;
-                job.status = "interrupted".into();
+                job.status = Status::Interrupted;
                 job.ended_at = Some(job.ended_at.unwrap_or(now));
                 job.error = Some("worker restarted".into());
             }
@@ -252,13 +292,13 @@ pub fn job_summary(record: &JobRecord, max_chars: usize) -> String {
         .filter(|line| !line.is_empty())
         .collect();
     let text = lines[lines.len().saturating_sub(3)..].join(" | ");
-    let status = match (&record.status[..], &record.error) {
-        ("completed", _) => format!(
+    let status = match (record.status, &record.error) {
+        (Status::Completed, _) => format!(
             "exit {}",
             record.exit_code.map_or("null".to_owned(), |code| code.to_string())
         ),
-        (status, Some(error)) if !error.is_empty() => format!("{status}: {error}"),
-        (status, _) => status.to_owned(),
+        (status, Some(error)) if !error.is_empty() => format!("{}: {error}", status.as_str()),
+        (status, _) => status.as_str().to_owned(),
     };
     let units: Vec<u16> = text.encode_utf16().collect();
     let body = if units.len() > max_chars {
@@ -281,7 +321,7 @@ pub fn job_event(record: &JobRecord, awaited: bool, root_aborted: bool) -> Optio
     let mut event = json!({
         "kind": "job_done",
         "id": record.id,
-        "status": record.status,
+        "status": record.status.as_str(),
         "summary": job_summary(record, 240),
         "fetch": format!("await rlm.job(\"{}\")", record.id),
         "lane": record.lane,

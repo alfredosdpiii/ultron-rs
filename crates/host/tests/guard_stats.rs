@@ -2,6 +2,7 @@
 //! packages/coding-agent/test/ultron-file-hooks.test.ts with its literal expectations, plus the TS semantics of
 //! `GuardRecord` (phase, outcome, ms, display paths, lane, detail), `enabled()` and per-call time limits.
 
+use host::Guard;
 use host::file_hooks::{
     AfterCellReport, AfterOutcome, CellChanges, FileHooks, FileWriteGuard, GuardRecord, GuardStats, Snapshot,
     Snapshotter, Verdict,
@@ -46,7 +47,7 @@ impl FileWriteGuard for Fake {
     fn name(&self) -> &str {
         "Fake"
     }
-    fn before_write_on(&self, path: &Path, content: &str, _: &Path, lane: &str) -> Result<Verdict, String> {
+    fn before_write(&self, path: &Path, content: &str, _: &Path, lane: &str) -> Result<Verdict, String> {
         self.0
             .lock()
             .unwrap()
@@ -72,7 +73,7 @@ fn host_guard_stats_count_checks_and_blocks_like_file_hooks_ts() {
     let seen: Seen = Arc::default();
     let mut hooks = FileHooks::new(&root);
     hooks.add(Box::new(Fake(seen.clone())));
-    let blocked = hooks.before_write_on("main", "app.py", "VALUE = \"forbidden\"\n");
+    let blocked = hooks.before_write("main", "app.py", "VALUE = \"forbidden\"\n");
     assert_eq!(
         blocked,
         json!({"blocked": true, "reason": "[Fake] app.py:1: fake/rule: forbidden text", "notes": []})
@@ -86,16 +87,16 @@ fn host_guard_stats_count_checks_and_blocks_like_file_hooks_ts() {
         )
     );
     assert_eq!(
-        hooks.before_write_on("lane-2", "pkg/new.py", "forbidden = True\n")["blocked"],
+        hooks.before_write("lane-2", "pkg/new.py", "forbidden = True\n")["blocked"],
         true
     );
     assert_eq!(seen.lock().unwrap()[1].2, "lane-2");
     assert_eq!(
-        hooks.before_write_on("main", "app.py", "VALUE = 2\n"),
+        hooks.before_write("main", "app.py", "VALUE = 2\n"),
         json!({"blocked": false, "notes": ["[Fake] looks fine"]})
     );
-    hooks.before_write_on("main", "a.txt", "one");
-    hooks.before_write_on("main", "b.txt", "two");
+    hooks.before_write("main", "a.txt", "one");
+    hooks.before_write("main", "b.txt", "two");
     let stats = stats_of(&hooks, 0);
     assert_eq!(
         (stats.name.as_str(), stats.checks, stats.blocked, stats.unchecked),
@@ -130,15 +131,15 @@ fn host_guard_stats_count_shell_checks_and_skip_commands_that_write_nothing() {
     let mut hooks = FileHooks::new(&root);
     hooks.add(Box::new(ShellFake(seen.clone())));
     assert_eq!(
-        hooks.before_shell_on("main", "echo VALUE = 2 > app.py").as_deref(),
+        hooks.before_shell("main", "echo VALUE = 2 > app.py").as_deref(),
         Some("[Fake] loki: `redirect` into app.py")
     );
     assert_eq!(
-        hooks.before_shell_on("main", "echo beta >> notes.txt && cat notes.txt"),
+        hooks.before_shell("main", "echo beta >> notes.txt && cat notes.txt"),
         None
     );
     assert_eq!(
-        hooks.before_shell_on("main", "grep -c VALUE app.py 2>/dev/null | tail -1"),
+        hooks.before_shell("main", "grep -c VALUE app.py 2>/dev/null | tail -1"),
         None
     );
     assert_eq!(
@@ -162,7 +163,7 @@ impl FileWriteGuard for Hung {
     fn timeout(&self) -> Option<Duration> {
         Some(self.1)
     }
-    fn before_write(&self, _: &Path, _: &str, _: &Path) -> Result<Verdict, String> {
+    fn before_write(&self, _: &Path, _: &str, _: &Path, _: &str) -> Result<Verdict, String> {
         let _ = self.0.lock().unwrap().recv();
         Ok(Verdict::Block("too late".into()))
     }
@@ -178,7 +179,7 @@ impl FileWriteGuard for Broken {
     fn name(&self) -> &str {
         "Broken"
     }
-    fn before_write(&self, _: &Path, _: &str, _: &Path) -> Result<Verdict, String> {
+    fn before_write(&self, _: &Path, _: &str, _: &Path, _: &str) -> Result<Verdict, String> {
         Err("checker crashed".into())
     }
 }
@@ -189,7 +190,7 @@ fn host_guard_that_does_not_answer_in_time_lets_the_command_run() {
     let (_release, wait) = channel::<()>();
     let mut hooks = FileHooks::new(&root);
     hooks.add(Box::new(Hung(Mutex::new(wait), Duration::from_millis(200))));
-    assert_eq!(hooks.before_shell_on("main", "echo VALUE = 3 > app.py"), None);
+    assert_eq!(hooks.before_shell("main", "echo VALUE = 3 > app.py"), None);
     let stats = stats_of(&hooks, 0);
     assert_eq!((stats.checks, stats.unchecked, stats.blocked), (1, 1, 0));
 }
@@ -202,7 +203,7 @@ fn host_guard_that_does_not_answer_in_time_lets_the_write_proceed_with_a_note() 
     hooks.add(Box::new(Hung(Mutex::new(wait), Duration::from_millis(200))));
     hooks.add(Box::new(Broken));
     assert_eq!(
-        hooks.before_write_on("main", "out.txt", "hello"),
+        hooks.before_write("main", "out.txt", "hello"),
         json!({"blocked": false, "notes": [
             "[Slow] Slow did not check this write to out.txt (no answer within 0.2 s); it was written unchecked.",
             "[Broken] Broken did not check this write to out.txt (checker crashed); it was written unchecked."
@@ -217,7 +218,7 @@ fn host_guard_that_does_not_answer_in_time_lets_the_write_proceed_with_a_note() 
     let mut rounded = FileHooks::new(&root);
     rounded.add(Box::new(Hung(Mutex::new(wait), Duration::from_millis(250))));
     assert_eq!(
-        rounded.before_write_on("main", "/elsewhere/x.txt", "hello")["notes"][0],
+        rounded.before_write("main", "/elsewhere/x.txt", "hello")["notes"][0],
         "[Slow] Slow did not check this write to /elsewhere/x.txt (no answer within 0.3 s); it was written unchecked."
     );
 }
@@ -235,7 +236,7 @@ impl FileWriteGuard for Off {
     fn checks_writes(&self) -> bool {
         !self.1
     }
-    fn before_write(&self, _: &Path, _: &str, _: &Path) -> Result<Verdict, String> {
+    fn before_write(&self, _: &Path, _: &str, _: &Path, _: &str) -> Result<Verdict, String> {
         self.0.fetch_add(1, Ordering::SeqCst);
         Ok(Verdict::Block("should not run".into()))
     }
@@ -249,7 +250,7 @@ fn host_disabled_guards_are_not_asked_or_counted() {
     hooks.add(Box::new(Off(calls.clone(), false)));
     hooks.add(Box::new(Off(calls.clone(), true)));
     assert_eq!(
-        hooks.before_write_on("main", "a.txt", "x"),
+        hooks.before_write("main", "a.txt", "x"),
         json!({"blocked": false, "notes": []})
     );
     assert_eq!(calls.load(Ordering::SeqCst), 0);
@@ -265,11 +266,11 @@ fn host_guard_records_and_turn_times_follow_file_hooks_ts() {
     hooks.add(Box::new(ShellFake(Arc::default())));
     ticking(&hooks);
     let records = recorded(&hooks);
-    hooks.before_write_on("main", "app.py", "forbidden");
-    hooks.before_write_on("worker", "/abs/out.txt", "fine");
+    hooks.before_write("main", "app.py", "forbidden");
+    hooks.before_write("worker", "/abs/out.txt", "fine");
     let long = format!("echo {} > app.py", "x".repeat(90));
-    hooks.before_shell_on("main", &long);
-    hooks.before_shell_on("main", "echo ok > notes.txt");
+    hooks.before_shell("main", &long);
+    hooks.before_shell("main", "echo ok > notes.txt");
     let shown = format!("{}...", &long[..77]);
     assert_eq!(
         *records.lock().unwrap(),
@@ -287,7 +288,7 @@ fn host_guard_records_and_turn_times_follow_file_hooks_ts() {
     let times: Vec<(u64, u64)> = hooks.stats().iter().map(|s| (s.total_ms, s.turn_ms)).collect();
     assert_eq!(times, vec![(20, 20), (20, 20)]);
     hooks.begin_turn();
-    hooks.before_write_on("main", "a.txt", "x");
+    hooks.before_write("main", "a.txt", "x");
     let times: Vec<(u64, u64)> = hooks.stats().iter().map(|s| (s.total_ms, s.turn_ms)).collect();
     assert_eq!(times, vec![(30, 10), (20, 0)]);
     assert_eq!(
@@ -353,7 +354,7 @@ fn host_after_cell_stats_count_findings_and_failures_not_advisories() {
     ticking(&hooks);
     let records = recorded(&hooks);
     hooks.cell_started("main");
-    let _ = hooks.before_write_on("main", "app.py", "VALUE = 2\n");
+    let _ = hooks.before_write("main", "app.py", "VALUE = 2\n");
     std::fs::write(root.join("app.py"), "VALUE = 2\n").unwrap();
     std::fs::write(root.join("notes.txt"), "beta\n").unwrap();
     hooks.cell_ended("main");
@@ -402,7 +403,7 @@ impl FileWriteGuard for Lanes {
     fn name(&self) -> &str {
         "Lanes"
     }
-    fn before_write_on(&self, _: &Path, _: &str, _: &Path, lane: &str) -> Result<Verdict, String> {
+    fn before_write(&self, _: &Path, _: &str, _: &Path, lane: &str) -> Result<Verdict, String> {
         self.0.lock().unwrap().push(lane.to_string());
         Ok(Verdict::Allow(None))
     }

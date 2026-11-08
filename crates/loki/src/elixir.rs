@@ -16,9 +16,7 @@ use std::time::Instant;
 
 const SECURITY_LEVELS: [&str; 4] = ["none", "low", "medium", "high"];
 
-fn invalid(message: impl Into<String>) -> CheckError {
-    CheckError::Value(message.into())
-}
+use crate::invalid;
 
 fn os(error: &std::io::Error) -> CheckError {
     CheckError::os(error, None)

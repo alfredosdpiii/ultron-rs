@@ -10,121 +10,17 @@
 //! The policy is the repository's `.loki/loki.json` under the root (the Git work tree, else the session directory).
 
 use crate::file_hooks::{AfterCellReport, AfterOutcome, CellChanges, FileWriteGuard, Verdict, inside};
-use fancy_regex::Regex;
-use serde_json::{Map, Value, json};
+use loki::CheckError;
+use loki::run::Report;
+use serde_json::{Map, Value};
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{LazyLock, Mutex};
 
 /// Files one after-cell check takes; the rest are named as not checked.
 const MAX_HOOK_FILES: usize = 40;
-static PROTECTED_LOKI: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"^\.loki/\S*: protected content changed$").expect("static pattern"));
-static FINDING_PATH: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"^([^:\s][^:\n]*?)(?::\d+)?: ").expect("static pattern"));
-static ADVISORY_LINE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"(: loki/slop-[\w-]+: |\[Warning/|^oxlint advisory \(not blocking\))").expect("static pattern")
-});
-static ENGINE_ERROR: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"^loki: (invalid hook input|guard error)").expect("static pattern"));
-
-/// A check's lines by tier (`LokiReport`).
-#[derive(Debug, Default, PartialEq, Eq)]
-pub struct LokiReport {
-    pub blocking: Vec<String>,
-    pub advisory: Vec<String>,
-    pub not_checked: Vec<String>,
-    pub error: Option<String>,
-}
-
-fn texts(value: &Value) -> Vec<String> {
-    value
-        .as_array()
-        .into_iter()
-        .flatten()
-        .map(|item| match item {
-            Value::String(text) => text.clone(),
-            Value::Object(map) => map.get("text").and_then(Value::as_str).unwrap_or_default().to_string(),
-            _ => String::new(),
-        })
-        .filter(|text| !text.trim().is_empty())
-        .collect()
-}
-
-/// `parseLokiReport`: the `--format json` document, or none when stdout is not one.
-pub fn parse_loki_report(stdout: &str) -> Option<LokiReport> {
-    let parsed: Value = serde_json::from_str(stdout).ok()?;
-    let map = parsed.as_object()?;
-    if !map.contains_key("status") || !map.contains_key("blocking") {
-        return None;
-    }
-    Some(LokiReport {
-        blocking: texts(&map["blocking"]),
-        advisory: texts(map.get("advisory").unwrap_or(&Value::Null)),
-        not_checked: texts(map.get("not_checked").unwrap_or(&Value::Null)),
-        error: map.get("error").and_then(Value::as_str).map(str::to_string),
-    })
-}
-
-/// `classifyLokiText`: the tiers from the text an engine prints on stderr: `NOT CHECKED` lines, slop and analyzer
-/// warnings as advisory, and when the check failed everything else (after the advisory label: advisory) blocking.
-pub fn classify_loki_text(stderr: &str, failed: bool) -> LokiReport {
-    let mut report = LokiReport::default();
-    let mut labelled = false;
-    for raw in stderr.split('\n') {
-        let line = raw.trim();
-        if line.is_empty() || line.starts_with("loki: post-write check failed") {
-            continue;
-        }
-        if failed && ENGINE_ERROR.is_match(line).unwrap_or(false) {
-            return LokiReport {
-                error: Some(line.to_string()),
-                ..LokiReport::default()
-            };
-        }
-        if line == "loki: advisory (not blocking):" {
-            labelled = true;
-        } else if line.starts_with("NOT CHECKED") {
-            report.not_checked.push(line.to_string());
-        } else if !failed || labelled || ADVISORY_LINE.is_match(line).unwrap_or(false) {
-            report.advisory.push(line.to_string());
-        } else {
-            report.blocking.push(line.to_string());
-        }
-    }
-    report
-}
-
-/// `findingKey`: a finding's file and its identity without the line number, which moves as the file is edited.
-/// The engine's own `loki: ...` lines name no file at their start (`loki` is no path): a protected-file line is
-/// followed by the file it names, others cannot be followed. Keyed by `loki`, they stayed "still open in loki"
-/// for the rest of the session, since no check ever clears a file named `loki`. The same holds for other non-path
-/// prefixes such as `git:` and `typescript:`, so a prefix with no `.` or `/` that names no existing file is no file.
-fn finding_key(root: &Path, line: &str) -> (String, String) {
-    if let Some(rest) = line.strip_prefix("loki: ") {
-        return match rest.strip_prefix("protected file: ") {
-            Some(named) => {
-                let path = named.split(" (set ").next().unwrap_or(named).to_string();
-                (path, line.to_string())
-            }
-            None => (String::new(), line.to_string()),
-        };
-    }
-    match FINDING_PATH.captures(line).ok().flatten() {
-        // A tool or engine prefix (`git: ...`, `typescript: ...`) is no path either: no check clears it.
-        Some(found) if !found[1].contains(['.', '/']) && !root.join(&found[1]).exists() => {
-            (String::new(), line.to_string())
-        }
-        Some(found) => {
-            let path = found[1].to_string();
-            let rest = &line[found[0].len()..];
-            (path.clone(), format!("{path}: {rest}"))
-        }
-        None => (String::new(), line.to_string()),
-    }
-}
 
 fn count(n: usize, noun: &str) -> String {
     format!("{n} {noun}{}", if n == 1 { "" } else { "s" })
@@ -149,14 +45,6 @@ fn loki_file_as_committed(root: &Path, relative: &str) -> bool {
             .is_ok_and(|status| status.success())
     };
     git(&["ls-files", "--error-unmatch", "--", relative]) && git(&["diff", "--quiet", "HEAD", "--", relative])
-}
-
-fn first_line(text: &str) -> String {
-    text.split('\n')
-        .map(str::trim)
-        .find(|line| !line.is_empty())
-        .unwrap_or_default()
-        .to_string()
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -206,27 +94,6 @@ pub fn git_root(cwd: &Path) -> Option<PathBuf> {
     (output.status.success() && !root.is_empty()).then(|| PathBuf::from(root))
 }
 
-/// `classifyLokiText` for a check that passed: `NOT CHECKED` lines apart, every other line advisory.
-fn classify_passed(stderr: &str) -> (Vec<String>, Vec<String>) {
-    let (mut advisory, mut not_checked) = (Vec::new(), Vec::new());
-    for line in stderr.split('\n').map(str::trim) {
-        if line.is_empty()
-            || line.starts_with("loki: post-write check failed")
-            || line == "loki: advisory (not blocking):"
-        {
-            continue;
-        }
-        if line.starts_with("NOT CHECKED") {
-            not_checked.push(line.to_string());
-        } else {
-            advisory.push(line.to_string());
-        }
-    }
-    (advisory, not_checked)
-}
-
-const NOT_PORTED: &str = "loki: guard error: NotPorted: ";
-
 pub struct LokiGuard {
     root: PathBuf,
     mode: LokiMode,
@@ -235,7 +102,7 @@ pub struct LokiGuard {
     /// Findings already shown and not fixed since, per tier and file, so a later cell is not told again in full.
     open: Mutex<HashMap<&'static str, HashMap<String, HashSet<String>>>>,
     paused_shown: AtomicBool,
-    /// Runs `hook --file ... --format json` in `root` (default: the Rust engine in-process).
+    /// Runs `hook --file ...` in `root` (default: the Rust engine in-process).
     hook: HookRunner,
     /// Post-write checks run (`postWrite`): they compare against a base revision, so only in a repository.
     post_write: bool,
@@ -243,8 +110,8 @@ pub struct LokiGuard {
     timeout: Option<std::time::Duration>,
 }
 
-/// Runs Loki's post-write `hook` on repository-relative files: its exit status, stdout and stderr.
-pub type HookRunner = std::sync::Arc<dyn Fn(&Path, &[String]) -> loki::run::Outcome + Send + Sync>;
+/// Runs Loki's post-write `hook` on repository-relative files.
+pub type HookRunner = std::sync::Arc<dyn Fn(&Path, &[String]) -> Result<Report, CheckError> + Send + Sync>;
 
 /// One tier's lines not yet shown for their file, how many shown earlier are still there, and their files.
 struct Unseen {
@@ -262,7 +129,7 @@ impl LokiGuard {
             shown_notices: Mutex::new(Vec::new()),
             open: Mutex::new(HashMap::new()),
             paused_shown: AtomicBool::new(false),
-            hook: std::sync::Arc::new(|root: &Path, files: &[String]| loki::run::hook(root, files, true)),
+            hook: std::sync::Arc::new(|root: &Path, files: &[String]| loki::run::hook(root, files, None)),
             post_write: true,
             timeout: None,
         }
@@ -284,9 +151,8 @@ impl LokiGuard {
     /// Post-write checks ask `python` (the project's interpreter, `findProjectPython`; loki.ts passes it to the
     /// engine as `LOKI_PYTHON`) whether newly imported modules exist.
     pub fn with_project_python(mut self, python: Option<String>) -> Self {
-        self.hook = std::sync::Arc::new(move |root: &Path, files: &[String]| {
-            loki::run::hook_with_python(root, files, true, python.as_deref())
-        });
+        self.hook =
+            std::sync::Arc::new(move |root: &Path, files: &[String]| loki::run::hook(root, files, python.as_deref()));
         self
     }
 
@@ -305,7 +171,7 @@ impl LokiGuard {
         let mut fresh = Vec::new();
         let mut stale: Vec<String> = Vec::new();
         for line in lines {
-            let (path, key) = finding_key(&self.root, line);
+            let (path, key) = loki::finding_key(&self.root, line);
             if !path.is_empty() && memory.get(&path).is_some_and(|keys| keys.contains(&key)) {
                 if !stale.contains(&path) {
                     stale.push(path.clone());
@@ -357,13 +223,7 @@ impl LokiGuard {
         (!fresh.is_empty()).then(|| format!("not checked in this session (said once): {}", fresh.join("; ")))
     }
 
-    fn refused(&self, stderr: &str, status: u8, advise: &str) -> Verdict {
-        let text = stderr.trim();
-        let reason = if text.is_empty() {
-            format!("the checker failed (exit status {status})")
-        } else {
-            text.to_string()
-        };
+    fn refused(&self, reason: String, advise: &str) -> Verdict {
         if self.mode == LokiMode::Advise {
             Verdict::Allow(Some(format!("{advise}:\n{reason}")))
         } else {
@@ -383,7 +243,7 @@ impl FileWriteGuard for LokiGuard {
         self.timeout
     }
 
-    fn before_write(&self, path: &Path, content: &str, cwd: &Path) -> Result<Verdict, String> {
+    fn before_write(&self, path: &Path, content: &str, _cwd: &Path, _lane: &str) -> Result<Verdict, String> {
         // A write into another repository (a sibling worktree) is checked against that repository's own policy.
         let (root, relative) = match inside(&self.root, path) {
             Some(relative) => (self.root.clone(), relative),
@@ -401,26 +261,25 @@ impl FileWriteGuard for LokiGuard {
                 (root, relative)
             }
         };
-        let envelope = json!({
-            "cwd": cwd.to_string_lossy(),
-            "tool_name": "write",
-            "tool_input": {"path": path.to_string_lossy(), "content": content},
-        });
-        let outcome = loki::run::protect(&root, &[relative], Some("ultron"), false, || Ok(envelope));
-        // A check the Rust engine does not have yet (a language rule pack): the write proceeds, with a note.
-        if let Some(error) = outcome.stderr.trim().strip_prefix(NOT_PORTED) {
-            return Err(error.to_string());
+        let report = match loki::run::protect_write(&root, &relative, content) {
+            Ok(report) => report,
+            Err(error) => {
+                return Ok(self.refused(
+                    format!("loki: {}", error.describe()),
+                    "would block this write (advise-only mode)",
+                ));
+            }
+        };
+        if report.blocked() {
+            return Ok(self.refused(
+                report.refusal_lines().join("\n"),
+                "would block this write (advise-only mode)",
+            ));
         }
-        if outcome.status == 0 {
-            let (mut lines, not_checked) = classify_passed(&outcome.stderr);
-            lines.extend(self.notice(&not_checked));
-            return Ok(Verdict::Allow((!lines.is_empty()).then(|| lines.join("\n"))));
-        }
-        Ok(self.refused(
-            &outcome.stderr,
-            outcome.status,
-            "would block this write (advise-only mode)",
-        ))
+        let not_checked: Vec<String> = report.not_checked().cloned().collect();
+        let mut lines: Vec<String> = report.advisory().cloned().collect();
+        lines.extend(self.notice(&not_checked));
+        Ok(Verdict::Allow((!lines.is_empty()).then(|| lines.join("\n"))))
     }
 
     fn watches_cells(&self) -> bool {
@@ -447,28 +306,10 @@ impl FileWriteGuard for LokiGuard {
             return Ok(None);
         }
         let checked: Vec<String> = targets.iter().take(MAX_HOOK_FILES).cloned().collect();
-        let outcome = (self.hook)(&self.root, &checked);
-        let failed = outcome.status != 0;
-        let report = parse_loki_report(&outcome.stdout).unwrap_or_else(|| classify_loki_text(&outcome.stderr, failed));
-        if let Some(error) = report.error {
-            return Err(error);
-        }
-        if failed && report.blocking.is_empty() {
-            let line = first_line(&outcome.stderr);
-            return Err(if line.is_empty() {
-                format!("the checker failed (exit status {})", outcome.status)
-            } else {
-                line
-            });
-        }
+        let report = (self.hook)(&self.root, &checked).map_err(|error| error.describe())?;
         // Loki compares against the committed policy: while .loki/ itself has uncommitted changes every post-write
         // check reports that and stops. Say so once.
-        if !report.blocking.is_empty()
-            && report
-                .blocking
-                .iter()
-                .all(|line| PROTECTED_LOKI.is_match(line.trim()).unwrap_or(false))
-        {
+        if report.blocked_by_policy_changes() {
             if self.paused_shown.swap(true, Ordering::SeqCst) {
                 return Ok(None);
             }
@@ -477,8 +318,10 @@ impl FileWriteGuard for LokiGuard {
                 message: Some("post-write checks are paused: .loki/ has uncommitted changes, and Loki checks against the committed policy. Before-write checks of edit() and write() still run. Commit .loki/ to resume them (git add .loki && git commit -m 'Add Loki guardrails' -- .loki).".into()),
             }));
         }
+        let advisory: Vec<String> = report.advisory().cloned().collect();
+        let not_checked: Vec<String> = report.not_checked().cloned().collect();
         let blocking = self.unseen("blocking", &report.blocking, &checked);
-        let advisory = self.unseen("advisory", &report.advisory, &checked);
+        let advisory = self.unseen("advisory", &advisory, &checked);
         let mut sections = Vec::new();
         if !blocking.fresh.is_empty() {
             sections.push(format!(
@@ -501,7 +344,7 @@ impl FileWriteGuard for LokiGuard {
                 advisory.fresh.join("\n")
             ));
         }
-        sections.extend(self.notice(&report.not_checked));
+        sections.extend(self.notice(&not_checked));
         if targets.len() > checked.len() {
             sections.push(format!(
                 "({} more changed files were not checked)",
@@ -522,46 +365,12 @@ impl FileWriteGuard for LokiGuard {
     }
 
     fn before_shell(&self, command: &str, cwd: &Path) -> Result<Verdict, String> {
-        let (status, stderr) =
-            loki::shell::run_shell_writes(&self.root, &json!({"command": command, "cwd": cwd.to_string_lossy()}));
-        if status == 0 {
-            return Ok(Verdict::Allow(None));
-        }
-        Ok(self.refused(&stderr, status, "would refuse this command (advise-only mode)"))
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    /// Issue #5: `loki: protected file: X` was keyed by the file `loki`, which no check clears, so it stayed
-    /// "still open in loki" all session. It is followed by the file it names; other `loki:` lines by nothing.
-    #[test]
-    fn host_loki_engine_lines_are_keyed_by_the_file_they_name() {
-        let protected = "loki: protected file: .loki/loki.json (set LOKI_ALLOW_PROTECTED=1 to override)";
-        assert_eq!(
-            finding_key(Path::new("."), protected),
-            (".loki/loki.json".to_string(), protected.to_string())
-        );
-        let other = "loki: unsupported changed file type: a";
-        assert_eq!(finding_key(Path::new("."), other), (String::new(), other.to_string()));
-        assert_eq!(
-            finding_key(Path::new("."), "src/a.py:3: loki/x: y"),
-            ("src/a.py".to_string(), "src/a.py: loki/x: y".to_string())
-        );
-    }
-
-    /// `git: snapshot content exceeds 64 MiB` was keyed by a file `git` and nagged "still open in git" all session.
-    #[test]
-    fn host_tool_prefixes_are_no_file() {
-        let root = tempfile::tempdir().unwrap();
-        std::fs::write(root.path().join("Makefile"), "").unwrap();
-        let git = "git: snapshot content exceeds 64 MiB";
-        assert_eq!(finding_key(root.path(), git), (String::new(), git.to_string()));
-        assert_eq!(
-            finding_key(root.path(), "Makefile:3: tab"),
-            ("Makefile".to_string(), "Makefile: tab".to_string())
-        );
+        Ok(match loki::shell::command_refusal(&self.root, command, cwd) {
+            None => Verdict::Allow(None),
+            Some(reason) => self.refused(
+                reason.trim().to_string(),
+                "would refuse this command (advise-only mode)",
+            ),
+        })
     }
 }

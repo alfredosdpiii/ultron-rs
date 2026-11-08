@@ -1,4 +1,4 @@
-//! Readable diagram text: every label of a flattened diagram SVG ([`crate::diagram_svg::flatten_svg`]) meets WCAG
+//! Readable diagram text: every label of a flattened diagram SVG ([`crate::svg::flatten_svg`]) meets WCAG
 //! contrast 4.5:1 against what is drawn under it.
 //!
 //! Pele picks one text colour per diagram kind (pie slice percentages in the page colour, node labels in the text
@@ -9,7 +9,7 @@
 //! label box is estimated from its position, font size and anchor (no fonts are needed): `0.55 em` per character,
 //! from `0.7 em` above the baseline to it.
 
-use crate::diagram_svg::DiagramPalette;
+use crate::svg::DiagramPalette;
 use resvg::tiny_skia;
 use resvg::usvg;
 use resvg::usvg::fontdb;

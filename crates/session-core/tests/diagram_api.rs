@@ -1,4 +1,4 @@
-//! `diagram.mermaid` (diagram_api.py, kernel_apis::diagram, session_core::session_diagrams) in the product's session:
+//! `diagram.mermaid` (diagram_api.py, diagram, session_core::session_diagrams) in the product's session:
 //! a root cell renders Mermaid through a fake `node` on the session environment's PATH (a shell script printing a
 //! canned Pele answer), gets back the saved files, and the tool result carries the PNG for the user only
 //! (`details.displayImages`) with one `diagram: <path> (WxH)` line for the model; `to_model=True` puts the image in

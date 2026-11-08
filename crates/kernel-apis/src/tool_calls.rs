@@ -351,7 +351,7 @@ impl ToolCalls {
                 "source": "repl",
                 "name": name,
                 "label": tool_call_label(name, &params),
-                "input": preview(&Value::Object(params.clone()), PREVIEW_CHARS),
+                "input": jsrt::json::preview(&Value::Object(params.clone()), PREVIEW_CHARS),
                 "status": "running",
                 "startedAt": self.now(),
                 "endedAt": null,
@@ -441,7 +441,7 @@ impl ToolCalls {
             return;
         }
         if let Some(record) = state.records.iter_mut().find(|r| id_of(r) == id) {
-            record["preview"] = preview(&Value::from(text), PREVIEW_CHARS).into();
+            record["preview"] = jsrt::json::preview(&Value::from(text), PREVIEW_CHARS).into();
         }
     }
 
@@ -475,13 +475,13 @@ impl ToolCalls {
                     record.insert("error".into(), shown.into());
                     record.insert(
                         "preview".into(),
-                        preview(&Value::from(error.as_str()), PREVIEW_CHARS).into(),
+                        jsrt::json::preview(&Value::from(error.as_str()), PREVIEW_CHARS).into(),
                     );
                 } else if let Some(outcome) = &outcome {
                     record.insert("status".into(), "completed".into());
                     record.insert(
                         "preview".into(),
-                        preview(&Value::from(outcome.text.as_str()), PREVIEW_CHARS).into(),
+                        jsrt::json::preview(&Value::from(outcome.text.as_str()), PREVIEW_CHARS).into(),
                     );
                 }
             }
@@ -518,7 +518,7 @@ impl ToolCalls {
         }
         let mut details = result.get("details").cloned().unwrap_or(Value::Null);
         if !details.is_null() && jsrt::json::stringify(&details).len() > DETAILS_MAX_BYTES {
-            details = json!({"truncated": true, "preview": preview(&details, 2000)});
+            details = json!({"truncated": true, "preview": jsrt::json::preview(&details, 2000)});
         }
         Outcome {
             truncated: text != raw,
@@ -677,7 +677,7 @@ impl ToolCalls {
             .ok_or("call id must be a nonempty string")?;
         let state = jsrt::sync::lock(&self.inner.state);
         match state.records.iter().find(|r| id_of(r) == id) {
-            Some(record) if lane == "main" || record["lane"] == lane => Ok(id.to_string()),
+            Some(record) if kernel::sees(lane, record["lane"].as_str().unwrap_or_default()) => Ok(id.to_string()),
             _ => Err(format!("Unknown tool call {id}")),
         }
     }
@@ -710,7 +710,7 @@ impl ToolCalls {
         let payload = request.payload;
         match request.kind {
             "tools.list" => {
-                jsrt::payload::fields(payload, &[])?;
+                kernel::ops::fields("tools.list", payload)?;
                 Ok(Value::Array(
                     self.runner()?
                         .tools()
@@ -728,7 +728,7 @@ impl ToolCalls {
                 ))
             }
             "tools.describe" => {
-                jsrt::payload::fields(payload, &["name"])?;
+                kernel::ops::fields("tools.describe", payload)?;
                 let tool = self.tool(payload.get("name"))?;
                 let mut item = Map::new();
                 item.insert("name".into(), tool.name.into());
@@ -742,7 +742,7 @@ impl ToolCalls {
             "tools.call" => {
                 // Wait up to `yield_after` seconds (absent: until the call ends). A call still running when a
                 // waiting cell is stopped is cancelled, unless the kernel asked for a handle (`detach`).
-                jsrt::payload::fields(payload, &["name", "params", "yield_after", "detach"])?;
+                kernel::ops::fields("tools.call", payload)?;
                 let tool = self.tool(payload.get("name"))?;
                 let params = match payload.get("params") {
                     None | Some(Value::Null) => Map::new(),
@@ -768,7 +768,7 @@ impl ToolCalls {
                 self.snapshot_of(&id)
             }
             "tools.result" => {
-                jsrt::payload::fields(payload, &["id", "wait"])?;
+                kernel::ops::fields("tools.result", payload)?;
                 let id = self.visible(payload.get("id"), request.lane)?;
                 if self.is_live(&id) {
                     let wait = wait_seconds(payload.get("wait"), "wait")?;
@@ -777,25 +777,25 @@ impl ToolCalls {
                 self.snapshot_of(&id)
             }
             "tools.get" => {
-                jsrt::payload::fields(payload, &["id"])?;
+                kernel::ops::fields("tools.get", payload)?;
                 let id = self.visible(payload.get("id"), request.lane)?;
                 self.snapshot_of(&id)
             }
             "tools.cancel" => {
-                jsrt::payload::fields(payload, &["id"])?;
+                kernel::ops::fields("tools.cancel", payload)?;
                 let id = self.visible(payload.get("id"), request.lane)?;
                 self.cancel(&id, "cancelled");
                 self.snapshot_of(&id)
             }
             "tools.calls" => {
-                jsrt::payload::fields(payload, &[])?;
+                kernel::ops::fields("tools.calls", payload)?;
                 let state = jsrt::sync::lock(&self.inner.state);
                 Ok(Value::Array(
                     state
                         .records
                         .iter()
                         .rev()
-                        .filter(|r| request.lane == "main" || r["lane"] == request.lane)
+                        .filter(|r| kernel::sees(request.lane, r["lane"].as_str().unwrap_or_default()))
                         .map(|r| {
                             let mut snapshot = self.snapshot(&state, r);
                             snapshot["text"] = Value::Null;
@@ -839,27 +839,13 @@ fn wait_seconds(value: Option<&Value>, name: &str) -> Result<Option<f64>, String
     }
 }
 
-/// `preview`: a string as is, anything else as JSON; whitespace collapsed; at most `limit` characters.
-pub fn preview(value: &Value, limit: usize) -> String {
-    let text = match value {
-        Value::String(text) => text.clone(),
-        other => jsrt::json::stringify(other),
-    };
-    let flat = jsrt::string::flatten(&text);
-    if flat.chars().count() > limit {
-        format!("{}…", flat.chars().take(limit - 1).collect::<String>())
-    } else {
-        flat
-    }
-}
-
 fn first_paragraph(text: &str, limit: usize) -> String {
     let trimmed = jsrt::string::trim(text);
     let paragraph = fancy_regex::Regex::new(r"\n\s*\n")
         .ok()
         .and_then(|re| re.find(trimmed).ok().flatten())
         .map_or(trimmed, |found| &trimmed[..found.start()]);
-    preview(&Value::from(paragraph), limit)
+    jsrt::json::preview(&Value::from(paragraph), limit)
 }
 
 /// The text of a tool result: text parts joined; other parts named (`resultText`).

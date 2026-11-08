@@ -20,26 +20,18 @@ pub struct SandboxGuard {
 }
 
 impl Guard for SandboxGuard {
-    fn before_shell(&self, command: &str) -> Option<String> {
-        self.before_shell_on("main", command)
+    fn before_shell(&self, lane: &str, command: &str) -> Option<String> {
+        self.inner.before_shell(lane, command)
     }
 
-    fn before_shell_on(&self, lane: &str, command: &str) -> Option<String> {
-        self.inner.before_shell_on(lane, command)
-    }
-
-    fn before_write(&self, path: &str, content: &str) -> Value {
-        self.before_write_on("main", path, content)
-    }
-
-    fn before_write_on(&self, lane: &str, path: &str, content: &str) -> Value {
+    fn before_write(&self, lane: &str, path: &str, content: &str) -> Value {
         if self.launcher.mode != Mode::Off {
             let target = self.launcher.policy.cwd.join(path);
             if !self.launcher.policy.may_write(&target) {
                 return json!({ "blocked": true, "reason": outside_message(&self.launcher.policy) });
             }
         }
-        self.inner.before_write_on(lane, path, content)
+        self.inner.before_write(lane, path, content)
     }
 
     fn guard_stats(&self) -> Vec<Value> {

@@ -80,13 +80,10 @@ pub trait FileWriteGuard: Send + Sync {
     fn timeout(&self) -> Option<Duration> {
         Some(DEFAULT_BEFORE_WRITE_TIMEOUT)
     }
-    /// A proposed write: the absolute, normalized path and the complete new text; `cwd` is the lane's directory.
-    fn before_write(&self, _path: &Path, _content: &str, _cwd: &Path) -> Result<Verdict, String> {
+    /// A proposed write of the cell on `lane`: the absolute, normalized path and the complete new text; `cwd` is the
+    /// lane's directory.
+    fn before_write(&self, _path: &Path, _content: &str, _cwd: &Path, _lane: &str) -> Result<Verdict, String> {
         Ok(Verdict::Allow(None))
-    }
-    /// [`Self::before_write`] for a write of the cell on `lane`.
-    fn before_write_on(&self, path: &Path, content: &str, cwd: &Path, _lane: &str) -> Result<Verdict, String> {
-        self.before_write(path, content, cwd)
     }
     /// A shell command that may write files ([`may_write_files`]), before it runs in `cwd`.
     fn before_shell(&self, _command: &str, _cwd: &Path) -> Result<Verdict, String> {
@@ -615,167 +612,6 @@ impl FileHooks {
     fn guards(&self) -> Vec<Registered> {
         sync::lock(&self.inner.guards).clone()
     }
-
-    /// `beforeWrite` of one proposed write on `lane`: every enabled guard, in parallel, each within its time limit.
-    pub fn before_write_on(&self, lane: &str, path: &str, content: &str) -> Value {
-        let path = resolve_lexical(&self.inner.cwd, path);
-        let display = self.display(&path);
-        let calls: Vec<(Registered, u64, Option<Duration>, Pending)> = self
-            .guards()
-            .into_iter()
-            .filter(|r| r.guard.checks_writes() && r.guard.enabled())
-            .map(|registered| {
-                let started = self.inner.now();
-                let timeout = registered.guard.timeout();
-                let (guard, path, content, cwd, lane) = (
-                    registered.guard.clone(),
-                    path.clone(),
-                    content.to_string(),
-                    self.inner.cwd.clone(),
-                    lane.to_string(),
-                );
-                // Started together; each answer is awaited below with its own limit.
-                let (sender, receiver) = channel();
-                std::thread::spawn(move || {
-                    let _ = sender.send(timed(timeout, move || {
-                        guard.before_write_on(&path, &content, &cwd, &lane)
-                    }));
-                });
-                (registered, started, timeout, receiver)
-            })
-            .collect();
-        let mut reasons = Vec::new();
-        let mut notes = Vec::new();
-        for (registered, started, timeout, receiver) in calls {
-            let answer = receiver.recv().unwrap_or(Answer::TimedOut);
-            let ms = self.inner.now().saturating_sub(started);
-            let name = registered.guard.name().to_string();
-            let mut stats = sync::lock(&registered.stats);
-            stats.total_ms += ms;
-            stats.turn_ms += ms;
-            stats.checks += 1;
-            let (outcome, reason, note) = match answer {
-                Answer::TimedOut => {
-                    stats.unchecked += 1;
-                    let limit = js_seconds(timeout.unwrap_or_default());
-                    let note = format!(
-                        "[{name}] {name} did not check this write to {display} (no answer within {limit} s); it was written unchecked."
-                    );
-                    ("unchecked", None, Some(note))
-                }
-                Answer::Error(error) => {
-                    stats.unchecked += 1;
-                    let note = format!(
-                        "[{name}] {name} did not check this write to {display} ({error}); it was written unchecked."
-                    );
-                    ("unchecked", None, Some(note))
-                }
-                Answer::Value(Verdict::Block(reason)) => {
-                    stats.blocked += 1;
-                    ("blocked", Some(format!("[{name}] {reason}")), None)
-                }
-                Answer::Value(Verdict::Allow(Some(message))) if !message.is_empty() => {
-                    ("allowed", None, Some(format!("[{name}] {message}")))
-                }
-                Answer::Value(Verdict::Allow(_)) => ("allowed", None, None),
-            };
-            drop(stats);
-            self.inner.record(GuardRecord {
-                guard: name,
-                phase: "before_write",
-                outcome,
-                ms,
-                paths: vec![display.clone()],
-                lane: lane.to_string(),
-                detail: reason.clone(),
-            });
-            reasons.extend(reason);
-            notes.extend(note);
-        }
-        if reasons.is_empty() {
-            // The write will happen with this content; an after-cell diff need not report it again.
-            sync::lock(&self.inner.checked).insert(path, jsrt::hash::sha256_hex(content.as_bytes()));
-            json!({ "blocked": false, "notes": notes })
-        } else {
-            json!({ "blocked": true, "reason": reasons.join("\n"), "notes": notes })
-        }
-    }
-
-    /// `beforeShell` of a command on `lane`: commands that may write no file, or with no shell guard, are allowed
-    /// at once. `Some(reasons)` blocks it. Notes (a guard that could not check, advise-only refusals) are not shown
-    /// for shell commands.
-    pub fn before_shell_on(&self, lane: &str, command: &str) -> Option<String> {
-        let observers: Vec<Arc<dyn CellObserver>> = sync::lock(&self.inner.observers)
-            .iter()
-            .filter(|observer| observer.enabled())
-            .cloned()
-            .collect();
-        if let Some(reason) = observers
-            .iter()
-            .find_map(|observer| observer.before_shell(command, lane))
-        {
-            return Some(reason);
-        }
-        let guards: Vec<Registered> = self
-            .guards()
-            .into_iter()
-            .filter(|r| r.guard.checks_shell() && r.guard.enabled())
-            .collect();
-        if guards.is_empty() || !may_write_files(command) {
-            return None;
-        }
-        let display = if command.encode_utf16().count() > 80 {
-            format!("{}...", js_cut(command, 77).0)
-        } else {
-            command.to_string()
-        };
-        let calls: Vec<(Registered, u64, Pending)> = guards
-            .into_iter()
-            .map(|registered| {
-                let started = self.inner.now();
-                let timeout = registered.guard.timeout();
-                let (guard, command, cwd) = (registered.guard.clone(), command.to_string(), self.inner.cwd.clone());
-                let (sender, receiver) = channel();
-                std::thread::spawn(move || {
-                    let _ = sender.send(timed(timeout, move || guard.before_shell(&command, &cwd)));
-                });
-                (registered, started, receiver)
-            })
-            .collect();
-        let mut reasons = Vec::new();
-        for (registered, started, receiver) in calls {
-            let answer = receiver.recv().unwrap_or(Answer::TimedOut);
-            let ms = self.inner.now().saturating_sub(started);
-            let name = registered.guard.name().to_string();
-            let mut stats = sync::lock(&registered.stats);
-            stats.total_ms += ms;
-            stats.turn_ms += ms;
-            stats.checks += 1;
-            let (outcome, reason) = match answer {
-                Answer::TimedOut | Answer::Error(_) => {
-                    stats.unchecked += 1;
-                    ("unchecked", None)
-                }
-                Answer::Value(Verdict::Block(reason)) => {
-                    stats.blocked += 1;
-                    ("blocked", Some(format!("[{name}] {reason}")))
-                }
-                Answer::Value(Verdict::Allow(_)) => ("allowed", None),
-            };
-            drop(stats);
-            self.inner.record(GuardRecord {
-                guard: name,
-                phase: "before_shell",
-                outcome,
-                ms,
-                paths: vec![display.clone()],
-                lane: lane.to_string(),
-                detail: reason.clone(),
-            });
-            reasons.extend(reason);
-        }
-        (!reasons.is_empty()).then(|| reasons.join("\n"))
-    }
 }
 
 impl Inner {
@@ -975,20 +811,163 @@ impl Inner {
 }
 
 impl Guard for FileHooks {
-    fn before_shell(&self, command: &str) -> Option<String> {
-        self.before_shell_on("main", command)
+    /// `beforeShell` of a command on `lane`: commands that may write no file, or with no shell guard, are allowed
+    /// at once. `Some(reasons)` blocks it. Notes (a guard that could not check, advise-only refusals) are not shown
+    /// for shell commands.
+    fn before_shell(&self, lane: &str, command: &str) -> Option<String> {
+        let observers: Vec<Arc<dyn CellObserver>> = sync::lock(&self.inner.observers)
+            .iter()
+            .filter(|observer| observer.enabled())
+            .cloned()
+            .collect();
+        if let Some(reason) = observers
+            .iter()
+            .find_map(|observer| observer.before_shell(command, lane))
+        {
+            return Some(reason);
+        }
+        let guards: Vec<Registered> = self
+            .guards()
+            .into_iter()
+            .filter(|r| r.guard.checks_shell() && r.guard.enabled())
+            .collect();
+        if guards.is_empty() || !may_write_files(command) {
+            return None;
+        }
+        let display = if command.encode_utf16().count() > 80 {
+            format!("{}...", js_cut(command, 77).0)
+        } else {
+            command.to_string()
+        };
+        let calls: Vec<(Registered, u64, Pending)> = guards
+            .into_iter()
+            .map(|registered| {
+                let started = self.inner.now();
+                let timeout = registered.guard.timeout();
+                let (guard, command, cwd) = (registered.guard.clone(), command.to_string(), self.inner.cwd.clone());
+                let (sender, receiver) = channel();
+                std::thread::spawn(move || {
+                    let _ = sender.send(timed(timeout, move || guard.before_shell(&command, &cwd)));
+                });
+                (registered, started, receiver)
+            })
+            .collect();
+        let mut reasons = Vec::new();
+        for (registered, started, receiver) in calls {
+            let answer = receiver.recv().unwrap_or(Answer::TimedOut);
+            let ms = self.inner.now().saturating_sub(started);
+            let name = registered.guard.name().to_string();
+            let mut stats = sync::lock(&registered.stats);
+            stats.total_ms += ms;
+            stats.turn_ms += ms;
+            stats.checks += 1;
+            let (outcome, reason) = match answer {
+                Answer::TimedOut | Answer::Error(_) => {
+                    stats.unchecked += 1;
+                    ("unchecked", None)
+                }
+                Answer::Value(Verdict::Block(reason)) => {
+                    stats.blocked += 1;
+                    ("blocked", Some(format!("[{name}] {reason}")))
+                }
+                Answer::Value(Verdict::Allow(_)) => ("allowed", None),
+            };
+            drop(stats);
+            self.inner.record(GuardRecord {
+                guard: name,
+                phase: "before_shell",
+                outcome,
+                ms,
+                paths: vec![display.clone()],
+                lane: lane.to_string(),
+                detail: reason.clone(),
+            });
+            reasons.extend(reason);
+        }
+        (!reasons.is_empty()).then(|| reasons.join("\n"))
     }
 
-    fn before_shell_on(&self, lane: &str, command: &str) -> Option<String> {
-        FileHooks::before_shell_on(self, lane, command)
-    }
-
-    fn before_write(&self, path: &str, content: &str) -> Value {
-        self.before_write_on("main", path, content)
-    }
-
-    fn before_write_on(&self, lane: &str, path: &str, content: &str) -> Value {
-        FileHooks::before_write_on(self, lane, path, content)
+    /// `beforeWrite` of one proposed write on `lane`: every enabled guard, in parallel, each within its time limit.
+    fn before_write(&self, lane: &str, path: &str, content: &str) -> Value {
+        let path = resolve_lexical(&self.inner.cwd, path);
+        let display = self.display(&path);
+        let calls: Vec<(Registered, u64, Option<Duration>, Pending)> = self
+            .guards()
+            .into_iter()
+            .filter(|r| r.guard.checks_writes() && r.guard.enabled())
+            .map(|registered| {
+                let started = self.inner.now();
+                let timeout = registered.guard.timeout();
+                let (guard, path, content, cwd, lane) = (
+                    registered.guard.clone(),
+                    path.clone(),
+                    content.to_string(),
+                    self.inner.cwd.clone(),
+                    lane.to_string(),
+                );
+                // Started together; each answer is awaited below with its own limit.
+                let (sender, receiver) = channel();
+                std::thread::spawn(move || {
+                    let _ = sender.send(timed(timeout, move || guard.before_write(&path, &content, &cwd, &lane)));
+                });
+                (registered, started, timeout, receiver)
+            })
+            .collect();
+        let mut reasons = Vec::new();
+        let mut notes = Vec::new();
+        for (registered, started, timeout, receiver) in calls {
+            let answer = receiver.recv().unwrap_or(Answer::TimedOut);
+            let ms = self.inner.now().saturating_sub(started);
+            let name = registered.guard.name().to_string();
+            let mut stats = sync::lock(&registered.stats);
+            stats.total_ms += ms;
+            stats.turn_ms += ms;
+            stats.checks += 1;
+            let (outcome, reason, note) = match answer {
+                Answer::TimedOut => {
+                    stats.unchecked += 1;
+                    let limit = js_seconds(timeout.unwrap_or_default());
+                    let note = format!(
+                        "[{name}] {name} did not check this write to {display} (no answer within {limit} s); it was written unchecked."
+                    );
+                    ("unchecked", None, Some(note))
+                }
+                Answer::Error(error) => {
+                    stats.unchecked += 1;
+                    let note = format!(
+                        "[{name}] {name} did not check this write to {display} ({error}); it was written unchecked."
+                    );
+                    ("unchecked", None, Some(note))
+                }
+                Answer::Value(Verdict::Block(reason)) => {
+                    stats.blocked += 1;
+                    ("blocked", Some(format!("[{name}] {reason}")), None)
+                }
+                Answer::Value(Verdict::Allow(Some(message))) if !message.is_empty() => {
+                    ("allowed", None, Some(format!("[{name}] {message}")))
+                }
+                Answer::Value(Verdict::Allow(_)) => ("allowed", None, None),
+            };
+            drop(stats);
+            self.inner.record(GuardRecord {
+                guard: name,
+                phase: "before_write",
+                outcome,
+                ms,
+                paths: vec![display.clone()],
+                lane: lane.to_string(),
+                detail: reason.clone(),
+            });
+            reasons.extend(reason);
+            notes.extend(note);
+        }
+        if reasons.is_empty() {
+            // The write will happen with this content; an after-cell diff need not report it again.
+            sync::lock(&self.inner.checked).insert(path, jsrt::hash::sha256_hex(content.as_bytes()));
+            json!({ "blocked": false, "notes": notes })
+        } else {
+            json!({ "blocked": true, "reason": reasons.join("\n"), "notes": notes })
+        }
     }
 
     fn guard_stats(&self) -> Vec<Value> {

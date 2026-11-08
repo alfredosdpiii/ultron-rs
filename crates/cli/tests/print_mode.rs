@@ -19,7 +19,7 @@ fn normalize(value: &Value, tmp: &str) -> Value {
         .unwrap()
         .replace(tmp, "<TMP>")
         .replace(&root.display().to_string(), "<root>");
-    let clock = regex_free_clock(&text);
+    let clock = without_line_numbers(&regex_free_clock(&text));
     serde_json::from_str(&clock).unwrap()
 }
 
@@ -50,9 +50,36 @@ fn regex_free_clock(text: &str) -> String {
     out
 }
 
+/// Python source line numbers (traceback `.py", line N` at any JSON escaping depth, warning `.py:N:`) become
+/// `<line>`, so the recorded tracebacks and warnings do not pin runtime.py's layout.
+fn without_line_numbers(text: &str) -> String {
+    let mut out = String::new();
+    let mut rest = text;
+    while let Some(i) = rest.find(".py") {
+        let after = &rest[i + 3..];
+        let quotes = after.len() - after.trim_start_matches(['\\', '"']).len();
+        let tail = &after[quotes..];
+        out.push_str(&rest[..i + 3 + quotes]);
+        rest = tail;
+        let (marker, numbered) = match tail.strip_prefix(", line ") {
+            Some(numbered) if quotes > 0 => (", line ", numbered),
+            _ => (":", tail.strip_prefix(':').unwrap_or_default()),
+        };
+        let digits = numbered.bytes().take_while(u8::is_ascii_digit).count();
+        if digits > 0 && (marker != ":" || numbered[digits..].starts_with(':')) {
+            out.push_str(marker);
+            out.push_str("<line>");
+            rest = &numbered[digits..];
+        }
+    }
+    out.push_str(rest);
+    out
+}
+
 #[test]
 fn cli_print_mode_matches_typescript() {
-    let fixture: Value = serde_json::from_str(include_str!("../fixtures/print_mode.json")).unwrap();
+    let fixture: Value =
+        serde_json::from_str(&without_line_numbers(include_str!("../fixtures/print_mode.json"))).unwrap();
     for case in fixture.as_array().unwrap() {
         let name = case["name"].as_str().unwrap();
         let replies = case["replies"]
@@ -134,10 +161,12 @@ fn cli_print_mode_matches_typescript() {
                 .join("../..")
                 .canonicalize()
                 .unwrap();
-            let text = std::fs::read_to_string(file)
-                .unwrap()
-                .replace(&tmp_text, "<TMP>")
-                .replace(&checkout.display().to_string(), "<root>");
+            let text = without_line_numbers(
+                &std::fs::read_to_string(file)
+                    .unwrap()
+                    .replace(&tmp_text, "<TMP>")
+                    .replace(&checkout.display().to_string(), "<root>"),
+            );
             let journal = normalize_journal(&text);
             // Files are matched by content: names carry times and ids.
             let position = wanted.iter().position(|w| w["journal"] == journal).unwrap_or_else(|| {

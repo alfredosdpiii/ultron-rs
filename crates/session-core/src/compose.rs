@@ -1317,7 +1317,7 @@ struct ApiModules {
     memory: Arc<MemoryApi>,
     hints: Arc<HintsModule>,
     images: Arc<kernel_apis::ImagesModule>,
-    diagram: Arc<kernel_apis::DiagramModule>,
+    diagram: Arc<diagram::DiagramModule>,
     schedule: Arc<kernel_apis::prompt_schedule::ScheduleModule>,
     tools: Arc<kernel_apis::ToolCalls>,
     instances: Arc<kernel_apis::InstancesModule>,

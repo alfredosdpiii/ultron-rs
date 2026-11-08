@@ -27,41 +27,10 @@ from __future__ import annotations
 
 import contextlib
 import json
-import math
-import os
 import re
 from typing import Any
 
-_DEFAULT_TOOL_YIELD_AFTER = 30.0
-_MAX_WAIT_SECONDS = 3600
-
-
-class _Default:
-    def __repr__(self) -> str:
-        return "default"
-
-
-_DEFAULT = _Default()
-
-
-def _events_enabled() -> bool:
-    return os.environ.get("ULTRON_ASYNC_EVENTS", "").strip().lower() not in ("off", "0", "false", "no")
-
-
-def _default_yield_after() -> float | None:
-    """ULTRON_TOOL_YIELD_AFTER (else ULTRON_BASH_YIELD_AFTER) seconds, default 30; 0 or "off" blocks."""
-    raw = (os.environ.get("ULTRON_TOOL_YIELD_AFTER", "").strip() or os.environ.get("ULTRON_BASH_YIELD_AFTER", "").strip()).lower()
-    if raw == "":
-        return _DEFAULT_TOOL_YIELD_AFTER
-    if raw in ("off", "none", "false", "no"):
-        return None
-    try:
-        value = float(raw)
-    except ValueError:
-        return _DEFAULT_TOOL_YIELD_AFTER
-    if not math.isfinite(value) or value < 0:
-        return _DEFAULT_TOOL_YIELD_AFTER
-    return None if value == 0 else min(value, _MAX_WAIT_SECONDS)
+import waits
 
 
 class ToolError(RuntimeError):
@@ -108,7 +77,7 @@ class ToolResult(str):
             shown = (
                 f"[{name} still running as call {call.id}{waited_text}; its completion will arrive as a runtime "
                 "event, or `await <result>.call.result()` to wait]"
-                if _events_enabled()
+                if waits.async_events_enabled()
                 else f"[{name} still running as call {call.id}{waited_text}; `await <result>.call.result()` waits for it]"
             )
         self = super().__new__(cls, shown)
@@ -219,14 +188,14 @@ class ToolCall:
 
 def _yield_payload(yield_after: Any) -> tuple[dict[str, Any], str, float | None]:
     """The host payload fields for a yield_after argument, the return mode, and the automatic wait."""
-    if yield_after is _DEFAULT:
-        auto = _default_yield_after()
+    if yield_after is waits.DEFAULT:
+        auto = waits.setting("ULTRON_TOOL_YIELD_AFTER", "ULTRON_BASH_YIELD_AFTER")
         return ({} if auto is None else {"yield_after": auto}), "auto", auto
     if yield_after is None:
         return {}, "block", None
     if isinstance(yield_after, bool) or not isinstance(yield_after, (int, float)) or yield_after < 0:
         raise ValueError("yield_after must be a non-negative number of seconds, or None")
-    return {"yield_after": min(float(yield_after), _MAX_WAIT_SECONDS), "detach": True}, "handle", None
+    return {"yield_after": min(float(yield_after), waits.MAX_WAIT_SECONDS), "detach": True}, "handle", None
 
 
 class _BoundTool:
@@ -234,7 +203,7 @@ class _BoundTool:
         self._tools = tools
         self._name = name
 
-    async def __call__(self, params: dict[str, Any] | None = None, /, *, yield_after: Any = _DEFAULT, **kwargs: Any) -> Any:
+    async def __call__(self, params: dict[str, Any] | None = None, /, *, yield_after: Any = waits.DEFAULT, **kwargs: Any) -> Any:
         return await self._tools.call(self._name, params, yield_after=yield_after, **kwargs)
 
     def __repr__(self) -> str:
@@ -255,7 +224,7 @@ class Tools:
         """One tool's name, full description and JSON-schema parameters."""
         return await self._bridge.request("tools.describe", {"name": name})
 
-    async def call(self, name: str, params: dict[str, Any] | None = None, /, *, yield_after: Any = _DEFAULT,
+    async def call(self, name: str, params: dict[str, Any] | None = None, /, *, yield_after: Any = waits.DEFAULT,
                    **kwargs: Any) -> Any:
         """Call extension tool ``name`` with ``params`` (a dict) and/or keyword arguments.
 
@@ -325,7 +294,7 @@ class _McpServer:
         if tool.startswith("_"):
             raise AttributeError(tool)
 
-        async def call(args: dict[str, Any] | str | None = None, /, *, yield_after: Any = _DEFAULT, **kwargs: Any) -> Any:
+        async def call(args: dict[str, Any] | str | None = None, /, *, yield_after: Any = waits.DEFAULT, **kwargs: Any) -> Any:
             return await self._mcp.call(tool, args, server=await self._name(), yield_after=yield_after, **kwargs)
 
         call.__name__ = tool
@@ -422,7 +391,7 @@ class Mcp:
         return await self._gateway(server=server, read=uri)
 
     async def call(self, tool: str, args: dict[str, Any] | str | None = None, /, *, server: str | None = None,
-                   yield_after: Any = _DEFAULT, **kwargs: Any) -> Any:
+                   yield_after: Any = waits.DEFAULT, **kwargs: Any) -> Any:
         """Call MCP tool ``tool``; keyword arguments (and/or an ``args`` dict or JSON string) are its arguments.
 
         Returns a ToolResult (``.json()`` parses JSON text; ``.details`` has the gateway's details). Raises McpError

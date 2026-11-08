@@ -17,9 +17,7 @@ use std::path::{Path, PathBuf};
 const MAX_MANIFEST: u64 = 4 * 1024 * 1024;
 const MAX_CONTENT: usize = 64 * 1024 * 1024;
 
-fn invalid(message: impl Into<String>) -> CheckError {
-    CheckError::Value(message.into())
-}
+use crate::invalid;
 
 fn os(error: &std::io::Error, name: Option<&str>) -> CheckError {
     CheckError::os(error, name)

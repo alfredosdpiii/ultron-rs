@@ -442,13 +442,6 @@ fn is_omitted(entry: &Value) -> bool {
     entry["type"] == "custom" && entry["customType"] == CONTEXT_OMITTED_CUSTOM_TYPE
 }
 
-fn nonempty(value: Option<&Value>, name: &str) -> Result<String, String> {
-    match value.and_then(Value::as_str) {
-        Some(text) if !jsrt::string::trim(text).is_empty() => Ok(text.to_string()),
-        _ => Err(format!("{name} must be a nonempty string")),
-    }
-}
-
 fn id_list(value: Option<&Value>) -> Result<Vec<String>, String> {
     let items = value
         .and_then(Value::as_array)
@@ -456,7 +449,7 @@ fn id_list(value: Option<&Value>) -> Result<Vec<String>, String> {
         .ok_or("ids must be a nonempty list of item ids")?;
     let ids = items
         .iter()
-        .map(|id| nonempty(Some(id), "id"))
+        .map(|id| jsrt::payload::nonempty_string(Some(id), "id"))
         .collect::<Result<Vec<_>, _>>()?;
     if ids.len() > HISTORY_MAX as usize {
         return Err(format!("at most {HISTORY_MAX} ids per edit"));
@@ -503,7 +496,7 @@ pub fn compaction_trim_enabled(value: Option<&str>) -> bool {
 impl ContextControl {
     pub fn new(branches: Arc<dyn ContextBranches>) -> Self {
         let tracking = Tracking {
-            lanes: HashSet::from(["main".to_string()]),
+            lanes: HashSet::from([kernel::ROOT_LANE.to_string()]),
             ..Tracking::default()
         };
         Self {
@@ -756,10 +749,10 @@ impl ContextControl {
     pub fn state(&self) -> Result<Value, String> {
         let pending_ids = jsrt::sync::lock(&self.pending)
             .iter()
-            .filter(|(lane, _)| lane == "main")
+            .filter(|(lane, _)| lane == kernel::ROOT_LANE)
             .map(|(_, entry)| entry["id"].as_str().unwrap_or_default().to_string())
             .collect();
-        let key = (self.branches.tip_id("main")?, pending_ids);
+        let key = (self.branches.tip_id(kernel::ROOT_LANE)?, pending_ids);
         if let Some((cached, state)) = &*jsrt::sync::lock(&self.state_cache)
             && *cached == key
         {
@@ -771,7 +764,7 @@ impl ContextControl {
     }
 
     fn read_state(&self) -> Result<Value, String> {
-        let view = self.view("main")?;
+        let view = self.view(kernel::ROOT_LANE)?;
         let item = |id: &str| match view.by_id(id) {
             Some(entry) => json!({"id": id, "kind": kind_of(entry).unwrap_or("custom"),
                 "preview": one_line(&entry_text(entry), 80)}),
@@ -819,7 +812,7 @@ impl ContextControl {
         let view = self.view(lane)?;
         match kind {
             "ctx.history" => {
-                jsrt::payload::fields(payload, &["limit", "kinds"])?;
+                kernel::ops::fields("ctx.history", payload)?;
                 let limit = match payload.get("limit") {
                     None => HISTORY_DEFAULT,
                     Some(value) => jsrt::number::safe_integer(value)
@@ -851,8 +844,8 @@ impl ContextControl {
                     "compacted": view.compaction_index.is_some()}))
             }
             "ctx.get" => {
-                jsrt::payload::fields(payload, &["id"])?;
-                let id = nonempty(payload.get("id"), "id")?;
+                kernel::ops::fields("ctx.get", payload)?;
+                let id = jsrt::payload::nonempty_string(payload.get("id"), "id")?;
                 let entry = view.by_id(&id);
                 let item = entry.and_then(|entry| Self::item(&view, entry));
                 let (Some(entry), Some(mut item)) = (entry, item) else {
@@ -869,10 +862,13 @@ impl ContextControl {
                 Ok(item)
             }
             "ctx.forget" => {
-                jsrt::payload::fields(payload, &["ids", "reason"])?;
+                kernel::ops::fields("ctx.forget", payload)?;
                 let ids = id_list(payload.get("ids"))?;
-                let reason =
-                    jsrt::utf16::head(&nonempty(payload.get("reason"), "reason")?, REASON_MAX_CHARS).to_string();
+                let reason = jsrt::utf16::head(
+                    &jsrt::payload::nonempty_string(payload.get("reason"), "reason")?,
+                    REASON_MAX_CHARS,
+                )
+                .to_string();
                 Self::guard(&view, &ids)?;
                 let fresh: Vec<String> = ids
                     .iter()
@@ -898,8 +894,8 @@ impl ContextControl {
                     "freed_bytes": before.saturating_sub(after)}))
             }
             "ctx.summarize" => {
-                jsrt::payload::fields(payload, &["ids", "text"])?;
-                let text = nonempty(payload.get("text"), "text")?;
+                kernel::ops::fields("ctx.summarize", payload)?;
+                let text = jsrt::payload::nonempty_string(payload.get("text"), "text")?;
                 if jsrt::utf16::len(&text) > SUMMARY_MAX_CHARS {
                     return Err(format!("text exceeds {SUMMARY_MAX_CHARS} characters"));
                 }
@@ -923,8 +919,8 @@ impl ContextControl {
                     "freed_bytes": before.saturating_sub(after)}))
             }
             "ctx.pin" | "ctx.unpin" => {
-                jsrt::payload::fields(payload, &["id"])?;
-                let id = nonempty(payload.get("id"), "id")?;
+                kernel::ops::fields(kind, payload)?;
+                let id = jsrt::payload::nonempty_string(payload.get("id"), "id")?;
                 if !view.by_id(&id).is_some_and(|entry| kind_of(entry).is_some()) {
                     return Err(format!("Unknown context item: {id}"));
                 }
@@ -936,8 +932,8 @@ impl ContextControl {
                 Ok(json!({"id": id, "pinned": pin, "changed": true}))
             }
             "ctx.note" => {
-                jsrt::payload::fields(payload, &["text"])?;
-                let text = nonempty(payload.get("text"), "text")?;
+                kernel::ops::fields("ctx.note", payload)?;
+                let text = jsrt::payload::nonempty_string(payload.get("text"), "text")?;
                 if jsrt::utf16::len(&text) > NOTE_MAX_CHARS {
                     return Err(format!("note exceeds {NOTE_MAX_CHARS} characters"));
                 }
@@ -971,7 +967,7 @@ pub const CONTEXT_KEPT_MESSAGE_TYPE: &str = "ultron-context-kept";
 impl ContextControl {
     /// Harness `tool_start`: a root `rlm` cell starts; finished tasks not yet attributed belong to it.
     pub fn tool_start(&self, lane: &str, tool_name: &str, tool_call_id: &str) {
-        if lane != "main" || tool_name != "rlm" {
+        if lane != kernel::ROOT_LANE || tool_name != "rlm" {
             return;
         }
         let mut tracking = jsrt::sync::lock(&self.tracking);
@@ -985,14 +981,14 @@ impl ContextControl {
     /// Harness `tool_end`.
     pub fn tool_end(&self, lane: &str, tool_call_id: &str) {
         let mut tracking = jsrt::sync::lock(&self.tracking);
-        if lane == "main" && tracking.current_cell.as_deref() == Some(tool_call_id) {
+        if lane == kernel::ROOT_LANE && tracking.current_cell.as_deref() == Some(tool_call_id) {
             tracking.current_cell = None;
         }
     }
 
     /// Harness `message_end`: once the root model answered after a cell's output, collapse it.
     pub fn message_end(&self, lane: &str, role: &str) -> Result<(), String> {
-        if lane == "main" && role == "assistant" && !jsrt::sync::lock(&self.tracking).cells.is_empty() {
+        if lane == kernel::ROOT_LANE && role == "assistant" && !jsrt::sync::lock(&self.tracking).cells.is_empty() {
             self.collapse()?;
         }
         Ok(())
@@ -1000,7 +996,7 @@ impl ContextControl {
 
     /// Harness `run_end`.
     pub fn run_end(&self, lane: &str) -> Result<(), String> {
-        if lane == "main" && !jsrt::sync::lock(&self.tracking).cells.is_empty() {
+        if lane == kernel::ROOT_LANE && !jsrt::sync::lock(&self.tracking).cells.is_empty() {
             self.collapse()?;
         }
         Ok(())
@@ -1094,7 +1090,7 @@ impl ContextControl {
         if jsrt::sync::lock(&self.tracking).cells.is_empty() {
             return Ok(());
         }
-        let view = self.view("main")?;
+        let view = self.view(kernel::ROOT_LANE)?;
         let mut edits = Vec::new();
         let mut tasks = Vec::new();
         let mut answered_after = false;
@@ -1138,7 +1134,7 @@ impl ContextControl {
         }
         edits.reverse();
         self.append(
-            "main",
+            kernel::ROOT_LANE,
             CONTEXT_EDIT_CUSTOM_TYPE,
             json!({"edits": edits, "source": "collapse", "reason": "task results returned", "tasks": tasks}),
         )?;

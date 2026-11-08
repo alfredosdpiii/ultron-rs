@@ -394,11 +394,11 @@ impl ScheduleModule {
     }
 
     fn create(&self, payload: &Map<String, Value>, kind: Kind) -> Result<Schedule, String> {
-        let allowed: &[&str] = match kind {
-            Kind::Every => &["interval", "prompt", "name", "until_ms", "until_in_ms", "max_runs"],
-            Kind::At => &["when_ms", "when_in_ms", "prompt", "name"],
+        let op = match kind {
+            Kind::Every => "schedule.every",
+            Kind::At => "schedule.at",
         };
-        jsrt::payload::fields(payload, allowed)?;
+        kernel::ops::fields(op, payload)?;
         let prompt = payload
             .get("prompt")
             .and_then(Value::as_str)

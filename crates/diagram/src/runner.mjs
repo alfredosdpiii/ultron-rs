@@ -1,4 +1,4 @@
-// diagram.mermaid's runner (crates/kernel-apis/src/diagram.rs): reads Mermaid text on stdin, renders it with the
+// diagram.mermaid's runner (crates/diagram/src/lib.rs): reads Mermaid text on stdin, renders it with the
 // vendored Pele beside this file and prints one JSON line: {ok: true, type, mermaidType, svg, width, height} or
 // {ok: false, error, line, column}.
 import { render } from "./pele.mjs";

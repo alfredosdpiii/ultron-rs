@@ -162,7 +162,7 @@ impl ImagesModule {
     }
 
     fn generate(&self, request: &Request<'_>) -> Result<Value, String> {
-        jsrt::payload::fields(request.payload, &["prompt", "model", "size", "n", "out"])?;
+        kernel::ops::fields(request.kind, request.payload)?;
         let prompt = text_field(request, "prompt")?.ok_or("images.generate prompt must be a non-empty string")?;
         let count = match request.payload.get("n") {
             None | Some(Value::Null) => 1,

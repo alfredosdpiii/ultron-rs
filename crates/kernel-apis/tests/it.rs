@@ -11,10 +11,6 @@ mod cell_hints;
 mod context;
 #[path = "context_state_cache.rs"]
 mod context_state_cache;
-#[path = "diagram.rs"]
-mod diagram;
-#[path = "diagram_contrast.rs"]
-mod diagram_contrast;
 #[path = "durable_work.rs"]
 mod durable_work;
 #[path = "family.rs"]

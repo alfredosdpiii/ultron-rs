@@ -1,8 +1,6 @@
 """Schedule and goal RPC clients. The host owns timing, budgets, and verification."""
 
-
-def _compact(payload):
-    return {key: value for key, value in payload.items() if value is not None}
+from payload_fields import given
 
 
 class Schedules:
@@ -10,10 +8,10 @@ class Schedules:
         self._bridge = bridge
 
     async def create(self, definition, input, every_ms, *, start_at=None, max_runs=None, goal_id=None, model=None):
-        return await self._bridge.request('schedules.create', _compact({
-            'definition': definition, 'input': input, 'every_ms': every_ms, 'start_at': start_at,
-            'max_runs': max_runs, 'goal_id': goal_id, 'model': model,
-        }))
+        return await self._bridge.request('schedules.create', given(
+            definition=definition, input=input, every_ms=every_ms, start_at=start_at, max_runs=max_runs,
+            goal_id=goal_id, model=model,
+        ))
 
     async def list(self):
         return await self._bridge.request('schedules.list')
@@ -36,9 +34,7 @@ class Goals:
         self._bridge = bridge
 
     async def create(self, title, required_checks, *, max_tasks=None):
-        return await self._bridge.request('goals.create', _compact({
-            'title': title, 'required_checks': list(required_checks), 'max_tasks': max_tasks,
-        }))
+        return await self._bridge.request('goals.create', given(title=title, required_checks=list(required_checks), max_tasks=max_tasks))
 
     async def list(self):
         return await self._bridge.request('goals.list')

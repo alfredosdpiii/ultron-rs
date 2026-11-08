@@ -415,7 +415,7 @@ The model renders Mermaid through the REPL; the user sees the diagram inline, th
   TypeScript host answers the request with an error): `d = await diagram.mermaid(text, *, theme="auto", show=True,
   to_model=False, path=None)` returns `{svg_path, png_path, width, height, type}` (PNG pixels, Pele's diagram type).
   The Rust guide gets one pointer line (`help(diagram)`); `ULTRON_GUIDE=ts` has none.
-- **Rendering** (`crates/kernel-apis/src/diagram.rs`): Pele 1.7.0 (MIT, `crates/kernel-apis/assets/pele/`, with
+- **Rendering** (`crates/diagram/src/lib.rs`): Pele 1.7.0 (MIT, `crates/diagram/assets/pele/`, with
   `LICENSE` and a `VERSION` note carrying the sha256) is embedded with `include_bytes!` and unpacked once to
   `<agent dir>/cache/pele-<sha256 prefix of pele+runner>/` (staging directory renamed into place; a damaged one is
   replaced). The host runs `node runner.mjs` with node found on the **session environment's** `PATH` only (never the
@@ -423,7 +423,7 @@ The model renders Mermaid through the REPL; the user sees the diagram inline, th
   child is killed and reaped), 16 MiB output cap, cancelled with the cell. No node: `diagram.mermaid needs Node.js
   on PATH; the source stays in the transcript`. A Mermaid error is Pele's message (plus `(line L, column C)` when
   the message does not name the line), raised as RuntimeError in the cell.
-- **Theme** (`crates/kernel-apis/src/diagram_svg.rs`): every `var(--name, fallback)` inside tags is replaced
+- **Theme** (`crates/diagram/src/svg.rs`): every `var(--name, fallback)` inside tags is replaced
   (`--pele-*` by the theme's colour, `--_*` by the SVG's own definition, else the fallback, else the theme's
   foreground; nested and cyclic references handled), `color-mix(in srgb, ...)` of the results is computed, the
   custom-property declarations are dropped; labels between tags are never touched. Colours come from the TUI theme

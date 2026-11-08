@@ -114,6 +114,36 @@ fn normalize_wire(log: &str) -> Value {
     json!({"h2k": h2k, "k2h": k2h})
 }
 
+/// Python source line numbers (traceback `.py", line N` at any JSON escaping depth, warning `.py:N:`) become
+/// `<line>`, so the recorded tracebacks and warnings do not pin runtime.py's layout.
+fn without_line_numbers(text: &str) -> String {
+    let mut out = String::new();
+    let mut rest = text;
+    while let Some(i) = rest.find(".py") {
+        let after = &rest[i + 3..];
+        let quotes = after.len() - after.trim_start_matches(['\\', '"']).len();
+        let tail = &after[quotes..];
+        out.push_str(&rest[..i + 3 + quotes]);
+        rest = tail;
+        let (marker, numbered) = match tail.strip_prefix(", line ") {
+            Some(numbered) if quotes > 0 => (", line ", numbered),
+            _ => (":", tail.strip_prefix(':').unwrap_or_default()),
+        };
+        let digits = numbered.bytes().take_while(u8::is_ascii_digit).count();
+        if digits > 0 && (marker != ":" || numbered[digits..].starts_with(':')) {
+            out.push_str(marker);
+            out.push_str("<line>");
+            rest = &numbered[digits..];
+        }
+    }
+    out.push_str(rest);
+    out
+}
+
+fn line_free(value: &Value) -> Value {
+    serde_json::from_str(&without_line_numbers(&serde_json::to_string(value).unwrap())).unwrap()
+}
+
 fn is_uuid(text: &str) -> bool {
     text.char_indices().all(|(index, character)| match index {
         8 | 13 | 18 | 23 => character == '-',
@@ -167,10 +197,10 @@ fn kernel_session_replays_typescript_results_and_protocol_lines() {
         let expected = step
             .get("ok")
             .map_or_else(|| json!({"error": step["error"]}), |ok| json!({"ok": ok}));
-        assert_eq!(got, expected, "step {}", step["code"]);
+        assert_eq!(line_free(&got), line_free(&expected), "step {}", step["code"]);
     }
     kernel.shutdown();
     let wire = normalize_wire(&std::fs::read_to_string(&log).unwrap());
-    assert_eq!(wire["h2k"], fixture["session"]["wire"]["h2k"]);
-    assert_eq!(wire["k2h"], fixture["session"]["wire"]["k2h"]);
+    assert_eq!(line_free(&wire["h2k"]), line_free(&fixture["session"]["wire"]["h2k"]));
+    assert_eq!(line_free(&wire["k2h"]), line_free(&fixture["session"]["wire"]["k2h"]));
 }

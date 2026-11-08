@@ -9,9 +9,7 @@ use std::path::{Path, PathBuf};
 
 pub const SNAPSHOT_LIMIT: usize = 64 * 1024 * 1024;
 
-fn invalid(message: impl Into<String>) -> CheckError {
-    CheckError::Value(message.into())
-}
+use crate::invalid;
 
 const TOO_MANY_OBJECTS: &str = "git: snapshot exceeds 100000 base objects";
 const BASE_TOO_LARGE: &str = "git: snapshot base content exceeds 64 MiB";
@@ -467,6 +465,18 @@ pub fn base_policy(root: &Path, base: Option<&str>, deadline: Deadline) -> Resul
     config::validate_config(&value).map(Some).map_err(invalid)
 }
 
+const PROTECTED_CHANGE: &str = ": protected content changed";
+
+/// Whether `finding` reports a changed `.loki/` policy file: a check against the committed policy reports that
+/// (and nothing else) until `.loki/` is committed.
+pub fn is_policy_change(finding: &str) -> bool {
+    finding
+        .trim()
+        .strip_suffix(PROTECTED_CHANGE)
+        .and_then(|path| path.strip_prefix(".loki/"))
+        .is_some_and(|rest| !rest.contains(char::is_whitespace))
+}
+
 /// `protected_change_violations`: changes to protected files of the base policy.
 pub fn protected_change_violations(changes: &[FileChange], base: &Config) -> Result<Vec<String>, CheckError> {
     let patterns = config::protected_patterns(base).map_err(invalid)?;
@@ -475,7 +485,7 @@ pub fn protected_change_violations(changes: &[FileChange], base: &Config) -> Res
         .filter(|c| patterns.iter().any(|p| path_matches(&c.path, p)))
         .map(|c| {
             crate::evidence::finding("protected-content", Some(&c.path));
-            format!("{}: protected content changed", c.path)
+            format!("{}{PROTECTED_CHANGE}", c.path)
         })
         .collect())
 }

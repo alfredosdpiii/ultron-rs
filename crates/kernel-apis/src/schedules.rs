@@ -20,13 +20,6 @@ use std::sync::{Arc, Mutex};
 
 const MAX_EVERY_MS: i64 = 366 * 24 * 60 * 60 * 1000;
 
-fn nonempty_string(value: Option<&Value>, name: &str) -> Result<String, String> {
-    match value.and_then(Value::as_str) {
-        Some(text) if !jsrt::string::trim(text).is_empty() => Ok(text.to_string()),
-        _ => Err(format!("{name} must be a nonempty string")),
-    }
-}
-
 /// `/^[a-z][a-z0-9-]*@[0-9]+$/`
 fn valid_definition(text: &str) -> bool {
     let Some((id, version)) = text.split_once('@') else {
@@ -143,7 +136,7 @@ fn find<'a>(items: &'a mut Value, key: &str, id: &str) -> Option<&'a mut Value> 
 }
 
 fn lookup(document: &Value, key: &str, id: Option<&Value>, unknown: &str) -> Result<Value, String> {
-    let id = nonempty_string(id, "id")?;
+    let id = jsrt::payload::nonempty_string(id, "id")?;
     document[key]
         .as_array()
         .and_then(|items| items.iter().find(|item| item["id"] == id.as_str()))
@@ -340,13 +333,13 @@ impl SchedulesModule {
         match kind {
             "schedules.create" => self.create_schedule(document, payload, caller, host),
             "schedules.list" => {
-                jsrt::payload::fields(payload, &[])?;
+                kernel::ops::fields("schedules.list", payload)?;
                 Ok(document["schedules"].clone())
             }
-            "schedules.pause" => self.set_schedule_state(document, payload, "paused"),
-            "schedules.resume" => self.set_schedule_state(document, payload, "active"),
+            "schedules.pause" => self.set_schedule_state(document, kind, payload, "paused"),
+            "schedules.resume" => self.set_schedule_state(document, kind, payload, "active"),
             "schedules.delete" => {
-                jsrt::payload::fields(payload, &["id"])?;
+                kernel::ops::fields("schedules.delete", payload)?;
                 self.update(document, |draft| {
                     let schedule = lookup(draft, "schedules", payload.get("id"), "Unknown schedule")?;
                     if let Some(items) = draft["schedules"].as_array_mut() {
@@ -356,21 +349,21 @@ impl SchedulesModule {
                 })
             }
             "schedules.tick" => {
-                jsrt::payload::fields(payload, &[])?;
+                kernel::ops::fields("schedules.tick", payload)?;
                 // Firings outlive the request that happened to drive the tick.
                 self.tick_locked(document, host, &Signal::new())
             }
             "goals.create" => self.create_goal(document, payload, caller, host),
             "goals.list" => {
-                jsrt::payload::fields(payload, &[])?;
+                kernel::ops::fields("goals.list", payload)?;
                 Ok(document["goals"].clone())
             }
             "goals.get" => {
-                jsrt::payload::fields(payload, &["id"])?;
+                kernel::ops::fields("goals.get", payload)?;
                 lookup(document, "goals", payload.get("id"), "Unknown goal")
             }
-            "goals.pause" => self.set_goal_state(document, payload, "paused"),
-            "goals.resume" => self.set_goal_state(document, payload, "active"),
+            "goals.pause" => self.set_goal_state(document, kind, payload, "paused"),
+            "goals.resume" => self.set_goal_state(document, kind, payload, "active"),
             "goals.attach" => self.attach(document, payload, host),
             _ => Err(format!("Unknown schedule request: {kind}")),
         }
@@ -383,18 +376,7 @@ impl SchedulesModule {
         owner: Option<&str>,
         host: &dyn TaskHost,
     ) -> Result<Value, String> {
-        jsrt::payload::fields(
-            payload,
-            &[
-                "definition",
-                "input",
-                "every_ms",
-                "start_at",
-                "max_runs",
-                "goal_id",
-                "model",
-            ],
-        )?;
+        kernel::ops::fields("schedules.create", payload)?;
         let definition = definition_key(payload.get("definition"), "definition")?;
         let input = payload.get("input").cloned().ok_or("input must be JSON")?;
         let every_ms = integer(payload.get("every_ms"), "every_ms", 1, MAX_EVERY_MS)?;
@@ -428,10 +410,11 @@ impl SchedulesModule {
     fn set_schedule_state(
         &self,
         document: &mut Value,
+        kind: &str,
         payload: &Map<String, Value>,
         state: &str,
     ) -> Result<Value, String> {
-        jsrt::payload::fields(payload, &["id"])?;
+        kernel::ops::fields(kind, payload)?;
         self.update(document, |draft| {
             let id = lookup(draft, "schedules", payload.get("id"), "Unknown schedule")?["id"].clone();
             let schedule = find(draft, "schedules", id.as_str().unwrap_or("")).expect("found above");
@@ -450,8 +433,8 @@ impl SchedulesModule {
         owner: Option<&str>,
         host: &dyn TaskHost,
     ) -> Result<Value, String> {
-        jsrt::payload::fields(payload, &["title", "required_checks", "max_tasks"])?;
-        let title = nonempty_string(payload.get("title"), "title")?;
+        kernel::ops::fields("goals.create", payload)?;
+        let title = jsrt::payload::nonempty_string(payload.get("title"), "title")?;
         let items = payload
             .get("required_checks")
             .and_then(Value::as_array)
@@ -478,8 +461,14 @@ impl SchedulesModule {
         })
     }
 
-    fn set_goal_state(&self, document: &mut Value, payload: &Map<String, Value>, state: &str) -> Result<Value, String> {
-        jsrt::payload::fields(payload, &["id"])?;
+    fn set_goal_state(
+        &self,
+        document: &mut Value,
+        kind: &str,
+        payload: &Map<String, Value>,
+        state: &str,
+    ) -> Result<Value, String> {
+        kernel::ops::fields(kind, payload)?;
         self.update(document, |draft| {
             let id = lookup(draft, "goals", payload.get("id"), "Unknown goal")?["id"].clone();
             let goal = find(draft, "goals", id.as_str().unwrap_or("")).expect("found above");
@@ -492,8 +481,8 @@ impl SchedulesModule {
     }
 
     fn attach(&self, document: &mut Value, payload: &Map<String, Value>, host: &dyn TaskHost) -> Result<Value, String> {
-        jsrt::payload::fields(payload, &["id", "task_id"])?;
-        let task_id = nonempty_string(payload.get("task_id"), "task_id")?;
+        kernel::ops::fields("goals.attach", payload)?;
+        let task_id = jsrt::payload::nonempty_string(payload.get("task_id"), "task_id")?;
         let goal_id = lookup(document, "goals", payload.get("id"), "Unknown goal")?["id"].clone();
         if !host.tasks()?.iter().any(|task| task["id"] == task_id.as_str()) {
             return Err("Unknown Ultron task".into());
@@ -645,7 +634,7 @@ impl SchedulesModule {
         host: &dyn TaskHost,
         signal: &Signal,
     ) -> Result<Value, String> {
-        jsrt::payload::fields(payload, &["id", "input"])?;
+        kernel::ops::fields("goals.verify", payload)?;
         let (goal_id, round, spawned) = {
             let mut guard = jsrt::sync::lock(&self.document);
             let document = self.loaded(&mut guard)?;

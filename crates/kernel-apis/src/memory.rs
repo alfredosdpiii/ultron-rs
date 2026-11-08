@@ -2005,26 +2005,15 @@ const USER_QUERY: &str = "What should a coding agent know about this user before
 fn payload_valid(kind: &str, payload: &Map<String, Value>) -> bool {
     match kind {
         "memory.prepare" => {
-            exact_fields(payload, &["query", "taskId", "scope", "refresh"])
+            kernel::ops::fields(kind, payload).is_ok()
                 && string_min1(payload.get("query"))
                 && string_min1(payload.get("taskId"))
                 && optional_in(payload.get("scope"), SCOPES)
                 && payload.get("refresh").is_none_or(Value::is_boolean)
         }
         "memory.propose" => {
-            exact_fields(
-                payload,
-                &[
-                    "text",
-                    "evidence",
-                    "scope",
-                    "evidenceClass",
-                    "type",
-                    "key",
-                    "situation",
-                    "pathGlobs",
-                ],
-            ) && string_min1(payload.get("text"))
+            kernel::ops::fields(kind, payload).is_ok()
+                && string_min1(payload.get("text"))
                 && evidence_schema(payload.get("evidence"))
                 && optional_in(payload.get("scope"), SCOPES)
                 && optional_in(payload.get("evidenceClass"), EVIDENCE_CLASSES)
@@ -2038,24 +2027,24 @@ fn payload_valid(kind: &str, payload: &Map<String, Value>) -> bool {
                 })
         }
         "memory.correct" => {
-            exact_fields(payload, &["id", "text", "evidence", "evidenceClass"])
+            kernel::ops::fields(kind, payload).is_ok()
                 && string_min1(payload.get("id"))
                 && string_min1(payload.get("text"))
                 && evidence_schema(payload.get("evidence"))
                 && optional_in(payload.get("evidenceClass"), EVIDENCE_CLASSES)
         }
-        "memory.get" | "memory.forget" => exact_fields(payload, &["id"]) && string_min1(payload.get("id")),
+        "memory.get" | "memory.forget" => kernel::ops::fields(kind, payload).is_ok() && string_min1(payload.get("id")),
         "memory.reflect" => {
-            exact_fields(payload, &["query", "scope"])
+            kernel::ops::fields(kind, payload).is_ok()
                 && string_min1(payload.get("query"))
                 && optional_in(payload.get("scope"), SCOPES)
         }
         "memory.invalidate" => {
-            exact_fields(payload, &["id", "reason"])
+            kernel::ops::fields(kind, payload).is_ok()
                 && string_min1(payload.get("id"))
                 && payload.get("reason").is_none_or(|reason| string_min1(Some(reason)))
         }
-        "memory.why" => exact_fields(payload, &["taskId"]) && string_min1(payload.get("taskId")),
+        "memory.why" => kernel::ops::fields(kind, payload).is_ok() && string_min1(payload.get("taskId")),
         "memory.list" => payload.is_empty(),
         _ => false,
     }

@@ -611,17 +611,17 @@ impl GoalDriver {
         let state = &mut *guard;
         self.load(state)?;
         if kind == "goal.get" {
-            jsrt::payload::fields(payload, &[])?;
+            kernel::ops::fields("goal.get", payload)?;
             return Ok(state.goal.as_ref().map_or(Value::Null, public_goal));
         }
         let goal = state.goal.as_ref().ok_or("There is no session goal")?;
         let job = goal["job"].as_str().and_then(|job| self.jobs.lane_of_job(job));
-        if lane != "main" && Some(lane) != job.as_deref() {
+        if lane != kernel::ROOT_LANE && Some(lane) != job.as_deref() {
             return Err("Only the goal's job or the root agent works the session goal; subagents report to it".into());
         }
         match kind {
             "goal.check" => {
-                jsrt::payload::fields(payload, &[])?;
+                kernel::ops::fields("goal.check", payload)?;
                 if goal["check"].is_null() {
                     return Err("This goal has no check command (the user sets one with /goal check)".into());
                 }
@@ -654,7 +654,7 @@ impl GoalDriver {
                 Ok(run)
             }
             "goal.complete" => {
-                jsrt::payload::fields(payload, &["revision", "summary", "evidence"])?;
+                kernel::ops::fields("goal.complete", payload)?;
                 Self::current(goal, payload.get("revision"))?;
                 let summary = text(payload.get("summary"), "summary")?;
                 let evidence = evidence_list(payload.get("evidence"))?;
@@ -680,7 +680,7 @@ impl GoalDriver {
                 )
             }
             "goal.blocked" => {
-                jsrt::payload::fields(payload, &["revision", "reason"])?;
+                kernel::ops::fields("goal.blocked", payload)?;
                 Self::current(goal, payload.get("revision"))?;
                 let reason = text(payload.get("reason"), "reason")?;
                 let checks = int_of(goal, "checks");

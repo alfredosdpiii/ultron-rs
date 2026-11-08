@@ -257,18 +257,7 @@ impl FamilyModule {
     fn send(&self, request: &Request<'_>, cached: &mut Option<Vec<Value>>) -> Result<Value, String> {
         let payload = request.payload;
         let sender = request.caller_task;
-        jsrt::payload::fields(
-            payload,
-            &[
-                "message",
-                "receiver_role",
-                "receiver_name",
-                "receiver_id",
-                "key",
-                "ttl_ms",
-                "steer",
-            ],
-        )?;
+        kernel::ops::fields(request.kind, payload)?;
         let content = match payload.get("message") {
             Some(Value::String(content)) if !jsrt::string::trim(content).is_empty() => content.clone(),
             _ => return Err("message must be a nonempty string".into()),
@@ -393,7 +382,7 @@ impl FamilyModule {
     }
 
     fn receive(&self, request: &Request<'_>, cached: &mut Option<Vec<Value>>) -> Result<Value, String> {
-        jsrt::payload::fields(request.payload, &["limit"])?;
+        kernel::ops::fields(request.kind, request.payload)?;
         let caller = request.caller_task;
         let limit = match optional(request.payload, "limit") {
             None => self.options.max_inbox,
@@ -452,7 +441,7 @@ impl FamilyModule {
     }
 
     fn list(&self, request: &Request<'_>, cached: &mut Option<Vec<Value>>) -> Result<Value, String> {
-        jsrt::payload::fields(request.payload, &[])?;
+        kernel::ops::fields(request.kind, request.payload)?;
         let caller = request.caller_task;
         let now = self.clock(request.host);
         let current = self.load(cached)?;

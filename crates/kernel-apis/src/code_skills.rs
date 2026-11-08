@@ -278,7 +278,7 @@ pub struct CodeSkillsOptions {
     pub runtime_path: PathBuf,
     /// Interpreter for the test kernels; default as for every kernel.
     pub python: Option<PathBuf>,
-    /// Wall budget of one test run (`ULTRON_CODE_SKILL_TEST_TIMEOUT_MS`, default 120 s).
+    /// Wall budget of one test run (a session's `ULTRON_CODE_SKILL_TEST_TIMEOUT_MS`, default 120 s).
     pub test_timeout_ms: u64,
     pub now: Clock,
     /// The environment test kernels start from (`KernelOptions::base_env`): the session's, so a skill's test finds
@@ -287,23 +287,20 @@ pub struct CodeSkillsOptions {
 }
 
 impl CodeSkillsOptions {
+    /// Options with the default test budget and this process's environment for test kernels.
     pub fn new(dir: impl Into<PathBuf>, runtime_path: impl Into<PathBuf>) -> Self {
-        let configured = std::env::var(CODE_SKILL_TEST_TIMEOUT_MS_ENV)
-            .ok()
-            .and_then(|value| value.trim().parse::<u64>().ok())
-            .filter(|value| *value > 0);
         Self {
             dir: dir.into(),
             runtime_path: runtime_path.into(),
             python: None,
-            test_timeout_ms: configured.unwrap_or(DEFAULT_TEST_TIMEOUT_MS),
+            test_timeout_ms: DEFAULT_TEST_TIMEOUT_MS,
             now: system_clock(),
             base_env: None,
         }
     }
 
     /// [`CodeSkillsOptions::new`] for a session: test kernels start from `base_env`, and the test budget is the
-    /// session's `ULTRON_CODE_SKILL_TEST_TIMEOUT_MS` (from `base_env`, not this process's environment).
+    /// session's `ULTRON_CODE_SKILL_TEST_TIMEOUT_MS` (from `base_env`, never this process's environment).
     pub fn for_session(
         dir: impl Into<PathBuf>,
         runtime_path: impl Into<PathBuf>,
@@ -475,11 +472,11 @@ impl CodeSkills {
 
     /// `skills.propose_code` / `skills.propose_policy`.
     pub fn propose(&self, kind: CodeSkillKind, payload: &Map<String, Value>, signal: &Signal) -> Result<Value, String> {
-        let allowed: &[&str] = match kind {
-            CodeSkillKind::Code => &["name", "source", "test_source", "evidence"],
-            CodeSkillKind::Policy => &["name", "source", "test_source", "evidence", "family"],
+        let op = match kind {
+            CodeSkillKind::Code => "skills.propose_code",
+            CodeSkillKind::Policy => "skills.propose_policy",
         };
-        jsrt::payload::fields(payload, allowed)?;
+        kernel::ops::fields(op, payload)?;
         let name = code_skill_name(payload.get("name"))?;
         let source = source_text(payload.get("source"), "source")?;
         let test_source = source_text(payload.get("test_source"), "test_source")?;
@@ -614,7 +611,7 @@ impl CodeSkills {
 
     /// `skills.rollback`: only the active version can be rolled back; the version it superseded returns.
     pub fn rollback(&self, payload: &Map<String, Value>) -> Result<Value, String> {
-        jsrt::payload::fields(payload, &["name", "version"])?;
+        kernel::ops::fields("skills.rollback", payload)?;
         let name = code_skill_name(payload.get("name"))?;
         let version = payload
             .get("version")

@@ -143,7 +143,7 @@ fn host_loki_unported_check_writes_with_a_note() {
         fn name(&self) -> &str {
             "Loki"
         }
-        fn before_write(&self, _: &Path, _: &str, _: &Path) -> Result<host::file_hooks::Verdict, String> {
+        fn before_write(&self, _: &Path, _: &str, _: &Path, _: &str) -> Result<host::file_hooks::Verdict, String> {
             Err("the elixir rule pack is not ported to the Rust engine".into())
         }
     }
@@ -153,7 +153,7 @@ fn host_loki_unported_check_writes_with_a_note() {
     checked.add(Box::new(LokiGuard::new(&cwd, LokiMode::On)));
     let python = cwd.join("a.py").to_string_lossy().into_owned();
     assert_eq!(
-        checked.before_write(&python, "x = 1\n"),
+        checked.before_write("main", &python, "x = 1\n"),
         json!({"blocked": false, "notes": []})
     );
 
@@ -161,7 +161,7 @@ fn host_loki_unported_check_writes_with_a_note() {
     broken.add(Box::new(Broken));
     let elixir = cwd.join("a.ex").to_string_lossy().into_owned();
     assert_eq!(
-        broken.before_write(&elixir, "x = 1\n"),
+        broken.before_write("main", &elixir, "x = 1\n"),
         json!({"blocked": false, "notes": [
             "[Loki] Loki did not check this write to a.ex (the elixir rule pack is not ported to the Rust engine); it was written unchecked."
         ]})
@@ -227,11 +227,7 @@ fn host_loki_after_cell_skips_loki_files_that_match_the_commit() {
         .with_post_write(true)
         .with_hook(Arc::new(move |_: &Path, files: &[String]| {
             seen.lock().unwrap().push(files.to_vec());
-            loki::run::Outcome {
-                status: 0,
-                stdout: String::new(),
-                stderr: String::new(),
-            }
+            Ok(loki::run::Report::default())
         }));
     let changes = CellChanges {
         files: vec![root.join(".loki/loki.json")],
@@ -267,10 +263,10 @@ fn host_loki_checks_writes_into_a_sibling_repository() {
     let mut hooks = FileHooks::new(&session);
     hooks.add(Box::new(LokiGuard::new(&session, LokiMode::On)));
     let policy = sibling.join(".loki/loki.json").to_string_lossy().into_owned();
-    let answer = hooks.before_write(&policy, "{\"off\": true}\n");
+    let answer = hooks.before_write("main", &policy, "{\"off\": true}\n");
     assert_eq!(answer["blocked"], json!(true), "{answer}");
     assert!(answer["reason"].as_str().unwrap().contains("protected"), "{answer}");
     // Outside every repository with a policy, a write is still not Loki's to check.
     let loose = tmp.join("loose.txt").to_string_lossy().into_owned();
-    assert_eq!(hooks.before_write(&loose, "x\n")["blocked"], json!(false));
+    assert_eq!(hooks.before_write("main", &loose, "x\n")["blocked"], json!(false));
 }

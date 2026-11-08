@@ -22,6 +22,7 @@
 mod config;
 pub mod continuity;
 pub mod env;
+pub mod ops;
 mod output;
 mod process;
 mod sandboxed;
@@ -41,6 +42,14 @@ pub use config::{
     DEFAULT_KERNEL_LIMITS, KernelResourceLimits, LimitOverrides, kernel_environment, kernel_resource_limits,
     rlm_output_budget,
 };
+
+/// The root agent's lane; every other lane is a child's.
+pub const ROOT_LANE: &str = "main";
+
+/// Whether `viewer`'s kernel sees work owned by `owner`: the root lane sees every lane's, a child lane its own.
+pub fn sees(viewer: &str, owner: &str) -> bool {
+    viewer == ROOT_LANE || viewer == owner
+}
 
 use command_fds::{CommandFdExt, FdMapping};
 use continuity::{Crash, recovery_report};

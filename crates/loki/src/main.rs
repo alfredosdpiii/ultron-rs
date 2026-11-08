@@ -1,7 +1,7 @@
 //! `loki` command line: loki.py's argparse interface over the Rust engine.
 
 use loki::proc::Deadline;
-use loki::run;
+use loki::run::{self, Report};
 use loki::{CheckError, config, hook, injected_context, py, resolve};
 use serde_json::{Value, json};
 use std::io::Read;
@@ -461,8 +461,8 @@ fn read_stdin_json(what: &str) -> Result<Value, CheckError> {
     serde_json::from_str(&text).map_err(|e| CheckError::Value(loki::pyjson::error_text(&text, &e)))
 }
 
-/// The protect/hook body: what blocks and what is only reported.
-fn check(args: &Args, root: &Path, config: &config::Config) -> Result<(Vec<String>, Vec<String>), CheckError> {
+/// The protect/hook body of a `--harness` or `hook` run: what blocks and what is only reported.
+fn check(args: &Args, root: &Path, config: &config::Config) -> Result<Report, CheckError> {
     let deadline = Deadline::after(20.0);
     let mut warnings: Vec<String> = Vec::new();
     let harness = args.get("--harness");
@@ -477,8 +477,8 @@ fn check(args: &Args, root: &Path, config: &config::Config) -> Result<(Vec<Strin
         None => (run::file_paths(&args.all("--file"))?, None),
     };
     loki::evidence::targets(&paths);
-    if args.command == "protect" {
-        let messages = run::protect_violations(
+    let messages = if args.command == "protect" {
+        run::protect_violations(
             root,
             config,
             &paths,
@@ -486,44 +486,87 @@ fn check(args: &Args, root: &Path, config: &config::Config) -> Result<(Vec<Strin
             harness.unwrap_or(""),
             deadline,
             &mut warnings,
-        )?;
-        return Ok((messages, warnings));
-    }
-    let messages = run::hook_violations(root, config, &paths, args.get("--python"), deadline, &mut warnings)?;
-    Ok((messages, warnings))
+        )?
+    } else {
+        run::hook_violations(root, config, &paths, args.get("--python"), deadline, &mut warnings)?
+    };
+    Ok(Report::new(messages, warnings))
 }
 
 fn guard(args: &Args) -> ExitCode {
-    let json = args.get("--format") == Some("json");
     let root = root_of(args);
-    let outcome = match run::load(&root) {
-        Err(error) => {
-            run::failure_evidence(&error, "invalid-policy");
-            run::fail(&args.command, &error, json)
-        }
-        Ok(config) if args.command == "protect" && args.get("--harness").is_none() => {
-            let files = args.all("--file");
-            run::protect_with(&root, &config, &files, args.get("--preview"), json, || {
-                read_stdin_json("preview")
-            })
-        }
-        Ok(config) => match check(args, &root, &config) {
-            Ok((messages, warnings)) => run::report(
-                &args.command,
-                &messages,
-                warnings,
-                json,
-                args.get("--harness").is_some(),
-            ),
-            Err(error) => {
-                run::failure_evidence(&error, "invalid-input");
-                run::fail(&args.command, &error, json)
+    let harness = args.get("--harness");
+    let checked = run::load(&root)
+        .inspect_err(|error| run::failure_evidence(error, "invalid-policy"))
+        .and_then(|config| {
+            if args.command == "protect" && harness.is_none() {
+                let preview = args.get("--preview");
+                let payload = match preview {
+                    Some(_) => Some(
+                        read_stdin_json("preview")
+                            .inspect_err(|error| run::failure_evidence(error, "invalid-input"))?,
+                    ),
+                    None => None,
+                };
+                run::protect_with(&root, &config, &args.all("--file"), preview.zip(payload.as_ref()))
+            } else {
+                check(args, &root, &config).inspect_err(|error| run::failure_evidence(error, "invalid-input"))
             }
-        },
+        });
+    let (status, stdout, stderr) = rendered(
+        &args.command,
+        checked,
+        args.get("--format") == Some("json"),
+        harness.is_some(),
+    );
+    eprint!("{stderr}");
+    print!("{stdout}");
+    ExitCode::from(status)
+}
+
+/// What `protect` and `hook` print: the JSON report for `--format json`; a failed check's error, or blocking
+/// findings (then advisories and unchecked notes), on stderr with status 2; else the warnings, which a `--harness`
+/// run also hands back as hook context.
+fn rendered(command: &str, checked: Result<Report, CheckError>, json: bool, harness: bool) -> (u8, String, String) {
+    let report = match checked {
+        Ok(report) => report,
+        Err(error) => {
+            let text = error.describe();
+            let stdout = if json {
+                format!("{}\n", py::dumps(&loki::hook_report(command, &[], &[], Some(&text))))
+            } else {
+                String::new()
+            };
+            return (2, stdout, format!("loki: {text}\n"));
+        }
     };
-    eprint!("{}", outcome.stderr);
-    print!("{}", outcome.stdout);
-    ExitCode::from(outcome.status)
+    let mut stdout = if json {
+        format!("{}\n", py::dumps(&report.json(command)))
+    } else {
+        String::new()
+    };
+    if report.blocked() {
+        let prefix = if command == "hook" {
+            "loki: post-write check failed; files are already changed.\n"
+        } else {
+            ""
+        };
+        return (2, stdout, format!("{prefix}{}\n", report.refusal_lines().join("\n")));
+    }
+    if report.warnings.is_empty() {
+        return (0, stdout, String::new());
+    }
+    let text = report.warnings.join("\n");
+    if harness {
+        let event = if command == "protect" {
+            "PreToolUse"
+        } else {
+            "PostToolUse"
+        };
+        let context = json!({"hookSpecificOutput": {"hookEventName": event, "additionalContext": text}});
+        stdout.push_str(&format!("{}\n", py::dumps(&context)));
+    }
+    (0, stdout, format!("{text}\n"))
 }
 
 /// `loki elixir`: the analysis tiers of a Mix project, or with `--credo-new` the Credo issues the work tree adds.
@@ -614,7 +657,7 @@ fn audit(args: &Args) -> ExitCode {
             Err(hook::RuffError::Other(error)) => report(error),
         };
     }
-    let strict = args.has("--strict") || std::env::var("LOKI_STRICT").as_deref() == Ok("1");
+    let strict = args.has("--strict") || loki::strict();
     match loki::scan::scan(
         &root,
         &config,
@@ -834,12 +877,6 @@ fn dispatch(argv: &[String]) -> ExitCode {
             }
             ExitCode::from(u8::from(!findings.is_empty()))
         }
-        other => {
-            eprintln!(
-                "loki: {}",
-                CheckError::not_ported(&format!("the {other} command")).describe()
-            );
-            ExitCode::from(2)
-        }
+        other => unreachable!("`parse` accepts no command {other}"),
     }
 }

@@ -328,20 +328,6 @@ fn task_options(payload: &Map<String, Value>) -> Result<(Option<String>, Option<
     Ok((model, key, timeout))
 }
 
-/// `preview(value, limit)`: whitespace collapsed, cut to `limit` UTF-16 units with an ellipsis.
-fn preview(value: &Value, limit: usize) -> String {
-    let text = match value {
-        Value::String(text) => text.clone(),
-        other => json::stringify(other),
-    };
-    let flat = string::flatten(&text);
-    if utf16::len(&flat) > limit {
-        format!("{}…", utf16::head(&flat, limit - 1))
-    } else {
-        flat
-    }
-}
-
 fn fetch_hint(definition: &str, id: &str) -> String {
     match definition {
         "rlm-child@1" => format!("await rlm.collect([\"{id}\"])"),
@@ -861,7 +847,7 @@ impl Agents {
             reservation,
             notify,
             started_at: Some(now),
-            input_preview: Some(preview(&request.input, GRAPH_PREVIEW_CHARS)),
+            input_preview: Some(json::preview(&request.input, GRAPH_PREVIEW_CHARS)),
             workflow: request.workflow.clone(),
             ..Task::default()
         };
@@ -1177,7 +1163,7 @@ impl Agents {
             state.lane_tasks.insert(lane.clone(), id.into());
             if let Some(task) = state.task_mut(id) {
                 task.lane = Some(lane.clone());
-                task.model = model.as_deref().map(|m| preview(&json!(m), 80));
+                task.model = model.as_deref().map(|m| json::preview(&json!(m), 80));
             }
         }
         if signal.is_aborted() {
@@ -1260,7 +1246,7 @@ impl Agents {
                     task.tool_calls = Some(task.tool_calls.unwrap_or(0).max(reply.tool_calls));
                     let flat = string::flatten(&reply.text);
                     if !flat.is_empty() {
-                        task.last_text = Some(preview(&json!(flat), GRAPH_TEXT_CHARS));
+                        task.last_text = Some(json::preview(&json!(flat), GRAPH_TEXT_CHARS));
                     }
                 }
             }
@@ -1301,7 +1287,7 @@ impl Agents {
             state.lane_tasks.insert(lane.clone(), id.into());
             let task = state.task_mut(id).ok_or("Unknown Ultron task")?;
             task.lane = Some(lane.clone());
-            task.model = request.model.as_deref().map(|m| preview(&json!(m), 80));
+            task.model = request.model.as_deref().map(|m| json::preview(&json!(m), 80));
             let reservation = task.reservation.as_ref();
             (
                 reservation.map(|r| r.root_id().to_string()),
@@ -1950,10 +1936,10 @@ impl Agents {
         if let Some(result) = record.get("result") {
             let mut view = json!({ "status": result["status"] });
             if let Some(error) = result.get("error") {
-                view["error"] = json!(preview(error, GRAPH_PREVIEW_CHARS));
+                view["error"] = json!(json::preview(error, GRAPH_PREVIEW_CHARS));
             }
             if let Some(value) = result.get("value") {
-                view["preview"] = json!(preview(value, GRAPH_PREVIEW_CHARS));
+                view["preview"] = json!(json::preview(value, GRAPH_PREVIEW_CHARS));
             }
             out["result"] = view;
         }
@@ -2645,7 +2631,7 @@ impl Agents {
                 if let Some(record) = state.workflow_runs.iter_mut().find(|r| r["run"] == run.as_str()) {
                     let mut ended = json!({ "status": result["status"] });
                     if let Some(reason) = reason {
-                        ended["reason"] = json!(preview(&json!(reason), GRAPH_TEXT_CHARS));
+                        ended["reason"] = json!(json::preview(&json!(reason), GRAPH_TEXT_CHARS));
                     }
                     record["ended"][&id] = ended;
                 }

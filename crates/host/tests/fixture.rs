@@ -139,10 +139,10 @@ fn host_streaming_decoder_matches_text_decoder() {
 /// Blocks writes whose content holds "FORBIDDEN" and commands starting with "rm ", adds a note to every write.
 struct Strict;
 impl Guard for Strict {
-    fn before_shell(&self, command: &str) -> Option<String> {
+    fn before_shell(&self, _lane: &str, command: &str) -> Option<String> {
         command.starts_with("rm ").then(|| "loki: no rm".to_owned())
     }
-    fn before_write(&self, _path: &str, content: &str) -> Value {
+    fn before_write(&self, _lane: &str, _path: &str, content: &str) -> Value {
         json!({ "blocked": content.contains("FORBIDDEN"), "reason": "loki: forbidden word", "notes": ["[loki] checked"] })
     }
 }
