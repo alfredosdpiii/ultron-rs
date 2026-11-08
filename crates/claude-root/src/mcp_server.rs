@@ -511,7 +511,7 @@ fn open_runtime(
         // provider's model cannot drive a Claude Code process.
         let explicit = resolved.child_model_explicit;
         let settings = runtime.config.settings_reader();
-        delegation.set_child_model_source(Arc::new(move || {
+        delegation.set_child_model(Arc::new(move || {
             if explicit {
                 return None;
             }
@@ -521,12 +521,15 @@ fn open_runtime(
         // `--children ultron`: `--ultron-child-model` / `claudeCode.ultronChildModel` for spawns that name none,
         // else `rlm.childModel` (/settings -> Models, read per spawn) when it names a Claude Code model, else the
         // root's subscription model ([`ultron_child_model`]).
-        if resolved.ultron_child_model.is_some() {
-            delegation.set_child_model(Some(ultron_child_model(resolved, None, &subscription)));
-        }
+        let named = resolved
+            .ultron_child_model
+            .is_some()
+            .then(|| ultron_child_model(resolved, None, &subscription));
         let (settings, subscription) = (runtime.config.settings_reader(), subscription.clone());
-        delegation.set_child_model_source(Arc::new(move || {
-            Some(written_child_model(&*settings).unwrap_or_else(|| subscription.clone()))
+        delegation.set_child_model(Arc::new(move || {
+            named
+                .clone()
+                .or_else(|| Some(written_child_model(&*settings).unwrap_or_else(|| subscription.clone())))
         }));
     }
     let loki_context = if loki_in_prompt {
@@ -1498,7 +1501,7 @@ fn claude_subagents(
             namespace,
             key,
             handed_over: None,
-        }) as Box<dyn delegation::task_store::TaskStore>
+        }) as Box<dyn delegation::task_store::DocumentStore>
     };
     Ok(SubagentHost {
         store: value(TASKS_NAMESPACE, TASKS_KEY),

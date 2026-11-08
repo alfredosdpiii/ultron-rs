@@ -1083,7 +1083,7 @@ impl Core {
         let sweep_stop = durable.stop.clone();
         lane.stack
             .lanes
-            .sweep_every(delegation::lanes::IDLE_SWEEP_INTERVAL, move |interval| {
+            .sweep_every(lanes::IDLE_SWEEP_INTERVAL, move |interval| {
                 sweep_stop.wait_timeout(interval).is_some()
             });
         // `compaction.enabled` (default on); `set_auto_compaction` changes it for the session.

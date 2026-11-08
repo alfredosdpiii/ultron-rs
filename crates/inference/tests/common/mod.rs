@@ -103,3 +103,43 @@ pub fn model(recorded: &Value) -> Model {
     }))
     .unwrap()
 }
+
+/// Frame requests through crates/ai's dispatch over `transport`, each carrying `env` as its provider environment
+/// (credentials, endpoints, the Claude Code binary) instead of the process environment: how a session's request
+/// stack hands frames its environment.
+pub struct EnvStream {
+    pub env: ai::env::ProviderEnv,
+    pub transport: std::sync::Arc<dyn Transport>,
+}
+
+impl agent::StreamFn for EnvStream {
+    fn stream<'a>(
+        &'a self,
+        model: &'a Model,
+        context: &'a ai::TranscriptContext,
+        options: &'a ai::SimpleStreamOptions,
+        sink: &'a mut ai::EventSink<'_>,
+    ) -> BoxFuture<'a, ai::AssistantMessage> {
+        Box::pin(async move {
+            let mut options = options.clone();
+            options.base.env = Some(self.env.clone());
+            let reply = match ai::model_registry::prepare_request(model, &options) {
+                Ok((routed, prepared)) => {
+                    let model = routed.as_ref().unwrap_or(model);
+                    let options = prepared.as_ref().unwrap_or(&options);
+                    ai::dispatch::stream_simple(model, context, options, &*self.transport, sink).await
+                }
+                Err(error) => Err(error),
+            };
+            reply.unwrap_or_else(|error| {
+                serde_json::from_value(json!({
+                    "role": "assistant", "content": [], "api": model.api, "provider": model.provider,
+                    "model": model.id, "stopReason": "error", "errorMessage": error, "timestamp": 0,
+                    "usage": {"input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0, "totalTokens": 0,
+                        "cost": {"input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0, "total": 0}},
+                }))
+                .unwrap()
+            })
+        })
+    }
+}

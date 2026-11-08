@@ -3,8 +3,8 @@
 //! eviction records the non-restorable names and a recreated kernel restores the rest; a failed snapshot refuses the
 //! eviction and keeps the kernel's state.
 
-use delegation::kernel_pool::{KernelPool, KernelPoolOptions};
 use kernel::{Kernel, KernelOptions, Signal, Status};
+use lanes::kernel_pool::{KernelPool, KernelPoolOptions};
 use serde_json::{Map, Value, json};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};

@@ -7,6 +7,8 @@
 //! the same result. The Claude Code CLI frame runs the ai crate's fake `claude` and must hand it the same argv,
 //! output cap and prompt. The fixture's capOutputTokens / withContractSchema table is replayed against `payload`.
 
+mod common;
+
 use ai::ReqwestTransport;
 use inference::Inference;
 use inference::payload::{cap_output_tokens, with_contract_schema};
@@ -195,14 +197,15 @@ fn run(scenario: &Value, dir: &Path) -> (Value, Vec<Value>, Option<String>) {
         }
         log = Some(cli.join("log"));
     }
+    let transport: Arc<dyn ai::Transport> = Arc::new(ReqwestTransport::new(None));
     let handler = Inference::new(
         Arc::new(EchoHandler),
         model,
         scenario["apiKey"].as_str().map(str::to_string),
-        Arc::new(ReqwestTransport::new(None)),
+        transport.clone(),
         dir.join("context"),
     )
-    .with_provider_env(env);
+    .with_stream(Arc::new(common::EnvStream { env, transport }));
     let Value::Object(payload) = scenario["payload"].clone() else {
         panic!("payload")
     };

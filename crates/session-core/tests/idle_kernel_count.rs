@@ -1,8 +1,8 @@
 //! The footer's kernel strip reads `rlm.pool`: a session composed as the worker composes it (`Runtime::stack`, its
 //! root lane opened) reports no live kernel before its first cell, as the TypeScript session does
-//! (crates/delegation/fixtures/idle-pool.json, recorded from `createUltronRlmTool(...).poolStats()`).
+//! (crates/lanes/fixtures/idle-pool.json, recorded from `createUltronRlmTool(...).poolStats()`).
 
-use delegation::lanes::CellOutcome;
+use lanes::CellOutcome;
 use serde_json::{Value, json};
 use session_core::RunEnv;
 use session_core::compose::{Runtime, Services, Stack};
@@ -46,7 +46,7 @@ fn stack(root: &Path, max_live: u64) -> Arc<Stack> {
 fn session_core_idle_session_reports_no_live_kernel_before_its_first_cell_like_ts() {
     let dir = tempfile::tempdir().unwrap();
     let stack = stack(dir.path(), 16);
-    let expected: Value = serde_json::from_str(include_str!("../../delegation/fixtures/idle-pool.json")).unwrap();
+    let expected: Value = serde_json::from_str(include_str!("../../lanes/fixtures/idle-pool.json")).unwrap();
     // The pool's own fields; the session adds its guard statistics (Loki), which the fixture's bare tool has not.
     let mut stats = stack.pool_stats();
     assert!(stats.as_object_mut().unwrap().remove("guards").is_some(), "{stats}");

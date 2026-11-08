@@ -7,7 +7,6 @@ use ai::http::BoxFuture;
 use ai::{AbortSignal, AssistantMessage, EventSink, Model, SimpleStreamOptions, TranscriptContext};
 use delegation::child::agent_runner;
 use delegation::host::{Delegation, DelegationOptions};
-use delegation::task_store::MemoryStore;
 use serde_json::{Value, json};
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
@@ -108,18 +107,7 @@ fn host_with(
             Box::new(Scripted(Mutex::new(script.into()))) as Box<dyn StreamFn>,
         )
     }));
-    Delegation::new(DelegationOptions {
-        store: Box::new(MemoryStore::default()),
-        collect: delegation::host::CollectMode::Wait,
-        runner,
-        spawn_depth: 3,
-        child_model: None,
-        workspace: None,
-        session_id: "session".into(),
-        worktree_setup: None,
-        keep_worktrees: false,
-        now: Box::new(|| 0.0),
-    })
+    Delegation::new(DelegationOptions::new(runner))
 }
 
 #[test]

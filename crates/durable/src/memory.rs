@@ -73,6 +73,10 @@ pub struct PreparedCommit {
     actions: Vec<(u64, DocumentAction)>,
 }
 
+/// Sees each commit as it will be applied, before it is: an error fails the commit unapplied. A backend that keeps
+/// its records elsewhere persists them here (session-core's journal; a replay log).
+pub type CommitSink = Box<dyn FnMut(&PreparedCommit) -> Result<()> + Send>;
+
 /// Detached in-memory reference implementation of [`Storage`]. Reads return owned copies.
 pub struct MemoryStorage {
     record_types: HashMap<u64, Table>,
@@ -96,6 +100,7 @@ pub struct MemoryStorage {
     next_id: u64,
     next_seq: u64,
     closed: bool,
+    sink: Option<CommitSink>,
 }
 
 impl Default for MemoryStorage {
@@ -128,7 +133,14 @@ impl MemoryStorage {
             next_id: 2,
             next_seq: 1,
             closed: false,
+            sink: None,
         }
+    }
+
+    /// Every later commit goes through `sink` before it is applied.
+    pub fn with_commit_sink(mut self, sink: CommitSink) -> Self {
+        self.sink = Some(sink);
+        self
     }
 
     /// Validate one commit and resolve its document copies without changing observable state. `seq` defaults to the
@@ -521,6 +533,9 @@ impl MemoryStorage {
 impl Storage for MemoryStorage {
     fn commit(&mut self, writes: Vec<StorageWrite>) -> Result<Seq> {
         let prepared = self.prepare_commit(writes, None)?;
+        if let Some(sink) = &mut self.sink {
+            sink(&prepared)?;
+        }
         Ok(self.apply_commit(prepared))
     }
 

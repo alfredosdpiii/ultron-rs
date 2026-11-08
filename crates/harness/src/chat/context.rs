@@ -47,13 +47,20 @@ pub fn read_context(tx: &mut Tx<'_>, conversation_id: ConversationId, at: Option
                 max_entry_id: None,
                 order: None,
             };
-            match tx.committed_scan_entries(&query, 1, None)?.items.first() {
+            match tx
+                .committed(|storage| storage.scan_entries(&query, 1, None))?
+                .items
+                .first()
+            {
                 Some(entry) => entry.id,
                 None => return Ok(ContextView::default()),
             }
         }
         Some(at) => {
-            if tx.committed_visible_entry(conversation_id, at)?.is_none() {
+            if tx
+                .committed(|storage| storage.visible_entry(conversation_id, at))?
+                .is_none()
+            {
                 return Err(HarnessError::Error(format!(
                     "Entry {} is not visible from conversation {}",
                     at.0, conversation_id.0
@@ -62,7 +69,7 @@ pub fn read_context(tx: &mut Tx<'_>, conversation_id: ConversationId, at: Option
             at
         }
     };
-    let head = tx.committed_head_marker(conversation_id, Some(tail))?;
+    let head = tx.committed(|storage| storage.find_latest_head_marker(conversation_id, Some(tail)))?;
     let mut entries = Vec::new();
     let query = EntryQuery {
         conversation_id,
@@ -72,7 +79,7 @@ pub fn read_context(tx: &mut Tx<'_>, conversation_id: ConversationId, at: Option
     };
     let mut cursor: Option<Cursor> = None;
     loop {
-        let page = tx.committed_scan_entries(&query, SCAN_PAGE_SIZE, cursor.as_ref())?;
+        let page = tx.committed(|storage| storage.scan_entries(&query, SCAN_PAGE_SIZE, cursor.as_ref()))?;
         entries.extend(page.items);
         match page.next {
             Some(next) => cursor = Some(next),

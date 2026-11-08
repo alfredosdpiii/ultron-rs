@@ -24,6 +24,45 @@ pub fn flatten(text: &str) -> String {
         .join(" ")
 }
 
+/// `^[^/\s]+\/[^/\s]+(?:\/[^/\s]+)*$`: a `provider/model` reference (more segments allowed), none empty or holding
+/// whitespace.
+pub fn is_model_ref(text: &str) -> bool {
+    let segments: Vec<&str> = text.split('/').collect();
+    segments.len() >= 2 && segments.iter().all(|s| !s.is_empty() && !s.chars().any(is_space))
+}
+
+/// `text.replace(/^```(?:json)?\s*\n([\s\S]*?)\n```$/, "$1")`: the body of a fenced model reply, else `text`.
+pub fn strip_json_fence(text: &str) -> &str {
+    fence_body(text, true).unwrap_or(text)
+}
+
+/// `text.replace(/^```(?:json)?\s*\n([\s\S]*?)\n?```$/, "$1")`: the same with the newline before the closing fence
+/// optional.
+pub fn strip_json_fence_loose(text: &str) -> &str {
+    fence_body(text, false).unwrap_or(text)
+}
+
+/// The capture of the fence regexes, tried in the regex's order: with `json`, then without; within each, the
+/// newline ending the whitespace run from the last back (greedy `\s*`, then backtracking).
+fn fence_body(text: &str, closing_newline: bool) -> Option<&str> {
+    if text.len() < 6 {
+        return None;
+    }
+    let inner = text.strip_prefix("```")?.strip_suffix("```")?;
+    for rest in inner.strip_prefix("json").into_iter().chain([inner]) {
+        let run = &rest[..rest.len() - rest.trim_start_matches(is_space).len()];
+        for (at, _) in run.match_indices('\n').rev() {
+            let body = &rest[at + 1..];
+            match body.strip_suffix('\n') {
+                Some(body) => return Some(body),
+                None if !closing_newline => return Some(body),
+                None => {}
+            }
+        }
+    }
+    None
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -45,6 +84,35 @@ mod tests {
                 "{:x}",
                 c as u32
             );
+        }
+    }
+
+    #[test]
+    fn jsrt_is_model_ref_matches_the_javascript_pattern() {
+        for ok in ["a/b", "openrouter/x/y-1"] {
+            assert!(is_model_ref(ok), "{ok}");
+        }
+        for bad in ["a", "a/", "/b", "a//b", "a/b c", "a/\u{feff}b", ""] {
+            assert!(!is_model_ref(bad), "{bad:?}");
+        }
+    }
+
+    #[test]
+    fn jsrt_strip_json_fence_matches_the_javascript_replacements() {
+        let cases = [
+            ("```json\n{\"a\":1}\n```", "{\"a\":1}", "{\"a\":1}"),
+            ("```\n[1]\n```", "[1]", "[1]"),
+            ("```json \n\n{}\n```", "{}", "{}"),
+            ("```json\n{}```", "```json\n{}```", "{}"),
+            ("```\n\n```", "", ""),
+            ("```\n```", "```\n```", ""),
+            ("```jsonx\n1\n```", "```jsonx\n1\n```", "```jsonx\n1\n```"),
+            ("```json{}\n```", "```json{}\n```", "```json{}\n```"),
+            ("plain", "plain", "plain"),
+        ];
+        for (text, strict, loose) in cases {
+            assert_eq!(strip_json_fence(text), strict, "{text:?}");
+            assert_eq!(strip_json_fence_loose(text), loose, "{text:?}");
         }
     }
 }

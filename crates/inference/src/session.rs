@@ -22,7 +22,7 @@ use serde_json::{Map, Value, json};
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 const FOLLOW_UP_EXHAUSTED: &str = "budget exhausted before a follow-up request (a retry or tool round)";
 
@@ -532,25 +532,13 @@ impl FrameSession {
             .filter(|_| engine.model.reasoning)
             .unwrap_or_else(|| "off".into());
         let mut agent = Agent::new(agent_options, Box::new(stream));
-        // The frame's cancellation aborts the agent's run; the watcher ends with the frame.
-        let (control, signal, done) = (agent.control(), run.signal.clone(), Signal::new());
-        let finished = done.clone();
-        let watcher = std::thread::spawn(move || {
-            while !finished.is_aborted() {
-                if signal.wait(Duration::from_millis(50)) {
-                    control.abort();
-                    return;
-                }
-            }
-        });
         let runtime = match tokio::runtime::Builder::new_current_thread().enable_all().build() {
             Ok(runtime) => runtime,
-            Err(error) => {
-                done.abort("done");
-                let _ = watcher.join();
-                return Outcome::Error(error.to_string());
-            }
+            Err(error) => return Outcome::Error(error.to_string()),
         };
+        // The frame's cancellation aborts the agent's run (an already cancelled frame stops at its first attempt).
+        let control = agent.control();
+        let listener = run.signal.on_abort(move |_| control.abort());
         let mut conversation_chars = jsrt::utf16::len(&system) as u64;
         let outcome = 'attempts: {
             for attempt in 0u64.. {
@@ -617,8 +605,9 @@ impl FrameSession {
             }
             unreachable!("the attempt counter is unbounded")
         };
-        done.abort("done");
-        let _ = watcher.join();
+        if let Some(listener) = listener {
+            run.signal.forget(listener);
+        }
         outcome
     }
 

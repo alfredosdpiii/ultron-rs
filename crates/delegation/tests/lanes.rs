@@ -3,10 +3,9 @@
 //! more lanes, and a cell outliving its tool call is detached (its end arrives as an event) or cancelled (a parked
 //! cell keeps its kernel and variables; a busy one has its kernel killed).
 
-use delegation::host::{ChildRunner, CollectMode, Delegation, DelegationOptions, DetachedEnd};
-use delegation::lanes::{CellEnd, CellOutcome, Lanes, LanesOptions};
-use delegation::task_store::MemoryStore;
+use delegation::host::{ChildRunner, CollectMode, Delegation, DelegationOptions, DetachedEnd, LaneCollect};
 use kernel::{ExecutionResult, Kernel, KernelOptions, Status};
+use lanes::{CellEnd, CellOutcome, Lanes, LanesOptions};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::Receiver;
 use std::sync::{Arc, Condvar, Mutex};
@@ -79,20 +78,15 @@ fn root(collect: CollectMode, max_lanes: usize) -> Root {
 }
 
 fn root_with_grace(collect: CollectMode, max_lanes: usize, cancel_grace: Duration) -> Root {
+    root_per_lane(Arc::new(move |_: &str| collect), max_lanes, cancel_grace)
+}
+
+fn root_per_lane(collect: LaneCollect, max_lanes: usize, cancel_grace: Duration) -> Root {
     let dir = tempfile::tempdir().unwrap();
     let gates = Gates::default();
-    let (host, events) = Delegation::new(DelegationOptions {
-        store: Box::new(MemoryStore::default()),
-        collect,
-        runner: gates.runner(),
-        spawn_depth: 3,
-        child_model: None,
-        workspace: None,
-        session_id: "session".into(),
-        worktree_setup: None,
-        keep_worktrees: false,
-        now: Box::new(|| 0.0),
-    });
+    let mut options = DelegationOptions::new(gates.runner());
+    options.collect = collect;
+    let (host, events) = Delegation::new(options);
     let cwd = dir.path().to_path_buf();
     let private = dir.path().join("agent");
     let handlers_host = host.clone();
@@ -184,16 +178,18 @@ fn delegation_host_collect_never_holds_a_cell() {
     r.lanes.close();
 }
 
+/// A woken lane's `rlm.merge` waits for its children on the host and parks its cell (this root has no working
+/// directory, so the merge itself then fails).
 #[test]
-fn delegation_parked_collect_detaches_and_other_lanes_run() {
-    let r = root(CollectMode::Wait, 2);
+fn delegation_parked_merge_detaches_and_other_lanes_run() {
+    let r = root(CollectMode::Host, 2);
     ok(&r.lanes, "main", "x = 41\nh = await rlm.spawn('brief', name='a')");
     let started = Instant::now();
     let (cell, parked) = running(
         r.lanes
             .run(
                 "main",
-                "res = await rlm.collect([h])\nprint(res[0]['result']['value'], x + 1)",
+                "try:\n    await rlm.merge([h])\nexcept RuntimeError as e:\n    print(e, x + 1)",
                 BUDGET,
             )
             .unwrap(),
@@ -224,9 +220,12 @@ fn delegation_parked_collect_detaches_and_other_lanes_run() {
     r.gates.open(0);
     let end = r.ends.recv_timeout(HANG_GUARD).unwrap();
     assert_eq!((end.cell.as_str(), end.lane.as_str()), (cell.as_str(), "main"));
-    assert_eq!(end.outcome.unwrap().stdout, "reply-0 42\n");
+    assert_eq!(
+        end.outcome.unwrap().stdout,
+        "rlm.merge needs a working directory, and this session has none 42\n"
+    );
     let event = r.events.recv_timeout(HANG_GUARD).unwrap();
-    assert!(event.awaited, "the child's end was awaited by the parked collect");
+    assert!(event.awaited, "the child's end was awaited by the parked merge");
     // The lane is free again, its state intact.
     assert_eq!(ok(&r.lanes, "main", "x").result.unwrap(), "41");
     r.lanes.close_lane("side").unwrap();
@@ -235,10 +234,10 @@ fn delegation_parked_collect_detaches_and_other_lanes_run() {
 
 #[test]
 fn delegation_cancel_parked_cell_keeps_kernel_state() {
-    let r = root(CollectMode::Wait, 2);
+    let r = root(CollectMode::Host, 2);
     ok(&r.lanes, "main", "x = 7\nh = await rlm.spawn('brief', name='a')");
     let pid = r.lanes.kernel("main").unwrap().pid().unwrap();
-    let (cell, parked) = running(r.lanes.run("main", "await rlm.collect([h])", BUDGET).unwrap());
+    let (cell, parked) = running(r.lanes.run("main", "await rlm.merge([h])", BUDGET).unwrap());
     assert!(parked);
     let started = Instant::now();
     let outcome = r.lanes.cancel(&cell, "user pressed escape").unwrap().unwrap();
@@ -247,7 +246,7 @@ fn delegation_cancel_parked_cell_keeps_kernel_state() {
     let error = outcome.error.unwrap();
     assert_eq!(
         (error.ename.as_str(), error.evalue.as_str()),
-        ("RuntimeError", "rlm.collect was cancelled: user pressed escape")
+        ("RuntimeError", "rlm.merge was cancelled: user pressed escape")
     );
     // No CellEnd event for a cancelled cell: the canceller has its outcome.
     assert!(r.ends.recv_timeout(Duration::from_millis(200)).is_err());
@@ -328,7 +327,7 @@ fn delegation_cell_outliving_its_budget_detaches_or_cancels() {
 
 #[test]
 fn delegation_cell_cancels_another_lanes_cell_but_not_itself() {
-    let r = root(CollectMode::Wait, 2);
+    let r = root(CollectMode::InCell, 2);
     r.lanes.open("side").unwrap();
     ok(&r.lanes, "main", "h = await rlm.spawn('brief', name='a')");
     let (cell, _) = running(r.lanes.run("main", "await rlm.collect([h])", BUDGET).unwrap());
@@ -353,14 +352,17 @@ fn delegation_cell_cancels_another_lanes_cell_but_not_itself() {
 /// is picked per lane.
 #[test]
 fn delegation_in_cell_collect_holds_the_cell_unparked_and_honours_timeout_ms() {
-    let r = root(CollectMode::Wait, 2);
-    r.host.set_lane_collect(Arc::new(|lane: &str| {
-        if lane == "main" {
-            CollectMode::InCell
-        } else {
-            CollectMode::Host
-        }
-    }));
+    let r = root_per_lane(
+        Arc::new(|lane: &str| {
+            if lane == "main" {
+                CollectMode::InCell
+            } else {
+                CollectMode::Host
+            }
+        }),
+        2,
+        HANG_GUARD,
+    );
     assert_eq!(r.host.collect_mode("main"), CollectMode::InCell);
     assert_eq!(r.host.collect_mode("other"), CollectMode::Host);
     ok(&r.lanes, "main", "x = 41\nh = await rlm.spawn('brief', name='a')");

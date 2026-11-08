@@ -4,8 +4,8 @@
 //! failures, already merged, errors), `rlm.worktrees.list/cleanup`, the files and branches left behind, completion
 //! events and the journal. Temp roots, worktree ids, task ids, keys and Git ids are normalized as by the generator.
 
-use delegation::host::{ChildRunner, CollectMode, Delegation, DelegationOptions, DetachedEnd};
-use delegation::task_store::TaskStore;
+use delegation::host::{ChildRunner, Delegation, DelegationOptions, DetachedEnd};
+use delegation::task_store::DocumentStore;
 use regex::Regex;
 use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
@@ -15,7 +15,7 @@ use std::time::{Duration, Instant};
 
 struct Store(Arc<Mutex<Option<Value>>>);
 
-impl TaskStore for Store {
+impl DocumentStore for Store {
     fn read(&mut self) -> Result<Option<Value>, String> {
         Ok(self.0.lock().unwrap().clone())
     }
@@ -150,7 +150,6 @@ fn delegation_spawn_worktrees_replay_typescript_scenarios() {
         let journal = Arc::new(Mutex::new(None));
         let mut options = DelegationOptions::new(runner);
         options.store = Box::new(Store(journal.clone()));
-        options.collect = CollectMode::Wait;
         options.now = Box::new(|| 1000.0);
         options.workspace = workspace.clone();
         options.session_id = "fixture-session".into();

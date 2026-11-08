@@ -393,7 +393,9 @@ impl ChatHarness {
             let mut ids = Vec::new();
             let mut cursor: Option<Cursor> = None;
             loop {
-                let page = tx.committed_scan_conversations(&ConversationQuery::default(), 256, cursor.as_ref())?;
+                let page = tx.committed(|storage| {
+                    storage.scan_conversations(&ConversationQuery::default(), 256, cursor.as_ref())
+                })?;
                 ids.extend(page.items.into_iter().map(|record| record.id));
                 match page.next {
                     Some(next) => cursor = Some(next),
@@ -572,7 +574,7 @@ impl Conversation {
             let mut entries = Vec::new();
             let mut cursor: Option<Cursor> = None;
             loop {
-                let page = tx.committed_scan_entries(&query, 256, cursor.as_ref())?;
+                let page = tx.committed(|storage| storage.scan_entries(&query, 256, cursor.as_ref()))?;
                 entries.extend(page.items);
                 match page.next {
                     Some(next) => cursor = Some(next),

@@ -34,13 +34,6 @@ fn value_doc(kind: &str, semantics: DocSemantics, initial: &'static str) -> dura
         .unwrap()
 }
 
-fn seeded_family(kind: &str, semantics: DocSemantics) -> durable::Doc {
-    DocDefinition::new(kind, 1, semantics, |seed| json!({ "value": seed }))
-        .family()
-        .define()
-        .unwrap()
-}
-
 fn set_value(draft: chord_delta::Draft, value: Value) -> Result<(), SessionError> {
     Ok(draft.set(&path!["value"], value)?)
 }
@@ -58,13 +51,6 @@ fn point(tx: &mut durable::Tx<'_>, conversation: durable::ConversationId, kind: 
 fn read(t: &TestSession, doc: &durable::Doc, conversation: durable::ConversationId) -> Option<Value> {
     t.session
         .snapshot(doc, Owner::Conversation(conversation))
-        .unwrap()
-        .map(|v| (*v).clone())
-}
-
-fn read_member(t: &TestSession, doc: &durable::Doc, conversation: durable::ConversationId, key: &str) -> Option<Value> {
-    t.session
-        .snapshot_member(doc, Owner::Conversation(conversation), key)
         .unwrap()
         .map(|v| (*v).clone())
 }
@@ -87,8 +73,6 @@ fn durable_session_forks_copy_as_of_and_current_bases_while_leaving_initial_docu
             semantics(DocumentHistory::Latest, DocumentFork::Initial),
             "fresh",
         );
-        let as_of_family = seeded_family("fork.policies.as-of-family", AS_OF);
-        let current_family = seeded_family("fork.policies.current-family", CURRENT);
         let t = TestSession::open(backend);
         let parent = t.create_conversation();
         let p = Owner::Conversation(parent);
@@ -99,33 +83,13 @@ fn durable_session_forks_copy_as_of_and_current_bases_while_leaving_initial_docu
                 set_value(tx.doc(&as_of, p)?, json!("as-at-fork"))?;
                 set_value(tx.doc(&current, p)?, json!("current-at-fork"))?;
                 set_value(tx.doc(&initial, p)?, json!("parent-only"))?;
-                set_value(
-                    tx.doc_member(&as_of_family, p, "a", json!("unused"))?,
-                    json!("family-as-a"),
-                )?;
-                set_value(
-                    tx.doc_member(&as_of_family, p, "b", json!("unused"))?,
-                    json!("family-as-b"),
-                )?;
-                set_value(
-                    tx.doc_member(&current_family, p, "a", json!("unused"))?,
-                    json!("family-current-a"),
-                )?;
                 Ok(at)
             })
             .unwrap();
         t.session
             .commit(|tx| {
                 set_value(tx.doc(&as_of, p)?, json!("as-after-fork"))?;
-                set_value(tx.doc(&current, p)?, json!("current-when-copied"))?;
-                set_value(
-                    tx.doc_member(&as_of_family, p, "a", json!("unused"))?,
-                    json!("family-as-after"),
-                )?;
-                set_value(
-                    tx.doc_member(&current_family, p, "a", json!("unused"))?,
-                    json!("family-current-when-copied"),
-                )
+                set_value(tx.doc(&current, p)?, json!("current-when-copied"))
             })
             .unwrap();
         let reads = t.storage.document_reads();
@@ -138,22 +102,10 @@ fn durable_session_forks_copy_as_of_and_current_bases_while_leaving_initial_docu
             Some(json!({ "value": "current-when-copied" }))
         );
         assert_eq!(read(&t, &initial, child.id), None);
-        assert_eq!(
-            read_member(&t, &as_of_family, child.id, "a"),
-            Some(json!({ "value": "family-as-a" }))
-        );
-        assert_eq!(
-            read_member(&t, &as_of_family, child.id, "b"),
-            Some(json!({ "value": "family-as-b" }))
-        );
-        assert_eq!(
-            read_member(&t, &current_family, child.id, "a"),
-            Some(json!({ "value": "family-current-when-copied" }))
-        );
 
         let admitted: Vec<Value> = t.storage.last_commit().iter().map(json).collect();
         let copies: Vec<&Value> = admitted.iter().filter(|w| w["type"] == "document.copy").collect();
-        assert_eq!(copies.len(), 5);
+        assert_eq!(copies.len(), 2);
         assert!(
             copies
                 .iter()
@@ -161,7 +113,7 @@ fn durable_session_forks_copy_as_of_and_current_bases_while_leaving_initial_docu
         );
         let publication = t.last_publication();
         let copied = document_copy_changes(&publication);
-        assert_eq!(copied.len(), 5);
+        assert_eq!(copied.len(), 2);
         for (record, conversation_id, source) in &copied {
             assert_eq!(record.created_at, publication.seq);
             assert_eq!(*conversation_id, child.id);
@@ -312,7 +264,7 @@ fn durable_session_forks_copy_the_stored_value_and_version_without_migrating() {
         })
         .define()
         .unwrap();
-        let t = TestSession::open(backend);
+        let mut t = TestSession::open(backend);
         let parent = t.create_conversation();
         let fork_at = t
             .session
@@ -322,7 +274,7 @@ fn durable_session_forks_copy_the_stored_value_and_version_without_migrating() {
                 Ok(at)
             })
             .unwrap();
-        t.session.unload_documents().unwrap();
+        t.reopen();
         assert_eq!(read(&t, &v3, parent), Some(json!({ "count": 1, "migrated": true })));
         assert_eq!(migrations.load(Ordering::SeqCst), 1);
         let child = fork(&t, parent, fork_at);
@@ -413,46 +365,6 @@ fn durable_session_forks_coalesce_a_typed_migration_and_override_into_the_copied
 }
 
 #[test]
-fn durable_session_forks_copy_the_incarnation_alive_at_the_fork_point() {
-    each_backend(|backend| {
-        let doc = value_doc("fork.incarnations", AS_OF, "initial");
-        let t = TestSession::open(backend);
-        let parent = t.create_conversation();
-        let p = Owner::Conversation(parent);
-        let old_at = t
-            .session
-            .commit(|tx| {
-                let at = point(tx, parent, "old");
-                set_value(tx.doc(&doc, p)?, json!("old"))?;
-                Ok(at)
-            })
-            .unwrap();
-        let retired_at = t
-            .session
-            .commit(|tx| {
-                let at = point(tx, parent, "retired");
-                tx.retire_doc(&doc, p)?;
-                Ok(at)
-            })
-            .unwrap();
-        let new_at = t
-            .session
-            .commit(|tx| {
-                let at = point(tx, parent, "new");
-                set_value(tx.doc(&doc, p)?, json!("new"))?;
-                Ok(at)
-            })
-            .unwrap();
-        let old_child = fork(&t, parent, old_at);
-        let empty_child = fork(&t, parent, retired_at);
-        let new_child = fork(&t, parent, new_at);
-        assert_eq!(read(&t, &doc, old_child.id), Some(json!({ "value": "old" })));
-        assert_eq!(read(&t, &doc, empty_child.id), None);
-        assert_eq!(read(&t, &doc, new_child.id), Some(json!({ "value": "new" })));
-    });
-}
-
-#[test]
 fn durable_session_forks_reject_invisible_fork_points_before_admission_and_remain_usable() {
     each_backend(|backend| {
         let t = TestSession::open(backend);
@@ -473,42 +385,6 @@ fn durable_session_forks_reject_invisible_fork_points_before_admission_and_remai
         );
         assert_eq!(t.storage.commit_count(), commits);
         assert_eq!(t.publication_count(), published);
-        let independent = t
-            .session
-            .commit(|tx| tx.create_conversation(ConversationOwnership::Ownerless))
-            .unwrap();
-        assert_eq!(t.storage.conversation(independent.id).unwrap(), Some(independent));
-    });
-}
-
-#[test]
-fn durable_session_forks_reject_duplicate_as_of_and_current_selections_before_admission() {
-    each_backend(|backend| {
-        let as_of = value_doc("fork.duplicate-policy", AS_OF, "as-of");
-        let current = value_doc("fork.duplicate-policy", CURRENT, "current");
-        let t = TestSession::open(backend);
-        let parent = t.create_conversation();
-        let p = Owner::Conversation(parent);
-        let old_at = t
-            .session
-            .commit(|tx| {
-                let at = point(tx, parent, "old");
-                tx.doc(&as_of, p)?;
-                Ok(at)
-            })
-            .unwrap();
-        t.session.commit(|tx| tx.retire_doc(&as_of, p)).unwrap();
-        t.session.commit(|tx| tx.doc(&current, p).map(drop)).unwrap();
-        let commits = t.storage.commit_count();
-        let error = t
-            .session
-            .commit(|tx| tx.fork_conversation(parent, old_at, ConversationOwnership::Ownerless))
-            .unwrap_err();
-        assert_eq!(
-            error.to_string(),
-            "Fork selects multiple source documents for fork.duplicate-policy"
-        );
-        assert_eq!(t.storage.commit_count(), commits);
         let independent = t
             .session
             .commit(|tx| tx.create_conversation(ConversationOwnership::Ownerless))
@@ -658,7 +534,10 @@ fn durable_session_forks_fail_the_session_on_a_rejected_fork_commit_which_leaves
             .commit(|tx| tx.create_conversation(ConversationOwnership::Ownerless))
             .unwrap_err();
         assert_eq!(failed.name(), "SessionFailed");
-        assert_eq!(failed.cause(), Some(&SessionError::Storage(rejection.clone())));
+        assert_eq!(
+            failed,
+            SessionError::Failed(Box::new(SessionError::Storage(rejection.clone())))
+        );
         // The failed Session closed its Storage; reopened, it holds nothing of the batch.
         assert_eq!(
             t.session.wait_closed(),
@@ -666,37 +545,6 @@ fn durable_session_forks_fail_the_session_on_a_rejected_fork_commit_which_leaves
         );
         t.storage.reopen();
         assert_eq!(t.storage.conversation(rejected_child.unwrap()).unwrap(), None);
-    });
-}
-
-#[test]
-fn durable_session_forks_retire_a_copied_document_and_recreate_the_address_in_the_fork_transaction() {
-    each_backend(|backend| {
-        let doc = value_doc("fork.retire-recreate", AS_OF, "fresh");
-        let t = TestSession::open(backend);
-        let parent = t.create_conversation();
-        let fork_at = t
-            .session
-            .commit(|tx| {
-                let at = point(tx, parent, "point");
-                set_value(tx.doc(&doc, Owner::Conversation(parent))?, json!("copied"))?;
-                Ok(at)
-            })
-            .unwrap();
-        let child = t
-            .session
-            .commit(|tx| {
-                let created = tx.fork_conversation(parent, fork_at, ConversationOwnership::Ownerless)?;
-                tx.retire_doc(&doc, Owner::Conversation(created.id))?;
-                set_value(tx.doc(&doc, Owner::Conversation(created.id))?, json!("replacement"))?;
-                Ok(created)
-            })
-            .unwrap();
-        let kinds = types(&t.storage.last_commit());
-        for kind in ["document.copy", "document.create", "document.retire"] {
-            assert_eq!(kinds.iter().filter(|k| *k == kind).count(), 1, "{kind}");
-        }
-        assert_eq!(read(&t, &doc, child.id), Some(json!({ "value": "replacement" })));
     });
 }
 
@@ -758,21 +606,27 @@ fn durable_session_forks_copy_only_conversation_documents() {
 }
 
 #[test]
-fn durable_session_forks_copy_every_family_member_across_storage_scan_pages() {
+fn durable_session_forks_copy_every_document_across_storage_scan_pages() {
     each_backend(|backend| {
-        let family = seeded_family("fork.pagination", CURRENT);
+        let docs: Vec<durable::Doc> = (0..260)
+            .map(|index| {
+                DocDefinition::new(
+                    &format!("fork.pagination.{index}"),
+                    1,
+                    CURRENT,
+                    move |_| json!({ "value": index }),
+                )
+                .define()
+                .unwrap()
+            })
+            .collect();
         let t = TestSession::open(backend);
         let parent = t.create_conversation();
         let fork_at = t.session.commit(|tx| Ok(point(tx, parent, "point"))).unwrap();
         t.session
             .commit(|tx| {
-                for index in 0..260 {
-                    tx.doc_member(
-                        &family,
-                        Owner::Conversation(parent),
-                        &format!("member-{index}"),
-                        json!(index),
-                    )?;
+                for doc in &docs {
+                    tx.doc(doc, Owner::Conversation(parent))?;
                 }
                 Ok(())
             })
@@ -785,13 +639,7 @@ fn durable_session_forks_copy_every_family_member_across_storage_scan_pages() {
                 .count(),
             260
         );
-        assert_eq!(
-            read_member(&t, &family, child.id, "member-0"),
-            Some(json!({ "value": 0 }))
-        );
-        assert_eq!(
-            read_member(&t, &family, child.id, "member-259"),
-            Some(json!({ "value": 259 }))
-        );
+        assert_eq!(read(&t, &docs[0], child.id), Some(json!({ "value": 0 })));
+        assert_eq!(read(&t, &docs[259], child.id), Some(json!({ "value": 259 })));
     });
 }

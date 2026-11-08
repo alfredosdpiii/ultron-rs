@@ -1,5 +1,5 @@
 //! Kill/reopen process test: a child process (this test binary, re-run in child mode) opens a Harness over the
-//! product's durable store (a format-4 session file through `JournalStorage`), commits task intents and starts their effects, then freezes Storage so the cascade commit
+//! product's durable store (a format-4 session file through `durable_store::open`), commits task intents and starts their effects, then freezes Storage so the cascade commit
 //! that follows an abort mark never lands; the parent SIGKILLs it mid-phase, reopens the same session file, and asserts the
 //! recovery contract (spec §5.2, §5.4, §5.5, §10.1): a replay-safe phase reruns, an unsafe one yields an interrupted
 //! outcome, abort cascades and `completing` holds are re-derived from durable records, abandoned work is aborted with

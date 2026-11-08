@@ -10,7 +10,7 @@ use std::sync::{Arc, Mutex};
 
 use agent::{
     AgentContext, AgentEvent, AgentLoopConfig, AgentTool, AgentToolResult, BeforeToolCall, BeforeToolCallResult,
-    StreamFn, ToolExecutionMode, ToolUpdate, agent_loop,
+    StreamFn, ToolUpdate, agent_loop,
 };
 use ai::http::BoxFuture;
 use ai::{AbortSignal, AssistantMessage, AssistantMessageEvent, EventSink, Message, Model, SimpleStreamOptions};
@@ -131,18 +131,6 @@ impl AgentTool for FixtureTool {
     fn tool(&self) -> &ai::Tool {
         &self.tool
     }
-    fn prepare_arguments(&self, args: &Value) -> Result<Value, String> {
-        if self.tool.name != "legacy" {
-            return Ok(args.clone());
-        }
-        if args.get("boom").is_some_and(|b| b != false && !b.is_null()) {
-            return Err("cannot prepare".into());
-        }
-        Ok(match args.get("old") {
-            Some(old) => json!({ "text": old }),
-            None => args.clone(),
-        })
-    }
     fn execute<'a>(
         &'a self,
         _id: &'a str,
@@ -151,9 +139,6 @@ impl AgentTool for FixtureTool {
         on_update: &'a ToolUpdate<'a>,
     ) -> BoxFuture<'a, Result<AgentToolResult, String>> {
         Box::pin(async move {
-            if self.tool.name == "legacy" {
-                return Ok(result(text(&format!("legacy: {args}")), json!({})));
-            }
             on_update(result(text("working"), json!({ "step": 1 })));
             let arg = args["text"].as_str().unwrap_or_default();
             Ok(result(text(&format!("echo: {arg}")), json!({ "text": arg })))
@@ -162,15 +147,11 @@ impl AgentTool for FixtureTool {
 }
 
 fn tool(name: &str, schema: &Value) -> Arc<dyn AgentTool> {
-    let description = match name {
-        "echo" => "Echo the text back",
-        "legacy" => "Accepts the old argument name",
-        other => panic!("unknown fixture tool {other}"),
-    };
+    assert_eq!(name, "echo", "unknown fixture tool");
     Arc::new(FixtureTool {
         tool: serde_json::from_value(json!({
             "name": name,
-            "description": description,
+            "description": "Echo the text back",
             "parameters": schema,
         }))
         .unwrap(),
@@ -221,9 +202,6 @@ async fn replay(name: &str) {
     let responses: VecDeque<AssistantMessage> = serde_json::from_value(scenario["responses"].clone()).unwrap();
     let stream = Scripted(Mutex::new(responses));
     let mut config = AgentLoopConfig::new(serde_json::from_value(fixture["model"].clone()).unwrap());
-    if scenario["toolExecution"] == "sequential" {
-        config.tool_execution = ToolExecutionMode::Sequential;
-    }
     let calls: Calls = Arc::default();
     match scenario["hooks"].as_str() {
         Some("policy") => {
@@ -314,23 +292,8 @@ async fn agent_loop_invalid_arguments_fail_like_typescript_in_parallel() {
 }
 
 #[tokio::test]
-async fn agent_loop_invalid_arguments_fail_like_typescript_in_sequence() {
-    replay("invalid_sequential").await;
-}
-
-#[tokio::test]
-async fn agent_loop_prepare_arguments_runs_before_validation_like_typescript() {
-    replay("prepare_arguments").await;
-}
-
-#[tokio::test]
 async fn agent_loop_before_tool_call_blocks_and_throws_like_typescript() {
     replay("before_hooks").await;
-}
-
-#[tokio::test]
-async fn agent_loop_before_tool_call_in_sequence_like_typescript() {
-    replay("before_hooks_sequential").await;
 }
 
 #[tokio::test]
@@ -348,6 +311,10 @@ async fn agent_loop_abort_during_before_tool_call_like_typescript() {
     replay("abort_in_before").await;
 }
 
+/// Recorded scenarios of upstream seams this port does not have: sequential tool execution and `prepareArguments`
+/// (no tool of the product adapts or runs its calls one at a time).
+const NOT_PORTED: [&str; 3] = ["invalid_sequential", "prepare_arguments", "before_hooks_sequential"];
+
 #[test]
 fn agent_validation_fixture_covers_every_scenario() {
     let names: Vec<String> = fixture()["scenarios"]
@@ -355,16 +322,13 @@ fn agent_validation_fixture_covers_every_scenario() {
         .unwrap()
         .iter()
         .map(|s| s["name"].as_str().unwrap().to_string())
-        .filter(|name| !name.starts_with("after_"))
+        .filter(|name| !name.starts_with("after_") && !NOT_PORTED.contains(&name.as_str()))
         .collect();
     assert_eq!(
         names,
         [
             "invalid_parallel",
-            "invalid_sequential",
-            "prepare_arguments",
             "before_hooks",
-            "before_hooks_sequential",
             "before_terminate",
             "abort_and_block_in_before",
             "abort_in_before"

@@ -4,9 +4,8 @@
 //! `rlm.collect()` in host collect mode, and `rlm.recovery()`.
 
 use delegation::host::{ChildRunner, CollectMode, Delegation, DelegationOptions, DetachedEnd};
-use delegation::lanes::{CellOutcome, Lanes, LanesOptions};
-use delegation::task_store::MemoryStore;
 use kernel::{ContinuityPolicy, ExecutionResult, Kernel, KernelOptions, Status};
+use lanes::{CellOutcome, Lanes, LanesOptions};
 use serde_json::json;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::Receiver;
@@ -66,18 +65,9 @@ struct Root {
 fn root(collect: CollectMode, max_lanes: usize, continuity: bool) -> Root {
     let dir = tempfile::tempdir().unwrap();
     let gates = Gates::default();
-    let (host, events) = Delegation::new(DelegationOptions {
-        store: Box::new(MemoryStore::default()),
-        collect,
-        runner: gates.runner(),
-        spawn_depth: 3,
-        child_model: None,
-        workspace: None,
-        session_id: "session".into(),
-        worktree_setup: None,
-        keep_worktrees: false,
-        now: Box::new(|| 0.0),
-    });
+    let mut options = DelegationOptions::new(gates.runner());
+    options.collect = Arc::new(move |_: &str| collect);
+    let (host, events) = Delegation::new(options);
     let cwd = dir.path().to_path_buf();
     let private = dir.path().join("agent");
     let handlers = host.clone();
@@ -151,7 +141,7 @@ fn parked_cell(lanes: &Lanes, lane: &str, code: &str) -> String {
 
 #[test]
 fn delegation_rlm_lane_wrappers_open_list_and_close_lanes() {
-    let r = root(CollectMode::Wait, 2, false);
+    let r = root(CollectMode::InCell, 2, false);
     assert_eq!(
         value(&r.lanes, "main", "[(l['lane'], l['cell']) for l in await rlm.lanes()]"),
         "[('main', 'cell-1')]"
@@ -204,10 +194,10 @@ fn delegation_rlm_lane_wrappers_open_list_and_close_lanes() {
 
 #[test]
 fn delegation_rlm_cell_wrappers_list_and_cancel_a_parked_cell() {
-    let r = root(CollectMode::Wait, 2, false);
+    let r = root(CollectMode::Host, 2, false);
     r.lanes.open("side").unwrap();
     ok(&r.lanes, "main", "x = 7\nh = await rlm.spawn('brief', name='a')");
-    let cell = parked_cell(&r.lanes, "main", "await rlm.collect([h])");
+    let cell = parked_cell(&r.lanes, "main", "await rlm.merge([h])");
     assert_eq!(
         value(&r.lanes, "side", "await rlm.cells()"),
         format!(
@@ -251,7 +241,7 @@ fn delegation_rlm_cell_wrappers_list_and_cancel_a_parked_cell() {
 /// (`Delegation::subagent_views`); `rlm.cells` and `rlm.list_subagents` stay as a cell sees them.
 #[test]
 fn delegation_running_work_views_list_detached_cells_and_named_subagents() {
-    let r = root(CollectMode::Wait, 2, false);
+    let r = root(CollectMode::Host, 2, false);
     ok(
         &r.lanes,
         "main",
@@ -261,7 +251,7 @@ fn delegation_running_work_views_list_detached_cells_and_named_subagents() {
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
         .as_millis() as u64;
-    let cell = parked_cell(&r.lanes, "main", "await rlm.collect([h])");
+    let cell = parked_cell(&r.lanes, "main", "await rlm.merge([h])");
     let cells = r.lanes.detached_cells("main");
     assert_eq!(cells.len(), 1, "{cells:?}");
     assert_eq!(

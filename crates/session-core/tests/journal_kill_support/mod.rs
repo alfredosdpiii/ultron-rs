@@ -1,9 +1,9 @@
 //! The product's durable store for the kill/reopen process tests: a format-4 session file whose durable runtime
-//! records go through [`JournalStorage`], opened anew from the file the way a restarted worker opens it.
+//! records go through the journal storage (`durable_store::open`), opened anew from the file the way a restarted worker opens it.
 
 #![allow(dead_code)]
 
-use session_core::durable_store::{JournalStorage, SharedSession, stored_commits};
+use session_core::durable_store::{SharedSession, stored_commits};
 use session_journal::repo::read_metadata;
 use session_journal::{Session, SessionRepo, SystemClock};
 use std::path::{Path, PathBuf};
@@ -26,9 +26,9 @@ pub fn open_session(path: &Path) -> Session {
 }
 
 /// The durable storage of the session file at `path`, replayed from its journal.
-pub fn open_journal(path: &Path) -> JournalStorage {
+pub fn open_journal(path: &Path) -> durable::MemoryStorage {
     let session: SharedSession = Arc::new(Mutex::new(open_session(path)));
-    JournalStorage::open(session, None).expect("open journal storage")
+    session_core::durable_store::open(session, None).expect("open journal storage")
 }
 
 /// How many durable commits the session file at `path` holds.

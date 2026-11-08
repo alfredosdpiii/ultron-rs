@@ -22,7 +22,7 @@ use std::sync::Arc;
 type Result<T> = std::result::Result<T, DeltaError>;
 
 /// Upstream emits one root replacement instead of a batch longer than this.
-const MAX_DELTA_OPERATIONS: usize = 4_096;
+pub(crate) const MAX_DELTA_OPERATIONS: usize = 4_096;
 /// Upstream `overlap()` scan bound used when diffing strings.
 const OVERLAP_SCAN: usize = 65_536;
 
@@ -544,24 +544,31 @@ fn emit_changed(ops: &mut Vec<Op>, path: Path, before: Option<&Value>, after: &V
     {
         return;
     }
-    if let (Some(Value::String(before)), Value::String(after)) = (before, after) {
-        let (before_units, after_units) = (jsrt::utf16::len(before), jsrt::utf16::len(after));
-        if after_units > before_units && after.starts_with(before.as_str()) {
-            ops.push(Op::Append(path, after[before.len()..].to_owned()));
-            return;
-        }
-        let shared = overlap(before, after, OVERLAP_SCAN);
-        if shared > 0
-            && let Some(rest) = utf16_suffix(after, shared)
-        {
-            ops.push(Op::Trim(path.clone(), before_units - shared));
-            if after_units > shared {
-                ops.push(Op::Append(path, rest.to_owned()));
-            }
-            return;
-        }
+    match (before, after) {
+        (Some(Value::String(before)), Value::String(after)) => emit_string(ops, path, before, after),
+        _ => ops.push(Op::Set(path, after.clone())),
     }
-    ops.push(Op::Set(path, after.clone()));
+}
+
+/// A changed string: an append when `after` extends `before`, a trim and an append when `before`'s tail is
+/// `after`'s head, else a set.
+pub(crate) fn emit_string(ops: &mut Vec<Op>, path: Path, before: &str, after: &str) {
+    let (before_units, after_units) = (jsrt::utf16::len(before), jsrt::utf16::len(after));
+    if after_units > before_units && after.starts_with(before) {
+        ops.push(Op::Append(path, after[before.len()..].to_owned()));
+        return;
+    }
+    let shared = overlap(before, after, OVERLAP_SCAN);
+    if shared > 0
+        && let Some(rest) = utf16_suffix(after, shared)
+    {
+        ops.push(Op::Trim(path.clone(), before_units - shared));
+        if after_units > shared {
+            ops.push(Op::Append(path, rest.to_owned()));
+        }
+        return;
+    }
+    ops.push(Op::Set(path, Value::String(after.to_owned())));
 }
 
 /// The part of `text` after its first `units` UTF-16 code units; `None` when that splits a character.

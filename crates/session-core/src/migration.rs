@@ -19,7 +19,7 @@
 //! (`fixtures/migration/migration.json`).
 
 use crate::pi_view::{native_session_as_pi, native_to_pi_entry};
-use delegation::task_store::TaskStore;
+use delegation::task_store::DocumentStore;
 use delegation::usage::{Measurement, UsageLedger, UsageOptions};
 use serde_json::{Map, Value, json};
 use session_file::{Leaf, SessionManager, SystemEnv, build_context_entries, build_session_context, entry_messages, js};
@@ -651,7 +651,7 @@ impl Clock for PiClock {
 /// The usage ledger's store during an import: it starts empty and keeps what the ledger writes.
 struct Captured(Arc<Mutex<Option<Value>>>);
 
-impl TaskStore for Captured {
+impl DocumentStore for Captured {
     fn read(&mut self) -> Result<Option<Value>, String> {
         Ok(None)
     }

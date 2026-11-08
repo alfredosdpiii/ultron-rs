@@ -4,7 +4,7 @@
 //! concurrent ends by microtask), and the journal ends the same. Ids and keys are numbered by first appearance.
 
 use delegation::host::{ChildRunner, Delegation, DelegationOptions, DetachedEnd};
-use delegation::task_store::TaskStore;
+use delegation::task_store::DocumentStore;
 use serde_json::{Value, json};
 use std::collections::HashMap;
 use std::path::Path;
@@ -18,7 +18,7 @@ struct Shared {
 
 struct Store(Arc<Mutex<Shared>>);
 
-impl TaskStore for Store {
+impl DocumentStore for Store {
     fn read(&mut self) -> Result<Option<Value>, String> {
         Ok(self.0.lock().unwrap().value.clone())
     }
@@ -179,18 +179,11 @@ fn delegation_spawn_collect_finish_replay_typescript_scenarios() {
             })
         };
         let spawn_depth = delegation::host::spawn_depth_limit(scenario["env"]["ULTRON_SPAWN_DEPTH"].as_str());
-        let (host, events) = Delegation::new(DelegationOptions {
-            store: Box::new(Store(shared.clone())),
-            collect: delegation::host::CollectMode::Wait,
-            runner,
-            spawn_depth,
-            child_model: None,
-            workspace: None,
-            session_id: "session".into(),
-            worktree_setup: None,
-            keep_worktrees: false,
-            now: Box::new(|| 1000.0),
-        });
+        let mut options = DelegationOptions::new(runner);
+        options.store = Box::new(Store(shared.clone()));
+        options.spawn_depth = spawn_depth;
+        options.now = Box::new(|| 1000.0);
+        let (host, events) = Delegation::new(options);
         let host_ref = host.clone();
         let mut ids: Vec<String> = Vec::new();
         let mut pending: Vec<std::thread::JoinHandle<Result<Value, String>>> = Vec::new();

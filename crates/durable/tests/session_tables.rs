@@ -25,7 +25,6 @@ fn progress_doc() -> durable::Doc {
 
 fn step_doc() -> durable::Doc {
     DocDefinition::new("test.step", 1, DocSemantics::Task, |_| json!({ "lines": [] }))
-        .family()
         .define()
         .unwrap()
 }
@@ -492,7 +491,7 @@ fn durable_session_tables_create_a_task_and_then_its_document_without_read_after
                 // Validation uses the candidate task record, not a caller table read.
                 tx.doc(&progress_doc(), Owner::Task(task_id))?
                     .push(&path!["lines"], vec![json!("created")])?;
-                tx.doc_member(&step_doc(), Owner::Task(task_id), "one", Value::Null)?
+                tx.doc(&step_doc(), Owner::Task(task_id))?
                     .push(&path!["lines"], vec![json!("step")])?;
                 Ok(task_id)
             })
@@ -543,9 +542,7 @@ fn durable_session_tables_reject_task_documents_after_a_terminal_candidate() {
                     expected
                 );
                 assert_eq!(
-                    tx.doc_member(&step_doc(), Owner::Task(task_id), "late", Value::Null)
-                        .unwrap_err()
-                        .to_string(),
+                    tx.doc(&step_doc(), Owner::Task(task_id)).unwrap_err().to_string(),
                     expected
                 );
                 assert!(
@@ -572,30 +569,23 @@ fn durable_session_tables_retire_task_documents_at_terminal_settlement() {
         let t = TestSession::open(backend);
         let c = t.create_conversation();
         let task_id = create_task(&t, c, true);
-        t.session
-            .commit(|tx| {
-                tx.doc_member(&step_doc(), Owner::Task(task_id), "committed", Value::Null)?
-                    .push(&path!["lines"], vec![json!("x")])?;
-                Ok(())
-            })
-            .unwrap();
         let published = t.publication_count();
         t.session
             .commit(|tx| {
                 let task = tx.task(task_id)?.unwrap();
-                tx.doc_member(&step_doc(), Owner::Task(task_id), "new", Value::Null)?
+                tx.doc(&step_doc(), Owner::Task(task_id))?
                     .push(&path!["lines"], vec![json!("created then retired")])?;
                 tx.set_task(terminal(&task))
             })
             .unwrap();
         let writes: Vec<Value> = t.storage.last_commit().iter().map(json).collect();
-        assert_eq!(writes.len(), 5);
+        assert_eq!(writes.len(), 4);
         let of = |kind: &str| writes.iter().filter(|w| w["type"] == kind).cloned().collect::<Vec<_>>();
         assert_eq!(of("task").len(), 1);
         let creations = of("document.create");
         let retirements = of("document.retire");
         assert_eq!(creations.len(), 1);
-        assert_eq!(retirements.len(), 3);
+        assert_eq!(retirements.len(), 2);
         assert!(retirements.iter().any(|r| r["id"] == creations[0]["record"]["id"]));
         assert_eq!(t.publication_count(), published + 1);
         let publication = t.last_publication();
@@ -608,7 +598,7 @@ fn durable_session_tables_retire_task_documents_at_terminal_settlement() {
         let documents = document_changes(&publication);
         assert_eq!(
             documents.iter().map(|d| d.value.clone()).collect::<Vec<_>>(),
-            [None, None, None]
+            [None, None]
         );
         assert!(
             documents
@@ -616,12 +606,7 @@ fn durable_session_tables_retire_task_documents_at_terminal_settlement() {
                 .all(|d| d.ops.is_empty() && d.conversation_id == Some(c))
         );
         assert_eq!(t.session.snapshot(&progress_doc(), Owner::Task(task_id)).unwrap(), None);
-        assert_eq!(
-            t.session
-                .snapshot_member(&step_doc(), Owner::Task(task_id), "committed")
-                .unwrap(),
-            None
-        );
+        assert_eq!(t.session.snapshot(&step_doc(), Owner::Task(task_id)).unwrap(), None);
         let alive = t
             .storage
             .scan_documents(

@@ -105,7 +105,7 @@ impl DocumentStore for SessionDocument {
     }
 }
 
-impl delegation::task_store::TaskStore for SessionDocument {
+impl delegation::task_store::DocumentStore for SessionDocument {
     fn read(&mut self) -> Result<Option<Value>, String> {
         DocumentStore::read(self)
     }

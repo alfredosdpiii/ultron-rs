@@ -1,8 +1,8 @@
 //! `rlm.pool` reports each live kernel's process-tree memory and the tree cap (session-worker.ts `poolStats`:
 //! `memoryBytes` per lane and in all, `memoryCapBytes`), against the real runtime.py.
 
-use delegation::lanes::{CellOutcome, Lanes, LanesOptions};
 use kernel::{HostHandler, Kernel, KernelOptions, Status, TreeMemoryOptions};
+use lanes::{CellOutcome, Lanes, LanesOptions};
 use serde_json::Value;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;

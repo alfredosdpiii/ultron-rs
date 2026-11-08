@@ -15,7 +15,6 @@ mod common;
 use agents_support::{Options, aborted, adapter};
 use common::HANG;
 use delegation::agents::Agents;
-use delegation::task_store::TaskStore;
 use host::journal::FileJobJournal;
 use host::{AllowAll, Host};
 use kernel::{HostHandler, Kernel, KernelOptions, Signal, Status};
@@ -44,7 +43,7 @@ fn wait_for(what: &str, mut condition: impl FnMut() -> bool) {
 /// The task journal in one JSON file (the session value `ultron.rlm/tasks`).
 struct FileTasks(PathBuf);
 
-impl TaskStore for FileTasks {
+impl delegation::task_store::DocumentStore for FileTasks {
     fn read(&mut self) -> Result<Option<Value>, String> {
         FileDocumentStore::new(&self.0).read()
     }

@@ -91,7 +91,7 @@ impl State {
         let mut inner = self.lock();
         let mut next = inner.value.clone();
         mutate(&mut next);
-        let ops = crate::diff::diff_revisions(&inner.value, &next);
+        let ops = chord_delta::diff_revisions(&inner.value, &next);
         if ops.is_empty() {
             return;
         }
@@ -122,7 +122,7 @@ impl State {
         };
         let mut next = aside.inner.value.clone();
         mutate(&mut next);
-        let ops = crate::diff::diff_revisions(&aside.inner.value, &next);
+        let ops = chord_delta::diff_revisions(&aside.inner.value, &next);
         if ops.is_empty() {
             return;
         }

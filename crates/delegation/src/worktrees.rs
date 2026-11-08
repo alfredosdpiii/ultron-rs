@@ -17,9 +17,6 @@
 //! Crashes: each worktree has a record (`<id>.json`) naming its owner process; [`prune_worktrees`] removes those of
 //! gone owners, committing uncommitted work first and keeping branches that hold work.
 
-#[path = "checkpoints.rs"]
-pub mod checkpoints;
-
 use jsrt::utf16;
 use kernel::Signal;
 use regex::Regex;
@@ -162,12 +159,12 @@ pub struct GitResult {
 }
 
 #[derive(Default)]
-struct GitOptions<'a> {
-    env: Vec<(&'a str, String)>,
-    input: Option<Vec<u8>>,
+pub(crate) struct GitOptions<'a> {
+    pub(crate) env: Vec<(&'a str, String)>,
+    pub(crate) input: Option<Vec<u8>>,
 }
 
-fn opts<'a>(env: &[(&'a str, &str)]) -> GitOptions<'a> {
+pub(crate) fn opts<'a>(env: &[(&'a str, &str)]) -> GitOptions<'a> {
     GitOptions {
         env: env.iter().map(|(k, v)| (*k, v.to_string())).collect(),
         input: None,
@@ -250,7 +247,7 @@ fn first_lines(text: &str, count: usize) -> String {
 }
 
 /// `git` that must succeed; its stderr names what failed.
-fn git_ok_with(cwd: &Path, args: &[&str], options: GitOptions<'_>) -> Result<String> {
+pub(crate) fn git_ok_with(cwd: &Path, args: &[&str], options: GitOptions<'_>) -> Result<String> {
     let result = git_with(cwd, args, options)?;
     if result.code != 0 {
         let shown: Vec<&str> = args
@@ -276,12 +273,12 @@ fn git_ok_with(cwd: &Path, args: &[&str], options: GitOptions<'_>) -> Result<Str
     Ok(result.stdout)
 }
 
-fn git_ok(cwd: &Path, args: &[&str]) -> Result<String> {
+pub(crate) fn git_ok(cwd: &Path, args: &[&str]) -> Result<String> {
     git_ok_with(cwd, args, GitOptions::default())
 }
 
 /// No user hooks, no signing prompts: Ultron's own bookkeeping commits and checkouts.
-fn quiet<'a>(args: &[&'a str]) -> Vec<&'a str> {
+pub(crate) fn quiet<'a>(args: &[&'a str]) -> Vec<&'a str> {
     let mut out = vec![
         "-c",
         "core.hooksPath=/dev/null",
@@ -299,7 +296,7 @@ type Identity = Vec<(&'static str, String)>;
 static IDENTITIES: LazyLock<Mutex<HashMap<PathBuf, Identity>>> = LazyLock::new(Mutex::default);
 
 /// Author/committer for Ultron's commits: the repository's configured identity, else "Ultron".
-fn identity_env(cwd: &Path) -> Result<Identity> {
+pub(crate) fn identity_env(cwd: &Path) -> Result<Identity> {
     if let Some(cached) = IDENTITIES.lock().unwrap_or_else(PoisonError::into_inner).get(cwd) {
         return Ok(cached.clone());
     }
@@ -394,7 +391,7 @@ pub fn repo_info(cwd: &Path) -> Result<RepoInfo> {
     })
 }
 
-fn temporary_index(kind: &str) -> PathBuf {
+pub(crate) fn temporary_index(kind: &str) -> PathBuf {
     std::env::temp_dir().join(format!(
         "ultron-{kind}-{}-{}",
         std::process::id(),
@@ -402,7 +399,7 @@ fn temporary_index(kind: &str) -> PathBuf {
     ))
 }
 
-struct TempIndex(PathBuf);
+pub(crate) struct TempIndex(pub(crate) PathBuf);
 
 impl Drop for TempIndex {
     fn drop(&mut self) {
@@ -418,7 +415,7 @@ impl Drop for TempIndex {
 /// entry, so a file rewritten with the same size in the second it was staged (an edit right after a commit) looked
 /// unchanged once the copy landed a second later, and the snapshot left the edit out: under load the fixture's
 /// parent edit went missing and a conflicting merge came back as "changed during the merge".
-fn copy_index(from: &Path, to: &Path) -> std::io::Result<()> {
+pub(crate) fn copy_index(from: &Path, to: &Path) -> std::io::Result<()> {
     std::fs::copy(from, to)?;
     let modified = std::fs::metadata(from)?.modified()?;
     std::fs::File::options().write(true).open(to)?.set_modified(modified)

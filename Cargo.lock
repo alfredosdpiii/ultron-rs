@@ -18,6 +18,7 @@ dependencies = [
  "jsrt",
  "kernel",
  "kernel-apis",
+ "lanes",
  "mimalloc",
  "serde_json",
  "services",
@@ -627,6 +628,7 @@ dependencies = [
  "jsrt",
  "kernel",
  "kernel-apis",
+ "lanes",
  "regex",
  "rustix",
  "serde",
@@ -714,7 +716,6 @@ dependencies = [
  "chord-delta",
  "indexmap",
  "jsrt",
- "rustix",
  "serde",
  "serde_json",
  "tempfile",
@@ -1653,6 +1654,16 @@ dependencies = [
  "euclid",
  "polycool",
  "smallvec",
+]
+
+[[package]]
+name = "lanes"
+version = "0.1.0"
+dependencies = [
+ "jsrt",
+ "kernel",
+ "serde_json",
+ "tempfile",
 ]
 
 [[package]]
@@ -2753,6 +2764,7 @@ dependencies = [
  "jsrt",
  "kernel",
  "kernel-apis",
+ "lanes",
  "loki",
  "mcp",
  "regex",

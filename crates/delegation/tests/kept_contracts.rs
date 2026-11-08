@@ -5,7 +5,7 @@
 
 use delegation::host::{ChildRunner, Delegation, DelegationOptions, Reattached};
 use delegation::spawn_contract::SpawnContract;
-use delegation::task_store::TaskStore;
+use delegation::task_store::DocumentStore;
 use kernel::Signal;
 use serde_json::{Value, json};
 use std::sync::{Arc, Mutex};
@@ -17,7 +17,7 @@ const HANG: Duration = Duration::from_secs(120);
 #[derive(Clone, Default)]
 struct Shared(Arc<Mutex<Option<Value>>>);
 
-impl TaskStore for Shared {
+impl DocumentStore for Shared {
     fn read(&mut self) -> Result<Option<Value>, String> {
         Ok(self.0.lock().unwrap().clone())
     }

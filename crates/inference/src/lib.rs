@@ -305,29 +305,6 @@ fn is_plain_type(contract: &Value, types: &[&str]) -> bool {
     })
 }
 
-/// `text.replace(/^```(?:json)?\s*\n([\s\S]*?)\n?```$/, "$1")`.
-fn strip_fence(text: &str) -> &str {
-    let Some(inner) = text.strip_prefix("```").and_then(|rest| rest.strip_suffix("```")) else {
-        return text;
-    };
-    if text.len() < 6 {
-        return text;
-    }
-    let body = |rest: &'_ str| -> Option<usize> {
-        let run = rest.len() - rest.trim_start_matches(jsrt::string::is_space).len();
-        rest[..run].rfind('\n').map(|at| at + 1)
-    };
-    let start = match inner.strip_prefix("json").and_then(|rest| body(rest).map(|at| 4 + at)) {
-        Some(at) => at,
-        None => match body(inner) {
-            Some(at) => at,
-            None => return text,
-        },
-    };
-    // The capture's optional trailing newline is trimmed by the caller.
-    &inner[start..]
-}
-
 /// typebox `Errors(contract, value)` as `parseReply` words them: `"<instancePath or value> <message>"`.
 pub fn contract_errors(contract: &Value, value: &Value) -> Vec<String> {
     jsonschema::errors(contract, value)
@@ -348,7 +325,7 @@ pub fn contract_errors(contract: &Value, value: &Value) -> Vec<String> {
 
 /// `parseReply`: the contract-valid value, or the reason to re-ask.
 fn parse_reply(text: &str, contract: &Value) -> Result<Value, String> {
-    let cleaned = jsrt::string::trim(strip_fence(jsrt::string::trim(text)));
+    let cleaned = jsrt::string::trim(jsrt::string::strip_json_fence_loose(jsrt::string::trim(text)));
     let parsed = serde_json::from_str::<Value>(cleaned).ok().or_else(|| {
         let start = cleaned.find(['[', '{'])?;
         let end = cleaned.rfind(['}', ']'])?;
@@ -400,8 +377,6 @@ pub(crate) struct Engine {
     model: Model,
     api_key: Option<String>,
     transport: Arc<dyn Transport>,
-    /// The provider environment requests carry (`options.env`); none reads the process environment.
-    env: Option<ai::env::ProviderEnv>,
     /// Other models a frame may name; none: only the session's own.
     models: Option<ModelResolver>,
     /// The stream requests go through instead of `transport` (the session's request stack: its settings, keys and
@@ -415,7 +390,7 @@ impl Engine {
     }
 
     /// The engine of a frame that names `model`: this one for the session's own model (or none), else the
-    /// resolver's model over the same transport and environment.
+    /// resolver's model over the same transport.
     fn for_model(&self, model: Option<&str>) -> Result<Engine, String> {
         let Some(model) = model.filter(|model| *model != self.own_model()) else {
             return Ok(self.clone());
@@ -430,7 +405,7 @@ impl Engine {
         })
     }
 
-    /// A request's options: the key, the provider environment and reasoning; no output limit of its own, so the
+    /// A request's options: the key and reasoning; no output limit of its own, so the
     /// provider's default goes out capped at `tranche` (with the contract for a schema-enforcing provider) by the
     /// payload hook, as inference.ts `beforePayload` does.
     fn options(&self, tranche: u64, thinking: Option<&str>, contract: Option<&Value>) -> SimpleStreamOptions {
@@ -440,13 +415,10 @@ impl Engine {
         options
     }
 
-    /// Fill a request's key, provider environment and payload hook.
+    /// Fill a request's key and payload hook.
     fn prepare(&self, options: &mut SimpleStreamOptions, tranche: u64, contract: Option<&Value>) {
         options.base.api_key = self.api_key.clone();
         options.base.max_tokens = None;
-        if self.env.is_some() {
-            options.base.env = self.env.clone();
-        }
         options.base.on_payload = Some(payload::hook(contract.cloned(), tranche));
     }
 
@@ -542,7 +514,6 @@ impl Inference {
                 model,
                 api_key,
                 transport,
-                env: None,
                 models: None,
                 stream: None,
             },
@@ -568,13 +539,6 @@ impl Inference {
     /// Frame requests go through `stream` (the session's request stack) instead of this handler's transport.
     pub fn with_stream(mut self, stream: Arc<dyn agent::StreamFn>) -> Self {
         self.engine.stream = Some(stream);
-        self
-    }
-
-    /// The provider environment frame requests carry (`options.env`: credentials, regions, endpoints) instead of
-    /// the process environment.
-    pub fn with_provider_env(mut self, env: ai::env::ProviderEnv) -> Self {
-        self.engine.env = Some(env);
         self
     }
 
@@ -723,7 +687,7 @@ impl Inference {
         let requested_depth = optional_integer(budget.get("depth"), "budget.depth", 1, MAX_DEPTH)?;
         let model = match payload.get("model") {
             None | Some(Value::Null) => None,
-            Some(Value::String(model)) if is_model_ref(model) => Some(model.clone()),
+            Some(Value::String(model)) if jsrt::string::is_model_ref(model) => Some(model.clone()),
             Some(_) => return Err("model must be provider/model".into()),
         };
         let max_repairs = optional_integer(payload.get("max_repairs"), "max_repairs", 0, MAX_REPAIRS)?.unwrap_or(
@@ -804,15 +768,6 @@ impl Inference {
         self.session.run_frame(&live, &self.lane, signal);
         Ok(self.session.observation(&live))
     }
-}
-
-/// `^[^/\s]+\/[^/\s]+(?:\/[^/\s]+)*$`.
-fn is_model_ref(model: &str) -> bool {
-    let parts: Vec<&str> = model.split('/').collect();
-    parts.len() >= 2
-        && parts
-            .iter()
-            .all(|part| !part.is_empty() && !part.chars().any(char::is_whitespace))
 }
 
 fn create_private_dir(dir: &Path) -> Result<(), String> {

@@ -7,6 +7,7 @@
 
 use super::log::{EntryKind, LogEntry, LogUsage, SessionLog, log_usage, record};
 use super::stats::{CELL_APIS, Cells, Stats, parse_session_stats};
+use delegation::lane_names::{LaneOwner, child_lane, frame_lane, parse_lane};
 use indexmap::{IndexMap, IndexSet};
 use serde_json::{Map, Value, json};
 use std::collections::{HashMap, HashSet};
@@ -32,9 +33,12 @@ pub const DURABLE_CHILDREN_MODEL: &str = "sub-agents (host ledger)";
 fn lane_kind(lane: Option<&str>) -> Lane {
     match lane {
         Some("main") => Lane::Root,
-        Some(l) if l.starts_with("ultron.rlm-frame.") => Lane::Frames,
-        Some(l) if l.starts_with("ultron.rlm-child.") => Lane::Subagents,
-        _ => Lane::Other,
+        Some(lane) => match parse_lane(lane) {
+            Some(LaneOwner::Frame(_)) => Lane::Frames,
+            Some(LaneOwner::Child(_)) => Lane::Subagents,
+            None => Lane::Other,
+        },
+        None => Lane::Other,
     }
 }
 
@@ -544,10 +548,7 @@ pub fn build_session_report_with(log: &SessionLog, subscription_providers: &[Str
         .collect();
     let mut process_children: HashSet<&str> = HashSet::new();
     for task in &tasks {
-        if !external
-            || task.definition != "rlm-child"
-            || lane_models.contains_key(format!("ultron.rlm-child.{}", task.id).as_str())
-        {
+        if !external || task.definition != "rlm-child" || lane_models.contains_key(child_lane(&task.id).as_str()) {
             continue;
         }
         process_children.insert(&task.id);
@@ -581,12 +582,7 @@ pub fn build_session_report_with(log: &SessionLog, subscription_providers: &[Str
             usage.insert("cost".into(), json!({"total": cost}));
         }
         if let Some(usage) = log_usage(Some(&Value::Object(usage))) {
-            buckets.add(
-                Lane::Subagents,
-                &model,
-                &usage,
-                Some(&format!("ultron.rlm-child.{}", task.id)),
-            );
+            buckets.add(Lane::Subagents, &model, &usage, Some(&child_lane(&task.id)));
         }
     }
 
@@ -777,7 +773,7 @@ pub fn build_session_report_with(log: &SessionLog, subscription_providers: &[Str
         }
     }
     for child in &children {
-        let lane = format!("ultron.rlm-child.{}", child.id);
+        let lane = child_lane(&child.id);
         let model = lane_models
             .get(lane.as_str())
             .cloned()
@@ -839,7 +835,7 @@ pub fn build_session_report_with(log: &SessionLog, subscription_providers: &[Str
 
     // Depth: frames.
     let mut trace_by_id: IndexMap<String, &Map<String, Value>> = IndexMap::new();
-    for (key, value) in log.values_of("ultron.rlm.frames") {
+    for (key, value) in log.values_of(inference::TRACE_NAMESPACE) {
         if key == "index" {
             continue;
         }
@@ -929,7 +925,7 @@ pub fn build_session_report_with(log: &SessionLog, subscription_providers: &[Str
             trace.get("taskId").and_then(Value::as_str),
         ) {
             (Some(lane), _) => Some(lane.to_string()),
-            (None, Some(task)) => Some(format!("ultron.rlm-frame.{task}")),
+            (None, Some(task)) => Some(frame_lane(task)),
             _ => None,
         };
         let model = trace
@@ -956,7 +952,7 @@ pub fn build_session_report_with(log: &SessionLog, subscription_providers: &[Str
             frames[6] += 1.0;
         }
         max_frame_level = max_frame_level.max(level);
-        let lane = format!("ultron.rlm-frame.{}", task.id);
+        let lane = frame_lane(&task.id);
         let model = lane_models
             .get(lane.as_str())
             .cloned()

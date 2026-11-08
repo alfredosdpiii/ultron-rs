@@ -1,50 +1,17 @@
 //! The delegation host's view of the one task journal. The journal itself (`task-store.ts`: validation, bounded
 //! persistence, recovery that interrupts unfinished tasks, the error texts) lives once, in `harness::task_store`;
-//! this module keeps the JSON-valued API `host.rs` uses and the boxed [`TaskStore`] it is configured with.
+//! this module keeps the JSON-valued API `host.rs` uses over the boxed [`DocumentStore`] it is configured with.
 
-pub use harness::task_store::task_fingerprint;
-use harness::task_store::{TaskDocumentStore, TaskState};
+use harness::task_store::TaskState;
+pub use harness::task_store::{DocumentStore, MemoryStore, task_fingerprint};
 use serde_json::Value;
 
-/// Atomic document replacement (`NativeHostStore`).
-pub trait TaskStore: Send {
-    fn read(&mut self) -> Result<Option<Value>, String>;
-    fn write(&mut self, document: &Value) -> Result<(), String>;
-}
-
-/// An in-memory store (the session value in tests).
-#[derive(Default)]
-pub struct MemoryStore {
-    pub value: Option<Value>,
-}
-
-impl TaskStore for MemoryStore {
-    fn read(&mut self) -> Result<Option<Value>, String> {
-        Ok(self.value.clone())
-    }
-    fn write(&mut self, document: &Value) -> Result<(), String> {
-        self.value = Some(document.clone());
-        Ok(())
-    }
-}
-
-struct Store(Box<dyn TaskStore>);
-
-impl TaskDocumentStore for Store {
-    fn read(&mut self) -> Result<Option<Value>, String> {
-        self.0.read()
-    }
-    fn write(&mut self, document: &Value) -> Result<(), String> {
-        self.0.write(document)
-    }
-}
-
 /// `NativeTaskJournal`, synchronous: callers serialize access (the host keeps it behind a mutex).
-pub struct TaskJournal(harness::task_store::TaskJournal<Store>);
+pub struct TaskJournal(harness::task_store::TaskJournal<Box<dyn DocumentStore>>);
 
 impl TaskJournal {
-    pub fn new(store: Box<dyn TaskStore>) -> Self {
-        TaskJournal(harness::task_store::TaskJournal::new(Store(store)))
+    pub fn new(store: Box<dyn DocumentStore>) -> Self {
+        TaskJournal(harness::task_store::TaskJournal::new(store))
     }
 
     pub fn list(&mut self) -> Result<Vec<Value>, String> {

@@ -484,14 +484,14 @@ pub fn in_journal<T>(
     clock: Arc<dyn TickClock>,
     change: impl FnOnce(&kernel_apis::prompt_schedule::ScheduleModule) -> Result<T, String>,
 ) -> Result<T, String> {
-    let _owner = durable::owner::OwnerLock::acquire(path).map_err(|error| match error {
-        durable::owner::OwnerError::InUse { pid } => crate::worker::session_in_use(
+    let _owner = crate::owner::OwnerLock::acquire(path, Duration::from_millis(500)).map_err(|error| match error {
+        crate::owner::OwnerError::InUse { pid } => crate::worker::session_in_use(
             &session_journal::repo::read_metadata(path)
                 .map(|m| m.id)
                 .unwrap_or_default(),
             pid,
         ),
-        durable::owner::OwnerError::Io(error) => error.to_string(),
+        crate::owner::OwnerError::Io(error) => error.to_string(),
     })?;
     let _lock = crate::lock::Lock::acquire(
         path,

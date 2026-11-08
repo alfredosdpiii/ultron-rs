@@ -294,7 +294,7 @@ fn claude_root_subagent_root_spawns_only_within_its_allowance_and_relays_its_ver
 fn claude_root_harness_lane_children_get_the_configured_child_model() {
     let runs: Runs = Arc::default();
     let host = host(Arc::clone(&runs));
-    host.set_child_model(Some("cliproxyapi/glm-5.3-flash".into()));
+    host.set_child_model(Arc::new(|| Some("cliproxyapi/glm-5.3-flash".into())));
     assert_eq!(
         spawn(&host, json!({"name": "x"})).unwrap()["model"],
         "cliproxyapi/glm-5.3-flash"

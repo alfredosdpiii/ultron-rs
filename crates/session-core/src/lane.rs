@@ -12,11 +12,11 @@ use ai::{
     AbortSignal, AssistantMessage, EventSink, Message, Model, SimpleStreamOptions, StopReason, TextContent, Tool,
     TranscriptContext, Transport, UserContent, UserMessage, UserMessageContent,
 };
-use delegation::lanes::{CellOutcome, Lanes};
 use host::Host;
 use host::cell::{CellFormat, cell_output};
 use host::secrets::OutputMasker;
 use kernel::Kernel;
+use lanes::{CellOutcome, Lanes};
 use serde_json::{Value, json};
 use std::future::Future;
 use std::path::{Path, PathBuf};

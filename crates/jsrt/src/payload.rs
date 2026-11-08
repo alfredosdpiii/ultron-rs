@@ -11,6 +11,14 @@ pub fn fields(payload: &Map<String, Value>, allowed: &[&str]) -> Result<(), Stri
     }
 }
 
+/// A string field that is not empty after `trim()`, returned untrimmed; else "<name> must be a nonempty string".
+pub fn nonempty_string(value: Option<&Value>, name: &str) -> Result<String, String> {
+    match value.and_then(Value::as_str) {
+        Some(text) if !crate::string::trim(text).is_empty() => Ok(text.to_string()),
+        _ => Err(format!("{name} must be a nonempty string")),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -26,5 +34,20 @@ mod tests {
         assert_eq!(fields(&payload, &["name"]), Err("Unknown payload field: zeta".into()));
         assert_eq!(fields(&payload, &["name", "zeta", "alpha"]), Ok(()));
         assert_eq!(fields(&map(json!({})), &[]), Ok(()));
+    }
+
+    #[test]
+    fn jsrt_nonempty_string_trims_as_javascript_does() {
+        assert_eq!(nonempty_string(Some(&json!(" a ")), "name"), Ok(" a ".into()));
+        for blank in [json!(""), json!(" \u{feff}\n"), json!(1), Value::Null] {
+            assert_eq!(
+                nonempty_string(Some(&blank), "name"),
+                Err("name must be a nonempty string".into())
+            );
+        }
+        assert_eq!(
+            nonempty_string(None, "key"),
+            Err("key must be a nonempty string".into())
+        );
     }
 }

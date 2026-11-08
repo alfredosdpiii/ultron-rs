@@ -4,10 +4,9 @@
 //! instead, and goes back to the lane (closing idle side lanes) once it is free. `rlm.cancel(id)` cancels another
 //! lane's cell. Against the real runtime.py; every wait is on a condition, with a 120 s hang guard.
 
-use delegation::host::{ChildRunner, CollectMode, Delegation, DelegationOptions};
-use delegation::lanes::{CellEnd, CellOutcome, Lanes, LanesOptions, Started, side_lane_note};
-use delegation::task_store::MemoryStore;
+use delegation::host::{ChildRunner, Delegation, DelegationOptions};
 use kernel::{ExecutionResult, Kernel, KernelOptions, Status};
+use lanes::{CellEnd, CellOutcome, Lanes, LanesOptions, Started, side_lane_note};
 use serde_json::{Map, Value};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::Receiver;
@@ -56,18 +55,7 @@ struct Root {
 fn root(max_lanes: usize, cancel_grace: Duration) -> Root {
     let dir = tempfile::tempdir().unwrap();
     let gate = Gate::default();
-    let (host, _events) = Delegation::new(DelegationOptions {
-        store: Box::new(MemoryStore::default()),
-        collect: CollectMode::Wait,
-        runner: gate.runner(),
-        spawn_depth: 3,
-        child_model: None,
-        workspace: None,
-        session_id: "session".into(),
-        worktree_setup: None,
-        keep_worktrees: false,
-        now: Box::new(|| 0.0),
-    });
+    let (host, _events) = Delegation::new(DelegationOptions::new(gate.runner()));
     let cwd = dir.path().to_path_buf();
     let private = dir.path().join("agent");
     let handler_lanes: Arc<Mutex<Vec<String>>> = Arc::default();

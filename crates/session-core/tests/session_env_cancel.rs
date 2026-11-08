@@ -13,7 +13,7 @@
 //! second FIFO nobody writes. Nothing here signals a process: the host stops what it started, and a command still
 //! blocked when a test fails is released by opening its FIFO (the reader then sees end of file).
 
-use delegation::lanes::CellOutcome;
+use lanes::CellOutcome;
 use serde_json::json;
 use session_core::RunEnv;
 use session_core::compose::{CELL_CANCELLED_SHELL, Runtime, Services, Stack};

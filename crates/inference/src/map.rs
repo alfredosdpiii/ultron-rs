@@ -4,7 +4,8 @@
 //! frame's first call is held at admission, so the shared pool decides deterministically which frames run. Code-free frames that name no model take
 //! ULTRON_RLM_FRAME_MODEL, else `rlm.frameModel`; `rlm.frameThinking` is the default thinking level.
 
-use super::{Inference, fields, is_model_ref, optional_integer};
+use super::{Inference, fields, optional_integer};
+use jsrt::string::is_model_ref;
 use kernel::{HostHandler, Signal};
 use serde_json::{Map, Value, json};
 use std::collections::HashMap;

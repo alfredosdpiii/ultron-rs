@@ -82,7 +82,7 @@ impl SharedWorld {
 
     /// Serve `kind` for the subagent called `name` (`None`: this subagent server's own root).
     pub fn serve(&self, name: Option<&str>, kind: &str, payload: &Map<String, Value>) -> Result<Value, String> {
-        if !crate::durable_apis::SHARED_RECORDS.contains(&kind) {
+        if !harness::chat::host_ops::SWARM_KINDS.contains(&kind) {
             return Err(format!("{kind} is not one of the session's shared records"));
         }
         if let Some(durable) = self.durable.get() {

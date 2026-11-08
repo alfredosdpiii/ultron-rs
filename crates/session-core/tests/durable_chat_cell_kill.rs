@@ -1,6 +1,6 @@
 //! Kill/reopen process test of the durable REPL cell (spec §8.4, rewriteplan "Example recovery contract"): a child
 //! process (this binary re-run in child mode) opens a ChatHarness over the product's durable store (a format-4
-//! session file through `JournalStorage`) with cells running in the real Python kernel (`runtime.py`). The model calls the REPL; the cell commits partial output through the
+//! session file through `durable_store::open`) with cells running in the real Python kernel (`runtime.py`). The model calls the REPL; the cell commits partial output through the
 //! `cell.output` host request, records an external effect, and blocks. The parent SIGKILLs the child and its kernel,
 //! reopens the same session file with a fresh kernel, and checks the contract: the cell's committed intent is answered with
 //! one `interrupted` result carrying the committed partial output, the cell's code never runs again, and the run

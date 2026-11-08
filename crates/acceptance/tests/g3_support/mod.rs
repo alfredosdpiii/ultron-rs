@@ -9,7 +9,7 @@
 #![allow(dead_code)]
 
 use delegation::agents::{Agents, AgentsOptions, LaneReply, LaneRun};
-use delegation::task_store::TaskStore;
+use delegation::task_store::DocumentStore;
 use kernel::Signal;
 use kernel_apis::{ApiModule, Request, TaskHost};
 use serde_json::{Value, json};
@@ -26,7 +26,7 @@ fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
 #[derive(Clone, Default)]
 pub struct JournalStore(pub Arc<Mutex<Option<Value>>>);
 
-impl TaskStore for JournalStore {
+impl DocumentStore for JournalStore {
     fn read(&mut self) -> Result<Option<Value>, String> {
         Ok(lock(&self.0).clone())
     }

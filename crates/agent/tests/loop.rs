@@ -6,8 +6,7 @@ use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
 
 use agent::{
-    Agent, AgentControl, AgentEvent, AgentOptions, AgentTool, AgentToolResult, QueueMode, StreamFn, ToolExecutionMode,
-    ToolUpdate,
+    Agent, AgentControl, AgentEvent, AgentOptions, AgentTool, AgentToolResult, QueueMode, StreamFn, ToolUpdate,
 };
 use ai::http::BoxFuture;
 use ai::{
@@ -195,12 +194,7 @@ fn act(action: &Value, control: &AgentControl) {
         .map(|t| user(t.as_str().unwrap()));
     match action["do"].as_str().unwrap() {
         "abort" => control.abort(),
-        "abortFollowUp" => {
-            texts.for_each(|m| control.follow_up(m));
-            control.abort();
-        }
         "steer" | "steers" => texts.for_each(|m| control.steer(m)),
-        "followUps" => texts.for_each(|m| control.follow_up(m)),
         other => panic!("unknown action {other}"),
     }
 }
@@ -226,10 +220,6 @@ async fn replay(scenario: &Value) {
     options.system_prompt = scenario["systemPrompt"].as_str().map(String::from);
     options.tools = names("tools");
     options.steering_mode = mode(&scenario["steeringMode"]);
-    options.follow_up_mode = mode(&scenario["followUpMode"]);
-    if scenario["toolExecution"] == "sequential" {
-        options.tool_execution = ToolExecutionMode::Sequential;
-    }
     let mut agent = Agent::new(
         options,
         Box::new(Scripted {
@@ -299,11 +289,6 @@ async fn replay(scenario: &Value) {
         state["errorMessage"].as_str(),
         "{name}: errorMessage"
     );
-    assert_eq!(
-        agent.control().has_queued_messages(),
-        state["queued"].as_bool().unwrap(),
-        "{name}: queued"
-    );
 }
 
 async fn replay_named(name: &str) {
@@ -333,11 +318,6 @@ async fn agent_loop_parallel_tools_with_error_and_unknown_tool_match_typescript(
 }
 
 #[tokio::test]
-async fn agent_loop_sequential_tools_match_typescript() {
-    replay_named("two_tools_sequential").await;
-}
-
-#[tokio::test]
 async fn agent_loop_abort_mid_stream_matches_typescript() {
     replay_named("abort_mid_stream").await;
 }
@@ -350,11 +330,6 @@ async fn agent_loop_steering_matches_typescript() {
 #[tokio::test]
 async fn agent_loop_steering_one_at_a_time_matches_typescript() {
     replay_named("steering_one_at_a_time").await;
-}
-
-#[tokio::test]
-async fn agent_loop_follow_up_all_mode_matches_typescript() {
-    replay_named("follow_up").await;
 }
 
 #[tokio::test]
@@ -383,19 +358,18 @@ async fn agent_loop_mixed_terminate_batch_continues_like_typescript() {
 }
 
 #[tokio::test]
-async fn agent_loop_abort_ends_run_despite_queued_follow_up_like_typescript() {
-    replay_named("abort_with_queued_follow_up").await;
-}
-
-#[tokio::test]
-async fn agent_loop_abort_stops_sequential_tools_like_typescript() {
-    replay_named("abort_during_sequential_tools").await;
-}
-
-#[tokio::test]
 async fn agent_loop_declares_tool_changes_like_typescript() {
     replay_named("tools_added_later").await;
 }
+
+/// Recorded scenarios of upstream seams this port does not have: sequential tool execution and follow-up messages
+/// (nothing in the product runs tools one at a time or queues a follow-up).
+const NOT_PORTED: [&str; 4] = [
+    "two_tools_sequential",
+    "follow_up",
+    "abort_with_queued_follow_up",
+    "abort_during_sequential_tools",
+];
 
 #[test]
 fn agent_loop_fixture_covers_every_scenario() {
@@ -405,6 +379,7 @@ fn agent_loop_fixture_covers_every_scenario() {
         .unwrap()
         .iter()
         .map(|s| s["name"].as_str().unwrap())
+        .filter(|name| !NOT_PORTED.contains(name))
         .collect();
     assert_eq!(
         names,
@@ -412,18 +387,14 @@ fn agent_loop_fixture_covers_every_scenario() {
             "text",
             "tool_round_trip",
             "two_tools_parallel",
-            "two_tools_sequential",
             "abort_mid_stream",
             "steering",
-            "follow_up",
             "steering_one_at_a_time",
             "provider_error",
             "no_response_queued",
             "length_stop",
             "terminate",
             "terminate_mixed",
-            "abort_with_queued_follow_up",
-            "abort_during_sequential_tools",
             "tools_added_later"
         ]
     );

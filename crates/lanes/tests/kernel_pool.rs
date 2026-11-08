@@ -2,7 +2,7 @@
 //! kernels with a fixed clock): every operation returns the same value or error, and each lane sees the same kernel
 //! lifecycle (create, snapshot, shutdown). TS close() evicts lanes concurrently, so the log is compared per lane.
 
-use delegation::kernel_pool::{KernelPool, KernelPoolOptions, Lease, PoolableKernel, SnapshotPath, snapshot_outcome};
+use lanes::kernel_pool::{KernelPool, KernelPoolOptions, Lease, PoolableKernel, SnapshotPath, snapshot_outcome};
 use serde_json::{Value, json};
 use std::path::Path;
 use std::sync::{Arc, Mutex};

@@ -1,7 +1,7 @@
 //! Python-level process tests of the durable many-agent APIs through the real `runtime.py` (`swarm_api.py`): the
 //! model's REPL cells call `rlm.spawn(keep=True)`, `rlm.collect`, `rlm.ask`, `rlm.partial`, `swarm`, `board` and
 //! `notes`; every request reaches the Rust host operations through the kernel protocol, and every durable record
-//! goes to the product's durable store (a format-4 session file through `JournalStorage`). One test SIGKILLs the
+//! goes to the product's durable store (a format-4 session file through `durable_store::open`). One test SIGKILLs the
 //! process (and its kernel) after a persistent child answered, reopens the session file, and asks the child again
 //! from a new cell: the child survived the restart with its context.
 

@@ -12,7 +12,7 @@ fn fixture() -> Value {
 fn daemon_diff_revisions_matches_chord() {
     for case in fixture()["diffs"].as_array().unwrap() {
         let name = case["name"].as_str().unwrap();
-        let ops = daemon::diff::diff_revisions(&case["before"], &case["after"]);
+        let ops = chord_delta::diff_revisions(&case["before"], &case["after"]);
         let json: Vec<Value> = ops.iter().map(Op::to_json).collect();
         assert_eq!(Value::Array(json), case["ops"], "{name} ops");
         let wire = Encoder::default().encode(&ops);

@@ -6,12 +6,10 @@
 //! value in those two searches, and containers always fall back to the per-index diff, as a freshly built revision
 //! does upstream. Counting mismatches uses deep equality, which emits the same ops as upstream's identity count.
 
-use chord_delta::{Op, Path, RESERVED_SEGMENTS, Seg, overlap};
+use crate::tracker::{MAX_DELTA_OPERATIONS, emit_string};
+use crate::{Op, Path, RESERVED_SEGMENTS, Seg};
 use jsrt::utf16;
 use serde_json::{Map, Value};
-
-const DEFAULT_OVERLAP_SCAN: usize = 65_536;
-const MAX_DELTA_OPERATIONS: usize = 4_096;
 
 fn emit_set(path: &[Seg], value: &Value, ops: &mut Vec<Op>) {
     if path.is_empty() {
@@ -28,25 +26,6 @@ fn is_primitive(value: &Value) -> bool {
 /// Upstream `===` on array items: primitives by value, containers never (see the module docs).
 fn same(left: &Value, right: &Value) -> bool {
     is_primitive(left) && left == right
-}
-
-fn emit_string(before: &str, after: &str, path: &[Seg], ops: &mut Vec<Op>) {
-    if before == after {
-        return;
-    }
-    if after.len() > before.len() && after.starts_with(before) {
-        ops.push(Op::Append(path.to_vec(), after[before.len()..].to_string()));
-        return;
-    }
-    let shared = overlap(before, after, DEFAULT_OVERLAP_SCAN);
-    if shared == 0 {
-        ops.push(Op::Set(path.to_vec(), Value::String(after.to_string())));
-        return;
-    }
-    ops.push(Op::Trim(path.to_vec(), utf16::len(before) - shared));
-    if utf16::len(after) > shared {
-        ops.push(Op::Append(path.to_vec(), utf16::skip(after, shared).to_string()));
-    }
 }
 
 fn permutation(before: &[Value], after: &[Value]) -> Option<Vec<usize>> {
@@ -184,7 +163,7 @@ fn diff_value(before: &Value, after: &Value, path: &[Seg], ops: &mut Vec<Op>) {
         return;
     }
     match (before, after) {
-        (Value::String(b), Value::String(a)) if !path.is_empty() => emit_string(b, a, path, ops),
+        (Value::String(b), Value::String(a)) if !path.is_empty() => emit_string(ops, path.to_vec(), b, a),
         (Value::Array(b), Value::Array(a)) => diff_array(b, a, path, ops),
         (Value::Object(b), Value::Object(a)) => diff_object(b, a, path, ops),
         _ => emit_set(path, after, ops),

@@ -15,16 +15,8 @@ mod contracts;
 mod fork;
 #[path = "git_baseline.rs"]
 mod git_baseline;
-#[path = "idle_pool.rs"]
-mod idle_pool;
-#[path = "idle_sweep.rs"]
-mod idle_sweep;
 #[path = "kept_contracts.rs"]
 mod kept_contracts;
-#[path = "kernel_pool.rs"]
-mod kernel_pool;
-#[path = "kernel_pool_real.rs"]
-mod kernel_pool_real;
 #[path = "lane_routing.rs"]
 mod lane_routing;
 #[path = "lanes.rs"]
@@ -33,8 +25,6 @@ mod lanes;
 mod lanes_api;
 #[path = "orphan_prune.rs"]
 mod orphan_prune;
-#[path = "pool_memory.rs"]
-mod pool_memory;
 #[path = "predict_fixture.rs"]
 mod predict_fixture;
 #[path = "schema_fixture.rs"]

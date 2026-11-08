@@ -16,23 +16,6 @@ use kernel::Signal;
 use serde_json::{Map, Value, json};
 use std::sync::{Arc, Weak};
 
-/// Requests that always come here.
-const SHARED: [&str; 13] = [
-    "swarm.register",
-    "swarm.agents",
-    "swarm.route",
-    "swarm.send",
-    "swarm.inbox",
-    "board.add",
-    "board.claim",
-    "board.update",
-    "board.list",
-    "notes.read",
-    "notes.append",
-    "notes.write",
-    "rlm.ask",
-];
-
 /// Child requests that come here when every child they name is persistent.
 const CHILD_REQUESTS: [&str; 4] = ["rlm.collect", "rlm.results", "rlm.cancel", "rlm.delete_subagent"];
 
@@ -81,7 +64,8 @@ impl SwarmOps {
 
     /// Whether `kind` with `payload` is served here.
     fn serves(&self, kind: &str, payload: &Map<String, Value>) -> bool {
-        if SHARED.contains(&kind) {
+        // Always here: `rlm.ask`, the swarm, the board and the notes.
+        if kind == "rlm.ask" || harness::chat::host_ops::SWARM_KINDS.contains(&kind) {
             return true;
         }
         if kind == "rlm.spawn" {

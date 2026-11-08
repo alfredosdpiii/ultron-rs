@@ -1,12 +1,13 @@
 use std::sync::{Arc, Mutex};
 
 use ai::transcript::create_initial_system_message;
-use ai::{AbortSignal, ImageContent, Message, Model, TextContent, UserContent, UserMessage, UserMessageContent};
+use ai::{
+    AbortSignal, AssistantContent, ImageContent, Message, Model, StopReason, TextContent, UserContent, UserMessage,
+    UserMessageContent,
+};
 
 use crate::agent_loop::agent_loop;
-use crate::types::{
-    AgentContext, AgentEvent, AgentLoopConfig, AgentMessage, AgentTool, BeforeToolCall, StreamFn, ToolExecutionMode,
-};
+use crate::types::{AgentContext, AgentEvent, AgentLoopConfig, AgentMessage, AgentTool, BeforeToolCall, StreamFn};
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum QueueMode {
@@ -37,11 +38,10 @@ impl Queue {
 
 type Shared<T> = Arc<Mutex<T>>;
 
-/// Cloneable handle for listeners and other tasks: queue messages and abort the active run.
+/// Cloneable handle for listeners and other tasks: queue steering messages and abort the active run.
 #[derive(Clone)]
 pub struct AgentControl {
     steering: Shared<Queue>,
-    follow_up: Shared<Queue>,
     active: Shared<Option<AbortSignal>>,
 }
 
@@ -51,19 +51,10 @@ impl AgentControl {
         jsrt::sync::lock(&self.steering).messages.push(message);
     }
 
-    /// Queue a message delivered when the agent would otherwise stop.
-    pub fn follow_up(&self, message: AgentMessage) {
-        jsrt::sync::lock(&self.follow_up).messages.push(message);
-    }
-
     pub fn abort(&self) {
         if let Some(signal) = jsrt::sync::lock(&self.active).as_ref() {
             signal.abort();
         }
-    }
-
-    pub fn has_queued_messages(&self) -> bool {
-        !jsrt::sync::lock(&self.steering).messages.is_empty() || !jsrt::sync::lock(&self.follow_up).messages.is_empty()
     }
 }
 
@@ -75,8 +66,6 @@ pub struct AgentOptions {
     /// `"off"` or a reasoning level.
     pub thinking_level: String,
     pub steering_mode: QueueMode,
-    pub follow_up_mode: QueueMode,
-    pub tool_execution: ToolExecutionMode,
     pub session_id: Option<String>,
     pub before_tool_call: Option<BeforeToolCall>,
 }
@@ -90,8 +79,6 @@ impl AgentOptions {
             messages: Vec::new(),
             thinking_level: "off".into(),
             steering_mode: QueueMode::OneAtATime,
-            follow_up_mode: QueueMode::OneAtATime,
-            tool_execution: ToolExecutionMode::Parallel,
             session_id: None,
             before_tool_call: None,
         }
@@ -106,7 +93,6 @@ pub struct Agent {
     pub thinking_level: String,
     pub tools: Vec<Arc<dyn AgentTool>>,
     pub messages: Vec<AgentMessage>,
-    pub tool_execution: ToolExecutionMode,
     pub session_id: Option<String>,
     pub error_message: Option<String>,
     pub before_tool_call: Option<BeforeToolCall>,
@@ -135,7 +121,6 @@ impl Agent {
             thinking_level: options.thinking_level,
             tools: options.tools,
             messages,
-            tool_execution: options.tool_execution,
             session_id: options.session_id,
             error_message: None,
             before_tool_call: options.before_tool_call,
@@ -143,7 +128,6 @@ impl Agent {
             listeners: Vec::new(),
             control: AgentControl {
                 steering: queue(options.steering_mode),
-                follow_up: queue(options.follow_up_mode),
                 active: Arc::new(Mutex::new(None)),
             },
         }
@@ -171,6 +155,30 @@ impl Agent {
         self.prompt(vec![message]).await;
     }
 
+    /// The run's reply: the text of the transcript's last assistant message; `Err` when that message failed or was
+    /// aborted (its error), or there is none.
+    pub fn final_text(&self) -> Result<String, String> {
+        let last = self.messages.iter().rev().find_map(|m| match m {
+            Message::Assistant(message) => Some(message),
+            _ => None,
+        });
+        let Some(last) = last else {
+            return Err("Agent produced no assistant result at the completed tip".into());
+        };
+        if matches!(last.stop_reason, StopReason::Error | StopReason::Aborted) {
+            return Err(last.error_message.clone().unwrap_or_else(|| "Agent run failed".into()));
+        }
+        Ok(last
+            .content
+            .iter()
+            .filter_map(|part| match part {
+                AssistantContent::Text(text) => Some(text.text.as_str()),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+            .join("\n"))
+    }
+
     /// Run the loop over `messages`; returns when the run ends (`agent_end`).
     pub async fn prompt(&mut self, messages: Vec<AgentMessage>) {
         let signal = AbortSignal::new();
@@ -178,15 +186,12 @@ impl Agent {
         self.error_message = None;
 
         let steering = self.control.steering.clone();
-        let follow_up = self.control.follow_up.clone();
         let config = AgentLoopConfig {
             model: self.model.clone(),
             reasoning: (self.thinking_level != "off").then(|| self.thinking_level.clone()),
             session_id: self.session_id.clone(),
             api_key: None,
-            tool_execution: self.tool_execution,
             get_steering_messages: Some(Box::new(move || jsrt::sync::lock(&steering).drain())),
-            get_follow_up_messages: Some(Box::new(move || jsrt::sync::lock(&follow_up).drain())),
             before_tool_call: self.before_tool_call.clone(),
         };
         let context = AgentContext {

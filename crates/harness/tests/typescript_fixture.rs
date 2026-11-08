@@ -5,7 +5,7 @@
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
 
-use harness::task_store::{TaskDocumentStore, TaskJournal, TaskState, task_fingerprint};
+use harness::task_store::{DocumentStore, TaskJournal, TaskState, task_fingerprint};
 use serde_json::{Value, json};
 
 #[derive(Default)]
@@ -18,7 +18,7 @@ struct Shared {
 #[derive(Clone, Default)]
 struct MemoryStore(Arc<Mutex<Shared>>);
 
-impl TaskDocumentStore for MemoryStore {
+impl DocumentStore for MemoryStore {
     fn read(&mut self) -> Result<Option<Value>, String> {
         let shared = self.0.lock().unwrap();
         if shared.fail_read {

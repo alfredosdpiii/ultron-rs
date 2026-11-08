@@ -12,8 +12,10 @@
 //! - Object key order follows insertion; upstream JavaScript lists integer-like keys first. Key order is not part of
 //!   the upstream contract.
 
+mod diff;
 mod tracker;
 
+pub use diff::diff_revisions;
 pub use tracker::{Draft, Prepared, Tracker, overlap};
 
 use serde_json::Value;

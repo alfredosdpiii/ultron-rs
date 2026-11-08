@@ -1,5 +1,5 @@
 //! The session's Pi Durable storage, kept in the session's own format-4 journal: the durable conversation runtime
-//! (`harness::chat`: generations, REPL cells, the inbox, children) commits through [`JournalStorage`], which
+//! (`harness::chat`: generations, REPL cells, the inbox, children) commits through the storage [`open`] returns, which
 //! validates each commit against an in-memory [`MemoryStorage`] and appends it to the session file as one
 //! `ultron.module` list element (`durable`: `{seq, writes}`) before applying it. Reopening the session replays those
 //! elements, so every durable record survives a crash with the transcript it belongs to, in one file.
@@ -10,12 +10,7 @@
 //! Each commit is also shown to an [`Observer`] after it is durable: the session actor projects the runtime's
 //! progress (answers, cell results) onto the TypeScript transcript from there.
 
-use durable::{
-    ConversationId, ConversationQuery, ConversationRecord, Cursor, DocumentAddress, DocumentId, DocumentPoint,
-    DocumentQuery, DocumentRecord, EntryId, EntryQuery, EntryRecord, MemoryStorage, Page, Seq, Storage, StorageError,
-    StorageWrite, StoredDocument, StoredEntry, SubmissionId, SubmissionQuery, SubmissionRecord, TaskId, TaskQuery,
-    TaskRecord,
-};
+use durable::{MemoryStorage, PreparedCommit, Seq, StorageError, StorageWrite};
 use serde_json::json;
 use session_journal::{Session, Write};
 use std::sync::{Arc, Mutex, MutexGuard};
@@ -33,13 +28,6 @@ pub fn lock(session: &SharedSession) -> MutexGuard<'_, Session> {
 
 /// Sees every durable commit after it is in the journal (on the committing thread; it must not block).
 pub type Observer = Arc<dyn Fn(&[StorageWrite]) + Send + Sync>;
-
-/// Pi Durable storage inside a format-4 session file.
-pub struct JournalStorage {
-    session: SharedSession,
-    memory: MemoryStorage,
-    observer: Option<Observer>,
-}
 
 fn failed(message: impl Into<String>) -> StorageError {
     StorageError::Failed(message.into())
@@ -62,136 +50,27 @@ pub fn stored_commits(session: &Session) -> Result<Vec<(u64, Vec<StorageWrite>)>
         .collect()
 }
 
-impl JournalStorage {
-    /// Replay the durable records of `session`.
-    pub fn open(session: SharedSession, observer: Option<Observer>) -> Result<JournalStorage, StorageError> {
-        let mut memory = MemoryStorage::new();
-        for (seq, writes) in stored_commits(&lock(&session))? {
-            let prepared = memory.prepare_commit(writes, Some(Seq(seq)))?;
-            memory.apply_commit(prepared);
-        }
-        Ok(JournalStorage {
-            session,
-            memory,
-            observer,
-        })
+/// Pi Durable storage inside a format-4 session file: a [`MemoryStorage`] holding the durable records `session`
+/// has, whose every later commit is appended to it (then shown to `observer`) before it is applied.
+pub fn open(session: SharedSession, observer: Option<Observer>) -> Result<MemoryStorage, StorageError> {
+    let mut memory = MemoryStorage::new();
+    for (seq, writes) in stored_commits(&lock(&session))? {
+        let prepared = memory.prepare_commit(writes, Some(Seq(seq)))?;
+        memory.apply_commit(prepared);
     }
-}
-
-impl Storage for JournalStorage {
-    fn commit(&mut self, writes: Vec<StorageWrite>) -> durable::Result<Seq> {
-        let prepared = self.memory.prepare_commit(writes, None)?;
+    Ok(memory.with_commit_sink(Box::new(move |prepared: &PreparedCommit| {
         let record = json!({
             "seq": prepared.seq.0,
             "writes": serde_json::to_value(&prepared.writes).map_err(|e| failed(e.to_string()))?,
         });
-        lock(&self.session)
+        lock(&session)
             .commit(&[Write::append(NAMESPACE, KEY, record)])
             .map_err(failed)?;
-        let observed = self.observer.as_ref().map(|_| prepared.writes.clone());
-        let seq = self.memory.apply_commit(prepared);
-        if let (Some(observer), Some(writes)) = (&self.observer, observed) {
-            observer(&writes);
+        if let Some(observer) = &observer {
+            observer(&prepared.writes);
         }
-        Ok(seq)
-    }
-
-    fn mint_id(&mut self) -> durable::Result<u64> {
-        self.memory.mint_id()
-    }
-
-    fn conversation(&self, id: ConversationId) -> durable::Result<Option<ConversationRecord>> {
-        self.memory.conversation(id)
-    }
-
-    fn scan_conversations(
-        &self,
-        query: &ConversationQuery,
-        limit: usize,
-        cursor: Option<&Cursor>,
-    ) -> durable::Result<Page<ConversationRecord>> {
-        self.memory.scan_conversations(query, limit, cursor)
-    }
-
-    fn entry(&self, id: EntryId) -> durable::Result<Option<StoredEntry>> {
-        self.memory.entry(id)
-    }
-
-    fn visible_entry(&self, conversation_id: ConversationId, id: EntryId) -> durable::Result<Option<StoredEntry>> {
-        self.memory.visible_entry(conversation_id, id)
-    }
-
-    fn find_latest_head_marker(
-        &self,
-        conversation_id: ConversationId,
-        at_or_before: Option<EntryId>,
-    ) -> durable::Result<Option<EntryRecord>> {
-        self.memory.find_latest_head_marker(conversation_id, at_or_before)
-    }
-
-    fn scan_entries(
-        &self,
-        query: &EntryQuery,
-        limit: usize,
-        cursor: Option<&Cursor>,
-    ) -> durable::Result<Page<EntryRecord>> {
-        self.memory.scan_entries(query, limit, cursor)
-    }
-
-    fn task(&self, id: TaskId) -> durable::Result<Option<TaskRecord>> {
-        self.memory.task(id)
-    }
-
-    fn scan_tasks(
-        &self,
-        query: &TaskQuery,
-        limit: usize,
-        cursor: Option<&Cursor>,
-    ) -> durable::Result<Page<TaskRecord>> {
-        self.memory.scan_tasks(query, limit, cursor)
-    }
-
-    fn submission(&self, id: SubmissionId) -> durable::Result<Option<SubmissionRecord>> {
-        self.memory.submission(id)
-    }
-
-    fn scan_submissions(
-        &self,
-        query: &SubmissionQuery,
-        limit: usize,
-        cursor: Option<&Cursor>,
-    ) -> durable::Result<Page<SubmissionRecord>> {
-        self.memory.scan_submissions(query, limit, cursor)
-    }
-
-    fn submission_by_request(
-        &self,
-        conversation_id: ConversationId,
-        request_id: &str,
-    ) -> durable::Result<Option<SubmissionRecord>> {
-        self.memory.submission_by_request(conversation_id, request_id)
-    }
-
-    fn find_document(&self, address: &DocumentAddress, at: DocumentPoint) -> durable::Result<Option<DocumentRecord>> {
-        self.memory.find_document(address, at)
-    }
-
-    fn document(&self, id: DocumentId, at: DocumentPoint) -> durable::Result<Option<StoredDocument>> {
-        self.memory.document(id, at)
-    }
-
-    fn scan_documents(
-        &self,
-        query: &DocumentQuery,
-        limit: usize,
-        cursor: Option<&Cursor>,
-    ) -> durable::Result<Page<DocumentRecord>> {
-        self.memory.scan_documents(query, limit, cursor)
-    }
-
-    fn close(&mut self) -> durable::Result<()> {
-        self.memory.close()
-    }
+        Ok(())
+    })))
 }
 
 /// Whether a session file holds durable runtime records.

@@ -9,7 +9,7 @@ mod agents_support;
 mod services_support;
 
 use agents_support::{Memory, aborted, adapter, definition, input_of};
-use delegation::task_store::TaskStore;
+use delegation::task_store::DocumentStore;
 use kernel_apis::{MemoryDocumentStore, ProgressModule, SchedulesModule};
 use serde_json::{Value, json};
 use services::ReleaseGateModule;

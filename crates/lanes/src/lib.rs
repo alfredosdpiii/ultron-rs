@@ -21,7 +21,8 @@
 //!   TTL), and the lane's next cell starts a kernel that restores that snapshot. When every live kernel is running or
 //!   pinned, opening or running another lane is refused with the pool's capacity error. `rlm.pool` reports it.
 
-use crate::host::Park;
+pub mod kernel_pool;
+
 use crate::kernel_pool::{KernelPool, KernelPoolOptions, Lease, PoolableKernel};
 use jsrt::sync;
 use kernel::{ExecutionResult, HostHandler, Kernel, Signal};
@@ -36,6 +37,10 @@ pub type LaneFactory = Arc<dyn Fn(&str) -> Result<Kernel, String> + Send + Sync>
 /// Makes the handler for one cell's host requests other than the lane API (normally
 /// `Delegation::cell_handler(lane, signal, park)`): `signal` is aborted when the cell ends or is cancelled, and the
 /// handler calls `park(true)` / `park(false)` around a host-side wait.
+/// Called with `true` when a request starts waiting host-side on children and `false` when that wait ends: how a
+/// lane learns its cell is parked.
+pub type Park = Arc<dyn Fn(bool) + Send + Sync>;
+
 pub type LaneHandlers = Arc<dyn Fn(&str, Signal, Park) -> Arc<dyn HostHandler> + Send + Sync>;
 
 pub struct LanesOptions {

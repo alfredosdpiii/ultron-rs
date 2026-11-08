@@ -11,7 +11,7 @@ use crate::compose::{AgentStores, Stack, SubagentHost, child_setup};
 use crate::durable_store::{SharedSession, lock};
 use delegation::agents::{LaneReply, LaneRun, LaneRunner};
 use delegation::host::{ChildRun, ChildRunner, ChildWaiter, Reattached};
-use delegation::task_store::TaskStore;
+use delegation::task_store::DocumentStore;
 use durable::{ConversationId, Cursor, ROOT_CONVERSATION_ID, TaskId, TaskQuery};
 use harness::chat::children::{CHILD_KIND, ChildInput, child_report, spawn_child};
 use harness::chat::{ChatHarness, ModelRef};
@@ -29,7 +29,7 @@ use std::time::Duration;
 pub const TASKS_NAMESPACE: &str = "ultron.tasks";
 pub const TASKS_KEY: &str = "root";
 /// The lane a subagent task's cells run in (`ultron.rlm-child.<task id>`), which its child task is named after.
-pub const LANE_PREFIX: &str = "ultron.rlm-child.";
+pub use delegation::lane_names::CHILD_LANE_PREFIX as LANE_PREFIX;
 /// The lane of another root conversation of the session (`ultron.conversation.<id>`).
 pub const CONVERSATION_LANE_PREFIX: &str = "ultron.conversation.";
 /// The `rlm.spawn(name=...)` of each subagent, a session value per task id (Rust-only: the task journal and the
@@ -60,7 +60,7 @@ pub struct SessionValueStore {
     pub handed_over: Option<Arc<AtomicBool>>,
 }
 
-impl TaskStore for SessionValueStore {
+impl DocumentStore for SessionValueStore {
     fn read(&mut self) -> Result<Option<Value>, String> {
         Ok(lock(&self.session).value(self.namespace, self.key).cloned())
     }
@@ -80,7 +80,7 @@ impl TaskStore for SessionValueStore {
 /// ones when they are ahead of the ledger's.
 pub struct SessionUsageStore(pub SharedSession);
 
-impl TaskStore for SessionUsageStore {
+impl DocumentStore for SessionUsageStore {
     fn read(&mut self) -> Result<Option<Value>, String> {
         Ok(lock(&self.0).value(USAGE_NAMESPACE, USAGE_KEY).cloned())
     }
@@ -172,7 +172,7 @@ impl DurableChildren {
                 namespace,
                 key,
                 handed_over: Some(self.handed_over.clone()),
-            }) as Box<dyn TaskStore>
+            }) as Box<dyn DocumentStore>
         };
         SubagentHost {
             store: value(TASKS_NAMESPACE, TASKS_KEY),

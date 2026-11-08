@@ -3,8 +3,8 @@
 //! fixtures/idle-pool.json (generate-idle-pool.mjs: the TypeScript tool's `poolStats()` right after creation), then
 //! checks admission with the first cell and the capacity refusal at open, with the real runtime.py.
 
-use delegation::lanes::{CellOutcome, Lanes, LanesOptions, PoolLimits};
 use kernel::{HostHandler, Kernel, KernelOptions, Status};
+use lanes::{CellOutcome, Lanes, LanesOptions, PoolLimits};
 use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;

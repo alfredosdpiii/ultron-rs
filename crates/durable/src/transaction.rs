@@ -4,9 +4,6 @@
 //! Port of `packages/durable/src/session/{transaction,forks}.ts`. Every Tx operation runs synchronously while the
 //! commit holds the Session line.
 
-mod chat_access;
-mod scheduler_access;
-
 use crate::documents::{
     Doc, Owner, Resolved, address_id, address_of, check_record_scope, check_record_version, document_create,
     materialize_value, object, resolve_address,
@@ -15,8 +12,9 @@ use crate::session::{CommitChange, Inner, LineState, Loaded, LoadedDocument, Res
 use crate::{
     ConversationId, ConversationOwner, ConversationParent, ConversationQuery, ConversationRecord, Cursor,
     DocumentContent, DocumentCopySource, DocumentCreate, DocumentFork, DocumentId, DocumentPoint, DocumentQuery,
-    DocumentRecord, DocumentScope, EntryId, EntryQuery, EntryRecord, Page, Seq, StorageWrite, SubmissionId,
-    SubmissionRecord, SubmissionStatus, SubmissionType, TaskId, TaskQuery, TaskRecord, TaskState, TaskStatus,
+    DocumentRecord, DocumentScope, EntryId, EntryQuery, EntryRecord, Page, ROOT_CONVERSATION_ID, Seq, StorageWrite,
+    SubmissionId, SubmissionRecord, SubmissionStatus, SubmissionType, TaskId, TaskQuery, TaskRecord, TaskState,
+    TaskStatus,
 };
 use chord_delta::{Draft, Prepared, Tracker};
 use indexmap::IndexMap;
@@ -193,7 +191,6 @@ enum Target {
         record: DocumentCreate,
         source: DocumentCopySource,
     },
-    RetireOnly(DocumentRecord),
 }
 
 /// One incarnation acquired, created, copied, or retired by this transaction.
@@ -303,6 +300,44 @@ impl<'a> Tx<'a> {
 
     fn read<T>(&mut self, call: impl FnOnce(&mut dyn crate::Storage) -> crate::Result<T>) -> Result<T> {
         self.inner.guard(self.line, true, call)
+    }
+
+    /// A read of committed Storage that ignores the read-after-write rule: the conversation runtime and the task
+    /// scheduler (`crates/harness`) read inside their own commit callbacks, as upstream's read Storage directly.
+    pub fn committed<T>(&mut self, read: impl FnOnce(&dyn crate::Storage) -> crate::Result<T>) -> Result<T> {
+        self.read(|storage| read(storage))
+    }
+
+    /// Latest candidate of every task this transaction created or replaced, in first-write order.
+    pub fn staged_tasks(&self) -> Vec<TaskRecord> {
+        self.tasks
+            .values()
+            .filter_map(|task| task.write.as_ref().map(|(_, record)| record.clone()))
+            .collect()
+    }
+
+    /// Every conversation this transaction created or forked, in order.
+    pub fn staged_conversations(&self) -> Vec<ConversationRecord> {
+        self.writes
+            .iter()
+            .filter_map(|write| match write {
+                StorageWrite::Conversation { value } => Some(value.clone()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// Create the ownerless root conversation at its reserved ID.
+    pub fn create_root_conversation(&mut self) -> Result<ConversationRecord> {
+        self.has_table_write = true;
+        let record = ConversationRecord {
+            id: ROOT_CONVERSATION_ID,
+            parent: None,
+            owner: None,
+        };
+        self.created_conversations.insert(record.id);
+        self.writes.push(StorageWrite::Conversation { value: record.clone() });
+        Ok(record)
     }
 
     fn mint(&mut self) -> Result<u64> {
@@ -690,16 +725,7 @@ impl<'a> Tx<'a> {
 
     /// Acquire a draft of a singleton document, creating it from `initial` when absent.
     pub fn doc(&mut self, doc: &Doc, owner: Owner) -> Result<Draft> {
-        self.doc_at(doc, owner, None, Value::Null)
-    }
-
-    /// Acquire a draft of one family member; `seed` initializes only an absent member.
-    pub fn doc_member(&mut self, doc: &Doc, owner: Owner, key: &str, seed: Value) -> Result<Draft> {
-        self.doc_at(doc, owner, Some(key), seed)
-    }
-
-    fn doc_at(&mut self, doc: &Doc, owner: Owner, key: Option<&str>, seed: Value) -> Result<Draft> {
-        let resolved = resolve_address(doc.definition(), owner, key)?;
+        let resolved = resolve_address(doc.definition(), owner)?;
         if let DocumentScope::Task { task_id } = resolved.address.scope
             && self
                 .tasks
@@ -721,7 +747,7 @@ impl<'a> Tx<'a> {
             }
         }
         let skip_load = latest.is_some_and(|index| self.documents[index].retire);
-        let (target, draft) = self.acquire(doc, &resolved, seed, skip_load)?;
+        let (target, draft) = self.acquire(doc, &resolved, skip_load)?;
         self.latest.insert(resolved.id.clone(), self.documents.len());
         self.documents.push(DocEntry {
             address_id: resolved.id,
@@ -733,7 +759,7 @@ impl<'a> Tx<'a> {
         Ok(draft)
     }
 
-    fn acquire(&mut self, doc: &Doc, resolved: &Resolved, seed: Value, skip_load: bool) -> Result<(Target, Draft)> {
+    fn acquire(&mut self, doc: &Doc, resolved: &Resolved, skip_load: bool) -> Result<(Target, Draft)> {
         let definition = doc.definition();
         let loaded = if skip_load {
             None
@@ -761,7 +787,7 @@ impl<'a> Tx<'a> {
             },
             DocumentScope::Session => {}
         }
-        let value = object((definition.initial)(&seed), &definition.kind)?;
+        let value = object((definition.initial)(&Value::Null), &definition.kind)?;
         let id = DocumentId(self.mint()?);
         let tracker = Tracker::new(value);
         let draft = tracker.begin_change()?;
@@ -813,60 +839,6 @@ impl<'a> Tx<'a> {
         });
         entry.draft = Some(draft.clone());
         Ok(draft)
-    }
-
-    /// Retire the current incarnation at an address when the transaction commits; an acquired draft's final content
-    /// is written first. Retiring an absent address does nothing.
-    pub fn retire_doc(&mut self, doc: &Doc, owner: Owner) -> Result<()> {
-        self.retire_at(doc, owner, None)
-    }
-
-    pub fn retire_member(&mut self, doc: &Doc, owner: Owner, key: &str) -> Result<()> {
-        self.retire_at(doc, owner, Some(key))
-    }
-
-    fn retire_at(&mut self, doc: &Doc, owner: Owner, key: Option<&str>) -> Result<()> {
-        let definition = doc.definition();
-        let resolved = resolve_address(definition, owner, key)?;
-        if let Some(&index) = self.latest.get(&resolved.id) {
-            let entry = &mut self.documents[index];
-            if entry.retire {
-                return Ok(());
-            }
-            if entry.draft.is_none()
-                && let Some(Target::ForkCopy { record, .. }) = &entry.target
-            {
-                check_record_scope(definition, record)?;
-                entry.retire = true;
-                return Ok(());
-            }
-            if entry.draft.is_some() {
-                entry.retire = true;
-                return Ok(());
-            }
-        }
-        let cached = lock(&self.inner.documents)
-            .get(&resolved.id)
-            .map(|loaded| lock(loaded).record.clone());
-        let record = match cached {
-            Some(record) => Some(record),
-            None => {
-                let address = resolved.address.clone();
-                self.read(|storage| storage.find_document(&address, DocumentPoint::Current))?
-            }
-        };
-        if let Some(record) = &record {
-            check_record_scope(definition, &record.identity)?;
-        }
-        self.latest.insert(resolved.id.clone(), self.documents.len());
-        self.documents.push(DocEntry {
-            address_id: resolved.id,
-            definition: Some(doc.clone()),
-            draft: None,
-            target: record.map(Target::RetireOnly),
-            retire: true,
-        });
-        Ok(())
     }
 
     // ─── Settlement ─────────────────────────────────────────────────────────
@@ -1208,7 +1180,6 @@ fn plan_document(entry: DocEntry) -> Result<Option<Plan>> {
             };
             plan(PlanRecord::New(record), Some(content), None)
         }
-        Target::RetireOnly(record) => plan(PlanRecord::Committed(record), None, None),
         Target::Loaded(loaded) => {
             let prepared = prepared.expect("a loaded incarnation has a draft");
             let doc = definition.expect("a loaded incarnation has a definition");

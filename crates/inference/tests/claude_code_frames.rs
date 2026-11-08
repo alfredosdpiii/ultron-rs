@@ -5,6 +5,7 @@
 //! with the plan's usage limit; an API key in that env is never used. The task host is a fake that runs each
 //! `rlm-frame@1` task on its own thread. Sealed environment; nothing reaches the network.
 
+mod common;
 #[path = "../../ai/tests/claude_subscription_support/isolate.rs"]
 mod isolate;
 
@@ -146,7 +147,10 @@ fn inference_depth_frame_on_claude_code_runs_on_the_subscription_without_api_cre
         dir.path().join("context"),
     )
     .with_session(session, "main")
-    .with_provider_env(env);
+    .with_stream(Arc::new(common::EnvStream {
+        env,
+        transport: transport.clone(),
+    }));
     let Value::Object(payload) = json!({"task": "count", "budget": {"depth": 2, "calls": 2}}) else {
         unreachable!()
     };

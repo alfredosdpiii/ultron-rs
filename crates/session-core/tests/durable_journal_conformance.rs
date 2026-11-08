@@ -1,9 +1,9 @@
-//! The product's Pi Durable storage, [`JournalStorage`] (durable records inside the session's format-4 journal),
+//! The product's Pi Durable storage, the journal storage (`durable_store::open`) (durable records inside the session's format-4 journal),
 //! replays every upstream storage conformance case (`crates/durable/fixtures/generate.mjs`) call by call and must
 //! give the same results and the same error names and messages as upstream.
 //!
-//! Two runs per case: one JournalStorage over a fresh session file, compared with upstream's MemoryStorage
-//! recording (JournalStorage validates against a MemoryStorage working copy); and one closed and reopened from the
+//! Two runs per case: one durable::MemoryStorage over a fresh session file, compared with upstream's MemoryStorage
+//! recording (durable::MemoryStorage validates against a MemoryStorage working copy); and one closed and reopened from the
 //! file after every commit, failed or not, compared with upstream's reopened file backend (`jsonlReopen`): a reopen
 //! replays the journal, so IDs minted but never stored are not reserved again, as upstream. The one difference is the
 //! closed-storage message, which names the class that refused (`MemoryStorage is closed` here).
@@ -14,7 +14,7 @@ use durable::{
     StoredDocument, StoredEntry, SubmissionId, SubmissionQuery, SubmissionRecord, TaskId, TaskQuery, TaskRecord,
 };
 use serde_json::{Value, json};
-use session_core::durable_store::{JournalStorage, SharedSession, stored_commits};
+use session_core::durable_store::{SharedSession, stored_commits};
 use session_journal::{Metadata, SessionRepo, TestClock};
 use std::sync::{Arc, LazyLock, Mutex};
 use tempfile::TempDir;
@@ -116,8 +116,8 @@ fn open_session(repo: &SessionRepo, metadata: &Metadata) -> SharedSession {
     Arc::new(Mutex::new(repo.open(metadata).expect("open session")))
 }
 
-fn open_journal(repo: &SessionRepo, metadata: &Metadata) -> JournalStorage {
-    JournalStorage::open(open_session(repo, metadata), None).expect("open journal storage")
+fn open_journal(repo: &SessionRepo, metadata: &Metadata) -> durable::MemoryStorage {
+    session_core::durable_store::open(open_session(repo, metadata), None).expect("open journal storage")
 }
 
 /// The sequences of every commit the recording acknowledged, in order.
@@ -142,13 +142,13 @@ fn assert_journal_holds(name: &str, backend: &str, repo: &SessionRepo, metadata:
 
 /// Upstream's `ReopeningStorage` (test/sqlite-storage.test.ts): every commit, failed or not, closes and reopens.
 struct Reopening {
-    current: JournalStorage,
-    reopen: Box<dyn Fn() -> JournalStorage>,
+    current: durable::MemoryStorage,
+    reopen: Box<dyn Fn() -> durable::MemoryStorage>,
     closed: bool,
 }
 
 impl Reopening {
-    fn new(reopen: impl Fn() -> JournalStorage + 'static) -> Self {
+    fn new(reopen: impl Fn() -> durable::MemoryStorage + 'static) -> Self {
         Reopening {
             current: reopen(),
             reopen: Box::new(reopen),

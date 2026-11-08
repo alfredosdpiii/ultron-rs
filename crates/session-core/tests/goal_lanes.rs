@@ -5,7 +5,7 @@
 
 mod p_session_support;
 
-use delegation::lanes::CellOutcome;
+use lanes::CellOutcome;
 use p_session_support::{Setup, actor, text, tool};
 use serde_json::{Value, json};
 use session_core::RunEnv;

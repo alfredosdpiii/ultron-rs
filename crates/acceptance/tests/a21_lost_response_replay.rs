@@ -12,7 +12,7 @@
 mod agents_support;
 
 use agents_support::{Fixture, Options, adapter, fixture_with_stores, lock, wait_for};
-use delegation::task_store::TaskStore;
+use delegation::task_store::DocumentStore;
 use delegation::usage::{UsageLedger, UsageOptions};
 use kernel::Signal;
 use serde_json::{Value, json};
@@ -65,7 +65,7 @@ struct Owner {
     crash: Option<Crash>,
 }
 
-impl TaskStore for Owner {
+impl DocumentStore for Owner {
     fn read(&mut self) -> Result<Option<Value>, String> {
         Ok(self.durable.document())
     }

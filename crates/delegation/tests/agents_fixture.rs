@@ -5,7 +5,7 @@
 //! first appearance. Prompts and adapter calls are compared as multisets (parallel workflow nodes run concurrently).
 
 use delegation::agents::{AdapterRequest, Agents, AgentsOptions, LaneReply, LaneRun, TaskEnd};
-use delegation::task_store::TaskStore;
+use delegation::task_store::DocumentStore;
 use delegation::usage::{UsageLedger, UsageLimits, UsageOptions};
 use kernel_apis::TaskHost;
 use regex::Regex;
@@ -28,7 +28,7 @@ impl Shared {
     }
 }
 
-impl TaskStore for Shared {
+impl DocumentStore for Shared {
     fn read(&mut self) -> Result<Option<Value>, String> {
         Ok(self.0.lock().unwrap().clone())
     }

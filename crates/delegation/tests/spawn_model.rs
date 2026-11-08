@@ -2,7 +2,7 @@
 //! with the session's model check installed an unknown model is refused too, instead of the child silently running
 //! on the root's model; a known model reaches the child run.
 
-use delegation::host::{ChildRunner, CollectMode, Delegation, DelegationOptions, ModelCheck};
+use delegation::host::{ChildRunner, Delegation, DelegationOptions, ModelCheck};
 use serde_json::json;
 use std::sync::{Arc, Mutex};
 
@@ -20,7 +20,7 @@ fn builtin_model_check() -> ModelCheck {
     })
 }
 
-fn host() -> (Delegation, Arc<Mutex<Vec<Option<String>>>>) {
+fn host(model_check: Option<ModelCheck>) -> (Delegation, Arc<Mutex<Vec<Option<String>>>>) {
     let models: Arc<Mutex<Vec<Option<String>>>> = Arc::default();
     let seen = models.clone();
     let runner: ChildRunner = Arc::new(move |run| {
@@ -28,7 +28,7 @@ fn host() -> (Delegation, Arc<Mutex<Vec<Option<String>>>>) {
         Ok("done".into())
     });
     let mut options = DelegationOptions::new(runner);
-    options.collect = CollectMode::Wait;
+    options.model_check = model_check;
     (Delegation::new(options).0, models)
 }
 
@@ -42,7 +42,7 @@ fn spawn(host: &Delegation, model: serde_json::Value) -> Result<serde_json::Valu
 
 #[test]
 fn delegation_spawn_refuses_a_malformed_model() {
-    let (host, models) = host();
+    let (host, models) = host(None);
     for bad in ["no-slash", "a/", "/b", "a b/c", ""] {
         assert_eq!(
             spawn(&host, json!(bad)).unwrap_err(),
@@ -58,8 +58,7 @@ fn delegation_spawn_refuses_a_malformed_model() {
 
 #[test]
 fn delegation_spawn_with_the_model_check_refuses_an_unknown_model_and_passes_a_known_one() {
-    let (host, models) = host();
-    host.set_model_check(builtin_model_check());
+    let (host, models) = host(Some(builtin_model_check()));
     let error = spawn(&host, json!("nope/not-a-model")).unwrap_err();
     assert_eq!(
         error,

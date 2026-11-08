@@ -12,13 +12,12 @@
 
 use crate::context_reminder::ContextReminders;
 use agent::{Agent, AgentControl, AgentEvent};
-use ai::{AssistantContent, Message, StopReason, UserMessage, UserMessageContent};
-use delegation::child::ChildAgentFactory;
+use ai::{Message, UserMessage, UserMessageContent};
+use delegation::child::{ChildAgentFactory, run_to_text};
 use delegation::host::{ChildRun, ChildRunner};
 use jsrt::sync;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, OnceLock};
-use std::time::Duration;
 
 /// The running in-memory children, by lane.
 #[derive(Default)]
@@ -59,14 +58,6 @@ impl MemoryChildren {
     fn run(&self, factory: &ChildAgentFactory, run: ChildRun) -> Result<String, String> {
         let (options, stream) = factory(&run);
         let mut agent = Agent::new(options, stream);
-        let control = agent.control();
-        let signal = run.signal.clone();
-        let abort = control.clone();
-        // The child's end also aborts its signal, so this watcher always exits.
-        std::thread::spawn(move || {
-            while !signal.wait(Duration::from_secs(3600)) {}
-            abort.abort();
-        });
         // The conversation as the loop has it, for the lane's context meter.
         let conversation = Arc::new(Mutex::new(agent.messages.clone()));
         let seen = conversation.clone();
@@ -85,40 +76,12 @@ impl MemoryChildren {
                 })),
             );
         }
-        sync::lock(&self.running).insert(lane.clone(), control);
-        let ended = |children: &MemoryChildren| {
-            sync::lock(&children.running).remove(&lane);
-            if let Some(reminders) = children.reminders.get() {
-                reminders.set_lane_meter(&lane, None);
-            }
-        };
-        let runtime = match tokio::runtime::Builder::new_current_thread().enable_all().build() {
-            Ok(runtime) => runtime,
-            Err(error) => {
-                ended(self);
-                return Err(error.to_string());
-            }
-        };
-        runtime.block_on(agent.prompt_text(&run.prompt, Vec::new()));
-        ended(self);
-        let last = agent.messages.iter().rev().find_map(|m| match m {
-            Message::Assistant(message) => Some(message),
-            _ => None,
-        });
-        let Some(last) = last else {
-            return Err("Agent produced no assistant result at the completed tip".into());
-        };
-        if matches!(last.stop_reason, StopReason::Error | StopReason::Aborted) {
-            return Err(last.error_message.clone().unwrap_or_else(|| "Agent run failed".into()));
+        sync::lock(&self.running).insert(lane.clone(), agent.control());
+        let reply = run_to_text(&mut agent, &run.prompt, &run.signal);
+        sync::lock(&self.running).remove(&lane);
+        if let Some(reminders) = self.reminders.get() {
+            reminders.set_lane_meter(&lane, None);
         }
-        Ok(last
-            .content
-            .iter()
-            .filter_map(|part| match part {
-                AssistantContent::Text(text) => Some(text.text.as_str()),
-                _ => None,
-            })
-            .collect::<Vec<_>>()
-            .join("\n"))
+        reply
     }
 }

@@ -4,7 +4,7 @@
 //! first lane's state comes back in a new process. `rlm.pool` reports the pool; with every kernel running or pinned a
 //! new lane is refused with the pool's capacity error.
 
-use delegation::lanes::CellOutcome;
+use lanes::CellOutcome;
 use serde_json::{Value, json};
 use session_core::RunEnv;
 use session_core::compose::{Runtime, Services, Stack};

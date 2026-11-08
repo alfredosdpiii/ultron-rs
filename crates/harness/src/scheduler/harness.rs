@@ -265,7 +265,9 @@ impl Harness {
                 };
                 let mut cursor = None;
                 loop {
-                    let page = tx.committed_scan_submissions(&query, super::SCAN_PAGE_SIZE, cursor.as_ref())?;
+                    let page = tx.committed(|storage| {
+                        storage.scan_submissions(&query, super::SCAN_PAGE_SIZE, cursor.as_ref())
+                    })?;
                     submissions.extend(page.items);
                     match page.next {
                         Some(next) => cursor = Some(next),

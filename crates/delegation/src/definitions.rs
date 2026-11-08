@@ -3,7 +3,7 @@
 //! document replaced whole, a failed write poisons the registry), and the input/output contract checks every
 //! strategy shares, with the schema error detail of definitions derived from Python agent classes.
 
-use crate::task_store::TaskStore;
+use crate::task_store::DocumentStore;
 use harness::task_store::task_fingerprint;
 use jsonschema::{unchecked_keyword, validate_json_schema};
 use serde_json::{Map, Value, json};
@@ -212,13 +212,6 @@ fn is_lower_id(text: &str) -> bool {
         && chars.all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
 }
 
-/// `provider/model[/more]`: at least two nonempty segments without whitespace (JavaScript `\s`).
-pub fn is_model(text: &str) -> bool {
-    let js_space = |c: char| c == '\u{feff}' || c.is_whitespace();
-    let segments: Vec<&str> = text.split('/').collect();
-    segments.len() >= 2 && segments.iter().all(|s| !s.is_empty() && !s.chars().any(js_space))
-}
-
 /// The typebox `definitionSchema` check: the exact descriptor shape.
 fn descriptor_shape(value: &Value) -> bool {
     let Some(map) = value.as_object() else {
@@ -274,7 +267,7 @@ pub fn validate_definition(value: &Value) -> Result<Map<String, Value>, String> 
         }
     }
     if let Some(model) = value.get("model").and_then(Value::as_str)
-        && !is_model(model)
+        && !jsrt::string::is_model_ref(model)
     {
         return Err("Definition model must be provider/model".into());
     }
@@ -303,7 +296,7 @@ fn validate_stored(value: &Value) -> Result<Definition, String> {
 
 /// `NativeDefinitionRegistry`, synchronous: callers serialize access.
 pub struct DefinitionRegistry {
-    store: Option<Box<dyn TaskStore>>,
+    store: Option<Box<dyn DocumentStore>>,
     deterministic: bool,
     predict: bool,
     definitions: Vec<Definition>,
@@ -313,7 +306,7 @@ pub struct DefinitionRegistry {
 
 impl DefinitionRegistry {
     /// `deterministic` / `predict`: whether an adapter for that strategy is injected.
-    pub fn new(store: Option<Box<dyn TaskStore>>, deterministic: bool, predict: bool) -> Self {
+    pub fn new(store: Option<Box<dyn DocumentStore>>, deterministic: bool, predict: bool) -> Self {
         let definitions = builtin_descriptors()
             .into_iter()
             .map(|descriptor| Definition {

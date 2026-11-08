@@ -5,10 +5,10 @@
 //!
 //! Waits are host-side. With [`CollectMode::Host`] a cell's `rlm.collect` never waits (it fails at once naming the
 //! running children) and the turn scheduler waits between turns ([`Delegation::running`], [`Delegation::wait`], the
-//! [`DetachedEnd`] channel). With [`CollectMode::Wait`] (TS parity) the wait blocks only the request's host thread,
-//! ends when the cell is cancelled, and reports itself through [`CellContext::park`] so the lane detaches the cell.
-//! With [`CollectMode::InCell`] the wait blocks the cell itself (never parked, so the cell is never detached): for a
-//! lane nothing wakes when its work ends. [`Delegation::set_lane_collect`] picks the mode per lane.
+//! [`DetachedEnd`] channel); its `rlm.merge` waits on its own host thread and reports itself through
+//! [`CellContext::park`] so the lane detaches the cell. With [`CollectMode::InCell`] the wait blocks the cell itself
+//! (never parked, so the cell is never detached): for a lane nothing wakes when its work ends.
+//! [`DelegationOptions::collect`] picks the mode per lane.
 //! A detached child's end is pushed to the [`DetachedEnd`] channel as soon as its result is durable.
 
 mod restore;
@@ -16,14 +16,16 @@ pub use restore::{ChildWaiter, Reattached};
 
 use crate::git_baseline::GitBaseline;
 use crate::spawn_contract::{CheckPlace, CheckRunner, Enforcer, SpawnContract, enforce, plain_check_runner};
-use crate::task_store::{MemoryStore, TaskJournal, TaskStore, task_fingerprint};
+use crate::task_store::{DocumentStore, MemoryStore, TaskJournal, task_fingerprint};
 use crate::verdict::{MAX_VERDICT_REJECTIONS, validate_verdict};
 use crate::workspace::{
     DEFAULT_MAX_SNAPSHOT_ENTRIES, WorkspaceSnapshot, check_files, diff_snapshots, snapshot_workspace,
 };
 use crate::worktrees::{self as wt, WorktreeRecord, WorktreeSetup};
+use jsrt::payload::nonempty_string;
 use jsrt::{number, sync};
 use kernel::{HostHandler, Signal};
+use lanes::Park;
 use serde_json::{Map, Value, json};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -32,7 +34,6 @@ use std::sync::{Arc, Condvar, Mutex, PoisonError};
 use std::time::Duration;
 
 const CHILD: &str = "rlm-child@1";
-const DEFAULT_TIMEOUT_MS: f64 = 30.0 * 60.0 * 1000.0;
 const THINKING_LEVELS: [&str; 7] = ["off", "minimal", "low", "medium", "high", "xhigh", "max"];
 /// Default ceiling on `rlm.spawn` nesting (`ULTRON_SPAWN_DEPTH`).
 pub const DEFAULT_SPAWN_DEPTH: u32 = 3;
@@ -94,10 +95,6 @@ pub struct DetachedEnd {
     pub fetch: String,
 }
 
-/// Called with `true` when a request starts waiting host-side on children and `false` when that wait ends: how a
-/// lane learns its cell is parked (see `lanes.rs`).
-pub type Park = Arc<dyn Fn(bool) + Send + Sync>;
-
 /// What a request knows about the cell that made it.
 #[derive(Clone, Default)]
 pub struct CellContext {
@@ -109,8 +106,6 @@ pub struct CellContext {
 /// How `rlm.collect` treats children that are still running.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CollectMode {
-    /// As `native-host.ts`: the request waits (on its own host thread, cancelled with its cell) for every child.
-    Wait,
     /// The cell never waits: with every selected child ended it returns their results; otherwise it fails at once,
     /// naming the running children, and the host waits instead (their ends arrive as `child_done` events).
     Host,
@@ -120,43 +115,57 @@ pub enum CollectMode {
     InCell,
 }
 
-/// The [`CollectMode`] of each lane (see [`Delegation::set_lane_collect`]).
+/// The [`CollectMode`] of each lane.
 pub type LaneCollect = Arc<dyn Fn(&str) -> CollectMode + Send + Sync>;
 
 pub struct DelegationOptions {
-    pub store: Box<dyn TaskStore>,
-    pub collect: CollectMode,
+    pub store: Box<dyn DocumentStore>,
+    /// How `rlm.collect` (and `rlm.merge`'s wait) treats running children, per requesting lane: `Host` only where
+    /// the host wakes the lane when its work ends, `InCell` elsewhere.
+    pub collect: LaneCollect,
     pub runner: ChildRunner,
     /// See [`spawn_depth_limit`].
     pub spawn_depth: u32,
-    /// Model for spawns that name none.
-    pub child_model: Option<String>,
     pub now: Box<dyn Fn() -> f64 + Send + Sync>,
     /// The working directory subagents share: snapshotted when a child starts and ends to check its verdict's
     /// `changed_files`, and the tree worktree children branch from and merge into.
     pub workspace: Option<PathBuf>,
     /// Names worktree branches (`ultron/<session>/<child>`).
     pub session_id: String,
-    /// Default worktree setup (the `worktrees` setting); a spawn's `worktree_setup=` overrides it key by key.
-    pub worktree_setup: Option<WorktreeSetup>,
+    /// Default worktree setup (the `worktrees` setting), read at each worktree spawn (TS `worktreeSetup`); a
+    /// spawn's `worktree_setup=` overrides it key by key.
+    pub worktree_setup: WorktreeSetupSource,
     /// `ULTRON_KEEP_WORKTREES`: keep worktrees and branches after merges and on close.
     pub keep_worktrees: bool,
+    /// Refuses a spawn's `model=` the session cannot run; none: only the `provider/model` form is checked.
+    pub model_check: Option<ModelCheck>,
+    /// Runs contract `run` checks (the session's runs them under its sandbox).
+    pub check_runner: CheckRunner,
+    /// The session's environment, for the git commands of contract baselines (empty: git is looked up on
+    /// `/usr/local/bin:/usr/bin:/bin` with an otherwise empty environment, never this process's).
+    pub command_env: Vec<(String, String)>,
+    /// Told how each worktree child's merge ended (`onMerge`: the session's counters); it never affects the merge.
+    pub on_merge: Option<MergeObserver>,
 }
 
 impl DelegationOptions {
-    /// Defaults: in-memory journal, waiting collect, depth 3, no workspace, session "session", a zero clock.
+    /// Defaults: in-memory journal, in-cell collect everywhere, depth 3, no workspace, session "session", a zero
+    /// clock, no default worktree setup, contract checks run unsandboxed ([`plain_check_runner`]).
     pub fn new(runner: ChildRunner) -> Self {
         DelegationOptions {
             store: Box::new(MemoryStore::default()),
-            collect: CollectMode::Wait,
+            collect: Arc::new(|_: &str| CollectMode::InCell),
             runner,
             spawn_depth: DEFAULT_SPAWN_DEPTH,
-            child_model: None,
             now: Box::new(|| 0.0),
             workspace: None,
             session_id: "session".into(),
-            worktree_setup: None,
+            worktree_setup: Arc::new(|| None),
             keep_worktrees: false,
+            model_check: None,
+            check_runner: plain_check_runner(),
+            command_env: Vec::new(),
+            on_merge: None,
         }
     }
 }
@@ -206,49 +215,39 @@ struct Inner {
     state: Mutex<State>,
     changed: Condvar,
     runner: ChildRunner,
-    collect: CollectMode,
-    /// Per-lane collect modes over `collect` (see [`Delegation::set_lane_collect`]).
-    lane_collect: Mutex<Option<LaneCollect>>,
+    collect: LaneCollect,
     events: Mutex<Sender<DetachedEnd>>,
     spawn_depth: u32,
-    child_model: Option<String>,
     now: Box<dyn Fn() -> f64 + Send + Sync>,
     workspace: Option<PathBuf>,
     session_id: String,
-    worktree_setup: Option<WorktreeSetup>,
+    worktree_setup: WorktreeSetupSource,
     keep_worktrees: bool,
+    model_check: Option<ModelCheck>,
+    check_runner: CheckRunner,
+    command_env: Vec<(String, String)>,
+    on_merge: Option<MergeObserver>,
     /// `rlm.merge` calls run one at a time: each writes into a working tree.
     merging: Mutex<()>,
-    /// Refuses a spawn's `model=` the session cannot run (see [`Delegation::set_model_check`]).
-    model_check: Mutex<Option<ModelCheck>>,
     /// The limit text of a child's root once its tree is spent (see [`Delegation::set_limit_reason`]).
     limit_reason: Mutex<Option<LimitReason>>,
     /// Where a forked child starts (see [`Delegation::set_fork_point`]); none: `fork=True` is refused.
     fork_point: Mutex<Option<crate::fork::ForkPointHook>>,
-    /// Told how each worktree child's merge ended (see [`Delegation::on_merge`]).
-    on_merge: Mutex<Option<MergeObserver>>,
-    /// Read at each spawn in place of `child_model` (see [`Delegation::set_child_model_source`]).
-    child_model_source: Mutex<Option<ChildModelSource>>,
-    /// Read at each worktree spawn in place of `worktree_setup` (see [`Delegation::set_worktree_setup_source`]).
-    worktree_setup_source: Mutex<Option<WorktreeSetupSource>>,
+    /// The model of spawns that name none (see [`Delegation::set_child_model`]).
+    child_model: Mutex<ChildModelSource>,
     /// Sees every subagent's terminal record (`onTaskEnd`).
     on_task_end: Mutex<Option<TaskEndObserver>>,
     /// Sees every admitted subagent before it starts (see [`Delegation::on_spawn`]).
     on_spawn: Mutex<Option<SpawnObserver>>,
-    /// See [`Delegation::set_root_spawn`], [`Delegation::set_root_finish`], [`Delegation::set_child_model`].
+    /// See [`Delegation::set_root_spawn`], [`Delegation::set_root_finish`].
     root: Mutex<RootOptions>,
-    /// Runs contract `run` checks (see [`Delegation::set_check_runner`]); none: [`plain_check_runner`].
-    check_runner: Mutex<Option<CheckRunner>>,
-    /// The session environment git runs with for contract baselines (see [`Delegation::set_command_env`]).
-    command_env: Mutex<Vec<(String, String)>>,
 }
 
 /// Where a root that is itself a subagent (an `ultron mcp --child` server) sends its `rlm.finish` verdict
 /// (`rootFinish`): the payload in, its parent's answer out.
 pub type RootFinish = Arc<dyn Fn(Map<String, Value>) -> Result<Value, String> + Send + Sync>;
 
-/// The root of this host when it is itself a subagent (`rootSpawn`, `rootFinish`), and the model of spawns that
-/// name none when it changes after the host is built (`childModel`).
+/// The root of this host when it is itself a subagent (`rootSpawn`, `rootFinish`).
 #[derive(Clone, Default)]
 struct RootOptions {
     /// Nesting levels above the root.
@@ -256,7 +255,6 @@ struct RootOptions {
     /// How many more levels the root may create (`None`: unlimited).
     allowance: Option<i64>,
     finish: Option<RootFinish>,
-    child_model: Option<String>,
 }
 
 /// The model of spawns that name none, read at each spawn (TS `childModel` as a function: a changed setting
@@ -312,13 +310,6 @@ fn collect_timeout(value: Option<&Value>) -> Result<Option<Duration>, String> {
             _ => Err("rlm.collect timeout_ms must be a nonnegative number of milliseconds".into()),
         },
         Some(_) => Err("rlm.collect timeout_ms must be a nonnegative number of milliseconds".into()),
-    }
-}
-
-fn nonempty_string(value: Option<&Value>, name: &str) -> Result<String, String> {
-    match value.and_then(Value::as_str) {
-        Some(text) if !text.trim().is_empty() => Ok(text.to_string()),
-        _ => Err(format!("{name} must be a nonempty string")),
     }
 }
 
@@ -470,72 +461,32 @@ impl Delegation {
                 changed: Condvar::new(),
                 runner: options.runner,
                 collect: options.collect,
-                lane_collect: Mutex::new(None),
                 events: Mutex::new(sender),
                 spawn_depth: options.spawn_depth,
-                child_model: options.child_model,
                 now: options.now,
                 workspace: options.workspace,
                 session_id: options.session_id,
                 worktree_setup: options.worktree_setup,
                 keep_worktrees: options.keep_worktrees,
+                model_check: options.model_check,
+                check_runner: options.check_runner,
+                command_env: options.command_env,
+                on_merge: options.on_merge,
                 merging: Mutex::new(()),
-                model_check: Mutex::new(None),
                 limit_reason: Mutex::new(None),
                 fork_point: Mutex::new(None),
-                on_merge: Mutex::new(None),
-                child_model_source: Mutex::new(None),
-                worktree_setup_source: Mutex::new(None),
+                child_model: Mutex::new(Arc::new(|| None)),
                 on_task_end: Mutex::new(None),
                 on_spawn: Mutex::new(None),
                 root: Mutex::new(RootOptions::default()),
-                check_runner: Mutex::new(None),
-                command_env: Mutex::new(Vec::new()),
             }),
         };
         (host, receiver)
     }
 
-    /// Run contract `run` checks with `runner` (the session's runs them under its sandbox); by default they run
-    /// unsandboxed with `/bin/sh -c`.
-    pub fn set_check_runner(&self, runner: CheckRunner) {
-        *self.inner.check_runner.lock().unwrap_or_else(PoisonError::into_inner) = Some(runner);
-    }
-
-    /// The session's environment, for the git commands of contract baselines (by default none: git is looked up
-    /// on `/usr/local/bin:/usr/bin:/bin` with an otherwise empty environment, never this process's).
-    pub fn set_command_env(&self, env: Vec<(String, String)>) {
-        *self.inner.command_env.lock().unwrap_or_else(PoisonError::into_inner) = env;
-    }
-
-    fn command_env(&self) -> Vec<(String, String)> {
-        self.inner
-            .command_env
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .clone()
-    }
-
-    /// How `rlm.collect` (and `rlm.merge`'s wait) treats running children, per requesting lane: `Host` only where
-    /// the host wakes the lane when its work ends, `InCell` elsewhere. Without it every lane has the options' mode.
-    pub fn set_lane_collect(&self, policy: LaneCollect) {
-        *self.inner.lane_collect.lock().unwrap_or_else(PoisonError::into_inner) = Some(policy);
-    }
-
     /// The collect mode of `lane`.
     pub fn collect_mode(&self, lane: &str) -> CollectMode {
-        let policy = self
-            .inner
-            .lane_collect
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .clone();
-        policy.map_or(self.inner.collect, |policy| policy(lane))
-    }
-
-    /// Refuse spawns whose `model=` fails `check` (by default only the `provider/model` form is checked).
-    pub fn set_model_check(&self, check: ModelCheck) {
-        *self.inner.model_check.lock().unwrap_or_else(PoisonError::into_inner) = Some(check);
+        (self.inner.collect)(lane)
     }
 
     /// `withLimitReason`: a child that failed once its root's tree ran out of turns, tokens or cost (its run was
@@ -571,48 +522,20 @@ impl Delegation {
         *self.inner.fork_point.lock().unwrap_or_else(PoisonError::into_inner) = Some(hook);
     }
 
-    /// Read the model of spawns that name none from `source` at each spawn (instead of the fixed `child_model`).
-    pub fn set_child_model_source(&self, source: ChildModelSource) {
-        *self
-            .inner
-            .child_model_source
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner) = Some(source);
-    }
-
-    /// Read the default worktree setup from `source` at each worktree spawn (instead of the fixed `worktree_setup`).
-    pub fn set_worktree_setup_source(&self, source: WorktreeSetupSource) {
-        *self
-            .inner
-            .worktree_setup_source
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner) = Some(source);
+    /// Read the model of spawns that name none from `source` at each spawn (TS `childModel` as a function: a
+    /// changed setting applies to the next subagent); by default they name none.
+    pub fn set_child_model(&self, source: ChildModelSource) {
+        *self.inner.child_model.lock().unwrap_or_else(PoisonError::into_inner) = source;
     }
 
     fn child_model(&self) -> Option<String> {
         let source = self
             .inner
-            .child_model_source
+            .child_model
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .clone();
-        match source {
-            Some(source) => source(),
-            None => self.inner.child_model.clone(),
-        }
-    }
-
-    fn default_worktree_setup(&self) -> Option<WorktreeSetup> {
-        let source = self
-            .inner
-            .worktree_setup_source
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .clone();
-        match source {
-            Some(source) => source(),
-            None => self.inner.worktree_setup.clone(),
-        }
+        source()
     }
 
     /// Startup pruning (native-host.ts `loadTasks`): the worktrees of sessions that ended without cleaning up (a
@@ -638,15 +561,6 @@ impl Delegation {
         self.inner.root.lock().unwrap_or_else(PoisonError::into_inner).finish = Some(finish);
     }
 
-    /// The model of spawns that name none from now on (`childModel`, read per spawn); `None`: the options' one.
-    pub fn set_child_model(&self, model: Option<String>) {
-        self.inner
-            .root
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .child_model = model;
-    }
-
     /// Who sees each subagent's end (`onTaskEnd(publicRecord(task), info)`): its terminal journal record (id, key,
     /// definition, state, result, parentId?). Observers never affect the result.
     pub fn on_task_end(&self, observer: TaskEndObserver) {
@@ -659,20 +573,9 @@ impl Delegation {
         *self.inner.on_spawn.lock().unwrap_or_else(PoisonError::into_inner) = Some(observer);
     }
 
-    /// Tell `observer` how each worktree child's merge ended (`onMerge`: the session's counters).
-    pub fn on_merge(&self, observer: MergeObserver) {
-        *self.inner.on_merge.lock().unwrap_or_else(PoisonError::into_inner) = Some(observer);
-    }
-
-    /// `merged(task, status)`: keep how a child's merge ended and tell the observer (it never affects the merge).
+    /// `merged(task, status)`: keep how a child's merge ended and tell the observer.
     fn merged(&self, id: &str, status: &str) {
-        let observer = self
-            .inner
-            .on_merge
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .clone();
-        if let Some(observer) = observer {
+        if let Some(observer) = &self.inner.on_merge {
             observer(id, status);
         }
     }
@@ -739,8 +642,7 @@ impl Delegation {
             }
             "rlm.collect" | "rlm.results" => {
                 let ids = self.selected(&payload, parent)?;
-                let mode = self.collect_mode(lane);
-                let waits = kind == "rlm.collect" && mode != CollectMode::Host;
+                let waits = kind == "rlm.collect" && self.collect_mode(lane) == CollectMode::InCell;
                 if !waits {
                     let running = self.unfinished(&ids);
                     if kind == "rlm.collect" && !running.is_empty() {
@@ -759,17 +661,7 @@ impl Delegation {
                 // `timeout_ms` (0 or absent: no bound) ends the wait with the children still running named.
                 let timeout = collect_timeout(payload.get("timeout_ms"))?;
                 // An in-cell wait is never parked: the cell is not detached, so its result reaches the model.
-                let park = cell
-                    .park
-                    .as_ref()
-                    .filter(|_| mode == CollectMode::Wait && !self.unfinished(&ids).is_empty());
-                if let Some(park) = park {
-                    park(true);
-                }
                 let outcomes = self.wait_until(&ids, timeout, cancel);
-                if let Some(park) = park {
-                    park(false);
-                }
                 if outcomes.len() < ids.len() {
                     if let Some(reason) = cancel.and_then(Signal::reason) {
                         return Err(format!("rlm.collect was cancelled: {reason}"));
@@ -1241,29 +1133,18 @@ impl Delegation {
         // A named model must be `provider/model` and one the session can run: never silently the root's model.
         let model = match kwargs.get("model") {
             Some(Value::String(model)) => {
-                if !crate::definitions::is_model(model) {
+                if !jsrt::string::is_model_ref(model) {
                     return Err("model must be provider/model".into());
                 }
-                if let Some(check) = self
-                    .inner
-                    .model_check
-                    .lock()
-                    .unwrap_or_else(PoisonError::into_inner)
-                    .as_ref()
-                {
+                if let Some(check) = &self.inner.model_check {
                     check(model)?;
                 }
                 Some(model.clone())
             }
-            _ => root.child_model.clone().or_else(|| self.child_model()),
+            _ => self.child_model(),
         };
-        let timeout = match kwargs.get("timeout_ms") {
-            Some(value @ Value::Number(_)) => value.clone(),
-            _ => json!(DEFAULT_TIMEOUT_MS as i64),
-        };
-        let timeout_ms = number::safe_integer(&timeout)
-            .filter(|n| (1..=3_600_000).contains(n))
-            .ok_or("timeout_ms must be an integer between 1 and 3600000")? as u64;
+        // A `timeout_ms` that is not a number is the default (native-host.ts `typeof === "number"`).
+        let timeout_ms = crate::timeout_ms(kwargs.get("timeout_ms").filter(|t| t.is_number()))?;
         let fork_at = match fork_hook.filter(|_| fork) {
             Some(hook) => {
                 Some(hook(lane)?.ok_or("rlm.spawn fork=True: your lane has no finished conversation to fork yet")?)
@@ -1351,7 +1232,7 @@ impl Delegation {
             }
             (id, level)
         };
-        let lane_name = format!("ultron.rlm-child.{task_id}");
+        let lane_name = crate::lane_names::child_lane(&task_id);
         let (cwd, env, brief) = {
             let state = sync::lock(&self.inner.state);
             let inherited = state.worktree_of(Some(&task_id));
@@ -1444,7 +1325,7 @@ impl Delegation {
             }
             return Err("worktree=True needs a working directory, and this session has none".into());
         };
-        let default_setup = self.default_worktree_setup();
+        let default_setup = (self.inner.worktree_setup)();
         let setup = merged_setup(default_setup.as_ref(), setup);
         let created = wt::create_child_worktree(&wt::CreateWorktreeOptions {
             cwd: &from,
@@ -1585,23 +1466,16 @@ impl Delegation {
                 &snapshot_workspace(&before.root, DEFAULT_MAX_SNAPSHOT_ENTRIES, true),
             )
             .ok(),
-            (None, Some(baseline), Some(workspace)) => baseline.changes(workspace, &self.command_env()).ok(),
+            (None, Some(baseline), Some(workspace)) => baseline.changes(workspace, &self.inner.command_env).ok(),
             _ => None,
         };
-        let runner = self
-            .inner
-            .check_runner
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .clone()
-            .unwrap_or_else(plain_check_runner);
         let place = CheckPlace {
             cwd: workspace.as_deref(),
             env: &env,
             diff: diff.as_ref(),
             signal,
         };
-        contract.evaluate(verdict.as_ref(), &place, &runner)
+        contract.evaluate(verdict.as_ref(), &place, &self.inner.check_runner)
     }
 
     /// `childStart`: a worktree child's setup command runs, then its working directory is pictured (plus the parent's
@@ -1623,7 +1497,7 @@ impl Delegation {
         }
         // Workspace checks keep a Git baseline too, for a host that reattaches the child after a restart.
         let git_baseline = match (&workspace, needs_baseline) {
-            (Some(w), true) => GitBaseline::capture(w, &self.command_env()),
+            (Some(w), true) => GitBaseline::capture(w, &self.inner.command_env),
             _ => None,
         };
         let before = workspace.map(|w| snapshot_workspace(&w, DEFAULT_MAX_SNAPSHOT_ENTRIES, true));
@@ -2123,15 +1997,17 @@ impl Delegation {
         timeout: Option<Duration>,
         cancel: Option<&Signal>,
     ) -> Vec<(String, Result<Value, String>)> {
-        if let Some(cancel) = cancel.filter(|c| !c.is_aborted()) {
-            // Wakes this wait when the signal is aborted; every cell signal is aborted when its cell ends.
-            let (cancel, inner) = (cancel.clone(), self.inner.clone());
-            std::thread::spawn(move || {
-                while !cancel.wait(Duration::from_secs(3600)) {}
-                let _state = sync::lock(&inner.state);
-                inner.changed.notify_all();
-            });
-        }
+        // Wakes this wait when the signal is aborted (from a thread of its own: the aborting thread may hold the
+        // state).
+        let listener = cancel.and_then(|cancel| {
+            let inner = self.inner.clone();
+            cancel.on_abort(move |_| {
+                std::thread::spawn(move || {
+                    let _state = sync::lock(&inner.state);
+                    inner.changed.notify_all();
+                });
+            })
+        });
         let deadline = timeout.map(|t| std::time::Instant::now() + t);
         let mut state = sync::lock(&self.inner.state);
         for id in ids {
@@ -2164,6 +2040,10 @@ impl Delegation {
                     out.push((id.clone(), outcome.clone()));
                 }
             }
+        }
+        drop(state);
+        if let (Some(cancel), Some(listener)) = (cancel, listener) {
+            cancel.forget(listener);
         }
         out
     }

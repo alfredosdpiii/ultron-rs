@@ -151,7 +151,7 @@ struct Shared {
     closing: Mutex<bool>,
     ready: Mutex<bool>,
     _lock: Mutex<Option<crate::lock::Lock>>,
-    _owner: Mutex<Option<durable::owner::OwnerLock>>,
+    _owner: Mutex<Option<crate::owner::OwnerLock>>,
     progress: Arc<Progress>,
     /// The `health` state of the operations service (crate::watchdog).
     health: Arc<crate::chord::State>,
@@ -741,12 +741,13 @@ pub fn run(args: &[String], docs: PathBuf) -> Result<(), String> {
     let metadata = options.metadata.clone();
     let path = PathBuf::from(metadata["path"].as_str().unwrap_or_default());
     let session_id = metadata["id"].as_str().unwrap_or_default().to_string();
-    // One writer per session file, across every server and instance: a live owner refuses this worker at once.
-    let owner_lock = acquire_owner(&path).map_err(|error| match error {
-        durable::owner::OwnerError::InUse { pid } => {
+    // One writer per session file, across every server and instance: a live owner refuses this worker, named once
+    // its record appears (bounded by a hang guard a loaded machine never reaches).
+    let owner_lock = crate::owner::OwnerLock::acquire(&path, Duration::from_secs(30)).map_err(|error| match error {
+        crate::owner::OwnerError::InUse { pid } => {
             fail_coded(Some("service_invalid_value"), session_in_use(&session_id, pid))
         }
-        durable::owner::OwnerError::Io(error) => fail(error.to_string()),
+        crate::owner::OwnerError::Io(error) => fail(error.to_string()),
     })?;
     let lock = crate::lock::Lock::acquire(
         &path,
@@ -1150,24 +1151,6 @@ fn cancel_requests(shared: &Arc<Shared>, matches: impl Fn(&str, &Value) -> bool)
         std::thread::spawn(move || {
             let _ = session_core::core::call(&core, Op::AbortBash);
         });
-    }
-}
-
-/// Own `path`'s storage, or name its live owner. An owner records its pid just after it takes the lock;
-/// `OwnerLock::acquire` gives that record a short grace, which a loaded machine can outlast (the refusal then named
-/// no pid). Until the owner's record appears, or the owner lets go (then this worker owns the file), ask again,
-/// bounded by a hang guard.
-fn acquire_owner(path: &std::path::Path) -> Result<durable::owner::OwnerLock, durable::owner::OwnerError> {
-    let deadline = std::time::Instant::now() + Duration::from_secs(30);
-    loop {
-        match durable::owner::OwnerLock::acquire(path) {
-            Err(durable::owner::OwnerError::InUse { pid: None }) if std::time::Instant::now() < deadline => {
-                if let Some(pid) = durable::owner::recorded_owner(path) {
-                    return Err(durable::owner::OwnerError::InUse { pid: Some(pid) });
-                }
-            }
-            other => return other,
-        }
     }
 }
 

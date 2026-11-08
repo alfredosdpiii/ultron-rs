@@ -1,5 +1,5 @@
 //! Rust port of Ultron's `packages/agent` loop (`agent-loop.ts`) and `Agent` (`agent.ts`): turns over a streaming
-//! function, tool execution, steering and follow-up queues, abort, and the emitted [`AgentEvent`] stream.
+//! function, tool execution, the steering queue, abort, and the emitted [`AgentEvent`] stream.
 //!
 //! Evidence: `fixtures/generate.mjs` drives the TypeScript `Agent` with the TypeScript faux provider and records every
 //! provider call and agent event; `tests/loop.rs` replays the provider events here and compares the agent events.

@@ -216,8 +216,9 @@ pub fn child_conversation(chat: &ChatHarness, task: TaskId, state: &TaskState) -
         chat.commit(|tx| {
             let mut cursor: Option<Cursor> = None;
             loop {
-                let page =
-                    tx.committed_scan_conversations(&durable::ConversationQuery::default(), 256, cursor.as_ref())?;
+                let page = tx.committed(|storage| {
+                    storage.scan_conversations(&durable::ConversationQuery::default(), 256, cursor.as_ref())
+                })?;
                 if let Some(found) = page
                     .items
                     .iter()

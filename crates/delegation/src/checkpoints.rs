@@ -1,6 +1,6 @@
 //! Per-turn working-tree checkpoints (Rust-only feature; the design follows reflection-oss/mirror
 //! `mirror-agent/src/checkpoints.rs`): the working tree pictured as an unreferenced commit, made from a copy of the
-//! index exactly as a worktree child's base is ([`super::snapshot_working_tree`]'s method: `add -A` into a temporary
+//! index exactly as a worktree child's base is ([`crate::worktrees::snapshot_working_tree`]'s method: `add -A` into a temporary
 //! index, `write-tree`, `commit-tree` on top of HEAD), so HEAD, branches, the real index and the files stay as they
 //! were. Nothing references the commits: Git's garbage collection may prune old ones (`gc.pruneExpire`, two weeks
 //! by default).
@@ -15,8 +15,9 @@
 //! checkpoint (so the restore is undoable), and refuses to overwrite a file that safety checkpoint cannot hold
 //! (ignored or too large). Ignored files, HEAD and the index are never changed.
 
-use super::{
-    GitOptions, TempIndex, copy_index, git_ok, git_ok_with, identity_env, opts, quiet, repo_info, temporary_index,
+use crate::worktrees::{
+    GitOptions, TempIndex, WorktreeError, copy_index, git_ok, git_ok_with, identity_env, opts, quiet, repo_info,
+    temporary_index,
 };
 use serde_json::{Value, json};
 use std::io::Read;
@@ -183,7 +184,7 @@ pub fn capture(
 /// The working tree's tree object (from a copy of the index, `excluded` left out); `Some(HEAD)` as the commit when
 /// it is HEAD's tree.
 fn commit_tree(top: &Path, head: Option<&str>, excluded: &[String]) -> Result<(Option<String>, String), String> {
-    let error = |e: super::WorktreeError| e.message;
+    let error = |e: WorktreeError| e.message;
     let index_path = git_ok(top, &["rev-parse", "--path-format=absolute", "--git-path", "index"]).map_err(error)?;
     let temporary = TempIndex(temporary_index("checkpoint-index"));
     let index = temporary.0.display().to_string();

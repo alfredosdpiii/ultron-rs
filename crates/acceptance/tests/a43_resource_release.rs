@@ -1,18 +1,18 @@
 //! A43 (partial): resource release and eviction respect live references and evidence retention.
 //! Ported from the four kernel cases of packages/coding-agent/test/ultron-a43-resource-release.test.ts with their
-//! literal expectations: `delegation::kernel_pool::KernelPool` over real kernels (runtime.py under the Rust kernel
+//! literal expectations: `lanes::kernel_pool::KernelPool` over real kernels (runtime.py under the Rust kernel
 //! supervisor) on a controlled clock. A cell runs on its own thread while the pool sweeps, as the TS test leaves its
 //! cell promise pending.
 //!
 //! Not ported: artifact retention, deletion policy and quota (`artifacts.*` of NativeLocalServices has no Rust
-//! counterpart), and ultron-a43-kernel-pool-wired.test.ts (the session's REPL lanes, `delegation::lanes::Lanes`, refuse
+//! counterpart), and ultron-a43-kernel-pool-wired.test.ts (the session's REPL lanes, `lanes::Lanes`, refuse
 //! past their lane limit instead of evicting through the pool, and no `rlm.pool` stats exist).
 
 mod common;
 
 use common::runtime;
-use delegation::kernel_pool::{KernelPool, KernelPoolOptions, PoolableKernel, snapshot_outcome};
 use kernel::{ExecutionResult, Kernel, KernelOptions, Status};
+use lanes::kernel_pool::{KernelPool, KernelPoolOptions, PoolableKernel, snapshot_outcome};
 use serde_json::{Value, json};
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -69,7 +69,7 @@ impl Fixture {
             idle_ttl_ms,
             max_pinned: None,
             snapshot_path: snapshot
-                .map(|f| -> delegation::kernel_pool::SnapshotPath { Box::new(move |lane: &str| Some(f(lane))) }),
+                .map(|f| -> lanes::kernel_pool::SnapshotPath { Box::new(move |lane: &str| Some(f(lane))) }),
             now: Box::new(move || clock.load(Ordering::SeqCst) as f64),
         })
         .unwrap();

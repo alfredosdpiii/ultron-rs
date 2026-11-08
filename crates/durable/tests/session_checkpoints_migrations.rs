@@ -6,7 +6,10 @@
 mod session_support;
 
 use chord_delta::{Op, path};
-use durable::{DocDefinition, DocSemantics, DocumentFork, DocumentHistory, EntryDraft, Owner, SessionError, Storage};
+use durable::{
+    DocDefinition, DocSemantics, Owner, SessionError, Storage, TaskDefinition, TaskId, TaskOptions, TaskOutcome,
+    TaskState, Tx,
+};
 use serde_json::{Value, json};
 use session_support::*;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -37,6 +40,38 @@ fn bump(t: &TestSession, doc: &durable::Doc, field: &str) {
 fn set(t: &TestSession, doc: &durable::Doc, field: &str, value: Value) {
     t.session
         .commit(|tx| Ok(tx.doc(doc, Owner::Session)?.set(&path![field], value)?))
+        .unwrap();
+}
+
+fn task_doc(kind: &str, version: u64, initial: Value) -> DocDefinition {
+    DocDefinition::new(kind, version, DocSemantics::Task, move |_| initial.clone())
+}
+
+fn create_task(t: &TestSession) -> TaskId {
+    let conversation_id = t.create_conversation();
+    let work = TaskDefinition::new("checkpoint.work", 1, |_| json!({}));
+    t.session
+        .commit(|tx| {
+            let options = TaskOptions {
+                conversation_id: Some(conversation_id),
+                ..TaskOptions::default()
+            };
+            tx.create_task(&work, Value::Null, options)
+        })
+        .unwrap()
+}
+
+/// Run `change`, then settle the task as completed in the same commit, which retires its documents.
+fn settle_task(t: &TestSession, task_id: TaskId, change: impl FnOnce(&mut Tx<'_>) -> Result<(), SessionError>) {
+    t.session
+        .commit(|tx| {
+            let mut task = tx.task(task_id)?.unwrap();
+            change(tx)?;
+            task.state = TaskState::Terminal {
+                outcome: TaskOutcome::Completed { result: Value::Null },
+            };
+            tx.set_task(task)
+        })
         .unwrap();
 }
 
@@ -177,12 +212,12 @@ fn durable_session_checkpoints_pass_the_stored_delta_count_since_the_newest_base
             })
             .define()
             .unwrap();
-        let t = TestSession::open(backend);
+        let mut t = TestSession::open(backend);
         touch(&t, &v1);
         bump(&t, &v1, "count");
         bump(&t, &v1, "count");
         bump(&t, &v1, "count");
-        t.session.unload_documents().unwrap();
+        t.reopen();
         bump(&t, &v1, "count");
         assert_eq!(*seen.lock().unwrap(), [0, 1, 2, 0]);
         let commits = t.storage.commits();
@@ -317,7 +352,7 @@ fn durable_session_checkpoints_persist_repeated_false_decisions_as_deltas_and_re
             })
             .define()
             .unwrap();
-        let t = TestSession::open(backend);
+        let mut t = TestSession::open(backend);
         touch(&t, &doc);
         for value in 1..=8 {
             t.session
@@ -331,7 +366,7 @@ fn durable_session_checkpoints_persist_repeated_false_decisions_as_deltas_and_re
         }
         assert_eq!(change_kinds(&t), vec!["delta"; 8]);
         assert_eq!(calls.load(Ordering::SeqCst), 8);
-        t.session.unload_documents().unwrap();
+        t.reopen();
         assert_eq!(*read(&t, &doc).unwrap(), json!({ "values": [1, 2, 3, 4, 5, 6, 7, 8] }));
     });
 }
@@ -344,7 +379,7 @@ fn durable_session_checkpoints_keep_a_prepared_root_replacement_as_a_delta_when_
             .checkpoint_when(|_, _, _, _| Ok(false))
             .define()
             .unwrap();
-        let t = TestSession::open(backend);
+        let mut t = TestSession::open(backend);
         touch(&t, &doc);
         t.session
             .commit(|tx| {
@@ -361,7 +396,7 @@ fn durable_session_checkpoints_keep_a_prepared_root_replacement_as_a_delta_when_
         let ops = write["content"]["ops"].as_array().unwrap();
         assert_eq!(ops.len(), 1);
         assert_eq!(ops[0][0], "r");
-        t.session.unload_documents().unwrap();
+        t.reopen();
         assert_eq!(read(&t, &doc).unwrap()["field4099"], 1);
     });
 }
@@ -371,7 +406,7 @@ fn durable_session_checkpoints_use_ordinary_checkpoint_selection_before_retireme
     each_backend(|backend| {
         let calls = counter();
         let counted = calls.clone();
-        let doc = session_doc("checkpoint.retire", 1, json!({ "count": 0 }))
+        let doc = task_doc("checkpoint.retire", 1, json!({ "count": 0 }))
             .checkpoint_when(move |_, _, _, _| {
                 counted.fetch_add(1, Ordering::SeqCst);
                 Ok(true)
@@ -379,13 +414,12 @@ fn durable_session_checkpoints_use_ordinary_checkpoint_selection_before_retireme
             .define()
             .unwrap();
         let t = TestSession::open(backend);
-        touch(&t, &doc);
-        t.session
-            .commit(|tx| {
-                tx.doc(&doc, Owner::Session)?.set(&path!["count"], json!(1))?;
-                tx.retire_doc(&doc, Owner::Session)
-            })
-            .unwrap();
+        let task_id = create_task(&t);
+        let owner = Owner::Task(task_id);
+        t.session.commit(|tx| tx.doc(&doc, owner).map(drop)).unwrap();
+        settle_task(&t, task_id, |tx| {
+            Ok(tx.doc(&doc, owner)?.set(&path!["count"], json!(1))?)
+        });
         assert_eq!(calls.load(Ordering::SeqCst), 1);
         let writes = document_writes(&t.storage.last_commit());
         assert_eq!(writes.len(), 2);
@@ -413,16 +447,16 @@ fn durable_session_migrations_migrate_read_only_once_per_cold_load_and_write_not
             })
             .define()
             .unwrap();
-        let t = TestSession::open(backend);
+        let mut t = TestSession::open(backend);
         touch(&t, &old);
-        t.session.unload_documents().unwrap();
+        t.reopen();
         let commits = t.storage.commit_count();
         let first = read(&t, &current).unwrap();
         assert!(Arc::ptr_eq(&read(&t, &current).unwrap(), &first));
         assert_eq!(calls.load(Ordering::SeqCst), 1);
         assert_eq!(t.storage.commit_count(), commits);
         assert_eq!(*first, json!({ "count": 2, "labels": ["migrated"] }));
-        t.session.unload_documents().unwrap();
+        t.reopen();
         let second = read(&t, &current).unwrap();
         assert!(!Arc::ptr_eq(&second, &first));
         assert_eq!(second, first);
@@ -447,55 +481,23 @@ fn durable_session_migrations_write_the_required_base_on_the_first_transaction_t
             })
             .define()
             .unwrap();
-        let t = TestSession::open(backend);
+        let mut t = TestSession::open(backend);
         touch(&t, &old);
-        t.session.unload_documents().unwrap();
-        // An observer of the older shape.
-        let watch = t.session.watch_doc(&old, Owner::Session).unwrap().unwrap();
-        let frames: Arc<Mutex<Vec<(Value, Vec<Value>)>>> = Arc::default();
-        let sink = frames.clone();
-        watch
-            .start(move |value, ops| {
-                let value = value.as_deref().cloned().unwrap_or(Value::Null);
-                sink.lock()
-                    .unwrap()
-                    .push((value, ops.iter().map(Op::to_json).collect()));
-                Ok(())
-            })
-            .unwrap();
+        t.reopen();
         assert_eq!(*read(&t, &current).unwrap(), json!({ "count": 4 }));
         let snapshot = read(&t, &current).unwrap();
-        // An observer of the new shape: the migration changes nothing it sees.
-        let current_watch = t.session.watch_doc(&current, Owner::Session).unwrap().unwrap();
-        let current_frames = Arc::new(Mutex::new(0));
-        let current_sink = current_frames.clone();
-        current_watch
-            .start(move |_, _| {
-                *current_sink.lock().unwrap() += 1;
-                Ok(())
-            })
-            .unwrap();
         touch(&t, &current);
         assert_matches(
             &json(&t.storage.last_commit()[0]),
             json!({ "type": "document.change", "content": { "kind": "base", "version": 3, "value": { "count": 4 } } }),
         );
         assert_eq!(checkpoints.load(Ordering::SeqCst), 0);
-        // The migration-only base is published, so the older-shape watch receives the new value as a root replacement.
+        // The migration-only base is published.
         let published = document_changes(&t.last_publication());
         assert_eq!(published.len(), 1);
         assert_eq!(published[0].version, Some(3));
         assert_eq!(**published[0].value.as_ref().unwrap(), json!({ "count": 4 }));
         assert!(published[0].ops.is_empty());
-        eventually(|| frames.lock().unwrap().len() == 1);
-        settle();
-        assert_eq!(
-            *frames.lock().unwrap(),
-            [(json!({ "count": 4 }), vec![json!(["r", { "count": 4 }])])]
-        );
-        assert_eq!(*current_frames.lock().unwrap(), 0);
-        watch.stop();
-        current_watch.stop();
         assert!(Arc::ptr_eq(&read(&t, &current).unwrap(), &snapshot));
 
         set(&t, &current, "count", json!(7));
@@ -504,7 +506,7 @@ fn durable_session_migrations_write_the_required_base_on_the_first_transaction_t
             json!({ "type": "document.change", "content": { "kind": "delta", "version": 3 } }),
         );
         assert_eq!(checkpoints.load(Ordering::SeqCst), 1);
-        t.session.unload_documents().unwrap();
+        t.reopen();
         assert_eq!(*read(&t, &current).unwrap(), json!({ "count": 7 }));
     });
 }
@@ -524,9 +526,9 @@ fn durable_session_migrations_roll_migration_and_edits_back_then_coalesce_later_
             })
             .define()
             .unwrap();
-        let t = TestSession::open(backend);
+        let mut t = TestSession::open(backend);
         touch(&t, &old);
-        t.session.unload_documents().unwrap();
+        t.reopen();
         let commits = t.storage.commit_count();
         let error = t
             .session
@@ -578,9 +580,9 @@ fn durable_session_migrations_reject_newer_stored_versions_and_older_versions_wi
         let v3 = session_doc("migration.compatibility", 3, json!({ "count": 3 }))
             .define()
             .unwrap();
-        let t = TestSession::open(backend);
+        let mut t = TestSession::open(backend);
         touch(&t, &v2);
-        t.session.unload_documents().unwrap();
+        t.reopen();
         let commits = t.storage.commit_count();
         let id = json(&t.storage.last_commit()[0])["record"]["id"].clone();
         let newer = format!("Document {id} (migration.compatibility) has newer version 2 than 1");
@@ -611,23 +613,18 @@ fn durable_session_migrations_reject_newer_stored_versions_and_older_versions_wi
 #[test]
 fn durable_session_migrations_persist_a_required_base_before_retirement_without_the_predicate() {
     each_backend(|backend| {
-        let old = session_doc("migration.retire", 1, json!({ "count": 1 }))
-            .define()
-            .unwrap();
-        let current = session_doc("migration.retire", 2, json!({ "count": 0 }))
+        let old = task_doc("migration.retire", 1, json!({ "count": 1 })).define().unwrap();
+        let current = task_doc("migration.retire", 2, json!({ "count": 0 }))
             .migrate(|value, _| Ok(json!({ "count": value["count"] })))
             .checkpoint_when(|_, _, _, _| Err("must not run".into()))
             .define()
             .unwrap();
-        let t = TestSession::open(backend);
-        touch(&t, &old);
-        t.session.unload_documents().unwrap();
-        t.session
-            .commit(|tx| {
-                tx.doc(&current, Owner::Session)?;
-                tx.retire_doc(&current, Owner::Session)
-            })
-            .unwrap();
+        let mut t = TestSession::open(backend);
+        let task_id = create_task(&t);
+        let owner = Owner::Task(task_id);
+        t.session.commit(|tx| tx.doc(&old, owner).map(drop)).unwrap();
+        t.reopen();
+        settle_task(&t, task_id, |tx| tx.doc(&current, owner).map(drop));
         let writes = document_writes(&t.storage.last_commit());
         assert_eq!(writes.len(), 2);
         assert_matches(
@@ -651,7 +648,7 @@ fn durable_session_migrations_leave_unaccessed_older_documents_untouched() {
             .migrate(|value, _| Ok(json!({ "count": value["count"] })))
             .define()
             .unwrap();
-        let t = TestSession::open(backend);
+        let mut t = TestSession::open(backend);
         t.session
             .commit(|tx| {
                 tx.doc(&first_v1, Owner::Session)?;
@@ -659,7 +656,7 @@ fn durable_session_migrations_leave_unaccessed_older_documents_untouched() {
                 Ok(())
             })
             .unwrap();
-        t.session.unload_documents().unwrap();
+        t.reopen();
         let commits = t.storage.commit_count();
         assert_eq!(*read(&t, &first_v2).unwrap(), json!({ "count": 1 }));
         assert_eq!(t.storage.commit_count(), commits);
@@ -679,171 +676,6 @@ fn durable_session_migrations_leave_unaccessed_older_documents_untouched() {
             .unwrap()
             .unwrap();
         assert_eq!(stored.version, 1);
-    });
-}
-
-const REWINDABLE: DocSemantics = DocSemantics::Conversation {
-    history: DocumentHistory::Rewindable,
-    fork: DocumentFork::AsOf,
-};
-
-#[test]
-fn durable_session_history_migrates_current_and_historical_values_independently_and_follows_fork_ancestry() {
-    each_backend(|backend| {
-        let v1 = DocDefinition::new("history.migration", 1, REWINDABLE, |_| json!({ "count": 0 }))
-            .define()
-            .unwrap();
-        let family = DocDefinition::new(
-            "history.family",
-            1,
-            REWINDABLE,
-            |seed| json!({ "seed": seed, "count": 0 }),
-        )
-        .family()
-        .define()
-        .unwrap();
-        let migrations: Arc<Mutex<Vec<u64>>> = Arc::default();
-        let recorded = migrations.clone();
-        let v3 = DocDefinition::new(
-            "history.migration",
-            3,
-            REWINDABLE,
-            |_| json!({ "count": 0, "version": 3 }),
-        )
-        .migrate(move |value, from| {
-            recorded.lock().unwrap().push(from);
-            Ok(json!({ "count": value["count"], "version": 3 }))
-        })
-        .define()
-        .unwrap();
-        let t = TestSession::open(backend);
-        let c = t.create_conversation();
-        let owner = Owner::Conversation(c);
-        let first = t
-            .session
-            .commit(|tx| {
-                let at = tx.append_entry(c, EntryDraft::new("first"))?.id;
-                tx.doc(&v1, owner)?.set(&path!["count"], json!(1))?;
-                tx.doc_member(&family, owner, "member", json!("seed"))?
-                    .set(&path!["count"], json!(1))?;
-                Ok(at)
-            })
-            .unwrap();
-        let second = t
-            .session
-            .commit(|tx| {
-                let at = tx.append_entry(c, EntryDraft::new("second"))?.id;
-                tx.doc(&v1, owner)?.set(&path!["count"], json!(2))?;
-                Ok(at)
-            })
-            .unwrap();
-        t.session.unload_documents().unwrap();
-        let commits = t.storage.commit_count();
-        assert_eq!(
-            *t.session.snapshot(&v3, owner).unwrap().unwrap(),
-            json!({ "count": 2, "version": 3 })
-        );
-        assert_eq!(*migrations.lock().unwrap(), [1]);
-        assert_eq!(t.storage.commit_count(), commits);
-        let third = t
-            .session
-            .commit(|tx| {
-                let at = tx.append_entry(c, EntryDraft::new("third"))?.id;
-                tx.doc(&v3, owner)?;
-                Ok(at)
-            })
-            .unwrap();
-        assert!(t.storage.last_commit().iter().map(json).any(|w| matches(
-            &w,
-            &json!({ "type": "document.change", "content": { "kind": "base", "version": 3 } })
-        )));
-        let as_of = |conversation, key: Option<&str>, at| {
-            let doc = if key.is_some() { &family } else { &v3 };
-            t.session
-                .snapshot_as_of(doc, conversation, key, at)
-                .map(|value| value.map(|value| (*value).clone()))
-        };
-        assert_eq!(
-            as_of(c, None, first).unwrap(),
-            Some(json!({ "count": 1, "version": 3 }))
-        );
-        assert_eq!(
-            as_of(c, None, second).unwrap(),
-            Some(json!({ "count": 2, "version": 3 }))
-        );
-        assert_eq!(
-            as_of(c, None, third).unwrap(),
-            Some(json!({ "count": 2, "version": 3 }))
-        );
-        assert_eq!(*migrations.lock().unwrap(), [1, 1, 1]);
-        assert_eq!(
-            as_of(c, Some("member"), first).unwrap(),
-            Some(json!({ "seed": "seed", "count": 1 }))
-        );
-        let child = t
-            .session
-            .commit(|tx| {
-                Ok(tx
-                    .fork_conversation(c, second, durable::ConversationOwnership::Ownerless)?
-                    .id)
-            })
-            .unwrap();
-        assert_eq!(
-            as_of(child, None, first).unwrap(),
-            Some(json!({ "count": 1, "version": 3 }))
-        );
-        assert_eq!(
-            as_of(child, None, second).unwrap(),
-            Some(json!({ "count": 2, "version": 3 }))
-        );
-        assert_eq!(
-            as_of(child, Some("member"), first).unwrap(),
-            Some(json!({ "seed": "seed", "count": 1 }))
-        );
-        assert_eq!(
-            as_of(child, None, third).unwrap_err().to_string(),
-            format!("Entry {} is not visible from conversation {}", third.0, child.0)
-        );
-    });
-}
-
-#[test]
-fn durable_session_history_selects_the_incarnation_alive_at_the_entry_commit() {
-    each_backend(|backend| {
-        let doc = DocDefinition::new("history.incarnation", 1, REWINDABLE, |_| json!({ "value": "initial" }))
-            .define()
-            .unwrap();
-        let t = TestSession::open(backend);
-        let c = t.create_conversation();
-        let owner = Owner::Conversation(c);
-        let entry = |kind: &str, change: &dyn Fn(&mut durable::Tx<'_>) -> Result<(), SessionError>| {
-            t.session
-                .commit(|tx| {
-                    let at = tx.append_entry(c, EntryDraft::new(kind))?.id;
-                    change(tx)?;
-                    Ok(at)
-                })
-                .unwrap()
-        };
-        let before = entry("before", &|_| Ok(()));
-        let created = entry("create", &|tx| {
-            Ok(tx.doc(&doc, owner)?.set(&path!["value"], json!("old"))?)
-        });
-        let retired = entry("retire", &|tx| tx.retire_doc(&doc, owner));
-        let recreated = entry("recreate", &|tx| {
-            Ok(tx.doc(&doc, owner)?.set(&path!["value"], json!("new"))?)
-        });
-        let as_of = |at| {
-            t.session
-                .snapshot_as_of(&doc, c, None, at)
-                .map(|v| v.map(|v| (*v).clone()))
-        };
-        assert_eq!(as_of(before).unwrap(), None);
-        assert_eq!(as_of(created).unwrap(), Some(json!({ "value": "old" })));
-        assert_eq!(as_of(retired).unwrap(), None);
-        assert_eq!(as_of(recreated).unwrap(), Some(json!({ "value": "new" })));
-        t.session.close().unwrap();
-        assert_eq!(as_of(recreated).unwrap_err().to_string(), "Session is closed");
     });
 }
 
@@ -886,46 +718,11 @@ fn durable_session_cache_migrates_a_document_cached_by_an_older_definition_witho
 }
 
 #[test]
-fn durable_session_cache_sends_observers_of_an_older_shape_a_root_replacement() {
-    each_backend(|backend| {
-        let t = TestSession::open(backend);
-        touch(&t, &v1_doc());
-        let state = t.session.document_state(&v1_doc(), Owner::Session).unwrap().unwrap();
-        let watch = t.session.watch_doc(&v1_doc(), Owner::Session).unwrap().unwrap();
-        let frames: Arc<Mutex<Vec<Vec<Value>>>> = Arc::default();
-        let sink = frames.clone();
-        watch
-            .start(move |_, ops| {
-                sink.lock().unwrap().push(ops.iter().map(Op::to_json).collect());
-                Ok(())
-            })
-            .unwrap();
-        t.session
-            .commit(|tx| {
-                Ok(tx
-                    .doc(&v2_doc(), Owner::Session)?
-                    .push(&path!["names"], vec![json!("second")])
-                    .map(drop)?)
-            })
-            .unwrap();
-        eventually(|| !frames.lock().unwrap().is_empty());
-        assert_eq!(*state.value().unwrap(), json!({ "names": ["first", "second"] }));
-        assert_eq!(*watch.value().unwrap(), json!({ "names": ["first", "second"] }));
-        assert_eq!(
-            *frames.lock().unwrap(),
-            [vec![json!(["r", { "names": ["first", "second"] }])]]
-        );
-        state.dispose();
-        watch.stop();
-    });
-}
-
-#[test]
 fn durable_session_cache_serves_an_older_definition_from_storage_after_an_in_memory_migration() {
     each_backend(|backend| {
-        let t = TestSession::open(backend);
+        let mut t = TestSession::open(backend);
         touch(&t, &v1_doc());
-        t.session.unload_documents().unwrap();
+        t.reopen();
         assert_eq!(*read(&t, &v2_doc()).unwrap(), json!({ "names": ["first"] }));
         assert_eq!(*read(&t, &v1_doc()).unwrap(), json!({ "name": "first" }));
         set(&t, &v1_doc(), "name", json!("renamed"));

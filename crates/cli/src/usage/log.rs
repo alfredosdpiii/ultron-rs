@@ -227,7 +227,7 @@ const KEPT_NAMESPACES: [&str; 9] = [
     "ultron.branch.tip",
     "ultron.tasks",
     "ultron.usage",
-    "ultron.rlm.frames",
+    inference::TRACE_NAMESPACE,
     "ultron.memory.state",
     "ultron.module",
     "ultron.claude-code.lanes",

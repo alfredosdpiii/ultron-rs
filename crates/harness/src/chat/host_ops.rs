@@ -63,6 +63,33 @@ fn parse_model(value: Option<&Value>) -> Result<Option<ModelRef>, String> {
     }
 }
 
+/// The swarm, board and notes requests: served for a conversation whichever children exist.
+pub const SWARM_KINDS: [&str; 12] = [
+    "swarm.register",
+    "swarm.agents",
+    "swarm.route",
+    "swarm.send",
+    "swarm.inbox",
+    "board.add",
+    "board.claim",
+    "board.update",
+    "board.list",
+    "notes.read",
+    "notes.append",
+    "notes.write",
+];
+
+/// The requests about persistent children ([`SWARM_KINDS`] and these are every request [`HostOps`] serves).
+pub const CHILD_KINDS: [&str; 7] = [
+    "rlm.spawn",
+    "rlm.collect",
+    "rlm.results",
+    "rlm.list_subagents",
+    "rlm.cancel",
+    "rlm.delete_subagent",
+    "rlm.ask",
+];
+
 impl HostOps {
     pub fn new(chat: ChatHarness) -> HostOps {
         HostOps { chat }
@@ -83,38 +110,14 @@ impl HostOps {
             "rlm.list_subagents" => self.list(call),
             "rlm.cancel" | "rlm.delete_subagent" => self.cancel(payload, signal),
             "rlm.ask" => self.ask(payload, call, signal),
-            "swarm.register" | "swarm.agents" | "swarm.route" | "swarm.send" | "swarm.inbox" | "board.add"
-            | "board.claim" | "board.update" | "board.list" | "notes.read" | "notes.append" | "notes.write" => {
-                self.swarm(kind, payload, call)
-            }
+            kind if SWARM_KINDS.contains(&kind) => self.swarm(kind, payload, call),
             _ => return None,
         })
     }
 
     /// Whether `kind` is one of these operations.
     pub fn serves(kind: &str) -> bool {
-        matches!(
-            kind,
-            "rlm.spawn"
-                | "rlm.collect"
-                | "rlm.results"
-                | "rlm.list_subagents"
-                | "rlm.cancel"
-                | "rlm.delete_subagent"
-                | "rlm.ask"
-                | "swarm.register"
-                | "swarm.agents"
-                | "swarm.route"
-                | "swarm.send"
-                | "swarm.inbox"
-                | "board.add"
-                | "board.claim"
-                | "board.update"
-                | "board.list"
-                | "notes.read"
-                | "notes.append"
-                | "notes.write"
-        )
+        CHILD_KINDS.contains(&kind) || SWARM_KINDS.contains(&kind)
     }
 
     /// A [`HostHandler`] for one cell: delegation operations here, everything else to `fallback`.
@@ -199,7 +202,7 @@ impl HostOps {
                 let mut records = Vec::new();
                 let mut cursor = None;
                 loop {
-                    let page = tx.committed_scan_tasks(&query, 256, cursor.as_ref())?;
+                    let page = tx.committed(|storage| storage.scan_tasks(&query, 256, cursor.as_ref()))?;
                     records.extend(page.items);
                     match page.next {
                         Some(next) => cursor = Some(next),

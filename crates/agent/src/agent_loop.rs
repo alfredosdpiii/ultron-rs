@@ -16,7 +16,7 @@ use jsonschema::validate_tool_arguments;
 
 use crate::types::{
     AgentContext, AgentEvent, AgentLoopConfig, AgentMessage, AgentTool, AgentToolResult, BeforeToolCallContext,
-    StreamFn, ToolExecutionMode,
+    StreamFn,
 };
 
 /// The event sink, shared by concurrently running tools.
@@ -70,72 +70,64 @@ async fn run_loop(
 ) {
     let mut first_turn = true;
     let mut pending = poll_messages(&mut config.get_steering_messages);
-    loop {
-        let mut has_more_tool_calls = true;
-        while has_more_tool_calls || !pending.is_empty() {
-            if !first_turn {
-                emit.emit(AgentEvent::TurnStart);
-            }
-            first_turn = false;
-            for message in declare_tool_changes(&context, std::mem::take(&mut pending)) {
-                emit.emit(AgentEvent::MessageStart {
-                    message: message.clone(),
-                });
-                emit.emit(AgentEvent::MessageEnd {
-                    message: message.clone(),
-                });
-                context.messages.push(message.clone());
-                new_messages.push(message);
-            }
+    let mut has_more_tool_calls = true;
+    while has_more_tool_calls || !pending.is_empty() {
+        if !first_turn {
+            emit.emit(AgentEvent::TurnStart);
+        }
+        first_turn = false;
+        for message in declare_tool_changes(&context, std::mem::take(&mut pending)) {
+            emit.emit(AgentEvent::MessageStart {
+                message: message.clone(),
+            });
+            emit.emit(AgentEvent::MessageEnd {
+                message: message.clone(),
+            });
+            context.messages.push(message.clone());
+            new_messages.push(message);
+        }
 
-            let message = stream_assistant_response(&mut context, &config, signal, emit, stream_fn).await;
-            new_messages.push(Message::Assistant(message.clone()));
-            if matches!(message.stop_reason, StopReason::Error | StopReason::Aborted) {
-                emit.emit(AgentEvent::TurnEnd {
-                    message: Message::Assistant(message),
-                    tool_results: Vec::new(),
-                });
-                emit.emit(AgentEvent::AgentEnd {
-                    messages: new_messages.clone(),
-                });
-                return;
-            }
-
-            let tool_calls: Vec<ToolCall> = message
-                .content
-                .iter()
-                .filter_map(|c| match c {
-                    AssistantContent::ToolCall(call) => Some(call.clone()),
-                    _ => None,
-                })
-                .collect();
-            has_more_tool_calls = false;
-            let mut tool_results = Vec::new();
-            if !tool_calls.is_empty() {
-                let batch = if message.stop_reason == StopReason::Length {
-                    fail_truncated_tool_calls(&tool_calls, emit)
-                } else {
-                    execute_tool_calls(&context, &message, &tool_calls, &config, signal, emit).await
-                };
-                has_more_tool_calls = !batch.terminate;
-                for result in &batch.messages {
-                    context.messages.push(Message::ToolResult(result.clone()));
-                    new_messages.push(Message::ToolResult(result.clone()));
-                }
-                tool_results = batch.messages;
-            }
+        let message = stream_assistant_response(&mut context, &config, signal, emit, stream_fn).await;
+        new_messages.push(Message::Assistant(message.clone()));
+        if matches!(message.stop_reason, StopReason::Error | StopReason::Aborted) {
             emit.emit(AgentEvent::TurnEnd {
                 message: Message::Assistant(message),
-                tool_results,
+                tool_results: Vec::new(),
             });
-            pending = poll_messages(&mut config.get_steering_messages);
+            emit.emit(AgentEvent::AgentEnd {
+                messages: new_messages.clone(),
+            });
+            return;
         }
 
-        let follow_ups = poll_messages(&mut config.get_follow_up_messages);
-        if follow_ups.is_empty() {
-            break;
+        let tool_calls: Vec<ToolCall> = message
+            .content
+            .iter()
+            .filter_map(|c| match c {
+                AssistantContent::ToolCall(call) => Some(call.clone()),
+                _ => None,
+            })
+            .collect();
+        has_more_tool_calls = false;
+        let mut tool_results = Vec::new();
+        if !tool_calls.is_empty() {
+            let batch = if message.stop_reason == StopReason::Length {
+                fail_truncated_tool_calls(&tool_calls, emit)
+            } else {
+                execute_tool_calls(&context, &message, &tool_calls, &config, signal, emit).await
+            };
+            has_more_tool_calls = !batch.terminate;
+            for result in &batch.messages {
+                context.messages.push(Message::ToolResult(result.clone()));
+                new_messages.push(Message::ToolResult(result.clone()));
+            }
+            tool_results = batch.messages;
         }
-        pending = follow_ups;
+        emit.emit(AgentEvent::TurnEnd {
+            message: Message::Assistant(message),
+            tool_results,
+        });
+        pending = poll_messages(&mut config.get_steering_messages);
     }
     emit.emit(AgentEvent::AgentEnd {
         messages: new_messages.clone(),
@@ -380,37 +372,8 @@ async fn execute_tool_calls(
     signal: &AbortSignal,
     emit: &Emit<'_>,
 ) -> Batch {
-    let sequential = config.tool_execution == ToolExecutionMode::Sequential;
-    let mut finalized = Vec::new();
-    if sequential {
-        let mut messages = Vec::new();
-        for call in calls {
-            emit_start(call, emit);
-            let done = match prepare_tool_call(context, assistant, call, config, signal).await {
-                Prepared::Immediate(done) => *done,
-                Prepared::Ready { tool, args } => {
-                    let executed = execute_prepared(call, tool, &args, signal, emit).await;
-                    finalize(call, executed)
-                }
-            };
-            emit_end(&done, emit);
-            let message = tool_result_message(&done);
-            emit_result_message(&message, emit);
-            messages.push(message);
-            finalized.push(done);
-            if signal.aborted() {
-                break;
-            }
-        }
-        return Batch {
-            messages,
-            terminate: should_terminate(&finalized),
-        };
-    }
-
-    // Parallel: each call is prepared in order (lookup, argument preparation, validation, `beforeToolCall`), and an
-    // immediate outcome ends at once; then every prepared call runs concurrently; result messages follow in call
-    // order.
+    // Each call is prepared in order (lookup, validation, `beforeToolCall`), and an immediate outcome ends at once;
+    // then every prepared call runs concurrently; result messages follow in call order.
     let mut slots: Vec<Option<Finalized>> = Vec::new();
     let mut running: Vec<BoxFuture<'_, (usize, Finalized)>> = Vec::new();
     for call in calls {
@@ -491,7 +454,7 @@ fn immediate(call: &ToolCall, message: impl Into<String>) -> Finalized {
     }
 }
 
-/// `prepareToolCall`: find the tool, apply its `prepareArguments`, validate and coerce the arguments against its
+/// `prepareToolCall`: find the tool, validate and coerce the arguments against its
 /// schema (`validateToolArguments`, same error text), then ask `beforeToolCall`. Anything that fails or blocks is an
 /// immediate error result.
 async fn prepare_tool_call<'c>(
@@ -504,10 +467,7 @@ async fn prepare_tool_call<'c>(
     let Some(tool) = context.tools.iter().find(|t| t.tool().name == call.name) else {
         return Prepared::Immediate(Box::new(immediate(call, format!("Tool {} not found", call.name))));
     };
-    let args = match tool
-        .prepare_arguments(&call.arguments)
-        .and_then(|prepared| validate_tool_arguments(&call.name, &tool.tool().parameters, &prepared))
-    {
+    let args = match validate_tool_arguments(&call.name, &tool.tool().parameters, &call.arguments) {
         Ok(args) => args,
         Err(message) => return Prepared::Immediate(Box::new(immediate(call, message))),
     };

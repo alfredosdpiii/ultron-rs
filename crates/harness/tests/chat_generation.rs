@@ -20,7 +20,7 @@ use durable::{
     CommitChange, ConversationOwnership, DocumentContent, EntryDraft, Owner, StorageWrite, SubmissionCreate,
     SubmissionStatus, SubmissionType, TaskDefinition, TaskId, TaskOptions, TaskQuery,
 };
-use harness::chat::docs::{LIVE, PROVIDER};
+use harness::chat::docs::{AGENT, INBOX, LIVE, PROVIDER, USAGE};
 use harness::chat::faux::{Faux, FauxOptions, FauxStep, error_message, message, text_message, unanswered};
 use harness::chat::{
     AgentChange, ChatHarness, Conversation, ModelRef, Models, Settings, StreamRequest, SubmissionDraft,
@@ -790,9 +790,21 @@ fn harness_chat_generation_creates_and_persists_provider_state_before_a_legacy_c
             *sink.lock().unwrap() = request.session_id.clone();
             Ok(text_message("ok"))
         })]);
-        let (chat, root) = open_chat(Controlled::new(backend), &setup);
-        root.commit(|tx| Ok(tx.retire_doc(&PROVIDER, Owner::Conversation(root.id))?))
+        let storage = Controlled::new(backend);
+        // A conversation created before `ultron.provider` existed has every other built-in document.
+        let legacy = durable::Session::new(storage.clone());
+        legacy
+            .commit(|tx| {
+                let root = tx.create_root_conversation()?;
+                for doc in [&LIVE, &INBOX, &USAGE, &AGENT] {
+                    tx.doc(doc, Owner::Conversation(root.id))?;
+                }
+                Ok(())
+            })
             .unwrap();
+        legacy.close().unwrap();
+        let (chat, root) = open_chat(storage.reopen(), &setup);
+        root.configure(&AgentChange::model(Faux::model_ref())).unwrap();
         assert!(
             chat.snapshot(&PROVIDER, Owner::Conversation(root.id))
                 .unwrap()

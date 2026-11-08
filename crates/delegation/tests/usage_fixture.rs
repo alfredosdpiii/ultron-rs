@@ -3,7 +3,7 @@
 //! text (key order included); invalid stored documents fail with the same messages; the env limits and the budget
 //! line match.
 
-use delegation::task_store::TaskStore;
+use delegation::task_store::DocumentStore;
 use delegation::usage::{
     Measurement, Remaining, Reservation, ReserveRequest, UsageLedger, UsageLimits, UsageOptions, budget_line,
     limits_from_env,
@@ -19,7 +19,7 @@ fn fixture() -> Value {
 
 struct Shared(Arc<Mutex<Option<Value>>>);
 
-impl TaskStore for Shared {
+impl DocumentStore for Shared {
     fn read(&mut self) -> Result<Option<Value>, String> {
         Ok(self.0.lock().unwrap().clone())
     }

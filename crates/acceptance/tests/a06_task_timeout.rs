@@ -3,8 +3,8 @@
 //! Rust task host for spawned work is the subagent host (`crates/delegation`, `rlm.spawn` with `timeout_ms=`), whose
 //! timeout commits the same cancelled result, and a host reopened over the same journal reports it.
 
-use delegation::host::{ChildRunner, CollectMode, Delegation, DelegationOptions};
-use delegation::task_store::TaskStore;
+use delegation::host::{ChildRunner, Delegation, DelegationOptions};
+use delegation::task_store::DocumentStore;
 use serde_json::{Value, json};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -12,7 +12,7 @@ use std::time::Duration;
 #[derive(Clone, Default)]
 struct Store(Arc<Mutex<Option<Value>>>);
 
-impl TaskStore for Store {
+impl DocumentStore for Store {
     fn read(&mut self) -> Result<Option<Value>, String> {
         Ok(self.0.lock().unwrap().clone())
     }
@@ -25,7 +25,6 @@ impl TaskStore for Store {
 fn host(store: &Store, runner: ChildRunner) -> Delegation {
     let mut options = DelegationOptions::new(runner);
     options.store = Box::new(store.clone());
-    options.collect = CollectMode::Wait;
     Delegation::new(options).0
 }
 

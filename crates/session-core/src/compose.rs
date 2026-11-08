@@ -6,7 +6,7 @@
 //! 2. [`inference::Inference`]: `rlm.infer`, `rlm.load`, `rlm.frames`;
 //! 3. [`Router`]: subagents (`rlm.spawn`, `rlm.collect`, ... served by [`delegation::host::Delegation`] for the
 //!    calling lane, in host collect mode: a cell never waits); the lane API (`rlm.lanes`, `rlm.lane.*`, `rlm.cells`, `rlm.cell.cancel`, `rlm.recovery`) is answered by the
-//!    session's REPL lanes ([`delegation::lanes::Lanes`]) first;
+//!    session's REPL lanes ([`lanes::Lanes`]) first;
 //! 4. [`host::Host`], sandboxed ([`host::Host::sandboxed`] with the `sandbox.*` settings) over the
 //!    session's file hooks (Loki): shell, jobs and the before-write check.
 //!
@@ -22,8 +22,7 @@ use agent::{AgentOptions, AgentTool, StreamFn};
 use ai::{Message, Model, UserMessage, UserMessageContent};
 use delegation::agents::{Agents, AgentsOptions, Completion, PredictCall, predict_adapter};
 use delegation::child::agent_runner;
-use delegation::host::{ChildRun, ChildRunner, CollectMode, Delegation, DelegationOptions, DetachedEnd, Park};
-use delegation::lanes::{CellEnd, Lanes, LanesOptions};
+use delegation::host::{ChildRun, ChildRunner, Delegation, DelegationOptions, DetachedEnd};
 use delegation::usage::UsageLedger;
 use host::Host;
 use host::file_hooks::{FileHooks, GuardRecord, OnRecord};
@@ -35,6 +34,8 @@ use kernel_apis::{
     CodeSkills, CodeSkillsOptions, DurableWork, DurableWorkOptions, FileDocumentStore, GoalDriver, HintsModule,
     KernelApis, MemoryApi, MemoryBackend, MemoryService, SchedulesModule, SkillSource, SkillsModule, TaskGoalJobs,
 };
+use lanes::Park;
+use lanes::{CellEnd, Lanes, LanesOptions};
 use serde_json::{Map, Value, json};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -414,7 +415,7 @@ fn max_live_kernels(settings: &Value) -> usize {
 
 /// Where each lane's kernel snapshot lives (the path its kernel restores at startup): the pool snapshots an idle
 /// kernel there before evicting it.
-fn lane_snapshot_path(config: &Arc<Config>, session_id: &str) -> delegation::lanes::SnapshotPathFn {
+fn lane_snapshot_path(config: &Arc<Config>, session_id: &str) -> lanes::SnapshotPathFn {
     let snapshots = config.session_dir("rlm-snapshots", session_id);
     Arc::new(move |lane: &str| {
         Some(
@@ -1007,7 +1008,8 @@ impl Runtime {
             // Per lane (crate::wake): a woken root's cell never waits for subagents (rlm.collect returns what has
             // ended, and the host waits between turns, delivering each end as a child_done event); every other
             // lane waits in its cell.
-            options.collect = CollectMode::InCell;
+            let lane_wake = wake.clone();
+            options.collect = Arc::new(move |lane: &str| lane_wake.collect_mode(lane));
             options.spawn_depth = config.spawn_depth;
             options.session_id = session_id.clone();
             options.workspace = Some(config.cwd.clone());
@@ -1016,15 +1018,10 @@ impl Runtime {
             options.keep_worktrees = delegation::worktrees::keep_worktrees(
                 (config.var)(delegation::worktrees::KEEP_WORKTREES_ENV).as_deref(),
             );
-            let (delegation, child_ends) = Delegation::new(options);
-            let lane_wake = wake.clone();
-            delegation.set_lane_collect(Arc::new(move |lane: &str| lane_wake.collect_mode(lane)));
-            // Read per spawn, as session-worker.ts passes them: `rlm.childModel` (/settings -> Models) and the
-            // `worktrees` setting, so a changed setting applies to the next subagent.
+            // Read per worktree spawn, as session-worker.ts passes it: the `worktrees` setting, so a changed setting
+            // applies to the next subagent.
             let settings = config.settings_reader();
-            delegation.set_child_model_source(Arc::new(move || settings().rlm_model_settings().child_model));
-            let settings = config.settings_reader();
-            delegation.set_worktree_setup_source(Arc::new(move || {
+            options.worktree_setup = Arc::new(move || {
                 let configured = settings().worktree_settings();
                 Some(delegation::worktrees::WorktreeSetup {
                     link: configured.link,
@@ -1032,22 +1029,27 @@ impl Runtime {
                     command: configured.command,
                     timeout_ms: None,
                 })
-            }));
+            });
+            // How each worktree child's merge ended is counted (`onMerge`).
+            let merges = stats.clone();
+            options.on_merge = Some(Arc::new(move |task: &str, status: &str| merges.merge(task, status)));
+            // A spawn naming a model the session cannot run is refused, never run on the root's model (A04).
+            options.model_check = Some(config.model_check());
+            // Spawn contract `run` checks run under the session's shell sandbox, in the child's working directory.
+            options.check_runner = crate::contract_checks::check_runner(me.clone());
+            // Contract baselines run git with the session's environment (its PATH finds git).
+            options.command_env = config.child_env();
+            let (delegation, child_ends) = Delegation::new(options);
+            // Read per spawn, as session-worker.ts passes it: `rlm.childModel` (/settings -> Models), so a changed
+            // setting applies to the next subagent.
+            let settings = config.settings_reader();
+            delegation.set_child_model(Arc::new(move || settings().rlm_model_settings().child_model));
             // Worktrees of sessions that ended without cleaning up (a crash): pruned in the background, their work
             // kept on its branch (native-host.ts `loadTasks`).
             let pruning = delegation.clone();
             std::thread::spawn(move || pruning.prune_orphan_worktrees());
-            // How each worktree child's merge ended is counted (`onMerge`).
-            let merges = stats.clone();
-            delegation.on_merge(Arc::new(move |task: &str, status: &str| merges.merge(task, status)));
             // Workflow nodes with worktree=True run as subagents of the workflow's caller (worktrees live there).
             agents.set_worktree_children(Arc::new(delegation.clone()));
-            // A spawn naming a model the session cannot run is refused, never run on the root's model (A04).
-            delegation.set_model_check(config.model_check());
-            // Spawn contract `run` checks run under the session's shell sandbox, in the child's working directory.
-            delegation.set_check_runner(crate::contract_checks::check_runner(me.clone()));
-            // Contract baselines run git with the session's environment (its PATH finds git).
-            delegation.set_command_env(config.child_env());
             let factory_stack = me.clone();
             let handler_stack = me.clone();
             let lanes = Lanes::new(LanesOptions {
@@ -1063,7 +1065,7 @@ impl Runtime {
                 cancel_grace: Duration::from_secs(5),
                 // Live kernels are bounded as the TS session's rlm tool bounds them (A43): an idle lane is
                 // snapshotted to its own snapshot path and evicted, and its next cell restores it.
-                pool: Some(delegation::lanes::PoolLimits::new(
+                pool: Some(lanes::PoolLimits::new(
                     max_live_kernels(&config.settings),
                     Some(lane_snapshot_path(&config, &session_id)),
                 )),
@@ -1768,7 +1770,7 @@ impl Stack {
 
 /// How a session's subagents run, and where their task journal lives.
 pub struct SubagentHost {
-    pub store: Box<dyn delegation::task_store::TaskStore>,
+    pub store: Box<dyn delegation::task_store::DocumentStore>,
     /// Builds the runner from the stack being built (it may hold the stack weakly).
     pub runner: Box<dyn FnOnce(Weak<Stack>) -> delegation::host::ChildRunner>,
     /// The typed agents' task journal, definition registry and usage ledger stores, and the runner of their `rlm`
@@ -1778,9 +1780,9 @@ pub struct SubagentHost {
 
 /// Where the typed-agent host keeps its records, and how its `rlm` lanes run.
 pub struct AgentStores {
-    pub tasks: Box<dyn delegation::task_store::TaskStore>,
-    pub definitions: Box<dyn delegation::task_store::TaskStore>,
-    pub usage: Box<dyn delegation::task_store::TaskStore>,
+    pub tasks: Box<dyn delegation::task_store::DocumentStore>,
+    pub definitions: Box<dyn delegation::task_store::DocumentStore>,
+    pub usage: Box<dyn delegation::task_store::DocumentStore>,
     pub lanes: Box<dyn FnOnce(Weak<Stack>) -> delegation::agents::LaneRunner>,
     /// Where frame traces are kept (`ultron.rlm.frames`).
     pub frames: Arc<dyn inference::TraceStore>,
@@ -1817,9 +1819,9 @@ fn typed_agents(
             })),
         ),
         None => (
-            Box::new(MemoryStore::default()) as Box<dyn delegation::task_store::TaskStore>,
-            Box::new(MemoryStore::default()) as Box<dyn delegation::task_store::TaskStore>,
-            Box::new(MemoryStore::default()) as Box<dyn delegation::task_store::TaskStore>,
+            Box::new(MemoryStore::default()) as Box<dyn delegation::task_store::DocumentStore>,
+            Box::new(MemoryStore::default()) as Box<dyn delegation::task_store::DocumentStore>,
+            Box::new(MemoryStore::default()) as Box<dyn delegation::task_store::DocumentStore>,
             None,
         ),
     };

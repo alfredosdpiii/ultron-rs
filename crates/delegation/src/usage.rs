@@ -6,7 +6,7 @@
 //! The document is the TS one (`ultron.usage/root`), with its key order, so either implementation reads the other's.
 //! Every change is one serialized step that writes the whole document; a failed write poisons the ledger.
 
-use crate::task_store::{MemoryStore, TaskStore};
+use crate::task_store::{DocumentStore, MemoryStore};
 use jsrt::{json, sync};
 use serde_json::{Map, Value, json};
 use std::sync::{Arc, Mutex};
@@ -258,7 +258,7 @@ impl Default for UsageOptions {
 }
 
 struct State {
-    store: Box<dyn TaskStore>,
+    store: Box<dyn DocumentStore>,
     document: Value,
     loaded: Option<Result<(), String>>,
     broken: bool,
@@ -578,8 +578,8 @@ fn reservations_of(root: &Value) -> &[Value] {
 }
 
 impl UsageLedger {
-    /// A ledger over the session value `ultron.usage/root` (any [`TaskStore`]).
-    pub fn new(store: Box<dyn TaskStore>, options: UsageOptions) -> Result<Self, String> {
+    /// A ledger over the session value `ultron.usage/root` (any [`DocumentStore`]).
+    pub fn new(store: Box<dyn DocumentStore>, options: UsageOptions) -> Result<Self, String> {
         if options.detailed_roots < 1 {
             return Err(invalid("detailedRoots"));
         }

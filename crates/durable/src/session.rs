@@ -4,28 +4,23 @@
 //! Port of `packages/durable/src/session/session.ts` and the Session errors of `errors.ts`.
 //!
 //! Differences from upstream:
-//! - Synchronous. Commits, cold reads, watch acquisition and close run on a FIFO ticket line, so they settle in
-//!   admission order exactly as upstream's promise chain does; a cached snapshot is served off the line. A Session is
-//!   `Send + Sync` and clones share it.
-//! - No `Context`: there are no context values to carry to listeners and no abort signals. Watches are cancelled
-//!   with [`Watch::cancel`]; a commit admitted to the line always runs.
+//! - Synchronous. Commits, cold reads and close run on a FIFO ticket line, so they settle in admission order exactly
+//!   as upstream's promise chain does; a cached snapshot is served off the line. A Session is `Send + Sync` and
+//!   clones share it.
+//! - No `Context`: there are no context values to carry to listeners and no abort signals; a commit admitted to the
+//!   line always runs.
+//! - No document watches or document states (`watch`, `documentState`): commit listeners see every change.
 //! - Commit callbacks are synchronous, so a callback cannot settle with Tx operations still pending and the Tx
 //!   cannot be used after it settles (the borrow ends); escaped drafts are revoked.
-//! - Storage writes own copies of document values; published values are shared (`Arc`) with snapshots and watches.
-//! - `documentState` delivers on subscriber threads and has no delivery `Context` (see [`crate::document_state`]).
+//! - Storage writes own copies of document values; published values are shared (`Arc`) with snapshots.
 
-mod scheduler_access;
-
-use crate::document_state::{DocumentState, StateShared};
 use crate::documents::{
-    Doc, DocDefinition, DocSemantics, Owner, check_record_scope, check_record_version, materialize_document,
-    resolve_address,
+    Doc, DocDefinition, Owner, check_record_scope, check_record_version, materialize_document, resolve_address,
 };
-use crate::observation::{Observed, Watch, WatchEnd, WatchShared};
 use crate::transaction::{Tx, TxScope};
 use crate::{
-    ConversationId, DocumentAddress, DocumentCopySource, DocumentId, DocumentPoint, DocumentRecord, EntryId, Seq,
-    Storage, StorageError, StorageWrite,
+    ConversationId, DocumentAddress, DocumentCopySource, DocumentPoint, DocumentRecord, Seq, Storage, StorageError,
+    StorageWrite,
 };
 use chord_delta::{DeltaError, Op, Tracker};
 use serde_json::Value;
@@ -62,14 +57,6 @@ impl SessionError {
             SessionError::Storage(error) => error.name(),
             SessionError::Delta(error) => error.name(),
             SessionError::Type(_) => "TypeError",
-        }
-    }
-
-    /// The first error of a failed Session.
-    pub fn cause(&self) -> Option<&SessionError> {
-        match self {
-            SessionError::Failed(cause) => Some(cause),
-            _ => None,
         }
     }
 }
@@ -128,7 +115,8 @@ pub enum CommitChange {
         /// Owning conversation; task documents derive it from their task. `None` only for Session documents.
         conversation_id: Option<ConversationId>,
         version: Option<u64>,
-        value: Observed,
+        /// `None` once this commit retired it.
+        value: Option<Arc<Value>>,
         /// Exact operations of an ordinary update; empty for creation and retirement.
         ops: Vec<Op>,
     },
@@ -224,55 +212,11 @@ impl std::ops::DerefMut for LineGuard<'_> {
 type CommitListener = Arc<dyn Fn(&CommitPublication) + Send + Sync>;
 type CloseListener = Arc<dyn Fn() + Send + Sync>;
 
-struct Observer {
-    target: ObserverTarget,
-    /// Definition version of the observed value; another version's change arrives as a root replacement.
-    version: u64,
-}
-
-/// What follows a document's commits (`#attachDocument`): a watch or a document state.
-enum ObserverTarget {
-    Watch(Arc<WatchShared>),
-    State(Arc<StateShared>),
-}
-
-impl ObserverTarget {
-    fn record(&self) -> DocumentId {
-        match self {
-            ObserverTarget::Watch(watch) => watch.record,
-            ObserverTarget::State(state) => state.record,
-        }
-    }
-
-    fn is_ended(&self) -> bool {
-        match self {
-            ObserverTarget::Watch(watch) => watch.is_ended(),
-            ObserverTarget::State(state) => state.is_ended(),
-        }
-    }
-
-    fn advance(&self, value: Observed, ops: Vec<Op>) {
-        match self {
-            ObserverTarget::Watch(watch) => watch.advance(value, ops),
-            ObserverTarget::State(state) => state.advance(value),
-        }
-    }
-
-    /// `closeSession`: a watch ends with `end`; a state stops publishing and keeps its value.
-    fn close(&self, end: WatchEnd) {
-        match self {
-            ObserverTarget::Watch(watch) => watch.terminate(end),
-            ObserverTarget::State(state) => state.detach(),
-        }
-    }
-}
-
 #[derive(Default)]
 struct Listeners {
     next: u64,
     commits: Vec<(u64, CommitListener)>,
     closes: Vec<(u64, CloseListener)>,
-    observers: Vec<Observer>,
 }
 
 #[derive(Default)]
@@ -403,18 +347,9 @@ impl Session {
 
     /// The committed value of a document; never creates one.
     pub fn snapshot(&self, doc: &Doc, owner: Owner) -> Result<Option<Arc<Value>>> {
-        self.snapshot_at(doc, owner, None)
-    }
-
-    /// `snapshot` of one family member.
-    pub fn snapshot_member(&self, doc: &Doc, owner: Owner, key: &str) -> Result<Option<Arc<Value>>> {
-        self.snapshot_at(doc, owner, Some(key))
-    }
-
-    fn snapshot_at(&self, doc: &Doc, owner: Owner, key: Option<&str>) -> Result<Option<Arc<Value>>> {
         self.inner.assert_usable()?;
         let definition = doc.definition();
-        let resolved = resolve_address(definition, owner, key)?;
+        let resolved = resolve_address(definition, owner)?;
         let cached = lock(&self.inner.documents).get(&resolved.id).cloned();
         let loaded = match cached.filter(|loaded| lock(loaded).value_version == definition.version) {
             Some(loaded) => Some(loaded),
@@ -432,117 +367,11 @@ impl Session {
         Ok(Some(loaded.tracker.value().clone()))
     }
 
-    /// Watch a committed document; never creates one.
-    pub fn watch_doc(&self, doc: &Doc, owner: Owner) -> Result<Option<Watch>> {
-        self.watch_at(doc, owner, None)
-    }
-
-    fn watch_at(&self, doc: &Doc, owner: Owner, key: Option<&str>) -> Result<Option<Watch>> {
-        self.attach(doc, owner, key, |record, value| {
-            let shared = WatchShared::new(record, value);
-            (ObserverTarget::Watch(shared.clone()), Watch { shared })
-        })
-    }
-
-    /// A hydrated read-only state of a committed document that follows its commits (`documentState`); never
-    /// creates one.
-    pub fn document_state(&self, doc: &Doc, owner: Owner) -> Result<Option<DocumentState>> {
-        self.state_at(doc, owner, None)
-    }
-
-    pub fn document_state_member(&self, doc: &Doc, owner: Owner, key: &str) -> Result<Option<DocumentState>> {
-        self.state_at(doc, owner, Some(key))
-    }
-
-    fn state_at(&self, doc: &Doc, owner: Owner, key: Option<&str>) -> Result<Option<DocumentState>> {
-        self.attach(doc, owner, key, |record, value| {
-            let shared = StateShared::new(record, value);
-            (ObserverTarget::State(shared.clone()), DocumentState { shared })
-        })
-    }
-
-    /// `#attachDocument`: load the current incarnation on the line and register an observer of its commits.
-    fn attach<T>(
-        &self,
-        doc: &Doc,
-        owner: Owner,
-        key: Option<&str>,
-        create: impl FnOnce(DocumentId, Arc<Value>) -> (ObserverTarget, T),
-    ) -> Result<Option<T>> {
-        self.inner.assert_usable()?;
-        let definition = doc.definition();
-        let resolved = resolve_address(definition, owner, key)?;
+    /// Fail the Session with `error`, the first failure wins: admission ends, close listeners run, every watch ends,
+    /// and Storage closes. Must not be called on the mutation line (from a commit callback or listener).
+    pub fn fail(&self, error: SessionError) {
         let mut line = self.inner.line.enter();
-        self.inner.assert_healthy()?;
-        let Some(loaded) = self
-            .inner
-            .load(&mut line, definition, &resolved.id, &resolved.address)?
-        else {
-            return Ok(None);
-        };
-        let loaded = lock(&loaded);
-        check_record_scope(definition, &loaded.record.identity)?;
-        check_record_version(definition, &loaded.record.identity, loaded.stored_version)?;
-        let (target, handle) = create(loaded.record.identity.id, loaded.tracker.value().clone());
-        lock(&self.inner.listeners).observers.push(Observer {
-            target,
-            version: loaded.value_version,
-        });
-        Ok(Some(handle))
-    }
-
-    /// The value of a rewindable conversation document as of the commit that persisted the visible entry `at`.
-    pub fn snapshot_as_of(
-        &self,
-        doc: &Doc,
-        conversation_id: ConversationId,
-        key: Option<&str>,
-        at: EntryId,
-    ) -> Result<Option<Arc<Value>>> {
-        self.inner.assert_usable()?;
-        let definition = doc.definition();
-        if !matches!(definition.semantics, DocSemantics::Conversation { .. }) {
-            return Err(SessionError::Type(
-                "Session.snapshotAsOf() requires a conversation document".into(),
-            ));
-        }
-        let resolved = resolve_address(definition, Owner::Conversation(conversation_id), key)?;
-        let mut line = self.inner.line.enter();
-        self.inner.assert_healthy()?;
-        let inner = &self.inner;
-        let Some(stored_entry) = inner.guard(&mut line, true, |storage| storage.visible_entry(conversation_id, at))?
-        else {
-            return Err(SessionError::Error(format!(
-                "Entry {} is not visible from conversation {}",
-                at.0, conversation_id.0
-            )));
-        };
-        let address = DocumentAddress {
-            scope: crate::DocumentScope::Conversation {
-                conversation_id: stored_entry.entry.conversation_id,
-            },
-            ..resolved.address
-        };
-        let point = DocumentPoint::At(stored_entry.commit_seq);
-        let Some(record) = inner.guard(&mut line, true, |storage| storage.find_document(&address, point))? else {
-            return Ok(None);
-        };
-        let id = record.identity.id;
-        let Some(stored) = inner.guard(&mut line, true, |storage| storage.document(id, point))? else {
-            return Err(SessionError::Error(format!(
-                "Historical document {} ({}) cannot be read",
-                id.0, record.identity.kind
-            )));
-        };
-        Ok(Some(Arc::new(materialize_document(definition, &stored)?)))
-    }
-
-    /// Drop every loaded tracker on the line; later access cold-loads from Storage.
-    pub fn unload_documents(&self) -> Result<()> {
-        self.inner.assert_usable()?;
-        let _line = self.inner.line.enter();
-        lock(&self.inner.documents).clear();
-        Ok(())
+        self.inner.fail(&mut line, error);
     }
 
     /// Observe complete commits synchronously after adoption, on the committing thread. The listener must not block
@@ -699,64 +528,17 @@ impl Inner {
         self.ended.notify_all();
     }
 
-    /// Run the close listeners once, then end every watch.
+    /// Run the close listeners once.
     fn notify_close(&self) {
-        let (closes, observers) = {
-            let mut listeners = lock(&self.listeners);
-            (
-                std::mem::take(&mut listeners.closes),
-                std::mem::take(&mut listeners.observers),
-            )
-        };
+        let closes = std::mem::take(&mut lock(&self.listeners).closes);
         for (_, listener) in closes {
             listener();
         }
-        let end = match &lock(&self.status).failure {
-            None => WatchEnd::SessionClosed,
-            Some(failure) => WatchEnd::SessionFailed(failure.clone()),
-        };
-        for observer in observers {
-            observer.target.close(end.clone());
-        }
     }
 
-    /// Deliver a durable commit: watches queue their frames first, then host listeners run.
+    /// Deliver a durable commit to the host listeners.
     fn publish(&self, publication: &CommitPublication) {
-        let commits = {
-            let mut listeners = lock(&self.listeners);
-            listeners.observers.retain(|observer| !observer.target.is_ended());
-            for observer in &mut listeners.observers {
-                for change in &publication.changes {
-                    let CommitChange::Document {
-                        record,
-                        version,
-                        value,
-                        ops,
-                        ..
-                    } = change
-                    else {
-                        continue;
-                    };
-                    if record.identity.id != observer.target.record() {
-                        continue;
-                    }
-                    let ops = match (value, version) {
-                        (None, _) => vec![Op::Replace(Value::Null)],
-                        (Some(_), Some(version)) if *version == observer.version => ops.clone(),
-                        (Some(value), version) => {
-                            // An observer of another shape gets the new value as a root replacement.
-                            observer.version = version.unwrap_or(observer.version);
-                            vec![Op::Replace((**value).clone())]
-                        }
-                    };
-                    // A migration-only base changes nothing for an observer of the new version.
-                    if !ops.is_empty() {
-                        observer.target.advance(value.clone(), ops);
-                    }
-                }
-            }
-            listeners.commits.clone()
-        };
+        let commits = lock(&self.listeners).commits.clone();
         for (_, listener) in commits {
             listener(publication);
         }

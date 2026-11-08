@@ -1,7 +1,7 @@
 //! Replays the upstream storage conformance cases (fixtures/generate.mjs) call by call against MemoryStorage, and
 //! against the test model of the product's reopen-by-replay (`replay_support`, reopened after every commit), and
 //! requires the same results and the same error names and messages as upstream's MemoryStorage and reopened file
-//! backend. The product backend itself (session-core `JournalStorage`) replays the same cases in
+//! backend. The product backend itself (session-core `durable_store::open`) replays the same cases in
 //! `crates/session-core/tests/durable_journal_conformance.rs`.
 
 #[path = "replay_support/mod.rs"]
@@ -13,7 +13,7 @@ use durable::{
     StorageWrite, StoredDocument, StoredEntry, SubmissionId, SubmissionQuery, SubmissionRecord, TaskId, TaskQuery,
     TaskRecord,
 };
-use replay_support::{ReplayLog, Replayed};
+use replay_support::ReplayLog;
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
@@ -105,7 +105,7 @@ struct Reopening<S> {
     closed: bool,
 }
 
-impl Reopening<Replayed> {
+impl Reopening<MemoryStorage> {
     fn replaying() -> Self {
         let log = ReplayLog::default();
         Reopening::new(move || log.open())

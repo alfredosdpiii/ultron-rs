@@ -1,7 +1,8 @@
 //! Document definitions, logical addresses, and the checks typed access applies to stored incarnations.
 //!
-//! Port of `packages/durable/src/documents.ts`. Upstream overloads pick the owner and family key from positional
-//! arguments; here [`Owner`] and an explicit key say the same, and a definition is shared as a [`Doc`] token.
+//! Port of `packages/durable/src/documents.ts`. Upstream overloads pick the owner from positional arguments; here
+//! [`Owner`] says the same, and a definition is shared as a [`Doc`] token. Document families (`defineDocFamily`)
+//! are not ported: every document is a singleton of its owner (stored records still carry upstream's `key`).
 
 use crate::session::SessionError;
 use crate::{
@@ -35,8 +36,8 @@ type Initial = dyn Fn(&Value) -> Value + Send + Sync;
 type Migrate = dyn Fn(&JsonObject, u64) -> Result<Value, String> + Send + Sync;
 type CheckpointWhen = dyn Fn(&DocDefinition, &Value, &[Op], CheckpointInfo) -> Result<bool, String> + Send + Sync;
 
-/// A document definition. `initial` receives the family seed (`null` for a singleton) and runs only when the
-/// document is absent; `migrate` converts a stored value of an older version; `checkpoint_when` returning true
+/// A document definition. `initial` receives `null` (upstream's family seed) and runs only when the document is
+/// absent; `migrate` converts a stored value of an older version; `checkpoint_when` returning true
 /// stores an ordinary change as a complete base instead of a delta.
 pub struct DocDefinition {
     /// Stable persisted kind; part of the public protocol.
@@ -44,7 +45,6 @@ pub struct DocDefinition {
     /// Positive integer version of the stored value shape.
     pub version: u64,
     pub semantics: DocSemantics,
-    pub family: bool,
     pub initial: Box<Initial>,
     pub migrate: Option<Box<Migrate>>,
     pub checkpoint_when: Option<Box<CheckpointWhen>>,
@@ -56,7 +56,6 @@ impl fmt::Debug for DocDefinition {
             .field("kind", &self.kind)
             .field("version", &self.version)
             .field("semantics", &self.semantics)
-            .field("family", &self.family)
             .finish_non_exhaustive()
     }
 }
@@ -72,17 +71,10 @@ impl DocDefinition {
             kind: kind.to_owned(),
             version,
             semantics,
-            family: false,
             initial: Box::new(initial),
             migrate: None,
             checkpoint_when: None,
         }
-    }
-
-    /// A keyed family: `initial` receives the seed of the first acquisition of each member.
-    pub fn family(mut self) -> DocDefinition {
-        self.family = true;
-        self
     }
 
     pub fn migrate(
@@ -101,7 +93,7 @@ impl DocDefinition {
         self
     }
 
-    /// Validate and share the definition (upstream `defineDoc`/`defineDocFamily`).
+    /// Validate and share the definition (upstream `defineDoc`).
     pub fn define(self) -> Result<Doc, SessionError> {
         if self.version < 1 || self.version > crate::MAX_SAFE_ID {
             return Err(SessionError::Type(format!(
@@ -145,12 +137,8 @@ pub(crate) struct Resolved {
     pub id: String,
 }
 
-/// Resolve an owner and optional family key against a definition.
-pub(crate) fn resolve_address(
-    definition: &DocDefinition,
-    owner: Owner,
-    key: Option<&str>,
-) -> Result<Resolved, SessionError> {
+/// Resolve an owner against a definition.
+pub(crate) fn resolve_address(definition: &DocDefinition, owner: Owner) -> Result<Resolved, SessionError> {
     let scope = match (definition.semantics, owner) {
         (DocSemantics::Session, Owner::Session) => DocumentScope::Session,
         (DocSemantics::Conversation { .. }, Owner::Conversation(conversation_id)) => {
@@ -165,25 +153,10 @@ pub(crate) fn resolve_address(
             )));
         }
     };
-    match (definition.family, key) {
-        (true, None) => {
-            return Err(SessionError::Type(format!(
-                "Document {} requires a family key",
-                definition.kind
-            )));
-        }
-        (false, Some(_)) => {
-            return Err(SessionError::Type(format!(
-                "Document {} is not a family",
-                definition.kind
-            )));
-        }
-        _ => {}
-    }
     let address = DocumentAddress {
         kind: definition.kind.clone(),
         scope,
-        key: key.map(str::to_owned),
+        key: None,
     };
     let id = address_id(&address);
     Ok(Resolved { address, id })

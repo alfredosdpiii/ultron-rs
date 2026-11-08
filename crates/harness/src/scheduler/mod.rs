@@ -1291,7 +1291,7 @@ impl Scheduler {
             let live = self.st().live.get(id).cloned();
             let record = match live {
                 Some(record) => Some(record),
-                None => tx.committed_task_record(*id)?,
+                None => tx.committed(|storage| storage.task(*id))?,
             };
             if record.is_some_and(|record| failed_outcome(&record)) {
                 return Ok(true);
@@ -1365,7 +1365,7 @@ impl Scheduler {
         let mut conversations: IndexSet<ConversationId> = IndexSet::new();
         let mut cursor = None;
         loop {
-            let page = tx.committed_scan_submissions(&query, SCAN_PAGE_SIZE, cursor.as_ref())?;
+            let page = tx.committed(|storage| storage.scan_submissions(&query, SCAN_PAGE_SIZE, cursor.as_ref()))?;
             conversations.extend(page.items.iter().map(|submission| submission.conversation_id));
             match page.next {
                 Some(next) => cursor = Some(next),
@@ -1388,7 +1388,7 @@ impl Scheduler {
                     let node = match known {
                         Some(node) => node,
                         None => {
-                            let Some(record) = tx.committed_task_record(id)? else {
+                            let Some(record) = tx.committed(|storage| storage.task(id))? else {
                                 return Ok(());
                             };
                             let node = node_of(&record);
@@ -1405,7 +1405,7 @@ impl Scheduler {
                     let edge = match known {
                         Some(edge) => edge,
                         None => {
-                            let record = tx.committed_conversation(id)?;
+                            let record = tx.committed(|storage| storage.conversation(id))?;
                             let edge = record.and_then(|record| record.owner).map(|owner| owner.task_id);
                             self.st().set_edge(id, edge);
                             edge
@@ -2012,7 +2012,7 @@ impl Scheduler {
                 .or_else(|| self.st().live.get(id).cloned());
             let member = match known {
                 Some(member) => Some(member),
-                None => tx.committed_task_record(*id)?,
+                None => tx.committed(|storage| storage.task(*id))?,
             };
             let Some(member) = member else {
                 return Err(HarnessError::Error(format!("Task {} does not exist", id.0)));

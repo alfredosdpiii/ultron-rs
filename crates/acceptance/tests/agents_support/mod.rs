@@ -8,7 +8,7 @@
 use delegation::agents::{
     Adapter, AdapterRequest, Agents, AgentsOptions, LaneCheck, LaneMessage, LaneRelease, LaneReply, LaneRun, TaskEnd,
 };
-use delegation::task_store::TaskStore;
+use delegation::task_store::DocumentStore;
 use delegation::usage::{Measurement, UsageLedger};
 use kernel::Signal;
 use kernel_apis::TaskHost;
@@ -46,7 +46,7 @@ impl Memory {
     }
 }
 
-impl TaskStore for Memory {
+impl DocumentStore for Memory {
     fn read(&mut self) -> Result<Option<Value>, String> {
         Ok(lock(&self.value).clone())
     }
@@ -116,7 +116,11 @@ pub fn fixture(mut options: Options) -> Fixture {
 }
 
 /// A fixture over the given journal and definition stores (its `store` / `definitions` are unused then).
-pub fn fixture_with_stores(options: Options, tasks: Box<dyn TaskStore>, definitions: Box<dyn TaskStore>) -> Fixture {
+pub fn fixture_with_stores(
+    options: Options,
+    tasks: Box<dyn DocumentStore>,
+    definitions: Box<dyn DocumentStore>,
+) -> Fixture {
     let (store, definition_store) = (Memory::default(), Memory::default());
     let lane_calls: Arc<Mutex<Vec<String>>> = Arc::default();
     let prompts: Arc<Mutex<Vec<(String, String)>>> = Arc::default();

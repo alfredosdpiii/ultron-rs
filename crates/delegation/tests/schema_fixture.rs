@@ -3,7 +3,7 @@
 //! the corpus, and the registry's register / list / stored hashes / reload / validation errors.
 
 use delegation::definitions::DefinitionRegistry;
-use delegation::task_store::TaskStore;
+use delegation::task_store::DocumentStore;
 use jsonschema::{check, errors, validate_json_schema};
 use serde_json::{Value, json};
 use std::path::Path;
@@ -23,7 +23,7 @@ struct Store {
     fail_write: bool,
 }
 
-impl TaskStore for Store {
+impl DocumentStore for Store {
     fn read(&mut self) -> Result<Option<Value>, String> {
         if self.fail_read {
             return Err("disk".into());
@@ -39,7 +39,7 @@ impl TaskStore for Store {
     }
 }
 
-fn store(shared: &Shared) -> Box<dyn TaskStore> {
+fn store(shared: &Shared) -> Box<dyn DocumentStore> {
     Box::new(Store {
         shared: shared.clone(),
         fail_read: false,

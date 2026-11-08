@@ -3,7 +3,7 @@
 //! Port of `packages/durable/src/{types,errors}.ts` and `storage/memory-storage.ts` from earendil-works/pi (MIT); the
 //! pinned revision is recorded in `fixtures/storage-conformance.json`. Errors carry the upstream error name and
 //! message. Upstream's SQLite and JSONL file backends are not ported: the product keeps durable records in the
-//! session's format-4 journal (`session-core`'s `JournalStorage`, a MemoryStorage working copy whose commits are
+//! session's format-4 journal (`session-core`'s `durable_store::open`: a MemoryStorage whose commits are
 //! journal records).
 //!
 //! Differences from upstream:
@@ -11,19 +11,14 @@
 //! - Records are typed, so malformed records fail to deserialize instead of reaching storage, and a
 //!   `document.create` whose content is a delta is rejected at commit (upstream's types forbid it).
 
-mod document_state;
 mod documents;
 mod memory;
-mod observation;
-pub mod owner;
 mod records;
 mod session;
 mod transaction;
 
-pub use document_state::{Delivery, DeliveryKind, DocumentState, StateSubscription};
 pub use documents::{CheckpointInfo, Doc, DocDefinition, DocSemantics, Owner};
-pub use memory::{MemoryStorage, PreparedCommit};
-pub use observation::{Observed, Watch, WatchEnd};
+pub use memory::{CommitSink, MemoryStorage, PreparedCommit};
 pub use records::*;
 pub use session::{CommitChange, CommitPublication, Session, SessionEnd, SessionError, Subscription};
 pub use transaction::{

@@ -289,7 +289,7 @@ fn daemon_prompt_schedules_cancel_in_journal_takes_the_locks_and_writes_the_canc
         "no active schedule sch-1"
     );
     // A live owner (a worker) holds the session: refused, nothing written.
-    let owner = durable::owner::OwnerLock::acquire(&probe.path).unwrap();
+    let owner = daemon::owner::OwnerLock::acquire(&probe.path, std::time::Duration::ZERO).unwrap();
     let error = cancel_in_journal(&probe.path, "sch-1", clock).unwrap_err();
     assert!(error.contains("is open in another Ultron process"), "{error}");
     drop(owner);

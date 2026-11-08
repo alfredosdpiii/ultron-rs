@@ -2,7 +2,7 @@
 //! operations on the Rust journal must return the same tasks and errors and leave the same stored document, byte for
 //! byte as JSON text (random task ids are numbered by first appearance on both sides).
 
-use delegation::task_store::{TaskJournal, TaskStore, task_fingerprint};
+use delegation::task_store::{DocumentStore, TaskJournal, task_fingerprint};
 use serde_json::{Value, json};
 use std::collections::HashMap;
 use std::path::Path;
@@ -21,7 +21,7 @@ struct Scripted {
     fail_read: bool,
 }
 
-impl TaskStore for Scripted {
+impl DocumentStore for Scripted {
     fn read(&mut self) -> Result<Option<Value>, String> {
         if self.fail_read {
             return Err("disk".into());

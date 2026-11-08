@@ -13,12 +13,14 @@
 //! requesting cell is cancelled (TS: the request context's abort); `agents.result` ends with an error then (TS keeps
 //! waiting). The model's tool list is untouched: these are kernel APIs (`agents_api.py`).
 
+use crate::DEFAULT_TIMEOUT_MS;
 use crate::contract::Brief;
-use crate::definitions::{Definition, DefinitionRegistry, Strategy, is_model};
-use crate::task_store::{TaskJournal, TaskStore, task_fingerprint};
+use crate::definitions::{Definition, DefinitionRegistry, Strategy};
+use crate::task_store::{DocumentStore, TaskJournal, task_fingerprint};
 use crate::usage::{Measurement, Reservation, ReserveRequest, UsageLedger};
 use crate::verdict::{MAX_VERDICT_REJECTIONS, validate_verdict};
 use jsonschema::json_equal;
+use jsrt::payload::nonempty_string;
 use jsrt::{json, random, string, sync, utf16};
 use kernel::{HostHandler, Signal};
 use serde_json::{Map, Value, json};
@@ -27,8 +29,6 @@ use std::sync::mpsc::{Receiver, Sender, channel};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
 
-const DEFAULT_TIMEOUT_MS: u64 = 30 * 60 * 1000;
-const MAX_TIMEOUT_MS: u64 = 60 * 60 * 1000;
 const GRAPH_TASK_LIMIT: usize = 300;
 const GRAPH_PREVIEW_CHARS: usize = 240;
 const GRAPH_TEXT_CHARS: usize = 160;
@@ -137,9 +137,9 @@ pub type LaneMessage = Arc<dyn Fn(&str, &str) -> bool + Send + Sync>;
 pub type LaneRelease = Arc<dyn Fn(&str, &str) + Send + Sync>;
 
 pub struct AgentsOptions {
-    pub store: Box<dyn TaskStore>,
+    pub store: Box<dyn DocumentStore>,
     /// Runtime registration needs it (`options.definitionStore`).
-    pub definition_store: Option<Box<dyn TaskStore>>,
+    pub definition_store: Option<Box<dyn DocumentStore>>,
     pub usage: Option<UsageLedger>,
     pub deterministic: Option<Adapter>,
     pub predict: Option<Adapter>,
@@ -167,7 +167,7 @@ pub struct AgentsOptions {
 
 impl AgentsOptions {
     /// An in-memory journal, no ledger, no adapters, no lanes, the system clock.
-    pub fn new(store: Box<dyn TaskStore>) -> Self {
+    pub fn new(store: Box<dyn DocumentStore>) -> Self {
         AgentsOptions {
             store,
             definition_store: None,
@@ -298,13 +298,6 @@ pub struct Agents {
     inner: Arc<Inner>,
 }
 
-fn nonempty_string(value: Option<&Value>, name: &str) -> Result<String, String> {
-    match value.and_then(Value::as_str) {
-        Some(text) if !string::trim(text).is_empty() => Ok(text.to_string()),
-        _ => Err(format!("{name} must be a nonempty string")),
-    }
-}
-
 fn object_input(value: Option<&Value>) -> Result<&Map<String, Value>, String> {
     value
         .and_then(Value::as_object)
@@ -324,21 +317,14 @@ fn definition_key(value: Option<&Value>) -> Result<String, String> {
 fn task_options(payload: &Map<String, Value>) -> Result<(Option<String>, Option<String>, u64), String> {
     let model = match payload.get("model") {
         None | Some(Value::Null) => None,
-        Some(Value::String(model)) if is_model(model) => Some(model.clone()),
+        Some(Value::String(model)) if string::is_model_ref(model) => Some(model.clone()),
         Some(_) => return Err("model must be provider/model".into()),
     };
     let key = match payload.get("key") {
         None | Some(Value::Null) => None,
         value => Some(nonempty_string(value, "key")?),
     };
-    let timeout = match payload.get("timeout_ms") {
-        None => DEFAULT_TIMEOUT_MS,
-        Some(value) => value
-            .as_f64()
-            .filter(|t| t.fract() == 0.0 && (1.0..=MAX_TIMEOUT_MS as f64).contains(t))
-            .map(|t| t as u64)
-            .ok_or("timeout_ms must be an integer between 1 and 3600000")?,
-    };
+    let timeout = crate::timeout_ms(payload.get("timeout_ms"))?;
     Ok((model, key, timeout))
 }
 
@@ -1309,7 +1295,7 @@ impl Agents {
             .frames
             .clone()
             .ok_or("rlm-frame@1 tasks are started by rlm.infer and rlm.map only")?;
-        let lane = format!("ultron.rlm-frame.{id}");
+        let lane = crate::lane_names::frame_lane(id);
         let (usage_root, deadline_at) = {
             let mut state = self.state();
             state.lane_tasks.insert(lane.clone(), id.into());
@@ -1569,6 +1555,17 @@ impl Agents {
     /// Waits for a task's terminal result. `cell`: the requesting cell; when it is cancelled the wait ends with an
     /// error (`cancel_task`: and the task is cancelled first, as an invoke's own task is).
     fn wait_outcome(&self, id: &str, cell: Option<(&Signal, bool)>) -> Result<Value, String> {
+        // The cell's cancellation wakes this wait (from a thread of its own: the aborting thread may hold the state).
+        let listener = cell.and_then(|(signal, _)| {
+            let inner = self.inner.clone();
+            let id = signal.on_abort(move |_| {
+                std::thread::spawn(move || {
+                    let _state = sync::lock(&inner.state);
+                    inner.changed.notify_all();
+                });
+            })?;
+            Some((signal, id))
+        });
         let mut state = self.state();
         if let Some(task) = state.task_mut(id) {
             task.waiters += 1;
@@ -1600,15 +1597,14 @@ impl Agents {
                     continue;
                 }
             }
-            state = self
-                .inner
-                .changed
-                .wait_timeout(state, Duration::from_millis(20))
-                .unwrap_or_else(PoisonError::into_inner)
-                .0;
+            state = self.inner.changed.wait(state).unwrap_or_else(PoisonError::into_inner);
         };
         if let Some(task) = state.task_mut(id) {
             task.waiters -= 1;
+        }
+        drop(state);
+        if let Some((signal, listener)) = listener {
+            signal.forget(listener);
         }
         outcome
     }
@@ -2857,17 +2853,7 @@ pub fn predict_adapter(complete: Complete) -> Adapter {
         let text = reply.text;
         Ok(json_from(&text).unwrap_or_else(|_| {
             let trimmed = string::trim(&text);
-            json!(strip_fence(trimmed))
+            json!(string::strip_json_fence(trimmed))
         }))
     })
-}
-
-fn strip_fence(text: &str) -> &str {
-    text.strip_prefix("```")
-        .and_then(|rest| {
-            let rest = rest.strip_prefix("json").unwrap_or(rest);
-            let rest = rest.trim_start_matches(|c: char| c.is_whitespace() && c != '\n');
-            rest.strip_prefix('\n')?.strip_suffix("\n```")
-        })
-        .unwrap_or(text)
 }

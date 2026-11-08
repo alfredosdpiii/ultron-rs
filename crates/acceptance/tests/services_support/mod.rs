@@ -7,7 +7,7 @@
 #![allow(dead_code)]
 
 use delegation::agents::{Adapter, Agents, AgentsOptions, LaneReply, LaneRun, RefinementsHook, TaskEnd};
-use delegation::task_store::{MemoryStore, TaskStore};
+use delegation::task_store::{DocumentStore, MemoryStore};
 use delegation::usage::UsageLedger;
 use kernel::{HostHandler, Signal};
 use kernel_apis::artifacts::{KeyedDocuments, MemoryKeyedDocuments};
@@ -20,8 +20,8 @@ use std::sync::{Arc, Mutex, OnceLock, PoisonError};
 pub type Script = Arc<dyn Fn(&str, &str, &Signal) -> Result<String, String> + Send + Sync>;
 
 pub struct Setup {
-    pub tasks: Box<dyn TaskStore>,
-    pub definitions: Box<dyn TaskStore>,
+    pub tasks: Box<dyn DocumentStore>,
+    pub definitions: Box<dyn DocumentStore>,
     pub usage: Option<UsageLedger>,
     pub deterministic: Option<Adapter>,
     pub predict: Option<Adapter>,

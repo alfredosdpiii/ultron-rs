@@ -5,9 +5,10 @@
 
 use rustix::fs::{FlockOperation, flock};
 use std::fs::{File, OpenOptions};
-use std::io::{Read, Seek, SeekFrom, Write};
+use std::io::{Seek, SeekFrom, Write};
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
+use std::time::{Duration, Instant};
 
 /// Why ownership was not taken.
 #[derive(Debug)]
@@ -51,8 +52,10 @@ pub struct OwnerLock {
 }
 
 impl OwnerLock {
-    /// Take ownership of `target` for this process, or report who holds it. Never waits.
-    pub fn acquire(target: &Path) -> Result<OwnerLock, OwnerError> {
+    /// Take ownership of `target` for this process, or report who holds it. A new owner records its pid just after
+    /// it locks: a refusal waits up to `grace` for that record (named in the refusal; none when it never appears),
+    /// and takes the lock instead if the owner lets go meanwhile.
+    pub fn acquire(target: &Path, grace: Duration) -> Result<OwnerLock, OwnerError> {
         let path = owner_path(target);
         let mut file = OpenOptions::new()
             .read(true)
@@ -62,27 +65,19 @@ impl OwnerLock {
             .mode(0o600)
             .open(&path)
             .map_err(OwnerError::Io)?;
-        match flock(&file, FlockOperation::NonBlockingLockExclusive) {
-            Ok(()) => {}
-            Err(rustix::io::Errno::WOULDBLOCK) => {
-                // A new owner records itself just after it locks: give its record a moment to appear.
-                let mut pid = None;
-                for _ in 0..50 {
-                    let mut text = String::new();
-                    let _ = file.seek(SeekFrom::Start(0));
-                    let _ = file.read_to_string(&mut text);
-                    pid = serde_json::from_str::<serde_json::Value>(text.trim())
-                        .ok()
-                        .and_then(|r| r["pid"].as_u64())
-                        .map(|pid| pid as u32);
-                    if pid.is_some() {
-                        break;
+        let deadline = Instant::now() + grace;
+        loop {
+            match flock(&file, FlockOperation::NonBlockingLockExclusive) {
+                Ok(()) => break,
+                Err(rustix::io::Errno::WOULDBLOCK) => {
+                    let pid = recorded_owner(target);
+                    if pid.is_some() || Instant::now() >= deadline {
+                        return Err(OwnerError::InUse { pid });
                     }
-                    std::thread::sleep(std::time::Duration::from_millis(10));
+                    std::thread::sleep(Duration::from_millis(10));
                 }
-                return Err(OwnerError::InUse { pid });
+                Err(error) => return Err(OwnerError::Io(error.into())),
             }
-            Err(error) => return Err(OwnerError::Io(error.into())),
         }
         let acquired_at = jsrt::date::now_ms() as u64;
         let record = serde_json::json!({"pid": std::process::id(), "acquiredAt": acquired_at});

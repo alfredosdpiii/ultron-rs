@@ -297,14 +297,16 @@ fn harness_chat_children_time_out_on_a_durable_deadline_that_survives_reopen() {
         let brief = chat
             .commit(|tx| {
                 Ok(tx
-                    .committed_scan_submissions(
-                        &durable::SubmissionQuery {
-                            conversation_id: Some(conversation),
-                            ..durable::SubmissionQuery::default()
-                        },
-                        10,
-                        None,
-                    )?
+                    .committed(|storage| {
+                        storage.scan_submissions(
+                            &durable::SubmissionQuery {
+                                conversation_id: Some(conversation),
+                                ..durable::SubmissionQuery::default()
+                            },
+                            10,
+                            None,
+                        )
+                    })?
                     .items)
             })
             .unwrap();

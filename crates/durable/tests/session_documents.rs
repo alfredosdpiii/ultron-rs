@@ -39,16 +39,6 @@ fn counter_doc() -> durable::Doc {
         .unwrap()
 }
 
-fn member_doc(seeds: Arc<std::sync::Mutex<Vec<Value>>>) -> durable::Doc {
-    DocDefinition::new("test.member", 1, DocSemantics::Session, move |seed| {
-        seeds.lock().unwrap().push(seed.clone());
-        json!({ "seed": seed, "hits": 0 })
-    })
-    .family()
-    .define()
-    .unwrap()
-}
-
 fn setup_live(backend: Backend) -> (TestSession, durable::ConversationId) {
     let t = TestSession::open(backend);
     let c = t.create_conversation();
@@ -112,15 +102,8 @@ fn durable_session_documents_never_create_on_snapshot() {
         let t = TestSession::open(backend);
         let c = t.create_conversation();
         let before = t.storage.commit_count();
-        let seeds = Arc::default();
         assert_eq!(snapshot(&t, &live_doc(), Owner::Conversation(c)), None);
         assert_eq!(snapshot(&t, &counter_doc(), Owner::Session), None);
-        assert_eq!(
-            t.session
-                .snapshot_member(&member_doc(seeds), Owner::Session, "k")
-                .unwrap(),
-            None
-        );
         assert_eq!(t.storage.commit_count(), before);
         assert_eq!(t.storage.mint_count(), 1);
     });
@@ -307,48 +290,6 @@ fn durable_session_documents_memoize_duplicate_acquisition_and_initialize_once()
     });
 }
 
-fn increment(draft: &chord_delta::Draft, field: &str) {
-    let count = draft.get(&path![field]).unwrap().unwrap().as_i64().unwrap();
-    draft.set(&path![field], json!(count + 1)).unwrap();
-}
-
-#[test]
-fn durable_session_documents_use_the_first_family_seed_and_ignore_seeds_for_existing_members() {
-    each_backend(|backend| {
-        let t = TestSession::open(backend);
-        let seeds = Arc::new(std::sync::Mutex::new(Vec::new()));
-        let member = member_doc(seeds.clone());
-        t.session
-            .commit(|tx| {
-                let first = tx.doc_member(&member, Owner::Session, "k", json!("first"))?;
-                let second = tx.doc_member(&member, Owner::Session, "k", json!("second"))?;
-                assert!(second.ptr_eq(&first));
-                increment(&first, "hits");
-                Ok(())
-            })
-            .unwrap();
-        t.session
-            .commit(|tx| {
-                increment(&tx.doc_member(&member, Owner::Session, "k", json!("third"))?, "hits");
-                increment(
-                    &tx.doc_member(&member, Owner::Session, "other", json!("fourth"))?,
-                    "hits",
-                );
-                Ok(())
-            })
-            .unwrap();
-        assert_eq!(*seeds.lock().unwrap(), [json!("first"), json!("fourth")]);
-        let read = |key| {
-            t.session
-                .snapshot_member(&member, Owner::Session, key)
-                .unwrap()
-                .map(|v| (*v).clone())
-        };
-        assert_eq!(read("k"), Some(json!({ "seed": "first", "hits": 2 })));
-        assert_eq!(read("other"), Some(json!({ "seed": "fourth", "hits": 1 })));
-    });
-}
-
 #[test]
 fn durable_session_documents_reject_definitions_whose_semantics_or_version_disagree_with_storage() {
     each_backend(|backend| {
@@ -472,8 +413,10 @@ fn durable_session_documents_fail_the_session_after_a_storage_failure_and_publis
             "Session failed after a storage error; close and reopen it"
         );
         assert_eq!(
-            failed.cause(),
-            Some(&SessionError::Storage(StorageError::Failed("disk vanished".into())))
+            failed,
+            SessionError::Failed(Box::new(SessionError::Storage(StorageError::Failed(
+                "disk vanished".into()
+            ))))
         );
         t.session.close().unwrap();
     });
@@ -506,169 +449,6 @@ fn durable_session_documents_keep_the_previous_revision_unchanged_through_storag
             json!(["a", "b", "c"])
         );
         assert_eq!(*before, copy);
-    });
-}
-
-#[test]
-fn durable_session_documents_retire_and_create_a_new_incarnation_at_the_same_address() {
-    each_backend(|backend| {
-        let (t, c) = setup_live(backend);
-        let owner = Owner::Conversation(c);
-        let old_id = document_changes(&t.last_publication())[0].record.identity.id;
-        t.session
-            .commit(|tx| {
-                let live = tx.doc(&live_doc(), owner)?;
-                live.set(&path!["message"], json!("final"))?;
-                tx.retire_doc(&live_doc(), owner)?;
-                let replacement = tx.doc(&live_doc(), owner)?;
-                assert!(!replacement.ptr_eq(&live));
-                replacement.set(&path!["message"], json!("new"))?;
-                Ok(())
-            })
-            .unwrap();
-        let writes: Vec<Value> = t.storage.last_commit().iter().map(json).collect();
-        assert_eq!(writes.len(), 3);
-        assert_matches(&writes[0], json!({ "type": "document.change", "id": old_id.0 }));
-        assert_eq!(writes[1], json!({ "type": "document.retire", "id": old_id.0 }));
-        assert_matches(
-            &writes[2],
-            json!({ "type": "document.create", "record": { "kind": "test.live" } }),
-        );
-        let publication = t.last_publication();
-        let changes = document_changes(&publication);
-        let (retired, created) = (&changes[0], &changes[1]);
-        assert_eq!(retired.record.identity.id, old_id);
-        assert_eq!(retired.value, None);
-        assert!(retired.ops.is_empty());
-        assert_eq!(retired.record.retired_at, Some(publication.seq));
-        assert_ne!(created.record.identity.id, old_id);
-        assert_eq!(created.record.created_at, publication.seq);
-        assert_eq!(created.value.as_ref().unwrap()["message"], "new");
-        assert_eq!(created.value.as_ref().unwrap()["items"], json!([]));
-        assert!(created.ops.is_empty());
-        assert!(Arc::ptr_eq(
-            &snapshot(&t, &live_doc(), owner).unwrap(),
-            created.value.as_ref().unwrap()
-        ));
-
-        t.session.commit(|tx| tx.retire_doc(&live_doc(), owner)).unwrap();
-        assert_eq!(snapshot(&t, &live_doc(), owner), None);
-        t.session.unload_documents().unwrap();
-        assert_eq!(snapshot(&t, &live_doc(), owner), None);
-        // Retiring an absent address is a no-op.
-        let commits = t.storage.commit_count();
-        t.session.commit(|tx| tx.retire_doc(&live_doc(), owner)).unwrap();
-        assert_eq!(t.storage.commit_count(), commits);
-    });
-}
-
-#[test]
-fn durable_session_documents_retire_without_acquisition_and_recreate_existing_and_absent_addresses() {
-    each_backend(|backend| {
-        let (t, c) = setup_live(backend);
-        let owner = Owner::Conversation(c);
-        let old_id = document_changes(&t.last_publication())[0].record.identity.id;
-        t.session.unload_documents().unwrap();
-        t.session
-            .commit(|tx| {
-                tx.retire_doc(&live_doc(), owner)?;
-                Ok(tx
-                    .doc(&live_doc(), owner)?
-                    .set(&path!["message"], json!("replacement"))?)
-            })
-            .unwrap();
-        let writes = t.storage.last_commit();
-        assert_eq!(types(&writes), ["document.retire", "document.create"]);
-        assert_eq!(json(&writes[0]), json!({ "type": "document.retire", "id": old_id.0 }));
-
-        let member = member_doc(Arc::default());
-        t.session
-            .commit(|tx| {
-                tx.retire_member(&member, Owner::Session, "absent")?;
-                Ok(tx
-                    .doc_member(&member, Owner::Session, "absent", json!("seed"))?
-                    .set(&path!["hits"], json!(1))?)
-            })
-            .unwrap();
-        assert_eq!(types(&t.storage.last_commit()), ["document.create"]);
-        assert_eq!(
-            *t.session
-                .snapshot_member(&member, Owner::Session, "absent")
-                .unwrap()
-                .unwrap(),
-            json!({ "seed": "seed", "hits": 1 })
-        );
-    });
-}
-
-#[test]
-fn durable_session_documents_retire_the_acquired_incarnation_after_writing_its_final_content() {
-    each_backend(|backend| {
-        let (t, c) = setup_live(backend);
-        let owner = Owner::Conversation(c);
-        let old_id = document_changes(&t.last_publication())[0].record.identity.id;
-        t.session
-            .commit(|tx| {
-                let acquired = tx.doc(&live_doc(), owner)?;
-                tx.retire_doc(&live_doc(), owner)?;
-                Ok(acquired.set(&path!["message"], json!("final"))?)
-            })
-            .unwrap();
-        let writes: Vec<Value> = t.storage.last_commit().iter().map(json).collect();
-        assert_eq!(writes.len(), 2);
-        assert_matches(
-            &writes[0],
-            json!({ "type": "document.change", "id": old_id.0, "content": { "kind": "delta" } }),
-        );
-        assert_eq!(writes[1], json!({ "type": "document.retire", "id": old_id.0 }));
-        assert_eq!(snapshot(&t, &live_doc(), owner), None);
-
-        t.session
-            .commit(|tx| Ok(tx.doc(&live_doc(), owner)?.set(&path!["message"], json!("second"))?))
-            .unwrap();
-        let second_id = document_changes(&t.last_publication())[0].record.identity.id;
-        t.session
-            .commit(|tx| {
-                let old = tx.doc(&live_doc(), owner)?;
-                tx.retire_doc(&live_doc(), owner)?;
-                let fresh = tx.doc(&live_doc(), owner)?;
-                assert!(!fresh.ptr_eq(&old));
-                Ok(fresh.set(&path!["message"], json!("third"))?)
-            })
-            .unwrap();
-        let writes = t.storage.last_commit();
-        assert_eq!(types(&writes), ["document.retire", "document.create"]);
-        assert_eq!(
-            json(&writes[0]),
-            json!({ "type": "document.retire", "id": second_id.0 })
-        );
-        assert_eq!(snapshot(&t, &live_doc(), owner).unwrap()["message"], "third");
-    });
-}
-
-#[test]
-fn durable_session_documents_reload_an_unloaded_document_from_storage() {
-    each_backend(|backend| {
-        let (t, c) = setup_live(backend);
-        let owner = Owner::Conversation(c);
-        let loaded = snapshot(&t, &live_doc(), owner).unwrap();
-        t.session.unload_documents().unwrap();
-        let reloaded = snapshot(&t, &live_doc(), owner).unwrap();
-        assert!(!Arc::ptr_eq(&reloaded, &loaded));
-        assert_eq!(reloaded, loaded);
-        t.session
-            .commit(|tx| {
-                Ok(tx
-                    .doc(&live_doc(), owner)?
-                    .push(&path!["items"], vec![json!("c")])
-                    .map(drop)?)
-            })
-            .unwrap();
-        t.session.unload_documents().unwrap();
-        assert_eq!(
-            snapshot(&t, &live_doc(), owner).unwrap()["items"],
-            json!(["a", "b", "c"])
-        );
     });
 }
 
@@ -729,10 +509,9 @@ fn durable_session_documents_settle_admitted_commits_before_close_and_reject_lat
                 session.commit(|tx| Ok(tx.doc(&live_doc(), owner)?.set(&path!["message"], json!("queued"))?))
             })
         };
-        let member = member_doc(Arc::default());
         let admitted_snapshot = {
             let session = t.session.clone();
-            std::thread::spawn(move || session.snapshot_member(&member, Owner::Session, "absent"))
+            std::thread::spawn(move || session.snapshot(&counter_doc(), Owner::Session))
         };
         // Both are admitted to the line, behind the held commit, before the close begins.
         eventually(|| t.session.line_len() >= 3);

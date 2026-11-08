@@ -300,18 +300,22 @@ pub struct TestSession {
 impl TestSession {
     pub fn open(backend: Backend) -> TestSession {
         let storage = Controlled::new(backend);
-        let session = Session::new(storage.clone());
         let publications = Arc::new(Mutex::new(Vec::new()));
-        let sink = publications.clone();
-        session
-            .subscribe_commits(move |publication| sink.lock().unwrap().push(publication.clone()))
-            .unwrap();
+        let session = publishing_session(&storage, &publications);
         TestSession {
             backend,
             session,
             storage,
             publications,
         }
+    }
+
+    /// Close the Session and open a fresh one over the reopened storage, as a restarted process would, so every
+    /// document loads cold from Storage.
+    pub fn reopen(&mut self) {
+        self.session.close().unwrap();
+        self.storage.reopen();
+        self.session = publishing_session(&self.storage, &self.publications);
     }
 
     pub fn publication_count(&self) -> usize {
@@ -333,6 +337,15 @@ impl TestSession {
             .commit(|tx| Ok(tx.create_conversation(ConversationOwnership::Ownerless)?.id))
             .unwrap()
     }
+}
+
+fn publishing_session(storage: &Controlled, publications: &Arc<Mutex<Vec<CommitPublication>>>) -> Session {
+    let session = Session::new(storage.clone());
+    let sink = publications.clone();
+    session
+        .subscribe_commits(move |publication| sink.lock().unwrap().push(publication.clone()))
+        .unwrap();
+    session
 }
 
 /// Document changes of a publication: `(record, conversation, version, value, ops)`.
@@ -438,10 +451,4 @@ pub fn eventually(mut condition: impl FnMut() -> bool) {
         std::thread::sleep(Duration::from_millis(5));
     }
     panic!("condition never became true");
-}
-
-/// Give other threads a moment, only for asserting that something did NOT happen (a slow machine can make such a
-/// check pass wrongly, never fail). Never use it to wait for something.
-pub fn settle() {
-    std::thread::sleep(Duration::from_millis(50));
 }

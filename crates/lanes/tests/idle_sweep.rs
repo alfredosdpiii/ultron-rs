@@ -3,8 +3,8 @@
 //! being leased. The pool's clock is injected and the sweeps are driven by ticks the test sends; each sweep reports
 //! what it evicted, which the test waits for (a 120 s hang guard only).
 
-use delegation::lanes::{CellOutcome, Lanes, LanesOptions, PoolLimits};
 use kernel::{HostHandler, Kernel, KernelOptions, Status};
+use lanes::{CellOutcome, Lanes, LanesOptions, PoolLimits};
 use serde_json::Value;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::channel;

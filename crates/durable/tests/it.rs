@@ -7,8 +7,6 @@
 
 #[path = "conformance.rs"]
 mod conformance;
-#[path = "document_state.rs"]
-mod document_state;
 #[path = "session_checkpoints_migrations.rs"]
 mod session_checkpoints_migrations;
 #[path = "session_documents.rs"]
@@ -17,5 +15,3 @@ mod session_documents;
 mod session_forks;
 #[path = "session_tables.rs"]
 mod session_tables;
-#[path = "session_watches.rs"]
-mod session_watches;

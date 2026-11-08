@@ -11,14 +11,6 @@ use serde_json::Value;
 /// A transcript message. Upstream allows app-specific message kinds; none exist in Rust yet.
 pub type AgentMessage = Message;
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub enum ToolExecutionMode {
-    Sequential,
-    #[default]
-    Parallel,
-}
-
 /// What a tool returns. `terminate` on every result of a batch ends the run after it.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -52,11 +44,6 @@ pub type ToolUpdate<'a> = dyn Fn(AgentToolResult) + Send + Sync + 'a;
 pub trait AgentTool: Send + Sync {
     /// The declaration the model sees.
     fn tool(&self) -> &ai::Tool;
-    /// `prepareArguments`: adapt the raw call arguments before validation (for example an old argument name). `Err`
-    /// is a thrown error: the call fails with the message as text.
-    fn prepare_arguments(&self, args: &Value) -> Result<Value, String> {
-        Ok(args.clone())
-    }
     fn execute<'a>(
         &'a self,
         tool_call_id: &'a str,
@@ -119,9 +106,7 @@ pub struct AgentLoopConfig {
     pub reasoning: Option<String>,
     pub session_id: Option<String>,
     pub api_key: Option<String>,
-    pub tool_execution: ToolExecutionMode,
     pub get_steering_messages: Option<MessageSource>,
-    pub get_follow_up_messages: Option<MessageSource>,
     pub before_tool_call: Option<BeforeToolCall>,
 }
 
@@ -132,9 +117,7 @@ impl AgentLoopConfig {
             reasoning: None,
             session_id: None,
             api_key: None,
-            tool_execution: ToolExecutionMode::Parallel,
             get_steering_messages: None,
-            get_follow_up_messages: None,
             before_tool_call: None,
         }
     }

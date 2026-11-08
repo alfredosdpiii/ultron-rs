@@ -33,7 +33,7 @@ use harness::chat::{AgentChange, ChatHarness, ChatOptions, CompactionPolicy, Mod
 use harness::scheduler::Registry;
 use serde_json::{Map, Value, json};
 use session_core::compose::Runtime;
-use session_core::durable_store::{JournalStorage, SharedSession};
+use session_core::durable_store::SharedSession;
 use session_core::lane::{Lane, MAIN};
 use session_core::subagents::{CONVERSATION_LANE_PREFIX, DurableChildren};
 use session_core::swarm_ops::SwarmOps;
@@ -42,22 +42,6 @@ use std::sync::Arc;
 
 /// Generation partials are not committed (as the native runtime: nothing shows a child's stream).
 const NO_PARTIALS_MS: u64 = 365 * 24 * 3600 * 1000;
-
-/// The swarm, board and notes requests (the rest of what session_core::swarm_ops serves is `rlm.*`).
-pub const SHARED_RECORDS: [&str; 12] = [
-    "swarm.register",
-    "swarm.agents",
-    "swarm.route",
-    "swarm.send",
-    "swarm.inbox",
-    "board.add",
-    "board.claim",
-    "board.update",
-    "board.list",
-    "notes.read",
-    "notes.append",
-    "notes.write",
-];
 
 /// Whether `payload` of an `rlm.spawn` asks for a persistent child.
 pub fn is_keep_spawn(kind: &str, payload: &Map<String, Value>) -> bool {
@@ -107,7 +91,7 @@ pub fn open(
     // The children's session (their contracts are values of it, session_core::kept_contracts). Its subagent host
     // is not used: this server's subagents are Claude Code processes or in-memory loops.
     drop(children.host(session.clone()));
-    let storage = JournalStorage::open(session.clone(), None).map_err(|e| e.message().to_string())?;
+    let storage = session_core::durable_store::open(session.clone(), None).map_err(|e| e.message().to_string())?;
     // Nothing reaches an actor: the root conversation never runs, and children's requests never use the bridge.
     let bridge = Bridge::new(Arc::new(|_| {}));
     let provider =
@@ -312,7 +296,7 @@ impl DurableApis {
         Some(Ok(json!({"id": sent["id"], "woke": true})))
     }
 
-    /// `kind` (one of [`SHARED_RECORDS`]) for a subagent with no conversation here, by its `name`: an in-memory
+    /// `kind` (one of [`harness::chat::host_ops::SWARM_KINDS`]) for a subagent with no conversation here, by its `name`: an in-memory
     /// subagent of this server, or a Claude Code subagent whose server forwarded it (crate::shared_world). It is
     /// served as `harness::chat::host_ops` serves a conversation's request, the subagent being the agent called
     /// `name` (what it adds, appends, claims and sends is by `name`; its inbox is `name`'s): a wake to the root goes

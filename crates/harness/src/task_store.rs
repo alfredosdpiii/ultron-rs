@@ -144,10 +144,36 @@ impl fmt::Display for TaskStoreError {
 
 impl std::error::Error for TaskStoreError {}
 
-/// Atomic replacement of the one task document (the session value `ultron.tasks/root`).
-pub trait TaskDocumentStore {
+/// Atomic replacement of one JSON document: the task journal (the session value `ultron.tasks/root`), and the
+/// typed agents' definition registry and usage ledger (`NativeHostStore`).
+pub trait DocumentStore: Send {
     fn read(&mut self) -> Result<Option<Value>, String>;
     fn write(&mut self, document: &Value) -> Result<(), String>;
+}
+
+impl DocumentStore for Box<dyn DocumentStore> {
+    fn read(&mut self) -> Result<Option<Value>, String> {
+        (**self).read()
+    }
+    fn write(&mut self, document: &Value) -> Result<(), String> {
+        (**self).write(document)
+    }
+}
+
+/// A document kept in memory (a session without a journal, and tests).
+#[derive(Default)]
+pub struct MemoryStore {
+    pub value: Option<Value>,
+}
+
+impl DocumentStore for MemoryStore {
+    fn read(&mut self) -> Result<Option<Value>, String> {
+        Ok(self.value.clone())
+    }
+    fn write(&mut self, document: &Value) -> Result<(), String> {
+        self.value = Some(document.clone());
+        Ok(())
+    }
 }
 
 /// SHA-256 of the canonical JSON (object keys sorted by UTF-16 code units, as JavaScript's sort does).
@@ -344,7 +370,7 @@ pub struct TaskJournal<S> {
     mint: Box<dyn FnMut() -> String + Send>,
 }
 
-impl<S: TaskDocumentStore> TaskJournal<S> {
+impl<S: DocumentStore> TaskJournal<S> {
     pub fn new(store: S) -> Self {
         Self::with_id_source(store, Box::new(random_task_id))
     }

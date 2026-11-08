@@ -22,7 +22,7 @@ kernel-apis = { path = "../kernel-apis" }
 mcp = { path = "../mcp" }
 protocol = { path = "../protocol" }
 resources = { path = "../resources" }
-rustix = { version = "=1.1.5", features = ["process", "std"] }
+rustix = { version = "=1.1.5", features = ["fs", "process", "std"] }
 serde_json = { version = "=1.0.151", features = ["float_roundtrip", "preserve_order"] }
 server = { path = "../server" }
 session-core = { path = "../session-core" }
@@ -42,6 +42,10 @@ name = "it"
 path = "tests/it.rs"
 
 # Sets the process-wide settings defaults once: in `it` it leaked into every later settings test.
+[[test]]
+name = "owner"
+path = "tests/owner.rs"
+
 [[test]]
 name = "persona_durable_default"
 path = "tests/persona_durable_default.rs"

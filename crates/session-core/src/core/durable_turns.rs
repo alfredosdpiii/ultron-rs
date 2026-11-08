@@ -4,7 +4,6 @@
 //! transcript had not, then letting the runtime continue).
 
 use super::*;
-use crate::durable_store::JournalStorage;
 use crate::turns::{Answer, Bridge, GenerationStart, Request, StartError, TurnCells, TurnModels};
 use agent::AgentToolResult;
 use durable::{ROOT_CONVERSATION_ID, SubmissionId, SubmissionStatus};
@@ -71,7 +70,7 @@ pub(super) fn open_durable(
     }));
     let observed = child_context.clone();
     let committed: crate::turns::Committed = Arc::new(move |entry| observed.committed(entry));
-    let storage = JournalStorage::open(session.clone(), Some(crate::turns::observer(bridge.clone(), committed)))
+    let storage = crate::durable_store::open(session.clone(), Some(crate::turns::observer(bridge.clone(), committed)))
         .map_err(|e| e.message().to_string())?;
     let auto_retry = Arc::new(AtomicBool::new(true));
     let retry = auto_retry.clone();
@@ -1012,8 +1011,9 @@ impl Core {
                 let mut ids = Vec::new();
                 let mut cursor: Option<durable::Cursor> = None;
                 loop {
-                    let page =
-                        tx.committed_scan_conversations(&durable::ConversationQuery::default(), 256, cursor.as_ref())?;
+                    let page = tx.committed(|storage| {
+                        storage.scan_conversations(&durable::ConversationQuery::default(), 256, cursor.as_ref())
+                    })?;
                     ids.extend(
                         page.items
                             .into_iter()

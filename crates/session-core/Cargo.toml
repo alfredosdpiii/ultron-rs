@@ -24,6 +24,7 @@ jsonschema = { path = "../jsonschema" }
 jsrt = { path = "../jsrt" }
 kernel = { path = "../kernel" }
 kernel-apis = { path = "../kernel-apis" }
+lanes = { path = "../lanes" }
 loki = { path = "../loki" }
 mcp = { path = "../mcp" }
 regex = "=1.13.1"

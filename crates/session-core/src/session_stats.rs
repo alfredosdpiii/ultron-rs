@@ -111,7 +111,7 @@ pub fn classify_nudge(text: &str) -> Option<&'static str> {
 pub fn stats_lane(lane: &str) -> &'static str {
     if lane == "main" {
         "root"
-    } else if lane.starts_with("ultron.rlm-child.") {
+    } else if lane.starts_with(delegation::lane_names::CHILD_LANE_PREFIX) {
         "subagents"
     } else {
         "other"

@@ -13,8 +13,9 @@
 //! A Claude Code subagent's server (`--child`) forwards the swarm, board and notes to its parent server
 //! (crate::shared_world); `rlm.spawn(keep=True)`, `rlm.ask` and creating a schedule are refused there.
 
-use crate::durable_apis::{DurableApis, SHARED_RECORDS, is_keep_spawn, subagent_refusal};
+use crate::durable_apis::{DurableApis, is_keep_spawn, subagent_refusal};
 use crate::shared_world::SharedWorld;
+use harness::chat::host_ops::SWARM_KINDS;
 use kernel_apis::ApiModule;
 use kernel_apis::prompt_schedule::ScheduleModule;
 use serde_json::{Map, Value};
@@ -67,7 +68,7 @@ pub fn root_layer(
             if let Some(error) = apis.refusal(lane, kind, &payload) {
                 return Err(error);
             }
-            if SHARED_RECORDS.contains(&kind) && apis.conversation(lane).is_none() {
+            if SWARM_KINDS.contains(&kind) && apis.conversation(lane).is_none() {
                 return world.serve(Some(&world.name_of_lane(lane)), kind, &payload);
             }
             match apis.wake_root(lane, kind, &payload, next) {
@@ -86,7 +87,7 @@ pub fn child_layer(world: Arc<SharedWorld>) -> RequestLayer {
             if let Some(error) = child_refusal(kind, &payload) {
                 return Err(error);
             }
-            if SHARED_RECORDS.contains(&kind) {
+            if SWARM_KINDS.contains(&kind) {
                 // This server's root is the subagent its parent knows by its token; its own subagents go by name.
                 let name = (lane != MAIN).then(|| world.name_of_lane(lane));
                 return world.serve(name.as_deref(), kind, &payload);
