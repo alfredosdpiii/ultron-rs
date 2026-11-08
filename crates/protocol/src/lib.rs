@@ -3,7 +3,11 @@
 
 pub mod cbor;
 pub mod framing;
+pub mod handshake;
+pub mod json;
 pub mod message;
+pub mod names;
+mod route;
 pub mod service;
 
 pub use cbor::{CborError, CborOptions, Value, decode_cbor, encode_cbor};
@@ -13,4 +17,5 @@ pub use message::{
     ServerMessage, ServerMessageDecoder, SessionTarget, encode_client_message, encode_server_message, is_server_id,
     is_supported_protocol_version, parse_client_message, parse_server_message,
 };
+pub use route::Route;
 pub use service::{ServiceCall, parse_service_call};

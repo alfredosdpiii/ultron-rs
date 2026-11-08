@@ -93,7 +93,14 @@ struct Server {
 impl Server {
     fn start(args: &[&str], env: RunEnv) -> Server {
         let argv: Vec<String> = args.iter().map(|a| a.to_string()).collect();
-        let (running, handlers) = start(&argv, &claude_root::Ctx { env }).unwrap();
+        let (running, handlers) = start(
+            &argv,
+            &claude_root::Ctx {
+                env,
+                session_report: None,
+            },
+        )
+        .unwrap();
         let (input, stdin) = std::io::pipe().unwrap();
         let (stdout, output) = std::io::pipe().unwrap();
         let serving = std::thread::spawn(move || {

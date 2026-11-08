@@ -12,6 +12,7 @@ pub mod eval;
 pub mod github;
 pub mod js;
 pub mod ledger;
+pub mod lessons;
 pub mod local;
 pub mod plan;
 pub mod prepare;

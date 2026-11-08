@@ -8,11 +8,9 @@ publish.workspace = true
 autotests = false
 
 [dependencies]
-agent = { path = "../agent" }
 ai = { path = "../ai" }
 base64 = "=0.23.1"
 chord-delta = { path = "../chord-delta" }
-client = { path = "../client" }
 config = { path = "../config" }
 durable = { path = "../durable" }
 jsrt = { path = "../jsrt" }

@@ -100,7 +100,7 @@ pub fn resolve(root: &Path, session_id: &str, tracked: &[Meta]) -> Result<Meta, 
     }
     match matches.len() {
         0 => Err(crate::chord::ServiceError::coded(
-            "session_not_found",
+            protocol::names::SESSION_NOT_FOUND_CODE,
             format!("Unknown session: {session_id}"),
         )),
         1 => Ok(matches.remove(0)),

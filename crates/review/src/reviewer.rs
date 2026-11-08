@@ -4,7 +4,7 @@
 //! instructions.
 //!
 //! The engine is a [`ReviewEngine`] (the coordinator serves it with the kernel-backed engine); the lesson memory a
-//! [`LessonMemory`] (`crates/hindsight`'s `HindsightLessons`); building a test environment an optional
+//! [`LessonMemory`] ([`crate::lessons::HindsightLessons`]); building a test environment an optional
 //! [`EnvironmentPreparer`] (`prepareEnvironment`, which becomes a host job).
 //!
 //! Known differences from the TypeScript:
@@ -26,6 +26,7 @@ use serde_json::{Map, Value, json};
 use crate::accounts::{Account, TokenStore, account_key};
 use crate::ban::{Bans, banned_reason, refusal};
 use crate::checkout::{Checkout, CheckoutManager, PullHeads, make_private_dir, random_hex};
+use crate::engine::{Log, ReviewEngine};
 use crate::github::{
     Clock, Comment, Error, GitHub, PullRef, PullRequest, Review, ReviewCommentInput, ReviewInput, pull_key,
 };
@@ -41,10 +42,6 @@ use crate::promotion::{
 use crate::runner::Runner;
 use crate::settings::{AutoreviewConfig, AutoreviewPaths, MAX_ATTEMPTS, engine_settings, tests_eligible};
 use crate::state::{AutoreviewState, PostedFinding, PullState, ReviewRecord, StateStore, claim_hash, to_json_1};
-
-/// Runs one review: `spec` is the TypeScript `EngineSpec` as JSON; the result is the `EngineResult` as JSON
-/// (`crate::engine::KernelEngine` in the service, a scripted engine in tests).
-pub use crate::engine::ReviewEngine;
 
 /// Where fates and rules are also retained (Hindsight).
 pub trait LessonMemory: Send + Sync {
@@ -98,8 +95,6 @@ pub struct PreparedEnvironment {
 pub trait EnvironmentPreparer: Send + Sync {
     fn prepare(&self, work_dir: &str, log: &dyn Fn(&str)) -> Result<PreparedEnvironment, String>;
 }
-
-pub type Log = Arc<dyn Fn(&str) + Send + Sync>;
 
 #[derive(Clone)]
 pub struct ReviewerDeps {
@@ -750,15 +745,6 @@ pub struct Prepared {
     pub recheck_only: bool,
     /// Asked for on the command line: every line is in play, as in a first review.
     pub forced: bool,
-}
-
-/// The verdict as the state and the outcome name it.
-pub fn verdict_name(verdict: Verdict) -> &'static str {
-    match verdict {
-        Verdict::Approve => "approve",
-        Verdict::RequestChanges => "request_changes",
-        Verdict::Comment => "comment",
-    }
 }
 
 fn seconds(ms: i64) -> String {
@@ -1929,7 +1915,7 @@ fn review_in(
     }
 
     let ack_to_post_ms = prepared.ack_at.map(|at| (now() - at).max(0));
-    let verdict = verdict_name(plan.verdict).to_string();
+    let verdict = plan.verdict.name().to_string();
     let stages = match raw.get("timing").and_then(|timing| timing.get("stages")) {
         Some(Value::Object(stages)) => stages.clone().into_iter().collect(),
         _ => indexmap::IndexMap::new(),
@@ -1995,7 +1981,7 @@ fn review_in(
         ))
     ));
     let reviewed = Box::new(Reviewed {
-        verdict: verdict_name(plan.verdict),
+        verdict: plan.verdict.name(),
         sha: head,
         result: raw,
         plan,

@@ -110,7 +110,14 @@ impl Server {
         .chain(args)
         .map(|a| a.to_string())
         .collect();
-        let (running, handlers) = start(&argv, &claude_root::Ctx { env: root.env(extra) }).unwrap();
+        let (running, handlers) = start(
+            &argv,
+            &claude_root::Ctx {
+                env: root.env(extra),
+                session_report: None,
+            },
+        )
+        .unwrap();
         let (input, stdin) = std::io::pipe().unwrap();
         let (stdout, output) = std::io::pipe().unwrap();
         let serving = std::thread::spawn(move || {

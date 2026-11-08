@@ -326,8 +326,8 @@ pub fn start_server(home: &Home, server_id: &str) -> ServerProcess {
 }
 
 impl ServerProcess {
-    pub fn route(&self) -> client::runtime::Route {
-        client::runtime::Route {
+    pub fn route(&self) -> protocol::Route {
+        protocol::Route {
             server_id: self.server_id.clone(),
             path: self.socket.clone(),
         }

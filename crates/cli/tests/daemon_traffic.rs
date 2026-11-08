@@ -23,7 +23,7 @@ use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
 
 fn cbor_json(value: &protocol::Value) -> Value {
-    client::runtime::to_json(value)
+    protocol::json::to_json(value)
 }
 
 /// The generator's `normalize`.
@@ -356,7 +356,7 @@ fn cli_daemon_traffic_matches_typescript() {
         }
         let proxy_path = home.server_dir().join("proxy.sock");
         let (frames, pumps) = proxy(&proxy_path, &server.socket);
-        let route = client::runtime::Route {
+        let route = protocol::Route {
             server_id: server.server_id.clone(),
             path: proxy_path,
         };
@@ -388,7 +388,7 @@ fn cli_daemon_traffic_matches_typescript() {
         let (got_cmp, want_cmp) = (comparable(&got_core), comparable(&want_core));
         for (i, (g, w)) in got_cmp.iter().zip(&want_cmp).enumerate() {
             assert_eq!(g, w, "{name} frame {i}");
-            let encode = |v: &Value| protocol::encode_cbor(&client::runtime::to_cbor(v), &Default::default()).unwrap();
+            let encode = |v: &Value| protocol::encode_cbor(&protocol::json::to_cbor(v), &Default::default()).unwrap();
             assert_eq!(encode(&g.1), encode(&w.1), "{name} frame {i} bytes");
         }
         assert_eq!(got_cmp.len(), want_cmp.len(), "{name} frame count");

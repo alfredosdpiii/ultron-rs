@@ -12,6 +12,7 @@ use crate::guide::{
     Audience, CLAUDE_RLM_TOOL, GuideOptions, PromptResources, ResourceFlags, claude_system_prompt,
     describe_prompt_resources,
 };
+use crate::hooks::{HERDR_HOOKS, HookEvent, SESSION_HOOKS};
 use crate::self_cmd::{SelfCommand, shell_command, shell_quote};
 use crate::{Ctx, UsageError};
 use serde_json::{Map, Value, json};
@@ -48,7 +49,7 @@ pub struct LauncherOptions {
     pub no_context_files: bool,
     pub no_skills: bool,
     pub frame_model: Option<String>,
-    pub children: Option<String>,
+    pub children: Option<crate::settings::ChildrenMode>,
     pub child_model: Option<String>,
     /// Claude Code model of the root when neither `--model` nor ULTRON_CLAUDE_MODEL names one (`claudeCode.model`).
     pub root_model: Option<String>,
@@ -87,11 +88,8 @@ pub fn parse_launcher_args(args: &[String]) -> Result<Option<LauncherOptions>, U
             "--frame-model" => options.frame_model = Some(value()?),
             "--child-model" => options.child_model = Some(value()?),
             "--children" => {
-                let mode = value()?;
-                if mode != "claude" && mode != "ultron" {
-                    return Err(UsageError("--children must be claude or ultron".into()));
-                }
-                options.children = Some(mode);
+                let mode = crate::settings::ChildrenMode::parse(&value()?);
+                options.children = Some(mode.ok_or_else(|| UsageError("--children must be claude or ultron".into()))?);
             }
             other => options.claude_args.push(other.to_string()),
         }
@@ -169,9 +167,10 @@ pub fn build_claude_launch(input: &LaunchInput) -> ClaudeLaunch {
     let root = (model.trim() != DEFAULT_CLAUDE_MODEL).then(|| model.trim().to_string());
     let mut mcp_args: Vec<String> = self_cmd.args.clone();
     mcp_args.extend(["mcp", "--no-instructions", "--socket", input.socket].map(String::from));
+    let children = options.children.map(|mode| mode.as_str().to_string());
     for (flag, value) in [
         ("--frame-model", &options.frame_model),
-        ("--children", &options.children),
+        ("--children", &children),
         ("--child-model", &options.child_model),
         ("--root-model", &root),
     ] {
@@ -195,30 +194,31 @@ pub fn build_claude_launch(input: &LaunchInput) -> ClaudeLaunch {
     let mcp_config = jsrt::json::stringify(&json!({
         "mcpServers": {"ultron": {"type": "stdio", "command": self_cmd.command, "args": mcp_args}}
     }));
-    let hook = |event: &str, timeout: u64| json!({"hooks": [{"type": "command", "command": shell_command(self_cmd, &["hook", event, "--socket", input.socket]), "timeout": timeout}]});
+    let command = |event: HookEvent| shell_command(self_cmd, &["hook", event.command(), "--socket", input.socket]);
+    let hook = |event: HookEvent| json!({"hooks": [{"type": "command", "command": command(event), "timeout": event.timeout_secs()}]});
     let mut settings = Map::new();
     settings.insert("permissions".into(), json!({"allow": [CLAUDE_RLM_TOOL]}));
     if options.hooks {
-        let mut hooks = json!({
-            "SessionStart": [hook("session-start", 30)],
-            "UserPromptSubmit": [hook("user-prompt", 60)],
-            "Stop": [hook("stop", 30)],
-        });
+        let mut hooks = json!({});
+        for event in SESSION_HOOKS {
+            hooks[event.claude_event()] = json!([hook(event)]);
+        }
         // After every rlm call, a background waiter wakes the model when work it started ends while Claude Code is
-        // idle (crate::hooks::WAIT_EVENTS); a newer waiter replaces the older one. Not under TypeScript's guide.
+        // idle (HookEvent::WaitEvents); a newer waiter replaces the older one. Not under TypeScript's guide.
         if crate::guide::wakes(input.var, wake_hooks) {
-            hooks["PostToolUse"] = json!([{"matcher": CLAUDE_RLM_TOOL, "hooks": [{
+            let wait = HookEvent::WaitEvents;
+            hooks[wait.claude_event()] = json!([{"matcher": CLAUDE_RLM_TOOL, "hooks": [{
                 "type": "command",
-                "command": shell_command(self_cmd, &["hook", crate::hooks::WAIT_EVENTS, "--socket", input.socket]),
+                "command": command(wait),
                 "async": true,
                 "asyncRewake": true,
-                "timeout": crate::hooks::WAIT_EVENTS_TIMEOUT.as_secs(),
+                "timeout": wait.timeout_secs(),
             }]}]);
         }
         // Inside herdr, the events only its agents panel needs (crate::herdr_hook).
         if herdr::detect(input.var, None).is_some() {
-            for (command, event) in crate::herdr_hook::HERDR_HOOK_EVENTS {
-                hooks[event] = json!([hook(command, 10)]);
+            for event in HERDR_HOOKS {
+                hooks[event.claude_event()] = json!([hook(event)]);
             }
         }
         settings.insert("hooks".into(), hooks);

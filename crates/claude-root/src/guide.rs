@@ -170,7 +170,7 @@ pub fn render_prompt_resources(resources: &PromptResources, bundled_skills: Opti
         .persona
         .as_deref()
         .filter(|_| root)
-        .map(|text| resources::persona::claude_persona_text(text, bundled_skills));
+        .map(|text| claude_persona_text(text, bundled_skills));
     if resources.context_files.is_empty() && resources.skills.is_empty() && persona.is_none() {
         return Vec::new();
     }
@@ -235,7 +235,7 @@ pub fn wakes(var: &dyn Fn(&str) -> Option<String>, hooks: bool) -> bool {
     hooks && var(session_core::compose::GUIDE_ENV).as_deref() != Some("ts")
 }
 
-/// [`claude_runtime_guide`]; `wake`: events wake the idle root (crate::hooks::WAIT_EVENTS), as in native Ultron.
+/// [`claude_runtime_guide`]; `wake`: events wake the idle root (crate::hooks::HookEvent::WaitEvents), as in native Ultron.
 pub fn claude_runtime_guide_with(hints: bool, wake: bool) -> String {
     claude_runtime_guide_for(None, hints, wake)
 }
@@ -405,4 +405,15 @@ pub fn platform() -> &'static str {
 /// Today's date in UTC (`new Date().toISOString().slice(0, 10)`).
 pub fn utc_date() -> String {
     jsrt::date::iso_string(jsrt::date::now_ms())[..10].to_string()
+}
+
+/// The persona section of the Claude root's prompt: the persona's text and where the pstack principles are.
+fn claude_persona_text(personality: &str, bundled_skills: Option<&Path>) -> String {
+    match bundled_skills {
+        Some(dir) => format!(
+            "{personality}\n\nThe pstack skills directory is {} (principle-<name>/SKILL.md).",
+            dir.join("pstack").display()
+        ),
+        None => personality.to_string(),
+    }
 }

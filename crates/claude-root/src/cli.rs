@@ -136,11 +136,20 @@ fn dispatch(argv: &[String], ctx: &Ctx, out: &mut dyn Write, err: &mut dyn Write
 }
 
 /// Run one of [`CLAUDE_COMMANDS`] (`argv[0]` is the command); `None` when `argv` is not one of them.
-pub fn run(argv: &[String], env: &RunEnv, out: &mut dyn Write, err: &mut dyn Write) -> Option<i32> {
+pub fn run(
+    argv: &[String],
+    env: &RunEnv,
+    session_report: crate::mcp_server::SessionReport,
+    out: &mut dyn Write,
+    err: &mut dyn Write,
+) -> Option<i32> {
     if !argv.first().is_some_and(|c| CLAUDE_COMMANDS.contains(&c.as_str())) {
         return None;
     }
-    let ctx = Ctx { env: env.clone() };
+    let ctx = Ctx {
+        env: env.clone(),
+        session_report: Some(session_report),
+    };
     Some(report(dispatch(argv, &ctx, out, err), err))
 }
 

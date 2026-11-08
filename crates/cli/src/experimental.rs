@@ -7,9 +7,10 @@
 
 use crate::Env;
 use crate::link::{RemoteRoute, RemoteSelection};
-use client::runtime::{ClientResult, Route};
+use client::runtime::ClientResult;
 use daemon::server::{ServerOptions, activate_server, start_foreground_server};
 use daemon::workers::WorkerModel;
+use protocol::Route;
 use serde_json::{Value, json};
 use server::radius_relay::AuthInput;
 use server::radius_relay::{RelayHostStatus, StatusSink, relay_status_line};
@@ -543,23 +544,15 @@ fn instance_server_options(
     model: Option<String>,
 ) -> Result<ServerOptions, String> {
     let instance = crate::instance(env, false);
-    instance.prepare().map_err(io)?;
     let session_dir = session_dir.map(|dir| resolve(env, dir).display().to_string());
     let session_dir = crate::session::session_directory_of(session_dir.as_deref(), env, &instance);
-    Ok(ServerOptions {
-        directory: instance.dir.clone(),
-        session_dir,
-        server_id: (env.var)(crate::service_cli::SERVER_ID_ENV),
-        model: WorkerModel {
-            provider,
-            model,
-            env: crate::startup::worker_env(env),
-            ..Default::default()
-        },
-        keep_alive: true,
-        root: instance.root().map(Path::to_path_buf),
-        relay: None,
-    })
+    let model = WorkerModel {
+        provider,
+        model,
+        env: crate::startup::worker_env(env),
+        ..Default::default()
+    };
+    ServerOptions::for_instance(&instance, session_dir, &*env.var, model).map_err(io)
 }
 
 /// What the server command waits for.
@@ -808,7 +801,7 @@ pub fn choose_server(
 fn server_sessions(route: &Route) -> Result<Vec<Value>, String> {
     let connection = client::runtime::Connection::connect(&route.path, &route.server_id).map_err(crate::link::fail)?;
     let sessions = connection
-        .subscribe(connection.server_target(), "ultron.session-directory")
+        .subscribe(connection.server_target(), protocol::names::SESSION_DIRECTORY)
         .map(|subscription| {
             connection
                 .state(&subscription, "state")

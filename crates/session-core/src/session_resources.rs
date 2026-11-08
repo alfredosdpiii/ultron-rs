@@ -208,10 +208,7 @@ pub fn prompt_source_info(
             "user" => ("user", resources::paths::join(agent_dir, "prompts")),
             "project" => (
                 "project",
-                resources::paths::join(
-                    &resources::paths::join(cwd, resources::skills::CONFIG_DIR_NAME),
-                    "prompts",
-                ),
+                resources::paths::join(&resources::paths::join(cwd, config::paths::CONFIG_DIR_NAME), "prompts"),
             ),
             _ => ("temporary", resources::paths::dirname(&template.file_path)),
         };

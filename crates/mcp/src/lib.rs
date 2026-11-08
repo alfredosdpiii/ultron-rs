@@ -9,7 +9,7 @@
 //!
 //! Translated from `@ultron/mcp` (MIT), which credits the MCP TypeScript SDK (MIT, see packages/mcp/LICENSES).
 
-pub mod client;
+mod client;
 pub mod config;
 pub mod connection;
 pub mod content;
@@ -17,14 +17,14 @@ pub mod edit;
 pub mod gateway;
 pub mod http;
 pub mod js_json;
-pub mod jsonrpc;
+mod jsonrpc;
 pub mod log;
-pub mod net;
+mod net;
 pub mod oauth;
 pub mod resolve;
 pub mod results;
 pub mod runtime;
-pub mod stdio;
+mod stdio;
 
 pub use client::{CancelToken, Client, ClientOptions, ConnState, RequestOptions};
 pub use jsonrpc::Error;

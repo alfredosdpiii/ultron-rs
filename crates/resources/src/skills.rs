@@ -13,8 +13,6 @@ const MAX_NAME_LENGTH: usize = 64;
 const MAX_DESCRIPTION_LENGTH: usize = 1024;
 /// Most characters of always-on skill text in one system prompt.
 pub const ALWAYS_SKILLS_MAX_CHARS: usize = 16_000;
-/// Project config directory name (`CONFIG_DIR_NAME`).
-pub const CONFIG_DIR_NAME: &str = ".pi";
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Skill {
@@ -214,7 +212,7 @@ pub fn load_skills(options: &LoadSkillsOptions) -> LoadSkillsResult {
     let cwd = resolve_path(options.cwd, "/", false);
     let agent_dir = resolve_path(options.agent_dir, &cwd, false);
     let user_dir = join(&agent_dir, "skills");
-    let project_dir = resolve(&cwd, &format!("{CONFIG_DIR_NAME}/skills"));
+    let project_dir = resolve(&cwd, &format!("{}/skills", config::paths::CONFIG_DIR_NAME));
 
     let mut skills: Vec<Skill> = Vec::new();
     let mut real_paths: HashSet<String> = HashSet::new();

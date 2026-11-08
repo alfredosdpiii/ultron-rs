@@ -10,9 +10,11 @@ autotests = false
 [dependencies]
 ai = { path = "../ai" }
 config = { path = "../config" }
+hindsight = { path = "../hindsight" }
 inference = { path = "../inference" }
 jsrt = { path = "../jsrt" }
 kernel = { path = "../kernel" }
+kernel-apis = { path = "../kernel-apis" }
 knowledge = { path = "../knowledge" }
 model-scope = { path = "../model-scope" }
 indexmap = { version = "=2.14.2", features = ["serde"] }

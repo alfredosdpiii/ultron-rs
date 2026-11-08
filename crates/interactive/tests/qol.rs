@@ -695,7 +695,7 @@ fn interactive_rlm_cell_shows_the_diff_of_written_files_only_when_expanded() {
 }
 
 /// Status lines pass through the composition root's filter (client-tui.ts `#showStatus` -> `friendlyStatus`; the CLI
-/// sets `daemon::lost::friendly_status`), the lane's errors included.
+/// sets `client::lost::friendly_status`), the lane's errors included.
 #[test]
 fn interactive_status_lines_pass_through_the_status_filter() {
     fn marked(text: &str) -> String {

@@ -167,41 +167,9 @@ fn mcp_gateway_open_browser_uses_the_platform_launcher_as_typescript() {
     assert_eq!(browser_command("freebsd", url), ("xdg-open".to_string(), s(&[url])));
 }
 
-/// The launcher runs detached with the URL as one argument (no shell re-parses it); a missing launcher is ignored.
-#[test]
-fn mcp_gateway_open_browser_passes_the_url_as_one_argument() {
-    let dir = tempfile::tempdir().unwrap();
-    let out = dir.path().join("args");
-    let script = dir.path().join("launcher");
-    std::fs::write(
-        &script,
-        format!(
-            "#!/bin/sh\nprintf '%s\\n' \"$@\" > {}.tmp && mv {}.tmp {}\n",
-            out.display(),
-            out.display(),
-            out.display()
-        ),
-    )
-    .unwrap();
-    use std::os::unix::fs::PermissionsExt;
-    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
-    let url = "https://example.com/a?b=1&c=$(touch pwned)";
-    mcp::gateway::spawn_detached(&script.display().to_string(), &[url.to_string()]);
-    let start = std::time::Instant::now();
-    while !out.exists() {
-        assert!(
-            start.elapsed() < std::time::Duration::from_secs(120),
-            "the launcher never ran"
-        );
-        std::thread::sleep(std::time::Duration::from_millis(5));
-    }
-    assert_eq!(std::fs::read_to_string(&out).unwrap(), format!("{url}\n"));
-    assert!(!dir.path().join("pwned").exists());
-    mcp::gateway::spawn_detached("/nonexistent/launcher", &[url.to_string()]);
-}
-
 /// The session's browser opener finds `xdg-open` only on the PATH it was given (never the process's), runs it with
-/// just that PATH and HOME, and opens nothing when that PATH has no launcher.
+/// just that PATH and HOME and the URL as one argument (no shell re-parses it), and opens nothing when that PATH has
+/// no launcher.
 #[test]
 fn mcp_gateway_browser_opener_uses_only_the_given_path() {
     use std::os::unix::fs::PermissionsExt;
@@ -222,8 +190,9 @@ fn mcp_gateway_browser_opener_uses_only_the_given_path() {
     .unwrap();
     std::fs::set_permissions(&launcher, std::fs::Permissions::from_mode(0o755)).unwrap();
     let path = format!("{}:/usr/bin:/bin", bin.display());
-    let open = mcp::gateway::browser_opener(Some(path.clone()), Some("/h".into()));
-    open("https://example.com/signin");
+    let open = mcp::gateway::browser_opener_with(Some(path.clone()), Some("/h".into()), Vec::new());
+    let url = "https://example.com/signin?b=1&c=$(touch pwned)";
+    open(url);
     let start = std::time::Instant::now();
     while !out.exists() {
         assert!(
@@ -232,16 +201,14 @@ fn mcp_gateway_browser_opener_uses_only_the_given_path() {
         );
         std::thread::sleep(std::time::Duration::from_millis(5));
     }
-    assert_eq!(
-        std::fs::read_to_string(&out).unwrap(),
-        format!("https://example.com/signin|{path}|/h\n")
-    );
+    assert_eq!(std::fs::read_to_string(&out).unwrap(), format!("{url}|{path}|/h\n"));
+    assert!(!dir.path().join("pwned").exists());
     // A PATH without a launcher, or none at all: nothing runs (the process PATH is never searched).
     std::fs::remove_file(&out).unwrap();
     let empty = dir.path().join("empty");
     std::fs::create_dir_all(&empty).unwrap();
-    mcp::gateway::browser_opener(Some(empty.display().to_string()), None)("https://example.com/x");
-    mcp::gateway::browser_opener(None, None)("https://example.com/y");
+    mcp::gateway::browser_opener_with(Some(empty.display().to_string()), None, Vec::new())("https://example.com/x");
+    mcp::gateway::browser_opener_with(None, None, Vec::new())("https://example.com/y");
     assert!(!out.exists());
 }
 

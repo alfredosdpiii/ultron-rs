@@ -1,10 +1,9 @@
 //! The persona (resources::persona): the auto-nudge rule replayed against fixtures/persona-nudge.json (recorded from
-//! the user's Claude Code hook's rule by generate-persona-nudge.py), the decision's conditions one by one, the
+//! the user's Claude Code hook's rule by generate-persona-nudge.py; its transcripts are claude-root's), the decision's conditions one by one, the
 //! chain's count, the prompt's persona section, and engineering mode's proactive skills note.
 
 use resources::persona::{
-    Chain, MAX_NUDGES, NUDGE_CUSTOM_TYPE, NUDGE_TEXT, TurnEnd, decide, last_turn, nudge_message, read_personality,
-    should_nudge,
+    Chain, MAX_NUDGES, NUDGE_CUSTOM_TYPE, NUDGE_TEXT, TurnEnd, decide, nudge_message, read_personality, should_nudge,
 };
 use resources::skills::{Skill, bundled_skills_note};
 use resources::system_prompt::{BuildOptions, build_system_prompt};
@@ -25,24 +24,6 @@ fn resources_persona_nudge_rule_matches_the_recorded_hook() {
     for case in cases {
         let (text, tools) = (case["text"].as_str().unwrap(), case["tools"].as_u64().unwrap() as usize);
         assert_eq!(should_nudge(text, tools), case["nudge"] == true, "{case}");
-    }
-    for transcript in fixture["transcripts"].as_array().unwrap() {
-        let (text, tools) = last_turn(transcript["jsonl"].as_str().unwrap());
-        assert_eq!(
-            (text.as_str(), tools as u64),
-            (
-                transcript["text"].as_str().unwrap(),
-                transcript["tools"].as_u64().unwrap()
-            ),
-            "{}",
-            transcript["name"]
-        );
-        assert_eq!(
-            should_nudge(&text, tools),
-            transcript["nudge"] == true,
-            "{}",
-            transcript["name"]
-        );
     }
 }
 

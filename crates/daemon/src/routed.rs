@@ -6,8 +6,8 @@
 use crate::catalog::{self, Meta};
 use crate::chord::{Call, Endpoint, Provider, Publish, Service, ServiceError, ServiceResult, State, WireEncoder};
 use crate::chord::{subscribe_id, unsubscribe_id};
-use crate::wire::{to_cbor, to_json};
 use crate::workers::{Handle, Manager};
+use protocol::json::{to_cbor, to_json};
 use protocol::{
     ClientMessage, ClientMessageDecoder, MAX_SERVER_FRAME_LENGTH, PROTOCOL_VERSION, ProtocolError, RpcTarget,
     ServerMessage, SessionTarget, encode_server_message, is_supported_protocol_version,
@@ -143,8 +143,6 @@ struct Router {
     reconnecting: HashMap<u64, String>,
 }
 
-/// The code of a session call made while its worker restarts.
-pub const RECONNECTING_CODE: &str = "session_reconnecting";
 /// How long clients wait for a crashed worker to come back before they are detached.
 const RESTART_WAIT: Duration = Duration::from_secs(120);
 
@@ -270,7 +268,7 @@ impl Hub {
             Ok(attachment) => (handle, attachment),
             // The session's worker went idle as its last client left and is retiring (a client that attaches right
             // after another detached): once it is gone, a new worker is started for this client.
-            Err(error) if error.code.as_deref() == Some(crate::workers::WORKER_RETIRING_CODE) => {
+            Err(error) if error.code.as_deref() == Some(protocol::names::WORKER_RETIRING_CODE) => {
                 self.wait_worker_gone(session_id, &handle);
                 let handle = self.acquire(session_id, options)?;
                 let attachment = self.manager.attach_client(&handle)?;
@@ -589,7 +587,7 @@ impl Hub {
     }
 
     fn server_services(&self, conn: &Arc<Conn>) -> Provider {
-        let directory = Service::new("ultron.session-directory").state("state", self.directory.clone());
+        let directory = Service::new(protocol::names::SESSION_DIRECTORY).state("state", self.directory.clone());
         let weak = self.me.clone();
         let hub = move || weak.upgrade().ok_or_else(|| ServiceError::internal("Server is closed"));
         let conn_weak = Arc::downgrade(conn);
@@ -609,7 +607,7 @@ impl Hub {
         );
         let (c1, c2, c3, c4) = (conn_of.clone(), conn_of.clone(), conn_of.clone(), conn_of);
         let (h8, h9) = (hub.clone(), hub.clone());
-        let management = Service::new("ultron.session-management")
+        let management = Service::new(protocol::names::SESSION_MANAGEMENT)
             .method("attach", move |args| {
                 let (hub, conn) = (h1()?, c1()?);
                 let id = args.first().and_then(Value::as_str).unwrap_or_default().to_string();
@@ -669,7 +667,7 @@ impl Hub {
                     Ok(None)
                 })
             });
-        let plugins = Service::new("ultron.presentation-plugins")
+        let plugins = Service::new(protocol::names::PRESENTATION_PLUGINS)
             .method("prepareSession", move |args| {
                 let (hub, conn) = (h7()?, c3()?);
                 let request = args.first().unwrap_or(&Value::Null);
@@ -874,7 +872,7 @@ impl Hub {
                 self,
             );
         }
-        let call_json = to_json(&call).unwrap_or(Value::Null);
+        let call_json = to_json(&call);
         let Some(parsed) = Call::parse(&call_json) else {
             return respond(
                 conn,
@@ -962,7 +960,7 @@ impl Hub {
                 let Some((handle, attachment)) = attachment else {
                     if self.router().reconnecting.get(&conn.id) == Some(&session.session_id) {
                         return finish(Err(coded(
-                            RECONNECTING_CODE,
+                            protocol::names::RECONNECTING_CODE,
                             "The session worker is restarting; this client is re-attached when it is back",
                         )));
                     }

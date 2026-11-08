@@ -6,9 +6,10 @@
 
 use crate::Env;
 use crate::args::Args;
-use client::runtime::{ClientCommand, ClientResult, Route, RunOptions, run_client_with};
+use client::runtime::{ClientCommand, ClientResult, RunOptions, run_client_with};
 use daemon::server::{ServerOptions, start_foreground_server};
 use daemon::workers::WorkerModel;
+use protocol::Route;
 use serde_json::json;
 use session_core::ModelFlags;
 pub use session_core::core::lane_config;
@@ -121,27 +122,21 @@ fn preflight(parsed: &Args, env: &Env, target: &Target) -> Result<(), String> {
 pub fn server_options(parsed: &Args, env: &Env, extension_mode: &str) -> Result<ServerOptions, String> {
     let instance = crate::instance(env, false);
     let session_dir = crate::session::session_directory_of(parsed.session_dir.as_deref(), env, &instance);
-    instance.prepare().map_err(|e| e.to_string())?;
+    let model = WorkerModel {
+        provider: parsed.provider.clone(),
+        model: parsed.model.clone(),
+        api_key: parsed.api_key.clone(),
+        thinking: parsed.thinking.clone(),
+        extension_mode: Some(extension_mode.into()),
+        no_naming: parsed.no_session,
+        models: parsed.models.clone(),
+        session: session_flags(parsed, env),
+        env: crate::startup::worker_env(env),
+        project_trust: parsed.project_trust_override,
+    };
     Ok(ServerOptions {
-        directory: instance.dir.clone(),
-        session_dir,
-        server_id: (env.var)(crate::service_cli::SERVER_ID_ENV)
-            .or_else(|| (env.var)(crate::service_cli::LEGACY_SERVER_ID_ENV)),
-        model: WorkerModel {
-            provider: parsed.provider.clone(),
-            model: parsed.model.clone(),
-            api_key: parsed.api_key.clone(),
-            thinking: parsed.thinking.clone(),
-            extension_mode: Some(extension_mode.into()),
-            no_naming: parsed.no_session,
-            models: parsed.models.clone(),
-            session: session_flags(parsed, env),
-            env: crate::startup::worker_env(env),
-            project_trust: parsed.project_trust_override,
-        },
-        keep_alive: true,
-        root: instance.root().map(std::path::Path::to_path_buf),
         relay: Some(crate::radius_relay::relay_config(env)),
+        ..ServerOptions::for_instance(&instance, session_dir, &*env.var, model).map_err(|e| e.to_string())?
     })
 }
 
@@ -217,13 +212,6 @@ pub fn client_command(parsed: &Args, target: &Target, prompt: Option<String>) ->
     command
 }
 
-fn route_of(route: daemon::server::Route) -> Route {
-    Route {
-        server_id: route.server_id,
-        path: route.path,
-    }
-}
-
 /// The route a client run uses: a foreground generation of this process (returned, for the run to close); a client
 /// of the durable instance uses its detached server (activated when not running, never stopped by this run).
 pub fn open_route(
@@ -233,7 +221,7 @@ pub fn open_route(
     if crate::durable_client::is_client(env) {
         let route = crate::durable_client::activate(options)?;
         trace_startup(env, "cli.server-attached");
-        return Ok((route_of(route), None));
+        return Ok((route, None));
     }
     let server = start_foreground_server(options).map_err(|e| e.to_string())?;
     trace_startup(env, "cli.server-started");
@@ -286,7 +274,7 @@ pub fn run_prompt(
             // The server generation went away with its coordinator: start a new one (and coordinator); a client of
             // the durable instance activates the durable server again.
             if durable {
-                return crate::durable_client::activate(&server_options).map(route_of);
+                return crate::durable_client::activate(&server_options);
             }
             let server = start_foreground_server(&server_options).map_err(|e| e.to_string())?;
             let route = Route {
@@ -318,7 +306,12 @@ pub fn run_prompt(
         && let Ok(connection) = client::runtime::Connection::connect(&route.path, &route.server_id)
     {
         let target = connection.server_target();
-        let _ = connection.call(target, "ultron.session-management", "remove", json!([session_id]));
+        let _ = connection.call(
+            target,
+            protocol::names::SESSION_MANAGEMENT,
+            "remove",
+            json!([session_id]),
+        );
         connection.disconnect();
     }
     for server in servers.lock().unwrap_or_else(|e| e.into_inner()).drain(..) {
@@ -328,7 +321,7 @@ pub fn run_prompt(
         std::process::exit(code.load(Ordering::SeqCst));
     }
     signals::clear_handler();
-    match result.map_err(|e| daemon::lost::describe(&e).unwrap_or(e))? {
+    match result? {
         ClientResult::Prompted {
             server_id,
             session_id,
@@ -368,9 +361,7 @@ pub fn run_unprompted(parsed: &Args, env: &Env, target: Target) -> Result<String
     if let Some(server) = server {
         server.close();
     }
-    Ok(render_unprompted(
-        &result.map_err(|e| daemon::lost::describe(&e).unwrap_or(e))?,
-    ))
+    Ok(render_unprompted(&result?))
 }
 
 /// What a run without a prompt prints for its client result.

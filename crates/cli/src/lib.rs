@@ -182,8 +182,7 @@ fn run_inner(argv: &[String], env: &Env, out: &mut dyn Write, err: &mut dyn Writ
     }
     // `ultron mcp` answers `usage.report` inspections with the report `/usage` shows: a subscription login's costs
     // are notional.
-    claude_root::mcp_server::set_session_report(mcp_session_report);
-    if let Some(code) = claude_root::cli::run(argv, env, out, err) {
+    if let Some(code) = claude_root::cli::run(argv, env, mcp_session_report, out, err) {
         return Ok(code);
     }
     if argv.first().is_some_and(|a| a == "watch") {

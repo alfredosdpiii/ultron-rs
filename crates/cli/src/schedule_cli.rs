@@ -85,23 +85,15 @@ fn wake(env: &Env) -> Result<bool, String> {
     if !active || !servers(env, &instance).is_empty() {
         return Ok(false);
     }
-    instance.prepare().map_err(io)?;
-    activate_server(
-        &ServerOptions {
-            directory: instance.dir.clone(),
-            session_dir: dir,
-            server_id: (env.var)(crate::service_cli::SERVER_ID_ENV),
-            model: WorkerModel {
-                env: crate::startup::worker_env(env),
-                ..Default::default()
-            },
-            keep_alive: false,
-            root: instance.root().map(std::path::Path::to_path_buf),
-            relay: None,
-        },
-        false,
-    )
-    .map_err(io)?;
+    let model = WorkerModel {
+        env: crate::startup::worker_env(env),
+        ..Default::default()
+    };
+    let options = ServerOptions {
+        keep_alive: false,
+        ..ServerOptions::for_instance(&instance, dir, &*env.var, model).map_err(io)?
+    };
+    activate_server(&options, false).map_err(io)?;
     Ok(true)
 }
 
@@ -196,7 +188,7 @@ fn cancel_schedule(env: &Env, target: &str, out: &mut dyn Write) -> Result<i32, 
                     RpcTarget::Server {
                         server_id: server.server_id.clone(),
                     },
-                    "ultron.schedules",
+                    protocol::names::SCHEDULES,
                     "cancel",
                     json!([meta.id, schedule.id]),
                 )

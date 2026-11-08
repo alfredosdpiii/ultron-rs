@@ -1747,7 +1747,7 @@ fn reviewer_deps(
             (env.var)(hindsight::resolve::HINDSIGHT_URL_ENV).as_deref(),
             hindsight::resolve::setting_url(&manager).as_deref(),
         );
-        url.and_then(|url| hindsight::lessons::HindsightLessons::new(&url, Box::new(jsrt::date::now_ms), None).ok())
+        url.and_then(|url| review::lessons::HindsightLessons::new(&url, Box::new(jsrt::date::now_ms), None).ok())
             .map(|lessons| Arc::new(lessons) as Arc<dyn review::reviewer::LessonMemory>)
     } else {
         None

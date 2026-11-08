@@ -169,7 +169,14 @@ struct Server {
 
 impl Server {
     fn start(env: RunEnv) -> Server {
-        let (running, handlers) = start(&[], &claude_root::Ctx { env }).unwrap();
+        let (running, handlers) = start(
+            &[],
+            &claude_root::Ctx {
+                env,
+                session_report: None,
+            },
+        )
+        .unwrap();
         let (input, stdin) = std::io::pipe().unwrap();
         let (stdout, output) = std::io::pipe().unwrap();
         let serving = std::thread::spawn(move || {

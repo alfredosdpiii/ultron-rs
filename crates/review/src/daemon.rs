@@ -32,10 +32,11 @@ use regex::Regex;
 
 use crate::accounts::{Account, account_key};
 use crate::ban::{BanList, banned_author, banned_reason};
+use crate::engine::Log;
 use crate::github::{Clock, Error, GitHub, PullRef, pull_key};
 use crate::js::Num;
 use crate::reviewer::{
-    Candidate, Log, Outcome, Preparation, Prepared, ReviewOptions, ReviewerDeps, prepare_pull, run_review,
+    Candidate, Outcome, Preparation, Prepared, ReviewOptions, ReviewerDeps, prepare_pull, run_review,
 };
 use crate::settings::RETENTION_DAYS;
 use crate::state::{AccountState, AutoreviewState, DaemonInfo, StateStore};

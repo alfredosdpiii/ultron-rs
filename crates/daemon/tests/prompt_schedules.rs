@@ -173,7 +173,7 @@ fn daemon_prompt_schedules_scan_reads_only_the_sessions_own_last_values() {
     assert_eq!(std::fs::read_to_string(&probe.path).unwrap(), text);
     assert_eq!(
         fire_call("sch-1", 5),
-        json!({"serviceId": "ultron.session-ops", "member": "op", "args": [{"op": "scheduleFire", "id": "sch-1", "due": 5}]})
+        json!({"serviceId": protocol::names::SESSION_OPS, "member": "op", "args": [{"op": "scheduleFire", "id": "sch-1", "due": 5}]})
     );
 }
 

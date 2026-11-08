@@ -318,12 +318,12 @@ pub fn sign_in(
 fn transport_error(error: OAuthError) -> Error {
     match error {
         OAuthError::AuthorizationRequired => http_failure(
-            "McpOAuthAuthorizationRequiredError",
+            crate::jsonrpc::HttpErrorKind::OAuthAuthorizationRequired,
             401,
             OAuthError::AuthorizationRequired.to_string(),
             "",
         ),
-        OAuthError::Network(message) => http_failure("TypeError", 0, message, ""),
+        OAuthError::Network(message) => http_failure(crate::jsonrpc::HttpErrorKind::Network, 0, message, ""),
         other => Error::Other(other.to_string()),
     }
 }

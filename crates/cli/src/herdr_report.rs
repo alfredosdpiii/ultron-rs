@@ -21,8 +21,6 @@ use std::sync::{Mutex, OnceLock, PoisonError};
 
 /// The display name herdr shows for the TUI.
 pub const DISPLAY_AGENT: &str = "Ultron";
-/// The longest message or title sent.
-const MAX_TEXT: usize = 200;
 
 /// The pane to report to: the injected env and the `herdr` setting (global or trusted project).
 pub fn pane(env: &Env) -> Option<herdr::Pane> {
@@ -68,16 +66,8 @@ pub fn resume_argv(parsed: &Args, env: &Env, session_id: &str) -> Vec<String> {
     argv
 }
 
-fn clip(text: &str) -> String {
-    let text = text.trim();
-    match text.char_indices().nth(MAX_TEXT) {
-        Some((cut, _)) => format!("{}…", &text[..cut]),
-        None => text.to_string(),
-    }
-}
-
 fn first_line(text: &str) -> String {
-    clip(text.trim().lines().next().unwrap_or_default())
+    herdr::clip(text.trim().lines().next().unwrap_or_default())
 }
 
 /// The state a run's end reports: its status, error and the final assistant text.
@@ -93,11 +83,10 @@ pub fn run_end_state(event: &Value, final_text: &str) -> (State, Option<String>)
             };
             (state, Some(first_line(error)))
         }
-        _ if herdr::ends_with_question(final_text) => {
-            let question = final_text.trim().rsplit("\n\n").next().unwrap_or_default();
-            (State::Blocked, Some(clip(question)))
-        }
-        _ => (State::Idle, None),
+        _ => match herdr::question(final_text) {
+            Some(question) => (State::Blocked, Some(question)),
+            None => (State::Idle, None),
+        },
     }
 }
 

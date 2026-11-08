@@ -4,10 +4,36 @@
 use serde_json::Value;
 use std::path::Path;
 
+/// What `rlm.spawn` subagents of a Claude root are (`--children`, `ULTRON_CLAUDE_CHILDREN`, `claudeCode.children`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ChildrenMode {
+    /// Claude Code processes.
+    Claude,
+    /// Ultron lanes.
+    Ultron,
+}
+
+impl ChildrenMode {
+    pub fn parse(value: &str) -> Option<ChildrenMode> {
+        match value {
+            "claude" => Some(ChildrenMode::Claude),
+            "ultron" => Some(ChildrenMode::Ultron),
+            _ => None,
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            ChildrenMode::Claude => "claude",
+            ChildrenMode::Ultron => "ultron",
+        }
+    }
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct ClaudeCodeSettings {
     pub frame_model: Option<String>,
-    pub children: Option<String>,
+    pub children: Option<ChildrenMode>,
     pub child_model: Option<String>,
     pub ultron_child_model: Option<String>,
     pub model: Option<String>,
@@ -35,8 +61,7 @@ impl ClaudeCodeSettings {
             children: configured
                 .get("children")
                 .and_then(Value::as_str)
-                .filter(|v| *v == "claude" || *v == "ultron")
-                .map(str::to_string),
+                .and_then(ChildrenMode::parse),
             child_model: text("childModel"),
             ultron_child_model: text("ultronChildModel"),
             model: text("model"),

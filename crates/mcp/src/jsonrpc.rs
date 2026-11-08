@@ -3,10 +3,8 @@
 use serde_json::{Map, Value, json};
 use std::fmt;
 
-pub const PARSE_ERROR: i64 = -32700;
 pub const INVALID_REQUEST: i64 = -32600;
 pub const METHOD_NOT_FOUND: i64 = -32601;
-pub const INVALID_PARAMS: i64 = -32602;
 pub const INTERNAL_ERROR: i64 = -32603;
 
 #[derive(Debug, Clone, PartialEq)]
@@ -17,6 +15,13 @@ pub enum Error {
         message: String,
         data: Option<Value>,
     },
+    /// An HTTP transport failure: its TypeScript class, the response status (0 for a network failure) and body.
+    Http {
+        kind: HttpErrorKind,
+        status: u16,
+        message: String,
+        body: String,
+    },
     /// `McpConnectionClosedError`.
     ConnectionClosed(String),
     /// `McpTimeoutError`, in milliseconds.
@@ -25,6 +30,33 @@ pub enum Error {
     Aborted,
     /// Any other failure (`Error`).
     Other(String),
+}
+
+/// What an HTTP failure was, as the TypeScript error class names it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HttpErrorKind {
+    /// fetch's `TypeError`: the request never got a response.
+    Network,
+    /// `McpHttpError`: a status the transport does not handle.
+    Status,
+    /// `McpAuthRequiredError`: 401.
+    AuthRequired,
+    /// `McpOAuthAuthorizationRequiredError`: the OAuth provider needs the user to sign in.
+    OAuthAuthorizationRequired,
+    /// `McpSessionExpiredError`: 404 for a session the server no longer knows.
+    SessionExpired,
+}
+
+impl HttpErrorKind {
+    pub fn name(self) -> &'static str {
+        match self {
+            HttpErrorKind::Network => "TypeError",
+            HttpErrorKind::Status => "McpHttpError",
+            HttpErrorKind::AuthRequired => "McpAuthRequiredError",
+            HttpErrorKind::OAuthAuthorizationRequired => "McpOAuthAuthorizationRequiredError",
+            HttpErrorKind::SessionExpired => "McpSessionExpiredError",
+        }
+    }
 }
 
 impl Error {
@@ -47,7 +79,7 @@ impl Error {
     /// The TypeScript error class name.
     pub fn name(&self) -> &'static str {
         match self {
-            Error::Mcp { .. } => "McpError",
+            Error::Mcp { .. } | Error::Http { .. } => "McpError",
             Error::ConnectionClosed(_) => "McpConnectionClosedError",
             Error::Timeout(_) => "McpTimeoutError",
             Error::Aborted => "AbortError",
@@ -59,9 +91,10 @@ impl Error {
 impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Error::Mcp { message, .. } | Error::ConnectionClosed(message) | Error::Other(message) => {
-                f.write_str(message)
-            }
+            Error::Mcp { message, .. }
+            | Error::Http { message, .. }
+            | Error::ConnectionClosed(message)
+            | Error::Other(message) => f.write_str(message),
             Error::Timeout(ms) => write!(f, "MCP request timed out after {ms}ms"),
             Error::Aborted => f.write_str("MCP request aborted"),
         }

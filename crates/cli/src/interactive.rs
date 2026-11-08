@@ -512,7 +512,7 @@ impl ExtensionUiPoll {
         let connection = link.connection();
         let polled = connection
             .session_target()
-            .and_then(|target| connection.call(target, "ultron.extension-ui", "poll", json!([self.cursor, 0])));
+            .and_then(|target| connection.call(target, protocol::names::EXTENSION_UI, "poll", json!([self.cursor, 0])));
         let Ok(Some(result)) = polled else {
             self.cursor = None;
             return;
@@ -839,7 +839,7 @@ fn link_thread(
             let connection = link.connection();
             let prepared = connection.call(
                 connection.server_target(),
-                "ultron.presentation-plugins",
+                protocol::names::PRESENTATION_PLUGINS,
                 "prepareSession",
                 json!([{"sessionId": session.session_id, "packagePaths": null}]),
             );
@@ -889,7 +889,7 @@ fn link_thread(
                 if last_recovery.is_some_and(|t| now.duration_since(t) < WORKER_RECOVERY_INTERVAL) {
                     send(LaneEvent::Status(format!(
                         "Error: The session worker stopped again; {}",
-                        daemon::lost::RESUME_HINT
+                        client::lost::RESUME_HINT
                     )));
                     continue;
                 }
@@ -985,7 +985,12 @@ fn link_thread(
             }
             Command::Bash(command, exclude) => {
                 // Answered on its own thread, so Esc (abortBash) reaches the worker while it runs.
-                let started = start_call(&link, "ultron.session-control", "bash", json!([command, exclude]));
+                let started = start_call(
+                    &link,
+                    protocol::names::SESSION_CONTROL,
+                    "bash",
+                    json!([command, exclude]),
+                );
                 let ui = ui.clone();
                 std::thread::spawn(move || {
                     let result =
@@ -997,7 +1002,7 @@ fn link_thread(
             Command::Compact(instructions) => {
                 let started = start_call(
                     &link,
-                    "ultron.agent-controller",
+                    protocol::names::AGENT_CONTROLLER,
                     "compact",
                     json!([{"customInstructions": instructions}]),
                 );
@@ -1005,9 +1010,8 @@ fn link_thread(
                 std::thread::spawn(move || {
                     // Success shows through the lane's `entry_added` of the compaction entry.
                     let result =
-                        started.and_then(|(connection, request)| connection.wait(&request).map_err(|e| e.to_string()));
+                        started.and_then(|(connection, request)| connection.wait(&request).map_err(crate::link::fail));
                     if let Err(error) = result {
-                        let error = daemon::lost::describe(&error).unwrap_or(error);
                         let error = error
                             .strip_prefix("session_operation_failed: ")
                             .map(str::to_string)
@@ -1096,7 +1100,12 @@ fn link_thread(
                         let _ = ui.send(UiEvent::Lane(event));
                     };
                     let run = connection.session_target().and_then(|target| {
-                        connection.call(target, "ultron.legacy-extension-commands", "run", json!(["mcp", args]))
+                        connection.call(
+                            target,
+                            protocol::names::LEGACY_EXTENSION_COMMANDS,
+                            "run",
+                            json!(["mcp", args]),
+                        )
                     });
                     match run {
                         Ok(result) => {
@@ -1168,14 +1177,13 @@ fn link_thread(
                 // The agent controller's navigate runs on its own worker thread (a summary is a model call).
                 let started = start_call(
                     &link,
-                    "ultron.agent-controller",
+                    protocol::names::AGENT_CONTROLLER,
                     "navigate",
                     json!([{"targetId": target, "summarize": summarize, "label": null, "customInstructions": instructions}]),
                 );
                 let result = started
-                    .and_then(|(connection, request)| connection.wait(&request).map_err(|e| e.to_string()))
+                    .and_then(|(connection, request)| connection.wait(&request).map_err(crate::link::fail))
                     .map_err(|error| {
-                        let error = daemon::lost::describe(&error).unwrap_or(error);
                         error
                             .strip_prefix("session_operation_failed: ")
                             .map(str::to_string)
@@ -1217,9 +1225,9 @@ fn link_thread(
             },
             Command::ExtensionUiRespond(id, answer) => {
                 let connection = link.connection();
-                let _ = connection
-                    .session_target()
-                    .and_then(|target| connection.call(target, "ultron.extension-ui", "respond", json!([id, answer])));
+                let _ = connection.session_target().and_then(|target| {
+                    connection.call(target, protocol::names::EXTENSION_UI, "respond", json!([id, answer]))
+                });
             }
             Command::KillAgent(id) => {
                 if let Err(error) = link.op(&Op::KillAgent { id }) {
@@ -1291,7 +1299,7 @@ fn link_thread(
             Command::Share(cancel, theme) => share_session(&link, &send, &cancel, theme.as_deref(), &catalog_env),
             Command::BugSummary(hint) => {
                 let op = Op::BugSummary { hint };
-                let started = start_call(&link, daemon::worker::OPS_SERVICE, "op", json!([op.to_json()]));
+                let started = start_call(&link, protocol::names::SESSION_OPS, "op", json!([op.to_json()]));
                 let ui = ui.clone();
                 std::thread::spawn(move || {
                     let result = started
@@ -1549,7 +1557,12 @@ fn link_thread(
                     .map(|(path, decision)| json!({"path": path, "decision": decision}))
                     .collect();
                 send(LaneEvent::Status(
-                    match session_call(&link, "ultron.session-control", "setProjectTrust", json!([updates])) {
+                    match session_call(
+                        &link,
+                        protocol::names::SESSION_CONTROL,
+                        "setProjectTrust",
+                        json!([updates]),
+                    ) {
                         Ok(_) => interactive::trust_selector::saved_status(trusted),
                         Err(error) => format!("Error: {error}"),
                     },
@@ -1593,7 +1606,7 @@ fn session_call(link: &Link, service: &str, member: &str, args: Value) -> Result
 
 /// `/trust`: the worker's `readSettings` and the trust choices for its cwd (`getProjectTrustOptions`).
 fn read_trust(link: &Link) -> Result<interactive::trust_selector::TrustView, String> {
-    let read = session_call(link, "ultron.session-control", "readSettings", json!([]))?.unwrap_or_default();
+    let read = session_call(link, protocol::names::SESSION_CONTROL, "readSettings", json!([]))?.unwrap_or_default();
     let cwd = read["cwd"].as_str().unwrap_or_default().to_string();
     let display = |p: &std::path::Path| p.display().to_string();
     let choices = config::trust::trust_options(std::path::Path::new(&cwd), false)
@@ -1623,7 +1636,7 @@ fn write_debug_log(
     agent_dir: &std::path::Path,
     capture: &interactive::debug_log::DebugCapture,
 ) -> LaneEvent {
-    let worker = session_call(link, "ultron.session-control", "debugInfo", json!([]))
+    let worker = session_call(link, protocol::names::SESSION_CONTROL, "debugInfo", json!([]))
         .map(Option::unwrap_or_default)
         .map_err(|e| {
             if e == "Session is not attached" {
@@ -1703,13 +1716,13 @@ fn reload_plugins(link: &Link) -> Result<(), String> {
     let data = connection
         .call(
             connection.server_target(),
-            "ultron.presentation-plugins",
+            protocol::names::PRESENTATION_PLUGINS,
             "reload",
             json!([]),
         )
         .map_err(|e| e.to_string())?
         .unwrap_or(Value::Null);
-    session_call(link, "ultron.session-plugins", "reload", json!([]))?;
+    session_call(link, protocol::names::SESSION_PLUGINS, "reload", json!([]))?;
     apply_presentation_plugins(&data)
 }
 
@@ -2016,7 +2029,7 @@ fn session_op_runner(link: &Link) -> Arc<dyn Fn(Op) -> Result<Option<Value>, Str
     Arc::new(move |op: Op| {
         let session = connection.session_target().map_err(|e| e.to_string())?;
         let request = connection
-            .start(session, daemon::worker::OPS_SERVICE, "op", json!([op.to_json()]))
+            .start(session, protocol::names::SESSION_OPS, "op", json!([op.to_json()]))
             .map_err(|e| e.to_string())?;
         connection.wait(&request).map_err(crate::link::fail)
     })
@@ -2028,11 +2041,11 @@ fn start_call(
     member: &str,
     args: Value,
 ) -> Result<(Arc<client::runtime::Connection>, String), String> {
-    let session = link.connection().session_target().map_err(|e| e.to_string())?;
+    let session = link.connection().session_target().map_err(crate::link::fail)?;
     let request = link
         .connection()
         .start(session, service, member, args)
-        .map_err(|e| e.to_string())?;
+        .map_err(crate::link::fail)?;
     Ok((link.connection(), request))
 }
 
@@ -2435,7 +2448,7 @@ fn run_tui(
     };
     let mut app = App::new(options, Box::new(client));
     // client-tui.ts `#showStatus`: a status line reporting a lost server or worker says so clearly.
-    app.set_status_filter(daemon::lost::friendly_status);
+    app.set_status_filter(client::lost::friendly_status);
     // A signal leaves the TUI as closing its input does (the terminal is restored, the link closes), then the
     // process exits with the signal's code.
     let (code, end) = (signalled.clone(), std::sync::Mutex::new(ui_tx.clone()));

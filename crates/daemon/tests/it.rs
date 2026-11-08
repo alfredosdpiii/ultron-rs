@@ -19,8 +19,6 @@ mod instance;
 mod lane_publish;
 #[path = "lifecycle.rs"]
 mod lifecycle;
-#[path = "lost.rs"]
-mod lost;
 #[path = "persona_setting.rs"]
 mod persona_setting;
 #[path = "prompt_schedules.rs"]

@@ -296,6 +296,15 @@ pub enum Verdict {
 }
 
 impl Verdict {
+    /// The verdict as the state and the outcome name it (its serialized form).
+    pub fn name(self) -> &'static str {
+        match self {
+            Verdict::Approve => "approve",
+            Verdict::RequestChanges => "request_changes",
+            Verdict::Comment => "comment",
+        }
+    }
+
     pub fn event(self) -> &'static str {
         match self {
             Verdict::Approve => "APPROVE",

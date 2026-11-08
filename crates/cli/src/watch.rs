@@ -185,15 +185,17 @@ pub fn poll_snapshot(
 ) -> (RlmSnapshot, Value) {
     let timeout = Duration::from_secs(10);
     let status = client
-        .request("status", Map::new(), timeout)
+        .request(claude_root::control::op::STATUS, Map::new(), timeout)
         .unwrap_or_else(|_| json!({}));
     poller.poll(&mut |request, payload| {
         let mut fields = Map::new();
         fields.insert("request".into(), request.into());
         fields.insert("payload".into(), payload);
-        client.request("inspect", fields, timeout)
+        client.request(claude_root::control::op::INSPECT, fields, timeout)
     });
-    let records = client.request("cells", Map::new(), timeout).ok();
+    let records = client
+        .request(claude_root::control::op::CELLS, Map::new(), timeout)
+        .ok();
     let cells: Vec<Value> = records
         .as_ref()
         .and_then(|r| r["cells"].as_array())

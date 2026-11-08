@@ -6,14 +6,14 @@
 //!
 //! RLM-first: Claude Code sees one tool, `mcp__ultron__rlm`; every capability is a kernel API reached from a cell.
 
-pub mod checkpoints;
+mod checkpoints;
 pub mod child;
-pub mod child_usage;
+mod child_usage;
 pub mod claude_cli;
 pub mod cli;
 pub mod control;
 pub mod durable_apis;
-pub mod external_lane;
+mod external_lane;
 pub mod external_root;
 pub mod guide;
 pub mod herdr_hook;
@@ -23,24 +23,37 @@ pub mod mcp_protocol;
 pub mod mcp_server;
 pub mod persona_hook;
 pub mod root_sink;
-pub mod schedules;
+mod schedules;
 pub mod self_cmd;
 pub mod settings;
-pub mod shared_world;
-pub mod typed_agents;
+mod shared_world;
+mod typed_agents;
 pub mod unavailable;
 pub mod worker_root;
 
 use session_core::RunEnv;
 use std::path::{Path, PathBuf};
 
+/// `<model>` of a `claude-code/<model>` reference.
+pub(crate) fn claude_code_id(model: &str) -> Option<&str> {
+    model.strip_prefix(ai::claude_code::PROVIDER)?.strip_prefix('/')
+}
+
+/// `claude-code/<id>`.
+pub(crate) fn claude_code_ref(id: &str) -> String {
+    format!("{}/{id}", ai::claude_code::PROVIDER)
+}
+
 /// A usage error: printed without a stack, exit code 2.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct UsageError(pub String);
 
-/// What a command sees: the process environment and locations.
+/// What a command sees: the process environment and locations, and what the CLI (which owns the session report)
+/// provides.
 pub struct Ctx {
     pub env: RunEnv,
+    /// Answers `ultron mcp`'s `usage.report` inspections; `None`: the report is not available.
+    pub session_report: Option<mcp_server::SessionReport>,
 }
 
 impl Ctx {
@@ -50,9 +63,6 @@ impl Ctx {
             .then(|| config::paths::normalize(&self.env.docs.join("../skills")))
     }
 }
-
-// ponytail: only the do-not-touch bridge.rs still calls `crate::random_hex`; drop this once it is gone.
-pub use jsrt::random::random_hex;
 
 /// `os.tmpdir()`: `TMPDIR` without a trailing slash, else `/tmp`.
 pub fn tmpdir(var: &dyn Fn(&str) -> Option<String>) -> PathBuf {

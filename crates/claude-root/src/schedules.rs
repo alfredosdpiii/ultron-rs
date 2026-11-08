@@ -5,7 +5,7 @@
 //! one thread sleeps until the earliest due time (on the schedules' own clock; a change to the schedules wakes it),
 //! records the run (`fire_with`: missed slots collapse into one run, the next slot is after now) and puts the prompt
 //! in the root's inbox as a `<scheduled_prompt>` line. While Claude Code is idle the wait-events hook
-//! (crate::hooks::WAIT_EVENTS) wakes the model with it, which starts a turn; during a turn it arrives with the next
+//! (crate::hooks::HookEvent::WaitEvents) wakes the model with it, which starts a turn; during a turn it arrives with the next
 //! cell result, or wakes the model when the turn ends.
 //!
 //! The schedules fire only while Claude Code runs (this server is the process it starts for its session). They are
@@ -17,14 +17,11 @@
 
 use kernel_apis::TickClock;
 use kernel_apis::artifacts::KeyedDocuments;
-use kernel_apis::prompt_schedule::{Listener, ScheduleModule};
+use kernel_apis::prompt_schedule::{Listener, RETRY_MS, ScheduleModule};
 use serde_json::Value;
 use session_core::durable_store::{SharedSession, lock};
 use std::collections::HashMap;
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
-
-/// A delivery that failed is tried again after this (the server's timer waits as long).
-pub const RETRY_MS: i64 = kernel_apis::prompt_schedule::RETRY_MS;
 
 /// Where a Claude Code session's schedules are kept (session values; never `ultron.schedule`).
 pub const NAMESPACE: &str = "ultron.claude.schedule";

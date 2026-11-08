@@ -182,7 +182,7 @@ fn cli_instances_durable_is_separate_and_survives_a_killed_project_server() {
     assert_eq!(running[1][1], project.display().to_string());
     let durable_sessions = client::runtime::run_client(
         &client::runtime::ClientCommand::default(),
-        &client::runtime::Route {
+        &protocol::Route {
             server_id: durable_id.to_string(),
             path: PathBuf::from(durable_socket),
         },

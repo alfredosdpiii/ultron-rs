@@ -7,13 +7,13 @@
 
 #[path = "fixture.rs"]
 mod fixture;
+#[path = "lost.rs"]
+mod lost;
 #[path = "radius.rs"]
 mod radius;
 #[path = "radius_connection.rs"]
 mod radius_connection;
 #[path = "replica.rs"]
 mod replica;
-#[path = "runtime_json.rs"]
-mod runtime_json;
 #[path = "unix.rs"]
 mod unix;

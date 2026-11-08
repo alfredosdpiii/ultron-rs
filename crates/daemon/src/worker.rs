@@ -62,17 +62,17 @@ pub const RESTART_EXIT_CODE: i32 = 75;
 /// server's heartbeat.
 const LONG_OPERATIONS: [(&str, &str); 10] = [
     // `/mcp` may wait on the client's dialogs (its menu, a sign-in's redirect prompt).
-    ("ultron.legacy-extension-commands", "run"),
-    ("ultron.agent-controller", "prompt"),
-    ("ultron.agent-controller", "resume"),
-    ("ultron.agent-controller", "compact"),
-    ("ultron.agent-controller", "navigate"),
-    ("ultron.extension-ui", "poll"),
-    ("ultron.session-control", "bash"),
-    ("ultron.session-control", "readTree"),
+    (protocol::names::LEGACY_EXTENSION_COMMANDS, "run"),
+    (protocol::names::AGENT_CONTROLLER, "prompt"),
+    (protocol::names::AGENT_CONTROLLER, "resume"),
+    (protocol::names::AGENT_CONTROLLER, "compact"),
+    (protocol::names::AGENT_CONTROLLER, "navigate"),
+    (protocol::names::EXTENSION_UI, "poll"),
+    (protocol::names::SESSION_CONTROL, "bash"),
+    (protocol::names::SESSION_CONTROL, "readTree"),
     // A session operation may be a compaction or a bash command; `abortStuck` waits for the run to stop.
-    (OPS_SERVICE, "op"),
-    (OPS_SERVICE, "abortStuck"),
+    (protocol::names::SESSION_OPS, "op"),
+    (protocol::names::SESSION_OPS, "abortStuck"),
 ];
 
 fn lifecycle_delay(name: &str, fallback: u64) -> Result<Duration, String> {
@@ -290,9 +290,6 @@ fn scope_key(scope: &Value) -> String {
     )
 }
 
-/// The Rust session-operations service (not in TypeScript's catalogue order; listed last).
-pub const OPS_SERVICE: &str = "ultron.session-ops";
-
 /// One operation of the session actor, answered with the actor's result as a service result.
 fn call_core(core: &Sender<Input>, op: Op) -> ServiceResult {
     session_core::core::call(core, op).map_err(|message| ServiceError::coded("session_operation_failed", message))
@@ -392,7 +389,7 @@ fn services(
     let next_core = core.clone();
     let prompt_lifecycle = lifecycle.clone();
     let (resume_core, resume_progress) = (core.clone(), watch.progress.clone());
-    let agent = Service::new("ultron.agent-controller")
+    let agent = Service::new(protocol::names::AGENT_CONTROLLER)
         .method("cancelQueued", move |args| {
             let entry_id = args.first().and_then(Value::as_str).unwrap_or_default().to_string();
             call_core(&cancel_core, Op::CancelQueued { entry_id })
@@ -454,12 +451,12 @@ fn services(
             Ok(Some(response))
         })
         .method("steer", move |args| queue(&steer_core, QueueKind::Steer, &args));
-    let plugins = Service::new("ultron.session-plugins").method("reload", |_| Ok(None));
+    let plugins = Service::new(protocol::names::SESSION_PLUGINS).method("reload", |_| Ok(None));
     // `/mcp`, the built-in MCP gateway's command (TypeScript's inline MCP extension, so on the legacy extension
     // command service): it runs here, its dialogs and notices go to the client through the dialog bridge. Pi
     // extensions are not supported by ultron-rs, so it is the only command of the service.
     let (list_mcp, run_mcp, run_ui) = (extensions.mcp.clone(), extensions.mcp.clone(), extensions.ui.clone());
-    let legacy = Service::new("ultron.legacy-extension-commands")
+    let legacy = Service::new(protocol::names::LEGACY_EXTENSION_COMMANDS)
         .method("list", move |_| {
             let listed: Vec<Value> = list_mcp
                 .get()
@@ -495,7 +492,7 @@ fn services(
     );
     let commands_core = core.clone();
     let op_env = extensions.env.clone();
-    let control = Service::new("ultron.session-control")
+    let control = Service::new(protocol::names::SESSION_CONTROL)
         .method("abortBash", move |_| call_core(&abort_bash_core, Op::AbortBash))
         .method("bash", move |args| {
             let command = args.first().and_then(Value::as_str).unwrap_or_default().to_string();
@@ -548,7 +545,7 @@ fn services(
         extensions.control.clone(),
     );
     let (poll_ui, respond_ui) = (extensions.ui.clone(), extensions.ui);
-    let extension_ui = Service::new("ultron.extension-ui")
+    let extension_ui = Service::new(protocol::names::EXTENSION_UI)
         .method("poll", move |args| {
             let after = args.first().and_then(Value::as_u64);
             let wait = args.get(1).and_then(Value::as_u64).unwrap_or(0);
@@ -565,7 +562,7 @@ fn services(
     let (select_state, thinking_state, refresh_state) =
         (models_state.clone(), models_state.clone(), models_state.clone());
     let (refresh_core, refresh_env, select_env) = (models_core, extensions.env.clone(), extensions.env.clone());
-    let models = Service::new("ultron.models")
+    let models = Service::new(protocol::names::MODELS)
         .method("cycleThinking", move |_| call_core(&cycle_core, Op::CycleThinking))
         .method("getThinkingLevels", move |_| {
             call_core(&levels_core, Op::ThinkingLevels)
@@ -616,9 +613,9 @@ fn services(
             Ok(None)
         })
         .state("state", models_state);
-    let transcript = Service::new("ultron.transcript").state("state", lane.transcript.clone());
+    let transcript = Service::new(protocol::names::TRANSCRIPT).state("state", lane.transcript.clone());
     // Rust-only: one session operation (session-core `Op` as JSON), the RPC and TUI clients' whole command set.
-    let ops = Service::new(OPS_SERVICE)
+    let ops = Service::new(protocol::names::SESSION_OPS)
         .method("op", move |args| {
             let op = Op::from_json(request(&args)).map_err(ServiceError::internal)?;
             // A prompt that is one of the session's commands runs that command (crate::session_commands).
@@ -1144,7 +1141,7 @@ fn cancel_requests(shared: &Arc<Shared>, matches: impl Fn(&str, &Value) -> bool)
         .unwrap_or_else(|e| e.into_inner())
         .iter()
         .any(|(id, (scope, service, member))| {
-            matches(id, scope) && service == "ultron.session-control" && member == "bash"
+            matches(id, scope) && service == protocol::names::SESSION_CONTROL && member == "bash"
         });
     if bash {
         let core = shared.core.clone();

@@ -7,7 +7,8 @@ use std::io::{Read, Write};
 use std::os::unix::net::UnixStream;
 use std::sync::{Arc, Mutex};
 
-use client::runtime::{Connection, to_cbor, to_json};
+use client::runtime::Connection;
+use protocol::json::{to_cbor, to_json};
 use protocol::{
     ClientMessage, ClientMessageDecoder, MAX_SERVER_FRAME_LENGTH, PROTOCOL_VERSION, ServerMessage,
     encode_server_message,
@@ -98,7 +99,7 @@ fn subscribe(connection: &Connection, fake: &mut Fake, service: &str, snapshot: 
         .start_subscribe(connection.server_target(), service)
         .expect("start");
     let (id, call) = fake.request();
-    assert_eq!(call["serviceId"], "$chord.service");
+    assert_eq!(call["serviceId"], protocol::names::CHORD_SERVICE);
     assert_eq!(call["args"], json!([subscription, service, "singleton"]));
     fake.respond(&id, snapshot);
     connection
@@ -111,8 +112,11 @@ fn subscribe_models(connection: &Connection, fake: &mut Fake) -> String {
     subscribe(
         connection,
         fake,
-        "ultron.models",
-        models_snapshot("ultron.models", json!([["r", {"selected": null, "revision": 0}]])),
+        protocol::names::MODELS,
+        models_snapshot(
+            protocol::names::MODELS,
+            json!([["r", {"selected": null, "revision": 0}]]),
+        ),
     )
     .expect("subscribe")
 }
@@ -141,8 +145,11 @@ fn revision(connection: &Connection, subscription: &str) -> Option<Json> {
 fn client_replica_hydrates_a_snapshot_past_the_default_frame_length() {
     let (connection, mut fake) = connect();
     let big = "x".repeat(20 * 1024 * 1024);
-    let snapshot = models_snapshot("ultron.models", json!([["r", {"selected": big, "revision": 0}]]));
-    let subscription = subscribe(&connection, &mut fake, "ultron.models", snapshot).expect("subscribe");
+    let snapshot = models_snapshot(
+        protocol::names::MODELS,
+        json!([["r", {"selected": big, "revision": 0}]]),
+    );
+    let subscription = subscribe(&connection, &mut fake, protocol::names::MODELS, snapshot).expect("subscribe");
     let state = connection.state(&subscription, "state").expect("hydrated");
     assert_eq!(state["selected"].as_str().map(str::len), Some(20 * 1024 * 1024));
 }
@@ -315,33 +322,32 @@ fn client_replica_subscribe_rejects_bad_snapshots() {
     let not_base = subscribe(
         &connection,
         &mut fake,
-        "ultron.models",
-        models_snapshot("ultron.models", json!([["s", ["revision"], 1]])),
+        protocol::names::MODELS,
+        models_snapshot(protocol::names::MODELS, json!([["s", ["revision"], 1]])),
     );
     assert_eq!(
         not_base,
         Err("Replicated state snapshot is not a base operation batch".into())
     );
-    let two =
-        json!({"serviceId": "ultron.models", "mode": "singleton", "instances": [{"members": []}, {"members": []}]});
+    let two = json!({"serviceId": protocol::names::MODELS, "mode": "singleton", "instances": [{"members": []}, {"members": []}]});
     assert_eq!(
-        subscribe(&connection, &mut fake, "ultron.models", two),
+        subscribe(&connection, &mut fake, protocol::names::MODELS, two),
         Err("Remote service ultron.models returned an invalid singleton snapshot".into())
     );
     let other = models_snapshot("ultron.other", json!([["r", {}]]));
     assert_eq!(
-        subscribe(&connection, &mut fake, "ultron.models", other),
+        subscribe(&connection, &mut fake, protocol::names::MODELS, other),
         Err("Remote service ultron.models returned an invalid singleton snapshot".into())
     );
-    let keyed = json!({"serviceId": "ultron.models", "mode": "keyed", "instances": [{"members": []}]});
+    let keyed = json!({"serviceId": protocol::names::MODELS, "mode": "keyed", "instances": [{"members": []}]});
     assert_eq!(
-        subscribe(&connection, &mut fake, "ultron.models", keyed),
+        subscribe(&connection, &mut fake, protocol::names::MODELS, keyed),
         Err("Remote service ultron.models returned an invalid singleton snapshot".into())
     );
-    let duplicate = json!({"serviceId": "ultron.models", "mode": "singleton", "instances": [{"members": [
+    let duplicate = json!({"serviceId": protocol::names::MODELS, "mode": "singleton", "instances": [{"members": [
         {"name": "select", "kind": "method"}, {"name": "select", "kind": "method"}]}]});
     assert_eq!(
-        subscribe(&connection, &mut fake, "ultron.models", duplicate),
+        subscribe(&connection, &mut fake, protocol::names::MODELS, duplicate),
         Err("Remote service has invalid member descriptions".into())
     );
     assert!(!connection.is_closed());
@@ -351,7 +357,7 @@ fn client_replica_subscribe_rejects_bad_snapshots() {
 fn client_replica_updates_before_the_snapshot_are_checked_in_order() {
     let (connection, mut fake) = connect();
     let (subscription, request) = connection
-        .start_subscribe(connection.server_target(), "ultron.models")
+        .start_subscribe(connection.server_target(), protocol::names::MODELS)
         .expect("start");
     let (id, _) = fake.request();
     // An update queued before the snapshot was read, with a gap: reported once the replica is installed.
@@ -361,7 +367,10 @@ fn client_replica_updates_before_the_snapshot_are_checked_in_order() {
     );
     fake.respond(
         &id,
-        models_snapshot("ultron.models", json!([["r", {"selected": null, "revision": 0}]])),
+        models_snapshot(
+            protocol::names::MODELS,
+            json!([["r", {"selected": null, "revision": 0}]]),
+        ),
     );
     // Wait for the reader to see the response; the update before it is then queued for the subscription.
     let ping = connection

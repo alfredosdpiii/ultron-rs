@@ -17,7 +17,7 @@ pub const HINDSIGHT_URL_ENV: &str = "ULTRON_HINDSIGHT_URL";
 /// `DEFAULT_HINDSIGHT_URL` (core/defaults.ts).
 pub const DEFAULT_HINDSIGHT_URL: &str = "http://localhost:8888";
 /// The bank when `ULTRON_HINDSIGHT_BANK` is unset or empty.
-pub const DEFAULT_BANK: &str = "ultron";
+const DEFAULT_BANK: &str = "ultron";
 
 fn off(value: &str) -> bool {
     matches!(value.to_lowercase().as_str(), "off" | "none" | "0" | "false")
@@ -37,14 +37,32 @@ pub fn hindsight_url(env: Option<&str>, setting: Option<&str>) -> Option<String>
     }
 }
 
-/// `effectiveHindsightUrl` of cli/setup/core.ts: the URL (`None`: off) and where it came from.
-pub fn effective_hindsight_url(env: Option<&str>, setting: Option<&str>) -> (Option<String>, &'static str) {
+/// Where [`resolve`] found the URL.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Source {
+    Env,
+    Setting,
+    Default,
+}
+
+impl Source {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Source::Env => "env",
+            Source::Setting => "setting",
+            Source::Default => "default",
+        }
+    }
+}
+
+/// `effectiveHindsightUrl` of cli/setup/core.ts: [`hindsight_url`] (`None`: off) and where it came from.
+pub fn resolve(env: Option<&str>, setting: Option<&str>) -> (Option<String>, Source) {
     let source = if trimmed(env).is_some() {
-        "env"
+        Source::Env
     } else if trimmed(setting).is_some() {
-        "setting"
+        Source::Setting
     } else {
-        "default"
+        Source::Default
     };
     (hindsight_url(env, setting), source)
 }

@@ -10,7 +10,7 @@
 use crate::client::{Client, ClientOptions, ConnState, RequestOptions};
 use crate::config::ServerEntry;
 use crate::http::{AuthProvider, HttpTransport, http_error};
-use crate::jsonrpc::{Error, METHOD_NOT_FOUND};
+use crate::jsonrpc::{Error, HttpErrorKind, METHOD_NOT_FOUND};
 use crate::log::ServerLog;
 use crate::oauth::Challenge;
 use crate::oauth::signin::{OAuthAuth, OAuthSettings, ProviderAuth};
@@ -322,8 +322,8 @@ impl Connection {
     /// A refresh that needs the user, or a rejection of a server with OAuth or a `/login` provider, needs sign-in.
     fn needs_sign_in(&self, error: &Error) -> bool {
         match http_error(error) {
-            Some(("McpOAuthAuthorizationRequiredError", _)) => true,
-            Some(("McpAuthRequiredError", _)) => self.auth.is_some(),
+            Some((HttpErrorKind::OAuthAuthorizationRequired, _)) => true,
+            Some((HttpErrorKind::AuthRequired, _)) => self.auth.is_some(),
             _ => false,
         }
     }
@@ -595,13 +595,16 @@ impl Connection {
                 Ok(value) => return Ok(value),
                 Err(error) => {
                     let kind = http_error(&error).map(|(kind, _)| kind);
-                    if read_only && attempt == 1 && kind.is_some_and(|k| k != "TypeError") && is_transient_error(&error)
+                    if read_only
+                        && attempt == 1
+                        && kind.is_some_and(|k| k != HttpErrorKind::Network)
+                        && is_transient_error(&error)
                     {
                         std::thread::sleep(Duration::from_millis(CONNECT_RETRY_DELAYS_MS[0]));
                         attempt += 1;
                         continue;
                     }
-                    if kind == Some("McpSessionExpiredError") && attempt == 1 {
+                    if kind == Some(HttpErrorKind::SessionExpired) && attempt == 1 {
                         // The server no longer knows the session, so it did not run the request. The old client is
                         // detached but not closed: its other in-flight calls get the same 404 and retry the same way.
                         let mut data = sync::lock(&self.data);

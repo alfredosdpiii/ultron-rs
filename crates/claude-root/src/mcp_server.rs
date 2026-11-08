@@ -12,10 +12,14 @@
 //! reopens the same session.
 
 use crate::claude_cli::{DEFAULT_CLAUDE_MODEL, resolve_claude_binary};
-use crate::control::{ControlClient, ControlHandler, ServerRecord, control_dir, socket_path_for, start_control_server};
+use crate::control::{
+    ControlClient, ControlHandler, ServerRecord, control_dir, op, socket_path_for, start_control_server,
+};
 use crate::external_root::ExternalRoot;
 use crate::guide::{Audience, GuideOptions, UNLIMITED, claude_runtime_guide_for, claude_system_prompt};
+use crate::hooks::HookEvent;
 use crate::mcp_protocol::{McpHandlers, McpPrompt, McpResource, serve};
+use crate::settings::ChildrenMode;
 use crate::{Ctx, UsageError};
 use ai::AbortSignal;
 use serde_json::{Map, Value, json};
@@ -36,7 +40,7 @@ const WAIT_EVENTS_POLL: Duration = Duration::from_millis(250);
 const WAIT_EVENTS_GRACE: Duration = Duration::from_secs(2);
 
 pub fn default_frame_model() -> String {
-    format!("claude-code/{DEFAULT_CLAUDE_MODEL}")
+    crate::claude_code_ref(DEFAULT_CLAUDE_MODEL)
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -49,7 +53,7 @@ pub struct McpServerArgs {
     /// [`UNLIMITED`] for a root server.
     pub allowance: u64,
     pub frame_model: Option<String>,
-    pub children: Option<String>,
+    pub children: Option<ChildrenMode>,
     pub child_model: Option<String>,
     pub ultron_child_model: Option<String>,
     /// `--root-model`: the Claude Code model the root runs on, as the launcher passed it to `claude --model` (only
@@ -59,7 +63,7 @@ pub struct McpServerArgs {
     pub instructions: bool,
     pub no_context_files: bool,
     pub no_skills: bool,
-    /// `--wake`: the launcher's wait-events hook wakes the idle root when its work ends (crate::hooks::WAIT_EVENTS).
+    /// `--wake`: the launcher's wait-events hook wakes the idle root when its work ends (crate::hooks::HookEvent::WaitEvents).
     pub wake: bool,
 }
 
@@ -110,11 +114,8 @@ pub fn parse_mcp_args(args: &[String]) -> Result<McpServerArgs, UsageError> {
             "--allowance" => parsed.allowance = count(&value()?, arg)?,
             "--frame-model" => parsed.frame_model = Some(value()?),
             "--children" => {
-                let mode = value()?;
-                if mode != "claude" && mode != "ultron" {
-                    return Err(UsageError("--children must be claude or ultron".into()));
-                }
-                parsed.children = Some(mode);
+                let mode = ChildrenMode::parse(&value()?);
+                parsed.children = Some(mode.ok_or_else(|| UsageError("--children must be claude or ultron".into()))?);
             }
             "--child-model" => parsed.child_model = Some(value()?),
             "--ultron-child-model" => parsed.ultron_child_model = Some(value()?),
@@ -159,7 +160,7 @@ pub struct Resolved {
     /// The frame model was named (`--frame-model`, ULTRON_CLAUDE_FRAME_MODEL, `claudeCode.frameModel`), not the
     /// default: it beats `rlm.frameModel` and ULTRON_RLM_FRAME_MODEL.
     pub frame_model_explicit: bool,
-    pub children: String,
+    pub children: ChildrenMode,
     pub child_model: String,
     /// The Claude children's model was named (`--child-model`, ULTRON_CLAUDE_CHILD_MODEL, `claudeCode.childModel`):
     /// `rlm.childModel` never overrides it.
@@ -170,8 +171,6 @@ pub struct Resolved {
     pub root_model: Option<String>,
 }
 
-const CLAUDE_CODE_PREFIX: &str = "claude-code/";
-
 /// The Claude root's own subscription model as `claude-code/<id>`: the root's model when `known` (the model
 /// registry has `claude-code/<id>`), else the default frame model ([`default_frame_model`]). Every Ultron child of a
 /// Claude root that names no model runs on it ([`ultron_child_model`]): a `claude-code` request with tools runs on
@@ -179,9 +178,9 @@ const CLAUDE_CODE_PREFIX: &str = "claude-code/";
 pub fn subscription_model(root_model: Option<&str>, known: &dyn Fn(&str) -> bool) -> String {
     root_model
         .map(str::trim)
-        .map(|model| model.strip_prefix(CLAUDE_CODE_PREFIX).unwrap_or(model))
+        .map(|model| crate::claude_code_id(model).unwrap_or(model))
         .filter(|id| !id.is_empty() && known(id))
-        .map_or_else(default_frame_model, |id| format!("{CLAUDE_CODE_PREFIX}{id}"))
+        .map_or_else(default_frame_model, crate::claude_code_ref)
 }
 
 /// `rlm.childModel` as written when it names a Claude Code model; under `ultron claude` another provider's model in
@@ -189,7 +188,7 @@ pub fn subscription_model(root_model: Option<&str>, known: &dyn Fn(&str) -> bool
 pub fn claude_code_setting(model: Option<&str>) -> Option<String> {
     model
         .map(str::trim)
-        .filter(|model| model.starts_with(CLAUDE_CODE_PREFIX) && model.len() > CLAUDE_CODE_PREFIX.len())
+        .filter(|model| crate::claude_code_id(model).is_some_and(|id| !id.is_empty()))
         .map(str::to_string)
 }
 
@@ -222,15 +221,12 @@ pub fn resolve(args: &McpServerArgs, var: &dyn Fn(&str) -> Option<String>, cwd: 
     let frame_model = named_frame_model.unwrap_or_else(default_frame_model);
     let children = args
         .children
-        .clone()
-        .or_else(|| var(CLAUDE_CHILDREN_ENV).filter(|v| v == "ultron" || v == "claude"))
-        .or(settings.children.clone())
-        .unwrap_or_else(|| {
-            if resolve_claude_binary(var).is_none() {
-                "ultron".into()
-            } else {
-                "claude".into()
-            }
+        .or_else(|| var(CLAUDE_CHILDREN_ENV).as_deref().and_then(ChildrenMode::parse))
+        .or(settings.children)
+        .unwrap_or(if resolve_claude_binary(var).is_none() {
+            ChildrenMode::Ultron
+        } else {
+            ChildrenMode::Claude
         });
     let named_child_model = args
         .child_model
@@ -261,16 +257,7 @@ fn session_map_path(agent_dir: &Path, claude_session_id: &str) -> PathBuf {
         use std::os::unix::fs::DirBuilderExt;
         let _ = std::fs::DirBuilder::new().recursive(true).mode(0o700).create(&dir);
     }
-    let safe: String = claude_session_id
-        .chars()
-        .map(|c| {
-            if c.is_ascii_alphanumeric() || "._-".contains(c) {
-                c
-            } else {
-                '_'
-            }
-        })
-        .collect();
+    let safe: String = crate::control::file_name_chars(claude_session_id).collect();
     dir.join(format!("{safe}.json"))
 }
 
@@ -470,9 +457,9 @@ fn open_runtime(
     let subscription = subscription_model(resolved.root_model.as_deref(), &|id| {
         session_core::lane::catalog_model(ai::claude_code::PROVIDER, id, env).is_ok()
     });
-    let _ = typed_model.set(if resolved.children == "claude" {
+    let _ = typed_model.set(if resolved.children == ChildrenMode::Claude {
         let id = resolved.child_model.trim();
-        format!("claude-code/{}", id.strip_prefix("claude-code/").unwrap_or(id))
+        crate::claude_code_ref(crate::claude_code_id(id).unwrap_or(id))
     } else {
         ultron_child_model(resolved, settings_child.as_deref(), &subscription)
     });
@@ -507,7 +494,7 @@ fn open_runtime(
     if let Some(finish) = root_finish {
         delegation.set_root_finish(finish);
     }
-    if resolved.children == "claude" {
+    if resolved.children == ChildrenMode::Claude {
         // A Claude Code child runs on `--child-model` / `claudeCode.childModel` when one is named; otherwise on
         // `rlm.childModel` (/settings -> Models, read per spawn) only when that names a Claude Code model: another
         // provider's model cannot drive a Claude Code process.
@@ -738,6 +725,7 @@ struct Startup {
 pub struct Server {
     args: McpServerArgs,
     env: RunEnv,
+    session_report: Option<SessionReport>,
     name: String,
     record: ServerRecord,
     resolved: Resolved,
@@ -800,7 +788,7 @@ impl Server {
         if let Some(opened) = opened {
             status.insert("sessionId".into(), opened.session_id.clone().into());
             status.insert("frameModel".into(), opened.model.clone().into());
-            status.insert("children".into(), self.resolved.children.clone().into());
+            status.insert("children".into(), self.resolved.children.as_str().into());
             status.insert("turn".into(), opened.root.turn().map_or(Value::Null, Value::from));
             status.insert("cells".into(), opened.root.cells().into());
             status.insert("pendingEvents".into(), opened.root.pending_events().into());
@@ -810,15 +798,15 @@ impl Server {
 
     /// One control request.
     pub fn control(&self, request: Map<String, Value>) -> Result<Value, String> {
-        let op = request.get("op").and_then(Value::as_str).unwrap_or("");
-        match op {
-            "status" => Ok(self.status()),
-            "cells" => {
+        let requested = request.get("op").and_then(Value::as_str).unwrap_or("");
+        match requested {
+            op::STATUS => Ok(self.status()),
+            op::CELLS => {
                 let cells = self.cells.lock().unwrap_or_else(PoisonError::into_inner);
                 let start = cells.1.len().saturating_sub(50);
                 Ok(json!({"cells": cells.1[start..].iter().map(CellRecord::to_json).collect::<Vec<_>>()}))
             }
-            "inspect" => {
+            op::INSPECT => {
                 // `String(request.request ?? "")`.
                 let inspect = match request.get("request") {
                     None | Some(Value::Null) => String::new(),
@@ -838,7 +826,7 @@ impl Server {
                     "rlm.pool" => Ok(stack.pool_stats()),
                     "async.pending" => Ok(crate::external_lane::async_pending(stack, &opened.sink)),
                     "usage.report" => {
-                        let report = SESSION_REPORT.get().ok_or("the session report is not available")?;
+                        let report = self.session_report.ok_or("the session report is not available")?;
                         // The counters still in memory go to the session file first.
                         stack.stats.flush();
                         report(&opened.session_path, &self.env)
@@ -848,18 +836,19 @@ impl Server {
                         .handle(&inspect, payload, &kernel::Signal::new()),
                 }
             }
-            "hook" => {
+            op::HOOK => {
                 let event = match request.get("event") {
                     None | Some(Value::Null) => String::new(),
                     other => jsrt::value::string(other),
                 };
+                let event = HookEvent::parse(&event).ok_or_else(|| format!("unknown hook event: {event}"))?;
                 let input = match request.get("input") {
                     Some(Value::Object(input)) => input.clone(),
                     _ => Map::new(),
                 };
-                self.hook(&event, &input)
+                self.hook(event, &input)
             }
-            "child.finish" => {
+            op::CHILD_FINISH => {
                 let lane = request
                     .get("token")
                     .and_then(Value::as_str)
@@ -883,7 +872,7 @@ impl Server {
                     .handle("rlm.finish", payload, &kernel::Signal::new())
             }
             // A subagent server's shared-world request (crate::shared_world), checked against its token.
-            "shared" => {
+            op::SHARED => {
                 let lane = request
                     .get("token")
                     .and_then(Value::as_str)
@@ -910,7 +899,7 @@ impl Server {
             }
             // `ultron hook wait-events` (an asyncRewake hook): wait in the background for the root's next event
             // while Claude Code is idle; the hook wakes the model with it.
-            "wait-events" => {
+            op::WAIT_EVENTS => {
                 let opened = self.runtime()?;
                 Ok(self.wait_events(&opened))
             }
@@ -920,7 +909,7 @@ impl Server {
                 let opened = self.runtime()?;
                 let global = self.persona_on();
                 let text = self.persona_change(&opened, |state, now, limits| {
-                    state.command(op, &args, now, global, limits)
+                    state.command(requested, &args, now, global, limits)
                 })?;
                 Ok(json!({"text": text}))
             }
@@ -966,7 +955,7 @@ impl Server {
     }
 
     /// Claude Code hook events: the hook command forwards its input here and prints what this returns.
-    fn hook(&self, event: &str, input: &Map<String, Value>) -> Result<Value, String> {
+    fn hook(&self, event: HookEvent, input: &Map<String, Value>) -> Result<Value, String> {
         if let Some(answer) = self.herdr.before(event, input) {
             return Ok(answer);
         }
@@ -977,8 +966,8 @@ impl Server {
             None => json!({}),
         };
         match event {
-            "session-start" => Ok(context("SessionStart", root.session_context())),
-            "user-prompt" => {
+            HookEvent::SessionStart => Ok(context(event.claude_event(), root.session_context())),
+            HookEvent::UserPrompt => {
                 let prompt = input.get("prompt").and_then(Value::as_str).unwrap_or("");
                 // `/persona on|off|auto`, `/keepgoing on|off`: the session's toggles, answered without a turn.
                 if !self.args.child {
@@ -1002,7 +991,7 @@ impl Server {
                     contexts.extend(start);
                 }
                 let mut answer = context(
-                    "UserPromptSubmit",
+                    event.claude_event(),
                     (!contexts.is_empty()).then(|| contexts.join("\n\n")),
                 );
                 if let Some(notice) = notice {
@@ -1010,7 +999,7 @@ impl Server {
                 }
                 Ok(answer)
             }
-            "stop" => {
+            HookEvent::Stop => {
                 root.end_turn();
                 if self.args.child {
                     return Ok(json!({}));
@@ -1024,7 +1013,10 @@ impl Server {
                 self.herdr.stopped(input, &answer);
                 Ok(answer)
             }
-            other => Err(format!("unknown hook event: {other}")),
+            // The herdr-only events are answered by crate::herdr_hook; `wait-events` is a control op of its own.
+            HookEvent::Notification | HookEvent::SessionEnd | HookEvent::WaitEvents => {
+                Err(format!("unknown hook event: {}", event.command()))
+            }
         }
     }
 
@@ -1232,15 +1224,8 @@ impl McpHandlers for Handlers {
 }
 
 /// Builds the session report (`usage.report`) from a session file, in the server's environment (which logins are
-/// subscriptions); the CLI, which owns the report, sets it.
+/// subscriptions); the CLI, which owns the report, passes it in ([`Ctx::session_report`]).
 pub type SessionReport = fn(&Path, &RunEnv) -> Result<Value, String>;
-
-static SESSION_REPORT: std::sync::OnceLock<SessionReport> = std::sync::OnceLock::new();
-
-/// Answer `usage.report` inspections with `report`.
-pub fn set_session_report(report: SessionReport) {
-    let _ = SESSION_REPORT.set(report);
-}
 
 /// What a running server holds: shut down once, by Claude Code disconnecting or by a signal.
 pub struct Running {
@@ -1381,6 +1366,7 @@ pub fn start(argv: &[String], ctx: &Ctx) -> Result<(Arc<Running>, Arc<Handlers>)
         hints: kernel_apis::cell_hints::hints_enabled(var(kernel_apis::cell_hints::HINTS_ENV).as_deref()),
         args: args.clone(),
         env: env.clone(),
+        session_report: ctx.session_report,
         name,
         record: record.clone(),
         resolved: resolved.clone(),
@@ -1399,7 +1385,7 @@ pub fn start(argv: &[String], ctx: &Ctx) -> Result<(Arc<Running>, Arc<Handlers>)
     });
     // `--children claude` (the default when `claude` is installed): each `rlm.spawn` child is a Claude Code process
     // attached to its own `ultron mcp --child` server.
-    let claude = resolve_claude_binary(&*var).filter(|_| resolved.children == "claude");
+    let claude = resolve_claude_binary(&*var).filter(|_| resolved.children == ChildrenMode::Claude);
     let starter = server.clone();
     std::thread::spawn(move || {
         let outcome = open_runtime(&starter, claude, root_finish);
@@ -1439,7 +1425,7 @@ fn root_finish(parent: Arc<Mutex<Option<ControlClient>>>, token: Option<String>)
             fields.insert("token".into(), token.clone().into());
         }
         fields.insert("payload".into(), Value::Object(payload));
-        client.request("child.finish", fields, Duration::from_secs(30))
+        client.request(op::CHILD_FINISH, fields, Duration::from_secs(30))
     })
 }
 
@@ -1459,7 +1445,7 @@ fn upstream(parent: Arc<Mutex<Option<ControlClient>>>, token: Option<String>) ->
         }
         fields.insert("kind".into(), kind.into());
         fields.insert("payload".into(), Value::Object(payload.clone()));
-        client.request(crate::shared_world::OP, fields, Duration::from_secs(60))
+        client.request(op::SHARED, fields, Duration::from_secs(60))
     })
 }
 
@@ -1490,6 +1476,7 @@ fn claude_subagents(
     };
     let ctx = crate::Ctx {
         env: server.env.clone(),
+        session_report: server.session_report,
     };
     let bundled = ctx.bundled_skills();
     // Subagents get the context files, skills, SYSTEM.md and APPEND_SYSTEM.md native Ultron loads here, read once,
@@ -1530,7 +1517,7 @@ fn claude_subagents(
                     root: roots.root_of(&run.task_id),
                     task_id: &run.task_id,
                     timeout_ms: run.timeout_ms,
-                    model: format!("claude-code/{model}"),
+                    model: crate::claude_code_ref(&model),
                 };
                 let token = jsrt::random::random_hex(24);
                 server

@@ -130,6 +130,24 @@ impl Metadata {
     }
 }
 
+/// The longest message or title herdr is sent.
+pub const MAX_TEXT: usize = 200;
+
+/// `text` trimmed, cut at [`MAX_TEXT`] characters with an ellipsis.
+pub fn clip(text: &str) -> String {
+    let text = text.trim();
+    match text.char_indices().nth(MAX_TEXT) {
+        Some((cut, _)) => format!("{}…", &text[..cut]),
+        None => text.to_string(),
+    }
+}
+
+/// The question a run's final answer ends with, clipped, when it [asks one](ends_with_question): the `blocked`
+/// state's message.
+pub fn question(final_text: &str) -> Option<String> {
+    ends_with_question(final_text).then(|| clip(final_text.trim().rsplit("\n\n").next().unwrap_or_default()))
+}
+
 /// Whether a run's final answer asks the user something: its last paragraph ends with a question mark (after
 /// closing emphasis, quotes and brackets).
 pub fn ends_with_question(text: &str) -> bool {

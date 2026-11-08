@@ -23,7 +23,7 @@ use std::sync::{Arc, Condvar, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
 pub(crate) fn fail(error: CallError) -> String {
-    daemon::lost::describe(&error.to_string()).unwrap_or_else(|| error.to_string())
+    client::lost::message(&error)
 }
 
 /// Where a link forwards the attached session's lane-watch events.
@@ -46,7 +46,7 @@ pub fn connection_event(state: &str, message: Option<&str>) -> Value {
 /// the Radius gateway.
 #[derive(Clone)]
 pub enum RemoteRoute {
-    Unix(client::runtime::Route),
+    Unix(protocol::Route),
     Radius {
         server_id: String,
         auth: Arc<dyn RelayAuthResolver>,
@@ -225,7 +225,7 @@ fn session_call(shared: &Shared, service: &str, member: &str, args: Value) -> Op
         match result {
             // Refused before it reached a worker: send it again once the link rejoined.
             Err(CallError::Server(error))
-                if error.code == daemon::routed::RECONNECTING_CODE && Instant::now() < deadline =>
+                if error.code == protocol::names::RECONNECTING_CODE && Instant::now() < deadline =>
             {
                 std::thread::sleep(SUPERVISE);
             }
@@ -241,7 +241,7 @@ pub struct Ops(Arc<Shared>);
 impl Ops {
     /// Run a session operation on the attached session's worker.
     pub fn op(&self, op: &Op) -> OpResult {
-        session_call(&self.0, daemon::worker::OPS_SERVICE, "op", json!([op.to_json()]))
+        session_call(&self.0, protocol::names::SESSION_OPS, "op", json!([op.to_json()]))
     }
 }
 
@@ -279,7 +279,12 @@ impl Shared {
     fn management(&self, member: &str, args: Value) -> Result<Option<Value>, String> {
         let connection = self.connection();
         connection
-            .call(connection.server_target(), "ultron.session-management", member, args)
+            .call(
+                connection.server_target(),
+                protocol::names::SESSION_MANAGEMENT,
+                member,
+                args,
+            )
             .map_err(fail)
     }
 
@@ -325,7 +330,7 @@ impl Shared {
         connection
             .call(
                 server,
-                "ultron.presentation-plugins",
+                protocol::names::PRESENTATION_PLUGINS,
                 "prepareSession",
                 json!([{"sessionId": id, "packagePaths": null}]),
             )
@@ -349,9 +354,9 @@ impl Shared {
         let theme = self.terminal_theme.lock().unwrap_or_else(|e| e.into_inner()).clone();
         if let Some(theme) = theme {
             let op = Op::SetTerminalTheme { theme };
-            let _ = connection
-                .session_target()
-                .and_then(|session| connection.call(session, daemon::worker::OPS_SERVICE, "op", json!([op.to_json()])));
+            let _ = connection.session_target().and_then(|session| {
+                connection.call(session, protocol::names::SESSION_OPS, "op", json!([op.to_json()]))
+            });
         }
         let reconnector = self.radius.lock().unwrap_or_else(|e| e.into_inner()).clone();
         if let Some(reconnector) = reconnector {
@@ -365,7 +370,11 @@ impl Shared {
         let attachment = connection.attachment().map(|a| a.attachment_id);
         let session = connection.session_target().map_err(fail)?;
         let mut started = Vec::new();
-        for service in ["ultron.models", "ultron.agent-controller", "ultron.transcript"] {
+        for service in [
+            protocol::names::MODELS,
+            protocol::names::AGENT_CONTROLLER,
+            protocol::names::TRANSCRIPT,
+        ] {
             started.push(connection.start_subscribe(session.clone(), service).map_err(fail)?);
         }
         let mut subscriptions = Vec::new();
@@ -375,7 +384,7 @@ impl Shared {
         }
         // The session's name and run health, as they change (the Rust-only operations service).
         let ops = connection
-            .subscribe(session, daemon::worker::OPS_SERVICE)
+            .subscribe(session, protocol::names::SESSION_OPS)
             .map_err(fail)?;
         let ops_events = self.events.clone();
         connection.listen(
@@ -472,7 +481,7 @@ impl Shared {
             Ok(()) => (self.events)(connection_event("rejoined", None)),
             Err(error) => (self.events)(connection_event(
                 "lost",
-                Some(&daemon::lost::lost_server_message(Some(error))),
+                Some(&client::lost::lost_server_message(Some(error))),
             )),
         }
         result
@@ -796,7 +805,7 @@ impl Link {
                         if !shared.lost_reported.swap(true, Ordering::SeqCst) {
                             (shared.events)(connection_event(
                                 "lost",
-                                Some(&daemon::lost::lost_server_message(Some(reason))),
+                                Some(&client::lost::lost_server_message(Some(reason))),
                             ));
                         }
                     }
@@ -894,7 +903,7 @@ impl Link {
 
     /// Run a session operation on the attached session's worker.
     pub fn op(&self, op: &Op) -> OpResult {
-        self.session_call(daemon::worker::OPS_SERVICE, "op", json!([op.to_json()]))
+        self.session_call(protocol::names::SESSION_OPS, "op", json!([op.to_json()]))
     }
 
     /// The terminal's appearance (`"light"` / `"dark"`, as the TUI detected it): told to the attached session now and

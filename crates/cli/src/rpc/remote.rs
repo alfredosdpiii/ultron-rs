@@ -59,7 +59,7 @@ fn serve_extension_ui(
             // Short polls: a poll held open in the worker would keep it from retiring after this client is gone.
             let polled = connection
                 .session_target()
-                .and_then(|target| connection.call(target, "ultron.extension-ui", "poll", json!([cursor, 0])));
+                .and_then(|target| connection.call(target, protocol::names::EXTENSION_UI, "poll", json!([cursor, 0])));
             match polled {
                 Ok(Some(result)) => {
                     cursor = result["cursor"].as_u64();
@@ -379,7 +379,7 @@ impl RpcSession for Remote<'_> {
             instructions: custom_instructions.map(str::to_string),
         };
         let request = connection
-            .start(session, daemon::worker::OPS_SERVICE, "op", json!([op.to_json()]))
+            .start(session, protocol::names::SESSION_OPS, "op", json!([op.to_json()]))
             .map_err(|e| e.to_string())?;
         let (pending, tx) = (self.bash.clone(), self.tx.clone());
         pending.fetch_add(1, Ordering::SeqCst);
@@ -414,7 +414,7 @@ impl RpcSession for Remote<'_> {
         let request = connection
             .start(
                 session,
-                "ultron.session-control",
+                protocol::names::SESSION_CONTROL,
                 "bash",
                 json!([command, exclude_from_context, id]),
             )
@@ -517,7 +517,7 @@ impl RpcSession for Remote<'_> {
 
     fn extension_ui_response(&mut self, id: &str, answer: Value) {
         if let Some(link) = &self.link {
-            let _ = link.call("ultron.extension-ui", "respond", json!([id, answer]));
+            let _ = link.call(protocol::names::EXTENSION_UI, "respond", json!([id, answer]));
         }
     }
 

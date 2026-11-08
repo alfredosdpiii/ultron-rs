@@ -42,11 +42,6 @@ pub const RESTART_BASE: Duration = Duration::from_millis(250);
 pub const RESTART_MAX_DELAY: Duration = Duration::from_secs(8);
 pub const MAX_RESTARTS: u32 = 5;
 pub const RESTART_STABLE: Duration = Duration::from_secs(60);
-/// The code of an operation whose worker died under it (the worker is restarting).
-pub const WORKER_LOST_CODE: &str = "session_worker_lost";
-/// The code of an attach refused because the session's worker is retiring (it went idle after its last client left)
-/// or stopping: once it is gone, a new worker serves the session ([`Manager::attach_client`]).
-pub const WORKER_RETIRING_CODE: &str = "session_worker_retiring";
 /// What a retiring worker answers a demand (crate::lifecycle `set_demand`).
 const RETIRING_REJECTION: &str = "Session worker is retiring";
 
@@ -720,10 +715,7 @@ impl Manager {
                 if trusted { "1" } else { "0" }.to_string(),
             ));
         }
-        session_core::startup_trace::trace_startup(
-            std::env::var(session_core::startup_trace::TRACE_ENV).ok().as_deref(),
-            "server.spawn-worker",
-        );
+        crate::process::trace_startup("server.spawn-worker");
         let child = process::spawn(Role::SessionWorker, &[self.worker_options(meta).to_string()], &env)
             .map_err(|e| ServiceError::internal(e.to_string()))?;
         let pid = child.id();
@@ -809,7 +801,7 @@ impl Manager {
             }
             if worker.is_none_or(|w| w.stopping || w.retiring) {
                 return Err(ServiceError::coded(
-                    WORKER_RETIRING_CODE,
+                    protocol::names::WORKER_RETIRING_CODE,
                     "Experimental Session worker is stopping",
                 ));
             }
@@ -825,7 +817,7 @@ impl Manager {
             // The worker went idle and is retiring (its announcement may still be in flight): the caller waits for
             // it to end and starts a new one.
             if error.ends_with(RETIRING_REJECTION) || handle.terminated.is_resolved() {
-                return Err(ServiceError::coded(WORKER_RETIRING_CODE, error));
+                return Err(ServiceError::coded(protocol::names::WORKER_RETIRING_CODE, error));
             }
             return Err(ServiceError::internal(error));
         }
@@ -1215,7 +1207,10 @@ impl Manager {
         match lost {
             Some(reason) => self.reject_worker_operations_with(
                 peer,
-                ServiceError::coded(WORKER_LOST_CODE, format!("{reason} during an operation")),
+                ServiceError::coded(
+                    protocol::names::WORKER_LOST_CODE,
+                    format!("{reason} during an operation"),
+                ),
             ),
             None => self.reject_worker_operations(peer, "Session worker disconnected during an operation"),
         }

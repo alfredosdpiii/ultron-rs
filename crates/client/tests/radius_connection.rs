@@ -46,6 +46,23 @@ fn connect(gateway: &Gateway) -> (std::sync::Arc<Connection>, support::gateway::
     })
 }
 
+/// The gateway's snapshot once its reader has recorded `count` messages from the client: a client call can end (its
+/// answer arrive) before the gateway's reader thread has recorded the request.
+fn recorded(socket: &support::gateway::GatewaySocket, count: usize) -> serde_json::Value {
+    let deadline = std::time::Instant::now() + HANG_GUARD;
+    loop {
+        let snapshot = socket.snapshot();
+        if snapshot["sent"].as_array().unwrap().len() >= count {
+            return snapshot;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the gateway never recorded {count} client messages"
+        );
+        std::thread::yield_now();
+    }
+}
+
 fn wait_closed(connection: &Connection) {
     let deadline = std::time::Instant::now() + HANG_GUARD;
     while !connection.is_closed() {
@@ -59,18 +76,7 @@ fn client_radius_connection_disconnects_its_relay_while_held() {
     let gateway = Gateway::start();
     let (connection, socket) = connect(&gateway);
     // The handshake can end before the gateway's reader has recorded the client's hello: wait for it.
-    let deadline = std::time::Instant::now() + HANG_GUARD;
-    let snapshot = loop {
-        let snapshot = socket.snapshot();
-        if !snapshot["sent"].as_array().unwrap().is_empty() {
-            break snapshot;
-        }
-        assert!(
-            std::time::Instant::now() < deadline,
-            "the client's hello never reached the gateway"
-        );
-        std::thread::yield_now();
-    };
+    let snapshot = recorded(&socket, 1);
     assert_eq!(snapshot["protocol"], "pi-session-relay.client.v1");
     assert_eq!(snapshot["authorization"], "Bearer secret");
     assert_eq!(snapshot["path"], format!("/v1/session-relays/{SERVER_ID}/connect"));
@@ -122,11 +128,14 @@ fn recorded_sleep(
 }
 
 fn sent_call(socket: &support::gateway::GatewaySocket, index: usize) -> serde_json::Value {
-    let sent = socket.snapshot()["sent"][index]["binary"].as_str().unwrap().to_string();
+    let sent = recorded(socket, index + 1)["sent"][index]["binary"]
+        .as_str()
+        .unwrap()
+        .to_string();
     let mut decoder = protocol::ClientMessageDecoder::default();
     match decoder.push(&support::gateway::unhex(&sent)).unwrap().remove(0) {
         protocol::ClientMessage::Request { id, call, .. } => {
-            serde_json::json!({"id": id, "call": client::runtime::to_json(&call)})
+            serde_json::json!({"id": id, "call": protocol::json::to_json(&call)})
         }
         other => panic!("not a request: {other:?}"),
     }
@@ -169,7 +178,7 @@ fn client_radius_reopen_retries_with_backoff_and_reattaches_the_session() {
     assert_eq!(connection.attachment().map(|a| a.session_id), Some("sess-1".into()));
     assert_eq!(
         sent_call(&socket, 1),
-        serde_json::json!({"id": "request-1", "call": {"serviceId": "ultron.session-management", "member": "attach", "args": ["sess-1"]}})
+        serde_json::json!({"id": "request-1", "call": {"serviceId": protocol::names::SESSION_MANAGEMENT, "member": "attach", "args": ["sess-1"]}})
     );
     assert!(!connection.is_closed());
     connection.disconnect();

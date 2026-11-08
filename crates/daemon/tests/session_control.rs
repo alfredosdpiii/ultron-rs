@@ -61,7 +61,7 @@ fn fixture_with(pool: OpResult) -> Fixture {
         started: Instant::now(),
         auto_retry: AtomicBool::new(true),
     });
-    let service = session_control::members(Service::new("ultron.session-control"), core, context);
+    let service = session_control::members(Service::new(protocol::names::SESSION_CONTROL), core, context);
     Fixture {
         service,
         ops,

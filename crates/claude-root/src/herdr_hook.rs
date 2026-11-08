@@ -5,15 +5,13 @@
 //! (`working` stays while the persona's nudge continues the turn), a Notification for a permission prompt, an idle
 //! prompt or a dialog `blocked`, and SessionEnd releases the agent (a later SessionStart, after `/clear`, reports
 //! again). Agent `ultron`, display agent "Ultron (Claude)". Inside herdr the launcher adds the Notification and
-//! SessionEnd hooks ([`HERDR_HOOK_EVENTS`]).
+//! SessionEnd hooks ([`crate::hooks::HERDR_HOOKS`]).
 
+use crate::hooks::HookEvent;
 use herdr::{Metadata, Reporter, Session, State};
 use serde_json::{Map, Value, json};
 use session_core::RunEnv;
 use std::sync::{Mutex, PoisonError};
-
-/// The hook commands only herdr reporting uses, and their Claude Code events.
-pub const HERDR_HOOK_EVENTS: [(&str, &str); 2] = [("notification", "Notification"), ("session-end", "SessionEnd")];
 
 pub const DISPLAY_AGENT: &str = "Ultron (Claude)";
 
@@ -73,9 +71,9 @@ impl HerdrHook {
 
     /// A hook event before the server answers it: `Some(answer)` for the events only herdr uses (answered here),
     /// `None` for the others (answered by the server as before).
-    pub fn before(&self, event: &str, input: &Map<String, Value>) -> Option<Value> {
+    pub fn before(&self, event: HookEvent, input: &Map<String, Value>) -> Option<Value> {
         match event {
-            "session-start" => self.with(true, |reporter| {
+            HookEvent::SessionStart => self.with(true, |reporter| {
                 if let Some(id) = text(input, "session_id") {
                     reporter.session(Session {
                         resume_argv: Some(resume_argv(&id)),
@@ -90,21 +88,21 @@ impl HerdrHook {
                     ..Metadata::default()
                 });
             }),
-            "user-prompt" => self.with(true, |reporter| reporter.state(State::Working, None)),
-            "notification" => {
+            HookEvent::UserPrompt => self.with(true, |reporter| reporter.state(State::Working, None)),
+            HookEvent::Notification => {
                 let kind = text(input, "notification_type").unwrap_or_default();
                 if BLOCKING_NOTIFICATIONS.contains(&kind.as_str()) {
                     self.with(false, |reporter| reporter.state(State::Blocked, text(input, "message")));
                 }
                 return Some(json!({}));
             }
-            "session-end" => {
+            HookEvent::SessionEnd => {
                 // Dropped: the agent is released; a later SessionStart starts a new reporter.
                 let reporter = self.reporter.lock().unwrap_or_else(PoisonError::into_inner).take();
                 drop(reporter);
                 return Some(json!({}));
             }
-            _ => {}
+            HookEvent::Stop | HookEvent::WaitEvents => {}
         }
         None
     }
@@ -115,13 +113,10 @@ impl HerdrHook {
             return;
         }
         let final_text = text(input, "last_assistant_message")
-            .unwrap_or_else(|| resources::persona::last_turn(&crate::persona_hook::transcript_of(input)).0);
-        let (state, message) = if herdr::ends_with_question(&final_text) {
-            let question = final_text.trim().rsplit("\n\n").next().unwrap_or_default().trim();
-            let clipped: String = question.chars().take(200).collect();
-            (State::Blocked, Some(clipped))
-        } else {
-            (State::Idle, None)
+            .unwrap_or_else(|| crate::persona_hook::last_turn(&crate::persona_hook::transcript_of(input)).0);
+        let (state, message) = match herdr::question(&final_text) {
+            Some(question) => (State::Blocked, Some(question)),
+            None => (State::Idle, None),
         };
         self.with(false, |reporter| reporter.state(state, message));
     }

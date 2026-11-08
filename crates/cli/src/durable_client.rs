@@ -8,8 +8,9 @@
 //! (injected) environment; the server it activates is the one `ultron durable start` starts.
 
 use crate::Env;
-use daemon::server::{Route, ServerOptions, activate_server};
+use daemon::server::{ServerOptions, activate_server};
 use daemon::workers::WorkerModel;
+use protocol::Route;
 use std::io::Write;
 use std::sync::Arc;
 

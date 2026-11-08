@@ -19,13 +19,12 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
 pub const LEGACY_SERVER_ID_ENV: &str = "PI_SERVER_ID";
-pub const SERVER_ID_ENV: &str = "ULTRON_SERVER_ID";
 
 /// Variables the unit keeps from the installing environment (locations only; never keys).
 const KEPT_VARS: [&str; 6] = [
     config::paths::ENV_SERVER_DIR,
     config::paths::LEGACY_ENV_SERVER_DIR,
-    SERVER_ID_ENV,
+    daemon::server::SERVER_ID_ENV,
     LEGACY_SERVER_ID_ENV,
     config::paths::ENV_AGENT_DIR,
     config::paths::ENV_SESSION_DIR,
@@ -146,19 +145,15 @@ fn run_systemctl(binary: &Path, env: &Env, args: &[&str]) -> Result<String, Stri
 /// The options of the durable instance's server as `ultron durable start` resolves them.
 pub fn durable_options(env: &Env) -> Result<ServerOptions, String> {
     let instance = crate::instance(env, true);
-    instance.prepare().map_err(io)?;
+    let session_dir = crate::session::session_directory_of(None, env, &instance);
+    // `--offline` and the `httpProxy` setting (already in `env`) hold for its workers.
+    let model = WorkerModel {
+        env: crate::startup::worker_env(env),
+        ..WorkerModel::default()
+    };
     Ok(ServerOptions {
-        directory: instance.dir.clone(),
-        session_dir: crate::session::session_directory_of(None, env, &instance),
-        server_id: (env.var)(SERVER_ID_ENV),
-        // `--offline` and the `httpProxy` setting (already in `env`) hold for its workers.
-        model: WorkerModel {
-            env: crate::startup::worker_env(env),
-            ..WorkerModel::default()
-        },
-        keep_alive: true,
-        root: None,
         relay: Some(crate::radius_relay::relay_config(env)),
+        ..ServerOptions::for_instance(&instance, session_dir, &*env.var, model).map_err(io)?
     })
 }
 

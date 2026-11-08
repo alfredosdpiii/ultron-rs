@@ -590,11 +590,9 @@ dependencies = [
 name = "daemon"
 version = "0.1.0"
 dependencies = [
- "agent",
  "ai",
  "base64 0.23.1",
  "chord-delta",
- "client",
  "config",
  "durable",
  "getrandom 0.4.3",
@@ -1164,7 +1162,6 @@ dependencies = [
  "kernel-apis",
  "regex",
  "reqwest",
- "review",
  "serde_json",
  "tokio",
  "url",
@@ -2400,6 +2397,7 @@ dependencies = [
 name = "resources"
 version = "0.1.0"
 dependencies = [
+ "config",
  "jsrt",
  "regex",
  "serde_json",
@@ -2428,10 +2426,12 @@ version = "0.1.0"
 dependencies = [
  "ai",
  "config",
+ "hindsight",
  "indexmap",
  "inference",
  "jsrt",
  "kernel",
+ "kernel-apis",
  "knowledge",
  "model-scope",
  "regex",

@@ -12,7 +12,7 @@ pub fn stop_answer(persona: bool, transcript: &str, nudges: &mut u32) -> Value {
     if !persona || *nudges >= resources::persona::MAX_NUDGES {
         return json!({});
     }
-    let (text, tool_calls) = resources::persona::last_turn(transcript);
+    let (text, tool_calls) = last_turn(transcript);
     if !resources::persona::should_nudge(&text, tool_calls) {
         return json!({});
     }
@@ -60,7 +60,7 @@ pub fn stop_answer_in(
     limits: resources::keep_going::Limits,
 ) -> Value {
     use resources::keep_going::{Next, RunEnd, after_run, nudge_text};
-    let (text, since_prompt) = resources::persona::last_turn(transcript);
+    let (text, since_prompt) = last_turn(transcript);
     let total = tool_calls_total(transcript);
     let worked = match state.keep_going.as_ref().and_then(|k| k.tool_calls_seen) {
         Some(seen) => total > seen,
@@ -118,4 +118,45 @@ pub fn prompt_input(
     let context =
         (notice.is_some() && state.keep_going.is_some()).then(|| resources::keep_going::START_TEXT.to_string());
     (notice, context)
+}
+
+/// The hook's `last_turn` over a Claude Code transcript (JSONL): the final assistant text and the tool calls since
+/// the last real user prompt. A line that is not JSON makes the whole transcript unreadable (`("", 0)`).
+pub fn last_turn(jsonl: &str) -> (String, usize) {
+    let mut entries = Vec::new();
+    for line in jsonl.lines().filter(|l| !l.trim().is_empty()) {
+        match serde_json::from_str::<Value>(line) {
+            Ok(entry) => entries.push(entry),
+            Err(_) => return (String::new(), 0),
+        }
+    }
+    let (mut text, mut tools) = (String::new(), 0);
+    for entry in entries.iter().rev() {
+        let content = &entry["message"]["content"];
+        if entry["type"] == "user" {
+            let prompt = content.is_string()
+                || content
+                    .as_array()
+                    .is_some_and(|blocks| blocks.iter().any(|b| b.is_object() && b["type"] == "text"));
+            if prompt {
+                break;
+            }
+            continue;
+        }
+        let Some(blocks) = content.as_array().filter(|_| entry["type"] == "assistant") else {
+            continue;
+        };
+        tools += blocks.iter().filter(|b| b["type"] == "tool_use").count();
+        if text.is_empty() {
+            text = blocks
+                .iter()
+                .filter(|b| b["type"] == "text")
+                .map(|b| b["text"].as_str().unwrap_or(""))
+                .collect::<Vec<_>>()
+                .join("\n")
+                .trim()
+                .to_string();
+        }
+    }
+    (text, tools)
 }

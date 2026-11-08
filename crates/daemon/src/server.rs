@@ -9,6 +9,7 @@ use crate::process::{self, Role};
 use crate::routed::Hub;
 use crate::sockets;
 use crate::workers::{Manager, WorkerModel};
+use protocol::Route;
 use serde_json::{Value, json};
 use std::collections::HashMap;
 use std::io::{self, Write};
@@ -247,6 +248,31 @@ pub struct ServerOptions {
     pub relay: Option<server::radius_relay::RelayConfig>,
 }
 
+/// The logical server ID a command asks for (server.ts `ENV_SERVER_ID`), else the directory's default one.
+pub const SERVER_ID_ENV: &str = "ULTRON_SERVER_ID";
+
+impl ServerOptions {
+    /// The server of `instance` (prepared: created, its project root recorded) on `session_dir`, whose workers start
+    /// on `model`: held open, the server ID `ULTRON_SERVER_ID` asks for, no Radius relay.
+    pub fn for_instance(
+        instance: &instance::Instance,
+        session_dir: PathBuf,
+        var: &dyn Fn(&str) -> Option<String>,
+        model: WorkerModel,
+    ) -> io::Result<ServerOptions> {
+        instance.prepare()?;
+        Ok(ServerOptions {
+            directory: instance.dir.clone(),
+            session_dir,
+            server_id: var(SERVER_ID_ENV),
+            model,
+            keep_alive: true,
+            root: instance.root().map(Path::to_path_buf),
+            relay: None,
+        })
+    }
+}
+
 struct Closed {
     done: Mutex<bool>,
     changed: Condvar,
@@ -359,15 +385,9 @@ fn start_generation(
     let nonce: String = jsrt::random::uuid_v4().replace('-', "")[..12].to_string();
     let endpoint_path = sockets_dir.join(format!("server-{server_id}-{nonce}.sock"));
     remove_dead_endpoints(&sockets_dir, server_id);
-    session_core::startup_trace::trace_startup(
-        std::env::var(session_core::startup_trace::TRACE_ENV).ok().as_deref(),
-        "server.coordinator",
-    );
+    crate::process::trace_startup("server.coordinator");
     let mut lease = coord_client::ensure_coordinator(&socket_path, &control_path).map_err(Err)?;
-    session_core::startup_trace::trace_startup(
-        std::env::var(session_core::startup_trace::TRACE_ENV).ok().as_deref(),
-        "server.coordinator-ready",
-    );
+    crate::process::trace_startup("server.coordinator-ready");
     let lifetime = Lifetime::with_graces(
         options.keep_alive,
         AUTO_SERVER_STARTUP_GRACE,
@@ -454,10 +474,7 @@ fn start_generation(
     };
     manager.set_coordinator(coordinator.clone());
     drop(lease);
-    session_core::startup_trace::trace_startup(
-        std::env::var(session_core::startup_trace::TRACE_ENV).ok().as_deref(),
-        "server.connected",
-    );
+    crate::process::trace_startup("server.connected");
     manager.discover();
     hub.refresh();
     if is_durable_directory(&options.directory) {
@@ -530,19 +547,13 @@ pub fn start_foreground_server(options: &ServerOptions) -> io::Result<Arc<Runnin
     })
 }
 
-/// A reachable logical server.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Route {
-    pub server_id: String,
-    pub path: PathBuf,
-}
-
 fn reachable(route: &Route) -> bool {
     let Ok(Some(stream)) = sockets::try_connect(&route.path) else {
         return false;
     };
     let _ = stream.set_read_timeout(Some(Duration::from_millis(1_000)));
-    client::Client::connect(stream, &route.server_id).is_ok()
+    let mut stream = stream;
+    protocol::handshake::hello(&mut stream, &route.server_id).is_ok()
 }
 
 /// `activateServer`: make the directory's logical server reachable, launching a detached server process if needed.

@@ -15,7 +15,7 @@ fn python() -> String {
 
 fn error_value(error: &Error) -> Value {
     if let Some((kind, status)) = http_error(error) {
-        return json!({ "name": kind, "message": error.to_string(), "status": status });
+        return json!({ "name": kind.name(), "message": error.to_string(), "status": status });
     }
     let mut out = json!({ "name": error.name(), "message": error.to_string() });
     if let Error::Mcp { code, .. } = error {

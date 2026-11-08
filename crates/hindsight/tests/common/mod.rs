@@ -8,6 +8,9 @@ use std::net::{TcpListener, TcpStream};
 use std::path::Path;
 use std::process::{Child, Command, Stdio};
 
+/// crates/hindsight/fixtures, from this crate's tests and from review's (its lessons replay the same fixture).
+const FIXTURES: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../hindsight/fixtures");
+
 pub struct FakeHindsight {
     child: Child,
     pub port: u16,
@@ -16,7 +19,7 @@ pub struct FakeHindsight {
 impl FakeHindsight {
     pub fn start() -> FakeHindsight {
         let python = kernel::env::python(|name| std::env::var(name).ok());
-        let script = Path::new(env!("CARGO_MANIFEST_DIR")).join("fixtures/fake_hindsight.py");
+        let script = Path::new(FIXTURES).join("fake_hindsight.py");
         let mut child = Command::new(python)
             .arg("-I")
             .arg(script)
@@ -103,7 +106,7 @@ pub fn closed_port() -> u16 {
 }
 
 pub fn fixture() -> Value {
-    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("fixtures/exchanges.json");
+    let path = Path::new(FIXTURES).join("exchanges.json");
     serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap()
 }
 

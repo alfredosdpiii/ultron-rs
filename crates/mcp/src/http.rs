@@ -3,11 +3,9 @@
 //! initialization and reconnects with backoff; a response stream that drops before its answer is resumed with GET and
 //! `Last-Event-ID`; close ends the session with DELETE.
 //!
-//! HTTP failures are `Error::Mcp` with code [`HTTP_ERROR_CODE`] and `data` `{kind, status, body}`, so the client's
-//! error type stays unchanged; [`http_error`] reads them back. `kind` is the TypeScript class name, and network
-//! failures (`TypeError` from fetch) have status 0.
+//! HTTP failures are [`Error::Http`]; network failures (`TypeError` from fetch) have status 0.
 
-use crate::jsonrpc::{Error, INTERNAL_ERROR, is_request, parse_message};
+use crate::jsonrpc::{Error, HttpErrorKind, INTERNAL_ERROR, is_request, parse_message};
 use crate::stdio::DEFAULT_MAX_MESSAGE_BYTES;
 use crate::{Incoming, Sink, Transport};
 use jsrt::sync;
@@ -17,7 +15,6 @@ use std::io::Read;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-pub const HTTP_ERROR_CODE: i64 = -32099;
 const MAX_ERROR_BODY_BYTES: usize = 8 * 1024;
 const ERROR_MESSAGE_BODY_CHARS: usize = 500;
 
@@ -137,28 +134,25 @@ impl SseParser {
 }
 
 /// An HTTP failure as the client's error.
-pub fn http_failure(kind: &str, status: u16, message: impl Into<String>, body: &str) -> Error {
-    Error::Mcp {
-        code: HTTP_ERROR_CODE,
+pub fn http_failure(kind: HttpErrorKind, status: u16, message: impl Into<String>, body: &str) -> Error {
+    Error::Http {
+        kind,
+        status,
         message: message.into(),
-        data: Some(json!({ "kind": kind, "status": status, "body": body })),
+        body: body.into(),
     }
 }
 
-/// `(kind, status)` of an error from [`http_failure`].
-pub fn http_error(error: &Error) -> Option<(&str, u16)> {
+/// `(kind, status)` of an HTTP failure.
+pub fn http_error(error: &Error) -> Option<(HttpErrorKind, u16)> {
     match error {
-        Error::Mcp {
-            code: HTTP_ERROR_CODE,
-            data: Some(data),
-            ..
-        } => Some((data["kind"].as_str()?, u16::try_from(data["status"].as_u64()?).ok()?)),
+        Error::Http { kind, status, .. } => Some((*kind, *status)),
         _ => None,
     }
 }
 
 fn network_error(error: &reqwest::Error) -> Error {
-    http_failure("TypeError", 0, format!("fetch failed: {error}"), "")
+    http_failure(HttpErrorKind::Network, 0, format!("fetch failed: {error}"), "")
 }
 
 fn describe_failure(status: u16, body: &str) -> String {
@@ -362,7 +356,7 @@ impl Shared {
         let body = String::from_utf8_lossy(&bytes).into_owned();
         if status == 401 {
             return Err(http_failure(
-                "McpAuthRequiredError",
+                HttpErrorKind::AuthRequired,
                 401,
                 "MCP server requires authentication",
                 &body,
@@ -370,14 +364,14 @@ impl Shared {
         }
         if status == 404 && sync::lock(&self.state).session_id.is_some() {
             return Err(http_failure(
-                "McpSessionExpiredError",
+                HttpErrorKind::SessionExpired,
                 404,
                 "MCP session expired",
                 &body,
             ));
         }
         Err(http_failure(
-            "McpHttpError",
+            HttpErrorKind::Status,
             status,
             describe_failure(status, &body),
             &body,
@@ -401,7 +395,7 @@ impl Shared {
             }
             let n = body
                 .read(&mut chunk)
-                .map_err(|e| http_failure("TypeError", 0, format!("terminated: {e}"), ""))?;
+                .map_err(|e| http_failure(HttpErrorKind::Network, 0, format!("terminated: {e}"), ""))?;
             let items = if n == 0 {
                 parser.finish()
             } else {
@@ -491,7 +485,7 @@ impl Shared {
         if content_type(&response).as_deref() != Some("text/event-stream") {
             let kind = content_type(&response).unwrap_or_else(|| "missing".into());
             return Err(http_failure(
-                "McpHttpError",
+                HttpErrorKind::Status,
                 response.status().as_u16(),
                 format!("Unsupported MCP GET response content type: {kind}"),
                 "",
@@ -620,7 +614,7 @@ struct Cursor {
 /// Network failures and transient statuses (408, 429, 5xx) are worth reopening a stream for.
 fn is_retryable(error: &Error) -> bool {
     match http_error(error) {
-        Some(("TypeError", _)) => true,
+        Some((HttpErrorKind::Network, _)) => true,
         Some((_, status)) => status == 408 || status == 429 || status >= 500,
         None => false,
     }
@@ -679,7 +673,7 @@ impl Transport for HttpTransport {
         let method = message["method"].as_str().unwrap_or_default();
         if status == 202 || status == 204 {
             return Err(http_failure(
-                "McpHttpError",
+                HttpErrorKind::Status,
                 status,
                 format!("MCP server accepted request {method} without a response"),
                 "",
@@ -705,7 +699,7 @@ impl Transport for HttpTransport {
                 Ok(())
             }
             other => Err(http_failure(
-                "McpHttpError",
+                HttpErrorKind::Status,
                 status,
                 format!("Unsupported MCP response content type: {}", other.unwrap_or("missing")),
                 "",

@@ -113,7 +113,7 @@ fn strip_auth_scheme(value: &str) -> String {
 /// Network failures and overloaded or restarting servers (408, 429, 5xx except 501), which are worth another attempt.
 pub fn is_transient_error(error: &Error) -> bool {
     match http_error(error) {
-        Some(("TypeError", _)) => true,
+        Some((crate::jsonrpc::HttpErrorKind::Network, _)) => true,
         Some((_, status)) => status == 408 || status == 429 || (status >= 500 && status != 501),
         None => false,
     }

@@ -6,7 +6,7 @@
 use crate::Env;
 use crate::setup_core::{
     self, CustomEndpoint, Fetch, HINDSIGHT_CONTAINER, HINDSIGHT_IMAGE, HINDSIGHT_LLM_PROVIDERS, HindsightDockerOptions,
-    ProbeCommand, UrlSource,
+    ProbeCommand,
 };
 use ai::Model;
 use config::settings::SettingsManager;
@@ -820,16 +820,6 @@ fn probe<U: SetupUi>(
     ui.busy(&message, move || setup_core::probe_hindsight(&url, &fetch))
 }
 
-fn hindsight_setting(settings: &SettingsManager) -> Option<String> {
-    settings
-        .global_settings()
-        .get("hindsightUrl")
-        .and_then(Value::as_str)
-        .map(jsrt::string::trim)
-        .filter(|v| !v.is_empty())
-        .map(str::to_string)
-}
-
 fn hindsight_step<U: SetupUi>(ui: &mut U, deps: &mut SetupDeps) -> Result<SummaryLine, SetupQuit> {
     ui.heading(&step_title(3, "Hindsight memory server"));
     ui.note(
@@ -837,9 +827,9 @@ fn hindsight_step<U: SetupUi>(ui: &mut U, deps: &mut SetupDeps) -> Result<Summar
         Tone::Info,
     );
     let env_url = deps.var(hindsight::resolve::HINDSIGHT_URL_ENV);
-    let (effective, source) =
-        setup_core::effective_hindsight_url(env_url.as_deref(), hindsight_setting(&deps.settings).as_deref());
-    if source == UrlSource::Env {
+    let setting = hindsight::resolve::setting_url(&deps.settings);
+    let (effective, source) = hindsight::resolve::resolve(env_url.as_deref(), setting.as_deref());
+    if source == hindsight::resolve::Source::Env {
         ui.note(
             &format!(
                 "ULTRON_HINDSIGHT_URL is set ({}); it overrides anything saved here.",
@@ -1003,7 +993,8 @@ fn hindsight_step<U: SetupUi>(ui: &mut U, deps: &mut SetupDeps) -> Result<Summar
 }
 
 fn custom_hindsight_url<U: SetupUi>(ui: &mut U, deps: &mut SetupDeps) -> Result<Option<SummaryLine>, SetupQuit> {
-    let initial = hindsight_setting(&deps.settings).unwrap_or_else(|| "http://localhost:8888".into());
+    let initial = hindsight::resolve::setting_url(&deps.settings)
+        .unwrap_or_else(|| hindsight::resolve::DEFAULT_HINDSIGHT_URL.into());
     let Some(url) = ui.input(
         "Hindsight URL",
         InputOptions {

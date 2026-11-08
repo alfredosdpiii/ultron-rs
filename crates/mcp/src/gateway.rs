@@ -215,24 +215,6 @@ fn node_platform() -> &'static str {
     }
 }
 
-/// Starts `command` detached (its own process group, no stdio, as `spawn(..., {detached: true, stdio: "ignore"})`)
-/// and reaps it in the background; a launcher that fails to start is ignored.
-pub fn spawn_detached(command: &str, args: &[String]) {
-    let mut launcher = std::process::Command::new(command);
-    launcher
-        .args(args)
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null());
-    #[cfg(unix)]
-    std::os::unix::process::CommandExt::process_group(&mut launcher, 0);
-    if let Ok(mut child) = launcher.spawn() {
-        std::thread::spawn(move || {
-            let _ = child.wait();
-        });
-    }
-}
-
 pub type UrlOpener = Arc<dyn Fn(&str) + Send + Sync>;
 
 /// The session variables a browser launcher needs to reach the desktop (xdg-open finds the display and the
@@ -256,13 +238,9 @@ pub fn opener_vars(var: &dyn Fn(&str) -> Option<String>) -> Vec<(String, String)
         .collect()
 }
 
-/// `openBrowser` with the launcher found on `path` (the session's PATH, never the process's), run detached with
-/// only that PATH and `home` in its environment; a missing launcher opens nothing.
-pub fn browser_opener(path: Option<String>, home: Option<String>) -> UrlOpener {
-    browser_opener_with(path, home, Vec::new())
-}
-
-/// [`browser_opener`] that also passes `desktop` (from [`opener_vars`]) to the launcher.
+/// `openBrowser` with the launcher found on `path` (the session's PATH, never the process's), run detached (its own
+/// process group, no stdio, reaped in the background) with only that PATH, `home` and `desktop` (from
+/// [`opener_vars`]) in its environment; a missing launcher opens nothing.
 pub fn browser_opener_with(path: Option<String>, home: Option<String>, desktop: Vec<(String, String)>) -> UrlOpener {
     Arc::new(move |url: &str| {
         let (name, args) = browser_command(node_platform(), url);

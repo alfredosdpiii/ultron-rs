@@ -25,6 +25,8 @@ mod github_fixtures;
 mod github_review;
 #[path = "ledger.rs"]
 mod ledger;
+#[path = "lessons.rs"]
+mod lessons;
 #[path = "prepare_env.rs"]
 mod prepare_env;
 #[path = "promotion.rs"]

@@ -7,8 +7,6 @@ use serde_json::{Value, json};
 use std::collections::{BTreeMap, HashMap};
 use std::sync::{Arc, Mutex};
 
-pub const SERVICE_CONTROL_ID: &str = "$chord.service";
-
 /// A failure a service reports. With a code (a `RemoteServiceError`/`ServerError`) it crosses the wire as is;
 /// without one it is an internal error the server reports as "Internal server error".
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -263,7 +261,7 @@ enum Control {
 }
 
 fn control(call: &Call) -> Option<Control> {
-    if call.service_id != SERVICE_CONTROL_ID || call.has_instance {
+    if call.service_id != protocol::names::CHORD_SERVICE || call.has_instance {
         return None;
     }
     let is_id = |v: &Value| v.as_str().is_some_and(|s| !s.is_empty());

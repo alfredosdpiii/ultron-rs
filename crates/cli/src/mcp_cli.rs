@@ -153,7 +153,7 @@ pub fn run(argv: &[String], env: &Env, out: &mut dyn std::io::Write, err: &mut d
         return Some(0);
     }
     let agent_dir = env.agent_dir();
-    let project_config = env.cwd.join(mcp::config::CONFIG_DIR_NAME).join("mcp.json");
+    let project_config = env.cwd.join(config::paths::CONFIG_DIR_NAME).join("mcp.json");
     let rest = &args[1..];
     match command {
         "add" => return Some(add(rest, &project_config, env, &agent_dir, &mut io)),

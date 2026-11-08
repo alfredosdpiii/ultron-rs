@@ -20,7 +20,7 @@ fn resolved(ultron: Option<&str>) -> Resolved {
     Resolved {
         frame_model: "claude-code/claude-opus-5-5".into(),
         frame_model_explicit: false,
-        children: "ultron".into(),
+        children: claude_root::settings::ChildrenMode::Ultron,
         child_model: "claude-opus-5-5".into(),
         child_model_explicit: false,
         ultron_child_model: ultron.map(str::to_string),

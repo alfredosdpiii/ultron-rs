@@ -10,8 +10,6 @@ use crate::self_cmd::self_command;
 
 pub const SELF_COMMAND_ENV: &str = "ULTRON_SELF_COMMAND";
 
-pub const CLAUDE_CODE_PROVIDER_ID: &str = "claude-code";
-
 /// The root model `--claude` selects, and the environment the session worker must get.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ClaudeRoot {
@@ -62,7 +60,7 @@ pub fn prepare_claude_root(
     };
     let Some(model) = model else {
         if let Some(provider) = provider
-            && provider != CLAUDE_CODE_PROVIDER_ID
+            && provider != ai::claude_code::PROVIDER
         {
             return Err(model_error(provider));
         }
@@ -70,22 +68,22 @@ pub fn prepare_claude_root(
             .map(|v| v.trim().to_string())
             .filter(|v| !v.is_empty())
             .unwrap_or_else(|| DEFAULT_CLAUDE_MODEL.into());
-        return Ok(done(None, format!("{CLAUDE_CODE_PROVIDER_ID}/{id}")));
+        return Ok(done(None, crate::claude_code_ref(&id)));
     };
     if let Some(provider) = provider {
-        if provider != CLAUDE_CODE_PROVIDER_ID {
+        if provider != ai::claude_code::PROVIDER {
             return Err(model_error(&format!("{provider}/{model}")));
         }
         return Ok(done(Some(provider), model.to_string()));
     }
     if let Some(slash) = model.find('/').filter(|s| *s > 0) {
-        if &model[..slash] != CLAUDE_CODE_PROVIDER_ID {
+        if &model[..slash] != ai::claude_code::PROVIDER {
             return Err(model_error(model));
         }
         return Ok(done(None, model.to_string()));
     }
     if claude_alias(model) {
-        return Ok(done(None, format!("{CLAUDE_CODE_PROVIDER_ID}/{model}")));
+        return Ok(done(None, crate::claude_code_ref(model)));
     }
     Err(model_error(model))
 }
@@ -101,18 +99,16 @@ pub fn subscription_root(
     var: &dyn Fn(&str) -> Option<String>,
 ) -> Result<ClaudeRoot, String> {
     let subscription = |p: &str| p.trim() == CLAUDE_SUBSCRIPTION_PROVIDER_ID;
-    let provider = provider.map(|p| if subscription(p) { CLAUDE_CODE_PROVIDER_ID } else { p });
+    let provider = provider.map(|p| if subscription(p) { ai::claude_code::PROVIDER } else { p });
     let rewritten = model.map(|m| {
         m.trim()
             .strip_prefix(&format!("{CLAUDE_SUBSCRIPTION_PROVIDER_ID}/"))
-            .map_or_else(|| m.to_string(), |id| format!("{CLAUDE_CODE_PROVIDER_ID}/{id}"))
+            .map_or_else(|| m.to_string(), crate::claude_code_ref)
     });
     let selected = prepare_claude_root(provider, rewritten.as_deref(), var)?;
     let id = match selected.provider.as_deref() {
         Some(_) => selected.model.clone(),
-        None => selected
-            .model
-            .strip_prefix(&format!("{CLAUDE_CODE_PROVIDER_ID}/"))
+        None => crate::claude_code_id(&selected.model)
             .unwrap_or(&selected.model)
             .to_string(),
     };

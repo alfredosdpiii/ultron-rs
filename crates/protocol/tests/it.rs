@@ -7,5 +7,9 @@
 
 #[path = "fixture.rs"]
 mod fixture;
+#[path = "handshake.rs"]
+mod handshake;
+#[path = "json.rs"]
+mod json;
 #[path = "ported.rs"]
 mod ported;

@@ -2,12 +2,11 @@
 //! "ultron-autoreview" bank on the same server the REPL's memory uses, tagged per repository, as tool evidence. One
 //! retain per fate and per rule, each with a document id that replaces the previous version.
 
-use crate::backend::{HindsightBackend, HindsightOptions};
-use crate::transport::Transport;
+use crate::ledger::{FATE_DAYS, Fate, FateKind, Lesson};
+use hindsight::{HindsightBackend, HindsightOptions, Transport};
 use kernel::Signal;
 use kernel_apis::MemoryError;
 use kernel_apis::memory::MemoryBackend;
-use review::ledger::{FATE_DAYS, Fate, FateKind, Lesson};
 use serde_json::json;
 use std::sync::Arc;
 
@@ -138,7 +137,7 @@ impl HindsightLessons {
 }
 
 /// The reviewer's lesson memory (`LessonMemory` of autoreview/reviewer.ts): a failed retain is logged, never fatal.
-impl review::reviewer::LessonMemory for HindsightLessons {
+impl crate::reviewer::LessonMemory for HindsightLessons {
     fn retain(&self, repo: &str, fates: &[Fate], lessons: &[Lesson]) -> Result<(), String> {
         HindsightLessons::retain(self, repo, fates, lessons).map_err(|error| error.to_string())
     }

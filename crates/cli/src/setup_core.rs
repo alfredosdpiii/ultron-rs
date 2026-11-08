@@ -640,8 +640,6 @@ pub const HINDSIGHT_IMAGE: &str = "ghcr.io/vectorize-io/hindsight:latest";
 pub const HINDSIGHT_CONTAINER: &str = "hindsight";
 pub const HINDSIGHT_VOLUME: &str = "hindsight-data";
 pub const HINDSIGHT_DOCS: &str = "https://hindsight.vectorize.io/developer/installation";
-/// `DEFAULT_HINDSIGHT_URL`.
-pub const DEFAULT_HINDSIGHT_URL: &str = "http://localhost:8888";
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct HindsightLlmChoice {
@@ -778,35 +776,6 @@ pub fn hindsight_port(url: &str) -> u16 {
 /// `isLocalUrl`.
 pub fn is_local_url(url: &str) -> bool {
     parse_url(url).is_some_and(|parts| ["localhost", "127.0.0.1", "::1", "[::1]"].contains(&parts.host.as_str()))
-}
-
-/// Where the effective Hindsight URL came from.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum UrlSource {
-    Env,
-    Setting,
-    Default,
-}
-
-/// `effectiveHindsightUrl`: ULTRON_HINDSIGHT_URL, then the `hindsightUrl` setting, then localhost:8888; `None`
-/// when memory is turned off.
-pub fn effective_hindsight_url(env_value: Option<&str>, setting: Option<&str>) -> (Option<String>, UrlSource) {
-    let from_env = env_value.map(jsrt::string::trim).filter(|v| !v.is_empty());
-    let setting = setting.map(jsrt::string::trim).filter(|v| !v.is_empty());
-    let source = if from_env.is_some() {
-        UrlSource::Env
-    } else if setting.is_some() {
-        UrlSource::Setting
-    } else {
-        UrlSource::Default
-    };
-    match from_env.or(setting) {
-        None => (Some(DEFAULT_HINDSIGHT_URL.into()), source),
-        Some(value) => {
-            let off = ["off", "none", "0", "false"].contains(&value.to_lowercase().as_str());
-            ((!off).then(|| value.to_string()), source)
-        }
-    }
 }
 
 /// `probeHindsight`: GET `<url>/health`; the reason it is not reachable.

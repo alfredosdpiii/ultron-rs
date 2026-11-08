@@ -20,7 +20,7 @@
 //! - `swarm.send(to, text, wake=True)` to the root (Claude Code: the name it registered, else `root`) cannot start
 //!   a turn of the runtime's root conversation: the message is sent, and also goes to the root's inbox as a
 //!   `<swarm_message>` line, which the next cell result or the wait-events hook brings to Claude Code
-//!   (crate::hooks::WAIT_EVENTS).
+//!   (crate::hooks::HookEvent::WaitEvents).
 //! - A subagent with no conversation here (an in-memory `--children ultron` subagent, a Claude Code subagent's
 //!   server) uses the swarm, board and notes by its spawn name ([`DurableApis::serve_as`], crate::shared_world);
 //!   persistent children and `rlm.ask` stay with conversations ([`subagent_refusal`]).

@@ -1,57 +1,14 @@
 //! The worker's main lane as presentations see it: the `ultron.transcript` state `{ snapshot, event }`
 //! (experimental/services/transcript-provider.ts), folded with the harness reducer (crates/harness) from the
-//! lane-watch events the agent loop's events translate to.
-//!
-//! The session actor (crates/session-core `core`) reports the lane-watch events; entries are the format-4 journal's
-//! (with their `seq` and numeric `timestamp`).
+//! lane-watch events the session actor (crates/session-core `core`) reports.
 
 use crate::chord::State;
-use agent::AgentEvent;
-use serde_json::{Map, Value, json};
+use serde_json::{Value, json};
 use std::sync::Arc;
 
-pub const LANE: &str = "main";
-
-fn add(total: &mut Value, usage: &Value) {
-    let (Some(total), Some(usage)) = (total.as_object_mut(), usage.as_object()) else {
-        return;
-    };
-    for (key, value) in usage {
-        if key == "cost" {
-            add(total.entry("cost").or_insert_with(|| json!({})), value);
-            continue;
-        }
-        if let Some(n) = value.as_f64() {
-            let current = total.get(key).and_then(Value::as_f64).unwrap_or(0.0);
-            let sum = current + n;
-            total.insert(key.clone(), jsrt::json::number(sum));
-        }
-    }
-}
-
-/// Entries as the transcript shows them: the stored entry plus its branch position as `seq`.
-fn transcript_entry(entry: &Value, seq: usize) -> Value {
-    let mut entry = entry.clone();
-    if let Some(map) = entry.as_object_mut() {
-        map.insert("seq".into(), json!(seq));
-    }
-    entry
-}
-
-fn event(fields: &[(&str, Value)]) -> Value {
-    Value::Object(
-        fields
-            .iter()
-            .map(|(k, v)| ((*k).to_string(), v.clone()))
-            .collect::<Map<_, _>>(),
-    )
-}
-
-/// The transcript service state of one lane and the run in progress.
+/// The transcript service state of one lane.
 pub struct Lane {
     pub transcript: Arc<State>,
-    run_id: Option<String>,
-    from_tip: Value,
 }
 
 impl Lane {
@@ -59,8 +16,6 @@ impl Lane {
         Lane {
             // The provider starts at `{ snapshot: null }` and publishes the lane snapshot once on activation.
             transcript: State::with_sequence(json!({"snapshot": snapshot, "event": null}), 1),
-            run_id: None,
-            from_tip: Value::Null,
         }
     }
 
@@ -85,150 +40,6 @@ impl Lane {
             self.transcript.change(fold);
         } else {
             self.transcript.change_beside("/snapshot/transcript", fold);
-        }
-    }
-
-    /// The snapshot's `tipId`.
-    fn tip(&self) -> Value {
-        self.transcript.read(|state| state["snapshot"]["tipId"].clone())
-    }
-
-    pub fn start_run(&mut self, run_id: &str, started_at: i64) {
-        self.run_id = Some(run_id.to_string());
-        self.from_tip = self.tip();
-        self.publish(event(&[
-            ("type", json!("run_start")),
-            ("runId", json!(run_id)),
-            ("startedAt", json!(started_at)),
-            ("lane", json!(LANE)),
-        ]));
-    }
-
-    pub fn end_run(&mut self, ended_at: i64, error: Option<&str>) {
-        let Some(run_id) = self.run_id.take() else { return };
-        let tip = self.tip();
-        let mut fields = vec![
-            ("type", json!("run_end")),
-            ("lane", json!(LANE)),
-            ("runId", json!(run_id)),
-            ("status", json!(if error.is_some() { "failed" } else { "completed" })),
-        ];
-        if let Some(message) = error {
-            fields.push(("error", json!({"code": "run_failed", "message": message})));
-        }
-        fields.extend([
-            ("fromTipId", self.from_tip.clone()),
-            ("tipId", tip),
-            ("endedAt", json!(ended_at)),
-        ]);
-        self.publish(event(&fields));
-    }
-
-    /// Translate one agent event (with the stored entry of an ended message) into lane-watch events.
-    pub fn agent_event(&mut self, agent_event: &AgentEvent, entry: Option<&Value>) {
-        let run = json!(self.run_id.clone().unwrap_or_default());
-        let lane = json!(LANE);
-        match agent_event {
-            AgentEvent::MessageStart { message: m } => self.publish(event(&[
-                ("type", json!("message_start")),
-                ("runId", run),
-                ("lane", lane),
-                ("message", serde_json::to_value(m).unwrap_or(Value::Null)),
-            ])),
-            AgentEvent::MessageUpdate {
-                message: m,
-                assistant_message_event,
-            } => {
-                // The frame and the usage, never the response so far (session_core::journal::update_fields).
-                let (frame, usage) = session_core::journal::update_fields(m, assistant_message_event);
-                self.publish(event(&[
-                    ("type", json!("message_update")),
-                    ("runId", run),
-                    ("lane", lane),
-                    ("frame", frame),
-                    ("usage", usage),
-                ]));
-            }
-            AgentEvent::MessageEnd { message: m } => {
-                let entry_id = entry.map_or(Value::Null, |e| e["id"].clone());
-                self.publish(event(&[
-                    ("type", json!("message_end")),
-                    ("runId", run),
-                    ("lane", lane.clone()),
-                    ("message", serde_json::to_value(m).unwrap_or(Value::Null)),
-                    ("entryId", entry_id.clone()),
-                ]));
-                let Some(entry) = entry else { return };
-                let seq = self
-                    .transcript
-                    .read(|state| state["snapshot"]["transcript"].as_array().map_or(0, Vec::len));
-                self.publish(event(&[
-                    ("type", json!("entry_added")),
-                    ("lane", lane.clone()),
-                    ("entry", transcript_entry(entry, seq)),
-                ]));
-                if entry["message"]["role"] == "assistant" {
-                    let mut totals = self
-                        .transcript
-                        .read(|state| state["snapshot"]["stats"]["usage"].clone());
-                    let usage = entry["message"]["usage"].clone();
-                    add(&mut totals, &usage);
-                    self.publish(event(&[
-                        ("type", json!("usage")),
-                        ("lane", lane),
-                        (
-                            "row",
-                            json!({"id": jsrt::random::uuid_v4(), "usage": usage, "entryId": entry_id, "adjustment": false, "seq": seq}),
-                        ),
-                        ("totals", totals),
-                    ]));
-                }
-            }
-            AgentEvent::ToolExecutionStart {
-                tool_call_id,
-                tool_name,
-                args,
-            } => self.publish(event(&[
-                ("type", json!("tool_start")),
-                ("runId", run),
-                ("lane", lane),
-                ("toolCallId", json!(tool_call_id)),
-                ("toolName", json!(tool_name)),
-                ("args", args.clone()),
-            ])),
-            AgentEvent::ToolExecutionUpdate {
-                tool_call_id,
-                tool_name,
-                args,
-                partial_result,
-            } => self.publish(event(&[
-                ("type", json!("tool_update")),
-                ("runId", run),
-                ("lane", lane),
-                ("toolCallId", json!(tool_call_id)),
-                ("toolName", json!(tool_name)),
-                ("args", args.clone()),
-                (
-                    "partialResult",
-                    serde_json::to_value(partial_result).unwrap_or(Value::Null),
-                ),
-            ])),
-            AgentEvent::ToolExecutionEnd {
-                tool_call_id,
-                tool_name,
-                result,
-                is_error,
-                ..
-            } => self.publish(event(&[
-                ("type", json!("tool_end")),
-                ("runId", run),
-                ("lane", lane),
-                ("toolCallId", json!(tool_call_id)),
-                ("toolName", json!(tool_name)),
-                ("result", serde_json::to_value(result).unwrap_or(Value::Null)),
-                ("isError", json!(is_error)),
-            ])),
-            _ => {}
         }
     }
 }

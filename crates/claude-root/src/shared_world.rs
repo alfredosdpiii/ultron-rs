@@ -26,9 +26,6 @@ use std::sync::{Arc, Mutex, OnceLock, PoisonError};
 /// `None` for this server's own root (the parent knows it by its token).
 pub type Upstream = Arc<dyn Fn(Option<&str>, &str, &Map<String, Value>) -> Result<Value, String> + Send + Sync>;
 
-/// The control op a subagent's server forwards shared-world requests with.
-pub const OP: &str = "shared";
-
 /// Where a server's subagents reach the shared world: the root's durable runtime, or the parent server.
 #[derive(Default)]
 pub struct SharedWorld {

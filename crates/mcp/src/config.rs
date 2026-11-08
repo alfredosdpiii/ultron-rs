@@ -11,7 +11,6 @@ use url::Url;
 const EXPOSURES: [&str; 4] = ["codemode", "deferred", "direct", "hidden"];
 const LIFECYCLES: [&str; 4] = ["lazy", "eager", "keep-alive", "lazy-keep-alive"];
 const LOOPBACK_HOSTS: [&str; 3] = ["localhost", "127.0.0.1", "[::1]"];
-pub const CONFIG_DIR_NAME: &str = ".pi";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Scope {
@@ -444,7 +443,11 @@ pub fn load_config(agent_dir: &Path, cwd: &Path, project_trusted: bool) -> Loade
     let mut loaded = LoadedConfig::default();
     read_config_file(&agent_dir.join("mcp.json"), Scope::Global, &mut loaded);
     if project_trusted {
-        read_config_file(&cwd.join(CONFIG_DIR_NAME).join("mcp.json"), Scope::Project, &mut loaded);
+        read_config_file(
+            &cwd.join(config::paths::CONFIG_DIR_NAME).join("mcp.json"),
+            Scope::Project,
+            &mut loaded,
+        );
     }
     loaded
 }

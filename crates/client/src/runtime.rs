@@ -4,43 +4,19 @@
 //! create one and prompt it, following its transcript until the run ends.
 
 use chord_delta::{Decoder, Op};
+use protocol::Route;
+use protocol::json::{to_cbor, to_json};
 use protocol::{
-    ClientMessage, DEFAULT_MAX_FRAME_LENGTH, MAX_SERVER_FRAME_LENGTH, PROTOCOL_VERSION, ProtocolError, RpcTarget,
-    ServerMessage, ServerMessageDecoder, SessionTarget, Value, encode_client_message, is_server_id,
+    ClientMessage, DEFAULT_MAX_FRAME_LENGTH, PROTOCOL_VERSION, ProtocolError, RpcTarget, ServerMessage, SessionTarget,
+    encode_client_message, is_server_id,
 };
 use serde_json::{Value as Json, json};
 use std::collections::HashMap;
 use std::io::{ErrorKind, Read, Write};
 use std::os::unix::net::UnixStream;
-use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, mpsc};
 use std::time::{Duration, Instant};
-
-pub fn to_cbor(json: &Json) -> Value {
-    match json {
-        Json::Null => Value::Null,
-        Json::Bool(b) => Value::Bool(*b),
-        Json::Number(n) => n
-            .as_i64()
-            .map_or_else(|| Value::Float(n.as_f64().unwrap_or(f64::NAN)), Value::Int),
-        Json::String(s) => Value::Text(s.clone()),
-        Json::Array(items) => Value::Array(items.iter().map(to_cbor).collect()),
-        Json::Object(map) => Value::Map(map.iter().map(|(k, v)| (k.clone(), to_cbor(v))).collect()),
-    }
-}
-
-pub fn to_json(value: &Value) -> Json {
-    match value {
-        Value::Null | Value::Bytes(_) => Json::Null,
-        Value::Bool(b) => Json::Bool(*b),
-        Value::Int(n) => Json::from(*n),
-        Value::Float(f) => jsrt::json::number(*f),
-        Value::Text(s) => Json::String(s.clone()),
-        Value::Array(items) => Json::Array(items.iter().map(to_json).collect()),
-        Value::Map(entries) => Json::Object(entries.iter().map(|(k, v)| (k.clone(), to_json(v))).collect()),
-    }
-}
 
 /// A failed call: a bounded server error, or a lost connection.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -356,7 +332,6 @@ impl Connection {
         writer: Box<dyn ConnectionWriter>,
         server_id: &str,
     ) -> Result<Arc<Connection>, CallError> {
-        let disconnected = |e: std::io::Error| CallError::Disconnected(e.to_string());
         let connection = Arc::new(Connection {
             server_id: server_id.to_string(),
             writer: Mutex::new(writer),
@@ -367,27 +342,18 @@ impl Connection {
         connection.write(&ClientMessage::Hello {
             version: PROTOCOL_VERSION,
         })?;
-        let mut decoder = ServerMessageDecoder::new(MAX_SERVER_FRAME_LENGTH).unwrap_or_default();
-        let mut buffer = vec![0u8; 64 * 1024];
-        let mut queued = Vec::new();
-        let handshake = (|| {
-            while queued.is_empty() {
-                let n = read.read(&mut buffer).map_err(disconnected)?;
-                if n == 0 {
-                    return Err(CallError::Disconnected("Byte transport closed".into()));
+        let protocol::handshake::Connected { mut decoder, queued } =
+            match protocol::handshake::read_hello(&mut read, server_id) {
+                Ok(connected) => connected,
+                Err(error) => {
+                    connection.disconnect();
+                    return Err(match error {
+                        protocol::handshake::HelloError::Rejected(error) => CallError::Server(error),
+                        other => CallError::Disconnected(other.to_string()),
+                    });
                 }
-                queued = decoder.push(&buffer[..n]).map_err(|e| CallError::Disconnected(e.0))?;
-            }
-            match queued.remove(0) {
-                ServerMessage::Hello { server_id: id, .. } if id == server_id => Ok(()),
-                ServerMessage::HelloError { error } => Err(CallError::Server(error)),
-                _ => Err(CallError::Disconnected("Expected server hello as first message".into())),
-            }
-        })();
-        if let Err(error) = handshake {
-            connection.disconnect();
-            return Err(error);
-        }
+            };
+        let mut buffer = vec![0u8; 64 * 1024];
         let shared = connection.shared.clone();
         for message in queued {
             dispatch(&shared, message);
@@ -551,7 +517,7 @@ impl Connection {
         drop(shared);
         let request = self.start(
             target,
-            "$chord.service",
+            protocol::names::CHORD_SERVICE,
             "subscribe",
             json!([subscription, service, "singleton"]),
         )?;
@@ -578,7 +544,12 @@ impl Connection {
     }
 
     pub fn start_unsubscribe(&self, target: RpcTarget, subscription: &str) -> Result<String, CallError> {
-        self.start(target, "$chord.service", "unsubscribe", json!([subscription]))
+        self.start(
+            target,
+            protocol::names::CHORD_SERVICE,
+            "unsubscribe",
+            json!([subscription]),
+        )
     }
 
     pub fn forget(&self, subscription: &str) {
@@ -717,13 +688,6 @@ impl ClientResult {
     }
 }
 
-/// A server reached at its socket path.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Route {
-    pub server_id: String,
-    pub path: PathBuf,
-}
-
 fn message_text(message: &Json) -> String {
     message["content"]
         .as_array()
@@ -735,7 +699,7 @@ fn message_text(message: &Json) -> String {
 }
 
 fn fail(error: CallError) -> String {
-    error.to_string()
+    crate::lost::message(&error)
 }
 
 /// Told every transcript event of a prompted session (`onEvent`).
@@ -756,18 +720,15 @@ pub struct RunOptions {
     pub session_options: Option<Json>,
 }
 
-/// The session operations service of the Rust worker (crates/daemon `worker::OPS_SERVICE`).
-pub const OPS_SERVICE: &str = "ultron.session-ops";
-/// Server error codes that mean the session's worker is gone for now and is being brought back.
-pub const LOST_CODES: [&str; 2] = ["session_worker_lost", "session_reconnecting"];
 /// How long a client tries to rejoin its session after losing its worker or server.
 pub const REJOIN_TIMEOUT: Duration = Duration::from_secs(120);
 
-/// The call failed because the worker or the server went away (the session is durable: rejoin it).
-pub fn is_lost(error: &CallError) -> bool {
+/// The call failed because the connection or the session's worker went away: the session is durable, rejoin it.
+/// Any disconnect counts here, also one [`crate::lost::is_lost`] would not describe as a lost server.
+fn must_rejoin(error: &CallError) -> bool {
     match error {
         CallError::Disconnected(_) => true,
-        CallError::Server(error) => LOST_CODES.contains(&error.code.as_str()),
+        CallError::Server(error) => protocol::names::is_lost_code(&error.code),
     }
 }
 
@@ -776,7 +737,7 @@ fn interrupted(options: &RunOptions) -> bool {
 }
 
 fn ops(connection: &Connection, session: &RpcTarget, op: Json) -> Result<Option<Json>, CallError> {
-    connection.call(session.clone(), OPS_SERVICE, "op", json!([op]))
+    connection.call(session.clone(), protocol::names::SESSION_OPS, "op", json!([op]))
 }
 
 /// Rejoin `session_id` after its worker or server went away: attach (the server re-attaches clients of a restarted
@@ -789,7 +750,7 @@ pub fn rejoin(connection: &Connection, session_id: &str, options: &RunOptions) -
         let attached = connection
             .call(
                 server.clone(),
-                "ultron.session-management",
+                protocol::names::SESSION_MANAGEMENT,
                 "attach",
                 match &options.session_options {
                     Some(session_options) => json!([session_id, session_options]),
@@ -802,7 +763,7 @@ pub fn rejoin(connection: &Connection, session_id: &str, options: &RunOptions) -
             });
         match attached {
             Ok(session) => break session,
-            Err(CallError::Server(error)) if error.code == "session_not_found" => {
+            Err(CallError::Server(error)) if error.code == protocol::names::SESSION_NOT_FOUND_CODE => {
                 return Err(CallError::Server(error));
             }
             Err(error) if connection.is_closed() || Instant::now() >= deadline => return Err(error),
@@ -820,7 +781,12 @@ pub fn rejoin(connection: &Connection, session_id: &str, options: &RunOptions) -
         }
         if interrupted(options) && !abort_sent {
             abort_sent = true;
-            connection.call(session.clone(), "ultron.agent-controller", "requestAbort", json!([]))?;
+            connection.call(
+                session.clone(),
+                protocol::names::AGENT_CONTROLLER,
+                "requestAbort",
+                json!([]),
+            )?;
         }
         if Instant::now() >= deadline {
             return Err(CallError::Disconnected(
@@ -872,7 +838,7 @@ pub fn run_client_reopening(
     if let (Ok(Some(created)), true) = (&result.1, command.no_session) {
         let target = connection.server_target();
         let attached = connection.attachment().is_some_and(|a| &a.session_id == created);
-        match connection.call(target, "ultron.session-management", "remove", json!([created])) {
+        match connection.call(target, protocol::names::SESSION_MANAGEMENT, "remove", json!([created])) {
             Ok(_) if attached => {
                 let _ = connection.wait_attachment(|a| a.is_none());
             }
@@ -897,7 +863,12 @@ pub fn run_client_reopening(
             Ok(connection.server_target())
         };
         if let Ok(target) = target {
-            calls.push((target, "$chord.service", "unsubscribe", json!([subscription])));
+            calls.push((
+                target,
+                protocol::names::CHORD_SERVICE,
+                "unsubscribe",
+                json!([subscription]),
+            ));
         }
     }
     for id in connection.start_all(calls).unwrap_or_default() {
@@ -985,7 +956,12 @@ fn await_prompt(
         }
         if interrupted(options) && !abort_sent {
             abort_sent = true;
-            let _ = connection.start(session.clone(), "ultron.agent-controller", "requestAbort", json!([]));
+            let _ = connection.start(
+                session.clone(),
+                protocol::names::AGENT_CONTROLLER,
+                "requestAbort",
+                json!([]),
+            );
         }
     }
 }
@@ -1001,9 +977,9 @@ fn operation(
     let server_id = connection.server_id.clone();
     let mut started = Vec::new();
     for service in [
-        "ultron.session-directory",
-        "ultron.session-management",
-        "ultron.presentation-plugins",
+        protocol::names::SESSION_DIRECTORY,
+        protocol::names::SESSION_MANAGEMENT,
+        protocol::names::PRESENTATION_PLUGINS,
     ] {
         started.push(connection.start_subscribe(server.clone(), service).map_err(fail)?);
     }
@@ -1017,7 +993,7 @@ fn operation(
         .map(|s| s["sessions"].as_array().cloned().unwrap_or_default())
         .unwrap_or_default();
     let management =
-        |member: &str, args: Json| connection.call(server.clone(), "ultron.session-management", member, args);
+        |member: &str, args: Json| connection.call(server.clone(), protocol::names::SESSION_MANAGEMENT, member, args);
 
     let mut session_id = command.session_id.clone();
     if session_id.is_none() && command.prompt.is_none() {
@@ -1089,7 +1065,7 @@ fn operation(
     connection
         .call(
             server.clone(),
-            "ultron.presentation-plugins",
+            protocol::names::PRESENTATION_PLUGINS,
             "prepareSession",
             json!([{"sessionId": session_id, "packagePaths": null}]),
         )
@@ -1105,10 +1081,14 @@ fn operation(
     let session = connection.session_target().map_err(fail)?;
     // The session service namespace checks the catalogue, then subscribes to its facades.
     let catalogue = connection
-        .start(session.clone(), "$chord.service", "catalogue", json!([]))
+        .start(session.clone(), protocol::names::CHORD_SERVICE, "catalogue", json!([]))
         .map_err(fail)?;
     let mut started = Vec::new();
-    for service in ["ultron.models", "ultron.agent-controller", "ultron.transcript"] {
+    for service in [
+        protocol::names::MODELS,
+        protocol::names::AGENT_CONTROLLER,
+        protocol::names::TRANSCRIPT,
+    ] {
         started.push(connection.start_subscribe(session.clone(), service).map_err(fail)?);
     }
     connection.wait(&catalogue).map_err(fail)?;
@@ -1143,13 +1123,13 @@ fn operation(
     let response = connection
         .start(
             session.clone(),
-            "ultron.agent-controller",
+            protocol::names::AGENT_CONTROLLER,
             "prompt",
             json!([{"message": prompt, "images": images}]),
         )
         .and_then(|request| await_prompt(connection, &session, &request, options));
     let response = match response {
-        Err(error) if is_lost(&error) => {
+        Err(error) if must_rejoin(&error) => {
             connection.unlisten(&transcript);
             return Err(Failure::Lost { session_id, error });
         }
@@ -1243,7 +1223,7 @@ fn follow_event_runs(
     received: &mpsc::Receiver<Json>,
     absorb: &mut dyn FnMut(&Json),
 ) {
-    let Ok(control) = connection.subscribe(session.clone(), "ultron.session-control") else {
+    let Ok(control) = connection.subscribe(session.clone(), protocol::names::SESSION_CONTROL) else {
         return;
     };
     let mut running: Option<String> = None;
@@ -1267,7 +1247,7 @@ fn follow_event_runs(
         }
         let status = connection.call(
             session.clone(),
-            "ultron.session-control",
+            protocol::names::SESSION_CONTROL,
             "inspect",
             json!(["async.pending", {}]),
         );

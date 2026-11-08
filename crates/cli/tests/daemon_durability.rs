@@ -330,7 +330,7 @@ fn cli_durable_killed_worker_restarts_by_itself_and_runs_the_queued_follow_up() 
                 "{}",
                 error.message
             );
-            assert!(daemon::lost::is_lost(&error.message), "{}", error.message);
+            assert!(protocol::names::is_lost_code(&error.code));
         }
         other => panic!("the prompt must fail as lost, got {other:?}"),
     }

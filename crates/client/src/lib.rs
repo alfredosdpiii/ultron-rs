@@ -2,6 +2,7 @@
 //! correlation, attachment routing updates) and discovery of local servers by probing
 //! `<serverId>.sock` entries in a server directory.
 
+pub mod lost;
 pub mod radius;
 pub mod runtime;
 
@@ -10,12 +11,13 @@ use std::fmt;
 use std::io::{self, ErrorKind, Read, Write};
 use std::os::unix::fs::FileTypeExt;
 use std::os::unix::net::UnixStream;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::time::Duration;
 
+use protocol::handshake::HelloError;
 use protocol::{
-    ClientMessage, DEFAULT_MAX_FRAME_LENGTH, MAX_SERVER_FRAME_LENGTH, PROTOCOL_VERSION, ProtocolError, RpcTarget,
-    ServerMessage, ServerMessageDecoder, SessionTarget, Value, encode_client_message, is_server_id, parse_service_call,
+    ClientMessage, DEFAULT_MAX_FRAME_LENGTH, ProtocolError, Route, RpcTarget, ServerMessage, ServerMessageDecoder,
+    SessionTarget, Value, encode_client_message, is_server_id, parse_service_call,
 };
 
 pub const DEFAULT_DISCOVERY_TIMEOUT: Duration = Duration::from_millis(1_000);
@@ -64,29 +66,25 @@ impl<T: Read + Write> Client<T> {
                 "serverId must be a canonical lowercase UUIDv4".into(),
             ));
         }
-        let mut client = Self {
+        let mut stream = stream;
+        let connected = protocol::handshake::hello(&mut stream, server_id).map_err(|error| match error {
+            HelloError::Rejected(error) => ClientError::Server(error),
+            HelloError::Invalid(message) => ClientError::Validation(message),
+            HelloError::Closed => ClientError::Disconnected(HelloError::Closed.to_string()),
+            HelloError::Io(error) if error.kind() == ErrorKind::BrokenPipe => {
+                ClientError::Disconnected(error.to_string())
+            }
+            HelloError::Io(error) => ClientError::Io(error),
+        })?;
+        Ok(Self {
             stream,
             server_id: server_id.into(),
-            decoder: ServerMessageDecoder::new(MAX_SERVER_FRAME_LENGTH).unwrap_or_default(),
-            queued: VecDeque::new(),
+            decoder: connected.decoder,
+            queued: connected.queued.into(),
             sequence: 0,
             attachment: None,
             connected: true,
-        };
-        client.send(&ClientMessage::Hello {
-            version: PROTOCOL_VERSION,
-        })?;
-        let error = match client.next()? {
-            ServerMessage::HelloError { error } => ClientError::Server(error),
-            ServerMessage::Hello { server_id, .. } if server_id == client.server_id => return Ok(client),
-            ServerMessage::Hello { server_id, .. } => ClientError::Validation(format!(
-                "Connected server {server_id:?} does not match {:?}",
-                client.server_id
-            )),
-            _ => ClientError::Validation("Expected server hello as first message".into()),
-        };
-        client.connected = false;
-        Err(error)
+        })
     }
 
     pub fn attachment(&self) -> Option<&SessionTarget> {
@@ -176,15 +174,9 @@ impl<T: Read + Write> Client<T> {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct UnixServerRoute {
-    pub server_id: String,
-    pub path: PathBuf,
-}
-
 /// Discover reachable local servers by probing server-addressed Unix sockets, in server ID order.
 /// Missing, refused, timed-out, version-mismatched or non-conforming endpoints are omitted, never deleted.
-pub fn discover_unix_servers(directory: &Path, timeout: Duration) -> io::Result<Vec<UnixServerRoute>> {
+pub fn discover_unix_servers(directory: &Path, timeout: Duration) -> io::Result<Vec<Route>> {
     let entries = match std::fs::read_dir(directory) {
         Ok(entries) => entries,
         Err(e) if e.kind() == ErrorKind::NotFound => return Ok(Vec::new()),
@@ -208,7 +200,7 @@ pub fn discover_unix_servers(directory: &Path, timeout: Duration) -> io::Result<
             Err(e) => return Err(e),
         }
         if probe(&path, server_id, timeout)? {
-            routes.push(UnixServerRoute {
+            routes.push(Route {
                 server_id: server_id.into(),
                 path,
             });

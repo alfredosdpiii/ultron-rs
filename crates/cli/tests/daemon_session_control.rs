@@ -312,7 +312,7 @@ impl Raw {
         self.send(&ClientMessage::Request {
             id: id.into(),
             target,
-            call: client::runtime::to_cbor(&call),
+            call: protocol::json::to_cbor(&call),
         });
     }
 
@@ -323,7 +323,7 @@ impl Raw {
                 return (
                     id,
                     result
-                        .map(|r| r.as_ref().map(client::runtime::to_json))
+                        .map(|r| r.as_ref().map(protocol::json::to_json))
                         .map_err(|e| format!("{}: {}", e.code, e.message)),
                 );
             }

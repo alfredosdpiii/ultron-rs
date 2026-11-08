@@ -2,7 +2,7 @@
 //! `ultron setup` and the wizard flow over a scripted UI, with the TypeScript tests' literal expectations.
 //! Fakes only: a scripted fetch, probe, live test and docker; private temp profiles.
 
-use cli::setup_core::{self, CustomEndpoint, FetchResponse, HindsightDockerOptions, SetupOfferInput, UrlSource};
+use cli::setup_core::{self, CustomEndpoint, FetchResponse, HindsightDockerOptions, SetupOfferInput};
 use cli::setup_wizard::{
     Choice, InputOptions, LoginOutcome, ModelTestResult, SetupDeps, SetupQuit, SetupUi, Tone, run_setup_wizard,
 };
@@ -206,26 +206,6 @@ fn cli_setup_core_probes_hindsight_health_over_http() {
     assert_eq!(
         setup_core::probe_hindsight(&format!("http://127.0.0.1:{port}"), &setup_core::http_fetch()),
         Err("connection refused".into())
-    );
-}
-
-#[test]
-fn cli_setup_core_hindsight_url_comes_from_env_then_setting_then_default() {
-    assert_eq!(
-        setup_core::effective_hindsight_url(None, None),
-        (Some("http://localhost:8888".into()), UrlSource::Default)
-    );
-    assert_eq!(
-        setup_core::effective_hindsight_url(None, Some("http://mem:9000")),
-        (Some("http://mem:9000".into()), UrlSource::Setting)
-    );
-    assert_eq!(
-        setup_core::effective_hindsight_url(Some("off"), Some("http://mem:9000")),
-        (None, UrlSource::Env)
-    );
-    assert_eq!(
-        setup_core::effective_hindsight_url(Some(""), Some("OFF")),
-        (None, UrlSource::Setting)
     );
 }
 

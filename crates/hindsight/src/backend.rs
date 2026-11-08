@@ -287,7 +287,7 @@ impl HindsightBackend {
     }
 
     /// `retain` with the error as a [`MemoryError`].
-    pub(crate) fn retain_items(&self, request: &Value, signal: &Signal) -> Result<Value, MemoryError> {
+    pub fn retain_items(&self, request: &Value, signal: &Signal) -> Result<Value, MemoryError> {
         self.call("/memories", "POST", Some(request), signal)
     }
 

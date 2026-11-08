@@ -1,8 +1,8 @@
 //! Prompt templates: `/name args` expansion from markdown files (core/prompt-templates.ts).
 
 use crate::paths::{basename, join, resolve, resolve_path};
-use crate::skills::CONFIG_DIR_NAME;
 use crate::{Diagnostic, frontmatter};
+use config::paths::CONFIG_DIR_NAME;
 use std::fs;
 
 #[derive(Clone, Debug, PartialEq, Eq)]

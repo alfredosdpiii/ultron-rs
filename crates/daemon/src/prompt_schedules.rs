@@ -388,12 +388,12 @@ pub fn scan_sessions(session_dir: &Path) -> Vec<(Meta, Vec<Schedule>)> {
 
 /// The session operation that fires a schedule.
 pub fn fire_call(id: &str, due: i64) -> Value {
-    json!({"serviceId": crate::worker::OPS_SERVICE, "member": "op", "args": [{"op": "scheduleFire", "id": id, "due": due}]})
+    json!({"serviceId": protocol::names::SESSION_OPS, "member": "op", "args": [{"op": "scheduleFire", "id": id, "due": due}]})
 }
 
 /// The session operation that cancels a schedule.
 pub fn cancel_call(id: &str) -> Value {
-    json!({"serviceId": crate::worker::OPS_SERVICE, "member": "op", "args": [{"op": "scheduleCancel", "id": id}]})
+    json!({"serviceId": protocol::names::SESSION_OPS, "member": "op", "args": [{"op": "scheduleCancel", "id": id}]})
 }
 
 /// Fires through the hub: the session's worker is started or adopted (crate::routed `Hub::session_call`).
@@ -409,7 +409,9 @@ impl Deliver for HubDeliver {
         }
         match hub.session_call(&meta.id, fire_call(id, due)) {
             Ok(answer) => Delivery::Done(answer.map(|a| a["schedules"].clone()).unwrap_or(Value::Null)),
-            Err(ServiceError { code: Some(code), .. }) if code == "session_not_found" => Delivery::Gone,
+            Err(ServiceError { code: Some(code), .. }) if code == protocol::names::SESSION_NOT_FOUND_CODE => {
+                Delivery::Gone
+            }
             Err(error) => Delivery::Retry(error.message),
         }
     }
@@ -418,7 +420,7 @@ impl Deliver for HubDeliver {
 /// The server service `ultron.schedules` (unlisted; `ultron schedule cancel`): `cancel(sessionId, id)` cancels
 /// through the session's worker (started for it when none runs).
 pub fn server_service(hub: Weak<Hub>) -> Service {
-    Service::new("ultron.schedules")
+    Service::new(protocol::names::SCHEDULES)
         .unlisted()
         .method("cancel", move |args| {
             let hub = hub

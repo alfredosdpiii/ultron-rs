@@ -90,7 +90,7 @@ fn claude_root_launcher_argument_parsing_and_flag_detection() {
         .unwrap()
         .unwrap();
     assert!(parsed.watch);
-    assert_eq!(parsed.children.as_deref(), Some("ultron"));
+    assert_eq!(parsed.children, Some(claude_root::settings::ChildrenMode::Ultron));
     assert_eq!(parsed.claude_args, strings(&["--watch"]));
     assert_eq!(parse_launcher_args(&strings(&["--help"])).unwrap(), None);
     assert!(parse_launcher_args(&strings(&["--children", "x"])).is_err());

@@ -17,6 +17,8 @@ mod external_turns;
 mod mcp_runtime;
 #[path = "persona.rs"]
 mod persona;
+#[path = "persona_transcripts.rs"]
+mod persona_transcripts;
 #[path = "root_sink.rs"]
 mod root_sink;
 #[path = "stuck_cells.rs"]

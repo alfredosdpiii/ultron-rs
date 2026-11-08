@@ -18,8 +18,34 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+/// The requests a server answers (`op`), sent by the hooks, the viewer and subagent servers.
+pub mod op {
+    pub const STATUS: &str = "status";
+    pub const CELLS: &str = "cells";
+    /// A read-only inspection of the root's runtime (the viewer's RLM panes).
+    pub const INSPECT: &str = "inspect";
+    /// A Claude Code hook (crate::hooks::HookEvent) forwarded by `ultron hook`.
+    pub const HOOK: &str = "hook";
+    pub const WAIT_EVENTS: &str = crate::hooks::HookEvent::WaitEvents.command();
+    /// A Claude Code subagent's `rlm.finish`, from its own server.
+    pub const CHILD_FINISH: &str = "child.finish";
+    /// A subagent server's shared-world request (crate::shared_world).
+    pub const SHARED: &str = "shared";
+}
+
 /// Lines longer than this are refused.
 pub const MAX_CONTROL_LINE: usize = 4 * 1024 * 1024;
+
+/// `name.replace(/[^A-Za-z0-9._-]/g, "_")`.
+pub(crate) fn file_name_chars(name: &str) -> impl Iterator<Item = char> + '_ {
+    name.chars().map(|c| {
+        if c.is_ascii_alphanumeric() || "._-".contains(c) {
+            c
+        } else {
+            '_'
+        }
+    })
+}
 
 /// The per-user directory for control sockets and registry files (created 0700, owned by this user).
 pub fn control_dir(var: &dyn Fn(&str) -> Option<String>) -> Result<PathBuf, String> {
@@ -45,17 +71,7 @@ pub fn control_dir(var: &dyn Fn(&str) -> Option<String>) -> Result<PathBuf, Stri
 
 /// A registry name safe as a file name.
 pub fn safe_name(name: &str) -> String {
-    let safe: String = name
-        .chars()
-        .map(|c| {
-            if c.is_ascii_alphanumeric() || "._-".contains(c) {
-                c
-            } else {
-                '_'
-            }
-        })
-        .take(120)
-        .collect();
+    let safe: String = file_name_chars(name).take(120).collect();
     if safe.is_empty() { "session".into() } else { safe }
 }
 

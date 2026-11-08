@@ -9,9 +9,9 @@
 //! This crate only writes. The kernel reads the same file with Python's `sqlite3` (`rlm/knowledge_api.py`), read-only,
 //! and refuses a schema version it does not know.
 
-pub mod extract;
-pub mod index;
-pub mod store;
+mod extract;
+mod index;
+mod store;
 
 pub use index::{IndexStats, index_tree};
 pub use store::{Note, SCHEMA_VERSION, Store};

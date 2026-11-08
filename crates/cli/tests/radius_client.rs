@@ -349,7 +349,7 @@ fn cli_radius_detached_server_runs_the_relay_with_the_stored_credential() {
         &[
             ("RADIUS_API_KEY", "stored-key"),
             (config::paths::ENV_SERVER_DIR, &durable.display().to_string()),
-            (cli::service_cli::SERVER_ID_ENV, SERVER_ID),
+            (daemon::server::SERVER_ID_ENV, SERVER_ID),
         ],
     ));
     assert_eq!(code, Some(0), "{err}");

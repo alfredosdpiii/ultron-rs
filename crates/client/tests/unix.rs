@@ -9,7 +9,8 @@ use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use client::{Client, ClientError, UnixServerRoute, discover_unix_servers};
+use client::{Client, ClientError, discover_unix_servers};
+use protocol::Route;
 use protocol::{ProtocolError, RpcTarget, ServiceCall, Value};
 use server_peer::{Connection, HostError, Output, ServerConfig, ServerServices};
 
@@ -137,7 +138,7 @@ fn client_discovery_returns_reachable_servers_in_id_order_and_never_deletes() {
     drop(UnixListener::bind(&stale).expect("stale"));
 
     let routes = discover_unix_servers(dir, PATIENT).expect("discover");
-    let expected = [A, B].map(|id| UnixServerRoute {
+    let expected = [A, B].map(|id| Route {
         server_id: id.into(),
         path: dir.join(format!("{id}.sock")),
     });

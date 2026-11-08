@@ -1,7 +1,7 @@
 //! SYSTEM.md / APPEND_SYSTEM.md discovery and prompt inputs (DefaultResourceLoader in core/resource-loader.ts).
 
 use crate::paths::{join, resolve_path, strip_bom};
-use crate::skills::CONFIG_DIR_NAME;
+use config::paths::CONFIG_DIR_NAME;
 use std::fs;
 use std::path::Path;
 

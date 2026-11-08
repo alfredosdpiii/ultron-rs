@@ -33,7 +33,7 @@ pub fn child_claude_model(requested: Option<&str>, fallback: &str) -> Result<Str
     let Some(trimmed) = requested.map(str::trim).filter(|r| !r.is_empty()) else {
         return Ok(fallback.to_string());
     };
-    if let Some(model) = trimmed.strip_prefix("claude-code/") {
+    if let Some(model) = crate::claude_code_id(trimmed) {
         return Ok(model.to_string());
     }
     if !trimmed.contains('/') {
@@ -164,7 +164,7 @@ pub fn fold_stream_line(line: &str, stats: &mut StreamStats) -> Option<Map<Strin
         && message.get("subtype") == Some(&json!("init"))
         && let Some(Value::String(model)) = message.get("model")
     {
-        stats.model = Some(format!("claude-code/{model}"));
+        stats.model = Some(crate::claude_code_ref(model));
     }
     if message.get("type") == Some(&json!("assistant"))
         && let Some(body) = message.get("message")

@@ -71,11 +71,10 @@ pub fn should_nudge(text: &str, tool_calls: usize) -> bool {
     if tool_calls == 0 || text.is_empty() {
         return false;
     }
-    let tail = text.trim().rsplit("\n\n").next().unwrap_or("");
-    if tail.trim_end().ends_with('?') {
+    if crate::keep_going::asks(text) {
         return false;
     }
-    announce().is_match(tail)
+    announce().is_match(text.trim().rsplit("\n\n").next().unwrap_or(""))
 }
 
 /// How a root turn ended, for [`decide`].
@@ -176,56 +175,4 @@ pub fn nudge_message(n: u32, timestamp: i64) -> Value {
         "details": {"nudge": n, "max": MAX_NUDGES},
         "timestamp": timestamp,
     })
-}
-
-/// The hook's `last_turn` over a Claude Code transcript (JSONL): the final assistant text and the tool calls since
-/// the last real user prompt. A line that is not JSON makes the whole transcript unreadable (`("", 0)`).
-pub fn last_turn(jsonl: &str) -> (String, usize) {
-    let mut entries = Vec::new();
-    for line in jsonl.lines().filter(|l| !l.trim().is_empty()) {
-        match serde_json::from_str::<Value>(line) {
-            Ok(entry) => entries.push(entry),
-            Err(_) => return (String::new(), 0),
-        }
-    }
-    let (mut text, mut tools) = (String::new(), 0);
-    for entry in entries.iter().rev() {
-        let content = &entry["message"]["content"];
-        if entry["type"] == "user" {
-            let prompt = content.is_string()
-                || content
-                    .as_array()
-                    .is_some_and(|blocks| blocks.iter().any(|b| b.is_object() && b["type"] == "text"));
-            if prompt {
-                break;
-            }
-            continue;
-        }
-        let Some(blocks) = content.as_array().filter(|_| entry["type"] == "assistant") else {
-            continue;
-        };
-        tools += blocks.iter().filter(|b| b["type"] == "tool_use").count();
-        if text.is_empty() {
-            text = blocks
-                .iter()
-                .filter(|b| b["type"] == "text")
-                .map(|b| b["text"].as_str().unwrap_or(""))
-                .collect::<Vec<_>>()
-                .join("\n")
-                .trim()
-                .to_string();
-        }
-    }
-    (text, tools)
-}
-
-/// The persona section of the Claude root's prompt: the persona's text and where the pstack principles are.
-pub fn claude_persona_text(personality: &str, bundled_skills: Option<&Path>) -> String {
-    match bundled_skills {
-        Some(dir) => format!(
-            "{personality}\n\nThe pstack skills directory is {} (principle-<name>/SKILL.md).",
-            dir.join("pstack").display()
-        ),
-        None => personality.to_string(),
-    }
 }
