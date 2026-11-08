@@ -8,8 +8,8 @@ use std::rc::Rc;
 use interactive::render_settings::{self, RenderSettings};
 use interactive::{AssistantBlock, AssistantMessage, AssistantView, UserMessage};
 use serde_json::Value;
-use tui::components::Component;
-use tui::theme::{ColorMode, builtin_theme_json, create_theme};
+use theme::{ColorMode, builtin_theme_json, create_theme};
+use tui::Component;
 
 #[test]
 fn interactive_render_settings_reach_the_transcript_markdown_like_ts() {

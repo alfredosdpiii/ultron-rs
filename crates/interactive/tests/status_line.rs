@@ -5,9 +5,11 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::mpsc;
 use std::time::Duration;
+use theme::Fg;
 
-use tui::status_git::*;
-use tui::status_line::*;
+use interactive::status_git::*;
+use interactive::status_line::*;
+use tui::VimMode;
 
 fn data() -> StatusData {
     StatusData {
@@ -452,8 +454,8 @@ fn tui_status_line_layout_fits_width_in_omp_order() {
 
 #[test]
 fn tui_status_line_theme_style_colors_segments() {
-    let json = tui::theme::builtin_theme_json("dark").unwrap();
-    let theme = tui::theme::create_theme(&json, tui::theme::ColorMode::Truecolor, None).unwrap();
+    let json = theme::builtin_theme_json("dark").unwrap();
+    let theme = theme::create_theme(&json, theme::ColorMode::Truecolor, None).unwrap();
     let mut d = data();
     d.git_branch = Some("main".into());
     let out = render_segment(
@@ -464,7 +466,7 @@ fn tui_status_line_theme_style_colors_segments() {
         &ThemeStyle(&theme),
     )
     .unwrap();
-    assert_eq!(out, theme.fg("success", "⑂ main").unwrap());
+    assert_eq!(out, theme.fg(Fg::Success, "⑂ main"));
 }
 
 #[test]
@@ -565,7 +567,8 @@ fn tui_status_git_probe_reads_a_real_repository_and_caches_pr_lookups() {
     let (ptx, _prx) = mpsc::channel();
     let watcher = GitWatcher::spawn(dir.clone(), FakePr(ptx), move || {
         let _ = utx.send(());
-    });
+    })
+    .unwrap();
     urx.recv_timeout(Duration::from_secs(120)).unwrap(); // hang guard
     assert_eq!(watcher.snapshot().branch.as_deref(), Some("feature"));
     assert_eq!(watcher.snapshot().pr.map(|p| p.0), Some(7));

@@ -6,12 +6,13 @@ use std::rc::Rc;
 
 use interactive::chat::ChatStyle;
 use interactive::copy_targets::TranscriptEntry;
+use interactive::keybindings::Platform;
+use interactive::keybindings::native_app_keybindings;
 use interactive::transcript_picker::{PickerEvent, PickerMode, PickerOptions, TranscriptPicker};
 use serde_json::json;
-use tui::keybindings::{KeybindingsManager, Platform};
-use tui::qol_keys::native_app_keybindings;
-use tui::theme::{ColorMode, builtin_theme_json, create_theme};
-use tui::utils::{strip_terminal_sequences, visible_width};
+use theme::{ColorMode, builtin_theme_json, create_theme};
+use tui::KeybindingsManager;
+use tui::{strip_terminal_sequences, visible_width};
 
 const W: usize = 72;
 const H: usize = 60;

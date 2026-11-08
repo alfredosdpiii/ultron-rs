@@ -4,11 +4,11 @@
 
 use std::rc::Rc;
 
-use tui::components::{Component, Text};
-use tui::keybindings::KeybindingsManager;
-use tui::theme::Theme;
+use theme::{Fg, Theme};
+use tui::KeybindingsManager;
+use tui::{Component, Text};
 
-use crate::components::{bold, dynamic_border, fg, format_key_text, key_hint, key_text};
+use crate::components::{bold, dynamic_border, format_key_text, key_hint, key_text};
 
 /// One trust choice (`ProjectTrustOption`).
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -114,35 +114,35 @@ impl Component for TrustSelector {
     fn render(&mut self, width: usize) -> Vec<String> {
         let t = Rc::clone(&self.theme);
         let text = |s: &str| Text::new(s, 1, 0, None).render(width);
-        let border = |s: &str| fg(&t, "border", s);
+        let border = |s: &str| t.fg(Fg::Border, s);
         let mut lines = dynamic_border(&border, width);
         lines.push(String::new());
-        lines.extend(text(&fg(&t, "accent", &bold("Project trust"))));
-        lines.extend(text(&fg(&t, "muted", &self.view.cwd)));
+        lines.extend(text(&t.fg(Fg::Accent, &bold("Project trust"))));
+        lines.extend(text(&t.fg(Fg::Muted, &self.view.cwd)));
         lines.push(String::new());
         let trust_path = self.view.choices.first().and_then(|c| c.saved_path.as_deref());
         let decision = format_decision(trust_path, self.view.saved.as_ref());
-        lines.extend(text(&fg(&t, "muted", &format!("Saved decision: {decision}"))));
+        lines.extend(text(&t.fg(Fg::Muted, &format!("Saved decision: {decision}"))));
         let current = if self.view.project_trusted {
             "trusted"
         } else {
             "untrusted"
         };
-        lines.extend(text(&fg(&t, "muted", &format!("Current session: {current}"))));
+        lines.extend(text(&t.fg(Fg::Muted, &format!("Current session: {current}"))));
         lines.push(String::new());
         for (i, choice) in self.view.choices.iter().enumerate() {
             let selected = i == self.selected;
             let marker = if self.is_saved(choice) {
-                fg(&t, "accent", "✓ ")
+                t.fg(Fg::Accent, "✓ ")
             } else {
                 "  ".into()
             };
             let prefix = if selected {
-                fg(&t, "accent", "→ ")
+                t.fg(Fg::Accent, "→ ")
             } else {
                 "  ".into()
             };
-            let label = fg(&t, if selected { "accent" } else { "text" }, &choice.label);
+            let label = t.fg(if selected { Fg::Accent } else { Fg::Text }, &choice.label);
             lines.extend(text(&format!("{prefix}{marker}{label}")));
         }
         lines.push(String::new());

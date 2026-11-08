@@ -11,6 +11,7 @@ autotests = false
 config = { path = "../config" }
 jsrt = { path = "../jsrt" }
 rlm-views = { path = "../rlm-views" }
+theme = { path = "../theme" }
 tui = { path = "../tui" }
 model-scope = { path = "../model-scope" }
 session-file = { path = "../session-file" }
@@ -20,6 +21,7 @@ crossterm = { version = "=0.29.0", default-features = false }
 rustix = { version = "=1.1.5", features = ["event", "process", "std"] }
 base64 = "=0.23.1"
 image = { version = "=0.25.10", default-features = false, features = ["bmp", "gif", "jpeg", "png", "webp"] }
+unicode-segmentation = "=1.13.3"
 
 [lints]
 workspace = true

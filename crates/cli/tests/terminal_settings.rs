@@ -10,7 +10,7 @@ use std::sync::Arc;
 use cli::Env;
 use config::settings::SettingsManager;
 use serde_json::{Value, json};
-use tui::image::ImageProtocol;
+use tui::ImageProtocol;
 
 fn env_with(vars: HashMap<String, String>, home: PathBuf) -> Env {
     Env {
@@ -74,8 +74,8 @@ fn cli_terminal_settings_wsl_interop_selects_windows_keybindings() {
     // WSLENV alone is the clipboard's WSL test (utils/wsl.ts), not the keybindings'.
     assert!(!cli::terminal_settings::wsl_keybindings(&env(&[("WSLENV", "x")])));
     let paste = |platform| {
-        tui::keybindings::KeybindingsManager::new(
-            tui::qol_keys::native_app_keybindings(platform),
+        tui::KeybindingsManager::new(
+            interactive::keybindings::native_app_keybindings(platform),
             Vec::new(),
             Default::default(),
         )
@@ -201,8 +201,8 @@ fn cli_terminal_settings_capabilities_probe_tmux_only_when_undecided() {
     assert_eq!(probes.get(), 1);
     assert!(caps(&[("TERM", "tmux-256color")], json!({})).hyperlinks);
     assert_eq!(probes.get(), 2);
-    assert!(!caps(&[("TMUX", "/s,1,0"), (tui::image::HYPERLINKS_ENV, "0")], json!({})).hyperlinks);
-    assert!(caps(&[("TMUX", "/s,1,0"), (tui::image::HYPERLINKS_ENV, "1")], json!({})).hyperlinks);
+    assert!(!caps(&[("TMUX", "/s,1,0"), (tui::HYPERLINKS_ENV, "0")], json!({})).hyperlinks);
+    assert!(caps(&[("TMUX", "/s,1,0"), (tui::HYPERLINKS_ENV, "1")], json!({})).hyperlinks);
     assert!(!caps(&[("TMUX", "/s,1,0")], json!({"terminal": {"hyperlinks": false}})).hyperlinks);
     assert!(!caps(&[("TERM", "xterm-256color")], json!({})).hyperlinks);
     assert_eq!(probes.get(), 2);

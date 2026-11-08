@@ -4,8 +4,8 @@
 //! facts the keybindings and clipboard read from the run's environment.
 
 use config::settings::SettingsManager;
-use tui::capability_overrides::{CapabilityOverrides, capabilities as with_overrides};
-use tui::image::{Capabilities, ImageProtocol};
+use tui::{Capabilities, ImageProtocol};
+use tui::{CapabilityOverrides, capabilities as with_overrides};
 
 use crate::Env;
 
@@ -35,8 +35,7 @@ pub fn capabilities_with(env: &Env, settings: &SettingsManager, probe: &dyn Fn(&
     let var = |k: &str| (env.var)(k);
     let in_tmux =
         var("TMUX").is_some_and(|v| !v.is_empty()) || var("TERM").is_some_and(|t| t.to_lowercase().starts_with("tmux"));
-    let decided =
-        matches!(var(tui::image::HYPERLINKS_ENV).as_deref(), Some("1" | "0")) || overrides.hyperlinks.is_some();
+    let decided = matches!(var(tui::HYPERLINKS_ENV).as_deref(), Some("1" | "0")) || overrides.hyperlinks.is_some();
     let tmux = in_tmux && !decided && probe(env);
     with_overrides(&var, false, tmux, &overrides)
 }
@@ -131,14 +130,14 @@ pub fn windows_terminal_session(env: &Env) -> bool {
 
 /// The key-matching state the TUI starts with: Kitty off until the terminal confirms it, Windows Terminal from the
 /// environment.
-pub fn key_context(env: &Env) -> tui::keys::KeyContext {
-    tui::keys::KeyContext {
+pub fn key_context(env: &Env) -> tui::KeyContext {
+    tui::KeyContext {
         kitty_active: false,
         windows_terminal: windows_terminal_session(env),
     }
 }
 
 /// The keybinding platform of this run.
-pub fn platform(env: &Env) -> tui::keybindings::Platform {
-    tui::keybindings::Platform::new("linux", wsl_keybindings(env))
+pub fn platform(env: &Env) -> interactive::keybindings::Platform {
+    interactive::keybindings::Platform::new("linux", wsl_keybindings(env))
 }

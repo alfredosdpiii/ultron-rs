@@ -3,10 +3,10 @@
 //! (`node crates/tui/fixtures/generate-markdown-latex.mjs`).
 
 use serde_json::Value;
-use tui::components::Component;
-use tui::markdown::{DefaultTextStyle, Markdown, MarkdownOptions, MarkdownTheme};
-use tui::marked::markdown_tokens;
-use tui::select::StyleFn;
+use tui::Component;
+use tui::StyleFn;
+use tui::markdown_tokens;
+use tui::{DefaultTextStyle, Markdown, MarkdownOptions, MarkdownTheme};
 
 fn sty(open: u32, close: u32) -> StyleFn {
     Box::new(move |s| format!("\x1b[{open}m{s}\x1b[{close}m"))

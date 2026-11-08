@@ -10,15 +10,16 @@ use std::time::{Duration, Instant};
 
 use interactive::app::{App, AppOptions};
 use interactive::history::PromptHistoryStore;
+use interactive::keybindings::Platform;
+use interactive::keybindings::native_app_keybindings;
 use interactive::lane::{LaneClient, LaneEvent, ModelInfo, SessionOpened};
 use interactive::qol::QolSettings;
 use interactive::render_settings::{self, RenderSettings};
 use interactive::url_opener::{browser_command, find_launcher, launcher_name, url_opener};
 use serde_json::{Value, json};
-use tui::keybindings::{KeybindingsManager, Platform};
-use tui::qol_keys::native_app_keybindings;
-use tui::theme::{ColorMode, builtin_theme_json, create_theme};
-use tui::utils::strip_terminal_sequences;
+use theme::{ColorMode, builtin_theme_json, create_theme};
+use tui::KeybindingsManager;
+use tui::strip_terminal_sequences;
 
 const HANG_GUARD: Duration = Duration::from_secs(120);
 const URL: &str = "https://example.com/docs?q=1";
@@ -93,7 +94,6 @@ fn app(qol: QolSettings, text: &str) -> App {
         AppOptions {
             theme,
             keys: keys(),
-            editor_keys: keys(),
             version: "1.2.3".into(),
             cwd: "/p".into(),
             home: None,

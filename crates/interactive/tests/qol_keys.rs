@@ -3,8 +3,9 @@
 
 use std::time::{Duration, Instant};
 
-use tui::keybindings::{KeybindingsManager, Platform, app_keybindings};
-use tui::qol_keys::{DoubleTap, native_app_keybindings, qol_keybindings};
+use interactive::keybindings::{DoubleTap, native_app_keybindings, qol_keybindings};
+use interactive::keybindings::{Platform, app_keybindings};
+use tui::KeybindingsManager;
 
 fn manager(user: Vec<(String, Option<Vec<String>>)>) -> KeybindingsManager {
     KeybindingsManager::new(

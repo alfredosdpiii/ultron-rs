@@ -1,7 +1,7 @@
 //! Ported from packages/tui/test/layout.test.ts ("viewport layout"): vertical stack allocation and a transcript
 //! following its end, with the same literal expectations; plus the alternate-screen painter's row diffing.
 
-use tui::screen::{AltScreen, StackEntry, allocate_stack_sizes, stack_lines};
+use tui::{AltScreen, StackEntry, allocate_stack_sizes, stack_lines};
 
 fn lines(text: &str) -> Vec<String> {
     text.split('\n').map(str::to_string).collect()

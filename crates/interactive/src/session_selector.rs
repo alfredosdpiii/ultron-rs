@@ -9,14 +9,14 @@
 use std::rc::Rc;
 use std::time::{Duration, Instant};
 
-use tui::components::{Component, Text};
-use tui::fuzzy::fuzzy_match;
-use tui::input::{Input, InputEvent};
-use tui::keybindings::KeybindingsManager;
-use tui::theme::Theme;
-use tui::utils::{truncate_to_width, visible_width};
+use theme::{Bg, Fg, Theme};
+use tui::KeybindingsManager;
+use tui::fuzzy_match;
+use tui::{Component, Text};
+use tui::{Input, InputEvent};
+use tui::{truncate_to_width, visible_width};
 
-use crate::components::{bold, fg, key_hint, key_text};
+use crate::components::{bold, key_hint, key_text};
 use crate::lane::SessionListing;
 
 /// `SortMode`.
@@ -470,29 +470,29 @@ impl SessionSelector {
         let scope = if loading {
             format!(
                 "{}{}",
-                fg(&t, "muted", "○ Current Folder | "),
-                fg(&t, "accent", "Loading ...")
+                t.fg(Fg::Muted, "○ Current Folder | "),
+                t.fg(Fg::Accent, "Loading ...")
             )
         } else if self.scope_all {
             format!(
                 "{}{}",
-                fg(&t, "muted", "○ Current Folder | "),
-                fg(&t, "accent", "◉ All")
+                t.fg(Fg::Muted, "○ Current Folder | "),
+                t.fg(Fg::Accent, "◉ All")
             )
         } else {
             format!(
                 "{}{}",
-                fg(&t, "accent", "◉ Current Folder"),
-                fg(&t, "muted", " | ○ All")
+                t.fg(Fg::Accent, "◉ Current Folder"),
+                t.fg(Fg::Muted, " | ○ All")
             )
         };
         let right = truncate_to_width(
             &format!(
                 "{scope}  {}{}  {}{}",
-                fg(&t, "muted", "Name: "),
-                fg(&t, "accent", name),
-                fg(&t, "muted", "Sort: "),
-                fg(&t, "accent", sort)
+                t.fg(Fg::Muted, "Name: "),
+                t.fg(Fg::Accent, name),
+                t.fg(Fg::Muted, "Sort: "),
+                t.fg(Fg::Accent, sort)
             ),
             width,
             "",
@@ -515,21 +515,21 @@ impl SessionSelector {
                 hint("tui.select.cancel", "cancel")
             );
             (
-                fg(&t, "error", &truncate_to_width(&confirm, width, "…", false)),
+                t.fg(Fg::Error, &truncate_to_width(&confirm, width, "…", false)),
                 String::new(),
             )
         } else if let Some((error, message, _)) = &self.status {
-            let color = if *error { "error" } else { "accent" };
+            let color = if *error { Fg::Error } else { Fg::Accent };
             (
-                fg(&t, color, &truncate_to_width(message, width, "…", false)),
+                t.fg(color, &truncate_to_width(message, width, "…", false)),
                 String::new(),
             )
         } else {
-            let sep = fg(&t, "muted", " · ");
+            let sep = t.fg(Fg::Muted, " · ");
             let hint1 = format!(
                 "{}{sep}{}",
                 hint("tui.input.tab", "scope"),
-                fg(&t, "muted", "re:<pattern> regex · \"phrase\" exact")
+                t.fg(Fg::Muted, "re:<pattern> regex · \"phrase\" exact")
             );
             let path_state = if self.show_path { "(on)" } else { "(off)" };
             let mut parts = vec![
@@ -564,7 +564,7 @@ impl SessionSelector {
                 (false, true) => "  No sessions found".to_string(),
                 (false, false) => "  No sessions in current folder. Press Tab to view all.".to_string(),
             };
-            lines.push(fg(&t, "muted", &truncate_to_width(&message, width, "…", false)));
+            lines.push(t.fg(Fg::Muted, &truncate_to_width(&message, width, "…", false)));
             return lines;
         }
         let n = self.filtered.len() as isize;
@@ -597,37 +597,37 @@ impl SessionSelector {
                 right = format!("{} {right}", self.shorten(&s.path));
             }
             let cursor = if selected {
-                fg(&t, "accent", "› ")
+                t.fg(Fg::Accent, "› ")
             } else {
                 "  ".to_string()
             };
             let available = width as isize - 2 - (visible_width(&right) + 2) as isize;
             let truncated = truncate_to_width(&normalized, available.max(10) as usize, "…", false);
             let color = if deleting {
-                Some("error")
+                Some(Fg::Error)
             } else if current {
-                Some("accent")
+                Some(Fg::Accent)
             } else if s.name.is_some() {
-                Some("warning")
+                Some(Fg::Warning)
             } else {
                 None
             };
-            let mut message = color.map_or(truncated.clone(), |c| fg(&t, c, &truncated));
+            let mut message = color.map_or(truncated.clone(), |c| t.fg(c, &truncated));
             if selected {
                 message = bold(&message);
             }
-            let left = format!("{cursor}{}{message}", fg(&t, "dim", ""));
+            let left = format!("{cursor}{}{message}", t.fg(Fg::Dim, ""));
             let spacing = (width as isize - visible_width(&left) as isize - visible_width(&right) as isize).max(1);
-            let styled_right = fg(&t, if deleting { "error" } else { "dim" }, &right);
+            let styled_right = t.fg(if deleting { Fg::Error } else { Fg::Dim }, &right);
             let mut line = format!("{left}{}{styled_right}", " ".repeat(spacing as usize));
             if selected {
-                line = t.bg("selectedBg", &line).unwrap_or(line);
+                line = t.bg(Bg::SelectedBg, &line);
             }
             lines.push(truncate_to_width(&line, width, "...", false));
         }
         if start > 0 || end < self.filtered.len() {
             let text = format!("  ({}/{})", self.selected + 1, self.filtered.len());
-            lines.push(fg(&t, "muted", &truncate_to_width(&text, width, "", false)));
+            lines.push(t.fg(Fg::Muted, &truncate_to_width(&text, width, "", false)));
         }
         lines
     }
@@ -636,14 +636,14 @@ impl SessionSelector {
 impl SessionSelector {
     /// `SessionSelectorComponent.handleMouse` (a `Container`): only the rename panel's `Input` takes the mouse (a
     /// press moves its cursor); the session list and its search line (`SessionList`) read none.
-    pub fn handle_mouse(&mut self, event: &tui::mouse::MouseEvent) -> Option<tui::mouse::MouseResult> {
+    pub fn handle_mouse(&mut self, event: &tui::MouseEvent) -> Option<tui::MouseResult> {
         let (_, input) = self.rename.as_mut()?;
         let top = 3 + Text::new(&bold("Rename Session"), 1, 0, None).render(event.width).len() as i64 + 1;
         let rows = input.render(event.width).len() as i64;
         if event.y < top || event.y >= top + rows {
             return None;
         }
-        let local = tui::mouse::MouseEvent {
+        let local = tui::MouseEvent {
             y: event.y - top,
             ..*event
         };
@@ -654,7 +654,7 @@ impl SessionSelector {
 impl Component for SessionSelector {
     fn render(&mut self, width: usize) -> Vec<String> {
         let t = Rc::clone(&self.theme);
-        let border = fg(&t, "accent", &"─".repeat(width.max(1)));
+        let border = t.fg(Fg::Accent, &"─".repeat(width.max(1)));
         let mut lines = vec![String::new(), border.clone(), String::new()];
         if let Some((_, input)) = self.rename.as_mut() {
             lines.extend(Text::new(&bold("Rename Session"), 1, 0, None).render(width));
@@ -666,7 +666,7 @@ impl Component for SessionSelector {
                 key_text(&self.keys, "tui.select.confirm", false),
                 key_text(&self.keys, "tui.select.cancel", false)
             );
-            lines.extend(Text::new(&fg(&t, "muted", &hint), 1, 0, None).render(width));
+            lines.extend(Text::new(&t.fg(Fg::Muted, &hint), 1, 0, None).render(width));
         } else {
             lines.extend(self.header(width));
             lines.push(String::new());

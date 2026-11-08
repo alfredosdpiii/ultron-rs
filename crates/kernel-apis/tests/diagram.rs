@@ -76,7 +76,7 @@ fn kernel_apis_diagram_palette_maps_the_ultron_theme_tokens() {
     assert_eq!(light.get("--pele-surface"), Some("#e8e8f0"));
     assert_eq!(light.get("--pele-accent"), Some("#5a8080"));
     // A custom theme without export colours: the page falls back by its text's lightness.
-    let mut custom = tui::theme::builtin_theme_json("light").unwrap();
+    let mut custom = theme::builtin_theme_json("light").unwrap();
     custom.export = Default::default();
     let palette = palette_from_theme(&custom, "paper").unwrap();
     assert!(!palette.dark);
@@ -112,8 +112,8 @@ fn kernel_apis_diagram_theme_follows_the_setting_and_the_terminal() {
         select_palette("dark", Some("light"), Some("0;15"), none).unwrap().theme,
         "dark"
     );
-    // A custom theme from the themes directory; one that does not load falls back to the terminal's built-in.
-    let mut json: Value = serde_json::from_str(include_str!("../../tui/src/theme/dark.json")).unwrap();
+    // A custom theme from the themes directory; one that does not load falls back to dark, as the TUI does.
+    let mut json: Value = serde_json::from_str(include_str!("../../theme/src/dark.json")).unwrap();
     json["name"] = json!("ember");
     json["vars"]["accent"] = json!("#ff8800");
     std::fs::write(none.join("ember.json"), json.to_string()).unwrap();
@@ -126,7 +126,7 @@ fn kernel_apis_diagram_theme_follows_the_setting_and_the_terminal() {
         select_palette("auto", Some("missing"), Some("0;15"), none)
             .unwrap()
             .theme,
-        "light"
+        "dark"
     );
     assert_eq!(
         select_palette("sepia", None, None, none).unwrap_err(),

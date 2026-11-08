@@ -12,6 +12,7 @@ use crate::link::Link;
 use crate::print_mode::Target;
 use interactive::app::{App, AppOptions};
 use interactive::history::{PROMPT_HISTORY_FILE, PromptHistoryStore};
+use interactive::keybindings::native_app_keybindings;
 use interactive::lane::{
     BashResult, CatalogRefresh, ForkMessage, LaneClient, LaneEvent, ModelInfo, PromptImage, QueueKind, Queued,
     SessionListing, SessionOpened,
@@ -22,10 +23,8 @@ use session_core::core::{Op, QueueKind as CoreQueue};
 use std::io::{BufRead, IsTerminal, Write};
 use std::rc::Rc;
 use std::sync::{Arc, mpsc};
-use tui::keybindings::KeybindingsManager;
-use tui::keybindings_file::UserBindings;
-use tui::qol_keys::native_app_keybindings;
-use tui::theme::{ColorMode, builtin_theme_json, create_theme};
+use tui::KeybindingsManager;
+use tui::UserBindings;
 
 pub const PI_AGENT_DIR_ENV: &str = "PI_CODING_AGENT_DIR";
 pub const SPLASH_ENV: &str = "ULTRON_SPLASH";
@@ -1477,12 +1476,10 @@ fn link_thread(
                     themes.extend(custom);
                 }
                 let terminal_theme = terminal_theme.clone().unwrap_or_else(|| {
-                    match tui::theme::detect_terminal_background_from_env(std::env::var("COLORFGBG").ok().as_deref())
+                    theme::detect_terminal_background_from_env(std::env::var("COLORFGBG").ok().as_deref())
                         .theme
-                    {
-                        tui::theme::TerminalTheme::Light => "light".to_string(),
-                        tui::theme::TerminalTheme::Dark => "dark".to_string(),
-                    }
+                        .name()
+                        .to_string()
                 });
                 let mut values = settings.settings().clone();
                 // A client of the durable instance: its sessions start on `durable.model` and save a chosen model
@@ -1805,8 +1802,8 @@ fn share_session(
         let preview = crate::export_html::share_viewer_url(&|k| (env.var)(k), &gist_id);
         Ok(Some(format!(
             "Share URL: {}\nGist: {}",
-            tui::image::hyperlink(&preview, &preview),
-            tui::image::hyperlink(&gist_url, &gist_url)
+            tui::hyperlink(&preview, &preview),
+            tui::hyperlink(&gist_url, &gist_url)
         )))
     })();
     let _ = std::fs::remove_dir_all(&dir);
@@ -2249,25 +2246,22 @@ pub fn recovery_events(event: &Value, lane_open: &mut bool) -> (Vec<LaneEvent>, 
 
 /// `KeybindingsManager.create(agentDir)` (core/keybindings.ts): the user bindings in `<agentDir>/keybindings.json`,
 /// legacy names migrated and ordered by the TypeScript definitions; nothing when the file is missing or malformed.
-pub fn user_keybindings(agent_dir: &std::path::Path, platform: tui::keybindings::Platform) -> UserBindings {
-    tui::keybindings_file::load_user_bindings(
-        &tui::keybindings_file::keybindings_path(agent_dir),
-        &tui::keybindings::app_keybindings(platform),
+pub fn user_keybindings(agent_dir: &std::path::Path, platform: interactive::keybindings::Platform) -> UserBindings {
+    tui::load_user_bindings(
+        &tui::keybindings_path(agent_dir),
+        &interactive::keybindings::app_keybindings(platform),
     )
 }
 
 /// Run the TUI over the link `open_link` opens (its watch events go to the TUI) until the user exits.
 /// The TUI's debug outputs and Termux flag from `env` ([`interactive::run::terminal_debug`]): the redraw log goes to
 /// the agent directory (`logDirectory: agentDir`), dumps to `dump_dir`; the write-log file is named by local time.
-pub fn terminal_debug(
-    env: &Env,
-    dump_dir: &std::path::Path,
-) -> (Option<std::sync::Arc<tui::render_debug::RenderDebug>>, bool) {
+pub fn terminal_debug(env: &Env, dump_dir: &std::path::Path) -> (Option<std::sync::Arc<tui::RenderDebug>>, bool) {
     let now = jsrt::date::now_ms();
     let zone = jsrt::localtime::Zone::from_env((env.var)("TZ").as_deref());
     let fields = zone.fields(now as f64);
     let second = (now.div_euclid(1000) + zone.offset(now as f64)).rem_euclid(60) as u32;
-    let local = tui::render_debug::LocalStamp {
+    let local = tui::LocalStamp {
         year: fields.year,
         month: fields.month,
         day: fields.day,
@@ -2314,15 +2308,12 @@ fn run_tui(
     let caps = crate::terminal_settings::capabilities(env, &settings);
     // `--use-theme <name[/name]>`: this run's theme setting (not saved).
     let theme_setting = parsed.use_theme.clone().or_else(|| settings.theme());
-    let theme_name = theme_setting
-        .clone()
-        .filter(|t| !t.contains('/'))
-        .or_else(|| settings.theme())
-        .unwrap_or_else(|| "dark".into());
-    let theme_json = builtin_theme_json(&theme_name)
-        .or_else(|| builtin_theme_json("dark"))
-        .ok_or("the dark theme is missing")?;
-    let theme = Rc::new(create_theme(&theme_json, ColorMode::from_capabilities(&caps), None)?);
+    let theme = Rc::new(crate::themes::resolve(
+        theme_setting.as_deref(),
+        (env.var)("COLORFGBG").as_deref(),
+        &env.agent_dir().join("themes"),
+        tui::color_mode(&caps),
+    ));
     // What every transcript markdown reads (`getCapabilities().hyperlinks`, `markdown.codeBlockIndent`); this thread
     // paints.
     interactive::render_settings::set(interactive::render_settings::RenderSettings {
@@ -2426,7 +2417,6 @@ fn run_tui(
     let options = AppOptions {
         theme,
         keys: keys(),
-        editor_keys: keys(),
         version: crate::version(),
         cwd: env.cwd.display().to_string(),
         home: Some(env.home.display().to_string()).filter(|h| !h.is_empty()),
@@ -2465,14 +2455,10 @@ fn run_tui(
     // the split viewport (drawn into scrollback as TypeScript's main screen draws them).
     let wezterm = (env.var)("WEZTERM_PANE").is_some_and(|v| !v.is_empty())
         || (env.var)("TERM_PROGRAM").is_some_and(|v| v.eq_ignore_ascii_case("wezterm"));
-    app.set_image_protocol(caps.images.filter(|p| *p == tui::image::ImageProtocol::Kitty), wezterm);
+    app.set_image_protocol(caps.images.filter(|p| *p == tui::ImageProtocol::Kitty), wezterm);
     // The theme setting (custom themes from `<agent dir>/themes`, automatic light/dark pairs) and the presentation
     // settings the TUI applies to itself.
-    let mut registry = tui::theme::registry::ThemeRegistry::new(
-        std::path::PathBuf::new(),
-        env.agent_dir().join("themes"),
-        ColorMode::from_capabilities(&caps),
-    );
+    let mut registry = theme::registry::ThemeRegistry::new(env.agent_dir().join("themes"), tui::color_mode(&caps));
     // `setRegisteredThemes(resourceLoader.getThemes().themes)`: the themes the settings and theme directories register.
     let _ = registry.set_registered_themes(crate::themes::load(env, registry.mode).themes);
     app.set_theme_controller(interactive::theme_setup::ThemeController::new(
@@ -2518,9 +2504,9 @@ fn run_tui(
         });
     }
     spawn_gated_input(ui_tx, app.input_gate());
-    let (debug, termux) = terminal_debug(env, std::path::Path::new(tui::render_debug::RENDER_DUMP_DIR));
+    let (debug, termux) = terminal_debug(env, std::path::Path::new(tui::RENDER_DUMP_DIR));
     app.set_terminal_debug(debug, termux);
-    let result = run_stdout(&mut app, &ui_rx, &tui::terminal::size);
+    let result = run_stdout(&mut app, &ui_rx, &tui::size);
     // Its prompt history is written before the process can exit.
     drop(app);
     let _ = command_tx.send(Command::Shutdown);

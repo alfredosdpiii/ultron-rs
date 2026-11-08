@@ -4,6 +4,7 @@
 
 use std::rc::Rc;
 
+use interactive::keybindings::{Platform, app_keybindings};
 use interactive::word_diff::diff_words;
 use interactive::{
     AssistantBlock, AssistantMessage, AssistantView, BashExecution, FooterModel, FooterView, SummaryMessage,
@@ -11,10 +12,10 @@ use interactive::{
     render_footer,
 };
 use serde_json::Value;
-use tui::components::{Component, Text};
-use tui::keybindings::{KeybindingsManager, Platform, app_keybindings};
-use tui::keys::KeyContext;
-use tui::theme::{ColorMode, Theme, builtin_theme_json, create_theme};
+use theme::{ColorMode, Fg, Theme, builtin_theme_json, create_theme};
+use tui::KeyContext;
+use tui::KeybindingsManager;
+use tui::{Component, Text};
 
 fn fixture() -> Value {
     let path = concat!(env!("CARGO_MANIFEST_DIR"), "/fixtures/conversation-parity.json");
@@ -227,7 +228,7 @@ fn renderers(def: &str) -> Option<ToolRenderers> {
     let call: interactive::CallRenderer = Box::new(|args, theme, _| {
         let code = args["code"].as_str().unwrap_or("?");
         Some(Box::new(Text::new(
-            &theme.fg("accent", &format!("call {code}")).unwrap(),
+            &theme.fg(Fg::Accent, &format!("call {code}")),
             0,
             0,
             None,
@@ -248,7 +249,7 @@ fn renderers(def: &str) -> Option<ToolRenderers> {
             st.is_partial,
             parts.join("|")
         );
-        Some(Box::new(Text::new(&theme.fg("toolOutput", &text).unwrap(), 0, 0, None)))
+        Some(Box::new(Text::new(&theme.fg(Fg::ToolOutput, &text), 0, 0, None)))
     });
     match def {
         "none" => None,
@@ -391,7 +392,7 @@ fn interactive_footer_prints_a_nan_context_percent_like_to_fixed() {
     };
     let lines: Vec<String> = render_footer(theme, &view, 120)
         .iter()
-        .map(|l| tui::utils::strip_terminal_sequences(l))
+        .map(|l| tui::strip_terminal_sequences(l))
         .collect();
     assert!(lines.iter().any(|l| l.contains("NaN%/200k")), "{lines:?}");
 }

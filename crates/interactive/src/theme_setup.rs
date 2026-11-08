@@ -13,8 +13,8 @@
 //! arrive, and a scheme report wins over the background reply (`detectTerminalThemeForAuto`). Nothing waits for an
 //! answer (TypeScript waits up to 100 ms at startup), so the input pump and the paint path never block.
 
-use tui::theme::registry::ThemeRegistry;
-use tui::theme::{
+use theme::registry::ThemeRegistry;
+use theme::{
     TerminalTheme, Theme, detect_terminal_background_from_env, detect_terminal_background_theme,
     parse_auto_theme_setting, resolve_theme_setting,
 };
@@ -171,10 +171,7 @@ impl ThemeController {
 
     /// `getTerminalTheme`.
     pub fn terminal_theme(&self) -> &'static str {
-        match self.terminal {
-            TerminalTheme::Light => "light",
-            TerminalTheme::Dark => "dark",
-        }
+        self.terminal.name()
     }
 
     /// `getThemeSelection`.
@@ -198,10 +195,11 @@ impl ThemeController {
             )),
             _ => None,
         };
-        let theme = self.registry.current().cloned().unwrap_or_else(|| {
-            let dark = tui::theme::builtin_theme_json("dark").expect("the dark theme");
-            tui::theme::create_theme(&dark, self.registry.mode, None).expect("the dark theme resolves")
-        });
+        let theme = self
+            .registry
+            .current()
+            .cloned()
+            .unwrap_or_else(|| theme::fallback_theme(self.registry.mode));
         (theme, error, ok)
     }
 

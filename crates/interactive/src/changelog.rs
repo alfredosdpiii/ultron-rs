@@ -1,8 +1,8 @@
 //! `/changelog` (`utils/changelog.ts`): the package's CHANGELOG.md split into `## [x.y.z]` entries, links pinned to
 //! the release tag, oldest entry first.
 
-use tui::markdown::Token;
-use tui::marked::markdown_tokens;
+use tui::Token;
+use tui::markdown_tokens;
 
 const GITHUB_REPO: &str = "earendil-works/pi";
 const LINK_BASE: &str = "packages/coding-agent";

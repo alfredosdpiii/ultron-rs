@@ -8,11 +8,11 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender};
 use std::time::{Duration, Instant};
 
-use tui::keyboard_protocol::KeyboardProtocol;
-use tui::screen::AltScreen;
-use tui::terminal::Terminal;
-use tui::tty_writer::TtyWriter;
-use tui::viewport::{GateDecision, RenderGate, ViewportRenderer};
+use tui::AltScreen;
+use tui::KeyboardProtocol;
+use tui::Terminal;
+use tui::TtyWriter;
+use tui::{GateDecision, RenderGate, ViewportRenderer};
 
 use crate::app::App;
 use crate::lane::LaneEvent;
@@ -34,7 +34,7 @@ const ANIMATION: Duration = Duration::from_millis(80);
 /// How often an idle loop looks at the terminal size.
 const IDLE: Duration = Duration::from_millis(100);
 /// The editor's debounce for `@` and trigger-character completion.
-const DEBOUNCE: Duration = Duration::from_millis(tui::editor::AUTOCOMPLETE_DEBOUNCE_MS);
+const DEBOUNCE: Duration = Duration::from_millis(tui::AUTOCOMPLETE_DEBOUNCE_MS);
 
 /// How long exit waits for the writer thread to drain.
 const EXIT_FLUSH: Duration = Duration::from_secs(1);
@@ -76,7 +76,7 @@ impl std::io::Read for GatedStdin {
 
 /// Forward stdin input sequences into `tx`, not reading while `paused`.
 pub fn spawn_gated_input(tx: Sender<UiEvent>, paused: Arc<AtomicBool>) {
-    let input = tui::terminal::spawn_input_pump(GatedStdin { paused });
+    let input = tui::spawn_input_pump(GatedStdin { paused });
     std::thread::spawn(move || {
         for data in input {
             if tx.send(UiEvent::Input(data)).is_err() {
@@ -139,15 +139,15 @@ pub fn terminal_debug(
     var: &dyn Fn(&str) -> Option<String>,
     log_dir: &std::path::Path,
     dump_dir: &std::path::Path,
-    local: tui::render_debug::LocalStamp,
+    local: tui::LocalStamp,
     pid: u32,
     clock: Box<dyn Fn() -> i64 + Send + Sync>,
-) -> (Option<Arc<tui::render_debug::RenderDebug>>, bool) {
+) -> (Option<Arc<tui::RenderDebug>>, bool) {
     let write_log = var(TUI_WRITE_LOG_ENV).and_then(|value| {
         let is_dir = std::fs::metadata(&value).is_ok_and(|m| m.is_dir());
-        tui::render_debug::write_log_path(&value, is_dir, local, pid)
+        tui::write_log_path(&value, is_dir, local, pid)
     });
-    let debug = tui::render_debug::RenderDebug::from_env(var, write_log, log_dir, dump_dir, clock);
+    let debug = tui::RenderDebug::from_env(var, write_log, log_dir, dump_dir, clock);
     let termux = var("TERMUX_VERSION").is_some_and(|v| !v.is_empty());
     (debug.map(Arc::new), termux)
 }
@@ -165,14 +165,13 @@ pub fn run<W: Write>(
 /// The product entry point on the process terminal: starts the background services of the enabled additions
 /// ([`crate::qol::install_services`]) and paints through the writer thread when `qol.tty_writer` is on.
 pub fn run_stdout(app: &mut App, events: &Receiver<UiEvent>, size: &dyn Fn() -> (u16, u16)) -> std::io::Result<()> {
-    crate::qol::install_services(app, std::env::var("PATH").ok());
+    crate::qol::install_services(app, std::env::var("PATH").ok())?;
     app.set_suspend_hook(Box::new(suspend_process));
     // Fullscreen owns the mouse (wheel, scrollbar, selection); the tracking mode follows the terminal multiplexer.
-    app.set_mouse_tracking(Some(tui::fullscreen::mouse_tracking(&|name| std::env::var(name).ok())));
-    app.set_right_click_paste(tui::right_click_paste::right_click_paste_enabled(
-        tui::clipboard_copy::platform(),
-        &|name| std::env::var(name).ok(),
-    ));
+    app.set_mouse_tracking(Some(tui::mouse_tracking(&|name| std::env::var(name).ok())));
+    app.set_right_click_paste(tui::right_click_paste_enabled(tui::platform(), &|name| {
+        std::env::var(name).ok()
+    }));
     let mut terminal = Terminal::new(std::io::stdout());
     if app.qol().tty_writer {
         let tty = TtyWriter::stdout()?;
@@ -469,7 +468,7 @@ pub fn paint_loop_with(
 fn leave_bytes(app: &App, split: bool) -> &'static str {
     match (split, app.image_protocol) {
         (true, _) => "\x1b[?2004l\x1b[?25h\r\n",
-        (false, Some(tui::image::ImageProtocol::Kitty)) => "\x1b_Ga=d,d=A,q=2\x1b\\\x1b[?2004l\x1b[?25h\x1b[?1049l",
+        (false, Some(tui::ImageProtocol::Kitty)) => "\x1b_Ga=d,d=A,q=2\x1b\\\x1b[?2004l\x1b[?25h\x1b[?1049l",
         (false, _) => "\x1b[?2004l\x1b[?25h\x1b[?1049l",
     }
 }

@@ -3,9 +3,8 @@
 
 use std::sync::{Arc, Mutex};
 
-use tui::attachments::*;
-use tui::clipboard::*;
-use tui::utils::{strip_terminal_sequences, visible_width};
+use tui::*;
+use tui::{strip_terminal_sequences, visible_width};
 
 mod support;
 use support::latch::{HANG_GUARD, Latch};
@@ -121,10 +120,10 @@ fn tui_attachments_paste_routing() {
         PasteAction::Text("line1\nline2".into())
     );
     assert_eq!(RAW_PASTE_KEY, "ctrl+shift+v");
-    assert!(tui::keys::matches_key(
+    assert!(tui::matches_key(
         "\x1b[118;6u",
         RAW_PASTE_KEY,
-        tui::keys::KeyContext::default()
+        tui::KeyContext::default()
     ));
 }
 
@@ -170,9 +169,9 @@ impl Clipboard for FakeClipboard {
         *self.text.lock().unwrap() = text.to_string();
         Ok(())
     }
-    fn get_image(&mut self) -> Result<tui::clipboard::ClipboardImage, String> {
+    fn get_image(&mut self) -> Result<tui::ClipboardImage, String> {
         let bytes = self.image.clone().ok_or("no image")?;
-        Ok(tui::clipboard::ClipboardImage {
+        Ok(tui::ClipboardImage {
             bytes,
             mime_type: "image/png".into(),
         })
@@ -188,7 +187,7 @@ fn tui_clipboard_service_is_off_thread_and_ordered() {
         ..FakeClipboard::default()
     };
     let store = fake.text.clone();
-    let svc = ClipboardService::spawn(fake);
+    let svc = ClipboardService::spawn(fake).unwrap();
     svc.copy("yanked");
     let mut sink = svc.yank_sink();
     sink("from vim");
@@ -216,7 +215,7 @@ fn tui_clipboard_service_is_off_thread_and_ordered() {
         image: Some(b"\x89PNGdata".to_vec()),
         ..FakeClipboard::default()
     };
-    let svc = ClipboardService::spawn(img);
+    let svc = ClipboardService::spawn(img).unwrap();
     svc.request(ClipboardRead::ImageOrText);
     assert_eq!(
         svc.replies().recv_timeout(HANG_GUARD).unwrap(),

@@ -12,11 +12,12 @@ use base64::Engine;
 use base64::engine::general_purpose::STANDARD as B64;
 use interactive::chat::{ChatStyle, ChatView, ImageSettings};
 use interactive::key_text;
+use interactive::keybindings::{Platform, app_keybindings};
 use serde_json::{Value, json};
-use tui::image::{DEFAULT_CELL, ImageProtocol};
-use tui::keybindings::{KeybindingsManager, Platform, app_keybindings};
-use tui::keys::KeyContext;
-use tui::theme::{ColorMode, builtin_theme_json, create_theme};
+use theme::{ColorMode, builtin_theme_json, create_theme};
+use tui::KeyContext;
+use tui::KeybindingsManager;
+use tui::{DEFAULT_CELL, ImageProtocol};
 
 fn fixture() -> Value {
     serde_json::from_str(include_str!("../fixtures/tool-images.json")).unwrap()
@@ -224,13 +225,14 @@ fn interactive_tool_images_cell_size_answer_like_consume_cell_size_response() {
 mod app {
     use interactive::app::{App, AppOptions};
     use interactive::history::PromptHistoryStore;
+    use interactive::keybindings::Platform;
+    use interactive::keybindings::native_app_keybindings;
     use interactive::lane::{LaneClient, LaneEvent, ModelInfo, SessionOpened};
     use serde_json::json;
     use std::rc::Rc;
-    use tui::image::ImageProtocol;
-    use tui::keybindings::{KeybindingsManager, Platform};
-    use tui::qol_keys::native_app_keybindings;
-    use tui::theme::{ColorMode, builtin_theme_json, create_theme};
+    use theme::{ColorMode, builtin_theme_json, create_theme};
+    use tui::ImageProtocol;
+    use tui::KeybindingsManager;
 
     struct Quiet;
 
@@ -272,7 +274,6 @@ mod app {
             AppOptions {
                 theme,
                 keys: keys(),
-                editor_keys: keys(),
                 version: "1.2.3".into(),
                 cwd: "/p".into(),
                 home: None,
@@ -312,7 +313,7 @@ mod app {
         let screen = app
             .render(100, 40)
             .iter()
-            .map(|l| tui::utils::strip_terminal_sequences(l))
+            .map(|l| tui::strip_terminal_sequences(l))
             .collect::<Vec<_>>()
             .join("\n");
         app.handle_input("\x1b");

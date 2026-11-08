@@ -11,27 +11,27 @@ use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+use crate::status_git::GitSnapshot;
+use crate::status_line::{StatusData, StreamState, ThemeStyle, Usage, VimDisplay, VimStatus, render_status_line};
 use serde_json::Value;
-use tui::attachments::{Attachments, PASTE_END, PASTE_START, PasteAction, chip_band, classify_paste, draft_chips};
-use tui::autocomplete::{AutocompleteItem, SlashCommand};
-use tui::clipboard::{ClipboardRead, ClipboardReply, ClipboardService};
-use tui::components::{Component, Text};
-use tui::editor::Editor;
-use tui::keybindings::KeybindingsManager;
-use tui::screen::{StackEntry, stack_lines};
-use tui::select::{SelectEvent, SelectItem, SelectList, SelectListTheme};
-use tui::status_git::GitSnapshot;
-use tui::status_line::{StatusData, StreamState, ThemeStyle, Usage, VimDisplay, VimStatus, render_status_line};
-use tui::theme::Theme;
-use tui::utils::truncate_to_width;
-use tui::viewport::{FramePlan, HistoryBatch, HistoryKind};
-use tui::vim::VimMode;
-use tui::vim_editor::VimEditor;
+use theme::{Bg, Fg, Theme};
+use tui::Editor;
+use tui::KeybindingsManager;
+use tui::VimEditor;
+use tui::VimMode;
+use tui::truncate_to_width;
+use tui::{Attachments, PASTE_END, PASTE_START, PasteAction, chip_band, classify_paste, draft_chips};
+use tui::{AutocompleteItem, SlashCommand};
+use tui::{ClipboardRead, ClipboardReply, ClipboardService};
+use tui::{Component, Text};
+use tui::{FramePlan, HistoryBatch, HistoryKind};
+use tui::{SelectEvent, SelectItem, SelectList, SelectListTheme};
+use tui::{StackEntry, stack_lines};
 
 use crate::agent_hub::{AgentHub, HubEvent};
 use crate::chat::{ChatStyle, ChatView, user_message_text};
 use crate::commands::{COMMANDS, MarkdownNotice, SessionStats, hotkeys_markdown, key_display_text, session_info};
-use crate::components::{BashExecution, FooterModel, FooterView, bold, fg, key_text, render_footer};
+use crate::components::{BashExecution, FooterModel, FooterView, bold, key_text, render_footer};
 use crate::copy_targets::TranscriptEntry;
 use crate::header::StartupHeader;
 use crate::history::{PromptHistoryStore, TimedPrompt};
@@ -86,9 +86,8 @@ pub fn env_off(value: Option<&str>) -> bool {
 /// What the app was started with.
 pub struct AppOptions {
     pub theme: Rc<Theme>,
-    /// Two managers over the same bindings: one for the editor, one for the app's own keys.
+    /// The app's keys; the editor and every dialog match with clones of it.
     pub keys: KeybindingsManager,
-    pub editor_keys: KeybindingsManager,
     pub version: String,
     pub cwd: String,
     pub home: Option<String>,
@@ -153,7 +152,7 @@ fn thinking_description(level: &str) -> Option<&'static str> {
 
 /// A full-screen overlay (the omp-inspired additions, [`QolSettings::overlays`]).
 enum Overlay {
-    Search(Box<tui::transcript_search::TranscriptSearch>),
+    Search(Box<crate::transcript_search::TranscriptSearch>),
     Picker(Box<TranscriptPicker>),
     ModelHub(Box<ModelHub>),
     AgentHub(Box<AgentHub>),
@@ -192,7 +191,7 @@ enum Panel {
     LoginPrompt {
         provider: crate::selectors::AuthProvider,
         method: String,
-        input: Box<tui::input::Input>,
+        input: Box<tui::Input>,
     },
     /// A `/mcp` `input` dialog (`#showTextInput`): the request id.
     ExtensionInput {
@@ -255,17 +254,17 @@ struct Selection {
 /// in its place, and the transcript with the rows of each item.
 #[derive(Clone, Debug, Default)]
 struct MouseLayout {
-    slot: Option<tui::scroll_view::Rect>,
-    transcript: Option<tui::scroll_view::Rect>,
+    slot: Option<tui::Rect>,
+    transcript: Option<tui::Rect>,
     /// Header rows above the first transcript item.
     header_rows: usize,
     item_heights: Vec<usize>,
 }
 
-/// The dock slot's [`tui::fullscreen::MouseTarget`] id; transcript item `i` is `i + 1`.
+/// The dock slot's [`tui::MouseTarget`] id; transcript item `i` is `i + 1`.
 const SLOT_TARGET: usize = 0;
 
-/// The app's components for [`tui::fullscreen::FullscreenViewport::handle_input_with`]: they change themselves;
+/// The app's components for [`tui::FullscreenViewport::handle_input_with`]: they change themselves;
 /// what the app does about a selection or a settings change is collected and done after the gesture.
 struct AppMouse<'a> {
     layout: &'a MouseLayout,
@@ -284,12 +283,12 @@ struct AppMouse<'a> {
 
 impl AppMouse<'_> {
     /// The dock slot's component (`event` in the slot's rows).
-    fn slot_mouse(&mut self, event: &tui::mouse::MouseEvent) -> Option<tui::mouse::MouseResult> {
+    fn slot_mouse(&mut self, event: &tui::MouseEvent) -> Option<tui::MouseResult> {
         match (self.selection.as_mut(), self.panel.as_mut()) {
             (Some(selection), _) => {
                 // The title (`Text` with padding 1) above the list.
                 let title = Text::new(&bold(&selection.title), 1, 1, None).render(event.width).len() as i64;
-                let local = tui::mouse::MouseEvent {
+                let local = tui::MouseEvent {
                     y: event.y - title,
                     ..*event
                 };
@@ -316,13 +315,13 @@ impl AppMouse<'_> {
             ) => {
                 // The rows `LoginDialogComponent` shows its prompt on: border, title, spacer, the message.
                 let text = |s: &str| Text::new(s, 1, 0, None).render(event.width).len() as i64;
-                let title = text(&fg(self.theme, "accent", &bold(&format!("Login to {}", provider.name))));
-                let top = 1 + title + 1 + text(&fg(self.theme, "text", &format!("Enter {method}")));
+                let title = text(&self.theme.fg(Fg::Accent, &bold(&format!("Login to {}", provider.name))));
+                let top = 1 + title + 1 + text(&self.theme.fg(Fg::Text, &format!("Enter {method}")));
                 let rows = input.render(event.width).len() as i64;
                 if event.y < top || event.y >= top + rows {
                     return None;
                 }
-                let local = tui::mouse::MouseEvent {
+                let local = tui::MouseEvent {
                     y: event.y - top,
                     ..*event
                 };
@@ -339,23 +338,19 @@ impl AppMouse<'_> {
         }
     }
 
-    fn dispatch(
-        &mut self,
-        target: tui::fullscreen::MouseTarget,
-        event: &tui::mouse::MouseEvent,
-    ) -> Option<tui::fullscreen::MouseDispatch> {
+    fn dispatch(&mut self, target: tui::MouseTarget, event: &tui::MouseEvent) -> Option<tui::MouseDispatch> {
         let result = if target.id == SLOT_TARGET {
             self.slot_mouse(event)?
         } else {
             self.chat.handle_item_mouse(target.id - 1, event)?
         };
-        Some(tui::fullscreen::MouseDispatch { result, target })
+        Some(tui::MouseDispatch { result, target })
     }
 }
 
-impl tui::fullscreen::MouseTargets for AppMouse<'_> {
-    fn dispatch_at(&mut self, event: &tui::mouse::MouseEvent) -> Option<tui::fullscreen::MouseDispatch> {
-        use tui::fullscreen::{MouseTarget, retarget_mouse_event};
+impl tui::MouseTargets for AppMouse<'_> {
+    fn dispatch_at(&mut self, event: &tui::MouseEvent) -> Option<tui::MouseDispatch> {
+        use tui::{MouseTarget, retarget_mouse_event};
         let (x, y) = (event.screen_x, event.screen_y);
         if let Some(rect) = self.layout.slot.filter(|r| r.contains(x, y)) {
             let target = MouseTarget {
@@ -387,11 +382,7 @@ impl tui::fullscreen::MouseTargets for AppMouse<'_> {
         None
     }
 
-    fn dispatch_to(
-        &mut self,
-        target: &tui::fullscreen::MouseTarget,
-        event: &tui::mouse::MouseEvent,
-    ) -> Option<tui::fullscreen::MouseDispatch> {
+    fn dispatch_to(&mut self, target: &tui::MouseTarget, event: &tui::MouseEvent) -> Option<tui::MouseDispatch> {
         self.dispatch(*target, event)
     }
 }
@@ -476,7 +467,7 @@ pub struct App {
     scoped_ids: Option<Vec<String>>,
     overlay: Option<Overlay>,
     /// Esc-Esc on an idle, empty editor (the rewind selector).
-    escapes: tui::qol_keys::DoubleTap,
+    escapes: crate::keybindings::DoubleTap,
     /// Rewind waits for the session's user-message entries.
     rewind_pending: bool,
     /// The rewind selector's turns: their ids and whether each is a session user entry.
@@ -518,8 +509,6 @@ pub struct App {
     extension_dialogs: std::collections::VecDeque<Value>,
     /// A `/mcp` dialog is open.
     extension_dialog_open: bool,
-    /// The editor's keybindings (dialogs with an editor of their own).
-    editor_keys: KeybindingsManager,
     /// The clock (tests drive double taps, countdowns and polls with their own).
     clock: Box<dyn Fn() -> Instant>,
     /// The theme setting, its live application and previews.
@@ -527,7 +516,7 @@ pub struct App {
     /// The terminal appearance last told to the client ([`LaneClient::terminal_theme`]).
     told_terminal_theme: Option<&'static str>,
     /// Takes the OSC 11 background replies out of the input.
-    osc11: tui::terminal_colors::Osc11Reader,
+    osc11: tui::Osc11Reader,
     /// The terminal's color palette notifications are on (`CSI ? 2031 h` sent, not yet turned off).
     scheme_notifications: bool,
     /// `showHardwareCursor`: the painter shows the terminal's cursor at the editor's.
@@ -536,7 +525,7 @@ pub struct App {
     pub clear_on_shrink: bool,
     /// The terminal's image protocol on the alternate screen (`TuiAltScreen.imageProtocol`) and whether it is
     /// WezTerm; the painter places and clears images with them.
-    pub image_protocol: Option<tui::image::ImageProtocol>,
+    pub image_protocol: Option<tui::ImageProtocol>,
     pub wezterm: bool,
     /// `doubleEscapeAction`: `tree`, `fork` or `none`.
     double_escape_action: String,
@@ -552,11 +541,11 @@ pub struct App {
     /// Clipboard reads waiting for their answer, oldest first: true for a right-click paste, false for Ctrl+V.
     pending_reads: std::collections::VecDeque<bool>,
     /// The fullscreen transcript viewport (`TuiAltScreen`): scroll position, selection, scrollbar, flashes.
-    viewport: tui::fullscreen::FullscreenViewport,
+    viewport: tui::FullscreenViewport,
     /// The mouse tracking the alternate screen turns on (`None`: none, as in tests that paint frames).
     mouse_tracking: Option<&'static str>,
     /// The TUI debug outputs the environment turned on (`PI_TUI_WRITE_LOG`, `PI_TUI_DEBUG_REDRAW`, `PI_TUI_DEBUG`).
-    render_debug: Option<std::sync::Arc<tui::render_debug::RenderDebug>>,
+    render_debug: Option<std::sync::Arc<tui::RenderDebug>>,
     /// Running in Termux (`TERMUX_VERSION`): the split viewport diffs a height change.
     termux: bool,
     /// Where a pasted clipboard image is saved (`tmpdir()`).
@@ -589,15 +578,15 @@ pub struct App {
     mouse_layout: MouseLayout,
 }
 
-fn select_theme(t: &Rc<Theme>, scroll: &'static str, no_match: &'static str) -> SelectListTheme {
-    let style = |color: &'static str| {
+fn select_theme(t: &Rc<Theme>, scroll: Fg, no_match: Fg) -> SelectListTheme {
+    let style = |color: Fg| {
         let t = Rc::clone(t);
-        Box::new(move |s: &str| fg(&t, color, s)) as Box<dyn Fn(&str) -> String>
+        Box::new(move |s: &str| t.fg(color, s)) as Box<dyn Fn(&str) -> String>
     };
     SelectListTheme {
-        selected_prefix: style("accent"),
-        selected_text: style("accent"),
-        description: style("muted"),
+        selected_prefix: style(Fg::Accent),
+        selected_text: style(Fg::Accent),
+        description: style(Fg::Muted),
         scroll_info: style(scroll),
         no_match: style(no_match),
     }
@@ -746,15 +735,12 @@ fn slash_commands(models: &[ModelInfo], qol: &QolSettings) -> Vec<SlashCommand> 
 impl App {
     pub fn new(options: AppOptions, client: Box<dyn LaneClient>) -> Self {
         let theme = options.theme;
-        let editor_keys = options.editor_keys.clone();
-        let editor_ctx = options.editor_keys.ctx();
         let mut editor = Editor::new(
-            options.editor_keys,
-            editor_ctx,
+            options.keys.clone(),
             thinking_border(&theme, &options.thinking_level),
             1,
         );
-        editor.set_select_list_theme(select_theme(&theme, "muted", "muted"));
+        editor.set_select_list_theme(select_theme(&theme, Fg::Muted, Fg::Muted));
         let qol = options.qol;
         let commands = slash_commands(&options.models, &qol);
         editor.set_autocomplete_provider(crate::qol::autocomplete_provider(
@@ -816,7 +802,7 @@ impl App {
             exit: false,
             terminal_writes: Vec::new(),
             rows: 24,
-            vim: qol.vim.then(|| VimEditor::new(editor_ctx)),
+            vim: qol.vim.then(VimEditor::new),
             qol,
             attachments: Attachments::default(),
             clipboard: None,
@@ -863,10 +849,9 @@ impl App {
             rlm_agents: Value::Null,
             rlm_clock: rlm_views::RlmClock::new(),
             clock: Box::new(Instant::now),
-            editor_keys,
             theme_controller: None,
             told_terminal_theme: None,
-            osc11: tui::terminal_colors::Osc11Reader::new(),
+            osc11: tui::Osc11Reader::new(),
             scheme_notifications: false,
             show_hardware_cursor: false,
             image_protocol: None,
@@ -880,7 +865,7 @@ impl App {
             pending_copies: std::collections::VecDeque::new(),
             pending_reads: std::collections::VecDeque::new(),
             viewport: {
-                let mut viewport = tui::fullscreen::FullscreenViewport::default();
+                let mut viewport = tui::FullscreenViewport::default();
                 // The frames keep the OSC 133 marks the TUI always painted (the qol_parity byte guard); TS strips
                 // them, which no terminal shows differently.
                 viewport.keep_zone_marks = true;
@@ -912,11 +897,6 @@ impl App {
     /// the Vim layer match Kitty input (`shift+enter` from `ESC CR` or LF, ...).
     pub fn set_kitty_protocol_active(&mut self, active: bool) {
         self.keys.set_kitty_active(active);
-        self.editor_keys.set_kitty_active(active);
-        self.editor.set_kitty_active(active);
-        if let Some(vim) = self.vim.as_mut() {
-            vim.ctx.kitty_active = active;
-        }
     }
 
     /// Whether key matching treats the input as Kitty keyboard protocol input.
@@ -926,9 +906,8 @@ impl App {
 
     /// `KeybindingsManager.setUserBindings`: the app's keys, the editor's and every component built from them
     /// afterwards resolve `user`.
-    pub fn set_user_keybindings(&mut self, user: tui::keybindings_file::UserBindings) {
+    pub fn set_user_keybindings(&mut self, user: tui::UserBindings) {
         self.keys.set_user_bindings(user.clone());
-        self.editor_keys.set_user_bindings(user.clone());
         self.editor.set_user_keybindings(user);
         self.chat.cancel_key = key_text(&self.keys, "tui.select.cancel", false);
     }
@@ -1002,10 +981,6 @@ impl App {
 
     fn now(&self) -> Instant {
         (self.clock)()
-    }
-
-    fn editor_keys(&self) -> KeybindingsManager {
-        self.editor_keys.clone()
     }
 
     /// Where a pasted clipboard image is saved (default: the system temp directory).
@@ -1112,8 +1087,7 @@ impl App {
     /// `queryTerminalBackgroundColor`: the OSC 11 query; the reply arrives as input ([`App::handle_input`]).
     fn query_background(&mut self, query: bool) {
         if query {
-            self.terminal_writes
-                .push(tui::terminal_colors::OSC11_BACKGROUND_QUERY.to_string());
+            self.terminal_writes.push(tui::OSC11_BACKGROUND_QUERY.to_string());
         }
     }
 
@@ -1229,7 +1203,7 @@ impl App {
 
     /// Opens hyperlinks: an OSC 8 link clicked in the fullscreen transcript (`openUrl`) and a link chosen in the copy
     /// picker. Without one, clicks select as usual and nothing opens.
-    pub fn set_url_opener(&mut self, opener: tui::fullscreen::UrlOpener) {
+    pub fn set_url_opener(&mut self, opener: tui::UrlOpener) {
         self.viewport.open_url = Some(opener);
     }
 
@@ -1364,8 +1338,8 @@ impl App {
     /// A clipboard image (base64) saved as `<tmp>/ultron-clipboard-<id>.<ext>`, the extension by its MIME type
     /// (`extensionForImageMimeType`, else `png`); its path.
     fn save_clipboard_image(&self, data: &str, mime_type: &str) -> Option<String> {
-        let bytes = tui::clipboard::image_bytes(data)?;
-        let extension = tui::clipboard_image::extension_for_image_mime_type(mime_type).unwrap_or("png");
+        let bytes = jsrt::base64::atob(data)?;
+        let extension = tui::extension_for_image_mime_type(mime_type).unwrap_or("png");
         let nanos = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map_or(0, |d| d.as_nanos());
@@ -1408,7 +1382,7 @@ impl App {
         }
     }
 
-    /// The mouse tracking the alternate screen turns on ([`tui::fullscreen::mouse_tracking`] of the terminal's
+    /// The mouse tracking the alternate screen turns on ([`tui::mouse_tracking`] of the terminal's
     /// environment); the product sets it, frames painted in tests leave the mouse alone.
     pub fn set_mouse_tracking(&mut self, mouse: Option<&'static str>) {
         self.mouse_tracking = mouse;
@@ -1419,12 +1393,12 @@ impl App {
     }
 
     /// The terminal environment's debug outputs and Termux flag ([`crate::run::terminal_debug`]).
-    pub fn set_terminal_debug(&mut self, debug: Option<std::sync::Arc<tui::render_debug::RenderDebug>>, termux: bool) {
+    pub fn set_terminal_debug(&mut self, debug: Option<std::sync::Arc<tui::RenderDebug>>, termux: bool) {
         self.render_debug = debug;
         self.termux = termux;
     }
 
-    pub fn render_debug(&self) -> Option<std::sync::Arc<tui::render_debug::RenderDebug>> {
+    pub fn render_debug(&self) -> Option<std::sync::Arc<tui::RenderDebug>> {
         self.render_debug.clone()
     }
 
@@ -1432,14 +1406,14 @@ impl App {
         self.termux
     }
 
-    /// Right-click paste in fullscreen ([`tui::right_click_paste::right_click_paste_enabled`] of the terminal's
+    /// Right-click paste in fullscreen ([`tui::right_click_paste_enabled`] of the terminal's
     /// platform and environment; off unless the product turns it on).
     pub fn set_right_click_paste(&mut self, enabled: bool) {
         self.viewport.right_click_paste = enabled;
     }
 
     /// The fullscreen transcript viewport.
-    pub fn viewport(&self) -> &tui::fullscreen::FullscreenViewport {
+    pub fn viewport(&self) -> &tui::FullscreenViewport {
         &self.viewport
     }
 
@@ -1467,7 +1441,7 @@ impl App {
         if self.qol.viewport_split {
             return false;
         }
-        if self.overlay.is_some() && !tui::fullscreen::is_focus_report(data) {
+        if self.overlay.is_some() && !tui::is_focus_report(data) {
             return false;
         }
         let now = self.now();
@@ -1495,13 +1469,13 @@ impl App {
             self.settings_event(Some(event));
         }
         match input {
-            tui::fullscreen::ViewportInput::Pass => false,
-            tui::fullscreen::ViewportInput::Consumed => true,
-            tui::fullscreen::ViewportInput::Copy(text) => {
+            tui::ViewportInput::Pass => false,
+            tui::ViewportInput::Consumed => true,
+            tui::ViewportInput::Copy(text) => {
                 self.copy_selection(&text);
                 true
             }
-            tui::fullscreen::ViewportInput::RightClickPaste => {
+            tui::ViewportInput::RightClickPaste => {
                 if let Some(clipboard) = &self.clipboard {
                     self.pending_reads.push_back(true);
                     clipboard.request(ClipboardRead::Text);
@@ -1559,13 +1533,7 @@ impl App {
         let vim = self.vim.as_ref().map(|v| {
             let indicator = v.indicator(&self.editor);
             VimStatus {
-                mode: match indicator.mode {
-                    VimMode::Insert => tui::status_line::VimMode::Insert,
-                    VimMode::Normal => tui::status_line::VimMode::Normal,
-                    VimMode::Visual => tui::status_line::VimMode::Visual,
-                    VimMode::VisualLine => tui::status_line::VimMode::VisualLine,
-                    VimMode::Replace => tui::status_line::VimMode::Replace,
-                },
+                mode: indicator.mode,
                 pending: indicator.pending,
                 selected_lines: indicator.selected_lines,
                 display: VimDisplay::Text,
@@ -1757,7 +1725,7 @@ impl App {
         let bash = self.editor.text().trim_start().starts_with('!');
         self.editor.border_color = if bash {
             let t = Rc::clone(&self.theme);
-            Box::new(move |s| t.bash_mode_border(s))
+            Box::new(move |s| t.fg(Fg::BashMode, s))
         } else {
             thinking_border(&self.theme, &self.thinking_level)
         };
@@ -1883,7 +1851,7 @@ impl App {
                 self.chat.add_message(&message);
                 // A Claude turn that switched to API credits (or back) says so once, under its answer.
                 if let Some(notice) = crate::lane::route_notice(&message) {
-                    self.notice(&fg(&self.theme, "warning", &notice));
+                    self.notice(&self.theme.fg(Fg::Warning, &notice));
                 }
                 self.transcript.push(message);
             }
@@ -1911,7 +1879,7 @@ impl App {
                 self.session_name = name;
                 self.update_title();
                 if let Some(name) = confirmed.then(|| self.pending_name.take()).flatten() {
-                    self.notice(&fg(&self.theme, "dim", &format!("Session name set: {name}")));
+                    self.notice(&self.theme.fg(Fg::Dim, &format!("Session name set: {name}")));
                 }
             }
             LaneEvent::Model(model) => {
@@ -1926,7 +1894,7 @@ impl App {
                 self.update_editor_border();
             }
             LaneEvent::Notice(text) => self.notice(&text),
-            LaneEvent::GoalReply(text) => self.notice(&fg(&self.theme, "dim", &text)),
+            LaneEvent::GoalReply(text) => self.notice(&self.theme.fg(Fg::Dim, &text)),
             LaneEvent::BashDone(result) => self.bash_done(result),
             LaneEvent::BugSummary(result) => self.bug_summary_done(result),
             LaneEvent::BugReport(outcome) => self.bug_report_done(outcome),
@@ -1944,7 +1912,7 @@ impl App {
                 delay_ms,
                 error,
             } => {
-                self.notice(&fg(&self.theme, "error", &format!("Error: {error}")));
+                self.notice(&self.theme.fg(Fg::Error, &format!("Error: {error}")));
                 self.chat.set_retry_indicator(attempt, max_attempts, delay_ms);
             }
             LaneEvent::SummarizationRetryStarted { branch_summary, reason } => {
@@ -1971,7 +1939,7 @@ impl App {
                 self.chat.clear_retry_indicator();
                 if let Some(error) = failed {
                     let text = format!("Error: Retry failed after {attempt} attempts: {error}");
-                    self.notice(&fg(&self.theme, "error", &text));
+                    self.notice(&self.theme.fg(Fg::Error, &text));
                 }
             }
             LaneEvent::Tree { tree, leaf } => self.show_tree(tree, leaf, None),
@@ -2361,11 +2329,11 @@ impl App {
                 .find(|m| m["role"] == "assistant")
                 .is_some_and(|m| m["stopReason"] == "error");
         let outcome = if errored {
-            tui::notify::TurnOutcome::Error
+            crate::notify::TurnOutcome::Error
         } else {
-            tui::notify::TurnOutcome::Complete
+            crate::notify::TurnOutcome::Complete
         };
-        let message = tui::notify::Message::turn(self.session_name.as_deref(), outcome);
+        let message = crate::notify::Message::turn(self.session_name.as_deref(), outcome);
         if let Some(notify) = self.notify.as_mut() {
             notify(message);
         }
@@ -2397,7 +2365,7 @@ impl App {
     /// The terminal draws tool images inline with `protocol` (Kitty; TypeScript's alternate screen turns iTerm2
     /// images off): tool results draw their images, and the terminal is asked for its cell size (`CSI 16 t`,
     /// `queryCellSize`), whose answer arrives as input.
-    pub fn set_image_protocol(&mut self, protocol: Option<tui::image::ImageProtocol>, wezterm: bool) {
+    pub fn set_image_protocol(&mut self, protocol: Option<tui::ImageProtocol>, wezterm: bool) {
         self.image_protocol = protocol;
         self.wezterm = wezterm;
         let mut images = self.chat.image_settings();
@@ -2426,7 +2394,7 @@ impl App {
         if let Some((height, width)) = parse_cell_size_response(data) {
             if height > 0 && width > 0 {
                 let mut images = self.chat.image_settings();
-                images.cell = tui::image::Dimensions {
+                images.cell = tui::Dimensions {
                     width_px: width,
                     height_px: height,
                 };
@@ -2456,7 +2424,7 @@ impl App {
             return;
         }
         // tui.ts `handleInput`: Kitty key releases never reach a component (none wants them).
-        if tui::editor::is_key_release(data) {
+        if tui::is_key_release(data) {
             return;
         }
         // `handleInput` while `#busy`: only Ctrl+C, and Ctrl+D on an empty editor, are read.
@@ -2826,7 +2794,7 @@ impl App {
                 let name = args.trim();
                 if name.is_empty() {
                     match self.session_name.clone() {
-                        Some(current) => self.notice(&fg(&self.theme, "dim", &format!("Session name: {current}"))),
+                        Some(current) => self.notice(&self.theme.fg(Fg::Dim, &format!("Session name: {current}"))),
                         None => self.show_status("Usage: /name <name>"),
                     }
                     return;
@@ -3033,7 +3001,7 @@ impl App {
 
     /// `showError`: `Error: <message>` in the transcript.
     fn show_error(&mut self, message: &str) {
-        let text = fg(&self.theme, "error", &format!("Error: {message}"));
+        let text = self.theme.fg(Fg::Error, &format!("Error: {message}"));
         self.notice(&text);
     }
 
@@ -3044,7 +3012,7 @@ impl App {
         let flow = crate::bug_report::BugFlow::new(
             Rc::clone(&self.theme),
             self.keys.clone(),
-            self.editor_keys(),
+            self.keys.clone(),
             (!hint.is_empty()).then_some(hint),
             model,
             self.client.bug_report_target(),
@@ -3202,7 +3170,7 @@ impl App {
             "aborted" => self.status = "Auto-compaction cancelled".into(),
             "failed" => {
                 let message = error.unwrap_or_else(|| "Auto-compaction failed".into());
-                self.notice(&fg(&self.theme, "error", &message));
+                self.notice(&self.theme.fg(Fg::Error, &message));
             }
             _ => {}
         }
@@ -3874,16 +3842,16 @@ impl App {
             selector.update_models(&models, enabled);
             match refresh {
                 CatalogRefresh::TimedOut => {
-                    selector.set_refresh_status("Model refresh timed out; showing cached models.", "warning");
+                    selector.set_refresh_status("Model refresh timed out; showing cached models.", Fg::Warning);
                 }
                 CatalogRefresh::Failed(error) => {
-                    selector.set_refresh_status(&format!("Could not refresh model catalogs: {error}"), "warning");
+                    selector.set_refresh_status(&format!("Could not refresh model catalogs: {error}"), Fg::Warning);
                 }
                 CatalogRefresh::Done(failed) if !failed.is_empty() => selector.set_refresh_status(
                     &format!("Could not refresh {}; showing cached models.", failed.join(", ")),
-                    "warning",
+                    Fg::Warning,
                 ),
-                CatalogRefresh::Done(_) => selector.set_refresh_status("Model catalogs refreshed.", "success"),
+                CatalogRefresh::Done(_) => selector.set_refresh_status("Model catalogs refreshed.", Fg::Success),
             }
         }
     }
@@ -3966,7 +3934,7 @@ impl App {
         }
         match option.api_key_method.clone() {
             Some((method, true)) if option.generic_login => {
-                let mut input = tui::input::Input::new(self.keys.clone()).with_options(None, None, None, Some("•"));
+                let mut input = tui::Input::new(self.keys.clone()).with_options(None, None, None, Some("•"));
                 input.focused = true;
                 self.panel = Some(Panel::LoginPrompt {
                     provider: option,
@@ -4500,11 +4468,11 @@ impl App {
             // Every transcript row (scrollback and viewport) at the current width, rendered once.
             let width = self.cols.max(1);
             let rows = self.document(width);
-            let mut search = tui::transcript_search::TranscriptSearch::new(rows, self.keys.clone(), false);
+            let mut search = crate::transcript_search::TranscriptSearch::new(rows, self.keys.clone(), false);
             let (t1, t2) = (Rc::clone(&self.theme), Rc::clone(&self.theme));
             search.set_styles(
-                Box::new(move |s| format!("\x1b[4m{}\x1b[24m", fg(&t1, "accent", s))),
-                Box::new(move |s| format!("\x1b[7m{}\x1b[27m", fg(&t2, "accent", s))),
+                Box::new(move |s| format!("\x1b[4m{}\x1b[24m", t1.fg(Fg::Accent, s))),
+                Box::new(move |s| format!("\x1b[7m{}\x1b[27m", t2.fg(Fg::Accent, s))),
             );
             self.overlay = Some(Overlay::Search(Box::new(search)));
             return true;
@@ -4632,7 +4600,10 @@ impl App {
         };
         match overlay {
             Overlay::Search(search) => {
-                if matches!(search.handle_input(data), tui::transcript_search::SearchOutcome::Close) {
+                if matches!(
+                    search.handle_input(data),
+                    crate::transcript_search::SearchOutcome::Close
+                ) {
                     self.overlay = None;
                 }
             }
@@ -4825,7 +4796,7 @@ impl App {
         let mut list = SelectList::new(
             items.clone(),
             items.len().clamp(1, 12),
-            select_theme(&self.theme, "dim", "warning"),
+            select_theme(&self.theme, Fg::Dim, Fg::Warning),
         );
         if let Some(index) = index {
             list.set_selected_index(index);
@@ -4875,7 +4846,7 @@ impl App {
                             let dialog = crate::extension_dialogs::ExtensionEditorDialog::new(
                                 Rc::clone(&self.theme),
                                 self.keys.clone(),
-                                self.editor_keys(),
+                                self.keys.clone(),
                                 "Custom summarization instructions",
                                 None,
                             );
@@ -5089,11 +5060,9 @@ impl App {
 
     fn header_lines(&mut self, width: usize) -> Vec<String> {
         self.header.details = match &self.session_id {
-            Some(id) => fg(
-                &self.theme,
-                "dim",
-                &format!("Server: {}\nSession: {id}", self.server_id),
-            ),
+            Some(id) => self
+                .theme
+                .fg(Fg::Dim, &format!("Server: {}\nSession: {id}", self.server_id)),
             None => String::new(),
         };
         self.header.rows = Some(self.rows);
@@ -5109,7 +5078,7 @@ impl App {
         }
         let mut status = Vec::new();
         if !self.status.is_empty() {
-            status.extend(Text::new(&fg(&self.theme, "dim", &self.status), 1, 0, None).render(width));
+            status.extend(Text::new(&self.theme.fg(Fg::Dim, &self.status), 1, 0, None).render(width));
         }
         // `#renderRlm(width, "panel")`: the docked RLM panel, one column in, hidden while the graph shows.
         let rlm_focus = matches!(self.panel, Some(Panel::RlmFocus(_)));
@@ -5181,11 +5150,11 @@ impl App {
             ) => {
                 // `LoginDialogComponent` with its prompt (`showPrompt`).
                 let t = Rc::clone(&self.theme);
-                let border = fg(&t, "border", &"─".repeat(width.max(1)));
+                let border = t.fg(Fg::Border, &"─".repeat(width.max(1)));
                 let mut lines = vec![border.clone()];
                 lines.extend(
                     Text::new(
-                        &fg(&t, "accent", &bold(&format!("Login to {}", provider.name))),
+                        &t.fg(Fg::Accent, &bold(&format!("Login to {}", provider.name))),
                         1,
                         0,
                         None,
@@ -5193,7 +5162,7 @@ impl App {
                     .render(width),
                 );
                 lines.push(String::new());
-                lines.extend(Text::new(&fg(&t, "text", &format!("Enter {method}")), 1, 0, None).render(width));
+                lines.extend(Text::new(&t.fg(Fg::Text, &format!("Enter {method}")), 1, 0, None).render(width));
                 lines.extend(input.render(width));
                 let hint = |id: &str, d: &str| crate::components::key_hint(&t, &key_text(&self.keys, id, false), d);
                 lines.extend(
@@ -5256,8 +5225,7 @@ impl App {
 
     /// The chat column and the RLM pane beside it.
     fn render_columns(&mut self, width: usize, height: usize) -> Vec<String> {
-        let (main_width, side_width) =
-            tui::split_view::split_widths(width, self.rlm_pane_shown(), rlm_pane_width(width));
+        let (main_width, side_width) = tui::split_widths(width, self.rlm_pane_shown(), rlm_pane_width(width));
         let main = self.render_main(main_width, height);
         if side_width == 0 {
             return main;
@@ -5275,18 +5243,17 @@ impl App {
             &style,
         );
         side.truncate(height);
-        let border = fg(
-            &self.theme,
+        let border = self.theme.fg(
             if self.rlm_pane_focused {
-                "borderAccent"
+                Fg::BorderAccent
             } else {
-                "border"
+                Fg::Border
             },
             "│",
         );
         let mut main = main;
         main.resize(height, String::new());
-        tui::split_view::render_split(&main, &side, main_width, side_width, &border)
+        tui::render_split(&main, &side, main_width, side_width, &border)
     }
 
     /// The chat column: transcript above the dock, `height` rows.
@@ -5307,7 +5274,7 @@ impl App {
             })
             .collect();
         let dock_intrinsic: Vec<usize> = dock.iter().map(Vec::len).collect();
-        let dock_height: usize = tui::screen::allocate_stack_sizes(&dock_entries, &dock_intrinsic, None)
+        let dock_height: usize = tui::allocate_stack_sizes(&dock_entries, &dock_intrinsic, None)
             .iter()
             .sum();
         let root = [
@@ -5322,17 +5289,17 @@ impl App {
                 ..StackEntry::default()
             },
         ];
-        let sizes = tui::screen::allocate_stack_sizes(&root, &[document.len(), dock_height], Some(height));
+        let sizes = tui::allocate_stack_sizes(&root, &[document.len(), dock_height], Some(height));
         let dock_lines = stack_lines(dock, &dock_entries, &[], sizes[1]);
         // The rows each dock part got, for the mouse: the slot is the editor's (second to last).
-        let dock_sizes = tui::screen::allocate_stack_sizes(&dock_entries, &dock_intrinsic, Some(sizes[1]));
-        self.mouse_layout.slot = Some(tui::scroll_view::Rect {
+        let dock_sizes = tui::allocate_stack_sizes(&dock_entries, &dock_intrinsic, Some(sizes[1]));
+        self.mouse_layout.slot = Some(tui::Rect {
             x: 0,
             y: sizes[0] + dock_sizes[..editor].iter().sum::<usize>(),
             width,
             height: dock_sizes[editor],
         });
-        self.mouse_layout.transcript = Some(tui::scroll_view::Rect {
+        self.mouse_layout.transcript = Some(tui::Rect {
             x: 0,
             y: 0,
             width,
@@ -5342,7 +5309,7 @@ impl App {
         self.style_viewport();
         let mut lines = self.viewport.layout(
             document,
-            tui::scroll_view::Rect {
+            tui::Rect {
                 x: 0,
                 y: 0,
                 width,
@@ -5356,19 +5323,15 @@ impl App {
     /// The transcript scrollbar's theme colors and the jump-to-end label (tui-renderer.ts `scrollToEndIndicator`).
     fn style_viewport(&mut self) {
         let (track, thumb) = (Rc::clone(&self.theme), Rc::clone(&self.theme));
-        self.viewport.view.track_style = Box::new(move |t| fg(&track, "scrollbarTrack", t));
-        self.viewport.view.thumb_style = Box::new(move |t| fg(&thumb, "scrollbarThumb", t));
+        self.viewport.view.track_style = Box::new(move |t| track.fg(Fg::ScrollbarTrack, t));
+        self.viewport.view.thumb_style = Box::new(move |t| thumb.fg(Fg::ScrollbarThumb, t));
         let shortcut = key_display_text(&self.keys, "tui.altScreen.bottom");
         let label = if shortcut.is_empty() {
             " ↓ Jump to latest message ".to_string()
         } else {
             format!(" ↓ Jump to latest message · {shortcut} ")
         };
-        self.viewport.indicator = Some(
-            self.theme
-                .bg("selectedBg", &fg(&self.theme, "text", &label))
-                .unwrap_or(label),
-        );
+        self.viewport.indicator = Some(self.theme.bg(Bg::SelectedBg, &self.theme.fg(Fg::Text, &label)));
     }
 
     /// What stays on the main screen after exit: the layout rendered without a height, where the transcript gets its

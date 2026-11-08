@@ -44,7 +44,7 @@ pub fn render(models: &[Model], search: Option<&str>, docs: &Path) -> String {
     }
     let all: Vec<&Model> = models.iter().collect();
     let mut filtered: Vec<&Model> = match search {
-        Some(q) if !q.is_empty() => tui::fuzzy::fuzzy_filter(&all, q, |m| format!("{} {}", m.provider, m.id)),
+        Some(q) if !q.is_empty() => tui::fuzzy_filter(&all, q, |m| format!("{} {}", m.provider, m.id)),
         _ => all,
     };
     if filtered.is_empty() {

@@ -7,15 +7,16 @@ use std::rc::Rc;
 
 use interactive::app::{App, AppOptions};
 use interactive::history::PromptHistoryStore;
+use interactive::keybindings::Platform;
+use interactive::keybindings::native_app_keybindings;
 use interactive::lane::{LaneClient, LaneEvent, ModelInfo, SessionOpened};
 use interactive::qol::QolSettings;
 use interactive::run::{UiEvent, paint_loop};
 use serde_json::{Value, json};
-use tui::image::ImageProtocol;
-use tui::keybindings::{KeybindingsManager, Platform};
-use tui::qol_keys::native_app_keybindings;
-use tui::theme::{ColorMode, builtin_theme_json, create_theme};
-use tui::viewport::ViewportRenderer;
+use theme::{ColorMode, builtin_theme_json, create_theme};
+use tui::ImageProtocol;
+use tui::KeybindingsManager;
+use tui::ViewportRenderer;
 
 struct Quiet;
 
@@ -66,7 +67,6 @@ fn app() -> App {
         AppOptions {
             theme,
             keys: keys(),
-            editor_keys: keys(),
             version: "1.2.3".into(),
             cwd: "/p".into(),
             home: None,

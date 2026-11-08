@@ -3,11 +3,11 @@
 
 use std::rc::Rc;
 
-use tui::components::{Component, Text};
-use tui::keybindings::KeybindingsManager;
-use tui::theme::Theme;
+use theme::{Fg, Theme};
+use tui::KeybindingsManager;
+use tui::{Component, Text};
 
-use crate::components::{bold, fg, key_hint, key_text};
+use crate::components::{bold, key_hint, key_text};
 
 /// `ULTRON_LOGO`: `$` is background, every other character is logo; 100 columns by 55 rows.
 pub const ULTRON_LOGO: &str = include_str!("ultron-logo.txt");
@@ -126,8 +126,8 @@ impl StartupHeader {
         let raw = |key: &str, desc: &str| key_hint(t, key, desc);
         let logo = format!(
             "{}{}",
-            bold(&fg(t, "accent", "ultron")),
-            fg(t, "dim", &format!(" v{}", self.version))
+            bold(&t.fg(Fg::Accent, "ultron")),
+            t.fg(Fg::Dim, &format!(" v{}", self.version))
         );
         let hints = if self.expanded {
             [
@@ -172,7 +172,7 @@ impl StartupHeader {
                 raw("!", "bash"),
                 hint("app.tools.expand", "more"),
             ]
-            .join(&fg(t, "muted", " · "))
+            .join(&t.fg(Fg::Muted, " · "))
         };
         let details = if self.details.is_empty() {
             String::new()
@@ -188,8 +188,8 @@ impl StartupHeader {
             return text;
         }
         let t = &self.theme;
-        let logo = |s: &str| bold(&fg(t, "accent", s));
-        let background = |s: &str| fg(t, "dim", s);
+        let logo = |s: &str| bold(&t.fg(Fg::Accent, s));
+        let background = |s: &str| t.fg(Fg::Dim, s);
         let splash: Vec<String> = splash_lines(width, self.rows)
             .iter()
             .map(|l| color_logo_line(l, &logo, &background))

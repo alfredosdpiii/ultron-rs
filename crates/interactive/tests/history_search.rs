@@ -4,11 +4,12 @@
 use std::rc::Rc;
 
 use interactive::history_search::{HistorySearchEvent, PromptHistorySearch, search_prompt_history};
+use interactive::keybindings::Platform;
+use interactive::keybindings::native_app_keybindings;
 use serde_json::Value;
-use tui::components::Component;
-use tui::keybindings::{KeybindingsManager, Platform};
-use tui::qol_keys::native_app_keybindings;
-use tui::theme::{ColorMode, builtin_theme_json, create_theme};
+use theme::{ColorMode, builtin_theme_json, create_theme};
+use tui::Component;
+use tui::KeybindingsManager;
 
 fn fixture() -> Value {
     serde_json::from_str(include_str!("../fixtures/history-search-parity.json")).unwrap()

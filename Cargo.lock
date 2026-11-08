@@ -407,6 +407,7 @@ dependencies = [
  "signals",
  "telemetry",
  "tempfile",
+ "theme",
  "tokio",
  "tui",
  "url",
@@ -1498,7 +1499,9 @@ dependencies = [
  "rustix",
  "serde_json",
  "session-file",
+ "theme",
  "tui",
+ "unicode-segmentation",
 ]
 
 [[package]]
@@ -1639,8 +1642,8 @@ dependencies = [
  "session-journal",
  "sha2",
  "tempfile",
+ "theme",
  "tokio",
- "tui",
  "yaml-rust2",
 ]
 
@@ -2449,8 +2452,10 @@ name = "rlm-views"
 version = "0.1.0"
 dependencies = [
  "fancy-regex 0.19.2",
+ "interactive",
  "jsrt",
  "serde_json",
+ "theme",
  "tui",
 ]
 
@@ -3113,6 +3118,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "theme"
+version = "0.1.0"
+dependencies = [
+ "jsrt",
+ "serde_json",
+]
+
+[[package]]
 name = "thiserror"
 version = "2.0.21"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3448,6 +3461,7 @@ dependencies = [
  "jsrt",
  "serde_json",
  "syntect",
+ "theme",
  "unicode-segmentation",
 ]
 

@@ -1,15 +1,16 @@
 //! Replays fixtures/transcript-search-parity.json (packages/tui/src/alt-screen-search.ts, recorded by
-//! fixtures/generate-transcript-search.mjs) against `tui::transcript_search`, and tests the selection, highlight
+//! fixtures/generate-transcript-search.mjs) against `interactive::transcript_search`, and tests the selection, highlight
 //! and fullscreen view behavior ported from tui-alt-screen.ts over the scrollback/viewport split.
 
-use serde_json::Value;
-use tui::components::Component;
-use tui::keybindings::{KeybindingsManager, Platform};
-use tui::qol_keys::native_app_keybindings;
-use tui::transcript_search::{
+use interactive::keybindings::Platform;
+use interactive::keybindings::native_app_keybindings;
+use interactive::transcript_search::{
     SearchBar, SearchIndex, SearchMatch, SearchOutcome, SearchSegment, SelectionMode, TranscriptSearch, highlight_row,
     match_key, select_match,
 };
+use serde_json::Value;
+use tui::Component;
+use tui::KeybindingsManager;
 
 fn fixture() -> Value {
     serde_json::from_str(include_str!("../fixtures/transcript-search-parity.json")).unwrap()
@@ -213,7 +214,7 @@ fn tui_transcript_search_view_searches_scrollback_and_viewport() {
         .map(|i| format!("line {i} alpha"))
         .chain(["live alpha tail".to_string()])
     {
-        rows.extend(tui::components::Text::new(&text, 0, 0, None).render(40));
+        rows.extend(tui::Text::new(&text, 0, 0, None).render(40));
     }
     assert_eq!(rows.len(), 31, "scrollback rows then the live row");
 

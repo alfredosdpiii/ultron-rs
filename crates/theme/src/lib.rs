@@ -1,7 +1,7 @@
 //! Themes (port of packages/coding-agent/src/modes/interactive/theme/theme.ts): built-in dark/light documents, var
-//! resolution, truecolor/256-color ANSI palettes, HTML export colors, theme-setting parsing and terminal background
-//! detection. Process globals (current theme, registry, watcher) stay with the caller; everything here is a function
-//! of its inputs.
+//! resolution, truecolor/256-color ANSI palettes, HTML export colors, theme-setting parsing, terminal background
+//! detection and [`resolve_theme`], which picks the document a theme setting names. Process globals (current theme,
+//! watcher) stay with the caller; everything here is a function of its inputs.
 
 pub mod registry;
 mod schema;
@@ -11,7 +11,6 @@ use std::path::Path;
 
 use serde_json::Value;
 
-use crate::image::Capabilities;
 pub use schema::{
     ColorValue, REQUIRED_COLORS, ThemeExport, ThemeJson, assert_theme_name_is_valid, validate_theme_json,
 };
@@ -19,86 +18,142 @@ pub use schema::{
 pub const DARK_JSON: &str = include_str!("dark.json");
 pub const LIGHT_JSON: &str = include_str!("light.json");
 
+/// The theme every failed theme load falls back to (`initTheme` / `setTheme`).
+pub const FALLBACK_THEME: &str = "dark";
+
+/// The page and text colors of a theme that leaves them to the terminal: `""` text and no export page color.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct DefaultColors {
+    pub page: &'static str,
+    pub text: &'static str,
+}
+
+pub const DARK_DEFAULTS: DefaultColors = DefaultColors {
+    page: "#1e1e1e",
+    text: "#e5e5e7",
+};
+pub const LIGHT_DEFAULTS: DefaultColors = DefaultColors {
+    page: "#ffffff",
+    text: "#000000",
+};
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ColorMode {
     Truecolor,
     Ansi256,
 }
 
-impl ColorMode {
-    /// `createTheme`'s default: truecolor when the terminal supports it, else 256 colors.
-    pub fn from_capabilities(caps: &Capabilities) -> Self {
-        if caps.true_color {
-            Self::Truecolor
-        } else {
-            Self::Ansi256
+macro_rules! tokens {
+    ($(#[$doc:meta])* $ty:ident { $($variant:ident = $name:literal,)* }) => {
+        $(#[$doc])*
+        #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+        pub enum $ty {
+            $($variant,)*
         }
+
+        impl $ty {
+            pub const ALL: &'static [$ty] = &[$($ty::$variant,)*];
+
+            /// The token's name in a theme document.
+            pub fn name(self) -> &'static str {
+                match self {
+                    $($ty::$variant => $name,)*
+                }
+            }
+
+            pub fn from_name(name: &str) -> Option<Self> {
+                match name {
+                    $($name => Some($ty::$variant),)*
+                    _ => None,
+                }
+            }
+        }
+    };
+}
+
+tokens! {
+    /// Foreground tokens, in `ThemeColor` order.
+    Fg {
+        Accent = "accent",
+        Border = "border",
+        BorderAccent = "borderAccent",
+        BorderMuted = "borderMuted",
+        Success = "success",
+        Error = "error",
+        Warning = "warning",
+        Muted = "muted",
+        Dim = "dim",
+        Text = "text",
+        ThinkingText = "thinkingText",
+        ScrollbarTrack = "scrollbarTrack",
+        ScrollbarThumb = "scrollbarThumb",
+        SearchMatchText = "searchMatchText",
+        UserMessageText = "userMessageText",
+        CustomMessageText = "customMessageText",
+        CustomMessageLabel = "customMessageLabel",
+        ToolTitle = "toolTitle",
+        ToolOutput = "toolOutput",
+        MdHeading = "mdHeading",
+        MdLink = "mdLink",
+        MdLinkUrl = "mdLinkUrl",
+        MdCode = "mdCode",
+        MdCodeBlock = "mdCodeBlock",
+        MdCodeBlockBorder = "mdCodeBlockBorder",
+        MdQuote = "mdQuote",
+        MdQuoteBorder = "mdQuoteBorder",
+        MdHr = "mdHr",
+        MdListBullet = "mdListBullet",
+        ToolDiffAdded = "toolDiffAdded",
+        ToolDiffRemoved = "toolDiffRemoved",
+        ToolDiffContext = "toolDiffContext",
+        SyntaxComment = "syntaxComment",
+        SyntaxKeyword = "syntaxKeyword",
+        SyntaxFunction = "syntaxFunction",
+        SyntaxVariable = "syntaxVariable",
+        SyntaxString = "syntaxString",
+        SyntaxNumber = "syntaxNumber",
+        SyntaxType = "syntaxType",
+        SyntaxOperator = "syntaxOperator",
+        SyntaxPunctuation = "syntaxPunctuation",
+        ThinkingOff = "thinkingOff",
+        ThinkingMinimal = "thinkingMinimal",
+        ThinkingLow = "thinkingLow",
+        ThinkingMedium = "thinkingMedium",
+        ThinkingHigh = "thinkingHigh",
+        ThinkingXhigh = "thinkingXhigh",
+        ThinkingMax = "thinkingMax",
+        BashMode = "bashMode",
     }
 }
 
-/// Foreground tokens, in `ThemeColor` order.
-pub const THEME_COLORS: [&str; 49] = [
-    "accent",
-    "border",
-    "borderAccent",
-    "borderMuted",
-    "success",
-    "error",
-    "warning",
-    "muted",
-    "dim",
-    "text",
-    "thinkingText",
-    "scrollbarTrack",
-    "scrollbarThumb",
-    "searchMatchText",
-    "userMessageText",
-    "customMessageText",
-    "customMessageLabel",
-    "toolTitle",
-    "toolOutput",
-    "mdHeading",
-    "mdLink",
-    "mdLinkUrl",
-    "mdCode",
-    "mdCodeBlock",
-    "mdCodeBlockBorder",
-    "mdQuote",
-    "mdQuoteBorder",
-    "mdHr",
-    "mdListBullet",
-    "toolDiffAdded",
-    "toolDiffRemoved",
-    "toolDiffContext",
-    "syntaxComment",
-    "syntaxKeyword",
-    "syntaxFunction",
-    "syntaxVariable",
-    "syntaxString",
-    "syntaxNumber",
-    "syntaxType",
-    "syntaxOperator",
-    "syntaxPunctuation",
-    "thinkingOff",
-    "thinkingMinimal",
-    "thinkingLow",
-    "thinkingMedium",
-    "thinkingHigh",
-    "thinkingXhigh",
-    "thinkingMax",
-    "bashMode",
+tokens! {
+    /// Background tokens, in `ThemeBg` order.
+    Bg {
+        SelectedBg = "selectedBg",
+        SearchMatchBg = "searchMatchBg",
+        UserMessageBg = "userMessageBg",
+        CustomMessageBg = "customMessageBg",
+        ToolPendingBg = "toolPendingBg",
+        ToolSuccessBg = "toolSuccessBg",
+        ToolErrorBg = "toolErrorBg",
+    }
+}
+
+/// The optional tokens a theme document may leave out (`withThemeColorFallbacks`), and the token each one takes.
+const OPTIONAL_TOKENS: [(&str, &str); 5] = [
+    ("scrollbarTrack", "muted"),
+    ("scrollbarThumb", "text"),
+    ("thinkingMax", "thinkingXhigh"),
+    ("searchMatchBg", "selectedBg"),
+    ("searchMatchText", "text"),
 ];
 
-/// Background tokens, in `ThemeBg` order.
-pub const THEME_BGS: [&str; 7] = [
-    "selectedBg",
-    "searchMatchBg",
-    "userMessageBg",
-    "customMessageBg",
-    "toolPendingBg",
-    "toolSuccessBg",
-    "toolErrorBg",
-];
+fn optional_fallback(key: &str) -> Option<&'static str> {
+    OPTIONAL_TOKENS
+        .iter()
+        .find(|(k, _)| *k == key)
+        .map(|(_, fallback)| *fallback)
+}
 
 /// A color after var resolution: `""`, a hex string, or a 256-color index.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -223,13 +278,7 @@ pub fn resolve_theme_colors(json: &ThemeJson) -> Result<Vec<(String, Resolved)>,
     for (k, v) in &json.colors {
         entries.push((k.clone(), json_color(v)?));
     }
-    for (key, fallback) in [
-        ("scrollbarTrack", "muted"),
-        ("scrollbarThumb", "text"),
-        ("thinkingMax", "thinkingXhigh"),
-        ("searchMatchBg", "selectedBg"),
-        ("searchMatchText", "text"),
-    ] {
+    for (key, fallback) in OPTIONAL_TOKENS {
         if !entries.iter().any(|(k, _)| k == key) {
             let value = entries.iter().find(|(k, _)| k == fallback).map(|(_, v)| v.clone());
             entries.push((
@@ -244,7 +293,7 @@ pub fn resolve_theme_colors(json: &ThemeJson) -> Result<Vec<(String, Resolved)>,
         .collect()
 }
 
-/// The colors of a theme: one ANSI sequence per foreground and background token.
+/// The colors of a theme: one ANSI sequence per foreground and background token, indexed by the token.
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct Palette {
     mode: ColorMode,
@@ -270,24 +319,17 @@ impl Theme {
     /// tokens (scrollbarTrack, scrollbarThumb, thinkingMax, searchMatchText, searchMatchBg), which then fall back.
     pub fn new(lookup: &dyn Fn(&str) -> Option<Resolved>, mode: ColorMode) -> Result<Self, String> {
         let get = |key: &str| -> Result<Resolved, String> {
-            let fallback = match key {
-                "scrollbarTrack" => "muted",
-                "scrollbarThumb" | "searchMatchText" => "text",
-                "thinkingMax" => "thinkingXhigh",
-                "searchMatchBg" => "selectedBg",
-                _ => key,
-            };
             lookup(key)
-                .or_else(|| lookup(fallback))
+                .or_else(|| optional_fallback(key).and_then(lookup))
                 .ok_or_else(|| format!("Missing theme color: {key}"))
         };
-        let fg = THEME_COLORS
+        let fg = Fg::ALL
             .iter()
-            .map(|k| fg_ansi(&get(k)?, mode))
+            .map(|k| fg_ansi(&get(k.name())?, mode))
             .collect::<Result<_, _>>()?;
-        let bg = THEME_BGS
+        let bg = Bg::ALL
             .iter()
-            .map(|k| bg_ansi(&get(k)?, mode))
+            .map(|k| bg_ansi(&get(k.name())?, mode))
             .collect::<Result<_, _>>()?;
         Ok(Self {
             name: None,
@@ -304,31 +346,23 @@ impl Theme {
     }
 
     /// `getFgAnsi`.
-    pub fn fg_ansi(&self, color: &str) -> Result<String, String> {
-        THEME_COLORS
-            .iter()
-            .position(|c| *c == color)
-            .map(|i| self.palette.borrow().fg[i].clone())
-            .ok_or_else(|| format!("Unknown theme color: {color}"))
+    pub fn fg_ansi(&self, color: Fg) -> String {
+        self.palette.borrow().fg[color as usize].clone()
     }
 
     /// `getBgAnsi`.
-    pub fn bg_ansi(&self, color: &str) -> Result<String, String> {
-        THEME_BGS
-            .iter()
-            .position(|c| *c == color)
-            .map(|i| self.palette.borrow().bg[i].clone())
-            .ok_or_else(|| format!("Unknown theme background color: {color}"))
+    pub fn bg_ansi(&self, color: Bg) -> String {
+        self.palette.borrow().bg[color as usize].clone()
     }
 
     /// `fg`: color `text`, resetting only the foreground.
-    pub fn fg(&self, color: &str, text: &str) -> Result<String, String> {
-        Ok(format!("{}{text}\x1b[39m", self.fg_ansi(color)?))
+    pub fn fg(&self, color: Fg, text: &str) -> String {
+        format!("{}{text}\x1b[39m", self.palette.borrow().fg[color as usize])
     }
 
     /// `bg`: color the background of `text`, resetting only the background.
-    pub fn bg(&self, color: &str, text: &str) -> Result<String, String> {
-        Ok(format!("{}{text}\x1b[49m", self.bg_ansi(color)?))
+    pub fn bg(&self, color: Bg, text: &str) -> String {
+        format!("{}{text}\x1b[49m", self.palette.borrow().bg[color as usize])
     }
 
     pub fn color_mode(&self) -> ColorMode {
@@ -338,23 +372,15 @@ impl Theme {
     /// `getThinkingBorderColor(level)(text)`; unknown levels use `thinkingOff`.
     pub fn thinking_border(&self, level: &str, text: &str) -> String {
         let token = match level {
-            "minimal" => "thinkingMinimal",
-            "low" => "thinkingLow",
-            "medium" => "thinkingMedium",
-            "high" => "thinkingHigh",
-            "xhigh" => "thinkingXhigh",
-            "max" => "thinkingMax",
-            _ => "thinkingOff",
+            "minimal" => Fg::ThinkingMinimal,
+            "low" => Fg::ThinkingLow,
+            "medium" => Fg::ThinkingMedium,
+            "high" => Fg::ThinkingHigh,
+            "xhigh" => Fg::ThinkingXhigh,
+            "max" => Fg::ThinkingMax,
+            _ => Fg::ThinkingOff,
         };
-        format!(
-            "{}{text}\x1b[39m",
-            self.palette.borrow().fg[THEME_COLORS.iter().position(|c| *c == token).unwrap_or(0)]
-        )
-    }
-
-    /// `getBashModeBorderColor()(text)`.
-    pub fn bash_mode_border(&self, text: &str) -> String {
-        format!("{}{text}\x1b[39m", self.palette.borrow().fg[THEME_COLORS.len() - 1])
+        self.fg(token, text)
     }
 }
 
@@ -362,7 +388,7 @@ impl Theme {
 /// invalid hex anywhere fails the theme as in TypeScript.
 pub fn create_theme(json: &ThemeJson, mode: ColorMode, source_path: Option<&str>) -> Result<Theme, String> {
     let resolved = resolve_theme_colors(json)?;
-    let (bgs, fgs): (Vec<_>, Vec<_>) = resolved.iter().partition(|(k, _)| THEME_BGS.contains(&k.as_str()));
+    let (bgs, fgs): (Vec<_>, Vec<_>) = resolved.iter().partition(|(k, _)| Bg::from_name(k).is_some());
     for (_, v) in &fgs {
         fg_ansi(v, mode)?;
     }
@@ -391,7 +417,31 @@ pub fn builtin_theme_json(name: &str) -> Option<ThemeJson> {
         "light" => LIGHT_JSON,
         _ => return None,
     };
-    parse_theme_json_content(name, content).ok()
+    Some(parse_theme_json_content(name, content).expect("the built-in themes are valid"))
+}
+
+/// The theme a failed load falls back to ([`FALLBACK_THEME`]).
+pub fn fallback_theme(mode: ColorMode) -> Theme {
+    let json = builtin_theme_json(FALLBACK_THEME).expect("the fallback theme is built in");
+    create_theme(&json, mode, None).expect("the built-in themes resolve")
+}
+
+/// The theme document a `theme` setting picks (`initTheme(resolveThemeSetting(setting, terminal) ?? terminal)`): an
+/// automatic `light/dark` pair takes the terminal's side, a name loads as a built-in or `<custom_dir>/<name>.json`,
+/// no setting takes the built-in of the terminal's side, and a theme that does not load or resolve falls back to
+/// [`FALLBACK_THEME`]. Returns the theme's name with its document, which [`create_theme`] accepts.
+pub fn resolve_theme(setting: Option<&str>, terminal: TerminalTheme, custom_dir: &Path) -> (String, ThemeJson) {
+    let name = resolve_theme_setting(setting.filter(|s| !s.trim().is_empty()), terminal)
+        .unwrap_or_else(|| terminal.name().to_string());
+    match load_theme_json(&name, custom_dir)
+        .and_then(|json| create_theme(&json, ColorMode::Truecolor, None).map(|_| json))
+    {
+        Ok(json) => (name, json),
+        Err(_) => (
+            FALLBACK_THEME.to_string(),
+            builtin_theme_json(FALLBACK_THEME).expect("the fallback theme is built in"),
+        ),
+    }
 }
 
 /// `loadThemeFromPath`.
@@ -441,9 +491,9 @@ pub fn ansi256_to_hex(index: u8) -> String {
 /// `getResolvedThemeColors`: every resolved color as CSS hex; `""` becomes the default text color of the theme.
 pub fn resolved_css_colors(json: &ThemeJson, theme_name: &str) -> Result<Vec<(String, String)>, String> {
     let default_text = if is_light_theme(theme_name) {
-        "#000000"
+        LIGHT_DEFAULTS.text
     } else {
-        "#e5e5e7"
+        DARK_DEFAULTS.text
     };
     Ok(resolve_theme_colors(json)?
         .into_iter()
@@ -496,6 +546,23 @@ pub fn theme_export_colors(json: &ThemeJson) -> ExportColors {
 pub enum TerminalTheme {
     Dark,
     Light,
+}
+
+impl TerminalTheme {
+    /// The built-in theme of this side, `"dark"` or `"light"`.
+    pub fn name(self) -> &'static str {
+        match self {
+            TerminalTheme::Dark => "dark",
+            TerminalTheme::Light => "light",
+        }
+    }
+
+    pub fn defaults(self) -> DefaultColors {
+        match self {
+            TerminalTheme::Dark => DARK_DEFAULTS,
+            TerminalTheme::Light => LIGHT_DEFAULTS,
+        }
+    }
 }
 
 /// `parseAutoThemeSetting`: `"light/dark"` with exactly one slash and both sides non-empty after trimming.
@@ -574,13 +641,9 @@ pub fn detect_terminal_background_from_env(colorfgbg: Option<&str>) -> TerminalT
         .find(|n| (0..=255).contains(n));
     match bg {
         Some(bg) => {
-            let rgb = hex_to_rgb(&ansi256_to_hex(bg as u8)).unwrap_or((0, 0, 0));
+            let (r, g, b) = hex_to_rgb(&ansi256_to_hex(bg as u8)).unwrap_or((0, 0, 0));
             TerminalThemeDetection {
-                theme: if luminance(rgb) >= 0.5 {
-                    TerminalTheme::Light
-                } else {
-                    TerminalTheme::Dark
-                },
+                theme: theme_for_rgb(r, g, b),
                 source: "COLORFGBG",
                 detail: format!("background color index {bg}"),
                 confidence: "high",

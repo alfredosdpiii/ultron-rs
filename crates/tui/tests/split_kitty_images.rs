@@ -5,10 +5,8 @@
 //! written as the bytes this renderer emits for the same frames (it diffs per row and appends history above the
 //! viewport where TypeScript rewrites a contiguous range of one document).
 
-use tui::image::{
-    KittyImageMetadata, crop_kitty_image_line, delete_kitty_image, encode_kitty, register_kitty_image_metadata,
-};
-use tui::viewport::{FramePlan, HistoryBatch, HistoryKind, ViewportRenderer};
+use tui::{FramePlan, HistoryBatch, HistoryKind, ViewportRenderer};
+use tui::{KittyImageMetadata, crop_kitty_image_line, delete_kitty_image, encode_kitty, register_kitty_image_metadata};
 
 const R: &str = "\x1b[0m\x1b]8;;\x07";
 const BEGIN: &str = "\x1b[?2026h";

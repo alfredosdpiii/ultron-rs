@@ -3,11 +3,9 @@
 //! fixtures/markdown-parity.json, produced by `node crates/tui/fixtures/generate-markdown.mjs`.
 
 use serde_json::Value;
-use tui::components::Component;
-use tui::markdown::{
-    DefaultTextStyle, ListItem, Markdown, MarkdownOptions, MarkdownTheme, Token, trim_partial_closing_fences,
-};
-use tui::select::StyleFn;
+use tui::Component;
+use tui::StyleFn;
+use tui::{DefaultTextStyle, ListItem, Markdown, MarkdownOptions, MarkdownTheme, Token, trim_partial_closing_fences};
 
 fn fixture() -> Value {
     let path = concat!(env!("CARGO_MANIFEST_DIR"), "/fixtures/markdown-parity.json");
@@ -133,7 +131,7 @@ fn theme(c: &Value) -> MarkdownTheme {
                     .enumerate()
                     .map(|(i, l)| format!("<{}:{i}>{l}", lang.unwrap_or("-")))
                     .collect()
-            }) as tui::markdown::HighlightFn
+            }) as tui::HighlightFn
         }),
         code_block_indent: c["indent"].as_str().map(str::to_string),
     }

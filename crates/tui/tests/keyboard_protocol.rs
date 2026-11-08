@@ -4,8 +4,8 @@
 
 use std::time::{Duration, Instant};
 
-use tui::keyboard_protocol::{KeyboardProtocol, NegotiationSequence, parse_negotiation_sequence};
-use tui::terminal::Terminal;
+use tui::Terminal;
+use tui::{KeyboardProtocol, NegotiationSequence, parse_negotiation_sequence};
 
 /// The harness: a protocol after `queryAndEnableKittyProtocol`, its writes and the forwarded input.
 struct Harness {

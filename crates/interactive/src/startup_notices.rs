@@ -6,13 +6,13 @@
 
 use std::rc::Rc;
 
-use tui::components::{Component, Spacer, Text};
-use tui::markdown::{Markdown, MarkdownOptions};
-use tui::marked::markdown_tokens;
-use tui::theme::Theme;
+use theme::{Fg, Theme};
+use tui::markdown_tokens;
+use tui::{Component, Spacer, Text};
+use tui::{Markdown, MarkdownOptions};
 
 use crate::changelog::{Entry, normalize_links, parse};
-use crate::components::{bold, dynamic_border, fg, markdown_theme};
+use crate::components::{bold, dynamic_border, markdown_theme};
 
 /// `ANTHROPIC_SUBSCRIPTION_AUTH_WARNING`.
 pub const ANTHROPIC_SUBSCRIPTION_AUTH_WARNING: &str = "Anthropic subscription auth is active. Third-party harness usage draws from extra usage and is billed per token, not your Claude plan limits. Manage extra usage at https://claude.ai/settings/usage. Disable this warning in /settings.";
@@ -100,7 +100,7 @@ pub fn warns_about_subscription_auth(
 
 /// `showWarning`'s text (the transcript adds its spacer).
 pub fn warning_text(theme: &Theme, message: &str) -> String {
-    fg(theme, "warning", &format!("Warning: {message}"))
+    theme.fg(Fg::Warning, &format!("Warning: {message}"))
 }
 
 /// `showStartupNoticesIfNeeded`'s block.
@@ -119,7 +119,7 @@ pub struct WhatsNewNotice {
 impl Component for WhatsNewNotice {
     fn render(&mut self, width: usize) -> Vec<String> {
         let t = &self.theme;
-        let border = |s: &str| fg(t, "border", s);
+        let border = |s: &str| t.fg(Fg::Border, s);
         let mut lines = dynamic_border(&border, width);
         if self.collapse {
             let latest = newest_version(&self.markdown).unwrap_or_else(|| self.version.clone());
@@ -129,7 +129,7 @@ impl Component for WhatsNewNotice {
             );
             lines.extend(Text::new(&text, 1, 0, None).render(width));
         } else {
-            lines.extend(Text::new(&bold(&fg(t, "accent", "What's New")), 1, 0, None).render(width));
+            lines.extend(Text::new(&bold(&t.fg(Fg::Accent, "What's New")), 1, 0, None).render(width));
             lines.extend(Spacer(1).render(width));
             let mut theme = markdown_theme(t);
             if self.code_block_indent.is_some() {
@@ -171,23 +171,23 @@ pub struct NewVersionNotice {
 impl Component for NewVersionNotice {
     fn render(&mut self, width: usize) -> Vec<String> {
         let t = &self.theme;
-        let border = |s: &str| fg(t, "warning", s);
+        let border = |s: &str| t.fg(Fg::Warning, s);
         let instruction = format!(
             "{}{}",
-            fg(t, "muted", &format!("New version {} is available. Run ", self.version)),
-            fg(t, "accent", UPDATE_COMMAND)
+            t.fg(Fg::Muted, &format!("New version {} is available. Run ", self.version)),
+            t.fg(Fg::Accent, UPDATE_COMMAND)
         );
         let url = format!("{RELEASES_URL}/tag/v{}", self.version);
         let link = if self.hyperlinks {
-            tui::image::hyperlink(&fg(t, "accent", &url), &url)
+            tui::hyperlink(&t.fg(Fg::Accent, &url), &url)
         } else {
-            fg(t, "accent", &url)
+            t.fg(Fg::Accent, &url)
         };
-        let notes = format!("{}{link}", fg(t, "muted", "Release notes: "));
+        let notes = format!("{}{link}", t.fg(Fg::Muted, "Release notes: "));
         let mut lines = dynamic_border(&border, width);
         lines.extend(
             Text::new(
-                &format!("{}\n{instruction}", bold(&fg(t, "warning", "Update Available"))),
+                &format!("{}\n{instruction}", bold(&t.fg(Fg::Warning, "Update Available"))),
                 1,
                 0,
                 None,

@@ -14,7 +14,7 @@ use std::sync::OnceLock;
 
 use syntect::parsing::{ParseState, Scope, ScopeStack, ScopeStackOp, SyntaxDefinition, SyntaxReference, SyntaxSet};
 
-use crate::theme::Theme;
+use theme::{Fg, Theme};
 
 static DEFAULTS: OnceLock<SyntaxSet> = OnceLock::new();
 static EXTENDED: OnceLock<SyntaxSet> = OnceLock::new();
@@ -85,26 +85,25 @@ pub struct HighlightColors {
     pub r#type: String,
     pub operator: String,
     pub punctuation: String,
-    pub inserted: Option<String>,
-    pub deleted: Option<String>,
+    pub inserted: String,
+    pub deleted: String,
 }
 
 impl HighlightColors {
     /// The theme's `syntax*` colors, with diff additions/removals from `toolDiffAdded`/`toolDiffRemoved`.
     pub fn from_theme(theme: &Theme) -> Self {
-        let fg = |name: &str| theme.fg_ansi(name).unwrap_or_default();
         Self {
-            comment: fg("syntaxComment"),
-            keyword: fg("syntaxKeyword"),
-            function: fg("syntaxFunction"),
-            variable: fg("syntaxVariable"),
-            string: fg("syntaxString"),
-            number: fg("syntaxNumber"),
-            r#type: fg("syntaxType"),
-            operator: fg("syntaxOperator"),
-            punctuation: fg("syntaxPunctuation"),
-            inserted: theme.fg_ansi("toolDiffAdded").ok(),
-            deleted: theme.fg_ansi("toolDiffRemoved").ok(),
+            comment: theme.fg_ansi(Fg::SyntaxComment),
+            keyword: theme.fg_ansi(Fg::SyntaxKeyword),
+            function: theme.fg_ansi(Fg::SyntaxFunction),
+            variable: theme.fg_ansi(Fg::SyntaxVariable),
+            string: theme.fg_ansi(Fg::SyntaxString),
+            number: theme.fg_ansi(Fg::SyntaxNumber),
+            r#type: theme.fg_ansi(Fg::SyntaxType),
+            operator: theme.fg_ansi(Fg::SyntaxOperator),
+            punctuation: theme.fg_ansi(Fg::SyntaxPunctuation),
+            inserted: theme.fg_ansi(Fg::ToolDiffAdded),
+            deleted: theme.fg_ansi(Fg::ToolDiffRemoved),
         }
     }
 
@@ -119,8 +118,8 @@ impl HighlightColors {
             &self.r#type,
             &self.operator,
             &self.punctuation,
-            self.inserted.as_deref().unwrap_or(""),
-            self.deleted.as_deref().unwrap_or(""),
+            &self.inserted,
+            &self.deleted,
         ]
     }
 }

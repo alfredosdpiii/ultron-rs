@@ -2,11 +2,11 @@
 //! `node crates/tui/fixtures/generate.mjs`.
 
 use serde_json::Value;
-use tui::components::{BgFn, Component, Panel, Text, TruncatedText};
-use tui::keys::{KeyContext, decode_printable_key, parse_key};
-use tui::renderer::Renderer;
-use tui::stdin_buffer::{InputEvent, StdinBuffer};
-use tui::utils::{slice_with_width, truncate_to_width, visible_width, wrap_text_with_ansi};
+use tui::Renderer;
+use tui::{BgFn, Component, Panel, Text, TruncatedText};
+use tui::{KeyContext, decode_printable_key, parse_key};
+use tui::{StdinBuffer, StdinEvent};
+use tui::{slice_with_width, truncate_to_width, visible_width, wrap_text_with_ansi};
 
 fn fixture() -> Value {
     let path = concat!(env!("CARGO_MANIFEST_DIR"), "/fixtures/tui-parity.json");
@@ -173,13 +173,13 @@ fn tui_stdin_buffer_splits_like_ts() {
         for chunk in strings(&c[0]) {
             events.extend(buf.process(&chunk));
         }
-        let want: Vec<InputEvent> = c[1]
+        let want: Vec<StdinEvent> = c[1]
             .as_array()
             .expect("events")
             .iter()
             .map(|e| match s(&e[0]) {
-                "paste" => InputEvent::Paste(s(&e[1]).to_string()),
-                _ => InputEvent::Data(s(&e[1]).to_string()),
+                "paste" => StdinEvent::Paste(s(&e[1]).to_string()),
+                _ => StdinEvent::Data(s(&e[1]).to_string()),
             })
             .collect();
         let flushed = buf.flush();

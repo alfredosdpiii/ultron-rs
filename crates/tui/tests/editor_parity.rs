@@ -2,12 +2,12 @@
 //! (TypeScript). Fixture: fixtures/editor-parity.json, produced by `node crates/tui/fixtures/generate-editor.mjs`.
 
 use serde_json::Value;
-use tui::components::Component;
-use tui::editing::{find_word_backward, find_word_forward};
-use tui::fuzzy::{fuzzy_filter, fuzzy_match};
-use tui::input::{Input, InputEvent};
-use tui::keybindings::{KeybindingsManager, Platform, app_keybindings, tui_keybindings};
-use tui::keys::{KeyContext, matches_key};
+use tui::Component;
+use tui::{Input, InputEvent};
+use tui::{KeyContext, matches_key};
+use tui::{KeybindingsManager, tui_keybindings};
+use tui::{find_word_backward, find_word_forward};
+use tui::{fuzzy_filter, fuzzy_match};
 
 fn fixture() -> Value {
     let path = concat!(env!("CARGO_MANIFEST_DIR"), "/fixtures/editor-parity.json");
@@ -71,7 +71,7 @@ fn tui_matches_key_matches_ts_for_every_input_and_key_id() {
     report(failures, cases.len());
 }
 
-fn defs_json(defs: &[tui::keybindings::KeybindingDefinition]) -> Vec<(String, Vec<String>, String)> {
+fn defs_json(defs: &[tui::KeybindingDefinition]) -> Vec<(String, Vec<String>, String)> {
     defs.iter()
         .map(|d| (d.id.to_string(), d.default_keys.clone(), d.description.to_string()))
         .collect()
@@ -86,19 +86,11 @@ fn defs_fixture(v: &Value) -> Vec<(String, Vec<String>, String)> {
 }
 
 #[test]
-fn tui_keybinding_defaults_match_ts_for_each_platform() {
-    let f = fixture();
-    assert_eq!(defs_json(&tui_keybindings()), defs_fixture(&f["tuiKeybindings"]));
-    for p in rows(&f, "platforms") {
-        let platform = Platform::new(s(&p[0]), p[1].as_bool().unwrap());
-        assert_eq!(
-            defs_json(&app_keybindings(platform)),
-            defs_fixture(&p[2]),
-            "platform {} wsl {}",
-            p[0],
-            p[1]
-        );
-    }
+fn tui_keybinding_defaults_match_ts() {
+    assert_eq!(
+        defs_json(&tui_keybindings()),
+        defs_fixture(&fixture()["tuiKeybindings"])
+    );
 }
 
 #[test]
@@ -112,10 +104,9 @@ fn tui_keybindings_manager_resolves_user_bindings_like_ts() {
             .map(|u| (s(&u[0]).to_string(), u[1].as_array().map(|_| strings(&u[1]))))
             .collect();
         let m = KeybindingsManager::new(tui_keybindings(), user, KeyContext::default());
-        let resolved: Vec<(String, Vec<String>)> = m
-            .get_resolved_bindings()
-            .into_iter()
-            .map(|(id, k)| (id.to_string(), k))
+        let resolved: Vec<(String, Vec<String>)> = tui_keybindings()
+            .iter()
+            .map(|d| (d.id.to_string(), m.get_keys(d.id)))
             .collect();
         let want: Vec<(String, Vec<String>)> = case[1]
             .as_array()
@@ -124,15 +115,6 @@ fn tui_keybindings_manager_resolves_user_bindings_like_ts() {
             .map(|r| (s(&r[0]).to_string(), strings(&r[1])))
             .collect();
         assert_eq!(resolved, want);
-        let conflicts: Vec<(String, Vec<String>)> =
-            m.get_conflicts().into_iter().map(|c| (c.key, c.keybindings)).collect();
-        let want: Vec<(String, Vec<String>)> = case[2]
-            .as_array()
-            .unwrap()
-            .iter()
-            .map(|r| (s(&r[0]).to_string(), strings(&r[1])))
-            .collect();
-        assert_eq!(conflicts, want);
         for mcase in case[3].as_array().unwrap() {
             let data = s(&mcase[0]);
             let got: Vec<&str> = tui_keybindings()

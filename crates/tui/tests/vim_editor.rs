@@ -3,11 +3,11 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use tui::editor::Editor;
-use tui::keybindings::{KeybindingsManager, tui_keybindings};
-use tui::keys::KeyContext;
-use tui::vim::VimMode;
-use tui::vim_editor::VimEditor;
+use tui::Editor;
+use tui::KeyContext;
+use tui::VimEditor;
+use tui::VimMode;
+use tui::{KeybindingsManager, tui_keybindings};
 
 const ESC: &str = "\x1b";
 const UP: &str = "\x1b[A";
@@ -23,14 +23,14 @@ impl T {
     fn plain() -> Self {
         let keys = KeybindingsManager::new(tui_keybindings(), Vec::new(), KeyContext::default());
         Self {
-            ed: Editor::new(keys, KeyContext::default(), Box::new(str::to_string), 0),
+            ed: Editor::new(keys, Box::new(str::to_string), 0),
             vim: None,
             submitted: Vec::new(),
         }
     }
     fn modal() -> Self {
         let mut t = Self::plain();
-        t.vim = Some(VimEditor::new(KeyContext::default()));
+        t.vim = Some(VimEditor::new());
         t
     }
     /// `vimEditor(text)`: Normal mode at the head of the buffer.
@@ -706,7 +706,7 @@ fn tui_vim_editor_clamps_normal_cursor_and_expands_token_starts() {
 
 struct Slash;
 
-impl tui::autocomplete::AutocompleteProvider for Slash {
+impl tui::AutocompleteProvider for Slash {
     fn trigger_characters(&self) -> Vec<String> {
         vec!["/".into()]
     }
@@ -716,13 +716,11 @@ impl tui::autocomplete::AutocompleteProvider for Slash {
         _line: usize,
         _col: usize,
         _force: bool,
-    ) -> Option<tui::autocomplete::AutocompleteSuggestions> {
-        lines[0]
-            .starts_with('/')
-            .then(|| tui::autocomplete::AutocompleteSuggestions {
-                items: vec![tui::autocomplete::AutocompleteItem::new("/help")],
-                prefix: lines[0].clone(),
-            })
+    ) -> Option<tui::AutocompleteSuggestions> {
+        lines[0].starts_with('/').then(|| tui::AutocompleteSuggestions {
+            items: vec![tui::AutocompleteItem::new("/help")],
+            prefix: lines[0].clone(),
+        })
     }
 }
 

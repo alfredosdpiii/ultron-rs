@@ -4,13 +4,13 @@
 
 use std::rc::Rc;
 
-use tui::components::{Component, Spacer, Text};
-use tui::keybindings::KeybindingsManager;
-use tui::markdown::{Markdown, MarkdownOptions};
-use tui::marked::markdown_tokens;
-use tui::theme::Theme;
+use theme::{Fg, Theme};
+use tui::KeybindingsManager;
+use tui::markdown_tokens;
+use tui::{Component, Spacer, Text};
+use tui::{Markdown, MarkdownOptions};
 
-use crate::components::{bold, fg, format_key_text, format_tokens, markdown_theme};
+use crate::components::{bold, format_key_text, format_tokens, markdown_theme};
 use jsrt::number;
 
 /// One command: name, argument hint and description.
@@ -273,7 +273,7 @@ impl Component for MarkdownNotice {
 pub struct LexedNotice {
     pub theme: Rc<Theme>,
     pub title: String,
-    pub tokens: Vec<tui::markdown::Token>,
+    pub tokens: Vec<tui::Token>,
 }
 
 impl Component for LexedNotice {
@@ -282,10 +282,10 @@ impl Component for LexedNotice {
     }
 }
 
-fn notice_lines(t: &Rc<Theme>, title: &str, tokens: Vec<tui::markdown::Token>, width: usize) -> Vec<String> {
-    let border = fg(t, "border", &"─".repeat(width.max(1)));
+fn notice_lines(t: &Rc<Theme>, title: &str, tokens: Vec<tui::Token>, width: usize) -> Vec<String> {
+    let border = t.fg(Fg::Border, &"─".repeat(width.max(1)));
     let mut lines = vec![border.clone()];
-    lines.extend(Text::new(&bold(&fg(t, "accent", title)), 1, 0, None).render(width));
+    lines.extend(Text::new(&bold(&t.fg(Fg::Accent, title)), 1, 0, None).render(width));
     lines.extend(Spacer(1).render(width));
     let mut md = Markdown {
         tokens,
@@ -331,7 +331,7 @@ fn locale(n: u64) -> String {
 
 /// Pi's `/session` text.
 pub fn session_info(t: &Theme, s: &SessionStats) -> String {
-    let dim = |x: &str| fg(t, "dim", x);
+    let dim = |x: &str| t.fg(Fg::Dim, x);
     let mut info = format!("{}\n\n", bold("Session Info"));
     if let Some(name) = &s.name {
         info += &format!("{} {name}\n", dim("Name:"));

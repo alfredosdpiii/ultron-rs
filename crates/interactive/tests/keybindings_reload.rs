@@ -5,10 +5,11 @@ use std::rc::Rc;
 
 use interactive::app::{App, AppOptions};
 use interactive::history::PromptHistoryStore;
+use interactive::keybindings::Platform;
+use interactive::keybindings::native_app_keybindings;
 use interactive::lane::{LaneClient, LaneEvent, ModelInfo, SessionOpened};
-use tui::keybindings::{KeybindingsManager, Platform};
-use tui::qol_keys::native_app_keybindings;
-use tui::theme::{ColorMode, builtin_theme_json, create_theme};
+use theme::{ColorMode, builtin_theme_json, create_theme};
+use tui::KeybindingsManager;
 
 struct Quiet;
 
@@ -50,7 +51,6 @@ fn app() -> App {
         AppOptions {
             theme,
             keys: keys(),
-            editor_keys: keys(),
             version: "1.2.3".into(),
             cwd: "/p".into(),
             home: None,
@@ -85,15 +85,15 @@ fn typed(app: &mut App, text: &str) {
 fn interactive_keybindings_reload_applies_the_file_to_app_and_editor() {
     let dir = std::env::temp_dir().join(format!("interactive-keybindings-reload-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
-    let path = tui::keybindings_file::keybindings_path(&dir);
+    let path = tui::keybindings_path(&dir);
     // Legacy names migrate (`exit`, `cursorLineStart`, `interrupt`).
     std::fs::write(
         &path,
         r#"{"exit": "ctrl+q", "cursorLineStart": "f6", "interrupt": ["ctrl+x"]}"#,
     )
     .unwrap();
-    let defs = tui::keybindings::app_keybindings(Platform::new("linux", false));
-    let user = tui::keybindings_file::load_user_bindings(&path, &defs);
+    let defs = interactive::keybindings::app_keybindings(Platform::new("linux", false));
+    let user = tui::load_user_bindings(&path, &defs);
     let _ = std::fs::remove_dir_all(&dir);
 
     let mut app = app();

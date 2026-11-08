@@ -13,14 +13,15 @@ use std::time::{Duration, Instant};
 use interactive::api_key_login::{ApiKeyLogin, Step};
 use interactive::app::{App, AppOptions};
 use interactive::history::PromptHistoryStore;
+use interactive::keybindings::Platform;
+use interactive::keybindings::native_app_keybindings;
 use interactive::lane::{LaneClient, LaneEvent, LoginEvent, LoginPrompt, ModelInfo, SessionListing, SessionOpened};
 use interactive::qol::QolSettings;
 use interactive::run::{UiEvent, paint_loop};
 use serde_json::{Value, json};
-use tui::clipboard::{Clipboard, ClipboardService};
-use tui::keybindings::{KeybindingsManager, Platform};
-use tui::qol_keys::native_app_keybindings;
-use tui::theme::{ColorMode, Theme, builtin_theme_json, create_theme};
+use theme::{ColorMode, Fg, Theme, builtin_theme_json, create_theme};
+use tui::KeybindingsManager;
+use tui::{Clipboard, ClipboardService};
 
 #[derive(Default)]
 struct Calls(RefCell<Vec<String>>);
@@ -139,7 +140,6 @@ fn harness_with(qol: QolSettings, splash: bool) -> Harness {
         AppOptions {
             theme: Rc::clone(&theme),
             keys: keys(),
-            editor_keys: keys(),
             version: "1.2.3".into(),
             cwd: "/p".into(),
             home: None,
@@ -190,7 +190,7 @@ impl Harness {
         self.app
             .render(width, height)
             .iter()
-            .map(|l| tui::utils::strip_terminal_sequences(l).trim_end().to_string())
+            .map(|l| tui::strip_terminal_sequences(l).trim_end().to_string())
             .collect::<Vec<_>>()
             .join("\n")
     }
@@ -462,7 +462,7 @@ impl Clipboard for CopyClipboard {
     fn set_text(&mut self, _: &str) -> Result<(), String> {
         Ok(())
     }
-    fn get_image(&mut self) -> Result<tui::clipboard::ClipboardImage, String> {
+    fn get_image(&mut self) -> Result<tui::ClipboardImage, String> {
         Err("none".into())
     }
     fn copy_checked(&mut self, _: &str) -> Result<Option<String>, String> {
@@ -502,7 +502,8 @@ fn interactive_p_tui_copy_uses_the_clipboard_before_osc52() {
     ] {
         let mut h = harness();
         h.app.apply(LaneEvent::Message(answer.clone()));
-        h.app.set_clipboard(ClipboardService::spawn(CopyClipboard(result)));
+        h.app
+            .set_clipboard(ClipboardService::spawn(CopyClipboard(result)).unwrap());
         h.app.terminal_writes.clear();
         h.submit("/copy");
         wait_status(&mut h, status);
@@ -607,7 +608,7 @@ fn interactive_p_tui_rlm_pane_opens_beside_the_chat_and_moves_the_focus() {
     let frame = h.app.render(160, 40);
     // Chat 95 columns, the border, the pane 64 columns (rlmPaneWidth(160)).
     assert_eq!(interactive::app::rlm_pane_width(160), 64);
-    let border = tui::utils::strip_terminal_sequences(&frame[0]);
+    let border = tui::strip_terminal_sequences(&frame[0]);
     assert_eq!(border.chars().nth(95), Some('│'), "{border:?}");
     // Focused, keys go to the pane: typing does not reach the editor; Alt+W gives the focus back.
     h.typed("x");
@@ -619,10 +620,7 @@ fn interactive_p_tui_rlm_pane_opens_beside_the_chat_and_moves_the_focus() {
     h.app.handle_input("\x1bw");
     h.app.handle_input("q");
     let frame = h.app.render(160, 40);
-    assert_ne!(
-        tui::utils::strip_terminal_sequences(&frame[0]).chars().nth(95),
-        Some('│')
-    );
+    assert_ne!(tui::strip_terminal_sequences(&frame[0]).chars().nth(95), Some('│'));
 }
 
 #[test]
@@ -644,10 +642,7 @@ fn interactive_p_tui_rlm_pane_auto_opens_once_per_turn_without_focus() {
     h.app.apply(LaneEvent::OperationStarted("op1".into()));
     h.app.apply(LaneEvent::RlmStatus(running_child()));
     let frame = h.app.render(160, 40);
-    assert_eq!(
-        tui::utils::strip_terminal_sequences(&frame[0]).chars().nth(95),
-        Some('│')
-    );
+    assert_eq!(tui::strip_terminal_sequences(&frame[0]).chars().nth(95), Some('│'));
     // Unfocused: typing stays in the editor.
     h.typed("y");
     assert_eq!(h.app.editor_text(), "y");
@@ -657,10 +652,7 @@ fn interactive_p_tui_rlm_pane_auto_opens_once_per_turn_without_focus() {
     h.app.handle_input("q");
     h.app.apply(LaneEvent::RlmStatus(running_child()));
     let frame = h.app.render(160, 40);
-    assert_ne!(
-        tui::utils::strip_terminal_sequences(&frame[0]).chars().nth(95),
-        Some('│')
-    );
+    assert_ne!(tui::strip_terminal_sequences(&frame[0]).chars().nth(95), Some('│'));
     // rlmPaneAutoOpen off (or ULTRON_RLM_PANE_AUTO=off): never by itself.
     let mut h = harness();
     h.app.apply_startup_settings(&json!({}), &|k| {
@@ -669,10 +661,7 @@ fn interactive_p_tui_rlm_pane_auto_opens_once_per_turn_without_focus() {
     h.screen_at(160, 40);
     h.app.apply(LaneEvent::RlmStatus(running_child()));
     let frame = h.app.render(160, 40);
-    assert_ne!(
-        tui::utils::strip_terminal_sequences(&frame[0]).chars().nth(95),
-        Some('│')
-    );
+    assert_ne!(tui::strip_terminal_sequences(&frame[0]).chars().nth(95), Some('│'));
     // Too narrow: no auto-open (never the full-screen graph).
     let mut h = harness();
     h.screen_at(100, 40);
@@ -1007,8 +996,7 @@ fn controller(
     colorfgbg: Option<&str>,
     custom: Option<&std::path::Path>,
 ) -> interactive::theme_setup::ThemeController {
-    let registry = tui::theme::registry::ThemeRegistry::new(
-        std::path::PathBuf::new(),
+    let registry = theme::registry::ThemeRegistry::new(
         custom.map(std::path::Path::to_path_buf).unwrap_or_default(),
         ColorMode::Truecolor,
     );
@@ -1020,21 +1008,20 @@ fn interactive_p_tui_theme_from_settings_custom_and_automatic() {
     // A custom theme from `<agent dir>/themes`.
     let dir = std::env::temp_dir().join(format!("p-tui-themes-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
-    let light_json =
-        include_str!("../../tui/src/theme/light.json").replace("\"name\": \"light\"", "\"name\": \"paper\"");
+    let light_json = include_str!("../../theme/src/light.json").replace("\"name\": \"light\"", "\"name\": \"paper\"");
     std::fs::write(dir.join("paper.json"), light_json).unwrap();
     let mut h = harness();
     h.app.set_theme_controller(controller(Some("paper"), None, Some(&dir)));
-    assert_eq!(h.theme.fg("accent", "x"), light().fg("accent", "x"));
+    assert_eq!(h.theme.fg(Fg::Accent, "x"), light().fg(Fg::Accent, "x"));
     // An automatic pair follows the terminal (COLORFGBG 0;15: light background).
     let mut h = harness();
     h.app
         .set_theme_controller(controller(Some("light/dark"), Some("0;15"), None));
-    assert_eq!(h.theme.fg("accent", "x"), light().fg("accent", "x"));
+    assert_eq!(h.theme.fg(Fg::Accent, "x"), light().fg(Fg::Accent, "x"));
     let mut h = harness();
     h.app
         .set_theme_controller(controller(Some("light/dark"), Some("15;0"), None));
-    assert_eq!(h.theme.fg("accent", "x"), dark().fg("accent", "x"));
+    assert_eq!(h.theme.fg(Fg::Accent, "x"), dark().fg(Fg::Accent, "x"));
     // A theme that does not load falls back to dark and says so.
     let mut h = harness();
     h.app
@@ -1048,7 +1035,7 @@ fn interactive_p_tui_theme_from_settings_custom_and_automatic() {
     // No setting: a confident detection applies and is saved.
     let mut h = harness();
     h.app.set_theme_controller(controller(None, Some("0;15"), None));
-    assert_eq!(h.theme.fg("accent", "x"), light().fg("accent", "x"));
+    assert_eq!(h.theme.fg(Fg::Accent, "x"), light().fg(Fg::Accent, "x"));
     assert_eq!(h.calls(), ["setting theme=\"light\""]);
     let _ = std::fs::remove_dir_all(dir);
 }
@@ -1067,15 +1054,15 @@ fn interactive_p_tui_theme_previews_while_browsing_and_applies_live() {
     h.app.handle_input("\r");
     // Moving to light previews it; Esc restores the setting's theme.
     h.app.handle_input(DOWN);
-    assert_eq!(h.theme.fg("accent", "x"), light().fg("accent", "x"));
+    assert_eq!(h.theme.fg(Fg::Accent, "x"), light().fg(Fg::Accent, "x"));
     h.app.handle_input(ESC);
-    assert_eq!(h.theme.fg("accent", "x"), dark().fg("accent", "x"));
+    assert_eq!(h.theme.fg(Fg::Accent, "x"), dark().fg(Fg::Accent, "x"));
     // Picking light saves and applies it.
     h.app.handle_input("\r");
     h.app.handle_input(DOWN);
     h.app.handle_input("\r");
     assert_eq!(h.calls().last().unwrap(), "setting theme=\"light\"");
-    assert_eq!(h.theme.fg("accent", "x"), light().fg("accent", "x"));
+    assert_eq!(h.theme.fg(Fg::Accent, "x"), light().fg(Fg::Accent, "x"));
 }
 
 #[test]

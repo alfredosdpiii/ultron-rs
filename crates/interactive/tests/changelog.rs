@@ -2,7 +2,7 @@
 
 use interactive::changelog::{changelog_tokens, normalize_links, parse};
 use serde_json::Value;
-use tui::marked::markdown_tokens;
+use tui::markdown_tokens;
 
 /// What `/changelog` shows, as one document: the entries oldest first, links pinned, or Pi's empty notice. The
 /// oracle `changelog_tokens` must agree with when the document is lexed whole.

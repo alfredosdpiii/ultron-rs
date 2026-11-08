@@ -9,7 +9,7 @@ const PASTE_END: &str = "\x1b[201~";
 
 /// One unit of input.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub enum InputEvent {
+pub enum StdinEvent {
     Data(String),
     Paste(String),
 }
@@ -95,8 +95,7 @@ fn extract_complete(buffer: &str) -> (Vec<String>, String) {
             continue;
         }
         let mut found = false;
-        for (end, c) in remaining.char_indices().skip(1).map(|(i, c)| (i + c.len_utf8(), c)) {
-            let _ = c;
+        for end in remaining.char_indices().skip(1).map(|(i, c)| i + c.len_utf8()) {
             let candidate = &remaining[..end];
             if is_complete(candidate) == Status::Complete {
                 if candidate == "\x1b\x1b" && remaining[end..].starts_with(['[', ']', 'O', 'P', '_']) {
@@ -140,14 +139,14 @@ impl StdinBuffer {
     }
 
     /// Feed input; returns the complete events. Check [`StdinBuffer::flush_after`] for a pending partial sequence.
-    pub fn process(&mut self, data: &str) -> Vec<InputEvent> {
+    pub fn process(&mut self, data: &str) -> Vec<StdinEvent> {
         let mut out = Vec::new();
         self.process_into(data, &mut out);
         out
     }
 
     /// Feed raw bytes: a lone high byte is the legacy meta encoding of ESC + (byte - 128).
-    pub fn process_bytes(&mut self, data: &[u8]) -> Vec<InputEvent> {
+    pub fn process_bytes(&mut self, data: &[u8]) -> Vec<StdinEvent> {
         if let [b] = data
             && *b > 127
         {
@@ -156,7 +155,7 @@ impl StdinBuffer {
         self.process(&String::from_utf8_lossy(data))
     }
 
-    fn process_into(&mut self, data: &str, out: &mut Vec<InputEvent>) {
+    fn process_into(&mut self, data: &str, out: &mut Vec<StdinEvent>) {
         if data.is_empty() && self.buffer.is_empty() {
             self.emit("", out);
             return;
@@ -187,7 +186,7 @@ impl StdinBuffer {
         }
     }
 
-    fn finish_paste(&mut self, out: &mut Vec<InputEvent>) {
+    fn finish_paste(&mut self, out: &mut Vec<StdinEvent>) {
         let Some(paste) = self.paste.as_ref() else {
             return;
         };
@@ -198,13 +197,13 @@ impl StdinBuffer {
         let remaining = paste[end + PASTE_END.len()..].to_string();
         self.paste = None;
         self.pending_kitty_printable = None;
-        out.push(InputEvent::Paste(content));
+        out.push(StdinEvent::Paste(content));
         if !remaining.is_empty() {
             self.process_into(&remaining, out);
         }
     }
 
-    fn emit(&mut self, seq: &str, out: &mut Vec<InputEvent>) {
+    fn emit(&mut self, seq: &str, out: &mut Vec<StdinEvent>) {
         let mut chars = seq.chars();
         if let (Some(c), None) = (chars.next(), chars.next())
             && Some(c as u32) == self.pending_kitty_printable
@@ -213,7 +212,7 @@ impl StdinBuffer {
             return;
         }
         self.pending_kitty_printable = unmodified_kitty_printable(seq);
-        out.push(InputEvent::Data(seq.to_string()));
+        out.push(StdinEvent::Data(seq.to_string()));
     }
 
     /// How long to wait before calling [`StdinBuffer::flush`] (the escape timeout, 10 ms by default, for a lone ESC;

@@ -5,13 +5,13 @@
 use std::rc::Rc;
 
 use serde_json::Value;
-use tui::components::{Component, Spacer, Text, TruncatedText};
-use tui::select::Loader;
-use tui::theme::Theme;
+use theme::{Fg, Theme};
+use tui::Loader;
+use tui::{Component, Spacer, Text, TruncatedText};
 
 use crate::components::{
     AssistantBlock, AssistantMessage, AssistantView, BashExecution, InlineImage, InlineImages, ToolContent,
-    ToolExecution, ToolResultView, UserMessage, fg,
+    ToolExecution, ToolResultView, UserMessage,
 };
 use crate::lane::{QueueKind, Queued};
 use crate::rlm_cell::{Highlighter, rlm_renderers};
@@ -166,10 +166,10 @@ struct Tool {
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct ImageSettings {
     /// `None`: the terminal cannot draw images here (they are named in the text instead).
-    pub protocol: Option<tui::image::ImageProtocol>,
+    pub protocol: Option<tui::ImageProtocol>,
     pub show: bool,
     pub width_cells: u32,
-    pub cell: tui::image::Dimensions,
+    pub cell: tui::Dimensions,
 }
 
 impl Default for ImageSettings {
@@ -178,7 +178,7 @@ impl Default for ImageSettings {
             protocol: None,
             show: true,
             width_cells: 60,
-            cell: tui::image::DEFAULT_CELL,
+            cell: tui::DEFAULT_CELL,
         }
     }
 }
@@ -327,7 +327,7 @@ impl ChatView {
             })
             .collect();
         while tool.image_ids.len() < blocks.len() {
-            tool.image_ids.push(tui::image::allocate_image_id());
+            tool.image_ids.push(tui::allocate_image_id());
         }
         let ids = tool.image_ids.clone();
         let mut images = Vec::new();
@@ -335,7 +335,7 @@ impl ChatView {
             if data.is_empty() || mime.is_empty() {
                 continue;
             }
-            let (data, mime) = if protocol == tui::image::ImageProtocol::Kitty && mime != "image/png" {
+            let (data, mime) = if protocol == tui::ImageProtocol::Kitty && mime != "image/png" {
                 let converter = self
                     .converter
                     .get_or_insert_with(crate::image_convert::PngConverter::new);
@@ -349,7 +349,7 @@ impl ChatView {
             images.push(InlineImage {
                 data,
                 mime,
-                image_id: (protocol == tui::image::ImageProtocol::Kitty).then_some(id),
+                image_id: (protocol == tui::ImageProtocol::Kitty).then_some(id),
             });
         }
         Some(InlineImages {
@@ -404,22 +404,18 @@ impl ChatView {
                     Value::Null => "undefined".to_string(),
                     v => v.to_string(),
                 };
-                self.append_notice_text(&fg(
-                    &t,
-                    "muted",
-                    &format!("[compaction] compacted from {tokens} tokens"),
-                ));
+                self.append_notice_text(&t.fg(Fg::Muted, &format!("[compaction] compacted from {tokens} tokens")));
                 for retained in entry["retainedTail"].as_array().into_iter().flatten() {
                     self.add_message(retained);
                 }
             }
             Some("branch_summary") => {
-                self.append_notice_text(&fg(&t, "muted", "[branch summary]"));
+                self.append_notice_text(&t.fg(Fg::Muted, "[branch summary]"));
                 self.append_notice_text(entry["summary"].as_str().unwrap_or(""));
             }
             Some("custom") => {
                 let kind = entry["customType"].as_str().unwrap_or("");
-                self.append_notice_text(&fg(&t, "muted", &format!("[{kind}]")));
+                self.append_notice_text(&t.fg(Fg::Muted, &format!("[{kind}]")));
             }
             _ => self.add_message(&entry["message"]),
         }
@@ -489,19 +485,19 @@ impl ChatView {
             Some("custom") if message["customType"] == NUDGE_CUSTOM_TYPE => {
                 let line = nudge_line(message);
                 let t = Rc::clone(&self.style.theme);
-                self.append_notice_text(&fg(&t, "muted", &line));
+                self.append_notice_text(&t.fg(Fg::Muted, &line));
             }
             // A fired schedule (kernel_apis::prompt_schedule in the engine): one line, not its prompt.
             Some("custom") if message["customType"] == SCHEDULE_CUSTOM_TYPE => {
                 let line = schedule_line(message);
                 let t = Rc::clone(&self.style.theme);
-                self.append_notice_text(&fg(&t, "muted", &line));
+                self.append_notice_text(&t.fg(Fg::Muted, &line));
             }
             // Recalled memories (session_core::auto_memory in the engine): one line, not their text.
             Some("custom") if message["customType"] == MEMORY_CUSTOM_TYPE => {
                 let line = memory_line(message);
                 let t = Rc::clone(&self.style.theme);
-                self.append_notice_text(&fg(&t, "muted", &line));
+                self.append_notice_text(&t.fg(Fg::Muted, &line));
             }
             // Other injected context is shown muted, so what reached the model is visible.
             Some("custom") if message["display"] == true => {
@@ -522,7 +518,7 @@ impl ChatView {
                 };
                 let kind = message["customType"].as_str().unwrap_or("");
                 let t = Rc::clone(&self.style.theme);
-                self.append_notice_text(&fg(&t, "muted", &format!("[{kind}]\n{text}")));
+                self.append_notice_text(&t.fg(Fg::Muted, &format!("[{kind}]\n{text}")));
             }
             _ => {}
         }
@@ -634,8 +630,8 @@ impl ChatView {
             let t2 = Rc::clone(&self.style.theme);
             self.navigating = false;
             self.indicator = Some(Loader::new(
-                Box::new(move |s| fg(&t, "accent", s)),
-                Box::new(move |s| fg(&t2, "muted", s)),
+                Box::new(move |s| t.fg(Fg::Accent, s)),
+                Box::new(move |s| t2.fg(Fg::Muted, s)),
                 &format!("Working... ({} to abort)", self.style.interrupt_key),
                 None,
             ));
@@ -656,8 +652,8 @@ impl ChatView {
         let t2 = Rc::clone(&self.style.theme);
         self.navigating = false;
         self.indicator = Some(Loader::new(
-            Box::new(move |s| fg(&t, "warning", s)),
-            Box::new(move |s| fg(&t2, "muted", s)),
+            Box::new(move |s| t.fg(Fg::Warning, s)),
+            Box::new(move |s| t2.fg(Fg::Muted, s)),
             &countdown.message(countdown.seconds),
             None,
         ));
@@ -680,8 +676,8 @@ impl ChatView {
         self.retry = None;
         self.navigating = false;
         self.indicator = Some(Loader::new(
-            Box::new(move |s| fg(&t, "accent", s)),
-            Box::new(move |s| fg(&t2, "muted", s)),
+            Box::new(move |s| t.fg(Fg::Accent, s)),
+            Box::new(move |s| t2.fg(Fg::Muted, s)),
             &label,
             None,
         ));
@@ -703,8 +699,8 @@ impl ChatView {
         self.retry = None;
         self.navigating = false;
         self.indicator = Some(Loader::new(
-            Box::new(move |s| fg(&t, "accent", s)),
-            Box::new(move |s| fg(&t2, "muted", s)),
+            Box::new(move |s| t.fg(Fg::Accent, s)),
+            Box::new(move |s| t2.fg(Fg::Muted, s)),
             &label,
             None,
         ));
@@ -735,8 +731,8 @@ impl ChatView {
         self.retry = None;
         self.navigating = false;
         self.indicator = Some(Loader::new(
-            Box::new(move |s| fg(&t, "accent", s)),
-            Box::new(move |s| fg(&t2, "muted", s)),
+            Box::new(move |s| t.fg(Fg::Accent, s)),
+            Box::new(move |s| t2.fg(Fg::Muted, s)),
             &label,
             None,
         ));
@@ -823,8 +819,8 @@ impl ChatView {
 
     /// `handleMouse` of item `i` (`event` in its own rows): a left click on a tool's call or result toggles its
     /// expansion, on a thinking run shows or hides it. The item is drawn again.
-    pub fn handle_item_mouse(&mut self, i: usize, event: &tui::mouse::MouseEvent) -> Option<tui::mouse::MouseResult> {
-        use tui::mouse::{MouseButton, MouseEventType, MouseResult};
+    pub fn handle_item_mouse(&mut self, i: usize, event: &tui::MouseEvent) -> Option<tui::MouseResult> {
+        use tui::{MouseButton, MouseEventType, MouseResult};
         let item = self.items.get_mut(i)?;
         let (x, y) = (usize::try_from(event.x).ok()?, usize::try_from(event.y).ok()?);
         let region = *item
@@ -1001,12 +997,12 @@ impl ChatView {
                 QueueKind::NextRun => "Next run",
             };
             let text: Vec<&str> = q.text.split_whitespace().collect();
-            let line = fg(t, "dim", &format!("{label}: {}", text.join(" ")));
+            let line = t.fg(Fg::Dim, &format!("{label}: {}", text.join(" ")));
             lines.extend(truncated(line, width));
         }
         if self.queues.iter().any(|q| q.user) {
             let hint = format!("↳ {} to edit all queued messages", self.style.dequeue_key);
-            lines.extend(truncated(fg(t, "dim", &hint), width));
+            lines.extend(truncated(t.fg(Fg::Dim, &hint), width));
         }
         lines
     }

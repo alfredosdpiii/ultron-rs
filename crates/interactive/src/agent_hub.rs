@@ -11,16 +11,16 @@
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
-use tui::components::Component;
-use tui::input::Input;
-use tui::keybindings::KeybindingsManager;
-use tui::outline::{Anchor, BrowserFrame, FrameBrowser, key_glyph};
-use tui::sgr_mouse::parse_sgr_mouse;
-use tui::theme::Theme;
-use tui::utils::{strip_terminal_sequences, truncate_to_width, visible_width};
+use crate::outline::{Anchor, BrowserFrame, FrameBrowser, key_glyph};
+use theme::{Bg, Fg, Theme};
+use tui::Component;
+use tui::Input;
+use tui::KeybindingsManager;
+use tui::parse_sgr_mouse;
+use tui::{strip_terminal_sequences, truncate_to_width, visible_width};
 
 use crate::chat::{ChatStyle, ChatView};
-use crate::components::{bold, fg};
+use crate::components::bold;
 use crate::copy_targets::TranscriptEntry;
 
 /// Identity of the ambient main session in the roster.
@@ -55,12 +55,12 @@ impl AgentStatus {
     }
 
     /// Theme color of the status (`STATUS_TONE`).
-    pub fn color(self) -> &'static str {
+    pub fn color(self) -> Fg {
         match self {
-            AgentStatus::Running => "accent",
-            AgentStatus::Idle => "success",
-            AgentStatus::Parked => "muted",
-            AgentStatus::Aborted => "error",
+            AgentStatus::Running => Fg::Accent,
+            AgentStatus::Idle => Fg::Success,
+            AgentStatus::Parked => Fg::Muted,
+            AgentStatus::Aborted => Fg::Error,
         }
     }
 
@@ -476,13 +476,7 @@ pub fn running_subagent_ids(agents: &[AgentView]) -> Vec<String> {
 /// The status-line badge: `⟳ 2 agents` while children run, nothing otherwise.
 pub fn running_subagent_badge(theme: &Theme, agents: &[AgentView]) -> Option<String> {
     let n = running_subagent_ids(agents).len();
-    (n > 0).then(|| {
-        fg(
-            theme,
-            "accent",
-            &format!("⟳ {n} agent{}", if n == 1 { "" } else { "s" }),
-        )
-    })
+    (n > 0).then(|| theme.fg(Fg::Accent, &format!("⟳ {n} agent{}", if n == 1 { "" } else { "s" })))
 }
 
 /// What the client should do.
@@ -614,7 +608,7 @@ impl AgentHub {
         } else {
             ordered
                 .into_iter()
-                .filter(|r| tui::fuzzy::fuzzy_match(&query, &r.id.to_lowercase()).matches)
+                .filter(|r| tui::fuzzy_match(&query, &r.id.to_lowercase()).matches)
                 .collect()
         };
         self.children = roster.iter().filter_map(|r| r.parent_id.clone()).collect();
@@ -895,11 +889,11 @@ impl AgentHub {
         let mut body: Vec<String> = Vec::new();
         let mut hits: Vec<Option<usize>> = Vec::new();
         // Summary: projection toggle and status counts.
-        let active = |s: &str| bold(&fg(&t, "accent", &format!(" {s} ")));
-        let inactive = |s: &str| fg(&t, "muted", &format!(" {s} "));
+        let active = |s: &str| bold(&t.fg(Fg::Accent, &format!(" {s} ")));
+        let inactive = |s: &str| t.fg(Fg::Muted, &format!(" {s} "));
         let projection = match self.view {
-            ViewMode::Roster => format!("{}{}{}", active("Flat"), fg(&t, "dim", "/"), inactive("By parent")),
-            ViewMode::Tree => format!("{}{}{}", inactive("Flat"), fg(&t, "dim", "/"), active("By parent")),
+            ViewMode::Roster => format!("{}{}{}", active("Flat"), t.fg(Fg::Dim, "/"), inactive("By parent")),
+            ViewMode::Tree => format!("{}{}{}", inactive("Flat"), t.fg(Fg::Dim, "/"), active("By parent")),
         };
         let mut counts = Vec::new();
         for status in [
@@ -910,10 +904,10 @@ impl AgentHub {
         ] {
             let n = self.rows.iter().filter(|r| r.status == status).count();
             if n > 0 {
-                counts.push(fg(&t, status.color(), &format!("{n} {}", status.name())));
+                counts.push(t.fg(status.color(), &format!("{n} {}", status.name())));
             }
         }
-        let dot = fg(&t, "dim", " · ");
+        let dot = t.fg(Fg::Dim, " · ");
         let mut summary = format!("{}{dot}{projection}", bold("Roster"));
         if !counts.is_empty() {
             summary.push_str(&format!("{dot}{}", counts.join(&dot)));
@@ -928,9 +922,8 @@ impl AgentHub {
             .notice
             .iter()
             .map(|n| {
-                fg(
-                    &t,
-                    "error",
+                t.fg(
+                    Fg::Error,
                     &truncate_to_width(&sanitize_single_line(n), inner.max(10), "…", false),
                 )
             })
@@ -938,10 +931,9 @@ impl AgentHub {
         let budget = content_rows.saturating_sub(body.len() + notice.len());
         if self.rows.is_empty() {
             let empty = [
-                format!("{} {}", fg(&t, "muted", "○"), bold("No agents in this session")),
-                fg(
-                    &t,
-                    "dim",
+                format!("{} {}", t.fg(Fg::Muted, "○"), bold("No agents in this session")),
+                t.fg(
+                    Fg::Dim,
                     "Spawned RLM children (rlm.spawn) appear here while the session runs.",
                 ),
             ];
@@ -960,7 +952,7 @@ impl AgentHub {
                 }
             } else {
                 if w.top {
-                    body.push(fg(&t, "dim", &format!("… {} more", w.start)));
+                    body.push(t.fg(Fg::Dim, &format!("… {} more", w.start)));
                     hits.push(None);
                 }
                 for (i, entry) in entries.iter().enumerate().take(w.end).skip(w.start) {
@@ -970,7 +962,7 @@ impl AgentHub {
                     }
                 }
                 if w.bottom {
-                    body.push(fg(&t, "dim", &format!("… {} more", self.rows.len() - w.end)));
+                    body.push(t.fg(Fg::Dim, &format!("… {} more", self.rows.len() - w.end)));
                     hits.push(None);
                 }
             }
@@ -992,7 +984,7 @@ impl AgentHub {
             self.hit_rows.push(hit);
         }
         out.push(divider(&t, width));
-        out.push(boxed_row(&t, &fg(&t, "dim", &self.footer()), width));
+        out.push(boxed_row(&t, &t.fg(Fg::Dim, &self.footer()), width));
         out.push(bottom_border(&t, width));
         self.hit_rows.extend([None, None, None]);
         out.truncate(height);
@@ -1032,38 +1024,38 @@ impl AgentHub {
         let t = &self.theme;
         let r = &self.rows[index];
         let selected = index == self.selected;
-        let cursor = if selected { fg(t, "accent", "❯") } else { " ".into() };
+        let cursor = if selected { t.fg(Fg::Accent, "❯") } else { " ".into() };
         let tree = self.view == ViewMode::Tree;
         let branch = if tree {
-            fg(t, "dim", &tree_prefix(&r.id, width, &self.tree, false))
+            t.fg(Fg::Dim, &tree_prefix(&r.id, width, &self.tree, false))
         } else {
             String::new()
         };
         let id = sanitize_single_line(&r.id);
         let styled = if selected {
-            bold(&fg(t, "accent", &id))
+            bold(&t.fg(Fg::Accent, &id))
         } else {
             bold(&id)
         };
         let mut fields = vec![format!(
             "{cursor} {branch}{} {styled}",
-            fg(t, r.status.color(), r.status.glyph())
+            t.fg(r.status.color(), r.status.glyph())
         )];
         if !tree && let Some(p) = r.parent_id.as_deref().filter(|p| *p != MAIN_AGENT_ID) {
-            fields.push(fg(t, "dim", &format!("↳ {}", sanitize_single_line(p))));
+            fields.push(t.fg(Fg::Dim, &format!("↳ {}", sanitize_single_line(p))));
         }
         if r.kind == AgentKind::Advisor {
-            fields.push(fg(t, "warning", "read-only"));
+            fields.push(t.fg(Fg::Warning, "read-only"));
         }
         if r.unread > 0 {
-            fields.push(fg(t, "warning", &format!("✉ {}", r.unread)));
+            fields.push(t.fg(Fg::Warning, &format!("✉ {}", r.unread)));
         }
         let left = fields.join("  ");
         let right = r
             .model
             .as_deref()
             .map(|m| {
-                let model = fg(t, "muted", &sanitize_single_line(m));
+                let model = t.fg(Fg::Muted, &sanitize_single_line(m));
                 match r.thinking.as_deref().filter(|l| *l != "off" && *l != "inherit") {
                     Some(level) => format!("{model} {}", t.thinking_border(level, level)),
                     None => model,
@@ -1078,12 +1070,15 @@ impl AgentHub {
         }];
         let detail_indent = (4 + visible_width(&branch)).min(width.saturating_sub(1));
         let rail = if self.children.contains(&r.id) {
-            fg(t, "dim", "│ ")
+            t.fg(Fg::Dim, "│ ")
         } else {
             "  ".into()
         };
         let continuation = if tree {
-            format!("  {}{rail}", fg(t, "dim", &tree_prefix(&r.id, width, &self.tree, true)))
+            format!(
+                "  {}{rail}",
+                t.fg(Fg::Dim, &tree_prefix(&r.id, width, &self.tree, true))
+            )
         } else {
             String::new()
         };
@@ -1096,7 +1091,7 @@ impl AgentHub {
         if let Some(task) = r.task.as_deref().map(task_summary).filter(|s| !s.trim().is_empty()) {
             lines.push(format!(
                 "{indent}{}",
-                fg(t, "muted", &truncate_to_width(&task, detail_width, "…", false))
+                t.fg(Fg::Muted, &truncate_to_width(&task, detail_width, "…", false))
             ));
         }
         let age = format_age(((self.now - r.last_activity) as f64 / 1000.0).round().max(1.0) as i64);
@@ -1112,7 +1107,7 @@ impl AgentHub {
         };
         lines.push(format!(
             "{indent}{}",
-            fg(t, "dim", &truncate_to_width(&meta, detail_width, "…", false))
+            t.fg(Fg::Dim, &truncate_to_width(&meta, detail_width, "…", false))
         ));
         if self.hovered == Some(index) {
             return lines
@@ -1124,7 +1119,7 @@ impl AgentHub {
                     } else {
                         l
                     };
-                    t.bg("selectedBg", &padded).unwrap_or(padded)
+                    t.bg(Bg::SelectedBg, &padded)
                 })
                 .collect();
         }
@@ -1155,11 +1150,7 @@ impl AgentHub {
             .map(|r| {
                 format!(
                     " {}",
-                    fg(
-                        &t,
-                        r.status.color(),
-                        &format!("{} {}", r.status.glyph(), r.status.name())
-                    )
+                    t.fg(r.status.color(), &format!("{} {}", r.status.glyph(), r.status.name()))
                 )
             })
             .unwrap_or_default();
@@ -1169,7 +1160,7 @@ impl AgentHub {
         )];
         let body: Vec<String> = v.chat.render_item_rows(width).into_iter().flatten().collect();
         let body = if body.is_empty() {
-            vec![fg(&t, "muted", "  (no messages yet)")]
+            vec![t.fg(Fg::Muted, "  (no messages yet)")]
         } else {
             body
         };
@@ -1184,7 +1175,7 @@ impl AgentHub {
             header,
             body,
             anchor,
-            footer: vec![input, fg(&t, "dim", &footer_hint)],
+            footer: vec![input, t.fg(Fg::Dim, &footer_hint)],
         };
         v.browser.render(&frame, width, height)
     }
@@ -1207,18 +1198,18 @@ fn top_border(t: &Theme, width: usize, title: &str) -> String {
     let fill = width.saturating_sub(2 + visible_width(&label));
     format!(
         "{}{}{}",
-        fg(t, "border", "╭"),
+        t.fg(Fg::Border, "╭"),
         bold(&label),
-        fg(t, "border", &format!("{}╮", "─".repeat(fill)))
+        t.fg(Fg::Border, &format!("{}╮", "─".repeat(fill)))
     )
 }
 
 fn divider(t: &Theme, width: usize) -> String {
-    fg(t, "border", &format!("├{}┤", "─".repeat(width.saturating_sub(2))))
+    t.fg(Fg::Border, &format!("├{}┤", "─".repeat(width.saturating_sub(2))))
 }
 
 fn bottom_border(t: &Theme, width: usize) -> String {
-    fg(t, "border", &format!("╰{}╯", "─".repeat(width.saturating_sub(2))))
+    t.fg(Fg::Border, &format!("╰{}╯", "─".repeat(width.saturating_sub(2))))
 }
 
 fn boxed_row(t: &Theme, content: &str, width: usize) -> String {
@@ -1227,8 +1218,8 @@ fn boxed_row(t: &Theme, content: &str, width: usize) -> String {
     let pad = inner.saturating_sub(visible_width(&cut));
     format!(
         "{} {cut}{} {}",
-        fg(t, "border", "│"),
+        t.fg(Fg::Border, "│"),
         " ".repeat(pad),
-        fg(t, "border", "│")
+        t.fg(Fg::Border, "│")
     )
 }

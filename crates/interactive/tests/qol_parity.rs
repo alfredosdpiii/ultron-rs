@@ -10,12 +10,13 @@ use std::sync::mpsc;
 
 use interactive::app::{App, AppOptions};
 use interactive::history::PromptHistoryStore;
+use interactive::keybindings::{Platform, app_keybindings};
 use interactive::lane::{LaneClient, LaneEvent, ModelInfo, QueueKind, Queued, SessionOpened};
 use interactive::qol::QolSettings;
 use interactive::run::{UiEvent, paint_loop};
 use serde_json::{Value, json};
-use tui::keybindings::{KeybindingsManager, Platform, app_keybindings};
-use tui::theme::{ColorMode, builtin_theme_json, create_theme};
+use theme::{ColorMode, builtin_theme_json, create_theme};
+use tui::KeybindingsManager;
 
 struct Quiet;
 
@@ -60,7 +61,6 @@ pub fn parity_app(qol: QolSettings) -> App {
         AppOptions {
             theme,
             keys: keys(),
-            editor_keys: keys(),
             version: "1.2.3".into(),
             cwd: "/nonexistent-qol-parity".into(),
             home: None,

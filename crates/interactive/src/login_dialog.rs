@@ -4,12 +4,12 @@
 //! paste-the-code prompts it asks. The flow itself runs in the client process (the composition root); the dialog
 //! only shows its steps and returns what the user answered.
 
-use crate::components::{bold, fg, key_hint, key_text};
+use crate::components::{bold, key_hint, key_text};
 use crate::lane::{LoginEvent, LoginPrompt};
 use std::rc::Rc;
-use tui::components::{Component, Text};
-use tui::keybindings::KeybindingsManager;
-use tui::theme::Theme;
+use theme::{Fg, Theme};
+use tui::KeybindingsManager;
+use tui::{Component, Text};
 
 /// `UNREACHABLE_CALLBACK_STEP`.
 const UNREACHABLE_CALLBACK_STEP: &str = "copy that page's full address from the address bar and paste it here.";
@@ -65,7 +65,7 @@ pub enum DialogAction {
 pub struct LoginDialog {
     title: String,
     items: Vec<Item>,
-    input: tui::input::Input,
+    input: tui::Input,
     keys: KeybindingsManager,
     secret: bool,
     /// The prompt has no meaningful empty answer (paste-the-code): Enter on an empty input is ignored.
@@ -80,7 +80,7 @@ pub struct LoginDialog {
 impl LoginDialog {
     /// The dialog for signing in to `name` (`Login to <name>`).
     pub fn new(keys: KeybindingsManager, name: &str, reach: &str) -> Self {
-        let mut input = tui::input::Input::new(keys.clone());
+        let mut input = tui::Input::new(keys.clone());
         input.focused = true;
         LoginDialog {
             title: format!("Login to {name}"),
@@ -102,9 +102,9 @@ impl LoginDialog {
     /// A new input, masked for secrets (`createInput`).
     fn reset_input(&mut self, secret: bool) {
         let mut input = if secret {
-            tui::input::Input::new(self.keys.clone()).with_options(None, None, None, Some("•"))
+            tui::Input::new(self.keys.clone()).with_options(None, None, None, Some("•"))
         } else {
-            tui::input::Input::new(self.keys.clone())
+            tui::Input::new(self.keys.clone())
         };
         input.focused = true;
         self.input = input;
@@ -117,14 +117,14 @@ impl LoginDialog {
             LoginEvent::AuthUrl { url, instructions } => {
                 self.items.clear();
                 self.items.push(Item::Spacer);
-                self.line(fg(theme, "accent", &link(url, url)));
-                self.line(fg(theme, "dim", &link(url, "Ctrl+click to open")));
+                self.line(theme.fg(Fg::Accent, &link(url, url)));
+                self.line(theme.fg(Fg::Dim, &link(url, "Ctrl+click to open")));
                 if self.reach != "local" {
-                    self.line(fg(theme, "warning", "Open this address in a browser on your computer."));
+                    self.line(theme.fg(Fg::Warning, "Open this address in a browser on your computer."));
                 }
                 if let Some(instructions) = instructions.as_deref().filter(|_| self.reach == "local") {
                     self.items.push(Item::Spacer);
-                    self.line(fg(theme, "warning", instructions));
+                    self.line(theme.fg(Fg::Warning, instructions));
                 }
             }
             LoginEvent::DeviceCode {
@@ -133,28 +133,28 @@ impl LoginDialog {
             } => {
                 self.items.clear();
                 self.items.push(Item::Spacer);
-                self.line(fg(theme, "accent", &link(verification_uri, verification_uri)));
-                self.line(fg(theme, "dim", &link(verification_uri, "Ctrl+click to open")));
+                self.line(theme.fg(Fg::Accent, &link(verification_uri, verification_uri)));
+                self.line(theme.fg(Fg::Dim, &link(verification_uri, "Ctrl+click to open")));
                 self.items.push(Item::Spacer);
-                self.line(fg(theme, "warning", &format!("Enter code: {user_code}")));
+                self.line(theme.fg(Fg::Warning, &format!("Enter code: {user_code}")));
                 // `showWaiting("Waiting for authentication...")` follows every device code.
                 self.items.push(Item::Spacer);
-                self.line(fg(theme, "dim", "Waiting for authentication..."));
+                self.line(theme.fg(Fg::Dim, "Waiting for authentication..."));
                 let hint = self.hint(theme, "tui.select.cancel", "to cancel");
                 self.line(format!("({hint})"));
             }
             LoginEvent::Info { message, links } => {
                 self.items.push(Item::Spacer);
-                self.line(fg(theme, "text", message));
+                self.line(theme.fg(Fg::Text, message));
                 for (label, url) in links {
                     let text = match label {
                         Some(label) => format!("{label}: {url}"),
                         None => url.clone(),
                     };
-                    self.line(fg(theme, "accent", &link(url, &text)));
+                    self.line(theme.fg(Fg::Accent, &link(url, &text)));
                 }
             }
-            LoginEvent::Progress(message) => self.line(fg(theme, "dim", message)),
+            LoginEvent::Progress(message) => self.line(theme.fg(Fg::Dim, message)),
         }
     }
 
@@ -180,9 +180,9 @@ impl LoginDialog {
                 self.require_value = true;
                 self.input.set_value("");
                 self.items.push(Item::Spacer);
-                self.line(fg(theme, "dim", message));
-                let color = if self.reach == "local" { "dim" } else { "warning" };
-                self.line(fg(theme, color, &unreachable_callback_hint(&self.reach)));
+                self.line(theme.fg(Fg::Dim, message));
+                let color = if self.reach == "local" { Fg::Dim } else { Fg::Warning };
+                self.line(theme.fg(color, &unreachable_callback_hint(&self.reach)));
                 self.items.push(Item::Input);
                 let hint = self.hint(theme, "tui.select.cancel", "to cancel");
                 self.line(format!("({hint})"));
@@ -198,9 +198,9 @@ impl LoginDialog {
                 }
                 self.require_value = false;
                 self.items.push(Item::Spacer);
-                self.line(fg(theme, "text", message));
+                self.line(theme.fg(Fg::Text, message));
                 if let Some(placeholder) = placeholder {
-                    self.line(fg(theme, "dim", &format!("e.g., {placeholder}")));
+                    self.line(theme.fg(Fg::Dim, &format!("e.g., {placeholder}")));
                 }
                 self.items.push(Item::Input);
                 let cancel = self.hint(theme, "tui.select.cancel", "to cancel,");
@@ -259,17 +259,13 @@ impl LoginDialog {
     /// `LoginDialogComponent.handleMouse` (a `Container`: border, title, the content, border): the input's row goes
     /// to the `Input` (a press moves its cursor); the selector shown in the dialog's place takes no mouse
     /// (`ExtensionSelectorComponent` renders text rows only).
-    pub fn handle_mouse(
-        &mut self,
-        theme: &Rc<Theme>,
-        event: &tui::mouse::MouseEvent,
-    ) -> Option<tui::mouse::MouseResult> {
+    pub fn handle_mouse(&mut self, theme: &Rc<Theme>, event: &tui::MouseEvent) -> Option<tui::MouseResult> {
         if self.select.is_some() {
             return None;
         }
         let width = event.width;
         let text = |s: &str| Text::new(s, 1, 0, None).render(width).len() as i64;
-        let mut top = 1 + text(&fg(theme, "accent", &bold(&self.title)));
+        let mut top = 1 + text(&theme.fg(Fg::Accent, &bold(&self.title)));
         for item in &self.items {
             let rows = match item {
                 Item::Spacer => 1,
@@ -278,7 +274,7 @@ impl LoginDialog {
                 Item::Input => {
                     let rows = self.input.render(width).len() as i64;
                     if event.y >= top && event.y < top + rows {
-                        let local = tui::mouse::MouseEvent {
+                        let local = tui::MouseEvent {
                             y: event.y - top,
                             ..*event
                         };
@@ -293,19 +289,19 @@ impl LoginDialog {
     }
 
     pub fn render(&mut self, theme: &Rc<Theme>, width: usize) -> Vec<String> {
-        let border = fg(theme, "border", &"─".repeat(width.max(1)));
+        let border = theme.fg(Fg::Border, &"─".repeat(width.max(1)));
         let text = |s: &str| Text::new(s, 1, 0, None).render(width);
         let mut lines = vec![border.clone()];
         if let Some(select) = &self.select {
             // `ExtensionSelectorComponent` in the dialog's slot.
             lines.push(String::new());
-            lines.extend(text(&fg(theme, "accent", &bold(&select.message))));
+            lines.extend(text(&theme.fg(Fg::Accent, &bold(&select.message))));
             lines.push(String::new());
             for (index, (_, label)) in select.options.iter().enumerate() {
                 let row = if index == select.index {
-                    format!("{}{}", fg(theme, "accent", "→ "), fg(theme, "accent", label))
+                    format!("{}{}", theme.fg(Fg::Accent, "→ "), theme.fg(Fg::Accent, label))
                 } else {
-                    format!("  {}", fg(theme, "text", label))
+                    format!("  {}", theme.fg(Fg::Text, label))
                 };
                 lines.extend(text(&row));
             }
@@ -318,7 +314,7 @@ impl LoginDialog {
             lines.push(border);
             return lines;
         }
-        lines.extend(text(&fg(theme, "accent", &bold(&self.title))));
+        lines.extend(text(&theme.fg(Fg::Accent, &bold(&self.title))));
         for item in &self.items {
             match item {
                 Item::Spacer => lines.push(String::new()),

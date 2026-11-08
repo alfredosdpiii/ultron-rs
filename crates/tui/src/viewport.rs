@@ -17,14 +17,12 @@
 use std::collections::BTreeSet;
 use std::time::{Duration, Instant};
 
+use crate::frame::{SYNC_BEGIN, SYNC_END, extract_cursor, is_image_line, kitty_command};
 use crate::image::delete_kitty_image;
-use crate::renderer::{CURSOR_MARKER, is_image_line};
 use crate::tty_writer::MAX_PENDING_OUTPUT_BYTES;
 use crate::utils::{normalize_terminal_output, truncate_to_width, visible_width};
 
 const SEGMENT_RESET: &str = "\x1b[0m\x1b]8;;\x07";
-const SYNC_BEGIN: &str = "\x1b[?2026h";
-const SYNC_END: &str = "\x1b[?2026l";
 
 /// How a history batch reaches the terminal.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -92,11 +90,10 @@ pub struct ViewportRenderer {
 
 /// `parseKittyImageHeader`: the image ids (`i=`) and cell rows (`r=`, default 1) of a line's first Kitty command.
 fn kitty_header(line: &str) -> Option<(Vec<u32>, usize)> {
-    let start = line.find("\x1b_G")? + 3;
-    let end = start + line[start..].find(';')?;
+    let (_, controls, _) = kitty_command(line)?;
     let mut ids = Vec::new();
     let mut rows = 1;
-    for param in line[start..end].split(',') {
+    for param in controls.split(',') {
         let Some((key, value)) = param.split_once('=') else {
             continue;
         };
@@ -434,18 +431,6 @@ impl ViewportRenderer {
             acknowledged: history.map(|h| h.id).or(stale_ack),
         }
     }
-}
-
-/// Strip the last [`CURSOR_MARKER`] and return its (row, column).
-fn extract_cursor(rows: &mut [String]) -> Option<(usize, usize)> {
-    for (row, line) in rows.iter_mut().enumerate().rev() {
-        if let Some(idx) = line.find(CURSOR_MARKER) {
-            let col = visible_width(&line[..idx]);
-            line.replace_range(idx..idx + CURSOR_MARKER.len(), "");
-            return Some((row, col));
-        }
-    }
-    None
 }
 
 /// What the render loop should do now.

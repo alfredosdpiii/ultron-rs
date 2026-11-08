@@ -3,12 +3,12 @@
 //! cycles through, session-only until Ctrl+S saves them to `enabledModels`. `None` enables every model; a list is
 //! the enabled models in cycling order.
 
-use crate::components::{bold, fg, format_key_text, strikethrough};
+use crate::components::{bold, format_key_text, strikethrough};
 use crate::lane::ModelInfo;
 use std::rc::Rc;
-use tui::components::{Component, Text};
-use tui::keybindings::KeybindingsManager;
-use tui::theme::Theme;
+use theme::{Fg, Theme};
+use tui::KeybindingsManager;
+use tui::{Component, Text};
 
 type EnabledIds = Option<Vec<String>>;
 
@@ -116,10 +116,10 @@ pub struct ScopedModelsSelector {
     enabled: EnabledIds,
     filtered: Vec<Item>,
     selected: usize,
-    search: tui::input::Input,
+    search: tui::Input,
     dirty: bool,
     /// The catalog refresh's line and its color.
-    refresh: Option<(String, &'static str)>,
+    refresh: Option<(String, Fg)>,
 }
 
 const MAX_VISIBLE: usize = 8;
@@ -132,7 +132,7 @@ impl ScopedModelsSelector {
         enabled: Option<Vec<String>>,
         refresh_status: Option<&str>,
     ) -> Self {
-        let mut search = tui::input::Input::new(keys.clone());
+        let mut search = tui::Input::new(keys.clone());
         search.focused = true;
         let mut selector = ScopedModelsSelector {
             theme,
@@ -144,7 +144,7 @@ impl ScopedModelsSelector {
             selected: 0,
             search,
             dirty: false,
-            refresh: refresh_status.map(|s| (s.to_string(), "muted")),
+            refresh: refresh_status.map(|s| (s.to_string(), Fg::Muted)),
         };
         selector.set_models(models);
         selector.filtered = selector.items();
@@ -177,7 +177,7 @@ impl ScopedModelsSelector {
     }
 
     /// `setRefreshStatus`.
-    pub fn set_refresh_status(&mut self, message: &str, kind: &'static str) {
+    pub fn set_refresh_status(&mut self, message: &str, kind: Fg) {
         self.refresh = Some((message.to_string(), kind));
     }
 
@@ -198,7 +198,7 @@ impl ScopedModelsSelector {
         self.filtered = if query.is_empty() {
             items
         } else {
-            tui::fuzzy::fuzzy_filter(&items, &query, |item| match &item.model {
+            tui::fuzzy_filter(&items, &query, |item| match &item.model {
                 Some(model) => search_text(model),
                 None => item.full_id.clone(),
             })
@@ -242,11 +242,11 @@ impl ScopedModelsSelector {
         if self.dirty {
             format!(
                 "{}{}",
-                fg(t, "dim", &format!("  {parts} ")),
-                fg(t, "warning", "(unsaved)")
+                t.fg(Fg::Dim, &format!("  {parts} ")),
+                t.fg(Fg::Warning, "(unsaved)")
             )
         } else {
-            fg(t, "dim", &format!("  {parts}"))
+            t.fg(Fg::Dim, &format!("  {parts}"))
         }
     }
 
@@ -366,17 +366,17 @@ impl ScopedModelsSelector {
 
     /// `ScopedModelsSelectorComponent.handleMouse` (a `Container`): a press on the search `Input` moves its cursor;
     /// the model rows are text.
-    pub fn handle_mouse(&mut self, event: &tui::mouse::MouseEvent) -> Option<tui::mouse::MouseResult> {
+    pub fn handle_mouse(&mut self, event: &tui::MouseEvent) -> Option<tui::MouseResult> {
         let t = Rc::clone(&self.theme);
         let width = event.width;
         let text = |s: &str| Text::new(s, 0, 0, None).render(width).len() as i64;
         let subtitle = format!("Session-only. {} to save to settings.", self.key("app.models.save"));
-        let top = 2 + text(&fg(&t, "accent", &bold("Model Configuration"))) + text(&fg(&t, "muted", &subtitle)) + 1;
+        let top = 2 + text(&t.fg(Fg::Accent, &bold("Model Configuration"))) + text(&t.fg(Fg::Muted, &subtitle)) + 1;
         let rows = self.search.render(width).len() as i64;
         if event.y < top || event.y >= top + rows {
             return None;
         }
-        let local = tui::mouse::MouseEvent {
+        let local = tui::MouseEvent {
             y: event.y - top,
             ..*event
         };
@@ -386,19 +386,18 @@ impl ScopedModelsSelector {
     pub fn render(&mut self, width: usize) -> Vec<String> {
         let t = Rc::clone(&self.theme);
         let text = |s: &str| Text::new(s, 0, 0, None).render(width);
-        let border = fg(&t, "border", &"─".repeat(width.max(1)));
+        let border = t.fg(Fg::Border, &"─".repeat(width.max(1)));
         let mut lines = vec![border.clone(), String::new()];
-        lines.extend(text(&fg(&t, "accent", &bold("Model Configuration"))));
-        lines.extend(text(&fg(
-            &t,
-            "muted",
+        lines.extend(text(&t.fg(Fg::Accent, &bold("Model Configuration"))));
+        lines.extend(text(&t.fg(
+            Fg::Muted,
             &format!("Session-only. {} to save to settings.", self.key("app.models.save")),
         )));
         lines.push(String::new());
         lines.extend(self.search.render(width));
         lines.push(String::new());
         if self.filtered.is_empty() {
-            lines.extend(text(&fg(&t, "muted", "  No matching models")));
+            lines.extend(text(&t.fg(Fg::Muted, "  No matching models")));
         } else {
             let count = self.filtered.len();
             let start = self
@@ -409,30 +408,29 @@ impl ScopedModelsSelector {
             for (index, item) in self.filtered[start..end].iter().enumerate() {
                 let selected = start + index == self.selected;
                 let prefix = if selected {
-                    fg(&t, "accent", "→ ")
+                    t.fg(Fg::Accent, "→ ")
                 } else {
                     "  ".into()
                 };
                 let id = item.model.as_ref().map_or(item.full_id.clone(), |m| m.id.clone());
                 let styled = if item.model.is_some() { id } else { strikethrough(&id) };
-                let model_text = if selected { fg(&t, "accent", &styled) } else { styled };
-                let badge = fg(
-                    &t,
-                    "muted",
+                let model_text = if selected { t.fg(Fg::Accent, &styled) } else { styled };
+                let badge = t.fg(
+                    Fg::Muted,
                     &item
                         .model
                         .as_ref()
                         .map_or(" [unavailable]".to_string(), |m| format!(" [{}]", m.provider)),
                 );
                 let status = if item.model.is_some() && item.enabled {
-                    fg(&t, "accent", "✓ ")
+                    t.fg(Fg::Accent, "✓ ")
                 } else {
                     "  ".into()
                 };
                 lines.extend(text(&format!("{prefix}{status}{model_text}{badge}")));
             }
             if start > 0 || end < count {
-                lines.extend(text(&fg(&t, "muted", &format!("  ({}/{count})", self.selected + 1))));
+                lines.extend(text(&t.fg(Fg::Muted, &format!("  ({}/{count})", self.selected + 1))));
             }
             let selected = &self.filtered[self.selected];
             lines.push(String::new());
@@ -440,11 +438,11 @@ impl ScopedModelsSelector {
                 Some(model) => format!("  Model Name: {}", model.name),
                 None => "  Model unavailable".into(),
             };
-            lines.extend(text(&fg(&t, "muted", &name)));
+            lines.extend(text(&t.fg(Fg::Muted, &name)));
         }
         lines.push(String::new());
         if let Some((message, kind)) = &self.refresh {
-            lines.extend(text(&fg(&t, kind, &format!("  {message}"))));
+            lines.extend(text(&t.fg(*kind, &format!("  {message}"))));
         }
         lines.extend(text(&self.footer()));
         lines.push(border);

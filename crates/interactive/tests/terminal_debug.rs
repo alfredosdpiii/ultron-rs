@@ -12,14 +12,15 @@ use std::sync::{Arc, Mutex};
 
 use interactive::app::{App, AppOptions};
 use interactive::history::PromptHistoryStore;
+use interactive::keybindings::Platform;
+use interactive::keybindings::native_app_keybindings;
 use interactive::lane::{LaneClient, LaneEvent, ModelInfo, SessionOpened};
 use interactive::qol::QolSettings;
 use interactive::run::{UiEvent, paint_loop, terminal_debug};
 use serde_json::{Value, json};
-use tui::keybindings::{KeybindingsManager, Platform};
-use tui::qol_keys::native_app_keybindings;
-use tui::render_debug::LocalStamp;
-use tui::theme::{ColorMode, builtin_theme_json, create_theme};
+use theme::{ColorMode, builtin_theme_json, create_theme};
+use tui::KeybindingsManager;
+use tui::LocalStamp;
 
 struct Quiet;
 
@@ -65,7 +66,6 @@ fn split_app() -> App {
         AppOptions {
             theme,
             keys: keys(),
-            editor_keys: keys(),
             version: "1.2.3".into(),
             cwd: "/p".into(),
             home: None,
@@ -139,8 +139,8 @@ fn interactive_terminal_debug_env_logs_writes_redraws_and_renders() {
     std::fs::create_dir_all(&write_dir).unwrap();
     let vars: HashMap<&str, String> = HashMap::from([
         (interactive::run::TUI_WRITE_LOG_ENV, write_dir.display().to_string()),
-        (tui::render_debug::TUI_DEBUG_REDRAW_ENV, "1".to_string()),
-        (tui::render_debug::TUI_DEBUG_ENV, "1".to_string()),
+        (tui::TUI_DEBUG_REDRAW_ENV, "1".to_string()),
+        (tui::TUI_DEBUG_ENV, "1".to_string()),
     ]);
     let var = |name: &str| vars.get(name).cloned();
     let (debug, termux) = terminal_debug(&var, &agent, &dumps, STAMP, 4242, Box::new(|| 1_792_224_000_999));
@@ -203,9 +203,7 @@ fn interactive_terminal_debug_is_off_without_the_variables_and_reads_termux() {
     assert_eq!(debug.write_log.as_deref(), Some(file.as_path()));
     assert!(!debug.traces_renders());
     // Termux through the loop: a height change alone is diffed, never painted whole.
-    let redraw = |name: &str| {
-        (name == tui::render_debug::TUI_DEBUG_REDRAW_ENV || name == "TERMUX_VERSION").then(|| "1".to_string())
-    };
+    let redraw = |name: &str| (name == tui::TUI_DEBUG_REDRAW_ENV || name == "TERMUX_VERSION").then(|| "1".to_string());
     let agent = temp.join("agent");
     let (debug, termux) = terminal_debug(&redraw, &agent, &temp, STAMP, 1, Box::new(|| 0));
     let debug = debug.unwrap();

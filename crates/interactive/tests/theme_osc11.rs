@@ -10,24 +10,21 @@ use std::sync::{Arc, Mutex};
 
 use interactive::app::{App, AppOptions};
 use interactive::history::PromptHistoryStore;
+use interactive::keybindings::Platform;
+use interactive::keybindings::native_app_keybindings;
 use interactive::lane::{LaneClient, ModelInfo};
 use interactive::run::{UiEvent, paint_loop};
 use interactive::theme_setup::ThemeController;
 use serde_json::Value;
-use tui::keybindings::{KeybindingsManager, Platform};
-use tui::qol_keys::native_app_keybindings;
-use tui::stdin_buffer::{InputEvent, StdinBuffer};
-use tui::theme::registry::ThemeRegistry;
-use tui::theme::{ColorMode, Theme, builtin_theme_json, create_theme};
+use theme::registry::ThemeRegistry;
+use theme::{ColorMode, Fg, Theme, builtin_theme_json, create_theme};
+use tui::KeybindingsManager;
+use tui::{StdinBuffer, StdinEvent};
 
 const QUERY: &str = "\x1b]11;?\x07";
 
 fn registry() -> ThemeRegistry {
-    ThemeRegistry::new(
-        PathBuf::new(),
-        PathBuf::from("/nonexistent/themes"),
-        ColorMode::Truecolor,
-    )
+    ThemeRegistry::new(PathBuf::from("/nonexistent/themes"), ColorMode::Truecolor)
 }
 
 fn builtin(name: &str) -> Theme {
@@ -35,7 +32,7 @@ fn builtin(name: &str) -> Theme {
 }
 
 fn which(theme: &Theme) -> &'static str {
-    let probe = |t: &Theme| t.fg("accent", "x").unwrap();
+    let probe = |t: &Theme| t.fg(Fg::Accent, "x");
     if probe(theme) == probe(&builtin("light")) {
         "light"
     } else if probe(theme) == probe(&builtin("dark")) {
@@ -99,7 +96,6 @@ fn new_app_told(theme: Rc<Theme>, saves: &Saves, told: &Told) -> App {
         AppOptions {
             theme,
             keys: keys(),
-            editor_keys: keys(),
             version: "1.2.3".into(),
             cwd: "/p".into(),
             home: None,
@@ -125,8 +121,8 @@ fn input_events(reads: &[&str]) -> Vec<UiEvent> {
     for read in reads {
         for event in buffer.process(read) {
             match event {
-                InputEvent::Data(d) => events.push(UiEvent::Input(d)),
-                InputEvent::Paste(p) => panic!("paste {p:?}"),
+                StdinEvent::Data(d) => events.push(UiEvent::Input(d)),
+                StdinEvent::Paste(p) => panic!("paste {p:?}"),
             }
         }
         events.extend(buffer.flush().into_iter().map(UiEvent::Input));

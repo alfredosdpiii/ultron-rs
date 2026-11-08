@@ -6,8 +6,8 @@ use std::rc::Rc;
 
 use interactive::chat::{ChatStyle, ChatView, ImageSettings};
 use serde_json::{Value, json};
-use tui::image::{DEFAULT_CELL, ImageProtocol};
-use tui::theme::{ColorMode, builtin_theme_json, create_theme};
+use theme::{ColorMode, builtin_theme_json, create_theme};
+use tui::{DEFAULT_CELL, ImageProtocol};
 
 fn png() -> Value {
     let fixture: Value = serde_json::from_str(include_str!("../fixtures/tool-images.json")).unwrap();

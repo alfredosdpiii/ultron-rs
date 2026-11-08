@@ -7,20 +7,21 @@ use std::time::Duration;
 
 use interactive::app::{App, AppOptions};
 use interactive::history::PromptHistoryStore;
+use interactive::keybindings::{Platform, app_keybindings};
 use interactive::lane::{LaneClient, LaneEvent, ModelInfo, PromptImage, SessionOpened};
+use interactive::notify::{Message, TurnOutcome};
 use interactive::qol::{GitSource, QolSettings, StatusSymbols, from_settings};
 use interactive::run::{UiEvent, paint_loop};
+use interactive::status_git::GitSnapshot;
+use interactive::status_line::{GitCounts, Preset, SegmentId, SeparatorStyle};
 use serde_json::{Value, json};
-use tui::clipboard::{Clipboard, ClipboardService};
-use tui::keybindings::{KeybindingsManager, Platform, app_keybindings};
-use tui::notify::{Message, TurnOutcome};
-use tui::status_git::GitSnapshot;
-use tui::status_line::{GitCounts, Preset, SegmentId, SeparatorStyle};
-use tui::theme::{ColorMode, Theme, builtin_theme_json, create_theme};
-use tui::tty_writer::{MAX_PENDING_OUTPUT_BYTES, TtyWriter};
-use tui::utils::strip_terminal_sequences;
-use tui::viewport::{HistoryKind, ViewportRenderer};
-use tui::vim::VimMode;
+use theme::{ColorMode, Fg, Theme, builtin_theme_json, create_theme};
+use tui::KeybindingsManager;
+use tui::VimMode;
+use tui::strip_terminal_sequences;
+use tui::{Clipboard, ClipboardService};
+use tui::{HistoryKind, ViewportRenderer};
+use tui::{MAX_PENDING_OUTPUT_BYTES, TtyWriter};
 
 #[derive(Default)]
 struct Calls(RefCell<Vec<String>>);
@@ -91,7 +92,6 @@ fn app_with_fd(cwd: &str, qol: QolSettings, fd_path: Option<std::path::PathBuf>)
         AppOptions {
             theme: theme(),
             keys: keys(),
-            editor_keys: keys(),
             version: "1.2.3".into(),
             cwd: cwd.into(),
             home: None,
@@ -379,11 +379,11 @@ impl Clipboard for FakeClipboard {
     fn set_text(&mut self, _: &str) -> Result<(), String> {
         Ok(())
     }
-    fn get_image(&mut self) -> Result<tui::clipboard::ClipboardImage, String> {
+    fn get_image(&mut self) -> Result<tui::ClipboardImage, String> {
         if self.0.is_empty() {
             Err("no image".into())
         } else {
-            Ok(tui::clipboard::ClipboardImage {
+            Ok(tui::ClipboardImage {
                 bytes: self.0.clone(),
                 mime_type: "image/png".into(),
             })
@@ -447,14 +447,14 @@ fn base64_len(n: usize) -> usize {
 #[test]
 fn interactive_qol_clipboard_paste_image_then_text_fallback() {
     let (mut app, _) = fresh(QolSettings::default());
-    app.set_clipboard(ClipboardService::spawn(FakeClipboard(png(2, 3))));
+    app.set_clipboard(ClipboardService::spawn(FakeClipboard(png(2, 3))).unwrap());
     app.handle_input("\x16");
     poll_until(&mut app, |a| !a.editor_text().is_empty());
     assert_eq!(app.editor_text(), "[Image #1, 2x3] ");
     assert_eq!(app.attachments().images[0].mime, "image/png");
 
     let (mut app, _) = fresh(QolSettings::default());
-    app.set_clipboard(ClipboardService::spawn(FakeClipboard(Vec::new())));
+    app.set_clipboard(ClipboardService::spawn(FakeClipboard(Vec::new())).unwrap());
     app.handle_input("\x16");
     poll_until(&mut app, |a| !a.editor_text().is_empty());
     assert_eq!(app.editor_text(), "clip text");
@@ -465,7 +465,7 @@ fn interactive_qol_clipboard_paste_image_then_text_fallback() {
     std::fs::create_dir_all(&dir).unwrap();
     let (mut parity, _) = fresh(QolSettings::parity());
     parity.set_temp_dir(dir.clone());
-    parity.set_clipboard(ClipboardService::spawn(FakeClipboard(png(2, 3))));
+    parity.set_clipboard(ClipboardService::spawn(FakeClipboard(png(2, 3))).unwrap());
     parity.handle_input("\x16");
     poll_until(&mut parity, |a| !a.editor_text().is_empty());
     let path = parity.editor_text();
@@ -476,7 +476,7 @@ fn interactive_qol_clipboard_paste_image_then_text_fallback() {
     assert_eq!(std::fs::read(&path).unwrap(), png(2, 3));
     assert!(parity.attachments().images.is_empty());
     let (mut parity, _) = fresh(QolSettings::parity());
-    parity.set_clipboard(ClipboardService::spawn(FakeClipboard(Vec::new())));
+    parity.set_clipboard(ClipboardService::spawn(FakeClipboard(Vec::new())).unwrap());
     parity.handle_input("\x16");
     poll_until(&mut parity, |a| !a.editor_text().is_empty());
     assert_eq!(parity.editor_text(), "clip text");
@@ -484,7 +484,7 @@ fn interactive_qol_clipboard_paste_image_then_text_fallback() {
 }
 
 /// A clipboard holding one typed image (`readClipboardImage` returns JPEG, WebP and GIF as read).
-struct TypedClipboard(tui::clipboard::ClipboardImage);
+struct TypedClipboard(tui::ClipboardImage);
 
 impl Clipboard for TypedClipboard {
     fn get_text(&mut self) -> Result<String, String> {
@@ -493,7 +493,7 @@ impl Clipboard for TypedClipboard {
     fn set_text(&mut self, _: &str) -> Result<(), String> {
         Ok(())
     }
-    fn get_image(&mut self) -> Result<tui::clipboard::ClipboardImage, String> {
+    fn get_image(&mut self) -> Result<tui::ClipboardImage, String> {
         Ok(self.0.clone())
     }
 }
@@ -514,13 +514,13 @@ fn interactive_qol_clipboard_paste_keeps_the_image_type_like_ts() {
         ("image/gif", b"GIF89a".to_vec(), "gif"),
     ];
     for (mime_type, bytes, extension) in cases {
-        let image = tui::clipboard::ClipboardImage {
+        let image = tui::ClipboardImage {
             bytes: bytes.clone(),
             mime_type: mime_type.into(),
         };
         let (mut parity, _) = fresh(QolSettings::parity());
         parity.set_temp_dir(dir.clone());
-        parity.set_clipboard(ClipboardService::spawn(TypedClipboard(image)));
+        parity.set_clipboard(ClipboardService::spawn(TypedClipboard(image)).unwrap());
         parity.handle_input("\x16");
         poll_until(&mut parity, |a| !a.editor_text().is_empty());
         let path = parity.editor_text();
@@ -532,12 +532,13 @@ fn interactive_qol_clipboard_paste_keeps_the_image_type_like_ts() {
         assert_eq!(std::fs::read(&path).unwrap(), bytes, "{mime_type}");
     }
     let (mut app, _) = fresh(QolSettings::default());
-    app.set_clipboard(ClipboardService::spawn(TypedClipboard(
-        tui::clipboard::ClipboardImage {
+    app.set_clipboard(
+        ClipboardService::spawn(TypedClipboard(tui::ClipboardImage {
             bytes: jpeg,
             mime_type: "image/jpeg".into(),
-        },
-    )));
+        }))
+        .unwrap(),
+    );
     app.handle_input("\x16");
     poll_until(&mut app, |a| !a.editor_text().is_empty());
     assert_eq!(app.editor_text(), "[Image #1, 4x2] ");
@@ -560,7 +561,7 @@ fn rlm_transcript() -> Vec<Value> {
 
 #[test]
 fn interactive_qol_highlight_styles_fenced_code_and_leaves_rlm_cells_to_the_cell_highlighter() {
-    let keyword = theme().fg_ansi("syntaxKeyword").unwrap();
+    let keyword = theme().fg_ansi(Fg::SyntaxKeyword);
     let render = |qol: QolSettings| {
         let (mut app, _) = fresh(qol);
         app.apply(LaneEvent::Opened(SessionOpened {

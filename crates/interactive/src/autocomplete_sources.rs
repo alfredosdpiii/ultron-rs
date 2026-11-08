@@ -3,7 +3,7 @@
 //!
 //! - Emoji: `:name` suggestions.
 //!   The shortcode table `data/emojis.json` is omp's (built from gemoji), loaded once on first use.
-//! - GitHub `#123` references: local PR/issue candidates; titles come from a [`RefTitleSource`] whose network
+//! - GitHub `#123` references: local PR/issue candidates; titles come from [`GhRefTitles`], whose network
 //!   lookups run on its own thread, so suggestions never wait on `gh`.
 //! - Model mentions: `@model` (trigger configurable; omp uses `^`) ranked by fuzzy match over ids and names.
 //!
@@ -12,14 +12,10 @@
 
 use std::collections::{HashMap, HashSet};
 use std::process::{Command, Stdio};
-use std::sync::mpsc::{self, Sender};
 use std::sync::{Arc, Mutex, OnceLock};
-use std::thread;
 
-use crate::autocomplete::{
-    AbortSignal, AutocompleteItem, AutocompleteProvider, AutocompleteSuggestions, Completion, SuggestionsJob,
-};
-use crate::fuzzy::fuzzy_filter;
+use tui::{AbortSignal, AutocompleteItem, AutocompleteProvider, AutocompleteSuggestions, Completion, SuggestionsJob};
+use tui::{ServiceThread, fuzzy_filter};
 
 // ---- emoji ----
 
@@ -247,21 +243,13 @@ pub fn github_ref_context(text_before: &str) -> Option<GithubRefContext> {
     })
 }
 
-/// Titles for references, fetched off the paint path.
-pub trait RefTitleSource {
-    /// The cached title, if any; never blocks.
-    fn title(&self, kind: RefKind, number: u64) -> Option<String>;
-    /// Ask for a title in the background (deduplicated by the implementation).
-    fn request(&self, kind: RefKind, number: u64);
-}
-
 type TitleCache = Arc<Mutex<HashMap<(RefKind, u64), Option<String>>>>;
 
-/// Titles from `gh {pr|issue} view N --json title` on a worker thread.
+/// Titles for references from `gh {pr|issue} view N --json title`, fetched on a worker thread off the paint path.
 pub struct GhRefTitles {
     cache: TitleCache,
     asked: Mutex<HashSet<(RefKind, u64)>>,
-    tx: Mutex<Sender<(RefKind, u64)>>,
+    thread: ServiceThread<(RefKind, u64)>,
 }
 
 impl GhRefTitles {
@@ -269,32 +257,28 @@ impl GhRefTitles {
     pub fn spawn(
         lookup: impl Fn(RefKind, u64) -> Option<String> + Send + 'static,
         on_update: impl Fn() + Send + 'static,
-    ) -> Self {
+    ) -> std::io::Result<Self> {
         let cache: TitleCache = Arc::default();
         let shared = Arc::clone(&cache);
-        let (tx, rx) = mpsc::channel::<(RefKind, u64)>();
-        thread::Builder::new()
-            .name("gh-ref-titles".into())
-            .spawn(move || {
-                for (kind, n) in rx {
-                    let title = lookup(kind, n);
-                    shared
-                        .lock()
-                        .unwrap_or_else(|e| e.into_inner())
-                        .insert((kind, n), title);
-                    on_update();
-                }
-            })
-            .ok();
-        Self {
+        let thread = ServiceThread::spawn("gh-ref-titles", move |jobs| {
+            for (kind, n) in jobs {
+                let title = lookup(kind, n);
+                shared
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .insert((kind, n), title);
+                on_update();
+            }
+        })?;
+        Ok(Self {
             cache,
             asked: Mutex::default(),
-            tx: Mutex::new(tx),
-        }
+            thread,
+        })
     }
 
     /// `gh` in `cwd`.
-    pub fn gh(cwd: std::path::PathBuf, on_update: impl Fn() + Send + 'static) -> Self {
+    pub fn gh(cwd: std::path::PathBuf, on_update: impl Fn() + Send + 'static) -> std::io::Result<Self> {
         Self::spawn(
             move |kind, n| {
                 let sub = if kind == RefKind::Pr { "pr" } else { "issue" };
@@ -314,7 +298,8 @@ impl GhRefTitles {
     }
 }
 
-impl RefTitleSource for GhRefTitles {
+impl GhRefTitles {
+    /// The cached title, if any; never blocks.
     fn title(&self, kind: RefKind, number: u64) -> Option<String> {
         self.cache
             .lock()
@@ -323,6 +308,7 @@ impl RefTitleSource for GhRefTitles {
             .cloned()
             .flatten()
     }
+    /// Ask for a title in the background, once per reference.
     fn request(&self, kind: RefKind, number: u64) {
         if self
             .asked
@@ -330,16 +316,13 @@ impl RefTitleSource for GhRefTitles {
             .unwrap_or_else(|e| e.into_inner())
             .insert((kind, number))
         {
-            let _ = self.tx.lock().unwrap_or_else(|e| e.into_inner()).send((kind, number));
+            self.thread.send((kind, number));
         }
     }
 }
 
 /// Suggestions for a `#N` token: PR and Issue candidates (or the named kind), titled when known.
-pub fn github_ref_suggestions(
-    text_before: &str,
-    titles: Option<&dyn RefTitleSource>,
-) -> Option<AutocompleteSuggestions> {
+pub fn github_ref_suggestions(text_before: &str, titles: Option<&GhRefTitles>) -> Option<AutocompleteSuggestions> {
     let ctx = github_ref_context(text_before)?;
     let kinds: Vec<RefKind> = match ctx.qualifier {
         Some(k) => vec![k],
@@ -372,7 +355,7 @@ pub fn github_ref_suggestions(
 
 /// `#N` completion; accepting inserts the reference (`pr://N`) and a space.
 pub struct GithubRefProvider {
-    pub titles: Option<Box<dyn RefTitleSource>>,
+    pub titles: Option<GhRefTitles>,
 }
 
 impl AutocompleteProvider for GithubRefProvider {
@@ -386,7 +369,7 @@ impl AutocompleteProvider for GithubRefProvider {
         col: usize,
         _force: bool,
     ) -> Option<AutocompleteSuggestions> {
-        github_ref_suggestions(line_before(lines, line, col), self.titles.as_deref())
+        github_ref_suggestions(line_before(lines, line, col), self.titles.as_ref())
     }
     fn apply_completion(
         &self,
@@ -563,7 +546,7 @@ impl AutocompleteProvider for ChainProvider {
         let i = self.last.get().min(self.providers.len().saturating_sub(1));
         match self.providers.get(i) {
             Some(p) => p.apply_completion(lines, line, col, item, prefix),
-            None => crate::autocomplete::apply_completion(lines, line, col, item, prefix),
+            None => tui::apply_completion(lines, line, col, item, prefix),
         }
     }
     fn should_trigger_file_completion(&self, lines: &[String], line: usize, col: usize) -> bool {

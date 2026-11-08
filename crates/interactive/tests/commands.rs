@@ -7,11 +7,12 @@ use std::rc::Rc;
 
 use interactive::app::{App, AppOptions, next_model, path_argument};
 use interactive::history::PromptHistoryStore;
+use interactive::keybindings::Platform;
+use interactive::keybindings::native_app_keybindings;
 use interactive::lane::{AutoreviewRequest, BashResult, ForkMessage, LaneClient, LaneEvent, ModelInfo, SessionOpened};
 use serde_json::{Value, json};
-use tui::keybindings::{KeybindingsManager, Platform};
-use tui::qol_keys::native_app_keybindings;
-use tui::theme::{ColorMode, builtin_theme_json, create_theme};
+use theme::{ColorMode, builtin_theme_json, create_theme};
+use tui::KeybindingsManager;
 
 #[derive(Default)]
 struct Calls(RefCell<Vec<String>>);
@@ -181,7 +182,6 @@ fn app_with(qol: interactive::qol::QolSettings, models: Vec<ModelInfo>) -> (App,
         AppOptions {
             theme,
             keys: keys(),
-            editor_keys: keys(),
             version: "1.2.3".into(),
             cwd: "/p".into(),
             home: None,
@@ -227,7 +227,7 @@ fn submit(app: &mut App, text: &str) {
 fn screen(app: &mut App) -> String {
     app.render(80, 30)
         .iter()
-        .map(|l| tui::utils::strip_terminal_sequences(l).trim_end().to_string())
+        .map(|l| tui::strip_terminal_sequences(l).trim_end().to_string())
         .collect::<Vec<_>>()
         .join("\n")
 }
@@ -571,7 +571,7 @@ fn interactive_commands_thinking_argument_selector_and_cycle() {
     let rows: String = app
         .render(120, 30)
         .iter()
-        .map(|l| tui::utils::strip_terminal_sequences(l))
+        .map(|l| tui::strip_terminal_sequences(l))
         .collect::<Vec<_>>()
         .join("\n");
     assert!(
@@ -717,11 +717,10 @@ fn interactive_commands_export_clone_usage_reach_the_lane() {
 fn interactive_commands_export_names_the_active_theme() {
     let dir = std::env::temp_dir().join(format!("commands-export-theme-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
-    let paper = include_str!("../../tui/src/theme/light.json").replace("\"name\": \"light\"", "\"name\": \"paper\"");
+    let paper = include_str!("../../theme/src/light.json").replace("\"name\": \"light\"", "\"name\": \"paper\"");
     std::fs::write(dir.join("paper.json"), paper).unwrap();
     let controller = |setting: &str| {
-        let registry =
-            tui::theme::registry::ThemeRegistry::new(std::path::PathBuf::new(), dir.clone(), ColorMode::Truecolor);
+        let registry = theme::registry::ThemeRegistry::new(dir.clone(), ColorMode::Truecolor);
         interactive::theme_setup::ThemeController::new(registry, Some(setting.to_string()), None)
     };
     let (mut failed, f) = app();
@@ -891,7 +890,7 @@ fn interactive_commands_agents_opens_the_hub_with_overlays_only() {
     assert!(
         app.render(80, 20)
             .iter()
-            .any(|l| tui::utils::strip_terminal_sequences(l).contains("No agents in this session"))
+            .any(|l| tui::strip_terminal_sequences(l).contains("No agents in this session"))
     );
 }
 
@@ -997,7 +996,6 @@ fn interactive_commands_images_go_with_steering_and_follow_ups() {
         AppOptions {
             theme,
             keys: keys(),
-            editor_keys: keys(),
             version: "1".into(),
             cwd: "/p".into(),
             home: None,
@@ -1440,7 +1438,7 @@ fn interactive_commands_login_with_an_api_key() {
     let wide: String = app
         .render(300, 30)
         .iter()
-        .map(|l| tui::utils::strip_terminal_sequences(l))
+        .map(|l| tui::strip_terminal_sequences(l))
         .collect();
     assert!(wide.contains("signing in with an account is not available"), "{wide}");
 }

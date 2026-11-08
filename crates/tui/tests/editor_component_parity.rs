@@ -2,9 +2,10 @@
 //! packages/tui/src/components/editor.ts by fixtures/generate-editor-component.mjs.
 
 use serde_json::Value;
-use tui::editor::{Editor, is_key_release, word_wrap_line};
-use tui::keybindings::{KeybindingsManager, tui_keybindings};
-use tui::keys::KeyContext;
+use tui::KeyContext;
+use tui::is_key_release;
+use tui::{Editor, word_wrap_line};
+use tui::{KeybindingsManager, tui_keybindings};
 
 fn fixture() -> Value {
     let path = concat!(env!("CARGO_MANIFEST_DIR"), "/fixtures/editor-component-parity.json");
@@ -21,7 +22,7 @@ fn strs(v: &Value) -> Vec<String> {
 
 fn editor(padding_x: usize) -> Editor {
     let keys = KeybindingsManager::new(tui_keybindings(), Vec::new(), KeyContext::default());
-    let mut e = Editor::new(keys, KeyContext::default(), Box::new(|s| format!("<{s}>")), padding_x);
+    let mut e = Editor::new(keys, Box::new(|s| format!("<{s}>")), padding_x);
     e.terminal_rows = 20;
     e
 }

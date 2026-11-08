@@ -1,7 +1,7 @@
 //! Lexer and layout cost of the Markdown component (tui::marked + tui::markdown).
 //!
 //! `tui_marked_lex_work_grows_linearly` guards against quadratic regressions without a clock: it lexes generated
-//! documents at 1x and 4x size and compares the lexer's own work counter (`tui::marked::lex_work`: rule calls plus the
+//! documents at 1x and 4x size and compares the lexer's own work counter (`tui::lex_work`: rule calls plus the
 //! bytes each can scan), which is the same on every run and every machine. Linear lexing gives a ratio of ~4, a
 //! lexer that rescans the rest of the input per token ~16. The wall-clock version of the same check
 //! (`tui_marked_lex_time_grows_linearly`) is ignored: a time ratio failed under load.
@@ -13,11 +13,11 @@
 
 use std::time::{Duration, Instant};
 
-use tui::components::Component;
-use tui::markdown::{Markdown, MarkdownOptions, MarkdownTheme};
-use tui::marked::{lex_work, markdown_tokens};
+use tui::Component;
+use tui::{Markdown, MarkdownOptions, MarkdownTheme};
+use tui::{lex_work, markdown_tokens};
 
-fn sty(open: u32, close: u32) -> tui::select::StyleFn {
+fn sty(open: u32, close: u32) -> tui::StyleFn {
     Box::new(move |s| format!("\x1b[{open}m{s}\x1b[{close}m"))
 }
 

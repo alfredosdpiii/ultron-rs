@@ -3,10 +3,11 @@
 //! written before the report, and a failed upload offers the zip.
 
 use interactive::bug_report::{Action, BugFlow, DISCLAIMER, Step, TRANSCRIPT_NOTE};
+use interactive::keybindings::Platform;
+use interactive::keybindings::native_app_keybindings;
 use std::rc::Rc;
-use tui::keybindings::{KeybindingsManager, Platform};
-use tui::qol_keys::native_app_keybindings;
-use tui::theme::{ColorMode, builtin_theme_json, create_theme};
+use theme::{ColorMode, builtin_theme_json, create_theme};
+use tui::KeybindingsManager;
 
 const ENTER: &str = "\r";
 const DOWN: &str = "\x1b[B";

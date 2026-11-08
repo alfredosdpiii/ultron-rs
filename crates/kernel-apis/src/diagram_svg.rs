@@ -11,6 +11,7 @@ use resvg::usvg;
 use resvg::usvg::fontdb;
 use std::collections::HashMap;
 use std::sync::{Arc, OnceLock};
+use theme::{Bg, Fg};
 
 /// The colours a diagram is drawn in: `--pele-<name>` values, and whether the theme is dark.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -29,56 +30,60 @@ impl DiagramPalette {
 
     /// The page colour the PNG is filled with.
     pub fn background(&self) -> &str {
-        self.get("--pele-bg")
-            .unwrap_or(if self.dark { "#1e1e1e" } else { "#ffffff" })
+        self.get("--pele-bg").unwrap_or(defaults(self.dark).page)
     }
 
     /// What an unresolvable `var()` without a fallback becomes.
     pub fn foreground(&self) -> &str {
-        self.get("--pele-fg")
-            .unwrap_or(if self.dark { "#e5e5e7" } else { "#000000" })
+        self.get("--pele-fg").unwrap_or(defaults(self.dark).text)
+    }
+}
+
+fn defaults(dark: bool) -> theme::DefaultColors {
+    if dark {
+        theme::DARK_DEFAULTS
+    } else {
+        theme::LIGHT_DEFAULTS
     }
 }
 
 /// Theme tokens of the eight series colours (pie slices, chart lines, git branches), in order.
-pub const SERIES_TOKENS: [&str; 8] = [
-    "accent",
-    "success",
-    "warning",
-    "error",
-    "border",
-    "thinkingHigh",
-    "mdHeading",
-    "syntaxType",
+pub const SERIES_TOKENS: [Fg; 8] = [
+    Fg::Accent,
+    Fg::Success,
+    Fg::Warning,
+    Fg::Error,
+    Fg::Border,
+    Fg::ThinkingHigh,
+    Fg::MdHeading,
+    Fg::SyntaxType,
 ];
 
 /// The Pele colours of an Ultron theme: page and card from the theme's `export` colours (else its tool background),
 /// text, muted text, lines, borders, accent and the series from its colour tokens.
-pub fn palette_from_theme(json: &tui::theme::ThemeJson, name: &str) -> Result<DiagramPalette, String> {
-    let colors: HashMap<String, String> = tui::theme::resolved_css_colors(json, name)?.into_iter().collect();
+pub fn palette_from_theme(json: &theme::ThemeJson, name: &str) -> Result<DiagramPalette, String> {
+    let colors: HashMap<String, String> = theme::resolved_css_colors(json, name)?.into_iter().collect();
     let color = |token: &str| colors.get(token).cloned().unwrap_or_default();
-    let text = color("text");
-    let dark = tui::theme::hex_to_rgb(&text)
-        .map(|(r, g, b)| tui::theme::theme_for_rgb(r, g, b) == tui::theme::TerminalTheme::Light)
-        .unwrap_or(!tui::theme::is_light_theme(name));
-    let export = tui::theme::theme_export_colors(json);
-    let page = export
-        .page_bg
-        .unwrap_or_else(|| (if dark { "#1e1e1e" } else { "#ffffff" }).to_string());
+    let text = color(Fg::Text.name());
+    let dark = theme::hex_to_rgb(&text)
+        .map(|(r, g, b)| theme::theme_for_rgb(r, g, b) == theme::TerminalTheme::Light)
+        .unwrap_or(!theme::is_light_theme(name));
+    let export = theme::theme_export_colors(json);
+    let page = export.page_bg.unwrap_or_else(|| defaults(dark).page.to_string());
     let mut vars = vec![
         ("--pele-bg".to_string(), page),
         ("--pele-fg".to_string(), text.clone()),
-        ("--pele-muted".to_string(), color("muted")),
+        ("--pele-muted".to_string(), color(Fg::Muted.name())),
         ("--pele-line".to_string(), text),
-        ("--pele-surface".to_string(), color("toolPendingBg")),
-        ("--pele-surface-alt".to_string(), color("selectedBg")),
-        ("--pele-border".to_string(), color("border")),
-        ("--pele-accent".to_string(), color("accent")),
-        ("--pele-critical".to_string(), color("error")),
-        ("--pele-error".to_string(), color("error")),
+        ("--pele-surface".to_string(), color(Bg::ToolPendingBg.name())),
+        ("--pele-surface-alt".to_string(), color(Bg::SelectedBg.name())),
+        ("--pele-border".to_string(), color(Fg::Border.name())),
+        ("--pele-accent".to_string(), color(Fg::Accent.name())),
+        ("--pele-critical".to_string(), color(Fg::Error.name())),
+        ("--pele-error".to_string(), color(Fg::Error.name())),
     ];
     for (i, token) in SERIES_TOKENS.iter().enumerate() {
-        vars.push((format!("--pele-series-{}", i + 1), color(token)));
+        vars.push((format!("--pele-series-{}", i + 1), color(token.name())));
     }
     vars.retain(|(_, v)| !v.is_empty());
     Ok(DiagramPalette {
@@ -88,10 +93,10 @@ pub fn palette_from_theme(json: &tui::theme::ThemeJson, name: &str) -> Result<Di
     })
 }
 
-/// Which theme a diagram uses: `"dark"` / `"light"` name the built-ins; `"auto"` follows the `theme` setting
-/// (a `"light/dark"` pair picks the side the terminal's `COLORFGBG` names, as the TUI does without an OSC 11
-/// answer), a custom theme from `custom_dir`, and the built-in of the terminal's side when the setting is unset or
-/// names a theme that does not load.
+/// Which theme a diagram uses: `"dark"` / `"light"` name the built-ins; `"auto"` follows the `theme` setting as the
+/// TUI does ([`theme::resolve_theme`]): a `"light/dark"` pair picks the side the terminal's `COLORFGBG` names (as
+/// the TUI does without an OSC 11 answer), a custom theme comes from `custom_dir`, no setting takes the built-in of
+/// the terminal's side, and a theme that does not load falls back to dark.
 pub fn select_palette(
     requested: &str,
     setting: Option<&str>,
@@ -111,32 +116,19 @@ pub fn select_palette_for_terminal(
     colorfgbg: Option<&str>,
     custom_dir: &std::path::Path,
 ) -> Result<DiagramPalette, String> {
-    let builtin = |name: &str| {
-        let json = tui::theme::builtin_theme_json(name).ok_or_else(|| format!("built-in theme {name} is missing"))?;
-        palette_from_theme(&json, name)
-    };
     match requested {
-        "dark" | "light" => builtin(requested),
+        "dark" | "light" => {
+            let json = theme::builtin_theme_json(requested).expect("dark and light are built in");
+            palette_from_theme(&json, requested)
+        }
         "auto" => {
             let terminal = match terminal.map(str::trim) {
-                Some("light") => tui::theme::TerminalTheme::Light,
-                Some("dark") => tui::theme::TerminalTheme::Dark,
-                _ => tui::theme::detect_terminal_background_from_env(colorfgbg).theme,
+                Some("light") => theme::TerminalTheme::Light,
+                Some("dark") => theme::TerminalTheme::Dark,
+                _ => theme::detect_terminal_background_from_env(colorfgbg).theme,
             };
-            let side = match terminal {
-                tui::theme::TerminalTheme::Light => "light",
-                tui::theme::TerminalTheme::Dark => "dark",
-            };
-            let name = tui::theme::resolve_theme_setting(setting.filter(|s| !s.trim().is_empty()), terminal);
-            match name {
-                Some(name) => match tui::theme::load_theme_json(&name, custom_dir)
-                    .and_then(|json| palette_from_theme(&json, &name))
-                {
-                    Ok(palette) => Ok(palette),
-                    Err(_) => builtin(side),
-                },
-                None => builtin(side),
-            }
+            let (name, json) = theme::resolve_theme(setting, terminal, custom_dir);
+            palette_from_theme(&json, &name)
         }
         other => Err(format!(
             "diagram.mermaid theme must be \"auto\", \"dark\" or \"light\", not {other:?}"

@@ -2,9 +2,7 @@
 //! packages/tui/src/autocomplete.ts by fixtures/generate-autocomplete.mjs.
 
 use serde_json::Value;
-use tui::autocomplete::{
-    AutocompleteItem, AutocompleteProvider, CombinedAutocompleteProvider, SlashCommand, apply_completion,
-};
+use tui::{AutocompleteItem, AutocompleteProvider, CombinedAutocompleteProvider, SlashCommand, apply_completion};
 
 fn fixture() -> Value {
     let path = concat!(env!("CARGO_MANIFEST_DIR"), "/fixtures/autocomplete-parity.json");

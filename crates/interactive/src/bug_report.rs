@@ -4,11 +4,11 @@
 
 use std::rc::Rc;
 
-use tui::components::{Component, Text};
-use tui::keybindings::KeybindingsManager;
-use tui::theme::Theme;
+use theme::{Fg, Theme};
+use tui::KeybindingsManager;
+use tui::{Component, Text};
 
-use crate::components::{bold, fg, format_key_text, key_hint, key_text};
+use crate::components::{bold, format_key_text, key_hint, key_text};
 use crate::extension_dialogs::{BorderedLoader, DialogOutcome, ExtensionEditorDialog};
 
 pub const DISCLAIMER: &str = "This report goes to the Pi developers (Earendil) and is not shared publicly. It includes your pi version, operating system, the current model and provider configuration (without API keys), loaded extensions, settings, and provider error diagnostics from this session.";
@@ -60,28 +60,28 @@ impl SelectorDialog {
 
     pub fn render(&self, width: usize) -> Vec<String> {
         let t = &self.theme;
-        let border = fg(t, "border", &"─".repeat(width.max(1)));
+        let border = t.fg(Fg::Border, &"─".repeat(width.max(1)));
         let text = |s: &str| Text::new(s, 1, 0, None).render(width);
         let mut lines = vec![border.clone(), String::new()];
-        lines.extend(text(&fg(t, "accent", &bold(&self.title))));
+        lines.extend(text(&t.fg(Fg::Accent, &bold(&self.title))));
         if let Some(description) = &self.description {
             lines.push(String::new());
-            lines.extend(text(&fg(t, "text", description)));
+            lines.extend(text(&t.fg(Fg::Text, description)));
         }
         lines.push(String::new());
         for (i, option) in self.options.iter().enumerate() {
             let line = if i == self.selected {
-                format!("{}{}", fg(t, "accent", "→ "), fg(t, "accent", option))
+                format!("{}{}", t.fg(Fg::Accent, "→ "), t.fg(Fg::Accent, option))
             } else {
-                format!("  {}", fg(t, "text", option))
+                format!("  {}", t.fg(Fg::Text, option))
             };
             lines.extend(text(&line));
         }
         lines.push(String::new());
         let raw = format!(
             "{}{}",
-            fg(t, "dim", &format_key_text("↑↓", false, false)),
-            fg(t, "muted", " navigate")
+            t.fg(Fg::Dim, &format_key_text("↑↓", false, false)),
+            t.fg(Fg::Muted, " navigate")
         );
         let hints = format!(
             "{raw}  {}  {}",
@@ -357,7 +357,7 @@ impl BugFlow {
     }
 
     /// The `/bug` hint step is an `ExtensionEditorComponent`: its editor takes the mouse; the other steps are text.
-    pub fn handle_mouse(&mut self, event: &tui::mouse::MouseEvent, rows: usize) -> Option<tui::mouse::MouseResult> {
+    pub fn handle_mouse(&mut self, event: &tui::MouseEvent, rows: usize) -> Option<tui::MouseResult> {
         match &mut self.step {
             Step::Hint(dialog) => dialog.handle_mouse(event, rows),
             _ => None,

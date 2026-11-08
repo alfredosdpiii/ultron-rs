@@ -12,10 +12,10 @@ use unicode_segmentation::UnicodeSegmentation;
 
 use crate::autocomplete::AutocompleteProvider;
 use crate::editing::{KillRing, find_word_backward, find_word_forward};
-use crate::keybindings::KeybindingsManager;
+use crate::frame::CURSOR_MARKER;
+use crate::keybindings::{KeybindingsManager, UserBindings};
 use crate::keys::{KeyContext, decode_printable_key, matches_key};
 use crate::mouse::{MouseButton, MouseEvent, MouseEventType, MouseResult};
-use crate::renderer::CURSOR_MARKER;
 use crate::select::{SelectList, SelectListTheme};
 use crate::utils::{is_cjk_break, slice_with_width, visible_width};
 use jsrt::{string, utf16};
@@ -220,14 +220,6 @@ fn wrap_segments(line: &str, max_width: usize, segments: &[(usize, &str)]) -> Ve
     chunks
 }
 
-/// TS `isKeyRelease`: a Kitty flag-2 release event (never bracketed paste content).
-pub fn is_key_release(data: &str) -> bool {
-    !data.contains("\x1b[200~")
-        && [":3u", ":3~", ":3A", ":3B", ":3C", ":3D", ":3H", ":3F"]
-            .iter()
-            .any(|p| data.contains(p))
-}
-
 fn scroll_border(direction: &str, hidden: usize, width: usize) -> String {
     let label = format!(" {direction} {hidden} more ");
     let label_width = visible_width(&label);
@@ -302,7 +294,6 @@ pub struct Editor {
     snapped_from: Option<usize>,
     undo_stack: Vec<Snapshot>,
     keys: KeybindingsManager,
-    ctx: KeyContext,
     /// TS `onChange`: called with the full text after every edit.
     pub on_change: Option<ChangeFn>,
     select_list_theme: Rc<SelectListTheme>,
@@ -320,8 +311,8 @@ pub struct Editor {
 }
 
 impl Editor {
-    /// `keys` stands in for the TS global `getKeybindings()`, `ctx` for the global key-matching state.
-    pub fn new(keys: KeybindingsManager, ctx: KeyContext, border_color: StyleFn, padding_x: usize) -> Self {
+    /// `keys` stands in for the TS global `getKeybindings()` and the global key-matching state.
+    pub fn new(keys: KeybindingsManager, border_color: StyleFn, padding_x: usize) -> Self {
         Editor {
             lines: vec![String::new()],
             cursor_line: 0,
@@ -348,7 +339,6 @@ impl Editor {
             snapped_from: None,
             undo_stack: Vec::new(),
             keys,
-            ctx,
             on_change: None,
             select_list_theme: Rc::new(SelectListTheme {
                 selected_prefix: Box::new(str::to_string),
@@ -369,14 +359,13 @@ impl Editor {
         }
     }
 
-    /// `setKittyProtocolActive`: the editor's own key checks and its bindings match Kitty input.
-    pub fn set_kitty_active(&mut self, active: bool) {
-        self.ctx.kitty_active = active;
-        self.keys.set_kitty_active(active);
+    /// The key-matching state the editor matches with.
+    pub fn key_context(&self) -> KeyContext {
+        self.keys.ctx()
     }
 
     /// New user bindings (`<agentDir>/keybindings.json` read again on `/reload`).
-    pub fn set_user_keybindings(&mut self, user: Vec<(String, Option<Vec<String>>)>) {
+    pub fn set_user_keybindings(&mut self, user: UserBindings) {
         self.keys.set_user_bindings(user);
     }
 
@@ -746,9 +735,9 @@ impl Editor {
             self.delete_word_backward();
         } else if kb("tui.editor.deleteWordForward") {
             self.delete_word_forward();
-        } else if kb("tui.editor.deleteCharBackward") || matches_key(data, "shift+backspace", self.ctx) {
+        } else if kb("tui.editor.deleteCharBackward") || matches_key(data, "shift+backspace", self.keys.ctx()) {
             self.handle_backspace();
-        } else if kb("tui.editor.deleteCharForward") || matches_key(data, "shift+delete", self.ctx) {
+        } else if kb("tui.editor.deleteCharForward") || matches_key(data, "shift+delete", self.keys.ctx()) {
             self.handle_forward_delete();
         } else if kb("tui.editor.yank") {
             self.yank();
@@ -821,7 +810,7 @@ impl Editor {
             self.jump_forward = Some(true);
         } else if kb("tui.editor.jumpBackward") {
             self.jump_forward = Some(false);
-        } else if matches_key(data, "shift+space", self.ctx) {
+        } else if matches_key(data, "shift+space", self.keys.ctx()) {
             self.insert_character(" ");
         } else if let Some(p) = decode_printable_key(data) {
             self.insert_character(&p);
@@ -903,7 +892,7 @@ impl Editor {
     }
 
     fn should_submit_on_backslash_enter(&self, data: &str) -> bool {
-        if self.disable_submit || !matches_key(data, "enter", self.ctx) {
+        if self.disable_submit || !matches_key(data, "enter", self.keys.ctx()) {
             return false;
         }
         let submit = self.keys.get_keys("tui.input.submit");

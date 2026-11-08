@@ -15,16 +15,16 @@ use std::time::{Duration, Instant};
 
 use unicode_segmentation::UnicodeSegmentation;
 
+use crate::frame::is_image_line;
 use crate::keybindings::KeybindingsManager;
-use crate::keys::{KeyEventType, key_event_type};
+use crate::keys::is_key_release;
+use crate::mouse::parse_sgr_mouse;
 use crate::mouse::{MouseButton, MouseEvent, MouseEventType, MouseResult};
 use crate::overlay::composite_line;
-use crate::renderer::is_image_line;
 use crate::scroll_view::{
     Rect, ScrollView, Scrollbar, ScrollbarGeometry, grapheme_cell_range, paint_scrollbar, scrollbar_geometry,
     slice_by_column,
 };
-use crate::sgr_mouse::parse_sgr_mouse;
 use crate::utils::{
     ansi_len, extract_ansi_code, grapheme_width, strip_terminal_sequences, truncate_to_width, visible_width,
 };
@@ -201,7 +201,7 @@ pub enum ViewportInput {
     /// A selection finished with copy-on-select: copy this text, then report with [`FullscreenViewport::copied`].
     Copy(String),
     /// A right-button press with [`FullscreenViewport::right_click_paste`] on: paste the clipboard's text
-    /// ([`crate::right_click_paste`]).
+    /// ([`right_click_paste_enabled`]).
     RightClickPaste,
 }
 
@@ -292,7 +292,7 @@ pub struct FullscreenViewport {
     pub indicator: Option<String>,
     /// Paint rows with their OSC 133 zone marks (TypeScript strips them; they are invisible either way).
     pub keep_zone_marks: bool,
-    /// A right-button press pastes instead of selecting ([`crate::right_click_paste::right_click_paste_enabled`];
+    /// A right-button press pastes instead of selecting ([`right_click_paste_enabled`];
     /// off by default).
     pub right_click_paste: bool,
     /// Opens an OSC 8 hyperlink clicked with the primary button (`openUrl`); `None` opens nothing.
@@ -593,7 +593,7 @@ impl FullscreenViewport {
         if is_mouse_sequence(data) {
             return ViewportInput::Consumed;
         }
-        let release = !data.contains("\x1b[200~") && key_event_type(data) == Some(KeyEventType::Release);
+        let release = is_key_release(data);
         let height = self.view.viewport_height();
         let page = height.saturating_sub(PAGE_SCROLL_OVERLAP).max(1) as i64;
         let half = (height / 2).max(1) as i64;
@@ -770,7 +770,7 @@ impl FullscreenViewport {
             }
             return ViewportInput::Consumed;
         }
-        if self.right_click_paste && crate::right_click_paste::is_right_click_press(ev.button, ev.release) {
+        if self.right_click_paste && is_right_click_press(ev.button, ev.release) {
             return ViewportInput::RightClickPaste;
         }
         self.selection_mouse(ev, now, targets)
@@ -1363,6 +1363,24 @@ pub fn is_mouse_sequence(data: &str) -> bool {
 /// Whether `data` is a terminal focus report (`\x1b[I` / `\x1b[O`).
 pub fn is_focus_report(data: &str) -> bool {
     data == FOCUS_IN || data == FOCUS_OUT
+}
+
+// Right-click paste in fullscreen on Windows terminals (`handleRightClickPaste` of packages/tui/src/tui-alt-screen.ts
+// and of modes/interactive/interactive-mode.ts). Fullscreen captures the mouse, so a Windows console's own
+// right-click paste never happens; a right-button press the viewport would otherwise give to text selection pastes
+// the clipboard's text instead, as a bracketed paste into the focused editor. VS Code's terminal (`TERM_PROGRAM`
+// `vscode`, any case) keeps its own context menu, and every other platform keeps selection.
+
+/// Whether right-click paste is on (`process.platform === "win32"` and `TERM_PROGRAM` not `vscode`); `platform` is
+/// the Node platform name ([`crate::clipboard_copy::platform`]) and `var` reads the environment.
+pub fn right_click_paste_enabled(platform: &str, var: &dyn Fn(&str) -> Option<String>) -> bool {
+    platform == "win32" && var("TERM_PROGRAM").is_none_or(|program| program.to_lowercase() != "vscode")
+}
+
+/// An SGR mouse report that pastes: a press (not a release) of exactly button 2, so no modifier, motion or wheel
+/// bits.
+pub fn is_right_click_press(button: u32, release: bool) -> bool {
+    !release && button == 2
 }
 
 #[cfg(test)]

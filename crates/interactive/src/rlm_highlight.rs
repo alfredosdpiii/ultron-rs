@@ -5,30 +5,37 @@ use std::cell::RefCell;
 use std::collections::VecDeque;
 use std::rc::Rc;
 
+use theme::styles::TextStyle;
+use theme::{Fg, Theme};
 use tui::hljs::Token;
-use tui::theme::Theme;
 
-use crate::components::{bold, fg, italic, underline};
 use crate::rlm_cell::Highlighter;
 
+/// How a highlight.js scope is drawn.
+#[derive(Clone, Copy)]
+enum Style {
+    Color(Fg),
+    Text(TextStyle),
+}
+
 /// `buildCliHighlightTheme`: the style for each highlight.js scope that has one.
-fn scope_style(scope: &str) -> Option<&'static str> {
+fn scope_style(scope: &str) -> Option<Style> {
     Some(match scope {
-        "keyword" | "name" => "syntaxKeyword",
-        "built_in" | "class" | "type" => "syntaxType",
-        "literal" | "number" => "syntaxNumber",
-        "regexp" | "string" => "syntaxString",
-        "comment" | "doctag" => "syntaxComment",
-        "meta" => "muted",
-        "function" | "title" => "syntaxFunction",
-        "tag" | "punctuation" => "syntaxPunctuation",
-        "attr" | "variable" | "params" => "syntaxVariable",
-        "operator" => "syntaxOperator",
-        "emphasis" => "italic",
-        "strong" => "bold",
-        "link" => "underline",
-        "addition" => "toolDiffAdded",
-        "deletion" => "toolDiffRemoved",
+        "keyword" | "name" => Style::Color(Fg::SyntaxKeyword),
+        "built_in" | "class" | "type" => Style::Color(Fg::SyntaxType),
+        "literal" | "number" => Style::Color(Fg::SyntaxNumber),
+        "regexp" | "string" => Style::Color(Fg::SyntaxString),
+        "comment" | "doctag" => Style::Color(Fg::SyntaxComment),
+        "meta" => Style::Color(Fg::Muted),
+        "function" | "title" => Style::Color(Fg::SyntaxFunction),
+        "tag" | "punctuation" => Style::Color(Fg::SyntaxPunctuation),
+        "attr" | "variable" | "params" => Style::Color(Fg::SyntaxVariable),
+        "operator" => Style::Color(Fg::SyntaxOperator),
+        "emphasis" => Style::Text(TextStyle::Italic),
+        "strong" => Style::Text(TextStyle::Bold),
+        "link" => Style::Text(TextStyle::Underline),
+        "addition" => Style::Color(Fg::ToolDiffAdded),
+        "deletion" => Style::Color(Fg::ToolDiffRemoved),
         _ => return None,
     })
 }
@@ -37,7 +44,7 @@ fn scope_style(scope: &str) -> Option<&'static str> {
 /// `mdCodeBlock`; code highlight.js gives up on comes back plain.
 pub fn highlight_code(theme: &Theme, code: &str, lang: Option<&str>) -> Vec<String> {
     let Some(lang) = lang.filter(|l| tui::hljs::supports_language(l)) else {
-        return code.split('\n').map(|line| fg(theme, "mdCodeBlock", line)).collect();
+        return code.split('\n').map(|line| theme.fg(Fg::MdCodeBlock, line)).collect();
     };
     themed(theme, code, tui::hljs::highlight(code, lang).as_deref())
 }
@@ -47,14 +54,11 @@ fn themed(theme: &Theme, code: &str, tokens: Option<&[Token]>) -> Vec<String> {
     let Some(tokens) = tokens else {
         return code.split('\n').map(str::to_string).collect();
     };
-    let apply = |style: &str, text: &str| match style {
-        "italic" => italic(text),
-        "bold" => bold(text),
-        "underline" => underline(text),
-        color => fg(theme, color, text),
+    let apply = |style: &Style, text: &str| match *style {
+        Style::Text(style) => style.apply(text, 1),
+        Style::Color(color) => theme.fg(color, text),
     };
-    let formatter = |scope: &str| scope_style(scope).map(str::to_string);
-    tui::hljs::render(tokens, &formatter, &apply)
+    tui::hljs::render(tokens, &scope_style, &apply)
         .split('\n')
         .map(str::to_string)
         .collect()

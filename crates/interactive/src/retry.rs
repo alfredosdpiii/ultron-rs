@@ -3,8 +3,8 @@
 //! turn-recovery.ts `hasAbortedToolCallTail`). The retry itself is a session request the client sends.
 
 use serde_json::Value;
-use tui::keybindings::KeybindingsManager;
-use tui::theme::Theme;
+use theme::Theme;
+use tui::KeybindingsManager;
 
 use crate::components::{format_key_text, key_hint};
 

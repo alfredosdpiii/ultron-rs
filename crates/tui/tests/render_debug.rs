@@ -5,8 +5,8 @@
 
 use std::path::Path;
 
-use tui::render_debug::{LocalStamp, RenderDebug, render_dump_name, write_log_path};
-use tui::viewport::{FramePlan, ViewportRenderer};
+use tui::{FramePlan, ViewportRenderer};
+use tui::{LocalStamp, RenderDebug, render_dump_name, write_log_path};
 
 const R: &str = "\x1b[0m\x1b]8;;\x07";
 
@@ -182,7 +182,7 @@ fn tui_render_debug_files_are_written_by_the_background_writer() {
     let (logs, dumps) = (temp.join("agent"), temp.join("dumps"));
     let write_log = temp.join("write.log");
     let env = |name: &str| match name {
-        tui::render_debug::TUI_DEBUG_REDRAW_ENV | tui::render_debug::TUI_DEBUG_ENV => Some("1".to_string()),
+        tui::TUI_DEBUG_REDRAW_ENV | tui::TUI_DEBUG_ENV => Some("1".to_string()),
         _ => None,
     };
     let debug = RenderDebug::from_env(
@@ -239,7 +239,7 @@ fn tui_render_debug_files_are_written_by_the_background_writer() {
 fn tui_render_debug_redraw_log_stamps_expanded_years_like_to_iso_string() {
     let temp = tempfile_dir();
     let logs = temp.join("agent");
-    let env = |name: &str| (name == tui::render_debug::TUI_DEBUG_REDRAW_ENV).then(|| "1".to_string());
+    let env = |name: &str| (name == tui::TUI_DEBUG_REDRAW_ENV).then(|| "1".to_string());
     let debug =
         RenderDebug::from_env(&env, None, &logs, &temp.join("dumps"), Box::new(|| 253_402_300_800_000)).expect("on");
     debug.redraw("fullRender: first render");
@@ -269,8 +269,8 @@ fn tempfile_dir() -> std::path::PathBuf {
 /// keeping its other flags (the call itself is `cfg(windows)`).
 #[test]
 fn tui_terminal_windows_vt_input_mode_adds_the_flag() {
-    assert_eq!(tui::terminal::ENABLE_VIRTUAL_TERMINAL_INPUT, 0x0200);
-    assert_eq!(tui::terminal::vt_input_mode(0x0007), 0x0207);
-    assert_eq!(tui::terminal::vt_input_mode(0x0207), 0x0207);
-    assert_eq!(tui::terminal::vt_input_mode(0), 0x0200);
+    assert_eq!(tui::ENABLE_VIRTUAL_TERMINAL_INPUT, 0x0200);
+    assert_eq!(tui::vt_input_mode(0x0007), 0x0207);
+    assert_eq!(tui::vt_input_mode(0x0207), 0x0207);
+    assert_eq!(tui::vt_input_mode(0), 0x0200);
 }

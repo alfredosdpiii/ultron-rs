@@ -9,9 +9,9 @@ use std::time::{Duration, Instant};
 
 use support::latch::HANG_GUARD;
 use support::vterm::VTerm;
-use tui::renderer::CURSOR_MARKER;
-use tui::tty_writer::TtyWriter;
-use tui::viewport::*;
+use tui::CURSOR_MARKER;
+use tui::TtyWriter;
+use tui::*;
 
 const R: &str = "\x1b[0m\x1b]8;;\x07";
 

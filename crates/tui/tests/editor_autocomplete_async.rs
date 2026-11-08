@@ -11,12 +11,10 @@ use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, Receiver};
 
 use support::latch::HANG_GUARD;
-use tui::autocomplete::{
-    AutocompleteItem, AutocompleteProvider, AutocompleteSuggestions, CombinedAutocompleteProvider, Completion,
-};
-use tui::editor::Editor;
-use tui::keybindings::{KeybindingsManager, tui_keybindings};
-use tui::keys::KeyContext;
+use tui::Editor;
+use tui::KeyContext;
+use tui::{AutocompleteItem, AutocompleteProvider, AutocompleteSuggestions, CombinedAutocompleteProvider, Completion};
+use tui::{KeybindingsManager, tui_keybindings};
 
 /// What every fake `fd` prints (directories end in `/`, as `fd` prints them).
 const LISTING: &str = "alpha.txt\nbeta/\nbeta/alpine/\ndata.md\nzeta.rs\n";
@@ -148,7 +146,7 @@ fn provider(base: &Path, fd: PathBuf) -> CombinedAutocompleteProvider {
 
 fn editor(provider: Box<dyn AutocompleteProvider>) -> Editor {
     let keys = KeybindingsManager::new(tui_keybindings(), Vec::new(), KeyContext::default());
-    let mut e = Editor::new(keys, KeyContext::default(), Box::new(|s| s.to_string()), 0);
+    let mut e = Editor::new(keys, Box::new(|s| s.to_string()), 0);
     e.set_autocomplete_provider(provider);
     e
 }

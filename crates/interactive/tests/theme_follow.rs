@@ -8,12 +8,13 @@ use std::rc::Rc;
 
 use interactive::app::{App, AppOptions};
 use interactive::history::PromptHistoryStore;
+use interactive::keybindings::Platform;
+use interactive::keybindings::native_app_keybindings;
 use interactive::lane::{LaneClient, ModelInfo};
 use interactive::theme_setup::{ThemeController, parse_color_scheme_report};
-use tui::keybindings::{KeybindingsManager, Platform};
-use tui::qol_keys::native_app_keybindings;
-use tui::theme::registry::ThemeRegistry;
-use tui::theme::{ColorMode, TerminalTheme, Theme, builtin_theme_json, create_theme};
+use theme::registry::ThemeRegistry;
+use theme::{ColorMode, Fg, TerminalTheme, Theme, builtin_theme_json, create_theme};
+use tui::KeybindingsManager;
 
 #[test]
 fn interactive_theme_color_scheme_reports_parse_like_ts() {
@@ -34,11 +35,7 @@ fn interactive_theme_color_scheme_reports_parse_like_ts() {
 }
 
 fn registry() -> ThemeRegistry {
-    ThemeRegistry::new(
-        PathBuf::new(),
-        PathBuf::from("/nonexistent/themes"),
-        ColorMode::Truecolor,
-    )
+    ThemeRegistry::new(PathBuf::from("/nonexistent/themes"), ColorMode::Truecolor)
 }
 
 fn builtin(name: &str) -> Theme {
@@ -47,7 +44,7 @@ fn builtin(name: &str) -> Theme {
 
 /// Which built-in `theme` draws like.
 fn which(theme: &Theme) -> &'static str {
-    let probe = |t: &Theme| t.fg("accent", "x").unwrap();
+    let probe = |t: &Theme| t.fg(Fg::Accent, "x");
     if probe(theme) == probe(&builtin("light")) {
         "light"
     } else if probe(theme) == probe(&builtin("dark")) {
@@ -140,7 +137,6 @@ fn app(theme: Rc<Theme>) -> App {
         AppOptions {
             theme,
             keys: keys(),
-            editor_keys: keys(),
             version: "1.2.3".into(),
             cwd: "/p".into(),
             home: None,
@@ -183,7 +179,7 @@ fn interactive_theme_reports_switch_the_running_app() {
     let editor: String = app
         .render(80, 30)
         .iter()
-        .map(|l| tui::utils::strip_terminal_sequences(l))
+        .map(|l| tui::strip_terminal_sequences(l))
         .collect();
     assert!(!editor.contains("997"), "a report is not typed into the editor");
     app.stop_terminal_notifications();

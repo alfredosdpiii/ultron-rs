@@ -4,12 +4,12 @@
 //! here: the frames are what the TypeScript screen shows after each scroll. Each test registers its own image ids
 //! (the registry is the process's, as TypeScript's module map is).
 
-use tui::image::{
+use tui::{AltScreen, StackEntry, stack_lines};
+use tui::{
     Capabilities, DELETE_ALL_KITTY_IMAGES, DELETE_ALL_KITTY_PLACEMENTS, Dimensions, Image, ImageProtocol,
     KittyImageMetadata, RenderOptions, allocate_image_id, crop_kitty_image_line, encode_kitty, kitty_image_metadata,
     kitty_image_placement, register_kitty_image_metadata, render_image,
 };
-use tui::screen::{AltScreen, StackEntry, stack_lines};
 
 fn kitty_line(id: u32, columns: u32, rows: u32, width_px: u32, height_px: u32) -> String {
     let line = encode_kitty("AAAA", Some(columns), Some(rows), Some(id), false);
@@ -131,7 +131,7 @@ fn tui_kitty_images_moved_images_are_placed_not_transmitted() {
         height_px: 100,
     };
     image.image_id = Some(777);
-    let lines = tui::components::Component::render(&mut image, 10);
+    let lines = tui::Component::render(&mut image, 10);
     let mut first = rows(&["header"]);
     first.extend(lines.iter().cloned());
     first.push("left".into());

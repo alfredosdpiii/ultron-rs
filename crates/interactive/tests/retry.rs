@@ -3,12 +3,13 @@
 
 use std::rc::Rc;
 
+use interactive::keybindings::Platform;
+use interactive::keybindings::native_app_keybindings;
 use interactive::retry::{failed_turn_tail, retry_hint_rows};
 use serde_json::json;
-use tui::keybindings::{KeybindingsManager, Platform};
-use tui::qol_keys::native_app_keybindings;
-use tui::theme::{ColorMode, builtin_theme_json, create_theme};
-use tui::utils::strip_terminal_sequences;
+use theme::{ColorMode, builtin_theme_json, create_theme};
+use tui::KeybindingsManager;
+use tui::strip_terminal_sequences;
 
 fn assistant(stop: &str) -> serde_json::Value {
     json!({"role": "assistant", "content": [], "stopReason": stop})

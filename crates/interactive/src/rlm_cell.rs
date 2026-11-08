@@ -8,12 +8,12 @@ use std::rc::Rc;
 
 use jsrt::string;
 use serde_json::Value;
-use tui::components::{Component, Container, Text};
-use tui::theme::Theme;
-use tui::utils::{truncate_to_width, visible_width, wrap_text_with_ansi};
+use theme::{Fg, Theme};
+use tui::{Component, Container, Text};
+use tui::{truncate_to_width, visible_width, wrap_text_with_ansi};
 
 use crate::components::{
-    FileChange, ToolRenderState, ToolRenderers, ToolResultView, bold, fg, key_hint, render_diff, tool_text_output_with,
+    FileChange, ToolRenderState, ToolRenderers, ToolResultView, bold, key_hint, render_diff, tool_text_output_with,
     truncate_to_visual_lines,
 };
 
@@ -71,17 +71,17 @@ fn render_call(
     let code = args.get("code").and_then(Value::as_str);
     let meta = code.map_or(String::new(), |c| {
         let n = c.split('\n').count();
-        fg(theme, "muted", &format!(" python · {n} line{}", plural(n)))
+        theme.fg(Fg::Muted, &format!(" python · {n} line{}", plural(n)))
     });
     let mut children: Vec<Box<dyn Component>> = vec![Box::new(Text::new(
-        &format!("{}{meta}", fg(theme, "toolTitle", &bold("rlm"))),
+        &format!("{}{meta}", theme.fg(Fg::ToolTitle, &bold("rlm"))),
         0,
         0,
         None,
     ))];
     let Some(code) = code.filter(|c| !c.trim_matches(string::is_space).is_empty()) else {
         if !state.args_complete {
-            children.push(Box::new(Text::new(&fg(theme, "toolOutput", "..."), 0, 0, None)));
+            children.push(Box::new(Text::new(&theme.fg(Fg::ToolOutput, "..."), 0, 0, None)));
         }
         return Box::new(Container { children });
     };
@@ -95,7 +95,7 @@ fn render_call(
     let body = lines[..shown]
         .iter()
         .enumerate()
-        .map(|(i, line)| format!("{} {line}", fg(theme, "dim", &format!("{:>gutter$} │", i + 1))))
+        .map(|(i, line)| format!("{} {line}", theme.fg(Fg::Dim, &format!("{:>gutter$} │", i + 1))))
         .collect::<Vec<_>>()
         .join("\n");
     let mut text = format!("\n{body}");
@@ -103,9 +103,9 @@ fn render_call(
     if hidden > 0 {
         text.push_str(&format!(
             "\n{} {}{}",
-            fg(theme, "muted", &format!("... ({hidden} more line{},", plural(hidden))),
+            theme.fg(Fg::Muted, &format!("... ({hidden} more line{},", plural(hidden))),
             key_hint(theme, expand_key, "to expand"),
-            fg(theme, "muted", ")")
+            theme.fg(Fg::Muted, ")")
         ));
     }
     children.push(Box::new(Text::new(&text, 0, 0, None)));
@@ -116,7 +116,7 @@ fn render_call(
 struct OutputPreview {
     theme: Rc<Theme>,
     output: String,
-    color: &'static str,
+    color: Fg,
     label: String,
     expand_key: String,
 }
@@ -124,15 +124,15 @@ struct OutputPreview {
 impl Component for OutputPreview {
     fn render(&mut self, width: usize) -> Vec<String> {
         let t = &self.theme;
-        let color = |s: &str| fg(t, self.color, s);
+        let color = |s: &str| t.fg(self.color, s);
         let (visual, skipped) = output_tail(&self.output, &color, RLM_OUTPUT_PREVIEW_LINES, width);
         let mut lines = vec![String::new(), self.label.clone()];
         if skipped > 0 {
             let hint = format!(
                 "{} {}{}",
-                fg(t, "muted", &format!("... ({skipped} earlier line{},", plural(skipped))),
+                t.fg(Fg::Muted, &format!("... ({skipped} earlier line{},", plural(skipped))),
                 key_hint(t, &self.expand_key, "to expand"),
-                fg(t, "muted", ")")
+                t.fg(Fg::Muted, ")")
             );
             lines.push(truncate_to_width(&hint, width, "...", false));
         }
@@ -150,23 +150,22 @@ pub fn file_changes_text(theme: &Theme, changes: &[FileChange]) -> Option<String
     let n = changes.len();
     let mut lines = vec![
         String::new(),
-        fg(theme, "muted", &format!("{n} file{} changed", plural(n))),
+        theme.fg(Fg::Muted, &format!("{n} file{} changed", plural(n))),
     ];
     for change in changes {
         let created = if change.created {
-            fg(theme, "muted", " (new)")
+            theme.fg(Fg::Muted, " (new)")
         } else {
             String::new()
         };
-        lines.push(format!("{}{created}", fg(theme, "accent", &change.path)));
+        lines.push(format!("{}{created}", theme.fg(Fg::Accent, &change.path)));
         match &change.diff {
             Some(diff) => lines.push(render_diff(theme, diff)),
-            None => lines.push(fg(theme, "muted", "(too large or not text to show)")),
+            None => lines.push(theme.fg(Fg::Muted, "(too large or not text to show)")),
         }
         if change.omitted > 0 {
-            lines.push(fg(
-                theme,
-                "muted",
+            lines.push(theme.fg(
+                Fg::Muted,
                 &format!("... ({} more diff line{})", change.omitted, plural(change.omitted)),
             ));
         }
@@ -191,7 +190,7 @@ fn render_result(
     if output.is_empty() {
         if state.is_partial {
             children.push(Box::new(Text::new(
-                &format!("\n{}", fg(theme, "muted", "running…")),
+                &format!("\n{}", theme.fg(Fg::Muted, "running…")),
                 0,
                 0,
                 None,
@@ -202,10 +201,9 @@ fn render_result(
         }
         return Box::new(Container { children });
     }
-    let color = if state.is_error { "error" } else { "toolOutput" };
-    let label = fg(
-        theme,
-        "muted",
+    let color = if state.is_error { Fg::Error } else { Fg::ToolOutput };
+    let label = theme.fg(
+        Fg::Muted,
         if state.is_error {
             "error"
         } else if state.is_partial {
@@ -217,7 +215,7 @@ fn render_result(
     if state.expanded {
         let styled = output
             .split('\n')
-            .map(|l| fg(theme, color, l))
+            .map(|l| theme.fg(color, l))
             .collect::<Vec<_>>()
             .join("\n");
         children.push(Box::new(Text::new(&format!("\n{label}\n{styled}"), 0, 0, None)));

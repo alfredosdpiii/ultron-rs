@@ -12,28 +12,28 @@
 use std::collections::HashMap;
 use std::rc::Rc;
 
-use fancy_regex::Regex;
-use tui::components::Component;
-use tui::highlight::{HighlightColors, highlight_lines, supports_language, warmed};
-use tui::input::Input;
-use tui::keybindings::KeybindingsManager;
-use tui::outline::{
+use crate::outline::{
     Anchor, BrowserFrame, ComposedColumn, FrameBrowser, OutlineBuilder, OutlineEntry, OutlinePaint, OutlineStyle,
     OutlineTarget, append_outline_entries, compose_outline_column, key_glyph, nearest_visible_target, outline_rows,
     outline_visibility, strip_prompt_zones,
 };
-use tui::sgr_mouse::parse_sgr_mouse;
-use tui::theme::Theme;
-use tui::utils::{strip_terminal_sequences, truncate_to_width, visible_width};
+use fancy_regex::Regex;
+use theme::{Fg, Theme};
+use tui::Component;
+use tui::Input;
+use tui::KeybindingsManager;
+use tui::parse_sgr_mouse;
+use tui::{HighlightColors, highlight_lines, supports_language, warmed};
+use tui::{strip_terminal_sequences, truncate_to_width, visible_width};
 
 use crate::chat::{ChatStyle, ChatView};
-use crate::components::{bold, fg};
+use crate::components::bold;
 use crate::copy_targets::{CopyBlock, SEP_DOT, TranscriptEntry, collect_blocks, is_user_turn, target_copy};
 
 /// Preview rows per block in the descended view; copy always takes the full text.
 pub const BLOCK_PREVIEW_LINES: usize = 12;
 /// The copy picker's outline is green, distinct from rewind's accent.
-const COPY_OUTLINE: &str = "success";
+const COPY_OUTLINE: Fg = Fg::Success;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PickerMode {
@@ -464,7 +464,7 @@ impl TranscriptPicker {
 
     fn open_filter(&mut self) {
         let input = Input::new(self.keys.clone()).with_options(
-            Some(&format!("{} ", fg(&self.theme, "accent", "filter:"))),
+            Some(&format!("{} ", self.theme.fg(Fg::Accent, "filter:"))),
             Some("words…"),
             None,
             None,
@@ -590,9 +590,9 @@ impl TranscriptPicker {
 
     // Render.
 
-    fn painter(&self) -> impl Fn(&str, &str) -> String + 'static {
+    fn painter(&self) -> impl Fn(Fg, &str) -> String + 'static {
         let theme = Rc::clone(&self.theme);
-        move |c: &str, s: &str| fg(&theme, c, s)
+        move |c: Fg, s: &str| theme.fg(c, s)
     }
 
     fn first_key(&self, id: &str) -> String {
@@ -637,12 +637,12 @@ impl TranscriptPicker {
             (None, PickerMode::Copy) => format!(
                 "⧉ {}{}",
                 bold("Copy"),
-                fg(t, "dim", &format!("{SEP_DOT}pick what to put on the clipboard"))
+                t.fg(Fg::Dim, &format!("{SEP_DOT}pick what to put on the clipboard"))
             ),
             (None, PickerMode::Rewind) => format!(
                 "↶ {}{}",
                 bold("Rewind"),
-                fg(t, "dim", &format!("{SEP_DOT}pick the point to continue from"))
+                t.fg(Fg::Dim, &format!("{SEP_DOT}pick the point to continue from"))
             ),
         }
     }
@@ -712,7 +712,7 @@ impl TranscriptPicker {
                     )
                 });
                 let style = OutlineStyle {
-                    color: Some(COPY_OUTLINE.into()),
+                    color: Some(COPY_OUTLINE),
                     caption,
                 };
                 let column = compose_outline_column(
@@ -774,7 +774,7 @@ impl TranscriptPicker {
             header: vec![self.header()],
             body: column.lines,
             anchor,
-            footer: vec![fg(&self.theme, "dim", &hint)],
+            footer: vec![self.theme.fg(Fg::Dim, &hint)],
         }
     }
 
@@ -805,14 +805,13 @@ impl TranscriptPicker {
                 .map(|r| truncate_to_width(&r.replace('\t', "   "), inner, "…", false))
                 .collect();
             if raw.len() > shown.len() {
-                rows.push(fg(
-                    &self.theme,
-                    "dim",
-                    &format!("… +{} more lines", raw.len() - shown.len()),
-                ));
+                rows.push(
+                    self.theme
+                        .fg(Fg::Dim, &format!("… +{} more lines", raw.len() - shown.len())),
+                );
             }
             let selected = index == self.block_selected;
-            let caption_color = if selected { COPY_OUTLINE } else { "dim" };
+            let caption_color = if selected { COPY_OUTLINE } else { Fg::Dim };
             let mut controls = vec![(Control::Copy, format!("⧉ {}", self.action))];
             if block.href.is_some() {
                 controls.push((Control::Open, "↗ open".to_string()));
@@ -831,13 +830,13 @@ impl TranscriptPicker {
                 "…",
                 false,
             );
-            let mut caption = fg(&self.theme, caption_color, &summary);
+            let mut caption = self.theme.fg(caption_color, &summary);
             let mut cursor = 2 + visible_width(&summary);
             let mut regions = Vec::new();
             for (kind, text) in &controls {
                 cursor += 2;
                 regions.push((*kind, index, cursor, cursor + visible_width(text)));
-                caption.push_str(&format!("  {}", fg(&self.theme, "accent", text)));
+                caption.push_str(&format!("  {}", self.theme.fg(Fg::Accent, text)));
                 cursor += visible_width(text);
             }
             lines.push(String::new());
@@ -846,7 +845,7 @@ impl TranscriptPicker {
                 let start = lines.len();
                 lines.push(format!("  {caption}"));
                 let style = OutlineStyle {
-                    color: Some(COPY_OUTLINE.into()),
+                    color: Some(COPY_OUTLINE),
                     caption: None,
                 };
                 lines.extend(outline_rows(paint, &rows, inner, &style));
@@ -905,7 +904,7 @@ impl TranscriptPicker {
             header: vec![self.header()],
             anchor: id.and_then(|id| self.anchor(&column, id)),
             body: column.lines,
-            footer: vec![fg(&self.theme, "dim", &hint)],
+            footer: vec![self.theme.fg(Fg::Dim, &hint)],
         }
     }
 
@@ -945,16 +944,15 @@ impl TranscriptPicker {
         );
         let t = Rc::clone(&self.theme);
         let lines = if matches.is_empty() {
-            vec![fg(&t, "muted", &format!("  No items match \"{query}\""))]
+            vec![t.fg(Fg::Muted, &format!("  No items match \"{query}\""))]
         } else {
             column.lines.clone()
         };
         let count = if matches.is_empty() {
-            fg(&t, "error", "no matches")
+            t.fg(Fg::Error, "no matches")
         } else {
-            fg(
-                &t,
-                "dim",
+            t.fg(
+                Fg::Dim,
                 &format!(
                     "{}/{}",
                     selected.map_or("-".to_string(), |s| (s + 1).to_string()),
@@ -985,7 +983,7 @@ impl TranscriptPicker {
             header: vec![self.header()],
             anchor: self.anchor(&column, id),
             body: lines,
-            footer: vec![format!("{field}  {count}  {}", fg(&t, "dim", &hint))],
+            footer: vec![format!("{field}  {count}  {}", t.fg(Fg::Dim, &hint))],
         }
     }
 }

@@ -217,7 +217,7 @@ pub enum LoginStep {
 #[derive(Clone, Debug, PartialEq)]
 pub enum LaneEvent {
     /// `<agentDir>/keybindings.json` read again (`/reload`): the user bindings every key manager resolves.
-    Keybindings(tui::keybindings_file::UserBindings),
+    Keybindings(tui::UserBindings),
     /// A session was opened (startup, `/new`, `/clear`, resume).
     Opened(SessionOpened),
     /// The opened session's lane entries on its branch (format-4 entries: messages, compactions with their retained
@@ -332,7 +332,7 @@ pub enum LaneEvent {
     /// A subscription login's progress (the flow runs in the client process).
     Login(LoginStep),
     /// What `/changelog` shows, lexed off the UI thread ([`crate::changelog::changelog_tokens`]).
-    Changelog(Vec<tui::markdown::Token>),
+    Changelog(Vec<tui::Token>),
     /// The models the session can use now (after a login or logout).
     Catalog(Vec<ModelInfo>),
     /// The model catalogs refreshed ([`LaneClient::refresh_catalog`]), or why not.

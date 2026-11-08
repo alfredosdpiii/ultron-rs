@@ -10,8 +10,8 @@ use interactive::startup_notices::{
     warns_about_subscription_auth,
 };
 use serde_json::Value;
-use tui::components::{Component, Text};
-use tui::theme::{ColorMode, Theme, builtin_theme_json, create_theme};
+use theme::{ColorMode, Theme, builtin_theme_json, create_theme};
+use tui::{Component, Text};
 
 fn fixture() -> Value {
     serde_json::from_str(include_str!("../fixtures/startup-notices.json")).unwrap()

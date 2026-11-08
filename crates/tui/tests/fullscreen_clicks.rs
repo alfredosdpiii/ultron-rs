@@ -8,11 +8,11 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use serde_json::Value;
-use tui::fullscreen::{FullscreenViewport, ViewportInput, osc8_link_at_column, word_selection};
-use tui::keybindings::{KeybindingsManager, tui_keybindings};
-use tui::keys::KeyContext;
-use tui::scroll_view::{Rect, ScrollView, Scrollbar, slice_by_column};
-use tui::utils::{normalize_terminal_output, visible_width};
+use tui::KeyContext;
+use tui::{FullscreenViewport, ViewportInput, osc8_link_at_column, word_selection};
+use tui::{KeybindingsManager, tui_keybindings};
+use tui::{Rect, ScrollView, Scrollbar, slice_by_column};
+use tui::{normalize_terminal_output, visible_width};
 
 const SEGMENT_RESET: &str = "\x1b[0m\x1b]8;;\x07";
 

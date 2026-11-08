@@ -4,16 +4,17 @@
 
 use std::rc::Rc;
 
+use interactive::keybindings::Platform;
+use interactive::keybindings::native_app_keybindings;
 use interactive::lane::ModelInfo;
 use interactive::model_hub::{
     Focus, ModelHub, ModelHubEvent, ModelItem, ScopeKind, compact_search_text, compare_model_items,
     extract_version_number, model_search_tier,
 };
 use serde_json::Value;
-use tui::keybindings::{KeybindingsManager, Platform};
-use tui::qol_keys::native_app_keybindings;
-use tui::theme::{ColorMode, builtin_theme_json, create_theme};
-use tui::utils::strip_terminal_sequences;
+use theme::{ColorMode, builtin_theme_json, create_theme};
+use tui::KeybindingsManager;
+use tui::strip_terminal_sequences;
 
 fn fixture() -> Value {
     serde_json::from_str(include_str!("../fixtures/omp-model-hub-parity.json")).unwrap()

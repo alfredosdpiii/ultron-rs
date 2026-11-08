@@ -10,13 +10,14 @@ use std::sync::{Arc, Mutex};
 
 use interactive::app::{App, AppOptions};
 use interactive::history::PromptHistoryStore;
+use interactive::keybindings::Platform;
+use interactive::keybindings::native_app_keybindings;
 use interactive::lane::{LaneClient, LaneEvent, ModelInfo, SessionListing, SessionOpened};
 use interactive::qol::QolSettings;
 use serde_json::{Value, json};
-use tui::keybindings::{KeybindingsManager, Platform};
-use tui::qol_keys::native_app_keybindings;
-use tui::theme::{ColorMode, builtin_theme_json, create_theme};
-use tui::utils::strip_terminal_sequences;
+use theme::{ColorMode, builtin_theme_json, create_theme};
+use tui::KeybindingsManager;
+use tui::strip_terminal_sequences;
 
 const W: usize = 80;
 const H: usize = 40;
@@ -82,7 +83,6 @@ fn app() -> (App, Arc<Mutex<Vec<String>>>) {
         AppOptions {
             theme,
             keys: keys(),
-            editor_keys: keys(),
             version: "1.2.3".into(),
             cwd: "/p".into(),
             home: None,
@@ -126,7 +126,7 @@ fn cell_of(app: &mut App, text: &str) -> (usize, usize) {
         .rposition(|l| l.contains(text))
         .unwrap_or_else(|| panic!("{text}: {s:#?}"));
     let byte = s[row].find(text).unwrap();
-    (tui::utils::visible_width(&s[row][..byte]), row)
+    (tui::visible_width(&s[row][..byte]), row)
 }
 
 fn press(app: &mut App, (x, y): (usize, usize)) {
@@ -368,7 +368,7 @@ fn interactive_mouse_press_in_selector_search_lines_moves_their_cursor() {
 /// steps (text rows) take none.
 #[test]
 fn interactive_mouse_click_in_the_bug_report_editor_moves_its_cursor() {
-    use tui::mouse::{MouseButton, MouseEvent, MouseEventType};
+    use tui::{MouseButton, MouseEvent, MouseEventType};
     let theme = Rc::new(create_theme(&builtin_theme_json("dark").unwrap(), ColorMode::Truecolor, None).unwrap());
     let mut flow = interactive::bug_report::BugFlow::new(
         theme,

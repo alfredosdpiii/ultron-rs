@@ -6,12 +6,13 @@ use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use interactive::autocomplete_sources::*;
 use serde_json::{Value, json};
-use tui::autocomplete::{AutocompleteItem, AutocompleteProvider, AutocompleteSuggestions};
-use tui::autocomplete_sources::*;
+use tui::{AutocompleteItem, AutocompleteProvider, AutocompleteSuggestions};
 
-mod support;
-use support::latch::{HANG_GUARD, Latch};
+#[path = "../../tui/tests/support/latch.rs"]
+mod latch;
+use latch::{HANG_GUARD, Latch};
 
 fn fixture() -> Value {
     serde_json::from_str(include_str!("../fixtures/autocomplete-sources-parity.json")).unwrap()
@@ -94,7 +95,8 @@ fn tui_autocomplete_sources_github_titles_off_thread() {
         move || {
             let _ = tx.send(());
         },
-    );
+    )
+    .unwrap();
     let first = github_ref_suggestions("#7", Some(&titles)).unwrap();
     assert_eq!(first.items[0].description.as_deref(), Some("GitHub pull request"));
     github_ref_suggestions("#7", Some(&titles));

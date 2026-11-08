@@ -13,11 +13,12 @@ use std::time::{Duration, Instant};
 use interactive::app::{App, AppOptions};
 use interactive::footer_data::{FooterBranch, claude_code_usage_text, find_git_paths, read_branch};
 use interactive::history::PromptHistoryStore;
+use interactive::keybindings::Platform;
+use interactive::keybindings::native_app_keybindings;
 use interactive::lane::{LaneClient, LaneEvent, ModelInfo, SessionOpened};
 use serde_json::{Value, json};
-use tui::keybindings::{KeybindingsManager, Platform};
-use tui::qol_keys::native_app_keybindings;
-use tui::theme::{ColorMode, builtin_theme_json, create_theme};
+use theme::{ColorMode, builtin_theme_json, create_theme};
+use tui::KeybindingsManager;
 
 struct Quiet(RefCell<Vec<String>>);
 
@@ -107,7 +108,6 @@ fn app(cwd: &Path, home: &Path, model: ModelInfo, models: Vec<ModelInfo>) -> App
         AppOptions {
             theme,
             keys: keys(),
-            editor_keys: keys(),
             version: "1.2.3".into(),
             cwd: cwd.clone(),
             home: Some(home.display().to_string()),
@@ -269,7 +269,7 @@ fn interactive_footer_data_claude_subscription_reads_as_claude_code() {
     let screen: Vec<String> = app
         .render(100, 30)
         .iter()
-        .map(|l| tui::utils::strip_terminal_sequences(l).trim_end().to_string())
+        .map(|l| tui::strip_terminal_sequences(l).trim_end().to_string())
         .collect();
     assert!(
         screen.iter().any(|l| l.starts_with("↑10 ↓5 $0.000 (sub) ")),

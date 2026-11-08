@@ -5,8 +5,8 @@ use std::collections::HashMap;
 use std::time::Duration;
 
 use serde_json::Value;
-use tui::stdin_buffer::StdinBuffer;
-use tui::terminal::resolve_escape_timeout;
+use tui::StdinBuffer;
+use tui::resolve_escape_timeout;
 
 #[test]
 fn tui_escape_timeout_matches_ts_resolve_escape_timeout_ms() {

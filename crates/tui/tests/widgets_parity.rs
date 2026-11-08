@@ -5,15 +5,13 @@ use serde_json::Value;
 
 mod support;
 use support::latch::HANG_GUARD;
-use tui::components::Component;
-use tui::image::{
+use tui::Component;
+use tui::{Anchor, OverlayOptions, SizeValue, composite_line, resolve_overlay_layout};
+use tui::{
     Capabilities, Dimensions, Image, ImageProtocol, calculate_image_cell_size, detect_capabilities, encode_iterm2,
     encode_kitty, image_dimensions,
 };
-use tui::overlay::{Anchor, OverlayOptions, SizeValue, composite_line, resolve_overlay_layout};
-use tui::select::{
-    Loader, SelectItem, SelectList, SelectListTheme, SettingItem, SettingsList, SettingsListTheme, StyleFn,
-};
+use tui::{Loader, SelectItem, SelectList, SelectListTheme, SettingItem, SettingsList, SettingsListTheme, StyleFn};
 
 fn fixture() -> Value {
     let path = concat!(env!("CARGO_MANIFEST_DIR"), "/fixtures/widgets-parity.json");
@@ -104,9 +102,9 @@ fn tui_select_list_renders_and_navigates_like_ts() {
         for (k, key) in script["keys"].as_array().unwrap().iter().enumerate() {
             if let Some(e) = list.handle_input(s(&f["keys"][s(key)])) {
                 events.push(match e {
-                    tui::select::SelectEvent::SelectionChanged(i) => serde_json::json!(["changed", i.value]),
-                    tui::select::SelectEvent::Selected(i) => serde_json::json!(["selected", i.value]),
-                    tui::select::SelectEvent::Cancelled => serde_json::json!(["cancelled"]),
+                    tui::SelectEvent::SelectionChanged(i) => serde_json::json!(["changed", i.value]),
+                    tui::SelectEvent::Selected(i) => serde_json::json!(["selected", i.value]),
+                    tui::SelectEvent::Cancelled => serde_json::json!(["cancelled"]),
                 });
             }
             check_frames(
@@ -221,10 +219,10 @@ fn tui_settings_list_renders_and_cycles_like_ts() {
         );
         for (k, key) in script["keys"].as_array().unwrap().iter().enumerate() {
             match list.handle_input(s(&f["keys"][s(key)])) {
-                Some(tui::select::SettingsEvent::Changed { id, value }) => {
+                Some(tui::SettingsEvent::Changed { id, value }) => {
                     events.push(serde_json::json!(["changed", id, value]))
                 }
-                Some(tui::select::SettingsEvent::Cancelled) => events.push(serde_json::json!(["cancelled"])),
+                Some(tui::SettingsEvent::Cancelled) => events.push(serde_json::json!(["cancelled"])),
                 None => {}
             }
             check_frames(
@@ -479,7 +477,7 @@ fn tui_terminal_escape_writes_match_ts() {
     let f = fixture();
     let mut failures = Vec::new();
     for c in f["terminalWrites"].as_array().unwrap() {
-        let mut t = tui::terminal::Terminal::new(Vec::new());
+        let mut t = tui::Terminal::new(Vec::new());
         match s(&c[0]) {
             // The Rust product writes these sequences itself (the title in interactive's `update_title`).
             "moveBy" | "clearLine" | "clearFromCursor" | "clearScreen" | "setTitle" => continue,
@@ -553,7 +551,7 @@ fn tui_terminal_input_pump_splits_sequences_pastes_and_lone_escape() {
             gate,
             reads: std::sync::Arc::clone(&reads),
         };
-        let rx = tui::terminal::spawn_input_pump(reader);
+        let rx = tui::spawn_input_pump(reader);
         let mut got = Vec::new();
         while let Ok(event) = rx.recv_timeout(HANG_GUARD) {
             if event == "\x1b" {

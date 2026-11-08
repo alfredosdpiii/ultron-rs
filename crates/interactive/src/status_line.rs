@@ -7,7 +7,10 @@
 //! [`render_status_line`] lays both groups out for a width, truncating the session name, dropping right segments,
 //! shrinking the path, then dropping left segments, the way omp does.
 
-use crate::utils::{truncate_to_width, visible_width};
+use theme::{Fg, Theme};
+use tui::VimMode;
+
+use tui::{truncate_to_width, visible_width};
 
 /// Segment identifiers (omp `STATUS_LINE_SEGMENT_IDS`, plus Ultron's `state`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -551,33 +554,23 @@ impl StatusStyle for Plain {
     }
 }
 
-/// Styling from a [`crate::theme::Theme`]: roles map to existing theme colors.
-pub struct ThemeStyle<'a>(pub &'a crate::theme::Theme);
+/// Styling from a [`Theme`]: roles map to existing theme colors.
+pub struct ThemeStyle<'a>(pub &'a Theme);
 
 impl StatusStyle for ThemeStyle<'_> {
     fn fg(&self, role: Role, text: &str) -> String {
         let color = match role {
-            Role::Accent | Role::Model | Role::Context => "accent",
-            Role::Muted | Role::Path | Role::Spend | Role::Cost | Role::Subagents => "muted",
-            Role::Dim | Role::Separator => "dim",
-            Role::Success | Role::GitClean | Role::Staged => "success",
-            Role::Warning | Role::GitDirty | Role::Dirty => "warning",
-            Role::Error => "error",
-            Role::Purple => "thinkingHigh",
-            Role::Untracked | Role::Output => "text",
+            Role::Accent | Role::Model | Role::Context => Fg::Accent,
+            Role::Muted | Role::Path | Role::Spend | Role::Cost | Role::Subagents => Fg::Muted,
+            Role::Dim | Role::Separator => Fg::Dim,
+            Role::Success | Role::GitClean | Role::Staged => Fg::Success,
+            Role::Warning | Role::GitDirty | Role::Dirty => Fg::Warning,
+            Role::Error => Fg::Error,
+            Role::Purple => Fg::ThinkingHigh,
+            Role::Untracked | Role::Output => Fg::Text,
         };
-        self.0.fg(color, text).unwrap_or_else(|_| text.to_string())
+        self.0.fg(color, text)
     }
-}
-
-/// Vim modal state shown by the `vim` segment.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum VimMode {
-    Insert,
-    Normal,
-    Visual,
-    VisualLine,
-    Replace,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

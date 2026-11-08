@@ -12,15 +12,16 @@ use std::time::{Duration, Instant};
 
 use interactive::app::{App, AppOptions};
 use interactive::history::PromptHistoryStore;
+use interactive::keybindings::Platform;
+use interactive::keybindings::native_app_keybindings;
 use interactive::lane::{LaneClient, LaneEvent, ModelInfo, SessionOpened};
 use interactive::qol::QolSettings;
 use interactive::run::{UiEvent, paint_loop};
 use serde_json::{Value, json};
-use tui::clipboard::{Clipboard, ClipboardService};
-use tui::keybindings::{KeybindingsManager, Platform};
-use tui::qol_keys::native_app_keybindings;
-use tui::theme::{ColorMode, builtin_theme_json, create_theme};
-use tui::utils::strip_terminal_sequences;
+use theme::{ColorMode, builtin_theme_json, create_theme};
+use tui::KeybindingsManager;
+use tui::strip_terminal_sequences;
+use tui::{Clipboard, ClipboardService};
 
 struct Quiet(Arc<Mutex<Vec<String>>>);
 
@@ -83,7 +84,6 @@ fn app_with(turns: usize, qol: QolSettings) -> (App, Arc<Mutex<Vec<String>>>) {
         AppOptions {
             theme,
             keys: keys(),
-            editor_keys: keys(),
             version: "1.2.3".into(),
             cwd: "/p".into(),
             home: None,
@@ -205,7 +205,7 @@ impl Clipboard for Recording {
         self.0.lock().unwrap().push(text.to_string());
         Ok(())
     }
-    fn get_image(&mut self) -> Result<tui::clipboard::ClipboardImage, String> {
+    fn get_image(&mut self) -> Result<tui::ClipboardImage, String> {
         Err("none".into())
     }
 }
@@ -224,7 +224,7 @@ fn poll_until(app: &mut App, done: impl Fn(&mut App) -> bool) {
 fn interactive_fullscreen_drag_selection_copies_through_the_clipboard_service_and_flashes() {
     let (mut app, _) = app(12);
     let copies = Arc::new(Mutex::new(Vec::new()));
-    app.set_clipboard(ClipboardService::spawn(Recording(Arc::clone(&copies))));
+    app.set_clipboard(ClipboardService::spawn(Recording(Arc::clone(&copies))).unwrap());
     screen(&mut app);
     let row = row_of(&mut app, "answer 12") + 1;
     // Press at the start of "answer 12", drag over "answer", release: the selection is copied.
@@ -252,12 +252,12 @@ fn interactive_fullscreen_copy_failure_flashes_the_clipboard_error() {
         fn set_text(&mut self, _: &str) -> Result<(), String> {
             Err("Clipboard unavailable".into())
         }
-        fn get_image(&mut self) -> Result<tui::clipboard::ClipboardImage, String> {
+        fn get_image(&mut self) -> Result<tui::ClipboardImage, String> {
             Err("x".into())
         }
     }
     let (mut app, _) = app(3);
-    app.set_clipboard(ClipboardService::spawn(Failing));
+    app.set_clipboard(ClipboardService::spawn(Failing).unwrap());
     screen(&mut app);
     let row = row_of(&mut app, "answer 3") + 1;
     app.handle_input(&format!("\x1b[<0;2;{row}M"));
@@ -318,7 +318,7 @@ fn interactive_fullscreen_overlays_take_the_mouse_and_focus_reports_stay_with_th
 #[test]
 fn interactive_fullscreen_paint_loop_captures_and_releases_the_mouse() {
     let (mut app, _) = app(2);
-    app.set_mouse_tracking(Some(tui::fullscreen::ENABLE_BUTTON_MOTION_MOUSE));
+    app.set_mouse_tracking(Some(tui::ENABLE_BUTTON_MOTION_MOUSE));
     let (tx, rx) = mpsc::channel();
     tx.send(UiEvent::Input("\x1b[<64;3;3M".into())).unwrap();
     tx.send(UiEvent::InputClosed).unwrap();
@@ -340,7 +340,7 @@ fn interactive_fullscreen_paint_loop_captures_and_releases_the_mouse() {
     );
     let release = writes
         .iter()
-        .position(|w| w == &tui::screen::AltScreen::release_mouse())
+        .position(|w| w == &tui::AltScreen::release_mouse())
         .unwrap();
     assert!(writes[release + 1].contains("\x1b[?1049l"), "{writes:?}");
     // The wheel report scrolled the transcript; nothing reached the editor.
@@ -465,8 +465,8 @@ impl Clipboard for ImageAndText {
     fn set_text(&mut self, _: &str) -> Result<(), String> {
         Ok(())
     }
-    fn get_image(&mut self) -> Result<tui::clipboard::ClipboardImage, String> {
-        Ok(tui::clipboard::ClipboardImage {
+    fn get_image(&mut self) -> Result<tui::ClipboardImage, String> {
+        Ok(tui::ClipboardImage {
             bytes: b"\x89PNG\r\n\x1a\n".to_vec(),
             mime_type: "image/png".into(),
         })
@@ -481,7 +481,7 @@ impl Clipboard for TextClipboard {
     fn set_text(&mut self, _: &str) -> Result<(), String> {
         Ok(())
     }
-    fn get_image(&mut self) -> Result<tui::clipboard::ClipboardImage, String> {
+    fn get_image(&mut self) -> Result<tui::ClipboardImage, String> {
         Err("none".into())
     }
 }
@@ -493,10 +493,7 @@ impl Clipboard for TextClipboard {
 fn interactive_fullscreen_right_click_pastes_the_clipboard_text_when_enabled() {
     let (mut on, _) = app(3);
     let reads = Arc::new(Mutex::new(0));
-    on.set_clipboard(ClipboardService::spawn(TextClipboard(
-        Arc::clone(&reads),
-        "pasted text",
-    )));
+    on.set_clipboard(ClipboardService::spawn(TextClipboard(Arc::clone(&reads), "pasted text")).unwrap());
     on.set_right_click_paste(true);
     screen(&mut on);
     let row = row_of(&mut on, "answer 3") + 1;
@@ -513,7 +510,7 @@ fn interactive_fullscreen_right_click_pastes_the_clipboard_text_when_enabled() {
     // It is a bracketed paste (the editor folds a long one into a marker), not typed text as Ctrl+V inserts.
     let (mut long, _) = app(3);
     let text = "1\n2\n3\n4\n5\n6\n7\n8\n9\n10\n11\n12";
-    long.set_clipboard(ClipboardService::spawn(TextClipboard(Arc::new(Mutex::new(0)), text)));
+    long.set_clipboard(ClipboardService::spawn(TextClipboard(Arc::new(Mutex::new(0)), text)).unwrap());
     long.set_right_click_paste(true);
     screen(&mut long);
     long.handle_input(&format!("\x1b[<2;3;{row}M"));
@@ -521,7 +518,7 @@ fn interactive_fullscreen_right_click_pastes_the_clipboard_text_when_enabled() {
     assert_eq!(long.editor_text(), "[paste #1 +12 lines]");
     // Ctrl+V first, then a right click: the Ctrl+V answer is typed text, the right click's a bracketed paste.
     let (mut both, _) = app(3);
-    both.set_clipboard(ClipboardService::spawn(TextClipboard(Arc::new(Mutex::new(0)), text)));
+    both.set_clipboard(ClipboardService::spawn(TextClipboard(Arc::new(Mutex::new(0)), text)).unwrap());
     both.set_right_click_paste(true);
     screen(&mut both);
     both.handle_input("\x16");
@@ -530,7 +527,7 @@ fn interactive_fullscreen_right_click_pastes_the_clipboard_text_when_enabled() {
     assert_eq!(both.editor_text(), format!("{text}[paste #1 +12 lines]"));
     // A right click pastes the text even when the clipboard also holds an image (it reads text only).
     let (mut image, _) = app(3);
-    image.set_clipboard(ClipboardService::spawn(ImageAndText));
+    image.set_clipboard(ClipboardService::spawn(ImageAndText).unwrap());
     image.set_right_click_paste(true);
     screen(&mut image);
     image.handle_input(&format!("\x1b[<2;3;{row}M"));
@@ -543,10 +540,7 @@ fn interactive_fullscreen_right_click_pastes_the_clipboard_text_when_enabled() {
     // Off (not Windows, or VS Code's terminal): the press reads nothing; only the following Ctrl+V pastes.
     let (mut off, _) = app(3);
     let reads = Arc::new(Mutex::new(0));
-    off.set_clipboard(ClipboardService::spawn(TextClipboard(
-        Arc::clone(&reads),
-        "pasted text",
-    )));
+    off.set_clipboard(ClipboardService::spawn(TextClipboard(Arc::clone(&reads), "pasted text")).unwrap());
     screen(&mut off);
     off.handle_input(&format!("\x1b[<2;3;{row}M"));
     off.handle_input("\x16");

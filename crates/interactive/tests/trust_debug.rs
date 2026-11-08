@@ -8,13 +8,14 @@ use std::rc::Rc;
 use interactive::app::{App, AppOptions};
 use interactive::debug_log::{ClientFacts, DebugCapture, debug_log, notice};
 use interactive::history::PromptHistoryStore;
+use interactive::keybindings::Platform;
+use interactive::keybindings::native_app_keybindings;
 use interactive::lane::{LaneClient, LaneEvent, ModelInfo, SessionOpened};
 use interactive::trust_selector::{TrustAction, TrustChoice, TrustSelector, TrustView, saved_status};
 use serde_json::{Value, json};
-use tui::components::Component;
-use tui::keybindings::{KeybindingsManager, Platform};
-use tui::qol_keys::native_app_keybindings;
-use tui::theme::{ColorMode, builtin_theme_json, create_theme};
+use theme::{ColorMode, builtin_theme_json, create_theme};
+use tui::Component;
+use tui::KeybindingsManager;
 
 fn fixture() -> Value {
     serde_json::from_str(include_str!("../fixtures/trust-debug.json")).unwrap()
@@ -38,7 +39,7 @@ fn key(name: &str) -> &str {
     }
 }
 
-fn theme(name: &str) -> Rc<tui::theme::Theme> {
+fn theme(name: &str) -> Rc<theme::Theme> {
     let (theme, mode) = name.split_once('-').unwrap();
     let mode = if mode == "truecolor" {
         ColorMode::Truecolor
@@ -250,7 +251,6 @@ fn app() -> (App, Rc<Calls>) {
         AppOptions {
             theme: theme("dark-truecolor"),
             keys: keys(),
-            editor_keys: keys(),
             version: "1.2.3".into(),
             cwd: "/p".into(),
             home: None,
@@ -285,7 +285,7 @@ fn submit(app: &mut App, text: &str) {
 fn screen(app: &mut App) -> String {
     app.render(80, 30)
         .iter()
-        .map(|l| tui::utils::strip_terminal_sequences(l).trim_end().to_string())
+        .map(|l| tui::strip_terminal_sequences(l).trim_end().to_string())
         .collect::<Vec<_>>()
         .join("\n")
 }

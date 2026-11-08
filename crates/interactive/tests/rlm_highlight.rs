@@ -5,8 +5,8 @@ use std::rc::Rc;
 
 use interactive::rlm_highlight::{highlight_code, rlm_highlighter};
 use serde_json::Value;
+use theme::{ColorMode, Fg, Theme, builtin_theme_json, create_theme};
 use tui::hljs::Token;
-use tui::theme::{ColorMode, Theme, builtin_theme_json, create_theme};
 
 fn fixture() -> Value {
     let path = concat!(env!("CARGO_MANIFEST_DIR"), "/fixtures/rlm-highlight.json");
@@ -74,11 +74,11 @@ fn interactive_rlm_highlight_matches_highlightjs_and_ts_highlight_code() {
 }
 
 /// `highlightCode` for a language highlight.js does not know: every line in `mdCodeBlock` (literal TS behaviour:
-/// `code.split("\n").map((line) => theme.fg("mdCodeBlock", line))`).
+/// `code.split("\n").map((line) => theme.fg(Fg::MdCodeBlock, line))`).
 #[test]
 fn interactive_rlm_highlight_unknown_language_uses_md_code_block() {
     let theme = &themes()[0];
-    let ansi = theme.fg_ansi("mdCodeBlock").unwrap();
+    let ansi = theme.fg_ansi(Fg::MdCodeBlock);
     assert_eq!(
         highlight_code(theme, "a\nb", Some("klingon")),
         [format!("{ansi}a\x1b[39m"), format!("{ansi}b\x1b[39m")]

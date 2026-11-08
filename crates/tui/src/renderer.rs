@@ -1,17 +1,12 @@
 //! Main-screen differential renderer (port of packages/tui/src/tui-main-screen.ts `doRender`): repaints only
 //! the changed line range inside synchronized output and tracks the hardware cursor row.
 
+use crate::frame::{SYNC_BEGIN, SYNC_END, extract_cursor, is_image_line};
 use crate::utils::{normalize_terminal_output, visible_width};
 
-/// Marks the hardware cursor position inside a rendered line (APC, zero width).
-pub const CURSOR_MARKER: &str = "\x1b_pi:c\x07";
 const SEGMENT_RESET: &str = "\x1b[0m\x1b]8;;\x07";
 const HIDE_CURSOR: &str = "\x1b[?25l";
 const SHOW_CURSOR: &str = "\x1b[?25h";
-
-pub fn is_image_line(line: &str) -> bool {
-    line.contains("\x1b_G") || line.contains("\x1b]1337;File=")
-}
 
 /// A rendered frame overflowed the terminal width.
 #[derive(Debug, PartialEq, Eq)]
@@ -116,7 +111,7 @@ impl Renderer {
 
         if first >= lines.len() {
             if prev_len > lines.len() {
-                let mut buf = String::from("\x1b[?2026h");
+                let mut buf = String::from(SYNC_BEGIN);
                 let target_row = lines.len().saturating_sub(1) as i64;
                 if target_row < prev_viewport_top {
                     self.full_render(&mut out, lines, true, cursor, width, height);
@@ -146,7 +141,7 @@ impl Renderer {
                 if move_back > 0 {
                     buf.push_str(&format!("\x1b[{move_back}A"));
                 }
-                buf.push_str("\x1b[?2026l");
+                buf.push_str(SYNC_END);
                 out.push_str(&buf);
                 self.cursor_row = target_row as usize;
                 self.hardware_cursor_row = target_row;
@@ -164,7 +159,7 @@ impl Renderer {
             return Ok(out);
         }
 
-        let mut buf = String::from("\x1b[?2026h");
+        let mut buf = String::from(SYNC_BEGIN);
         let prev_viewport_bottom = prev_viewport_top + h - 1;
         let move_target = if append_start { first - 1 } else { first } as i64;
         if move_target > prev_viewport_bottom {
@@ -210,7 +205,7 @@ impl Renderer {
             buf.push_str(&"\r\n\x1b[2K".repeat(extra));
             buf.push_str(&format!("\x1b[{extra}A"));
         }
-        buf.push_str("\x1b[?2026l");
+        buf.push_str(SYNC_END);
         out.push_str(&buf);
 
         self.cursor_row = lines.len().saturating_sub(1);
@@ -234,12 +229,12 @@ impl Renderer {
         height: usize,
     ) {
         self.full_redraws += 1;
-        out.push_str("\x1b[?2026h");
+        out.push_str(SYNC_BEGIN);
         if clear {
             out.push_str("\x1b[2J\x1b[H\x1b[3J");
         }
         out.push_str(&lines.join("\r\n"));
-        out.push_str("\x1b[?2026l");
+        out.push_str(SYNC_END);
         self.cursor_row = lines.len().saturating_sub(1);
         self.hardware_cursor_row = self.cursor_row as i64;
         self.max_lines_rendered = if clear {
@@ -271,15 +266,8 @@ impl Renderer {
     }
 }
 
-/// Find, strip and locate the last `CURSOR_MARKER` within the bottom `height` lines.
+/// Find, strip and locate the last cursor marker within the bottom `height` lines.
 fn extract_cursor_position(lines: &mut [String], height: usize) -> Option<(usize, usize)> {
     let top = lines.len().saturating_sub(height);
-    for row in (top..lines.len()).rev() {
-        if let Some(idx) = lines[row].find(CURSOR_MARKER) {
-            let col = visible_width(&lines[row][..idx]);
-            lines[row].replace_range(idx..idx + CURSOR_MARKER.len(), "");
-            return Some((row, col));
-        }
-    }
-    None
+    extract_cursor(&mut lines[top..]).map(|(row, col)| (top + row, col))
 }

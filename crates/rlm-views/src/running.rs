@@ -5,10 +5,11 @@
 //! arrives as a `cell_done` event). It draws from what the RLM views poll and has no lines while nothing runs.
 
 use serde_json::Value;
-use tui::utils::{truncate_to_width, visible_width};
+use theme::Fg;
+use tui::{truncate_to_width, visible_width};
 
 use super::flat;
-use super::visualizer::{Color, RlmJob, RlmSnapshot, RlmStyle, RlmTask, format_duration, is_active_state, short_id};
+use super::visualizer::{RlmJob, RlmSnapshot, RlmStyle, RlmTask, format_duration, is_active_state, short_id};
 
 /// Lines the panel takes at most (its `+N more` tail included).
 pub const RUNNING_WORK_MAX_LINES: usize = 4;
@@ -205,7 +206,7 @@ pub fn render_running_work(
     let mut lines: Vec<String> = shown.iter().map(|item| work_line(item, width, style, now)).collect();
     if shown.len() < work.len() {
         let more = format!("  +{} more", work.len() - shown.len());
-        lines.push(style.fg(Color::Dim, &truncate_to_width(&more, width.max(1), "…", false)));
+        lines.push(style.fg(Fg::Dim, &truncate_to_width(&more, width.max(1), "…", false)));
     }
     lines
 }
@@ -213,9 +214,9 @@ pub fn render_running_work(
 fn work_line(item: &RunningWork, width: usize, style: &RlmStyle, now: f64) -> String {
     let width = width.max(1);
     let (glyph, color) = match item.state {
-        WorkState::Running => ("●", Color::Accent),
-        WorkState::Waiting => ("○", Color::Muted),
-        WorkState::Stopping => ("●", Color::Warning),
+        WorkState::Running => ("●", Fg::Accent),
+        WorkState::Waiting => ("○", Fg::Muted),
+        WorkState::Stopping => ("●", Fg::Warning),
     };
     let elapsed = match item.started_at {
         Some(start) if now >= start => format_duration(now - start),
@@ -225,8 +226,8 @@ fn work_line(item: &RunningWork, width: usize, style: &RlmStyle, now: f64) -> St
     let head = format!(
         "{} {} {}",
         style.fg(color, glyph),
-        style.fg(Color::Muted, &kind),
-        style.fg(Color::Text, &item.id)
+        style.fg(Fg::Muted, &kind),
+        style.fg(Fg::Text, &item.id)
     );
     let head_width = visible_width(glyph) + 1 + kind.len() + 1 + visible_width(&item.id);
     let tail_width = if elapsed.is_empty() {
@@ -241,7 +242,7 @@ fn work_line(item: &RunningWork, width: usize, style: &RlmStyle, now: f64) -> St
     // The detail takes what the head and the time leave (after a two-column gap), else it is left out.
     let room = width - head_width - tail_width;
     let detail = if room > 2 && !item.detail.is_empty() {
-        truncate_to_width(&style.fg(Color::Muted, &item.detail), room - 2, "…", false)
+        truncate_to_width(&style.fg(Fg::Muted, &item.detail), room - 2, "…", false)
     } else {
         String::new()
     };
@@ -254,7 +255,7 @@ fn work_line(item: &RunningWork, width: usize, style: &RlmStyle, now: f64) -> St
     }
     if !elapsed.is_empty() {
         line.push_str(&" ".repeat(width - used - visible_width(&elapsed)));
-        line.push_str(&style.fg(Color::Dim, &elapsed));
+        line.push_str(&style.fg(Fg::Dim, &elapsed));
     }
     line
 }

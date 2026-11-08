@@ -7,11 +7,10 @@
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::sync::mpsc::{self, Sender};
 use std::sync::{Arc, Mutex};
-use std::thread::{self, JoinHandle};
 
 use crate::status_line::GitCounts;
+use tui::{Jobs, ServiceThread};
 
 /// Where a cached PR answer applies.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -27,23 +26,6 @@ pub fn can_reuse_cached_pr(
     current: Option<&PrCacheContext>,
 ) -> bool {
     cached.is_some() && current.is_some() && cached_context.is_some_and(|c| Some(c) == current)
-}
-
-/// The repository's git directory: `.git` directly, or the `gitdir:` a worktree's `.git` file points to.
-pub fn find_git_dir(start: &Path) -> Option<PathBuf> {
-    for dir in start.ancestors() {
-        let dot = dir.join(".git");
-        if dot.is_dir() {
-            return Some(dot);
-        }
-        if dot.is_file() {
-            let text = std::fs::read_to_string(&dot).ok()?;
-            let target = text.trim().strip_prefix("gitdir:")?.trim();
-            let p = Path::new(target);
-            return Some(if p.is_absolute() { p.to_path_buf() } else { dir.join(p) });
-        }
-    }
-    None
 }
 
 /// Branch from `HEAD` contents: `ref: refs/heads/x` -> `x`; a detached commit -> its first 7 characters.
@@ -129,10 +111,10 @@ impl<L: PrLookup> GitProbe<L> {
     }
 
     pub fn probe(&mut self) -> GitSnapshot {
-        let Some(git_dir) = find_git_dir(&self.cwd) else {
+        let Some(git) = crate::footer_data::find_git_paths(&self.cwd) else {
             return GitSnapshot::default();
         };
-        let branch = std::fs::read_to_string(git_dir.join("HEAD"))
+        let branch = std::fs::read_to_string(&git.head_path)
             .ok()
             .and_then(|h| parse_head(&h));
         let status = Command::new("git")
@@ -147,7 +129,7 @@ impl<L: PrLookup> GitProbe<L> {
         let pr = branch.as_ref().and_then(|b| {
             let ctx = PrCacheContext {
                 branch: b.clone(),
-                repo_id: Some(git_dir.join("HEAD").to_string_lossy().into_owned()),
+                repo_id: Some(git.head_path.to_string_lossy().into_owned()),
             };
             let reuse = can_reuse_cached_pr(
                 self.pr_cache.as_ref().map(|(_, pr)| pr),
@@ -168,49 +150,42 @@ impl<L: PrLookup> GitProbe<L> {
 /// Background git refresher.
 pub struct GitWatcher {
     snapshot: Arc<Mutex<GitSnapshot>>,
-    tx: Option<Sender<()>>,
-    worker: Option<JoinHandle<()>>,
+    thread: ServiceThread<()>,
 }
 
 impl GitWatcher {
     /// Start the thread; `on_update` runs after each refresh that changed the snapshot (request a render there).
-    pub fn spawn<L: PrLookup + 'static>(cwd: PathBuf, lookup: L, on_update: impl Fn() + Send + 'static) -> Self {
+    pub fn spawn<L: PrLookup + 'static>(
+        cwd: PathBuf,
+        lookup: L,
+        on_update: impl Fn() + Send + 'static,
+    ) -> std::io::Result<Self> {
         let snapshot = Arc::new(Mutex::new(GitSnapshot::default()));
         let shared = Arc::clone(&snapshot);
-        let (tx, rx) = mpsc::channel::<()>();
-        let worker = thread::Builder::new()
-            .name("status-git".into())
-            .spawn(move || {
-                let mut probe = GitProbe::new(cwd, lookup);
-                while rx.recv().is_ok() {
-                    while rx.try_recv().is_ok() {} // coalesce bursts
-                    let next = probe.probe();
-                    let changed = {
-                        let mut cur = shared.lock().unwrap_or_else(|e| e.into_inner());
-                        let changed = *cur != next;
-                        *cur = next;
-                        changed
-                    };
-                    if changed {
-                        on_update();
-                    }
+        let thread = ServiceThread::spawn("status-git", move |mut jobs: Jobs<()>| {
+            let mut probe = GitProbe::new(cwd, lookup);
+            while jobs.next().is_some() {
+                while jobs.try_next().is_some() {} // coalesce bursts
+                let next = probe.probe();
+                let changed = {
+                    let mut cur = shared.lock().unwrap_or_else(|e| e.into_inner());
+                    let changed = *cur != next;
+                    *cur = next;
+                    changed
+                };
+                if changed {
+                    on_update();
                 }
-            })
-            .ok();
-        let w = Self {
-            snapshot,
-            tx: Some(tx),
-            worker,
-        };
+            }
+        })?;
+        let w = Self { snapshot, thread };
         w.refresh();
-        w
+        Ok(w)
     }
 
     /// Ask for a refresh (after a turn, a cell that ran git, or a cwd change). Never blocks.
     pub fn refresh(&self) {
-        if let Some(tx) = &self.tx {
-            let _ = tx.send(());
-        }
+        self.thread.send(());
     }
 
     /// The latest snapshot (cheap clone; never waits on git).
@@ -219,16 +194,7 @@ impl GitWatcher {
     }
 
     /// Stop after the in-flight refresh.
-    pub fn shutdown(mut self) {
-        self.tx.take();
-        if let Some(w) = self.worker.take() {
-            let _ = w.join();
-        }
-    }
-}
-
-impl Drop for GitWatcher {
-    fn drop(&mut self) {
-        self.tx.take();
+    pub fn shutdown(self) {
+        self.thread.shutdown();
     }
 }

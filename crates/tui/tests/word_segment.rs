@@ -4,7 +4,7 @@
 //! cases recorded from Node 26 (ICU 78.3) for the dictionary engines and the rule statuses.
 
 use serde_json::Value;
-use tui::word_segment::word_segments;
+use tui::word_segments;
 
 /// A line's segments as `text` for word-like ones, `·text` otherwise, joined by `|`.
 fn shown(line: &str) -> String {

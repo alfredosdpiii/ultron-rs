@@ -7,13 +7,13 @@
 use std::rc::Rc;
 
 use jsrt::string;
-use tui::components::Component;
-use tui::input::Input;
-use tui::keybindings::KeybindingsManager;
-use tui::theme::Theme;
-use tui::utils::{truncate_to_width, visible_width};
+use theme::{Fg, Theme};
+use tui::Component;
+use tui::Input;
+use tui::KeybindingsManager;
+use tui::{truncate_to_width, visible_width};
 
-use crate::components::{bold, fg};
+use crate::components::bold;
 
 const MAX_VISIBLE_MATCHES: usize = 8;
 
@@ -122,7 +122,7 @@ impl PromptHistorySearch {
     /// `highlight`: matched terms bold in `warning`, the selected row's other text in `accent`.
     fn highlight(&self, text: &str, terms: &[String], selected: bool) -> String {
         let t = &self.theme;
-        let base = |s: &str| if selected { fg(t, "accent", s) } else { s.to_string() };
+        let base = |s: &str| if selected { t.fg(Fg::Accent, s) } else { s.to_string() };
         if terms.is_empty() {
             return base(text);
         }
@@ -161,7 +161,7 @@ impl PromptHistorySearch {
                 return;
             }
             out.push_str(&if marked {
-                bold(&fg(t, "warning", run))
+                bold(&t.fg(Fg::Warning, run))
             } else {
                 base(run)
             });
@@ -183,15 +183,15 @@ impl Component for PromptHistorySearch {
     fn render(&mut self, width: usize) -> Vec<String> {
         let t = Rc::clone(&self.theme);
         let inner = width.saturating_sub(2).max(1);
-        let label = fg(&t, "accent", "history search: ");
+        let label = t.fg(Fg::Accent, "history search: ");
         let input_lines = self.input.render(inner.saturating_sub(visible_width(&label)).max(1));
         let count = if self.matches.is_empty() {
-            fg(&t, "warning", "no match")
+            t.fg(Fg::Warning, "no match")
         } else {
-            fg(&t, "dim", &format!("{}/{}", self.selected + 1, self.matches.len()))
+            t.fg(Fg::Dim, &format!("{}/{}", self.selected + 1, self.matches.len()))
         };
         let mut lines = vec![
-            fg(&t, "border", &"─".repeat(width)),
+            t.fg(Fg::Border, &"─".repeat(width)),
             format!(" {label}{}", input_lines.first().cloned().unwrap_or_default()),
             format!(" {count}"),
         ];
@@ -206,7 +206,7 @@ impl Component for PromptHistorySearch {
             let one_line = collapse_whitespace_runs(&self.matches[index]);
             let selected = index == self.selected;
             let prefix = if selected {
-                fg(&t, "accent", "→ ")
+                t.fg(Fg::Accent, "→ ")
             } else {
                 "  ".into()
             };
@@ -218,9 +218,9 @@ impl Component for PromptHistorySearch {
             );
             lines.push(format!(" {prefix}{body}"));
         }
-        let hint = fg(&t, "dim", "↑↓ move · enter/tab use · esc cancel");
+        let hint = t.fg(Fg::Dim, "↑↓ move · enter/tab use · esc cancel");
         lines.push(format!(" {}", truncate_to_width(&hint, inner, "", false)));
-        lines.push(fg(&t, "border", &"─".repeat(width)));
+        lines.push(t.fg(Fg::Border, &"─".repeat(width)));
         lines
     }
 }

@@ -1,8 +1,8 @@
 //! Differential parity of theme text styles against packages/coding-agent theme.ts (chalk 6) at levels 0-3.
-//! Fixture: fixtures/theme-styles-parity.json (`node crates/tui/fixtures/generate-theme-styles.mjs`).
+//! Fixture: fixtures/theme-styles-parity.json (`node crates/theme/fixtures/generate-theme-styles.mjs`).
 
 use serde_json::Value;
-use tui::theme::styles::TextStyle;
+use theme::styles::TextStyle;
 
 #[test]
 fn tui_theme_text_styles_match_ts() {

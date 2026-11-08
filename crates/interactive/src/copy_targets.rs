@@ -6,8 +6,8 @@
 //! `bash` and `eval`.
 
 use serde_json::Value;
-use tui::markdown::Token;
-use tui::marked::lex;
+use tui::Token;
+use tui::lex;
 
 /// A persisted transcript entry as the client receives it: id, ISO timestamp and the agent message.
 #[derive(Clone, Debug, PartialEq)]

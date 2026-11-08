@@ -5,15 +5,15 @@
 use std::sync::Arc;
 
 use claude_root::control::{ControlHandler, listen};
-use cli::watch::{parse_watch_args, render_watch_frame, run, strip_ansi};
+use cli::watch::{parse_watch_args, render_watch_frame, run};
 use rlm_views::RlmSnapshot;
 use rlm_views::pane::RlmPane;
 use rlm_views::visualizer::RlmStyle;
 use serde_json::{Value, json};
 
-fn keys() -> tui::keybindings::KeybindingsManager {
-    tui::keybindings::KeybindingsManager::new(
-        tui::qol_keys::native_app_keybindings(tui::keybindings::Platform::new("linux", false)),
+fn keys() -> tui::KeybindingsManager {
+    tui::KeybindingsManager::new(
+        interactive::keybindings::native_app_keybindings(interactive::keybindings::Platform::new("linux", false)),
         Vec::new(),
         Default::default(),
     )
@@ -52,14 +52,6 @@ fn cli_watch_frames_match_typescript() {
             .collect();
         assert_eq!(lines, want, "{name} status {} {width}x{height}", case["status"]);
     }
-}
-
-#[test]
-fn cli_watch_strips_csi_and_osc() {
-    assert_eq!(
-        strip_ansi("\x1b[1m\x1b[38;5;2mUltron\x1b[39m\x1b[22m \x1b]8;;http://x\x07link\x1b]8;;\x07"),
-        "Ultron link"
-    );
 }
 
 #[test]

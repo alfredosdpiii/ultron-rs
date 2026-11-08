@@ -8,7 +8,7 @@
 use unicode_segmentation::UnicodeSegmentation;
 
 use crate::editor::Editor;
-use crate::keys::{KeyContext, decode_printable_key, parse_key};
+use crate::keys::{decode_printable_key, parse_key};
 use crate::vim::{
     Pos, VimBuffer, VimCommand, VimMode, VimState, last_grapheme_start, next_grapheme_start, visual_range,
 };
@@ -36,7 +36,6 @@ pub struct VimEditor {
     register: Option<String>,
     replace_log: Vec<ReplaceEntry>,
     replacing: bool,
-    pub ctx: KeyContext,
     /// Called with every yanked text (paste markers expanded): wire the system clipboard here.
     pub on_yank: Option<YankFn>,
 }
@@ -56,9 +55,15 @@ fn nav_key(canonical: &str) -> Option<&'static str> {
     })
 }
 
+impl Default for VimEditor {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl VimEditor {
     /// Starts in Insert mode, so typing keeps working when the setting is turned on.
-    pub fn new(ctx: KeyContext) -> Self {
+    pub fn new() -> Self {
         let mut state = VimState::new();
         state.mode = VimMode::Insert;
         Self {
@@ -66,7 +71,6 @@ impl VimEditor {
             register: None,
             replace_log: Vec::new(),
             replacing: false,
-            ctx,
             on_yank: None,
         }
     }
@@ -110,7 +114,7 @@ impl VimEditor {
     /// Route one input chunk. True when Vim consumed it; otherwise pass it to [`Editor::handle_input`].
     /// An open autocomplete popup gets the first Escape.
     pub fn handle_input(&mut self, ed: &mut Editor, data: &str) -> bool {
-        let canonical = parse_key(data, self.ctx);
+        let canonical = parse_key(data, ed.key_context());
         if canonical.as_deref() == Some("escape") {
             return !ed.is_showing_autocomplete() && self.run(ed, "escape");
         }

@@ -2,8 +2,9 @@
 //! and the never-blocking grammar warm-up.
 
 use std::time::Instant;
+use theme::Fg;
 
-use tui::highlight::*;
+use tui::*;
 
 fn colors() -> HighlightColors {
     let c = |s: &str| s.to_string();
@@ -17,8 +18,8 @@ fn colors() -> HighlightColors {
         r#type: c("<t>"),
         operator: c("<o>"),
         punctuation: c("<p>"),
-        inserted: Some(c("<+>")),
-        deleted: Some(c("<->")),
+        inserted: c("<+>"),
+        deleted: c("<->"),
     }
 }
 
@@ -121,11 +122,11 @@ fn tui_highlight_typescript_and_nix_after_warm() {
 
 #[test]
 fn tui_highlight_theme_colors_and_highlighted_lines() {
-    let json = tui::theme::builtin_theme_json("dark").unwrap();
-    let theme = tui::theme::create_theme(&json, tui::theme::ColorMode::Truecolor, None).unwrap();
+    let json = theme::builtin_theme_json("dark").unwrap();
+    let theme = theme::create_theme(&json, theme::ColorMode::Truecolor, None).unwrap();
     let c = HighlightColors::from_theme(&theme);
-    assert_eq!(c.keyword, theme.fg_ansi("syntaxKeyword").unwrap());
-    assert_eq!(c.inserted, theme.fg_ansi("toolDiffAdded").ok());
+    assert_eq!(c.keyword, theme.fg_ansi(Fg::SyntaxKeyword));
+    assert_eq!(c.inserted, theme.fg_ansi(Fg::ToolDiffAdded));
     let lines = highlight_lines("x = 1\ny", Some("python"), &colors());
     assert_eq!(lines.len(), 2);
     assert!(lines[0].contains("<n>1\x1b[39m"));

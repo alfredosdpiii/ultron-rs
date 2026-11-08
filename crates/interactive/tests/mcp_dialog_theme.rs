@@ -6,11 +6,12 @@ use std::rc::Rc;
 
 use interactive::app::{App, AppOptions};
 use interactive::history::PromptHistoryStore;
+use interactive::keybindings::Platform;
+use interactive::keybindings::native_app_keybindings;
 use interactive::lane::{LaneClient, LaneEvent, ModelInfo, SessionOpened};
 use serde_json::{Value, json};
-use tui::keybindings::{KeybindingsManager, Platform};
-use tui::qol_keys::native_app_keybindings;
-use tui::theme::{ColorMode, Theme, builtin_theme_json, create_theme};
+use theme::{ColorMode, Fg, Theme, builtin_theme_json, create_theme};
+use tui::KeybindingsManager;
 
 struct Quiet;
 
@@ -56,7 +57,6 @@ fn app(theme: Rc<Theme>) -> App {
         AppOptions {
             theme,
             keys: keys(),
-            editor_keys: keys(),
             version: "1.2.3".into(),
             cwd: "/p".into(),
             home: None,
@@ -85,7 +85,7 @@ fn app(theme: Rc<Theme>) -> App {
 fn row_with(app: &mut App, text: &str) -> String {
     app.render(80, 30)
         .into_iter()
-        .find(|l| tui::utils::strip_terminal_sequences(l).contains(text))
+        .find(|l| tui::strip_terminal_sequences(l).contains(text))
         .unwrap_or_else(|| panic!("{text}"))
 }
 
@@ -93,7 +93,7 @@ fn row_with(app: &mut App, text: &str) -> String {
 fn interactive_mcp_dialogs_are_drawn_in_the_session_theme() {
     for name in ["light", "dark"] {
         let t = theme(name);
-        let accent = t.fg("accent", "Name?").unwrap();
+        let accent = t.fg(Fg::Accent, "Name?");
         let mut app = app(Rc::clone(&t));
         app.apply(LaneEvent::ExtensionUi(
             json!({"type": "extension_ui_request", "id": "p1", "method": "input", "title": "Name?"}),
@@ -109,8 +109,8 @@ fn interactive_mcp_dialogs_are_drawn_in_the_session_theme() {
         ));
         let selected = row_with(&mut app, "one");
         let other = theme(if name == "light" { "dark" } else { "light" });
-        assert_ne!(t.fg("accent", "x").unwrap(), other.fg("accent", "x").unwrap());
-        let accent_code = t.fg("accent", "").unwrap();
+        assert_ne!(t.fg(Fg::Accent, "x"), other.fg(Fg::Accent, "x"));
+        let accent_code = t.fg(Fg::Accent, "");
         let code = accent_code.trim_end_matches("\x1b[39m");
         assert!(selected.contains(code), "{name}: the selected option {selected:?}");
     }

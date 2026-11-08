@@ -9,10 +9,8 @@ use std::collections::HashMap;
 use std::os::unix::fs::PermissionsExt;
 
 use serde_json::Value;
-use tui::clipboard::{Clipboard, ClipboardImage, SystemClipboard, tool_run};
-use tui::clipboard_image::{
-    ImageRead, ImageSources, extension_for_image_mime_type, is_wayland_session, read_clipboard_image,
-};
+use tui::{Clipboard, ClipboardImage, SystemClipboard};
+use tui::{ImageRead, ImageSources, extension_for_image_mime_type, is_wayland_session, read_clipboard_image};
 
 /// generate-clipboard-image.mjs `FAKE`, with the scenario directory written in (the test cannot set its own
 /// environment for the child).
@@ -99,7 +97,7 @@ fn tui_clipboard_image_reads_like_ts() {
             .collect();
         // The fake tools, then the system's (`tr`, `cat` for the scripts themselves run from /usr/bin).
         let path = format!("{}:/usr/bin:/bin", bin.display());
-        let mut run = |program: &str, args: &[&str]| tool_run(Some(&path), program, args);
+        let mut run = |program: &str, args: &[&str]| tui::proc::run(program, Some(&path), args, None, None);
         // Every recorded case ends before the native clipboard and (with a Linux image under WSL) before PowerShell.
         let got = read_clipboard_image(ImageSources {
             platform: "linux",
@@ -287,10 +285,7 @@ fn tui_clipboard_image_wsl_powershell_fallback() {
                   $path = 'C:\\Users\\it''s\\pi-wsl-clip-1.png'; $img = [System.Windows.Forms.Clipboard]::GetImage(); \
                   if ($img) { $img.Save($path, [System.Drawing.Imaging.ImageFormat]::Png); Write-Output 'ok' } else \
                   { Write-Output 'empty' }";
-    assert_eq!(
-        tui::clipboard_image::powershell_script("C:\\Users\\it's\\pi-wsl-clip-1.png"),
-        script
-    );
+    assert_eq!(tui::powershell_script("C:\\Users\\it's\\pi-wsl-clip-1.png"), script);
     let text_only: &[(&str, &[u8])] = &[("wl-paste --list-types", b"text/plain\n")];
     let calls = |extra: &[&str]| -> Vec<String> {
         let mut c = vec!["wl-paste --list-types".to_string()];
@@ -479,8 +474,8 @@ fn tui_clipboard_image_native_fallback_order() {
 #[test]
 fn tui_clipboard_image_rgba_to_png_round_trips() {
     let pixels = vec![255, 0, 0, 255, 0, 255, 0, 128, 0, 0, 255, 0, 9, 9, 9, 9];
-    let png = tui::clipboard_image::rgba_to_png(2, 2, pixels.clone()).unwrap();
+    let png = tui::rgba_to_png(2, 2, pixels.clone()).unwrap();
     assert_eq!(rgba(&png), (2, 2, "Rgba8".to_string(), pixels));
     // A buffer that does not match the size is no PNG.
-    assert_eq!(tui::clipboard_image::rgba_to_png(3, 2, vec![0; 16]), None);
+    assert_eq!(tui::rgba_to_png(3, 2, vec![0; 16]), None);
 }

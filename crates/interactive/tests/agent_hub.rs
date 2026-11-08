@@ -11,11 +11,12 @@ use interactive::agent_hub::{
 };
 use interactive::chat::ChatStyle;
 use interactive::copy_targets::TranscriptEntry;
+use interactive::keybindings::Platform;
+use interactive::keybindings::native_app_keybindings;
 use serde_json::{Value, json};
-use tui::keybindings::{KeybindingsManager, Platform};
-use tui::qol_keys::native_app_keybindings;
-use tui::theme::{ColorMode, Theme, builtin_theme_json, create_theme};
-use tui::utils::strip_terminal_sequences;
+use theme::{ColorMode, Theme, builtin_theme_json, create_theme};
+use tui::KeybindingsManager;
+use tui::strip_terminal_sequences;
 
 fn fixture() -> Value {
     serde_json::from_str(include_str!("../fixtures/omp-agent-hub-parity.json")).unwrap()

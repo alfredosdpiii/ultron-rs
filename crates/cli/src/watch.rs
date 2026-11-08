@@ -5,11 +5,12 @@
 
 use claude_root::control::{ControlClient, ServerQuery, control_dir, find_server, list_servers};
 use rlm_views::pane::RlmPane;
-use rlm_views::visualizer::{Color, RlmClock, RlmStyle, RlmTurn, parse_cell};
+use rlm_views::visualizer::{RlmClock, RlmStyle, RlmTurn, parse_cell};
 use rlm_views::{RlmPoller, RlmSnapshot, WATCH_FRAME_LIMIT};
 use serde_json::{Map, Value, json};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
+use theme::Fg;
 
 /// `POLL_MS`.
 const POLL: Duration = Duration::from_millis(500);
@@ -121,8 +122,8 @@ pub fn run(
     let mut client = ControlClient::connect(&socket, Duration::from_secs(5))?;
     let mut clock = RlmClock::new();
     let mut poller = RlmPoller::new(WATCH_FRAME_LIMIT);
-    let keys = tui::keybindings::KeybindingsManager::new(
-        tui::qol_keys::native_app_keybindings(tui::keybindings::Platform::new("linux", false)),
+    let keys = tui::KeybindingsManager::new(
+        interactive::keybindings::native_app_keybindings(interactive::keybindings::Platform::new("linux", false)),
         Vec::new(),
         Default::default(),
     );
@@ -138,7 +139,11 @@ pub fn run(
         let width = parsed.width.map_or_else(terminal_width, |w| w as usize);
         let lines = render_watch_frame(&mut pane, &keys, &snapshot, &status, width, 40, &style, false, 30);
         let text = lines.join("\n");
-        let text = if plain { strip_ansi(&text) } else { text };
+        let text = if plain {
+            tui::strip_terminal_sequences(&text)
+        } else {
+            text
+        };
         out.write_all(format!("{text}\n").as_bytes())
             .map_err(|e| e.to_string())?;
         return Ok(0);
@@ -148,31 +153,24 @@ pub fn run(
 }
 
 fn terminal_width() -> usize {
-    match tui::terminal::size() {
+    match tui::size() {
         (0, _) => 100,
         (columns, _) => columns as usize,
     }
 }
 
-/// The theme the settings name (`initTheme(settings.getTheme())`): a built-in or `<agent dir>/themes/<name>.json`;
-/// dark when it does not load.
-fn watch_theme(cwd: &str, var: &dyn Fn(&str) -> Option<String>) -> tui::theme::Theme {
+/// The theme the settings name (`initTheme(settings.getTheme())`): a built-in or `<agent dir>/themes/<name>.json`.
+fn watch_theme(cwd: &str, var: &dyn Fn(&str) -> Option<String>) -> theme::Theme {
     let home = PathBuf::from(var("HOME").unwrap_or_default());
     let agent_dir = config::paths::agent_dir(var, &home);
     let settings = config::settings::SettingsManager::create(Path::new(cwd), &agent_dir, false);
-    let mode = tui::theme::ColorMode::from_capabilities(&tui::image::detect_capabilities(&|k| var(k), false, false));
-    let mut registry = tui::theme::registry::ThemeRegistry::new(PathBuf::new(), agent_dir.join("themes"), mode);
-    registry.init_theme(settings.theme().as_deref(), "dark");
-    registry.current().cloned().unwrap_or_else(|| {
-        let json = tui::theme::builtin_theme_json("dark").expect("the dark theme");
-        tui::theme::create_theme(&json, mode, None).expect("the dark theme resolves")
-    })
-}
-
-/// `ANSI`: CSI and OSC sequences, removed from plain output.
-pub fn strip_ansi(text: &str) -> String {
-    let pattern = regex::Regex::new(r"\x1b\[[0-9;?]*[A-Za-z]|\x1b\][^\x07]*\x07").expect("ansi pattern");
-    pattern.replace_all(text, "").into_owned()
+    let mode = tui::color_mode(&tui::detect_capabilities(&|k| var(k), false, false));
+    crate::themes::resolve(
+        settings.theme_setting().as_deref(),
+        var("COLORFGBG").as_deref(),
+        &agent_dir.join("themes"),
+        mode,
+    )
 }
 
 /// `pollSnapshot`: one poll of a session, everything a frame is drawn from (`now`: ms since the epoch): the server's
@@ -257,8 +255,8 @@ fn header_line(status: &Value, style: &RlmStyle) -> String {
     parts.retain(|p| !p.is_empty());
     format!(
         "{} {}",
-        style.bold(&style.fg(Color::Accent, "Ultron")),
-        style.fg(Color::Muted, &parts.join(" · "))
+        style.bold(&style.fg(Fg::Accent, "Ultron")),
+        style.fg(Fg::Muted, &parts.join(" · "))
     )
 }
 
@@ -267,7 +265,7 @@ fn header_line(status: &Value, style: &RlmStyle) -> String {
 #[allow(clippy::too_many_arguments)]
 pub fn render_watch_frame(
     pane: &mut RlmPane,
-    keys: &tui::keybindings::KeybindingsManager,
+    keys: &tui::KeybindingsManager,
     snapshot: &RlmSnapshot,
     status: &Value,
     width: usize,
@@ -276,7 +274,7 @@ pub fn render_watch_frame(
     focused: bool,
     pane_height: usize,
 ) -> Vec<String> {
-    let header = tui::utils::truncate_to_width(&header_line(status, style), width.max(1), "…", false);
+    let header = tui::truncate_to_width(&header_line(status, style), width.max(1), "…", false);
     let options = rlm_views::graph::RlmViewOptions {
         style: style.clone(),
         spinner_frame: (snapshot.now / 100.0).floor() as i64,
@@ -301,21 +299,21 @@ fn live(
     mut client: ControlClient,
     mut poller: RlmPoller,
     mut clock: RlmClock,
-    keys: tui::keybindings::KeybindingsManager,
+    keys: tui::KeybindingsManager,
     style: RlmStyle,
     mut snapshot: RlmSnapshot,
     mut status: Value,
 ) -> Result<(), String> {
-    let mut terminal = tui::terminal::Terminal::new(std::io::stdout());
+    let mut terminal = tui::Terminal::new(std::io::stdout());
     terminal.start(true).map_err(|e| e.to_string())?;
-    let input = tui::terminal::spawn_stdin_pump();
-    let mut screen = tui::screen::AltScreen::new();
+    let input = tui::spawn_stdin_pump();
+    let mut screen = tui::AltScreen::new();
     let mut pane = RlmPane::new();
     let result = (|| -> Result<(), String> {
         terminal.write(&screen.enter()).map_err(|e| e.to_string())?;
         let mut next_poll = std::time::Instant::now() + POLL;
         loop {
-            let (columns, rows) = tui::terminal::size();
+            let (columns, rows) = tui::size();
             let (width, height) = (columns.max(20) as usize, rows.max(10) as usize);
             let pane_height = 6usize.max(height.saturating_sub((height as f64 * 0.4).floor() as usize + 3));
             let lines = render_watch_frame(

@@ -95,7 +95,7 @@ pub fn derive_export_colors(base: &str) -> [String; 3] {
 
 /// `generateHtml(sessionData)` with the default theme (`getDefaultTheme()`: `COLORFGBG`, else dark).
 pub fn generate_html(session_data: &Value, colorfgbg: Option<&str>) -> String {
-    use tui::theme::{TerminalTheme, builtin_theme_json, detect_terminal_background_from_env};
+    use theme::{TerminalTheme, builtin_theme_json, detect_terminal_background_from_env};
     let name = match detect_terminal_background_from_env(colorfgbg).theme {
         TerminalTheme::Light => "light",
         TerminalTheme::Dark => "dark",
@@ -112,8 +112,8 @@ pub struct ThemeSources<'a> {
 }
 
 /// `loadThemeJson(name)`: a built-in, else a registered theme's file, else `<custom dir>/<name>.json`.
-pub fn load_export_theme_json(name: &str, sources: &ThemeSources<'_>) -> Result<tui::theme::ThemeJson, String> {
-    if let Some(json) = tui::theme::builtin_theme_json(name) {
+pub fn load_export_theme_json(name: &str, sources: &ThemeSources<'_>) -> Result<theme::ThemeJson, String> {
+    if let Some(json) = theme::builtin_theme_json(name) {
         return Ok(json);
     }
     if let Some((_, source)) = sources.registered.iter().find(|(n, _)| n == name) {
@@ -121,9 +121,9 @@ pub fn load_export_theme_json(name: &str, sources: &ThemeSources<'_>) -> Result<
             return Err(format!("Theme \"{name}\" does not have a source path for export"));
         };
         let content = std::fs::read_to_string(path).map_err(|e| format!("Failed to read theme {path}: {e}"))?;
-        return tui::theme::parse_theme_json_content(path, &content);
+        return theme::parse_theme_json_content(path, &content);
     }
-    tui::theme::load_theme_json(name, sources.custom_dir)
+    theme::load_theme_json(name, sources.custom_dir)
 }
 
 /// `generateHtml(sessionData, themeName)`: the page in the named theme (`theme.name` of the TUI's active theme);
@@ -141,9 +141,9 @@ pub fn generate_html_themed(
     page(session_data, &json, name)
 }
 
-fn page(session_data: &Value, json: &tui::theme::ThemeJson, name: &str) -> Result<String, String> {
-    let colors = tui::theme::resolved_css_colors(json, name)?;
-    let export = tui::theme::theme_export_colors(json);
+fn page(session_data: &Value, json: &theme::ThemeJson, name: &str) -> Result<String, String> {
+    let colors = theme::resolved_css_colors(json, name)?;
+    let export = theme::theme_export_colors(json);
     let user_bg = colors
         .iter()
         .find(|(k, _)| k == "userMessageBg")
@@ -174,8 +174,8 @@ fn page(session_data: &Value, json: &tui::theme::ThemeJson, name: &str) -> Resul
 /// and `<agent dir>/themes`, as `loadThemeJson` finds them.
 pub fn export_page(data: &Value, theme: Option<&str>, env: &crate::Env) -> Result<String, String> {
     let registered: Vec<(String, Option<String>)> = match theme {
-        Some(name) if tui::theme::builtin_theme_json(name).is_none() => {
-            crate::themes::load(env, tui::theme::ColorMode::Truecolor)
+        Some(name) if theme::builtin_theme_json(name).is_none() => {
+            crate::themes::load(env, theme::ColorMode::Truecolor)
                 .themes
                 .into_iter()
                 .filter_map(|t| Some((t.name?, t.source_path)))

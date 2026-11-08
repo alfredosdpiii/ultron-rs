@@ -8,6 +8,7 @@ use crate::Env;
 use crate::setup_wizard::{Choice, InputOptions, LoginOutcome, SetupQuit, SetupUi, Tone};
 use ai::auth::{AuthEvent, AuthInteraction, AuthPrompt};
 use ai::http::{AbortSignal, BoxFuture};
+use interactive::keybindings::Platform;
 use interactive::lane::{LoginEvent, LoginPrompt};
 use interactive::login_dialog::{DialogAction, LoginDialog};
 use interactive::selectors::{AuthProvider, AuthSelector};
@@ -17,17 +18,14 @@ use std::rc::Rc;
 use std::sync::Arc;
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 use std::time::Duration;
-use tui::components::{Component, Text};
-use tui::keybindings::{KeybindingsManager, Platform};
-use tui::renderer::Renderer;
-use tui::select::{Loader, SelectEvent, SelectItem, SelectList, SelectListTheme};
-use tui::theme::{ColorMode, Theme, builtin_theme_json, create_theme};
+use theme::{Fg, Theme};
+use tui::KeybindingsManager;
+use tui::Renderer;
+use tui::{Component, Text};
+use tui::{Loader, SelectEvent, SelectItem, SelectList, SelectListTheme};
 
 const MAX_VISIBLE: usize = 10;
 
-fn fg(theme: &Theme, color: &str, text: &str) -> String {
-    theme.fg(color, text).unwrap_or_else(|_| text.to_string())
-}
 const CTRL_C: &str = "\x03";
 
 /// What the UI thread waits on.
@@ -50,7 +48,7 @@ static INPUT_PAUSED: std::sync::LazyLock<Arc<std::sync::atomic::AtomicBool>> =
 
 /// The terminal: raw mode, the main-screen renderer, and the hardware cursor row it leaves (for `stop`).
 struct Screen {
-    out: tui::terminal::Terminal<std::io::Stdout>,
+    out: tui::Terminal<std::io::Stdout>,
     renderer: Renderer,
     /// Where the hardware cursor is, as a row of the document (`hardwareCursorRow`).
     cursor_row: i64,
@@ -62,7 +60,7 @@ struct Screen {
 
 fn keys() -> KeybindingsManager {
     KeybindingsManager::new(
-        tui::qol_keys::native_app_keybindings(Platform::new("linux", false)),
+        interactive::keybindings::native_app_keybindings(Platform::new("linux", false)),
         Vec::new(),
         Default::default(),
     )
@@ -71,11 +69,12 @@ fn keys() -> KeybindingsManager {
 fn theme(env: &Env) -> Rc<Theme> {
     let settings = config::settings::SettingsManager::create(&env.cwd, &env.agent_dir(), false);
     let caps = crate::terminal_settings::capabilities(env, &settings);
-    let name = settings.theme().unwrap_or_else(|| "dark".into());
-    let json = builtin_theme_json(&name)
-        .or_else(|| builtin_theme_json("dark"))
-        .expect("the dark theme is built in");
-    Rc::new(create_theme(&json, ColorMode::from_capabilities(&caps), None).expect("the built-in theme compiles"))
+    Rc::new(crate::themes::resolve(
+        settings.theme_setting().as_deref(),
+        (env.var)("COLORFGBG").as_deref(),
+        &env.agent_dir().join("themes"),
+        tui::color_mode(&caps),
+    ))
 }
 
 /// Advance `row` over the cursor moves of renderer output (`\x1b[nA`, `\x1b[nB`, CRLF, a clear to home).
@@ -139,7 +138,7 @@ impl Screen {
                 }
             });
         });
-        let mut out = tui::terminal::Terminal::new(std::io::stdout());
+        let mut out = tui::Terminal::new(std::io::stdout());
         out.start(true)?;
         out.hide_cursor()?;
         Ok(Screen {
@@ -154,7 +153,7 @@ impl Screen {
     }
 
     fn size() -> (usize, usize) {
-        let (w, h) = tui::terminal::size();
+        let (w, h) = tui::size();
         (w.max(1) as usize, h.max(1) as usize)
     }
 
@@ -200,20 +199,20 @@ fn hint(theme: &Theme, keys: &KeybindingsManager, binding: &str, description: &s
 }
 
 fn border(theme: &Theme, width: usize) -> String {
-    fg(theme, "border", &"─".repeat(width.max(1)))
+    theme.fg(Fg::Border, &"─".repeat(width.max(1)))
 }
 
 fn select_theme(theme: &Rc<Theme>) -> SelectListTheme {
-    let style = |color: &'static str| {
+    let style = |color: Fg| {
         let t = Rc::clone(theme);
-        Box::new(move |s: &str| fg(&t, color, s)) as Box<dyn Fn(&str) -> String>
+        Box::new(move |s: &str| t.fg(color, s)) as Box<dyn Fn(&str) -> String>
     };
     SelectListTheme {
-        selected_prefix: style("accent"),
-        selected_text: style("accent"),
-        description: style("muted"),
-        scroll_info: style("muted"),
-        no_match: style("muted"),
+        selected_prefix: style(Fg::Accent),
+        selected_text: style(Fg::Accent),
+        description: style(Fg::Muted),
+        scroll_info: style(Fg::Muted),
+        no_match: style(Fg::Muted),
     }
 }
 
@@ -222,7 +221,7 @@ struct SetupSelect {
     title: String,
     description: Option<String>,
     items: Vec<SelectItem>,
-    search: Option<tui::input::Input>,
+    search: Option<tui::Input>,
     list: SelectList,
 }
 
@@ -238,8 +237,7 @@ impl SetupSelect {
             })
             .collect();
         let search = (items.len() > MAX_VISIBLE).then(|| {
-            let mut input =
-                tui::input::Input::new(screen.keys.clone()).with_options(Some("Search: "), None, None, None);
+            let mut input = tui::Input::new(screen.keys.clone()).with_options(Some("Search: "), None, None, None);
             input.focused = true;
             input
         });
@@ -278,7 +276,7 @@ impl SetupSelect {
         let filtered = if query.is_empty() {
             self.items.clone()
         } else {
-            tui::fuzzy::fuzzy_filter(&self.items, &query, |item| {
+            tui::fuzzy_filter(&self.items, &query, |item| {
                 format!("{} {}", item.label, item.description.clone().unwrap_or_default())
             })
         };
@@ -289,9 +287,9 @@ impl SetupSelect {
     fn render(&mut self, screen: &Screen, width: usize) -> Vec<String> {
         let t = &screen.theme;
         let mut lines = vec![border(t, width)];
-        lines.extend(Text::new(&fg(t, "accent", &bold(&self.title)), 1, 0, None).render(width));
+        lines.extend(Text::new(&t.fg(Fg::Accent, &bold(&self.title)), 1, 0, None).render(width));
         if let Some(description) = &self.description {
-            lines.extend(Text::new(&fg(t, "text", description), 1, 0, None).render(width));
+            lines.extend(Text::new(&t.fg(Fg::Text, description), 1, 0, None).render(width));
         }
         lines.push(String::new());
         if let Some(search) = self.search.as_mut() {
@@ -316,16 +314,16 @@ impl SetupSelect {
 struct SetupInput {
     title: String,
     options: InputOptions,
-    input: tui::input::Input,
+    input: tui::Input,
     error: String,
 }
 
 impl SetupInput {
     fn new(screen: &Screen, title: &str, options: InputOptions) -> Self {
         let mut input = if options.secret {
-            tui::input::Input::new(screen.keys.clone()).with_options(None, None, None, Some("•"))
+            tui::Input::new(screen.keys.clone()).with_options(None, None, None, Some("•"))
         } else {
-            tui::input::Input::new(screen.keys.clone())
+            tui::Input::new(screen.keys.clone())
         };
         input.focused = true;
         if let Some(initial) = options.initial.as_deref().filter(|i| !i.is_empty()) {
@@ -346,14 +344,14 @@ impl SetupInput {
         }
         self.error.clear();
         match self.input.handle_input(data) {
-            Some(tui::input::InputEvent::Submit(value)) => {
+            Some(tui::InputEvent::Submit(value)) => {
                 if let Some(problem) = self.options.validate.as_ref().and_then(|v| v(&value)) {
-                    self.error = fg(&screen.theme, "error", &problem);
+                    self.error = screen.theme.fg(Fg::Error, &problem);
                     return None;
                 }
                 Some(Some(value))
             }
-            Some(tui::input::InputEvent::Escape) => Some(None),
+            Some(tui::InputEvent::Escape) => Some(None),
             None => None,
         }
     }
@@ -361,14 +359,14 @@ impl SetupInput {
     fn render(&mut self, screen: &Screen, width: usize) -> Vec<String> {
         let t = &screen.theme;
         let mut lines = vec![border(t, width)];
-        lines.extend(Text::new(&fg(t, "accent", &bold(&self.title)), 1, 0, None).render(width));
+        lines.extend(Text::new(&t.fg(Fg::Accent, &bold(&self.title)), 1, 0, None).render(width));
         if let Some(description) = &self.options.description {
-            lines.extend(Text::new(&fg(t, "text", description), 1, 0, None).render(width));
+            lines.extend(Text::new(&t.fg(Fg::Text, description), 1, 0, None).render(width));
         }
         if self.options.secret {
             lines.extend(
                 Text::new(
-                    &fg(t, "dim", "Input is hidden. Paste the value and press Enter."),
+                    &t.fg(Fg::Dim, "Input is hidden. Paste the value and press Enter."),
                     1,
                     0,
                     None,
@@ -430,22 +428,22 @@ impl TuiSetupUi {
     fn paint(&mut self, slot: Slot) {
         let (width, _) = Screen::size();
         let t = Rc::clone(&self.screen.theme);
-        let mut lines = Text::new(&fg(&t, "accent", &bold("Ultron setup")), 1, 0, None).render(width);
+        let mut lines = Text::new(&t.fg(Fg::Accent, &bold("Ultron setup")), 1, 0, None).render(width);
         for entry in &self.transcript {
             match entry {
                 Entry::Heading(title) => {
                     lines.push(String::new());
-                    lines.extend(Text::new(&fg(&t, "accent", &bold(title)), 1, 0, None).render(width));
+                    lines.extend(Text::new(&t.fg(Fg::Accent, &bold(title)), 1, 0, None).render(width));
                 }
                 Entry::Note(text, tone) => {
                     let color = match tone {
-                        Tone::Success => "success",
-                        Tone::Warning => "warning",
-                        Tone::Error => "error",
-                        Tone::Dim => "dim",
-                        Tone::Info => "text",
+                        Tone::Success => Fg::Success,
+                        Tone::Warning => Fg::Warning,
+                        Tone::Error => Fg::Error,
+                        Tone::Dim => Fg::Dim,
+                        Tone::Info => Fg::Text,
                     };
-                    lines.extend(Text::new(&fg(&t, color, text), 2, 0, None).render(width));
+                    lines.extend(Text::new(&t.fg(color, text), 2, 0, None).render(width));
                 }
             }
         }
@@ -749,8 +747,8 @@ impl SetupUi for TuiSetupUi {
         let t = Rc::clone(&self.screen.theme);
         let (spin, muted) = (Rc::clone(&t), Rc::clone(&t));
         let mut loader = Loader::new(
-            Box::new(move |s: &str| fg(&spin, "accent", s)),
-            Box::new(move |s: &str| fg(&muted, "muted", s)),
+            Box::new(move |s: &str| spin.fg(Fg::Accent, s)),
+            Box::new(move |s: &str| muted.fg(Fg::Muted, s)),
             message,
             None,
         );
@@ -920,13 +918,13 @@ pub fn show_startup_selector(env: &Env, title: &str, options: &[&str]) -> std::i
         let (width, _) = Screen::size();
         let t = Rc::clone(&screen.theme);
         let mut lines = vec![border(&t, width), String::new()];
-        lines.extend(Text::new(&fg(&t, "accent", &bold(title)), 1, 0, None).render(width));
+        lines.extend(Text::new(&t.fg(Fg::Accent, &bold(title)), 1, 0, None).render(width));
         lines.push(String::new());
         for (i, option) in options.iter().enumerate() {
             let row = if i == index {
-                format!("{}{}", fg(&t, "accent", "→ "), fg(&t, "accent", option))
+                format!("{}{}", t.fg(Fg::Accent, "→ "), t.fg(Fg::Accent, option))
             } else {
-                format!("  {}", fg(&t, "text", option))
+                format!("  {}", t.fg(Fg::Text, option))
             };
             lines.extend(Text::new(&row, 1, 0, None).render(width));
         }

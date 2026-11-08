@@ -5,10 +5,10 @@
 
 use std::time::Instant;
 
-use tui::fullscreen::{FullscreenViewport, ViewportInput};
-use tui::keybindings::{KeybindingsManager, tui_keybindings};
-use tui::keys::KeyContext;
-use tui::right_click_paste::{is_right_click_press, right_click_paste_enabled};
+use tui::KeyContext;
+use tui::{FullscreenViewport, ViewportInput};
+use tui::{KeybindingsManager, tui_keybindings};
+use tui::{is_right_click_press, right_click_paste_enabled};
 
 #[test]
 fn tui_right_click_paste_is_on_only_on_windows_outside_vscode() {

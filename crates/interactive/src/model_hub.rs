@@ -11,17 +11,17 @@
 use std::cmp::Ordering;
 use std::rc::Rc;
 
+use crate::outline::key_glyph;
 use jsrt::collate::locale_compare;
-use tui::components::Component;
-use tui::fuzzy::fuzzy_match;
-use tui::input::Input;
-use tui::keybindings::KeybindingsManager;
-use tui::outline::key_glyph;
-use tui::sgr_mouse::parse_sgr_mouse;
-use tui::theme::Theme;
-use tui::utils::{truncate_to_width, visible_width};
+use theme::{Fg, Theme};
+use tui::Component;
+use tui::Input;
+use tui::KeybindingsManager;
+use tui::fuzzy_match;
+use tui::parse_sgr_mouse;
+use tui::{truncate_to_width, visible_width};
 
-use crate::components::{bold, fg};
+use crate::components::bold;
 use crate::lane::ModelInfo;
 
 /// The thinking levels the strip offers: all but `max`.
@@ -603,7 +603,7 @@ impl ModelHub {
         ModelHubEvent::Ignored
     }
 
-    fn mouse(&mut self, mouse: tui::sgr_mouse::SgrMouse) -> ModelHubEvent {
+    fn mouse(&mut self, mouse: tui::SgrMouse) -> ModelHubEvent {
         let (sidebar, list_row, list_rows, side_row) = self.layout;
         let in_sidebar = mouse.col >= 0 && (mouse.col as usize) < sidebar + 2;
         if let Some(wheel) = mouse.wheel {
@@ -661,7 +661,7 @@ impl ModelHub {
         let mut side: Vec<String> = Vec::new();
         for scope in &self.scopes {
             if scope.kind == ScopeKind::Separator {
-                side.push(fg(&t, "dim", &"─".repeat(sidebar)));
+                side.push(t.fg(Fg::Dim, &"─".repeat(sidebar)));
                 continue;
             }
             let active = scope.kind == self.active;
@@ -677,11 +677,11 @@ impl ModelHub {
             let gap = sidebar.saturating_sub(visible_width(marker) + visible_width(&label) + count.len());
             let text = format!("{marker}{label}{}{count}", " ".repeat(gap));
             side.push(if active && self.focus == Focus::Scopes {
-                bold(&fg(&t, "accent", &text))
+                bold(&t.fg(Fg::Accent, &text))
             } else if active {
-                fg(&t, "accent", &text)
+                t.fg(Fg::Accent, &text)
             } else if skipped {
-                fg(&t, "dim", &text)
+                t.fg(Fg::Dim, &text)
             } else {
                 text
             });
@@ -694,7 +694,7 @@ impl ModelHub {
             .into_iter()
             .next()
             .unwrap_or_default();
-        right.push(format!("{} {search}", fg(&t, "accent", "⌕")));
+        right.push(format!("{} {search}", t.fg(Fg::Accent, "⌕")));
         right.push(String::new());
         let list_rows = body_rows.saturating_sub(4).max(1);
         if self.cursor < self.list_top {
@@ -705,7 +705,7 @@ impl ModelHub {
         self.list_top = self.list_top.min(self.shown.len().saturating_sub(list_rows));
         let show_provider = !matches!(self.active, ScopeKind::Provider(_));
         if self.shown.is_empty() {
-            right.push(fg(&t, "muted", "  No models match"));
+            right.push(t.fg(Fg::Muted, "  No models match"));
         }
         for (i, item) in self.shown.iter().enumerate().skip(self.list_top).take(list_rows) {
             let selected = i == self.cursor;
@@ -726,10 +726,14 @@ impl ModelHub {
             let gap = room.saturating_sub(visible_width(&name));
             let row = format!("{name}{} {ctx} {glyphs}", " ".repeat(gap));
             right.push(if selected {
-                let style = if self.focus == Focus::Models { "accent" } else { "muted" };
-                format!("{} {}", fg(&t, "accent", "❯"), bold(&fg(&t, style, &row)))
+                let style = if self.focus == Focus::Models {
+                    Fg::Accent
+                } else {
+                    Fg::Muted
+                };
+                format!("{} {}", t.fg(Fg::Accent, "❯"), bold(&t.fg(style, &row)))
             } else if current {
-                format!("  {}", fg(&t, "success", &row))
+                format!("  {}", t.fg(Fg::Success, &row))
             } else {
                 format!("  {row}")
             });
@@ -745,7 +749,7 @@ impl ModelHub {
                 format!("{}{reasoning}", i.model.name)
             })
             .unwrap_or_default();
-        right.push(fg(&t, "dim", &detail));
+        right.push(t.fg(Fg::Dim, &detail));
         self.layout = (sidebar, 3, list_rows, 1);
         // Compose.
         let mut out = vec![top_border(&t, width, "Models")];
@@ -757,14 +761,14 @@ impl ModelHub {
             let rw = visible_width(&rr);
             out.push(format!(
                 "{} {l}{} {} {rr}{}{}",
-                fg(&t, "border", "│"),
+                t.fg(Fg::Border, "│"),
                 " ".repeat(sidebar.saturating_sub(lw)),
-                fg(&t, "border", "│"),
+                t.fg(Fg::Border, "│"),
                 " ".repeat(pane.saturating_sub(rw)),
-                fg(&t, "border", "│")
+                t.fg(Fg::Border, "│")
             ));
         }
-        out.push(fg(&t, "border", &format!("├{}┤", "─".repeat(width - 2))));
+        out.push(t.fg(Fg::Border, &format!("├{}┤", "─".repeat(width - 2))));
         let footer = match &self.strip {
             Some(strip) => {
                 let chips: Vec<String> = THINKING_LEVELS
@@ -772,21 +776,20 @@ impl ModelHub {
                     .enumerate()
                     .map(|(i, l)| {
                         if i == strip.index {
-                            bold(&fg(&t, "accent", &format!("[{l}]")))
+                            bold(&t.fg(Fg::Accent, &format!("[{l}]")))
                         } else {
-                            fg(&t, "muted", &format!(" {l} "))
+                            t.fg(Fg::Muted, &format!(" {l} "))
                         }
                     })
                     .collect();
                 format!(
                     "{} {}",
-                    fg(&t, "dim", &format!("thinking for {}:", strip.item.model.id)),
+                    t.fg(Fg::Dim, &format!("thinking for {}:", strip.item.model.id)),
                     chips.join("")
                 )
             }
-            None => fg(
-                &t,
-                "dim",
+            None => t.fg(
+                Fg::Dim,
                 &format!(
                     "Session-only switch · {} {} use · {} focus · type to search · {} close",
                     self.first_key("tui.select.up"),
@@ -800,11 +803,11 @@ impl ModelHub {
         let pad = inner.saturating_sub(2 + visible_width(&footer));
         out.push(format!(
             "{} {footer}{} {}",
-            fg(&t, "border", "│"),
+            t.fg(Fg::Border, "│"),
             " ".repeat(pad),
-            fg(&t, "border", "│")
+            t.fg(Fg::Border, "│")
         ));
-        out.push(fg(&t, "border", &format!("╰{}╯", "─".repeat(width - 2))));
+        out.push(t.fg(Fg::Border, &format!("╰{}╯", "─".repeat(width - 2))));
         out
     }
 }
@@ -824,8 +827,8 @@ fn top_border(t: &Theme, width: usize, title: &str) -> String {
     let fill = width.saturating_sub(2 + visible_width(&label));
     format!(
         "{}{}{}",
-        fg(t, "border", "╭"),
+        t.fg(Fg::Border, "╭"),
         bold(&label),
-        fg(t, "border", &format!("{}╮", "─".repeat(fill)))
+        t.fg(Fg::Border, &format!("{}╮", "─".repeat(fill)))
     )
 }

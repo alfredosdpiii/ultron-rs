@@ -3,10 +3,11 @@
 
 use std::sync::{Arc, Mutex};
 
-use tui::notify::*;
+use interactive::notify::*;
 
-mod support;
-use support::latch::Latch;
+#[path = "../../tui/tests/support/latch.rs"]
+mod latch;
+use latch::Latch;
 
 const UUID: &str = "123e4567-e89b-12d3-a456-426614174000";
 const TMUX: &str = "/tmp/tmux-1000/default,1234,0";
@@ -476,7 +477,7 @@ fn tui_notify_resolves_desktop_notifier() {
     let file = dir.join("notify-send");
     std::fs::write(&file, "#!/bin/sh\n").unwrap();
     assert_eq!(
-        which("notify-send", Some(dir.to_str().unwrap())),
+        tui::proc::which("notify-send", Some(dir.to_str().unwrap())),
         None,
         "not executable"
     );
@@ -485,8 +486,8 @@ fn tui_notify_resolves_desktop_notifier() {
         use std::os::unix::fs::PermissionsExt;
         std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o755)).unwrap();
         assert_eq!(
-            which("notify-send", Some(dir.to_str().unwrap())),
-            Some(file.to_string_lossy().into_owned())
+            tui::proc::which("notify-send", Some(dir.to_str().unwrap())),
+            Some(file.clone())
         );
     }
     std::fs::remove_dir_all(&dir).unwrap();
@@ -668,7 +669,8 @@ fn tui_notify_service_never_blocks_the_caller() {
     let svc = NotificationService::spawn(
         omp(NotifyProtocol::Osc99, &[]),
         SlowSink(written.clone(), blocked.clone()),
-    );
+    )
+    .unwrap();
     svc.notify(text("one"));
     svc.set_osc99_supported(true);
     svc.notify(Message::Structured(Notification {

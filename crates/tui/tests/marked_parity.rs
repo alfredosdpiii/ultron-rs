@@ -5,10 +5,10 @@
 //! (`node crates/tui/fixtures/generate-marked.mjs`).
 
 use serde_json::Value;
-use tui::components::Component;
-use tui::markdown::{DefaultTextStyle, Markdown, MarkdownOptions, MarkdownTheme};
-use tui::marked::markdown_tokens;
-use tui::select::StyleFn;
+use tui::Component;
+use tui::StyleFn;
+use tui::markdown_tokens;
+use tui::{DefaultTextStyle, Markdown, MarkdownOptions, MarkdownTheme};
 
 fn st(v: &Value) -> String {
     v.as_str().unwrap_or("").to_string()
@@ -40,7 +40,7 @@ fn theme(c: &Value) -> MarkdownTheme {
                     .enumerate()
                     .map(|(i, l)| format!("<{}:{i}>{l}", lang.unwrap_or("-")))
                     .collect()
-            }) as tui::markdown::HighlightFn
+            }) as tui::HighlightFn
         }),
         code_block_indent: c["indent"].as_str().map(str::to_string),
     }

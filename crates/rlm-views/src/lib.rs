@@ -34,10 +34,5 @@ pub(crate) fn flat(text: &str, limit: usize) -> String {
 
 /// chalk's `bold` (`theme.bold`), always on: the themed views are drawn only where colors are.
 pub(crate) fn bold(text: &str) -> String {
-    tui::theme::styles::TextStyle::Bold.apply(text, 1)
-}
-
-/// `theme.fg(color, text)` for a token known to exist.
-pub(crate) fn fg(theme: &tui::theme::Theme, color: &str, text: &str) -> String {
-    theme.fg(color, text).unwrap_or_else(|_| text.to_string())
+    theme::styles::TextStyle::Bold.apply(text, 1)
 }

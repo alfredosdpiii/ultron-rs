@@ -149,7 +149,7 @@ fn kernel_apis_diagram_contrast_dark_percentages_on_dark_slices_get_the_text_col
     let s = setup();
     let custom = s.root.join("themes");
     std::fs::create_dir_all(&custom).unwrap();
-    let mut json: Value = serde_json::from_str(include_str!("../../tui/src/theme/dark.json")).unwrap();
+    let mut json: Value = serde_json::from_str(include_str!("../../theme/src/dark.json")).unwrap();
     json["name"] = json!("midnight");
     for (token, color) in [
         ("accent", "#1f3a68"),

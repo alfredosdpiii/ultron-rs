@@ -4,6 +4,7 @@
 
 use std::collections::{HashMap, HashSet};
 
+use interactive::keybindings::{Platform, app_keybindings};
 use rlm_views::RlmGraphFocus;
 use rlm_views::focus::{
     FocusAction, FocusRenderOptions, FocusState, apply_focus_action, render_focus_view, selected_row,
@@ -22,8 +23,8 @@ use rlm_views::visualizer::{
     format_duration, parse_agents_status, parse_frames, parse_pool, parse_retained, short_id,
 };
 use serde_json::{Value, json};
-use tui::keybindings::{KeybindingsManager, Platform, app_keybindings};
-use tui::utils::visible_width;
+use tui::KeybindingsManager;
+use tui::visible_width;
 
 const NOW: f64 = 1_000_000.0;
 
@@ -444,7 +445,7 @@ fn row_options() -> RowRenderOptions {
 }
 
 fn strip(line: &str) -> String {
-    tui::utils::strip_terminal_sequences(line)
+    tui::strip_terminal_sequences(line)
 }
 
 #[test]
@@ -685,7 +686,7 @@ fn interactive_rlm_budget_gauges_and_their_packing() {
         ]
     );
     let marked = RlmStyle {
-        fg: std::rc::Rc::new(|c, t| format!("<{}>{t}</>", c.token())),
+        fg: std::rc::Rc::new(|c, t| format!("<{}>{t}</>", c.name())),
         bold: std::rc::Rc::new(str::to_string),
     };
     let lines = render_gauges(&gauges, 80, &marked, 10);
@@ -1384,7 +1385,7 @@ fn interactive_rlm_pane_highlights_the_selection_and_lists_dependencies() {
     let runs = workflow_runs(&reference());
     let marked = RlmStyle {
         fg: std::rc::Rc::new(|c, t| {
-            if c.token() == "accent" {
+            if c.name() == "accent" {
                 format!("\x1b[35m{t}\x1b[39m")
             } else {
                 t.to_string()

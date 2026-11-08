@@ -10,13 +10,13 @@ use std::borrow::Cow;
 
 use unicode_segmentation::UnicodeSegmentation;
 
-use crate::components::Component;
-use crate::input::Input;
-use crate::keybindings::KeybindingsManager;
 use crate::outline::ScrollBody;
-use crate::sgr_mouse::parse_sgr_mouse;
-use crate::utils::{ansi_len, slice_with_width, strip_terminal_sequences, truncate_to_width, visible_width};
 use jsrt::string;
+use tui::Component;
+use tui::Input;
+use tui::KeybindingsManager;
+use tui::parse_sgr_mouse;
+use tui::{ansi_len, slice_with_width, strip_terminal_sequences, truncate_to_width, visible_width};
 
 #[derive(Clone, Copy, Debug)]
 struct Span {

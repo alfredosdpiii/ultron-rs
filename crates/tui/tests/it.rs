@@ -9,8 +9,6 @@
 mod attachments;
 #[path = "autocomplete_parity.rs"]
 mod autocomplete_parity;
-#[path = "autocomplete_sources.rs"]
-mod autocomplete_sources;
 #[path = "clipboard_image.rs"]
 mod clipboard_image;
 #[path = "editor_autocomplete_async.rs"]
@@ -29,8 +27,6 @@ mod fullscreen_clicks;
 mod fullscreen_scroll;
 #[path = "highlight.rs"]
 mod highlight;
-#[path = "keybindings_file.rs"]
-mod keybindings_file;
 #[path = "keyboard_protocol.rs"]
 mod keyboard_protocol;
 #[path = "kitty_images.rs"]
@@ -45,12 +41,8 @@ mod markdown_parity;
 mod marked_parity;
 #[path = "marked_perf.rs"]
 mod marked_perf;
-#[path = "notify.rs"]
-mod notify;
 #[path = "osc11.rs"]
 mod osc11;
-#[path = "outline.rs"]
-mod outline;
 #[path = "p_tui.rs"]
 mod p_tui;
 #[path = "parity.rs"]
@@ -59,8 +51,6 @@ mod parity;
 mod paste_parity;
 #[path = "ported.rs"]
 mod ported;
-#[path = "qol_keys.rs"]
-mod qol_keys;
 #[path = "render_debug.rs"]
 mod render_debug;
 #[path = "right_click_paste.rs"]
@@ -69,16 +59,6 @@ mod right_click_paste;
 mod screen;
 #[path = "split_kitty_images.rs"]
 mod split_kitty_images;
-#[path = "status_line.rs"]
-mod status_line;
-#[path = "theme_parity.rs"]
-mod theme_parity;
-#[path = "theme_registry_parity.rs"]
-mod theme_registry_parity;
-#[path = "theme_styles_parity.rs"]
-mod theme_styles_parity;
-#[path = "transcript_search.rs"]
-mod transcript_search;
 #[path = "tty_writer.rs"]
 mod tty_writer;
 #[path = "viewport.rs"]

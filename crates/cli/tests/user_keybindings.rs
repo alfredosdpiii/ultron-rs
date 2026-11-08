@@ -5,7 +5,7 @@
 fn cli_user_keybindings_load_the_agent_dir_file() {
     let tmp = tempfile::tempdir().unwrap();
     let dir = tmp.path();
-    let linux = tui::keybindings::Platform::new("linux", false);
+    let linux = interactive::keybindings::Platform::new("linux", false);
     assert!(cli::interactive::user_keybindings(dir, linux).is_empty());
     std::fs::write(
         dir.join("keybindings.json"),

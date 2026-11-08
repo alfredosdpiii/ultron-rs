@@ -4,10 +4,10 @@ use unicode_segmentation::UnicodeSegmentation;
 
 use crate::components::Component;
 use crate::editing::{KillRing, find_word_backward, find_word_forward, next_grapheme_len, prev_grapheme_len};
+use crate::frame::CURSOR_MARKER;
 use crate::keybindings::KeybindingsManager;
 use crate::keys::decode_printable_key;
 use crate::mouse::{MouseButton, MouseEvent, MouseEventType, MouseResult};
-use crate::renderer::CURSOR_MARKER;
 use crate::utils::{slice_with_width, truncate_to_width, visible_width};
 
 #[derive(Clone, Copy, PartialEq, Eq)]

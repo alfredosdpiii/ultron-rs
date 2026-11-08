@@ -2,10 +2,10 @@
 //! fixtures/osc11-parity.json (recorded from packages/tui/src/terminal-colors.ts by generate-osc11.mjs), and the
 //! reader that takes the reply out of the input stream, fed through the stdin buffer as the terminal thread feeds it.
 
-use tui::stdin_buffer::{InputEvent, StdinBuffer};
-use tui::terminal_colors::{
+use tui::{
     OSC11_BACKGROUND_QUERY, Osc11Read, Osc11Reader, is_osc11_background_color_response, parse_osc11_background_color,
 };
+use tui::{StdinBuffer, StdinEvent};
 
 fn fixture() -> serde_json::Value {
     serde_json::from_str(include_str!("../fixtures/osc11-parity.json")).expect("fixture")
@@ -59,8 +59,8 @@ fn sequences(buffer: &mut StdinBuffer, chunk: &str) -> Vec<String> {
         .process(chunk)
         .into_iter()
         .map(|e| match e {
-            InputEvent::Data(d) => d,
-            InputEvent::Paste(p) => panic!("paste {p:?}"),
+            StdinEvent::Data(d) => d,
+            StdinEvent::Paste(p) => panic!("paste {p:?}"),
         })
         .collect()
 }

@@ -6,11 +6,12 @@ use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
 use serde_json::Value;
-use tui::theme::Theme;
+use theme::Theme;
 
 use super::flat;
-use crate::{bold, fg};
+use crate::bold;
 use jsrt::{number, utf16};
+use theme::Fg;
 
 /// A task's result (`agents.status`).
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -363,40 +364,10 @@ pub struct RlmSnapshot {
     pub workflows: Vec<RlmWorkflowRun>,
 }
 
-/// The theme colors the views use.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Color {
-    Accent,
-    Success,
-    Error,
-    Warning,
-    Muted,
-    Dim,
-    Text,
-    ToolTitle,
-    MdCodeBlock,
-}
-
-impl Color {
-    pub fn token(self) -> &'static str {
-        match self {
-            Color::Accent => "accent",
-            Color::Success => "success",
-            Color::Error => "error",
-            Color::Warning => "warning",
-            Color::Muted => "muted",
-            Color::Dim => "dim",
-            Color::Text => "text",
-            Color::ToolTitle => "toolTitle",
-            Color::MdCodeBlock => "mdCodeBlock",
-        }
-    }
-}
-
-type FgFn = Rc<dyn Fn(Color, &str) -> String>;
+type FgFn = Rc<dyn Fn(Fg, &str) -> String>;
 type BoldFn = Rc<dyn Fn(&str) -> String>;
 
-/// Color hooks: the theme in the TUI, identity in tests (`PLAIN_STYLE`).
+/// Fg hooks: the theme in the TUI, identity in tests (`PLAIN_STYLE`).
 #[derive(Clone)]
 pub struct RlmStyle {
     pub fg: FgFn,
@@ -414,12 +385,12 @@ impl RlmStyle {
     /// `rlmStyle` of client-tui.ts: `theme.fg` and `theme.bold`.
     pub fn themed(theme: Rc<Theme>) -> RlmStyle {
         RlmStyle {
-            fg: Rc::new(move |c, t| fg(&theme, c.token(), t)),
+            fg: Rc::new(move |c, t| theme.fg(c, t)),
             bold: Rc::new(bold),
         }
     }
 
-    pub fn fg(&self, color: Color, text: &str) -> String {
+    pub fn fg(&self, color: Fg, text: &str) -> String {
         (self.fg)(color, text)
     }
 
@@ -857,7 +828,7 @@ pub fn render_context_lines(context: Option<&RlmContextState>, style: &RlmStyle)
         return Vec::new();
     }
     let mut lines = vec![style.fg(
-        Color::Muted,
+        Fg::Muted,
         &format!(
             "context: {} forgotten · {} collapsed · {} pinned · {} notes",
             number::to_string(c.forgotten_count),
@@ -874,7 +845,7 @@ pub fn render_context_lines(context: Option<&RlmContextState>, style: &RlmStyle)
             _ => String::new(),
         };
         lines.push(style.fg(
-            Color::Dim,
+            Fg::Dim,
             &format!(
                 "  forgot {} {} {}{why}",
                 short_id(&item.id),
@@ -885,7 +856,7 @@ pub fn render_context_lines(context: Option<&RlmContextState>, style: &RlmStyle)
     }
     for item in tail(&c.pinned) {
         lines.push(style.fg(
-            Color::Dim,
+            Fg::Dim,
             &format!(
                 "  pinned {} {} {}",
                 short_id(&item.id),

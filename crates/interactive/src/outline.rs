@@ -7,8 +7,9 @@
 //! rows with a dotted outline around the selected turn ([`compose_outline_column`]). [`FrameBrowser`] lays a
 //! header, the scrolled body and a footer over the whole screen and keeps the selection revealed.
 
-use crate::utils::{truncate_to_width, visible_width};
 use jsrt::string;
+use theme::Fg;
+use tui::{truncate_to_width, visible_width};
 
 /// One selectable transcript item: a turn plus its rendered child range.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -144,38 +145,20 @@ pub fn strip_prompt_zones(rows: &[String]) -> Vec<String> {
 
 /// Theme access for the outline: `fg(color, text)` and `bold(text)`.
 pub struct OutlinePaint<'a> {
-    pub fg: &'a dyn Fn(&str, &str) -> String,
+    pub fg: &'a dyn Fn(Fg, &str) -> String,
     pub bold: &'a dyn Fn(&str) -> String,
 }
 
 /// Stroke color and an optional caption inset into the top rule.
 #[derive(Clone, Debug, Default)]
 pub struct OutlineStyle {
-    /// Theme color; `accent` when unset.
-    pub color: Option<String>,
+    /// `accent` when unset.
+    pub color: Option<Fg>,
     pub caption: Option<String>,
 }
 
 pub const DOTTED_HORIZONTAL: &str = "┄";
 pub const DOTTED_VERTICAL: &str = "┆";
-
-/// omp `padToWidth`: pad to exactly `width` cells, truncating with `…` when wider.
-pub fn pad_to_width(text: &str, width: usize) -> String {
-    if width == 0 {
-        return text.to_string();
-    }
-    let w = visible_width(text);
-    if w == width {
-        return text.to_string();
-    }
-    let fitted = if w < width {
-        format!("{text}{}", " ".repeat(width - w))
-    } else {
-        truncate_to_width(text, width, "…", false)
-    };
-    let drift = width.saturating_sub(visible_width(&fitted));
-    format!("{fitted}{}", " ".repeat(drift))
-}
 
 /// `outlineRule`: a dotted rule with rounded corners spanning the outline.
 pub fn outline_rule(
@@ -183,7 +166,7 @@ pub fn outline_rule(
     left: &str,
     right: &str,
     inner_width: usize,
-    color: &str,
+    color: Fg,
     caption: Option<&str>,
 ) -> String {
     let label = caption.map(|c| format!(" {c} ")).unwrap_or_default();
@@ -198,7 +181,7 @@ pub fn outline_rule(
 
 /// `outlineRows`: `rows` inside the dotted outline (rules above and below, `┆` sides).
 pub fn outline_rows(paint: &OutlinePaint, rows: &[String], inner_width: usize, style: &OutlineStyle) -> Vec<String> {
-    let color = style.color.as_deref().unwrap_or("accent");
+    let color = style.color.unwrap_or(Fg::Accent);
     let vertical = (paint.fg)(color, DOTTED_VERTICAL);
     let mut lines = vec![outline_rule(
         paint,
@@ -210,7 +193,7 @@ pub fn outline_rows(paint: &OutlinePaint, rows: &[String], inner_width: usize, s
     )];
     for row in rows {
         let body = if inner_width > 0 {
-            pad_to_width(row, inner_width)
+            truncate_to_width(row, inner_width, "…", true)
         } else {
             String::new()
         };

@@ -5,11 +5,10 @@
 use std::path::PathBuf;
 
 use super::{
-    ColorMode, Theme, assert_theme_name_is_valid, builtin_theme_json, create_theme, load_theme_from_path,
-    load_theme_json,
+    ColorMode, Theme, assert_theme_name_is_valid, create_theme, fallback_theme, load_theme_from_path, load_theme_json,
 };
 
-/// `ThemeInfo`: a theme name and the file it came from (registered themes may have none).
+/// `ThemeInfo`: a theme name and the file it came from (the embedded built-ins and registered themes may have none).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ThemeInfo {
     pub name: String,
@@ -18,8 +17,6 @@ pub struct ThemeInfo {
 
 /// TS keeps these in module globals; here the caller owns one value.
 pub struct ThemeRegistry {
-    /// Directory of the built-in `dark.json` / `light.json` (TS `getThemesDir()`), used only for listed paths.
-    pub themes_dir: PathBuf,
     /// `<agent dir>/themes` (TS `getCustomThemesDir()`).
     pub custom_dir: PathBuf,
     pub mode: ColorMode,
@@ -28,9 +25,8 @@ pub struct ThemeRegistry {
 }
 
 impl ThemeRegistry {
-    pub fn new(themes_dir: PathBuf, custom_dir: PathBuf, mode: ColorMode) -> Self {
+    pub fn new(custom_dir: PathBuf, mode: ColorMode) -> Self {
         ThemeRegistry {
-            themes_dir,
             custom_dir,
             mode,
             registered: Vec::new(),
@@ -66,7 +62,7 @@ impl ThemeRegistry {
         for name in ["dark", "light"] {
             add(ThemeInfo {
                 name: name.into(),
-                path: Some(self.themes_dir.join(format!("{name}.json")).display().to_string()),
+                path: None,
             });
         }
         let mut files: Vec<String> = std::fs::read_dir(&self.custom_dir)
@@ -108,7 +104,7 @@ impl ThemeRegistry {
     }
 
     fn fall_back_to_dark(&mut self) {
-        self.current = builtin_theme_json("dark").and_then(|j| create_theme(&j, self.mode, None).ok());
+        self.current = Some(fallback_theme(self.mode));
     }
 
     /// `initTheme(name)`: `default_name` stands in for TS `getDefaultTheme()` (terminal background detection); an

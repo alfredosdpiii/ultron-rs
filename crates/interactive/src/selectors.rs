@@ -3,12 +3,12 @@
 
 use std::rc::Rc;
 
-use tui::components::{Component, Text};
-use tui::keybindings::KeybindingsManager;
-use tui::theme::Theme;
-use tui::utils::truncate_to_width;
+use theme::{Fg, Theme};
+use tui::KeybindingsManager;
+use tui::truncate_to_width;
+use tui::{Component, Text};
 
-use crate::components::{bold, fg};
+use crate::components::bold;
 use crate::lane::ForkMessage;
 
 /// What a key did to a selector.
@@ -67,7 +67,7 @@ impl UserMessageSelector {
     fn list(&self, width: usize) -> Vec<String> {
         let t = &self.theme;
         if self.messages.is_empty() {
-            return vec![fg(t, "muted", "  No user messages found")];
+            return vec![t.fg(Fg::Muted, "  No user messages found")];
         }
         let n = self.messages.len() as isize;
         let max = self.max_visible as isize;
@@ -78,22 +78,18 @@ impl UserMessageSelector {
             let selected = i == self.selected;
             let normalized = self.messages[i].text.replace('\n', " ");
             let truncated = truncate_to_width(normalized.trim(), width.saturating_sub(2), "...", false);
-            let cursor = if selected { fg(t, "accent", "› ") } else { "  ".into() };
+            let cursor = if selected {
+                t.fg(Fg::Accent, "› ")
+            } else {
+                "  ".into()
+            };
             let text = if selected { bold(&truncated) } else { truncated };
             lines.push(format!("{cursor}{text}"));
-            lines.push(fg(
-                t,
-                "muted",
-                &format!("  Message {} of {}", i + 1, self.messages.len()),
-            ));
+            lines.push(t.fg(Fg::Muted, &format!("  Message {} of {}", i + 1, self.messages.len())));
             lines.push(String::new());
         }
         if start > 0 || end < self.messages.len() {
-            lines.push(fg(
-                t,
-                "muted",
-                &format!("  ({}/{})", self.selected + 1, self.messages.len()),
-            ));
+            lines.push(t.fg(Fg::Muted, &format!("  ({}/{})", self.selected + 1, self.messages.len())));
         }
         lines
     }
@@ -102,14 +98,13 @@ impl UserMessageSelector {
 impl Component for UserMessageSelector {
     fn render(&mut self, width: usize) -> Vec<String> {
         let t = Rc::clone(&self.theme);
-        let border = fg(&t, "border", &"─".repeat(width.max(1)));
+        let border = t.fg(Fg::Border, &"─".repeat(width.max(1)));
         let mut lines = vec![String::new()];
         lines.extend(Text::new(&bold("Fork from Message"), 1, 0, None).render(width));
         lines.extend(
             Text::new(
-                &fg(
-                    &t,
-                    "muted",
+                &t.fg(
+                    Fg::Muted,
                     "Select a user message to copy the active path up to that point into a new session",
                 ),
                 1,
@@ -197,7 +192,7 @@ pub struct AuthSelector {
     all: Vec<AuthProvider>,
     filtered: Vec<AuthProvider>,
     selected: usize,
-    search: tui::input::Input,
+    search: tui::Input,
     type_labels: bool,
 }
 
@@ -209,7 +204,7 @@ impl AuthSelector {
         providers: Vec<AuthProvider>,
         search: Option<&str>,
     ) -> Self {
-        let mut input = tui::input::Input::new(keys.clone());
+        let mut input = tui::Input::new(keys.clone());
         input.focused = true;
         if let Some(s) = search {
             input.set_value(s);
@@ -234,7 +229,7 @@ impl AuthSelector {
         self.filtered = if query.is_empty() {
             self.all.clone()
         } else {
-            tui::fuzzy::fuzzy_filter(&self.all, &query, |p| format!("{} {} {}", p.name, p.id, p.auth_type))
+            tui::fuzzy_filter(&self.all, &query, |p| format!("{} {} {}", p.name, p.id, p.auth_type))
         };
         self.selected = self.selected.min(self.filtered.len().saturating_sub(1));
     }
@@ -265,7 +260,7 @@ impl AuthSelector {
     fn status(&self, p: &AuthProvider) -> String {
         let t = &self.theme;
         let Some((kind, source)) = &p.status else {
-            return fg(t, "muted", " • unconfigured");
+            return t.fg(Fg::Muted, " • unconfigured");
         };
         if *kind != p.auth_type {
             let label = if kind == "oauth" {
@@ -273,10 +268,10 @@ impl AuthSelector {
             } else {
                 "API key configured"
             };
-            return fg(t, "muted", " • ") + &fg(t, "warning", label);
+            return t.fg(Fg::Muted, " • ") + &t.fg(Fg::Warning, label);
         }
         match source.as_deref() {
-            None | Some("OAuth" | "stored credential") => fg(t, "success", " ✓ configured"),
+            None | Some("OAuth" | "stored credential") => t.fg(Fg::Success, " ✓ configured"),
             Some(source) => {
                 let env = !source.is_empty()
                     && source.split(", ").all(|s| {
@@ -289,7 +284,7 @@ impl AuthSelector {
                 } else {
                     source.to_string()
                 };
-                fg(t, "success", &format!(" ✓ {shown}"))
+                t.fg(Fg::Success, &format!(" ✓ {shown}"))
             }
         }
     }
@@ -298,15 +293,15 @@ impl AuthSelector {
 impl AuthSelector {
     /// `OAuthSelectorComponent.handleMouse` (a `Container`): a press on the search `Input` moves its cursor; the
     /// provider rows are text.
-    pub fn handle_mouse(&mut self, event: &tui::mouse::MouseEvent) -> Option<tui::mouse::MouseResult> {
+    pub fn handle_mouse(&mut self, event: &tui::MouseEvent) -> Option<tui::MouseResult> {
         let t = Rc::clone(&self.theme);
         let title = if self.login {
             "Select provider to configure:"
         } else {
             "Select provider to logout:"
         };
-        let title_rows = tui::components::TruncatedText {
-            text: fg(&t, "accent", &bold(title)),
+        let title_rows = tui::TruncatedText {
+            text: t.fg(Fg::Accent, &bold(title)),
             padding_x: 1,
             padding_y: 0,
         }
@@ -317,7 +312,7 @@ impl AuthSelector {
         if event.y < top || event.y >= top + rows {
             return None;
         }
-        let local = tui::mouse::MouseEvent {
+        let local = tui::MouseEvent {
             y: event.y - top,
             ..*event
         };
@@ -328,9 +323,9 @@ impl AuthSelector {
 impl Component for AuthSelector {
     fn render(&mut self, width: usize) -> Vec<String> {
         let t = Rc::clone(&self.theme);
-        let border = fg(&t, "border", &"─".repeat(width.max(1)));
+        let border = t.fg(Fg::Border, &"─".repeat(width.max(1)));
         let truncated = |s: String| {
-            tui::components::TruncatedText {
+            tui::TruncatedText {
                 text: s,
                 padding_x: 1,
                 padding_y: 0,
@@ -343,7 +338,7 @@ impl Component for AuthSelector {
         } else {
             "Select provider to logout:"
         };
-        lines.extend(truncated(fg(&t, "accent", &bold(title))));
+        lines.extend(truncated(t.fg(Fg::Accent, &bold(title))));
         lines.push(String::new());
         lines.extend(self.search.render(width));
         lines.push(String::new());
@@ -359,28 +354,26 @@ impl Component for AuthSelector {
                 } else {
                     "API key"
                 };
-                fg(&t, "muted", &format!(" [{kind}]"))
+                t.fg(Fg::Muted, &format!(" [{kind}]"))
             } else {
                 String::new()
             };
             let line = if i == self.selected {
                 format!(
                     "{}{}{label}{}",
-                    fg(&t, "accent", "→ "),
-                    fg(&t, "accent", &p.name),
+                    t.fg(Fg::Accent, "→ "),
+                    t.fg(Fg::Accent, &p.name),
                     self.status(p)
                 )
             } else {
-                format!("  {}{label}{}", fg(&t, "text", &p.name), self.status(p))
+                format!("  {}{label}{}", t.fg(Fg::Text, &p.name), self.status(p))
             };
             lines.extend(truncated(line));
         }
         if start > 0 || end < self.filtered.len() {
-            lines.extend(truncated(fg(
-                &t,
-                "muted",
-                &format!("  ({}/{})", self.selected + 1, self.filtered.len()),
-            )));
+            lines.extend(truncated(
+                t.fg(Fg::Muted, &format!("  ({}/{})", self.selected + 1, self.filtered.len())),
+            ));
         }
         if self.filtered.is_empty() {
             let message = if !self.all.is_empty() {
@@ -390,7 +383,7 @@ impl Component for AuthSelector {
             } else {
                 "No providers logged in. Use /login first."
             };
-            lines.extend(truncated(fg(&t, "muted", &format!("  {message}"))));
+            lines.extend(truncated(t.fg(Fg::Muted, &format!("  {message}"))));
         }
         lines.push(String::new());
         lines.push(border);

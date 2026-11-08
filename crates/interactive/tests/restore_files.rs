@@ -8,11 +8,12 @@ use std::rc::Rc;
 
 use interactive::app::{App, AppOptions};
 use interactive::history::PromptHistoryStore;
+use interactive::keybindings::Platform;
+use interactive::keybindings::native_app_keybindings;
 use interactive::lane::{ForkMessage, LaneClient, LaneEvent, ModelInfo, SessionOpened};
 use serde_json::{Value, json};
-use tui::keybindings::{KeybindingsManager, Platform};
-use tui::qol_keys::native_app_keybindings;
-use tui::theme::{ColorMode, builtin_theme_json, create_theme};
+use theme::{ColorMode, builtin_theme_json, create_theme};
+use tui::KeybindingsManager;
 
 #[derive(Default)]
 struct Calls(RefCell<Vec<String>>);
@@ -75,7 +76,6 @@ fn app() -> (App, Rc<Calls>) {
         AppOptions {
             theme,
             keys: keys(),
-            editor_keys: keys(),
             version: "1.2.3".into(),
             cwd: "/p".into(),
             home: None,
@@ -103,7 +103,7 @@ fn app() -> (App, Rc<Calls>) {
 fn screen(app: &mut App) -> String {
     app.render(100, 40)
         .iter()
-        .map(|l| tui::utils::strip_terminal_sequences(l).trim_end().to_string())
+        .map(|l| tui::strip_terminal_sequences(l).trim_end().to_string())
         .collect::<Vec<_>>()
         .join("\n")
 }

@@ -7,13 +7,10 @@ use std::path::{Path, PathBuf};
 
 use serde_json::{Map, Value};
 
-use crate::keybindings::KeybindingDefinition;
+use crate::keybindings::{KeybindingDefinition, UserBindings};
 
 /// The file name under the agent directory.
 pub const KEYBINDINGS_FILE: &str = "keybindings.json";
-
-/// User bindings as [`crate::keybindings::KeybindingsManager`] takes them.
-pub type UserBindings = Vec<(String, Option<Vec<String>>)>;
 
 /// `KEYBINDING_NAME_MIGRATIONS`: legacy name -> keybinding id.
 pub const KEYBINDING_NAME_MIGRATIONS: [(&str, &str); 59] = [

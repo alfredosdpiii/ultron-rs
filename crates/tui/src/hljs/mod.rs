@@ -846,10 +846,10 @@ impl<'a> Run<'a> {
 
 /// `renderHighlightedHtml` over the token list: each run of text between scope changes, with the innermost scope
 /// that `has_formatter` accepts (`getScopeFormatter`: the scope, then its part before `.`, then before `-`).
-pub fn render(
+pub fn render<K>(
     tokens: &[Token],
-    formatter: &dyn Fn(&str) -> Option<String>,
-    apply: &dyn Fn(&str, &str) -> String,
+    formatter: &dyn Fn(&str) -> Option<K>,
+    apply: &dyn Fn(&K, &str) -> String,
 ) -> String {
     let mut out = String::new();
     let mut buf = String::new();
@@ -882,7 +882,7 @@ pub fn render(
     out
 }
 
-fn scope_formatter(scope: &str, formatter: &dyn Fn(&str) -> Option<String>) -> Option<String> {
+fn scope_formatter<K>(scope: &str, formatter: &dyn Fn(&str) -> Option<K>) -> Option<K> {
     formatter(scope)
         .or_else(|| scope.find('.').and_then(|i| formatter(&scope[..i])))
         .or_else(|| scope.find('-').and_then(|i| formatter(&scope[..i])))

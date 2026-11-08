@@ -8,10 +8,11 @@ use std::rc::Rc;
 
 use interactive::app::{App, AppOptions};
 use interactive::history::PromptHistoryStore;
+use interactive::keybindings::Platform;
+use interactive::keybindings::native_app_keybindings;
 use interactive::lane::{LaneClient, LaneEvent, ModelInfo, SessionOpened};
-use tui::keybindings::{KeybindingsManager, Platform};
-use tui::qol_keys::native_app_keybindings;
-use tui::theme::{ColorMode, builtin_theme_json, create_theme};
+use theme::{ColorMode, builtin_theme_json, create_theme};
+use tui::KeybindingsManager;
 
 #[derive(Default)]
 struct Calls(RefCell<Vec<String>>);
@@ -81,7 +82,6 @@ fn app() -> (App, Rc<Calls>) {
         AppOptions {
             theme,
             keys: keys(),
-            editor_keys: keys(),
             version: "1.2.3".into(),
             cwd: "/p".into(),
             home: None,
@@ -115,7 +115,7 @@ fn typed(app: &mut App, text: &str) {
 fn screen(app: &mut App) -> String {
     app.render(80, 30)
         .iter()
-        .map(|l| tui::utils::strip_terminal_sequences(l).trim_end().to_string())
+        .map(|l| tui::strip_terminal_sequences(l).trim_end().to_string())
         .collect::<Vec<_>>()
         .join("\n")
 }
@@ -178,7 +178,7 @@ fn interactive_radius_recovery_ends_with_input_back() {
 fn shows_cursor(app: &mut App, width: usize) -> bool {
     app.render(width, 30)
         .iter()
-        .any(|line| line.contains(tui::renderer::CURSOR_MARKER))
+        .any(|line| line.contains(tui::CURSOR_MARKER))
 }
 
 #[test]

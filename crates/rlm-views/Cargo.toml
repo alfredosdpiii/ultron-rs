@@ -10,9 +10,11 @@ autotests = false
 [dependencies]
 jsrt = { path = "../jsrt" }
 serde_json = { version = "=1.0.151", features = ["preserve_order"] }
+theme = { path = "../theme" }
 tui = { path = "../tui" }
 
 [dev-dependencies]
+interactive = { path = "../interactive" }
 fancy-regex = "=0.19.2"
 
 [lints]

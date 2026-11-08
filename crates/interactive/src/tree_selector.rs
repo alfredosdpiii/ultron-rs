@@ -8,13 +8,13 @@ use std::rc::Rc;
 
 use jsrt::{date, utf16};
 use serde_json::Value;
-use tui::components::{Component, Text};
-use tui::input::Input;
-use tui::keybindings::KeybindingsManager;
-use tui::theme::Theme;
-use tui::utils::{slice_with_width, truncate_to_width, visible_width, wrap_text_with_ansi};
+use theme::{Bg, Fg, Theme};
+use tui::Input;
+use tui::KeybindingsManager;
+use tui::{Component, Text};
+use tui::{slice_with_width, truncate_to_width, visible_width, wrap_text_with_ansi};
 
-use crate::components::{bold, fg, format_key_text, italic};
+use crate::components::{bold, format_key_text, italic};
 
 const TREE_GUTTER_WIDTH: usize = 2;
 const MIN_VISIBLE_ANCHOR_CONTENT_WIDTH: usize = 4;
@@ -685,33 +685,32 @@ impl TreeList {
             "message" => {
                 let m = &entry["message"];
                 match s(m, "role").unwrap_or("") {
-                    "user" => fg(t, "accent", "user: ") + &normalize(&content(&m["content"])),
+                    "user" => t.fg(Fg::Accent, "user: ") + &normalize(&content(&m["content"])),
                     "assistant" => {
                         let text = normalize(&content(&m["content"]));
-                        let head = fg(t, "success", "assistant: ");
+                        let head = t.fg(Fg::Success, "assistant: ");
                         if !text.is_empty() {
                             head + &text
                         } else if m["stopReason"] == "aborted" {
-                            head + &fg(t, "muted", "(aborted)")
+                            head + &t.fg(Fg::Muted, "(aborted)")
                         } else if let Some(error) = s(m, "errorMessage").filter(|e| !e.is_empty()) {
-                            head + &fg(t, "error", &utf16::head_lossy(&normalize(error), 80))
+                            head + &t.fg(Fg::Error, &utf16::head_lossy(&normalize(error), 80))
                         } else {
-                            head + &fg(t, "muted", "(no content)")
+                            head + &t.fg(Fg::Muted, "(no content)")
                         }
                     }
                     "toolResult" => {
                         let call = s(m, "toolCallId").and_then(|id| self.tool_calls.get(id));
                         match call {
-                            Some((name, args)) => fg(t, "muted", &format_tool_call(name, args, &self.home)),
-                            None => fg(t, "muted", &format!("[{}]", s(m, "toolName").unwrap_or("tool"))),
+                            Some((name, args)) => t.fg(Fg::Muted, &format_tool_call(name, args, &self.home)),
+                            None => t.fg(Fg::Muted, &format!("[{}]", s(m, "toolName").unwrap_or("tool"))),
                         }
                     }
-                    "bashExecution" => fg(
-                        t,
-                        "dim",
+                    "bashExecution" => t.fg(
+                        Fg::Dim,
                         &format!("[bash]: {}", normalize(s(m, "command").unwrap_or(""))),
                     ),
-                    role => fg(t, "dim", &format!("[{role}]")),
+                    role => t.fg(Fg::Dim, &format!("[{role}]")),
                 }
             }
             "custom_message" => {
@@ -719,27 +718,24 @@ impl TreeList {
                     Value::String(text) => text.clone(),
                     other => full_content(other),
                 };
-                fg(
-                    t,
-                    "customMessageLabel",
+                t.fg(
+                    Fg::CustomMessageLabel,
                     &format!("[{}]: ", s(entry, "customType").unwrap_or("")),
                 ) + &normalize(&text)
             }
             "compaction" => {
                 let tokens = (entry["tokensBefore"].as_f64().unwrap_or(0.0) / 1000.0).round();
-                fg(t, "borderAccent", &format!("[compaction: {tokens}k tokens]"))
+                t.fg(Fg::BorderAccent, &format!("[compaction: {tokens}k tokens]"))
             }
-            "branch_summary" => fg(t, "warning", "[branch summary]: ") + &normalize(s(entry, "summary").unwrap_or("")),
-            "model_change" => fg(t, "dim", &format!("[model: {}]", s(entry, "modelId").unwrap_or(""))),
-            "thinking_level_change" => fg(
-                t,
-                "dim",
+            "branch_summary" => t.fg(Fg::Warning, "[branch summary]: ") + &normalize(s(entry, "summary").unwrap_or("")),
+            "model_change" => t.fg(Fg::Dim, &format!("[model: {}]", s(entry, "modelId").unwrap_or(""))),
+            "thinking_level_change" => t.fg(
+                Fg::Dim,
                 &format!("[thinking: {}]", s(entry, "thinkingLevel").unwrap_or("")),
             ),
-            "custom" => fg(t, "dim", &format!("[custom: {}]", s(entry, "customType").unwrap_or(""))),
-            "context_edit" => fg(
-                t,
-                "dim",
+            "custom" => t.fg(Fg::Dim, &format!("[custom: {}]", s(entry, "customType").unwrap_or(""))),
+            "context_edit" => t.fg(
+                Fg::Dim,
                 &format!(
                     "[context {}: {}]",
                     if entry["replacement"].is_null() {
@@ -750,14 +746,13 @@ impl TreeList {
                     s(entry, "targetId").unwrap_or("")
                 ),
             ),
-            "label" => fg(
-                t,
-                "dim",
+            "label" => t.fg(
+                Fg::Dim,
                 &format!("[label: {}]", s(entry, "label").unwrap_or("(cleared)")),
             ),
             "session_info" => match s(entry, "name").filter(|n| !n.is_empty()) {
-                Some(name) => fg(t, "dim", "[title: ") + &fg(t, "dim", name) + &fg(t, "dim", "]"),
-                None => fg(t, "dim", "[title: ") + &italic(&fg(t, "dim", "empty")) + &fg(t, "dim", "]"),
+                Some(name) => t.fg(Fg::Dim, "[title: ") + &t.fg(Fg::Dim, name) + &t.fg(Fg::Dim, "]"),
+                None => t.fg(Fg::Dim, "[title: ") + &italic(&t.fg(Fg::Dim, "empty")) + &t.fg(Fg::Dim, "]"),
             },
             _ => String::new(),
         };
@@ -793,9 +788,9 @@ impl TreeList {
         let t = Rc::clone(&self.theme);
         if self.filtered.is_empty() {
             return vec![
-                truncate_to_width(&fg(&t, "muted", "  No entries found"), width, "...", false),
+                truncate_to_width(&t.fg(Fg::Muted, "  No entries found"), width, "...", false),
                 truncate_to_width(
-                    &fg(&t, "muted", &format!("  (0/0){}", self.status_labels())),
+                    &t.fg(Fg::Muted, &format!("  (0/0){}", self.status_labels())),
                     width,
                     "...",
                     false,
@@ -813,7 +808,7 @@ impl TreeList {
             let id = id_of(entry).to_string();
             let selected = i == self.selected;
             let cursor = if selected {
-                fg(&t, "accent", "› ")
+                t.fg(Fg::Accent, "› ")
             } else {
                 "  ".to_string()
             };
@@ -845,12 +840,12 @@ impl TreeList {
                 }
             }
             let fold_marker = if folded && !connector {
-                fg(&t, "accent", "⊞ ")
+                t.fg(Fg::Accent, "⊞ ")
             } else {
                 String::new()
             };
             let path_marker = if self.active_path.contains(&id) {
-                fg(&t, "accent", "• ")
+                t.fg(Fg::Accent, "• ")
             } else {
                 String::new()
             };
@@ -858,31 +853,30 @@ impl TreeList {
             let label = node
                 .label
                 .as_ref()
-                .map(|l| fg(&t, "warning", &format!("[{l}] ")))
+                .map(|l| t.fg(Fg::Warning, &format!("[{l}] ")))
                 .unwrap_or_default();
             let label_time = match (&node.label, &node.label_timestamp) {
                 (Some(_), Some(ts)) if self.show_label_timestamps => {
-                    fg(&t, "muted", &format!("{} ", format_label_timestamp(ts)))
+                    t.fg(Fg::Muted, &format!("{} ", format_label_timestamp(ts)))
                 }
                 _ => String::new(),
             };
             let text = self.display_text(f.node, selected);
-            let prefix_part = fg(&t, "dim", &prefix) + &fold_marker + &path_marker;
+            let prefix_part = t.fg(Fg::Dim, &prefix) + &fold_marker + &path_marker;
             let anchor = visible_width(&prefix_part);
             let mut gutter = cursor;
             let mut body = prefix_part + &label + &label_time + &text;
             if selected {
-                gutter = t.bg("selectedBg", &gutter).unwrap_or(gutter);
-                body = t.bg("selectedBg", &body).unwrap_or(body);
+                gutter = t.bg(Bg::SelectedBg, &gutter);
+                body = t.bg(Bg::SelectedBg, &body);
             }
             let body_width = visible_width(&body);
             rows.push((gutter, body, anchor, body_width, selected));
         }
         let mut lines = horizontal_viewport(&rows, width);
         lines.push(truncate_to_width(
-            &fg(
-                &t,
-                "muted",
+            &t.fg(
+                Fg::Muted,
                 &format!(
                     "  ({}/{}){}",
                     self.selected + 1,
@@ -1178,7 +1172,7 @@ fn help_lines(theme: &Theme, keys: &KeybindingsManager, width: usize, checkpoint
     if !current.is_empty() {
         lines.extend(wrap_text_with_ansi(current.trim_end(), available));
     }
-    lines.into_iter().map(|l| fg(theme, "muted", &l)).collect()
+    lines.into_iter().map(|l| theme.fg(Fg::Muted, &l)).collect()
 }
 
 /// `TreeSelectorComponent`.
@@ -1310,16 +1304,16 @@ impl TreeSelector {
 impl Component for TreeSelector {
     fn render(&mut self, width: usize) -> Vec<String> {
         let t = Rc::clone(&self.theme);
-        let border = fg(&t, "border", &"─".repeat(width.max(1)));
+        let border = t.fg(Fg::Border, &"─".repeat(width.max(1)));
         let mut lines = vec![String::new(), border.clone()];
         lines.extend(Text::new(&bold("  Session Tree"), 1, 0, None).render(width));
         let checkpoints = self.list.nodes.iter().any(|n| n.checkpoint);
         lines.extend(help_lines(&t, &self.list.keys, width, checkpoints));
         let query = &self.list.query;
         let search = if query.is_empty() {
-            format!("  {}", fg(&t, "muted", "Type to search:"))
+            format!("  {}", t.fg(Fg::Muted, "Type to search:"))
         } else {
-            format!("  {} {}", fg(&t, "muted", "Type to search:"), fg(&t, "accent", query))
+            format!("  {} {}", t.fg(Fg::Muted, "Type to search:"), t.fg(Fg::Accent, query))
         };
         lines.push(truncate_to_width(&search, width, "...", false));
         lines.push(border.clone());
@@ -1329,7 +1323,7 @@ impl Component for TreeSelector {
             Some((_, input)) => {
                 let indent = "  ";
                 lines.push(truncate_to_width(
-                    &format!("{indent}{}", fg(&t, "muted", "Label (empty to remove):")),
+                    &format!("{indent}{}", t.fg(Fg::Muted, "Label (empty to remove):")),
                     width,
                     "...",
                     false,

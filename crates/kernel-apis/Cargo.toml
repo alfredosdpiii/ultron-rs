@@ -23,8 +23,8 @@ session-file = { path = "../session-file" }
 session-journal = { path = "../session-journal" }
 sha2 = "=0.10.9"
 tempfile = "=3.27.0"
+theme = { path = "../theme" }
 tokio = { version = "=1.53.2", features = ["rt", "time"] }
-tui = { path = "../tui" }
 yaml-rust2 = "=0.13.0"
 
 [lints]

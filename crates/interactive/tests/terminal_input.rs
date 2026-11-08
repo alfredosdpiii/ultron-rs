@@ -11,16 +11,17 @@ use std::sync::{Arc, Mutex};
 
 use interactive::app::{App, AppOptions};
 use interactive::history::PromptHistoryStore;
+use interactive::keybindings::Platform;
+use interactive::keybindings::native_app_keybindings;
 use interactive::lane::{LaneClient, LaneEvent, ModelInfo, SessionOpened};
 use interactive::qol::QolSettings;
 use interactive::run::{UiEvent, paint_loop_with};
 use serde_json::{Value, json};
-use tui::keybindings::{KeybindingsManager, Platform};
-use tui::keyboard_protocol::KeyboardProtocol;
-use tui::keys::KeyContext;
-use tui::qol_keys::native_app_keybindings;
-use tui::theme::{ColorMode, builtin_theme_json, create_theme};
-use tui::utils::strip_terminal_sequences;
+use theme::{ColorMode, builtin_theme_json, create_theme};
+use tui::KeyContext;
+use tui::KeybindingsManager;
+use tui::KeyboardProtocol;
+use tui::strip_terminal_sequences;
 
 const W: usize = 80;
 const H: usize = 40;
@@ -78,7 +79,6 @@ fn app_with_keys(ctx: KeyContext, user: User, messages: Vec<Value>) -> (App, Arc
         AppOptions {
             theme,
             keys: keys(ctx, &user),
-            editor_keys: keys(ctx, &user),
             version: "1.2.3".into(),
             cwd: "/p".into(),
             home: None,
@@ -122,7 +122,7 @@ fn cell_of(app: &mut App, text: &str) -> (usize, usize) {
         .rposition(|l| l.contains(text))
         .unwrap_or_else(|| panic!("{text}: {s:#?}"));
     let byte = s[row].find(text).unwrap();
-    (tui::utils::visible_width(&s[row][..byte]), row)
+    (tui::visible_width(&s[row][..byte]), row)
 }
 
 /// A left press and release on one cell (SGR, 1-based).

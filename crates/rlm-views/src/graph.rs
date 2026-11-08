@@ -4,13 +4,14 @@
 //! the docked panel, and the focus view's body (see [`super::focus`]).
 
 use std::collections::{HashMap, HashSet};
+use theme::Fg;
 
 use serde_json::Value;
-use tui::utils::{truncate_to_width, visible_width};
+use tui::{truncate_to_width, visible_width};
 
 use super::flat;
 use super::visualizer::{
-    CellStatus, Color, RlmFrame, RlmJob, RlmRootCell, RlmSnapshot, RlmStyle, RlmTask, RlmToolCall, format_duration,
+    CellStatus, RlmFrame, RlmJob, RlmRootCell, RlmSnapshot, RlmStyle, RlmTask, RlmToolCall, format_duration,
     render_context_lines, short_id,
 };
 use jsrt::{number, utf16};
@@ -1123,14 +1124,14 @@ pub fn status_glyph(status: GraphStatus, spinner: &str) -> String {
     }
 }
 
-pub fn status_color(status: GraphStatus) -> Color {
+pub fn status_color(status: GraphStatus) -> Fg {
     match status {
-        GraphStatus::Running => Color::Accent,
-        GraphStatus::Pending => Color::Muted,
-        GraphStatus::Done => Color::Success,
-        GraphStatus::Failed => Color::Error,
-        GraphStatus::Cancelled => Color::Dim,
-        GraphStatus::Incomplete => Color::Warning,
+        GraphStatus::Running => Fg::Accent,
+        GraphStatus::Pending => Fg::Muted,
+        GraphStatus::Done => Fg::Success,
+        GraphStatus::Failed => Fg::Error,
+        GraphStatus::Cancelled => Fg::Dim,
+        GraphStatus::Incomplete => Fg::Warning,
     }
 }
 
@@ -1221,9 +1222,9 @@ fn progress_text(p: &GraphProgress, cells: usize, style: &RlmStyle) -> String {
         "{} {finished}/{}",
         style.fg(
             if p.failed + p.incomplete > 0 {
-                Color::Warning
+                Fg::Warning
             } else {
-                Color::Success
+                Fg::Success
             },
             &bar(finished as f64 / p.total.max(1) as f64, cells)
         ),
@@ -1233,10 +1234,10 @@ fn progress_text(p: &GraphProgress, cells: usize, style: &RlmStyle) -> String {
         parts.push(format!("{} running", p.running));
     }
     if p.incomplete > 0 {
-        parts.push(style.fg(Color::Warning, &format!("{} incomplete", p.incomplete)));
+        parts.push(style.fg(Fg::Warning, &format!("{} incomplete", p.incomplete)));
     }
     if p.failed > 0 {
-        parts.push(style.fg(Color::Error, &format!("{} failed", p.failed)));
+        parts.push(style.fg(Fg::Error, &format!("{} failed", p.failed)));
     }
     parts.join(" · ")
 }
@@ -1291,7 +1292,7 @@ pub fn render_graph_row(row: &GraphRow, width: usize, o: &RowRenderOptions) -> S
     let selected = o.selected_key.as_deref() == Some(node.key.as_str());
     let gutter = if o.gutter {
         if selected {
-            style.fg(Color::Accent, "▶ ")
+            style.fg(Fg::Accent, "▶ ")
         } else {
             "  ".into()
         }
@@ -1312,9 +1313,9 @@ pub fn render_graph_row(row: &GraphRow, width: usize, o: &RowRenderOptions) -> S
         style.fg(color, &status_glyph(node.status, &o.spinner))
     };
     let label_color = match node.kind {
-        GraphKind::Earlier => Color::Muted,
-        GraphKind::Turn | GraphKind::Cell => Color::ToolTitle,
-        _ => Color::Text,
+        GraphKind::Earlier => Fg::Muted,
+        GraphKind::Turn | GraphKind::Cell => Fg::ToolTitle,
+        _ => Fg::Text,
     };
     let label = if selected {
         style.bold(&style.fg(label_color, &node.label))
@@ -1322,7 +1323,7 @@ pub fn render_graph_row(row: &GraphRow, width: usize, o: &RowRenderOptions) -> S
         style.fg(label_color, &node.label)
     };
     let fold = if row.collapsed {
-        format!("{} ", style.fg(Color::Dim, &format!("[+{}]", row.hidden)))
+        format!("{} ", style.fg(Fg::Dim, &format!("[+{}]", row.hidden)))
     } else {
         String::new()
     };
@@ -1333,23 +1334,23 @@ pub fn render_graph_row(row: &GraphRow, width: usize, o: &RowRenderOptions) -> S
         parts.push(progress_text(p, if narrow { 5 } else { 10 }, style));
     }
     if let Some(j) = &node.join {
-        parts.push(style.fg(Color::Accent, j));
+        parts.push(style.fg(Fg::Accent, j));
     }
     if let Some(n) = node.note.as_deref().filter(|n| !n.is_empty())
         && !narrow
     {
         parts.push(style.fg(
             match node.status {
-                GraphStatus::Failed => Color::Error,
-                GraphStatus::Incomplete => Color::Warning,
-                _ => Color::Muted,
+                GraphStatus::Failed => Fg::Error,
+                GraphStatus::Incomplete => Fg::Warning,
+                _ => Fg::Muted,
             },
             n,
         ));
     }
     let left = format!(
         "{gutter}{}{}",
-        style.fg(Color::Dim, &connector(row, width)),
+        style.fg(Fg::Dim, &connector(row, width)),
         parts.join(" ")
     );
     let right = meta(node, o.now, narrow);
@@ -1359,11 +1360,11 @@ pub fn render_graph_row(row: &GraphRow, width: usize, o: &RowRenderOptions) -> S
     let right_width = visible_width(&right);
     let room = width as isize - right_width as isize - 1;
     if room < 12 {
-        return truncate_to_width(&format!("{left} {}", style.fg(Color::Dim, &right)), width, "…", false);
+        return truncate_to_width(&format!("{left} {}", style.fg(Fg::Dim, &right)), width, "…", false);
     }
     let fitted = truncate_to_width(&left, room as usize, "…", false);
     let pad = (width as isize - visible_width(&fitted) as isize - right_width as isize).max(1) as usize;
-    format!("{fitted}{}{}", " ".repeat(pad), style.fg(Color::Dim, &right))
+    format!("{fitted}{}{}", " ".repeat(pad), style.fg(Fg::Dim, &right))
 }
 
 /// Detail lines for an expanded node, indented under it with a dotted rail.
@@ -1384,16 +1385,16 @@ pub fn render_details(
     let mut lines = Vec::new();
     for (label, value) in entries.iter().take(max_lines).map(|e| (&e.0, &e.1)) {
         let color = match label.as_str() {
-            "error" | "failed" => Color::Error,
-            "fetch" | "traces" => Color::Accent,
-            _ => Color::Muted,
+            "error" | "failed" => Fg::Error,
+            "fetch" | "traces" => Fg::Accent,
+            _ => Fg::Muted,
         };
         let padded = format!("{label:<9}");
         lines.push(truncate_to_width(
             &format!(
                 "{indent}{}{} {}",
-                style.fg(Color::Dim, "┆ "),
-                style.fg(Color::Dim, &padded),
+                style.fg(Fg::Dim, "┆ "),
+                style.fg(Fg::Dim, &padded),
                 style.fg(color, value)
             ),
             width,
@@ -1405,7 +1406,7 @@ pub fn render_details(
         lines.push(truncate_to_width(
             &format!(
                 "{indent}{}",
-                style.fg(Color::Dim, &format!("┆ … {} more", entries.len() - max_lines))
+                style.fg(Fg::Dim, &format!("┆ … {} more", entries.len() - max_lines))
             ),
             width,
             "…",
@@ -1565,13 +1566,13 @@ pub fn budget_gauges(snapshot: &RlmSnapshot, _graph: &GraphNode) -> Vec<Gauge> {
     gauges
 }
 
-fn gauge_color(fraction: f64) -> Color {
+fn gauge_color(fraction: f64) -> Fg {
     if fraction >= 0.85 {
-        Color::Error
+        Fg::Error
     } else if fraction >= 0.6 {
-        Color::Warning
+        Fg::Warning
     } else {
-        Color::Success
+        Fg::Success
     }
 }
 
@@ -1585,12 +1586,12 @@ pub fn render_gauges(gauges: &[Gauge], width: usize, style: &RlmStyle, max_lines
                 let fraction = g.used / limit;
                 format!(
                     "{} {} {}",
-                    style.fg(Color::Dim, &g.label),
+                    style.fg(Fg::Dim, &g.label),
                     style.fg(gauge_color(fraction), &bar(fraction, cells)),
-                    style.fg(Color::Text, &g.text)
+                    style.fg(Fg::Text, &g.text)
                 )
             }
-            _ => format!("{} {}", style.fg(Color::Dim, &g.label), style.fg(Color::Text, &g.text)),
+            _ => format!("{} {}", style.fg(Fg::Dim, &g.label), style.fg(Fg::Text, &g.text)),
         })
         .collect();
     let mut lines = Vec::new();
@@ -1638,26 +1639,26 @@ pub fn render_kernel_strip(snapshot: &RlmSnapshot, width: usize, style: &RlmStyl
             .iter()
             .map(|l| {
                 if l.running > 0.0 {
-                    style.fg(Color::Accent, "■")
+                    style.fg(Fg::Accent, "■")
                 } else if !l.pinned_by.is_empty() {
-                    style.fg(Color::Warning, "◆")
+                    style.fg(Fg::Warning, "◆")
                 } else {
-                    style.fg(Color::Muted, "□")
+                    style.fg(Fg::Muted, "□")
                 }
             })
             .collect();
         let free = (pool.max_live as isize - pool.lanes.len() as isize).max(0) as usize;
         parts.push(format!(
             "{} {cells}{} {}/{}",
-            style.fg(Color::Dim, "kernels"),
-            style.fg(Color::Dim, &"·".repeat(free)),
+            style.fg(Fg::Dim, "kernels"),
+            style.fg(Fg::Dim, &"·".repeat(free)),
             number::to_string(pool.live),
             number::to_string(pool.max_live)
         ));
     } else {
         parts.push(format!(
             "{} {}/{}",
-            style.fg(Color::Dim, "kernels"),
+            style.fg(Fg::Dim, "kernels"),
             number::to_string(pool.live),
             number::to_string(pool.max_live)
         ));
@@ -1679,19 +1680,19 @@ pub fn render_kernel_strip(snapshot: &RlmSnapshot, width: usize, style: &RlmStyl
             continue;
         }
         let blocked = if g.blocked > 0.0 {
-            style.fg(Color::Warning, &format!(" {} blocked", number::to_string(g.blocked)))
+            style.fg(Fg::Warning, &format!(" {} blocked", number::to_string(g.blocked)))
         } else {
             String::new()
         };
         parts.push(format!(
             "{} {} turn/{}{blocked}",
-            style.fg(Color::Dim, &g.name.to_lowercase()),
+            style.fg(Fg::Dim, &g.name.to_lowercase()),
             format_guard_ms(g.turn_ms),
             format_guard_ms(g.total_ms)
         ));
     }
     Some(truncate_to_width(
-        &parts.join(&style.fg(Color::Dim, " · ")),
+        &parts.join(&style.fg(Fg::Dim, " · ")),
         width,
         "…",
         false,
@@ -1874,20 +1875,20 @@ pub fn render_rlm_footer(snapshot: &RlmSnapshot, width: usize, o: &RlmViewOption
         ));
     }
     if totals.failed > 0 {
-        parts.push(style.fg(Color::Error, &format!("{} failed", totals.failed)));
+        parts.push(style.fg(Fg::Error, &format!("{} failed", totals.failed)));
     }
     if let Some(c) = graph.cost.filter(|c| *c > 0.0) {
         parts.push(format_cost(c));
     }
     let summary = format!(
         "{} {}",
-        style.fg(Color::Accent, &format!("◆ rlm {spinner}")),
-        style.fg(Color::Muted, &parts.join(" · "))
+        style.fg(Fg::Accent, &format!("◆ rlm {spinner}")),
+        style.fg(Fg::Muted, &parts.join(" · "))
     );
     let hint = o
         .focus_key
         .as_ref()
-        .map(|k| style.fg(Color::Dim, &format!(" · {k} graph")))
+        .map(|k| style.fg(Fg::Dim, &format!(" · {k} graph")))
         .unwrap_or_default();
     let bound = width.max(1);
     if !hint.is_empty() && visible_width(&summary) + visible_width(&hint) <= bound {
@@ -1899,25 +1900,25 @@ pub fn render_rlm_footer(snapshot: &RlmSnapshot, width: usize, o: &RlmViewOption
 fn header_line(graph: &GraphNode, snapshot: &RlmSnapshot, style: &RlmStyle, spinner: &str, suffix: &str) -> String {
     let totals = graph_totals(graph);
     let state = if graph_active(graph) {
-        style.fg(Color::Accent, &format!("{spinner} running"))
+        style.fg(Fg::Accent, &format!("{spinner} running"))
     } else if graph.status == GraphStatus::Failed {
-        style.fg(Color::Error, "✗ failed")
+        style.fg(Fg::Error, "✗ failed")
     } else if graph.children.is_empty() {
-        style.fg(Color::Dim, "idle")
+        style.fg(Fg::Dim, "idle")
     } else {
-        style.fg(Color::Success, "✓ done")
+        style.fg(Fg::Success, "✓ done")
     };
     let mut parts = vec![format!("{} nodes", totals.nodes - 1)];
     if totals.running > 0 {
         parts.push(format!("{} active", totals.running));
     }
     if let Some(e) = &snapshot.error {
-        parts.push(style.fg(Color::Error, &format!("inspection failed: {}", flat(e, 80))));
+        parts.push(style.fg(Fg::Error, &format!("inspection failed: {}", flat(e, 80))));
     }
     format!(
         "{} {state} {}{suffix}",
-        style.bold(&style.fg(Color::Accent, "RLM")),
-        style.fg(Color::Muted, &parts.join(" · "))
+        style.bold(&style.fg(Fg::Accent, "RLM")),
+        style.fg(Fg::Muted, &parts.join(" · "))
     )
 }
 
@@ -1930,7 +1931,7 @@ pub fn render_rlm_dock(snapshot: &RlmSnapshot, width: usize, o: &RlmViewOptions,
     let hint = o
         .focus_key
         .as_ref()
-        .map(|k| style.fg(Color::Dim, &format!("  {k} focus")))
+        .map(|k| style.fg(Fg::Dim, &format!("  {k} focus")))
         .unwrap_or_default();
     let mut lines = vec![truncate_to_width(
         &header_line(&graph, snapshot, style, spinner, &hint),
@@ -1955,7 +1956,7 @@ pub fn render_rlm_dock(snapshot: &RlmSnapshot, width: usize, o: &RlmViewOptions,
     };
     if start > 0 {
         lines.push(style.fg(
-            Color::Dim,
+            Fg::Dim,
             &truncate_to_width(&format!("   ↑ {start} more"), bound, "…", false),
         ));
     }
@@ -1966,7 +1967,7 @@ pub fn render_rlm_dock(snapshot: &RlmSnapshot, width: usize, o: &RlmViewOptions,
         let below = &rows[end..];
         let active = below.iter().filter(|r| !is_finished(r.node.status)).count();
         lines.push(style.fg(
-            Color::Dim,
+            Fg::Dim,
             &truncate_to_width(
                 &format!(
                     "  ↓ {} more{}",

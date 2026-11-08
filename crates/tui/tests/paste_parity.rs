@@ -2,7 +2,7 @@
 //! assembly, tmux control re-encoding, the OSC 5522 typed-paste controller and pasted-path detection.
 
 use serde_json::{Value, json};
-use tui::attachments::*;
+use tui::*;
 
 fn fixture() -> Value {
     serde_json::from_str(include_str!("../fixtures/paste-parity.json")).unwrap()

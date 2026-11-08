@@ -3,8 +3,8 @@
 //! wrapping and padding). Tokens use marked's shape; the lexer is not ported here.
 
 use crate::components::Component;
+use crate::frame::is_image_line;
 use crate::image::hyperlink;
-use crate::renderer::is_image_line;
 use crate::select::StyleFn;
 use crate::utils::{apply_background_to_line, visible_width, wrap_text_with_ansi};
 

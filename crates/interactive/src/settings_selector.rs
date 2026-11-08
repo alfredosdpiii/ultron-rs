@@ -7,16 +7,16 @@ use std::collections::BTreeMap;
 use std::rc::Rc;
 
 use serde_json::{Value, json};
-use tui::components::Component;
-use tui::fuzzy::fuzzy_filter;
-use tui::input::Input;
-use tui::keybindings::KeybindingsManager;
-use tui::mouse::{MouseButton, MouseEvent, MouseEventType, MouseResult};
-use tui::select::{SelectEvent, SelectItem, SelectList, SelectListTheme};
-use tui::theme::Theme;
-use tui::utils::{truncate_to_width, visible_width, wrap_text_with_ansi};
+use theme::{Fg, Theme};
+use tui::Component;
+use tui::Input;
+use tui::KeybindingsManager;
+use tui::fuzzy_filter;
+use tui::{MouseButton, MouseEvent, MouseEventType, MouseResult};
+use tui::{SelectEvent, SelectItem, SelectList, SelectListTheme};
+use tui::{truncate_to_width, visible_width, wrap_text_with_ansi};
 
-use crate::components::{bold, fg};
+use crate::components::bold;
 use crate::lane::ModelInfo;
 
 const DEFAULT_CLAUDE_MODEL: &str = "claude-opus-5-5";
@@ -315,7 +315,7 @@ impl List {
         } else {
             "  Enter/Space to change · Esc to cancel"
         };
-        lines.push(truncate_to_width(&fg(&self.theme, "dim", text), width, "...", false));
+        lines.push(truncate_to_width(&self.theme.fg(Fg::Dim, text), width, "...", false));
     }
 
     fn render(&mut self, width: usize) -> Vec<String> {
@@ -326,7 +326,7 @@ impl List {
             lines.push(String::new());
         }
         if self.items.is_empty() {
-            lines.push(fg(&t, "dim", "  No settings available"));
+            lines.push(t.fg(Fg::Dim, "  No settings available"));
             if self.search.is_some() {
                 self.hint(&mut lines, width);
             }
@@ -334,7 +334,7 @@ impl List {
         }
         if self.filtered.is_empty() {
             lines.push(truncate_to_width(
-                &fg(&t, "dim", "  No matching settings"),
+                &t.fg(Fg::Dim, "  No matching settings"),
                 width,
                 "...",
                 false,
@@ -354,7 +354,7 @@ impl List {
             let it = &self.items[self.filtered[row]];
             let selected = row == self.selected;
             let prefix = if selected {
-                fg(&t, "accent", "→ ")
+                t.fg(Fg::Accent, "→ ")
             } else {
                 "  ".to_string()
             };
@@ -363,13 +363,13 @@ impl List {
                 it.label,
                 " ".repeat(label_width.saturating_sub(visible_width(&it.label)))
             );
-            let label = if selected { fg(&t, "accent", &padded) } else { padded };
+            let label = if selected { t.fg(Fg::Accent, &padded) } else { padded };
             let used = visible_width(&prefix) + label_width + 2;
             let value = truncate_to_width(&it.value, width.saturating_sub(used + 2), "", false);
             let value = if selected {
-                fg(&t, "accent", &value)
+                t.fg(Fg::Accent, &value)
             } else {
-                fg(&t, "muted", &value)
+                t.fg(Fg::Muted, &value)
             };
             lines.push(truncate_to_width(
                 &format!("{prefix}{label}  {value}"),
@@ -380,11 +380,7 @@ impl List {
         }
         if start > 0 || end < self.filtered.len() {
             let text = format!("  ({}/{})", self.selected + 1, self.filtered.len());
-            lines.push(fg(
-                &t,
-                "dim",
-                &truncate_to_width(&text, width.saturating_sub(2), "", false),
-            ));
+            lines.push(t.fg(Fg::Dim, &truncate_to_width(&text, width.saturating_sub(2), "", false)));
         }
         if let Some(description) = self
             .filtered
@@ -393,7 +389,7 @@ impl List {
         {
             lines.push(String::new());
             for line in wrap_text_with_ansi(&description, width.saturating_sub(4)) {
-                lines.push(fg(&t, "dim", &format!("  {line}")));
+                lines.push(t.fg(Fg::Dim, &format!("  {line}")));
             }
         }
         self.hint(&mut lines, width);
@@ -462,16 +458,16 @@ enum SelectOutcome {
 }
 
 fn select_theme(t: &Rc<Theme>) -> SelectListTheme {
-    let style = |color: &'static str| {
+    let style = |color: Fg| {
         let t = Rc::clone(t);
-        Box::new(move |s: &str| fg(&t, color, s)) as Box<dyn Fn(&str) -> String>
+        Box::new(move |s: &str| t.fg(color, s)) as Box<dyn Fn(&str) -> String>
     };
     SelectListTheme {
-        selected_prefix: style("accent"),
-        selected_text: style("accent"),
-        description: style("muted"),
-        scroll_info: style("muted"),
-        no_match: style("muted"),
+        selected_prefix: style(Fg::Accent),
+        selected_text: style(Fg::Accent),
+        description: style(Fg::Muted),
+        scroll_info: style(Fg::Muted),
+        no_match: style(Fg::Muted),
     }
 }
 
@@ -550,9 +546,9 @@ impl SelectSubmenu {
     fn handle_mouse(&mut self, event: &MouseEvent) -> Option<(MouseResult, Vec<SelectOutcome>)> {
         let width = event.width;
         let t = Rc::clone(&self.theme);
-        let mut top = wrap_text_with_ansi(&bold(&fg(&t, "accent", &self.title)), width).len() as i64;
+        let mut top = wrap_text_with_ansi(&bold(&t.fg(Fg::Accent, &self.title)), width).len() as i64;
         if !self.description.is_empty() {
-            top += 1 + wrap_text_with_ansi(&fg(&t, "muted", &self.description), width).len() as i64;
+            top += 1 + wrap_text_with_ansi(&t.fg(Fg::Muted, &self.description), width).len() as i64;
         }
         if let Some(search) = self.search.as_mut() {
             top += 1;
@@ -591,10 +587,10 @@ impl SelectSubmenu {
 
     fn render(&mut self, width: usize) -> Vec<String> {
         let t = Rc::clone(&self.theme);
-        let mut lines = wrap_text_with_ansi(&bold(&fg(&t, "accent", &self.title)), width);
+        let mut lines = wrap_text_with_ansi(&bold(&t.fg(Fg::Accent, &self.title)), width);
         if !self.description.is_empty() {
             lines.push(String::new());
-            lines.extend(wrap_text_with_ansi(&fg(&t, "muted", &self.description), width));
+            lines.extend(wrap_text_with_ansi(&t.fg(Fg::Muted, &self.description), width));
         }
         if let Some(search) = self.search.as_mut() {
             lines.push(String::new());
@@ -608,7 +604,7 @@ impl SelectSubmenu {
         } else {
             "  Enter to select · Esc to go back"
         };
-        lines.extend(wrap_text_with_ansi(&fg(&t, "dim", hint), width));
+        lines.extend(wrap_text_with_ansi(&t.fg(Fg::Dim, hint), width));
         lines
     }
 }
@@ -1285,10 +1281,8 @@ impl SettingsSelector {
             .collect::<Vec<_>>();
         let n = items.len().min(14);
         let header = vec![
-            bold(&fg(t, "accent", "Models")),
-            fg(
-                t,
-                "muted",
+            bold(&t.fg(Fg::Accent, "Models")),
+            t.fg(Fg::Muted,
                 "Changes apply to the running session: the next frame, review or sub-agent uses them. Claude Code mode rows apply when `ultron claude` next starts.",
             ),
             String::new(),
@@ -1312,7 +1306,7 @@ impl SettingsSelector {
         for (group, mut list) in groups {
             items.push(SelectItem {
                 value: format!("{GROUP_PREFIX}{group}"),
-                label: fg(&self.theme, "muted", &format!("── {group} ──")),
+                label: self.theme.fg(Fg::Muted, &format!("── {group} ──")),
                 description: None,
             });
             list.sort_by(|a, b| a.1.cmp(&b.1));
@@ -1462,10 +1456,10 @@ impl SettingsSelector {
             kind: SubKind::Theme,
             list: List::new(Rc::clone(t), self.keys.clone(), items, 4, false),
             header: vec![
-                bold(&fg(t, "accent", "Automatic Theme")),
+                bold(&t.fg(Fg::Accent, "Automatic Theme")),
                 String::new(),
-                fg(t, "muted", "Choose themes for terminal light and dark appearance."),
-                fg(t, "muted", "Light/dark detection requires terminal support."),
+                t.fg(Fg::Muted, "Choose themes for terminal light and dark appearance."),
+                t.fg(Fg::Muted, "Light/dark detection requires terminal support."),
                 String::new(),
             ],
         }
@@ -1497,7 +1491,7 @@ impl SettingsSelector {
                     .iter()
                     .map(|m| SelectItem {
                         value: model_ref(m),
-                        label: format!("{} {}", m.id, fg(&t, "muted", &format!("[{}]", m.provider))),
+                        label: format!("{} {}", m.id, t.fg(Fg::Muted, &format!("[{}]", m.provider))),
                         description: self.model_thinking.get(&model_ref(m)).cloned(),
                     })
                     .collect();
@@ -2042,7 +2036,7 @@ fn automatic_themes(setting: &str, themes: &[String]) -> (String, String) {
 impl Component for SettingsSelector {
     fn render(&mut self, width: usize) -> Vec<String> {
         let t = Rc::clone(&self.theme);
-        let border = fg(&t, "border", &"─".repeat(width.max(1)));
+        let border = t.fg(Fg::Border, &"─".repeat(width.max(1)));
         let mut lines = vec![border.clone()];
         // A submenu list keeps its header above what it opened (its `Container` holds both).
         let depth = self.stack.len();
@@ -2109,15 +2103,15 @@ mod tests {
 
     fn selector(settings: Value) -> SettingsSelector {
         let theme = Rc::new(
-            tui::theme::create_theme(
-                &tui::theme::builtin_theme_json("dark").unwrap(),
-                tui::theme::ColorMode::Truecolor,
+            theme::create_theme(
+                &theme::builtin_theme_json("dark").unwrap(),
+                theme::ColorMode::Truecolor,
                 None,
             )
             .unwrap(),
         );
         let keys = KeybindingsManager::new(
-            tui::qol_keys::native_app_keybindings(tui::keybindings::Platform::new("linux", false)),
+            crate::keybindings::native_app_keybindings(crate::keybindings::Platform::new("linux", false)),
             Vec::new(),
             Default::default(),
         );

@@ -7,8 +7,8 @@
 use serde_json::{Value, json};
 use std::path::Path;
 use std::sync::Arc;
-use tui::theme::ColorMode;
-use tui::theme::registry::ThemeRegistry;
+use theme::ColorMode;
+use theme::registry::ThemeRegistry;
 
 fn fixture() -> Value {
     serde_json::from_str(include_str!("../fixtures/local_themes.json")).unwrap()
@@ -112,18 +112,22 @@ fn cli_local_themes_are_offered_and_applied_by_the_settings() {
     let tmp = tempfile::tempdir().unwrap();
     let root = tmp.path().canonicalize().unwrap();
     let env = profile(&root);
-    let mut registry = ThemeRegistry::new(
-        Path::new("<builtin>").to_path_buf(),
-        env.agent_dir().join("themes"),
-        ColorMode::Truecolor,
-    );
+    let mut registry = ThemeRegistry::new(env.agent_dir().join("themes"), ColorMode::Truecolor);
     registry
         .set_registered_themes(cli::themes::load(&env, registry.mode).themes)
         .unwrap();
     let available: Vec<Value> = registry
         .available_themes_with_paths()
         .iter()
-        .map(|t| json!({"name": t.name, "path": t.path.as_deref().map(|p| clean(p, &root))}))
+        .map(|t| {
+            // TypeScript lists the built-ins' files in its themes directory; here they are embedded.
+            let path = match t.path.as_deref() {
+                Some(path) => Some(clean(path, &root)),
+                None if ["dark", "light"].contains(&t.name.as_str()) => Some(format!("<builtin>/{}.json", t.name)),
+                None => None,
+            };
+            json!({"name": t.name, "path": path})
+        })
         .collect();
     assert_eq!(json!(available), fixture()["available"]);
     // `/settings` theme: choosing a settings theme applies it.

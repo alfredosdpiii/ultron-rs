@@ -1,11 +1,11 @@
 //! Ported packages/tui/test expectations (truncate-to-width, keys, stdin-buffer) with their literal values,
 //! plus the 2,000-line transcript frame-diff check.
 
-use tui::components::{Component, Spacer, Text};
-use tui::keys::{KeyContext, parse_key};
-use tui::renderer::Renderer;
-use tui::stdin_buffer::{InputEvent, StdinBuffer};
-use tui::utils::{normalize_terminal_output, truncate_to_width, visible_width, wrap_text_with_ansi};
+use tui::Renderer;
+use tui::{Component, Spacer, Text};
+use tui::{KeyContext, parse_key};
+use tui::{StdinBuffer, StdinEvent};
+use tui::{normalize_terminal_output, truncate_to_width, visible_width, wrap_text_with_ansi};
 
 #[test]
 fn tui_truncate_closes_bel_osc8_link() {
@@ -110,19 +110,19 @@ fn tui_stdin_buffer_partial_sequences_and_paste() {
     let mut buf = StdinBuffer::new();
     assert_eq!(buf.process("\x1b["), vec![]);
     assert_eq!(buf.flush_after(), Some(std::time::Duration::from_millis(50)));
-    assert_eq!(buf.process("1;5A"), vec![InputEvent::Data("\x1b[1;5A".into())]);
+    assert_eq!(buf.process("1;5A"), vec![StdinEvent::Data("\x1b[1;5A".into())]);
     assert_eq!(buf.process("\x1b"), vec![]);
     assert_eq!(buf.flush_after(), Some(std::time::Duration::from_millis(10)));
     assert_eq!(buf.flush(), vec!["\x1b".to_string()]);
     assert_eq!(
         buf.process("x\x1b[200~a\x1b[201~y"),
         vec![
-            InputEvent::Data("x".into()),
-            InputEvent::Paste("a".into()),
-            InputEvent::Data("y".into())
+            StdinEvent::Data("x".into()),
+            StdinEvent::Paste("a".into()),
+            StdinEvent::Data("y".into())
         ]
     );
-    assert_eq!(buf.process_bytes(&[0xe1]), vec![InputEvent::Data("\x1ba".into())]);
+    assert_eq!(buf.process_bytes(&[0xe1]), vec![StdinEvent::Data("\x1ba".into())]);
 }
 
 #[test]

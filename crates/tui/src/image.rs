@@ -3,6 +3,7 @@
 //! and the environment are passed in instead of read from process globals.
 
 use crate::components::Component;
+use crate::frame::{KITTY_PREFIX, kitty_command};
 use crate::select::StyleFn;
 use crate::utils::truncate_to_width;
 use std::sync::{LazyLock, Mutex};
@@ -22,6 +23,15 @@ pub struct Capabilities {
     pub images: Option<ImageProtocol>,
     pub true_color: bool,
     pub hyperlinks: bool,
+}
+
+/// `createTheme`'s default color mode: truecolor when the terminal supports it, else 256 colors.
+pub fn color_mode(caps: &Capabilities) -> theme::ColorMode {
+    if caps.true_color {
+        theme::ColorMode::Truecolor
+    } else {
+        theme::ColorMode::Ansi256
+    }
 }
 
 /// `detectCapabilities`: environment detection plus the PI_HYPERLINKS, PI_IMAGE_PROTOCOL and PI_TRUE_COLOR overrides.
@@ -540,16 +550,6 @@ pub fn register_kitty_image_metadata(metadata: KittyImageMetadata) {
     }
 }
 
-const KITTY_PREFIX: &str = "\x1b_G";
-
-/// `/\x1b_G([^;]*);/`: where the first Kitty command starts, its controls, and where its payload starts.
-fn kitty_command(line: &str) -> Option<(usize, &str, usize)> {
-    let at = line.find(KITTY_PREFIX)?;
-    let controls_start = at + KITTY_PREFIX.len();
-    let end = controls_start + line[controls_start..].find(';')?;
-    Some((at, &line[controls_start..end], end + 1))
-}
-
 fn has_control(controls: &str, key: &str, value: &str) -> bool {
     controls.split(',').any(|c| c.split_once('=') == Some((key, value)))
 }
@@ -643,4 +643,37 @@ pub fn crop_kitty_image_line(line: &str, hidden_rows: i64, visible_rows: i64) ->
         format!("r={cropped}"),
     ]);
     format!("{}\x1b_G{};{}", &line[..at], kept.join(","), &line[payload..])
+}
+
+// terminal-image.ts `getCapabilities` under `setCapabilityOverrides` (the `terminal.trueColor`,
+// `terminal.hyperlinks` and `terminal.images` settings): the detected capabilities with each configured one forced.
+// A configured `hyperlinks` also stands in for the tmux probe, so a forced value is never second-guessed by it.
+
+/// What the settings force; `None` keeps the detected value. `images: Some(None)` turns inline images off.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct CapabilityOverrides {
+    pub images: Option<Option<ImageProtocol>>,
+    pub true_color: Option<bool>,
+    pub hyperlinks: Option<bool>,
+}
+
+/// `getCapabilities()` after `setCapabilityOverrides(overrides)`: [`detect_capabilities`] (environment and the
+/// `PI_*` variables) with `tmux_forwards_hyperlinks` as the tmux probe's answer, then the overrides on top.
+pub fn capabilities(
+    env: &dyn Fn(&str) -> Option<String>,
+    windows: bool,
+    tmux_forwards_hyperlinks: bool,
+    overrides: &CapabilityOverrides,
+) -> Capabilities {
+    let mut caps = detect_capabilities(env, windows, overrides.hyperlinks.unwrap_or(tmux_forwards_hyperlinks));
+    if let Some(images) = overrides.images {
+        caps.images = images;
+    }
+    if let Some(true_color) = overrides.true_color {
+        caps.true_color = true_color;
+    }
+    if let Some(hyperlinks) = overrides.hyperlinks {
+        caps.hyperlinks = hyperlinks;
+    }
+    caps
 }

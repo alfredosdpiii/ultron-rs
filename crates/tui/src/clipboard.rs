@@ -2,12 +2,9 @@
 //! fail) with `wl-paste`/`xclip` (and PowerShell under WSL) for image reads,
 //! driven by a [`ClipboardService`] thread. Copies are fire-and-forget; reads answer on a channel.
 
-use std::process::{Command, Stdio};
-use std::sync::mpsc::{self, Receiver, Sender};
-use std::thread::{self, JoinHandle};
+use std::sync::mpsc::{self, Receiver};
 
-use base64::Engine;
-use base64::engine::general_purpose::STANDARD as B64;
+use crate::service::ServiceThread;
 
 /// A clipboard image (`ClipboardImage`): its bytes and base MIME type.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -77,29 +74,16 @@ impl Default for SystemClipboard {
     }
 }
 
-/// A fresh `pi-wsl-clip-<id>.png` path in the temp dir (`readClipboardImageViaPowerShell`).
-fn wsl_temp_file() -> std::path::PathBuf {
+/// A fresh `pi-wsl-clip-<pid>-<nanos>-<n>.<extension>` path in the temp dir, for the WSL clipboard bridges (the
+/// PowerShell image read, the text written for `clip.exe`).
+pub(crate) fn wsl_temp_file(extension: &str) -> std::path::PathBuf {
     static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let nanos = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_nanos())
         .unwrap_or_default();
     let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    std::env::temp_dir().join(format!("pi-wsl-clip-{}-{nanos}-{n}.png", std::process::id()))
-}
-
-/// Run a clipboard tool found on `path`: its stdout when it exited 0, even empty (`runClipboardCommand`).
-pub fn tool_run(path: Option<&str>, program: &str, args: &[&str]) -> Option<Vec<u8>> {
-    let program = std::env::split_paths(path?)
-        .map(|dir| dir.join(program))
-        .find(|candidate| candidate.is_file())?;
-    let out = Command::new(program)
-        .args(args)
-        .stdin(Stdio::null())
-        .stderr(Stdio::null())
-        .output()
-        .ok()?;
-    out.status.success().then_some(out.stdout)
+    std::env::temp_dir().join(format!("pi-wsl-clip-{}-{nanos}-{n}.{extension}", std::process::id()))
 }
 
 impl Clipboard for SystemClipboard {
@@ -131,7 +115,7 @@ impl Clipboard for SystemClipboard {
         let vars = self.vars.clone();
         let var = |name: &str| vars.iter().find(|(k, _)| k == name).map(|(_, v)| v.clone());
         let proc_version = std::fs::read_to_string("/proc/version").ok();
-        let mut run = |program: &str, args: &[&str]| tool_run(path.as_deref(), program, args);
+        let mut run = |program: &str, args: &[&str]| crate::proc::run(program, path.as_deref(), args, None, None);
         let native_images = self.native_images;
         let mut native = || {
             if !native_images {
@@ -156,7 +140,7 @@ impl Clipboard for SystemClipboard {
                 Err(_) => ImageRead::Failed,
             }
         };
-        let temp_file = wsl_temp_file;
+        let temp_file = || wsl_temp_file("png");
         let sources = ImageSources {
             platform: crate::clipboard_copy::platform(),
             var: &var,
@@ -200,75 +184,59 @@ enum Job {
     Copy(String),
     CopyChecked(String),
     Read(ClipboardRead),
-    Stop,
 }
 
 /// A thread owning the clipboard: `copy` and `request` return immediately.
 pub struct ClipboardService {
-    tx: Option<Sender<Job>>,
+    thread: ServiceThread<Job>,
     replies: Receiver<ClipboardReply>,
-    worker: Option<JoinHandle<()>>,
 }
 
 impl ClipboardService {
-    pub fn spawn<C: Clipboard + 'static>(mut clipboard: C) -> Self {
-        let (tx, rx) = mpsc::channel::<Job>();
+    pub fn spawn<C: Clipboard + 'static>(mut clipboard: C) -> std::io::Result<Self> {
         let (reply_tx, replies) = mpsc::channel();
-        let worker = thread::Builder::new()
-            .name("clipboard".into())
-            .spawn(move || {
-                for job in rx {
-                    let reply = match job {
-                        Job::Stop => break,
-                        Job::Copy(text) => {
-                            let _ = clipboard.set_text(&text);
-                            continue;
-                        }
-                        Job::CopyChecked(text) => Ok(ClipboardReply::Copied(clipboard.copy_checked(&text))),
-                        Job::Read(ClipboardRead::Text) => clipboard.get_text().map(ClipboardReply::Text),
-                        Job::Read(ClipboardRead::Image) => clipboard.get_image().map(image_reply),
-                        Job::Read(ClipboardRead::ImageOrText) => clipboard
-                            .get_image()
-                            .map(image_reply)
-                            .or_else(|_| clipboard.get_text().map(ClipboardReply::Text)),
-                    };
-                    if reply_tx.send(reply.unwrap_or_else(ClipboardReply::Error)).is_err() {
-                        break;
+        let thread = ServiceThread::spawn("clipboard", move |jobs| {
+            for job in jobs {
+                let reply = match job {
+                    Job::Copy(text) => {
+                        // A yank's copy has no one to answer.
+                        let _ = clipboard.set_text(&text);
+                        continue;
                     }
+                    Job::CopyChecked(text) => Ok(ClipboardReply::Copied(clipboard.copy_checked(&text))),
+                    Job::Read(ClipboardRead::Text) => clipboard.get_text().map(ClipboardReply::Text),
+                    Job::Read(ClipboardRead::Image) => clipboard.get_image().map(image_reply),
+                    Job::Read(ClipboardRead::ImageOrText) => clipboard
+                        .get_image()
+                        .map(image_reply)
+                        .or_else(|_| clipboard.get_text().map(ClipboardReply::Text)),
+                };
+                if reply_tx.send(reply.unwrap_or_else(ClipboardReply::Error)).is_err() {
+                    break;
                 }
-            })
-            .ok();
-        Self {
-            tx: Some(tx),
-            replies,
-            worker,
-        }
+            }
+        })?;
+        Ok(Self { thread, replies })
     }
 
     /// The desktop clipboard.
-    pub fn system() -> Self {
+    pub fn system() -> std::io::Result<Self> {
         Self::spawn(SystemClipboard::new())
     }
 
     /// Copy `text` (Vim yanks, copy commands). Never blocks.
     pub fn copy(&self, text: &str) {
-        if let Some(tx) = &self.tx {
-            let _ = tx.send(Job::Copy(text.to_string()));
-        }
+        self.thread.send(Job::Copy(text.to_string()));
     }
 
     /// A user-visible copy (`/copy`, the copy keys): answered by a [`ClipboardReply::Copied`]. Never blocks.
     pub fn copy_checked(&self, text: &str) {
-        if let Some(tx) = &self.tx {
-            let _ = tx.send(Job::CopyChecked(text.to_string()));
-        }
+        self.thread.send(Job::CopyChecked(text.to_string()));
     }
 
     /// Start a read; poll [`ClipboardService::try_reply`] from the event loop.
     pub fn request(&self, read: ClipboardRead) {
-        if let Some(tx) = &self.tx {
-            let _ = tx.send(Job::Read(read));
-        }
+        self.thread.send(Job::Read(read));
     }
 
     /// The next finished read, if any. Never blocks.
@@ -283,30 +251,13 @@ impl ClipboardService {
 
     /// A closure for `VimEditor::on_yank`.
     pub fn yank_sink(&self) -> Box<dyn FnMut(&str)> {
-        let tx = self.tx.clone();
-        Box::new(move |text: &str| {
-            if let Some(tx) = &tx {
-                let _ = tx.send(Job::Copy(text.to_string()));
-            }
-        })
+        let tx = self.thread.sender();
+        Box::new(move |text: &str| tx.send(Job::Copy(text.to_string())))
     }
 
     /// Finish queued jobs and stop (yank sinks handed out earlier become no-ops).
-    pub fn shutdown(mut self) {
-        if let Some(tx) = self.tx.take() {
-            let _ = tx.send(Job::Stop);
-        }
-        if let Some(w) = self.worker.take() {
-            let _ = w.join();
-        }
-    }
-}
-
-impl Drop for ClipboardService {
-    fn drop(&mut self) {
-        if let Some(tx) = self.tx.take() {
-            let _ = tx.send(Job::Stop);
-        }
+    pub fn shutdown(self) {
+        self.thread.shutdown();
     }
 }
 
@@ -315,9 +266,4 @@ fn image_reply(image: ClipboardImage) -> ClipboardReply {
         data: jsrt::base64::encode(image.bytes),
         mime_type: image.mime_type,
     }
-}
-
-/// The bytes of a [`ClipboardReply::Image`] (standard base64).
-pub fn image_bytes(data: &str) -> Option<Vec<u8>> {
-    B64.decode(data).ok()
 }

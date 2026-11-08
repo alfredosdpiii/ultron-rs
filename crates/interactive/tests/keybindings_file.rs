@@ -4,9 +4,11 @@
 
 use std::path::Path;
 
+use interactive::keybindings::{Platform, app_keybindings};
 use serde_json::{Map, Value};
-use tui::keybindings::{KeybindingsManager, Platform, app_keybindings};
-use tui::keybindings_file::{UserBindings, keybindings_path, load_user_bindings, migrate_keybindings_config};
+use tui::KeybindingsManager;
+use tui::UserBindings;
+use tui::{keybindings_path, load_user_bindings, migrate_keybindings_config};
 
 fn fixture() -> Value {
     serde_json::from_str(include_str!("../fixtures/keybindings-file.json")).unwrap()
@@ -52,24 +54,14 @@ fn expected_user(pairs: &Value) -> UserBindings {
 
 fn resolved_json(manager: &KeybindingsManager) -> Value {
     Value::Array(
-        manager
-            .get_resolved_bindings()
+        app_keybindings(Platform::new("linux", false))
             .into_iter()
+            .map(|d| (d.id, manager.get_keys(d.id)))
             // `getResolvedBindings`: one key as a string, otherwise the array.
             .map(|(id, keys)| match keys.as_slice() {
                 [one] => serde_json::json!([id, one]),
                 _ => serde_json::json!([id, keys]),
             })
-            .collect(),
-    )
-}
-
-fn conflicts_json(manager: &KeybindingsManager) -> Value {
-    Value::Array(
-        manager
-            .get_conflicts()
-            .into_iter()
-            .map(|c| serde_json::json!({"key": c.key, "keybindings": c.keybindings}))
             .collect(),
     )
 }
@@ -90,7 +82,6 @@ fn tui_keybindings_file_load_and_migrate_match_ts_create() {
         assert_eq!(user, expected_user(&case["user"]), "{}", case["content"]);
         let m = manager(user);
         assert_eq!(resolved_json(&m), case["resolved"], "{}", case["content"]);
-        assert_eq!(conflicts_json(&m), case["conflicts"], "{}", case["content"]);
         if let Some(migrated) = case["migrated"].as_object() {
             let text = case["content"].as_str().unwrap();
             let raw: Map<String, Value> = serde_json::from_str(text.trim_start_matches('\u{feff}')).unwrap();
@@ -118,4 +109,27 @@ fn tui_keybindings_file_reload_rereads_the_file_like_ts() {
         assert_eq!(resolved_json(&m), case["resolved"], "{}", case["after"]);
     }
     let _ = std::fs::remove_dir_all(dir);
+}
+
+/// `KEYBINDINGS` per platform against packages/coding-agent keybindings.ts, recorded with the TUI's parity cases
+/// (`crates/tui/fixtures/generate-editor.mjs`).
+#[test]
+fn interactive_app_keybinding_defaults_match_ts_for_each_platform() {
+    let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../tui/fixtures/editor-parity.json");
+    let f: Value = serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
+    let defs = |defs: &[tui::KeybindingDefinition]| -> Vec<Value> {
+        defs.iter()
+            .map(|d| serde_json::json!([d.id, d.default_keys, d.description]))
+            .collect()
+    };
+    for p in f["platforms"].as_array().unwrap() {
+        let platform = Platform::new(p[0].as_str().unwrap(), p[1].as_bool().unwrap());
+        assert_eq!(
+            Value::Array(defs(&app_keybindings(platform))),
+            p[2],
+            "platform {} wsl {}",
+            p[0],
+            p[1]
+        );
+    }
 }

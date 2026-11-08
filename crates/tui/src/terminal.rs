@@ -9,7 +9,7 @@ use std::thread;
 use std::time::Duration;
 
 use crate::keyboard_protocol::KeyboardProtocol;
-use crate::stdin_buffer::{InputEvent, StdinBuffer};
+use crate::stdin_buffer::{StdinBuffer, StdinEvent};
 
 pub const TUI_ESC_TIMEOUT_ENV: &str = "PI_TUI_ESC_TIMEOUT";
 
@@ -118,11 +118,11 @@ pub fn size() -> (u16, u16) {
 }
 
 /// Input as the TS terminal delivers it: one sequence per event, pastes re-wrapped in bracketed-paste markers.
-fn deliver(events: Vec<InputEvent>, tx: &mpsc::Sender<String>) -> bool {
+fn deliver(events: Vec<StdinEvent>, tx: &mpsc::Sender<String>) -> bool {
     events.into_iter().all(|e| {
         let data = match e {
-            InputEvent::Data(s) => s,
-            InputEvent::Paste(p) => format!("\x1b[200~{p}\x1b[201~"),
+            StdinEvent::Data(s) => s,
+            StdinEvent::Paste(p) => format!("\x1b[200~{p}\x1b[201~"),
         };
         tx.send(data).is_ok()
     })
@@ -201,9 +201,9 @@ pub fn spawn_input_pump<R: Read + Send + 'static>(mut input: R) -> Receiver<Stri
             };
             let events = match chunk {
                 Ok(bytes) => sb.process_bytes(&bytes),
-                Err(RecvTimeoutError::Timeout) => sb.flush().into_iter().map(InputEvent::Data).collect(),
+                Err(RecvTimeoutError::Timeout) => sb.flush().into_iter().map(StdinEvent::Data).collect(),
                 Err(RecvTimeoutError::Disconnected) => {
-                    deliver(sb.flush().into_iter().map(InputEvent::Data).collect(), &tx);
+                    deliver(sb.flush().into_iter().map(StdinEvent::Data).collect(), &tx);
                     break;
                 }
             };

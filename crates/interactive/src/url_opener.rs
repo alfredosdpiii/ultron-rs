@@ -6,7 +6,7 @@
 
 use std::sync::Arc;
 
-use tui::fullscreen::UrlOpener;
+use tui::UrlOpener;
 
 /// The variables a launcher needs to reach the desktop; only these pass to it besides PATH and HOME.
 pub const DESKTOP_VARS: [&str; 8] = [

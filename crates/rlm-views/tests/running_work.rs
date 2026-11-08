@@ -8,7 +8,7 @@ use rlm_views::running::{
 };
 use rlm_views::visualizer::{RlmSnapshot, RlmStyle, parse_agents_status};
 use serde_json::{Value, json};
-use tui::utils::{strip_terminal_sequences, visible_width};
+use tui::{strip_terminal_sequences, visible_width};
 
 const NOW: f64 = 1_000_000.0;
 

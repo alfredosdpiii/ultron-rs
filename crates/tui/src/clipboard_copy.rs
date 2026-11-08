@@ -7,10 +7,9 @@
 //! commands ([`SystemCopyIo`]), tests pass recorders, so no test touches the desktop's clipboard. OSC 52 is returned
 //! to the caller (the TUI writes it with its frames) instead of being written to stdout here.
 
-use std::io::{Read, Write};
+use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 /// `MAX_OSC52_ENCODED_LENGTH`.
 pub const MAX_OSC52_ENCODED_LENGTH: usize = 100_000;
@@ -45,17 +44,6 @@ pub trait CopyIo {
 /// `isRemoteSession`.
 fn is_remote_session(env: &CopyEnv) -> bool {
     env.set("SSH_CONNECTION") || env.set("SSH_CLIENT") || env.set("MOSH_CONNECTION")
-}
-
-/// `isWSL`.
-pub fn is_wsl(env: &CopyEnv) -> bool {
-    if env.set("WSL_DISTRO_NAME") || env.set("WSLENV") {
-        return true;
-    }
-    env.proc_version.as_deref().is_some_and(|release| {
-        let lower = release.to_lowercase();
-        lower.contains("microsoft") || lower.contains("wsl")
-    })
 }
 
 /// `emitOsc52`: the sequence, or `None` when the payload is over the limit.
@@ -126,7 +114,7 @@ pub fn copy_to_clipboard(text: &str, env: &CopyEnv, io: &mut dyn CopyIo) -> Resu
         }
     }
     let mut emitted: Option<String> = None;
-    if !copied && p == "linux" && is_wsl(env) {
+    if !copied && p == "linux" && crate::clipboard_image::is_wsl(env.var, env.proc_version.as_deref()) {
         // Windows Terminal supports OSC 52; prefer it over the slower PowerShell round trip.
         if env.set("WT_SESSION") {
             emitted = osc52(text);
@@ -166,53 +154,6 @@ pub fn copy_to_clipboard(text: &str, env: &CopyEnv, io: &mut dyn CopyIo) -> Resu
     Err("Clipboard unavailable".into())
 }
 
-/// `runClipboardCommand`: spawn `command`, feed `input` (writers get no stdout pipe to keep, since they can
-/// daemonize), kill it after `timeout_ms`; its stdout when it exited 0. `path`: the PATH it is looked up on (the
-/// injected environment's; without one nothing runs).
-pub fn run_clipboard_command(
-    command: &str,
-    args: &[String],
-    input: Option<&str>,
-    timeout_ms: u64,
-    path: Option<&str>,
-) -> Option<Vec<u8>> {
-    let program = std::env::split_paths(path?)
-        .map(|dir| dir.join(command))
-        .find(|candidate| candidate.is_file())?;
-    let mut child = Command::new(program)
-        .args(args)
-        .stdin(Stdio::piped())
-        .stdout(if input.is_some() { Stdio::null() } else { Stdio::piped() })
-        .stderr(Stdio::null())
-        .spawn()
-        .ok()?;
-    if let Some(mut stdin) = child.stdin.take() {
-        // A writer may exit before consuming all input.
-        let _ = stdin.write_all(input.unwrap_or("").as_bytes());
-    }
-    let reader = child.stdout.take().map(|mut stdout| {
-        std::thread::spawn(move || {
-            let mut out = Vec::new();
-            let _ = stdout.read_to_end(&mut out);
-            out
-        })
-    });
-    let deadline = Instant::now() + Duration::from_millis(timeout_ms);
-    let status = loop {
-        match child.try_wait() {
-            Ok(Some(status)) => break Some(status),
-            Ok(None) if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(10)),
-            _ => {
-                let _ = child.kill();
-                let _ = child.wait();
-                break None;
-            }
-        }
-    };
-    let out = reader.and_then(|r| r.join().ok()).unwrap_or_default();
-    status.filter(|s| s.success()).map(|_| out)
-}
-
 /// The real side effects: arboard as the native writer (only consulted off Linux), commands on `path`.
 pub struct SystemCopyIo {
     pub path: Option<String>,
@@ -235,14 +176,17 @@ impl CopyIo for SystemCopyIo {
     }
 
     fn run(&mut self, command: &str, args: &[String], input: Option<&str>, timeout_ms: u64) -> Option<Vec<u8>> {
-        run_clipboard_command(command, args, input, timeout_ms, self.path.as_deref())
+        crate::proc::run(
+            command,
+            self.path.as_deref(),
+            args,
+            input,
+            Some(Duration::from_millis(timeout_ms)),
+        )
     }
 
     fn write_temp(&mut self, text: &str) -> Result<PathBuf, String> {
-        let nanos = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map_or(0, |d| d.as_nanos());
-        let path = std::env::temp_dir().join(format!("pi-wsl-clip-{}-{nanos}.txt", std::process::id()));
+        let path = crate::clipboard::wsl_temp_file("txt");
         let mut options = std::fs::OpenOptions::new();
         options.write(true).create_new(true);
         #[cfg(unix)]

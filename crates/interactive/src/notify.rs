@@ -12,9 +12,10 @@
 use std::collections::BTreeMap;
 use std::path::Path;
 use std::process::{Command, Stdio};
-use std::sync::mpsc::{self, Sender};
-use std::thread::{self, JoinHandle};
-use std::time::{Duration, Instant};
+use std::thread;
+use std::time::Duration;
+
+use tui::ServiceThread;
 
 /// Default notification title and application name.
 pub const APP_NAME: &str = "ultron";
@@ -181,28 +182,14 @@ pub fn query_tmux_client_terminal_name(env: &Env) -> Option<String> {
     if !Multiplexer::Tmux.is_inside(env) {
         return None;
     }
-    let mut child = Command::new("tmux")
-        .args(["display-message", "-p", "#{client_termtype}"])
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .spawn()
-        .ok()?;
-    let deadline = Instant::now() + Duration::from_millis(500);
-    loop {
-        match child.try_wait() {
-            Ok(Some(status)) if status.success() => break,
-            Ok(Some(_)) | Err(_) => return None,
-            Ok(None) if Instant::now() >= deadline => {
-                let _ = child.kill();
-                let _ = child.wait();
-                return None;
-            }
-            Ok(None) => thread::sleep(Duration::from_millis(5)),
-        }
-    }
-    let mut out = String::new();
-    std::io::Read::read_to_string(&mut child.stdout.take()?, &mut out).ok()?;
+    let out = tui::proc::run(
+        "tmux",
+        env.get("PATH"),
+        &["display-message", "-p", "#{client_termtype}"],
+        None,
+        Some(Duration::from_millis(500)),
+    )?;
+    let out = String::from_utf8_lossy(&out);
     parse_client_termtype(&out)
 }
 
@@ -787,23 +774,6 @@ pub fn build_desktop_notify_command(notifier: &DesktopNotifier, message: &Messag
     }
 }
 
-/// First executable `name` on `PATH`.
-pub fn which(name: &str, path_var: Option<&str>) -> Option<String> {
-    std::env::split_paths(path_var?)
-        .map(|dir| dir.join(name))
-        .find_map(|p| {
-            let meta = std::fs::metadata(&p).ok()?;
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::PermissionsExt;
-                if meta.permissions().mode() & 0o111 == 0 {
-                    return None;
-                }
-            }
-            meta.is_file().then(|| p.to_string_lossy().into_owned())
-        })
-}
-
 /// Real sink: writes through `write`, spawns children detached and reaps them on a thread.
 pub struct ProcessSink<W: FnMut(&str) + Send> {
     write: W,
@@ -848,7 +818,11 @@ impl<W: FnMut(&str) + Send> NotifySink for ProcessSink<W> {
     fn desktop_notifier(&mut self) -> Option<DesktopNotifier> {
         let path_var = self.path_var.clone();
         self.notifier
-            .get_or_insert_with(|| resolve_desktop_notifier(&|name| which(name, path_var.as_deref())))
+            .get_or_insert_with(|| {
+                resolve_desktop_notifier(&|name| {
+                    tui::proc::which(name, path_var.as_deref()).map(|p| p.to_string_lossy().into_owned())
+                })
+            })
             .clone()
     }
 }
@@ -860,52 +834,34 @@ enum Job {
 
 /// Fire-and-forget notifications: a thread owns the [`Notifier`] and its sink; `notify` only queues.
 pub struct NotificationService {
-    tx: Option<Sender<Job>>,
-    worker: Option<JoinHandle<()>>,
+    thread: ServiceThread<Job>,
 }
 
 impl NotificationService {
-    pub fn spawn<S: NotifySink + Send + 'static>(mut notifier: Notifier, mut sink: S) -> Self {
-        let (tx, rx) = mpsc::channel::<Job>();
-        let worker = thread::Builder::new()
-            .name("notify".into())
-            .spawn(move || {
-                for job in rx {
-                    match job {
-                        Job::Notify(m) => notifier.deliver(&m, &mut sink),
-                        Job::ConfirmOsc99(ok) => notifier.osc99_confirmed = ok,
-                    }
+    pub fn spawn<S: NotifySink + Send + 'static>(mut notifier: Notifier, mut sink: S) -> std::io::Result<Self> {
+        let thread = ServiceThread::spawn("notify", move |jobs| {
+            for job in jobs {
+                match job {
+                    Job::Notify(m) => notifier.deliver(&m, &mut sink),
+                    Job::ConfirmOsc99(ok) => notifier.osc99_confirmed = ok,
                 }
-            })
-            .ok();
-        Self { tx: Some(tx), worker }
+            }
+        })?;
+        Ok(Self { thread })
     }
 
     /// Queue a notification; returns immediately.
     pub fn notify(&self, message: Message) {
-        if let Some(tx) = &self.tx {
-            let _ = tx.send(Job::Notify(message));
-        }
+        self.thread.send(Job::Notify(message));
     }
 
     /// Record the OSC 99 `p=?` probe result.
     pub fn set_osc99_supported(&self, supported: bool) {
-        if let Some(tx) = &self.tx {
-            let _ = tx.send(Job::ConfirmOsc99(supported));
-        }
+        self.thread.send(Job::ConfirmOsc99(supported));
     }
 
     /// Deliver everything queued, then stop the worker.
-    pub fn shutdown(mut self) {
-        self.tx.take();
-        if let Some(w) = self.worker.take() {
-            let _ = w.join();
-        }
-    }
-}
-
-impl Drop for NotificationService {
-    fn drop(&mut self) {
-        self.tx.take();
+    pub fn shutdown(self) {
+        self.thread.shutdown();
     }
 }

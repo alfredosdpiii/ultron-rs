@@ -2,10 +2,10 @@
 //! packages/tui/src/components/stack.ts), a transcript viewport that follows its end (`ScrollView` with
 //! `follow: "end"`), and the alternate-screen painter of `TuiAltScreen` that rewrites only changed rows.
 
+use crate::frame::{CURSOR_MARKER, SYNC_BEGIN, SYNC_END, extract_cursor, is_image_line};
 use crate::image::{
     DELETE_ALL_KITTY_IMAGES, DELETE_ALL_KITTY_PLACEMENTS, ImageProtocol, delete_kitty_image, kitty_image_placement,
 };
-use crate::renderer::{CURSOR_MARKER, is_image_line};
 use crate::utils::{truncate_to_width, visible_width};
 
 /// One child of a vertical stack.
@@ -164,8 +164,6 @@ const ENTER_ALT_SCREEN: &str = "\x1b[?1049h";
 const EXIT_ALT_SCREEN: &str = "\x1b[?1049l";
 const DISABLE_AUTOWRAP: &str = "\x1b[?7l";
 const ENABLE_AUTOWRAP: &str = "\x1b[?7h";
-const BEGIN_SYNC: &str = "\x1b[?2026h";
-const END_SYNC: &str = "\x1b[?2026l";
 const SEGMENT_RESET: &str = "\x1b[0m\x1b]8;;\x07";
 
 /// `MAX_CACHED_OFFSCREEN_KITTY_*`: how many uploaded images off screen are kept for placement-only reuse.
@@ -231,7 +229,7 @@ impl AltScreen {
     /// a handover of the terminal.
     pub fn release_mouse() -> String {
         format!(
-            "{BEGIN_SYNC}{}{ENABLE_AUTOWRAP}{END_SYNC}",
+            "{SYNC_BEGIN}{}{ENABLE_AUTOWRAP}{SYNC_END}",
             crate::fullscreen::DISABLE_MOUSE
         )
     }
@@ -301,14 +299,10 @@ impl AltScreen {
     /// One frame of exactly `height` rows (extra rows are dropped, missing rows blank); a cursor marker places the
     /// hardware cursor.
     pub fn paint(&mut self, lines: &[String], width: usize, height: usize) -> String {
+        let mut lines: Vec<String> = lines.iter().take(height).cloned().collect();
+        let cursor = extract_cursor(&mut lines);
         let mut screen: Vec<String> = Vec::with_capacity(height);
-        let mut cursor = None;
-        for (row, line) in lines.iter().take(height).enumerate() {
-            let mut line = line.clone();
-            if let Some(idx) = line.find(CURSOR_MARKER) {
-                cursor = Some((row, visible_width(&line[..idx])));
-                line.replace_range(idx..idx + CURSOR_MARKER.len(), "");
-            }
+        for mut line in lines {
             if is_image_line(&line) {
                 screen.push(line);
                 continue;
@@ -331,7 +325,7 @@ impl AltScreen {
         } else {
             (screen.clone(), String::new())
         };
-        let mut out = String::from(BEGIN_SYNC);
+        let mut out = String::from(SYNC_BEGIN);
         if full {
             self.full_redraws += 1;
             out.push_str(if self.kitty() && had_uploaded {
@@ -376,7 +370,7 @@ impl AltScreen {
             }
             None => out.push_str("\x1b[?25l"),
         }
-        out.push_str(END_SYNC);
+        out.push_str(SYNC_END);
         self.previous = screen;
         self.width = width;
         self.height = height;
@@ -388,12 +382,12 @@ impl AltScreen {
     pub fn exit(&mut self, document: &[String], width: usize) -> String {
         // `beforeTerminalStop`: the alternate screen's Kitty images are deleted.
         let mut out = if self.kitty() {
-            format!("{BEGIN_SYNC}{DELETE_ALL_KITTY_IMAGES}{END_SYNC}")
+            format!("{SYNC_BEGIN}{DELETE_ALL_KITTY_IMAGES}{SYNC_END}")
         } else {
             String::new()
         };
         self.uploaded.clear();
-        out.push_str(&format!("{BEGIN_SYNC}{EXIT_ALT_SCREEN}{DISABLE_AUTOWRAP}"));
+        out.push_str(&format!("{SYNC_BEGIN}{EXIT_ALT_SCREEN}{DISABLE_AUTOWRAP}"));
         for (row, line) in document.iter().enumerate() {
             let mut line = line.replace(CURSOR_MARKER, "");
             let image = is_image_line(&line);
@@ -405,7 +399,7 @@ impl AltScreen {
             }
             out.push_str(&format!("\r\x1b[2K{line}{}", if image { "" } else { SEGMENT_RESET }));
         }
-        out.push_str(&format!("\x1b[0m{ENABLE_AUTOWRAP}\r\n\x1b[?25h{END_SYNC}"));
+        out.push_str(&format!("\x1b[0m{ENABLE_AUTOWRAP}\r\n\x1b[?25h{SYNC_END}"));
         self.previous.clear();
         out
     }

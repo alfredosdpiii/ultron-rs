@@ -1,17 +1,15 @@
 //! Differential parity of the theme registry (theme list, initTheme / setTheme with dark fallback, loadTheme,
 //! setRegisteredThemes) against packages/coding-agent theme.ts.
-//! Fixture: fixtures/theme-registry-parity.json (`node crates/tui/fixtures/generate-theme-registry.mjs`). The Rust
+//! Fixture: fixtures/theme-registry-parity.json (`node crates/theme/fixtures/generate-theme-registry.mjs`). The Rust
 //! registry has no change callback and no `setThemeInstance`: the fixture's `changes` counts and its `instance` step
 //! are not replayed.
 
-use std::path::PathBuf;
-
 use serde_json::{Value, json};
-use tui::theme::registry::ThemeRegistry;
-use tui::theme::{ColorMode, load_theme_from_path};
+use theme::registry::ThemeRegistry;
+use theme::{ColorMode, load_theme_from_path};
 
-fn accent(theme: Option<&tui::theme::Theme>) -> Value {
-    theme.map_or(Value::Null, |t| json!(t.fg("accent", "x").expect("accent")))
+fn accent(theme: Option<&theme::Theme>) -> Value {
+    theme.map_or(Value::Null, |t| json!(t.fg(theme::Fg::Accent, "x")))
 }
 
 #[test]
@@ -24,12 +22,8 @@ fn tui_theme_registry_matches_ts() {
     for (file, content) in f["files"].as_object().expect("files") {
         std::fs::write(custom.join(file), content.as_str().expect("content")).expect("write");
     }
-    let builtin = PathBuf::from("/builtin-themes");
-    let norm = |s: &str| {
-        s.replace(&custom.display().to_string(), "<custom>")
-            .replace(&builtin.display().to_string(), "<builtin>")
-    };
-    let mut reg = ThemeRegistry::new(builtin.clone(), custom.clone(), ColorMode::Truecolor);
+    let norm = |s: &str| s.replace(&custom.display().to_string(), "<custom>");
+    let mut reg = ThemeRegistry::new(custom.clone(), ColorMode::Truecolor);
     for step in f["steps"].as_array().expect("steps") {
         if step["op"] == "instance" {
             continue;
@@ -40,7 +34,17 @@ fn tui_theme_registry_matches_ts() {
                 let list: Vec<Value> = reg
                     .available_themes_with_paths()
                     .into_iter()
-                    .map(|t| json!({"name": t.name, "path": t.path.as_deref().map(norm)}))
+                    .map(|t| {
+                        // TypeScript lists the built-ins' files in its themes directory; here they are embedded.
+                        let path = match t.path.as_deref() {
+                            Some(path) => Some(norm(path)),
+                            None if ["dark", "light"].contains(&t.name.as_str()) => {
+                                Some(format!("<builtin>/{}.json", t.name))
+                            }
+                            None => None,
+                        };
+                        json!({"name": t.name, "path": path})
+                    })
                     .collect();
                 json!({"op": "list", "result": list})
             }
@@ -100,10 +104,10 @@ fn tui_theme_registry_lists_names_in_locale_compare_order() {
     let custom = root.join("themes");
     std::fs::create_dir_all(&custom).expect("mkdir");
     for name in ["f", "a1", "é", "a-b", "a_b"] {
-        let json = tui::theme::DARK_JSON.replacen("\"name\": \"dark\"", &format!("\"name\": \"{name}\""), 1);
+        let json = theme::DARK_JSON.replacen("\"name\": \"dark\"", &format!("\"name\": \"{name}\""), 1);
         std::fs::write(custom.join(format!("{name}.json")), json).expect("write");
     }
-    let reg = ThemeRegistry::new(PathBuf::from("/builtin-themes"), custom, ColorMode::Truecolor);
+    let reg = ThemeRegistry::new(custom, ColorMode::Truecolor);
     let names: Vec<String> = reg
         .available_themes_with_paths()
         .into_iter()

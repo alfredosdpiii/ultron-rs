@@ -2,7 +2,7 @@
 //! Fixture: fixtures/latex-parity.json, produced by `node crates/tui/fixtures/generate-latex.mjs`.
 
 use serde_json::Value;
-use tui::latex::render_latex;
+use tui::render_latex;
 
 fn fixture() -> Vec<Value> {
     let path = concat!(env!("CARGO_MANIFEST_DIR"), "/fixtures/latex-parity.json");

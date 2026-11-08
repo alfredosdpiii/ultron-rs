@@ -11,6 +11,8 @@ mod agent_hub;
 mod agent_hub_actions;
 #[path = "app.rs"]
 mod app;
+#[path = "autocomplete_sources.rs"]
+mod autocomplete_sources;
 #[path = "bug_report.rs"]
 mod bug_report;
 #[path = "changelog.rs"]
@@ -35,6 +37,8 @@ mod fullscreen_viewport;
 mod history_search;
 #[path = "inspection.rs"]
 mod inspection;
+#[path = "keybindings_file.rs"]
+mod keybindings_file;
 #[path = "keybindings_reload.rs"]
 mod keybindings_reload;
 #[path = "link_click.rs"]
@@ -47,10 +51,16 @@ mod model_hub;
 mod mouse_surfaces;
 #[path = "next_model.rs"]
 mod next_model;
+#[path = "notify.rs"]
+mod notify;
+#[path = "outline.rs"]
+mod outline;
 #[path = "p_tui.rs"]
 mod p_tui;
 #[path = "qol.rs"]
 mod qol;
+#[path = "qol_keys.rs"]
+mod qol_keys;
 #[path = "qol_parity.rs"]
 mod qol_parity;
 #[path = "radius_recovery.rs"]
@@ -71,6 +81,8 @@ mod startup_env_fallbacks;
 mod startup_notices;
 #[path = "startup_notices_app.rs"]
 mod startup_notices_app;
+#[path = "status_line.rs"]
+mod status_line;
 #[path = "terminal_debug.rs"]
 mod terminal_debug;
 #[path = "terminal_input.rs"]
@@ -83,5 +95,7 @@ mod theme_osc11;
 mod tool_images;
 #[path = "transcript_picker.rs"]
 mod transcript_picker;
+#[path = "transcript_search.rs"]
+mod transcript_search;
 #[path = "trust_debug.rs"]
 mod trust_debug;

@@ -8,76 +8,48 @@ use serde_json::Value;
 
 use crate::word_diff::diff_words;
 use jsrt::{number, string};
-use tui::components::{Component, Container, Panel, Spacer, Text};
-use tui::image::{image_dimensions, image_fallback};
-use tui::keybindings::KeybindingsManager;
-use tui::markdown::{DefaultTextStyle, Markdown, MarkdownOptions, MarkdownTheme};
-use tui::marked::markdown_tokens;
-use tui::select::{Loader, StyleFn};
-use tui::theme::Theme;
-use tui::utils::{strip_terminal_sequences, truncate_to_width, visible_width};
+use theme::styles::TextStyle;
+use theme::{Bg, Fg, Theme};
+use tui::KeybindingsManager;
+use tui::markdown_tokens;
+use tui::{Component, Container, Panel, Spacer, Text};
+use tui::{DefaultTextStyle, Markdown, MarkdownOptions, MarkdownTheme};
+use tui::{Loader, StyleFn};
+use tui::{image_dimensions, image_fallback};
+use tui::{strip_terminal_sequences, truncate_to_width, visible_width};
 
 const OSC133_ZONE_START: &str = "\x1b]133;A\x07";
 const OSC133_ZONE_END_FINAL: &str = "\x1b]133;B\x07\x1b]133;C\x07";
 
-/// chalk 6 at level > 0: re-open after every inner close, close/re-open around line feeds, nothing for "".
-fn chalk(open: &str, close: &str, s: &str) -> String {
-    if s.is_empty() {
-        return String::new();
-    }
-    let s = if s.contains('\x1b') {
-        s.replace(close, &format!("{close}{open}"))
-    } else {
-        s.to_string()
-    };
-    let mut out = String::from(open);
-    let mut end = 0;
-    for (idx, _) in s.match_indices('\n') {
-        let cr = s[..idx].ends_with('\r');
-        out.push_str(&s[end..idx - usize::from(cr)]);
-        out.push_str(close);
-        out.push_str(if cr { "\r\n" } else { "\n" });
-        out.push_str(open);
-        end = idx + 1;
-    }
-    out.push_str(&s[end..]);
-    out.push_str(close);
-    out
-}
-
+/// chalk's modifiers at level > 0 ([`TextStyle::apply`]): the components are drawn only where colors are.
 pub fn bold(s: &str) -> String {
-    chalk("\x1b[1m", "\x1b[22m", s)
+    TextStyle::Bold.apply(s, 1)
 }
 
 pub fn italic(s: &str) -> String {
-    chalk("\x1b[3m", "\x1b[23m", s)
+    TextStyle::Italic.apply(s, 1)
 }
 
 pub fn underline(s: &str) -> String {
-    chalk("\x1b[4m", "\x1b[24m", s)
+    TextStyle::Underline.apply(s, 1)
 }
 
 pub fn inverse(s: &str) -> String {
-    chalk("\x1b[7m", "\x1b[27m", s)
+    TextStyle::Inverse.apply(s, 1)
 }
 
 pub fn strikethrough(s: &str) -> String {
-    chalk("\x1b[9m", "\x1b[29m", s)
+    TextStyle::Strikethrough.apply(s, 1)
 }
 
-/// `theme.fg(color, text)` for a token known to exist.
-pub(crate) fn fg(theme: &Theme, color: &str, text: &str) -> String {
-    theme.fg(color, text).unwrap_or_else(|_| text.to_string())
-}
-
-fn fg_fn(theme: &Rc<Theme>, color: &'static str) -> StyleFn {
+fn fg_fn(theme: &Rc<Theme>, color: Fg) -> StyleFn {
     let t = Rc::clone(theme);
-    Box::new(move |s| fg(&t, color, s))
+    Box::new(move |s| t.fg(color, s))
 }
 
-fn bg_fn(theme: &Rc<Theme>, color: &'static str) -> StyleFn {
+fn bg_fn(theme: &Rc<Theme>, color: Bg) -> StyleFn {
     let t = Rc::clone(theme);
-    Box::new(move |s| t.bg(color, s).unwrap_or_else(|_| s.to_string()))
+    Box::new(move |s| t.bg(color, s))
 }
 
 /// `getMarkdownTheme()`. Code blocks are colored `mdCodeBlock` line by line; cli-highlight syntax coloring for known
@@ -89,26 +61,26 @@ pub fn markdown_theme(theme: &Rc<Theme>) -> MarkdownTheme {
 /// [`markdown_theme`] with fenced code blocks drawn by `code_highlight` (the Rust-only syntect highlighting).
 pub fn markdown_theme_with(theme: &Rc<Theme>, code_highlight: Option<&crate::qol::CodeHighlight>) -> MarkdownTheme {
     let t = Rc::clone(theme);
-    let highlight_code: tui::markdown::HighlightFn = match code_highlight {
+    let highlight_code: tui::HighlightFn = match code_highlight {
         Some(h) => {
             let h = Rc::clone(h);
             Box::new(move |code: &str, lang: Option<&str>| h(code, lang))
         }
         None => Box::new(move |code: &str, _lang: Option<&str>| {
-            code.split('\n').map(|l| fg(&t, "mdCodeBlock", l)).collect()
+            code.split('\n').map(|l| t.fg(Fg::MdCodeBlock, l)).collect()
         }),
     };
     MarkdownTheme {
-        heading: fg_fn(theme, "mdHeading"),
-        link: fg_fn(theme, "mdLink"),
-        link_url: fg_fn(theme, "mdLinkUrl"),
-        code: fg_fn(theme, "mdCode"),
-        code_block: fg_fn(theme, "mdCodeBlock"),
-        code_block_border: fg_fn(theme, "mdCodeBlockBorder"),
-        quote: fg_fn(theme, "mdQuote"),
-        quote_border: fg_fn(theme, "mdQuoteBorder"),
-        hr: fg_fn(theme, "mdHr"),
-        list_bullet: fg_fn(theme, "mdListBullet"),
+        heading: fg_fn(theme, Fg::MdHeading),
+        link: fg_fn(theme, Fg::MdLink),
+        link_url: fg_fn(theme, Fg::MdLinkUrl),
+        code: fg_fn(theme, Fg::MdCode),
+        code_block: fg_fn(theme, Fg::MdCodeBlock),
+        code_block_border: fg_fn(theme, Fg::MdCodeBlockBorder),
+        quote: fg_fn(theme, Fg::MdQuote),
+        quote_border: fg_fn(theme, Fg::MdQuoteBorder),
+        hr: fg_fn(theme, Fg::MdHr),
+        list_bullet: fg_fn(theme, Fg::MdListBullet),
         bold: Box::new(bold),
         italic: Box::new(italic),
         strikethrough: Box::new(strikethrough),
@@ -149,7 +121,7 @@ fn markdown_with(
     }
 }
 
-fn colored(theme: &Rc<Theme>, color: &'static str) -> Option<DefaultTextStyle> {
+fn colored(theme: &Rc<Theme>, color: Fg) -> Option<DefaultTextStyle> {
     Some(DefaultTextStyle {
         color: Some(fg_fn(theme, color)),
         ..DefaultTextStyle::default()
@@ -199,8 +171,8 @@ pub fn key_text(keys: &KeybindingsManager, keybinding: &str, darwin: bool) -> St
 pub fn key_hint(theme: &Theme, key: &str, description: &str) -> String {
     format!(
         "{}{}",
-        fg(theme, "dim", key),
-        fg(theme, "muted", &format!(" {description}"))
+        theme.fg(Fg::Dim, key),
+        theme.fg(Fg::Muted, &format!(" {description}"))
     )
 }
 
@@ -241,14 +213,14 @@ impl Component for UserMessage {
             &self.theme,
             &self.text,
             0,
-            colored(&self.theme, "userMessageText"),
+            colored(&self.theme, Fg::UserMessageText),
             options,
         );
         let mut panel = Panel {
             children: vec![Box::new(md)],
             padding_x: self.output_pad,
             padding_y: 1,
-            bg: Some(bg_fn(&self.theme, "userMessageBg")),
+            bg: Some(bg_fn(&self.theme, Bg::UserMessageBg)),
         };
         zone(panel.render(width))
     }
@@ -352,11 +324,11 @@ impl AssistantMessage {
                             .map_or(self.hide_thinking, |(_, h)| *h);
                         runs.push((c.children.len(), index, hidden));
                         if hidden {
-                            let label = italic(&fg(theme, "thinkingText", &self.hidden_thinking_label));
+                            let label = italic(&theme.fg(Fg::ThinkingText, &self.hidden_thinking_label));
                             c.children.push(Box::new(Text::new(&label, pad, 0, None)));
                         } else {
                             let style = DefaultTextStyle {
-                                color: Some(fg_fn(theme, "thinkingText")),
+                                color: Some(fg_fn(theme, Fg::ThinkingText)),
                                 italic: true,
                                 ..DefaultTextStyle::default()
                             };
@@ -379,7 +351,7 @@ impl AssistantMessage {
             i += 1;
         }
         let has_tool_calls = content.contains(&AssistantBlock::ToolCall);
-        let error = |text: String| Text::new(&fg(theme, "error", &text), pad, 0, None);
+        let error = |text: String| Text::new(&theme.fg(Fg::Error, &text), pad, 0, None);
         let notice = match self.message.stop_reason.as_str() {
             "length" => Some(error("Response was truncated before completion.".into())),
             "aborted" if !has_tool_calls => Some(error(
@@ -455,7 +427,7 @@ impl Component for SummaryMessage {
         let theme = &self.theme;
         let tokens = self.tokens_before.map(group_thousands);
         let tag = if tokens.is_some() { "compaction" } else { "branch" };
-        let label = fg(theme, "customMessageLabel", &format!("\x1b[1m[{tag}]\x1b[22m"));
+        let label = theme.fg(Fg::CustomMessageLabel, &format!("\x1b[1m[{tag}]\x1b[22m"));
         let mut children: Vec<Box<dyn Component>> = vec![Box::new(Text::new(&label, 0, 0, None)), Box::new(Spacer(1))];
         if self.expanded {
             let header = match &tokens {
@@ -467,7 +439,7 @@ impl Component for SummaryMessage {
                 theme,
                 &text,
                 0,
-                colored(theme, "customMessageText"),
+                colored(theme, Fg::CustomMessageText),
                 MarkdownOptions::default(),
             );
             children.push(Box::new(md));
@@ -478,9 +450,9 @@ impl Component for SummaryMessage {
             };
             let text = format!(
                 "{}{}{}",
-                fg(theme, "customMessageText", &lead),
-                fg(theme, "dim", &self.expand_key),
-                fg(theme, "customMessageText", " to expand)")
+                theme.fg(Fg::CustomMessageText, &lead),
+                theme.fg(Fg::Dim, &self.expand_key),
+                theme.fg(Fg::CustomMessageText, " to expand)")
             );
             children.push(Box::new(Text::new(&text, 0, 0, None)));
         }
@@ -488,7 +460,7 @@ impl Component for SummaryMessage {
             children,
             padding_x: 1,
             padding_y: 1,
-            bg: Some(bg_fn(theme, "customMessageBg")),
+            bg: Some(bg_fn(theme, Bg::CustomMessageBg)),
         }
         .render(width)
     }
@@ -558,7 +530,7 @@ pub fn render_diff(theme: &Theme, diff: &str) -> String {
     let mut i = 0;
     while i < lines.len() {
         let Some((prefix, num, content)) = parse_diff_line(lines[i]) else {
-            out.push(fg(theme, "toolDiffContext", lines[i]));
+            out.push(theme.fg(Fg::ToolDiffContext, lines[i]));
             i += 1;
             continue;
         };
@@ -578,21 +550,21 @@ pub fn render_diff(theme: &Theme, diff: &str) -> String {
             let added = take('+');
             if let ([(rn, rc)], [(an, ac)]) = (removed.as_slice(), added.as_slice()) {
                 let (r, a) = intra_line_diff(&tabs(rc), &tabs(ac));
-                out.push(fg(theme, "toolDiffRemoved", &format!("-{rn} {r}")));
-                out.push(fg(theme, "toolDiffAdded", &format!("+{an} {a}")));
+                out.push(theme.fg(Fg::ToolDiffRemoved, &format!("-{rn} {r}")));
+                out.push(theme.fg(Fg::ToolDiffAdded, &format!("+{an} {a}")));
             } else {
                 for (n, c) in &removed {
-                    out.push(fg(theme, "toolDiffRemoved", &format!("-{n} {}", tabs(c))));
+                    out.push(theme.fg(Fg::ToolDiffRemoved, &format!("-{n} {}", tabs(c))));
                 }
                 for (n, c) in &added {
-                    out.push(fg(theme, "toolDiffAdded", &format!("+{n} {}", tabs(c))));
+                    out.push(theme.fg(Fg::ToolDiffAdded, &format!("+{n} {}", tabs(c))));
                 }
             }
         } else if prefix == '+' {
-            out.push(fg(theme, "toolDiffAdded", &format!("+{num} {}", tabs(content))));
+            out.push(theme.fg(Fg::ToolDiffAdded, &format!("+{num} {}", tabs(content))));
             i += 1;
         } else {
-            out.push(fg(theme, "toolDiffContext", &format!(" {num} {}", tabs(content))));
+            out.push(theme.fg(Fg::ToolDiffContext, &format!(" {num} {}", tabs(content))));
             i += 1;
         }
     }
@@ -678,9 +650,9 @@ pub struct InlineImage {
 /// How tool images are drawn: the terminal's protocol, `terminal.imageWidthCells`, the cell size, and the images.
 #[derive(Clone, Debug, PartialEq)]
 pub struct InlineImages {
-    pub protocol: tui::image::ImageProtocol,
+    pub protocol: tui::ImageProtocol,
     pub width_cells: u32,
-    pub cell: tui::image::Dimensions,
+    pub cell: tui::Dimensions,
     pub images: Vec<InlineImage>,
 }
 
@@ -775,15 +747,14 @@ impl ToolExecution {
         let Some(inline) = self.inline.as_ref().filter(|_| self.show_images) else {
             return Vec::new();
         };
-        let caps = tui::image::Capabilities {
+        let caps = tui::Capabilities {
             images: Some(inline.protocol),
             true_color: true,
             hyperlinks: false,
         };
         let mut lines = Vec::new();
         for image in &inline.images {
-            let mut component =
-                tui::image::Image::new(&image.data, &image.mime, fg_fn(&self.theme, "toolOutput"), caps);
+            let mut component = tui::Image::new(&image.data, &image.mime, fg_fn(&self.theme, Fg::ToolOutput), caps);
             component.max_width_cells = Some(inline.width_cells);
             component.cell = inline.cell;
             component.image_id = image.image_id;
@@ -795,17 +766,17 @@ impl ToolExecution {
 
     fn bg(&self) -> StyleFn {
         let token = if self.is_partial {
-            "toolPendingBg"
+            Bg::ToolPendingBg
         } else if self.result.as_ref().is_some_and(|r| r.is_error) {
-            "toolErrorBg"
+            Bg::ToolErrorBg
         } else {
-            "toolSuccessBg"
+            Bg::ToolSuccessBg
         };
         bg_fn(&self.theme, token)
     }
 
     fn title(&self) -> String {
-        fg(&self.theme, "toolTitle", &bold(&self.tool_name))
+        self.theme.fg(Fg::ToolTitle, &bold(&self.tool_name))
     }
 
     fn result_fallback(&self) -> Option<Box<dyn Component>> {
@@ -822,16 +793,16 @@ impl ToolExecution {
         let t = &self.theme;
         let mut text = lines[..shown]
             .iter()
-            .map(|l| fg(t, "toolOutput", l))
+            .map(|l| t.fg(Fg::ToolOutput, l))
             .collect::<Vec<_>>()
             .join("\n");
         if lines.len() > shown {
             let more = format!("\n... ({} more lines,", lines.len() - shown);
             text.push_str(&format!(
                 "{} {}{}",
-                fg(t, "muted", &more),
+                t.fg(Fg::Muted, &more),
                 key_hint(t, &self.expand_key, "to expand"),
-                fg(t, "muted", ")")
+                t.fg(Fg::Muted, ")")
             ));
         }
         Some(Box::new(Text::new(&text, 0, 0, None)))
@@ -1003,9 +974,9 @@ impl BashExecution {
         expand_key: &str,
         cancel_key: &str,
     ) -> Self {
-        let color = if exclude_from_context { "dim" } else { "bashMode" };
+        let color = if exclude_from_context { Fg::Dim } else { Fg::BashMode };
         let message = format!("Running... ({cancel_key} to cancel)");
-        let loader = Loader::new(fg_fn(&theme, color), fg_fn(&theme, "muted"), &message, None);
+        let loader = Loader::new(fg_fn(&theme, color), fg_fn(&theme, Fg::Muted), &message, None);
         Self {
             theme,
             command: command.to_string(),
@@ -1069,12 +1040,16 @@ impl BashExecution {
 impl Component for BashExecution {
     fn render(&mut self, width: usize) -> Vec<String> {
         let t = Rc::clone(&self.theme);
-        let color = if self.exclude_from_context { "dim" } else { "bashMode" };
-        let border = |s: &str| fg(&t, color, s);
-        let header_color = if self.updated { "bashMode" } else { color };
+        let color = if self.exclude_from_context {
+            Fg::Dim
+        } else {
+            Fg::BashMode
+        };
+        let border = |s: &str| t.fg(color, s);
+        let header_color = if self.updated { Fg::BashMode } else { color };
         let mut lines = vec![String::new()];
         lines.extend(dynamic_border(&border, width));
-        let header = fg(&t, header_color, &bold(&format!("$ {}", self.command)));
+        let header = t.fg(header_color, &bold(&format!("$ {}", self.command)));
         lines.extend(Text::new(&header, 1, 0, None).render(width));
         let (tail, context_truncated) = truncate_tail(&self.output());
         let available: Vec<&str> = if tail.is_empty() {
@@ -1091,7 +1066,7 @@ impl Component for BashExecution {
             };
             let text = format!(
                 "\n{}",
-                shown.iter().map(|l| fg(&t, "muted", l)).collect::<Vec<_>>().join("\n")
+                shown.iter().map(|l| t.fg(Fg::Muted, l)).collect::<Vec<_>>().join("\n")
             );
             if self.expanded {
                 lines.extend(Text::new(&text, 1, 0, None).render(width));
@@ -1107,24 +1082,23 @@ impl Component for BashExecution {
                 parts.push(if self.expanded {
                     format!(
                         "{}{}{}",
-                        fg(&t, "muted", "("),
+                        t.fg(Fg::Muted, "("),
                         key_hint(&t, &self.expand_key, "to collapse"),
-                        fg(&t, "muted", ")")
+                        t.fg(Fg::Muted, ")")
                     )
                 } else {
                     format!(
                         "{}{}{}",
-                        fg(&t, "muted", &format!("... {hidden} more lines (")),
+                        t.fg(Fg::Muted, &format!("... {hidden} more lines (")),
                         key_hint(&t, &self.expand_key, "to expand"),
-                        fg(&t, "muted", ")")
+                        t.fg(Fg::Muted, ")")
                     )
                 });
             }
             match self.status {
-                BashStatus::Cancelled => parts.push(fg(&t, "warning", "(cancelled)")),
-                BashStatus::Error => parts.push(fg(
-                    &t,
-                    "error",
+                BashStatus::Cancelled => parts.push(t.fg(Fg::Warning, "(cancelled)")),
+                BashStatus::Error => parts.push(t.fg(
+                    Fg::Error,
                     &format!(
                         "(exit {})",
                         self.exit_code.map_or("undefined".to_string(), |c| c.to_string())
@@ -1137,7 +1111,7 @@ impl Component for BashExecution {
                 .as_deref()
                 .filter(|_| self.truncated || context_truncated)
             {
-                parts.push(fg(&t, "warning", &format!("Output truncated. Full output: {path}")));
+                parts.push(t.fg(Fg::Warning, &format!("Output truncated. Full output: {path}")));
             }
             if !parts.is_empty() {
                 lines.extend(Text::new(&format!("\n{}", parts.join("\n")), 1, 0, None).render(width));
@@ -1230,7 +1204,7 @@ fn sanitize_status(text: &str) -> String {
 
 /// `FooterComponent.render`: the cwd line, the stats line with the model on the right, and extension statuses.
 pub fn render_footer(theme: &Theme, v: &FooterView, width: usize) -> Vec<String> {
-    let dim = |s: &str| fg(theme, "dim", s);
+    let dim = |s: &str| theme.fg(Fg::Dim, s);
     let mut pwd = format_cwd_for_footer(&v.cwd, v.home.as_deref());
     if let Some(b) = v.git_branch.as_deref().filter(|b| !b.is_empty()) {
         pwd = format!("{pwd} ({b})");
@@ -1277,14 +1251,14 @@ pub fn render_footer(theme: &Theme, v: &FooterView, width: usize) -> Vec<String>
         ),
     };
     stats.push(if percent_value > 90.0 {
-        fg(theme, "error", &display)
+        theme.fg(Fg::Error, &display)
     } else if percent_value > 70.0 {
-        fg(theme, "warning", &display)
+        theme.fg(Fg::Warning, &display)
     } else {
         display
     });
     if v.experimental {
-        stats.push(format!("{} {}", dim("•"), bold(&fg(theme, "warning", "xp"))));
+        stats.push(format!("{} {}", dim("•"), bold(&theme.fg(Fg::Warning, "xp"))));
     }
     let mut left = stats.join(" ");
     let model_name = match model {

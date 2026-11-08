@@ -4,9 +4,10 @@
 //! the editor's padding and the split viewport's clear-on-shrink.
 
 use std::path::{Path, PathBuf};
+use theme::Fg;
 
 use serde_json::Value;
-use tui::clipboard_copy::{CopyEnv, CopyIo, copy_to_clipboard};
+use tui::{CopyEnv, CopyIo, copy_to_clipboard};
 
 /// Records every command and answers from a script: `fail` lists the commands that fail.
 #[derive(Default)]
@@ -280,20 +281,26 @@ fn tui_copy_detects_wsl_from_proc_version() {
         var: &var,
         proc_version: Some("Linux version 5.15.90.1-microsoft-standard-WSL2".into()),
     };
-    assert!(tui::clipboard_copy::is_wsl(&env));
+    assert!(tui::is_wsl(env.var, env.proc_version.as_deref()));
 }
 
 #[test]
 fn tui_copy_clipboard_command_needs_the_injected_path() {
     // Without a PATH nothing is run (launchers come only from the injected environment).
     assert_eq!(
-        tui::clipboard_copy::run_clipboard_command("sh", &[], None, 1000, None),
+        tui::proc::run::<&str>("sh", None, &[], None, Some(std::time::Duration::from_secs(1))),
         None
     );
     let empty = std::env::temp_dir().join(format!("p-tui-empty-path-{}", std::process::id()));
     std::fs::create_dir_all(&empty).unwrap();
     assert_eq!(
-        tui::clipboard_copy::run_clipboard_command("sh", &[], None, 1000, Some(&empty.display().to_string())),
+        tui::proc::run::<&str>(
+            "sh",
+            Some(&empty.display().to_string()),
+            &[],
+            None,
+            Some(std::time::Duration::from_secs(1))
+        ),
         None
     );
     let _ = std::fs::remove_dir_all(empty);
@@ -315,7 +322,7 @@ fn tui_split_view_matches_typescript() {
         let width = case["width"].as_u64().unwrap() as usize;
         let open = case["open"].as_bool().unwrap();
         let (main_width, side_width) =
-            tui::split_view::split_widths(width, open, 44usize.max((width as f64 * 0.4).round() as usize));
+            tui::split_widths(width, open, 44usize.max((width as f64 * 0.4).round() as usize));
         assert_eq!(
             (main_width as u64, side_width as u64),
             (case["mainWidth"].as_u64().unwrap(), case["sideWidth"].as_u64().unwrap()),
@@ -323,29 +330,29 @@ fn tui_split_view_matches_typescript() {
         );
         let main = lines(&fixture["mains"][case["main"].as_u64().unwrap() as usize]);
         let side = lines(&fixture["sides"][case["side"].as_u64().unwrap() as usize]);
-        let got = tui::split_view::render_split(&main, &side, main_width, side_width, "\x1b[90m│\x1b[39m");
+        let got = tui::render_split(&main, &side, main_width, side_width, "\x1b[90m│\x1b[39m");
         assert_eq!(got, lines(&case["lines"]), "{width} open={open}");
     }
 }
 
 #[test]
 fn tui_split_view_keeps_the_editor_cursor_marker() {
-    let main = vec![format!("ab{}c", tui::renderer::CURSOR_MARKER)];
-    let got = tui::split_view::render_split(&main, &["x".into()], 10, 5, "│");
-    assert!(got[0].contains(tui::renderer::CURSOR_MARKER), "{:?}", got[0]);
+    let main = vec![format!("ab{}c", tui::CURSOR_MARKER)];
+    let got = tui::render_split(&main, &["x".into()], 10, 5, "│");
+    assert!(got[0].contains(tui::CURSOR_MARKER), "{:?}", got[0]);
 }
 
 #[test]
 fn tui_theme_adopt_recolors_every_holder() {
-    use tui::theme::{ColorMode, builtin_theme_json, create_theme};
+    use theme::{ColorMode, builtin_theme_json, create_theme};
     let dark =
         std::rc::Rc::new(create_theme(&builtin_theme_json("dark").unwrap(), ColorMode::Truecolor, None).unwrap());
     let light = create_theme(&builtin_theme_json("light").unwrap(), ColorMode::Truecolor, None).unwrap();
     let held = std::rc::Rc::clone(&dark);
-    let before = held.fg("accent", "x").unwrap();
+    let before = held.fg(Fg::Accent, "x");
     dark.adopt(&light);
-    assert_eq!(held.fg("accent", "x").unwrap(), light.fg("accent", "x").unwrap());
-    assert_ne!(held.fg("accent", "x").unwrap(), before);
+    assert_eq!(held.fg(Fg::Accent, "x"), light.fg(Fg::Accent, "x"));
+    assert_ne!(held.fg(Fg::Accent, "x"), before);
     assert_eq!(held.thinking_border("high", "x"), light.thinking_border("high", "x"));
     // The name stays the holder's.
     assert_eq!(held.name.as_deref(), Some("dark"));
@@ -353,25 +360,21 @@ fn tui_theme_adopt_recolors_every_holder() {
 
 #[test]
 fn tui_editor_padding_x_moves_the_text() {
-    let keys = tui::keybindings::KeybindingsManager::new(
-        tui::keybindings::app_keybindings(tui::keybindings::Platform::new("linux", false)),
-        Vec::new(),
-        Default::default(),
-    );
-    let mut editor = tui::editor::Editor::new(keys, Default::default(), Box::new(str::to_string), 0);
+    let keys = tui::KeybindingsManager::new(tui::tui_keybindings(), Vec::new(), Default::default());
+    let mut editor = tui::Editor::new(keys, Box::new(str::to_string), 0);
     editor.set_text("hi");
     let plain = editor.render(20);
     editor.set_padding_x(3);
     assert_eq!(editor.padding_x(), 3);
     let padded = editor.render(20);
-    let row = |lines: &[String]| strip(&lines[1].replace(tui::renderer::CURSOR_MARKER, ""));
+    let row = |lines: &[String]| strip(&lines[1].replace(tui::CURSOR_MARKER, ""));
     assert!(row(&plain).starts_with("hi"), "{:?}", row(&plain));
     assert!(row(&padded).starts_with("   hi"), "{:?}", row(&padded));
 }
 
 #[test]
 fn tui_viewport_clear_on_shrink_repaints_the_shrunk_viewport() {
-    use tui::viewport::{FramePlan, ViewportRenderer};
+    use tui::{FramePlan, ViewportRenderer};
     let plan = |n: usize| FramePlan {
         history: None,
         viewport: (0..n).map(|i| format!("row {i}")).collect(),

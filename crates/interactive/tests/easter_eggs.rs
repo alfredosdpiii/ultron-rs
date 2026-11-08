@@ -7,8 +7,8 @@
 use interactive::easter_eggs::{Armin, EarendilAnnouncement};
 use serde_json::Value;
 use std::rc::Rc;
-use tui::components::Component;
-use tui::theme::{ColorMode, Theme, builtin_theme_json, create_theme};
+use theme::{ColorMode, Fg, Theme, builtin_theme_json, create_theme};
+use tui::Component;
 
 fn fixture() -> Value {
     serde_json::from_str(include_str!("../fixtures/easter_eggs.json")).unwrap()
@@ -35,14 +35,14 @@ fn translate(line: &str, colors: &[Value], theme: &Theme) -> String {
     let mut out = line.to_string();
     for (i, color) in colors.iter().enumerate() {
         let code = format!("\x1b[38;5;{}m", i + 1);
-        let styled = theme.fg(color.as_str().unwrap(), "\u{0}").unwrap();
+        let styled = theme.fg(Fg::from_name(color.as_str().unwrap()).unwrap(), "\u{0}");
         let open = styled.split('\u{0}').next().unwrap().to_string();
         // Wrapped lines carry the active styles combined into one SGR sequence (`\x1b[1;38;5;Nm`).
         let combined = format!("\x1b[1;38;5;{}m", i + 1);
         out = out.replace(&combined, &format!("\x1b[1;{}", &open[2..]));
         out = out.replace(&code, &open);
     }
-    let close = theme.fg("accent", "\u{0}").unwrap();
+    let close = theme.fg(Fg::Accent, "\u{0}");
     let close = close.split('\u{0}').nth(1).unwrap();
     out.replace("\x1b[39m", close)
 }

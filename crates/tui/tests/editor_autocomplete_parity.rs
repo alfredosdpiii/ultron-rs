@@ -8,16 +8,16 @@ use std::rc::Rc;
 
 use jsrt::collate::locale_compare;
 use serde_json::{Value, json};
-use tui::autocomplete::{
+use tui::Component;
+use tui::Editor;
+use tui::KeyContext;
+use tui::{
     AutocompleteItem, AutocompleteProvider, AutocompleteSuggestions, CombinedAutocompleteProvider, Completion,
     SlashCommand, SuggestionsJob,
 };
-use tui::components::Component;
-use tui::editor::Editor;
-use tui::keybindings::{KeybindingsManager, tui_keybindings};
-use tui::keys::KeyContext;
-use tui::mouse::{MouseButton, MouseEvent, MouseEventType, MouseResult};
-use tui::select::{SelectItem, SelectList, SelectListTheme};
+use tui::{KeybindingsManager, tui_keybindings};
+use tui::{MouseButton, MouseEvent, MouseEventType, MouseResult};
+use tui::{SelectItem, SelectList, SelectListTheme};
 
 fn fixture() -> Value {
     let path = concat!(env!("CARGO_MANIFEST_DIR"), "/fixtures/editor-autocomplete-parity.json");
@@ -291,7 +291,6 @@ fn tui_editor_autocomplete_scripted_sequences_match_ts() {
         let keys = KeybindingsManager::new(tui_keybindings(), Vec::new(), KeyContext::default());
         let mut e = Editor::new(
             keys,
-            KeyContext::default(),
             Box::new(|s| format!("<{s}>")),
             r["paddingX"].as_u64().expect("padding") as usize,
         );

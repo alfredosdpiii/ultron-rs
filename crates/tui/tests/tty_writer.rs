@@ -4,7 +4,7 @@ use std::io::{self, ErrorKind, Write};
 use std::sync::{Arc, Condvar, Mutex, mpsc};
 use std::time::{Duration, Instant};
 
-use tui::tty_writer::*;
+use tui::*;
 
 mod support;
 use support::latch::{HANG_GUARD, Latch};

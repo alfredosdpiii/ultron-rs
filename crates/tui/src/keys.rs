@@ -50,27 +50,10 @@ fn normalize_kitty_functional(cp: i64) -> i64 {
     }
 }
 
-/// Kitty event type (flag 2).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum KeyEventType {
-    Press,
-    Repeat,
-    Release,
-}
-
-fn event_type(s: Option<&str>) -> KeyEventType {
-    match s.and_then(|s| s.parse::<u32>().ok()) {
-        Some(2) => KeyEventType::Repeat,
-        Some(3) => KeyEventType::Release,
-        _ => KeyEventType::Press,
-    }
-}
-
 struct Kitty {
     codepoint: i64,
     base_layout: Option<i64>,
     modifier: u32,
-    event: KeyEventType,
 }
 
 fn digits(s: &str) -> bool {
@@ -122,7 +105,7 @@ fn match_csi_u(data: &str) -> Option<(&str, Option<&str>, Option<&str>, Option<&
 }
 
 /// `^\x1b\[1;(\d+)(?::(\d+))?([<finals>])$`
-fn match_csi1(data: &str, finals: &str) -> Option<(i64, KeyEventType, char)> {
+fn match_csi1(data: &str, finals: &str) -> Option<(i64, char)> {
     let body = data.strip_prefix("\x1b[1;")?;
     let last = body.chars().last()?;
     if !finals.contains(last) {
@@ -136,19 +119,18 @@ fn match_csi1(data: &str, finals: &str) -> Option<(i64, KeyEventType, char)> {
     if !digits(m) || ev.is_some_and(|e| !digits(e)) {
         return None;
     }
-    Some((num(m), event_type(ev), last))
+    Some((num(m), last))
 }
 
 fn parse_kitty(data: &str) -> Option<Kitty> {
-    if let Some((cp, _, base, modv, ev)) = match_csi_u(data) {
+    if let Some((cp, _, base, modv, _)) = match_csi_u(data) {
         return Some(Kitty {
             codepoint: num(cp),
             base_layout: base.map(num),
             modifier: modv.map_or(1, num).wrapping_sub(1) as u32,
-            event: event_type(ev),
         });
     }
-    if let Some((m, event, c)) = match_csi1(data, "ABCD") {
+    if let Some((m, c)) = match_csi1(data, "ABCD") {
         let codepoint = match c {
             'A' => UP,
             'B' => DOWN,
@@ -159,7 +141,6 @@ fn parse_kitty(data: &str) -> Option<Kitty> {
             codepoint,
             base_layout: None,
             modifier: (m - 1) as u32,
-            event,
         });
     }
     // `^\x1b\[(\d+)(?:;(\d+))?(?::(\d+))?~$`
@@ -187,18 +168,16 @@ fn parse_kitty(data: &str) -> Option<Kitty> {
                     codepoint,
                     base_layout: None,
                     modifier: (m.map_or(1, num) - 1) as u32,
-                    event: event_type(ev),
                 });
             }
         }
     }
-    if let Some((m, event, c)) = match_csi1(data, "HF") {
+    if let Some((m, c)) = match_csi1(data, "HF") {
         let codepoint = if c == 'H' { HOME } else { END };
         return Some(Kitty {
             codepoint,
             base_layout: None,
             modifier: (m - 1) as u32,
-            event,
         });
     }
     None
@@ -407,9 +386,12 @@ pub fn parse_key(data: &str, ctx: KeyContext) -> Option<String> {
     None
 }
 
-/// Kitty event type of a sequence, when it is a Kitty sequence.
-pub fn key_event_type(data: &str) -> Option<KeyEventType> {
-    parse_kitty(data).map(|k| k.event)
+/// TS `isKeyRelease`: a Kitty flag-2 release event (never bracketed paste content), by the substrings TypeScript looks for.
+pub fn is_key_release(data: &str) -> bool {
+    !data.contains("\x1b[200~")
+        && [":3u", ":3~", ":3A", ":3B", ":3C", ":3D", ":3H", ":3F"]
+            .iter()
+            .any(|p| data.contains(p))
 }
 
 /// Printable character carried by a Kitty CSI-u or modifyOtherKeys sequence (plain or shifted keys only).

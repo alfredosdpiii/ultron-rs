@@ -3,10 +3,10 @@
 
 use std::rc::Rc;
 
-use tui::components::{Component, Text};
-use tui::theme::Theme;
+use theme::{Fg, Theme};
+use tui::{Component, Text};
 
-use crate::components::{bold, fg};
+use crate::components::bold;
 
 /// XBM image: 31x36 pixels, LSB first, 1 = background, 0 = foreground.
 const WIDTH: usize = 31;
@@ -292,7 +292,7 @@ impl Component for Armin {
         let available = width.saturating_sub(1);
         let line = |text: &str| {
             let pad = available.saturating_sub(text.chars().count());
-            format!(" {}{}", fg(&self.theme, "accent", text), " ".repeat(pad))
+            format!(" {}{}", self.theme.fg(Fg::Accent, text), " ".repeat(pad))
         };
         let mut lines: Vec<String> = self
             .current
@@ -336,21 +336,21 @@ const IMAGE: &[u8] = include_bytes!("../../../packages/coding-agent/src/modes/in
 /// every image as its fallback line).
 pub struct EarendilAnnouncement {
     theme: Rc<Theme>,
-    image: tui::image::Image,
+    image: tui::Image,
 }
 
 impl EarendilAnnouncement {
     pub fn new(theme: Rc<Theme>) -> Self {
         let muted = Rc::clone(&theme);
-        let caps = tui::image::Capabilities {
+        let caps = tui::Capabilities {
             images: None,
             true_color: false,
             hyperlinks: false,
         };
-        let mut image = tui::image::Image::new(
+        let mut image = tui::Image::new(
             &jsrt::base64::encode(IMAGE),
             "image/png",
-            Box::new(move |s: &str| fg(&muted, "muted", s)),
+            Box::new(move |s: &str| muted.fg(Fg::Muted, s)),
             caps,
         );
         image.max_width_cells = Some(56);
@@ -362,13 +362,13 @@ impl EarendilAnnouncement {
 impl Component for EarendilAnnouncement {
     fn render(&mut self, width: usize) -> Vec<String> {
         let t = &self.theme;
-        let border = fg(t, "accent", &"─".repeat(width.max(1)));
+        let border = t.fg(Fg::Accent, &"─".repeat(width.max(1)));
         let text = |s: &str| Text::new(s, 1, 0, None).render(width);
         let mut lines = vec![border.clone()];
-        lines.extend(text(&bold(&fg(t, "accent", "pi has joined Earendil"))));
+        lines.extend(text(&bold(&t.fg(Fg::Accent, "pi has joined Earendil"))));
         lines.push(String::new());
-        lines.extend(text(&fg(t, "muted", "Read the blog post:")));
-        lines.extend(text(&fg(t, "mdLink", BLOG_URL)));
+        lines.extend(text(&t.fg(Fg::Muted, "Read the blog post:")));
+        lines.extend(text(&t.fg(Fg::MdLink, BLOG_URL)));
         lines.push(String::new());
         lines.extend(self.image.render(width));
         lines.push(String::new());

@@ -3,16 +3,17 @@
 //! [`RlmGraphFocus`] holds the state, maps keys through the keybindings and renders.
 
 use std::collections::{HashMap, HashSet};
+use theme::Fg;
 
 use serde_json::Value;
-use tui::keybindings::KeybindingsManager;
-use tui::utils::{truncate_to_width, visible_width};
+use tui::KeybindingsManager;
+use tui::{truncate_to_width, visible_width};
 
 use super::graph::{
     CollapseState, GraphRow, RowRenderOptions, budget_gauges, build_rlm_graph, frame_trace_details, graph_active,
     graph_totals, layout_graph, render_details, render_gauges, render_graph_row, render_kernel_strip, spinner_glyph,
 };
-use super::visualizer::{Color, RlmSnapshot, RlmStyle};
+use super::visualizer::{RlmSnapshot, RlmStyle};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum FocusAction {
@@ -151,13 +152,13 @@ pub fn render_focus_view(
     let selected_key = selected.map(|i| rows[i].node.key.clone());
     let totals = graph_totals(&graph);
     let status = if graph_active(&graph) {
-        style.fg(Color::Accent, &format!("{spinner} running"))
+        style.fg(Fg::Accent, &format!("{spinner} running"))
     } else if graph.status == super::graph::GraphStatus::Failed {
-        style.fg(Color::Error, "✗ failed")
+        style.fg(Fg::Error, "✗ failed")
     } else if graph.children.is_empty() {
-        style.fg(Color::Dim, "idle")
+        style.fg(Fg::Dim, "idle")
     } else {
-        style.fg(Color::Success, "✓ settled")
+        style.fg(Fg::Success, "✓ settled")
     };
     let mut counts = format!("{} nodes", totals.nodes - 1);
     if totals.running > 0 {
@@ -168,20 +169,20 @@ pub fn render_focus_view(
     }
     let mut head = vec![format!(
         "{} {status} {}",
-        style.bold(&style.fg(Color::Accent, "RLM graph")),
-        style.fg(Color::Muted, &counts)
+        style.bold(&style.fg(Fg::Accent, "RLM graph")),
+        style.fg(Fg::Muted, &counts)
     )];
     if let Some(e) = &snapshot.error {
-        head.push(style.fg(Color::Error, &format!("inspection failed: {e}")));
+        head.push(style.fg(Fg::Error, &format!("inspection failed: {e}")));
     }
     if let Some(h) = o.hints.as_deref().filter(|h| !h.is_empty()) {
-        head.push(style.fg(Color::Dim, h));
+        head.push(style.fg(Fg::Dim, h));
     }
     head.extend(render_gauges(&budget_gauges(snapshot, &graph), bound, style, 2));
     if let Some(strip) = render_kernel_strip(snapshot, bound, style) {
         head.push(strip);
     }
-    head.push(style.fg(Color::Dim, &"─".repeat(bound)));
+    head.push(style.fg(Fg::Dim, &"─".repeat(bound)));
 
     let row_options = RowRenderOptions {
         style: style.clone(),
@@ -216,7 +217,7 @@ pub fn render_focus_view(
     let mut visible: Vec<String> = body.iter().skip(scroll).take(room).cloned().collect();
     if scroll > 0 && !visible.is_empty() {
         visible[0] = style.fg(
-            Color::Dim,
+            Fg::Dim,
             &truncate_to_width(&format!("  ↑ {scroll} more above"), bound, "…", false),
         );
     }
@@ -224,7 +225,7 @@ pub fn render_focus_view(
     if hidden_below > 0 && visible.len() > 1 {
         let last = visible.len() - 1;
         visible[last] = style.fg(
-            Color::Dim,
+            Fg::Dim,
             &truncate_to_width(&format!("  ↓ {hidden_below} more below"), bound, "…", false),
         );
     }

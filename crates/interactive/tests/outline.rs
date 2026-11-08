@@ -1,21 +1,22 @@
 //! Replays fixtures/outline-parity.json (omp transcript-outline.ts, scroll-viewport.ts scrollOffsetForRow and
-//! mouse.ts parseSgrMouse, recorded by fixtures/generate-outline.mjs) against `tui::outline` and
+//! mouse.ts parseSgrMouse, recorded by fixtures/generate-outline.mjs) against `interactive::outline` and
 //! `tui::sgr_mouse`, plus behavior tests of the scroll body and frame browser.
 
-use serde_json::Value;
-use tui::outline::{
+use interactive::outline::{
     Align, Anchor, BrowserFrame, FrameBrowser, OutlineBuilder, OutlineEntry, OutlinePaint, OutlineStyle, OutlineTarget,
     ScrollBody, append_outline_entries, compose_outline_column, outline_rows, outline_rule, outline_visibility,
     scroll_offset_for_row, strip_prompt_zones,
 };
-use tui::sgr_mouse::parse_sgr_mouse;
+use serde_json::Value;
+use theme::Fg;
+use tui::parse_sgr_mouse;
 
 fn fixture() -> Value {
     serde_json::from_str(include_str!("../fixtures/outline-parity.json")).unwrap()
 }
 
-fn fg(color: &str, s: &str) -> String {
-    let code = match color {
+fn fg(color: Fg, s: &str) -> String {
+    let code = match color.name() {
         "accent" => 39,
         "success" => 34,
         "dim" => 245,
@@ -45,7 +46,7 @@ fn strings(v: &Value) -> Vec<String> {
 
 fn style(v: &Value) -> OutlineStyle {
     OutlineStyle {
-        color: v["color"].as_str().map(str::to_string),
+        color: v["color"].as_str().map(|c| Fg::from_name(c).unwrap()),
         caption: v["caption"].as_str().map(str::to_string),
     }
 }
@@ -74,7 +75,7 @@ fn tui_outline_rules_and_rows_match_omp() {
             "╭",
             "╮",
             case["inner"].as_u64().unwrap() as usize,
-            case["color"].as_str().unwrap(),
+            Fg::from_name(case["color"].as_str().unwrap()).unwrap(),
             case["caption"].as_str(),
         );
         assert_eq!(got, case["out"].as_str().unwrap(), "{case}");

@@ -5,6 +5,7 @@
 
 use crate::Env;
 use config::settings::SettingsManager;
+use interactive::keybindings::Platform;
 use interactive::{bold, key_hint, key_text};
 use resources::paths::{basename, canonicalize, dirname, join, relative};
 use serde_json::{Map, Value};
@@ -12,11 +13,11 @@ use session_core::local_resources::{LocalResources, PathMetadata, RESOURCE_TYPES
 use std::collections::HashMap;
 use std::io::Write;
 use std::rc::Rc;
-use tui::components::Component;
-use tui::input::Input;
-use tui::keybindings::{KeybindingsManager, Platform};
-use tui::theme::{ColorMode, Theme, builtin_theme_json, create_theme};
-use tui::utils::{truncate_to_width, visible_width};
+use theme::{Fg, Theme};
+use tui::Component;
+use tui::Input;
+use tui::KeybindingsManager;
+use tui::{truncate_to_width, visible_width};
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum WriteScope {
@@ -227,7 +228,7 @@ pub struct ConfigSelector {
 
 pub fn keybindings() -> KeybindingsManager {
     KeybindingsManager::new(
-        tui::qol_keys::native_app_keybindings(Platform::new("linux", false)),
+        interactive::keybindings::native_app_keybindings(Platform::new("linux", false)),
         Vec::new(),
         Default::default(),
     )
@@ -280,10 +281,6 @@ impl ConfigSelector {
         selector.build_rows();
         selector.filtered = selector.rows.clone();
         selector
-    }
-
-    fn fg(&self, color: &str, text: &str) -> String {
-        self.theme.fg(color, text).unwrap_or_else(|_| text.to_string())
     }
 
     fn index(&self) -> usize {
@@ -600,15 +597,15 @@ impl ConfigSelector {
     fn checkbox(&self, item: &Item) -> String {
         if self.write_scope == WriteScope::Project {
             return match self.override_state(item) {
-                OverrideState::Load => self.fg("success", "[+]"),
-                OverrideState::Unload => self.fg("warning", "[-]"),
-                OverrideState::Inherit => self.fg("dim", if item.enabled { "[x]" } else { "[ ]" }),
+                OverrideState::Load => self.theme.fg(Fg::Success, "[+]"),
+                OverrideState::Unload => self.theme.fg(Fg::Warning, "[-]"),
+                OverrideState::Inherit => self.theme.fg(Fg::Dim, if item.enabled { "[x]" } else { "[ ]" }),
             };
         }
         if item.enabled {
-            self.fg("success", "[x]")
+            self.theme.fg(Fg::Success, "[x]")
         } else {
-            self.fg("dim", "[ ]")
+            self.theme.fg(Fg::Dim, "[ ]")
         }
     }
 
@@ -617,9 +614,9 @@ impl ConfigSelector {
             return String::new();
         }
         match self.override_state(item) {
-            OverrideState::Load => self.fg("muted", "  project load"),
-            OverrideState::Unload => self.fg("muted", "  project unload"),
-            OverrideState::Inherit if self.is_inherited_global(item) => self.fg("dim", "  inherited global"),
+            OverrideState::Load => self.theme.fg(Fg::Muted, "  project load"),
+            OverrideState::Unload => self.theme.fg(Fg::Muted, "  project unload"),
+            OverrideState::Inherit if self.is_inherited_global(item) => self.theme.fg(Fg::Dim, "  inherited global"),
             OverrideState::Inherit => String::new(),
         }
     }
@@ -630,7 +627,7 @@ impl ConfigSelector {
         } else {
             "Global Resources"
         });
-        let sep = self.fg("muted", " · ");
+        let sep = self.theme.fg(Fg::Muted, " · ");
         let switch = if self.project_mode {
             format!(
                 "{}{sep}",
@@ -653,16 +650,16 @@ impl ConfigSelector {
             .saturating_sub(visible_width(&title) + visible_width(&hint))
             .max(1);
         let scope_hint = if self.write_scope == WriteScope::Project {
-            self.fg(
-                "muted",
+            self.theme.fg(
+                Fg::Muted,
                 &format!(
                     "{}/settings.json · inherited global resources are dimmed",
                     config::paths::CONFIG_DIR_NAME
                 ),
             )
         } else {
-            self.fg(
-                "muted",
+            self.theme.fg(
+                Fg::Muted,
                 &format!("~/{}/agent/settings.json", config::paths::CONFIG_DIR_NAME),
             )
         };
@@ -676,7 +673,7 @@ impl ConfigSelector {
         let mut lines = self.search.render(width);
         lines.push(String::new());
         if self.filtered.is_empty() {
-            lines.push(self.fg("muted", "  No resources found"));
+            lines.push(self.theme.fg(Fg::Muted, "  No resources found"));
             return lines;
         }
         let len = self.filtered.len() as i64;
@@ -694,16 +691,16 @@ impl ConfigSelector {
                         group.label,
                         if inherited { " · inherited global" } else { "" }
                     ));
-                    let line = self.fg(if inherited { "dim" } else { "accent" }, &label);
+                    let line = self.theme.fg(if inherited { Fg::Dim } else { Fg::Accent }, &label);
                     lines.push(truncate_to_width(&format!("  {line}"), width, "", false));
                 }
                 Row::Subgroup(g, s) => {
                     let color = if self.write_scope == WriteScope::Project && groups[g].scope == Scope::User {
-                        "dim"
+                        Fg::Dim
                     } else {
-                        "muted"
+                        Fg::Muted
                     };
-                    let label = self.fg(color, type_label(groups[g].subgroups[s].kind));
+                    let label = self.theme.fg(color, type_label(groups[g].subgroups[s].kind));
                     lines.push(truncate_to_width(&format!("    {label}"), width, "", false));
                 }
                 row @ Row::Item(..) => {
@@ -717,7 +714,7 @@ impl ConfigSelector {
                     } else {
                         item.display_name.clone()
                     };
-                    let name = if dimmed { self.fg("dim", &text) } else { text };
+                    let name = if dimmed { self.theme.fg(Fg::Dim, &text) } else { text };
                     let cursor = if selected { "> " } else { "  " };
                     lines.push(truncate_to_width(
                         &format!("{cursor}    {} {name}{}", self.checkbox(item), self.suffix(item)),
@@ -735,14 +732,14 @@ impl ConfigSelector {
                 .filter(|r| matches!(r, Row::Item(..)))
                 .count()
                 + 1;
-            lines.push(self.fg("dim", &format!("  ({current}/{count})")));
+            lines.push(self.theme.fg(Fg::Dim, &format!("  ({current}/{count})")));
         }
         lines
     }
 
     /// The whole component (`ConfigSelectorComponent.render`).
     pub fn render(&mut self, width: usize) -> Vec<String> {
-        let border = self.fg("border", &"─".repeat(width.max(1)));
+        let border = self.theme.fg(Fg::Border, &"─".repeat(width.max(1)));
         let mut lines = vec![String::new(), border.clone(), String::new()];
         lines.extend(self.header(width));
         lines.push(String::new());
@@ -759,11 +756,12 @@ fn item_scope(item: &Item) -> Scope {
 
 fn theme_for(env: &Env, settings: &SettingsManager) -> Result<Rc<Theme>, String> {
     let caps = crate::terminal_settings::capabilities(env, settings);
-    let name = settings.theme().unwrap_or_else(|| "dark".into());
-    let json = builtin_theme_json(&name)
-        .or_else(|| builtin_theme_json("dark"))
-        .ok_or("the dark theme is missing")?;
-    Ok(Rc::new(create_theme(&json, ColorMode::from_capabilities(&caps), None)?))
+    Ok(Rc::new(crate::themes::resolve(
+        settings.theme_setting().as_deref(),
+        (env.var)("COLORFGBG").as_deref(),
+        &env.agent_dir().join("themes"),
+        tui::color_mode(&caps),
+    )))
 }
 
 /// Run the selector on the process terminal until it closes (`selectConfig`).
@@ -776,7 +774,7 @@ pub fn select_config(
     project_mode: bool,
 ) -> Result<(), String> {
     let theme = theme_for(env, &settings)?;
-    let (_, rows) = tui::terminal::size();
+    let (_, rows) = tui::size();
     let mut selector = ConfigSelector::new(
         global,
         project,
@@ -789,22 +787,21 @@ pub fn select_config(
         project_mode,
         theme,
     );
-    let input = tui::terminal::spawn_stdin_pump();
-    let mut terminal = tui::terminal::Terminal::new(std::io::stdout());
+    let input = tui::spawn_stdin_pump();
+    let mut terminal = tui::Terminal::new(std::io::stdout());
     terminal.start(true).map_err(|e| e.to_string())?;
     let _ = terminal.hide_cursor();
-    let mut renderer = tui::renderer::Renderer::new();
+    let mut renderer = tui::Renderer::new();
     let mut cursor_row: i64 = 0;
-    let mut paint = |selector: &mut ConfigSelector,
-                     renderer: &mut tui::renderer::Renderer,
-                     terminal: &mut tui::terminal::Terminal<std::io::Stdout>| {
-        let (w, h) = tui::terminal::size();
-        let (w, h) = (w.max(1) as usize, h.max(1) as usize);
-        if let Ok(out) = renderer.render(selector.render(w), w, h) {
-            track(&mut cursor_row, &out);
-            let _ = terminal.write(&out);
-        }
-    };
+    let mut paint =
+        |selector: &mut ConfigSelector, renderer: &mut tui::Renderer, terminal: &mut tui::Terminal<std::io::Stdout>| {
+            let (w, h) = tui::size();
+            let (w, h) = (w.max(1) as usize, h.max(1) as usize);
+            if let Ok(out) = renderer.render(selector.render(w), w, h) {
+                track(&mut cursor_row, &out);
+                let _ = terminal.write(&out);
+            }
+        };
     paint(&mut selector, &mut renderer, &mut terminal);
     loop {
         let data = match input.recv_timeout(std::time::Duration::from_millis(100)) {

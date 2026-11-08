@@ -3,16 +3,17 @@
 //! follows it) or one `workflows.run` call (waves are the topological levels of `dependsOn`).
 
 use std::collections::{HashMap, HashSet};
+use theme::Fg;
 
-use tui::keybindings::KeybindingsManager;
-use tui::utils::{truncate_to_width, visible_width};
+use tui::KeybindingsManager;
+use tui::{truncate_to_width, visible_width};
 
 use super::flat;
 use super::graph::{
     GraphKind, GraphNode, GraphProgress, GraphStatus, bar, build_rlm_graph, count, is_finished, rollup, status_color,
     task_status,
 };
-use super::visualizer::{Color, RlmSnapshot, RlmStyle, RlmTask, format_duration, short_id};
+use super::visualizer::{RlmSnapshot, RlmStyle, RlmTask, format_duration, short_id};
 use jsrt::number;
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -668,9 +669,9 @@ fn dot(status: GraphStatus) -> &'static str {
     }
 }
 
-fn tone(status: GraphStatus) -> Color {
+fn tone(status: GraphStatus) -> Fg {
     if status == GraphStatus::Pending {
-        Color::Dim
+        Fg::Dim
     } else {
         status_color(status)
     }
@@ -876,7 +877,7 @@ fn natural_box_width(node: &DagNode, run: &DagRun) -> usize {
         + 4
 }
 
-fn draw_box(lines: &[String], width: usize, border: Color, style: &RlmStyle, bold: bool) -> Vec<String> {
+fn draw_box(lines: &[String], width: usize, border: Fg, style: &RlmStyle, bold: bool) -> Vec<String> {
     if width < 5 {
         return lines.iter().map(|l| pad_to(l, width)).collect();
     }
@@ -907,18 +908,18 @@ fn node_box(
 ) -> Vec<String> {
     let inner = width.saturating_sub(4).max(1);
     let marker = if selected {
-        style.fg(Color::Accent, ">")
+        style.fg(Fg::Accent, ">")
     } else {
         " ".into()
     };
-    let fold = style.fg(Color::Dim, if folded { "[+]" } else { "[-]" });
+    let fold = style.fg(Fg::Dim, if folded { "[+]" } else { "[-]" });
     let name = if selected {
         style.bold(&node.name)
     } else {
         node.name.clone()
     };
     let color = tone(node.status());
-    let border = if selected { Color::Accent } else { Color::Dim };
+    let border = if selected { Fg::Accent } else { Fg::Dim };
     if folded {
         let glyph = style.fg(color, dot(node.status()));
         let head = cut(&format!("{marker} {fold} {name}"), inner.saturating_sub(2).max(1));
@@ -927,7 +928,7 @@ fn node_box(
     let word = status_word(node);
     let status = match elapsed_of(node, now) {
         Some(t) if visible_width(word) + 2 + visible_width(&t) <= inner => {
-            format!("{}  {}", style.fg(color, word), style.fg(Color::Dim, &t))
+            format!("{}  {}", style.fg(color, word), style.fg(Fg::Dim, &t))
         }
         _ => style.fg(color, word),
     };
@@ -935,8 +936,8 @@ fn node_box(
         Some(p) if matches!(node.kind(), GraphKind::Fanout | GraphKind::Workflow | GraphKind::Tools) => {
             style.fg(tone(node.status()), &progress_line(p, inner))
         }
-        _ if !node.depends_on.is_empty() => style.fg(Color::Muted, &sub_of(node, run)),
-        _ => style.fg(Color::Dim, &node.origin),
+        _ if !node.depends_on.is_empty() => style.fg(Fg::Muted, &sub_of(node, run)),
+        _ => style.fg(Fg::Dim, &node.origin),
     };
     draw_box(
         &[format!("{marker} {fold} {name}"), status, sub],
@@ -950,7 +951,7 @@ fn node_box(
 fn card_lines(node: &DagNode, run: &DagRun, width: usize, selected: bool, style: &RlmStyle, now: f64) -> Vec<String> {
     let color = tone(node.status());
     let marker = if selected {
-        format!("{} ", style.fg(Color::Accent, ">"))
+        format!("{} ", style.fg(Fg::Accent, ">"))
     } else {
         String::new()
     };
@@ -958,7 +959,7 @@ fn card_lines(node: &DagNode, run: &DagRun, width: usize, selected: bool, style:
         "{marker}{} {}",
         style.fg(color, dot(node.status())),
         style.fg(
-            if selected { Color::Accent } else { Color::Text },
+            if selected { Fg::Accent } else { Fg::Text },
             node.prompt.as_deref().unwrap_or(&node.name)
         )
     );
@@ -972,14 +973,14 @@ fn card_lines(node: &DagNode, run: &DagRun, width: usize, selected: bool, style:
         _ => None,
     };
     let body = if node.status() == GraphStatus::Failed && node.note.is_some() {
-        style.fg(Color::Error, node.note.as_deref().unwrap_or(""))
+        style.fg(Fg::Error, node.note.as_deref().unwrap_or(""))
     } else if let Some(t) = &node.text {
-        style.fg(Color::Text, t)
+        style.fg(Fg::Text, t)
     } else if let Some(n) = &node.note {
-        style.fg(Color::Muted, &format!("→ {n}"))
+        style.fg(Fg::Muted, &format!("→ {n}"))
     } else if node.status() == GraphStatus::Pending {
         style.fg(
-            Color::Dim,
+            Fg::Dim,
             &format!(
                 "waiting{}",
                 if node.depends_on.is_empty() {
@@ -990,9 +991,9 @@ fn card_lines(node: &DagNode, run: &DagRun, width: usize, selected: bool, style:
             ),
         )
     } else if let Some(p) = &node.progress {
-        style.fg(Color::Muted, &progress_line(p, width.saturating_sub(4)))
+        style.fg(Fg::Muted, &progress_line(p, width.saturating_sub(4)))
     } else {
-        style.fg(Color::Dim, "no output yet")
+        style.fg(Fg::Dim, "no output yet")
     };
     let mut stats = Vec::new();
     if node.status() == GraphStatus::Pending {
@@ -1016,10 +1017,10 @@ fn card_lines(node: &DagNode, run: &DagRun, width: usize, selected: bool, style:
     }
     let lines = vec![
         head,
-        style.fg(Color::Muted, &format!("{} · {meta}", node.name)),
+        style.fg(Fg::Muted, &format!("{} · {meta}", node.name)),
         body,
         style.fg(
-            Color::Dim,
+            Fg::Dim,
             &if stats.is_empty() {
                 "—".to_string()
             } else {
@@ -1030,7 +1031,7 @@ fn card_lines(node: &DagNode, run: &DagRun, width: usize, selected: bool, style:
     draw_box(
         &lines,
         width,
-        if selected { Color::Accent } else { Color::Dim },
+        if selected { Fg::Accent } else { Fg::Dim },
         style,
         selected,
     )
@@ -1124,18 +1125,18 @@ pub fn render_dag_body(run: &DagRun, state: &RlmPaneState, width: usize, style: 
             start += per_row;
         }
         if wave.len() > 1 {
-            lines.push(cut(&style.fg(Color::Dim, "  · Same frontier"), bound));
+            lines.push(cut(&style.fg(Fg::Dim, "  · Same frontier"), bound));
         }
         if wave_index < run.waves.len() - 1 {
-            lines.push(center(&style.fg(Color::Dim, "│")));
-            lines.push(center(&style.fg(Color::Accent, "▼")));
+            lines.push(center(&style.fg(Fg::Dim, "│")));
+            lines.push(center(&style.fg(Fg::Accent, "▼")));
         }
     }
     lines.push(String::new());
-    lines.push(style.bold(&style.fg(Color::Text, "Dependencies")));
+    lines.push(style.bold(&style.fg(Fg::Text, "Dependencies")));
     if run.edges.is_empty() {
         lines.push(style.fg(
-            Color::Dim,
+            Fg::Dim,
             &cut(
                 if run.kind == RunKind::Turn {
                     "  none · each cell's work is one frontier"
@@ -1152,22 +1153,22 @@ pub fn render_dag_body(run: &DagRun, state: &RlmPaneState, width: usize, style: 
         lines.push(cut(
             &format!(
                 "  {} {} {}",
-                style.fg(Color::Text, &name(from)),
-                style.fg(Color::Dim, "→"),
-                style.fg(Color::Text, &name(to))
+                style.fg(Fg::Text, &name(from)),
+                style.fg(Fg::Dim, "→"),
+                style.fg(Fg::Text, &name(to))
             ),
             bound,
         ));
     }
     if run.edges.len() > EDGE_LIMIT {
         lines.push(style.fg(
-            Color::Dim,
+            Fg::Dim,
             &cut(&format!("  … {} more", run.edges.len() - EDGE_LIMIT), bound),
         ));
     }
     if state.details {
         lines.push(String::new());
-        lines.push(style.bold(&style.fg(Color::Text, "Node details")));
+        lines.push(style.bold(&style.fg(Fg::Text, "Node details")));
         for key in node_order(run) {
             let node = by_key[key.as_str()];
             for l in card_lines(node, run, bound, Some(&key) == selected.as_ref(), style, now) {
@@ -1233,35 +1234,35 @@ pub fn render_rlm_pane(
     let mut header = Vec::new();
     match run {
         None => {
-            header.push(style.bold(&style.fg(Color::Accent, "RLM")));
-            header.push(style.fg(Color::Muted, "RLM pane"));
+            header.push(style.bold(&style.fg(Fg::Accent, "RLM")));
+            header.push(style.fg(Fg::Muted, "RLM pane"));
         }
         Some(run) => {
             let c = run_counts(run);
             let index = runs.iter().position(|r| r.key == run.key).unwrap_or(0) + 1;
             header.push(format!(
                 "{} {} {}",
-                style.bold(&style.fg(Color::Accent, "RLM")),
-                style.fg(Color::Dim, "·"),
-                style.fg(Color::Muted, &run.id)
+                style.bold(&style.fg(Fg::Accent, "RLM")),
+                style.fg(Fg::Dim, "·"),
+                style.fg(Fg::Muted, &run.id)
             ));
             header.push(format!(
                 "{}  {}",
                 style.fg(
-                    Color::Muted,
+                    Fg::Muted,
                     &format!(
                         "RLM pane / {}",
                         if run.kind == RunKind::Turn { "turn" } else { "workflow" }
                     )
                 ),
-                style.fg(Color::Dim, &format!("Tasks ({})", o.task_count))
+                style.fg(Fg::Dim, &format!("Tasks ({})", o.task_count))
             ));
             let counter = format!("{index}/{}", runs.len());
             let title = cut(&run.title, bound.saturating_sub(visible_width(&counter) + 2).max(1));
             header.push(format!(
                 "{}  {}",
-                style.bold(&style.fg(Color::Text, &title)),
-                style.fg(Color::Dim, &counter)
+                style.bold(&style.fg(Fg::Text, &title)),
+                style.fg(Fg::Dim, &counter)
             ));
             let word = if c.running > 0 {
                 "Running"
@@ -1273,13 +1274,13 @@ pub fn render_rlm_pane(
                 "Finished"
             };
             let color = if c.running > 0 {
-                Color::Accent
+                Fg::Accent
             } else if c.failed > 0 {
-                Color::Error
+                Fg::Error
             } else if c.pending > 0 {
-                Color::Dim
+                Fg::Dim
             } else {
-                Color::Success
+                Fg::Success
             };
             let mut extra = vec![format!("Done {}/{}", c.done, c.total)];
             if c.running > 0 {
@@ -1292,8 +1293,8 @@ pub fn render_rlm_pane(
             header.push(format!(
                 "{} {} {}",
                 style.fg(color, word),
-                style.fg(Color::Dim, "·"),
-                style.fg(Color::Muted, &extra.join(" · "))
+                style.fg(Fg::Dim, "·"),
+                style.fg(Fg::Muted, &extra.join(" · "))
             ));
         }
     }
@@ -1301,9 +1302,9 @@ pub fn render_rlm_pane(
         None => Body {
             lines: vec![
                 String::new(),
-                style.fg(Color::Dim, "No RLM work in this turn yet."),
-                style.fg(Color::Dim, "Spawned children and workflows.run nodes"),
-                style.fg(Color::Dim, "appear here as dependency waves."),
+                style.fg(Fg::Dim, "No RLM work in this turn yet."),
+                style.fg(Fg::Dim, "Spawned children and workflows.run nodes"),
+                style.fg(Fg::Dim, "appear here as dependency waves."),
             ],
             spans: HashMap::new(),
         },
@@ -1313,28 +1314,19 @@ pub fn render_rlm_pane(
     hints.extend(o.hints.iter().cloned());
     let connection = match &o.error {
         Some(e) => style.fg(
-            Color::Error,
+            Fg::Error,
             &format!(
                 "● {}",
                 cut(&format!("Inspection failed: {e}"), bound.saturating_sub(14).max(1))
             ),
         ),
-        None => style.fg(Color::Success, "● Connected"),
+        None => style.fg(Fg::Success, "● Connected"),
     };
     let mut footer_hints: Vec<String> = pack_hints(&hints, bound)
         .iter()
-        .map(|l| {
-            style.fg(
-                if o.focused == Some(false) {
-                    Color::Dim
-                } else {
-                    Color::Muted
-                },
-                l,
-            )
-        })
+        .map(|l| style.fg(if o.focused == Some(false) { Fg::Dim } else { Fg::Muted }, l))
         .collect();
-    let mut separator = vec![style.fg(Color::Dim, &"─".repeat(bound))];
+    let mut separator = vec![style.fg(Fg::Dim, &"─".repeat(bound))];
     let mut blank = vec![String::new()];
     if rows < header.len() + 1 + 2 + footer_hints.len() + 6 {
         blank.clear();
@@ -1368,7 +1360,7 @@ pub fn render_rlm_pane(
     } else {
         format!("{}-{}/{total}", scroll + 1, total.min(scroll + room))
     };
-    let status = cut(&format!("{connection}  {}", style.fg(Color::Dim, &position)), bound);
+    let status = cut(&format!("{connection}  {}", style.fg(Fg::Dim, &position)), bound);
     let mut lines: Vec<String> = header;
     lines.extend(blank);
     lines.extend(body.lines.iter().skip(scroll).take(room).cloned());
@@ -1441,9 +1433,9 @@ pub fn render_wave_summary(runs: &[DagRun], width: usize, style: &RlmStyle, now:
     let mut lines = vec![cut(
         &format!(
             "{} {}{}",
-            style.fg(Color::Accent, "▶"),
-            style.bold(&style.fg(Color::Text, &cut(&run.title, title_room))),
-            style.fg(Color::Muted, &tail)
+            style.fg(Fg::Accent, "▶"),
+            style.bold(&style.fg(Fg::Text, &cut(&run.title, title_room))),
+            style.fg(Fg::Muted, &tail)
         ),
         bound,
     )];
@@ -1505,9 +1497,9 @@ pub fn render_wave_summary(runs: &[DagRun], width: usize, style: &RlmStyle, now:
             dot(node.status())
         };
         let color = match node.status() {
-            GraphStatus::Pending => Color::Dim,
-            GraphStatus::Failed => Color::Error,
-            _ => Color::Muted,
+            GraphStatus::Pending => Fg::Dim,
+            GraphStatus::Failed => Fg::Error,
+            _ => Fg::Muted,
         };
         lines.push(cut(
             &format!(
@@ -1520,7 +1512,7 @@ pub fn render_wave_summary(runs: &[DagRun], width: usize, style: &RlmStyle, now:
     }
     if nodes.len() > shown.len() {
         lines.push(cut(
-            &style.fg(Color::Dim, &format!("  +{} more", nodes.len() - shown.len())),
+            &style.fg(Fg::Dim, &format!("  +{} more", nodes.len() - shown.len())),
             bound,
         ));
     }

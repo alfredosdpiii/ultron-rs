@@ -22,19 +22,18 @@ use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 
-use serde_json::Value;
-use tui::autocomplete::{AutocompleteProvider, CombinedAutocompleteProvider, SlashCommand};
-use tui::autocomplete_sources::{
+use crate::autocomplete_sources::{
     ChainProvider, EmojiProvider, GhRefTitles, GithubRefProvider, MentionModel, ModelMentionProvider,
 };
-use tui::highlight::{HighlightColors, highlight_lines, supports_language};
-use tui::notify::{Message, NotificationService, Notifier, ProcessSink};
-use tui::status_git::{GhPrLookup, GitSnapshot, GitWatcher, PrLookup};
-use tui::status_line::{Preset, SegmentId, SeparatorStyle, StatusLineSettings, Symbols};
-use tui::theme::Theme;
+use crate::notify::{Message, NotificationService, Notifier, ProcessSink};
+use crate::status_git::{GhPrLookup, GitSnapshot, GitWatcher, PrLookup};
+use crate::status_line::{Preset, SegmentId, SeparatorStyle, StatusLineSettings, Symbols};
+use serde_json::Value;
+use theme::{Fg, Theme};
+use tui::{AutocompleteProvider, CombinedAutocompleteProvider, SlashCommand};
+use tui::{HighlightColors, highlight_lines, supports_language};
 
 use crate::app::App;
-use crate::components::fg;
 use crate::lane::ModelInfo;
 
 /// The environment variable that turns every Rust-only addition off.
@@ -71,7 +70,7 @@ pub struct QolSettings {
     pub notifications: bool,
     /// Frames go through the terminal writer thread (used by [`crate::run::run_stdout`]).
     pub tty_writer: bool,
-    /// Frame pacing with output backpressure ([`tui::viewport::RenderGate`]).
+    /// Frame pacing with output backpressure ([`tui::RenderGate`]).
     pub render_gate: bool,
     /// Finished transcript goes to the terminal's scrollback once; only the live area and the dock are repainted
     /// (main screen). Off (the default): the alternate-screen layout.
@@ -232,7 +231,7 @@ pub fn code_highlighter(theme: &Rc<Theme>) -> CodeHighlight {
     Rc::new(
         move |code: &str, lang: Option<&str>| match lang.filter(|l| supports_language(l)) {
             Some(lang) => highlight_lines(code, Some(lang), &colors),
-            None => code.split('\n').map(|l| fg(&t, "mdCodeBlock", l)).collect(),
+            None => code.split('\n').map(|l| t.fg(Fg::MdCodeBlock, l)).collect(),
         },
     )
 }
@@ -267,7 +266,8 @@ pub fn autocomplete_provider(
     }
     if qol.autocomplete_github {
         chain.push(Box::new(GithubRefProvider {
-            titles: Some(Box::new(GhRefTitles::gh(PathBuf::from(cwd), || {}))),
+            // Without its thread the provider still offers the references, untitled.
+            titles: GhRefTitles::gh(PathBuf::from(cwd), || {}).ok(),
         }));
     }
     if qol.autocomplete_emoji {
@@ -309,13 +309,13 @@ impl PrLookup for NoPr {
 
 /// Start what the enabled additions need on their own threads: the desktop clipboard (attachments, Vim yanks), the
 /// git watcher (status line), the terminal notifier (its bytes reach the terminal through the paint loop), and
-/// grammar warm-up (highlighting). Call once at startup, before the paint loop.
-pub fn install_services(app: &mut App, path_var: Option<String>) {
+/// grammar warm-up (highlighting). Call once at startup, before the paint loop; fails when a thread cannot start.
+pub fn install_services(app: &mut App, path_var: Option<String>) -> std::io::Result<()> {
     let qol = app.qol().clone();
     // Pi's Ctrl+V and copies use the clipboard in every mode (its tools come from `path_var`).
-    app.set_clipboard(tui::clipboard::ClipboardService::spawn(
-        tui::clipboard::SystemClipboard::with_env(path_var.clone(), std::env::vars().collect()).with_native_images(),
-    ));
+    app.set_clipboard(tui::ClipboardService::spawn(
+        tui::SystemClipboard::with_env(path_var.clone(), std::env::vars().collect()).with_native_images(),
+    )?);
     // Clicked hyperlinks open with the launcher on `path_var` only (`openBrowser`).
     app.set_url_opener(crate::url_opener::url_opener_with(
         path_var.clone(),
@@ -334,9 +334,9 @@ pub fn install_services(app: &mut App, path_var: Option<String>) {
     if qol.status_line {
         let cwd = PathBuf::from(app.cwd());
         let watcher = if qol.status_pr {
-            GitWatcher::spawn(cwd, GhPrLookup, || {})
+            GitWatcher::spawn(cwd, GhPrLookup, || {})?
         } else {
-            GitWatcher::spawn(cwd, NoPr, || {})
+            GitWatcher::spawn(cwd, NoPr, || {})?
         };
         app.set_git_source(Box::new(watcher));
     }
@@ -346,10 +346,13 @@ pub fn install_services(app: &mut App, path_var: Option<String>) {
             move |data: &str| out.lock().unwrap_or_else(|e| e.into_inner()).push(data.to_string()),
             path_var,
         );
-        let service = NotificationService::spawn(Notifier::detect(), sink);
+        let service = NotificationService::spawn(Notifier::detect(), sink)?;
         app.set_notify_sink(Box::new(move |m| service.notify(m)));
     }
     if qol.highlight {
-        std::thread::spawn(tui::highlight::warm);
+        std::thread::Builder::new()
+            .name("highlight-warm".into())
+            .spawn(tui::warm)?;
     }
+    Ok(())
 }

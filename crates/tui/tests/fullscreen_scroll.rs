@@ -5,12 +5,12 @@
 use std::time::{Duration, Instant};
 
 use serde_json::Value;
-use tui::fullscreen::{FullscreenViewport, ViewportInput};
-use tui::keybindings::{KeybindingsManager, tui_keybindings};
-use tui::keys::KeyContext;
-use tui::screen::{AltScreen, StackEntry, allocate_stack_sizes, stack_lines};
-use tui::scroll_view::{Rect, ScrollView, Scrollbar, slice_by_column};
-use tui::utils::{normalize_terminal_output, visible_width};
+use tui::KeyContext;
+use tui::{AltScreen, StackEntry, allocate_stack_sizes, stack_lines};
+use tui::{FullscreenViewport, ViewportInput};
+use tui::{KeybindingsManager, tui_keybindings};
+use tui::{Rect, ScrollView, Scrollbar, slice_by_column};
+use tui::{normalize_terminal_output, visible_width};
 
 const SEGMENT_RESET: &str = "\x1b[0m\x1b]8;;\x07";
 const PROMPT: &str = "\x1b]133;A\x07";
@@ -227,7 +227,7 @@ fn tui_fullscreen_mouse_tracking_sequences_match_ts() {
     for case in fixture()["startStop"].as_array().unwrap() {
         let env = case["env"].as_object().unwrap().clone();
         let var = |name: &str| env.get(name).and_then(Value::as_str).map(str::to_string);
-        let mouse = tui::fullscreen::mouse_tracking(&var);
+        let mouse = tui::mouse_tracking(&var);
         assert_eq!(
             AltScreen::new().enter_with_mouse(mouse),
             case["enter"].as_str().unwrap(),

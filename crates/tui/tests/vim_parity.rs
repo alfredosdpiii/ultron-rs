@@ -3,7 +3,7 @@
 //! must match exactly.
 
 use serde_json::{Value, json};
-use tui::vim::*;
+use tui::*;
 
 fn col(c: usize) -> i64 {
     if c == usize::MAX { -1 } else { c as i64 }

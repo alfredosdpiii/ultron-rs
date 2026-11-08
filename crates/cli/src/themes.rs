@@ -8,7 +8,15 @@
 use config::settings::SettingsManager;
 use session_core::local_resources::LocalResources;
 use std::path::Path;
-use tui::theme::{ColorMode, Theme, load_theme_from_path};
+use theme::{ColorMode, Theme, load_theme_from_path};
+
+/// The theme a screen outside the TUI draws with ([`theme::resolve_theme`]): `setting` (the `theme` setting), the side
+/// of the terminal `COLORFGBG` names, and `custom_dir` (`<agent dir>/themes`).
+pub fn resolve(setting: Option<&str>, colorfgbg: Option<&str>, custom_dir: &Path, mode: ColorMode) -> Theme {
+    let terminal = theme::detect_terminal_background_from_env(colorfgbg).theme;
+    let (_, json) = theme::resolve_theme(setting, terminal, custom_dir);
+    theme::create_theme(&json, mode, None).expect("resolve_theme returns a theme that resolves")
+}
 
 /// A theme file that did not load (`warning`) or a name already taken (`collision`): (type, path).
 pub type Diagnostic = (String, String);

@@ -6,11 +6,9 @@
 use std::rc::Rc;
 
 use serde_json::Value;
-use tui::components::{Component, Text};
-use tui::theme::Theme;
-use tui::utils::visible_width;
-
-use crate::components::fg;
+use theme::{Fg, Theme};
+use tui::visible_width;
+use tui::{Component, Text};
 
 /// The log's file name in the agent directory (`basename(getDebugLogPath())`).
 pub const DEBUG_LOG_NAME: &str = "ultron-debug.log";
@@ -122,11 +120,11 @@ pub fn notice(theme: &Rc<Theme>, path: &str, summary: &[String], width: usize) -
     let mut lines = vec![String::new()];
     let written = format!(
         "{}\n{}",
-        fg(theme, "accent", "✓ Debug log written"),
-        fg(theme, "muted", path)
+        theme.fg(Fg::Accent, "✓ Debug log written"),
+        theme.fg(Fg::Muted, path)
     );
     lines.extend(Text::new(&written, 1, 0, None).render(width));
-    lines.extend(Text::new(&fg(theme, "dim", &summary.join("\n")), 1, 0, None).render(width));
+    lines.extend(Text::new(&theme.fg(Fg::Dim, &summary.join("\n")), 1, 0, None).render(width));
     lines
 }
 

@@ -5,14 +5,14 @@
 use std::rc::Rc;
 use std::time::Instant;
 
-use tui::components::{Component, Text};
-use tui::editor::Editor;
-use tui::input::Input;
-use tui::keybindings::KeybindingsManager;
-use tui::select::Loader;
-use tui::theme::Theme;
+use theme::{Fg, Theme};
+use tui::Editor;
+use tui::Input;
+use tui::KeybindingsManager;
+use tui::Loader;
+use tui::{Component, Text};
 
-use crate::components::{fg, key_hint, key_text};
+use crate::components::{key_hint, key_text};
 
 /// What a key did to a dialog.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -25,7 +25,7 @@ pub enum DialogOutcome {
 }
 
 fn border(theme: &Theme, width: usize) -> String {
-    fg(theme, "border", &"─".repeat(width.max(1)))
+    theme.fg(Fg::Border, &"─".repeat(width.max(1)))
 }
 
 fn hint(theme: &Theme, keys: &KeybindingsManager, id: &str, description: &str) -> String {
@@ -94,14 +94,14 @@ impl ExtensionInputDialog {
     }
 
     /// `ExtensionInputComponent.handleMouse` (a `Container`): a press on the input's row moves its cursor.
-    pub fn handle_mouse(&mut self, event: &tui::mouse::MouseEvent, now: Instant) -> Option<tui::mouse::MouseResult> {
+    pub fn handle_mouse(&mut self, event: &tui::MouseEvent, now: Instant) -> Option<tui::MouseResult> {
         let title = match self.remaining(now) {
             Some(seconds) => format!("{} ({seconds}s)", self.title),
             None => self.title.clone(),
         };
         let t = Rc::clone(&self.theme);
         let top = 2
-            + Text::new(&fg(&t, "accent", &title), 1, 0, None)
+            + Text::new(&t.fg(Fg::Accent, &title), 1, 0, None)
                 .render(event.width)
                 .len() as i64
             + 1;
@@ -109,7 +109,7 @@ impl ExtensionInputDialog {
         if event.y < top || event.y >= top + rows {
             return None;
         }
-        let local = tui::mouse::MouseEvent {
+        let local = tui::MouseEvent {
             y: event.y - top,
             ..*event
         };
@@ -123,7 +123,7 @@ impl ExtensionInputDialog {
             None => self.title.clone(),
         };
         let mut lines = vec![border(&t, width), String::new()];
-        lines.extend(Text::new(&fg(&t, "accent", &title), 1, 0, None).render(width));
+        lines.extend(Text::new(&t.fg(Fg::Accent, &title), 1, 0, None).render(width));
         lines.push(String::new());
         lines.extend(self.input.render(width));
         lines.push(String::new());
@@ -160,12 +160,7 @@ impl ExtensionEditorDialog {
         prefill: Option<&str>,
     ) -> Self {
         let t = Rc::clone(&theme);
-        let mut editor = Editor::new(
-            editor_keys,
-            Default::default(),
-            Box::new(move |s| fg(&t, "borderMuted", s)),
-            0,
-        );
+        let mut editor = Editor::new(editor_keys, Box::new(move |s| t.fg(Fg::BorderMuted, s)), 0);
         editor.focused = true;
         if let Some(prefill) = prefill.filter(|p| !p.is_empty()) {
             editor.set_text(prefill);
@@ -209,14 +204,14 @@ impl ExtensionEditorDialog {
 
     /// `ExtensionEditorComponent.handleMouse` (a `Container`): the editor's rows go to the `Editor` (a click moves
     /// its cursor, its autocomplete rows pick).
-    pub fn handle_mouse(&mut self, event: &tui::mouse::MouseEvent, rows: usize) -> Option<tui::mouse::MouseResult> {
+    pub fn handle_mouse(&mut self, event: &tui::MouseEvent, rows: usize) -> Option<tui::MouseResult> {
         let t = Rc::clone(&self.theme);
         let width = event.width;
-        let mut top = 2 + Text::new(&fg(&t, "accent", &self.title), 1, 0, None)
+        let mut top = 2 + Text::new(&t.fg(Fg::Accent, &self.title), 1, 0, None)
             .render(width)
             .len() as i64;
         if let Some(description) = &self.description {
-            top += 1 + Text::new(&fg(&t, "text", description), 1, 0, None).render(width).len() as i64;
+            top += 1 + Text::new(&t.fg(Fg::Text, description), 1, 0, None).render(width).len() as i64;
         }
         top += 1;
         self.editor.terminal_rows = rows;
@@ -224,7 +219,7 @@ impl ExtensionEditorDialog {
         if event.y < top || event.y >= top + height as i64 {
             return None;
         }
-        let local = tui::mouse::MouseEvent {
+        let local = tui::MouseEvent {
             y: event.y - top,
             height,
             ..*event
@@ -235,10 +230,10 @@ impl ExtensionEditorDialog {
     pub fn render(&mut self, width: usize, rows: usize) -> Vec<String> {
         let t = Rc::clone(&self.theme);
         let mut lines = vec![border(&t, width), String::new()];
-        lines.extend(Text::new(&fg(&t, "accent", &self.title), 1, 0, None).render(width));
+        lines.extend(Text::new(&t.fg(Fg::Accent, &self.title), 1, 0, None).render(width));
         if let Some(description) = &self.description {
             lines.push(String::new());
-            lines.extend(Text::new(&fg(&t, "text", description), 1, 0, None).render(width));
+            lines.extend(Text::new(&t.fg(Fg::Text, description), 1, 0, None).render(width));
         }
         lines.push(String::new());
         self.editor.terminal_rows = rows;
@@ -269,8 +264,8 @@ impl BorderedLoader {
     pub fn new(theme: Rc<Theme>, keys: KeybindingsManager, message: &str) -> Self {
         let (t1, t2) = (Rc::clone(&theme), Rc::clone(&theme));
         let loader = Loader::new(
-            Box::new(move |s| fg(&t1, "accent", s)),
-            Box::new(move |s| fg(&t2, "muted", s)),
+            Box::new(move |s| t1.fg(Fg::Accent, s)),
+            Box::new(move |s| t2.fg(Fg::Muted, s)),
             message,
             None,
         );
