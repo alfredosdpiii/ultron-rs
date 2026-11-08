@@ -1,6 +1,8 @@
 //! The chat rung: a configured model answers through an `answer` tool whose parameters are the closed answer set
-//! (providers that sample against a tool's JSON schema keep it inside the set; every answer is checked anyway). It
-//! is the last fallback (`judge.fallbackModel`) and the escalation (`judge.escalateModel`).
+//! (providers that sample against a tool's JSON schema keep it inside the set; every answer is checked anyway), or,
+//! on a model that returns only text (`claude-code`, whose `claude -p` serves completions, not tool calls), as one
+//! JSON object matching the same schema. It is the last fallback (`judge.fallbackModel`) and the escalation
+//! (`judge.escalateModel`).
 
 use crate::backend::{Backend, Failure, Reply, Spend};
 use crate::question::{self, Question};
@@ -16,6 +18,9 @@ const ANSWER_TOOL: &str = "answer";
 const SYSTEM: &str = "You are a judge. Read the state and answer every question by calling the `answer` tool once. \
 Choose only from the answers each question allows. `confidence` is your probability, from 0 to 1, that the answer is \
 right; say so when the state does not settle it.";
+const SYSTEM_TEXT: &str = "You are a judge. Read the state and answer every question with one JSON object and nothing \
+else. Choose only from the answers each question allows. `confidence` is your probability, from 0 to 1, that the \
+answer is right; say so when the state does not settle it.";
 
 /// One request to a `provider/model`, no retries; `Err` when it could not be sent.
 pub trait ChatModel: Send + Sync {
@@ -25,6 +30,11 @@ pub trait ChatModel: Send + Sync {
         context: &TranscriptContext,
         signal: &Signal,
     ) -> Result<AssistantMessage, String>;
+
+    /// Whether `model_ref` answers tool calls; a model that does not is asked for the answer as JSON text.
+    fn takes_tools(&self, _model_ref: &str) -> bool {
+        true
+    }
 }
 
 /// The model of a `provider/model` reference, ready for requests.
@@ -74,6 +84,13 @@ impl ChatModel for DispatchChat {
             &mut sink,
         ))
     }
+
+    fn takes_tools(&self, model_ref: &str) -> bool {
+        let Some((provider, id)) = model_ref.split_once('/') else {
+            return true;
+        };
+        (self.models)(provider, id).is_none_or(|model| model.api != ai::claude_code::API)
+    }
 }
 
 /// The chat rung on one model.
@@ -82,22 +99,31 @@ pub struct Chat {
     pub chat: Arc<dyn ChatModel>,
 }
 
-fn context(state: &str, questions: &[Question]) -> Result<TranscriptContext, Failure> {
+fn context(state: &str, questions: &[Question], tools: bool) -> Result<TranscriptContext, Failure> {
+    let schema = question::chat_schema(questions);
+    let mut prompt = question::chat_prompt(state, questions);
+    if !tools {
+        prompt.push_str(&format!(
+            "\n\nAnswer with one JSON object matching this JSON schema:\n{schema}"
+        ));
+    }
     let user = serde_json::from_value(json!({
         "role": "user",
-        "content": question::chat_prompt(state, questions),
+        "content": prompt,
         "timestamp": 0,
     }))
     .map_err(|e| Failure::Failed(e.to_string()))?;
     Ok(ai::transcript::normalize_context(&Context {
-        system_prompt: Some(SYSTEM.into()),
+        system_prompt: Some(if tools { SYSTEM } else { SYSTEM_TEXT }.into()),
         messages: vec![user],
-        tools: Some(vec![Tool {
-            name: ANSWER_TOOL.into(),
-            description: "Your answers, one per question.".into(),
-            parameters: question::chat_schema(questions),
-            constrained_sampling: None,
-        }]),
+        tools: tools.then(|| {
+            vec![Tool {
+                name: ANSWER_TOOL.into(),
+                description: "Your answers, one per question.".into(),
+                parameters: schema,
+                constrained_sampling: None,
+            }]
+        }),
     }))
 }
 
@@ -137,7 +163,7 @@ impl Backend for Chat {
     }
 
     fn call(&self, state: &str, questions: &[Question], signal: &Signal) -> Result<Reply, Failure> {
-        let context = context(state, questions)?;
+        let context = context(state, questions, self.chat.takes_tools(&self.model))?;
         let message = self
             .chat
             .complete(&self.model, &context, signal)

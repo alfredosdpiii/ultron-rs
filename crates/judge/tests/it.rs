@@ -2,6 +2,8 @@
 
 #[path = "bench.rs"]
 mod bench;
+#[path = "chat_text.rs"]
+mod chat_text;
 #[path = "fakes.rs"]
 mod fakes;
 #[path = "http.rs"]
