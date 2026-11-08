@@ -57,17 +57,37 @@ fn serve_extension_ui(link: client::session::LinkHandle, tx: Sender<Input>, stop
     });
 }
 
+/// The run this front end waits on, as the transcript and the link report it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RunTrack {
+    Idle,
+    /// A run is going: prompted (its `run_start` not seen yet), attached while streaming, or started.
+    Running,
+    /// The link lost its worker or server while a run was going; it ends as failed when the link rejoins or is lost,
+    /// unless a `run_start` or `run_end` arrives first.
+    Lost,
+}
+
+impl RunTrack {
+    /// The state after `event`, and whether `event` is the link settling a lost run (a failed `run_end` is due).
+    pub fn next(self, event: &Value) -> (RunTrack, bool) {
+        match (event["type"].as_str(), event["state"].as_str()) {
+            (Some("run_start"), _) => (RunTrack::Running, false),
+            (Some("run_end"), _) => (RunTrack::Idle, false),
+            (Some("connection"), Some("reconnecting")) if self != RunTrack::Idle => (RunTrack::Lost, false),
+            (Some("connection"), Some("rejoined" | "lost")) if self == RunTrack::Lost => (RunTrack::Idle, true),
+            _ => (self, false),
+        }
+    }
+}
+
 pub struct Remote<'a> {
     env: &'a Env,
     parsed: &'a Args,
     link: Option<SessionLink>,
     tx: Sender<Input>,
     translator: RpcEventTranslator,
-    running: bool,
-    /// The run in progress (its `run_start` id).
-    run_id: Option<String>,
-    /// The run that was in progress when the link lost its worker or server.
-    lost_run: Option<String>,
+    run: RunTrack,
     /// Commands answered when they end (`bash`, `compact`) still running.
     bash: Arc<AtomicUsize>,
     /// Ends the extension UI relay.
@@ -120,9 +140,7 @@ impl<'a> Remote<'a> {
             link: Some(link),
             tx,
             translator: RpcEventTranslator::default(),
-            running: false,
-            run_id: None,
-            lost_run: None,
+            run: RunTrack::Idle,
             bash: Arc::new(AtomicUsize::new(0)),
             herdr: crate::herdr_report::RpcReport::start(env),
             command_reply: None,
@@ -159,9 +177,11 @@ impl<'a> Remote<'a> {
     fn switch_to(&mut self, id: &str) -> Result<(), String> {
         let link = self.link.as_mut().ok_or("The session is closed")?;
         link.attach(id)?;
-        self.running = self.read(Op::State)["isStreaming"] == true;
-        self.run_id = None;
-        self.lost_run = None;
+        self.run = if self.read(Op::State)["isStreaming"] == true {
+            RunTrack::Running
+        } else {
+            RunTrack::Idle
+        };
         Ok(())
     }
 
@@ -201,17 +221,10 @@ impl Remote<'_> {
                 return;
             }
         };
-        // A run its worker lost ends for RPC clients as failed when the link rejoins (recovery settled it), unless
-        // its end, or another run, was seen meanwhile.
-        if event["type"] == "connection" && event["state"] == "reconnecting" {
-            self.lost_run = self.run_id.clone().filter(|_| self.running);
-        }
-        let lost = event["type"] == "connection"
-            && event["state"] == "rejoined"
-            && self
-                .lost_run
-                .take()
-                .is_some_and(|lost| self.running && self.run_id.as_deref() == Some(&lost));
+        // A run its worker lost (also one prompted whose `run_start` never came) ends for RPC clients as failed when
+        // the link rejoins (recovery settled it) or is lost, unless its end, or another run, was seen meanwhile.
+        let (run, lost) = self.run.next(&event);
+        self.run = run;
         let event = if lost {
             json!({"type": "run_end", "status": "failed", "endedAt": jsrt::date::now_ms(),
                 "error": {"code": "interrupted", "message": "The session worker stopped during this run"}})
@@ -220,14 +233,6 @@ impl Remote<'_> {
         };
         if let Some(herdr) = &self.herdr {
             herdr.event(&event);
-        }
-        match event["type"].as_str() {
-            Some("run_start") => {
-                self.running = true;
-                self.run_id = event["runId"].as_str().map(str::to_string);
-            }
-            Some("run_end") => self.running = false,
-            _ => {}
         }
         if let Some(lane_event) = WatchEvent::decode(&event) {
             for line in self.translator.translate(lane_event) {
@@ -238,7 +243,7 @@ impl Remote<'_> {
 
     /// Whether work is still in flight that must finish before the process exits.
     pub fn busy(&self) -> bool {
-        self.running || self.bash.load(Ordering::SeqCst) > 0
+        self.is_running() || self.bash.load(Ordering::SeqCst) > 0
     }
 
     /// Stdin ended: stop runs, then [`busy`](Self::busy) drains the rest.
@@ -248,7 +253,7 @@ impl Remote<'_> {
             return;
         }
         self.close();
-        self.running = false;
+        self.run = RunTrack::Idle;
         self.bash.store(0, Ordering::SeqCst);
     }
 
@@ -261,7 +266,7 @@ impl Remote<'_> {
     }
 
     pub fn is_running(&self) -> bool {
-        self.running
+        self.run != RunTrack::Idle
     }
 
     pub fn prompt(&mut self, message: String, images: Vec<Value>) -> Result<(), String> {
@@ -276,7 +281,9 @@ impl Remote<'_> {
             return Ok(());
         }
         // The run starts now; its `run_start` follows on the transcript.
-        self.running = true;
+        if self.run == RunTrack::Idle {
+            self.run = RunTrack::Running;
+        }
         Ok(())
     }
 

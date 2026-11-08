@@ -35,13 +35,15 @@ use crate::ledger::{
 };
 use crate::local::{expand_path, find_checkout, without_guide_mentions};
 use crate::plan::{EngineResult, PlanOptions, PromotionNote, ReviewPlan, Verdict, plan_review, without_inline};
-use crate::prepare_env::RunnerPreparer;
+use crate::prepare_env::{EnvLease, RunnerPreparer};
 use crate::promotion::{
     PromotionDelta, PromotionSource, changed_new_lines, cherry_sources, promotion_delta, referenced_pulls, source_label,
 };
 use crate::runner::Runner;
 use crate::settings::{AutoreviewConfig, AutoreviewPaths, MAX_ATTEMPTS, engine_settings, tests_eligible};
-use crate::state::{AutoreviewState, PostedFinding, PullState, ReviewRecord, StateStore, claim_hash, to_json_1};
+use crate::state::{
+    AutoreviewState, HeadAttempts, PostedFinding, PullState, ReviewRecord, StateStore, claim_hash, to_json_1,
+};
 use jsrt::json::Num;
 
 /// Where fates and rules are also retained (Hindsight).
@@ -90,6 +92,8 @@ pub struct PreparedEnvironment {
     pub failures: Vec<String>,
     /// The toolchain entries' paths.
     pub toolchain: Vec<String>,
+    /// Held while the review uses the environment: it is not rebuilt under the review's tests.
+    pub lease: EnvLease,
 }
 
 #[derive(Clone)]
@@ -812,6 +816,8 @@ pub fn prepare_pull(deps: &ReviewerDeps, candidate: &Candidate, options: ReviewO
 
     let me = account.login.to_lowercase();
     let mut requested = pull.requested_reviewers.iter().any(|login| login.to_lowercase() == me);
+    let gave_up = saved.head_attempts(&head) == HeadAttempts::GaveUp;
+    let mut mention_at = None;
     let decided = if options.force {
         decision(true, "asked for on the command line")
     } else {
@@ -845,8 +851,8 @@ pub fn prepare_pull(deps: &ReviewerDeps, candidate: &Candidate, options: ReviewO
             requested = false;
             ignored.push(format!("the review request by {actor}"));
         }
-        let mut mention_at = None;
-        if !(requested && last_sha.is_none() && pull.state == "open" && !pull.draft) {
+        // After giving up on the head, a mention asks to try again even where a request alone would review it.
+        if gave_up || !(requested && last_sha.is_none() && pull.state == "open" && !pull.draft) {
             let mut comments = github.issue_comments(r)?;
             comments.extend(github.review_comments(r)?);
             mention_at = latest_mention_except(&account.login, &pull, &comments, &reviews, &banned);
@@ -865,7 +871,7 @@ pub fn prepare_pull(deps: &ReviewerDeps, candidate: &Candidate, options: ReviewO
             last_sha: last_sha.clone(),
             last_at,
             last_requested_changes,
-            mention_at,
+            mention_at: mention_at.clone(),
             requested,
             skip_bots: deps.config.skip_bots,
             requested_at: &requested_at,
@@ -916,12 +922,26 @@ pub fn prepare_pull(deps: &ReviewerDeps, candidate: &Candidate, options: ReviewO
         return Ok(Preparation::Done(Outcome::Skipped(decided.reason)));
     }
 
-    if !options.force && saved.gave_up_sha.as_deref() == Some(head.as_str()) {
+    // The "could not review" comment promises another try on a mention.
+    let mut attempts = saved.head_attempts(&head);
+    if !options.force
+        && attempts == HeadAttempts::GaveUp
+        && deps
+            .store
+            .update_pull(&key, |state, _| state.retry_after_mention(&head, mention_at.as_deref()))?
+    {
+        (deps.log)(&format!(
+            "{name}: mentioned after giving up on {}; trying again",
+            short(&head)
+        ));
+        attempts = HeadAttempts::Fresh;
+    }
+    if !options.force && attempts == HeadAttempts::GaveUp {
         return Ok(Preparation::Done(Outcome::Skipped(
             "gave up on this commit earlier".into(),
         )));
     }
-    if !options.force && saved.attempts.get(&head).copied().unwrap_or(0) >= MAX_ATTEMPTS {
+    if !options.force && matches!(attempts, HeadAttempts::Failed(failed) if failed >= MAX_ATTEMPTS) {
         if !dry_run {
             github.post_comment(
                 r,
@@ -931,8 +951,8 @@ pub fn prepare_pull(deps: &ReviewerDeps, candidate: &Candidate, options: ReviewO
                 ),
             )?;
         }
-        deps.store
-            .update_pull(&key, |state, _| state.gave_up_sha = Some(head.clone()))?;
+        let at = jsrt::date::iso_string((deps.now)());
+        deps.store.update_pull(&key, |state, _| state.gave_up(&head, at))?;
         (deps.log)(&format!(
             "{name}: gave up on {} after {MAX_ATTEMPTS} attempts",
             short(&head)
@@ -1137,6 +1157,22 @@ fn review_input(head: &str, plan: &ReviewPlan) -> ReviewInput {
     }
 }
 
+/// The number after the highest `<short_sha>-<n>` id among `findings` (1 when there is none).
+fn next_finding_number(findings: &[PostedFinding], short_sha: &str) -> usize {
+    findings
+        .iter()
+        .filter_map(|finding| {
+            finding
+                .id
+                .strip_prefix(short_sha)?
+                .strip_prefix('-')?
+                .parse::<usize>()
+                .ok()
+        })
+        .max()
+        .map_or(1, |highest| highest + 1)
+}
+
 /// Review a prepared pull request and post the review (or write it to the dry-run directory).
 pub fn run_review(deps: &ReviewerDeps, prepared: &Prepared) -> Result<Outcome, Error> {
     let candidate = &prepared.candidate;
@@ -1150,18 +1186,12 @@ pub fn run_review(deps: &ReviewerDeps, prepared: &Prepared) -> Result<Outcome, E
     }
     let saved: PullState = deps.store.read().pulls.get(&key).cloned().unwrap_or_default();
     (deps.log)(&format!("{name}: reviewing {} ({})", short(&head), prepared.reason));
-    deps.store.update_pull(&key, |state, _| {
-        *state.attempts.entry(head.clone()).or_insert(0) += 1;
-    })?;
-    let forget_attempt = || {
-        deps.store.update_pull(&key, |state, _| {
-            let count = state.attempts.get(&head).copied().unwrap_or(1).saturating_sub(1);
-            if count == 0 {
-                state.attempts.shift_remove(&head);
-            } else {
-                state.attempts.insert(head.clone(), count);
-            }
-        })
+    // Counted when the review fails or panics, not when it starts: a daemon stopped or killed mid-review (a restart
+    // during a long review) has not failed.
+    let failed = FailedAttempt {
+        deps,
+        key: &key,
+        head: &head,
     };
     let scratch = jsrt::path::join(&[
         &std::env::temp_dir().to_string_lossy(),
@@ -1169,16 +1199,44 @@ pub fn run_review(deps: &ReviewerDeps, prepared: &Prepared) -> Result<Outcome, E
     ]);
     make_private_dir(&scratch).map_err(|e| Error::Other(format!("{scratch}: {e}")))?;
     let mut checkout: Option<Checkout> = None;
-    let outcome = review_in(deps, prepared, &saved, &scratch, &mut checkout, &forget_attempt);
-    if let Err(Error::RateLimit { .. }) = &outcome {
+    let outcome = review_in(deps, prepared, &saved, &scratch, &mut checkout);
+    match &outcome {
         // Waiting for a rate limit is not a failed attempt.
-        let _ = forget_attempt();
+        Err(Error::RateLimit { .. }) | Ok(_) => {}
+        Err(_) => failed.record(),
     }
     let _ = std::fs::remove_dir_all(&scratch);
     if let Some(checkout) = &checkout {
         checkout.cleanup();
     }
     outcome
+}
+
+/// Counts a failed attempt at a head commit: by [`FailedAttempt::record`], or when the review panics.
+struct FailedAttempt<'a> {
+    deps: &'a ReviewerDeps,
+    key: &'a str,
+    head: &'a str,
+}
+
+impl FailedAttempt<'_> {
+    fn record(&self) {
+        if let Err(error) = self
+            .deps
+            .store
+            .update_pull(self.key, |state, _| state.attempt_failed(self.head))
+        {
+            (self.deps.log)(&format!("{}: the failed attempt was not recorded: {error}", self.key));
+        }
+    }
+}
+
+impl Drop for FailedAttempt<'_> {
+    fn drop(&mut self) {
+        if std::thread::panicking() {
+            self.record();
+        }
+    }
 }
 
 /// The skip reason when the prepared pull request's author is banned for its account now (the list re-read).
@@ -1315,7 +1373,6 @@ fn review_in(
     saved: &PullState,
     scratch: &str,
     checkout_slot: &mut Option<Checkout>,
-    forget_attempt: &dyn Fn() -> Result<(), Error>,
 ) -> Result<Outcome, Error> {
     let candidate = &prepared.candidate;
     let (account, r) = (&candidate.account, &candidate.pull);
@@ -1341,7 +1398,6 @@ fn review_in(
     {
         Ok(prepared_checkout) => *checkout_slot = Some(prepared_checkout),
         Err(Error::StaleHead(message)) => {
-            forget_attempt()?;
             return Ok(Outcome::Requeue(message));
         }
         Err(error) => (deps.log)(&format!("{name}: no checkout, reviewing the diff only: {error}")),
@@ -1606,7 +1662,6 @@ fn review_in(
     }
     // Banned during the preparation (checkout, environment): the model turn is not started.
     if let Some(reason) = banned_now(deps, prepared) {
-        forget_attempt()?;
         (deps.log)(&format!("{name}: {reason}; the review was not started"));
         return Ok(Outcome::Skipped(reason));
     }
@@ -1617,7 +1672,6 @@ fn review_in(
     // A review of a commit that is no longer the head would be stale: drop it and come back.
     let current = github.pull(r)?;
     if current.head_sha != head {
-        forget_attempt()?;
         (deps.log)(&format!(
             "{name}: the head moved to {} during the review; discarded",
             short(&current.head_sha)
@@ -1626,7 +1680,6 @@ fn review_in(
     }
     // Banned during the model turn: nothing is posted.
     if let Some(reason) = banned_now(deps, prepared) {
-        forget_attempt()?;
         (deps.log)(&format!("{name}: {reason}; the finished review was discarded"));
         return Ok(Outcome::Skipped(reason));
     }
@@ -1679,6 +1732,9 @@ fn review_in(
         _ => Vec::new(),
     };
     let mut posted: Vec<PostedFinding> = Vec::new();
+    // Ids are `<short sha>-<n>`, numbered on from an earlier review of the same commit (a mention after an incomplete
+    // review reviews it again): two findings with one id would share a status, a thread and a fate.
+    let numbered = next_finding_number(&saved.findings, &short_sha);
     let mut track = |index: usize| -> usize {
         let finding = &result.findings[index];
         let kind = raw_findings
@@ -1694,7 +1750,7 @@ fn review_in(
             extra.insert("rules".to_string(), Value::Array(ids.clone()));
         }
         posted.push(PostedFinding {
-            id: format!("{short_sha}-{}", index + 1),
+            id: format!("{short_sha}-{}", numbered + index),
             file: finding.file.clone(),
             line: finding.line,
             severity: finding.level().into(),
@@ -1853,23 +1909,6 @@ fn review_in(
                 (deps.log)(&format!("{name}: the fates of earlier findings were not read: {error}"));
             }
         }
-        // A COMMENT leaves an earlier request for changes in force on GitHub: once none of its blocking findings is
-        // left, it is dismissed (boost-capital/aqua-parser#91: "Your change request from 17:04 still blocks the
-        // merge. Can you approve #91, or dismiss that change request?").
-        if plan.verdict == Verdict::Comment && state == "open" && pull.author.to_lowercase() != me {
-            lift_own_blocks(deps, &github, r, &me, &head, &name);
-        }
-        // Resolve our own threads whose finding is fixed, by the thread id stored when the comment was posted.
-        for status in statuses.iter().filter(|status| status.status == "fixed") {
-            let Some(finding) = saved.findings.iter().find(|item| item.id == status.id) else {
-                continue;
-            };
-            let Some(thread_id) = &finding.thread_id else { continue };
-            match github.resolve_thread(thread_id) {
-                Ok(()) => resolved.push(finding.id.clone()),
-                Err(error) => (deps.log)(&format!("{name}: thread of {} was not resolved: {error}", finding.id)),
-            }
-        }
     }
 
     if !dry_run {
@@ -1917,7 +1956,7 @@ fn review_in(
         if let Some(id) = review_id {
             pull_state.last_review_id = Some(id);
         }
-        pull_state.attempts.shift_remove(&head);
+        pull_state.attempt_succeeded(&head);
         for status in &statuses {
             let Some(finding) = pull_state.findings.iter_mut().find(|item| item.id == status.id) else {
                 continue;
@@ -1953,6 +1992,28 @@ fn review_in(
             extra: Default::default(),
         });
     })?;
+    // Recorded first, then the steps that act on what was recorded: a crash before the record leaves at most the
+    // review on GitHub (seen as this account's review next time), never threads resolved for findings the state
+    // still has open (which the next fates would read as resolved by a human: rejected).
+    if !dry_run {
+        // A COMMENT leaves an earlier request for changes in force on GitHub: once none of its blocking findings is
+        // left, it is dismissed (boost-capital/aqua-parser#91: "Your change request from 17:04 still blocks the
+        // merge. Can you approve #91, or dismiss that change request?").
+        if plan.verdict == Verdict::Comment && state == "open" && pull.author.to_lowercase() != me {
+            lift_own_blocks(deps, &github, r, &me, &head, &name);
+        }
+        // Resolve our own threads whose finding is fixed, by the thread id stored when the comment was posted.
+        for status in statuses.iter().filter(|status| status.status == "fixed") {
+            let Some(finding) = saved.findings.iter().find(|item| item.id == status.id) else {
+                continue;
+            };
+            let Some(thread_id) = &finding.thread_id else { continue };
+            match github.resolve_thread(thread_id) {
+                Ok(()) => resolved.push(finding.id.clone()),
+                Err(error) => (deps.log)(&format!("{name}: thread of {} was not resolved: {error}", finding.id)),
+            }
+        }
+    }
     (deps.log)(&format!(
         "{name}: {} {} for {short_sha}: {} findings, {} inline, {} threads resolved, {} s from pickup{}",
         if dry_run { "dry-run" } else { "posted" },

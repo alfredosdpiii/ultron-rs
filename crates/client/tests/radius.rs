@@ -242,6 +242,59 @@ fn run_reconnect(scenario: &Value) -> (Vec<String>, Vec<u64>) {
     (log, delays)
 }
 
+/// A drop that comes after a reconnection re-attached but before its thread ended (the link reports it at once) is
+/// not lost: the reconnector runs again instead of ignoring it as "already running", so the link is not left
+/// recovering forever.
+#[test]
+fn client_radius_reconnect_runs_again_for_a_drop_right_after_its_reattach() {
+    let log = Arc::new(Mutex::new(Vec::new()));
+    let client = Arc::new(FakeClient {
+        state: Mutex::new((true, ConnectionState::Connected)),
+        reconnects: Mutex::new(Vec::new()),
+        log: log.clone(),
+        reconnector: OnceLock::new(),
+    });
+    let dropping = client.clone();
+    let reattaches = Arc::new(Mutex::new(0));
+    let counted = reattaches.clone();
+    let reconnector = Arc::new(RadiusClientReconnect::new(
+        client.clone(),
+        Some("s1".into()),
+        Arc::new(move |session: &str| {
+            let mut count = counted.lock().unwrap();
+            *count += 1;
+            dropping.log.lock().unwrap().push(format!("reattach {session}"));
+            if *count == 1 {
+                // The new connection drops as soon as the session is attached again.
+                *dropping.state.lock().unwrap() = (false, ConnectionState::Disconnected);
+                dropping
+                    .reconnector
+                    .get()
+                    .unwrap()
+                    .connection_state_changed(ConnectionState::Disconnected);
+            }
+            Ok(())
+        }),
+        Some(Arc::new(|_, cancel: &Cancellation| !cancel.is_cancelled())),
+    ));
+    let _ = client.reconnector.set(reconnector.clone());
+    client.disconnect("lost");
+    reconnector.wait_idle();
+    assert!(client.connected(), "the link is connected again");
+    assert_eq!(*reattaches.lock().unwrap(), 2);
+    assert_eq!(
+        log.lock().unwrap().clone(),
+        [
+            "disconnect: lost",
+            "reconnect",
+            "reattach s1",
+            "reconnect",
+            "reattach s1"
+        ]
+    );
+    reconnector.dispose();
+}
+
 #[test]
 fn client_radius_reconnect_replays_recorded_typescript_scenarios() {
     let mut failures = Vec::new();

@@ -211,7 +211,7 @@ impl ProjectTrustStore {
             jsrt::utf16::sort(&mut keys);
             let sorted: Map<String, Value> = keys.into_iter().map(|k| (k.clone(), data[k].clone())).collect();
             let text = format!("{}\n", jsrt::json::stringify_pretty(&Value::Object(sorted)));
-            fs::write(&self.path, text).map_err(|e| e.to_string())
+            crate::paths::write_private(&self.path, &text).map_err(|e| e.to_string())
         })
     }
 }
@@ -255,7 +255,9 @@ pub const TRUST_OVERRIDE_ENV: &str = "__ULTRON_PROJECT_TRUST";
 
 /// `workerProjectTrusted` (worker-settings.ts): whether a session worker loads the project's settings and
 /// resources. A project without trust-requiring resources is trusted; else the saved `/trust` decision for `cwd`;
-/// else `defaultProjectTrust` (global only) is not "never" ("ask" cannot prompt in a worker, so it trusts).
+/// else `defaultProjectTrust` (global only) is not "never" ("ask" cannot prompt in a worker, so it trusts). A trust
+/// store that cannot be read (held lock, torn or invalid `trust.json`) fails closed: the decision stored there may
+/// be "do not trust", so the project is not trusted.
 pub fn worker_project_trusted(cwd: &Path, agent_dir: &Path, home: &Path) -> bool {
     // `--approve` / `--no-approve` of the run that started this worker decide it outright.
     match std::env::var(TRUST_OVERRIDE_ENV).as_deref() {
@@ -266,8 +268,13 @@ pub fn worker_project_trusted(cwd: &Path, agent_dir: &Path, home: &Path) -> bool
     if !has_trust_requiring_project_resources(cwd, home) {
         return true;
     }
-    if let Ok(Some(decision)) = ProjectTrustStore::new(agent_dir).get(cwd) {
-        return decision;
+    match ProjectTrustStore::new(agent_dir).get(cwd) {
+        Ok(Some(decision)) => return decision,
+        Ok(None) => {}
+        Err(error) => {
+            eprintln!("Warning: project not trusted, the trust store could not be read: {error}");
+            return false;
+        }
     }
     crate::settings::SettingsManager::create(cwd, agent_dir, false).default_project_trust() != "never"
 }

@@ -270,3 +270,28 @@ fn session_core_compaction_retry_wait_journal_and_kill() {
         assert_eq!(current_operation(&session), Value::Null);
     }
 }
+
+/// A state written after the cancel request (the summary's usage, a retry wait, the next attempt) keeps it: every
+/// state of the operation starts from the stored control, so a worker killed later still settles `aborted`.
+#[test]
+fn session_core_compaction_cancel_survives_the_states_written_after_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut session, tip) = session(dir.path());
+    let mut op = CompactionOp::begin(&mut session, &preparation(&tip), &[], None).unwrap();
+    let operation = current_operation(&session).as_str().unwrap().to_string();
+    compaction_op::request_cancel(&mut session, 5).unwrap();
+    // The summary request was already on its way off the actor: its states commit after the cancel.
+    op.request(&mut session, ai::retry::RetryPolicy::default()).unwrap();
+    op.retry_wait(&mut session, None, "overloaded", 10).unwrap();
+    let state = session.value(OP_STATE, &operation).unwrap().clone();
+    assert_eq!(state["at"], "summary.retry_wait");
+    assert_eq!(
+        state["control"],
+        json!({"status": "cancel_requested", "requestedAt": 5})
+    );
+    drop(op);
+    let mut session = repo(dir.path()).open(session.metadata()).unwrap();
+    let recovered = settle(&mut session).unwrap();
+    assert_eq!(recovered.status.as_deref(), Some("aborted"));
+    assert!(!recovered.resume);
+}

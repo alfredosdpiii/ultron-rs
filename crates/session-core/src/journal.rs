@@ -171,23 +171,24 @@ impl RunJournal {
         self.apply(session, |run, s| run.request_cancel(s, at));
     }
 
-    /// End a cancelled run (status `aborted`); returns the first write error.
-    pub fn finish_aborted(self, session: &mut Session) -> Result<(), String> {
-        if let Some(error) = self.error {
-            return Err(error);
-        }
-        match self.run {
+    /// End a cancelled run (status `aborted`): its terminal transaction, also after an earlier write failed (the
+    /// run ended; its operation must not stay open). `Err`: the terminal transaction did not commit; it may be
+    /// committed again.
+    pub fn finish_aborted(&self, session: &mut Session) -> Result<(), String> {
+        match &self.run {
             Some(run) => run.finish_aborted(session),
             None => Ok(()),
         }
     }
 
-    /// End the run (`failure`: the error kind and message it ended with); returns the first write error.
-    pub fn finish(self, session: Option<&mut Session>, failure: Option<(&str, &str)>) -> Result<(), String> {
-        if let Some(error) = self.error {
-            return Err(error);
-        }
-        match (self.run, session) {
+    /// End the run (`failure`: the error kind and message it ended with; an earlier write error ends it failed with
+    /// that error). `Err`: the terminal transaction did not commit; it may be committed again.
+    pub fn finish(&self, session: Option<&mut Session>, failure: Option<(&str, &str)>) -> Result<(), String> {
+        let failure = match &self.error {
+            Some(error) => Some(("journal_write_failed", error.as_str())),
+            None => failure,
+        };
+        match (&self.run, session) {
             (Some(run), Some(session)) => run.finish(session, failure),
             _ => Ok(()),
         }

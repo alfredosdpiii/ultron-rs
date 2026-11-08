@@ -11,6 +11,10 @@
 //! - after the last segment the host runs the final check (the last `check` segment's command) again, and the run
 //!   passes only if it still passes.
 //!
+//! A run stays in the [`RunBook`] while a step runs (held by the step): a second `procedure.start` on its lane is
+//! refused, and `procedure.abort` ends it when the step returns. A run record that cannot be written leaves the run
+//! in the book, as its record still says.
+//!
 //! Between steps the [`RunBook`] watches each cell of a lane with a run (a `host::file_hooks::CellObserver`): a cell
 //! that changes files outside the segment's `writes` is told so at once, and the segment's next step fails. A cell
 //! that steps is judged by the step's own picture instead.
@@ -56,22 +60,45 @@ struct Run {
     started: i64,
 }
 
+/// A lane's run in the book: waiting for its next step, or held by the step that runs now (a check may take
+/// minutes). A stepping run stays in the book, so a second `procedure.start` on its lane is refused and
+/// `procedure.abort` finds it (the abort is carried out when the step returns).
+enum Slot {
+    Ready(Box<Run>),
+    Stepping {
+        id: String,
+        skill: String,
+        segment: String,
+        /// `procedure.abort` asked during the step, with its reason.
+        abort: Option<Option<String>>,
+    },
+}
+
 /// The runs in progress, one per lane at most; also the cell observer that enforces their boundaries.
 #[derive(Default)]
 pub struct RunBook {
-    runs: Mutex<HashMap<String, Run>>,
+    runs: Mutex<HashMap<String, Slot>>,
+}
+
+impl RunBook {
+    /// The lane's run is waiting for its next step again.
+    fn put(&self, lane: &str, run: Run) {
+        jsrt::sync::lock(&self.runs).insert(lane.to_string(), Slot::Ready(Box::new(run)));
+    }
 }
 
 impl CellObserver for RunBook {
     fn enabled(&self) -> bool {
-        jsrt::sync::lock(&self.runs)
-            .values()
-            .any(|run| run.procedure.segments[run.index].writes.is_some())
+        jsrt::sync::lock(&self.runs).values().any(|slot| match slot {
+            Slot::Ready(run) => run.procedure.segments[run.index].writes.is_some(),
+            Slot::Stepping { .. } => false,
+        })
     }
 
     fn cell_changed(&self, changes: &CellChanges, cwd: &Path, lane: &str) -> Vec<String> {
         let mut runs = jsrt::sync::lock(&self.runs);
-        let Some(run) = runs.get_mut(lane) else {
+        // A cell that steps is judged by the step's own picture.
+        let Some(Slot::Ready(run)) = runs.get_mut(lane) else {
             return Vec::new();
         };
         if std::mem::take(&mut run.stepped) {
@@ -224,15 +251,20 @@ impl SkillRuns {
         })
     }
 
-    /// End `run` with `outcome`: its record is completed and the lane is free again.
+    /// End `run` with `outcome`: its record is completed and the lane is free again. A record that cannot be
+    /// written leaves the run in the book (its record still says running), so it can be ended again.
     fn finish(&self, lane: &str, mut run: Run, outcome: &str, reason: Option<String>) -> Result<Value, String> {
         let ended = (self.now)();
         let outputs = jsrt::hash::sha256_hex(serde_json::to_string(&run.results).unwrap_or_default());
-        self.record(
+        let recorded = self.record(
             &run,
             json!({"outcome": outcome, "reason": reason, "segments": run.results, "output_digest": outputs,
                    "ended_at": ended, "duration_ms": ended - run.started}),
-        )?;
+        );
+        if let Err(error) = recorded {
+            self.book.put(lane, run);
+            return Err(error);
+        }
         jsrt::sync::lock(&self.book.runs).remove(lane);
         run.stepped = false;
         let mut status = self.status(&run, outcome);
@@ -247,10 +279,13 @@ impl SkillRuns {
         let name = jsrt::payload::nonempty_string(payload.get("name"), "name")?;
         let version = payload.get("version").and_then(Value::as_str);
         let input = payload.get("input").cloned().unwrap_or(Value::Null);
-        if let Some(run) = jsrt::sync::lock(&self.book.runs).get(request.lane) {
+        if let Some(slot) = jsrt::sync::lock(&self.book.runs).get(request.lane) {
+            let (skill, id, segment) = match slot {
+                Slot::Ready(run) => (&run.skill.name, &run.id, &run.procedure.segments[run.index].name),
+                Slot::Stepping { id, skill, segment, .. } => (skill, id, segment),
+            };
             return Err(format!(
-                "This lane is running skill {} (run {}, segment {}): finish it or abort it first",
-                run.skill.name, run.id, run.procedure.segments[run.index].name
+                "This lane is running skill {skill} (run {id}, segment {segment}): finish it or abort it first"
             ));
         }
         let skill = self.skills.pinned_skill(&name, version)?;
@@ -294,7 +329,7 @@ impl SkillRuns {
             return self.finish(request.lane, run, "blocked", Some(reason));
         }
         let status = self.status(&run, "running");
-        jsrt::sync::lock(&self.book.runs).insert(request.lane.to_string(), run);
+        self.book.put(request.lane, run);
         Ok(status)
     }
 
@@ -388,25 +423,46 @@ impl SkillRuns {
         kernel::ops::fields("procedure.step", payload)?;
         let id = jsrt::payload::nonempty_string(payload.get("run"), "run")?;
         let named = jsrt::payload::nonempty_string(payload.get("segment"), "segment")?;
-        // The run leaves the book while its step runs (a check may take minutes) and is put back after.
+        // The step holds the run while it runs (a check may take minutes); the book keeps its place.
         let mut run = {
             let mut runs = jsrt::sync::lock(&self.book.runs);
-            let current = runs
-                .get(request.lane)
-                .filter(|run| run.id == id)
-                .ok_or_else(|| format!("No skill run {id} is in progress on this lane"))?;
-            let at = &current.procedure.segments[current.index].name;
-            if *at != named {
-                return Err(format!("Run {id} is at segment {at}, not {named}"));
+            let skill = match runs.get(request.lane) {
+                Some(Slot::Ready(current)) if current.id == id => {
+                    let at = &current.procedure.segments[current.index].name;
+                    if *at != named {
+                        return Err(format!("Run {id} is at segment {at}, not {named}"));
+                    }
+                    current.skill.name.clone()
+                }
+                Some(Slot::Stepping { id: stepping, .. }) if *stepping == id => {
+                    return Err(format!("Run {id} is already running a step"));
+                }
+                _ => return Err(format!("No skill run {id} is in progress on this lane")),
+            };
+            let stepping = Slot::Stepping {
+                id: id.clone(),
+                skill,
+                segment: named.clone(),
+                abort: None,
+            };
+            match runs.insert(request.lane.to_string(), stepping) {
+                Some(Slot::Ready(run)) => *run,
+                _ => unreachable!("checked above"),
             }
-            runs.remove(request.lane).expect("present")
         };
         let decided = self.decide(&mut run, request, payload.get("state"));
         run.stepped = true;
+        let abort = match jsrt::sync::lock(&self.book.runs).get_mut(request.lane) {
+            Some(Slot::Stepping { abort, .. }) => abort.take(),
+            _ => None,
+        };
+        if let Some(reason) = abort {
+            return self.finish(request.lane, run, "aborted", reason);
+        }
         let decision = match decided {
             Ok(decision) => decision,
             Err(error) => {
-                jsrt::sync::lock(&self.book.runs).insert(request.lane.to_string(), run);
+                self.book.put(request.lane, run);
                 return Err(error);
             }
         };
@@ -476,11 +532,11 @@ impl SkillRuns {
                 Ok(status)
             }
             Decision::Fail(_) if run.tries < segment.max_iters => {
-                self.record(&run, json!({"at_segment": segment.name, "segments": run.results}))?;
+                let recorded = self.record(&run, json!({"at_segment": segment.name, "segments": run.results}));
                 let mut status = self.status(&run, "running");
                 status["step"] = json!({"passed": false, "evidence": evidence});
-                jsrt::sync::lock(&self.book.runs).insert(lane.to_string(), run);
-                Ok(status)
+                self.book.put(lane, run);
+                recorded.map(|()| status)
             }
             Decision::Fail(_) => {
                 run.results.push(result);
@@ -503,14 +559,14 @@ impl SkillRuns {
                     status["step"] = step;
                     return Ok(status);
                 }
-                self.record(
+                let recorded = self.record(
                     &run,
                     json!({"at_segment": run.procedure.segments[run.index].name, "segments": run.results}),
-                )?;
+                );
                 let mut status = self.status(&run, "running");
                 status["step"] = step;
-                jsrt::sync::lock(&self.book.runs).insert(lane.to_string(), run);
-                Ok(status)
+                self.book.put(lane, run);
+                recorded.map(|()| status)
             }
         }
     }
@@ -548,8 +604,21 @@ impl SkillRuns {
             .map(str::to_string);
         let run = {
             let mut runs = jsrt::sync::lock(&self.book.runs);
-            match runs.get(request.lane) {
-                Some(run) if run.id == id => runs.remove(request.lane).expect("present"),
+            match runs.get_mut(request.lane) {
+                Some(Slot::Ready(run)) if run.id == id => match runs.remove(request.lane) {
+                    Some(Slot::Ready(run)) => *run,
+                    _ => unreachable!("checked above"),
+                },
+                // Its step is running: the run ends as aborted when the step returns.
+                Some(Slot::Stepping {
+                    id: stepping,
+                    skill,
+                    abort,
+                    ..
+                }) if *stepping == id => {
+                    *abort = Some(reason.clone());
+                    return Ok(json!({"run": id, "name": skill, "outcome": "aborting", "reason": reason}));
+                }
                 _ => return Err(format!("No skill run {id} is in progress on this lane")),
             }
         };
@@ -577,7 +646,10 @@ impl SkillRuns {
     pub fn interrupt_orphans(&self) -> Result<usize, String> {
         let live: Vec<String> = jsrt::sync::lock(&self.book.runs)
             .values()
-            .map(|run| run.id.clone())
+            .map(|slot| match slot {
+                Slot::Ready(run) => run.id.clone(),
+                Slot::Stepping { id, .. } => id.clone(),
+            })
             .collect();
         let ended = (self.now)();
         let mut marked = 0;

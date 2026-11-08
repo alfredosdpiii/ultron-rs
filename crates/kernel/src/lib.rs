@@ -57,7 +57,7 @@ use output::{
 use rustix::process::{WaitId, WaitIdOptions};
 use serde::Serialize;
 use serde_json::{Map, Value};
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{HashMap, VecDeque};
 use std::io::{Read, Write};
 use std::os::unix::fs::OpenOptionsExt;
 use std::os::unix::process::{CommandExt, ExitStatusExt};
@@ -271,8 +271,9 @@ impl Drop for Link {
 }
 
 /// Serves host requests from Python (`await rlm.host_request(type, payload)` and every API built on it). Runs on its
-/// own thread per request; `signal` is aborted when the requesting cell completes or the kernel fails, and a reply
-/// after that is dropped. `Err` becomes a `RuntimeError` with that message in Python.
+/// own thread per request; `signal` is aborted when the requesting cell completes, Python cancels the request, or the
+/// kernel fails. The outcome is still sent while the kernel lives (Python drops one nobody awaits). `Err` becomes a
+/// `RuntimeError` with that message in Python.
 pub trait HostHandler: Send + Sync {
     fn handle(&self, kind: &str, payload: Map<String, Value>, signal: &Signal) -> Result<Value, String>;
 }
@@ -564,7 +565,8 @@ struct Generation {
     output: Option<CellOutput>,
     pending: HashMap<String, Waiter>,
     active_cell: Option<String>,
-    host_requests: HashSet<String>,
+    /// In-flight host requests and the signal each one's handler gets (aborted by its cell's end or a cancel).
+    host_requests: HashMap<String, Signal>,
     ready_received: bool,
     initialized: bool,
     startup_deadline: Instant,
@@ -579,6 +581,14 @@ struct Generation {
     host_completes_startup: bool,
     /// A caller is completing startup.
     completing: bool,
+}
+
+/// A `host_request` frame: `cell` is the execute request whose code made it (absent outside a cell).
+struct HostRequest {
+    id: String,
+    kind: String,
+    payload: Map<String, Value>,
+    cell: Option<String>,
 }
 
 struct Op {
@@ -1689,7 +1699,7 @@ impl Shared {
             output: None,
             pending: HashMap::new(),
             active_cell: None,
-            host_requests: HashSet::new(),
+            host_requests: HashMap::new(),
             ready_received: false,
             initialized: false,
             startup_deadline: Instant::now() + options.startup_timeout,
@@ -1988,7 +1998,31 @@ impl Shared {
                     Some(Value::Object(payload)) => payload.clone(),
                     Some(_) => return Err("host_request payload must be an object".into()),
                 };
-                self.handle_host_request(state, generation, id, kind, payload);
+                let cell = match frame.get("cell") {
+                    None => None,
+                    Some(Value::String(cell)) if !cell.is_empty() => Some(cell.clone()),
+                    Some(_) => return Err("host_request cell must be a request id".into()),
+                };
+                self.handle_host_request(
+                    state,
+                    generation,
+                    HostRequest {
+                        id,
+                        kind,
+                        payload,
+                        cell,
+                    },
+                );
+                Ok(())
+            }
+            "host_cancel" => {
+                let Some(Value::String(id)) = frame.get("id") else {
+                    return Err("host_cancel requires an id".into());
+                };
+                // A request that already finished (or was refused) has nothing to cancel.
+                if let Some(request) = current.host_requests.get(id) {
+                    request.abort("RLM host request cancelled");
+                }
                 Ok(())
             }
             "stdout" | "stderr" | "result" | "error" | "done" => {
@@ -2017,24 +2051,32 @@ impl Shared {
         }
     }
 
-    fn handle_host_request(
-        self: &Arc<Self>,
-        state: &mut State,
-        generation: u64,
-        id: String,
-        kind: String,
-        payload: Map<String, Value>,
-    ) {
+    fn handle_host_request(self: &Arc<Self>, state: &mut State, generation: u64, request: HostRequest) {
+        let HostRequest {
+            id,
+            kind,
+            payload,
+            cell,
+        } = request;
         let Some(current) = state.current(generation) else {
             return;
         };
-        if current.host_requests.contains(&id) {
+        if current.host_requests.contains_key(&id) {
             let error = KernelError::new(format!("RLM kernel protocol duplicate host request id: {id}"));
             self.fail(state, generation, error);
             return;
         }
-        let cell = current.active_cell.as_ref().and_then(|cell| current.pending.get(cell));
-        let Some(cell) = cell else {
+        // A request names the cell that made it; one from a task a finished cell left running is refused, so it never
+        // runs under the next cell's handler, signal and output. A request without a cell belongs to the active one.
+        let waiter = match &cell {
+            Some(cell) if current.active_cell.as_ref() != Some(cell) => {
+                self.send_host_error(state, generation, &id, "RLM host request from a cell that has finished");
+                return;
+            }
+            Some(cell) => current.pending.get(cell),
+            None => current.active_cell.as_ref().and_then(|cell| current.pending.get(cell)),
+        };
+        let Some(waiter) = waiter else {
             self.send_host_error(state, generation, &id, "RLM host request has no active cell");
             return;
         };
@@ -2043,14 +2085,26 @@ impl Shared {
             self.send_host_error(state, generation, &id, &message);
             return;
         }
-        let handler = cell.handler.clone().unwrap_or_else(|| self.handler.clone());
-        let signal = cell.controller.clone();
-        current.host_requests.insert(id.clone());
+        let handler = waiter.handler.clone().unwrap_or_else(|| self.handler.clone());
+        let cell_signal = waiter.controller.clone();
+        // The request's signal ends with its cell for good, not only while the handler runs: handlers keep it
+        // (a shell job remembers the signal of the request that started it, to tell its cell ending from a cancel).
+        let signal = Signal::new();
+        let request = signal.clone();
+        if cell_signal.on_abort(move |reason| request.abort(reason)).is_none() {
+            signal.abort(cell_signal.reason().unwrap_or_default());
+        }
+        current.host_requests.insert(id.clone(), signal.clone());
         let shared = self.clone();
         std::thread::spawn(move || {
-            let result = handler.handle(&kind, payload, &signal);
+            let result =
+                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| handler.handle(&kind, payload, &signal)))
+                    .unwrap_or_else(|_| Err(format!("RLM host handler for {kind} panicked")));
+            // Every request is answered while its kernel lives, also after its cell completed or it was cancelled:
+            // whatever still awaits it gets the outcome instead of waiting forever, and Python drops a reply nobody
+            // waits for.
             shared.with_state(|state| {
-                if state.current(generation).is_some() && !signal.is_aborted() {
+                if state.current(generation).is_some() {
                     match result {
                         Ok(value) => {
                             let reply = object([

@@ -1316,7 +1316,7 @@ fn interactive_commands_login_with_an_api_key() {
     assert!(
         matches!(
             c.commands().last(),
-            Some(LaneCommand::OAuthLogin { provider, name }) if provider == "anthropic" && name == "Anthropic"
+            Some(LaneCommand::OAuthLogin { provider, name, .. }) if provider == "anthropic" && name == "Anthropic"
         ),
         "{:?}",
         c.commands().last()

@@ -8,7 +8,7 @@ use delegation::skill_runs::{RUNS, RunBook, SkillRuns};
 use delegation::spawn_contract::plain_check_runner;
 use host::file_hooks::{CellChanges, CellObserver};
 use kernel::Signal;
-use kernel::store::MemoryDocumentStore;
+use kernel::store::{DocumentStore, MemoryDocumentStore};
 use kernel_apis::{ApiModule, Request, SkillSource, SkillsModule, TaskHost};
 use serde_json::{Map, Value, json};
 use std::path::{Path, PathBuf};
@@ -90,6 +90,11 @@ fn skill(name: &str, procedure: &str) -> String {
 }
 
 fn fixture(content: String, verdict: Value) -> Fixture {
+    fixture_in(content, verdict, Arc::new(MemoryDocumentStore::default()))
+}
+
+/// [`fixture`] over the skills module document `store`.
+fn fixture_in(content: String, verdict: Value, store: Arc<dyn DocumentStore>) -> Fixture {
     let tmp = tempfile::tempdir().unwrap();
     let cwd = tmp.path().canonicalize().unwrap().join("work");
     std::fs::create_dir_all(&cwd).unwrap();
@@ -103,12 +108,7 @@ fn fixture(content: String, verdict: Value) -> Fixture {
         }])
     });
     let clock: kernel_apis::util::Clock = Arc::new(|| 1_000);
-    let skills = Arc::new(SkillsModule::new(
-        Arc::new(MemoryDocumentStore::default()),
-        loader,
-        clock.clone(),
-        None,
-    ));
+    let skills = Arc::new(SkillsModule::new(store, loader, clock.clone(), None));
     let judge = Arc::new(FakeJudge {
         verdict,
         seen: Mutex::default(),
@@ -570,4 +570,104 @@ fn skill_runs_a_run_a_dead_worker_left_running_is_marked_interrupted() {
     );
     assert!(record["reason"].as_str().unwrap().contains("worker"), "{record}");
     assert_eq!(restarted.interrupt_orphans(), Ok(0), "marked once");
+}
+
+/// A judge seat that waits, mid-decision, until the test lets it answer.
+struct GateJudge {
+    entered: Mutex<Option<std::sync::mpsc::Sender<()>>>,
+    release: Mutex<std::sync::mpsc::Receiver<()>>,
+}
+
+impl ApiModule for GateJudge {
+    fn prefixes(&self) -> &[&str] {
+        &["judge."]
+    }
+    fn handle(&self, _: &Request<'_>) -> Result<Value, String> {
+        if let Some(entered) = self.entered.lock().unwrap().take() {
+            entered.send(()).unwrap();
+            let _ = self.release.lock().unwrap().recv();
+        }
+        Ok(yes())
+    }
+}
+
+/// B-report #5: while a step runs, its run stays in the book: a second `procedure.start` on the lane is refused
+/// (it used to succeed, and the step's return overwrote the new run), and `procedure.abort` finds the run and ends
+/// it when the step returns (it used to fail with "No skill run").
+#[test]
+fn skill_runs_a_run_whose_step_is_running_stays_in_the_book() {
+    let judged = "  segments:\n    - name: why\n      goal: Why it fails.\n      judge: {kind: skill.demo, questions: {why: {type: yesno, instructions: Right reason?}}, pass: {why: true}}\n    - name: after\n      goal: Then.\n      judge: {kind: skill.demo, questions: {why: {type: yesno, instructions: Right reason?}}, pass: {why: true}}\n";
+    let mut f = fixture(skill("demo", judged), yes());
+    let (entered, judging) = std::sync::mpsc::channel();
+    let (release, released) = std::sync::mpsc::channel();
+    f.runs.judge = Arc::new(GateJudge {
+        entered: Mutex::new(Some(entered)),
+        release: Mutex::new(released),
+    });
+    let run = f.call("procedure.start", json!({"name": "demo"})).unwrap();
+    let id = run["run"].as_str().unwrap().to_string();
+    let stepped = std::thread::scope(|scope| {
+        // Owned here, so a failed assertion below drops it and the waiting judge returns.
+        let release = release;
+        let step = scope.spawn(|| f.step(&run, Some("the assertion is wrong")));
+        judging.recv().unwrap();
+        let refused = f.call("procedure.start", json!({"name": "demo"})).unwrap_err();
+        assert_eq!(
+            refused,
+            format!("This lane is running skill demo (run {id}, segment why): finish it or abort it first")
+        );
+        let aborting = f
+            .call("procedure.abort", json!({"run": id, "reason": "wrong bug"}))
+            .unwrap();
+        assert_eq!(aborting["outcome"], "aborting");
+        release.send(()).unwrap();
+        step.join().unwrap()
+    });
+    assert_eq!(
+        (stepped["outcome"].clone(), stepped["reason"].clone()),
+        (json!("aborted"), json!("wrong bug"))
+    );
+    let records = f.records();
+    assert_eq!(records.len(), 1);
+    assert_eq!(records[0]["outcome"], "aborted");
+    // The lane is free again.
+    f.call("procedure.start", json!({"name": "demo"})).unwrap();
+}
+
+/// B-report #5: a run whose end cannot be recorded stays in the book (its record still says running), so ending it
+/// again works; it used to be dropped from the book with its record left running.
+#[test]
+fn skill_runs_a_run_whose_end_cannot_be_recorded_stays_in_the_book() {
+    #[derive(Default)]
+    struct Refusing {
+        value: Mutex<Option<Value>>,
+        refused: Mutex<bool>,
+    }
+    impl DocumentStore for Refusing {
+        fn read(&self) -> Result<Option<Value>, String> {
+            Ok(self.value.lock().unwrap().clone())
+        }
+        fn write(&self, document: &Value) -> Result<(), String> {
+            let mut refused = self.refused.lock().unwrap();
+            if !*refused && document.to_string().contains("\"outcome\":\"aborted\"") {
+                *refused = true;
+                return Err("disk full".into());
+            }
+            *self.value.lock().unwrap() = Some(document.clone());
+            Ok(())
+        }
+    }
+    let f = fixture_in(skill("demo", TDD), yes(), Arc::new(Refusing::default()));
+    let run = f
+        .call("procedure.start", json!({"name": "demo", "input": {"test": "false"}}))
+        .unwrap();
+    let abort = json!({"run": run["run"], "reason": "wrong bug"});
+    assert!(
+        f.call("procedure.abort", abort.clone())
+            .unwrap_err()
+            .contains("disk full")
+    );
+    assert_eq!(f.records()[0]["outcome"], "running");
+    assert_eq!(f.call("procedure.abort", abort).unwrap()["outcome"], "aborted");
+    assert_eq!(f.records()[0]["outcome"], "aborted");
 }

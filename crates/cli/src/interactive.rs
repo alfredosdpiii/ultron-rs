@@ -121,9 +121,10 @@ struct Cancels {
     bug: Arc<std::sync::atomic::AtomicBool>,
 }
 
-/// The TUI's commands, in order: the ones that must not wait behind the link thread's current command (a cancel, a
-/// login's answer, a startup check) are answered here; the rest go to the link thread.
+/// The TUI's commands, in order: the ones that must not wait behind the link thread's current command (an abort, a
+/// cancel, a login's answer, a startup check) are answered here; the rest go to the link thread.
 fn route(
+    link: client::session::LinkHandle,
     lane: mpsc::Receiver<LaneCommand>,
     commands: mpsc::Sender<Command>,
     env: Env,
@@ -154,12 +155,16 @@ fn route(
                     }
                 });
             }
-            LaneCommand::OAuthLogin { provider, name } if !crate::tui_login::supported(&env, &provider) => {
+            LaneCommand::OAuthLogin { provider, name, .. } if !crate::tui_login::supported(&env, &provider) => {
                 send(LaneEvent::Status(format!(
                     "Error: Failed to login to {name}: signing in with an account is not available in the Rust build yet; use an API key"
                 )));
             }
-            LaneCommand::OAuthLogin { provider, name } => {
+            LaneCommand::OAuthLogin {
+                id: login_id,
+                provider,
+                name,
+            } => {
                 let ui = ui.clone();
                 let events: Arc<dyn Fn(LaneEvent) + Send + Sync> = Arc::new(move |event| {
                     let _ = ui.send(UiEvent::Lane(event));
@@ -168,9 +173,32 @@ fn route(
                 let saved = Box::new(move || {
                     let _ = saved_commands.send(Command::LoginSaved(id, label));
                 });
-                crate::tui_login::start(env.clone(), provider, name, events, login.clone(), saved);
+                crate::tui_login::start(env.clone(), login_id, provider, name, events, login.clone(), saved);
             }
-            LaneCommand::LoginReply(answer) => login.reply(answer),
+            LaneCommand::LoginReply { id, answer } => login.reply(id, answer),
+            // Esc: sent to the worker now, not after the link thread's current command (a `/share` export, an
+            // inspection); sent in order with the commands that follow it, its answer awaited off this thread.
+            command @ (LaneCommand::Abort | LaneCommand::AbortRetry | LaneCommand::AbortBash) => {
+                let op = match command {
+                    LaneCommand::AbortRetry => Op::AbortRetry,
+                    LaneCommand::AbortBash => Op::AbortBash,
+                    _ => Op::Abort,
+                };
+                let started = start_call(
+                    &link.connection(),
+                    protocol::names::SESSION_OPS,
+                    "op",
+                    json!([op.to_json()]),
+                );
+                let ui = ui.clone();
+                std::thread::spawn(move || {
+                    let result = started
+                        .and_then(|(connection, request)| connection.wait(&request).map_err(client::lost::message));
+                    if let Err(error) = result {
+                        let _ = ui.send(UiEvent::Lane(LaneEvent::Error(error)));
+                    }
+                });
+            }
             LaneCommand::CancelShare => jsrt::sync::lock(&cancels.share).abort("cancelled"),
             LaneCommand::CancelBugReport => cancels.bug.store(true, std::sync::atomic::Ordering::SeqCst),
             command => {
@@ -429,9 +457,6 @@ fn link_thread(
                 },
             ),
             Command::Lane(LaneCommand::CancelQueued(entry_id)) => run_op(&link, Op::CancelQueued { entry_id }),
-            Command::Lane(LaneCommand::Abort) => run_op(&link, Op::Abort),
-            Command::Lane(LaneCommand::AbortRetry) => run_op(&link, Op::AbortRetry),
-            Command::Lane(LaneCommand::AbortBash) => run_op(&link, Op::AbortBash),
             Command::Lane(LaneCommand::SetName(name)) => run_op(&link, Op::SetName { name }),
             Command::Lane(LaneCommand::Prompt { text, images }) => match link.op(&Op::Prompt {
                 message: text,
@@ -523,7 +548,7 @@ fn link_thread(
             Command::Lane(LaneCommand::Bash { command, exclude }) => {
                 // Answered on its own thread, so Esc (abortBash) reaches the worker while it runs.
                 let started = start_call(
-                    &link,
+                    &link.connection(),
                     protocol::names::SESSION_CONTROL,
                     "bash",
                     json!([command, exclude]),
@@ -538,7 +563,7 @@ fn link_thread(
             }
             Command::Lane(LaneCommand::Compact(instructions)) => {
                 let started = start_call(
-                    &link,
+                    &link.connection(),
                     protocol::names::AGENT_CONTROLLER,
                     "compact",
                     json!([{"customInstructions": instructions}]),
@@ -717,7 +742,7 @@ fn link_thread(
             }) => {
                 // The agent controller's navigate runs on its own worker thread (a summary is a model call).
                 let started = start_call(
-                    &link,
+                    &link.connection(),
                     protocol::names::AGENT_CONTROLLER,
                     "navigate",
                     json!([{"targetId": target, "summarize": summarize, "label": null, "customInstructions": instructions}]),
@@ -842,7 +867,12 @@ fn link_thread(
             }
             Command::Lane(LaneCommand::BugReportSummary(hint)) => {
                 let op = Op::BugSummary { hint };
-                let started = start_call(&link, protocol::names::SESSION_OPS, "op", json!([op.to_json()]));
+                let started = start_call(
+                    &link.connection(),
+                    protocol::names::SESSION_OPS,
+                    "op",
+                    json!([op.to_json()]),
+                );
                 let ui = ui.clone();
                 std::thread::spawn(move || {
                     let result = started
@@ -1088,7 +1118,10 @@ fn link_thread(
                 LaneCommand::StartupChangelog
                 | LaneCommand::SubscriptionAuthWarning(_)
                 | LaneCommand::OAuthLogin { .. }
-                | LaneCommand::LoginReply(_)
+                | LaneCommand::LoginReply { .. }
+                | LaneCommand::Abort
+                | LaneCommand::AbortRetry
+                | LaneCommand::AbortBash
                 | LaneCommand::CancelShare
                 | LaneCommand::CancelBugReport,
             ) => {}
@@ -1497,17 +1530,16 @@ fn session_op_runner(link: &Link) -> Arc<dyn Fn(Op) -> Result<Option<Value>, Str
 /// Start a long call of the attached session (one the worker runs on its own thread, so later calls such as
 /// `abortBash` are not queued behind it) without waiting for it.
 fn start_call(
-    link: &Link,
+    connection: &Arc<client::runtime::Connection>,
     service: &str,
     member: &str,
     args: Value,
 ) -> Result<(Arc<client::runtime::Connection>, String), String> {
-    let session = link.connection().session_target().map_err(client::lost::message)?;
-    let request = link
-        .connection()
+    let session = connection.session_target().map_err(client::lost::message)?;
+    let request = connection
         .start(session, service, member, args)
         .map_err(client::lost::message)?;
-    Ok((link.connection(), request))
+    Ok((connection.clone(), request))
 }
 
 fn bash_result(value: &Value) -> BashResult {
@@ -1829,6 +1861,7 @@ fn run_tui(
         }
     };
     let link = open_link(Arc::new(watch))?;
+    let handle = link.handle();
     let server_id = link.connection().server_id.clone();
     let no_session = parsed.no_session;
     let signalled = Arc::new(std::sync::atomic::AtomicI32::new(0));
@@ -1859,7 +1892,7 @@ fn run_tui(
     let (lane_tx, lane_rx) = mpsc::channel::<LaneCommand>();
     let router = {
         let (commands, env, ui) = (command_tx.clone(), env.clone(), ui_tx.clone());
-        std::thread::spawn(move || route(lane_rx, commands, env, ui, cancels))
+        std::thread::spawn(move || route(handle, lane_rx, commands, env, ui, cancels))
     };
     let model = model.map(|m| catalog_info(&m)).unwrap_or_default();
     let hide_thinking = settings.settings().get("hideThinkingBlock") == Some(&Value::Bool(true));

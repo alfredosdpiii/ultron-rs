@@ -151,7 +151,12 @@ impl Shared {
     /// Writes the journal (every job, tails left out: they are not even copied), serialized under the jobs lock so the
     /// newest state wins.
     fn persist(&self) {
-        let jobs = sync::lock(&self.jobs);
+        self.persist_locked(&sync::lock(&self.jobs));
+    }
+
+    /// [`Shared::persist`] with the jobs lock held: a job's end and the release to a next owner are decided under it,
+    /// so exactly one of the two workers settles each job.
+    fn persist_locked(&self, jobs: &[Arc<Job>]) {
         let Some(journal) = sync::lock(&self.journal).clone() else {
             return;
         };
@@ -198,8 +203,20 @@ struct Job {
     cancel: (Mutex<bool>, Condvar),
     /// Why the first stop asked for it.
     reason: Mutex<Option<StopReason>>,
-    done: (Mutex<bool>, Condvar),
+    /// Whether this worker still follows the job; its condvar wakes waiters and cancellers when that ends.
+    tracking: (Mutex<Tracking>, Condvar),
     waiters: AtomicUsize,
+}
+
+/// Where this worker is with a job. Waiters and cancellers wait while it is `Following`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Tracking {
+    /// Its follower runs (or will run) and settles it.
+    Following,
+    /// Handed to the next owner of the journal ([`Host::release_jobs`]): this worker never settles it.
+    Released,
+    /// Settled: its record holds its end.
+    Ended,
 }
 
 impl Job {
@@ -226,14 +243,30 @@ impl Job {
             exited: Mutex::new(None),
             cancel: (Mutex::new(false), Condvar::new()),
             reason: Mutex::new(None),
-            done: (Mutex::new(false), Condvar::new()),
+            tracking: (Mutex::new(Tracking::Following), Condvar::new()),
             waiters: AtomicUsize::new(0),
         }
     }
 
     fn finished(&self) {
-        *sync::lock(&self.done.0) = true;
-        self.done.1.notify_all();
+        self.stop_following(Tracking::Ended);
+    }
+
+    fn stop_following(&self, to: Tracking) {
+        *sync::lock(&self.tracking.0) = to;
+        self.tracking.1.notify_all();
+    }
+
+    fn following(&self) -> bool {
+        *sync::lock(&self.tracking.0) == Tracking::Following
+    }
+
+    /// Waits until this worker settled the job or released it.
+    fn wait_settled(&self) {
+        let mut tracking = sync::lock(&self.tracking.0);
+        while *tracking == Tracking::Following {
+            tracking = self.tracking.1.wait(tracking).unwrap_or_else(PoisonError::into_inner);
+        }
     }
 }
 
@@ -604,9 +637,28 @@ impl Host {
     /// Hands the running jobs to the next owner of the journal: this host stops following and journaling them, and
     /// dropping it no longer stops them (a worker handing over to its successor). Without a journal it changes
     /// nothing but the drop.
+    ///
+    /// A stop already asked for is carried out first, so the successor does not keep following a job the person
+    /// cancelled. The release is decided under the jobs lock, as each job's end and each stop request are: a job
+    /// either ends here (and the journal says so) or is the successor's, and a later stop here returns at once.
     pub fn release_jobs(&self) {
-        self.shared.persist();
-        self.shared.released.store(true, Ordering::SeqCst);
+        loop {
+            let jobs = sync::lock(&self.shared.jobs);
+            let stopping: Vec<Arc<Job>> = jobs
+                .iter()
+                .filter(|job| *sync::lock(&job.cancel.0) && job.following())
+                .cloned()
+                .collect();
+            if stopping.is_empty() {
+                self.shared.persist_locked(&jobs);
+                self.shared.released.store(true, Ordering::SeqCst);
+                break;
+            }
+            drop(jobs);
+            for job in stopping {
+                job.wait_settled();
+            }
+        }
         for job in sync::lock(&self.shared.jobs).iter() {
             job.cancel.1.notify_all();
         }
@@ -617,7 +669,7 @@ impl Host {
     pub fn stop_jobs(&self) {
         let jobs = sync::lock(&self.shared.jobs).clone();
         for job in jobs {
-            cancel(&job, StopReason::Closed);
+            cancel(&job, StopReason::Closed, &self.shared);
         }
     }
 
@@ -639,7 +691,7 @@ impl Host {
             .cloned()
             .collect();
         for job in jobs {
-            cancel(&job, StopReason::RootAborted);
+            cancel(&job, StopReason::RootAborted, &self.shared);
         }
     }
 
@@ -776,7 +828,7 @@ impl Host {
             "shell.cancel" => {
                 kernel::ops::fields(kind, &payload)?;
                 let job = self.find(lane, payload.get("id"))?;
-                cancel(&job, StopReason::Cancelled);
+                cancel(&job, StopReason::Cancelled, &self.shared);
                 Ok(snapshot(&job))
             }
             "shell.read" => {
@@ -914,7 +966,7 @@ impl Host {
         wait(&job, yield_after, signal);
         if sync::lock(&job.record).status == Status::Running && signal.is_aborted() {
             job.waiters.fetch_add(1, Ordering::SeqCst);
-            cancel(&job, StopReason::Cancelled);
+            cancel(&job, StopReason::Cancelled, &self.shared);
             job.waiters.fetch_sub(1, Ordering::SeqCst);
         }
         bash_result(&job)
@@ -1167,6 +1219,7 @@ fn follow(job: &Arc<Job>, child: Option<std::process::Child>, shared: &Shared) {
             break ended;
         }
         if shared.released.load(Ordering::SeqCst) {
+            job.stop_following(Tracking::Released);
             return;
         }
         if stopped.is_none() {
@@ -1195,6 +1248,13 @@ fn follow(job: &Arc<Job>, child: Option<std::process::Child>, shared: &Shared) {
     digest.finish(job);
     // The keeper writes the command's status just before it exits.
     let code = exit_status(&job.exit_path);
+    let jobs = sync::lock(&shared.jobs);
+    if shared.released.load(Ordering::SeqCst) {
+        // Released while it ended: the next owner settles it from its exit file.
+        drop(jobs);
+        job.stop_following(Tracking::Released);
+        return;
+    }
     {
         let mut record = sync::lock(&job.record);
         record.ended_at = Some(match own {
@@ -1237,7 +1297,8 @@ fn follow(job: &Arc<Job>, child: Option<std::process::Child>, shared: &Shared) {
             },
         }
     }
-    shared.persist();
+    shared.persist_locked(&jobs);
+    drop(jobs);
     // `onEnd`, before the job's waiters wake: a caller still waiting gets the result inline, so nothing is announced.
     let reason = *sync::lock(&job.reason);
     let end = JobEnd {
@@ -1260,19 +1321,19 @@ fn wait(job: &Arc<Job>, seconds: Option<f64>, signal: &Signal) {
     let deadline = seconds.map(|seconds| Instant::now() + Duration::from_secs_f64(seconds.max(0.02)));
     let woken = job.clone();
     let link = signal.link(move |_| {
-        let _done = sync::lock(&woken.done.0);
-        woken.done.1.notify_all();
+        let _tracking = sync::lock(&woken.tracking.0);
+        woken.tracking.1.notify_all();
     });
-    let mut done = sync::lock(&job.done.0);
-    while !*done && !signal.is_aborted() {
+    let mut done = sync::lock(&job.tracking.0);
+    while *done == Tracking::Following && !signal.is_aborted() {
         done = match deadline {
-            None => job.done.1.wait(done).unwrap_or_else(PoisonError::into_inner),
+            None => job.tracking.1.wait(done).unwrap_or_else(PoisonError::into_inner),
             Some(deadline) => {
                 let now = Instant::now();
                 if now >= deadline {
                     break;
                 }
-                job.done
+                job.tracking
                     .1
                     .wait_timeout(done, deadline - now)
                     .unwrap_or_else(PoisonError::into_inner)
@@ -1285,17 +1346,20 @@ fn wait(job: &Arc<Job>, seconds: Option<f64>, signal: &Signal) {
     job.waiters.fetch_sub(1, Ordering::SeqCst);
 }
 
-fn cancel(job: &Job, reason: StopReason) {
-    if *sync::lock(&job.done.0) {
-        return;
+/// Stops a job this worker follows and waits until it is settled (or released). A job already handed to the next
+/// owner is not this worker's to stop: it returns at once.
+fn cancel(job: &Job, reason: StopReason, shared: &Shared) {
+    {
+        // Under the jobs lock, as the release is: a stop asked for before it is carried out by this worker.
+        let _jobs = sync::lock(&shared.jobs);
+        if shared.released.load(Ordering::SeqCst) || !job.following() {
+            return;
+        }
+        sync::lock(&job.reason).get_or_insert(reason);
+        *sync::lock(&job.cancel.0) = true;
     }
-    sync::lock(&job.reason).get_or_insert(reason);
-    *sync::lock(&job.cancel.0) = true;
     job.cancel.1.notify_all();
-    let mut done = sync::lock(&job.done.0);
-    while !*done {
-        done = job.done.1.wait(done).unwrap_or_else(PoisonError::into_inner);
-    }
+    job.wait_settled();
 }
 
 fn read_file(path: &Path, cursor: usize, max: usize) -> String {

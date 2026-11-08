@@ -12,6 +12,8 @@ mod dies_connection;
 mod gateway_command;
 #[path = "gateway_fixture.rs"]
 mod gateway_fixture;
+#[path = "handshake_close.rs"]
+mod handshake_close;
 #[path = "http_fixture.rs"]
 mod http_fixture;
 #[path = "http_resumption.rs"]
@@ -22,6 +24,8 @@ mod js_parity;
 mod oauth_fixture;
 #[path = "oauth_ported.rs"]
 mod oauth_ported;
+#[path = "oauth_store_update.rs"]
+mod oauth_store_update;
 #[path = "ordering_fixture.rs"]
 mod ordering_fixture;
 #[path = "runtime_fixture.rs"]

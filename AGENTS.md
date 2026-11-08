@@ -56,6 +56,38 @@ bar above or something genuinely needs the user; don't end a turn by announcing 
 - Never leave copies of `auth.json` or keys behind; delete temp agent dirs after use.
 - Never print a secret in full; show at most its first 6 characters.
 
+## Design
+
+The codebase was untangled around one question: should these pieces change together? Keep it that way. Before
+adding code, decide what it changes with and put it there.
+
+- **No hidden links.** Pieces that must change together live together. No copied logic or values (one owner, one
+  helper: `jsrt`, `config::keys`, `config::auth`, `config::paths`, `signals`, `session_journal::catalog`,
+  `delegation::usage`). No module reading a global or file another module sets without going through that module's
+  API. Keep a feature's code in one crate or folder, not split by layer. No call order or convention callers just
+  have to know: make it a type, a single entry point, or a check in `crates/workspace-checks`.
+- **No needless links.** Callers depend on behavior, not internals. Stable code never imports more volatile code;
+  check the dependency direction when adding a crate dependency. A general function takes no parameter only one
+  caller understands. Prefer deep modules: a small interface over a lot of behavior.
+- **No surplus.** No pass-through wrappers, no extension points or settings for things that never vary, no dead code.
+  Delete what nothing uses.
+- **Special cases are design debt.** An `if` for one value, a parameter for one caller, a swallowed error, a retry or
+  sleep, a disabled test: each is a requirement the design missed. Fix the design so the case follows from it; keep
+  a special case only when the system really needs it, and say why next to it.
+- **Explicit state machines.** A lifecycle with more than two states is an enum with one transition function, not
+  several bools, Options or status strings set from many places. Settle what a state owes (a reply, a cancel, a
+  reservation) before replacing it. Never hold a lock while calling code that can call back into it. State that must
+  survive a restart is written before it is acted on, files are written atomically (`config::paths::write_private`:
+  temp file, fsync, rename), and recovery handles every persisted state by name. A protocol across threads,
+  processes or restarts gets a Quint spec in `specs/` (see `specs/check.sh` and its verify skills) that models both
+  the bug class and the fix.
+- **Fail closed** on unreadable security state (trust, approvals, credentials).
+- **Comments** say what the code cannot: an outside constraint, a reason, a workaround and the problem behind it.
+  Don't restate the code.
+- **Tests** check behavior and fail on a regression, and only then. A test that repeats the implementation, depends
+  on internals, or cannot fail is removed or rewritten. A bug fix comes with a test that fails without the fix.
+- A typical change lands in one place. If yours touches many, look for the missing owner first.
+
 ## Code
 
 - New work goes in `crates/*`. Workspace lints apply: `unsafe_code` is forbidden, clippy warnings are errors.
@@ -79,7 +111,8 @@ Several agent sessions may work in this checkout at once.
 - Never: `git reset --hard`, `git checkout .`, `git clean -fd`, `git stash`, `git add -A`, `git add .`,
   `git commit --no-verify`, force pushes. On rebase conflicts in files you didn't change, stop and ask.
 - Parallel work goes in a git worktree (`git worktree add -b <branch> ../<dir> main`), with its own
-  `CARGO_TARGET_DIR`; delete that target dir after the merge.
+  `CARGO_TARGET_DIR`. After the merge, remove the worktree (`git worktree remove`, `git worktree prune`) and delete
+  its target dir.
 - To inspect a PR, use `gh pr view`/`gh pr diff` and `git show`; don't switch branches unless asked.
 - Post issue or PR comments with `--body-file`, in the user's tone.
 

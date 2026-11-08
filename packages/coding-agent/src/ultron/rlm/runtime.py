@@ -4,6 +4,7 @@ import ast
 import asyncio
 import base64
 import contextlib
+import contextvars
 import hashlib
 import io
 import json
@@ -73,39 +74,51 @@ class SpawnHandle:
 _MAX_HOST_FRAME_BYTES = 1024 * 1024 - 1024
 
 
+# The execute request whose code is running in this context. Set by execute_cell; tasks and `asyncio.to_thread` calls a
+# cell starts inherit it, so their host requests and prints stay the cell's own after a later cell has started.
+_CELL: contextvars.ContextVar[str | None] = contextvars.ContextVar("ultron_rlm_cell", default=None)
+
+
 class HostBridge:
+    """Host requests: a request is registered, written (with its cell), then answered by the host's reply. The host
+    answers every request while the kernel lives; a request the caller stops awaiting is cancelled on the host
+    (`host_cancel`), and its late reply is dropped here."""
+
     def __init__(self) -> None:
         self._host_requests: dict[str, asyncio.Future[Any]] = {}
         self._counter = 0
-        self._write_lock = asyncio.Lock()
 
     async def request(self, request_type: str, payload: dict[str, Any] | None = None) -> Any:
         self._counter += 1
         request_id = f"host-{self._counter}"
-        line = json.dumps({
-            "event": "host_request",
-            "id": request_id,
-            "type": request_type,
-            "payload": payload or {},
-        }, separators=(",", ":")) + "\n"
+        frame: dict[str, Any] = {"event": "host_request", "id": request_id, "type": request_type, "payload": payload or {}}
+        cell = _CELL.get()
+        if cell is not None:
+            frame["cell"] = cell
+        line = json.dumps(frame, separators=(",", ":")) + "\n"
         # The host kills a kernel that writes a frame over 1 MiB, losing every variable: refuse it here instead.
         if len(line) > _MAX_HOST_FRAME_BYTES:
             raise ValueError(f"{request_type} request is {len(line):,} bytes, over the kernel's 1 MiB frame: pass "
                              "rlm.load handles or file paths instead of inline text, or send it in parts")
         future: asyncio.Future[Any] = asyncio.get_running_loop().create_future()
         self._host_requests[request_id] = future
-        async with self._write_lock:
-            _write_frame(line)
         try:
+            _write_frame(line)
             return await future
         finally:
             self._host_requests.pop(request_id, None)
+            if future.cancelled():
+                # The awaiting task was cancelled (asyncio.wait_for, a cancelled gather): stop the host's work too.
+                try:
+                    emit("host_cancel", id=request_id)
+                except Exception:
+                    pass
 
     def resolve(self, request_id: str, payload: Any = None, error: str | None = None) -> None:
         future = self._host_requests.get(request_id)
         if future is None or future.done():
             return
-        if error:
+        if error is not None:
             future.set_exception(RuntimeError(error))
         else:
             future.set_result(payload)
@@ -944,7 +957,6 @@ class RuntimeState:
         self.bridge = HostBridge()
         self.cell_active = False
         self.execution_lock = asyncio.Lock()
-        self.snapshot_path: Path | None = None
         # asyncio is pre-imported: the guide batches independent work with asyncio.gather.
         self.namespace: dict[str, Any] = {"__name__": "__main__", "asyncio": asyncio}
         # The stdlib names cells most often use without importing (a NameError costs a whole turn).
@@ -1264,7 +1276,6 @@ def save_snapshot(path: str) -> dict[str, Any]:
     temporary = target.with_name(f".{target.name}.{os.getpid()}.tmp")
     temporary.write_bytes(content)
     os.replace(temporary, target)
-    _STATE.snapshot_path = target
     return {
         "saved": sorted(encoded),
         "skipped": skipped,
@@ -1328,9 +1339,15 @@ def restore_snapshot(path: str, verified_sha256: Any = None) -> dict[str, Any]:
         raise SnapshotIntegrityError("snapshot integrity check failed: malformed body")
     # Decode everything before touching the namespace, so a bad snapshot changes nothing.
     decoded = {name: _decode_value(value) for name, value in names.items()}
+    before = dict(_STATE.namespace)
     _STATE.namespace.update(decoded)
-    _STATE.snapshot_path = target
-    agent_class_api.rehydrate()
+    try:
+        agent_class_api.rehydrate()
+    except BaseException:
+        # Defining the stored agent classes failed: put the namespace back as it was.
+        _STATE.namespace.clear()
+        _STATE.namespace.update(before)
+        raise
     return {"restored": sorted(decoded), "missing": False, "skipped": sorted(skipped), "reasons": reasons}
 
 
@@ -2037,6 +2054,7 @@ _STATE.bindings = {name: value for name, value in _STATE.namespace.items() if na
 
 async def execute_cell(request_id: str, source: str) -> None:
     async with _STATE.execution_lock:
+        _CELL.set(request_id)
         budget = _output_budget()
         spill_dir = _spill_dir()
         stdout = _MiddleTextIO(budget, "stdout", spill_dir)
@@ -2051,9 +2069,10 @@ async def execute_cell(request_id: str, source: str) -> None:
                 stdout.write(note + "\n")
             _arm_cpu_limit()
             _STATE.cell_active = True
+            out = _CellStream(request_id, _LiveOutput.tee(live, stdout, "stdout"))
+            err = _CellStream(request_id, _LiveOutput.tee(live, stderr, "stderr"))
             try:
-                with contextlib.redirect_stdout(_LiveOutput.tee(live, stdout, "stdout")), \
-                        contextlib.redirect_stderr(_LiveOutput.tee(live, stderr, "stderr")):
+                with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
                     agent_class_api.begin_cell(source)
                     try:
                         result = eval(compiled, _STATE.namespace, _STATE.namespace)
@@ -2076,6 +2095,9 @@ async def execute_cell(request_id: str, source: str) -> None:
             finally:
                 _STATE.cell_active = False
                 _LiveOutput.close(live)
+            dropped = out.dropped + err.dropped
+            if dropped:
+                stderr.write(f"[{dropped} characters printed by a task of an earlier cell were dropped]\n")
             emit("stdout", id=request_id, text=stdout.getvalue())
             emit("stderr", id=request_id, text=stderr.getvalue())
             emit("result", id=request_id, result=result_text)
@@ -2115,6 +2137,30 @@ def _exit_for(*errors: BaseException) -> None:
     os._exit(code)
 
 
+def _reset_scratch_op() -> dict[str, Any]:
+    _STATE.reset_scratch()
+    return {}
+
+
+# Ops besides execute: each runs under the execution lock, like a cell, as a task of its own, so the reader loop keeps
+# reading host replies while it waits, and an op never runs beside a cell or another op.
+_OPS = {
+    "snapshot": lambda frame: {"snapshot": save_snapshot(str(frame.get("path")))},
+    "restore": lambda frame: {"restore": restore_snapshot(str(frame.get("path")), frame.get("content_sha256"))},
+    "reset_scratch": lambda _frame: _reset_scratch_op(),
+}
+
+
+async def _run_op(request_id: Any, request_type: str, frame: dict[str, Any]) -> None:
+    async with _STATE.execution_lock:
+        try:
+            fields = _OPS[request_type](frame)
+        except Exception as error:
+            emit("done", id=request_id, status="error", error=_exception_message(error))
+            return
+        emit("done", id=request_id, status="ok", **fields)
+
+
 async def handle_request(frame: dict[str, Any]) -> None:
     request_type = frame.get("request")
     request_id = frame.get("id")
@@ -2122,22 +2168,8 @@ async def handle_request(frame: dict[str, Any]) -> None:
         asyncio.create_task(execute_cell(request_id, str(frame.get("code", ""))))
     elif request_type == "host_reply":
         _STATE.bridge.resolve(str(frame.get("id")), frame.get("payload"), frame.get("error"))
-    elif request_type == "snapshot":
-        try:
-            result = save_snapshot(str(frame.get("path")))
-            emit("done", id=request_id, status="ok", snapshot=result)
-        except Exception as error:
-            emit("done", id=request_id, status="error", error=_exception_message(error))
-    elif request_type == "restore":
-        try:
-            result = restore_snapshot(str(frame.get("path")), frame.get("content_sha256"))
-            emit("done", id=request_id, status="ok", restore=result)
-        except Exception as error:
-            emit("done", id=request_id, status="error", error=_exception_message(error))
-    elif request_type == "reset_scratch":
-        async with _STATE.execution_lock:
-            _STATE.reset_scratch()
-        emit("done", id=request_id, status="ok")
+    elif isinstance(request_type, str) and request_type in _OPS:
+        asyncio.create_task(_run_op(request_id, request_type, frame))
     else:
         detail = _text_preview(request_type) if isinstance(request_type, str) else _result_preview(request_type)
         emit("done", id=request_id, status="error", error=_text_preview("unknown request: " + detail))
@@ -2151,14 +2183,20 @@ async def main() -> None:
         line = await asyncio.to_thread(_PROTOCOL_IN.readline)
         if not line:
             return
+        request_id = None
         try:
             frame = json.loads(line.decode("utf-8"))
             if isinstance(frame, dict):
+                request_id = frame.get("id")
                 await handle_request(frame)
         except SystemExit:
             return
         except Exception as error:
-            emit("error", **_error_preview(error))
+            # The host ends a request only by its id: a failure it can attribute is that request's error.
+            if isinstance(request_id, str) and request_id:
+                emit("done", id=request_id, status="error", error=_exception_message(error))
+            else:
+                emit("error", **_error_preview(error))
 
 
 # How often a running cell's new output is sent, and the most one send carries (the newest bytes; older ones are
@@ -2232,8 +2270,8 @@ class _LiveOutput:
             text = f"[... {dropped} characters not sent ...]\n" + text
         payload = {"text": text.encode("utf-8", errors="backslashreplace").decode("utf-8")}
         try:
-            _write_frame(_encode_frame({"event": "host_request", "id": frame_id, "type": "cell.output",
-                                        "payload": payload}))
+            _write_frame(_encode_frame({"event": "host_request", "id": frame_id, "cell": self._request_id,
+                                        "type": "cell.output", "payload": payload}))
         except BaseException:
             pass
 
@@ -2244,6 +2282,34 @@ class _LiveOutput:
             self._pending = []
         if timer is not None:
             timer.cancel()
+
+
+class _CellStream(io.TextIOBase):
+    """sys.stdout or sys.stderr while a cell runs. The redirect is process-wide, so a task an earlier cell left running
+    would print into this cell's output; text from a context that names another cell is dropped and counted instead.
+    Text from a context without a cell (a plain thread) is this cell's, as before."""
+
+    def __init__(self, cell: str, target: io.TextIOBase) -> None:
+        super().__init__()
+        self._cell = cell
+        self._target = target
+        self.dropped = 0
+
+    def writable(self) -> bool:
+        return True
+
+    def write(self, text: str) -> int:
+        owner = _CELL.get()
+        if owner is not None and owner != self._cell:
+            self.dropped += len(text)
+            return len(text)
+        return self._target.write(text)
+
+    def flush(self) -> None:
+        self._target.flush()
+
+    def getvalue(self) -> str:
+        return self._target.getvalue()  # type: ignore[attr-defined]
 
 
 class _LiveTee(io.TextIOBase):

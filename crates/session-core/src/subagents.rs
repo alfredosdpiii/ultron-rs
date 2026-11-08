@@ -89,10 +89,10 @@ pub fn unfinished(session: &SharedSession) -> Vec<String> {
         .unwrap_or_default()
         .iter()
         .filter(|task| {
-            !matches!(
-                task["state"].as_str(),
-                Some("completed" | "failed" | "cancelled" | "interrupted")
-            )
+            task["state"]
+                .as_str()
+                .and_then(harness::task_store::TaskState::parse)
+                .is_none_or(|state| !state.is_terminal())
         })
         .filter_map(|task| task["id"].as_str().map(str::to_string))
         .collect()

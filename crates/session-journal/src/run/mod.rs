@@ -8,12 +8,14 @@ use crate::session::Session;
 use crate::state::Write;
 use serde_json::{Map, Value, json};
 
+mod at;
 mod journal;
 pub mod summary;
 
 /// The root lane of a session: the lane every prompted run journals on (the kernel's `kernel::ROOT_LANE`).
 pub const MAIN_LANE: &str = "main";
 
+pub use at::OpAt;
 pub use journal::{OpenCompaction, Run};
 
 /// A generation's default `streamOptions` (`providerRequestOptions` of absent settings); a session sets the ones its

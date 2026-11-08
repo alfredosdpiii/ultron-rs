@@ -1,0 +1,3 @@
+code NoSelfWait=breaks NoWaitCycle=breaks NoOrphanJob=holds JobFollowsStatus=holds
+code_no_child NoSelfWait=breaks NoWaitCycle=holds NoOrphanJob=holds JobFollowsStatus=holds
+fixed NoSelfWait=holds NoWaitCycle=holds NoOrphanJob=holds JobFollowsStatus=holds

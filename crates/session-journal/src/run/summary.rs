@@ -4,6 +4,7 @@
 //! before the request and with it (`request{index, usageId}`), and `summary.retry_wait` (`notBefore`,
 //! `errorMessage`) between attempts.
 
+use super::OpAt;
 use crate::ns::OP_STATE;
 use crate::{Session, Write, lock_clock};
 use serde_json::{Map, Value, json};
@@ -15,11 +16,6 @@ fn stream_options() -> Value {
     options
 }
 
-pub const DECIDING: &str = "summary.deciding";
-pub const READY: &str = "summary.ready";
-pub const EFFECT_PENDING: &str = "summary.effect_pending";
-pub const RETRY_WAIT: &str = "summary.retry_wait";
-
 /// The operation an attempt's states belong to: its id, the scope every state starts with (`control`, `settings`,
 /// `latestAssistantEntryId`) and its task (`Null`: none).
 pub struct Scope {
@@ -30,7 +26,7 @@ pub struct Scope {
 
 impl Scope {
     /// The operation's state `at`: the scope, `at`, the task, then `fields`.
-    pub fn state(&self, at: &str, fields: Vec<(&str, Value)>) -> Value {
+    pub fn state(&self, at: OpAt, fields: Vec<(&str, Value)>) -> Value {
         let mut state = self.base.clone();
         state.insert("at".into(), at.into());
         if !self.task.is_null() {
@@ -42,7 +38,7 @@ impl Scope {
         Value::Object(state)
     }
 
-    fn write(&self, at: &str, fields: Vec<(&str, Value)>) -> Write {
+    fn write(&self, at: OpAt, fields: Vec<(&str, Value)>) -> Write {
         Write::set(OP_STATE, &self.operation_id, self.state(at, fields))
     }
 }
@@ -81,17 +77,17 @@ impl SummaryAttempt {
     pub fn start(&mut self, session: &mut Session, scope: &Scope) -> Result<(), String> {
         self.usage_id = None;
         session.commit(&[scope.write(
-            READY,
+            OpAt::SummaryReady,
             vec![
                 ("summaryContext", self.context.clone()),
                 ("nextAttempt", json!(self.attempt)),
             ],
         )])?;
-        session.commit(&[scope.write(EFFECT_PENDING, self.pending_fields())])?;
+        session.commit(&[scope.write(OpAt::SummaryEffectPending, self.pending_fields())])?;
         let usage_id = lock_clock(&session.clock()).next_id();
         let mut requested = self.pending_fields();
         requested.push(("request", json!({"index": 0, "usageId": usage_id})));
-        session.commit(&[scope.write(EFFECT_PENDING, requested)])?;
+        session.commit(&[scope.write(OpAt::SummaryEffectPending, requested)])?;
         self.usage_id = Some(usage_id);
         Ok(())
     }
@@ -107,7 +103,7 @@ impl SummaryAttempt {
     pub fn retry_wait(&self, scope: &Scope, usage: Option<&Value>, error: &str, not_before: i64) -> Vec<Write> {
         let mut writes: Vec<Write> = usage.and_then(|usage| self.usage_row(usage)).into_iter().collect();
         writes.push(scope.write(
-            RETRY_WAIT,
+            OpAt::SummaryRetryWait,
             vec![
                 ("summaryContext", self.context.clone()),
                 ("nextAttempt", json!(self.attempt + 1)),
@@ -121,14 +117,14 @@ impl SummaryAttempt {
     /// The summary response arrived: its usage row, with the state that lists it.
     pub fn record_usage(&self, scope: &Scope, usage: &Value) -> Vec<Write> {
         match self.usage_row(usage) {
-            Some(row) => vec![row, scope.write(EFFECT_PENDING, self.pending_fields())],
+            Some(row) => vec![row, scope.write(OpAt::SummaryEffectPending, self.pending_fields())],
             None => Vec::new(),
         }
     }
 
     /// `summary.effect_pending` of the attempt with the usage ids it recorded.
     pub fn pending(&self, scope: &Scope) -> Value {
-        scope.state(EFFECT_PENDING, self.pending_fields())
+        scope.state(OpAt::SummaryEffectPending, self.pending_fields())
     }
 
     fn pending_fields(&self) -> Vec<(&'static str, Value)> {

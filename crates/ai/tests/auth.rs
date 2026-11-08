@@ -179,7 +179,10 @@ struct TestOAuth {
     delay_ms: u64,
     seen_signal: Mutex<Option<AbortSignal>>,
     started: tokio::sync::Notify,
+    /// Wait for the abort, then fail (a refresh that stops on its signal) or, with `answers_after_abort`, answer
+    /// anyway (the provider had already rotated the token).
     block: bool,
+    answers_after_abort: bool,
 }
 
 impl TestOAuth {
@@ -191,6 +194,7 @@ impl TestOAuth {
             seen_signal: Mutex::new(None),
             started: tokio::sync::Notify::new(),
             block: false,
+            answers_after_abort: false,
         }
     }
 }
@@ -211,10 +215,13 @@ impl OAuthAuth for TestOAuth {
     ) -> BoxFuture<'a, Result<OAuthCredential, String>> {
         Box::pin(async move {
             let n = self.refreshes.fetch_add(1, Ordering::SeqCst) + 1;
-            *self.seen_signal.lock().unwrap() = signal;
+            *self.seen_signal.lock().unwrap() = signal.clone();
             self.started.notify_one();
             if self.block {
-                std::future::pending::<()>().await;
+                signal.expect("a signal").cancelled().await;
+                if !self.answers_after_abort {
+                    return Err("aborted".into());
+                }
             }
             tokio::time::sleep(std::time::Duration::from_millis(self.delay_ms)).await;
             if let Some(message) = &self.fail {
@@ -371,6 +378,36 @@ async fn ai_auth_cancelling_a_refresh_keeps_the_previous_credential() {
     assert_eq!(result.unwrap_err(), AuthError::Aborted);
     assert!(oauth.seen_signal.lock().unwrap().as_ref().unwrap().aborted());
     assert_eq!(access_of(&store).await, "old");
+}
+
+/// The refresh answered after the abort: the provider has rotated the refresh token, so its answer is kept although
+/// the caller that asked for it gets `Aborted`.
+#[tokio::test]
+async fn ai_auth_a_refresh_answered_after_the_abort_is_still_stored() {
+    let (_dir, store) = file_store();
+    store
+        .modify("p1", set(oauth_credential("old", 0.0)), None)
+        .await
+        .unwrap();
+    let oauth = Arc::new(TestOAuth {
+        block: true,
+        answers_after_abort: true,
+        ..TestOAuth::new()
+    });
+    let auth = oauth_only(oauth.clone());
+    let signal = AbortSignal::new();
+    let overrides = AuthOverrides {
+        signal: Some(signal.clone()),
+        ..Default::default()
+    };
+    let started = oauth.started.notified();
+    let resolving = resolve_provider_auth("p1", &auth, &store, &Ambient, &overrides);
+    let (result, ()) = tokio::join!(resolving, async {
+        started.await;
+        signal.abort();
+    });
+    assert_eq!(result.unwrap_err(), AuthError::Aborted);
+    assert_eq!(access_of(&store).await, "new-1");
 }
 
 #[tokio::test]

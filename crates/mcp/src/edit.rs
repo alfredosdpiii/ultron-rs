@@ -40,7 +40,10 @@ fn edit_servers(path: &Path, edit: impl FnOnce(&mut Map<String, Value>) -> bool)
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
     }
-    std::fs::write(path, format!("{}\n", jsrt::json::stringify_indented(&parsed, &indent))).map_err(|e| e.to_string())
+    // The file keeps its permissions; a new one gets `fs::write`'s (0666 less the umask).
+    let mode = std::fs::metadata(path).map_or(0o666, |m| std::os::unix::fs::PermissionsExt::mode(&m.permissions()));
+    let text = format!("{}\n", jsrt::json::stringify_indented(&parsed, &indent));
+    config::paths::write_atomic(path, text.as_bytes(), mode & 0o7777).map_err(|e| e.to_string())
 }
 
 /// Add or replace a server; returns whether it replaced one.

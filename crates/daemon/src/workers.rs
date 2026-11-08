@@ -197,12 +197,111 @@ impl Terminated {
     }
 }
 
+/// Why a demand update did not settle as applied.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DemandError {
+    /// The worker did not answer in time: it may hold the demand or not.
+    TimedOut,
+    /// Not sent, refused, or the worker went away: it does not hold the demand.
+    Failed(String),
+}
+
+impl std::fmt::Display for DemandError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            DemandError::TimedOut => f.write_str("Session worker demand update timed out"),
+            DemandError::Failed(message) => f.write_str(message),
+        }
+    }
+}
+
+/// One attachment's demand as the server holds it for a worker.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AttachmentDemand {
+    /// Attached (or its attach under way): requests on it are routed and it keeps the worker alive.
+    Attached,
+    /// Released here, but the worker has not confirmed the detach: it may still hold the demand (and so never retire),
+    /// so the detach is sent again until the worker applies it, refuses it or goes away.
+    Withdrawing,
+}
+
+/// The attachments a server demands of one worker, and the detaches it still owes the worker.
+#[derive(Debug, Default)]
+pub struct DemandLedger {
+    attachments: HashMap<String, AttachmentDemand>,
+}
+
+impl DemandLedger {
+    /// An attach of `attachment` is about to be sent.
+    pub fn attach(&mut self, attachment: &str) {
+        self.attachments
+            .insert(attachment.to_string(), AttachmentDemand::Attached);
+    }
+
+    pub fn state(&self, attachment: &str) -> Option<AttachmentDemand> {
+        self.attachments.get(attachment).copied()
+    }
+
+    pub fn is_attached(&self, attachment: &str) -> bool {
+        self.state(attachment) == Some(AttachmentDemand::Attached)
+    }
+
+    /// Any client is attached (a crashed worker with one is restarted).
+    pub fn any_attached(&self) -> bool {
+        self.attachments.values().any(|d| *d == AttachmentDemand::Attached)
+    }
+
+    /// Release `attachment`: whether the worker must be told (it holds, or may hold, the demand).
+    pub fn withdraw(&mut self, attachment: &str) -> bool {
+        match self.attachments.get_mut(attachment) {
+            Some(demand) => {
+                *demand = AttachmentDemand::Withdrawing;
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// The outcome of the attach (`attached`) or detach of `attachment`. A timed-out attach is withdrawn (the worker
+    /// may hold it); a failed one is dropped. A detach settles when the worker applied or refused it or went away; one
+    /// that timed out stays owed ([`DemandLedger::owed`]).
+    pub fn settle(&mut self, attachment: &str, attached: bool, outcome: &Result<(), DemandError>) {
+        let Some(demand) = self.attachments.get_mut(attachment) else {
+            return;
+        };
+        match (attached, *demand, outcome) {
+            (true, AttachmentDemand::Attached, Ok(())) => {}
+            (true, AttachmentDemand::Attached, Err(DemandError::TimedOut)) => *demand = AttachmentDemand::Withdrawing,
+            (true, AttachmentDemand::Attached, Err(DemandError::Failed(_))) => {
+                self.attachments.remove(attachment);
+            }
+            (false, AttachmentDemand::Withdrawing, Ok(()) | Err(DemandError::Failed(_))) => {
+                self.attachments.remove(attachment);
+            }
+            // A detach that timed out stays owed; an answer for a state the attachment left changes nothing.
+            _ => {}
+        }
+    }
+
+    /// The detaches the worker has not confirmed: sent again with each heartbeat.
+    pub fn owed(&self) -> Vec<String> {
+        let mut owed: Vec<String> = self
+            .attachments
+            .iter()
+            .filter(|(_, d)| **d == AttachmentDemand::Withdrawing)
+            .map(|(a, _)| a.clone())
+            .collect();
+        owed.sort();
+        owed
+    }
+}
+
 struct Worker {
     peer: String,
     meta: Meta,
     pid: u32,
     token: String,
-    attachments: HashSet<String>,
+    demand: DemandLedger,
     expected_stop: bool,
     retiring: bool,
     stopping: bool,
@@ -353,7 +452,9 @@ impl Manager {
             loop {
                 std::thread::sleep(period);
                 let Some(this) = this.upgrade() else { return };
-                let (live, hung): (Vec<String>, Vec<(u32, String, Duration)>) = {
+                // Live peers; hung workers (pid, session, silence); detaches each live worker still owes.
+                type Owed = Vec<(String, Vec<String>)>;
+                let (live, hung, owed): (Vec<String>, Vec<(u32, String, Duration)>, Owed) = {
                     let inner = this.lock();
                     if inner.detached || inner.shutting_down {
                         return;
@@ -365,6 +466,10 @@ impl Manager {
                         live.iter().map(|w| w.peer.clone()).collect(),
                         hung.iter()
                             .map(|w| (w.pid, w.meta.id.clone(), w.last_seen.elapsed()))
+                            .collect(),
+                        live.iter()
+                            .map(|w| (w.peer.clone(), w.demand.owed()))
+                            .filter(|(_, owed)| !owed.is_empty())
                             .collect(),
                     )
                 };
@@ -380,6 +485,13 @@ impl Manager {
                 }
                 for peer in live {
                     let _ = this.send(&peer, json!({"type": "ping", "nonce": jsrt::random::uuid_v4()}));
+                }
+                // Detaches a worker did not confirm: sent again (the worker answers each; see `handle_message`).
+                for (peer, attachments) in owed {
+                    for attachment in attachments {
+                        let message = this.demand_message(&jsrt::random::uuid_v4(), &attachment, false);
+                        let _ = this.send(&peer, message);
+                    }
                 }
             }
         });
@@ -407,7 +519,7 @@ impl Manager {
             && !inner.releasing
             && !worker.expected_stop
             && !worker.retiring
-            && (worker.busy || !worker.attachments.is_empty())
+            && (worker.busy || worker.demand.any_attached())
     }
 
     /// Restart `meta`'s worker after a backoff, retrying launch failures; gives up after [`MAX_RESTARTS`].
@@ -808,12 +920,16 @@ impl Manager {
         }
         let attachment = jsrt::random::uuid_v4();
         if let Some(worker) = self.lock().workers.get_mut(&handle.peer) {
-            worker.attachments.insert(attachment.clone());
+            worker.demand.attach(&attachment);
         }
-        if let Err(error) = self.apply_demand(&handle.peer, &attachment, true) {
-            if let Some(worker) = self.lock().workers.get_mut(&handle.peer) {
-                worker.attachments.remove(&attachment);
+        let outcome = self.apply_demand(&handle.peer, &attachment, true);
+        self.settle_demand(&handle.peer, &attachment, true, &outcome);
+        if let Err(error) = outcome {
+            if error == DemandError::TimedOut {
+                // The worker may hold the attach after all: withdraw it.
+                self.withdraw(&handle.peer, &attachment);
             }
+            let error = error.to_string();
             // The worker went idle and is retiring (its announcement may still be in flight): the caller waits for
             // it to end and starts a new one.
             if error.ends_with(RETIRING_REJECTION) || handle.terminated.is_resolved() {
@@ -825,58 +941,66 @@ impl Manager {
     }
 
     pub fn release_attachment(&self, handle: &Handle, attachment: &str) {
-        let active = {
-            let inner = self.lock();
+        let owed = {
+            let mut inner = self.lock();
             !inner.detached
                 && inner
                     .workers
-                    .get(&handle.peer)
-                    .is_some_and(|w| w.attachments.contains(attachment))
+                    .get_mut(&handle.peer)
+                    .is_some_and(|w| w.demand.withdraw(attachment))
         };
-        if active {
-            let _ = self.apply_demand(&handle.peer, attachment, false);
+        if owed {
+            self.withdraw(&handle.peer, attachment);
         }
         let server = self.coordinator().server_connection_id.clone();
         let mut inner = self.lock();
-        if let Some(worker) = inner.workers.get_mut(&handle.peer) {
-            worker.attachments.remove(attachment);
-        }
         let prefix = format!("{server}\0{attachment}\0");
         inner.subscriptions.retain(|key, _| !key.starts_with(&prefix));
     }
 
-    fn apply_demand(&self, peer: &str, attachment: &str, attached: bool) -> Result<(), String> {
+    /// Tell the worker `attachment` is released; a detach it does not confirm stays owed and is sent again with the
+    /// heartbeat ([`DemandLedger::owed`]).
+    fn withdraw(&self, peer: &str, attachment: &str) {
+        let outcome = self.apply_demand(peer, attachment, false);
+        self.settle_demand(peer, attachment, false, &outcome);
+    }
+
+    fn settle_demand(&self, peer: &str, attachment: &str, attached: bool, outcome: &Result<(), DemandError>) {
+        if let Some(worker) = self.lock().workers.get_mut(peer) {
+            worker.demand.settle(attachment, attached, outcome);
+        }
+    }
+
+    fn demand_message(&self, request: &str, attachment: &str, attached: bool) -> Value {
+        let server = self.coordinator().server_connection_id.clone();
+        json!({"type": "session_demand", "serverConnectionId": server, "requestId": request, "attachmentId": attachment, "attached": attached})
+    }
+
+    fn apply_demand(&self, peer: &str, attachment: &str, attached: bool) -> Result<(), DemandError> {
         let request = jsrt::random::uuid_v4();
         {
             let mut inner = self.lock();
             if inner.workers.get(peer).is_none_or(|w| w.stopping) {
-                return Err("Experimental Session worker is stopping".into());
+                return Err(DemandError::Failed("Experimental Session worker is stopping".into()));
             }
             inner.demands.insert(request.clone(), (peer.to_string(), None));
         }
-        let server = self.coordinator().server_connection_id.clone();
-        let sent = self.send(
-            peer,
-            json!({"type": "session_demand", "serverConnectionId": server, "requestId": request, "attachmentId": attachment, "attached": attached}),
-        );
-        if let Err(error) = sent {
+        if let Err(error) = self.send(peer, self.demand_message(&request, attachment, attached)) {
             self.lock().demands.remove(&request);
-            return Err(error.to_string());
+            return Err(DemandError::Failed(error.to_string()));
         }
-        let (mut inner, done) = self.wait_until(WORKER_DEMAND_TIMEOUT, |i| {
+        let (mut inner, _) = self.wait_until(WORKER_DEMAND_TIMEOUT, |i| {
             i.demands.get(&request).is_none_or(|(_, outcome)| outcome.is_some())
         });
         let outcome = inner.demands.remove(&request);
         drop(inner);
         match outcome {
-            Some((_, Some(result))) => result,
-            None => Err("Session worker disconnected during demand update".into()),
-            Some((_, None)) if !done && attached => {
-                // A lost attach is compensated by withdrawing it; a lost detach counts as applied.
-                let _ = self.apply_demand(peer, attachment, false);
-                Err("Session worker demand update timed out".into())
-            }
-            Some((_, None)) => Ok(()),
+            Some((_, Some(result))) => result.map_err(DemandError::Failed),
+            None => Err(DemandError::Failed(
+                "Session worker disconnected during demand update".into(),
+            )),
+            // Unanswered (or the manager detached, which forgets the worker and its ledger).
+            Some((_, None)) => Err(DemandError::TimedOut),
         }
     }
 
@@ -898,7 +1022,7 @@ impl Manager {
             && inner
                 .workers
                 .get(&handle.peer)
-                .is_some_and(|w| !w.stopping && w.attachments.contains(attachment));
+                .is_some_and(|w| !w.stopping && w.demand.is_attached(attachment));
         if !valid {
             drop(inner);
             done(Err(ServiceError::internal(
@@ -1380,6 +1504,19 @@ impl Manager {
                         entry.1 = Some(outcome);
                     }
                 }
+                // A detach's answer settles it in the ledger whoever asked: a late answer to one that timed out, or
+                // to one the heartbeat sent again.
+                if message["attached"] == false
+                    && owns(&inner, &path)
+                    && let (Some(attachment), Some(worker)) =
+                        (message["attachmentId"].as_str(), inner.workers.get_mut(from))
+                {
+                    let outcome = match kind {
+                        "demand_applied" => Ok(()),
+                        _ => Err(DemandError::Failed(String::new())),
+                    };
+                    worker.demand.settle(attachment, false, &outcome);
+                }
             }
             Some("worker_retiring") => {
                 let path = key(message);
@@ -1540,7 +1677,7 @@ impl Manager {
                 meta,
                 pid,
                 token,
-                attachments: HashSet::new(),
+                demand: DemandLedger::default(),
                 expected_stop: false,
                 retiring: false,
                 stopping: false,

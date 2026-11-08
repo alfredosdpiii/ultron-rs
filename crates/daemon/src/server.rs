@@ -114,7 +114,8 @@ struct LifetimeState {
     startup_held: bool,
     stopped: bool,
     timer: u64,
-    armed: bool,
+    /// The idle retirement whose grace runs, by its token; only that timer's thread clears it.
+    armed: Option<u64>,
 }
 
 /// `ServerLifetime`: retires an automatically activated server once it has had no connection, no worker and no
@@ -193,7 +194,7 @@ impl Lifetime {
 
     /// Whether an idle retirement is armed (its grace running).
     pub fn retiring(&self) -> bool {
-        self.lock().armed
+        self.lock().armed.is_some()
     }
 
     pub fn stop(&self) {
@@ -210,23 +211,26 @@ impl Lifetime {
         let mut state = self.lock();
         if self.keep_alive || !Self::idle(&state) {
             state.timer += 1;
-            state.armed = false;
+            state.armed = None;
             return;
         }
-        if state.armed || self.retire.lock().unwrap_or_else(|e| e.into_inner()).is_none() {
+        if state.armed.is_some() || self.retire.lock().unwrap_or_else(|e| e.into_inner()).is_none() {
             return;
         }
-        state.armed = true;
         let token = state.timer;
+        state.armed = Some(token);
         let (me, grace) = (self.me.clone(), self.idle_grace);
         std::thread::spawn(move || {
             std::thread::sleep(grace);
             let Some(me) = me.upgrade() else { return };
             let fire = {
                 let mut state = me.lock();
-                let fire = state.timer == token && Self::idle(&state);
-                state.armed = false;
-                fire
+                // A stale timer (called off, then another armed) leaves the newer one's mark alone.
+                if state.armed != Some(token) {
+                    return;
+                }
+                state.armed = None;
+                state.timer == token && Self::idle(&state)
             };
             if fire && let Some(retire) = &*me.retire.lock().unwrap_or_else(|e| e.into_inner()) {
                 retire();

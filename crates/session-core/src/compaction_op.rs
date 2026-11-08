@@ -10,8 +10,8 @@ use serde_json::{Map, Value, json};
 use session_journal::ns::{
     BRANCH_TIP, ENTRY_LABEL, LANE_CONFIG, LANE_STATE, OP_META, OP_PREPARATION, OP_RESULT, OP_STATE,
 };
-use session_journal::run::summary::{self, Scope, SummaryAttempt};
-use session_journal::run::{MAIN_LANE, default_settings};
+use session_journal::run::summary::{Scope, SummaryAttempt};
+use session_journal::run::{MAIN_LANE, OpAt, default_settings};
 use session_journal::{Session, Write};
 
 fn mint(session: &Session) -> String {
@@ -72,9 +72,17 @@ impl CompactionOp {
         &self.operation_id
     }
 
-    fn scope(&self) -> Scope {
+    /// The fields every state starts with. The control is the stored one: a cancel request ([`request_cancel`],
+    /// made on the actor while the summary runs off it) stays recorded in every later state, so a worker that dies
+    /// after it is settled `aborted`.
+    fn scope(&self, session: &Session) -> Scope {
+        let control = session
+            .value(OP_STATE, &self.operation_id)
+            .map(|state| state["control"].clone())
+            .filter(Value::is_object)
+            .unwrap_or_else(|| json!({"status": "running"}));
         let mut base = Map::new();
-        base.insert("control".into(), json!({"status": "running"}));
+        base.insert("control".into(), control);
         base.insert("settings".into(), default_settings());
         base.insert("latestAssistantEntryId".into(), Value::Null);
         Scope {
@@ -84,8 +92,8 @@ impl CompactionOp {
         }
     }
 
-    fn state(&self, at: &str, extra: Vec<(&str, Value)>) -> Value {
-        self.scope().state(at, extra)
+    fn state(&self, session: &Session, at: OpAt, extra: Vec<(&str, Value)>) -> Value {
+        self.scope(session).state(at, extra)
     }
 
     fn lane_state(&self, running: bool) -> Value {
@@ -138,7 +146,11 @@ impl CompactionOp {
         session.commit(&[
             Write::set(OP_PREPARATION, &op.preparation_key(), prepared),
             Write::set(OP_META, &op.operation_id, meta),
-            Write::set(OP_STATE, &op.operation_id, op.state(summary::DECIDING, vec![])),
+            Write::set(
+                OP_STATE,
+                &op.operation_id,
+                op.state(session, OpAt::SummaryDeciding, vec![]),
+            ),
             Write::set(LANE_STATE, MAIN_LANE, op.lane_state(true)),
         ])?;
         Ok(op)
@@ -215,7 +227,11 @@ impl CompactionOp {
         session.commit(&[
             Write::set(OP_PREPARATION, &op.preparation_key(), prepared),
             Write::set(OP_META, &op.operation_id, op.navigation_meta(true, custom_instructions)),
-            Write::set(OP_STATE, &op.operation_id, op.state(summary::DECIDING, vec![])),
+            Write::set(
+                OP_STATE,
+                &op.operation_id,
+                op.state(session, OpAt::SummaryDeciding, vec![]),
+            ),
             Write::set(LANE_STATE, MAIN_LANE, op.lane_state(true)),
         ])?;
         Ok(op)
@@ -245,7 +261,7 @@ impl CompactionOp {
             Write::set(
                 OP_STATE,
                 &op.operation_id,
-                op.state("navigation.ready_to_commit", extra),
+                op.state(session, OpAt::NavigationReadyToCommit, extra),
             ),
             Write::set(LANE_STATE, MAIN_LANE, op.lane_state(true)),
         ])?;
@@ -319,7 +335,8 @@ impl CompactionOp {
         self.retry = retry;
         let configuration = session.value(LANE_CONFIG, MAIN_LANE).cloned().unwrap_or(Value::Null);
         let mut attempt = SummaryAttempt::new(&self.result_entry_id, configuration, retry.journal_value());
-        attempt.start(session, &self.scope())?;
+        let scope = self.scope(session);
+        attempt.start(session, &scope)?;
         self.summary = Some(attempt);
         Ok(())
     }
@@ -346,14 +363,14 @@ impl CompactionOp {
         let Some(attempt) = &self.summary else {
             return Ok(());
         };
-        let writes = attempt.retry_wait(&self.scope(), usage, error, not_before);
+        let writes = attempt.retry_wait(&self.scope(session), usage, error, not_before);
         session.commit(&writes).map(drop)
     }
 
     /// The wait ended (`runStructuralRetryWait`): the next attempt's `summary.ready`, `summary.effect_pending` and
     /// request.
     pub fn retry(&mut self, session: &mut Session) -> Result<(), String> {
-        let scope = self.scope();
+        let scope = self.scope(session);
         match self.summary.as_mut() {
             Some(attempt) => attempt.retry(session, &scope),
             None => Ok(()),
@@ -365,7 +382,7 @@ impl CompactionOp {
         let Some(attempt) = &self.summary else {
             return Ok(());
         };
-        let writes = attempt.record_usage(&self.scope(), usage);
+        let writes = attempt.record_usage(&self.scope(session), usage);
         if writes.is_empty() {
             return Ok(());
         }

@@ -181,6 +181,47 @@ pub fn radius_attachment_event(state: &str, session_id: &str) -> Value {
     json!({"type": "radius_attachment", "state": state, "sessionId": session_id})
 }
 
+/// Where a link stands with its session; the supervisor acts on it (rejoin, Radius recovery), calls wait while it
+/// recovers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LinkPhase {
+    /// No session attached yet, or the owner's last attach failed: there is nothing to rejoin.
+    Unattached,
+    /// The owner attaches a session (a switch: new, resume, fork, clone): the old attachment is dropped first, which
+    /// is no reason to rejoin the old session.
+    Attaching,
+    Attached,
+    /// The supervisor is rejoining the session.
+    Rejoining,
+    /// A Radius route's reconnector is bringing the connection back (it re-attaches the session).
+    RadiusRecovering,
+    /// The last rejoin gave up (the watcher was told `lost`): the supervisor keeps trying.
+    Lost,
+}
+
+impl LinkPhase {
+    /// A reconnection is under way: calls wait for it.
+    pub fn recovering(self) -> bool {
+        matches!(self, LinkPhase::Rejoining | LinkPhase::RadiusRecovering)
+    }
+
+    /// Why the supervisor must rejoin, if it must: the connection `closed`, or the link's attachment is no longer the
+    /// connection's (`attachment_current` false: the worker restarted, or a failed rejoin left none).
+    pub fn rejoin_reason(self, closed: bool, attachment_current: bool) -> Option<&'static str> {
+        if !matches!(self, LinkPhase::Attached | LinkPhase::Lost) {
+            return None;
+        }
+        if closed {
+            Some(SERVER_WENT_AWAY)
+        } else {
+            (!attachment_current).then_some(WORKER_RESTARTED)
+        }
+    }
+}
+
+/// The `reconnecting` reason when the server connection closed under the link.
+const SERVER_WENT_AWAY: &str = "The Ultron server went away";
+
 struct State {
     /// Stops the server generation this process runs (none for a server it does not own).
     server: Option<Stop>,
@@ -190,8 +231,7 @@ struct State {
     attachment_id: Option<String>,
     subscriptions: Vec<String>,
     transcript: Option<String>,
-    /// A reconnection is under way (operations wait for it).
-    reconnecting: bool,
+    phase: LinkPhase,
 }
 
 struct Shared {
@@ -199,9 +239,8 @@ struct Shared {
     changed: Condvar,
     origin: Origin,
     events: WatchSink,
-    /// A Radius route's reconnector (`RadiusClientReconnect`), and whether it is recovering the connection now.
+    /// A Radius route's reconnector (`RadiusClientReconnect`).
     radius: Mutex<Option<Arc<RadiusClientReconnect>>>,
-    radius_recovering: AtomicBool,
     /// A reconnection attempt is under way (`connecting`).
     radius_connecting: AtomicBool,
     /// A remote Unix route's loss was reported (it has no reconnect).
@@ -419,15 +458,19 @@ impl Shared {
     /// Radius recovery runs.
     fn wait_supervised_change(&self) {
         let connection = self.connection();
-        if connection.is_closed() || self.radius_recovering.load(Ordering::SeqCst) {
+        if connection.is_closed() || self.phase() == LinkPhase::RadiusRecovering {
             self.wait_link_change();
         } else {
             connection.wait_attachment_change(connection.attachment().as_ref(), SUPERVISE);
         }
     }
 
-    fn set_reconnecting(&self, reconnecting: bool) {
-        self.lock().reconnecting = reconnecting;
+    fn phase(&self) -> LinkPhase {
+        self.lock().phase
+    }
+
+    fn set_phase(&self, phase: LinkPhase) {
+        self.lock().phase = phase;
         self.changed.notify_all();
     }
 
@@ -436,11 +479,11 @@ impl Shared {
     fn wait_reconnected(&self) {
         let deadline = Instant::now() + REJOIN_TIMEOUT;
         loop {
-            let reconnecting = self.lock().reconnecting;
+            let recovering = self.phase().recovering();
             if self.closing.load(Ordering::SeqCst)
                 || self.lost_reported.load(Ordering::SeqCst)
                 || Instant::now() >= deadline
-                || (!reconnecting && self.needs_rejoin().is_none())
+                || (!recovering && self.needs_rejoin().is_none())
             {
                 return;
             }
@@ -456,22 +499,22 @@ impl Shared {
     /// What the supervisor sees: whether the link lost its server, or its attachment moved or ended.
     fn needs_rejoin(&self) -> Option<&'static str> {
         let state = self.lock();
-        if state.session_id.is_empty() || state.attachment_id.is_none() && !state.reconnecting {
+        if state.session_id.is_empty() {
             return None;
         }
-        if state.connection.is_closed() {
-            return Some("The Ultron server went away");
-        }
         let current = state.connection.attachment();
-        let moved = current.as_ref().map(|a| (&a.session_id, &a.attachment_id))
-            != Some((&state.session_id, state.attachment_id.as_ref()?));
-        moved.then_some(WORKER_RESTARTED)
+        let attachment_current = state.attachment_id.as_ref().is_some_and(|id| {
+            current.as_ref().map(|a| (&a.session_id, &a.attachment_id)) == Some((&state.session_id, id))
+        });
+        state
+            .phase
+            .rejoin_reason(state.connection.is_closed(), attachment_current)
     }
 
     /// Rejoin the session: a new server generation (and connection) if the server is gone, then attach and
     /// subscribe again. Retries until it works or [`REJOIN_TIMEOUT`] passes.
     fn rejoin(&self, reason: &str) -> Result<(), String> {
-        self.set_reconnecting(true);
+        self.set_phase(LinkPhase::Rejoining);
         (self.events)(connection_event("reconnecting", Some(reason)));
         let deadline = Instant::now() + REJOIN_TIMEOUT;
         let mut delay = Duration::from_millis(100);
@@ -488,7 +531,12 @@ impl Shared {
                 }
             }
         };
-        self.set_reconnecting(false);
+        // A link that gave up stays `Lost`: the supervisor tries again (the link never gives up on its session).
+        self.set_phase(if result.is_ok() {
+            LinkPhase::Attached
+        } else {
+            LinkPhase::Lost
+        });
         match &result {
             Ok(()) => (self.events)(connection_event("rejoined", None)),
             Err(error) => (self.events)(connection_event(
@@ -544,10 +592,14 @@ impl Shared {
     /// The Radius connection closed: report it and let the reconnector bring it back (`RadiusClientReconnect`:
     /// after 1 s, doubling to 30 s per failure), then re-attach the session. Operations wait meanwhile.
     fn recover_radius(self: &Arc<Self>) {
-        if self.radius_recovering.swap(true, Ordering::SeqCst) {
-            return;
+        {
+            let mut state = self.lock();
+            if state.phase == LinkPhase::RadiusRecovering {
+                return;
+            }
+            state.phase = LinkPhase::RadiusRecovering;
         }
-        self.set_reconnecting(true);
+        self.changed.notify_all();
         (self.events)(radius_connection_event(ConnectionState::Disconnected));
         let reconnector = self.radius.lock().unwrap_or_else(|e| e.into_inner()).clone();
         if let Some(reconnector) = reconnector {
@@ -565,8 +617,7 @@ impl Shared {
             let shared = shared.upgrade().ok_or("The link is closed")?;
             (shared.events)(radius_attachment_event("attaching", session_id));
             shared.attach(session_id)?;
-            shared.radius_recovering.store(false, Ordering::SeqCst);
-            shared.set_reconnecting(false);
+            shared.set_phase(LinkPhase::Attached);
             (shared.events)(radius_attachment_event("attached", session_id));
             Ok(())
         });
@@ -665,7 +716,7 @@ impl SessionLink {
                 attachment_id: None,
                 subscriptions: Vec::new(),
                 transcript: None,
-                reconnecting: false,
+                phase: LinkPhase::Unattached,
             }),
             changed: Condvar::new(),
             origin,
@@ -674,7 +725,6 @@ impl SessionLink {
             attaching: Mutex::new(()),
             kept_op: Mutex::new(None),
             radius: Mutex::new(None),
-            radius_recovering: AtomicBool::new(false),
             radius_connecting: AtomicBool::new(false),
             lost_reported: AtomicBool::new(false),
         });
@@ -737,7 +787,7 @@ impl SessionLink {
                 if shared.closing.load(Ordering::SeqCst) {
                     return;
                 }
-                if shared.radius_recovering.load(Ordering::SeqCst) {
+                if shared.phase() == LinkPhase::RadiusRecovering {
                     continue;
                 }
                 let Some(reason) = shared.needs_rejoin() else {
@@ -817,7 +867,25 @@ impl SessionLink {
     /// Attach to session `id` (replacing the current one): its services subscribed, its transcript followed.
     pub fn attach(&mut self, id: &str) -> Result<(), String> {
         self.shared.wait_reconnected();
-        self.shared.attach(id)
+        {
+            let mut state = self.shared.lock();
+            if !state.phase.recovering() {
+                state.phase = LinkPhase::Attaching;
+            }
+        }
+        let result = self.shared.attach(id);
+        // A recovery under way sets the phase when it ends.
+        let mut state = self.shared.lock();
+        if !state.phase.recovering() {
+            state.phase = if result.is_ok() {
+                LinkPhase::Attached
+            } else {
+                LinkPhase::Unattached
+            };
+        }
+        drop(state);
+        self.shared.changed.notify_all();
+        result
     }
 
     /// The attached session's transcript snapshot (`LaneSnapshot`).
@@ -855,7 +923,7 @@ impl SessionLink {
         self.shared.closing.store(true, Ordering::SeqCst);
         self.shared.changed.notify_all();
         // A recovery under way is abandoned (the reconnector stops and disconnects).
-        if self.shared.radius_recovering.load(Ordering::SeqCst) {
+        if self.shared.phase() == LinkPhase::RadiusRecovering {
             self.shared.stop_radius_reconnector();
         }
         {

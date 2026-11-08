@@ -154,6 +154,7 @@ pub(super) fn install(
     chat: ChatHarness,
     children: Arc<DurableChildren>,
     stop: harness::scheduler::Cancel,
+    session: SharedSession,
 ) -> Arc<Dispatcher> {
     let stack = lane.stack.clone();
     let agents = stack.agents.clone();
@@ -176,6 +177,17 @@ pub(super) fn install(
     options.on_root_aborted = Some(Arc::new(move |root: &str| {
         host.cancel_root(root);
         tools.cancel_root(root);
+    }));
+    // Aborted roots and each chain's automatic runs outlive this worker (a hand-over, a restart).
+    options.chains = crate::async_events::Chains::from_value(
+        lock_session(&session).value(session_journal::ns::MODULE, crate::async_events::CHAINS_MODULE),
+    );
+    options.save_chains = Some(Arc::new(move |chains: &crate::async_events::Chains| {
+        let _ = lock_session(&session).commit(&[Write::set(
+            session_journal::ns::MODULE,
+            crate::async_events::CHAINS_MODULE,
+            chains.to_value(),
+        )]);
     }));
     // Event summaries are masked with the session's secrets (`maskCellOutput`).
     options.mask = Some(stack.mask());

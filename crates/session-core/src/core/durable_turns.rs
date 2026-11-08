@@ -437,6 +437,42 @@ impl Core {
         }
     }
 
+    /// Move the queued messages the runtime has placed (their submissions are `placed` or `done`) from the queue to
+    /// `delivered` for `turn`, and return their entry ids in placement order. Matched by submission, never by text:
+    /// two queued messages can say the same thing.
+    fn take_placed(&self, turn: u64) -> Vec<String> {
+        let waiting: Vec<(String, SubmissionId)> = sync::lock(&self.queues)
+            .items
+            .iter()
+            .filter_map(|q| Some((q.entry_id.clone(), q.submission?)))
+            .collect();
+        let mut placed: Vec<(Option<durable::EntryId>, String)> = waiting
+            .into_iter()
+            .filter_map(|(entry_id, submission)| {
+                let record = self
+                    .durable
+                    .chat
+                    .commit(|tx| Ok(tx.submission(submission)?))
+                    .ok()
+                    .flatten()?;
+                matches!(record.status, SubmissionStatus::Placed | SubmissionStatus::Done)
+                    .then_some((record.entry, entry_id))
+            })
+            .collect();
+        placed.sort();
+        let mut queues = sync::lock(&self.queues);
+        placed
+            .into_iter()
+            .filter_map(|(_, entry_id)| {
+                let index = queues.items.iter().position(|q| q.entry_id == entry_id)?;
+                let mut queued = queues.items.remove(index);
+                queued.turn = turn;
+                queues.delivered.push(queued);
+                Some(entry_id)
+            })
+            .collect()
+    }
+
     /// Take queued messages back out of the runtime's inbox (an aborted run: they wait for the user again).
     pub(super) fn withdraw_queued(&mut self, ids: &[String]) {
         let withdrawn: Vec<SubmissionId> = {
@@ -548,9 +584,10 @@ impl Core {
         lock_session(&self.session)
             .value(session_journal::ns::OP_STATE, &operation)
             .is_some_and(|state| {
-                let continuation = match state["at"].as_str() {
-                    Some("checkpoint") => &state["continuation"],
-                    Some(at) if at.starts_with("summary.") => &state["task"]["boundary"]["resumeAfter"]["continuation"],
+                use session_journal::run::OpAt;
+                let continuation = match OpAt::of(state) {
+                    Some(OpAt::Checkpoint) => &state["continuation"],
+                    Some(at) if at.is_summary() => &state["task"]["boundary"]["resumeAfter"]["continuation"],
                     _ => return false,
                 };
                 continuation["kind"] == "may_finish"
@@ -775,23 +812,17 @@ impl Core {
             }
         }
         let turn = self.run.as_ref().map_or(0, |r| r.turns) + 1;
-        {
-            let mut queues = sync::lock(&self.queues);
-            for user in &fresh {
-                let text = text_of(user);
-                if let Some(index) = queues.items.iter().position(|q| message_text(&q.message) == text) {
-                    let mut queued = queues.items.remove(index);
-                    queued.turn = turn;
-                    queues.delivered.push(queued);
-                }
-            }
-        }
+        // The queued messages the runtime placed for this request are the newest fresh users, in placement order.
+        let placed = self.take_placed(turn);
+        let queued_from = fresh.len().saturating_sub(placed.len());
+        let skip = placed.len().saturating_sub(fresh.len());
+        let mut placed = placed.into_iter().skip(skip);
         self.on_agent_event(AgentEvent::TurnStart);
-        for message in fresh {
-            self.on_agent_event(AgentEvent::MessageStart {
-                message: message.clone(),
-            });
-            self.on_agent_event(AgentEvent::MessageEnd { message });
+        for (index, message) in fresh.into_iter().enumerate() {
+            let queued = if index >= queued_from { placed.next() } else { None };
+            let value = super::stored(&message);
+            self.on_agent_event(AgentEvent::MessageStart { message });
+            self.user_message_end(value, queued);
         }
         // The root lane's context reminder follows its model and compaction settings as of this request.
         let settings = self.compaction_settings();
@@ -876,6 +907,8 @@ impl Core {
             submission: submission.as_ref().map(|s| s.id),
             compaction_failed: false,
             resume_overflow,
+            hiding: false,
+            ending: false,
         });
         self.lane.stack.begin_turn();
         self.lane.stack.stats.touch();

@@ -693,12 +693,22 @@ impl SchedulesModule {
             {
                 goal["verification"] =
                     json!({"round": round, "status": status, "at": now, "checks": checks, "reasons": reasons});
-                if status == "achieved" {
-                    goal["state"] = "achieved".into();
-                }
+                let state = verified_state(goal["state"].as_str().unwrap_or_default(), status);
+                goal["state"] = state.into();
             }
             Ok(goal.clone())
         })
+    }
+}
+
+/// A goal's state once a verification round with `status` is recorded (the latest round decides, the check results
+/// arrive with the lock released): an active goal it passes is achieved, an achieved goal it does not pass (an
+/// older round passed first) is active again, and a goal paused meanwhile stays paused.
+fn verified_state<'a>(state: &'a str, status: &str) -> &'a str {
+    match (state, status) {
+        ("active", "achieved") => "achieved",
+        ("achieved", status) if status != "achieved" => "active",
+        (state, _) => state,
     }
 }
 

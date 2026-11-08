@@ -153,6 +153,9 @@ pub enum Op {
     },
     /// The whole session as the TUI shows it: `{sessionId, sessionFile, name, messages, model, thinkingLevel}`.
     Describe,
+    /// The main lane's snapshot as transcript state starts from ([`Core::snapshot`]): what a watcher rebases on after
+    /// a navigation, which its events cannot fold.
+    LaneSnapshot,
     /// Sessions of this working directory, newest first (`{path, id, name, modified, messageCount, firstMessage,
     /// allMessagesText, cwd}`).
     ListSessions,
@@ -351,6 +354,7 @@ impl Op {
                 target: need("target")?,
             },
             "describe" => Op::Describe,
+            "laneSnapshot" => Op::LaneSnapshot,
             "listSessions" => Op::ListSessions,
             "recover" => Op::Recover,
             "agents" => Op::Agents,
@@ -466,6 +470,7 @@ impl Op {
             Op::CloneSource => json!({"op": "cloneSource"}),
             Op::Forked { target } => json!({"op": "forked", "target": target}),
             Op::Describe => json!({"op": "describe"}),
+            Op::LaneSnapshot => json!({"op": "laneSnapshot"}),
             Op::ListSessions => json!({"op": "listSessions"}),
             Op::Recover => json!({"op": "recover"}),
             Op::Agents => json!({"op": "agents"}),
@@ -508,7 +513,8 @@ pub enum Input {
     Agent(Box<AgentEvent>),
     /// The model's title for the session arrived.
     Title(Box<AssistantMessage>),
-    RunEnd,
+    /// The bug report summary with this number ended.
+    BugSummaryEnded(u64),
     /// A user's command ended: its `BashResult` (camelCase, as recorded), or the error that failed it.
     BashDone {
         command: String,
@@ -616,6 +622,11 @@ struct Running {
     /// The worker died during an overflow compaction of this run: the next checkpoint compacts first, resuming
     /// this `resumeAfter` (crate::core::auto_compact).
     resume_overflow: Option<Value>,
+    /// The provider message being hidden: the empty response an aborted run ends with (its `message_start` came,
+    /// its `message_end` is swallowed). Per run: a start whose end never comes cannot hide the next run's message.
+    hiding: bool,
+    /// The run's last boundary is done; only its terminal transaction is outstanding (it failed once).
+    ending: bool,
 }
 
 pub struct OpenOptions {
@@ -661,14 +672,12 @@ pub struct Core {
     memory_notice: Option<String>,
     /// Instruction refinements proposed after compactions and delivered before user messages (crate::auto_refine).
     auto_refine: crate::auto_refine::AutoRefine,
-    /// The run's provider message being hidden: the empty response an aborted run ends with.
-    hiding: bool,
     queues: Arc<Mutex<Queues>>,
     auto_compaction: bool,
     auto_retry: bool,
     bash: Option<kernel::Signal>,
-    /// The bug report summary in progress.
-    bug_summary: Option<AbortSignal>,
+    /// The bug report summary in progress (its number, and its signal); cleared when it ends.
+    bug_summary: Option<(u64, AbortSignal)>,
     /// How many of the session's entries were announced (`entry_added`).
     announced: usize,
     /// How many of the session's usage rows were announced (`usage`).
@@ -1066,6 +1075,7 @@ impl Core {
             durable.chat.clone(),
             children.clone(),
             durable.stop.clone(),
+            session.clone(),
         );
         event_lanes::tick_activity(tx.clone(), durable.stop.clone());
         // Idle kernels are swept every minute (evicted after their idle TTL), not only when a lane is leased.
@@ -1101,7 +1111,6 @@ impl Core {
             tx,
             sink,
             run: None,
-            hiding: false,
             queues,
             auto_compaction,
             auto_retry: true,
@@ -1196,9 +1205,13 @@ impl Core {
                         self.name_changed();
                     }
                 }
-                Input::RunEnd => self.run_end(),
                 Input::Turn(request) => self.on_turn(request),
                 Input::HarnessIdle => self.harness_idle(),
+                Input::BugSummaryEnded(number) => {
+                    if self.bug_summary.as_ref().is_some_and(|(current, _)| *current == number) {
+                        self.bug_summary = None;
+                    }
+                }
                 Input::BashDone {
                     command,
                     exclude,
@@ -1217,7 +1230,13 @@ impl Core {
                     return;
                 }
                 Input::EventLane(call, reply) => self.event_lane(call, reply),
-                Input::ActivityTick => self.report_activity(),
+                Input::ActivityTick => {
+                    // A run whose terminal transaction failed tries it again.
+                    if self.run.as_ref().is_some_and(|run| run.ending) {
+                        self.run_end();
+                    }
+                    self.report_activity();
+                }
                 // A compaction's wake-up is read by the compaction itself.
                 Input::Woken => {}
                 // A queued fire was counted when it was taken; one that cannot start now is dropped (the next slot
@@ -1345,6 +1364,43 @@ impl Core {
         Ok(())
     }
 
+    /// A user message's `message_end`: the run's prompt (committed when the run was admitted), a queued message
+    /// the runtime placed (`queued`: its pending entry; it joins the branch when the loop takes it, see
+    /// [`Core::begin_generation`]), or another user message (appended now).
+    pub(super) fn user_message_end(&mut self, value: Value, queued: Option<String>) {
+        let shown = self.persona_shown(value.clone());
+        self.emit(WatchEvent::MessageEnd {
+            run_id: self.run_id(),
+            lane: MAIN_LANE.into(),
+            message: shown,
+        });
+        let delivered = queued.and_then(|entry_id| {
+            let mut queues = sync::lock(&self.queues);
+            let found = queues.delivered.iter().position(|q| q.entry_id == entry_id);
+            found.map(|i| queues.delivered.remove(i))
+        });
+        let first = self
+            .run
+            .as_mut()
+            .is_some_and(|run| std::mem::take(&mut run.prompt_pending));
+        let committed = match &delivered {
+            Some(queued) if self.taken.contains(&queued.entry_id) => {
+                self.taken.retain(|id| *id != queued.entry_id);
+                Ok(())
+            }
+            Some(queued) => self.commit_queued(queued, value),
+            None if !first => lock_session(&self.session).append_message(MAIN_LANE, value).map(drop),
+            None => Ok(()),
+        };
+        if let Err(error) = committed {
+            self.fail_run(error);
+        }
+        self.announce();
+        if delivered.is_some() {
+            self.queue_update();
+        }
+    }
+
     /// A queued message taken by the loop joins the branch under its pending entry's id.
     fn commit_queued(&mut self, queued: &Queued, message: Value) -> Result<(), String> {
         let entry = Write::message_entry(&queued.entry_id, self.tip().as_deref(), message);
@@ -1412,7 +1468,9 @@ impl Core {
                     && value["stopReason"] == "aborted"
                     && value["content"].as_array().is_none_or(Vec::is_empty)
                 {
-                    self.hiding = true;
+                    if let Some(run) = self.run.as_mut() {
+                        run.hiding = true;
+                    }
                     return;
                 }
                 self.journal(&agent_event);
@@ -1427,7 +1485,7 @@ impl Core {
                 message,
                 assistant_message_event,
             } => {
-                if self.hiding {
+                if self.run.as_ref().is_some_and(|run| run.hiding) {
                     return;
                 }
                 self.journal(&agent_event);
@@ -1442,10 +1500,13 @@ impl Core {
                 });
             }
             AgentEvent::MessageEnd { message } => {
-                if std::mem::take(&mut self.hiding) {
+                if self.run.as_mut().is_some_and(|run| std::mem::take(&mut run.hiding)) {
                     return;
                 }
                 let value = stored(message);
+                if value["role"] == "user" {
+                    return self.user_message_end(value, None);
+                }
                 if value["role"] == "assistant"
                     && let Some(running) = self.run.as_mut()
                 {
@@ -1457,52 +1518,17 @@ impl Core {
                     lane: MAIN_LANE.into(),
                     message: shown,
                 });
-                let delivered = if value["role"] == "user" {
-                    let mut queues = sync::lock(&self.queues);
-                    let found = queues
-                        .delivered
-                        .iter()
-                        .position(|q| message_text(&q.message) == message_text(&value));
-                    found.map(|i| queues.delivered.remove(i))
-                } else {
-                    None
-                };
-                let was_queued = delivered.is_some();
                 let answered = value["role"] == "assistant";
-                let round_message = (value["role"] != "user").then(|| value.clone());
+                let round_message = Some(value.clone());
                 let mut retry = None;
-                if value["role"] == "user" {
-                    let first = self
-                        .run
-                        .as_mut()
-                        .is_some_and(|run| std::mem::take(&mut run.prompt_pending));
-                    // The run's prompt was committed when the run was admitted; a steering or follow-up message
-                    // joins the branch when the loop takes it.
-                    let committed = match &delivered {
-                        Some(queued) if self.taken.contains(&queued.entry_id) => {
-                            self.taken.retain(|id| *id != queued.entry_id);
-                            Ok(())
-                        }
-                        Some(queued) => self.commit_queued(queued, value),
-                        None if !first => lock_session(&self.session).append_message(MAIN_LANE, value).map(drop),
-                        None => Ok(()),
-                    };
-                    if let Err(error) = committed {
-                        self.fail_run(error);
-                    }
-                } else {
-                    if let Message::Assistant(answer) = message {
-                        retry = self.retry_decision(answer);
-                    }
-                    if value["role"] == "assistant" {
-                        self.persona_assistant(&value);
-                    }
-                    self.journal(&agent_event);
+                if let Message::Assistant(answer) = message {
+                    retry = self.retry_decision(answer);
                 }
+                if value["role"] == "assistant" {
+                    self.persona_assistant(&value);
+                }
+                self.journal(&agent_event);
                 self.announce();
-                if was_queued {
-                    self.queue_update();
-                }
                 let retried = matches!(retry, Some(WatchEvent::RetryScheduled { .. }));
                 if let Some(note) = retry {
                     self.emit(note);
@@ -1640,26 +1666,47 @@ impl Core {
         }
     }
 
+    /// The run ends: its last boundary, then its terminal transaction, then its end is reported. The run is taken
+    /// only once the terminal transaction committed: when it fails, the run stays (`ending`) and the transaction is
+    /// tried again on the next activity tick, so a run is never reported ended while its operation stays open (a
+    /// successor would end it a second time).
     fn run_end(&mut self) {
         let operation = self.operation_id();
-        if let Some(operation) = &operation {
-            self.lane.stack.agents.end_root_turn(operation);
+        let Some(ending) = self.run.as_ref().map(|run| run.ending) else {
+            return;
+        };
+        if !ending {
+            if let Some(operation) = &operation {
+                self.lane.stack.agents.end_root_turn(operation);
+            }
+            let unanswered = self
+                .run
+                .as_ref()
+                .filter(|run| !run.cancelled && run.error.is_none())
+                .and_then(|run| self.unanswered(run.submission));
+            // The run's last boundary: collapse what the model answered after, then place what is still waiting.
+            let _ = self.context.run_end(MAIN_LANE);
+            let waiting = context_lane::pending_count(&lock_session(&self.session));
+            let placed = self.branches.place(true);
+            if let Some(run) = self.run.as_mut() {
+                run.ending = true;
+                if let Some(unanswered) = unanswered {
+                    run.error = Some(unanswered);
+                }
+                if let Err(error) = placed {
+                    run.error.get_or_insert(error);
+                }
+                if let Some(write) = run.journal.error() {
+                    run.error.get_or_insert(write.to_string());
+                }
+            }
+            self.announce();
+            if waiting > 0 {
+                self.queue_update();
+            }
+            self.durable.bridge.set_user_abort(false);
         }
-        let Some(mut run) = self.run.take() else { return };
-        if !run.cancelled && run.error.is_none() {
-            run.error = self.unanswered(run.submission);
-        }
-        // The run's last boundary: collapse what the model answered after, then place what is still waiting.
-        let _ = self.context.run_end(MAIN_LANE);
-        let waiting = context_lane::pending_count(&lock_session(&self.session));
-        if let Err(error) = self.branches.place(true) {
-            run.error.get_or_insert(error);
-        }
-        self.announce();
-        if waiting > 0 {
-            self.queue_update();
-        }
-        self.durable.bridge.set_user_abort(false);
+        let Some(run) = self.run.as_ref() else { return };
         let aborted = run.cancelled;
         let finished = if aborted {
             run.journal.finish_aborted(&mut lock_session(&self.session))
@@ -1672,11 +1719,11 @@ impl Core {
             let failure = run.error.as_deref().map(|m| (code, m));
             run.journal.finish(Some(&mut lock_session(&self.session)), failure)
         };
-        let mut error = if aborted { None } else { run.error.clone() };
-        if let Err(write) = finished {
-            error.get_or_insert(write);
+        if finished.is_err() {
+            return;
         }
-        // An error answer commits with the run's terminal transaction.
+        let Some(run) = self.run.take() else { return };
+        let error = if aborted { None } else { run.error.clone() };
         self.announce();
         self.taken.clear();
         sync::lock(&self.queues).delivered.clear();
@@ -1867,13 +1914,17 @@ impl Core {
                 let messages = view::messages(&self.pi());
                 let retry = self.summary_retry();
                 let signal = AbortSignal::new();
-                self.bug_summary = Some(signal.clone());
+                static SUMMARIES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+                let number = SUMMARIES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                self.bug_summary = Some((number, signal.clone()));
+                let tx = self.tx.clone();
                 std::thread::spawn(move || {
                     reply(
                         summarizer
                             .bug_report(&messages, hint.as_deref(), retry, &signal)
                             .map(|text| Some(json!(text))),
-                    )
+                    );
+                    let _ = tx.send(Input::BugSummaryEnded(number));
                 });
             }
             // AgentSession `compact`: `await this.abort()` first, then compact once the session is idle.
@@ -2059,7 +2110,7 @@ impl Core {
                 Ok(None)
             }
             Op::AbortBugSummary => {
-                if let Some(signal) = self.bug_summary.take() {
+                if let Some((_, signal)) = self.bug_summary.take() {
                     signal.abort();
                 }
                 Ok(None)
@@ -2101,6 +2152,7 @@ impl Core {
                 Ok(None)
             }
             Op::Messages => Ok(Some(Value::Array(view::messages(&self.pi())))),
+            Op::LaneSnapshot => Ok(Some(self.snapshot())),
             Op::ForkSource { entry_id } => {
                 self.idle()?;
                 let pi = self.pi();
@@ -2678,6 +2730,8 @@ impl Core {
             cancelled: false,
             compaction_failed: false,
             resume_overflow: None,
+            hiding: false,
+            ending: false,
         });
         self.persona_run_started();
         self.emit(WatchEvent::RunStart {

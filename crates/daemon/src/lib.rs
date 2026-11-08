@@ -16,6 +16,7 @@ pub mod paths;
 pub mod process;
 pub mod prompt_schedules;
 mod routed;
+pub mod routes;
 pub mod server;
 pub mod session_commands;
 pub mod session_control;

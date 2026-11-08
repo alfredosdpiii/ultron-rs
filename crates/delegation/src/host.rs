@@ -1220,6 +1220,18 @@ impl Delegation {
                 }
             };
             let id = record["id"].as_str().unwrap_or_default().to_string();
+            // Running in the journal before it exists in memory: a child whose start could not be written is never
+            // listed as running with nothing to run it (rlm.collect and the turn would wait on it until close).
+            let record = match state.journal.transition(&id, "running", None) {
+                Ok(running) => running,
+                Err(error) => {
+                    // The failed write poisons the journal; reopening it records the admitted task interrupted.
+                    if let Some(record) = &worktree {
+                        wt::remove_child_worktree(record, true);
+                    }
+                    return Err(error);
+                }
+            };
             state.tasks.push(Task {
                 id: id.clone(),
                 parent_id: parent.map(String::from),
@@ -1252,10 +1264,6 @@ impl Delegation {
                 git_baseline: None,
             });
             let level = root.level + state.line(Some(&id)).iter().filter(|a| state.is_child(a)).count() as u32;
-            let running = state.journal.transition(&id, "running", None)?;
-            if let Some(task) = state.task_mut(&id) {
-                task.record = running;
-            }
             (id, level)
         };
         let lane_name = lanes::lane_names::child_lane(&task_id);
@@ -1697,6 +1705,12 @@ impl Delegation {
     }
 
     /// `finish`: the first terminal result wins; nothing is published until the journal commits it.
+    ///
+    /// A terminal write that fails is not an end: the journal still says `running` (and a failed write poisons it
+    /// until the worker reopens it), so a restart reattaches the child and delivers its reply, and publishing the
+    /// error now would give the parent two results. The task stays unfinished and the caller gets the error; the
+    /// next end (a cancel, its timeout) tries again, and once the host has closed the error is published (this
+    /// worker is going away).
     fn end(&self, id: &str, result: Value) -> Result<Value, String> {
         {
             let mut state = sync::lock(&self.inner.state);
@@ -1730,6 +1744,15 @@ impl Delegation {
             let committed = state.journal.transition(id, &terminal, Some(result));
             let now = (self.inner.now)();
             let closed = state.closed;
+            if let Err(error) = &committed
+                && !closed
+            {
+                if let Some(task) = state.task_mut(id) {
+                    task.finishing = false;
+                }
+                self.inner.changed.notify_all();
+                return Err(error.clone());
+            }
             let owner_lane = {
                 let parent = state.task(id).and_then(|t| t.parent_id.clone());
                 parent

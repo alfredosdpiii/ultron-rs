@@ -581,7 +581,9 @@ impl Store {
 
     /// Records what the proposer of `version` read from newly scanned blobs (their earlier proposals and verdicts
     /// go: they came from another version) and which files of `tree` were read for relations, in one transaction.
-    /// A proposal plain code settled is `accepted` by `code`; the others wait for the judge.
+    /// A proposal plain code settled is `accepted` by `code`; the others wait for the judge. A blob another process
+    /// recorded at `version` since this one checked ([`Store::scanned_blobs`] reads outside this transaction) is
+    /// kept as it is: replacing it would drop verdicts settled on it and hand its relations' ids to new rows.
     pub fn record_relations(
         &mut self,
         tree: i64,
@@ -589,8 +591,12 @@ impl Store {
         scanned: &[(String, Vec<Proposed>)],
         version: i64,
     ) -> Result<(), Error> {
-        let tx = self.conn.transaction()?;
+        // Write-locked from the start: the check below and the writes after it see one state of the store.
+        let tx = self
+            .conn
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
         {
+            let mut recorded = tx.prepare_cached("SELECT 1 FROM relation_scans WHERE blob = ?1 AND version = ?2")?;
             let mut clear = tx.prepare_cached("DELETE FROM relations WHERE blob = ?1")?;
             let mut clear_scans = tx.prepare_cached("DELETE FROM relation_scans WHERE blob = ?1")?;
             let mut scan = tx.prepare_cached("INSERT INTO relation_scans (blob, version) VALUES (?1, ?2)")?;
@@ -599,6 +605,9 @@ impl Store {
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
             )?;
             for (oid, proposed) in scanned {
+                if recorded.exists(params![oid, version])? {
+                    continue;
+                }
                 clear.execute(params![oid])?;
                 clear_scans.execute(params![oid])?;
                 scan.execute(params![oid, version])?;

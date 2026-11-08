@@ -241,17 +241,22 @@ pub fn sign_in(
         .clone()
         .unwrap_or_else(|| callback.redirect_url.clone());
     let result = (|| {
-        if let Some(Value::Object(stored)) = &stored {
-            let mut next = stored.clone();
-            // Every sign-in gets a fresh `state` parameter.
-            next.shift_remove("oauthState");
-            // A registered client cannot use another redirect URI, and its tokens belong to it.
-            if settings.client_id.is_none() && !registered.contains(&redirect_url) {
-                next.shift_remove("clientInformation");
-                next.shift_remove("tokens");
-                next.shift_remove("tokensExpireAt");
-            }
-            store.save(&Value::Object(next))?;
+        if let Some(Value::Object(_)) = &stored {
+            // Changed as it is now, not as it was read before the callback server started.
+            store.update(|current| {
+                let Some(Value::Object(mut next)) = current else {
+                    return None;
+                };
+                // Every sign-in gets a fresh `state` parameter.
+                next.shift_remove("oauthState");
+                // A registered client cannot use another redirect URI, and its tokens belong to it.
+                if settings.client_id.is_none() && !registered.contains(&redirect_url) {
+                    next.shift_remove("clientInformation");
+                    next.shift_remove("tokens");
+                    next.shift_remove("tokensExpireAt");
+                }
+                Some(Value::Object(next))
+            })?;
         }
         let authorization_url: Mutex<Option<String>> = Mutex::new(None);
         let provider = provider(

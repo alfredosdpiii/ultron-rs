@@ -354,22 +354,28 @@ impl<'a> Provider<'a> {
     }
 
     /// Stored state for another server URL is ignored, so credentials never leak across servers.
-    fn load(&self) -> Result<Map<String, Value>, OAuthError> {
-        let state = self.store.load()?;
-        Ok(match state {
+    fn of_this_server(&self, state: Option<Value>) -> Map<String, Value> {
+        match state {
             Some(Value::Object(map)) if map.get("serverUrl").and_then(Value::as_str) == Some(&self.server_url) => map,
             _ => {
                 let mut fresh = Map::new();
                 fresh.insert("serverUrl".into(), Value::String(self.server_url.clone()));
                 fresh
             }
-        })
+        }
     }
 
+    fn load(&self) -> Result<Map<String, Value>, OAuthError> {
+        Ok(self.of_this_server(self.store.load()?))
+    }
+
+    /// One read-modify-write under the file lock: another process's write in between is kept.
     fn update(&self, change: impl FnOnce(&mut Map<String, Value>)) -> Result<(), OAuthError> {
-        let mut state = self.load()?;
-        change(&mut state);
-        self.store.save(&Value::Object(state))
+        self.store.update(|state| {
+            let mut state = self.of_this_server(state);
+            change(&mut state);
+            Some(Value::Object(state))
+        })
     }
 
     pub fn state(&self) -> Result<String, OAuthError> {

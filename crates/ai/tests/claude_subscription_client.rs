@@ -769,6 +769,41 @@ fn ai_claude_subscription_cancellation_kills_native_and_its_grandchild() {
     assert_eq!(fake.records().len(), runs);
 }
 
+/// Once aborted, the call cancels native once and then waits for it without holding the thread: before, the aborted
+/// signal stayed ready and the loop cancelled again and again inside one poll until native was gone.
+#[test]
+fn ai_claude_subscription_cancellation_waits_for_native_without_spinning() {
+    seal();
+    let fake = Fake::new();
+    let config = fake.config(NO_UPSTREAM, &[("FAKE_HANG", "1")]);
+    let signal = AbortSignal::new();
+    let mut opts = options();
+    opts.base.signal = Some(signal.clone());
+    let mut sink = |event: &AssistantMessageEvent| {
+        if matches!(event, AssistantMessageEvent::TextDelta { delta, .. } if delta == "started") {
+            signal.abort();
+        }
+    };
+    let done = std::sync::atomic::AtomicBool::new(false);
+    let call = async {
+        let message =
+            ai::claude_subscription::stream_with(&model("sonnet"), &first_turn(), &opts, config, &mut sink).await;
+        done.store(true, std::sync::atomic::Ordering::SeqCst);
+        message
+    };
+    // Polled in the same task as the call: it runs once the call's poll returns after the abort.
+    let watcher = async {
+        signal.cancelled().await;
+        done.load(std::sync::atomic::Ordering::SeqCst)
+    };
+    let (message, done_when_watched) = runtime().block_on(async { tokio::join!(call, watcher) });
+    assert_eq!(message.stop_reason, StopReason::Aborted);
+    assert!(
+        !done_when_watched,
+        "the cancelled call held its thread until native was gone"
+    );
+}
+
 const QUIET: [&str; 3] = [
     "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC",
     "DISABLE_TELEMETRY",

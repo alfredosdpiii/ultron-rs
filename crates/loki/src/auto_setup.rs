@@ -282,7 +282,8 @@ fn auto_commit_skip_reason(context: &SetupContext<'_>, root: &Path) -> Option<St
 }
 
 /// `commitLoki`: commit `.loki/` and nothing else (`git add .loki`, then a pathspec-limited commit), hooks and
-/// signing as configured, nothing able to prompt; on failure `.loki/` is unstaged again. The short sha, or why not.
+/// signing as configured, nothing able to prompt; on failure `.loki/` is unstaged again (back to HEAD). The short
+/// sha, or why not.
 pub fn commit_loki(context: &SetupContext<'_>, root: &Path, timeout_ms: Option<u64>) -> Result<String, String> {
     let quiet = [
         ("GIT_TERMINAL_PROMPT", "0"),
@@ -307,12 +308,18 @@ pub fn commit_loki(context: &SetupContext<'_>, root: &Path, timeout_ms: Option<u
         timeout_ms,
     );
     if committed.status != Some(0) {
-        context.git(
-            root,
-            &["rm", "--cached", "-r", "-q", "--ignore-unmatch", "--", ".loki"],
-            GIT_TIMEOUT_MS,
-            &quiet,
-        );
+        // Back to what HEAD has: another session may have committed `.loki/` meanwhile (its commit is why this one
+        // had nothing to commit), and removing that from the index would stage its deletion. Without a HEAD (no
+        // commit yet) nothing is tracked, so it is only removed from the index.
+        let reset = context.git(root, &["reset", "-q", "--", ".loki"], GIT_TIMEOUT_MS, &quiet);
+        if reset.status != Some(0) {
+            context.git(
+                root,
+                &["rm", "--cached", "-r", "-q", "--ignore-unmatch", "--", ".loki"],
+                GIT_TIMEOUT_MS,
+                &quiet,
+            );
+        }
         let detail = match committed.error {
             Some(error) if error.starts_with("timed out") => format!("{error} (a hook or a signing prompt?)"),
             Some(error) => error,

@@ -118,6 +118,68 @@ fn host_after_cell_changes_reach_the_guards_and_findings_come_with_the_next_cell
     assert!(last.checked.is_empty() && last.complete);
 }
 
+/// Each lane given unchecked files, with the files.
+type Given = Arc<Mutex<Vec<(String, Vec<PathBuf>)>>>;
+
+/// Records which lane each cell's unchecked files were given to.
+struct ByLane(Given);
+
+impl FileWriteGuard for ByLane {
+    fn name(&self) -> &str {
+        "ByLane"
+    }
+    fn watches_cells(&self) -> bool {
+        true
+    }
+    fn after_cell_changes(
+        &self,
+        changes: &CellChanges,
+        _: &Path,
+        lane: &str,
+    ) -> Result<Option<AfterCellReport>, String> {
+        self.0.lock().unwrap().push((lane.to_string(), changes.files.clone()));
+        Ok(None)
+    }
+}
+
+/// B-report #7: cells of two lanes overlap. Each lane is told what changed while its own cell ran, from its own
+/// start: lane `a`, started after `b` wrote, is not blamed for `b`'s write, and `a`'s end does not absorb that write
+/// into a shared picture, so `b` still sees it when its cell ends. A change goes to the first cell that ends after
+/// it (`a.txt` to `a`); `b` gets it too only if it changes the file again.
+#[test]
+fn host_after_cell_attributes_changes_to_the_lane_whose_cell_ran() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().canonicalize().unwrap();
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let mut hooks = FileHooks::with_snapshots(&root, snapshotter());
+    hooks.add(Box::new(ByLane(seen.clone())));
+    hooks.cell_started("b");
+    std::fs::write(root.join("b.txt"), "from b\n").unwrap();
+    hooks.cell_started("a");
+    std::fs::write(root.join("a.txt"), "from a\n").unwrap();
+    hooks.cell_ended("a");
+    hooks.settled();
+    hooks.cell_ended("b");
+    hooks.settled();
+    hooks.cell_started("b");
+    hooks.cell_started("a");
+    std::fs::write(root.join("a.txt"), "from a again\n").unwrap();
+    hooks.cell_ended("a");
+    hooks.settled();
+    std::fs::write(root.join("a.txt"), "from b\n").unwrap();
+    hooks.cell_ended("b");
+    hooks.settled();
+    assert_eq!(
+        *seen.lock().unwrap(),
+        vec![
+            ("a".to_string(), vec![root.join("a.txt")]),
+            ("b".to_string(), vec![root.join("b.txt")]),
+            ("a".to_string(), vec![root.join("a.txt")]),
+            ("b".to_string(), vec![root.join("a.txt")]),
+        ]
+    );
+}
+
 /// Issue #5: Loki's own setup commit ran beside the first cell, and its pre-commit hook rewrote `.loki/loki.json`;
 /// the after-cell check then reported that file as the cell's change (`protected file: .loki/loki.json`). Work
 /// outside the cells is waited for and what it changed is not the cell's, unless the cell changes it again.

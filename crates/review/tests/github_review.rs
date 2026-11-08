@@ -475,6 +475,74 @@ fn review_github_three_failed_attempts_then_one_could_not_review_comment() {
 }
 
 #[test]
+fn review_github_a_mention_after_giving_up_tries_the_same_commit_again() {
+    let failed = || Err("the review pipeline failed".to_string());
+    let context = setup(
+        json!({}),
+        Some(FakeEngine::new(vec![
+            failed(),
+            failed(),
+            failed(),
+            Ok(engine_result(json!({}))),
+        ])),
+    );
+    context.hub.add_pull(FakePull::new("o", "r", 1).requested(&[BOT]));
+    for _ in 0..3 {
+        review_pull(&context.deps, &context.requested(), ReviewOptions::default()).expect_err("fails");
+    }
+    context.hub.set_now("2026-10-04T11:00:00Z");
+    assert_eq!(requested(&context).kind(), "gave-up");
+    // A mention from before the "could not review" comment asks for nothing new.
+    context.hub.set_now("2026-10-04T12:00:00Z");
+    context.hub.with_pull(|pull| {
+        pull.issue_comments.push(FakeComment::new(
+            70,
+            "alice",
+            &format!("@{BOT} please look"),
+            "2026-10-04T10:30:00Z",
+        ))
+    });
+    assert_eq!(skipped(&run(&context, &["mention"])), "gave up on this commit earlier");
+    // The comment says "mention me again to retry": a mention after it does.
+    context.hub.with_pull(|pull| {
+        pull.issue_comments.push(FakeComment::new(
+            71,
+            "alice",
+            &format!("@{BOT} try again?"),
+            "2026-10-04T11:30:00Z",
+        ))
+    });
+    assert_eq!(run(&context, &["mention"]).kind(), "posted");
+    assert_eq!(context.engine.specs().len(), 4);
+    let state = context.pull_state();
+    assert_eq!(state.gave_up_sha, None);
+    assert!(state.attempts.is_empty());
+}
+
+#[test]
+fn review_github_a_review_cut_off_by_a_stop_is_not_a_failed_attempt() {
+    let context = setup(json!({}), None);
+    context.hub.add_pull(FakePull::new("o", "r", 1).requested(&[BOT]));
+    // While the engine runs, the state shows no failed attempt: a daemon killed now (a restart during a long
+    // review) has not failed one.
+    let store = context.deps.store.clone();
+    let key = review::reviewer::pull_state_key(&context.account, &reference());
+    let during = Arc::new(Mutex::new(None));
+    let seen = during.clone();
+    *context.engine.on_review.lock().expect("hook") = Some(Box::new(move || {
+        let attempts = store
+            .read()
+            .pulls
+            .get(&key)
+            .map(|state| state.attempts.clone())
+            .unwrap_or_default();
+        *seen.lock().expect("seen") = Some(attempts);
+    }));
+    assert_eq!(requested(&context).kind(), "posted");
+    assert_eq!(during.lock().expect("seen").clone(), Some(Default::default()));
+}
+
+#[test]
 fn review_github_a_rate_limit_while_reviewing_is_not_a_failed_attempt() {
     let context = setup(json!({}), None);
     context.hub.add_pull(FakePull::new("o", "r", 1).requested(&[BOT]));

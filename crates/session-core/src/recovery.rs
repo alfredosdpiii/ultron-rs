@@ -13,7 +13,7 @@ use session_journal::Session;
 use session_journal::Write;
 use session_journal::ns::{BRANCH_TIP, LANE_STATE};
 use session_journal::ns::{OP_META, OP_RESULT, OP_STATE, OP_TOOL_ARGS, PENDING_ENTRY, PENDING_FRAMES};
-use session_journal::run::MAIN_LANE;
+use session_journal::run::{MAIN_LANE, OpAt};
 use std::collections::BTreeMap;
 
 /// `interruptedAssistantMessage`'s warning.
@@ -129,6 +129,18 @@ pub fn inbox(session: &Session) -> Vec<Inboxed> {
         .collect()
 }
 
+/// How the state an operation was left in ends it.
+enum Ending {
+    /// The work that was in flight is settled as interrupted; the run may continue.
+    Interrupted,
+    /// The run had nothing left to do.
+    Completed,
+    /// The run had already failed with this error.
+    Failed { code: &'static str, message: String },
+    /// A state this build does not write: settled without continuing.
+    Unknown,
+}
+
 /// The continuation depth of the run whose operation is `meta`: its prompt's [`RECOVERY_DEPTH`], else 0.
 fn depth(session: &Session, meta: &Value) -> u64 {
     meta["intent"]["promptEntryIds"][0]
@@ -153,9 +165,11 @@ pub fn settle(session: &mut Session) -> Result<Recovered, String> {
     let mut writes = Vec::new();
     let mut tip = session.branch_tip(MAIN_LANE).flatten();
     let mut interrupted_calls = 0;
-    let at = state["at"].as_str().unwrap_or_default();
-    match at {
-        "assistant.effect_pending" => {
+    let stored_at = state["at"].as_str().unwrap_or_default().to_string();
+    // Every state the writers produce is settled here by name; a value this build does not know (a newer writer,
+    // a damaged record) is not guessed at: the operation fails without resuming.
+    let ending = match OpAt::of(&state) {
+        Some(OpAt::AssistantEffectPending) => {
             let response = state["responseEntryId"].as_str().unwrap_or_default().to_string();
             let key = format!("{operation}:{response}");
             let frames: Vec<Value> = session
@@ -169,8 +183,9 @@ pub fn settle(session: &mut Session) -> Result<Recovered, String> {
             writes.push(Write::message_entry(&response, tip.as_deref(), message));
             writes.push(Write::delete_list(PENDING_FRAMES, &key));
             tip = Some(response);
+            Ending::Interrupted
         }
-        "tools" => {
+        Some(OpAt::Tools) => {
             let batch = &state["batch"];
             let assistant = batch["assistantEntryId"].as_str().unwrap_or_default();
             let content = session
@@ -205,46 +220,75 @@ pub fn settle(session: &mut Session) -> Result<Recovered, String> {
                 }
                 tip = Some(result_id);
             }
+            Ending::Interrupted
         }
         // A navigation without a summary that was admitted commits (`commitNavigation`: nothing external is
         // repeated), unless it was cancelled.
-        "navigation.ready_to_commit" if !cancelled => {
-            tip = state["targetId"].as_str().map(str::to_string);
-            let labelled = state["labelEntryId"]
-                .as_str()
-                .map(str::to_string)
-                .or_else(|| tip.clone());
-            if let (Some(entry), Some(label)) = (labelled, state["label"].as_str()) {
-                writes.push(Write::set(session_journal::ns::ENTRY_LABEL, &entry, json!(label)));
+        Some(OpAt::NavigationReadyToCommit) => {
+            if !cancelled {
+                tip = state["targetId"].as_str().map(str::to_string);
+                let labelled = state["labelEntryId"]
+                    .as_str()
+                    .map(str::to_string)
+                    .or_else(|| tip.clone());
+                if let (Some(entry), Some(label)) = (labelled, state["label"].as_str()) {
+                    writes.push(Write::set(session_journal::ns::ENTRY_LABEL, &entry, json!(label)));
+                }
+                if tip.is_none() {
+                    writes.push(Write::set(BRANCH_TIP, MAIN_LANE, Value::Null));
+                }
             }
-            if tip.is_none() {
-                writes.push(Write::set(BRANCH_TIP, MAIN_LANE, Value::Null));
-            }
+            Ending::Completed
         }
-        _ => {}
-    }
+        // The last answer committed and the run may finish: it had nothing left to do. So had a run in the compaction
+        // of that checkpoint (its summary only shortens what the next run sends), as `may_finish` of the reopened
+        // run reads it.
+        Some(OpAt::Checkpoint) if state["continuation"]["kind"] == "may_finish" => Ending::Completed,
+        Some(at)
+            if at.is_summary() && state["task"]["boundary"]["resumeAfter"]["continuation"]["kind"] == "may_finish" =>
+        {
+            Ending::Completed
+        }
+        // The answer the run ends with committed (an error the run does not retry): the run failed with it.
+        Some(OpAt::AssistantFailed) => Ending::Failed {
+            code: "assistant_error",
+            message: state["errorMessage"].as_str().unwrap_or_default().to_string(),
+        },
+        // Between steps, nothing in flight: the next step (a generation, a retried one, a compaction's summary) had
+        // not reached the provider, so nothing is settled; the run is interrupted there.
+        Some(
+            OpAt::Starting
+            | OpAt::Checkpoint
+            | OpAt::AssistantReady
+            | OpAt::AssistantRetryWait
+            | OpAt::SummaryDeciding
+            | OpAt::SummaryReady
+            | OpAt::SummaryEffectPending
+            | OpAt::SummaryRetryWait,
+        ) => Ending::Interrupted,
+        None => Ending::Unknown,
+    };
     if let Some(tip) = &tip {
         writes.push(Write::set(BRANCH_TIP, MAIN_LANE, json!(tip)));
     }
-    // A run whose last answer committed and may finish had nothing left to do; so had an admitted navigation.
-    let finished =
-        (at == "checkpoint" && state["continuation"]["kind"] == "may_finish") || at == "navigation.ready_to_commit";
-    let status = if cancelled {
-        "aborted"
-    } else if finished {
-        "completed"
-    } else {
-        "failed"
+    let status = match (&ending, cancelled) {
+        (_, true) => "aborted",
+        (Ending::Completed, false) => "completed",
+        _ => "failed",
     };
     let mut result = Map::new();
     result.insert("operationId".into(), operation.clone().into());
     result.insert("kind".into(), meta["intent"]["kind"].as_str().unwrap_or("run").into());
     result.insert("status".into(), status.into());
     if status == "failed" {
-        result.insert(
-            "error".into(),
-            json!({"code": "interrupted", "message": "The session worker stopped during this run"}),
-        );
+        let error = match &ending {
+            Ending::Failed { code, message } => json!({"code": code, "message": message}),
+            Ending::Unknown => json!({"code": "interrupted", "message": format!(
+                "The session worker stopped during this run, in a state this build does not know ({stored_at:?})"
+            )}),
+            _ => json!({"code": "interrupted", "message": "The session worker stopped during this run"}),
+        };
+        result.insert("error".into(), error);
     }
     result.insert("fromTipId".into(), meta["sourceTipId"].clone());
     result.insert("tipId".into(), tip.clone().map_or(Value::Null, Value::from));
@@ -283,7 +327,7 @@ pub fn settle(session: &mut Session) -> Result<Recovered, String> {
     Ok(Recovered {
         operation_id: Some(operation),
         status: Some(status.to_string()),
-        resume: run && status == "failed" && depth < MAX_RECOVERY_DEPTH,
+        resume: run && status == "failed" && matches!(ending, Ending::Interrupted) && depth < MAX_RECOVERY_DEPTH,
         depth,
         interrupted_calls,
         queued,

@@ -190,8 +190,9 @@ enum Panel {
         changed: bool,
         session_scope: bool,
     },
-    /// The login dialog of a subscription (OAuth) login running in the client.
-    OAuthLogin(Box<crate::login_dialog::LoginDialog>),
+    /// The login dialog of a subscription (OAuth) login running in the client, or of a multi-field API-key login
+    /// running in the dialog: the flow its answers and its cancel go to.
+    OAuthLogin(Box<crate::login_dialog::LoginDialog>, LoginFlow),
     /// The login dialog's prompt for an API key.
     LoginPrompt {
         provider: crate::selectors::AuthProvider,
@@ -213,6 +214,15 @@ enum Panel {
     ShareLoader(Box<crate::extension_dialogs::BorderedLoader>),
     /// `/bug`'s dialogs and loaders.
     BugReport(Box<crate::bug_report::BugFlow>),
+}
+
+/// Who runs the login a [`Panel::OAuthLogin`] dialog shows. The flow lives in the panel, so a dialog that is
+/// replaced takes its flow with it: no later login's answers can reach it.
+enum LoginFlow {
+    /// A subscription login running in the client, by its id ([`LaneCommand::OAuthLogin`]).
+    Client(u64),
+    /// A multi-field API-key login (`apiKey.login`): its flow and provider.
+    ApiKey(Box<(crate::api_key_login::ApiKeyLogin, crate::selectors::AuthProvider)>),
 }
 
 /// `nextModel` (client-tui-actions.ts): the next model in the `enabledModels` scope when it selects any
@@ -309,7 +319,7 @@ impl AppMouse<'_> {
             }
             (None, None) => self.editor.handle_mouse(event),
             // The dialogs and selectors whose components read the mouse (input.ts, editor.ts in a `Container`).
-            (None, Some(Panel::OAuthLogin(dialog))) => dialog.handle_mouse(self.theme, event),
+            (None, Some(Panel::OAuthLogin(dialog, _))) => dialog.handle_mouse(self.theme, event),
             (
                 None,
                 Some(Panel::LoginPrompt {
@@ -509,8 +519,6 @@ pub struct App {
     rlm_clock: rlm_views::visualizer::RlmClock,
     /// `/mcp` dialogs not shown yet: they share the selector, so they are answered in order.
     extension_dialogs: std::collections::VecDeque<Value>,
-    /// A `/mcp` dialog is open.
-    extension_dialog_open: bool,
     /// The clock (tests drive double taps, countdowns and polls with their own).
     clock: Box<dyn Fn() -> Instant>,
     /// The theme setting, its live application and previews.
@@ -564,6 +572,9 @@ pub struct App {
     rlm_poll: rlm_views::poller::RlmPoller,
     /// When the RLM inspections were last polled (`None`: poll on the next pass).
     rlm_polled: Option<Instant>,
+    /// A poll round was sent and its last answer (`detached`) has not come back: the link thread answers commands in
+    /// order, so no new round is queued behind it (a busy link thread would otherwise collect a burst of stale ones).
+    rlm_round: bool,
     /// The wave summary showed at the last poll (it polls at the visible rate while it does).
     wave_active: bool,
     /// The root lane's detached cells (`rlm.detached`), for the running-work panel.
@@ -574,8 +585,8 @@ pub struct App {
     operation_started_ms: Option<f64>,
     /// The external editor edits the editor dialog's text, not the main editor's.
     edit_dialog: bool,
-    /// A multi-field API-key login in progress: its flow and provider.
-    api_login: Option<(crate::api_key_login::ApiKeyLogin, crate::selectors::AuthProvider)>,
+    /// The id of the last subscription login started ([`LaneCommand::OAuthLogin`]).
+    last_login: u64,
     /// Where the mouse-aware parts of the last fullscreen frame were.
     mouse_layout: MouseLayout,
 }
@@ -808,7 +819,6 @@ impl App {
             compacted: false,
             panel: None,
             extension_dialogs: std::collections::VecDeque::new(),
-            extension_dialog_open: false,
             enabled_models: Vec::new(),
             scoped_ids: None,
             overlay: None,
@@ -866,12 +876,13 @@ impl App {
             rlm_pane_auto: true,
             rlm_poll: rlm_views::poller::RlmPoller::new(rlm_views::poller::TUI_FRAME_LIMIT),
             rlm_polled: None,
+            rlm_round: false,
             wave_active: false,
             detached_cells: Vec::new(),
             work_active: false,
             operation_started_ms: None,
             edit_dialog: false,
-            api_login: None,
+            last_login: 0,
             mouse_layout: MouseLayout::default(),
         }
         .with_cancel_key()
@@ -1786,14 +1797,14 @@ impl App {
                 self.transcript = opened.messages;
                 self.context_from = 0;
                 self.compacted = false;
-                self.panel = None;
+                self.set_panel(None);
                 self.path_usage = Value::Null;
                 self.session_id = Some(opened.session_id);
                 self.session_file = opened.session_file;
                 self.session_name = opened.name;
                 // A `/name` still unconfirmed named the session this one replaced.
                 self.pending_name = None;
-                self.operation = None;
+                self.reset_run_status();
                 // A resumed session's own prompts join this project's history by time.
                 let prompts: Vec<TimedPrompt> = self
                     .transcript
@@ -1944,11 +1955,11 @@ impl App {
                     "Creating gist...",
                 );
                 self.editor.focused = false;
-                self.panel = Some(Panel::ShareLoader(Box::new(loader)));
+                self.set_panel(Some(Panel::ShareLoader(Box::new(loader))));
             }
             LaneEvent::ShareLoader(false) => {
                 if matches!(self.panel, Some(Panel::ShareLoader(_))) {
-                    self.panel = None;
+                    self.set_panel(None);
                 }
             }
             LaneEvent::AllSessions(sessions) => {
@@ -1991,11 +2002,11 @@ impl App {
                     rust_rows: self.qol.any(),
                 };
                 let selector = SettingsSelector::new(Rc::clone(&self.theme), self.keys.clone(), input);
-                self.panel = Some(Panel::Settings(Box::new(selector)));
+                self.set_panel(Some(Panel::Settings(Box::new(selector))));
                 self.editor.focused = false;
             }
             LaneEvent::LoginProviders { providers, query } => self.login(providers, &query),
-            LaneEvent::Login(step) => self.login_step(step),
+            LaneEvent::Login(id, step) => self.login_step(id, step),
             LaneEvent::Changelog(tokens) => {
                 let notice = crate::commands::LexedNotice {
                     theme: Rc::clone(&self.theme),
@@ -2031,7 +2042,7 @@ impl App {
                     providers,
                     None,
                 );
-                self.panel = Some(Panel::Logout(Box::new(selector)));
+                self.set_panel(Some(Panel::Logout(Box::new(selector))));
                 self.editor.focused = false;
             }
             LaneEvent::Catalog(models) => {
@@ -2162,11 +2173,11 @@ impl App {
                     return;
                 }
                 let last = messages.last().map(|m| m.entry_id.clone());
-                self.panel = Some(Panel::Fork(UserMessageSelector::new(
+                self.set_panel(Some(Panel::Fork(UserMessageSelector::new(
                     Rc::clone(&self.theme),
                     messages,
                     last.as_deref(),
-                )));
+                ))));
                 self.editor.focused = false;
             }
             LaneEvent::Forked { editor_text, status } => {
@@ -2216,7 +2227,7 @@ impl App {
             LaneEvent::Trust(view) => {
                 let selector =
                     crate::trust_selector::TrustSelector::new(Rc::clone(&self.theme), self.keys.clone(), view);
-                self.panel = Some(Panel::Trust(Box::new(selector)));
+                self.set_panel(Some(Panel::Trust(Box::new(selector))));
                 self.editor.focused = false;
             }
             LaneEvent::DebugLogWritten { path, summary } => {
@@ -2243,14 +2254,26 @@ impl App {
         }
     }
 
+    /// A `/mcp` dialog is open: the panel or the selection shows one (derived, so a dialog that was displaced is
+    /// never counted as open).
+    fn extension_dialog_open(&self) -> bool {
+        matches!(self.panel, Some(Panel::ExtensionInput { .. }))
+            || matches!(
+                self.selection,
+                Some(Selection {
+                    purpose: Purpose::ExtensionSelect { .. },
+                    ..
+                })
+            )
+    }
+
     fn next_extension_dialog(&mut self) {
-        if self.extension_dialog_open {
+        if self.extension_dialog_open() {
             return;
         }
         let Some(request) = self.extension_dialogs.pop_front() else {
             return;
         };
-        self.extension_dialog_open = true;
         let id = request["id"].as_str().unwrap_or_default().to_string();
         let title = request["title"].as_str().unwrap_or_default();
         match request["method"].as_str().unwrap_or_default() {
@@ -2278,10 +2301,10 @@ impl App {
                     self.now(),
                 );
                 self.editor.focused = false;
-                self.panel = Some(Panel::ExtensionInput {
+                self.set_panel(Some(Panel::ExtensionInput {
                     id,
                     dialog: Box::new(dialog),
-                });
+                }));
             }
         }
     }
@@ -2293,7 +2316,7 @@ impl App {
             && dialog.expired(now)
         {
             let id = id.clone();
-            self.panel = None;
+            self.panel.take();
             self.answer_extension_dialog(&id, serde_json::json!({ "cancelled": true }));
         }
     }
@@ -2304,8 +2327,28 @@ impl App {
             id: id.to_string(),
             answer,
         });
-        self.extension_dialog_open = false;
         self.next_extension_dialog();
+    }
+
+    /// The one way a panel is shown or closed: the panel it replaces is dismissed first, settling what it still owes
+    /// another party (a `/mcp` input dialog is answered cancelled, a login is cancelled), so nothing waits on a
+    /// dialog that is no longer shown. A handler that answers its panel's obligation itself takes the panel
+    /// (`self.panel.take()`) instead. Closing the panel shows the next queued `/mcp` dialog.
+    fn set_panel(&mut self, panel: Option<Panel>) {
+        let closing = panel.is_none();
+        match std::mem::replace(&mut self.panel, panel) {
+            Some(Panel::ExtensionInput { id, .. }) => self.send(LaneCommand::ExtensionUiRespond {
+                id,
+                answer: serde_json::json!({ "cancelled": true }),
+            }),
+            Some(Panel::OAuthLogin(_, LoginFlow::Client(id))) => {
+                self.send(LaneCommand::LoginReply { id, answer: None })
+            }
+            _ => {}
+        }
+        if closing {
+            self.next_extension_dialog();
+        }
     }
 
     /// Turn bookkeeping of the additions: active time, the git refresh and the turn-end notification.
@@ -2480,8 +2523,7 @@ impl App {
         }
         // A quick Esc-Esc can arrive as one read (Alt+Escape): the rewind selector, like two taps.
         if self.qol.overlays && data == "\x1b\x1b" && self.operation.is_none() && self.editor.text().trim().is_empty() {
-            self.rewind_pending = true;
-            self.send(LaneCommand::ForkMessages);
+            self.fork_messages(true);
             return;
         }
         if self.qol.attachments && data.starts_with(PASTE_START) && self.paste_attachments(data) {
@@ -2678,8 +2720,7 @@ impl App {
         // With the overlays, idle on an empty editor a second Esc opens the rewind selector (omp's Esc-Esc).
         if self.qol.overlays {
             if self.escapes.tap(now) {
-                self.rewind_pending = true;
-                self.send(LaneCommand::ForkMessages);
+                self.fork_messages(true);
             }
             return;
         }
@@ -2695,7 +2736,7 @@ impl App {
             if self.double_escape_action == "tree" {
                 self.send(LaneCommand::Tree);
             } else {
-                self.send(LaneCommand::ForkMessages);
+                self.fork_messages(false);
             }
         } else {
             self.last_escape = Some(now);
@@ -2785,6 +2826,14 @@ impl App {
             self.status = "Running turn…".into();
             self.send(LaneCommand::Prompt { text: prompt, images });
         }
+    }
+
+    /// Ask for the user messages: for the rewind picker (`rewind`) or the fork selector. Each request says which, so
+    /// a rewind whose request failed (answered by an error, not [`LaneEvent::ForkMessages`]) never turns a later
+    /// `/fork` into a rewind.
+    fn fork_messages(&mut self, rewind: bool) {
+        self.rewind_pending = rewind;
+        self.send(LaneCommand::ForkMessages);
     }
 
     fn execute_slash_command(&mut self, name: &str, args: &str) {
@@ -2932,7 +2981,7 @@ impl App {
                     (!args.is_empty()).then_some(args).map(str::to_string),
                 ));
             }
-            Slash::Fork => self.send(LaneCommand::ForkMessages),
+            Slash::Fork => self.fork_messages(false),
             Slash::Tree => self.send(LaneCommand::Tree),
             Slash::Rlm => match args.trim() {
                 "focus" => self.open_rlm_focus(),
@@ -3053,11 +3102,11 @@ impl App {
             self.bug_report_target.clone(),
         );
         self.editor.focused = false;
-        self.panel = Some(Panel::BugReport(Box::new(flow)));
+        self.set_panel(Some(Panel::BugReport(Box::new(flow))));
     }
 
     fn bug_cancelled(&mut self) {
-        self.panel = None;
+        self.set_panel(None);
         self.show_status("Bug report cancelled");
     }
 
@@ -3071,7 +3120,7 @@ impl App {
             Action::None => {}
             Action::Cancelled => self.bug_cancelled(),
             Action::Offline => {
-                self.panel = None;
+                self.set_panel(None);
                 self.show_error("Uploading bug reports requires online mode. Use Export as Zip instead.");
             }
             Action::Summarize => {
@@ -3092,7 +3141,7 @@ impl App {
                 };
                 // An export writes at once (no loader); an upload shows its loader until it answers.
                 if !request.upload {
-                    self.panel = None;
+                    self.set_panel(None);
                 }
                 self.send(LaneCommand::BugReport(request));
             }
@@ -3101,7 +3150,7 @@ impl App {
                 self.bug_cancelled();
             }
             Action::ExportAfterFailure => {
-                self.panel = None;
+                self.set_panel(None);
                 self.send(LaneCommand::BugReportExport);
             }
             Action::External(text) => {
@@ -3129,7 +3178,7 @@ impl App {
                 self.bug_action(action);
             }
             Err(error) => {
-                self.panel = None;
+                self.set_panel(None);
                 self.show_error(&format!("Failed to write bug report summary: {error}"));
             }
         }
@@ -3149,7 +3198,7 @@ impl App {
             }
             outcome => {
                 if uploading {
-                    self.panel = None;
+                    self.set_panel(None);
                 }
                 match outcome {
                     BugReportOutcome::Uploaded(id) => {
@@ -3189,6 +3238,21 @@ impl App {
         if let Err(error) = result {
             self.status = format!("Error: {error}");
         }
+    }
+
+    /// A session opened (a switch, a worker restart, a reattach): nothing the old lane was doing runs any more, so
+    /// every run status goes with the operation; a later run or compaction reports itself again. Before, a worker
+    /// lost mid-compaction or mid-retry left `compacting`/`retrying` set with no indicator, and Esc then cancelled a
+    /// compaction that no longer existed.
+    fn reset_run_status(&mut self) {
+        if let Some(started) = self.turn_started.take() {
+            self.active_ms += started.elapsed().as_millis() as u64;
+        }
+        self.operation = None;
+        self.compacting = false;
+        self.retrying = false;
+        self.aborting = false;
+        self.summarizing_branch = None;
     }
 
     /// After a compaction the run it happened in (if any) is still working.
@@ -3443,7 +3507,7 @@ impl App {
     /// What the settings selector answered (a key or a click).
     fn settings_event(&mut self, event: Option<SettingsEvent>) {
         match event {
-            Some(SettingsEvent::Cancelled) => self.panel = None,
+            Some(SettingsEvent::Cancelled) => self.set_panel(None),
             // `onThemePreview`: the theme shows while the user browses; leaving restores the setting's.
             Some(SettingsEvent::Preview(setting)) => {
                 if let Some(theme) = self.theme_controller.as_mut().and_then(|c| c.preview(&setting)) {
@@ -3508,13 +3572,13 @@ impl App {
         match self.panel.as_mut() {
             Some(Panel::Fork(selector)) => match selector.handle_input(&self.keys, data) {
                 Some(SelectorAction::Selected(entry_id)) => {
-                    self.panel = None;
+                    self.set_panel(None);
                     if self.operation.is_some() {
                         self.send(LaneCommand::Abort);
                     }
                     self.send(LaneCommand::Fork(entry_id.to_string()));
                 }
-                Some(SelectorAction::Cancelled) => self.panel = None,
+                Some(SelectorAction::Cancelled) => self.set_panel(None),
                 None => {}
             },
             Some(Panel::RlmFocus(_)) => {
@@ -3524,7 +3588,7 @@ impl App {
                     return;
                 };
                 match focus.handle_input(&self.keys, data, &snapshot, height) {
-                    rlm_views::focus::FocusEvent::Exit => self.panel = None,
+                    rlm_views::focus::FocusEvent::Exit => self.set_panel(None),
                     // `loadTrace`: the frame's trace (`rlm.frames {id}`), answered as an inspection.
                     rlm_views::focus::FocusEvent::LoadTrace { key, trace_id } => self.send(LaneCommand::RlmInspect {
                         tag: format!("trace:{key}").to_string(),
@@ -3536,7 +3600,7 @@ impl App {
             }
             Some(Panel::Sessions(selector)) => match selector.handle_input(data) {
                 Some(SessionAction::Selected(path)) => {
-                    self.panel = None;
+                    self.set_panel(None);
                     if Some(&path) == self.session_file.as_ref() {
                         self.show_status("Already in this session");
                     } else {
@@ -3544,7 +3608,7 @@ impl App {
                         self.send(LaneCommand::Resume(path.to_string()));
                     }
                 }
-                Some(SessionAction::Cancelled) => self.panel = None,
+                Some(SessionAction::Cancelled) => self.set_panel(None),
                 Some(SessionAction::Delete(path)) => self.send(LaneCommand::DeleteSession(path.to_string())),
                 Some(SessionAction::LoadAll) => self.send(LaneCommand::ListAllSessions),
                 Some(SessionAction::Rename(path, name)) => {
@@ -3561,11 +3625,11 @@ impl App {
             },
             Some(Panel::PiSessions(selector)) => match selector.handle_input(data) {
                 Some(SessionAction::Selected(path)) => {
-                    self.panel = None;
+                    self.set_panel(None);
                     self.show_status(&format!("Importing {path}…"));
                     self.send(LaneCommand::ImportPi(path.to_string()));
                 }
-                Some(SessionAction::Cancelled) => self.panel = None,
+                Some(SessionAction::Cancelled) => self.set_panel(None),
                 Some(SessionAction::LoadAll) => self.send(LaneCommand::ListAllPiSessions),
                 Some(SessionAction::Delete(_) | SessionAction::Rename(..)) => {
                     selector.set_status(true, "Pi sessions are read-only here", Duration::from_secs(3));
@@ -3575,14 +3639,14 @@ impl App {
             Some(Panel::Login(selector, options, auth_type)) => match selector.handle_input(data) {
                 Some(Ok((id, kind))) => {
                     let option = options.iter().find(|o| o.id == id && o.auth_type == kind).cloned();
-                    self.panel = None;
+                    self.set_panel(None);
                     if let Some(option) = option {
                         self.start_login(option);
                     }
                 }
                 Some(Err(())) => {
                     let (options, typed) = (options.clone(), auth_type.is_some());
-                    self.panel = None;
+                    self.set_panel(None);
                     if typed {
                         self.ask_login_method(options, false);
                     }
@@ -3595,34 +3659,36 @@ impl App {
                     self.update_session_models(enabled);
                 }
                 crate::scoped_models::ScopedAction::Persist(enabled) => self.persist_scope(enabled),
-                crate::scoped_models::ScopedAction::Cancel => self.panel = None,
+                crate::scoped_models::ScopedAction::Cancel => self.set_panel(None),
                 crate::scoped_models::ScopedAction::None => {}
             },
-            Some(Panel::OAuthLogin(dialog)) => match dialog.handle_input(data) {
-                crate::login_dialog::DialogAction::Answer(answer) => match self.api_login.as_mut() {
-                    Some((login, _)) => {
-                        let steps = login.answer(answer);
+            Some(Panel::OAuthLogin(dialog, flow)) => match dialog.handle_input(data) {
+                crate::login_dialog::DialogAction::Answer(answer) => match flow {
+                    LoginFlow::ApiKey(login) => {
+                        let steps = login.0.answer(answer);
                         self.api_login_steps(steps);
                     }
-                    None => self.send(LaneCommand::LoginReply(Some(answer))),
-                },
-                crate::login_dialog::DialogAction::Cancel => {
-                    // Esc stops the login and closes its dialog silently (`Login cancelled`).
-                    self.panel = None;
-                    if self.api_login.take().is_none() {
-                        self.send(LaneCommand::LoginReply(None));
+                    LoginFlow::Client(id) => {
+                        let id = *id;
+                        self.send(LaneCommand::LoginReply {
+                            id,
+                            answer: Some(answer),
+                        });
                     }
-                }
+                },
+                // Esc stops the login and closes its dialog silently (`Login cancelled`): dismissing the dialog
+                // cancels its login.
+                crate::login_dialog::DialogAction::Cancel => self.set_panel(None),
                 crate::login_dialog::DialogAction::None => {}
             },
             Some(Panel::LoginPrompt { provider, input, .. }) => {
                 if self.keys.matches(data, "tui.select.cancel") {
                     // Esc closes the login silently.
-                    self.panel = None;
+                    self.set_panel(None);
                 } else if self.keys.matches(data, "tui.select.confirm") {
                     let key = input.value().to_string();
                     let id = provider.id.clone();
-                    self.panel = None;
+                    self.set_panel(None);
                     self.send(LaneCommand::SaveApiKey {
                         provider: id.to_string(),
                         key: key.to_string(),
@@ -3633,15 +3699,15 @@ impl App {
             }
             Some(Panel::Trust(selector)) => match selector.handle_input(data) {
                 Some(crate::trust_selector::TrustAction::Selected { trusted, updates }) => {
-                    self.panel = None;
+                    self.set_panel(None);
                     self.send(LaneCommand::SetProjectTrust { trusted, updates });
                 }
-                Some(crate::trust_selector::TrustAction::Cancelled) => self.panel = None,
+                Some(crate::trust_selector::TrustAction::Cancelled) => self.set_panel(None),
                 None => {}
             },
             Some(Panel::Logout(selector)) => match selector.handle_input(data) {
                 Some(Ok((id, kind))) => {
-                    self.panel = None;
+                    self.set_panel(None);
                     let name = crate::selectors::provider_name(&id);
                     let done = if kind == "oauth" {
                         format!("Logged out of {name}")
@@ -3655,7 +3721,7 @@ impl App {
                         done: done.to_string(),
                     });
                 }
-                Some(Err(())) => self.panel = None,
+                Some(Err(())) => self.set_panel(None),
                 None => {}
             },
             Some(Panel::Settings(selector)) => {
@@ -3664,10 +3730,10 @@ impl App {
             }
             Some(Panel::Tree(tree)) => match tree.handle_input(data) {
                 Some(TreeAction::Selected(entry)) => {
-                    self.panel = None;
+                    self.set_panel(None);
                     self.tree_selected(entry);
                 }
-                Some(TreeAction::Cancelled) => self.panel = None,
+                Some(TreeAction::Cancelled) => self.set_panel(None),
                 Some(TreeAction::Copy(text)) => match text {
                     None => self.show_status("Error: Selected entry has no text to copy"),
                     Some(text) => self.copy_to_clipboard(&text, "Copied selected message to clipboard"),
@@ -3677,7 +3743,7 @@ impl App {
                     label: label.clone(),
                 }),
                 Some(TreeAction::RestoreFiles(entry)) => {
-                    self.panel = None;
+                    self.set_panel(None);
                     self.ask_restore(entry, false);
                 }
                 None => {}
@@ -3690,7 +3756,8 @@ impl App {
                     _ => return,
                 };
                 let id = id.clone();
-                self.panel = None;
+                // Answered here: taken, not dismissed (which would cancel it).
+                self.panel.take();
                 self.answer_extension_dialog(&id, answer);
             }
             Some(Panel::TextEditor { dialog, .. }) => {
@@ -3726,18 +3793,18 @@ impl App {
             Some(Panel::ShareLoader(loader)) => {
                 // `loader.onAbort`: the upload stops and the loader closes.
                 if loader.handle_input(data) {
-                    self.panel = None;
+                    self.set_panel(None);
                     self.send(LaneCommand::CancelShare);
                     self.show_status("Share cancelled");
                 }
             }
             Some(Panel::HistorySearch(search)) => match search.handle_input(data) {
                 HistorySearchEvent::Accept(text) => {
-                    self.panel = None;
+                    self.set_panel(None);
                     self.editor.set_text(&text);
                     self.update_editor_border();
                 }
-                HistorySearchEvent::Cancel => self.panel = None,
+                HistorySearchEvent::Cancel => self.set_panel(None),
                 HistorySearchEvent::None => {}
             },
             None => {}
@@ -3842,7 +3909,11 @@ impl App {
             options,
             (!search.is_empty()).then_some(search),
         );
-        self.panel = Some(Panel::Login(Box::new(selector), all, auth_type.map(str::to_string)));
+        self.set_panel(Some(Panel::Login(
+            Box::new(selector),
+            all,
+            auth_type.map(str::to_string),
+        )));
         self.editor.focused = false;
     }
 
@@ -3881,11 +3952,11 @@ impl App {
             enabled,
             Some("Refreshing model catalogs…"),
         );
-        self.panel = Some(Panel::ScopedModels {
+        self.set_panel(Some(Panel::ScopedModels {
             selector: Box::new(selector),
             changed: false,
             session_scope,
-        });
+        }));
         self.editor.focused = false;
         self.send(LaneCommand::RefreshCatalog);
     }
@@ -3950,28 +4021,29 @@ impl App {
     }
 
     /// A step of the subscription login running in the client (`runProviderLogin`'s dialog).
-    fn login_step(&mut self, step: crate::lane::LoginStep) {
+    /// A step of login `id` reaches only that login's dialog.
+    fn login_step(&mut self, id: u64, step: crate::lane::LoginStep) {
         use crate::lane::LoginStep;
+        if let LoginStep::Started { name, reach } = step {
+            let dialog = crate::login_dialog::LoginDialog::new(self.keys.clone(), &name, &reach);
+            self.set_panel(Some(Panel::OAuthLogin(Box::new(dialog), LoginFlow::Client(id))));
+            self.editor.focused = false;
+            return;
+        }
+        let Some(Panel::OAuthLogin(dialog, LoginFlow::Client(shown))) = self.panel.as_mut() else {
+            return;
+        };
+        if *shown != id {
+            return;
+        }
         match step {
-            LoginStep::Started { name, reach } => {
-                let dialog = crate::login_dialog::LoginDialog::new(self.keys.clone(), &name, &reach);
-                self.panel = Some(Panel::OAuthLogin(Box::new(dialog)));
-                self.editor.focused = false;
-            }
-            LoginStep::Event(event) => {
-                if let Some(Panel::OAuthLogin(dialog)) = self.panel.as_mut() {
-                    dialog.show_event(&self.theme, &event);
-                }
-            }
-            LoginStep::Prompt(prompt) => {
-                if let Some(Panel::OAuthLogin(dialog)) = self.panel.as_mut() {
-                    dialog.show_prompt(&self.theme, &prompt);
-                }
-            }
+            LoginStep::Started { .. } => {}
+            LoginStep::Event(event) => dialog.show_event(&self.theme, &event),
+            LoginStep::Prompt(prompt) => dialog.show_prompt(&self.theme, &prompt),
+            // The login is over: its dialog closes without a reply.
             LoginStep::Finished => {
-                if matches!(self.panel, Some(Panel::OAuthLogin(_))) {
-                    self.panel = None;
-                }
+                self.panel.take();
+                self.next_extension_dialog();
             }
         }
     }
@@ -3981,7 +4053,9 @@ impl App {
         if option.auth_type == "oauth" {
             // The flow runs in the client; its dialog opens with its first step (`LoginStep::Started`), or the client
             // says it cannot sign in with an account.
+            self.last_login += 1;
             self.send(LaneCommand::OAuthLogin {
+                id: self.last_login,
                 provider: option.id,
                 name: option.name,
             });
@@ -3990,9 +4064,9 @@ impl App {
         // A provider whose key prompt has a choice or several fields (`apiKey.login`): its flow runs in the dialog.
         if let Some((login, steps)) = crate::api_key_login::ApiKeyLogin::start(&option.id) {
             let dialog = crate::login_dialog::LoginDialog::new(self.keys.clone(), &option.name, "local");
-            self.panel = Some(Panel::OAuthLogin(Box::new(dialog)));
+            let flow = LoginFlow::ApiKey(Box::new((login, option)));
+            self.set_panel(Some(Panel::OAuthLogin(Box::new(dialog), flow)));
             self.editor.focused = false;
-            self.api_login = Some((login, option));
             self.api_login_steps(steps);
             return;
         }
@@ -4000,11 +4074,11 @@ impl App {
             Some((method, true)) if option.generic_login => {
                 let mut input = tui::Input::new(self.keys.clone()).with_options(None, None, None, Some("•"));
                 input.focused = true;
-                self.panel = Some(Panel::LoginPrompt {
+                self.set_panel(Some(Panel::LoginPrompt {
                     provider: option,
                     method,
                     input: Box::new(input),
-                });
+                }));
                 self.editor.focused = false;
             }
             Some((method, false)) => self.show_status(&format!("{method} is configured outside Ultron.")),
@@ -4022,28 +4096,27 @@ impl App {
         for step in steps {
             match step {
                 Step::Event(event) => {
-                    if let Some(Panel::OAuthLogin(dialog)) = self.panel.as_mut() {
+                    if let Some(Panel::OAuthLogin(dialog, LoginFlow::ApiKey(_))) = self.panel.as_mut() {
                         dialog.show_event(&self.theme, &event);
                     }
                 }
                 Step::Prompt(prompt) => {
-                    if let Some(Panel::OAuthLogin(dialog)) = self.panel.as_mut() {
+                    if let Some(Panel::OAuthLogin(dialog, LoginFlow::ApiKey(_))) = self.panel.as_mut() {
                         dialog.show_prompt(&self.theme, &prompt);
                     }
                 }
                 Step::Done(credential) => {
-                    self.panel = None;
-                    if let Some((login, _)) = self.api_login.take() {
-                        self.send(LaneCommand::SaveCredential {
-                            provider: login.provider().to_string(),
-                            credential,
-                        });
+                    if let Some(Panel::OAuthLogin(_, LoginFlow::ApiKey(login))) = &self.panel {
+                        let provider = login.0.provider().to_string();
+                        self.set_panel(None);
+                        self.send(LaneCommand::SaveCredential { provider, credential });
                     }
                 }
                 Step::Failed(error) => {
-                    self.panel = None;
-                    if let Some((_, option)) = self.api_login.take() {
-                        self.show_status(&format!("Error: Failed to save API key for {}: {error}", option.name));
+                    if let Some(Panel::OAuthLogin(_, LoginFlow::ApiKey(login))) = &self.panel {
+                        let name = login.1.name.clone();
+                        self.set_panel(None);
+                        self.show_status(&format!("Error: Failed to save API key for {name}: {error}"));
                     }
                 }
             }
@@ -4117,6 +4190,12 @@ impl App {
     /// `#refreshRlm`: poll the read-only inspections the RLM views draw from (the subagents, recent frames, the
     /// kernel pool, the context state, retained instances); answers arrive as lane events.
     fn refresh_rlm(&mut self) {
+        if self.rlm_round {
+            // Polled again as soon as the round in flight is answered.
+            self.rlm_polled = None;
+            return;
+        }
+        self.rlm_round = true;
         self.rlm_polled = Some(self.now());
         // The `rlm.spawn` subagents: the Rust worker keeps them in a task journal of their own, which
         // `agents.status` does not list (TypeScript's one task host lists both).
@@ -4143,6 +4222,7 @@ impl App {
         let interval = if live { RLM_POLL_VISIBLE } else { RLM_POLL_HIDDEN };
         let now = self.now();
         if self.session_id.is_none()
+            || self.rlm_round
             || self
                 .rlm_polled
                 .is_some_and(|last| now.saturating_duration_since(last) < interval)
@@ -4207,6 +4287,7 @@ impl App {
         }
         // A worker without `rlm.detached` lists no detached cells.
         if tag == "detached" {
+            self.rlm_round = false;
             self.detached_cells = result
                 .ok()
                 .map(|v| rlm_views::running::parse_detached_cells(&v))
@@ -4352,7 +4433,7 @@ impl App {
         if matches!(self.panel, Some(Panel::RlmFocus(_))) {
             return;
         }
-        self.panel = Some(Panel::RlmFocus(Box::new(rlm_views::focus::RlmGraphFocus::new())));
+        self.set_panel(Some(Panel::RlmFocus(Box::new(rlm_views::focus::RlmGraphFocus::new()))));
         self.editor.focused = false;
         self.refresh_rlm();
     }
@@ -4429,7 +4510,7 @@ impl App {
             self.home.as_deref().unwrap_or(""),
         );
         self.tree = Some((tree, leaf));
-        self.panel = Some(Panel::Tree(Box::new(selector)));
+        self.set_panel(Some(Panel::Tree(Box::new(selector))));
         self.editor.focused = false;
     }
 
@@ -4524,7 +4605,7 @@ impl App {
         }
         let mut search = PromptHistorySearch::new(history, Rc::clone(&self.theme), self.keys.clone(), "");
         search.set_focused(true);
-        self.panel = Some(Panel::HistorySearch(Box::new(search)));
+        self.set_panel(Some(Panel::HistorySearch(Box::new(search))));
         self.editor.focused = false;
     }
 
@@ -4858,7 +4939,7 @@ impl App {
             self.home.as_deref().unwrap_or(""),
             now,
         );
-        self.panel = Some(Panel::Sessions(Box::new(selector)));
+        self.set_panel(Some(Panel::Sessions(Box::new(selector))));
         self.editor.focused = false;
     }
 
@@ -4875,7 +4956,7 @@ impl App {
             now,
         );
         selector.set_show_rename_hint(false);
-        self.panel = Some(Panel::PiSessions(Box::new(selector)));
+        self.set_panel(Some(Panel::PiSessions(Box::new(selector))));
         self.editor.focused = false;
     }
 
@@ -4890,11 +4971,20 @@ impl App {
             list.set_selected_index(index);
         }
         self.editor.focused = false;
-        self.selection = Some(Selection {
+        // A `/mcp` select dialog this selection replaces is answered cancelled.
+        if let Some(Selection {
+            purpose: Purpose::ExtensionSelect { id },
+            ..
+        }) = self.selection.replace(Selection {
             title: title.to_string(),
             list,
             purpose,
-        });
+        }) {
+            self.send(LaneCommand::ExtensionUiRespond {
+                id,
+                answer: serde_json::json!({ "cancelled": true }),
+            });
+        }
     }
 
     fn handle_select_input(&mut self, data: &str) {
@@ -4939,10 +5029,10 @@ impl App {
                                 None,
                             );
                             self.editor.focused = false;
-                            self.panel = Some(Panel::TextEditor {
+                            self.set_panel(Some(Panel::TextEditor {
                                 entry,
                                 dialog: Box::new(dialog),
-                            });
+                            }));
                         }
                         choice => self.navigate(&entry, choice == "Summarize", None),
                     },
@@ -5019,6 +5109,8 @@ impl App {
             },
             _ => {}
         }
+        // A `/mcp` dialog queued behind one this selection displaced shows now.
+        self.next_extension_dialog();
     }
 
     fn last_assistant_text(&self) -> Option<String> {
@@ -5214,7 +5306,7 @@ impl App {
             (None, Some(Panel::Logout(selector))) => selector.render(width),
             (None, Some(Panel::Trust(selector))) => selector.render(width),
             (None, Some(Panel::Login(selector, ..))) => selector.render(width),
-            (None, Some(Panel::OAuthLogin(dialog))) => dialog.render(&self.theme, width),
+            (None, Some(Panel::OAuthLogin(dialog, _))) => dialog.render(&self.theme, width),
             (None, Some(Panel::ScopedModels { selector, .. })) => selector.render(width),
             (
                 None,

@@ -229,7 +229,7 @@ pub fn zero_times(value: &Value) -> Value {
 pub fn normalize_journal(text: &str) -> Value {
     let mut lines = text.lines().filter(|l| !l.is_empty());
     let mut header: Value = serde_json::from_str(lines.next().unwrap()).unwrap();
-    let mut transactions: Vec<Vec<Value>> = lines
+    let transactions: Vec<Vec<Value>> = lines
         .map(|line| match serde_json::from_str::<Value>(line).unwrap() {
             Value::Array(items) => items,
             one => vec![one],
@@ -250,6 +250,27 @@ pub fn normalize_journal(text: &str) -> Value {
         })
         .filter(|records| !records.is_empty())
         .collect();
+    // Rust commits the error answer a run ends with when it arrives, with its own `assistant.failed` state; the
+    // TypeScript drive commits the same writes first in the run's terminal transaction. Folded back into that one.
+    let mut folded: Vec<Vec<Value>> = Vec::new();
+    let mut held: Vec<Value> = Vec::new();
+    for mut records in transactions {
+        let failed = records
+            .iter()
+            .position(|r| r["namespace"] == "ultron.op.state" && r["value"]["at"] == "assistant.failed");
+        if let Some(index) = failed {
+            records.remove(index);
+            held.append(&mut records);
+            continue;
+        }
+        if !held.is_empty() {
+            held.append(&mut records);
+            records = std::mem::take(&mut held);
+        }
+        folded.push(records);
+    }
+    folded.extend((!held.is_empty()).then_some(held));
+    let mut transactions = folded;
     let seqs: Vec<i64> = transactions
         .iter()
         .flatten()

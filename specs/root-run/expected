@@ -1,0 +1,5 @@
+code EndsOnce=holds NotFailedWhenFinished=holds NoLostRun=holds NoInventedRun=holds DeliveredOnce=breaks NoLostMessage=holds
+code_faults EndsOnce=breaks NotFailedWhenFinished=breaks NoLostRun=breaks NoInventedRun=holds
+code_legacy NotFailedWhenFinished=breaks EndsOnce=holds NoLostRun=holds
+fixed EndsOnce=holds NotFailedWhenFinished=holds NoLostRun=holds NoInventedRun=holds DeliveredOnce=holds NoLostMessage=holds
+fixed_legacy EndsOnce=holds NotFailedWhenFinished=holds NoLostRun=holds

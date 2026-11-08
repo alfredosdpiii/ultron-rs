@@ -739,6 +739,9 @@ pub fn run(args: &[String], package: PathBuf) -> Result<(), String> {
     // The actor reports no event while it opens; the transcript state starts at its snapshot.
     let lane_slot: Arc<std::sync::OnceLock<Arc<Mutex<Lane>>>> = Arc::new(std::sync::OnceLock::new());
     let sink_lane = lane_slot.clone();
+    // The actor's input, for the lane to ask it for a fresh snapshot after a navigation.
+    let core_slot: Arc<OnceLock<Sender<Input>>> = Arc::new(OnceLock::new());
+    let sink_core = core_slot.clone();
     // The client this worker is started for serves the dialog bridge (Pi's `extensionMode` tui or rpc).
     let ui =
         crate::extension_ui::ExtensionUiBridge::new(matches!(options.mode.as_str(), "interactive" | "tui" | "rpc"));
@@ -798,11 +801,28 @@ pub fn run(args: &[String], package: PathBuf) -> Result<(), String> {
             if event["type"] == "session_name" {
                 names.replace(json!({"name": event["name"]}));
             } else if let Some(lane) = sink_lane.get() {
-                lane.lock().unwrap_or_else(|e| e.into_inner()).publish(event);
+                let ended = event["runId"].clone();
+                let reduction = lane.lock().unwrap_or_else(|e| e.into_inner()).publish(event);
+                // A navigation ended: its events cannot be folded, so the lane takes the session's snapshot (asked
+                // after the events already queued, so it includes them).
+                if reduction.is_some()
+                    && let Some(core) = sink_core.get()
+                {
+                    let lane = lane.clone();
+                    let _ = core.send(Input::Op(
+                        Op::LaneSnapshot,
+                        Box::new(move |result| {
+                            if let Ok(Some(fresh)) = result {
+                                lane.lock().unwrap_or_else(|e| e.into_inner()).rebase(fresh, &ended);
+                            }
+                        }),
+                    ));
+                }
             }
         }),
     )
     .map_err(fail)?;
+    let _ = core_slot.set(core.clone());
     let lane = lane_slot
         .get_or_init(|| Arc::new(Mutex::new(Lane::new(summary["snapshot"].clone()))))
         .clone();
@@ -1017,7 +1037,7 @@ fn demand(shared: &Arc<Shared>, lifecycle: &Arc<Lifecycle>, command: &Value) {
                 let _ = std::fs::write(std::path::Path::new(&dir).join("rejected"), &message);
             }
             json!({"type": "demand_rejected", "token": shared.token, "sessionKey": shared.session_key,
-            "requestId": command["requestId"], "message": message})
+            "requestId": command["requestId"], "attachmentId": attachment, "attached": attached, "message": message})
         }
         Ok(()) => json!({"type": "demand_applied", "token": shared.token, "sessionKey": shared.session_key,
             "requestId": command["requestId"], "attachmentId": attachment, "attached": attached}),

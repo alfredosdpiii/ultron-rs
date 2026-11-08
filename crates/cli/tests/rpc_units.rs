@@ -298,3 +298,43 @@ fn cli_rpc_watch_events_become_rpc_events() {
     );
     assert!(translate(json!({"type": "session_name", "name": "x"})).is_empty());
 }
+
+/// A run the worker lost before its `run_start` (prompted, or attached while streaming) still ends as failed when
+/// the link rejoins or is lost; before, only a run whose `run_start` id was seen did, so an RPC client stayed busy
+/// and an ACP prompt was never answered.
+#[test]
+fn cli_rpc_run_lost_before_run_start_ends_failed() {
+    use cli::rpc::remote::RunTrack;
+    let connection = |state: &str| json!({"type": "connection", "state": state});
+    let run = |events: &[Value]| {
+        events
+            .iter()
+            .fold((RunTrack::Running, Vec::new()), |(track, mut ends), event| {
+                let (next, end) = track.next(event);
+                ends.push(end);
+                (next, ends)
+            })
+    };
+    // Prompted, the worker lost, the link rejoined: the failed end is due once.
+    let (track, ends) = run(&[
+        connection("reconnecting"),
+        connection("rejoined"),
+        connection("rejoined"),
+    ]);
+    assert_eq!((track, ends), (RunTrack::Idle, vec![false, true, false]));
+    // The link gave up: the run ends too.
+    let (track, ends) = run(&[connection("reconnecting"), connection("lost")]);
+    assert_eq!((track, ends), (RunTrack::Idle, vec![false, true]));
+    // The run's own end (or a new run) seen meanwhile settles it: no synthetic end.
+    let run_end = json!({"type": "run_end", "status": "completed"});
+    let (track, ends) = run(&[connection("reconnecting"), run_end, connection("rejoined")]);
+    assert_eq!((track, ends), (RunTrack::Idle, vec![false, false, false]));
+    let run_start = json!({"type": "run_start", "runId": "r2"});
+    let (track, ends) = run(&[connection("reconnecting"), run_start, connection("rejoined")]);
+    assert_eq!((track, ends), (RunTrack::Running, vec![false, false, false]));
+    // Idle: a reconnect ends nothing.
+    assert_eq!(
+        RunTrack::Idle.next(&connection("reconnecting")),
+        (RunTrack::Idle, false)
+    );
+}

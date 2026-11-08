@@ -109,6 +109,7 @@ fn login_in(
     let saved_tx = Mutex::new(saved_tx);
     cli::tui_login::start_with(
         env,
+        1,
         provider.into(),
         provider.into(),
         send,
@@ -125,9 +126,9 @@ fn login_in(
     let mut url = String::new();
     loop {
         match rx.recv_timeout(guard).expect("the login's next step within 120 s") {
-            LaneEvent::Login(LoginStep::Event(LoginEvent::AuthUrl { url: shown, .. })) => url = shown,
-            LaneEvent::Login(LoginStep::Prompt(prompt)) => slot.reply(Some(answer(&url, &prompt))),
-            LaneEvent::Login(LoginStep::Finished) => break,
+            LaneEvent::Login(_, LoginStep::Event(LoginEvent::AuthUrl { url: shown, .. })) => url = shown,
+            LaneEvent::Login(_, LoginStep::Prompt(prompt)) => slot.reply(1, Some(answer(&url, &prompt))),
+            LaneEvent::Login(_, LoginStep::Finished) => break,
             LaneEvent::Status(status) => panic!("{provider}: {status}"),
             _ => {}
         }
@@ -302,6 +303,7 @@ fn cli_tui_login_browser_callback_listens_on_the_chosen_port() {
     let slot = Arc::new(cli::tui_login::LoginSlot::default());
     cli::tui_login::start_with(
         env,
+        1,
         "anthropic".into(),
         "Anthropic".into(),
         send,
@@ -318,8 +320,8 @@ fn cli_tui_login_browser_callback_listens_on_the_chosen_port() {
             .recv_timeout(Duration::from_secs(120))
             .expect("the login's next step within 120 s")
         {
-            LaneEvent::Login(LoginStep::Event(LoginEvent::AuthUrl { url: shown, .. })) => url = shown,
-            LaneEvent::Login(LoginStep::Prompt(LoginPrompt::ManualCode { .. })) => {
+            LaneEvent::Login(_, LoginStep::Event(LoginEvent::AuthUrl { url: shown, .. })) => url = shown,
+            LaneEvent::Login(_, LoginStep::Prompt(LoginPrompt::ManualCode { .. })) => {
                 let state = query(&url, "state");
                 let mut stream = std::net::TcpStream::connect(("127.0.0.1", port)).expect("the callback listens there");
                 std::io::Write::write_all(
@@ -328,7 +330,7 @@ fn cli_tui_login_browser_callback_listens_on_the_chosen_port() {
                 )
                 .unwrap();
             }
-            LaneEvent::Login(LoginStep::Finished) => break,
+            LaneEvent::Login(_, LoginStep::Finished) => break,
             LaneEvent::Status(status) => panic!("{status}"),
             _ => {}
         }

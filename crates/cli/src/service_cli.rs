@@ -199,7 +199,11 @@ fn manage(action: &str, env: &Env, out: &mut dyn Write, err: &mut dyn Write) -> 
             let enabled = run_systemctl(&binary, env, &["daemon-reload"])
                 .and_then(|_| run_systemctl(&binary, env, &["enable", "--now", &name]));
             if let Err(error) = enabled {
+                // `enable --now` may have enabled the unit before its start failed: undo the enable (its
+                // `default.target.wants` link) before the file goes, and reload so systemd forgets the unit.
+                let _ = run_systemctl(&binary, env, &["disable", &name]);
                 let _ = std::fs::remove_file(&unit);
+                let _ = run_systemctl(&binary, env, &["daemon-reload"]);
                 writeln!(err, "{error}").map_err(io)?;
                 writeln!(err, "The unit was not installed.").map_err(io)?;
                 return Ok(1);

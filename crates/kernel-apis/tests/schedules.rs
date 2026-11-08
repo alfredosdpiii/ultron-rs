@@ -236,3 +236,177 @@ fn kernel_apis_schedules_rejects_invalid_documents() {
     );
     assert!(module.start(&fake).is_ok());
 }
+
+/// B-report #11: `goals.verify` waits for its checks with the lock released. A goal paused meanwhile is not moved
+/// to achieved by the late result (paused -> achieved without a resume); the round is still recorded.
+#[test]
+fn kernel_apis_goals_verify_does_not_achieve_a_goal_paused_while_its_checks_ran() {
+    struct Pausing {
+        inner: FakeTasks,
+        module: std::sync::OnceLock<Arc<SchedulesModule>>,
+        goal: Mutex<Option<Value>>,
+    }
+    impl TaskHost for Pausing {
+        fn caller_task_id(&self, lane: &str) -> Option<String> {
+            self.inner.caller_task_id(lane)
+        }
+        fn task_lane(&self, task_id: &str) -> Option<String> {
+            self.inner.task_lane(task_id)
+        }
+        fn strategy(&self, definition: &str) -> Result<String, String> {
+            self.inner.strategy(definition)
+        }
+        fn tasks(&self) -> Result<Vec<Value>, String> {
+            self.inner.tasks()
+        }
+        fn spawn(&self, request: &Value, parent: Option<&str>) -> Result<Value, String> {
+            self.inner.spawn(request, parent)
+        }
+        fn result(&self, task_id: &str) -> Result<Value, String> {
+            if let Some(id) = jsrt::sync::lock(&self.goal).take() {
+                let module = self.module.get().unwrap();
+                module
+                    .handle("goals.pause", json!({"id": id}).as_object().unwrap(), None, &self.inner)
+                    .unwrap();
+            }
+            self.inner.result(task_id)
+        }
+        fn cancel(&self, task_id: &str, reason: &str) -> Result<Value, String> {
+            self.inner.cancel(task_id, reason)
+        }
+        fn steer(&self, task_id: &str, message: &str) -> Result<bool, String> {
+            self.inner.steer(task_id, message)
+        }
+        fn now(&self) -> i64 {
+            self.inner.now()
+        }
+    }
+    let clock = Arc::new(AtomicI64::new(FIXED_NOW));
+    let (module, _, _) = direct(&clock);
+    let module = Arc::new(module);
+    let host = Pausing {
+        inner: FakeTasks::new(clock, Vec::new()),
+        module: std::sync::OnceLock::new(),
+        goal: Mutex::new(None),
+    };
+    let _ = host.module.set(module.clone());
+    let call = |kind: &str, payload: Value| module.handle(kind, payload.as_object().unwrap(), None, &host);
+    let goal = call(
+        "goals.create",
+        json!({"title": "ship", "required_checks": ["pass-check@1"]}),
+    )
+    .unwrap();
+    *jsrt::sync::lock(&host.goal) = Some(goal["id"].clone());
+    let verified = call("goals.verify", json!({"id": goal["id"]})).unwrap();
+    assert_eq!(verified["verification"]["status"], "achieved");
+    assert_eq!(verified["state"], "paused");
+}
+
+/// B-report #11: an older round that passes first, then a newer round that does not: the goal's state follows the
+/// latest round (active again), never `achieved` beside a verification that says `unachieved`.
+#[test]
+fn kernel_apis_goals_verify_state_follows_the_latest_round() {
+    /// Round 1's check passes once round 2 is admitted; round 2's fails, once round 1 has been recorded.
+    struct Rounds {
+        inner: FakeTasks,
+        module: std::sync::OnceLock<Arc<SchedulesModule>>,
+        goal: Value,
+        newer: Mutex<Option<std::thread::JoinHandle<Value>>>,
+        first_done: (Mutex<bool>, std::sync::Condvar),
+    }
+    impl TaskHost for Rounds {
+        fn caller_task_id(&self, lane: &str) -> Option<String> {
+            self.inner.caller_task_id(lane)
+        }
+        fn task_lane(&self, task_id: &str) -> Option<String> {
+            self.inner.task_lane(task_id)
+        }
+        fn strategy(&self, definition: &str) -> Result<String, String> {
+            self.inner.strategy(definition)
+        }
+        fn tasks(&self) -> Result<Vec<Value>, String> {
+            self.inner.tasks()
+        }
+        fn spawn(&self, request: &Value, parent: Option<&str>) -> Result<Value, String> {
+            self.inner.spawn(request, parent)
+        }
+        fn result(&self, task_id: &str) -> Result<Value, String> {
+            let key = jsrt::sync::lock(&self.inner.tasks)
+                .iter()
+                .find(|task| task["id"] == task_id)
+                .map(|task| task["key"].as_str().unwrap_or_default().to_string())
+                .unwrap_or_default();
+            if key.contains(":verify:1:") {
+                // Round 2 is admitted before round 1 is recorded.
+                while jsrt::sync::lock(&self.inner.tasks).len() < 2 {
+                    std::thread::yield_now();
+                }
+                return Ok(json!({"status": "succeeded", "value": {"passed": true}}));
+            }
+            let mut done = jsrt::sync::lock(&self.first_done.0);
+            while !*done {
+                done = self.first_done.1.wait(done).unwrap();
+            }
+            Ok(json!({"status": "succeeded", "value": {"passed": false}}))
+        }
+        fn cancel(&self, task_id: &str, reason: &str) -> Result<Value, String> {
+            self.inner.cancel(task_id, reason)
+        }
+        fn steer(&self, task_id: &str, message: &str) -> Result<bool, String> {
+            self.inner.steer(task_id, message)
+        }
+        fn now(&self) -> i64 {
+            self.inner.now()
+        }
+    }
+    let clock = Arc::new(AtomicI64::new(FIXED_NOW));
+    let (module, _, store) = direct(&clock);
+    let module = Arc::new(module);
+    let goal = module
+        .handle(
+            "goals.create",
+            json!({"title": "ship", "required_checks": ["any-check@1"]})
+                .as_object()
+                .unwrap(),
+            None,
+            &FakeTasks::new(clock.clone(), Vec::new()),
+        )
+        .unwrap();
+    let host = Arc::new(Rounds {
+        inner: FakeTasks::new(clock, Vec::new()),
+        module: std::sync::OnceLock::new(),
+        goal: goal["id"].clone(),
+        newer: Mutex::new(None),
+        first_done: (Mutex::new(false), std::sync::Condvar::new()),
+    });
+    let _ = host.module.set(module.clone());
+    let verify = |host: &Rounds| {
+        host.module.get().unwrap().handle(
+            "goals.verify",
+            json!({"id": host.goal}).as_object().unwrap(),
+            None,
+            host,
+        )
+    };
+    let first = {
+        // Round 2 starts on a thread of its own once round 1 has admitted its check.
+        let racing = host.clone();
+        let watcher = std::thread::spawn(move || {
+            while jsrt::sync::lock(&racing.inner.tasks).is_empty() {
+                std::thread::yield_now();
+            }
+            verify(&racing).unwrap()
+        });
+        *jsrt::sync::lock(&host.newer) = Some(watcher);
+        verify(&host).unwrap()
+    };
+    assert_eq!(first["verification"]["round"], 1);
+    *jsrt::sync::lock(&host.first_done.0) = true;
+    host.first_done.1.notify_all();
+    let second = jsrt::sync::lock(&host.newer).take().unwrap().join().unwrap();
+    assert_eq!(second["verification"]["round"], 2);
+    assert_eq!(second["verification"]["status"], "unachieved");
+    assert_eq!(second["state"], "active");
+    let saved = store.read().unwrap().unwrap();
+    assert_eq!(saved["goals"][0]["state"], "active");
+}

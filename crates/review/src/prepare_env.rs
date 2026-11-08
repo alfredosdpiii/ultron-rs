@@ -12,6 +12,9 @@
 //! - A cached or listed record whose fields have the wrong types reads them as empty, where the TypeScript would throw
 //!   later; an entry of `mise ls --json` whose `version` is not a string never matches.
 //! - A cache directory that cannot be written is an `Err` with the OS error's text, not Node's error message.
+//! - One environment is built at a time and never removed while in use: `<cache>/envs/<hash>.lock` is held
+//!   exclusively (`flock`) to build, and shared by every [`Prepared`] handed out (its [`EnvLease`]) until it is
+//!   dropped, by any process. A build that waited for another one uses what that one built, partial or not.
 
 use std::collections::{BTreeMap, HashMap};
 use std::fs;
@@ -60,6 +63,22 @@ pub struct Prepared {
     pub failures: Vec<String>,
     pub ms: i64,
     pub json: Value,
+    /// Keeps the environment from being rebuilt (removed) while it is in use.
+    pub lease: EnvLease,
+}
+
+/// A shared hold on `<cache>/envs/<hash>.lock`: a rebuild of that environment waits until every holder is dropped,
+/// including one held by the thread that asks for the rebuild. Clones share the hold. It is not part of what a
+/// [`Prepared`] is, so every lease compares equal.
+#[derive(Debug, Clone, Default)]
+pub struct EnvLease {
+    _held: Option<std::sync::Arc<fs::File>>,
+}
+
+impl PartialEq for EnvLease {
+    fn eq(&self, _: &Self) -> bool {
+        true
+    }
 }
 
 impl Prepared {
@@ -96,6 +115,7 @@ impl Prepared {
             failures: strings("failures"),
             ms: json.get("ms").and_then(Value::as_i64).unwrap_or(0),
             json,
+            lease: EnvLease::default(),
         }
     }
 
@@ -108,6 +128,7 @@ impl Prepared {
             prepared: self.prepared.clone(),
             failures: self.failures.clone(),
             toolchain: self.toolchain.iter().map(|entry| entry.path.clone()).collect(),
+            lease: self.lease.clone(),
         }
     }
 }
@@ -330,11 +351,7 @@ fn io_error(what: &str, path: &str, error: std::io::Error) -> String {
 
 /// The cached record of `dir` when it says it succeeded.
 fn ok_record(record_path: &str) -> Option<Map<String, Value>> {
-    let text = fs::read_to_string(record_path).ok()?;
-    match serde_json::from_str::<Value>(&text) {
-        Ok(Value::Object(record)) if jsrt::value::truthy(record.get("ok")) => Some(record),
-        _ => None,
-    }
+    any_record(record_path).filter(|record| jsrt::value::truthy(record.get("ok")))
 }
 
 /// Prepare the environment of `repo_dir`: toolchains, then the Python virtualenv and/or the Node modules, into
@@ -348,15 +365,42 @@ pub fn prepare_environment(repo_dir: &str, options: &PrepareOptions) -> Result<P
     let hash = environment_hash(repo, options.python.as_deref());
     let dir = jsrt::path::join(&[&options.cache_dir, "envs", &hash]);
     let record_path = jsrt::path::join(&[&dir, "toolchain.json"]);
-    if !options.force
-        && exists(&record_path)
-        && let Some(mut record) = ok_record(&record_path)
-    {
+    let lock = open_env_lock(&options.cache_dir, &hash)?;
+    let locked = |result: std::io::Result<()>| result.map_err(|error| io_error("cannot lock", &dir, error));
+    let cached = |mut record: Map<String, Value>, lock: fs::File| {
         record.insert("dir".into(), json!(dir));
         record.insert("hash".into(), json!(hash));
         record.insert("cached".into(), json!(true));
         record.insert("ms".into(), json!((options.now)() - started));
-        return Ok(Prepared::from_record(Value::Object(record)));
+        let mut prepared = Prepared::from_record(Value::Object(record));
+        prepared.lease = EnvLease {
+            _held: Some(std::sync::Arc::new(lock)),
+        };
+        prepared
+    };
+    locked(lock.lock_shared())?;
+    if !options.force
+        && exists(&record_path)
+        && let Some(record) = ok_record(&record_path)
+    {
+        return Ok(cached(record, lock));
+    }
+    // To rebuild, wait until no build runs and no review uses this environment.
+    let seen = fs::read(&record_path).ok();
+    locked(lock.unlock())?;
+    locked(lock.lock())?;
+    // Built by another review while this one waited: used as that one left it, partial or not.
+    if !options.force
+        && fs::read(&record_path).ok() != seen
+        && let Some(record) = any_record(&record_path).filter(|record| {
+            record
+                .get("prepared")
+                .and_then(Value::as_array)
+                .is_some_and(|p| !p.is_empty())
+        })
+    {
+        locked(lock.lock_shared())?;
+        return Ok(cached(record, lock));
     }
     match fs::remove_dir_all(&dir) {
         Ok(()) => {}
@@ -666,19 +710,37 @@ pub fn prepare_environment(repo_dir: &str, options: &PrepareOptions) -> Result<P
         "repo": repo_dir,
     });
     write_record(&record_path, &to_json_1(&record))?;
-    Ok(Prepared::from_record(record))
+    locked(lock.lock_shared())?;
+    let mut prepared = Prepared::from_record(record);
+    prepared.lease = EnvLease {
+        _held: Some(std::sync::Arc::new(lock)),
+    };
+    Ok(prepared)
 }
 
-fn write_record(path: &str, text: &str) -> Result<(), String> {
-    use std::io::Write;
-    use std::os::unix::fs::OpenOptionsExt;
+/// `<cache>/envs/<hash>.lock`, beside the environment so removing that leaves the lock alone.
+fn open_env_lock(cache_dir: &str, hash: &str) -> Result<fs::File, String> {
+    let envs = jsrt::path::join(&[cache_dir, "envs"]);
+    fs::create_dir_all(&envs).map_err(|error| io_error("cannot create", &envs, error))?;
+    let path = jsrt::path::join(&[&envs, &format!("{hash}.lock")]);
     fs::OpenOptions::new()
-        .write(true)
+        .append(true)
         .create(true)
-        .truncate(true)
-        .mode(0o644)
-        .open(path)
-        .and_then(|mut file| file.write_all(text.as_bytes()))
+        .open(&path)
+        .map_err(|error| io_error("cannot open", &path, error))
+}
+
+/// The record in `record_path`, whatever it says.
+fn any_record(record_path: &str) -> Option<Map<String, Value>> {
+    match serde_json::from_str::<Value>(&fs::read_to_string(record_path).ok()?) {
+        Ok(Value::Object(record)) => Some(record),
+        _ => None,
+    }
+}
+
+/// Written whole or not at all: a torn record would read as a failed build.
+fn write_record(path: &str, text: &str) -> Result<(), String> {
+    config::paths::write_atomic(Path::new(path), text.as_bytes(), 0o644)
         .map_err(|error| io_error("cannot write", path, error))
 }
 

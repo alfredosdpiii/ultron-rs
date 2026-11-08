@@ -119,9 +119,7 @@ impl CredentialStore {
                 .create(dir)
                 .map_err(other)?;
         }
-        if !self.path.exists() {
-            config::paths::write_private(&self.path, "{}").map_err(other)?;
-        }
+        config::paths::create_private_if_missing(&self.path, "{}").map_err(other)?;
         let _lock =
             config::lock::acquire(&config::lock::lock_path_for(&self.path), config::lock::SYNC).map_err(other)?;
         let current = std::fs::read_to_string(&self.path).ok();
@@ -240,6 +238,27 @@ impl ServerStore {
         })?;
         self.store.remember(state.as_ref());
         Ok(state)
+    }
+
+    /// Read, change and write the server's state under one hold of the file lock, so a change made by another
+    /// process between a read and a write (a refresh's rotated tokens) is never written back over. `change` gets the
+    /// state (legacy state taken over as [`ServerStore::load`] does); `None` from it leaves the file as it is.
+    pub fn update(&self, change: impl FnOnce(Option<Value>) -> Option<Value>) -> Result<(), OAuthError> {
+        let (key, legacy) = (&self.key, &self.legacy);
+        let written = self.store.with_lock(|current| {
+            let mut states = parse_states(current)?;
+            let state = match states.get(key) {
+                Some(state) => Some(state.clone()),
+                None => states.shift_remove(legacy),
+            };
+            let Some(next) = change(state) else {
+                return Ok((None, None));
+            };
+            states.insert(key.clone(), next.clone());
+            Ok((Some(next), Some(serialize_states(&states))))
+        })?;
+        self.store.remember(written.as_ref());
+        Ok(())
     }
 
     pub fn save(&self, state: &Value) -> Result<(), OAuthError> {

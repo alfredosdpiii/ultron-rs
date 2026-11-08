@@ -3,6 +3,7 @@
 
 use daemon::chord::State;
 use daemon::lane::Lane;
+use protocol::watch::reducer::Reduction;
 use serde_json::{Value, json};
 
 fn snapshot() -> Value {
@@ -42,7 +43,7 @@ fn lane_publish_folds_like_a_full_change_and_keeps_the_transcript() {
         json!({"type": "run_end", "runId": "r1", "lane": "main", "status": "completed", "tipId": "d", "endedAt": 2}),
     ];
     for event in events {
-        lane.publish(event.clone());
+        assert_eq!(lane.publish(event.clone()), None);
         full.change(|state| {
             protocol::watch::reducer::reduce_lane_snapshot(&mut state["snapshot"], &event);
             state["event"] = event.clone();
@@ -74,4 +75,48 @@ fn lane_publish_panic_keeps_the_transcript() {
         snapshot()["transcript"]
     );
     assert_eq!(state.read(|value| value["event"].clone()), json!("next"));
+}
+
+/// A navigation's end cannot be folded (the reducer asks for a rebase): the lane says so and takes the session's
+/// snapshot, so a client that subscribes later does not hydrate a navigation still open over the old branch. An
+/// operation that opened after the navigation, and what only the events know, stay.
+#[test]
+fn lane_publish_rebases_on_the_session_snapshot_after_a_navigation() {
+    let lane = Lane::new(snapshot());
+    let start = json!({"type": "navigation_start", "runId": "n1", "lane": "main", "targetId": "a", "startedAt": 1});
+    assert_eq!(lane.publish(start), None);
+    lane.transcript
+        .change(|state| state["snapshot"]["queues"] = json!([{"kind": "steer"}]));
+    let end = json!({"type": "navigation_end", "runId": "n1", "lane": "main", "status": "completed", "tipId": "a", "endedAt": 2});
+    assert_eq!(lane.publish(end), Some(Reduction::Rebase));
+    assert_eq!(lane.snapshot()["operation"]["kind"], "navigation");
+
+    let mut fresh = snapshot();
+    fresh["tipId"] = json!("a");
+    fresh["transcript"] = json!([snapshot()["transcript"][0].clone()]);
+    fresh["queues"] = json!([]);
+    lane.rebase(fresh.clone(), &json!("n1"));
+    let rebased = lane.snapshot();
+    assert_eq!(rebased["operation"], Value::Null);
+    assert_eq!(rebased["tipId"], "a");
+    assert_eq!(rebased["transcript"], fresh["transcript"]);
+    assert_eq!(rebased["queues"], json!([{"kind": "steer"}]));
+
+    // A run that started before the snapshot arrived stays open.
+    assert_eq!(
+        lane.publish(json!({"type": "navigation_start", "runId": "n2", "lane": "main", "startedAt": 3})),
+        None
+    );
+    assert_eq!(
+        lane.publish(
+            json!({"type": "navigation_end", "runId": "n2", "lane": "main", "status": "completed", "endedAt": 4})
+        ),
+        Some(Reduction::Rebase)
+    );
+    assert_eq!(
+        lane.publish(json!({"type": "run_start", "runId": "r2", "lane": "main", "startedAt": 5})),
+        None
+    );
+    lane.rebase(fresh, &json!("n2"));
+    assert_eq!(lane.snapshot()["operation"]["id"], "r2");
 }

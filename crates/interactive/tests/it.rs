@@ -102,3 +102,5 @@ mod transcript_picker;
 mod transcript_search;
 #[path = "trust_debug.rs"]
 mod trust_debug;
+#[path = "ui_slots.rs"]
+mod ui_slots;

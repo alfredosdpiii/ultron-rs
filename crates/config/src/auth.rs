@@ -39,9 +39,7 @@ impl LockedAuthFile {
                 .create(dir)
                 .map_err(|e| e.to_string())?;
         }
-        if !path.exists() {
-            crate::paths::write_private(path, "{}").map_err(|e| e.to_string())?;
-        }
+        crate::paths::create_private_if_missing(path, "{}").map_err(|e| e.to_string())?;
         let lock = acquire(&lock_path_for(path), AUTH_LOCK).map_err(|e| e.to_string())?;
         Ok(LockedAuthFile {
             path: path.to_path_buf(),
@@ -53,7 +51,7 @@ impl LockedAuthFile {
         fs::read_to_string(&self.path).map_err(|e| e.to_string())
     }
 
-    /// Replace the file's text (mode 0600).
+    /// Replace the file's text (mode 0600, atomically).
     pub fn write(&self, text: &str) -> Result<(), String> {
         crate::paths::write_private(&self.path, text).map_err(|e| e.to_string())
     }

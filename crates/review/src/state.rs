@@ -118,10 +118,63 @@ pub struct PullState {
     /// The commit a "could not review" comment was posted for.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub gave_up_sha: Option<String>,
+    /// When that comment was posted: a mention after it asks for another try of the same commit.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gave_up_at: Option<String>,
     #[serde(default)]
     pub findings: Vec<PostedFinding>,
     #[serde(flatten)]
     pub extra: IndexMap<String, Value>,
+}
+
+/// Where reviewing one head commit stands. A review that fails counts (a rate limit, a moved head or a ban is not a
+/// failure, and neither is a process stopped or killed mid-review: nothing is counted before the review ends);
+/// after [`MAX_ATTEMPTS`](crate::settings::MAX_ATTEMPTS) failures the "could not review" comment is posted once and
+/// the commit is given up on, until a new commit or a mention made after that comment.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HeadAttempts {
+    Fresh,
+    Failed(u32),
+    GaveUp,
+}
+
+impl PullState {
+    pub fn head_attempts(&self, head: &str) -> HeadAttempts {
+        if self.gave_up_sha.as_deref() == Some(head) {
+            return HeadAttempts::GaveUp;
+        }
+        match self.attempts.get(head).copied().unwrap_or(0) {
+            0 => HeadAttempts::Fresh,
+            failed => HeadAttempts::Failed(failed),
+        }
+    }
+
+    pub fn attempt_failed(&mut self, head: &str) {
+        *self.attempts.entry(head.to_string()).or_insert(0) += 1;
+    }
+
+    pub fn attempt_succeeded(&mut self, head: &str) {
+        self.attempts.shift_remove(head);
+    }
+
+    pub fn gave_up(&mut self, head: &str, at: String) {
+        self.gave_up_sha = Some(head.to_string());
+        self.gave_up_at = Some(at);
+    }
+
+    /// A mention after the "could not review" comment for `head` starts its attempts over; true when it did. A
+    /// give-up recorded without its time (by an older version) is not reset, since the mention that asked for the
+    /// first review could not be told apart from a new one.
+    pub fn retry_after_mention(&mut self, head: &str, mention_at: Option<&str>) -> bool {
+        let asked = self.head_attempts(head) == HeadAttempts::GaveUp
+            && matches!((mention_at, self.gave_up_at.as_deref()), (Some(at), Some(gave_up)) if jsrt::utf16::cmp(at, gave_up).is_gt());
+        if asked {
+            self.gave_up_sha = None;
+            self.gave_up_at = None;
+            self.attempts.shift_remove(head);
+        }
+        asked
+    }
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]

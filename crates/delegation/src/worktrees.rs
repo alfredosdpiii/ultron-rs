@@ -110,6 +110,16 @@ pub struct Owner {
     pub host: String,
 }
 
+impl Owner {
+    /// This worker process on this host.
+    pub fn of_this_process() -> Owner {
+        Owner {
+            pid: std::process::id(),
+            host: hostname(),
+        }
+    }
+}
+
 /// A subagent worktree, as recorded next to it (`<common dir>/ultron-worktrees/<id>.json`).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -779,10 +789,7 @@ fn create_in(info: &RepoInfo, options: &CreateWorktreeOptions<'_>) -> Result<Wor
         id,
         session_id: options.session_id.to_string(),
         name: options.name.to_string(),
-        owner: Owner {
-            pid: std::process::id(),
-            host: hostname(),
-        },
+        owner: Owner::of_this_process(),
         repo: text(&info.top),
         common_dir: text(&info.common_dir),
         path: text(&path),

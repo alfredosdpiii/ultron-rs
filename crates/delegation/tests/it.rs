@@ -14,6 +14,8 @@ mod contracts;
 mod fork;
 #[path = "git_baseline.rs"]
 mod git_baseline;
+#[path = "journal_failures.rs"]
+mod journal_failures;
 #[path = "kept_contracts.rs"]
 mod kept_contracts;
 #[path = "lane_routing.rs"]
@@ -26,6 +28,8 @@ mod lanes_api;
 mod orphan_prune;
 #[path = "predict_fixture.rs"]
 mod predict_fixture;
+#[path = "restore_worktrees.rs"]
+mod restore_worktrees;
 #[path = "schema_fixture.rs"]
 mod schema_fixture;
 #[path = "skill_procedure.rs"]

@@ -90,7 +90,16 @@ fn retry_case(name: &str, replies: Vec<String>, set_off: bool) {
     a.prompt("hello");
     assert_eq!(json!(rpc_retry_events(&a)), expected["events"], "{name}: events");
     let states = a.op_states();
-    let ats: Vec<Value> = states.iter().map(|s| s["at"].clone()).collect();
+    let mut ats: Vec<Value> = states.iter().map(|s| s["at"].clone()).collect();
+    // The error answer the run ends with commits with Rust's own last state (`assistant.failed`); TypeScript holds
+    // it for the terminal transaction.
+    if name != "retry-then-answer" {
+        assert_eq!(
+            ats.pop(),
+            Some(json!("assistant.failed")),
+            "{name}: the error answer commits"
+        );
+    }
     assert_eq!(json!(ats), expected["states"], "{name}: states");
     let waits: Vec<&Value> = states.iter().filter(|s| s["at"] == "assistant.retry_wait").collect();
     let expected_waits = expected["retryWaits"].as_array().unwrap();

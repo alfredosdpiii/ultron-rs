@@ -222,6 +222,43 @@ fn a_second_task_reads_nothing_again_and_keeps_the_judges_verdicts() {
     assert_eq!(later, 1);
 }
 
+/// Two tasks asked at once: both found the blob unread, the first recorded and judged it, then the second records
+/// what it read. That keeps the first's rows: before, it replaced them, dropping the verdict (and its row id could
+/// go to another relation, which a verdict in flight would then land on).
+#[test]
+fn a_scan_recorded_meanwhile_keeps_its_rows_and_verdicts() {
+    let (_dir, root, db) = setup();
+    let first = relations(&db, REPO, &root, "HEAD", &[], &[]).unwrap();
+    let level = first
+        .pruned
+        .kept
+        .iter()
+        .find(|r| r.object == "log.level")
+        .unwrap()
+        .clone();
+    let mut store = Store::open(&db).unwrap();
+    let settled = store
+        .settle_relations(&[Settlement {
+            id: level.id,
+            status: Settled::Accepted,
+            backend: Some("d1".into()),
+            rung: None,
+            model: None,
+            confidence: None,
+        }])
+        .unwrap();
+    assert_eq!(settled, 1);
+    // The late scanner's read of the same blob, recorded after the first one's.
+    let text = std::fs::read_to_string(root.join("crates/store/src/lib.rs")).unwrap();
+    let late = vec![(level.blob.clone(), propose("crates/store/src/lib.rs", &text))];
+    store
+        .record_relations(first.tree, &[], &late, RELATIONS_VERSION)
+        .unwrap();
+    let again = relations(&db, REPO, &root, "HEAD", &[], &[]).unwrap();
+    let kept = again.pruned.kept.iter().find(|r| r.object == "log.level").unwrap();
+    assert_eq!((kept.id, kept.status.as_str()), (level.id, "accepted"));
+}
+
 #[test]
 fn a_task_asks_for_kinds_and_files() {
     let (_dir, root, db) = setup();

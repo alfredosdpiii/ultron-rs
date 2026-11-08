@@ -260,35 +260,107 @@ pub(crate) fn board_add(tx: &mut Tx<'_>, by: &str, title: &str, detail: Option<&
     Ok(task)
 }
 
-/// Claim an open task for `owner`; a task someone else claimed is refused.
-pub(crate) fn board_claim(tx: &mut Tx<'_>, owner: &str, id: u64, now: u64) -> Result<Value> {
-    let (doc, index, mut task) = board_index(tx, id)?;
-    match task["status"].as_str() {
-        Some("open") => {}
-        Some("claimed") if task["owner"] == owner => return Ok(task),
-        Some("claimed") => {
-            return Err(msg(format!(
-                "Board task {id} is claimed by {}",
-                task["owner"].as_str().unwrap_or("another agent")
-            )));
-        }
-        _ => {
-            return Err(msg(format!(
-                "Board task {id} is {}",
-                task["status"].as_str().unwrap_or("closed")
-            )));
+/// A board task's status.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum BoardStatus {
+    Open,
+    Claimed,
+    Done,
+    Dropped,
+}
+
+impl BoardStatus {
+    fn parse(status: &str) -> Option<BoardStatus> {
+        match status {
+            "open" => Some(BoardStatus::Open),
+            "claimed" => Some(BoardStatus::Claimed),
+            "done" => Some(BoardStatus::Done),
+            "dropped" => Some(BoardStatus::Dropped),
+            _ => None,
         }
     }
-    d(doc.set(&task_path(index, "status"), json!("claimed")))?;
-    d(doc.set(&task_path(index, "owner"), json!(owner)))?;
+
+    fn as_str(self) -> &'static str {
+        match self {
+            BoardStatus::Open => "open",
+            BoardStatus::Claimed => "claimed",
+            BoardStatus::Done => "done",
+            BoardStatus::Dropped => "dropped",
+        }
+    }
+}
+
+/// The agent that may settle any claimed task (the coordinator: a claimant that died leaves its claim).
+const BOARD_COORDINATOR: &str = "root";
+
+/// The board's one transition rule: `by` moves task `id` (its `task` as stored) to `to`. Returns the owner the task
+/// has after it (`None`: none). A claim takes an open task (the claimant's own claim again is no change); only the
+/// owner (or the coordinator) releases, finishes or drops a claimed task; a finished or dropped task stays so.
+fn board_transition(id: u64, task: &Value, by: &str, to: BoardStatus) -> Result<Option<String>> {
+    let from = task["status"]
+        .as_str()
+        .and_then(BoardStatus::parse)
+        .unwrap_or(BoardStatus::Open);
+    let owner = task["owner"].as_str();
+    match from {
+        BoardStatus::Done | BoardStatus::Dropped if from != to => {
+            return Err(msg(format!("Board task {id} is {}", from.as_str())));
+        }
+        BoardStatus::Claimed
+            if owner.is_some_and(|owner| owner != by) && (to == BoardStatus::Claimed || by != BOARD_COORDINATOR) =>
+        {
+            return Err(msg(format!(
+                "Board task {id} is claimed by {}",
+                owner.unwrap_or("another agent")
+            )));
+        }
+        _ => {}
+    }
+    Ok(match to {
+        BoardStatus::Claimed => Some(by.to_string()),
+        BoardStatus::Open => None,
+        BoardStatus::Done | BoardStatus::Dropped => owner.map(str::to_string),
+    })
+}
+
+/// Move task `index` to `to` with `owner`, in the document and in `task`.
+fn board_set_status(
+    doc: &chord_delta::Draft,
+    index: usize,
+    task: &mut Value,
+    to: BoardStatus,
+    owner: Option<String>,
+) -> Result<()> {
+    d(doc.set(&task_path(index, "status"), json!(to.as_str())))?;
+    task["status"] = json!(to.as_str());
+    match owner {
+        Some(owner) => {
+            d(doc.set(&task_path(index, "owner"), json!(owner)))?;
+            task["owner"] = json!(owner);
+        }
+        None if task.get("owner").is_some() => {
+            d(doc.delete(&task_path(index, "owner")))?;
+            task.as_object_mut().map(|task| task.remove("owner"));
+        }
+        None => {}
+    }
+    Ok(())
+}
+
+/// Claim an open task for `owner`; a task someone else claimed, or a closed one, is refused.
+pub(crate) fn board_claim(tx: &mut Tx<'_>, owner: &str, id: u64, now: u64) -> Result<Value> {
+    let (doc, index, mut task) = board_index(tx, id)?;
+    let after = board_transition(id, &task, owner, BoardStatus::Claimed)?;
+    if task["status"] == "claimed" && task["owner"] == owner {
+        return Ok(task);
+    }
+    board_set_status(&doc, index, &mut task, BoardStatus::Claimed, after)?;
     d(doc.set(&task_path(index, "updatedAt"), json!(now)))?;
-    task["status"] = json!("claimed");
-    task["owner"] = json!(owner);
     task["updatedAt"] = json!(now);
     Ok(task)
 }
 
-/// Change a task's status (`open`, `claimed`, `done`, `dropped`) and/or append a note.
+/// Change a task's status (`open`, `claimed`, `done`, `dropped`, by [`board_transition`]) and/or append a note.
 pub(crate) fn board_update(
     tx: &mut Tx<'_>,
     by: &str,
@@ -299,15 +371,9 @@ pub(crate) fn board_update(
 ) -> Result<Value> {
     let (doc, index, mut task) = board_index(tx, id)?;
     if let Some(status) = status {
-        if !["open", "claimed", "done", "dropped"].contains(&status) {
-            return Err(msg(format!("Unknown board status {status}")));
-        }
-        d(doc.set(&task_path(index, "status"), json!(status)))?;
-        task["status"] = json!(status);
-        if status == "open" {
-            d(doc.delete(&task_path(index, "owner")))?;
-            task.as_object_mut().map(|task| task.remove("owner"));
-        }
+        let to = BoardStatus::parse(status).ok_or_else(|| msg(format!("Unknown board status {status}")))?;
+        let owner = board_transition(id, &task, by, to)?;
+        board_set_status(&doc, index, &mut task, to, owner)?;
     }
     if let Some(note) = note {
         let entry = json!({ "by": by, "text": note, "at": now });

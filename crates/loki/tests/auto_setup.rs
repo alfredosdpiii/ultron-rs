@@ -287,6 +287,24 @@ fn loki_auto_setup_a_rejecting_hook_leaves_loki_uncommitted_and_unstaged() {
     );
 }
 
+/// Two sessions started together: both installed, the other one committed first, so this one has nothing to commit.
+/// Unstaging after that failure keeps the other's commit: before, `git rm --cached` staged the deletion of `.loki/`,
+/// which the user's next commit would have made.
+#[test]
+fn loki_auto_setup_a_commit_that_lost_the_race_leaves_the_committed_loki_alone() {
+    let w = work();
+    let root = repository(&w.dir, "repo", &w.dir);
+    fake_loki_dir(&root);
+    git(&root, &w.dir, &["add", "--", ".loki"]);
+    git(&root, &w.dir, &["commit", "-qm", "Add Loki guardrails"]);
+    let head = git(&root, &w.dir, &["rev-parse", "HEAD"]);
+
+    let committed = with_context(&root, &w.dir, &[], json!({}), |c| commit_loki(c, &root, None));
+    assert!(committed.is_err(), "{committed:?}");
+    assert_eq!(git(&root, &w.dir, &["rev-parse", "HEAD"]), head);
+    assert_eq!(git(&root, &w.dir, &["status", "--porcelain", "--", ".loki"]), "");
+}
+
 #[test]
 fn loki_auto_setup_a_failing_or_hanging_signer_never_prompts() {
     let w = work();

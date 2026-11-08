@@ -276,6 +276,37 @@ fn daemon_lifetime_requires_both_client_and_worker_demand_to_disappear() {
     lifetime.stop();
 }
 
+/// A timer called off and replaced by a newer one leaves the newer one armed when it wakes: `retiring` stays true
+/// for the newer grace, and a later idle check does not arm a third timer that would retire the server twice.
+#[test]
+fn daemon_lifetime_stale_idle_timer_leaves_the_newer_one_armed() {
+    let (count, retire) = Retired::new();
+    let lifetime = Lifetime::with_graces(false, Duration::from_secs(600), ms(400));
+    lifetime.start(retire);
+    lifetime.set_connections(1);
+    let first = Instant::now();
+    lifetime.set_connections(0);
+    std::thread::sleep(ms(200));
+    // Busy and idle again: the first timer is called off, a second one armed (it fires at about 600 ms).
+    lifetime.set_connections(1);
+    lifetime.set_connections(0);
+    std::thread::sleep(ms(300));
+    // The first timer woke (at 400 ms); the second still runs. Checked only when the read is provably in between.
+    let retiring = lifetime.retiring();
+    let elapsed = first.elapsed();
+    if elapsed >= ms(400) && elapsed < ms(600) && retired(&count) == 0 {
+        assert!(retiring, "the newer idle timer is still armed");
+    }
+    // An idle check meanwhile (a setter that changes nothing) must not arm another timer.
+    lifetime.set_workers(0);
+    retires(&count);
+    assert!(
+        count.signal.recv_timeout(ms(800)).is_err(),
+        "the server retired a second time"
+    );
+    lifetime.stop();
+}
+
 #[test]
 fn daemon_lifetime_never_retires_while_a_schedule_is_pending() {
     // A long idle grace: an armed retirement stays visible (`retiring`) instead of firing.

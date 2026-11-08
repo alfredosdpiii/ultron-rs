@@ -133,6 +133,8 @@ mod frame_models_e2e;
 mod herdr;
 #[path = "interactive.rs"]
 mod interactive;
+#[path = "interactive_abort.rs"]
+mod interactive_abort;
 #[path = "interactive_agent_hub.rs"]
 mod interactive_agent_hub;
 #[path = "interactive_bug_report.rs"]

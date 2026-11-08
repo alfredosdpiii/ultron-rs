@@ -282,6 +282,7 @@ fn review_prepare_env_summary_is_what_the_reviewer_binds() {
             prepared: vec!["python: uv pip install -r requirements.txt".into()],
             failures: vec![],
             toolchain: vec![format!("{base}/opt/py")],
+            lease: Default::default(),
         }
     );
     // The second time it is a cache hit: nothing runs.
@@ -289,6 +290,62 @@ fn review_prepare_env_summary_is_what_the_reviewer_binds() {
     let again = preparer.prepare(&repo, &|_| {}).expect("cached");
     assert!(again.cached);
     assert_eq!(runner.calls.lock().unwrap().len(), calls);
+}
+
+/// A rebuild (forced here; a partial environment is rebuilt the same way) waits until the review using the
+/// environment is done with it: before, it removed the directory under that review's tests.
+#[test]
+fn review_prepare_env_is_not_rebuilt_while_a_review_uses_it() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let base = std::fs::canonicalize(temp.path())
+        .unwrap()
+        .to_string_lossy()
+        .into_owned();
+    let repo = format!("{base}/repo");
+    std::fs::create_dir_all(format!("{base}/opt/py/bin")).unwrap();
+    std::fs::write(format!("{base}/opt/py/bin/python3"), "").unwrap();
+    std::fs::create_dir_all(format!("{base}/bin")).unwrap();
+    std::fs::write(format!("{base}/bin/uv"), "").unwrap();
+    std::os::unix::fs::symlink(format!("{base}/opt/py/bin/python3"), format!("{base}/bin/python3")).unwrap();
+    std::fs::create_dir_all(&repo).unwrap();
+    std::fs::write(format!("{repo}/requirements.txt"), "a\n").unwrap();
+    let runner = Scripted {
+        base: base.clone(),
+        rules: vec![json!({"match": "", "results": [{"code": 0, "stdout": "", "stderr": ""}]})],
+        used: Mutex::default(),
+        calls: Mutex::default(),
+        hash: Mutex::default(),
+    };
+    let now = || 0;
+    let options = |force| PrepareOptions {
+        runner: &runner,
+        cache_dir: format!("{base}/cache"),
+        python: None,
+        mise: Some(Mise::Enabled(false)),
+        env: HashMap::from([("PATH".to_string(), format!("{base}/bin"))]),
+        home: format!("{base}/home"),
+        log: &|_| {},
+        timeout_ms: None,
+        force,
+        now: &now,
+    };
+    let in_use = prepare_environment(&repo, &options(false)).expect("prepared");
+    let marker = format!("{}/in-use", in_use.dir);
+    std::fs::write(&marker, "").unwrap();
+    let (done, rebuilt) = std::sync::mpsc::channel();
+    let (options, repo) = (&options, &repo);
+    std::thread::scope(|scope| {
+        scope.spawn(move || {
+            let again = prepare_environment(repo, &options(true)).expect("rebuilt");
+            done.send(again.cached).unwrap();
+        });
+        // Nothing can let it through while the lease is held; the wait only bounds how long that is checked.
+        assert!(rebuilt.recv_timeout(std::time::Duration::from_millis(300)).is_err());
+        assert!(Path::new(&marker).exists(), "removed while in use");
+        drop(in_use);
+        assert!(!rebuilt.recv().unwrap());
+    });
+    assert!(!Path::new(&marker).exists());
 }
 
 /// The daemon builds the test environment of a pull request's checkout before the review (prepareEnvs, tests
@@ -497,6 +554,8 @@ fn review_prepare_env_poetry_apps_use_declared_python_and_install_dependencies_w
         let record = std::fs::read_to_string(format!("{}/toolchain.json", failed.dir)).unwrap();
         assert!(record.contains("Building a package is not possible in non-package mode."));
         assert!(cached_environment(&repo, &options.cache_dir, None).is_none());
+        // Done with it: a rebuild waits until the failed environment is no longer held.
+        drop(failed);
         let prepared = prepare_environment(&repo, &options).unwrap();
         assert!(prepared.failures.is_empty(), "{:?}", prepared.failures);
         assert!(

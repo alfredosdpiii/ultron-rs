@@ -195,15 +195,76 @@ pub fn private_temp_dir(base: &Path, prefix: &str) -> std::io::Result<PathBuf> {
     }
 }
 
-/// Write `content` to `path`, created or truncated, readable only by the user (0600).
+/// Write `content` to `path`, readable only by the user (0600), atomically: see [`write_atomic`].
 pub fn write_private(path: &Path, content: &str) -> std::io::Result<()> {
+    write_atomic(path, content.as_bytes(), 0o600)
+}
+
+/// Create `path` with `content` (0600) only when it does not exist yet; an existing file is left alone, so a
+/// placeholder written outside a lock never replaces what another process wrote under it.
+pub fn create_private_if_missing(path: &Path, content: &str) -> std::io::Result<()> {
     use std::io::Write;
     use std::os::unix::fs::OpenOptionsExt;
-    let mut file = std::fs::OpenOptions::new()
+    match std::fs::OpenOptions::new()
         .write(true)
-        .create(true)
-        .truncate(true)
+        .create_new(true)
         .mode(0o600)
-        .open(path)?;
-    file.write_all(content.as_bytes())
+        .open(path)
+    {
+        Ok(mut file) => file.write_all(content.as_bytes()),
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => Ok(()),
+        Err(e) => Err(e),
+    }
+}
+
+/// Replace `path` with `content`: written to a new temporary file in the same directory (created with `mode`,
+/// less the umask), flushed to disk, then renamed over `path`, and the directory flushed. A crash, kill or full
+/// disk leaves the old file or the new one, never a truncated or partial one. A symbolic link is followed: its
+/// target is replaced and the link kept.
+pub fn write_atomic(path: &Path, content: &[u8], mode: u32) -> std::io::Result<()> {
+    use std::io::Write;
+    use std::os::unix::fs::OpenOptionsExt;
+    let target = match std::fs::symlink_metadata(path) {
+        Ok(meta) if meta.file_type().is_symlink() => std::fs::canonicalize(path)?,
+        _ => path.to_path_buf(),
+    };
+    let dir = match target.parent() {
+        Some(dir) if !dir.as_os_str().is_empty() => dir.to_path_buf(),
+        _ => PathBuf::from("."),
+    };
+    let name = target
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let (temporary, mut file) = loop {
+        let temporary = dir.join(format!(
+            ".{name}.{}.{}.tmp",
+            std::process::id(),
+            jsrt::random::random_hex(4)
+        ));
+        match std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(mode)
+            .open(&temporary)
+        {
+            Ok(file) => break (temporary, file),
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(e) => return Err(e),
+        }
+    };
+    let written = file
+        .write_all(content)
+        .and_then(|()| file.sync_all())
+        .and_then(|()| std::fs::rename(&temporary, &target));
+    drop(file);
+    if let Err(e) = written {
+        let _ = std::fs::remove_file(&temporary);
+        return Err(e);
+    }
+    // The rename is durable once the directory entry is: a failed directory flush is not a failed write.
+    if let Ok(dir) = std::fs::File::open(&dir) {
+        let _ = dir.sync_all();
+    }
+    Ok(())
 }

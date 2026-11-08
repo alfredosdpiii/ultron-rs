@@ -135,6 +135,8 @@ mod protected_profile;
 mod provider_headers;
 #[path = "provider_routes.rs"]
 mod provider_routes;
+#[path = "queued_identity.rs"]
+mod queued_identity;
 #[path = "recovery.rs"]
 mod recovery;
 #[path = "request_auth_env.rs"]

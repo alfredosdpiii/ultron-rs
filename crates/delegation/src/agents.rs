@@ -1414,6 +1414,14 @@ impl Agents {
             None => "failed",
         }
         .to_string();
+        // The usage status of the end this caller meant, settled even when the journal refuses it: the task ends
+        // here either way, and an open reservation would count against its root until the next reopen.
+        let meant = match result["status"].as_str() {
+            Some("succeeded") => "succeeded",
+            Some("cancelled") => "cancelled",
+            Some("interrupted") => "unknown",
+            _ => "failed",
+        };
         let mut state = self.state();
         let committed = state.journal.transition(id, &terminal, Some(result));
         let now = self.now();
@@ -1437,6 +1445,7 @@ impl Agents {
         let lane = task.lane.clone();
         if let Err(error) = &outcome {
             task.signal.abort(error.clone());
+            self.settle_task(&mut state, id, meant);
             drop(state);
             if let Some(lane) = lane {
                 self.abort_lane(&lane);

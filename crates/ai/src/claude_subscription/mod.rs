@@ -564,6 +564,9 @@ async fn run_with(
                 };
                 let _ = done.send(process::run(&config, env, &prepared, &worker, &mut forward));
             });
+            // Streaming, then (once aborted) cancelling until the worker returns: cancelled once, since an aborted
+            // signal stays ready and a loop that cancelled on every turn would spin without yielding.
+            let mut cancelling = false;
             let result = loop {
                 tokio::select! {
                     biased;
@@ -574,7 +577,10 @@ async fn run_with(
                         }
                         break result.unwrap_or(Err(ClaudeError::Failed("Native response missing".into())));
                     }
-                    () = crate::http::cancelled(signal.as_ref()) => handle.cancel(),
+                    () = crate::http::cancelled(signal.as_ref()), if !cancelling => {
+                        cancelling = true;
+                        handle.cancel();
+                    }
                 }
             };
             rate_limits = handle

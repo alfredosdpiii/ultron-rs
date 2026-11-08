@@ -195,7 +195,9 @@ fn ai_claude_code_lane_out_of_usage_never_spends_api_credits() {
         &mut sink,
     ));
     assert_eq!(api.requests().len(), 1, "{:?}", explicit.error_message);
-    assert!(router.held_until().is_some());
+    // The fake API answers 500: a failed API call ends the hold, so the next turn tries the subscription again.
+    assert_eq!(explicit.stop_reason, StopReason::Error);
+    assert_eq!(router.held_until(), None);
 }
 
 #[test]

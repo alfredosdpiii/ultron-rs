@@ -9,28 +9,65 @@ use crate::Env;
 use ai::auth::{AuthEvent, AuthInteraction, AuthPrompt};
 use ai::http::{AbortSignal, BoxFuture};
 use interactive::lane::{LaneEvent, LoginEvent, LoginPrompt, LoginStep};
+use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 pub const OAUTH_CALLBACK_PORT_ENV: &str = "ULTRON_OAUTH_CALLBACK_PORT";
 
-/// The pending prompt of the login running now, and its signal.
+/// The logins running now, by id: each one's signal and pending prompt. A login only ever touches its own entry,
+/// so one ending (or being answered) never reaches another.
 #[derive(Default)]
 pub struct LoginSlot {
-    reply: Mutex<Option<tokio::sync::oneshot::Sender<Option<String>>>>,
-    signal: Mutex<Option<AbortSignal>>,
+    logins: Mutex<HashMap<u64, Login>>,
+}
+
+struct Login {
+    signal: AbortSignal,
+    reply: Option<tokio::sync::oneshot::Sender<Option<String>>>,
 }
 
 impl LoginSlot {
-    /// The dialog's answer to the pending prompt; `None` stops the login (`Login cancelled`).
-    pub fn reply(&self, answer: Option<String>) {
-        if answer.is_none()
-            && let Some(signal) = self.signal.lock().unwrap_or_else(|e| e.into_inner()).as_ref()
-        {
-            signal.abort();
-        }
-        if let Some(sender) = self.reply.lock().unwrap_or_else(|e| e.into_inner()).take() {
+    /// The dialog's answer to login `id`'s pending prompt; `None` stops the login (`Login cancelled`). A login that
+    /// already ended ignores it.
+    pub fn reply(&self, id: u64, answer: Option<String>) {
+        let sender = {
+            let mut logins = self.logins.lock().unwrap_or_else(|e| e.into_inner());
+            let Some(login) = logins.get_mut(&id) else {
+                return;
+            };
+            if answer.is_none() {
+                login.signal.abort();
+            }
+            login.reply.take()
+        };
+        if let Some(sender) = sender {
             let _ = sender.send(answer);
         }
+    }
+
+    fn start(&self, id: u64, signal: AbortSignal) {
+        let login = Login { signal, reply: None };
+        self.logins.lock().unwrap_or_else(|e| e.into_inner()).insert(id, login);
+    }
+
+    /// Login `id` waits for an answer on `sender`; false when it is no longer running.
+    fn prompting(&self, id: u64, sender: tokio::sync::oneshot::Sender<Option<String>>) -> bool {
+        match self.logins.lock().unwrap_or_else(|e| e.into_inner()).get_mut(&id) {
+            Some(login) => {
+                login.reply = Some(sender);
+                true
+            }
+            None => false,
+        }
+    }
+
+    fn end(&self, id: u64) {
+        self.logins.lock().unwrap_or_else(|e| e.into_inner()).remove(&id);
+    }
+
+    /// Whether login `id` is still running (tests).
+    pub fn running(&self, id: u64) -> bool {
+        self.logins.lock().unwrap_or_else(|e| e.into_inner()).contains_key(&id)
     }
 }
 
@@ -68,6 +105,7 @@ pub fn open_browser(env: &Env, url: &str) {
 type Send = Arc<dyn Fn(LaneEvent) + std::marker::Send + Sync>;
 
 struct DialogInteraction {
+    id: u64,
     send: Send,
     slot: Arc<LoginSlot>,
     signal: AbortSignal,
@@ -99,8 +137,10 @@ impl AuthInteraction for DialogInteraction {
                 return Err(CANCELLED.into());
             }
             let (sender, receiver) = tokio::sync::oneshot::channel();
-            *self.slot.reply.lock().unwrap_or_else(|e| e.into_inner()) = Some(sender);
-            (self.send)(LaneEvent::Login(LoginStep::Prompt(view)));
+            if !self.slot.prompting(self.id, sender) {
+                return Err(CANCELLED.into());
+            }
+            (self.send)(LaneEvent::Login(self.id, LoginStep::Prompt(view)));
             let cancelled = async {
                 match &cancel {
                     Some(cancel) => cancel.cancelled().await,
@@ -140,7 +180,7 @@ impl AuthInteraction for DialogInteraction {
             },
             AuthEvent::Progress { message } => LoginEvent::Progress(message),
         };
-        (self.send)(LaneEvent::Login(LoginStep::Event(view)));
+        (self.send)(LaneEvent::Login(self.id, LoginStep::Event(view)));
     }
 
     fn signal(&self) -> Option<AbortSignal> {
@@ -148,11 +188,12 @@ impl AuthInteraction for DialogInteraction {
     }
 }
 
-/// Run `provider`'s account login on its own thread. On success the credential is in `auth.json` and `saved` runs
-/// (the statuses and catalog that follow a login); a failure reports `Error: Failed to login to <name>: <error>`, a
-/// cancel nothing.
+/// Run `provider`'s account login `id` on its own thread. On success the credential is in `auth.json` and `saved`
+/// runs (the statuses and catalog that follow a login); a failure reports `Error: Failed to login to <name>:
+/// <error>`, a cancel nothing.
 pub fn start(
     env: Env,
+    id: u64,
     provider: String,
     name: String,
     send: Send,
@@ -160,12 +201,14 @@ pub fn start(
     saved: Box<dyn FnOnce() + std::marker::Send>,
 ) {
     let options = options(&env);
-    start_with(env, provider, name, send, slot, saved, options);
+    start_with(env, id, provider, name, send, slot, saved, options);
 }
 
 /// [`start`] with the provider reached through `options` (tests answer its endpoints).
+#[allow(clippy::too_many_arguments)]
 pub fn start_with(
     env: Env,
+    id: u64,
     provider: String,
     name: String,
     send: Send,
@@ -175,13 +218,17 @@ pub fn start_with(
 ) {
     let reach = browser_reach(&env);
     let signal = AbortSignal::new();
-    *slot.signal.lock().unwrap_or_else(|e| e.into_inner()) = Some(signal.clone());
-    send(LaneEvent::Login(LoginStep::Started {
-        name: name.clone(),
-        reach: reach.clone(),
-    }));
+    slot.start(id, signal.clone());
+    send(LaneEvent::Login(
+        id,
+        LoginStep::Started {
+            name: name.clone(),
+            reach: reach.clone(),
+        },
+    ));
     std::thread::spawn(move || {
         let interaction = DialogInteraction {
+            id,
             send: send.clone(),
             slot: slot.clone(),
             signal: signal.clone(),
@@ -205,9 +252,8 @@ pub fn start_with(
                 .map(|_| ())
                 .map_err(|e| e.to_string())
         })();
-        *slot.signal.lock().unwrap_or_else(|e| e.into_inner()) = None;
-        slot.reply.lock().unwrap_or_else(|e| e.into_inner()).take();
-        send(LaneEvent::Login(LoginStep::Finished));
+        slot.end(id);
+        send(LaneEvent::Login(id, LoginStep::Finished));
         match outcome {
             Ok(()) => saved(),
             Err(error) if error == CANCELLED || signal.aborted() => {}

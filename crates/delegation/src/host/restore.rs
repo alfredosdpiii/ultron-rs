@@ -57,6 +57,14 @@ impl Delegation {
                     None => false,
                 }
             })?;
+            // The children's saved worktree records: a reattached child keeps its worktree, and a kept worktree
+            // already merged stays merged (`rlm.merge` does not merge it again).
+            let saved = self
+                .inner
+                .workspace
+                .as_deref()
+                .map(wt::list_records)
+                .unwrap_or_default();
             for record in records {
                 let id = record["id"].as_str().unwrap_or_default().to_string();
                 if id.is_empty() || state.task(&id).is_some() {
@@ -81,16 +89,20 @@ impl Delegation {
                     }
                 };
                 let lane_name = child.then(|| lanes::lane_names::child_lane(&id));
+                let saved = saved
+                    .iter()
+                    .find(|record| child && record.task_id.as_deref() == Some(id.as_str()));
+                let merge_status = saved
+                    .filter(|record| record.state == "merged")
+                    .map(|_| "merged".to_string());
                 // A reattached worktree child keeps its worktree (its saved record names the task): its work is
                 // committed on its branch when it ends, and `rlm.merge` finds it.
-                let worktree = waiter
-                    .as_ref()
-                    .and(self.inner.workspace.as_deref())
-                    .and_then(|workspace| {
-                        wt::list_records(workspace)
-                            .into_iter()
-                            .find(|record| record.task_id.as_deref() == Some(id.as_str()))
-                    });
+                // This worker owns it now: its close prunes the worktree once the child has ended.
+                let worktree = waiter.as_ref().and(saved.cloned()).map(|mut record| {
+                    record.owner = wt::Owner::of_this_process();
+                    let _ = wt::save_record(&record);
+                    record
+                });
                 if let (Some(lane), Some(_)) = (&lane_name, &waiter) {
                     state.lane_tasks.insert(lane.clone(), id.clone());
                 }
@@ -118,7 +130,7 @@ impl Delegation {
                     worktree_baseline: None,
                     outside_before: None,
                     before: None,
-                    merge_status: None,
+                    merge_status,
                     contract: contract.clone().and_then(Result::ok),
                     git_baseline,
                 });

@@ -6,8 +6,9 @@
 
 use serde_json::{Value, json};
 use session_core::async_events::{
-    Accepted, Cancelled, Delivery, Dispatcher, DispatcherOptions, EventLanes, Execution, RUNTIME_EVENT_MESSAGE_TYPE,
-    RuntimeEvent, async_events_enabled, default_mask, max_event_runs_from_env, runtime_event_text,
+    Accepted, Cancelled, Chains, Delivery, Dispatcher, DispatcherOptions, EventLanes, Execution,
+    RUNTIME_EVENT_MESSAGE_TYPE, RuntimeEvent, async_events_enabled, default_mask, max_event_runs_from_env,
+    runtime_event_text,
 };
 use std::collections::HashMap;
 use std::sync::mpsc::{Receiver, Sender, channel};
@@ -404,6 +405,57 @@ fn session_core_async_events_after_an_abort_the_root_never_restarts_and_later_co
     s.dispatcher.drain();
     assert_eq!(s.fake.runs("main").len(), 1);
     assert_eq!(s.fake.queued("main", "nextRun").len(), 2);
+}
+
+/// What delivery remembers is saved after each change and given to the next worker's dispatcher (a hand-over, a
+/// restart): an aborted root's late completion does not wake the model there, and a chain's automatic-run budget
+/// is not reset.
+#[test]
+fn session_core_async_events_aborted_roots_and_chain_budgets_survive_the_worker() {
+    let saved = Arc::new(Mutex::new(Chains::default()));
+    let keep = saved.clone();
+    let first = setup(|options| {
+        options.max_runs = 1;
+        options.save_chains = Some(Arc::new(move |chains: &Chains| *keep.lock().unwrap() = chains.clone()));
+    });
+    // Chain `turn:user-1` uses its one automatic run.
+    first.dispatcher.publish(event("job-a"));
+    first.dispatcher.drain();
+    assert_eq!(first.fake.runs("main").len(), 1);
+    first.fake.end("main", false, &first.dispatcher);
+    // The user's next turn is aborted.
+    let run = first.fake.start("main", json!({"role": "user", "content": "work"}));
+    let aborted = format!("turn:{run}");
+    first.fake.end("main", true, &first.dispatcher);
+    first.dispatcher.drain();
+    first.dispatcher.close();
+    let chains = saved.lock().unwrap().clone();
+    assert_eq!(chains.aborted.iter().collect::<Vec<_>>(), [&aborted]);
+    assert_eq!(chains.runs.get("turn:user-1"), Some(&1));
+    // The stored value reads back the same.
+    assert_eq!(Chains::from_value(Some(&chains.to_value())), chains);
+
+    let next = setup(|options| {
+        options.max_runs = 1;
+        options.chains = chains;
+    });
+    assert!(next.dispatcher.root_aborted(Some(&aborted)));
+    next.dispatcher.publish(RuntimeEvent {
+        kind: "task_done".into(),
+        root_id: Some(aborted.clone()),
+        ..event("t1")
+    });
+    next.dispatcher.drain();
+    next.dispatcher.publish(event("job-b"));
+    next.dispatcher.drain();
+    assert!(next.fake.runs("main").is_empty(), "no completion woke the model");
+    assert_eq!(
+        *next.deliveries.lock().unwrap(),
+        [
+            "nextRun:the root turn was aborted",
+            "nextRun:1 of 1 automatic runs used for turn:user-1"
+        ]
+    );
 }
 
 #[test]

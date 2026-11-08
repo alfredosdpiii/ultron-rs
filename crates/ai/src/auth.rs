@@ -945,14 +945,22 @@ impl CredentialStore for FileCredentialStore {
         f: ModifyFn<'a>,
         signal: Option<&'a AbortSignal>,
     ) -> BoxFuture<'a, Result<Option<Credential>, StoreError>> {
-        Box::pin(unless_aborted(signal, async move {
+        Box::pin(async move {
             let store = |e: String| StoreError::Store(e);
-            let _local = self.local.lock().await;
-            let path = self.path.clone();
-            let file = tokio::task::spawn_blocking(move || config::auth::LockedAuthFile::open(&path))
-                .await
-                .map_err(|e| store(e.to_string()))?
-                .map_err(store)?;
+            // Queued behind this process's writers and the file lock: an abort ends it before anything runs.
+            let (_local, file) = unless_aborted(signal, async {
+                let local = self.local.lock().await;
+                let path = self.path.clone();
+                let file = tokio::task::spawn_blocking(move || config::auth::LockedAuthFile::open(&path))
+                    .await
+                    .map_err(|e| store(e.to_string()))?
+                    .map_err(store)?;
+                Ok((local, file))
+            })
+            .await?;
+            // Under the lock the callback runs to its end (it has the signal and stops on it), and a credential it
+            // returns is written even when the signal fired meanwhile: a provider that rotated the refresh token has
+            // already spent the stored one, so dropping its answer would force a new login.
             let text = file.read().map_err(store)?;
             let mut data = if text.trim().is_empty() {
                 Map::new()
@@ -965,10 +973,10 @@ impl CredentialStore for FileCredentialStore {
                 .map(|v| parse_credential(v, provider_id))
                 .transpose()
                 .map_err(store)?;
-            let next = f(current.clone()).await.map_err(StoreError::Callback)?;
-            if is_aborted(signal) {
-                return Err(StoreError::Aborted);
-            }
+            let next = match f(current.clone()).await {
+                Err(_) if is_aborted(signal) => return Err(StoreError::Aborted),
+                next => next.map_err(StoreError::Callback)?,
+            };
             let result = match next {
                 Some(next) => {
                     data.insert(
@@ -982,8 +990,11 @@ impl CredentialStore for FileCredentialStore {
                 None => current,
             };
             drop(file);
+            if is_aborted(signal) {
+                return Err(StoreError::Aborted);
+            }
             Ok(result)
-        }))
+        })
     }
 
     fn delete<'a>(&'a self, provider_id: &'a str) -> BoxFuture<'a, Result<(), String>> {

@@ -324,3 +324,161 @@ fn session_core_recovery_reduces_frames_to_text_and_thinking() {
         (&json!("p"), &json!("m"), &json!("unknown"), &json!([]))
     );
 }
+
+/// The error answer a run ends with commits when it arrives (`assistant.failed`): a worker killed before the run's
+/// terminal transaction leaves that answer and a failed run, not an interrupted partial that is resumed.
+#[test]
+fn session_core_recovery_keeps_the_error_answer_a_run_ended_with() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut session = repo(dir.path()).create("/w", None, None).unwrap();
+    let mut run = admit(&mut session, user("q"));
+    run.begin_assistant(&mut session, 1000, 200_000).unwrap();
+    let mut answer = partial(json!([]));
+    answer["stopReason"] = json!("error");
+    answer["errorMessage"] = json!("401 invalid key");
+    assert!(!run.commit_assistant(&mut session, answer).unwrap());
+    let operation = run.operation_id().to_string();
+    assert_eq!(session.value(OP_STATE, &operation).unwrap()["at"], "assistant.failed");
+    drop(run);
+    let mut session = reopened(dir.path(), &session);
+    let recovered = settle(&mut session).unwrap();
+    assert_eq!(recovered.status.as_deref(), Some("failed"));
+    assert!(!recovered.resume, "a run that failed on its answer is not continued");
+    let messages = branch(&session);
+    assert_eq!(messages.len(), 2);
+    assert_eq!(messages[1]["errorMessage"], "401 invalid key");
+    let result = session.value(OP_RESULT, &operation).unwrap();
+    assert_eq!(
+        result["error"],
+        json!({"code": "assistant_error", "message": "401 invalid key"})
+    );
+}
+
+/// A live run that ends on its error answer leaves the same journal: the answer is the tip, the run failed.
+#[test]
+fn session_core_recovery_an_error_answer_is_the_tip_of_the_run_that_ends_with_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut session = repo(dir.path()).create("/w", None, None).unwrap();
+    let mut run = admit(&mut session, user("q"));
+    run.begin_assistant(&mut session, 1000, 200_000).unwrap();
+    let mut answer = partial(json!([]));
+    answer["stopReason"] = json!("error");
+    answer["errorMessage"] = json!("boom");
+    run.commit_assistant(&mut session, answer).unwrap();
+    let operation = run.operation_id().to_string();
+    let answer_id = session.branch_tip("main").flatten().unwrap();
+    run.finish(&mut session, Some(("assistant_error", "boom"))).unwrap();
+    let result = session.value(OP_RESULT, &operation).unwrap();
+    assert_eq!(result["status"], "failed");
+    assert_eq!(result["tipId"], answer_id.as_str());
+    assert_eq!(branch(&session)[1]["errorMessage"], "boom");
+}
+
+/// Every state the writers produce is named by `OpAt`; a state this build does not know is settled `failed`
+/// without resuming (it may have had work in flight that recovery cannot see).
+#[test]
+fn session_core_recovery_does_not_resume_an_operation_in_an_unknown_state() {
+    for at in run::OpAt::ALL {
+        assert_eq!(run::OpAt::parse(at.as_str()), Some(at));
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let mut session = repo(dir.path()).create("/w", None, None).unwrap();
+    let run = admit(&mut session, user("q"));
+    let operation = run.operation_id().to_string();
+    let mut state = session.value(OP_STATE, &operation).unwrap().clone();
+    state["at"] = json!("assistant.someday");
+    session.commit(&[Write::set(OP_STATE, &operation, state)]).unwrap();
+    drop(run);
+    let recovered = settle(&mut session).unwrap();
+    assert_eq!(recovered.status.as_deref(), Some("failed"));
+    assert!(!recovered.resume);
+    let error = &session.value(OP_RESULT, &operation).unwrap()["error"];
+    assert_eq!(error["code"], "interrupted");
+    assert!(
+        error["message"].as_str().unwrap().contains("assistant.someday"),
+        "{error}"
+    );
+}
+
+/// A run that finished and was compacting at its last (may-finish) checkpoint when the worker died had nothing left
+/// to do: it ends `completed` and is not resumed, its compaction's preparation dropped (root-run spec,
+/// `NotFailedWhenFinished`).
+#[test]
+fn session_core_recovery_completes_a_finished_run_that_died_in_its_last_compaction() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut session = repo(dir.path()).create("/w", None, None).unwrap();
+    let mut run = admit(&mut session, user("q"));
+    run.begin_assistant(&mut session, 1000, 200_000).unwrap();
+    let mut answer = partial(json!([{"type": "text", "text": "A."}]));
+    answer["stopReason"] = json!("stop");
+    assert!(!run.commit_assistant(&mut session, answer).unwrap());
+    run.begin_compaction(&mut session, "threshold", json!({"kind": "compaction"}), None)
+        .unwrap();
+    let operation = run.operation_id().to_string();
+    assert_eq!(session.value(OP_STATE, &operation).unwrap()["at"], "summary.deciding");
+    drop(run);
+    let mut session = reopened(dir.path(), &session);
+    let recovered = settle(&mut session).unwrap();
+    assert_eq!(recovered.status.as_deref(), Some("completed"));
+    assert!(!recovered.resume);
+    assert!(session.value(OP_RESULT, &operation).unwrap().get("error").is_none());
+    assert!(
+        session
+            .state()
+            .scan_values(session_journal::ns::OP_PREPARATION, "")
+            .is_empty()
+    );
+}
+
+fn read_only(path: &std::path::Path, read_only: bool) {
+    let mut permissions = std::fs::metadata(path).unwrap().permissions();
+    permissions.set_readonly(read_only);
+    std::fs::set_permissions(path, permissions).unwrap();
+}
+
+/// A run ends exactly once (root-run spec, `EndsOnce`): after a journal write failed, its end still commits the
+/// terminal transaction (failed, with the write error) instead of leaving the operation open for a successor to end
+/// again; a terminal transaction that fails can be committed again, and then commits once.
+#[test]
+fn session_core_recovery_a_run_whose_journal_write_failed_still_ends_once() {
+    use session_core::journal::RunJournal;
+    let dir = tempfile::tempdir().unwrap();
+    let mut session = repo(dir.path()).create("/w", None, None).unwrap();
+    let config = run::lane_config("anthropic", "claude-sonnet-4-5", "medium", &["rlm"]);
+    let mut journal = RunJournal::admit(
+        Some(&mut session),
+        config,
+        user("q"),
+        (1000, 200_000),
+        run::default_settings(),
+        &[],
+        json!([]),
+    )
+    .unwrap();
+    let operation = journal.run().unwrap().operation_id().to_string();
+    let path = session.metadata().path.clone();
+    // The disk refuses a write: the journal stops writing.
+    read_only(&path, true);
+    journal.event(&mut session, &agent::AgentEvent::TurnStart);
+    assert!(journal.error().is_some());
+    // The terminal transaction fails too; the operation stays open and the end can be tried again.
+    assert!(journal.finish(Some(&mut session), None).is_err());
+    assert!(session.value(OP_META, &operation).is_some());
+    read_only(&path, false);
+    journal.finish(Some(&mut session), None).unwrap();
+    let session = reopened(dir.path(), &session);
+    let result = session.value(OP_RESULT, &operation).unwrap();
+    assert_eq!(result["status"], "failed");
+    assert_eq!(result["error"]["code"], "journal_write_failed");
+    assert!(session.value(OP_META, &operation).is_none());
+    assert_eq!(
+        session.value(LANE_STATE, "main").unwrap()["currentOperationId"],
+        Value::Null
+    );
+    let mut session = session;
+    assert_eq!(
+        settle(&mut session).unwrap(),
+        Recovered::default(),
+        "nothing is left to end again"
+    );
+}

@@ -14,7 +14,9 @@
 //! the message carries one [`ROUTE_DIAGNOSTIC`] ("Claude subscription limit reached; using API credits until
 //! <reset>"). Turns 2..n go straight to the API until the reset (or [`DEFAULT_HOLD_MS`] when none was reported),
 //! with no CLI spawned. The first turn after the reset tries the subscription again and, unless it is still out of
-//! usage, carries a route diagnostic naming the switch back. A transient 429/529, an error after streamed content,
+//! usage, carries a route diagnostic naming the switch back. A failed API call ends the hold too (a revoked key, the
+//! credits gone, an outage): the next turn tries the subscription again rather than failing on the API until the
+//! reset, and a plan still out of usage starts a new hold. A transient 429/529, an error after streamed content,
 //! fallback turned off (`claude.apiFallback: false`) or no API key leave the subscription's error as it was (no
 //! key adds [`KEY_HINT`]). The hold lives in this process only.
 
@@ -70,7 +72,9 @@ impl Default for RouterOptions {
     }
 }
 
-/// The routing state of one process: until when calls skip the subscription.
+/// The routing state of one process: until when calls skip the subscription. It changes only under its lock, by
+/// [`Router::start_hold`] and [`Router::end_hold`]; ending names the hold it ends, so a call that read an old hold
+/// never clears a newer one another call started meanwhile.
 pub struct Router {
     options: RouterOptions,
     hold: Mutex<Option<i64>>,
@@ -266,6 +270,40 @@ impl Router {
         *jsrt::sync::lock(&self.hold)
     }
 
+    /// The plan is out of usage until `until`: calls go to the API until then (or until a later hold's end).
+    fn start_hold(&self, until: i64) {
+        let mut hold = jsrt::sync::lock(&self.hold);
+        *hold = Some(hold.map_or(until, |held| held.max(until)));
+    }
+
+    /// End the hold until `until`, unless another call replaced it since it was read.
+    fn end_hold(&self, until: i64) {
+        let mut hold = jsrt::sync::lock(&self.hold);
+        if *hold == Some(until) {
+            *hold = None;
+        }
+    }
+
+    /// The call on API credits while held until `until`; a failed one ends the hold.
+    #[allow(clippy::too_many_arguments)]
+    async fn api_held(
+        &self,
+        until: i64,
+        model: &Model,
+        context: &TranscriptContext,
+        options: &SimpleStreamOptions,
+        transport: &dyn Transport,
+        sink: &mut EventSink<'_>,
+        key: &str,
+        switched: Option<Switch>,
+    ) -> AssistantMessage {
+        let message = self.api(model, context, options, transport, sink, key, switched).await;
+        if message.stop_reason == StopReason::Error {
+            self.end_hold(until);
+        }
+        message
+    }
+
     fn agent_dir(&self) -> PathBuf {
         self.options.agent_dir.clone().unwrap_or_else(|| {
             let env = &self.options.env;
@@ -377,14 +415,19 @@ impl Router {
             return self.subscription(model, context, options, sink).await;
         }
         let now = (self.options.clock)();
-        let held = self.held_until();
-        if let Some(until) = held {
-            if now < until
-                && let Some(key) = self.api_key(options, &agent_dir)
-            {
-                return self.api(model, context, options, transport, sink, &key, None).await;
+        // Back on the subscription because the hold ran out: said on this call's message.
+        let mut expired = false;
+        if let Some(until) = self.held_until() {
+            if now < until {
+                if let Some(key) = self.api_key(options, &agent_dir) {
+                    return self
+                        .api_held(until, model, context, options, transport, sink, &key, None)
+                        .await;
+                }
+            } else {
+                expired = true;
             }
-            *jsrt::sync::lock(&self.hold) = None;
+            self.end_hold(until);
         }
         let mut gate = Gate::new(sink);
         let mut message = {
@@ -396,13 +439,22 @@ impl Router {
             Some(resets_at) if !gate.committed => match self.api_key(options, &agent_dir) {
                 Some(key) => {
                     let until = resets_at.filter(|r| *r > now).unwrap_or(now + DEFAULT_HOLD_MS);
-                    *jsrt::sync::lock(&self.hold) = Some(until);
+                    self.start_hold(until);
                     let switched = Switch {
                         until,
                         reason: message.error_message.clone().unwrap_or_default(),
                     };
                     return self
-                        .api(model, context, options, transport, gate.sink, &key, Some(switched))
+                        .api_held(
+                            until,
+                            model,
+                            context,
+                            options,
+                            transport,
+                            gate.sink,
+                            &key,
+                            Some(switched),
+                        )
                         .await;
                 }
                 None => {
@@ -410,7 +462,7 @@ impl Router {
                     error.push_str(&format!(" ({KEY_HINT})"));
                 }
             },
-            _ if held.is_some() => {
+            _ if expired => {
                 let mut extra = Map::new();
                 extra.insert("provider".into(), super::PROVIDER.into());
                 message

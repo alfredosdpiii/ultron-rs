@@ -17,8 +17,11 @@
 //!   and progress are in the goal document, written with every change. A worker whose `GoalJobs` keeps no journal
 //!   (`job_state` is `None`) behaves as TypeScript: an active goal whose job was running loads as paused.
 //!
-//! The document `{version: 1, goal}` is the session value `ultron.module/goal`. Requests and commands run one at a
-//! time (TS interleaves `goal.*` requests with commands; only their order of effects matters here).
+//! The document `{version: 1, goal}` is the session value `ultron.module/goal`; a failed write is the error of the
+//! command, request or task end that made it. Each change of the goal is made under one lock, and the job calls it
+//! decides (start, stop) and a check's run are made with the lock released: stopping a job ends it on the calling
+//! thread and its end comes back through [`GoalDriver::task_ended`]. A start in flight is named by its run key; a
+//! job whose goal moved on meanwhile is stopped, and a job that ended before its start returned is settled then.
 
 use crate::store::read_versioned;
 use crate::util::Clock;
@@ -259,10 +262,58 @@ fn tail(output: &str) -> String {
     }
 }
 
+/// A [`GoalJobs`] call decided under the driver's lock and made after it is released: stopping a running job ends it
+/// on the calling thread, and its end comes back through [`GoalDriver::task_ended`], which takes the lock.
+enum Effect {
+    Stop {
+        job: String,
+        reason: String,
+    },
+    Start {
+        key: String,
+        brief: String,
+        usage_root: String,
+    },
+}
+
 struct State {
     goal: Option<Value>,
     loaded: bool,
     closed: bool,
+    /// Calls to make once the lock is released.
+    effects: Vec<Effect>,
+    /// Run keys (`<goal id>:<run>`) whose job is being started, outside the lock.
+    starting: Vec<String>,
+    /// Task ends that arrived while a start was in flight: one may be the job being started, which ended before its
+    /// id was recorded.
+    early_ends: Vec<(String, Option<Value>)>,
+}
+
+/// What `/goal` shows: a fixed text, or the goal's status (after the calls it made), with a note.
+enum Reply {
+    Text(String),
+    Status(&'static str),
+}
+
+/// A `goal.*` request that needs the check run: what it was decided against, re-checked once the run returns.
+struct PendingCheck {
+    id: String,
+    command: String,
+}
+
+fn run_key(goal: &Value) -> String {
+    format!("{}:{}", text_of(goal, "id"), goal["runs"])
+}
+
+/// Takes the goal's job and stops it after the lock is released.
+fn stop_job(goal: &mut Value, effects: &mut Vec<Effect>, reason: &str) {
+    if let Some(job) = goal["job"].as_str().map(str::to_string) {
+        effects.push(Effect::Stop {
+            job,
+            reason: reason.into(),
+        });
+    }
+    goal["job"] = Value::Null;
 }
 
 pub struct GoalDriver {
@@ -282,12 +333,95 @@ impl GoalDriver {
                 goal: None,
                 loaded: false,
                 closed: false,
+                effects: Vec::new(),
+                starting: Vec::new(),
+                early_ends: Vec::new(),
             }),
         }
     }
 
     fn now(&self) -> i64 {
         (self.now)()
+    }
+
+    /// Runs `step` on the loaded goal under the lock, then makes the [`GoalJobs`] calls it decided with the lock
+    /// released. A failed write of the document is the call's error, even when the step itself succeeded.
+    fn locked<R>(&self, step: impl FnOnce(&Self, &mut State) -> Result<R, String>) -> Result<R, String> {
+        let (result, effects) = {
+            let mut state = jsrt::sync::lock(&self.state);
+            let result = self.load(&mut state).and_then(|()| step(self, &mut state));
+            (result, std::mem::take(&mut state.effects))
+        };
+        let applied = self.apply(effects);
+        let result = result?;
+        applied.map(|()| result)
+    }
+
+    /// Makes the calls, then records what each start returned (which may decide more calls).
+    fn apply(&self, mut effects: Vec<Effect>) -> Result<(), String> {
+        let mut outcome = Ok(());
+        while !effects.is_empty() {
+            for effect in std::mem::take(&mut effects) {
+                match effect {
+                    Effect::Stop { job, reason } => {
+                        let _ = self.jobs.stop_job(&job, &reason);
+                    }
+                    Effect::Start { key, brief, usage_root } => {
+                        let started = self.jobs.start_job(&brief, &key, &usage_root);
+                        let mut state = jsrt::sync::lock(&self.state);
+                        let recorded = self.started(&mut state, &key, started);
+                        effects.extend(std::mem::take(&mut state.effects));
+                        outcome = outcome.and(recorded);
+                    }
+                }
+            }
+        }
+        outcome
+    }
+
+    /// A start returned: its job is the goal's when the goal still waits on that run, and is stopped otherwise (the
+    /// goal was paused, cleared or replaced while it started).
+    fn started(&self, state: &mut State, key: &str, started: Result<String, String>) -> Result<(), String> {
+        state.starting.retain(|starting| starting != key);
+        let mut early = if state.starting.is_empty() {
+            std::mem::take(&mut state.early_ends)
+        } else {
+            Vec::new()
+        };
+        let waiting = state
+            .goal
+            .as_ref()
+            .is_some_and(|goal| goal["status"] == "active" && goal["job"].is_null() && run_key(goal) == key);
+        let result = match started {
+            Ok(job) if !waiting => {
+                state.effects.push(Effect::Stop {
+                    job,
+                    reason: "goal changed".into(),
+                });
+                Ok(())
+            }
+            Ok(job) => {
+                state.goal.as_mut().expect("a goal")["job"] = job.as_str().into();
+                let persisted = self.persist(state);
+                let ended = early.iter().position(|(id, _)| *id == job).map(|at| early.remove(at));
+                match ended {
+                    Some((id, result)) => persisted.and(self.job_ended(state, &id, result.as_ref())),
+                    None => persisted,
+                }
+            }
+            Err(error) if waiting => {
+                let goal = state.goal.as_mut().expect("a goal");
+                goal["status"] = "paused".into();
+                goal["reason"] = format!("the goal job could not start: {error}").into();
+                self.persist(state)
+            }
+            Err(_) => Ok(()),
+        };
+        if !state.starting.is_empty() {
+            // Kept for the starts still in flight.
+            state.early_ends.extend(early);
+        }
+        result
     }
 
     fn load(&self, state: &mut State) -> Result<(), String> {
@@ -300,45 +434,38 @@ impl GoalDriver {
         if state.goal.is_none() {
             state.goal = goal;
         }
-        self.reconcile(state);
-        Ok(())
+        self.reconcile(state)
     }
 
-    /// Reconciles an active goal with the task journal after a reopen (see the module docs).
-    fn reconcile(&self, state: &mut State) {
+    /// Reconciles an active goal with the task journal after a reopen (see the module docs). The journal lookups
+    /// only read it and never call back into the driver, so they run under the lock.
+    fn reconcile(&self, state: &mut State) -> Result<(), String> {
         let Some(goal) = state.goal.as_mut().filter(|goal| goal["status"] == "active") else {
-            return;
+            return Ok(());
         };
         let mut changed = false;
         if goal["job"].is_null() {
             // An active goal without a job was starting a run when the worker died: the run is written before it is
             // admitted, so its key names the task if the admission happened.
-            let key = format!("{}:{}", text_of(goal, "id"), int_of(goal, "runs"));
-            match self.jobs.job_with_key(&key) {
+            match self.jobs.job_with_key(&run_key(goal)) {
                 Some(task) => {
                     goal["job"] = task.into();
                     changed = true;
                 }
-                None => {
-                    self.start_job(state);
-                    return;
-                }
+                None => return self.start_job(state),
             }
         }
         let Some(job) = goal["job"].as_str().map(str::to_string) else {
-            return;
+            return Ok(());
         };
         match self.jobs.job_state(&job) {
-            Some(JobState::Running) => {
-                if changed {
-                    self.persist(state);
-                }
-            }
+            Some(JobState::Running) if changed => self.persist(state),
+            Some(JobState::Running) => Ok(()),
             Some(JobState::Ended(result)) if cut_off(&result) => {
                 // The worker going away cut the run off, not the job's own work: the goal goes on with its next run.
                 goal["job"] = Value::Null;
                 goal["last_answer"] = "The previous run was interrupted when Ultron restarted; continue from the goal's state and the files.".into();
-                self.start_job(state);
+                self.start_job(state)
             }
             Some(JobState::Ended(result)) => self.job_ended(state, &job, Some(&result)),
             None => {
@@ -346,6 +473,7 @@ impl GoalDriver {
                 goal["job"] = Value::Null;
                 goal["status"] = "paused".into();
                 goal["reason"] = "Ultron restarted while the goal job ran; /goal resume continues".into();
+                Ok(())
             }
         }
     }
@@ -355,16 +483,17 @@ impl GoalDriver {
         self.get()
     }
 
-    /// Writes the document; as in TS a failed write does not fail the operation.
-    fn persist(&self, state: &State) {
-        let _ = self.store.write(&json!({"version": 1, "goal": state.goal}));
+    /// Writes the document.
+    fn persist(&self, state: &State) -> Result<(), String> {
+        self.store
+            .write(&json!({"version": 1, "goal": state.goal}))
+            .map_err(|error| format!("the session goal could not be saved: {error}"))
     }
 
     /// The goal now (a copy), after the document loads.
     pub fn get(&self) -> Result<Option<Value>, String> {
-        let mut state = jsrt::sync::lock(&self.state);
-        self.load(&mut state)?;
-        Ok(state.goal.clone())
+        self.locked(|_, _| Ok(()))?;
+        Ok(jsrt::sync::lock(&self.state).goal.clone())
     }
 
     /// Stops starting jobs (shutdown).
@@ -372,92 +501,91 @@ impl GoalDriver {
         jsrt::sync::lock(&self.state).closed = true;
     }
 
-    fn start_job(&self, state: &mut State) {
+    /// Writes the goal's next run, then has its job started once the lock is released.
+    fn start_job(&self, state: &mut State) -> Result<(), String> {
         if state.closed {
-            return;
+            return Ok(());
         }
         let now = self.now();
         let goal = state.goal.as_mut().expect("a goal");
         goal["runs"] = (int_of(goal, "runs") + 1).into();
         goal["run_progress"] = false.into();
         goal["updated_at"] = now.into();
-        let id = text_of(goal, "id");
-        let key = format!("{id}:{}", goal["runs"]);
-        // The run is durable before its task is admitted, so a reopen finds the task by this key.
         goal["job"] = Value::Null;
-        self.persist(state);
-        let goal = state.goal.as_mut().expect("a goal");
-        match self
-            .jobs
-            .start_job(&goal_brief(goal), &key, &format!("{GOAL_USAGE_ROOT_PREFIX}{id}"))
-        {
-            Ok(job) => goal["job"] = job.into(),
-            Err(error) => {
-                goal["job"] = Value::Null;
-                goal["status"] = "paused".into();
-                goal["reason"] = format!("the goal job could not start: {error}").into();
-            }
+        let key = run_key(goal);
+        // The run is durable before its task is admitted, so a reopen finds the task by this key; a run that could
+        // not be written is not started.
+        if let Err(error) = self.persist(state) {
+            let goal = state.goal.as_mut().expect("a goal");
+            goal["status"] = "paused".into();
+            goal["reason"] = format!("{error}; /goal resume retries").into();
+            return Err(error);
         }
-        self.persist(state);
+        let goal = state.goal.as_ref().expect("a goal");
+        let effect = Effect::Start {
+            key: key.clone(),
+            brief: goal_brief(goal),
+            usage_root: format!("{GOAL_USAGE_ROOT_PREFIX}{}", text_of(goal, "id")),
+        };
+        state.starting.push(key);
+        state.effects.push(effect);
+        Ok(())
     }
 
-    fn stop_job(&self, goal: &mut Value, reason: &str) {
-        let job = goal["job"].as_str().map(str::to_string);
-        goal["job"] = Value::Null;
-        if let Some(job) = job {
-            let _ = self.jobs.stop_job(&job, reason);
-        }
-    }
-
-    fn set_status(&self, state: &mut State, status: &str, reason: Option<&str>) {
+    fn set_status(&self, state: &mut State, status: &str, reason: Option<&str>) -> Result<(), String> {
         let now = self.now();
         let goal = state.goal.as_mut().expect("a goal");
         goal["status"] = status.into();
         goal["reason"] = reason.map_or(Value::Null, Value::from);
         goal["updated_at"] = now.into();
-        self.persist(state);
+        self.persist(state)
     }
 
     /// `/goal [objective | pause | resume | clear | check [command] | status]`; returns the text to show.
     pub fn command(&self, args: &str) -> Result<String, String> {
-        let mut guard = jsrt::sync::lock(&self.state);
-        let state = &mut *guard;
-        self.load(state)?;
         let text = jsrt::string::trim(args);
+        let reply = self.locked(|this, state| this.command_step(state, text))?;
+        Ok(match reply {
+            Reply::Text(text) => text,
+            Reply::Status(note) => goal_status_text(jsrt::sync::lock(&self.state).goal.as_ref()) + note,
+        })
+    }
+
+    fn command_step(&self, state: &mut State, text: &str) -> Result<Reply, String> {
         if text.is_empty() || text == "status" {
-            return Ok(goal_status_text(state.goal.as_ref()));
+            return Ok(Reply::Status(""));
         }
         if text == "clear" {
             let Some(goal) = state.goal.as_mut() else {
-                return Ok("No goal to clear.".into());
+                return Ok(Reply::Text("No goal to clear.".into()));
             };
-            self.stop_job(goal, "goal cleared");
+            stop_job(goal, &mut state.effects, "goal cleared");
             state.goal = None;
-            self.persist(state);
-            return Ok("Goal cleared.".into());
+            self.persist(state)?;
+            return Ok(Reply::Text("Goal cleared.".into()));
         }
         if text == "pause" {
             match state.goal.as_mut() {
-                Some(goal) if goal["status"] == "active" => self.stop_job(goal, "goal paused"),
-                _ => return Ok(goal_status_text(state.goal.as_ref())),
+                Some(goal) if goal["status"] == "active" => stop_job(goal, &mut state.effects, "goal paused"),
+                _ => return Ok(Reply::Status("")),
             }
-            self.set_status(state, "paused", Some("paused by you; /goal resume continues"));
-            return Ok(goal_status_text(state.goal.as_ref()));
+            self.set_status(state, "paused", Some("paused by you; /goal resume continues"))?;
+            return Ok(Reply::Status(""));
         }
         if text == "resume" {
             match state.goal.as_ref() {
                 Some(goal) if goal["status"] != "complete" && goal["status"] != "active" => {}
-                _ => return Ok(goal_status_text(state.goal.as_ref())),
+                _ => return Ok(Reply::Status("")),
             }
-            self.set_status(state, "active", None);
+            self.set_status(state, "active", None)?;
             state.goal.as_mut().expect("a goal")["stuck"] = 0.into();
-            self.start_job(state);
-            return Ok(goal_status_text(state.goal.as_ref()));
+            self.start_job(state)?;
+            return Ok(Reply::Status(""));
         }
         if text == "check" || text.starts_with("check ") {
             let now = self.now();
             let Some(goal) = state.goal.as_mut() else {
-                return Ok("Set a goal first: /goal <objective>.".into());
+                return Ok(Reply::Text("Set a goal first: /goal <objective>.".into()));
             };
             let command = jsrt::string::trim(&text["check".len()..]);
             goal["check"] = if command.is_empty() {
@@ -469,12 +597,12 @@ impl GoalDriver {
             goal["stuck"] = 0.into();
             goal["last_signature"] = Value::Null;
             goal["updated_at"] = now.into();
-            self.persist(state);
-            return Ok(goal_status_text(state.goal.as_ref()));
+            self.persist(state)?;
+            return Ok(Reply::Status(""));
         }
         let mut revision = 1;
         if let Some(goal) = state.goal.as_mut() {
-            self.stop_job(goal, "goal replaced");
+            stop_job(goal, &mut state.effects, "goal replaced");
             revision = int_of(goal, "revision") + 1;
         }
         let now = self.now();
@@ -497,30 +625,31 @@ impl GoalDriver {
             "updated_at": now,
             "completion": null,
         }));
-        self.start_job(state);
-        Ok(format!(
-            "{}\nAdd the check that decides when it is done: /goal check <command>.",
-            goal_status_text(state.goal.as_ref())
+        self.start_job(state)?;
+        Ok(Reply::Status(
+            "\nAdd the check that decides when it is done: /goal check <command>.",
         ))
     }
 
     /// A task ended (the worker's task-end observer; `result` is its `NativeResult`): a goal job that ended early is
     /// started again when its run made progress, otherwise the goal pauses.
     pub fn task_ended(&self, task_id: &str, result: Option<&Value>) -> Result<(), String> {
-        let mut guard = jsrt::sync::lock(&self.state);
-        let state = &mut *guard;
-        self.load(state)?;
-        self.job_ended(state, task_id, result);
-        Ok(())
+        self.locked(|this, state| this.job_ended(state, task_id, result))
     }
 
-    fn job_ended(&self, state: &mut State, task_id: &str, result: Option<&Value>) {
+    fn job_ended(&self, state: &mut State, task_id: &str, result: Option<&Value>) -> Result<(), String> {
         let now = self.now();
         let Some(goal) = state.goal.as_mut() else {
-            return;
+            return Ok(());
         };
-        if state.closed || goal["job"] != task_id {
-            return;
+        if state.closed {
+            return Ok(());
+        }
+        if goal["job"] != task_id {
+            if !state.starting.is_empty() {
+                state.early_ends.push((task_id.to_string(), result.cloned()));
+            }
+            return Ok(());
         }
         goal["job"] = Value::Null;
         let answer = match result.map(|result| (&result["value"], result.get("error"))) {
@@ -537,24 +666,21 @@ impl GoalDriver {
         };
         goal["updated_at"] = now.into();
         if goal["status"] != "active" {
-            self.persist(state);
-            return;
+            return self.persist(state);
         }
         if goal["run_progress"] == true {
-            self.start_job(state);
-            return;
+            return self.start_job(state);
         }
         self.set_status(
             state,
             "paused",
             Some("the goal job ended without progress; /goal resume continues"),
-        );
+        )
     }
 
-    fn run_check(&self, state: &mut State) -> Result<Value, String> {
+    /// Records a check's result on the goal it ran for.
+    fn record_check(&self, state: &mut State, command: String, result: GoalCheckResult) -> Result<Value, String> {
         let goal = state.goal.as_mut().expect("a goal");
-        let command = text_of(goal, "check");
-        let result = self.jobs.run_check(&command, CHECK_TIMEOUT_SECONDS)?;
         let passed = result.exit_code == Some(0) && !result.timed_out;
         let signature = check_signature(&result);
         let same = goal["last_signature"] == signature.as_str();
@@ -582,7 +708,7 @@ impl GoalDriver {
         });
         goal["updated_at"] = now.into();
         let run = goal["last_check"].clone();
-        self.persist(state);
+        self.persist(state)?;
         Ok(run)
     }
 
@@ -604,79 +730,68 @@ impl GoalDriver {
         Ok(())
     }
 
-    /// One `goal.*` request from `lane`.
+    /// One `goal.*` request from `lane`. A check runs with the lock released (it can take CHECK_TIMEOUT_SECONDS),
+    /// and its result is recorded only on the goal it ran for.
     pub fn handle_request(&self, kind: &str, payload: &Map<String, Value>, lane: &str) -> Result<Value, String> {
-        let mut guard = jsrt::sync::lock(&self.state);
-        let state = &mut *guard;
-        self.load(state)?;
+        let check = match self.locked(|this, state| this.request_step(state, kind, payload, lane))? {
+            Ok(done) => return Ok(done),
+            Err(check) => check,
+        };
+        let result = self.jobs.run_check(&check.command, CHECK_TIMEOUT_SECONDS)?;
+        self.locked(|this, state| {
+            let same = state
+                .goal
+                .as_ref()
+                .is_some_and(|goal| text_of(goal, "id") == check.id && goal["check"] == check.command.as_str());
+            if !same {
+                return Err("The session goal changed while its check ran: read it with goal.get()".into());
+            }
+            if kind == "goal.complete" {
+                Self::current(state.goal.as_ref().expect("a goal"), payload.get("revision"))?;
+            }
+            let run = this.record_check(state, check.command, result)?;
+            this.checked(state, kind, payload, run)
+        })
+    }
+
+    /// The part of a request before its check: `Ok` is the reply when no check is needed.
+    fn request_step(
+        &self,
+        state: &mut State,
+        kind: &str,
+        payload: &Map<String, Value>,
+        lane: &str,
+    ) -> Result<Result<Value, PendingCheck>, String> {
         if kind == "goal.get" {
             kernel::ops::fields("goal.get", payload)?;
-            return Ok(state.goal.as_ref().map_or(Value::Null, public_goal));
+            return Ok(Ok(state.goal.as_ref().map_or(Value::Null, public_goal)));
         }
         let goal = state.goal.as_ref().ok_or("There is no session goal")?;
         let job = goal["job"].as_str().and_then(|job| self.jobs.lane_of_job(job));
         if lane != kernel::ROOT_LANE && Some(lane) != job.as_deref() {
             return Err("Only the goal's job or the root agent works the session goal; subagents report to it".into());
         }
+        let pending = || PendingCheck {
+            id: text_of(goal, "id"),
+            command: text_of(goal, "check"),
+        };
         match kind {
             "goal.check" => {
                 kernel::ops::fields("goal.check", payload)?;
                 if goal["check"].is_null() {
                     return Err("This goal has no check command (the user sets one with /goal check)".into());
                 }
-                let mut run = self.run_check(state)?;
-                let goal = state.goal.as_ref().expect("a goal");
-                if goal["status"] == "active" && int_of(goal, "stuck") >= STUCK_CHECKS {
-                    let stuck = int_of(goal, "stuck");
-                    self.set_status(
-                        state,
-                        "paused",
-                        Some(&format!(
-                            "{stuck} failing checks in a row gave the same result; /goal resume continues"
-                        )),
-                    );
-                    let goal = state.goal.as_mut().expect("a goal");
-                    // Stopped after this reply reaches the job's cell.
-                    if let Some(stopping) = goal["job"].as_str().map(str::to_string) {
-                        let jobs = self.jobs.clone();
-                        std::thread::spawn(move || {
-                            std::thread::sleep(Duration::from_millis(100));
-                            let _ = jobs.stop_job(&stopping, "goal stuck");
-                        });
-                    }
-                    goal["job"] = Value::Null;
-                    run["paused"] = true.into();
-                    run["reason"] = goal["reason"].clone();
-                    return Ok(run);
-                }
-                run["paused"] = false.into();
-                Ok(run)
+                Ok(Err(pending()))
             }
             "goal.complete" => {
                 kernel::ops::fields("goal.complete", payload)?;
                 Self::current(goal, payload.get("revision"))?;
-                let summary = text(payload.get("summary"), "summary")?;
-                let evidence = evidence_list(payload.get("evidence"))?;
-                let checked = !goal["check"].is_null();
-                if checked {
-                    let run = self.run_check(state)?;
-                    if run["passed"] != true {
-                        return Ok(json!({
-                            "complete": false,
-                            "status": state.goal.as_ref().expect("a goal")["status"],
-                            "check": run,
-                            "message": "The check failed, so the goal is not complete: fix the cause and call goal.complete again.",
-                        }));
-                    }
+                text(payload.get("summary"), "summary")?;
+                evidence_list(payload.get("evidence"))?;
+                if goal["check"].is_null() {
+                    return self.complete(state, payload, false).map(Ok);
                 }
-                let now = self.now();
-                state.goal.as_mut().expect("a goal")["completion"] =
-                    json!({"summary": summary, "evidence": evidence, "verified": checked, "at": now});
-                self.set_status(state, "complete", None);
-                let goal = state.goal.as_ref().expect("a goal");
-                Ok(
-                    json!({"complete": true, "status": goal["status"], "verified": checked, "check": goal["last_check"]}),
-                )
+                Ok(Err(pending()))
             }
             "goal.blocked" => {
                 kernel::ops::fields("goal.blocked", payload)?;
@@ -688,11 +803,69 @@ impl GoalDriver {
                         "goal.blocked is accepted after {BLOCK_MIN_CHECKS} checks ({checks} so far): keep working, test with goal.check(), and try another approach"
                     ));
                 }
-                self.set_status(state, "blocked", Some(&reason));
-                Ok(json!({"status": "blocked", "reason": reason}))
+                self.set_status(state, "blocked", Some(&reason))?;
+                Ok(Ok(json!({"status": "blocked", "reason": reason})))
             }
             _ => Err(kernel::ops::not_wired(kind)),
         }
+    }
+
+    /// The part of a request after its check ran (`run` is the recorded check).
+    fn checked(
+        &self,
+        state: &mut State,
+        kind: &str,
+        payload: &Map<String, Value>,
+        mut run: Value,
+    ) -> Result<Value, String> {
+        if kind == "goal.complete" {
+            if run["passed"] != true {
+                return Ok(json!({
+                    "complete": false,
+                    "status": state.goal.as_ref().expect("a goal")["status"],
+                    "check": run,
+                    "message": "The check failed, so the goal is not complete: fix the cause and call goal.complete again.",
+                }));
+            }
+            return self.complete(state, payload, true);
+        }
+        let goal = state.goal.as_ref().expect("a goal");
+        if goal["status"] == "active" && int_of(goal, "stuck") >= STUCK_CHECKS {
+            let stuck = int_of(goal, "stuck");
+            self.set_status(
+                state,
+                "paused",
+                Some(&format!(
+                    "{stuck} failing checks in a row gave the same result; /goal resume continues"
+                )),
+            )?;
+            let goal = state.goal.as_mut().expect("a goal");
+            // Stopped after this reply reaches the job's cell.
+            if let Some(stopping) = goal["job"].as_str().map(str::to_string) {
+                let jobs = self.jobs.clone();
+                std::thread::spawn(move || {
+                    std::thread::sleep(Duration::from_millis(100));
+                    let _ = jobs.stop_job(&stopping, "goal stuck");
+                });
+            }
+            goal["job"] = Value::Null;
+            run["paused"] = true.into();
+            run["reason"] = goal["reason"].clone();
+            return Ok(run);
+        }
+        run["paused"] = false.into();
+        Ok(run)
+    }
+
+    fn complete(&self, state: &mut State, payload: &Map<String, Value>, verified: bool) -> Result<Value, String> {
+        let summary = text(payload.get("summary"), "summary")?;
+        let evidence = evidence_list(payload.get("evidence"))?;
+        let now = self.now();
+        state.goal.as_mut().expect("a goal")["completion"] =
+            json!({"summary": summary, "evidence": evidence, "verified": verified, "at": now});
+        self.set_status(state, "complete", None)?;
+        let goal = state.goal.as_ref().expect("a goal");
+        Ok(json!({"complete": true, "status": goal["status"], "verified": verified, "check": goal["last_check"]}))
     }
 }
 
@@ -702,7 +875,7 @@ impl ApiModule for GoalDriver {
     }
 
     fn start(&self, _host: &dyn TaskHost) -> Result<(), String> {
-        self.load(&mut jsrt::sync::lock(&self.state))
+        self.locked(|_, _| Ok(()))
     }
 
     fn handle(&self, request: &Request<'_>) -> Result<Value, String> {

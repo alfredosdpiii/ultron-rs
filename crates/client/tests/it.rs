@@ -10,6 +10,8 @@ mod support;
 
 #[path = "fixture.rs"]
 mod fixture;
+#[path = "link_phase.rs"]
+mod link_phase;
 #[path = "lost.rs"]
 mod lost;
 #[path = "radius.rs"]

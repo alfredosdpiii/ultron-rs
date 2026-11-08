@@ -221,6 +221,67 @@ fn host_durable_jobs_release_hands_running_jobs_to_the_next_owner() {
     assert_eq!(journal_record(&dir, &stopped)["status"], "cancelled");
 }
 
+/// B-report #2: after `release_jobs` the old worker no longer settles its jobs, so nothing there may wait for it to:
+/// a waiter already blocked on the job wakes, and a later cancel (Esc, `job.cancel()`, shutdown) returns at once and
+/// leaves the job to the next owner, which follows it to its one end.
+#[test]
+fn host_durable_jobs_release_wakes_waiters_and_a_later_cancel_returns() {
+    let temp = tempfile::tempdir().unwrap();
+    let dir = temp.path().canonicalize().unwrap();
+    let first = Arc::new(host_in(&dir));
+    let id = call(
+        &first,
+        "shell.run",
+        json!({ "command": "i=0; while [ ! -e go ] && [ $i -lt 2400 ]; do sleep 0.05; i=$((i+1)); done; echo handed", "yield_after": 0 }),
+    )["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    // Within the hang guard, or the test fails rather than hangs.
+    let returns = |what: &str, work: Box<dyn FnOnce() -> Value + Send>| {
+        let (sent, received) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = sent.send(work());
+        });
+        received
+            .recv_timeout(HANG)
+            .unwrap_or_else(|_| panic!("hang guard: {what}"))
+    };
+    let (waiting, waited) = std::sync::mpsc::channel();
+    let (host, job) = (first.clone(), id.clone());
+    std::thread::spawn(move || {
+        let _ = waiting.send(call(&host, "shell.result", json!({ "id": job })));
+    });
+    first.release_jobs();
+    let woken = waited
+        .recv_timeout(HANG)
+        .expect("hang guard: the waiter wakes on release");
+    assert_eq!(woken["status"], "running");
+    let (host, job) = (first.clone(), id.clone());
+    let cancelled = returns(
+        "a cancel after the release",
+        Box::new(move || call(&host, "shell.cancel", json!({ "id": job }))),
+    );
+    assert_eq!(cancelled["status"], "running");
+    let host = first.clone();
+    returns(
+        "stopping the jobs after the release",
+        Box::new(move || {
+            host.stop_jobs();
+            Value::Null
+        }),
+    );
+    drop(first);
+
+    let second = host_in(&dir);
+    assert_eq!(call(&second, "shell.get", json!({ "id": id }))["status"], "running");
+    std::fs::write(dir.join("go"), "").unwrap();
+    subset(
+        &call(&second, "shell.result", json!({ "id": id })),
+        &json!({ "status": "completed", "exit_code": 0, "text": "handed\n" }),
+    );
+}
+
 /// A TypeScript journal names no process: its running jobs read as interrupted, as there.
 #[test]
 fn host_durable_jobs_typescript_records_read_as_interrupted() {

@@ -413,8 +413,8 @@ fn kernel_host_requests_round_trip_with_per_cell_handlers_and_limits() {
         .execute("await rlm.host_request('x.y')", None, Some(override_handler))
         .unwrap();
     assert_eq!(result.result.as_deref(), Some("'cell handler: x.y'"));
-    // A request after its cell has finished has no active cell. The task waits for `go` (created once the cell has
-    // returned) and touches `asked` once its request is answered.
+    // A request from a task its finished cell left running is refused. The task waits for `go` (created once the cell
+    // has returned) and touches `asked` once its request is answered.
     let directory = tempfile::tempdir().unwrap();
     let go = directory.path().join("go");
     let asked = directory.path().join("asked");
@@ -432,7 +432,7 @@ fn kernel_host_requests_round_trip_with_per_cell_handlers_and_limits() {
         &kernel,
         "try:\n    await late\nexcept Exception as error:\n    message = str(error)\nmessage",
     );
-    assert_eq!(late, "'RLM host request has no active cell'");
+    assert_eq!(late, "'RLM host request from a cell that has finished'");
     // A reply that cannot be encoded within a frame becomes an error in Python.
     let big: Arc<dyn HostHandler> =
         Arc::new(|_: &str, _: Map<String, Value>, _: &Signal| Ok(Value::from("b".repeat(MIB))));
@@ -442,6 +442,192 @@ fn kernel_host_requests_round_trip_with_per_cell_handlers_and_limits() {
         .error
         .unwrap();
     assert_eq!(result.evalue, "RLM kernel outbound frame exceeds 1 MiB (1048576 bytes)");
+}
+
+/// A request from a task an earlier cell left running, made while a later cell runs, is refused instead of running
+/// under the later cell's handler, and what that task prints is not the later cell's output.
+#[test]
+fn kernel_host_request_from_a_finished_cells_task_is_not_the_running_cells() {
+    let kernel = kernel();
+    let directory = tempfile::tempdir().unwrap();
+    let go = directory.path().join("go");
+    run(
+        &kernel,
+        &format!(
+            "import asyncio, os\nasync def later():\n    while not os.path.exists({go:?}):\n        await asyncio.sleep(0.01)\n    print('stale print')\n    return await rlm.host_request('test.echo', {{}})\nlate = asyncio.ensure_future(later())",
+            go = go.display().to_string(),
+        ),
+    );
+    let calls = Arc::new(AtomicUsize::new(0));
+    let counter = calls.clone();
+    let later_cell: Arc<dyn HostHandler> = Arc::new(move |_: &str, _: Map<String, Value>, _: &Signal| {
+        counter.fetch_add(1, Ordering::SeqCst);
+        Ok(Value::from("later cell's handler"))
+    });
+    let code = format!(
+        "open({go:?}, 'w').close()\ntry:\n    message = await late\nexcept Exception as error:\n    message = str(error)\nmessage",
+        go = go.display().to_string(),
+    );
+    let result = kernel.execute(&code, None, Some(later_cell)).unwrap();
+    assert_eq!(
+        result.result.as_deref(),
+        Some("'RLM host request from a cell that has finished'"),
+        "{result:?}"
+    );
+    assert_eq!(calls.load(Ordering::SeqCst), 0, "the later cell's handler never ran");
+    assert!(!result.stdout.contains("stale print"), "{result:?}");
+    assert!(
+        result
+            .stderr
+            .contains("[12 characters printed by a task of an earlier cell were dropped]"),
+        "{result:?}"
+    );
+}
+
+/// A request still in flight when its cell completes is answered (its signal aborted), so a later `await` of it
+/// returns instead of waiting forever.
+#[test]
+fn kernel_host_request_in_flight_when_its_cell_completes_is_still_answered() {
+    let handler: Arc<dyn HostHandler> = Arc::new(|_: &str, _: Map<String, Value>, signal: &Signal| {
+        assert!(signal.wait(HANG_GUARD), "the cell's end aborts the request");
+        Err(signal.reason().unwrap_or_default())
+    });
+    let kernel = kernel_with(options(), handler);
+    run(
+        &kernel,
+        "import asyncio\npending = asyncio.ensure_future(rlm.host_request('test.slow'))\nawait asyncio.sleep(0)",
+    );
+    let late = value(
+        &kernel,
+        "try:\n    await asyncio.wait_for(pending, 60)\nexcept Exception as error:\n    message = f'{type(error).__name__}: {error}'\nmessage",
+    );
+    assert_eq!(late, "'RuntimeError: RLM cell completed'");
+}
+
+/// A request's signal ends with its cell even after the handler returned: handlers keep it (session-core tells a shell
+/// job's cell ending from a cancel by the signal of the request that started the job).
+#[test]
+fn kernel_host_request_signal_kept_by_a_handler_ends_with_its_cell() {
+    let kept = Arc::new(Mutex::new(None::<Signal>));
+    let keep = kept.clone();
+    let handler: Arc<dyn HostHandler> = Arc::new(move |_: &str, _: Map<String, Value>, signal: &Signal| {
+        *keep.lock().unwrap() = Some(signal.clone());
+        Ok(Value::Null)
+    });
+    let kernel = kernel_with(options(), handler);
+    run(&kernel, "await rlm.host_request('test.keep')");
+    let signal = kept.lock().unwrap().clone().unwrap();
+    assert!(
+        signal.wait(HANG_GUARD),
+        "the kept signal is aborted once the cell completed"
+    );
+    assert_eq!(signal.reason().as_deref(), Some("RLM cell completed"));
+}
+
+/// Cancelling the task that awaits a host request cancels the request on the host, not only in Python; a handler's
+/// empty error is still an error.
+#[test]
+fn kernel_cancelled_host_request_is_cancelled_on_the_host() {
+    let reasons = Arc::new(Mutex::new(Vec::new()));
+    let seen = reasons.clone();
+    let directory = tempfile::tempdir().unwrap();
+    let stopped = directory.path().join("stopped");
+    let marker = stopped.clone();
+    let handler: Arc<dyn HostHandler> = Arc::new(move |kind: &str, _: Map<String, Value>, signal: &Signal| {
+        if kind == "test.empty_error" {
+            return Err(String::new());
+        }
+        signal.wait(HANG_GUARD);
+        seen.lock().unwrap().push(signal.reason().unwrap_or_default());
+        std::fs::write(&marker, "").unwrap();
+        Ok(Value::Null)
+    });
+    let kernel = kernel_with(options(), handler);
+    let code = format!(
+        "import asyncio, os\ntry:\n    await asyncio.wait_for(rlm.host_request('test.slow'), 0.05)\nexcept asyncio.TimeoutError:\n    pass\nfor _ in range(6000):\n    if os.path.exists({stopped:?}):\n        break\n    await asyncio.sleep(0.01)\nos.path.exists({stopped:?})",
+        stopped = stopped.display().to_string(),
+    );
+    assert_eq!(value(&kernel, &code), "True");
+    assert_eq!(*reasons.lock().unwrap(), ["RLM host request cancelled"]);
+    assert_eq!(
+        value(
+            &kernel,
+            "try:\n    outcome = repr(await rlm.host_request('test.empty_error'))\nexcept RuntimeError as error:\n    outcome = f'RuntimeError({error})'\noutcome"
+        ),
+        "'RuntimeError()'"
+    );
+    // A request whose frame cannot be written is not left registered.
+    assert_eq!(
+        value(
+            &kernel,
+            "import sys\nruntime = sys.modules['__main__']\nwrite = runtime._write_frame\ndef broken(line):\n    raise OSError('pipe closed')\nruntime._write_frame = broken\ntry:\n    await rlm.host_request('test.echo')\nexcept OSError:\n    pass\nfinally:\n    runtime._write_frame = write\nlen(runtime._STATE.bridge._host_requests)"
+        ),
+        "0"
+    );
+}
+
+/// A failing reset (a malformed agent-class store) is reported as that request's error; the kernel keeps running.
+#[test]
+fn kernel_reset_scratch_failure_is_the_requests_error_not_a_protocol_violation() {
+    let kernel = kernel();
+    run(&kernel, "state = {'__agents__': {'classes': [1], 'instances': {}}}");
+    let pid = kernel.pid();
+    let reset = kernel.reset_scratch().unwrap();
+    assert_eq!(reset.status, Status::Error, "{reset:?}");
+    assert_eq!(kernel.pid(), pid, "the kernel was not restarted");
+    assert_eq!(value(&kernel, "1 + 1"), "2");
+}
+
+/// The runtime runs one op at a time: a reset or snapshot sent while a cell waits on a host reply waits for the cell,
+/// and the reader keeps reading the reply meanwhile (the runtime driven directly over stdin and stdout).
+#[test]
+fn runtime_ops_wait_for_the_running_cell_without_blocking_its_host_replies() {
+    use std::io::{BufRead, BufReader, Write};
+    use std::process::{Command, Stdio};
+    let directory = tempfile::tempdir().unwrap();
+    let mut child = Command::new(kernel::env::python(|name| std::env::var(name).ok()))
+        .arg(runtime())
+        .current_dir(directory.path())
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    let mut input = child.stdin.take().unwrap();
+    let output = BufReader::new(child.stdout.take().unwrap());
+    let (frames, received) = mpsc::channel::<Value>();
+    std::thread::spawn(move || {
+        for line in output.lines().map_while(Result::ok) {
+            if frames.send(serde_json::from_str(&line).unwrap()).is_err() {
+                return;
+            }
+        }
+    });
+    let next = || received.recv_timeout(HANG_GUARD).expect("runtime frame");
+    let mut send = |frame: Value| writeln!(input, "{frame}").and_then(|()| input.flush()).unwrap();
+    assert_eq!(next()["event"], "ready");
+    send(json!({"request": "execute", "id": "c1", "code": "await rlm.host_request('t')"}));
+    let request = next();
+    assert_eq!(
+        (&request["event"], &request["cell"]),
+        (&json!("host_request"), &json!("c1"))
+    );
+    send(json!({"request": "reset_scratch", "id": "r1"}));
+    let path = directory.path().join("snap").display().to_string();
+    send(json!({"request": "snapshot", "id": "s1", "path": path}));
+    send(json!({"request": "host_reply", "id": request["id"], "payload": 5}));
+    let mut done = Vec::new();
+    while done.len() < 3 {
+        let frame = next();
+        if frame["event"] == "done" {
+            assert_eq!(frame["status"], "ok", "{frame}");
+            done.push(frame["id"].as_str().unwrap().to_string());
+        }
+    }
+    assert_eq!(done, ["c1", "r1", "s1"]);
+    drop(send);
+    let _ = child.kill();
+    let _ = child.wait();
 }
 
 #[test]

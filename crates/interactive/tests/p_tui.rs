@@ -38,7 +38,7 @@ fn record(command: &LaneCommand) -> Option<String> {
         LaneCommand::Share { .. } => "share".into(),
         LaneCommand::CancelShare => "cancel_share".into(),
         LaneCommand::SaveCredential { provider, credential } => format!("credential {provider} {credential}"),
-        LaneCommand::LoginReply(answer) => format!("login_reply {answer:?}"),
+        LaneCommand::LoginReply { answer, .. } => format!("login_reply {answer:?}"),
         LaneCommand::RlmStatus => "rlm_status".into(),
         LaneCommand::RlmInspect { tag, request, payload } => format!("inspect {tag} {request} {payload}"),
         LaneCommand::ReadSettings => "read_settings".into(),
@@ -596,15 +596,35 @@ fn interactive_p_tui_rlm_polls_inspections_on_the_clock() {
         ]
     );
     h.clear();
+    // A round whose answers have not all come back (the link thread is busy) is not followed by another: none
+    // queue up behind it.
+    h.advance(5000);
+    assert!(!h.app.poll_rlm());
+    assert!(h.calls().is_empty(), "{:?}", h.calls());
+    // Its last answer arrived: the next round goes out at once (it is overdue).
+    round_answered(&mut h);
+    assert!(h.app.poll_rlm());
+    round_answered(&mut h);
+    h.clear();
     h.advance(4999);
     assert!(!h.app.poll_rlm());
     h.advance(1);
     assert!(h.app.poll_rlm());
+    round_answered(&mut h);
     // While an RLM view shows, every second.
     h.app.handle_input("\x12");
+    round_answered(&mut h);
     h.clear();
     h.advance(1000);
     assert!(h.app.poll_rlm());
+}
+
+/// The last answer of a poll round (`rlm.detached`; the link thread answers in order).
+fn round_answered(h: &mut Harness) {
+    h.app.apply(LaneEvent::RlmInspected {
+        tag: "detached".into(),
+        result: Ok(json!({"cells": []})),
+    });
 }
 
 /// The running-work panel: the session's running shell jobs, subagents and detached cells, one line each right
@@ -677,6 +697,9 @@ fn interactive_p_tui_running_work_panel_lists_background_work_under_the_transcri
         !ended.contains("● agent") && !ended.contains("● job") && !ended.contains("● cell"),
         "{ended}"
     );
+    // The refresh the panel toggles asked for while a round was in flight goes out now; then the poll slows down.
+    assert!(h.app.poll_rlm());
+    round_answered(&mut h);
     h.advance(1000);
     assert!(!h.app.poll_rlm());
 }
@@ -687,6 +710,7 @@ fn interactive_p_tui_running_work_panel_lists_background_work_under_the_transcri
 fn interactive_p_tui_rlm_agents_status_falls_back_to_the_plain_listing() {
     let mut h = harness();
     h.app.handle_input("\x12");
+    round_answered(&mut h);
     h.clear();
     h.app.apply(LaneEvent::RlmInspected {
         tag: "agents".into(),

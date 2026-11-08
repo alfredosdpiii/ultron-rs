@@ -152,6 +152,19 @@ fn cli_service_without_systemd_or_a_user_manager_fails_and_writes_nothing() {
     assert!(err.contains("Failed to connect to bus: No medium found"), "{err}");
     assert!(err.contains("The unit was not installed."), "{err}");
     assert!(units(&home).is_empty());
+    // A start that failed after the enable is rolled back: disabled before the file goes, then reloaded.
+    let calls = std::fs::read_to_string(&log).unwrap();
+    let lines: Vec<&str> = calls.lines().collect();
+    let name = lines[1].strip_prefix("--user enable --now ").expect(&calls);
+    assert_eq!(
+        lines,
+        [
+            "--user daemon-reload",
+            lines[1],
+            &format!("--user disable {name}"),
+            "--user daemon-reload"
+        ]
+    );
     let (code, _, err) = run(&home, &failing, &["service", "install", "now"]);
     assert_eq!(
         (code, err.trim()),

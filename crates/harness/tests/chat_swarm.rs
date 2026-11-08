@@ -650,6 +650,63 @@ fn harness_chat_swarm_keeps_a_durable_task_board_with_exclusive_claims() {
     }
 }
 
+/// Board moves follow one rule: `board.update` to `claimed` makes the caller the owner (it set no owner), only the
+/// owner (or the root) releases, finishes or drops a claimed task, and a finished or dropped task stays so.
+#[test]
+fn harness_chat_swarm_board_status_moves_follow_one_transition_rule() {
+    let storage = Controlled::new(Backend::Replay);
+    let setup = Setup::new();
+    setup.fix_clock(3);
+    let (chat, root) = open_chat(storage, &setup);
+    let ops = HostOps::new(chat.clone());
+    let [a, b] = conversations(&chat, 2)[..] else {
+        unreachable!()
+    };
+    op(&ops, "swarm.register", json!({ "name": "alice" }), &call_from(a)).unwrap();
+    op(&ops, "swarm.register", json!({ "name": "bob" }), &call_from(b)).unwrap();
+    for title in ["one", "two", "three"] {
+        op(&ops, "board.add", json!({ "title": title }), &call_from(root.id)).unwrap();
+    }
+    let update = |id: u64, status: &str, from: ConversationId| {
+        op(
+            &ops,
+            "board.update",
+            json!({ "id": id, "status": status }),
+            &call_from(from),
+        )
+    };
+    // A claim through `board.update` has an owner.
+    assert_matches(
+        &update(1, "claimed", a).unwrap(),
+        json!({ "status": "claimed", "owner": "alice" }),
+    );
+    // Another agent can neither finish, drop, release nor take it.
+    for status in ["done", "dropped", "open", "claimed"] {
+        assert_eq!(
+            update(1, status, b).unwrap_err(),
+            "Board task 1 is claimed by alice",
+            "{status}"
+        );
+    }
+    // The owner finishes it; a finished task is not reopened or claimed again, by anyone.
+    assert_matches(
+        &update(1, "done", a).unwrap(),
+        json!({ "status": "done", "owner": "alice" }),
+    );
+    for (status, from) in [("open", a), ("claimed", b), ("dropped", root.id)] {
+        assert_eq!(update(1, status, from).unwrap_err(), "Board task 1 is done", "{status}");
+    }
+    // A dropped task stays dropped.
+    update(2, "dropped", b).unwrap();
+    assert_eq!(update(2, "claimed", a).unwrap_err(), "Board task 2 is dropped");
+    // The root settles a claim its holder left; a release clears the owner.
+    op(&ops, "board.claim", json!({ "id": 3 }), &call_from(b)).unwrap();
+    let released = update(3, "open", root.id).unwrap();
+    assert_eq!(released["status"], "open");
+    assert!(released.get("owner").is_none(), "{released}");
+    chat.close().unwrap();
+}
+
 #[test]
 fn harness_chat_swarm_keeps_shared_notes_and_refuses_a_stale_writer() {
     {

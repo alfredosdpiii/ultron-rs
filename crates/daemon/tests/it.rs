@@ -2,6 +2,8 @@
 //! once rather than once per file. A file that re-runs or exits its own test binary (`current_exe`,
 //! `process::exit`) stays a test binary of its own in Cargo.toml. `crates/workspace-checks` keeps both lists whole.
 
+#[path = "demand_ledger.rs"]
+mod demand_ledger;
 #[path = "dream.rs"]
 mod dream;
 #[path = "extension_ui.rs"]
@@ -18,6 +20,8 @@ mod lifecycle;
 mod persona_setting;
 #[path = "prompt_schedules.rs"]
 mod prompt_schedules;
+#[path = "routes.rs"]
+mod routes;
 #[path = "session_control.rs"]
 mod session_control;
 #[path = "watchdog.rs"]

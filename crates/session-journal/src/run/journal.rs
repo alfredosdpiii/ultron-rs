@@ -2,8 +2,8 @@
 //! commits it, plus [`Run::reopen`]: the durable runtime resumes an operation a dead worker left open, so its journal
 //! continues from the stored state instead of being settled as interrupted.
 
-use super::summary::{self, Scope, SummaryAttempt};
-use super::{FrameEncoder, MAIN_LANE, retry_policy, stream_options};
+use super::summary::{Scope, SummaryAttempt};
+use super::{FrameEncoder, MAIN_LANE, OpAt, retry_policy, stream_options};
 use crate::ns::{
     BRANCH_TIP, LANE_CONFIG, LANE_STATE, OP_META, OP_PREPARATION, OP_RESULT, OP_STATE, OP_TOOL_ARGS, PENDING_ENTRY,
     PENDING_FRAMES, PENDING_TOOL_OUTPUT, USAGE,
@@ -27,6 +27,9 @@ struct ToolCallState {
     result: Option<Value>,
 }
 
+/// One open operation's journal writer. Some transitions change their fields before their commit: after a method
+/// returns an error the stored state is behind the fields, so the run is not written again (the session's
+/// `RunJournal` stops at its first write error and leaves the operation open for recovery).
 pub struct Run {
     operation_id: String,
     config: Value,
@@ -61,9 +64,6 @@ pub struct Run {
     preparations: Vec<String>,
     /// The next generation's `assistant.ready` was committed with the compaction before it (its step id is set).
     ready_written: bool,
-    /// An error answer the run ends with commits in the run's terminal transaction (`providerError`): its entry,
-    /// usage row and tip, until then.
-    error_answer: Vec<Write>,
     /// The generation's retry policy (`generationContext.retryPolicy`, `normalizedRetryPolicy` of settings.json's
     /// `retry`).
     retry_policy: Value,
@@ -152,7 +152,6 @@ impl Run {
             compaction_with_answer: None,
             preparations: Vec::new(),
             ready_written: false,
-            error_answer: Vec::new(),
             retry_policy: retry_policy(),
             stream_options: stream_options(),
             attempt: 1,
@@ -164,7 +163,7 @@ impl Run {
             "intent": {"kind": "run", "promptEntryIds": [prompt_id]},
         });
         let starting = json!({
-            "at": "starting", "control": {"status": "running"}, "settings": run.settings, "latestAssistantEntryId": null,
+            "at": OpAt::Starting.as_str(), "control": {"status": "running"}, "settings": run.settings, "latestAssistantEntryId": null,
         });
         let mut writes = Vec::new();
         let mut parent = source_tip.clone();
@@ -280,7 +279,6 @@ impl Run {
             compaction_with_answer: None,
             preparations,
             ready_written: false,
-            error_answer: Vec::new(),
             retry_policy: match &context["retryPolicy"] {
                 Value::Null => retry_policy(),
                 policy => policy.clone(),
@@ -294,7 +292,7 @@ impl Run {
                 .or_else(|| state["nextAttempt"].as_u64())
                 .unwrap_or(1),
             retry_next: None,
-            retry_waiting: (state["at"] == "assistant.retry_wait")
+            retry_waiting: (OpAt::of(&state) == Some(OpAt::AssistantRetryWait))
                 .then(|| state["nextAttempt"].as_u64())
                 .flatten(),
         })
@@ -334,7 +332,7 @@ impl Run {
     pub fn open_compaction(session: &Session, operation_id: &str) -> Option<OpenCompaction> {
         let state = session.value(OP_STATE, operation_id)?;
         let task = &state["task"];
-        if !state["at"].as_str().is_some_and(|at| at.starts_with("summary.")) {
+        if !OpAt::of(state).is_some_and(OpAt::is_summary) {
             return None;
         }
         Some(OpenCompaction {
@@ -387,14 +385,14 @@ impl Run {
         state
     }
 
-    fn scope(&self, at: &str) -> Map<String, Value> {
+    fn scope(&self, at: OpAt) -> Map<String, Value> {
         let mut state = self.base();
         state.insert("at".into(), at.into());
         state
     }
 
     fn checkpoint(&self, continuation: Value) -> Value {
-        let mut state = self.scope("checkpoint");
+        let mut state = self.scope(OpAt::Checkpoint);
         state.insert("continuation".into(), continuation);
         state.insert("triggerEntryId".into(), self.trigger.clone().into());
         Value::Object(state)
@@ -436,14 +434,9 @@ impl Run {
         before: Vec<Write>,
         trigger: Option<String>,
     ) -> Result<(), String> {
-        // An error answer the harness retries commits on its own first.
-        let error_answer = std::mem::take(&mut self.error_answer);
-        if !error_answer.is_empty() {
-            session.commit(&error_answer)?;
-        }
         if let Some(next) = self.retry_waiting.take() {
             // The retry wait ended (`runRetryWait`): the same step again, as the next attempt.
-            let mut ready = self.scope("assistant.ready");
+            let mut ready = self.scope(OpAt::AssistantReady);
             ready.insert("generationContext".into(), self.generation_context());
             ready.insert("nextAttempt".into(), next.into());
             let mut writes = before;
@@ -466,7 +459,7 @@ impl Run {
         self.usage_id = mint(session);
         self.encoder = FrameEncoder::default();
         self.held = None;
-        let mut pending = self.scope("assistant.effect_pending");
+        let mut pending = self.scope(OpAt::AssistantEffectPending);
         pending.insert("generationContext".into(), self.generation_context());
         pending.insert("attempt".into(), self.attempt.into());
         pending.insert("responseEntryId".into(), self.response_entry_id.clone().into());
@@ -478,7 +471,7 @@ impl Run {
     }
 
     fn commit_ready(&mut self, session: &mut Session, before: Vec<Write>) -> Result<(), String> {
-        let mut ready = self.scope("assistant.ready");
+        let mut ready = self.scope(OpAt::AssistantReady);
         // The checkpoint's continuation carries over (`may_finish` when a follow-up reopens a finished turn).
         let continuation = session
             .value(OP_STATE, &self.operation_id)
@@ -618,7 +611,7 @@ impl Run {
                 task: task.clone(),
                 summary: None,
             });
-            self.summary_scope().state(summary::DECIDING, vec![])
+            self.summary_scope().state(OpAt::SummaryDeciding, vec![])
         } else if calls.is_empty() || message["stopReason"] != "toolUse" {
             self.trigger = id.clone();
             self.calls.clear();
@@ -641,6 +634,7 @@ impl Run {
             self.overflow_recovery_used = false;
         }
         let error = message["stopReason"] == "error" && writes.is_empty();
+        let error_message = message["errorMessage"].clone();
         let retry = if error { self.retry_next.take() } else { None };
         let mut all = vec![
             Write::message_entry(&id, tip.as_deref(), message),
@@ -651,7 +645,7 @@ impl Run {
         if let Some((not_before, error_message)) = retry {
             // `assistant.retry_wait`: the answer commits now and the step is tried again after the wait.
             let next = self.attempt + 1;
-            let mut wait = self.scope("assistant.retry_wait");
+            let mut wait = self.scope(OpAt::AssistantRetryWait);
             wait.insert("generationContext".into(), self.generation_context());
             wait.insert("nextAttempt".into(), next.into());
             wait.insert("notBefore".into(), not_before.into());
@@ -662,8 +656,15 @@ impl Run {
             return Ok(false);
         }
         if error {
-            // The run ends with it: the answer commits with the terminal transaction.
-            self.error_answer = all;
+            // The run ends with it. The TypeScript drive holds the answer for its terminal transaction
+            // (`providerError`); it commits now, with a state that says the run failed with it, so a worker that dies
+            // before the terminal transaction leaves this answer and a failed run, not an interrupted partial that
+            // recovery would resume.
+            let mut failed = self.scope(OpAt::AssistantFailed);
+            failed.insert("responseEntryId".into(), id.into());
+            failed.insert("errorMessage".into(), error_message);
+            all.push(Write::set(OP_STATE, &self.operation_id, Value::Object(failed)));
+            session.commit(&all)?;
             return Ok(false);
         }
         all.append(&mut writes);
@@ -744,7 +745,7 @@ impl Run {
         let task = self.task(session, reason, resume_after);
         let preparation = self.prepare_compaction(&task, prepared);
         self.compaction = Some(Compaction { task, summary: None });
-        let deciding = self.summary_scope().state(summary::DECIDING, vec![]);
+        let deciding = self.summary_scope().state(OpAt::SummaryDeciding, vec![]);
         session
             .commit(&[
                 preparation,
@@ -804,7 +805,7 @@ impl Run {
         let scope = self.summary_scope();
         match self.summary_attempt() {
             Some(attempt) => attempt.pending(&scope),
-            None => scope.state(summary::DECIDING, vec![]),
+            None => scope.state(OpAt::SummaryDeciding, vec![]),
         }
     }
 
@@ -836,12 +837,12 @@ impl Run {
             self.step_id = mint(session);
             self.ready_written = true;
             let mut ready = current.as_object().cloned().unwrap_or_default();
-            ready.insert("at".into(), "assistant.ready".into());
+            ready.insert("at".into(), OpAt::AssistantReady.into());
             ready.insert("generationContext".into(), self.generation_context());
             ready.insert("nextAttempt".into(), 1.into());
             return Value::Object(ready);
         }
-        let mut state = self.scope("checkpoint");
+        let mut state = self.scope(OpAt::Checkpoint);
         state.insert("continuation".into(), continuation.clone());
         state.insert("triggerEntryId".into(), resume_after["triggerEntryId"].clone());
         Value::Object(state)
@@ -947,7 +948,7 @@ impl Run {
                 Value::Object(call)
             })
             .collect();
-        let mut state = self.scope("tools");
+        let mut state = self.scope(OpAt::Tools);
         state.insert(
             "batch".into(),
             json!({
@@ -1032,7 +1033,7 @@ impl Run {
         let mut state = session
             .value(OP_STATE, &self.operation_id)
             .cloned()
-            .unwrap_or_else(|| Value::Object(self.scope("checkpoint")));
+            .unwrap_or_else(|| Value::Object(self.scope(OpAt::Checkpoint)));
         state["control"] = self.control.clone();
         session.commit(&[
             Write::set(OP_STATE, &self.operation_id, state),
@@ -1042,7 +1043,7 @@ impl Run {
     }
 
     /// The terminal transaction of a run that ended because it was cancelled: status `aborted`.
-    pub fn finish_aborted(self, session: &mut Session) -> Result<(), String> {
+    pub fn finish_aborted(&self, session: &mut Session) -> Result<(), String> {
         self.finish_as(session, "aborted", None, None)
     }
 
@@ -1064,14 +1065,15 @@ impl Run {
     }
 
     /// The terminal transaction: the operation is removed, its result recorded and the lane idle again.
-    /// `error` is `(code, message)` for a failed run.
-    pub fn finish(self, session: &mut Session, error: Option<(&str, &str)>) -> Result<(), String> {
+    /// `error` is `(code, message)` for a failed run. It changes nothing in memory: after a failed commit the same
+    /// terminal transaction can be committed again.
+    pub fn finish(&self, session: &mut Session, error: Option<(&str, &str)>) -> Result<(), String> {
         let status = if error.is_some() { "failed" } else { "completed" };
         self.finish_as(session, status, error, None)
     }
 
     fn finish_as(
-        mut self,
+        &self,
         session: &mut Session,
         status: &str,
         error: Option<(&str, &str)>,
@@ -1093,19 +1095,14 @@ impl Run {
             "fromTipId".into(),
             self.source_tip.clone().map_or(Value::Null, Value::from),
         );
-        // The error answer committing with this transaction is the tip it leaves.
-        let tip = match self.error_answer.is_empty() {
-            true => session.branch_tip(MAIN_LANE).flatten(),
-            false => Some(self.assistant_entry_id.clone()),
-        };
+        let tip = session.branch_tip(MAIN_LANE).flatten();
         result.insert("tipId".into(), tip.map_or(Value::Null, Value::from));
         result.insert("startedAt".into(), self.started_at.into());
         result.insert("endedAt".into(), ended_at.into());
-        let mut writes = std::mem::take(&mut self.error_answer);
-        writes.extend([
+        let mut writes = vec![
             Write::delete(OP_META, &self.operation_id),
             Write::delete(OP_STATE, &self.operation_id),
-        ]);
+        ];
         writes.extend(self.preparations.iter().map(|key| Write::delete(OP_PREPARATION, key)));
         writes.extend([
             Write::set(OP_RESULT, &self.operation_id, Value::Object(result)),

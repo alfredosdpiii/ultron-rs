@@ -281,6 +281,26 @@ fn kernel_snapshot_valid_restore_and_foreign_key_refusal() {
     assert!(evalue(&stranger.restore(Some(&path)).unwrap().result).contains("HMAC signature mismatch"));
 }
 
+/// A snapshot whose stored agent classes cannot be defined again is refused without changing the namespace, as
+/// `restore_snapshot` promises.
+#[test]
+fn kernel_snapshot_restore_that_fails_to_rehydrate_changes_nothing() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("lane.snapshot");
+    let key = load_or_create_snapshot_key(directory.path()).unwrap();
+    let source = kernel(&key, None);
+    value(
+        &source,
+        "state = {'__agents__': {'classes': [1], 'instances': {}}}\nbalance = 100",
+    );
+    assert_eq!(source.snapshot(Some(&path)).unwrap().result.status, Status::Ok);
+    let target = kernel(&key, None);
+    value(&target, "state['n'] = 1\nbalance = 5");
+    let refused = target.restore(Some(&path)).unwrap();
+    assert_eq!(refused.result.status, Status::Error, "{refused:?}");
+    assert_eq!(value(&target, "(balance, state)"), "(5, {'n': 1})");
+}
+
 #[test]
 fn kernel_snapshot_profile_key_is_created_once_private_and_stable() {
     let directory = tempfile::tempdir().unwrap();

@@ -144,6 +144,53 @@ fn review_rereview_a_commit_reviewed_incompletely_is_read_again_and_what_is_new_
     );
 }
 
+/// A second full review of one commit numbers its findings on: before, both reviews' first findings were
+/// `aaaaaaa-1`, and a status, a thread resolution or a fate for one applied to the other.
+#[test]
+fn review_rereview_findings_of_a_second_review_of_one_commit_get_new_ids() {
+    let claim = |text: &str| major_with(json!({ "claim": text }));
+    let context = reviewed_at(
+        head(),
+        vec![
+            engine_result(json!({ "complete": false, "incomplete": ["2 reviewer passes failed"],
+                "findings": [claim("first claim."), claim("second claim.")] })),
+            engine_result(json!({ "findings": [claim("third claim.")] })),
+        ],
+    );
+    context.hub.set_now("2026-10-04T11:00:00Z");
+    mention(&context, "2026-10-04T10:30:00Z");
+    posted(run(&context, &["mention"]));
+    let ids: Vec<String> = context.pull_state().findings.iter().map(|f| f.id.clone()).collect();
+    assert_eq!(ids, ["aaaaaaa-1", "aaaaaaa-2", "aaaaaaa-3"]);
+}
+
+/// The review is recorded before the steps that act on it: a thread of a fixed finding is resolved only once the
+/// state says it is fixed. Before, a review whose record failed (or a process killed before it) had resolved the
+/// thread of a finding the state still held open, which the next fates read as resolved by a human: rejected.
+#[test]
+fn review_rereview_threads_are_resolved_only_after_the_review_is_recorded() {
+    let context = reviewed_at(
+        old(),
+        vec![
+            engine_result(json!({ "findings": [major()] })),
+            engine_result(json!({ "earlier": [earlier("ccccccc-1", "fixed")] })),
+        ],
+    );
+    assert!(context.pull_state().findings[0].thread_id.is_some());
+    push(&context);
+    // Another process holds the state from the model turn on: the review is posted, but cannot be recorded.
+    let lock = format!("{}.lock", context.deps.store.path);
+    *context.engine.on_review.lock().expect("hook") = Some(Box::new(move || std::fs::create_dir(&lock).unwrap()));
+    let result = review_pull(
+        &context.deps,
+        &context.candidate(&["requested_changes"]),
+        ReviewOptions::default(),
+    );
+    assert!(result.is_err(), "{result:?}");
+    assert_eq!(context.hub.pull().reviews.len(), 2);
+    assert!(context.hub.pull().resolved.is_empty());
+}
+
 #[test]
 fn review_rereview_a_new_finding_outside_what_changed_blocks_only_when_critical() {
     let late = |level: &str| {

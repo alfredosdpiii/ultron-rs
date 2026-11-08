@@ -1,0 +1,5 @@
+code StaysWhereItChose=breaks NoDemandLeak=holds RetiresWhenIdle=holds
+code_lossy NoDemandLeak=breaks RetiresWhenIdle=breaks
+attach_clears StaysWhereItChose=breaks NoDemandLeak=holds RetiresWhenIdle=holds
+fixed_start_only StaysWhereItChose=breaks
+fixed StaysWhereItChose=holds NoDemandLeak=holds RetiresWhenIdle=holds

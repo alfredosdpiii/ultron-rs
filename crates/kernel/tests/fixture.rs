@@ -75,7 +75,7 @@ fn kernel_output_budget_reads_the_environment_like_typescript() {
 }
 
 /// Host-made UUIDs become req-N in order of first use, the kernel pid 0, the checkout path <root>
-/// (fixtures/generate.mjs normalizeWire).
+/// (fixtures/generate.mjs normalizeWire); a host request's `cell` field is left out.
 fn normalize_wire(log: &str) -> Value {
     let mut ids: Vec<String> = Vec::new();
     let (mut h2k, mut k2h) = (Vec::new(), Vec::new());
@@ -103,6 +103,12 @@ fn normalize_wire(log: &str) -> Value {
         let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
         let root = root.canonicalize().unwrap().display().to_string();
         out = out.replace(&root, "<root>");
+        // The cell a host request names: a protocol field the TypeScript kernel did not have.
+        while let Some(start) = out.find(r#","cell":"req-"#) {
+            let value = start + r#","cell":""#.len();
+            let end = value + out[value..].find('"').unwrap() + 1;
+            out.replace_range(start..end, "");
+        }
         if let Some(start) = out.find("\"pid\":") {
             let digits = out[start + 6..].bytes().take_while(u8::is_ascii_digit).count();
             out.replace_range(start + 6..start + 6 + digits, "0");

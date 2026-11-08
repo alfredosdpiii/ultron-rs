@@ -1303,26 +1303,26 @@ async def run(rlm: Any, args: str | list[str] | None = "", *, cwd: str | None = 
         stats["subagents"] = spawned
 
     confirmed.sort(key=_rank)
-    post_line = None
-    post_pending = False
-    if options.post:
-        if scope.pr is None:
-            post_line = "Not posted: --post needs a pull request (pass its number)."
-        else:
-            post_pending = True
-            post_line = (f"Post pending: nothing has been posted to PR #{scope.pr}. It is posted only after the "
-                         f"user explicitly confirms.")
     report_args = dict(label=scope.label, files=scope.files, reviewers=reviewers, confirmed=confirmed,
                        uncertain=uncertain, rejected=rejected, stats=stats, not_checked=not_checked,
-                       read_file=scope.read_file, post_line=post_line)
+                       read_file=scope.read_file)
+    return _finish(report_args, git, scope.pr, options.post)
+
+
+def _finish(report_args: dict[str, Any], git: Git | None, pr: int | None, post_requested: bool) -> Review:
+    """Save the report and build the Review. The saved file is the comment `post` sends, so it names neither its
+    local path nor the post status; the report shown in the session has both."""
+    post_line = None
+    if post_requested:
+        if pr is None:
+            post_line = "Not posted: --post needs a pull request (pass its number)."
+        else:
+            post_line = (f"Post pending: nothing has been posted to PR #{pr}. It is posted only after the "
+                         f"user explicitly confirms.")
     path = _save(render_report(**report_args), git)
-    report = render_report(**report_args, path=path)
-    if path:
-        try:
-            Path(path).write_text(report, encoding="utf-8")
-        except OSError:
-            pass
-    return Review(report, path, scope.label, confirmed, uncertain, rejected, stats, scope.pr, post_pending)
+    report = render_report(**report_args, path=path, post_line=post_line)
+    return Review(report, path, report_args["label"], report_args["confirmed"], report_args["uncertain"],
+                  report_args["rejected"], report_args["stats"], pr, post_requested and pr is not None)
 
 
 async def _deep_verify(rlm: Any, options: Options, cwd: str, scope: Scope, confirmed: list[dict[str, Any]],
@@ -1356,10 +1356,15 @@ async def _deep_verify(rlm: Any, options: Options, cwd: str, scope: Scope, confi
     return confirmed + more_confirmed, rest + still_uncertain, rejected + more_rejected, len(handles)
 
 
+# Reports posted from this kernel, as (resolved path, PR number).
+_POSTED: set[tuple[str, int]] = set()
+
+
 async def post(review: Review | str, *, confirm: bool = False, pr: int | None = None, runner: Runner | None = None,
                which: Callable[[str], str | None] = shutil.which, cwd: str | None = None) -> str:
     """Post a review's saved report as a PR comment with `gh`. Call only after the user explicitly said yes.
-    `review` is a Review, or the saved report's path together with `pr=`."""
+    `review` is a Review, or the saved report's path together with `pr=`. A report is posted once: a second call
+    (a retry after it went through) is refused."""
     if confirm is not True:
         raise ReviewError("posting needs confirm=True, and only after the user explicitly agreed to post")
     path = review if isinstance(review, str) else review.path
@@ -1368,12 +1373,16 @@ async def post(review: Review | str, *, confirm: bool = False, pr: int | None = 
         raise ReviewError("this review has no pull request to post to")
     if not path or not Path(path).is_file():
         raise ReviewError("the review has no saved report to post")
+    posted = (str(Path(path).resolve()), number)
+    if posted in _POSTED:
+        raise ReviewError(f"this report was already posted to PR #{number}")
     if which("gh") is None:
         raise ReviewError("posting needs the GitHub CLI (gh)")
     code, stdout, stderr = (runner or _run_process)(
         ["gh", "pr", "comment", str(number), "--body-file", path], cwd or os.getcwd(), GH_TIMEOUT_S)
     if code != 0:
         raise ReviewError(f"gh pr comment failed: {(stderr or stdout).strip()[:300]}")
+    _POSTED.add(posted)
     if isinstance(review, Review):
         review.post_pending = False
     return stdout.strip() or f"posted to PR #{number}"

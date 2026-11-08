@@ -340,7 +340,10 @@ pub type Reattach = Arc<dyn Fn(&str) -> Result<(), String> + Send + Sync>;
 struct ReconnectState {
     desired_session: Option<String>,
     reconnecting: Option<std::thread::JoinHandle<()>>,
+    /// A reconnection thread runs; it is the only one, and it clears this under the same lock that sees `rerun`.
     running: bool,
+    /// A disconnect arrived while a run was ending (after its re-attach, before it stopped): the thread runs again.
+    rerun: bool,
 }
 
 struct ReconnectInner {
@@ -377,6 +380,7 @@ impl RadiusClientReconnect {
                     desired_session: attached_session,
                     reconnecting: None,
                     running: false,
+                    rerun: false,
                 }),
                 disposed: AtomicBool::new(false),
                 cancel: Cancellation::default(),
@@ -393,13 +397,15 @@ impl RadiusClientReconnect {
         }
     }
 
-    /// `onConnectionStateChange`: a disconnect starts reconnecting (once at a time).
+    /// `onConnectionStateChange`: a disconnect starts reconnecting (once at a time). One that comes while a
+    /// reconnection runs makes it run again once it ends, so a drop right after its re-attach is not lost.
     pub fn connection_state_changed(&self, state: ConnectionState) {
         if state != ConnectionState::Disconnected || self.inner.disposed.load(Ordering::SeqCst) {
             return;
         }
         let mut guard = sync::lock(&self.inner.state);
         if guard.running {
+            guard.rerun = true;
             return;
         }
         guard.running = true;
@@ -410,8 +416,14 @@ impl RadiusClientReconnect {
         }
         let inner = self.inner.clone();
         guard.reconnecting = Some(std::thread::spawn(move || {
-            inner.run();
-            sync::lock(&inner.state).running = false;
+            loop {
+                inner.run();
+                let mut state = sync::lock(&inner.state);
+                if !std::mem::take(&mut state.rerun) || inner.disposed() {
+                    state.running = false;
+                    return;
+                }
+            }
         }));
     }
 

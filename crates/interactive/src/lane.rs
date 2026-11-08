@@ -321,8 +321,8 @@ pub enum LaneEvent {
         providers: Vec<crate::selectors::AuthProvider>,
         query: String,
     },
-    /// A subscription login's progress (the flow runs in the client process).
-    Login(LoginStep),
+    /// A step of subscription login `id` ([`LaneCommand::OAuthLogin`]; the flow runs in the client process).
+    Login(u64, LoginStep),
     /// What `/changelog` shows, lexed off the UI thread ([`crate::changelog::changelog_tokens`]).
     Changelog(Vec<tui::Token>),
     /// The models the session can use now (after a login or logout).
@@ -521,11 +521,16 @@ pub enum LaneCommand {
     /// Start a subscription (OAuth) login for `provider` (`name` is what the dialog says): [`LaneEvent::Login`]
     /// steps, then statuses and a fresh [`LaneEvent::Catalog`] answer.
     OAuthLogin {
+        /// The login's id: its steps carry it and its replies name it, so one login never answers another.
+        id: u64,
         provider: String,
         name: String,
     },
-    /// The answer to the login's pending prompt; `None` cancels the login.
-    LoginReply(Option<String>),
+    /// The answer to login `id`'s pending prompt; `None` cancels the login.
+    LoginReply {
+        id: u64,
+        answer: Option<String>,
+    },
     /// Refresh the model catalogs (`models.refresh`): a fresh [`LaneEvent::Catalog`], then
     /// [`LaneEvent::CatalogRefreshed`].
     RefreshCatalog,

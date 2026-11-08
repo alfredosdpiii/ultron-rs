@@ -431,7 +431,8 @@ impl SettingsManager {
         if lock.is_none() {
             lock = Some(acquire(&lock_path_for(path), SYNC).map_err(|e| e.to_string())?);
         }
-        let written = fs::write(path, jsrt::json::stringify_pretty(&Value::Object(merged))).map_err(|e| e.to_string());
+        let written = crate::paths::write_private(path, &jsrt::json::stringify_pretty(&Value::Object(merged)))
+            .map_err(|e| e.to_string());
         drop(lock);
         written
     }

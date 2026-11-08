@@ -18,7 +18,7 @@ use crate::Guard;
 use fancy_regex::Regex;
 use jsrt::sync;
 use serde_json::{Value, json};
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Component, Path, PathBuf};
 use std::sync::mpsc::{Sender, channel};
 use std::sync::{Arc, Condvar, LazyLock, Mutex, PoisonError};
@@ -410,15 +410,33 @@ struct Inner {
     /// Findings not yet shown, per lane.
     pending: Mutex<HashMap<String, Vec<String>>>,
     /// The last snapshot of the directory (taken before the first watched cell, then after each).
-    baseline: Mutex<Option<Snapshot>>,
+    latest: Mutex<Option<Snapshot>>,
+    /// Each lane's picture from the start of its running cell, which the cell's end is compared with: a lane is
+    /// told only what changed while its own cell ran, and another lane's end does not absorb its changes. Changed
+    /// only by the after-cell worker, in the order the cells started and ended.
+    baselines: Mutex<HashMap<String, Snapshot>>,
+    /// Changes another lane's cell end was given while this lane's cell ran (relative path -> its picture entry then,
+    /// `None` for a deletion): a change goes to the first cell that ends after it, and another lane's running cell
+    /// gets it only if that cell changes the file again.
+    claimed: Mutex<HashMap<String, HashMap<String, Option<String>>>>,
+    /// Lanes whose watched cell runs now.
+    live: Mutex<HashSet<String>>,
     /// Files changed outside the cells, left out of their changes ([`FileHooks::ignore_outside`]).
     outside: Mutex<Option<OutsideChanges>>,
     /// Paths no cell may write ([`FileHooks::protect`]), and how a shell command names each.
     protected: Mutex<Vec<Protected>>,
-    /// After-cell checks queued or running, and the worker that runs them one at a time.
+    /// Cell starts and ends queued or being handled, and the worker that handles them one at a time.
     queued: Mutex<usize>,
     idle: Condvar,
-    worker: Mutex<Option<Sender<String>>>,
+    worker: Mutex<Option<Sender<CellEvent>>>,
+}
+
+/// A watched cell's start or end, handled by the after-cell worker in order.
+enum CellEvent {
+    /// Its picture when one was taken as it started (another lane's cell was running, or there was none yet);
+    /// otherwise the latest picture is its baseline.
+    Started(String, Option<Snapshot>),
+    Ended(String),
 }
 
 /// A protected file or directory: its absolute path, and the text a shell command names it by (its path from the
@@ -475,7 +493,10 @@ impl FileHooks {
                 snapshot: None,
                 checked: Mutex::new(HashMap::new()),
                 pending: Mutex::new(HashMap::new()),
-                baseline: Mutex::new(None),
+                latest: Mutex::new(None),
+                baselines: Mutex::new(HashMap::new()),
+                claimed: Mutex::new(HashMap::new()),
+                live: Mutex::new(HashSet::new()),
                 outside: Mutex::new(None),
                 protected: Mutex::new(Vec::new()),
                 queued: Mutex::new(0),
@@ -596,42 +617,67 @@ impl FileHooks {
         self.inner.watches_cells()
     }
 
-    /// A cell is starting: make sure a baseline picture of the directory exists to compare its end with.
-    pub fn cell_started(&self, _lane: &str) {
-        let inner = &self.inner;
-        if !inner.watches_cells() || sync::lock(&inner.baseline).is_some() {
-            return;
-        }
-        let picture = inner.picture();
-        let mut baseline = sync::lock(&inner.baseline);
-        if baseline.is_none() {
-            *baseline = picture;
-        }
-    }
-
-    /// A cell on `lane` ended: in the background, diff the directory against the previous picture and give the
-    /// guards the files changed by other means than checked writes. Returns at once; [`Self::settled`] waits.
-    pub fn cell_ended(&self, lane: &str) {
+    /// A cell is starting on `lane`: the directory as it is now is what its end is compared with. While no other
+    /// lane's cell runs that is the latest picture (taken after the previous cell); otherwise a picture is taken now,
+    /// so the other lane's changes made before this start are not this lane's.
+    pub fn cell_started(&self, lane: &str) {
         let inner = &self.inner;
         if !inner.watches_cells() {
             return;
         }
-        if sync::lock(&inner.baseline).is_none() {
-            // No baseline yet (a guard became interested mid-session): this cell's changes cannot be told apart.
-            self.cell_started(lane);
+        let concurrent = {
+            let mut live = sync::lock(&inner.live);
+            live.insert(lane.to_string());
+            live.len() > 1
+        };
+        let picture = (concurrent || sync::lock(&inner.latest).is_none())
+            .then(|| inner.picture())
+            .flatten();
+        self.send(CellEvent::Started(lane.to_string(), picture));
+    }
+
+    /// A cell on `lane` ended: in the background, diff the directory against the lane's picture from the cell's
+    /// start and give the guards the files changed by other means than checked writes. Returns at once;
+    /// [`Self::settled`] waits.
+    pub fn cell_ended(&self, lane: &str) {
+        let inner = &self.inner;
+        let watched = sync::lock(&inner.live).remove(lane);
+        if !inner.watches_cells() {
             return;
         }
+        if !watched {
+            if sync::lock(&inner.latest).is_none() {
+                // No picture yet (a guard became interested mid-session): this cell's changes cannot be told apart;
+                // the next cell's are.
+                let picture = inner.picture();
+                let mut latest = sync::lock(&inner.latest);
+                if latest.is_none() {
+                    *latest = picture;
+                }
+                return;
+            }
+            // Its start was not seen: compared with the latest picture.
+            self.send(CellEvent::Started(lane.to_string(), None));
+        }
+        self.send(CellEvent::Ended(lane.to_string()));
+    }
+
+    fn send(&self, event: CellEvent) {
+        let inner = &self.inner;
         *sync::lock(&inner.queued) += 1;
         let mut worker = sync::lock(&inner.worker);
         let sender = worker.get_or_insert_with(|| {
-            let (sender, lanes) = channel::<String>();
+            let (sender, events) = channel::<CellEvent>();
             let inner = Arc::downgrade(&self.inner);
             std::thread::spawn(move || {
-                for lane in lanes {
+                for event in events {
                     let Some(inner) = inner.upgrade() else {
                         return;
                     };
-                    inner.after_cell(&lane);
+                    match event {
+                        CellEvent::Started(lane, picture) => inner.started(lane, picture),
+                        CellEvent::Ended(lane) => inner.after_cell(&lane),
+                    }
                     let mut queued = sync::lock(&inner.queued);
                     *queued -= 1;
                     inner.idle.notify_all();
@@ -639,7 +685,7 @@ impl FileHooks {
             });
             sender
         });
-        if sender.send(lane.to_string()).is_err() {
+        if sender.send(event).is_err() {
             *sync::lock(&inner.queued) -= 1;
         }
     }
@@ -728,16 +774,28 @@ impl Inner {
         self.snapshot.as_ref().and_then(|snapshot| snapshot(&self.cwd).ok())
     }
 
-    /// `#afterCell`: diff against the previous picture, then ask every watching guard (each within its time limit).
+    /// A lane's cell started: its baseline is the picture taken then, else the latest one.
+    fn started(&self, lane: String, picture: Option<Snapshot>) {
+        let mut latest = sync::lock(&self.latest);
+        let Some(baseline) = picture.or_else(|| latest.clone()) else {
+            return;
+        };
+        latest.get_or_insert_with(|| baseline.clone());
+        sync::lock(&self.claimed).remove(&lane);
+        sync::lock(&self.baselines).insert(lane, baseline);
+    }
+
+    /// `#afterCell`: diff against the lane's picture from its cell's start, then ask every watching guard (each
+    /// within its time limit).
     fn after_cell(&self, lane: &str) {
-        let before = sync::lock(&self.baseline).clone();
+        let before = sync::lock(&self.baselines).remove(lane);
         let outside = sync::lock(&self.outside).clone();
         if let Some(outside) = &outside {
             outside.wait(OUTSIDE_WAIT);
         }
         let after = self.picture();
         if let Some(after) = &after {
-            *sync::lock(&self.baseline) = Some(after.clone());
+            *sync::lock(&self.latest) = Some(after.clone());
         }
         let (Some(before), Some(after)) = (before, after) else {
             return;
@@ -746,6 +804,21 @@ impl Inner {
             return;
         }
         let (mut added, mut modified, mut deleted, complete) = diff_snapshots(&before, &after);
+        {
+            let mut claimed = sync::lock(&self.claimed);
+            if let Some(theirs) = claimed.remove(lane) {
+                let unchanged = |relative: &String| theirs.get(relative) == Some(&after.entries.get(relative).cloned());
+                added.retain(|relative| !unchanged(relative));
+                modified.retain(|relative| !unchanged(relative));
+                deleted.retain(|relative| !unchanged(relative));
+            }
+            for other in sync::lock(&self.baselines).keys() {
+                let theirs = claimed.entry(other.clone()).or_default();
+                for relative in added.iter().chain(&modified).chain(&deleted) {
+                    theirs.insert(relative.clone(), after.entries.get(relative).cloned());
+                }
+            }
+        }
         if let Some(outside) = &outside {
             let theirs = |relative: &String| {
                 outside.explains(&resolve_lexical(&after.root, relative), after.entries.get(relative))

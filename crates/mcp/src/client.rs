@@ -388,7 +388,13 @@ impl Client {
         }
         transport.set_protocol_version(&version);
         self.notify_internal("notifications/initialized", None, true)?;
-        sync::lock(&self.0.state).conn = ConnState::Connected;
+        // Connecting -> Connected only: a server that exited during the handshake has closed the client already (its
+        // close listeners ran), and a closed client never reads as connected.
+        let mut state = sync::lock(&self.0.state);
+        if state.conn != ConnState::Connecting {
+            return Err(Error::closed());
+        }
+        state.conn = ConnState::Connected;
         Ok(result)
     }
 

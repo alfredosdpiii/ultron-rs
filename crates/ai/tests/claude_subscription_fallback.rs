@@ -493,6 +493,75 @@ fn ai_claude_subscription_fallback_holds_until_the_reset_then_tries_the_subscrip
 }
 
 #[test]
+fn ai_claude_subscription_fallback_a_failing_api_ends_the_hold_before_the_reset() {
+    seal();
+    // The plan is out of usage on the first request only; the reset is days away.
+    let reset = NOW / 1000 + 5 * 24 * 3600;
+    let answered = Arc::new(AtomicUsize::new(0));
+    let upstream = {
+        let answered = answered.clone();
+        Upstream::start(move |_, stream| {
+            if answered.fetch_add(1, Ordering::SeqCst) == 0 {
+                let body = r#"{"type":"error","error":{"type":"rate_limit_error","message":"This request would exceed your account's rate limit. Please try again later."}}"#;
+                let _ = write!(
+                    stream,
+                    "HTTP/1.1 429 Too Many Requests\r\nContent-Type: application/json\r\nanthropic-ratelimit-unified-status: rejected\r\nanthropic-ratelimit-unified-reset: {reset}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+            } else {
+                reply_sse(
+                    stream,
+                    &reply_events(
+                        "msg_sub",
+                        &[json!({"type": "text", "text": "from subscription"})],
+                        "end_turn",
+                        json!({"input_tokens": 1, "output_tokens": 1}),
+                    ),
+                );
+            }
+        })
+    };
+    let revoked = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let mut rig = make_rig(&upstream.url(), &[], &keyed(), true);
+    rig.api = {
+        let revoked = revoked.clone();
+        Upstream::start(move |_, stream| {
+            if revoked.load(Ordering::SeqCst) {
+                reply_status(
+                    stream,
+                    401,
+                    r#"{"type":"error","error":{"type":"authentication_error","message":"invalid x-api-key"}}"#,
+                );
+            } else {
+                api_sse(stream, "from api");
+            }
+        })
+    };
+    rig.router = Router::new(RouterOptions {
+        clock: Arc::new(|| NOW),
+        env: Arc::new(|name| (name == "ANTHROPIC_API_KEY").then(|| KEY.to_string())),
+        agent_dir: Some(rig.agent.path().to_path_buf()),
+        subscription: Some(rig.fake.config(&upstream.url(), &[])),
+        api_base_url: Some(rig.api.url()),
+    });
+
+    let (first, _) = run(&rig, &first_turn());
+    assert_eq!(text_of(&first), "from api");
+    assert_eq!(rig.router.held_until(), Some(reset * 1000));
+
+    // The key is revoked: that turn fails on the API, and ends the hold rather than failing every turn for days.
+    revoked.store(true, Ordering::SeqCst);
+    let (second, _) = run(&rig, &first_turn());
+    assert_eq!(second.stop_reason, StopReason::Error);
+    assert_eq!(rig.router.held_until(), None);
+
+    let (third, _) = run(&rig, &first_turn());
+    assert_eq!(text_of(&third), "from subscription");
+    assert_eq!(rig.fake.records().len(), 2);
+    assert_eq!(rig.api.requests().len(), 2);
+}
+
+#[test]
 fn ai_claude_subscription_fallback_api_credits_exhausted_names_both() {
     seal();
     // The recorded TypeScript fake's usage-limit run: a rejected rate_limit_event, then the CLI's text.

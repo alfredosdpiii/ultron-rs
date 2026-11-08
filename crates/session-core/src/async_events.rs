@@ -25,7 +25,7 @@
 
 use jsrt::sync;
 use serde_json::{Value, json};
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender, channel};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -197,6 +197,49 @@ pub type RootOfRun = Arc<dyn Fn(&str) -> String + Send + Sync>;
 /// A line that ends a lane's event message (`lane`, the message text): the context reminder (crate::context_reminder).
 pub type EventNote = Arc<dyn Fn(&str, &str) -> Option<String> + Send + Sync>;
 
+/// What delivery remembers across workers (a hand-over, a restart): the roots whose turn the user aborted (their
+/// work never re-invokes the model) and how many automatic runs each chain started (its `max_runs` budget). Kept in
+/// the session (`ultron.module/async-events`); in memory only, a successor re-invoked an aborted root for a late
+/// completion and gave every chain a fresh budget.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Chains {
+    pub aborted: BTreeSet<String>,
+    pub runs: BTreeMap<String, usize>,
+}
+
+/// The `ultron.module` key [`Chains`] are stored under.
+pub const CHAINS_MODULE: &str = "async-events";
+
+impl Chains {
+    /// The stored value (absent or unreadable: nothing remembered).
+    pub fn from_value(value: Option<&Value>) -> Chains {
+        let Some(value) = value else {
+            return Chains::default();
+        };
+        Chains {
+            aborted: value["abortedRoots"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(|root| root.as_str().map(str::to_string))
+                .collect(),
+            runs: value["chainRuns"]
+                .as_object()
+                .into_iter()
+                .flatten()
+                .filter_map(|(root, runs)| Some((root.clone(), runs.as_u64()? as usize)))
+                .collect(),
+        }
+    }
+
+    pub fn to_value(&self) -> Value {
+        json!({"version": 1, "abortedRoots": self.aborted, "chainRuns": self.runs})
+    }
+}
+
+/// Keeps [`Chains`] after each change.
+pub type SaveChains = Arc<dyn Fn(&Chains) + Send + Sync>;
+
 /// `AsyncEventOptions`.
 #[derive(Clone)]
 pub struct DispatcherOptions {
@@ -216,6 +259,9 @@ pub struct DispatcherOptions {
     pub note: Option<EventNote>,
     /// Masks the summaries (none: the shipped rules only).
     pub mask: Option<MaskText>,
+    /// What an earlier worker of the session remembered, and where changes go (none: kept in memory only).
+    pub chains: Chains,
+    pub save_chains: Option<SaveChains>,
 }
 
 impl DispatcherOptions {
@@ -231,6 +277,8 @@ impl DispatcherOptions {
             retry_after: RETRY_AFTER,
             note: None,
             mask: None,
+            chains: Chains::default(),
+            save_chains: None,
         }
     }
 }
@@ -265,8 +313,12 @@ pub struct Dispatcher {
 impl Dispatcher {
     pub fn new(options: DispatcherOptions, lanes: Arc<dyn EventLanes>) -> Arc<Dispatcher> {
         let (tx, rx) = channel();
-        let counts = Arc::new(Mutex::new(Counts::default()));
+        let counts = Arc::new(Mutex::new(Counts {
+            aborted: options.chains.aborted.iter().cloned().collect(),
+            ..Counts::default()
+        }));
         let enabled = options.enabled;
+        let chain_runs = options.chains.runs.clone().into_iter().collect();
         let mut worker = Worker {
             options,
             lanes,
@@ -274,7 +326,7 @@ impl Dispatcher {
             pending: HashMap::new(),
             retries: Vec::new(),
             steered: Vec::new(),
-            chain_runs: HashMap::new(),
+            chain_runs,
             notes: HashMap::new(),
             now: || jsrt::date::now_ms() as u64,
         };
@@ -401,7 +453,9 @@ impl Worker {
                 Ok(Command::RunEnded { lane, run_id, aborted }) => {
                     if lane == session_journal::run::MAIN_LANE && aborted {
                         let root = (self.options.root_of_run)(&run_id);
-                        sync::lock(&self.counts).aborted.insert(root.clone());
+                        if sync::lock(&self.counts).aborted.insert(root.clone()) {
+                            self.save_chains();
+                        }
                         if let Some(callback) = &self.options.on_root_aborted {
                             callback(&root);
                         }
@@ -463,6 +517,20 @@ impl Worker {
         sync::lock(&self.counts).in_flight -= 1;
     }
 
+    fn save_chains(&self) {
+        if let Some(save) = &self.options.save_chains {
+            let chains = Chains {
+                aborted: sync::lock(&self.counts).aborted.iter().cloned().collect(),
+                runs: self
+                    .chain_runs
+                    .iter()
+                    .map(|(root, runs)| (root.clone(), *runs))
+                    .collect(),
+            };
+            save(&chains);
+        }
+    }
+
     fn message(&mut self, lane: &str, events: &[RuntimeEvent]) -> Value {
         let mask = self.options.mask.clone().unwrap_or_else(default_mask);
         let mut message = runtime_event_message_with(events, (self.now)(), &mask);
@@ -512,6 +580,7 @@ impl Worker {
             match self.lanes.accept(lane, &message, &root) {
                 Accepted::Run(_) => {
                     *self.chain_runs.entry(root).or_default() += 1;
+                    self.save_chains();
                     self.delivered(lane, "run", &events, None);
                     return;
                 }
