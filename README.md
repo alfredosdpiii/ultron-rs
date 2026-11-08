@@ -507,9 +507,7 @@ The first run that needs them installs the runtime files into `~/.ultron/agent/r
 `$ULTRON_CODING_AGENT_DIR` when set); each release gets its own directory, and older ones are removed once no
 running `ultron` uses them.
 
-`ultron update` asks the npm registry for the latest `ultron-agent` version and, when it is newer, prints the GitHub
-releases page to download from; it does not replace the binary, so updating means installing the new archive. `ultron update --models` refreshes the model catalogs.
-Ultron also checks for a newer version at startup; `ULTRON_SKIP_VERSION_CHECK=1` (or `--offline`) turns that off.
+To update, install the new release archive the same way; `install.sh` replaces the binary in place.
 
 Settings, credentials, skills and models live in `~/.ultron/agent`, separate from Pi's `~/.pi/agent`, so both can be
 installed side by side. `ultron migrate import-pi <session.jsonl>` imports a Pi session tree,
