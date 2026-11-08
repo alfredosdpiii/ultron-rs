@@ -29,6 +29,7 @@ lanes = { path = "../lanes" }
 loki = { path = "../loki" }
 mcp = { path = "../mcp" }
 model-scope = { path = "../model-scope" }
+protocol = { path = "../protocol" }
 regex = "=1.13.1"
 resources = { path = "../resources" }
 sandbox = { path = "../sandbox" }

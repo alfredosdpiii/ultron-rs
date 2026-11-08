@@ -1,7 +1,7 @@
 //! Rust port of the interactive TUI of packages/coding-agent: the conversation components of
 //! src/modes/interactive/components and the client TUI of src/experimental/client-tui*.ts (header, transcript,
 //! editor, footer, slash commands, selectors) on the `tui` crate. It renders plain view data and talks to its
-//! session through [`lane::LaneClient`]; it never links the engine.
+//! session through [`lane::LaneCommand`]s and [`lane::LaneEvent`]s; it never links the engine.
 
 pub mod agent_hub;
 pub mod api_key_login;
@@ -24,6 +24,7 @@ pub mod image_convert;
 pub mod inspection;
 pub mod keybindings;
 pub mod lane;
+pub mod lane_watch;
 pub mod login_dialog;
 pub mod model_hub;
 pub mod modes;

@@ -7,13 +7,15 @@
 
 use std::rc::Rc;
 use std::sync::mpsc;
-use std::sync::{Arc, Mutex};
+
+mod support;
+use support::Sent;
 
 use interactive::app::{App, AppOptions};
 use interactive::history::PromptHistoryStore;
 use interactive::keybindings::Platform;
 use interactive::keybindings::native_app_keybindings;
-use interactive::lane::{LaneClient, LaneEvent, ModelInfo, SessionOpened};
+use interactive::lane::{LaneCommand, LaneEvent, ModelInfo, QueueKind, SessionOpened};
 use interactive::qol::QolSettings;
 use interactive::run::{UiEvent, paint_loop_with};
 use serde_json::{Value, json};
@@ -26,32 +28,18 @@ use tui::strip_terminal_sequences;
 const W: usize = 80;
 const H: usize = 40;
 
-struct Recorder(Arc<Mutex<Vec<String>>>);
-
-impl LaneClient for Recorder {
-    fn prompt(&self, text: &str) {
-        self.0.lock().unwrap().push(format!("prompt {text}"));
-    }
-    fn steer(&self, _: &str) -> String {
-        String::new()
-    }
-    fn follow_up(&self, text: &str) -> String {
-        self.0.lock().unwrap().push(format!("follow-up {text}"));
-        String::new()
-    }
-    fn cancel_queued(&self, _: &str) {}
-    fn abort(&self) {}
-    fn new_session(&self) {}
-    fn resume(&self, _: &str) {}
-    fn list_sessions(&self) {}
-    fn set_name(&self, _: &str) {}
-    fn select_model(&self, _: &str, _: &str) {}
-    fn set_thinking(&self, level: &str) {
-        self.0.lock().unwrap().push(format!("thinking {level}"));
-    }
-    fn save_setting(&self, key: &str, value: Value) {
-        self.0.lock().unwrap().push(format!("{key}={value}"));
-    }
+fn record(command: &LaneCommand) -> Option<String> {
+    Some(match command {
+        LaneCommand::Prompt { text, .. } => format!("prompt {text}"),
+        LaneCommand::Enqueue {
+            kind: QueueKind::FollowUp,
+            text,
+            ..
+        } => format!("follow-up {text}"),
+        LaneCommand::SetThinking(level) => format!("thinking {level}"),
+        LaneCommand::SaveSetting { key, value } => format!("{key}={value}"),
+        _ => return None,
+    })
 }
 
 type User = Vec<(String, Option<Vec<String>>)>;
@@ -60,11 +48,11 @@ fn keys(ctx: KeyContext, user: &User) -> KeybindingsManager {
     KeybindingsManager::new(native_app_keybindings(Platform::new("linux", false)), user.clone(), ctx)
 }
 
-fn app_with(ctx: KeyContext, messages: Vec<Value>) -> (App, Arc<Mutex<Vec<String>>>) {
+fn app_with(ctx: KeyContext, messages: Vec<Value>) -> (App, Rc<Sent>) {
     app_with_keys(ctx, Vec::new(), messages)
 }
 
-fn app_with_keys(ctx: KeyContext, user: User, messages: Vec<Value>) -> (App, Arc<Mutex<Vec<String>>>) {
+fn app_with_keys(ctx: KeyContext, user: User, messages: Vec<Value>) -> (App, Rc<Sent>) {
     let theme = Rc::new(create_theme(&builtin_theme_json("dark").unwrap(), ColorMode::Truecolor, None).unwrap());
     let model = ModelInfo {
         provider: "anthropic".into(),
@@ -74,7 +62,7 @@ fn app_with_keys(ctx: KeyContext, user: User, messages: Vec<Value>) -> (App, Arc
         context_window: 1000,
         thinking_levels: Vec::new(),
     };
-    let calls = Arc::new(Mutex::new(Vec::new()));
+    let (lane, calls) = Sent::new(record);
     let mut app = App::new(
         AppOptions {
             theme,
@@ -91,8 +79,9 @@ fn app_with_keys(ctx: KeyContext, user: User, messages: Vec<Value>) -> (App, Arc
             fd_path: None,
             highlight: Rc::new(|code: &str| code.split('\n').map(str::to_string).collect()),
             qol: QolSettings::parity(),
+            bug_report_target: ("radius.pi.dev".into(), false),
         },
-        Box::new(Recorder(Arc::clone(&calls))),
+        lane,
     );
     app.apply(LaneEvent::Opened(SessionOpened {
         session_id: "sess".into(),
@@ -103,7 +92,7 @@ fn app_with_keys(ctx: KeyContext, user: User, messages: Vec<Value>) -> (App, Arc
     (app, calls)
 }
 
-fn app() -> (App, Arc<Mutex<Vec<String>>>) {
+fn app() -> (App, Rc<Sent>) {
     app_with(KeyContext::default(), Vec::new())
 }
 
@@ -275,7 +264,7 @@ fn interactive_mouse_click_on_a_selection_row_confirms_it() {
     click(&mut app, (x, y));
     let s = screen(&mut app).join("\n");
     assert!(s.contains("Thinking level: high."), "{s}");
-    assert!(calls.lock().unwrap().contains(&"thinking high".to_string()));
+    assert!(calls.calls().contains(&"thinking high".to_string()));
 }
 
 fn open_settings(app: &mut App) {
@@ -297,7 +286,7 @@ fn interactive_mouse_click_on_a_settings_row_changes_it() {
     typed(&mut app, "tui mode");
     let (x, y) = cell_of(&mut app, "TUI mode");
     click(&mut app, (x, y));
-    assert_eq!(*calls.lock().unwrap(), ["tuiMode=\"regular\""]);
+    assert_eq!(calls.calls(), ["tuiMode=\"regular\""]);
     let s = screen(&mut app).join("\n");
     assert!(
         s.split_whitespace()

@@ -1320,3 +1320,18 @@ pub fn render_footer(theme: &Theme, v: &FooterView, width: usize) -> Vec<String>
     }
     lines
 }
+
+/// A select list's theme: accented selection, muted descriptions, and the scroll and no-match lines in their colors.
+pub(crate) fn select_theme(t: &Rc<Theme>, scroll: Fg, no_match: Fg) -> tui::SelectListTheme {
+    let style = |color: Fg| {
+        let t = Rc::clone(t);
+        Box::new(move |s: &str| t.fg(color, s)) as Box<dyn Fn(&str) -> String>
+    };
+    tui::SelectListTheme {
+        selected_prefix: style(Fg::Accent),
+        selected_text: style(Fg::Accent),
+        description: style(Fg::Muted),
+        scroll_info: style(scroll),
+        no_match: style(no_match),
+    }
+}

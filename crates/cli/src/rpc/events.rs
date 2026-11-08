@@ -2,173 +2,8 @@
 //! forwarded, so turns are reconstructed from message boundaries, and stream events are reshaped into Pi's
 //! partial-free `assistantMessageEvent` form.
 
+use protocol::watch::{Ended, QueueKind, WatchEvent};
 use serde_json::{Map, Value, json};
-
-/// A lane watch event (`LaneWatchEvent`), the input of [`RpcEventTranslator`].
-#[derive(Clone, Debug, PartialEq)]
-pub enum LaneEvent {
-    RunStart,
-    /// `run_end`; `error` is set when the run failed.
-    RunEnd {
-        error: Option<String>,
-        ended_at: i64,
-    },
-    MessageStart(Value),
-    /// An assistant message changed: its usage now, and the provider event (`frame`).
-    MessageUpdate {
-        usage: Value,
-        event: Value,
-    },
-    /// `message_end`; `in_run` when it belongs to the current run.
-    MessageEnd {
-        message: Value,
-        in_run: bool,
-    },
-    ToolStart {
-        id: String,
-        name: String,
-        args: Value,
-    },
-    ToolUpdate {
-        id: String,
-        name: String,
-        partial: Value,
-    },
-    ToolEnd {
-        id: String,
-        name: String,
-        result: Value,
-        is_error: bool,
-    },
-    /// The queued messages after a change: `(kind, text)` with kind `steer`, `followUp` or `nextRun`.
-    QueueUpdate(Vec<(String, String)>),
-    CompactionStart {
-        reason: String,
-    },
-    CompactionEnd {
-        reason: String,
-        aborted: bool,
-        error: Option<String>,
-    },
-    EntryAdded(Value),
-    ThinkingLevel(String),
-    /// AgentSession's `summarization_retry_scheduled` / `_attempt_start` / `_finished` (a compaction's or branch
-    /// summary's retry), as the RPC stream carries them.
-    SummarizationRetry(Value),
-    /// The run's generation failed and is retried (`retry_scheduled`, rpc-events.ts `auto_retry_start`).
-    AutoRetryStart {
-        attempt: Value,
-        max_attempts: Value,
-        delay_ms: Value,
-        error: Value,
-    },
-    /// The run's retries ended (`retry_end`, rpc-events.ts `auto_retry_end`).
-    AutoRetryEnd {
-        success: bool,
-        attempt: Value,
-        final_error: Option<Value>,
-    },
-    /// A chunk of a user command's output (AgentSession `bash_execution_update`), under the command's id.
-    BashOutput {
-        id: Option<String>,
-        delta: Value,
-    },
-    /// The session was renamed (AgentSession `session_info_changed`).
-    SessionInfoChanged(Option<String>),
-}
-
-impl LaneEvent {
-    /// The event a lane-watch event (`LaneWatchEvent` JSON, as the transcript state carries it) is; `None` for
-    /// events the RPC stream does not show.
-    pub fn from_watch(event: &Value) -> Option<LaneEvent> {
-        let text = |key: &str| event[key].as_str().unwrap_or_default().to_string();
-        Some(match event["type"].as_str()? {
-            "run_start" => LaneEvent::RunStart,
-            "run_end" => LaneEvent::RunEnd {
-                error: (event["status"] == "failed")
-                    .then(|| event["error"]["message"].as_str().map(str::to_string))
-                    .flatten(),
-                ended_at: event["endedAt"].as_i64().unwrap_or(0),
-            },
-            "message_start" => LaneEvent::MessageStart(event["message"].clone()),
-            // The usage rides on the event (harness::stream_fold); an older worker's update carries its message.
-            "message_update" => {
-                let message = harness::stream_fold::message_of(event);
-                if message.is_some_and(|m| m["role"] != "assistant") || event["frame"].is_null() {
-                    return None;
-                }
-                LaneEvent::MessageUpdate {
-                    usage: message.map_or_else(|| event["usage"].clone(), |m| m["usage"].clone()),
-                    event: event["frame"].clone(),
-                }
-            }
-            "message_end" => LaneEvent::MessageEnd {
-                message: event["message"].clone(),
-                in_run: event.get("runId").is_some_and(|r| !r.is_null()),
-            },
-            "tool_start" => LaneEvent::ToolStart {
-                id: text("toolCallId"),
-                name: text("toolName"),
-                args: event["args"].clone(),
-            },
-            "tool_update" => LaneEvent::ToolUpdate {
-                id: text("toolCallId"),
-                name: text("toolName"),
-                partial: event["partialResult"].clone(),
-            },
-            "tool_end" => LaneEvent::ToolEnd {
-                id: text("toolCallId"),
-                name: text("toolName"),
-                result: event["result"].clone(),
-                is_error: event["isError"] == true,
-            },
-            "queue_update" => LaneEvent::QueueUpdate(
-                event["queues"]
-                    .as_array()
-                    .into_iter()
-                    .flatten()
-                    .filter(|item| item["type"] == "message")
-                    .map(|item| (text_of(&item["kind"]), message_text(&item["message"])))
-                    .collect(),
-            ),
-            "compaction_start" => LaneEvent::CompactionStart { reason: text("reason") },
-            "compaction_end" => LaneEvent::CompactionEnd {
-                reason: text("reason"),
-                aborted: event["status"] == "aborted",
-                error: (event["status"] == "failed")
-                    .then(|| event["error"]["message"].as_str().unwrap_or_default().to_string()),
-            },
-            "entry_added" => LaneEvent::EntryAdded(event["entry"].clone()),
-            "config_update" if event["property"] == "thinkingLevel" => LaneEvent::ThinkingLevel(text("value")),
-            "summarization_retry_scheduled" | "summarization_retry_attempt_start" | "summarization_retry_finished" => {
-                let mut shown = event.as_object().cloned().unwrap_or_default();
-                shown.remove("lane");
-                LaneEvent::SummarizationRetry(Value::Object(shown))
-            }
-            "retry_scheduled" => LaneEvent::AutoRetryStart {
-                attempt: event["attempt"].clone(),
-                max_attempts: event["maxAttempts"].clone(),
-                delay_ms: event["delayMs"].clone(),
-                error: event["errorMessage"].clone(),
-            },
-            "bash_execution_update" => LaneEvent::BashOutput {
-                id: event["id"].as_str().map(str::to_string),
-                delta: event["delta"].clone(),
-            },
-            "session_info_changed" => LaneEvent::SessionInfoChanged(event["name"].as_str().map(str::to_string)),
-            "retry_end" => LaneEvent::AutoRetryEnd {
-                success: event["success"] == true,
-                attempt: event["attempt"].clone(),
-                final_error: event.get("finalError").filter(|e| !e.is_null()).cloned(),
-            },
-            _ => return None,
-        })
-    }
-}
-
-fn text_of(value: &Value) -> String {
-    value.as_str().unwrap_or_default().to_string()
-}
 
 /// Translates lane events into Pi RPC wire events.
 #[derive(Default)]
@@ -184,15 +19,21 @@ fn role(message: &Value) -> Option<&str> {
 }
 
 impl RpcEventTranslator {
-    pub fn translate(&mut self, event: LaneEvent) -> Vec<Value> {
+    /// The Pi RPC events a lane-watch event is (none for the ones the RPC stream does not show).
+    pub fn translate(&mut self, event: WatchEvent) -> Vec<Value> {
         match event {
-            LaneEvent::RunStart => {
+            WatchEvent::RunStart { .. } => {
                 self.run_messages.clear();
                 self.turn_open = false;
                 self.turn_tool_results.clear();
                 vec![json!({"type": "agent_start"})]
             }
-            LaneEvent::RunEnd { error, ended_at } => {
+            WatchEvent::RunEnd {
+                status,
+                error,
+                ended_at,
+                ..
+            } => {
                 let mut events = self.close_turn();
                 // A run that failed before any response has no assistant error message; Pi clients learn of a
                 // failed run from one, so it is shown as one.
@@ -200,10 +41,10 @@ impl RpcEventTranslator {
                     .run_messages
                     .last()
                     .is_some_and(|m| role(m) == Some("assistant") && m["stopReason"] == "error");
-                if let Some(error) = error
+                if let Some(error) = error.filter(|_| status == Ended::Failed)
                     && !answered_with_error
                 {
-                    let message = run_failure_message(&error, ended_at);
+                    let message = run_failure_message(&error.message, ended_at);
                     self.run_messages.push(message.clone());
                     events.push(json!({"type": "message_start", "message": message}));
                     events.push(json!({"type": "message_end", "message": message}));
@@ -213,7 +54,7 @@ impl RpcEventTranslator {
                 events.push(json!({"type": "agent_settled"}));
                 events
             }
-            LaneEvent::MessageStart(message) => {
+            WatchEvent::MessageStart { message, .. } => {
                 let mut events = Vec::new();
                 if role(&message) == Some("assistant") {
                     events.extend(self.close_turn());
@@ -223,14 +64,24 @@ impl RpcEventTranslator {
                 events.push(json!({"type": "message_start", "message": message}));
                 events
             }
-            LaneEvent::MessageUpdate { usage, event } => match frame_to_assistant_message_event(&event) {
-                Some(update) => {
-                    vec![json!({"type": "message_update", "usage": usage, "assistantMessageEvent": update})]
+            // The usage rides on the event (harness::stream_fold); an older worker's update carries its message.
+            WatchEvent::MessageUpdate {
+                frame, usage, message, ..
+            } => {
+                let message = message.filter(Value::is_object);
+                if message.as_ref().is_some_and(|m| m["role"] != "assistant") {
+                    return Vec::new();
                 }
-                None => Vec::new(),
-            },
-            LaneEvent::MessageEnd { message, in_run } => {
-                if in_run {
+                let usage = message.map_or(usage, |m| m["usage"].clone());
+                match frame_to_assistant_message_event(&frame) {
+                    Some(update) => {
+                        vec![json!({"type": "message_update", "usage": usage, "assistantMessageEvent": update})]
+                    }
+                    None => Vec::new(),
+                }
+            }
+            WatchEvent::MessageEnd { run_id, message, .. } => {
+                if run_id.is_some() {
                     self.run_messages.push(message.clone());
                 }
                 if role(&message) == Some("toolResult") {
@@ -238,77 +89,116 @@ impl RpcEventTranslator {
                 }
                 vec![json!({"type": "message_end", "message": message})]
             }
-            LaneEvent::ToolStart { id, name, args } => {
+            WatchEvent::ToolStart {
+                tool_call_id: id,
+                tool_name: name,
+                args,
+                ..
+            } => {
                 self.tool_args.push((id.clone(), args.clone()));
                 vec![json!({"type": "tool_execution_start", "toolCallId": id, "toolName": name, "args": args})]
             }
-            LaneEvent::ToolUpdate { id, name, partial } => {
+            WatchEvent::ToolUpdate {
+                tool_call_id: id,
+                tool_name: name,
+                partial_result,
+                ..
+            } => {
                 let mut event = json!({"type": "tool_execution_update", "toolCallId": id, "toolName": name});
                 if let Some((_, args)) = self.tool_args.iter().find(|(known, _)| *known == id) {
                     event["args"] = args.clone();
                 }
-                event["partialResult"] = partial;
+                event["partialResult"] = partial_result;
                 vec![event]
             }
-            LaneEvent::ToolEnd {
-                id,
-                name,
+            WatchEvent::ToolEnd {
+                tool_call_id: id,
+                tool_name: name,
                 result,
                 is_error,
+                ..
             } => {
                 self.tool_args.retain(|(known, _)| *known != id);
                 vec![json!({
                     "type": "tool_execution_end", "toolCallId": id, "toolName": name, "result": result, "isError": is_error,
                 })]
             }
-            LaneEvent::QueueUpdate(queues) => vec![queue_update(&queues)],
-            LaneEvent::CompactionStart { reason } => vec![json!({"type": "compaction_start", "reason": reason})],
-            LaneEvent::CompactionEnd { reason, aborted, error } => {
-                let mut event =
-                    json!({"type": "compaction_end", "reason": reason, "aborted": aborted, "willRetry": false});
-                if let Some(error) = error {
-                    event["errorMessage"] = error.into();
+            WatchEvent::QueueUpdate { queues, .. } => {
+                let queues: Vec<(QueueKind, String)> = queues
+                    .iter()
+                    .filter(|item| item.item == "message")
+                    .map(|item| (item.kind, item.message.as_ref().map(message_text).unwrap_or_default()))
+                    .collect();
+                vec![queue_update(&queues)]
+            }
+            WatchEvent::CompactionStart { reason, .. } => vec![json!({"type": "compaction_start", "reason": reason})],
+            WatchEvent::CompactionEnd {
+                reason, status, error, ..
+            } => {
+                let mut event = json!({"type": "compaction_end", "reason": reason, "aborted": status == Ended::Aborted,
+                    "willRetry": false});
+                if status == Ended::Failed {
+                    event["errorMessage"] = error.map(|e| e.message).unwrap_or_default().into();
                 }
                 vec![event]
             }
-            LaneEvent::EntryAdded(entry) => vec![json!({"type": "entry_appended", "entry": entry})],
-            LaneEvent::ThinkingLevel(level) => vec![json!({"type": "thinking_level_changed", "level": level})],
-            LaneEvent::SummarizationRetry(event) => vec![event],
-            LaneEvent::AutoRetryStart {
+            WatchEvent::EntryAdded { entry, .. } => vec![json!({"type": "entry_appended", "entry": entry})],
+            WatchEvent::ConfigUpdate { property, value, .. } if property == "thinkingLevel" => {
+                vec![json!({"type": "thinking_level_changed", "level": value.as_str().unwrap_or_default()})]
+            }
+            // AgentSession's `summarization_retry_scheduled` / `_attempt_start` / `_finished` (a compaction's or
+            // branch summary's retry), as the RPC stream carries them.
+            event @ (WatchEvent::SummarizationRetryScheduled { .. }
+            | WatchEvent::SummarizationRetryAttemptStart { .. }
+            | WatchEvent::SummarizationRetryFinished { .. }) => {
+                let mut shown = event.to_value();
+                if let Some(shown) = shown.as_object_mut() {
+                    shown.remove("lane");
+                }
+                vec![shown]
+            }
+            // The run's generation failed and is retried (rpc-events.ts `auto_retry_start`).
+            WatchEvent::RetryScheduled {
                 attempt,
                 max_attempts,
                 delay_ms,
-                error,
+                error_message,
+                ..
             } => vec![
                 json!({"type": "auto_retry_start", "attempt": attempt, "maxAttempts": max_attempts,
-                "delayMs": delay_ms, "errorMessage": error}),
+                "delayMs": delay_ms, "errorMessage": error_message}),
             ],
-            LaneEvent::AutoRetryEnd {
+            // The run's retries ended (rpc-events.ts `auto_retry_end`).
+            WatchEvent::RetryEnd {
                 success,
                 attempt,
                 final_error,
+                ..
             } => {
                 let mut event = json!({"type": "auto_retry_end", "success": success, "attempt": attempt});
                 if let Some(error) = final_error {
-                    event["finalError"] = error;
+                    event["finalError"] = error.into();
                 }
                 vec![event]
             }
-            LaneEvent::BashOutput { id, delta } => {
+            // A chunk of a user command's output (AgentSession `bash_execution_update`), under the command's id.
+            WatchEvent::BashExecutionUpdate { id, delta, .. } => {
                 let mut event = json!({"type": "bash_execution_update"});
                 if let Some(id) = id {
                     event["id"] = json!(id);
                 }
-                event["delta"] = delta;
+                event["delta"] = delta.into();
                 vec![event]
             }
-            LaneEvent::SessionInfoChanged(name) => {
+            // The session was renamed (AgentSession `session_info_changed`).
+            WatchEvent::SessionInfoChanged { name, .. } => {
                 let mut event = json!({"type": "session_info_changed"});
                 if let Some(name) = name {
                     event["name"] = json!(name);
                 }
                 vec![event]
             }
+            _ => Vec::new(),
         }
     }
 
@@ -328,15 +218,15 @@ impl RpcEventTranslator {
 }
 
 /// `queueUpdate`: steering texts and follow-up (and next-run) texts.
-pub fn queue_update(queues: &[(String, String)]) -> Value {
-    let pick = |kinds: &[&str]| -> Vec<&str> {
+pub fn queue_update(queues: &[(QueueKind, String)]) -> Value {
+    let pick = |steer: bool| -> Vec<&str> {
         queues
             .iter()
-            .filter(|(kind, _)| kinds.contains(&kind.as_str()))
+            .filter(|(kind, _)| (*kind == QueueKind::Steer) == steer)
             .map(|(_, text)| text.as_str())
             .collect()
     };
-    json!({"type": "queue_update", "steering": pick(&["steer"]), "followUp": pick(&["followUp", "nextRun"])})
+    json!({"type": "queue_update", "steering": pick(true), "followUp": pick(false)})
 }
 
 /// `frameToAssistantMessageEvent` over the frame a provider event encodes to: the event without its `partial`;
@@ -394,8 +284,7 @@ pub fn frame_to_assistant_message_event(event: &Value) -> Option<Value> {
     Some(Value::Object(out))
 }
 
-/// `messageText`: a string content, or the text blocks joined.
-pub use session_core::view::message_text;
+use protocol::pi_message::text as message_text;
 
 fn run_failure_message(error: &str, timestamp: i64) -> Value {
     json!({

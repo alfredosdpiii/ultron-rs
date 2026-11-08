@@ -1,15 +1,17 @@
 //! Ported tests: experimental-ultron-logo.test.ts (splash) and prompt-history behavior from
 //! experimental/prompt-history.ts; plus the client TUI's key and command handling against a recording
-//! `LaneClient` (what each key sends to the session), with literal expectations from client-tui.ts.
+//! lane channel (what each key sends to the session), with literal expectations from client-tui.ts.
 
-use std::cell::RefCell;
 use std::rc::Rc;
+
+mod support;
+use support::Sent;
 
 use interactive::app::{App, AppOptions, context_usage};
 use interactive::header::{ULTRON_LOGO, color_logo_line, halve_logo, splash_lines};
 use interactive::history::{PromptHistoryStore, merge_prompt_history};
 use interactive::keybindings::{Platform, app_keybindings};
-use interactive::lane::{LaneClient, LaneEvent, ModelInfo, SessionOpened};
+use interactive::lane::{LaneCommand, LaneEvent, ModelInfo, QueueKind, SessionOpened};
 use serde_json::json;
 use theme::{ColorMode, builtin_theme_json, create_theme};
 use tui::KeybindingsManager;
@@ -126,47 +128,26 @@ fn interactive_context_usage_is_last_usage_plus_estimates() {
     assert_eq!(context_usage(&transcript, 0), None);
 }
 
-#[derive(Default)]
-struct Calls(RefCell<Vec<String>>);
-
-struct Recorder(Rc<Calls>);
-
-impl LaneClient for Recorder {
-    fn prompt(&self, text: &str) {
-        self.0.0.borrow_mut().push(format!("prompt {text}"));
-    }
-    fn steer(&self, text: &str) -> String {
-        self.0.0.borrow_mut().push(format!("steer {text}"));
-        "s1".into()
-    }
-    fn follow_up(&self, text: &str) -> String {
-        self.0.0.borrow_mut().push(format!("follow_up {text}"));
-        "f1".into()
-    }
-    fn cancel_queued(&self, id: &str) {
-        self.0.0.borrow_mut().push(format!("cancel {id}"));
-    }
-    fn abort(&self) {
-        self.0.0.borrow_mut().push("abort".into());
-    }
-    fn new_session(&self) {
-        self.0.0.borrow_mut().push("new".into());
-    }
-    fn resume(&self, path: &str) {
-        self.0.0.borrow_mut().push(format!("resume {path}"));
-    }
-    fn list_sessions(&self) {
-        self.0.0.borrow_mut().push("list".into());
-    }
-    fn goal(&self, args: &str) {
-        self.0.0.borrow_mut().push(format!("goal {args}"));
-    }
-    fn set_name(&self, name: &str) {
-        self.0.0.borrow_mut().push(format!("name {name}"));
-    }
-    fn select_model(&self, provider: &str, id: &str) {
-        self.0.0.borrow_mut().push(format!("model {provider}/{id}"));
-    }
+/// What these tests follow of what the app sends, and the entry ids its queued messages got.
+fn record(command: &LaneCommand) -> Option<String> {
+    Some(match command {
+        LaneCommand::Prompt { text, .. } => format!("prompt {text}"),
+        LaneCommand::Enqueue {
+            kind: QueueKind::Steer,
+            text,
+            ..
+        } => format!("steer {text}"),
+        LaneCommand::Enqueue { text, .. } => format!("follow_up {text}"),
+        LaneCommand::CancelQueued(id) => format!("cancel {id}"),
+        LaneCommand::Abort => "abort".into(),
+        LaneCommand::NewSession => "new".into(),
+        LaneCommand::Resume(path) => format!("resume {path}"),
+        LaneCommand::ListSessions => "list".into(),
+        LaneCommand::Goal(args) => format!("goal {args}"),
+        LaneCommand::SetName(name) => format!("name {name}"),
+        LaneCommand::SelectModel { provider, id } => format!("model {provider}/{id}"),
+        _ => return None,
+    })
 }
 
 fn model(id: &str) -> ModelInfo {
@@ -180,7 +161,7 @@ fn model(id: &str) -> ModelInfo {
     }
 }
 
-fn app() -> (App, Rc<Calls>) {
+fn app() -> (App, Rc<Sent>) {
     let theme = Rc::new(create_theme(&builtin_theme_json("dark").unwrap(), ColorMode::Truecolor, None).unwrap());
     let keys = || {
         KeybindingsManager::new(
@@ -189,7 +170,7 @@ fn app() -> (App, Rc<Calls>) {
             Default::default(),
         )
     };
-    let calls = Rc::new(Calls::default());
+    let (lane, sent) = Sent::new(record);
     let mut app = App::new(
         AppOptions {
             theme,
@@ -206,8 +187,9 @@ fn app() -> (App, Rc<Calls>) {
             fd_path: None,
             highlight: Rc::new(|code: &str| code.split('\n').map(str::to_string).collect()),
             qol: interactive::qol::QolSettings::parity(),
+            bug_report_target: ("radius.pi.dev".into(), false),
         },
-        Box::new(Recorder(calls.clone())),
+        lane,
     );
     app.apply(LaneEvent::Opened(SessionOpened {
         session_id: "sess".into(),
@@ -215,7 +197,7 @@ fn app() -> (App, Rc<Calls>) {
         name: None,
         messages: Vec::new(),
     }));
-    (app, calls)
+    (app, sent)
 }
 
 fn typed(app: &mut App, text: &str) {
@@ -232,8 +214,8 @@ fn screen(app: &mut App) -> String {
         .join("\n")
 }
 
-fn calls(c: &Calls) -> Vec<String> {
-    c.0.borrow().clone()
+fn calls(c: &Sent) -> Vec<String> {
+    c.calls()
 }
 
 #[test]
@@ -247,7 +229,10 @@ fn interactive_enter_prompts_when_idle_and_steers_while_running() {
     typed(&mut app, "more");
     app.handle_input("\r");
     assert_eq!(calls(&c), ["prompt hello", "steer more"]);
-    assert!(screen(&mut app).contains(" Queued s1."));
+    let Some(LaneCommand::Enqueue { entry_id, .. }) = c.commands().pop() else {
+        panic!("{:?}", c.commands());
+    };
+    assert!(screen(&mut app).contains(&format!(" Queued {entry_id}.")));
     // Alt+Enter queues a follow-up.
     typed(&mut app, "later");
     app.handle_input("\x1b\r");
@@ -368,8 +353,11 @@ fn interactive_ctrl_c_clears_then_exits_and_ctrl_d_exits_when_empty() {
     app.handle_input("\x03");
     assert!(app.exit, "a second Ctrl+C within 500 ms exits");
     let (mut app, _) = self::app();
+    let now = Rc::new(std::cell::Cell::new(std::time::Instant::now()));
+    let clock = Rc::clone(&now);
+    app.set_clock(Box::new(move || clock.get()));
     app.handle_input("\x03");
-    std::thread::sleep(std::time::Duration::from_millis(600));
+    now.set(now.get() + std::time::Duration::from_millis(600));
     app.handle_input("\x03");
     assert!(!app.exit, "presses 600 ms apart only clear");
     app.handle_input("\x04");

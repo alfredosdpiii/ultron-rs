@@ -3,60 +3,29 @@
 //! (interrupted) agent revives it (`reviveAgent`) and lists the agents again, steering a parked agent revives it
 //! first, and what the session answered shows as the hub's notice.
 
-use std::cell::RefCell;
 use std::rc::Rc;
 
-use interactive::agent_hub::{AgentKind, AgentStatus, AgentView};
+mod support;
+use support::Sent;
+
 use interactive::app::{App, AppOptions};
 use interactive::history::PromptHistoryStore;
 use interactive::keybindings::Platform;
 use interactive::keybindings::native_app_keybindings;
-use interactive::lane::{LaneClient, LaneEvent, ModelInfo, SessionOpened};
+use interactive::lane::{AgentAction, LaneCommand, LaneEvent, ModelInfo, SessionOpened};
 use serde_json::json;
 use theme::{ColorMode, builtin_theme_json, create_theme};
 use tui::KeybindingsManager;
 
-#[derive(Default)]
-struct Calls(RefCell<Vec<String>>);
-
-struct Recorder(Rc<Calls>);
-
-impl Recorder {
-    fn push(&self, call: String) {
-        self.0.0.borrow_mut().push(call);
-    }
-}
-
-impl LaneClient for Recorder {
-    fn prompt(&self, _: &str) {}
-    fn steer(&self, _: &str) -> String {
-        String::new()
-    }
-    fn follow_up(&self, _: &str) -> String {
-        String::new()
-    }
-    fn cancel_queued(&self, _: &str) {}
-    fn abort(&self) {}
-    fn new_session(&self) {}
-    fn resume(&self, _: &str) {}
-    fn list_sessions(&self) {}
-    fn set_name(&self, _: &str) {}
-    fn select_model(&self, _: &str, _: &str) {}
-    fn agents(&self) {
-        self.push("agents".into());
-    }
-    fn kill_agent(&self, id: &str) {
-        self.push(format!("kill {id}"));
-    }
-    fn steer_agent(&self, id: &str, text: &str) {
-        self.push(format!("steer {id} {text}"));
-    }
-    fn revive_agent(&self, id: &str) {
-        self.push(format!("revive {id}"));
-    }
-    fn agent_transcript(&self, id: &str) {
-        self.push(format!("transcript {id}"));
-    }
+fn record(command: &LaneCommand) -> Option<String> {
+    Some(match command {
+        LaneCommand::Agents => "agents".into(),
+        LaneCommand::KillAgent(id) => format!("kill {id}"),
+        LaneCommand::SteerAgent { id, text } => format!("steer {id} {text}"),
+        LaneCommand::ReviveAgent(id) => format!("revive {id}"),
+        LaneCommand::AgentTranscript(id) => format!("transcript {id}"),
+        _ => return None,
+    })
 }
 
 fn model() -> ModelInfo {
@@ -70,7 +39,7 @@ fn model() -> ModelInfo {
     }
 }
 
-fn app() -> (App, Rc<Calls>) {
+fn app() -> (App, Rc<Sent>) {
     let theme = Rc::new(create_theme(&builtin_theme_json("dark").unwrap(), ColorMode::Truecolor, None).unwrap());
     let keys = || {
         KeybindingsManager::new(
@@ -79,7 +48,7 @@ fn app() -> (App, Rc<Calls>) {
             Default::default(),
         )
     };
-    let calls = Rc::new(Calls::default());
+    let (lane, sent) = Sent::new(record);
     let mut app = App::new(
         AppOptions {
             theme,
@@ -96,8 +65,9 @@ fn app() -> (App, Rc<Calls>) {
             fd_path: None,
             highlight: Rc::new(|code: &str| code.split('\n').map(str::to_string).collect()),
             qol: interactive::qol::QolSettings::default(),
+            bug_report_target: ("radius.pi.dev".into(), false),
         },
-        Box::new(Recorder(calls.clone())),
+        lane,
     );
     app.apply(LaneEvent::Opened(SessionOpened {
         session_id: "sess".into(),
@@ -105,22 +75,7 @@ fn app() -> (App, Rc<Calls>) {
         name: None,
         messages: Vec::new(),
     }));
-    (app, calls)
-}
-
-fn agent(id: &str, status: AgentStatus, last: i64) -> AgentView {
-    AgentView {
-        id: id.into(),
-        kind: AgentKind::Sub,
-        parent_id: None,
-        status,
-        unread: 0,
-        task: None,
-        last_activity: last,
-        model: None,
-        thinking: None,
-        metrics: None,
-    }
+    (app, sent)
 }
 
 fn screen(app: &mut App) -> String {
@@ -132,8 +87,10 @@ fn screen(app: &mut App) -> String {
 }
 
 /// Drain the calls made so far.
-fn take(c: &Calls) -> Vec<String> {
-    std::mem::take(&mut *c.0.borrow_mut())
+fn take(c: &Sent) -> Vec<String> {
+    let calls = c.calls();
+    c.clear();
+    calls
 }
 
 #[test]
@@ -141,10 +98,10 @@ fn interactive_agent_hub_reads_steers_and_revives_through_the_session() {
     let (mut app, c) = app();
     app.handle_input("\x1ba");
     assert_eq!(take(&c), ["agents"]);
-    app.apply(LaneEvent::Agents(vec![
-        agent("scout", AgentStatus::Running, 50),
-        agent("fixer", AgentStatus::Parked, 10),
-    ]));
+    app.apply(LaneEvent::Agents(json!({"subagents": [
+        {"id": "scout", "definition": "scout", "state": "running"},
+        {"id": "fixer", "definition": "fixer", "state": "interrupted"},
+    ]})));
     assert!(screen(&mut app).contains("scout"));
 
     // Enter opens the running agent's transcript, read from the session.
@@ -152,10 +109,10 @@ fn interactive_agent_hub_reads_steers_and_revives_through_the_session() {
     assert_eq!(take(&c), ["transcript scout"]);
     app.apply(LaneEvent::AgentTranscript {
         id: "scout".into(),
-        messages: vec![
+        messages: Ok(vec![
             json!({"role": "user", "content": "map the parser", "timestamp": 1}),
             json!({"role": "assistant", "content": [{"type": "text", "text": "Reading parser.rs"}], "timestamp": 2}),
-        ],
+        ]),
     });
     assert!(screen(&mut app).contains("Reading parser.rs"), "{}", screen(&mut app));
 
@@ -171,7 +128,11 @@ fn interactive_agent_hub_reads_steers_and_revives_through_the_session() {
     app.handle_input("j");
     app.handle_input("r");
     assert_eq!(take(&c), ["revive fixer", "agents"]);
-    app.apply(LaneEvent::AgentNotice("Revived \"fixer\" as \"t9\".".into()));
+    app.apply(LaneEvent::AgentAnswered {
+        id: "fixer".into(),
+        action: AgentAction::Revive,
+        answer: Ok(Some(json!({"id": "t9"}))),
+    });
     assert!(
         screen(&mut app).contains("Revived \"fixer\" as \"t9\"."),
         "{}",

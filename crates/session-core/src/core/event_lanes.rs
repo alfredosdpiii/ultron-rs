@@ -325,16 +325,7 @@ impl Core {
 
     /// An event the root may not run now waits in the transcript, seen with the root's next run.
     fn keep_for_next_run(&mut self, message: Value) -> Result<String, String> {
-        self.emit(event(vec![
-            ("type", json!("message_start")),
-            ("lane", json!(LANE)),
-            ("message", message.clone()),
-        ]));
-        self.emit(event(vec![
-            ("type", json!("message_end")),
-            ("lane", json!(LANE)),
-            ("message", message.clone()),
-        ]));
+        self.announce_message(&message);
         self.append(message)?;
         Ok(self.tip().unwrap_or_default())
     }
@@ -357,7 +348,10 @@ impl Core {
         let stack = self.lane.stack.clone();
         forward_ends(&stack.events, &self.durable.children, &stack.agents, &self.events);
         let active = running || self.events.pending_for(LANE) > 0;
-        self.emit(json!({"type": "activity", "lane": LANE, "active": active}));
+        self.emit(WatchEvent::Activity {
+            lane: LANE.into(),
+            active,
+        });
         // A session quiet for a while keeps its tail now, not only when it closes (crate::auto_memory::IDLE_RETAIN).
         if self.auto_memory.idle_due(active, std::time::Instant::now()) {
             self.retain_tail(true);

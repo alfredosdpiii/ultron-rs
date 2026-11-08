@@ -4,47 +4,29 @@
 //! Pi extensions are not supported by ultron-rs: `/extension` says so, and a `confirm` request (only an extension
 //! raised one) opens nothing.
 
-use std::cell::RefCell;
 use std::rc::Rc;
+
+mod support;
+use support::Sent;
 
 use interactive::app::{App, AppOptions};
 use interactive::history::PromptHistoryStore;
 use interactive::keybindings::Platform;
 use interactive::keybindings::native_app_keybindings;
-use interactive::lane::{LaneClient, LaneEvent, ModelInfo, SessionOpened};
+use interactive::lane::{LaneCommand, LaneEvent, ModelInfo, SessionOpened};
 use serde_json::{Value, json};
 use theme::{ColorMode, builtin_theme_json, create_theme};
 use tui::KeybindingsManager;
 
-#[derive(Default)]
-struct Calls(RefCell<Vec<String>>);
-
-struct Recorder(Rc<Calls>);
-
-impl LaneClient for Recorder {
-    fn prompt(&self, _: &str) {}
-    fn steer(&self, _: &str) -> String {
-        String::new()
-    }
-    fn follow_up(&self, _: &str) -> String {
-        String::new()
-    }
-    fn cancel_queued(&self, _: &str) {}
-    fn abort(&self) {}
-    fn new_session(&self) {}
-    fn resume(&self, _: &str) {}
-    fn list_sessions(&self) {}
-    fn set_name(&self, _: &str) {}
-    fn select_model(&self, _: &str, _: &str) {}
-    fn mcp_command(&self, args: &str) {
-        self.0.0.borrow_mut().push(format!("run mcp [{args}]"));
-    }
-    fn extension_ui_respond(&self, id: &str, answer: Value) {
-        self.0.0.borrow_mut().push(format!("respond {id} {answer}"));
-    }
+fn record(command: &LaneCommand) -> Option<String> {
+    Some(match command {
+        LaneCommand::Mcp(args) => format!("run mcp [{args}]"),
+        LaneCommand::ExtensionUiRespond { id, answer } => format!("respond {id} {answer}"),
+        _ => return None,
+    })
 }
 
-fn app() -> (App, Rc<Calls>) {
+fn app() -> (App, Rc<Sent>) {
     let theme = Rc::new(create_theme(&builtin_theme_json("dark").unwrap(), ColorMode::Truecolor, None).unwrap());
     let keys = || {
         KeybindingsManager::new(
@@ -61,7 +43,7 @@ fn app() -> (App, Rc<Calls>) {
         context_window: 1000,
         thinking_levels: Vec::new(),
     };
-    let calls = Rc::new(Calls::default());
+    let (lane, sent) = Sent::new(record);
     let mut app = App::new(
         AppOptions {
             theme,
@@ -78,8 +60,9 @@ fn app() -> (App, Rc<Calls>) {
             fd_path: None,
             highlight: Rc::new(|code: &str| code.split('\n').map(str::to_string).collect()),
             qol: interactive::qol::QolSettings::parity(),
+            bug_report_target: ("radius.pi.dev".into(), false),
         },
-        Box::new(Recorder(calls.clone())),
+        lane,
     );
     app.apply(LaneEvent::Opened(SessionOpened {
         session_id: "sess".into(),
@@ -87,7 +70,7 @@ fn app() -> (App, Rc<Calls>) {
         name: None,
         messages: Vec::new(),
     }));
-    (app, calls)
+    (app, sent)
 }
 
 fn submit(app: &mut App, text: &str) {
@@ -105,8 +88,8 @@ fn screen(app: &mut App) -> String {
         .join("\n")
 }
 
-fn calls(c: &Calls) -> Vec<String> {
-    c.0.borrow().clone()
+fn calls(c: &Sent) -> Vec<String> {
+    c.calls()
 }
 
 fn request(value: Value) -> LaneEvent {

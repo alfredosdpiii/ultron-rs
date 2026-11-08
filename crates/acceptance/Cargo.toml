@@ -33,6 +33,7 @@ kernel = { path = "../kernel" }
 hindsight = { path = "../hindsight" }
 kernel-apis = { path = "../kernel-apis" }
 lanes = { path = "../lanes" }
+protocol = { path = "../protocol" }
 session-core = { path = "../session-core" }
 services = { path = "../services" }
 session-file = { path = "../session-file" }

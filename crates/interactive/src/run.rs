@@ -152,18 +152,9 @@ pub fn terminal_debug(
     (debug.map(Arc::new), termux)
 }
 
-/// Run until the app exits. `size` reports the terminal (columns, rows).
-pub fn run<W: Write>(
-    app: &mut App,
-    events: &Receiver<UiEvent>,
-    terminal: &mut Terminal<W>,
-    size: &dyn Fn() -> (u16, u16),
-) -> std::io::Result<()> {
-    run_with(app, events, terminal, size, None)
-}
-
-/// The product entry point on the process terminal: starts the background services of the enabled additions
-/// ([`crate::qol::install_services`]) and paints through the writer thread when `qol.tty_writer` is on.
+/// The product entry point on the process terminal, until the app exits (`size` reports the terminal's columns and
+/// rows): starts the background services of the enabled additions ([`crate::qol::install_services`]) and paints
+/// through the writer thread when `qol.tty_writer` is on.
 pub fn run_stdout(app: &mut App, events: &Receiver<UiEvent>, size: &dyn Fn() -> (u16, u16)) -> std::io::Result<()> {
     crate::qol::install_services(app, std::env::var("PATH").ok())?;
     app.set_suspend_hook(Box::new(suspend_process));
@@ -173,17 +164,17 @@ pub fn run_stdout(app: &mut App, events: &Receiver<UiEvent>, size: &dyn Fn() -> 
         std::env::var(name).ok()
     }));
     let mut terminal = Terminal::new(std::io::stdout());
-    if app.qol().tty_writer {
-        let tty = TtyWriter::stdout()?;
-        run_with(app, events, &mut terminal, size, Some(&tty))
+    let tty = if app.qol().tty_writer {
+        Some(TtyWriter::stdout()?)
     } else {
-        run(app, events, &mut terminal, size)
-    }
+        None
+    };
+    run_on(app, events, &mut terminal, size, tty.as_ref())
 }
 
-/// [`run`], with frames written through `tty` (the terminal writer thread) instead of `terminal` when given; raw
-/// mode and bracketed paste still go through `terminal`.
-pub fn run_with<W: Write>(
+/// Frames are written through `tty` (the terminal writer thread) instead of `terminal` when given; raw mode and
+/// bracketed paste still go through `terminal`.
+fn run_on<W: Write>(
     app: &mut App,
     events: &Receiver<UiEvent>,
     terminal: &mut Terminal<W>,

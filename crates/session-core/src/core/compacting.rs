@@ -350,21 +350,22 @@ impl Core {
     /// runs off the actor; a failure whose last response is a retryable provider error (`isRetryableAssistantError`)
     /// waits `retryDelayMs` under the policy (off the actor, ended by `abort`) and is tried again until the policy's
     /// attempts run out. `journal` records the wait and the next attempt. Emits the harness's `retry_scheduled`,
-    /// `retry_start` and `retry_end`. Answers the last attempt and its response.
+    /// `retry_start` and `retry_end`, and AgentSession's `summarization_retry_*` (`attempt_start` is the summary's
+    /// `summarization_retry_attempt_start`). Answers the last attempt and its response.
     pub(super) fn summary_attempts<T: Send + 'static>(
         &mut self,
         signal: &AbortSignal,
         retry: RetryPolicy,
         ids: (&str, &str),
-        source: Value,
+        attempt_start: WatchEvent,
         attempt: AttemptFn<T>,
         journal: &mut dyn FnMut(&mut Core, RetryStep<'_>) -> Result<(), String>,
     ) -> Attempt<T> {
         let mut scheduled = false;
-        let outcome = self.attempt_loop(signal, retry, ids, &source, attempt, journal, &mut scheduled);
+        let outcome = self.attempt_loop(signal, retry, ids, &attempt_start, attempt, journal, &mut scheduled);
         // AgentSession's `onRetryFinished`: the retries ended, however they did.
         if scheduled {
-            self.emit(json!({"type": "summarization_retry_finished", "lane": LANE}));
+            self.emit(WatchEvent::SummarizationRetryFinished { lane: LANE.into() });
         }
         outcome
     }
@@ -375,7 +376,7 @@ impl Core {
         signal: &AbortSignal,
         retry: RetryPolicy,
         (run_id, step): (&str, &str),
-        source: &Value,
+        attempt_start: &WatchEvent,
         attempt: AttemptFn<T>,
         journal: &mut dyn FnMut(&mut Core, RetryStep<'_>) -> Result<(), String>,
         scheduled: &mut bool,
@@ -396,18 +397,14 @@ impl Core {
                 }
                 _ => {
                     if number > 1 {
-                        let mut fields = vec![
-                            ("type", json!("retry_end")),
-                            ("lane", json!(LANE)),
-                            ("runId", json!(run_id)),
-                            ("step", json!(step)),
-                            ("attempt", json!(number)),
-                            ("success", json!(result.is_ok())),
-                        ];
-                        if let Err(error) = &result {
-                            fields.push(("finalError", json!(error)));
-                        }
-                        self.emit(event(fields));
+                        self.emit(WatchEvent::RetryEnd {
+                            lane: LANE.into(),
+                            run_id: Some(run_id.into()),
+                            step: step.into(),
+                            attempt: number,
+                            success: result.is_ok(),
+                            final_error: result.as_ref().err().cloned(),
+                        });
                     }
                     return (result, last);
                 }
@@ -426,46 +423,42 @@ impl Core {
                 return (Err(write), last);
             }
             *scheduled = true;
-            self.emit(event(vec![
-                ("type", json!("retry_scheduled")),
-                ("lane", json!(LANE)),
-                ("runId", json!(run_id)),
-                ("step", json!(step)),
-                ("attempt", json!(number + 1)),
-                ("maxAttempts", json!(retry.max_attempts())),
-                ("delayMs", json!(delay)),
-                ("notBefore", json!(not_before)),
-                ("errorMessage", json!(error)),
-            ]));
+            self.emit(WatchEvent::RetryScheduled {
+                lane: LANE.into(),
+                run_id: Some(run_id.into()),
+                step: step.into(),
+                attempt: number + 1,
+                max_attempts: retry.max_attempts(),
+                delay_ms: delay,
+                not_before,
+                error_message: error.clone(),
+            });
             // AgentSession's `onRetryScheduled` (`retryAssistantCall`): the retry's number, the retries allowed
             // (`maxRetries`), the delay and the provider's error.
             let provider_error = last
                 .as_ref()
                 .and_then(|m| m.error_message.clone())
                 .unwrap_or_else(|| error.clone());
-            self.emit(json!({
-                "type": "summarization_retry_scheduled", "lane": LANE, "attempt": number,
-                "maxAttempts": retry.max_attempts() - 1, "delayMs": delay, "errorMessage": provider_error,
-            }));
+            self.emit(WatchEvent::SummarizationRetryScheduled {
+                lane: LANE.into(),
+                attempt: number,
+                max_attempts: retry.max_attempts() - 1,
+                delay_ms: delay,
+                error_message: provider_error,
+            });
             let cancel = signal.clone();
             let _ = self.off_actor(move || wait_until(not_before, &cancel));
             if signal.aborted() {
                 return (Err(CANCELLED.into()), None);
             }
             number += 1;
-            self.emit(event(vec![
-                ("type", json!("retry_start")),
-                ("lane", json!(LANE)),
-                ("runId", json!(run_id)),
-                ("step", json!(step)),
-                ("attempt", json!(number)),
-            ]));
-            // `onRetryAttemptStart`, with the summary's source (`branchSummary`, or `compaction` and its reason).
-            let mut start = json!({"type": "summarization_retry_attempt_start", "lane": LANE});
-            for (key, value) in source.as_object().into_iter().flatten() {
-                start[key] = value.clone();
-            }
-            self.emit(start);
+            self.emit(WatchEvent::RetryStart {
+                lane: LANE.into(),
+                run_id: Some(run_id.into()),
+                step: step.into(),
+                attempt: number,
+            });
+            self.emit(attempt_start.clone());
             if let Err(write) = journal(self, RetryStep::Retry) {
                 return (Err(write), None);
             }
@@ -475,12 +468,11 @@ impl Core {
     /// A manual compaction: `compaction_start`, the journaled operation (the summary, cancellable), the entry, `compaction_end`; answers Pi's `CompactionResult` fields of the compaction entry.
     pub(super) fn compact(&mut self, instructions: Option<&str>) -> Result<Value, String> {
         self.idle()?;
-        let lane = json!(LANE);
-        self.emit(event(vec![
-            ("type", json!("compaction_start")),
-            ("lane", lane.clone()),
-            ("reason", json!("manual")),
-        ]));
+        self.emit(WatchEvent::CompactionStart {
+            lane: LANE.into(),
+            run_id: None,
+            reason: "manual".into(),
+        });
         let signal = AbortSignal::new();
         self.compacting = Some(signal.clone());
         let outcome = self.compact_now(instructions, &signal);
@@ -490,27 +482,28 @@ impl Core {
                 // AgentSession clears its compaction state before `compaction_end`.
                 self.compacting = None;
                 let cancelled = error == CANCELLED;
-                let mut fields = vec![
-                    ("type", json!("compaction_end")),
-                    ("lane", lane),
-                    ("reason", json!("manual")),
-                    ("status", json!(if cancelled { "aborted" } else { "failed" })),
-                ];
-                if !cancelled {
-                    fields.push(("error", json!({"message": error})));
-                }
-                self.emit(event(fields));
+                self.emit(WatchEvent::CompactionEnd {
+                    lane: LANE.into(),
+                    run_id: None,
+                    reason: "manual".into(),
+                    status: if cancelled { Ended::Aborted } else { Ended::Failed },
+                    error: (!cancelled).then(|| Failure {
+                        code: None,
+                        message: error.clone(),
+                    }),
+                });
                 return Err(error);
             }
         };
         self.announce();
         self.compacting = None;
-        self.emit(event(vec![
-            ("type", json!("compaction_end")),
-            ("lane", lane),
-            ("reason", json!("manual")),
-            ("status", json!("completed")),
-        ]));
+        self.emit(WatchEvent::CompactionEnd {
+            lane: LANE.into(),
+            run_id: None,
+            reason: "manual".into(),
+            status: Ended::Completed,
+            error: None,
+        });
         self.retain_compaction();
         let pi = self.pi();
         let entry = pi
@@ -568,7 +561,11 @@ impl Core {
             signal,
             retry,
             (&ids.0, &ids.1),
-            json!({"source": "compaction", "reason": "manual"}),
+            WatchEvent::SummarizationRetryAttemptStart {
+                lane: LANE.into(),
+                source: "compaction".into(),
+                reason: Some("manual".into()),
+            },
             attempt,
             &mut journal,
         );

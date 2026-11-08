@@ -1,18 +1,7 @@
 //! `experimental/pi-session-view.ts`: Pi's read-side views (tree, context messages, last assistant text, stats)
 //! over a format-4 session converted to Pi entries ([`super::pi_view`]), with the shapes and numbers Pi reports.
 
-/// The text blocks of a message joined (a string content as it is).
-pub fn message_text(message: &Value) -> String {
-    match message.get("content") {
-        Some(Value::String(text)) => text.clone(),
-        Some(Value::Array(blocks)) => blocks
-            .iter()
-            .filter(|b| b["type"] == "text")
-            .filter_map(|b| b["text"].as_str())
-            .collect(),
-        _ => String::new(),
-    }
-}
+pub use protocol::pi_message::text as message_text;
 use serde_json::{Map, Value, json};
 use session_file::SessionManager;
 

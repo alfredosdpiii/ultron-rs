@@ -453,3 +453,58 @@ fn interactive_agent_hub_badge_counts_running_children() {
     assert_eq!(strip_terminal_sequences(&badge), "⟳ 1 agent");
     assert!(interactive::agent_hub::running_subagent_badge(&t, &agents[1..]).is_none());
 }
+
+#[test]
+fn interactive_subagents_become_agent_hub_rows() {
+    let listed = json!({"subagents": [
+        {"id": "a", "definition": "rlm-child@1", "state": "running"},
+        {"id": "b", "definition": "rlm-child@1", "state": "completed", "parentId": "a", "result": {"summary": "done it"}},
+        {"id": "c", "definition": "rlm-child@1", "state": "cancelled"},
+        {"id": "d", "definition": "rlm-child@1", "state": "interrupted"},
+        {"id": "e", "definition": "rlm-child@1", "state": "admitted"},
+        {"id": "f", "definition": "rlm-child@1", "state": "failed"},
+    ]});
+    let rows = interactive::agent_hub::agent_views(&listed);
+    let statuses: Vec<AgentStatus> = rows.iter().map(|r| r.status).collect();
+    // An admitted child (accepted, about to run) runs; one a dead worker left (`interrupted`) is parked.
+    assert_eq!(
+        statuses,
+        [
+            AgentStatus::Running,
+            AgentStatus::Idle,
+            AgentStatus::Aborted,
+            AgentStatus::Parked,
+            AgentStatus::Running,
+            AgentStatus::Aborted
+        ]
+    );
+    assert_eq!(rows[1].parent_id.as_deref(), Some("a"));
+    assert_eq!(rows[1].task.as_deref(), Some("done it"));
+    assert!(interactive::agent_hub::agent_views(&json!({})).is_empty());
+}
+
+#[test]
+fn interactive_agent_hub_notices() {
+    use interactive::agent_hub::agent_notice;
+    use interactive::lane::AgentAction::{Revive, Steer};
+    assert_eq!(
+        agent_notice("t1", Steer, Ok(Some(json!({"state": "delivered", "steered": true})))),
+        "Steered \"t1\"."
+    );
+    assert_eq!(
+        agent_notice("t1", Steer, Ok(Some(json!({"state": "pending", "steered": false})))),
+        "\"t1\" has no live run: the message waits in its inbox."
+    );
+    assert_eq!(
+        agent_notice("t1", Revive, Ok(Some(json!({"id": "t2", "revived": "t1"})))),
+        "Revived \"t1\" as \"t2\"."
+    );
+    assert_eq!(
+        agent_notice(
+            "t1",
+            Steer,
+            Err("session_operation_failed: Receiver task has already finished".into())
+        ),
+        "Error: Receiver task has already finished"
+    );
+}

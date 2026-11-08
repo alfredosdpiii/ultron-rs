@@ -1,66 +1,42 @@
 //! The client TUI while its Radius connection is recovered (client-tui.ts `#handleConnectionState`,
-//! `#handleAttachmentState` and `handleInput` while `#busy`), against a recording `LaneClient`: the recovery status
+//! `#handleAttachmentState` and `handleInput` while `#busy`), against a recording lane: the recovery status
 //! shows, typed input and Enter wait, Ctrl+C still clears and a second one exits, Ctrl+D exits on an empty editor,
 //! and the end of the recovery clears the status and takes input again.
 
-use std::cell::RefCell;
 use std::rc::Rc;
+
+mod support;
+use support::Sent;
 
 use interactive::app::{App, AppOptions};
 use interactive::history::PromptHistoryStore;
 use interactive::keybindings::Platform;
 use interactive::keybindings::native_app_keybindings;
-use interactive::lane::{LaneClient, LaneEvent, ModelInfo, SessionOpened};
+use interactive::lane::{LaneCommand, LaneEvent, ModelInfo, QueueKind, SessionOpened};
 use theme::{ColorMode, builtin_theme_json, create_theme};
 use tui::KeybindingsManager;
 
-#[derive(Default)]
-struct Calls(RefCell<Vec<String>>);
-
-struct Recorder(Rc<Calls>);
-
-impl Recorder {
-    fn push(&self, call: String) {
-        self.0.0.borrow_mut().push(call);
-    }
+fn record(command: &LaneCommand) -> Option<String> {
+    Some(match command {
+        LaneCommand::Prompt { text, .. } => format!("prompt {text}"),
+        LaneCommand::Enqueue {
+            kind: QueueKind::Steer,
+            text,
+            ..
+        } => format!("steer {text}"),
+        LaneCommand::Enqueue { text, .. } => format!("follow_up {text}"),
+        LaneCommand::CancelQueued(id) => format!("cancel {id}"),
+        LaneCommand::Abort => "abort".into(),
+        LaneCommand::NewSession => "new".into(),
+        LaneCommand::Resume(path) => format!("resume {path}"),
+        LaneCommand::ListSessions => "list".into(),
+        LaneCommand::SetName(name) => format!("name {name}"),
+        LaneCommand::SelectModel { provider, id } => format!("model {provider}/{id}"),
+        _ => return None,
+    })
 }
 
-impl LaneClient for Recorder {
-    fn prompt(&self, text: &str) {
-        self.push(format!("prompt {text}"));
-    }
-    fn steer(&self, text: &str) -> String {
-        self.push(format!("steer {text}"));
-        "s1".into()
-    }
-    fn follow_up(&self, text: &str) -> String {
-        self.push(format!("follow_up {text}"));
-        "f1".into()
-    }
-    fn cancel_queued(&self, id: &str) {
-        self.push(format!("cancel {id}"));
-    }
-    fn abort(&self) {
-        self.push("abort".into());
-    }
-    fn new_session(&self) {
-        self.push("new".into());
-    }
-    fn resume(&self, path: &str) {
-        self.push(format!("resume {path}"));
-    }
-    fn list_sessions(&self) {
-        self.push("list".into());
-    }
-    fn set_name(&self, name: &str) {
-        self.push(format!("name {name}"));
-    }
-    fn select_model(&self, provider: &str, id: &str) {
-        self.push(format!("model {provider}/{id}"));
-    }
-}
-
-fn app() -> (App, Rc<Calls>) {
+fn app() -> (App, Rc<Sent>) {
     let theme = Rc::new(create_theme(&builtin_theme_json("dark").unwrap(), ColorMode::Truecolor, None).unwrap());
     let keys = || {
         KeybindingsManager::new(
@@ -77,7 +53,7 @@ fn app() -> (App, Rc<Calls>) {
         context_window: 1000,
         thinking_levels: Vec::new(),
     };
-    let calls = Rc::new(Calls::default());
+    let (lane, calls) = Sent::new(record);
     let mut app = App::new(
         AppOptions {
             theme,
@@ -94,8 +70,9 @@ fn app() -> (App, Rc<Calls>) {
             fd_path: None,
             highlight: Rc::new(|code: &str| code.split('\n').map(str::to_string).collect()),
             qol: interactive::qol::QolSettings::parity(),
+            bug_report_target: ("radius.pi.dev".into(), false),
         },
-        Box::new(Recorder(calls.clone())),
+        lane,
     );
     app.apply(LaneEvent::Opened(SessionOpened {
         session_id: "sess".into(),
@@ -136,7 +113,7 @@ fn interactive_radius_recovery_waits_for_the_connection() {
     // Typing and Enter wait: the editor keeps its draft, nothing is sent.
     typed(&mut app, "more");
     app.handle_input("\r");
-    assert!(calls.0.borrow().is_empty());
+    assert!(calls.calls().is_empty());
     let shown = screen(&mut app);
     assert!(shown.contains("draft") && !shown.contains("draftmore"), "{shown}");
     app.apply(recovery(true, "Reconnecting to Radius…"));
@@ -171,7 +148,7 @@ fn interactive_radius_recovery_ends_with_input_back() {
     assert!(!screen(&mut app).contains("Reattaching Session…"));
     typed(&mut app, "hello");
     app.handle_input("\r");
-    assert_eq!(calls.0.borrow().clone(), vec!["prompt hello".to_string()]);
+    assert_eq!(calls.calls(), vec!["prompt hello".to_string()]);
 }
 
 /// Whether the rendered frame places the hardware cursor (the focused editor's `CURSOR_MARKER`).

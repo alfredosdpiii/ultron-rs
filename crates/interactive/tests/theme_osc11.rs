@@ -6,13 +6,15 @@
 
 use std::path::PathBuf;
 use std::rc::Rc;
-use std::sync::{Arc, Mutex};
+
+mod support;
+use support::Sent;
 
 use interactive::app::{App, AppOptions};
 use interactive::history::PromptHistoryStore;
 use interactive::keybindings::Platform;
 use interactive::keybindings::native_app_keybindings;
-use interactive::lane::{LaneClient, ModelInfo};
+use interactive::lane::{LaneCommand, ModelInfo};
 use interactive::run::{UiEvent, paint_loop};
 use interactive::theme_setup::ThemeController;
 use serde_json::Value;
@@ -42,32 +44,11 @@ fn which(theme: &Theme) -> &'static str {
     }
 }
 
-type Saves = Arc<Mutex<Vec<(String, Value)>>>;
-/// What the app told the client about the terminal's appearance (`LaneClient::terminal_theme`).
-type Told = Arc<Mutex<Vec<String>>>;
-
-struct Lane(Saves, Told);
-
-impl LaneClient for Lane {
-    fn prompt(&self, _: &str) {}
-    fn steer(&self, _: &str) -> String {
-        String::new()
-    }
-    fn follow_up(&self, _: &str) -> String {
-        String::new()
-    }
-    fn cancel_queued(&self, _: &str) {}
-    fn abort(&self) {}
-    fn new_session(&self) {}
-    fn resume(&self, _: &str) {}
-    fn list_sessions(&self) {}
-    fn set_name(&self, _: &str) {}
-    fn select_model(&self, _: &str, _: &str) {}
-    fn save_setting(&self, key: &str, value: Value) {
-        self.0.lock().unwrap().push((key.to_string(), value));
-    }
-    fn terminal_theme(&self, theme: &str) {
-        self.1.lock().unwrap().push(theme.to_string());
+/// What the app told the session about the terminal's appearance (`LaneCommand::TerminalTheme`).
+fn record(command: &LaneCommand) -> Option<String> {
+    match command {
+        LaneCommand::TerminalTheme(theme) => Some(theme.clone()),
+        _ => None,
     }
 }
 
@@ -79,11 +60,7 @@ fn keys() -> KeybindingsManager {
     )
 }
 
-fn new_app(theme: Rc<Theme>, saves: &Saves) -> App {
-    new_app_told(theme, saves, &Told::default())
-}
-
-fn new_app_told(theme: Rc<Theme>, saves: &Saves, told: &Told) -> App {
+fn new_app(theme: Rc<Theme>) -> (App, Rc<Sent>) {
     let model = ModelInfo {
         provider: "anthropic".into(),
         id: "a".into(),
@@ -92,7 +69,8 @@ fn new_app_told(theme: Rc<Theme>, saves: &Saves, told: &Told) -> App {
         context_window: 1000,
         thinking_levels: Vec::new(),
     };
-    App::new(
+    let (lane, sent) = Sent::new(record);
+    let app = App::new(
         AppOptions {
             theme,
             keys: keys(),
@@ -108,9 +86,11 @@ fn new_app_told(theme: Rc<Theme>, saves: &Saves, told: &Told) -> App {
             fd_path: None,
             highlight: Rc::new(|code: &str| code.split('\n').map(str::to_string).collect()),
             qol: interactive::qol::QolSettings::parity(),
+            bug_report_target: ("radius.pi.dev".into(), false),
         },
-        Box::new(Lane(Arc::clone(saves), Arc::clone(told))),
-    )
+        lane,
+    );
+    (app, sent)
 }
 
 /// The terminal thread's input: each read split by the stdin buffer, a timed-out partial flushed before the next
@@ -152,17 +132,22 @@ fn run(app: &mut App, reads: &[&str]) -> String {
     written
 }
 
-fn saved(saves: &Saves) -> Vec<(String, Value)> {
-    saves.lock().unwrap().clone()
+fn saved(sent: &Sent) -> Vec<(String, Value)> {
+    sent.commands()
+        .into_iter()
+        .filter_map(|command| match command {
+            LaneCommand::SaveSetting { key, value } => Some((key, value)),
+            _ => None,
+        })
+        .collect()
 }
 
 /// No setting, `COLORFGBG` says dark (and is saved), the terminal reports a light background split across reads: the
 /// theme switches to light, light is saved, and the keys around the reply are typed as they were.
 #[test]
 fn interactive_osc11_reply_switches_the_startup_theme() {
-    let saves = Saves::default();
     let theme = Rc::new(builtin("dark"));
-    let mut app = new_app(Rc::clone(&theme), &saves);
+    let (mut app, saves) = new_app(Rc::clone(&theme));
     app.set_theme_controller(ThemeController::new(registry(), None, Some("15;0")));
     assert_eq!(which(&theme), "dark");
     assert_eq!(saved(&saves), [("theme".to_string(), Value::from("dark"))]);
@@ -183,9 +168,8 @@ fn interactive_osc11_reply_switches_the_startup_theme() {
 /// until a reply makes the detection confident.
 #[test]
 fn interactive_osc11_no_reply_keeps_colorfgbg() {
-    let saves = Saves::default();
     let theme = Rc::new(builtin("dark"));
-    let mut app = new_app(Rc::clone(&theme), &saves);
+    let (mut app, saves) = new_app(Rc::clone(&theme));
     app.set_theme_controller(ThemeController::new(registry(), None, Some("0;15")));
     let written = run(&mut app, &["hi"]);
     assert!(written.contains(QUERY));
@@ -193,9 +177,8 @@ fn interactive_osc11_no_reply_keeps_colorfgbg() {
     assert_eq!(saved(&saves), [("theme".to_string(), Value::from("light"))]);
     assert_eq!(app.editor_text(), "hi");
 
-    let saves = Saves::default();
     let theme = Rc::new(builtin("light"));
-    let mut app = new_app(Rc::clone(&theme), &saves);
+    let (mut app, saves) = new_app(Rc::clone(&theme));
     app.set_theme_controller(ThemeController::new(registry(), None, None));
     assert_eq!(which(&theme), "dark", "the fallback");
     assert!(saved(&saves).is_empty(), "a fallback is not saved");
@@ -207,9 +190,8 @@ fn interactive_osc11_no_reply_keeps_colorfgbg() {
 /// A named theme is never asked about, and a reply (late, or from elsewhere) changes nothing and is not typed.
 #[test]
 fn interactive_osc11_named_theme_ignores_replies() {
-    let saves = Saves::default();
     let theme = Rc::new(builtin("dark"));
-    let mut app = new_app(Rc::clone(&theme), &saves);
+    let (mut app, saves) = new_app(Rc::clone(&theme));
     app.set_theme_controller(ThemeController::new(registry(), Some("dark".into()), Some("0;15")));
     let written = run(&mut app, &["\x1b]11;rgb:ffff/ffff/ffff\x07z"]);
     assert!(!written.contains(QUERY), "{written:?}");
@@ -222,9 +204,8 @@ fn interactive_osc11_named_theme_ignores_replies() {
 /// later reply. Nothing is saved for a pair.
 #[test]
 fn interactive_osc11_pair_scheme_report_wins() {
-    let saves = Saves::default();
     let theme = Rc::new(builtin("dark"));
-    let mut app = new_app(Rc::clone(&theme), &saves);
+    let (mut app, _) = new_app(Rc::clone(&theme));
     app.set_theme_controller(ThemeController::new(
         registry(),
         Some("light/dark".into()),
@@ -234,9 +215,8 @@ fn interactive_osc11_pair_scheme_report_wins() {
     assert!(written.contains("\x1b[?996n") && written.contains(QUERY), "{written:?}");
     assert_eq!(which(&theme), "light", "the reply picks the light side");
 
-    let saves = Saves::default();
     let theme = Rc::new(builtin("dark"));
-    let mut app = new_app(Rc::clone(&theme), &saves);
+    let (mut app, saves) = new_app(Rc::clone(&theme));
     app.set_theme_controller(ThemeController::new(
         registry(),
         Some("light/dark".into()),
@@ -250,9 +230,8 @@ fn interactive_osc11_pair_scheme_report_wins() {
 /// The reply is applied once: a second, unasked reply changes nothing.
 #[test]
 fn interactive_osc11_reply_applies_once() {
-    let saves = Saves::default();
     let theme = Rc::new(builtin("dark"));
-    let mut app = new_app(Rc::clone(&theme), &saves);
+    let (mut app, saves) = new_app(Rc::clone(&theme));
     app.set_theme_controller(ThemeController::new(registry(), None, None));
     run(
         &mut app,
@@ -283,34 +262,26 @@ fn interactive_osc11_reply_after_named_choice_changes_nothing() {
 /// scheme report's; once per change. A named theme still reports the terminal's side (it never asks OSC 11).
 #[test]
 fn interactive_osc11_detected_appearance_is_told_to_the_client() {
-    let (saves, told) = (Saves::default(), Told::default());
-    let theme = Rc::new(builtin("dark"));
-    let mut app = new_app_told(Rc::clone(&theme), &saves, &told);
+    let (mut app, told) = new_app(Rc::new(builtin("dark")));
     app.set_theme_controller(ThemeController::new(
         registry(),
         Some("light/dark".into()),
         Some("15;0"),
     ));
-    assert_eq!(*told.lock().unwrap(), ["dark"], "COLORFGBG before any reply");
+    assert_eq!(told.calls(), ["dark"], "COLORFGBG before any reply");
     run(
         &mut app,
         &["\x1b]11;rgb:ffff/ffff/ffff\x07", "\x1b[?997;1n", "\x1b[?997;1n"],
     );
-    assert_eq!(*told.lock().unwrap(), ["dark", "light", "dark"]);
+    assert_eq!(told.calls(), ["dark", "light", "dark"]);
 
-    let (saves, told) = (Saves::default(), Told::default());
-    let mut app = new_app_told(Rc::new(builtin("dark")), &saves, &told);
+    let (mut app, told) = new_app(Rc::new(builtin("dark")));
     app.set_theme_controller(ThemeController::new(registry(), None, Some("15;0")));
     run(&mut app, &["\x1b]11;rgb:ffff/ffff/ffff\x07"]);
-    assert_eq!(*told.lock().unwrap(), ["dark", "light"], "no setting: the reply's side");
+    assert_eq!(told.calls(), ["dark", "light"], "no setting: the reply's side");
 
-    let (saves, told) = (Saves::default(), Told::default());
-    let mut app = new_app_told(Rc::new(builtin("dark")), &saves, &told);
+    let (mut app, told) = new_app(Rc::new(builtin("dark")));
     app.set_theme_controller(ThemeController::new(registry(), Some("dark".into()), Some("0;15")));
     run(&mut app, &["\x1b]11;rgb:0000/0000/0000\x07"]);
-    assert_eq!(
-        *told.lock().unwrap(),
-        ["light"],
-        "a named theme: COLORFGBG's side, no query"
-    );
+    assert_eq!(told.calls(), ["light"], "a named theme: COLORFGBG's side, no query");
 }

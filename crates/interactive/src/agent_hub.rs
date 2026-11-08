@@ -8,6 +8,7 @@
 //! transcript with its own input line; submitting steers the agent. The hub never talks to the session: it returns
 //! [`HubEvent`]s and the client feeds transcripts back with [`AgentHub::set_transcript`].
 
+use serde_json::Value;
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
@@ -110,6 +111,53 @@ pub struct AgentView {
     pub model: Option<String>,
     pub thinking: Option<String>,
     pub metrics: Option<AgentMetrics>,
+}
+
+/// The roster rows of `rlm.list_subagents` (`{subagents: [{id, definition, state, parentId?, result?}]}`), by
+/// task state (`NativeTaskState`): admitted and running children run, completed ones are idle, failed or cancelled
+/// ones aborted, and one left by a worker that died while it ran (`interrupted`) is parked, which the hub can revive.
+pub fn agent_views(listed: &Value) -> Vec<AgentView> {
+    listed["subagents"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .map(|a| AgentView {
+            id: a["id"].as_str().unwrap_or_default().to_string(),
+            kind: AgentKind::Sub,
+            parent_id: a["parentId"].as_str().map(str::to_string),
+            status: match a["state"].as_str() {
+                Some("admitted" | "running") => AgentStatus::Running,
+                Some("completed") => AgentStatus::Idle,
+                Some("failed" | "cancelled") => AgentStatus::Aborted,
+                _ => AgentStatus::Parked,
+            },
+            unread: 0,
+            task: a["result"]["summary"].as_str().map(str::to_string),
+            last_activity: 0,
+            model: None,
+            thinking: None,
+            metrics: None,
+        })
+        .collect()
+}
+
+/// The hub's notice for what a steer (`agent_message.send`'s `{state, steered}`) or a revive (`{id}`) of `id` answered.
+pub fn agent_notice(id: &str, action: crate::lane::AgentAction, answer: Result<Option<Value>, String>) -> String {
+    use crate::lane::AgentAction;
+    match (action, answer) {
+        (_, Err(error)) => format!(
+            "Error: {}",
+            error.strip_prefix("session_operation_failed: ").unwrap_or(&error)
+        ),
+        (AgentAction::Steer, Ok(answer)) if answer.as_ref().is_some_and(|a| a["steered"] == true) => {
+            format!("Steered \"{id}\".")
+        }
+        (AgentAction::Steer, Ok(_)) => format!("\"{id}\" has no live run: the message waits in its inbox."),
+        (AgentAction::Revive, Ok(answer)) => {
+            let new = answer.as_ref().and_then(|a| a["id"].as_str()).unwrap_or_default();
+            format!("Revived \"{id}\" as \"{new}\".")
+        }
+    }
 }
 
 /// `compareRosterAgents`: status, then most recent activity, then id.
@@ -1185,7 +1233,7 @@ fn replay(chat: &mut ChatView, entry: &TranscriptEntry) {
     match entry.role() {
         "user" | "assistant" | "toolResult" => chat.add_message(&entry.message),
         _ => {
-            let text = crate::chat::user_message_text(&entry.message);
+            let text = protocol::pi_message::text(&entry.message);
             if !text.trim().is_empty() {
                 chat.append_notice_text(&text);
             }

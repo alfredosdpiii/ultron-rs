@@ -10,11 +10,14 @@ use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+mod support;
+use support::Sent;
+
 use interactive::app::{App, AppOptions};
 use interactive::history::PromptHistoryStore;
 use interactive::keybindings::Platform;
 use interactive::keybindings::native_app_keybindings;
-use interactive::lane::{LaneClient, LaneEvent, ModelInfo, SessionOpened};
+use interactive::lane::{LaneCommand, LaneEvent, ModelInfo, SessionOpened};
 use interactive::qol::QolSettings;
 use interactive::run::{UiEvent, paint_loop};
 use serde_json::{Value, json};
@@ -23,25 +26,10 @@ use tui::KeybindingsManager;
 use tui::strip_terminal_sequences;
 use tui::{Clipboard, ClipboardService};
 
-struct Quiet(Arc<Mutex<Vec<String>>>);
-
-impl LaneClient for Quiet {
-    fn prompt(&self, _: &str) {}
-    fn steer(&self, _: &str) -> String {
-        String::new()
-    }
-    fn follow_up(&self, _: &str) -> String {
-        String::new()
-    }
-    fn cancel_queued(&self, _: &str) {}
-    fn abort(&self) {}
-    fn new_session(&self) {}
-    fn resume(&self, _: &str) {}
-    fn list_sessions(&self) {}
-    fn set_name(&self, _: &str) {}
-    fn select_model(&self, _: &str, _: &str) {}
-    fn save_setting(&self, key: &str, value: Value) {
-        self.0.lock().unwrap().push(format!("{key}={value}"));
+fn record(command: &LaneCommand) -> Option<String> {
+    match command {
+        LaneCommand::SaveSetting { key, value } => Some(format!("{key}={value}")),
+        _ => None,
     }
 }
 
@@ -65,11 +53,11 @@ fn messages(turns: usize) -> Vec<Value> {
 }
 
 /// A fullscreen app (`ULTRON_TUI_PARITY` settings: no scrollback split) on a session of `turns` turns.
-fn app(turns: usize) -> (App, Arc<Mutex<Vec<String>>>) {
+fn app(turns: usize) -> (App, Rc<Sent>) {
     app_with(turns, QolSettings::parity())
 }
 
-fn app_with(turns: usize, qol: QolSettings) -> (App, Arc<Mutex<Vec<String>>>) {
+fn app_with(turns: usize, qol: QolSettings) -> (App, Rc<Sent>) {
     let theme = Rc::new(create_theme(&builtin_theme_json("dark").unwrap(), ColorMode::Truecolor, None).unwrap());
     let model = ModelInfo {
         provider: "anthropic".into(),
@@ -79,7 +67,7 @@ fn app_with(turns: usize, qol: QolSettings) -> (App, Arc<Mutex<Vec<String>>>) {
         context_window: 1000,
         thinking_levels: Vec::new(),
     };
-    let saved = Arc::new(Mutex::new(Vec::new()));
+    let (lane, saved) = Sent::new(record);
     let mut app = App::new(
         AppOptions {
             theme,
@@ -96,8 +84,9 @@ fn app_with(turns: usize, qol: QolSettings) -> (App, Arc<Mutex<Vec<String>>>) {
             fd_path: None,
             highlight: Rc::new(|code: &str| code.split('\n').map(str::to_string).collect()),
             qol,
+            bug_report_target: ("radius.pi.dev".into(), false),
         },
-        Box::new(Quiet(Arc::clone(&saved))),
+        lane,
     );
     app.apply(LaneEvent::Opened(SessionOpened {
         session_id: "sess".into(),
@@ -301,7 +290,7 @@ fn interactive_fullscreen_overlays_take_the_mouse_and_focus_reports_stay_with_th
     let (mut app, _) = app_with(12, qol);
     screen(&mut app);
     app.handle_input("\x1ba");
-    app.apply(LaneEvent::Agents(Vec::new()));
+    app.apply(LaneEvent::Agents(json!({"subagents": []})));
     let hub = screen(&mut app);
     assert!(hub.iter().any(|l| l.contains("No agents in this session")), "{hub:#?}");
     app.handle_input("\x1b[<64;5;5M");
@@ -371,7 +360,7 @@ fn interactive_tui_mode_change_says_when_it_applies() {
     assert!(row.contains("fullscreen") && !row.contains("regular"), "{row}");
     app.handle_input("\r");
     let s = screen(&mut app).join("\n");
-    assert_eq!(*saved.lock().unwrap(), ["tuiMode=\"regular\""]);
+    assert_eq!(saved.calls(), ["tuiMode=\"regular\""]);
     let words = s.split_whitespace().collect::<Vec<_>>().join(" ");
     assert!(
         words.contains("Saved tuiMode: regular. It takes effect when Ultron restarts."),

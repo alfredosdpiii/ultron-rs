@@ -7,8 +7,10 @@ pub mod handshake;
 pub mod json;
 pub mod message;
 pub mod names;
+pub mod pi_message;
 mod route;
 pub mod service;
+pub mod watch;
 
 pub use cbor::{CborError, CborOptions, Value, decode_cbor, encode_cbor};
 pub use framing::{DEFAULT_MAX_FRAME_LENGTH, FrameDecoder, FrameError, MAX_SERVER_FRAME_LENGTH, encode_frame};

@@ -254,25 +254,16 @@ pub struct CopyBlock {
     pub href: Option<String>,
 }
 
-fn text_blocks(content: &Value, sep: &str) -> String {
-    match content {
-        Value::String(s) => s.clone(),
-        Value::Array(blocks) => blocks
-            .iter()
-            .filter(|b| b["type"] == "text")
-            .map(|b| b["text"].as_str().unwrap_or(""))
-            .collect::<Vec<_>>()
-            .join(sep),
-        _ => String::new(),
-    }
-}
-
 fn assistant_visible(message: &Value) -> String {
-    text_blocks(&message["content"], "").trim().to_string()
+    protocol::pi_message::content_text(&message["content"], "")
+        .trim()
+        .to_string()
 }
 
 fn tool_result_text(message: &Value) -> String {
-    text_blocks(&message["content"], "\n").trim().to_string()
+    protocol::pi_message::content_text(&message["content"], "\n")
+        .trim()
+        .to_string()
 }
 
 fn push_markdown_blocks(blocks: &mut Vec<CopyBlock>, text: &str, entry: usize) {
@@ -333,7 +324,11 @@ pub fn collect_blocks(entries: &[TranscriptEntry], indices: &[usize]) -> Vec<Cop
     for &index in indices {
         let message = &entries[index].message;
         match message["role"].as_str() {
-            Some("user") => push_markdown_blocks(&mut blocks, &text_blocks(&message["content"], "\n"), index),
+            Some("user") => push_markdown_blocks(
+                &mut blocks,
+                &protocol::pi_message::content_text(&message["content"], "\n"),
+                index,
+            ),
             Some("assistant") => {
                 push_markdown_blocks(&mut blocks, &assistant_visible(message), index);
                 for call in tool_calls(message) {
@@ -405,7 +400,12 @@ pub fn target_copy(entries: &[TranscriptEntry], first: usize, blocks: &[CopyBloc
             .join("\n")
     };
     match message["role"].as_str() {
-        Some("user") => return (text_blocks(&message["content"], "\n"), "user message".into()),
+        Some("user") => {
+            return (
+                protocol::pi_message::content_text(&message["content"], "\n"),
+                "user message".into(),
+            );
+        }
         Some("assistant") => {
             let text = assistant_visible(message);
             if !text.is_empty() {
@@ -430,7 +430,7 @@ pub fn target_copy(entries: &[TranscriptEntry], first: usize, blocks: &[CopyBloc
             return (message["summary"].as_str().unwrap_or("").to_string(), "summary".into());
         }
         Some("custom") | Some("hookMessage") => {
-            let content = text_blocks(&message["content"], "\n");
+            let content = protocol::pi_message::content_text(&message["content"], "\n");
             if !content.trim().is_empty() {
                 return (content, "message".into());
             }

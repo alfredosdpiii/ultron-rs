@@ -1,7 +1,6 @@
 //! What the interactive TUI exchanges with the session it shows, as plain data: events from the lane (Pi message
-//! JSON, queue and operation changes) and the commands it sends ([`LaneClient`]). The TUI never links the engine;
-//! the composition root implements [`LaneClient`] (today an in-process lane on its own thread, later the session
-//! worker over the server protocol).
+//! JSON, queue and operation changes) and the commands it sends ([`LaneCommand`]). The TUI never links the engine;
+//! the composition root receives its commands and sends its events.
 
 use serde_json::Value;
 
@@ -102,13 +101,7 @@ pub struct Queued {
     pub user: bool,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum QueueKind {
-    Steer,
-    FollowUp,
-    /// Held for the session's next run.
-    NextRun,
-}
+pub use protocol::watch::QueueKind;
 
 /// A stored session the resume picker offers.
 #[derive(Clone, Debug, PartialEq)]
@@ -137,7 +130,6 @@ pub struct SessionOpened {
     pub messages: Vec<Value>,
 }
 
-/// What a login flow reported (`AuthEvent`), as the dialog shows it.
 /// A notice interactive-mode.ts shows around startup.
 #[derive(Clone, Debug, PartialEq)]
 pub enum StartupNotice {
@@ -164,6 +156,7 @@ pub enum CatalogRefresh {
     Failed(String),
 }
 
+/// What a login flow reported (`AuthEvent`), as the dialog shows it.
 #[derive(Clone, Debug, PartialEq)]
 pub enum LoginEvent {
     AuthUrl {
@@ -336,18 +329,30 @@ pub enum LaneEvent {
     Changelog(Vec<tui::Token>),
     /// The models the session can use now (after a login or logout).
     Catalog(Vec<ModelInfo>),
-    /// The model catalogs refreshed ([`LaneClient::refresh_catalog`]), or why not.
+    /// The model catalogs refreshed ([`LaneCommand::RefreshCatalog`]), or why not.
     CatalogRefreshed(CatalogRefresh),
     /// A startup notice from the client ([`crate::startup_notices`]); shown once the session is open.
     StartupNotice(StartupNotice),
     /// The session's subagents for the RLM views (`rlm.list_subagents`: `{subagents: [...]}`).
     RlmStatus(Value),
-    /// The session's subagents, for the agent hub.
-    Agents(Vec<crate::agent_hub::AgentView>),
+    /// The session's subagents (`rlm.list_subagents`: `{subagents: [...]}`), for the agent hub.
+    Agents(Value),
     /// A subagent's transcript (`agents.transcript`): its messages, for the agent hub's transcript view.
-    AgentTranscript { id: String, messages: Vec<Value> },
-    /// What the agent hub's steer or revive did (shown as the hub's notice).
-    AgentNotice(String),
+    AgentTranscript {
+        id: String,
+        messages: Result<Vec<Value>, String>,
+    },
+    /// What the agent hub's steer (`agent_message.send`'s `{state, steered}`) or revive (`{id}`) of `id` answered.
+    AgentAnswered {
+        id: String,
+        action: AgentAction,
+        answer: Result<Option<Value>, String>,
+    },
+    /// A read-only inspection's answer ([`LaneCommand::Inspect`]), rendered under `title`.
+    Inspected {
+        title: String,
+        result: Result<Value, String>,
+    },
     /// The TUI moved to a fork or clone of the session (after [`LaneEvent::Opened`]): the editor text it starts with
     /// and the status to show.
     Forked { editor_text: String, status: String },
@@ -365,7 +370,7 @@ pub enum LaneEvent {
     DebugLogWritten { path: String, summary: Vec<String> },
     /// `/share`'s gist upload started (`true`: the "Creating gist..." loader shows) or ended (`false`).
     ShareLoader(bool),
-    /// An RLM inspection's answer ([`LaneClient::rlm_inspect`]).
+    /// An RLM inspection's answer ([`LaneCommand::RlmInspect`]).
     RlmInspected { tag: String, result: Result<Value, String> },
     /// Every project's sessions, newest first (the resume selector's All scope).
     AllSessions(Vec<SessionListing>),
@@ -376,6 +381,13 @@ pub enum LaneEvent {
     ExtensionUi(Value),
 }
 
+/// What the agent hub asked of a subagent.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AgentAction {
+    Steer,
+    Revive,
+}
+
 /// An image attached to a prompt (`ImageContent`: base64 data and MIME type).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PromptImage {
@@ -383,264 +395,241 @@ pub struct PromptImage {
     pub mime_type: String,
 }
 
-/// TUI to lane. Every call returns at once; results arrive as [`LaneEvent`]s.
-pub trait LaneClient {
+/// TUI to lane: what the TUI asks of the session, sent on the App's channel. Sending never waits; answers arrive as
+/// [`LaneEvent`]s.
+#[derive(Clone, Debug, PartialEq)]
+pub enum LaneCommand {
     /// Answer a `/mcp` dialog (`ultron.extension-ui.respond`): `{value}` or `{cancelled: true}`.
-    fn extension_ui_respond(&self, _id: &str, _answer: Value) {}
-    /// Start a turn. The first prompt of an unnamed session also names it (shown at once, refined in the
-    /// background), unless the user names it first.
-    fn prompt(&self, text: &str);
-    /// Start a turn with images (the draft's `[Image #N]` attachments). Lanes without image input drop them.
-    fn prompt_with_images(&self, text: &str, images: Vec<PromptImage>) {
-        let _ = images;
-        self.prompt(text);
-    }
-    /// Queue a steering message into the running turn; returns its entry id.
-    fn steer(&self, text: &str) -> String;
-    /// Queue a follow-up for when the running turn would stop; returns its entry id.
-    fn follow_up(&self, text: &str) -> String;
-    /// [`LaneClient::steer`] with the draft's images.
-    fn steer_with_images(&self, text: &str, images: Vec<PromptImage>) -> String {
-        let _ = images;
-        self.steer(text)
-    }
-    /// [`LaneClient::follow_up`] with the draft's images.
-    fn follow_up_with_images(&self, text: &str, images: Vec<PromptImage>) -> String {
-        let _ = images;
-        self.follow_up(text)
-    }
+    ExtensionUiRespond {
+        id: String,
+        answer: Value,
+    },
+    /// Start a turn with the draft's `[Image #N]` attachments. The first prompt of an unnamed session also names it
+    /// (shown at once, refined in the background), unless the user names it first.
+    Prompt {
+        text: String,
+        images: Vec<PromptImage>,
+    },
+    /// Queue a steering message into the running turn, or a follow-up for when it would stop, under `entry_id`.
+    Enqueue {
+        kind: QueueKind,
+        text: String,
+        images: Vec<PromptImage>,
+        entry_id: String,
+    },
     /// Drop a queued message.
-    fn cancel_queued(&self, entry_id: &str);
+    CancelQueued(String),
     /// Abort the running turn.
-    fn abort(&self);
+    Abort,
     /// Stop the run's retry wait (`abortRetry`); the run then ends with its error.
-    fn abort_retry(&self) {
-        self.abort();
-    }
-    /// Start a new session.
-    fn new_session(&self);
+    AbortRetry,
+    NewSession,
     /// `/import <path>`: import the Pi session file at `path` through the server ([`LaneEvent::PiImported`] or a
     /// [`LaneEvent::Status`] error answers).
-    fn import_pi(&self, path: &str) {
-        let _ = path;
-    }
-    /// `/import` without a path: list Pi's sessions of this working directory for Pi's picker
-    /// ([`LaneEvent::PiSessions`]). Pi's files are only read.
-    fn list_pi_sessions(&self) {}
-    /// Switch to a stored session.
-    fn resume(&self, path: &str);
-    /// List the sessions of this working directory ([`LaneEvent::Sessions`]).
-    fn list_sessions(&self);
+    ImportPi(String),
+    /// `/import` without a path: Pi's sessions of this working directory for Pi's picker ([`LaneEvent::PiSessions`]).
+    /// Pi's files are only read.
+    ListPiSessions,
+    /// Switch to the stored session at this path.
+    Resume(String),
+    /// The sessions of this working directory ([`LaneEvent::Sessions`]).
+    ListSessions,
     /// Name the session (a user-given name: an automatic name never replaces it).
-    fn set_name(&self, name: &str);
-    /// Switch the session's model.
-    fn select_model(&self, provider: &str, id: &str);
+    SetName(String),
+    SelectModel {
+        provider: String,
+        id: String,
+    },
     /// Run a `!` command in the session's shell (`exclude`: `!!`, kept out of the model's context);
     /// [`LaneEvent::BashDone`] answers.
-    fn bash(&self, command: &str, exclude: bool) {
-        let _ = (command, exclude);
-    }
+    Bash {
+        command: String,
+        exclude: bool,
+    },
     /// Cancel the running `!` command.
-    fn abort_bash(&self) {}
+    AbortBash,
     /// Compact the session context now ([`LaneEvent::Compacted`] answers).
-    fn compact(&self, instructions: Option<&str>) {
-        let _ = instructions;
-    }
+    Compact(Option<String>),
     /// Set the thinking level ([`LaneEvent::Thinking`] answers).
-    fn set_thinking(&self, level: &str) {
-        let _ = level;
-    }
-    /// List the user messages a fork can start before ([`LaneEvent::ForkMessages`]).
-    fn fork_messages(&self) {}
-    /// Fork the session before user message `entry_id` and switch to the fork.
-    fn fork(&self, entry_id: &str) {
-        let _ = entry_id;
-    }
+    SetThinking(String),
+    /// The user messages a fork can start before ([`LaneEvent::ForkMessages`]).
+    ForkMessages,
+    /// Fork the session before user message entry `0` and switch to the fork.
+    Fork(String),
     /// Copy the session at its current position and switch to the copy.
-    fn clone_session(&self) {}
+    CloneSession,
     /// Export the session (`/export [path]`: HTML, or the Pi JSONL for a `.jsonl` path); the page uses `theme`, the
     /// name of the TUI's active theme (`generateHtml(..., theme.name)`).
-    fn export(&self, path: Option<&str>, theme: Option<&str>) {
-        let _ = (path, theme);
-    }
+    Export {
+        path: Option<String>,
+        theme: Option<String>,
+    },
     /// The session report (`/usage`), as a [`LaneEvent::Notice`].
-    fn usage_report(&self) {}
-    /// `/goal [objective | pause | resume | clear | check <command>]`: the session goal's command
-    /// ([`LaneEvent::GoalReply`] answers).
-    fn goal(&self, args: &str) {
-        let _ = args;
-    }
+    Usage,
+    /// `/goal [objective | pause | resume | clear | check <command>]` ([`LaneEvent::GoalReply`] answers).
+    Goal(String),
     /// Read the session tree ([`LaneEvent::Tree`]).
-    fn tree(&self) {}
+    Tree,
     /// Navigate to the selected tree entry `target` (AgentSession `navigateTree`: before a user or custom message,
     /// else onto the entry; `None`: the root), optionally summarizing the branch it leaves
     /// ([`LaneEvent::Navigated`]).
-    fn navigate(&self, target: Option<&str>, summarize: bool, instructions: Option<&str>) {
-        let _ = (target, summarize, instructions);
-    }
+    Navigate {
+        target: Option<String>,
+        summarize: bool,
+        instructions: Option<String>,
+    },
     /// Label a tree entry (`None` removes it).
-    fn set_label(&self, entry_id: &str, label: Option<&str>) {
-        let _ = (entry_id, label);
-    }
-    /// Restore the working tree's files to the checkpoint of entry `entry_id` (its turn's start), the current files
-    /// saved as a checkpoint first ([`LaneEvent::FilesRestored`]).
-    fn restore_files(&self, entry_id: &str) {
-        let _ = entry_id;
-    }
-    /// List the session's subagents ([`LaneEvent::Agents`]).
-    fn agents(&self) {}
-    /// A read-only inspection request (`/memory list`, `/agents <id>`, ...); its answer, rendered under `title`
-    /// ([`crate::inspection::format_inspection`]), arrives as a [`LaneEvent::Status`].
-    fn inspect(&self, title: &str, request: &str, payload: Value) {
-        let _ = (title, request, payload);
-    }
+    SetLabel {
+        entry_id: String,
+        label: Option<String>,
+    },
+    /// Restore the working tree's files to the checkpoint of this entry (its turn's start), the current files saved
+    /// as a checkpoint first ([`LaneEvent::FilesRestored`]).
+    RestoreFiles(String),
+    /// The session's subagents ([`LaneEvent::Agents`]).
+    Agents,
+    /// A read-only inspection request (`/memory list`, `/agents <id>`, ...); [`LaneEvent::Inspected`] answers.
+    Inspect {
+        title: String,
+        request: String,
+        payload: Value,
+    },
     /// Poll the session's subagents for the RLM views ([`LaneEvent::RlmStatus`]).
-    fn rlm_status(&self) {}
-    /// Read the settings for `/settings` ([`LaneEvent::Settings`]).
-    fn read_settings(&self) {}
-    /// Read the settings' mode for `/mode` and `/engineering` ([`LaneEvent::Mode`]).
-    fn read_mode(&self) {}
-    /// Read the settings' persona for `/persona` ([`LaneEvent::Persona`]).
-    fn read_persona(&self) {}
-    /// `/persona on|off|auto` and `/keepgoing [on|off]` (`command`: `persona` or `keepgoing`): the session's own
-    /// persona toggle and keep-going mode; the session's answer arrives as a [`LaneEvent::Status`].
-    fn session_persona(&self, command: &str, args: &str) {
-        let _ = (command, args);
-    }
-    /// `/autoreview`: answered by [`LaneEvent::AutoreviewAccounts`] for [`AutoreviewRequest::Accounts`], else by a
-    /// [`LaneEvent::Status`].
-    fn autoreview(&self, request: AutoreviewRequest) {
-        let _ = request;
-    }
-    /// The sign-in options for `/login` ([`LaneEvent::LoginProviders`]).
-    fn login_providers(&self, query: &str) {
-        let _ = query;
-    }
-    /// Start a subscription (OAuth) login for `provider` (`name` is what the dialog says): [`LaneEvent::Login`]
-    /// steps, then statuses and a fresh [`LaneEvent::Catalog`] answer. `false` when this client cannot sign in to
-    /// that provider with an account.
-    fn oauth_login(&self, provider: &str, name: &str) -> bool {
-        let _ = (provider, name);
-        false
-    }
-    /// Refresh the model catalogs (`models.refresh`): a fresh [`LaneEvent::Catalog`], then
-    /// [`LaneEvent::CatalogRefreshed`].
-    fn refresh_catalog(&self) {}
-    /// The answer to the login's pending prompt; `None` cancels the login.
-    fn login_reply(&self, answer: Option<String>) {
-        let _ = answer;
-    }
-    /// Save an API key for a provider; statuses and a fresh [`LaneEvent::Catalog`] answer.
-    fn save_api_key(&self, provider: &str, key: &str) {
-        let _ = (provider, key);
-    }
-    /// Read the changelog ([`LaneEvent::Changelog`]).
-    fn changelog(&self) {}
-    /// `getChangelogForDisplay` for a session that opened without messages: the entries newer than the
-    /// `lastChangelogVersion` setting (which it records), as [`LaneEvent::StartupNotice`] when there are any.
-    fn startup_changelog(&self) {}
-    /// `maybeWarnAboutAnthropicSubscriptionAuth` for the session's model's `provider`: a
-    /// [`StartupNotice::Warning`] when its credential is a subscription login and the warning is on.
-    fn subscription_auth_warning(&self, provider: &str) {
-        let _ = provider;
-    }
-    /// Run `/mcp args` (`LegacyExtensionCommands.run`, the built-in MCP gateway's command); statuses answer. Its
-    /// dialogs and notices arrive as [`LaneEvent::ExtensionUi`].
-    fn mcp_command(&self, args: &str) {
-        let _ = args;
-    }
-    /// `/share`: export the session and upload it as a secret gist with `gh`; statuses answer, and
-    /// [`LaneEvent::ShareLoader`] while the gist is created. The page uses `theme`, as `/export` does.
-    fn share(&self, theme: Option<&str>) {
-        let _ = theme;
-    }
-    /// Esc on the share loader: stop the gist upload; nothing more is reported about it.
-    fn cancel_share(&self) {}
-    /// `/bug`: the host an upload goes to (`new URL(getRadiusGatewayUrl()).host`) and whether the session is offline
-    /// (`PI_OFFLINE`).
-    fn bug_report_target(&self) -> (String, bool) {
-        ("radius.pi.dev".into(), false)
-    }
-    /// `/bug`'s summary written by the session's model (`summarizeForBugReport`); [`LaneEvent::BugSummary`] answers.
-    fn bug_report_summary(&self, _hint: Option<&str>) {}
-    /// Stop the summary in progress; its answer is then ignored.
-    fn abort_bug_report_summary(&self) {}
-    /// Build the report and upload or export it; [`LaneEvent::BugReport`] answers (an upload stopped with
-    /// [`LaneClient::cancel_bug_report`] answers nothing).
-    fn bug_report(&self, _request: BugReportRequest) {}
-    /// Export the report the failed upload built as a zip; [`LaneEvent::BugReport`] answers.
-    fn bug_report_export(&self) {}
-    /// Esc on the upload loader: stop the upload.
-    fn cancel_bug_report(&self) {}
-    /// Save a credential `ModelRuntime.login` produced (`{type: "api_key", key?, env?}`) for `provider`; statuses and
-    /// a fresh [`LaneEvent::Catalog`] answer as for [`LaneClient::save_api_key`].
-    fn save_credential(&self, provider: &str, credential: Value) {
-        let _ = (provider, credential);
-    }
+    RlmStatus,
     /// A read-only inspection for the RLM views (`rlm.frames`, `rlm.pool`, `ctx.state`, `instances.list`), answered
     /// by [`LaneEvent::RlmInspected`] with `tag`.
-    fn rlm_inspect(&self, tag: &str, request: &str, payload: Value) {
-        let _ = (tag, request, payload);
-    }
+    RlmInspect {
+        tag: String,
+        request: String,
+        payload: Value,
+    },
+    /// The settings for `/settings` ([`LaneEvent::Settings`]).
+    ReadSettings,
+    /// The settings' mode for `/mode` and `/engineering` ([`LaneEvent::Mode`]).
+    ReadMode,
+    /// `/persona` without an argument: the session's persona state, as a [`LaneEvent::Status`].
+    ReadPersona,
+    /// `/persona on|off|auto`: the session's own persona toggle; its answer arrives as a [`LaneEvent::Status`].
+    Persona(String),
+    /// `/keepgoing [on|off]`: the session's keep-going mode; its answer arrives as a [`LaneEvent::Status`].
+    KeepGoing(String),
+    /// `/autoreview`: answered by [`LaneEvent::AutoreviewAccounts`] for [`AutoreviewRequest::Accounts`], else by a
+    /// [`LaneEvent::Status`].
+    Autoreview(AutoreviewRequest),
+    /// The sign-in options for `/login` ([`LaneEvent::LoginProviders`]).
+    LoginProviders(String),
+    /// Start a subscription (OAuth) login for `provider` (`name` is what the dialog says): [`LaneEvent::Login`]
+    /// steps, then statuses and a fresh [`LaneEvent::Catalog`] answer.
+    OAuthLogin {
+        provider: String,
+        name: String,
+    },
+    /// The answer to the login's pending prompt; `None` cancels the login.
+    LoginReply(Option<String>),
+    /// Refresh the model catalogs (`models.refresh`): a fresh [`LaneEvent::Catalog`], then
+    /// [`LaneEvent::CatalogRefreshed`].
+    RefreshCatalog,
+    /// Save an API key for a provider; statuses and a fresh [`LaneEvent::Catalog`] answer.
+    SaveApiKey {
+        provider: String,
+        key: String,
+    },
+    /// Save a credential `ModelRuntime.login` produced (`{type: "api_key", key?, env?}`) for `provider`; answered as
+    /// [`LaneCommand::SaveApiKey`] is.
+    SaveCredential {
+        provider: String,
+        credential: Value,
+    },
+    /// The stored credentials ([`LaneEvent::Credentials`]).
+    Credentials,
+    /// Remove a stored credential; a [`LaneEvent::Status`] with `done` and a fresh [`LaneEvent::Catalog`] answer.
+    Logout {
+        provider: String,
+        done: String,
+    },
+    /// Read the changelog ([`LaneEvent::Changelog`]).
+    Changelog,
+    /// `getChangelogForDisplay` for a session that opened without messages: the entries newer than the
+    /// `lastChangelogVersion` setting (which it records), as [`LaneEvent::StartupNotice`] when there are any.
+    StartupChangelog,
+    /// `maybeWarnAboutAnthropicSubscriptionAuth` for the session's model's provider: a
+    /// [`StartupNotice::SubscriptionAuth`] when its credential is a subscription login and the warning is on.
+    SubscriptionAuthWarning(String),
+    /// Run `/mcp args` (`LegacyExtensionCommands.run`, the built-in MCP gateway's command); statuses answer. Its
+    /// dialogs and notices arrive as [`LaneEvent::ExtensionUi`].
+    Mcp(String),
+    /// `/share`: export the session and upload it as a secret gist with `gh`; statuses answer, and
+    /// [`LaneEvent::ShareLoader`] while the gist is created. The page uses `theme`, as `/export` does.
+    Share {
+        theme: Option<String>,
+    },
+    /// Esc on the share loader: stop the gist upload; nothing more is reported about it.
+    CancelShare,
+    /// `/bug`'s summary written by the session's model (`summarizeForBugReport`); [`LaneEvent::BugSummary`] answers.
+    BugReportSummary(Option<String>),
+    /// Stop the summary in progress; its answer is then ignored.
+    AbortBugReportSummary,
+    /// Build the report and upload or export it; [`LaneEvent::BugReport`] answers (an upload stopped with
+    /// [`LaneCommand::CancelBugReport`] answers nothing).
+    BugReport(BugReportRequest),
+    /// Export the report the failed upload built as a zip; [`LaneEvent::BugReport`] answers.
+    BugReportExport,
+    /// Esc on the upload loader: stop the upload.
+    CancelBugReport,
     /// Every project's sessions for the resume selector's All scope ([`LaneEvent::AllSessions`]).
-    fn list_all_sessions(&self) {}
+    ListAllSessions,
     /// Pi's sessions of every project for `/import`'s All scope ([`LaneEvent::PiAllSessions`]).
-    fn list_all_pi_sessions(&self) {}
-    /// List the stored credentials ([`LaneEvent::Credentials`]).
-    fn credentials(&self) {}
-    /// Remove a stored credential; a [`LaneEvent::Status`] and a fresh [`LaneEvent::Catalog`] answer.
-    fn logout(&self, provider: &str, done: &str) {
-        let _ = (provider, done);
-    }
+    ListAllPiSessions,
     /// Delete a stored session (not the attached one); [`LaneEvent::SessionDeleted`] answers.
-    fn delete_session(&self, path: &str) {
-        let _ = path;
-    }
-    /// Rename a stored session (the attached one through [`LaneClient::set_name`]); [`LaneEvent::Sessions`] answers
+    DeleteSession(String),
+    /// Rename a stored session (the attached one through [`LaneCommand::SetName`]); [`LaneEvent::Sessions`] answers
     /// with the fresh listing.
-    fn rename_session(&self, path: &str, name: &str) {
-        let _ = (path, name);
-    }
+    RenameSession {
+        path: String,
+        name: String,
+    },
     /// Abort and release a subagent (and its unfinished descendants).
-    fn kill_agent(&self, id: &str) {
-        let _ = id;
-    }
-    /// Steer a subagent with `text` (`agent_message.send` with `steer: true`); the outcome arrives as a
-    /// [`LaneEvent::AgentNotice`].
-    fn steer_agent(&self, id: &str, text: &str) {
-        let _ = (id, text);
-    }
-    /// Start an interrupted subagent again from its brief; the outcome arrives as a [`LaneEvent::AgentNotice`].
-    fn revive_agent(&self, id: &str) {
-        let _ = id;
-    }
-    /// Read a subagent's transcript ([`LaneEvent::AgentTranscript`]).
-    fn agent_transcript(&self, id: &str) {
-        let _ = id;
-    }
+    KillAgent(String),
+    /// Steer a subagent with `text` (`agent_message.send` with `steer: true`); [`LaneEvent::AgentAnswered`] answers.
+    SteerAgent {
+        id: String,
+        text: String,
+    },
+    /// Start an interrupted subagent again from its brief; [`LaneEvent::AgentAnswered`] answers.
+    ReviveAgent(String),
+    /// A subagent's transcript ([`LaneEvent::AgentTranscript`]).
+    AgentTranscript(String),
     /// Save a global setting (Pi's `SettingsManager` writes).
-    fn save_setting(&self, key: &str, value: Value) {
-        let _ = (key, value);
-    }
+    SaveSetting {
+        key: String,
+        value: Value,
+    },
     /// The terminal's appearance as the TUI knows it (`"light"` / `"dark"`: OSC 11, a scheme report, else
     /// `COLORFGBG`), told when it is first known and whenever it changes: the session's `diagram` `auto` theme and the
     /// settings lane follow it.
-    fn terminal_theme(&self, theme: &str) {
-        let _ = theme;
-    }
-    /// `/trust`: read the worker's trust state ([`LaneEvent::Trust`], or a [`LaneEvent::Status`] error).
-    fn read_trust(&self) {}
+    TerminalTheme(String),
+    /// `/trust`: the worker's trust state ([`LaneEvent::Trust`], or a [`LaneEvent::Status`] error).
+    ReadTrust,
     /// Save a `/trust` choice through the worker (`setProjectTrust`); a [`LaneEvent::Status`] answers.
-    fn set_project_trust(&self, trusted: bool, updates: Vec<(String, Option<bool>)>) {
-        let _ = (trusted, updates);
-    }
+    SetProjectTrust {
+        trusted: bool,
+        updates: Vec<(String, Option<bool>)>,
+    },
     /// `/debug`: add the worker's and server's state to what the TUI shows and write the log
     /// ([`LaneEvent::DebugLogWritten`], or a [`LaneEvent::Status`] error).
-    fn write_debug_log(&self, capture: crate::debug_log::DebugCapture) {
-        let _ = capture;
-    }
+    WriteDebugLog(crate::debug_log::DebugCapture),
     /// `/reload`: reload the server-selected presentation plugins and the session's plugins; statuses answer.
-    fn reload_plugins(&self) {}
+    ReloadPlugins,
+}
+
+impl From<rlm_views::Inspect> for LaneCommand {
+    fn from(inspect: rlm_views::Inspect) -> LaneCommand {
+        LaneCommand::RlmInspect {
+            tag: inspect.tag,
+            request: inspect.request.into(),
+            payload: inspect.payload,
+        }
+    }
 }
 
 /// The diagnostic the Claude subscription router puts on the message where it switched routes

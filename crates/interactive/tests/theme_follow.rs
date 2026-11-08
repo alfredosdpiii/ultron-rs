@@ -10,7 +10,7 @@ use interactive::app::{App, AppOptions};
 use interactive::history::PromptHistoryStore;
 use interactive::keybindings::Platform;
 use interactive::keybindings::native_app_keybindings;
-use interactive::lane::{LaneClient, ModelInfo};
+use interactive::lane::ModelInfo;
 use interactive::theme_setup::{ThemeController, parse_color_scheme_report};
 use theme::registry::ThemeRegistry;
 use theme::{ColorMode, Fg, TerminalTheme, Theme, builtin_theme_json, create_theme};
@@ -97,25 +97,6 @@ fn interactive_theme_only_a_pair_syncs() {
     assert!(controller.terminal_scheme_changed(TerminalTheme::Light).is_none());
 }
 
-struct Lane;
-
-impl LaneClient for Lane {
-    fn prompt(&self, _: &str) {}
-    fn steer(&self, _: &str) -> String {
-        String::new()
-    }
-    fn follow_up(&self, _: &str) -> String {
-        String::new()
-    }
-    fn cancel_queued(&self, _: &str) {}
-    fn abort(&self) {}
-    fn new_session(&self) {}
-    fn resume(&self, _: &str) {}
-    fn list_sessions(&self) {}
-    fn set_name(&self, _: &str) {}
-    fn select_model(&self, _: &str, _: &str) {}
-}
-
 fn keys() -> KeybindingsManager {
     KeybindingsManager::new(
         native_app_keybindings(Platform::new("linux", false)),
@@ -149,8 +130,9 @@ fn app(theme: Rc<Theme>) -> App {
             fd_path: None,
             highlight: Rc::new(|code: &str| code.split('\n').map(str::to_string).collect()),
             qol: interactive::qol::QolSettings::parity(),
+            bug_report_target: ("radius.pi.dev".into(), false),
         },
-        Box::new(Lane),
+        std::sync::mpsc::channel().0,
     )
 }
 

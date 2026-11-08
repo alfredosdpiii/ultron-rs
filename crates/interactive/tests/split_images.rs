@@ -9,7 +9,7 @@ use interactive::app::{App, AppOptions};
 use interactive::history::PromptHistoryStore;
 use interactive::keybindings::Platform;
 use interactive::keybindings::native_app_keybindings;
-use interactive::lane::{LaneClient, LaneEvent, ModelInfo, SessionOpened};
+use interactive::lane::{LaneEvent, ModelInfo, SessionOpened};
 use interactive::qol::QolSettings;
 use interactive::run::{UiEvent, paint_loop};
 use serde_json::{Value, json};
@@ -17,25 +17,6 @@ use theme::{ColorMode, builtin_theme_json, create_theme};
 use tui::ImageProtocol;
 use tui::KeybindingsManager;
 use tui::ViewportRenderer;
-
-struct Quiet;
-
-impl LaneClient for Quiet {
-    fn prompt(&self, _: &str) {}
-    fn steer(&self, _: &str) -> String {
-        String::new()
-    }
-    fn follow_up(&self, _: &str) -> String {
-        String::new()
-    }
-    fn cancel_queued(&self, _: &str) {}
-    fn abort(&self) {}
-    fn new_session(&self) {}
-    fn resume(&self, _: &str) {}
-    fn list_sessions(&self) {}
-    fn set_name(&self, _: &str) {}
-    fn select_model(&self, _: &str, _: &str) {}
-}
 
 fn png() -> Value {
     let fixture: Value = serde_json::from_str(include_str!("../fixtures/tool-images.json")).unwrap();
@@ -79,8 +60,9 @@ fn app() -> App {
             fd_path: None,
             highlight: Rc::new(|code: &str| code.split('\n').map(str::to_string).collect()),
             qol,
+            bug_report_target: ("radius.pi.dev".into(), false),
         },
-        Box::new(Quiet),
+        std::sync::mpsc::channel().0,
     );
     app.apply(LaneEvent::Opened(SessionOpened {
         session_id: "sess".into(),

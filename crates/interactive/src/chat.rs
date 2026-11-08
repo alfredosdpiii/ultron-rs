@@ -83,18 +83,6 @@ pub fn schedule_line(message: &Value) -> String {
     )
 }
 
-pub fn user_message_text(message: &Value) -> String {
-    match &message["content"] {
-        Value::String(s) => s.clone(),
-        Value::Array(blocks) => blocks
-            .iter()
-            .filter(|b| b["type"] == "text")
-            .filter_map(|b| b["text"].as_str())
-            .collect(),
-        _ => String::new(),
-    }
-}
-
 /// What `AssistantMessageComponent` reads from an assistant message.
 pub fn assistant_view(message: &Value) -> AssistantView {
     let content = message["content"]
@@ -437,7 +425,7 @@ impl ChatView {
         match message["role"].as_str() {
             Some("user") => {
                 self.push(Kind::Spacer);
-                self.push(Kind::User(user_message_text(message)));
+                self.push(Kind::User(protocol::pi_message::text(message)));
             }
             Some("assistant") => {
                 let view = assistant_view(message);

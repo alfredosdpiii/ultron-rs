@@ -11,31 +11,12 @@ use std::sync::mpsc;
 use interactive::app::{App, AppOptions};
 use interactive::history::PromptHistoryStore;
 use interactive::keybindings::{Platform, app_keybindings};
-use interactive::lane::{LaneClient, LaneEvent, ModelInfo, QueueKind, Queued, SessionOpened};
+use interactive::lane::{LaneEvent, ModelInfo, QueueKind, Queued, SessionOpened};
 use interactive::qol::QolSettings;
 use interactive::run::{UiEvent, paint_loop};
 use serde_json::{Value, json};
 use theme::{ColorMode, builtin_theme_json, create_theme};
 use tui::KeybindingsManager;
-
-struct Quiet;
-
-impl LaneClient for Quiet {
-    fn prompt(&self, _: &str) {}
-    fn steer(&self, _: &str) -> String {
-        "s1".into()
-    }
-    fn follow_up(&self, _: &str) -> String {
-        "f1".into()
-    }
-    fn cancel_queued(&self, _: &str) {}
-    fn abort(&self) {}
-    fn new_session(&self) {}
-    fn resume(&self, _: &str) {}
-    fn list_sessions(&self) {}
-    fn set_name(&self, _: &str) {}
-    fn select_model(&self, _: &str, _: &str) {}
-}
 
 fn model(id: &str) -> ModelInfo {
     ModelInfo {
@@ -73,8 +54,9 @@ pub fn parity_app(qol: QolSettings) -> App {
             fd_path: None,
             highlight: Rc::new(|code: &str| code.split('\n').map(str::to_string).collect()),
             qol,
+            bug_report_target: ("radius.pi.dev".into(), false),
         },
-        Box::new(Quiet),
+        std::sync::mpsc::channel().0,
     )
 }
 

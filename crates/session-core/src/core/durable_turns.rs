@@ -648,14 +648,16 @@ impl Core {
             // The queued messages its admission placed come first, as they are on the branch (already committed).
             let (captured, run_id) = (run.captured.clone(), run.id.clone());
             for message in captured {
-                for kind in ["message_start", "message_end"] {
-                    self.emit(event(vec![
-                        ("type", json!(kind)),
-                        ("runId", json!(run_id)),
-                        ("lane", json!(LANE)),
-                        ("message", message.clone()),
-                    ]));
-                }
+                self.emit(WatchEvent::MessageStart {
+                    run_id: Some(run_id.clone()),
+                    lane: LANE.into(),
+                    message: message.clone(),
+                });
+                self.emit(WatchEvent::MessageEnd {
+                    run_id: Some(run_id.clone()),
+                    lane: LANE.into(),
+                    message,
+                });
             }
             let prompt = self.run.as_ref().map(|r| r.prompt.clone()).unwrap_or(Value::Null);
             if let Ok(message) = serde_json::from_value::<Message>(prompt) {
@@ -808,12 +810,11 @@ impl Core {
         });
         self.lane.stack.begin_turn();
         self.lane.stack.stats.touch();
-        self.emit(event(vec![
-            ("type", json!("run_start")),
-            ("runId", json!(id)),
-            ("startedAt", json!(now_ms())),
-            ("lane", json!(LANE)),
-        ]));
+        self.emit(WatchEvent::RunStart {
+            run_id: id.clone(),
+            started_at: now_ms(),
+            lane: LANE.into(),
+        });
         // A prompt admitted to the transcript but not to the runtime is submitted now (idempotent by its entry).
         if submission.is_none() && !cancelled {
             self.durable.bridge.clear();

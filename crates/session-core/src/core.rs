@@ -42,34 +42,8 @@ pub const LANE: &str = session_journal::run::MAIN_LANE;
 /// `InvalidMessage` (`reason: "empty"`) of a queued message without text or image (lane.ts `enqueue`).
 pub const EMPTY_QUEUED: &str = "Queued input must contain text or an image";
 
-/// A queue a message can join while a run streams.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum QueueKind {
-    Steer,
-    FollowUp,
-    /// Held until the next run starts (the agent controller's `nextRun`): the run in progress never takes it, and
-    /// the next run's admission places it before its prompt.
-    NextRun,
-}
-
-impl QueueKind {
-    pub fn name(self) -> &'static str {
-        match self {
-            QueueKind::Steer => "steer",
-            QueueKind::FollowUp => "followUp",
-            QueueKind::NextRun => "nextRun",
-        }
-    }
-
-    pub fn parse(name: &str) -> Option<QueueKind> {
-        match name {
-            "steer" => Some(QueueKind::Steer),
-            "followUp" => Some(QueueKind::FollowUp),
-            "nextRun" => Some(QueueKind::NextRun),
-            _ => None,
-        }
-    }
-}
+pub use protocol::watch::QueueKind;
+use protocol::watch::{Ended, Failure, QueueItem, WatchEvent};
 
 /// What an operation answers: data for the response (`None`: no data), or the error text.
 pub type OpResult = Result<Option<Value>, String>;
@@ -641,14 +615,6 @@ pub struct OpenOptions {
     pub auto_name: bool,
 }
 
-/// What a response did to its generation's retries.
-enum RetryNote {
-    /// A retry was scheduled: `{step, attempt, maxAttempts, delayMs, notBefore, errorMessage}`.
-    Scheduled(Value),
-    /// A retried generation ended: `{step, attempt, success, finalError?}`.
-    Ended(Value),
-}
-
 /// The session actor.
 /// How long a quiet session's tail may take to reach Hindsight.
 const IDLE_WAIT: std::time::Duration = std::time::Duration::from_secs(60);
@@ -757,15 +723,6 @@ fn stored(message: &Message) -> Value {
         value.as_object_mut().map(|m| m.remove("details"));
     }
     value
-}
-
-fn event(fields: Vec<(&str, Value)>) -> Value {
-    Value::Object(
-        fields
-            .into_iter()
-            .map(|(k, v)| (k.to_string(), v))
-            .collect::<Map<_, _>>(),
-    )
 }
 
 /// generation.ts `configurationError`'s message for `model_unavailable`.
@@ -1278,33 +1235,35 @@ impl Core {
         }
     }
 
-    fn emit(&mut self, value: Value) {
-        (self.sink)(value);
+    fn emit(&mut self, event: WatchEvent) {
+        (self.sink)(event.to_value());
     }
 
     /// The session's name now (`session_name`, a Rust-only event the worker serves as `ultron.session-ops` state,
     /// not on the transcript).
     fn name_changed(&mut self) {
         let name = lock_session(&self.session).name();
-        self.emit(json!({"type": "session_name", "lane": LANE, "name": name}));
+        self.emit(WatchEvent::SessionName {
+            lane: LANE.into(),
+            name,
+        });
     }
 
     /// AgentSession `setSessionName`: `session_info_changed` to clients (Pi's RPC event).
     fn session_info_changed(&mut self) {
         let name = lock_session(&self.session).name();
-        let mut fields = vec![("type", json!("session_info_changed")), ("lane", json!(LANE))];
-        if let Some(name) = &name {
-            fields.push(("name", json!(name)));
-        }
-        self.emit(event(fields));
+        self.emit(WatchEvent::SessionInfoChanged {
+            lane: LANE.into(),
+            name,
+        });
     }
 
     fn api_key(&self) -> Option<String> {
         self.keys.key(&self.model.provider)
     }
 
-    fn run_id(&self) -> Value {
-        self.run.as_ref().map_or(Value::Null, |r| json!(r.id))
+    fn run_id(&self) -> Option<String> {
+        self.run.as_ref().map(|r| r.id.clone())
     }
 
     /// Announce the entries and usage rows committed since the last announcement, as `entry_added` and `usage`
@@ -1314,11 +1273,10 @@ impl Core {
         self.announced += entries.len();
         for entry in entries {
             let _ = self.context.entry_added(LANE, &entry);
-            self.emit(event(vec![
-                ("type", json!("entry_added")),
-                ("lane", json!(LANE)),
-                ("entry", entry),
-            ]));
+            self.emit(WatchEvent::EntryAdded {
+                lane: LANE.into(),
+                entry,
+            });
         }
         let rows: Vec<Value> = lock_session(&self.session)
             .state()
@@ -1332,12 +1290,11 @@ impl Core {
                 .fold(session_journal::usage::empty_usage(), |total, row| {
                     session_journal::usage::add_usage(&total, &row["usage"])
                 });
-            self.emit(event(vec![
-                ("type", json!("usage")),
-                ("lane", json!(LANE)),
-                ("row", rows[index].clone()),
-                ("totals", totals),
-            ]));
+            self.emit(WatchEvent::Usage {
+                lane: LANE.into(),
+                row: rows[index].clone(),
+                totals,
+            });
         }
         self.announced_usage = rows.len();
     }
@@ -1389,16 +1346,21 @@ impl Core {
     }
 
     fn queue_update(&mut self) {
-        let items: Vec<Value> = sync::lock(&self.queues)
+        let queues = sync::lock(&self.queues)
             .visible()
             .into_iter()
-            .map(|q| json!({"type": "message", "kind": q.kind.name(), "entryId": q.entry_id, "message": q.message}))
+            .map(|q| QueueItem {
+                item: "message".into(),
+                kind: q.kind,
+                entry_id: q.entry_id.clone(),
+                message: Some(q.message.clone()),
+                custom_type: None,
+            })
             .collect();
-        self.emit(event(vec![
-            ("type", json!("queue_update")),
-            ("lane", json!(LANE)),
-            ("queues", Value::Array(items)),
-        ]));
+        self.emit(WatchEvent::QueueUpdate {
+            lane: LANE.into(),
+            queues,
+        });
     }
 
     /// Store the model and thinking level as the lane's configuration (`ultron.lane.config`).
@@ -1430,7 +1392,6 @@ impl Core {
 
     fn on_agent_event(&mut self, agent_event: AgentEvent) {
         let run = self.run_id();
-        let lane = json!(LANE);
         match &agent_event {
             AgentEvent::MessageStart { message } => {
                 let value = stored(message);
@@ -1445,12 +1406,11 @@ impl Core {
                 }
                 self.journal(&agent_event);
                 let shown = self.persona_shown(value);
-                self.emit(event(vec![
-                    ("type", json!("message_start")),
-                    ("runId", run),
-                    ("lane", lane),
-                    ("message", shown),
-                ]));
+                self.emit(WatchEvent::MessageStart {
+                    run_id: run,
+                    lane: LANE.into(),
+                    message: shown,
+                });
             }
             AgentEvent::MessageUpdate {
                 message,
@@ -1462,13 +1422,13 @@ impl Core {
                 self.journal(&agent_event);
                 // The frame (`AssistantMessageFrame`) and the usage, never the message (crate::journal::update_fields).
                 let (frame, usage) = crate::journal::update_fields(message, assistant_message_event);
-                self.emit(event(vec![
-                    ("type", json!("message_update")),
-                    ("runId", run),
-                    ("lane", lane),
-                    ("frame", frame),
-                    ("usage", usage),
-                ]));
+                self.emit(WatchEvent::MessageUpdate {
+                    run_id: run,
+                    lane: LANE.into(),
+                    frame,
+                    usage,
+                    message: None,
+                });
             }
             AgentEvent::MessageEnd { message } => {
                 if std::mem::take(&mut self.hiding) {
@@ -1481,12 +1441,11 @@ impl Core {
                     running.error = value["errorMessage"].as_str().map(str::to_string);
                 }
                 let shown = self.persona_shown(value.clone());
-                self.emit(event(vec![
-                    ("type", json!("message_end")),
-                    ("runId", run),
-                    ("lane", lane),
-                    ("message", shown),
-                ]));
+                self.emit(WatchEvent::MessageEnd {
+                    run_id: run,
+                    lane: LANE.into(),
+                    message: shown,
+                });
                 let delivered = if value["role"] == "user" {
                     let mut queues = sync::lock(&self.queues);
                     let found = queues
@@ -1534,9 +1493,9 @@ impl Core {
                 if was_queued {
                     self.queue_update();
                 }
-                let retried = matches!(retry, Some(RetryNote::Scheduled(_)));
+                let retried = matches!(retry, Some(WatchEvent::RetryScheduled { .. }));
                 if let Some(note) = retry {
-                    self.emit_retry(note);
+                    self.emit(note);
                 }
                 // A response that is retried ends no turn (no `turn_end` at `assistant.retry_wait`).
                 if let Some(message) = round_message.filter(|_| !retried) {
@@ -1553,32 +1512,27 @@ impl Core {
                 args,
             } => {
                 self.journal(&agent_event);
-                self.emit(event(vec![
-                    ("type", json!("tool_start")),
-                    ("runId", run),
-                    ("lane", lane),
-                    ("toolCallId", json!(tool_call_id)),
-                    ("toolName", json!(tool_name)),
-                    ("args", args.clone()),
-                ]));
+                self.emit(WatchEvent::ToolStart {
+                    run_id: run,
+                    lane: LANE.into(),
+                    tool_call_id: tool_call_id.clone(),
+                    tool_name: tool_name.clone(),
+                    args: args.clone(),
+                });
             }
             AgentEvent::ToolExecutionUpdate {
                 tool_call_id,
                 tool_name,
                 args,
                 partial_result,
-            } => self.emit(event(vec![
-                ("type", json!("tool_update")),
-                ("runId", run),
-                ("lane", lane),
-                ("toolCallId", json!(tool_call_id)),
-                ("toolName", json!(tool_name)),
-                ("args", args.clone()),
-                (
-                    "partialResult",
-                    serde_json::to_value(partial_result).unwrap_or(Value::Null),
-                ),
-            ])),
+            } => self.emit(WatchEvent::ToolUpdate {
+                run_id: run,
+                lane: LANE.into(),
+                tool_call_id: tool_call_id.clone(),
+                tool_name: tool_name.clone(),
+                args: args.clone(),
+                partial_result: serde_json::to_value(partial_result).unwrap_or(Value::Null),
+            }),
             AgentEvent::ToolExecutionEnd {
                 tool_call_id,
                 tool_name,
@@ -1589,15 +1543,14 @@ impl Core {
                 if *is_error && result["details"] == json!({}) {
                     result.as_object_mut().map(|m| m.remove("details"));
                 }
-                self.emit(event(vec![
-                    ("type", json!("tool_end")),
-                    ("runId", run),
-                    ("lane", lane),
-                    ("toolCallId", json!(tool_call_id)),
-                    ("toolName", json!(tool_name)),
-                    ("result", result),
-                    ("isError", json!(is_error)),
-                ]));
+                self.emit(WatchEvent::ToolEnd {
+                    run_id: run,
+                    lane: LANE.into(),
+                    tool_call_id: tool_call_id.clone(),
+                    tool_name: tool_name.clone(),
+                    result,
+                    is_error: *is_error,
+                });
             }
             // The lane's own boundaries: turns and the run's end are reconstructed by clients.
             AgentEvent::TurnStart => self.begin_generation(),
@@ -1647,8 +1600,13 @@ impl Core {
             .and_then(|run| run.journal.run())
             .and_then(|journal| Some((journal.retry_waiting()?, journal.step_id().to_string())));
         if let Some((attempt, step)) = retry_start {
-            let run = self.run_id();
-            self.emit(json!({"type": "retry_start", "lane": LANE, "runId": run, "step": step, "attempt": attempt}));
+            let run_id = self.run_id();
+            self.emit(WatchEvent::RetryStart {
+                lane: LANE.into(),
+                run_id,
+                step,
+                attempt,
+            });
         }
         if let Some(placed) = parent.filter(|placed| Some(placed) != tip.as_ref()) {
             writes.push(Write::set(BRANCH_TIP, LANE, placed.into()));
@@ -1715,29 +1673,26 @@ impl Core {
         self.taken.clear();
         sync::lock(&self.queues).delivered.clear();
         let status = if aborted {
-            "aborted"
+            Ended::Aborted
         } else if error.is_some() {
-            "failed"
+            Ended::Failed
         } else {
-            "completed"
+            Ended::Completed
         };
         // Detached work the run leaves running keeps the worker alive: reported before the run's end is.
         self.report_activity();
-        let mut fields = vec![
-            ("type", json!("run_end")),
-            ("lane", json!(LANE)),
-            ("runId", json!(run.id)),
-            ("status", json!(status)),
-        ];
-        if let Some(message) = &error {
-            fields.push(("error", json!({"code": "run_failed", "message": message})));
-        }
-        fields.extend([
-            ("fromTipId", run.started_tip.clone()),
-            ("tipId", self.tip().map_or(Value::Null, Value::from)),
-            ("endedAt", json!(now_ms())),
-        ]);
-        self.emit(event(fields));
+        self.emit(WatchEvent::RunEnd {
+            lane: LANE.into(),
+            run_id: run.id.clone(),
+            status,
+            error: error.as_ref().map(|message| Failure {
+                code: Some("run_failed".into()),
+                message: message.clone(),
+            }),
+            from_tip_id: run.started_tip.as_str().map(str::to_string),
+            tip_id: self.tip(),
+            ended_at: now_ms(),
+        });
         let failed = error.is_some();
         // The dispatcher's `run_end`: an aborted root never restarts work; unconsumed steers are taken back.
         if let Some(operation) = &operation {
@@ -1799,30 +1754,34 @@ impl Core {
             Err(e) => return reply(Err(e)),
         };
         let message = user_bash::bash_message(&command, &result, exclude, now_ms());
-        self.emit(event(vec![
-            ("type", json!("message_start")),
-            ("lane", json!(LANE)),
-            ("message", message.clone()),
-        ]));
-        self.emit(event(vec![
-            ("type", json!("message_end")),
-            ("lane", json!(LANE)),
-            ("message", message.clone()),
-        ]));
+        self.announce_message(&message);
         if let Err(error) = self.append(message) {
             return reply(Err(error));
         }
         reply(Ok(Some(result)));
     }
 
+    /// A message outside a run: its `message_start` and `message_end`.
+    fn announce_message(&mut self, message: &Value) {
+        self.emit(WatchEvent::MessageStart {
+            run_id: None,
+            lane: LANE.into(),
+            message: message.clone(),
+        });
+        self.emit(WatchEvent::MessageEnd {
+            run_id: None,
+            lane: LANE.into(),
+            message: message.clone(),
+        });
+    }
+
     /// AgentSession's `bash_execution_update`: a chunk of the running command's output, under its id.
     fn emit_bash_output(&mut self, id: Option<String>, delta: String) {
-        let mut fields = vec![("type", json!("bash_execution_update")), ("lane", json!(LANE))];
-        if let Some(id) = id {
-            fields.push(("id", json!(id)));
-        }
-        fields.push(("delta", json!(delta)));
-        self.emit(event(fields));
+        self.emit(WatchEvent::BashExecutionUpdate {
+            lane: LANE.into(),
+            id,
+            delta,
+        });
     }
 
     /// Stop the lane (kernels, subagents).
@@ -2243,8 +2202,8 @@ impl Core {
 
     /// What a response means for the generation's retries (the harness's `publishResponse`): a retryable error
     /// within the policy's attempts is retried after `retryDelayMs` (journaled as `assistant.retry_wait`); a later
-    /// attempt's response ends the retries.
-    fn retry_decision(&mut self, answer: &ai::AssistantMessage) -> Option<RetryNote> {
+    /// attempt's response ends the retries: `retry_scheduled` / `retry_end` of the run's generation.
+    fn retry_decision(&mut self, answer: &ai::AssistantMessage) -> Option<WatchEvent> {
         let policy = self.summary_retry();
         let run = self.run.as_mut()?;
         if run.signal.aborted() {
@@ -2265,36 +2224,35 @@ impl Core {
                 .clone()
                 .unwrap_or_else(|| "Assistant request failed".into());
             run.journal.schedule_retry(not_before, message.clone());
-            return Some(RetryNote::Scheduled(json!({
-                "step": step, "attempt": attempt + 1, "maxAttempts": policy.max_attempts(), "delayMs": delay,
-                "notBefore": not_before, "errorMessage": message,
-            })));
+            return Some(WatchEvent::RetryScheduled {
+                lane: LANE.into(),
+                run_id: Some(run.id.clone()),
+                step,
+                attempt: attempt + 1,
+                max_attempts: policy.max_attempts(),
+                delay_ms: delay,
+                not_before,
+                error_message: message,
+            });
         }
         if attempt <= 1 {
             return None;
         }
         let success = !matches!(answer.stop_reason, ai::StopReason::Error | ai::StopReason::Aborted);
-        let mut end = json!({"step": step, "attempt": attempt, "success": success});
-        if !success {
-            end["finalError"] = json!(answer.error_message.clone().unwrap_or_else(|| {
+        let final_error = (!success).then(|| {
+            answer.error_message.clone().unwrap_or_else(|| {
                 let reason = serde_json::to_value(answer.stop_reason).unwrap_or(Value::Null);
                 format!("Assistant request ended with {}", reason.as_str().unwrap_or_default())
-            }));
-        }
-        Some(RetryNote::Ended(end))
-    }
-
-    /// `retry_scheduled` / `retry_end` of the run's generation.
-    fn emit_retry(&mut self, note: RetryNote) {
-        let (kind, fields) = match note {
-            RetryNote::Scheduled(fields) => ("retry_scheduled", fields),
-            RetryNote::Ended(fields) => ("retry_end", fields),
-        };
-        let mut event = json!({"type": kind, "lane": LANE, "runId": self.run_id()});
-        for (key, value) in fields.as_object().into_iter().flatten() {
-            event[key] = value.clone();
-        }
-        self.emit(event);
+            })
+        });
+        Some(WatchEvent::RetryEnd {
+            lane: LANE.into(),
+            run_id: Some(run.id.clone()),
+            step,
+            attempt,
+            success,
+            final_error,
+        })
     }
 
     /// A model turn of the run that answers without tools ends with its answer (`turn_end`); a tool round's turn
@@ -2364,12 +2322,11 @@ impl Core {
         if self.thinking != level {
             self.thinking = level.to_string();
             self.store_lane_config()?;
-            self.emit(event(vec![
-                ("type", json!("config_update")),
-                ("lane", json!(LANE)),
-                ("property", json!("thinkingLevel")),
-                ("value", json!(level)),
-            ]));
+            self.emit(WatchEvent::ConfigUpdate {
+                lane: LANE.into(),
+                property: "thinkingLevel".into(),
+                value: json!(level),
+            });
         }
         Ok(())
     }
@@ -2591,13 +2548,7 @@ impl Core {
             opening.extend(self.refinements_message());
         }
         for message in opening {
-            for kind in ["message_start", "message_end"] {
-                self.emit(event(vec![
-                    ("type", json!(kind)),
-                    ("lane", json!(LANE)),
-                    ("message", message.clone()),
-                ]));
-            }
+            self.announce_message(&message);
             if let Err(error) = self.append(message) {
                 return fail(error, waiter);
             }
@@ -2715,12 +2666,11 @@ impl Core {
             resume_overflow: None,
         });
         self.persona_run_started();
-        self.emit(event(vec![
-            ("type", json!("run_start")),
-            ("runId", json!(id)),
-            ("startedAt", json!(now_ms())),
-            ("lane", json!(LANE)),
-        ]));
+        self.emit(WatchEvent::RunStart {
+            run_id: id,
+            started_at: now_ms(),
+            lane: LANE.into(),
+        });
         self.spawn_waiter();
         Ok(())
     }
@@ -2785,7 +2735,7 @@ impl Core {
         // Recovery runs the first queued message (or the continuation); the others are delivered by the run, in
         // order, as before.
         match self.prompt_with(prompt, None, false) {
-            Ok(()) => answer(true, self.run_id(), reason),
+            Ok(()) => answer(true, json!(self.run_id()), reason),
             Err((error, _)) => Err(error),
         }
     }

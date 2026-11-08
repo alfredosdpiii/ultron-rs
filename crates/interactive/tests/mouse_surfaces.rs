@@ -6,15 +6,17 @@
 //! Literal expectations from the TypeScript sources.
 
 use std::rc::Rc;
-use std::sync::{Arc, Mutex};
+
+mod support;
+use support::Sent;
 
 use interactive::app::{App, AppOptions};
 use interactive::history::PromptHistoryStore;
 use interactive::keybindings::Platform;
 use interactive::keybindings::native_app_keybindings;
-use interactive::lane::{LaneClient, LaneEvent, ModelInfo, SessionListing, SessionOpened};
+use interactive::lane::{LaneCommand, LaneEvent, ModelInfo, SessionListing, SessionOpened};
 use interactive::qol::QolSettings;
-use serde_json::{Value, json};
+use serde_json::json;
 use theme::{ColorMode, builtin_theme_json, create_theme};
 use tui::KeybindingsManager;
 use tui::strip_terminal_sequences;
@@ -22,42 +24,14 @@ use tui::strip_terminal_sequences;
 const W: usize = 80;
 const H: usize = 40;
 
-struct Recorder(Arc<Mutex<Vec<String>>>);
-
-impl Recorder {
-    fn push(&self, call: String) {
-        self.0.lock().unwrap().push(call);
-    }
-}
-
-impl LaneClient for Recorder {
-    fn prompt(&self, _: &str) {}
-    fn steer(&self, _: &str) -> String {
-        String::new()
-    }
-    fn follow_up(&self, _: &str) -> String {
-        String::new()
-    }
-    fn cancel_queued(&self, _: &str) {}
-    fn abort(&self) {}
-    fn new_session(&self) {}
-    fn resume(&self, _: &str) {}
-    fn list_sessions(&self) {}
-    fn set_name(&self, _: &str) {}
-    fn select_model(&self, _: &str, _: &str) {}
-    fn save_setting(&self, key: &str, value: Value) {
-        self.push(format!("{key}={value}"));
-    }
-    fn login_providers(&self, _: &str) {}
-    fn save_api_key(&self, provider: &str, key: &str) {
-        self.push(format!("key {provider} {key}"));
-    }
-    fn extension_ui_respond(&self, id: &str, answer: Value) {
-        self.push(format!("respond {id} {answer}"));
-    }
-    fn rename_session(&self, path: &str, name: &str) {
-        self.push(format!("rename {path} {name}"));
-    }
+fn record(command: &LaneCommand) -> Option<String> {
+    Some(match command {
+        LaneCommand::SaveSetting { key, value } => format!("{key}={value}"),
+        LaneCommand::SaveApiKey { provider, key } => format!("key {provider} {key}"),
+        LaneCommand::ExtensionUiRespond { id, answer } => format!("respond {id} {answer}"),
+        LaneCommand::RenameSession { path, name } => format!("rename {path} {name}"),
+        _ => return None,
+    })
 }
 
 fn keys() -> KeybindingsManager {
@@ -68,7 +42,7 @@ fn keys() -> KeybindingsManager {
     )
 }
 
-fn app() -> (App, Arc<Mutex<Vec<String>>>) {
+fn app() -> (App, Rc<Sent>) {
     let theme = Rc::new(create_theme(&builtin_theme_json("dark").unwrap(), ColorMode::Truecolor, None).unwrap());
     let model = ModelInfo {
         provider: "anthropic".into(),
@@ -78,7 +52,7 @@ fn app() -> (App, Arc<Mutex<Vec<String>>>) {
         context_window: 1000,
         thinking_levels: Vec::new(),
     };
-    let calls = Arc::new(Mutex::new(Vec::new()));
+    let (lane, calls) = Sent::new(record);
     let mut app = App::new(
         AppOptions {
             theme,
@@ -95,8 +69,9 @@ fn app() -> (App, Arc<Mutex<Vec<String>>>) {
             fd_path: None,
             highlight: Rc::new(|code: &str| code.split('\n').map(str::to_string).collect()),
             qol: QolSettings::parity(),
+            bug_report_target: ("radius.pi.dev".into(), false),
         },
-        Box::new(Recorder(Arc::clone(&calls))),
+        lane,
     );
     app.apply(LaneEvent::Opened(SessionOpened {
         session_id: "cur".into(),
@@ -149,8 +124,8 @@ fn typed(app: &mut App, text: &str) {
     }
 }
 
-fn calls(c: &Arc<Mutex<Vec<String>>>) -> Vec<String> {
-    c.lock().unwrap().clone()
+fn calls(c: &Sent) -> Vec<String> {
+    c.calls()
 }
 
 fn open_settings(app: &mut App) {

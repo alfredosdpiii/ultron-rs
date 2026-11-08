@@ -3,46 +3,37 @@
 //! the subscription-auth check runs for an `anthropic` model at open and on every model change until it warned,
 //! and the warning shows once.
 
-use std::cell::RefCell;
 use std::rc::Rc;
+
+mod support;
+use support::Sent;
 
 use interactive::app::{App, AppOptions};
 use interactive::history::PromptHistoryStore;
 use interactive::keybindings::Platform;
 use interactive::keybindings::native_app_keybindings;
-use interactive::lane::{LaneClient, LaneEvent, ModelInfo, SessionOpened, StartupNotice};
+use interactive::lane::{LaneCommand, LaneEvent, ModelInfo, SessionOpened, StartupNotice};
 use theme::{ColorMode, builtin_theme_json, create_theme};
 use tui::KeybindingsManager;
 
-#[derive(Default)]
-struct Calls {
-    changelog: usize,
-    auth_checks: Vec<String>,
+fn record(command: &LaneCommand) -> Option<String> {
+    Some(match command {
+        LaneCommand::StartupChangelog => "changelog".into(),
+        LaneCommand::SubscriptionAuthWarning(provider) => format!("auth {provider}"),
+        _ => return None,
+    })
 }
 
-struct Lane(Rc<RefCell<Calls>>);
+fn changelog(calls: &Sent) -> usize {
+    calls.calls().iter().filter(|c| *c == "changelog").count()
+}
 
-impl LaneClient for Lane {
-    fn prompt(&self, _: &str) {}
-    fn steer(&self, _: &str) -> String {
-        String::new()
-    }
-    fn follow_up(&self, _: &str) -> String {
-        String::new()
-    }
-    fn cancel_queued(&self, _: &str) {}
-    fn abort(&self) {}
-    fn new_session(&self) {}
-    fn resume(&self, _: &str) {}
-    fn list_sessions(&self) {}
-    fn set_name(&self, _: &str) {}
-    fn select_model(&self, _: &str, _: &str) {}
-    fn startup_changelog(&self) {
-        self.0.borrow_mut().changelog += 1;
-    }
-    fn subscription_auth_warning(&self, provider: &str) {
-        self.0.borrow_mut().auth_checks.push(provider.to_string());
-    }
+fn auth_checks(calls: &Sent) -> Vec<String> {
+    calls
+        .calls()
+        .iter()
+        .filter_map(|c| c.strip_prefix("auth ").map(str::to_string))
+        .collect()
 }
 
 fn model(provider: &str) -> ModelInfo {
@@ -56,7 +47,7 @@ fn model(provider: &str) -> ModelInfo {
     }
 }
 
-fn app(provider: &str) -> (App, Rc<RefCell<Calls>>) {
+fn app(provider: &str) -> (App, Rc<Sent>) {
     let keys = || {
         KeybindingsManager::new(
             native_app_keybindings(Platform::new("linux", false)),
@@ -64,7 +55,7 @@ fn app(provider: &str) -> (App, Rc<RefCell<Calls>>) {
             Default::default(),
         )
     };
-    let calls = Rc::new(RefCell::new(Calls::default()));
+    let (lane, calls) = Sent::new(record);
     let theme = Rc::new(create_theme(&builtin_theme_json("dark").unwrap(), ColorMode::Truecolor, None).unwrap());
     let app = App::new(
         AppOptions {
@@ -82,8 +73,9 @@ fn app(provider: &str) -> (App, Rc<RefCell<Calls>>) {
             fd_path: None,
             highlight: Rc::new(|code: &str| code.split('\n').map(str::to_string).collect()),
             qol: interactive::qol::QolSettings::parity(),
+            bug_report_target: ("radius.pi.dev".into(), false),
         },
-        Box::new(Lane(calls.clone())),
+        lane,
     );
     (app, calls)
 }
@@ -109,15 +101,15 @@ fn screen(app: &mut App) -> String {
 fn interactive_startup_asks_for_the_changelog_only_for_a_session_without_messages() {
     let (mut fresh, calls) = app("openai");
     fresh.apply(opened(Vec::new()));
-    assert_eq!(calls.borrow().changelog, 1);
+    assert_eq!(changelog(&calls), 1);
     // Opening another session later (a switch) does not ask again.
     fresh.apply(opened(Vec::new()));
-    assert_eq!(calls.borrow().changelog, 1);
+    assert_eq!(changelog(&calls), 1);
     let (mut resumed, calls) = app("openai");
     resumed.apply(opened(vec![
         serde_json::json!({"role": "user", "content": "hi", "timestamp": 1}),
     ]));
-    assert_eq!(calls.borrow().changelog, 0);
+    assert_eq!(changelog(&calls), 0);
 }
 
 #[test]
@@ -155,15 +147,11 @@ fn interactive_startup_notices_show_once_the_session_is_open() {
 fn interactive_subscription_auth_warning_is_checked_for_anthropic_and_shown_once() {
     let (mut app, calls) = app("anthropic");
     app.apply(opened(Vec::new()));
-    assert_eq!(calls.borrow().auth_checks, vec!["anthropic".to_string()]);
+    assert_eq!(auth_checks(&calls), vec!["anthropic".to_string()]);
     app.apply(LaneEvent::Model(model("openai")));
-    assert_eq!(
-        calls.borrow().auth_checks.len(),
-        1,
-        "only an anthropic model is checked"
-    );
+    assert_eq!(auth_checks(&calls).len(), 1, "only an anthropic model is checked");
     app.apply(LaneEvent::Model(model("anthropic")));
-    assert_eq!(calls.borrow().auth_checks.len(), 2);
+    assert_eq!(auth_checks(&calls).len(), 2);
     app.apply(LaneEvent::StartupNotice(StartupNotice::SubscriptionAuth));
     app.apply(LaneEvent::StartupNotice(StartupNotice::SubscriptionAuth));
     let text = screen(&mut app);
@@ -174,5 +162,5 @@ fn interactive_subscription_auth_warning_is_checked_for_anthropic_and_shown_once
     );
     // Once it warned, no more checks.
     app.apply(LaneEvent::Model(model("anthropic")));
-    assert_eq!(calls.borrow().auth_checks.len(), 2);
+    assert_eq!(auth_checks(&calls).len(), 2);
 }

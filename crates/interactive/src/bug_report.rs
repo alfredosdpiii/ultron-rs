@@ -1,6 +1,6 @@
 //! `/bug [description]` (modes/interactive/bug-report.ts `reportBug`): the consent and options dialogs in the
 //! editor's place, the loaders while the summary is written or the report uploads, and the fallback offer after a
-//! failed upload. The report itself is the client's ([`crate::lane::LaneClient::bug_report`]).
+//! failed upload. The report itself is the client's ([`crate::lane::LaneCommand::BugReport`]).
 
 use std::rc::Rc;
 

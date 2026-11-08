@@ -127,20 +127,21 @@ impl Core {
         })
     }
 
-    fn compaction_event(&mut self, kind: &str, reason: Reason, status: Option<(&str, Option<&str>)>) {
-        let mut fields = vec![
-            ("type", json!(kind)),
-            ("lane", json!(LANE)),
-            ("runId", self.run_id()),
-            ("reason", json!(reason.name())),
-        ];
-        if let Some((status, error)) = status {
-            fields.push(("status", json!(status)));
-            if let Some(message) = error {
-                fields.push(("error", json!({"message": message})));
-            }
-        }
-        self.emit(event(fields));
+    fn compaction_event(&mut self, reason: Reason, end: Option<(Ended, Option<&str>)>) {
+        let (lane, run_id, reason) = (LANE.to_string(), self.run_id(), reason.name().to_string());
+        self.emit(match end {
+            None => WatchEvent::CompactionStart { lane, run_id, reason },
+            Some((status, error)) => WatchEvent::CompactionEnd {
+                lane,
+                run_id,
+                reason,
+                status,
+                error: error.map(|message| Failure {
+                    code: None,
+                    message: message.to_string(),
+                }),
+            },
+        });
     }
 
     fn journal_error(&self) -> Option<String> {
@@ -162,7 +163,7 @@ impl Core {
                 // A compacted context starts a new approach to the limit: its next crossing reminds again.
                 self.lane.stack.context_reminders.rearm(LANE);
                 self.announce();
-                self.compaction_event("compaction_end", reason, Some(("completed", None)));
+                self.compaction_event(reason, Some((Ended::Completed, None)));
                 self.retain_compaction();
                 return Ok(());
             }
@@ -170,7 +171,7 @@ impl Core {
                 if let Some(run) = self.run.as_mut() {
                     run.journal.abandon_compaction();
                 }
-                self.compaction_event("compaction_end", reason, Some(("aborted", None)));
+                self.compaction_event(reason, Some((Ended::Aborted, None)));
                 return Err(CANCELLED.into());
             }
             Work::Failed(message) => message,
@@ -182,7 +183,7 @@ impl Core {
             run.error = Some(message.clone());
             run.compaction_failed = true;
         }
-        self.compaction_event("compaction_end", reason, Some(("failed", Some(message.as_str()))));
+        self.compaction_event(reason, Some((Ended::Failed, Some(message.as_str()))));
         Err(message)
     }
 
@@ -228,7 +229,11 @@ impl Core {
             signal,
             retry,
             (&run_id, &task_id),
-            json!({"source": "compaction", "reason": reason.name()}),
+            WatchEvent::SummarizationRetryAttemptStart {
+                lane: LANE.into(),
+                source: "compaction".into(),
+                reason: Some(reason.name().into()),
+            },
             attempt,
             &mut journal,
         );
@@ -273,9 +278,9 @@ impl Core {
     }
 
     /// Resume the checkpoint without the compaction it started (a `before_compaction` hook declined it): what
-    /// waited for the boundary is placed, `compaction_end` with `status`. `waiting`: the context entries pending
+    /// waited for the boundary is placed, `compaction_end` `declined`. `waiting`: the context entries pending
     /// before the hook.
-    fn decline(&mut self, reason: Reason, waiting: usize, status: &str) {
+    fn decline(&mut self, reason: Reason, waiting: usize) {
         // The trim's edit waits for the run's next boundary, as a queued write does.
         let pending = context_lane::pending_count(&lock_session(&self.session));
         if pending > waiting {
@@ -297,7 +302,7 @@ impl Core {
                 .decline_compaction(&mut lock_session(&self.session), placement),
             None => false,
         };
-        self.compaction_event("compaction_end", reason, Some((status, None)));
+        self.compaction_event(reason, Some((Ended::Declined, None)));
         if resumed && pending > 0 {
             self.announce();
             self.queue_update();
@@ -355,7 +360,7 @@ impl Core {
                 resumed,
             );
         }
-        self.compaction_event("compaction_start", reason, None);
+        self.compaction_event(reason, None);
         // `before_compaction`: ContextControl may trim old tool results instead of a threshold compaction.
         let waiting = context_lane::pending_count(&lock_session(&self.session));
         let window = i64::try_from(self.model.context_window).ok();
@@ -366,7 +371,7 @@ impl Core {
             .before_compaction(LANE, reason.name(), tokens, window, reserve)
             .unwrap_or(false)
         {
-            self.decline(reason, waiting, "declined");
+            self.decline(reason, waiting);
             return Ok(false);
         }
         self.complete_compaction(reason, &prepared)?;
@@ -402,7 +407,7 @@ impl Core {
         self.on_agent_event(AgentEvent::MessageEnd {
             message: Message::Assistant(error),
         });
-        self.compaction_event("compaction_start", Reason::Overflow, None);
+        self.compaction_event(Reason::Overflow, None);
         match self.complete_compaction(Reason::Overflow, &prepared) {
             Ok(_) => answer.give(Settled::Retry),
             Err(error) => answer.give(Settled::Failed(error)),

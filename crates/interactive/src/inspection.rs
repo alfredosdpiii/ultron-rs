@@ -6,9 +6,6 @@ use serde_json::{Value, json};
 
 const MAX_LINES: usize = 40;
 
-/// The inspection command names, in their registration order.
-pub const INSPECTORS: [&str; 6] = ["agents", "memory", "skills", "experiments", "goals", "progress"];
-
 fn words(args: &str) -> Vec<&str> {
     args.split_whitespace().collect()
 }

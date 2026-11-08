@@ -9,6 +9,7 @@ autotests = false
 
 [dependencies]
 jsrt = { path = "../jsrt" }
+serde = { version = "=1.0.229", features = ["derive"] }
 serde_json = { version = "=1.0.151", features = ["float_roundtrip", "preserve_order"] }
 
 [lints]

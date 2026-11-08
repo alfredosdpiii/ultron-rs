@@ -15,10 +15,11 @@
 //! and `session_tree` hooks are not supported by ultron-rs.)
 
 use super::compacting::{AttemptFn, RetryStep, Summarizer};
-use super::{Core, LANE, event};
+use super::{Core, LANE};
 use crate::compaction_op::CompactionOp;
 use crate::durable_store::lock as lock_session;
 use crate::lane::now_ms;
+use protocol::watch::{Ended, Failure, WatchEvent};
 use serde_json::{Map, Value, json};
 use session_journal::Write;
 use session_journal::ns::ENTRY_LABEL;
@@ -239,7 +240,11 @@ impl Core {
             signal,
             retry,
             (&ids.0, &ids.1),
-            json!({"source": "branchSummary"}),
+            WatchEvent::SummarizationRetryAttemptStart {
+                lane: LANE.into(),
+                source: "branchSummary".into(),
+                reason: None,
+            },
             attempt,
             &mut journal,
         );
@@ -271,33 +276,30 @@ impl Core {
     }
 
     fn navigation_start(&mut self, operation: &str, target: &Option<String>) {
-        self.emit(event(vec![
-            ("type", json!("navigation_start")),
-            ("lane", json!(LANE)),
-            ("runId", json!(operation)),
-            ("targetId", json!(target)),
-            ("startedAt", json!(now_ms())),
-        ]));
+        self.emit(WatchEvent::NavigationStart {
+            lane: LANE.into(),
+            run_id: operation.into(),
+            target_id: target.clone(),
+            started_at: now_ms(),
+        });
     }
 
     /// `navigation_end` with the harness's status: `completed`, `aborted` or `failed` (with its error).
     fn navigation_end(&mut self, operation: &str, from: &Option<String>, ended: Result<&Value, &Stopped>) {
         let (status, tip, error) = match ended {
-            Ok(tip) => ("completed", tip.clone(), None),
-            Err(Stopped::Aborted) => ("aborted", json!(from), None),
-            Err(Stopped::Failed(message)) => ("failed", json!(from), Some(message.clone())),
+            Ok(tip) => (Ended::Completed, tip.as_str().map(str::to_string), None),
+            Err(Stopped::Aborted) => (Ended::Aborted, from.clone(), None),
+            Err(Stopped::Failed(message)) => (Ended::Failed, from.clone(), Some(message.clone())),
         };
-        let mut fields = vec![
-            ("type", json!("navigation_end")),
-            ("lane", json!(LANE)),
-            ("runId", json!(operation)),
-            ("status", json!(status)),
-        ];
-        if let Some(message) = error {
-            fields.push(("error", json!({"message": message})));
-        }
-        fields.extend([("fromTipId", json!(from)), ("tipId", tip), ("endedAt", json!(now_ms()))]);
-        self.emit(event(fields));
+        self.emit(WatchEvent::NavigationEnd {
+            lane: LANE.into(),
+            run_id: operation.into(),
+            status,
+            error: error.map(|message| Failure { code: None, message }),
+            from_tip_id: from.clone(),
+            tip_id: tip,
+            ended_at: now_ms(),
+        });
     }
 }
 

@@ -1,16 +1,18 @@
 //! `/trust`, `/debug` and `/reload`: replays fixtures/trust-debug.json (recorded by fixtures/generate-trust-debug.mjs
 //! from client-tui-pi-commands.ts `showTrustSelector` / `writeDebugLog` and trust-selector.ts) and drives the app with
-//! a recording `LaneClient` (slash-commands-provider.ts `/reload`).
+//! the commands the app sends (slash-commands-provider.ts `/reload`).
 
-use std::cell::RefCell;
 use std::rc::Rc;
+
+mod support;
+use support::Sent;
 
 use interactive::app::{App, AppOptions};
 use interactive::debug_log::{ClientFacts, DebugCapture, debug_log, notice};
 use interactive::history::PromptHistoryStore;
 use interactive::keybindings::Platform;
 use interactive::keybindings::native_app_keybindings;
-use interactive::lane::{LaneClient, LaneEvent, ModelInfo, SessionOpened};
+use interactive::lane::{LaneCommand, LaneEvent, ModelInfo, SessionOpened};
 use interactive::trust_selector::{TrustAction, TrustChoice, TrustSelector, TrustView, saved_status};
 use serde_json::{Value, json};
 use theme::{ColorMode, builtin_theme_json, create_theme};
@@ -191,53 +193,25 @@ fn interactive_debug_log_text_and_notice_match_ts() {
     }
 }
 
-#[derive(Default)]
-struct Calls(RefCell<Vec<String>>);
-
-struct Recorder(Rc<Calls>);
-
-impl LaneClient for Recorder {
-    fn prompt(&self, text: &str) {
-        self.0.0.borrow_mut().push(format!("prompt {text}"));
-    }
-    fn steer(&self, _: &str) -> String {
-        "s".into()
-    }
-    fn follow_up(&self, _: &str) -> String {
-        "f".into()
-    }
-    fn cancel_queued(&self, _: &str) {}
-    fn abort(&self) {}
-    fn new_session(&self) {}
-    fn resume(&self, _: &str) {}
-    fn list_sessions(&self) {}
-    fn set_name(&self, _: &str) {}
-    fn select_model(&self, _: &str, _: &str) {}
-    fn read_trust(&self) {
-        self.0.0.borrow_mut().push("read_trust".into());
-    }
-    fn set_project_trust(&self, trusted: bool, updates: Vec<(String, Option<bool>)>) {
-        self.0
-            .0
-            .borrow_mut()
-            .push(format!("set_project_trust {trusted} {updates:?}"));
-    }
-    fn write_debug_log(&self, capture: DebugCapture) {
-        self.0.0.borrow_mut().push(format!(
+fn record(command: &LaneCommand) -> Option<String> {
+    Some(match command {
+        LaneCommand::Prompt { text, .. } => format!("prompt {text}"),
+        LaneCommand::ReadTrust => "read_trust".into(),
+        LaneCommand::SetProjectTrust { trusted, updates } => format!("set_project_trust {trusted} {updates:?}"),
+        LaneCommand::WriteDebugLog(capture) => format!(
             "write_debug_log {}x{} lines={} messages={} session={:?}",
             capture.width,
             capture.height,
             capture.lines.len(),
             capture.messages.len(),
             capture.session_id
-        ));
-    }
-    fn reload_plugins(&self) {
-        self.0.0.borrow_mut().push("reload_plugins".into());
-    }
+        ),
+        LaneCommand::ReloadPlugins => "reload_plugins".into(),
+        _ => return None,
+    })
 }
 
-fn app() -> (App, Rc<Calls>) {
+fn app() -> (App, Rc<Sent>) {
     let model = ModelInfo {
         provider: "anthropic".into(),
         id: "a".into(),
@@ -246,7 +220,7 @@ fn app() -> (App, Rc<Calls>) {
         context_window: 1000,
         thinking_levels: Vec::new(),
     };
-    let calls = Rc::new(Calls::default());
+    let (lane, calls) = Sent::new(record);
     let mut app = App::new(
         AppOptions {
             theme: theme("dark-truecolor"),
@@ -263,8 +237,9 @@ fn app() -> (App, Rc<Calls>) {
             fd_path: None,
             highlight: Rc::new(|code: &str| code.split('\n').map(str::to_string).collect()),
             qol: interactive::qol::QolSettings::parity(),
+            bug_report_target: ("radius.pi.dev".into(), false),
         },
-        Box::new(Recorder(calls.clone())),
+        lane,
     );
     app.apply(LaneEvent::Opened(SessionOpened {
         session_id: "sess".into(),
@@ -290,8 +265,10 @@ fn screen(app: &mut App) -> String {
         .join("\n")
 }
 
-fn take(calls: &Calls) -> Vec<String> {
-    std::mem::take(&mut *calls.0.borrow_mut())
+fn take(calls: &Sent) -> Vec<String> {
+    let taken = calls.calls();
+    calls.clear();
+    taken
 }
 
 #[test]

@@ -3,52 +3,29 @@
 //! the conversation once the files were restored (and not when the restore failed). The tree shows the restore key
 //! in its help only when some entry has a checkpoint.
 
-use std::cell::RefCell;
 use std::rc::Rc;
+
+mod support;
+use support::Sent;
 
 use interactive::app::{App, AppOptions};
 use interactive::history::PromptHistoryStore;
 use interactive::keybindings::Platform;
 use interactive::keybindings::native_app_keybindings;
-use interactive::lane::{ForkMessage, LaneClient, LaneEvent, ModelInfo, SessionOpened};
+use interactive::lane::{ForkMessage, LaneCommand, LaneEvent, ModelInfo, SessionOpened};
 use serde_json::{Value, json};
 use theme::{ColorMode, builtin_theme_json, create_theme};
 use tui::KeybindingsManager;
 
-#[derive(Default)]
-struct Calls(RefCell<Vec<String>>);
-
-struct Recorder(Rc<Calls>);
-
-impl LaneClient for Recorder {
-    fn prompt(&self, _: &str) {}
-    fn steer(&self, _: &str) -> String {
-        String::new()
-    }
-    fn follow_up(&self, _: &str) -> String {
-        String::new()
-    }
-    fn cancel_queued(&self, _: &str) {}
-    fn new_session(&self) {}
-    fn resume(&self, _: &str) {}
-    fn list_sessions(&self) {}
-    fn set_name(&self, _: &str) {}
-    fn select_model(&self, _: &str, _: &str) {}
-    fn abort(&self) {
-        self.0.0.borrow_mut().push("abort".into());
-    }
-    fn fork_messages(&self) {
-        self.0.0.borrow_mut().push("fork_messages".into());
-    }
-    fn fork(&self, entry_id: &str) {
-        self.0.0.borrow_mut().push(format!("fork {entry_id}"));
-    }
-    fn tree(&self) {
-        self.0.0.borrow_mut().push("tree".into());
-    }
-    fn restore_files(&self, entry_id: &str) {
-        self.0.0.borrow_mut().push(format!("restore_files {entry_id}"));
-    }
+fn record(command: &LaneCommand) -> Option<String> {
+    Some(match command {
+        LaneCommand::Abort => "abort".into(),
+        LaneCommand::ForkMessages => "fork_messages".into(),
+        LaneCommand::Fork(entry_id) => format!("fork {entry_id}"),
+        LaneCommand::Tree => "tree".into(),
+        LaneCommand::RestoreFiles(entry_id) => format!("restore_files {entry_id}"),
+        _ => return None,
+    })
 }
 
 fn model() -> ModelInfo {
@@ -62,7 +39,7 @@ fn model() -> ModelInfo {
     }
 }
 
-fn app() -> (App, Rc<Calls>) {
+fn app() -> (App, Rc<Sent>) {
     let theme = Rc::new(create_theme(&builtin_theme_json("dark").unwrap(), ColorMode::Truecolor, None).unwrap());
     let keys = || {
         KeybindingsManager::new(
@@ -71,7 +48,7 @@ fn app() -> (App, Rc<Calls>) {
             Default::default(),
         )
     };
-    let calls = Rc::new(Calls::default());
+    let (lane, calls) = Sent::new(record);
     let mut app = App::new(
         AppOptions {
             theme,
@@ -88,8 +65,9 @@ fn app() -> (App, Rc<Calls>) {
             fd_path: None,
             highlight: Rc::new(|code: &str| code.split('\n').map(str::to_string).collect()),
             qol: interactive::qol::QolSettings::default(),
+            bug_report_target: ("radius.pi.dev".into(), false),
         },
-        Box::new(Recorder(calls.clone())),
+        lane,
     );
     app.apply(LaneEvent::Opened(SessionOpened {
         session_id: "sess".into(),
@@ -108,8 +86,8 @@ fn screen(app: &mut App) -> String {
         .join("\n")
 }
 
-fn calls(c: &Calls) -> Vec<String> {
-    c.0.borrow().clone()
+fn calls(c: &Sent) -> Vec<String> {
+    c.calls()
 }
 
 fn entry(id: &str, parent: Option<&str>, role: &str, text: &str) -> Value {

@@ -5,12 +5,15 @@ use std::rc::Rc;
 use std::sync::{Arc, Mutex, mpsc};
 use std::time::Duration;
 
+mod support;
+use support::Sent;
+
 use interactive::app::{App, AppOptions};
 use interactive::history::PromptHistoryStore;
 use interactive::keybindings::{Platform, app_keybindings};
-use interactive::lane::{LaneClient, LaneEvent, ModelInfo, PromptImage, SessionOpened};
+use interactive::lane::{LaneCommand, LaneEvent, ModelInfo, QueueKind, SessionOpened};
 use interactive::notify::{Message, TurnOutcome};
-use interactive::qol::{GitSource, QolSettings, StatusSymbols, from_settings};
+use interactive::qol::{GitSource, QolSettings, StatusSymbols};
 use interactive::run::{UiEvent, paint_loop};
 use interactive::status_git::GitSnapshot;
 use interactive::status_line::{GitCounts, Preset, SegmentId, SeparatorStyle};
@@ -23,41 +26,24 @@ use tui::{Clipboard, ClipboardService};
 use tui::{HistoryKind, ViewportRenderer};
 use tui::{MAX_PENDING_OUTPUT_BYTES, TtyWriter};
 
-#[derive(Default)]
-struct Calls(RefCell<Vec<String>>);
-
-struct Recorder(Rc<Calls>);
-
-impl LaneClient for Recorder {
-    fn prompt(&self, text: &str) {
-        self.0.0.borrow_mut().push(format!("prompt {text}"));
-    }
-    fn prompt_with_images(&self, text: &str, images: Vec<PromptImage>) {
-        let mimes: Vec<String> = images
-            .iter()
-            .map(|i| format!("{}:{}", i.mime_type, i.data.len()))
-            .collect();
-        self.0
-            .0
-            .borrow_mut()
-            .push(format!("prompt_with_images {text} [{}]", mimes.join(",")));
-    }
-    fn steer(&self, text: &str) -> String {
-        self.0.0.borrow_mut().push(format!("steer {text}"));
-        "s1".into()
-    }
-    fn follow_up(&self, _: &str) -> String {
-        "f1".into()
-    }
-    fn cancel_queued(&self, _: &str) {}
-    fn abort(&self) {
-        self.0.0.borrow_mut().push("abort".into());
-    }
-    fn new_session(&self) {}
-    fn resume(&self, _: &str) {}
-    fn list_sessions(&self) {}
-    fn set_name(&self, _: &str) {}
-    fn select_model(&self, _: &str, _: &str) {}
+fn record(command: &LaneCommand) -> Option<String> {
+    Some(match command {
+        LaneCommand::Prompt { text, images } if images.is_empty() => format!("prompt {text}"),
+        LaneCommand::Prompt { text, images } => {
+            let mimes: Vec<String> = images
+                .iter()
+                .map(|i| format!("{}:{}", i.mime_type, i.data.len()))
+                .collect();
+            format!("prompt_with_images {text} [{}]", mimes.join(","))
+        }
+        LaneCommand::Enqueue {
+            kind: QueueKind::Steer,
+            text,
+            ..
+        } => format!("steer {text}"),
+        LaneCommand::Abort => "abort".into(),
+        _ => return None,
+    })
 }
 
 fn theme() -> Rc<Theme> {
@@ -75,11 +61,11 @@ fn model(id: &str) -> ModelInfo {
     }
 }
 
-fn app_in(cwd: &str, qol: QolSettings) -> (App, Rc<Calls>) {
+fn app_in(cwd: &str, qol: QolSettings) -> (App, Rc<Sent>) {
     app_with_fd(cwd, qol, None)
 }
 
-fn app_with_fd(cwd: &str, qol: QolSettings, fd_path: Option<std::path::PathBuf>) -> (App, Rc<Calls>) {
+fn app_with_fd(cwd: &str, qol: QolSettings, fd_path: Option<std::path::PathBuf>) -> (App, Rc<Sent>) {
     let keys = || {
         KeybindingsManager::new(
             app_keybindings(Platform::new("linux", false)),
@@ -87,7 +73,7 @@ fn app_with_fd(cwd: &str, qol: QolSettings, fd_path: Option<std::path::PathBuf>)
             Default::default(),
         )
     };
-    let calls = Rc::new(Calls::default());
+    let (lane, calls) = Sent::new(record);
     let mut app = App::new(
         AppOptions {
             theme: theme(),
@@ -104,8 +90,9 @@ fn app_with_fd(cwd: &str, qol: QolSettings, fd_path: Option<std::path::PathBuf>)
             fd_path,
             highlight: Rc::new(|code: &str| code.split('\n').map(str::to_string).collect()),
             qol,
+            bug_report_target: ("radius.pi.dev".into(), false),
         },
-        Box::new(Recorder(calls.clone())),
+        lane,
     );
     app.apply(LaneEvent::Opened(SessionOpened {
         session_id: "sess".into(),
@@ -116,7 +103,7 @@ fn app_with_fd(cwd: &str, qol: QolSettings, fd_path: Option<std::path::PathBuf>)
     (app, calls)
 }
 
-fn fresh(qol: QolSettings) -> (App, Rc<Calls>) {
+fn fresh(qol: QolSettings) -> (App, Rc<Sent>) {
     app_in("/nonexistent-qol", qol)
 }
 
@@ -138,8 +125,8 @@ fn screen(app: &mut App) -> String {
     plain(&app.render(100, 30))
 }
 
-fn calls(c: &Calls) -> Vec<String> {
-    c.0.borrow().clone()
+fn calls(c: &Sent) -> Vec<String> {
+    c.calls()
 }
 
 fn temp_dir(tag: &str) -> std::path::PathBuf {
@@ -173,24 +160,24 @@ fn assistant(text: &str, stop: &str) -> Value {
 #[test]
 fn interactive_qol_tui_mode_defaults_to_fullscreen_like_ts() {
     let none = |_: &str| None;
-    assert!(!from_settings(&json!({}), &none).viewport_split);
+    assert!(!QolSettings::from_settings(&json!({}), &none).viewport_split);
     assert!(!QolSettings::default().viewport_split);
-    assert!(from_settings(&json!({"tuiMode": "regular"}), &none).viewport_split);
-    assert!(!from_settings(&json!({"tuiMode": "fullscreen"}), &none).viewport_split);
-    assert!(!from_settings(&json!({"tuiMode": "split"}), &none).viewport_split);
-    assert!(!from_settings(&json!({"tuiMode": true}), &none).viewport_split);
+    assert!(QolSettings::from_settings(&json!({"tuiMode": "regular"}), &none).viewport_split);
+    assert!(!QolSettings::from_settings(&json!({"tuiMode": "fullscreen"}), &none).viewport_split);
+    assert!(!QolSettings::from_settings(&json!({"tuiMode": "split"}), &none).viewport_split);
+    assert!(!QolSettings::from_settings(&json!({"tuiMode": true}), &none).viewport_split);
 }
 
 #[test]
 fn interactive_qol_settings_keys_defaults_and_parity_env() {
     let none = |_: &str| None;
-    let d = from_settings(&json!({}), &none);
+    let d = QolSettings::from_settings(&json!({}), &none);
     assert_eq!(d, QolSettings::default());
     assert!(d.notifications && d.tty_writer && d.render_gate && d.status_line);
     assert!(d.attachments && d.highlight && d.autocomplete_emoji && d.autocomplete_models);
     assert!(!d.vim && !d.autocomplete_github && !d.status_pr);
 
-    let q = from_settings(
+    let q = QolSettings::from_settings(
         &json!({
             "notifications": "off",
             "tuiMode": "fullscreen",
@@ -212,14 +199,17 @@ fn interactive_qol_settings_keys_defaults_and_parity_env() {
     assert_eq!(q.status_symbols, StatusSymbols::Ascii);
     assert!(q.vim && !q.attachments && !q.highlight);
     assert!(!q.autocomplete_emoji && !q.autocomplete_models && q.autocomplete_github);
-    assert!(!from_settings(&json!({"statusLine": false}), &none).status_line);
-    assert!(!from_settings(&json!({"statusLine": {"enabled": false}}), &none).status_line);
+    assert!(!QolSettings::from_settings(&json!({"statusLine": false}), &none).status_line);
+    assert!(!QolSettings::from_settings(&json!({"statusLine": {"enabled": false}}), &none).status_line);
 
     // ULTRON_TUI_PARITY=1 wins over every setting; other values do not.
     let parity = |k: &str| (k == interactive::qol::PARITY_ENV).then(|| "1".to_string());
-    assert_eq!(from_settings(&json!({"vimMode": true}), &parity), QolSettings::parity());
+    assert_eq!(
+        QolSettings::from_settings(&json!({"vimMode": true}), &parity),
+        QolSettings::parity()
+    );
     let zero = |k: &str| (k == interactive::qol::PARITY_ENV).then(|| "0".to_string());
-    assert!(from_settings(&json!({"vimMode": true}), &zero).vim);
+    assert!(QolSettings::from_settings(&json!({"vimMode": true}), &zero).vim);
     assert!(!QolSettings::parity().any() && QolSettings::default().any());
 }
 
@@ -691,26 +681,6 @@ fn interactive_rlm_cell_shows_the_diff_of_written_files_only_when_expanded() {
     assert!(
         !again.contains("files changed") && again.contains("Edited src/app.py"),
         "{again}"
-    );
-}
-
-/// Status lines pass through the composition root's filter (client-tui.ts `#showStatus` -> `friendlyStatus`; the CLI
-/// sets `client::lost::friendly_status`), the lane's errors included.
-#[test]
-fn interactive_status_lines_pass_through_the_status_filter() {
-    fn marked(text: &str) -> String {
-        format!("{text} [filtered]")
-    }
-    let (mut app, _) = fresh(QolSettings::parity());
-    app.apply(LaneEvent::Error("first".into()));
-    assert!(screen(&mut app).contains("Error: first"), "unfiltered by default");
-    assert!(!screen(&mut app).contains("[filtered]"));
-    app.set_status_filter(marked);
-    app.apply(LaneEvent::Error("Session worker s-1 disconnected unexpectedly".into()));
-    assert!(
-        screen(&mut app).contains("Error: Session worker s-1 disconnected unexpectedly [filtered]"),
-        "{}",
-        screen(&mut app)
     );
 }
 

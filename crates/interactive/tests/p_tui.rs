@@ -1,21 +1,24 @@
-//! The client TUI's live settings, dialogs and RLM pane against a recording `LaneClient`, with literal expectations
+//! The client TUI's live settings, dialogs and RLM pane against what it sends the session, with literal expectations
 //! from experimental/client-tui.ts (`#applySettingLocally`, `#handleEscape`, `#serveExtensionUI`, `#showTextInput`,
 //! `#showTextEditor`, `#toggleRlmPane`, `#autoOpenRlmPane`, `#renderWaveSummary`, `#suspend`), client-tui-auth.ts
 //! (multi-field API-key logins; flows replayed from fixtures/api-key-login.json, `node
 //! crates/interactive/fixtures/generate-api-key-login.mjs`), client-tui-pi-commands.ts (`/share`'s loader),
 //! client-tui-sessions.ts with session-selector.ts (Tab's scope) and the theme controller.
 
-use std::cell::{Cell, RefCell};
+use std::cell::Cell;
 use std::rc::Rc;
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
+
+mod support;
+use support::Sent;
 
 use interactive::api_key_login::{ApiKeyLogin, Step};
 use interactive::app::{App, AppOptions};
 use interactive::history::PromptHistoryStore;
 use interactive::keybindings::Platform;
 use interactive::keybindings::native_app_keybindings;
-use interactive::lane::{LaneClient, LaneEvent, LoginEvent, LoginPrompt, ModelInfo, SessionListing, SessionOpened};
+use interactive::lane::{LaneCommand, LaneEvent, LoginEvent, LoginPrompt, ModelInfo, SessionListing, SessionOpened};
 use interactive::qol::QolSettings;
 use interactive::run::{UiEvent, paint_loop};
 use serde_json::{Value, json};
@@ -23,82 +26,28 @@ use theme::{ColorMode, Fg, Theme, builtin_theme_json, create_theme};
 use tui::KeybindingsManager;
 use tui::{Clipboard, ClipboardService};
 
-#[derive(Default)]
-struct Calls(RefCell<Vec<String>>);
-
-struct Recorder(Rc<Calls>);
-
-impl Recorder {
-    fn log(&self, entry: String) {
-        self.0.0.borrow_mut().push(entry);
-    }
-}
-
-impl LaneClient for Recorder {
-    fn prompt(&self, text: &str) {
-        self.log(format!("prompt {text}"));
-    }
-    fn steer(&self, _: &str) -> String {
-        String::new()
-    }
-    fn follow_up(&self, _: &str) -> String {
-        String::new()
-    }
-    fn cancel_queued(&self, _: &str) {}
-    fn abort(&self) {
-        self.log("abort".into());
-    }
-    fn new_session(&self) {}
-    fn resume(&self, path: &str) {
-        self.log(format!("resume {path}"));
-    }
-    fn list_sessions(&self) {
-        self.log("list".into());
-    }
-    fn list_all_sessions(&self) {
-        self.log("list_all".into());
-    }
-    fn list_pi_sessions(&self) {
-        self.log("list_pi".into());
-    }
-    fn list_all_pi_sessions(&self) {
-        self.log("list_all_pi".into());
-    }
-    fn set_name(&self, _: &str) {}
-    fn select_model(&self, _: &str, _: &str) {}
-    fn tree(&self) {
-        self.log("tree".into());
-    }
-    fn fork_messages(&self) {
-        self.log("fork_messages".into());
-    }
-    fn extension_ui_respond(&self, id: &str, answer: Value) {
-        self.log(format!("respond {id} {answer}"));
-    }
-    fn save_setting(&self, key: &str, value: Value) {
-        self.log(format!("setting {key}={value}"));
-    }
-    fn share(&self, _theme: Option<&str>) {
-        self.log("share".into());
-    }
-    fn cancel_share(&self) {
-        self.log("cancel_share".into());
-    }
-    fn save_credential(&self, provider: &str, credential: Value) {
-        self.log(format!("credential {provider} {credential}"));
-    }
-    fn login_reply(&self, answer: Option<String>) {
-        self.log(format!("login_reply {answer:?}"));
-    }
-    fn rlm_status(&self) {
-        self.log("rlm_status".into());
-    }
-    fn rlm_inspect(&self, tag: &str, request: &str, payload: Value) {
-        self.log(format!("inspect {tag} {request} {payload}"));
-    }
-    fn read_settings(&self) {
-        self.log("read_settings".into());
-    }
+fn record(command: &LaneCommand) -> Option<String> {
+    Some(match command {
+        LaneCommand::Prompt { text, .. } => format!("prompt {text}"),
+        LaneCommand::Abort | LaneCommand::AbortRetry => "abort".into(),
+        LaneCommand::Resume(path) => format!("resume {path}"),
+        LaneCommand::ListSessions => "list".into(),
+        LaneCommand::ListAllSessions => "list_all".into(),
+        LaneCommand::ListPiSessions => "list_pi".into(),
+        LaneCommand::ListAllPiSessions => "list_all_pi".into(),
+        LaneCommand::Tree => "tree".into(),
+        LaneCommand::ForkMessages => "fork_messages".into(),
+        LaneCommand::ExtensionUiRespond { id, answer } => format!("respond {id} {answer}"),
+        LaneCommand::SaveSetting { key, value } => format!("setting {key}={value}"),
+        LaneCommand::Share { .. } => "share".into(),
+        LaneCommand::CancelShare => "cancel_share".into(),
+        LaneCommand::SaveCredential { provider, credential } => format!("credential {provider} {credential}"),
+        LaneCommand::LoginReply(answer) => format!("login_reply {answer:?}"),
+        LaneCommand::RlmStatus => "rlm_status".into(),
+        LaneCommand::RlmInspect { tag, request, payload } => format!("inspect {tag} {request} {payload}"),
+        LaneCommand::ReadSettings => "read_settings".into(),
+        _ => return None,
+    })
 }
 
 fn keys() -> KeybindingsManager {
@@ -121,7 +70,7 @@ fn light() -> Theme {
 struct Harness {
     app: App,
     theme: Rc<Theme>,
-    calls: Rc<Calls>,
+    calls: Rc<Sent>,
     clock: Rc<Cell<Instant>>,
 }
 
@@ -135,7 +84,7 @@ fn harness_with(qol: QolSettings, splash: bool) -> Harness {
         context_window: 1000,
         thinking_levels: Vec::new(),
     };
-    let calls = Rc::new(Calls::default());
+    let (lane, calls) = Sent::new(record);
     let mut app = App::new(
         AppOptions {
             theme: Rc::clone(&theme),
@@ -152,8 +101,9 @@ fn harness_with(qol: QolSettings, splash: bool) -> Harness {
             fd_path: None,
             highlight: Rc::new(|code: &str| code.split('\n').map(str::to_string).collect()),
             qol,
+            bug_report_target: ("radius.pi.dev".into(), false),
         },
-        Box::new(Recorder(calls.clone())),
+        lane,
     );
     let clock = Rc::new(Cell::new(Instant::now()));
     let now = Rc::clone(&clock);
@@ -178,10 +128,10 @@ fn harness() -> Harness {
 
 impl Harness {
     fn calls(&self) -> Vec<String> {
-        self.calls.0.borrow().clone()
+        self.calls.calls()
     }
     fn clear(&self) {
-        self.calls.0.borrow_mut().clear();
+        self.calls.clear();
     }
     fn advance(&self, ms: u64) {
         self.clock.set(self.clock.get() + Duration::from_millis(ms));

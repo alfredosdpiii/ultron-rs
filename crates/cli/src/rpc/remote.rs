@@ -12,12 +12,13 @@
 //! requests resent, cells reported interrupted, subagents reattached, and shell jobs that outlived the worker
 //! followed; a sandboxed job dies with its worker) when the next client attaches.
 
-use super::events::{LaneEvent, RpcEventTranslator};
+use super::events::RpcEventTranslator;
 use super::{Input, Output, QueueKind, Reply, RpcSession};
 use crate::Env;
 use crate::args::Args;
 use crate::link::Link;
 use crate::print_mode::Target;
+use protocol::watch::WatchEvent;
 use serde_json::{Value, json};
 use session_core::core::Op;
 use std::sync::Arc;
@@ -253,7 +254,7 @@ impl RpcSession for Remote<'_> {
             Some("run_end") => self.running = false,
             _ => {}
         }
-        if let Some(lane_event) = LaneEvent::from_watch(&event) {
+        if let Some(lane_event) = WatchEvent::decode(&event) {
             for line in self.translator.translate(lane_event) {
                 out.emit(&line);
             }

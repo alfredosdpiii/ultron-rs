@@ -168,11 +168,6 @@ impl QolSettings {
     }
 }
 
-/// The additions from the merged settings JSON and the environment (`var`).
-pub fn from_settings(settings: &Value, var: &dyn Fn(&str) -> Option<String>) -> QolSettings {
-    QolSettings::from_settings(settings, var)
-}
-
 impl QolSettings {
     /// See [`from_settings`].
     pub fn from_settings(settings: &Value, var: &dyn Fn(&str) -> Option<String>) -> Self {

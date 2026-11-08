@@ -1,140 +1,78 @@
-//! The client TUI's commands and keys ported after the first batch, against a recording `LaneClient`, with
+//! The client TUI's commands and keys ported after the first batch, against what it sends the session, with
 //! literal expectations from client-tui.ts, client-tui-actions.ts (`nextModel`), client-tui-commands.ts
 //! (`pathArgument`), slash-commands-provider.ts (`/thinking`) and client-tui-chat.ts (`#addEntry`).
 
-use std::cell::RefCell;
 use std::rc::Rc;
+
+mod support;
+use support::Sent;
 
 use interactive::app::{App, AppOptions, next_model, path_argument};
 use interactive::history::PromptHistoryStore;
 use interactive::keybindings::Platform;
 use interactive::keybindings::native_app_keybindings;
-use interactive::lane::{AutoreviewRequest, BashResult, ForkMessage, LaneClient, LaneEvent, ModelInfo, SessionOpened};
+use interactive::lane::{
+    AutoreviewRequest, BashResult, ForkMessage, LaneCommand, LaneEvent, ModelInfo, QueueKind, SessionOpened,
+};
 use serde_json::{Value, json};
 use theme::{ColorMode, builtin_theme_json, create_theme};
 use tui::KeybindingsManager;
 
-#[derive(Default)]
-struct Calls(RefCell<Vec<String>>);
-
-struct Recorder(Rc<Calls>);
-
-impl Recorder {
-    fn push(&self, call: String) {
-        self.0.0.borrow_mut().push(call);
-    }
-}
-
-impl LaneClient for Recorder {
-    fn prompt(&self, text: &str) {
-        self.push(format!("prompt {text}"));
-    }
-    fn steer(&self, text: &str) -> String {
-        self.push(format!("steer {text}"));
-        "s1".into()
-    }
-    fn follow_up(&self, text: &str) -> String {
-        self.push(format!("follow_up {text}"));
-        "f1".into()
-    }
-    fn inspect(&self, title: &str, request: &str, payload: serde_json::Value) {
-        self.push(format!("inspect {title} {request} {payload}"));
-    }
-    fn cancel_queued(&self, id: &str) {
-        self.push(format!("cancel {id}"));
-    }
-    fn abort(&self) {
-        self.push("abort".into());
-    }
-    fn abort_retry(&self) {
-        self.push("abort_retry".into());
-    }
-    fn new_session(&self) {
-        self.push("new".into());
-    }
-    fn resume(&self, path: &str) {
-        self.push(format!("resume {path}"));
-    }
-    fn list_sessions(&self) {
-        self.push("list".into());
-    }
-    fn list_pi_sessions(&self) {
-        self.push("list_pi".into());
-    }
-    fn set_name(&self, name: &str) {
-        self.push(format!("name {name}"));
-    }
-    fn select_model(&self, provider: &str, id: &str) {
-        self.push(format!("model {provider}/{id}"));
-    }
-    fn bash(&self, command: &str, exclude: bool) {
-        self.push(format!("bash {command} {exclude}"));
-    }
-    fn abort_bash(&self) {
-        self.push("abort_bash".into());
-    }
-    fn compact(&self, instructions: Option<&str>) {
-        self.push(format!("compact {instructions:?}"));
-    }
-    fn set_thinking(&self, level: &str) {
-        self.push(format!("thinking {level}"));
-    }
-    fn fork_messages(&self) {
-        self.push("fork_messages".into());
-    }
-    fn fork(&self, entry_id: &str) {
-        self.push(format!("fork {entry_id}"));
-    }
-    fn clone_session(&self) {
-        self.push("clone".into());
-    }
-    fn export(&self, path: Option<&str>, theme: Option<&str>) {
-        self.push(format!("export {path:?} {theme:?}"));
-    }
-    fn usage_report(&self) {
-        self.push("usage".into());
-    }
-    fn goal(&self, args: &str) {
-        self.push(format!("goal {args}"));
-    }
-    fn save_setting(&self, key: &str, value: Value) {
-        self.push(format!("setting {key}={value}"));
-    }
-    fn agents(&self) {
-        self.push("agents".into());
-    }
-    fn tree(&self) {
-        self.push("tree".into());
-    }
-    fn navigate(&self, target: Option<&str>, summarize: bool, instructions: Option<&str>) {
-        self.push(format!("navigate {target:?} {summarize} {instructions:?}"));
-    }
-    fn set_label(&self, entry_id: &str, label: Option<&str>) {
-        self.push(format!("label {entry_id} {label:?}"));
-    }
-    fn import_pi(&self, path: &str) {
-        self.push(format!("import {path}"));
-    }
-    fn delete_session(&self, path: &str) {
-        self.push(format!("delete {path}"));
-    }
-    fn rename_session(&self, path: &str, name: &str) {
-        self.push(format!("rename {path} {name}"));
-    }
-    fn read_settings(&self) {
-        self.push("read_settings".into());
-    }
-    fn read_mode(&self) {
-        self.push("read_mode".into());
-    }
-    fn read_persona(&self) {
-        self.push("read_persona".into());
-    }
-    fn session_persona(&self, command: &str, args: &str) {
-        self.push(format!("session {command} {args}"));
-    }
-    fn autoreview(&self, request: AutoreviewRequest) {
-        self.push(match request {
+fn record(command: &LaneCommand) -> Option<String> {
+    Some(match command {
+        LaneCommand::Prompt { text, .. } => format!("prompt {text}"),
+        LaneCommand::Enqueue {
+            kind: QueueKind::Steer,
+            text,
+            ..
+        } => format!("steer {text}"),
+        LaneCommand::Enqueue { text, .. } => format!("follow_up {text}"),
+        LaneCommand::Inspect {
+            title,
+            request,
+            payload,
+        } => format!("inspect {title} {request} {payload}"),
+        LaneCommand::CancelQueued(id) => format!("cancel {id}"),
+        LaneCommand::Abort => "abort".into(),
+        LaneCommand::AbortRetry => "abort_retry".into(),
+        LaneCommand::NewSession => "new".into(),
+        LaneCommand::Resume(path) => format!("resume {path}"),
+        LaneCommand::ListSessions => "list".into(),
+        LaneCommand::ListPiSessions => "list_pi".into(),
+        LaneCommand::SetName(name) => format!("name {name}"),
+        LaneCommand::SelectModel { provider, id } => format!("model {provider}/{id}"),
+        LaneCommand::Bash { command, exclude } => format!("bash {command} {exclude}"),
+        LaneCommand::AbortBash => "abort_bash".into(),
+        LaneCommand::Compact(instructions) => format!("compact {:?}", instructions.as_deref()),
+        LaneCommand::SetThinking(level) => format!("thinking {level}"),
+        LaneCommand::ForkMessages => "fork_messages".into(),
+        LaneCommand::Fork(entry_id) => format!("fork {entry_id}"),
+        LaneCommand::CloneSession => "clone".into(),
+        LaneCommand::Export { path, theme } => format!("export {:?} {:?}", path.as_deref(), theme.as_deref()),
+        LaneCommand::Usage => "usage".into(),
+        LaneCommand::Goal(args) => format!("goal {args}"),
+        LaneCommand::SaveSetting { key, value } => format!("setting {key}={value}"),
+        LaneCommand::Agents => "agents".into(),
+        LaneCommand::Tree => "tree".into(),
+        LaneCommand::Navigate {
+            target,
+            summarize,
+            instructions,
+        } => format!(
+            "navigate {:?} {summarize} {:?}",
+            target.as_deref(),
+            instructions.as_deref()
+        ),
+        LaneCommand::SetLabel { entry_id, label } => format!("label {entry_id} {:?}", label.as_deref()),
+        LaneCommand::ImportPi(path) => format!("import {path}"),
+        LaneCommand::DeleteSession(path) => format!("delete {path}"),
+        LaneCommand::RenameSession { path, name } => format!("rename {path} {name}"),
+        LaneCommand::ReadSettings => "read_settings".into(),
+        LaneCommand::ReadMode => "read_mode".into(),
+        LaneCommand::ReadPersona => "read_persona".into(),
+        LaneCommand::Persona(args) => format!("session persona {args}"),
+        LaneCommand::KeepGoing(args) => format!("session keepgoing {args}"),
+        LaneCommand::Autoreview(request) => match request {
             AutoreviewRequest::Status => "autoreview status".into(),
             AutoreviewRequest::Accounts => "autoreview accounts".into(),
             AutoreviewRequest::Off => "autoreview off".into(),
@@ -143,17 +81,12 @@ impl LaneClient for Recorder {
             }
             AutoreviewRequest::Ban { login, account } => format!("autoreview ban {login} {account:?}"),
             AutoreviewRequest::Unban { login, account } => format!("autoreview unban {login} {account:?}"),
-        });
-    }
-    fn login_providers(&self, query: &str) {
-        self.push(format!("login_providers {query}"));
-    }
-    fn save_api_key(&self, provider: &str, key: &str) {
-        self.push(format!("save_api_key {provider} {key}"));
-    }
-    fn rlm_status(&self) {
-        self.push("rlm_status".into());
-    }
+        },
+        LaneCommand::LoginProviders(query) => format!("login_providers {query}"),
+        LaneCommand::SaveApiKey { provider, key } => format!("save_api_key {provider} {key}"),
+        LaneCommand::RlmStatus => "rlm_status".into(),
+        _ => return None,
+    })
 }
 
 fn model(id: &str, reasoning: bool) -> ModelInfo {
@@ -167,7 +100,7 @@ fn model(id: &str, reasoning: bool) -> ModelInfo {
     }
 }
 
-fn app_with(qol: interactive::qol::QolSettings, models: Vec<ModelInfo>) -> (App, Rc<Calls>) {
+fn app_with(qol: interactive::qol::QolSettings, models: Vec<ModelInfo>) -> (App, Rc<Sent>) {
     let theme = Rc::new(create_theme(&builtin_theme_json("dark").unwrap(), ColorMode::Truecolor, None).unwrap());
     let keys = || {
         KeybindingsManager::new(
@@ -176,7 +109,7 @@ fn app_with(qol: interactive::qol::QolSettings, models: Vec<ModelInfo>) -> (App,
             Default::default(),
         )
     };
-    let calls = Rc::new(Calls::default());
+    let (lane, calls) = Sent::new(record);
     let current = models[0].clone();
     let mut app = App::new(
         AppOptions {
@@ -194,8 +127,9 @@ fn app_with(qol: interactive::qol::QolSettings, models: Vec<ModelInfo>) -> (App,
             fd_path: None,
             highlight: Rc::new(|code: &str| code.split('\n').map(str::to_string).collect()),
             qol,
+            bug_report_target: ("radius.pi.dev".into(), false),
         },
-        Box::new(Recorder(calls.clone())),
+        lane,
     );
     app.apply(LaneEvent::Opened(SessionOpened {
         session_id: "sess".into(),
@@ -206,7 +140,7 @@ fn app_with(qol: interactive::qol::QolSettings, models: Vec<ModelInfo>) -> (App,
     (app, calls)
 }
 
-fn app() -> (App, Rc<Calls>) {
+fn app() -> (App, Rc<Sent>) {
     app_with(
         interactive::qol::QolSettings::parity(),
         vec![model("a", true), model("b", true), model("c", false)],
@@ -232,8 +166,8 @@ fn screen(app: &mut App) -> String {
         .join("\n")
 }
 
-fn calls(c: &Calls) -> Vec<String> {
-    c.0.borrow().clone()
+fn calls(c: &Sent) -> Vec<String> {
+    c.calls()
 }
 
 fn footer(app: &mut App) -> String {
@@ -742,7 +676,7 @@ fn interactive_commands_export_names_the_active_theme() {
     failed.set_theme_controller(controller("missing"));
     submit(&mut failed, "/export");
     let _ = std::fs::remove_dir_all(&dir);
-    let exports = |c: &Rc<Calls>| -> Vec<String> { calls(c).into_iter().filter(|x| x.starts_with("export")).collect() };
+    let exports = |c: &Rc<Sent>| -> Vec<String> { calls(c).into_iter().filter(|x| x.starts_with("export")).collect() };
     assert_eq!(exports(&p), ["export None Some(\"paper\")"]);
     assert_eq!(
         exports(&c),
@@ -886,7 +820,7 @@ fn interactive_commands_agents_opens_the_hub_with_overlays_only() {
     );
     submit(&mut app, "/agents");
     assert_eq!(calls(&c), ["agents"]);
-    app.apply(LaneEvent::Agents(Vec::new()));
+    app.apply(LaneEvent::Agents(json!({"subagents": []})));
     assert!(
         app.render(80, 20)
             .iter()
@@ -945,38 +879,6 @@ const PNG: [u8; 67] = [
     0x00, 0x00, 0x49, 0x45, 0x4e, 0x44, 0xae, 0x42, 0x60, 0x82,
 ];
 
-#[derive(Default)]
-struct ImageCalls(RefCell<Vec<(String, usize)>>);
-
-struct ImageRecorder(Rc<ImageCalls>);
-
-impl LaneClient for ImageRecorder {
-    fn prompt(&self, _: &str) {}
-    fn steer(&self, text: &str) -> String {
-        self.0.0.borrow_mut().push((format!("steer {text}"), 0));
-        "s".into()
-    }
-    fn follow_up(&self, text: &str) -> String {
-        self.0.0.borrow_mut().push((format!("follow_up {text}"), 0));
-        "f".into()
-    }
-    fn steer_with_images(&self, text: &str, images: Vec<interactive::lane::PromptImage>) -> String {
-        self.0.0.borrow_mut().push((format!("steer {text}"), images.len()));
-        "s".into()
-    }
-    fn follow_up_with_images(&self, text: &str, images: Vec<interactive::lane::PromptImage>) -> String {
-        self.0.0.borrow_mut().push((format!("follow_up {text}"), images.len()));
-        "f".into()
-    }
-    fn cancel_queued(&self, _: &str) {}
-    fn abort(&self) {}
-    fn new_session(&self) {}
-    fn resume(&self, _: &str) {}
-    fn list_sessions(&self) {}
-    fn set_name(&self, _: &str) {}
-    fn select_model(&self, _: &str, _: &str) {}
-}
-
 #[test]
 fn interactive_commands_images_go_with_steering_and_follow_ups() {
     let dir = std::env::temp_dir().join(format!("interactive-img-{}", std::process::id()));
@@ -991,7 +893,7 @@ fn interactive_commands_images_go_with_steering_and_follow_ups() {
             Default::default(),
         )
     };
-    let calls = Rc::new(ImageCalls::default());
+    let (lane, sent) = Sent::new(|_| None);
     let mut app = App::new(
         AppOptions {
             theme,
@@ -1011,8 +913,9 @@ fn interactive_commands_images_go_with_steering_and_follow_ups() {
                 attachments: true,
                 ..interactive::qol::QolSettings::parity()
             },
+            bug_report_target: ("radius.pi.dev".into(), false),
         },
-        Box::new(ImageRecorder(calls.clone())),
+        lane,
     );
     app.apply(LaneEvent::Opened(SessionOpened {
         session_id: "s".into(),
@@ -1030,7 +933,20 @@ fn interactive_commands_images_go_with_steering_and_follow_ups() {
     app.handle_input("\x1b\r");
     typed(&mut app, "plain");
     app.handle_input("\r");
-    let got = calls.0.borrow().clone();
+    let got: Vec<(String, usize)> = sent
+        .commands()
+        .iter()
+        .filter_map(|command| match command {
+            LaneCommand::Enqueue {
+                kind: QueueKind::Steer,
+                text,
+                images,
+                ..
+            } => Some((format!("steer {text}"), images.len())),
+            LaneCommand::Enqueue { text, images, .. } => Some((format!("follow_up {text}"), images.len())),
+            _ => None,
+        })
+        .collect();
     assert_eq!(got.len(), 3, "{got:?}");
     assert_eq!(got[0].1, 1);
     assert!(got[0].0.starts_with("steer [Image #1"), "{got:?}");
@@ -1053,7 +969,19 @@ fn interactive_commands_review_is_sent_as_typed_for_the_worker_to_expand() {
         calls(&c),
         ["prompt /review main --post", "prompt /review", "steer /review 12"]
     );
-    assert!(screen(&mut app).contains("Queued s1."), "{}", screen(&mut app));
+    let id = c
+        .commands()
+        .into_iter()
+        .find_map(|command| match command {
+            LaneCommand::Enqueue { entry_id, .. } => Some(entry_id),
+            _ => None,
+        })
+        .unwrap();
+    assert!(
+        screen(&mut app).contains(&format!("Queued {id}.")),
+        "{}",
+        screen(&mut app)
+    );
 }
 
 fn entry(id: &str, parent: Option<&str>, role: &str, text: &str) -> Value {
@@ -1435,6 +1363,19 @@ fn interactive_commands_login_with_an_api_key() {
     });
     assert!(screen(&mut app).contains("Select authentication method for Anthropic:"));
     app.handle_input("\r");
+    assert!(
+        matches!(
+            c.commands().last(),
+            Some(LaneCommand::OAuthLogin { provider, name }) if provider == "anthropic" && name == "Anthropic"
+        ),
+        "{:?}",
+        c.commands().last()
+    );
+    app.apply(LaneEvent::Status(
+        "Error: Failed to login to Anthropic: signing in with an account is not available in the Rust build yet; use \
+         an API key"
+            .into(),
+    ));
     let wide: String = app
         .render(300, 30)
         .iter()

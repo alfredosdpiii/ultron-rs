@@ -5,7 +5,6 @@
 //! must hold the TypeScript footer lines exactly. Plus the branch following a `HEAD` change, and the Rust root's
 //! `claude-subscription` provider read as Claude Code (literal expectations).
 
-use std::cell::RefCell;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::time::{Duration, Instant};
@@ -15,31 +14,10 @@ use interactive::footer_data::{FooterBranch, claude_code_usage_text, find_git_pa
 use interactive::history::PromptHistoryStore;
 use interactive::keybindings::Platform;
 use interactive::keybindings::native_app_keybindings;
-use interactive::lane::{LaneClient, LaneEvent, ModelInfo, SessionOpened};
+use interactive::lane::{LaneEvent, ModelInfo, SessionOpened};
 use serde_json::{Value, json};
 use theme::{ColorMode, builtin_theme_json, create_theme};
 use tui::KeybindingsManager;
-
-struct Quiet(RefCell<Vec<String>>);
-
-impl LaneClient for Quiet {
-    fn prompt(&self, text: &str) {
-        self.0.borrow_mut().push(text.into());
-    }
-    fn steer(&self, _: &str) -> String {
-        String::new()
-    }
-    fn follow_up(&self, _: &str) -> String {
-        String::new()
-    }
-    fn cancel_queued(&self, _: &str) {}
-    fn abort(&self) {}
-    fn new_session(&self) {}
-    fn resume(&self, _: &str) {}
-    fn list_sessions(&self) {}
-    fn set_name(&self, _: &str) {}
-    fn select_model(&self, _: &str, _: &str) {}
-}
 
 struct Root(PathBuf);
 
@@ -120,8 +98,9 @@ fn app(cwd: &Path, home: &Path, model: ModelInfo, models: Vec<ModelInfo>) -> App
             fd_path: None,
             highlight: Rc::new(|code: &str| code.split('\n').map(str::to_string).collect()),
             qol: interactive::qol::QolSettings::parity(),
+            bug_report_target: ("radius.pi.dev".into(), false),
         },
-        Box::new(Quiet(RefCell::default())),
+        std::sync::mpsc::channel().0,
     )
 }
 

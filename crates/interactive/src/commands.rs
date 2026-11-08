@@ -13,145 +13,339 @@ use tui::{Markdown, MarkdownOptions};
 use crate::components::{bold, format_key_text, format_tokens, markdown_theme};
 use jsrt::number;
 
-/// One command: name, argument hint and description.
+/// Who offers a slash command, which decides where it is listed and when it runs.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Tier {
+    /// The TypeScript client TUI's own: listed and run.
+    Client,
+    /// Rust-only, with the overlays ([`crate::qol::QolSettings::overlays`]): a parity build has exactly the client
+    /// TUI's commands.
+    Overlay,
+    /// Pi's interactive mode's (interactive-mode.ts), which the client TUI does not list: run, and listed with the
+    /// overlays.
+    Pi,
+    /// Pi's easter eggs: run, never listed.
+    Hidden,
+}
+
+/// One command: name, argument hint, description and tier.
 pub struct CommandSpec {
     pub name: &'static str,
     pub hint: &'static str,
     pub description: &'static str,
+    pub tier: Tier,
 }
 
-const fn c(name: &'static str, hint: &'static str, description: &'static str) -> CommandSpec {
-    CommandSpec {
-        name,
-        hint,
-        description,
+/// The slash commands this TUI runs.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Slash {
+    Name,
+    Session,
+    Usage,
+    Goal,
+    Copy,
+    Export,
+    Hotkeys,
+    Changelog,
+    Quit,
+    Settings,
+    Login,
+    Logout,
+    Share,
+    Resume,
+    Import,
+    Engineering,
+    Autoreview,
+    Trust,
+    ScopedModels,
+    Debug,
+    New,
+    Rlm,
+    Tree,
+    Fork,
+    Clone,
+    Model,
+    Agents,
+    Memory,
+    Skills,
+    Experiments,
+    Goals,
+    Progress,
+    Extension,
+    Mcp,
+    Thinking,
+    Compact,
+    Review,
+    Reload,
+    Mode,
+    Persona,
+    KeepGoing,
+    Schedules,
+    Clear,
+    Bug,
+    ArminSaysHi,
+    DementedElves,
+}
+
+impl Slash {
+    /// Every command, in the order the editor's autocomplete lists them (the client TUI's, then the Rust-only ones).
+    pub const ALL: [Slash; 46] = [
+        Slash::Name,
+        Slash::Session,
+        Slash::Usage,
+        Slash::Goal,
+        Slash::Copy,
+        Slash::Export,
+        Slash::Hotkeys,
+        Slash::Changelog,
+        Slash::Quit,
+        Slash::Settings,
+        Slash::Login,
+        Slash::Logout,
+        Slash::Share,
+        Slash::Resume,
+        Slash::Import,
+        Slash::Engineering,
+        Slash::Autoreview,
+        Slash::Trust,
+        Slash::ScopedModels,
+        Slash::Debug,
+        Slash::New,
+        Slash::Rlm,
+        Slash::Tree,
+        Slash::Fork,
+        Slash::Clone,
+        Slash::Model,
+        Slash::Agents,
+        Slash::Memory,
+        Slash::Skills,
+        Slash::Experiments,
+        Slash::Goals,
+        Slash::Progress,
+        Slash::Extension,
+        Slash::Mcp,
+        Slash::Thinking,
+        Slash::Compact,
+        Slash::Review,
+        Slash::Reload,
+        Slash::Mode,
+        Slash::Persona,
+        Slash::KeepGoing,
+        Slash::Schedules,
+        Slash::Clear,
+        Slash::Bug,
+        Slash::ArminSaysHi,
+        Slash::DementedElves,
+    ];
+
+    pub fn spec(self) -> CommandSpec {
+        let (name, hint, description, tier) = match self {
+            Slash::Name => ("name", "<name>", "Set session display name", Tier::Client),
+            Slash::Session => ("session", "", "Show session info and stats", Tier::Client),
+            Slash::Usage => (
+                "usage",
+                "",
+                "What this session did: depth (frames, sub-agents), cells, tokens and cost, guardrails",
+                Tier::Client,
+            ),
+            Slash::Goal => (
+                "goal",
+                "[objective | pause | resume | clear | check <command>]",
+                "Set a goal the agent works on round after round (pause, resume, clear, check <command>)",
+                Tier::Client,
+            ),
+            Slash::Copy => ("copy", "", "Copy last agent message to clipboard", Tier::Client),
+            Slash::Export => (
+                "export",
+                "[path]",
+                "Export session (HTML default, or specify path: .html/.jsonl)",
+                Tier::Client,
+            ),
+            Slash::Hotkeys => ("hotkeys", "", "Show all keyboard shortcuts", Tier::Client),
+            Slash::Changelog => ("changelog", "", "Show changelog entries", Tier::Client),
+            Slash::Quit => ("quit", "", "Quit ultron", Tier::Client),
+            Slash::Settings => ("settings", "", "Open settings menu", Tier::Client),
+            Slash::Login => ("login", "<provider>", "Configure provider authentication", Tier::Client),
+            Slash::Logout => ("logout", "", "Remove provider authentication", Tier::Client),
+            Slash::Share => ("share", "", "Share session as a secret GitHub gist", Tier::Client),
+            Slash::Resume => ("resume", "", "Resume a different session", Tier::Client),
+            Slash::Import => (
+                "import",
+                "[path.jsonl]",
+                "Import a Pi session (JSONL) as a native session",
+                Tier::Client,
+            ),
+            Slash::Engineering => (
+                "engineering",
+                "[true|false]",
+                "Engineering mode: put the always-on skills (alwaysSkills) in the system prompt",
+                Tier::Client,
+            ),
+            Slash::Autoreview => (
+                "autoreview",
+                "[on|off]",
+                "Automatic pull-request reviews as your gh account: on (picks the account, starts the service), off, or the status",
+                Tier::Client,
+            ),
+            Slash::Trust => (
+                "trust",
+                "",
+                "Save project trust decision for future sessions",
+                Tier::Client,
+            ),
+            Slash::ScopedModels => (
+                "scoped-models",
+                "",
+                "Enable/disable models for Ctrl+P cycling",
+                Tier::Client,
+            ),
+            Slash::Debug => (
+                "debug",
+                "",
+                "Write a debug log (TUI, Session worker and server state)",
+                Tier::Client,
+            ),
+            Slash::New => ("new", "", "Start a new session", Tier::Client),
+            Slash::Rlm => (
+                "rlm",
+                "",
+                "Toggle the live RLM graph panel; /rlm focus opens it full screen, /rlm pane the RLM pane",
+                Tier::Client,
+            ),
+            Slash::Tree => ("tree", "", "Navigate the session tree (switch branches)", Tier::Client),
+            Slash::Fork => (
+                "fork",
+                "",
+                "Create a new fork from a previous user message",
+                Tier::Client,
+            ),
+            Slash::Clone => (
+                "clone",
+                "",
+                "Duplicate the current session at the current position",
+                Tier::Client,
+            ),
+            Slash::Model => ("model", "<provider/model>", "Select model", Tier::Client),
+            Slash::Agents => (
+                "agents",
+                "[task-id]",
+                "Show Ultron tasks, definitions, and usage",
+                Tier::Client,
+            ),
+            Slash::Memory => (
+                "memory",
+                "why <task-id> | list",
+                "Show recorded memory evidence without a new search",
+                Tier::Client,
+            ),
+            Slash::Skills => (
+                "skills",
+                "why <decision-id> | list",
+                "Show skill versions or why a skill was selected",
+                Tier::Client,
+            ),
+            Slash::Experiments => ("experiments", "", "Show recorded experiment attempts", Tier::Client),
+            Slash::Goals => (
+                "goals",
+                "[goal-id]",
+                "Show goals and their verification state",
+                Tier::Client,
+            ),
+            Slash::Progress => (
+                "progress",
+                "<task-id>",
+                "Show progress receipts and decisions for a task",
+                Tier::Client,
+            ),
+            // TypeScript's `/extension <name> [args]`: kept in the list (as the client TUI lists it); Pi extensions are not
+            // supported by ultron-rs, so it says so.
+            Slash::Extension => (
+                "extension",
+                "<name> [args]",
+                "Run a loaded Pi extension command",
+                Tier::Client,
+            ),
+            Slash::Mcp => (
+                "mcp",
+                "",
+                "MCP servers: status, connect or disconnect, sign in, enable or disable",
+                Tier::Client,
+            ),
+            Slash::Thinking => ("thinking", "<level>", "Set thinking level", Tier::Client),
+            Slash::Compact => (
+                "compact",
+                "<instructions>",
+                "Manually compact the session context",
+                Tier::Client,
+            ),
+            Slash::Review => (
+                "review",
+                "[base-ref|PR|path...] [--only bugs,security,arch,tests,ai] [--budget 300k] [--model p/m] [--post]",
+                "Review code changes: specialist reviewer frames, then a verifier per finding",
+                Tier::Client,
+            ),
+            Slash::Reload => ("reload", "", "Reload server-selected plugins", Tier::Client),
+            Slash::Mode => (
+                "mode",
+                "[name]",
+                "Switch mode (Default, Engineering); without a name, pick one",
+                Tier::Overlay,
+            ),
+            Slash::Persona => (
+                "persona",
+                "[on|off|auto|ultron|none]",
+                "The Ultron persona: on/off/auto for this session, ultron/none for the setting",
+                Tier::Overlay,
+            ),
+            Slash::KeepGoing => (
+                "keepgoing",
+                "[on|off]",
+                "Keep-going mode: continue every working turn until the work is done (while you are away)",
+                Tier::Overlay,
+            ),
+            Slash::Schedules => (
+                "schedules",
+                "",
+                "Scheduled prompts of this session (schedule.every / schedule.at): name, next run, runs",
+                Tier::Overlay,
+            ),
+            // Claude Code's `/clear`: `/new` by another name.
+            Slash::Clear => (
+                "clear",
+                "",
+                "Clear the conversation: start a new session",
+                Tier::Overlay,
+            ),
+            // Pi's own (core/slash-commands.ts), which the client TUI does not offer.
+            Slash::Bug => ("bug", "<description>", "Report a bug to the Pi developers", Tier::Pi),
+            Slash::ArminSaysHi => ("arminsayshi", "", "", Tier::Hidden),
+            Slash::DementedElves => ("dementedelves", "", "", Tier::Hidden),
+        };
+        CommandSpec {
+            name,
+            hint,
+            description,
+            tier,
+        }
+    }
+
+    /// The command `/name` runs, with the overlays on or off; `None` when there is none.
+    pub fn parse(name: &str, overlays: bool) -> Option<Slash> {
+        Slash::ALL
+            .into_iter()
+            .find(|c| c.spec().name == name)
+            .filter(|c| c.spec().tier != Tier::Overlay || overlays)
+    }
+
+    /// Whether the editor's autocomplete lists the command.
+    pub fn listed(self, overlays: bool) -> bool {
+        match self.spec().tier {
+            Tier::Client => true,
+            Tier::Overlay | Tier::Pi => overlays,
+            Tier::Hidden => false,
+        }
     }
 }
-
-/// Every command the TypeScript client TUI offers, in its order.
-/// The Rust-only commands, offered with the overlays ([`crate::qol::QolSettings::overlays`]); a parity build has
-/// exactly the client TUI's [`COMMANDS`].
-pub const QOL_COMMANDS: [CommandSpec; 6] = [
-    c(
-        "mode",
-        "[name]",
-        "Switch mode (Default, Engineering); without a name, pick one",
-    ),
-    c(
-        "persona",
-        "[on|off|auto|ultron|none]",
-        "The Ultron persona: on/off/auto for this session, ultron/none for the setting",
-    ),
-    c(
-        "keepgoing",
-        "[on|off]",
-        "Keep-going mode: continue every working turn until the work is done (while you are away)",
-    ),
-    c(
-        "schedules",
-        "",
-        "Scheduled prompts of this session (schedule.every / schedule.at): name, next run, runs",
-    ),
-    // Claude Code's `/clear`: `/new` by another name.
-    c("clear", "", "Clear the conversation: start a new session"),
-    // Pi's own (core/slash-commands.ts), which the client TUI does not offer.
-    c("bug", "<description>", "Report a bug to the Pi developers"),
-];
-
-/// Pi's interactive commands the client TUI does not list but this TUI runs (interactive-mode.ts): `/bug` and the
-/// easter eggs.
-pub const PI_COMMANDS: [&str; 3] = ["bug", "arminsayshi", "dementedelves"];
-
-pub const COMMANDS: [CommandSpec; 38] = [
-    c("name", "<name>", "Set session display name"),
-    c("session", "", "Show session info and stats"),
-    c(
-        "usage",
-        "",
-        "What this session did: depth (frames, sub-agents), cells, tokens and cost, guardrails",
-    ),
-    c(
-        "goal",
-        "[objective | pause | resume | clear | check <command>]",
-        "Set a goal the agent works on round after round (pause, resume, clear, check <command>)",
-    ),
-    c("copy", "", "Copy last agent message to clipboard"),
-    c(
-        "export",
-        "[path]",
-        "Export session (HTML default, or specify path: .html/.jsonl)",
-    ),
-    c("hotkeys", "", "Show all keyboard shortcuts"),
-    c("changelog", "", "Show changelog entries"),
-    c("quit", "", "Quit ultron"),
-    c("settings", "", "Open settings menu"),
-    c("login", "<provider>", "Configure provider authentication"),
-    c("logout", "", "Remove provider authentication"),
-    c("share", "", "Share session as a secret GitHub gist"),
-    c("resume", "", "Resume a different session"),
-    c(
-        "import",
-        "[path.jsonl]",
-        "Import a Pi session (JSONL) as a native session",
-    ),
-    c(
-        "engineering",
-        "[true|false]",
-        "Engineering mode: put the always-on skills (alwaysSkills) in the system prompt",
-    ),
-    c(
-        "autoreview",
-        "[on|off]",
-        "Automatic pull-request reviews as your gh account: on (picks the account, starts the service), off, or the status",
-    ),
-    c("trust", "", "Save project trust decision for future sessions"),
-    c("scoped-models", "", "Enable/disable models for Ctrl+P cycling"),
-    c("debug", "", "Write a debug log (TUI, Session worker and server state)"),
-    c("new", "", "Start a new session"),
-    c(
-        "rlm",
-        "",
-        "Toggle the live RLM graph panel; /rlm focus opens it full screen, /rlm pane the RLM pane",
-    ),
-    c("tree", "", "Navigate the session tree (switch branches)"),
-    c("fork", "", "Create a new fork from a previous user message"),
-    c("clone", "", "Duplicate the current session at the current position"),
-    c("model", "<provider/model>", "Select model"),
-    c("agents", "[task-id]", "Show Ultron tasks, definitions, and usage"),
-    c(
-        "memory",
-        "why <task-id> | list",
-        "Show recorded memory evidence without a new search",
-    ),
-    c(
-        "skills",
-        "why <decision-id> | list",
-        "Show skill versions or why a skill was selected",
-    ),
-    c("experiments", "", "Show recorded experiment attempts"),
-    c("goals", "[goal-id]", "Show goals and their verification state"),
-    c(
-        "progress",
-        "<task-id>",
-        "Show progress receipts and decisions for a task",
-    ),
-    // TypeScript's `/extension <name> [args]`: kept in the list (as the client TUI lists it); Pi extensions are not
-    // supported by ultron-rs, so it says so.
-    c("extension", "<name> [args]", "Run a loaded Pi extension command"),
-    c(
-        "mcp",
-        "",
-        "MCP servers: status, connect or disconnect, sign in, enable or disable",
-    ),
-    c("thinking", "<level>", "Set thinking level"),
-    c("compact", "<instructions>", "Manually compact the session context"),
-    c(
-        "review",
-        "[base-ref|PR|path...] [--only bugs,security,arch,tests,ai] [--budget 300k] [--model p/m] [--post]",
-        "Review code changes: specialist reviewer frames, then a verifier per finding",
-    ),
-    c("reload", "", "Reload server-selected plugins"),
-];
 
 /// `keyDisplayText(keybinding)`: the binding's keys, capitalized.
 pub fn key_display_text(keys: &KeybindingsManager, keybinding: &str) -> String {

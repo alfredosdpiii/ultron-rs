@@ -104,21 +104,9 @@ fn parent_of(entry: &Value) -> Option<&str> {
     s(entry, "parentId")
 }
 
-fn full_content(content: &Value) -> String {
-    match content {
-        Value::String(text) => text.clone(),
-        Value::Array(blocks) => blocks
-            .iter()
-            .filter(|b| b["type"] == "text")
-            .filter_map(|b| b["text"].as_str())
-            .collect(),
-        _ => String::new(),
-    }
-}
-
 /// `extractContent`: the first 200 UTF-16 units.
 fn content(content: &Value) -> String {
-    let full = full_content(content);
+    let full = protocol::pi_message::content_text(content, "");
     let units: Vec<u16> = full.encode_utf16().take(200).collect();
     String::from_utf16_lossy(&units)
 }
@@ -716,7 +704,7 @@ impl TreeList {
             "custom_message" => {
                 let text = match &entry["content"] {
                     Value::String(text) => text.clone(),
-                    other => full_content(other),
+                    other => protocol::pi_message::content_text(other, ""),
                 };
                 t.fg(
                     Fg::CustomMessageLabel,
@@ -767,7 +755,7 @@ impl TreeList {
                 if m["role"] == "bashExecution" {
                     s(m, "command").map(str::to_string)
                 } else if m.get("content").is_some() {
-                    let text = full_content(&m["content"]);
+                    let text = protocol::pi_message::content_text(&m["content"], "");
                     if text.is_empty() && m["role"] == "assistant" {
                         s(m, "errorMessage").map(str::to_string)
                     } else {
@@ -777,7 +765,7 @@ impl TreeList {
                     None
                 }
             }
-            "custom_message" => Some(full_content(&entry["content"])),
+            "custom_message" => Some(protocol::pi_message::content_text(&entry["content"], "")),
             "compaction" | "branch_summary" => s(entry, "summary").map(str::to_string),
             _ => None,
         };

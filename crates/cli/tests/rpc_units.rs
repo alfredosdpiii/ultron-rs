@@ -4,8 +4,9 @@
 
 use cli::lane::{format_clock_utc, format_gap, with_clock_lines};
 use cli::rpc::client::{RpcClient, RpcClientOptions};
-use cli::rpc::events::{LaneEvent, RpcEventTranslator, frame_to_assistant_message_event, queue_update};
+use cli::rpc::events::{RpcEventTranslator, frame_to_assistant_message_event, queue_update};
 use cli::rpc::jsonl::{JsonlLines, serialize_json_line};
+use protocol::watch::{QueueKind, WatchEvent};
 use serde_json::{Value, json};
 
 #[test]
@@ -46,30 +47,26 @@ fn assistant() -> Value {
     })
 }
 
+/// A lane-watch event from its JSON.
+fn watch(event: Value) -> WatchEvent {
+    WatchEvent::decode(&event).unwrap()
+}
+
 #[test]
 fn cli_rpc_translator_reconstructs_turn_and_agent_boundaries() {
     let mut translator = RpcEventTranslator::default();
     let user = json!({"role": "user", "content": "hi", "timestamp": 1});
     let events = [
-        LaneEvent::RunStart,
-        LaneEvent::MessageStart(user.clone()),
-        LaneEvent::MessageEnd {
-            message: user.clone(),
-            in_run: true,
-        },
-        LaneEvent::MessageStart(assistant()),
-        LaneEvent::MessageUpdate {
-            usage: assistant()["usage"].clone(),
-            event: json!({"type": "text_delta", "contentIndex": 0, "delta": "ok", "partial": assistant()}),
-        },
-        LaneEvent::MessageEnd {
-            message: assistant(),
-            in_run: true,
-        },
-        LaneEvent::RunEnd {
-            error: None,
-            ended_at: 1,
-        },
+        watch(json!({"type": "run_start", "runId": "r1"})),
+        watch(json!({"type": "message_start", "runId": "r1", "message": user})),
+        watch(json!({"type": "message_end", "runId": "r1", "message": user})),
+        watch(json!({"type": "message_start", "runId": "r1", "message": assistant()})),
+        watch(
+            json!({"type": "message_update", "runId": "r1", "usage": assistant()["usage"],
+            "frame": {"type": "text_delta", "contentIndex": 0, "delta": "ok", "partial": assistant()}}),
+        ),
+        watch(json!({"type": "message_end", "runId": "r1", "message": assistant()})),
+        watch(json!({"type": "run_end", "runId": "r1", "status": "completed", "endedAt": 1})),
     ];
     let lines: Vec<Value> = events.into_iter().flat_map(|e| translator.translate(e)).collect();
     let types: Vec<&str> = lines.iter().map(|l| l["type"].as_str().unwrap()).collect();
@@ -103,11 +100,10 @@ fn cli_rpc_translator_reconstructs_turn_and_agent_boundaries() {
 #[test]
 fn cli_rpc_translator_reports_a_failed_run_as_an_error_message() {
     let mut translator = RpcEventTranslator::default();
-    translator.translate(LaneEvent::RunStart);
-    let lines = translator.translate(LaneEvent::RunEnd {
-        error: Some("No API key".into()),
-        ended_at: 7,
-    });
+    translator.translate(watch(json!({"type": "run_start", "runId": "r1"})));
+    let lines = translator.translate(watch(
+        json!({"type": "run_end", "runId": "r1", "status": "failed", "error": {"message": "No API key"}, "endedAt": 7}),
+    ));
     let types: Vec<&str> = lines.iter().map(|l| l["type"].as_str().unwrap()).collect();
     assert_eq!(types, ["message_start", "message_end", "agent_end", "agent_settled"]);
     assert_eq!(lines[0]["message"]["errorMessage"], "No API key");
@@ -119,46 +115,35 @@ fn cli_rpc_translator_reports_a_failed_run_as_an_error_message() {
 #[test]
 fn cli_rpc_translator_tool_and_queue_events() {
     let mut translator = RpcEventTranslator::default();
-    translator.translate(LaneEvent::ToolStart {
-        id: "t1".into(),
-        name: "rlm".into(),
-        args: json!({"code": "1"}),
-    });
-    let update = translator.translate(LaneEvent::ToolUpdate {
-        id: "t1".into(),
-        name: "rlm".into(),
-        partial: json!({"content": []}),
-    });
+    translator.translate(watch(
+        json!({"type": "tool_start", "toolCallId": "t1", "toolName": "rlm", "args": {"code": "1"}}),
+    ));
+    let update = translator.translate(watch(
+        json!({"type": "tool_update", "toolCallId": "t1", "toolName": "rlm", "partialResult": {"content": []}}),
+    ));
     assert_eq!(
         update[0],
         json!({"type": "tool_execution_update", "toolCallId": "t1", "toolName": "rlm", "args": {"code": "1"}, "partialResult": {"content": []}})
     );
-    translator.translate(LaneEvent::ToolEnd {
-        id: "t1".into(),
-        name: "rlm".into(),
-        result: json!({}),
-        is_error: false,
-    });
+    translator.translate(watch(
+        json!({"type": "tool_end", "toolCallId": "t1", "toolName": "rlm", "result": {}, "isError": false}),
+    ));
     // After the end, the arguments are forgotten.
-    let late = translator.translate(LaneEvent::ToolUpdate {
-        id: "t1".into(),
-        name: "rlm".into(),
-        partial: json!(null),
-    });
+    let late = translator.translate(watch(
+        json!({"type": "tool_update", "toolCallId": "t1", "toolName": "rlm", "partialResult": null}),
+    ));
     assert!(late[0].get("args").is_none());
     assert_eq!(
         queue_update(&[
-            ("steer".into(), "a".into()),
-            ("followUp".into(), "b".into()),
-            ("nextRun".into(), "c".into())
+            (QueueKind::Steer, "a".into()),
+            (QueueKind::FollowUp, "b".into()),
+            (QueueKind::NextRun, "c".into())
         ]),
         json!({"type": "queue_update", "steering": ["a"], "followUp": ["b", "c"]})
     );
-    let end = translator.translate(LaneEvent::CompactionEnd {
-        reason: "manual".into(),
-        aborted: false,
-        error: Some("boom".into()),
-    });
+    let end = translator.translate(watch(
+        json!({"type": "compaction_end", "reason": "manual", "status": "failed", "error": {"message": "boom"}}),
+    ));
     assert_eq!(
         end[0],
         json!({"type": "compaction_end", "reason": "manual", "aborted": false, "willRetry": false, "errorMessage": "boom"})
@@ -306,89 +291,66 @@ done
 }
 
 #[test]
-fn cli_rpc_watch_events_decode_as_lane_events() {
-    use cli::rpc::events::LaneEvent;
+fn cli_rpc_watch_events_become_rpc_events() {
+    let translate = |event: Value| RpcEventTranslator::default().translate(watch(event));
     // A message outside a run (a `bash` result) is not part of the next run's messages.
-    let outside = json!({"type": "message_end", "lane": "main", "message": {"role": "bashExecution"}});
-    let inside = json!({"type": "message_end", "lane": "main", "runId": "r1", "message": {"role": "user"}});
-    assert_eq!(
-        LaneEvent::from_watch(&outside),
-        Some(LaneEvent::MessageEnd {
-            message: json!({"role": "bashExecution"}),
-            in_run: false
-        })
-    );
-    assert!(matches!(
-        LaneEvent::from_watch(&inside),
-        Some(LaneEvent::MessageEnd { in_run: true, .. })
+    let mut translator = RpcEventTranslator::default();
+    translator.translate(watch(json!({"type": "run_start", "runId": "r1"})));
+    translator.translate(watch(
+        json!({"type": "message_end", "lane": "main", "message": {"role": "bashExecution"}}),
     ));
+    translator.translate(watch(
+        json!({"type": "message_end", "lane": "main", "runId": "r1", "message": {"role": "user"}}),
+    ));
+    let ended = translator.translate(watch(json!({"type": "run_end", "runId": "r1", "status": "completed"})));
+    assert_eq!(ended[0]["messages"], json!([{"role": "user"}]));
     // AgentSession's summarization retry events pass through as they are, without the lane.
-    let scheduled = json!({"type": "summarization_retry_scheduled", "lane": "main", "attempt": 1, "maxAttempts": 3,
-        "delayMs": 2000, "errorMessage": "Overloaded"});
-    let Some(retry @ LaneEvent::SummarizationRetry(_)) = LaneEvent::from_watch(&scheduled) else {
-        panic!("not shown");
-    };
     assert_eq!(
-        RpcEventTranslator::default().translate(retry),
+        translate(
+            json!({"type": "summarization_retry_scheduled", "lane": "main", "attempt": 1, "maxAttempts": 3,
+            "delayMs": 2000, "errorMessage": "Overloaded"})
+        ),
         [
             json!({"type": "summarization_retry_scheduled", "attempt": 1, "maxAttempts": 3, "delayMs": 2000, "errorMessage": "Overloaded"})
         ]
     );
     // A run's retry is rpc-events.ts `auto_retry_start` / `auto_retry_end`; a success has no `finalError`.
-    let scheduled = json!({"type": "retry_scheduled", "lane": "main", "runId": "r1", "step": 0, "attempt": 1,
+    let scheduled = json!({"type": "retry_scheduled", "lane": "main", "runId": "r1", "step": "s0", "attempt": 1,
         "maxAttempts": 3, "delayMs": 2000, "errorMessage": "Overloaded"});
     let ended = |success: bool, error: Value| json!({"type": "retry_end", "lane": "main", "runId": "r1", "success": success, "attempt": 2, "finalError": error});
-    let translate = |event: &Value| RpcEventTranslator::default().translate(LaneEvent::from_watch(event).unwrap());
     assert_eq!(
-        translate(&scheduled),
+        translate(scheduled),
         [
             json!({"type": "auto_retry_start", "attempt": 1, "maxAttempts": 3, "delayMs": 2000, "errorMessage": "Overloaded"})
         ]
     );
     assert_eq!(
-        translate(&ended(true, Value::Null)),
+        translate(ended(true, Value::Null)),
         [json!({"type": "auto_retry_end", "success": true, "attempt": 2})]
     );
     assert_eq!(
-        translate(&ended(false, json!("Overloaded"))),
+        translate(ended(false, json!("Overloaded"))),
         [json!({"type": "auto_retry_end", "success": false, "attempt": 2, "finalError": "Overloaded"})]
     );
     // Only a failed run carries its error; an aborted one ends without.
-    let failed = json!({"type": "run_end", "status": "failed", "error": {"message": "boom"}, "endedAt": 5});
-    let aborted = json!({"type": "run_end", "status": "aborted", "endedAt": 6});
-    assert_eq!(
-        LaneEvent::from_watch(&failed),
-        Some(LaneEvent::RunEnd {
-            error: Some("boom".into()),
-            ended_at: 5
-        })
-    );
-    assert_eq!(
-        LaneEvent::from_watch(&aborted),
-        Some(LaneEvent::RunEnd {
-            error: None,
-            ended_at: 6
-        })
-    );
+    let failed = translate(json!({"type": "run_end", "status": "failed", "error": {"message": "boom"}, "endedAt": 5}));
+    assert_eq!(failed[0]["message"]["errorMessage"], "boom");
+    assert_eq!(failed[0]["message"]["timestamp"], 5);
+    let aborted = translate(json!({"type": "run_end", "status": "aborted", "endedAt": 6}));
+    assert_eq!(aborted[0]["type"], "agent_end");
     // A tool call's start frame names the call; queue items show their text; the name event is not RPC's.
     let start = json!({"type": "message_update", "lane": "main", "runId": "r1", "message": {"role": "assistant", "usage": {}},
         "frame": {"type": "toolcall_start", "contentIndex": 0, "id": "t1", "toolName": "rlm"}});
-    let Some(LaneEvent::MessageUpdate { event, .. }) = LaneEvent::from_watch(&start) else {
-        panic!("a message update")
-    };
     assert_eq!(
-        frame_to_assistant_message_event(&event),
-        Some(json!({"type": "toolcall_start", "contentIndex": 0, "id": "t1", "toolName": "rlm"}))
+        translate(start)[0]["assistantMessageEvent"],
+        json!({"type": "toolcall_start", "contentIndex": 0, "id": "t1", "toolName": "rlm"})
     );
     let queued = json!({"type": "queue_update", "lane": "main", "queues": [
         {"type": "message", "kind": "followUp", "entryId": "e1", "message": {"role": "user", "content": [{"type": "text", "text": "later"}]}}
     ]});
     assert_eq!(
-        LaneEvent::from_watch(&queued),
-        Some(LaneEvent::QueueUpdate(vec![("followUp".into(), "later".into())]))
+        translate(queued),
+        [json!({"type": "queue_update", "steering": [], "followUp": ["later"]})]
     );
-    assert_eq!(
-        LaneEvent::from_watch(&json!({"type": "session_name", "name": "x"})),
-        None
-    );
+    assert!(translate(json!({"type": "session_name", "name": "x"})).is_empty());
 }

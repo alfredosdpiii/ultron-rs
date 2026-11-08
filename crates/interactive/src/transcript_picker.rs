@@ -103,7 +103,7 @@ fn replay_entry(chat: &mut ChatView, entry: &TranscriptEntry) {
         "compactionSummary" => chat.append_notice_text(&format!("Compaction summary\n{}", s("summary"))),
         "branchSummary" => chat.append_notice_text(&format!("Branch summary\n{}", s("summary"))),
         "custom" => {
-            let text = crate::chat::user_message_text(m);
+            let text = protocol::pi_message::text(m);
             if !text.trim().is_empty() {
                 chat.append_notice_text(&text);
             }

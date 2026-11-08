@@ -3,7 +3,7 @@
 //! screen. Keys follow Pi's: Enter sends (steers while a turn runs), Alt+Enter queues a follow-up, Escape aborts the
 //! turn, Ctrl+C clears and exits on a second press, Ctrl+D exits on an empty editor.
 //!
-//! The app only holds view state. Everything that touches the session goes through [`LaneClient`] and comes back as
+//! The app only holds view state. Everything that touches the session is sent as a [`LaneCommand`] and comes back as
 //! [`LaneEvent`]s, so handling a key or painting a frame never waits on the network or the disk.
 
 use std::path::Path;
@@ -25,19 +25,19 @@ use tui::{AutocompleteItem, SlashCommand};
 use tui::{ClipboardRead, ClipboardReply, ClipboardService};
 use tui::{Component, Text};
 use tui::{FramePlan, HistoryBatch, HistoryKind};
-use tui::{SelectEvent, SelectItem, SelectList, SelectListTheme};
+use tui::{SelectEvent, SelectItem, SelectList};
 use tui::{StackEntry, stack_lines};
 
 use crate::agent_hub::{AgentHub, HubEvent};
-use crate::chat::{ChatStyle, ChatView, user_message_text};
-use crate::commands::{COMMANDS, MarkdownNotice, SessionStats, hotkeys_markdown, key_display_text, session_info};
+use crate::chat::{ChatStyle, ChatView};
+use crate::commands::{MarkdownNotice, SessionStats, Slash, hotkeys_markdown, key_display_text, session_info};
 use crate::components::{BashExecution, FooterModel, FooterView, bold, key_text, render_footer};
 use crate::copy_targets::TranscriptEntry;
 use crate::header::StartupHeader;
 use crate::history::{PromptHistoryStore, TimedPrompt};
 use crate::history_search::{HistorySearchEvent, PromptHistorySearch};
 use crate::lane::{
-    AutoreviewRequest, BashResult, LaneClient, LaneEvent, ModelInfo, PromptImage, QueueKind, Queued, SessionListing,
+    AutoreviewRequest, BashResult, LaneCommand, LaneEvent, ModelInfo, PromptImage, QueueKind, Queued, SessionListing,
 };
 use crate::model_hub::{ModelHub, ModelHubEvent};
 use crate::qol::{GitSource, NotifyFn, QolSettings, code_highlighter};
@@ -47,6 +47,7 @@ use crate::session_selector::{SessionAction, SessionSelector};
 use crate::settings_selector::{SettingsEvent, SettingsInput, SettingsSelector, format_http_idle};
 use crate::transcript_picker::{PickerEvent, PickerMode, PickerOptions, TranscriptPicker};
 use crate::tree_selector::{FilterMode, TreeAction, TreeSelector};
+use protocol::pi_message::text as message_text;
 
 pub const RLM_PANE_AUTO_ENV: &str = "ULTRON_RLM_PANE_AUTO";
 
@@ -103,6 +104,9 @@ pub struct AppOptions {
     pub highlight: Highlighter,
     /// The Rust-only additions ([`QolSettings::parity`] paints exactly what the TypeScript client TUI paints).
     pub qol: QolSettings,
+    /// `/bug`: the host an upload goes to (`new URL(getRadiusGatewayUrl()).host`) and whether the session is offline
+    /// (`PI_OFFLINE`).
+    pub bug_report_target: (String, bool),
 }
 
 /// The file-restoring rewind's choices.
@@ -393,7 +397,9 @@ pub struct App {
     editor: Editor,
     chat: ChatView,
     header: StartupHeader,
-    client: Box<dyn LaneClient>,
+    lane: std::sync::mpsc::Sender<LaneCommand>,
+    /// `/bug`'s upload host and whether the session is offline ([`AppOptions::bug_report_target`]).
+    bug_report_target: (String, bool),
     history: PromptHistoryStore,
     cwd: String,
     home: Option<String>,
@@ -402,9 +408,6 @@ pub struct App {
     model: ModelInfo,
     thinking_level: String,
     status: String,
-    /// What a status line's text passes through first (`friendlyStatus`: a lost server's error made clear); set by
-    /// the composition root, which knows the server.
-    status_filter: Option<fn(&str) -> String>,
     /// The running operation's id.
     operation: Option<String>,
     /// A compaction is running (its indicator says Esc cancels it).
@@ -513,7 +516,7 @@ pub struct App {
     clock: Box<dyn Fn() -> Instant>,
     /// The theme setting, its live application and previews.
     theme_controller: Option<crate::theme_setup::ThemeController>,
-    /// The terminal appearance last told to the client ([`LaneClient::terminal_theme`]).
+    /// The terminal appearance last told to the client ([`LaneCommand::TerminalTheme`]).
     told_terminal_theme: Option<&'static str>,
     /// Takes the OSC 11 background replies out of the input.
     osc11: tui::Osc11Reader,
@@ -576,20 +579,6 @@ pub struct App {
     api_login: Option<(crate::api_key_login::ApiKeyLogin, crate::selectors::AuthProvider)>,
     /// Where the mouse-aware parts of the last fullscreen frame were.
     mouse_layout: MouseLayout,
-}
-
-fn select_theme(t: &Rc<Theme>, scroll: Fg, no_match: Fg) -> SelectListTheme {
-    let style = |color: Fg| {
-        let t = Rc::clone(t);
-        Box::new(move |s: &str| t.fg(color, s)) as Box<dyn Fn(&str) -> String>
-    };
-    SelectListTheme {
-        selected_prefix: style(Fg::Accent),
-        selected_text: style(Fg::Accent),
-        description: style(Fg::Muted),
-        scroll_info: style(scroll),
-        no_match: style(no_match),
-    }
 }
 
 fn thinking_border(t: &Rc<Theme>, level: &str) -> Box<dyn Fn(&str) -> String> {
@@ -667,23 +656,19 @@ pub fn context_usage(transcript: &[Value], window: u64) -> Option<(u64, f64)> {
 
 /// The editor's slash commands: the client TUI's, and `/model`'s completions.
 fn slash_commands(models: &[ModelInfo], qol: &QolSettings) -> Vec<SlashCommand> {
-    let mut commands: Vec<SlashCommand> = COMMANDS
-        .iter()
-        .map(|c| SlashCommand {
-            name: c.name.to_string(),
-            description: Some(c.description.to_string()),
-            argument_hint: (!c.hint.is_empty()).then(|| c.hint.to_string()),
-            argument_completions: None,
+    let mut commands: Vec<SlashCommand> = Slash::ALL
+        .into_iter()
+        .filter(|c| c.listed(qol.overlays))
+        .map(|c| {
+            let c = c.spec();
+            SlashCommand {
+                name: c.name.to_string(),
+                description: Some(c.description.to_string()),
+                argument_hint: (!c.hint.is_empty()).then(|| c.hint.to_string()),
+                argument_completions: None,
+            }
         })
         .collect();
-    if qol.overlays {
-        commands.extend(crate::commands::QOL_COMMANDS.iter().map(|c| SlashCommand {
-            name: c.name.to_string(),
-            description: Some(c.description.to_string()),
-            argument_hint: (!c.hint.is_empty()).then(|| c.hint.to_string()),
-            argument_completions: None,
-        }));
-    }
     let models = models.to_vec();
     if let Some(model) = commands.iter_mut().find(|c| c.name == "model") {
         model.argument_completions = Some(Box::new(move |prefix: &str| {
@@ -733,14 +718,14 @@ fn slash_commands(models: &[ModelInfo], qol: &QolSettings) -> Vec<SlashCommand> 
 }
 
 impl App {
-    pub fn new(options: AppOptions, client: Box<dyn LaneClient>) -> Self {
+    pub fn new(options: AppOptions, lane: std::sync::mpsc::Sender<LaneCommand>) -> Self {
         let theme = options.theme;
         let mut editor = Editor::new(
             options.keys.clone(),
             thinking_border(&theme, &options.thinking_level),
             1,
         );
-        editor.set_select_list_theme(select_theme(&theme, Fg::Muted, Fg::Muted));
+        editor.set_select_list_theme(crate::components::select_theme(&theme, Fg::Muted, Fg::Muted));
         let qol = options.qol;
         let commands = slash_commands(&options.models, &qol);
         editor.set_autocomplete_provider(crate::qol::autocomplete_provider(
@@ -776,7 +761,8 @@ impl App {
             theme,
             keys,
             editor,
-            client,
+            lane,
+            bug_report_target: options.bug_report_target,
             history,
             cwd: options.cwd,
             home: options.home,
@@ -785,7 +771,6 @@ impl App {
             model: options.model,
             thinking_level: options.thinking_level,
             status: "Starting Session…".into(),
-            status_filter: None,
             operation: None,
             compacting: false,
             retrying: false,
@@ -1065,7 +1050,10 @@ impl App {
         self.sync_scheme_notifications(applied.query_scheme);
         self.query_background(applied.query_background);
         if let Some(save) = applied.save {
-            self.client.save_setting("theme", Value::String(save));
+            self.send(LaneCommand::SaveSetting {
+                key: "theme".into(),
+                value: Value::String(save),
+            });
         }
         if let Some(error) = applied.error {
             self.show_status(&format!("Error: {error}"));
@@ -1080,7 +1068,7 @@ impl App {
         };
         if self.told_terminal_theme != Some(theme) {
             self.told_terminal_theme = Some(theme);
-            self.client.terminal_theme(theme);
+            self.send(LaneCommand::TerminalTheme(theme.to_string()));
         }
     }
 
@@ -1101,7 +1089,10 @@ impl App {
         };
         self.adopt_theme(&applied.theme);
         if let Some(save) = applied.save {
-            self.client.save_setting("theme", Value::String(save));
+            self.send(LaneCommand::SaveSetting {
+                key: "theme".into(),
+                value: Value::String(save),
+            });
         }
     }
 
@@ -1270,9 +1261,9 @@ impl App {
                     // `copySelection`: "Copied!", or the clipboard's error, as a flash.
                     (None, Ok(osc52)) => {
                         self.terminal_writes.extend(osc52);
-                        self.viewport.copied(Ok(()), Instant::now());
+                        self.viewport.copied(Ok(()), self.now());
                     }
-                    (None, Err(error)) => self.viewport.copied(Err(error), Instant::now()),
+                    (None, Err(error)) => self.viewport.copied(Err(error), self.now()),
                 },
                 // interactive-mode.ts `handleRightClickPaste`: the clipboard's text as a bracketed paste into the
                 // editor, unless it is empty or an overlay took the focus meanwhile; errors are ignored.
@@ -1377,7 +1368,7 @@ impl App {
             None => {
                 self.terminal_writes
                     .push(format!("\x1b]52;c;{}\x07", jsrt::base64::encode(text)));
-                self.viewport.copied(Ok(()), Instant::now());
+                self.viewport.copied(Ok(()), self.now());
             }
         }
     }
@@ -1458,9 +1449,7 @@ impl App {
             select_events: Vec::new(),
             settings_events: Vec::new(),
         };
-        let input = self
-            .viewport
-            .handle_input_with(data, &self.keys, Instant::now(), &mut mouse);
+        let input = self.viewport.handle_input_with(data, &self.keys, now, &mut mouse);
         let (select_events, settings_events) = (mouse.select_events, mouse.settings_events);
         for event in select_events {
             self.select_event(Some(event));
@@ -1560,7 +1549,9 @@ impl App {
                 ..Usage::default()
             },
             active_ms: self.active_ms,
-            turn_elapsed_ms: self.turn_started.map(|t| t.elapsed().as_millis() as u64),
+            turn_elapsed_ms: self
+                .turn_started
+                .map(|t| self.now().duration_since(t).as_millis() as u64),
             now_ms: self.ticks * 80,
             session_id: self.session_id.clone(),
             session_name: self.session_name.clone(),
@@ -1781,7 +1772,7 @@ impl App {
     /// `maybeWarnAboutAnthropicSubscriptionAuth`: only an `anthropic` model is checked, and only until it warned.
     fn check_subscription_auth(&mut self) {
         if !self.subscription_warning_shown && self.model.provider == "anthropic" {
-            self.client.subscription_auth_warning(&self.model.provider);
+            self.send(LaneCommand::SubscriptionAuthWarning(self.model.provider.to_string()));
         }
     }
 
@@ -1814,7 +1805,7 @@ impl App {
                     .iter()
                     .filter(|m| m["role"] == "user")
                     .map(|m| TimedPrompt {
-                        text: user_message_text(m).trim().to_string(),
+                        text: message_text(m).trim().to_string(),
                         timestamp: m["timestamp"].as_i64().unwrap_or(0),
                     })
                     .filter(|p| !p.text.is_empty())
@@ -1826,7 +1817,7 @@ impl App {
                     self.status.clear();
                     // `init`: the changelog of a session without messages, then the subscription-auth check.
                     if self.transcript.is_empty() {
-                        self.client.startup_changelog();
+                        self.send(LaneCommand::StartupChangelog);
                     }
                     for notice in std::mem::take(&mut self.early_startup_notices) {
                         self.show_startup_notice(notice);
@@ -1840,7 +1831,7 @@ impl App {
                 self.operation_started_ms = Some(jsrt::date::now_ms() as f64);
                 self.operation = Some(id);
                 self.aborting = false;
-                self.turn_started = Some(Instant::now());
+                self.turn_started = Some(self.now());
                 // A woken turn may start with work's ends (`cell_done`, `child_done`): the running-work panel
                 // reads them on the next pass.
                 self.rlm_polled = None;
@@ -2076,9 +2067,9 @@ impl App {
                     self.show_status(&message);
                     if let Some(entry) = self.rewind_after_restore.take() {
                         if self.operation.is_some() {
-                            self.client.abort();
+                            self.send(LaneCommand::Abort);
                         }
-                        self.client.fork(&entry);
+                        self.send(LaneCommand::Fork(entry.to_string()));
                     }
                 }
                 Err(error) => {
@@ -2110,7 +2101,10 @@ impl App {
                     Err(error) => self.show_status(&format!("Error: {error}")),
                 }
             }
-            LaneEvent::AgentTranscript { id, messages } => {
+            LaneEvent::AgentTranscript {
+                id,
+                messages: Ok(messages),
+            } => {
                 if let Some(Overlay::AgentHub(hub)) = self.overlay.as_mut() {
                     let entries = messages
                         .into_iter()
@@ -2123,11 +2117,18 @@ impl App {
                     hub.set_transcript(&id, entries);
                 }
             }
-            LaneEvent::AgentNotice(notice) => match self.overlay.as_mut() {
-                Some(Overlay::AgentHub(hub)) => hub.set_notice(Some(notice)),
-                _ => self.show_status(&notice),
-            },
-            LaneEvent::Agents(agents) => {
+            LaneEvent::AgentTranscript {
+                messages: Err(error), ..
+            } => self.agent_notice(format!("Error: {error}")),
+            LaneEvent::AgentAnswered { id, action, answer } => {
+                self.agent_notice(crate::agent_hub::agent_notice(&id, action, answer));
+            }
+            LaneEvent::Inspected { title, result } => self.show_status(&match result {
+                Ok(value) => crate::inspection::format_inspection(&title, &value),
+                Err(error) => format!("Error: {error}"),
+            }),
+            LaneEvent::Agents(listed) => {
+                let agents = crate::agent_hub::agent_views(&listed);
                 if let Some(Overlay::AgentHub(hub)) = self.overlay.as_mut() {
                     hub.set_agents(agents, true);
                     return;
@@ -2304,7 +2305,10 @@ impl App {
 
     /// Answer the open `/mcp` dialog and show the next one.
     fn answer_extension_dialog(&mut self, id: &str, answer: Value) {
-        self.client.extension_ui_respond(id, answer);
+        self.send(LaneCommand::ExtensionUiRespond {
+            id: id.to_string(),
+            answer,
+        });
         self.extension_dialog_open = false;
         self.next_extension_dialog();
     }
@@ -2339,15 +2343,32 @@ impl App {
         }
     }
 
-    /// What every status line shown through `showStatus` passes through first (client-tui.ts `friendlyStatus`).
-    pub fn set_status_filter(&mut self, filter: fn(&str) -> String) {
-        self.status_filter = Some(filter);
+    /// The agent hub's notice, or a status line when the hub is closed.
+    fn agent_notice(&mut self, notice: String) {
+        match self.overlay.as_mut() {
+            Some(Overlay::AgentHub(hub)) => hub.set_notice(Some(notice)),
+            _ => self.show_status(&notice),
+        }
+    }
+
+    fn send(&self, command: LaneCommand) {
+        let _ = self.lane.send(command);
+    }
+
+    /// Queue `text` (and its images) as a steering message or a follow-up; returns its entry id.
+    fn enqueue(&self, kind: QueueKind, text: String, images: Vec<PromptImage>) -> String {
+        let entry_id = jsrt::random::uuid_v4();
+        self.send(LaneCommand::Enqueue {
+            kind,
+            text,
+            images,
+            entry_id: entry_id.clone(),
+        });
+        entry_id
     }
 
     /// `showStatus`: short text in the status line; more than three lines go to the transcript.
     fn show_status(&mut self, text: &str) {
-        let filtered = self.status_filter.map(|filter| filter(text));
-        let text = filtered.as_deref().unwrap_or(text);
         if text.split('\n').count() > 3 {
             self.chat.append_notice_text(text);
             self.status.clear();
@@ -2467,7 +2488,7 @@ impl App {
         // A quick Esc-Esc can arrive as one read (Alt+Escape): the rewind selector, like two taps.
         if self.qol.overlays && data == "\x1b\x1b" && self.operation.is_none() && self.editor.text().trim().is_empty() {
             self.rewind_pending = true;
-            self.client.fork_messages();
+            self.send(LaneCommand::ForkMessages);
             return;
         }
         if self.qol.attachments && data.starts_with(PASTE_START) && self.paste_attachments(data) {
@@ -2527,11 +2548,7 @@ impl App {
                     self.record_history(&text);
                     self.status = "Queueing follow-up…".into();
                     let images = self.take_images(&text);
-                    let id = if images.is_empty() {
-                        self.client.follow_up(&text)
-                    } else {
-                        self.client.follow_up_with_images(&text, images)
-                    };
+                    let id = self.enqueue(QueueKind::FollowUp, text, images);
                     self.status = format!("Queued {id}.");
                 }
                 return;
@@ -2561,7 +2578,10 @@ impl App {
             if k("app.thinking.toggle") {
                 let hide = !self.chat.hide_thinking;
                 self.chat.set_hide_thinking(hide);
-                self.client.save_setting("hideThinkingBlock", Value::Bool(hide));
+                self.send(LaneCommand::SaveSetting {
+                    key: "hideThinkingBlock".into(),
+                    value: Value::Bool(hide),
+                });
                 self.show_status(&format!("Thinking blocks: {}", if hide { "hidden" } else { "visible" }));
                 return;
             }
@@ -2631,32 +2651,32 @@ impl App {
 
     fn handle_escape(&mut self) {
         if self.bash.is_some() {
-            self.client.abort_bash();
+            self.send(LaneCommand::AbortBash);
             return;
         }
         // A run waiting to retry its request: Esc stops the retry (interactive-mode.ts `abortRetry`).
         if self.retrying {
             self.retrying = false;
-            self.client.abort_retry();
+            self.send(LaneCommand::AbortRetry);
             return;
         }
         // A branch summary in progress: Esc cancels it (interactive-mode.ts `abortBranchSummary`).
         if self.summarizing_branch.is_some() {
-            self.client.abort();
+            self.send(LaneCommand::Abort);
             return;
         }
         // A manual compaction (no run): Esc cancels it (interactive-mode.ts `abortCompaction`). During a run the
         // abort below cancels the run's compaction with the run.
         if self.compacting && self.operation.is_none() {
             self.status = "Cancelling compaction…".into();
-            self.client.abort();
+            self.send(LaneCommand::Abort);
             return;
         }
         if let Some(operation) = self.operation.clone() {
             self.restore_queued_to_editor();
             self.aborting = true;
             self.status = format!("Aborting {operation}…");
-            self.client.abort();
+            self.send(LaneCommand::Abort);
         }
         if self.operation.is_some() || !self.editor.text().trim().is_empty() {
             return;
@@ -2666,7 +2686,7 @@ impl App {
         if self.qol.overlays {
             if self.escapes.tap(now) {
                 self.rewind_pending = true;
-                self.client.fork_messages();
+                self.send(LaneCommand::ForkMessages);
             }
             return;
         }
@@ -2680,9 +2700,9 @@ impl App {
         {
             self.last_escape = None;
             if self.double_escape_action == "tree" {
-                self.client.tree();
+                self.send(LaneCommand::Tree);
             } else {
-                self.client.fork_messages();
+                self.send(LaneCommand::ForkMessages);
             }
         } else {
             self.last_escape = Some(now);
@@ -2690,7 +2710,7 @@ impl App {
     }
 
     fn handle_ctrl_c(&mut self) {
-        let now = Instant::now();
+        let now = self.now();
         if self
             .last_ctrl_c
             .is_some_and(|t| now.duration_since(t) < CTRL_C_EXIT_WINDOW)
@@ -2726,7 +2746,7 @@ impl App {
             .join("\n\n");
         self.editor.set_text(&combined);
         for q in &ordered {
-            self.client.cancel_queued(&q.entry_id);
+            self.send(LaneCommand::CancelQueued(q.entry_id.to_string()));
         }
         // The next queue_update answers the cancels; until then only the host items stay pending.
         self.chat.set_queues(all.into_iter().filter(|q| !q.user).collect());
@@ -2766,31 +2786,22 @@ impl App {
         let images = self.take_images(&prompt);
         if self.operation.is_some() {
             self.status = "Queueing steering message…".into();
-            let id = if images.is_empty() {
-                self.client.steer(&prompt)
-            } else {
-                self.client.steer_with_images(&prompt, images)
-            };
+            let id = self.enqueue(QueueKind::Steer, prompt, images);
             self.status = format!("Queued {id}.");
         } else {
             self.status = "Running turn…".into();
-            if images.is_empty() {
-                self.client.prompt(&prompt);
-            } else {
-                self.client.prompt_with_images(&prompt, images);
-            }
+            self.send(LaneCommand::Prompt { text: prompt, images });
         }
     }
 
     fn execute_slash_command(&mut self, name: &str, args: &str) {
         self.editor.set_text("");
-        let qol_command = self.qol.overlays && crate::commands::QOL_COMMANDS.iter().any(|c| c.name == name);
-        if !COMMANDS.iter().any(|c| c.name == name) && !qol_command && !crate::commands::PI_COMMANDS.contains(&name) {
+        let Some(command) = Slash::parse(name, self.qol.overlays) else {
             self.status = format!("Unknown slash command: /{name}");
             return;
-        }
-        match name {
-            "name" => {
+        };
+        match command {
+            Slash::Name => {
                 let name = args.trim();
                 if name.is_empty() {
                     match self.session_name.clone() {
@@ -2799,10 +2810,10 @@ impl App {
                     }
                     return;
                 }
-                self.client.set_name(name);
+                self.send(LaneCommand::SetName(name.to_string()));
                 self.pending_name = Some(name.to_string());
             }
-            "session" => {
+            Slash::Session => {
                 let Some(id) = self.session_id.clone() else {
                     return;
                 };
@@ -2810,9 +2821,9 @@ impl App {
                 let text = session_info(&self.theme, &stats);
                 self.notice(&text);
             }
-            "copy" if self.qol.overlays => self.open_copy_picker(),
-            "copy" => self.copy_last_message(),
-            "hotkeys" => {
+            Slash::Copy if self.qol.overlays => self.open_copy_picker(),
+            Slash::Copy => self.copy_last_message(),
+            Slash::Hotkeys => {
                 let notice = MarkdownNotice {
                     theme: Rc::clone(&self.theme),
                     title: "Keyboard Shortcuts".into(),
@@ -2820,19 +2831,19 @@ impl App {
                 };
                 self.chat.append_notice(Box::new(notice));
             }
-            "quit" => self.exit = true,
+            Slash::Quit => self.exit = true,
             // `/clear` is `/new` (as Claude Code's `/clear`): the running turn aborted, a new session in this TUI.
-            "new" | "clear" => {
+            Slash::New | Slash::Clear => {
                 if self.operation.is_some() {
-                    self.client.abort();
+                    self.send(LaneCommand::Abort);
                 }
-                self.client.new_session();
+                self.send(LaneCommand::NewSession);
             }
-            "scoped-models" => self.open_scoped_models(),
-            "model" if self.qol.overlays && args.is_empty() => self.open_model_hub(),
-            "model" => self.model_command(args),
-            "resume" => self.client.list_sessions(),
-            "import" => match path_argument(args) {
+            Slash::ScopedModels => self.open_scoped_models(),
+            Slash::Model if self.qol.overlays && args.is_empty() => self.open_model_hub(),
+            Slash::Model => self.model_command(args),
+            Slash::Resume => self.send(LaneCommand::ListSessions),
+            Slash::Import => match path_argument(args) {
                 Some(path) => {
                     let path = if Path::new(&path).is_absolute() {
                         path
@@ -2840,13 +2851,13 @@ impl App {
                         Path::new(&self.cwd).join(path).display().to_string()
                     };
                     self.show_status(&format!("Importing {path}…"));
-                    self.client.import_pi(&path);
+                    self.send(LaneCommand::ImportPi(path.to_string()));
                 }
                 // Pi's picker of its own sessions for this project (client-tui-sessions.ts `showPiSessionPicker`).
-                None => self.client.list_pi_sessions(),
+                None => self.send(LaneCommand::ListPiSessions),
             },
-            "thinking" => self.thinking_command(args),
-            "mode" => match args.trim() {
+            Slash::Thinking => self.thinking_command(args),
+            Slash::Mode => match args.trim() {
                 "" => self.request_mode(crate::modes::ModeRequest::Picker),
                 name => match crate::modes::find(name) {
                     Some(mode) => self.request_mode(crate::modes::ModeRequest::Set(mode.engineering)),
@@ -2856,34 +2867,38 @@ impl App {
                     )),
                 },
             },
-            "engineering" => match crate::modes::engineering_arg(args) {
+            Slash::Engineering => match crate::modes::engineering_arg(args) {
                 Some(None) => self.request_mode(crate::modes::ModeRequest::Status),
                 Some(Some(enabled)) => self.request_mode(crate::modes::ModeRequest::Set(enabled)),
                 None => self.show_status("Usage: /engineering true|false"),
             },
             // The persona (resources::persona in the engine): written like `/engineering`, applied from the next
             // message.
-            "persona" => match crate::modes::persona_arg(args) {
-                Some(crate::modes::PersonaArg::Report) => self.client.read_persona(),
+            Slash::Persona => match crate::modes::persona_arg(args) {
+                Some(crate::modes::PersonaArg::Report) => self.send(LaneCommand::ReadPersona),
                 Some(crate::modes::PersonaArg::Global(on)) => {
-                    self.client
-                        .save_setting("persona", if on { Value::from("ultron") } else { Value::Null });
+                    self.send(LaneCommand::SaveSetting {
+                        key: "persona".into(),
+                        value: if on { Value::from("ultron") } else { Value::Null },
+                    });
                     self.show_status(&crate::modes::persona_changed(on));
                 }
                 // The session's own toggle (resources::keep_going in the engine), kept in the session.
-                Some(crate::modes::PersonaArg::Session(arg)) => self.client.session_persona("persona", arg),
+                Some(crate::modes::PersonaArg::Session(arg)) => self.send(LaneCommand::Persona(arg.to_string())),
                 None => self.show_status(crate::modes::PERSONA_USAGE),
             },
             // Keep-going mode of the session (resources::keep_going in the engine).
-            "keepgoing" => match args.trim().to_lowercase().as_str() {
-                arg @ ("" | "on" | "off") => self.client.session_persona("keepgoing", arg),
+            Slash::KeepGoing => match args.trim().to_lowercase().as_str() {
+                arg @ ("" | "on" | "off") => self.send(LaneCommand::KeepGoing(arg.to_string())),
                 _ => self.show_status("Usage: /keepgoing on|off"),
             },
             // The session's scheduled prompts (kernel_apis::prompt_schedule in the engine), one line each.
-            "schedules" => self
-                .client
-                .inspect("/schedules", "schedule.list", serde_json::json!({"text": true})),
-            "autoreview" => {
+            Slash::Schedules => self.send(LaneCommand::Inspect {
+                title: "/schedules".into(),
+                request: "schedule.list".into(),
+                payload: serde_json::json!({"text": true}),
+            }),
+            Slash::Autoreview => {
                 let words: Vec<&str> = args.split_whitespace().collect();
                 let verb = words.first().map(|word| word.to_lowercase());
                 let ban = |login: &str, account: Option<&str>| (login.to_string(), account.map(str::to_string));
@@ -2893,66 +2908,73 @@ impl App {
                     _ => None,
                 };
                 match (verb.as_deref(), target) {
-                    (None, _) => self.client.autoreview(AutoreviewRequest::Status),
-                    (Some("on"), _) if words.len() == 1 => self.client.autoreview(AutoreviewRequest::Accounts),
-                    (Some("off"), _) if words.len() == 1 => self.client.autoreview(AutoreviewRequest::Off),
+                    (None, _) => self.send(LaneCommand::Autoreview(AutoreviewRequest::Status)),
+                    (Some("on"), _) if words.len() == 1 => {
+                        self.send(LaneCommand::Autoreview(AutoreviewRequest::Accounts))
+                    }
+                    (Some("off"), _) if words.len() == 1 => self.send(LaneCommand::Autoreview(AutoreviewRequest::Off)),
                     (Some("ban"), Some((login, account))) => {
-                        self.client.autoreview(AutoreviewRequest::Ban { login, account })
+                        self.send(LaneCommand::Autoreview(AutoreviewRequest::Ban { login, account }))
                     }
                     (Some("unban"), Some((login, account))) => {
-                        self.client.autoreview(AutoreviewRequest::Unban { login, account })
+                        self.send(LaneCommand::Autoreview(AutoreviewRequest::Unban { login, account }))
                     }
                     _ => self.show_status("Usage: /autoreview on|off, or ban|unban <login> [--account <login>]"),
                 }
             }
-            "compact" => {
+            Slash::Compact => {
                 self.show_status("Compacting…");
-                self.client.compact((!args.is_empty()).then_some(args));
+                self.send(LaneCommand::Compact(
+                    (!args.is_empty()).then_some(args).map(str::to_string),
+                ));
             }
-            "fork" => self.client.fork_messages(),
-            "tree" => self.client.tree(),
-            "rlm" => match args.trim() {
+            Slash::Fork => self.send(LaneCommand::ForkMessages),
+            Slash::Tree => self.send(LaneCommand::Tree),
+            Slash::Rlm => match args.trim() {
                 "focus" => self.open_rlm_focus(),
                 "pane" => self.rlm_pane(),
                 _ => self.toggle_rlm(),
             },
-            "settings" => self.client.read_settings(),
-            "trust" => self.client.read_trust(),
-            "debug" => {
+            Slash::Settings => self.send(LaneCommand::ReadSettings),
+            Slash::Trust => self.send(LaneCommand::ReadTrust),
+            Slash::Debug => {
                 // `host.renderedLines()`: the frame at the terminal's size.
                 let (width, height) = (self.cols.max(1), self.rows.max(1));
                 let lines = self.render(width, height);
-                self.client.write_debug_log(crate::debug_log::DebugCapture {
+                self.send(LaneCommand::WriteDebugLog(crate::debug_log::DebugCapture {
                     width,
                     height,
                     lines,
                     messages: self.transcript.clone(),
                     session_id: self.session_id.clone(),
-                });
+                }));
             }
-            "reload" => {
+            Slash::Reload => {
                 self.show_status("Reloading plugins…");
-                self.client.reload_plugins();
+                self.send(LaneCommand::ReloadPlugins);
             }
             // `/mcp` runs in the session's worker; its dialogs and notices come back as extension UI.
-            "mcp" => self.client.mcp_command(args.trim()),
+            Slash::Mcp => self.send(LaneCommand::Mcp(args.trim().to_string())),
             // TypeScript's `legacyExtensionCommand`: Pi extensions are not supported by ultron-rs.
-            "extension" => self.show_status(&format!("Error: {EXTENSIONS_UNSUPPORTED}")),
+            Slash::Extension => self.show_status(&format!("Error: {EXTENSIONS_UNSUPPORTED}")),
             // `reviewCommand` (slash-commands-provider.ts): sent as typed; the worker's agent controller expands it
             // (session_core::review_command), as it does for queued messages.
-            "review" => {
+            Slash::Review => {
                 self.show_status("Reviewing changes…");
                 let message = format!("/review {args}").trim().to_string();
                 if self.operation.is_some() {
-                    let id = self.client.steer(&message);
+                    let id = self.enqueue(QueueKind::Steer, message, Vec::new());
                     self.status = format!("Queued {id}.");
                 } else {
-                    self.client.prompt(&message);
+                    self.send(LaneCommand::Prompt {
+                        text: message,
+                        images: Vec::new(),
+                    });
                 }
             }
-            "bug" => self.open_bug_report(args),
+            Slash::Bug => self.open_bug_report(args),
             // `handleArminSaysHi` and `handleDementedDelves` (only the bare commands are easter eggs).
-            "arminsayshi" if args.is_empty() => {
+            Slash::ArminSaysHi if args.is_empty() => {
                 let armin = Rc::new(std::cell::RefCell::new(crate::easter_eggs::Armin::new(
                     Rc::clone(&self.theme),
                     Box::new(crate::easter_eggs::seeded_random(self.now())),
@@ -2963,39 +2985,48 @@ impl App {
                 let now = self.now();
                 self.armin.push((id, armin, now, 0));
             }
-            "dementedelves" if args.is_empty() => {
+            Slash::DementedElves if args.is_empty() => {
                 let announcement = crate::easter_eggs::EarendilAnnouncement::new(Rc::clone(&self.theme));
                 self.chat.append_notice(Box::new(announcement));
             }
-            "logout" => self.client.credentials(),
-            "login" => self.client.login_providers(args),
-            "changelog" => self.client.changelog(),
-            "share" => self.client.share(self.active_theme_name().as_deref()),
-            "clone" => {
+            Slash::Logout => self.send(LaneCommand::Credentials),
+            Slash::Login => self.send(LaneCommand::LoginProviders(args.to_string())),
+            Slash::Changelog => self.send(LaneCommand::Changelog),
+            Slash::Share => self.send(LaneCommand::Share {
+                theme: self.active_theme_name(),
+            }),
+            Slash::Clone => {
                 if self.operation.is_some() {
-                    self.client.abort();
+                    self.send(LaneCommand::Abort);
                 }
-                self.client.clone_session();
+                self.send(LaneCommand::CloneSession);
             }
-            "export" => self
-                .client
-                .export(path_argument(args).as_deref(), self.active_theme_name().as_deref()),
-            "usage" => self.client.usage_report(),
-            "goal" => self.client.goal(args),
+            Slash::Export => self.send(LaneCommand::Export {
+                path: path_argument(args),
+                theme: self.active_theme_name(),
+            }),
+            Slash::Usage => self.send(LaneCommand::Usage),
+            Slash::Goal => self.send(LaneCommand::Goal(args.to_string())),
             // With the overlays, `/agents` opens the agent hub (the inspection text is the worker's, not ported).
-            "agents" if self.qol.overlays && args.is_empty() => self.client.agents(),
+            Slash::Agents if self.qol.overlays && args.is_empty() => self.send(LaneCommand::Agents),
             // The inspection commands: one read-only host request each, answered as indented lines.
-            name if crate::inspection::INSPECTORS.contains(&name) => {
+            Slash::Agents | Slash::Memory | Slash::Skills | Slash::Experiments | Slash::Goals | Slash::Progress => {
                 match crate::inspection::inspection_request(name, args.trim()) {
                     Some(Ok((request, payload))) => {
                         let title = format!("/{name} {args}");
-                        self.client.inspect(title.trim(), &request, payload);
+                        self.send(LaneCommand::Inspect {
+                            title: title.trim().to_string(),
+                            request: request.to_string(),
+                            payload,
+                        });
                     }
                     Some(Err(usage)) => self.show_status(&format!("Error: {usage}")),
                     None => {}
                 }
             }
-            other => self.show_status(&format!("Error: /{other} is not available in the Rust build yet")),
+            Slash::ArminSaysHi | Slash::DementedElves => {
+                self.show_status(&format!("Error: /{name} is not available in the Rust build yet"))
+            }
         }
     }
 
@@ -3015,7 +3046,7 @@ impl App {
             self.keys.clone(),
             (!hint.is_empty()).then_some(hint),
             model,
-            self.client.bug_report_target(),
+            self.bug_report_target.clone(),
         );
         self.editor.focused = false;
         self.panel = Some(Panel::BugReport(Box::new(flow)));
@@ -3041,10 +3072,10 @@ impl App {
             }
             Action::Summarize => {
                 let hint = flow.choices.hint.clone();
-                self.client.bug_report_summary(hint.as_deref());
+                self.send(LaneCommand::BugReportSummary(hint.clone()));
             }
             Action::CancelSummary => {
-                self.client.abort_bug_report_summary();
+                self.send(LaneCommand::AbortBugReportSummary);
                 self.bug_cancelled();
             }
             Action::Deliver => {
@@ -3059,15 +3090,15 @@ impl App {
                 if !request.upload {
                     self.panel = None;
                 }
-                self.client.bug_report(request);
+                self.send(LaneCommand::BugReport(request));
             }
             Action::CancelUpload => {
-                self.client.cancel_bug_report();
+                self.send(LaneCommand::CancelBugReport);
                 self.bug_cancelled();
             }
             Action::ExportAfterFailure => {
                 self.panel = None;
-                self.client.bug_report_export();
+                self.send(LaneCommand::BugReportExport);
             }
             Action::External(text) => {
                 if self.external_editor.is_some() {
@@ -3141,7 +3172,10 @@ impl App {
             return;
         }
         self.bash = Some(self.chat.bash_component(command, excluded));
-        self.client.bash(command, excluded);
+        self.send(LaneCommand::Bash {
+            command: command.to_string(),
+            exclude: excluded,
+        });
         self.update_editor_border();
     }
 
@@ -3284,7 +3318,7 @@ impl App {
     }
 
     fn set_thinking(&mut self, level: &str) {
-        self.client.set_thinking(level);
+        self.send(LaneCommand::SetThinking(level.to_string()));
         self.thinking_level = level.to_string();
         self.update_editor_border();
     }
@@ -3292,7 +3326,7 @@ impl App {
     /// `/mode` and `/engineering` act on the settings' mode, which the client reads.
     fn request_mode(&mut self, request: crate::modes::ModeRequest) {
         self.mode_request = Some(request);
-        self.client.read_mode();
+        self.send(LaneCommand::ReadMode);
     }
 
     fn mode_read(&mut self, engineering: bool, always_skills: Vec<String>) {
@@ -3324,10 +3358,10 @@ impl App {
     fn autoreview_accounts(&mut self, accounts: Vec<(String, String)>) {
         match accounts.as_slice() {
             [] => self.show_status("No gh account is logged in: run gh auth login, then /autoreview on"),
-            [(login, host)] => self.client.autoreview(AutoreviewRequest::On {
+            [(login, host)] => self.send(LaneCommand::Autoreview(AutoreviewRequest::On {
                 accounts: None,
                 reviewing_as: format!("{host}/{login}"),
-            }),
+            })),
             _ => {
                 let mut items: Vec<SelectItem> = accounts
                     .iter()
@@ -3355,7 +3389,10 @@ impl App {
 
     /// Write the `engineering` setting; the session's next request renders its prompt in that mode.
     fn set_engineering(&mut self, enabled: bool, always_skills: &[String]) {
-        self.client.save_setting("engineering", Value::Bool(enabled));
+        self.send(LaneCommand::SaveSetting {
+            key: "engineering".into(),
+            value: Value::Bool(enabled),
+        });
         self.show_status(&crate::modes::changed(enabled, always_skills));
     }
 
@@ -3385,7 +3422,10 @@ impl App {
                 return;
             }
         };
-        self.client.select_model(&next.provider, &next.id);
+        self.send(LaneCommand::SelectModel {
+            provider: next.provider.to_string(),
+            id: next.id.to_string(),
+        });
         let suffix = if next.reasoning && self.thinking_level != "off" {
             format!(" (thinking: {})", self.thinking_level)
         } else {
@@ -3415,7 +3455,10 @@ impl App {
                     .cloned()
                 {
                     // The session worker saves the selection as the default (`Models.select`).
-                    self.client.select_model(&model.provider, &model.id);
+                    self.send(LaneCommand::SelectModel {
+                        provider: model.provider.to_string(),
+                        id: model.id.to_string(),
+                    });
                     self.model = model;
                     self.show_status(&format!("Session model: {selector} (saved as default)"));
                 }
@@ -3429,7 +3472,10 @@ impl App {
                 } else {
                     Value::String(value.clone())
                 };
-                self.client.save_setting(&key, stored);
+                self.send(LaneCommand::SaveSetting {
+                    key: key.to_string(),
+                    value: stored,
+                });
                 let next = match key.as_str() {
                     "rlm.frameModel" | "rlm.frameThinking" => Some("the next frame"),
                     "review.model" => Some("the next /review"),
@@ -3459,9 +3505,9 @@ impl App {
                 Some(SelectorAction::Selected(entry_id)) => {
                     self.panel = None;
                     if self.operation.is_some() {
-                        self.client.abort();
+                        self.send(LaneCommand::Abort);
                     }
-                    self.client.fork(&entry_id);
+                    self.send(LaneCommand::Fork(entry_id.to_string()));
                 }
                 Some(SelectorAction::Cancelled) => self.panel = None,
                 None => {}
@@ -3475,11 +3521,11 @@ impl App {
                 match focus.handle_input(&self.keys, data, &snapshot, height) {
                     rlm_views::focus::FocusEvent::Exit => self.panel = None,
                     // `loadTrace`: the frame's trace (`rlm.frames {id}`), answered as an inspection.
-                    rlm_views::focus::FocusEvent::LoadTrace { key, trace_id } => self.client.rlm_inspect(
-                        &format!("trace:{key}"),
-                        "rlm.frames",
-                        serde_json::json!({ "id": trace_id }),
-                    ),
+                    rlm_views::focus::FocusEvent::LoadTrace { key, trace_id } => self.send(LaneCommand::RlmInspect {
+                        tag: format!("trace:{key}").to_string(),
+                        request: "rlm.frames".into(),
+                        payload: serde_json::json!({ "id": trace_id }),
+                    }),
                     _ => {}
                 }
             }
@@ -3490,18 +3536,21 @@ impl App {
                         self.show_status("Already in this session");
                     } else {
                         // "Resumed session" once the switch is done (the link reports it).
-                        self.client.resume(&path);
+                        self.send(LaneCommand::Resume(path.to_string()));
                     }
                 }
                 Some(SessionAction::Cancelled) => self.panel = None,
-                Some(SessionAction::Delete(path)) => self.client.delete_session(&path),
-                Some(SessionAction::LoadAll) => self.client.list_all_sessions(),
+                Some(SessionAction::Delete(path)) => self.send(LaneCommand::DeleteSession(path.to_string())),
+                Some(SessionAction::LoadAll) => self.send(LaneCommand::ListAllSessions),
                 Some(SessionAction::Rename(path, name)) => {
                     if Some(&path) == self.session_file.as_ref() {
                         self.session_name = Some(name.clone());
                         self.update_title();
                     }
-                    self.client.rename_session(&path, &name);
+                    self.send(LaneCommand::RenameSession {
+                        path: path.to_string(),
+                        name: name.to_string(),
+                    });
                 }
                 None => {}
             },
@@ -3509,10 +3558,10 @@ impl App {
                 Some(SessionAction::Selected(path)) => {
                     self.panel = None;
                     self.show_status(&format!("Importing {path}…"));
-                    self.client.import_pi(&path);
+                    self.send(LaneCommand::ImportPi(path.to_string()));
                 }
                 Some(SessionAction::Cancelled) => self.panel = None,
-                Some(SessionAction::LoadAll) => self.client.list_all_pi_sessions(),
+                Some(SessionAction::LoadAll) => self.send(LaneCommand::ListAllPiSessions),
                 Some(SessionAction::Delete(_) | SessionAction::Rename(..)) => {
                     selector.set_status(true, "Pi sessions are read-only here", Duration::from_secs(3));
                 }
@@ -3550,13 +3599,13 @@ impl App {
                         let steps = login.answer(answer);
                         self.api_login_steps(steps);
                     }
-                    None => self.client.login_reply(Some(answer)),
+                    None => self.send(LaneCommand::LoginReply(Some(answer))),
                 },
                 crate::login_dialog::DialogAction::Cancel => {
                     // Esc stops the login and closes its dialog silently (`Login cancelled`).
                     self.panel = None;
                     if self.api_login.take().is_none() {
-                        self.client.login_reply(None);
+                        self.send(LaneCommand::LoginReply(None));
                     }
                 }
                 crate::login_dialog::DialogAction::None => {}
@@ -3569,7 +3618,10 @@ impl App {
                     let key = input.value().to_string();
                     let id = provider.id.clone();
                     self.panel = None;
-                    self.client.save_api_key(&id, &key);
+                    self.send(LaneCommand::SaveApiKey {
+                        provider: id.to_string(),
+                        key: key.to_string(),
+                    });
                 } else {
                     input.handle_input(data);
                 }
@@ -3577,7 +3629,7 @@ impl App {
             Some(Panel::Trust(selector)) => match selector.handle_input(data) {
                 Some(crate::trust_selector::TrustAction::Selected { trusted, updates }) => {
                     self.panel = None;
-                    self.client.set_project_trust(trusted, updates);
+                    self.send(LaneCommand::SetProjectTrust { trusted, updates });
                 }
                 Some(crate::trust_selector::TrustAction::Cancelled) => self.panel = None,
                 None => {}
@@ -3593,7 +3645,10 @@ impl App {
                             "Removed stored API key for {name}. Environment variables and models.json config are unchanged"
                         )
                     };
-                    self.client.logout(&id, &done);
+                    self.send(LaneCommand::Logout {
+                        provider: id.to_string(),
+                        done: done.to_string(),
+                    });
                 }
                 Some(Err(())) => self.panel = None,
                 None => {}
@@ -3612,7 +3667,10 @@ impl App {
                     None => self.show_status("Error: Selected entry has no text to copy"),
                     Some(text) => self.copy_to_clipboard(&text, "Copied selected message to clipboard"),
                 },
-                Some(TreeAction::Label(entry, label)) => self.client.set_label(&entry, label.as_deref()),
+                Some(TreeAction::Label(entry, label)) => self.send(LaneCommand::SetLabel {
+                    entry_id: entry.to_string(),
+                    label: label.clone(),
+                }),
                 Some(TreeAction::RestoreFiles(entry)) => {
                     self.panel = None;
                     self.ask_restore(entry, false);
@@ -3664,7 +3722,7 @@ impl App {
                 // `loader.onAbort`: the upload stops and the loader closes.
                 if loader.handle_input(data) {
                     self.panel = None;
-                    self.client.cancel_share();
+                    self.send(LaneCommand::CancelShare);
                     self.show_status("Share cancelled");
                 }
             }
@@ -3824,7 +3882,7 @@ impl App {
             session_scope,
         });
         self.editor.focused = false;
-        self.client.refresh_catalog();
+        self.send(LaneCommand::RefreshCatalog);
     }
 
     /// The catalogs refreshed (or timed out, or failed): the open selector shows the catalog it has now.
@@ -3878,7 +3936,10 @@ impl App {
         let value = patterns
             .as_ref()
             .map_or(serde_json::Value::Null, |p| serde_json::json!(p));
-        self.client.save_setting("enabledModels", value);
+        self.send(LaneCommand::SaveSetting {
+            key: "enabledModels".into(),
+            value,
+        });
         self.enabled_models = patterns.unwrap_or_default();
         self.show_status("Model selection saved to settings");
     }
@@ -3913,14 +3974,12 @@ impl App {
     /// `startProviderLogin`: the login dialog (a subscription login runs in the client; an API key is prompted for).
     fn start_login(&mut self, option: crate::selectors::AuthProvider) {
         if option.auth_type == "oauth" {
-            // The flow runs in the client; its dialog opens with its first step (`LoginStep::Started`).
-            if self.client.oauth_login(&option.id, &option.name) {
-                return;
-            }
-            self.show_status(&format!(
-                "Error: Failed to login to {}: signing in with an account is not available in the Rust build yet; use an API key",
-                option.name
-            ));
+            // The flow runs in the client; its dialog opens with its first step (`LoginStep::Started`), or the client
+            // says it cannot sign in with an account.
+            self.send(LaneCommand::OAuthLogin {
+                provider: option.id,
+                name: option.name,
+            });
             return;
         }
         // A provider whose key prompt has a choice or several fields (`apiKey.login`): its flow runs in the dialog.
@@ -3970,7 +4029,10 @@ impl App {
                 Step::Done(credential) => {
                     self.panel = None;
                     if let Some((login, _)) = self.api_login.take() {
-                        self.client.save_credential(login.provider(), credential);
+                        self.send(LaneCommand::SaveCredential {
+                            provider: login.provider().to_string(),
+                            credential,
+                        });
                     }
                 }
                 Step::Failed(error) => {
@@ -4004,7 +4066,10 @@ impl App {
             "warnings",
             "cacheWarming",
         ];
-        self.client.save_setting(key, value.clone());
+        self.send(LaneCommand::SaveSetting {
+            key: key.to_string(),
+            value: value.clone(),
+        });
         // A per-model thinking level of the current model applies to the session now.
         if key == "modelThinkingLevel"
             && value["provider"] == self.model.provider.as_str()
@@ -4050,12 +4115,16 @@ impl App {
         self.rlm_polled = Some(self.now());
         // The `rlm.spawn` subagents: the Rust worker keeps them in a task journal of their own, which
         // `agents.status` does not list (TypeScript's one task host lists both).
-        self.client.rlm_status();
-        let client = &self.client;
-        self.rlm_poll
-            .refresh(&mut |i| client.rlm_inspect(&i.tag, i.request, i.payload));
-        self.client
-            .rlm_inspect("detached", "rlm.detached", serde_json::json!({}));
+        self.send(LaneCommand::RlmStatus);
+        let lane = &self.lane;
+        self.rlm_poll.refresh(&mut |i| {
+            let _ = lane.send(i.into());
+        });
+        self.send(LaneCommand::RlmInspect {
+            tag: "detached".into(),
+            request: "rlm.detached".into(),
+            payload: serde_json::json!({}),
+        });
     }
 
     /// `#scheduleRlmPolling`: poll every second while an RLM view or the live wave summary shows, else every five
@@ -4101,9 +4170,10 @@ impl App {
         } else {
             Vec::new()
         };
-        let client = &self.client;
-        self.rlm_poll
-            .assess(&running, &mut |i| client.rlm_inspect(&i.tag, i.request, i.payload));
+        let lane = &self.lane;
+        self.rlm_poll.assess(&running, &mut |i| {
+            let _ = lane.send(i.into());
+        });
     }
 
     /// The session's work as the RLM views list it: `agents.status`, then the subagents it does not list.
@@ -4138,10 +4208,10 @@ impl App {
                 .unwrap_or_default();
             return self.update_work_active();
         }
-        let client = &self.client;
-        let answered = self
-            .rlm_poll
-            .answer(tag, result, &mut |i| client.rlm_inspect(&i.tag, i.request, i.payload));
+        let lane = &self.lane;
+        let answered = self.rlm_poll.answer(tag, result, &mut |i| {
+            let _ = lane.send(i.into());
+        });
         if answered == rlm_views::Answered::Agents {
             self.agents_status_inspected();
         }
@@ -4422,7 +4492,7 @@ impl App {
 
     fn navigate(&mut self, entry_id: &str, summarize: bool, instructions: Option<&str>) {
         if self.operation.is_some() {
-            self.client.abort();
+            self.send(LaneCommand::Abort);
         }
         self.summarizing_branch = summarize.then(|| entry_id.to_string());
         self.show_status(if summarize {
@@ -4433,7 +4503,11 @@ impl App {
         // The lane's navigation operation shows its indicator until the session answers.
         self.chat.set_navigating(true);
         // The session resolves the selection (AgentSession `navigateTree`) and answers the editor's text.
-        self.client.navigate(Some(entry_id), summarize, instructions);
+        self.send(LaneCommand::Navigate {
+            target: Some(entry_id.to_string()),
+            summarize,
+            instructions: instructions.map(str::to_string),
+        });
     }
 
     /// Pi's prompt-history search (`app.history.search`, Alt+R).
@@ -4461,7 +4535,7 @@ impl App {
             return true;
         }
         if self.keys.matches(data, "app.agents.hub") {
-            self.client.agents();
+            self.send(LaneCommand::Agents);
             return true;
         }
         if self.keys.matches(data, "tui.altScreen.search") {
@@ -4491,14 +4565,17 @@ impl App {
             .iter()
             .rev()
             .find(|m| m["role"] == "user")
-            .map(|m| user_message_text(m).trim().to_string())
+            .map(|m| message_text(m).trim().to_string())
             .filter(|t| !t.is_empty())
         else {
             self.show_status("Nothing to retry");
             return;
         };
         self.status = "Retrying…".into();
-        self.client.prompt(&prompt);
+        self.send(LaneCommand::Prompt {
+            text: prompt,
+            images: Vec::new(),
+        });
     }
 
     /// Whether the display reset was asked for; clears the request.
@@ -4548,7 +4625,7 @@ impl App {
             .enumerate()
             .map(|(i, m)| {
                 let id = if m["role"] == "user" {
-                    let text = user_message_text(m);
+                    let text = message_text(m);
                     ids.by_ref()
                         .find(|f| f.text == text)
                         .map_or(format!("m{i}"), |f| f.entry_id)
@@ -4632,9 +4709,9 @@ impl App {
                         return;
                     };
                     if self.operation.is_some() {
-                        self.client.abort();
+                        self.send(LaneCommand::Abort);
                     }
-                    self.client.fork(&entry_id);
+                    self.send(LaneCommand::Fork(entry_id.to_string()));
                 }
                 PickerEvent::RestoreFiles { entry_id } => {
                     self.overlay = None;
@@ -4674,16 +4751,16 @@ impl App {
             Overlay::AgentHub(hub) => match hub.handle_input(data) {
                 HubEvent::Close => self.overlay = None,
                 HubEvent::Kill(id) => {
-                    self.client.kill_agent(&id);
-                    self.client.agents();
+                    self.send(LaneCommand::KillAgent(id.to_string()));
+                    self.send(LaneCommand::Agents);
                 }
                 HubEvent::OpenTranscript(id) => {
                     hub.set_transcript(&id, Vec::new());
-                    self.client.agent_transcript(&id);
+                    self.send(LaneCommand::AgentTranscript(id.to_string()));
                 }
                 HubEvent::Revive(id) => {
-                    self.client.revive_agent(&id);
-                    self.client.agents();
+                    self.send(LaneCommand::ReviveAgent(id.to_string()));
+                    self.send(LaneCommand::Agents);
                 }
                 HubEvent::Steer { id, text } => {
                     // A parked (interrupted) agent is revived first; its brief runs again as a new subagent.
@@ -4692,11 +4769,14 @@ impl App {
                         .iter()
                         .any(|r| r.id == id && r.status == crate::agent_hub::AgentStatus::Parked);
                     if parked {
-                        self.client.revive_agent(&id);
-                        self.client.agents();
+                        self.send(LaneCommand::ReviveAgent(id.to_string()));
+                        self.send(LaneCommand::Agents);
                     } else {
-                        self.client.steer_agent(&id, &text);
-                        self.client.agent_transcript(&id);
+                        self.send(LaneCommand::SteerAgent {
+                            id: id.to_string(),
+                            text: text.to_string(),
+                        });
+                        self.send(LaneCommand::AgentTranscript(id.to_string()));
                     }
                 }
                 HubEvent::Ignored | HubEvent::Render => {}
@@ -4750,7 +4830,10 @@ impl App {
     }
 
     fn select_model(&mut self, model: ModelInfo) {
-        self.client.select_model(&model.provider, &model.id);
+        self.send(LaneCommand::SelectModel {
+            provider: model.provider.to_string(),
+            id: model.id.to_string(),
+        });
         self.status = format!("Selected {}/{}.", model.provider, model.id);
         self.model = model;
     }
@@ -4796,7 +4879,7 @@ impl App {
         let mut list = SelectList::new(
             items.clone(),
             items.len().clamp(1, 12),
-            select_theme(&self.theme, Fg::Dim, Fg::Warning),
+            crate::components::select_theme(&self.theme, Fg::Dim, Fg::Warning),
         );
         if let Some(index) = index {
             list.set_selected_index(index);
@@ -4859,10 +4942,10 @@ impl App {
                         choice => self.navigate(&entry, choice == "Summarize", None),
                     },
                     Purpose::RestoreFiles(entry) => match item.value.as_str() {
-                        RESTORE_FILES => self.client.restore_files(&entry),
+                        RESTORE_FILES => self.send(LaneCommand::RestoreFiles(entry.to_string())),
                         RESTORE_FILES_AND_REWIND => {
                             self.rewind_after_restore = Some(entry.clone());
-                            self.client.restore_files(&entry);
+                            self.send(LaneCommand::RestoreFiles(entry.to_string()));
                         }
                         _ => {}
                     },
@@ -4872,7 +4955,7 @@ impl App {
                         source,
                     } => match (item.value.as_str(), session_file) {
                         ("Switch to the imported session", Some(file)) => {
-                            self.client.resume(&file);
+                            self.send(LaneCommand::Resume(file.to_string()));
                             self.show_status(&format!("Session imported from: {source}"));
                         }
                         _ => self.show_status(&format!("{imported}. Use /resume to open it.")),
@@ -4889,7 +4972,7 @@ impl App {
                     }
                     Purpose::AutoreviewAccount(accounts) => {
                         let chosen = item.value.parse::<usize>().ok().and_then(|index| accounts.get(index));
-                        self.client.autoreview(match chosen {
+                        self.send(LaneCommand::Autoreview(match chosen {
                             Some((login, host)) => AutoreviewRequest::On {
                                 accounts: Some(vec![format!("{host}/{login}")]),
                                 reviewing_as: format!("{host}/{login}"),
@@ -4898,7 +4981,7 @@ impl App {
                                 accounts: None,
                                 reviewing_as: "every logged-in account".into(),
                             },
-                        });
+                        }));
                     }
                     Purpose::ExtensionSelect { id } => {
                         self.answer_extension_dialog(&id, serde_json::json!({ "value": item.value }));
@@ -4939,18 +5022,7 @@ impl App {
             .rev()
             .filter(|m| m["role"] == "assistant")
             .find(|m| !(m["stopReason"] == "aborted" && m["content"].as_array().is_none_or(Vec::is_empty)))
-            .map(|m| {
-                m["content"]
-                    .as_array()
-                    .map(|blocks| {
-                        blocks
-                            .iter()
-                            .filter(|b| b["type"] == "text")
-                            .filter_map(|b| b["text"].as_str())
-                            .collect::<String>()
-                    })
-                    .unwrap_or_default()
-            })
+            .map(protocol::pi_message::text)
     }
 
     fn copy_last_message(&mut self) {

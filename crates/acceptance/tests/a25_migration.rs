@@ -12,8 +12,9 @@
 
 mod common;
 
-use cli::rpc::events::{LaneEvent, RpcEventTranslator};
+use cli::rpc::events::RpcEventTranslator;
 use common::{Install, Provider, Reply};
+use protocol::watch::WatchEvent;
 use serde_json::{Value, json};
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
@@ -394,7 +395,7 @@ fn acceptance_a25_rpc_translator_reconstructs_turn_and_agent_boundaries() {
     let mut translator = RpcEventTranslator::default();
     let types: Vec<String> = events
         .iter()
-        .filter_map(LaneEvent::from_watch)
+        .filter_map(WatchEvent::decode)
         .flat_map(|event| translator.translate(event))
         .map(|line| line["type"].as_str().unwrap().to_string())
         .collect();

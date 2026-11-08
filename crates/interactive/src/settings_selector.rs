@@ -13,7 +13,7 @@ use tui::Input;
 use tui::KeybindingsManager;
 use tui::fuzzy_filter;
 use tui::{MouseButton, MouseEvent, MouseEventType, MouseResult};
-use tui::{SelectEvent, SelectItem, SelectList, SelectListTheme};
+use tui::{SelectEvent, SelectItem, SelectList};
 use tui::{truncate_to_width, visible_width, wrap_text_with_ansi};
 
 use crate::components::bold;
@@ -457,20 +457,6 @@ enum SelectOutcome {
     Highlight(String),
 }
 
-fn select_theme(t: &Rc<Theme>) -> SelectListTheme {
-    let style = |color: Fg| {
-        let t = Rc::clone(t);
-        Box::new(move |s: &str| t.fg(color, s)) as Box<dyn Fn(&str) -> String>
-    };
-    SelectListTheme {
-        selected_prefix: style(Fg::Accent),
-        selected_text: style(Fg::Accent),
-        description: style(Fg::Muted),
-        scroll_info: style(Fg::Muted),
-        no_match: style(Fg::Muted),
-    }
-}
-
 impl SelectSubmenu {
     fn new(
         theme: Rc<Theme>,
@@ -500,7 +486,11 @@ impl SelectSubmenu {
     }
 
     fn build(theme: &Rc<Theme>, items: &[SelectItem], current: &str, layout: (usize, usize)) -> SelectList {
-        let mut list = SelectList::new(items.to_vec(), items.len().min(10), select_theme(theme));
+        let mut list = SelectList::new(
+            items.to_vec(),
+            items.len().min(10),
+            crate::components::select_theme(theme, Fg::Muted, Fg::Muted),
+        );
         list.min_primary_column_width = Some(layout.0);
         list.max_primary_column_width = Some(layout.1);
         if let Some(i) = items.iter().position(|o| o.value == current) {
