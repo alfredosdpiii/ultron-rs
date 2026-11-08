@@ -4,5 +4,7 @@
 
 #[path = "graph.rs"]
 mod graph;
+#[path = "relations.rs"]
+mod relations;
 #[path = "similar.rs"]
 mod similar;

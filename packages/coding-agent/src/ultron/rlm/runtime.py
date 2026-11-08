@@ -43,6 +43,7 @@ from schedule_api import Schedule
 from diagram_api import Diagram
 from sessions_api import Sessions
 from judge_api import Judge
+from knowledge_api import KnowledgeApi
 import waits
 from tools_api import Mcp, McpError, ToolCall, ToolError, ToolResult, Tools
 from worktree_api import Worktrees, worktree_path
@@ -117,7 +118,7 @@ class RLMNamespace:
     system prompt and its own transcript on every turn, so use it for independent multi-step work, not for
     reading files); `await rlm.collect([h])` waits for results; a subagent ends with `rlm.finish(...)`;
     `worktree=True` gives a child its own Git worktree and `await rlm.merge(hs)` brings the work back
-    (`help(rlm.merge)`, `rlm.worktrees`); `rlm.list_subagents()`, `rlm.delete_subagent(id)`. `rlm.load`, `rlm.open`, `rlm.infer`, `rlm.map` and `rlm.frames` are the
+    (`help(rlm.merge)`, `rlm.worktrees`); `rlm.list_subagents()`, `rlm.progress()`, `rlm.delete_subagent(id)`. `rlm.load`, `rlm.open`, `rlm.infer`, `rlm.map` and `rlm.frames` are the
     bounded-inference API (`help(rlm.map)`). `rlm.jobs()` / `rlm.job(id)` recover shell jobs. `rlm.results()` never waits; `rlm.lanes()`, `rlm.lane`, `rlm.cells()`, `rlm.cell`, `rlm.recovery()`: REPL lanes (`help(rlm.lane)`).
 
     Search before delegating, over many files or a large input: search the concept and its synonyms in code,
@@ -142,12 +143,15 @@ class RLMNamespace:
 
     async def spawn(self, prompt: str, **kwargs: Any) -> SpawnHandle:
         """Start a subagent and return its SpawnHandle at once (`h.rlm_child_id`); options: name (required),
-        model, thinking, timeout_ms, depth, worktree, worktree_setup, fork.
+        model, thinking, timeout_ms, depth, worktree, worktree_setup, context, fork.
 
         The child has its own REPL and your tools and shares your filesystem, but not your conversation: give
         a self-contained brief (goal, paths, constraints, what to return). Its final reply is its result.
-        fork=True starts it on your conversation so far instead (not your kernel's variables), so a short brief
-        does; it re-reads all of that context every turn, so fork only when the child needs what you learned.
+        context="fresh" (the default) is that. context="retrieve" also tells it where this session is stored, so
+        it can look up what your brief left out with `sessions.search` / `sessions.read` instead of guessing.
+        context="fork" (or fork=True) starts it on your conversation so far instead (not your kernel's
+        variables), so a short brief does; it re-reads all of that context every turn, so fork only when the
+        child needs most of what you learned.
         Start several at once, then do only separate work of your own: never check on children through their
         files, logs or progress, since their results come to you. With nothing of your own left, wait for free
         with `await rlm.collect(handles)`, or (completion events on) end your turn: each end arrives as a
@@ -174,7 +178,7 @@ class RLMNamespace:
         name = kwargs.get("name")
         if not isinstance(name, str) or not name.strip():
             raise ValueError("rlm.spawn name must be a non-empty string")
-        allowed = {"name", "model", "thinking", "timeout_ms", "depth", "worktree", "worktree_setup", "fork"}
+        allowed = {"name", "model", "thinking", "timeout_ms", "depth", "worktree", "worktree_setup", "context", "fork"}
         unknown = sorted(set(kwargs) - allowed)
         if unknown:
             raise TypeError(f"rlm.spawn unknown options: {', '.join(unknown)}")
@@ -189,6 +193,8 @@ class RLMNamespace:
             raise ValueError('rlm.spawn worktree must be True, False or "auto" (every worktree child gets its own)')
         if kwargs.get("fork") is not None and not isinstance(kwargs["fork"], bool):
             raise ValueError("rlm.spawn fork must be True or False")
+        if kwargs.get("context") is not None and kwargs["context"] not in ("fresh", "fork", "retrieve"):
+            raise ValueError('rlm.spawn context must be "fresh", "fork" or "retrieve"')
         if kwargs.get("worktree_setup") is not None and not isinstance(kwargs["worktree_setup"], dict):
             raise ValueError('rlm.spawn worktree_setup must be a dict: {"link": [...], "copy": [...], "command": "..."}')
         result = await self._bridge.request("rlm.spawn", {
@@ -278,6 +284,18 @@ class RLMNamespace:
             "timeout_ms": timeout_ms,
         })
         return result.get("results", []) if isinstance(result, dict) else []
+
+    async def progress(self, selectors: list[str] | None = None) -> list[dict[str, Any]]:
+        """How your running subagents are doing (SpawnHandles or ids; all of yours when empty), for when the user
+        asks: `[{"id", "name", "level", "description", "responses", "cells", "elapsed_s", "cost_usd",
+        "forecast": {"time_left_s_max", "cost_usd_per_min", "cost_usd_at_timeout"}}]`. Levels are described
+        stages read from each child's transcript, not percentages: starting, exploring (nothing changed yet),
+        changing (edits not checked yet), checking (a test, build or linter ran after its last edit), finishing
+        (it recorded its verdict) or stalled (failing cells in a row, or idle for minutes). The forecasts bound
+        its remaining time by its timeout and project its cost at its spend rate so far. Finished children are
+        left out (collect them). Never poll it while you wait: their results come to you."""
+        result = await self._bridge.request("rlm.progress", {"selectors": child_selectors(selectors)})
+        return result.get("subagents", []) if isinstance(result, dict) else []
 
     async def delete_subagent(self, selector: str) -> dict[str, Any]:
         result = await self._bridge.request("rlm.delete_subagent", {"selector": selector})
@@ -956,7 +974,7 @@ class RuntimeState:
         self.namespace["memory"] = Memory(self.bridge)
         self.namespace["refinements"] = Refinements(self.bridge)
         self.namespace["progress"] = Progress(self.bridge)
-        self.namespace["skills"] = Skills(self.bridge)
+        self.namespace["skills"] = Skills(self.bridge, self.namespace)
         self.namespace["schedules"] = Schedules(self.bridge)
         self.namespace["goals"] = Goals(self.bridge)
         self.namespace["instances"] = Instances(self.bridge)
@@ -2013,6 +2031,7 @@ _STATE.namespace["schedule"] = Schedule(_STATE.bridge)
 _STATE.namespace["diagram"] = Diagram(_STATE.bridge)
 _STATE.namespace["sessions"] = Sessions(_STATE.bridge)
 _STATE.namespace["judge"] = Judge(_STATE.bridge)
+_STATE.namespace["knowledge"] = KnowledgeApi(_STATE.bridge)
 _STATE.bindings = {name: value for name, value in _STATE.namespace.items() if name != "state"}
 
 

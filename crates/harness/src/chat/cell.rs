@@ -464,7 +464,7 @@ fn execute_phase(services: &Services, task: &TaskRecord, runtime: &TaskRuntime) 
         })?;
         return run(services, runtime, task, call);
     }
-    let message = format!("Tool {name} was interrupted and may have partially run");
+    let message = interrupted_message(&name);
     settle(
         runtime,
         task,
@@ -476,16 +476,21 @@ fn execute_phase(services: &Services, task: &TaskRecord, runtime: &TaskRuntime) 
     )
 }
 
+/// The result of a call a restart cut off: interrupted, its effect unknown (never replayed).
+pub fn interrupted_message(name: &str) -> String {
+    format!(
+        "Tool {name} was interrupted by a restart; effect unknown: it may have partially run and was not replayed. \
+         Check what it changed before you run it again"
+    )
+}
+
 fn abort_handler(_services: &Services, task: &TaskRecord, runtime: &TaskRuntime) -> Result<()> {
     let (call_id, name, _) = read_call(runtime, task)?;
     let executing = matches!(checkpoint_of(task)?, CellCheckpoint::Execute { .. });
     let (code, message) = if task.abort_reason.is_none() {
         ("aborted", format!("Tool {name} was aborted"))
     } else if executing {
-        (
-            "interrupted",
-            format!("Tool {name} was interrupted by a restart and may have partially run"),
-        )
+        ("interrupted", interrupted_message(&name))
     } else {
         (
             "abandoned",

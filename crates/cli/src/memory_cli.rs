@@ -1,6 +1,7 @@
 //! `ultron memory import --from claude-code|codex [--dry-run]`: Claude Code's and Codex's memory notes become typed
-//! memory records in the shared Hindsight memory (kernel_apis::memory_import), each tagged with its source file and
-//! checked for secrets as `memory.propose` checks a write. `--dry-run` prints the plan and writes nothing.
+//! memory records in the shared memory (kernel_apis::memory_import; memorantado when `memory.backend` chooses it,
+//! else Hindsight), each tagged with its source file and checked for secrets as `memory.propose` checks a write.
+//! `--dry-run` prints the plan and writes nothing. `ultron memory migrate` is crate::memory_migrate.
 
 use crate::Env;
 use kernel_apis::MemoryBackend;
@@ -15,13 +16,31 @@ pub const USAGE: &str = "Usage: ultron memory import --from claude-code|codex [-
 
 fn scope_tags(env: &Env, project: Option<&Path>) -> Map<String, Value> {
     let cwd = project.unwrap_or(&env.cwd);
-    hindsight::worker_scope_tags("import", &cwd.display().to_string(), &env.home.display().to_string())
+    kernel_apis::memory::worker_scope_tags("import", &cwd.display().to_string(), &env.home.display().to_string())
 }
 
 pub fn run(argv: &[String], env: &Env, out: &mut dyn Write, err: &mut dyn Write) -> Result<i32, String> {
+    if argv.first().map(String::as_str) == Some("migrate") {
+        return crate::memory_migrate::run(&argv[1..], env, out, err);
+    }
     let agent_dir = env.agent_dir();
-    let endpoint = || hindsight::Endpoint::from_env(&|key| (env.var)(key), &env.cwd, &agent_dir);
+    let var = |key: &str| (env.var)(key);
+    let endpoint = || hindsight::Endpoint::from_env(&var, &env.cwd, &agent_dir);
+    // The backend sessions use: memorantado when chosen (as compose chooses it), else Hindsight.
+    let chosen = || {
+        let settings = config::settings::SettingsManager::create(&env.cwd, &agent_dir, false);
+        memorantado::Endpoint::choose(&var, &settings, endpoint().is_none(), &|url| {
+            memorantado::ReqwestTransport::new().is_ok_and(|t| memorantado::resolve::answers(&t, url))
+        })
+    };
     let backend = |project: Option<&Path>| -> Result<Arc<dyn MemoryBackend>, String> {
+        if let Some(memorantado) = chosen() {
+            return Ok(Arc::new(
+                memorantado
+                    .backend(scope_tags(env, project))
+                    .map_err(|e| e.to_string())?,
+            ));
+        }
         let endpoint = endpoint().ok_or("Hindsight is not configured. Set ULTRON_HINDSIGHT_URL.")?;
         let mut options = hindsight::HindsightOptions::new(&endpoint.url, &endpoint.bank, scope_tags(env, project));
         options.ensure_bank = true;

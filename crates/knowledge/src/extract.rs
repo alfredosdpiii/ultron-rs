@@ -55,8 +55,8 @@ impl Lang {
     }
 }
 
-/// The language of `path`, when it is one the indexer reads; vendored and built trees are left out.
-pub fn language(path: &str) -> Option<Lang> {
+/// Whether `path` is vendored, built or generated: no reader of the graph looks there.
+pub fn vendored(path: &str) -> bool {
     const SKIPPED: [&str; 7] = [
         "node_modules/",
         "dist/",
@@ -66,16 +66,20 @@ pub fn language(path: &str) -> Option<Lang> {
         "__pycache__/",
         "coverage/",
     ];
-    if SKIPPED
+    let name = path.rsplit('/').next().unwrap_or(path);
+    SKIPPED
         .iter()
         .any(|dir| path.starts_with(dir) || path.contains(&format!("/{dir}")))
-    {
+        || name.ends_with(".min.js")
+        || name.ends_with(".d.ts")
+}
+
+/// The language of `path`, when it is one the indexer reads; vendored and built trees are left out.
+pub fn language(path: &str) -> Option<Lang> {
+    if vendored(path) {
         return None;
     }
     let name = path.rsplit('/').next().unwrap_or(path);
-    if name.ends_with(".min.js") || name.ends_with(".d.ts") {
-        return None;
-    }
     let extension = name.rsplit_once('.').map(|(_, extension)| extension)?;
     match extension {
         "sql" => Some(Lang::Sql),

@@ -60,7 +60,7 @@ pub use progress::ProgressModule;
 pub use schedule_tick::{ManualTickClock, ScheduleTicker, TickClock};
 pub use schedules::SchedulesModule;
 pub use sessions::SessionsModule;
-pub use skills::{SkillLoader, SkillSource, SkillsModule};
+pub use skills::{PinnedSkill, SkillLoader, SkillSource, SkillsModule};
 pub use tasks::{RootOnly, TaskHost};
 pub use tool_calls::{ToolCallEnd, ToolCalls, ToolInfo, ToolRunner};
 

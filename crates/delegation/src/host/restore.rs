@@ -3,9 +3,10 @@
 //! running: its waiter delivers its reply when it ends, and the result is checked and announced as any child's.
 //! Unfinished tasks nothing runs read as the journal recovered them (`interrupted`, never replayed).
 //!
-//! The journal itself follows `task-store.ts`: reopening records every unfinished task as interrupted, which is what
-//! the TypeScript product reads. A reattached child's later result is the host's (and the durable runtime's), not a
-//! second terminal record.
+//! The journal follows `task-store.ts` (reopening records every unfinished task as interrupted, which is what the
+//! TypeScript product reads), except for a reattached child: it stays `running` in the journal and its end is
+//! journaled as any child's, so a result the parent collected never changes and a later restart reattaches it again
+//! (specs/spawn-collect: OneResult and KeepsRunning across two restarts).
 
 use super::*;
 
@@ -35,22 +36,34 @@ impl Delegation {
         unfinished: &[String],
         mut reattach: impl FnMut(&str) -> Option<Reattached>,
     ) -> Result<Vec<String>, String> {
-        let records = sync::lock(&self.inner.state).journal.list()?;
         let mut waiters = Vec::new();
         {
             let mut state = sync::lock(&self.inner.state);
-            for mut record in records {
+            let known: Vec<String> = state.tasks.iter().map(|task| task.id.clone()).collect();
+            // Asked while the journal reopens: a child a runtime still runs stays `running` in the same write that
+            // records the others `interrupted`, so a later restart finds it unfinished and reattaches it again.
+            let mut kept: HashMap<String, Reattached> = HashMap::new();
+            let records = state.journal.reopen(|record| {
+                let id = record["id"].as_str().unwrap_or_default();
+                if record["definition"] != CHILD || !unfinished.iter().any(|u| u == id) || known.iter().any(|k| k == id)
+                {
+                    return false;
+                }
+                match reattach(id) {
+                    Some(reattached) => {
+                        kept.insert(id.to_string(), reattached);
+                        true
+                    }
+                    None => false,
+                }
+            })?;
+            for record in records {
                 let id = record["id"].as_str().unwrap_or_default().to_string();
                 if id.is_empty() || state.task(&id).is_some() {
                     continue;
                 }
                 let child = record["definition"] == CHILD;
-                let reattached = if child && unfinished.contains(&id) {
-                    reattach(&id)
-                } else {
-                    None
-                };
-                let (waiter, contract, run) = match reattached {
+                let (waiter, contract, run) = match kept.remove(&id) {
                     Some(r) => (Some(r.waiter), r.contract, r.run),
                     None => (None, None, None),
                 };
@@ -61,13 +74,7 @@ impl Delegation {
                 let contract = contract.map(|kept| SpawnContract::from_described(&kept).map(Arc::new));
                 let signal = Signal::new();
                 let outcome = match &waiter {
-                    Some(_) => {
-                        record["state"] = json!("running");
-                        if let Some(fields) = record.as_object_mut() {
-                            fields.remove("result");
-                        }
-                        None
-                    }
+                    Some(_) => None,
                     None => {
                         signal.abort("ended");
                         Some(Ok(record["result"].clone()))
@@ -99,6 +106,7 @@ impl Delegation {
                     model: run.as_ref().and_then(|run| run.model.clone()),
                     started_at: None,
                     ended_at: None,
+                    timeout_ms: run.as_ref().map(|run| run.timeout_ms).filter(|ms| *ms > 0),
                     verdict: None,
                     verdict_rejections: 0,
                     verdict_problems: Vec::new(),
@@ -157,8 +165,7 @@ impl Delegation {
                 "Contract failed: the session's kept contract is unreadable: {error}"
             ));
         }
-        // As any child's end (its worktree work committed first), kept by the host: the journal already holds the
-        // task as it recovered it.
+        // As any child's end (its worktree work committed first, then the journal).
         let _ = self.end(id, result);
     }
 }

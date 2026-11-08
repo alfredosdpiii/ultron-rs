@@ -518,7 +518,9 @@ pub fn autoreview_paths(agent_dir: &str, env: &HashMap<String, String>, home: &s
         state: jsrt::path::join(&[&dir, "state.json"]),
         logs: jsrt::path::join(&[&dir, "logs"]),
         dry_run: jsrt::path::join(&[&dir, "dry-run"]),
-        knowledge: jsrt::path::join(&[agent_dir, "knowledge", "graph.db"]),
+        knowledge: knowledge::default_path(std::path::Path::new(agent_dir))
+            .display()
+            .to_string(),
         dir,
         cache,
     }

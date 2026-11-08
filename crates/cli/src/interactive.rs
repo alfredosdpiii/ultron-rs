@@ -450,9 +450,19 @@ fn link_thread(
             },
             Command::RefreshName => report_name(&link, &mut name),
             Command::Reopen => open(&link, &mut name),
-            Command::Lane(LaneCommand::NewSession) => {
+            Command::Lane(command @ (LaneCommand::NewSession | LaneCommand::ContinueSession(_))) => {
                 let previous = link.session_id();
-                match link.create(json!({})).and_then(|id| link.attach(&id).map(|()| id)) {
+                let continued = match command {
+                    LaneCommand::ContinueSession(id) => Some(id.unwrap_or_else(|| previous.clone())),
+                    _ => None,
+                };
+                let created = link.create(json!({})).and_then(|id| link.attach(&id).map(|()| id));
+                // `/continue`: the new session's first message names the old one and how to search it.
+                let created = match (created, &continued) {
+                    (Ok(id), Some(old)) => link.op(&Op::ContinueFrom { session: old.clone() }).map(|_| id),
+                    (created, _) => created,
+                };
+                match created {
                     Ok(id) => {
                         // `ultron-s` in its home session: the new session becomes home (before herdr asks how to
                         // resume it).
@@ -465,7 +475,10 @@ fn link_thread(
                             herdr.new_session();
                         }
                         open(&link, &mut name);
-                        send(LaneEvent::Status("✓ New session started".into()));
+                        send(LaneEvent::Status(match &continued {
+                            Some(old) => format!("✓ New session started; it searches session {old}"),
+                            None => "✓ New session started".into(),
+                        }));
                     }
                     Err(error) => send(LaneEvent::Error(error)),
                 }

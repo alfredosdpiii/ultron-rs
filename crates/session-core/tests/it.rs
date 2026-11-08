@@ -47,6 +47,8 @@ mod compaction_cancel;
 mod context_images;
 #[path = "context_reminder.rs"]
 mod context_reminder;
+#[path = "continue_from.rs"]
+mod continue_from;
 #[path = "contract_restart.rs"]
 mod contract_restart;
 #[path = "copilot_models.rs"]
@@ -89,6 +91,8 @@ mod keep_going;
 mod kept_contracts;
 #[path = "kernel_pool_wired.rs"]
 mod kernel_pool_wired;
+#[path = "knowledge_api.rs"]
+mod knowledge_api;
 #[path = "lane_run_hints.rs"]
 mod lane_run_hints;
 #[path = "loki_log.rs"]
@@ -141,6 +145,8 @@ mod request_settings;
 mod request_stream_options;
 #[path = "request_trace.rs"]
 mod request_trace;
+#[path = "result_footer.rs"]
+mod result_footer;
 #[path = "retry_reopen.rs"]
 mod retry_reopen;
 #[path = "review_command.rs"]
@@ -161,10 +167,14 @@ mod sessions_api;
 mod shared_memory;
 #[path = "situational_skills.rs"]
 mod situational_skills;
+#[path = "skill_runs_api.rs"]
+mod skill_runs_api;
 #[path = "snapshot_key_store.rs"]
 mod snapshot_key_store;
 #[path = "spawn_contracts.rs"]
 mod spawn_contracts;
+#[path = "spawn_two_restarts.rs"]
+mod spawn_two_restarts;
 #[path = "stats_wiring.rs"]
 mod stats_wiring;
 #[path = "stream_fold.rs"]

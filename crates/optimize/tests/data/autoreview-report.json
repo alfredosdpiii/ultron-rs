@@ -1,0 +1,27 @@
+{
+  "repo": "/repo", "blockAt": "medium", "mode": "deep", "model": "anthropic/claude-sonnet-5",
+  "cases": [
+    {"kind": "reverted", "sha": "aaaaaaaa00000000000000000000000000000000", "parent": "p1", "subject": "risky change", "by": ["r1"], "lines": [],
+     "score": {"blocked": true, "located": null, "confirmed": 1, "complete": true, "costUsd": 0.1,
+               "findings": [{"file": "a.py", "line": 3, "level": "high", "claim": "drops a row"}]}},
+    {"kind": "reverted", "sha": "bbbbbbbb00000000000000000000000000000000", "parent": "p2", "subject": "rename", "by": ["r2"], "lines": [],
+     "score": {"blocked": false, "located": null, "confirmed": 1, "complete": true, "costUsd": 0.1,
+               "findings": [{"file": "b.py", "line": 9, "level": "low", "claim": "unused name"}]}},
+    {"kind": "fixInducing", "sha": "cccccccc00000000000000000000000000000000", "parent": "p3", "subject": "speed up totals", "by": ["f1"],
+     "lines": [{"path": "app.py", "line": 3}],
+     "score": {"blocked": true, "located": true, "confirmed": 1, "complete": true, "costUsd": 0.2,
+               "findings": [{"file": "app.py", "line": 4, "level": "medium", "claim": "skips the last row"}]}},
+    {"kind": "fixInducing", "sha": "dddddddd00000000000000000000000000000000", "parent": "p4", "subject": "parse", "by": ["f2"],
+     "lines": [{"path": "parse.py", "line": 1}],
+     "score": {"blocked": false, "located": false, "confirmed": 0, "complete": true, "costUsd": 0.1, "findings": []}},
+    {"kind": "control", "sha": "eeeeeeee00000000000000000000000000000000", "parent": "p5", "subject": "docs", "by": [], "lines": [],
+     "score": {"blocked": false, "located": null, "confirmed": 1, "complete": true, "costUsd": 0.05,
+               "findings": [{"file": "c.py", "line": 1, "level": "nit", "claim": "wording"}]}},
+    {"kind": "control", "sha": "ffffffff00000000000000000000000000000000", "parent": "p6", "subject": "logging", "by": [], "lines": [],
+     "score": {"blocked": true, "located": null, "confirmed": 1, "complete": true, "costUsd": 0.05,
+               "findings": [{"file": "log.py", "line": 2, "level": "medium", "claim": "logger never used"}]}},
+    {"kind": "control", "sha": "0000000000000000000000000000000000000000", "parent": "p7", "subject": "bump", "by": [], "lines": [],
+     "error": "the engine returned an unreadable result"}
+  ],
+  "summary": {}
+}

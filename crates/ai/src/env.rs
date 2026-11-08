@@ -66,6 +66,8 @@ fn api_key_env_vars(provider: &str) -> Option<&'static [&'static str]> {
         // The judge seat's services (crates/judge): TypeSafe's Jev and a d1 server.
         "typesafe" => &["TYPESAFE_API_KEY"],
         "d1" => &["ULTRON_D1_KEY"],
+        // The knowledge graph's optional Neo4j mirror (crates/graph): the password of `graph.neo4j.user`.
+        "neo4j" => &["NEO4J_PASSWORD"],
         _ => return None,
     })
 }

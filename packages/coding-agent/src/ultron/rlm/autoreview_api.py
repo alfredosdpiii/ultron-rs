@@ -20,7 +20,10 @@ posting) happens in the host. The pipeline is `/review`'s (review_api.py), with 
    finding, and a verifier that rates the level itself and says whether the scenario really fails. Critical and
    high stay so only when it does (`final_level`). `severity` in the result is the level on the old
    four-name scale, kept for consumers that know only that one.
-5. Find, dedupe, verify: as in `/review`, with a finder contract that adds a line range and an exact
+5. The deterministic stage first (autoreview_static: compile, lint, type-check and Loki over the changed files),
+   each check degrading alone: what it finds on added lines is confirmed by the host; a model finding it
+   contradicts (a syntax error in a file that compiles) is dropped before any verifier sees it.
+   Find, dedupe, verify: as in `/review`, with a finder contract that adds a line range and an exact
    replacement. Small files are packed into one slice, so a small pull request costs one finder frame per
    reviewer instead of one per reviewer and file. Every frame is a request of its own, scheduled here: at most
    `concurrency` at once, and a rate limit or other transient provider error is retried twice with backoff. By
@@ -28,7 +31,9 @@ posting) happens in the host. The pipeline is `/review`'s (review_api.py), with 
    can be set: with a cap (`budget`), a frame gets a token grant out of it (what was really spent plus the grants
    of the frames in flight never exceeds it); with a deadline, unfinished finder passes are given up when it
    comes, what was found is verified, and the result is marked incomplete. A finding other people already raised (same file, nearby line, similar claim) is not verified or
-   posted again; it is returned under `alsoRaised`.
+   posted again; it is returned under `alsoRaised`. A confirmed finding is then put to the judge seat blind
+   (autoreview_blind: the claim and the code only); one it refutes, after escalating the dispute to another model
+   family, is posted as uncertain.
 6. Result. Confirmed and uncertain findings, the most serious pre-existing problems (`preexisting`: real, but in
    code the change did not alter, so never inline and never blocking), what was dropped, timing, usage, what was not checked, whether
    coverage was complete, and the new-file line ranges of the diff (the host validates inline comments on them).
@@ -82,8 +87,10 @@ from review_api import (
     skip_reason,
     source_window,
 )
+import autoreview_blind as blind
 import autoreview_compiled as compiled
 import autoreview_deep as deep
+import autoreview_static as static_checks
 from knowledge_api import Knowledge
 from review_prompts import GUIDANCE_HEADER
 from review_prompts import (ALIASES, AUTOREVIEW_VERIFIER_BATCH_TASK, AUTOREVIEW_VERIFIER_TASK, RECHECK_TASK, REVIEWERS,
@@ -1303,6 +1310,8 @@ def _public(finding: dict[str, Any], verification: str) -> dict[str, Any]:
         out["lesson"] = finding["lesson"]
     if finding.get("rules"):
         out["rules"] = list(finding["rules"])
+    if finding.get("blind"):
+        out["blind"] = finding["blind"]
     return out
 
 
@@ -1512,6 +1521,18 @@ async def run(rlm: Any, spec: dict[str, Any], *, runner: Runner | None = None,
     # to the others, never ends it.
     stages["scopeMs"] = scope_ms
     stages["recheckMs"] = recheck_ms
+    # The deterministic stage, beside the test session: plain-code checks of the changed files before any verifier
+    # (each check's time is in `static.stages`).
+    static_out: dict[str, Any] | None = None
+    if chunks:
+        base_rev = spec.get("base") if spec.get("repoDir") else spec.get("baseSha")
+        read_base = (_rev_reader(git, base_rev) if git is not None and isinstance(base_rev, str) and base_rev
+                     else lambda _path: None)
+        try:
+            static_out = await static_checks.run_static(rlm, scope.files, scope.read_file, read_base)
+            not_checked += static_checks.notes(static_out)
+        except Exception as error:  # the review goes on without it
+            not_checked.append(f"The deterministic stage failed ({_text(f'{type(error).__name__}: {error}', 160)}).")
     prepared: dict[str, Any] | None = None
     if deep_rev is not None and chunks and mode in ("deep", "both", "hybrid"):
         stage_began = clock()
@@ -1795,7 +1816,8 @@ async def run(rlm: Any, spec: dict[str, Any], *, runner: Runner | None = None,
         views_of: list[list[str]] = []
         meta: list[tuple[str, int | None]] = []
         for finding in findings:
-            if finding.get("host_confirmed") or finding["category"] == "tests" or skip_candidate(finding):
+            if (finding.get("host_confirmed") or finding["category"] == "tests" or skip_candidate(finding)
+                    or static_checks.contradiction(finding, static_out)):
                 continue
             if any(other["file"] == finding["file"] and other["category"] == finding["category"] and (
                     abs(other["line"] - finding["line"]) <= deep.MERGE_WINDOW or nearly_identical(other["claim"], finding["claim"]))
@@ -2023,7 +2045,27 @@ async def run(rlm: Any, spec: dict[str, Any], *, runner: Runner | None = None,
     hybrid_confirmed: list[dict[str, Any]] = []
     hybrid_refuted = 0
     hybrid_undecided = 0
-    for finding in merged:
+    # What the deterministic stage found is confirmed by the host; a model finding it settles goes no further.
+    found_static = (static_out or {}).get("findings") or []
+    for number, finding in enumerate(found_static, len(merged) + 1):
+        finding["id"] = number
+    static_ids = {id(item) for item in found_static}
+    contradicted: list[dict[str, Any]] = []
+    for finding in merged + found_static:
+        if id(finding) not in static_ids and not finding.get("host_confirmed"):
+            why = static_checks.contradiction(finding, static_out)
+            if why is not None:
+                contradicted.append({"file": finding["file"], "line": finding["line"], "claim": finding["claim"],
+                                     "source": finding.get("source") or "fast", "by": why})
+                continue
+            twin = next((item for item in found_static if item["file"] == finding["file"]
+                         and (item["line"] == finding["line"] or (abs(item["line"] - finding["line"]) <= EARLIER_WINDOW
+                                                                  and similar_claims(item["claim"], finding["claim"])))),
+                        None)
+            if twin is not None:
+                duplicates += 1
+                duplicate_records.append(duplicate_record(finding, twin, "static"))
+                continue
         logins = raised_by_others(finding, others)
         if logins:
             also_raised.append({"file": finding["file"], "line": finding["line"], "severity": finding["level"],
@@ -2127,6 +2169,25 @@ async def run(rlm: Any, spec: dict[str, Any], *, runner: Runner | None = None,
         confirmed, rejected = [], []
         uncertain = [dict(finding, verification="not verified (the verifier stage failed)") for finding in to_verify]
         incomplete.append(f"the verifier stage failed ({_text(f'{type(error).__name__}: {error}', 160)})")
+    # The blind check: the judge seat asked whether the code shows each claim, seeing neither the finder's reasoning
+    # nor the verifier's; a refutation that survives escalation to another model family leaves the finding uncertain.
+    blind_out: dict[str, Any] | None = None
+    if confirmed:
+        def blind_material(finding: dict[str, Any]) -> tuple[str, str] | None:
+            source = scope.read_file(finding["file"])
+            if not source:
+                return None
+            hunk = hunk_for(by_path.get(finding["file"]), finding["line"])
+            return "\n".join(render_hunk(hunk)) if hunk else "(no hunk)", source_window(source, finding["line"])
+        try:
+            blind_out = await blind.check(rlm, sorted(confirmed, key=level_rank), blind_material)
+        except Exception as error:  # the verifier's verdicts stand
+            blind_out = {"asked": 0, "unavailable": _text(f"{type(error).__name__}: {error}", 160)}
+        uncertain += [dict(finding, verification="the blind check refuted it: the judge seat, and a model of another "
+                                                 "family it escalated the dispute to, did not find the claim in the code")
+                      for finding in confirmed if finding.get("blind") == "refuted"]
+        confirmed = [finding for finding in confirmed if finding.get("blind") != "refuted"]
+        usage.cost += float(blind_out.get("costUsd") or 0)
     confirmed += observed
     uncertain += unverified
     if hybrid:
@@ -2214,13 +2275,16 @@ async def run(rlm: Any, spec: dict[str, Any], *, runner: Runner | None = None,
         "earlier": earlier,
         "dropped": {"rejected": len(rejected), "duplicates": duplicates, "generic": len(dropped_generic),
                     **({"preexisting": unnamed_preexisting} if unnamed_preexisting else {}),
-                    "refutedByTest": refuted, "duplicateOf": duplicate_records},
+                    "refutedByTest": refuted, "contradicted": len(contradicted), "duplicateOf": duplicate_records},
         "timing": {"totalMs": int((clock() - started) * 1000), "scopeMs": scope_ms, "findMs": find_ms,
                    "verifyMs": verify_ms, "deepMs": deep_ms, "programMs": program_ms, "stages": stages,
                    "frames": frames_runner.timings, "investigators": investigators, "program": program_records,
                    "reference": dict(prepared["brief"].reference_stats) if prepared and prepared["brief"].reference_stats else None},
+        # costUsd is the frames' cost plus the judge seat's; `judge` says how many of its calls carried no price.
         "usage": {"inputTokens": usage.input, "outputTokens": usage.output, "costUsd": round(usage.cost, 6),
-                  "frames": usage.frames, "tokens": usage.tokens, "budget": cap, "byPhase": usage.by_phase},
+                  "frames": usage.frames, "tokens": usage.tokens, "budget": cap, "byPhase": usage.by_phase,
+                  **({"judge": {key: blind_out[key] for key in ("calls", "costUsd", "unpricedCalls")}}
+                     if blind_out and "calls" in blind_out else {})},
         "model": model,
         "verifyModel": verify_model,
         "thinking": thinking,
@@ -2228,6 +2292,9 @@ async def run(rlm: Any, spec: dict[str, Any], *, runner: Runner | None = None,
         "mode": "compiled" if compiled_out is not None else "hybrid" if hybrid
         else ("both" if mode == "hybrid" else mode) if deep_out is not None or mode == "fast" else "fast",
         "verification": verification,
+        "static": {"stages": static_out["stages"], "findings": len(found_static), "contradicted": contradicted}
+        if static_out else None,
+        "blind": blind_out,
         "deepModel": deep_model if deep_out is not None else None,
         "deepThinking": deep_thinking if deep_out is not None else None,
         "planModel": plan_model if compiled_out is not None else None,

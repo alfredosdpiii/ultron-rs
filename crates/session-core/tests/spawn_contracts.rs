@@ -478,7 +478,7 @@ fn session_core_spawn_contract_is_refused_when_malformed() {
     a.prompt("ROOT: bad contract");
     assert_eq!(
         std::fs::read_to_string(&out).unwrap(),
-        "contract.checks[0].expect must be \"exit 0\" (or \"exit N\"), {\"exit\": N} or {\"stdout_contains\": \"text\"}"
+        "contract.checks[0].expect must be \"exit 0\" (or \"exit N\"), {\"exit\": N}, \"fail\" or {\"stdout_contains\": \"text\"}"
     );
     assert!(!a.requests().iter().any(|r| first_user(r).contains("CHILD: x")));
 }

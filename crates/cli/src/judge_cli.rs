@@ -3,6 +3,7 @@
 //! real call to each backend asked for; nothing else here spends. Also the seat the setup wizard probes with.
 
 use crate::Env;
+use config::keys::JudgeSettings;
 use judge::keys::{D1, TYPESAFE, key_source};
 use judge::{DispatchChat, Seat, SeatDeps};
 use std::io::Write;
@@ -30,17 +31,30 @@ Keys: TYPESAFE_API_KEY or auth.json \"typesafe\" (Jev), ULTRON_D1_KEY or auth.js
 setting (d1). judge.budgetUsd applies. A backend stops at its first failure.
 ";
 
-/// The judge seat of `env`'s profile: the global `judge.*` settings, the services' keys, and (with `chat`) the
-/// fallback and escalation models on the profile's models and keys.
+/// The judge seat of `env`'s profile: [`settings`] and [`deps`] over the network.
 pub fn seat(env: &Env, chat: bool, max_calls: Option<u64>) -> Result<Seat, String> {
-    let settings = config::settings::SettingsManager::create(&env.cwd, &env.agent_dir(), false);
-    let mut judge = config::keys::judge_settings(settings.global_settings());
+    let mut judge = settings(env);
     if let Some(max_calls) = max_calls {
         judge.max_calls = max_calls;
     }
+    Ok(Seat::new(
+        judge,
+        deps(env, chat, Arc::new(blocking_http::ReqwestTransport::new()?)),
+    ))
+}
+
+/// The global `judge.*` settings of `env`'s profile.
+pub fn settings(env: &Env) -> JudgeSettings {
+    let settings = config::settings::SettingsManager::create(&env.cwd, &env.agent_dir(), false);
+    config::keys::judge_settings(settings.global_settings())
+}
+
+/// What a seat of `env`'s profile is built from: the services' keys, `transport`, and (with `chat`) the fallback and
+/// escalation models on the profile's models and keys.
+pub fn deps(env: &Env, chat: bool, transport: Arc<dyn blocking_http::Transport>) -> SeatDeps {
     let auth = config::paths::AgentPaths::new(env.agent_dir()).auth();
     let mut deps = SeatDeps::new(
-        Arc::new(blocking_http::ReqwestTransport::new()?),
+        transport,
         key_source(TYPESAFE, env.var.clone(), auth.clone()),
         key_source(D1, env.var.clone(), auth),
     );
@@ -56,13 +70,14 @@ pub fn seat(env: &Env, chat: bool, max_calls: Option<u64>) -> Result<Seat, Strin
             }),
             transport: Arc::new(ai::ReqwestTransport::for_env(&*env.var, None)),
         }));
+        let settings = config::settings::SettingsManager::create(&env.cwd, &env.agent_dir(), false);
         let global = settings.global_settings();
         let text = |key: &str| global.get(key).and_then(serde_json::Value::as_str);
         deps.session_model = text("defaultProvider")
             .zip(text("defaultModel"))
             .map(|(p, m)| format!("{p}/{m}"));
     }
-    Ok(Seat::new(judge, deps))
+    deps
 }
 
 struct Options {

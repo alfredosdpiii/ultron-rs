@@ -3,11 +3,11 @@
 //
 // Code (names a reviewer can open):
 //   crates/delegation/src/host.rs          Delegation::spawn (admit, transition "running", then the child starts),
-//                                          Delegation::end (journal transition; a reattached task's end is in memory),
+//                                          Delegation::end (journal transition, a reattached task's too),
 //                                          handle_with Request::Collect / Results (read the task's outcome)
 //   crates/delegation/src/host/restore.rs  Delegation::restore, run_restored
-//   crates/harness/src/task_store.rs       TaskJournal::load (reopening records every unfinished task interrupted),
-//                                          TaskJournal::admit / transition
+//   crates/harness/src/task_store.rs       TaskJournal::reopen (reopening records every unfinished task interrupted,
+//                                          except the reattached ones, kept running), admit / transition
 //   crates/session-core/src/subagents.rs   unfinished (read from the stored document before the journal reopens),
 //                                          DurableChildren::restore (reattach, abort the conversations not reattached)
 //   crates/session-core/src/core.rs        Core start-up (unfinished, then children.restore); hand_over
@@ -20,7 +20,8 @@ module spawn_collect {
   const MAX_RESTARTS: int
   // Broken variant: restore re-runs an unfinished task instead of reattaching or interrupting it.
   const REPLAY: bool
-  // Fix candidate: restore keeps a reattached task "running" in the journal, and its end is journaled.
+  // The code: restore keeps a reattached task "running" in the journal, and its end is journaled. FALSE is the code
+  // before that fix (the reattached task recorded interrupted at reopening, its end kept in memory only).
   const JOURNAL_REATTACHED: bool
 
   type Host = { present: bool, outcome: str, reattached: bool }
@@ -107,8 +108,8 @@ module spawn_collect {
     conv' = conv, up' = up, restarts' = restarts, starts' = starts, seen' = seen,
   }
 
-  // run_restored, then Delegation::end of a reattached task: the result is kept in memory; the journal keeps the
-  // record it recovered at reopening.
+  // run_restored, then Delegation::end of a reattached task: the journal commits its end, as any child's (before the
+  // fix, JOURNAL_REATTACHED = false: the result was kept in memory and the journal kept the record it recovered).
   action ReattachedEnds = all {
     up,
     host.reattached,
@@ -137,9 +138,10 @@ module spawn_collect {
     journal' = journal, conv' = conv, starts' = starts, seen' = seen,
   }
 
-  // The next worker opens the session: subagents::unfinished reads the stored record, TaskJournal::load rewrites an
-  // unfinished record as interrupted, Delegation::restore reattaches a child whose conversation the runtime holds,
-  // and DurableChildren::restore aborts a running conversation it did not reattach.
+  // The next worker opens the session: subagents::unfinished reads the stored record, Delegation::restore reattaches
+  // a child whose conversation the runtime holds while TaskJournal::reopen keeps it running and rewrites every other
+  // unfinished record as interrupted (one write), and DurableChildren::restore aborts a running conversation it did
+  // not reattach.
   action WorkerStarts = all {
     not(up),
     up' = true,
@@ -197,8 +199,12 @@ module spawn_collect {
 
 // The code as written, through one restart and through two.
 module spawn_collect_one_restart {
-  import spawn_collect(MAX_RESTARTS = 1, REPLAY = false, JOURNAL_REATTACHED = false).*
+  import spawn_collect(MAX_RESTARTS = 1, REPLAY = false, JOURNAL_REATTACHED = true).*
 }
 module spawn_collect_two_restarts {
+  import spawn_collect(MAX_RESTARTS = 2, REPLAY = false, JOURNAL_REATTACHED = true).*
+}
+// The code before the fix: a reattached task's end kept in memory only.
+module spawn_collect_in_memory_two_restarts {
   import spawn_collect(MAX_RESTARTS = 2, REPLAY = false, JOURNAL_REATTACHED = false).*
 }

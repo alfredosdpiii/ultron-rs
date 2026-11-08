@@ -107,7 +107,10 @@ fn cli_version_is_the_recorded_typescript_version_or_newer() {
 const RUST_COMMANDS: &str =
     "  ultron schedule <command>        Scheduled prompts of this instance's sessions (list, wake, cancel <id|name>)
   ultron memory import <options>   Import Claude Code or Codex memory notes as Ultron memory records
+  ultron memory migrate <options>  Copy Hindsight's memory into memorantado once (--to memorantado, --dry-run)
   ultron judge bench <cases.json>  Measure the judge seat's backends (Jev, d1) on labelled cases
+  ultron optimize <pipeline>       Measure variants of judge, memory or autoreview on frozen test sets
+  ultron skills <command>          Procedure skills waiting for your approval (proposals, show, approve, reject)
   ultron migrate <command>         Back up or restore the profile; import or export Pi sessions
   ultron mcp <command>             Configure MCP servers and sign in (add, remove, list, login, logout)
   ultron sandbox doctor            Check the shell sandbox a session in this directory gets
@@ -241,6 +244,7 @@ fn cli_help_lists_every_dispatched_subcommand() {
         "watch",
         "guide",
         "service",
+        "skills",
     ] {
         let line = commands
             .iter()

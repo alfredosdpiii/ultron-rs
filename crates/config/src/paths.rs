@@ -114,6 +114,14 @@ impl AgentPaths {
     pub fn mcp(&self) -> PathBuf {
         self.join("mcp.json")
     }
+    /// The user's skills (`<agent dir>/skills/<name>/SKILL.md`).
+    pub fn skills_dir(&self) -> PathBuf {
+        self.join("skills")
+    }
+    /// Procedure skills waiting for the user's approval (`delegation::procedure::proposals`).
+    pub fn skill_proposals(&self) -> PathBuf {
+        self.join("skill-proposals")
+    }
     /// The session store of the durable and explicit instances and of `ultron claude` without
     /// `ULTRON_CODING_AGENT_SESSION_DIR`.
     pub fn experimental_sessions_dir(&self) -> PathBuf {

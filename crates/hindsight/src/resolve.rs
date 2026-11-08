@@ -8,7 +8,7 @@
 
 use crate::backend::{HindsightBackend, HindsightOptions};
 use kernel_apis::MemoryError;
-use serde_json::{Map, Value, json};
+use serde_json::Value;
 use std::path::Path;
 
 pub const HINDSIGHT_BANK_ENV: &str = "ULTRON_HINDSIGHT_BANK";
@@ -90,20 +90,7 @@ pub fn bank(env: Option<&str>) -> String {
     env.filter(|v| !v.is_empty()).unwrap_or(DEFAULT_BANK).to_string()
 }
 
-/// A stable, non-reversible id for a directory (`projectIdentity` of worker-services.ts).
-pub fn directory_identity(path: &str) -> String {
-    jsrt::hash::sha256_hex(path.as_bytes())[..16].to_string()
-}
-
-/// A session's scope tags: its own id, its project directory's identity and the home directory's identity.
-pub fn worker_scope_tags(session_id: &str, cwd: &str, home: &str) -> Map<String, Value> {
-    let tags = json!({
-        "session": [format!("ultron:session:{session_id}")],
-        "project": [format!("ultron:project:{}", directory_identity(cwd))],
-        "global": [format!("ultron:global:{}", directory_identity(home))],
-    });
-    tags.as_object().cloned().unwrap_or_default()
-}
+pub use kernel_apis::memory::{directory_identity, worker_scope_tags};
 
 /// The server and bank this process uses (`None` from [`Endpoint::at`]: memory is off).
 #[derive(Clone, Debug, PartialEq, Eq)]

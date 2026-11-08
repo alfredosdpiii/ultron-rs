@@ -1,0 +1,27 @@
+[package]
+name = "graph"
+version = "0.1.0"
+description = "The REPL's knowledge API (relations across files on demand, settled by plain code and the judge, cached in the knowledge store) and its optional Neo4j mirror, with memorantado's memory relations mirrored read-only"
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+autotests = false
+
+[dependencies]
+blocking-http = { path = "../blocking-http" }
+config = { path = "../config" }
+jsrt = { path = "../jsrt" }
+kernel = { path = "../kernel" }
+kernel-apis = { path = "../kernel-apis" }
+knowledge = { path = "../knowledge" }
+serde_json = { version = "=1.0.151", features = ["preserve_order"] }
+
+[dev-dependencies]
+tempfile = "=3.27.0"
+
+[lints]
+workspace = true
+
+[[test]]
+name = "it"
+path = "tests/it.rs"

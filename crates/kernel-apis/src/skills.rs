@@ -56,30 +56,6 @@ struct Skill {
     ignored: Map<String, Value>,
 }
 
-fn yaml_json(value: &Yaml) -> Value {
-    match value {
-        Yaml::Real(text) => text.parse::<f64>().map(Value::from).unwrap_or(Value::Null),
-        Yaml::Integer(number) => Value::from(*number),
-        Yaml::String(text) => Value::String(text.clone()),
-        Yaml::Boolean(flag) => Value::Bool(*flag),
-        Yaml::Array(items) => Value::Array(items.iter().map(yaml_json).collect()),
-        Yaml::Hash(map) => Value::Object(
-            map.iter()
-                .map(|(key, value)| {
-                    let key = match key {
-                        Yaml::String(text) | Yaml::Real(text) => text.clone(),
-                        Yaml::Integer(number) => number.to_string(),
-                        Yaml::Boolean(flag) => flag.to_string(),
-                        _ => "null".into(),
-                    };
-                    (key, yaml_json(value))
-                })
-                .collect(),
-        ),
-        _ => Value::Null,
-    }
-}
-
 fn parse_skill(source: &SkillSource) -> Skill {
     let (frontmatter, body) = match resources::frontmatter::parse(&source.content) {
         Ok(parsed) => (parsed.frontmatter, parsed.body),
@@ -90,7 +66,7 @@ fn parse_skill(source: &SkillSource) -> Skill {
     if let Yaml::Hash(map) = &frontmatter {
         for key in CAPABILITY_KEYS {
             if let Some(value) = map.get(&Yaml::String((*key).to_string())) {
-                ignored.insert((*key).to_string(), yaml_json(value));
+                ignored.insert((*key).to_string(), resources::frontmatter::to_json(value));
             }
         }
     }
@@ -216,6 +192,16 @@ impl Snapshot {
     fn get(&self, name: &str) -> Option<&Skill> {
         self.skills.iter().find(|skill| skill.name == name)
     }
+}
+
+/// One catalog skill as pinned for a caller outside this module (skill procedures, `delegation::skill_runs`).
+#[derive(Debug, Clone)]
+pub struct PinnedSkill {
+    pub name: String,
+    /// sha256 of the file content.
+    pub version: String,
+    pub file_path: String,
+    pub content: String,
 }
 
 /// Serves `skills.*`. Durable mutations and snapshot installation run one at a time.
@@ -457,28 +443,7 @@ impl SkillsModule {
             "state": "admitting",
         });
         let id = invocation["id"].as_str().unwrap_or_default().to_string();
-        let record = |change: Value| -> Result<(), String> {
-            let _exclusive = jsrt::sync::lock(&self.exclusive);
-            self.mutate(|document| {
-                let existing = document["invocations"]
-                    .as_array_mut()
-                    .and_then(|items| items.iter_mut().find(|item| item["id"] == id.as_str()));
-                match existing {
-                    Some(existing) => {
-                        for (key, value) in change.as_object().into_iter().flatten() {
-                            existing[key] = value.clone();
-                        }
-                    }
-                    None => {
-                        let mut next = invocation.clone();
-                        for (key, value) in change.as_object().into_iter().flatten() {
-                            next[key] = value.clone();
-                        }
-                        append(document, "invocations", next);
-                    }
-                }
-            })
-        };
+        let record = |change: Value| self.upsert("invocations", &invocation, &change);
         record(json!({}))?;
         let request = json!({
             "definition": "rlm-child@1",
@@ -500,6 +465,50 @@ impl SkillsModule {
             "version": skill.version,
             "ignored_capability_requests": skill.ignored,
         }))
+    }
+
+    /// Merge `change` into the record of `key` (a journal list of the module document) whose `id` is `base`'s, or
+    /// append `base` with `change` merged when there is none.
+    pub fn upsert(&self, key: &str, base: &Value, change: &Value) -> Result<(), String> {
+        let _exclusive = jsrt::sync::lock(&self.exclusive);
+        self.mutate(|document| {
+            let id = &base["id"];
+            let existing = document
+                .get_mut(key)
+                .and_then(Value::as_array_mut)
+                .and_then(|items| items.iter_mut().find(|item| &item["id"] == id));
+            let merge = |target: &mut Value| {
+                for (field, value) in change.as_object().into_iter().flatten() {
+                    target[field] = value.clone();
+                }
+            };
+            match existing {
+                Some(existing) => merge(existing),
+                None => {
+                    let mut next = base.clone();
+                    merge(&mut next);
+                    append(document, key, next);
+                }
+            }
+        })
+    }
+
+    /// The records of `key` (a journal list of the module document), oldest first.
+    pub fn records(&self, key: &str) -> Result<Vec<Value>, String> {
+        let document = read_document(self.store.read()?)?;
+        Ok(document[key].as_array().cloned().unwrap_or_default())
+    }
+
+    /// The catalog's `name` (at `version`, when given: an older version is refused as stale).
+    pub fn pinned_skill(&self, name: &str, version: Option<&str>) -> Result<PinnedSkill, String> {
+        let snapshot = self.current()?;
+        let skill = Self::pinned(&snapshot, name, version)?;
+        Ok(PinnedSkill {
+            name: skill.name.clone(),
+            version: skill.version.clone(),
+            file_path: skill.file_path.clone(),
+            content: skill.content.clone(),
+        })
     }
 
     fn code_skills(&self) -> Result<&CodeSkills, String> {

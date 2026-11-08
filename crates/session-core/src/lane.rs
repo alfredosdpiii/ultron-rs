@@ -1,7 +1,7 @@
 //! The root lane every prompted mode runs on (print mode, `--mode json`, `--mode rpc`): the model, its key and the
 //! native worker's system prompt (`session-worker.ts`), the single `rlm` tool whose cells run in a persistent kernel
 //! (crates/kernel) over the host stack the composition root builds ([`crate::compose`]), the provider call, and the
-//! clock lines (`ultron/clock-context.ts`) a request carries.
+//! clock lines (`ultron/clock-context.ts`) and REPL result footers a request carries.
 
 use crate::compose::{Config, Runtime, RuntimeEvents, Stack};
 use crate::{ModelFlags, RunEnv as Env};
@@ -27,6 +27,8 @@ use std::task::Poll;
 use std::time::Duration;
 
 pub const CLOCK_CONTEXT_ENV: &str = "ULTRON_CLOCK_CONTEXT";
+/// `ULTRON_RESULT_FOOTER=on|1|true` adds [`result_footer`]s to requests (off until the runtime guide explains them).
+pub const RESULT_FOOTER_ENV: &str = "ULTRON_RESULT_FOOTER";
 
 /// `RLM_TOOL_DESCRIPTION` and `RLM_TOOL_SNIPPET` from ultron/rlm/prompt.ts.
 const RLM_DESCRIPTION: &str = "Run a Python cell in your persistent REPL: variables, imports and functions persist across calls, top-level `await` works, and the last expression's value is shown with anything printed (kept as `_`).\nPre-imported: `bash`, `read`, `edit`, `write`, `view_image`, `rlm`, `agents`, `workflows`, `background`, `tools`, `mcp`, `ctx`, `skills`, `memory`, `hints`, `agent`, `Budget`, `state`, `preview`, `asyncio`; `help(obj)` shows any API's docs.";
@@ -173,6 +175,57 @@ pub fn with_clock_lines_in(messages: &[Value], zone: &jsrt::localtime::Zone) -> 
         out.push(message.clone());
     }
     Some(out)
+}
+
+/// `[t+12m04s ctx 41k]`: when a REPL result came back, counted from the session's start, and the context the request
+/// that made the call held (its input, cached and output tokens; left out when the provider reported none).
+pub fn result_footer(at_ms: i64, start_ms: i64, context_tokens: u64) -> String {
+    let seconds = (at_ms - start_ms).max(0) / 1000;
+    let (minutes, hours) = (seconds / 60, seconds / 3600);
+    let elapsed = if seconds < 60 {
+        format!("{seconds}s")
+    } else if minutes < 60 {
+        format!("{minutes}m{:02}s", seconds % 60)
+    } else if hours < 48 {
+        format!("{hours}h{:02}m", minutes % 60)
+    } else {
+        format!("{}d{}h", hours / 24, hours % 24)
+    };
+    if context_tokens == 0 {
+        return format!("[t+{elapsed}]");
+    }
+    let context = if context_tokens < 1000 {
+        context_tokens.to_string()
+    } else {
+        format!("{}k", (context_tokens + 500) / 1000)
+    };
+    format!("[t+{elapsed} ctx {context}]")
+}
+
+/// Whether requests carry result footers ([`RESULT_FOOTER_ENV`]).
+pub fn result_footer_enabled(env: &Env) -> bool {
+    (env.var)(RESULT_FOOTER_ENV).is_some_and(|v| matches!(v.trim().to_lowercase().as_str(), "on" | "1" | "true"))
+}
+
+/// A footer ([`result_footer`]) after each tool result of a request: derived from the stored messages (the result's
+/// timestamp, the usage of the response that made the call), never stored, so an earlier result's footer reads the
+/// same in every request and the prompt cache keeps it.
+pub fn add_result_footers(messages: &mut [Message], start_ms: i64) {
+    let mut context = 0;
+    for message in messages {
+        match message {
+            Message::Assistant(assistant) => {
+                let usage = &assistant.usage;
+                context = usage.input + usage.cache_read + usage.cache_write + usage.output;
+            }
+            Message::ToolResult(result) if result.timestamp > 0 => {
+                result
+                    .content
+                    .push(text_block(result_footer(result.timestamp, start_ms, context)));
+            }
+            _ => {}
+        }
+    }
 }
 
 /// Session messages as the model sees them (`convertToLlm`): custom roles become user messages, excluded bash runs

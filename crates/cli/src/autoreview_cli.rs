@@ -58,11 +58,15 @@ Commands:
                                mise toolchains), into the cache the sandbox binds read-only during reviews
   eval <repo-dir>              Measure the reviewer on the repository's history: review the commits later reverted or
                                fixed, and as many others as controls, and report how many it would have blocked
+  register [--repo owner/name] The failure-mode register: what went wrong in the recorded reviews (rejected
+                               findings, drops, what was not checked, the hits of the checks that caught their
+                               planted bug), and Loki rules proposed from review rules findings keep citing (written
+                               to <agent dir>/autoreview/loki-proposals.json for approval, never applied)
   install | uninstall          Write or remove the user service that runs \"{APP_NAME} autoreview run\"
 
 Options:
   --dry-run                    Write the would-be review to <agent dir>/autoreview/dry-run/ instead of posting
-  --json                       Machine-readable output (review, once, status, bans, eval)
+  --json                       Machine-readable output (review, once, status, bans, eval, register)
   --account <login>            review: the account to review as (default: the first logged-in account of the host);
                                ban, unban: the reviewing account the ban is for (default: every account, *)
   --model <provider/model>     review: the model of the finder frames (default: autoreview.model, then review.model,
@@ -444,6 +448,13 @@ fn put_present(out: &mut Map<String, Value>, key: &str, from: &Map<String, Value
     }
 }
 
+/// `from[key]` copied when `wanted` says it carries something.
+fn put_when(out: &mut Map<String, Value>, key: &str, from: &Map<String, Value>, wanted: impl Fn(&Value) -> bool) {
+    if let Some(value) = from.get(key).filter(|value| wanted(value)) {
+        out.insert(key.into(), value.clone());
+    }
+}
+
 /// `x ?? fallback`: a missing or null value takes the fallback.
 fn or_else(from: &Map<String, Value>, field: &str, fallback: Value) -> Value {
     match from.get(field) {
@@ -555,6 +566,10 @@ pub fn offline_json(
     dropped.insert("refutedByTest".into(), or_else(dropped_in, "refutedByTest", json!(0)));
     dropped.insert("duplicateOf".into(), or_else(dropped_in, "duplicateOf", json!([])));
     put_present(&mut dropped, "preexisting", dropped_in, "preexisting");
+    // Findings the deterministic stage contradicted (Rust-only, when there were any).
+    put_when(&mut dropped, "contradicted", dropped_in, |count| {
+        count.as_u64().is_some_and(|n| n > 0)
+    });
     let timing_in = object(result.get("timing"), &empty);
     let mut timing = Map::new();
     for key in ["totalMs", "scopeMs", "findMs", "verifyMs"] {
@@ -583,6 +598,10 @@ pub fn offline_json(
     if let Some(by_phase) = usage_in.get("byPhase") {
         usage.insert("byPhase".into(), by_phase.clone());
     }
+    // The judge seat's calls (the blind check), included in costUsd (Rust-only, when it made any).
+    put_when(&mut usage, "judge", usage_in, |judge| {
+        judge["calls"].as_u64().is_some_and(|n| n > 0)
+    });
     let assurance: Vec<String> = result
         .get("assurance")
         .and_then(Value::as_array)
@@ -633,6 +652,14 @@ pub fn offline_json(
         out.insert(key.into(), or_else(result, key, Value::Null));
     }
     out.insert("program".into(), program);
+    // The deterministic stage and the blind check (Rust-only, when they found, dropped or asked anything).
+    put_when(&mut out, "static", result, |found| {
+        found["findings"].as_u64().is_some_and(|n| n > 0)
+            || found["contradicted"].as_array().is_some_and(|items| !items.is_empty())
+    });
+    put_when(&mut out, "blind", result, |blind| {
+        blind["asked"].as_u64().is_some_and(|n| n > 0)
+    });
     out.insert("notChecked".into(), array_copy(result.get("notChecked")));
     Ok(Value::Object(out))
 }
@@ -854,11 +881,27 @@ fn open_engine(
             map_tokens: saved.map_tokens,
         },
         kernel_env: Vec::new(),
+        // The blind check's closed questions go to the profile's judge seat (crates/judge).
+        modules: vec![Arc::new(judge_module(env))],
         // The review kernels start from this environment's variables, never the server process's.
         base_env: Some(session_core::compose::session_environment(&*env.var)),
         log: Some(log),
     };
     KernelEngine::open(options)
+}
+
+/// `judge.decide` for the review engine: the profile's seat as `ultron judge` builds it (global `judge.*` settings,
+/// the services' keys, the fallback and escalation models), rebuilt when the settings change.
+fn judge_module(env: &Env) -> judge::JudgeModule {
+    let (settings_env, seat_env) = (env.clone(), env.clone());
+    judge::JudgeModule::new(
+        Arc::new(move || {
+            let settings =
+                config::settings::SettingsManager::create(&settings_env.cwd, &settings_env.agent_dir(), false);
+            config::keys::judge_settings(settings.global_settings())
+        }),
+        Arc::new(move |_settings| crate::judge_cli::seat(&seat_env, true, None)),
+    )
 }
 
 fn absolute(cwd: &Path, path: &str) -> PathBuf {
@@ -888,6 +931,77 @@ fn index_knowledge(parsed: &Parsed, db: &str, repo_dir: &Path, head: &str, spec:
             let _ = writeln!(err, "the knowledge graph was not updated: {error}");
         }
     }
+}
+
+/// `register`: the failure-mode register and the Loki proposals (written beside the state, never applied).
+fn register_command(
+    parsed: &Parsed,
+    paths: &review::settings::AutoreviewPaths,
+    out: &mut dyn Write,
+) -> Result<i32, Failure> {
+    let io = |error: std::io::Error| Failure::Error(error.to_string());
+    let repo = parsed.repo.as_deref().map(review::register::repo_key);
+    let (register, proposals) = review::register::from_disk(paths, repo.as_deref());
+    let file = Path::new(&paths.dir).join(review::register::PROPOSALS_FILE);
+    if !proposals.is_empty() {
+        let written = json!({
+            "note": "Loki rules proposed from review rules that findings keep citing and people keep accepting. \
+                     Nothing here is applied: add an approved tuple to crates/loki/src/rules.rs.",
+            "proposals": proposals,
+        });
+        std::fs::create_dir_all(&paths.dir).map_err(io)?;
+        std::fs::write(&file, jsrt::json::stringify_indented(&written, " ")).map_err(io)?;
+    }
+    if parsed.json {
+        let value = json!({ "register": register, "proposals": proposals });
+        writeln!(out, "{}", jsrt::json::stringify(&value)).map_err(io)?;
+        return Ok(0);
+    }
+    let proven = register.checks.iter().filter(|check| check.proven).count();
+    let mut lines = vec![format!(
+        "{} recorded review(s), {} fate(s); {proven} of {} checks count (each caught its planted bug).",
+        register.reviews,
+        register.fates,
+        register.checks.len()
+    )];
+    lines.extend(register.checks.iter().filter(|check| !check.proven).map(|check| {
+        format!(
+            "  not counted: {} ({}): it did not catch its planted bug",
+            check.id, check.rule
+        )
+    }));
+    if register.modes.is_empty() {
+        lines.push("No failure mode recorded.".into());
+    }
+    for mode in &register.modes {
+        lines.push(format!("{:>5}  {}  [{}]", mode.count, mode.description, mode.source));
+        lines.extend(mode.examples.iter().map(|example| format!("         {example}")));
+    }
+    if !proposals.is_empty() {
+        lines.push(format!(
+            "{} Loki rule(s) proposed, written to {}:",
+            proposals.len(),
+            file.display()
+        ));
+        lines.extend(proposals.iter().map(|proposal| {
+            format!(
+                "  {}: {} (accepted {}, rejected {}){}",
+                proposal.rule,
+                proposal.message,
+                proposal.accepted,
+                proposal.rejected,
+                if proposal.pattern.is_none() {
+                    "; needs a pattern"
+                } else {
+                    ""
+                }
+            )
+        }));
+    }
+    for line in lines {
+        writeln!(out, "{line}").map_err(io)?;
+    }
+    Ok(0)
 }
 
 /// `eval <repo-dir>`: the reviewer measured on the repository's own mistakes (review::eval). The cases come from
@@ -2088,6 +2202,7 @@ fn execute(
         "doctor" => return doctor(parsed, &config, &model_lines(&config), env, &paths.cache, ov, out),
         "prepare" => return prepare_command(parsed, &config, env, &paths.cache, ov, out, err),
         "eval" => return eval_command(parsed, &config, &saved, env, &paths, ov, out, err),
+        "register" => return register_command(parsed, &paths, out),
         other => {
             return Err(Failure::Usage(format!("unknown command: {other}\n\n{}", usage())));
         }

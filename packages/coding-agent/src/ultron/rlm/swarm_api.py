@@ -48,7 +48,7 @@ _CONTRACT_DOC = """
         Host-checked contracts (Rust host): role="reviewer" leads the child's brief; contract={"checks": [...],
         "returns": schema} lists checks the HOST runs itself when the child ends, in the child's working directory
         (its worktree with worktree=True) under the session's sandbox, never trusting the child:
-        {"run": "cargo test -q", "expect": "exit 0" | {"exit": N} | {"stdout_contains": "ok"}, "timeout_ms": N}
+        {"run": "cargo test -q", "expect": "exit 0" | {"exit": N} | "fail" | {"stdout_contains": "ok"}, "timeout_ms": N}
         (default exit 0 within 120 s), {"changed_files_within": ["src/**", "tests/*.rs"]},
         {"no_new_dependencies": True} (no Cargo.toml, Cargo.lock, package.json, lockfile or other manifest
         changed), {"files_exist": ["docs/x.md"]}; "returns" is a JSON schema rlm.finish(outputs=...) must match.

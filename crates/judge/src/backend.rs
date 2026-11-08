@@ -85,10 +85,39 @@ pub trait Backend: Send + Sync {
 /// A key read when a call is made, so a key saved during a session applies to its next call.
 pub type KeySource = Arc<dyn Fn() -> Option<String> + Send + Sync>;
 
-/// `retry-after` as a delay: whole seconds only (an HTTP date is not read, and so not retried).
-fn retry_after(value: Option<&str>) -> Option<Duration> {
-    let seconds = jsrt::string::trim(value?).parse::<u64>().ok()?;
-    Some(Duration::from_secs(seconds))
+/// `retry-after` as a delay from `now_ms`: whole seconds, or an HTTP date (a past date is no wait).
+pub fn retry_after(value: Option<&str>, now_ms: i64) -> Option<Duration> {
+    let value = jsrt::string::trim(value?);
+    if let Ok(seconds) = value.parse::<u64>() {
+        return Some(Duration::from_secs(seconds));
+    }
+    let at = http_date(value)?;
+    Some(Duration::from_millis((at - now_ms).max(0) as u64))
+}
+
+/// An HTTP date (RFC 9110 IMF-fixdate, `Sun, 06 Nov 1994 08:49:37 GMT`) as ms since the epoch.
+fn http_date(text: &str) -> Option<i64> {
+    const MONTHS: [&str; 12] = [
+        "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+    ];
+    let parts: Vec<&str> = text.split_whitespace().collect();
+    let [weekday, day, month, year, time, "GMT"] = parts.as_slice() else {
+        return None;
+    };
+    if !weekday.ends_with(',') {
+        return None;
+    }
+    let month = MONTHS.iter().position(|m| m == month)? as u32 + 1;
+    let (day, year) = (day.parse::<u32>().ok()?, year.parse::<i64>().ok()?);
+    let clock: Vec<i64> = time.split(':').map(|n| n.parse().ok()).collect::<Option<_>>()?;
+    let [hour, minute, second] = clock.as_slice() else {
+        return None;
+    };
+    if !(1..=31).contains(&day) || *hour > 23 || *minute > 59 || *second > 60 {
+        return None;
+    }
+    let seconds = jsrt::date::days_from_civil(year, month, day) * 86_400 + hour * 3600 + minute * 60 + second;
+    Some(seconds * 1000)
 }
 
 /// POST `body` as JSON with a bearer key; the JSON answer of a 2xx status.
@@ -119,10 +148,12 @@ fn post_json(
         })?;
     let status = response.status;
     if !(200..300).contains(&status) {
-        return Err(match retry_after(response.retry_after.as_deref()) {
-            Some(after) if status == 429 || status >= 500 => Failure::Retry { status, after },
-            _ => Failure::Failed(format!("HTTP {status}")),
-        });
+        return Err(
+            match retry_after(response.retry_after.as_deref(), jsrt::date::now_ms()) {
+                Some(after) if status == 429 || status >= 500 => Failure::Retry { status, after },
+                _ => Failure::Failed(format!("HTTP {status}")),
+            },
+        );
     }
     serde_json::from_slice(&response.body).map_err(|_| Failure::Failed("answer is not JSON".into()))
 }
@@ -146,11 +177,13 @@ fn reply(body: &Value, questions: &[Question], requested: &str, cost: Option<f64
     })
 }
 
-/// Jev on TypeSafe: `POST <url> {state, model, questions}`. Its cost is what the answer's `usage.cost` reports;
-/// without one it is unknown.
+/// Jev on TypeSafe: `POST <url> {state, model, questions}`. Its cost is what the answer's `usage.cost` reports,
+/// else its reported tokens at `price_per_mtok` (`judge.jev.pricePerMTok`); without either it is unknown.
 pub struct Jev {
     pub url: String,
     pub model: String,
+    /// USD per million tokens, input and output alike.
+    pub price_per_mtok: Option<f64>,
     pub key: KeySource,
     pub transport: Arc<dyn Transport>,
     pub timeout: Duration,
@@ -177,7 +210,12 @@ impl Backend for Jev {
         let key = (self.key)().ok_or_else(|| Failure::Unavailable(NO_JEV_KEY.into()))?;
         let body = json!({"state": state, "model": self.model, "questions": question::wire_questions(questions)});
         let answer = post_json(&*self.transport, &self.url, &key, &body, self.timeout, signal)?;
-        let cost = answer["usage"]["cost"].as_f64().filter(|c| c.is_finite() && *c >= 0.0);
+        let usage = &answer["usage"];
+        let priced = self
+            .price_per_mtok
+            .zip(tokens(usage, "input_tokens").zip(tokens(usage, "output_tokens")))
+            .map(|(price, (input, output))| (input + output) as f64 * price / 1_000_000.0);
+        let cost = usage["cost"].as_f64().filter(|c| c.is_finite() && *c >= 0.0).or(priced);
         reply(&answer, questions, &self.model, cost)
     }
 }

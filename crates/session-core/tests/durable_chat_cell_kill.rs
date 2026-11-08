@@ -183,7 +183,7 @@ fn session_core_durable_chat_cell_kill_answers_a_cell_interrupted_by_sigkill_exa
         text,
         [
             "partial line\n",
-            "<harness>\n[error] Tool rlm was interrupted and may have partially run\n</harness>"
+            "<harness>\n[error] Tool rlm was interrupted by a restart; effect unknown: it may have partially run and was not replayed. Check what it changed before you run it again\n</harness>"
         ]
     );
     assert_eq!(results[0]["isError"], true);

@@ -82,3 +82,70 @@ fn daemon_dream_off_without_a_session_creates_nothing() {
     );
     assert!(!instance.join(SESSION_FILE).exists());
 }
+
+/// Records what the scheduler would have delivered.
+#[derive(Default)]
+struct Recorded(std::sync::Mutex<Vec<String>>);
+
+impl daemon::prompt_schedules::Deliver for Recorded {
+    fn fire(&self, _: &daemon::catalog::Meta, id: &str, _: i64) -> daemon::prompt_schedules::Delivery {
+        self.0.lock().unwrap().push(id.to_string());
+        daemon::prompt_schedules::Delivery::Done(serde_json::Value::Array(Vec::new()))
+    }
+}
+
+#[test]
+fn daemon_dream_quiet_night_passes_without_a_run_until_a_session_changes() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (instance, sessions, home) = (
+        tmp.path().join("server"),
+        tmp.path().join("sessions"),
+        tmp.path().join("home"),
+    );
+    std::fs::create_dir_all(&home).unwrap();
+    let clock = ManualTickClock::new(NOON);
+    let schedule = ensure(&instance, &sessions, &home, &json!({}), clock.clone(), &Zone::utc())
+        .unwrap()
+        .unwrap();
+    let due = schedule.next_due.unwrap();
+    clock.set(due + 1);
+    let inner = std::sync::Arc::new(Recorded::default());
+    let quiet = daemon::dream::QuietDreams {
+        inner: inner.clone(),
+        instance_dir: instance.clone(),
+        session_dir: sessions.clone(),
+        clock: clock.clone(),
+    };
+    let meta = daemon::catalog::list(&sessions).pop().unwrap();
+    use daemon::prompt_schedules::{Deliver, Delivery};
+
+    // Never dreamed: it runs.
+    quiet.fire(&meta, &schedule.id, due);
+    assert_eq!(inner.0.lock().unwrap().len(), 1);
+
+    // Dreamed after every session last changed: the slot passes, the next night is due, no run is counted.
+    let mut last = schedule.clone();
+    last.last_fired = Some(jsrt::date::now_ms() + 3_600_000);
+    daemon::prompt_schedules::in_journal(&meta.path, clock.clone(), |m| m.put(&last)).unwrap();
+    let Delivery::Done(active) = quiet.fire(&meta, &schedule.id, due) else {
+        panic!("a quiet night is done");
+    };
+    assert_eq!(inner.0.lock().unwrap().len(), 1, "nothing delivered");
+    assert_eq!(active[0]["nextDue"], json!(due + 24 * 3_600_000));
+    let after = scan_sessions(&sessions).pop().unwrap().1;
+    let kept = after.iter().find(|s| s.id == schedule.id).unwrap();
+    assert_eq!((kept.runs, kept.last_fired), (0, last.last_fired));
+
+    // Another session changed since: the next night runs.
+    let mut changed = kept.clone();
+    changed.last_fired = Some(0);
+    daemon::prompt_schedules::in_journal(&meta.path, clock.clone(), |m| m.put(&changed)).unwrap();
+    session_journal::SessionRepo::new(&sessions, session_journal::SystemClock::shared())
+        .create(&home.display().to_string(), None, None)
+        .unwrap();
+    clock.set(due + 24 * 3_600_000 + 1);
+    quiet.fire(&meta, &schedule.id, due + 24 * 3_600_000);
+    assert_eq!(inner.0.lock().unwrap().len(), 2);
+    assert!(daemon::dream::changed_since(&sessions, &meta.id, Some(0)));
+    assert!(!daemon::dream::changed_since(&sessions, &meta.id, Some(i64::MAX / 2)));
+}

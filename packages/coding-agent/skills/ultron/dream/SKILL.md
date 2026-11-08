@@ -16,6 +16,15 @@ The rule that governs everything: **no lesson without evidence, no change withou
 what happened (a session file and a quote from it, a review finding and its fate, a fact id). A lesson you cannot
 quote is a guess; drop it.
 
+## 0. Re-check what is kept (memorantado only)
+
+For each project a session of the day ran in (the `cwd` of `sessions.list(cwd="all", days=1)`),
+`await memory.dream(project=cwd)` re-checks that project's kept claims (and the global ones) not confirmed for a
+week against its files, plain code first: a claim whose quoted file still holds its quote is confirmed with no
+model call; a changed quote goes to the judge, and so does a new claim beside an older one of the same situation. It answers `{confirmed, revised, retracted, conflicts, review,
+unchecked, judged}`. Report its counts; read each `review` entry (the judge was not sure) and settle it yourself
+with the evidence, or leave it for a person. With Hindsight it raises UNSUPPORTED_API: skip this step.
+
 ## 1. Gather (read only)
 
 Keep raw text in variables; only findings reach your context.
@@ -48,7 +57,7 @@ Keep a candidate only if all hold:
 
 A kept memory that the day's evidence contradicts is a candidate to retire.
 
-At most five new memories and one new code skill per night. Fewer is normal; none is fine.
+At most five new memories, one new code skill and one skill proposal per night. Fewer is normal; none is fine.
 
 ## 3. Act (every change reversible)
 
@@ -61,11 +70,34 @@ At most five new memories and one new code skill per night. Fewer is normal; non
 - **Code skill:** only for a procedure done by hand in two or more sessions, small enough to test without the
   network: `await skills.propose_code(name, source, test_source, evidence)`. It activates only if its test passes;
   `skills.rollback(name, version)` undoes it.
+- **Procedure skill:** for a multi-step procedure that succeeded in two or more sessions (or a skill run whose
+  record shows `outcome: "passed"`), with a command that tells when each step is done:
+  `await skills.propose_procedure(name, skill_md, evidence)`, where `skill_md` is a whole SKILL.md whose
+  frontmatter has a `procedure:` (see the `tdd` skill) and `evidence` cites the session spans or `skill-run:<id>`s
+  where it worked. It is only a proposal: the user publishes it (`ultron skills approve <id>`) or rejects it.
 - Never edit files in a repository, never push, never message anyone, never write to the autoreview bank.
+
+## 3b. Pages (memorantado only)
+
+memorantado has no model of its own, so the briefs every new context opens with are yours to write. When anything
+changed tonight (or `await memory.topic()` shows no brief yet), rewrite:
+
+- each such project's brief: `await memory.brief(text, project=cwd)`, at most 200 lines and 4000
+  characters: conventions, decisions and why, pitfalls with fixes, the commands that build and test, the user's
+  preferences. Built from that project's kept claims only (`await memory.topic(project=cwd)` lists its pages);
+  no progress notes.
+- the user brief: `await memory.brief(text, scope="global")`, what holds across projects only.
+- a topic page for a theme too long for a brief: `await memory.brief(text, topic="<kebab-name>", project=cwd)`
+  (120 lines),
+  named in the brief so a session knows to read it (`memory.topic(name)`).
+
+A brief replaces the one before; keep what still holds. With Hindsight, `memory.brief` raises UNSUPPORTED_API:
+Hindsight writes its own.
 
 ## 4. Report
 
 Write `~/.ultron/agent/dreams/<YYYY-MM-DD>.md` (create the directory): one line per change with its kind (memory,
-retired, code skill), its key or name, the evidence refs, and how to undo it (`memory.forget(<id>)`,
-`skills.rollback(<name>, <version>)`). Then a short list of candidates you dropped and why. If nothing changed,
+retired, code skill, skill proposal), its key or name, the evidence refs, and how to undo it (`memory.forget(<id>)`,
+`skills.rollback(<name>, <version>)`), and the counts from step 0. Then a short list of candidates you dropped and
+why. If nothing changed,
 the report says so in one line. End your turn with the same summary.

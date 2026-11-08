@@ -1,0 +1,43 @@
+{
+ "source": "memorantado src/bench/ultronMemorySet.ts (the bench:ultron set), copied read-only; the file-quoting staleness part (FILES) is left out",
+ "scopes": {"s1":"ultron:session:s1","s2":"ultron:session:s2","s3":"ultron:session:s3","p1":"ultron:project:ultron-rs","p2":"ultron:project:webshop","g":"ultron:global:bryan"},
+ "sessionProject": {"s1":"p1","s2":"p1","s3":"p2"},
+ "memories": [
+  {"key":"p1-tests","scope":"p1","type":"procedure","evidence":"verified","subject":"tests","content":"Run the Rust test suite with cargo nextest run --workspace --offline."},
+  {"key":"p1-deps","scope":"p1","type":"convention","evidence":"user_statement","subject":"dependencies","content":"New crates need approval; pin exact versions and build with --offline."},
+  {"key":"p1-prompt","scope":"p1","type":"convention","evidence":"user_statement","subject":"system prompt","content":"Never edit runtime_guide.rs or other system prompt text directly."},
+  {"key":"p1-exit","scope":"p1","type":"fact","evidence":"tool_evidence","subject":"cli entry point","content":"The CLI entry point calls std::process::exit with the run code."},
+  {"key":"p1-workspace","scope":"p1","type":"fact","evidence":"tool_evidence","subject":"workspace","content":"The cargo workspace includes every crate under crates/ with resolver 2."},
+  {"key":"p1-repl","scope":"p1","type":"fact","evidence":"verified","subject":"model tools","content":"The model's only tool is a persistent Python REPL."},
+  {"key":"p1-journal","scope":"p1","type":"pitfall","evidence":"tool_evidence","subject":"session journal","content":"Never open a session journal for write while searching sessions."},
+  {"key":"p2-tests","scope":"p2","type":"procedure","evidence":"verified","subject":"tests","content":"Run the webshop test suite with pnpm vitest run."},
+  {"key":"p2-deploy","scope":"p2","type":"procedure","evidence":"user_statement","subject":"deploy","content":"Deploy the webshop by pushing a tag; CI ships it to Fly."},
+  {"key":"p2-db","scope":"p2","type":"fact","evidence":"tool_evidence","subject":"database","content":"The webshop stores orders in Postgres with Prisma migrations."},
+  {"key":"g-commits","scope":"g","type":"preference","evidence":"user_statement","subject":"commits","content":"Bryan commits himself: never commit, stage or stash for him."},
+  {"key":"g-style","scope":"g","type":"preference","evidence":"user_statement","subject":"reports","content":"Reports lead with findings in threes and avoid filler summaries."},
+  {"key":"g-secrets","scope":"g","type":"convention","evidence":"user_statement","subject":"secrets","content":"Never print API keys; show at most the first six characters."},
+  {"key":"s1-task","scope":"s1","type":"fact","evidence":"hypothesis","subject":"current task","content":"This session is wiring the judge seat into the delegation usage ledger."},
+  {"key":"s1-flaky","scope":"s1","type":"pitfall","evidence":"tool_evidence","subject":"flaky test","content":"The retry_after_date test is flaky under heavy load; rerun it once."},
+  {"key":"s2-task","scope":"s2","type":"fact","evidence":"hypothesis","subject":"current task","content":"This session is building span search over session journals."},
+  {"key":"s3-task","scope":"s3","type":"fact","evidence":"hypothesis","subject":"current task","content":"This session is fixing the webshop checkout button."}
+ ],
+ "replacements": [
+  {"key":"p1-tests","content":"Run the Rust test suite through the gate script: bash gates.sh <label> runs cargo nextest."},
+  {"key":"p2-deploy","content":"Deploy the webshop with the release workflow; tags no longer deploy."}
+ ],
+ "invalidated": ["p1-journal"],
+ "queries": [
+  {"session":"s1","query":"how do I run the tests","expected":["p1-tests"]},
+  {"session":"s3","query":"how do I run the tests","expected":["p2-tests"]},
+  {"session":"s1","query":"can I add a new crate dependency","expected":["p1-deps"]},
+  {"session":"s2","query":"edit the system prompt text","expected":["p1-prompt"]},
+  {"session":"s3","query":"how do we deploy","expected":["p2-deploy"]},
+  {"session":"s1","query":"should I commit my changes","expected":["g-commits"]},
+  {"session":"s2","query":"printing API keys in logs","expected":["g-secrets"]},
+  {"session":"s1","query":"what is the current task","expected":["s1-task"]},
+  {"session":"s2","query":"what is the current task","expected":["s2-task"]},
+  {"session":"s1","query":"flaky retry test","expected":["s1-flaky"]},
+  {"session":"s1","query":"session journal write","expected":[]},
+  {"session":"s3","query":"where are orders stored","expected":["p2-db"]}
+ ]
+}

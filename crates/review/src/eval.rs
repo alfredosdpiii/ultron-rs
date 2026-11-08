@@ -15,6 +15,10 @@
 //!   number is an upper bound on them.
 //!
 //! Each case is reviewed as `review --repo-dir --base <sha>^ --head <sha>` would review it.
+//!
+//! The check library is measured here too, with no review at all: each check of [`crate::checks::LIBRARY`] gets an
+//! engine result with a planted bug ([`planted`]), and counts only once it catches it and stays quiet without it
+//! ([`prove`]).
 
 use std::collections::{BTreeMap, HashSet};
 
@@ -512,4 +516,105 @@ pub fn summary_lines(summary: &Value, block_at: &str) -> Vec<String> {
     }
     lines.push(format!("Cost: ${:.4}.", summary["costUsd"].as_f64().unwrap_or(0.0)));
     lines
+}
+
+/// A planted bug for one check of the library ([`crate::checks::LIBRARY`]): a clean engine result, and the same
+/// result with the bug the check names.
+pub struct Planted {
+    pub check: &'static str,
+    pub clean: Value,
+    pub bugged: Value,
+}
+
+/// An engine result none of the library's checks flags.
+pub fn clean_result() -> Value {
+    json!({
+        "complete": true, "files": 1, "added": 3, "removed": 1,
+        "findings": [{"file": "calc.py", "line": 4, "level": "high", "severity": "major", "category": "correctness",
+            "claim": "total() skips the last row.", "verification": "confirmed",
+            "evidence": "`for row in rows[:-1]:`", "replacement": "    for row in rows:"}],
+        "dropped": {"rejected": 1, "duplicates": 1, "generic": 0, "refutedByTest": 0,
+            "duplicateOf": [{"dropped": {"file": "calc.py", "line": 5}, "into": {"file": "calc.py", "line": 4}}]},
+        "usage": {"frames": 3, "tokens": 900, "costUsd": 0.01,
+            "byPhase": {"find": {"frames": 2, "tokens": 600}, "verify": {"frames": 1, "tokens": 300}}},
+        "tests": {"runs": [{"kind": "run", "rev": "head", "paths": ["test_calc.py"], "status": "failed"},
+            {"kind": "run", "rev": "head", "paths": ["test_calc.py"], "status": "failed"}]},
+        "static": {"stages": [{"name": "compile", "status": "clean", "files": ["calc.py"]}]},
+        "notChecked": [], "incomplete": [],
+        "diffLines": {"calc.py": [[2, 6]]},
+    })
+}
+
+/// One planted bug per check of the library.
+pub fn planted() -> Vec<Planted> {
+    let clean = clean_result();
+    let with = |check: &'static str, change: &dyn Fn(&mut Value)| {
+        let mut bugged = clean.clone();
+        change(&mut bugged);
+        Planted {
+            check,
+            clean: clean.clone(),
+            bugged,
+        }
+    };
+    vec![
+        with("look-first", &|result| result["findings"][0]["evidence"] = json!("")),
+        with("before-after", &|result| result["added"] = json!(40)),
+        with("recompute", &|result| result["usage"]["tokens"] = json!(1500)),
+        with("undoable", &|result| result["dropped"]["duplicates"] = json!(3)),
+        with("green-not-done", &|result| {
+            result["findings"][0]["verification"] = json!("uncertain");
+            result["notChecked"] = json!(["Not traced by the deep pass: rows (correctness)."]);
+        }),
+        with("budget-end", &|result| {
+            result["findings"][0]["verification"] = json!("uncertain");
+            result["findings"][0]["note"] = json!("not verified (budget)");
+        }),
+        with("remove-path", &|result| {
+            result["findings"][0]["replacement"] = json!("@pytest.mark.skip(reason='flaky')")
+        }),
+        with("fail-once", &|result| {
+            result["static"]["stages"][0]["files"] = json!([])
+        }),
+        with("conventions", &|result| {
+            result["findings"][0]["severity"] = json!("minor")
+        }),
+        with("run-twice", &|result| {
+            result["tests"]["runs"][1]["status"] = json!("passed")
+        }),
+    ]
+}
+
+/// Whether a check caught its planted bug and stayed quiet on the clean result.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct Proof {
+    pub id: &'static str,
+    pub caught: bool,
+    pub quiet: bool,
+}
+
+impl Proof {
+    /// The check counts.
+    pub fn proven(&self) -> bool {
+        self.caught && self.quiet
+    }
+}
+
+/// Every check of `library` against its planted bug; a check with none planted is not proven.
+pub fn prove(library: &[crate::checks::Check], planted: &[Planted]) -> Vec<Proof> {
+    library
+        .iter()
+        .map(|check| match planted.iter().find(|case| case.check == check.id) {
+            Some(case) => Proof {
+                id: check.id,
+                caught: !(check.detect)(&case.bugged).is_empty(),
+                quiet: (check.detect)(&case.clean).is_empty(),
+            },
+            None => Proof {
+                id: check.id,
+                caught: false,
+                quiet: true,
+            },
+        })
+        .collect()
 }

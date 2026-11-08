@@ -33,5 +33,7 @@ mod scheduler_phases;
 mod scheduler_recovery;
 #[path = "scheduler_scheduling.rs"]
 mod scheduler_scheduling;
+#[path = "task_reopen.rs"]
+mod task_reopen;
 #[path = "typescript_fixture.rs"]
 mod typescript_fixture;

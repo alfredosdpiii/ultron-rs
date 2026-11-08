@@ -3,7 +3,9 @@
 //! 1. Before a write (blocking): the kernel's `edit()`/`write()` send each proposed write to the host before touching
 //!    the file (`files.before_write`). A guard that blocks makes `write()` raise ValueError with its diagnostic
 //!    (runtime.py `_check_write`); a guard that fails lets the write proceed with a visible note: it fails open,
-//!    never silently.
+//!    never silently. A guard that asks (a borderline case) lets it proceed too: its question goes to the hooks'
+//!    asker (the judge seat) on a thread of its own, and the answer comes with a later cell result; with no asker,
+//!    the note tells the model to ask the user.
 //! 2. After a cell (advisory): files a cell changed by other means (`bash('sed -i ...')`, `Path.write_text`) are found
 //!    by comparing workspace snapshots taken between cells, minus the checked writes whose content is unchanged.
 //!    Guards' `after_cell_changes` run in the background, so a cell returns as fast as before, and what they report
@@ -21,12 +23,18 @@ use std::sync::mpsc::{Sender, channel};
 use std::sync::{Arc, Condvar, LazyLock, Mutex, PoisonError};
 use std::time::Duration;
 
-/// A guard's answer: block with a reason, or allow with an optional note.
+/// A guard's answer: block with a reason, allow with an optional note, or ask (a borderline case: the write is
+/// made, and the question is settled off the write path, by the hooks' [`Asker`] or else by the user).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Verdict {
     Block(String),
     Allow(Option<String>),
+    Ask(String),
 }
+
+/// Settles a guard's question about a write that was made: `Ok(true)` it should not stand, `Ok(false)` it may,
+/// `Err(why)` it could not be settled (the user then decides). Runs on a thread of its own, never on the write path.
+pub type Asker = Arc<dyn Fn(&str) -> Result<bool, String> + Send + Sync>;
 
 /// Files one cell changed (absolute paths).
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -400,6 +408,7 @@ struct Inner {
     guards: Mutex<Vec<Registered>>,
     observers: Mutex<Vec<Arc<dyn CellObserver>>>,
     on_record: Mutex<Option<OnRecord>>,
+    asker: Mutex<Option<Asker>>,
     now: Mutex<Clock>,
     snapshot: Option<Snapshotter>,
     /// Checked writes since the last after-cell snapshot: absolute path -> sha256 of the checked content.
@@ -453,6 +462,7 @@ impl FileHooks {
                 guards: Mutex::new(Vec::new()),
                 observers: Mutex::new(Vec::new()),
                 on_record: Mutex::new(None),
+                asker: Mutex::new(None),
                 now: Mutex::new({
                     let started = std::time::Instant::now();
                     Arc::new(move || started.elapsed().as_millis() as u64)
@@ -503,6 +513,45 @@ impl FileHooks {
     /// Every guard outcome goes to `on_record` (ULTRON_LOKI_LOG).
     pub fn on_record(&self, on_record: OnRecord) {
         *sync::lock(&self.inner.on_record) = Some(on_record);
+    }
+
+    /// Guards' questions ([`Verdict::Ask`]) go to `asker` (the session's judge seat); without one, to the user.
+    pub fn on_ask(&self, asker: Asker) {
+        *sync::lock(&self.inner.asker) = Some(asker);
+    }
+
+    /// A guard's question about a write that is made on `lane`: settled in the background, its answer delivered with
+    /// a later cell result of the lane ([`Self::settled`] waits for it). Returns the note for the write itself.
+    fn ask(&self, name: &str, lane: &str, target: &str, question: &str) -> String {
+        let Some(asker) = sync::lock(&self.inner.asker).clone() else {
+            return format!("[{name}] {question} It was written; ask the user whether it should stay ({target}).");
+        };
+        *sync::lock(&self.inner.queued) += 1;
+        let note = format!(
+            "[{name}] {question} It was written; the judge is asked, and its answer comes with a later cell result."
+        );
+        let (inner, name, lane, target, question) = (
+            self.inner.clone(),
+            name.to_string(),
+            lane.to_string(),
+            target.to_string(),
+            question.to_string(),
+        );
+        std::thread::spawn(move || {
+            let line = match asker(&question) {
+                Ok(true) => format!(
+                    "[{name}] The judge answered the question about {target}: it should not stand. {question} Undo or fix it."
+                ),
+                Ok(false) => format!("[{name}] The judge cleared {target}."),
+                Err(why) => format!(
+                    "[{name}] The judge could not settle {target} ({why}): {question} Ask the user whether it should stay."
+                ),
+            };
+            sync::lock(&inner.pending).entry(lane).or_default().push(line);
+            *sync::lock(&inner.queued) -= 1;
+            inner.idle.notify_all();
+        });
+        note
     }
 
     /// The clock guard times are measured with (tests).
@@ -578,7 +627,7 @@ impl FileHooks {
         }
     }
 
-    /// Wait for the after-cell checks already started.
+    /// Wait for the after-cell checks and the guards' questions already started.
     pub fn settled(&self) {
         let mut queued = sync::lock(&self.inner.queued);
         while *queued > 0 {
@@ -868,6 +917,11 @@ impl Guard for FileHooks {
                     ("blocked", Some(format!("[{name}] {reason}")))
                 }
                 Answer::Value(Verdict::Allow(_)) => ("allowed", None),
+                Answer::Value(Verdict::Ask(question)) => {
+                    // The command runs; the question is settled after it, like a write's.
+                    self.ask(&name, lane, &format!("the command `{display}`"), &question);
+                    ("asked", None)
+                }
             };
             drop(stats);
             self.inner.record(GuardRecord {
@@ -944,6 +998,10 @@ impl Guard for FileHooks {
                     ("allowed", None, Some(format!("[{name}] {message}")))
                 }
                 Answer::Value(Verdict::Allow(_)) => ("allowed", None, None),
+                Answer::Value(Verdict::Ask(question)) => {
+                    let note = self.ask(&name, lane, &format!("the write to {display}"), &question);
+                    ("asked", None, Some(note))
+                }
             };
             drop(stats);
             self.inner.record(GuardRecord {

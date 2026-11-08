@@ -886,7 +886,7 @@ fn cli_durable_kill_during_a_cell_reports_it_interrupted_with_its_partial_output
     let result = tool_result_text(&requests[1]);
     assert!(result.contains("partial-42"), "{result}");
     assert!(
-        result.contains("[error] Tool rlm was interrupted and may have partially run"),
+        result.contains("[error] Tool rlm was interrupted by a restart; effect unknown: it may have partially run and was not replayed. Check what it changed before you run it again"),
         "{result}"
     );
     assert_eq!(std::fs::read_to_string(&runs).unwrap(), "x", "the cell ran once");
@@ -935,7 +935,7 @@ fn cli_durable_kill_during_a_cell_keeps_its_printed_output() {
     let result = tool_result_text(&requests[1]);
     assert!(result.starts_with("printed-42\nerr-42"), "{result}");
     assert!(
-        result.contains("[error] Tool rlm was interrupted and may have partially run"),
+        result.contains("[error] Tool rlm was interrupted by a restart; effect unknown: it may have partially run and was not replayed. Check what it changed before you run it again"),
         "{result}"
     );
     assert_eq!(

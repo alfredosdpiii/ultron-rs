@@ -91,3 +91,23 @@ fn daemon_worker_settings_judge_keys_are_saved_globally_and_checked() {
     }
     assert_eq!(saved(&agent), json!({}));
 }
+
+#[test]
+fn daemon_worker_settings_judge_jev_price_is_saved_globally_and_checked() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (agent, cwd) = (tmp.path().join("agent"), tmp.path().join("cwd"));
+    std::fs::create_dir_all(&agent).unwrap();
+    std::fs::create_dir_all(cwd.join(".pi")).unwrap();
+    let mut settings = SettingsManager::create(&cwd, &agent, true);
+    let mut apply = |key: &str, value: Value| worker_settings::apply(&mut settings, key, &value, None);
+    let (applied, _) = apply("judge.jev.pricePerMTok", json!(0.4)).unwrap();
+    assert_eq!(applied, Applied::Live);
+    assert_eq!(saved(&agent), json!({"jev": {"pricePerMTok": 0.4}}));
+    assert_eq!(
+        apply("judge.jev.pricePerMTok", json!("cheap")).unwrap_err(),
+        "judge.jev.pricePerMTok must be a number of US dollars per million tokens (or null to clear it)"
+    );
+    apply("judge.jev.pricePerMTok", Value::Null).unwrap();
+    assert_eq!(saved(&agent), json!({}));
+    assert!(!cwd.join(".pi/settings.json").exists());
+}

@@ -11,6 +11,9 @@ file's rare constructs, each construct weighted by how rare it is in that revisi
 Names are not similarity: every Prisma migration is called `migration.sql`, and the one that matters for a new
 append-only table is the other migration with a refusing `BEFORE UPDATE` trigger.
 
+`KnowledgeApi` is the REPL's `knowledge`: relations across files read on demand for a task, through the host,
+which writes the store (`knowledge.relations`).
+
 `query(sql)` lets an investigator ask the whole repository a structural question in SQL, as CodexGraph's agent
 does in Cypher (arXiv 2408.03910): who calls this name, which routes lack this guard, which migrations create a
 trigger. It sees only the revision's views (`GRAPH_SCHEMA`), on a connection of its own, through an authorizer
@@ -28,10 +31,13 @@ import urllib.parse
 from dataclasses import dataclass
 from typing import Any
 
+from judge_api import Judge
+
 #: The store schema this reader understands (`knowledge::SCHEMA_VERSION`): 2 added the review notes, 3 the rules
 #: (who wrote a note, whether this reviewer missed it, the fates of the findings that cited it), 4 the graph
-#: (symbol ranges and parents, calls, imports).
-SCHEMA_VERSION = 4
+#: (symbol ranges and parents, calls, imports), 5 the relations across files (`knowledge.relations`, read through
+#: the host).
+SCHEMA_VERSION = 5
 
 #: Rows a graph query returns, characters of a cell, characters of a query, and how long one may run.
 QUERY_ROWS = 30
@@ -415,3 +421,119 @@ def construct_label(kind: str) -> str:
     """`sql:trigger:before-update` as `trigger before-update`: the language prefix is the file's own."""
     _, _, rest = kind.partition(":")
     return rest.replace(":", " ") if rest else kind
+
+
+#: The relation kinds `knowledge.relations` reads (crates/knowledge `relations::Kind`).
+RELATION_KINDS = ("reads_config", "serves_route", "touches_table", "tests")
+
+#: Proposed relations asked of the judge in one `judge.decide` (it takes at most 16 questions).
+JUDGE_BATCH = 16
+
+
+class KnowledgeApi:
+    """Relations across the files of this repository at `HEAD`, read when a task needs them:
+    `found = await knowledge.relations(paths=["crates/judge"], kinds=["reads_config"])`.
+
+    Kinds: `reads_config` (code -> an environment variable or setting it reads), `serves_route` (a handler ->
+    `METHOD /path`), `touches_table` (code -> a table its SQL reads, writes or defines), `tests` (a test file -> a
+    repository file it imports). Plain code proposes them and settles what nothing else could mean; what only looks
+    like one (`config.get("x")`, lowercase SQL in a string) is asked of the judge (`judge.decide`, kind
+    "relation"), unless `judge=False`. Proposals and verdicts are cached by file content: asking again costs
+    nothing until the files change.
+
+    Returns `{"rev", "relations", "pruned", "files", "read", "truncated", "judge", "mirror"}`:
+    - `relations`: `{"id", "kind", "subject", "object", "path", "line", "evidence", "quote", "status",
+      "checked_by", "rung", "model", "confidence"}`, in path and line order. `subject` is `path::definition` (or
+      the path); `evidence` is `repo://<path>#L<line>`; `status` is "accepted" (by `checked_by`: "code" or the
+      judge's backend), "review" (the judge was unsure: check it yourself) or "proposed" (not judged: `judge=False`
+      or the judge abstained).
+    - `pruned`: counts dropped by plain code and the judge (`kind`, `unresolved` test imports, `rejected`,
+      `duplicate`); `files` in scope, `read` this time; `truncated` when the scope held more files than one call
+      reads (narrow `paths`).
+    - `judge`: `{"calls", "cost_usd", "abstained"}` of this call's judge decisions.
+    - `mirror`: the Neo4j mirror's outcome (`{"mirrored"}` or `{"error"}`), None without `graph.neo4j.url`.
+
+    `await knowledge.mirror()` rewrites the Neo4j mirror from the store (and memorantado's memories and their
+    links, when memory lives there): `{"relations", "memories", "errors"}`."""
+
+    def __init__(self, bridge: Any) -> None:
+        self._bridge = bridge
+        self._judge = Judge(bridge)
+
+    async def relations(self, paths: Any = None, kinds: Any = None, *, judge: bool = True) -> dict[str, Any]:
+        """The relations among the files under `paths` (files or directories; all when None) of `kinds` (all when
+        None); see `help(knowledge)`."""
+        if isinstance(paths, str):
+            paths = [paths]
+        if isinstance(kinds, str):
+            kinds = [kinds]
+        for kind in kinds or ():
+            if kind not in RELATION_KINDS:
+                raise ValueError(f"knowledge.relations kind {kind!r} is not one of {', '.join(RELATION_KINDS)}")
+        found = await self._bridge.request("knowledge.relations", {
+            "paths": None if paths is None else [str(path) for path in paths],
+            "kinds": None if kinds is None else list(kinds),
+        })
+        relations = list(found["relations"])
+        pruned = dict(found["pruned"])
+        mirror = found["mirror"]
+        spent: dict[str, Any] = {"calls": 0, "cost_usd": 0.0, "abstained": 0}
+        verdicts = await self._judged(found["pending"], spent) if judge else []
+        if verdicts:
+            settled = await self._bridge.request("knowledge.settle", {"rev": found["rev"], "verdicts": verdicts})
+            mirror = settled["mirror"] if settled["mirror"] is not None else mirror
+            by_id = {verdict["id"]: verdict for verdict in verdicts}
+            kept = []
+            for relation in relations:
+                verdict = by_id.get(relation["id"])
+                if verdict is not None:
+                    relation = {**relation, "status": verdict["status"], "checked_by": verdict["backend"],
+                                "rung": verdict["rung"], "model": verdict["model"],
+                                "confidence": verdict["confidence"]}
+                if relation["status"] == "rejected":
+                    pruned["rejected"] = pruned.get("rejected", 0) + 1
+                    continue
+                kept.append(relation)
+            relations = kept
+        return {"rev": found["rev"], "relations": relations, "pruned": pruned, "files": found["files"],
+                "read": found["read"], "truncated": found["truncated"], "judge": spent, "mirror": mirror}
+
+    async def _judged(self, pending: list[dict[str, Any]], spent: dict[str, Any]) -> list[dict[str, Any]]:
+        """Asks the judge about proposed relations, a file's at a time: the verdicts to settle."""
+        by_path: dict[str, list[dict[str, Any]]] = {}
+        for item in pending:
+            by_path.setdefault(item["path"], []).append(item)
+        verdicts = []
+        for items in by_path.values():
+            for start in range(0, len(items), JUDGE_BATCH):
+                group = items[start:start + JUDGE_BATCH]
+                state = "\n\n".join(f"[{index}] {item['path']} line {item['line']}:\n{item['context']}"
+                                     for index, item in enumerate(group))
+                questions = {f"r{index}": {"type": "yesno", "instructions": f"Snippet [{index}]: {item['question']}"}
+                             for index, item in enumerate(group)}
+                verdict = await self._judge.decide(state, questions, kind="relation")
+                spent["calls"] += verdict["calls"]
+                cost = verdict["cost_usd"]
+                spent["cost_usd"] = None if cost is None or spent["cost_usd"] is None else spent["cost_usd"] + cost
+                if verdict["abstained"]:
+                    spent["abstained"] += len(group)
+                    continue
+                for index, item in enumerate(group):
+                    answer = verdict["answers"].get(f"r{index}")
+                    if answer is None:
+                        continue
+                    if verdict["review"]:
+                        status = "review"
+                    else:
+                        status = "accepted" if answer["value"] is True else "rejected"
+                    verdicts.append({"id": item["id"], "status": status, "backend": verdict["backend"],
+                                     "rung": verdict["rung"], "model": verdict["model"],
+                                     "confidence": answer.get("confidence")})
+        return verdicts
+
+    async def mirror(self) -> dict[str, Any]:
+        """Rewrites the Neo4j mirror (`graph.neo4j.url`) from the store and memorantado; see `help(knowledge)`."""
+        return await self._bridge.request("knowledge.mirror", {})
+
+    def __repr__(self) -> str:
+        return "<knowledge: relations(paths=None, kinds=None, *, judge=True), mirror()>"

@@ -20,7 +20,7 @@ use std::collections::BTreeMap;
 pub const INTERRUPTED_ASSISTANT: &str = "Assistant request was interrupted. The preceding content is the latest committed partial; newer live output may be missing and the external outcome is unknown.";
 
 /// The result of a cell that was running when the worker died.
-pub const INTERRUPTED_CELL: &str = "Interrupted: the session worker stopped while this cell ran. Its outcome is unknown and it was not replayed; the kernel was restored from its last checkpoint.";
+pub const INTERRUPTED_CELL: &str = "Interrupted; effect unknown: the session worker stopped while this cell ran. It may have partially run and was not replayed; the kernel was restored from its last checkpoint. Check what it changed before you run it again.";
 
 /// The prompt of a run that continues interrupted work.
 pub const CONTINUE_PROMPT: &str = "[Ultron] The session worker stopped during the previous turn and was restarted. Committed work is intact; the step that was running when it stopped was interrupted (see above). Continue the task from where it stopped.";

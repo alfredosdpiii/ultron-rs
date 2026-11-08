@@ -2832,6 +2832,13 @@ impl App {
                 }
                 self.send(LaneCommand::NewSession);
             }
+            Slash::Continue => {
+                if self.operation.is_some() {
+                    self.send(LaneCommand::Abort);
+                }
+                let id = args.trim();
+                self.send(LaneCommand::ContinueSession((!id.is_empty()).then(|| id.to_string())));
+            }
             Slash::ScopedModels => self.open_scoped_models(),
             Slash::Model if self.qol.overlays && args.is_empty() => self.open_model_hub(),
             Slash::Model => self.model_command(args),

@@ -460,7 +460,7 @@ fn case<'a>(recorded: &'a Value, name: &str) -> &'a Value {
 }
 
 /// Where `ultron autoreview --help` differs from the recorded TypeScript text (recorded, Rust): the ban commands,
-/// `autoreview.ban` and `eval` are Rust only.
+/// `autoreview.ban`, `eval` and `register` are Rust only.
 const USAGE_EDITS: [(&str, &str); 5] = [
     (
         "  status                       Accounts, last poll, queue and recent reviews\n",
@@ -477,7 +477,7 @@ const USAGE_EDITS: [(&str, &str); 5] = [
         "  --json                       Machine-readable output (review, once, status)
   --account <login>            review: the account to review as (default: the first logged-in account of the host)
 ",
-        "  --json                       Machine-readable output (review, once, status, bans, eval)
+        "  --json                       Machine-readable output (review, once, status, bans, eval, register)
   --account <login>            review: the account to review as (default: the first logged-in account of the host);
                                ban, unban: the reviewing account the ban is for (default: every account, *)
 ",
@@ -487,6 +487,10 @@ const USAGE_EDITS: [(&str, &str); 5] = [
         "  install | uninstall ",
         "  eval <repo-dir>              Measure the reviewer on the repository's history: review the commits later reverted or
                                fixed, and as many others as controls, and report how many it would have blocked
+  register [--repo owner/name] The failure-mode register: what went wrong in the recorded reviews (rejected
+                               findings, drops, what was not checked, the hits of the checks that caught their
+                               planted bug), and Loki rules proposed from review rules findings keep citing (written
+                               to <agent dir>/autoreview/loki-proposals.json for approval, never applied)
   install | uninstall ",
     ),
     (
@@ -1076,4 +1080,32 @@ fn cli_autoreview_offline_json_refuses_an_unreadable_engine_result() {
     let error = cli::autoreview_cli::offline_json(&json!({"complete": true, "findings": "none"}), None, None, None)
         .unwrap_err();
     assert!(error.starts_with("the engine returned an unreadable result"), "{error}");
+}
+
+/// `register` with nothing recorded: every seeded check counts (each caught its planted bug), no mode, no proposal
+/// file; with a review record, its drops are modes.
+#[test]
+fn cli_autoreview_register_lists_failure_modes_and_the_checks_that_count() {
+    let world = World::new();
+    let (code, stdout, stderr) = world.run(&["register".into()]);
+    assert_eq!(code, 0, "{stderr}");
+    assert_eq!(
+        stdout,
+        "0 recorded review(s), 0 fate(s); 10 of 10 checks count (each caught its planted bug).\nNo failure mode recorded.\n"
+    );
+    let reviews = world.work.join("agent/autoreview/reviews");
+    std::fs::create_dir_all(&reviews).unwrap();
+    std::fs::write(
+        reviews.join("o-r-1.json"),
+        json!({"pull": "github.com/o/r#1", "result": {"dropped": {"contradicted": 2}, "notChecked": []}}).to_string(),
+    )
+    .unwrap();
+    let (code, stdout, stderr) = world.run(&["register".into(), "--repo".into(), "o/r".into(), "--json".into()]);
+    assert_eq!(code, 0, "{stderr}");
+    let got: Value = serde_json::from_str(&stdout).unwrap();
+    assert_eq!(got["register"]["reviews"], 1);
+    assert_eq!(got["register"]["modes"][0]["id"], "dropped:contradicted");
+    assert_eq!(got["register"]["modes"][0]["count"], 2);
+    assert_eq!(got["proposals"], json!([]));
+    assert!(!world.work.join("agent/autoreview/loki-proposals.json").exists());
 }

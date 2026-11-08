@@ -466,6 +466,7 @@ fn deps(profile: &Profile, vars: &[(&str, &str)]) -> (SetupDeps, Tested) {
             "jev" => Ok("jev-1.13 answered in 210 ms".into()),
             _ => Err("timed out after 15 s".into()),
         })),
+        probe_memorantado: None,
     };
     (deps, tested)
 }
@@ -948,4 +949,67 @@ fn cli_setup_start_model_an_unknown_default_gets_no_misleading_hint() {
         r#"{"defaultProvider": "my-extension-provider", "defaultModel": "m1"}"#,
     );
     assert_eq!(cli::setup::no_model_hint(&profile.env(&[])), None);
+}
+
+/// The memory backend step (before Hindsight): memorantado is probed at its URL, a choice saves `memory.backend`
+/// beside the other `memory.*` settings, a moved server's URL is saved, and "choose at each start" removes the key.
+#[test]
+fn cli_setup_wizard_chooses_the_memory_backend() {
+    let profile = Profile::new();
+    std::fs::create_dir_all(profile.agent()).unwrap();
+    std::fs::write(
+        profile.agent().join("settings.json"),
+        r#"{"memory": {"autoRecall": true}}"#,
+    )
+    .unwrap();
+    let (mut deps, _) = deps(&profile, &[]);
+    let probed: Arc<Mutex<Vec<String>>> = Arc::default();
+    let log = probed.clone();
+    deps.probe_memorantado = Some(Arc::new(move |url: &str| {
+        log.lock().unwrap().push(url.to_string());
+        url == "http://mini:3789"
+    }));
+    let mut ui = ScriptedUi::new(vec![
+        Step::Select("reach a model", "Skip"),
+        Step::Select("^Memory backend$", "set its URL"),
+        Step::Input("memorantado URL", "http://mini:3789/"),
+        Step::Select("^Memory backend$", "^Use memorantado$"),
+        Step::Select("Set up Hindsight", "^Skip$"),
+        Step::Select("^Judge seat$", "^Skip$"),
+        Step::Select("^Loki guardrails$", "^Keep"),
+    ]);
+    let result = run_setup_wizard(&mut ui, &mut deps);
+    assert!(ui.steps.is_empty());
+    assert_eq!(*probed.lock().unwrap(), ["http://127.0.0.1:3789", "http://mini:3789"]);
+    let saved = profile.settings();
+    assert_eq!(saved["memory"], json!({"autoRecall": true, "backend": "memorantado"}));
+    assert_eq!(saved["memorantadoUrl"], "http://mini:3789");
+    assert_eq!(
+        (
+            result.lines[1].step.as_str(),
+            result.lines[1].status,
+            result.lines[1].detail.as_str()
+        ),
+        ("Memory backend", "configured", "memorantado at http://mini:3789")
+    );
+    let text = ui.text();
+    assert!(
+        text.contains("Step 3/7: Memory backend") && text.contains("Step 4/7: Hindsight memory server"),
+        "{text}"
+    );
+    assert!(text.contains("memorantado is not reachable at http://127.0.0.1:3789."));
+
+    let (mut again, _) = deps_again(&profile);
+    again.probe_memorantado = Some(Arc::new(|_: &str| false));
+    let mut ui = ScriptedUi::new(vec![
+        Step::Select("reach a model", "Skip"),
+        Step::Select("^Memory backend$", "Choose at each start"),
+        Step::Select("Set up Hindsight", "^Skip$"),
+        Step::Select("^Judge seat$", "^Skip$"),
+        Step::Select("^Loki guardrails$", "^Keep"),
+    ]);
+    let result = run_setup_wizard(&mut ui, &mut again);
+    assert!(ui.steps.is_empty());
+    assert_eq!(profile.settings()["memory"], json!({"autoRecall": true}));
+    assert_eq!(result.lines[1].status, "configured");
 }

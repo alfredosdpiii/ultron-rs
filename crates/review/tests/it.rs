@@ -22,6 +22,8 @@ mod engine;
 mod engine_env;
 #[path = "eval.rs"]
 mod eval;
+#[path = "failure_register.rs"]
+mod failure_register;
 #[path = "github_accounts.rs"]
 mod github_accounts;
 #[path = "github_fixtures.rs"]
@@ -52,3 +54,5 @@ mod service;
 mod settings_ban;
 #[path = "state_writes.rs"]
 mod state_writes;
+#[path = "static_stage.rs"]
+mod static_stage;

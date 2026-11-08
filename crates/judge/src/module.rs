@@ -1,9 +1,10 @@
 //! `judge.decide(state, questions, kind=None)` from the REPL: one decision through the session's seat, asked on
-//! purpose by the model's code (never on a turn's own path). The seat follows the global `judge.*` settings as they
+//! purpose by the model's code (never on a turn's own path). `expect` names answers the caller already holds: a first
+//! answer that differs is a dispute, escalated to another family like an unsure one. The seat follows the global `judge.*` settings as they
 //! are at each call, keeping its call and spend counts across a change.
 
-use crate::question::parse_questions;
-use crate::seat::Seat;
+use crate::question::{Question, parse_questions};
+use crate::seat::{Seat, Verdict};
 use config::keys::JudgeSettings;
 use kernel_apis::{ApiModule, Request};
 use serde_json::Value;
@@ -61,16 +62,59 @@ impl JudgeModule {
         if state.chars().count() > MAX_STATE_CHARS {
             return Err(format!("judge.decide state is over {MAX_STATE_CHARS} characters"));
         }
-        let questions = parse_questions(request.payload.get("questions").unwrap_or(&Value::Null))?;
         let kind = match request.payload.get("kind") {
             None | Some(Value::Null) => None,
-            Some(Value::String(kind)) if valid_kind(kind) => Some(kind.as_str()),
+            Some(Value::String(kind)) => Some(kind.as_str()),
             Some(_) => return Err("judge.decide kind must be a short lowercase name (a-z, 0-9, _ . -)".into()),
         };
-        Ok(self
-            .seat()?
-            .decide(&state, &questions, kind, request.signal)
-            .to_json(kind))
+        let expect = match request.payload.get("expect") {
+            None | Some(Value::Null) => Vec::new(),
+            Some(Value::Object(held)) => held.iter().map(|(name, value)| (name.clone(), value.clone())).collect(),
+            Some(_) => return Err("judge.decide expect must be {question: answer}".into()),
+        };
+        self.decide_json(
+            &state,
+            request.payload.get("questions").unwrap_or(&Value::Null),
+            kind,
+            &expect,
+            request.signal,
+        )
+    }
+
+    /// One decision as `judge.decide` answers it (also asked by the host, such as dreaming's checks); `expect`
+    /// holds the caller's own answers, and an answer that disputes one is escalated like an unsure one.
+    pub fn decide_json(
+        &self,
+        state: &str,
+        questions: &Value,
+        kind: Option<&str>,
+        expect: &[(String, Value)],
+        signal: &kernel::Signal,
+    ) -> Result<Value, String> {
+        let questions = parse_questions(questions)?;
+        if kind.is_some_and(|kind| !valid_kind(kind)) {
+            return Err("judge.decide kind must be a short lowercase name (a-z, 0-9, _ . -)".into());
+        }
+        if let Some((name, _)) = expect
+            .iter()
+            .find(|(name, _)| !questions.iter().any(|q| &q.name == name))
+        {
+            return Err(format!("judge.decide expect names no question: {name}"));
+        }
+        Ok(self.decide_now(state, &questions, kind, expect, signal)?.to_json(kind))
+    }
+
+    /// One decision through the seat of the settings now, for host code off a turn's path (a borderline Loki write):
+    /// what `judge.decide` serves, without its argument checks.
+    pub fn decide_now(
+        &self,
+        state: &str,
+        questions: &[Question],
+        kind: Option<&str>,
+        expect: &[(String, Value)],
+        signal: &kernel::Signal,
+    ) -> Result<Verdict, String> {
+        Ok(self.seat()?.decide_expecting(state, questions, kind, expect, signal))
     }
 }
 

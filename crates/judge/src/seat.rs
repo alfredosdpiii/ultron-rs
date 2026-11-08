@@ -11,7 +11,7 @@
 //!   key `judge:<call id>`) and reported to `on_receipt`; the seat stops at `judge.maxCalls` calls and, for paid
 //!   backends, at `judge.budgetUsd`. Under a budget, Jev is passed over once it answered without a cost; under the
 //!   session's cost cap (`max_cost_usd`), which an unpriced call would exhaust, it is not asked at all. A call is never repeated silently: only a 429 or 5xx whose `retry-after` names
-//!   seconds within the policy's cap is tried once more, and that try has its own receipt.
+//!   a wait (seconds or an HTTP date) within the policy's cap is tried once more, and that try has its own receipt.
 
 use crate::backend::{Backend, D1, Failure, JEV_TIMEOUT, JEV_URL, Jev, KeySource, Reply, Spend};
 use crate::chat::{Chat, ChatModel, default_escalate_model, family};
@@ -220,6 +220,7 @@ impl Seat {
                     "jev" => Arc::new(Jev {
                         url: deps.jev_url.clone(),
                         model: settings.model.clone(),
+                        price_per_mtok: settings.jev_price_per_mtok,
                         key: deps.jev_key.clone(),
                         transport: deps.transport.clone(),
                         timeout: JEV_TIMEOUT,
@@ -301,13 +302,15 @@ impl Seat {
                 self.settings.max_calls
             )));
         }
-        // Jev's answers carry no cost today: settled unpriced in a ledger with a cost cap, one would stop all of the
-        // session's model work ("pricing unknown"), so under that cap Jev is passed over.
+        // Jev's answers carry no cost: unless `judge.jev.pricePerMTok` prices their tokens, one settled unpriced in a
+        // ledger with a cost cap would stop all of the session's model work ("pricing unknown"), so under that cap
+        // an unpriced Jev is passed over.
         if backend.name() == "jev"
+            && self.settings.jev_price_per_mtok.is_none()
             && let Some(cap) = self.ledger.as_ref().and_then(|l| l.limits().max_cost_usd)
         {
             return Ok(Err(format!(
-                "the session's cost cap (${cap}, max_cost_usd) needs priced calls, and Jev reports no cost"
+                "the session's cost cap (${cap}, max_cost_usd) needs priced calls, and Jev reports no cost (set judge.jev.pricePerMTok)"
             )));
         }
         if let Some(budget) = self.settings.budget_usd.filter(|_| backend.paid()) {
@@ -471,6 +474,19 @@ impl Seat {
 
     /// Decide `questions` about `state`: fallback, then escalation (see the module docs).
     pub fn decide(&self, state: &str, questions: &[Question], kind: Option<&str>, signal: &Signal) -> Verdict {
+        self.decide_expecting(state, questions, kind, &[], signal)
+    }
+
+    /// [`Seat::decide`] by a caller that already holds an answer (`expect`: question name and value, such as a
+    /// verifier's): a first answer that differs is a dispute, escalated like an unsure one.
+    pub fn decide_expecting(
+        &self,
+        state: &str,
+        questions: &[Question],
+        kind: Option<&str>,
+        expect: &[(String, Value)],
+        signal: &Signal,
+    ) -> Verdict {
         let mut receipts = Vec::new();
         let abstain = |reason: String, receipts: Vec<Receipt>| Verdict {
             answers: Vec::new(),
@@ -509,9 +525,15 @@ impl Seat {
         let named = |answers: Vec<Answer>| -> Vec<(String, Answer)> {
             questions.iter().map(|q| q.name.clone()).zip(answers).collect()
         };
+        let disputed = expect.iter().find_map(|(name, held)| {
+            let answer = reply.answers.get(questions.iter().position(|q| &q.name == name)?)?;
+            (answer.value != *held).then(|| format!("disputed: {name} is {}, the caller holds {held}", answer.value))
+        });
         let threshold = self.threshold(kind, backend.name());
-        let unsure = threshold.filter(|t| reply.answers.iter().any(|a| a.confidence < *t));
-        let Some(threshold) = unsure else {
+        let unsure = threshold
+            .filter(|t| reply.answers.iter().any(|a| a.confidence < *t))
+            .map(|t| format!("confidence under {t} ({})", backend.name()));
+        let Some(below) = disputed.or(unsure) else {
             return Verdict {
                 answers: named(reply.answers),
                 backend: Some(backend.name().into()),
@@ -529,7 +551,6 @@ impl Seat {
             reason: Some(reason),
             receipts,
         };
-        let below = format!("confidence under {threshold} ({})", backend.name());
         let Some(escalate) = &self.escalate else {
             return review(
                 format!("{below}; no escalation model (judge.escalateModel)"),

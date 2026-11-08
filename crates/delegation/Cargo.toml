@@ -10,12 +10,14 @@ autotests = false
 [dependencies]
 agent = { path = "../agent" }
 harness = { path = "../harness" }
+host = { path = "../host" }
 jsonschema = { path = "../jsonschema" }
 jsrt = { path = "../jsrt" }
 kernel = { path = "../kernel" }
 kernel-apis = { path = "../kernel-apis" }
 lanes = { path = "../lanes" }
 model-scope = { path = "../model-scope" }
+resources = { path = "../resources" }
 regex = "=1.13.1"
 rustix = { version = "=1.1.5", features = ["process", "std", "system"] }
 serde = { version = "=1.0.229", features = ["derive"] }

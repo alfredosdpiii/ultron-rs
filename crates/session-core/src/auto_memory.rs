@@ -236,9 +236,10 @@ pub fn recall_message(recalled: &Recalled, timestamp: u64) -> Option<Value> {
             _ => "Project brief",
         };
         let refreshed = brief["refreshedAt"].as_str().map(|at| &at[..at.len().min(10)]);
+        let writer = brief["writer"].as_str().unwrap_or("Hindsight");
         content.push_str(&match refreshed {
-            Some(at) => format!("\n\n{title} (written by Hindsight from memory, {at}):\n"),
-            None => format!("\n\n{title} (written by Hindsight from memory):\n"),
+            Some(at) => format!("\n\n{title} (written by {writer} from memory, {at}):\n"),
+            None => format!("\n\n{title} (written by {writer} from memory):\n"),
         });
         content.push_str(&cut(brief["content"].as_str().unwrap_or("").trim(), DIGEST_CHARS));
     }

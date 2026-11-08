@@ -250,6 +250,11 @@ pub enum Op {
     KeepGoing {
         args: String,
     },
+    /// `/continue`: this new session continues session `session` by searching its log (crate::continuation).
+    /// Answers `{session, name}`.
+    ContinueFrom {
+        session: String,
+    },
 }
 
 /// The JSON request a client sends for an operation ([`Op::to_json`]).
@@ -396,6 +401,9 @@ impl Op {
             "keepGoing" => Op::KeepGoing {
                 args: text("args").unwrap_or_default(),
             },
+            "continueFrom" => Op::ContinueFrom {
+                session: need("session")?,
+            },
             other => return Err(format!("Unknown session operation: {other}")),
         })
     }
@@ -489,6 +497,7 @@ impl Op {
             Op::ScheduleCancel { id } => json!({"op": "scheduleCancel", "id": id}),
             Op::Persona { args } => json!({"op": "persona", "args": args}),
             Op::KeepGoing { args } => json!({"op": "keepGoing", "args": args}),
+            Op::ContinueFrom { session } => json!({"op": "continueFrom", "session": session}),
         }
     }
 }
@@ -705,6 +714,7 @@ pub(crate) mod budget_gate;
 mod compacting;
 mod context_children;
 mod context_lane;
+mod continue_from;
 pub mod durable_turns;
 pub mod event_lanes;
 mod persona_nudge;
@@ -1041,6 +1051,11 @@ impl Core {
         ));
         // rlm.spawn(fork=True): the child's conversation starts as its caller's.
         lane.stack.delegation.set_fork_point(children.fork_point_hook());
+        // rlm.progress reads a running child's transcript from the runtime.
+        let transcripts = durable.chat.clone();
+        lane.stack.delegation.set_transcripts(Arc::new(move |lane: &str| {
+            crate::agent_hub::child_transcript(&transcripts, lane).map(|(messages, _)| messages)
+        }));
         children.restore(&lane.stack, &unfinished)?;
         let events = event_lanes::install(
             &lane,
@@ -1062,7 +1077,7 @@ impl Core {
         let auto_compaction = runtime.config.settings["compaction"]["enabled"] != false;
         let nudger = crate::nudge::ToolRoundNudger::new(runtime.config.tool_rounds_nudge, runtime.config.async_events);
         let skill_nudger = crate::nudge::SkillExtractionNudger::new(runtime.config.skill_nudge);
-        let auto_memory = crate::auto_memory::AutoMemory::new(&runtime.config.settings, runtime.hindsight_explicit);
+        let auto_memory = crate::auto_memory::AutoMemory::new(&runtime.config.settings, runtime.memory_explicit);
         let auto_refine =
             crate::auto_refine::AutoRefine::new(&runtime.config.settings, (env.var)(AUTO_REFINE_ENV).as_deref());
         let mut core = Core {
@@ -2133,6 +2148,7 @@ impl Core {
             Op::ScheduleCancel { id } => self.schedule_cancel(&id),
             Op::Persona { args } => self.persona_command("persona", &args).map(Some),
             Op::KeepGoing { args } => self.persona_command("keepgoing", &args).map(Some),
+            Op::ContinueFrom { session } => self.continue_from(&session).map(Some),
             Op::RestoreFiles { entry_id, checkpoint } => self.restore_files(entry_id, checkpoint).map(Some),
             // `rlm.list_subagents` with each subagent's name, model and times, for the agent hub and the RLM views.
             Op::Agents => self.lane.stack.delegation.subagent_views(MAIN_LANE).map(Some),

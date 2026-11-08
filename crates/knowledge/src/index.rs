@@ -7,6 +7,7 @@ use std::process::{Command, Stdio};
 use std::time::Instant;
 
 use crate::extract::{EXTRACTOR_VERSION, Extractor, MAX_BYTES, language};
+use crate::relations::{Kind, Pruned, RELATIONS_VERSION, prune, scanned};
 use crate::store::{Error, Store};
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -38,8 +39,8 @@ fn git(repo_dir: &Path, args: &[&str]) -> Result<Vec<u8>, Error> {
     Ok(output.stdout)
 }
 
-/// (path, blob, size) of the indexable files at `rev`.
-fn tree_entries(repo_dir: &Path, rev: &str) -> Result<Vec<(String, String, u64)>, Error> {
+/// (path, blob, size) of every file at `rev`.
+fn blobs_at(repo_dir: &Path, rev: &str) -> Result<Vec<(String, String, u64)>, Error> {
     let listing = git(repo_dir, &["ls-tree", "-r", "-l", "-z", "--full-tree", rev])?;
     let mut entries = Vec::new();
     for record in listing.split(|&byte| byte == 0).filter(|record| !record.is_empty()) {
@@ -50,15 +51,18 @@ fn tree_entries(repo_dir: &Path, rev: &str) -> Result<Vec<(String, String, u64)>
         };
         let fields: Vec<&str> = meta.split_whitespace().collect();
         let [_mode, kind, oid, size] = fields[..] else { continue };
-        if kind != "blob" || language(path).is_none() {
-            continue;
-        }
         let Ok(size) = size.parse::<u64>() else { continue };
-        if size > MAX_BYTES {
-            continue;
+        if kind == "blob" {
+            entries.push((path.to_string(), oid.to_string(), size));
         }
-        entries.push((path.to_string(), oid.to_string(), size));
     }
+    Ok(entries)
+}
+
+/// (path, blob, size) of the indexable files at `rev`.
+fn tree_entries(repo_dir: &Path, rev: &str) -> Result<Vec<(String, String, u64)>, Error> {
+    let mut entries = blobs_at(repo_dir, rev)?;
+    entries.retain(|(path, _, size)| language(path).is_some() && *size <= MAX_BYTES);
     Ok(entries)
 }
 
@@ -156,5 +160,103 @@ pub fn index_tree(db: &Path, repo: &str, repo_dir: &Path, rev: &str) -> Result<I
         files: paths.len(),
         read: blobs.len(),
         ms: started.elapsed().as_millis(),
+    })
+}
+
+/// Files read for relations in one call, at most: a bound on a monorepo asked about as a whole.
+pub const MAX_RELATION_FILES: usize = 5000;
+
+/// The relations a task asked for at one revision ([`relations`]).
+#[derive(Clone, Debug, PartialEq)]
+pub struct Relations {
+    /// The commit (the full id) and its tree in the store.
+    pub rev: String,
+    pub tree: i64,
+    /// What the task keeps, and what pruning dropped.
+    pub pruned: Pruned,
+    /// Files in scope, and blobs read this time (the others were read before, by this proposer version).
+    pub files: usize,
+    pub read: usize,
+    /// More files were in scope than [`MAX_RELATION_FILES`]: narrow `scope`.
+    pub truncated: bool,
+}
+
+/// Which files a task asked about: files and directories (`""` or `.` for all); everything when empty.
+struct Scope {
+    all: bool,
+    names: std::collections::HashSet<String>,
+}
+
+impl Scope {
+    fn new(scope: &[String]) -> Scope {
+        let names: std::collections::HashSet<String> =
+            scope.iter().map(|name| name.trim_matches('/').to_string()).collect();
+        Scope {
+            all: names.is_empty() || names.contains("") || names.contains("."),
+            names,
+        }
+    }
+
+    /// The path itself, or one of its directories, was named.
+    fn holds(&self, path: &str) -> bool {
+        self.all || self.names.contains(path) || path.match_indices('/').any(|(at, _)| self.names.contains(&path[..at]))
+    }
+}
+
+/// The relations of `kinds` (all when empty) among the files under `scope` of `repo` at `rev` of the git
+/// checkout `repo_dir`: the revision is indexed first (only blobs the store has not seen are read), the proposer
+/// reads only blobs it has not read at [`RELATIONS_VERSION`], and the result is pruned for the task. Verdicts the
+/// judge gave earlier come back with their relations.
+pub fn relations(
+    db: &Path,
+    repo: &str,
+    repo_dir: &Path,
+    rev: &str,
+    kinds: &[Kind],
+    scope: &[String],
+) -> Result<Relations, Error> {
+    let indexed = index_tree(db, repo, repo_dir, rev)?;
+    let all = blobs_at(repo_dir, &indexed.rev)?;
+    let paths: std::collections::BTreeSet<String> = all.iter().map(|(path, _, _)| path.clone()).collect();
+    let scope = Scope::new(scope);
+    let mut files: Vec<(String, String)> = all
+        .into_iter()
+        .filter(|(path, _, size)| scanned(path) && *size <= MAX_BYTES && scope.holds(path))
+        .map(|(path, oid, _)| (path, oid))
+        .collect();
+    let truncated = files.len() > MAX_RELATION_FILES;
+    files.truncate(MAX_RELATION_FILES);
+    let mut store = Store::open(db)?;
+    let tree = store
+        .tree_id(repo, &indexed.rev)?
+        .ok_or_else(|| Error(format!("{repo} at {} was not recorded", indexed.rev)))?;
+    let oids: Vec<&str> = files.iter().map(|(_, oid)| oid.as_str()).collect();
+    let known = store.scanned_blobs(&oids, RELATIONS_VERSION)?;
+    let mut unread: Vec<(String, String)> = Vec::new();
+    let mut queued = std::collections::HashSet::new();
+    for (path, oid) in &files {
+        if !known.contains(oid) && queued.insert(oid.clone()) {
+            unread.push((path.clone(), oid.clone()));
+        }
+    }
+    let unread_oids: Vec<String> = unread.iter().map(|(_, oid)| oid.clone()).collect();
+    let mut read = Vec::with_capacity(unread.len());
+    for ((path, oid), body) in unread.iter().zip(read_blobs(repo_dir, &unread_oids)?) {
+        // Text that is not UTF-8 is not source: recorded as read, with nothing in it.
+        let proposed = String::from_utf8(body)
+            .map(|text| crate::relations::propose(path, &text))
+            .unwrap_or_default();
+        read.push((oid.clone(), proposed));
+    }
+    store.record_relations(tree, &files, &read, RELATIONS_VERSION)?;
+    let in_files: Vec<String> = files.iter().map(|(path, _)| path.clone()).collect();
+    let rows = store.relations(tree, Some(&in_files))?;
+    Ok(Relations {
+        rev: indexed.rev,
+        tree,
+        pruned: prune(rows, kinds, &paths),
+        files: files.len(),
+        read: read.len(),
+        truncated,
     })
 }

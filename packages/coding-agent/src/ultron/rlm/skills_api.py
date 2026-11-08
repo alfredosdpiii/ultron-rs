@@ -11,10 +11,15 @@ class Skills:
     version)` undoes the active version; `await skills.code_list()` and `await skills.code_history(name)`
     inspect them. Use an active code skill instead of re-deriving it: `from code_skills import <name>` works
     in every kernel.
+
+    Procedure skills (a `procedure:` in their SKILL.md frontmatter) are walked, not read:
+    `run = await skills.run(name, input={...})` starts one (see `help(SkillRun)`); the host checks every
+    segment itself. `await skills.coverage(name)` summarizes this session's runs of a skill.
     """
 
-    def __init__(self, bridge):
+    def __init__(self, bridge, namespace=None):
         self._bridge = bridge
+        self._namespace = namespace if namespace is not None else {}
 
     async def refresh(self):
         return await self._bridge.request('skills.refresh', {})
@@ -39,6 +44,31 @@ class Skills:
 
     async def invoke(self, name, version, input):
         return await self._bridge.request('skills.invoke', {'name': name, 'version': version, 'input': input})
+
+    async def run(self, name, input=None, *, version=None):
+        """Start skill `name`'s procedure with `input` (the procedure's declared inputs); returns a SkillRun at its
+        first segment (its setup already run). Raises if the skill has no procedure, an input is missing, or this
+        lane already runs one. A run whose first segment cannot begin comes back with outcome "blocked"."""
+        payload = {'name': name}
+        if input is not None:
+            payload['input'] = input
+        if version is not None:
+            payload['version'] = version
+        run = SkillRun(self._bridge, self._namespace, await self._bridge.request('procedure.start', payload))
+        await run._setup()
+        return run
+
+    async def coverage(self, name):
+        """This session's runs of skill `name` at its current version: {"runs", "outcomes": {outcome: n},
+        "segments": [{name, kind, reached, passed, failed, mean_tries}], "never_passed", "other_versions"}."""
+        return await self._bridge.request('procedure.coverage', {'name': name})
+
+    async def propose_procedure(self, name, content, evidence):
+        """Propose a procedure skill for the user to publish: `content` is the whole SKILL.md (frontmatter `name`,
+        `description` and a `procedure:` that parses); `evidence` is [{"ref": "session://<id>#<from>..<to>" or
+        "skill-run:<id>", "quote": "..."}] showing where the procedure worked. It is kept as a proposal only;
+        the user publishes it with `ultron skills approve <id>` (or rejects it)."""
+        return await self._bridge.request('procedure.propose', {'name': name, 'content': content, 'evidence': evidence})
 
     # Code skills (procedural memory as tested code) import as `from code_skills import <name>`. The package is
     # named `code_skills` so it never shadows this `skills` object.
@@ -80,6 +110,80 @@ class Skills:
     async def code_history(self, name):
         """Every version of a code skill with its state, test outcome, and secret check."""
         return await self._bridge.request('skills.code_history', {'name': name})
+
+
+class SkillRun:
+    """A procedure skill's run, walked one segment at a time; the host decides every step.
+
+    `run.segment` is the segment to do now: {"name", "goal", "kind", "writes", "max_iters", "check" |
+    "questions"/"pass" | "model"/"checks", "requires"?, "setup"}. Do its goal in your own cells, changing only
+    files matching its `writes` globs (a cell that changes others is told so, and the segment's next step
+    fails), then `await run.check()`:
+
+    - kind "check": the host runs the segment's command (`expect` "fail" means the command must fail);
+    - kind "judge": `await run.check(state="what you claim and why")`; the judge reads it beside the last
+      check's output and must answer as `pass` says;
+    - kind "agent": the host runs a subagent on the segment's model with the goal and checks its work.
+
+    The reply (also `run.status`) has "outcome": "running" (with the next or same "segment", "tries_left"
+    and "step": {"passed", "evidence"}), or the end: "passed", "failed" (a segment used all its tries),
+    "blocked" (a segment's requires did not hold), "needs_review" (the judge stayed unsure: ask the user),
+    "final_check_mismatch" (the host ran the final check again at the end and it no longer passed) or
+    "aborted" (`await run.abort(reason)`). A new segment's `setup` code runs in your namespace when it begins.
+    """
+
+    def __init__(self, bridge, namespace, status):
+        self._bridge = bridge
+        self._namespace = namespace
+        self.status = status
+
+    @property
+    def id(self):
+        return self.status['run']
+
+    @property
+    def outcome(self):
+        return self.status['outcome']
+
+    @property
+    def segment(self):
+        return self.status.get('segment')
+
+    async def check(self, state=None):
+        """Ask the host to check the current segment; returns the new status."""
+        if self.outcome != 'running':
+            raise RuntimeError(f'skill run {self.id} has ended: {self.outcome}')
+        before = self.segment['name']
+        payload = {'run': self.id, 'segment': before}
+        if state is not None:
+            payload['state'] = state
+        self.status = await self._bridge.request('procedure.step', payload)
+        if self.outcome == 'running' and self.segment['name'] != before:
+            await self._setup()
+        return self.status
+
+    async def abort(self, reason=None):
+        """End the run as "aborted"; returns its final status."""
+        payload = {'run': self.id}
+        if reason is not None:
+            payload['reason'] = reason
+        self.status = await self._bridge.request('procedure.abort', payload)
+        return self.status
+
+    async def _setup(self):
+        code = (self.segment or {}).get('setup') if self.outcome == 'running' else None
+        if not code:
+            return
+        import ast
+        compiled = compile(code, f'<skill {self.status["name"]}: {self.segment["name"]} setup>', 'exec',
+                           flags=ast.PyCF_ALLOW_TOP_LEVEL_AWAIT)
+        result = eval(compiled, self._namespace)
+        if hasattr(result, '__await__'):
+            await result
+
+    def __repr__(self):
+        segment = self.segment['name'] if self.segment else None
+        return f'<SkillRun {self.status["name"]} {self.outcome} segment={segment}>'
 
 
 def _source_text(value, label):

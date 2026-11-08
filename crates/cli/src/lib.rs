@@ -28,7 +28,9 @@ pub mod list_models;
 pub mod mcp_cli;
 pub mod mcp_login;
 pub mod memory_cli;
+pub mod memory_migrate;
 pub mod migrate;
+pub mod optimize_cli;
 pub mod print_mode;
 pub mod radius_relay;
 pub mod rpc;
@@ -41,6 +43,7 @@ pub mod setup;
 pub mod setup_core;
 pub mod setup_tui;
 pub mod setup_wizard;
+pub mod skills_cli;
 pub mod startup;
 pub mod startup_checks;
 pub mod terminal_settings;
@@ -211,14 +214,15 @@ const COMMANDS: &[Command] = &[
             Some(Ok(claude_root::cli::exit_code(result, err)))
         },
     },
-    // `ultron memory import ...` only: a bare `ultron memory` stays a prompt, as in TypeScript.
+    // `ultron memory import|migrate ...` only: a bare `ultron memory` stays a prompt, as in TypeScript.
     Command {
         names: &["memory"],
         package_files: false,
         proxy: true,
         typescript: false,
         run: |argv, env, out, err| {
-            (argv.get(1).map(String::as_str) == Some("import")).then(|| memory_cli::run(&argv[1..], env, out, err))
+            matches!(argv.get(1).map(String::as_str), Some("import" | "migrate"))
+                .then(|| memory_cli::run(&argv[1..], env, out, err))
         },
     },
     // `ultron schedule list|wake|cancel <id>|--help` only: any other `ultron schedule ...` stays a prompt.
@@ -245,6 +249,22 @@ const COMMANDS: &[Command] = &[
         proxy: true,
         typescript: false,
         run: |argv, env, out, err| judge_cli::run(&argv[1..], env, out, err),
+    },
+    // `ultron optimize judge|memory|autoreview|--help` only: any other `ultron optimize ...` stays a prompt.
+    Command {
+        names: &["optimize"],
+        package_files: false,
+        proxy: true,
+        typescript: false,
+        run: |argv, env, out, err| optimize_cli::run(&argv[1..], env, out, err),
+    },
+    // `ultron skills proposals|show|approve|reject` only: any other `ultron skills ...` stays a prompt.
+    Command {
+        names: &["skills"],
+        package_files: false,
+        proxy: true,
+        typescript: false,
+        run: |argv, env, out, err| skills_cli::run(&argv[1..], env, out, err),
     },
     Command {
         names: &["sandbox"],

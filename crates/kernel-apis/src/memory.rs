@@ -9,6 +9,10 @@
 //! entries of a superseded claim or a forgotten document are withheld (`excluded`). Interrupted operations are
 //! settled on reopen and remote mutations are never replayed. A failed store write poisons the service.
 
+mod dream;
+
+pub use dream::{BRIEF_MAX_CHARS, BRIEF_MAX_LINES, Decide, TOPIC_MAX_CHARS, TOPIC_MAX_LINES, page_budget};
+
 use crate::memory_records::{IndexEntry, RecordIndex, Typed, content_cap, typed_fields};
 use crate::store::read_versioned;
 use crate::util::{Clock, system_clock};
@@ -25,9 +29,11 @@ pub trait MemoryBackend: Send + Sync {
     fn namespace(&self) -> String;
     /// Scope → identity tags, such as `{"session": ["ultron:session:<id>"]}`.
     fn scope_tags(&self) -> Map<String, Value>;
-    /// Whether the backend has `call` ("recall", "retain", "get", "delete", "operation").
-    fn supports(&self, _call: &str) -> bool {
-        true
+    /// Whether the backend has `call`: the document calls ("recall", "retain", "get", "delete", "operation") by
+    /// default; "fileEvidence" (a retain item's `evidence`: file snapshots it cites) and "claims" (the curation
+    /// calls below) only where a backend says so.
+    fn supports(&self, call: &str) -> bool {
+        matches!(call, "recall" | "retain" | "get" | "delete" | "operation")
     }
     fn recall(&self, request: &Value, signal: &Signal) -> std::result::Result<Value, String>;
     fn retain(&self, request: &Value, signal: &Signal) -> std::result::Result<Value, String>;
@@ -55,6 +61,41 @@ pub trait MemoryBackend: Send + Sync {
     fn create_mental_model(&self, _request: &Value, _signal: &Signal) -> std::result::Result<Value, String> {
         Err("UNSUPPORTED_API".into())
     }
+    // Claim curation (memorantado; Hindsight answers UNSUPPORTED_API). A claim is `{id, key, kind, text, tags,
+    // metadata, status, lastConfirmedAt, createdAt}`; `curate` above is the invalidation.
+    /// The claims of exactly `tags` (`{tags, status?, confirmedBefore?, sort?: "confirmed", limit?}`):
+    /// `{claims: [claim]}`, least recently confirmed first with `sort: "confirmed"`.
+    fn list(&self, _request: &Value, _signal: &Signal) -> std::result::Result<Value, String> {
+        Err("UNSUPPORTED_API".into())
+    }
+    /// Marks claim `id` re-verified now, with optional file evidence (`{evidence?: {source, content, quote}}`).
+    fn confirm(&self, _id: &str, _request: &Value, _signal: &Signal) -> std::result::Result<Value, String> {
+        Err("UNSUPPORTED_API".into())
+    }
+    /// Replaces claim `id` with `{text, metadata, evidence?}` (tags and key carried over): the new claim.
+    fn supersede(&self, _id: &str, _request: &Value, _signal: &Signal) -> std::result::Result<Value, String> {
+        Err("UNSUPPORTED_API".into())
+    }
+    /// Flags two claims as conflicting (`{id, conflictingId, reason}`), for a person or a later dream to settle.
+    fn conflict(&self, _request: &Value, _signal: &Signal) -> std::result::Result<Value, String> {
+        Err("UNSUPPORTED_API".into())
+    }
+}
+
+/// A stable, non-reversible id for a directory (`projectIdentity` of worker-services.ts).
+pub fn directory_identity(path: &str) -> String {
+    jsrt::hash::sha256_hex(path.as_bytes())[..16].to_string()
+}
+
+/// A session's scope tags, the same for every backend: its own id, its project directory's identity and the home
+/// directory's identity.
+pub fn worker_scope_tags(session_id: &str, cwd: &str, home: &str) -> Map<String, Value> {
+    let tags = json!({
+        "session": [format!("ultron:session:{session_id}")],
+        "project": [format!("ultron:project:{}", directory_identity(cwd))],
+        "global": [format!("ultron:global:{}", directory_identity(home))],
+    });
+    tags.as_object().cloned().unwrap_or_default()
 }
 
 /// Decides whether a recall runs (`{"retrieve", "probability"?}`) and whether a write is kept
@@ -319,9 +360,15 @@ fn evidence_refs(value: &Value) -> Result<Vec<Value>> {
         .map(|item| {
             let map = item.as_object().ok_or(MemoryError::code(ErrorCode::InvalidInput))?;
             let sha = map.get("sha256");
+            // A session span (`session://<id>#<from>..<to>`) must parse: dreaming reads it back.
+            let span = map
+                .get("ref")
+                .and_then(Value::as_str)
+                .filter(|r| r.starts_with("session://"));
             if !exact_fields(map, &["ref", "sha256"])
                 || !map.get("ref").is_some_and(nonempty)
                 || sha.is_some_and(|sha| !is_sha256(sha))
+                || span.is_some_and(|span| session_journal::search::SpanRef::parse(span).is_err())
             {
                 return Err(MemoryError::code(ErrorCode::InvalidInput));
             }
@@ -399,6 +446,15 @@ fn split_evidence(value: &Value) -> Result<(Value, Vec<Quote>)> {
         return Err(MemoryError::code(ErrorCode::InvalidInput));
     }
     Ok((Value::Array(stripped), quotes))
+}
+
+/// A quoted file's text: a file of at most [`MAX_QUOTED_FILE_BYTES`], else `None`.
+fn read_quoted(file: &Path) -> Option<String> {
+    let meta = std::fs::metadata(file).ok()?;
+    if !meta.is_file() || meta.len() > MAX_QUOTED_FILE_BYTES {
+        return None;
+    }
+    Some(String::from_utf8_lossy(&std::fs::read(file).ok()?).into_owned())
 }
 
 fn squeezed(text: &str) -> String {
@@ -715,6 +771,8 @@ pub struct MemoryService {
     records: Arc<RecordIndex>,
     /// The project directory evidence quotes are checked in ([`staleness`]); `None` checks nothing.
     root: Option<PathBuf>,
+    /// Who settles what dreaming's plain-code checks cannot ([`MemoryService::with_judge`]).
+    judge: Option<Decide>,
 }
 
 impl MemoryService {
@@ -744,6 +802,7 @@ impl MemoryService {
             }),
             records: Arc::new(RecordIndex::in_memory()),
             root: None,
+            judge: None,
         })
     }
 
@@ -753,6 +812,29 @@ impl MemoryService {
     pub fn with_root(mut self, root: impl Into<PathBuf>) -> Self {
         self.root = Some(root.into());
         self
+    }
+
+    /// The files `quotes` cite, as file evidence for a backend that snapshots them (`supports("fileEvidence")`):
+    /// `{source: "repo://<path>", content, quote}` for each quoted file under the root that can be read.
+    fn quoted_files(&self, quotes: &[Quote]) -> Vec<Value> {
+        match self.root.as_deref() {
+            Some(root) => self.quoted_files_in(root, quotes),
+            None => Vec::new(),
+        }
+    }
+
+    /// [`Self::quoted_files`] under `root`.
+    fn quoted_files_in(&self, root: &Path, quotes: &[Quote]) -> Vec<Value> {
+        if !self.backend.supports("fileEvidence") {
+            return Vec::new();
+        }
+        quotes
+            .iter()
+            .filter_map(|quote| {
+                let content = read_quoted(&root.join(&quote.path))?;
+                Some(json!({"source": format!("repo://{}", quote.path), "content": content, "quote": quote.quote}))
+            })
+            .collect()
     }
 
     /// Why a recalled memory of `scope` with Hindsight `metadata` is stale, if it is ([`staleness`]).
@@ -1529,15 +1611,10 @@ impl MemoryService {
         let Some(identity) = self.identity("project") else {
             return Ok(None);
         };
+        let id = Self::page_id("project", &identity, None);
         let tags: Vec<String> = self.read_scopes().into_iter().flat_map(|(_, tags)| tags).collect();
         let name = format!("Ultron project brief {identity}");
-        self.brief(
-            &format!("ultron-project-{identity}"),
-            &name,
-            DIGEST_QUERY,
-            &tags,
-            signal,
-        )
+        self.brief(&id, &name, DIGEST_QUERY, &tags, signal)
     }
 
     /// The user's brief, like [`Self::project_digest`] but written from the global memories only:
@@ -1547,25 +1624,32 @@ impl MemoryService {
         let Some(identity) = self.identity("global") else {
             return Ok(None);
         };
+        let id = Self::page_id("global", &identity, None);
         let tags = self.tags("global").unwrap_or_default();
         let name = format!("Ultron user brief {identity}");
-        self.brief(&format!("ultron-user-{identity}"), &name, USER_QUERY, &tags, signal)
+        self.brief(&id, &name, USER_QUERY, &tags, signal)
     }
 
     /// The identity in the first tag of `scope` (`ultron:project:<identity>`), lowercase alphanumerics only.
     fn identity(&self, scope: &str) -> Option<String> {
-        let tag = self.tags(scope).ok()?.into_iter().next()?;
-        let identity: String = tag
-            .rsplit(':')
-            .next()
-            .unwrap_or_default()
-            .chars()
-            .filter(char::is_ascii_alphanumeric)
-            .map(|c| c.to_ascii_lowercase())
-            .collect();
-        (!identity.is_empty()).then_some(identity)
+        tag_identity(&self.tags(scope).ok()?.into_iter().next()?)
     }
+}
 
+/// The identity a scope tag names (`ultron:project:<identity>`), lowercase alphanumerics only.
+fn tag_identity(tag: &str) -> Option<String> {
+    let identity: String = tag
+        .rsplit(':')
+        .next()
+        .unwrap_or_default()
+        .chars()
+        .filter(char::is_ascii_alphanumeric)
+        .map(|c| c.to_ascii_lowercase())
+        .collect();
+    (!identity.is_empty()).then_some(identity)
+}
+
+impl MemoryService {
     /// The content of the mental model `id`, created from `query` over the memories tagged `tags` on first use.
     fn brief(&self, id: &str, name: &str, query: &str, tags: &[String], signal: &Signal) -> Result<Option<Value>> {
         let model = self
@@ -1590,7 +1674,12 @@ impl MemoryService {
         }
         let content = model.get("content").and_then(Value::as_str).map(jsrt::string::trim);
         Ok(content.filter(|content| !content.is_empty()).map(|content| {
-            json!({"id": id, "content": content, "refreshedAt": model.get("last_refreshed_at").cloned().unwrap_or(Value::Null)})
+            // A backend without a model of its own names who wrote it (`writer`: dreaming); Hindsight names none.
+            let mut brief = json!({"id": id, "content": content, "refreshedAt": model.get("last_refreshed_at").cloned().unwrap_or(Value::Null)});
+            if let Some(writer) = model.get("writer").and_then(Value::as_str) {
+                brief["writer"] = writer.into();
+            }
+            brief
         }))
     }
 
@@ -1786,7 +1875,15 @@ impl MemoryService {
                 // Hindsight metadata values are strings.
                 metadata["ultron_quotes"] = Value::Array(quotes).to_string().into();
             }
-            let request = json!({
+            let spans: Vec<&Value> = evidence
+                .iter()
+                .map(|item| &item["ref"])
+                .filter(|r| r.as_str().is_some_and(|r| r.starts_with("session://")))
+                .collect();
+            if !spans.is_empty() {
+                metadata["ultron_spans"] = json!(spans).to_string().into();
+            }
+            let mut request = json!({
                 "async": true,
                 "operation_id": id,
                 "items": [{
@@ -1799,6 +1896,10 @@ impl MemoryService {
                     "metadata": metadata,
                 }],
             });
+            let files = self.quoted_files(quotes);
+            if !files.is_empty() {
+                request["items"][0]["evidence"] = Value::Array(files);
+            }
             let response = self
                 .backend
                 .retain(&request, signal)
@@ -2089,6 +2190,33 @@ fn payload_valid(kind: &str, payload: &Map<String, Value>) -> bool {
         }
         "memory.why" => kernel::ops::fields(kind, payload).is_ok() && string_min1(payload.get("taskId")),
         "memory.list" => payload.is_empty(),
+        "memory.dream" => {
+            kernel::ops::fields(kind, payload).is_ok()
+                && payload.get("project").is_none_or(|path| string_min1(Some(path)))
+                && payload
+                    .get("days")
+                    .is_none_or(|days| days.as_i64().is_some_and(|d| (0..=3650).contains(&d)))
+                && payload
+                    .get("limit")
+                    .is_none_or(|limit| limit.as_u64().is_some_and(|n| (1..=200).contains(&n)))
+        }
+        "memory.brief" => {
+            kernel::ops::fields(kind, payload).is_ok()
+                && payload.get("project").is_none_or(|path| string_min1(Some(path)))
+                && string_min1(payload.get("text"))
+                && optional_in(payload.get("scope"), &["project", "global"])
+                && payload
+                    .get("topic")
+                    .is_none_or(|t| t.as_str().is_some_and(crate::memory_records::is_kebab))
+        }
+        "memory.topic" => {
+            kernel::ops::fields(kind, payload).is_ok()
+                && payload.get("project").is_none_or(|path| string_min1(Some(path)))
+                && optional_in(payload.get("scope"), &["project", "global"])
+                && payload
+                    .get("topic")
+                    .is_none_or(|t| t.as_str().is_some_and(crate::memory_records::is_kebab))
+        }
         _ => false,
     }
 }
@@ -2107,6 +2235,21 @@ pub fn handle(
     if !payload_valid(kind, payload) {
         return Err(format!("Invalid memory request: {kind}"));
     }
+    // Over a curating backend (memorantado) a call's claim is at most tool evidence: only the host (dreaming's
+    // checks) marks one verified. Over Hindsight the TypeScript contract stands: a caller may name any class.
+    if service.backend.supports("claims") && payload.get("evidenceClass").and_then(Value::as_str) == Some("verified") {
+        return Err(format!(
+            "{kind}: evidenceClass \"verified\" is set only by the host's checks (dreaming), not by a call"
+        ));
+    }
+    if kind == "memory.brief"
+        && let Err(reason) = page_budget(
+            payload.get("text").and_then(Value::as_str).unwrap_or_default(),
+            payload.contains_key("topic"),
+        )
+    {
+        return Err(format!("memory.brief: {reason}"));
+    }
     let outcome = match kind {
         "memory.prepare" => service.prepare(payload, signal),
         "memory.propose" => service.propose(payload, signal),
@@ -2116,6 +2259,9 @@ pub fn handle(
         "memory.reflect" => service.reflect(payload, signal),
         "memory.invalidate" => service.invalidate(payload, signal),
         "memory.why" => service.why(payload.get("taskId").unwrap_or(&Value::Null)),
+        "memory.dream" => service.dream(payload, signal),
+        "memory.brief" => service.write_page(payload, signal),
+        "memory.topic" => service.topic(payload, signal),
         _ => service.list(),
     };
     outcome.map_err(|error| error.to_string())

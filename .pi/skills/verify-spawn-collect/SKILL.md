@@ -43,30 +43,30 @@ statechart skill (`/skill:statechart`).
 | config | what it is | expected |
 | --- | --- | --- |
 | `code_one_restart` | the code, one restart | all hold |
-| `code_two_restarts` | the code, two restarts | NeverReplayed holds; OneResult and KeepsRunning break (findings below) |
+| `code_two_restarts` | the code, two restarts | all hold |
 | `broken_replay` | restore re-runs an unfinished task (`REPLAY`) | NeverReplayed breaks |
-| `fix_two_restarts` | fix candidate: a reattached task stays `running` in the journal and its end is journaled (`JOURNAL_REATTACHED`) | all hold |
+| `broken_in_memory` | the code before the fix: a reattached task recorded `interrupted` when the journal reopens and its end kept in memory only (`JOURNAL_REATTACHED = FALSE`) | NeverReplayed holds; OneResult and KeepsRunning break |
 
-`broken_replay` shows NeverReplayed can fail; the findings show OneResult and KeepsRunning failing on the code itself.
+The broken variants show every rule can fail: `broken_replay` NeverReplayed, `broken_in_memory` the other two.
 
-## Findings (at the sync commit)
+## Findings (fixed)
 
-Both need two restarts while one subagent lives, and both were replayed against the code with session-core's
-`reopen_support` workers (three workers over one session, two hand-overs).
+Both needed two restarts while one subagent lives; they were found at `5b47a9e7` and replayed against the code with
+session-core's `reopen_support` workers (three workers over one session, two hand-overs). `broken_in_memory` keeps
+them as the model's evidence.
 
-1. **KeepsRunning breaks.** The root spawns a child; the worker hands over while the child runs; the next worker
-   reattaches it (`Delegation::restore`) but `TaskJournal::load` has already rewritten its record `interrupted`; that
-   worker hands over too while the child still runs; the third worker's `subagents::unfinished` reads `interrupted`, so
-   the child is not reattached and `DurableChildren::restore` aborts its conversation. Replay: the third worker's
-   `rlm.collect` returned `{"status": "interrupted", "error": "Owner ended; automatic replay is disabled"}` and the
-   child made no further model request.
-2. **OneResult breaks.** Same start; in the second worker the reattached child ends and the root's `rlm.collect`
-   returns `succeeded` (kept in memory only: `Delegation::end` does not journal a reattached task); after the next
-   hand-over the third worker's `rlm.collect` returns `interrupted` for the same child. Replay: exactly those two
-   results.
+1. **KeepsRunning broke.** The root spawns a child; the worker hands over while the child runs; the next worker
+   reattached it (`Delegation::restore`) but `TaskJournal::load` had already rewritten its record `interrupted`; that
+   worker handed over too while the child still ran; the third worker's `subagents::unfinished` read `interrupted`, so
+   the child was not reattached and `DurableChildren::restore` aborted its conversation.
+2. **OneResult broke.** Same start; in the second worker the reattached child ended and the root's `rlm.collect`
+   returned `succeeded` (kept in memory only: `Delegation::end` did not journal a reattached task); after the next
+   hand-over the third worker's `rlm.collect` returned `interrupted` for the same child.
 
-The `fix_two_restarts` config is a candidate fix, not a decision: it holds in the model; the code change and its tests
-are the owner's call. Do not edit product code from this skill.
+Fix: `TaskJournal::reopen` (crates/harness/src/task_store.rs) keeps the tasks `Delegation::restore` reattaches
+`running`, in the same write that records the others `interrupted`, and `Delegation::end` journals a reattached
+task's end as any child's. Regression tests: crates/session-core/tests/spawn_two_restarts.rs (both traces, real
+workers) and crates/harness/tests/task_reopen.rs.
 
 ## Bounds and what is left out
 
@@ -76,12 +76,14 @@ as distinct from collect (both read the same outcome), and journal write failure
 
 ## Coverage
 
-Sync commit: `5b47a9e7` (the model was last confirmed to describe the code at this commit).
+Sync commit: `5b47a9e7` plus the reattached-journal fix (N2 T4; move this to its commit once it lands). The model was
+last confirmed to describe the code there.
 
 - `crates/delegation/src/host.rs`: `Delegation::spawn` (admit, transition to running, child start), `Delegation::end`
-  (journal commit; the reattached branch kept in memory), `handle_with` `Request::Collect` / `Request::Results`.
+  (journal commit, a reattached task's too), `handle_with` `Request::Collect` / `Request::Results`.
 - `crates/delegation/src/host/restore.rs`: `Delegation::restore`, `run_restored`.
-- `crates/harness/src/task_store.rs`: `TaskJournal::load` (unfinished → interrupted), `admit`, `transition`.
+- `crates/harness/src/task_store.rs`: `TaskJournal::reopen` / `load` (unfinished → interrupted, reattached ones
+  kept running), `admit`, `transition`.
 - `crates/session-core/src/subagents.rs`: `unfinished`, `DurableChildren::restore`.
 - `crates/session-core/src/core.rs`: start-up order (`unfinished` before `children.restore`), `hand_over`.
 

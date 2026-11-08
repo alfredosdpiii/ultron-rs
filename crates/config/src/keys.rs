@@ -328,6 +328,9 @@ pub struct JudgeSettings {
     pub budget_usd: Option<f64>,
     /// `judge.maxCalls`: the backend calls one seat may make.
     pub max_calls: u64,
+    /// `judge.jev.pricePerMTok`: USD per million tokens (input and output) of a Jev answer that reports no cost;
+    /// unset, such an answer is unpriced. TypeSafe publishes no price this repository records.
+    pub jev_price_per_mtok: Option<f64>,
 }
 
 /// A confidence threshold: a number in 0..=1.
@@ -392,5 +395,75 @@ pub fn judge_settings(global: &Settings) -> JudgeSettings {
             .and_then(Value::as_f64)
             .filter(|n| n.is_finite() && *n > 0.0),
         max_calls: token_cap(field("maxCalls")).unwrap_or(JUDGE_DEFAULT_MAX_CALLS),
+        jev_price_per_mtok: object(field("jev"))
+            .and_then(|jev| jev.get("pricePerMTok"))
+            .and_then(Value::as_f64)
+            .filter(|n| n.is_finite() && *n >= 0.0),
     }
+}
+
+/// A non-empty trimmed string setting.
+fn text_setting(value: Option<&Value>) -> Option<String> {
+    value
+        .and_then(Value::as_str)
+        .map(jsrt::string::trim)
+        .filter(|text| !text.is_empty())
+        .map(str::to_string)
+}
+
+/// `graph.neo4j.database` and `graph.neo4j.user` when unset: Neo4j's own defaults.
+pub const NEO4J_DEFAULT_DATABASE: &str = "neo4j";
+pub const NEO4J_DEFAULT_USER: &str = "neo4j";
+
+/// `graph.neo4j.*` (Rust only, global only: it points at a service): the Neo4j server the knowledge store's relations
+/// and memory relations are mirrored to. Its password is never a setting (`NEO4J_PASSWORD`, else auth.json
+/// `neo4j`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Neo4jSettings {
+    /// `graph.neo4j.url`: the server's HTTP endpoint (`<url>/db/<database>/query/v2`).
+    pub url: String,
+    /// `graph.neo4j.database`.
+    pub database: String,
+    /// `graph.neo4j.user`.
+    pub user: String,
+}
+
+/// `graph.neo4j.*` of the global settings; `None` (no mirror) unless `graph.neo4j.url` is set.
+pub fn neo4j_settings(global: &Settings) -> Option<Neo4jSettings> {
+    let neo4j = object(object(global.get("graph"))?.get("neo4j"))?;
+    let url = text_setting(neo4j.get("url"))?.trim_end_matches('/').to_string();
+    Some(Neo4jSettings {
+        url,
+        database: text_setting(neo4j.get("database")).unwrap_or_else(|| NEO4J_DEFAULT_DATABASE.into()),
+        user: text_setting(neo4j.get("user")).unwrap_or_else(|| NEO4J_DEFAULT_USER.into()),
+    })
+}
+
+/// memorantado's REST API and project when `memory.memorantado.*` does not name them.
+pub const MEMORANTADO_DEFAULT_URL: &str = "http://127.0.0.1:3789/api";
+pub const MEMORANTADO_DEFAULT_PROJECT: &str = "ultron";
+
+/// The memorantado server memory lives in (global only).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MemorantadoSettings {
+    /// `memory.memorantado.url`: its REST API (`<url>/semantic-memories`).
+    pub url: String,
+    /// `memory.memorantado.project`.
+    pub project: String,
+}
+
+/// `memory.memorantado.*` of the global settings when `memory.backend` is `memorantado`, else `None`.
+pub fn memorantado_settings(global: &Settings) -> Option<MemorantadoSettings> {
+    let memory = object(global.get("memory"))?;
+    if text_setting(memory.get("backend")).as_deref() != Some("memorantado") {
+        return None;
+    }
+    let configured = object(memory.get("memorantado"));
+    let field = |key: &str| text_setting(configured.and_then(|c| c.get(key)));
+    Some(MemorantadoSettings {
+        url: field("url")
+            .map(|url| url.trim_end_matches('/').to_string())
+            .unwrap_or_else(|| MEMORANTADO_DEFAULT_URL.into()),
+        project: field("project").unwrap_or_else(|| MEMORANTADO_DEFAULT_PROJECT.into()),
+    })
 }

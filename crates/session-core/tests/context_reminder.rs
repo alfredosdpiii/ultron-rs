@@ -744,6 +744,7 @@ fn session_core_context_reminder_counts_an_attached_image() {
             settings: Some(settings(true)),
             vars: vars(&[]),
             files: vec![("dot.png", p_session_support::png(4, 3))],
+            ..Setup::default()
         },
     );
     a.prompt("look");

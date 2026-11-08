@@ -1,7 +1,8 @@
 //! Port of `packages/coding-agent/src/ultron/rlm/task-store.ts`: the session-scoped journal of RLM tasks
 //! (frames, spawns, agents). One owner per store; every change rewrites one JSON document and is
 //! published only after the write commits. A failed write poisons the journal; reopening turns
-//! unfinished tasks into `interrupted` and never replays them.
+//! unfinished tasks into `interrupted` and never replays them, except a subagent its new owner reattaches
+//! ([`TaskJournal::reopen`]), which stays `running` until its end is recorded.
 
 use std::fmt;
 
@@ -317,6 +318,19 @@ pub(crate) fn persisted_tasks(records: &[Task]) -> Vec<Task> {
         .collect()
 }
 
+/// An unfinished task as reopening records it: its owner ended, and it is never replayed.
+fn interrupted(task: Task) -> Task {
+    Task {
+        state: TaskState::Interrupted,
+        result: Some(json!({
+            "status": "interrupted",
+            "error": "Owner ended; automatic replay is disabled",
+            "verification": "unverified",
+        })),
+        ..task
+    }
+}
+
 fn random_task_id() -> String {
     format!("ultron-task-{}", jsrt::random::uuid_v4())
 }
@@ -330,6 +344,8 @@ pub struct TaskJournal<S> {
     /// keep their stored order and new ones follow.
     orders: std::collections::HashMap<String, Vec<String>>,
     loaded: Option<Result<(), TaskStoreError>>,
+    /// The tasks this owner recorded `interrupted` when it opened the journal, until [`TaskJournal::reopen`].
+    recovered: Vec<String>,
     broken: bool,
     mint: Box<dyn FnMut() -> String + Send>,
 }
@@ -346,6 +362,7 @@ impl<S: DocumentStore> TaskJournal<S> {
             records: Vec::new(),
             orders: std::collections::HashMap::new(),
             loaded: None,
+            recovered: Vec::new(),
             broken: false,
             mint,
         }
@@ -363,7 +380,9 @@ impl<S: DocumentStore> TaskJournal<S> {
         }
     }
 
-    fn load(&mut self) -> Result<(), TaskStoreError> {
+    /// Reads the stored document and records every unfinished task `interrupted`, except those `keep` accepts:
+    /// they stay unfinished as `running` (a subagent its new owner reattached). One write when anything changed.
+    fn load(&mut self, keep: &mut dyn FnMut(&Task) -> bool) -> Result<(), TaskStoreError> {
         let Some(saved) = self.store.read().map_err(|_| TaskStoreError::ReadFailed)? else {
             return Ok(());
         };
@@ -374,35 +393,72 @@ impl<S: DocumentStore> TaskJournal<S> {
             }
         }
         let unfinished = parsed.iter().any(|t| !t.state.is_terminal());
-        let recovered: Vec<Task> = parsed
+        let mut recovered = Vec::new();
+        let records: Vec<Task> = parsed
             .into_iter()
             .map(|task| {
                 if task.state.is_terminal() {
                     return task;
                 }
-                Task {
-                    state: TaskState::Interrupted,
-                    result: Some(json!({
-                        "status": "interrupted",
-                        "error": "Owner ended; automatic replay is disabled",
-                        "verification": "unverified",
-                    })),
-                    ..task
+                if keep(&task) {
+                    return Task {
+                        state: TaskState::Running,
+                        ..task
+                    };
                 }
+                recovered.push(task.id.clone());
+                interrupted(task)
             })
             .collect();
+        self.recovered = recovered;
         if unfinished {
-            self.write(recovered)
+            self.write(records)
         } else {
-            self.records = recovered;
+            self.records = records;
             Ok(())
         }
+    }
+
+    /// Opens the journal for a new owner: as the first use does, except that the unfinished tasks `keep` accepts
+    /// stay `running` instead of `interrupted`, in the same write. On a journal this owner already opened, the tasks
+    /// it recovered `interrupted` (and nothing has changed since) that `keep` accepts go back to `running`.
+    pub fn reopen(&mut self, keep: &mut dyn FnMut(&Task) -> bool) -> Result<Vec<Task>, TaskStoreError> {
+        self.assert_healthy()?;
+        if self.loaded.is_none() {
+            let outcome = self.load(keep);
+            self.loaded = Some(outcome);
+            self.loaded.clone().unwrap_or(Ok(()))?;
+            self.assert_healthy()?;
+            return Ok(self.records.clone());
+        }
+        self.begin()?;
+        let recovered = std::mem::take(&mut self.recovered);
+        let mut changed = false;
+        let next: Vec<Task> = self
+            .records
+            .iter()
+            .map(|task| {
+                if task.state == TaskState::Interrupted && recovered.contains(&task.id) && keep(task) {
+                    changed = true;
+                    return Task {
+                        state: TaskState::Running,
+                        result: None,
+                        ..task.clone()
+                    };
+                }
+                task.clone()
+            })
+            .collect();
+        if changed {
+            self.write(next)?;
+        }
+        Ok(self.records.clone())
     }
 
     /// Loads once; a failed load stays failed for this owner.
     fn ensure_loaded(&mut self) -> Result<(), TaskStoreError> {
         if self.loaded.is_none() {
-            let outcome = self.load();
+            let outcome = self.load(&mut |_| false);
             self.loaded = Some(outcome);
         }
         self.loaded.clone().unwrap_or(Ok(()))

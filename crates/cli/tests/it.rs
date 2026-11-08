@@ -11,8 +11,12 @@ mod executable_support;
 mod fake_proxy;
 #[path = "../../review/tests/github_common/mod.rs"]
 mod github_common;
+#[path = "../../hindsight/tests/common/mod.rs"]
+mod hindsight_common;
 #[path = "../../ai/tests/claude_subscription_support/isolate.rs"]
 mod isolate;
+#[path = "../../memorantado/tests/support/fake.rs"]
+mod memorantado_fake;
 mod radius_bridge;
 mod recorded_version;
 #[path = "../../kernel/tests/traceback_support/mod.rs"]
@@ -161,6 +165,8 @@ mod mcp_login;
 mod mcp_proxy;
 #[path = "memory_import.rs"]
 mod memory_import;
+#[path = "memory_migrate.rs"]
+mod memory_migrate;
 #[path = "models_flag.rs"]
 mod models_flag;
 #[path = "native_flags.rs"]
@@ -169,6 +175,8 @@ mod native_flags;
 mod native_run;
 #[path = "oauth_login_tui.rs"]
 mod oauth_login_tui;
+#[path = "optimize.rs"]
+mod optimize;
 #[path = "package_assets.rs"]
 mod package_assets;
 #[path = "package_dir.rs"]
@@ -221,6 +229,8 @@ mod sessions;
 mod setup_tui;
 #[path = "setup_wizard.rs"]
 mod setup_wizard;
+#[path = "skills_cli.rs"]
+mod skills_cli;
 #[path = "startup_checks.rs"]
 mod startup_checks;
 #[path = "startup_trace.rs"]

@@ -184,6 +184,8 @@ pub struct Setup {
     pub settings: Option<Value>,
     pub vars: Vec<(&'static str, String)>,
     pub files: Vec<(&'static str, Vec<u8>)>,
+    /// Files written under the agent directory before the session opens (its skills, say).
+    pub agent_files: Vec<(&'static str, Vec<u8>)>,
 }
 
 pub struct Actor {
@@ -215,6 +217,10 @@ pub fn actor(script: Script, setup: Setup) -> Actor {
     .unwrap();
     if let Some(settings) = &setup.settings {
         std::fs::write(agent_dir.join("settings.json"), settings.to_string()).unwrap();
+    }
+    for (name, bytes) in &setup.agent_files {
+        std::fs::create_dir_all(agent_dir.join(name).parent().unwrap()).unwrap();
+        std::fs::write(agent_dir.join(name), bytes).unwrap();
     }
     for (name, bytes) in &setup.files {
         std::fs::create_dir_all(cwd.join(name).parent().unwrap()).unwrap();

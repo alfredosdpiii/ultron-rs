@@ -19,6 +19,7 @@ blocking-http = { path = "../blocking-http" }
 kernel = { path = "../kernel" }
 loki = { path = "../loki" }
 mimalloc = { version = "=0.1.52", default-features = false }
+memorantado = { path = "../memorantado" }
 model-scope = { path = "../model-scope" }
 resources = { path = "../resources" }
 review = { path = "../review" }
@@ -38,6 +39,7 @@ reqwest = { version = "=0.13.5", default-features = false, features = ["rustls",
 jsrt = { path = "../jsrt" }
 judge = { path = "../judge" }
 kernel-apis = { path = "../kernel-apis" }
+optimize = { path = "../optimize" }
 sandbox = { path = "../sandbox" }
 session-core = { path = "../session-core" }
 server = { path = "../server" }

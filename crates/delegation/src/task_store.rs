@@ -19,6 +19,16 @@ impl TaskJournal {
         Ok(tasks.iter().map(|task| self.0.stored_json(task)).collect())
     }
 
+    /// Opens the journal for a new owner ([`harness::task_store::TaskJournal::reopen`]): the unfinished records
+    /// `keep` accepts stay `running`, every other unfinished one is recorded `interrupted`.
+    pub fn reopen(&mut self, mut keep: impl FnMut(&Value) -> bool) -> Result<Vec<Value>, String> {
+        let tasks = self
+            .0
+            .reopen(&mut |task| keep(&task.to_json()))
+            .map_err(|error| error.to_string())?;
+        Ok(tasks.iter().map(|task| self.0.stored_json(task)).collect())
+    }
+
     pub fn find(&mut self, id: &str) -> Option<Value> {
         self.list().ok()?.into_iter().find(|task| task["id"] == id)
     }

@@ -82,6 +82,7 @@ pub enum Slash {
     KeepGoing,
     Schedules,
     Clear,
+    Continue,
     Bug,
     ArminSaysHi,
     DementedElves,
@@ -89,7 +90,7 @@ pub enum Slash {
 
 impl Slash {
     /// Every command, in the order the editor's autocomplete lists them (the client TUI's, then the Rust-only ones).
-    pub const ALL: [Slash; 46] = [
+    pub const ALL: [Slash; 47] = [
         Slash::Name,
         Slash::Session,
         Slash::Usage,
@@ -133,6 +134,7 @@ impl Slash {
         Slash::KeepGoing,
         Slash::Schedules,
         Slash::Clear,
+        Slash::Continue,
         Slash::Bug,
         Slash::ArminSaysHi,
         Slash::DementedElves,
@@ -314,6 +316,12 @@ impl Slash {
                 "clear",
                 "",
                 "Clear the conversation: start a new session",
+                Tier::Overlay,
+            ),
+            Slash::Continue => (
+                "continue",
+                "[session id]",
+                "Start a new session that searches this one (or the session named) instead of a summary of it",
                 Tier::Overlay,
             ),
             // Pi's own (core/slash-commands.ts), which the client TUI does not offer.

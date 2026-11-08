@@ -8,6 +8,8 @@ mod agents_support;
 mod common;
 mod g3_support;
 mod live_support;
+#[path = "../../memorantado/tests/support/fake.rs"]
+mod memorantado_fake;
 mod memory_support;
 mod services_support;
 
@@ -141,6 +143,8 @@ mod a56_shell_job_ends;
 mod a56_shell_jobs;
 #[path = "after_cell_hooks.rs"]
 mod after_cell_hooks;
+#[path = "memory_rows_memorantado.rs"]
+mod memory_rows_memorantado;
 #[path = "spawn_fork.rs"]
 mod spawn_fork;
 #[path = "w22_persona_rpc.rs"]

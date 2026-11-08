@@ -121,3 +121,63 @@ fn session_core_clock_lines_open_conversations_and_follow_gaps() {
     assert!(with_clock_lines(&[answer(T0), user("y", T0 + 600_000)]).is_some());
     assert!(with_clock_lines(&[answer(T0), user("y", T0 + 599_999)]).is_none());
 }
+
+#[test]
+fn session_core_result_footer_formats_time_and_context() {
+    use session_core::lane::result_footer;
+    let start = 1_000_000;
+    assert_eq!(result_footer(start + 45_000, start, 0), "[t+45s]");
+    assert_eq!(result_footer(start + 724_000, start, 850), "[t+12m04s ctx 850]");
+    assert_eq!(
+        result_footer(start + 3 * 3_600_000 + 120_000, start, 41_499),
+        "[t+3h02m ctx 41k]"
+    );
+    assert_eq!(result_footer(start + 50 * 3_600_000, start, 41_500), "[t+2d2h ctx 42k]");
+    // A result stamped before the start (a clock change) counts as the start.
+    assert_eq!(result_footer(start - 5_000, start, 0), "[t+0s]");
+}
+
+#[test]
+fn session_core_result_footers_follow_the_stored_messages_and_never_change() {
+    use session_core::lane::add_result_footers;
+    let start = 1_000_000;
+    let call = |id: &str, input: u64| {
+        json!({"role": "assistant", "content": [{"type": "toolCall", "id": id, "name": "rlm", "arguments": {"code": "1"}}],
+            "api": "anthropic-messages", "provider": "anthropic", "model": "m",
+            "usage": {"input": input, "output": 10, "cacheRead": 2000, "cacheWrite": 0, "totalTokens": 0,
+                "cost": {"input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0, "total": 0}},
+            "stopReason": "toolUse", "timestamp": start})
+    };
+    let result = |id: &str, at: i64| {
+        json!({"role": "toolResult", "toolCallId": id, "toolName": "rlm", "content": [{"type": "text", "text": "ok"}],
+            "isError": false, "timestamp": at})
+    };
+    let messages = |n: usize| -> Vec<ai::Message> {
+        let all = [
+            call("a", 1000),
+            result("a", start + 5_000),
+            call("b", 3000),
+            result("b", start + 65_000),
+        ];
+        all[..n]
+            .iter()
+            .map(|m| serde_json::from_value(m.clone()).unwrap())
+            .collect()
+    };
+    let footers = |n: usize| -> Vec<String> {
+        let mut list = messages(n);
+        add_result_footers(&mut list, start);
+        list.iter()
+            .filter_map(|m| match m {
+                ai::Message::ToolResult(r) => match r.content.last() {
+                    Some(ai::UserContent::Text(t)) => Some(t.text.clone()),
+                    _ => None,
+                },
+                _ => None,
+            })
+            .collect()
+    };
+    assert_eq!(footers(2), ["[t+5s ctx 3k]"]);
+    // The next request keeps the first footer as it was.
+    assert_eq!(footers(4), ["[t+5s ctx 3k]", "[t+1m05s ctx 5k]"]);
+}

@@ -103,11 +103,11 @@ fn delegation_spawn_contract_refuses_malformed_options() {
         ),
         (
             json!({"contract": {"checks": [{"run": "x", "expect": "exit"}]}}),
-            "contract.checks[0].expect must be \"exit 0\" (or \"exit N\"), {\"exit\": N} or {\"stdout_contains\": \"text\"}",
+            "contract.checks[0].expect must be \"exit 0\" (or \"exit N\"), {\"exit\": N}, \"fail\" or {\"stdout_contains\": \"text\"}",
         ),
         (
             json!({"contract": {"checks": [{"run": "x", "expect": {"exit": 0, "stdout_contains": "a"}}]}}),
-            "contract.checks[0].expect must be \"exit 0\" (or \"exit N\"), {\"exit\": N} or {\"stdout_contains\": \"text\"}",
+            "contract.checks[0].expect must be \"exit 0\" (or \"exit N\"), {\"exit\": N}, \"fail\" or {\"stdout_contains\": \"text\"}",
         ),
         (
             json!({"contract": {"checks": [{"run": "x", "timeout_ms": 600_001}]}}),

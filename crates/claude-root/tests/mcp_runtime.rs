@@ -713,3 +713,70 @@ fn claude_root_mcp_keep_going_hooks_continue_working_runs_and_survive_a_restart(
     );
     next.close();
 }
+
+/// A d1 judge server answering every `/decide` with `q: noul 0.97`; how many calls it took.
+fn fake_d1() -> (String, Arc<Mutex<usize>>) {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let base = format!("http://127.0.0.1:{}", listener.local_addr().unwrap().port());
+    let calls: Arc<Mutex<usize>> = Arc::default();
+    let count = calls.clone();
+    std::thread::spawn(move || {
+        for stream in listener.incoming() {
+            let Ok(mut stream) = stream else { return };
+            let mut reader = BufReader::new(stream.try_clone().unwrap());
+            let mut length = 0;
+            loop {
+                let mut header = String::new();
+                if reader.read_line(&mut header).unwrap_or(0) == 0 || header.trim().is_empty() {
+                    break;
+                }
+                if let Some((k, v)) = header.split_once(':')
+                    && k.eq_ignore_ascii_case("content-length")
+                {
+                    length = v.trim().parse().unwrap_or(0);
+                }
+            }
+            let mut body = vec![0; length];
+            let _ = reader.read_exact(&mut body);
+            *count.lock().unwrap() += 1;
+            let answer = json!({"answers": {"q": {"noul": 0.97}}, "ms": 9.0}).to_string();
+            let head = format!(
+                "HTTP/1.1 200 OK\r\ncontent-length: {}\r\nconnection: close\r\n\r\n",
+                answer.len()
+            );
+            let _ = stream.write_all(head.as_bytes());
+            let _ = stream.write_all(answer.as_bytes());
+        }
+    });
+    (base, calls)
+}
+
+/// `judge.decide` in an `ultron claude` root (F1 wired it in native sessions): the root's cell asks the d1 judge the
+/// global settings name, and the call is a usage row of the server's Ultron session.
+#[test]
+fn claude_root_mcp_judge_decide_asks_the_configured_judge_and_records_its_usage() {
+    let root = Root::new();
+    let (base, calls) = fake_d1();
+    std::fs::write(
+        root.path("a/settings.json"),
+        json!({"judge": {"provider": ["d1"], "d1": {"url": base}}}).to_string(),
+    )
+    .unwrap();
+    let key = ["fake", "-d1-", "key"].concat();
+    let mut server = Server::start(&[], root.env(&[("ULTRON_D1_KEY", &key)]));
+    let printed = server.cell(
+        "import json\nv = await judge.decide('MEMORY: a', {'q': {'type': 'yesno', 'instructions': 'Still true?'}}, kind='memory')\nprint(json.dumps([v['rung'], v['backend'], v['answers']['q']['value']]))",
+    );
+    assert_eq!(printed, r#"["first", "d1", true]"#);
+    assert_eq!(*calls.lock().unwrap(), 1);
+    let session_path = server.running.opened().unwrap().session_path.clone();
+    let journal = std::fs::read_to_string(&session_path).unwrap();
+    let rows: Vec<Value> = journal
+        .lines()
+        .filter_map(|line| serde_json::from_str::<Value>(line).ok())
+        .filter(|line| line.to_string().contains("\"source\":\"judge\""))
+        .collect();
+    assert_eq!(rows.len(), 1, "{journal}");
+    assert!(!journal.contains(&key));
+    server.close();
+}

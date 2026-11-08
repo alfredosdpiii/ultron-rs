@@ -5,14 +5,17 @@
 //! Hindsight's banks, and keeps only what evidence backs, through the gated APIs (`memory.propose`,
 //! `memory.invalidate`, `skills.propose_code`), each change reversible. [`ensure`] reconciles the schedule to the
 //! settings on every start: run twice it changes nothing; `learn.dream: false` (or `ULTRON_DREAM=off`, for tests)
-//! cancels it.
+//! cancels it. A night with nothing new (no session changed since the last dream) passes without a model run
+//! ([`QuietDreams`]).
 
 use crate::catalog;
+use crate::prompt_schedules::{Deliver, Delivery};
+
 use jsrt::localtime::Zone;
 use kernel_apis::TickClock;
 use kernel_apis::prompt_schedule::{Kind, Schedule, State};
 use serde_json::Value;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 /// The dream session's id, in the instance directory.
@@ -118,6 +121,49 @@ pub fn ensure(
         module.put(&schedule)?;
         Ok(Some(schedule))
     })
+}
+
+/// Whether a session of `session_dir` other than the dream session `dream` changed after `since` (the dream's last
+/// run, ms); never dreamed is yes.
+pub fn changed_since(session_dir: &Path, dream: &str, since: Option<i64>) -> bool {
+    let Some(since) = since else {
+        return true;
+    };
+    catalog::list(session_dir)
+        .iter()
+        .any(|m| m.id != dream && m.modified_at > since as f64)
+}
+
+/// The scheduler's delivery with dreaming's quiet nights passed over: when the dream session's `dream` schedule is
+/// due and no other session changed since its last run, the slot is skipped in the journal (no prompt, so no
+/// model call) and the next night is due. Anything else, or a skip that cannot take the session's locks (its
+/// worker is running), is delivered as usual.
+pub struct QuietDreams {
+    pub inner: Arc<dyn Deliver>,
+    pub instance_dir: PathBuf,
+    pub session_dir: PathBuf,
+    pub clock: Arc<dyn TickClock>,
+}
+
+impl Deliver for QuietDreams {
+    fn fire(&self, meta: &catalog::Meta, id: &str, due: i64) -> Delivery {
+        let dream = session_id(&self.instance_dir, &self.session_dir).filter(|dream| *dream == meta.id);
+        let quiet = dream.is_some()
+            && kernel_apis::prompt_schedule::scan_journal(&meta.path)
+                .iter()
+                .find(|s| s.id == id && s.name == SCHEDULE_NAME)
+                .is_some_and(|s| !changed_since(&self.session_dir, &meta.id, s.last_fired));
+        if quiet {
+            let skipped = crate::prompt_schedules::in_journal(&meta.path, self.clock.clone(), |module| {
+                module.skip(id, due)?;
+                module.entries()
+            });
+            if let Ok(active) = skipped {
+                return Delivery::Done(Value::Array(active));
+            }
+        }
+        self.inner.fire(meta, id, due)
+    }
 }
 
 fn create_session(instance_dir: &Path, session_dir: &Path, cwd: &Path) -> Result<String, String> {

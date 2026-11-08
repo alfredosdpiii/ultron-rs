@@ -19,6 +19,7 @@ dependencies = [
  "kernel",
  "kernel-apis",
  "lanes",
+ "memorantado",
  "mimalloc",
  "protocol",
  "serde_json",
@@ -398,8 +399,10 @@ dependencies = [
  "knowledge",
  "loki",
  "mcp",
+ "memorantado",
  "mimalloc",
  "model-scope",
+ "optimize",
  "protocol",
  "regex",
  "reqwest",
@@ -633,6 +636,7 @@ dependencies = [
  "ai",
  "config",
  "harness",
+ "host",
  "jsonschema",
  "jsrt",
  "kernel",
@@ -640,6 +644,7 @@ dependencies = [
  "lanes",
  "model-scope",
  "regex",
+ "resources",
  "rustix",
  "serde",
  "serde_json",
@@ -1036,6 +1041,20 @@ checksum = "ee8cfcc411d9adbbaba82fb72661cc1bcca13e8bba98b364e62b2dba8f960159"
 dependencies = [
  "color_quant",
  "weezl",
+]
+
+[[package]]
+name = "graph"
+version = "0.1.0"
+dependencies = [
+ "blocking-http",
+ "config",
+ "jsrt",
+ "kernel",
+ "kernel-apis",
+ "knowledge",
+ "serde_json",
+ "tempfile",
 ]
 
 [[package]]
@@ -1827,6 +1846,20 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cf8baf1c55e62ffcace7a9f06f4bd9cd3f0c4beb022d3b367256b91b87513d98"
 
 [[package]]
+name = "memorantado"
+version = "0.1.0"
+dependencies = [
+ "blocking-http",
+ "config",
+ "jsrt",
+ "kernel",
+ "kernel-apis",
+ "serde_json",
+ "tempfile",
+ "url",
+]
+
+[[package]]
 name = "mimalloc"
 version = "0.1.52"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2048,6 +2081,23 @@ name = "openssl-probe"
 version = "0.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7c87def4c32ab89d880effc9e097653c8da5d6ef28e6b539d313baaacfbafcbe"
+
+[[package]]
+name = "optimize"
+version = "0.1.0"
+dependencies = [
+ "ai",
+ "blocking-http",
+ "config",
+ "delegation",
+ "jsrt",
+ "judge",
+ "kernel",
+ "kernel-apis",
+ "review",
+ "serde_json",
+ "tempfile",
+]
 
 [[package]]
 name = "os_pipe"
@@ -2445,6 +2495,7 @@ dependencies = [
  "kernel",
  "kernel-apis",
  "knowledge",
+ "loki",
  "model-scope",
  "regex",
  "ring",
@@ -2809,6 +2860,7 @@ dependencies = [
  "delegation",
  "diagram",
  "durable",
+ "graph",
  "harness",
  "hindsight",
  "host",
@@ -2819,9 +2871,11 @@ dependencies = [
  "judge",
  "kernel",
  "kernel-apis",
+ "knowledge",
  "lanes",
  "loki",
  "mcp",
+ "memorantado",
  "model-scope",
  "protocol",
  "regex",

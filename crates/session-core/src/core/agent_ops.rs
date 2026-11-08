@@ -1,7 +1,7 @@
 //! The agent hub's operations on the session actor (crate::agent_hub): steer, revive and read a subagent.
 
 use super::*;
-use crate::agent_hub::{child_conversation, child_task};
+use crate::agent_hub::{child_task, child_transcript};
 
 impl Core {
     /// [`Op::SteerAgent`]: the root lane's `agent_message.send` to its child `id`, delivered by steering.
@@ -62,20 +62,8 @@ impl Core {
 
     /// [`Op::AgentTranscript`]: the messages of subagent `id`'s child conversation, and whether it runs.
     pub(super) fn agent_transcript(&mut self, id: &str) -> Result<Value, String> {
-        let chat = &self.durable.chat;
-        let missing = || format!("No transcript for agent {id}");
-        let (task, _, state) = child_task(chat, &lanes::lane_names::child_lane(id)).ok_or_else(missing)?;
-        let conversation = child_conversation(chat, task, &state)
-            .and_then(|conversation| chat.conversation(conversation).ok().flatten())
-            .ok_or_else(missing)?;
-        let messages: Vec<Value> = conversation
-            .entries()
-            .map_err(|e| e.to_string())?
-            .iter()
-            .filter_map(|entry| entry.model.as_ref()?.first().cloned())
-            .filter(|message| matches!(message["role"].as_str(), Some("user" | "assistant" | "toolResult")))
-            .collect();
-        let live = chat.live(conversation.id).map_err(|e| e.to_string())?;
-        Ok(json!({"id": id, "busy": !live["run"].is_null(), "messages": messages}))
+        let (messages, busy) = child_transcript(&self.durable.chat, &lanes::lane_names::child_lane(id))
+            .ok_or_else(|| format!("No transcript for agent {id}"))?;
+        Ok(json!({"id": id, "busy": busy, "messages": messages}))
     }
 }

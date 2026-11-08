@@ -14,6 +14,7 @@
 mod restore;
 pub use restore::{ChildWaiter, Reattached};
 
+use crate::fork::SpawnContext;
 use crate::git_baseline::GitBaseline;
 use crate::spawn_contract::{CheckPlace, CheckRunner, Enforcer, SpawnContract, enforce, plain_check_runner};
 use crate::task_store::TaskJournal;
@@ -183,6 +184,8 @@ struct Task {
     model: Option<String>,
     started_at: Option<f64>,
     ended_at: Option<f64>,
+    /// Its `timeout_ms` (`None`: a reattached child whose run was not kept).
+    timeout_ms: Option<u64>,
     verdict: Option<Value>,
     verdict_rejections: u32,
     verdict_problems: Vec<String>,
@@ -234,6 +237,8 @@ struct Inner {
     limit_reason: Mutex<Option<LimitReason>>,
     /// Where a forked child starts (see [`Delegation::set_fork_point`]); none: `fork=True` is refused.
     fork_point: Mutex<Option<crate::fork::ForkPointHook>>,
+    /// A running child's transcript by lane, for `rlm.progress` (see [`Delegation::set_transcripts`]).
+    transcripts: Mutex<Option<crate::progress::TranscriptHook>>,
     /// The model of spawns that name none (see [`Delegation::set_child_model`]).
     child_model: Mutex<ChildModelSource>,
     /// Sees every subagent's terminal record (`onTaskEnd`).
@@ -476,6 +481,7 @@ impl Delegation {
                 merging: Mutex::new(()),
                 limit_reason: Mutex::new(None),
                 fork_point: Mutex::new(None),
+                transcripts: Mutex::new(None),
                 child_model: Mutex::new(Arc::new(|| None)),
                 on_task_end: Mutex::new(None),
                 on_spawn: Mutex::new(None),
@@ -520,6 +526,11 @@ impl Delegation {
     /// so far, before the call still running), which the runner receives as [`ChildRun::fork_at`].
     pub fn set_fork_point(&self, hook: crate::fork::ForkPointHook) {
         *self.inner.fork_point.lock().unwrap_or_else(PoisonError::into_inner) = Some(hook);
+    }
+
+    /// Where `rlm.progress` reads a running child's transcript (none: it reports levels from no activity).
+    pub fn set_transcripts(&self, hook: crate::progress::TranscriptHook) {
+        *self.inner.transcripts.lock().unwrap_or_else(PoisonError::into_inner) = Some(hook);
     }
 
     /// Read the model of spawns that name none from `source` at each spawn (TS `childModel` as a function: a
@@ -646,6 +657,10 @@ impl Delegation {
                     .map(public_task)
                     .collect();
                 Ok(json!({ "subagents": subagents }))
+            }
+            Request::Progress => {
+                let ids = self.selected(&payload, parent)?;
+                Ok(json!({ "subagents": self.progress(&ids) }))
             }
             Request::Collect | Request::Results => {
                 let collect = matches!(request, Request::Collect);
@@ -1093,17 +1108,15 @@ impl Delegation {
                 "worktree",
                 "worktree_setup",
                 "fork",
+                "context",
                 "role",
                 "contract",
                 "hop",
             ],
         )?;
         let contract = SpawnContract::parse(kwargs)?.map(Arc::new);
-        let fork = match kwargs.get("fork") {
-            None | Some(Value::Bool(false)) => false,
-            Some(Value::Bool(true)) => true,
-            Some(_) => return Err("fork must be True or False".into()),
-        };
+        let context = SpawnContext::of(kwargs.get("context"), kwargs.get("fork"))?;
+        let fork = context == SpawnContext::Fork;
         let fork_hook = self
             .inner
             .fork_point
@@ -1218,6 +1231,7 @@ impl Delegation {
                 model: model.clone(),
                 started_at: Some((self.inner.now)()),
                 ended_at: None,
+                timeout_ms: Some(timeout_ms),
                 verdict: None,
                 verdict_rejections: 0,
                 verdict_problems: Vec::new(),
@@ -1254,9 +1268,13 @@ impl Delegation {
                 Some(contract) => contract.prompt(&prompt),
                 None => prompt,
             };
-            let prompt = match &fork_at {
-                Some(_) => format!("{}\n\n{prompt}", crate::fork::FORK_BRIEF_NOTE),
-                None => prompt,
+            let prompt = match (&fork_at, context) {
+                (Some(_), _) => format!("{}\n\n{prompt}", crate::fork::FORK_BRIEF_NOTE),
+                (None, SpawnContext::Retrieve) => format!(
+                    "{}\n\n{prompt}",
+                    crate::fork::retrieve_brief_note(&self.inner.session_id)
+                ),
+                (None, _) => prompt,
             };
             (
                 inherited.map(|w| w.cwd.clone()),
@@ -1709,20 +1727,7 @@ impl Delegation {
                 None => "failed",
             }
             .to_string();
-            // A child reattached after a restart (`restore`: running again, never started by this host) is already
-            // terminal in the journal, which recorded it `interrupted` when it reopened (and keeps that first
-            // terminal record): its real end (a result, or a cancel) is the host's, kept in memory.
-            let reattached = state
-                .task(id)
-                .is_some_and(|t| t.started_at.is_none() && t.lane_name.is_some() && t.record["state"] == "running");
-            let committed = if reattached {
-                let mut record = state.task(id).map(|t| t.record.clone()).unwrap_or_default();
-                record["state"] = json!(terminal);
-                record["result"] = result;
-                Ok(record)
-            } else {
-                state.journal.transition(id, &terminal, Some(result))
-            };
+            let committed = state.journal.transition(id, &terminal, Some(result));
             let now = (self.inner.now)();
             let closed = state.closed;
             let owner_lane = {
@@ -1949,6 +1954,54 @@ impl Delegation {
             .filter(|t| selectors.is_empty() || selectors.contains(&t.id))
             .map(|t| t.id.clone())
             .collect())
+    }
+
+    /// `rlm.progress`: each of `ids` still running, with its level and forecasts ([`crate::progress::report`]).
+    fn progress(&self, ids: &[String]) -> Vec<Value> {
+        // Read under the lock; the transcripts are read after it (the runtime has locks of its own).
+        let running: Vec<Value> = {
+            let state = sync::lock(&self.inner.state);
+            ids.iter()
+                .filter_map(|id| state.task(id))
+                .filter(|t| t.outcome.is_none())
+                .map(|t| {
+                    json!({"id": t.id, "name": t.name, "lane": t.lane_name, "started": t.started_at,
+                        "timeout": t.timeout_ms})
+                })
+                .collect()
+        };
+        let hook = self
+            .inner
+            .transcripts
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone();
+        let now = (self.inner.now)();
+        running
+            .into_iter()
+            .map(|task| {
+                let messages = match (&hook, task["lane"].as_str()) {
+                    (Some(hook), Some(lane)) => hook(lane).unwrap_or_default(),
+                    _ => Vec::new(),
+                };
+                // A reattached child's start is not known here: its elapsed time counts from its first message.
+                let started = task["started"]
+                    .as_f64()
+                    .filter(|at| *at > 0.0)
+                    .or_else(|| {
+                        messages
+                            .iter()
+                            .filter_map(|m| m["timestamp"].as_f64())
+                            .find(|at| *at > 0.0)
+                    })
+                    .unwrap_or(now);
+                let timeout = task["timeout"].as_u64();
+                let mut entry = crate::progress::report(&messages, now, (now - started).max(0.0), timeout);
+                entry["id"] = task["id"].clone();
+                entry["name"] = task["name"].clone();
+                entry
+            })
+            .collect()
     }
 
     fn unfinished(&self, ids: &[String]) -> Vec<String> {
@@ -2197,6 +2250,7 @@ enum Request {
     Spawn,
     Finish,
     ListSubagents,
+    Progress,
     Collect,
     Results,
     DeleteSubagent,
@@ -2211,6 +2265,7 @@ impl Request {
             "rlm.spawn" => Request::Spawn,
             "rlm.finish" => Request::Finish,
             "rlm.list_subagents" => Request::ListSubagents,
+            "rlm.progress" => Request::Progress,
             "rlm.collect" => Request::Collect,
             "rlm.results" => Request::Results,
             "rlm.delete_subagent" => Request::DeleteSubagent,

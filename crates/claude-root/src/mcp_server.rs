@@ -511,6 +511,8 @@ fn open_runtime(
     };
     // The runtime counters (`/usage`, `ultron usage`) are the session value `ultron.module/stats` of a session whose
     // root is Claude Code (counting continues from a resumed one).
+    // `judge.decide` records its calls as usage rows of this session, as in a native one.
+    lane.stack.record_judge_rows_in(session.clone());
     lane.stack.stats.set_root("external");
     lane.stack
         .stats

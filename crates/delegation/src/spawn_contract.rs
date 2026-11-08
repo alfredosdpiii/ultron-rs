@@ -4,7 +4,7 @@
 //!
 //! `contract={"checks": [...], "returns": <JSON schema>}`. Checks, each an object with one kind:
 //!
-//! - `{"run": "<shell command>", "expect": "exit 0" | {"exit": N} | {"stdout_contains": s}, "timeout_ms": N}`: the
+//! - `{"run": "<shell command>", "expect": "exit 0" | {"exit": N} | "fail" | {"stdout_contains": s}, "timeout_ms": N}`: the
 //!   host runs the command in the child's working directory (its worktree with `worktree=True`, else the session's)
 //!   under the session's sandbox; `expect` defaults to exit 0, `timeout_ms` to 120 000 (at most 600 000);
 //! - `{"changed_files_within": [globs]}`: every file that changed in the child's working directory while it ran
@@ -81,6 +81,8 @@ fn is_dependency_file(path: &str) -> bool {
 #[derive(Clone, Debug, PartialEq)]
 pub enum Expect {
     Exit(i32),
+    /// Any nonzero exit: a test written to fail before the fix.
+    Fail,
     StdoutContains(String),
 }
 
@@ -154,10 +156,13 @@ fn integer(value: &Value) -> Option<i64> {
 
 fn parse_expect(value: Option<&Value>, at: &str) -> Result<Expect, String> {
     let wrong = || {
-        format!("{at}.expect must be \"exit 0\" (or \"exit N\"), {{\"exit\": N}} or {{\"stdout_contains\": \"text\"}}")
+        format!(
+            "{at}.expect must be \"exit 0\" (or \"exit N\"), {{\"exit\": N}}, \"fail\" or {{\"stdout_contains\": \"text\"}}"
+        )
     };
     match value {
         None | Some(Value::Null) => Ok(Expect::Exit(0)),
+        Some(Value::String(text)) if text.trim() == "fail" => Ok(Expect::Fail),
         Some(Value::String(text)) => {
             let code = text.trim().strip_prefix("exit").map(str::trim).ok_or_else(wrong)?;
             code.parse::<i32>().map(Expect::Exit).map_err(|_| wrong())
@@ -237,6 +242,7 @@ impl HostCheck {
             } => {
                 let expect = match expect {
                     Expect::Exit(code) => json!({ "exit": code }),
+                    Expect::Fail => json!("fail"),
                     Expect::StdoutContains(part) => json!({ "stdout_contains": part }),
                 };
                 json!({ "run": command, "expect": expect, "timeout_ms": timeout_ms })
@@ -614,6 +620,10 @@ fn run_check(check: &HostCheck, place: &CheckPlace<'_>, runner: &CheckRunner) ->
             };
             let (ok, evidence) = match expect {
                 Expect::Exit(code) => (outcome.error.is_none() && outcome.exit == Some(*code), ended.clone()),
+                Expect::Fail => (
+                    outcome.error.is_none() && outcome.exit.is_some_and(|code| code != 0),
+                    format!("{ended} (expected to fail)"),
+                ),
                 Expect::StdoutContains(part) => {
                     let found = outcome.error.is_none() && outcome.exit.is_some() && outcome.stdout.contains(part);
                     let said = if found { "contains" } else { "does not contain" };

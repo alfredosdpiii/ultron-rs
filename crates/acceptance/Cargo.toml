@@ -32,6 +32,7 @@ inference = { path = "../inference" }
 kernel = { path = "../kernel" }
 hindsight = { path = "../hindsight" }
 kernel-apis = { path = "../kernel-apis" }
+memorantado = { path = "../memorantado" }
 lanes = { path = "../lanes" }
 protocol = { path = "../protocol" }
 session-core = { path = "../session-core" }

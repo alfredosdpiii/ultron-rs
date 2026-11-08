@@ -172,6 +172,28 @@ impl TaskHost for SessionTasks<'_> {
     }
 }
 
+/// The transcript of the child that runs `lane` (its user, assistant and tool result messages) and whether it is
+/// busy now; `None` when it has no conversation.
+pub fn child_transcript(chat: &ChatHarness, lane: &str) -> Option<(Vec<Value>, bool)> {
+    let (task, _, state) = child_task(chat, lane)?;
+    let conversation = chat
+        .conversation(child_conversation(chat, task, &state)?)
+        .ok()
+        .flatten()?;
+    let messages = conversation
+        .entries()
+        .ok()?
+        .iter()
+        .filter_map(|entry| entry.model.as_ref()?.first().cloned())
+        .filter(|message| matches!(message["role"].as_str(), Some("user" | "assistant" | "toolResult")))
+        .collect();
+    let busy = chat
+        .live(conversation.id)
+        .ok()
+        .is_some_and(|live| !live["run"].is_null());
+    Some((messages, busy))
+}
+
 /// The durable child task that runs `lane` (finished or not): its id, input and state.
 pub fn child_task(chat: &ChatHarness, lane: &str) -> Option<(TaskId, ChildInput, TaskState)> {
     chat.commit(|tx| {

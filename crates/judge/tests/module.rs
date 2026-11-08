@@ -58,6 +58,14 @@ fn judge_decide_checks_its_payload() {
             json!({"state": "x".repeat(100_001), "questions": questions}),
             "over 100000 characters",
         ),
+        (
+            json!({"state": "s", "questions": questions, "expect": {"other": true}}),
+            "expect names no question: other",
+        ),
+        (
+            json!({"state": "s", "questions": questions, "expect": [true]}),
+            "expect must be {question: answer}",
+        ),
     ] {
         let got = call(&m, payload).unwrap_err();
         assert!(got.contains(error), "{got}");

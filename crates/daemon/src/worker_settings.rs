@@ -734,6 +734,34 @@ pub fn apply(
             nested(settings, "judge", "budgetUsd", budget);
             applied = Applied::Live;
         }
+        "judge.jev.pricePerMTok" => {
+            let price = match value {
+                Value::Null => None,
+                value => Some(json!(
+                    value
+                        .as_f64()
+                        .filter(|n| n.is_finite() && *n >= 0.0)
+                        .ok_or_else(|| format!(
+                            "{key} must be a number of US dollars per million tokens (or null to clear it)"
+                        ))?
+                )),
+            };
+            let mut jev = get(settings, &["judge", "jev"])
+                .and_then(Value::as_object)
+                .cloned()
+                .unwrap_or_default();
+            match price {
+                Some(price) => jev.insert("pricePerMTok".into(), price),
+                None => jev.shift_remove("pricePerMTok"),
+            };
+            nested(
+                settings,
+                "judge",
+                "jev",
+                (!jev.is_empty()).then_some(Value::Object(jev)),
+            );
+            applied = Applied::Live;
+        }
         "judge.maxCalls" => {
             let cap = match value {
                 Value::Null => None,

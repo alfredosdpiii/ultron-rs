@@ -65,6 +65,7 @@ fn review(root: &Path, runtime: PathBuf, base_env: Option<Vec<(String, String)>>
         frame_env: Default::default(),
         settings: Default::default(),
         kernel_env: Vec::new(),
+        modules: Vec::new(),
         base_env,
         log: None,
     })

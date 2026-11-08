@@ -538,6 +538,27 @@ impl ScheduleModule {
     }
 }
 
+impl ScheduleModule {
+    /// Pass over the due slot `due` of the repeating schedule `id` without running it (no run counted, `last_fired`
+    /// kept): its next slot after now. `None` when it is not due at `due`, or does not repeat.
+    pub fn skip(&self, id: &str, due: i64) -> Result<Option<Schedule>, String> {
+        let _writing = jsrt::sync::lock(&self.writing);
+        let now = self.now();
+        let Some(mut schedule) = self.all()?.into_iter().find(|s| s.id == id) else {
+            return Ok(None);
+        };
+        if !schedule.active() || schedule.next_due != Some(due) || due > now || schedule.kind != Kind::Every {
+            return Ok(None);
+        }
+        schedule.next_due = schedule.next_after(due, now);
+        if schedule.next_due.is_none() {
+            schedule.state = State::Done;
+        }
+        self.put(&schedule)?;
+        Ok(Some(schedule))
+    }
+}
+
 impl ApiModule for ScheduleModule {
     fn prefixes(&self) -> &[&str] {
         &["schedule."]

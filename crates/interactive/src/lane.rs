@@ -422,6 +422,8 @@ pub enum LaneCommand {
     /// Stop the run's retry wait (`abortRetry`); the run then ends with its error.
     AbortRetry,
     NewSession,
+    /// `/continue [id]`: a new session that continues session `id` (`None`: the current one) by searching its log.
+    ContinueSession(Option<String>),
     /// `/import <path>`: import the Pi session file at `path` through the server ([`LaneEvent::PiImported`] or a
     /// [`LaneEvent::Status`] error answers).
     ImportPi(String),

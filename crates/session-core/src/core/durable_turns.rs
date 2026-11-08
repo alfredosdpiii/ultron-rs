@@ -94,19 +94,27 @@ pub(super) fn open_durable(
         }
     }));
     let context = child_context.clone();
-    // Subagent lanes get clock lines as the root does (`clockLane`); typed agents and frames do not.
-    let clock = lane::clock_enabled(env).then(|| (lane::clock_zone(env), children.clone()));
+    // Subagent lanes get clock lines and result footers as the root does (`clockLane`); typed agents and frames do not.
+    let clock = lane::clock_enabled(env).then(|| lane::clock_zone(env));
+    let started = lock_session(session).metadata().created_at;
+    let footers = (lane::result_footer_enabled(env) && started > 0).then_some(started);
+    let subagents = children.clone();
     let transform: crate::turns::TransformChild = Arc::new(move |conversation, messages: &mut Vec<ai::Message>| {
         context.transform_request(conversation, messages);
-        if let Some((zone, children)) = &clock
-            && children.lane_of(conversation).is_some_and(|lane| {
-                matches!(
-                    lanes::lane_names::parse_lane(&lane),
-                    Some(lanes::lane_names::LaneOwner::Child(_))
-                )
-            })
-        {
+        let subagent = subagents.lane_of(conversation).is_some_and(|lane| {
+            matches!(
+                lanes::lane_names::parse_lane(&lane),
+                Some(lanes::lane_names::LaneOwner::Child(_))
+            )
+        });
+        if !subagent {
+            return;
+        }
+        if let Some(zone) = &clock {
             add_clock_lines(messages, zone);
+        }
+        if let Some(started) = footers {
+            lane::add_result_footers(messages, started);
         }
     });
     let mut options = child_chat_options(
@@ -675,6 +683,10 @@ impl Core {
             .collect();
         messages.extend(lane::to_llm(&history));
         messages.extend(lane::to_llm(&run));
+        let started = lock_session(&self.session).metadata().created_at;
+        if lane::result_footer_enabled(&self.env) && started > 0 {
+            lane::add_result_footers(&mut messages, started);
+        }
         // Old view_image results beyond the image budget leave the request (image-budget.ts).
         crate::view_images::apply_image_budget(&mut messages, self.runtime.config.context_images);
         Ok(messages)

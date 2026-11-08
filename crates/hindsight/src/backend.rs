@@ -275,6 +275,17 @@ impl HindsightBackend {
         self.call("/memories", "POST", Some(request), signal)
     }
 
+    /// One page of the bank's documents (`GET /documents?limit=&offset=`: `{items: [{id, ...}], total}`), for a
+    /// one-time move to another backend.
+    pub fn documents(&self, limit: u32, offset: u32, signal: &Signal) -> Result<Value, MemoryError> {
+        self.call(
+            &format!("/documents?limit={limit}&offset={offset}"),
+            "GET",
+            None,
+            signal,
+        )
+    }
+
     fn document(&self, prefix: &str, id: &str, method: &str, signal: &Signal) -> Result<Value, String> {
         let path = format!("/{prefix}/{}", segment(id).map_err(|e| e.code.to_string())?);
         self.call(&path, method, None, signal).map_err(|e| e.code.to_string())

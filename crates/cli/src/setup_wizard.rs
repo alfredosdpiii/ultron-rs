@@ -122,6 +122,8 @@ pub type TestModel = Arc<dyn Fn(&Env, &Model) -> ModelTestResult + Send + Sync>;
 pub type RunDocker = Arc<dyn Fn(&[String], &[(String, String)]) -> (bool, String) + Send + Sync>;
 /// One real call to a judge backend (`jev`, `d1`) of the profile: what answered and how fast, or why nothing did.
 pub type ProbeJudge = Arc<dyn Fn(&Env, &str) -> Result<String, String> + Send + Sync>;
+/// Whether a memorantado server answers at a URL (its health check).
+pub type ProbeMemorantado = Arc<dyn Fn(&str) -> bool + Send + Sync>;
 
 pub struct SetupDeps {
     /// The profile: its agent dir holds settings.json, auth.json and models.json; `var` is the environment.
@@ -143,6 +145,8 @@ pub struct SetupDeps {
     pub loki_version: Option<String>,
     /// The judge seat step's probe; `None` leaves the step out (the TypeScript-parity build, `ULTRON_TUI_PARITY=1`).
     pub probe_judge: Option<ProbeJudge>,
+    /// The memory backend step's probe; `None` leaves the step out (as `probe_judge`).
+    pub probe_memorantado: Option<ProbeMemorantado>,
 }
 
 impl SetupDeps {
@@ -219,11 +223,14 @@ impl ProfileRuntime {
     }
 }
 
-/// `Step n/total: title`; without the judge step (the TypeScript-parity build) the later steps move up one.
+/// `Step n/total: title`; without the judge step (the TypeScript-parity build) the later steps move up one, and
+/// the memory backend step (before Hindsight, when there is one) moves the steps from Hindsight on down one.
 fn step_title(deps: &SetupDeps, index: usize, title: &str) -> String {
     let judge = usize::from(deps.probe_judge.is_some());
-    let (index, total) = (if index > 4 { index - 1 + judge } else { index }, 5 + judge);
-    format!("Step {index}/{total}: {title}")
+    let memory = usize::from(deps.probe_memorantado.is_some());
+    let index = if index > 4 { index - 1 + judge } else { index };
+    let index = if index >= 3 { index + memory } else { index };
+    format!("Step {index}/{}: {title}", 5 + judge + memory)
 }
 
 fn describe(model: &Model) -> String {
@@ -244,6 +251,9 @@ pub fn run_setup_wizard<U: SetupUi>(ui: &mut U, deps: &mut SetupDeps) -> SetupRe
         let (model_line, ready) = provider_step(ui, deps)?;
         lines.push(model_line);
         model_ready = ready;
+        if deps.probe_memorantado.is_some() {
+            lines.push(memory_backend_step(ui, deps)?);
+        }
         lines.push(hindsight_step(ui, deps)?);
         if deps.probe_judge.is_some() {
             lines.push(judge_step(ui, deps)?);
@@ -822,6 +832,105 @@ fn probe<U: SetupUi>(
 ) -> Result<Result<(), String>, SetupQuit> {
     let (fetch, url) = (deps.fetch.clone(), url.to_string());
     ui.busy(&message, move || setup_core::probe_hindsight(&url, &fetch))
+}
+
+const MEMORY_BACKEND: &str = "Memory backend";
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum BackendAction {
+    Memorantado,
+    Hindsight,
+    Automatic,
+    Url,
+    Skip,
+}
+
+/// Saves `memory.backend` (`None` removes it: chosen at each start), keeping the other `memory.*` settings.
+fn save_backend(deps: &mut SetupDeps, choice: Option<memorantado::Choice>) {
+    deps.settings
+        .set_global_nested("memory", "backend", choice.map(|c| Value::String(c.as_str().into())));
+}
+
+/// Which memory server `memory.*`, automatic memory and dreaming use: memorantado (claims with keys, curation,
+/// file evidence; dreaming writes its briefs) or Hindsight (its own model writes briefs); unset, memorantado when
+/// it answers at the start of a session, else Hindsight.
+fn memory_backend_step<U: SetupUi>(ui: &mut U, deps: &mut SetupDeps) -> Result<SummaryLine, SetupQuit> {
+    let judge = usize::from(deps.probe_judge.is_some());
+    ui.heading(&format!("Step 3/{}: Memory backend", 6 + judge));
+    ui.note(
+        "Memory lives in memorantado (scoped claims that dreaming re-checks against your files) or in Hindsight. Unset, each session uses memorantado when it answers, else Hindsight.",
+        Tone::Info,
+    );
+    let Some(probe) = deps.probe_memorantado.clone() else {
+        return Ok(line(MEMORY_BACKEND, "skipped", "no probe"));
+    };
+    loop {
+        let current = memorantado::resolve::choice(&deps.settings);
+        let Some(endpoint) = memorantado::Endpoint::configured(&|name| deps.var(name), &deps.settings) else {
+            ui.note("memorantado is turned off (ULTRON_MEMORANTADO_URL).", Tone::Info);
+            return Ok(line(MEMORY_BACKEND, "unchanged", "Hindsight (memorantado off)"));
+        };
+        let url = endpoint.url;
+        let (target, probe) = (url.clone(), probe.clone());
+        let up = ui.busy(&format!("Looking for memorantado at {url}…"), move || probe(&target))?;
+        ui.note(
+            &if up {
+                format!("✓ memorantado is running at {url}.")
+            } else {
+                format!("memorantado is not reachable at {url}.")
+            },
+            if up { Tone::Success } else { Tone::Warning },
+        );
+        let now = current.map_or("chosen at each start", memorantado::Choice::as_str);
+        ui.note(&format!("memory.backend: {now}."), Tone::Dim);
+        let mut choices = Vec::new();
+        if up {
+            choices.push((
+                Choice::described("Use memorantado", "saves memory.backend: memorantado"),
+                BackendAction::Memorantado,
+            ));
+        }
+        choices.extend([
+            (
+                Choice::described("Use Hindsight", "saves memory.backend: hindsight"),
+                BackendAction::Hindsight,
+            ),
+            (
+                Choice::described("Choose at each start", "memorantado when it answers, else Hindsight"),
+                BackendAction::Automatic,
+            ),
+            (
+                Choice::new("memorantado runs elsewhere: set its URL"),
+                BackendAction::Url,
+            ),
+            (Choice::new("Skip"), BackendAction::Skip),
+        ]);
+        let (choice, detail) = match pick(ui, "Memory backend", &choices, None)? {
+            None | Some(BackendAction::Skip) => return Ok(line(MEMORY_BACKEND, "skipped", now)),
+            Some(BackendAction::Url) => {
+                let options = InputOptions {
+                    initial: Some(url.clone()),
+                    validate: Some(Box::new(setup_core::validate_base_url)),
+                    ..Default::default()
+                };
+                let Some(input) = ui.input("memorantado URL", options)? else {
+                    continue;
+                };
+                let input = input.trim().trim_end_matches('/').to_string();
+                deps.settings
+                    .set_global(memorantado::resolve::URL_SETTING, Some(Value::String(input)));
+                continue;
+            }
+            Some(BackendAction::Memorantado) => {
+                (Some(memorantado::Choice::Memorantado), format!("memorantado at {url}"))
+            }
+            Some(BackendAction::Hindsight) => (Some(memorantado::Choice::Hindsight), "Hindsight".to_string()),
+            Some(BackendAction::Automatic) => (None, "chosen at each start".to_string()),
+        };
+        let status = if choice == current { "unchanged" } else { "configured" };
+        save_backend(deps, choice);
+        return Ok(line(MEMORY_BACKEND, status, detail));
+    }
 }
 
 fn hindsight_step<U: SetupUi>(ui: &mut U, deps: &mut SetupDeps) -> Result<SummaryLine, SetupQuit> {
@@ -1643,5 +1752,13 @@ pub fn create_setup_deps(env: &Env) -> SetupDeps {
                 judge::bench::probe(&seat, backend, &kernel::Signal::new())
             }) as ProbeJudge
         }),
+        probe_memorantado: ((env.var)(interactive::qol::PARITY_ENV).as_deref().map(str::trim) != Some("1")).then(
+            || {
+                Arc::new(|url: &str| {
+                    memorantado::ReqwestTransport::new()
+                        .is_ok_and(|transport| memorantado::resolve::answers(&transport, url))
+                }) as ProbeMemorantado
+            },
+        ),
     }
 }

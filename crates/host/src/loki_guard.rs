@@ -1,7 +1,9 @@
 //! Ultron's built-in Loki guardrails (ultron/loki.ts `LokiGuard`), running the Rust Loki engine in-process instead of
 //! `python loki.py`:
 //! - before `edit()`/`write()` change a file: `protect --file <path> --preview ultron` on the proposed content; a
-//!   finding blocks the write (with `advise`, it is only reported);
+//!   finding blocks the write (with `advise`, it is only reported). Borderline: a credential found only in a test,
+//!   fixture or example file is asked about instead ([`Verdict::Ask`]: the write is made and the judge seat, else the
+//!   user, says whether it is a real credential);
 //! - before a shell command that may write files: `shell-writes`, which refuses a write into source or configuration
 //!   that would skip the before-write check;
 //! - after a cell, on the files it changed by other means (`hook --file ... --format json`): new findings to fix,
@@ -45,6 +47,31 @@ fn loki_file_as_committed(root: &Path, relative: &str) -> bool {
             .is_ok_and(|status| status.success())
     };
     git(&["ls-files", "--error-unmatch", "--", relative]) && git(&["diff", "--quiet", "HEAD", "--", relative])
+}
+
+/// Directories and file names of tests, fixtures and examples, where a credential-shaped value is often a sample.
+const SAMPLE_DIRS: [&str; 9] = [
+    "test",
+    "tests",
+    "spec",
+    "fixture",
+    "fixtures",
+    "testdata",
+    "__tests__",
+    "example",
+    "examples",
+];
+
+/// A refusal that is only credentials in a test, fixture or example file: a sample value as often as a real one.
+pub fn borderline(relative: &str, blocking: &[String]) -> bool {
+    let mut parts: Vec<&str> = relative.split('/').collect();
+    let name = parts.pop().unwrap_or_default().to_lowercase();
+    let sample = parts
+        .iter()
+        .any(|dir| SAMPLE_DIRS.contains(&dir.to_lowercase().as_str()))
+        || name.starts_with("test_")
+        || [".test.", ".spec.", "_test."].iter().any(|mark| name.contains(mark));
+    sample && !blocking.is_empty() && blocking.iter().all(|line| line.contains(": loki/secret: "))
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -271,6 +298,13 @@ impl FileWriteGuard for LokiGuard {
             }
         };
         if report.blocked() {
+            if self.mode == LokiMode::On && borderline(&relative, &report.blocking) {
+                return Ok(Verdict::Ask(format!(
+                    "Loki found what looks like a credential in a test, fixture or example file:\n{}\nIs it a real \
+                     credential that must not be committed (yes), or a test or sample value (no)?",
+                    report.blocking.join("\n")
+                )));
+            }
             return Ok(self.refused(
                 report.refusal_lines().join("\n"),
                 "would block this write (advise-only mode)",

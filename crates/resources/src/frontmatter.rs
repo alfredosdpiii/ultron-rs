@@ -1,5 +1,6 @@
 //! YAML frontmatter, as utils/frontmatter.ts parses it.
 
+use serde_json::Value;
 use yaml_rust2::{Yaml, YamlLoader};
 
 /// Frontmatter and body of a markdown file. `frontmatter` is `Yaml::Null` when there is none.
@@ -47,6 +48,31 @@ pub fn strip(content: &str) -> Result<String, String> {
 
 pub fn string_field<'a>(frontmatter: &'a Yaml, key: &str) -> Option<&'a str> {
     frontmatter[key].as_str()
+}
+
+/// A YAML value as JSON (keys as text; aliases and bad values become null).
+pub fn to_json(value: &Yaml) -> Value {
+    match value {
+        Yaml::Real(text) => text.parse::<f64>().map(Value::from).unwrap_or(Value::Null),
+        Yaml::Integer(number) => Value::from(*number),
+        Yaml::String(text) => Value::String(text.clone()),
+        Yaml::Boolean(flag) => Value::Bool(*flag),
+        Yaml::Array(items) => Value::Array(items.iter().map(to_json).collect()),
+        Yaml::Hash(map) => Value::Object(
+            map.iter()
+                .map(|(key, value)| {
+                    let key = match key {
+                        Yaml::String(text) | Yaml::Real(text) => text.clone(),
+                        Yaml::Integer(number) => number.to_string(),
+                        Yaml::Boolean(flag) => flag.to_string(),
+                        _ => "null".into(),
+                    };
+                    (key, to_json(value))
+                })
+                .collect(),
+        ),
+        _ => Value::Null,
+    }
 }
 
 #[cfg(test)]

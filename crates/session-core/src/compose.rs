@@ -62,8 +62,9 @@ pub type McpListener = Arc<dyn Fn(&Arc<mcp::gateway::Gateway>) + Send + Sync>;
 /// Collaborators a caller may supply in place of the defaults (tests, embedders).
 #[derive(Clone, Default)]
 pub struct Services {
-    /// The memory backend behind `memory.*`; none: the Hindsight server and bank this process resolves
-    /// ([`hindsight::Endpoint`]), or memory off ("Hindsight is not configured") when that resolves to off.
+    /// The memory backend behind `memory.*`; none: the memorantado server this process chose
+    /// ([`memorantado::Endpoint::choose`]), else the Hindsight server and bank it resolves ([`hindsight::Endpoint`]),
+    /// or memory off ("Hindsight is not configured") when that resolves to off.
     pub memory: Option<Arc<dyn MemoryBackend>>,
     /// Told the session's MCP gateway once its stack opens (the session worker serves `/mcp` with it).
     pub on_mcp: Option<McpListener>,
@@ -663,9 +664,12 @@ pub struct Runtime {
     /// The Hindsight server and bank every instance shares (`ULTRON_HINDSIGHT_URL`, the global `hindsightUrl`
     /// setting, else localhost:8888; `ULTRON_HINDSIGHT_BANK`, else "ultron"); `None`: memory is off.
     pub hindsight: Option<hindsight::Endpoint>,
-    /// Whether that server was set explicitly (`ULTRON_HINDSIGHT_URL` or the `hindsightUrl` setting), not the
-    /// default: automatic memory defaults to it (crate::auto_memory).
-    pub hindsight_explicit: bool,
+    /// The memorantado server memory uses instead, when `memory.backend` says so or (unset) it answered at start.
+    pub memorantado: Option<memorantado::Endpoint>,
+    /// Whether the memory server was set explicitly (`ULTRON_HINDSIGHT_URL` or the `hindsightUrl` setting;
+    /// `memory.backend: memorantado`, `ULTRON_MEMORANTADO_URL` or `memorantadoUrl`), not a default: automatic
+    /// memory defaults to it (crate::auto_memory).
+    pub memory_explicit: bool,
 }
 
 impl Runtime {
@@ -691,6 +695,13 @@ impl Runtime {
         let (hindsight_url, source) = hindsight::resolve::resolve_in(&*env.var, &manager);
         let hindsight_explicit = source != hindsight::resolve::Source::Default;
         let hindsight = hindsight::Endpoint::at(hindsight_url, &*env.var);
+        let memorantado = memorantado::Endpoint::choose(&*env.var, &manager, hindsight.is_none(), &|url| {
+            blocking_http::ReqwestTransport::new().is_ok_and(|transport| memorantado::resolve::answers(&transport, url))
+        });
+        let memorantado_explicit = memorantado.is_some()
+            && (memorantado::resolve::choice(&manager) == Some(memorantado::Choice::Memorantado)
+                || (env.var)(memorantado::resolve::MEMORANTADO_URL_ENV).is_some()
+                || memorantado::resolve::setting_url(&manager).is_some());
         // The `mcp` gateway lives in the REPL: the runtime guide lists it with its servers (`mcpServerNames`).
         let runtime_guide = mcp_runtime_guide(&config);
         let system = match &services.session.system_prompt {
@@ -714,7 +725,8 @@ impl Runtime {
             sessions_dir,
             mode: mode.to_string(),
             hindsight,
-            hindsight_explicit,
+            memorantado,
+            memory_explicit: hindsight_explicit || memorantado_explicit,
         })
     }
 
@@ -760,14 +772,27 @@ impl Runtime {
         ));
         // In engineering mode, the skill that fits a cell's file changes comes with its result
         // (crate::situational_skills).
+        // Skill procedures in progress (`skills.run`, delegation::skill_runs) watch each cell for changes outside the
+        // current segment's files.
+        let skill_runs = Arc::new(delegation::skill_runs::RunBook::default());
         let observers = self
             .memory_pointers(session_id, &memory_records)
             .into_iter()
             .chain(self.situational_skills())
+            .chain(Some(skill_runs.clone() as Arc<dyn host::file_hooks::CellObserver>))
             .collect();
+        // Loki's borderline writes go to the session's judge seat, set once the modules below are built.
+        let judge_slot: Arc<std::sync::OnceLock<Arc<judge::JudgeModule>>> = Arc::default();
         let host = Arc::new(
-            self.host_in(&config.cwd, session_id, "bash", Some(&stats), observers)?
-                .with_journal(jobs)?,
+            self.host_in(
+                &config.cwd,
+                session_id,
+                "bash",
+                Some(&stats),
+                observers,
+                Some(crate::session_judge::loki_asker(judge_slot.clone())),
+            )?
+            .with_journal(jobs)?,
         );
         crate::guard_log::loki_setup(&config);
         // `createSessionModuleStore(session, name)`: the session value `ultron.module/<name>`.
@@ -785,18 +810,20 @@ impl Runtime {
         };
         // TS createWorkerServices: a configured server gives every session a backend tagged with the session, its
         // project directory and the home directory; an invalid URL fails the session as it does there.
-        let backend = match (&self.services.memory, &self.hindsight) {
-            (Some(backend), _) => Some(backend.clone()),
-            (None, Some(endpoint)) => Some(Arc::new(
+        let (cwd, home) = (config.cwd.display().to_string(), config.home.display().to_string());
+        let backend = match (&self.services.memory, &self.memorantado, &self.hindsight) {
+            (Some(backend), _, _) => Some(backend.clone()),
+            (None, Some(endpoint), _) => Some(Arc::new(
                 endpoint
-                    .session_backend(
-                        session_id,
-                        &config.cwd.display().to_string(),
-                        &config.home.display().to_string(),
-                    )
+                    .session_backend(session_id, &cwd, &home)
                     .map_err(|e| e.to_string())?,
             ) as Arc<dyn MemoryBackend>),
-            (None, None) => None,
+            (None, None, Some(endpoint)) => Some(Arc::new(
+                endpoint
+                    .session_backend(session_id, &cwd, &home)
+                    .map_err(|e| e.to_string())?,
+            ) as Arc<dyn MemoryBackend>),
+            (None, None, None) => None,
         };
         let memory = match &backend {
             Some(backend) => Some(
@@ -872,24 +899,51 @@ impl Runtime {
         let root_model = Arc::new(Mutex::new(model.clone()));
         // `judge.decide` settles in the session's usage ledger, built with the stack below.
         let judge_ledger: Arc<std::sync::OnceLock<UsageLedger>> = Arc::default();
+        // Its usage rows go to the session's values (set later by a composer that keeps them elsewhere).
+        let judge_rows: Arc<std::sync::OnceLock<services::SessionValues>> = Arc::default();
+        if let Some(values) = &values {
+            let _ = judge_rows.set(values.clone());
+        }
+        let judge = judge_slot
+            .get_or_init(|| {
+                Arc::new(crate::session_judge::module(
+                    &config,
+                    root_model.clone(),
+                    keys.clone(),
+                    judge_rows.clone(),
+                    judge_ledger.clone(),
+                ))
+            })
+            .clone();
+        let skills = Arc::new(SkillsModule::new(modules("skills"), loader, clock.clone(), Some(code)));
+        // A skill procedure's `check` commands run as spawn contract checks do, with the stack's check runner.
+        let skill_checks: Arc<std::sync::OnceLock<delegation::spawn_contract::CheckRunner>> = Arc::default();
         let apis = ApiModules {
             local: Arc::new(services::LocalServicesModule {
                 services: local,
                 branch,
             }),
             gates: Arc::new(services::ReleaseGateModule::new(modules("release-gates"), None)),
-            skills: Arc::new(SkillsModule::new(modules("skills"), loader, clock.clone(), Some(code))),
-            memory: Arc::new(MemoryApi { service: memory }),
+            procedures: Arc::new(delegation::skill_runs::SkillRuns {
+                book: skill_runs,
+                skills: skills.clone(),
+                judge: judge.clone(),
+                cwd: config.cwd.clone(),
+                env: config.child_env(),
+                runner: skill_checks.clone(),
+                proposals: config::paths::AgentPaths::new(&config.agent_dir).skill_proposals(),
+                session_id: Some(session_id.to_string()),
+                now: clock.clone(),
+            }),
+            skills,
+            memory: Arc::new(MemoryApi {
+                service: memory.map(|memory| memory.with_judge(crate::session_judge::decider(judge.clone()))),
+            }),
             hints: Arc::new(HintsModule::new(modules("hints"))),
             images: Arc::new(crate::session_images::module(&config, session_id)),
             diagram: Arc::new(crate::session_diagrams::module(&config, session_id, images.clone())),
-            judge: Arc::new(crate::session_judge::module(
-                &config,
-                root_model.clone(),
-                keys.clone(),
-                values.clone(),
-                judge_ledger.clone(),
-            )),
+            judge,
+            knowledge: Arc::new(crate::session_knowledge::module(&config)),
             schedule: Arc::new(kernel_apis::prompt_schedule::ScheduleModule::new(
                 match &values {
                     Some(values) => Box::new(values.keyed(kernel_apis::prompt_schedule::NAMESPACE)),
@@ -1062,6 +1116,7 @@ impl Runtime {
             options.model_check = Some(config.model_check());
             // Spawn contract `run` checks run under the session's shell sandbox, in the child's working directory.
             options.check_runner = crate::contract_checks::check_runner(me.clone());
+            let _ = skill_checks.set(options.check_runner.clone());
             // Contract baselines run git with the session's environment (its PATH finds git).
             options.command_env = config.child_env();
             let (delegation, child_ends) = Delegation::new(options);
@@ -1167,6 +1222,7 @@ impl Runtime {
                 context_reminders,
                 lane_steer: Arc::new(std::sync::OnceLock::new()),
                 stats,
+                judge_rows,
                 retired_guards: Mutex::new(Vec::new()),
                 wake,
                 memory_children: memory_children_on,
@@ -1198,6 +1254,7 @@ impl Runtime {
         cwd: &Path,
         stats: Option<&Arc<SessionStats>>,
         observers: Vec<Arc<dyn host::file_hooks::CellObserver>>,
+        asker: Option<host::file_hooks::Asker>,
     ) -> FileHooks {
         let record = stats.map(|stats| {
             let stats = stats.clone();
@@ -1213,6 +1270,9 @@ impl Runtime {
         let hooks = self.config.file_hooks_in(cwd, record);
         for observer in observers {
             hooks.observe(observer);
+        }
+        if let Some(asker) = asker {
+            hooks.on_ask(asker);
         }
         hooks
     }
@@ -1254,14 +1314,14 @@ impl Runtime {
         records: &Arc<kernel_apis::memory_records::RecordIndex>,
     ) -> Option<Arc<dyn host::file_hooks::CellObserver>> {
         let config = &self.config;
-        let filters = match (&self.services.memory, &self.hindsight) {
-            (Some(backend), _) => backend.scope_tags(),
-            (None, Some(_)) => hindsight::worker_scope_tags(
+        let filters = match &self.services.memory {
+            Some(backend) => backend.scope_tags(),
+            None if self.memorantado.is_some() || self.hindsight.is_some() => kernel_apis::memory::worker_scope_tags(
                 session_id,
                 &config.cwd.display().to_string(),
                 &config.home.display().to_string(),
             ),
-            (None, None) => return None,
+            None => return None,
         };
         kernel_apis::memory_pointers::session_pointers(&config.settings, records.clone(), filters)
     }
@@ -1275,6 +1335,7 @@ impl Runtime {
         spill: &str,
         stats: Option<&Arc<SessionStats>>,
         observers: Vec<Arc<dyn host::file_hooks::CellObserver>>,
+        asker: Option<host::file_hooks::Asker>,
     ) -> Result<Host, String> {
         let config = &self.config;
         let jobs_dir = self.sessions_dir.join("rlm-jobs").join(session_id);
@@ -1294,7 +1355,7 @@ impl Runtime {
             cwd,
             jobs_dir,
             spill_dir,
-            Box::new(self.file_hooks_in(cwd, stats, observers)),
+            Box::new(self.file_hooks_in(cwd, stats, observers, asker)),
         )
         .with_shell_path(shell_path)
         // The session's environment, never the server's: its PATH finds the shell, the sandbox and the tools.
@@ -1331,11 +1392,13 @@ struct ApiModules {
     local: Arc<dyn kernel_apis::ApiModule>,
     gates: Arc<services::ReleaseGateModule>,
     skills: Arc<SkillsModule>,
+    procedures: Arc<delegation::skill_runs::SkillRuns>,
     memory: Arc<MemoryApi>,
     hints: Arc<HintsModule>,
     images: Arc<kernel_apis::ImagesModule>,
     diagram: Arc<diagram::DiagramModule>,
     judge: Arc<judge::JudgeModule>,
+    knowledge: Arc<graph::KnowledgeModule>,
     schedule: Arc<kernel_apis::prompt_schedule::ScheduleModule>,
     tools: Arc<kernel_apis::ToolCalls>,
     instances: Arc<kernel_apis::InstancesModule>,
@@ -1344,18 +1407,23 @@ struct ApiModules {
     sessions: Arc<kernel_apis::SessionsModule>,
 }
 
-/// `sessions.*` of session `session_id`: its own session root (the parent of the cwd's `sessions_dir`) first, then
-/// the profile's native and Pi-format stores.
-fn session_search(config: &Config, sessions_dir: &Path, session_id: &str) -> kernel_apis::SessionsModule {
+/// Where a session's `sessions.*` and `/continue` look for sessions: its own session root (the parent of the cwd's
+/// `sessions_dir`), then the profile's native and Pi-format stores.
+pub(crate) fn session_roots(config: &Config, sessions_dir: &Path) -> Vec<PathBuf> {
     let paths = config::paths::AgentPaths::new(&config.agent_dir);
-    let roots = sessions_dir
+    sessions_dir
         .parent()
         .map(Path::to_path_buf)
         .into_iter()
         .chain([paths.experimental_sessions_dir(), paths.sessions_dir()])
-        .collect();
+        .collect()
+}
+
+/// `sessions.*` of session `session_id`: its own session root (the parent of the cwd's `sessions_dir`) first, then
+/// the profile's native and Pi-format stores.
+fn session_search(config: &Config, sessions_dir: &Path, session_id: &str) -> kernel_apis::SessionsModule {
     kernel_apis::SessionsModule::new(
-        roots,
+        session_roots(config, sessions_dir),
         session_id,
         &config.cwd.display().to_string(),
         kernel_apis::util::system_clock(),
@@ -1435,6 +1503,8 @@ pub struct Stack {
     pub lane_steer: Arc<std::sync::OnceLock<crate::agent_hub::LaneSteer>>,
     /// The session's runtime counters (crate::session_stats), for `/usage`.
     pub stats: Arc<SessionStats>,
+    /// Where `judge.decide` writes its usage rows: the session's values (see [`Stack::record_judge_rows_in`]).
+    judge_rows: Arc<std::sync::OnceLock<services::SessionValues>>,
     /// The guard statistics of worktree subagent hosts whose runs ended (TypeScript has one set of file hooks for the
     /// whole session, so they stay in its totals).
     retired_guards: Mutex<Vec<Value>>,
@@ -1448,6 +1518,12 @@ pub struct Stack {
 }
 
 impl Stack {
+    /// `judge.decide` records its calls as usage rows of `session`: for a composer whose modules keep no session
+    /// values (an `ultron claude` server); a native session's go to its values already.
+    pub fn record_judge_rows_in(&self, session: crate::durable_store::SharedSession) {
+        let _ = self.judge_rows.set(services::SessionValues::shared(session));
+    }
+
     pub(crate) fn config(&self) -> &Arc<Config> {
         &self.config
     }
@@ -1579,11 +1655,13 @@ impl Stack {
         }
         let apis = apis
             .with(self.apis.skills.clone())
+            .with(self.apis.procedures.clone())
             .with(self.apis.memory.clone())
             .with(self.apis.hints.clone())
             .with(self.apis.images.clone())
             .with(self.apis.diagram.clone())
             .with(self.apis.judge.clone())
+            .with(self.apis.knowledge.clone())
             .with(self.apis.schedule.clone())
             .with(self.apis.tools.clone())
             .with(self.apis.local.clone())
@@ -2053,7 +2131,8 @@ pub fn child_setup(stack: &Stack, run: &ChildRun) -> ChildSetup {
             sessions_dir: stack.sessions_dir.clone(),
             mode: String::new(),
             hindsight: None,
-            hindsight_explicit: false,
+            memorantado: None,
+            memory_explicit: false,
         }
         .host_in(
             Path::new(cwd),
@@ -2061,6 +2140,9 @@ pub fn child_setup(stack: &Stack, run: &ChildRun) -> ChildSetup {
             &lane_dir(&run.lane_name),
             Some(&stack.stats),
             Vec::new(),
+            Some(crate::session_judge::loki_asker(Arc::new(
+                stack.apis.judge.clone().into(),
+            ))),
         );
         match host {
             Ok(host) => {

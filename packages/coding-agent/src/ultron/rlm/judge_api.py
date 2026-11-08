@@ -28,13 +28,18 @@ class Judge:
     for a person to settle) or "abstained" (no backend answered: `answers` is empty and `reason` says why).
     `cost_usd` is what the calls that answered cost (None when one did not report it; failed calls are
     in `receipts`). Every call is a receipt and a session usage row;
-    the seat stops at `judge.maxCalls` and `judge.budgetUsd`. Raises ValueError for invalid arguments."""
+    the seat stops at `judge.maxCalls` and `judge.budgetUsd`. Raises ValueError for invalid arguments.
+
+    `expect={name: value}` says what the caller already holds (a verifier's yes): a first answer that differs is a
+    dispute, escalated to a model of another family like an unsure one (`reason` starts "disputed")."""
 
     def __init__(self, bridge: Any) -> None:
         self._bridge = bridge
 
-    async def decide(self, state: Any, questions: dict[str, Any], kind: str | None = None) -> dict[str, Any]:
-        """Decide `questions` about `state` (see `help(judge)`); returns the verdict."""
+    async def decide(self, state: Any, questions: dict[str, Any], kind: str | None = None,
+                     expect: dict[str, Any] | None = None) -> dict[str, Any]:
+        """Decide `questions` about `state` (see `help(judge)`); returns the verdict. `expect`: answers already held,
+        by question name; one the judge disputes is escalated."""
         if not isinstance(state, str):
             state = json.dumps(state, ensure_ascii=False)
         if not state.strip():
@@ -46,7 +51,10 @@ class Judge:
                 raise ValueError(f"judge.decide questions[{name!r}] needs a type: choice, yesno, score or number")
         if kind is not None and not isinstance(kind, str):
             raise ValueError("judge.decide kind must be a string")
-        return await self._bridge.request("judge.decide", {"state": state, "questions": questions, "kind": kind})
+        if expect is not None and (not isinstance(expect, dict) or any(name not in questions for name in expect)):
+            raise ValueError("judge.decide expect must be {question name: answer}")
+        return await self._bridge.request("judge.decide", {"state": state, "questions": questions, "kind": kind,
+                                                           "expect": expect})
 
     def __repr__(self) -> str:
         return "<judge: decide(state, questions, kind=None)>"

@@ -16,6 +16,7 @@ config = { path = "../config" }
 delegation = { path = "../delegation" }
 diagram = { path = "../diagram" }
 durable = { path = "../durable" }
+graph = { path = "../graph" }
 harness = { path = "../harness" }
 hindsight = { path = "../hindsight" }
 host = { path = "../host" }
@@ -26,9 +27,11 @@ jsrt = { path = "../jsrt" }
 judge = { path = "../judge" }
 kernel = { path = "../kernel" }
 kernel-apis = { path = "../kernel-apis" }
+knowledge = { path = "../knowledge" }
 lanes = { path = "../lanes" }
 loki = { path = "../loki" }
 mcp = { path = "../mcp" }
+memorantado = { path = "../memorantado" }
 model-scope = { path = "../model-scope" }
 protocol = { path = "../protocol" }
 regex = "=1.13.1"

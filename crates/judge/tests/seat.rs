@@ -171,16 +171,21 @@ fn judge_retries_once_only_after_a_retry_after_and_each_try_has_a_receipt() {
         2
     );
 
-    // A wait over the cap, or an HTTP date, is not retried.
-    for after in ["3600", "Wed, 21 Oct 2026 07:28:00 GMT"] {
+    // A wait over the cap, as seconds or as an HTTP date, is not retried; an HTTP date already past is no wait.
+    for (after, calls) in [
+        ("3600", 1),
+        ("Fri, 01 Jan 2100 00:00:00 GMT", 1),
+        ("Wed, 21 Oct 2026 07:28:00 GMT", 2),
+    ] {
         let r = rig(json!({"d1": {"url": D1}}));
-        r.transport.script("/systemone", vec![status(429, Some(after))]);
+        r.transport
+            .script("/systemone", vec![status(429, Some(after)), status(429, Some(after))]);
         r.transport
             .script("/decide", vec![ok(json!({"answers": {"q": {"noul": 0.95}}}))]);
         r.seat.decide("s", &yes_no(), None, &Signal::new());
         assert_eq!(
             r.transport.urls().iter().filter(|u| u.ends_with("/systemone")).count(),
-            1,
+            calls,
             "{after}"
         );
     }
@@ -476,4 +481,97 @@ fn judge_abort_ends_the_decision() {
         (Rung::Abstained, Some("aborted"))
     );
     assert_eq!(r.transport.sent().len(), 1, "d1 is not asked after an abort");
+}
+
+#[test]
+fn judge_a_first_answer_that_disputes_the_callers_is_escalated_like_an_unsure_one() {
+    let held = [("q".to_string(), json!(true))];
+    // Jev is sure (0.97) the code does not show it, the caller holds yes: the other family settles it.
+    let r = rig_with(
+        json!({"escalateModel": "anthropic/claude-haiku-5-5"}),
+        Some("jev"),
+        vec![Ok(json!({"q": {"value": false, "confidence": 0.9}}))],
+        None,
+    );
+    r.transport.script("/systemone", vec![ok(jev_yes_no(0.03, None))]);
+    let verdict = r
+        .seat
+        .decide_expecting("s", &yes_no(), Some("review.finding"), &held, &Signal::new());
+    assert_eq!(verdict.rung, Rung::Escalated);
+    assert_eq!(verdict.answers[0].1.value, json!(false));
+    assert_eq!(
+        verdict.reason.as_deref(),
+        Some("disputed: q is false, the caller holds true")
+    );
+    assert_eq!(r.chat.models(), ["anthropic/claude-haiku-5-5"]);
+
+    // Agreeing with the caller, sure: settled at once, nothing escalated.
+    let r = rig_with(
+        json!({"escalateModel": "anthropic/claude-haiku-5-5"}),
+        Some("jev"),
+        Vec::new(),
+        None,
+    );
+    r.transport.script("/systemone", vec![ok(jev_yes_no(0.97, None))]);
+    let verdict = r.seat.decide_expecting("s", &yes_no(), None, &held, &Signal::new());
+    assert_eq!((verdict.rung, verdict.receipts.len()), (Rung::First, 1));
+    assert!(r.chat.models().is_empty());
+
+    // A dispute with no model to escalate to: review, with Jev's answer.
+    let r = rig(json!({}));
+    r.transport.script("/systemone", vec![ok(jev_yes_no(0.03, None))]);
+    let verdict = r.seat.decide_expecting("s", &yes_no(), None, &held, &Signal::new());
+    assert_eq!(verdict.rung, Rung::Review);
+    assert_eq!(verdict.answers[0].1.value, json!(false));
+    assert!(verdict.reason.unwrap().starts_with("disputed: q is false"));
+}
+
+#[test]
+fn judge_jev_priced_by_its_tokens_counts_toward_budgets_and_the_session_cap() {
+    let limits = UsageLimits {
+        max_cost_usd: Some(1.0),
+        ..UsageLimits::default()
+    };
+    let r = rig_with(
+        json!({"jev": {"pricePerMTok": 2.0}, "budgetUsd": 1.0}),
+        Some("jev"),
+        Vec::new(),
+        Some(UsageLedger::in_memory(limits)),
+    );
+    r.transport.script(
+        "/systemone",
+        vec![ok(jev_yes_no(0.97, None)), ok(jev_yes_no(0.97, Some(0.5)))],
+    );
+    let verdict = r.seat.decide("s", &yes_no(), None, &Signal::new());
+    assert_eq!(
+        verdict.backend.as_deref(),
+        Some("jev"),
+        "a priced Jev is asked under the cost cap"
+    );
+    let cost = verdict.receipts[0].spend.cost.unwrap();
+    assert!((cost - 442.0 * 2.0 / 1_000_000.0).abs() < 1e-12, "{cost}");
+    // A reported cost wins over the price, and Jev stays metered under the budget.
+    let second = r.seat.decide("s", &yes_no(), None, &Signal::new());
+    assert_eq!(second.backend.as_deref(), Some("jev"));
+    assert_eq!(second.receipts[0].spend.cost, Some(0.5));
+    assert_eq!(settings(json!({"jev": {"pricePerMTok": -1}})).jev_price_per_mtok, None);
+}
+
+#[test]
+fn judge_retry_after_reads_seconds_and_http_dates() {
+    use judge::backend::retry_after;
+    // 2026-10-21T07:28:00Z.
+    let now = jsrt::date::parse_date("2026-10-21T07:28:00Z").unwrap();
+    assert_eq!(
+        retry_after(Some("Wed, 21 Oct 2026 07:28:05 GMT"), now),
+        Some(Duration::from_secs(5))
+    );
+    assert_eq!(
+        retry_after(Some("Wed, 21 Oct 2026 07:27:00 GMT"), now),
+        Some(Duration::ZERO),
+        "a date already past is no wait"
+    );
+    assert_eq!(retry_after(Some(" 7 "), now), Some(Duration::from_secs(7)));
+    assert_eq!(retry_after(Some("soon"), now), None);
+    assert_eq!(retry_after(None, now), None);
 }

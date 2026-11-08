@@ -28,8 +28,14 @@ mod orphan_prune;
 mod predict_fixture;
 #[path = "schema_fixture.rs"]
 mod schema_fixture;
+#[path = "skill_procedure.rs"]
+mod skill_procedure;
+#[path = "skill_runs.rs"]
+mod skill_runs;
 #[path = "spawn.rs"]
 mod spawn;
+#[path = "spawn_context.rs"]
+mod spawn_context;
 #[path = "spawn_contracts.rs"]
 mod spawn_contracts;
 #[path = "spawn_model.rs"]

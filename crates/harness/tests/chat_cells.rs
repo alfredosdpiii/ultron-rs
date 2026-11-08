@@ -90,13 +90,13 @@ fn harness_chat_cells_answer_an_unsafe_cell_interrupted_after_intent_with_its_du
         assert_matches(result, json!({ "isError": true, "details": { "run": 1 } }));
         assert_eq!(
             text(result),
-            "run 1\n|<harness>\n[error] Tool rlm was interrupted and may have partially run\n</harness>"
+            "run 1\n|<harness>\n[error] Tool rlm was interrupted by a restart; effect unknown: it may have partially run and was not replayed. Check what it changed before you run it again\n</harness>"
         );
         assert_eq!(live(&chat, root.id), json!({}));
         let outcome = js(&chat.get_task(task).unwrap().unwrap().state)["outcome"].clone();
         assert_matches(
             &outcome,
-            json!({ "status": "failed", "error": { "message": "Tool rlm was interrupted and may have partially run" } }),
+            json!({ "status": "failed", "error": { "message": "Tool rlm was interrupted by a restart; effect unknown: it may have partially run and was not replayed. Check what it changed before you run it again" } }),
         );
         chat.close().unwrap();
     }

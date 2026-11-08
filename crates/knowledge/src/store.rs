@@ -6,10 +6,11 @@ use std::time::Duration;
 use rusqlite::{Connection, OptionalExtension, params};
 
 use crate::extract::{Call, Construct, Extracted, Import, Symbol};
+use crate::relations::{Kind, Proposed, Relation};
 
 /// The schema the kernel reader (`rlm/knowledge_api.py`) is written against. Bump it with every change to a table the
 /// reader uses, and teach the reader the new version in the same change.
-pub const SCHEMA_VERSION: i64 = 4;
+pub const SCHEMA_VERSION: i64 = 5;
 
 /// Characters of a note's body kept.
 pub const NOTE_CHARS: usize = 2000;
@@ -68,7 +69,36 @@ CREATE TABLE IF NOT EXISTS notes (
     UNIQUE (repo, url)
 );
 CREATE INDEX IF NOT EXISTS notes_path ON notes (repo, path);
+-- Schema 5. Relations across files (`relations.rs`), read on demand for a task: what the proposer read from a blob
+-- (`relation_scans`: by which proposer version, even when it found nothing), each relation with its evidence and
+-- verdict (`status` accepted, rejected, review or proposed; `checked_by` code or the judge backend), and which
+-- files of a revision were read for relations (`relation_entries`, beside the indexer's `entries`).
+CREATE TABLE IF NOT EXISTS relation_scans (
+    blob TEXT NOT NULL, version INTEGER NOT NULL, PRIMARY KEY (blob, version)
+) WITHOUT ROWID;
+CREATE TABLE IF NOT EXISTS relations (
+    id INTEGER PRIMARY KEY, blob TEXT NOT NULL, kind TEXT NOT NULL, subject TEXT NOT NULL, object TEXT NOT NULL,
+    line INTEGER NOT NULL, quote TEXT NOT NULL, context TEXT NOT NULL, status TEXT NOT NULL, checked_by TEXT,
+    rung TEXT, model TEXT, confidence REAL
+);
+CREATE INDEX IF NOT EXISTS relations_blob ON relations (blob);
+CREATE TABLE IF NOT EXISTS relation_entries (
+    tree INTEGER NOT NULL, path TEXT NOT NULL, blob TEXT NOT NULL,
+    PRIMARY KEY (tree, path)
+) WITHOUT ROWID;
+CREATE INDEX IF NOT EXISTS relation_entries_blob ON relation_entries (blob);
 ";
+
+/// A rule (a person's addressed review comment) with the fates of the findings that cited it.
+#[derive(Debug, Clone, PartialEq)]
+pub struct RuleCredit {
+    pub id: i64,
+    pub path: String,
+    pub body: String,
+    pub url: String,
+    pub accepted: i64,
+    pub rejected: i64,
+}
 
 /// A review comment, as [`Store::record_notes`] keeps it.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -88,6 +118,42 @@ pub struct Note {
     pub human: bool,
     /// This reviewer reviewed the pull request and raised nothing at the comment's place: a miss to learn from.
     pub missed: bool,
+}
+
+/// The judge's verdict on a relation.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Settled {
+    Accepted,
+    Rejected,
+    /// The judge was not sure and nothing settled it: a person may.
+    Review,
+}
+
+impl Settled {
+    pub fn name(self) -> &'static str {
+        match self {
+            Settled::Accepted => "accepted",
+            Settled::Rejected => "rejected",
+            Settled::Review => "review",
+        }
+    }
+
+    pub fn parse(name: &str) -> Option<Settled> {
+        [Settled::Accepted, Settled::Rejected, Settled::Review]
+            .into_iter()
+            .find(|settled| settled.name() == name)
+    }
+}
+
+/// [`Store::settle_relations`]: one relation's verdict and who gave it.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Settlement {
+    pub id: i64,
+    pub status: Settled,
+    pub backend: Option<String>,
+    pub rung: Option<String>,
+    pub model: Option<String>,
+    pub confidence: Option<f64>,
 }
 
 /// The columns schema 4 added to `symbols`. A store of an earlier schema has its blobs read again anyway: they were
@@ -164,8 +230,8 @@ impl Store {
             }
             Some(Ok(SCHEMA_VERSION)) => {}
             // Schema 1 had no notes (the table was created above); schema 2's lack the rule columns; schema 3's
-            // symbols lack their ranges and parents.
-            Some(Ok(old @ 1..=3)) => {
+            // symbols lack their ranges and parents; schema 4's relations tables were created above.
+            Some(Ok(old @ 1..=4)) => {
                 let columns = |table: &str| -> Result<Vec<String>, Error> {
                     let mut statement = self
                         .conn
@@ -311,14 +377,20 @@ impl Store {
                 entry_row.execute(params![tree, path, oid])?;
             }
         }
-        // Older trees of this repository beyond the limit go, with the blobs no tree still holds.
-        tx.execute(
-            "DELETE FROM entries WHERE tree IN (
-                 SELECT id FROM trees WHERE repo = ?1 ORDER BY indexed_at DESC, id DESC LIMIT -1 OFFSET ?2)",
-            params![repo_id, TREES_PER_REPO],
-        )?;
+        // Older trees of this repository beyond the limit go, with the blobs no tree still holds. A tree read only
+        // for relations (a repository with no file the indexer reads) has no entries but is kept like the others.
+        for table in ["entries", "relation_entries"] {
+            tx.execute(
+                &format!(
+                    "DELETE FROM {table} WHERE tree IN (
+                         SELECT id FROM trees WHERE repo = ?1 ORDER BY indexed_at DESC, id DESC LIMIT -1 OFFSET ?2)"
+                ),
+                params![repo_id, TREES_PER_REPO],
+            )?;
+        }
         let dropped = tx.execute(
-            "DELETE FROM trees WHERE repo = ?1 AND id NOT IN (SELECT DISTINCT tree FROM entries) AND id != ?2",
+            "DELETE FROM trees WHERE repo = ?1 AND id != ?2
+                 AND id NOT IN (SELECT tree FROM entries UNION SELECT tree FROM relation_entries)",
             params![repo_id, tree],
         )?;
         if dropped > 0 {
@@ -327,7 +399,9 @@ impl Store {
                  DELETE FROM symbols WHERE blob NOT IN (SELECT blob FROM entries);
                  DELETE FROM calls WHERE blob NOT IN (SELECT blob FROM entries);
                  DELETE FROM imports WHERE blob NOT IN (SELECT blob FROM entries);
-                 DELETE FROM blobs WHERE oid NOT IN (SELECT blob FROM entries);",
+                 DELETE FROM blobs WHERE oid NOT IN (SELECT blob FROM entries);
+                 DELETE FROM relations WHERE blob NOT IN (SELECT blob FROM relation_entries);
+                 DELETE FROM relation_scans WHERE blob NOT IN (SELECT blob FROM relation_entries);",
             )?;
         }
         tx.commit()?;
@@ -415,6 +489,27 @@ impl Store {
         Ok(changed)
     }
 
+    /// The rules of `repo` findings have cited (credit from at least one fate), most accepted first.
+    pub fn credited_rules(&self, repo: &str) -> Result<Vec<RuleCredit>, Error> {
+        let mut rows = self.conn.prepare_cached(
+            "SELECT n.id, n.path, n.body, n.url, n.accepted, n.rejected FROM notes n JOIN repos r ON r.id = n.repo
+             WHERE r.name = ?1 AND n.accepted + n.rejected > 0 ORDER BY n.accepted DESC, n.id",
+        )?;
+        let rules = rows
+            .query_map(params![repo], |row| {
+                Ok(RuleCredit {
+                    id: row.get(0)?,
+                    path: row.get(1)?,
+                    body: row.get(2)?,
+                    url: row.get(3)?,
+                    accepted: row.get(4)?,
+                    rejected: row.get(5)?,
+                })
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(rules)
+    }
+
     /// A rule's credit: (accepted, rejected, missed, human).
     pub fn rule_credit(&self, id: i64) -> Result<Option<(i64, i64, bool, bool)>, Error> {
         Ok(self
@@ -456,6 +551,200 @@ impl Store {
             params![key, value],
         )?;
         Ok(())
+    }
+
+    /// The tree of `repo` at commit `rev`, when it was recorded.
+    pub fn tree_id(&self, repo: &str, rev: &str) -> Result<Option<i64>, Error> {
+        Ok(self
+            .conn
+            .query_row(
+                "SELECT t.id FROM trees t JOIN repos r ON r.id = t.repo WHERE r.name = ?1 AND t.rev = ?2",
+                params![repo, rev],
+                |row| row.get(0),
+            )
+            .optional()?)
+    }
+
+    /// The blobs among `oids` the relation proposer of `version` has read.
+    pub fn scanned_blobs(&self, oids: &[&str], version: i64) -> Result<std::collections::HashSet<String>, Error> {
+        let mut known = std::collections::HashSet::new();
+        let mut statement = self
+            .conn
+            .prepare_cached("SELECT 1 FROM relation_scans WHERE blob = ?1 AND version = ?2")?;
+        for oid in oids {
+            if statement.exists(params![oid, version])? {
+                known.insert((*oid).to_string());
+            }
+        }
+        Ok(known)
+    }
+
+    /// Records what the proposer of `version` read from newly scanned blobs (their earlier proposals and verdicts
+    /// go: they came from another version) and which files of `tree` were read for relations, in one transaction.
+    /// A proposal plain code settled is `accepted` by `code`; the others wait for the judge.
+    pub fn record_relations(
+        &mut self,
+        tree: i64,
+        entries: &[(String, String)],
+        scanned: &[(String, Vec<Proposed>)],
+        version: i64,
+    ) -> Result<(), Error> {
+        let tx = self.conn.transaction()?;
+        {
+            let mut clear = tx.prepare_cached("DELETE FROM relations WHERE blob = ?1")?;
+            let mut clear_scans = tx.prepare_cached("DELETE FROM relation_scans WHERE blob = ?1")?;
+            let mut scan = tx.prepare_cached("INSERT INTO relation_scans (blob, version) VALUES (?1, ?2)")?;
+            let mut row = tx.prepare_cached(
+                "INSERT INTO relations (blob, kind, subject, object, line, quote, context, status, checked_by)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+            )?;
+            for (oid, proposed) in scanned {
+                clear.execute(params![oid])?;
+                clear_scans.execute(params![oid])?;
+                scan.execute(params![oid, version])?;
+                for relation in proposed {
+                    let (status, checked_by) = if relation.certain {
+                        ("accepted", Some("code"))
+                    } else {
+                        ("proposed", None)
+                    };
+                    row.execute(params![
+                        oid,
+                        relation.kind.name(),
+                        relation.subject,
+                        relation.object,
+                        relation.line,
+                        relation.quote,
+                        relation.context,
+                        status,
+                        checked_by
+                    ])?;
+                }
+            }
+            let mut entry = tx.prepare_cached(
+                "INSERT INTO relation_entries (tree, path, blob) VALUES (?1, ?2, ?3)
+                 ON CONFLICT (tree, path) DO UPDATE SET blob = excluded.blob",
+            )?;
+            for (path, oid) in entries {
+                entry.execute(params![tree, path, oid])?;
+            }
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// The files of `tree` read for relations so far.
+    pub fn relation_paths(&self, tree: i64) -> Result<Vec<String>, Error> {
+        let mut statement = self
+            .conn
+            .prepare_cached("SELECT path FROM relation_entries WHERE tree = ?1 ORDER BY path")?;
+        let paths = statement
+            .query_map(params![tree], |row| row.get(0))?
+            .collect::<Result<_, _>>()?;
+        Ok(paths)
+    }
+
+    /// The relations of the files of `tree` read for relations, in path and line order; `paths` (when given)
+    /// narrows them to those files.
+    pub fn relations(&self, tree: i64, paths: Option<&[String]>) -> Result<Vec<Relation>, Error> {
+        let mut statement = self.conn.prepare_cached(
+            "SELECT r.id, r.kind, r.subject, r.object, e.path, r.blob, r.line, r.quote, r.context, r.status,
+                    r.checked_by, r.rung, r.model, r.confidence
+             FROM relation_entries e JOIN relations r ON r.blob = e.blob
+             WHERE e.tree = ?1 ORDER BY e.path, r.line, r.id",
+        )?;
+        let wanted: Option<std::collections::HashSet<&str>> =
+            paths.map(|paths| paths.iter().map(String::as_str).collect());
+        let rows = statement.query_map(params![tree], |row| {
+            Ok((
+                row.get::<_, i64>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, String>(3)?,
+                row.get::<_, String>(4)?,
+                row.get::<_, String>(5)?,
+                row.get::<_, i64>(6)?,
+                row.get::<_, String>(7)?,
+                row.get::<_, String>(8)?,
+                row.get::<_, String>(9)?,
+                row.get::<_, Option<String>>(10)?,
+                row.get::<_, Option<String>>(11)?,
+                row.get::<_, Option<String>>(12)?,
+                row.get::<_, Option<f64>>(13)?,
+            ))
+        })?;
+        let mut out = Vec::new();
+        for row in rows {
+            let (
+                id,
+                kind,
+                subject,
+                object,
+                path,
+                blob,
+                line,
+                quote,
+                context,
+                status,
+                checked_by,
+                rung,
+                model,
+                confidence,
+            ) = row?;
+            if wanted.as_ref().is_some_and(|wanted| !wanted.contains(path.as_str())) {
+                continue;
+            }
+            // A kind this build does not know came from another version; it is read again before it is used.
+            let Some(kind) = Kind::parse(&kind) else { continue };
+            let subject = if subject.is_empty() {
+                path.clone()
+            } else {
+                format!("{path}::{subject}")
+            };
+            out.push(Relation {
+                id,
+                kind,
+                subject,
+                object,
+                path,
+                blob,
+                line,
+                quote,
+                context,
+                status,
+                checked_by,
+                rung,
+                model,
+                confidence,
+            });
+        }
+        Ok(out)
+    }
+
+    /// Records the judge's verdicts on proposed relations (or ones it sent for review before), in one
+    /// transaction; a relation plain code settled, or the judge already accepted or rejected, keeps its verdict.
+    /// Returns how many changed.
+    pub fn settle_relations(&mut self, verdicts: &[Settlement]) -> Result<usize, Error> {
+        let tx = self.conn.transaction()?;
+        let mut changed = 0;
+        {
+            let mut row = tx.prepare_cached(
+                "UPDATE relations SET status = ?2, checked_by = ?3, rung = ?4, model = ?5, confidence = ?6
+                 WHERE id = ?1 AND status IN ('proposed', 'review')",
+            )?;
+            for verdict in verdicts {
+                changed += row.execute(params![
+                    verdict.id,
+                    verdict.status.name(),
+                    verdict.backend,
+                    verdict.rung,
+                    verdict.model,
+                    verdict.confidence
+                ])?;
+            }
+        }
+        tx.commit()?;
+        Ok(changed)
     }
 
     /// How many trees the store holds for `repo`.
