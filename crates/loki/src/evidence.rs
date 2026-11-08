@@ -4,7 +4,6 @@
 //! worker thread record nothing, there as here.
 
 use serde_json::{Map, Value, json};
-use sha2::{Digest, Sha256};
 use std::cell::RefCell;
 use std::io::{Seek, SeekFrom, Write};
 use std::path::Path;
@@ -36,15 +35,12 @@ pub fn active() -> bool {
     ACTIVE.with(|active| active.borrow().is_some())
 }
 
-fn hex(bytes: &[u8]) -> String {
-    Sha256::digest(bytes).iter().map(|b| format!("{b:02x}")).collect()
-}
-
 /// `evidence_policy`: a policy file the check read (`raw` none: absent), once.
 pub fn policy(source: &str, path: &str, raw: Option<&[u8]>, base: Option<&str>) {
     ACTIVE.with(|active| {
         if let Some(evidence) = active.borrow_mut().as_mut() {
-            let item = json!({ "source": source, "path": path, "base": base, "sha256": raw.map(hex) });
+            let item =
+                json!({ "source": source, "path": path, "base": base, "sha256": raw.map(jsrt::hash::sha256_hex) });
             if !evidence.policies.contains(&item) {
                 evidence.policies.push(item);
             }
@@ -72,7 +68,7 @@ pub fn targets(paths: &[String]) {
 
 /// The engine whose decisions an event records: the bundled loki.py this port follows.
 pub fn engine_sha256() -> String {
-    hex(crate::scan::ENGINE)
+    jsrt::hash::sha256_hex(crate::scan::ENGINE)
 }
 
 fn now_seconds() -> f64 {

@@ -8,7 +8,7 @@ use indexmap::IndexMap;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::js::{Num, clamp, path_join, trim};
+use crate::js::{Num, clamp, path_join};
 
 pub const DEFAULT_POLL_SECONDS: f64 = 45.0;
 pub const MIN_POLL_SECONDS: f64 = 20.0;
@@ -284,7 +284,7 @@ pub fn resolve_ack_art(setting: Option<&AckArtSetting>, logo: &str) -> String {
     match setting {
         Some(AckArtSetting::Off(false)) => String::new(),
         None | Some(AckArtSetting::Off(true)) => logo.to_string(),
-        Some(AckArtSetting::Text(text)) => match trim(text).to_lowercase().as_str() {
+        Some(AckArtSetting::Text(text)) => match jsrt::string::trim(text).to_lowercase().as_str() {
             "" | "logo" => logo.to_string(),
             "none" => String::new(),
             _ => text.clone(),
@@ -502,7 +502,11 @@ pub struct AutoreviewPaths {
 
 pub fn autoreview_paths(agent_dir: &str, env: &HashMap<String, String>, home: &str) -> AutoreviewPaths {
     let dir = path_join(&[agent_dir, "autoreview"]);
-    let set = |name: &str| env.get(name).map(|value| trim(value)).filter(|value| !value.is_empty());
+    let set = |name: &str| {
+        env.get(name)
+            .map(|value| jsrt::string::trim(value))
+            .filter(|value| !value.is_empty())
+    };
     let cache = match set("ULTRON_AUTOREVIEW_CACHE_DIR") {
         Some(cache) => cache.to_string(),
         None => {

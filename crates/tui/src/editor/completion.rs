@@ -117,10 +117,6 @@ fn ends_with_trigger_token(text: &str, heads: &[char], quoted_at: bool) -> bool 
     false
 }
 
-fn trimmed(s: &str) -> &str {
-    s.trim_matches(is_whitespace_char)
-}
-
 fn to_select_item(item: &AutocompleteItem) -> SelectItem {
     SelectItem {
         value: item.value.clone(),
@@ -139,7 +135,7 @@ impl Editor {
             let (Some(c), None) = (it.next(), it.next()) else {
                 continue;
             };
-            if c.len_utf16() != 1 || c == '/' || is_whitespace_char(c) || chars.contains(&c) {
+            if c.len_utf16() != 1 || c == '/' || string::is_space(c) || chars.contains(&c) {
                 continue;
             }
             chars.push(c);
@@ -196,11 +192,11 @@ impl Editor {
     }
 
     fn is_at_start_of_message(&self) -> bool {
-        self.cursor_line == 0 && matches!(trimmed(self.before_cursor()), "" | "/")
+        self.cursor_line == 0 && matches!(string::trim(self.before_cursor()), "" | "/")
     }
 
     fn is_in_slash_command_context(&self, before: &str) -> bool {
-        self.cursor_line == 0 && before.trim_start_matches(is_whitespace_char).starts_with('/')
+        self.cursor_line == 0 && before.trim_start_matches(string::is_space).starts_with('/')
     }
 
     /// The trigger checks at the end of `insertCharacter`.
@@ -258,7 +254,7 @@ impl Editor {
             return;
         }
         let before = self.before_cursor().to_string();
-        if self.is_in_slash_command_context(&before) && !before.trim_start_matches(is_whitespace_char).contains(' ') {
+        if self.is_in_slash_command_context(&before) && !before.trim_start_matches(string::is_space).contains(' ') {
             self.request_autocomplete(false, true);
         } else {
             self.request_autocomplete(true, true);

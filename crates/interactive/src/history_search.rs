@@ -6,6 +6,7 @@
 
 use std::rc::Rc;
 
+use jsrt::string;
 use tui::components::Component;
 use tui::input::Input;
 use tui::keybindings::KeybindingsManager;
@@ -229,7 +230,7 @@ fn collapse_whitespace_runs(text: &str) -> String {
     let mut out = String::with_capacity(text.len());
     let mut in_space = false;
     for c in text.chars() {
-        if tui::utils::is_whitespace_char(c) {
+        if string::is_space(c) {
             if !in_space {
                 out.push(' ');
             }

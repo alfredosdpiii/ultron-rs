@@ -12,9 +12,6 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
-use base64::Engine;
-use base64::engine::general_purpose::STANDARD as B64;
-
 /// `MAX_OSC52_ENCODED_LENGTH`.
 pub const MAX_OSC52_ENCODED_LENGTH: usize = 100_000;
 
@@ -63,7 +60,7 @@ pub fn is_wsl(env: &CopyEnv) -> bool {
 
 /// `emitOsc52`: the sequence, or `None` when the payload is over the limit.
 pub fn osc52(text: &str) -> Option<String> {
-    let encoded = B64.encode(text.as_bytes());
+    let encoded = jsrt::base64::encode(text.as_bytes());
     (encoded.len() <= MAX_OSC52_ENCODED_LENGTH).then(|| format!("\x1b]52;c;{encoded}\x07"))
 }
 

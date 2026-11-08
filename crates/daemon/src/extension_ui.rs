@@ -45,10 +45,6 @@ pub struct ExtensionUiBridge {
     expected_until: Option<Instant>,
 }
 
-fn uuid() -> String {
-    crate::paths::uuid_v4()
-}
-
 impl ExtensionUiBridge {
     /// `expect_client`: the worker was started for an interactive client (the TUI or RPC) that has not polled yet.
     pub fn new(expect_client: bool) -> Arc<Self> {
@@ -110,7 +106,7 @@ impl ExtensionUiBridge {
     }
 
     fn lock(&self) -> MutexGuard<'_, State> {
-        self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+        jsrt::sync::lock(&self.state)
     }
 
     fn serving_in(&self, state: &State) -> bool {
@@ -199,7 +195,7 @@ impl ExtensionUiBridge {
             return;
         }
         let mut request = request;
-        request.insert("id".into(), json!(uuid()));
+        request.insert("id".into(), json!(jsrt::random::uuid_v4()));
         let item = Self::item(&mut state, request);
         state.events.push(item);
         let excess = state.events.len().saturating_sub(MAX_BUFFERED_EVENTS);
@@ -218,7 +214,7 @@ impl ExtensionUiBridge {
         if cancelled() || !self.serving_in(&state) {
             return None;
         }
-        let id = uuid();
+        let id = jsrt::random::uuid_v4();
         let mut request = request;
         request.insert("id".into(), json!(id));
         let item = Self::item(&mut state, request);

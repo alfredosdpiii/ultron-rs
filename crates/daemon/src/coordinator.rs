@@ -44,7 +44,7 @@ type Shared = Arc<Coordinator>;
 
 impl Coordinator {
     fn lock(&self) -> std::sync::MutexGuard<'_, State> {
-        self.state.lock().unwrap_or_else(|e| e.into_inner())
+        jsrt::sync::lock(&self.state)
     }
 }
 

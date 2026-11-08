@@ -1,23 +1,10 @@
 //! Literal expectations for the JavaScript semantics and helpers the ported subcommands print with (values checked
-//! against Node: `toFixed`, `Date#getHours` under TZ, `String.prototype.replace`, `JSON.stringify(v, null, "\t")`),
+//! against Node: `String.prototype.replace`, `JSON.stringify(v, null, "\t")`),
 //! and the ported `session-stats.test.ts` cases for cell APIs and steers.
 
-use cli::js::{base64, base64_decode, replace_first, to_fixed};
-use cli::localtime::{Fields, Zone};
+use cli::js::replace_first;
 use cli::usage::stats::{cell_apis, classify_nudge};
 use serde_json::json;
-
-#[test]
-fn cli_js_to_fixed_rounds_exact_ties_up() {
-    // (0.125).toFixed(2) === "0.13"; (2.5).toFixed(0) === "3"; (1.005).toFixed(2) === "1.00" (binary below the tie)
-    assert_eq!(to_fixed(0.125, 2), "0.13");
-    assert_eq!(to_fixed(2.5, 0), "3");
-    assert_eq!(to_fixed(1.005, 2), "1.00");
-    assert_eq!(to_fixed(9.995, 2), "9.99");
-    assert_eq!(to_fixed(0.0625, 3), "0.063");
-    assert_eq!(to_fixed(99.95, 1), "100.0");
-    assert_eq!(to_fixed(-0.125, 2), "-0.13");
-}
 
 #[test]
 fn cli_js_replace_first_expands_dollar_patterns() {
@@ -27,105 +14,6 @@ fn cli_js_replace_first_expands_dollar_patterns() {
         "a[{{X}}|a|b{{X}}|$|$1]b{{X}}"
     );
     assert_eq!(replace_first("abc", "z", "$&"), "abc");
-}
-
-#[test]
-fn cli_js_base64_round_trips() {
-    assert_eq!(base64(b""), "");
-    assert_eq!(base64(b"f"), "Zg==");
-    assert_eq!(base64(b"fo"), "Zm8=");
-    assert_eq!(base64("ü😀".as_bytes()), "w7zwn5iA");
-    assert_eq!(base64_decode("w7zwn5iA").unwrap(), "ü😀".as_bytes());
-}
-
-#[test]
-fn cli_localtime_posix_rules_match_node() {
-    let ny = Zone::from_posix("EST5EDT,M3.2.0,M11.1.0").unwrap();
-    let at = |ms: f64| ny.fields(ms);
-    // 2026-03-08T06:59:59Z is 01:59 EST; 07:00Z is 03:00 EDT.
-    assert_eq!(
-        at(1_772_953_199_000.0),
-        Fields {
-            year: 2026,
-            month: 3,
-            day: 8,
-            hour: 1,
-            minute: 59
-        }
-    );
-    assert_eq!(
-        at(1_772_953_200_000.0),
-        Fields {
-            year: 2026,
-            month: 3,
-            day: 8,
-            hour: 3,
-            minute: 0
-        }
-    );
-    // 2026-11-01T06:00:00Z is 01:00 EST (fall back at 06:00Z); 05:59Z is 01:59 EDT.
-    assert_eq!(
-        at(1_793_512_740_000.0),
-        Fields {
-            year: 2026,
-            month: 11,
-            day: 1,
-            hour: 1,
-            minute: 59
-        }
-    );
-    assert_eq!(
-        at(1_793_512_800_000.0),
-        Fields {
-            year: 2026,
-            month: 11,
-            day: 1,
-            hour: 1,
-            minute: 0
-        }
-    );
-    // Southern hemisphere: Sydney, AEST-10AEDT,M10.1.0,M4.1.0/3. 2026-01-01T00:00Z is 11:00 AEDT.
-    let sydney = Zone::from_posix("AEST-10AEDT,M10.1.0,M4.1.0/3").unwrap();
-    assert_eq!(sydney.fields(1_767_225_600_000.0).hour, 11);
-    assert_eq!(sydney.fields(1_782_864_000_000.0).hour, 10);
-    // A fixed offset with a quoted name, and a fractional one.
-    assert_eq!(
-        Zone::from_posix("<+0530>-5:30").unwrap().fields(0.0),
-        Fields {
-            year: 1970,
-            month: 1,
-            day: 1,
-            hour: 5,
-            minute: 30
-        }
-    );
-    assert_eq!(
-        Zone::utc().fields(-1.0),
-        Fields {
-            year: 1969,
-            month: 12,
-            day: 31,
-            hour: 23,
-            minute: 59
-        }
-    );
-}
-
-#[test]
-fn cli_localtime_reads_zoneinfo_files() {
-    let path = std::path::Path::new("/usr/share/zoneinfo/America/New_York");
-    if !path.exists() {
-        return;
-    }
-    let zone = Zone::from_env(Some("America/New_York"));
-    assert_eq!(zone.offset(1_772_953_200_000.0), -4 * 3600);
-    assert_eq!(zone.offset(1_772_953_199_000.0), -5 * 3600);
-    // 1990 is inside the transition table; 2090 relies on the footer rule.
-    assert_eq!(zone.offset(647_100_000_000.0), -4 * 3600);
-    assert_eq!(zone.offset(3_802_982_400_000.0), -4 * 3600);
-    assert_eq!(zone.offset(3_787_862_400_000.0), -5 * 3600);
-    assert_eq!(Zone::from_env(Some("Nowhere/Invalid")).offset(0.0), 0);
-    assert_eq!(Zone::from_env(Some(":UTC")).offset(0.0), 0);
 }
 
 #[test]
@@ -248,4 +136,79 @@ fn cli_usage_log_usage_matches_session_log() {
     assert_eq!((usage.total_tokens, usage.cost), (2.0, None));
     assert!(log_usage(Some(&json!([1]))).is_none());
     assert!(log_usage(None).is_none());
+}
+
+/// `--last` is `Number(value)` then `Number.isSafeInteger` (usage-cli.ts); node 26.12.1: Number("0x10") === 16,
+/// Number("0o17") === 15, Number("0b1") === 1, Number(" 7 ") === 7, and Number("1_0") and Number("-0x10") are NaN.
+#[test]
+fn cli_usage_last_reads_its_count_like_number() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().join("sessions");
+    std::fs::create_dir_all(&root).unwrap();
+    let env = session_core::RunEnv {
+        cwd: dir.path().to_path_buf(),
+        home: dir.path().to_path_buf(),
+        var: std::sync::Arc::new(|_| None),
+        docs: dir.path().join("docs"),
+    };
+    let refused = |count: &str| {
+        let (mut out, mut err) = (Vec::new(), Vec::new());
+        let args = [
+            "usage",
+            "--json",
+            "--sessions-root",
+            &root.display().to_string(),
+            "--last",
+            count,
+        ]
+        .map(str::to_string);
+        let code = cli::usage::run(&args, &env, &mut out, &mut err);
+        let err = String::from_utf8_lossy(&err).into_owned();
+        assert_eq!(
+            code == Some(2),
+            err.contains("--last needs a number between 1 and 1000"),
+            "{count}: {err}"
+        );
+        code == Some(2)
+    };
+    for count in ["0x10", "0o17", "0b1", " 7 ", "1e3"] {
+        assert!(!refused(count), "{count} is a count");
+    }
+    for count in ["1_0", "-0x10", "0x0", "1001", "Infinity"] {
+        assert!(refused(count), "{count} is refused");
+    }
+}
+
+/// `mcp add --oauth-callback-port` stores `Number(port)` (extensions/mcp/cli.ts); node 26.12.1: Number("0x1F90")
+/// === 8080 and Number(" 8081 ") === 8081.
+#[test]
+fn cli_mcp_add_reads_the_callback_port_like_number() {
+    for (port, want) in [("0x1F90", 8080), (" 8081 ", 8081)] {
+        let dir = tempfile::tempdir().unwrap();
+        let agent = dir.path().join("agent");
+        std::fs::create_dir_all(&agent).unwrap();
+        let agent_var = agent.display().to_string();
+        let env = session_core::RunEnv {
+            cwd: dir.path().to_path_buf(),
+            home: dir.path().to_path_buf(),
+            var: std::sync::Arc::new(move |k| (k == "ULTRON_CODING_AGENT_DIR").then(|| agent_var.clone())),
+            docs: dir.path().join("docs"),
+        };
+        let args = [
+            "mcp",
+            "add",
+            "s",
+            "--url",
+            "https://example.invalid/mcp",
+            "--oauth-callback-port",
+            port,
+        ]
+        .map(str::to_string);
+        let (mut out, mut err) = (Vec::new(), Vec::new());
+        let code = cli::mcp_cli::run(&args, &env, &mut out, &mut err);
+        assert_eq!(code, Some(0), "{}", String::from_utf8_lossy(&err));
+        let saved: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(agent.join("mcp.json")).unwrap()).unwrap();
+        assert_eq!(saved["mcpServers"]["s"]["oauth"]["callbackPort"], want, "{saved}");
+    }
 }

@@ -8,7 +8,6 @@ use crate::session::Session;
 use crate::storage::JsonlStorage;
 use crate::{SharedClock, io, lock};
 use serde_json::{Map, Value};
-use session_file::js;
 use std::path::{Path, PathBuf};
 
 /// `JsonlSessionMetadata`.
@@ -62,7 +61,7 @@ pub fn encode_uri_component(text: &str) -> String {
 
 /// `sessionFileName`.
 pub fn session_file_name(created_at: i64, id: &str) -> String {
-    let timestamp = js::iso_string(created_at).replace([':', '.'], "-");
+    let timestamp = jsrt::date::iso_string(created_at).replace([':', '.'], "-");
     format!("{timestamp}_{}.jsonl", encode_uri_component(id))
 }
 

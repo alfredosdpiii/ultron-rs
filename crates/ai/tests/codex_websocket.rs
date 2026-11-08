@@ -6,7 +6,6 @@
 //! `response.create` messages (deltas included) and the same close frames; the debug stats must agree.
 
 use ai::http::{BoxFuture, HeaderMap};
-use ai::json::normalize_numbers;
 use ai::openai_codex_responses::{self, OpenAICodexResponsesOptions};
 use ai::options::pi_user_agent;
 use ai::websocket::WebSocketConnection;
@@ -361,7 +360,10 @@ fn normalize_port(value: &Value, port: u16) -> Value {
 }
 
 fn same(what: &str, expected: &Value, actual: &Value, diffs: &mut Vec<String>) {
-    let (e, a) = (normalize_numbers(expected.clone()), normalize_numbers(actual.clone()));
+    let (e, a) = (
+        jsrt::json::normalize_numbers(expected.clone()),
+        jsrt::json::normalize_numbers(actual.clone()),
+    );
     if e != a {
         diffs.push(format!("{what}\n  expected {e}\n  actual   {a}"));
     }

@@ -19,7 +19,6 @@ use interactive::lane::{
 use interactive::run::{UiEvent, run_stdout, spawn_gated_input};
 use serde_json::{Value, json};
 use session_core::core::{Op, QueueKind as CoreQueue};
-use session_file::Env as _;
 use std::io::{BufRead, IsTerminal, Write};
 use std::rc::Rc;
 use std::sync::{Arc, mpsc};
@@ -50,10 +49,6 @@ pub fn mark_checkpoints(mut tree: Value, checkpoints: &Value) -> Value {
         }
     }
     tree
-}
-
-fn uuid() -> String {
-    session_file::SystemEnv.random_uuid()
 }
 
 /// What the TUI asks of the link thread.
@@ -215,7 +210,7 @@ impl DaemonLane {
     }
 
     fn enqueue(&self, kind: CoreQueue, text: &str, images: Vec<PromptImage>) -> String {
-        let entry_id = uuid();
+        let entry_id = jsrt::random::uuid_v4();
         self.send(Command::Op(Op::Enqueue {
             kind,
             message: text.to_string(),
@@ -1657,7 +1652,7 @@ fn write_debug_log(
         .map(|durable| crate::instance(env, durable).dir.join(format!("{server_id}.sock")))
         .find(|p| p.exists());
     let client = interactive::debug_log::ClientFacts {
-        time: session_file::js::iso_string(daemon::paths::now_ms()),
+        time: jsrt::date::iso_string(jsrt::date::now_ms()),
         process: format!(
             "ultron {} · rust · {} · pid {}",
             crate::version(),
@@ -1783,7 +1778,7 @@ fn share_session(
         }
         Ok(_) => {}
     }
-    let dir = std::env::temp_dir().join(format!("ultron-share-{}", uuid()));
+    let dir = std::env::temp_dir().join(format!("ultron-share-{}", jsrt::random::uuid_v4()));
     if let Err(error) = std::fs::create_dir_all(&dir) {
         return status(format!("Error: Failed to export session: {error}"));
     }
@@ -1885,7 +1880,7 @@ fn credentials_saved(link: &Link, env: &Env, send: &dyn Fn(LaneEvent), action: &
 /// `loginProviderOptions`: every built-in provider's sign-in options with what is configured (a stored credential,
 /// else the variables that supply a key), sorted by name.
 pub fn login_options(env: &Env, auth: &std::path::Path) -> Vec<interactive::selectors::AuthProvider> {
-    use interactive::selectors::{AuthProvider, locale_compare, provider_logins};
+    use interactive::selectors::{AuthProvider, provider_logins};
     let stored: std::collections::HashMap<String, String> = config::auth::AuthStorage::create(auth.to_path_buf())
         .list()
         .unwrap_or_default()
@@ -1999,7 +1994,7 @@ pub fn login_options(env: &Env, auth: &std::path::Path) -> Vec<interactive::sele
             generic_login: true,
         });
     }
-    options.sort_by(|a, b| locale_compare(&a.name, &b.name));
+    options.sort_by(|a, b| jsrt::collate::locale_compare(&a.name, &b.name));
     options
 }
 
@@ -2084,10 +2079,10 @@ fn export_session(link: &Link, output: Option<&str>, theme: Option<&str>, env: &
     let entries = read["entries"].as_array().cloned().unwrap_or_default();
     let cwd = std::env::current_dir().map_err(|e| e.to_string())?;
     // Pi entry times are already `toISOString()` text.
-    let timestamp = entries.first().and_then(|e| e["timestamp"].as_str()).map_or_else(
-        || session_file::js::iso_string(session_file::SystemEnv.now_ms()),
-        str::to_string,
-    );
+    let timestamp = entries
+        .first()
+        .and_then(|e| e["timestamp"].as_str())
+        .map_or_else(|| jsrt::date::iso_string(jsrt::date::now_ms()), str::to_string);
     let header = json!({"type": "session", "version": 3, "id": session_id, "timestamp": timestamp,
         "cwd": cwd.display().to_string()});
     let stem = described["sessionFile"]
@@ -2125,7 +2120,7 @@ fn usage_report(link: &Link, env: &Env) -> Result<String, String> {
     let log = crate::usage::log::read_session_log(std::path::Path::new(file)).map_err(|e| e.message().to_string())?;
     let providers = session_core::lane::subscription_providers(env);
     let report = crate::usage::report::build_session_report_with(&log, &providers);
-    let zone = crate::localtime::Zone::from_env(std::env::var("TZ").ok().as_deref());
+    let zone = jsrt::localtime::Zone::from_env(std::env::var("TZ").ok().as_deref());
     let home = std::env::var("HOME").unwrap_or_default();
     let options = crate::usage::text::TextOptions {
         utc: false,
@@ -2279,8 +2274,8 @@ pub fn terminal_debug(
     env: &Env,
     dump_dir: &std::path::Path,
 ) -> (Option<std::sync::Arc<tui::render_debug::RenderDebug>>, bool) {
-    let now = session_core::lane::now_ms();
-    let zone = crate::localtime::Zone::from_env((env.var)("TZ").as_deref());
+    let now = jsrt::date::now_ms();
+    let zone = jsrt::localtime::Zone::from_env((env.var)("TZ").as_deref());
     let fields = zone.fields(now as f64);
     let second = (now.div_euclid(1000) + zone.offset(now as f64)).rem_euclid(60) as u32;
     let local = tui::render_debug::LocalStamp {
@@ -2297,7 +2292,7 @@ pub fn terminal_debug(
         dump_dir,
         local,
         std::process::id(),
-        Box::new(session_core::lane::now_ms),
+        Box::new(jsrt::date::now_ms),
     )
 }
 

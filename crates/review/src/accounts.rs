@@ -111,7 +111,7 @@ pub fn list_accounts(runner: &dyn Runner, only: Option<&[String]>) -> Result<Vec
             "ultron autoreview needs the GitHub CLI (gh), which is not installed".into(),
         ));
     }
-    if result.code != 0 || !crate::js::trim(&result.stdout).starts_with('{') {
+    if result.code != 0 || !jsrt::string::trim(&result.stdout).starts_with('{') {
         result = runner.run(&argv(&["gh", "auth", "status"]), &options);
     }
     let accounts = parse_auth_status(&result.stdout, &result.stderr);
@@ -184,7 +184,7 @@ impl TokenStore {
                     ]),
                     &RunOptions::default(),
                 );
-                let token = crate::js::trim(&result.stdout).to_string();
+                let token = jsrt::string::trim(&result.stdout).to_string();
                 if result.code != 0 || token.is_empty() {
                     return Err(Error::Other(format!(
                         "gh has no token for {} on {}",

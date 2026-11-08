@@ -356,7 +356,7 @@ impl<'a> Provider<'a> {
             configured_client,
             store,
             on_redirect,
-            now: crate::oauth::store::now_ms,
+            now: jsrt::date::now_ms,
         }
     }
 
@@ -570,12 +570,11 @@ fn token_request(
     let client_id = client["client_id"].as_str().unwrap_or_default();
     match select_client_auth_method(client, &supported) {
         "client_secret_basic" => {
-            use base64::Engine;
             let secret = client["client_secret"].as_str().unwrap_or_default();
             if secret.is_empty() {
                 return Err(OAuthError::Other("client_secret_basic requires a client secret".into()));
             }
-            let encoded = base64::engine::general_purpose::STANDARD.encode(format!("{client_id}:{secret}"));
+            let encoded = jsrt::base64::encode(format!("{client_id}:{secret}"));
             headers.push(("Authorization", format!("Basic {encoded}")));
         }
         method => {

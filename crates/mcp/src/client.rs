@@ -3,10 +3,11 @@
 
 use crate::jsonrpc::{self, Error, INTERNAL_ERROR, METHOD_NOT_FOUND, id_text, is_id};
 use crate::{Incoming, Sink, Transport};
+use jsrt::sync;
 use serde_json::{Map, Value, json};
 use std::collections::{HashMap, HashSet};
 use std::sync::mpsc::{self, RecvTimeoutError, Sender};
-use std::sync::{Arc, Mutex, MutexGuard, Weak};
+use std::sync::{Arc, Mutex, Weak};
 use std::time::{Duration, Instant};
 
 pub const LATEST_PROTOCOL_VERSION: &str = "2025-11-25";
@@ -71,7 +72,7 @@ impl CancelToken {
     /// Cancels with `reason` (default `Aborted`); later calls do nothing.
     pub fn cancel(&self, reason: Option<&str>) {
         let callbacks = {
-            let mut inner = lock(&self.0);
+            let mut inner = sync::lock(&self.0);
             if inner.0.is_some() {
                 return;
             }
@@ -86,15 +87,15 @@ impl CancelToken {
     }
 
     pub fn reason(&self) -> Option<String> {
-        lock(&self.0).0.clone()
+        sync::lock(&self.0).0.clone()
     }
 
     pub fn is_cancelled(&self) -> bool {
-        lock(&self.0).0.is_some()
+        sync::lock(&self.0).0.is_some()
     }
 
     fn on_cancel(&self, callback: CancelCallback) {
-        let mut inner = lock(&self.0);
+        let mut inner = sync::lock(&self.0);
         match inner.0.clone() {
             Some(reason) => {
                 drop(inner);
@@ -143,10 +144,6 @@ struct Inner {
 
 #[derive(Clone)]
 pub struct Client(Arc<Inner>);
-
-fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
-    mutex.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
-}
 
 fn key(id: &Value) -> String {
     id.to_string()
@@ -293,49 +290,49 @@ impl Client {
     }
 
     pub fn connection_state(&self) -> ConnState {
-        lock(&self.0.state).conn
+        sync::lock(&self.0.state).conn
     }
 
     pub fn server_info(&self) -> Option<Value> {
-        lock(&self.0.state).server_info.clone()
+        sync::lock(&self.0.state).server_info.clone()
     }
 
     pub fn server_capabilities(&self) -> Option<Value> {
-        lock(&self.0.state).capabilities.clone()
+        sync::lock(&self.0.state).capabilities.clone()
     }
 
     pub fn instructions(&self) -> Option<String> {
-        lock(&self.0.state).instructions.clone()
+        sync::lock(&self.0.state).instructions.clone()
     }
 
     pub fn protocol_version(&self) -> Option<String> {
-        lock(&self.0.state).protocol_version.clone()
+        sync::lock(&self.0.state).protocol_version.clone()
     }
 
     pub fn set_request_handler(&self, method: &str, handler: RequestHandler) {
-        lock(&self.0.handlers).insert(method.into(), handler);
+        sync::lock(&self.0.handlers).insert(method.into(), handler);
     }
 
     pub fn on_notification(&self, method: &str, listener: impl Fn(Option<&Value>) + Send + Sync + 'static) {
-        lock(&self.0.notification_listeners)
+        sync::lock(&self.0.notification_listeners)
             .entry(method.into())
             .or_default()
             .push(Arc::new(listener));
     }
 
     pub fn on_error(&self, listener: impl Fn(&str) + Send + Sync + 'static) {
-        lock(&self.0.error_listeners).push(Arc::new(listener));
+        sync::lock(&self.0.error_listeners).push(Arc::new(listener));
     }
 
     /// Called once when the connection closes, whether the transport dropped or `close()` was called.
     pub fn on_close(&self, listener: impl Fn() + Send + Sync + 'static) {
-        lock(&self.0.close_listeners).push(Arc::new(listener));
+        sync::lock(&self.0.close_listeners).push(Arc::new(listener));
     }
 
     /// Starts the transport, runs the `initialize` handshake, and returns the server's initialize result.
     pub fn connect(&self, transport: Arc<dyn Transport>) -> Result<Value, Error> {
         {
-            let mut state = lock(&self.0.state);
+            let mut state = sync::lock(&self.0.state);
             if state.conn != ConnState::Idle {
                 return Err(Error::Other(format!(
                     "Cannot connect MCP client in {} state",
@@ -383,7 +380,7 @@ impl Client {
             )));
         }
         {
-            let mut state = lock(&self.0.state);
+            let mut state = sync::lock(&self.0.state);
             state.protocol_version = Some(version.clone());
             state.server_info = result.get("serverInfo").cloned();
             state.capabilities = result.get("capabilities").cloned();
@@ -391,7 +388,7 @@ impl Client {
         }
         transport.set_protocol_version(&version);
         self.notify_internal("notifications/initialized", None, true)?;
-        lock(&self.0.state).conn = ConnState::Connected;
+        sync::lock(&self.0.state).conn = ConnState::Connected;
         Ok(result)
     }
 
@@ -482,7 +479,7 @@ impl Client {
 
     /// Closes the connection: in-flight requests fail with `McpConnectionClosedError`, then the transport closes.
     pub fn close(&self) {
-        let transport = lock(&self.0.state).transport.take();
+        let transport = sync::lock(&self.0.state).transport.take();
         self.mark_closed(Error::closed());
         if let Some(transport) = transport {
             transport.close();
@@ -490,7 +487,7 @@ impl Client {
     }
 
     fn require_transport(&self, allow_connecting: bool) -> Result<Arc<dyn Transport>, Error> {
-        let state = lock(&self.0.state);
+        let state = sync::lock(&self.0.state);
         match &state.transport {
             Some(t)
                 if state.conn == ConnState::Connected || (allow_connecting && state.conn == ConnState::Connecting) =>
@@ -523,7 +520,7 @@ impl Client {
         let cancellable = method != "initialize";
         let (tx, rx) = mpsc::channel();
         let (id, message) = {
-            let mut state = lock(&self.0.state);
+            let mut state = sync::lock(&self.0.state);
             let id = json!(state.next_id);
             state.next_id += 1;
             let progress_token = options.on_progress.is_some().then(|| key(&id));
@@ -577,7 +574,7 @@ impl Client {
             self.cancel_pending(&request_key, error, false, None);
         }
         loop {
-            let current = lock(&self.0.state).pending.get(&request_key).map(|p| p.deadline);
+            let current = sync::lock(&self.0.state).pending.get(&request_key).map(|p| p.deadline);
             let received = match current {
                 Some(Some(deadline)) => rx.recv_timeout(deadline.saturating_duration_since(Instant::now())),
                 _ => rx.recv().map_err(|_| RecvTimeoutError::Disconnected),
@@ -585,7 +582,7 @@ impl Client {
             match received {
                 Ok(outcome) => return outcome,
                 Err(RecvTimeoutError::Timeout) => {
-                    let expired = lock(&self.0.state)
+                    let expired = sync::lock(&self.0.state)
                         .pending
                         .get(&request_key)
                         .and_then(|p| p.deadline)
@@ -619,7 +616,7 @@ impl Client {
 
     fn cancel_pending(&self, request_key: &str, error: Error, notify_server: bool, reason: Option<&str>) {
         let (entry, transport) = {
-            let mut state = lock(&self.0.state);
+            let mut state = sync::lock(&self.0.state);
             let Some(entry) = Self::remove_pending(&mut state, request_key) else {
                 return;
             };
@@ -641,7 +638,7 @@ impl Client {
     /// Idempotent: fails in-flight requests, cancels server requests being served, and flips the state.
     fn mark_closed(&self, error: Error) {
         let (was_closed, pending, incoming) = {
-            let mut state = lock(&self.0.state);
+            let mut state = sync::lock(&self.0.state);
             let was_closed = state.conn == ConnState::Closed;
             state.conn = ConnState::Closed;
             state.progress.clear();
@@ -652,7 +649,7 @@ impl Client {
         // Close listeners run before the waiting requests wake, as in TypeScript, where they run synchronously and
         // the rejected requests continue in later microtasks: a caller that sees its request fail also sees the close.
         if !was_closed {
-            let listeners = lock(&self.0.close_listeners).clone();
+            let listeners = sync::lock(&self.0.close_listeners).clone();
             for listener in listeners {
                 listener();
             }
@@ -666,7 +663,7 @@ impl Client {
     }
 
     fn emit_error(&self, message: &str) {
-        let listeners = lock(&self.0.error_listeners).clone();
+        let listeners = sync::lock(&self.0.error_listeners).clone();
         for listener in listeners {
             listener(message);
         }
@@ -674,7 +671,7 @@ impl Client {
 
     fn handle_incoming(&self, event: Incoming) {
         // A closed client has dropped its transport; like the TypeScript client's disposed listeners, it hears nothing.
-        if lock(&self.0.state).transport.is_none() {
+        if sync::lock(&self.0.state).transport.is_none() {
             return;
         }
         match event {
@@ -699,7 +696,7 @@ impl Client {
 
     fn handle_response(&self, message: &Value) {
         let id = &message["id"];
-        let entry = Self::remove_pending(&mut lock(&self.0.state), &key(id));
+        let entry = Self::remove_pending(&mut sync::lock(&self.0.state), &key(id));
         let Some(entry) = entry else {
             self.emit_error(&format!("Received response for unknown MCP request {}", id_text(id)));
             return;
@@ -716,12 +713,12 @@ impl Client {
     }
 
     fn handle_request(&self, message: Value) {
-        let Some(transport) = lock(&self.0.state).transport.clone() else {
+        let Some(transport) = sync::lock(&self.0.state).transport.clone() else {
             return;
         };
         let id = message["id"].clone();
         let method = message["method"].as_str().unwrap_or_default();
-        let handler = lock(&self.0.handlers).get(method).cloned();
+        let handler = sync::lock(&self.0.handlers).get(method).cloned();
         let Some(handler) = handler else {
             let error = json!({ "code": METHOD_NOT_FOUND, "message": format!("Method not found: {method}") });
             if let Err(e) = transport.send(&json!({ "jsonrpc": "2.0", "id": id, "error": error })) {
@@ -730,7 +727,7 @@ impl Client {
             return;
         };
         let token = CancelToken::new();
-        lock(&self.0.state).incoming.insert(key(&id), token.clone());
+        sync::lock(&self.0.state).incoming.insert(key(&id), token.clone());
         let reply = match handler(message.get("params"), &token) {
             Ok(Value::Null) => json!({ "jsonrpc": "2.0", "id": id, "result": {} }),
             Ok(result) => json!({ "jsonrpc": "2.0", "id": id, "result": result }),
@@ -748,7 +745,7 @@ impl Client {
         if let Err(e) = transport.send(&reply) {
             self.emit_error(&e.to_string());
         }
-        lock(&self.0.state).incoming.remove(&key(&id));
+        sync::lock(&self.0.state).incoming.remove(&key(&id));
     }
 
     fn handle_notification(&self, method: &str, params: Option<&Value>) {
@@ -756,7 +753,7 @@ impl Client {
             "notifications/progress" => self.handle_progress(params),
             "notifications/cancelled" => {
                 if let Some(id) = params.and_then(|p| p.get("requestId")).filter(|id| is_id(id)) {
-                    let token = lock(&self.0.state).incoming.get(&key(id)).cloned();
+                    let token = sync::lock(&self.0.state).incoming.get(&key(id)).cloned();
                     let reason = params.and_then(|p| p.get("reason")).map(id_text);
                     if let Some(token) = token {
                         token.cancel(reason.as_deref());
@@ -765,7 +762,7 @@ impl Client {
             }
             _ => {}
         }
-        let listeners = lock(&self.0.notification_listeners)
+        let listeners = sync::lock(&self.0.notification_listeners)
             .get(method)
             .cloned()
             .unwrap_or_default();
@@ -785,7 +782,7 @@ impl Client {
             return;
         }
         let listener = {
-            let mut state = lock(&self.0.state);
+            let mut state = sync::lock(&self.0.state);
             let Some(request_key) = state.progress.get(&key(token)).cloned() else {
                 return;
             };

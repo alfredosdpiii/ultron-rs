@@ -10,12 +10,12 @@
 
 use super::{
     AUTH_RETRY, AUTH_USER_AGENT, DEFAULT_UNIVERSE, Fail, NO_RETRY, ResponseType, SCOPE, absolute, gaxios, io_message,
-    js_string, js_truthy, realpath, sign_rs256,
+    realpath, sign_rs256,
 };
 use crate::env::{ProviderEnv, provider_env_value};
 use crate::http::{HeaderMap, HttpRequest, Transport};
-use crate::jsutil::{btoa, json_parse_error};
-use crate::oauth_flow::{base64url, form_urlencode};
+use crate::jsutil::json_parse_error;
+use crate::oauth_flow::form_urlencode;
 use serde_json::{Map, Value, json};
 use std::time::Duration;
 
@@ -58,26 +58,8 @@ pub(super) fn camel_option<'a>(json: &'a Value, key: &str) -> Option<&'a Value> 
 
 fn truthy_string(json: &Value, key: &str) -> Option<String> {
     camel_option(json, key)
-        .filter(|v| js_truthy(Some(v)))
-        .map(|v| js_string(Some(v)))
-}
-
-/// JavaScript's `Number(value)` for the JSON values a config holds.
-fn js_number(value: &Value) -> f64 {
-    match value {
-        Value::Null => 0.0,
-        Value::Bool(b) => f64::from(u8::from(*b)),
-        Value::Number(n) => n.as_f64().unwrap_or(f64::NAN),
-        Value::String(s) => {
-            let t = s.trim();
-            if t.is_empty() {
-                0.0
-            } else {
-                t.parse().unwrap_or(f64::NAN)
-            }
-        }
-        _ => f64::NAN,
-    }
+        .filter(|v| jsrt::value::truthy(Some(v)))
+        .map(|v| jsrt::value::string(Some(v)))
 }
 
 /// `encodeURIComponent`.
@@ -146,10 +128,12 @@ pub(crate) struct External {
 impl External {
     /// `ExternalAccountClient.fromJSON`: the constructor checks of the base client, then of the chosen subclass.
     pub(super) fn from_json(json: &Value) -> Result<External, Fail> {
-        let universe =
-            camel_option(json, "universe_domain").map_or_else(|| DEFAULT_UNIVERSE.into(), |v| js_string(Some(v)));
-        let token_url = camel_option(json, "token_url")
-            .map_or_else(|| format!("https://sts.{universe}/v1/token"), |v| js_string(Some(v)));
+        let universe = camel_option(json, "universe_domain")
+            .map_or_else(|| DEFAULT_UNIVERSE.into(), |v| jsrt::value::string(Some(v)));
+        let token_url = camel_option(json, "token_url").map_or_else(
+            || format!("https://sts.{universe}/v1/token"),
+            |v| jsrt::value::string(Some(v)),
+        );
         let client = truthy_string(json, "client_id").map(|id| {
             let secret = truthy_string(json, "client_secret").unwrap_or_default();
             (id, secret)
@@ -175,8 +159,8 @@ impl External {
         let audience = read_audience()?;
         let lifetime = camel_option(json, "service_account_impersonation")
             .and_then(|v| camel_option(v, "token_lifetime_seconds"))
-            .filter(|v| js_truthy(Some(v)))
-            .map_or_else(|| DEFAULT_TOKEN_LIFESPAN.to_string(), |v| js_string(Some(v)));
+            .filter(|v| jsrt::value::truthy(Some(v)))
+            .map_or_else(|| DEFAULT_TOKEN_LIFESPAN.to_string(), |v| jsrt::value::string(Some(v)));
         let source = credential_source(json)?;
         Ok(External {
             universe,
@@ -184,7 +168,7 @@ impl External {
             token_url,
             client,
             audience,
-            subject_token_type: camel_option(json, "subject_token_type").map(|v| js_string(Some(v))),
+            subject_token_type: camel_option(json, "subject_token_type").map(|v| jsrt::value::string(Some(v))),
             workforce_pool_user_project,
             impersonation_url: truthy_string(json, "service_account_impersonation_url"),
             lifetime,
@@ -269,7 +253,7 @@ impl External {
             body: json!({ "scope": [SCOPE], "lifetime": format!("{}s", self.lifetime) }).to_string(),
         };
         let response = gaxios(transport, request, &AUTH_RETRY, ResponseType::Json).await?;
-        Ok(js_string(response.data.get("accessToken")))
+        Ok(jsrt::value::string(response.data.get("accessToken")))
     }
 
     async fn subject_token(&self, env: Option<&ProviderEnv>, transport: &dyn Transport) -> Result<String, Fail> {
@@ -291,7 +275,7 @@ impl External {
                 let region = aws.region(env, transport).await?;
                 let credentials = aws.credentials(env, transport).await?;
                 let url = verification_url.replacen("{region}", &region, 1);
-                aws_subject_token(&url, &region, &credentials, &self.audience, crate::options::now_ms())
+                aws_subject_token(&url, &region, &credentials, &self.audience, jsrt::date::now_ms())
                     .map_err(|message| Fail::typed("TypeError", message))
             }
             Source::Executable {
@@ -325,20 +309,20 @@ fn is_workforce_audience(audience: &str) -> bool {
 }
 
 fn basic(id: &str, secret: &str) -> String {
-    format!("Basic {}", btoa(format!("{id}:{secret}").as_bytes()))
+    format!("Basic {}", jsrt::base64::encode(format!("{id}:{secret}").as_bytes()))
 }
 
 /// The subclass `ExternalAccountClient.fromJSON` picks, with its constructor checks.
 fn credential_source(json: &Value) -> Result<Source, Fail> {
     let source = json.get("credential_source").filter(|v| !v.is_null());
-    if source.is_some_and(|s| js_truthy(s.get("environment_id"))) {
+    if source.is_some_and(|s| jsrt::value::truthy(s.get("environment_id"))) {
         return aws_source(source.unwrap_or(&Value::Null));
     }
-    if source.is_some_and(|s| js_truthy(s.get("executable"))) {
+    if source.is_some_and(|s| jsrt::value::truthy(s.get("executable"))) {
         return executable_source(source.unwrap_or(&Value::Null));
     }
     // `IdentityPoolClient`.
-    let Some(source) = camel_option(json, "credential_source").filter(|v| js_truthy(Some(v))) else {
+    let Some(source) = camel_option(json, "credential_source").filter(|v| jsrt::value::truthy(Some(v))) else {
         return Err(Fail::new(
             "A credential source or subject token supplier must be specified.",
         ));
@@ -360,7 +344,7 @@ fn credential_source(json: &Value) -> Result<Source, Fail> {
     };
     let file = truthy_string(source, "file");
     let url = truthy_string(source, "url");
-    let certificate = camel_option(source, "certificate").filter(|v| js_truthy(Some(v)));
+    let certificate = camel_option(source, "certificate").filter(|v| jsrt::value::truthy(Some(v)));
     let set = [file.is_some(), url.is_some(), certificate.is_some()];
     if set.iter().filter(|s| **s).count() > 1 {
         return Err(Fail::new(NO_SOURCE));
@@ -372,7 +356,7 @@ fn credential_source(json: &Value) -> Result<Source, Fail> {
         let headers = match camel_option(source, "headers") {
             Some(Value::Object(map)) => map
                 .iter()
-                .map(|(k, v)| (k.to_lowercase(), js_string(Some(v))))
+                .map(|(k, v)| (k.to_lowercase(), jsrt::value::string(Some(v))))
                 .collect(),
             _ => HeaderMap::new(),
         };
@@ -413,12 +397,12 @@ fn file_subject_token(path: &str, format: &Format) -> Result<String, Fail> {
             json.get(field).cloned().unwrap_or(Value::Null)
         }
     };
-    if !js_truthy(Some(&token)) {
+    if !jsrt::value::truthy(Some(&token)) {
         return Err(Fail::new(
             "Unable to parse the subject_token from the credential_source file",
         ));
     }
-    Ok(js_string(Some(&token)))
+    Ok(jsrt::value::string(Some(&token)))
 }
 
 /// `UrlSubjectTokenSupplier.getSubjectToken`.
@@ -448,12 +432,12 @@ async fn url_subject_token(
         Format::Text => data,
         Format::Json(field) => data.get(field).cloned().unwrap_or(Value::Null),
     };
-    if !js_truthy(Some(&token)) {
+    if !jsrt::value::truthy(Some(&token)) {
         return Err(Fail::new(
             "Unable to parse the subject_token from the credential_source URL",
         ));
     }
-    Ok(js_string(Some(&token)))
+    Ok(jsrt::value::string(Some(&token)))
 }
 
 // -------------------------------------------------------------------------------------------------------- AWS
@@ -530,7 +514,7 @@ impl AwsSource<'_> {
             ResponseType::Text,
         )
         .await?;
-        Ok(Some(js_string(Some(&data))))
+        Ok(Some(jsrt::value::string(Some(&data))))
     }
 
     async fn region(&self, env: Option<&ProviderEnv>, transport: &dyn Transport) -> Result<String, Fail> {
@@ -551,7 +535,7 @@ impl AwsSource<'_> {
             .map(|t| ("x-aws-ec2-metadata-token", t))
             .into_iter()
             .collect();
-        let zone = js_string(Some(
+        let zone = jsrt::value::string(Some(
             &Self::metadata_text(transport, "GET", url, &headers, ResponseType::Text).await?,
         ));
         // `substr(0, length - 1)`: the availability zone without its letter.
@@ -582,18 +566,18 @@ impl AwsSource<'_> {
                 "Unable to determine AWS role name due to missing \"options.credential_source.url\"",
             ));
         };
-        let role = js_string(Some(
+        let role = jsrt::value::string(Some(
             &Self::metadata_text(transport, "GET", url, &headers, ResponseType::Text).await?,
         ));
         let data =
             Self::metadata_text(transport, "GET", &format!("{url}/{role}"), &headers, ResponseType::Json).await?;
         Ok(AwsCredentials {
-            access_key_id: js_string(data.get("AccessKeyId")),
-            secret_access_key: js_string(data.get("SecretAccessKey")),
+            access_key_id: jsrt::value::string(data.get("AccessKeyId")),
+            secret_access_key: jsrt::value::string(data.get("SecretAccessKey")),
             token: data
                 .get("Token")
-                .filter(|v| js_truthy(Some(v)))
-                .map(|v| js_string(Some(v))),
+                .filter(|v| jsrt::value::truthy(Some(v)))
+                .map(|v| jsrt::value::string(Some(v))),
         })
     }
 }
@@ -607,7 +591,7 @@ pub fn aws_subject_token(
     audience: &str,
     now_ms: i64,
 ) -> Result<String, String> {
-    use crate::aws::{amz_date, hmac_sha256, sha256_hex};
+    use crate::aws::amz_date;
     let parsed = reqwest::Url::parse(url).map_err(|_| "Invalid URL".to_string())?;
     let host = match (parsed.host_str(), parsed.port()) {
         (Some(host), Some(port)) => format!("{host}:{port}"),
@@ -628,24 +612,21 @@ pub fn aws_subject_token(
     let signed_headers = signed.iter().map(|(k, _)| *k).collect::<Vec<_>>().join(";");
     let canonical_request = format!(
         "POST\n{path}\n{query}\n{canonical_headers}\n{signed_headers}\n{}",
-        sha256_hex(b"")
+        jsrt::hash::sha256_hex(b"")
     );
     let scope = format!("{day}/{region}/{service}/aws4_request");
     let string_to_sign = format!(
         "AWS4-HMAC-SHA256\n{date}\n{scope}\n{}",
-        sha256_hex(canonical_request.as_bytes())
+        jsrt::hash::sha256_hex(canonical_request.as_bytes())
     );
-    let mut key = hmac_sha256(
+    let mut key = jsrt::hash::hmac_sha256(
         format!("AWS4{}", credentials.secret_access_key).as_bytes(),
         day.as_bytes(),
     );
     for part in [region, service.as_str(), "aws4_request"] {
-        key = hmac_sha256(&key, part.as_bytes());
+        key = jsrt::hash::hmac_sha256(&key, part.as_bytes());
     }
-    let signature: String = hmac_sha256(&key, string_to_sign.as_bytes())
-        .iter()
-        .map(|b| format!("{b:02x}"))
-        .collect();
+    let signature = jsrt::hash::hex(&jsrt::hash::hmac_sha256(&key, string_to_sign.as_bytes()));
     let authorization = format!(
         "AWS4-HMAC-SHA256 Credential={}/{scope}, SignedHeaders={signed_headers}, Signature={signature}",
         credentials.access_key_id
@@ -670,14 +651,14 @@ pub fn aws_subject_token(
 
 fn executable_source(source: &Value) -> Result<Source, Fail> {
     let executable = source.get("executable").cloned().unwrap_or(Value::Null);
-    let Some(command) = executable.get("command").filter(|v| js_truthy(Some(v))) else {
+    let Some(command) = executable.get("command").filter(|v| jsrt::value::truthy(Some(v))) else {
         return Err(Fail::new(NO_EXECUTABLE_SOURCE));
     };
-    let command = js_string(Some(command));
+    let command = jsrt::value::string(Some(command));
     let timeout_ms = match executable.get("timeout_millis") {
         None => DEFAULT_EXECUTABLE_TIMEOUT_MS,
         Some(value) => {
-            let ms = js_number(value);
+            let ms = jsrt::value::number(value);
             if ms < MIN_EXECUTABLE_TIMEOUT_MS || ms > MAX_EXECUTABLE_TIMEOUT_MS {
                 return Err(Fail::new("Timeout must be between 5000 and 120000 milliseconds."));
             }
@@ -687,7 +668,7 @@ fn executable_source(source: &Value) -> Result<Source, Fail> {
     let output_file = executable
         .get("output_file")
         .filter(|v| !v.is_null())
-        .map(|v| js_string(Some(v)));
+        .map(|v| jsrt::value::string(Some(v)));
     Ok(Source::Executable {
         command: parse_command(&command)?,
         timeout_ms,
@@ -751,15 +732,15 @@ impl ExecutableResponse {
         if json.is_null() {
             return Err(None);
         }
-        if !js_truthy(json.get("version")) {
+        if !jsrt::value::truthy(json.get("version")) {
             return Err(Some("Executable response must contain a 'version' field.".into()));
         }
         let Some(success) = json.get("success") else {
             return Err(Some("Executable response must contain a 'success' field.".into()));
         };
         let mut response = ExecutableResponse {
-            version: js_number(&json["version"]),
-            success: js_truthy(Some(success)),
+            version: jsrt::value::number(&json["version"]),
+            success: jsrt::value::truthy(Some(success)),
             expiration: None,
             token: String::new(),
             code: String::new(),
@@ -788,23 +769,23 @@ impl ExecutableResponse {
                     ),
                 )
             };
-            if !js_truthy(json.get(field)) {
+            if !jsrt::value::truthy(json.get(field)) {
                 return Err(Some(message));
             }
-            response.token = js_string(json.get(field));
+            response.token = jsrt::value::string(json.get(field));
         } else {
-            if !js_truthy(json.get("code")) {
+            if !jsrt::value::truthy(json.get("code")) {
                 return Err(Some(
                     "Executable response must contain a 'code' field when unsuccessful.".into(),
                 ));
             }
-            if !js_truthy(json.get("message")) {
+            if !jsrt::value::truthy(json.get("message")) {
                 return Err(Some(
                     "Executable response must contain a 'message' field when unsuccessful.".into(),
                 ));
             }
-            response.code = js_string(json.get("code"));
-            response.message = js_string(json.get("message"));
+            response.code = jsrt::value::string(json.get("code"));
+            response.message = jsrt::value::string(json.get("message"));
         }
         Ok(response)
     }
@@ -812,7 +793,7 @@ impl ExecutableResponse {
     fn is_expired(&self) -> bool {
         self.expiration
             .as_ref()
-            .is_some_and(|e| js_number(e) < (crate::options::now_ms() as f64 / 1000.0).round())
+            .is_some_and(|e| jsrt::value::number(e) < (jsrt::date::now_ms() as f64 / 1000.0).round())
     }
 }
 
@@ -866,7 +847,7 @@ impl External {
         if !response.success {
             return Err(executable_error(&response.message, &response.code));
         }
-        if output_file.is_some() && !js_truthy(response.expiration.as_ref()) {
+        if output_file.is_some() && !jsrt::value::truthy(response.expiration.as_ref()) {
             return Err(Fail::new(
                 "The executable response must contain the `expiration_time` field for successful responses when an output_file has been specified in the configuration.",
             ));
@@ -988,10 +969,10 @@ async fn run_executable(
 /// A token request whose error response is reworded by `getErrorFromOAuthErrorResponse`.
 async fn oauth_exchange(transport: &dyn Transport, request: HttpRequest) -> Result<String, Fail> {
     match gaxios(transport, request, &AUTH_RETRY, ResponseType::Json).await {
-        Ok(response) => Ok(js_string(response.data.get("access_token"))),
+        Ok(response) => Ok(jsrt::value::string(response.data.get("access_token"))),
         Err(mut fail) => {
             if let Some(data) = fail.data.as_deref() {
-                let field = |key: &str| data.get(key).map(|v| js_string(Some(v)));
+                let field = |key: &str| data.get(key).map(|v| jsrt::value::string(Some(v)));
                 let mut message = format!("Error code {}", field("error").unwrap_or_else(|| "undefined".into()));
                 if let Some(description) = field("error_description") {
                     message.push_str(&format!(": {description}"));
@@ -1021,24 +1002,24 @@ pub(crate) struct ExternalUser {
 
 impl ExternalUser {
     pub(super) fn from_json(json: &Value) -> ExternalUser {
-        let universe =
-            camel_option(json, "universe_domain").map_or_else(|| DEFAULT_UNIVERSE.into(), |v| js_string(Some(v)));
-        let plain = |key: &str| js_string(json.get(key).filter(|v| !v.is_null()));
+        let universe = camel_option(json, "universe_domain")
+            .map_or_else(|| DEFAULT_UNIVERSE.into(), |v| jsrt::value::string(Some(v)));
+        let plain = |key: &str| jsrt::value::string(json.get(key).filter(|v| !v.is_null()));
         ExternalUser {
             token_url: json.get("token_url").filter(|v| !v.is_null()).map_or_else(
                 || format!("https://sts.{universe}/v1/oauthtoken"),
-                |v| js_string(Some(v)),
+                |v| jsrt::value::string(Some(v)),
             ),
             universe,
             quota: json
                 .get("quota_project_id")
-                .filter(|v| js_truthy(Some(v)))
-                .map(|v| js_string(Some(v))),
+                .filter(|v| jsrt::value::truthy(Some(v)))
+                .map(|v| jsrt::value::string(Some(v))),
             client_id: plain("client_id"),
             client_secret: json
                 .get("client_secret")
-                .filter(|v| js_truthy(Some(v)))
-                .map(|v| js_string(Some(v)))
+                .filter(|v| jsrt::value::truthy(Some(v)))
+                .map(|v| jsrt::value::string(Some(v)))
                 .unwrap_or_default(),
             refresh_token: plain("refresh_token"),
         }
@@ -1084,9 +1065,9 @@ pub fn self_signed_jwt(email: &str, pem: &str, key_id: Option<&str>, iat_seconds
     payload.insert("iat".into(), json!(iat_seconds));
     let input = format!(
         "{}.{}",
-        base64url(Value::Object(header).to_string().as_bytes()),
-        base64url(Value::Object(payload).to_string().as_bytes())
+        jsrt::base64::encode_url(Value::Object(header).to_string().as_bytes()),
+        jsrt::base64::encode_url(Value::Object(payload).to_string().as_bytes())
     );
     let signature = sign_rs256(pem, input.as_bytes())?;
-    Ok(format!("{input}.{}", base64url(&signature)))
+    Ok(format!("{input}.{}", jsrt::base64::encode_url(&signature)))
 }

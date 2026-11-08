@@ -50,6 +50,16 @@ fn cli_list_models_order_matches_typescript_locale_compare() {
 }
 
 #[test]
+fn cli_list_models_locale_compare_sorts_whitespace_first() {
+    // node 26.12.1: "a b".localeCompare("a_b") === -1, "a b".localeCompare("a1") === -1,
+    // "My Project/x".localeCompare("My-Project/x") === -1 (ICU puts whitespace before punctuation and digits).
+    use std::cmp::Ordering::Less;
+    assert_eq!(locale_compare("a b", "a_b"), Less);
+    assert_eq!(locale_compare("a b", "a1"), Less);
+    assert_eq!(locale_compare("My Project/x", "My-Project/x"), Less);
+}
+
+#[test]
 fn cli_format_token_count_rounds_like_to_fixed() {
     assert_eq!(format_token_count(999), "999");
     assert_eq!(format_token_count(1_000), "1K");
@@ -59,6 +69,15 @@ fn cli_format_token_count_rounds_like_to_fixed() {
     assert_eq!(format_token_count(1_000_000), "1M");
     assert_eq!(format_token_count(1_048_576), "1.0M");
     assert_eq!(format_token_count(1_050_000), "1.1M");
+}
+
+#[test]
+fn cli_format_token_count_keeps_to_fixed_below_the_tie() {
+    // node 26.12.1: (1150 / 1e3).toFixed(1) === "1.1", (2050 / 1e3).toFixed(1) === "2.0",
+    // (1450000 / 1e6).toFixed(1) === "1.4": each quotient's double lies just below the decimal tie.
+    assert_eq!(format_token_count(1_150), "1.1K");
+    assert_eq!(format_token_count(2_050), "2.0K");
+    assert_eq!(format_token_count(1_450_000), "1.4M");
 }
 
 #[test]

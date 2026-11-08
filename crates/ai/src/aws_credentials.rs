@@ -153,9 +153,7 @@ fn from_env(input: &ChainInput<'_>) -> Result<AwsCredentials> {
         (Some(access_key_id), Some(secret_access_key)) => {
             // `...(expiry && { expiration: new Date(expiry) })`.
             let expiry = input.var("AWS_CREDENTIAL_EXPIRATION").filter(|e| !e.is_empty());
-            input
-                .expiration
-                .set(expiry.as_deref().and_then(crate::model_refresh::parse_iso_ms));
+            input.expiration.set(expiry.as_deref().and_then(jsrt::date::parse_date));
             Ok(AwsCredentials {
                 access_key_id,
                 secret_access_key,
@@ -701,7 +699,7 @@ async fn sts_call(
             input.expiration.set(
                 xml_tag(&credentials, "Expiration")
                     .as_deref()
-                    .and_then(crate::model_refresh::parse_iso_ms),
+                    .and_then(jsrt::date::parse_date),
             );
             Ok(AwsCredentials {
                 access_key_id,
@@ -831,7 +829,7 @@ async fn from_process(input: &ChainInput<'_>, profile: &str) -> Result<AwsCreden
         )));
     };
     if let Some(expiration) = data.get("Expiration").and_then(Value::as_str).filter(|e| !e.is_empty())
-        && crate::model_refresh::parse_iso_ms(expiration).is_some_and(|ms| ms < input.now_ms)
+        && jsrt::date::parse_date(expiration).is_some_and(|ms| ms < input.now_ms)
     {
         return Err(CredentialError::next(format!(
             "Profile {profile} credential_process returned expired credentials."
@@ -928,7 +926,7 @@ async fn from_sso(input: &ChainInput<'_>, name: &str) -> Result<AwsCredentials> 
             let expires = token
                 .get("expiresAt")
                 .and_then(Value::as_str)
-                .and_then(crate::model_refresh::parse_iso_ms);
+                .and_then(jsrt::date::parse_date);
             if expires.is_some_and(|ms| ms - input.now_ms <= 0) {
                 return Err(CredentialError::stop(format!(
                     "The SSO session associated with this profile has expired. {SSO_REFRESH}"
@@ -1067,7 +1065,7 @@ async fn sso_session_token(input: &ChainInput<'_>, profile_name: &str) -> std::r
         .insert(session_name.clone(), input.now_ms);
     match refresh_sso_token(input, &region, &token).await {
         Some((new_token, expires_in, refresh_token)) => {
-            let expires_at = crate::claude_code_cli::iso_string((input.now_ms + expires_in * 1000) as f64);
+            let expires_at = jsrt::date::iso_string(input.now_ms + expires_in * 1000);
             let mut updated = token.clone();
             updated.insert("accessToken".into(), Value::String(new_token.clone()));
             updated.insert("expiresAt".into(), Value::String(expires_at));
@@ -1131,7 +1129,7 @@ fn js_string(value: &Value) -> String {
 
 fn parse_js_date(value: &Value) -> Option<i64> {
     match value {
-        Value::String(s) => crate::model_refresh::parse_iso_ms(s),
+        Value::String(s) => jsrt::date::parse_date(s),
         Value::Number(n) => n.as_f64().map(|f| f as i64),
         _ => None,
     }
@@ -1152,7 +1150,7 @@ fn is_imds_credentials(input: &ChainInput<'_>, value: &Value, static_stability: 
         secret_access_key: text("SecretAccessKey")?,
         session_token: Some(text("Token")?),
     };
-    let ms = crate::model_refresh::parse_iso_ms(&expiration);
+    let ms = jsrt::date::parse_date(&expiration);
     input
         .expiration
         .set(if static_stability && ms.is_some_and(|ms| ms < input.now_ms) {

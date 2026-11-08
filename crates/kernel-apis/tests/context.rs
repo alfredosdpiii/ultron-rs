@@ -11,7 +11,6 @@ use kernel::{HostHandler, Signal};
 use kernel_apis::context_control::{
     ContextBranches, ContextControl, TaskLine, apply_context_edits, collapsed_cell_text, task_line, trimmed_result_text,
 };
-use kernel_apis::util::lock;
 use kernel_apis::{ApiModule, KernelApis, Request};
 use serde_json::{Map, Value, json};
 use std::path::Path;
@@ -60,12 +59,12 @@ impl Fake {
 
 impl ContextBranches for Fake {
     fn entries(&self, lane: &str) -> Result<Vec<Value>, String> {
-        let mut branches = lock(&self.0);
+        let mut branches = jsrt::sync::lock(&self.0);
         Ok(Self::lane_mut(&mut branches, lane).clone())
     }
 
     fn append_custom(&self, lane: &str, custom_type: &str, data: &Value) -> Result<String, String> {
-        let mut branches = lock(&self.0);
+        let mut branches = jsrt::sync::lock(&self.0);
         branches.seq += 1;
         branches.appended += 1;
         let id = format!("{lane}-x{}", branches.appended);
@@ -80,7 +79,7 @@ impl ContextBranches for Fake {
     }
 
     fn tip_id(&self, lane: &str) -> Result<Option<String>, String> {
-        let mut branches = lock(&self.0);
+        let mut branches = jsrt::sync::lock(&self.0);
         Ok(Self::lane_mut(&mut branches, lane)
             .last()
             .and_then(|entry| entry["id"].as_str().map(str::to_string)))
@@ -99,14 +98,14 @@ impl ApiModule for OnLane {
     }
 
     fn handle(&self, request: &Request<'_>) -> Result<Value, String> {
-        let lane = lock(&self.fake.0).lane.clone();
+        let lane = jsrt::sync::lock(&self.fake.0).lane.clone();
         self.control.handle_request(request.kind, request.payload, &lane)
     }
 }
 
 fn test_requests(fake: Fake) -> Arc<dyn HostHandler> {
     Arc::new(move |kind: &str, payload: Map<String, Value>, _: &Signal| {
-        let mut branches = lock(&fake.0);
+        let mut branches = jsrt::sync::lock(&fake.0);
         match kind {
             "test.lane" => branches.lane = payload["lane"].as_str().unwrap().into(),
             "test.defer" => branches.deferred = payload["on"].as_bool().unwrap(),
@@ -141,7 +140,7 @@ fn context_host(_: &Path) -> Made {
     Made {
         handler: KernelApis::new(test_requests(fake)).with(Arc::new(module)),
         env: Vec::new(),
-        state: Box::new(move || Value::Object(lock(&state.0).lanes.clone())),
+        state: Box::new(move || Value::Object(jsrt::sync::lock(&state.0).lanes.clone())),
     }
 }
 
@@ -232,7 +231,7 @@ struct HookBranches(Arc<Mutex<HookState>>);
 
 impl HookBranches {
     fn push(&self, lane: &str, entry: Value) {
-        let mut state = lock(&self.0);
+        let mut state = jsrt::sync::lock(&self.0);
         state
             .0
             .entry(lane)
@@ -246,7 +245,7 @@ impl HookBranches {
 
 impl ContextBranches for HookBranches {
     fn entries(&self, lane: &str) -> Result<Vec<Value>, String> {
-        Ok(lock(&self.0)
+        Ok(jsrt::sync::lock(&self.0)
             .0
             .get(lane)
             .and_then(Value::as_array)
@@ -256,7 +255,7 @@ impl ContextBranches for HookBranches {
 
     fn append_custom(&self, lane: &str, custom_type: &str, data: &Value) -> Result<String, String> {
         let (id, seq) = {
-            let mut state = lock(&self.0);
+            let mut state = jsrt::sync::lock(&self.0);
             state.1 += 1;
             state.2 += 1;
             (format!("{lane}-y{}", state.2), state.1)
@@ -280,12 +279,12 @@ impl ContextBranches for HookBranches {
 fn kernel_apis_context_hooks_collapse_trim_and_keep_like_typescript() {
     let recorded = helpers()["hooks"].clone();
     let branches = HookBranches::default();
-    lock(&branches.0).0.insert("main".into(), json!([]));
+    jsrt::sync::lock(&branches.0).0.insert("main".into(), json!([]));
     let control = ContextControl::new(Arc::new(branches.clone())).with_trim(true);
     let mut observed = Vec::new();
     let mut outputs = Vec::new();
     let drain = |control: &ContextControl, observed: &mut Vec<Value>| {
-        let added = std::mem::take(&mut lock(&branches.0).3);
+        let added = std::mem::take(&mut jsrt::sync::lock(&branches.0).3);
         for (lane, entry) in added {
             observed.extend(control.entry_added(&lane, &entry));
         }
@@ -296,7 +295,7 @@ fn kernel_apis_context_hooks_collapse_trim_and_keep_like_typescript() {
         match step["op"].as_str().unwrap() {
             "append" => {
                 let seq = {
-                    let mut state = lock(&branches.0);
+                    let mut state = jsrt::sync::lock(&branches.0);
                     state.1 += 1;
                     state.1
                 };

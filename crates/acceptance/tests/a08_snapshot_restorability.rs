@@ -285,7 +285,7 @@ fn acceptance_a08_unsigned_truncated_and_forged_non_data_snapshots_are_rejected(
     let body = r#"{"names":{"injected":{"$object":["os","system"]}},"skipped":[],"reasons":{}}"#;
     let header = format!(
         r#"{{"format":"ultron-rlm-snapshot","version":2,"sha256":"{}","bytes":{}}}"#,
-        kernel::snapshot::sha256_hex(body.as_bytes()),
+        jsrt::hash::sha256_hex(body),
         body.len()
     );
     std::fs::write(path, sign_snapshot(&KEY, format!("{header}\n{body}").as_bytes())).unwrap();

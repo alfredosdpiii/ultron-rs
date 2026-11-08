@@ -7,7 +7,7 @@
 //! `ULTRON_HINTS=on`.
 
 use crate::hints::HintsModule;
-use crate::util::{Clock, lock, sha256_hex, system_clock};
+use crate::util::{Clock, system_clock};
 use fancy_regex::Regex;
 use serde_json::{Map, Value};
 use std::collections::{HashMap, HashSet};
@@ -182,7 +182,7 @@ impl LoopDetector {
     pub fn cell_ended(&mut self, lane: &str, code: &str, failed: bool, ename: Option<&str>) -> Option<LoopTrip> {
         let limits = self.limits;
         let state = self.lanes.entry(lane.to_string()).or_default();
-        let hash = sha256_hex(normalize_cell(code).as_bytes())[..16].to_string();
+        let hash = jsrt::hash::sha256_hex(normalize_cell(code).as_bytes())[..16].to_string();
         state.history.push((hash.clone(), failed));
         if state.history.len() > limits.alternation * 2 + 2 {
             state.history.remove(0);
@@ -377,12 +377,12 @@ impl CellHints {
     /// Which lanes the host wakes when their work ends: the others' hints say to await what the answer needs
     /// (nothing wakes them after they reply) instead of "end your turn".
     pub fn set_lane_woken(&self, woken: LaneWoken) {
-        *lock(&self.woken) = Some(woken);
+        *jsrt::sync::lock(&self.woken) = Some(woken);
     }
 
     /// Whether `lane` is woken by the ends of its work.
     fn woken(&self, lane: &str) -> bool {
-        let woken = lock(&self.woken).clone();
+        let woken = jsrt::sync::lock(&self.woken).clone();
         match woken {
             Some(woken) => woken(lane),
             None => lane == "main" && !self.options.next_call_root,
@@ -399,8 +399,8 @@ impl CellHints {
 
     /// `lane`'s run ended: failure streaks start over with its next run.
     pub fn run_ended(&self, lane: &str) {
-        lock(&self.loops).reset(lane);
-        if let Some(state) = lock(&self.lanes).get_mut(lane) {
+        jsrt::sync::lock(&self.loops).reset(lane);
+        if let Some(state) = jsrt::sync::lock(&self.lanes).get_mut(lane) {
             state.failure = None;
         }
     }
@@ -410,7 +410,7 @@ impl CellHints {
         if !self.enabled() {
             return;
         }
-        lock(&self.lanes).entry(lane.to_string()).or_default().cell = Some(Cell {
+        jsrt::sync::lock(&self.lanes).entry(lane.to_string()).or_default().cell = Some(Cell {
             code: code.to_string(),
             ..Cell::default()
         });
@@ -426,7 +426,7 @@ impl CellHints {
         started_at: i64,
     ) {
         let now = self.now();
-        let mut lanes = lock(&self.lanes);
+        let mut lanes = jsrt::sync::lock(&self.lanes);
         let Some(cell) = lanes.get_mut(lane).and_then(|s| s.cell.as_mut()) else {
             return;
         };
@@ -481,7 +481,7 @@ impl CellHints {
         // A lane nothing wakes gets the hints that say to await what the answer needs.
         let next_call = !self.woken(lane);
         let (mut candidates, code, failed) = {
-            let mut lanes = lock(&self.lanes);
+            let mut lanes = jsrt::sync::lock(&self.lanes);
             let state = lanes.entry(lane.to_string()).or_default();
             let cell = state.cell.take()?;
             let candidates = self.candidates(state, &cell, outcome, next_call);
@@ -489,7 +489,7 @@ impl CellHints {
             (candidates, cell.code, outcome.ename.is_some() || cell.bash_failed)
         };
         let (trip, level) = {
-            let mut loops = lock(&self.loops);
+            let mut loops = jsrt::sync::lock(&self.loops);
             let trip = loops.cell_ended(lane, &code, failed, outcome.ename);
             (trip, loops.level(lane))
         };
@@ -542,7 +542,7 @@ impl CellHints {
             });
 
         if let Some((id, waited)) = cell.detached.first() {
-            let after = waited.map_or(String::new(), |w| format!(" after {} s", js_number(w)));
+            let after = waited.map_or(String::new(), |w| format!(" after {} s", jsrt::number::to_string(w)));
             found.push((
                 "job-detached",
                 if events && next_call {
@@ -578,7 +578,7 @@ impl CellHints {
                 "blocked-on-job",
                 format!(
                     "This cell spent {} s waiting in {}. You could have ended your turn instead: completions arrive as <runtime_event> messages that start a new turn, so wait only when you need the result now.",
-                    js_round(waited_ms as f64 / 1000.0),
+                    jsrt::number::round(waited_ms as f64 / 1000.0) as i64,
                     calls.join(", ")
                 ),
             ));
@@ -635,7 +635,7 @@ impl CellHints {
                 "large-read",
                 format!(
                     "This cell read a large file into a string. `await read(path)` returns a ContextHandle for files over {} KiB: use h.search(regex), h.lines(a, b), h.chunks(n) or rlm.map(task, h.chunks(n)) and print only what you need.",
-                    js_round(handle_bytes as f64 / 1024.0)
+                    jsrt::number::round(handle_bytes as f64 / 1024.0) as i64
                 ),
             ));
         }
@@ -649,20 +649,6 @@ impl CellHints {
             found.push(repeat);
         }
         found
-    }
-}
-
-/// `Math.round` for non-negative values.
-fn js_round(value: f64) -> i64 {
-    (value + 0.5).floor() as i64
-}
-
-/// A number as JavaScript prints it in a template string (30, 0.5).
-fn js_number(value: f64) -> String {
-    if value.fract() == 0.0 && value.abs() < 1e15 {
-        format!("{}", value as i64)
-    } else {
-        format!("{value}")
     }
 }
 

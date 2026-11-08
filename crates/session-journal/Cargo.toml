@@ -9,6 +9,7 @@ autotests = false
 
 [dependencies]
 getrandom = "=0.4.3"
+jsrt = { path = "../jsrt" }
 serde_json = { version = "=1.0.151", features = ["float_roundtrip", "preserve_order"] }
 session-file = { path = "../session-file" }
 

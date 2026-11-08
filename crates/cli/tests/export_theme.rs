@@ -4,7 +4,6 @@
 //! sha256, with its <style> compared as text), and every failure must carry the TypeScript message.
 
 use serde_json::Value;
-use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -48,7 +47,7 @@ fn check(case: &Value, got: Result<String, String>, root: &Path) {
             let html = got.unwrap_or_else(|e| panic!("{label}: {e}"));
             assert_eq!(style(&html), case["style"].as_str().unwrap(), "{label}: style");
             assert_eq!(
-                format!("{:x}", Sha256::digest(html.as_bytes())),
+                jsrt::hash::sha256_hex(html.as_bytes()),
                 case["sha256"].as_str().unwrap(),
                 "{label}: page"
             );

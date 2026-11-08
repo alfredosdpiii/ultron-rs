@@ -12,18 +12,17 @@
 
 use crate::store::{DocumentStore, read_versioned};
 use crate::tasks::TaskHost;
-use crate::util::{Clock, fields, js_trim, lock, safe_integer, uuid};
+use crate::util::Clock;
 use kernel::Signal;
 use serde_json::{Map, Value, json};
 use std::collections::HashSet;
 use std::sync::{Arc, Mutex};
 
 const MAX_EVERY_MS: i64 = 366 * 24 * 60 * 60 * 1000;
-const MAX_SAFE: i64 = 9_007_199_254_740_991;
 
 fn nonempty_string(value: Option<&Value>, name: &str) -> Result<String, String> {
     match value.and_then(Value::as_str) {
-        Some(text) if !js_trim(text).is_empty() => Ok(text.to_string()),
+        Some(text) if !jsrt::string::trim(text).is_empty() => Ok(text.to_string()),
         _ => Err(format!("{name} must be a nonempty string")),
     }
 }
@@ -60,7 +59,7 @@ fn valid_model(text: &str) -> bool {
 fn integer(value: Option<&Value>, name: &str, min: i64, max: i64) -> Result<i64, String> {
     value
         .filter(|value| value.is_number())
-        .and_then(safe_integer)
+        .and_then(jsrt::number::safe_integer)
         .filter(|number| (min..=max).contains(number))
         .ok_or_else(|| format!("{name} must be an integer between {min} and {max}"))
 }
@@ -68,7 +67,7 @@ fn integer(value: Option<&Value>, name: &str, min: i64, max: i64) -> Result<i64,
 fn optional_integer(value: Option<&Value>, name: &str, min: i64) -> Result<Option<i64>, String> {
     match value {
         None | Some(Value::Null) => Ok(None),
-        value => integer(value, name, min, MAX_SAFE).map(Some),
+        value => integer(value, name, min, jsrt::number::MAX_SAFE_INTEGER).map(Some),
     }
 }
 
@@ -221,11 +220,11 @@ impl SchedulesModule {
 
     /// Calls `hook` after every committed change (the ticker's wake-up).
     pub fn on_change(&self, hook: Option<ChangeHook>) {
-        *lock(&self.on_change) = hook;
+        *jsrt::sync::lock(&self.on_change) = hook;
     }
 
     fn changed(&self) {
-        let hook = lock(&self.on_change).clone();
+        let hook = jsrt::sync::lock(&self.on_change).clone();
         if let Some(hook) = hook {
             hook();
         }
@@ -233,7 +232,7 @@ impl SchedulesModule {
 
     /// The earliest time a schedule fires (see [`next_fire_at`]), after the document loads; `None`: none will.
     pub fn next_fire(&self) -> Result<Option<i64>, String> {
-        let mut guard = lock(&self.document);
+        let mut guard = jsrt::sync::lock(&self.document);
         let document = self.loaded(&mut guard)?;
         let goals = document["goals"].as_array().cloned().unwrap_or_default();
         Ok(document["schedules"]
@@ -320,7 +319,7 @@ impl SchedulesModule {
     }
 
     pub fn start(&self, host: &dyn TaskHost) -> Result<(), String> {
-        let mut guard = lock(&self.document);
+        let mut guard = jsrt::sync::lock(&self.document);
         let document = self.loaded(&mut guard)?;
         self.reconcile(document, host)
     }
@@ -336,18 +335,18 @@ impl SchedulesModule {
         if kind == "goals.verify" {
             return self.verify(payload, caller, host, signal);
         }
-        let mut guard = lock(&self.document);
+        let mut guard = jsrt::sync::lock(&self.document);
         let document = self.loaded(&mut guard)?;
         match kind {
             "schedules.create" => self.create_schedule(document, payload, caller, host),
             "schedules.list" => {
-                fields(payload, &[])?;
+                jsrt::payload::fields(payload, &[])?;
                 Ok(document["schedules"].clone())
             }
             "schedules.pause" => self.set_schedule_state(document, payload, "paused"),
             "schedules.resume" => self.set_schedule_state(document, payload, "active"),
             "schedules.delete" => {
-                fields(payload, &["id"])?;
+                jsrt::payload::fields(payload, &["id"])?;
                 self.update(document, |draft| {
                     let schedule = lookup(draft, "schedules", payload.get("id"), "Unknown schedule")?;
                     if let Some(items) = draft["schedules"].as_array_mut() {
@@ -357,17 +356,17 @@ impl SchedulesModule {
                 })
             }
             "schedules.tick" => {
-                fields(payload, &[])?;
+                jsrt::payload::fields(payload, &[])?;
                 // Firings outlive the request that happened to drive the tick.
                 self.tick_locked(document, host, &Signal::new())
             }
             "goals.create" => self.create_goal(document, payload, caller, host),
             "goals.list" => {
-                fields(payload, &[])?;
+                jsrt::payload::fields(payload, &[])?;
                 Ok(document["goals"].clone())
             }
             "goals.get" => {
-                fields(payload, &["id"])?;
+                jsrt::payload::fields(payload, &["id"])?;
                 lookup(document, "goals", payload.get("id"), "Unknown goal")
             }
             "goals.pause" => self.set_goal_state(document, payload, "paused"),
@@ -384,7 +383,7 @@ impl SchedulesModule {
         owner: Option<&str>,
         host: &dyn TaskHost,
     ) -> Result<Value, String> {
-        fields(
+        jsrt::payload::fields(
             payload,
             &[
                 "definition",
@@ -413,7 +412,7 @@ impl SchedulesModule {
                 return Err("Cannot attach a schedule to an achieved goal".into());
             }
             let schedule = json!({
-                "id": format!("schedule-{}", uuid()),
+                "id": format!("schedule-{}", jsrt::random::uuid_v4()),
                 "definition": definition, "input": input, "every_ms": every_ms, "start_at": start_at,
                 "max_runs": max_runs, "goal_id": goal_id, "model": model, "owner": owner, "state": "active",
                 "created_at": now, "runs": 0, "last_slot": null, "pending_slot": null, "last_task_id": null,
@@ -432,7 +431,7 @@ impl SchedulesModule {
         payload: &Map<String, Value>,
         state: &str,
     ) -> Result<Value, String> {
-        fields(payload, &["id"])?;
+        jsrt::payload::fields(payload, &["id"])?;
         self.update(document, |draft| {
             let id = lookup(draft, "schedules", payload.get("id"), "Unknown schedule")?["id"].clone();
             let schedule = find(draft, "schedules", id.as_str().unwrap_or("")).expect("found above");
@@ -451,7 +450,7 @@ impl SchedulesModule {
         owner: Option<&str>,
         host: &dyn TaskHost,
     ) -> Result<Value, String> {
-        fields(payload, &["title", "required_checks", "max_tasks"])?;
+        jsrt::payload::fields(payload, &["title", "required_checks", "max_tasks"])?;
         let title = nonempty_string(payload.get("title"), "title")?;
         let items = payload
             .get("required_checks")
@@ -468,7 +467,7 @@ impl SchedulesModule {
         let now = self.now(host);
         self.update(document, |draft| {
             let goal = json!({
-                "id": format!("goal-{}", uuid()), "title": title, "required_checks": checks, "max_tasks": max_tasks,
+                "id": format!("goal-{}", jsrt::random::uuid_v4()), "title": title, "required_checks": checks, "max_tasks": max_tasks,
                 "owner": owner, "state": "active", "created_at": now, "task_ids": [], "verify_rounds": 0,
                 "verification": null,
             });
@@ -480,7 +479,7 @@ impl SchedulesModule {
     }
 
     fn set_goal_state(&self, document: &mut Value, payload: &Map<String, Value>, state: &str) -> Result<Value, String> {
-        fields(payload, &["id"])?;
+        jsrt::payload::fields(payload, &["id"])?;
         self.update(document, |draft| {
             let id = lookup(draft, "goals", payload.get("id"), "Unknown goal")?["id"].clone();
             let goal = find(draft, "goals", id.as_str().unwrap_or("")).expect("found above");
@@ -493,7 +492,7 @@ impl SchedulesModule {
     }
 
     fn attach(&self, document: &mut Value, payload: &Map<String, Value>, host: &dyn TaskHost) -> Result<Value, String> {
-        fields(payload, &["id", "task_id"])?;
+        jsrt::payload::fields(payload, &["id", "task_id"])?;
         let task_id = nonempty_string(payload.get("task_id"), "task_id")?;
         let goal_id = lookup(document, "goals", payload.get("id"), "Unknown goal")?["id"].clone();
         if !host.tasks()?.iter().any(|task| task["id"] == task_id.as_str()) {
@@ -514,7 +513,7 @@ impl SchedulesModule {
 
     /// Fires due schedules (the TS background timer's work); returns `{fired, failed}`.
     pub fn tick(&self, host: &dyn TaskHost, signal: &Signal) -> Result<Value, String> {
-        let mut guard = lock(&self.document);
+        let mut guard = jsrt::sync::lock(&self.document);
         let document = self.loaded(&mut guard)?;
         self.tick_locked(document, host, signal)
     }
@@ -646,9 +645,9 @@ impl SchedulesModule {
         host: &dyn TaskHost,
         signal: &Signal,
     ) -> Result<Value, String> {
-        fields(payload, &["id", "input"])?;
+        jsrt::payload::fields(payload, &["id", "input"])?;
         let (goal_id, round, spawned) = {
-            let mut guard = lock(&self.document);
+            let mut guard = jsrt::sync::lock(&self.document);
             let document = self.loaded(&mut guard)?;
             let goal = lookup(document, "goals", payload.get("id"), "Unknown goal")?;
             if goal["state"] == "achieved" {
@@ -714,7 +713,7 @@ impl SchedulesModule {
                 }
             })
             .collect();
-        let mut guard = lock(&self.document);
+        let mut guard = jsrt::sync::lock(&self.document);
         let document = self.loaded(&mut guard)?;
         let now = self.now(host);
         self.update(document, |draft| {

@@ -379,10 +379,7 @@ fn kernel_apis_memory_forget_and_correct_keep_the_index_in_step() {
     )
     .unwrap();
     assert_eq!(corrected["record"]["type"], "pitfall");
-    assert_eq!(
-        index.entries().unwrap()[0].text_hash,
-        kernel_apis::util::sha256_hex(b"better")
-    );
+    assert_eq!(index.entries().unwrap()[0].text_hash, jsrt::hash::sha256_hex(b"better"));
     let forgotten = call(&memory, "memory.forget", json!({"id": id})).unwrap();
     assert_eq!(forgotten["state"], "forgotten");
     assert!(index.entries().unwrap().is_empty());

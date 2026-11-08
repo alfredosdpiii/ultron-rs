@@ -90,3 +90,26 @@ fn tui_theme_registry_matches_ts() {
     }
     std::fs::remove_dir_all(&root).ok();
 }
+
+/// The theme list sorts names with `localeCompare` (ICU root): punctuation before digits, `_` before `-`, accents a
+/// secondary difference (node 26: `["f", "a1", "é", "a-b", "a_b"].sort((a, b) => a.localeCompare(b))` is
+/// `["a_b", "a-b", "a1", "é", "f"]`).
+#[test]
+fn tui_theme_registry_lists_names_in_locale_compare_order() {
+    let root = std::env::temp_dir().join(format!("tui-theme-order-{}", std::process::id()));
+    let custom = root.join("themes");
+    std::fs::create_dir_all(&custom).expect("mkdir");
+    for name in ["f", "a1", "é", "a-b", "a_b"] {
+        let json = tui::theme::DARK_JSON.replacen("\"name\": \"dark\"", &format!("\"name\": \"{name}\""), 1);
+        std::fs::write(custom.join(format!("{name}.json")), json).expect("write");
+    }
+    let reg = ThemeRegistry::new(PathBuf::from("/builtin-themes"), custom, ColorMode::Truecolor);
+    let names: Vec<String> = reg
+        .available_themes_with_paths()
+        .into_iter()
+        .map(|t| t.name)
+        .filter(|n| n != "dark" && n != "light")
+        .collect();
+    assert_eq!(names, ["a_b", "a-b", "a1", "é", "f"]);
+    std::fs::remove_dir_all(&root).ok();
+}

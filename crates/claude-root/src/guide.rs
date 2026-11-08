@@ -412,5 +412,5 @@ pub fn platform() -> &'static str {
 
 /// Today's date in UTC (`new Date().toISOString().slice(0, 10)`).
 pub fn utc_date() -> String {
-    session_file::js::iso_string(session_core::lane::now_ms())[..10].to_string()
+    jsrt::date::iso_string(jsrt::date::now_ms())[..10].to_string()
 }

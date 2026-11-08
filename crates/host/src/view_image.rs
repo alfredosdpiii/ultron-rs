@@ -181,11 +181,6 @@ fn base64_len(bytes: usize) -> f64 {
     bytes.div_ceil(3) as f64 * 4.0
 }
 
-/// JS `Math.round` of a non-negative number.
-fn js_round(value: f64) -> u32 {
-    (value + 0.5).floor() as u32
-}
-
 /// resizeImageInProcess: None when the image cannot be decoded or brought under `max_bytes`.
 fn resize(bytes: &[u8], mime: &'static str, limits: ResizeLimits) -> Option<CellImage> {
     let max_width = limits.max_width.unwrap_or(2000);
@@ -202,11 +197,11 @@ fn resize(bytes: &[u8], mime: &'static str, limits: ResizeLimits) -> Option<Cell
     }
     let (mut w, mut h) = (width, height);
     if w > max_width {
-        h = js_round(f64::from(h) * f64::from(max_width) / f64::from(w));
+        h = jsrt::number::round(f64::from(h) * f64::from(max_width) / f64::from(w)) as u32;
         w = max_width;
     }
     if h > max_height {
-        w = js_round(f64::from(w) * f64::from(max_height) / f64::from(h));
+        w = jsrt::number::round(f64::from(w) * f64::from(max_height) / f64::from(h)) as u32;
         h = max_height;
     }
     let mut qualities = vec![quality];

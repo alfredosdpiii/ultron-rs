@@ -14,7 +14,7 @@
 //! - `run` returns once no decision or review is left, including reviews that a decision finishing during shutdown
 //!   started (the TypeScript awaited only the tasks running when the signal came).
 //! - An injected sleep runs on a thread of its own; its return wakes the loop like the TypeScript's resolved promise.
-//! - `Date.parse` is [`crate::ledger::parse_iso_ms`] (ISO 8601 forms only): a notification time in another format
+//! - `Date.parse` is [`jsrt::date::parse_date`] (ISO 8601 forms only): a notification time in another format
 //!   (RFC 2822) is no notification time here.
 //! - A task that panics still leaves the decision or review set, so the loop never waits on it forever.
 //! - Log lines are masked by the closure given to [`create_logger`] (the cli passes the host's secret masking).
@@ -25,16 +25,15 @@ use std::io::Write;
 use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
 use std::path::Path;
 use std::sync::{Arc, Condvar, Mutex, MutexGuard};
-use std::time::{Duration, Instant, UNIX_EPOCH};
+use std::time::{Duration, Instant};
 
 use indexmap::{IndexMap, IndexSet};
 use regex::Regex;
 
 use crate::accounts::{Account, account_key};
 use crate::ban::{BanList, banned_author, banned_reason};
-use crate::github::{Clock, Error, GitHub, PullRef, iso_from_ms, pull_key};
-use crate::js::{Num, head16};
-use crate::ledger::parse_iso_ms;
+use crate::github::{Clock, Error, GitHub, PullRef, pull_key};
+use crate::js::Num;
 use crate::reviewer::{
     Candidate, Log, Outcome, Preparation, Prepared, ReviewOptions, ReviewerDeps, prepare_pull, run_review,
 };
@@ -87,10 +86,7 @@ pub fn prune_old(dirs: &[&str], now: i64, days: u32) -> usize {
                 }
                 let path = entry.path();
                 let modified = std::fs::metadata(&path)?.modified()?;
-                let mtime_ms = match modified.duration_since(UNIX_EPOCH) {
-                    Ok(after) => after.as_secs_f64() * 1000.0,
-                    Err(before) => -before.duration().as_secs_f64() * 1000.0,
-                };
+                let mtime_ms = jsrt::date::mtime_ms(modified);
                 if now as f64 - mtime_ms <= limit {
                     continue;
                 }
@@ -151,21 +147,21 @@ pub fn discover(
         if !entry.reasons.iter().any(|known| known == reason) {
             entry.reasons.push(reason.into());
         }
-        if let Some(at) = updated_at.and_then(parse_iso_ms)
+        if let Some(at) = updated_at.and_then(jsrt::date::parse_date)
             && entry.notified_at.is_none_or(|known| at > known)
         {
             entry.notified_at = Some(at);
         }
     };
-    let last = state.last_poll_at.as_deref().and_then(parse_iso_ms);
-    let since = iso_from_ms(last.map_or(now - FIRST_POLL_WINDOW_MS, |last| last - SINCE_OVERLAP_MS));
+    let last = state.last_poll_at.as_deref().and_then(jsrt::date::parse_date);
+    let since = jsrt::date::iso_string(last.map_or(now - FIRST_POLL_WINDOW_MS, |last| last - SINCE_OVERLAP_MS));
     let page = github.notifications(&since, state.last_modified.as_deref(), None)?;
     for notified in page.pulls {
         add(notified.pull, &notified.reason, Some(&notified.updated_at), None);
     }
     if search {
         let login = github.account.login.clone();
-        let day = iso_from_ms(now - SEARCH_WINDOW_MS)[..10].to_string();
+        let day = jsrt::date::iso_string(now - SEARCH_WINDOW_MS)[..10].to_string();
         for (found, author) in
             github.search_with_authors(&format!("is:open is:pr review-requested:{login} archived:false"))?
         {
@@ -181,7 +177,7 @@ pub fn discover(
         }
     }
     let mut next = state.clone();
-    next.last_poll_at = Some(iso_from_ms(now));
+    next.last_poll_at = Some(jsrt::date::iso_string(now));
     if let Some(last_modified) = page.last_modified {
         next.last_modified = Some(last_modified);
     }
@@ -206,7 +202,7 @@ pub fn stderr_writer() -> LogWrite {
 /// and with known secrets masked by `mask`. Logging never fails.
 pub fn create_logger(logs_dir: Option<String>, now: Clock, write: LogWrite, mask: Mask) -> Log {
     Arc::new(move |line: &str| {
-        let stamp = iso_from_ms(now());
+        let stamp = jsrt::date::iso_string(now());
         let text = format!("{stamp} {}\n", mask(line));
         write(&text);
         let Some(dir) = &logs_dir else { return };
@@ -230,7 +226,7 @@ pub fn record_daemon_start(
     store.update(|state| {
         state.daemon = Some(DaemonInfo {
             pid: Num(f64::from(pid)),
-            started_at: iso_from_ms(started_at),
+            started_at: jsrt::date::iso_string(started_at),
             engine_start_ms: engine_start_ms.map(Num),
             extra: IndexMap::new(),
         });
@@ -337,7 +333,7 @@ fn task_key(account: &Account, pull: &PullRef) -> String {
 
 impl Shared {
     fn lock(&self) -> MutexGuard<'_, Inner> {
-        self.inner.lock().unwrap_or_else(|e| e.into_inner())
+        jsrt::sync::lock(&self.inner)
     }
 
     fn now(&self) -> i64 {
@@ -399,16 +395,16 @@ impl Shared {
             self.lock().paused.insert(key.clone(), *resume_at);
             self.log(&format!(
                 "{key}: {message}; paused until {}",
-                iso_from_ms(*resume_at as i64)
+                jsrt::date::iso_string(*resume_at as i64)
             ));
         } else {
             self.log(&format!("{key}: {message}"));
         }
         let _ = self.deps.reviewer.store.update(|all| {
             let state = all.accounts.entry(key.clone()).or_default();
-            state.last_error = Some(head16(&message, 300).to_string());
+            state.last_error = Some(jsrt::utf16::head(&message, 300).to_string());
             if let Error::RateLimit { resume_at, .. } = error {
-                state.paused_until = Some(iso_from_ms(*resume_at as i64));
+                state.paused_until = Some(jsrt::date::iso_string(*resume_at as i64));
             }
         });
     }

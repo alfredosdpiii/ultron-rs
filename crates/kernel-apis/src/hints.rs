@@ -2,7 +2,6 @@
 //! persisted in the module document `{version: 1, lanes: {<lane>: {muted, fired}}}`.
 
 use crate::store::{DocumentStore, read_versioned};
-use crate::util::{lock, stringify};
 use serde_json::{Map, Value, json};
 use std::sync::{Arc, Mutex};
 
@@ -34,7 +33,7 @@ fn tags(value: Option<&Value>) -> Result<Vec<String>, String> {
             Some(tag) if HINT_TAGS.contains(&tag) => Ok(tag.to_string()),
             _ => Err(format!(
                 "Unknown hint tag {}; tags: {}",
-                stringify(tag),
+                jsrt::json::stringify(tag),
                 HINT_TAGS.join(", ")
             )),
         })
@@ -74,12 +73,12 @@ impl HintsModule {
     }
 
     pub fn start(&self) -> Result<(), String> {
-        self.load(&mut lock(&self.lanes))
+        self.load(&mut jsrt::sync::lock(&self.lanes))
     }
 
     /// The tags `lane` muted.
     pub fn muted(&self, lane: &str) -> Vec<String> {
-        let mut lanes = lock(&self.lanes);
+        let mut lanes = jsrt::sync::lock(&self.lanes);
         if self.load(&mut lanes).is_err() {
             return Vec::new();
         }
@@ -97,7 +96,7 @@ impl HintsModule {
     }
 
     pub fn handle(&self, kind: &str, payload: &Map<String, Value>, lane: &str) -> Result<Value, String> {
-        let mut guard = lock(&self.lanes);
+        let mut guard = jsrt::sync::lock(&self.lanes);
         self.load(&mut guard)?;
         let lanes = guard.as_mut().expect("loaded");
         let requested = if kind == "hints.muted" {
@@ -142,7 +141,7 @@ impl HintsModule {
     /// hint line; `None` when every candidate is muted or spent. While the loop detector handles a stuck phase
     /// (`stuck`), the narrower `repeated-failure` hint gives way.
     pub fn fire(&self, lane: &str, candidates: &[(&'static str, String)], max: u64, stuck: bool) -> Option<String> {
-        let mut guard = lock(&self.lanes);
+        let mut guard = jsrt::sync::lock(&self.lanes);
         self.load(&mut guard).ok()?;
         let lanes = guard.as_mut().expect("loaded");
         let entry = lanes

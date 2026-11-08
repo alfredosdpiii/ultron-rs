@@ -4,7 +4,7 @@
 //! frame's first call is held at admission, so the shared pool decides deterministically which frames run. Code-free frames that name no model take
 //! ULTRON_RLM_FRAME_MODEL, else `rlm.frameModel`; `rlm.frameThinking` is the default thinking level.
 
-use super::{Inference, MAX_SAFE_INTEGER, fields, is_model_ref, js_normalize, js_trim, optional_integer};
+use super::{Inference, fields, is_model_ref, optional_integer};
 use kernel::{HostHandler, Signal};
 use serde_json::{Map, Value, json};
 use std::collections::HashMap;
@@ -59,7 +59,7 @@ impl Frames {
 
     /// `envModel`: a `provider/model` value of an environment variable, else none.
     fn env_model(&self, name: &str) -> Option<String> {
-        let value = js_trim(self.env.get(name)?);
+        let value = jsrt::string::trim(self.env.get(name)?);
         is_model_ref(value).then(|| value.to_string())
     }
 
@@ -94,9 +94,12 @@ impl Frames {
     /// `defaultMapTokens`: ULTRON_RLM_MAP_TOKENS when it is a positive safe integer (JS `Number`), else the
     /// `rlm.mapTokens` setting (TypeScript: 500,000), else no limit.
     fn default_map_tokens(&self) -> Option<u64> {
-        let value = self.env.get(MAP_TOKENS_ENV).map(|v| js_trim(v).parse::<f64>());
+        let value = self
+            .env
+            .get(MAP_TOKENS_ENV)
+            .map(|v| jsrt::string::trim(v).parse::<f64>());
         match value {
-            Some(Ok(n)) if n.fract() == 0.0 && n > 0.0 && n <= MAX_SAFE_INTEGER as f64 => Some(n as u64),
+            Some(Ok(n)) if n > 0.0 && jsrt::number::is_safe_integer(n) => Some(n as u64),
             _ => (self.settings)().map_tokens,
         }
     }
@@ -209,7 +212,7 @@ impl Frames {
         Ok(json!({
             "results": results,
             "budget": session.budget_reply(&budget),
-            "usage": js_normalize(json!({"input_tokens": usage.0, "output_tokens": usage.1, "cost": usage.2})),
+            "usage": jsrt::json::normalize_numbers(json!({"input_tokens": usage.0, "output_tokens": usage.1, "cost": usage.2})),
         }))
     }
 }

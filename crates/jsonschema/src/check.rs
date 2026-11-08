@@ -7,8 +7,8 @@
 //! [`crate::unchecked_keyword`]).
 
 use crate::formats::{self, js_regex};
+use jsrt::json::object_entries;
 use serde_json::{Map, Value, json};
-use session_file::js::{number_to_string, object_entries};
 
 /// typebox `Settings.maxErrors`.
 const MAX_ERRORS: usize = 8;
@@ -91,14 +91,6 @@ impl Context {
     }
 }
 
-/// A JavaScript number as a template literal prints it.
-fn js_number(value: &Value) -> String {
-    match value {
-        Value::Number(n) => number_to_string(n),
-        other => other.to_string(),
-    }
-}
-
 fn joined(value: &Value) -> String {
     value
         .as_array()
@@ -107,7 +99,7 @@ fn joined(value: &Value) -> String {
                 .iter()
                 .map(|item| match item {
                     Value::String(text) => text.clone(),
-                    other => js_number(other),
+                    other => jsrt::value::string(Some(other)),
                 })
                 .collect::<Vec<_>>()
                 .join(", ")
@@ -119,7 +111,7 @@ fn joined(value: &Value) -> String {
 fn message(keyword: &str, params: &Value) -> String {
     let text = |key: &str| match &params[key] {
         Value::String(text) => text.clone(),
-        other => js_number(other),
+        other => jsrt::value::string(Some(other)),
     };
     match keyword {
         "additionalProperties" => "must not have additional properties".into(),

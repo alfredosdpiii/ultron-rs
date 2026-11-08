@@ -1056,3 +1056,16 @@ fn cli_rpc_fixture_covers_every_case() {
         ]
     );
 }
+
+/// `Invalid queue mode: ${String(mode)}` (rpc-native.ts): an array prints as `String([1, null])`, which node 26.12.1
+/// writes as `1,` (a `null` item is empty), not as JSON's `1,null`.
+#[test]
+fn cli_rpc_invalid_queue_mode_prints_string_of_the_value() {
+    let (mut client, _requests, _tmp) = start_client(Vec::new());
+    let response = client
+        .send(json!({"type": "set_steering_mode", "mode": [1, null]}))
+        .unwrap();
+    assert_eq!(response["error"], "Invalid queue mode: 1,", "{response}");
+    let (_, code) = client.finish(Duration::from_secs(120));
+    assert_eq!(code, Some(0));
+}

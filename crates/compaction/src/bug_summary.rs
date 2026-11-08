@@ -60,7 +60,7 @@ pub fn bug_summary_request(
         128_000
     };
     let selected = select_messages(messages, (window as f64 * 0.6).floor() as u64);
-    let hint = hint.map(session_file::js::trim).filter(|h| !h.is_empty());
+    let hint = hint.map(jsrt::string::trim).filter(|h| !h.is_empty());
     let mut parts = Vec::new();
     if selected.len() < messages.len() {
         parts.push(format!(
@@ -114,7 +114,7 @@ pub fn bug_summary_text(response: &AssistantMessage) -> Result<String, String> {
     if has_tool_call(response) {
         return Err("Bug report summary attempted to call a tool".into());
     }
-    let text = session_file::js::trim(&response_text(response)).to_string();
+    let text = jsrt::string::trim(&response_text(response)).to_string();
     if text.is_empty() {
         return Err("Bug report summary was empty".into());
     }

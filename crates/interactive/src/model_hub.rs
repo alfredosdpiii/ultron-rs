@@ -11,7 +11,7 @@
 use std::cmp::Ordering;
 use std::rc::Rc;
 
-use tui::collate::locale_compare;
+use jsrt::collate::locale_compare;
 use tui::components::Component;
 use tui::fuzzy::fuzzy_match;
 use tui::input::Input;

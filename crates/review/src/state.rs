@@ -225,7 +225,7 @@ pub fn empty_state() -> AutoreviewState {
 
 /// The first 16 hex digits of the SHA-256 of the claim, lowercased with its whitespace collapsed.
 pub fn claim_hash(claim: &str) -> String {
-    let normalized = crate::js::flatten(&claim.to_lowercase());
+    let normalized = jsrt::string::flatten(&claim.to_lowercase());
     let digest = ring::digest::digest(&ring::digest::SHA256, normalized.as_bytes());
     digest
         .as_ref()

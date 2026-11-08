@@ -43,3 +43,15 @@ fn delegation_verdict_tag_matches_typescript() {
         assert_eq!(verdict_tag(&case["result"]).as_deref(), case["tag"].as_str(), "{case}");
     }
 }
+
+/// `bounded` flattens with `replace(/\s+/g, " ").trim()`: U+FEFF is whitespace there and U+0085 is not (node 26:
+/// `JSON.stringify("a\u{85}b\u{feff}\u{feff}c").replace(/\s+/g, " ")` keeps the U+0085 and joins the U+FEFF run).
+#[test]
+fn delegation_verdict_bounded_flattens_javascript_whitespace() {
+    let payload = json!({"status": "a\u{85}b\u{feff}\u{feff}c"});
+    let problems = validate_verdict(payload.as_object().unwrap(), None).unwrap_err();
+    assert!(
+        problems.contains(&"status must be \"passed\", \"failed\" or \"blocked\", not \"a\u{85}b c\"".to_string()),
+        "{problems:?}"
+    );
+}

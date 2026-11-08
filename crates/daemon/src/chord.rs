@@ -83,7 +83,7 @@ impl State {
     }
 
     fn lock(&self) -> std::sync::MutexGuard<'_, StateInner> {
-        self.inner.lock().unwrap_or_else(|e| e.into_inner())
+        jsrt::sync::lock(&self.inner)
     }
 
     /// Mutate a copy of the value and publish the difference (nothing when it is unchanged).

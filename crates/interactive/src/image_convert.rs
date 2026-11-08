@@ -32,7 +32,7 @@ pub fn convert_to_png(b64: &str, mime: &str) -> Option<(String, String)> {
     }
     let mut out = Cursor::new(Vec::new());
     image.to_rgba8().write_to(&mut out, ImageFormat::Png).ok()?;
-    Some((B64.encode(out.into_inner()), "image/png".into()))
+    Some((jsrt::base64::encode(out.into_inner()), "image/png".into()))
 }
 
 /// A source image: its MIME type and data, hashed.

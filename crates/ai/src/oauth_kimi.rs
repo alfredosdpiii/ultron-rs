@@ -3,7 +3,6 @@
 use crate::auth::{AuthEvent, AuthInteraction, ModelAuth, OAuthAuth, OAuthCredential};
 use crate::env::provider_env_value;
 use crate::http::{AbortSignal, BoxFuture, Transport, is_aborted};
-use crate::json::stringify;
 use crate::oauth_flow::{
     Clock, ClockLoginEnv, Poll, TextResponse, fetch_text, form_request, poll_device_code_flow, trusted_http_url,
 };
@@ -41,7 +40,7 @@ fn read_json(response: &TextResponse) -> Option<Value> {
 }
 
 fn json_text(json: &Option<Value>) -> String {
-    stringify(json.as_ref().unwrap_or(&Value::Null))
+    jsrt::json::stringify(json.as_ref().unwrap_or(&Value::Null))
 }
 
 fn field<'a>(json: &'a Option<Value>, key: &str) -> Option<&'a Value> {

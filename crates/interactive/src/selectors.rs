@@ -169,10 +169,8 @@ pub fn provider_logins() -> Vec<ProviderLogin> {
         .collect()
 }
 
-/// `String.localeCompare` for provider names: case-insensitive first, then by case.
-pub fn locale_compare(a: &str, b: &str) -> std::cmp::Ordering {
-    a.to_lowercase().cmp(&b.to_lowercase()).then_with(|| b.cmp(a))
-}
+/// `String.localeCompare` for provider names (re-exported for cli's auth selector).
+pub use jsrt::collate::locale_compare;
 
 /// One provider row of the auth selector (`AuthSelectorProvider`).
 #[derive(Clone, Debug, PartialEq)]

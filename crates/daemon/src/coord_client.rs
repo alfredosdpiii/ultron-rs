@@ -75,7 +75,7 @@ impl CoordinatorConnection {
         let stream = UnixStream::connect(control_path).map_err(Err)?;
         let read = stream.try_clone().map_err(Err)?;
         let writer = LineWriter::new(stream);
-        let server_connection_id = crate::paths::uuid_v4();
+        let server_connection_id = jsrt::random::uuid_v4();
         writer
             .send(&json!({
                 "type": "register_server", "protocol": COORDINATOR_PROTOCOL_VERSION,

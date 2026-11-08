@@ -39,11 +39,6 @@ fn block_to_llm_content(block: &Value) -> Value {
     }
 }
 
-/// `JSON.stringify(value, null, 2)`.
-fn pretty(value: &Value) -> String {
-    serde_json::to_string_pretty(value).unwrap_or_default()
-}
-
 /// Converts a `tools/call` result to model content; a result with no blocks but `structuredContent` becomes its JSON.
 pub fn to_llm_content(result: &Value) -> Vec<Value> {
     let mut content: Vec<Value> = result
@@ -56,7 +51,7 @@ pub fn to_llm_content(result: &Value) -> Vec<Value> {
     if content.is_empty()
         && let Some(structured) = result.get("structuredContent")
     {
-        content.push(text(pretty(structured)));
+        content.push(text(jsrt::json::stringify_pretty(structured)));
     }
     content
 }

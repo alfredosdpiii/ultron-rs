@@ -7,7 +7,6 @@ use ai::images::{
     ImagesContext, ImagesModel, ImagesModels, ImagesOptions, ImagesProvider, ImagesStopReason, generate_images,
     image_model, image_models, image_providers, images_api_provider, register_images_api_provider,
 };
-use ai::json::normalize_numbers;
 use ai::types::{ImageContent, ModelCost, TextContent};
 use indexmap::IndexMap;
 use serde_json::{Value, json};
@@ -137,7 +136,9 @@ async fn ai_images_generate_matches_typescript() {
                 Err(e) => (None, Some(e)),
             }
         };
-        let result = result.map_or(Value::Null, |r| normalize_numbers(serde_json::to_value(r).unwrap()));
+        let result = result.map_or(Value::Null, |r| {
+            jsrt::json::normalize_numbers(serde_json::to_value(r).unwrap())
+        });
         assert_eq!(result, case["result"], "{name}: result");
         assert_eq!(
             thrown.map_or(Value::Null, Value::from),
@@ -176,7 +177,11 @@ fn ai_images_catalog_round_trips_every_model() {
     for (provider, models) in raw.as_object().unwrap() {
         for (id, model) in models.as_object().unwrap() {
             let parsed = image_model(provider, id).unwrap();
-            assert_eq!(&normalize_numbers(serde_json::to_value(parsed).unwrap()), model, "{id}");
+            assert_eq!(
+                &jsrt::json::normalize_numbers(serde_json::to_value(parsed).unwrap()),
+                model,
+                "{id}"
+            );
         }
     }
 }

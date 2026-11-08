@@ -149,7 +149,7 @@ fn run(program: &str, args: &[&str], cwd: &Path, env: &[(String, String)], timeo
             None if started.elapsed() >= Duration::from_millis(timeout_ms) => {
                 error = Some(format!(
                     "timed out after {} s",
-                    js_number((timeout_ms as f64 / 100.0).round() / 10.0)
+                    jsrt::number::to_string((timeout_ms as f64 / 100.0).round() / 10.0)
                 ));
                 if let Some(pid) = i32::try_from(child.id()).ok().and_then(Pid::from_raw) {
                     let _ = kill_process(pid, Signal::TERM);
@@ -170,14 +170,6 @@ fn run(program: &str, args: &[&str], cwd: &Path, env: &[(String, String)], timeo
         stdout,
         stderr,
         error,
-    }
-}
-
-fn js_number(value: f64) -> String {
-    if value.fract() == 0.0 {
-        format!("{}", value as i64)
-    } else {
-        format!("{value}")
     }
 }
 

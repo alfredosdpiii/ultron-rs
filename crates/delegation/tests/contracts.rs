@@ -319,3 +319,18 @@ fn delegation_contract_workflow_nodes_carry_briefs_and_a_missed_check_skips_the_
         2
     );
 }
+
+/// A nonempty string is one whose `trim()` is not empty, and JavaScript's `trim` keeps U+0085 (NEL): an id of just
+/// NEL is looked up (node 26: `"\u{85}".trim().length` is 1), one of just U+FEFF is refused.
+#[test]
+fn delegation_agents_nonempty_strings_trim_like_javascript() {
+    let h = host();
+    assert_eq!(
+        h.call("background.inspect", json!({"id": "\u{85}"})),
+        Err("Unknown background job".into())
+    );
+    assert_eq!(
+        h.call("background.inspect", json!({"id": "\u{feff} "})),
+        Err("id must be a nonempty string".into())
+    );
+}

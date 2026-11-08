@@ -35,10 +35,10 @@ impl Delegation {
         unfinished: &[String],
         mut reattach: impl FnMut(&str) -> Option<Reattached>,
     ) -> Result<Vec<String>, String> {
-        let records = lock(&self.inner.state).journal.list()?;
+        let records = sync::lock(&self.inner.state).journal.list()?;
         let mut waiters = Vec::new();
         {
-            let mut state = lock(&self.inner.state);
+            let mut state = sync::lock(&self.inner.state);
             for mut record in records {
                 let id = record["id"].as_str().unwrap_or_default().to_string();
                 if id.is_empty() || state.task(&id).is_some() {
@@ -141,7 +141,7 @@ impl Delegation {
             return;
         }
         let mut result = self.reply_result(id, reply);
-        let contract = lock(&self.inner.state).task(id).and_then(|t| t.contract.clone());
+        let contract = sync::lock(&self.inner.state).task(id).and_then(|t| t.contract.clone());
         if let Some(contract) = contract {
             let run = run.map(|run| ChildRun {
                 signal: signal.clone(),

@@ -4,7 +4,6 @@
 
 use ai::anthropic::{self, AnthropicOptions};
 use ai::http::{BoxFuture, HeaderMap};
-use ai::json::normalize_numbers;
 use ai::openai_completions::{self, OpenAICompletionsOptions};
 use ai::openai_responses::{self, OpenAIResponsesOptions};
 use ai::options::pi_user_agent;
@@ -255,7 +254,7 @@ fn run(scenario: &Value) -> Outcome {
 }
 
 fn compact(value: &Value) -> String {
-    serde_json::to_string(&normalize_numbers(value.clone())).unwrap()
+    serde_json::to_string(&jsrt::json::normalize_numbers(value.clone())).unwrap()
 }
 
 /// Every difference between the recorded and the Rust run of `scenario`, empty when they match exactly.
@@ -268,7 +267,10 @@ fn differences(scenario: &Value) -> Vec<String> {
     // optional message fields in whatever order the stream sets them.
     let mut check = |what: &str, expected: &Value, actual: &Value| {
         let ordered = what.starts_with("request");
-        let (e, a) = (normalize_numbers(expected.clone()), normalize_numbers(actual.clone()));
+        let (e, a) = (
+            jsrt::json::normalize_numbers(expected.clone()),
+            jsrt::json::normalize_numbers(actual.clone()),
+        );
         if (ordered && compact(&e) != compact(&a)) || (!ordered && e != a) {
             diffs.push(format!(
                 "{name}: {what}\n  expected {}\n  actual   {}",

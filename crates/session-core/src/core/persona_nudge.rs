@@ -8,8 +8,9 @@
 //! it lasts every run that made an `rlm` call is continued with the keep-going nudge, up to the ceiling. The toggle,
 //! the mode and its counters are the session value `ultron.module/persona`, so a restarted worker resumes them.
 
-use super::{Core, lock};
+use super::Core;
 use crate::durable_store::lock as lock_session;
+use jsrt::sync;
 use resources::keep_going::{self, Limits, Next, RunEnd, STATE_KEY, STATE_NAMESPACE, SessionPersona, Toggle};
 use serde_json::{Value, json};
 use session_journal::Write;
@@ -107,7 +108,8 @@ impl Core {
 
     /// The run ended (`aborted`, `failed`): start the keep-going or nudge run when one is due.
     pub(super) fn persona_run_ended(&mut self, aborted: bool, failed: bool) {
-        let pending = !lock(&self.queues).items.is_empty() || !self.deferred.is_empty() || !self.after_run.is_empty();
+        let pending =
+            !sync::lock(&self.queues).items.is_empty() || !self.deferred.is_empty() || !self.after_run.is_empty();
         let limits = self.persona_limits();
         let before = self.persona_session.clone();
         let next = keep_going::after_run(

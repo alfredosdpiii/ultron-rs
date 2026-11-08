@@ -1,7 +1,7 @@
 //! HTTP transport seam, cancellation, SDK-shaped API errors and the provider retry policy
 //! (`utils/provider-retry.ts`, `utils/error-body.ts`, and the error construction of the pinned OpenAI/Anthropic SDKs).
 
-use crate::json::{js_len, js_prefix, parse_json, stringify};
+use crate::json::parse_json;
 use serde_json::Value;
 use std::collections::BTreeMap;
 use std::future::Future;
@@ -192,11 +192,14 @@ impl Failure {
             Sdk::Anthropic => body.clone(),
             Sdk::OpenAi => body.as_ref().and_then(|b| b.get("error").cloned()),
         };
-        let message_field = error.as_ref().and_then(|e| e.get("message")).filter(|m| truthy(m));
+        let message_field = error
+            .as_ref()
+            .and_then(|e| e.get("message"))
+            .filter(|m| jsrt::value::truthy(Some(m)));
         let msg = match (message_field, &error) {
             (Some(Value::String(s)), _) => Some(s.clone()),
-            (Some(other), _) => Some(stringify(other)),
-            (None, Some(e)) if truthy(e) => Some(stringify(e)),
+            (Some(other), _) => Some(jsrt::json::stringify(other)),
+            (None, Some(e)) if jsrt::value::truthy(Some(e)) => Some(jsrt::json::stringify(e)),
             _ => text.filter(|t| !t.is_empty()),
         };
         let message = match (status, msg) {
@@ -208,8 +211,8 @@ impl Failure {
         let raw_metadata = error
             .as_ref()
             .and_then(|e| e.pointer("/metadata/raw"))
-            .filter(|r| truthy(r))
-            .map(js_string);
+            .filter(|r| jsrt::value::truthy(Some(r)))
+            .map(|raw| jsrt::value::string(Some(raw)));
         Failure {
             message,
             status,
@@ -240,24 +243,6 @@ impl Failure {
     }
 }
 
-fn truthy(value: &Value) -> bool {
-    match value {
-        Value::Null => false,
-        Value::Bool(b) => *b,
-        Value::Number(n) => n.as_f64() != Some(0.0),
-        Value::String(s) => !s.is_empty(),
-        _ => true,
-    }
-}
-
-/// `String(value)`.
-fn js_string(value: &Value) -> String {
-    match value {
-        Value::String(s) => s.clone(),
-        other => stringify(other),
-    }
-}
-
 pub(crate) const MAX_PROVIDER_ERROR_BODY_CHARS: usize = 4000;
 
 /// `formatProviderError(normalizeProviderError(error), prefix)`.
@@ -266,7 +251,7 @@ pub(crate) fn format_provider_error(failure: &Failure, prefix: Option<&str>) -> 
         .error
         .as_ref()
         .filter(|e| e.as_object().is_some_and(|o| !o.is_empty()))
-        .map(|e| stringify(e))
+        .map(|e| jsrt::json::stringify(e))
         .map(|text| text.trim().to_string())
         .filter(|text| !text.is_empty())
         .map(|text| truncate_error_text(&text, MAX_PROVIDER_ERROR_BODY_CHARS));
@@ -284,11 +269,11 @@ pub(crate) fn format_provider_error(failure: &Failure, prefix: Option<&str>) -> 
 }
 
 pub(crate) fn truncate_error_text(text: &str, max: usize) -> String {
-    let len = js_len(text);
+    let len = jsrt::utf16::len(text);
     if len <= max {
         return text.to_string();
     }
-    format!("{}... [truncated {} chars]", js_prefix(text, max), len - max)
+    format!("{}... [truncated {} chars]", jsrt::utf16::head(text, max), len - max)
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -373,11 +358,28 @@ fn validate_delay(delay_ms: f64, max: Option<f64>, message: &str) -> Result<f64,
 /// `Date.parse(text) - Date.now()` for a `retry-after` HTTP date (`Wed, 21 Oct 2015 07:28:00 GMT`); `None` (NaN) when
 /// it is not one.
 pub(crate) fn until_http_date_ms(text: &str) -> Option<f64> {
-    let date = crate::model_refresh::parse_http_date_ms(text)?;
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0.0, |d| d.as_secs_f64() * 1000.0);
-    Some(date as f64 - now)
+    let date = parse_http_date(text)?;
+    Some((date - jsrt::date::now_ms()) as f64)
+}
+
+/// `Date.parse` of the IMF-fixdate a `retry-after` header holds (`Sun, 06 Nov 1994 08:49:37 GMT`); `None` (NaN) for
+/// anything else. Only the literal `GMT` zone is read: RFC 9110 senders write no other, and V8 would apply the offset
+/// of a named zone such as `PST`.
+pub(crate) fn parse_http_date(text: &str) -> Option<i64> {
+    const MONTHS: [&str; 12] = [
+        "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+    ];
+    let parts: Vec<&str> = text.split_whitespace().collect();
+    let [_, day, month, year, time, "GMT"] = parts[..] else {
+        return None;
+    };
+    let month = MONTHS.iter().position(|m| m.eq_ignore_ascii_case(month))? as u32 + 1;
+    let hms: Vec<i64> = time.split(':').map(|p| p.parse().ok()).collect::<Option<_>>()?;
+    let [h, m, s] = hms[..] else {
+        return None;
+    };
+    let days = jsrt::date::days_from_civil(year.parse().ok()?, month, day.parse().ok()?);
+    Some((days * 86_400 + h * 3600 + m * 60 + s) * 1000)
 }
 
 /// Delay before retry `retry_index`. A non-numeric `retry-after` is an HTTP date: wait until then (a past date at
@@ -485,7 +487,7 @@ async fn send_once(
         bytes.extend_from_slice(&chunk);
     }
     let text = String::from_utf8_lossy(&bytes).into_owned();
-    let body = parse_json(&text).ok().filter(truthy);
+    let body = parse_json(&text).ok().filter(|body| jsrt::value::truthy(Some(body)));
     let text = if body.is_some() { None } else { Some(text) };
     Err(Failure::api(
         sdk,
@@ -846,5 +848,31 @@ pub(crate) async fn read_chunk(body: &mut dyn Body, signal: Option<&AbortSignal>
             Err(error) => Read::Failed(error),
         },
         () = cancelled(signal) => Read::Aborted,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn ai_http_date_is_date_parse_of_an_imf_fixdate() {
+        // Date.parse("Thu, 01 Jan 2026 00:00:01 GMT"), Date.parse("Sun, 06 Nov 1994 08:49:37 GMT")
+        assert_eq!(
+            parse_http_date("Thu, 01 Jan 2026 00:00:01 GMT"),
+            Some(1_767_225_601_000)
+        );
+        assert_eq!(parse_http_date("Sun, 06 Nov 1994 08:49:37 GMT"), Some(784_111_777_000));
+        assert_eq!(parse_http_date("Sun, 06 nov 1994 08:49:37 GMT"), Some(784_111_777_000));
+        assert_eq!(parse_http_date("soon"), None);
+        // A named zone other than GMT is refused rather than read as GMT.
+        assert_eq!(parse_http_date("Sun, 06 Nov 1994 08:49:37 PST"), None);
+    }
+
+    /// `Date.parse(t) - Date.now()` is a whole number of milliseconds.
+    #[test]
+    fn ai_http_until_date_counts_whole_milliseconds() {
+        let delay = until_http_date_ms("Fri, 01 Jan 2100 00:00:00 GMT").unwrap();
+        assert!(delay > 0.0 && delay.fract() == 0.0, "{delay}");
     }
 }

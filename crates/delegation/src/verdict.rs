@@ -1,6 +1,7 @@
 //! Port of `verdict.ts`: the mechanical checks on a subagent's `rlm.finish` verdict and its one-line completion tag.
 //! Nothing here judges quality; a verdict is rejected only for what a program can see.
 
+use jsrt::utf16;
 use regex::Regex;
 use serde_json::{Map, Value, json};
 use std::sync::LazyLock;
@@ -32,10 +33,6 @@ static CONCRETE: LazyLock<Vec<Regex>> = LazyLock::new(|| {
 /// Evidence a program can recognize as concrete: a command's exit status or counts, a file path, a line.
 pub fn is_concrete_evidence(item: &str) -> bool {
     CONCRETE.iter().any(|pattern| pattern.is_match(item))
-}
-
-fn utf16_len(text: &str) -> usize {
-    text.encode_utf16().count()
 }
 
 /// `path.posix.normalize`.
@@ -100,12 +97,11 @@ pub fn workspace_path(path: &str, workspace: Option<&str>) -> Option<String> {
 
 /// `bounded`: whitespace runs collapsed, trimmed, cut to `limit` UTF-16 units with an ellipsis.
 fn bounded(value: &str, limit: usize) -> String {
-    let flat = value.split_whitespace().collect::<Vec<_>>().join(" ");
-    let units: Vec<u16> = flat.encode_utf16().collect();
-    if units.len() <= limit {
+    let flat = jsrt::string::flatten(value);
+    if utf16::len(&flat) <= limit {
         return flat;
     }
-    format!("{}…", String::from_utf16_lossy(&units[..limit - 1]))
+    format!("{}…", utf16::head_lossy(&flat, limit - 1))
 }
 
 /// Checks an `rlm.finish` payload: the normalized verdict, or every problem found.
@@ -134,10 +130,10 @@ pub fn validate_verdict(payload: &Map<String, Value>, workspace: Option<&str>) -
         .trim();
     if summary.is_empty() {
         problems.push("summary must say in a sentence or two what was done, or what blocked it".into());
-    } else if utf16_len(summary) > SUMMARY_LIMIT {
+    } else if utf16::len(summary) > SUMMARY_LIMIT {
         problems.push(format!(
             "summary is {} characters; keep it under {SUMMARY_LIMIT} (details go in outputs)",
-            utf16_len(summary)
+            utf16::len(summary)
         ));
     }
     let null = Value::Null;
@@ -147,7 +143,7 @@ pub fn validate_verdict(payload: &Map<String, Value>, workspace: Option<&str>) -
     };
     if !outputs.is_object() {
         problems.push("outputs must be a JSON object (a dict of named results)".into());
-    } else if utf16_len(&outputs.to_string()) > OUTPUTS_BYTES {
+    } else if utf16::len(&outputs.to_string()) > OUTPUTS_BYTES {
         problems.push(format!(
             "outputs exceed {OUTPUTS_BYTES} bytes; write large results to a file and return its path"
         ));
@@ -165,7 +161,7 @@ pub fn validate_verdict(payload: &Map<String, Value>, workspace: Option<&str>) -
                     problems.push("every evidence item must be a nonempty string".into());
                     break;
                 };
-                if utf16_len(text) > EVIDENCE_CHARS {
+                if utf16::len(text) > EVIDENCE_CHARS {
                     problems.push(format!(
                         "an evidence item is over {EVIDENCE_CHARS} characters; quote the deciding lines only"
                     ));

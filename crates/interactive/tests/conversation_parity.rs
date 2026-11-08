@@ -378,17 +378,35 @@ fn interactive_footer_matches_ts() {
     check("footer", &|c, t| Box::new(Footer(Rc::clone(t), footer_view(c))));
 }
 
+/// A context percent that is not a number prints as `toFixed` does (`(NaN).toFixed(1)` is `"NaN"` in node 26)
+/// instead of panicking.
+#[test]
+fn interactive_footer_prints_a_nan_context_percent_like_to_fixed() {
+    let theme = &themes()[0];
+    let view = FooterView {
+        cwd: "/w".into(),
+        context_percent: Some(Some(f64::NAN)),
+        context_window: Some(200_000),
+        ..FooterView::default()
+    };
+    let lines: Vec<String> = render_footer(theme, &view, 120)
+        .iter()
+        .map(|l| tui::utils::strip_terminal_sequences(l))
+        .collect();
+    assert!(lines.iter().any(|l| l.contains("NaN%/200k")), "{lines:?}");
+}
+
 /// Literal values from node 26 (`Number.prototype.toFixed`, footer.ts formatTokens, `toLocaleString`).
 #[test]
 fn interactive_number_formatting_matches_js() {
-    use interactive::{format_cwd_for_footer, format_tokens, group_thousands, js_to_fixed};
+    use interactive::{format_cwd_for_footer, format_tokens, group_thousands};
     let fixed: Vec<String> = [0.25, 1.005, 2.5, 0.05, 99.95, -0.04]
         .iter()
-        .map(|x| js_to_fixed(*x, 1))
+        .map(|x| jsrt::number::to_fixed(*x, 1))
         .collect();
     assert_eq!(fixed, ["0.3", "1.0", "2.5", "0.1", "100.0", "-0.0"]);
-    assert_eq!(js_to_fixed(1.0005, 3), "1.000");
-    assert_eq!(js_to_fixed(0.0125, 3), "0.013");
+    assert_eq!(jsrt::number::to_fixed(1.0005, 3), "1.000");
+    assert_eq!(jsrt::number::to_fixed(0.0125, 3), "0.013");
     let tokens: Vec<String> = [
         999, 1000, 9999, 10500, 999_499, 999_500, 1_050_000, 9_999_999, 10_000_000, 25_000_000,
     ]

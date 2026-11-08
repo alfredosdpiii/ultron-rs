@@ -70,7 +70,7 @@ fn send(out: &Out, mut message: Map<String, Value>) {
     line.insert("jsonrpc".into(), "2.0".into());
     line.append(&mut message);
     let mut out = out.lock().unwrap_or_else(|p| p.into_inner());
-    let _ = out.write_all(format!("{}\n", session_file::js::stringify(&Value::Object(line))).as_bytes());
+    let _ = out.write_all(format!("{}\n", jsrt::json::stringify(&Value::Object(line))).as_bytes());
     let _ = out.flush();
 }
 
@@ -95,25 +95,8 @@ fn record(value: Option<&Value>) -> Map<String, Value> {
     }
 }
 
-/// `String(value)` of JavaScript for the values JSON can carry (`undefined` when absent).
-pub fn js_string(value: Option<&Value>) -> String {
-    match value {
-        None => "undefined".into(),
-        Some(Value::Null) => "null".into(),
-        Some(Value::String(text)) => text.clone(),
-        Some(Value::Bool(b)) => b.to_string(),
-        Some(Value::Number(n)) => session_file::js::number_to_string(n),
-        Some(Value::Array(items)) => items
-            .iter()
-            .map(|item| match item {
-                Value::Null => String::new(),
-                other => js_string(Some(other)),
-            })
-            .collect::<Vec<_>>()
-            .join(","),
-        Some(Value::Object(_)) => "[object Object]".into(),
-    }
-}
+// ponytail: only the do-not-touch bridge.rs still calls `mcp_protocol::js_string`; drop this once it is gone.
+pub use jsrt::value::string as js_string;
 
 struct Server<H: McpHandlers + 'static> {
     handlers: Arc<H>,
@@ -180,7 +163,7 @@ impl<H: McpHandlers + 'static> Server<H> {
                     .ok_or_else(|| {
                         (
                             INVALID_PARAMS,
-                            format!("Unknown prompt: {}", js_string(params.get("name"))),
+                            format!("Unknown prompt: {}", jsrt::value::string(params.get("name"))),
                         )
                     })?;
                 Ok(json!({
@@ -208,7 +191,7 @@ impl<H: McpHandlers + 'static> Server<H> {
                     .ok_or_else(|| {
                         (
                             INVALID_PARAMS,
-                            format!("Unknown resource: {}", js_string(params.get("uri"))),
+                            format!("Unknown resource: {}", jsrt::value::string(params.get("uri"))),
                         )
                     })?;
                 Ok(json!({"contents": [{"uri": resource.uri, "mimeType": resource.mime_type, "text": resource.text}]}))

@@ -237,7 +237,7 @@ impl RpcSession for Remote<'_> {
                 .take()
                 .is_some_and(|lost| self.running && self.run_id.as_deref() == Some(&lost));
         let event = if lost {
-            json!({"type": "run_end", "status": "failed", "endedAt": session_core::lane::now_ms(),
+            json!({"type": "run_end", "status": "failed", "endedAt": jsrt::date::now_ms(),
                 "error": {"code": "interrupted", "message": "The session worker stopped during this run"}})
         } else {
             event
@@ -531,7 +531,7 @@ impl RpcSession for Remote<'_> {
             .and_then(|file| crate::session::read_first_line(std::path::Path::new(file)).ok())
             .and_then(|line| serde_json::from_str::<Value>(&line).ok())
             .and_then(|header| header["createdAt"].as_f64())
-            .unwrap_or_else(|| session_core::lane::now_ms() as f64);
+            .unwrap_or_else(|| jsrt::date::now_ms() as f64);
         let entries = described["entries"].as_array().cloned().unwrap_or_default();
         let cwd = self.env.cwd.display().to_string();
         let data = crate::export_html::native_entries_data(&id, &cwd, created_at, &entries);

@@ -927,17 +927,12 @@ fn mypy_binary(root: &Path) -> Option<String> {
     proc::which("mypy")
 }
 
-fn sha256_hex(bytes: &[u8]) -> String {
-    use sha2::{Digest, Sha256};
-    Sha256::digest(bytes).iter().map(|b| format!("{b:02x}")).collect()
-}
-
 fn home() -> PathBuf {
     PathBuf::from(std::env::var("HOME").unwrap_or_else(|_| "/".into()))
 }
 
 fn mypy_state(root: &Path) -> Result<PathBuf, CheckError> {
-    let identity = sha256_hex(resolve(root).as_os_str().as_encoded_bytes());
+    let identity = jsrt::hash::sha256_hex(resolve(root).as_os_str().as_encoded_bytes());
     let state = home().join(".cache/loki/mypy").join(&identity[..16]);
     std::fs::create_dir_all(&state).map_err(|e| CheckError::os(&e, state.to_str()))?;
     let config = state.join("mypy.ini");

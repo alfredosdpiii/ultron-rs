@@ -45,7 +45,7 @@ use command_fds::{CommandFdExt, FdMapping};
 use continuity::{Crash, recovery_report};
 use output::{
     MAX_FRAME_BYTES, MAX_ORPHAN_CHARS, RawCapture, Utf8Stream, append_bounded, find, flush_marker, keep_tail,
-    marker_prefix_len, orphan_text, utf16_len,
+    marker_prefix_len, orphan_text,
 };
 use rustix::process::{WaitId, WaitIdOptions};
 use serde::Serialize;
@@ -138,10 +138,6 @@ impl KernelReply {
     }
 }
 
-fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
-    mutex.lock().unwrap_or_else(PoisonError::into_inner)
-}
-
 type Listener = Box<dyn FnOnce(String) + Send>;
 
 #[derive(Default)]
@@ -167,7 +163,7 @@ impl Signal {
     pub fn abort(&self, reason: impl Into<String>) {
         let reason = reason.into();
         let listeners = {
-            let mut state = lock(&self.inner.0);
+            let mut state = jsrt::sync::lock(&self.inner.0);
             if state.reason.is_some() {
                 return;
             }
@@ -181,16 +177,16 @@ impl Signal {
     }
 
     pub fn reason(&self) -> Option<String> {
-        lock(&self.inner.0).reason.clone()
+        jsrt::sync::lock(&self.inner.0).reason.clone()
     }
 
     pub fn is_aborted(&self) -> bool {
-        lock(&self.inner.0).reason.is_some()
+        jsrt::sync::lock(&self.inner.0).reason.is_some()
     }
 
     /// Blocks until aborted or `timeout` passes; whether it is aborted.
     pub fn wait(&self, timeout: Duration) -> bool {
-        let state = lock(&self.inner.0);
+        let state = jsrt::sync::lock(&self.inner.0);
         let (state, _) = self
             .inner
             .1
@@ -212,7 +208,7 @@ impl Signal {
 
     /// Runs `listener` on abort; None (and `listener` is dropped) when already aborted.
     fn listen(&self, listener: Listener) -> Option<u64> {
-        let mut state = lock(&self.inner.0);
+        let mut state = jsrt::sync::lock(&self.inner.0);
         if state.reason.is_some() {
             return None;
         }
@@ -223,7 +219,9 @@ impl Signal {
     }
 
     fn unlisten(&self, id: u64) {
-        lock(&self.inner.0).listeners.retain(|(listener, _)| *listener != id);
+        jsrt::sync::lock(&self.inner.0)
+            .listeners
+            .retain(|(listener, _)| *listener != id);
     }
 }
 
@@ -421,17 +419,7 @@ fn object(entries: impl IntoIterator<Item = (&'static str, Value)>) -> Map<Strin
 fn random_uuid() -> Result<String, KernelError> {
     let mut bytes = [0u8; 16];
     getrandom::fill(&mut bytes).map_err(|error| KernelError::new(format!("RLM kernel request id: {error}")))?;
-    bytes[6] = (bytes[6] & 0x0f) | 0x40;
-    bytes[8] = (bytes[8] & 0x3f) | 0x80;
-    let hex: String = bytes.iter().map(|byte| format!("{byte:02x}")).collect();
-    Ok(format!(
-        "{}-{}-{}-{}-{}",
-        &hex[..8],
-        &hex[8..12],
-        &hex[12..16],
-        &hex[16..20],
-        &hex[20..]
-    ))
+    Ok(jsrt::random::uuid_v4_from(bytes))
 }
 
 /// Lone UTF-16 surrogate escapes (which Python's json.dumps emits for surrogate-escaped text) become U+FFFD: a Rust
@@ -480,12 +468,12 @@ struct Exit {
 
 impl Exit {
     fn exited(&self) -> bool {
-        lock(&self.state).0
+        jsrt::sync::lock(&self.state).0
     }
 
     /// Waits up to `timeout` for the exit status; whether it is known.
     fn wait_reaped(&self, timeout: Duration) -> bool {
-        let state = lock(&self.state);
+        let state = jsrt::sync::lock(&self.state);
         let (state, _) = self
             .changed
             .wait_timeout_while(state, timeout, |state| state.1.is_none())
@@ -693,7 +681,7 @@ impl Kernel {
 
     /// Whether a kernel process is up and initialized.
     pub fn is_running(&self) -> bool {
-        let state = lock(&self.shared.state);
+        let state = jsrt::sync::lock(&self.shared.state);
         !state.closed
             && state
                 .generation
@@ -703,17 +691,17 @@ impl Kernel {
 
     /// The bounded tail of the kernel's raw stderr, for diagnostics.
     pub fn stderr_tail(&self) -> String {
-        lock(&self.shared.state).stderr.clone()
+        jsrt::sync::lock(&self.shared.state).stderr.clone()
     }
 
     /// How many calls (cells, snapshots, checkpoints) are running or queued, in call order.
     pub fn pending_calls(&self) -> usize {
-        lock(&self.shared.state).queue.len()
+        jsrt::sync::lock(&self.shared.state).queue.len()
     }
 
     /// The pid of the running kernel process.
     pub fn pid(&self) -> Option<u32> {
-        let state = lock(&self.shared.state);
+        let state = jsrt::sync::lock(&self.shared.state);
         state
             .generation
             .as_ref()
@@ -724,7 +712,7 @@ impl Kernel {
     /// no kernel process runs (kernel.ts `memoryUsage`, for `rlm.pool`).
     pub fn memory_usage(&self) -> Option<(u64, Option<u64>)> {
         let pid = {
-            let state = lock(&self.shared.state);
+            let state = jsrt::sync::lock(&self.shared.state);
             if state.closed {
                 return None;
             }
@@ -742,19 +730,19 @@ impl Kernel {
 
     /// How the running kernel's tree cap is enforced; None while no kernel process runs.
     pub fn tree_memory_backend(&self) -> Option<TreeMemoryBackend> {
-        let state = lock(&self.shared.state);
+        let state = jsrt::sync::lock(&self.shared.state);
         state.generation.as_ref().map(|generation| generation.tree_backend)
     }
 
     /// The sandbox the running kernel is in; None when unsandboxed or not running.
     pub fn sandbox(&self) -> Option<sandbox::Mechanism> {
-        let state = lock(&self.shared.state);
+        let state = jsrt::sync::lock(&self.shared.state);
         state.generation.as_ref().and_then(|generation| generation.sandbox)
     }
 
     /// Starts the kernel process if none runs and waits until it is ready.
     pub fn start(&self) -> Result<(), KernelError> {
-        let mut state = lock(&self.shared.state);
+        let mut state = jsrt::sync::lock(&self.shared.state);
         let generation = self.shared.ensure_started(&mut state, true)?;
         self.shared.wait_started(state, generation, None).map(drop)
     }
@@ -819,18 +807,18 @@ impl Kernel {
 
     /// The latest recovery's report, also after it was delivered with a cell.
     pub fn last_recovery(&self) -> Option<ContinuityReport> {
-        lock(&self.shared.state).continuity.last_recovery.clone()
+        jsrt::sync::lock(&self.shared.state).continuity.last_recovery.clone()
     }
 
     /// The latest checkpoint written to the configured snapshot path.
     pub fn checkpoint(&self) -> Option<SnapshotReport> {
-        lock(&self.shared.state).continuity.checkpoint.clone()
+        jsrt::sync::lock(&self.shared.state).continuity.checkpoint.clone()
     }
 
     /// Permanently closes this kernel: kills its process tree, rejects every call, and waits (bounded) for the exit.
     pub fn shutdown(&self) {
         let exit = {
-            let mut state = lock(&self.shared.state);
+            let mut state = jsrt::sync::lock(&self.shared.state);
             state.closed = true;
             let error = KernelError::new(SHUT_DOWN);
             let exit = match state
@@ -864,7 +852,7 @@ impl Drop for Kernel {
 
 impl Shared {
     fn with_state(&self, run: impl FnOnce(&mut State)) {
-        let mut state = lock(&self.state);
+        let mut state = jsrt::sync::lock(&self.state);
         run(&mut state);
         drop(state);
         self.changed.notify_all();
@@ -876,7 +864,7 @@ impl Shared {
         signal: Option<&Signal>,
         handler: Option<Arc<dyn HostHandler>>,
     ) -> Result<KernelReply, KernelError> {
-        if lock(&self.state).closed {
+        if jsrt::sync::lock(&self.state).closed {
             return Err(KernelError::new(SHUT_DOWN));
         }
         if let Some(reason) = signal.and_then(Signal::reason) {
@@ -886,7 +874,7 @@ impl Shared {
         probe.insert("id".into(), Value::from(PLACEHOLDER_ID));
         encode_frame(&probe)?;
         let op = {
-            let mut state = lock(&self.state);
+            let mut state = jsrt::sync::lock(&self.state);
             if state.closed {
                 return Err(KernelError::new(SHUT_DOWN));
             }
@@ -926,7 +914,7 @@ impl Shared {
         if let Some((signal, Some(id))) = listener {
             signal.unlisten(id);
         }
-        let mut state = lock(&self.state);
+        let mut state = jsrt::sync::lock(&self.state);
         let recovery = state.ops.remove(&op).and_then(|entry| entry.recovery);
         if state.queue.front() == Some(&op) {
             state.queue.pop_front();
@@ -979,7 +967,7 @@ impl Shared {
                     let Some(shared) = shared.upgrade() else {
                         return;
                     };
-                    let mut state = lock(&shared.state);
+                    let mut state = jsrt::sync::lock(&shared.state);
                     state.continuity.idle_flush_scheduled = false;
                     if state.continuity.dirty && !state.continuity.snapshot_queued && !state.closed {
                         shared.queue_checkpoint(&mut state, false);
@@ -1022,7 +1010,7 @@ impl Shared {
         std::thread::spawn(move || {
             // The outcome is recorded by signed_snapshot; a failed checkpoint keeps `dirty` for the next cell.
             let _ = shared.run(op, frame);
-            let mut state = lock(&shared.state);
+            let mut state = jsrt::sync::lock(&shared.state);
             state.ops.remove(&op);
             if state.queue.front() == Some(&op) {
                 state.queue.pop_front();
@@ -1066,7 +1054,7 @@ impl Shared {
     }
 
     fn run(self: &Arc<Self>, op: u64, frame: Map<String, Value>) -> Result<KernelReply, KernelError> {
-        let mut state = lock(&self.state);
+        let mut state = jsrt::sync::lock(&self.state);
         loop {
             if let Some(outcome) = Self::take_outcome(&mut state, op) {
                 return outcome;
@@ -1103,7 +1091,7 @@ impl Shared {
         generation: u64,
         mut frame: Map<String, Value>,
     ) -> Result<KernelReply, KernelError> {
-        let mut state = lock(&self.state);
+        let mut state = jsrt::sync::lock(&self.state);
         let execute = frame.get("request") == Some(&Value::from("execute"));
         let request_id = random_uuid()?;
         frame.insert("id".into(), Value::from(request_id.clone()));
@@ -1269,7 +1257,7 @@ impl Shared {
                 };
                 let cap_bytes = shared.tree_memory_mb * 1024 * 1024;
                 let bytes = (backend == TreeMemoryBackend::Watchdog).then(|| watchdog_tree_bytes(pid, &known));
-                let mut state = lock(&shared.state);
+                let mut state = jsrt::sync::lock(&shared.state);
                 let Some(current) = state.current(id) else {
                     return;
                 };
@@ -1319,7 +1307,7 @@ impl Shared {
                 let restore_path = current.restore_path.clone();
                 drop(state);
                 self.complete_startup(generation, restore_path);
-                state = lock(&self.state);
+                state = jsrt::sync::lock(&self.state);
                 continue;
             }
             let deadline = current.startup_deadline;
@@ -1361,7 +1349,7 @@ impl Shared {
     fn complete_startup(self: &Arc<Self>, generation: u64, restore_path: Option<PathBuf>) {
         let restored = restore_path.as_ref().map(|path| {
             let op = {
-                let mut state = lock(&self.state);
+                let mut state = jsrt::sync::lock(&self.state);
                 state.next_op += 1;
                 let op = state.next_op;
                 state.ops.insert(
@@ -1377,10 +1365,10 @@ impl Shared {
                 op
             };
             let outcome = self.verified_restore(op, generation, path);
-            lock(&self.state).ops.remove(&op);
+            jsrt::sync::lock(&self.state).ops.remove(&op);
             outcome
         });
-        let mut state = lock(&self.state);
+        let mut state = jsrt::sync::lock(&self.state);
         if state.current(generation).is_none() {
             return;
         }
@@ -1468,7 +1456,7 @@ impl Shared {
                 .snapshot
                 .as_ref()
                 .and_then(|report| report.content_sha256.as_deref());
-            if reported != Some(snapshot::sha256_hex(&content).as_str()) {
+            if reported != Some(jsrt::hash::sha256_hex(&content).as_str()) {
                 return Ok(failed(
                     "snapshot changed after the kernel wrote it; refusing to sign it".into(),
                 ));
@@ -1487,7 +1475,7 @@ impl Shared {
                 return Ok(failed(format!("snapshot signing failed: {error}")));
             }
             if self.options.snapshot_path.as_deref() == Some(path) {
-                let mut state = lock(&self.state);
+                let mut state = jsrt::sync::lock(&self.state);
                 let continuity = &mut state.continuity;
                 continuity.checkpoint = reply.snapshot.clone();
                 continuity.checkpoint_cells = continuity.cells;
@@ -1784,9 +1772,10 @@ impl Shared {
                 {
                 }
             }
-            shared.with_state(|_| lock(&exit.state).0 = true);
+            shared.with_state(|_| jsrt::sync::lock(&exit.state).0 = true);
             let status = child.wait();
-            lock(&exit.state).1 = Some(status.as_ref().copied().unwrap_or_else(|_| ExitStatus::from_raw(0)));
+            jsrt::sync::lock(&exit.state).1 =
+                Some(status.as_ref().copied().unwrap_or_else(|_| ExitStatus::from_raw(0)));
             exit.changed.notify_all();
             shared.with_state(|state| {
                 if state.current(id).is_some() {
@@ -1811,7 +1800,7 @@ impl Shared {
                 }
             });
             // Continuity: a kernel that died while serving is replaced and restored now, not at the next call.
-            let mut state = lock(&shared.state);
+            let mut state = jsrt::sync::lock(&shared.state);
             if std::mem::take(&mut state.continuity.restart)
                 && !state.closed
                 && state.generation.is_none()
@@ -1903,7 +1892,7 @@ impl Shared {
             waiter.controller.abort(error.message());
         }
         state.reject_ops(&error);
-        let known = lock(&failed.known_descendants).clone();
+        let known = jsrt::sync::lock(&failed.known_descendants).clone();
         process::kill_process_tree(
             failed.pid,
             true,
@@ -2115,7 +2104,7 @@ impl Shared {
 /// with the tree even after they left it.
 fn watchdog_tree_bytes(root: i32, known: &Mutex<HashMap<i32, u64>>) -> u64 {
     let (bytes, descendants) = tree_memory::tree_memory_usage(root);
-    let mut known = lock(known);
+    let mut known = jsrt::sync::lock(known);
     known.retain(|pid, start| process::process_stat(*pid).is_some_and(|stat| stat.start_time == *start));
     for pid in descendants {
         if let Some(stat) = process::process_stat(pid) {
@@ -2312,13 +2301,13 @@ fn route_raw(
         capture.push(&text);
         return;
     }
-    let used = utf16_len(&stream.orphan);
+    let used = jsrt::utf16::len(&stream.orphan);
     let room = MAX_ORPHAN_CHARS.saturating_sub(used);
-    if utf16_len(&text) > room {
+    if jsrt::utf16::len(&text) > room {
         stream.orphan_dropped = true;
     }
     if room > 0 {
-        let kept = output::utf16_head(&text, room);
+        let kept = jsrt::utf16::head(&text, room);
         stream.orphan.push_str(kept);
     }
 }

@@ -2,7 +2,6 @@
 //! `auth.json` store must leave the file coding-agent's `AuthStorage` leaves.
 
 use ai::auth::{Credential, CredentialStore, FileCredentialStore};
-use ai::json::normalize_numbers;
 use serde_json::Value;
 use std::sync::LazyLock;
 
@@ -45,8 +44,8 @@ fn ai_auth_json_store_writes_what_coding_agent_writes() {
             }
         });
         assert_eq!(
-            normalize_numbers(out),
-            normalize_numbers(entry["out"].clone()),
+            jsrt::json::normalize_numbers(out),
+            jsrt::json::normalize_numbers(entry["out"].clone()),
             "{step}"
         );
     }

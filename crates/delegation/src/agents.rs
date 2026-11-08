@@ -15,10 +15,11 @@
 
 use crate::contract::Brief;
 use crate::definitions::{Definition, DefinitionRegistry, Strategy, is_model};
-use crate::task_store::{TaskJournal, TaskStore, task_fingerprint, uuid_v4};
-use crate::usage::{Measurement, Reservation, ReserveRequest, UsageLedger, number};
+use crate::task_store::{TaskJournal, TaskStore, task_fingerprint};
+use crate::usage::{Measurement, Reservation, ReserveRequest, UsageLedger};
 use crate::verdict::{MAX_VERDICT_REJECTIONS, validate_verdict};
 use jsonschema::json_equal;
+use jsrt::{json, random, string, sync, utf16};
 use kernel::{HostHandler, Signal};
 use serde_json::{Map, Value, json};
 use std::collections::HashMap;
@@ -184,12 +185,7 @@ impl AgentsOptions {
             pin_lane: None,
             unpin_lane: None,
             root_turns: false,
-            now: Arc::new(|| {
-                std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .map(|d| d.as_millis() as f64)
-                    .unwrap_or(0.0)
-            }),
+            now: Arc::new(|| jsrt::date::now_ms() as f64),
         }
     }
 }
@@ -302,24 +298,9 @@ pub struct Agents {
     inner: Arc<Inner>,
 }
 
-fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
-    mutex.lock().unwrap_or_else(PoisonError::into_inner)
-}
-
-fn fields(payload: &Map<String, Value>, allowed: &[&str]) -> Result<(), String> {
-    match payload.keys().find(|k| !allowed.contains(&k.as_str())) {
-        Some(key) => Err(format!("Unknown payload field: {key}")),
-        None => Ok(()),
-    }
-}
-
-fn js_trim(text: &str) -> &str {
-    kernel_apis::util::js_trim(text)
-}
-
 fn nonempty_string(value: Option<&Value>, name: &str) -> Result<String, String> {
     match value.and_then(Value::as_str) {
-        Some(text) if !js_trim(text).is_empty() => Ok(text.to_string()),
+        Some(text) if !string::trim(text).is_empty() => Ok(text.to_string()),
         _ => Err(format!("{name} must be a nonempty string")),
     }
 }
@@ -361,19 +342,15 @@ fn task_options(payload: &Map<String, Value>) -> Result<(Option<String>, Option<
     Ok((model, key, timeout))
 }
 
-fn stringify(value: &Value) -> String {
-    kernel_apis::util::stringify(value)
-}
-
 /// `preview(value, limit)`: whitespace collapsed, cut to `limit` UTF-16 units with an ellipsis.
 fn preview(value: &Value, limit: usize) -> String {
     let text = match value {
         Value::String(text) => text.clone(),
-        other => stringify(other),
+        other => json::stringify(other),
     };
-    let flat = text.split_whitespace().collect::<Vec<_>>().join(" ");
-    if kernel_apis::util::utf16_len(&flat) > limit {
-        format!("{}…", kernel_apis::util::utf16_prefix(&flat, limit - 1))
+    let flat = string::flatten(&text);
+    if utf16::len(&flat) > limit {
+        format!("{}…", utf16::head(&flat, limit - 1))
     } else {
         flat
     }
@@ -423,7 +400,7 @@ fn succeeded(value: Value) -> Value {
 
 /// `jsonFrom(text)`: a reply as JSON, a fenced block unwrapped.
 fn json_from(text: &str) -> Result<Value, String> {
-    let trimmed = js_trim(text);
+    let trimmed = string::trim(text);
     let body = trimmed
         .strip_prefix("```")
         .and_then(|rest| {
@@ -434,8 +411,8 @@ fn json_from(text: &str) -> Result<Value, String> {
         })
         .unwrap_or(trimmed);
     serde_json::from_str(body).map_err(|error| {
-        let shown = if kernel_apis::util::utf16_len(body) > 32 {
-            format!("{}...", kernel_apis::util::utf16_prefix(body, 32))
+        let shown = if utf16::len(body) > 32 {
+            format!("{}...", utf16::head(body, 32))
         } else {
             body.to_string()
         };
@@ -604,7 +581,7 @@ impl Agents {
     }
 
     fn state(&self) -> MutexGuard<'_, State> {
-        lock(&self.inner.state)
+        sync::lock(&self.inner.state)
     }
 
     fn now(&self) -> f64 {
@@ -735,7 +712,7 @@ impl Agents {
         if state.root_turn_active && state.root_turn.is_some() {
             return state.root_turn.clone();
         }
-        Some(format!("job:{}", uuid_v4()))
+        Some(format!("job:{}", random::uuid_v4()))
     }
 
     /// `statusRoot(parentId)`.
@@ -753,7 +730,7 @@ impl Agents {
 
     /// `request(payload)` of `agents.spawn` / `agents.invoke`.
     fn request(&self, payload: &Map<String, Value>, parent: Option<&str>) -> Result<TaskRequest, String> {
-        fields(payload, &["definition", "input", "model", "key", "timeout_ms", "brief"])?;
+        jsrt::payload::fields(payload, &["definition", "input", "model", "key", "timeout_ms", "brief"])?;
         let definition = definition_key(payload.get("definition"))?;
         let Some(input) = payload.get("input") else {
             return Err("Agent input is not JSON".into());
@@ -814,7 +791,7 @@ impl Agents {
         parent: Option<&str>,
         notify: Option<&'static str>,
     ) -> Result<(String, Value), String> {
-        let _admitting = lock(&self.inner.admissions);
+        let _admitting = sync::lock(&self.inner.admissions);
         if self.state().closed {
             return Err("Ultron task host is closed".into());
         }
@@ -830,7 +807,7 @@ impl Agents {
             fingerprinted["brief"] = brief.to_value();
         }
         let fingerprint = task_fingerprint(&fingerprinted);
-        let key = request.key.clone().unwrap_or_else(uuid_v4);
+        let key = request.key.clone().unwrap_or_else(random::uuid_v4);
         // An idempotent retry resolves to the existing task before any budget is touched.
         if request.key.is_some() {
             let mut state = self.state();
@@ -1227,7 +1204,7 @@ impl Agents {
             format!(
                 "{}\n\nInput data:\n{}\n\nOutput contract:\n{}",
                 definition.instructions(),
-                stringify(&request.input),
+                json::stringify(&request.input),
                 definition.output_description()
             )
         };
@@ -1251,7 +1228,7 @@ impl Agents {
                 .map(|r| {
                     let version = match &r["version"] {
                         Value::Null => "unversioned".to_string(),
-                        other => stringify(other),
+                        other => json::stringify(other),
                     };
                     format!(
                         "Active refinement {} (version {version}):\n{}",
@@ -1295,7 +1272,7 @@ impl Agents {
                     // The run's own entries are authoritative for the graph view's counts.
                     task.turns = Some(task.turns.unwrap_or(0).max(reply.turns));
                     task.tool_calls = Some(task.tool_calls.unwrap_or(0).max(reply.tool_calls));
-                    let flat = reply.text.split_whitespace().collect::<Vec<_>>().join(" ");
+                    let flat = string::flatten(&reply.text);
                     if !flat.is_empty() {
                         task.last_text = Some(preview(&json!(flat), GRAPH_TEXT_CHARS));
                     }
@@ -1310,7 +1287,7 @@ impl Agents {
         if definition.id() == "rlm-child" {
             return self.child_result(id, &text);
         }
-        if js_trim(&text).is_empty() {
+        if string::trim(&text).is_empty() {
             return Err("Agent produced no assistant result at the completed tip".into());
         }
         let value = if definition.id() == "background-job" {
@@ -1365,10 +1342,10 @@ impl Agents {
         let state = self.state();
         let task = state.task(id).ok_or("Unknown Ultron task")?;
         let verdict = task.verdict.clone();
-        if js_trim(text).is_empty() && verdict.is_none() {
+        if string::trim(text).is_empty() && verdict.is_none() {
             return Err("Agent produced no assistant result at the completed tip".into());
         }
-        let value = if js_trim(text).is_empty() {
+        let value = if string::trim(text).is_empty() {
             verdict.as_ref().map_or(Value::Null, |v| v["summary"].clone())
         } else {
             json!(text)
@@ -1538,7 +1515,7 @@ impl Agents {
             hook(&record, cost, model.as_deref());
         }
         if let Some(event) = event {
-            let _ = lock(&self.inner.events).send(event);
+            let _ = sync::lock(&self.inner.events).send(event);
         }
         outcome
     }
@@ -1656,7 +1633,7 @@ impl Agents {
 
     /// Closes the host: later requests are refused and every unfinished task is cancelled.
     pub fn close(&self) {
-        let _admitting = lock(&self.inner.admissions);
+        let _admitting = sync::lock(&self.inner.admissions);
         let unfinished: Vec<String> = {
             let mut state = self.state();
             state.closed = true;
@@ -1706,32 +1683,32 @@ impl Agents {
         let records = self.state().journal.list()?;
         let visible = |id: &str| Self::visible(&self.state(), &records, id, parent);
         if ["ping", "agents.list", "agents.tasks"].contains(&kind) {
-            fields(&payload, &[])?;
+            jsrt::payload::fields(&payload, &[])?;
         }
         if kind == "agents.status" {
-            fields(&payload, &["graph"])?;
+            jsrt::payload::fields(&payload, &["graph"])?;
         }
         match kind {
             "ping" => Ok(json!({ "ok": true })),
             "agents.list" => Ok(Value::from(self.state().registry.list())),
             "agents.status" | "agents.tasks" => self.status(&payload, lane, parent, &records),
             "agents.register" => {
-                fields(&payload, &["definition"])?;
+                jsrt::payload::fields(&payload, &["definition"])?;
                 self.state()
                     .registry
                     .register(payload.get("definition").unwrap_or(&Value::Null))
             }
             "background.start" => {
-                fields(&payload, &["prompt", "model", "key", "timeout_ms"])?;
+                jsrt::payload::fields(&payload, &["prompt", "model", "key", "timeout_ms"])?;
                 let prompt = nonempty_string(payload.get("prompt"), "prompt")?;
-                if kernel_apis::util::utf16_len(&prompt) > 65_536 {
+                if utf16::len(&prompt) > 65_536 {
                     return Err("Background prompt exceeds 65536 characters".into());
                 }
                 let key = payload
                     .get("key")
                     .and_then(Value::as_str)
                     .map(|k| format!("background:{k}"));
-                if key.as_ref().is_some_and(|k| kernel_apis::util::utf16_len(k) > 264) {
+                if key.as_ref().is_some_and(|k| utf16::len(k) > 264) {
                     return Err("Background key is too long".into());
                 }
                 let request = TaskRequest {
@@ -1749,7 +1726,7 @@ impl Agents {
                 Ok(public_task(&admitted))
             }
             "background.list" => {
-                fields(&payload, &[])?;
+                jsrt::payload::fields(&payload, &[])?;
                 Ok(Value::from(
                     records
                         .iter()
@@ -1760,7 +1737,7 @@ impl Agents {
                 ))
             }
             "background.inspect" | "background.result" | "background.stop" => {
-                fields(&payload, &["id"])?;
+                jsrt::payload::fields(&payload, &["id"])?;
                 let id = nonempty_string(payload.get("id"), "id")?;
                 let stored = records
                     .iter()
@@ -1791,7 +1768,7 @@ impl Agents {
                 self.result_of(&id, cell.map(|c| (c, true)))
             }
             "agents.inspect" | "agents.result" | "agents.cancel" => {
-                fields(&payload, &["id"])?;
+                jsrt::payload::fields(&payload, &["id"])?;
                 let id = nonempty_string(payload.get("id"), "id")?;
                 let stored = records.iter().find(|r| r["id"] == id.as_str());
                 let Some(stored) = stored.filter(|_| visible(&id)) else {
@@ -1963,10 +1940,10 @@ impl Agents {
                 }
             };
             put("lane", task.lane.clone().map(Value::from));
-            put("startedAt", task.started_at.map(number));
-            put("endedAt", task.ended_at.map(number));
-            put("cost", task.cost.map(number));
-            put("tokens", task.tokens.map(number));
+            put("startedAt", task.started_at.map(json::number));
+            put("endedAt", task.ended_at.map(json::number));
+            put("cost", task.cost.map(json::number));
+            put("tokens", task.tokens.map(json::number));
             put("input", task.input_preview.clone().map(Value::from));
             put("workflow", task.workflow.clone());
             put("model", task.model.clone().map(Value::from));
@@ -2035,7 +2012,7 @@ impl Agents {
 
     /// `workflow(payload)`: the whole graph is validated before any effect.
     fn workflow(&self, payload: &Map<String, Value>) -> Result<Vec<Node>, String> {
-        fields(payload, &["nodes", "key"])?;
+        jsrt::payload::fields(payload, &["nodes", "key"])?;
         let items = payload
             .get("nodes")
             .and_then(Value::as_array)
@@ -2057,7 +2034,7 @@ impl Agents {
         let mut nodes = Vec::new();
         for value in items {
             let node = object_input(Some(value))?;
-            fields(
+            jsrt::payload::fields(
                 node,
                 &[
                     "id",
@@ -2140,7 +2117,9 @@ impl Agents {
             let depends_on: Vec<String> = match node.get("dependsOn") {
                 None => Vec::new(),
                 Some(Value::Array(list))
-                    if list.iter().all(|d| d.as_str().is_some_and(|d| !js_trim(d).is_empty()))
+                    if list
+                        .iter()
+                        .all(|d| d.as_str().is_some_and(|d| !string::trim(d).is_empty()))
                         && list.iter().enumerate().all(|(i, d)| !list[..i].contains(d)) =>
                 {
                     list.iter().filter_map(text_of).collect()
@@ -2181,7 +2160,7 @@ impl Agents {
                 None => None,
                 Some(value) => {
                     let route = object_input(Some(value))?;
-                    fields(route, &["node", "field", "equals"])?;
+                    jsrt::payload::fields(route, &["node", "field", "equals"])?;
                     let target = nonempty_string(route.get("node"), "when.node")?;
                     if !depends_on.contains(&target) {
                         return Err("when.node must name a dependency".into());
@@ -2194,7 +2173,7 @@ impl Agents {
                 None => None,
                 Some(value) => {
                     let lp = object_input(Some(value))?;
-                    fields(lp, &["from", "until", "max_rounds"])?;
+                    jsrt::payload::fields(lp, &["from", "until", "max_rounds"])?;
                     let rounds = lp
                         .get("max_rounds")
                         .and_then(Value::as_f64)
@@ -2206,7 +2185,7 @@ impl Agents {
                         return Err("revise.until is required".into());
                     };
                     let until = object_input(Some(until))?;
-                    fields(until, &["field", "equals"])?;
+                    jsrt::payload::fields(until, &["field", "equals"])?;
                     let from = nonempty_string(lp.get("from"), "revise.from")?;
                     let (field, equals) = condition(until, "revise.until")?;
                     Some((from, field, equals, rounds as u64))
@@ -2563,14 +2542,14 @@ impl Agents {
 
     /// `runWorkflow`: ready nodes run together; a dependency is satisfied only by its durable terminal result.
     fn run_workflow(&self, nodes: Vec<Node>, cell: Option<&Signal>, parent: Option<&str>) -> Result<Value, String> {
-        let run = format!("wf-{}", &uuid_v4()[..8]);
+        let run = format!("wf-{}", &random::uuid_v4()[..8]);
         {
             let mut state = self.state();
             let mut record = json!({ "run": run });
             if let Some(parent) = parent {
                 record["parentId"] = json!(parent);
             }
-            record["startedAt"] = number(self.now());
+            record["startedAt"] = json::number(self.now());
             record["nodes"] = Value::from(
                 nodes
                     .iter()
@@ -2680,7 +2659,7 @@ impl Agents {
         let mut state = self.state();
         let now = self.now();
         if let Some(record) = state.workflow_runs.iter_mut().find(|r| r["run"] == run.as_str()) {
-            record["endedAt"] = number(now);
+            record["endedAt"] = json::number(now);
         }
         Ok(Value::Object(output))
     }
@@ -2853,16 +2832,16 @@ pub fn predict_adapter(complete: Complete) -> Adapter {
             None => String::new(),
             Some(repair) => format!(
                 "\n\nYour previous answer was rejected (attempt {}): {}\nPrevious answer: {}",
-                stringify(&repair["attempt"]),
+                json::stringify(&repair["attempt"]),
                 repair["error"].as_str().unwrap_or_default(),
-                stringify(&repair["previous"])
+                json::stringify(&repair["previous"])
             ),
         };
         let user = format!(
             "{}\n\nInput:\n{}\n\nOutput schema:\n{}\n\nOutput contract:\n{}{repair}",
             definition["instructions"].as_str().unwrap_or_default(),
-            stringify(request.input),
-            stringify(&definition["outputSchema"]),
+            json::stringify(request.input),
+            json::stringify(&definition["outputSchema"]),
             definition["outputDescription"].as_str().unwrap_or_default(),
         );
         let reply = complete(PredictCall {
@@ -2877,7 +2856,7 @@ pub fn predict_adapter(complete: Complete) -> Adapter {
         }
         let text = reply.text;
         Ok(json_from(&text).unwrap_or_else(|_| {
-            let trimmed = js_trim(&text);
+            let trimmed = string::trim(&text);
             json!(strip_fence(trimmed))
         }))
     })

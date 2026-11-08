@@ -17,9 +17,8 @@ mod external;
 use crate::env::{ProviderEnv, provider_env_value};
 use crate::http::{HttpRequest, HttpResponse, Transport};
 use crate::jsutil::json_parse_error;
-use crate::oauth_flow::{base64url, form_urlencode};
+use crate::oauth_flow::form_urlencode;
 use serde_json::{Map, Value, json};
-use sha2::Digest;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -170,7 +169,7 @@ pub async fn request_headers(env: Option<&ProviderEnv>, transport: &dyn Transpor
             universe,
             ..
         } if universe != DEFAULT_UNIVERSE => {
-            let iat = crate::options::now_ms().div_euclid(1000);
+            let iat = jsrt::date::now_ms().div_euclid(1000);
             self_signed_jwt(email, key, key_id.as_deref(), iat).map_err(Fail::new)
         }
         _ => access_token(&credential, env, transport).await,
@@ -189,36 +188,8 @@ pub async fn request_headers(env: Option<&ProviderEnv>, transport: &dyn Transpor
 
 // ------------------------------------------------------------------------------------------ loading the credential
 
-fn js_truthy(value: Option<&Value>) -> bool {
-    match value {
-        None | Some(Value::Null) | Some(Value::Bool(false)) => false,
-        Some(Value::String(s)) => !s.is_empty(),
-        Some(Value::Number(n)) => n.as_f64().is_some_and(|f| f != 0.0),
-        Some(_) => true,
-    }
-}
-
-/// `String(value)` for the scalar fields a credential file holds.
-fn js_string(value: Option<&Value>) -> String {
-    match value {
-        None => "undefined".into(),
-        Some(Value::String(s)) => s.clone(),
-        Some(Value::Null) => "null".into(),
-        Some(Value::Array(items)) => items
-            .iter()
-            .map(|v| match v {
-                Value::Null => String::new(),
-                other => js_string(Some(other)),
-            })
-            .collect::<Vec<_>>()
-            .join(","),
-        Some(Value::Object(_)) => "[object Object]".into(),
-        Some(other) => other.to_string(),
-    }
-}
-
 fn optional_string(json: &Value, key: &str) -> Option<String> {
-    js_truthy(json.get(key)).then(|| js_string(json.get(key)))
+    jsrt::value::truthy(json.get(key)).then(|| jsrt::value::string(json.get(key)))
 }
 
 /// Which `fromJSON` branch a credential JSON takes; the service-account branch mutates the shared client options.
@@ -248,14 +219,14 @@ fn from_json(json: &Value) -> Result<Credential, (Fail, Branch)> {
     match kind {
         "authorized_user" => {
             for field in ["client_id", "client_secret", "refresh_token"] {
-                if !js_truthy(json.get(field)) {
+                if !jsrt::value::truthy(json.get(field)) {
                     return Err((missing(field), Branch::Known));
                 }
             }
             Ok(Credential::User {
-                client_id: js_string(json.get("client_id")),
-                client_secret: js_string(json.get("client_secret")),
-                refresh_token: js_string(json.get("refresh_token")),
+                client_id: jsrt::value::string(json.get("client_id")),
+                client_secret: jsrt::value::string(json.get("client_secret")),
+                refresh_token: jsrt::value::string(json.get("refresh_token")),
                 universe: universe_of(json),
                 quota: optional_string(json, "quota_project_id"),
             })
@@ -268,20 +239,20 @@ fn from_json(json: &Value) -> Result<Credential, (Fail, Branch)> {
             external::ExternalUser::from_json(json),
         ))),
         _ => {
-            if !js_truthy(Some(json)) {
+            if !jsrt::value::truthy(Some(json)) {
                 return Err((
                     Fail::new("Must pass in a JSON object containing the service account auth settings."),
                     Branch::Jwt,
                 ));
             }
             for field in ["client_email", "private_key"] {
-                if !js_truthy(json.get(field)) {
+                if !jsrt::value::truthy(json.get(field)) {
                     return Err((missing(field), Branch::Jwt));
                 }
             }
             Ok(Credential::ServiceAccount {
-                email: js_string(json.get("client_email")),
-                key: js_string(json.get("private_key")),
+                email: jsrt::value::string(json.get("client_email")),
+                key: jsrt::value::string(json.get("private_key")),
                 key_id: optional_string(json, "private_key_id"),
                 universe: universe_of(json),
                 quota: optional_string(json, "quota_project_id"),
@@ -292,18 +263,18 @@ fn from_json(json: &Value) -> Result<Credential, (Fail, Branch)> {
 
 /// `GoogleAuth.fromImpersonatedJSON`.
 fn impersonated(json: &Value) -> Result<Credential, Fail> {
-    let Some(source_json) = json.get("source_credentials").filter(|v| js_truthy(Some(v))) else {
+    let Some(source_json) = json.get("source_credentials").filter(|v| jsrt::value::truthy(Some(v))) else {
         return Err(Fail::new(
             "The incoming JSON object does not contain a source_credentials field",
         ));
     };
-    if !js_truthy(json.get("service_account_impersonation_url")) {
+    if !jsrt::value::truthy(json.get("service_account_impersonation_url")) {
         return Err(Fail::new(
             "The incoming JSON object does not contain a service_account_impersonation_url field",
         ));
     }
     let source = from_json(source_json).map_err(|(fail, _)| fail)?;
-    let url = js_string(json.get("service_account_impersonation_url"));
+    let url = jsrt::value::string(json.get("service_account_impersonation_url"));
     if url.encode_utf16().count() > 256 {
         return Err(Fail::typed(
             "RangeError",
@@ -323,10 +294,10 @@ fn impersonated(json: &Value) -> Result<Credential, Fail> {
         ));
     };
     // `new Impersonated`: the source's universe, unless one is set explicitly, which must then match it.
-    let universe = match external::camel_option(json, "universe_domain").filter(|v| js_truthy(Some(v))) {
+    let universe = match external::camel_option(json, "universe_domain").filter(|v| jsrt::value::truthy(Some(v))) {
         None => source.universe(),
         Some(explicit) => {
-            let explicit = js_string(Some(explicit));
+            let explicit = jsrt::value::string(Some(explicit));
             if explicit != source.universe() {
                 return Err(Fail::typed(
                     "RangeError",
@@ -644,7 +615,7 @@ fn api_error_message(status: u16, data: &Value) -> String {
     if let Value::String(text) = data {
         message = text.clone();
     }
-    if let Some(error) = data.get("error").filter(|e| js_truthy(Some(e))) {
+    if let Some(error) = data.get("error").filter(|e| jsrt::value::truthy(Some(e))) {
         match error {
             Value::String(text) => return text.clone(),
             Value::Object(object) => {
@@ -769,7 +740,7 @@ const NO_RETRY: Retry = Retry {
 // ------------------------------------------------------------------------------------------------- access tokens
 
 fn token_field(data: &Value, key: &str) -> String {
-    js_string(data.get(key))
+    jsrt::value::string(data.get(key))
 }
 
 /// `UserRefreshClient.refreshTokenNoCache`.
@@ -793,7 +764,7 @@ async fn refresh_user(
         Err(mut fail) => {
             let reauth = fail.data.as_ref().is_some_and(|data| {
                 data.get("error_description")
-                    .map(|d| js_string(Some(d)).to_lowercase().contains("reauth"))
+                    .map(|d| jsrt::value::string(Some(d)).to_lowercase().contains("reauth"))
                     .unwrap_or(false)
             });
             if fail.message == "invalid_grant" && reauth {
@@ -806,7 +777,7 @@ async fn refresh_user(
 
 /// The RS256 JWT `gtoken` signs for the JWT bearer grant.
 pub fn service_account_assertion(email: &str, pem: &str, iat_seconds: i64) -> Result<String, String> {
-    let header = base64url(br#"{"alg":"RS256"}"#);
+    let header = jsrt::base64::encode_url(br#"{"alg":"RS256"}"#);
     let payload = json!({
         "iss": email,
         "scope": SCOPE,
@@ -814,10 +785,10 @@ pub fn service_account_assertion(email: &str, pem: &str, iat_seconds: i64) -> Re
         "exp": iat_seconds + 3600,
         "iat": iat_seconds,
     });
-    let payload = base64url(serde_json::to_string(&payload).unwrap_or_default().as_bytes());
+    let payload = jsrt::base64::encode_url(serde_json::to_string(&payload).unwrap_or_default().as_bytes());
     let input = format!("{header}.{payload}");
     let signature = sign_rs256(pem, input.as_bytes())?;
-    Ok(format!("{input}.{}", base64url(&signature)))
+    Ok(format!("{input}.{}", jsrt::base64::encode_url(&signature)))
 }
 
 fn sign_rs256(pem: &str, message: &[u8]) -> Result<Vec<u8>, String> {
@@ -826,7 +797,7 @@ fn sign_rs256(pem: &str, message: &[u8]) -> Result<Vec<u8>, String> {
         .map(str::trim)
         .filter(|line| !line.starts_with("-----"))
         .collect();
-    let der = crate::jsutil::atob(&body).ok_or_else(|| BAD_KEY.to_string())?;
+    let der = jsrt::base64::atob(&body).ok_or_else(|| BAD_KEY.to_string())?;
     let pkcs1 = pem.contains("BEGIN RSA PRIVATE KEY");
     let key = if pkcs1 {
         ring::signature::RsaKeyPair::from_der(&der)
@@ -847,19 +818,19 @@ fn sign_rs256(pem: &str, message: &[u8]) -> Result<Vec<u8>, String> {
 
 /// `JWT.refreshTokenNoCache` through `gtoken`.
 async fn service_account_token(transport: &dyn Transport, email: &str, key: &str) -> Result<String, Fail> {
-    let iat = crate::options::now_ms().div_euclid(1000);
+    let iat = jsrt::date::now_ms().div_euclid(1000);
     let assertion = service_account_assertion(email, key, iat).map_err(Fail::new)?;
     let request = form_request(&[("grant_type", JWT_BEARER), ("assertion", &assertion)], true);
     match gaxios(transport, request, &AUTH_RETRY, ResponseType::Json).await {
         Ok(response) => Ok(token_field(&response.data, "access_token")),
         Err(mut fail) => {
             if let Some(data) = &fail.data
-                && js_truthy(data.get("error"))
+                && jsrt::value::truthy(data.get("error"))
             {
                 fail.message = format!(
                     "{}: {}",
-                    js_string(data.get("error")),
-                    js_string(data.get("error_description"))
+                    jsrt::value::string(data.get("error")),
+                    jsrt::value::string(data.get("error_description"))
                 );
             }
             Err(fail)
@@ -936,13 +907,17 @@ async fn impersonated_token(
     };
     attempt.await.map_err(|mut fail: Fail| {
         let error = fail.data.as_ref().and_then(|d| d.get("error"));
-        let status = error.and_then(|e| e.get("status")).filter(|s| js_truthy(Some(s)));
-        let message = error.and_then(|e| e.get("message")).filter(|m| js_truthy(Some(m)));
+        let status = error
+            .and_then(|e| e.get("status"))
+            .filter(|s| jsrt::value::truthy(Some(s)));
+        let message = error
+            .and_then(|e| e.get("message"))
+            .filter(|m| jsrt::value::truthy(Some(m)));
         fail.message = match (status, message) {
             (Some(status), Some(message)) => format!(
                 "{}: unable to impersonate: {}",
-                js_string(Some(status)),
-                js_string(Some(message))
+                jsrt::value::string(Some(status)),
+                jsrt::value::string(Some(message))
             ),
             _ => format!("unable to impersonate: {}: {}", fail.name, fail.message),
         };
@@ -994,12 +969,4 @@ fn key_file_jwt_error(path: &Path, scoped: bool) -> Fail {
             "Unknown certificate type. Type is determined based on file extension. Current supported extensions are *.json, and *.pem."
         }
     })
-}
-
-/// sha256 hex, for tests comparing a signature without storing it.
-pub fn sha256_hex(text: &str) -> String {
-    sha2::Sha256::digest(text.as_bytes())
-        .iter()
-        .map(|b| format!("{b:02x}"))
-        .collect()
 }

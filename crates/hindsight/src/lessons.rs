@@ -7,7 +7,6 @@ use crate::transport::Transport;
 use kernel::Signal;
 use kernel_apis::MemoryError;
 use kernel_apis::memory::MemoryBackend;
-use kernel_apis::util::sha256_hex;
 use review::ledger::{FATE_DAYS, Fate, FateKind, Lesson};
 use serde_json::json;
 use std::sync::Arc;
@@ -19,7 +18,7 @@ const GUIDE_QUERY: &str = "Which findings does this repository's team accept and
     count behind it. Only patterns seen in more than one finding.";
 
 fn repo_identity(repo: &str) -> String {
-    sha256_hex(repo.to_lowercase().as_bytes())[..16].to_string()
+    jsrt::hash::sha256_hex(repo.to_lowercase().as_bytes())[..16].to_string()
 }
 
 pub struct HindsightLessons {
@@ -118,7 +117,8 @@ impl HindsightLessons {
         }
         let signal = Signal::new();
         for (document_id, content) in items {
-            let operation = sha256_hex(format!("{document_id}:{}", (self.now)()).as_bytes())[..32].to_string();
+            let operation =
+                jsrt::hash::sha256_hex(format!("{document_id}:{}", (self.now)()).as_bytes())[..32].to_string();
             let request = json!({
                 "async": true,
                 "operation_id": operation,

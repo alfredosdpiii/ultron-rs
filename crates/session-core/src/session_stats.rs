@@ -15,11 +15,12 @@
 mod external_root;
 
 use crate::durable_store::{SharedSession, lock as lock_session};
+use jsrt::sync;
 use regex::Regex;
 use serde_json::{Map, Value, json};
 use session_journal::Write;
 use std::collections::HashMap;
-use std::sync::{Arc, Condvar, LazyLock, Mutex, MutexGuard, PoisonError};
+use std::sync::{Arc, Condvar, LazyLock, Mutex, PoisonError};
 use std::time::Duration;
 
 /// The module name: the session value `ultron.module/stats`.
@@ -117,15 +118,6 @@ pub fn stats_lane(lane: &str) -> &'static str {
     }
 }
 
-/// A count as JSON: an integer when it is one (as JavaScript prints it), else the number.
-fn num(n: f64) -> Value {
-    if n.fract() == 0.0 && n.abs() < 9_007_199_254_740_992.0 {
-        json!(n as i64)
-    } else {
-        json!(n)
-    }
-}
-
 fn count(value: Option<&Value>) -> f64 {
     match value.and_then(Value::as_f64) {
         Some(n) if n.is_finite() && n >= 0.0 => n,
@@ -137,20 +129,12 @@ fn object(value: Option<&Value>) -> Option<&Map<String, Value>> {
     value.and_then(Value::as_object)
 }
 
-/// A map's entries in JavaScript's enumeration order (array-index keys first, ascending).
-fn entries(map: &Map<String, Value>) -> Vec<(&String, &Value)> {
-    config::json::js_key_order(map)
-        .into_iter()
-        .map(|k| (k, &map[k]))
-        .collect()
-}
-
 fn counts(value: Option<&Value>) -> Value {
     let mut out = Map::new();
     if let Some(map) = object(value) {
-        for (key, item) in entries(map) {
+        for (key, item) in jsrt::json::object_entries(map) {
             if count(Some(item)) > 0.0 {
-                out.insert(key.clone(), num(count(Some(item))));
+                out.insert(key.clone(), jsrt::json::number(count(Some(item))));
             }
         }
     }
@@ -160,7 +144,7 @@ fn counts(value: Option<&Value>) -> Value {
 fn strings(value: Option<&Value>) -> Value {
     let mut out = Map::new();
     if let Some(map) = object(value) {
-        for (key, item) in entries(map) {
+        for (key, item) in jsrt::json::object_entries(map) {
             if let Some(text) = item.as_str() {
                 out.insert(key.clone(), json!(text));
             }
@@ -211,16 +195,16 @@ pub fn parse_session_stats(saved: &Value) -> Option<Value> {
     let cells_of = |name: &str| {
         let c = cells.as_ref().and_then(|c| part(c.get(name)));
         json!({
-            "count": num(count(c.as_ref().and_then(|c| c.get("count")))),
-            "failed": num(count(c.as_ref().and_then(|c| c.get("failed")))),
+            "count": jsrt::json::number(count(c.as_ref().and_then(|c| c.get("count")))),
+            "failed": jsrt::json::number(count(c.as_ref().and_then(|c| c.get("failed")))),
             "apis": counts(c.as_ref().and_then(|c| c.get("apis"))),
         })
     };
     let mut guards = Map::new();
     if let Some(map) = object(item.get("guards")) {
-        for (name, value) in entries(map) {
+        for (name, value) in jsrt::json::object_entries(map) {
             let value = part(Some(value));
-            let g = |k: &str| num(count(value.as_ref().and_then(|v| v.get(k))));
+            let g = |k: &str| jsrt::json::number(count(value.as_ref().and_then(|v| v.get(k))));
             guards.insert(
                 name.clone(),
                 json!({
@@ -235,9 +219,9 @@ pub fn parse_session_stats(saved: &Value) -> Option<Value> {
         }
     }
     let nudges = part(item.get("nudges"));
-    let nudge = |k: &str| num(count(nudges.as_ref().and_then(|n| n.get(k))));
+    let nudge = |k: &str| jsrt::json::number(count(nudges.as_ref().and_then(|n| n.get(k))));
     let turns = part(item.get("externalTurns"));
-    let turn = |k: &str| num(count(turns.as_ref().and_then(|t| t.get(k))));
+    let turn = |k: &str| jsrt::json::number(count(turns.as_ref().and_then(|t| t.get(k))));
     let root = if item.get("root").and_then(Value::as_str) == Some("external") {
         "external"
     } else {
@@ -246,14 +230,14 @@ pub fn parse_session_stats(saved: &Value) -> Option<Value> {
     Some(json!({
         "version": STATS_VERSION,
         "root": root,
-        "since": num(count(item.get("since"))),
-        "updatedAt": num(count(item.get("updatedAt"))),
+        "since": jsrt::json::number(count(item.get("since"))),
+        "updatedAt": jsrt::json::number(count(item.get("updatedAt"))),
         "cells": {"root": cells_of("root"), "subagents": cells_of("subagents"), "other": cells_of("other")},
         "hostCalls": counts(item.get("hostCalls")),
-        "secretsMasked": num(count(item.get("secretsMasked"))),
+        "secretsMasked": jsrt::json::number(count(item.get("secretsMasked"))),
         "guards": guards,
         "nudges": {"toolRounds": nudge("toolRounds"), "wait": nudge("wait"), "skill": nudge("skill")},
-        "usageLimitBlocks": num(count(item.get("usageLimitBlocks"))),
+        "usageLimitBlocks": jsrt::json::number(count(item.get("usageLimitBlocks"))),
         "merges": strings(item.get("merges")),
         "childModels": strings(item.get("childModels")),
         "externalTurns": {"count": turn("count"), "wallMs": turn("wallMs")},
@@ -345,10 +329,6 @@ struct Shared {
     flush_after: Duration,
 }
 
-fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
-    mutex.lock().unwrap_or_else(PoisonError::into_inner)
-}
-
 /// `SessionStatsRecorder`: counts in memory and saves the document shortly after a change.
 pub struct SessionStats {
     shared: Arc<Shared>,
@@ -357,13 +337,13 @@ pub struct SessionStats {
 impl Drop for SessionStats {
     fn drop(&mut self) {
         // A scheduled save of a recorder nobody holds is not waited for.
-        lock(&self.shared.state).timer = false;
+        sync::lock(&self.shared.state).timer = false;
         self.shared.wake.notify_all();
     }
 }
 
 fn add(value: &mut Value, n: f64) {
-    *value = num(count(Some(value)) + n);
+    *value = jsrt::json::number(count(Some(value)) + n);
 }
 
 /// `keep(map, key, value)`: `key` as the newest entry of a bounded map (the oldest past [`MAX_KEYS`] are dropped).
@@ -414,7 +394,7 @@ impl SessionStats {
     /// applied to what was stored. The session keeps the kind of root it has now.
     pub fn attach(&self, store: Arc<dyn StatsStore>) {
         let read = store.read();
-        let mut state = lock(&self.shared.state);
+        let mut state = sync::lock(&self.shared.state);
         if state.store.is_some() || state.early.is_none() {
             return;
         }
@@ -438,7 +418,7 @@ impl SessionStats {
     }
 
     fn change(&self, change: impl Fn(&mut Value) + Send + 'static) {
-        let mut state = lock(&self.shared.state);
+        let mut state = sync::lock(&self.shared.state);
         if state.closed {
             return;
         }
@@ -459,7 +439,7 @@ impl SessionStats {
         state.timer = true;
         let shared = self.shared.clone();
         std::thread::spawn(move || {
-            let state = lock(&shared.state);
+            let state = sync::lock(&shared.state);
             let (mut state, _) = shared
                 .wake
                 .wait_timeout_while(state, shared.flush_after, |s| s.timer)
@@ -570,7 +550,7 @@ impl SessionStats {
     /// A turn of an external root began (Claude Code's UserPromptSubmit, or its first cell).
     pub fn external_turn_started(&self, turn: &str) {
         {
-            let mut state = lock(&self.shared.state);
+            let mut state = sync::lock(&self.shared.state);
             if state.open_turns.contains_key(turn) {
                 return;
             }
@@ -582,7 +562,7 @@ impl SessionStats {
 
     pub fn external_turn_ended(&self, turn: &str) {
         let elapsed = {
-            let mut state = lock(&self.shared.state);
+            let mut state = sync::lock(&self.shared.state);
             let Some(started) = state.open_turns.remove(turn) else {
                 return;
             };
@@ -593,7 +573,7 @@ impl SessionStats {
 
     /// The counters as they are now, saved or not.
     pub fn snapshot(&self) -> Value {
-        let state = lock(&self.shared.state);
+        let state = sync::lock(&self.shared.state);
         let mut document = state.document.clone();
         for change in state.early.iter().flatten() {
             change(&mut document);
@@ -604,7 +584,7 @@ impl SessionStats {
     /// Save unsaved changes now. Never fails: a store that refuses the write leaves them for the next change.
     pub fn flush(&self) {
         {
-            let mut state = lock(&self.shared.state);
+            let mut state = sync::lock(&self.shared.state);
             state.timer = false;
         }
         self.shared.wake.notify_all();
@@ -613,12 +593,12 @@ impl SessionStats {
 
     /// Save and stop recording (open external turns end now).
     pub fn close(&self) {
-        let open: Vec<String> = lock(&self.shared.state).open_turns.keys().cloned().collect();
+        let open: Vec<String> = sync::lock(&self.shared.state).open_turns.keys().cloned().collect();
         for turn in open {
             self.external_turn_ended(&turn);
         }
         self.flush();
-        let mut state = lock(&self.shared.state);
+        let mut state = sync::lock(&self.shared.state);
         state.closed = true;
         state.timer = false;
         drop(state);
@@ -627,9 +607,9 @@ impl SessionStats {
 }
 
 fn save(shared: &Shared) {
-    let _one_at_a_time = lock(&shared.writes);
+    let _one_at_a_time = sync::lock(&shared.writes);
     let (store, document) = {
-        let mut state = lock(&shared.state);
+        let mut state = sync::lock(&shared.state);
         let Some(store) = state.store.clone() else {
             return;
         };
@@ -641,6 +621,6 @@ fn save(shared: &Shared) {
     };
     if store.write(&document).is_err() {
         // The counters stay in memory; the next change tries again.
-        lock(&shared.state).dirty = true;
+        sync::lock(&shared.state).dirty = true;
     }
 }

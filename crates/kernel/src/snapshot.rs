@@ -7,11 +7,9 @@
 //! `{"format":"ultron-rlm-snapshot-signature","version":1,"alg":"HMAC-SHA256","hmac":"<hex>"}\n<content>`; the HMAC
 //! covers the content bytes exactly.
 
-use crate::config::is_js_space;
 use crate::{CellError, ExecutionResult, Status};
 use serde::Serialize;
 use serde_json::{Map, Value};
-use sha2::{Digest, Sha256};
 use std::io::Write;
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::Path;
@@ -35,10 +33,6 @@ impl std::fmt::Display for SnapshotAuthError {
 
 impl std::error::Error for SnapshotAuthError {}
 
-pub(crate) fn hex(bytes: &[u8]) -> String {
-    bytes.iter().map(|byte| format!("{byte:02x}")).collect()
-}
-
 /// Lowercase hex of exactly 64 digits, as `/^[0-9a-f]{64}$/` accepts.
 fn hex64(text: &str) -> Option<Vec<u8>> {
     if text.len() != 64
@@ -54,25 +48,8 @@ fn hex64(text: &str) -> Option<Vec<u8>> {
         .collect()
 }
 
-pub fn sha256_hex(content: &[u8]) -> String {
-    hex(&Sha256::digest(content))
-}
-
-fn hmac_sha256(key: &[u8], content: &[u8]) -> [u8; 32] {
-    let mut block = [0u8; 64];
-    if key.len() > block.len() {
-        block[..32].copy_from_slice(&Sha256::digest(key));
-    } else {
-        block[..key.len()].copy_from_slice(key);
-    }
-    let pad = |byte: u8| block.map(|value| value ^ byte);
-    let inner = Sha256::new().chain_update(pad(0x36)).chain_update(content).finalize();
-    Sha256::new()
-        .chain_update(pad(0x5c))
-        .chain_update(inner)
-        .finalize()
-        .into()
-}
+// ponytail: kept as a re-export for the acceptance tests; new code calls `jsrt::hash::sha256_hex`.
+pub use jsrt::hash::sha256_hex;
 
 /// The signed file: a signature line over `content`, then `content`.
 pub fn sign_snapshot(key: &[u8], content: &[u8]) -> Vec<u8> {
@@ -80,7 +57,10 @@ pub fn sign_snapshot(key: &[u8], content: &[u8]) -> Vec<u8> {
     line.insert("format".into(), SIGNATURE_FORMAT.into());
     line.insert("version".into(), 1.into());
     line.insert("alg".into(), "HMAC-SHA256".into());
-    line.insert("hmac".into(), hex(&hmac_sha256(key, content)).into());
+    line.insert(
+        "hmac".into(),
+        jsrt::hash::hex(&jsrt::hash::hmac_sha256(key, content)).into(),
+    );
     let mut signed = Value::Object(line).to_string().into_bytes();
     signed.push(b'\n');
     signed.extend_from_slice(content);
@@ -108,7 +88,7 @@ pub fn verify_snapshot(key: &[u8], raw: &[u8]) -> Result<String, SnapshotAuthErr
         ));
     };
     let content = &raw[newline.map_or(raw.len(), |newline| newline + 1)..];
-    let expected = hmac_sha256(key, content);
+    let expected = jsrt::hash::hmac_sha256(key, content);
     let actual = hex64(signature).unwrap_or_default();
     // Constant time over the digest length.
     let differs = actual.len() != expected.len()
@@ -123,11 +103,11 @@ pub fn verify_snapshot(key: &[u8], raw: &[u8]) -> Result<String, SnapshotAuthErr
                 .into(),
         ));
     }
-    Ok(sha256_hex(content))
+    Ok(jsrt::hash::sha256_hex(content))
 }
 
 pub(crate) fn parse_key(text: &str, path: &str) -> Result<Vec<u8>, String> {
-    hex64(text.trim_matches(is_js_space)).ok_or_else(|| {
+    hex64(jsrt::string::trim(text)).ok_or_else(|| {
         format!(
             "RLM snapshot key {path} is malformed; delete it to create a new key (existing snapshots become unrestorable)"
         )
@@ -147,7 +127,7 @@ pub fn load_or_create_snapshot_key(agent_dir: &Path) -> Result<Vec<u8>, String> 
         Ok(mut file) => {
             let mut key = [0u8; KEY_BYTES];
             getrandom::fill(&mut key).map_err(|error| error.to_string())?;
-            file.write_all(format!("{}\n", hex(&key)).as_bytes())
+            file.write_all(format!("{}\n", jsrt::hash::hex(&key)).as_bytes())
                 .map_err(|error| error.to_string())?;
         }
         Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}

@@ -73,12 +73,12 @@ impl RootBranches {
 
     /// A run starts: appends wait for its boundaries.
     pub(super) fn run_started(&self) {
-        *lock(&self.running) = true;
+        *sync::lock(&self.running) = true;
     }
 
     /// Place every waiting entry at the branch's tip now. `ended`: the run is over, later appends join at once.
     pub(super) fn place(&self, ended: bool) -> Result<(), String> {
-        let mut running = lock(&self.running);
+        let mut running = sync::lock(&self.running);
         if ended {
             *running = false;
         }
@@ -103,7 +103,7 @@ impl ContextBranches for RootBranches {
 
     fn append_custom(&self, lane: &str, custom_type: &str, data: &Value) -> Result<String, String> {
         root_only(lane)?;
-        let running = lock(&self.running);
+        let running = sync::lock(&self.running);
         let mut session = lock_session(&self.session);
         let id = session_journal::lock_clock(&session.clock()).next_id();
         let waiting = json!({"customType": custom_type, "data": data});

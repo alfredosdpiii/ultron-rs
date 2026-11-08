@@ -223,7 +223,7 @@ async fn ai_google_auth_certificate_source_exchanges_over_mtls() {
         .map(url_decode)
         .unwrap();
     let chain: Vec<String> = serde_json::from_str(&subject).unwrap();
-    assert_eq!(chain, vec![ai::jsutil::btoa(&pki.workload_der)]);
+    assert_eq!(chain, vec![jsrt::base64::encode(&pki.workload_der)]);
     assert!(
         seen.request.starts_with("POST /v1/token HTTP/1.1\r\n"),
         "{}",

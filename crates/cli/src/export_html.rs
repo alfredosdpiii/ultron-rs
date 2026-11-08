@@ -3,9 +3,8 @@
 //! file through `session-file`. The page is the package's template with the theme's colors and the session data
 //! (base64 JSON) filled in; the templates are compiled into the binary.
 
-use crate::js::{base64, replace_first};
+use crate::js::replace_first;
 use serde_json::{Map, Value, json};
-use session_file::js::{iso_string, stringify};
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
@@ -58,7 +57,7 @@ fn adjust_brightness(color: &str, factor: f64) -> String {
     let Some((r, g, b)) = parse_color(color) else {
         return color.to_string();
     };
-    let adjust = |c: u8| crate::js::round(f64::from(c) * factor).clamp(0.0, 255.0);
+    let adjust = |c: u8| jsrt::number::round(f64::from(c) * factor).clamp(0.0, 255.0);
     format!("rgb({}, {}, {})", adjust(r), adjust(g), adjust(b))
 }
 
@@ -157,7 +156,7 @@ fn page(session_data: &Value, json: &tui::theme::ThemeJson, name: &str) -> Resul
     vars.push(format!("--exportPageBg: {body_bg};"));
     vars.push(format!("--exportCardBg: {container_bg};"));
     vars.push(format!("--exportInfoBg: {info_bg};"));
-    let data = base64(stringify(session_data).as_bytes());
+    let data = jsrt::base64::encode(jsrt::json::stringify(session_data).as_bytes());
     let css = replace_first(TEMPLATE_CSS, "{{THEME_VARS}}", &vars.join("\n      "));
     let css = replace_first(&css, "{{BODY_BG}}", &body_bg);
     let css = replace_first(&css, "{{CONTAINER_BG}}", &container_bg);
@@ -214,8 +213,8 @@ pub fn is_native_session_file(path: &Path) -> bool {
 
 fn safe_integer_at_least(value: Option<&Value>, minimum: f64) -> bool {
     value
-        .and_then(Value::as_f64)
-        .is_some_and(|n| n.fract() == 0.0 && n.abs() <= 9_007_199_254_740_991.0 && n >= minimum)
+        .and_then(jsrt::number::safe_integer)
+        .is_some_and(|n| n as f64 >= minimum)
 }
 
 /// `isJsonlStorageHeader`.
@@ -272,7 +271,7 @@ fn parse_transaction(line: &str, state: &mut ReplayState) -> Result<Vec<Map<Stri
         }
         let id = write
             .get("id")
-            .map(crate::js::string)
+            .map(|v| jsrt::value::string(Some(v)))
             .unwrap_or_else(|| "undefined".into());
         if state.ids.contains(&id) || ids.contains(&id) {
             return Err(());
@@ -281,7 +280,7 @@ fn parse_transaction(line: &str, state: &mut ReplayState) -> Result<Vec<Map<Stri
             match write.get("parentId") {
                 Some(Value::Null) => {}
                 parent => {
-                    let parent = parent.map(crate::js::string).unwrap_or_else(|| "undefined".into());
+                    let parent = jsrt::value::string(parent);
                     if !state.entries.contains_key(&parent) && !entry_ids.contains(&parent) {
                         return Err(());
                     }
@@ -311,15 +310,18 @@ impl ReplayState {
             match write["kind"].as_str() {
                 Some("entry") => {
                     write.shift_remove("kind");
-                    let id = crate::js::string(&write["id"]);
+                    let id = jsrt::value::string(Some(&write["id"]));
                     self.ids.insert(id.clone());
                     self.entries.insert(id, write);
                 }
                 Some("usage") => {
-                    self.ids.insert(crate::js::string(&write["id"]));
+                    self.ids.insert(jsrt::value::string(Some(&write["id"])));
                 }
                 Some("value") => {
-                    let key = (crate::js::string(&write["namespace"]), crate::js::string(&write["key"]));
+                    let key = (
+                        jsrt::value::string(Some(&write["namespace"])),
+                        jsrt::value::string(Some(&write["key"])),
+                    );
                     if write["op"].as_str() == Some("delete") {
                         self.values.remove(&key);
                     } else {
@@ -335,7 +337,9 @@ impl ReplayState {
 }
 
 fn iso(value: Option<&Value>) -> Value {
-    Value::String(iso_string(value.and_then(Value::as_f64).unwrap_or(0.0) as i64))
+    Value::String(jsrt::date::iso_string(
+        value.and_then(Value::as_f64).unwrap_or(0.0) as i64
+    ))
 }
 
 /// `toSessionEntry`: a native entry as the Pi exporter's entry shape; an unknown type is `null`.
@@ -414,7 +418,7 @@ fn native_session_data(path: &Path) -> Result<Value, String> {
     if header["storageVersion"].as_f64() != Some(1.0) {
         return Err(format!(
             "Session {id} uses unsupported storage version {}",
-            crate::js::string(&header["storageVersion"])
+            jsrt::value::string(Some(&header["storageVersion"]))
         ));
     }
     let mut state = ReplayState {
@@ -447,7 +451,7 @@ fn native_session_data(path: &Path) -> Result<Value, String> {
                 Some(parent) => {
                     current = state
                         .entries
-                        .get(&crate::js::string(parent))
+                        .get(&jsrt::value::string(Some(parent)))
                         .ok_or_else(|| "Corrupt branch: missing parent".to_string())?;
                 }
             }

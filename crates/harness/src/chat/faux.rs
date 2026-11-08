@@ -146,13 +146,6 @@ pub fn rlm_call(code: &str, id: &str) -> AssistantMessage {
     )
 }
 
-fn now_ms() -> i64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|elapsed| elapsed.as_millis() as i64)
-        .unwrap_or(0)
-}
-
 fn content_text(content: &UserMessageContent) -> String {
     match content {
         UserMessageContent::Text(text) => text.clone(),
@@ -319,7 +312,7 @@ impl Faux {
         message.provider = self.model.provider.clone();
         message.model = self.model.id.clone();
         if message.timestamp == DEFAULT_TIMESTAMP {
-            message.timestamp = now_ms();
+            message.timestamp = jsrt::date::now_ms();
         }
         Ok(with_usage(message, context))
     }
@@ -328,7 +321,7 @@ impl Faux {
         AssistantMessage {
             stop_reason: StopReason::Aborted,
             error_message: Some("Request was aborted".into()),
-            timestamp: now_ms(),
+            timestamp: jsrt::date::now_ms(),
             ..partial.clone()
         }
     }
@@ -479,7 +472,7 @@ impl Faux {
 
     fn error(&self, text: &str, context: &TranscriptContext) -> AssistantMessage {
         let mut message = error_message(text);
-        message.timestamp = now_ms();
+        message.timestamp = jsrt::date::now_ms();
         with_usage(message, context)
     }
 }
@@ -540,7 +533,7 @@ impl Models for Faux {
             };
             let deferred = AssistantMessage {
                 deferred: Some(handle),
-                timestamp: now_ms(),
+                timestamp: jsrt::date::now_ms(),
                 ..message(Vec::new(), StopReason::Deferred)
             };
             return Ok(self.stream_deltas(deferred, signal, on_event));
@@ -574,7 +567,7 @@ impl Models for Faux {
                 entry.pending_fetches -= 1;
                 return Ok(AssistantMessage {
                     deferred: Some(entry.handle.clone()),
-                    timestamp: now_ms(),
+                    timestamp: jsrt::date::now_ms(),
                     ..message(Vec::new(), StopReason::Deferred)
                 });
             }

@@ -32,7 +32,6 @@ use serde_json::Value;
 use std::collections::HashMap;
 use std::fmt;
 use std::sync::{Arc, Condvar, Mutex, MutexGuard};
-use std::time::{SystemTime, UNIX_EPOCH};
 
 /// A Session operation failure. `name()` is the upstream error class name.
 #[derive(Clone, Debug, PartialEq)]
@@ -162,9 +161,7 @@ pub(crate) struct LoadedDocument {
 
 pub(crate) type Loaded = Arc<Mutex<LoadedDocument>>;
 
-pub(crate) fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
-    mutex.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
-}
+pub(crate) use jsrt::sync::lock;
 
 /// What the line guards: the backend and whether it has been closed.
 pub(crate) struct LineState {
@@ -315,10 +312,7 @@ impl Subscription {
 }
 
 fn wall_clock() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|elapsed| elapsed.as_millis() as u64)
-        .unwrap_or(0)
+    jsrt::date::now_ms() as u64
 }
 
 impl Session {

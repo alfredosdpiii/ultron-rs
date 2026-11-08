@@ -8,7 +8,6 @@ use crate::Env;
 use crate::link::Link;
 use serde_json::{Map, Value, json};
 use session_core::core::Op;
-use session_file::Env as _;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -42,25 +41,6 @@ pub fn gateway_host(gateway: &str) -> String {
         },
         Err(_) => gateway.to_string(),
     }
-}
-
-/// `uuidv7()`: 48 bits of Unix milliseconds, the version and variant bits, the rest random.
-fn uuid_v7(now_ms: i64) -> String {
-    let random = session_file::SystemEnv.random_uuid().replace('-', "");
-    let mut hex = format!("{:012x}", now_ms.max(0) as u64 & 0xffff_ffff_ffff);
-    hex.push('7');
-    hex.push_str(&random[13..16]);
-    let variant = u8::from_str_radix(&random[16..17], 16).unwrap_or(0) & 0x3 | 0x8;
-    hex.push_str(&format!("{variant:x}"));
-    hex.push_str(&random[17..32]);
-    format!(
-        "{}-{}-{}-{}-{}",
-        &hex[0..8],
-        &hex[8..12],
-        &hex[12..16],
-        &hex[16..20],
-        &hex[20..32]
-    )
 }
 
 /// Node's `process.platform` and `process.arch` names for this build.
@@ -305,7 +285,7 @@ pub fn provider_info(env: &Env, provider: &str, runtime_key: bool) -> telemetry:
 
 /// `buildBundle`: the report of the attached session as the user chose it.
 pub fn build_bundle(link: &Link, env: &Env, request: &Request) -> Result<BugReportBundle, String> {
-    let now = session_file::SystemEnv.now_ms();
+    let now = jsrt::date::now_ms();
     let described = link.op(&Op::Describe)?.unwrap_or_default();
     let state = link.op(&Op::State)?.unwrap_or_default();
     let session_id = described["sessionId"].as_str().unwrap_or_default().to_string();
@@ -319,8 +299,8 @@ pub fn build_bundle(link: &Link, env: &Env, request: &Request) -> Result<BugRepo
         .map(|p| provider_info(env, p, request.runtime_key));
     let vars: BTreeMap<String, String> = std::env::vars().collect();
     let host = host();
-    let id = uuid_v7(now);
-    let created_at = session_file::js::iso_string(now);
+    let id = jsrt::random::uuid_v7(now);
+    let created_at = jsrt::date::iso_string(now);
     let global = Value::Object(settings.global_settings().clone());
     let project = Value::Object(settings.project_settings().clone());
     let messages = described["messages"].as_array().map_or(0, Vec::len) as u64;
@@ -354,7 +334,7 @@ pub fn build_bundle(link: &Link, env: &Env, request: &Request) -> Result<BugRepo
     let session = if request.include_session {
         let share = link.op(&Op::ShareContext)?.unwrap_or_default();
         let branch = described["entries"].as_array().cloned().unwrap_or_default();
-        let share_id: String = session_file::SystemEnv.random_uuid().chars().take(8).collect();
+        let share_id: String = jsrt::random::uuid_v4().chars().take(8).collect();
         Some(session_jsonl(
             &session_id,
             &cwd,
@@ -403,7 +383,7 @@ pub fn upload(
     let url = url::Url::parse(gateway)
         .and_then(|base| base.join("/v1/bug-reports"))
         .map_err(|e| e.to_string())?;
-    let boundary = format!("----ultron-bug-report-{}", session_file::SystemEnv.random_uuid());
+    let boundary = format!("----ultron-bug-report-{}", jsrt::random::uuid_v4());
     let body = multipart(&telemetry::bug_report::bug_report_files(bundle), &boundary);
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -446,7 +426,7 @@ pub fn upload_answer(status: u16, status_text: &str, body: &str) -> Result<Strin
     {
         return Ok(id.to_string());
     }
-    let truthy = |v: &Value| session_file::js::truthy(Some(v));
+    let truthy = |v: &Value| jsrt::value::truthy(Some(v));
     let detail = (json.is_object() && !truthy(&json["ok"]))
         .then(|| {
             [&json["description"], &json["error"]]
@@ -469,8 +449,8 @@ pub fn upload_answer(status: u16, status_text: &str, body: &str) -> Result<Strin
 pub fn export(bundle: &BugReportBundle, env: &Env) -> Result<PathBuf, String> {
     let id = bundle.metadata["id"].as_str().unwrap_or_default();
     let path = env.cwd.join(telemetry::bug_report::bug_report_archive_file_name(id));
-    let now = session_file::SystemEnv.now_ms();
-    let zone = crate::localtime::Zone::from_env((env.var)("TZ").as_deref());
+    let now = jsrt::date::now_ms();
+    let zone = jsrt::localtime::Zone::from_env((env.var)("TZ").as_deref());
     let fields = zone.fields(now as f64);
     let offset = zone.offset(now as f64);
     let at = telemetry::zip::LocalDateTime {
@@ -623,7 +603,8 @@ mod tests {
 
     #[test]
     fn cli_bug_report_uuid_v7_has_the_time_version_and_variant() {
-        let id = uuid_v7(0x0123_4567_89ab);
+        // The report id is `jsrt::random::uuid_v7`; an owned generator keeps the process-wide one's clock out of it.
+        let id = jsrt::random::Uuidv7::new().generate(None, 0x0123_4567_89ab, jsrt::random::bytes());
         assert_eq!(id.len(), 36);
         assert!(id.starts_with("01234567-89ab-7"), "{id}");
         assert!(matches!(&id[19..20], "8" | "9" | "a" | "b"), "{id}");

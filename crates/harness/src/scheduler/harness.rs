@@ -3,7 +3,6 @@
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use durable::{
     ConversationId, ConversationOwnership, Doc, Owner, ROOT_CONVERSATION_ID, Session, SessionEnd, SessionError,
@@ -94,10 +93,7 @@ impl HarnessOptions {
 }
 
 fn wall_clock() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|elapsed| elapsed.as_millis() as u64)
-        .unwrap_or(0)
+    jsrt::date::now_ms() as u64
 }
 
 /// `onReport` that cannot fail: it is the last place an error goes, so its own panic is dropped.

@@ -12,7 +12,6 @@
 //! installed from a registry at run time.
 
 use crate::diagram_svg::{self, DiagramPalette};
-use crate::util::{fields, sha256_hex};
 use crate::{ApiModule, Request};
 use resvg::usvg::fontdb;
 use serde_json::{Value, json};
@@ -112,7 +111,7 @@ pub fn find_node(path: Option<&str>) -> Option<PathBuf> {
 pub fn pele_dir_name() -> String {
     let mut bytes = PELE_JS.to_vec();
     bytes.extend_from_slice(RUNNER);
-    format!("pele-{}", &sha256_hex(&bytes)[..16])
+    format!("pele-{}", &jsrt::hash::sha256_hex(&bytes)[..16])
 }
 
 /// Pele, its license and the runner under `cache_dir` (written once; a complete directory is reused): the runner's
@@ -129,7 +128,7 @@ pub fn install_pele(cache_dir: &Path) -> Result<PathBuf, String> {
     }
     let failed = |e: std::io::Error| format!("diagram.mermaid: cannot unpack Pele into {}: {e}", cache_dir.display());
     std::fs::create_dir_all(cache_dir).map_err(failed)?;
-    let staging = cache_dir.join(format!(".{}-{}", pele_dir_name(), crate::util::uuid()));
+    let staging = cache_dir.join(format!(".{}-{}", pele_dir_name(), jsrt::random::uuid_v4()));
     std::fs::create_dir_all(&staging).map_err(failed)?;
     let written = [("pele.mjs", PELE_JS), ("LICENSE", PELE_LICENSE), ("runner.mjs", RUNNER)]
         .iter()
@@ -360,7 +359,7 @@ impl DiagramModule {
     }
 
     fn mermaid(&self, request: &Request<'_>) -> Result<Value, String> {
-        fields(request.payload, &["text", "theme", "show", "to_model", "path"])?;
+        jsrt::payload::fields(request.payload, &["text", "theme", "show", "to_model", "path"])?;
         let text = match request.payload.get("text") {
             Some(Value::String(text)) if !text.trim().is_empty() => text.as_str(),
             _ => return Err("diagram.mermaid text must be a non-empty string".into()),

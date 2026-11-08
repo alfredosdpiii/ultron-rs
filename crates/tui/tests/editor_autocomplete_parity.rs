@@ -6,12 +6,12 @@ use std::cell::RefCell;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
+use jsrt::collate::locale_compare;
 use serde_json::{Value, json};
 use tui::autocomplete::{
     AutocompleteItem, AutocompleteProvider, AutocompleteSuggestions, CombinedAutocompleteProvider, Completion,
     SlashCommand, SuggestionsJob,
 };
-use tui::collate::locale_compare;
 use tui::components::Component;
 use tui::editor::Editor;
 use tui::keybindings::{KeybindingsManager, tui_keybindings};

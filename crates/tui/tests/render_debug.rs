@@ -5,7 +5,7 @@
 
 use std::path::Path;
 
-use tui::render_debug::{LocalStamp, RenderDebug, iso_time, render_dump_name, write_log_path};
+use tui::render_debug::{LocalStamp, RenderDebug, render_dump_name, write_log_path};
 use tui::viewport::{FramePlan, ViewportRenderer};
 
 const R: &str = "\x1b[0m\x1b]8;;\x07";
@@ -46,11 +46,7 @@ fn tui_render_debug_write_log_path_names_a_file_in_a_directory() {
 }
 
 #[test]
-fn tui_render_debug_iso_time_matches_date_to_iso_string() {
-    assert_eq!(iso_time(0), "1970-01-01T00:00:00.000Z");
-    assert_eq!(iso_time(1_729_000_000_123), "2024-10-15T13:46:40.123Z");
-    assert_eq!(iso_time(1_792_224_000_999), "2026-10-17T08:00:00.999Z");
-    assert_eq!(iso_time(-1), "1969-12-31T23:59:59.999Z");
+fn tui_render_debug_dump_name_is_base36_of_the_clock() {
     assert_eq!(render_dump_name(17, 123_456_789), "render-17-21i3v9.log");
 }
 
@@ -234,6 +230,24 @@ fn tui_render_debug_files_are_written_by_the_background_writer() {
     assert!(RenderDebug::from_env(&none, None, &logs, &dumps, Box::new(|| 0)).is_none());
     let write_only = RenderDebug::from_env(&none, Some(write_log), &logs, &dumps, Box::new(|| 0)).unwrap();
     assert!(!write_only.traces_renders());
+    let _ = std::fs::remove_dir_all(&temp);
+}
+
+/// The redraw log stamps times as `toISOString` does, with the expanded `+YYYYYY` year past 9999 (node 26:
+/// `new Date(253402300800000).toISOString()` is `+010000-01-01T00:00:00.000Z`).
+#[test]
+fn tui_render_debug_redraw_log_stamps_expanded_years_like_to_iso_string() {
+    let temp = tempfile_dir();
+    let logs = temp.join("agent");
+    let env = |name: &str| (name == "PI_TUI_DEBUG_REDRAW").then(|| "1".to_string());
+    let debug =
+        RenderDebug::from_env(&env, None, &logs, &temp.join("dumps"), Box::new(|| 253_402_300_800_000)).expect("on");
+    debug.redraw("fullRender: first render");
+    debug.finish();
+    assert_eq!(
+        std::fs::read_to_string(logs.join("pi-tui-debug.log")).unwrap(),
+        "[+010000-01-01T00:00:00.000Z] fullRender: first render\n"
+    );
     let _ = std::fs::remove_dir_all(&temp);
 }
 

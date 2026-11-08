@@ -41,7 +41,7 @@ impl RootSink {
 
     /// A sink on the system clock.
     pub fn system() -> RootSink {
-        RootSink::new(Arc::new(|| session_core::lane::now_ms().max(0) as u64))
+        RootSink::new(Arc::new(|| jsrt::date::now_ms().max(0) as u64))
     }
 
     fn state(&self) -> std::sync::MutexGuard<'_, State> {

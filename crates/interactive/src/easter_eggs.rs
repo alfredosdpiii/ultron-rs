@@ -348,7 +348,7 @@ impl EarendilAnnouncement {
             hyperlinks: false,
         };
         let mut image = tui::image::Image::new(
-            &base64_encode(IMAGE),
+            &jsrt::base64::encode(IMAGE),
             "image/png",
             Box::new(move |s: &str| fg(&muted, "muted", s)),
             caps,
@@ -357,24 +357,6 @@ impl EarendilAnnouncement {
         image.filename = Some(IMAGE_FILENAME.into());
         EarendilAnnouncement { theme, image }
     }
-}
-
-fn base64_encode(bytes: &[u8]) -> String {
-    const TABLE: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-    let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
-    for chunk in bytes.chunks(3) {
-        let n = (u32::from(chunk[0]) << 16)
-            | (u32::from(*chunk.get(1).unwrap_or(&0)) << 8)
-            | u32::from(*chunk.get(2).unwrap_or(&0));
-        for i in 0..4 {
-            if i <= chunk.len() {
-                out.push(TABLE[((n >> (18 - 6 * i)) & 63) as usize] as char);
-            } else {
-                out.push('=');
-            }
-        }
-    }
-    out
 }
 
 impl Component for EarendilAnnouncement {
@@ -392,19 +374,5 @@ impl Component for EarendilAnnouncement {
         lines.push(String::new());
         lines.push(border);
         lines
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn interactive_easter_eggs_base64_matches_the_standard_alphabet() {
-        assert_eq!(base64_encode(b""), "");
-        assert_eq!(base64_encode(b"f"), "Zg==");
-        assert_eq!(base64_encode(b"fo"), "Zm8=");
-        assert_eq!(base64_encode(b"foo"), "Zm9v");
-        assert_eq!(base64_encode(b"\xff\xfe\xfd\x00"), "//79AA==");
     }
 }

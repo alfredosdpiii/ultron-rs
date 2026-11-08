@@ -11,7 +11,7 @@
 //! The branch itself lives in the session/harness: [`ContextBranches`] is what this module reads and appends.
 //! Entries are the TS `Entry` JSON (`{id, parentId, seq, timestamp, type, ...}`).
 
-use crate::util::{Clock, fields, js_trim, lock, stringify, system_clock, utf16_len, utf16_prefix};
+use crate::util::{Clock, system_clock};
 use crate::{ApiModule, Request};
 use serde_json::{Map, Value, json};
 use std::collections::HashSet;
@@ -47,7 +47,6 @@ const TRIM_HEAD_CHARS: usize = 4096;
 const TRIM_TAIL_CHARS: usize = 1024;
 const STATE_LIST_MAX: usize = 20;
 const KINDS: &[&str] = &["user", "assistant", "tool", "custom", "note", "summary", "compaction"];
-const MAX_SAFE_INTEGER: i64 = 9_007_199_254_740_991;
 
 /// The conversation branches of the session's lanes, as the harness keeps them.
 pub trait ContextBranches: Send + Sync {
@@ -241,13 +240,13 @@ pub fn message_text(message: &Value) -> String {
                             let name = match &part["name"] {
                                 Value::String(name) => name.clone(),
                                 Value::Null if part.get("name").is_none() => "undefined".into(),
-                                other => stringify(other),
+                                other => jsrt::json::stringify(other),
                             };
                             let arguments = match part.get("arguments") {
-                                Some(value) if !value.is_null() => stringify(value),
+                                Some(value) if !value.is_null() => jsrt::json::stringify(value),
                                 _ => "{}".into(),
                             };
-                            format!("{name}({})", utf16_prefix(&arguments, 2000))
+                            format!("{name}({})", jsrt::utf16::head(&arguments, 2000))
                         }
                         Some("image") => "[image]".into(),
                         _ => String::new(),
@@ -267,31 +266,12 @@ pub fn message_text(message: &Value) -> String {
     String::new()
 }
 
-fn js_space(ch: char) -> bool {
-    ch.is_whitespace() || ch == '\u{feff}'
-}
-
 /// `oneLine`: whitespace runs collapsed to one space, trimmed, cut to `max` UTF-16 units with an ellipsis.
 fn one_line(text: &str, max: usize) -> String {
-    let mut flat = String::with_capacity(text.len());
-    let mut space = false;
-    for ch in text.chars() {
-        if js_space(ch) {
-            space = true;
-        } else {
-            if space {
-                flat.push(' ');
-                space = false;
-            }
-            flat.push(ch);
-        }
-    }
-    if space {
-        flat.push(' ');
-    }
-    let flat = js_trim(&flat);
-    if utf16_len(flat) > max {
-        format!("{}…", utf16_prefix(flat, max - 1))
+    let flat = jsrt::string::flatten(text);
+    let flat = flat.as_str();
+    if jsrt::utf16::len(flat) > max {
+        format!("{}…", jsrt::utf16::head(flat, max - 1))
     } else {
         flat.to_string()
     }
@@ -311,8 +291,8 @@ fn entry_bytes(entry: &Value) -> usize {
         Some("message") => {
             let message = &entry["message"];
             match message.get("content") {
-                Some(content) if !content.is_null() => stringify(content).len(),
-                _ => stringify(&Value::String(message_text(message))).len(),
+                Some(content) if !content.is_null() => jsrt::json::stringify(content).len(),
+                _ => jsrt::json::stringify(&Value::String(message_text(message))).len(),
             }
         }
         Some("compaction" | "branch_summary") => entry["summary"].as_str().map_or(0, str::len),
@@ -405,10 +385,10 @@ pub fn collapsed_cell_text(entry_id: &str, original: &str, tasks: &[TaskLine]) -
 
 /// `trimmedResultText`: head and tail of a tool result trimmed before compaction (UTF-16 offsets).
 pub fn trimmed_result_text(entry_id: &str, original: &str) -> String {
-    let units = utf16_len(original);
+    let units = jsrt::utf16::len(original);
     let cut = units as i64 - TRIM_HEAD_CHARS as i64 - TRIM_TAIL_CHARS as i64;
-    let head = utf16_prefix(original, TRIM_HEAD_CHARS);
-    let tail_start = utf16_prefix(original, units.saturating_sub(TRIM_TAIL_CHARS)).len();
+    let head = jsrt::utf16::head(original, TRIM_HEAD_CHARS);
+    let tail_start = jsrt::utf16::head(original, units.saturating_sub(TRIM_TAIL_CHARS)).len();
     format!(
         "{head}\n[... {cut} characters trimmed before compaction; ctx.get(\"{entry_id}\") shows them ...]\n{}",
         &original[tail_start..]
@@ -462,7 +442,7 @@ fn is_omitted(entry: &Value) -> bool {
 
 fn nonempty(value: Option<&Value>, name: &str) -> Result<String, String> {
     match value.and_then(Value::as_str) {
-        Some(text) if !js_trim(text).is_empty() => Ok(text.to_string()),
+        Some(text) if !jsrt::string::trim(text).is_empty() => Ok(text.to_string()),
         _ => Err(format!("{name} must be a nonempty string")),
     }
 }
@@ -514,7 +494,7 @@ type StateKey = (Option<String>, Vec<String>);
 
 /// Whether old tool results are trimmed before a threshold compaction: ULTRON_COMPACTION_TRIM=off disables it.
 pub fn compaction_trim_enabled(value: Option<&str>) -> bool {
-    let raw = value.map(|value| js_trim(value).to_lowercase());
+    let raw = value.map(|value| jsrt::string::trim(value).to_lowercase());
     !matches!(raw.as_deref(), Some("off" | "0" | "false"))
 }
 
@@ -546,16 +526,16 @@ impl ContextControl {
     }
 
     fn known(&self, lane: &str) {
-        lock(&self.tracking).lanes.insert(lane.to_string());
+        jsrt::sync::lock(&self.tracking).lanes.insert(lane.to_string());
     }
 
     fn append(&self, lane: &str, custom_type: &str, data: Value) -> Result<String, String> {
         let id = self.branches.append_custom(lane, custom_type, &data)?;
         // While a turn runs the entry waits for the next boundary; later reads in this cell must already see it.
         if self.branches.tip_id(lane)?.as_deref() != Some(id.as_str()) {
-            lock(&self.pending).push((
+            jsrt::sync::lock(&self.pending).push((
                 lane.to_string(),
-                json!({"id": id, "parentId": null, "seq": MAX_SAFE_INTEGER, "timestamp": (self.clock)(),
+                json!({"id": id, "parentId": null, "seq": jsrt::number::MAX_SAFE_INTEGER, "timestamp": (self.clock)(),
                     "type": "custom", "customType": custom_type, "data": data}),
             ));
         }
@@ -565,7 +545,7 @@ impl ContextControl {
     fn view(&self, lane: &str) -> Result<BranchView, String> {
         let committed = self.branches.entries(lane)?;
         let committed_ids: HashSet<&str> = committed.iter().filter_map(|entry| entry["id"].as_str()).collect();
-        let mut pending = lock(&self.pending);
+        let mut pending = jsrt::sync::lock(&self.pending);
         pending.retain(|(_, entry)| !entry["id"].as_str().is_some_and(|id| committed_ids.contains(id)));
         let mut path = committed;
         path.extend(
@@ -772,19 +752,19 @@ impl ContextControl {
 
     /// Forgotten, pinned and noted items of the root branch (`ctx.state`, the `/rlm` panel).
     pub fn state(&self) -> Result<Value, String> {
-        let pending_ids = lock(&self.pending)
+        let pending_ids = jsrt::sync::lock(&self.pending)
             .iter()
             .filter(|(lane, _)| lane == "main")
             .map(|(_, entry)| entry["id"].as_str().unwrap_or_default().to_string())
             .collect();
         let key = (self.branches.tip_id("main")?, pending_ids);
-        if let Some((cached, state)) = &*lock(&self.state_cache)
+        if let Some((cached, state)) = &*jsrt::sync::lock(&self.state_cache)
             && *cached == key
         {
             return Ok(state.clone());
         }
         let state = self.read_state()?;
-        *lock(&self.state_cache) = Some((key, state.clone()));
+        *jsrt::sync::lock(&self.state_cache) = Some((key, state.clone()));
         Ok(state)
     }
 
@@ -830,17 +810,17 @@ impl ContextControl {
 
     pub fn handle_request(&self, kind: &str, payload: &Map<String, Value>, lane: &str) -> Result<Value, String> {
         if kind == "ctx.state" {
-            fields(payload, &[])?;
+            jsrt::payload::fields(payload, &[])?;
             return self.state();
         }
         self.known(lane);
         let view = self.view(lane)?;
         match kind {
             "ctx.history" => {
-                fields(payload, &["limit", "kinds"])?;
+                jsrt::payload::fields(payload, &["limit", "kinds"])?;
                 let limit = match payload.get("limit") {
                     None => HISTORY_DEFAULT,
-                    Some(value) => crate::util::safe_integer(value)
+                    Some(value) => jsrt::number::safe_integer(value)
                         .filter(|limit| (1..=HISTORY_MAX).contains(limit))
                         .ok_or_else(|| format!("limit must be an integer between 1 and {HISTORY_MAX}"))?,
                 };
@@ -869,7 +849,7 @@ impl ContextControl {
                     "compacted": view.compaction_index.is_some()}))
             }
             "ctx.get" => {
-                fields(payload, &["id"])?;
+                jsrt::payload::fields(payload, &["id"])?;
                 let id = nonempty(payload.get("id"), "id")?;
                 let entry = view.by_id(&id);
                 let item = entry.and_then(|entry| Self::item(&view, entry));
@@ -887,9 +867,10 @@ impl ContextControl {
                 Ok(item)
             }
             "ctx.forget" => {
-                fields(payload, &["ids", "reason"])?;
+                jsrt::payload::fields(payload, &["ids", "reason"])?;
                 let ids = id_list(payload.get("ids"))?;
-                let reason = utf16_prefix(&nonempty(payload.get("reason"), "reason")?, REASON_MAX_CHARS).to_string();
+                let reason =
+                    jsrt::utf16::head(&nonempty(payload.get("reason"), "reason")?, REASON_MAX_CHARS).to_string();
                 Self::guard(&view, &ids)?;
                 let fresh: Vec<String> = ids
                     .iter()
@@ -915,9 +896,9 @@ impl ContextControl {
                     "freed_bytes": before.saturating_sub(after)}))
             }
             "ctx.summarize" => {
-                fields(payload, &["ids", "text"])?;
+                jsrt::payload::fields(payload, &["ids", "text"])?;
                 let text = nonempty(payload.get("text"), "text")?;
-                if utf16_len(&text) > SUMMARY_MAX_CHARS {
+                if jsrt::utf16::len(&text) > SUMMARY_MAX_CHARS {
                     return Err(format!("text exceeds {SUMMARY_MAX_CHARS} characters"));
                 }
                 let mut ids = Self::closure(&view, &id_list(payload.get("ids"))?);
@@ -940,7 +921,7 @@ impl ContextControl {
                     "freed_bytes": before.saturating_sub(after)}))
             }
             "ctx.pin" | "ctx.unpin" => {
-                fields(payload, &["id"])?;
+                jsrt::payload::fields(payload, &["id"])?;
                 let id = nonempty(payload.get("id"), "id")?;
                 if !view.by_id(&id).is_some_and(|entry| kind_of(entry).is_some()) {
                     return Err(format!("Unknown context item: {id}"));
@@ -953,9 +934,9 @@ impl ContextControl {
                 Ok(json!({"id": id, "pinned": pin, "changed": true}))
             }
             "ctx.note" => {
-                fields(payload, &["text"])?;
+                jsrt::payload::fields(payload, &["text"])?;
                 let text = nonempty(payload.get("text"), "text")?;
-                if utf16_len(&text) > NOTE_MAX_CHARS {
+                if jsrt::utf16::len(&text) > NOTE_MAX_CHARS {
                     return Err(format!("note exceeds {NOTE_MAX_CHARS} characters"));
                 }
                 Ok(json!({"id": self.append(lane, CONTEXT_NOTE_CUSTOM_TYPE, json!({"text": text}))?}))
@@ -991,7 +972,7 @@ impl ContextControl {
         if lane != "main" || tool_name != "rlm" {
             return;
         }
-        let mut tracking = lock(&self.tracking);
+        let mut tracking = jsrt::sync::lock(&self.tracking);
         tracking.current_cell = Some(tool_call_id.to_string());
         if !tracking.unattributed.is_empty() {
             let lines = std::mem::take(&mut tracking.unattributed);
@@ -1001,7 +982,7 @@ impl ContextControl {
 
     /// Harness `tool_end`.
     pub fn tool_end(&self, lane: &str, tool_call_id: &str) {
-        let mut tracking = lock(&self.tracking);
+        let mut tracking = jsrt::sync::lock(&self.tracking);
         if lane == "main" && tracking.current_cell.as_deref() == Some(tool_call_id) {
             tracking.current_cell = None;
         }
@@ -1009,7 +990,7 @@ impl ContextControl {
 
     /// Harness `message_end`: once the root model answered after a cell's output, collapse it.
     pub fn message_end(&self, lane: &str, role: &str) -> Result<(), String> {
-        if lane == "main" && role == "assistant" && !lock(&self.tracking).cells.is_empty() {
+        if lane == "main" && role == "assistant" && !jsrt::sync::lock(&self.tracking).cells.is_empty() {
             self.collapse()?;
         }
         Ok(())
@@ -1017,7 +998,7 @@ impl ContextControl {
 
     /// Harness `run_end`.
     pub fn run_end(&self, lane: &str) -> Result<(), String> {
-        if lane == "main" && !lock(&self.tracking).cells.is_empty() {
+        if lane == "main" && !jsrt::sync::lock(&self.tracking).cells.is_empty() {
             self.collapse()?;
         }
         Ok(())
@@ -1040,7 +1021,7 @@ impl ContextControl {
             status,
             cost,
         };
-        let mut tracking = lock(&self.tracking);
+        let mut tracking = jsrt::sync::lock(&self.tracking);
         match tracking.current_cell.clone() {
             Some(cell) => {
                 let mut lines = tracking
@@ -1069,7 +1050,7 @@ impl ContextControl {
         if entry["type"] != "custom" {
             return None;
         }
-        lock(&self.pending).retain(|(_, pending)| pending["id"] != entry["id"]);
+        jsrt::sync::lock(&self.pending).retain(|(_, pending)| pending["id"] != entry["id"]);
         if entry["customType"] != CONTEXT_EDIT_CUSTOM_TYPE {
             return None;
         }
@@ -1098,7 +1079,7 @@ impl ContextControl {
                 .iter()
                 .map(|task| match task {
                     Value::String(text) => Value::String(text.clone()),
-                    other => Value::String(stringify(other)),
+                    other => Value::String(jsrt::json::stringify(other)),
                 })
                 .collect();
             event.insert("tasks".into(), tasks.into());
@@ -1108,7 +1089,7 @@ impl ContextControl {
 
     /// Collapse cell outputs the model has already answered after.
     fn collapse(&self) -> Result<(), String> {
-        if lock(&self.tracking).cells.is_empty() {
+        if jsrt::sync::lock(&self.tracking).cells.is_empty() {
             return Ok(());
         }
         let view = self.view("main")?;
@@ -1129,7 +1110,7 @@ impl ContextControl {
             }
             let call = message["toolCallId"].as_str().unwrap_or_default();
             let lines = {
-                let mut tracking = lock(&self.tracking);
+                let mut tracking = jsrt::sync::lock(&self.tracking);
                 let Some(index) = tracking.cells.iter().position(|(id, _)| id == call) else {
                     continue;
                 };
@@ -1144,7 +1125,7 @@ impl ContextControl {
                 continue;
             }
             let content = collapsed_cell_text(id, &original, &lines);
-            if utf16_len(&content) >= utf16_len(&original) {
+            if jsrt::utf16::len(&content) >= jsrt::utf16::len(&original) {
                 continue;
             }
             edits.push(json!({"targetId": id, "replacement": {"content": content}}));
@@ -1191,7 +1172,7 @@ impl ContextControl {
             .rev()
             .find(|entry| entry["type"] == "message" && entry["message"]["role"] == "assistant")
             .and_then(|entry| entry["id"].as_str().map(str::to_string));
-        let credit = lock(&self.tracking)
+        let credit = jsrt::sync::lock(&self.tracking)
             .trimmed
             .iter()
             .find(|(name, assistant, _)| name == lane && Some(assistant) == last_assistant.as_ref())
@@ -1226,11 +1207,11 @@ impl ContextControl {
                 continue;
             }
             let original = message_text(message);
-            if utf16_len(&original) <= TRIM_MIN_CHARS {
+            if jsrt::utf16::len(&original) <= TRIM_MIN_CHARS {
                 continue;
             }
             let content = trimmed_result_text(id, &original);
-            saved += (utf16_len(&original) as i64 - utf16_len(&content) as i64).div_euclid(4);
+            saved += (jsrt::utf16::len(&original) as i64 - jsrt::utf16::len(&content) as i64).div_euclid(4);
             edits.push(json!({"targetId": id, "replacement": {"content": content}}));
         }
         let Some(last_assistant) = last_assistant else {
@@ -1245,7 +1226,7 @@ impl ContextControl {
             CONTEXT_EDIT_CUSTOM_TYPE,
             json!({"edits": edits, "source": "trim", "reason": "trimmed old tool results instead of compacting"}),
         )?;
-        let mut tracking = lock(&self.tracking);
+        let mut tracking = jsrt::sync::lock(&self.tracking);
         tracking.trimmed.retain(|(name, _, _)| name != lane);
         tracking
             .trimmed
@@ -1261,7 +1242,7 @@ impl ContextControl {
         };
         let retained: HashSet<String> = view.path[index]["retainedTail"]
             .as_array()
-            .map(|tail| tail.iter().map(stringify).collect())
+            .map(|tail| tail.iter().map(jsrt::json::stringify).collect())
             .unwrap_or_default();
         let before = &view.path[..index];
         let omitted: HashSet<String> = before
@@ -1276,23 +1257,25 @@ impl ContextControl {
             if budget <= 0 {
                 return;
             }
-            let bounded = if utf16_len(&line) as i64 > budget {
-                format!("{}…", utf16_prefix(&line, budget as usize - 1))
+            let bounded = if jsrt::utf16::len(&line) as i64 > budget {
+                format!("{}…", jsrt::utf16::head(&line, budget as usize - 1))
             } else {
                 line
             };
-            budget -= utf16_len(&bounded) as i64;
+            budget -= jsrt::utf16::len(&bounded) as i64;
             lines.push(bounded);
         };
         for entry in before {
             let id = entry["id"].as_str().unwrap_or_default();
             if entry["type"] == "custom" && entry["customType"] == CONTEXT_NOTE_CUSTOM_TYPE && !omitted.contains(id) {
                 add(format!("- note {id}: {}", note_text(entry)));
-            } else if view.pinned(id) && entry["type"] == "message" && !retained.contains(&stringify(&entry["message"]))
+            } else if view.pinned(id)
+                && entry["type"] == "message"
+                && !retained.contains(&jsrt::json::stringify(&entry["message"]))
             {
                 let text = message_text(&entry["message"]);
-                let text = if utf16_len(&text) > KEPT_ITEM_CHARS {
-                    format!("{}…", utf16_prefix(&text, KEPT_ITEM_CHARS - 1))
+                let text = if jsrt::utf16::len(&text) > KEPT_ITEM_CHARS {
+                    format!("{}…", jsrt::utf16::head(&text, KEPT_ITEM_CHARS - 1))
                 } else {
                     text
                 };
@@ -1320,7 +1303,7 @@ impl ContextControl {
         else {
             return Ok(None);
         };
-        if !lock(&self.tracking).lanes.contains(lane) {
+        if !jsrt::sync::lock(&self.tracking).lanes.contains(lane) {
             return Ok(None);
         }
         let Some(kept) = self.kept_across_compaction(lane)? else {

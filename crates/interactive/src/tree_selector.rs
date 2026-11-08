@@ -6,6 +6,7 @@
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
+use jsrt::{date, utf16};
 use serde_json::Value;
 use tui::components::{Component, Text};
 use tui::input::Input;
@@ -136,12 +137,6 @@ fn normalize(text: &str) -> String {
     text.replace(['\n', '\t'], " ").trim().to_string()
 }
 
-/// `JSON.stringify(value).slice(0, n)` on UTF-16 units.
-fn js_slice(text: &str, n: usize) -> String {
-    let units: Vec<u16> = text.encode_utf16().take(n).collect();
-    String::from_utf16_lossy(&units)
-}
-
 /// `formatToolCall` (paths under `home` shortened to `~`).
 fn format_tool_call(name: &str, args: &Value, home: &str) -> String {
     let shorten = |p: String| match p.strip_prefix(home) {
@@ -178,8 +173,8 @@ fn format_tool_call(name: &str, args: &Value, home: &str) -> String {
         "edit" => format!("[edit: {}]", path()),
         "bash" => {
             let raw = text("command").unwrap_or_default();
-            let cmd = js_slice(normalize(&raw).as_str(), 50);
-            let more = if raw.encode_utf16().count() > 50 { "..." } else { "" };
+            let cmd = utf16::head_lossy(normalize(&raw).as_str(), 50);
+            let more = if utf16::len(&raw) > 50 { "..." } else { "" };
             format!("[bash: {cmd}{more}]")
         }
         "grep" => format!(
@@ -195,8 +190,8 @@ fn format_tool_call(name: &str, args: &Value, home: &str) -> String {
         "ls" => format!("[ls: {}]", shorten(text("path").unwrap_or_else(|| ".".into()))),
         _ => {
             let json = args.to_string();
-            let more = if json.encode_utf16().count() > 40 { "..." } else { "" };
-            format!("[{name}: {}{more}]", js_slice(&json, 40))
+            let more = if utf16::len(&json) > 40 { "..." } else { "" };
+            format!("[{name}: {}{more}]", utf16::head_lossy(&json, 40))
         }
     }
 }
@@ -699,7 +694,7 @@ impl TreeList {
                         } else if m["stopReason"] == "aborted" {
                             head + &fg(t, "muted", "(aborted)")
                         } else if let Some(error) = s(m, "errorMessage").filter(|e| !e.is_empty()) {
-                            head + &fg(t, "error", &js_slice(&normalize(error), 80))
+                            head + &fg(t, "error", &utf16::head_lossy(&normalize(error), 80))
                         } else {
                             head + &fg(t, "muted", "(no content)")
                         }
@@ -1008,12 +1003,7 @@ fn format_label_timestamp(ts: &str) -> String {
     // ISO `YYYY-MM-DDTHH:MM...`; the TUI process runs with the user's zone, shown as stored.
     let date = ts.get(..10).unwrap_or("");
     let time = ts.get(11..16).unwrap_or("");
-    let today = {
-        let days = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map_or(0, |d| d.as_secs() / 86_400) as i64;
-        civil_date(days)
-    };
+    let today = date::iso_string(date::now_ms())[..10].to_string();
     if date == today {
         return time.to_string();
     }
@@ -1025,20 +1015,6 @@ fn format_label_timestamp(ts: &str) -> String {
     } else {
         format!("{}/{month}/{day} {time}", year.get(2..).unwrap_or(""))
     }
-}
-
-/// `YYYY-MM-DD` of a day count since the epoch.
-fn civil_date(days: i64) -> String {
-    let z = days + 719_468;
-    let era = z.div_euclid(146_097);
-    let doe = z - era * 146_097;
-    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
-    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-    let mp = (5 * doy + 2) / 153;
-    let d = doy - (153 * mp + 2) / 5 + 1;
-    let m = if mp < 10 { mp + 3 } else { mp - 9 };
-    let y = yoe + era * 400 + i64::from(m <= 2);
-    format!("{y:04}-{m:02}-{d:02}")
 }
 
 /// `renderHorizontalViewport`: the gutter stays, the bodies pan when the selected row's anchor is too far right.
@@ -1295,7 +1271,7 @@ impl TreeSelector {
                 let id = id.clone();
                 for node in &mut self.list.nodes {
                     if id_of(&node.entry) == id {
-                        node.label_timestamp = label.as_ref().map(|_| tui_now_iso());
+                        node.label_timestamp = label.as_ref().map(|_| date::iso_string(date::now_ms()));
                         node.label = label.clone();
                     }
                 }
@@ -1329,22 +1305,6 @@ impl TreeSelector {
         }
         self.list.handle_input(data)
     }
-}
-
-fn tui_now_iso() -> String {
-    let ms = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |d| d.as_millis() as i64);
-    let days = ms.div_euclid(86_400_000);
-    let rem = ms.rem_euclid(86_400_000);
-    format!(
-        "{}T{:02}:{:02}:{:02}.{:03}Z",
-        civil_date(days),
-        rem / 3_600_000,
-        rem / 60_000 % 60,
-        rem / 1000 % 60,
-        rem % 1000
-    )
 }
 
 impl Component for TreeSelector {

@@ -9,7 +9,6 @@ mod common;
 use common::{FIXED_NOW, Made, fixed, fixture, run_scenario};
 use kernel::{HostHandler, Signal};
 use kernel_apis::goal::{GoalCheckResult, GoalDriver, GoalJobs, check_signature, goal_brief, goal_status_text};
-use kernel_apis::util::lock;
 use kernel_apis::{DocumentStore, KernelApis, MemoryDocumentStore};
 use serde_json::{Map, Value, json};
 use std::collections::HashMap;
@@ -60,9 +59,9 @@ impl Worker {
 
 impl GoalJobs for Worker {
     fn run_check(&self, command: &str, timeout_seconds: u64) -> Result<GoalCheckResult, String> {
-        lock(&self.calls).push(json!(["check", command, timeout_seconds]));
+        jsrt::sync::lock(&self.calls).push(json!(["check", command, timeout_seconds]));
         let list = Self::checks(command);
-        let mut used = lock(&self.used);
+        let mut used = jsrt::sync::lock(&self.used);
         let count = used.entry(command.to_string()).or_default();
         let result = list[(*count).min(list.len() - 1)].clone();
         *count += 1;
@@ -70,17 +69,17 @@ impl GoalJobs for Worker {
     }
 
     fn start_job(&self, prompt: &str, key: &str, usage_root: &str, _: &Signal) -> Result<String, String> {
-        lock(&self.calls).push(json!(["start", key, usage_root, prompt]));
+        jsrt::sync::lock(&self.calls).push(json!(["start", key, usage_root, prompt]));
         if prompt.contains("unstartable") {
             return Err("no capacity for a background job".into());
         }
-        let mut jobs = lock(&self.jobs);
+        let mut jobs = jsrt::sync::lock(&self.jobs);
         *jobs += 1;
         Ok(format!("task-{jobs}"))
     }
 
     fn stop_job(&self, task_id: &str, reason: &str) -> Result<(), String> {
-        lock(&self.calls).push(json!(["stop", task_id, reason]));
+        jsrt::sync::lock(&self.calls).push(json!(["stop", task_id, reason]));
         Ok(())
     }
 
@@ -113,7 +112,7 @@ fn goal_host(_: &Path) -> Made {
     Made {
         handler: KernelApis::new(inner).with(driver),
         env: Vec::new(),
-        state: Box::new(move || json!({"document": store.read().unwrap(), "calls": *lock(&worker.calls)})),
+        state: Box::new(move || json!({"document": store.read().unwrap(), "calls": *jsrt::sync::lock(&worker.calls)})),
     }
 }
 

@@ -4,7 +4,6 @@
 //! conversation branches, seeded (legacy, newer, corrupt) documents and failing writes.
 
 use kernel_apis::artifacts::KeyedDocuments;
-use kernel_apis::util::stringify;
 use serde_json::{Map, Value, json};
 use services::local::{Branch, LocalOptions, LocalServices, Validator};
 use services::validate_refinement_content;
@@ -89,7 +88,7 @@ fn documents_text(documents: &Documents) -> String {
         .iter()
         .map(|(k, v)| json!([k, v]))
         .collect();
-    stringify(&Value::Array(entries))
+    jsrt::json::stringify(&Value::Array(entries))
 }
 
 #[test]
@@ -141,9 +140,11 @@ fn services_local_refinements_and_experiments_match_native_local_services() {
                 _ => {
                     requests += 1;
                     let outcome = services.handle(kind, &args[1], branch.as_ref());
-                    let at = format!("{name} / step {index} {kind} {}", stringify(&args[1]));
+                    let at = format!("{name} / step {index} {kind} {}", jsrt::json::stringify(&args[1]));
                     match (&step.get("ok"), &step.get("error"), outcome) {
-                        (Some(want), _, Ok(got)) => assert_eq!(stringify(&got), stringify(want), "{at}"),
+                        (Some(want), _, Ok(got)) => {
+                            assert_eq!(jsrt::json::stringify(&got), jsrt::json::stringify(want), "{at}")
+                        }
                         (_, Some(want), Err(got)) => assert_eq!(got, want.as_str().unwrap(), "{at}"),
                         (want, error, got) => panic!("{at}: want {want:?} / {error:?}, got {got:?}"),
                     }
@@ -157,4 +158,31 @@ fn services_local_refinements_and_experiments_match_native_local_services() {
         }
     }
     assert_eq!(requests, 245);
+}
+
+#[test]
+fn services_local_record_dates_are_checked_like_date_parse() {
+    // D5: a stored `recordedAt` is valid exactly when `Date.parse` reads it. V8 refuses `T24:30` (the old check
+    // accepted it, ranging hours and minutes apart) and accepts the space form and `±HHmm` (the old check refused
+    // both): node prints NaN for `Date.parse("2026-10-07T24:30Z")` and 1791402180000 for
+    // `Date.parse("2026-10-07 19:43+0000")`.
+    let list = |recorded_at: &str| {
+        let documents = Documents::default();
+        let run =
+            json!({"id": "r1", "variant": "a", "fixtureHash": "h", "outcome": "passed", "recordedAt": recorded_at});
+        documents
+            .values
+            .lock()
+            .unwrap()
+            .insert("ultron.experiments".into(), json!({"formatVersion": 1, "runs": [run]}));
+        LocalServices::new(Box::new(documents), LocalOptions::default())
+            .handle("experiments.list", &json!({}), None)
+            .map(|runs| runs.as_array().map(Vec::len))
+    };
+    assert_eq!(list("2026-10-07 19:43+0000"), Ok(Some(1)));
+    assert_eq!(list("2026-10-07T19:43:49.517Z"), Ok(Some(1)));
+    assert_eq!(
+        list("2026-10-07T24:30Z"),
+        Err("Experiment requires variant, fixtureHash, outcome and valid record metadata".into())
+    );
 }

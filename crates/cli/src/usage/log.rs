@@ -382,7 +382,7 @@ fn parse_header(line: &str, path: &Path) -> Result<Header, LogError> {
     {
         return Err(LogError::Session(format!(
             "{shown} is a Pi-format session (version {}); only native Ultron sessions are reported",
-            crate::js::string(version)
+            jsrt::value::string(Some(version))
         )));
     }
     let header = header
@@ -450,15 +450,7 @@ pub fn read_session_header(path: &Path) -> Result<Header, LogError> {
 /// File modification time in milliseconds (`Math.round(stat.mtimeMs)`) and size.
 pub fn file_times(path: &Path) -> Result<(f64, u64), LogError> {
     let meta = std::fs::metadata(path).map_err(|e| LogError::Io(io_message(&e, "stat", path)))?;
-    Ok((mtime_ms(&meta).round(), meta.len()))
-}
-
-pub fn mtime_ms(meta: &std::fs::Metadata) -> f64 {
-    match meta.modified().ok().map(|m| m.duration_since(std::time::UNIX_EPOCH)) {
-        Some(Ok(d)) => d.as_secs() as f64 * 1000.0 + f64::from(d.subsec_nanos()) / 1e6,
-        Some(Err(e)) => -(e.duration().as_secs() as f64 * 1000.0 + f64::from(e.duration().subsec_nanos()) / 1e6),
-        None => 0.0,
-    }
+    Ok((meta.modified().map_or(0.0, jsrt::date::mtime_ms).round(), meta.len()))
 }
 
 /// Read a native session file. Fails with [`LogError::Session`] for a file that is not one.

@@ -10,7 +10,6 @@ use crate::repo::{Metadata, SessionRepo, absolute, read_metadata};
 use crate::session::{SESSION_NAME, Session};
 use crate::state::Write;
 use serde_json::{Value, json};
-use session_file::js;
 use std::path::Path;
 
 pub const AUTO_NAME_NAMESPACE: &str = "ultron.module";
@@ -22,7 +21,7 @@ pub const TITLE_MAX: usize = 60;
 
 /// `normalizeSessionName`: trimmed (JavaScript whitespace), `None` when empty.
 pub fn normalize_session_name(value: &str) -> Option<String> {
-    let name = js::trim(value);
+    let name = jsrt::string::trim(value);
     (!name.is_empty()).then(|| name.to_string())
 }
 
@@ -198,7 +197,7 @@ fn search_text(content: &Value) -> String {
         Value::Array(blocks) if !blocks.iter().any(Value::is_null) => blocks
             .iter()
             .filter(|b| b["type"] == "text")
-            .map(|b| js::join_string(b.get("text")))
+            .map(|b| session_file::js::join_string(b.get("text")))
             .collect::<Vec<_>>()
             .join(" "),
         _ => String::new(),
@@ -214,7 +213,7 @@ fn content_text(content: &Value) -> String {
             .map(|p| match &p["text"] {
                 Value::String(s) => s.clone(),
                 Value::Null => String::new(),
-                other => js::stringify(other),
+                other => jsrt::json::stringify(other),
             })
             .collect::<Vec<_>>()
             .join(" "),
@@ -256,7 +255,7 @@ pub fn session_details(text: &str) -> SessionDetails {
             if m["type"] == "session_info" {
                 name = m["name"]
                     .as_str()
-                    .map(js::trim)
+                    .map(jsrt::string::trim)
                     .filter(|n| !n.is_empty())
                     .map(str::to_string);
                 continue;

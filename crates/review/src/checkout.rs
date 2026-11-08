@@ -13,7 +13,7 @@ use std::sync::{Arc, Mutex};
 use regex::Regex;
 
 use crate::github::{Error, PullRef};
-use crate::js::{head16, path_join, trim};
+use crate::js::path_join;
 use crate::promotion::{CommitMessage, parse_commits};
 use crate::runner::{Env, RunOptions, RunResult, Runner};
 
@@ -96,7 +96,7 @@ impl Git {
             };
             return Err(Error::Other(format!(
                 "git {name} failed: {}",
-                head16(trim(detail), 300)
+                jsrt::utf16::head(jsrt::string::trim(detail), 300)
             )));
         }
         Ok(result.stdout)
@@ -320,11 +320,11 @@ impl CheckoutManager {
                 env,
                 FETCH_TIMEOUT_MS,
             )?;
-            let fetched = trim(
-                &self
-                    .git
-                    .must(&["-C", &dir, "rev-parse", &pull_ref], env, GIT_TIMEOUT_MS)?,
-            )
+            let fetched = jsrt::string::trim(&self.git.must(
+                &["-C", &dir, "rev-parse", &pull_ref],
+                env,
+                GIT_TIMEOUT_MS,
+            )?)
             .to_string();
             if fetched != pull.head_sha {
                 let moved: String = fetched.chars().take(7).collect();
@@ -352,7 +352,7 @@ impl CheckoutManager {
                 env,
                 FETCH_TIMEOUT_MS,
             )?;
-            let found = trim(&base.stdout);
+            let found = jsrt::string::trim(&base.stdout);
             if base.code == 0 && !found.is_empty() {
                 found.to_string()
             } else {

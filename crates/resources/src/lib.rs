@@ -34,8 +34,3 @@ impl Diagnostic {
         }
     }
 }
-
-/// JS regex `\s`: Unicode White_Space without U+0085, plus U+FEFF.
-pub fn js_space(c: char) -> bool {
-    (c.is_whitespace() && c != '\u{85}') || c == '\u{feff}'
-}

@@ -25,7 +25,6 @@ pub mod js;
 pub mod line_input;
 pub mod link;
 pub mod list_models;
-pub mod localtime;
 pub mod mcp_cli;
 pub mod mcp_login;
 pub mod memory_cli;
@@ -500,7 +499,7 @@ pub fn render_session_list(sessions: &[SessionListing], cwd: &str) -> String {
         out.push_str(&format!(
             "{}\t{}\t{}\t{}\n",
             session.metadata.id,
-            session_file::js::iso_string(session.metadata.modified_at as i64),
+            jsrt::date::iso_string(session.metadata.modified_at as i64),
             session.name.as_deref().unwrap_or(""),
             preview
         ));

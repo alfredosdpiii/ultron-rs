@@ -9,6 +9,7 @@
 //!   tool calls as `<runtime_event>` lines for the root's inbox (the dispatcher's `rootSink`);
 //! - [`async_pending`]: the `async.pending` inspection.
 
+use jsrt::sync;
 use kernel_apis::TaskHost;
 use kernel_apis::context_control::ContextBranches;
 use serde_json::{Map, Value, json};
@@ -18,11 +19,7 @@ use session_core::durable_store::SharedSession;
 use session_core::lane::{Lane, MAIN};
 use session_journal::Write;
 use session_journal::session::BRANCH_TIP;
-use std::sync::{Arc, Mutex, PoisonError};
-
-fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
-    mutex.lock().unwrap_or_else(PoisonError::into_inner)
-}
+use std::sync::{Arc, Mutex};
 
 /// The root's turns over a session stack.
 pub struct LaneRootHost {
@@ -50,20 +47,20 @@ impl LaneRootHost {
 
     /// The usage root of the open turn.
     pub fn current_root(&self) -> Option<String> {
-        lock(&self.root).clone()
+        sync::lock(&self.root).clone()
     }
 }
 
 impl crate::external_root::RootHost for LaneRootHost {
     fn begin_root_turn(&self, turn: &str) {
         self.stack.agents.begin_root_turn(turn);
-        *lock(&self.root) = Some(self.root_id_of_run(turn));
+        *sync::lock(&self.root) = Some(self.root_id_of_run(turn));
     }
 
     fn end_root_turn(&self, turn: &str) {
         self.stack.agents.end_root_turn(turn);
         let root = self.root_id_of_run(turn);
-        let mut current = lock(&self.root);
+        let mut current = sync::lock(&self.root);
         if current.as_deref() == Some(root.as_str()) {
             *current = None;
         }
@@ -133,12 +130,12 @@ fn root_only(lane: &str) -> Result<(), String> {
 impl ContextBranches for ExternalBranches {
     fn entries(&self, lane: &str) -> Result<Vec<Value>, String> {
         root_only(lane)?;
-        lock(&self.session).branch_entries(MAIN)
+        sync::lock(&self.session).branch_entries(MAIN)
     }
 
     fn append_custom(&self, lane: &str, custom_type: &str, data: &Value) -> Result<String, String> {
         root_only(lane)?;
-        let mut session = lock(&self.session);
+        let mut session = sync::lock(&self.session);
         let id = session_journal::lock_clock(&session.clock()).next_id();
         let tip = session.branch_tip(MAIN).flatten();
         let mut entry = Map::new();
@@ -153,7 +150,7 @@ impl ContextBranches for ExternalBranches {
 
     fn tip_id(&self, lane: &str) -> Result<Option<String>, String> {
         root_only(lane)?;
-        Ok(lock(&self.session).branch_tip(MAIN).flatten())
+        Ok(sync::lock(&self.session).branch_tip(MAIN).flatten())
     }
 }
 
@@ -169,7 +166,7 @@ pub fn wire(lane: &Lane, session: SharedSession, host: &LaneRootHost, sink: Arc<
     let explicit_token_cap = usage.limits().max_total_tokens.is_some();
     let _ = stack.budget_note.set(Arc::new(move |lane: &str| {
         let root = if lane == MAIN {
-            lock(&root).clone()
+            sync::lock(&root).clone()
         } else {
             agents.usage_root_for_lane(lane, "")
         };
@@ -179,7 +176,7 @@ pub fn wire(lane: &Lane, session: SharedSession, host: &LaneRootHost, sink: Arc<
     // A root's shell job belongs to the turn that started it.
     let roots = host.root.clone();
     stack.host.set_roots(Arc::new(
-        move |lane: &str| if lane == MAIN { lock(&roots).clone() } else { None },
+        move |lane: &str| if lane == MAIN { sync::lock(&roots).clone() } else { None },
     ));
     if !stack.events.enabled() {
         return;

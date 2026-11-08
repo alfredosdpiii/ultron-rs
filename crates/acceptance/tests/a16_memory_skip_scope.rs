@@ -223,7 +223,7 @@ fn acceptance_a16_live_recall_after_a_real_consolidation_keeps_exact_scope_tags_
         return;
     }
     let base = std::env::var("ULTRON_LIVE_HINDSIGHT_URL").unwrap_or_else(|_| "http://localhost:8888".into());
-    let bank = format!("ultron-a16-live-{}", &kernel_apis::util::uuid()[..8]);
+    let bank = format!("ultron-a16-live-{}", &jsrt::random::uuid_v4()[..8]);
     let bank_url = format!("{base}/v1/default/banks/{bank}");
     let http = ReqwestTransport::new().unwrap();
     let raw = |method: &str, url: String, body: Option<&str>| {

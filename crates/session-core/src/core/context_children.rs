@@ -19,6 +19,7 @@ use crate::durable_store::{SharedSession, lock as lock_session};
 use crate::subagents::{CONVERSATION_LANE_PREFIX, DurableChildren};
 use durable::{ConversationId, EntryRecord, SubmissionId};
 use harness::chat::SubmissionDraft;
+use jsrt::sync;
 use kernel_apis::ContextControl;
 use kernel_apis::context_control::{
     CONTEXT_EDIT_CUSTOM_TYPE, CONTEXT_NOTE_CUSTOM_TYPE, CONTEXT_OMITTED_CUSTOM_TYPE, ContextBranches,
@@ -26,14 +27,10 @@ use kernel_apis::context_control::{
 };
 use serde_json::{Value, json};
 use std::collections::HashSet;
-use std::sync::{Arc, Mutex, OnceLock, PoisonError, Weak};
+use std::sync::{Arc, Mutex, OnceLock, Weak};
 
 /// The durable entry kind of a custom entry `ctx` appended to a child conversation.
 pub const CUSTOM_KIND: &str = "ultron.custom";
-
-fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
-    mutex.lock().unwrap_or_else(PoisonError::into_inner)
-}
 
 /// The custom entry an `ultron.custom` durable entry stores (as JSON text: a write drops null fields, and an
 /// omission is `replacement: null`), with the lane it was appended on.
@@ -214,11 +211,14 @@ impl ChildContext {
         let (Some(context), Some(lane)) = (self.context(), self.lane_of(conversation)) else {
             return Vec::new();
         };
-        *lock(&self.capture) = Some((lane.clone(), Vec::new()));
+        *sync::lock(&self.capture) = Some((lane.clone(), Vec::new()));
         let tokens = i64::try_from(tokens).unwrap_or(i64::MAX);
         let threshold = i64::try_from(threshold).unwrap_or(i64::MAX);
         let declined = context.before_compaction(&lane, "threshold", tokens, Some(threshold), 0);
-        let captured = lock(&self.capture).take().map(|(_, writes)| writes).unwrap_or_default();
+        let captured = sync::lock(&self.capture)
+            .take()
+            .map(|(_, writes)| writes)
+            .unwrap_or_default();
         if declined == Ok(true) { captured } else { Vec::new() }
     }
 
@@ -280,7 +280,7 @@ impl ChildContext {
         let conversation = self.conversation(lane)?;
         let entries = pi_entries(&conversation.entries().map_err(|e| e.to_string())?);
         let landed: HashSet<&str> = entries.iter().filter_map(|(entry, _)| entry["id"].as_str()).collect();
-        lock(&self.queued).retain(|q| !q.entry["id"].as_str().is_some_and(|id| landed.contains(id)));
+        sync::lock(&self.queued).retain(|q| !q.entry["id"].as_str().is_some_and(|id| landed.contains(id)));
         Ok((conversation, entries))
     }
 
@@ -321,7 +321,7 @@ impl ChildContext {
                 durable.push(Some(target));
                 submissions.push(None);
             }
-            for queued in lock(&self.queued).iter().filter(|q| q.lane == lane) {
+            for queued in sync::lock(&self.queued).iter().filter(|q| q.lane == lane) {
                 path.push(queued.entry.clone());
                 durable.push(None);
                 submissions.push(queued.submission);
@@ -351,7 +351,10 @@ impl ChildContext {
                 let again = conversation
                     .submit(SubmissionDraft::write(custom_write(lane, &note, Some(model))))
                     .map_err(|e| e.to_string())?;
-                if let Some(queued) = lock(&self.queued).iter_mut().find(|q| q.submission == Some(submission)) {
+                if let Some(queued) = sync::lock(&self.queued)
+                    .iter_mut()
+                    .find(|q| q.submission == Some(submission))
+                {
                     queued.submission = Some(again.id);
                 }
             }
@@ -360,8 +363,8 @@ impl ChildContext {
             }
         };
         // Held across the write: a write admitted at once lands (and the next read drops it) only after the push.
-        let mut queued = lock(&self.queued);
-        let submission = match lock(&self.capture).as_mut() {
+        let mut queued = sync::lock(&self.queued);
+        let submission = match sync::lock(&self.capture).as_mut() {
             // A trim declining a compaction: the harness places the entry with the request it prepares.
             Some((capturing, captured)) if capturing == lane => {
                 captured.push(stored);

@@ -37,10 +37,8 @@ pub fn parse_watch_args(args: &[String]) -> Result<WatchArgs, String> {
             "--plain" => parsed.plain = true,
             "--width" => {
                 index += 1;
-                let value = args.get(index).map_or(f64::NAN, |v| {
-                    session_file::js::to_number(&serde_json::Value::String(v.clone()))
-                });
-                if value.fract() != 0.0 || !(20.0..=9_007_199_254_740_991.0).contains(&value) {
+                let value = args.get(index).map_or(f64::NAN, |v| jsrt::number::parse(v));
+                if !(jsrt::number::is_safe_integer(value) && value >= 20.0) {
                     return Err("--width must be an integer >= 20".into());
                 }
                 parsed.width = Some(value as u64);
@@ -134,7 +132,7 @@ pub fn run(
     } else {
         RlmStyle::themed(std::rc::Rc::new(watch_theme(cwd, var)))
     };
-    let (snapshot, status) = poll_snapshot(&mut client, &mut poller, &mut clock, epoch_ms());
+    let (snapshot, status) = poll_snapshot(&mut client, &mut poller, &mut clock, jsrt::date::now_ms() as f64);
     if parsed.once {
         let mut pane = RlmPane::new();
         let width = parsed.width.map_or_else(terminal_width, |w| w as usize);
@@ -147,12 +145,6 @@ pub fn run(
     }
     live(client, poller, clock, keys, style, snapshot, status)?;
     Ok(0)
-}
-
-fn epoch_ms() -> f64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0.0, |d| d.as_millis() as f64)
 }
 
 fn terminal_width() -> usize {
@@ -240,15 +232,6 @@ pub fn poll_snapshot(
     (snapshot, status)
 }
 
-/// A JSON number as JavaScript prints it in a template (integers without a fraction).
-fn js_number(n: f64) -> String {
-    if n.fract() == 0.0 && n.abs() < 1e15 {
-        format!("{}", n as i64)
-    } else {
-        format!("{n}")
-    }
-}
-
 /// `headerLine`: "Ultron" and the server's status fields.
 fn header_line(status: &Value, style: &RlmStyle) -> String {
     let text = |key: &str| status[key].as_str().filter(|s| !s.is_empty());
@@ -266,10 +249,10 @@ fn header_line(status: &Value, style: &RlmStyle) -> String {
         parts.push(format!("children {children}"));
     }
     if let Some(cells) = status["cells"].as_f64() {
-        parts.push(format!("{} cells", js_number(cells)));
+        parts.push(format!("{} cells", jsrt::number::to_string(cells)));
     }
     if let Some(pending) = status["pendingEvents"].as_f64().filter(|n| *n != 0.0) {
-        parts.push(format!("{} events waiting", js_number(pending)));
+        parts.push(format!("{} events waiting", jsrt::number::to_string(pending)));
     }
     parts.retain(|p| !p.is_empty());
     format!(
@@ -358,7 +341,8 @@ fn live(
                     }
                 }
                 Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
-                    (snapshot, status) = poll_snapshot(&mut client, &mut poller, &mut clock, epoch_ms());
+                    (snapshot, status) =
+                        poll_snapshot(&mut client, &mut poller, &mut clock, jsrt::date::now_ms() as f64);
                     next_poll = std::time::Instant::now() + POLL;
                 }
                 Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => return Ok(()),

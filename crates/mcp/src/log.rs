@@ -6,38 +6,8 @@ use serde_json::Value;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
-use std::time::{SystemTime, UNIX_EPOCH};
 
 const MAX_LOG_BYTES: u64 = 5 * 1024 * 1024;
-
-/// `Date.prototype.toISOString` of milliseconds since the epoch.
-pub fn iso_time(ms: i64) -> String {
-    let days = ms.div_euclid(86_400_000);
-    let rest = ms.rem_euclid(86_400_000);
-    // Civil date from days since 1970-01-01 (Howard Hinnant's algorithm).
-    let z = days + 719_468;
-    let era = z.div_euclid(146_097);
-    let doe = z.rem_euclid(146_097);
-    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
-    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-    let mp = (5 * doy + 2) / 153;
-    let day = doy - (153 * mp + 2) / 5 + 1;
-    let month = if mp < 10 { mp + 3 } else { mp - 9 };
-    let year = yoe + era * 400 + i64::from(month <= 2);
-    format!(
-        "{year:04}-{month:02}-{day:02}T{:02}:{:02}:{:02}.{:03}Z",
-        rest / 3_600_000,
-        rest / 60_000 % 60,
-        rest / 1000 % 60,
-        rest % 1000
-    )
-}
-
-fn now_ms() -> i64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0, |d| i64::try_from(d.as_millis()).unwrap_or(i64::MAX))
-}
 
 /// `formatMcpLogMessage`: one log line for a `notifications/message` from `server`; continuation lines are indented.
 pub fn format_log_message(server: &str, params: Option<&Value>, now_ms: i64) -> String {
@@ -63,7 +33,7 @@ pub fn format_log_message(server: &str, params: Option<&Value>, now_ms: i64) -> 
         Some(other) => other.to_string(),
     };
     let text = data.replace("\r\n", "\n").replace('\n', "\n    ");
-    format!("{} [{server}] {level}{logger} {text}\n", iso_time(now_ms))
+    format!("{} [{server}] {level}{logger} {text}\n", jsrt::date::iso_string(now_ms))
 }
 
 /// Appends server log messages to one file (`McpServerLog`).
@@ -81,7 +51,7 @@ impl ServerLog {
     }
 
     pub fn write(&self, server: &str, params: Option<&Value>) {
-        let line = format_log_message(server, params, now_ms());
+        let line = format_log_message(server, params, jsrt::date::now_ms());
         let mut size = self.size.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         let _ = self.append(&mut size, &line);
     }

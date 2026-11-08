@@ -60,28 +60,12 @@ pub fn pi_import_usage_root(pi_session_id: &str) -> String {
 
 /// `nativeSessionIdForPiSession`: a UUID-shaped (version 8) digest of the Pi session id.
 pub fn native_session_id_for_pi_session(pi_session_id: &str) -> String {
-    let digest = sha256(format!("ultron:pi-import:{pi_session_id}").as_bytes());
+    let digest = jsrt::hash::sha256(format!("ultron:pi-import:{pi_session_id}"));
     let mut bytes = [0u8; 16];
     bytes.copy_from_slice(&digest[..16]);
     bytes[6] = (bytes[6] & 0x0f) | 0x80;
     bytes[8] = (bytes[8] & 0x3f) | 0x80;
-    let hex: String = bytes.iter().map(|b| format!("{b:02x}")).collect();
-    format!(
-        "{}-{}-{}-{}-{}",
-        &hex[..8],
-        &hex[8..12],
-        &hex[12..16],
-        &hex[16..20],
-        &hex[20..]
-    )
-}
-
-fn sha256(data: &[u8]) -> Vec<u8> {
-    let hex = kernel_apis::util::sha256_hex(data);
-    (0..hex.len())
-        .step_by(2)
-        .map(|i| u8::from_str_radix(&hex[i..i + 2], 16).unwrap_or(0))
-        .collect()
+    jsrt::random::format_uuid(&bytes)
 }
 
 fn str_of<'a>(entry: &'a Value, key: &str) -> Option<&'a str> {
@@ -613,7 +597,7 @@ impl ImportResult {
             "unappliedContextEdits": self.unapplied_context_edits,
             "branchCopies": self.branch_copies,
             "importedUsage": {"root": self.usage_root, "entries": self.usage_entries,
-                "cost": delegation::usage::number(self.usage_cost)},
+                "cost": jsrt::json::number(self.usage_cost)},
         })
     }
 }
@@ -717,9 +701,7 @@ pub fn import_pi_session_with(
     let plan = plan_import(&split, &tree);
     let pi_by_id: HashMap<&str, &Value> = pi_entries.iter().map(|e| (id_of(e), e)).collect();
 
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |d| d.as_millis() as i64);
+    let now = jsrt::date::now_ms();
     let time = Arc::new(Mutex::new(parse_timestamp(header.get("timestamp"), now)));
     let set_time = |at: i64| *time.lock().unwrap_or_else(PoisonError::into_inner) = at;
     let clock: SharedClock = Arc::new(Mutex::new(PiClock { time: time.clone() }));

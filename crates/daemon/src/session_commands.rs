@@ -7,21 +7,16 @@
 use serde_json::{Value, json};
 use session_core::core::Op;
 
-/// JavaScript's `trim` whitespace (also U+FEFF).
-fn trim(text: &str) -> &str {
-    text.trim_matches(|c: char| c.is_whitespace() || c == '\u{feff}')
-}
-
 /// The command a prompt `message` is, as `(name, operation)`; `None` for any other text (a turn).
 pub fn command(message: &str) -> Option<(&'static str, Op)> {
-    let text = trim(message);
+    let text = jsrt::string::trim(message);
     if let Some(rest) = text.strip_prefix("/goal")
-        && (rest.is_empty() || rest.starts_with(char::is_whitespace))
+        && (rest.is_empty() || rest.starts_with(jsrt::string::is_space))
     {
         return Some((
             "goal",
             Op::Goal {
-                args: trim(rest).to_string(),
+                args: jsrt::string::trim(rest).to_string(),
             },
         ));
     }

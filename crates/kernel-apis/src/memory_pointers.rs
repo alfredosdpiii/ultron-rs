@@ -5,7 +5,6 @@
 //! session. The setting `memory.filePointers: false` turns this off.
 
 use crate::memory_records::{Glob, IndexEntry, RecordIndex};
-use crate::util::lock;
 use host::file_hooks::{CellChanges, CellObserver, inside};
 use serde_json::{Map, Value};
 use std::collections::HashSet;
@@ -61,7 +60,7 @@ impl MemoryPointers {
         let Ok(entries) = self.index.entries() else {
             return Vec::new();
         };
-        let mut delivered = lock(&self.delivered);
+        let mut delivered = jsrt::sync::lock(&self.delivered);
         let mut lines = Vec::new();
         for entry in entries {
             if lines.len() == MAX_POINTERS {

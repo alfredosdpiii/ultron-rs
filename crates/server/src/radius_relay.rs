@@ -11,6 +11,7 @@
 //! thread and are queued, in order, on the socket's writer.
 
 use crate::radius_ws::{self, WsConnection, WsEvent, WsWriter};
+use jsrt::sync;
 use protocol::websocket::Message;
 use serde_json::{Value, json};
 use std::collections::HashMap;
@@ -386,17 +387,13 @@ struct Shared {
     writer: Mutex<Option<WsWriter>>,
 }
 
-fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
-    mutex.lock().unwrap_or_else(|e| e.into_inner())
-}
-
 impl Shared {
     fn connections(&self) -> MutexGuard<'_, HashMap<String, Active>> {
-        lock(&self.connections)
+        sync::lock(&self.connections)
     }
 
     fn send(&self, message: Message) -> Result<(), String> {
-        match &*lock(&self.writer) {
+        match &*sync::lock(&self.writer) {
             Some(writer) => writer.send(message),
             None => Err("Radius relay host is disconnected".into()),
         }
@@ -406,7 +403,7 @@ impl Shared {
         let connections: Vec<Active> = self.connections().drain().map(|(_, active)| active).collect();
         for active in connections {
             active.connection.closed.store(true, Ordering::SeqCst);
-            let mut handler = lock(&active.handler);
+            let mut handler = sync::lock(&active.handler);
             match error {
                 Some(error) => handler.on_error(error),
                 None => handler.on_close(),
@@ -504,12 +501,12 @@ impl RadiusRelayHost {
         if self.closed.swap(true, Ordering::SeqCst) {
             return;
         }
-        if let Some(writer) = lock(&self.shared.writer).as_ref() {
+        if let Some(writer) = sync::lock(&self.shared.writer).as_ref() {
             writer.close_socket(1000, "Pi server stopped");
         }
         self.stop.notify_one();
         self.shared.drop_connections(None);
-        if let Some(thread) = lock(&self.thread).take() {
+        if let Some(thread) = sync::lock(&self.thread).take() {
             let _ = thread.join();
         }
     }
@@ -627,7 +624,7 @@ impl Run {
 
     /// `#serve`: handle the gateway's messages until the socket closes; `Ok` for a normal (1000) closure.
     async fn serve(&self, mut socket: WsConnection) -> Result<(), String> {
-        *lock(&self.shared.writer) = Some(socket.writer.clone());
+        *sync::lock(&self.shared.writer) = Some(socket.writer.clone());
         let result = loop {
             let event = tokio::select! {
                 event = socket.reader.next() => event,
@@ -662,7 +659,7 @@ impl Run {
             }
         };
         socket.writer.close();
-        *lock(&self.shared.writer) = None;
+        *sync::lock(&self.shared.writer) = None;
         self.shared.drop_connections(result.as_ref().err().map(String::as_str));
         socket.finish().await;
         result
@@ -673,7 +670,7 @@ impl Run {
             HostControl::Ping => {
                 let pong = json!({"version": 1, "type": "pong"}).to_string();
                 if self.shared.send(Message::Text(pong)).is_err()
-                    && let Some(writer) = lock(&self.shared.writer).as_ref()
+                    && let Some(writer) = sync::lock(&self.shared.writer).as_ref()
                 {
                     writer.close_socket(LOCAL_TRANSPORT_ERROR_CLOSE_CODE, "Radius relay send failed");
                 }
@@ -685,7 +682,7 @@ impl Run {
                 let active = self.shared.connections().remove(&id);
                 if let Some(active) = active {
                     active.connection.closed.store(true, Ordering::SeqCst);
-                    lock(&active.handler).on_close();
+                    sync::lock(&active.handler).on_close();
                 }
                 Ok(())
             }
@@ -696,7 +693,7 @@ impl Run {
         let (id, payload) = parse_relay_data_frame(bytes).ok_or("Invalid Radius relay data frame")?;
         let handler = self.shared.connections().get(&id).map(|a| a.handler.clone());
         match handler {
-            Some(handler) => lock(&handler).on_data(&payload),
+            Some(handler) => sync::lock(&handler).on_data(&payload),
             None => {
                 let _ = self.shared.send(Message::Text(close_control(&id, 1000)));
             }

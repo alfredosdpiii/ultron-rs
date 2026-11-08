@@ -54,10 +54,7 @@ pub fn file_stem(model: &str) -> String {
 
 /// `new Date().toISOString()`.
 pub fn now_iso() -> String {
-    let ms = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |d| d.as_millis() as i64);
-    kernel_apis::util::iso(ms)
+    jsrt::date::iso_string(jsrt::date::now_ms())
 }
 
 /// `(provider, model)` of `provider/model`.

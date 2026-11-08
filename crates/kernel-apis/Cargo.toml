@@ -13,6 +13,7 @@ base64 = "=0.23.1"
 fancy-regex = "=0.19.2"
 getrandom = "=0.4.3"
 host = { path = "../host" }
+jsrt = { path = "../jsrt" }
 kernel = { path = "../kernel" }
 resources = { path = "../resources" }
 resvg = { version = "=0.48.1", default-features = false, features = ["text", "system-fonts"] }

@@ -10,7 +10,6 @@
 //! hook never starts a daemon unasked: only `LOKI_DAEMON=1` (or `daemon start`) does.
 
 use serde_json::{Value, json};
-use sha2::{Digest, Sha256};
 use std::io::{Read, Write};
 use std::os::unix::fs::{DirBuilderExt, MetadataExt, PermissionsExt};
 use std::os::unix::net::{UnixListener, UnixStream};
@@ -31,11 +30,7 @@ fn home() -> PathBuf {
 /// `daemon_paths`: the socket and lock of `root`'s daemon, none when the socket path would not fit a
 /// `sockaddr_un` (107 bytes).
 pub fn daemon_paths(root: &Path) -> Option<(PathBuf, PathBuf)> {
-    let identity: String = Sha256::digest(crate::resolve(root).as_os_str().as_encoded_bytes())
-        .iter()
-        .map(|b| format!("{b:02x}"))
-        .collect::<String>()[..16]
-        .to_string();
+    let identity = jsrt::hash::sha256_hex(crate::resolve(root).as_os_str().as_encoded_bytes())[..16].to_string();
     let directory = home().join(".cache/loki/d");
     let socket = directory.join(&identity);
     if socket.as_os_str().len() > 107 {
@@ -48,7 +43,7 @@ pub fn daemon_paths(root: &Path) -> Option<(PathBuf, PathBuf)> {
 pub fn engine_digest() -> String {
     std::env::current_exe()
         .and_then(std::fs::read)
-        .map(|bytes| Sha256::digest(bytes).iter().map(|b| format!("{b:02x}")).collect())
+        .map(jsrt::hash::sha256_hex)
         .unwrap_or_default()
 }
 

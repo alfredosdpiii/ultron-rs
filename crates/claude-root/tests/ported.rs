@@ -298,7 +298,7 @@ impl McpHandlers for Fake {
             }
             return Err("cancelled".into());
         }
-        let code = claude_root::mcp_protocol::js_string(args.get("code"));
+        let code = jsrt::value::string(args.get("code"));
         Ok(json!({"content": [{"type": "text", "text": format!("ran {code}")}]}))
     }
     fn prompts(&self) -> Option<Vec<McpPrompt>> {

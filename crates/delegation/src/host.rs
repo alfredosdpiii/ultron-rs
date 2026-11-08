@@ -22,12 +22,13 @@ use crate::workspace::{
     DEFAULT_MAX_SNAPSHOT_ENTRIES, WorkspaceSnapshot, check_files, diff_snapshots, snapshot_workspace,
 };
 use crate::worktrees::{self as wt, WorktreeRecord, WorktreeSetup};
+use jsrt::{number, sync};
 use kernel::{HostHandler, Signal};
 use serde_json::{Map, Value, json};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{Receiver, Sender, channel};
-use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
+use std::sync::{Arc, Condvar, Mutex, PoisonError};
 use std::time::Duration;
 
 const CHILD: &str = "rlm-child@1";
@@ -41,7 +42,7 @@ pub fn spawn_depth_limit(raw: Option<&str>) -> u32 {
     raw.map(str::trim)
         .filter(|s| !s.is_empty())
         .and_then(|s| s.parse::<f64>().ok())
-        .filter(|v| v.fract() == 0.0 && *v >= 0.0 && *v <= 9_007_199_254_740_991.0)
+        .filter(|v| number::is_safe_integer(*v) && *v >= 0.0)
         .map_or(DEFAULT_SPAWN_DEPTH, |v| v.min(f64::from(u32::MAX)) as u32)
 }
 
@@ -314,25 +315,11 @@ fn collect_timeout(value: Option<&Value>) -> Result<Option<Duration>, String> {
     }
 }
 
-fn fields(payload: &Map<String, Value>, allowed: &[&str]) -> Result<(), String> {
-    match payload.keys().find(|k| !allowed.contains(&k.as_str())) {
-        Some(key) => Err(format!("Unknown payload field: {key}")),
-        None => Ok(()),
-    }
-}
-
 fn nonempty_string(value: Option<&Value>, name: &str) -> Result<String, String> {
     match value.and_then(Value::as_str) {
         Some(text) if !text.trim().is_empty() => Ok(text.to_string()),
         _ => Err(format!("{name} must be a nonempty string")),
     }
-}
-
-fn safe_integer(value: &Value) -> Option<i64> {
-    value
-        .as_f64()
-        .filter(|v| v.fract() == 0.0 && v.abs() <= 9_007_199_254_740_991.0)
-        .map(|v| v as i64)
 }
 
 /// `worktreeSetupOption`: a spawn's `worktree_setup=`, checked.
@@ -341,7 +328,7 @@ fn check_worktree_setup(value: Option<&Value>) -> Result<Option<WorktreeSetup>, 
         return Ok(None);
     };
     let setup = value.as_object().ok_or("agent input must be a JSON object")?;
-    fields(setup, &["link", "copy", "command", "timeout_ms"])?;
+    jsrt::payload::fields(setup, &["link", "copy", "command", "timeout_ms"])?;
     for name in ["link", "copy"] {
         let Some(item) = setup.get(name).filter(|v| !v.is_null()) else {
             continue;
@@ -358,7 +345,7 @@ fn check_worktree_setup(value: Option<&Value>) -> Result<Option<WorktreeSetup>, 
     }
     if setup
         .get("timeout_ms")
-        .is_some_and(|t| safe_integer(t).is_none_or(|n| n < 1))
+        .is_some_and(|t| number::safe_integer(t).is_none_or(|n| n < 1))
     {
         return Err("worktree_setup.timeout_ms must be a positive integer".into());
     }
@@ -429,10 +416,6 @@ fn public_task(task: &Task) -> Value {
         out["result"] = result.clone();
     }
     out
-}
-
-fn lock(state: &Mutex<State>) -> MutexGuard<'_, State> {
-    state.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
 impl State {
@@ -731,7 +714,7 @@ impl Delegation {
             return Err("Host payload must be a JSON object".into());
         };
         let parent = {
-            let mut state = lock(&self.inner.state);
+            let mut state = sync::lock(&self.inner.state);
             if state.closed {
                 return Err("Ultron task host is closed".into());
             }
@@ -743,8 +726,8 @@ impl Delegation {
             "rlm.spawn" => self.spawn(&payload, parent, lane),
             "rlm.finish" => self.finish_request(payload, parent),
             "rlm.list_subagents" => {
-                fields(&payload, &[])?;
-                let state = lock(&self.inner.state);
+                jsrt::payload::fields(&payload, &[])?;
+                let state = sync::lock(&self.inner.state);
                 let subagents: Vec<Value> = state
                     .tasks
                     .iter()
@@ -805,10 +788,10 @@ impl Delegation {
                 self.collected(outcomes)
             }
             "rlm.delete_subagent" => {
-                fields(&payload, &["selector"])?;
+                jsrt::payload::fields(&payload, &["selector"])?;
                 let selector = nonempty_string(payload.get("selector"), "selector")?;
                 let known = {
-                    let state = lock(&self.inner.state);
+                    let state = sync::lock(&self.inner.state);
                     state.is_child(&selector) && state.visible(&selector, parent)
                 };
                 if !known {
@@ -819,13 +802,13 @@ impl Delegation {
             }
             "rlm.merge" => self.merge_request(&payload, parent, lane, cell),
             "rlm.worktrees.list" => {
-                fields(&payload, &["all"])?;
+                jsrt::payload::fields(&payload, &["all"])?;
                 let shared = self.inner.workspace.as_deref();
-                let from = lock(&self.inner.state)
+                let from = sync::lock(&self.inner.state)
                     .workspace_of(parent, shared)
                     .or_else(|| std::env::current_dir().ok())
                     .unwrap_or_default();
-                let state = lock(&self.inner.state);
+                let state = sync::lock(&self.inner.state);
                 let worktrees: Vec<Value> = wt::list_records(&from)
                     .into_iter()
                     .filter(|r| payload.get("all") == Some(&Value::Bool(true)) || r.session_id == self.inner.session_id)
@@ -843,13 +826,13 @@ impl Delegation {
                 Ok(json!({ "worktrees": worktrees }))
             }
             "rlm.worktrees.cleanup" => {
-                fields(&payload, &["branches"])?;
-                let workspace = lock(&self.inner.state).workspace_of(parent, self.inner.workspace.as_deref());
+                jsrt::payload::fields(&payload, &["branches"])?;
+                let workspace = sync::lock(&self.inner.state).workspace_of(parent, self.inner.workspace.as_deref());
                 let Some(workspace) = workspace else {
                     return Ok(json!({ "removed": [], "kept_branches": [], "running": [] }));
                 };
                 let running = |record: &WorktreeRecord| {
-                    let state = lock(&self.inner.state);
+                    let state = sync::lock(&self.inner.state);
                     record
                         .task_id
                         .as_deref()
@@ -901,7 +884,7 @@ impl Delegation {
         lane: &str,
         cell: &CellContext,
     ) -> Result<Value, String> {
-        fields(payload, &["selectors", "on_conflict", "include_failed"])?;
+        jsrt::payload::fields(payload, &["selectors", "on_conflict", "include_failed"])?;
         let on_conflict = match payload.get("on_conflict") {
             None => "stop",
             Some(Value::String(s)) if ["stop", "markers", "skip"].contains(&s.as_str()) => s.as_str(),
@@ -915,7 +898,7 @@ impl Delegation {
             None => Vec::new(),
         };
         let children: Vec<String> = {
-            let state = lock(&self.inner.state);
+            let state = sync::lock(&self.inner.state);
             if selectors.is_empty() {
                 // Default: the caller's own worktree children, in the order they were spawned.
                 state
@@ -961,7 +944,7 @@ impl Delegation {
                     format!("rlm.merge was cancelled: {r}")
                 }));
         }
-        let target = lock(&self.inner.state).workspace_of(parent, self.inner.workspace.as_deref());
+        let target = sync::lock(&self.inner.state).workspace_of(parent, self.inner.workspace.as_deref());
         let Some(target) = target else {
             return Err("rlm.merge needs a working directory, and this session has none".into());
         };
@@ -981,7 +964,7 @@ impl Delegation {
         let mut stopped_at: Option<String> = None;
         for id in children {
             let (result, record, merge_status) = {
-                let state = lock(&self.inner.state);
+                let state = sync::lock(&self.inner.state);
                 let task = state.task(id);
                 (
                     task.and_then(|t| t.outcome.clone()).and_then(Result::ok),
@@ -1072,7 +1055,7 @@ impl Delegation {
             });
             let status = outcome.status();
             {
-                let mut state = lock(&self.inner.state);
+                let mut state = sync::lock(&self.inner.state);
                 if let Some(task) = state.task_mut(id) {
                     task.merge_status = Some(status.to_string());
                 }
@@ -1154,7 +1137,7 @@ impl Delegation {
     }
 
     fn store_record(&self, id: &str, record: WorktreeRecord) {
-        let mut state = lock(&self.inner.state);
+        let mut state = sync::lock(&self.inner.state);
         if let Some(task) = state.task_mut(id)
             && task.worktree.is_some()
         {
@@ -1163,11 +1146,11 @@ impl Delegation {
     }
 
     fn spawn(&self, payload: &Map<String, Value>, parent: Option<&str>, lane: &str) -> Result<Value, String> {
-        fields(payload, &["prompt", "kwargs"])?;
+        jsrt::payload::fields(payload, &["prompt", "kwargs"])?;
         let limit = self.inner.spawn_depth;
         let root = self.inner.root.lock().unwrap_or_else(PoisonError::into_inner).clone();
         let (depth, allowance) = {
-            let state = lock(&self.inner.state);
+            let state = sync::lock(&self.inner.state);
             let children: Vec<String> = state.line(parent).into_iter().filter(|id| state.is_child(id)).collect();
             let allowance = children
                 .first()
@@ -1192,7 +1175,7 @@ impl Delegation {
             Some(Value::Object(map)) => map,
             Some(_) => return Err("agent input must be a JSON object".into()),
         };
-        fields(
+        jsrt::payload::fields(
             kwargs,
             &[
                 "name",
@@ -1241,7 +1224,7 @@ impl Delegation {
         }
         let child_depth = match kwargs.get("depth") {
             None => 0,
-            Some(value) => safe_integer(value)
+            Some(value) => number::safe_integer(value)
                 .filter(|n| *n >= 0)
                 .ok_or("depth must be a non-negative integer")?,
         };
@@ -1278,7 +1261,7 @@ impl Delegation {
             Some(value @ Value::Number(_)) => value.clone(),
             _ => json!(DEFAULT_TIMEOUT_MS as i64),
         };
-        let timeout_ms = safe_integer(&timeout)
+        let timeout_ms = number::safe_integer(&timeout)
             .filter(|n| (1..=3_600_000).contains(n))
             .ok_or("timeout_ms must be an integer between 1 and 3600000")? as u64;
         let fork_at = match fork_hook.filter(|_| fork) {
@@ -1314,13 +1297,13 @@ impl Delegation {
         let fingerprint = task_fingerprint(&fingerprinted);
         let signal = Signal::new();
         let (task_id, level) = {
-            let mut state = lock(&self.inner.state);
+            let mut state = sync::lock(&self.inner.state);
             if state.closed {
                 return Err("Ultron task host is closed".into());
             }
             let admitted = state
                 .journal
-                .admit(CHILD, &fingerprint, &crate::task_store::uuid_v4(), parent);
+                .admit(CHILD, &fingerprint, &jsrt::random::uuid_v4(), parent);
             let (record, _) = match admitted {
                 Ok(admitted) => admitted,
                 Err(error) => {
@@ -1370,7 +1353,7 @@ impl Delegation {
         };
         let lane_name = format!("ultron.rlm-child.{task_id}");
         let (cwd, env, brief) = {
-            let state = lock(&self.inner.state);
+            let state = sync::lock(&self.inner.state);
             let inherited = state.worktree_of(Some(&task_id));
             let note = worktree.as_ref().map(wt::worktree_brief_note);
             // The role and the checks the host will run lead the brief.
@@ -1408,7 +1391,7 @@ impl Delegation {
             host: self.clone(),
         };
         {
-            let mut state = lock(&self.inner.state);
+            let mut state = sync::lock(&self.inner.state);
             state.lane_tasks.insert(lane_name.clone(), task_id.clone());
             if let Some(task) = state.task_mut(&task_id) {
                 task.lane_name = Some(lane_name);
@@ -1454,7 +1437,7 @@ impl Delegation {
         if mode == WorktreeMode::Off {
             return Ok(None);
         }
-        let from = lock(&self.inner.state).workspace_of(parent, self.inner.workspace.as_deref());
+        let from = sync::lock(&self.inner.state).workspace_of(parent, self.inner.workspace.as_deref());
         let Some(from) = from else {
             if mode == WorktreeMode::Auto {
                 return Ok(None);
@@ -1480,7 +1463,7 @@ impl Delegation {
     fn run_child(&self, run: ChildRun) {
         let id = run.task_id.clone();
         let signal = run.signal.clone();
-        let contract = lock(&self.inner.state).task(&id).and_then(|t| t.contract.clone());
+        let contract = sync::lock(&self.inner.state).task(&id).and_then(|t| t.contract.clone());
         let started = self.child_start(&id, &signal);
         let reply = match &started {
             Ok(()) => (self.inner.runner)(run.clone()),
@@ -1531,7 +1514,7 @@ impl Delegation {
                 return Some(None);
             };
             // Again, with what failed appended to its brief, on a verdict of its own.
-            if let Some(task) = lock(&self.inner.state).task_mut(id) {
+            if let Some(task) = sync::lock(&self.inner.state).task_mut(id) {
                 task.verdict = None;
                 task.verdict_rejections = 0;
                 task.verdict_problems.clear();
@@ -1546,7 +1529,7 @@ impl Delegation {
         };
         let mut review = |name: &str, prompt: &str| {
             let (parent, owner) = {
-                let state = lock(&self.inner.state);
+                let state = sync::lock(&self.inner.state);
                 let parent = state.task(id).and_then(|t| t.parent_id.clone());
                 let owner = parent
                     .as_deref()
@@ -1570,7 +1553,7 @@ impl Delegation {
     /// (`None`: it was spawned without one).
     /// A contract with workspace checks carries the Git baseline of its start (`baseline`), when there is one.
     pub fn contract_of(&self, id: &str) -> Option<Value> {
-        let state = lock(&self.inner.state);
+        let state = sync::lock(&self.inner.state);
         let task = state.task(id)?;
         let mut described = task.contract.as_ref()?.describe();
         if let Some(baseline) = &task.git_baseline {
@@ -1583,7 +1566,7 @@ impl Delegation {
     /// as they are now, against the snapshot taken when it started.
     fn check_contract(&self, id: &str, contract: &SpawnContract, signal: &Signal) -> Value {
         let (verdict, before, baseline, workspace, env) = {
-            let state = lock(&self.inner.state);
+            let state = sync::lock(&self.inner.state);
             let Some(task) = state.task(id) else {
                 return json!({ "verdict": "contract_failed", "checks": [], "failed": ["Unknown Ultron task"] });
             };
@@ -1625,7 +1608,7 @@ impl Delegation {
     /// tree for a worktree child, to see writes it makes outside its worktree).
     fn child_start(&self, id: &str, signal: &Signal) -> Result<(), String> {
         let (own, workspace, parent_workspace, needs_baseline) = {
-            let state = lock(&self.inner.state);
+            let state = sync::lock(&self.inner.state);
             let task = state.task(id).ok_or("Unknown Ultron task")?;
             let shared = self.inner.workspace.as_deref();
             (
@@ -1648,7 +1631,7 @@ impl Delegation {
             (Some(_), Some(_)) => parent_workspace.map(|w| snapshot_workspace(&w, DEFAULT_MAX_SNAPSHOT_ENTRIES, true)),
             _ => None,
         };
-        let mut state = lock(&self.inner.state);
+        let mut state = sync::lock(&self.inner.state);
         if let Some(task) = state.task_mut(id) {
             if own.is_some() {
                 task.worktree_baseline = before.clone();
@@ -1664,7 +1647,7 @@ impl Delegation {
     /// files that changed in its working directory while it ran.
     fn child_result(&self, id: &str, text: &str) -> Result<Value, String> {
         let (verdict, invalid, problems, before, workspace) = {
-            let state = lock(&self.inner.state);
+            let state = sync::lock(&self.inner.state);
             let task = state.task(id).ok_or("Unknown Ultron task")?;
             (
                 task.verdict.clone(),
@@ -1687,7 +1670,7 @@ impl Delegation {
             _ => None,
         };
         let (concurrent, explained) = {
-            let state = lock(&self.inner.state);
+            let state = sync::lock(&self.inner.state);
             let task = state.task(id).ok_or("Unknown Ultron task")?;
             let others = self.concurrent_with(&state, task);
             let explained: Vec<String> = others
@@ -1747,7 +1730,7 @@ impl Delegation {
     /// working there declared.
     fn outside_writes(&self, id: &str) -> Vec<String> {
         let (root, before, explained) = {
-            let state = lock(&self.inner.state);
+            let state = sync::lock(&self.inner.state);
             let Some(task) = state.task(id) else {
                 return Vec::new();
             };
@@ -1809,7 +1792,7 @@ impl Delegation {
     /// `finish`: the first terminal result wins; nothing is published until the journal commits it.
     fn end(&self, id: &str, result: Value) -> Result<Value, String> {
         {
-            let mut state = lock(&self.inner.state);
+            let mut state = sync::lock(&self.inner.state);
             loop {
                 let task = state.task(id).ok_or("Unknown Ultron task")?;
                 if let Some(outcome) = &task.outcome {
@@ -1831,7 +1814,7 @@ impl Delegation {
         let result = self.finalize_worktree(id, result);
         let mut ended = None;
         let event = {
-            let mut state = lock(&self.inner.state);
+            let mut state = sync::lock(&self.inner.state);
             let terminal = match result["status"].as_str() {
                 Some("succeeded") => "completed",
                 Some(other) => other,
@@ -1908,7 +1891,7 @@ impl Delegation {
         if let Some(event) = event {
             return Ok(event.task["result"].clone());
         }
-        let state = lock(&self.inner.state);
+        let state = sync::lock(&self.inner.state);
         state
             .task(id)
             .and_then(|t| t.outcome.clone())
@@ -1920,7 +1903,7 @@ impl Delegation {
     /// reported in `worktree.error` and the worktree is kept.
     fn finalize_worktree(&self, id: &str, mut result: Value) -> Value {
         let (record, verdict, baseline) = {
-            let state = lock(&self.inner.state);
+            let state = sync::lock(&self.inner.state);
             let Some(task) = state.task(id) else {
                 return result;
             };
@@ -1983,7 +1966,7 @@ impl Delegation {
             }
         };
         {
-            let mut state = lock(&self.inner.state);
+            let mut state = sync::lock(&self.inner.state);
             if let Some(task) = state.task_mut(id) {
                 task.worktree = Some(record);
                 if empty {
@@ -2009,7 +1992,7 @@ impl Delegation {
         cell: Option<&Signal>,
     ) -> Option<Result<Value, String>> {
         let (task, live) = {
-            let state = lock(&self.inner.state);
+            let state = sync::lock(&self.inner.state);
             let parent = state.lane_tasks.get(lane).cloned();
             let task = state
                 .task(id)
@@ -2038,7 +2021,7 @@ impl Delegation {
             json!({ "status": "cancelled", "error": reason, "verification": "unverified" }),
         );
         let children: Vec<String> = {
-            let state = lock(&self.inner.state);
+            let state = sync::lock(&self.inner.state);
             state
                 .tasks
                 .iter()
@@ -2054,7 +2037,7 @@ impl Delegation {
 
     /// The children a collect selects: visible to the caller, not the caller itself, in admission order.
     fn selected(&self, payload: &Map<String, Value>, parent: Option<&str>) -> Result<Vec<String>, String> {
-        fields(payload, &["selectors", "timeout_ms"])?;
+        jsrt::payload::fields(payload, &["selectors", "timeout_ms"])?;
         let selectors = match payload.get("selectors").and_then(Value::as_array) {
             Some(items) => items
                 .iter()
@@ -2062,7 +2045,7 @@ impl Delegation {
                 .collect::<Result<Vec<_>, _>>()?,
             None => Vec::new(),
         };
-        let state = lock(&self.inner.state);
+        let state = sync::lock(&self.inner.state);
         Ok(state
             .tasks
             .iter()
@@ -2074,7 +2057,7 @@ impl Delegation {
     }
 
     fn unfinished(&self, ids: &[String]) -> Vec<String> {
-        let state = lock(&self.inner.state);
+        let state = sync::lock(&self.inner.state);
         ids.iter()
             .filter(|id| state.task(id).is_some_and(|t| t.outcome.is_none()))
             .cloned()
@@ -2093,7 +2076,7 @@ impl Delegation {
     /// subagent's spawn `name` and `model`, and its `startedAt` / `endedAt` (ms since the epoch) when known.
     pub fn subagent_views(&self, lane: &str) -> Result<Value, String> {
         let mut listed = self.handle("rlm.list_subagents", json!({}), lane)?;
-        let state = lock(&self.inner.state);
+        let state = sync::lock(&self.inner.state);
         for view in listed["subagents"].as_array_mut().into_iter().flatten() {
             let Some(task) = view["id"].as_str().and_then(|id| state.task(id)) else {
                 continue;
@@ -2117,7 +2100,7 @@ impl Delegation {
     /// Unfinished children started from `lane` ("main" for the root), in admission order: what a turn scheduler
     /// waits for (with [`Delegation::wait`] or the [`DetachedEnd`] channel) after the model ends its turn.
     pub fn running(&self, lane: &str) -> Vec<String> {
-        let state = lock(&self.inner.state);
+        let state = sync::lock(&self.inner.state);
         let parent = state.lane_tasks.get(lane).cloned();
         state
             .tasks
@@ -2145,12 +2128,12 @@ impl Delegation {
             let (cancel, inner) = (cancel.clone(), self.inner.clone());
             std::thread::spawn(move || {
                 while !cancel.wait(Duration::from_secs(3600)) {}
-                let _state = lock(&inner.state);
+                let _state = sync::lock(&inner.state);
                 inner.changed.notify_all();
             });
         }
         let deadline = timeout.map(|t| std::time::Instant::now() + t);
-        let mut state = lock(&self.inner.state);
+        let mut state = sync::lock(&self.inner.state);
         for id in ids {
             if let Some(task) = state.task_mut(id) {
                 task.waiters += 1;
@@ -2187,12 +2170,12 @@ impl Delegation {
 
     /// Requests now waiting on a task's result.
     pub fn waiters(&self, id: &str) -> usize {
-        lock(&self.inner.state).task(id).map_or(0, |t| t.waiters)
+        sync::lock(&self.inner.state).task(id).map_or(0, |t| t.waiters)
     }
 
     /// The journal's tasks, in admission order.
     pub fn tasks(&self) -> Result<Vec<Value>, String> {
-        lock(&self.inner.state).journal.list()
+        sync::lock(&self.inner.state).journal.list()
     }
 
     fn finish_request(&self, mut payload: Map<String, Value>, parent: Option<&str>) -> Result<Value, String> {
@@ -2209,7 +2192,7 @@ impl Delegation {
                 return finish(payload);
             }
         }
-        let mut state = lock(&self.inner.state);
+        let mut state = sync::lock(&self.inner.state);
         let id = parent
             .filter(|id| state.is_child(id))
             .ok_or("rlm.finish is for subagents started with rlm.spawn; here, answer in your reply")?
@@ -2279,7 +2262,7 @@ impl Delegation {
     /// Stop accepting requests and cancel every unfinished task.
     pub fn close(&self) {
         let open: Vec<String> = {
-            let mut state = lock(&self.inner.state);
+            let mut state = sync::lock(&self.inner.state);
             state.closed = true;
             state
                 .tasks

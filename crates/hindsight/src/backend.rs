@@ -8,10 +8,10 @@
 //! failed creation is retried on the next call rather than remembered.
 
 use crate::transport::{HttpRequest, ReqwestTransport, Transport, TransportError};
+use jsrt::utf16;
 use kernel::Signal;
 use kernel_apis::MemoryBackend;
 use kernel_apis::MemoryError;
-use kernel_apis::util::{js_trim, lock, stringify, utf16_len};
 use serde_json::{Map, Value, json};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -66,7 +66,7 @@ const fn code(code: &'static str) -> MemoryError {
 }
 
 fn safe_integer_in(value: f64, min: f64, max: f64) -> bool {
-    value.is_finite() && value.fract() == 0.0 && value.abs() <= 9_007_199_254_740_991.0 && value >= min && value <= max
+    jsrt::number::is_safe_integer(value) && (min..=max).contains(&value)
 }
 
 /// `encodeURIComponent`.
@@ -84,19 +84,10 @@ pub fn encode_uri_component(value: &str) -> String {
 
 /// A path segment: a non-blank id other than "." and "..", at most 2048 UTF-16 units, URI-component encoded.
 fn segment(value: &str) -> Result<String, MemoryError> {
-    if js_trim(value).is_empty() || value == "." || value == ".." || utf16_len(value) > 2048 {
+    if jsrt::string::trim(value).is_empty() || value == "." || value == ".." || utf16::len(value) > 2048 {
         return Err(code("INVALID_CONFIG"));
     }
     Ok(encode_uri_component(value))
-}
-
-/// JavaScript's `\s`.
-fn js_space(c: char) -> bool {
-    matches!(
-        c,
-        '\t' | '\n' | '\u{b}' | '\u{c}' | '\r' | ' ' | '\u{a0}' | '\u{1680}' | '\u{2000}'
-            ..='\u{200a}' | '\u{2028}' | '\u{2029}' | '\u{202f}' | '\u{205f}' | '\u{3000}' | '\u{feff}'
-    )
 }
 
 /// `/(?:^|:)<scope>:[^\s:][^\s]*$/`.
@@ -106,7 +97,10 @@ fn names_scope(tag: &str, scope: &str) -> bool {
         (at == 0 || tag[..at].ends_with(':'))
             && tag[at..].strip_prefix(&prefix).is_some_and(|rest| {
                 let mut chars = rest.chars();
-                chars.next().is_some_and(|first| !js_space(first) && first != ':') && !chars.any(js_space)
+                chars
+                    .next()
+                    .is_some_and(|first| !jsrt::string::is_space(first) && first != ':')
+                    && !chars.any(jsrt::string::is_space)
             })
     })
 }
@@ -118,7 +112,7 @@ fn scope_tags(value: &Value, scope: &str) -> Result<Value, MemoryError> {
         .and_then(|items| items.iter().map(Value::as_str).collect());
     let valid = tags.as_ref().is_some_and(|tags| {
         !tags.is_empty()
-            && tags.iter().all(|tag| !js_trim(tag).is_empty())
+            && tags.iter().all(|tag| !jsrt::string::trim(tag).is_empty())
             && tags.iter().enumerate().all(|(i, tag)| !tags[..i].contains(tag))
             && tags.iter().any(|tag| names_scope(tag, scope))
     });
@@ -182,7 +176,7 @@ impl HindsightBackend {
             || base.password().is_some_and(|p| !p.is_empty())
             || base.query().is_some_and(|q| !q.is_empty())
             || base.fragment().is_some_and(|f| !f.is_empty())
-            || utf16_len(base.as_str()) > 8192
+            || utf16::len(base.as_str()) > 8192
         {
             return Err(code("INVALID_CONFIG"));
         }
@@ -192,7 +186,7 @@ impl HindsightBackend {
             href.strip_suffix('/').unwrap_or(href),
             segment(&options.bank_id)?
         );
-        if utf16_len(&namespace) > 8192 {
+        if utf16::len(&namespace) > 8192 {
             return Err(code("INVALID_CONFIG"));
         }
         let mut filters = Map::new();
@@ -234,7 +228,7 @@ impl HindsightBackend {
         signal: &Signal,
     ) -> Result<Value, MemoryError> {
         let url = format!("{}{path}", self.namespace);
-        if utf16_len(&url) > 8192 {
+        if utf16::len(&url) > 8192 {
             return Err(code("INVALID_CONFIG"));
         }
         if signal.is_aborted() {
@@ -244,7 +238,7 @@ impl HindsightBackend {
             method: method.into(),
             url,
             headers: self.headers.clone(),
-            body: body.map(|body| stringify(body).into_bytes()),
+            body: body.map(|body| jsrt::json::stringify(body).into_bytes()),
         };
         let response = self
             .transport
@@ -283,7 +277,7 @@ impl HindsightBackend {
     ) -> Result<Value, MemoryError> {
         if self.ensure_bank {
             // Callers arriving during the creation wait for it, as they share its promise in TS.
-            let mut ready = lock(&self.bank_ready);
+            let mut ready = jsrt::sync::lock(&self.bank_ready);
             if !*ready {
                 self.request("", "PUT", Some(&json!({})), signal)?;
                 *ready = true;

@@ -8,6 +8,7 @@ publish.workspace = true
 autotests = false
 
 [dependencies]
+jsrt = { path = "../jsrt" }
 serde_json = { version = "=1.0.151", features = ["preserve_order"] }
 tui = { path = "../tui" }
 

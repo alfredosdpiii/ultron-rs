@@ -15,11 +15,11 @@ use crate::constrained::{json_schema_tool_parameters, resolve_json_schema_strict
 use crate::env::provider_env_value;
 use crate::http::{AbortSignal, HttpRequest, HttpResponse, Read, Transport, cancelled, is_aborted, read_chunk};
 use crate::json::{parse_json, parse_streaming_json};
-use crate::jsutil::{atob, btoa, json_parse_error};
+use crate::jsutil::json_parse_error;
 use crate::models::calculate_cost;
 use crate::options::{
     SimpleStreamOptions, StreamOptions, ThinkingBudgets, adjust_max_tokens_for_thinking, build_base_options,
-    clamp_max_tokens_to_context, clamp_reasoning, now_ms,
+    clamp_max_tokens_to_context, clamp_reasoning,
 };
 use crate::transcript::{
     collapse_system_messages, current_tools, initial_system_message, system_message_text, transform_messages,
@@ -143,7 +143,7 @@ fn failure_diagnostic(error: &BedrockError, fallback_request_id: Option<&str>) -
     }
     (!details.is_empty()).then(|| AssistantMessageDiagnostic {
         kind: "bedrock_response_failure".into(),
-        timestamp: now_ms(),
+        timestamp: jsrt::date::now_ms(),
         error: None,
         details: Some(details),
     })
@@ -221,7 +221,7 @@ fn http_error(status: u16, headers: &crate::http::HeaderMap, body: &str) -> Bedr
 fn value_text(value: &Value) -> String {
     match value {
         Value::String(s) => s.clone(),
-        other => crate::json::stringify(other),
+        other => jsrt::json::stringify(other),
     }
 }
 
@@ -427,7 +427,7 @@ fn required_text(text: &str) -> Value {
 
 /// `atob` failure (`DOMException: The string to be decoded is not correctly encoded.`).
 fn base64_bytes(data: &str) -> Result<Vec<u8>, String> {
-    atob(data).ok_or_else(|| "The string to be decoded is not correctly encoded.".to_string())
+    jsrt::base64::atob(data).ok_or_else(|| "The string to be decoded is not correctly encoded.".to_string())
 }
 
 fn image_block(mime_type: &str, data: &str) -> Result<Value, String> {
@@ -438,7 +438,7 @@ fn image_block(mime_type: &str, data: &str) -> Result<Value, String> {
         "image/webp" => "webp",
         other => return Err(format!("Unknown image type: {other}")),
     };
-    Ok(json!({"format": format, "source": {"bytes": btoa(&base64_bytes(data)?)}}))
+    Ok(json!({"format": format, "source": {"bytes": jsrt::base64::encode(&base64_bytes(data)?)}}))
 }
 
 fn sanitize_document(value: &Value) -> Value {
@@ -478,7 +478,7 @@ fn convert_messages(
         Some(Message::System(_)) => &context.messages[1..],
         _ => &context.messages,
     };
-    let transformed = transform_messages(messages, model, Some(&normalize_tool_call_id), now_ms());
+    let transformed = transform_messages(messages, model, Some(&normalize_tool_call_id), jsrt::date::now_ms());
     let claude = is_anthropic_claude_model(model);
     let mut result: Vec<Value> = Vec::new();
     let mut i = 0;
@@ -520,9 +520,11 @@ fn convert_messages(
                                     .thinking_signature
                                     .as_deref()
                                     .filter(|s| !s.is_empty())
-                                    .and_then(atob);
+                                    .and_then(jsrt::base64::atob);
                                 if let Some(bytes) = bytes.filter(|b| !b.is_empty()) {
-                                    blocks.push(json!({"reasoningContent": {"redactedContent": btoa(&bytes)}}));
+                                    blocks.push(
+                                        json!({"reasoningContent": {"redactedContent": jsrt::base64::encode(&bytes)}}),
+                                    );
                                 }
                                 continue;
                             }
@@ -939,7 +941,7 @@ async fn run_chain(
         transport,
         profile,
         region,
-        now_ms: now_ms(),
+        now_ms: jsrt::date::now_ms(),
         expiration: Default::default(),
     };
     let credentials = default_credentials(&input).await?;
@@ -966,7 +968,7 @@ async fn chain_credentials(
     let (credentials, expiration) = run_chain(&target.region, profile, env, transport)
         .await
         .map_err(error)?;
-    match second_lookup(expiration, now_ms()) {
+    match second_lookup(expiration, jsrt::date::now_ms()) {
         SecondLookup::Cached => Ok(credentials),
         SecondLookup::LookUpAgain => Ok(run_chain(&target.region, profile, env, transport)
             .await
@@ -1032,7 +1034,13 @@ fn build_request(target: &Target, model: &Model, body: &str, options: &BedrockOp
                 },
                 body: body.as_bytes().to_vec(),
             };
-            sign_request(&mut signable, credentials, &target.region, "bedrock", now_ms());
+            sign_request(
+                &mut signable,
+                credentials,
+                &target.region,
+                "bedrock",
+                jsrt::date::now_ms(),
+            );
             headers = signable.headers;
         }
     }
@@ -1076,7 +1084,7 @@ impl Run<'_, '_> {
         if let Some(bytes) = block.redacted_chunks.take()
             && let AssistantContent::Thinking(thinking) = &mut self.output.content[position]
         {
-            thinking.thinking_signature = Some(btoa(&bytes));
+            thinking.thinking_signature = Some(jsrt::base64::encode(&bytes));
         }
     }
 
@@ -1326,7 +1334,7 @@ impl Run<'_, '_> {
                     .push_str(signature);
             }
             if let Some(redacted) = reasoning.get("redactedContent").and_then(Value::as_str) {
-                let bytes = atob(redacted).unwrap_or_default();
+                let bytes = jsrt::base64::atob(redacted).unwrap_or_default();
                 if !bytes.is_empty() {
                     let first =
                         matches!(&self.output.content[p], AssistantContent::Thinking(b) if b.redacted != Some(true));
@@ -1490,7 +1498,7 @@ pub async fn stream(
     sink: &mut EventSink<'_>,
 ) -> AssistantMessage {
     let context = collapse_system_messages(context);
-    let mut output = AssistantMessage::pending(model, now_ms());
+    let mut output = AssistantMessage::pending(model, jsrt::date::now_ms());
     output.api = "bedrock-converse-stream".into();
     let mut run = Run {
         output,

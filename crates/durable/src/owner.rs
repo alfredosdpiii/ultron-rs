@@ -8,7 +8,6 @@ use std::fs::{File, OpenOptions};
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
-use std::time::{SystemTime, UNIX_EPOCH};
 
 /// Why ownership was not taken.
 #[derive(Debug)]
@@ -85,9 +84,7 @@ impl OwnerLock {
             }
             Err(error) => return Err(OwnerError::Io(error.into())),
         }
-        let acquired_at = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map_or(0, |d| d.as_millis() as u64);
+        let acquired_at = jsrt::date::now_ms() as u64;
         let record = serde_json::json!({"pid": std::process::id(), "acquiredAt": acquired_at});
         file.set_len(0).map_err(OwnerError::Io)?;
         file.seek(SeekFrom::Start(0)).map_err(OwnerError::Io)?;

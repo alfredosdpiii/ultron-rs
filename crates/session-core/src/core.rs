@@ -9,6 +9,7 @@
 //! them ([`crate::journal`], [`crate::compaction_op`]); reads see the session as Pi entries ([`crate::pi_view`]).
 
 use crate::compaction_op::CompactionOp;
+use jsrt::sync;
 
 #[path = "navigate.rs"]
 mod navigate;
@@ -28,7 +29,7 @@ use session_journal::session::{BRANCH_TIP, LANE_CONFIG, LANE_STATE};
 use session_journal::{Session, SessionRepo, SystemClock, Write, names};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::Sender;
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 
 pub const LANE: &str = "main";
@@ -591,10 +592,6 @@ fn select_accepted(queues: &Queues, take_queued: bool) -> Vec<(String, Value)> {
         }
     }
     selected
-}
-
-fn lock<T>(shared: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
-    shared.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
 struct Running {
@@ -1382,7 +1379,7 @@ impl Core {
     }
 
     fn queue_update(&mut self) {
-        let items: Vec<Value> = lock(&self.queues)
+        let items: Vec<Value> = sync::lock(&self.queues)
             .visible()
             .into_iter()
             .map(|q| json!({"type": "message", "kind": q.kind.name(), "entryId": q.entry_id, "message": q.message}))
@@ -1481,7 +1478,7 @@ impl Core {
                     ("message", shown),
                 ]));
                 let delivered = if value["role"] == "user" {
-                    let mut queues = lock(&self.queues);
+                    let mut queues = sync::lock(&self.queues);
                     let found = queues
                         .delivered
                         .iter()
@@ -1613,7 +1610,7 @@ impl Core {
         if run.signal.aborted() {
             return;
         }
-        let taken: Vec<Queued> = lock(&self.queues)
+        let taken: Vec<Queued> = sync::lock(&self.queues)
             .delivered
             .iter()
             .filter(|q| q.turn <= turn && !self.taken.contains(&q.entry_id))
@@ -1706,7 +1703,7 @@ impl Core {
         // An error answer commits with the run's terminal transaction.
         self.announce();
         self.taken.clear();
-        lock(&self.queues).delivered.clear();
+        sync::lock(&self.queues).delivered.clear();
         let status = if aborted {
             "aborted"
         } else if error.is_some() {
@@ -1967,7 +1964,7 @@ impl Core {
                 self.enqueue(kind, message, images, entry_id).map(|id| Some(json!(id)))
             }
             Op::CancelQueued { entry_id } => {
-                let found = lock(&self.queues).items.iter().any(|q| q.entry_id == entry_id);
+                let found = sync::lock(&self.queues).items.iter().any(|q| q.entry_id == entry_id);
                 if found {
                     self.remove_queued(&[entry_id])?;
                 }
@@ -2040,7 +2037,7 @@ impl Core {
                 Ok(Some(json!(next)))
             }
             Op::SetQueueMode { kind, mode } => {
-                let mut queues = lock(&self.queues);
+                let mut queues = sync::lock(&self.queues);
                 let all = mode == "all";
                 match kind {
                     QueueKind::Steer => queues.steering_all = all,
@@ -2371,7 +2368,7 @@ impl Core {
     }
 
     fn state(&self) -> Value {
-        let queues = lock(&self.queues);
+        let queues = sync::lock(&self.queues);
         let mut state = Map::new();
         state.insert("model".into(), serde_json::to_value(&self.model).unwrap_or(Value::Null));
         state.insert("thinkingLevel".into(), self.thinking.clone().into());
@@ -2646,7 +2643,7 @@ impl Core {
         let settings = self.run_settings();
         // The run takes the messages queued while the lane was idle, placed before its prompt in the order they were
         // queued (`selectAcceptedInbox`); the rest wait in the inbox and the run delivers them.
-        let captured: Vec<(String, Value)> = select_accepted(&lock(&self.queues), take_queued);
+        let captured: Vec<(String, Value)> = select_accepted(&sync::lock(&self.queues), take_queued);
         let mut inbox = self.lane_state()["inbox"].clone();
         if let Some(items) = inbox.as_array_mut() {
             items.retain(|item| !captured.iter().any(|(id, _)| item["entryId"] == id.as_str()));
@@ -2664,7 +2661,7 @@ impl Core {
             Err(error) => return fail(error, waiter),
         };
         if !captured.is_empty() {
-            lock(&self.queues)
+            sync::lock(&self.queues)
                 .items
                 .retain(|q| !captured.iter().any(|(id, _)| *id == q.entry_id));
             self.queue_update();
@@ -2788,7 +2785,7 @@ impl Core {
         // The interrupted run continues first; queued messages stay queued and the loop delivers them as it would
         // have (steering during the run, follow-ups when it would end). Without one, the first queued message runs.
         // A message queued for the next run waits for one; it never starts it.
-        let first = lock(&self.queues)
+        let first = sync::lock(&self.queues)
             .items
             .iter()
             .find(|q| q.kind != QueueKind::NextRun)
@@ -2851,7 +2848,7 @@ impl Core {
             Write::set(PENDING_ENTRY, &entry_id, json!({"type": "message", "payload": message})),
             Write::set(LANE_STATE, LANE, lane_state),
         ])?;
-        lock(&self.queues).items.push(Queued {
+        sync::lock(&self.queues).items.push(Queued {
             kind,
             message,
             entry_id: entry_id.clone(),
@@ -2882,7 +2879,7 @@ impl Core {
             self.withdraw_queued(ids);
         }
         for id in ids {
-            let mut queues = lock(&self.queues);
+            let mut queues = sync::lock(&self.queues);
             if let Some(index) = queues.items.iter().position(|q| q.entry_id == *id) {
                 queues.items.remove(index);
             }
@@ -2894,7 +2891,7 @@ impl Core {
 
     fn clear_queue(&mut self) -> Value {
         let (steering, follow_up, cleared) = {
-            let queues = lock(&self.queues);
+            let queues = sync::lock(&self.queues);
             let visible = queues.visible();
             let pick = |kind: QueueKind| -> Vec<String> {
                 visible

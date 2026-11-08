@@ -2,21 +2,13 @@
 //! transaction per line (a single write is written bare, several as an array).
 
 use serde_json::{Map, Value};
-use session_file::js;
 
 pub const JSONL_FORMAT_VERSION: i64 = 4;
 pub const JSONL_STORAGE_VERSION: i64 = 1;
 
 /// `Number.isSafeInteger(value) && value >= minimum`.
 pub(crate) fn safe_integer_at_least(value: Option<&Value>, minimum: i64) -> bool {
-    match value {
-        Some(Value::Number(n)) => match (n.as_i64(), n.as_f64()) {
-            (Some(i), _) => i >= minimum && i.unsigned_abs() < (1 << 53),
-            (None, Some(f)) => f.fract() == 0.0 && f.abs() <= 9_007_199_254_740_991.0 && f >= minimum as f64,
-            _ => false,
-        },
-        _ => false,
-    }
+    value.and_then(jsrt::number::safe_integer).is_some_and(|n| n >= minimum)
 }
 
 fn optional_string(map: &Map<String, Value>, key: &str) -> bool {
@@ -51,7 +43,7 @@ pub fn is_v3_header(value: &Value) -> bool {
         && map
             .get("timestamp")
             .and_then(Value::as_str)
-            .is_some_and(|t| js::parse_date(t).is_some())
+            .is_some_and(|t| jsrt::date::parse_date(t).is_some())
         && optional_string(map, "parentSession")
 }
 
@@ -111,7 +103,7 @@ fn parse_committed_write(mut value: Value) -> Result<Value, String> {
     if !safe_integer_at_least(map.get("seq"), 1) {
         return Err("Invalid JSONL write seq".into());
     }
-    let op = map.get("op").map(js_string).unwrap_or_else(|| "undefined".into());
+    let op = jsrt::value::string(map.get("op"));
     match map.get("kind").and_then(Value::as_str) {
         Some("entry") => {
             if !safe_integer_at_least(map.get("timestamp"), 0) {
@@ -124,21 +116,11 @@ fn parse_committed_write(mut value: Value) -> Result<Value, String> {
         Some("list") if op == "append" || op == "delete" => {}
         Some("list") => return Err(format!("Invalid JSONL list operation: {op}")),
         _ => {
-            let kind = map.get("kind").map(js_string).unwrap_or_else(|| "undefined".into());
+            let kind = jsrt::value::string(map.get("kind"));
             return Err(format!("Invalid JSONL write kind: {kind}"));
         }
     }
     Ok(value)
-}
-
-/// `String(value)` for the error messages.
-fn js_string(value: &Value) -> String {
-    match value {
-        Value::String(s) => s.clone(),
-        Value::Null => "null".into(),
-        Value::Object(_) => "[object Object]".into(),
-        other => js::stringify(other),
-    }
 }
 
 /// `parseJsonlTransaction`: one write object or an array of them.
@@ -154,9 +136,12 @@ pub fn parse_transaction(line: &str) -> Result<Vec<Value>, String> {
 /// `serializeJsonlTransaction`.
 pub fn serialize_transaction(writes: &[Value]) -> String {
     match writes {
-        [one] => js::stringify(one),
+        [one] => jsrt::json::stringify(one),
         // `JSON.stringify` of the array, without copying the writes into one.
-        many => format!("[{}]", many.iter().map(js::stringify).collect::<Vec<_>>().join(",")),
+        many => format!(
+            "[{}]",
+            many.iter().map(jsrt::json::stringify).collect::<Vec<_>>().join(",")
+        ),
     }
 }
 

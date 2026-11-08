@@ -134,17 +134,9 @@ pub fn rlm_tool_guidelines(active_tools: &[&str]) -> Vec<String> {
     .to_string()]
 }
 
-/// JS `text.replace(/\s+/g, " ").trim()`.
-pub(crate) fn collapse_whitespace(text: &str) -> String {
-    text.split(crate::js_space)
-        .filter(|s| !s.is_empty())
-        .collect::<Vec<_>>()
-        .join(" ")
-}
-
 /// Truncate to `max` characters with an ellipsis, like the TS `slice(0, max - 1) + "…"`.
 fn one_line(text: &str) -> String {
-    let flat = collapse_whitespace(text);
+    let flat = jsrt::string::flatten(text);
     if flat.chars().count() > 120 {
         format!("{}…", flat.chars().take(119).collect::<String>())
     } else {

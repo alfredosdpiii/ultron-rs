@@ -6,7 +6,7 @@ use std::io::{BufRead, BufReader, Read};
 
 /// `serializeJsonLine`: `JSON.stringify(value)` and LF.
 pub fn serialize_json_line(value: &Value) -> String {
-    let mut line = session_file::js::stringify(value);
+    let mut line = jsrt::json::stringify(value);
     line.push('\n');
     line
 }

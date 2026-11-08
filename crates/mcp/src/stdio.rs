@@ -5,13 +5,14 @@
 
 use crate::jsonrpc::{Error, parse_message};
 use crate::{Incoming, Sink, Transport};
+use jsrt::sync;
 use rustix::process::{Pid, Signal, kill_process_group};
 use serde_json::Value;
 use std::io::{Read, Write};
 use std::os::unix::process::CommandExt;
 use std::path::PathBuf;
 use std::process::{ChildStdin, Command, Stdio};
-use std::sync::{Arc, Condvar, Mutex, MutexGuard};
+use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
 
 pub const DEFAULT_MAX_MESSAGE_BYTES: usize = 16 * 1024 * 1024;
@@ -52,10 +53,6 @@ pub struct StdioTransport {
     stderr: Arc<Mutex<Vec<u8>>>,
     /// Set once the child has exited and its stdout is drained.
     exited: Arc<(Mutex<bool>, Condvar)>,
-}
-
-fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
-    mutex.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
 fn signal_group(pid: u32, signal: Signal) {
@@ -105,19 +102,19 @@ impl StdioTransport {
     }
 
     pub fn pid(&self) -> Option<u32> {
-        lock(&self.state).pid
+        sync::lock(&self.state).pid
     }
 
     /// The last `max_stderr_bytes` the server wrote to stderr.
     pub fn stderr(&self) -> String {
-        String::from_utf8_lossy(&lock(&self.stderr)).into_owned()
+        String::from_utf8_lossy(&sync::lock(&self.stderr)).into_owned()
     }
 
     /// Waits up to `timeout` for the child to exit; true when it has.
     fn wait_exit(&self, timeout: Duration) -> bool {
         let (done, condvar) = &*self.exited;
         let end = Instant::now() + timeout;
-        let mut guard = lock(done);
+        let mut guard = sync::lock(done);
         while !*guard {
             let left = end.saturating_duration_since(Instant::now());
             if left.is_zero() {
@@ -131,7 +128,7 @@ impl StdioTransport {
 
 impl Transport for StdioTransport {
     fn start(&self, sink: Sink) -> Result<(), Error> {
-        let mut state = lock(&self.state);
+        let mut state = sync::lock(&self.state);
         if state.started {
             return Err(Error::Other("MCP stdio transport already started".into()));
         }
@@ -171,7 +168,7 @@ impl Transport for StdioTransport {
                 let _done = stderr_done;
                 let mut chunk = [0u8; 8192];
                 while let Ok(n @ 1..) = stderr.read(&mut chunk) {
-                    let mut buffer = lock(&buffer);
+                    let mut buffer = sync::lock(&buffer);
                     buffer.extend_from_slice(&chunk[..n]);
                     if buffer.len() > max {
                         let excess = buffer.len() - max;
@@ -211,7 +208,7 @@ impl Transport for StdioTransport {
                 ));
             }
             let (done, condvar) = &*exited;
-            *lock(done) = true;
+            *sync::lock(done) = true;
             condvar.notify_all();
             close_sink(Incoming::Closed);
         });
@@ -219,7 +216,7 @@ impl Transport for StdioTransport {
     }
 
     fn send(&self, message: &Value) -> Result<(), Error> {
-        let mut state = lock(&self.state);
+        let mut state = sync::lock(&self.state);
         let ready = state.started && !state.closed;
         let Some(stdin) = state.stdin.as_mut().filter(|_| ready) else {
             return Err(Error::closed());
@@ -241,7 +238,7 @@ impl Transport for StdioTransport {
 
     fn close(&self) {
         let (pid, stdin) = {
-            let mut state = lock(&self.state);
+            let mut state = sync::lock(&self.state);
             if state.closed {
                 return;
             }

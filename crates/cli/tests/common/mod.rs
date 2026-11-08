@@ -265,7 +265,7 @@ pub fn normalize_journal(text: &str) -> Value {
         header["nextSeq"] = json!(seqs.iter().filter(|s| **s < next).count() + 1);
     }
     let whole = json!({"header": header, "transactions": transactions});
-    let renamed = rename_ids(&session_file::js::stringify(&whole), &mut Vec::new());
+    let renamed = rename_ids(&jsrt::json::stringify(&whole), &mut Vec::new());
     zero_times(&serde_json::from_str(&renamed).unwrap())
 }
 

@@ -97,3 +97,12 @@ fn session_core_event_lines_mask_registered_values() {
     );
     assert!(plain.contains("printed opaque-session-value"), "{plain}");
 }
+
+/// `boundedSummary` is `text.replace(/\s+/g, " ").trim()`, where U+FEFF is whitespace (node 26:
+/// `"\u{feff} a\u{feff}\u{feff}b\n c ".replace(/\s+/g, " ").trim()` is `"a b c"`). (The masking pass already
+/// turns control characters such as U+0085 into spaces.)
+#[test]
+fn session_core_runtime_event_summary_flattens_javascript_whitespace() {
+    let line = session_core::compose::runtime_event_line("cell", "c1", "done", "\u{feff} a\u{feff}\u{feff}b\n c ", "f");
+    assert!(line.contains("summary=\"a b c\""), "{line}");
+}

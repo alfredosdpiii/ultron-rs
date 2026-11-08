@@ -11,9 +11,9 @@ use crate::google_shared::{
 use crate::http::{
     Failure, HeaderBuilder, Read, RetryOptions, cancelled, format_provider_error, is_aborted, read_chunk,
 };
-use crate::json::{parse_json, stringify};
+use crate::json::parse_json;
 use crate::models::{calculate_cost, clamp_thinking_level};
-use crate::options::{SimpleStreamOptions, StreamOptions, ThinkingBudgets, build_base_options, now_ms, pi_user_agent};
+use crate::options::{SimpleStreamOptions, StreamOptions, ThinkingBudgets, build_base_options, pi_user_agent};
 use crate::transcript::{collapse_system_messages, current_tools, initial_system_message, system_message_text};
 use crate::types::{
     AssistantContent, AssistantMessage, AssistantMessageEvent, EventSink, Model, StopReason, TextContent,
@@ -235,7 +235,7 @@ pub(crate) async fn stream_endpoint(
 ) -> AssistantMessage {
     let context = collapse_system_messages(context);
     let mut run = Run {
-        output: AssistantMessage::pending(model, now_ms()),
+        output: AssistantMessage::pending(model, jsrt::date::now_ms()),
         sink,
         current: None,
         tool_calls: if label == "Google Vertex" {
@@ -375,7 +375,7 @@ async fn send_once(
     Err(Failure {
         status: (400..600).contains(&status).then_some(status),
         api: (400..600).contains(&status),
-        ..Failure::plain(stringify(&body))
+        ..Failure::plain(jsrt::json::stringify(&body))
     })
 }
 
@@ -437,14 +437,14 @@ async fn read_google_stream(
             if (400.0..600.0).contains(&code) {
                 let status = error.get("status").map_or("undefined".to_string(), |s| match s {
                     Value::String(s) => s.clone(),
-                    other => stringify(other),
+                    other => jsrt::json::stringify(other),
                 });
                 return Err(Failure {
                     status: Some(code as u16),
                     api: true,
                     ..Failure::plain(format!(
                         "got status: {status}. {}",
-                        stringify(&Value::Object(object.clone()))
+                        jsrt::json::stringify(&Value::Object(object.clone()))
                     ))
                 });
             }
@@ -592,7 +592,7 @@ impl Run<'_, '_> {
                     Some(id) if !duplicate => id.to_string(),
                     _ => format!(
                         "{name}_{}_{}",
-                        now_ms(),
+                        jsrt::date::now_ms(),
                         self.tool_calls.fetch_add(1, Ordering::Relaxed) + 1
                     ),
                 };
@@ -614,7 +614,7 @@ impl Run<'_, '_> {
                     content_index: index,
                     partial,
                 });
-                let delta = stringify(&tool_call.arguments);
+                let delta = jsrt::json::stringify(&tool_call.arguments);
                 self.emit(|partial| AssistantMessageEvent::ToolCallDelta {
                     content_index: index,
                     delta,

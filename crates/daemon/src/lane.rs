@@ -24,12 +24,7 @@ fn add(total: &mut Value, usage: &Value) {
         if let Some(n) = value.as_f64() {
             let current = total.get(key).and_then(Value::as_f64).unwrap_or(0.0);
             let sum = current + n;
-            let next = if sum.fract() == 0.0 && sum.abs() < 9e15 {
-                json!(sum as i64)
-            } else {
-                json!(sum)
-            };
-            total.insert(key.clone(), next);
+            total.insert(key.clone(), jsrt::json::number(sum));
         }
     }
 }
@@ -183,7 +178,7 @@ impl Lane {
                         ("lane", lane),
                         (
                             "row",
-                            json!({"id": crate::paths::uuid_v4(), "usage": usage, "entryId": entry_id, "adjustment": false, "seq": seq}),
+                            json!({"id": jsrt::random::uuid_v4(), "usage": usage, "entryId": entry_id, "adjustment": false, "seq": seq}),
                         ),
                         ("totals", totals),
                     ]));

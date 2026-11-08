@@ -545,7 +545,7 @@ fn emit_changed(ops: &mut Vec<Op>, path: Path, before: Option<&Value>, after: &V
         return;
     }
     if let (Some(Value::String(before)), Value::String(after)) = (before, after) {
-        let (before_units, after_units) = (before.encode_utf16().count(), after.encode_utf16().count());
+        let (before_units, after_units) = (jsrt::utf16::len(before), jsrt::utf16::len(after));
         if after_units > before_units && after.starts_with(before.as_str()) {
             ops.push(Op::Append(path, after[before.len()..].to_owned()));
             return;

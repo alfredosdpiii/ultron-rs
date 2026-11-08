@@ -67,7 +67,7 @@ pub(super) fn open_durable(
     let to_actor = tx.clone();
     let to_actor = Mutex::new(to_actor);
     let bridge = Bridge::new(Arc::new(move |request| {
-        let _ = lock(&to_actor).send(Input::Turn(request));
+        let _ = sync::lock(&to_actor).send(Input::Turn(request));
     }));
     let observed = child_context.clone();
     let committed: crate::turns::Committed = Arc::new(move |entry| observed.committed(entry));
@@ -85,7 +85,7 @@ pub(super) fn open_durable(
     let stream_provider = provider.clone();
     let settings: harness::chat::SettingsSource = Arc::new(move || {
         let (steering, follow_up) = {
-            let queues = lock(&settings_queues);
+            let queues = sync::lock(&settings_queues);
             (queues.steering_all, queues.follow_up_all)
         };
         let mode = |all: bool| if all { QueueMode::All } else { QueueMode::OneAtATime };
@@ -117,7 +117,7 @@ pub(super) fn open_durable(
     let child_costs: ChildCosts = Arc::default();
     let (ended_costs, ended_stack) = (child_costs.clone(), Arc::downgrade(&lane.stack));
     lane.stack.delegation.on_task_end(Arc::new(move |task: &Value| {
-        let cost = task["id"].as_str().and_then(|id| lock(&ended_costs).remove(id));
+        let cost = task["id"].as_str().and_then(|id| sync::lock(&ended_costs).remove(id));
         if let Some(stack) = ended_stack.upgrade()
             && let Some(context) = stack.context.get()
         {
@@ -228,7 +228,7 @@ pub(super) fn open_durable(
 
 /// `withClockLines` over a request's messages: a clock line before each user message that opens the conversation or
 /// follows a gap (derived from the messages' own timestamps, never stored).
-fn add_clock_lines(messages: &mut Vec<ai::Message>, zone: &kernel_apis::localtime::Zone) {
+fn add_clock_lines(messages: &mut Vec<ai::Message>, zone: &jsrt::localtime::Zone) {
     // The positional system prompt sections are no message of the conversation (TypeScript's system prompt is
     // not in the lane's messages): they neither get a line nor count as the message before one.
     let values: Vec<Value> = messages
@@ -280,7 +280,7 @@ fn charge_turns(
                 .lane_of(conversation)
                 .and_then(|lane| lane.strip_prefix(crate::subagents::LANE_PREFIX).map(str::to_string))
         {
-            *lock(&costs).entry(task).or_insert(0.0) += cost;
+            *sync::lock(&costs).entry(task).or_insert(0.0) += cost;
         }
         let _ = stack.usage.record_turn(
             root.as_deref(),
@@ -335,7 +335,7 @@ impl Core {
     /// Queue every queued message that is not waiting in the runtime's inbox yet (a run is in progress).
     pub(super) fn submit_queued(&mut self) -> Result<(), String> {
         // A message queued for the next run waits for it in the lane's inbox, never in the runtime's.
-        let pending: Vec<Queued> = lock(&self.queues)
+        let pending: Vec<Queued> = sync::lock(&self.queues)
             .items
             .iter()
             .filter(|q| q.submission.is_none() && q.kind != QueueKind::NextRun)
@@ -373,7 +373,11 @@ impl Core {
     }
 
     fn mark_submitted(&self, entry_id: &str, id: SubmissionId) {
-        if let Some(item) = lock(&self.queues).items.iter_mut().find(|q| q.entry_id == entry_id) {
+        if let Some(item) = sync::lock(&self.queues)
+            .items
+            .iter_mut()
+            .find(|q| q.entry_id == entry_id)
+        {
             item.submission = Some(id);
         }
     }
@@ -381,7 +385,7 @@ impl Core {
     /// Take queued messages back out of the runtime's inbox (an aborted run: they wait for the user again).
     pub(super) fn withdraw_queued(&mut self, ids: &[String]) {
         let withdrawn: Vec<SubmissionId> = {
-            let mut queues = lock(&self.queues);
+            let mut queues = sync::lock(&self.queues);
             queues
                 .items
                 .iter_mut()
@@ -415,7 +419,7 @@ impl Core {
         // The agent loop polls steering once before its first request (`runLoop`): the first queued steer (every
         // one when steering is `all`) is placed after the prompt, in the run's first request.
         let steering: Vec<(String, SubmissionDraft)> = {
-            let queues = lock(&self.queues);
+            let queues = sync::lock(&self.queues);
             let steers = queues
                 .items
                 .iter()
@@ -713,7 +717,7 @@ impl Core {
         }
         let turn = self.run.as_ref().map_or(0, |r| r.turns) + 1;
         {
-            let mut queues = lock(&self.queues);
+            let mut queues = sync::lock(&self.queues);
             for user in &fresh {
                 let text = text_of(user);
                 if let Some(index) = queues.items.iter().position(|q| message_text(&q.message) == text) {

@@ -4,7 +4,7 @@
 use std::io::{BufRead, BufReader, Read, Write};
 use std::path::Path;
 use std::process::{Command, Stdio};
-use std::time::{Instant, SystemTime, UNIX_EPOCH};
+use std::time::Instant;
 
 use crate::extract::{EXTRACTOR_VERSION, Extractor, MAX_BYTES, language};
 use crate::store::{Error, Store};
@@ -149,9 +149,7 @@ pub fn index_tree(db: &Path, repo: &str, repo_dir: &Path, rev: &str) -> Result<I
         blobs.push((oid.clone(), lang.name().to_string(), extracted));
     }
     let paths: Vec<(String, String)> = entries.into_iter().map(|(path, oid, _)| (path, oid)).collect();
-    let indexed_at = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0, |elapsed| elapsed.as_millis() as i64);
+    let indexed_at = jsrt::date::now_ms();
     store.record_tree(repo, &commit, &paths, &blobs, EXTRACTOR_VERSION, indexed_at)?;
     Ok(IndexStats {
         rev: commit,

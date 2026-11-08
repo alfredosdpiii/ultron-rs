@@ -75,7 +75,7 @@ fn session_core_clock_lines_on_subagent_lanes_in_the_local_zone() {
 
 #[test]
 fn session_core_clock_format_matches_format_clock_in_its_zone() {
-    use kernel_apis::localtime::Zone;
+    use jsrt::localtime::Zone;
     use session_core::lane::format_clock;
     // `TZ=<zone> formatClock(ms)` of clock-context.ts.
     let cases = [

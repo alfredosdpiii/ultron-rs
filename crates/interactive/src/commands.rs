@@ -10,7 +10,8 @@ use tui::markdown::{Markdown, MarkdownOptions};
 use tui::marked::markdown_tokens;
 use tui::theme::Theme;
 
-use crate::components::{bold, fg, format_key_text, format_tokens, js_to_fixed, markdown_theme};
+use crate::components::{bold, fg, format_key_text, format_tokens, markdown_theme};
+use jsrt::number;
 
 /// One command: name, argument hint and description.
 pub struct CommandSpec {
@@ -361,7 +362,7 @@ pub fn session_info(t: &Theme, s: &SessionStats) -> String {
     if prompt > 0 && (s.cache_read > 0 || s.cache_write > 0) {
         let rate = dim(&format!(
             "({}%)",
-            js_to_fixed(s.cache_read as f64 / prompt as f64 * 100.0, 1)
+            number::to_fixed(s.cache_read as f64 / prompt as f64 * 100.0, 1)
         ));
         info += &format!("  {} {} {rate}\n", dim("Cached:"), locale(s.cache_read));
         info += &format!("  {} {}\n", dim("Uncached:"), locale(s.input + s.cache_write));
@@ -374,7 +375,7 @@ pub fn session_info(t: &Theme, s: &SessionStats) -> String {
     );
     if let Some((tokens, window, percent)) = s.context {
         let used = tokens.map_or("?".to_string(), format_tokens);
-        let percent = percent.map_or(String::new(), |p| format!(" ({}%)", js_to_fixed(p, 1)));
+        let percent = percent.map_or(String::new(), |p| format!(" ({}%)", number::to_fixed(p, 1)));
         info += &format!(
             "\n{}\n{} {used}/{}{percent}\n",
             bold("Context"),
@@ -383,7 +384,7 @@ pub fn session_info(t: &Theme, s: &SessionStats) -> String {
         );
     }
     if s.cost > 0.0 {
-        info += &format!("\n{}\n{} ${}", bold("Cost"), dim("Total:"), js_to_fixed(s.cost, 3));
+        info += &format!("\n{}\n{} ${}", bold("Cost"), dim("Total:"), number::to_fixed(s.cost, 3));
     }
     info.trim_end().to_string()
 }

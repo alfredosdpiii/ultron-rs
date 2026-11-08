@@ -18,7 +18,7 @@
 //! Not ported: the records of native tool calls (the model's only tool is `rlm`).
 
 use crate::store::{DocumentStore, read_versioned};
-use crate::util::{Clock, fields, lock, stringify, system_clock};
+use crate::util::{Clock, system_clock};
 use crate::{ApiModule, Request};
 use kernel::Signal;
 use serde_json::{Map, Value, json};
@@ -229,12 +229,12 @@ impl ToolCalls {
 
     /// Reports each REPL call's end (`onEnd`).
     pub fn on_end(&self, observer: ToolCallObserver) {
-        *lock(&self.inner.on_end) = Some(observer);
+        *jsrt::sync::lock(&self.inner.on_end) = Some(observer);
     }
 
     /// The root a lane's calls start under (`NativeHostApi.rootOf`).
     pub fn set_roots(&self, roots: RootOf) {
-        *lock(&self.inner.roots) = Some(roots);
+        *jsrt::sync::lock(&self.inner.roots) = Some(roots);
     }
 
     fn runner(&self) -> Result<Arc<dyn ToolRunner>, String> {
@@ -250,7 +250,7 @@ impl ToolCalls {
 
     /// Loads the journal once: a call that was running when its worker stopped is `interrupted`.
     fn load(&self) -> Result<(), String> {
-        let mut state = lock(&self.inner.state);
+        let mut state = jsrt::sync::lock(&self.inner.state);
         if state.loaded {
             return Ok(());
         }
@@ -324,7 +324,7 @@ impl ToolCalls {
         params: Map<String, Value>,
     ) -> Result<String, String> {
         let runner = self.runner()?;
-        let id = format!("call-{}", random_hex(4));
+        let id = format!("call-{}", jsrt::random::random_hex(4));
         let cancel = Signal::new();
         let exclusive = runner
             .tools()
@@ -333,7 +333,7 @@ impl ToolCalls {
             .is_some_and(|t| t.execution_mode.as_deref() == Some("sequential"));
         let ticket;
         {
-            let mut state = lock(&self.inner.state);
+            let mut state = jsrt::sync::lock(&self.inner.state);
             if state.closed {
                 return Err("Extension tool calls are closed".into());
             }
@@ -385,7 +385,7 @@ impl ToolCalls {
                     let on_update = move |partial: &Value| updates.progress(&update_id, partial);
                     let result =
                         runner.execute_with_updates(&name, &format!("repl-{call_id}"), &params, &cancel, &on_update);
-                    let mut state = lock(&calls.inner.state);
+                    let mut state = jsrt::sync::lock(&calls.inner.state);
                     if let Some(gate) = state.gates.get_mut(&lane) {
                         gate.release(ticket, exclusive);
                     }
@@ -401,7 +401,7 @@ impl ToolCalls {
 
     /// Waits for the lane's gate; a call cancelled while queued never starts.
     fn acquire(&self, lane: &str, id: &str, ticket: u64, cancel: &Signal) -> Result<(), String> {
-        let mut state = lock(&self.inner.state);
+        let mut state = jsrt::sync::lock(&self.inner.state);
         loop {
             let granted = state.gates.get(lane).is_some_and(|g| g.is_granted(ticket));
             if granted {
@@ -434,7 +434,7 @@ impl ToolCalls {
         if text.is_empty() {
             return;
         }
-        let mut state = lock(&self.inner.state);
+        let mut state = jsrt::sync::lock(&self.inner.state);
         if !state.live.contains_key(id) {
             return;
         }
@@ -445,7 +445,7 @@ impl ToolCalls {
 
     fn finish(&self, id: &str, result: Result<Value, String>) {
         let end = {
-            let mut state = lock(&self.inner.state);
+            let mut state = jsrt::sync::lock(&self.inner.state);
             let Some(live) = state.live.remove(id) else {
                 return;
             };
@@ -496,7 +496,7 @@ impl ToolCalls {
             })
         };
         if let Some(end) = end {
-            let observer = lock(&self.inner.on_end).clone();
+            let observer = jsrt::sync::lock(&self.inner.on_end).clone();
             if let Some(observer) = observer {
                 // Observers never affect a call.
                 let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| observer(end)));
@@ -510,12 +510,12 @@ impl ToolCalls {
         let mut budget = self.inner.output_bytes;
         let mut text = host::cell::truncate_tool_output(&raw, budget, None);
         // JSON escaping can grow text (control characters six-fold): keep the reply within the kernel's frame.
-        while stringify(&Value::from(text.as_str())).len() > REPLY_TEXT_MAX_BYTES && budget > 1024 {
+        while jsrt::json::stringify(&Value::from(text.as_str())).len() > REPLY_TEXT_MAX_BYTES && budget > 1024 {
             budget /= 2;
             text = host::cell::truncate_tool_output(&raw, budget, None);
         }
         let mut details = result.get("details").cloned().unwrap_or(Value::Null);
-        if !details.is_null() && stringify(&details).len() > DETAILS_MAX_BYTES {
+        if !details.is_null() && jsrt::json::stringify(&details).len() > DETAILS_MAX_BYTES {
             details = json!({"truncated": true, "preview": preview(&details, 2000)});
         }
         Outcome {
@@ -528,7 +528,7 @@ impl ToolCalls {
     /// Waits for call `id` at most `seconds` (`None`: until it ends), or until `signal` (the calling cell) aborts.
     fn wait(&self, id: &str, seconds: Option<f64>, signal: &Signal) {
         let deadline = seconds.map(|s| Instant::now() + Duration::from_secs_f64((s * 1000.0).max(20.0) / 1000.0));
-        let mut state = lock(&self.inner.state);
+        let mut state = jsrt::sync::lock(&self.inner.state);
         match state.live.get_mut(id) {
             Some(live) => live.waiters += 1,
             None => return,
@@ -559,7 +559,7 @@ impl ToolCalls {
 
     /// Stops call `id` and waits for its end (`reason`: `cancelled`, `root_aborted` or `closed`).
     pub fn cancel(&self, id: &str, reason: &'static str) {
-        let mut state = lock(&self.inner.state);
+        let mut state = jsrt::sync::lock(&self.inner.state);
         let Some(live) = state.live.get_mut(id) else {
             return;
         };
@@ -582,7 +582,7 @@ impl ToolCalls {
     /// Esc aborted a root turn: stop every REPL call started under it.
     pub fn cancel_root(&self, root: &str) {
         let ids: Vec<String> = {
-            let state = lock(&self.inner.state);
+            let state = jsrt::sync::lock(&self.inner.state);
             state
                 .records
                 .iter()
@@ -597,7 +597,7 @@ impl ToolCalls {
 
     /// Running REPL calls of `lane` whose root is not `excluded`.
     pub fn running(&self, lane: &str, excluded: &dyn Fn(Option<&str>) -> bool) -> usize {
-        let state = lock(&self.inner.state);
+        let state = jsrt::sync::lock(&self.inner.state);
         state
             .records
             .iter()
@@ -607,13 +607,18 @@ impl ToolCalls {
 
     /// Running and recent calls (`agents.status`), newest first.
     pub fn list(&self) -> Vec<Value> {
-        lock(&self.inner.state).records.iter().rev().cloned().collect()
+        jsrt::sync::lock(&self.inner.state)
+            .records
+            .iter()
+            .rev()
+            .cloned()
+            .collect()
     }
 
     /// Stops every running call without reporting their ends.
     pub fn close(&self) {
         let ids: Vec<String> = {
-            let mut state = lock(&self.inner.state);
+            let mut state = jsrt::sync::lock(&self.inner.state);
             state.closed = true;
             state.live.keys().cloned().collect()
         };
@@ -653,7 +658,7 @@ impl ToolCalls {
     }
 
     fn snapshot_of(&self, id: &str) -> Result<Value, String> {
-        let state = lock(&self.inner.state);
+        let state = jsrt::sync::lock(&self.inner.state);
         let record = state
             .records
             .iter()
@@ -668,7 +673,7 @@ impl ToolCalls {
             .and_then(Value::as_str)
             .filter(|id| !id.is_empty())
             .ok_or("call id must be a nonempty string")?;
-        let state = lock(&self.inner.state);
+        let state = jsrt::sync::lock(&self.inner.state);
         match state.records.iter().find(|r| id_of(r) == id) {
             Some(record) if lane == "main" || record["lane"] == lane => Ok(id.to_string()),
             _ => Err(format!("Unknown tool call {id}")),
@@ -676,7 +681,7 @@ impl ToolCalls {
     }
 
     fn is_live(&self, id: &str) -> bool {
-        lock(&self.inner.state).live.contains_key(id)
+        jsrt::sync::lock(&self.inner.state).live.contains_key(id)
     }
 
     /// Bounded retention: drop the oldest finished calls beyond the cap.
@@ -703,7 +708,7 @@ impl ToolCalls {
         let payload = request.payload;
         match request.kind {
             "tools.list" => {
-                fields(payload, &[])?;
+                jsrt::payload::fields(payload, &[])?;
                 Ok(Value::Array(
                     self.runner()?
                         .tools()
@@ -721,7 +726,7 @@ impl ToolCalls {
                 ))
             }
             "tools.describe" => {
-                fields(payload, &["name"])?;
+                jsrt::payload::fields(payload, &["name"])?;
                 let tool = self.tool(payload.get("name"))?;
                 let mut item = Map::new();
                 item.insert("name".into(), tool.name.into());
@@ -735,7 +740,7 @@ impl ToolCalls {
             "tools.call" => {
                 // Wait up to `yield_after` seconds (absent: until the call ends). A call still running when a
                 // waiting cell is stopped is cancelled, unless the kernel asked for a handle (`detach`).
-                fields(payload, &["name", "params", "yield_after", "detach"])?;
+                jsrt::payload::fields(payload, &["name", "params", "yield_after", "detach"])?;
                 let tool = self.tool(payload.get("name"))?;
                 let params = match payload.get("params") {
                     None | Some(Value::Null) => Map::new(),
@@ -743,13 +748,15 @@ impl ToolCalls {
                     Some(_) => return Err("tool params must be a dict (a JSON object)".into()),
                 };
                 let yield_after = wait_seconds(payload.get("yield_after"), "yield_after")?;
-                let root = lock(&self.inner.roots).clone().and_then(|roots| roots(request.lane));
+                let root = jsrt::sync::lock(&self.inner.roots)
+                    .clone()
+                    .and_then(|roots| roots(request.lane));
                 let id = self.start(request.lane, root, &tool.name, params)?;
                 self.wait(&id, yield_after, request.signal);
                 if self.is_live(&id) && request.signal.is_aborted() && payload.get("detach") != Some(&Value::Bool(true))
                 {
                     {
-                        let mut state = lock(&self.inner.state);
+                        let mut state = jsrt::sync::lock(&self.inner.state);
                         if let Some(live) = state.live.get_mut(&id) {
                             live.waiters += 1;
                         }
@@ -759,7 +766,7 @@ impl ToolCalls {
                 self.snapshot_of(&id)
             }
             "tools.result" => {
-                fields(payload, &["id", "wait"])?;
+                jsrt::payload::fields(payload, &["id", "wait"])?;
                 let id = self.visible(payload.get("id"), request.lane)?;
                 if self.is_live(&id) {
                     let wait = wait_seconds(payload.get("wait"), "wait")?;
@@ -768,19 +775,19 @@ impl ToolCalls {
                 self.snapshot_of(&id)
             }
             "tools.get" => {
-                fields(payload, &["id"])?;
+                jsrt::payload::fields(payload, &["id"])?;
                 let id = self.visible(payload.get("id"), request.lane)?;
                 self.snapshot_of(&id)
             }
             "tools.cancel" => {
-                fields(payload, &["id"])?;
+                jsrt::payload::fields(payload, &["id"])?;
                 let id = self.visible(payload.get("id"), request.lane)?;
                 self.cancel(&id, "cancelled");
                 self.snapshot_of(&id)
             }
             "tools.calls" => {
-                fields(payload, &[])?;
-                let state = lock(&self.inner.state);
+                jsrt::payload::fields(payload, &[])?;
+                let state = jsrt::sync::lock(&self.inner.state);
                 Ok(Value::Array(
                     state
                         .records
@@ -820,12 +827,6 @@ fn id_of(record: &Value) -> &str {
     record["id"].as_str().unwrap_or_default()
 }
 
-fn random_hex(bytes: usize) -> String {
-    let mut buffer = vec![0u8; bytes];
-    getrandom::fill(&mut buffer).expect("operating system random source");
-    buffer.iter().map(|b| format!("{b:02x}")).collect()
-}
-
 fn wait_seconds(value: Option<&Value>, name: &str) -> Result<Option<f64>, String> {
     match value {
         None | Some(Value::Null) => Ok(None),
@@ -840,9 +841,9 @@ fn wait_seconds(value: Option<&Value>, name: &str) -> Result<Option<f64>, String
 pub fn preview(value: &Value, limit: usize) -> String {
     let text = match value {
         Value::String(text) => text.clone(),
-        other => stringify(other),
+        other => jsrt::json::stringify(other),
     };
-    let flat = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    let flat = jsrt::string::flatten(&text);
     if flat.chars().count() > limit {
         format!("{}…", flat.chars().take(limit - 1).collect::<String>())
     } else {
@@ -851,7 +852,7 @@ pub fn preview(value: &Value, limit: usize) -> String {
 }
 
 fn first_paragraph(text: &str, limit: usize) -> String {
-    let trimmed = crate::util::js_trim(text);
+    let trimmed = jsrt::string::trim(text);
     let paragraph = fancy_regex::Regex::new(r"\n\s*\n")
         .ok()
         .and_then(|re| re.find(trimmed).ok().flatten())
@@ -909,7 +910,7 @@ pub fn tool_call_label(name: &str, params: &Map<String, Value>) -> String {
         return format!("mcp instructions {server}");
     }
     if let Some(search) = params.get("search") {
-        return format!("mcp search {}", stringify(search));
+        return format!("mcp search {}", jsrt::json::stringify(search));
     }
     if let Some(uri) = text("read") {
         return format!("mcp read {uri}");

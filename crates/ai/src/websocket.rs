@@ -5,7 +5,7 @@
 //! 1006 closure; a close frame is echoed. Pings are answered. No extension (permessage-deflate) is offered.
 
 use crate::http::{BoxFuture, HeaderMap};
-use protocol::websocket::{Message, MessageDecoder, accept_key, base64, encode_message};
+use protocol::websocket::{Message, MessageDecoder, accept_key, encode_message};
 use std::collections::VecDeque;
 use std::time::Duration;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, ReadHalf, WriteHalf};
@@ -65,15 +65,9 @@ struct Socket {
     close_sent: bool,
 }
 
-fn random<const N: usize>() -> [u8; N] {
-    let mut bytes = [0u8; N];
-    let _ = getrandom::fill(&mut bytes);
-    bytes
-}
-
 impl Socket {
     async fn write_message(&mut self, message: &Message) -> bool {
-        let frame = encode_message(message, Some(random::<4>()));
+        let frame = encode_message(message, Some(jsrt::random::bytes::<4>()));
         self.write.write_all(&frame).await.is_ok() && self.write.flush().await.is_ok()
     }
 
@@ -236,7 +230,7 @@ pub async fn connect(
         }
     };
     http.set_scheme(scheme).map_err(|_| fail())?;
-    let key = base64(&random::<16>());
+    let key = jsrt::base64::encode(jsrt::random::bytes::<16>());
     let mut request = client.get(http);
     for (name, value) in headers {
         request = request.header(name, value);

@@ -142,7 +142,7 @@ impl fmt::Debug for SessionManager {
 fn append_line(path: &str, entries: &[&Value]) -> io::Result<()> {
     let mut text = String::new();
     for entry in entries {
-        text.push_str(&js::stringify(entry));
+        text.push_str(&jsrt::json::stringify(entry));
         text.push('\n');
     }
     OpenOptions::new()
@@ -155,7 +155,7 @@ fn append_line(path: &str, entries: &[&Value]) -> io::Result<()> {
 fn write_all(path: &str, entries: &[Value], create_new: bool) -> io::Result<()> {
     let mut text = String::new();
     for entry in entries {
-        text.push_str(&js::stringify(entry));
+        text.push_str(&jsrt::json::stringify(entry));
         text.push('\n');
     }
     let mut options = OpenOptions::new();
@@ -305,7 +305,7 @@ impl SessionManager {
             Some(id) => id,
             None => env.session_id(),
         };
-        let timestamp = js::iso_string(env.now_ms());
+        let timestamp = jsrt::date::iso_string(env.now_ms());
         let path = join(&[&dir, &format!("{}_{id}.jsonl", file_timestamp(&timestamp))]);
         let header = json!({
             "type": "session", "version": CURRENT_SESSION_VERSION, "id": id,
@@ -360,7 +360,7 @@ impl SessionManager {
             Some(id) => id,
             None => self.env.session_id(),
         };
-        let timestamp = js::iso_string(self.env.now_ms());
+        let timestamp = jsrt::date::iso_string(self.env.now_ms());
         let header = object(vec![
             ("type", Some("session".into())),
             ("version", Some(CURRENT_SESSION_VERSION.into())),
@@ -421,7 +421,7 @@ impl SessionManager {
 
     fn apply_label(labels: &mut IndexMap<String, LabelState>, entry: &Value) {
         let key = id_key(entry.get("targetId"));
-        if js::truthy(entry.get("label")) {
+        if jsrt::value::truthy(entry.get("label")) {
             labels.insert(
                 key,
                 LabelState {
@@ -481,7 +481,7 @@ impl SessionManager {
     }
 
     fn now_iso(&mut self) -> String {
-        js::iso_string(self.env.now_ms())
+        jsrt::date::iso_string(self.env.now_ms())
     }
 
     /// The common `type, id, parentId, timestamp` head followed by `fields`.
@@ -567,7 +567,7 @@ impl SessionManager {
             ("type", Some("compaction".into())),
             ("id", Some(id.clone().into())),
             ("parentId", Some(self.leaf_id.clone().unwrap_or(Value::Null))),
-            ("timestamp", Some(js::iso_string(now).into())),
+            ("timestamp", Some(jsrt::date::iso_string(now).into())),
             ("summary", Some(summary.into())),
             ("firstKeptEntryId", Some(first_kept_entry_id.unwrap_or(&id).into())),
             ("tokensBefore", Some(tokens_before.into())),
@@ -614,7 +614,10 @@ impl SessionManager {
                 in_break = false;
             }
         }
-        let entry = self.entry_with("session_info", vec![("name", Some(js::trim(&collapsed).into()))]);
+        let entry = self.entry_with(
+            "session_info",
+            vec![("name", Some(jsrt::string::trim(&collapsed).into()))],
+        );
         self.append(entry)
     }
 
@@ -628,7 +631,7 @@ impl SessionManager {
         entry
             .get("name")
             .and_then(Value::as_str)
-            .map(js::trim)
+            .map(jsrt::string::trim)
             .filter(|n| !n.is_empty())
             .map(str::to_string)
     }
@@ -823,7 +826,7 @@ impl SessionManager {
         let mut parent_id = kept
             .last()
             .and_then(|e| e.get("id"))
-            .filter(|id| js::truthy(Some(id)))
+            .filter(|id| jsrt::value::truthy(Some(id)))
             .cloned()
             .unwrap_or(Value::Null);
         let mut label_entries = Vec::new();
@@ -887,7 +890,7 @@ impl SessionManager {
     pub fn leaf_entry(&self) -> Option<&Value> {
         self.leaf_id
             .as_ref()
-            .filter(|id| js::truthy(Some(id)))
+            .filter(|id| jsrt::value::truthy(Some(id)))
             .and_then(|id| self.lookup(&id_key(Some(id))))
     }
 

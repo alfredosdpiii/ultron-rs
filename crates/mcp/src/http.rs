@@ -10,10 +10,11 @@
 use crate::jsonrpc::{Error, INTERNAL_ERROR, is_request, parse_message};
 use crate::stdio::DEFAULT_MAX_MESSAGE_BYTES;
 use crate::{Incoming, Sink, Transport};
+use jsrt::sync;
 use reqwest::blocking::{Client, RequestBuilder, Response};
 use serde_json::{Value, json};
 use std::io::Read;
-use std::sync::{Arc, Mutex, MutexGuard};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 pub const HTTP_ERROR_CODE: i64 = -32099;
@@ -255,10 +256,6 @@ struct Shared {
 
 pub struct HttpTransport(Arc<Shared>);
 
-fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
-    mutex.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
-}
-
 impl HttpTransport {
     pub fn new(options: HttpOptions) -> Self {
         let client = crate::net::client(options.proxy.as_ref(), None).unwrap_or_else(|_| Client::new());
@@ -270,17 +267,17 @@ impl HttpTransport {
     }
 
     pub fn session_id(&self) -> Option<String> {
-        lock(&self.0.state).session_id.clone()
+        sync::lock(&self.0.state).session_id.clone()
     }
 }
 
 impl Shared {
     fn closed(&self) -> bool {
-        lock(&self.state).closed
+        sync::lock(&self.state).closed
     }
 
     fn emit(&self, incoming: Incoming) {
-        let sink = lock(&self.state).sink.clone();
+        let sink = sync::lock(&self.state).sink.clone();
         if let Some(sink) = sink {
             sink(incoming);
         }
@@ -293,7 +290,7 @@ impl Shared {
         for (name, value) in &self.options.headers {
             builder = builder.header(name, value);
         }
-        let state = lock(&self.state);
+        let state = sync::lock(&self.state);
         if let Some(id) = &state.session_id {
             builder = builder.header("Mcp-Session-Id", id);
         }
@@ -351,7 +348,7 @@ impl Shared {
             .and_then(|v| v.to_str().ok())
             .filter(|v| !v.is_empty())
         {
-            lock(&self.state).session_id = Some(id.into());
+            sync::lock(&self.state).session_id = Some(id.into());
         }
     }
 
@@ -371,7 +368,7 @@ impl Shared {
                 &body,
             ));
         }
-        if status == 404 && lock(&self.state).session_id.is_some() {
+        if status == 404 && sync::lock(&self.state).session_id.is_some() {
             return Err(http_failure(
                 "McpSessionExpiredError",
                 404,
@@ -631,7 +628,7 @@ fn is_retryable(error: &Error) -> bool {
 
 impl Transport for HttpTransport {
     fn start(&self, sink: Sink) -> Result<(), Error> {
-        let mut state = lock(&self.0.state);
+        let mut state = sync::lock(&self.0.state);
         if state.started {
             return Err(Error::Other("MCP Streamable HTTP transport already started".into()));
         }
@@ -644,13 +641,13 @@ impl Transport for HttpTransport {
     }
 
     fn set_protocol_version(&self, version: &str) {
-        lock(&self.0.state).protocol_version = Some(version.into());
+        sync::lock(&self.0.state).protocol_version = Some(version.into());
     }
 
     fn send(&self, message: &Value) -> Result<(), Error> {
         let shared = &self.0;
         {
-            let state = lock(&shared.state);
+            let state = sync::lock(&shared.state);
             if !state.started || state.closed {
                 return Err(Error::closed());
             }
@@ -668,7 +665,7 @@ impl Transport for HttpTransport {
             drop(response);
             let start_get =
                 message["method"] == "notifications/initialized" && shared.options.open_get_stream != Some(false) && {
-                    let mut state = lock(&shared.state);
+                    let mut state = sync::lock(&shared.state);
                     let first = !state.get_started && !state.closed;
                     state.get_started = true;
                     first
@@ -719,7 +716,7 @@ impl Transport for HttpTransport {
     fn close(&self) {
         let shared = &self.0;
         let (started, session) = {
-            let mut state = lock(&shared.state);
+            let mut state = sync::lock(&shared.state);
             if state.closed {
                 return;
             }

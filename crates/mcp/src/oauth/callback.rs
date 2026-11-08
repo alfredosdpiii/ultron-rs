@@ -3,6 +3,7 @@
 //! the authorization code of the pending sign-in (matched by its `state`) to the waiting flow.
 
 use super::OAuthError;
+use jsrt::sync;
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Write};
 use std::net::{TcpListener, TcpStream};
@@ -30,10 +31,6 @@ pub struct CallbackServer {
     pending: Arc<Mutex<Pending>>,
     closed: Arc<Mutex<bool>>,
     timeout: Duration,
-}
-
-fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
-    mutex.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
 impl CallbackServer {
@@ -69,7 +66,7 @@ impl CallbackServer {
         );
         std::thread::spawn(move || {
             for stream in listener.incoming() {
-                if *lock(&closed) {
+                if *sync::lock(&closed) {
                     return;
                 }
                 if let Ok(stream) = stream {
@@ -82,7 +79,7 @@ impl CallbackServer {
 
     /// Waits for the callback with `state`; the receiver yields its code, or why not.
     pub fn wait_for_callback(&self, state: &str) -> Result<Receiver<Result<Callback, OAuthError>>, OAuthError> {
-        let mut pending = lock(&self.pending);
+        let mut pending = sync::lock(&self.pending);
         if pending.contains_key(state) {
             return Err(OAuthError::Other("OAuth state is already pending".into()));
         }
@@ -91,7 +88,7 @@ impl CallbackServer {
         let (pending, state, timeout) = (self.pending.clone(), state.to_string(), self.timeout);
         std::thread::spawn(move || {
             std::thread::sleep(timeout);
-            if let Some(tx) = lock(&pending).remove(&state) {
+            if let Some(tx) = sync::lock(&pending).remove(&state) {
                 let _ = tx.send(Err(OAuthError::Other("OAuth callback timed out".into())));
             }
         });
@@ -99,8 +96,8 @@ impl CallbackServer {
     }
 
     pub fn close(&self) {
-        *lock(&self.closed) = true;
-        for (_, tx) in lock(&self.pending).drain() {
+        *sync::lock(&self.closed) = true;
+        for (_, tx) in sync::lock(&self.pending).drain() {
             let _ = tx.send(Err(OAuthError::Other("OAuth callback server closed".into())));
         }
         // Wakes the accept loop so it sees the close.
@@ -153,7 +150,7 @@ fn handle(mut stream: TcpStream, path: &str, base: &str, pending: &Mutex<Pending
     }
     let query: HashMap<String, String> = url.query_pairs().into_owned().collect();
     let state = query.get("state").filter(|s| !s.is_empty());
-    let sender = state.and_then(|s| lock(pending).remove(s));
+    let sender = state.and_then(|s| sync::lock(pending).remove(s));
     let (Some(state), Some(sender)) = (state, sender) else {
         return reply(&mut stream, 400, render, Some(("Invalid or expired OAuth state", None)));
     };

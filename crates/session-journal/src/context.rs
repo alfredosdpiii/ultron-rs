@@ -50,7 +50,7 @@ pub fn entry_context_messages(entry: &Value) -> Vec<Value> {
             }
             out
         }
-        "branch_summary" if session_file::js::truthy(entry.get("summary")) => {
+        "branch_summary" if jsrt::value::truthy(entry.get("summary")) => {
             vec![branch_summary_message(
                 &entry["summary"],
                 entry["fromId"].clone(),

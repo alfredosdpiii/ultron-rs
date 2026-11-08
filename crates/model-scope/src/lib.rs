@@ -34,34 +34,8 @@ pub fn is_valid_thinking_level(level: &str) -> bool {
     THINKING_LEVELS.contains(&level)
 }
 
-/// JavaScript's whitespace and line terminators (`String.prototype.trim`).
-fn is_js_whitespace(c: char) -> bool {
-    matches!(
-        c,
-        '\t' | '\n' | '\u{0B}' | '\u{0C}' | '\r' | ' ' | '\u{A0}' | '\u{1680}' | '\u{2000}'
-            ..='\u{200A}' | '\u{2028}' | '\u{2029}' | '\u{202F}' | '\u{205F}' | '\u{3000}' | '\u{FEFF}'
-    )
-}
-
-/// `String.prototype.localeCompare` (ICU root collation) for catalog ids and references: punctuation sorts before
-/// digits, digits before letters, letters case-insensitively, with lowercase first as the tie-break.
-pub fn locale_compare(a: &str, b: &str) -> Ordering {
-    const PUNCT: &str = "_-,;:!?.'\"()[]{}@*/\\&#%`^+<=>|~$";
-    let key = |c: char| -> (u8, u32) {
-        if let Some(i) = PUNCT.find(c) {
-            (0, i as u32)
-        } else if c.is_ascii_digit() {
-            (1, c as u32)
-        } else {
-            (2, c.to_ascii_lowercase() as u32)
-        }
-    };
-    let primary = a.chars().map(key).cmp(b.chars().map(key));
-    primary.then_with(|| {
-        let tertiary = |c: char| u8::from(c.is_ascii_uppercase());
-        a.chars().map(tertiary).cmp(b.chars().map(tertiary))
-    })
-}
+/// `String.prototype.localeCompare` (ICU root collation), re-exported for `ai::jsutil`.
+pub use jsrt::collate::locale_compare;
 
 /// `modelsAreEqual`: same provider and id.
 pub fn same<M: ScopeModel>(a: &M, b: &M) -> bool {
@@ -74,7 +48,7 @@ fn reference<M: ScopeModel>(model: &M) -> String {
 
 /// `findExactModelReferenceMatch`: `provider/id` (case-insensitive) or a bare id that only one model has.
 pub fn find_exact_model_reference_match<'a, M: ScopeModel>(reference_: &str, models: &'a [M]) -> Option<&'a M> {
-    let trimmed = reference_.trim_matches(is_js_whitespace);
+    let trimmed = jsrt::string::trim(reference_);
     if trimmed.is_empty() {
         return None;
     }
@@ -89,10 +63,7 @@ pub fn find_exact_model_reference_match<'a, M: ScopeModel>(reference_: &str, mod
         _ => return None,
     }
     if let Some((provider, id)) = trimmed.split_once('/') {
-        let (provider, id) = (
-            provider.trim_matches(is_js_whitespace),
-            id.trim_matches(is_js_whitespace),
-        );
+        let (provider, id) = (jsrt::string::trim(provider), jsrt::string::trim(id));
         if !provider.is_empty() && !id.is_empty() {
             let matches: Vec<&M> = models
                 .iter()

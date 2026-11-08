@@ -28,12 +28,6 @@ done
 out exposed "${exposed# }"
 "#;
 
-fn hex() -> String {
-    let mut buffer = [0u8; 6];
-    getrandom::fill(&mut buffer).expect("system randomness");
-    buffer.iter().map(|b| format!("{b:02x}")).collect()
-}
-
 struct Scratch(PathBuf);
 impl Drop for Scratch {
     fn drop(&mut self) {
@@ -44,9 +38,9 @@ impl Drop for Scratch {
 /// Run the isolation probe for `policy` under `mechanism` (None: unisolated, to show what the checks catch).
 /// `scratch_parent` holds the scratch project and outside directories (the system temp dir when None).
 pub fn self_check(policy: &Policy, mechanism: Option<Mechanism>, scratch_parent: Option<&Path>) -> Value {
-    let name = format!(".ultron-sandbox-probe-{}", hex());
+    let name = format!(".ultron-sandbox-probe-{}", jsrt::random::random_hex(6));
     let parent = scratch_parent.map_or_else(std::env::temp_dir, Path::to_path_buf);
-    let scratch = Scratch(parent.join(format!("ultron-sandbox-doctor-{}", hex())));
+    let scratch = Scratch(parent.join(format!("ultron-sandbox-doctor-{}", jsrt::random::random_hex(6))));
     let project = scratch.0.join("project");
     let outside = scratch.0.join("outside");
     for dir in [&project, &outside] {
@@ -56,7 +50,7 @@ pub fn self_check(policy: &Policy, mechanism: Option<Mechanism>, scratch_parent:
     }
     let project = std::fs::canonicalize(&project).unwrap_or(project);
     let outside = std::fs::canonicalize(&outside).unwrap_or(outside);
-    let host_tmp = std::env::temp_dir().join(format!("ultron-sandbox-host-{}", hex()));
+    let host_tmp = std::env::temp_dir().join(format!("ultron-sandbox-host-{}", jsrt::random::random_hex(6)));
     let _ = std::fs::write(&host_tmp, "host\n");
     let listener = std::net::TcpListener::bind("127.0.0.1:0");
     let port = listener

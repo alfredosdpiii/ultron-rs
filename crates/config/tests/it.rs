@@ -13,6 +13,8 @@ mod command_values;
 mod durable_model;
 #[path = "fixture.rs"]
 mod fixture;
+#[path = "js_values.rs"]
+mod js_values;
 #[path = "ported.rs"]
 mod ported;
 #[path = "settings_keys.rs"]

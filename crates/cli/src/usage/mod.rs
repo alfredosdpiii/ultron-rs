@@ -8,8 +8,8 @@ pub mod stats;
 pub mod text;
 
 use crate::Env;
-use crate::localtime::Zone;
-use log::{LogError, mtime_ms, read_session_header, read_session_log};
+use jsrt::localtime::Zone;
+use log::{LogError, read_session_header, read_session_log};
 use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
 
@@ -54,18 +54,7 @@ enum Failure {
 
 /// `Number(text)` for the `--last` value: a safe integer or nothing.
 fn js_integer(text: &str) -> Option<f64> {
-    let t = crate::js::trim(text);
-    if t.is_empty() {
-        return Some(0.0);
-    }
-    let value: f64 = if let Some(hex) = t.strip_prefix("0x").or_else(|| t.strip_prefix("0X")) {
-        u64::from_str_radix(hex, 16).ok()? as f64
-    } else if t.bytes().all(|b| b.is_ascii_digit() || b"+-.eE".contains(&b)) {
-        t.parse().ok()?
-    } else {
-        return None;
-    };
-    (value.fract() == 0.0 && value.abs() <= 9_007_199_254_740_991.0).then_some(value)
+    Some(jsrt::number::parse(text)).filter(|n| jsrt::number::is_safe_integer(*n))
 }
 
 fn parse(args: &[String]) -> Result<Options, Failure> {
@@ -151,7 +140,7 @@ fn list_session_files(root: &Path) -> Vec<SessionFile> {
                 && meta.is_file()
             {
                 files.push(SessionFile {
-                    modified_at: mtime_ms(&meta),
+                    modified_at: meta.modified().map_or(0.0, jsrt::date::mtime_ms),
                     path,
                 });
             }
@@ -161,7 +150,7 @@ fn list_session_files(root: &Path) -> Vec<SessionFile> {
         b.modified_at
             .partial_cmp(&a.modified_at)
             .unwrap_or(std::cmp::Ordering::Equal)
-            .then_with(|| crate::list_models::locale_compare(&a.path.to_string_lossy(), &b.path.to_string_lossy()))
+            .then_with(|| jsrt::collate::locale_compare(&a.path.to_string_lossy(), &b.path.to_string_lossy()))
     });
     files
 }
@@ -316,7 +305,7 @@ fn command(rest: &[String], env: &Env, lines: &mut Vec<String>) -> Result<(), Fa
             }
         }
         if options.json {
-            lines.push(config::json::stringify_pretty(&json!({
+            lines.push(jsrt::json::stringify_pretty(&json!({
                 "schema": SESSION_REPORT_LIST_SCHEMA,
                 "sessions": reports,
             })));
@@ -372,7 +361,7 @@ fn command(rest: &[String], env: &Env, lines: &mut Vec<String>) -> Result<(), Fa
     };
     let (report, _) = report_of(&path, &subscription).map_err(error)?;
     if options.json {
-        lines.push(config::json::stringify_pretty(&report));
+        lines.push(jsrt::json::stringify_pretty(&report));
     } else {
         lines.extend(text::render_session_report(&report, &text));
     }

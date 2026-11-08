@@ -299,7 +299,7 @@ pub fn retain_summary(stack: &Arc<Stack>, session_id: &str, cwd: &str, summary: 
         "Compaction summary of an Ultron coding-agent session in {cwd}: the agent's own account of the user's goal, \
          its progress and its decisions. What it says it did or verified is its claim, not a checked fact."
     );
-    let timestamp = kernel_apis::util::iso(crate::lane::now_ms());
+    let timestamp = jsrt::date::iso_string(crate::lane::now_ms());
     let (stack, summary) = (stack.clone(), summary.to_string());
     std::thread::spawn(move || {
         if let Some(memory) = stack.memory() {

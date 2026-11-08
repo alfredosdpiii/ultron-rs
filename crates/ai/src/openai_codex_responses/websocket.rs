@@ -9,7 +9,6 @@ use super::{CodexError, aborted_error, map_codex_event};
 use crate::http::{AbortSignal, HeaderMap, Transport, cancelled, is_aborted};
 use crate::json::parse_json;
 use crate::openai_responses::{ConvertOptions, OPENAI_TOOL_CALL_PROVIDERS, ResponsesRun, TierPricing, ToolOptions};
-use crate::options::now_ms;
 use crate::types::{AssistantMessageEvent, Message, Model, TranscriptContext};
 use crate::websocket::{NO_WEBSOCKET, WebSocketConnection, WsEvent};
 use indexmap::IndexMap;
@@ -91,7 +90,7 @@ fn state() -> std::sync::MutexGuard<'static, WebSocketState> {
 
 /// `Date.now()` for the connection age limit.
 fn clock() -> i64 {
-    now_ms() + CLOCK_OFFSET_MS.load(Ordering::SeqCst)
+    jsrt::date::now_ms() + CLOCK_OFFSET_MS.load(Ordering::SeqCst)
 }
 
 /// Moves the clock the connection age limit is measured on (tests: what faking `Date.now` does upstream).
@@ -183,25 +182,6 @@ pub(super) fn resolve_codex_websocket_url(base_url: &str) -> String {
     } else {
         url
     }
-}
-
-/// `uuidv7()`.
-pub(super) fn uuid_v7() -> String {
-    let mut bytes = [0u8; 16];
-    let _ = getrandom::fill(&mut bytes);
-    let ms = (now_ms() as u64).to_be_bytes();
-    bytes[..6].copy_from_slice(&ms[2..]);
-    bytes[6] = (bytes[6] & 0x0f) | 0x70;
-    bytes[8] = (bytes[8] & 0x3f) | 0x80;
-    let hex: String = bytes.iter().map(|b| format!("{b:02x}")).collect();
-    format!(
-        "{}-{}-{}-{}-{}",
-        &hex[..8],
-        &hex[8..12],
-        &hex[12..16],
-        &hex[16..20],
-        &hex[20..]
-    )
 }
 
 /// `connectWebSocket`: open, or fail with the connect timeout (default 15 s; 0 waits forever) or the abort.
@@ -610,7 +590,7 @@ pub(super) async fn process_websocket_stream(
                             supports_tool_search: false,
                             tool_options: ToolOptions::default(),
                         },
-                        now_ms(),
+                        jsrt::date::now_ms(),
                     )
                     .unwrap_or_default()
                     .into_iter()

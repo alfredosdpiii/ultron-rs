@@ -10,7 +10,6 @@ use crate::http::HeaderMap;
 use ring::rand::SystemRandom;
 use ring::signature::{ECDSA_P256_SHA256_FIXED_SIGNING, EcdsaKeyPair};
 use serde_json::{Map, Value, json};
-use sha2::{Digest, Sha256};
 use std::path::PathBuf;
 
 /// `LoginCredentialsFetcher.REFRESH_THRESHOLD`.
@@ -24,9 +23,7 @@ pub fn login_token_path(login_session: &str, input: &super::ChainInput<'_>) -> P
         .var("AWS_LOGIN_CACHE_DIRECTORY")
         .map(PathBuf::from)
         .unwrap_or_else(|| home_dir(input.env).join(".aws").join("login").join("cache"));
-    let digest = Sha256::digest(login_session.as_bytes());
-    let hex: String = digest.iter().map(|b| format!("{b:02x}")).collect();
-    directory.join(format!("{hex}.json"))
+    directory.join(format!("{}.json", jsrt::hash::sha256_hex(login_session)))
 }
 
 /// The Signin endpoint of `region` (the client's endpoint rules, by partition).
@@ -44,16 +41,6 @@ pub fn signin_endpoint(region: &str) -> String {
     .find(|(prefix, _)| region.starts_with(prefix))
     .map_or("signin.aws.amazon.com", |(_, suffix)| suffix);
     format!("https://{region}.{suffix}")
-}
-
-/// JavaScript truthiness of a JSON field.
-fn truthy(value: Option<&Value>) -> bool {
-    match value {
-        None | Some(Value::Null) | Some(Value::Bool(false)) => false,
-        Some(Value::String(s)) => !s.is_empty(),
-        Some(Value::Number(n)) => n.as_f64().is_some_and(|f| f != 0.0 && !f.is_nan()),
-        Some(_) => true,
-    }
 }
 
 /// A thrown error as `String(error)` prints it.
@@ -79,9 +66,9 @@ fn load_token(path: &PathBuf) -> Result<Map<String, Value>> {
     };
     let mut missing: Vec<&str> = ["accessToken", "clientId", "refreshToken", "dpopKey"]
         .into_iter()
-        .filter(|key| !truthy(token.get(*key)))
+        .filter(|key| !jsrt::value::truthy(token.get(*key)))
         .collect();
-    if !truthy(token.get("accessToken").and_then(|a| a.get("accountId"))) {
+    if !jsrt::value::truthy(token.get("accessToken").and_then(|a| a.get("accountId"))) {
         missing.push("accountId");
     }
     if !missing.is_empty() {
@@ -247,10 +234,10 @@ async fn create_token(
     let access = parsed.get("accessToken");
     let field = |key: &str| access.and_then(|a| a.get(key));
     let refresh_token = parsed.get("refreshToken");
-    if !truthy(field("accessKeyId"))
-        || !truthy(field("secretAccessKey"))
-        || !truthy(field("sessionToken"))
-        || !truthy(refresh_token)
+    if !jsrt::value::truthy(field("accessKeyId"))
+        || !jsrt::value::truthy(field("secretAccessKey"))
+        || !jsrt::value::truthy(field("sessionToken"))
+        || !jsrt::value::truthy(refresh_token)
     {
         return Err(Failure::Other(thrown(
             "CredentialsProviderError",
@@ -258,7 +245,10 @@ async fn create_token(
         )));
     }
     let expires_in = parsed.get("expiresIn").and_then(Value::as_f64).unwrap_or(900.0);
-    let expires_at = crate::claude_code_cli::iso_string(input.now_ms as f64 + expires_in * 1000.0);
+    let Some(expires_at) = jsrt::date::time_clip(input.now_ms as f64 + expires_in * 1000.0).map(jsrt::date::iso_string)
+    else {
+        return Err(Failure::Other(thrown("RangeError", "Invalid time value")));
+    };
     let mut updated = fresh.clone();
     let mut access_token = match updated.get("accessToken") {
         Some(Value::Object(map)) => map.clone(),
@@ -289,13 +279,14 @@ fn dpop(path: &PathBuf, method: &str, endpoint: &str, now_ms: i64) -> Result<Str
     let rng = SystemRandom::new();
     let key = EcdsaKeyPair::from_private_key_and_public_key(&ECDSA_P256_SHA256_FIXED_SIGNING, &private, &public, &rng)
         .map_err(|e| fail(e.to_string()))?;
-    let b64 = crate::oauth_flow::base64url;
+    let b64 = |bytes: &[u8]| jsrt::base64::encode_url(bytes);
     let header = json!({
         "alg": "ES256",
         "typ": "dpop+jwt",
         "jwk": {"kty": "EC", "crv": "P-256", "x": b64(&public[1..33]), "y": b64(&public[33..65])},
     });
-    let payload = json!({"jti": uuid_v4(), "htm": method, "htu": endpoint, "iat": now_ms.div_euclid(1000)});
+    let payload =
+        json!({"jti": jsrt::random::uuid_v4(), "htm": method, "htu": endpoint, "iat": now_ms.div_euclid(1000)});
     let message = format!(
         "{}.{}",
         b64(header.to_string().as_bytes()),
@@ -303,23 +294,6 @@ fn dpop(path: &PathBuf, method: &str, endpoint: &str, now_ms: i64) -> Result<Str
     );
     let signature = key.sign(&rng, message.as_bytes()).map_err(|e| fail(e.to_string()))?;
     Ok(format!("{message}.{}", b64(signature.as_ref())))
-}
-
-/// `crypto.randomUUID()`.
-fn uuid_v4() -> String {
-    let mut bytes = [0u8; 16];
-    let _ = getrandom::fill(&mut bytes);
-    bytes[6] = (bytes[6] & 0x0f) | 0x40;
-    bytes[8] = (bytes[8] & 0x3f) | 0x80;
-    let hex: String = bytes.iter().map(|b| format!("{b:02x}")).collect();
-    format!(
-        "{}-{}-{}-{}-{}",
-        &hex[..8],
-        &hex[8..12],
-        &hex[12..16],
-        &hex[16..20],
-        &hex[20..]
-    )
 }
 
 /// One DER element at the start of `der`: its tag, contents and the rest.
@@ -354,7 +328,7 @@ pub fn parse_sec1_pem(pem: &str) -> std::result::Result<(Vec<u8>, Vec<u8>), Stri
     if !pem.contains("-----BEGIN EC PRIVATE KEY-----") {
         return Err(invalid());
     }
-    let bytes = crate::jsutil::atob(&body).ok_or_else(invalid)?;
+    let bytes = jsrt::base64::atob(&body).ok_or_else(invalid)?;
     let (tag, mut contents, _) = der(&bytes)?;
     if tag != 0x30 {
         return Err(invalid());

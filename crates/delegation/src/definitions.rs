@@ -453,7 +453,7 @@ impl DefinitionRegistry {
     pub fn validation_error(&self, definition: &Definition, value: &Value, direction: &str) -> String {
         if direction == "input" && definition.id().ends_with("-reviewer") {
             let request = value.get("request").and_then(Value::as_str);
-            if !value.is_object() || !request.is_some_and(|r| !kernel_apis::util::js_trim(r).is_empty()) {
+            if !value.is_object() || !request.is_some_and(|r| !jsrt::string::trim(r).is_empty()) {
                 return format!("{} input.request must be nonempty", definition.id());
             }
         }
@@ -493,11 +493,7 @@ pub fn schema_error_detail(schema: &Value, value: &Value) -> String {
         let allowed = match error.params.get("allowedValues").and_then(Value::as_array) {
             Some(values) => format!(
                 " ({})",
-                values
-                    .iter()
-                    .map(kernel_apis::util::stringify)
-                    .collect::<Vec<_>>()
-                    .join(", ")
+                values.iter().map(jsrt::json::stringify).collect::<Vec<_>>().join(", ")
             ),
             None => String::new(),
         };
@@ -519,5 +515,5 @@ pub fn schema_error_detail(schema: &Value, value: &Value) -> String {
             break;
         }
     }
-    kernel_apis::util::utf16_prefix(&lines.join("; "), 600).to_string()
+    jsrt::utf16::head(&lines.join("; "), 600).to_string()
 }

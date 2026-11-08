@@ -71,18 +71,10 @@ fn object(value: Option<&Value>) -> Option<&Map<String, Value>> {
     value.and_then(Value::as_object)
 }
 
-/// Entries in JavaScript's enumeration order (array-index keys first, ascending).
-fn entries(map: &Map<String, Value>) -> Vec<(&String, &Value)> {
-    config::json::js_key_order(map)
-        .into_iter()
-        .map(|k| (k, &map[k]))
-        .collect()
-}
-
 fn counts(value: Option<&Value>) -> IndexMap<String, f64> {
     object(value)
         .map(|m| {
-            entries(m)
+            jsrt::json::object_entries(m)
                 .into_iter()
                 .filter(|(_, v)| count(Some(v)) > 0.0)
                 .map(|(k, v)| (k.clone(), count(Some(v))))
@@ -94,7 +86,7 @@ fn counts(value: Option<&Value>) -> IndexMap<String, f64> {
 fn strings(value: Option<&Value>) -> IndexMap<String, String> {
     object(value)
         .map(|m| {
-            entries(m)
+            jsrt::json::object_entries(m)
                 .into_iter()
                 .filter_map(|(k, v)| Some((k.clone(), v.as_str()?.to_string())))
                 .collect()
@@ -123,7 +115,7 @@ pub fn parse_session_stats(saved: Option<&Value>) -> Option<Stats> {
     };
     let mut guards = IndexMap::new();
     if let Some(map) = object(item.get("guards")) {
-        for (name, value) in entries(map) {
+        for (name, value) in jsrt::json::object_entries(map) {
             let g = |k: &str| count(Some(value).filter(|v| !v.is_null()).and_then(|v| v.get(k)));
             guards.insert(
                 name.clone(),

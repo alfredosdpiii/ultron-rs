@@ -5,7 +5,6 @@
 
 use kernel::{HostHandler, Signal};
 use kernel_apis::TaskHost;
-use kernel_apis::util::lock;
 use serde_json::{Map, Value, json};
 use std::sync::{Arc, Mutex};
 
@@ -78,14 +77,14 @@ impl FakeTasks {
     }
 
     pub fn log(&self) -> Value {
-        Value::Array(lock(&self.state).log.clone())
+        Value::Array(jsrt::sync::lock(&self.state).log.clone())
     }
 
     /// The fixture host's `test.` module.
     pub fn inner(self: &Arc<Self>) -> Arc<dyn HostHandler> {
         let fake = self.clone();
         Arc::new(move |kind: &str, payload: Map<String, Value>, _: &Signal| {
-            let mut state = lock(&fake.state);
+            let mut state = jsrt::sync::lock(&fake.state);
             match kind {
                 "test.clock" => {
                     state.clock += payload["ms"].as_i64().unwrap();
@@ -110,11 +109,11 @@ impl FakeTasks {
 
 impl TaskHost for FakeTasks {
     fn caller_task_id(&self, _lane: &str) -> Option<String> {
-        lock(&self.state).caller.clone()
+        jsrt::sync::lock(&self.state).caller.clone()
     }
 
     fn task_lane(&self, task_id: &str) -> Option<String> {
-        lock(&self.state).log.push(json!(["taskLane", task_id]));
+        jsrt::sync::lock(&self.state).log.push(json!(["taskLane", task_id]));
         (task_id == "task-done").then(|| "lane-task-done".to_string())
     }
 
@@ -128,11 +127,11 @@ impl TaskHost for FakeTasks {
     }
 
     fn tasks(&self) -> Result<Vec<Value>, String> {
-        Ok(lock(&self.state).tasks.clone())
+        Ok(jsrt::sync::lock(&self.state).tasks.clone())
     }
 
     fn spawn(&self, request: &Value, parent: Option<&str>, _signal: &Signal) -> Result<Value, String> {
-        let mut state = lock(&self.state);
+        let mut state = jsrt::sync::lock(&self.state);
         state.log.push(json!(["spawn", request, parent]));
         let key = request["key"].as_str().map(str::to_string);
         if let Some(key) = &key
@@ -175,7 +174,7 @@ impl TaskHost for FakeTasks {
     }
 
     fn result(&self, task_id: &str) -> Result<Value, String> {
-        let mut state = lock(&self.state);
+        let mut state = jsrt::sync::lock(&self.state);
         state.log.push(json!(["result", task_id]));
         state
             .tasks
@@ -194,11 +193,11 @@ impl TaskHost for FakeTasks {
     }
 
     fn now(&self) -> i64 {
-        lock(&self.state).clock
+        jsrt::sync::lock(&self.state).clock
     }
 
     fn pin_lane(&self, lane: &str, holder: &str) -> bool {
-        let mut state = lock(&self.state);
+        let mut state = jsrt::sync::lock(&self.state);
         state.log.push(json!(["pinLane", lane, holder]));
         if state.pins >= 2 {
             return false;
@@ -208,7 +207,7 @@ impl TaskHost for FakeTasks {
     }
 
     fn unpin_lane(&self, lane: &str, holder: &str) {
-        let mut state = lock(&self.state);
+        let mut state = jsrt::sync::lock(&self.state);
         state.log.push(json!(["unpinLane", lane, holder]));
         state.pins -= 1;
     }

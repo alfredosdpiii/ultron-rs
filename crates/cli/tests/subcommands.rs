@@ -23,14 +23,6 @@ fn set_mtime(path: &Path, ms: f64) {
     file.set_modified(time).unwrap();
 }
 
-fn sha256(bytes: &[u8]) -> String {
-    ring::digest::digest(&ring::digest::SHA256, bytes)
-        .as_ref()
-        .iter()
-        .map(|b| format!("{b:02x}"))
-        .collect()
-}
-
 /// Replays one recorded case; returns the differences.
 fn replay(case: &Value) -> Vec<String> {
     // The generator's `mkdtemp` prefix: session files hold the temp path, so their size depends on its length.
@@ -135,7 +127,7 @@ fn replay(case: &Value) -> Vec<String> {
             .map(|at| &html[at + marker.len()..])
             .and_then(|rest| rest.find('<').map(|end| rest[..end].to_string()));
         if let (Some(data), Some(expected)) = (data, item["sessionData"].as_str()) {
-            let decoded = cli::js::base64_decode(&data).map(|b| String::from_utf8_lossy(&b).into_owned());
+            let decoded = jsrt::base64::atob(&data).map(|b| String::from_utf8_lossy(&b).into_owned());
             compare(
                 &mut diffs,
                 &args,
@@ -144,7 +136,7 @@ fn replay(case: &Value) -> Vec<String> {
                 expected,
             );
         }
-        if sha256(&bytes) != item["sha256"].as_str().unwrap() {
+        if jsrt::hash::sha256_hex(&bytes) != item["sha256"].as_str().unwrap() {
             diffs.push(format!(
                 "{args:?} {rel}: sha256 differs ({} bytes, node {})",
                 bytes.len(),
@@ -198,7 +190,7 @@ fn tree(root: &Path, rel: &str, sub: &dyn Fn(&str) -> String) -> Value {
             .unwrap()
             .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
             .collect();
-        names.sort_by(|a, b| a.encode_utf16().cmp(b.encode_utf16()));
+        jsrt::utf16::sort(&mut names);
         for name in names {
             let p = if dir.is_empty() { name } else { format!("{dir}/{name}") };
             let meta = std::fs::symlink_metadata(base.join(&p)).unwrap();

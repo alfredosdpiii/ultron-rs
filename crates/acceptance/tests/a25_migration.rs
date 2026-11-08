@@ -524,7 +524,7 @@ fn acceptance_a25_native_rpc_runs_prompts_bash_and_session_commands_ported_part(
     let encoded = &html[at..];
     let encoded = &encoded[encoded.find('>').unwrap() + 1..];
     let encoded = &encoded[..encoded.find('<').unwrap()];
-    let data: Value = serde_json::from_slice(&base64_decode(encoded.trim())).unwrap();
+    let data: Value = serde_json::from_slice(&jsrt::base64::atob(encoded.trim()).unwrap()).unwrap();
     let roles: Vec<&str> = data["entries"]
         .as_array()
         .unwrap()
@@ -738,7 +738,7 @@ mod migration {
         assert_eq!(field(&entries, "parentId"), field(&branch, "parentId"));
         let stamps: Vec<Value> = branch
             .iter()
-            .map(|e| json!(session_file::js::parse_date(e["timestamp"].as_str().unwrap()).unwrap()))
+            .map(|e| json!(jsrt::date::parse_date(e["timestamp"].as_str().unwrap()).unwrap()))
             .collect();
         assert_eq!(field(&entries, "timestamp"), stamps);
         // The abandoned branch is imported too, with its parents.
@@ -817,7 +817,7 @@ mod migration {
             .collect();
         let pi_stamps: Vec<Value> = pi_all
             .iter()
-            .map(|e| json!(session_file::js::parse_date(e["timestamp"].as_str().unwrap()).unwrap()))
+            .map(|e| json!(jsrt::date::parse_date(e["timestamp"].as_str().unwrap()).unwrap()))
             .collect();
         assert_eq!(stamps, pi_stamps);
         assert_eq!(pi.leaf_id(), Some(&json!("mc")));
@@ -1415,25 +1415,4 @@ mod migration {
             assert!(!text(&printed.stdout).contains(super::SECRET) && !text(&printed.stderr).contains(super::SECRET));
         }
     }
-}
-
-/// Standard base64 (the HTML export's embedded session data).
-fn base64_decode(text: &str) -> Vec<u8> {
-    let value = |c: u8| match c {
-        b'A'..=b'Z' => c - b'A',
-        b'a'..=b'z' => c - b'a' + 26,
-        b'0'..=b'9' => c - b'0' + 52,
-        b'+' => 62,
-        b'/' => 63,
-        _ => panic!("not base64: {c}"),
-    };
-    let bytes: Vec<u8> = text.bytes().filter(|b| *b != b'=').map(value).collect();
-    bytes
-        .chunks(4)
-        .flat_map(|chunk| {
-            let n = chunk.iter().fold(0u32, |n, b| (n << 6) | u32::from(*b)) << (6 * (4 - chunk.len()));
-            let all = [(n >> 16) as u8, (n >> 8) as u8, n as u8];
-            all[..chunk.len().saturating_sub(1)].to_vec()
-        })
-        .collect()
 }

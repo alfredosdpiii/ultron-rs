@@ -4,7 +4,7 @@
 //! every open instance. Pinning is best effort: retain reports `pinned: false` when the pool has no capacity.
 
 use crate::store::{DocumentStore, read_versioned};
-use crate::util::{Clock, fields, js_trim, lock, sha256_hex, stringify, uuid};
+use crate::util::Clock;
 use crate::{ApiModule, Request, TaskHost};
 use serde_json::{Value, json};
 use std::collections::HashSet;
@@ -14,7 +14,7 @@ const TERMINAL: &[&str] = &["completed", "failed", "cancelled", "interrupted"];
 
 fn text(value: Option<&Value>, name: &str) -> Result<String, String> {
     match value.and_then(Value::as_str) {
-        Some(text) if !js_trim(text).is_empty() => Ok(text.to_string()),
+        Some(text) if !jsrt::string::trim(text).is_empty() => Ok(text.to_string()),
         _ => Err(format!("{name} must be a nonempty string")),
     }
 }
@@ -116,7 +116,7 @@ impl ApiModule for InstancesModule {
     }
 
     fn start(&self, host: &dyn TaskHost) -> Result<(), String> {
-        let mut state = lock(&self.state);
+        let mut state = jsrt::sync::lock(&self.state);
         let document = self.load(&mut state)?;
         for instance in document["instances"].as_array().into_iter().flatten() {
             if instance["state"] == "open" {
@@ -127,7 +127,7 @@ impl ApiModule for InstancesModule {
     }
 
     fn handle(&self, request: &Request<'_>) -> Result<Value, String> {
-        let mut state = lock(&self.state);
+        let mut state = jsrt::sync::lock(&self.state);
         let current = self.load(&mut state)?;
         let host = request.host;
         let caller = request.caller_task;
@@ -135,7 +135,7 @@ impl ApiModule for InstancesModule {
         let payload = request.payload;
         match request.kind {
             "instances.retain" => {
-                fields(payload, &["task_id"])?;
+                jsrt::payload::fields(payload, &["task_id"])?;
                 let task_id = text(payload.get("task_id"), "task_id")?;
                 let existing = current["instances"]
                     .as_array()
@@ -166,7 +166,7 @@ impl ApiModule for InstancesModule {
                     .task_lane(&task_id)
                     .unwrap_or_else(|| format!("ultron.{}.{task_id}", definition.split('@').next().unwrap_or("")));
                 let record = json!({
-                    "id": format!("ultron-instance-{}", uuid()),
+                    "id": format!("ultron-instance-{}", jsrt::random::uuid_v4()),
                     "task_id": task_id,
                     "definition": definition,
                     "lane": lane,
@@ -185,7 +185,7 @@ impl ApiModule for InstancesModule {
                 Ok(Self::with_pinned(record, pinned))
             }
             "instances.invoke" => {
-                fields(payload, &["id", "input", "key"])?;
+                jsrt::payload::fields(payload, &["id", "input", "key"])?;
                 let index = find_index(&current, payload.get("id"))?;
                 let instance = current["instances"][index].clone();
                 assert_owner(&instance, caller)?;
@@ -225,7 +225,7 @@ impl ApiModule for InstancesModule {
                         items.push(json!({
                             "task_id": task["id"],
                             "at": now,
-                            "input_sha256": sha256_hex(stringify(input).as_bytes()),
+                            "input_sha256": jsrt::hash::sha256_hex(jsrt::json::stringify(input).as_bytes()),
                         }));
                     }
                     self.commit(&mut state, next)?;
@@ -233,7 +233,7 @@ impl ApiModule for InstancesModule {
                 Ok(json!({"instance_id": instance["id"], "task_id": task["id"]}))
             }
             "instances.close" => {
-                fields(payload, &["id"])?;
+                jsrt::payload::fields(payload, &["id"])?;
                 let index = find_index(&current, payload.get("id"))?;
                 let instance = current["instances"][index].clone();
                 assert_owner(&instance, caller)?;
@@ -249,14 +249,14 @@ impl ApiModule for InstancesModule {
                 Ok(closed)
             }
             "instances.get" => {
-                fields(payload, &["id"])?;
+                jsrt::payload::fields(payload, &["id"])?;
                 let index = find_index(&current, payload.get("id"))?;
                 let instance = current["instances"][index].clone();
                 assert_owner(&instance, caller)?;
                 Ok(instance)
             }
             "instances.list" => {
-                fields(payload, &[])?;
+                jsrt::payload::fields(payload, &[])?;
                 Ok(Value::Array(
                     current["instances"]
                         .as_array()

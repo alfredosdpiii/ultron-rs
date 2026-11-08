@@ -51,7 +51,7 @@ impl ModelConfig {
         let text = String::from_utf8_lossy(&bytes);
         let text = text.strip_prefix('\u{feff}').unwrap_or(&text);
         let parsed: Value = match serde_json::from_str(&strip_json_comments(text)) {
-            Ok(value) => js_order(crate::json::normalize_numbers(value)),
+            Ok(value) => js_order(jsrt::json::normalize_numbers(value)),
             Err(e) => {
                 // ponytail: serde_json's wording, not V8's JSON.parse message.
                 return failed(format!("Failed to parse models.json: {e}\n\nFile: {shown}"));
@@ -157,7 +157,7 @@ pub fn strip_json_comments(input: &str) -> String {
         }
         if chars[i] == ',' {
             let mut j = i + 1;
-            while j < chars.len() && is_js_whitespace(chars[j]) {
+            while j < chars.len() && jsrt::string::is_space(chars[j]) {
                 j += 1;
             }
             if matches!(chars.get(j), Some('}' | ']')) {
@@ -192,15 +192,6 @@ fn string_literal_end(chars: &[char], start: usize) -> Option<usize> {
 
 fn is_line_terminator(c: char) -> bool {
     matches!(c, '\n' | '\r' | '\u{2028}' | '\u{2029}')
-}
-
-/// JavaScript's `\s`.
-fn is_js_whitespace(c: char) -> bool {
-    matches!(
-        c,
-        '\t' | '\n' | '\u{b}' | '\u{c}' | '\r' | ' ' | '\u{a0}' | '\u{1680}' | '\u{2000}'
-            ..='\u{200a}' | '\u{2028}' | '\u{2029}' | '\u{202f}' | '\u{205f}' | '\u{3000}' | '\u{feff}'
-    )
 }
 
 /// A canonical array index (`0`..=`2^32 - 2`): such keys come first, ascending, in JavaScript objects.
@@ -284,14 +275,6 @@ fn display_path(instance_path: &str) -> String {
     if path.is_empty() { "root".into() } else { path }
 }
 
-fn js_number(n: f64) -> String {
-    if n.fract() == 0.0 && n.abs() < 1e21 {
-        format!("{}", n as i64)
-    } else {
-        format!("{n}")
-    }
-}
-
 /// `ErrorSchema`: records errors in TypeBox's keyword order and returns whether `value` is valid.
 fn validate(schema: &Schema, value: &Value, path: &str, errors: &mut Vec<SchemaError>) -> bool {
     if errors.len() >= MAX_ERRORS {
@@ -331,7 +314,7 @@ fn validate(schema: &Schema, value: &Value, path: &str, errors: &mut Vec<SchemaE
             };
             match exclusive_minimum {
                 Some(limit) if n <= *limit => {
-                    push(errors, path, format!("must be > {}", js_number(*limit)));
+                    push(errors, path, format!("must be > {}", jsrt::number::to_string(*limit)));
                     false
                 }
                 _ => true,
@@ -345,13 +328,13 @@ fn validate(schema: &Schema, value: &Value, path: &str, errors: &mut Vec<SchemaE
             if let Some(limit) = maximum
                 && n > *limit
             {
-                push(errors, path, format!("must be <= {}", js_number(*limit)));
+                push(errors, path, format!("must be <= {}", jsrt::number::to_string(*limit)));
                 ok = false;
             }
             if let Some(limit) = minimum
                 && n < *limit
             {
-                push(errors, path, format!("must be >= {}", js_number(*limit)));
+                push(errors, path, format!("must be >= {}", jsrt::number::to_string(*limit)));
                 ok = false;
             }
             ok

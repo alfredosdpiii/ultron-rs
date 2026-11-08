@@ -199,12 +199,12 @@ impl Shared {
                 .as_ref()
                 .is_some_and(|l| l.busy());
         json!({"type": "worker_status", "token": self.token, "sessionKey": self.session_key, "nonce": nonce,
-            "pid": std::process::id(), "busy": busy, "health": self.progress.health(session_core::lane::now_ms(), self.stuck_after)})
+            "pid": std::process::id(), "busy": busy, "health": self.progress.health(jsrt::date::now_ms(), self.stuck_after)})
     }
 
     fn report(&self) {
         self.health
-            .replace(self.progress.health(session_core::lane::now_ms(), self.stuck_after));
+            .replace(self.progress.health(jsrt::date::now_ms(), self.stuck_after));
         let _ = self.send(self.status(Value::Null), None);
     }
 
@@ -430,7 +430,7 @@ fn services(
             let message = expand_review_command(typed);
             let images = request(&args)["images"].as_array().cloned().unwrap_or_default();
             let lifecycle = prompt_lifecycle.lock().unwrap_or_else(|e| e.into_inner()).clone();
-            let marker = format!("prompt-{}", crate::paths::uuid_v4());
+            let marker = format!("prompt-{}", jsrt::random::uuid_v4());
             if let Some(lifecycle) = &lifecycle {
                 lifecycle.operation_started("run", "main", &marker);
             }
@@ -646,9 +646,7 @@ fn services(
         })
         // The run's progress (crate::watchdog), now.
         .method("checkHealth", move |_| {
-            Ok(Some(
-                health_progress.health(session_core::lane::now_ms(), watch.stuck_after),
-            ))
+            Ok(Some(health_progress.health(jsrt::date::now_ms(), watch.stuck_after)))
         })
         // Abort the run in progress; one that does not stop within the grace restarts the worker, whose recovery
         // ends it as aborted (its cancel request is journaled first).
@@ -803,7 +801,7 @@ pub fn run(args: &[String], docs: PathBuf) -> Result<(), String> {
     let names = name_state.clone();
     let progress = Arc::new(Progress::default());
     let stuck_after = crate::watchdog::stuck_after(&|k| std::env::var(k).ok());
-    let health_state = crate::chord::State::new(progress.health(session_core::lane::now_ms(), stuck_after));
+    let health_state = crate::chord::State::new(progress.health(jsrt::date::now_ms(), stuck_after));
     let (sink_progress, sink_shared) = (progress.clone(), shared_slot.clone());
     let (core, _actor, summary) = session_core::core::spawn(
         open,
@@ -816,7 +814,7 @@ pub fn run(args: &[String], docs: PathBuf) -> Result<(), String> {
                 }
                 return;
             }
-            let change = sink_progress.event(&event, session_core::lane::now_ms());
+            let change = sink_progress.event(&event, jsrt::date::now_ms());
             if change != Change::None
                 && let Some(shared) = sink_shared.get().and_then(Weak::upgrade)
             {
@@ -1190,7 +1188,7 @@ fn spawn_watchdog(shared: &Arc<Shared>) {
         loop {
             std::thread::sleep(period);
             let Some(shared) = watched.upgrade() else { return };
-            if shared.progress.check(session_core::lane::now_ms(), shared.stuck_after) {
+            if shared.progress.check(jsrt::date::now_ms(), shared.stuck_after) {
                 shared.report();
             }
         }

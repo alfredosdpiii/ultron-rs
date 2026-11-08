@@ -4,7 +4,6 @@
 //! `{version: 1, receipts, decisions}`; a verifier still pending when the owner ended is settled as unverified on load.
 
 use crate::store::{DocumentStore, read_versioned};
-use crate::util::{fields, js_trim, lock, utf16_len, uuid};
 use crate::{ApiModule, Request, TaskHost};
 use serde_json::{Map, Value, json};
 use std::sync::{Arc, Mutex};
@@ -22,7 +21,7 @@ const CLAIM_DECISIONS: &[&str] = &["pending", "verified", "unverified", "rejecte
 
 fn task_id_field(value: Option<&Value>) -> Result<String, String> {
     match value.and_then(Value::as_str) {
-        Some(text) if !js_trim(text).is_empty() => Ok(text.to_string()),
+        Some(text) if !jsrt::string::trim(text).is_empty() => Ok(text.to_string()),
         _ => Err("task_id must be a nonempty string".into()),
     }
 }
@@ -69,7 +68,7 @@ fn evidence_list(value: Option<&Value>) -> Result<Vec<Value>, String> {
         .enumerate()
         .map(|(index, item)| {
             let entry = plain_object(item, &format!("evidence[{index}]"))?;
-            fields(entry, &["kind", "ref", "sha256"])?;
+            jsrt::payload::fields(entry, &["kind", "ref", "sha256"])?;
             let kind = entry
                 .get("kind")
                 .and_then(Value::as_str)
@@ -78,7 +77,7 @@ fn evidence_list(value: Option<&Value>) -> Result<Vec<Value>, String> {
             let reference = entry
                 .get("ref")
                 .and_then(Value::as_str)
-                .filter(|r| !js_trim(r).is_empty() && utf16_len(r) <= MAX_REF)
+                .filter(|r| !jsrt::string::trim(r).is_empty() && jsrt::utf16::len(r) <= MAX_REF)
                 .ok_or_else(|| {
                     format!("evidence[{index}].ref must be a nonempty string of at most {MAX_REF} characters")
                 })?;
@@ -105,7 +104,7 @@ fn metrics_field(value: Option<&Value>) -> Result<Option<Value>, String> {
         return Err(format!("metrics may hold at most {MAX_METRICS} entries"));
     }
     for (key, metric) in metrics {
-        let length = utf16_len(key);
+        let length = jsrt::utf16::len(key);
         if length == 0 || length > 64 {
             return Err("metric names must be 1 to 64 characters".into());
         }
@@ -325,7 +324,7 @@ impl ProgressModule {
 
     /// Runs `change` on the loaded document, one at a time (TS `enqueue`).
     fn enqueue<T>(&self, change: impl FnOnce(&mut State) -> Result<T, String>) -> Result<T, String> {
-        let mut state = lock(&self.state);
+        let mut state = jsrt::sync::lock(&self.state);
         if state.broken {
             return Err(DURABILITY_ERROR.into());
         }
@@ -472,7 +471,7 @@ impl ProgressModule {
 
     fn report(&self, request: &Request<'_>) -> Result<Value, String> {
         let payload = request.payload;
-        fields(payload, &["task_id", "summary", "evidence", "metrics"])?;
+        jsrt::payload::fields(payload, &["task_id", "summary", "evidence", "metrics"])?;
         let caller = request.caller_task;
         let task_id = match payload.get("task_id").filter(|value| !value.is_null()) {
             None => caller.map(str::to_string),
@@ -482,7 +481,7 @@ impl ProgressModule {
         let summary = payload
             .get("summary")
             .and_then(Value::as_str)
-            .filter(|s| !js_trim(s).is_empty() && utf16_len(s) <= MAX_SUMMARY)
+            .filter(|s| !jsrt::string::trim(s).is_empty() && jsrt::utf16::len(s) <= MAX_SUMMARY)
             .ok_or_else(|| format!("summary must be a nonempty string of at most {MAX_SUMMARY} characters"))?;
         let evidence = evidence_list(payload.get("evidence"))?;
         let metrics = metrics_field(payload.get("metrics"))?;
@@ -521,7 +520,7 @@ impl ProgressModule {
                 }
             }
             let mut receipt = json!({
-                "id": format!("progress-receipt-{}", uuid()),
+                "id": format!("progress-receipt-{}", jsrt::random::uuid_v4()),
                 "task_id": task_id,
                 "reporter_task_id": caller,
                 "at": request.host.now(),
@@ -606,7 +605,7 @@ impl ProgressModule {
 
     fn reassess(&self, request: &Request<'_>) -> Result<Value, String> {
         let payload = request.payload;
-        fields(
+        jsrt::payload::fields(
             payload,
             &["task_id", "extend_budget", "claim", "verifier", "verifier_input"],
         )?;
@@ -634,7 +633,7 @@ impl ProgressModule {
         Self::owner_or_ancestor(caller, &task, &all)?;
         let assessment = self.enqueue(|state| Ok(self.assess(&state.document, &task, request.host.now())))?;
         let mut decision = json!({
-            "id": format!("progress-decision-{}", uuid()),
+            "id": format!("progress-decision-{}", jsrt::random::uuid_v4()),
             "task_id": task_id,
             "requester_task_id": caller,
             "at": request.host.now(),
@@ -682,7 +681,7 @@ impl ProgressModule {
             Some(input) => input.clone(),
             None => {
                 let evidence: Vec<Value> = {
-                    let state = lock(&self.state);
+                    let state = jsrt::sync::lock(&self.state);
                     Self::receipts_of(&state.document, &task_id)
                         .iter()
                         .flat_map(|receipt| receipt["evidence"].as_array().cloned().unwrap_or_default())
@@ -709,7 +708,7 @@ impl ProgressModule {
     }
 
     fn history(&self, request: &Request<'_>) -> Result<Value, String> {
-        fields(request.payload, &["task_id"])?;
+        jsrt::payload::fields(request.payload, &["task_id"])?;
         let task_id = task_id_field(request.payload.get("task_id"))?;
         let (task, all) = Self::find_task(request.host, &task_id)?;
         Self::owner_or_ancestor(request.caller_task, &task, &all)?;
@@ -730,7 +729,7 @@ impl ProgressModule {
     }
 
     fn assess_request(&self, request: &Request<'_>) -> Result<Value, String> {
-        fields(request.payload, &["task_id"])?;
+        jsrt::payload::fields(request.payload, &["task_id"])?;
         let task_id = task_id_field(request.payload.get("task_id"))?;
         let (task, all) = Self::find_task(request.host, &task_id)?;
         Self::owner_or_ancestor(request.caller_task, &task, &all)?;

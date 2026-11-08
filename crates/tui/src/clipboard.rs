@@ -312,7 +312,7 @@ impl Drop for ClipboardService {
 
 fn image_reply(image: ClipboardImage) -> ClipboardReply {
     ClipboardReply::Image {
-        data: B64.encode(image.bytes),
+        data: jsrt::base64::encode(image.bytes),
         mime_type: image.mime_type,
     }
 }

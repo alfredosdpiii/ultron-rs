@@ -118,6 +118,16 @@ fn inference_without_a_contract_returns_the_reply_text() {
     assert_eq!(observed.unwrap()["value"], "a short answer");
 }
 
+/// `"\u0085".trim()` is `"\u0085"` in node (NEL is not JavaScript whitespace), so a task of NEL is not blank: the
+/// frame runs. A plain-space task is still refused.
+#[test]
+fn inference_task_blankness_uses_javascript_trim() {
+    let (handler, _, _dir) = setup(vec![reply("ran")]);
+    let observed = call(&handler, "rlm.infer", json!({"task": "\u{85}"}));
+    assert_eq!(observed.unwrap()["value"], "ran");
+    assert!(call(&handler, "rlm.infer", json!({"task": " \u{feff} "})).is_err());
+}
+
 #[test]
 fn inference_malformed_contract_is_refused_before_any_frame_runs() {
     let (handler, transport, _dir) = setup(vec![reply("1")]);

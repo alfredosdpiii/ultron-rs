@@ -37,7 +37,7 @@ pub fn kernel_environment<K: AsRef<OsStr>, V: AsRef<OsStr>>(source: impl IntoIte
                 .as_ref()
                 .to_string_lossy()
                 .split(',')
-                .map(|name| name.trim_matches(is_js_space).to_string())
+                .map(|name| jsrt::string::trim(name).to_string())
                 .filter(|name| !name.is_empty())
                 .collect()
         })
@@ -75,8 +75,6 @@ pub struct LimitOverrides {
     pub max_cpu_seconds: Option<u64>,
 }
 
-const MAX_SAFE_INTEGER: u64 = (1 << 53) - 1;
-
 /// Limits from `ULTRON_RLM_MAX_MEMORY_MB` and `ULTRON_RLM_MAX_CPU_SECONDS` (read through `lookup`), then overrides.
 /// A malformed value falls back to the default; a value over 2^53 - 1 is an error, as in TypeScript.
 pub fn kernel_resource_limits(
@@ -87,18 +85,18 @@ pub fn kernel_resource_limits(
         let Some(raw) = lookup(name) else {
             return Ok(fallback);
         };
-        let digits = raw.trim_matches(is_js_space);
+        let digits = jsrt::string::trim(&raw);
         if digits.is_empty() || !digits.bytes().all(|byte| byte.is_ascii_digit()) {
             return Ok(fallback);
         }
         match digits.parse::<u64>() {
-            Ok(number) if number <= MAX_SAFE_INTEGER => Ok(number),
+            Ok(number) if number <= jsrt::number::MAX_SAFE_INTEGER as u64 => Ok(number),
             _ => Err(()),
         }
     };
     let field = |name: &str, override_value: Option<u64>, env: &str, fallback: u64| {
         let parsed = match override_value {
-            Some(number) if number <= MAX_SAFE_INTEGER => Ok(number),
+            Some(number) if number <= jsrt::number::MAX_SAFE_INTEGER as u64 => Ok(number),
             Some(_) => Err(()),
             None => value(env, fallback),
         };
@@ -126,60 +124,11 @@ const MAX_RLM_OUTPUT_BYTES: u64 = 128 * 1024;
 /// The byte budget for one cell's captured stream: `ULTRON_RLM_OUTPUT_BYTES` (as JavaScript's `Number` reads it),
 /// else 20 KB, within 1 KB..128 KiB.
 pub fn rlm_output_budget(value: Option<&str>) -> u64 {
-    let raw = value.unwrap_or("").trim_matches(is_js_space);
-    match js_number(raw) {
+    let raw = jsrt::string::trim(value.unwrap_or(""));
+    match Some(jsrt::number::parse(raw)).filter(|n| !n.is_nan()) {
         Some(number) if number.fract() == 0.0 && number.is_finite() && number > 0.0 => {
             number.clamp(1024.0, MAX_RLM_OUTPUT_BYTES as f64) as u64
         }
         _ => DEFAULT_RLM_OUTPUT_BYTES,
     }
-}
-
-/// JavaScript's whitespace for `trim` and `\s`: Unicode White_Space without U+0085, plus U+FEFF.
-pub(crate) fn is_js_space(character: char) -> bool {
-    character != '\u{85}' && (character.is_whitespace() || character == '\u{feff}')
-}
-
-/// `Number(text)` for already-trimmed, non-empty text; None where JavaScript yields NaN.
-fn js_number(text: &str) -> Option<f64> {
-    let radix = match text.get(..2) {
-        Some("0x" | "0X") => Some(16),
-        Some("0o" | "0O") => Some(8),
-        Some("0b" | "0B") => Some(2),
-        _ => None,
-    };
-    if let Some(radix) = radix {
-        let digits = &text[2..];
-        if digits.is_empty() || !digits.chars().all(|digit| digit.is_digit(radix)) {
-            return None;
-        }
-        return Some(digits.chars().fold(0.0, |total, digit| {
-            total * f64::from(radix) + f64::from(digit.to_digit(radix).unwrap_or(0))
-        }));
-    }
-    let unsigned = text.strip_prefix(['+', '-']).unwrap_or(text);
-    if unsigned == "Infinity" {
-        return Some(if text.starts_with('-') {
-            f64::NEG_INFINITY
-        } else {
-            f64::INFINITY
-        });
-    }
-    let (mantissa, exponent) = match unsigned.find(['e', 'E']) {
-        Some(index) => (&unsigned[..index], Some(&unsigned[index + 1..])),
-        None => (unsigned, None),
-    };
-    let (whole, fraction) = mantissa.split_once('.').unwrap_or((mantissa, ""));
-    let digits = |part: &str| part.bytes().all(|byte| byte.is_ascii_digit());
-    let exponent_ok = exponent.is_none_or(|exponent| {
-        let exponent = exponent.strip_prefix(['+', '-']).unwrap_or(exponent);
-        !exponent.is_empty() && digits(exponent)
-    });
-    if (whole.is_empty() && fraction.is_empty()) || !digits(whole) || !digits(fraction) || !exponent_ok {
-        return None;
-    }
-    if text.is_empty() {
-        return Some(0.0);
-    }
-    text.parse::<f64>().ok()
 }

@@ -107,15 +107,6 @@ impl Totals {
     }
 }
 
-/// A JSON number as JavaScript holds it: integral values print without a fraction.
-fn number(value: f64) -> Value {
-    if value.fract() == 0.0 && value.abs() < 9.007_199_254_740_992e15 {
-        Value::from(value as i64)
-    } else {
-        Value::from(value)
-    }
-}
-
 /// `getSessionStats()`: totals over every entry, compacted and abandoned history included.
 pub fn stats(manager: &SessionManager, session_file: Option<&str>, session_id: &str, context_window: u64) -> Value {
     let (mut users, mut assistants, mut tool_results, mut total, mut tool_calls) = (0, 0, 0, 0, 0);
@@ -164,12 +155,12 @@ pub fn stats(manager: &SessionManager, session_file: Option<&str>, session_id: &
     out.insert(
         "tokens".into(),
         json!({
-            "input": number(totals.input), "output": number(totals.output),
-            "cacheRead": number(totals.cache_read), "cacheWrite": number(totals.cache_write),
-            "total": number(totals.input + totals.output + totals.cache_read + totals.cache_write),
+            "input": jsrt::json::number(totals.input), "output": jsrt::json::number(totals.output),
+            "cacheRead": jsrt::json::number(totals.cache_read), "cacheWrite": jsrt::json::number(totals.cache_write),
+            "total": jsrt::json::number(totals.input + totals.output + totals.cache_read + totals.cache_write),
         }),
     );
-    out.insert("cost".into(), number(totals.cost));
+    out.insert("cost".into(), jsrt::json::number(totals.cost));
     if let Some(usage) = context_usage(manager, context_window) {
         out.insert("contextUsage".into(), usage);
     }
@@ -205,5 +196,5 @@ fn context_usage(manager: &SessionManager, context_window: u64) -> Option<Value>
     }
     let estimate = compaction::estimate_projected_context_tokens(&projection, &branch);
     let percent = estimate.tokens as f64 / context_window as f64 * 100.0;
-    Some(json!({"tokens": estimate.tokens, "contextWindow": context_window, "percent": number(percent)}))
+    Some(json!({"tokens": estimate.tokens, "contextWindow": context_window, "percent": jsrt::json::number(percent)}))
 }

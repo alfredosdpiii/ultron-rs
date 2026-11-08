@@ -7,7 +7,6 @@ use crate::Clock;
 use crate::codec::{self, JSONL_FORMAT_VERSION, JSONL_STORAGE_VERSION, ParsedHeader};
 use crate::usage::{add_usage, empty_usage, num};
 use serde_json::{Map, Value, json};
-use session_file::js;
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
@@ -56,7 +55,10 @@ pub struct LegacyV3Source {
 }
 
 fn timestamp_ms(record: &Value) -> Option<i64> {
-    record.get("timestamp").and_then(Value::as_str).and_then(js::parse_date)
+    record
+        .get("timestamp")
+        .and_then(Value::as_str)
+        .and_then(jsrt::date::parse_date)
 }
 
 fn ts_value(record: &Value) -> Value {
@@ -76,7 +78,7 @@ pub fn normalize_header(header: &Map<String, Value>) -> Map<String, Value> {
     out.insert(
         "createdAt".into(),
         codec::header_str(header, "timestamp")
-            .and_then(js::parse_date)
+            .and_then(jsrt::date::parse_date)
             .map_or(Value::Null, Value::from),
     );
     out.insert("storageVersion".into(), JSONL_STORAGE_VERSION.into());
@@ -109,7 +111,7 @@ fn parse_record(line: &str) -> Result<Value, String> {
             match kind {
                 None => "undefined".to_string(),
                 Some(Value::String(s)) => s.clone(),
-                Some(other) => js::stringify(other),
+                Some(other) => jsrt::json::stringify(other),
             }
         )),
     }
@@ -262,7 +264,7 @@ impl LegacyV3Source {
         mut seq: i64,
     ) -> Result<Vec<Value>, String> {
         let mut values = Vec::new();
-        if let Some(name) = name.filter(|n| js::truthy(Some(n))) {
+        if let Some(name) = name.filter(|n| jsrt::value::truthy(Some(n))) {
             values.push(set_value("ultron.session.name", "", name, seq));
             seq += 1;
         }
@@ -273,7 +275,7 @@ impl LegacyV3Source {
             };
             let label = entry.record.get("label").cloned().unwrap_or(Value::Null);
             let existing = labels.iter().position(|(t, _)| *t == target);
-            match (existing, js::truthy(Some(&label))) {
+            match (existing, jsrt::value::truthy(Some(&label))) {
                 (Some(i), true) => labels[i].1 = label,
                 (None, true) => labels.push((target, label)),
                 (Some(i), false) => {
@@ -378,7 +380,7 @@ impl LegacyV3Source {
         Ok(match entry.kind.as_str() {
             "message" => Some(r["message"].clone()),
             "custom_message" => Some(imported_custom_message(r)),
-            "branch_summary" if js::truthy(r.get("summary")) => Some(branch_summary_message(
+            "branch_summary" if jsrt::value::truthy(r.get("summary")) => Some(branch_summary_message(
                 &r["summary"],
                 self.resolve_from_id(r.get("fromId").and_then(Value::as_str))?,
                 ts_value(r),

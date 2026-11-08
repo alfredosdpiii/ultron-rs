@@ -9,12 +9,12 @@
 //! locking and cancellation rules are ported from `models-runtime.test.ts`.
 
 use crate::http::{AbortSignal, BoxFuture, Transport, is_aborted};
-use crate::json::normalize_numbers;
 use crate::oauth::OAuthProvider;
 use crate::oauth_flow::{Clock, SystemLoginEnv};
 use crate::oauth_login::LoginContext;
-use crate::options::{ProviderHeaders, now_ms};
+use crate::options::ProviderHeaders;
 use indexmap::IndexMap;
+use jsrt::date::now_ms;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 use std::path::{Path, PathBuf};
@@ -83,7 +83,7 @@ impl OAuthCredential {
         map.insert("access".into(), json!(self.access));
         map.insert("expires".into(), json!(self.expires));
         map.extend(self.extra.clone());
-        normalize_numbers(Value::Object(map))
+        jsrt::json::normalize_numbers(Value::Object(map))
     }
 }
 
@@ -109,7 +109,7 @@ impl Credential {
 
     pub fn to_json(&self) -> Value {
         match self {
-            Self::ApiKey(_) => normalize_numbers(serde_json::to_value(self).unwrap_or(Value::Null)),
+            Self::ApiKey(_) => jsrt::json::normalize_numbers(serde_json::to_value(self).unwrap_or(Value::Null)),
             Self::OAuth(credential) => credential.to_json(),
         }
     }
@@ -338,7 +338,7 @@ pub enum AuthEvent {
 impl AuthEvent {
     /// The event as TypeScript passes it to `notify`, integral numbers as integers.
     pub fn to_json(&self) -> Value {
-        normalize_numbers(serde_json::to_value(self).unwrap_or(Value::Null))
+        jsrt::json::normalize_numbers(serde_json::to_value(self).unwrap_or(Value::Null))
     }
 }
 
@@ -1049,7 +1049,7 @@ impl CredentialStore for FileCredentialStore {
                         provider_id.to_string(),
                         serde_json::to_value(&next).map_err(|e| store(e.to_string()))?,
                     );
-                    write_private(&path, &config::json::stringify_pretty(&Value::Object(data)))
+                    write_private(&path, &jsrt::json::stringify_pretty(&Value::Object(data)))
                         .map_err(|e| store(e.to_string()))?;
                     Some(next)
                 }

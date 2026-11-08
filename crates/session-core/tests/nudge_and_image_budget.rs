@@ -195,6 +195,15 @@ fn session_core_image_budget_reads_ultron_context_images() {
     assert_eq!(context_image_budget(Some("2.5")), 8);
 }
 
+/// `Number(" 3\u0085")` is `NaN` in JavaScript: `trim` keeps U+0085 (NEL), so the budget stays the default; U+FEFF
+/// is trimmed (node 26: `Number("\u{85}3")`, `Number("\u{feff}3")`).
+#[test]
+fn session_core_image_budget_trims_like_javascript() {
+    assert_eq!(context_image_budget(Some("\u{85}3")), 8);
+    assert_eq!(context_image_budget(Some("3\u{85}")), 8);
+    assert_eq!(context_image_budget(Some("\u{feff}3\u{a0}")), 3);
+}
+
 /// The wait steer matches what the root's `rlm.collect` does (session_core::wake): woken, collect never waits, so
 /// the root is told to end its turn; nothing waking it, it is told to await the results.
 #[test]

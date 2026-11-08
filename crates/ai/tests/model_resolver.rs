@@ -62,8 +62,8 @@ fn check_model(actual: Option<&Model>, expected: &Value, list: &[Model], context
             assert_eq!(reference(model), e["ref"].as_str().unwrap(), "{context}");
             match e.get("model") {
                 Some(full) => assert_eq!(
-                    ai::json::normalize_numbers(serde_json::to_value(model).unwrap()),
-                    ai::json::normalize_numbers(full.clone()),
+                    jsrt::json::normalize_numbers(serde_json::to_value(model).unwrap()),
+                    jsrt::json::normalize_numbers(full.clone()),
                     "{context}"
                 ),
                 None => assert!(

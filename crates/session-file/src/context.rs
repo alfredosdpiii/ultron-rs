@@ -9,11 +9,11 @@ use crate::js;
 
 /// Map key for an id value, matching JavaScript `Map` lookups by primitive: `undefined` is its own key.
 pub(crate) fn id_key(value: Option<&Value>) -> String {
-    value.map_or_else(|| "undefined".to_string(), js::stringify)
+    value.map_or_else(|| "undefined".to_string(), jsrt::json::stringify)
 }
 
 pub(crate) fn str_key(id: &str) -> String {
-    js::stringify(&Value::from(id))
+    jsrt::json::stringify(&Value::from(id))
 }
 
 pub(crate) fn field<'a>(entry: &'a Value, name: &str) -> Option<&'a Value> {
@@ -86,7 +86,7 @@ pub(crate) fn walk_to_root<'a>(
         path.push(entry);
         current = entry
             .get("parentId")
-            .filter(|p| js::truthy(Some(p)))
+            .filter(|p| jsrt::value::truthy(Some(p)))
             .and_then(|p| lookup(&id_key(Some(p))));
     }
     path.reverse();
@@ -98,7 +98,9 @@ pub(crate) fn session_path<'a>(entries: &[&'a Value], leaf: Leaf<'_>) -> Vec<&'a
     let by_id: HashMap<String, &Value> = entries.iter().map(|e| (id_key(e.get("id")), *e)).collect();
     let start = match leaf {
         Leaf::Root => return Vec::new(),
-        Leaf::Id(id) if js::truthy(Some(id)) => by_id.get(&id_key(Some(id))).copied().or(entries.last().copied()),
+        Leaf::Id(id) if jsrt::value::truthy(Some(id)) => {
+            by_id.get(&id_key(Some(id))).copied().or(entries.last().copied())
+        }
         _ => entries.last().copied(),
     };
     walk_to_root(start, by_id.len(), |key| by_id.get(key).copied())
@@ -170,7 +172,7 @@ pub fn entry_messages(entry: &Value) -> Vec<Value> {
             }
         }
         Some("custom_message") => vec![custom_message(entry)],
-        Some("branch_summary") if js::truthy(entry.get("summary")) => vec![object(vec![
+        Some("branch_summary") if jsrt::value::truthy(entry.get("summary")) => vec![object(vec![
             ("role", Some("branchSummary".into())),
             ("summary", entry.get("summary").cloned()),
             ("fromId", entry.get("fromId").cloned()),
@@ -184,7 +186,7 @@ pub fn entry_messages(entry: &Value) -> Vec<Value> {
                 ("timestamp", Some(js::date_json(entry.get("timestamp")))),
             ]);
             match entry.get("systemMessage") {
-                Some(system) if js::truthy(Some(system)) => vec![system.clone(), summary],
+                Some(system) if jsrt::value::truthy(Some(system)) => vec![system.clone(), summary],
                 _ => vec![summary],
             }
         }
@@ -374,7 +376,7 @@ pub fn current_system_message(messages: &[Value]) -> Option<Value> {
             content.push(text);
         }
         if let Some(Value::Object(patch)) = message.get("sections") {
-            for (name, value) in js::object_entries(patch) {
+            for (name, value) in jsrt::json::object_entries(patch) {
                 if value.is_null() {
                     sections.shift_remove(name);
                 } else {

@@ -296,6 +296,26 @@ async fn ai_oauth_login_codex_matches_typescript() {
     replay_provider("openai-codex").await;
 }
 
+/// The device-code `interval` string is `Number(interval)`, so `"0b1"` is 1 second, as in node; the recorded
+/// `interval: 1` case then replays unchanged.
+#[tokio::test(flavor = "multi_thread")]
+async fn ai_oauth_login_codex_interval_reads_javascript_number_literals() {
+    let fixture = fixture();
+    let mut case = fixture["cases"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|c| c["name"] == "codex device poll invalid success")
+        .unwrap()
+        .clone();
+    assert_eq!(
+        case["responses"][0][1],
+        r#"{"device_auth_id":"d","user_code":"u","interval":1}"#
+    );
+    case["responses"][0][1] = json!(r#"{"device_auth_id":"d","user_code":"u","interval":"0b1"}"#);
+    replay(&case).await;
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn ai_oauth_login_copilot_matches_typescript() {
     replay_provider("github-copilot").await;

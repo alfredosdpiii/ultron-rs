@@ -2,7 +2,6 @@
 //! `application/vnd.amazon.eventstream` binary framing (`@smithy/core/event-streams`) and the standard retry
 //! classification. Credentials and shared config files are `aws_credentials.rs`.
 
-use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 
 // --------------------------------------------------------------------------------------------------------- SigV4
@@ -41,32 +40,6 @@ const ALWAYS_UNSIGNABLE: &[&str] = &[
     "user-agent",
     "x-amzn-trace-id",
 ];
-
-fn hex(bytes: &[u8]) -> String {
-    bytes.iter().map(|b| format!("{b:02x}")).collect()
-}
-
-pub fn sha256_hex(data: &[u8]) -> String {
-    hex(&Sha256::digest(data))
-}
-
-/// HMAC-SHA256 (RFC 2104).
-pub fn hmac_sha256(key: &[u8], data: &[u8]) -> Vec<u8> {
-    const BLOCK: usize = 64;
-    let mut block = [0u8; BLOCK];
-    if key.len() > BLOCK {
-        block[..32].copy_from_slice(&Sha256::digest(key));
-    } else {
-        block[..key.len()].copy_from_slice(key);
-    }
-    let mut inner = Sha256::new();
-    inner.update(block.map(|b| b ^ 0x36));
-    inner.update(data);
-    let mut outer = Sha256::new();
-    outer.update(block.map(|b| b ^ 0x5c));
-    outer.update(inner.finalize());
-    outer.finalize().to_vec()
-}
 
 /// `escapeUri`: `encodeURIComponent` plus `!'()*`.
 pub fn escape_uri(text: &str) -> String {
@@ -130,27 +103,13 @@ pub fn amz_date(epoch_ms: i64) -> String {
     let secs = epoch_ms.div_euclid(1000);
     let days = secs.div_euclid(86_400);
     let rem = secs.rem_euclid(86_400);
-    let (year, month, day) = civil_from_days(days);
+    let (year, month, day) = jsrt::date::civil_from_days(days);
     format!(
         "{year:04}{month:02}{day:02}T{:02}{:02}{:02}Z",
         rem / 3600,
         (rem % 3600) / 60,
         rem % 60
     )
-}
-
-/// Days since 1970-01-01 to a proleptic Gregorian date (Howard Hinnant's algorithm).
-fn civil_from_days(days: i64) -> (i64, i64, i64) {
-    let z = days + 719_468;
-    let era = z.div_euclid(146_097);
-    let doe = z.rem_euclid(146_097);
-    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
-    let y = yoe + era * 400;
-    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-    let mp = (5 * doy + 2) / 153;
-    let d = doy - (153 * mp + 2) / 5 + 1;
-    let m = if mp < 10 { mp + 3 } else { mp - 9 };
-    (if m <= 2 { y + 1 } else { y }, m, d)
 }
 
 /// `SignatureV4.signRequest`: adds `x-amz-date`, `x-amz-security-token`, `x-amz-content-sha256` and `authorization`
@@ -178,7 +137,9 @@ pub fn sign_request(
         .iter()
         .find(|(name, _)| name.eq_ignore_ascii_case("x-amz-content-sha256"))
         .map(|(_, v)| v.clone());
-    let payload_hash = existing_hash.clone().unwrap_or_else(|| sha256_hex(&request.body));
+    let payload_hash = existing_hash
+        .clone()
+        .unwrap_or_else(|| jsrt::hash::sha256_hex(&request.body));
     if existing_hash.is_none() {
         request
             .headers
@@ -192,7 +153,8 @@ pub fn sign_request(
         if ALWAYS_UNSIGNABLE.contains(&lower.as_str()) || lower.starts_with("proxy-") || lower.starts_with("sec-") {
             continue;
         }
-        let collapsed = value.split_whitespace().collect::<Vec<_>>().join(" ");
+        // `value.trim().replace(/\s+/g, " ")`.
+        let collapsed = jsrt::string::flatten(value);
         canonical.insert(lower, collapsed);
     }
     let signed_headers = canonical.keys().cloned().collect::<Vec<_>>().join(";");
@@ -211,16 +173,16 @@ pub fn sign_request(
     );
     let string_to_sign = format!(
         "AWS4-HMAC-SHA256\n{long_date}\n{scope}\n{}",
-        sha256_hex(canonical_request.as_bytes())
+        jsrt::hash::sha256_hex(canonical_request.as_bytes())
     );
-    let mut key = hmac_sha256(
+    let mut key = jsrt::hash::hmac_sha256(
         format!("AWS4{}", credentials.secret_access_key).as_bytes(),
         short_date.as_bytes(),
     );
     for part in [region, service, "aws4_request"] {
-        key = hmac_sha256(&key, part.as_bytes());
+        key = jsrt::hash::hmac_sha256(&key, part.as_bytes());
     }
-    let signature = hex(&hmac_sha256(&key, string_to_sign.as_bytes()));
+    let signature = jsrt::hash::hex(&jsrt::hash::hmac_sha256(&key, string_to_sign.as_bytes()));
     request.headers.push((
         "authorization".into(),
         format!(
@@ -333,7 +295,7 @@ fn decode_headers(mut bytes: &[u8]) -> Result<BTreeMap<String, String>, String> 
                 let length = u16::from_be_bytes(take(&mut bytes, 2)?.try_into().map_err(|_| malformed())?) as usize;
                 String::from_utf8_lossy(&take(&mut bytes, length)?).into_owned()
             }
-            9 => hex(&take(&mut bytes, 16)?),
+            9 => jsrt::hash::hex(&take(&mut bytes, 16)?),
             _ => return Err(malformed()),
         };
         headers.insert(name, value);
@@ -398,8 +360,6 @@ pub fn is_transient_error(name: &str, status: Option<u16>) -> bool {
 pub fn backoff_delay_ms(retries: u32, throttling: bool) -> u64 {
     let base: f64 = if throttling { 500.0 } else { 100.0 };
     let cap = (base * 2f64.powi(retries as i32)).min(20_000.0);
-    let mut bytes = [0u8; 8];
-    let _ = getrandom::fill(&mut bytes);
-    let random = (u64::from_le_bytes(bytes) >> 11) as f64 / (1u64 << 53) as f64;
+    let random = (u64::from_le_bytes(jsrt::random::bytes::<8>()) >> 11) as f64 / (1u64 << 53) as f64;
     (random * cap).floor() as u64
 }

@@ -8,8 +8,8 @@
 //! cancels it.
 
 use crate::catalog;
+use jsrt::localtime::Zone;
 use kernel_apis::TickClock;
-use kernel_apis::localtime::Zone;
 use kernel_apis::prompt_schedule::{Kind, Schedule, State};
 use serde_json::Value;
 use std::path::Path;
@@ -102,7 +102,7 @@ pub fn ensure(
         }
         let now = module.now();
         let schedule = Schedule {
-            id: format!("sch-{}", &kernel_apis::util::uuid().replace('-', "")[..8]),
+            id: format!("sch-{}", &jsrt::random::uuid_v4().replace('-', "")[..8]),
             name: SCHEDULE_NAME.into(),
             session_id: id.clone(),
             prompt: PROMPT.into(),

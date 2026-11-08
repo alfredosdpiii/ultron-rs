@@ -181,29 +181,7 @@ fn prompt_request(command: &Value, kind: &str) -> Result<(String, Vec<Value>), S
 fn queue_mode(mode: Option<&Value>) -> Result<&str, String> {
     match mode.and_then(Value::as_str) {
         Some(mode @ ("all" | "one-at-a-time")) => Ok(mode),
-        _ => Err(format!(
-            "Invalid queue mode: {}",
-            mode.map_or("undefined".to_string(), js_string)
-        )),
-    }
-}
-
-/// `String(value)` for the values a command field can hold.
-fn js_string(value: &Value) -> String {
-    match value {
-        Value::String(s) => s.clone(),
-        Value::Null => "null".into(),
-        Value::Array(_) | Value::Object(_) => {
-            if value.is_array() {
-                value
-                    .as_array()
-                    .map(|items| items.iter().map(js_string).collect::<Vec<_>>().join(","))
-                    .unwrap_or_default()
-            } else {
-                "[object Object]".into()
-            }
-        }
-        other => session_file::js::stringify(other),
+        _ => Err(format!("Invalid queue mode: {}", jsrt::value::string(mode))),
     }
 }
 
@@ -264,14 +242,14 @@ fn run_command<S: RpcSession>(
         }
         "get_state" => done(Some(session.state())),
         "set_model" => {
-            let provider = command.get("provider").map_or("undefined".into(), js_string);
-            let model_id = command.get("modelId").map_or("undefined".into(), js_string);
+            let provider = jsrt::value::string(command.get("provider"));
+            let model_id = jsrt::value::string(command.get("modelId"));
             done(Some(session.set_model(&provider, &model_id)?))
         }
         "cycle_model" => done(Some(session.cycle_model()?.unwrap_or(Value::Null))),
         "get_available_models" => done(Some(json!({"models": session.available_models()}))),
         "set_thinking_level" => {
-            let level = command.get("level").map_or("undefined".into(), js_string);
+            let level = jsrt::value::string(command.get("level"));
             session.set_thinking_level(&level, out)?;
             done(None)
         }
@@ -356,7 +334,7 @@ fn run_command<S: RpcSession>(
         }
         "get_last_assistant_text" => done(Some(json!({"text": session.last_assistant_text()}))),
         "set_session_name" => {
-            let name = str_field("name").map(session_file::js::trim).unwrap_or_default();
+            let name = str_field("name").map(jsrt::string::trim).unwrap_or_default();
             if name.is_empty() {
                 return Err("Session name cannot be empty".into());
             }
@@ -419,7 +397,7 @@ pub fn handle_line<S: RpcSession>(session: &mut S, line: &str, out: &Output) {
     }
     let id = command.get("id");
     let Some(kind) = kind else {
-        let shown = command.get("type").map_or("undefined".into(), js_string);
+        let shown = jsrt::value::string(command.get("type"));
         out.emit(&failure(id, None, &format!("Unknown command: {shown}")));
         return;
     };

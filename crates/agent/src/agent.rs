@@ -1,9 +1,9 @@
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::{Arc, Mutex};
 
 use ai::transcript::create_initial_system_message;
 use ai::{AbortSignal, ImageContent, Message, Model, TextContent, UserContent, UserMessage, UserMessageContent};
 
-use crate::agent_loop::{agent_loop, now_ms};
+use crate::agent_loop::agent_loop;
 use crate::types::{
     AgentContext, AgentEvent, AgentLoopConfig, AgentMessage, AgentTool, BeforeToolCall, StreamFn, ToolExecutionMode,
 };
@@ -37,10 +37,6 @@ impl Queue {
 
 type Shared<T> = Arc<Mutex<T>>;
 
-fn lock<T>(shared: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
-    shared.lock().unwrap_or_else(PoisonError::into_inner)
-}
-
 /// Cloneable handle for listeners and other tasks: queue messages and abort the active run.
 #[derive(Clone)]
 pub struct AgentControl {
@@ -52,22 +48,22 @@ pub struct AgentControl {
 impl AgentControl {
     /// Queue a message delivered after the current turn's tool calls.
     pub fn steer(&self, message: AgentMessage) {
-        lock(&self.steering).messages.push(message);
+        jsrt::sync::lock(&self.steering).messages.push(message);
     }
 
     /// Queue a message delivered when the agent would otherwise stop.
     pub fn follow_up(&self, message: AgentMessage) {
-        lock(&self.follow_up).messages.push(message);
+        jsrt::sync::lock(&self.follow_up).messages.push(message);
     }
 
     pub fn abort(&self) {
-        if let Some(signal) = lock(&self.active).as_ref() {
+        if let Some(signal) = jsrt::sync::lock(&self.active).as_ref() {
             signal.abort();
         }
     }
 
     pub fn has_queued_messages(&self) -> bool {
-        !lock(&self.steering).messages.is_empty() || !lock(&self.follow_up).messages.is_empty()
+        !jsrt::sync::lock(&self.steering).messages.is_empty() || !jsrt::sync::lock(&self.follow_up).messages.is_empty()
     }
 }
 
@@ -170,7 +166,7 @@ impl Agent {
         content.extend(images.into_iter().map(UserContent::Image));
         let message = Message::User(UserMessage {
             content: UserMessageContent::Blocks(content),
-            timestamp: now_ms(),
+            timestamp: jsrt::date::now_ms(),
         });
         self.prompt(vec![message]).await;
     }
@@ -178,7 +174,7 @@ impl Agent {
     /// Run the loop over `messages`; returns when the run ends (`agent_end`).
     pub async fn prompt(&mut self, messages: Vec<AgentMessage>) {
         let signal = AbortSignal::new();
-        *lock(&self.control.active) = Some(signal.clone());
+        *jsrt::sync::lock(&self.control.active) = Some(signal.clone());
         self.error_message = None;
 
         let steering = self.control.steering.clone();
@@ -189,8 +185,8 @@ impl Agent {
             session_id: self.session_id.clone(),
             api_key: None,
             tool_execution: self.tool_execution,
-            get_steering_messages: Some(Box::new(move || lock(&steering).drain())),
-            get_follow_up_messages: Some(Box::new(move || lock(&follow_up).drain())),
+            get_steering_messages: Some(Box::new(move || jsrt::sync::lock(&steering).drain())),
+            get_follow_up_messages: Some(Box::new(move || jsrt::sync::lock(&follow_up).drain())),
             before_tool_call: self.before_tool_call.clone(),
         };
         let context = AgentContext {
@@ -221,6 +217,6 @@ impl Agent {
         };
         agent_loop(messages, context, config, &mut process, &signal, stream_fn.as_ref()).await;
 
-        *lock(&self.control.active) = None;
+        *jsrt::sync::lock(&self.control.active) = None;
     }
 }

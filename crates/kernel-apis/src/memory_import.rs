@@ -20,7 +20,6 @@
 
 use crate::memory::{MemoryError, MemoryService};
 use crate::memory_records::{MAX_SITUATION_BYTES, RecordIndex, Typed, content_cap};
-use crate::util::sha256_hex;
 use kernel::Signal;
 use serde_json::{Map, Value, json};
 use std::collections::BTreeMap;
@@ -491,7 +490,7 @@ fn note_key(harness: Harness, note: &Note, occurrence: usize) -> String {
     if occurrence > 1 {
         identity.push_str(&format!("\0{occurrence}"));
     }
-    let suffix = &sha256_hex(identity.as_bytes())[..12];
+    let suffix = &jsrt::hash::sha256_hex(identity.as_bytes())[..12];
     let base = note.key.trim_end_matches('-');
     let end = base.len().min(64 - 1 - suffix.len());
     format!("{}-{suffix}", base[..end].trim_end_matches('-'))
@@ -557,7 +556,7 @@ pub fn plan(sources: &[Source], home: &Path, index: &RecordIndex, tags: ScopeTag
                 )),
             };
             let file_sha = std::fs::read(&note.file)
-                .map(|bytes| sha256_hex(&bytes))
+                .map(|bytes| jsrt::hash::sha256_hex(&bytes))
                 .map_err(|e| format!("{}: {e}", note.file.display()))?;
             let action = if content.len() > content_cap(note.kind) {
                 Action::Refuse(format!(
@@ -571,7 +570,9 @@ pub fn plan(sources: &[Source], home: &Path, index: &RecordIndex, tags: ScopeTag
                 Action::Refuse("holds a secret or personal identifier".into())
             } else {
                 match index.by_key(&key, scope, &filters)? {
-                    Some(entry) if entry.text_hash == sha256_hex(content.as_bytes()) && entry.typed == typed => {
+                    Some(entry)
+                        if entry.text_hash == jsrt::hash::sha256_hex(content.as_bytes()) && entry.typed == typed =>
+                    {
                         Action::Unchanged(entry.id)
                     }
                     Some(entry) => Action::Replace(entry.id),

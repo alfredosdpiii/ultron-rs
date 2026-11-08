@@ -12,7 +12,6 @@
 //! RLIMIT_DATA per process stays in force in every mode.
 
 use crate::KernelError;
-use crate::config::is_js_space;
 use std::collections::HashMap;
 use std::ffi::{OsStr, OsString};
 use std::path::{Path, PathBuf};
@@ -20,7 +19,6 @@ use std::process::{Command, Stdio};
 use std::sync::{LazyLock, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
-const MAX_SAFE_INTEGER: u64 = (1 << 53) - 1;
 /// The memory cap of the probe scope (64 MiB), read back from its `memory.max`.
 const PROBE_BYTES: u64 = 64 * 1024 * 1024;
 const PROBE_TIMEOUT: Duration = Duration::from_secs(5);
@@ -53,14 +51,14 @@ pub fn kernel_tree_memory_limit(
     let fallback = per_process_mb.checked_mul(2).ok_or_else(error)?;
     let value = match override_mb {
         Some(value) => value,
-        None => match env_value.map(|text| text.trim_matches(is_js_space)) {
+        None => match env_value.map(jsrt::string::trim) {
             Some(text) if !text.is_empty() && text.bytes().all(|byte| byte.is_ascii_digit()) => {
                 text.parse::<u64>().unwrap_or(u64::MAX)
             }
             _ => fallback,
         },
     };
-    if value > MAX_SAFE_INTEGER {
+    if value > jsrt::number::MAX_SAFE_INTEGER as u64 {
         return Err(error());
     }
     Ok(value)
@@ -78,7 +76,7 @@ pub fn tree_memory_backend(
         return TreeMemoryBackend::Off;
     }
     let choice = requested
-        .map(|text| text.trim_matches(is_js_space).to_lowercase())
+        .map(|text| jsrt::string::trim(text).to_lowercase())
         .unwrap_or_default();
     match choice.as_str() {
         "off" => TreeMemoryBackend::Off,
@@ -137,7 +135,7 @@ fn probe(program: &OsStr) -> bool {
     match child.wait_with_output() {
         Ok(output) => {
             output.status.success()
-                && String::from_utf8_lossy(&output.stdout).trim_matches(is_js_space) == PROBE_BYTES.to_string()
+                && jsrt::string::trim(&String::from_utf8_lossy(&output.stdout)) == PROBE_BYTES.to_string()
         }
         Err(_) => false,
     }

@@ -17,7 +17,7 @@
 
 use kernel_apis::artifacts::KeyedDocuments;
 use kernel_apis::store::read_versioned;
-use kernel_apis::util::{Clock, iso, lock, safe_integer, system_clock, uuid};
+use kernel_apis::util::{Clock, system_clock};
 use serde_json::{Map, Value, json};
 use std::sync::{Arc, Mutex};
 
@@ -96,7 +96,7 @@ impl Default for LocalOptions {
             validate: None,
             require_approval: false,
             now: system_clock(),
-            ids: Arc::new(uuid),
+            ids: Arc::new(jsrt::random::uuid_v4),
         }
     }
 }
@@ -110,21 +110,12 @@ pub struct Branch {
     pub on_branch: Option<OnBranch>,
 }
 
-/// JavaScript `\s`.
-fn js_space(ch: char) -> bool {
-    (ch.is_whitespace() && ch != '\u{85}') || ch == '\u{feff}'
-}
-
-fn js_trim(text: &str) -> &str {
-    text.trim_matches(js_space)
-}
-
 /// `value.toLowerCase().replace(/[-_\s]/g, "")`.
 fn normalize(value: &str) -> String {
     value
         .to_lowercase()
         .chars()
-        .filter(|ch| *ch != '-' && *ch != '_' && !js_space(*ch))
+        .filter(|ch| *ch != '-' && *ch != '_' && !jsrt::string::is_space(*ch))
         .collect()
 }
 
@@ -171,11 +162,11 @@ pub(crate) fn frontmatter(text: &str, then_newline: bool) -> Option<(&str, &str)
 fn escalation(value: &Value) -> Option<String> {
     match value {
         Value::String(text) => {
-            let (front, _) = frontmatter(text.trim_start_matches(js_space), false)?;
+            let (front, _) = frontmatter(text.trim_start_matches(jsrt::string::is_space), false)?;
             for line in front.split('\n') {
                 let line = line.strip_suffix('\r').unwrap_or(line);
                 // /^\s*([A-Za-z][\w-]*)\s*:/
-                let rest = line.trim_start_matches(js_space);
+                let rest = line.trim_start_matches(jsrt::string::is_space);
                 let mut chars = rest.char_indices();
                 if !chars.next().is_some_and(|(_, ch)| ch.is_ascii_alphabetic()) {
                     continue;
@@ -184,7 +175,7 @@ fn escalation(value: &Value) -> Option<String> {
                     .find(|(_, ch)| !(ch.is_ascii_alphanumeric() || *ch == '_' || *ch == '-'))
                     .map_or(rest.len(), |(at, _)| at);
                 let key = &rest[..end];
-                if rest[end..].trim_start_matches(js_space).starts_with(':')
+                if rest[end..].trim_start_matches(jsrt::string::is_space).starts_with(':')
                     && CAPABILITY_KEYS.contains(&normalize(key).as_str())
                 {
                     return Some(key.to_string());
@@ -269,7 +260,7 @@ fn identity(kind: &Value, target: &Value) -> Result<(String, String), String> {
 fn nonempty(value: &Value) -> bool {
     match value {
         Value::Null => false,
-        Value::String(text) => !js_trim(text).is_empty(),
+        Value::String(text) => !jsrt::string::trim(text).is_empty(),
         Value::Array(items) => items.iter().any(nonempty),
         Value::Object(map) => map.values().any(nonempty),
         _ => true,
@@ -285,7 +276,7 @@ fn proposal(value: &Value) -> Result<Value, String> {
     )?;
     let (kind, target) = identity(&map["kind"], &map["target"])?;
     let base = &map["baseVersion"];
-    if !safe_integer(base).is_some_and(|version| version >= 0) {
+    if !jsrt::number::safe_integer(base).is_some_and(|version| version >= 0) {
         return Err("baseVersion must be a nonnegative safe integer".into());
     }
     let content = &map["content"];
@@ -297,64 +288,15 @@ fn proposal(value: &Value) -> Result<Value, String> {
         return Err("Evidence must be JSON text, an object, or an array".into());
     }
     let scope = map.get("scope").cloned().unwrap_or_else(|| json!("session"));
-    if !scope.as_str().is_some_and(|scope| !js_trim(scope).is_empty()) {
+    if !scope
+        .as_str()
+        .is_some_and(|scope| !jsrt::string::trim(scope).is_empty())
+    {
         return Err("Scope must be a nonempty string".into());
     }
     Ok(json!({
         "kind": kind, "target": target, "baseVersion": base, "content": content, "evidence": evidence, "scope": scope,
     }))
-}
-
-/// `Number.isFinite(Date.parse(text))` for the date forms the services write and read: `YYYY-MM-DD`, optionally
-/// followed by `THH:MM`, `:SS`, `.fraction` and `Z` or `±HH:MM`.
-fn parsable_date(text: &str) -> bool {
-    let digits = |part: &str, n: usize| part.len() == n && part.bytes().all(|b| b.is_ascii_digit());
-    let in_range = |part: &str, low: u32, high: u32| part.parse::<u32>().is_ok_and(|n| (low..=high).contains(&n));
-    let (date, time) = text.split_once('T').map_or((text, None), |(d, t)| (d, Some(t)));
-    let mut parts = date.split('-');
-    let (Some(year), Some(month), Some(day), None) = (parts.next(), parts.next(), parts.next(), parts.next()) else {
-        return false;
-    };
-    if !(digits(year, 4) && digits(month, 2) && digits(day, 2) && in_range(month, 1, 12) && in_range(day, 1, 31)) {
-        return false;
-    }
-    let Some(time) = time else {
-        return true;
-    };
-    let (clock, zone) = if let Some(clock) = time.strip_suffix('Z') {
-        (clock, None)
-    } else if let Some(at) = time.rfind(['+', '-']) {
-        (&time[..at], Some(&time[at + 1..]))
-    } else {
-        (time, None)
-    };
-    if let Some(zone) = zone {
-        let Some((hours, minutes)) = zone.split_once(':') else {
-            return false;
-        };
-        if !(digits(hours, 2) && digits(minutes, 2) && in_range(hours, 0, 23) && in_range(minutes, 0, 59)) {
-            return false;
-        }
-    }
-    let (clock, fraction) = clock.split_once('.').map_or((clock, None), |(c, f)| (c, Some(f)));
-    if fraction.is_some_and(|f| f.is_empty() || !f.bytes().all(|b| b.is_ascii_digit())) {
-        return false;
-    }
-    let units: Vec<&str> = clock.split(':').collect();
-    match units.as_slice() {
-        [hours, minutes] => {
-            digits(hours, 2) && digits(minutes, 2) && in_range(hours, 0, 24) && in_range(minutes, 0, 59)
-        }
-        [hours, minutes, seconds] => {
-            digits(hours, 2)
-                && digits(minutes, 2)
-                && digits(seconds, 2)
-                && in_range(hours, 0, 24)
-                && in_range(minutes, 0, 59)
-                && in_range(seconds, 0, 59)
-        }
-        _ => false,
-    }
 }
 
 /// One refinement (`RefinementRecord`).
@@ -426,7 +368,7 @@ fn apply(records: &mut Vec<Record>, event: &Value) -> Result<usize, String> {
     fields(event, &["action", "id", "at"], optional)?;
     let (Some(id), Some(at)) = (
         map["id"].as_str().filter(|id| !id.is_empty()),
-        map["at"].as_str().filter(|at| parsable_date(at)),
+        map["at"].as_str().filter(|at| jsrt::date::parse_date(at).is_some()),
     ) else {
         return Err("Malformed refinement event".into());
     };
@@ -475,7 +417,7 @@ fn apply(records: &mut Vec<Record>, event: &Value) -> Result<usize, String> {
                 .filter(|item| item.kind == record.kind && item.target == record.target)
                 .map(|item| item.version.unwrap_or(0))
                 .fold(0, i64::max);
-            if version + 1 > 9_007_199_254_740_991 {
+            if version + 1 > jsrt::number::MAX_SAFE_INTEGER {
                 return Err("Version exhausted".into());
             }
             let approval = map.get("approval");
@@ -537,7 +479,10 @@ fn experiment(value: &Value) -> Result<(), String> {
         || !map.get("fixtureHash").is_some_and(Value::is_string)
         || !outcome.is_some_and(|o| ["passed", "failed", "incomplete"].contains(&o))
         || !map.get("id").and_then(Value::as_str).is_some_and(|id| !id.is_empty())
-        || !map.get("recordedAt").and_then(Value::as_str).is_some_and(parsable_date)
+        || !map
+            .get("recordedAt")
+            .and_then(Value::as_str)
+            .is_some_and(|at| jsrt::date::parse_date(at).is_some())
     {
         return Err(INVALID.into());
     }
@@ -593,7 +538,7 @@ impl LocalServices {
 
     /// Serves one request; `branch` is the caller's conversation branch (none: every event applies).
     pub fn handle(&self, kind: &str, payload: &Value, branch: Option<&Branch>) -> Result<Value, String> {
-        let mut uncertain = lock(&self.uncertain);
+        let mut uncertain = jsrt::sync::lock(&self.uncertain);
         if *uncertain {
             return Err(UNCERTAIN.into());
         }
@@ -625,7 +570,7 @@ impl LocalServices {
     }
 
     fn now(&self) -> String {
-        iso((self.options.now)())
+        jsrt::date::iso_string((self.options.now)())
     }
 
     fn records(&self, branch: Option<&Branch>) -> Result<(Vec<Record>, Vec<Value>), String> {
@@ -798,21 +743,6 @@ impl LocalServices {
     }
 }
 
-/// `String(value)` of JavaScript, for refinement content handed to a prompt.
-pub fn js_string(value: &Value) -> String {
-    match value {
-        Value::String(text) => text.clone(),
-        Value::Null => "null".into(),
-        Value::Array(items) => items
-            .iter()
-            .map(|item| if item.is_null() { String::new() } else { js_string(item) })
-            .collect::<Vec<_>>()
-            .join(","),
-        Value::Object(_) => "[object Object]".into(),
-        other => kernel_apis::util::stringify(other),
-    }
-}
-
 /// The conversation branch refinements follow (`mainBranch`): the main lane's tip and which anchors are on its
 /// path, read when a request is made.
 pub type BranchSource = Arc<dyn Fn() -> Branch + Send + Sync>;
@@ -833,7 +763,7 @@ pub fn instruction_hook_on(services: Arc<LocalServices>, branch: Option<BranchSo
             .map(|record| {
                 let text = match &record["content"] {
                     Value::String(text) => text.clone(),
-                    other => kernel_apis::util::stringify(other),
+                    other => jsrt::json::stringify(other),
                 };
                 vec![json!({"id": record["id"], "version": record["version"], "text": text})]
             })

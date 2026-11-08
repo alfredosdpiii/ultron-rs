@@ -19,15 +19,12 @@
 //! - Every lane whose model has a known window, except lanes on Claude Code (`claude-code/*`, whose context is Claude
 //!   Code's) and the external Claude Code root (no session actor, so no meter).
 
+use jsrt::sync;
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError};
+use std::sync::{Arc, Mutex, OnceLock};
 
 /// The smallest margin before the limit (the paper's 2,048 tokens).
 pub const MIN_MARGIN: u64 = 2048;
-
-fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
-    mutex.lock().unwrap_or_else(PoisonError::into_inner)
-}
 
 /// Whether reminders are on, and the margin the environment sets.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -167,7 +164,7 @@ impl ContextReminders {
     /// The limit of `lane` from now on: its model and compaction settings; `None` (a lane on Claude Code, a model
     /// without a known window): no reminders.
     pub fn set_limit(&self, lane: &str, limit: Option<Limit>) {
-        let mut limits = lock(&self.limits);
+        let mut limits = sync::lock(&self.limits);
         match limit.filter(|limit| limit.context_window > 0) {
             Some(limit) => limits.insert(lane.to_string(), limit),
             None => limits.remove(lane),
@@ -178,8 +175,8 @@ impl ContextReminders {
     /// `None` returns it to the session's meter.
     pub fn set_lane_meter(&self, lane: &str, meter: Option<LaneMeter>) {
         match meter {
-            Some(meter) => lock(&self.lane_meters).insert(lane.to_string(), meter),
-            None => lock(&self.lane_meters).remove(lane),
+            Some(meter) => sync::lock(&self.lane_meters).insert(lane.to_string(), meter),
+            None => sync::lock(&self.lane_meters).remove(lane),
         };
     }
 
@@ -189,23 +186,23 @@ impl ContextReminders {
         match frame {
             Some((limit, meter)) => {
                 self.set_limit(lane, Some(limit));
-                lock(&self.lane_meters).insert(lane.to_string(), meter);
+                sync::lock(&self.lane_meters).insert(lane.to_string(), meter);
             }
             None => {
                 self.set_limit(lane, None);
-                lock(&self.lane_meters).remove(lane);
-                lock(&self.lanes).remove(lane);
+                sync::lock(&self.lane_meters).remove(lane);
+                sync::lock(&self.lanes).remove(lane);
             }
         }
     }
 
     pub fn limit(&self, lane: &str) -> Option<Limit> {
-        lock(&self.limits).get(lane).copied()
+        sync::lock(&self.limits).get(lane).copied()
     }
 
     /// The lane's context was compacted: its next result past the trigger reminds again.
     pub fn rearm(&self, lane: &str) {
-        if let Some(state) = lock(&self.lanes).get_mut(lane) {
+        if let Some(state) = sync::lock(&self.lanes).get_mut(lane) {
             state.reminded = false;
         }
     }
@@ -217,7 +214,7 @@ impl ContextReminders {
             return None;
         }
         let limit = self.limit(lane)?;
-        let mut lanes = lock(&self.lanes);
+        let mut lanes = sync::lock(&self.lanes);
         let state = lanes.entry(lane.to_string()).or_default();
         if state.epoch != measure.epoch {
             state.epoch = measure.epoch;
@@ -241,7 +238,7 @@ impl ContextReminders {
         if !self.settings.enabled {
             return None;
         }
-        let own = lock(&self.lane_meters).get(lane).cloned();
+        let own = sync::lock(&self.lane_meters).get(lane).cloned();
         let measure = match own {
             Some(meter) => Measure {
                 tokens: meter()?,

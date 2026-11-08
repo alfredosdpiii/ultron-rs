@@ -92,7 +92,7 @@ impl Scenario {
     }
     /// Recorded form: JavaScript number semantics (via `JSON.stringify`), placeholders, long strings shortened.
     fn unsub(&self, v: &Value) -> Value {
-        let js_view: Value = serde_json::from_str(&session_file::js::stringify(v)).unwrap();
+        let js_view: Value = serde_json::from_str(&jsrt::json::stringify(v)).unwrap();
         let cwd = std::env::current_dir().unwrap().to_string_lossy().into_owned();
         map_strings(&js_view, &|s| {
             shorten(

@@ -28,7 +28,6 @@ use crate::goal::GoalDriver;
 use crate::schedule_tick::{ScheduleTicker, SystemTickClock, TickClock, TickObserver};
 use crate::schedules::SchedulesModule;
 use crate::tasks::TaskHost;
-use crate::util::lock;
 use kernel::{HostHandler, Signal};
 use serde_json::{Map, Value};
 use std::sync::{Arc, Mutex};
@@ -141,13 +140,13 @@ impl DurableWork {
 
     /// Re-reads the next fire time now (after the clock moved or the schedules document changed elsewhere).
     pub fn wake(&self) {
-        if let Some(ticker) = lock(&self.ticker).as_ref() {
+        if let Some(ticker) = jsrt::sync::lock(&self.ticker).as_ref() {
             ticker.wake();
         }
     }
 
     fn stop(&self) {
-        let ticker = lock(&self.ticker).take();
+        let ticker = jsrt::sync::lock(&self.ticker).take();
         if let Some(ticker) = ticker {
             ticker.close();
         }

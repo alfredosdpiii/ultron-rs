@@ -7,9 +7,9 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use serde_json::{Map, Number, Value};
+use serde_json::{Map, Value};
 
-use crate::json::{parse, stringify_pretty};
+use crate::json::parse;
 use crate::lock::{SYNC_ATTEMPTS, SYNC_STALE, acquire, lock_path_for};
 use crate::paths::{CONFIG_DIR_NAME, expand_tilde, resolve};
 
@@ -205,9 +205,12 @@ fn load(path: &Path) -> Result<Settings, String> {
 
 /// `MODEL_REF_PATTERN`: a trimmed `provider/model[/more]` reference.
 pub fn model_ref(value: Option<&Value>) -> Option<String> {
-    let trimmed = js_trim(value?.as_str()?);
+    let trimmed = jsrt::string::trim(value?.as_str()?);
     let parts: Vec<&str> = trimmed.split('/').collect();
-    let valid = parts.len() >= 2 && parts.iter().all(|p| !p.is_empty() && !p.chars().any(js_space));
+    let valid = parts.len() >= 2
+        && parts
+            .iter()
+            .all(|p| !p.is_empty() && !p.chars().any(jsrt::string::is_space));
     valid.then(|| trimmed.to_string())
 }
 
@@ -215,27 +218,11 @@ pub fn model_ref(value: Option<&Value>) -> Option<String> {
 pub fn token_cap(value: Option<&Value>) -> Option<u64> {
     value?
         .as_f64()
-        .filter(|n| n.fract() == 0.0 && *n >= 1.0 && *n <= 9_007_199_254_740_991.0)
+        .filter(|n| jsrt::number::is_safe_integer(*n) && *n >= 1.0)
         .map(|n| n as u64)
 }
 
-fn js_space(c: char) -> bool {
-    c.is_whitespace() || c == '\u{feff}'
-}
-
-fn js_trim(s: &str) -> &str {
-    s.trim_matches(js_space)
-}
-
 pub const FRAME_THINKING_LEVELS: [&str; 7] = ["off", "minimal", "low", "medium", "high", "xhigh", "max"];
-
-fn integer(n: f64) -> Value {
-    if n.abs() < 9_007_199_254_740_992.0 {
-        Value::from(n as i64)
-    } else {
-        Number::from_f64(n).map(Value::Number).unwrap_or(Value::Null)
-    }
-}
 
 pub struct SettingsManager {
     paths: [PathBuf; 2],
@@ -428,7 +415,7 @@ impl SettingsManager {
         if lock.is_none() {
             lock = Some(acquire(&lock_path_for(path), SYNC_STALE, SYNC_ATTEMPTS).map_err(|e| e.to_string())?);
         }
-        let written = fs::write(path, stringify_pretty(&Value::Object(merged))).map_err(|e| e.to_string());
+        let written = fs::write(path, jsrt::json::stringify_pretty(&Value::Object(merged))).map_err(|e| e.to_string());
         drop(lock);
         written
     }
@@ -534,13 +521,7 @@ impl SettingsManager {
     }
 
     fn truthy(value: Option<&Value>) -> Option<&Value> {
-        value.filter(|v| match v {
-            Value::Null => false,
-            Value::Bool(b) => *b,
-            Value::Number(n) => n.as_f64().is_some_and(|f| f != 0.0),
-            Value::String(s) => !s.is_empty(),
-            _ => true,
-        })
+        value.filter(|v| jsrt::value::truthy(Some(v)))
     }
 
     pub fn steering_mode(&self) -> Value {
@@ -644,7 +625,7 @@ impl SettingsManager {
         if let Some(Value::Array(items)) = configured.get("ignoreRepos") {
             let repos: Vec<Value> = items
                 .iter()
-                .filter(|v| v.as_str().is_some_and(|s| !js_trim(s).is_empty()))
+                .filter(|v| v.as_str().is_some_and(|s| !jsrt::string::trim(s).is_empty()))
                 .cloned()
                 .collect();
             out.insert("ignoreRepos".into(), Value::Array(repos));
@@ -664,14 +645,14 @@ impl SettingsManager {
                 .as_array()?
                 .iter()
                 .filter_map(Value::as_str)
-                .filter(|s| !js_trim(s).is_empty())
-                .map(|s| js_trim(s).into())
+                .filter(|s| !jsrt::string::trim(s).is_empty())
+                .map(|s| jsrt::string::trim(s).into())
                 .collect();
             (!items.is_empty()).then_some(Value::Array(items))
         };
         let count = |key: &str| -> Option<Value> {
             let n = c.get(key)?.as_f64()?;
-            (n.is_finite() && n > 0.0).then(|| integer(n.floor()))
+            (n.is_finite() && n > 0.0).then(|| jsrt::json::number(n.floor()))
         };
         let flag = |key: &str| c.get(key).filter(|v| v.is_boolean()).cloned();
         let one_of = |key: &str, options: &[&str]| -> Option<Value> {
@@ -708,7 +689,7 @@ impl SettingsManager {
             for (name, limit) in limits {
                 let n = limit.as_f64().filter(|n| n.is_finite() && *n > 0.0);
                 if let Some(n) = n.filter(|_| name.contains('/')) {
-                    parsed.insert(name.clone(), integer(n.floor()));
+                    parsed.insert(name.clone(), jsrt::json::number(n.floor()));
                 }
             }
             put(
@@ -742,7 +723,7 @@ impl SettingsManager {
         if let Some(Value::Object(env)) = c.get("testEnv") {
             let mut parsed = Map::new();
             for (repo, dir) in env {
-                if let Some(dir) = dir.as_str().map(js_trim).filter(|d| !d.is_empty()) {
+                if let Some(dir) = dir.as_str().map(jsrt::string::trim).filter(|d| !d.is_empty()) {
                     parsed.insert(repo.to_lowercase(), dir.into());
                 }
             }
@@ -754,14 +735,14 @@ impl SettingsManager {
             "testImage",
             c.get("testImage")
                 .and_then(Value::as_str)
-                .map(js_trim)
+                .map(jsrt::string::trim)
                 .filter(|s| !s.is_empty())
                 .map(Value::from),
         );
         put("prepareEnvs", flag("prepareEnvs"));
         let mise = match c.get("mise") {
             Some(Value::Bool(b)) => Some(Value::Bool(*b)),
-            Some(Value::String(s)) if !js_trim(s).is_empty() => Some(js_trim(s).into()),
+            Some(Value::String(s)) if !jsrt::string::trim(s).is_empty() => Some(jsrt::string::trim(s).into()),
             _ => None,
         };
         put("mise", mise);
@@ -770,7 +751,7 @@ impl SettingsManager {
         put("ackLines", strings("ackLines"));
         let ack_art = match c.get("ackArt") {
             Some(Value::Bool(false)) => Some(Value::Bool(false)),
-            Some(Value::String(s)) if !js_trim(s).is_empty() => Some(s.as_str().into()),
+            Some(Value::String(s)) if !jsrt::string::trim(s).is_empty() => Some(s.as_str().into()),
             _ => None,
         };
         put("ackArt", ack_art);
@@ -782,14 +763,14 @@ impl SettingsManager {
         if let Some(Value::Object(ban)) = c.get("ban") {
             let mut parsed = Map::new();
             for (key, logins) in ban {
-                let key = js_trim(key);
+                let key = jsrt::string::trim(key);
                 let Some(logins) = logins.as_array().filter(|_| !key.is_empty()) else {
                     continue;
                 };
                 let logins: Vec<Value> = logins
                     .iter()
                     .filter_map(Value::as_str)
-                    .map(js_trim)
+                    .map(jsrt::string::trim)
                     .filter(|login| !login.is_empty())
                     .map(Value::from)
                     .collect();

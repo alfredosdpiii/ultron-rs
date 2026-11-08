@@ -42,7 +42,7 @@ struct SessionLanes {
 impl SessionLanes {
     fn ask(&self, call: LaneCall) -> Option<LaneAnswer> {
         let (reply, answer) = channel();
-        lock(&self.actor).send(Input::EventLane(call, reply)).ok()?;
+        sync::lock(&self.actor).send(Input::EventLane(call, reply)).ok()?;
         // The actor drops the reply when it closes: the session is going away.
         answer.recv().ok()
     }
@@ -115,7 +115,7 @@ impl EventLanes for SessionLanes {
                 _ => Err("the session is closing".into()),
             };
         }
-        let mut waiting = lock(&self.waiting);
+        let mut waiting = sync::lock(&self.waiting);
         waiting.push((lane.to_string(), message.clone()));
         Ok(format!("{lane}#waiting-{}", waiting.len()))
     }
@@ -292,7 +292,7 @@ impl Core {
             }),
             LaneCall::NextRun(message) => LaneAnswer::Queued(self.keep_for_next_run(message)),
             LaneCall::CancelQueued(entry) => LaneAnswer::Cancelled({
-                let queued = lock(&self.queues).items.iter().any(|q| q.entry_id == entry);
+                let queued = sync::lock(&self.queues).items.iter().any(|q| q.entry_id == entry);
                 if queued {
                     self.remove_queued(&[entry]).map(|_| Cancelled::Cancelled)
                 } else {

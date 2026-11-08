@@ -8,12 +8,12 @@ use std::collections::{HashMap, HashSet};
 use serde_json::Value;
 use tui::utils::{truncate_to_width, visible_width};
 
+use super::flat;
 use super::visualizer::{
     CellStatus, Color, RlmFrame, RlmJob, RlmRootCell, RlmSnapshot, RlmStyle, RlmTask, RlmToolCall, format_duration,
     render_context_lines, short_id,
 };
-use super::{flat, js_num};
-use crate::js_to_fixed;
+use jsrt::{number, utf16};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum GraphStatus {
@@ -394,18 +394,22 @@ fn frame_group_node(key: &str, frames: &[&RlmFrame]) -> GraphNode {
                 "budget",
                 format!(
                     "{} · calls {}/{} · tokens {}/{} · depth {}",
-                    super::js_slice(id, 8),
-                    js_num(calls),
-                    b.calls.map_or("∞".to_string(), js_num),
-                    js_num(tokens),
-                    b.tokens.map_or("∞".to_string(), js_num),
-                    js_num(b.depth)
+                    utf16::head_lossy(id, 8),
+                    number::to_string(calls),
+                    b.calls.map_or("∞".to_string(), number::to_string),
+                    number::to_string(tokens),
+                    b.tokens.map_or("∞".to_string(), number::to_string),
+                    number::to_string(b.depth)
                 ),
             ));
         }
         None => details.push(d(
             "spent",
-            format!("{} calls · {} tokens", js_num(calls), js_num(tokens)),
+            format!(
+                "{} calls · {} tokens",
+                number::to_string(calls),
+                number::to_string(tokens)
+            ),
         )),
     }
     let troubled: Vec<&&RlmFrame> = frames
@@ -440,7 +444,7 @@ fn frame_group_node(key: &str, frames: &[&RlmFrame]) -> GraphNode {
     } else {
         format!(
             "rlm.infer {}",
-            super::js_slice(first.id.strip_prefix("frame-").unwrap_or(&first.id), 8)
+            utf16::head_lossy(first.id.strip_prefix("frame-").unwrap_or(&first.id), 8)
         )
     };
     let mut node = GraphNode::new(
@@ -469,7 +473,7 @@ fn frame_group_node(key: &str, frames: &[&RlmFrame]) -> GraphNode {
 
 fn job_node(job: &RlmJob, now: f64) -> GraphNode {
     let status = job_status(job);
-    let exit = job.exit_code.map_or("null".to_string(), js_num);
+    let exit = job.exit_code.map_or("null".to_string(), number::to_string);
     let mut details = vec![
         d("id", &job.id),
         d("command", flat(&job.command, 400)),
@@ -973,7 +977,7 @@ pub fn build_rlm_graph(snapshot: &RlmSnapshot) -> GraphNode {
     }
     details.push(d("cells", cell_nodes.len().to_string()));
     if let Some(t) = snapshot.truncated_tasks.filter(|t| *t != 0.0) {
-        details.push(d("listing", format!("{} older tasks not listed", js_num(t))));
+        details.push(d("listing", format!("{} older tasks not listed", number::to_string(t))));
     }
     let prompt = snapshot
         .turn
@@ -1133,22 +1137,22 @@ pub fn status_color(status: GraphStatus) -> Color {
 /// `formatTokens`.
 pub fn format_tokens(tokens: f64) -> String {
     if tokens < 1000.0 {
-        js_num(tokens.round())
+        number::to_string(tokens.round())
     } else if tokens < 10_000.0 {
-        format!("{}k", js_to_fixed(tokens / 1000.0, 1))
+        format!("{}k", number::to_fixed(tokens / 1000.0, 1))
     } else if tokens < 1_000_000.0 {
-        format!("{}k", js_num((tokens / 1000.0).round()))
+        format!("{}k", number::to_string((tokens / 1000.0).round()))
     } else {
-        format!("{}M", js_to_fixed(tokens / 1_000_000.0, 1))
+        format!("{}M", number::to_fixed(tokens / 1_000_000.0, 1))
     }
 }
 
 /// `formatCost`.
 pub fn format_cost(cost: f64) -> String {
     if cost >= 0.01 {
-        format!("${}", js_to_fixed(cost, 2))
+        format!("${}", number::to_fixed(cost, 2))
     } else {
-        format!("${}", js_to_fixed(cost, 3))
+        format!("${}", number::to_fixed(cost, 3))
     }
 }
 
@@ -1156,9 +1160,9 @@ pub fn format_cost(cost: f64) -> String {
 pub fn format_bytes(bytes: f64) -> String {
     let mib = bytes / (1024.0 * 1024.0);
     if mib >= 1024.0 {
-        format!("{} GiB", js_to_fixed(mib / 1024.0, 1))
+        format!("{} GiB", number::to_fixed(mib / 1024.0, 1))
     } else {
-        format!("{} MiB", js_num(mib.round()))
+        format!("{} MiB", number::to_string(mib.round()))
     }
 }
 
@@ -1448,8 +1452,8 @@ pub fn budget_gauges(snapshot: &RlmSnapshot, _graph: &GraphNode) -> Vec<Gauge> {
             used: admitted,
             limit: max,
             text: match max {
-                None => js_num(admitted),
-                Some(m) => format!("{}/{}", js_num(admitted), js_num(m)),
+                None => number::to_string(admitted),
+                Some(m) => format!("{}/{}", number::to_string(admitted), number::to_string(m)),
             },
         });
     }
@@ -1494,7 +1498,7 @@ pub fn budget_gauges(snapshot: &RlmSnapshot, _graph: &GraphNode) -> Vec<Gauge> {
             label: "turns".into(),
             used: turns,
             limit: Some(limit),
-            text: format!("{}/{}", js_num(turns), js_num(limit)),
+            text: format!("{}/{}", number::to_string(turns), number::to_string(limit)),
         });
     }
     let spent = usage.and_then(|u| u.spent_usd.or(u.usage_cost)).unwrap_or(0.0);
@@ -1539,8 +1543,8 @@ pub fn budget_gauges(snapshot: &RlmSnapshot, _graph: &GraphNode) -> Vec<Gauge> {
             used: calls,
             limit: budget.calls,
             text: match budget.calls {
-                None => js_num(calls),
-                Some(c) => format!("{}/{}", js_num(calls), js_num(c)),
+                None => number::to_string(calls),
+                Some(c) => format!("{}/{}", number::to_string(calls), number::to_string(c)),
             },
         });
         if let Some(t) = budget.tokens {
@@ -1555,7 +1559,7 @@ pub fn budget_gauges(snapshot: &RlmSnapshot, _graph: &GraphNode) -> Vec<Gauge> {
             label: "depth".into(),
             used: budget.depth,
             limit: None,
-            text: js_num(budget.depth),
+            text: number::to_string(budget.depth),
         });
     }
     gauges
@@ -1616,9 +1620,9 @@ pub fn render_gauges(gauges: &[Gauge], width: usize, style: &RlmStyle, max_lines
 
 fn format_guard_ms(ms: f64) -> String {
     if ms < 1000.0 {
-        format!("{}ms", js_num(ms.round()))
+        format!("{}ms", number::to_string(ms.round()))
     } else {
-        format!("{}s", js_to_fixed(ms / 1000.0, 1))
+        format!("{}s", number::to_fixed(ms / 1000.0, 1))
     }
 }
 
@@ -1647,21 +1651,21 @@ pub fn render_kernel_strip(snapshot: &RlmSnapshot, width: usize, style: &RlmStyl
             "{} {cells}{} {}/{}",
             style.fg(Color::Dim, "kernels"),
             style.fg(Color::Dim, &"·".repeat(free)),
-            js_num(pool.live),
-            js_num(pool.max_live)
+            number::to_string(pool.live),
+            number::to_string(pool.max_live)
         ));
     } else {
         parts.push(format!(
             "{} {}/{}",
             style.fg(Color::Dim, "kernels"),
-            js_num(pool.live),
-            js_num(pool.max_live)
+            number::to_string(pool.live),
+            number::to_string(pool.max_live)
         ));
     }
     parts.push(format!("{busy} busy"));
     parts.push(format!("{pinned} pinned"));
     if let Some(e) = pool.evictions {
-        parts.push(format!("{} evicted", js_num(e)));
+        parts.push(format!("{} evicted", number::to_string(e)));
     }
     if let Some(m) = pool.memory_bytes {
         let cap = match pool.memory_cap_bytes {
@@ -1675,7 +1679,7 @@ pub fn render_kernel_strip(snapshot: &RlmSnapshot, width: usize, style: &RlmStyl
             continue;
         }
         let blocked = if g.blocked > 0.0 {
-            style.fg(Color::Warning, &format!(" {} blocked", js_num(g.blocked)))
+            style.fg(Color::Warning, &format!(" {} blocked", number::to_string(g.blocked)))
         } else {
             String::new()
         };
@@ -2017,7 +2021,7 @@ pub fn frame_trace_details(trace: &Value) -> Vec<(String, String)> {
     if r.is_object() {
         let show = |v: &Value, fallback: &str| match v {
             Value::Null => fallback.to_string(),
-            Value::Number(n) => js_num(n.as_f64().unwrap_or(0.0)),
+            Value::Number(n) => number::to_string(n.as_f64().unwrap_or(0.0)),
             Value::String(s) => s.clone(),
             other => other.to_string(),
         };

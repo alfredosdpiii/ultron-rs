@@ -54,15 +54,6 @@ pub fn mcp_namespace(server: &str) -> String {
     format!("mcp__{}", server.replace('-', "_"))
 }
 
-/// A JavaScript number as JSON: whole values print without a fraction, like `JSON.stringify`.
-fn js_number(value: f64) -> Value {
-    if value.fract() == 0.0 && value.abs() < 9_007_199_254_740_992.0 {
-        json!(value as i64)
-    } else {
-        json!(value)
-    }
-}
-
 fn is_string_record(value: &Value) -> bool {
     value.as_object().is_some_and(|m| m.values().all(Value::is_string))
 }
@@ -176,7 +167,7 @@ pub fn normalize_adapter_server_config(raw: &Value, defaults: &Value) -> Value {
     if !value.contains_key("timeout")
         && let Some(ms) = timeout_ms.filter(|ms| *ms > 0.0)
     {
-        value.insert("timeout".into(), js_number(ms / 1000.0));
+        value.insert("timeout".into(), jsrt::json::number(ms / 1000.0));
     }
     value.shift_remove("requestTimeoutMs");
     if value.get("auth").is_some_and(Value::is_string) {

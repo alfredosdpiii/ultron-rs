@@ -74,7 +74,5 @@ pub fn append(path: &Path, line: &str) -> Result<(), String> {
 
 /// File modification time in milliseconds (`mtimeMs`).
 pub fn mtime_ms(path: &Path) -> Option<f64> {
-    let modified = fs::metadata(path).ok()?.modified().ok()?;
-    let since = modified.duration_since(std::time::UNIX_EPOCH).ok()?;
-    Some(since.as_nanos() as f64 / 1_000_000.0)
+    fs::metadata(path).ok()?.modified().ok().map(jsrt::date::mtime_ms)
 }

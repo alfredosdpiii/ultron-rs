@@ -10,7 +10,6 @@ pub const DEFAULT_MAX_CBOR_CONTAINER_LENGTH: usize = 1_000_000;
 pub const DEFAULT_MAX_CBOR_DEPTH: usize = 64;
 const MAX_UINT32: u64 = 0xffff_ffff;
 const MAX_CONFIGURED_DEPTH: usize = 512;
-const MAX_SAFE_INTEGER: i64 = (1 << 53) - 1;
 
 #[derive(Debug, Clone)]
 pub enum Value {
@@ -176,7 +175,7 @@ impl Writer<'_> {
     }
 
     fn integer(&mut self, value: i64) -> Result<(), CborError> {
-        if !(-MAX_SAFE_INTEGER..=MAX_SAFE_INTEGER).contains(&value) {
+        if !(-jsrt::number::MAX_SAFE_INTEGER..=jsrt::number::MAX_SAFE_INTEGER).contains(&value) {
             return err("CBOR integers must be safe JavaScript integers");
         }
         if value >= 0 {
@@ -203,7 +202,7 @@ impl Writer<'_> {
                     return err("CBOR numbers must be finite");
                 }
                 if f.fract() == 0.0 && !(*f == 0.0 && f.is_sign_negative()) {
-                    if f.abs() > MAX_SAFE_INTEGER as f64 {
+                    if f.abs() > jsrt::number::MAX_SAFE_INTEGER as f64 {
                         return err("CBOR integers must be safe JavaScript integers");
                     }
                     return self.integer(*f as i64);
@@ -333,7 +332,7 @@ impl Reader<'_> {
             0 => Ok(Value::Int(self.argument(info)? as i64)),
             1 => {
                 let value = -1 - self.argument(info)? as i64;
-                if value < -MAX_SAFE_INTEGER {
+                if value < -jsrt::number::MAX_SAFE_INTEGER {
                     return err("Decoded CBOR integer is outside the safe range");
                 }
                 Ok(Value::Int(value))
@@ -387,7 +386,7 @@ impl Reader<'_> {
                 if !value.is_finite() {
                     return err("Decoded CBOR number must be finite");
                 }
-                if value.fract() == 0.0 && value.abs() > MAX_SAFE_INTEGER as f64 {
+                if value.fract() == 0.0 && value.abs() > jsrt::number::MAX_SAFE_INTEGER as f64 {
                     return err("Decoded CBOR integer is outside the safe range");
                 }
                 if value.fract() == 0.0 && !(value == 0.0 && value.is_sign_negative()) {

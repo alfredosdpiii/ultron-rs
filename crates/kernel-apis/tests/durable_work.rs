@@ -8,7 +8,6 @@ use common::fixed;
 use kernel::Signal;
 use kernel_apis::goal::{GoalCheckResult, GoalDriver, GoalJobs, HOST_CLOSED, JobState};
 use kernel_apis::schedules::next_fire_at;
-use kernel_apis::util::lock;
 use kernel_apis::{DocumentStore, ManualTickClock, MemoryDocumentStore, ScheduleTicker, SchedulesModule, TaskHost};
 use serde_json::{Value, json};
 use std::collections::HashMap;
@@ -72,10 +71,10 @@ impl TaskHost for Journal {
         Ok("deterministic".into())
     }
     fn tasks(&self) -> Result<Vec<Value>, String> {
-        Ok(lock(&self.tasks).clone())
+        Ok(jsrt::sync::lock(&self.tasks).clone())
     }
     fn spawn(&self, request: &Value, _: Option<&str>, _: &Signal) -> Result<Value, String> {
-        let mut tasks = lock(&self.tasks);
+        let mut tasks = jsrt::sync::lock(&self.tasks);
         if let Some(task) = tasks.iter().find(|t| t["key"] == request["key"]) {
             return Ok(task.clone());
         }
@@ -112,7 +111,7 @@ fn kernel_apis_schedule_ticker_fires_on_its_own_and_recomputes_after_reopen() {
             journal.clone(),
             clock.clone(),
             Some(Arc::new(move |report: &Result<Value, String>| {
-                let _ = lock(&reports).send(report.clone().unwrap());
+                let _ = jsrt::sync::lock(&reports).send(report.clone().unwrap());
             })),
         );
         (module, ticker, ticks)
@@ -175,7 +174,7 @@ impl Jobs {
         })
     }
     fn log(&self) -> Vec<Value> {
-        lock(&self.log).clone()
+        jsrt::sync::lock(&self.log).clone()
     }
 }
 
@@ -188,22 +187,22 @@ impl GoalJobs for Jobs {
         })
     }
     fn start_job(&self, _: &str, key: &str, _: &str, _: &Signal) -> Result<String, String> {
-        lock(&self.log).push(json!(["start", key]));
+        jsrt::sync::lock(&self.log).push(json!(["start", key]));
         Ok(format!("job-{key}"))
     }
     fn stop_job(&self, task_id: &str, reason: &str) -> Result<(), String> {
-        lock(&self.log).push(json!(["stop", task_id, reason]));
+        jsrt::sync::lock(&self.log).push(json!(["stop", task_id, reason]));
         Ok(())
     }
     fn lane_of_job(&self, _: &str) -> Option<String> {
         None
     }
     fn job_state(&self, task_id: &str) -> Option<JobState> {
-        let journal = lock(self.journal.as_ref()?);
+        let journal = jsrt::sync::lock(self.journal.as_ref()?);
         journal.get(task_id).cloned()
     }
     fn job_with_key(&self, key: &str) -> Option<String> {
-        lock(&self.keys).get(key).cloned()
+        jsrt::sync::lock(&self.keys).get(key).cloned()
     }
 }
 
@@ -337,7 +336,7 @@ fn kernel_apis_goal_writes_the_run_before_admitting_its_task() {
         }
         fn start_job(&self, _: &str, key: &str, _: &str, _: &Signal) -> Result<String, String> {
             let goal = self.store.read().unwrap().unwrap()["goal"].clone();
-            *lock(&self.seen) = Some(json!({"key": key, "runs": goal["runs"], "job": goal["job"]}));
+            *jsrt::sync::lock(&self.seen) = Some(json!({"key": key, "runs": goal["runs"], "job": goal["job"]}));
             Ok("task-1".into())
         }
         fn stop_job(&self, _: &str, _: &str) -> Result<(), String> {
@@ -356,7 +355,7 @@ fn kernel_apis_goal_writes_the_run_before_admitting_its_task() {
     driver.command("ship it", &Signal::new()).unwrap();
     let id = driver.get().unwrap().unwrap()["id"].as_str().unwrap().to_string();
     assert_eq!(
-        lock(&jobs.seen).clone().unwrap(),
+        jsrt::sync::lock(&jobs.seen).clone().unwrap(),
         json!({"key": format!("{id}:1"), "runs": 1, "job": null})
     );
     assert_eq!(store.read().unwrap().unwrap()["goal"]["job"], "task-1");
@@ -370,7 +369,7 @@ fn kernel_apis_schedule_changes_wake_the_ticker() {
     let module = SchedulesModule::new(Arc::new(MemoryDocumentStore::default()), Some(fixed(10_000)));
     let calls = Arc::new(Mutex::new(0));
     let counted = calls.clone();
-    module.on_change(Some(Arc::new(move || *lock(&counted) += 1)));
+    module.on_change(Some(Arc::new(move || *jsrt::sync::lock(&counted) += 1)));
     let call =
         |kind: &str, payload: Value| module.handle(kind, payload.as_object().unwrap(), None, &journal, &Signal::new());
     let created = call(
@@ -378,13 +377,13 @@ fn kernel_apis_schedule_changes_wake_the_ticker() {
         json!({"definition": "identity@1", "input": {}, "every_ms": 1000}),
     )
     .unwrap();
-    assert_eq!(*lock(&calls), 1);
+    assert_eq!(*jsrt::sync::lock(&calls), 1);
     call("schedules.pause", json!({"id": created["id"]})).unwrap();
     call("schedules.resume", json!({"id": created["id"]})).unwrap();
-    assert_eq!(*lock(&calls), 3);
+    assert_eq!(*jsrt::sync::lock(&calls), 3);
     assert!(call("schedules.create", json!({"every_ms": 0})).is_err());
-    assert_eq!(*lock(&calls), 3);
+    assert_eq!(*jsrt::sync::lock(&calls), 3);
     module.on_change(None);
     call("schedules.delete", json!({"id": created["id"]})).unwrap();
-    assert_eq!(*lock(&calls), 3);
+    assert_eq!(*jsrt::sync::lock(&calls), 3);
 }

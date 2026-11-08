@@ -8,7 +8,6 @@ mod common;
 use common::normalize;
 use kernel::Signal;
 use kernel_apis::memory::MemoryBackend;
-use kernel_apis::util::stringify;
 use kernel_apis::{DocumentStore, MemoryDocumentStore, MemoryService, worker_gate};
 use serde_json::{Map, Value, json};
 use std::path::Path;
@@ -55,11 +54,57 @@ fn kernel_apis_memory_journal_reopen_matches_typescript() {
             Err(error) => json!({"error": error.to_string()}),
         };
         produced["stored"] = store.read().unwrap().unwrap_or(Value::Null);
-        let produced: Value = serde_json::from_str(&normalize(&stringify(&produced), "\u{0}")).unwrap();
+        let produced: Value = serde_json::from_str(&normalize(&jsrt::json::stringify(&produced), "\u{0}")).unwrap();
         let mut actual = json!({"name": case["name"], "input": case["input"]});
         for (key, value) in produced.as_object().unwrap() {
             actual[key] = value.clone();
         }
         assert_eq!(actual, *case, "{}", case["name"]);
     }
+}
+
+/// A bank whose namespace and session scope tag are given.
+struct Tagged(&'static str, &'static str);
+
+impl MemoryBackend for Tagged {
+    fn namespace(&self) -> String {
+        self.0.into()
+    }
+    fn scope_tags(&self) -> Map<String, Value> {
+        json!({"session": [self.1]}).as_object().unwrap().clone()
+    }
+    fn recall(&self, _: &Value, _: &Signal) -> Result<Value, String> {
+        Err("unused".into())
+    }
+    fn retain(&self, _: &Value, _: &Signal) -> Result<Value, String> {
+        Err("unused".into())
+    }
+    fn get(&self, _: &str, _: &Signal) -> Result<Value, String> {
+        Err("unused".into())
+    }
+    fn delete(&self, _: &str, _: &Signal) -> Result<Value, String> {
+        Err("unused".into())
+    }
+    fn operation(&self, _: &str, _: &Signal) -> Result<Value, String> {
+        Err("unused".into())
+    }
+}
+
+#[test]
+fn kernel_apis_memory_scope_tags_and_namespace_use_javascript_whitespace() {
+    // D-W1: JavaScript's `\s` and `trim` leave U+0085 alone (`/^session:[^\s:][^\s]*$/.test("session:s\u0085")` is
+    // true and `"\u0085".trim()` is not blank in node); the old Rust class treated it as whitespace and refused both.
+    let open = |namespace, tag| {
+        let store = Arc::new(MemoryDocumentStore::new(None));
+        MemoryService::new(store, Arc::new(Tagged(namespace, tag)), worker_gate())
+            .err()
+            .map(|e| e.code)
+    };
+    assert_eq!(open("fake://bank", "ultron:session:s\u{85}1"), None);
+    assert_eq!(open("\u{85}", "ultron:session:s1"), None);
+    assert_eq!(
+        open("fake://bank", "ultron:session:s\u{a0}1"),
+        Some("UNSUPPORTED_SCOPE")
+    );
+    assert_eq!(open(" \u{feff} ", "ultron:session:s1"), Some("INVALID_CONFIG"));
 }

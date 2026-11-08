@@ -5,9 +5,7 @@
 use crate::TaskHost;
 use crate::code_skills::{CodeSkillKind, CodeSkills};
 use crate::store::{DocumentStore, read_versioned};
-use crate::util::{
-    Clock, fields, js_trim, locale_compare, lock, object, safe_integer, sha256_hex, utf16_len, utf16_prefix, uuid,
-};
+use crate::util::{Clock, object};
 use kernel::Signal;
 use serde_json::{Map, Value, json};
 use std::collections::HashSet;
@@ -99,7 +97,7 @@ fn parse_skill(source: &SkillSource) -> Skill {
         name: source.name.clone(),
         description: source.description.clone(),
         file_path: source.file_path.clone(),
-        version: sha256_hex(source.content.as_bytes()),
+        version: jsrt::hash::sha256_hex(source.content.as_bytes()),
         invocable: !source.disable_model_invocation,
         content: source.content.clone(),
         body,
@@ -149,7 +147,7 @@ fn score(skill: &Skill, terms: &[String], query: &str) -> Option<Value> {
 
 fn nonempty_string(value: Option<&Value>, name: &str) -> Result<String, String> {
     match value.and_then(Value::as_str) {
-        Some(text) if !js_trim(text).is_empty() => Ok(text.to_string()),
+        Some(text) if !jsrt::string::trim(text).is_empty() => Ok(text.to_string()),
         _ => Err(format!("{name} must be a nonempty string")),
     }
 }
@@ -172,7 +170,10 @@ fn read_document(saved: Option<Value>) -> Result<Value, String> {
         return Ok(empty_document());
     };
     let valid = document["format"] == 1
-        && document.get("generation").and_then(safe_integer).is_some()
+        && document
+            .get("generation")
+            .and_then(jsrt::number::safe_integer)
+            .is_some()
         && ["catalog", "changes", "decisions", "loads", "invocations"]
             .iter()
             .all(|key| document[key].is_array());
@@ -208,7 +209,7 @@ fn invocation_prompt(skill: &Skill, input: &Value) -> String {
         skill.file_path,
         skill.body,
         skill.version,
-        crate::util::stringify(input)
+        jsrt::json::stringify(input)
     )
 }
 
@@ -318,7 +319,7 @@ impl SkillsModule {
             json!({"generation": generation, "changes": changes})
         })?;
         // Install only after the catalog record is durable.
-        *lock(&self.snapshot) = Some(Arc::new(Snapshot {
+        *jsrt::sync::lock(&self.snapshot) = Some(Arc::new(Snapshot {
             generation: outcome["generation"].as_i64().unwrap_or(0),
             skills,
         }));
@@ -327,14 +328,14 @@ impl SkillsModule {
 
     /// One consistent catalog for the whole request, loaded on first use.
     fn current(&self) -> Result<Arc<Snapshot>, String> {
-        if let Some(snapshot) = lock(&self.snapshot).clone() {
+        if let Some(snapshot) = jsrt::sync::lock(&self.snapshot).clone() {
             return Ok(snapshot);
         }
-        let _exclusive = lock(&self.exclusive);
-        if lock(&self.snapshot).is_none() {
+        let _exclusive = jsrt::sync::lock(&self.exclusive);
+        if jsrt::sync::lock(&self.snapshot).is_none() {
             self.refresh_locked()?;
         }
-        Ok(lock(&self.snapshot).clone().expect("installed by refresh"))
+        Ok(jsrt::sync::lock(&self.snapshot).clone().expect("installed by refresh"))
     }
 
     fn pinned<'a>(snapshot: &'a Snapshot, name: &str, version: Option<&str>) -> Result<&'a Skill, String> {
@@ -387,12 +388,12 @@ impl SkillsModule {
     ) -> Result<Value, String> {
         match kind {
             "skills.refresh" => {
-                fields(payload, &[])?;
-                let _exclusive = lock(&self.exclusive);
+                jsrt::payload::fields(payload, &[])?;
+                let _exclusive = jsrt::sync::lock(&self.exclusive);
                 self.refresh_locked()
             }
             "skills.list" => {
-                fields(payload, &[])?;
+                jsrt::payload::fields(payload, &[])?;
                 let snapshot = self.current()?;
                 let skills: Vec<Value> = snapshot
                     .skills
@@ -404,7 +405,7 @@ impl SkillsModule {
             "skills.select" => self.select(payload, caller),
             "skills.load" => self.load(payload, caller),
             "skills.why" => {
-                fields(payload, &["decision_id"])?;
+                jsrt::payload::fields(payload, &["decision_id"])?;
                 let id = nonempty_string(payload.get("decision_id"), "decision_id")?;
                 let document = read_document(self.store.read()?)?;
                 document["decisions"]
@@ -418,7 +419,7 @@ impl SkillsModule {
                 self.change_code(kind, payload, caller, signal)
             }
             "skills.code_list" => {
-                fields(payload, &["kind", "family"])?;
+                jsrt::payload::fields(payload, &["kind", "family"])?;
                 let filter_kind = match payload.get("kind") {
                     None => None,
                     Some(Value::String(kind)) if kind == "code" || kind == "policy" => Some(kind.as_str()),
@@ -431,7 +432,7 @@ impl SkillsModule {
                 Ok(Value::Array(self.code_skills()?.list(filter_kind, family.as_deref())))
             }
             "skills.code_history" => {
-                fields(payload, &["name"])?;
+                jsrt::payload::fields(payload, &["name"])?;
                 self.code_skills()?.history(payload.get("name"))
             }
             _ => Err(format!("Unsupported skills request: {kind}")),
@@ -448,7 +449,7 @@ impl SkillsModule {
         host: &dyn TaskHost,
         signal: &Signal,
     ) -> Result<Value, String> {
-        fields(payload, &["name", "version", "input"])?;
+        jsrt::payload::fields(payload, &["name", "version", "input"])?;
         let name = nonempty_string(payload.get("name"), "name")?;
         let version = version_string(payload.get("version"))?;
         let Some(input) = payload.get("input") else {
@@ -460,7 +461,7 @@ impl SkillsModule {
             return Err(format!("Skill {name} disables model invocation"));
         }
         let invocation = json!({
-            "id": uuid(),
+            "id": jsrt::random::uuid_v4(),
             "at": (self.now)(),
             "name": name,
             "version": skill.version,
@@ -469,7 +470,7 @@ impl SkillsModule {
         });
         let id = invocation["id"].as_str().unwrap_or_default().to_string();
         let record = |change: Value| -> Result<(), String> {
-            let _exclusive = lock(&self.exclusive);
+            let _exclusive = jsrt::sync::lock(&self.exclusive);
             self.mutate(|document| {
                 let existing = document["invocations"]
                     .as_array_mut()
@@ -532,10 +533,10 @@ impl SkillsModule {
         let name = payload
             .get("name")
             .and_then(Value::as_str)
-            .map(|name| utf16_prefix(name, 64).to_string())
+            .map(|name| jsrt::utf16::head(name, 64).to_string())
             .unwrap_or_default();
         let base = vec![
-            ("id", Value::from(uuid())),
+            ("id", Value::from(jsrt::random::uuid_v4())),
             ("at", Value::from((self.now)())),
             ("action", Value::from(action)),
             ("name", Value::from(name)),
@@ -577,7 +578,7 @@ impl SkillsModule {
                         ("failed", failed.into()),
                     ];
                     if let Some(error) = test.get("error").and_then(Value::as_str).filter(|e| !e.is_empty()) {
-                        summary.push(("error", utf16_prefix(error, 500).into()));
+                        summary.push(("error", jsrt::utf16::head(error, 500).into()));
                     }
                     record.push(("test", object(summary)));
                 }
@@ -591,27 +592,27 @@ impl SkillsModule {
                 record.extend([
                     ("version", Value::Null),
                     ("status", "failed".into()),
-                    ("error", utf16_prefix(&error, 500).into()),
+                    ("error", jsrt::utf16::head(&error, 500).into()),
                 ]);
                 (object(record), Err(error))
             }
         };
         {
-            let _exclusive = lock(&self.exclusive);
+            let _exclusive = jsrt::sync::lock(&self.exclusive);
             self.mutate(|document| append(document, "code", record))?;
         }
         result
     }
 
     fn select(&self, payload: &Map<String, Value>, caller: Option<&str>) -> Result<Value, String> {
-        fields(payload, &["query", "limit"])?;
+        jsrt::payload::fields(payload, &["query", "limit"])?;
         let query = nonempty_string(payload.get("query"), "query")?;
-        if utf16_len(&query) > MAX_QUERY_CHARS {
+        if jsrt::utf16::len(&query) > MAX_QUERY_CHARS {
             return Err(format!("query must be at most {MAX_QUERY_CHARS} characters"));
         }
         let limit = match payload.get("limit") {
             None => 5,
-            Some(value) => safe_integer(value)
+            Some(value) => jsrt::number::safe_integer(value)
                 .filter(|limit| (1..=50).contains(limit) && value.is_number())
                 .ok_or("limit must be an integer between 1 and 50")?,
         };
@@ -621,7 +622,7 @@ impl SkillsModule {
         let mut excluded = Vec::new();
         let mut scored = Vec::new();
         let mut ordered: Vec<&Skill> = snapshot.skills.iter().collect();
-        ordered.sort_by(|a, b| locale_compare(&a.name, &b.name));
+        ordered.sort_by(|a, b| jsrt::collate::locale_compare(&a.name, &b.name));
         for skill in ordered {
             considered.insert(skill.name.clone(), skill.version.clone().into());
             if !skill.invocable {
@@ -644,7 +645,7 @@ impl SkillsModule {
             .map(|candidate| json!({"name": candidate["name"], "version": candidate["version"]}))
             .collect();
         let decision = json!({
-            "id": uuid(),
+            "id": jsrt::random::uuid_v4(),
             "at": (self.now)(),
             "query": query,
             "terms": terms,
@@ -655,13 +656,13 @@ impl SkillsModule {
             "candidates": scored,
             "chosen": chosen,
         });
-        let _exclusive = lock(&self.exclusive);
+        let _exclusive = jsrt::sync::lock(&self.exclusive);
         self.mutate(|document| append(document, "decisions", decision.clone()))?;
         Ok(decision)
     }
 
     fn load(&self, payload: &Map<String, Value>, caller: Option<&str>) -> Result<Value, String> {
-        fields(payload, &["name", "version"])?;
+        jsrt::payload::fields(payload, &["name", "version"])?;
         let name = nonempty_string(payload.get("name"), "name")?;
         let version = match payload.get("version") {
             None => None,
@@ -669,12 +670,12 @@ impl SkillsModule {
         };
         let snapshot = self.current()?;
         let skill = Self::pinned(&snapshot, &name, version.as_deref())?;
-        let id = uuid();
-        let context_chars = utf16_len(&skill.content);
+        let id = jsrt::random::uuid_v4();
+        let context_chars = jsrt::utf16::len(&skill.content);
         let record = json!({"id": id, "at": (self.now)(), "name": name, "version": skill.version,
             "caller_task_id": caller, "context_chars": context_chars});
         {
-            let _exclusive = lock(&self.exclusive);
+            let _exclusive = jsrt::sync::lock(&self.exclusive);
             self.mutate(|document| append(document, "loads", record))?;
         }
         Ok(json!({

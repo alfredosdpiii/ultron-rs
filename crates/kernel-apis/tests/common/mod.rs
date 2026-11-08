@@ -5,7 +5,7 @@
 use fancy_regex::Regex;
 use kernel::{HostHandler, Kernel, KernelOptions, Signal};
 use kernel_apis::KernelApis;
-use kernel_apis::util::{Clock, stringify};
+use kernel_apis::util::Clock;
 use serde_json::{Map, Value, json};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -101,7 +101,7 @@ pub fn run_scenario(scenario: &Value, make: &dyn Fn(&Path) -> Made) -> Value {
     }
     kernel.shutdown();
     let recorded = json!({"name": scenario["name"], "cells": cells, "state": (made.state)()});
-    serde_json::from_str(&normalize(&stringify(&recorded), &dir.to_string_lossy())).unwrap()
+    serde_json::from_str(&normalize(&jsrt::json::stringify(&recorded), &dir.to_string_lossy())).unwrap()
 }
 
 pub fn assert_area(area: &str, make: &dyn Fn(&Path) -> Made) {

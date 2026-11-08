@@ -33,7 +33,7 @@ pub mod rewrite;
 pub mod setup;
 pub mod usage;
 
-use crate::options::{SimpleStreamOptions, now_ms};
+use crate::options::SimpleStreamOptions;
 use crate::transcript::{current_tools, system_message_text, transform_messages};
 use crate::types::{
     AssistantContent, AssistantMessage, AssistantMessageDiagnostic, AssistantMessageEvent, DiagnosticErrorInfo,
@@ -209,7 +209,12 @@ pub fn prepare(
             .take(64)
             .collect()
     };
-    let transformed = transform_messages(&context.messages[leading..], model, Some(&normalize), now_ms());
+    let transformed = transform_messages(
+        &context.messages[leading..],
+        model,
+        Some(&normalize),
+        jsrt::date::now_ms(),
+    );
     let frames = history::prepare_history(&transformed, &body.names)?;
     Ok(Prepared {
         model: model.id.clone(),
@@ -240,7 +245,7 @@ pub fn config_for(model: &Model, options: &SimpleStreamOptions) -> Result<(Confi
 fn diagnostic(kind: &str, details: Option<Map<String, Value>>, error: Option<String>) -> AssistantMessageDiagnostic {
     AssistantMessageDiagnostic {
         kind: kind.into(),
-        timestamp: now_ms(),
+        timestamp: jsrt::date::now_ms(),
         error: error.map(|message| DiagnosticErrorInfo {
             name: None,
             message,
@@ -548,7 +553,7 @@ async fn run_with(
     options: &SimpleStreamOptions,
     sink: &mut EventSink<'_>,
 ) -> AssistantMessage {
-    let mut output = AssistantMessage::pending(model, now_ms());
+    let mut output = AssistantMessage::pending(model, jsrt::date::now_ms());
     output.stop_reason = StopReason::Stop;
     let mut emitter = Emitter {
         output,
@@ -592,7 +597,7 @@ async fn run_with(
             result
         }
     };
-    let usage = rate_limits.map(|limits| usage::usage_diagnostic(&limits, now_ms()));
+    let usage = rate_limits.map(|limits| usage::usage_diagnostic(&limits, jsrt::date::now_ms()));
     match result {
         Ok(response) => {
             emitter.finish(&response);

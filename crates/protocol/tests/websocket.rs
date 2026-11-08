@@ -1,7 +1,7 @@
 //! RFC 6455 framing with the RFC's own literal examples (section 1.3 handshake, section 5.7 frames), plus the
 //! decoder's protocol checks.
 
-use protocol::websocket::{Message, MessageDecoder, accept_key, base64, encode_frame, encode_message, sha1};
+use protocol::websocket::{Message, MessageDecoder, accept_key, encode_frame, encode_message, sha1};
 
 fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
@@ -15,10 +15,6 @@ fn protocol_websocket_accept_key_is_the_rfc_example() {
         hex(&sha1(&[b'a'; 1_000_000])),
         "34aa973cd4c4daa4f61eeb2bdbad27316534016f"
     );
-    assert_eq!(base64(b""), "");
-    assert_eq!(base64(b"f"), "Zg==");
-    assert_eq!(base64(b"fo"), "Zm8=");
-    assert_eq!(base64(b"foo"), "Zm9v");
 }
 
 #[test]

@@ -2,8 +2,8 @@
 //! one-line-per-session table. A number the session did not keep prints as `not recorded` (`n/r` in the table), and
 //! a cost nobody reported as `unknown`: neither is ever printed as zero. Plain style only (the CLI prints no color).
 
-use crate::js::{len16, number, pad_end, pad_start, tail16, to_fixed};
-use crate::localtime::Zone;
+use crate::js::{pad_end, pad_start};
+use jsrt::localtime::Zone;
 use serde_json::{Map, Value};
 
 const NOT_RECORDED: &str = "not recorded";
@@ -16,31 +16,42 @@ pub struct TextOptions<'a> {
 
 pub fn format_tokens(tokens: f64) -> String {
     if tokens < 1000.0 {
-        return number(tokens);
+        return jsrt::number::to_string(tokens);
     }
     if tokens < 999_950.0 {
-        return format!("{}k", to_fixed(tokens / 1000.0, 1));
+        return format!("{}k", jsrt::number::to_fixed(tokens / 1000.0, 1));
     }
     format!(
         "{}M",
-        to_fixed(tokens / 1_000_000.0, if tokens < 99_950_000.0 { 2 } else { 1 })
+        jsrt::number::to_fixed(tokens / 1_000_000.0, if tokens < 99_950_000.0 { 2 } else { 1 })
     )
 }
 
 pub fn format_elapsed(ms: f64) -> String {
-    let seconds = crate::js::round(ms / 1000.0);
+    let seconds = jsrt::number::round(ms / 1000.0);
     if seconds < 60.0 {
-        return format!("{}s", number(seconds));
+        return format!("{}s", jsrt::number::to_string(seconds));
     }
     let minutes = (seconds / 60.0).floor();
     if minutes < 60.0 {
-        return format!("{}m{:0>2}s", number(minutes), number(seconds % 60.0));
+        return format!(
+            "{}m{:0>2}s",
+            jsrt::number::to_string(minutes),
+            jsrt::number::to_string(seconds % 60.0)
+        );
     }
-    format!("{}h{:0>2}m", number((minutes / 60.0).floor()), number(minutes % 60.0))
+    format!(
+        "{}h{:0>2}m",
+        jsrt::number::to_string((minutes / 60.0).floor()),
+        jsrt::number::to_string(minutes % 60.0)
+    )
 }
 
 fn usd(amount: f64) -> String {
-    format!("${}", to_fixed(amount, if amount >= 10.0 { 2 } else { 3 }))
+    format!(
+        "${}",
+        jsrt::number::to_fixed(amount, if amount >= 10.0 { 2 } else { 3 })
+    )
 }
 
 fn n(value: &Value, pointer: &str) -> f64 {
@@ -65,7 +76,7 @@ fn format_cost(cost: &Value, tokens: f64) -> String {
         parts.push(if parts.is_empty() {
             "unknown".into()
         } else {
-            format!("unknown ({} unpriced)", number(unpriced))
+            format!("unknown ({} unpriced)", jsrt::number::to_string(unpriced))
         });
     }
     if parts.is_empty() {
@@ -76,7 +87,7 @@ fn format_cost(cost: &Value, tokens: f64) -> String {
 
 fn format_date(at: f64, options: &TextOptions) -> String {
     let f = if options.utc {
-        crate::localtime::fields(at, 0)
+        jsrt::localtime::fields(at, 0)
     } else {
         options.zone.fields(at)
     };
@@ -93,39 +104,41 @@ fn short_path(path: &str, home: &str) -> String {
 
 fn format_bytes(bytes: f64) -> String {
     if bytes < 1024.0 {
-        return format!("{} B", number(bytes));
+        return format!("{} B", jsrt::number::to_string(bytes));
     }
     if bytes < 1024.0 * 1024.0 {
-        return format!("{} kB", to_fixed(bytes / 1024.0, 1));
+        return format!("{} kB", jsrt::number::to_fixed(bytes / 1024.0, 1));
     }
-    format!("{} MB", to_fixed(bytes / (1024.0 * 1024.0), 1))
+    format!("{} MB", jsrt::number::to_fixed(bytes / (1024.0 * 1024.0), 1))
 }
 
 fn plural(count: f64, one: &str) -> String {
-    format!("{} {}{}", number(count), one, if count == 1.0 { "" } else { "s" })
+    format!(
+        "{} {}{}",
+        jsrt::number::to_string(count),
+        one,
+        if count == 1.0 { "" } else { "s" }
+    )
 }
 
 fn non_zero(pairs: &[(&str, f64)]) -> String {
     pairs
         .iter()
         .filter(|(_, c)| *c > 0.0)
-        .map(|(label, c)| format!("{} {label}", number(*c)))
+        .map(|(label, c)| format!("{} {label}", jsrt::number::to_string(*c)))
         .collect::<Vec<_>>()
         .join(", ")
 }
 
 fn entries(value: &Value) -> Vec<(&String, &Value)> {
-    value
-        .as_object()
-        .map(|m| config::json::js_key_order(m).into_iter().map(|k| (k, &m[k])).collect())
-        .unwrap_or_default()
+    value.as_object().map(jsrt::json::object_entries).unwrap_or_default()
 }
 
 fn apis_line(apis: &Value) -> String {
     entries(apis)
         .into_iter()
         .filter(|(_, c)| c.as_f64().unwrap_or(0.0) > 0.0)
-        .map(|(name, c)| format!("{name} {}", number(c.as_f64().unwrap_or(0.0))))
+        .map(|(name, c)| format!("{name} {}", jsrt::number::to_string(c.as_f64().unwrap_or(0.0))))
         .collect::<Vec<_>>()
         .join(" · ")
 }
@@ -136,7 +149,7 @@ fn cells_line(cells: &Value) -> String {
         "{}{}",
         plural(count, "cell"),
         if count > 0.0 {
-            format!(", {} failed", number(n(cells, "/failed")))
+            format!(", {} failed", jsrt::number::to_string(n(cells, "/failed")))
         } else {
             String::new()
         }
@@ -162,7 +175,7 @@ fn table(rows: &[Vec<String>], right: &[usize]) -> Vec<String> {
             if widths.len() <= i {
                 widths.push(0);
             }
-            widths[i] = widths[i].max(len16(cell));
+            widths[i] = widths[i].max(jsrt::utf16::len(cell));
         }
     }
     rows.iter()
@@ -178,7 +191,7 @@ fn table(rows: &[Vec<String>], right: &[usize]) -> Vec<String> {
                 })
                 .collect::<Vec<_>>()
                 .join("  ")
-                .trim_end_matches(|c: char| crate::js::is_space(c))
+                .trim_end_matches(|c: char| jsrt::string::is_space(c))
                 .to_string()
         })
         .collect()
@@ -299,10 +312,10 @@ pub fn render_session_report(report: &Value, options: &TextOptions) -> Vec<Strin
                 &mut lines,
                 &format!(
                     "root {} · sub-agents {}{}",
-                    number(n(cells, "/root/count")),
-                    number(sub),
+                    jsrt::number::to_string(n(cells, "/root/count")),
+                    jsrt::number::to_string(sub),
                     if other > 0.0 {
-                        format!(" · other lanes {}", number(other))
+                        format!(" · other lanes {}", jsrt::number::to_string(other))
                     } else {
                         String::new()
                     }
@@ -317,9 +330,9 @@ pub fn render_session_report(report: &Value, options: &TextOptions) -> Vec<Strin
                     let failed = n(tool, "/failed");
                     format!(
                         "{name} {}{}",
-                        number(n(tool, "/calls")),
+                        jsrt::number::to_string(n(tool, "/calls")),
                         if failed > 0.0 {
-                            format!(" ({} failed)", number(failed))
+                            format!(" ({} failed)", jsrt::number::to_string(failed))
                         } else {
                             String::new()
                         }
@@ -350,9 +363,9 @@ pub fn render_session_report(report: &Value, options: &TextOptions) -> Vec<Strin
             "Frames",
             &format!(
                 "{}: {states}{} · {} tokens",
-                number(n(frames, "/count")),
+                jsrt::number::to_string(n(frames, "/count")),
                 if nested > 0.0 {
-                    format!(" · {} nested", number(nested))
+                    format!(" · {} nested", jsrt::number::to_string(nested))
                 } else {
                     String::new()
                 },
@@ -374,7 +387,7 @@ pub fn render_session_report(report: &Value, options: &TextOptions) -> Vec<Strin
         if !reasons.is_empty() {
             let text = reasons
                 .iter()
-                .map(|(r, c)| format!("{r} {}", number(c.as_f64().unwrap_or(0.0))))
+                .map(|(r, c)| format!("{r} {}", jsrt::number::to_string(c.as_f64().unwrap_or(0.0))))
                 .collect::<Vec<_>>()
                 .join(" · ");
             more(&mut lines, &format!("incomplete: {text}"));
@@ -407,10 +420,10 @@ pub fn render_session_report(report: &Value, options: &TextOptions) -> Vec<Strin
             "Sub-agents",
             &format!(
                 "{}: {states} · max depth {}{}",
-                number(n(subagents, "/count")),
-                number(n(subagents, "/maxDepth")),
+                jsrt::number::to_string(n(subagents, "/count")),
+                jsrt::number::to_string(n(subagents, "/maxDepth")),
                 if nested > 0.0 {
-                    format!(" ({} nested)", number(nested))
+                    format!(" ({} nested)", jsrt::number::to_string(nested))
                 } else {
                     String::new()
                 }
@@ -422,9 +435,9 @@ pub fn render_session_report(report: &Value, options: &TextOptions) -> Vec<Strin
             &mut lines,
             &format!(
                 "verdicts: {} verified · {} contradicted · {} unverified{}",
-                number(n(v, "/verified")),
-                number(n(v, "/contradicted")),
-                number(unverified),
+                jsrt::number::to_string(n(v, "/verified")),
+                jsrt::number::to_string(n(v, "/contradicted")),
+                jsrt::number::to_string(unverified),
                 if unverified > 0.0 {
                     format!(
                         " ({})",
@@ -448,7 +461,7 @@ pub fn render_session_report(report: &Value, options: &TextOptions) -> Vec<Strin
                     "{} tokens{}",
                     format_tokens(n(model, "/tokens")),
                     if unmeasured > 0.0 {
-                        format!(" ({} {NOT_RECORDED})", number(unmeasured))
+                        format!(" ({} {NOT_RECORDED})", jsrt::number::to_string(unmeasured))
                     } else {
                         String::new()
                     }
@@ -495,7 +508,7 @@ pub fn render_session_report(report: &Value, options: &TextOptions) -> Vec<Strin
                     " ({})",
                     typed
                         .iter()
-                        .map(|(d, c)| format!("{d} {}", number(c.as_f64().unwrap_or(0.0))))
+                        .map(|(d, c)| format!("{d} {}", jsrt::number::to_string(c.as_f64().unwrap_or(0.0))))
                         .collect::<Vec<_>>()
                         .join(", ")
                 )
@@ -510,7 +523,7 @@ pub fn render_session_report(report: &Value, options: &TextOptions) -> Vec<Strin
     let usage_row = |name: &str, bucket: &Value| -> Vec<String> {
         vec![
             format!("  {name}"),
-            number(n(bucket, "/responses")),
+            jsrt::number::to_string(n(bucket, "/responses")),
             format_tokens(n(bucket, "/input")),
             format_tokens(n(bucket, "/output")),
             format_tokens(n(bucket, "/cacheRead")),
@@ -610,8 +623,8 @@ pub fn render_session_report(report: &Value, options: &TextOptions) -> Vec<Strin
                 &format!(
                     "{}, {} blocked, {} unchecked · after cells: {}, {} · {}{since}",
                     plural(n(g, "/checks"), "check"),
-                    number(n(g, "/blocked")),
-                    number(n(g, "/unchecked")),
+                    jsrt::number::to_string(n(g, "/blocked")),
+                    jsrt::number::to_string(n(g, "/unchecked")),
                     plural(n(g, "/afterChecks"), "check"),
                     plural(n(g, "/afterFindings"), "finding"),
                     format_elapsed(n(g, "/ms"))
@@ -626,7 +639,7 @@ pub fn render_session_report(report: &Value, options: &TextOptions) -> Vec<Strin
         &if secrets.is_null() {
             missing("guardrails.secretsMasked")
         } else {
-            format!("{} masked", number(secrets.as_f64().unwrap_or(0.0)))
+            format!("{} masked", jsrt::number::to_string(secrets.as_f64().unwrap_or(0.0)))
         },
     );
     let hints = entries(&guardrails["hints"]);
@@ -636,11 +649,11 @@ pub fn render_session_report(report: &Value, options: &TextOptions) -> Vec<Strin
         "  Hints",
         &format!(
             "stuck-loop {}{}",
-            number(stuck),
+            jsrt::number::to_string(stuck),
             hints
                 .iter()
                 .filter(|(tag, _)| tag.as_str() != "stuck-loop")
-                .map(|(tag, c)| format!(" · {tag} {}", number(c.as_f64().unwrap_or(0.0))))
+                .map(|(tag, c)| format!(" · {tag} {}", jsrt::number::to_string(c.as_f64().unwrap_or(0.0))))
                 .collect::<String>()
         ),
     );
@@ -653,9 +666,9 @@ pub fn render_session_report(report: &Value, options: &TextOptions) -> Vec<Strin
         } else {
             format!(
                 "tool rounds {} · wait {} · skill {}",
-                number(n(nudges, "/toolRounds")),
-                number(n(nudges, "/wait")),
-                number(n(nudges, "/skill"))
+                jsrt::number::to_string(n(nudges, "/toolRounds")),
+                jsrt::number::to_string(n(nudges, "/wait")),
+                jsrt::number::to_string(n(nudges, "/skill"))
             )
         },
     );
@@ -679,7 +692,7 @@ pub fn render_session_report(report: &Value, options: &TextOptions) -> Vec<Strin
     } else {
         let text = entries(operations)
             .iter()
-            .map(|(op, c)| format!("{op} {}", number(c.as_f64().unwrap_or(0.0))))
+            .map(|(op, c)| format!("{op} {}", jsrt::number::to_string(c.as_f64().unwrap_or(0.0))))
             .collect::<Vec<_>>()
             .join(" · ");
         row(&mut lines, "  Store", &text);
@@ -691,14 +704,14 @@ pub fn render_session_report(report: &Value, options: &TextOptions) -> Vec<Strin
         let mut text = format!(
             "{} · {} {}",
             plural(count("messages"), "automatic recall"),
-            number(memories),
+            jsrt::number::to_string(memories),
             if memories == 1.0 { "memory" } else { "memories" }
         );
         if count("briefs") > 0.0 {
             text.push_str(&format!(" · {}", plural(count("briefs"), "project brief")));
         }
         if count("stale") > 0.0 {
-            text.push_str(&format!(" · {} stale", number(count("stale"))));
+            text.push_str(&format!(" · {} stale", jsrt::number::to_string(count("stale"))));
         }
         row(&mut lines, "  Recall", &text);
     }
@@ -723,10 +736,10 @@ fn table_model(report: &Value) -> String {
 }
 
 fn clip(text: &str, width: usize) -> String {
-    if len16(text) <= width {
+    if jsrt::utf16::len(text) <= width {
         text.to_string()
     } else {
-        format!("…{}", tail16(text, len16(text) - width + 1))
+        format!("…{}", jsrt::utf16::skip(text, jsrt::utf16::len(text) - width + 1))
     }
 }
 
@@ -757,7 +770,7 @@ pub fn render_session_table(reports: &[Value], options: &TextOptions) -> Vec<Str
                 unrecorded = true;
                 "n/r".to_string()
             }
-            Some(v) => number(v),
+            Some(v) => jsrt::number::to_string(v),
         };
         let total = &report["usage"]["total"];
         let unknown_usage = str_of(report, "/mode") == "ultron claude"
@@ -778,14 +791,14 @@ pub fn render_session_table(reports: &[Value], options: &TextOptions) -> Vec<Str
         };
         rows.push(vec![
             format_date(n(report, "/session/modifiedAt"), options),
-            crate::js::head16(id, 13).to_string(),
+            jsrt::utf16::head(id, 13).to_string(),
             clip(&short_path(str_of(report, "/session/cwd"), options.home), 32),
             str_of(report, "/mode").to_string(),
             clip(&table_model(report), 34),
             turns,
             cells,
-            number(n(report, "/depth/frames/count")),
-            number(n(report, "/depth/subagents/count")),
+            jsrt::number::to_string(n(report, "/depth/frames/count")),
+            jsrt::number::to_string(n(report, "/depth/subagents/count")),
             tokens,
             cost,
             str_of(report, "/depth/verdict").to_string(),

@@ -15,10 +15,10 @@ use crate::CancelToken;
 use crate::config::{LoadedConfig, ServerEntry, load_config, tool_exposure};
 use crate::connection::{Connection, ConnectionEnv, ServerState};
 use crate::results::{convert_mcp_result, is_mcp_app_resource, listed, save_to_temp_file, text_of, to_model_content};
+use jsrt::sync;
 use serde_json::{Map, Value, json};
-use std::cmp::Ordering;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex, MutexGuard};
+use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 
 /// The gateway tool's name: the REPL's `mcp` namespace calls it.
@@ -132,7 +132,7 @@ impl CommandUi for Recorded {
     }
 
     fn notify(&self, message: &str, level: &str) {
-        lock(&self.notices).push((message.into(), level.into()));
+        sync::lock(&self.notices).push((message.into(), level.into()));
     }
 
     fn select(&self, _: &str, _: &[String]) -> Option<String> {
@@ -350,10 +350,6 @@ impl GatewayError {
 
 type Outcome = Result<Value, GatewayError>;
 
-fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
-    mutex.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
-}
-
 fn text(value: impl Into<String>, details: Value) -> Value {
     json!({ "content": [{ "type": "text", "text": value.into() }], "details": details })
 }
@@ -378,39 +374,7 @@ fn first_line(text: &str) -> &str {
 
 /// `JSON.stringify(value, null, 2)`.
 fn pretty(value: Option<&Value>) -> String {
-    value.map_or_else(
-        || "undefined".into(),
-        |v| serde_json::to_string_pretty(v).unwrap_or_default(),
-    )
-}
-
-/// Primary weight of a character under the root collation `localeCompare` uses: whitespace, punctuation and
-/// symbols (in CLDR order), digits, then letters regardless of case.
-fn collation_weight(c: char) -> (u8, u32) {
-    const PUNCTUATION: &str = "_-,;:!?.'\"()[]{}@*/\\&#%`^+<=>|~$";
-    if c.is_whitespace() {
-        (0, 0)
-    } else if let Some(at) = PUNCTUATION.find(c) {
-        (1, at as u32)
-    } else if c.is_ascii_digit() {
-        (2, c as u32)
-    } else if c.is_alphabetic() {
-        (3, c.to_lowercase().next().unwrap_or(c) as u32)
-    } else {
-        (1, 100 + c as u32)
-    }
-}
-
-/// `a.localeCompare(b)` for tool names: primary weights first, then lowercase before uppercase.
-fn locale_compare(a: &str, b: &str) -> Ordering {
-    let primary = |s: &str| s.chars().map(collation_weight).collect::<Vec<_>>();
-    primary(a)
-        .cmp(&primary(b))
-        .then_with(|| {
-            let case = |s: &str| s.chars().map(|c| c.is_uppercase()).collect::<Vec<_>>();
-            case(a).cmp(&case(b))
-        })
-        .then_with(|| a.cmp(b))
+    value.map_or_else(|| "undefined".into(), jsrt::json::stringify_pretty)
 }
 
 /// Score of `tool` for the query words: name matches count more than description matches.
@@ -477,7 +441,7 @@ impl Gateway {
         });
         let loaded = gateway.load();
         {
-            let mut state = lock(&gateway.state);
+            let mut state = sync::lock(&gateway.state);
             state.servers = loaded
                 .servers
                 .into_iter()
@@ -507,7 +471,7 @@ impl Gateway {
 
     /// The gateway is registered once there is a server to reach; a profile without MCP servers has no `mcp` tool.
     fn ensure_tool(&self) {
-        let mut state = lock(&self.state);
+        let mut state = sync::lock(&self.state);
         if state.tool.is_some() || state.servers.is_empty() {
             return;
         }
@@ -528,14 +492,14 @@ impl Gateway {
 
     /// The `mcp` tool, once registered.
     pub fn tool(&self) -> Option<GatewayTool> {
-        lock(&self.state).tool.clone()
+        sync::lock(&self.state).tool.clone()
     }
 
     /// Read the configuration again. Connections of servers whose entry did not change are kept.
     pub fn reload(&self) {
         let loaded = self.load();
         let dropped: Vec<Arc<Connection>> = {
-            let mut state = lock(&self.state);
+            let mut state = sync::lock(&self.state);
             state.config_errors = loaded.errors;
             let mut previous = std::mem::take(&mut state.servers);
             for entry in loaded.servers {
@@ -562,10 +526,10 @@ impl Gateway {
     /// `session_start`: reload, then connect `eager` and `keep-alive` servers in the background. Returns the
     /// notices to show (configuration errors); `notify` later receives sign-in prompts of eager servers.
     pub fn start(self: &Arc<Self>, notify: Option<NoticeSink>) -> Vec<Notice> {
-        lock(&self.state).closed = false;
+        sync::lock(&self.state).closed = false;
         self.reload();
         let (errors, eager): (Vec<String>, Vec<String>) = {
-            let state = lock(&self.state);
+            let state = sync::lock(&self.state);
             let eager = state
                 .servers
                 .iter()
@@ -594,20 +558,20 @@ impl Gateway {
                 };
                 if let Err(error) = gateway.connect(&connection)
                     && error.code == Some("auth_required")
-                    && !lock(&gateway.state).closed
+                    && !sync::lock(&gateway.state).closed
                     && let Some(notify) = &notify
                 {
                     notify(&error.message, "warning");
                 }
             });
-            lock(&self.state).eager.push(handle);
+            sync::lock(&self.state).eager.push(handle);
         }
         notices
     }
 
     /// Wait for the background connects [`Gateway::start`] began.
     pub fn settle(&self) {
-        let handles = std::mem::take(&mut lock(&self.state).eager);
+        let handles = std::mem::take(&mut sync::lock(&self.state).eager);
         for handle in handles {
             let _ = handle.join();
         }
@@ -616,7 +580,7 @@ impl Gateway {
     /// `session_shutdown`: close every connection (stdio servers get their stdin closed, then signals).
     pub fn close(&self) {
         let connections: Vec<Arc<Connection>> = {
-            let mut state = lock(&self.state);
+            let mut state = sync::lock(&self.state);
             state.closed = true;
             state.servers.iter().filter_map(|s| s.connection.clone()).collect()
         };
@@ -645,7 +609,7 @@ impl Gateway {
     }
 
     fn entry_named(&self, name: &str) -> Result<ServerEntry, GatewayError> {
-        let state = lock(&self.state);
+        let state = sync::lock(&self.state);
         match state.servers.iter().find(|s| s.entry.name == name) {
             Some(server) => Ok(server.entry.clone()),
             None => {
@@ -672,7 +636,7 @@ impl Gateway {
                 format!("MCP server \"{name}\" is disabled. Enable it with /mcp."),
             ));
         }
-        let mut state = lock(&self.state);
+        let mut state = sync::lock(&self.state);
         let Some(server) = state.servers.iter_mut().find(|s| s.entry.name == name) else {
             return Err(GatewayError::new(
                 "server_not_found",
@@ -710,7 +674,7 @@ impl Gateway {
     fn enabled_servers(&self, only: Option<&str>) -> Result<Vec<ServerEntry>, GatewayError> {
         match only {
             Some(name) => Ok(vec![self.entry_named(name)?]),
-            None => Ok(lock(&self.state)
+            None => Ok(sync::lock(&self.state)
                 .servers
                 .iter()
                 .filter(|s| s.entry.enabled())
@@ -771,7 +735,7 @@ impl Gateway {
 
     /// `status`: every server's state, tool count and last error, then the configuration errors.
     pub fn status(&self) -> Value {
-        let state = lock(&self.state);
+        let state = sync::lock(&self.state);
         let list: Vec<Value> = state
             .servers
             .iter()
@@ -923,7 +887,7 @@ impl Gateway {
                     }
                 }
             }
-            matches.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| locale_compare(&a.2, &b.2)));
+            matches.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| jsrt::collate::locale_compare(&a.2, &b.2)));
             let limit = params
                 .get("limit")
                 .and_then(Value::as_f64)
@@ -968,7 +932,7 @@ impl Gateway {
             let content = to_model_content(name, &blocks, false, &save_to_temp_file);
             return Ok(json!({ "content": content, "details": { "mode": "read", "server": name, "uri": uri } }));
         }
-        if let Some(resources) = params.get("resources").filter(|v| truthy(v)) {
+        if let Some(resources) = params.get("resources").filter(|v| jsrt::value::truthy(Some(v))) {
             let only = resources.as_str().or(server_param);
             let (mut found, mut templates, mut errors) = (Vec::new(), Vec::new(), Vec::new());
             for entry in self.enabled_servers(only)? {
@@ -1059,7 +1023,7 @@ impl Gateway {
 
     /// The status word `/mcp` shows for a server.
     fn status_named(&self, name: &str) -> String {
-        let state = lock(&self.state);
+        let state = sync::lock(&self.state);
         state
             .servers
             .iter()
@@ -1070,7 +1034,7 @@ impl Gateway {
 
     /// `/mcp` without arguments in a client with dialogs.
     fn menu(&self, ui: &dyn CommandUi) -> Result<Option<String>, GatewayError> {
-        let servers: Vec<(String, bool)> = lock(&self.state)
+        let servers: Vec<(String, bool)> = sync::lock(&self.state)
             .servers
             .iter()
             .map(|s| (s.entry.name.clone(), s.entry.config.contains_key("url")))
@@ -1152,7 +1116,11 @@ impl Gateway {
                 if !enabled {
                     self.disconnect(name);
                 }
-                if let Some(server) = lock(&self.state).servers.iter_mut().find(|s| s.entry.name == name) {
+                if let Some(server) = sync::lock(&self.state)
+                    .servers
+                    .iter_mut()
+                    .find(|s| s.entry.name == name)
+                {
                     if enabled {
                         server.entry.config.shift_remove("enabled");
                     } else {
@@ -1230,7 +1198,7 @@ impl Gateway {
     }
 
     fn disconnect(&self, name: &str) -> String {
-        let connection = lock(&self.state)
+        let connection = sync::lock(&self.state)
             .servers
             .iter_mut()
             .find(|s| s.entry.name == name)
@@ -1244,15 +1212,6 @@ impl Gateway {
     /// The text of a gateway result (`textOf`).
     pub fn text_of(result: &Value) -> String {
         text_of(result["content"].as_array().map_or(&[], Vec::as_slice))
-    }
-}
-
-fn truthy(value: &Value) -> bool {
-    match value {
-        Value::Null | Value::Bool(false) => false,
-        Value::String(s) => !s.is_empty(),
-        Value::Number(n) => n.as_f64().is_some_and(|f| f != 0.0),
-        _ => true,
     }
 }
 

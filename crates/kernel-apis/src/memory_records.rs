@@ -13,7 +13,6 @@
 
 use crate::memory::MemoryError;
 use crate::store::{DocumentStore, MemoryDocumentStore};
-use crate::util::lock;
 use fancy_regex::Regex;
 use serde_json::{Map, Value, json};
 use std::path::PathBuf;
@@ -410,7 +409,7 @@ impl RecordIndex {
     }
 
     fn change(&self, change: impl FnOnce(&mut Vec<IndexEntry>)) -> Result<(), String> {
-        let _local = lock(&self.local);
+        let _local = jsrt::sync::lock(&self.local);
         let _file = match &self.lock_path {
             Some(path) => {
                 if let Some(parent) = path.parent() {

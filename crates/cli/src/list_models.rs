@@ -1,7 +1,6 @@
 //! `listModels` from packages/coding-agent/src/cli/list-models.ts over the built-in catalog and models.json.
 
 use ai::Model;
-use std::cmp::Ordering;
 use std::path::Path;
 
 /// The models of providers with credentials: built-in and models.json providers with a key (configured, in the
@@ -17,39 +16,22 @@ pub fn models_json_warning(env: &crate::Env) -> Option<String> {
         .map(|error| format!("{}\n", ai::model_config::models_json_warning(&error)))
 }
 
-/// `formatTokenCount`: 200000 -> "200K", 1000000 -> "1M", 131072 -> "131.1K" (`toFixed(1)` rounds ties up).
+/// `formatTokenCount`: 200000 -> "200K", 1000000 -> "1M", 131072 -> "131.1K", 1150 -> "1.1K" (`toFixed(1)` of the
+/// double `1.15`, which lies just below the tie).
 pub fn format_token_count(count: u64) -> String {
     for (unit, suffix) in [(1_000_000, "M"), (1_000, "K")] {
         if count >= unit {
             if count.is_multiple_of(unit) {
                 return format!("{}{suffix}", count / unit);
             }
-            let tenths = (count * 10 + unit / 2) / unit;
-            return format!("{}.{}{suffix}", tenths / 10, tenths % 10);
+            return format!("{}{suffix}", jsrt::number::to_fixed(count as f64 / unit as f64, 1));
         }
     }
     count.to_string()
 }
 
-/// ICU root collation as `String.prototype.localeCompare` applies it to catalog ids: punctuation sorts before digits,
-/// digits before letters, letters case-insensitively, with lowercase first as the tie-break.
-pub fn locale_compare(a: &str, b: &str) -> Ordering {
-    const PUNCT: &str = "_-,;:!?.'\"()[]{}@*/\\&#%`^+<=>|~$";
-    let key = |c: char| -> (u8, u32) {
-        if let Some(i) = PUNCT.find(c) {
-            (0, i as u32)
-        } else if c.is_ascii_digit() {
-            (1, c as u32)
-        } else {
-            (2, c.to_ascii_lowercase() as u32)
-        }
-    };
-    let primary = a.chars().map(key).cmp(b.chars().map(key));
-    primary.then_with(|| {
-        let tertiary = |c: char| u8::from(c.is_ascii_uppercase());
-        a.chars().map(tertiary).cmp(b.chars().map(tertiary))
-    })
-}
+/// `String.prototype.localeCompare` (ICU root collation), for the catalog ids `--list-models` sorts.
+pub use jsrt::collate::locale_compare;
 
 /// The `--list-models` output for `models`, filtered by `search`.
 pub fn render(models: &[Model], search: Option<&str>, docs: &Path) -> String {

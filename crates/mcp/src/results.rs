@@ -2,8 +2,6 @@
 //! resources are saved to files, resource links name `mcp.read`, MCP App resources are hidden from listings.
 
 use crate::content::to_llm_content;
-use base64::Engine;
-use base64::engine::{DecodePaddingMode, GeneralPurpose, GeneralPurposeConfig};
 use serde_json::{Map, Value, json};
 use std::io::Write;
 use std::os::unix::fs::OpenOptionsExt;
@@ -11,14 +9,6 @@ use std::path::PathBuf;
 
 /// Saves a binary resource and returns the file path. The extension includes the dot, for example `.bin`.
 pub type OutputSaver<'a> = &'a dyn Fn(&[u8], &str) -> Result<String, String>;
-
-/// `Buffer.from(blob, "base64")` accepts missing padding and stray whitespace.
-const LENIENT: GeneralPurpose = GeneralPurpose::new(
-    &base64::alphabet::STANDARD,
-    GeneralPurposeConfig::new()
-        .with_decode_allow_trailing_bits(true)
-        .with_decode_padding_mode(DecodePaddingMode::Indifferent),
-);
 
 /// Writes `data` to `<tmp>/ultron-mcp-<16 hex><extension>`, readable only by the user (results can carry private data).
 pub fn save_to_temp_file(data: &[u8], extension: &str) -> Result<String, String> {
@@ -41,9 +31,9 @@ pub fn format_size(bytes: usize) -> String {
     if bytes < 1024 {
         format!("{bytes}B")
     } else if bytes < 1024 * 1024 {
-        format!("{:.1}KB", bytes as f64 / 1024.0)
+        format!("{}KB", jsrt::number::to_fixed(bytes as f64 / 1024.0, 1))
     } else {
-        format!("{:.1}MB", bytes as f64 / (1024.0 * 1024.0))
+        format!("{}MB", jsrt::number::to_fixed(bytes as f64 / (1024.0 * 1024.0), 1))
     }
 }
 
@@ -123,10 +113,7 @@ fn block_to_content(server: &str, block: &Value, readable: bool, save: OutputSav
         && !mime.is_some_and(|m| m.starts_with("image/"))
     {
         let uri = resource["uri"].as_str().unwrap_or_default();
-        let clean: String = blob.chars().filter(|c| !c.is_whitespace()).collect();
-        let data = LENIENT
-            .decode(clean.replace('-', "+").replace('_', "/"))
-            .unwrap_or_default();
+        let data = jsrt::base64::buffer_from(blob);
         if is_text_mime_type(mime) {
             return vec![text(String::from_utf8_lossy(&data).into_owned())];
         }

@@ -16,6 +16,7 @@ test = false
 doc = false
 
 [dependencies]
+jsrt = { path = "../jsrt" }
 mimalloc = { version = "=0.1.52", default-features = false }
 cli = { path = "../cli" }
 config = { path = "../config" }

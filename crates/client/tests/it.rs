@@ -13,5 +13,7 @@ mod radius;
 mod radius_connection;
 #[path = "replica.rs"]
 mod replica;
+#[path = "runtime_json.rs"]
+mod runtime_json;
 #[path = "unix.rs"]
 mod unix;

@@ -10,10 +10,9 @@
 //! account outside the default universe) is compared the same way, and an AWS subject token (a SigV4-signed request)
 //! by its JSON with the date and signature blanked, its exact bytes checked separately at the pinned time.
 
-use ai::google_auth::{AwsCredentials, aws_subject_token, self_signed_jwt, service_account_assertion, sha256_hex};
+use ai::google_auth::{AwsCredentials, aws_subject_token, self_signed_jwt, service_account_assertion};
 use ai::google_vertex::{self, GoogleVertexOptions};
 use ai::http::{BoxFuture, HeaderMap};
-use ai::json::normalize_numbers;
 use ai::options::pi_user_agent;
 use ai::{
     AssistantMessageEvent, Body, HttpRequest, HttpResponse, Model, SimpleStreamOptions, TranscriptContext, Transport,
@@ -55,7 +54,7 @@ struct FixtureTransport {
 
 impl Transport for FixtureTransport {
     fn with_client_identity(&self, cert: &[u8], key: &[u8]) -> Result<Arc<dyn Transport>, String> {
-        let digest = |bytes: &[u8]| sha256_hex(&String::from_utf8_lossy(bytes));
+        let digest = |bytes: &[u8]| jsrt::hash::sha256_hex(String::from_utf8_lossy(bytes).as_bytes());
         Ok(Arc::new(FixtureTransport {
             identity: Some(json!({"certSha256": digest(cert), "keySha256": digest(key)})),
             ..self.clone()
@@ -172,13 +171,13 @@ fn url_decode(text: &str) -> String {
 fn b64url_json(part: &str) -> Value {
     let standard = part.replace('-', "+").replace('_', "/");
     let padded = format!("{standard}{}", "=".repeat((4 - standard.len() % 4) % 4));
-    serde_json::from_slice(&ai::jsutil::atob(&padded).unwrap()).unwrap()
+    serde_json::from_slice(&jsrt::base64::atob(&padded).unwrap()).unwrap()
 }
 
 /// A JWT assertion as the generator records it.
 fn decompose(assertion: &str) -> Value {
     let parts: Vec<&str> = assertion.split('.').collect();
-    json!({"header": b64url_json(parts[0]), "payload": b64url_json(parts[1]), "signatureSha256": sha256_hex(parts[2])})
+    json!({"header": b64url_json(parts[0]), "payload": b64url_json(parts[1]), "signatureSha256": jsrt::hash::sha256_hex(parts[2])})
 }
 
 /// A decoded JWT's `iat`/`exp` and signature depend on the clock: check the lifetime, then blank them.
@@ -410,7 +409,10 @@ fn differences(scenario: &Value) -> Vec<String> {
     let rust = run(scenario);
     let mut diffs = Vec::new();
     let mut check = |what: &str, expected: &Value, actual: &Value| {
-        let (expected, actual) = (normalize_numbers(expected.clone()), normalize_numbers(actual.clone()));
+        let (expected, actual) = (
+            jsrt::json::normalize_numbers(expected.clone()),
+            jsrt::json::normalize_numbers(actual.clone()),
+        );
         if expected != actual {
             diffs.push(format!("{name}: {what}\n  expected {expected}\n  actual   {actual}"));
         }
@@ -488,6 +490,19 @@ fn ai_google_auth_rejects_an_undecodable_private_key_like_node() {
         service_account_assertion("a@b", "not a key", 0).unwrap_err(),
         "error:1E08010C:DECODER routines::unsupported"
     );
+}
+
+/// An `expiration_time` of `"-inf"` compares as `Number("-inf")`, which is `NaN` in node, so the executable response is
+/// not expired and the recorded success replays. (Rust's `str::parse` reads `-inf` as minus infinity: expired.)
+#[test]
+fn ai_google_auth_executable_expiration_compares_as_a_javascript_number() {
+    let mut case = scenario("wif/executable-oidc-env").clone();
+    let original = case["files"]["exec.sh"].as_str().unwrap().to_string();
+    let script = original.replace(r#""expiration_time":4102444800"#, r#""expiration_time":"-inf""#);
+    assert_ne!(script, original);
+    case["files"]["exec.sh"] = json!(script);
+    let diffs = differences(&case);
+    assert!(diffs.is_empty(), "{}", diffs.join("\n"));
 }
 
 fn scenario(name: &str) -> &'static Value {

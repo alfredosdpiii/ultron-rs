@@ -3,7 +3,6 @@
 
 use crate::auth::{AuthEvent, AuthInteraction, ModelAuth, OAuthAuth, OAuthCredential};
 use crate::http::{AbortSignal, BoxFuture, HttpRequest, Transport, is_aborted};
-use crate::json::stringify;
 use crate::oauth_flow::{
     Clock, ClockLoginEnv, Poll, TextResponse, fetch_text, form_request, poll_device_code_flow, trusted_http_url,
 };
@@ -143,7 +142,7 @@ impl MetaOAuth {
         let (Some(device_code), Some(user_code), Some(uri)) = (device_code, user_code, uri) else {
             return Err(format!(
                 "Invalid Meta device authorization response: {}",
-                stringify(json.as_ref().unwrap_or(&Value::Null))
+                jsrt::json::stringify(json.as_ref().unwrap_or(&Value::Null))
             ));
         };
         let interval = positive(field(&json, "interval"));

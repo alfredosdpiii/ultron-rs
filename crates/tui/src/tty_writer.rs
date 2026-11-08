@@ -28,7 +28,7 @@ struct Inner {
 
 impl Inner {
     fn lock(&self) -> MutexGuard<'_, Vec<u8>> {
-        self.back.lock().unwrap_or_else(|e| e.into_inner())
+        jsrt::sync::lock(&self.back)
     }
 }
 

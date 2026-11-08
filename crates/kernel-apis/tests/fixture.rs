@@ -9,7 +9,6 @@ mod common;
 use common::{FIXED_NOW, Made, assert_area, fixed, inner, runtime, tree};
 use kernel::Signal;
 use kernel_apis::memory::MemoryBackend;
-use kernel_apis::util::lock;
 use kernel_apis::{
     CodeSkills, CodeSkillsOptions, DocumentStore, HintsModule, KernelApis, MemoryApi, MemoryDocumentStore,
     MemoryService, SkillSource, SkillsModule, worker_gate,
@@ -98,10 +97,10 @@ impl MemoryBackend for FakeHindsight {
     }
 
     fn recall(&self, request: &Value, _: &Signal) -> Result<Value, String> {
-        lock(&self.calls).push(json!(["recall", request]));
+        jsrt::sync::lock(&self.calls).push(json!(["recall", request]));
         let tags = request["tags"].as_array().unwrap();
         let query = request["query"].as_str().unwrap().to_lowercase();
-        let results: Vec<Value> = lock(&self.entries)
+        let results: Vec<Value> = jsrt::sync::lock(&self.entries)
             .iter()
             .filter(|entry| {
                 let own = entry["tags"].as_array().unwrap();
@@ -118,14 +117,14 @@ impl MemoryBackend for FakeHindsight {
     }
 
     fn retain(&self, request: &Value, _: &Signal) -> Result<Value, String> {
-        lock(&self.calls).push(json!(["retain", request]));
+        jsrt::sync::lock(&self.calls).push(json!(["retain", request]));
         let item = &request["items"][0];
-        let mut entries = lock(&self.entries);
+        let mut entries = jsrt::sync::lock(&self.entries);
         let id = format!("entry-{}", entries.len() + 1);
         entries.push(json!({"id": id, "text": item["content"], "tags": item["tags"], "document_id": item["document_id"], "metadata": item["metadata"]}));
         let document_id = item["document_id"].as_str().unwrap().to_string();
         let document = json!({"id": document_id, "original_text": item["content"], "tags": item["tags"]});
-        let mut documents = lock(&self.documents);
+        let mut documents = jsrt::sync::lock(&self.documents);
         match documents.iter_mut().find(|(key, _)| *key == document_id) {
             Some(slot) => slot.1 = document,
             None => documents.push((document_id, document)),
@@ -136,7 +135,7 @@ impl MemoryBackend for FakeHindsight {
         } else {
             "completed"
         };
-        lock(&self.operations).push((request["operation_id"].as_str().unwrap().into(), status.into()));
+        jsrt::sync::lock(&self.operations).push((request["operation_id"].as_str().unwrap().into(), status.into()));
         if content.contains("sync") {
             return Ok(json!({"success": true, "async": false}));
         }
@@ -144,8 +143,8 @@ impl MemoryBackend for FakeHindsight {
     }
 
     fn get(&self, id: &str, _: &Signal) -> Result<Value, String> {
-        lock(&self.calls).push(json!(["get", id]));
-        Ok(lock(&self.documents)
+        jsrt::sync::lock(&self.calls).push(json!(["get", id]));
+        Ok(jsrt::sync::lock(&self.documents)
             .iter()
             .find(|(key, _)| key == id)
             .map(|(_, document)| document.clone())
@@ -153,14 +152,14 @@ impl MemoryBackend for FakeHindsight {
     }
 
     fn delete(&self, id: &str, _: &Signal) -> Result<Value, String> {
-        lock(&self.calls).push(json!(["delete", id]));
-        lock(&self.documents).retain(|(key, _)| key != id);
+        jsrt::sync::lock(&self.calls).push(json!(["delete", id]));
+        jsrt::sync::lock(&self.documents).retain(|(key, _)| key != id);
         Ok(json!({"success": true, "document_id": id}))
     }
 
     fn operation(&self, id: &str, _: &Signal) -> Result<Value, String> {
-        lock(&self.calls).push(json!(["operation", id]));
-        let status = lock(&self.operations)
+        jsrt::sync::lock(&self.calls).push(json!(["operation", id]));
+        let status = jsrt::sync::lock(&self.operations)
             .iter()
             .rev()
             .find(|(key, _)| key == id)
@@ -178,7 +177,9 @@ fn memory_host(_: &Path) -> Made {
         handler: KernelApis::new(inner(Arc::new(AtomicI64::new(FIXED_NOW))))
             .with(Arc::new(MemoryApi { service: Some(service) })),
         env: Vec::new(),
-        state: Box::new(move || json!({"journal": store.read().unwrap(), "backend": *lock(&backend.calls)})),
+        state: Box::new(
+            move || json!({"journal": store.read().unwrap(), "backend": *jsrt::sync::lock(&backend.calls)}),
+        ),
     }
 }
 

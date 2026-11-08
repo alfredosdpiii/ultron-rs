@@ -7,7 +7,7 @@
 
 pub use crate::auth::{ModelAuth, OAuthCredential};
 use crate::http::{AbortSignal, HeaderMap, HttpRequest, Transport};
-use crate::json::{parse_json, stringify};
+use crate::json::parse_json;
 use crate::oauth_flow::form_urlencode;
 use serde_json::{Map, Value, json};
 
@@ -192,7 +192,7 @@ pub(crate) async fn anthropic_token_request(
         "POST",
         ANTHROPIC_TOKEN_URL,
         &headers,
-        stringify(body),
+        jsrt::json::stringify(body),
         signal,
     )
     .await
@@ -216,7 +216,10 @@ pub(crate) async fn anthropic_token_request(
         field("refresh_token"),
         data.get("expires_in").and_then(Value::as_f64),
     ) else {
-        return Err(format!("{lead} response missing fields: {}", stringify(&data)));
+        return Err(format!(
+            "{lead} response missing fields: {}",
+            jsrt::json::stringify(&data)
+        ));
     };
     Ok(OAuthCredential {
         refresh,
@@ -271,7 +274,7 @@ pub(crate) fn codex_credential(reply: &Reply, operation: &str, now_ms: f64) -> R
     ) else {
         return Err(format!(
             "OpenAI Codex token {operation} response missing fields: {}",
-            stringify(&data)
+            jsrt::json::stringify(&data)
         ));
     };
     let account_id = codex_account_id(&access).ok_or("Failed to extract accountId from token")?;
@@ -292,7 +295,7 @@ pub fn codex_account_id(access_token: &str) -> Option<String> {
         return None;
     }
     // `atob` yields one char per byte; JSON.parse reads that Latin-1 string.
-    let decoded = crate::jsutil::latin1(&crate::jsutil::atob(parts[1])?);
+    let decoded = crate::jsutil::latin1(&jsrt::base64::atob(parts[1])?);
     let payload = parse_json(&decoded).ok()?;
     let id = payload.get(CODEX_JWT_CLAIM_PATH)?.get("chatgpt_account_id")?.as_str()?;
     (!id.is_empty()).then(|| id.to_owned())

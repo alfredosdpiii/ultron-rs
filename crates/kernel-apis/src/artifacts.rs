@@ -2,7 +2,6 @@
 //! the store of schedules, local services and prompt schedules. (TypeScript's `artifacts.*` host requests over the
 //! same store are not ported.)
 
-use crate::util::lock;
 use serde_json::{Map, Value};
 use std::path::PathBuf;
 use std::sync::Mutex;
@@ -23,14 +22,14 @@ pub struct MemoryKeyedDocuments {
 
 impl KeyedDocuments for MemoryKeyedDocuments {
     fn get(&self, key: &str) -> Result<Option<Value>, String> {
-        Ok(lock(&self.values).get(key).cloned())
+        Ok(jsrt::sync::lock(&self.values).get(key).cloned())
     }
     fn set(&self, key: &str, value: &Value) -> Result<(), String> {
-        lock(&self.values).insert(key.into(), value.clone());
+        jsrt::sync::lock(&self.values).insert(key.into(), value.clone());
         Ok(())
     }
     fn list(&self, prefix: &str) -> Result<Vec<(String, Value)>, String> {
-        Ok(lock(&self.values)
+        Ok(jsrt::sync::lock(&self.values)
             .iter()
             .filter(|(key, _)| key.starts_with(prefix))
             .map(|(key, value)| (key.clone(), value.clone()))
@@ -64,18 +63,18 @@ impl FileKeyedDocuments {
 
 impl KeyedDocuments for FileKeyedDocuments {
     fn get(&self, key: &str) -> Result<Option<Value>, String> {
-        let _guard = lock(&self.guard);
+        let _guard = jsrt::sync::lock(&self.guard);
         Ok(self.read()?.get(key).cloned())
     }
     fn set(&self, key: &str, value: &Value) -> Result<(), String> {
         use crate::store::DocumentStore;
-        let _guard = lock(&self.guard);
+        let _guard = jsrt::sync::lock(&self.guard);
         let mut map = self.read()?;
         map.insert(key.into(), value.clone());
         self.store.write(&Value::Object(map))
     }
     fn list(&self, prefix: &str) -> Result<Vec<(String, Value)>, String> {
-        let _guard = lock(&self.guard);
+        let _guard = jsrt::sync::lock(&self.guard);
         Ok(self
             .read()?
             .into_iter()

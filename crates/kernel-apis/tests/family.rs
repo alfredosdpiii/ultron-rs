@@ -7,7 +7,6 @@ mod common;
 use common::{FIXED_NOW, Made, assert_area};
 use kernel::{HostHandler, Signal};
 use kernel_apis::family::{FamilyModule, FamilyOptions};
-use kernel_apis::util::lock;
 use kernel_apis::{ApiModule, DocumentStore, KernelApis, MemoryDocumentStore, Request, TaskHost};
 use serde_json::{Map, Value, json};
 use std::path::Path;
@@ -56,7 +55,7 @@ struct FakeHost {
 
 impl TaskHost for FakeHost {
     fn caller_task_id(&self, _lane: &str) -> Option<String> {
-        lane_task(&lock(&self.current).lane)
+        lane_task(&jsrt::sync::lock(&self.current).lane)
     }
     fn task_lane(&self, _task_id: &str) -> Option<String> {
         None
@@ -77,7 +76,7 @@ impl TaskHost for FakeHost {
         Err("unused".into())
     }
     fn steer(&self, task_id: &str, message: &str, _: &Signal) -> Result<bool, String> {
-        lock(&self.steered).push(json!([task_id, message]));
+        jsrt::sync::lock(&self.steered).push(json!([task_id, message]));
         match task_id {
             "t-child" => Ok(true),
             "t-other" => Ok(false),
@@ -85,14 +84,14 @@ impl TaskHost for FakeHost {
         }
     }
     fn now(&self) -> i64 {
-        lock(&self.current).now
+        jsrt::sync::lock(&self.current).now
     }
 }
 
 /// The fixture's `test.*` module: moves the calling lane and the clock.
 fn test_requests(current: Arc<Mutex<Current>>) -> Arc<dyn HostHandler> {
     Arc::new(move |kind: &str, payload: Map<String, Value>, _: &Signal| {
-        let mut current = lock(&current);
+        let mut current = jsrt::sync::lock(&current);
         match kind {
             "test.lane" => current.lane = payload["lane"].as_str().unwrap().into(),
             "test.clock" => current.now += payload["ms"].as_i64().unwrap(),
@@ -125,7 +124,7 @@ fn family_host(_: &Path) -> Made {
             .with_host(host, "main")
             .with(Arc::new(module)),
         env: Vec::new(),
-        state: Box::new(move || json!({"document": store.read().unwrap(), "steered": *lock(&steered)})),
+        state: Box::new(move || json!({"document": store.read().unwrap(), "steered": *jsrt::sync::lock(&steered)})),
     }
 }
 
@@ -149,7 +148,7 @@ fn kernel_apis_family_verifier_scope_and_untrusted_delivery() {
     let module = FamilyModule::new(Arc::new(MemoryDocumentStore::default()), FamilyOptions::default());
     let signal = Signal::new();
     let call = |kind: &str, payload: Value| {
-        let lane = lock(&current).lane.clone();
+        let lane = jsrt::sync::lock(&current).lane.clone();
         let caller = lane_task(&lane);
         let payload = payload.as_object().unwrap().clone();
         module.handle(&Request {
@@ -170,7 +169,7 @@ fn kernel_apis_family_verifier_scope_and_untrusted_delivery() {
     );
     let sent = call("agent_message.send", json!({"message": "verdict \"ok\""})).unwrap();
     assert_eq!(sent["state"], "pending");
-    lock(&current).lane = "lane-parent".into();
+    jsrt::sync::lock(&current).lane = "lane-parent".into();
     let received = call("agent_message.receive", json!({})).unwrap();
     assert_eq!(received["remaining"], 0);
     let message = &received["messages"][0];
@@ -221,7 +220,7 @@ fn kernel_apis_family_steer_envelope_encodes_the_body() {
         (result["state"].as_str(), result["steered"].as_bool()),
         (Some("delivered"), Some(true))
     );
-    let log = lock(&steered);
+    let log = jsrt::sync::lock(&steered);
     let text = log[0][1].as_str().unwrap();
     let id = result["id"].as_str().unwrap();
     assert_eq!(

@@ -12,7 +12,7 @@ use crate::openai_completions::read_openai_stream;
 use crate::openai_responses::{
     ConvertOptions, ResponsesRun, TierPricing, ToolOptions, convert_responses_messages, convert_responses_tools,
 };
-use crate::options::{SimpleStreamOptions, StreamOptions, build_base_options, now_ms, pi_user_agent};
+use crate::options::{SimpleStreamOptions, StreamOptions, build_base_options, pi_user_agent};
 use crate::transcript::{declared_tools, resolve_transcript, resolve_transcript_tools};
 use crate::types::{AssistantMessage, AssistantMessageEvent, EventSink, Mapped, Model, StopReason, TranscriptContext};
 use indexmap::IndexMap;
@@ -231,7 +231,7 @@ pub async fn stream(
         context,
         model.compat_bool("supportsMidConvoSystemMessages").unwrap_or(false),
     );
-    let now = now_ms();
+    let now = jsrt::date::now_ms();
     let mut output = AssistantMessage::pending(model, now);
     output.api = "azure-openai-responses".into();
     let mut run = ResponsesRun::new(output, sink);

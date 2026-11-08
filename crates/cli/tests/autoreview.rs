@@ -1038,3 +1038,34 @@ fn cli_autoreview_eval_reviews_reverted_commits() {
     assert_eq!((code, stderr.as_str()), (1, "no case's commit starts with 0000\n"));
     assert_eq!(world.requests().len(), requests, "--only with no case reviews nothing");
 }
+
+#[test]
+fn cli_autoreview_counts_read_like_number() {
+    // `Number(value())` in autoreview/cli.ts; node 26.12.1: Number("0x10") === 16, Number("0o17") === 15,
+    // Number("0b1") === 1, Number(" 12 ") === 12, and Number("1_0") is NaN.
+    let parse = |flag: &str, value: &str| {
+        cli::autoreview_cli::parse_args(&["review".to_string(), flag.to_string(), value.to_string()]).map_err(|e| e.0)
+    };
+    assert_eq!(parse("--max-comments", "0x10").map(|p| p.max_comments), Ok(Some(16.0)));
+    assert_eq!(parse("--deadline", "0o17").map(|p| p.deadline_seconds), Ok(Some(15.0)));
+    assert_eq!(parse("--plan-cells", "0b1").map(|p| p.plan_cells), Ok(Some(1.0)));
+    assert_eq!(parse("--plan-cells", " 12 ").map(|p| p.plan_cells), Ok(Some(12.0)));
+    assert_eq!(
+        parse("--max-comments", "1_0").map(|p| p.max_comments),
+        Err("--max-comments takes a whole number".to_string())
+    );
+}
+
+#[test]
+fn cli_autoreview_age_reads_times_like_date_parse() {
+    // node 26.12.1 (TZ=UTC), now = Date.parse("2026-10-01T10:00:30Z") = 1790848830000:
+    // Date.parse("2026-10-01T12:00:00+0200") and Date.parse("2026-10-01 10:00Z") are 30 s before it, and
+    // Date.parse("2026-10-01T24:30:00Z") is NaN.
+    let now = 1_790_848_830_000;
+    assert_eq!(
+        cli::autoreview_cli::age(Some("2026-10-01T12:00:00+0200"), now),
+        "30 s ago"
+    );
+    assert_eq!(cli::autoreview_cli::age(Some("2026-10-01 10:00Z"), now), "30 s ago");
+    assert_eq!(cli::autoreview_cli::age(Some("2026-10-01T24:30:00Z"), now), "NaN h ago");
+}

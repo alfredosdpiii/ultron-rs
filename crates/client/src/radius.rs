@@ -5,6 +5,7 @@
 //! and re-attaches its last Session (`RadiusClientReconnect`), and the statuses the client TUI shows meanwhile
 //! (`client-tui.ts` `#handleConnectionState` / `#handleAttachmentState`).
 
+use jsrt::sync;
 use protocol::websocket::Message;
 use server::radius_relay::{
     MAX_PENDING_BYTES, RADIUS_RELAY_CLIENT_SUBPROTOCOL, RelayAuthResolver, relay_web_socket_url,
@@ -13,16 +14,12 @@ use server::radius_ws::{self, WsEvent, WsWriter};
 use std::io::{self, Read, Write};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
-use std::sync::{Arc, Condvar, Mutex, MutexGuard};
+use std::sync::{Arc, Condvar, Mutex};
 use std::time::Duration;
 
 const CLIENT_RETRY_INITIAL_MS: u64 = 1_000;
 const CLIENT_RETRY_MAX_MS: u64 = 30_000;
 const LOCAL_TRANSPORT_ERROR_CLOSE_CODE: u16 = 4001;
-
-fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
-    mutex.lock().unwrap_or_else(|e| e.into_inner())
-}
 
 /// `ByteTransportHandlers`.
 pub trait ByteTransportHandlers: Send {
@@ -62,7 +59,7 @@ impl RadiusClientTransport {
 impl Drop for RadiusClientTransport {
     fn drop(&mut self) {
         self.close();
-        if let Some(thread) = lock(&self.thread).take() {
+        if let Some(thread) = sync::lock(&self.thread).take() {
             let _ = thread.join();
         }
     }
@@ -321,17 +318,17 @@ pub struct Cancellation {
 
 impl Cancellation {
     pub fn cancel(&self) {
-        *lock(&self.cancelled) = true;
+        *sync::lock(&self.cancelled) = true;
         self.changed.notify_all();
     }
 
     pub fn is_cancelled(&self) -> bool {
-        *lock(&self.cancelled)
+        *sync::lock(&self.cancelled)
     }
 
     /// Wait `duration`; `false` when cancelled first.
     pub fn wait(&self, duration: Duration) -> bool {
-        let guard = lock(&self.cancelled);
+        let guard = sync::lock(&self.cancelled);
         let (guard, _) = self
             .changed
             .wait_timeout_while(guard, duration, |cancelled| !*cancelled)
@@ -395,8 +392,8 @@ impl RadiusClientReconnect {
     /// `onAttachmentChange`: remember the Session to restore; a detach while connected forgets it.
     pub fn attachment_changed(&self, session_id: Option<&str>) {
         match session_id {
-            Some(id) => lock(&self.inner.state).desired_session = Some(id.to_string()),
-            None if self.inner.client.connected() => lock(&self.inner.state).desired_session = None,
+            Some(id) => sync::lock(&self.inner.state).desired_session = Some(id.to_string()),
+            None if self.inner.client.connected() => sync::lock(&self.inner.state).desired_session = None,
             None => {}
         }
     }
@@ -406,7 +403,7 @@ impl RadiusClientReconnect {
         if state != ConnectionState::Disconnected || self.inner.disposed.load(Ordering::SeqCst) {
             return;
         }
-        let mut guard = lock(&self.inner.state);
+        let mut guard = sync::lock(&self.inner.state);
         if guard.running {
             return;
         }
@@ -414,18 +411,18 @@ impl RadiusClientReconnect {
         if let Some(previous) = guard.reconnecting.take() {
             drop(guard);
             let _ = previous.join();
-            guard = lock(&self.inner.state);
+            guard = sync::lock(&self.inner.state);
         }
         let inner = self.inner.clone();
         guard.reconnecting = Some(std::thread::spawn(move || {
             inner.run();
-            lock(&inner.state).running = false;
+            sync::lock(&inner.state).running = false;
         }));
     }
 
     /// Wait for a reconnection under way to end (succeed, or stop).
     pub fn wait_idle(&self) {
-        let thread = lock(&self.inner.state).reconnecting.take();
+        let thread = sync::lock(&self.inner.state).reconnecting.take();
         if let Some(thread) = thread {
             let _ = thread.join();
         }
@@ -440,7 +437,7 @@ impl RadiusClientReconnect {
         if self.inner.client.connection_state() != ConnectionState::Disconnected {
             self.inner.client.disconnect("Radius reconnect stopped");
         }
-        let thread = lock(&self.inner.state).reconnecting.take();
+        let thread = sync::lock(&self.inner.state).reconnecting.take();
         if let Some(thread) = thread {
             let _ = thread.join();
         }
@@ -459,7 +456,7 @@ impl ReconnectInner {
                 return;
             }
             let attempt = self.client.reconnect().and_then(|()| {
-                let session = lock(&self.state).desired_session.clone();
+                let session = sync::lock(&self.state).desired_session.clone();
                 match session {
                     Some(session) => (self.reattach)(&session),
                     None => Ok(()),
@@ -553,11 +550,11 @@ struct ReopenSlot {
 
 impl ReopenSlot {
     fn connection(&self) -> Option<Arc<crate::runtime::Connection>> {
-        lock(&self.current).clone()
+        sync::lock(&self.current).clone()
     }
 
     fn failed(&self, error: String) -> String {
-        *lock(&self.last_error) = Some(error.clone());
+        *sync::lock(&self.last_error) = Some(error.clone());
         error
     }
 }
@@ -578,7 +575,7 @@ impl ReconnectClient for ReopenSlot {
     }
 
     fn disconnect(&self, _reason: &str) {
-        if let Some(connection) = lock(&self.current).take() {
+        if let Some(connection) = sync::lock(&self.current).take() {
             connection.disconnect();
         }
     }
@@ -588,7 +585,7 @@ impl ReconnectClient for ReopenSlot {
         let connected = crate::runtime::Connection::connect_radius(&self.server_id, self.auth.as_ref());
         self.connecting.store(false, Ordering::SeqCst);
         let connection = connected.map_err(|e| self.failed(e.to_string()))?;
-        *lock(&self.current) = Some(connection);
+        *sync::lock(&self.current) = Some(connection);
         Ok(())
     }
 }
@@ -655,7 +652,7 @@ impl RadiusReopen {
             Some(connection) if !connection.is_closed() => Ok(connection),
             _ => {
                 reconnector.dispose();
-                Err(lock(&slot.last_error)
+                Err(sync::lock(&slot.last_error)
                     .clone()
                     .unwrap_or_else(|| "Radius reconnect stopped".into()))
             }

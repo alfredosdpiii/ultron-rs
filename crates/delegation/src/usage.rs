@@ -7,8 +7,9 @@
 //! Every change is one serialized step that writes the whole document; a failed write poisons the ledger.
 
 use crate::task_store::{MemoryStore, TaskStore};
+use jsrt::{json, sync};
 use serde_json::{Map, Value, json};
-use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
+use std::sync::{Arc, Mutex};
 
 /// Kinds a stored ledger may hold (`jev` calls of older sessions still count as calls).
 const STORED_KINDS: [&str; 3] = ["task", "model", "jev"];
@@ -50,7 +51,7 @@ pub fn limits_from_env(var: &dyn Fn(&str) -> Option<String>, settings: &Value) -
             return None;
         }
         match text.parse::<f64>() {
-            Ok(n) if n.fract() == 0.0 && n >= minimum as f64 && n <= 9_007_199_254_740_991.0 => Some(n as u64),
+            Ok(n) if jsrt::number::is_safe_integer(n) && n >= minimum as f64 => Some(n as u64),
             _ => fallback,
         }
     };
@@ -214,17 +215,11 @@ pub struct Measurement {
     pub wall_ms: Option<f64>,
 }
 
-/// A JSON number as JavaScript writes it: integral values without a fraction.
-pub fn number(n: f64) -> Value {
-    if n.fract() == 0.0 && n.abs() < 9_007_199_254_740_992.0 {
-        Value::from(n as i64)
-    } else {
-        serde_json::Number::from_f64(n).map_or(Value::Null, Value::Number)
-    }
-}
+// ponytail: reconcile.rs (deleted on another branch) still imports `crate::usage::number`; drop this once it is gone.
+pub use jsrt::json::number;
 
 fn known(n: Option<f64>) -> Value {
-    n.map_or(Value::Null, number)
+    n.map_or(Value::Null, json::number)
 }
 
 /// Told when a reservation is refused because a limit was reached.
@@ -253,15 +248,10 @@ impl Default for UsageOptions {
         UsageOptions {
             limits: UsageLimits::default(),
             root_id: None,
-            now: Arc::new(|| {
-                std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .map(|d| d.as_millis() as f64)
-                    .unwrap_or(0.0)
-            }),
+            now: Arc::new(|| jsrt::date::now_ms() as f64),
             detailed_roots: DEFAULT_DETAILED_ROOTS,
             on_refused: None,
-            ids: Box::new(crate::task_store::uuid_v4),
+            ids: Box::new(jsrt::random::uuid_v4),
             keep_turns: false,
         }
     }
@@ -312,7 +302,7 @@ fn finite(value: &Value, name: &str) -> Result<f64, String> {
 fn finite_integer(value: &Value, name: &str, minimum: f64) -> Result<f64, String> {
     value
         .as_f64()
-        .filter(|n| n.fract() == 0.0 && n.abs() <= 9_007_199_254_740_991.0 && *n >= minimum)
+        .filter(|n| jsrt::number::is_safe_integer(*n) && *n >= minimum)
         .ok_or_else(|| invalid(name))
 }
 
@@ -524,10 +514,6 @@ fn validate_document(value: &Value) -> Result<(), String> {
     Ok(())
 }
 
-fn lock(state: &Mutex<State>) -> MutexGuard<'_, State> {
-    state.lock().unwrap_or_else(PoisonError::into_inner)
-}
-
 fn finite_limit(limit: Option<u64>) -> f64 {
     limit.map_or(f64::INFINITY, |n| n as f64)
 }
@@ -543,7 +529,7 @@ pub fn totals(calls: &[Value]) -> Value {
                 None => return Value::Null,
             }
         }
-        number(total)
+        json::number(total)
     };
     let wall: f64 = calls.iter().filter_map(|call| call["usage"]["wallMs"].as_f64()).sum();
     let unknown = calls
@@ -555,7 +541,7 @@ pub fn totals(calls: &[Value]) -> Value {
         })
         .count();
     json!({
-        "calls": calls.len(), "taskCalls": count("task"), "modelCalls": count("model"), "wallMs": number(wall),
+        "calls": calls.len(), "taskCalls": count("task"), "modelCalls": count("model"), "wallMs": json::number(wall),
         "inputTokens": sum("inputTokens"), "outputTokens": sum("outputTokens"), "totalTokens": sum("totalTokens"),
         "cost": sum("cost"), "unknownCalls": unknown,
     })
@@ -563,9 +549,9 @@ pub fn totals(calls: &[Value]) -> Value {
 
 /// `mergeTotals`: any unknown makes the sum unknown.
 fn merge_totals(target: &Value, source: &Value) -> Value {
-    let add = |key: &str| number(target[key].as_f64().unwrap_or(0.0) + source[key].as_f64().unwrap_or(0.0));
+    let add = |key: &str| json::number(target[key].as_f64().unwrap_or(0.0) + source[key].as_f64().unwrap_or(0.0));
     let known = |key: &str| match (target[key].as_f64(), source[key].as_f64()) {
-        (Some(a), Some(b)) => number(a + b),
+        (Some(a), Some(b)) => json::number(a + b),
         _ => Value::Null,
     };
     json!({
@@ -655,7 +641,7 @@ impl UsageLedger {
 
     /// One serialized step over the loaded document (`enqueue`).
     fn step<T>(&self, change: impl FnOnce(&mut State) -> Result<T, String>) -> Result<T, String> {
-        let mut state = lock(&self.state);
+        let mut state = sync::lock(&self.state);
         if state.broken {
             return Err(DURABILITY.into());
         }
@@ -738,10 +724,10 @@ impl UsageLedger {
         };
         let cap = self.limits.max_cost_usd.filter(|_| with_limits);
         json!({
-            "maxCostUsd": cap.map_or(Value::Null, number),
-            "spentUsd": number(spent),
-            "unknownPricedCalls": number(unknown),
-            "remainingUsd": cap.map_or(Value::Null, |cap| number((cap - spent).max(0.0))),
+            "maxCostUsd": cap.map_or(Value::Null, json::number),
+            "spentUsd": json::number(spent),
+            "unknownPricedCalls": json::number(unknown),
+            "remainingUsd": cap.map_or(Value::Null, |cap| json::number((cap - spent).max(0.0))),
         })
     }
 
@@ -758,8 +744,8 @@ impl UsageLedger {
                 kind: "turns",
                 reason: format!(
                     "Usage turn limit reached for root {root_id}: {} of {} model turns used (max_total_turns, ULTRON_MAX_TOTAL_TURNS). {advice}",
-                    js(count),
-                    js(max_turns)
+                    jsrt::number::to_string(count),
+                    jsrt::number::to_string(max_turns)
                 ),
             });
         }
@@ -768,8 +754,8 @@ impl UsageLedger {
                 kind: "tokens",
                 reason: format!(
                     "Usage token limit reached for root {root_id}: {} of {} tokens used (max_total_tokens, ULTRON_MAX_TOTAL_TOKENS). {advice}",
-                    js(tokens),
-                    js(cap)
+                    jsrt::number::to_string(tokens),
+                    jsrt::number::to_string(cap)
                 ),
             });
         }
@@ -782,8 +768,8 @@ impl UsageLedger {
                     kind: "cost",
                     reason: format!(
                         "Usage pricing unknown; cannot enforce cost cap of ${} for root {root_id} ({} model call(s) reported no cost). {advice}",
-                        js(max_cost),
-                        js(unknown)
+                        jsrt::number::to_string(max_cost),
+                        jsrt::number::to_string(unknown)
                     ),
                 });
             }
@@ -792,8 +778,8 @@ impl UsageLedger {
                     kind: "cost",
                     reason: format!(
                         "Usage cost cap reached for root {root_id}: spent ${} of ${} (ULTRON_MAX_COST_USD). {advice}",
-                        js((spent * 1e6).round() / 1e6),
-                        js(max_cost)
+                        jsrt::number::to_string((spent * 1e6).round() / 1e6),
+                        jsrt::number::to_string(max_cost)
                     ),
                 });
             }
@@ -825,7 +811,7 @@ impl UsageLedger {
                 return Err("Usage budgetId is empty".into());
             }
             if let Some(timeout) = request.timeout_ms {
-                finite_integer(&number(timeout), "timeoutMs", 1.0)?;
+                finite_integer(&json::number(timeout), "timeoutMs", 1.0)?;
             }
             if request.deadline_at.is_some_and(|d| !d.is_finite()) {
                 return Err(invalid("deadlineAt"));
@@ -842,9 +828,9 @@ impl UsageLedger {
             let now = (self.now)();
             let goal = root_id.starts_with(GOAL_USAGE_ROOT_PREFIX);
             if root["startedAt"].is_null() {
-                root["startedAt"] = number(now);
+                root["startedAt"] = json::number(now);
                 root["deadlineAt"] = match self.limits.max_wall_ms.filter(|_| !goal) {
-                    Some(wall) => number(now + wall as f64),
+                    Some(wall) => json::number(now + wall as f64),
                     None => Value::Null,
                 };
                 // TS mutates a root already in the document in place: its start stays even if admission is refused.
@@ -887,7 +873,7 @@ impl UsageLedger {
                     reservation.insert(key.into(), Value::String(value.clone()));
                 }
             }
-            reservation.insert("admittedAt".into(), number(now));
+            reservation.insert("admittedAt".into(), json::number(now));
             reservation.insert("deadlineAt".into(), known(deadline));
             let reservation = Value::Object(reservation);
             if let Some(list) = root["reservations"].as_array_mut() {
@@ -950,28 +936,28 @@ impl UsageLedger {
             let now = (self.now)();
             let deadline = root["deadlineAt"].as_f64();
             let cap = self.token_cap(&root);
-            let limit = |n: Option<u64>| n.map_or(Value::Null, |n| number(n as f64));
+            let limit = |n: Option<u64>| n.map_or(Value::Null, |n| json::number(n as f64));
             Ok(json!({
                 "rootId": root_id,
                 "limits": {
                     "maxAdmittedTasks": limit(self.limits.max_admitted_tasks),
                     "maxWallMs": limit(self.limits.max_wall_ms),
-                    "maxCostUsd": self.limits.max_cost_usd.map_or(Value::Null, number),
+                    "maxCostUsd": self.limits.max_cost_usd.map_or(Value::Null, json::number),
                     "maxTotalTokens": limit(self.limits.max_total_tokens),
                     "maxTotalTurns": limit(self.limits.max_total_turns),
                 },
                 "cost": self.spend(&root, true),
                 "turns": {
-                    "turns": number(root["turns"]["count"].as_f64().unwrap_or(0.0)),
-                    "tokens": number(root["turns"]["tokens"].as_f64().unwrap_or(0.0)),
+                    "turns": json::number(root["turns"]["count"].as_f64().unwrap_or(0.0)),
+                    "tokens": json::number(root["turns"]["tokens"].as_f64().unwrap_or(0.0)),
                     "maxTotalTurns": limit(self.limits.max_total_turns),
-                    "maxTotalTokens": if cap.is_finite() { number(cap) } else { Value::Null },
+                    "maxTotalTokens": if cap.is_finite() { json::number(cap) } else { Value::Null },
                 },
                 "admittedTasks": reservations_of(&root).iter().filter(|r| r["kind"] == "task").count(),
                 "activeReservations": reservations_of(&root).len(),
                 "startedAt": root["startedAt"],
                 "deadlineAt": root["deadlineAt"],
-                "remainingWallMs": deadline.map_or(Value::Null, |d| number((d - now).max(0.0))),
+                "remainingWallMs": deadline.map_or(Value::Null, |d| json::number((d - now).max(0.0))),
                 "usage": totals(calls_of(&root)),
                 "reservations": root["reservations"],
                 "session": self.session_totals(&state.document),
@@ -1005,11 +991,11 @@ impl UsageLedger {
             let ok = |n: Option<f64>| n.filter(|n| n.is_finite() && *n >= 0.0);
             let turns = &root["turns"];
             let next = json!({
-                "count": number(turns["count"].as_f64().unwrap_or(0.0) + 1.0),
-                "tokens": number(turns["tokens"].as_f64().unwrap_or(0.0) + ok(total_tokens).unwrap_or(0.0)),
-                "lastAt": number((self.now)()),
-                "cost": number(turns["cost"].as_f64().unwrap_or(0.0) + ok(cost).unwrap_or(0.0)),
-                "unpriced": number(turns["unpriced"].as_f64().unwrap_or(0.0) + if ok(cost).is_some() { 0.0 } else { 1.0 }),
+                "count": json::number(turns["count"].as_f64().unwrap_or(0.0) + 1.0),
+                "tokens": json::number(turns["tokens"].as_f64().unwrap_or(0.0) + ok(total_tokens).unwrap_or(0.0)),
+                "lastAt": json::number((self.now)()),
+                "cost": json::number(turns["cost"].as_f64().unwrap_or(0.0) + ok(cost).unwrap_or(0.0)),
+                "unpriced": json::number(turns["unpriced"].as_f64().unwrap_or(0.0) + if ok(cost).is_some() { 0.0 } else { 1.0 }),
             });
             root["turns"] = next;
             state.document["roots"][&id] = root;
@@ -1090,10 +1076,10 @@ impl UsageLedger {
         }
         json!({
             "roots": roots.len(),
-            "foldedRoots": history.and_then(|h| h["roots"].as_f64()).map_or(json!(0), number),
+            "foldedRoots": history.and_then(|h| h["roots"].as_f64()).map_or(json!(0), json::number),
             "usage": usage,
-            "spentUsd": number(spent),
-            "unknownPricedCalls": number(unknown),
+            "spentUsd": json::number(spent),
+            "unknownPricedCalls": json::number(unknown),
         })
     }
 
@@ -1117,7 +1103,7 @@ impl UsageLedger {
                 stored.push(json!({
                     "id": format!("ultron-usage-call-{root_id}-{index}"),
                     "reservationId": format!("ultron-usage-{root_id}-{index}"),
-                    "rootId": root_id, "kind": "model", "admittedAt": number(*at), "settledAt": number(*at),
+                    "rootId": root_id, "kind": "model", "admittedAt": json::number(*at), "settledAt": json::number(*at),
                     "status": status.clone().unwrap_or_else(|| "succeeded".into()), "usage": measured,
                 }));
             }
@@ -1231,14 +1217,6 @@ impl UsageLedger {
     }
 }
 
-fn js(n: f64) -> String {
-    match number(n) {
-        Value::Number(number) => number.to_string(),
-        _ if n.is_infinite() => if n > 0.0 { "Infinity" } else { "-Infinity" }.into(),
-        _ => "NaN".into(),
-    }
-}
-
 fn normalize_measurement(measurement: Option<&Measurement>, elapsed: f64) -> Result<Value, String> {
     let wall = measurement.and_then(|m| m.wall_ms).unwrap_or(elapsed);
     if !wall.is_finite() || wall < 0.0 {
@@ -1257,7 +1235,7 @@ fn normalize_measurement(measurement: Option<&Measurement>, elapsed: f64) -> Res
     }
     Ok(json!({
         "inputTokens": known(fields.input_tokens), "outputTokens": known(fields.output_tokens),
-        "totalTokens": known(fields.total_tokens), "cost": known(fields.cost), "wallMs": number(wall),
+        "totalTokens": known(fields.total_tokens), "cost": known(fields.cost), "wallMs": json::number(wall),
     }))
 }
 
@@ -1278,7 +1256,7 @@ fn call_from(reservation: &Value, id: String, now: f64, status: &str, usage: Val
         }
     }
     call.insert("admittedAt".into(), reservation["admittedAt"].clone());
-    call.insert("settledAt".into(), number(now));
+    call.insert("settledAt".into(), json::number(now));
     call.insert("status".into(), Value::String(status.into()));
     call.insert("usage".into(), usage);
     Value::Object(call)
@@ -1301,7 +1279,7 @@ fn last_activity(root: &Value) -> f64 {
 }
 
 fn fold_root(history: &mut Value, root: &Value, spend: &Value) {
-    let add = |value: &Value, n: f64| number(value.as_f64().unwrap_or(0.0) + n);
+    let add = |value: &Value, n: f64| json::number(value.as_f64().unwrap_or(0.0) + n);
     history["roots"] = add(&history["roots"], 1.0);
     if !root["imported"].is_null() {
         history["importedRoots"] = add(&history["importedRoots"], 1.0);
@@ -1312,12 +1290,12 @@ fn fold_root(history: &mut Value, root: &Value, spend: &Value) {
         .or_else(|| calls.iter().filter_map(|c| c["admittedAt"].as_f64()).reduce(f64::min));
     if let Some(started) = started {
         let first = history["firstStartedAt"].as_f64().map_or(started, |f| f.min(started));
-        history["firstStartedAt"] = number(first);
+        history["firstStartedAt"] = json::number(first);
     }
     for call in calls {
         let settled = call["settledAt"].as_f64().unwrap_or(0.0);
         let last = history["lastSettledAt"].as_f64().map_or(settled, |l| l.max(settled));
-        history["lastSettledAt"] = number(last);
+        history["lastSettledAt"] = json::number(last);
     }
     history["usage"] = merge_totals(&history["usage"], &totals(calls));
     for kind in ["task", "model"] {

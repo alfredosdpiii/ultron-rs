@@ -27,12 +27,11 @@ use crate::accounts::{Account, TokenStore, account_key};
 use crate::ban::{Bans, banned_reason, refusal};
 use crate::checkout::{Checkout, CheckoutManager, PullHeads, make_private_dir, random_hex};
 use crate::github::{
-    Clock, Comment, Error, GitHub, PullRef, PullRequest, Review, ReviewCommentInput, ReviewInput, iso_from_ms, pull_key,
+    Clock, Comment, Error, GitHub, PullRef, PullRequest, Review, ReviewCommentInput, ReviewInput, pull_key,
 };
-use crate::js::{Num, cmp16, flatten, is_space, len16, path_join, to_fixed};
+use crate::js::{Num, path_join};
 use crate::ledger::{
-    Fate, FateInput, FateKind, Lesson, ThreadState, fates_of, lessons_for, merge_fates, parse_iso_ms,
-    without_unposted_merges,
+    Fate, FateInput, FateKind, Lesson, ThreadState, fates_of, lessons_for, merge_fates, without_unposted_merges,
 };
 use crate::local::{expand_path, find_checkout, without_guide_mentions};
 use crate::plan::{EngineResult, PlanOptions, PromotionNote, ReviewPlan, Verdict, plan_review, without_inline};
@@ -274,7 +273,7 @@ fn backfill_notes(deps: &ReviewerDeps, r: &PullRef, github: &GitHub, name: &str)
         }
     }
     if read > 0 {
-        let _ = store.set_meta(&marker, &iso_from_ms((deps.now)()));
+        let _ = store.set_meta(&marker, &jsrt::date::iso_string((deps.now)()));
         let _ = store.mark_not_human(&repo, &our_logins(&state));
     }
     (deps.log)(&format!(
@@ -359,7 +358,7 @@ fn learn(
         return Ok(());
     }
     let repo = repo_key(r);
-    let now = iso_from_ms((deps.now)());
+    let now = jsrt::date::iso_string((deps.now)());
     let (lessons, new) = deps.store.update(|state| {
         let before = repo_ledger(state, &repo);
         let known: HashSet<String> = before.iter().map(|fate| format!("{}:{}", fate.pull, fate.id)).collect();
@@ -515,7 +514,10 @@ pub fn latest_mention_except(
         if author.to_lowercase() == me || at.is_empty() || !mentions(body, login) || ignored(author) {
             return;
         }
-        if latest.as_deref().is_none_or(|latest| cmp16(at, latest).is_gt()) {
+        if latest
+            .as_deref()
+            .is_none_or(|latest| jsrt::utf16::cmp(at, latest).is_gt())
+        {
             latest = Some(at.into());
         }
     };
@@ -566,7 +568,7 @@ fn short(sha: &str) -> String {
 /// re-request, a new mention, or (because this account then blocks the merge) its own request for changes.
 pub fn decide(input: &DecisionInput) -> Result<Decision, Error> {
     let pull = input.pull;
-    let later = |a: &str, b: &str| cmp16(a, b).is_gt();
+    let later = |a: &str, b: &str| jsrt::utf16::cmp(a, b).is_gt();
     let new_mention = input
         .mention_at
         .as_deref()
@@ -640,10 +642,10 @@ pub const MAX_ACK_CHARS: usize = 60_000;
 /// (with `autoreview.ackArt`) the art in a fenced block longer than any backtick run in the art; art that would take
 /// the comment past the size limit is left out.
 pub fn ack_body(line: &str, sha: &str, art: &str) -> String {
-    let quote = flatten(line);
+    let quote = jsrt::string::flatten(line);
     let body = format!("> *{quote}*\n> — Ultron\n\nReviewing `{}`.", short(sha));
     let art = art.replace("\r\n", "\n");
-    let banner = art.trim_start_matches('\n').trim_end_matches(is_space);
+    let banner = art.trim_start_matches('\n').trim_end_matches(jsrt::string::is_space);
     if banner.is_empty() {
         return body;
     }
@@ -654,7 +656,11 @@ pub fn ack_body(line: &str, sha: &str, art: &str) -> String {
         .fold(2, usize::max);
     let fence = "`".repeat(longest + 1);
     let full = format!("{body}\n\n{fence}text\n{banner}\n{fence}");
-    if len16(&full) <= MAX_ACK_CHARS { full } else { body }
+    if jsrt::utf16::len(&full) <= MAX_ACK_CHARS {
+        full
+    } else {
+        body
+    }
 }
 
 /// A line from `lines`, at random, other than the one used last on this pull request.
@@ -678,7 +684,7 @@ fn latest_own_review<'a>(reviews: &'a [Review], login: &str) -> Option<&'a Revie
         if review.user.to_lowercase() != me || review.state == "PENDING" || review.submitted_at.is_empty() {
             continue;
         }
-        if latest.is_none_or(|latest| cmp16(&review.submitted_at, &latest.submitted_at).is_gt()) {
+        if latest.is_none_or(|latest| jsrt::utf16::cmp(&review.submitted_at, &latest.submitted_at).is_gt()) {
             latest = Some(review);
         }
     }
@@ -756,7 +762,7 @@ pub fn verdict_name(verdict: Verdict) -> &'static str {
 }
 
 fn seconds(ms: i64) -> String {
-    format!("{} s", to_fixed(ms as f64 / 1000.0, 1))
+    format!("{} s", jsrt::number::to_fixed(ms as f64 / 1000.0, 1))
 }
 
 fn github_of(deps: &ReviewerDeps, account: &Account) -> GitHub {
@@ -812,7 +818,11 @@ pub fn prepare_pull(deps: &ReviewerDeps, candidate: &Candidate, options: ReviewO
     let mut last_at = own.map(|review| review.submitted_at.clone());
     let mut last_requested_changes = own.is_some_and(|review| review.state == "CHANGES_REQUESTED");
     let saved_at = saved.last_reviewed_at.clone().unwrap_or_default();
-    if saved_counts && last_at.as_deref().is_none_or(|at| cmp16(&saved_at, at).is_gt()) {
+    if saved_counts
+        && last_at
+            .as_deref()
+            .is_none_or(|at| jsrt::utf16::cmp(&saved_at, at).is_gt())
+    {
         last_sha = saved.last_reviewed_sha.clone();
         last_at = saved.last_reviewed_at.clone();
         last_requested_changes = saved.last_verdict.as_deref() == Some("request_changes");
@@ -860,7 +870,9 @@ pub fn prepare_pull(deps: &ReviewerDeps, candidate: &Candidate, options: ReviewO
             mention_at = latest_mention_except(&account.login, &pull, &comments, &reviews, &banned);
             if bans.applies_to(account)
                 && let Some(any) = latest_mention(&account.login, &pull, &comments, &reviews)
-                && mention_at.as_deref().is_none_or(|kept| cmp16(&any, kept).is_gt())
+                && mention_at
+                    .as_deref()
+                    .is_none_or(|kept| jsrt::utf16::cmp(&any, kept).is_gt())
             {
                 ignored.push("a mention by a banned login".into());
             }
@@ -896,7 +908,7 @@ pub fn prepare_pull(deps: &ReviewerDeps, candidate: &Candidate, options: ReviewO
                     };
                     let fates = fates_of(&FateInput {
                         pull: pull_key(r),
-                        now: iso_from_ms((deps.now)()),
+                        now: jsrt::date::iso_string((deps.now)()),
                         findings: saved.findings.iter().map(PostedFinding::ledger).collect(),
                         threads: threads.map(thread_states).unwrap_or_default(),
                         merged: pull.merged,
@@ -951,7 +963,7 @@ pub fn prepare_pull(deps: &ReviewerDeps, candidate: &Candidate, options: ReviewO
     // Acknowledge once per head commit, as soon as the review is known to be due.
     let mut ack = None;
     let mut ack_at = if saved.last_ack_sha.as_deref() == Some(head.as_str()) {
-        saved.last_ack_at.as_deref().and_then(parse_iso_ms)
+        saved.last_ack_at.as_deref().and_then(jsrt::date::parse_date)
     } else {
         None
     };
@@ -973,7 +985,7 @@ pub fn prepare_pull(deps: &ReviewerDeps, candidate: &Candidate, options: ReviewO
                 deps.store.update_pull(&key, |state, _| {
                     state.last_ack_sha = Some(head.clone());
                     state.last_ack_line = Some(line.clone());
-                    state.last_ack_at = Some(iso_from_ms(posted));
+                    state.last_ack_at = Some(jsrt::date::iso_string(posted));
                 })?;
                 (deps.log)(&format!(
                     "{name}: acknowledged {} ({}){}",
@@ -1383,7 +1395,10 @@ fn review_in(
 
     let earlier: Vec<PostedFinding> = saved.findings.iter().filter(|f| f.status == "open").cloned().collect();
     let lessons = if deps.config.learn {
-        lessons_for(&repo_ledger(&deps.store.read(), &repo_key(r)), &iso_from_ms(now()))
+        lessons_for(
+            &repo_ledger(&deps.store.read(), &repo_key(r)),
+            &jsrt::date::iso_string(now()),
+        )
     } else {
         Vec::new()
     };
@@ -1596,7 +1611,7 @@ fn review_in(
             review_comments
                 .iter()
                 .filter(|comment| comment.in_reply_to == Some(root) && comment.user.to_lowercase() != me)
-                .map(|comment| json!({ "author": comment.user, "body": crate::js::head16(&comment.body, MAX_REPLY_CHARS) }))
+                .map(|comment| json!({ "author": comment.user, "body": jsrt::utf16::head(&comment.body, MAX_REPLY_CHARS) }))
                 .collect()
         };
         let items: Vec<Value> = earlier
@@ -1685,7 +1700,7 @@ fn review_in(
             withheld.join("; ")
         ));
     }
-    let reviewed_at = iso_from_ms(now());
+    let reviewed_at = jsrt::date::iso_string(now());
     let short_sha = short(&head);
     let raw_findings = match raw.get("findings") {
         Some(Value::Array(items)) => items.clone(),
@@ -1848,7 +1863,7 @@ fn review_in(
                 let threads = github.review_threads(r)?;
                 let fates = fates_of(&FateInput {
                     pull: pull_key(r),
-                    now: iso_from_ms(now()),
+                    now: jsrt::date::iso_string(now()),
                     findings: earlier.iter().map(PostedFinding::ledger).collect(),
                     statuses: statuses.iter().map(|s| (s.id.clone(), s.status.clone())).collect(),
                     threads: thread_states(threads),
@@ -1973,7 +1988,7 @@ fn review_in(
         result.findings.len(),
         plan.comments.len(),
         resolved.len(),
-        crate::js::number(crate::js::round((now() - candidate.picked_at) as f64 / 1000.0)),
+        jsrt::number::to_string(jsrt::number::round((now() - candidate.picked_at) as f64 / 1000.0)),
         ack_to_post_ms.map_or(String::new(), |ms| format!(
             ", {} after the acknowledgement",
             seconds(ms)

@@ -2,7 +2,6 @@
 //! `initTheme` / `setTheme` with the silent fallback to `dark`. The file watcher, `setThemeInstance` and the change
 //! callback are not part of this port.
 
-use std::cmp::Ordering;
 use std::path::PathBuf;
 
 use super::{
@@ -26,24 +25,6 @@ pub struct ThemeRegistry {
     pub mode: ColorMode,
     registered: Vec<Theme>,
     current: Option<Theme>,
-}
-
-/// `String.prototype.localeCompare` for theme names: case-insensitive first, lowercase before uppercase on ties.
-fn locale_compare(a: &str, b: &str) -> Ordering {
-    let swap = |s: &str| -> String {
-        s.chars()
-            .map(|c| {
-                if c.is_lowercase() {
-                    c.to_ascii_uppercase()
-                } else {
-                    c.to_ascii_lowercase()
-                }
-            })
-            .collect()
-    };
-    a.to_lowercase()
-        .cmp(&b.to_lowercase())
-        .then_with(|| swap(a).cmp(&swap(b)))
 }
 
 impl ThemeRegistry {
@@ -109,7 +90,7 @@ impl ThemeRegistry {
                 });
             }
         }
-        result.sort_by(|a, b| locale_compare(&a.name, &b.name));
+        result.sort_by(|a, b| jsrt::collate::locale_compare(&a.name, &b.name));
         result
     }
 

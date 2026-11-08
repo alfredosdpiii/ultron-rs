@@ -54,7 +54,7 @@ impl TurnCheckpoints {
         };
         value["kind"] = json!("turn");
         value["turn"] = json!(turn);
-        value["createdAt"] = json!(session_core::lane::now_ms());
+        value["createdAt"] = json!(jsrt::date::now_ms());
         let _ = stored::put(&mut lock(&self.session), turn, value);
     }
 }

@@ -181,9 +181,3 @@ pub fn pi_user_agent() -> String {
         .unwrap_or_default();
     format!("pi ({platform} {release}; {arch})")
 }
-
-pub(crate) fn now_ms() -> i64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |d| d.as_millis() as i64)
-}

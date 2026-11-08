@@ -228,26 +228,11 @@ fn finish(opcode: u8, payload: Vec<u8>) -> Result<Message, String> {
 
 /// `Sec-WebSocket-Accept` for a `Sec-WebSocket-Key`.
 pub fn accept_key(key: &str) -> String {
-    base64(&sha1(format!("{key}{ACCEPT_GUID}").as_bytes()))
+    jsrt::base64::encode(sha1(format!("{key}{ACCEPT_GUID}").as_bytes()))
 }
 
-/// Standard base64 with padding.
-pub fn base64(bytes: &[u8]) -> String {
-    const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-    let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
-    for chunk in bytes.chunks(3) {
-        let n =
-            (chunk[0] as u32) << 16 | (*chunk.get(1).unwrap_or(&0) as u32) << 8 | *chunk.get(2).unwrap_or(&0) as u32;
-        for i in 0..4 {
-            if i <= chunk.len() {
-                out.push(ALPHABET[(n >> (18 - 6 * i) & 63) as usize] as char);
-            } else {
-                out.push('=');
-            }
-        }
-    }
-    out
-}
+// ponytail: ai/src/websocket.rs still imports `protocol::websocket::base64`; drop once it calls jsrt.
+pub use jsrt::base64::encode as base64;
 
 /// SHA-1 (FIPS 180-4); only for the handshake's accept value.
 pub fn sha1(data: &[u8]) -> [u8; 20] {

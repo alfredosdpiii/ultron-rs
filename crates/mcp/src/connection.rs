@@ -19,10 +19,11 @@ use crate::results::is_mcp_app_resource;
 use crate::runtime::{CONNECT_RETRY_DELAYS_MS, TransportSpec, is_transient_error, transport_spec};
 use crate::stdio::StdioTransport;
 use crate::{CancelToken, Transport};
+use jsrt::sync;
 use serde_json::{Map, Value, json};
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::{Arc, Condvar, Mutex, MutexGuard, Weak};
+use std::sync::{Arc, Condvar, Mutex, Weak};
 use std::time::Duration;
 
 const DEFAULT_TIMEOUT_SECONDS: f64 = 60.0;
@@ -177,10 +178,6 @@ pub struct Connection {
     challenge: Arc<Mutex<Option<Challenge>>>,
 }
 
-fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
-    mutex.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
-}
-
 /// The last `max` characters of `text`, trimmed; `None` when empty.
 fn tail(text: &str, max: usize) -> Option<String> {
     let trimmed = text.trim();
@@ -271,31 +268,31 @@ impl Connection {
     }
 
     pub fn state(&self) -> ServerState {
-        lock(&self.data).state
+        sync::lock(&self.data).state
     }
 
     pub fn error(&self) -> Option<String> {
-        lock(&self.data).error.clone()
+        sync::lock(&self.data).error.clone()
     }
 
     pub fn tools(&self) -> Vec<Value> {
-        lock(&self.data).tools.clone()
+        sync::lock(&self.data).tools.clone()
     }
 
     pub fn instructions(&self) -> Option<String> {
-        lock(&self.data).instructions.clone()
+        sync::lock(&self.data).instructions.clone()
     }
 
     /// Whether the server listed resources or templates at the last connect (`mcp.read` can then be named).
     pub fn has_listed_resources(&self) -> bool {
-        let data = lock(&self.data);
+        let data = sync::lock(&self.data);
         !data.resources.is_empty() || !data.resource_templates.is_empty()
     }
 
     /// `hasResources` with the lists of the last connect or change, without MCP App resources: how many resources
     /// and URI templates a server offering resources listed (`None` without the capability).
     pub fn listed_resource_counts(&self) -> Option<(usize, usize)> {
-        let data = lock(&self.data);
+        let data = sync::lock(&self.data);
         data.has_resources
             .then(|| (data.resources.len(), data.resource_templates.len()))
     }
@@ -343,7 +340,7 @@ impl Connection {
 
     /// The connected client: the live one, the attempt in progress, or a new attempt.
     pub fn get_client(self: &Arc<Self>) -> Result<(u64, Client), String> {
-        let mut data = lock(&self.data);
+        let mut data = sync::lock(&self.data);
         loop {
             if data.closed {
                 return Err(format!("MCP server \"{}\" is shut down", self.entry.name));
@@ -370,7 +367,7 @@ impl Connection {
         data.opening = true;
         drop(data);
         let result = self.open();
-        let mut data = lock(&self.data);
+        let mut data = sync::lock(&self.data);
         data.opening = false;
         data.attempts += 1;
         data.outcome = result.as_ref().map(drop).map_err(Clone::clone);
@@ -379,7 +376,7 @@ impl Connection {
     }
 
     fn open(self: &Arc<Self>) -> Result<(u64, Client), String> {
-        lock(&self.data).state = ServerState::Connecting;
+        sync::lock(&self.data).state = ServerState::Connecting;
         let retries: &[u64] = if self.is_http() { &CONNECT_RETRY_DELAYS_MS } else { &[] };
         let mut attempt = 0;
         loop {
@@ -388,12 +385,12 @@ impl Connection {
                 Err(failure) => {
                     let (error, stderr) = *failure;
                     let delay = retries.get(attempt);
-                    let closed = lock(&self.data).closed;
+                    let closed = sync::lock(&self.data).closed;
                     let Some(delay) = delay.filter(|_| !closed && is_transient_error(&error)) else {
                         return Err(self.connect_failed(&error, stderr));
                     };
                     std::thread::sleep(Duration::from_millis(*delay));
-                    if lock(&self.data).closed {
+                    if sync::lock(&self.data).closed {
                         return Err(self.connect_failed(&error, stderr));
                     }
                 }
@@ -452,7 +449,7 @@ impl Connection {
             stdio = stdio_transport;
             client.connect(transport)?;
             let generation = {
-                let mut data = lock(&self.data);
+                let mut data = sync::lock(&self.data);
                 data.next_generation += 1;
                 data.next_generation
             };
@@ -479,7 +476,7 @@ impl Connection {
             // Servers without the tools capability (prompts or resources only) do not answer tools/list.
             let capabilities = client.server_capabilities().unwrap_or(Value::Null);
             let has_resources = capabilities.get("resources").is_some();
-            let tools = if capabilities.get("tools").is_some_and(truthy) {
+            let tools = if jsrt::value::truthy(capabilities.get("tools")) {
                 client.list_tools(RequestOptions::default())?
             } else {
                 Vec::new()
@@ -489,7 +486,7 @@ impl Connection {
             } else {
                 (Vec::new(), Vec::new())
             };
-            let mut data = lock(&self.data);
+            let mut data = sync::lock(&self.data);
             if data.closed {
                 return Err(Error::Other("shut down while connecting".into()));
             }
@@ -541,7 +538,7 @@ impl Connection {
     }
 
     fn connect_failed(&self, error: &Error, stderr: Option<String>) -> String {
-        let mut data = lock(&self.data);
+        let mut data = sync::lock(&self.data);
         if self.needs_sign_in(error) && !data.closed {
             data.state = ServerState::NeedsAuth;
             data.error = None;
@@ -562,7 +559,7 @@ impl Connection {
 
     /// The transport dropped. The next call reconnects; until then the status shows why.
     fn client_closed(&self, generation: u64, stdio: Option<&StdioTransport>) {
-        let mut data = lock(&self.data);
+        let mut data = sync::lock(&self.data);
         if data.closed || data.client.as_ref().map(|(g, _)| *g) != Some(generation) {
             return;
         }
@@ -576,7 +573,7 @@ impl Connection {
 
     fn drop_client(&self, generation: u64, client: &Client) {
         {
-            let mut data = lock(&self.data);
+            let mut data = sync::lock(&self.data);
             if data.client.as_ref().map(|(g, _)| *g) == Some(generation) {
                 data.client = None;
             }
@@ -607,7 +604,7 @@ impl Connection {
                     if kind == Some("McpSessionExpiredError") && attempt == 1 {
                         // The server no longer knows the session, so it did not run the request. The old client is
                         // detached but not closed: its other in-flight calls get the same 404 and retry the same way.
-                        let mut data = lock(&self.data);
+                        let mut data = sync::lock(&self.data);
                         if data.client.as_ref().map(|(g, _)| *g) == Some(generation) {
                             data.client = None;
                         }
@@ -618,7 +615,7 @@ impl Connection {
                         return Err(error.to_string());
                     }
                     self.drop_client(generation, &client);
-                    let mut data = lock(&self.data);
+                    let mut data = sync::lock(&self.data);
                     data.state = ServerState::NeedsAuth;
                     data.error = None;
                     return Err(self.sign_in_required_message());
@@ -665,7 +662,7 @@ impl Connection {
     /// Connect again with fresh credentials.
     pub fn reconnect(self: &Arc<Self>) -> Result<(), String> {
         self.wait_opening();
-        let current = lock(&self.data).client.clone();
+        let current = sync::lock(&self.data).client.clone();
         if let Some((generation, client)) = current {
             self.drop_client(generation, &client);
         }
@@ -673,7 +670,7 @@ impl Connection {
     }
 
     fn wait_opening(&self) {
-        let mut data = lock(&self.data);
+        let mut data = sync::lock(&self.data);
         while data.opening {
             data = self
                 .settled
@@ -685,11 +682,11 @@ impl Connection {
     /// Disconnect after the stored credentials were removed: the server needs sign-in again.
     pub fn sign_out(&self) {
         self.wait_opening();
-        let current = lock(&self.data).client.clone();
+        let current = sync::lock(&self.data).client.clone();
         if let Some((generation, client)) = current {
             self.drop_client(generation, &client);
         }
-        let mut data = lock(&self.data);
+        let mut data = sync::lock(&self.data);
         if !data.closed {
             data.state = ServerState::NeedsAuth;
             data.error = None;
@@ -698,7 +695,7 @@ impl Connection {
 
     pub fn close(&self) {
         let client = {
-            let mut data = lock(&self.data);
+            let mut data = sync::lock(&self.data);
             data.closed = true;
             data.state = ServerState::Closed;
             data.client.take()
@@ -707,10 +704,6 @@ impl Connection {
             client.close();
         }
     }
-}
-
-fn truthy(value: &Value) -> bool {
-    !matches!(value, Value::Null | Value::Bool(false))
 }
 
 /// Servers that do not implement `resources/templates/list` have no templates.
@@ -736,7 +729,7 @@ fn fetch_resources(client: &Client) -> (Vec<Value>, Vec<Value>) {
 fn refresh_tools(weak: &Weak<Connection>, generation: u64, client: &Client) {
     let result = client.list_tools(RequestOptions::default());
     let Some(connection) = weak.upgrade() else { return };
-    let mut data = lock(&connection.data);
+    let mut data = sync::lock(&connection.data);
     match result {
         Ok(tools) => {
             if data.closed || data.client.as_ref().map(|(g, _)| *g) != Some(generation) {
@@ -751,7 +744,7 @@ fn refresh_tools(weak: &Weak<Connection>, generation: u64, client: &Client) {
 fn refresh_resources(weak: &Weak<Connection>, generation: u64, client: &Client) {
     let (resources, templates) = fetch_resources(client);
     let Some(connection) = weak.upgrade() else { return };
-    let mut data = lock(&connection.data);
+    let mut data = sync::lock(&connection.data);
     if data.closed || data.client.as_ref().map(|(g, _)| *g) != Some(generation) {
         return;
     }

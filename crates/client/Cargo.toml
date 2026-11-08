@@ -9,6 +9,7 @@ autotests = false
 
 [dependencies]
 chord-delta = { path = "../chord-delta" }
+jsrt = { path = "../jsrt" }
 protocol = { path = "../protocol" }
 server = { path = "../server" }
 serde_json = { version = "=1.0.151", features = ["float_roundtrip", "preserve_order"] }

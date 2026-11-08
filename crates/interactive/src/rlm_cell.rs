@@ -6,10 +6,11 @@
 
 use std::rc::Rc;
 
+use jsrt::string;
 use serde_json::Value;
 use tui::components::{Component, Container, Text};
 use tui::theme::Theme;
-use tui::utils::{js_trim_end, truncate_to_width, visible_width, wrap_text_with_ansi};
+use tui::utils::{truncate_to_width, visible_width, wrap_text_with_ansi};
 
 use crate::components::{
     FileChange, ToolRenderState, ToolRenderers, ToolResultView, bold, fg, key_hint, render_diff, tool_text_output_with,
@@ -78,13 +79,13 @@ fn render_call(
         0,
         None,
     ))];
-    let Some(code) = code.filter(|c| !c.trim_matches(tui::utils::is_whitespace_char).is_empty()) else {
+    let Some(code) = code.filter(|c| !c.trim_matches(string::is_space).is_empty()) else {
         if !state.args_complete {
             children.push(Box::new(Text::new(&fg(theme, "toolOutput", "..."), 0, 0, None)));
         }
         return Box::new(Container { children });
     };
-    let lines = highlight(&js_trim_end(code).replace('\t', "    "));
+    let lines = highlight(&code.trim_end_matches(string::is_space).replace('\t', "    "));
     let shown = if state.expanded {
         lines.len()
     } else {
@@ -179,7 +180,9 @@ fn render_result(
     state: &ToolRenderState,
     expand_key: &str,
 ) -> Box<dyn Component> {
-    let output = js_trim_end(&tool_text_output_with(Some(result), state.inline_images)).to_string();
+    let output = tool_text_output_with(Some(result), state.inline_images)
+        .trim_end_matches(string::is_space)
+        .to_string();
     let mut children: Vec<Box<dyn Component>> = Vec::new();
     let changes = state
         .expanded

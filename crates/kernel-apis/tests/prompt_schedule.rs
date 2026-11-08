@@ -138,7 +138,7 @@ fn kernel_apis_prompt_schedule_every_records_a_session_value_and_reports_it() {
                "runs": 0, "lastFired": null, "state": "active"})
     );
     assert_eq!(created["every"], "1h");
-    assert_eq!(created["next"], kernel_apis::util::iso(T0 + HOUR));
+    assert_eq!(created["next"], jsrt::date::iso_string(T0 + HOUR));
     assert_eq!(
         *f.reports.lock().unwrap(),
         vec![vec![json!({"id": id, "name": "build", "nextDue": T0 + HOUR})]]

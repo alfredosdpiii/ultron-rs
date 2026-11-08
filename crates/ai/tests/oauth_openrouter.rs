@@ -234,8 +234,8 @@ fn ai_oauth_openrouter_replays_recorded_typescript_flows() {
         assert_eq!(masked(&json!(requests)), masked(&case["requests"]), "{name}: requests");
         assert_eq!(json!(pages), case["callbackResponses"], "{name}: callback pages");
         assert_eq!(
-            ai::json::normalize_numbers(result),
-            ai::json::normalize_numbers(case["result"].clone()),
+            jsrt::json::normalize_numbers(result),
+            jsrt::json::normalize_numbers(case["result"].clone()),
             "{name}: result"
         );
         assert_eq!(error, case["error"], "{name}: error");

@@ -8,7 +8,6 @@
 
 use crate::backend::{HindsightBackend, HindsightOptions};
 use kernel_apis::MemoryError;
-use kernel_apis::util::{js_trim, sha256_hex};
 use serde_json::{Map, Value, json};
 use std::path::Path;
 
@@ -22,7 +21,7 @@ fn off(value: &str) -> bool {
 }
 
 fn trimmed(value: Option<&str>) -> Option<&str> {
-    value.map(js_trim).filter(|v| !v.is_empty())
+    value.map(jsrt::string::trim).filter(|v| !v.is_empty())
 }
 
 /// `hindsightUrl(configured, setting)` of session-worker.ts, also `hindsightUrlFrom(env, setting, DEFAULT)` of
@@ -53,7 +52,7 @@ pub fn setting_url(manager: &config::settings::SettingsManager) -> Option<String
         .global_settings()
         .get("hindsightUrl")
         .and_then(Value::as_str)
-        .map(js_trim)
+        .map(jsrt::string::trim)
         .filter(|v| !v.is_empty())
         .map(String::from)
 }
@@ -65,7 +64,7 @@ pub fn bank(env: Option<&str>) -> String {
 
 /// A stable, non-reversible id for a directory (`projectIdentity` of worker-services.ts).
 pub fn directory_identity(path: &str) -> String {
-    sha256_hex(path.as_bytes())[..16].to_string()
+    jsrt::hash::sha256_hex(path.as_bytes())[..16].to_string()
 }
 
 /// A session's scope tags: its own id, its project directory's identity and the home directory's identity.

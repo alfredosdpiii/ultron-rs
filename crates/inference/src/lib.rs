@@ -20,6 +20,9 @@ pub use session::{FrameExecution, FrameGate, FrameMeter, FrameSession, FrameTask
 pub use trace::{MemoryTraceStore, TRACE_NAMESPACE, TraceStore};
 
 use ai::{AssistantMessage, Message, Model, SimpleStreamOptions, Transport};
+use jsrt::payload::fields;
+use jsrt::sync::lock;
+use jsrt::utf16;
 use kernel::{HostHandler, Signal};
 use serde_json::{Map, Value, json};
 use std::path::{Path, PathBuf};
@@ -37,36 +40,16 @@ const MAX_REPAIRS: u64 = 8;
 const DEFAULT_REPAIRS: u64 = 2;
 const DEFAULT_SCALAR_REPAIRS: u64 = 1;
 const MAX_DEPTH: u64 = 4;
-const MAX_SAFE_INTEGER: u64 = 9_007_199_254_740_991;
 const DEFAULT_TIMEOUT_MS: u64 = 10 * 60 * 1000;
 const MAX_TIMEOUT_MS: u64 = 60 * 60 * 1000;
 const THINKING_LEVELS: [&str; 7] = ["off", "minimal", "low", "medium", "high", "xhigh", "max"];
 
-/// JS `string.length`.
-fn js_len(text: &str) -> usize {
-    text.encode_utf16().count()
-}
-
 /// `bounded(text, limit)`: at most `limit` UTF-16 units, the last one an ellipsis.
 fn bounded(text: &str, limit: usize) -> String {
-    if js_len(text) <= limit {
+    if utf16::len(text) <= limit {
         return text.to_string();
     }
-    let head: Vec<u16> = text.encode_utf16().take(limit - 1).collect();
-    format!("{}…", String::from_utf16_lossy(&head))
-}
-
-/// Integral floats become integers, as a JS round trip (`JSON.parse` then `JSON.stringify`) leaves them.
-fn js_normalize(value: Value) -> Value {
-    match value {
-        Value::Number(n) if !n.is_i64() && !n.is_u64() => match n.as_f64() {
-            Some(f) if f.fract() == 0.0 && f.abs() <= MAX_SAFE_INTEGER as f64 => json!(f as i64),
-            _ => Value::Number(n),
-        },
-        Value::Array(items) => Value::Array(items.into_iter().map(js_normalize).collect()),
-        Value::Object(map) => Value::Object(map.into_iter().map(|(k, v)| (k, js_normalize(v))).collect()),
-        other => other,
-    }
+    format!("{}…", utf16::head_lossy(text, limit - 1))
 }
 
 #[derive(Clone, Copy)]
@@ -187,13 +170,6 @@ fn charged_tokens(usage: &ai::Usage) -> u64 {
     usage.input + usage.output + usage.cache_write + usage.cache_read.div_ceil(10)
 }
 
-fn fields(payload: &Map<String, Value>, allowed: &[&str]) -> Result<(), String> {
-    match payload.keys().find(|key| !allowed.contains(&key.as_str())) {
-        Some(key) => Err(format!("Unknown payload field: {key}")),
-        None => Ok(()),
-    }
-}
-
 fn optional_integer(item: Option<&Value>, name: &str, minimum: u64, maximum: u64) -> Result<Option<u64>, String> {
     match item {
         None | Some(Value::Null) => Ok(None),
@@ -201,7 +177,7 @@ fn optional_integer(item: Option<&Value>, name: &str, minimum: u64, maximum: u64
             let integer = value.as_u64().or_else(|| {
                 value
                     .as_f64()
-                    .filter(|f| f.fract() == 0.0 && *f >= 0.0 && *f <= MAX_SAFE_INTEGER as f64)
+                    .filter(|f| *f >= 0.0 && jsrt::number::is_safe_integer(*f))
                     .map(|f| f as u64)
             });
             integer
@@ -329,11 +305,6 @@ fn is_plain_type(contract: &Value, types: &[&str]) -> bool {
     })
 }
 
-/// JS `String.prototype.trim` whitespace.
-fn js_trim(text: &str) -> &str {
-    text.trim_matches(|c: char| c.is_whitespace() || c == '\u{feff}')
-}
-
 /// `text.replace(/^```(?:json)?\s*\n([\s\S]*?)\n?```$/, "$1")`.
 fn strip_fence(text: &str) -> &str {
     let Some(inner) = text.strip_prefix("```").and_then(|rest| rest.strip_suffix("```")) else {
@@ -343,10 +314,7 @@ fn strip_fence(text: &str) -> &str {
         return text;
     }
     let body = |rest: &'_ str| -> Option<usize> {
-        let run = rest.len()
-            - rest
-                .trim_start_matches(|c: char| c.is_whitespace() || c == '\u{feff}')
-                .len();
+        let run = rest.len() - rest.trim_start_matches(jsrt::string::is_space).len();
         rest[..run].rfind('\n').map(|at| at + 1)
     };
     let start = match inner.strip_prefix("json").and_then(|rest| body(rest).map(|at| 4 + at)) {
@@ -380,7 +348,7 @@ pub fn contract_errors(contract: &Value, value: &Value) -> Vec<String> {
 
 /// `parseReply`: the contract-valid value, or the reason to re-ask.
 fn parse_reply(text: &str, contract: &Value) -> Result<Value, String> {
-    let cleaned = js_trim(strip_fence(js_trim(text)));
+    let cleaned = jsrt::string::trim(strip_fence(jsrt::string::trim(text)));
     let parsed = serde_json::from_str::<Value>(cleaned).ok().or_else(|| {
         let start = cleaned.find(['[', '{'])?;
         let end = cleaned.rfind(['}', ']'])?;
@@ -388,7 +356,7 @@ fn parse_reply(text: &str, contract: &Value) -> Result<Value, String> {
             .then(|| serde_json::from_str::<Value>(&cleaned[start..=end]).ok())
             .flatten()
     });
-    let parsed = parsed.map(js_normalize);
+    let parsed = parsed.map(jsrt::json::normalize_numbers);
     if is_plain_type(contract, &["string"]) && !parsed.as_ref().is_some_and(Value::is_string) {
         return Ok(Value::String(cleaned.to_string()));
     }
@@ -621,12 +589,13 @@ impl Inference {
             let label = self.session.label(digest);
             return Ok(json!({"path": shown, "stored": true, "label": label, "size": meta.len()}));
         }
-        let size = optional_integer(payload.get("size"), "size", 0, MAX_SAFE_INTEGER)?.unwrap_or(0);
-        optional_integer(payload.get("chars"), "chars", 0, MAX_SAFE_INTEGER)?;
+        let size =
+            optional_integer(payload.get("size"), "size", 0, jsrt::number::MAX_SAFE_INTEGER as u64)?.unwrap_or(0);
+        optional_integer(payload.get("chars"), "chars", 0, jsrt::number::MAX_SAFE_INTEGER as u64)?;
         let label = payload
             .get("label")
             .and_then(Value::as_str)
-            .filter(|label| !js_trim(label).is_empty())
+            .filter(|label| !jsrt::string::trim(label).is_empty())
             .map_or_else(|| "context".to_string(), |label| bounded(label, 200));
         create_private_dir(&self.context_dir)?;
         let stored = std::fs::metadata(&path).is_ok_and(|meta| meta.len() == size);
@@ -725,7 +694,7 @@ impl Inference {
             .get("contract")
             .filter(|c| !c.is_null())
             .cloned()
-            .map(js_normalize);
+            .map(jsrt::json::normalize_numbers);
         if let Some(contract) = &contract {
             jsonschema::validate_json_schema(contract, "$.contract")?;
             if let Some(at) = jsonschema::unchecked_keyword(contract, "$.contract") {
@@ -739,8 +708,18 @@ impl Inference {
             Some(_) => return Err("budget must be an object".into()),
         };
         fields(budget, &["calls", "tokens", "depth"])?;
-        let calls = optional_integer(budget.get("calls"), "budget.calls", 0, MAX_SAFE_INTEGER)?;
-        let tokens = optional_integer(budget.get("tokens"), "budget.tokens", 0, MAX_SAFE_INTEGER)?;
+        let calls = optional_integer(
+            budget.get("calls"),
+            "budget.calls",
+            0,
+            jsrt::number::MAX_SAFE_INTEGER as u64,
+        )?;
+        let tokens = optional_integer(
+            budget.get("tokens"),
+            "budget.tokens",
+            0,
+            jsrt::number::MAX_SAFE_INTEGER as u64,
+        )?;
         let requested_depth = optional_integer(budget.get("depth"), "budget.depth", 1, MAX_DEPTH)?;
         let model = match payload.get("model") {
             None | Some(Value::Null) => None,
@@ -784,9 +763,9 @@ impl Inference {
         let task = payload
             .get("task")
             .and_then(Value::as_str)
-            .filter(|task| !js_trim(task).is_empty())
+            .filter(|task| !jsrt::string::trim(task).is_empty())
             .ok_or("task must be a nonempty string")?;
-        if js_len(task) > MAX_TASK_CHARS {
+        if utf16::len(task) > MAX_TASK_CHARS {
             return Err(format!(
                 "task exceeds {MAX_TASK_CHARS} characters; pass data as context"
             ));
@@ -843,10 +822,6 @@ fn create_private_dir(dir: &Path) -> Result<(), String> {
         .mode(0o700)
         .create(dir)
         .map_err(|error| error.to_string())
-}
-
-fn lock<T>(mutex: &std::sync::Mutex<T>) -> std::sync::MutexGuard<'_, T> {
-    mutex.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
 impl HostHandler for Inference {

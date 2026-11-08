@@ -8,6 +8,7 @@ publish.workspace = true
 autotests = false
 
 [dependencies]
+jsrt = { path = "../jsrt" }
 rlm-views = { path = "../rlm-views" }
 tui = { path = "../tui" }
 model-scope = { path = "../model-scope" }

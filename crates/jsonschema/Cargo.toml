@@ -8,12 +8,11 @@ publish.workspace = true
 autotests = false
 
 [dependencies]
-config = { path = "../config" }
+jsrt = { path = "../jsrt" }
 fancy-regex = "=0.19.2"
 icu_normalizer = "=2.3.0"
 regex = "=1.13.1"
 serde_json = { version = "=1.0.151", features = ["preserve_order"] }
-session-file = { path = "../session-file" }
 url = "=2.5.8"
 
 [lints]

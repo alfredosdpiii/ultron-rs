@@ -5,17 +5,13 @@
 //! the oldest tool-result images of a request out of it as a note.
 
 use ai::Model;
-use base64::Engine;
 use host::view_image::{CellImages, ImageModel, ResizeLimits, VIEW_IMAGE_REQUEST, ViewImageOptions};
+use jsrt::sync;
 use kernel::{HostHandler, Signal};
 use serde_json::{Map, Value};
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex, PoisonError};
-
-fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
-    mutex.lock().unwrap_or_else(PoisonError::into_inner)
-}
+use std::sync::{Arc, Mutex};
 
 /// The model a lane's images go to, as the host's normalizer reads it (`input`, `inputLimits.images.resize`).
 pub fn image_model(model: &Model) -> ImageModel {
@@ -68,9 +64,9 @@ impl ViewImages {
     pub fn set_model(&self, lane: Option<&str>, model: Model) {
         match lane {
             Some(lane) => {
-                lock(&self.models).insert(lane.to_string(), model);
+                sync::lock(&self.models).insert(lane.to_string(), model);
             }
-            None => *lock(&self.default_model) = model,
+            None => *sync::lock(&self.default_model) = model,
         }
     }
 
@@ -81,10 +77,10 @@ impl ViewImages {
     }
 
     fn options(&self, lane: &str) -> ViewImageOptions {
-        let model = lock(&self.models)
+        let model = sync::lock(&self.models)
             .get(lane)
             .cloned()
-            .unwrap_or_else(|| lock(&self.default_model).clone());
+            .unwrap_or_else(|| sync::lock(&self.default_model).clone());
         ViewImageOptions {
             auto_resize: self.auto_resize(),
             model: Some(image_model(&model)),
@@ -94,13 +90,13 @@ impl ViewImages {
     /// A cell starts on `lane`: its images start empty.
     pub fn begin(&self, lane: &str) {
         let options = self.options(lane);
-        lock(&self.cells).insert(lane.to_string(), CellImages::new(options));
-        lock(&self.display).remove(lane);
+        sync::lock(&self.cells).insert(lane.to_string(), CellImages::new(options));
+        sync::lock(&self.display).remove(lane);
     }
 
     /// A PNG `lane`'s running cell shows the user only; `line` is what the model reads instead.
     pub fn display(&self, lane: &str, png: Vec<u8>, line: String) {
-        lock(&self.display)
+        sync::lock(&self.display)
             .entry(lane.to_string())
             .or_default()
             .push(DisplayImage { png, line });
@@ -108,22 +104,22 @@ impl ViewImages {
 
     /// The display-only images of `lane`'s cell (its cell ended).
     pub fn take_display(&self, lane: &str) -> Vec<DisplayImage> {
-        lock(&self.display).remove(lane).unwrap_or_default()
+        sync::lock(&self.display).remove(lane).unwrap_or_default()
     }
 
     /// One `rlm.view_image` request of `lane`'s running cell.
     pub fn attach(&self, lane: &str, payload: &Map<String, Value>) -> Result<Value, String> {
-        if !lock(&self.cells).contains_key(lane) {
+        if !sync::lock(&self.cells).contains_key(lane) {
             self.begin(lane);
         }
-        let mut cells = lock(&self.cells);
+        let mut cells = sync::lock(&self.cells);
         let images = cells.get_mut(lane).expect("begun");
         images.attach(payload)
     }
 
     /// The images `lane`'s cell attached (its cell ended).
     pub fn take(&self, lane: &str) -> Option<CellImages> {
-        lock(&self.cells).remove(lane)
+        sync::lock(&self.cells).remove(lane)
     }
 }
 
@@ -152,7 +148,7 @@ pub fn with_display_details(mut details: Value, shown: &[DisplayImage]) -> Value
         .map(|image| {
             serde_json::json!({
                 "type": "image",
-                "data": base64::engine::general_purpose::STANDARD.encode(&image.png),
+                "data": jsrt::base64::encode(&image.png),
                 "mimeType": "image/png",
             })
         })
@@ -176,7 +172,7 @@ pub fn cell_content(images: Option<&CellImages>, text: String) -> Vec<ai::UserCo
     let mut content = vec![crate::lane::text_block(images.text(&text))];
     content.extend(images.images.iter().map(|image| {
         ai::UserContent::Image(ai::ImageContent {
-            data: base64::engine::general_purpose::STANDARD.encode(&image.data),
+            data: jsrt::base64::encode(&image.data),
             mime_type: image.mime_type.to_string(),
         })
     }));
@@ -207,57 +203,16 @@ pub const OFFLOADED_IMAGE_TEXT: &str =
 
 /// `contextImageBudget`: `ULTRON_CONTEXT_IMAGES`, default 8; 0 disables the budget.
 pub fn context_image_budget(value: Option<&str>) -> usize {
-    let raw = value.map(js_trim).unwrap_or_default();
+    let raw = value.map(jsrt::string::trim).unwrap_or_default();
     if raw.is_empty() {
         return DEFAULT_CONTEXT_IMAGES;
     }
     // `Number(raw)`: a whole number, possibly written with a fraction of zero, an exponent, or as a hex, octal or
     // binary literal.
-    match js_number(raw) {
-        Some(n) if n.is_finite() && n >= 0.0 && n.fract() == 0.0 => n as usize,
+    match jsrt::number::parse(raw) {
+        n if n.is_finite() && n >= 0.0 && n.fract() == 0.0 => n as usize,
         _ => DEFAULT_CONTEXT_IMAGES,
     }
-}
-
-/// JavaScript's `String.prototype.trim`: white space, line terminators and the byte order mark.
-fn js_trim(text: &str) -> &str {
-    text.trim_matches(|c: char| c.is_whitespace() || c == '\u{feff}')
-}
-
-/// JavaScript's `Number(text)` for trimmed, non-empty `text` (`None`: `NaN`): a decimal literal (sign, fraction,
-/// exponent, `Infinity`), or an unsigned `0x`, `0o` or `0b` literal.
-fn js_number(text: &str) -> Option<f64> {
-    let radix = match text.get(..2) {
-        Some("0x" | "0X") => 16,
-        Some("0o" | "0O") => 8,
-        Some("0b" | "0B") => 2,
-        _ => 0,
-    };
-    if radix != 0 {
-        let digits = &text[2..];
-        if digits.is_empty() {
-            return None;
-        }
-        return digits.chars().try_fold(0f64, |value, c| {
-            c.to_digit(radix).map(|d| value * f64::from(radix) + f64::from(d))
-        });
-    }
-    let unsigned = text.strip_prefix(['+', '-']).unwrap_or(text);
-    if unsigned == "Infinity" {
-        return Some(if text.starts_with('-') {
-            f64::NEG_INFINITY
-        } else {
-            f64::INFINITY
-        });
-    }
-    // Rust also reads `inf` and `nan` spellings, which JavaScript does not: only digits, a point and an exponent.
-    if !unsigned
-        .chars()
-        .all(|c| c.is_ascii_digit() || matches!(c, '.' | 'e' | 'E' | '+' | '-'))
-    {
-        return None;
-    }
-    text.parse::<f64>().ok()
 }
 
 /// `imagesToDrop`: how many of `total` images (oldest first) to drop under budget `max`.

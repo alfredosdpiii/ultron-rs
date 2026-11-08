@@ -15,6 +15,7 @@ chord-delta = { path = "../chord-delta" }
 client = { path = "../client" }
 config = { path = "../config" }
 durable = { path = "../durable" }
+jsrt = { path = "../jsrt" }
 getrandom = "=0.4.3"
 harness = { path = "../harness" }
 kernel-apis = { path = "../kernel-apis" }

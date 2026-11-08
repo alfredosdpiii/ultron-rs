@@ -591,11 +591,6 @@ fn typescript_function_metrics(root: &Path, texts: &[(String, String)], deadline
     Some(metrics)
 }
 
-fn sha256_hex(bytes: &[u8]) -> String {
-    use sha2::{Digest, Sha256};
-    Sha256::digest(bytes).iter().map(|b| format!("{b:02x}")).collect()
-}
-
 fn home() -> PathBuf {
     PathBuf::from(std::env::var("HOME").unwrap_or_else(|_| "/".into()))
 }
@@ -604,7 +599,7 @@ fn go_function_metrics(texts: &[(String, String)], deadline: Deadline) -> Option
     if texts.is_empty() || proc::which("go").is_none() {
         return None;
     }
-    let digest = sha256_hex(SLOP_GO.as_bytes());
+    let digest = jsrt::hash::sha256_hex(SLOP_GO.as_bytes());
     let tool = home()
         .join(".cache/loki/tools")
         .join(format!("gometrics-{}", &digest[..16]));

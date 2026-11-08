@@ -147,6 +147,17 @@ fn harness_task_store_replays_typescript_scenarios() {
     }
 }
 
+/// `JSON.stringify({ n: 12345678901234567890 })` is `{"n":12345678901234567000}` in node: an integer beyond 2^53
+/// prints as the double it parses to, so the fingerprint hashes that text, not the integer's digits.
+#[test]
+fn harness_task_fingerprint_rounds_large_integers_like_json_stringify() {
+    let big: Value = serde_json::from_str(r#"{"n":12345678901234567890}"#).unwrap();
+    assert_eq!(
+        task_fingerprint(&big),
+        jsrt::hash::sha256_hex(r#"{"n":12345678901234567000}"#)
+    );
+}
+
 #[test]
 fn harness_task_store_fingerprints_match_typescript() {
     for case in fixture()["fingerprints"].as_array().unwrap() {

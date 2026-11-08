@@ -131,7 +131,7 @@ impl Worker {
                 .jobs(self.host.clone())
                 .clock(self.clock.clone())
                 .on_tick(Arc::new(move |report: &Result<Value, String>| {
-                    let _ = kernel_apis::util::lock(&reports).send(report.clone());
+                    let _ = jsrt::sync::lock(&reports).send(report.clone());
                 })),
         )
         .unwrap();

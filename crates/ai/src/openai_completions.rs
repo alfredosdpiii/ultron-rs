@@ -10,11 +10,11 @@ use crate::http::{
     Failure, HeaderBuilder, HttpRequest, Read, Sdk, Transport, format_provider_error, has_header, is_aborted, join_url,
     read_chunk, send_with_retry,
 };
-use crate::json::{js_len, js_prefix, parse_json, parse_streaming_json, short_hash, stringify};
+use crate::json::{parse_json, parse_streaming_json, short_hash};
 use crate::models::{calculate_cost, clamp_thinking_level};
 use crate::options::{
     SimpleStreamOptions, StreamOptions, ThinkingBudgets, build_base_options, clamp_thinking_budget_to_answer_room,
-    now_ms, pi_user_agent, thinking_budget_for_level,
+    pi_user_agent, thinking_budget_for_level,
 };
 use crate::sse::{ServerSentEvent, SseDecoder};
 use crate::transcript::{
@@ -245,23 +245,13 @@ fn parse_legacy_encrypted_detail(signature: Option<&str>) -> Option<Value> {
     ok.then_some(parsed)
 }
 
-fn js_falsy(value: Option<&Value>) -> bool {
-    match value {
-        None | Some(Value::Null) => true,
-        Some(Value::String(s)) => s.is_empty(),
-        Some(Value::Number(n)) => n.as_f64() == Some(0.0),
-        Some(Value::Bool(b)) => !b,
-        _ => false,
-    }
-}
-
 fn fill_common_fields(target: &mut Map<String, Value>, source: &Map<String, Value>) {
     if target.get("id").is_none_or(Value::is_null)
         && let Some(id) = source.get("id")
     {
         target.insert("id".into(), id.clone());
     }
-    if js_falsy(target.get("format"))
+    if !jsrt::value::truthy(target.get("format"))
         && let Some(format) = source.get("format")
     {
         target.insert("format".into(), format.clone());
@@ -288,7 +278,7 @@ fn append_reasoning_detail(details: &mut Vec<Value>, detail: &Value) {
         );
         last.insert(field.into(), json!(joined));
         if kind == "reasoning.text"
-            && js_falsy(last.get("signature"))
+            && !jsrt::value::truthy(last.get("signature"))
             && let Some(signature) = source.get("signature")
         {
             last.insert("signature".into(), signature.clone());
@@ -321,15 +311,15 @@ fn normalize_tool_call_id(model: &Model, id: &str) -> String {
         } else {
             format!("{call_id}_{item_id}")
         };
-        if js_len(&combined) <= 40 {
+        if jsrt::utf16::len(&combined) <= 40 {
             return combined;
         }
         let hash: String = short_hash(id).chars().take(8).collect();
-        let prefix = js_prefix(&call_id, 1.max(40 - js_len(&hash) - 1));
+        let prefix = jsrt::utf16::head(&call_id, 1.max(40 - jsrt::utf16::len(&hash) - 1));
         return format!("{prefix}_{hash}");
     }
-    if model.provider == "openai" && js_len(id) > 40 {
-        return js_prefix(id, 40).to_string();
+    if model.provider == "openai" && jsrt::utf16::len(id) > 40 {
+        return jsrt::utf16::head(id, 40).to_string();
     }
     id.to_string()
 }
@@ -521,7 +511,7 @@ fn convert_messages(
                                 "name": call.name,
                                 "input": grammar_tool_input(&call.name, &call.arguments, property)?,
                             }}),
-                            None => json!({"id": call.id, "type": "function", "function": {"name": call.name, "arguments": stringify(&call.arguments)}}),
+                            None => json!({"id": call.id, "type": "function", "function": {"name": call.name, "arguments": jsrt::json::stringify(&call.arguments)}}),
                         });
                     }
                     out.insert("tool_calls".into(), Value::Array(tool_calls));
@@ -756,7 +746,7 @@ fn build_params(
             params.insert("tool_stream".into(), json!(true));
         }
     }
-    if let Some(choice) = options.tool_choice.as_ref().filter(|c| !js_falsy(Some(c))) {
+    if let Some(choice) = options.tool_choice.as_ref().filter(|c| jsrt::value::truthy(Some(c))) {
         params.insert("tool_choice".into(), choice.clone());
     }
     if let Some(priority) = &compat.vllm_priority {
@@ -1005,7 +995,7 @@ impl Run<'_, '_> {
         if let (Some(details), AssistantContent::Thinking(block)) =
             (&self.reasoning_details, &mut self.output.content[position])
         {
-            block.thinking_signature = Some(stringify(&Value::Array(details.clone())));
+            block.thinking_signature = Some(jsrt::json::stringify(&Value::Array(details.clone())));
         }
     }
 
@@ -1047,7 +1037,7 @@ impl Run<'_, '_> {
     }
 
     fn ensure_tool_call(&mut self, delta: &Value, grammar: &IndexMap<String, String>) -> usize {
-        let present = |key: &str| delta.get(key).filter(|v| !js_falsy(Some(v)));
+        let present = |key: &str| delta.get(key).filter(|v| jsrt::value::truthy(Some(v)));
         let stream_index = delta.get("index").and_then(Value::as_i64);
         let function = present("function");
         let custom = present("custom");
@@ -1139,14 +1129,14 @@ impl Run<'_, '_> {
         {
             self.output.response_model = Some(response_model.to_string());
         }
-        let chunk_usage_present = chunk.get("usage").is_some_and(|u| !js_falsy(Some(u)));
+        let chunk_usage_present = chunk.get("usage").is_some_and(|u| jsrt::value::truthy(Some(u)));
         if chunk_usage_present {
             self.output.usage = chunk_usage(&chunk["usage"], model);
         }
         let Some(choice) = chunk.get("choices").and_then(Value::as_array).and_then(|c| c.first()) else {
             return Ok(());
         };
-        if !chunk_usage_present && let Some(usage) = choice.get("usage").filter(|u| !js_falsy(Some(u))) {
+        if !chunk_usage_present && let Some(usage) = choice.get("usage").filter(|u| jsrt::value::truthy(Some(u))) {
             self.output.usage = chunk_usage(usage, model);
         }
         if let Some(reason) = choice
@@ -1162,7 +1152,7 @@ impl Run<'_, '_> {
             }
             self.has_finish_reason = true;
         }
-        let Some(delta) = choice.get("delta").filter(|d| !js_falsy(Some(d))) else {
+        let Some(delta) = choice.get("delta").filter(|d| jsrt::value::truthy(Some(d))) else {
             return Ok(());
         };
         if let Some(content) = delta.get("content").and_then(Value::as_str).filter(|c| !c.is_empty()) {
@@ -1322,7 +1312,7 @@ pub async fn stream(
 ) -> AssistantMessage {
     let compat = Compat::of(model);
     let context = resolve_transcript(context, compat.supports_mid_convo_system_messages);
-    let now = now_ms();
+    let now = jsrt::date::now_ms();
     let mut run = Run {
         output: AssistantMessage::pending(model, now),
         sink,
@@ -1427,7 +1417,7 @@ pub(crate) async fn read_openai_stream(
                 continue;
             }
             let data = parse_json(&sse.data).map_err(|e| Failure::plain(e.to_string()))?;
-            if let Some(error) = data.get("error").filter(|e| !js_falsy(Some(e))) {
+            if let Some(error) = data.get("error").filter(|e| jsrt::value::truthy(Some(e))) {
                 return Err(Failure::api(
                     Sdk::OpenAi,
                     None,

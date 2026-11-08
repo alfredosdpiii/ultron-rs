@@ -4,7 +4,6 @@
 //! processing hints. Paths resolve like the read tool's (`resolveReadPath`: `~`, a stray `@`, unicode spaces, the
 //! macOS screenshot variants).
 
-use base64::Engine;
 use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
 
@@ -92,9 +91,12 @@ fn dimensions(bytes: &[u8], mime: &str) -> Option<(u32, u32)> {
         .ok()
 }
 
-/// JS `x.toFixed(2)` for a positive ratio (ties away from zero).
-fn to_fixed_2(x: f64) -> String {
-    format!("{:.2}", (x * 100.0).round() / 100.0)
+/// The hint for an image shown at `w`x`h` instead of its original `ow`x`oh`; the ratio is `(ow / w).toFixed(2)`.
+fn resize_hint(ow: u32, oh: u32, w: u32, h: u32) -> String {
+    format!(
+        "[Image: original {ow}x{oh}, displayed at {w}x{h}. Multiply coordinates by {} to map to original image.]",
+        jsrt::number::to_fixed(f64::from(ow) / f64::from(w), 2)
+    )
 }
 
 /// `processImage(bytes, mime, {autoResizeImages: true})`: the attachment and its hints, or the omission message.
@@ -122,12 +124,9 @@ fn process_image(path: &Path, bytes: &[u8], mime: &str) -> Result<(Value, Vec<St
     if let (Some((ow, oh)), Some((w, h))) = (original, shown)
         && (!normalized_unchanged || (ow, oh) != (w, h))
     {
-        hints.push(format!(
-            "[Image: original {ow}x{oh}, displayed at {w}x{h}. Multiply coordinates by {} to map to original image.]",
-            to_fixed_2(f64::from(ow) / f64::from(w))
-        ));
+        hints.push(resize_hint(ow, oh, w, h));
     }
-    let data = base64::engine::general_purpose::STANDARD.encode(&processed.data);
+    let data = jsrt::base64::encode(&processed.data);
     Ok((
         json!({"type": "image", "mimeType": processed.mime_type, "data": data}),
         hints,
@@ -187,7 +186,24 @@ mod tests {
             resolve_to_cwd("my\u{00A0}file.txt", cwd, home),
             PathBuf::from("/w/p/my file.txt")
         );
-        assert_eq!(to_fixed_2(9.0 / 8.0), "1.13");
-        assert_eq!(to_fixed_2(4000.0 / 2000.0), "2.00");
+    }
+
+    #[test]
+    fn cli_file_args_resize_hint_ratio_is_to_fixed_2() {
+        // node 26.12.1: (9 / 8).toFixed(2) === "1.13", (4000 / 2000).toFixed(2) === "2.00",
+        // (2230 / 2000).toFixed(2) === "1.11" (the double 1.115 lies below the tie; `(x * 100).round()` gave 1.12).
+        let ratio = |ow, w| {
+            resize_hint(ow, 1, w, 1)
+                .split(" by ")
+                .nth(1)
+                .map(|rest| rest[..4].to_string())
+        };
+        assert_eq!(ratio(9, 8).as_deref(), Some("1.13"));
+        assert_eq!(ratio(4000, 2000).as_deref(), Some("2.00"));
+        assert_eq!(ratio(2230, 2000).as_deref(), Some("1.11"));
+        assert_eq!(
+            resize_hint(2230, 1000, 2000, 897),
+            "[Image: original 2230x1000, displayed at 2000x897. Multiply coordinates by 1.11 to map to original image.]"
+        );
     }
 }

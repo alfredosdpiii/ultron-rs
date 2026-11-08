@@ -43,9 +43,12 @@ pub fn websocket_connect_timeout_ms(settings: &Settings) -> Result<Option<f64>, 
     let Some(value) = settings.get("websocketConnectTimeoutMs") else {
         return Ok(None);
     };
-    parse_timeout(value)
-        .map(Some)
-        .ok_or_else(|| format!("Invalid websocketConnectTimeoutMs setting: {}", js_string(value)))
+    parse_timeout(value).map(Some).ok_or_else(|| {
+        format!(
+            "Invalid websocketConnectTimeoutMs setting: {}",
+            jsrt::value::string(Some(value))
+        )
+    })
 }
 
 /// `parseHttpIdleTimeoutMs`.
@@ -69,25 +72,6 @@ fn parse_timeout(value: &Value) -> Option<f64> {
         }
         Value::Number(n) => n.as_f64().filter(|n| n.is_finite() && *n >= 0.0).map(f64::floor),
         _ => None,
-    }
-}
-
-/// `String(value)` for a JSON value.
-fn js_string(value: &Value) -> String {
-    match value {
-        Value::Null => "null".into(),
-        Value::Bool(b) => b.to_string(),
-        Value::Number(n) => n.to_string(),
-        Value::String(s) => s.clone(),
-        Value::Array(items) => items
-            .iter()
-            .map(|v| match v {
-                Value::Null => String::new(),
-                other => js_string(other),
-            })
-            .collect::<Vec<_>>()
-            .join(","),
-        Value::Object(_) => "[object Object]".into(),
     }
 }
 

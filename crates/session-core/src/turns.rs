@@ -21,13 +21,10 @@ use ai::{AbortSignal, AssistantContent, AssistantMessage, AssistantMessageEvent,
 use durable::{ROOT_CONVERSATION_ID, StorageWrite};
 use harness::chat::{CellCall, CellExecutor, CellProgress, CellResult, Models, StreamRequest};
 use harness::scheduler::{Cancel, HarnessError};
+use jsrt::sync;
 use serde_json::{Value, json};
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
-
-fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
-    mutex.lock().unwrap_or_else(PoisonError::into_inner)
-}
+use std::sync::{Arc, Mutex};
 
 /// What the actor answers a generation's start with: the request messages. Their key is that of the generation's
 /// own model (pinned at preparation), resolved when the request is sent.
@@ -61,7 +58,7 @@ impl<T> Default for Answer<T> {
 
 impl<T> Answer<T> {
     pub fn give(&self, value: T) {
-        *lock(&self.value) = Some(value);
+        *sync::lock(&self.value) = Some(value);
         self.ready.abort();
     }
 
@@ -69,7 +66,7 @@ impl<T> Answer<T> {
     fn wait(&self, signal: &Cancel) -> Option<T> {
         let linked = Cancel::any(&[signal, &self.ready]);
         linked.signal().wait();
-        lock(&self.value).take()
+        sync::lock(&self.value).take()
     }
 }
 
@@ -164,13 +161,13 @@ impl Bridge {
     }
 
     pub fn set_user_abort(&self, aborted: bool) {
-        *lock(&self.user_abort) = aborted;
+        *sync::lock(&self.user_abort) = aborted;
     }
 
     /// Forget the current round (a new turn starts).
     pub fn clear(&self) {
-        *lock(&self.round) = Round::default();
-        lock(&self.results).clear();
+        *sync::lock(&self.round) = Round::default();
+        sync::lock(&self.results).clear();
     }
 
     /// An assistant answer committed by the runtime (or recovered from it): the agent loop's `message_end`, then the
@@ -191,7 +188,7 @@ impl Bridge {
         if !round {
             return;
         }
-        *lock(&self.round) = Round {
+        *sync::lock(&self.round) = Round {
             calls: calls.iter().map(|(id, name, _)| (id.clone(), name.clone())).collect(),
             done: HashMap::new(),
         };
@@ -206,8 +203,8 @@ impl Bridge {
 
     /// The calls and failures of the current round once every call has a result (run here or committed).
     fn round_complete(&self) -> Option<(usize, usize)> {
-        let round = lock(&self.round);
-        let results = lock(&self.results);
+        let round = sync::lock(&self.round);
+        let results = sync::lock(&self.results);
         if round.calls.is_empty() {
             return None;
         }
@@ -234,14 +231,14 @@ impl Bridge {
                 .unwrap_or_default();
             round.done.insert(id, Reported { name, result, is_error });
         }
-        *lock(&self.round) = round;
+        *sync::lock(&self.round) = round;
     }
 
     /// A cell result committed by the runtime: the agent loop's `tool_execution_end`, and once every call of the
     /// round has one, the result messages in call order.
     pub fn result_committed(&self, message: &Value) {
         let call_id = message["toolCallId"].as_str().unwrap_or_default().to_string();
-        let reported = lock(&self.results).remove(&call_id).unwrap_or_else(|| Reported {
+        let reported = sync::lock(&self.results).remove(&call_id).unwrap_or_else(|| Reported {
             name: message["toolName"].as_str().unwrap_or("rlm").to_string(),
             result: AgentToolResult {
                 content: serde_json::from_value(message["content"].clone()).unwrap_or_default(),
@@ -258,7 +255,7 @@ impl Bridge {
             is_error: reported.is_error,
         });
         let finished = {
-            let mut round = lock(&self.round);
+            let mut round = sync::lock(&self.round);
             round.done.insert(call_id, reported);
             if round.calls.iter().all(|(id, _)| round.done.contains_key(id)) {
                 let round = std::mem::take(&mut *round);
@@ -591,7 +588,7 @@ impl TurnModels {
         // The ledger counts the response before its entry commits and before the next request or cell is gated, as
         // the TypeScript drive's `after_response` does; a response a closing worker drops is not counted (the
         // reopened runtime resends it).
-        if (!signal.is_cancelled() || *lock(&self.bridge.user_abort))
+        if (!signal.is_cancelled() || *sync::lock(&self.bridge.user_abort))
             && let Some(charge) = &self.charge
         {
             charge(ROOT_CONVERSATION_ID, &message);
@@ -606,7 +603,7 @@ impl TurnModels {
         if signal.is_cancelled() {
             // Only the user's abort ends the turn here; the transcript keeps the aborted response as the agent loop
             // does. A closing worker keeps nothing: the reopened runtime resends the pinned request.
-            if *lock(&self.bridge.user_abort) {
+            if *sync::lock(&self.bridge.user_abort) {
                 self.bridge.send(AgentEvent::MessageEnd {
                     message: Message::Assistant(message.clone()),
                 });
@@ -628,7 +625,7 @@ pub fn publish_output(progress: &Mutex<Option<CellProgress>>, text: &str, mask: 
         return;
     }
     let masked = mask(text);
-    if let Some(progress) = lock(progress).as_ref() {
+    if let Some(progress) = sync::lock(progress).as_ref() {
         progress.output(&masked);
     }
 }
@@ -714,7 +711,7 @@ impl CellExecutor for TurnCells {
             return Ok(cell_result(result, is_error));
         }
         let bridged = Bridged::new(signal);
-        *lock(&self.progress) = Some(progress.clone());
+        *sync::lock(&self.progress) = Some(progress.clone());
         // The root cell's start and end, on the cell's own thread: a task that ends while the cell runs is the
         // cell's (collapse on return), whenever the actor gets to the cell's events.
         let context = self.stack.context.get().cloned();
@@ -725,10 +722,10 @@ impl CellExecutor for TurnCells {
         if let Some(context) = &context {
             context.tool_end(crate::lane::MAIN, &call.call_id);
         }
-        *lock(&self.progress) = None;
+        *sync::lock(&self.progress) = None;
         drop(bridged);
         let (result, is_error) = executed?;
-        lock(&self.bridge.results).insert(
+        sync::lock(&self.bridge.results).insert(
             call.call_id.clone(),
             Reported {
                 name: call.name.clone(),

@@ -6,7 +6,6 @@ use crate::codec::{self, ParsedHeader};
 use crate::io;
 use crate::legacy_v3::LegacyV3Source;
 use crate::state::{seq_of, str_of};
-use crate::usage::num;
 use serde_json::{Map, Value, json};
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
@@ -333,8 +332,8 @@ pub fn run_fork(
         ForkInput::LegacyV3(source) => source.writes(Some(&copied))?,
         ForkInput::V4 { .. } => source_writes,
     };
-    header.insert("nextSeq".into(), num(next_seq as f64));
-    let mut content = format!("{}\n", session_file::js::stringify(&Value::Object(header)));
+    header.insert("nextSeq".into(), jsrt::json::number(next_seq as f64));
+    let mut content = format!("{}\n", jsrt::json::stringify(&Value::Object(header)));
     for write in writes {
         let projected = match str_of(&write, "kind") {
             "entry" => copied(str_of(&write, "id")).then_some(write),

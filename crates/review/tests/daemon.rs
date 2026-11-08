@@ -16,7 +16,6 @@ use github_common::*;
 use review::accounts::{Account, TokenStore};
 use review::daemon::{Daemon, DaemonDeps, Reported, blocked_pulls, create_logger, discover, prune_old};
 use review::github::{Error, GitHub, PullRef};
-use review::ledger::parse_iso_ms;
 use review::runner::{RunOptions, RunResult, Runner};
 use review::settings::RETENTION_DAYS;
 use review::state::{AccountState, AutoreviewState, PullState};
@@ -1029,13 +1028,13 @@ fn review_daemon_run_polls_again_after_the_poll_interval() {
     let slept = polls.lock().expect("polls").clone();
     assert_eq!(&slept[..4], &[5_000, 5_000, 5_000, 5_000]);
     assert_eq!(
-        parse_iso_ms(
+        jsrt::date::parse_date(
             context.deps.store.read().accounts["github.com/ultron-bot"]
                 .last_poll_at
                 .as_deref()
                 .expect("polled")
         ),
-        Some(parse_iso_ms("2026-10-04T10:00:40Z").expect("date"))
+        Some(jsrt::date::parse_date("2026-10-04T10:00:40Z").expect("date"))
     );
 }
 

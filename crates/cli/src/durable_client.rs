@@ -218,7 +218,7 @@ fn home_inner(args: &[String], env: &Env, out: &mut dyn Write, err: &mut dyn Wri
         writeln!(out, "ID\tNAME\tLAST ACTIVITY\tHOME").map_err(|e| e.to_string())?;
         for meta in &sessions {
             let name = daemon::catalog::details(meta).name.unwrap_or_else(|| "-".into());
-            let at = session_file::js::iso_string(meta.modified_at as i64);
+            let at = jsrt::date::iso_string(meta.modified_at as i64);
             let mark = if home.as_deref() == Some(meta.id.as_str()) {
                 "*"
             } else {
@@ -262,7 +262,7 @@ fn home_inner(args: &[String], env: &Env, out: &mut dyn Write, err: &mut dyn Wri
         None => match home.filter(|_| !new) {
             Some(id) => id,
             None => {
-                let id = daemon::paths::uuid_v4();
+                let id = jsrt::random::uuid_v4();
                 set_home(&instance.dir, &id)?;
                 id
             }

@@ -29,6 +29,7 @@ use host::Host;
 use host::file_hooks::{FileHooks, GuardRecord, OnRecord};
 use host::loki_guard::{LokiGuard, LokiMode, git_root, loki_mode};
 use inference::Inference;
+use jsrt::sync;
 use kernel::{ContinuityPolicy, HostHandler, Kernel, KernelOptions, Signal};
 use kernel_apis::{
     CodeSkills, CodeSkillsOptions, DurableWork, DurableWorkOptions, FileDocumentStore, GoalDriver, HintsModule,
@@ -38,7 +39,7 @@ use serde_json::{Map, Value, json};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::Receiver;
-use std::sync::{Arc, Mutex, PoisonError, Weak};
+use std::sync::{Arc, Mutex, Weak};
 use std::time::Duration;
 
 /// Host requests the subagent host serves.
@@ -562,13 +563,13 @@ impl SystemPrompt {
     pub fn current(&self) -> String {
         let state = &self.0;
         let Some(render) = &state.render else {
-            return lock(&state.current).1.clone();
+            return sync::lock(&state.current).1.clone();
         };
         let mut mode = (state.mode)();
-        if let Some(persona) = *lock(&state.persona) {
+        if let Some(persona) = *sync::lock(&state.persona) {
             mode.persona = persona;
         }
-        let mut current = lock(&state.current);
+        let mut current = sync::lock(&state.current);
         if current.0 != mode
             && let Ok((text, warnings)) = render(&mode)
         {
@@ -585,10 +586,10 @@ impl SystemPrompt {
             return self.current();
         };
         let mut mode = (state.mode)();
-        if let Some(persona) = *lock(&state.persona) {
+        if let Some(persona) = *sync::lock(&state.persona) {
             mode.persona = persona;
         }
-        let mut child = lock(&state.child);
+        let mut child = sync::lock(&state.child);
         if let Some((cached, flag, text)) = &*child
             && *cached == mode
             && *flag == memory
@@ -609,12 +610,12 @@ impl SystemPrompt {
 
     /// The session's persona toggle (`None`: follow the settings), applied from the next request.
     pub fn set_persona(&self, persona: Option<bool>) {
-        *lock(&self.0.persona) = persona;
+        *sync::lock(&self.0.persona) = persona;
     }
 
     /// The `alwaysSkills` problems of the prompt as last rendered.
     pub fn warnings(&self) -> Vec<String> {
-        lock(&self.0.current).2.clone()
+        sync::lock(&self.0.current).2.clone()
     }
 }
 
@@ -1316,10 +1317,6 @@ struct ApiModules {
     family: Arc<kernel_apis::FamilyModule>,
 }
 
-fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
-    mutex.lock().unwrap_or_else(PoisonError::into_inner)
-}
-
 /// A worktree subagent's lane: its working directory, extra environment and host.
 struct Workspace {
     cwd: PathBuf,
@@ -1431,10 +1428,10 @@ impl Stack {
     /// subagent's host (live or ended) added in.
     pub fn guard_stats(&self) -> Vec<Value> {
         let mut totals = self.host.guard_stats();
-        let others: Vec<Vec<Value>> = lock(&self.workspaces)
+        let others: Vec<Vec<Value>> = sync::lock(&self.workspaces)
             .values()
             .map(|w| w.host.guard_stats())
-            .chain(std::iter::once(lock(&self.retired_guards).clone()))
+            .chain(std::iter::once(sync::lock(&self.retired_guards).clone()))
             .collect();
         for stats in others {
             add_guard_stats(&mut totals, &stats);
@@ -1445,10 +1442,10 @@ impl Stack {
     /// A new root turn began (`fileHooks.beginTurn()`): every host's per-turn guard times start from zero.
     pub fn begin_turn(&self) {
         self.host.begin_turn();
-        for workspace in lock(&self.workspaces).values() {
+        for workspace in sync::lock(&self.workspaces).values() {
             workspace.host.begin_turn();
         }
-        for retired in lock(&self.retired_guards).iter_mut() {
+        for retired in sync::lock(&self.retired_guards).iter_mut() {
             retired["turnMs"] = json!(0);
         }
     }
@@ -1456,15 +1453,15 @@ impl Stack {
     /// A worktree subagent's lane ended: its host goes (its shell jobs are the session's and keep running), its guard
     /// statistics stay in the session's.
     fn retire_workspace(&self, lane: &str) {
-        let Some(workspace) = lock(&self.workspaces).remove(lane) else {
+        let Some(workspace) = sync::lock(&self.workspaces).remove(lane) else {
             return;
         };
-        add_guard_stats(&mut lock(&self.retired_guards), &workspace.host.guard_stats());
+        add_guard_stats(&mut sync::lock(&self.retired_guards), &workspace.host.guard_stats());
     }
 
     /// The host `lane` runs its shell in: a worktree subagent's own, else the session's.
     fn host_of(&self, lane: &str) -> Arc<Host> {
-        lock(&self.workspaces)
+        sync::lock(&self.workspaces)
             .get(lane)
             .map_or_else(|| self.host.clone(), |w| w.host.clone())
     }
@@ -1581,7 +1578,7 @@ impl Stack {
     /// under the profile and the continuity policy.
     fn kernel(&self, lane: &str) -> Result<Kernel, String> {
         let config = &self.config;
-        let (cwd, extra) = match lock(&self.workspaces).get(lane) {
+        let (cwd, extra) = match sync::lock(&self.workspaces).get(lane) {
             Some(workspace) => (workspace.cwd.clone(), workspace.env.clone()),
             None => (config.cwd.clone(), Vec::new()),
         };
@@ -1627,7 +1624,7 @@ impl Stack {
     /// lane's is built once.
     fn kernel_launcher(&self, lane: &str) -> Result<Option<Arc<sandbox::Launcher>>, String> {
         let host = self.host_of(lane);
-        let workspace = lock(&self.workspaces).contains_key(lane);
+        let workspace = sync::lock(&self.workspaces).contains_key(lane);
         if !workspace && let Some(launcher) = self.kernel_sandbox.get() {
             return Ok(launcher.clone());
         }
@@ -1695,13 +1692,13 @@ impl Stack {
 
     /// The root lane's model now.
     pub fn root_model(&self) -> Model {
-        lock(&self.root_model).clone()
+        sync::lock(&self.root_model).clone()
     }
 
     /// The root lane switched to `model` (`set_model`, `cycle_model`): frames, the predict adapter and the root's
     /// `view_image` follow it.
     pub fn set_root_model(&self, model: &Model) {
-        *lock(&self.root_model) = model.clone();
+        *sync::lock(&self.root_model) = model.clone();
         self.images.set_model(None, model.clone());
     }
 
@@ -1870,7 +1867,7 @@ fn typed_agents(
     // resolved then, over the process's HTTP stack at the idle timeout the settings name now.
     let settings = config.settings_reader();
     options.predict = Some(predict_adapter(Arc::new(move |call: PredictCall<'_>| {
-        let model = lock(&root_model).clone();
+        let model = sync::lock(&root_model).clone();
         let idle = ai::http::http_idle_timeout(settings().settings().get("httpIdleTimeoutMs"));
         let provider = crate::request_keys::Keyed {
             inner: Provider::with_idle_timeout(idle),
@@ -2023,7 +2020,7 @@ pub fn child_setup(stack: &Stack, run: &ChildRun) -> ChildSetup {
                 // Its commands run with the worktree's environment (`withShellEnv(..., laneWorkspace(lane).env)`),
                 // and its shell jobs are the session's (one `ShellJobs` for every lane).
                 let host = host.with_env(run.env.clone()).sharing_jobs(&stack.host);
-                lock(&stack.workspaces).insert(
+                sync::lock(&stack.workspaces).insert(
                     run.lane_name.clone(),
                     Workspace {
                         cwd: PathBuf::from(cwd),
@@ -2183,7 +2180,7 @@ impl CellShell {
 
     /// Records a job this cell started; the first one arms the cancel listener.
     fn track(&self, host: &Arc<Host>, lane: &str, job: &str, request: &Signal) {
-        let mut jobs = lock(&self.jobs);
+        let mut jobs = sync::lock(&self.jobs);
         if !jobs.0.iter().any(|known| known == job) {
             jobs.0.push(job.to_string());
         }
@@ -2242,7 +2239,7 @@ impl HostHandler for Router {
         if shell
             && let (Some(progress), Ok(value)) = (&self.progress, &result)
             && let Some(output) = value["output"].as_str().filter(|o| !o.is_empty())
-            && let Some(progress) = lock(progress).as_ref()
+            && let Some(progress) = sync::lock(progress).as_ref()
         {
             // Masked, as the cell's result will be: the durable partial output reaches the transcript too.
             let output = session_mask(&self.config)(output);
@@ -2265,7 +2262,7 @@ fn stop_cell_jobs(host: &Arc<Host>, lane: &str, request: &Signal, jobs: &Mutex<(
     if request.is_aborted() {
         return;
     }
-    let ids = std::mem::take(&mut lock(jobs).0);
+    let ids = std::mem::take(&mut sync::lock(jobs).0);
     for id in ids {
         let mut payload = Map::new();
         payload.insert("id".into(), Value::String(id));
@@ -2283,7 +2280,7 @@ struct ObservedByHints {
 
 impl HostHandler for ObservedByHints {
     fn handle(&self, kind: &str, payload: Map<String, Value>, signal: &Signal) -> Result<Value, String> {
-        let started = kernel_apis::util::system_clock()();
+        let started = jsrt::date::now_ms();
         let observed = payload.clone();
         let result = self.inner.handle(kind, payload, signal);
         self.hints
@@ -2338,7 +2335,7 @@ fn attribute(value: &str) -> String {
 
 /// `boundedSummary`: one line of at most 240 characters.
 fn bounded(text: &str) -> String {
-    let line = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    let line = jsrt::string::flatten(text);
     if line.chars().count() > 240 {
         format!("{}…", line.chars().take(239).collect::<String>())
     } else {
@@ -2395,20 +2392,6 @@ pub fn runtime_event_line_with(
     )
 }
 
-/// `text.slice(0, n)` of a JavaScript string: its first `n` UTF-16 code units (a surrogate pair is not split).
-pub fn js_slice(text: &str, n: usize) -> String {
-    let mut units = 0;
-    let mut out = String::new();
-    for c in text.chars() {
-        units += c.len_utf16();
-        if units > n {
-            break;
-        }
-        out.push(c);
-    }
-    out
-}
-
 /// The session's masking of text that reaches the model: values MCP servers resolved (`registerSecretValues`) and
 /// the shipped rules, unless `ULTRON_MASK_SECRETS` turns it off.
 pub fn session_mask(config: &Config) -> crate::async_events::MaskText {
@@ -2435,7 +2418,7 @@ impl RuntimeEvents {
     fn pending_lines(&self) -> Vec<String> {
         let mut lines = Vec::new();
         // A typed task's end nobody awaited (`task_done`, as session-worker.ts `onDetachedEnd`).
-        while let Ok(end) = lock(&self.task_ends).try_recv() {
+        while let Ok(end) = sync::lock(&self.task_ends).try_recv() {
             if end.owner_lane != crate::lane::MAIN || end.awaited {
                 continue;
             }
@@ -2454,7 +2437,7 @@ impl RuntimeEvents {
                 &self.mask,
             ));
         }
-        while let Ok(end) = lock(&self.child_ends).try_recv() {
+        while let Ok(end) = sync::lock(&self.child_ends).try_recv() {
             if end.owner_lane != crate::lane::MAIN {
                 continue;
             }
@@ -2467,7 +2450,7 @@ impl RuntimeEvents {
                 end.kind, id, status, &summary, &end.fetch, &self.mask,
             ));
         }
-        while let Ok(end) = lock(&self.cell_ends).try_recv() {
+        while let Ok(end) = sync::lock(&self.cell_ends).try_recv() {
             if end.lane != crate::lane::MAIN {
                 continue;
             }
@@ -2499,7 +2482,7 @@ impl RuntimeEvents {
     /// (`cell_done`), each for the lane that owns the work. A subagent's or cell's root is left for the caller.
     pub fn drain_ends(&self) -> Vec<crate::async_events::RuntimeEvent> {
         let mut events = Vec::new();
-        while let Ok(end) = lock(&self.task_ends).try_recv() {
+        while let Ok(end) = sync::lock(&self.task_ends).try_recv() {
             if end.awaited {
                 continue;
             }
@@ -2518,7 +2501,7 @@ impl RuntimeEvents {
                 root_id: end.root_id.clone(),
             });
         }
-        while let Ok(end) = lock(&self.child_ends).try_recv() {
+        while let Ok(end) = sync::lock(&self.child_ends).try_recv() {
             let task = &end.task;
             events.push(crate::async_events::RuntimeEvent {
                 kind: end.kind.into(),
@@ -2534,7 +2517,7 @@ impl RuntimeEvents {
                 root_id: None,
             });
         }
-        while let Ok(end) = lock(&self.cell_ends).try_recv() {
+        while let Ok(end) = sync::lock(&self.cell_ends).try_recv() {
             let (status, summary) = match &end.outcome {
                 Ok(result) => (
                     if result.status == kernel::Status::Ok {

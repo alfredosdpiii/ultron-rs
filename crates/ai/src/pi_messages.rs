@@ -5,8 +5,8 @@
 use crate::env::provider_env_value;
 use crate::http::{AbortSignal, HttpRequest, HttpResponse, Read, Transport, cancelled, is_aborted, read_chunk};
 use crate::json::{parse_json, parse_streaming_json};
-use crate::jsutil::{Utf8Stream, js_trim};
-use crate::options::{SimpleStreamOptions, StreamOptions, now_ms};
+use crate::jsutil::Utf8Stream;
+use crate::options::{SimpleStreamOptions, StreamOptions};
 use crate::types::{
     AssistantContent, AssistantMessage, AssistantMessageDiagnostic, AssistantMessageEvent, CacheRetention,
     DiagnosticErrorInfo, EventSink, Model, StopReason, TextContent, ThinkingContent, ToolCall, TranscriptContext,
@@ -47,9 +47,8 @@ impl Failure {
 const MAX_DIAGNOSTIC_CHARS: usize = 8192;
 
 fn truncate_diagnostic(value: &str) -> String {
-    let units: Vec<u16> = value.encode_utf16().collect();
-    if units.len() > MAX_DIAGNOSTIC_CHARS {
-        format!("{}…", String::from_utf16_lossy(&units[..MAX_DIAGNOSTIC_CHARS]))
+    if jsrt::utf16::len(value) > MAX_DIAGNOSTIC_CHARS {
+        format!("{}…", jsrt::utf16::head_lossy(value, MAX_DIAGNOSTIC_CHARS))
     } else {
         value.to_string()
     }
@@ -94,7 +93,7 @@ fn response_failure(model: &Model, url: &str, status: u16, body: &str) -> Failur
     if error_body.is_none() {
         details.insert("body".into(), json!(truncate_diagnostic(body)));
     }
-    details.insert("timestampMs".into(), json!(now_ms()));
+    details.insert("timestampMs".into(), json!(jsrt::date::now_ms()));
     Failure {
         message: text,
         response: Some((code, details)),
@@ -145,7 +144,7 @@ impl Converter {
                 .get_or_insert_with(Vec::new)
                 .push(AssistantMessageDiagnostic {
                     kind: "pi_messages_rewrite".into(),
-                    timestamp: now_ms(),
+                    timestamp: jsrt::date::now_ms(),
                     error: None,
                     details: Some(rewrite.clone()),
                 });
@@ -317,7 +316,7 @@ fn parse_frame(raw: &str) -> Result<Option<Value>, String> {
     let Some(data) = raw
         .split('\n')
         .find(|line| line.starts_with("data:"))
-        .map(|line| js_trim(&line[5..]))
+        .map(|line| jsrt::string::trim(&line[5..]))
     else {
         return Ok(None);
     };
@@ -360,7 +359,7 @@ async fn read_events(
             break;
         }
     }
-    if !js_trim(&buffer).is_empty()
+    if !jsrt::string::trim(&buffer).is_empty()
         && let Some(event) = parse_frame(&buffer).map_err(Failure::plain)?
     {
         return on_event(event).map_err(Failure::plain);
@@ -500,7 +499,7 @@ pub async fn stream(
     sink: &mut EventSink<'_>,
 ) -> AssistantMessage {
     let mut converter = Converter {
-        partial: AssistantMessage::pending(model, now_ms()),
+        partial: AssistantMessage::pending(model, jsrt::date::now_ms()),
         tool_json: HashMap::new(),
     };
     let mut last: Option<AssistantMessage> = None;
@@ -519,7 +518,7 @@ pub async fn stream(
         Ok(()) => last.unwrap_or(converter.partial),
         Err(failure) => {
             let aborted = is_aborted(options.base.signal());
-            let mut message = AssistantMessage::pending(model, now_ms());
+            let mut message = AssistantMessage::pending(model, jsrt::date::now_ms());
             message.stop_reason = if aborted {
                 StopReason::Aborted
             } else {
@@ -529,7 +528,7 @@ pub async fn stream(
             if !aborted && let Some((code, details)) = failure.response {
                 message.diagnostics = Some(vec![AssistantMessageDiagnostic {
                     kind: "pi_messages_response_failure".into(),
-                    timestamp: now_ms(),
+                    timestamp: jsrt::date::now_ms(),
                     error: Some(DiagnosticErrorInfo {
                         name: Some("PiMessagesResponseError".into()),
                         message: failure.message,

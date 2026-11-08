@@ -35,15 +35,13 @@ pub struct LoadSkillsResult {
     pub diagnostics: Vec<Diagnostic>,
 }
 
-/// JS string length (UTF-16 code units).
-fn js_len(text: &str) -> usize {
-    text.encode_utf16().count()
-}
-
 fn validate_name(name: &str) -> Vec<String> {
     let mut errors = Vec::new();
-    if js_len(name) > MAX_NAME_LENGTH {
-        errors.push(format!("name exceeds {MAX_NAME_LENGTH} characters ({})", js_len(name)));
+    if jsrt::utf16::len(name) > MAX_NAME_LENGTH {
+        errors.push(format!(
+            "name exceeds {MAX_NAME_LENGTH} characters ({})",
+            jsrt::utf16::len(name)
+        ));
     }
     if name.is_empty()
         || !name
@@ -64,10 +62,10 @@ fn validate_name(name: &str) -> Vec<String> {
 fn validate_description(description: Option<&str>) -> Vec<String> {
     match description {
         Some(text) if !text.trim().is_empty() => {
-            if js_len(text) > MAX_DESCRIPTION_LENGTH {
+            if jsrt::utf16::len(text) > MAX_DESCRIPTION_LENGTH {
                 vec![format!(
                     "description exceeds {MAX_DESCRIPTION_LENGTH} characters ({})",
-                    js_len(text)
+                    jsrt::utf16::len(text)
                 )]
             } else {
                 vec![]
@@ -312,7 +310,7 @@ pub fn apply_always_skills(skills: &mut [Skill], names: &[String]) -> Vec<Diagno
                 continue;
             }
         };
-        let len = js_len(&body);
+        let len = jsrt::utf16::len(&body);
         if used + len > ALWAYS_SKILLS_MAX_CHARS {
             diagnostics.push(Diagnostic::warning(
                 format!(
@@ -399,7 +397,7 @@ pub fn format_skills_for_prompt(skills: &[Skill], file_read_tool: &str) -> Strin
 
 /// The first sentence of a description, at most `max` characters.
 fn short_purpose(description: &str, max: usize) -> String {
-    let flat = crate::runtime_guide::collapse_whitespace(description);
+    let flat = jsrt::string::flatten(description);
     let sentence = match flat.find(". ") {
         Some(i) => &flat[..=i],
         None => flat.as_str(),

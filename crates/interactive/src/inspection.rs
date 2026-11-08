@@ -45,7 +45,7 @@ pub fn inspection_request(name: &str, args: &str) -> Option<Result<(String, Valu
 fn scalar(item: &Value) -> String {
     match item {
         Value::String(text) => text.clone(),
-        other => session_file::js::stringify(other),
+        other => jsrt::json::stringify(other),
     }
 }
 
@@ -86,7 +86,7 @@ fn render(lines: &mut Vec<String>, item: &Value, indent: &str, label: Option<&st
         }
         Value::Object(map) => {
             // `Object.entries`: array-index keys first, ascending, then insertion order.
-            for (key, child) in session_file::js::object_entries(map) {
+            for (key, child) in jsrt::json::object_entries(map) {
                 render(lines, child, &inner, Some(key));
             }
         }

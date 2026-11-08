@@ -379,7 +379,7 @@ pub fn sig() -> Signal {
 }
 
 pub fn sha256(text: &str) -> String {
-    kernel_apis::util::sha256_hex(text.as_bytes())
+    jsrt::hash::sha256_hex(text.as_bytes())
 }
 
 /// Asserts every field of `want` equals the field of `got` (vitest `toMatchObject`, one level of objects deep

@@ -5,7 +5,6 @@
 
 use ai::http::{Body, BoxFuture, HeaderMap, HttpRequest, HttpResponse, Transport};
 use ai::images::{ImagesContext, ImagesModel, ImagesOptions, generate_images};
-use ai::json::normalize_numbers;
 use serde_json::{Value, json};
 use std::sync::Mutex;
 
@@ -83,7 +82,7 @@ async fn ai_images_timeout_ms_matches_typescript() {
         };
         let result = generate_images(&model, &context, &options, &transport).await.unwrap();
         assert_eq!(
-            normalize_numbers(serde_json::to_value(result).unwrap()),
+            jsrt::json::normalize_numbers(serde_json::to_value(result).unwrap()),
             case["result"],
             "{name}"
         );

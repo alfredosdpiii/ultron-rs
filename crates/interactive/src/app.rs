@@ -81,17 +81,6 @@ pub fn env_off(value: Option<&str>) -> bool {
     )
 }
 
-/// JavaScript truthiness of a settings value.
-fn js_truthy(value: &Value) -> bool {
-    match value {
-        Value::Null => false,
-        Value::Bool(b) => *b,
-        Value::Number(n) => n.as_f64().is_some_and(|n| n != 0.0 && !n.is_nan()),
-        Value::String(s) => !s.is_empty(),
-        Value::Array(_) | Value::Object(_) => true,
-    }
-}
-
 /// What the app was started with.
 pub struct AppOptions {
     pub theme: Rc<Theme>,
@@ -1029,12 +1018,12 @@ impl App {
         // `getShowHardwareCursor`: the setting, else (`??`) `PI_HARDWARE_CURSOR=1`.
         self.show_hardware_cursor = match &settings["showHardwareCursor"] {
             Value::Null => var("PI_HARDWARE_CURSOR").as_deref() == Some("1"),
-            value => js_truthy(value),
+            value => jsrt::value::truthy(Some(value)),
         };
         // `getClearOnShrink`: a present setting (even null), else `PI_CLEAR_ON_SHRINK=1`.
         self.clear_on_shrink = match settings["terminal"].get("clearOnShrink") {
             None => var("PI_CLEAR_ON_SHRINK").as_deref() == Some("1"),
-            Some(value) => js_truthy(value),
+            Some(value) => jsrt::value::truthy(Some(value)),
         };
         if let Some(action) = settings["doubleEscapeAction"].as_str() {
             self.double_escape_action = action.to_string();
@@ -1395,7 +1384,7 @@ impl App {
             }
             None => {
                 self.terminal_writes
-                    .push(format!("\x1b]52;c;{}\x07", base64(text.as_bytes())));
+                    .push(format!("\x1b]52;c;{}\x07", jsrt::base64::encode(text)));
                 self.show_status(done);
             }
         }
@@ -1411,7 +1400,7 @@ impl App {
             }
             None => {
                 self.terminal_writes
-                    .push(format!("\x1b]52;c;{}\x07", base64(text.as_bytes())));
+                    .push(format!("\x1b]52;c;{}\x07", jsrt::base64::encode(text)));
                 self.viewport.copied(Ok(()), Instant::now());
             }
         }
@@ -1878,11 +1867,7 @@ impl App {
             }
             LaneEvent::Entries(entries) => self.load_entries(&entries),
             LaneEvent::OperationStarted(id) => {
-                self.operation_started_ms = Some(
-                    std::time::SystemTime::now()
-                        .duration_since(std::time::UNIX_EPOCH)
-                        .map_or(0.0, |d| d.as_millis() as f64),
-                );
+                self.operation_started_ms = Some(jsrt::date::now_ms() as f64);
                 self.operation = Some(id);
                 self.aborting = false;
                 self.turn_started = Some(Instant::now());
@@ -2082,7 +2067,7 @@ impl App {
                         generic_login: false,
                     })
                     .collect();
-                providers.sort_by(|a, b| crate::selectors::locale_compare(&a.name, &b.name));
+                providers.sort_by(|a, b| jsrt::collate::locale_compare(&a.name, &b.name));
                 let selector = crate::selectors::AuthSelector::new(
                     Rc::clone(&self.theme),
                     self.keys.clone(),
@@ -2779,10 +2764,7 @@ impl App {
     }
 
     fn record_history(&mut self, text: &str) {
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_millis() as i64)
-            .unwrap_or(0);
+        let now = jsrt::date::now_ms();
         self.history.append(text, now);
         self.editor.add_to_history(text);
     }
@@ -4339,9 +4321,7 @@ impl App {
     /// `#buildRlmSnapshot`: the session's subagents (polled) and the root turn's `rlm` cells (the transcript).
     fn rlm_snapshot(&mut self) -> rlm_views::RlmSnapshot {
         use rlm_views::visualizer::{RunningTool, TranscriptView, extract_root_cell, extract_turn};
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map_or(0.0, |d| d.as_millis() as f64);
+        let now = jsrt::date::now_ms() as f64;
         // The open operation's tools: the calls of the last assistant message that have no result yet.
         let running = self.operation.as_ref().map(|_| {
             let done: std::collections::HashSet<&str> = self
@@ -4753,9 +4733,7 @@ impl App {
 
     /// The open overlay's frame, when one is open.
     fn overlay_frame(&mut self, width: usize, height: usize) -> Option<Vec<String>> {
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map_or(0, |d| d.as_millis() as i64);
+        let now = jsrt::date::now_ms();
         Some(match self.overlay.as_mut()? {
             Overlay::Search(search) => search.render(width, height),
             Overlay::Picker(picker) => picker.render(width, height),
@@ -4810,9 +4788,7 @@ impl App {
             selector.set_sessions(sessions);
             return;
         }
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map_or(0, |d| d.as_millis() as i64);
+        let now = jsrt::date::now_ms();
         let selector = SessionSelector::new(
             Rc::clone(&self.theme),
             self.keys.clone(),
@@ -4828,9 +4804,7 @@ impl App {
     /// `/import` without a path: Pi's session selector over Pi's sessions of this project (`showPiSessionPicker`).
     /// Nothing in it is the attached session, and Pi's files are read-only here.
     fn show_pi_sessions(&mut self, sessions: Vec<SessionListing>) {
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map_or(0, |d| d.as_millis() as i64);
+        let now = jsrt::date::now_ms();
         let mut selector = SessionSelector::new(
             Rc::clone(&self.theme),
             self.keys.clone(),
@@ -5417,26 +5391,6 @@ fn refill<'a>(buffer: &mut Vec<String>, rows: impl Iterator<Item = &'a String>) 
         len += 1;
     }
     buffer.truncate(len);
-}
-
-/// Standard base64 with padding.
-fn base64(bytes: &[u8]) -> String {
-    const TABLE: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-    let mut out = String::new();
-    for chunk in bytes.chunks(3) {
-        let n = chunk
-            .iter()
-            .enumerate()
-            .fold(0u32, |n, (i, b)| n | u32::from(*b) << (16 - 8 * i));
-        for i in 0..4 {
-            if i <= chunk.len() {
-                out.push(TABLE[(n >> (18 - 6 * i) & 63) as usize] as char);
-            } else {
-                out.push('=');
-            }
-        }
-    }
-    out
 }
 
 /// Pi's path argument (`pathArgument`): the first word, or a quoted string.

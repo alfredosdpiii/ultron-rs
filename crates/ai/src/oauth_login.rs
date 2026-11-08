@@ -6,7 +6,6 @@
 
 use crate::auth::{AuthEvent, AuthInteraction, AuthPrompt, SelectOption};
 use crate::http::{AbortSignal, Transport};
-use crate::json::stringify;
 use crate::oauth::{
     ANTHROPIC_CLIENT_ID, CODEX_CLIENT_ID, CODEX_TOKEN_URL, COPILOT_API_VERSION, COPILOT_HEADERS,
     COPILOT_INDIVIDUAL_URL, CopilotCatalog, OAuthCredential, OAuthProvider, Reply, SendError, anthropic_token_request,
@@ -521,37 +520,9 @@ async fn login_codex_browser(ctx: &LoginContext<'_>) -> Result<OAuthCredential, 
     codex_exchange(ctx, &code, &verifier, CODEX_REDIRECT_URI).await
 }
 
-/// JS truthiness of a JSON value.
-fn truthy(value: Option<&Value>) -> bool {
-    match value {
-        None | Some(Value::Null) => false,
-        Some(Value::Bool(b)) => *b,
-        Some(Value::Number(n)) => n.as_f64().is_some_and(|f| f != 0.0 && !f.is_nan()),
-        Some(Value::String(s)) => !s.is_empty(),
-        Some(_) => true,
-    }
-}
-
-/// `Number(text)` for the decimal and `Infinity` forms (hex/octal/binary literals read as NaN here).
-fn js_number(text: &str) -> f64 {
-    let t = text.trim();
-    if t.is_empty() {
-        return 0.0;
-    }
-    match t {
-        "Infinity" | "+Infinity" => return f64::INFINITY,
-        "-Infinity" => return f64::NEG_INFINITY,
-        _ => {}
-    }
-    if t.bytes().any(|b| b.is_ascii_alphabetic() && b != b'e' && b != b'E') {
-        return f64::NAN;
-    }
-    t.parse().unwrap_or(f64::NAN)
-}
-
 async fn login_codex_device(ctx: &LoginContext<'_>) -> Result<OAuthCredential, String> {
     let headers = [("Content-Type", "application/json")];
-    let body = stringify(&json!({"client_id": CODEX_CLIENT_ID}));
+    let body = jsrt::json::stringify(&json!({"client_id": CODEX_CLIENT_ID}));
     let reply = codex_send(ctx, CODEX_DEVICE_USER_CODE_URL, &headers, body).await?;
     if !reply.ok() {
         if reply.status == 404 {
@@ -569,19 +540,24 @@ async fn login_codex_device(ctx: &LoginContext<'_>) -> Result<OAuthCredential, S
     }
     let data = crate::json::parse_json(&reply.text).map_err(|e| format!("SyntaxError: {e}"))?;
     let interval = match data.get("interval") {
-        Some(Value::String(s)) => Some(js_number(s)),
+        Some(Value::String(s)) => Some(jsrt::number::parse(s)),
         Some(Value::Number(n)) => n.as_f64(),
         _ => None,
     };
-    let invalid = || format!("Invalid OpenAI Codex device code response: {}", stringify(&data));
+    let invalid = || {
+        format!(
+            "Invalid OpenAI Codex device code response: {}",
+            jsrt::json::stringify(&data)
+        )
+    };
     // ponytail: upstream also accepts non-string truthy ids/codes and passes them through; here they are invalid.
     let (Some(device_auth_id), Some(user_code), Some(interval)) = (
         data.get("device_auth_id")
             .and_then(Value::as_str)
-            .filter(|_| truthy(data.get("device_auth_id"))),
+            .filter(|_| jsrt::value::truthy(data.get("device_auth_id"))),
         data.get("user_code")
             .and_then(Value::as_str)
-            .filter(|_| truthy(data.get("user_code"))),
+            .filter(|_| jsrt::value::truthy(data.get("user_code"))),
         interval.filter(|i| i.is_finite() && *i >= 0.0),
     ) else {
         return Err(invalid());
@@ -592,7 +568,7 @@ async fn login_codex_device(ctx: &LoginContext<'_>) -> Result<OAuthCredential, S
         interval_seconds: Some(interval),
         expires_in_seconds: Some(CODEX_DEVICE_TIMEOUT_SECONDS),
     });
-    let poll_body = stringify(&json!({"device_auth_id": device_auth_id, "user_code": user_code}));
+    let poll_body = jsrt::json::stringify(&json!({"device_auth_id": device_auth_id, "user_code": user_code}));
     let (code, verifier) = poll_device_code_flow(
         ctx.env,
         Some(&ctx.signal),
@@ -608,7 +584,7 @@ async fn login_codex_device(ctx: &LoginContext<'_>) -> Result<OAuthCredential, S
                     (Some(code), Some(verifier)) => Poll::Complete((code.to_owned(), verifier.to_owned())),
                     _ => Poll::Failed(format!(
                         "Invalid OpenAI Codex device auth token response: {}",
-                        stringify(&data)
+                        jsrt::json::stringify(&data)
                     )),
                 });
             }
@@ -792,7 +768,7 @@ async fn send_with_rate_limit_retry(
         if let Some(retry_after) = reply.headers.get("retry-after").filter(|v| !v.is_empty()) {
             let seconds = js_parse_float(retry_after);
             delay = if seconds.is_nan() {
-                parse_http_date(retry_after).map_or(f64::NAN, |at| at - env.now_ms())
+                crate::http::parse_http_date(retry_after).map_or(f64::NAN, |at| at as f64 - env.now_ms())
             } else {
                 seconds * 1000.0
             };
@@ -898,31 +874,6 @@ fn js_parse_float(text: &str) -> f64 {
     t[..i].trim_end_matches('.').parse().unwrap_or(f64::NAN)
 }
 
-/// `Date.parse` for the IMF-fixdate form a `Retry-After` header uses (`Sun, 06 Nov 1994 08:49:37 GMT`).
-fn parse_http_date(text: &str) -> Option<f64> {
-    let parts: Vec<&str> = text.split_whitespace().collect();
-    let [_, day, month, year, time, "GMT"] = parts[..] else {
-        return None;
-    };
-    const MONTHS: [&str; 12] = [
-        "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
-    ];
-    let month = MONTHS.iter().position(|m| *m == month)? as i64 + 1;
-    let (day, year): (i64, i64) = (day.parse().ok()?, year.parse().ok()?);
-    let hms: Vec<i64> = time.split(':').map(|p| p.parse().ok()).collect::<Option<_>>()?;
-    let [h, m, s] = hms[..] else {
-        return None;
-    };
-    // Days from 1970-01-01 (Howard Hinnant's days_from_civil).
-    let y = if month <= 2 { year - 1 } else { year };
-    let era = y.div_euclid(400);
-    let yoe = y - era * 400;
-    let doy = (153 * (month + if month > 2 { -3 } else { 9 }) + 2) / 5 + day - 1;
-    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
-    let days = era * 146_097 + doe - 719_468;
-    Some(((days * 86_400 + h * 3600 + m * 60 + s) * 1000) as f64)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -937,19 +888,10 @@ mod tests {
         assert_eq!(js_parse_float("-Infinity"), f64::NEG_INFINITY);
         assert!(js_parse_float("Thu, 01 Jan").is_nan());
         assert!(js_parse_float(".").is_nan());
-        assert_eq!(js_number(" 5 "), 5.0);
-        assert_eq!(js_number(""), 0.0);
-        assert!(js_number("soon").is_nan());
-        assert!(js_number("5s").is_nan());
-        // Date.parse("Thu, 01 Jan 2026 00:00:01 GMT"), Date.parse("Sun, 06 Nov 1994 08:49:37 GMT")
-        assert_eq!(
-            parse_http_date("Thu, 01 Jan 2026 00:00:01 GMT"),
-            Some(1_767_225_601_000.0)
-        );
-        assert_eq!(
-            parse_http_date("Sun, 06 Nov 1994 08:49:37 GMT"),
-            Some(784_111_777_000.0)
-        );
-        assert_eq!(parse_http_date("soon"), None);
+        // The device-code `interval` string is `Number(text)`.
+        assert_eq!(jsrt::number::parse(" 5 "), 5.0);
+        assert_eq!(jsrt::number::parse(""), 0.0);
+        assert!(jsrt::number::parse("soon").is_nan());
+        assert!(jsrt::number::parse("5s").is_nan());
     }
 }

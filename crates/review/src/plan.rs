@@ -11,7 +11,6 @@
 use indexmap::IndexMap;
 use serde::{Deserialize, Serialize};
 
-use crate::js::{flatten, head16, len16, number, round, to_fixed};
 use crate::settings::SIGNATURE;
 
 pub const LEVELS: [&str; 5] = ["critical", "high", "medium", "low", "nit"];
@@ -392,19 +391,19 @@ pub fn comment_marker(key: &str) -> String {
 }
 
 fn short(text: &str, limit: usize) -> String {
-    let flat = flatten(text);
-    if len16(&flat) <= limit {
+    let flat = jsrt::string::flatten(text);
+    if jsrt::utf16::len(&flat) <= limit {
         return flat;
     }
     format!(
         "{}…",
-        head16(&flat, limit.saturating_sub(1).max(1)).trim_end_matches(crate::js::is_space)
+        jsrt::utf16::head(&flat, limit.saturating_sub(1).max(1)).trim_end_matches(jsrt::string::is_space)
     )
 }
 
 /// `text` ending as a sentence.
 fn sentence(text: &str) -> String {
-    let flat = flatten(text);
+    let flat = jsrt::string::flatten(text);
     if flat.is_empty() || flat.ends_with(['.', '!', '?', '…', ':']) {
         flat
     } else {
@@ -431,11 +430,17 @@ pub fn comment_text(finding: &EngineFinding) -> String {
         (None, Some(fix)) => sentence(fix),
         _ => String::new(),
     };
-    let room =
-        COMMENT_TARGET_CHARS as i64 - len16(&head) as i64 - if fix.is_empty() { 0 } else { len16(&fix) as i64 + 1 } - 1;
+    let room = COMMENT_TARGET_CHARS as i64
+        - jsrt::utf16::len(&head) as i64
+        - if fix.is_empty() {
+            0
+        } else {
+            jsrt::utf16::len(&fix) as i64 + 1
+        }
+        - 1;
     // The scenario is the evidence when there is one; else the reason.
     let evidence = match &finding.scenario {
-        Some(scenario) if !crate::js::trim(scenario).is_empty() => scenario.as_str(),
+        Some(scenario) if !jsrt::string::trim(scenario).is_empty() => scenario.as_str(),
         _ => finding.why.as_str(),
     };
     let middle = if room >= 40 && !evidence.is_empty() {
@@ -618,31 +623,31 @@ pub fn decide_verdict_in(
 
 fn seconds(ms: f64) -> String {
     if ms < 10_000.0 {
-        format!("{} s", to_fixed(ms / 1000.0, 1))
+        format!("{} s", jsrt::number::to_fixed(ms / 1000.0, 1))
     } else {
-        format!("{} s", number(round(ms / 1000.0)))
+        format!("{} s", jsrt::number::to_string(jsrt::number::round(ms / 1000.0)))
     }
 }
 
 fn tokens(count: f64) -> String {
     if count >= 1000.0 {
-        format!("{}k", number(round(count / 1000.0)))
+        format!("{}k", jsrt::number::to_string(jsrt::number::round(count / 1000.0)))
     } else {
-        number(count)
+        jsrt::number::to_string(count)
     }
 }
 
 /// One line of timing and cost.
 pub fn cost_line(result: &EngineResult) -> String {
     let cost = if result.usage.cost_usd > 0.0 {
-        format!(", ${}", to_fixed(result.usage.cost_usd, 2))
+        format!(", ${}", jsrt::number::to_fixed(result.usage.cost_usd, 2))
     } else {
         String::new()
     };
     format!(
         "Reviewed in {}: {} model calls, {} tokens{cost}.",
         seconds(result.timing.total_ms),
-        number(result.usage.frames),
+        jsrt::number::to_string(result.usage.frames),
         tokens(result.usage.tokens)
     )
 }
@@ -711,7 +716,7 @@ pub fn plan_review(result: &EngineResult, options: &PlanOptions) -> ReviewPlan {
     let mut comments: Vec<PlannedComment> = Vec::new();
     let mut in_summary = Vec::new();
     let mut over_cap = Vec::new();
-    let short_sha = head16(&options.head_sha, 7);
+    let short_sha = jsrt::utf16::head(&options.head_sha, 7);
     let ranked = rank_findings(result);
     let ranges = |file: &str| result.diff_lines.get(file).map(Vec::as_slice);
     for &index in &ranked {
@@ -773,7 +778,7 @@ pub fn plan_review(result: &EngineResult, options: &PlanOptions) -> ReviewPlan {
         .iter()
         .filter(|finding| finding.verification == "uncertain")
         .count();
-    let since = options.since_sha.as_deref().map(|sha| head16(sha, 7));
+    let since = options.since_sha.as_deref().map(|sha| jsrt::utf16::head(sha, 7));
 
     // Paragraph 1: what was checked and holds.
     let assurance: Vec<String> = result

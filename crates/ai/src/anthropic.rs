@@ -11,7 +11,7 @@ use crate::json::{parse_json_with_repair, parse_streaming_json};
 use crate::models::calculate_cost;
 use crate::options::{
     SimpleStreamOptions, StreamOptions, adjust_max_tokens_for_thinking, build_base_options,
-    clamp_max_tokens_to_context, now_ms, pi_user_agent,
+    clamp_max_tokens_to_context, pi_user_agent,
 };
 use crate::sse::{ServerSentEvent, SseDecoder};
 use crate::transcript::{
@@ -1082,7 +1082,7 @@ pub async fn stream(
     let compat = Compat::of(model);
     let context = resolve_transcript(context, compat.mid_convo_system_messages);
     let tools = current_tools(&context.messages);
-    let now = now_ms();
+    let now = jsrt::date::now_ms();
     let mut run = Run {
         output: AssistantMessage::pending(model, now),
         sink,
@@ -1214,7 +1214,7 @@ async fn drive(
             .get_or_insert_with(Vec::new)
             .push(AssistantMessageDiagnostic {
                 kind: "anthropic_input_transformations".into(),
-                timestamp: now_ms(),
+                timestamp: jsrt::date::now_ms(),
                 error: None,
                 details: Some(details),
             });

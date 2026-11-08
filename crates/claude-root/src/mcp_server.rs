@@ -82,8 +82,8 @@ pub fn parse_mcp_args(args: &[String]) -> Result<McpServerArgs, UsageError> {
         wake: false,
     };
     let count = |text: &str, flag: &str| -> Result<u64, UsageError> {
-        let number = session_file::js::to_number(&Value::String(text.to_string()));
-        if number.fract() != 0.0 || !(0.0..=9_007_199_254_740_991.0).contains(&number) {
+        let number = jsrt::number::parse(text);
+        if !(jsrt::number::is_safe_integer(number) && number >= 0.0) {
             return Err(UsageError(format!("{flag} must be a non-negative integer")));
         }
         Ok(number as u64)
@@ -418,7 +418,7 @@ fn open_runtime(
             if let Some(id) = claude_session_id.filter(|_| !args.child) {
                 crate::write_private(
                     &session_map_path(&agent_dir, id),
-                    &format!("{}\n", session_file::js::stringify(&metadata_json(&metadata))),
+                    &format!("{}\n", jsrt::json::stringify(&metadata_json(&metadata))),
                 )
                 .map_err(|e| e.to_string())?;
             }
@@ -817,7 +817,7 @@ impl Server {
                 // `String(request.request ?? "")`.
                 let inspect = match request.get("request") {
                     None | Some(Value::Null) => String::new(),
-                    other => crate::mcp_protocol::js_string(other),
+                    other => jsrt::value::string(other),
                 };
                 if !READ_ONLY_INSPECTIONS.contains(&inspect.as_str()) {
                     return Err(format!("not a read-only inspection: {inspect}"));
@@ -846,7 +846,7 @@ impl Server {
             "hook" => {
                 let event = match request.get("event") {
                     None | Some(Value::Null) => String::new(),
-                    other => crate::mcp_protocol::js_string(other),
+                    other => jsrt::value::string(other),
                 };
                 let input = match request.get("input") {
                     Some(Value::Object(input)) => input.clone(),
@@ -1035,7 +1035,7 @@ impl Server {
         let mut state = SessionPersona::from_json(session.value(STATE_NAMESPACE, STATE_KEY));
         let before = state.clone();
         let limits = resources::keep_going::Limits::from_env(&*self.env.var);
-        let out = change(&mut state, session_core::lane::now_ms(), limits);
+        let out = change(&mut state, jsrt::date::now_ms(), limits);
         if state != before {
             // A state that cannot be written is kept for this hook only; the next change writes it again.
             let _ = session.commit(&[session_journal::Write::set(STATE_NAMESPACE, STATE_KEY, state.to_json())]);
@@ -1129,7 +1129,7 @@ impl Server {
             let n = cells.0;
             cells.1.push(CellRecord {
                 n,
-                started_at: session_core::lane::now_ms(),
+                started_at: jsrt::date::now_ms(),
                 ended_at: None,
                 code: js_head(code, 400),
                 status: "running",
@@ -1148,7 +1148,7 @@ impl Server {
             .iter_mut()
             .find(|c| c.n == n)
         {
-            cell.ended_at = Some(session_core::lane::now_ms());
+            cell.ended_at = Some(jsrt::date::now_ms());
             cell.status = if result.is_error { "error" } else { "ok" };
             cell.output = result
                 .content
@@ -1326,18 +1326,18 @@ pub fn start(argv: &[String], ctx: &Ctx) -> Result<(Arc<Running>, Arc<Handlers>)
         .map(|v| v.trim().to_string())
         .filter(|v| !v.is_empty());
     let claude_pid = var("CLAUDE_PID")
-        .map(|v| session_file::js::to_number(&Value::String(v)))
+        .map(|v| jsrt::number::parse(&v))
         .filter(|n| *n != 0.0 && n.is_finite() && n.fract() == 0.0 && *n > 0.0)
         .map(|n| n as u64);
     let resolved = resolve(&args, &*var, &env.cwd, &agent_dir);
     let name = if args.child {
-        format!("child-{}-{}", std::process::id(), crate::random_hex(3))
+        format!("child-{}-{}", std::process::id(), jsrt::random::random_hex(3))
     } else {
         claude_session_id.clone().unwrap_or_else(|| {
             format!(
                 "mcp-{}-{}",
                 std::process::id(),
-                crate::launcher::base36(session_core::lane::now_ms() as u64)
+                crate::launcher::base36(jsrt::date::now_ms() as u64)
             )
         })
     };
@@ -1351,7 +1351,7 @@ pub fn start(argv: &[String], ctx: &Ctx) -> Result<(Arc<Running>, Arc<Handlers>)
         pid: std::process::id(),
         socket,
         cwd,
-        started_at: session_core::lane::now_ms(),
+        started_at: jsrt::date::now_ms(),
         claude_session_id: claude_session_id.clone(),
         claude_pid,
         session_id: None,
@@ -1533,7 +1533,7 @@ fn claude_subagents(
                     timeout_ms: run.timeout_ms,
                     model: format!("claude-code/{model}"),
                 };
-                let token = crate::random_hex(24);
+                let token = jsrt::random::random_hex(24);
                 server
                     .child_tokens
                     .lock()

@@ -7,6 +7,7 @@ use std::rc::Rc;
 use serde_json::Value;
 
 use crate::word_diff::diff_words;
+use jsrt::{number, string};
 use tui::components::{Component, Container, Panel, Spacer, Text};
 use tui::image::{image_dimensions, image_fallback};
 use tui::keybindings::KeybindingsManager;
@@ -14,7 +15,7 @@ use tui::markdown::{DefaultTextStyle, Markdown, MarkdownOptions, MarkdownTheme};
 use tui::marked::markdown_tokens;
 use tui::select::{Loader, StyleFn};
 use tui::theme::Theme;
-use tui::utils::{is_whitespace_char, strip_terminal_sequences, truncate_to_width, visible_width};
+use tui::utils::{strip_terminal_sequences, truncate_to_width, visible_width};
 
 const OSC133_ZONE_START: &str = "\x1b]133;A\x07";
 const OSC133_ZONE_END_FINAL: &str = "\x1b]133;B\x07\x1b]133;C\x07";
@@ -283,13 +284,9 @@ pub struct AssistantMessage {
     pub code_highlight: Option<crate::qol::CodeHighlight>,
 }
 
-fn js_trim(s: &str) -> &str {
-    s.trim_matches(is_whitespace_char)
-}
-
 fn visible(b: &AssistantBlock) -> bool {
     match b {
-        AssistantBlock::Text(t) | AssistantBlock::Thinking(t) => !js_trim(t).is_empty(),
+        AssistantBlock::Text(t) | AssistantBlock::Thinking(t) => !string::trim(t).is_empty(),
         AssistantBlock::ToolCall => false,
     }
 }
@@ -326,10 +323,10 @@ impl AssistantMessage {
         let mut i = 0;
         while i < content.len() {
             match &content[i] {
-                AssistantBlock::Text(t) if !js_trim(t).is_empty() => {
+                AssistantBlock::Text(t) if !string::trim(t).is_empty() => {
                     c.children.push(Box::new(markdown_with(
                         theme,
-                        js_trim(t),
+                        string::trim(t),
                         pad,
                         None,
                         MarkdownOptions::default(),
@@ -339,8 +336,8 @@ impl AssistantMessage {
                 AssistantBlock::Thinking(_) => {
                     let mut blocks = Vec::new();
                     while let Some(AssistantBlock::Thinking(t)) = content.get(i) {
-                        if !js_trim(t).is_empty() {
-                            blocks.push(js_trim(t));
+                        if !string::trim(t).is_empty() {
+                            blocks.push(string::trim(t));
                         }
                         i += 1;
                     }
@@ -502,12 +499,12 @@ fn parse_diff_line(line: &str) -> Option<(char, &str, &str)> {
     let mut chars = line.chars();
     let prefix = chars
         .next()
-        .filter(|c| *c == '+' || *c == '-' || is_whitespace_char(*c))?;
+        .filter(|c| *c == '+' || *c == '-' || string::is_space(*c))?;
     let rest = chars.as_str();
-    let ws = rest.len() - rest.trim_start_matches(is_whitespace_char).len();
+    let ws = rest.len() - rest.trim_start_matches(string::is_space).len();
     let digits = rest[ws..].bytes().take_while(u8::is_ascii_digit).count();
     let after = rest[ws + digits..].chars().next();
-    let split = if after.is_some_and(is_whitespace_char) {
+    let split = if after.is_some_and(string::is_space) {
         ws + digits
     } else if ws > 0 {
         rest[..ws].char_indices().last().map(|(i, _)| i)?
@@ -523,7 +520,7 @@ fn parse_diff_line(line: &str) -> Option<(char, &str, &str)> {
 }
 
 fn leading_ws(s: &str) -> &str {
-    &s[..s.len() - s.trim_start_matches(is_whitespace_char).len()]
+    &s[..s.len() - s.trim_start_matches(string::is_space).len()]
 }
 
 fn intra_line_diff(old: &str, new: &str) -> (String, String) {
@@ -1188,45 +1185,14 @@ pub struct FooterView {
     pub statuses: Vec<(String, String)>,
 }
 
-/// `Number.prototype.toFixed(digits)`: exact decimal expansion, ties rounded away from zero.
-pub fn js_to_fixed(x: f64, digits: usize) -> String {
-    let exact = format!("{:.1100}", x.abs());
-    let (int, frac) = exact.split_once('.').unwrap_or((&exact, ""));
-    let mut d: Vec<u8> = format!("{int}{}", &frac[..digits]).into_bytes();
-    if frac.as_bytes()[digits] >= b'5' {
-        let mut i = d.len();
-        loop {
-            if i == 0 {
-                d.insert(0, b'1');
-                break;
-            }
-            i -= 1;
-            if d[i] == b'9' {
-                d[i] = b'0';
-            } else {
-                d[i] += 1;
-                break;
-            }
-        }
-    }
-    let s = String::from_utf8(d).unwrap_or_default();
-    let (a, b) = s.split_at(s.len() - digits);
-    let sign = if x < 0.0 { "-" } else { "" };
-    if digits == 0 {
-        format!("{sign}{a}")
-    } else {
-        format!("{sign}{a}.{b}")
-    }
-}
-
 /// `formatTokens`.
 pub fn format_tokens(count: u64) -> String {
     let c = count as f64;
     match count {
         0..1_000 => count.to_string(),
-        1_000..10_000 => format!("{}k", js_to_fixed(c / 1000.0, 1)),
+        1_000..10_000 => format!("{}k", number::to_fixed(c / 1000.0, 1)),
         10_000..1_000_000 => format!("{}k", (c / 1000.0).round()),
-        1_000_000..10_000_000 => format!("{}M", js_to_fixed(c / 1_000_000.0, 1)),
+        1_000_000..10_000_000 => format!("{}M", number::to_fixed(c / 1_000_000.0, 1)),
         _ => format!("{}M", (c / 1_000_000.0).round()),
     }
 }
@@ -1259,7 +1225,7 @@ fn sanitize_status(text: &str) -> String {
             out.push(c);
         }
     }
-    out.trim_matches(is_whitespace_char).to_string()
+    out.trim_matches(string::is_space).to_string()
 }
 
 /// `FooterComponent.render`: the cwd line, the stats line with the model on the right, and extension statuses.
@@ -1287,14 +1253,14 @@ pub fn render_footer(theme: &Theme, v: &FooterView, width: usize) -> Vec<String>
         .latest_cache_hit_rate
         .filter(|_| v.cache_read > 0 || v.cache_write > 0)
     {
-        stats.push(format!("CH{}%", js_to_fixed(rate, 1)));
+        stats.push(format!("CH{}%", number::to_fixed(rate, 1)));
     }
     let model = v.model.as_ref();
     let subscription = model.is_some_and(|m| m.provider == "kimi-coding" || v.using_subscription);
     if v.cost != 0.0 || subscription {
         stats.push(format!(
             "${}{}",
-            js_to_fixed(v.cost, 3),
+            number::to_fixed(v.cost, 3),
             if subscription { " (sub)" } else { "" }
         ));
     }
@@ -1304,7 +1270,11 @@ pub fn render_footer(theme: &Theme, v: &FooterView, width: usize) -> Vec<String>
     let auto = if v.auto_compact && !claude_code { " (auto)" } else { "" };
     let display = match v.context_percent {
         Some(None) => format!("?/{}{auto}", format_tokens(window)),
-        _ => format!("{}%/{}{auto}", js_to_fixed(percent_value, 1), format_tokens(window)),
+        _ => format!(
+            "{}%/{}{auto}",
+            number::to_fixed(percent_value, 1),
+            format_tokens(window)
+        ),
     };
     stats.push(if percent_value > 90.0 {
         fg(theme, "error", &display)

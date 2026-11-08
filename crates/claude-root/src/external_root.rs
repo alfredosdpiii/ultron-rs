@@ -100,8 +100,8 @@ impl ExternalRoot {
             state: Mutex::default(),
             prefix: format!(
                 "cc-{}-{}",
-                crate::launcher::base36(session_core::lane::now_ms() as u64),
-                crate::random_hex(4)
+                crate::launcher::base36(jsrt::date::now_ms() as u64),
+                jsrt::random::random_hex(4)
             ),
             events,
             runner,
@@ -214,7 +214,7 @@ impl ExternalRoot {
     }
 
     fn lock(&self) -> std::sync::MutexGuard<'_, State> {
-        self.state.lock().unwrap_or_else(PoisonError::into_inner)
+        jsrt::sync::lock(&self.state)
     }
 
     /// Move completions that arrived into the inbox (the async dispatcher's sink).

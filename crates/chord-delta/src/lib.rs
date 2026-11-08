@@ -114,20 +114,6 @@ fn path_error(path: &[Seg]) -> DeltaError {
     DeltaError::Path(path_json(path).to_string())
 }
 
-/// JavaScript `String(value)`, for error messages that echo untrusted input.
-fn js_string(value: &Value) -> String {
-    match value {
-        Value::String(text) => text.clone(),
-        Value::Array(items) => items
-            .iter()
-            .map(|item| if item.is_null() { String::new() } else { js_string(item) })
-            .collect::<Vec<_>>()
-            .join(","),
-        Value::Object(_) => "[object Object]".to_owned(),
-        other => other.to_string(),
-    }
-}
-
 /// `Number.isInteger(value) && value >= 0`, saturated to `usize`.
 fn non_negative_int(value: &Value) -> Option<usize> {
     if let Some(n) = value.as_u64() {
@@ -147,7 +133,7 @@ fn parse_seg(value: &Value) -> Result<Seg> {
     }
     match non_negative_int(value) {
         Some(index) if index != usize::MAX => Ok(Seg::Index(index)),
-        _ => Err(DeltaError::UnsafePath(js_string(value))),
+        _ => Err(DeltaError::UnsafePath(jsrt::value::string(Some(value)))),
     }
 }
 
@@ -191,7 +177,12 @@ impl Op {
         };
         let verb = match &op[0] {
             Value::String(verb) => verb.as_str(),
-            other => return Err(DeltaError::Invalid(format!("unknown op verb: {}", js_string(other)))),
+            other => {
+                return Err(DeltaError::Invalid(format!(
+                    "unknown op verb: {}",
+                    jsrt::value::string(Some(other))
+                )));
+            }
         };
         match verb {
             "r" if op.len() == 2 => Ok(Op::Replace(op[1].clone())),
@@ -535,7 +526,12 @@ pub fn validate_wire_op(value: &Value) -> Result<()> {
     let count = |v: &Value, message: &str| non_negative_int(v).map(|_| ()).map_or_else(|| invalid(message), Ok);
     let verb = match &op[0] {
         Value::String(verb) => verb.as_str(),
-        other => return Err(DeltaError::Invalid(format!("unknown op verb: {}", js_string(other)))),
+        other => {
+            return Err(DeltaError::Invalid(format!(
+                "unknown op verb: {}",
+                jsrt::value::string(Some(other))
+            )));
+        }
     };
     match (verb, op.len()) {
         ("r", 2) | ("s", 2) | ("d", 1) => Ok(()),

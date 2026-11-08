@@ -35,8 +35,7 @@ pub fn to_json(value: &Value) -> Json {
         Value::Null | Value::Bytes(_) => Json::Null,
         Value::Bool(b) => Json::Bool(*b),
         Value::Int(n) => Json::from(*n),
-        Value::Float(f) if f.fract() == 0.0 && f.abs() < 9e15 => Json::from(*f as i64),
-        Value::Float(f) => serde_json::Number::from_f64(*f).map_or(Json::Null, Json::Number),
+        Value::Float(f) => jsrt::json::number(*f),
         Value::Text(s) => Json::String(s.clone()),
         Value::Array(items) => Json::Array(items.iter().map(to_json).collect()),
         Value::Map(entries) => Json::Object(entries.iter().map(|(k, v)| (k.clone(), to_json(v))).collect()),
@@ -214,7 +213,11 @@ impl Replica {
                 let Some(decoder) = decoder else {
                     let name = match instance.is_null() {
                         true => member.to_string(),
-                        false => format!("{}@{}.{member}", js(&instance["key"]), js(&instance["generation"])),
+                        false => format!(
+                            "{}@{}.{member}",
+                            jsrt::value::string(Some(&instance["key"])),
+                            jsrt::value::string(Some(&instance["generation"]))
+                        ),
                     };
                     return Err(UpdateError::Fatal(format!("Unknown service state {name}")));
                 };
@@ -280,14 +283,6 @@ impl Replica {
             }
             Err(UpdateError::Fatal(error)) => Err(error),
         }
-    }
-}
-
-/// JavaScript template interpolation of a JSON scalar.
-fn js(value: &Json) -> String {
-    match value {
-        Json::String(s) => s.clone(),
-        other => other.to_string(),
     }
 }
 
@@ -425,7 +420,7 @@ impl Connection {
     }
 
     fn lock(&self) -> MutexGuard<'_, Shared> {
-        self.shared.0.lock().unwrap_or_else(|e| e.into_inner())
+        jsrt::sync::lock(&self.shared.0)
     }
 
     fn write(&self, message: &ClientMessage) -> Result<(), CallError> {

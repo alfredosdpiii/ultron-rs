@@ -19,6 +19,8 @@ mod gateway_fixture;
 mod http_fixture;
 #[path = "http_resumption.rs"]
 mod http_resumption;
+#[path = "js_parity.rs"]
+mod js_parity;
 #[path = "oauth_fixture.rs"]
 mod oauth_fixture;
 #[path = "oauth_ported.rs"]

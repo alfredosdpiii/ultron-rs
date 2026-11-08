@@ -14,7 +14,6 @@
 use crate::Env;
 use daemon::server::{ServerOptions, serve};
 use daemon::workers::WorkerModel;
-use sha2::{Digest, Sha256};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -66,9 +65,8 @@ pub fn unit_dir(env: &Env) -> PathBuf {
 
 /// `ultron-durable-<12 hex of the instance directory>.service`.
 pub fn unit_name(instance_dir: &Path) -> String {
-    let digest = Sha256::digest(instance_dir.as_os_str().as_encoded_bytes());
-    let hex: String = digest.iter().take(6).map(|b| format!("{b:02x}")).collect();
-    format!("ultron-durable-{hex}.service")
+    let hex = jsrt::hash::sha256_hex(instance_dir.as_os_str().as_encoded_bytes());
+    format!("ultron-durable-{}.service", &hex[..12])
 }
 
 /// The first executable `systemctl` on the injected `PATH`.

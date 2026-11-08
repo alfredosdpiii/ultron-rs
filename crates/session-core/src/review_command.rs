@@ -6,23 +6,9 @@
 //! `prompt`, `steer`, `followUp` and `nextRun`), so the TUI, queued messages, `ultron -p "/review"` and RPC clients
 //! behave the same. Clients send `/review <args>` as typed.
 
-/// JavaScript's `\s` (WhiteSpace and LineTerminator), which is also what `String.prototype.trim` removes. It differs
-/// from Rust's `char::is_whitespace`: it includes U+FEFF and excludes U+0085.
-fn js_space(c: char) -> bool {
-    matches!(
-        c,
-        '\t' | '\n' | '\u{0b}' | '\u{0c}' | '\r' | ' ' | '\u{a0}' | '\u{1680}' | '\u{2000}'
-            ..='\u{200a}' | '\u{2028}' | '\u{2029}' | '\u{202f}' | '\u{205f}' | '\u{3000}' | '\u{feff}'
-    )
-}
-
-fn js_trim(text: &str) -> &str {
-    text.trim_matches(js_space)
-}
-
 /// `reviewPrompt`: the model-facing prompt for `/review <args>`.
 pub fn review_prompt(args: &str) -> String {
-    let trimmed = js_trim(args);
+    let trimmed = jsrt::string::trim(args);
     // A JSON string literal is a valid Python string literal for any argument text.
     let literal = serde_json::to_string(trimmed).unwrap_or_else(|_| "\"\"".into());
     let mut lines = vec![
@@ -52,20 +38,20 @@ fn posts(args: &str) -> bool {
     args.match_indices("--post").any(|(at, flag)| {
         let before = args[..at].chars().next_back();
         let after = args[at + flag.len()..].chars().next();
-        before.is_none_or(js_space) && after.is_none_or(|c| js_space(c) || c == '=')
+        before.is_none_or(jsrt::string::is_space) && after.is_none_or(|c| jsrt::string::is_space(c) || c == '=')
     })
 }
 
 /// `expandReviewCommand`: `/review [args]` (after trimming; `/^\/review(?:\s+([\s\S]*))?$/`) becomes the review
 /// prompt; any other text is returned unchanged.
 pub fn expand_review_command(text: &str) -> String {
-    let Some(rest) = js_trim(text).strip_prefix("/review") else {
+    let Some(rest) = jsrt::string::trim(text).strip_prefix("/review") else {
         return text.to_string();
     };
     if rest.is_empty() {
         return review_prompt("");
     }
-    if rest.starts_with(js_space) {
+    if rest.starts_with(jsrt::string::is_space) {
         return review_prompt(rest);
     }
     text.to_string()

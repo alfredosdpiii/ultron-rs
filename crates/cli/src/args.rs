@@ -83,19 +83,14 @@ pub struct Args {
 
 /// `normalizeSessionName`: the trimmed name, or `None` when blank.
 pub fn normalize_session_name(value: &str) -> Option<String> {
-    let name = js_trim(value);
+    let name = jsrt::string::trim(value);
     (!name.is_empty()).then(|| name.to_string())
-}
-
-/// `String.prototype.trim`: JS whitespace and line terminators, which `char::is_whitespace` covers plus U+FEFF.
-fn js_trim(value: &str) -> &str {
-    value.trim_matches(|c: char| c.is_whitespace() || c == '\u{feff}')
 }
 
 fn split_list(value: &str, drop_empty: bool) -> Vec<String> {
     value
         .split(',')
-        .map(|s| js_trim(s).to_string())
+        .map(|s| jsrt::string::trim(s).to_string())
         .filter(|s| !drop_empty || !s.is_empty())
         .collect()
 }

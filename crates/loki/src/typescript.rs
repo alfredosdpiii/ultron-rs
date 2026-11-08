@@ -251,15 +251,6 @@ fn diagnostics(
     })
 }
 
-fn sha256(bytes: &[u8]) -> [u8; 32] {
-    use sha2::{Digest, Sha256};
-    Sha256::digest(bytes).into()
-}
-
-fn hex(bytes: &[u8]) -> String {
-    bytes.iter().map(|b| format!("{b:02x}")).collect()
-}
-
 /// The marker naming one exact candidate tree: base, config and changes.
 fn typescript_state(
     root: &Path,
@@ -276,19 +267,19 @@ fn typescript_state(
     }
     let mut digest = Sha256::new();
     digest.update(format!("{base}\0").as_bytes());
-    digest.update(sha256(config));
+    digest.update(jsrt::hash::sha256(config));
     for (name, content) in &files {
-        digest.update(sha256(name.as_bytes()));
+        digest.update(jsrt::hash::sha256(name.as_bytes()));
         match content {
             None => digest.update(b"-"),
-            Some(bytes) => digest.update(sha256(bytes)),
+            Some(bytes) => digest.update(jsrt::hash::sha256(bytes)),
         }
     }
-    let identity = hex(&sha256(resolve(root).as_os_str().as_encoded_bytes()));
+    let identity = jsrt::hash::sha256_hex(resolve(root).as_os_str().as_encoded_bytes());
     let home = PathBuf::from(std::env::var("HOME").unwrap_or_else(|_| "/".into()));
     home.join(".cache/loki/typescript")
         .join(&identity[..16])
-        .join(hex(&digest.finalize()))
+        .join(jsrt::hash::hex(&digest.finalize()))
 }
 
 static JSONC_TOKEN: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {

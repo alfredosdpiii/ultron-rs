@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 
 use serde_json::{Map, Value};
 
-use crate::json::{parse, stringify_pretty};
+use crate::json::parse;
 use crate::lock::{SYNC_ATTEMPTS, SYNC_STALE, acquire};
 use crate::paths::{CONFIG_DIR_NAME, normalize};
 
@@ -208,10 +208,9 @@ impl ProjectTrustStore {
                 };
             }
             let mut keys: Vec<&String> = data.keys().collect();
-            // JavaScript's default sort compares UTF-16 code units.
-            keys.sort_by(|a, b| a.encode_utf16().cmp(b.encode_utf16()));
+            jsrt::utf16::sort(&mut keys);
             let sorted: Map<String, Value> = keys.into_iter().map(|k| (k.clone(), data[k].clone())).collect();
-            let text = format!("{}\n", stringify_pretty(&Value::Object(sorted)));
+            let text = format!("{}\n", jsrt::json::stringify_pretty(&Value::Object(sorted)));
             fs::write(&self.path, text).map_err(|e| e.to_string())
         })
     }

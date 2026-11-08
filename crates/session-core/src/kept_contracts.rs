@@ -25,12 +25,13 @@ use delegation::git_baseline::GitBaseline;
 use delegation::spawn_contract::{CheckPlace, Enforcer, SPAWN_KEYS, SpawnContract, enforce_after};
 use delegation::verdict::MAX_VERDICT_REJECTIONS;
 use delegation::workspace::{DEFAULT_MAX_SNAPSHOT_ENTRIES, WorkspaceSnapshot, diff_snapshots, snapshot_workspace};
+use jsrt::sync;
 use kernel::Signal;
 use serde_json::{Map, Value, json};
 use session_journal::Write;
 use std::cell::Cell;
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex, PoisonError, Weak};
+use std::sync::{Arc, Mutex, Weak};
 
 /// Where the session keeps each kept child's contract.
 pub const KEPT_CONTRACTS_NAMESPACE: &str = "ultron.kept-contracts";
@@ -59,10 +60,6 @@ fn final_error(contract: &SpawnContract) -> String {
 
 fn count(kept: &Value, key: &str) -> u32 {
     kept[key].as_u64().map_or(0, |n| n.min(u64::from(u32::MAX)) as u32)
-}
-
-fn guard<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
-    mutex.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
 impl KeptContracts {
@@ -131,7 +128,7 @@ impl KeptContracts {
         }
         self.keep(&id, kept)?;
         if let Some(before) = before {
-            guard(&self.before).insert(id, before);
+            sync::lock(&self.before).insert(id, before);
         }
         Ok(handle)
     }
@@ -222,7 +219,7 @@ impl KeptContracts {
 
     /// `rlm.ask`'s answer from kept child `id` (`{"id", "status", "value" | "error"}`), held to its contract.
     pub fn ask_answer(&self, id: &str, answer: Value, lane: &str, signal: &Signal, serve: Serve<'_>) -> Value {
-        let _checking = guard(&self.checking);
+        let _checking = sync::lock(&self.checking);
         let Some(kept) = self.kept(id) else {
             return answer;
         };
@@ -248,7 +245,7 @@ impl KeptContracts {
             let Some(id) = report["id"].as_str().map(String::from) else {
                 continue;
             };
-            let _checking = guard(&self.checking);
+            let _checking = sync::lock(&self.checking);
             let Some(mut kept) = self.kept(&id) else {
                 continue;
             };
@@ -307,7 +304,7 @@ impl KeptContracts {
                 .kept(id)
                 .map(|kept| kept["verdict"].clone())
                 .filter(|v| !v.is_null());
-            let before = guard(&self.before).get(id).cloned();
+            let before = sync::lock(&self.before).get(id).cloned();
             let diff = match (&before, &baseline) {
                 (Some(before), _) => {
                     diff_snapshots(before, &snapshot_workspace(&cwd, DEFAULT_MAX_SNAPSHOT_ENTRIES, true)).ok()

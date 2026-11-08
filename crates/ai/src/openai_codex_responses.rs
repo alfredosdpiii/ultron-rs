@@ -15,15 +15,15 @@ use crate::constrained::grammar_tool_input_properties;
 use crate::http::{
     AbortSignal, Body, HeaderBuilder, HttpRequest, HttpResponse, Read, Transport, cancelled, is_aborted, read_chunk,
 };
-use crate::json::{parse_json, stringify};
-use crate::jsutil::{Utf8Stream, atob, js_trim, latin1};
+use crate::json::parse_json;
+use crate::jsutil::{Utf8Stream, latin1};
 use crate::models::clamp_thinking_level;
 use crate::openai_prompt_cache::clamp_openai_prompt_cache_key;
 use crate::openai_responses::{
     ConvertOptions, OPENAI_TOOL_CALL_PROVIDERS, ResponsesRun, TierPricing, ToolOptions, convert_responses_messages,
     convert_responses_tools,
 };
-use crate::options::{SimpleStreamOptions, StreamOptions, build_base_options, now_ms, pi_user_agent};
+use crate::options::{SimpleStreamOptions, StreamOptions, build_base_options, pi_user_agent};
 use crate::transcript::{
     declared_tools, initial_system_message, resolve_transcript, resolve_transcript_tools, system_message_text,
 };
@@ -73,24 +73,17 @@ pub fn extract_account_id(token: &str) -> Result<String, String> {
     if parts.len() != 3 {
         return Err(fail());
     }
-    let payload = parse_json(&latin1(&atob(parts[1]).ok_or_else(fail)?)).map_err(|_| fail())?;
+    let payload = parse_json(&latin1(&jsrt::base64::atob(parts[1]).ok_or_else(fail)?)).map_err(|_| fail())?;
     match payload.get(JWT_CLAIM_PATH).and_then(|c| c.get("chatgpt_account_id")) {
         Some(Value::String(id)) if !id.is_empty() => Ok(id.clone()),
-        Some(value) if !matches!(value, Value::Null | Value::Bool(false)) && value != &json!(0) => Ok(js_string(value)),
+        Some(value) if jsrt::value::truthy(Some(value)) => Ok(jsrt::value::string(Some(value))),
         _ => Err(fail()),
-    }
-}
-
-fn js_string(value: &Value) -> String {
-    match value {
-        Value::String(s) => s.clone(),
-        other => stringify(other),
     }
 }
 
 /// `resolveCodexUrl`.
 pub fn resolve_codex_url(base_url: &str) -> String {
-    let raw = if js_trim(base_url).is_empty() {
+    let raw = if jsrt::string::trim(base_url).is_empty() {
         DEFAULT_CODEX_BASE_URL
     } else {
         base_url
@@ -251,24 +244,8 @@ fn sse_headers(
 fn normalize_timeout_ms(value: Option<f64>) -> Result<Option<u64>, String> {
     match value {
         None => Ok(None),
-        Some(v) if !v.is_finite() || v < 0.0 => Err(format!("Invalid timeoutMs: {}", js_number(v))),
+        Some(v) if !v.is_finite() || v < 0.0 => Err(format!("Invalid timeoutMs: {}", jsrt::number::to_string(v))),
         Some(v) => Ok(Some(v.floor() as u64)),
-    }
-}
-
-fn js_number(value: f64) -> String {
-    if value.is_nan() {
-        "NaN".into()
-    } else if value.is_infinite() {
-        if value > 0.0 {
-            "Infinity".into()
-        } else {
-            "-Infinity".into()
-        }
-    } else if value.fract() == 0.0 && value.abs() < 1e21 {
-        format!("{}", value as i64)
-    } else {
-        format!("{value}")
     }
 }
 
@@ -365,36 +342,16 @@ fn is_retryable_error(status: u16, text: &str) -> bool {
         || crate::jsutil::loose_match(text, "connection", "refused")
 }
 
-/// `Number(text)` for a header value: blank is 0, otherwise the whole trimmed text must be numeric.
-fn js_to_number(text: &str) -> Option<f64> {
-    let trimmed = js_trim(text);
-    if trimmed.is_empty() {
-        return Some(0.0);
-    }
-    if let Some(hex) = trimmed.strip_prefix("0x").or_else(|| trimmed.strip_prefix("0X")) {
-        return u64::from_str_radix(hex, 16).ok().map(|v| v as f64);
-    }
-    match trimmed {
-        "Infinity" | "+Infinity" => return Some(f64::INFINITY),
-        "-Infinity" => return Some(f64::NEG_INFINITY),
-        _ => {}
-    }
-    if trimmed.chars().any(|c| c.is_ascii_alphabetic() && c != 'e' && c != 'E') {
-        return None;
-    }
-    trimmed.parse::<f64>().ok()
-}
-
 /// `getRetryAfterDelayMs`: `retry-after-ms`, else `retry-after` in seconds, else as an HTTP date (the time until
 /// then, at least 0).
 fn retry_after_delay_ms(headers: &crate::http::HeaderMap) -> Option<f64> {
     if let Some(value) = headers.get("retry-after-ms")
-        && let Some(millis) = js_to_number(value).filter(|m| m.is_finite())
+        && let Some(millis) = Some(jsrt::number::parse(value)).filter(|m| m.is_finite())
     {
         return Some(millis.max(0.0));
     }
     let retry_after = headers.get("retry-after").filter(|v| !v.is_empty())?;
-    if let Some(seconds) = js_to_number(retry_after).filter(|s| s.is_finite()) {
+    if let Some(seconds) = Some(jsrt::number::parse(retry_after)).filter(|s| s.is_finite()) {
         return Some((seconds * 1000.0).max(0.0));
     }
     crate::http::until_http_date_ms(retry_after).map(|ms| ms.max(0.0))
@@ -430,16 +387,6 @@ fn status_text(status: u16) -> String {
         .to_string()
 }
 
-fn js_truthy(value: Option<&Value>) -> bool {
-    match value {
-        None | Some(Value::Null) => false,
-        Some(Value::Bool(b)) => *b,
-        Some(Value::Number(n)) => n.as_f64().is_some_and(|f| f != 0.0),
-        Some(Value::String(s)) => !s.is_empty(),
-        Some(_) => true,
-    }
-}
-
 /// `parseErrorResponse`: the error message, and a friendly one for ChatGPT usage limits.
 pub fn parse_error_response(status: u16, raw: &str, now: i64) -> (String, Option<String>) {
     let mut message = if !raw.is_empty() {
@@ -450,13 +397,13 @@ pub fn parse_error_response(status: u16, raw: &str, now: i64) -> (String, Option
     };
     let mut friendly = None;
     if let Ok(parsed) = parse_json(raw)
-        && let Some(err) = parsed.get("error").filter(|e| js_truthy(Some(e)))
+        && let Some(err) = parsed.get("error").filter(|e| jsrt::value::truthy(Some(e)))
     {
         let code = [err.get("code"), err.get("type")]
             .into_iter()
-            .find(|v| js_truthy(*v))
+            .find(|v| jsrt::value::truthy(*v))
             .flatten()
-            .map(js_string)
+            .map(|v| jsrt::value::string(Some(v)))
             .unwrap_or_default();
         let lower = code.to_lowercase();
         if lower.contains("usage_limit_reached")
@@ -464,25 +411,26 @@ pub fn parse_error_response(status: u16, raw: &str, now: i64) -> (String, Option
             || lower.contains("rate_limit_exceeded")
             || status == 429
         {
-            let plan = match err.get("plan_type").filter(|p| js_truthy(Some(p))) {
-                Some(plan) => format!(" ({} plan)", js_string(plan).to_lowercase()),
+            let plan = match err.get("plan_type").filter(|p| jsrt::value::truthy(Some(p))) {
+                Some(plan) => format!(" ({} plan)", jsrt::value::string(Some(plan)).to_lowercase()),
                 None => String::new(),
             };
             let when = match err
                 .get("resets_at")
-                .filter(|r| js_truthy(Some(r)))
+                .filter(|r| jsrt::value::truthy(Some(r)))
                 .and_then(Value::as_f64)
             {
                 Some(resets_at) => {
                     let minutes = ((resets_at * 1000.0 - now as f64) / 60000.0 + 0.5).floor().max(0.0);
-                    format!(" Try again in ~{} min.", js_number(minutes))
+                    format!(" Try again in ~{} min.", jsrt::number::to_string(minutes))
                 }
                 None => String::new(),
             };
-            friendly = Some(js_trim(&format!("You have hit your ChatGPT usage limit{plan}.{when}")).to_string());
+            friendly =
+                Some(jsrt::string::trim(&format!("You have hit your ChatGPT usage limit{plan}.{when}")).to_string());
         }
-        if let Some(text) = err.get("message").filter(|m| js_truthy(Some(m))) {
-            message = js_string(text);
+        if let Some(text) = err.get("message").filter(|m| jsrt::value::truthy(Some(m))) {
+            message = jsrt::value::string(Some(text));
         } else if let Some(friendly) = &friendly {
             message = friendly.clone();
         }
@@ -502,7 +450,7 @@ struct CodexSse {
 impl CodexSse {
     fn frames(&mut self, text: &str, done: bool) -> Result<Vec<Value>, CodexError> {
         self.buffer.push_str(text);
-        if done && !js_trim(&self.buffer).is_empty() {
+        if done && !jsrt::string::trim(&self.buffer).is_empty() {
             self.buffer.push_str("\n\n");
         }
         let mut out = Vec::new();
@@ -512,13 +460,13 @@ impl CodexSse {
             let lines: Vec<&str> = chunk
                 .split('\n')
                 .filter(|l| l.starts_with("data:"))
-                .map(|l| js_trim(&l[5..]))
+                .map(|l| jsrt::string::trim(&l[5..]))
                 .collect();
             if lines.is_empty() {
                 continue;
             }
             let data = lines.join("\n");
-            let data = js_trim(&data);
+            let data = jsrt::string::trim(&data);
             if !data.is_empty() && data != "[DONE]" {
                 let value = parse_json(data).map_err(|e| {
                     let message = crate::jsutil::json_parse_error(data).unwrap_or_else(|| e.to_string());
@@ -545,7 +493,7 @@ fn map_codex_event(event: Value, output: &mut AssistantMessage) -> Result<Option
             let text = message
                 .filter(|m| !m.is_empty())
                 .or(code.clone().filter(|c| !c.is_empty()))
-                .unwrap_or_else(|| stringify(&event));
+                .unwrap_or_else(|| jsrt::json::stringify(&event));
             Err(CodexError::Api {
                 message: format!("Codex error: {text}"),
                 code,
@@ -642,7 +590,7 @@ pub async fn stream(
         context,
         model.compat_bool("supportsMidConvoSystemMessages").unwrap_or(false),
     );
-    let now = now_ms();
+    let now = jsrt::date::now_ms();
     let mut output = AssistantMessage::pending(model, now);
     output.api = "openai-codex-responses".into();
     let mut run = ResponsesRun::new(output, sink);
@@ -703,7 +651,7 @@ async fn drive(
     let websocket_request_id = codex_session_id
         .clone()
         .filter(|id| !id.is_empty())
-        .unwrap_or_else(websocket::uuid_v7);
+        .unwrap_or_else(|| jsrt::random::uuid_v7(jsrt::date::now_ms()));
     let headers = sse_headers(model, base, &account_id, &api_key, codex_session_id.as_deref()).build();
     let ws_headers = websocket_headers(model, base, &account_id, &api_key, &websocket_request_id).build();
     let body_json = serde_json::to_string(&body).unwrap_or_default();
@@ -783,7 +731,7 @@ async fn drive(
                 .get_or_insert_with(Vec::new)
                 .push(AssistantMessageDiagnostic {
                     kind: "provider_transport_failure".into(),
-                    timestamp: now_ms(),
+                    timestamp: jsrt::date::now_ms(),
                     error: Some(error.diagnostic()),
                     details: Some(details),
                 });
@@ -901,7 +849,7 @@ async fn send_with_codex_retry(
                 sleep(delay, signal).await?;
                 return Ok(None);
             }
-            let (message, friendly) = parse_error_response(response.status, &text, now_ms());
+            let (message, friendly) = parse_error_response(response.status, &text, jsrt::date::now_ms());
             Err(CodexError::Plain(friendly.unwrap_or(message)))
         }
         .await;

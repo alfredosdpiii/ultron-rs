@@ -9,12 +9,11 @@ use super::OAuthError;
 use super::flow::{StateStore, normalized_url};
 use crate::connection::SecretSink;
 use serde_json::{Map, Value};
-use sha2::{Digest, Sha256};
 use std::io::Write;
 use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime};
 
 /// A refresh lock its holder stopped renewing (the process was killed) is taken over after this.
 const REFRESH_LOCK_STALE: Duration = Duration::from_secs(20);
@@ -22,12 +21,6 @@ const REFRESH_LOCK_STALE: Duration = Duration::from_secs(20);
 const REFRESH_LOCK_WAIT: Duration = Duration::from_secs(25);
 /// How often the holder renews the lock: half the staleness, as `proper-lockfile`'s default `update`.
 const REFRESH_LOCK_RENEW: Duration = Duration::from_secs(10);
-
-pub fn now_ms() -> i64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0, |d| i64::try_from(d.as_millis()).unwrap_or(i64::MAX))
-}
 
 /// The credential file of a profile.
 pub struct CredentialStore {
@@ -59,10 +52,7 @@ fn parse_states(content: Option<&str>) -> Result<Map<String, Value>, OAuthError>
 }
 
 fn serialize_states(states: &Map<String, Value>) -> String {
-    format!(
-        "{}\n",
-        crate::edit::stringify_indented(&Value::Object(states.clone()), "  ")
-    )
+    format!("{}\n", jsrt::json::stringify_pretty(&Value::Object(states.clone())))
 }
 
 /// `mcp__<namespace>|<url>`, and the legacy key by URL alone.
@@ -94,11 +84,7 @@ impl CredentialStore {
     /// The lock directory of `key`'s refreshes.
     fn refresh_lock_path(&self, key: &str) -> Option<PathBuf> {
         let dir = self.lock_dir.as_ref()?;
-        let hash: String = Sha256::digest(key.as_bytes())
-            .iter()
-            .map(|b| format!("{b:02x}"))
-            .collect::<String>()[..16]
-            .to_string();
+        let hash = &jsrt::hash::sha256_hex(key)[..16];
         Some(config::lock::lock_path_for(
             &dir.join(format!("mcp-auth-refresh-{hash}")),
         ))

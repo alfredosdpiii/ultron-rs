@@ -21,21 +21,12 @@ fn number(value: Option<&Value>) -> Option<f64> {
     value.and_then(Value::as_f64)
 }
 
-/// A whole number back as an integer, so the payload serializes as JavaScript would.
-fn js_number(value: f64) -> Value {
-    if value.fract() == 0.0 && value.abs() < 9_007_199_254_740_992.0 {
-        json!(value as i64)
-    } else {
-        json!(value)
-    }
-}
-
 /// Lower `holder[key]` to `limit` (never under `floor`) when it is a number; whether it was.
 fn cap_field(holder: &mut Map<String, Value>, key: &str, limit: f64, floor: f64) -> bool {
     let Some(current) = number(holder.get(key)) else {
         return false;
     };
-    holder.insert(key.into(), js_number(floor.max(current.min(limit))));
+    holder.insert(key.into(), jsrt::json::number(floor.max(current.min(limit))));
     true
 }
 
@@ -64,8 +55,8 @@ pub fn cap_output_tokens(mut payload: Value, limit: u64, api: &str, provider: &s
         && let Some(budget) = number(thinking.get("budget_tokens"))
     {
         let adjusted = 1024f64.max(budget.min(max_tokens - 1.0));
-        thinking.insert("budget_tokens".into(), js_number(adjusted));
-        body.insert("max_tokens".into(), js_number(max_tokens.max(adjusted + 1.0)));
+        thinking.insert("budget_tokens".into(), jsrt::json::number(adjusted));
+        body.insert("max_tokens".into(), jsrt::json::number(max_tokens.max(adjusted + 1.0)));
     }
     if !capped && api == "openai-completions" {
         let key = if provider == "openai" || provider == "azure-openai" {

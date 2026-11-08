@@ -146,3 +146,18 @@ fn interactive_copy_rlm_cells_are_python_commands() {
     assert_eq!(blocks[0].content, "print(1)");
     assert_eq!(blocks[0].kind, Some(BlockKind::Command));
 }
+
+/// `firstLine` and link labels flatten with `replace(/\s+/g, " ").trim()`: U+FEFF is whitespace there and U+0085 is
+/// not (node 26: `"\u{feff}a\u{85}b\u{feff} c".replace(/\s+/g, " ").trim()` is `"a\u{85}b c"`).
+#[test]
+fn interactive_copy_flattens_javascript_whitespace() {
+    assert_eq!(
+        interactive::copy_targets::first_line("\n\u{feff}a\u{85}b\u{feff} c\nnext"),
+        "a\u{85}b c"
+    );
+    let links = extract_links("[a\u{85}b\u{feff}\u{feff}c](https://example.com/x)");
+    assert_eq!(
+        links.iter().map(|l| l.text.as_str()).collect::<Vec<_>>(),
+        ["a\u{85}b c"]
+    );
+}

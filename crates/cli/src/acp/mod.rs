@@ -467,7 +467,7 @@ impl Server {
                     .clone()
                     .unwrap_or_else(|| s.first_message.chars().take(80).collect());
                 json!({"sessionId": s.metadata.id, "cwd": s.metadata.cwd, "title": title,
-                    "updatedAt": session_file::js::iso_string(s.metadata.modified_at as i64)})
+                    "updatedAt": jsrt::date::iso_string(s.metadata.modified_at as i64)})
             })
             .collect();
         Ok(json!({"sessions": sessions}))

@@ -28,7 +28,7 @@ pub use session::Session;
 pub use state::{CommitResult, Write};
 pub use storage::JsonlStorage;
 
-use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
+use std::sync::{Arc, Mutex, MutexGuard};
 
 /// The clock and id source of a session (`Date.now()` and `uuidv7()` of `@ultron/ai`).
 pub trait Clock: Send {
@@ -42,7 +42,7 @@ pub trait Clock: Send {
 pub type SharedClock = Arc<Mutex<dyn Clock>>;
 
 pub(crate) fn lock(clock: &SharedClock) -> MutexGuard<'_, dyn Clock + 'static> {
-    clock.lock().unwrap_or_else(PoisonError::into_inner)
+    jsrt::sync::lock(clock)
 }
 
 /// Lock a shared clock (a poisoned lock is still usable: the clock has no invariants to break).
@@ -50,98 +50,21 @@ pub fn lock_clock(clock: &SharedClock) -> MutexGuard<'_, dyn Clock + 'static> {
     lock(clock)
 }
 
-const MAX_UUID_V7_TIMESTAMP: i64 = 0xffff_ffff_ffff;
-const MAX_SEQUENCE: u64 = (1 << 41) - 1;
-
-/// The `uuidv7` generator: a 41-bit sequence seeded from the first id's random bytes, then incremented.
-#[derive(Debug)]
-pub struct Uuidv7 {
-    last_ordinary: i64,
-    sequence: Option<u64>,
-}
-
-impl Default for Uuidv7 {
-    fn default() -> Self {
-        Uuidv7 {
-            last_ordinary: -1,
-            sequence: None,
-        }
-    }
-}
-
-impl Uuidv7 {
-    /// An id at `explicit` when given, else at `now` clamped to the last ordinary id's time.
-    pub fn generate(&mut self, explicit: Option<i64>, now: i64, mut bytes: [u8; 16]) -> String {
-        let timestamp = match explicit {
-            Some(at) => at,
-            None => {
-                self.last_ordinary = now.max(self.last_ordinary);
-                self.last_ordinary
-            }
-        }
-        .clamp(0, MAX_UUID_V7_TIMESTAMP);
-        let sequence = match self.sequence {
-            None => bytes[1..6].iter().fold(0u64, |acc, b| (acc << 8) | u64::from(*b)),
-            // ponytail: upstream throws once 2^41 ids share one generator; wrap instead of failing a session.
-            Some(s) if s == MAX_SEQUENCE => 0,
-            Some(s) => s + 1,
-        };
-        self.sequence = Some(sequence);
-        let ts = timestamp as u64;
-        for (index, byte) in bytes.iter_mut().take(6).enumerate() {
-            *byte = (ts >> ((5 - index) * 8)) as u8;
-        }
-        bytes[6] = 0x70 | ((sequence >> 37) & 0x0f) as u8;
-        bytes[7] = (sequence >> 29) as u8;
-        bytes[8] = 0x80 | ((sequence >> 23) & 0x3f) as u8;
-        bytes[9] = (sequence >> 15) as u8;
-        bytes[10] = (sequence >> 7) as u8;
-        bytes[11] = (((sequence & 0x7f) << 1) as u8) | (bytes[11] & 0x01);
-        let hex: Vec<String> = bytes.iter().map(|x| format!("{x:02x}")).collect();
-        format!(
-            "{}-{}-{}-{}-{}",
-            hex[0..4].concat(),
-            hex[4..6].concat(),
-            hex[6..8].concat(),
-            hex[8..10].concat(),
-            hex[10..].concat()
-        )
-    }
-}
-
 /// The system clock with the process-wide UUIDv7 generator and OS randomness.
 #[derive(Debug, Default)]
 pub struct SystemClock;
 
-static GENERATOR: Mutex<Uuidv7> = Mutex::new(Uuidv7 {
-    last_ordinary: -1,
-    sequence: None,
-});
-
-fn system_now() -> i64 {
-    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH);
-    now.map_or(0, |d| d.as_millis() as i64)
-}
-
-fn random_bytes() -> [u8; 16] {
-    let mut bytes = [0; 16];
-    let _ = getrandom::fill(&mut bytes);
-    bytes
-}
-
 impl Clock for SystemClock {
     fn now(&mut self) -> i64 {
-        system_now()
+        jsrt::date::now_ms()
     }
 
     fn uuidv7(&mut self, at: i64) -> String {
-        let mut generator = GENERATOR.lock().unwrap_or_else(PoisonError::into_inner);
-        generator.generate(Some(at), 0, random_bytes())
+        jsrt::random::uuid_v7_exact(at)
     }
 
     fn next_id(&mut self) -> String {
-        let mut generator = GENERATOR.lock().unwrap_or_else(PoisonError::into_inner);
-        generator.generate(None, system_now(), random_bytes())
+        jsrt::random::uuid_v7(jsrt::date::now_ms())
     }
 }
 
@@ -157,7 +80,7 @@ impl SystemClock {
 pub struct TestClock {
     pub time: i64,
     pub step: i64,
-    generator: Uuidv7,
+    generator: jsrt::random::Uuidv7,
 }
 
 impl TestClock {
@@ -165,7 +88,7 @@ impl TestClock {
         TestClock {
             time: start,
             step,
-            generator: Uuidv7::default(),
+            generator: jsrt::random::Uuidv7::new(),
         }
     }
 

@@ -8,7 +8,6 @@ pub mod capability_overrides;
 pub mod clipboard;
 pub mod clipboard_copy;
 pub mod clipboard_image;
-pub mod collate;
 pub mod components;
 pub mod editing;
 pub mod editor;

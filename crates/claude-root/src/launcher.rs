@@ -136,10 +136,6 @@ pub struct LaunchInput<'a> {
     pub apis: Option<&'a resources::runtime_guide::RuntimeGuideOptions>,
 }
 
-fn stringify(value: &Value) -> String {
-    serde_json::to_string(value).expect("JSON values serialize")
-}
-
 /// The Claude Code model the root runs on: a `--model` among the claude args (`None`: it is there, and goes to
 /// `claude` as given), else ULTRON_CLAUDE_MODEL, `claudeCode.model`, the default.
 fn root_model(options: &LauncherOptions, var: &dyn Fn(&str) -> Option<String>) -> (String, bool) {
@@ -196,7 +192,7 @@ pub fn build_claude_launch(input: &LaunchInput) -> ClaudeLaunch {
     if crate::guide::wakes(input.var, wake_hooks) {
         mcp_args.push("--wake".into());
     }
-    let mcp_config = stringify(&json!({
+    let mcp_config = jsrt::json::stringify(&json!({
         "mcpServers": {"ultron": {"type": "stdio", "command": self_cmd.command, "args": mcp_args}}
     }));
     let hook = |event: &str, timeout: u64| json!({"hooks": [{"type": "command", "command": shell_command(self_cmd, &["hook", event, "--socket", input.socket]), "timeout": timeout}]});
@@ -227,7 +223,7 @@ pub fn build_claude_launch(input: &LaunchInput) -> ClaudeLaunch {
         }
         settings.insert("hooks".into(), hooks);
     }
-    let settings = stringify(&Value::Object(settings));
+    let settings = jsrt::json::stringify(&Value::Object(settings));
     let prompt = claude_system_prompt(
         Audience::Claude,
         &GuideOptions {
@@ -324,8 +320,8 @@ fn require_claude(var: &dyn Fn(&str) -> Option<String>) -> Result<(String, BTree
 fn launch_id() -> String {
     format!(
         "L-{}-{}",
-        base36(session_core::lane::now_ms() as u64),
-        crate::random_hex(4)
+        base36(jsrt::date::now_ms() as u64),
+        jsrt::random::random_hex(4)
     )
 }
 

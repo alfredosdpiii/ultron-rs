@@ -37,23 +37,12 @@ impl Reason {
 /// `getCompactionTokenSetting`: a token setting must be a non-negative safe integer.
 fn token_setting(value: Option<&Value>, what: &str) -> Result<Option<u64>, String> {
     let Some(value) = value else { return Ok(None) };
-    const MAX_SAFE: f64 = 9_007_199_254_740_991.0;
     match value.as_f64() {
-        Some(n) if n.fract() == 0.0 && (0.0..=MAX_SAFE).contains(&n) && value.is_number() => Ok(Some(n as u64)),
+        Some(n) if jsrt::number::is_safe_integer(n) && n >= 0.0 && value.is_number() => Ok(Some(n as u64)),
         _ => Err(format!(
             "Invalid {what} setting: {}. Expected a non-negative safe integer.",
-            js_string(value)
+            jsrt::value::string(Some(value))
         )),
-    }
-}
-
-/// `String(value)` for the error messages.
-fn js_string(value: &Value) -> String {
-    match value {
-        Value::String(text) => text.clone(),
-        Value::Object(_) => "[object Object]".into(),
-        Value::Array(items) => items.iter().map(js_string).collect::<Vec<_>>().join(","),
-        other => other.to_string(),
     }
 }
 
@@ -80,7 +69,7 @@ pub fn settings(
         {
             return Err(format!(
                 "Invalid compaction.modelOverrides[\"{key}\"] setting: {}. Expected an object.",
-                js_string(entry)
+                jsrt::value::string(Some(entry))
             ));
         }
         let overridden = token_setting(

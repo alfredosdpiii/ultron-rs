@@ -103,16 +103,12 @@ fn plain_inline(tokens: &[Token]) -> String {
     out
 }
 
-fn collapse_whitespace(s: &str) -> String {
-    s.split_whitespace().collect::<Vec<_>>().join(" ")
-}
-
 fn walk_links(tokens: &[Token], links: &mut Vec<(String, String)>) {
     for token in tokens {
         match token {
             Token::Link { href, tokens, .. } => {
                 if !href.is_empty() {
-                    let label = collapse_whitespace(&plain_inline(tokens));
+                    let label = jsrt::string::flatten(&plain_inline(tokens));
                     links.push((if label.is_empty() { href.clone() } else { label }, href.clone()));
                 }
             }
@@ -456,7 +452,7 @@ pub fn first_line(source: &str) -> String {
     source
         .split('\n')
         .find(|l| !l.trim().is_empty())
-        .map(collapse_whitespace)
+        .map(jsrt::string::flatten)
         .unwrap_or_default()
 }
 

@@ -18,6 +18,7 @@ use ai::{
     UserContent, UserMessage, UserMessageContent,
 };
 use indexmap::IndexSet;
+use jsrt::utf16;
 use serde_json::Value;
 use session_file::{Leaf, ProjectedEntry, SessionProjection, build_session_projection, current_system_message, js};
 
@@ -30,11 +31,6 @@ pub use bug_summary::{BUG_SUMMARY_INSTRUCTIONS, BUG_SUMMARY_SYSTEM_PROMPT, bug_s
 // ============================================================================
 // Shared utilities (utils.ts)
 // ============================================================================
-
-/// `text.length` in JavaScript: UTF-16 code units.
-fn js_len(text: &str) -> usize {
-    text.encode_utf16().count()
-}
 
 fn str_of<'a>(value: &'a Value, key: &str) -> Option<&'a str> {
     value.get(key).and_then(Value::as_str)
@@ -98,18 +94,13 @@ pub fn extract_file_ops_from_message(message: &Value, ops: &mut FileOperations) 
     }
 }
 
-/// JavaScript's default `Array.prototype.sort`: by UTF-16 code units.
-fn js_sort(items: &mut [String]) {
-    items.sort_by(|a, b| a.encode_utf16().cmp(b.encode_utf16()));
-}
-
 /// `computeFileLists`: `(read-only files, modified files)`, each sorted.
 pub fn compute_file_lists(ops: &FileOperations) -> (Vec<String>, Vec<String>) {
     let modified: IndexSet<&String> = ops.edited.iter().chain(&ops.written).collect();
     let mut read_files: Vec<String> = ops.read.iter().filter(|f| !modified.contains(f)).cloned().collect();
     let mut modified_files: Vec<String> = modified.into_iter().cloned().collect();
-    js_sort(&mut read_files);
-    js_sort(&mut modified_files);
+    utf16::sort(&mut read_files);
+    utf16::sort(&mut modified_files);
     (read_files, modified_files)
 }
 
@@ -133,26 +124,14 @@ pub fn format_file_operations(read_files: &[String], modified_files: &[String]) 
 
 const TOOL_RESULT_MAX_CHARS: usize = 2000;
 
-/// `text.slice(0, max)` over UTF-16 code units; never splits a surrogate pair (upstream can leave half of one).
-fn js_prefix(text: &str, max: usize) -> &str {
-    let mut units = 0;
-    for (i, c) in text.char_indices() {
-        units += c.len_utf16();
-        if units > max {
-            return &text[..i];
-        }
-    }
-    text
-}
-
 fn truncate_for_summary(text: &str, max_chars: usize) -> String {
-    let len = js_len(text);
+    let len = utf16::len(text);
     if len <= max_chars {
         return text.to_string();
     }
     format!(
         "{}\n\n[... {} more characters truncated]",
-        js_prefix(text, max_chars),
+        utf16::head(text, max_chars),
         len - max_chars
     )
 }
@@ -181,9 +160,9 @@ pub fn serialize_conversation(messages: &[Value]) -> String {
                         Some("thinking") => thinking.push(js::join_string(block.get("thinking"))),
                         Some("toolCall") => {
                             let args = match block.get("arguments") {
-                                Some(Value::Object(map)) => js::object_entries(map)
+                                Some(Value::Object(map)) => jsrt::json::object_entries(map)
                                     .into_iter()
-                                    .map(|(k, v)| format!("{k}={}", js::stringify(v)))
+                                    .map(|(k, v)| format!("{k}={}", jsrt::json::stringify(v)))
                                     .collect::<Vec<_>>()
                                     .join(", "),
                                 _ => String::new(),
@@ -235,12 +214,12 @@ fn bash_execution_to_text(message: &Value) -> String {
         text.push_str(&format!("```\n{output}\n```"));
     }
     let exit_code = message.get("exitCode").filter(|c| !c.is_null());
-    if js::truthy(message.get("cancelled")) {
+    if jsrt::value::truthy(message.get("cancelled")) {
         text.push_str("\n\n(command cancelled)");
     } else if let Some(code) = exit_code.filter(|c| c.as_f64() != Some(0.0)) {
-        text.push_str(&format!("\n\nCommand exited with code {}", js::stringify(code)));
+        text.push_str(&format!("\n\nCommand exited with code {}", jsrt::json::stringify(code)));
     }
-    if js::truthy(message.get("truncated")) && js::truthy(message.get("fullOutputPath")) {
+    if jsrt::value::truthy(message.get("truncated")) && jsrt::value::truthy(message.get("fullOutputPath")) {
         text.push_str(&format!(
             "\n\n[Output truncated. Full output: {}]",
             js::join_string(message.get("fullOutputPath"))
@@ -285,7 +264,7 @@ pub fn convert_to_llm(messages: &[Value]) -> Vec<Value> {
     messages
         .iter()
         .filter_map(|m| match role(m) {
-            Some("bashExecution") if js::truthy(m.get("excludeFromContext")) => None,
+            Some("bashExecution") if jsrt::value::truthy(m.get("excludeFromContext")) => None,
             Some("bashExecution") => Some(text_user(bash_execution_to_text(m), m.get("timestamp"))),
             Some("custom") => {
                 let content = match m.get("content") {
@@ -365,18 +344,18 @@ fn assistant_usage(message: &Value) -> Option<&Value> {
     }
     message
         .get("usage")
-        .filter(|u| js::truthy(Some(u)) && calculate_context_tokens(u) > 0)
+        .filter(|u| jsrt::value::truthy(Some(u)) && calculate_context_tokens(u) > 0)
 }
 
 const ESTIMATED_IMAGE_CHARS: usize = 4800;
 
 fn text_and_image_chars(content: Option<&Value>) -> usize {
     match content {
-        Some(Value::String(text)) => js_len(text),
+        Some(Value::String(text)) => utf16::len(text),
         Some(Value::Array(blocks)) => blocks
             .iter()
             .map(|block| match str_of(block, "type") {
-                Some("text") => str_of(block, "text").map_or(0, js_len),
+                Some("text") => str_of(block, "text").map_or(0, utf16::len),
                 Some("image") => ESTIMATED_IMAGE_CHARS,
                 _ => 0,
             })
@@ -387,17 +366,17 @@ fn text_and_image_chars(content: Option<&Value>) -> usize {
 
 /// `estimateTokens`: characters / 4, rounded up (an overestimate); images count 4800 characters.
 pub fn estimate_tokens(message: &Value) -> u64 {
-    let len = |key: &str| str_of(message, key).map_or(0, js_len);
+    let len = |key: &str| str_of(message, key).map_or(0, utf16::len);
     let chars = match role(message) {
         Some("system") => {
             let sections: usize = match message.get("sections") {
-                Some(Value::Object(map)) => map.values().filter_map(Value::as_str).map(js_len).sum(),
+                Some(Value::Object(map)) => map.values().filter_map(Value::as_str).map(utf16::len).sum(),
                 _ => 0,
             };
             let tools = message
                 .get("toolsAdded")
-                .filter(|t| js::truthy(Some(t)))
-                .map_or(0, |t| js_len(&js::stringify(t)));
+                .filter(|t| jsrt::value::truthy(Some(t)))
+                .map_or(0, |t| utf16::len(&jsrt::json::stringify(t)));
             text_and_image_chars(message.get("content")) + sections + tools
         }
         Some("user" | "custom" | "toolResult") => text_and_image_chars(message.get("content")),
@@ -407,11 +386,13 @@ pub fn estimate_tokens(message: &Value) -> u64 {
             .map_or(&[][..], Vec::as_slice)
             .iter()
             .map(|block| match str_of(block, "type") {
-                Some("text") => str_of(block, "text").map_or(0, js_len),
-                Some("thinking") => str_of(block, "thinking").map_or(0, js_len),
+                Some("text") => str_of(block, "text").map_or(0, utf16::len),
+                Some("thinking") => str_of(block, "thinking").map_or(0, utf16::len),
                 Some("toolCall") => {
-                    str_of(block, "name").map_or(0, js_len)
-                        + block.get("arguments").map_or(0, |a| js_len(&js::stringify(a)))
+                    str_of(block, "name").map_or(0, utf16::len)
+                        + block
+                            .get("arguments")
+                            .map_or(0, |a| utf16::len(&jsrt::json::stringify(a)))
                 }
                 _ => 0,
             })
@@ -465,7 +446,7 @@ pub fn estimate_projected_context_tokens(
         for entry in &projection.entries {
             let next = start + entry.messages.len();
             if last_usage < next {
-                usage_entry_id = entry.source.get("id").filter(|id| js::truthy(Some(id)));
+                usage_entry_id = entry.source.get("id").filter(|id| jsrt::value::truthy(Some(id)));
                 break;
             }
             start = next;
@@ -689,7 +670,7 @@ fn find_projected_cut_point(entries: &[ProjectedEntry<'_>], start: usize, end: u
 
 /// JavaScript `Set`/`Map` key for an id: `undefined` is distinct from every string.
 fn id_key(value: Option<&Value>) -> String {
-    value.map_or_else(|| "undefined".to_string(), js::stringify)
+    value.map_or_else(|| "undefined".to_string(), jsrt::json::stringify)
 }
 
 // ============================================================================
@@ -723,10 +704,10 @@ fn summary_messages(entries: &[ProjectedEntry<'_>]) -> Vec<Value> {
 
 /// Adds the read/modified lists a pi-generated (not extension) summary entry recorded in `details`.
 fn add_recorded_files(entry: &Value, ops: &mut FileOperations) {
-    if js::truthy(entry.get("fromHook")) {
+    if jsrt::value::truthy(entry.get("fromHook")) {
         return;
     }
-    let Some(details) = entry.get("details").filter(|d| js::truthy(Some(d))) else {
+    let Some(details) = entry.get("details").filter(|d| jsrt::value::truthy(Some(d))) else {
         return;
     };
     let files = |key: &str| {

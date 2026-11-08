@@ -9,7 +9,7 @@ use std::sync::{Arc, Mutex};
 pub const MAX_CONTROL_LINE_BYTES: usize = 128 * 1024 * 1024;
 
 pub fn encode_control_line(message: &Value) -> io::Result<String> {
-    let line = format!("{}\n", session_file::js::stringify(message));
+    let line = format!("{}\n", jsrt::json::stringify(message));
     if line.len() > MAX_CONTROL_LINE_BYTES {
         return Err(io::Error::other("Internal control message is too large"));
     }

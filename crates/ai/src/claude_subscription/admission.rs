@@ -25,10 +25,6 @@ pub const CONSUMED: &str =
 const ERROR_BODY_LIMIT: usize = 65_536;
 const HEAD_LIMIT: usize = 65_536;
 
-fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
-    mutex.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
-}
-
 // ------------------------------------------------------------------------------------------------------- capture
 
 /// The Messages SSE stream assembled into the assistant message native would build (`Capture`).
@@ -144,8 +140,11 @@ impl Capture {
                 }
             }
             "message_stop" => {
-                self.complete =
-                    self.message.as_ref().is_some_and(|m| truthy(m.get("stop_reason"))) && self.arguments.is_empty();
+                self.complete = self
+                    .message
+                    .as_ref()
+                    .is_some_and(|m| jsrt::value::truthy(m.get("stop_reason")))
+                    && self.arguments.is_empty();
             }
             _ => {}
         }
@@ -163,14 +162,6 @@ impl Capture {
 
     fn block(&mut self, index: u64) -> Result<&mut Value, &'static str> {
         self.content()?.get_mut(index as usize).ok_or("IndexError")
-    }
-}
-
-fn truthy(value: Option<&Value>) -> bool {
-    match value {
-        None | Some(Value::Null) | Some(Value::Bool(false)) => false,
-        Some(Value::String(s)) => !s.is_empty(),
-        _ => true,
     }
 }
 
@@ -225,25 +216,6 @@ fn percent_decode(text: &str) -> String {
         i += 1;
     }
     String::from_utf8_lossy(&out).into_owned()
-}
-
-fn base64(input: &[u8]) -> String {
-    const TABLE: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-    let mut out = String::new();
-    for chunk in input.chunks(3) {
-        let n = chunk
-            .iter()
-            .enumerate()
-            .fold(0u32, |n, (i, b)| n | (u32::from(*b) << (16 - 8 * i)));
-        for i in 0..4 {
-            if i <= chunk.len() {
-                out.push(TABLE[((n >> (18 - 6 * i)) & 63) as usize] as char);
-            } else {
-                out.push('=');
-            }
-        }
-    }
-    out
 }
 
 /// `getproxies_environment`: every `*_proxy` variable by scheme; a lowercase name wins over its uppercase form.
@@ -323,7 +295,7 @@ pub fn upstream_proxy(
             percent_decode(url.username()),
             percent_decode(url.password().unwrap_or_default())
         );
-        format!("Basic {}", base64(credentials.as_bytes()))
+        format!("Basic {}", jsrt::base64::encode(credentials))
     });
     Some(ProxyRoute {
         host: url.host_str().unwrap_or_default().trim_matches(['[', ']']).to_string(),
@@ -387,12 +359,6 @@ pub struct Admission {
     handlers: Arc<Mutex<Vec<JoinHandle<()>>>>,
 }
 
-pub fn random_token(bytes: usize) -> String {
-    let mut raw = vec![0u8; bytes];
-    getrandom::fill(&mut raw).expect("the OS random source works");
-    raw.iter().map(|b| format!("{b:02x}")).collect()
-}
-
 fn loopback(url: &Url) -> bool {
     url.host_str().is_some_and(|host| {
         let host = host.trim_matches(['[', ']']);
@@ -434,7 +400,7 @@ impl Admission {
         let listener = TcpListener::bind("127.0.0.1:0").map_err(|e| e.to_string())?;
         listener.set_nonblocking(true).map_err(|e| e.to_string())?;
         let port = listener.local_addr().map_err(|e| e.to_string())?.port();
-        let prefix = format!("/admit/{}", random_token(32));
+        let prefix = format!("/admit/{}", jsrt::random::random_hex(32));
         let gate = Arc::new(Gate {
             upstream,
             queried,
@@ -456,7 +422,7 @@ impl Admission {
                     match listener.accept() {
                         Ok((stream, _)) => {
                             let gate = gate.clone();
-                            lock(&handlers).push(std::thread::spawn(move || handle(&gate, stream)));
+                            jsrt::sync::lock(&handlers).push(std::thread::spawn(move || handle(&gate, stream)));
                         }
                         Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
                             std::thread::sleep(Duration::from_millis(10));
@@ -494,7 +460,7 @@ impl Admission {
 
     /// The outcome so far (complete once native exited and [`Admission::close`] ran).
     pub fn outcome(&self) -> MutexGuard<'_, Outcome> {
-        lock(&self.gate.outcome)
+        jsrt::sync::lock(&self.gate.outcome)
     }
 
     /// Stop listening and wait for handlers to unwind. Does not abort a finished exchange's outcome.
@@ -504,7 +470,7 @@ impl Admission {
             let _ = listener.join();
         }
         self.abort();
-        let handlers: Vec<JoinHandle<()>> = lock(&self.handlers).drain(..).collect();
+        let handlers: Vec<JoinHandle<()>> = jsrt::sync::lock(&self.handlers).drain(..).collect();
         for handler in handlers {
             let _ = handler.join();
         }
@@ -521,7 +487,7 @@ impl Gate {
     fn abort_all(&self) {
         self.cancelled.store(true, Ordering::SeqCst);
         self.abort.abort();
-        for socket in lock(&self.sockets).iter() {
+        for socket in jsrt::sync::lock(&self.sockets).iter() {
             let _ = socket.shutdown(Shutdown::Both);
         }
     }
@@ -632,7 +598,7 @@ fn handle(gate: &Gate, stream: TcpStream) {
         return;
     }
     {
-        let mut outcome = lock(&gate.outcome);
+        let mut outcome = jsrt::sync::lock(&gate.outcome);
         if gate.cancelled.load(Ordering::SeqCst) || outcome.used {
             outcome.denied += 1;
             drop(outcome);
@@ -642,11 +608,11 @@ fn handle(gate: &Gate, stream: TcpStream) {
         outcome.used = true;
     }
     if let Ok(clone) = writer.try_clone() {
-        lock(&gate.sockets).push(clone);
+        jsrt::sync::lock(&gate.sockets).push(clone);
     }
     let failure = forward(gate, &head, query.as_deref(), &mut reader, &mut writer).err();
     if let Some(failure) = failure {
-        lock(&gate.outcome).failure = Some(failure);
+        jsrt::sync::lock(&gate.outcome).failure = Some(failure);
     }
     let _ = writer.shutdown(Shutdown::Both);
 }
@@ -665,7 +631,7 @@ fn forward(
         Ok(restored) => restored,
         Err(mismatch) => {
             // Restoration is hygiene, not a gate: a frame it cannot prove lossless forwards as native built it.
-            lock(&gate.outcome).unrestored = Some(mismatch.to_string());
+            jsrt::sync::lock(&gate.outcome).unrestored = Some(mismatch.to_string());
             payload
         }
     };
@@ -740,7 +706,7 @@ async fn exchange(
     };
     let status = response.status();
     {
-        let mut outcome = lock(&gate.outcome);
+        let mut outcome = jsrt::sync::lock(&gate.outcome);
         let id = |name: &str| {
             response
                 .headers()
@@ -774,7 +740,7 @@ async fn exchange(
             Ok(Ok(Some(chunk))) => chunk,
         };
         {
-            let mut outcome = lock(&gate.outcome);
+            let mut outcome = jsrt::sync::lock(&gate.outcome);
             if status.as_u16() == 200 {
                 outcome.capture.feed(&chunk)?;
             } else if outcome.error_body.len() < ERROR_BODY_LIMIT {

@@ -119,7 +119,7 @@ fn model() -> Model {
 }
 
 async fn call(transport: &Sockets, session: &str) -> Value {
-    let b64 = |v: Value| ai::oauth_flow::base64url(v.to_string().as_bytes());
+    let b64 = |v: Value| jsrt::base64::encode_url(v.to_string().as_bytes());
     let token = format!(
         "{}.{}.example-sig",
         b64(json!({"alg": "none"})),

@@ -2,7 +2,7 @@
 //! carry their surrounding whitespace ([`session_file::diff::diff_tokens`]), then the whitespace dedupe pass. No options
 //! (no ignoreCase, no segmenter).
 
-use tui::utils::is_whitespace_char as ws;
+use jsrt::string;
 
 pub use session_file::diff::Change;
 
@@ -19,15 +19,15 @@ fn tokenize(value: &str) -> Vec<String> {
     while let Some(c) = rest.chars().next() {
         let len = if word_char(c) {
             rest.find(|x: char| !word_char(x)).unwrap_or(rest.len())
-        } else if ws(c) {
-            rest.find(|x: char| !ws(x)).unwrap_or(rest.len())
+        } else if string::is_space(c) {
+            rest.find(|x: char| !string::is_space(x)).unwrap_or(rest.len())
         } else {
             c.len_utf8()
         };
         parts.push(&rest[..len]);
         rest = &rest[len..];
     }
-    let is_ws = |p: &str| p.chars().any(ws);
+    let is_ws = |p: &str| p.chars().any(string::is_space);
     let mut tokens: Vec<String> = Vec::new();
     let mut prev: Option<&str> = None;
     for part in parts {
@@ -51,23 +51,29 @@ fn tokenize(value: &str) -> Vec<String> {
 }
 
 fn equals(a: &str, b: &str) -> bool {
-    a.trim_matches(ws) == b.trim_matches(ws)
+    a.trim_matches(string::is_space) == b.trim_matches(string::is_space)
 }
 
 fn join(tokens: &[String]) -> String {
     tokens
         .iter()
         .enumerate()
-        .map(|(i, t)| if i == 0 { t.as_str() } else { t.trim_start_matches(ws) })
+        .map(|(i, t)| {
+            if i == 0 {
+                t.as_str()
+            } else {
+                t.trim_start_matches(string::is_space)
+            }
+        })
         .collect()
 }
 
 fn leading_ws(s: &str) -> &str {
-    &s[..s.len() - s.trim_start_matches(ws).len()]
+    &s[..s.len() - s.trim_start_matches(string::is_space).len()]
 }
 
 fn trailing_ws(s: &str) -> &str {
-    &s[s.trim_end_matches(ws).len()..]
+    &s[s.trim_end_matches(string::is_space).len()..]
 }
 
 fn common_prefix<'a>(a: &'a str, b: &str) -> &'a str {
@@ -139,10 +145,10 @@ fn dedupe(changes: &mut [Change], start: Option<usize>, del: Option<usize>, ins:
         }
         (None, Some(n)) => {
             if start.is_some() {
-                changes[n].value = changes[n].value.trim_start_matches(ws).to_string();
+                changes[n].value = changes[n].value.trim_start_matches(string::is_space).to_string();
             }
             if let Some(e) = end {
-                changes[e].value = changes[e].value.trim_start_matches(ws).to_string();
+                changes[e].value = changes[e].value.trim_start_matches(string::is_space).to_string();
             }
         }
         (Some(d), None) => match (start, end) {

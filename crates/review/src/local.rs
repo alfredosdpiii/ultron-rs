@@ -10,13 +10,13 @@ use std::path::Path;
 use regex::Regex;
 
 use crate::github::PullRef;
-use crate::js::{is_space, len16, path_join, trim};
+use crate::js::path_join;
 use crate::plan::{PlannedComment, ReviewPlan};
 use crate::runner::{Env, RunOptions, Runner, argv};
 
 /// `~` and relative paths made absolute.
 pub fn expand_path(path: &str, home: &str) -> String {
-    let text = trim(path);
+    let text = jsrt::string::trim(path);
     if text == "~" {
         return home.into();
     }
@@ -42,7 +42,7 @@ pub fn home_dir() -> String {
 
 /// Whether a git remote URL names `owner/repo` on `host` (https, ssh or scp-like syntax; `.git` optional).
 pub fn remote_matches(url: &str, host: &str, owner: &str, repo: &str) -> bool {
-    let url = trim(url);
+    let url = jsrt::string::trim(url);
     // JavaScript's `.` stops at line terminators.
     let full = Regex::new(
         r"^(?:https?://|ssh://|git://)(?:[^@/]+@)?([^/:]+)(?::[0-9]+)?/([^\n\r\u{2028}\u{2029}]+?)(?:\.git)?/?$",
@@ -84,8 +84,8 @@ pub fn find_checkout(runner: &dyn Runner, roots: &[String], r: &PullRef) -> Opti
         }
         let urls = result.stdout.split('\n').filter_map(|line| {
             // line.trim().split(/\s+/)[1]
-            let line = trim(line);
-            let mut parts = line.split(is_space).filter(|part| !part.is_empty());
+            let line = jsrt::string::trim(line);
+            let mut parts = line.split(jsrt::string::is_space).filter(|part| !part.is_empty());
             if line.is_empty() {
                 return None;
             }
@@ -109,7 +109,7 @@ pub fn guide_mentions(text: &str, guide_names: &[String]) -> Vec<String> {
         .iter()
         .filter(|name| {
             let needle = name.to_lowercase();
-            if len16(&needle) < 4 {
+            if jsrt::utf16::len(&needle) < 4 {
                 return false;
             }
             // A file name must stand alone; a path is matched anywhere.
@@ -130,11 +130,11 @@ fn sentences(text: &str) -> Vec<&str> {
     let mut previous: Option<char> = None;
     let mut chars = text.char_indices().peekable();
     while let Some((index, c)) = chars.next() {
-        if is_space(c) && matches!(previous, Some('.' | '!' | '?')) {
+        if jsrt::string::is_space(c) && matches!(previous, Some('.' | '!' | '?')) {
             parts.push(&text[start..index]);
             let mut end = index + c.len_utf8();
             while let Some(&(next, n)) = chars.peek() {
-                if !is_space(n) {
+                if !jsrt::string::is_space(n) {
                     break;
                 }
                 end = next + n.len_utf8();

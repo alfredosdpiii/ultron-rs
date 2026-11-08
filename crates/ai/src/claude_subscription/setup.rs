@@ -182,7 +182,7 @@ pub fn discover_models(config: &Config, env: &Env, timeout: Duration) -> Option<
     let handshake =
         json!({"type": "control_request", "request_id": "ultron-picker", "request": {"subtype": "initialize"}});
     let temp_root = config.temp_root.clone().unwrap_or_else(std::env::temp_dir);
-    let cwd = temp_root.join(format!("ultron-claude-picker-{}", super::admission::random_token(6)));
+    let cwd = temp_root.join(format!("ultron-claude-picker-{}", jsrt::random::random_hex(6)));
     std::fs::create_dir(&cwd).ok()?;
     let output = run_bounded(&argv, &child, Some(&cwd), &format!("{handshake}\n"), timeout);
     let _ = std::fs::remove_dir_all(&cwd);

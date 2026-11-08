@@ -10,9 +10,10 @@ use std::process::{Child, Command, Stdio};
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use crate::collate::locale_compare;
 use crate::fuzzy::fuzzy_filter;
-use crate::utils::{is_cjk_punctuation, is_whitespace_char};
+use crate::utils::is_cjk_punctuation;
+use jsrt::collate::locale_compare;
+use jsrt::{string, utf16};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AutocompleteItem {
@@ -124,7 +125,7 @@ pub struct SlashCommand {
 
 /// `\s` or CJK punctuation (TS `autocompleteSeparatorRegex`).
 pub fn is_autocomplete_separator(c: char) -> bool {
-    is_whitespace_char(c) || is_cjk_punctuation(c)
+    string::is_space(c) || is_cjk_punctuation(c)
 }
 
 fn is_path_delimiter(c: char) -> bool {
@@ -383,7 +384,7 @@ fn walk_with_fd(
     }
     let stdout = String::from_utf8_lossy(&bytes);
     stdout
-        .trim_matches(is_whitespace_char)
+        .trim_matches(string::is_space)
         .split('\n')
         .filter(|l| !l.is_empty())
         .filter_map(|line| {
@@ -652,11 +653,10 @@ fn fuzzy_file_suggestions(
         .filter(|(s, _)| *s > 0)
         .collect();
     let depth = |p: &str| p.split('/').filter(|s| !s.is_empty()).count();
-    let len16 = |p: &str| p.encode_utf16().count();
     scored.sort_by(|(sa, a), (sb, b)| {
         sb.cmp(sa)
             .then_with(|| depth(&a.path).cmp(&depth(&b.path)))
-            .then_with(|| len16(&a.path).cmp(&len16(&b.path)))
+            .then_with(|| utf16::len(&a.path).cmp(&utf16::len(&b.path)))
             .then_with(|| locale_compare(&a.path, &b.path))
     });
     scored
@@ -731,7 +731,7 @@ impl AutocompleteProvider for CombinedAutocompleteProvider {
 
     fn should_trigger_file_completion(&self, lines: &[String], line: usize, col: usize) -> bool {
         let text = lines.get(line).map_or("", |l| &l[..col.min(l.len())]);
-        let trimmed = text.trim_matches(is_whitespace_char);
+        let trimmed = text.trim_matches(string::is_space);
         !(trimmed.starts_with('/') && !trimmed.contains(' '))
     }
 }
@@ -761,7 +761,7 @@ pub fn apply_completion(
         value.len()
     };
     let is_slash_command =
-        prefix.starts_with('/') && before.trim_matches(is_whitespace_char).is_empty() && !prefix[1..].contains('/');
+        prefix.starts_with('/') && before.trim_matches(string::is_space).is_empty() && !prefix[1..].contains('/');
     let (new_line, cursor_col) = if is_slash_command {
         (format!("{before}/{value} {after}"), before.len() + value.len() + 2)
     } else if prefix.starts_with('@') {

@@ -4,7 +4,7 @@
 //! the keyring and otherwise uses a key for this process only. Exposure reduction, not secrecy: model code runs as
 //! the same user. `secret-tool` is found on the session's `PATH` only, and runs with the session's desktop variables.
 
-use crate::snapshot::{KEY_BYTES, SNAPSHOT_KEY_FILE, hex, load_or_create_snapshot_key, parse_key};
+use crate::snapshot::{KEY_BYTES, SNAPSHOT_KEY_FILE, load_or_create_snapshot_key, parse_key};
 use std::io::{Read, Write};
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
@@ -279,7 +279,7 @@ pub fn load_snapshot_key(
     } else {
         random_key()?
     };
-    let encoded = hex(&key);
+    let encoded = jsrt::hash::hex(&key);
     let read_back = if keyring.store(&encoded) {
         keyring.lookup()
     } else {

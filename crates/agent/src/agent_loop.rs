@@ -1,7 +1,6 @@
 use std::future::poll_fn;
 use std::sync::Mutex;
 use std::task::Poll;
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use ai::http::BoxFuture;
 use ai::transcript::{current_tools, normalize_context};
@@ -19,12 +18,6 @@ use crate::types::{
     AgentContext, AgentEvent, AgentLoopConfig, AgentMessage, AgentTool, AgentToolResult, BeforeToolCallContext,
     StreamFn, ToolExecutionMode,
 };
-
-pub(crate) fn now_ms() -> i64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0, |d| d.as_millis() as i64)
-}
 
 /// The event sink, shared by concurrently running tools.
 pub(crate) struct Emit<'a>(Mutex<&'a mut (dyn FnMut(AgentEvent) + Send)>);
@@ -191,7 +184,7 @@ pub(crate) fn declare_tool_changes(context: &AgentContext, pending: Vec<AgentMes
         sections: None,
         tools_added: None,
         tools_removed: None,
-        timestamp: now_ms(),
+        timestamp: jsrt::date::now_ms(),
     };
     let update = Message::System(with_tool_changes(&empty, added, removed));
     let index = pending
@@ -371,7 +364,7 @@ fn tool_result_message(finalized: &Finalized) -> ToolResultMessage {
         details: Some(finalized.result.details.clone()).filter(|d| !d.is_null()),
         usage: finalized.result.usage.clone(),
         is_error: finalized.is_error,
-        timestamp: now_ms(),
+        timestamp: jsrt::date::now_ms(),
     }
 }
 

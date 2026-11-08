@@ -37,7 +37,7 @@ fn normalize(value: Value) -> Value {
             _ => {}
         }
     }
-    let mut value = ai::json::normalize_numbers(value);
+    let mut value = jsrt::json::normalize_numbers(value);
     zero(&mut value);
     if let Value::Array(events) = &mut value {
         order_concurrent_completions(events);

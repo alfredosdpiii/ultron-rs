@@ -23,6 +23,7 @@
 
 use crate::host::Park;
 use crate::kernel_pool::{KernelPool, KernelPoolOptions, Lease, PoolableKernel};
+use jsrt::sync;
 use kernel::{ExecutionResult, HostHandler, Kernel, Signal};
 use serde_json::{Map, Value, json};
 use std::collections::{BTreeMap, HashMap};
@@ -206,10 +207,6 @@ pub struct Lanes {
     inner: Arc<Inner>,
 }
 
-fn lock(state: &Mutex<State>) -> MutexGuard<'_, State> {
-    state.lock().unwrap_or_else(PoisonError::into_inner)
-}
-
 /// The per-cell host handler: lane API requests go to the lanes, the rest to the cell's handler.
 struct CellHandler {
     lanes: Lanes,
@@ -258,12 +255,7 @@ impl Lanes {
                 .map(|path| Box::new(move |lane: &str| path(lane)) as crate::kernel_pool::SnapshotPath),
             now: match limits.as_ref().and_then(|l| l.now.clone()) {
                 Some(now) => Box::new(move || now()),
-                None => Box::new(|| {
-                    std::time::SystemTime::now()
-                        .duration_since(std::time::UNIX_EPOCH)
-                        .map(|d| d.as_millis() as f64)
-                        .unwrap_or(0.0)
-                }),
+                None => Box::new(|| jsrt::date::now_ms() as f64),
             },
         })?;
         let (sender, receiver) = channel();
@@ -303,7 +295,7 @@ impl Lanes {
 
     /// `kernels.sweep()`: snapshot and evict every idle unpinned kernel past its TTL; the lanes it evicted.
     pub fn sweep(&self) -> Vec<String> {
-        if lock(&self.inner.state).closed {
+        if sync::lock(&self.inner.state).closed {
             return Vec::new();
         }
         self.pool()
@@ -364,7 +356,7 @@ impl Lanes {
 
     /// Keeps `lane`'s kernel live for `holder` (a retained instance); false when the pool has no pin left.
     pub fn pin(&self, lane: &str, holder: &str) -> bool {
-        lock(&self.inner.state).closed.then_some(()).is_none() && self.pool().pin(lane, holder).is_ok()
+        sync::lock(&self.inner.state).closed.then_some(()).is_none() && self.pool().pin(lane, holder).is_ok()
     }
 
     pub fn unpin(&self, lane: &str, holder: &str) {
@@ -429,7 +421,7 @@ impl Lanes {
         if lane.trim().is_empty() {
             return Err("lane must be a nonempty string".into());
         }
-        let mut state = lock(&self.inner.state);
+        let mut state = sync::lock(&self.inner.state);
         if state.closed {
             return Err("REPL lanes are closed".into());
         }
@@ -459,7 +451,7 @@ impl Lanes {
 
     /// Closes an idle lane and shuts its kernel down.
     pub fn close_lane(&self, lane: &str) -> Result<(), String> {
-        let mut state = lock(&self.inner.state);
+        let mut state = sync::lock(&self.inner.state);
         match state.lanes.get(lane) {
             None => return Err(format!("Unknown REPL lane: {lane}")),
             Some(Lane { busy: Some(cell), .. }) => {
@@ -474,7 +466,7 @@ impl Lanes {
 
     /// Open lanes: name, running cell (or null) and kernel pid (or null before its first cell).
     pub fn list(&self) -> Value {
-        let state = lock(&self.inner.state);
+        let state = sync::lock(&self.inner.state);
         let mut pool = self.pool();
         Value::from(
             state
@@ -491,7 +483,7 @@ impl Lanes {
     /// Detached cells of `lane` (its own or its side lanes') still running: each one's end arrives as a
     /// [`CellEnd`] of `lane`.
     pub fn detached_running(&self, lane: &str) -> usize {
-        let state = lock(&self.inner.state);
+        let state = sync::lock(&self.inner.state);
         state.detached_of(lane).count()
     }
 
@@ -499,18 +491,16 @@ impl Lanes {
     /// (never given to a cell): `{cell, lane, parked, startedAt}` (`startedAt` in ms since the epoch), and
     /// `cancelling` for one being cancelled.
     pub fn detached_cells(&self, lane: &str) -> Vec<Value> {
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map_or(0, |d| d.as_millis());
-        let state = lock(&self.inner.state);
+        let now = jsrt::date::now_ms() as u64;
+        let state = sync::lock(&self.inner.state);
         let mut cells: Vec<(&String, &Cell)> = state.detached_of(lane).collect();
         cells.sort_by_key(|(_, cell)| cell.started);
         cells
             .into_iter()
             .map(|(id, cell)| {
-                let started = now.saturating_sub(cell.started.elapsed().as_millis());
+                let started = now.saturating_sub(cell.started.elapsed().as_millis() as u64);
                 let mut view =
-                    json!({ "cell": id, "lane": cell.lane, "parked": cell.parked > 0, "startedAt": started as u64 });
+                    json!({ "cell": id, "lane": cell.lane, "parked": cell.parked > 0, "startedAt": started });
                 if cell.cancelled {
                     view["cancelling"] = json!(true);
                 }
@@ -521,7 +511,7 @@ impl Lanes {
 
     /// The live kernel of an open lane (none while it is evicted).
     pub fn kernel(&self, lane: &str) -> Option<Arc<Kernel>> {
-        if !lock(&self.inner.state).lanes.contains_key(lane) {
+        if !sync::lock(&self.inner.state).lanes.contains_key(lane) {
             return None;
         }
         self.pool().live(lane).map(|kernel| kernel.0.clone())
@@ -530,7 +520,7 @@ impl Lanes {
     /// Runs a cell in `lane`, returning within `budget` (see [`CellOutcome`]). A lane still running a cell refuses.
     pub fn run(&self, lane: &str, code: &str, budget: Duration) -> Result<CellOutcome, String> {
         let cell = {
-            let mut state = lock(&self.inner.state);
+            let mut state = sync::lock(&self.inner.state);
             self.start_in(&mut state, lane, code)?
         };
         self.wait(&cell, budget)
@@ -542,7 +532,7 @@ impl Lanes {
     /// arrives as a [`CellEnd`] of `lane`. Once `lane` is free again its idle side lanes are closed. Wait for the
     /// cell with [`Lanes::wait`].
     pub fn start_routed(&self, lane: &str, code: &str) -> Result<Started, String> {
-        let mut state = lock(&self.inner.state);
+        let mut state = sync::lock(&self.inner.state);
         // A cancelled cell ends within its grace and the kill that follows it.
         let deadline = Instant::now() + self.inner.options.cancel_grace + Duration::from_secs(15);
         loop {
@@ -696,7 +686,7 @@ impl Lanes {
     /// routed past it, see [`Lanes::start_routed`]) returns as running and parked: its end arrives as a [`CellEnd`].
     pub fn wait(&self, id: &str, budget: Duration) -> Result<CellOutcome, String> {
         let deadline = Instant::now() + budget;
-        let mut state = lock(&self.inner.state);
+        let mut state = sync::lock(&self.inner.state);
         loop {
             let cell = state.cells.get_mut(id).ok_or_else(|| format!("Unknown cell: {id}"))?;
             cell.waiting = true;
@@ -746,7 +736,7 @@ impl Lanes {
     }
 
     fn park(&self, cell: &str, delta: isize) {
-        let mut state = lock(&self.inner.state);
+        let mut state = sync::lock(&self.inner.state);
         if let Some(cell) = state.cells.get_mut(cell) {
             cell.parked = cell.parked.saturating_add_signed(delta);
         }
@@ -756,7 +746,7 @@ impl Lanes {
 
     fn ended(&self, id: &str, outcome: Result<ExecutionResult, String>) {
         let event = {
-            let mut state = lock(&self.inner.state);
+            let mut state = sync::lock(&self.inner.state);
             let Some(cell) = state.cells.get_mut(id) else {
                 return;
             };
@@ -803,7 +793,7 @@ impl Lanes {
     /// Detaches a running cell: its end arrives on the [`CellEnd`] channel. A cell that already ended returns its
     /// outcome instead.
     pub fn detach(&self, id: &str) -> Result<Option<Result<ExecutionResult, String>>, String> {
-        let mut state = lock(&self.inner.state);
+        let mut state = sync::lock(&self.inner.state);
         let cell = state.cells.get_mut(id).ok_or_else(|| format!("Unknown cell: {id}"))?;
         if let Some(outcome) = cell.outcome.clone() {
             state.cells.remove(id);
@@ -817,7 +807,7 @@ impl Lanes {
     /// keeps its state); a cell still running after the grace period has its kernel killed.
     pub fn cancel(&self, id: &str, reason: &str) -> Result<Result<ExecutionResult, String>, String> {
         let (waits, kill) = {
-            let mut state = lock(&self.inner.state);
+            let mut state = sync::lock(&self.inner.state);
             let cell = state.cells.get_mut(id).ok_or_else(|| format!("Unknown cell: {id}"))?;
             cell.cancelled = true;
             cell.cancellers += 1;
@@ -832,7 +822,7 @@ impl Lanes {
                     .ok_or_else(|| format!("cell {id} did not end after its kernel was killed"))
             }
         };
-        let mut state = lock(&self.inner.state);
+        let mut state = sync::lock(&self.inner.state);
         if let Some(cell) = state.cells.get_mut(id) {
             cell.cancellers -= 1;
             if cell.outcome.is_some() && cell.cancellers == 0 && !cell.waiting {
@@ -844,7 +834,7 @@ impl Lanes {
 
     fn await_end(&self, id: &str, timeout: Duration) -> Option<Result<ExecutionResult, String>> {
         let deadline = Instant::now() + timeout;
-        let mut state = lock(&self.inner.state);
+        let mut state = sync::lock(&self.inner.state);
         loop {
             // The record stays: the canceller removes it (a caller still waiting gets the outcome too).
             if let Some(outcome) = state.cells.get(id)?.outcome.clone() {
@@ -869,32 +859,28 @@ impl Lanes {
     /// (the requesting cell's lane kernel's latest [`kernel::ContinuityReport`], or null). `own` is the requesting
     /// cell, which cannot cancel itself.
     pub fn request(&self, kind: &str, payload: Map<String, Value>, own: Option<&str>) -> Result<Value, String> {
-        let only = |allowed: &[&str]| match payload.keys().find(|k| !allowed.contains(&k.as_str())) {
-            Some(key) => Err(format!("Unknown payload field: {key}")),
-            None => Ok(()),
-        };
         let text = |name: &str| match payload.get(name).and_then(Value::as_str) {
             Some(text) if !text.trim().is_empty() => Ok(text.to_string()),
             _ => Err(format!("{name} must be a nonempty string")),
         };
         match kind {
             "rlm.lanes" => {
-                only(&[])?;
+                jsrt::payload::fields(&payload, &[])?;
                 Ok(json!({ "lanes": self.list() }))
             }
             "rlm.lane.open" => {
-                only(&["lane"])?;
+                jsrt::payload::fields(&payload, &["lane"])?;
                 self.open(&text("lane")?)?;
                 Ok(json!({ "opened": true }))
             }
             "rlm.lane.close" => {
-                only(&["lane"])?;
+                jsrt::payload::fields(&payload, &["lane"])?;
                 self.close_lane(&text("lane")?)?;
                 Ok(json!({ "closed": true }))
             }
             "rlm.cells" => {
-                only(&[])?;
-                let state = lock(&self.inner.state);
+                jsrt::payload::fields(&payload, &[])?;
+                let state = sync::lock(&self.inner.state);
                 let mut cells: Vec<Value> = state
                     .cells
                     .iter()
@@ -914,7 +900,7 @@ impl Lanes {
             }
             // `rlm.cancel(id)` and `rlm.cell.cancel(id)`: any lane's running cell but the requesting one.
             "rlm.cell.cancel" | "rlm.cancel" => {
-                only(&["cell"])?;
+                jsrt::payload::fields(&payload, &["cell"])?;
                 let cell = text("cell")?;
                 if own == Some(cell.as_str()) {
                     return Err("a cell cannot cancel itself".into());
@@ -926,13 +912,13 @@ impl Lanes {
                 })
             }
             "rlm.pool" => {
-                only(&[])?;
+                jsrt::payload::fields(&payload, &[])?;
                 Ok(self.pool_stats())
             }
             "rlm.recovery" => {
-                only(&[])?;
+                jsrt::payload::fields(&payload, &[])?;
                 let lane = own
-                    .and_then(|cell| lock(&self.inner.state).cells.get(cell).map(|c| c.lane.clone()))
+                    .and_then(|cell| sync::lock(&self.inner.state).cells.get(cell).map(|c| c.lane.clone()))
                     .ok_or("rlm.recovery: the request is not from a running cell")?;
                 let report = self.kernel(&lane).and_then(|kernel| kernel.last_recovery());
                 serde_json::to_value(report).map_err(|e| e.to_string())
@@ -944,7 +930,7 @@ impl Lanes {
     /// Cancels every running cell and shuts every lane down.
     pub fn close(&self) {
         let cells: Vec<String> = {
-            let mut state = lock(&self.inner.state);
+            let mut state = sync::lock(&self.inner.state);
             state.closed = true;
             state
                 .cells

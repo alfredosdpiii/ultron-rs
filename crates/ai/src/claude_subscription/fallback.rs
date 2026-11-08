@@ -20,14 +20,14 @@
 
 use super::{Config, ERROR_DIAGNOSTIC, catalog};
 use crate::http::Transport;
-use crate::options::{SimpleStreamOptions, now_ms};
+use crate::options::SimpleStreamOptions;
 use crate::types::{
     AssistantMessage, AssistantMessageDiagnostic, AssistantMessageEvent, EventSink, Model, StopReason,
     TranscriptContext,
 };
 use serde_json::{Map, Value};
 use std::path::PathBuf;
-use std::sync::{Arc, LazyLock, Mutex, MutexGuard};
+use std::sync::{Arc, LazyLock, Mutex};
 
 /// The diagnostic on the message where routing switched; `details.route` is `api` or `subscription`, and
 /// `details.notice` is the line a UI shows.
@@ -61,7 +61,7 @@ pub struct RouterOptions {
 impl Default for RouterOptions {
     fn default() -> Self {
         RouterOptions {
-            clock: Arc::new(now_ms),
+            clock: Arc::new(jsrt::date::now_ms),
             env: Arc::new(|name| std::env::var(name).ok().filter(|v| !v.is_empty())),
             agent_dir: None,
             subscription: None,
@@ -92,10 +92,6 @@ pub async fn stream_simple(
     sink: &mut EventSink<'_>,
 ) -> AssistantMessage {
     GLOBAL.stream(model, context, options, transport, sink).await
-}
-
-fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
-    mutex.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
 /// Holds `Start` until content arrives and the terminal event until the call is decided, so a call that failed
@@ -252,21 +248,17 @@ fn route(route: &str, notice: String, extra: Map<String, Value>) -> AssistantMes
     details.extend(extra);
     AssistantMessageDiagnostic {
         kind: ROUTE_DIAGNOSTIC.into(),
-        timestamp: now_ms(),
+        timestamp: jsrt::date::now_ms(),
         error: None,
         details: Some(details),
     }
-}
-
-fn iso(ms: i64) -> String {
-    crate::claude_code_cli::iso_string(ms as f64)
 }
 
 /// Text `notice` of the switch to the API.
 pub fn api_notice(until: i64) -> String {
     format!(
         "Claude subscription limit reached; using API credits until {}",
-        iso(until)
+        jsrt::date::iso_string(until)
     )
 }
 
@@ -282,7 +274,7 @@ impl Router {
 
     /// Until when calls go straight to the API (epoch ms), if they do.
     pub fn held_until(&self) -> Option<i64> {
-        *lock(&self.hold)
+        *jsrt::sync::lock(&self.hold)
     }
 
     fn agent_dir(&self) -> PathBuf {
@@ -392,7 +384,7 @@ impl Router {
     ) -> AssistantMessage {
         let agent_dir = self.agent_dir();
         if !self.enabled(&agent_dir) {
-            *lock(&self.hold) = None;
+            *jsrt::sync::lock(&self.hold) = None;
             return self.subscription(model, context, options, sink).await;
         }
         let now = (self.options.clock)();
@@ -403,7 +395,7 @@ impl Router {
             {
                 return self.api(model, context, options, transport, sink, &key, None).await;
             }
-            *lock(&self.hold) = None;
+            *jsrt::sync::lock(&self.hold) = None;
         }
         let mut gate = Gate::new(sink);
         let mut message = {
@@ -415,7 +407,7 @@ impl Router {
             Some(resets_at) if !gate.committed => match self.api_key(options, &agent_dir) {
                 Some(key) => {
                     let until = resets_at.filter(|r| *r > now).unwrap_or(now + DEFAULT_HOLD_MS);
-                    *lock(&self.hold) = Some(until);
+                    *jsrt::sync::lock(&self.hold) = Some(until);
                     let switched = Switch {
                         until,
                         reason: message.error_message.clone().unwrap_or_default(),
@@ -467,7 +459,7 @@ impl Router {
             crate::anthropic::stream_simple(&api_model, context, &request, transport, &mut forward).await
         };
         let mut message = result.unwrap_or_else(|error| {
-            let mut message = AssistantMessage::pending(&api_model, now_ms());
+            let mut message = AssistantMessage::pending(&api_model, jsrt::date::now_ms());
             message.stop_reason = StopReason::Error;
             message.error_message = Some(error);
             message
@@ -477,7 +469,7 @@ impl Router {
         {
             let until = self
                 .held_until()
-                .map(|u| format!(" until {}", iso(u)))
+                .map(|u| format!(" until {}", jsrt::date::iso_string(u)))
                 .unwrap_or_default();
             message.error_message = Some(format!(
                 "{BOTH_EXHAUSTED}: the subscription is out of usage{until}, and the API answered: {error}"

@@ -4,7 +4,7 @@
 
 use super::callback::{Callback, CallbackServer, PageRenderer};
 use super::flow::{Fetcher, FlowOptions, FlowResult, Provider, StateStore, authorize, step_up_scope};
-use super::store::{ServerStore, now_ms};
+use super::store::ServerStore;
 use super::{Challenge, OAuthError, parse_www_authenticate};
 use crate::CancelToken;
 use crate::http::{AuthProvider, Unauthorized, http_failure};
@@ -420,7 +420,7 @@ impl AuthProvider for OAuthAuth {
         let expired = state
             .as_ref()
             .and_then(|s| s["tokensExpireAt"].as_i64())
-            .is_some_and(|at| at - REFRESH_SKEW_MS <= now_ms());
+            .is_some_and(|at| at - REFRESH_SKEW_MS <= jsrt::date::now_ms());
         let refreshable = state
             .as_ref()
             .and_then(|s| s["tokens"]["refresh_token"].as_str())

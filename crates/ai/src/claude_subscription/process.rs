@@ -265,7 +265,7 @@ static PROCESS_WORKDIRS: LazyLock<Mutex<std::collections::HashMap<PathBuf, PathB
 
 fn private_temp(temp_root: &Path, prefix: &str) -> std::io::Result<PathBuf> {
     loop {
-        let path = temp_root.join(format!("{prefix}{}", super::admission::random_token(6)));
+        let path = temp_root.join(format!("{prefix}{}", jsrt::random::random_hex(6)));
         if create_private(&path)? {
             return Ok(path);
         }
@@ -462,15 +462,6 @@ fn python_str(value: Option<&Value>) -> String {
         None | Some(Value::Null) => "None".into(),
         Some(Value::String(s)) => s.clone(),
         Some(other) => other.to_string(),
-    }
-}
-
-fn truthy(value: Option<&Value>) -> bool {
-    match value {
-        None | Some(Value::Null) | Some(Value::Bool(false)) => false,
-        Some(Value::Number(n)) => n.as_f64() != Some(0.0),
-        Some(Value::String(s)) => !s.is_empty(),
-        _ => true,
     }
 }
 
@@ -680,7 +671,7 @@ pub fn run(
                     return Err(ClaudeError::Failed("Native exited before replay acknowledgment".into()));
                 };
                 if ack["type"] == "result" {
-                    if ack["num_turns"] != json!(0) || truthy(ack.get("is_error")) {
+                    if ack["num_turns"] != json!(0) || jsrt::value::truthy(ack.get("is_error")) {
                         return Err(ClaudeError::Failed(
                             "Native history replay not supported: expected zero-turn acknowledgment".into(),
                         ));
@@ -709,7 +700,8 @@ pub fn run(
                 }
             }
             Some("assistant") => {
-                let failed = truthy(event.get("error")) || truthy(event["message"].get("error"));
+                let failed =
+                    jsrt::value::truthy(event.get("error")) || jsrt::value::truthy(event["message"].get("error"));
                 if failed {
                     let detail = event["message"]["content"]
                         .as_array()
@@ -848,7 +840,7 @@ pub fn run(
     let boundary = !calls.is_empty() && subtype == Some(&json!("error_max_turns")) && code == Some(1);
     if !boundary
         && !handled
-        && (code != Some(0) || truthy(last_result.get("is_error")) || subtype != Some(&json!("success")))
+        && (code != Some(0) || jsrt::value::truthy(last_result.get("is_error")) || subtype != Some(&json!("success")))
     {
         return Err(ClaudeError::Failed(format!(
             "Native request failed: {}",

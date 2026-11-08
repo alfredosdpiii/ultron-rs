@@ -8,8 +8,9 @@ use std::rc::Rc;
 use serde_json::Value;
 use tui::theme::Theme;
 
-use super::{flat, js_slice};
+use super::flat;
 use crate::{bold, fg};
+use jsrt::{number, utf16};
 
 /// A task's result (`agents.status`).
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -444,18 +445,17 @@ pub fn short_id(id: &str) -> String {
         .strip_prefix("ultron-task-")
         .or_else(|| id.strip_prefix("ultron-instance-"))
         .unwrap_or(id);
-    js_slice(rest, 8)
+    utf16::head_lossy(rest, 8)
 }
 
 /// `formatDuration`.
 pub fn format_duration(ms: f64) -> String {
-    use crate::js_to_fixed;
     if ms < 1000.0 {
-        return format!("{}ms", super::js_num(ms.round()));
+        return format!("{}ms", number::to_string(ms.round()));
     }
     let seconds = ms / 1000.0;
     if seconds < 10.0 {
-        return format!("{}s", js_to_fixed(seconds, 1));
+        return format!("{}s", number::to_fixed(seconds, 1));
     }
     if seconds < 60.0 {
         return format!("{}s", seconds.floor());
@@ -856,15 +856,14 @@ pub fn render_context_lines(context: Option<&RlmContextState>, style: &RlmStyle)
     if c.forgotten_count + c.collapsed_count + c.pinned_count + c.notes == 0.0 {
         return Vec::new();
     }
-    use super::js_num;
     let mut lines = vec![style.fg(
         Color::Muted,
         &format!(
             "context: {} forgotten · {} collapsed · {} pinned · {} notes",
-            js_num(c.forgotten_count),
-            js_num(c.collapsed_count),
-            js_num(c.pinned_count),
-            js_num(c.notes)
+            number::to_string(c.forgotten_count),
+            number::to_string(c.collapsed_count),
+            number::to_string(c.pinned_count),
+            number::to_string(c.notes)
         ),
     )];
     let tail = |items: &[RlmContextItem]| items[items.len().saturating_sub(3)..].to_vec();

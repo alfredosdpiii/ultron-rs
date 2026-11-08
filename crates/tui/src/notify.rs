@@ -16,9 +16,6 @@ use std::sync::mpsc::{self, Sender};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
-use base64::Engine;
-use base64::engine::general_purpose::STANDARD as B64;
-
 /// Default notification title and application name.
 pub const APP_NAME: &str = "ultron";
 /// `off`, `0` or `false` suppresses every notification.
@@ -342,7 +339,7 @@ fn osc99_chunk(meta: &[String], payload: &str) -> String {
     if payload.chars().any(is_osc_unsafe) {
         let mut meta = meta.to_vec();
         meta.push("e=1".into());
-        return format!("\x1b]99;{};{}\x1b\\", meta.join(":"), B64.encode(payload));
+        return format!("\x1b]99;{};{}\x1b\\", meta.join(":"), jsrt::base64::encode(payload));
     }
     format!("\x1b]99;{};{payload}\x1b\\", meta.join(":"))
 }
@@ -432,7 +429,7 @@ impl Notifier {
             id = format!("{}-{}", self.app_name, self.next_osc99_id);
             self.next_osc99_id += 1;
         }
-        let mut meta = vec![format!("i={id}"), format!("f={}", B64.encode(&self.app_name))];
+        let mut meta = vec![format!("i={id}"), format!("f={}", jsrt::base64::encode(&self.app_name))];
         let actions = match n.actions.as_deref() {
             Some("focus") => Some("focus"),
             Some("report") => Some("report"),
@@ -453,12 +450,12 @@ impl Notifier {
                 }
             ));
         }
-        meta.extend(n.kinds.iter().map(|t| format!("t={}", B64.encode(t))));
+        meta.extend(n.kinds.iter().map(|t| format!("t={}", jsrt::base64::encode(t))));
         if let Some(icon) = n.icon_name.as_deref().filter(|s| !s.is_empty()) {
-            meta.push(format!("n={}", B64.encode(icon)));
+            meta.push(format!("n={}", jsrt::base64::encode(icon)));
         }
         if let Some(sound) = n.sound.as_deref().filter(|s| !s.is_empty()) {
-            meta.push(format!("s={}", B64.encode(sound)));
+            meta.push(format!("s={}", jsrt::base64::encode(sound)));
         }
         if let Some(w) = n.expires_ms {
             meta.push(format!("w={}", w.max(-1)));

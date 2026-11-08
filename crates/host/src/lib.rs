@@ -26,6 +26,7 @@ pub mod text;
 pub mod view_image;
 
 use journal::{JobJournal, JobRecord};
+use jsrt::sync;
 use kernel::{HostHandler, Signal};
 use serde_json::{Map, Value, json};
 use std::fs::File;
@@ -35,8 +36,8 @@ use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError, mpsc};
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::sync::{Arc, Condvar, Mutex, PoisonError, mpsc};
+use std::time::{Duration, Instant, UNIX_EPOCH};
 use text::{DEFAULT_MAX_BYTES, Decoder, clean, tail_bytes, truncate_tail};
 
 pub const JOB_TEXT_BYTES: usize = 16 * 1024;
@@ -159,8 +160,8 @@ impl Shared {
     /// Writes the journal (every job, tails left out: they are not even copied), serialized under the jobs lock so the
     /// newest state wins.
     fn persist(&self) {
-        let jobs = lock(&self.jobs);
-        let Some(journal) = lock(&self.journal).clone() else {
+        let jobs = sync::lock(&self.jobs);
+        let Some(journal) = sync::lock(&self.journal).clone() else {
             return;
         };
         if self.released.load(Ordering::SeqCst) {
@@ -279,15 +280,15 @@ impl Job {
     }
 
     fn finished(&self) {
-        *lock(&self.done.0) = true;
+        *sync::lock(&self.done.0) = true;
         self.done.1.notify_all();
     }
 }
 
 /// The job's record; `tail`: with its output tail (the journal leaves it out).
 fn job_record(job: &Job, tail: bool) -> JobRecord {
-    let record = lock(&job.record);
-    let process = *lock(&job.process);
+    let record = sync::lock(&job.record);
+    let process = *sync::lock(&job.process);
     JobRecord {
         id: job.id.clone(),
         lane: job.lane.clone(),
@@ -333,29 +334,6 @@ fn exit_status(path: &Path) -> Option<i32> {
     text.split_whitespace().last()?.parse().ok()
 }
 
-fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
-    mutex.lock().unwrap_or_else(PoisonError::into_inner)
-}
-
-fn now_ms() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0, |d| d.as_millis() as u64)
-}
-
-fn hex(bytes: usize) -> String {
-    let mut buffer = vec![0u8; bytes];
-    getrandom::fill(&mut buffer).expect("system randomness");
-    buffer.iter().map(|b| format!("{b:02x}")).collect()
-}
-
-fn fields(payload: &Map<String, Value>, allowed: &[&str]) -> Result<(), String> {
-    match payload.keys().find(|key| !allowed.contains(&key.as_str())) {
-        Some(key) => Err(format!("Unknown payload field: {key}")),
-        None => Ok(()),
-    }
-}
-
 fn command_of(payload: &Map<String, Value>) -> Result<String, String> {
     match payload.get("command") {
         Some(Value::String(command)) if !command.trim().is_empty() => Ok(command.clone()),
@@ -384,15 +362,11 @@ fn wait_seconds(value: Option<&Value>, name: &str) -> Result<Option<f64>, String
     }
 }
 
+/// `Number.isSafeInteger(value) && value >= 0`, or `default` when absent.
 fn safe_integer(value: Option<&Value>, default: u64) -> Option<u64> {
     match value {
         None => Some(default),
-        Some(value) => value.as_u64().or_else(|| {
-            value
-                .as_f64()
-                .filter(|f| f.fract() == 0.0 && *f >= 0.0 && *f <= 9_007_199_254_740_991.0)
-                .map(|f| f as u64)
-        }),
+        Some(value) => jsrt::number::safe_integer(value).and_then(|n| u64::try_from(n).ok()),
     }
 }
 
@@ -628,11 +602,11 @@ impl Host {
     /// completed with the exit status the keeper wrote, or `lost` when the process ended without one. Records
     /// without a process (TypeScript journals) read as `interrupted`, as there. Call once, before the first request.
     pub fn with_journal(self, journal: Arc<dyn JobJournal>) -> Result<Host, String> {
-        let now = now_ms();
+        let now = jsrt::date::now_ms() as u64;
         let restored = journal::restore_durable(journal.read()?.as_ref(), now)?;
         let mut adopted = Vec::new();
         {
-            let mut jobs = lock(&self.shared.jobs);
+            let mut jobs = sync::lock(&self.shared.jobs);
             for saved in restored.records {
                 let job = Arc::new(Job::new(
                     saved.id.clone(),
@@ -654,7 +628,7 @@ impl Host {
                 ));
                 if saved.status == "running" {
                     let pid = saved.pid.and_then(|pid| i32::try_from(pid).ok());
-                    *lock(&job.process) = pid.map(|pid| (pid, saved.pid_start));
+                    *sync::lock(&job.process) = pid.map(|pid| (pid, saved.pid_start));
                     adopted.push(job.clone());
                 } else {
                     job.finished();
@@ -662,9 +636,9 @@ impl Host {
                 jobs.push(job);
             }
         }
-        *lock(&self.shared.journal) = Some(journal);
+        *sync::lock(&self.shared.journal) = Some(journal);
         for job in adopted {
-            if keeper_alive(*lock(&job.process)) {
+            if keeper_alive(*sync::lock(&job.process)) {
                 let (runner, shared) = (job.clone(), self.shared.clone());
                 std::thread::spawn(move || follow(&runner, None, &shared));
             } else {
@@ -682,7 +656,7 @@ impl Host {
     pub fn release_jobs(&self) {
         self.shared.persist();
         self.shared.released.store(true, Ordering::SeqCst);
-        for job in lock(&self.shared.jobs).iter() {
+        for job in sync::lock(&self.shared.jobs).iter() {
             job.cancel.1.notify_all();
         }
     }
@@ -690,7 +664,7 @@ impl Host {
     /// Stops every running job and waits until each has ended (worker shutdown). Dropping the host does the same
     /// unless [`Host::release_jobs`] was called. Nothing is reported of them.
     pub fn stop_jobs(&self) {
-        let jobs = lock(&self.shared.jobs).clone();
+        let jobs = sync::lock(&self.shared.jobs).clone();
         for job in jobs {
             cancel(&job, StopReason::Closed);
         }
@@ -698,17 +672,17 @@ impl Host {
 
     /// Who hears of every job's end (`onEnd`): the completion events of jobs nobody waited on.
     pub fn on_job_end(&self, ends: JobEnds) {
-        *lock(&self.shared.ends) = Some(ends);
+        *sync::lock(&self.shared.ends) = Some(ends);
     }
 
     /// Where a new job's usage root comes from (`host.rootOf(caller)`).
     pub fn set_roots(&self, roots: RootOf) {
-        *lock(&self.shared.roots) = Some(roots);
+        *sync::lock(&self.shared.roots) = Some(roots);
     }
 
     /// `cancelRoot`: Esc aborted a root turn: stop every job started under it (their ends are not announced).
     pub fn cancel_root(&self, root: &str) {
-        let jobs: Vec<Arc<Job>> = lock(&self.shared.jobs)
+        let jobs: Vec<Arc<Job>> = sync::lock(&self.shared.jobs)
             .iter()
             .filter(|job| job.root_id.as_deref() == Some(root))
             .cloned()
@@ -721,7 +695,7 @@ impl Host {
     /// How many callers are waiting on job `id` now (a waiter that sees the job end gets its result inline, so
     /// the end is not announced).
     pub fn job_waiters(&self, id: &str) -> usize {
-        lock(&self.shared.jobs)
+        sync::lock(&self.shared.jobs)
             .iter()
             .find(|job| job.id == id)
             .map_or(0, |job| job.waiters.load(Ordering::SeqCst))
@@ -730,7 +704,7 @@ impl Host {
     /// Every job's record, newest first (`ShellJobs.list()`), as `lane` may see them: the root lane every job, another
     /// lane its own.
     pub fn job_records(&self, lane: &str) -> Vec<JobRecord> {
-        lock(&self.shared.jobs)
+        sync::lock(&self.shared.jobs)
             .iter()
             .rev()
             .filter(|job| visible(job, lane))
@@ -740,18 +714,18 @@ impl Host {
 
     /// Running jobs of every lane.
     pub fn running_jobs(&self) -> usize {
-        lock(&self.shared.jobs)
+        sync::lock(&self.shared.jobs)
             .iter()
-            .filter(|job| lock(&job.record).status == Status::Running)
+            .filter(|job| sync::lock(&job.record).status == Status::Running)
             .count()
     }
 
     /// Running jobs of `lane` whose root `excluded` does not exclude (`running`).
     pub fn running(&self, lane: &str, excluded: &dyn Fn(Option<&str>) -> bool) -> usize {
-        lock(&self.shared.jobs)
+        sync::lock(&self.shared.jobs)
             .iter()
             .filter(|job| job.lane == lane && !excluded(job.root_id.as_deref()))
-            .filter(|job| lock(&job.record).status == Status::Running)
+            .filter(|job| sync::lock(&job.record).status == Status::Running)
             .count()
     }
 
@@ -831,7 +805,7 @@ impl Host {
             "bash" if payload.contains_key("yield_after") => self.shell_bash(lane, &payload, signal),
             "bash" => self.blocking_bash(&payload, signal, &mut |_| {}),
             "shell.run" => {
-                fields(&payload, &["command", "timeout", "yield_after"])?;
+                jsrt::payload::fields(&payload, &["command", "timeout", "yield_after"])?;
                 let command = command_of(&payload)?;
                 let timeout = timeout_of(payload.get("timeout"))?;
                 let yield_after = wait_seconds(payload.get("yield_after"), "yield_after")?.unwrap_or(0.0);
@@ -840,33 +814,33 @@ impl Host {
                 Ok(snapshot(&job))
             }
             "shell.result" => {
-                fields(&payload, &["id", "wait"])?;
+                jsrt::payload::fields(&payload, &["id", "wait"])?;
                 let job = self.find(lane, payload.get("id"))?;
                 // TS validates `wait` only while the job runs.
-                if lock(&job.record).status == Status::Running {
+                if sync::lock(&job.record).status == Status::Running {
                     wait(&job, wait_seconds(payload.get("wait"), "wait")?, signal);
                 }
                 Ok(snapshot(&job))
             }
             "shell.get" => {
-                fields(&payload, &["id"])?;
+                jsrt::payload::fields(&payload, &["id"])?;
                 let job = self.find(lane, payload.get("id"))?;
                 Ok(snapshot(&job))
             }
             "shell.cancel" => {
-                fields(&payload, &["id"])?;
+                jsrt::payload::fields(&payload, &["id"])?;
                 let job = self.find(lane, payload.get("id"))?;
                 cancel(&job, StopReason::Cancelled);
                 Ok(snapshot(&job))
             }
             "shell.read" => {
-                fields(&payload, &["id", "cursor", "max_bytes"])?;
+                jsrt::payload::fields(&payload, &["id", "cursor", "max_bytes"])?;
                 let job = self.find(lane, payload.get("id"))?;
                 read_output(&job, payload.get("cursor"), payload.get("max_bytes"))
             }
             "shell.list" => {
-                fields(&payload, &[])?;
-                let jobs = lock(&self.shared.jobs).clone();
+                jsrt::payload::fields(&payload, &[])?;
+                let jobs = sync::lock(&self.shared.jobs).clone();
                 Ok(Value::Array(
                     jobs.iter()
                         .rev()
@@ -914,7 +888,9 @@ impl Host {
         let open_spill =
             |spill: &mut Option<(PathBuf, File)>, chunks: &std::collections::VecDeque<String>| -> Result<(), String> {
                 if spill.is_none() {
-                    let path = self.spill_dir.join(format!("pi-bash-{}.log", hex(8)));
+                    let path = self
+                        .spill_dir
+                        .join(format!("pi-bash-{}.log", jsrt::random::random_hex(8)));
                     let mut file = File::create(&path).map_err(|error| error.to_string())?;
                     for chunk in chunks {
                         let _ = file.write_all(chunk.as_bytes());
@@ -984,13 +960,13 @@ impl Host {
 
     /// Plain `await bash(cmd)` with a yield_after: wait like the blocking bash, then leave a slow command running.
     fn shell_bash(&self, lane: &str, payload: &Map<String, Value>, signal: &Signal) -> Result<Value, String> {
-        fields(payload, &["command", "timeout", "yield_after"])?;
+        jsrt::payload::fields(payload, &["command", "timeout", "yield_after"])?;
         let command = command_of(payload)?;
         let timeout = timeout_of(payload.get("timeout"))?;
         let yield_after = wait_seconds(payload.get("yield_after"), "yield_after")?;
         let job = self.start(lane, command, timeout)?;
         wait(&job, yield_after, signal);
-        if lock(&job.record).status == Status::Running && signal.is_aborted() {
+        if sync::lock(&job.record).status == Status::Running && signal.is_aborted() {
             job.waiters.fetch_add(1, Ordering::SeqCst);
             cancel(&job, StopReason::Cancelled);
             job.waiters.fetch_sub(1, Ordering::SeqCst);
@@ -1002,7 +978,7 @@ impl Host {
         let Some(Value::String(id)) = id.filter(|id| id.as_str().is_some_and(|id| !id.is_empty())) else {
             return Err("job id must be a nonempty string".into());
         };
-        lock(&self.shared.jobs)
+        sync::lock(&self.shared.jobs)
             .iter()
             .find(|job| &job.id == id && visible(job, lane))
             .cloned()
@@ -1010,13 +986,13 @@ impl Host {
     }
 
     fn start(&self, lane: &str, command: String, timeout: Option<f64>) -> Result<Arc<Job>, String> {
-        let root = lock(&self.shared.roots).clone().and_then(|roots| roots(lane));
-        let mut jobs = lock(&self.shared.jobs);
-        let running = |job: &Arc<Job>| lock(&job.record).status == Status::Running;
+        let root = sync::lock(&self.shared.roots).clone().and_then(|roots| roots(lane));
+        let mut jobs = sync::lock(&self.shared.jobs);
+        let running = |job: &Arc<Job>| sync::lock(&job.record).status == Status::Running;
         if jobs.iter().filter(|job| running(job)).count() >= JOB_MAX_ACTIVE {
             return Err(format!("At most {JOB_MAX_ACTIVE} shell jobs can run at once"));
         }
-        let id = format!("job-{}", hex(4));
+        let id = format!("job-{}", jsrt::random::random_hex(4));
         let job = Arc::new(Job::new(
             id,
             (lane.to_string(), root),
@@ -1026,7 +1002,7 @@ impl Host {
             Record {
                 status: Status::Running,
                 exit_code: None,
-                started_at: now_ms(),
+                started_at: jsrt::date::now_ms() as u64,
                 ended_at: None,
                 output_bytes: 0,
                 retained_bytes: 0,
@@ -1074,14 +1050,14 @@ impl Host {
             match shell.and_then(|(shell, keeper)| spawn_keeper(&runner, (&shell, &keeper), env, launcher.as_deref())) {
                 Ok(child) => {
                     let pid = child.id() as i32;
-                    *lock(&runner.process) = Some((pid, process_start(pid)));
+                    *sync::lock(&runner.process) = Some((pid, process_start(pid)));
                     let _ = started.send(());
                     follow(&runner, Some(child), &shared);
                 }
                 Err(error) => {
-                    let mut record = lock(&runner.record);
+                    let mut record = sync::lock(&runner.record);
                     record.status = Status::Failed;
-                    record.ended_at = Some(now_ms());
+                    record.ended_at = Some(jsrt::date::now_ms() as u64);
                     record.error = Some(error);
                     drop(record);
                     let _ = started.send(());
@@ -1159,7 +1135,7 @@ impl Digest {
             .mode(0o600)
             .open(&job.output_path)
             .ok();
-        let mut record = lock(&job.record);
+        let mut record = sync::lock(&job.record);
         record.output_bytes = 0;
         record.retained_bytes = 0;
         record.tail.clear();
@@ -1173,7 +1149,7 @@ impl Digest {
         if text.is_empty() {
             return;
         }
-        let mut record = lock(&job.record);
+        let mut record = sync::lock(&job.record);
         record.output_bytes += text.len();
         let room = JOB_RETAINED_BYTES.saturating_sub(record.retained_bytes);
         if room > 0 {
@@ -1218,23 +1194,23 @@ fn follow(job: &Arc<Job>, child: Option<std::process::Child>, shared: &Shared) {
         let waiter = job.clone();
         std::thread::spawn(move || {
             let code = child.wait().ok().and_then(|status| status.code());
-            let guard = lock(&waiter.cancel.0);
-            *lock(&waiter.exited) = Some(code);
+            let guard = sync::lock(&waiter.cancel.0);
+            *sync::lock(&waiter.exited) = Some(code);
             drop(guard);
             waiter.cancel.1.notify_all();
         });
     }
     let mut digest = Digest::new(job);
     let mut raw = File::open(&job.raw_path).ok();
-    let started_at = lock(&job.record).started_at;
+    let started_at = sync::lock(&job.record).started_at;
     let deadline = job
         .timeout
         .map(|seconds| started_at.saturating_add((seconds * 1000.0) as u64));
-    let process = *lock(&job.process);
+    let process = *sync::lock(&job.process);
     let mut stopped: Option<Status> = None;
     let ended = loop {
         let ended = match own {
-            true => *lock(&job.exited),
+            true => *sync::lock(&job.exited),
             false => {
                 let code = exit_status(&job.exit_path);
                 (code.is_some() || !keeper_alive(process)).then_some(code)
@@ -1248,9 +1224,9 @@ fn follow(job: &Arc<Job>, child: Option<std::process::Child>, shared: &Shared) {
             return;
         }
         if stopped.is_none() {
-            if deadline.is_some_and(|deadline| now_ms() >= deadline) {
+            if deadline.is_some_and(|deadline| jsrt::date::now_ms() as u64 >= deadline) {
                 stopped = Some(Status::TimedOut);
-            } else if *lock(&job.cancel.0) {
+            } else if *sync::lock(&job.cancel.0) {
                 stopped = Some(Status::Cancelled);
             }
             // The keeper's own group (`process_group(0)` in `spawn_keeper`): its pgid is its pid.
@@ -1260,8 +1236,8 @@ fn follow(job: &Arc<Job>, child: Option<std::process::Child>, shared: &Shared) {
                 kernel::kill_command_group(pid);
             }
         }
-        let cancel = lock(&job.cancel.0);
-        if lock(&job.exited).is_none() {
+        let cancel = sync::lock(&job.cancel.0);
+        if sync::lock(&job.exited).is_none() {
             drop(
                 job.cancel
                     .1
@@ -1274,16 +1250,16 @@ fn follow(job: &Arc<Job>, child: Option<std::process::Child>, shared: &Shared) {
     // The keeper writes the command's status just before it exits.
     let code = exit_status(&job.exit_path);
     {
-        let mut record = lock(&job.record);
+        let mut record = sync::lock(&job.record);
         record.ended_at = Some(match own {
-            true => now_ms(),
+            true => jsrt::date::now_ms() as u64,
             // Ended while nobody followed it: the exit file's time, when there is one.
             false => std::fs::metadata(&job.exit_path)
                 .and_then(|meta| meta.modified())
                 .ok()
                 .filter(|_| code.is_some())
                 .and_then(|time| time.duration_since(UNIX_EPOCH).ok())
-                .map_or_else(now_ms, |d| d.as_millis() as u64),
+                .map_or_else(|| jsrt::date::now_ms() as u64, |d| d.as_millis() as u64),
         });
         match stopped {
             Some(status) => {
@@ -1292,7 +1268,7 @@ fn follow(job: &Arc<Job>, child: Option<std::process::Child>, shared: &Shared) {
                 if status == Status::TimedOut {
                     record.error = Some(format!(
                         "timed out after {}s; process tree killed",
-                        js_number(job.timeout.unwrap_or(0.0))
+                        jsrt::number::to_string(job.timeout.unwrap_or(0.0))
                     ));
                 }
             }
@@ -1317,13 +1293,13 @@ fn follow(job: &Arc<Job>, child: Option<std::process::Child>, shared: &Shared) {
     }
     shared.persist();
     // `onEnd`, before the job's waiters wake: a caller still waiting gets the result inline, so nothing is announced.
-    let reason = *lock(&job.reason);
+    let reason = *sync::lock(&job.reason);
     let end = JobEnd {
         record: job_record(job, true),
         awaited: job.waiters.load(Ordering::SeqCst) > 0,
         root_aborted: reason == Some(StopReason::RootAborted),
     };
-    let ends = lock(&shared.ends).clone();
+    let ends = sync::lock(&shared.ends).clone();
     job.finished();
     if reason != Some(StopReason::Closed)
         && let Some(ends) = ends
@@ -1332,29 +1308,11 @@ fn follow(job: &Arc<Job>, child: Option<std::process::Child>, shared: &Shared) {
     }
 }
 
-/// A number as JS prints it in a template string (integers without a fraction).
-fn js_number(value: f64) -> String {
-    if value.fract() == 0.0 {
-        format!("{}", value as i64)
-    } else {
-        format!("{value}")
-    }
-}
-
-/// A JSON number as JS writes it: integral values without a fraction (Python then sees an int).
-fn js_json_number(value: f64) -> Value {
-    if value.fract() == 0.0 {
-        json!(value as i64)
-    } else {
-        json!(value)
-    }
-}
-
 /// Wait for a job at most `seconds` (at least 20 ms; None: until it ends) or until the calling cell ends.
 fn wait(job: &Job, seconds: Option<f64>, signal: &Signal) {
     job.waiters.fetch_add(1, Ordering::SeqCst);
     let deadline = seconds.map(|seconds| Instant::now() + Duration::from_secs_f64(seconds.max(0.02)));
-    let mut done = lock(&job.done.0);
+    let mut done = sync::lock(&job.done.0);
     while !*done && !signal.is_aborted() && deadline.is_none_or(|deadline| Instant::now() < deadline) {
         done = job
             .done
@@ -1368,13 +1326,13 @@ fn wait(job: &Job, seconds: Option<f64>, signal: &Signal) {
 }
 
 fn cancel(job: &Job, reason: StopReason) {
-    if *lock(&job.done.0) {
+    if *sync::lock(&job.done.0) {
         return;
     }
-    lock(&job.reason).get_or_insert(reason);
-    *lock(&job.cancel.0) = true;
+    sync::lock(&job.reason).get_or_insert(reason);
+    *sync::lock(&job.cancel.0) = true;
     job.cancel.1.notify_all();
-    let mut done = lock(&job.done.0);
+    let mut done = sync::lock(&job.done.0);
     while !*done {
         done = job.done.1.wait(done).unwrap_or_else(PoisonError::into_inner);
     }
@@ -1407,9 +1365,12 @@ fn job_text(job: &Job, record: &Record) -> (String, bool) {
 }
 
 fn snapshot(job: &Job) -> Value {
-    let record = lock(&job.record);
+    let record = sync::lock(&job.record);
     let (text, truncated) = job_text(job, &record);
-    let elapsed = record.ended_at.unwrap_or_else(now_ms).saturating_sub(record.started_at);
+    let elapsed = record
+        .ended_at
+        .unwrap_or_else(|| jsrt::date::now_ms() as u64)
+        .saturating_sub(record.started_at);
     json!({
         "id": job.id,
         "lane": job.lane,
@@ -1424,7 +1385,7 @@ fn snapshot(job: &Job) -> Value {
         "truncated": truncated,
         "output_path": job.output_path.to_string_lossy(),
         "output_bytes": record.output_bytes,
-        "elapsed_seconds": js_json_number((elapsed as f64 / 100.0).round() / 10.0),
+        "elapsed_seconds": jsrt::json::number((elapsed as f64 / 100.0).round() / 10.0),
         "error": record.error,
     })
 }
@@ -1432,7 +1393,7 @@ fn snapshot(job: &Job) -> Value {
 /// The blocking bash's reply shape for a command that ran as a job, plus `running` and the job while it runs.
 fn bash_result(job: &Job) -> Result<Value, String> {
     let (status, exit_code, error, partial) = {
-        let record = lock(&job.record);
+        let record = sync::lock(&job.record);
         (
             record.status,
             record.exit_code,
@@ -1464,7 +1425,7 @@ fn read_output(job: &Job, cursor: Option<&Value>, max_bytes: Option<&Value>) -> 
     let max = safe_integer(max_bytes, 65_536)
         .filter(|max| (1..=1_048_576).contains(max))
         .ok_or("max_bytes must be an integer between 1 and 1048576")? as usize;
-    let record = lock(&job.record);
+    let record = sync::lock(&job.record);
     let start = cursor.min(record.retained_bytes);
     let text = read_file(&job.output_path, start, max.min(record.retained_bytes - start));
     let next = start + text.len();

@@ -10,7 +10,7 @@
 
 use kernel_apis::DocumentStore;
 use kernel_apis::store::read_versioned;
-use kernel_apis::util::{Clock, fields, lock, sha256_hex, stringify, utf16_len, uuid};
+use kernel_apis::util::Clock;
 use serde_json::{Map, Value, json};
 use std::sync::{Arc, Mutex};
 
@@ -18,10 +18,6 @@ const MAX_CHECKS: usize = 256;
 const MAX_ATTEMPTS: usize = 4096;
 const DURABILITY_ERROR: &str = "Release gate store durability is uncertain; reopen the owner";
 const OUTCOMES: [&str; 3] = ["passed", "failed", "missing"];
-
-fn js_space(ch: char) -> bool {
-    (ch.is_whitespace() && ch != '\u{85}') || ch == '\u{feff}'
-}
 
 /// `/^[a-z][a-z0-9._-]{0,127}$/`.
 fn valid_id(value: &str) -> bool {
@@ -48,11 +44,11 @@ fn valid_hash(value: &str) -> bool {
 
 /// `/^\S.{0,255}$/` in UTF-16 units: no leading space, no line terminator.
 fn valid_variant(value: &str) -> bool {
-    value.chars().next().is_some_and(|ch| !js_space(ch))
+    value.chars().next().is_some_and(|ch| !jsrt::string::is_space(ch))
         && !value
             .chars()
             .any(|ch| matches!(ch, '\n' | '\r' | '\u{2028}' | '\u{2029}'))
-        && utf16_len(value) <= 256
+        && jsrt::utf16::len(value) <= 256
 }
 
 fn plain_object<'a>(value: Option<&'a Value>, name: &str) -> Result<&'a Map<String, Value>, String> {
@@ -84,7 +80,7 @@ fn checks_field(value: Option<&Value>) -> Result<Vec<(String, bool)>, String> {
     let mut checks: Vec<(String, bool)> = Vec::new();
     for (index, item) in list.iter().enumerate() {
         let entry = plain_object(Some(item), &format!("checks[{index}]"))?;
-        fields(entry, &["name", "required"])?;
+        jsrt::payload::fields(entry, &["name", "required"])?;
         let name = entry
             .get("name")
             .and_then(Value::as_str)
@@ -109,7 +105,9 @@ fn checks_field(value: Option<&Value>) -> Result<Vec<(String, bool)>, String> {
 /// SHA-256 of the canonical definition `{id, checks: [[name, required]], fixture_hash}`.
 fn gate_digest(id: &str, checks: &[(String, bool)], fixture_hash: &str) -> String {
     let checks: Vec<Value> = checks.iter().map(|(name, required)| json!([name, required])).collect();
-    sha256_hex(stringify(&json!({"id": id, "checks": checks, "fixture_hash": fixture_hash})).as_bytes())
+    jsrt::hash::sha256_hex(
+        jsrt::json::stringify(&json!({"id": id, "checks": checks, "fixture_hash": fixture_hash})).as_bytes(),
+    )
 }
 
 fn gate_checks(gate: &Value) -> Vec<(String, bool)> {
@@ -365,7 +363,7 @@ impl ReleaseGateModule {
         ReleaseGateModule {
             store,
             now,
-            ids: Arc::new(uuid),
+            ids: Arc::new(jsrt::random::uuid_v4),
             state: Mutex::new(State {
                 document: json!({"version": 1, "gates": [], "attempts": []}),
                 loaded: None,
@@ -442,12 +440,12 @@ impl ReleaseGateModule {
         let now = self.now.as_ref().map_or(now, |clock| clock());
         match kind {
             "gates.define" => {
-                fields(payload, &["id", "checks", "fixture_hash"])?;
+                jsrt::payload::fields(payload, &["id", "checks", "fixture_hash"])?;
                 let id = gate_id_field(payload.get("id"), "id")?;
                 let checks = checks_field(payload.get("checks"))?;
                 let fixture_hash = hash_field(payload.get("fixture_hash"), "fixture_hash")?;
                 let digest = gate_digest(&id, &checks, &fixture_hash);
-                let mut guard = lock(&self.state);
+                let mut guard = jsrt::sync::lock(&self.state);
                 let state = self.ready(&mut guard)?;
                 if let Ok(existing) = Self::find_gate(&state.document, &id) {
                     if existing["digest"] != digest.as_str() {
@@ -473,9 +471,9 @@ impl ReleaseGateModule {
                 Ok(gate)
             }
             "gates.compare" => {
-                fields(payload, &["gate_id", "baseline", "candidate"])?;
+                jsrt::payload::fields(payload, &["gate_id", "baseline", "candidate"])?;
                 let gate_id = gate_id_field(payload.get("gate_id"), "gate_id")?;
-                let mut guard = lock(&self.state);
+                let mut guard = jsrt::sync::lock(&self.state);
                 let state = self.ready(&mut guard)?;
                 if state.document["attempts"].as_array().map_or(0, Vec::len) >= MAX_ATTEMPTS {
                     return Err(format!("Release gate history is full ({MAX_ATTEMPTS} attempts)"));
@@ -499,9 +497,9 @@ impl ReleaseGateModule {
                 Ok(attempt)
             }
             "gates.history" => {
-                fields(payload, &["gate_id"])?;
+                jsrt::payload::fields(payload, &["gate_id"])?;
                 let gate_id = gate_id_field(payload.get("gate_id"), "gate_id")?;
-                let mut guard = lock(&self.state);
+                let mut guard = jsrt::sync::lock(&self.state);
                 let state = self.ready(&mut guard)?;
                 let gate = Self::find_gate(&state.document, &gate_id)?;
                 let attempts: Vec<Value> = state.document["attempts"]
@@ -514,8 +512,8 @@ impl ReleaseGateModule {
                 Ok(json!({"gate": gate, "attempts": attempts}))
             }
             "gates.list" => {
-                fields(payload, &[])?;
-                let mut guard = lock(&self.state);
+                jsrt::payload::fields(payload, &[])?;
+                let mut guard = jsrt::sync::lock(&self.state);
                 let state = self.ready(&mut guard)?;
                 Ok(json!({"gates": state.document["gates"]}))
             }
@@ -530,7 +528,7 @@ impl kernel_apis::ApiModule for ReleaseGateModule {
     }
 
     fn start(&self, _host: &dyn kernel_apis::TaskHost) -> Result<(), String> {
-        let mut guard = lock(&self.state);
+        let mut guard = jsrt::sync::lock(&self.state);
         self.ready(&mut guard).map(drop)
     }
 

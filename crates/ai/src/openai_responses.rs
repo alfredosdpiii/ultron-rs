@@ -10,10 +10,10 @@ use crate::http::{
     Failure, HeaderBuilder, HttpRequest, Sdk, Transport, format_provider_error, has_header, is_aborted, join_url,
     send_with_retry,
 };
-use crate::json::{js_len, parse_json, parse_streaming_json, short_hash, stringify};
+use crate::json::{parse_json, parse_streaming_json, short_hash};
 use crate::models::{calculate_cost, clamp_thinking_level};
 use crate::openai_completions::read_openai_stream;
-use crate::options::{SimpleStreamOptions, StreamOptions, build_base_options, now_ms, pi_user_agent};
+use crate::options::{SimpleStreamOptions, StreamOptions, build_base_options, pi_user_agent};
 use crate::transcript::{
     declared_tools, render_system_message_update, resolve_transcript, resolve_transcript_tools, system_message_text,
     transform_messages,
@@ -93,7 +93,7 @@ fn js_str(value: Option<&Value>) -> String {
     match value {
         None => "undefined".into(),
         Some(Value::String(s)) => s.clone(),
-        Some(other) => stringify(other),
+        Some(other) => jsrt::json::stringify(other),
     }
 }
 
@@ -369,7 +369,7 @@ pub fn convert_responses_messages(
                             text_index += 1;
                             let id = match parsed.as_ref().map(|(id, _)| id.as_str()).filter(|id| !id.is_empty()) {
                                 None => fallback,
-                                Some(id) if js_len(id) > 64 => format!("msg_{}", short_hash(id)),
+                                Some(id) if jsrt::utf16::len(id) > 64 => format!("msg_{}", short_hash(id)),
                                 Some(id) => id.to_string(),
                             };
                             let mut item = Map::new();
@@ -414,7 +414,7 @@ pub fn convert_responses_messages(
                                     "input".into(),
                                     json!(grammar_tool_input(&call.name, &call.arguments, property)?),
                                 ),
-                                None => item.insert("arguments".into(), json!(stringify(&call.arguments))),
+                                None => item.insert("arguments".into(), json!(jsrt::json::stringify(&call.arguments))),
                             };
                             if let (true, Some(namespace)) = (same_model, &call.namespace) {
                                 item.insert("namespace".into(), json!(namespace));
@@ -819,7 +819,7 @@ impl<'s, 'e> ResponsesRun<'s, 'e> {
                 continue;
             }
             stored["encrypted_content"] = encrypted.clone();
-            block.thinking_signature = Some(stringify(&stored));
+            block.thinking_signature = Some(jsrt::json::stringify(&stored));
         }
         if let Some(id) = str_field(response, "id").filter(|i| !i.is_empty()) {
             self.output.response_id = Some(id.to_string());
@@ -1020,7 +1020,7 @@ impl<'s, 'e> ResponsesRun<'s, 'e> {
                             } else if !content.is_empty() {
                                 block.thinking = content;
                             }
-                            block.thinking_signature = Some(stringify(item));
+                            block.thinking_signature = Some(jsrt::json::stringify(item));
                         }
                         self.reasoning_by_id.insert(js_str(item.get("id")), position);
                         let AssistantContent::Thinking(block) = &self.output.content[position] else {
@@ -1060,7 +1060,7 @@ impl<'s, 'e> ResponsesRun<'s, 'e> {
                         }
                         if let AssistantContent::Text(block) = &mut self.output.content[position] {
                             block.text = text.clone();
-                            block.text_signature = Some(stringify(&Value::Object(signature)));
+                            block.text_signature = Some(jsrt::json::stringify(&Value::Object(signature)));
                         }
                         self.emit(|partial| AssistantMessageEvent::TextEnd {
                             content_index: position,
@@ -1207,7 +1207,7 @@ pub async fn stream(
 ) -> AssistantMessage {
     let compat = Compat::of(model);
     let context = resolve_transcript(context, compat.supports_mid_convo_system_messages);
-    let now = now_ms();
+    let now = jsrt::date::now_ms();
     let mut run = ResponsesRun::new(AssistantMessage::pending(model, now), sink);
     let signal = options.base.signal();
     match drive(&mut run, model, &context, options, &compat, transport, now).await {

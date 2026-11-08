@@ -6,7 +6,6 @@ use ai::google::{self, GoogleOptions};
 use ai::google_shared;
 use ai::google_vertex::{self, GoogleVertexOptions};
 use ai::http::{BoxFuture, HeaderMap};
-use ai::json::normalize_numbers;
 use ai::mistral::{self, MistralOptions};
 use ai::options::pi_user_agent;
 use ai::{
@@ -246,7 +245,7 @@ fn pin_generated_ids(text: &str) -> String {
 }
 
 fn compact(value: &Value) -> String {
-    pin_generated_ids(&serde_json::to_string(&normalize_numbers(value.clone())).unwrap())
+    pin_generated_ids(&serde_json::to_string(&jsrt::json::normalize_numbers(value.clone())).unwrap())
 }
 
 fn differences(fixture: &Value, scenario: &Value) -> Vec<String> {
@@ -256,7 +255,10 @@ fn differences(fixture: &Value, scenario: &Value) -> Vec<String> {
     let mut diffs = Vec::new();
     let mut check = |what: &str, expected: &Value, actual: &Value| {
         let ordered = what.starts_with("request");
-        let (e, a) = (normalize_numbers(expected.clone()), normalize_numbers(actual.clone()));
+        let (e, a) = (
+            jsrt::json::normalize_numbers(expected.clone()),
+            jsrt::json::normalize_numbers(actual.clone()),
+        );
         let (e, a) = if ordered {
             (json!(compact(&e)), json!(compact(&a)))
         } else {

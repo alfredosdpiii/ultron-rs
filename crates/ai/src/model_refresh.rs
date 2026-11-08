@@ -21,7 +21,7 @@ use std::time::Duration;
 pub fn builtin_generated_at() -> Option<i64> {
     static AT: LazyLock<Option<i64>> = LazyLock::new(|| {
         let meta: Value = serde_json::from_str(include_str!("../data/catalog-meta.json")).ok()?;
-        parse_iso_ms(meta.get("generatedAt")?.as_str()?)
+        jsrt::date::parse_date(meta.get("generatedAt")?.as_str()?)
     });
     *AT
 }
@@ -358,7 +358,7 @@ pub async fn refresh_remote_catalog(
     };
     let last_modified = response
         .header("last-modified")
-        .and_then(parse_http_date_ms)
+        .and_then(crate::http::parse_http_date)
         .unwrap_or(0);
     let mut entry = Map::new();
     entry.insert("models".into(), Value::Array(models));
@@ -396,40 +396,5 @@ fn parse_catalog(provider: &str, value: &Value) -> Result<Vec<Value>, String> {
         .collect())
 }
 
-fn days_from_civil(year: i64, month: i64, day: i64) -> i64 {
-    let year = if month <= 2 { year - 1 } else { year };
-    let era = year.div_euclid(400);
-    let yoe = year - era * 400;
-    let mp = (month + 9) % 12;
-    let doy = (153 * mp + 2) / 5 + day - 1;
-    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
-    era * 146_097 + doe - 719_468
-}
-
-/// `Date.parse` of an ISO timestamp (`2026-10-07T19:43:49.517Z`).
-pub fn parse_iso_ms(text: &str) -> Option<i64> {
-    let (date, time) = text.trim_end_matches('Z').split_once('T')?;
-    let mut d = date.split('-').map(|p| p.parse::<i64>().ok());
-    let (year, month, day) = (d.next()??, d.next()??, d.next()??);
-    let (hms, millis) = time.split_once('.').unwrap_or((time, "0"));
-    let mut t = hms.split(':').map(|p| p.parse::<i64>().ok());
-    let (h, m, s) = (t.next()??, t.next()??, t.next()??);
-    let ms: i64 = format!("{millis:0<3}").get(..3)?.parse().ok()?;
-    Some(((days_from_civil(year, month, day) * 24 + h) * 60 + m) * 60_000 + s * 1000 + ms)
-}
-
-/// `Date.parse` of an HTTP date (`Thu, 08 Oct 2026 19:43:49 GMT`).
-pub fn parse_http_date_ms(text: &str) -> Option<i64> {
-    let parts: Vec<&str> = text.split_whitespace().collect();
-    let [_, day, month, year, time, _] = parts.as_slice() else {
-        return None;
-    };
-    const MONTHS: [&str; 12] = [
-        "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
-    ];
-    let month = MONTHS.iter().position(|m| m.eq_ignore_ascii_case(month))? as i64 + 1;
-    let mut t = time.split(':').map(|p| p.parse::<i64>().ok());
-    let (h, m, s) = (t.next()??, t.next()??, t.next()??);
-    let days = days_from_civil(year.parse().ok()?, month, day.parse().ok()?);
-    Some(((days * 24 + h) * 60 + m) * 60_000 + s * 1000)
-}
+// ponytail: session-core/tests/model_refresh.rs still names `ai::model_refresh::parse_iso_ms`.
+pub use jsrt::date::parse_date as parse_iso_ms;

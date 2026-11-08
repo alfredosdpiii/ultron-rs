@@ -15,9 +15,8 @@ use crate::input::Input;
 use crate::keybindings::KeybindingsManager;
 use crate::outline::ScrollBody;
 use crate::sgr_mouse::parse_sgr_mouse;
-use crate::utils::{
-    ansi_len, is_whitespace_char, slice_with_width, strip_terminal_sequences, truncate_to_width, visible_width,
-};
+use crate::utils::{ansi_len, slice_with_width, strip_terminal_sequences, truncate_to_width, visible_width};
+use jsrt::string;
 
 #[derive(Clone, Copy, Debug)]
 struct Span {
@@ -108,7 +107,7 @@ fn build_corpus(lines: &[String]) -> Corpus {
         } else {
             for g in line.graphemes(true) {
                 let width = visible_width(g);
-                if g.chars().all(is_whitespace_char) {
+                if g.chars().all(string::is_space) {
                     b.space();
                 } else {
                     b.push(g, row, column, width, false);
@@ -124,7 +123,7 @@ fn build_corpus(lines: &[String]) -> Corpus {
 /// `normalizeQuery`: whitespace runs collapse to one space, trimmed.
 pub fn normalize_query(query: &str) -> String {
     query
-        .split(is_whitespace_char)
+        .split(string::is_space)
         .filter(|w| !w.is_empty())
         .collect::<Vec<_>>()
         .join(" ")

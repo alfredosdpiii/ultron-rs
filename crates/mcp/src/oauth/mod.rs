@@ -252,11 +252,11 @@ pub fn parse_tokens(value: &Value) -> Result<Value, String> {
     let expires = if absent(input.get("expires_in")) {
         None
     } else {
-        let n = session_file::js::to_number(&input["expires_in"]);
+        let n = jsrt::value::number(&input["expires_in"]);
         if !n.is_finite() {
             return Err("Invalid expires_in".into());
         }
-        Some(crate::js_json::js_number(n))
+        Some(jsrt::json::number(n))
     };
     let mut out = Map::new();
     out.insert(

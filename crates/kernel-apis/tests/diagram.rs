@@ -340,7 +340,7 @@ fn kernel_apis_diagram_slugs_paths_and_runner_answers() {
 #[test]
 fn kernel_apis_diagram_pele_is_unpacked_once_under_a_content_addressed_name() {
     let note = include_str!("../assets/pele/VERSION");
-    let sha = kernel_apis::util::sha256_hex(PELE_JS);
+    let sha = jsrt::hash::sha256_hex(PELE_JS);
     assert!(
         note.contains(&format!("sha256 {sha}  pele.js")),
         "the VERSION note names the embedded bytes"
@@ -350,7 +350,7 @@ fn kernel_apis_diagram_pele_is_unpacked_once_under_a_content_addressed_name() {
     let runner = install_pele(dir.path()).unwrap();
     let mut both = PELE_JS.to_vec();
     both.extend_from_slice(RUNNER);
-    let name = format!("pele-{}", &kernel_apis::util::sha256_hex(&both)[..16]);
+    let name = format!("pele-{}", &jsrt::hash::sha256_hex(&both)[..16]);
     assert_eq!(pele_dir_name(), name);
     assert_eq!(runner, dir.path().join(&name).join("runner.mjs"));
     assert_eq!(std::fs::read(dir.path().join(&name).join("pele.mjs")).unwrap(), PELE_JS);

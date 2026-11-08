@@ -11,8 +11,8 @@
 
 use super::{
     Engine, Kind, LAST_OUTPUTS, Ledger, MAX_DEPTH, MIN_TRANCHE, OUTPUT_PREVIEW_CHARS, Options, Outcome,
-    REQUEST_OVERHEAD_TOKENS, View, bounded, charged_tokens, frame_prompt, frame_system, js_len, js_trim, lock,
-    parse_reply, repair_prompt, trace,
+    REQUEST_OVERHEAD_TOKENS, View, bounded, charged_tokens, frame_prompt, frame_system, lock, parse_reply,
+    repair_prompt, trace,
 };
 use crate::trace::{Budget, Frame, Spec, TraceStore, Traces};
 use agent::{Agent, AgentOptions, AgentTool, StreamFn};
@@ -221,7 +221,7 @@ impl FrameSession {
         let parent_node = admission.parent.as_ref().map(|frame| frame.node);
         let node = lock(&self.ledger).add(parent_node, admission.calls, admission.tokens);
         Budget {
-            id: trace::uuid("budget"),
+            id: format!("budget-{}", jsrt::random::uuid_v4()),
             node,
             depth: admission.depth,
             parent: admission.parent.as_ref().map(|frame| frame.id.clone()),
@@ -403,7 +403,7 @@ impl FrameSession {
         let engine = &live.engine();
         let deadline = Instant::now() + options.timeout;
         let system = frame_system(options);
-        let mut conversation_chars = js_len(&system) as u64;
+        let mut conversation_chars = jsrt::utf16::len(&system) as u64;
         let mut message = {
             let mut frame = lock(&live.frame);
             frame.model = Some(engine.own_model());
@@ -414,14 +414,15 @@ impl FrameSession {
             if signal.is_aborted() || Instant::now() >= deadline {
                 return Outcome::Error("cancelled".into());
             }
-            let estimate = (conversation_chars + js_len(&message) as u64).div_ceil(3) + REQUEST_OVERHEAD_TOKENS;
+            let estimate =
+                (conversation_chars + jsrt::utf16::len(&message) as u64).div_ceil(3) + REQUEST_OVERHEAD_TOKENS;
             if let Some(error) = self.window_error(engine, estimate) {
                 return Outcome::Error(error);
             }
             let Some((held, tranche)) = self.claim(live, estimate) else {
                 return Outcome::Incomplete("budget_exhausted", exhausted_detail(attempt));
             };
-            conversation_chars += js_len(&message) as u64;
+            conversation_chars += jsrt::utf16::len(&message) as u64;
             history.push(user_message(&message));
             let reservation = match self.reserve(live, run, attempt) {
                 Ok(reservation) => reservation,
@@ -466,7 +467,7 @@ impl FrameSession {
             }
             let text = reply_text(&reply);
             history.push(Message::Assistant(reply));
-            conversation_chars += js_len(&text) as u64;
+            conversation_chars += jsrt::utf16::len(&text) as u64;
             match self.judge(live, attempt, text) {
                 Ok(outcome) => return outcome,
                 Err(next) => message = next,
@@ -550,13 +551,14 @@ impl FrameSession {
                 return Outcome::Error(error.to_string());
             }
         };
-        let mut conversation_chars = js_len(&system) as u64;
+        let mut conversation_chars = jsrt::utf16::len(&system) as u64;
         let outcome = 'attempts: {
             for attempt in 0u64.. {
                 if run.signal.is_aborted() || Instant::now() >= deadline {
                     break 'attempts Outcome::Error("cancelled".into());
                 }
-                let estimate = (conversation_chars + js_len(&message) as u64).div_ceil(3) + REQUEST_OVERHEAD_TOKENS;
+                let estimate =
+                    (conversation_chars + jsrt::utf16::len(&message) as u64).div_ceil(3) + REQUEST_OVERHEAD_TOKENS;
                 if let Some(error) = self.window_error(engine, estimate) {
                     break 'attempts Outcome::Error(error);
                 }
@@ -564,7 +566,7 @@ impl FrameSession {
                     break 'attempts Outcome::Incomplete("budget_exhausted", exhausted_detail(attempt));
                 };
                 *lock(&pending) = Some(hold);
-                conversation_chars += js_len(&message) as u64;
+                conversation_chars += jsrt::utf16::len(&message) as u64;
                 let reservation = match self.reserve(live, Some(run), attempt) {
                     Ok(reservation) => reservation,
                     Err(error) => {
@@ -607,7 +609,7 @@ impl FrameSession {
                     break 'attempts outcome;
                 }
                 let text = reply_text(reply);
-                conversation_chars += js_len(&text) as u64;
+                conversation_chars += jsrt::utf16::len(&text) as u64;
                 match self.judge(live, attempt, text) {
                     Ok(outcome) => break 'attempts outcome,
                     Err(next) => message = next,
@@ -663,7 +665,7 @@ impl FrameSession {
             let mut frame = lock(&live.frame);
             if frame.requests.len() < trace::TRACE_REQUEST_LIMIT {
                 frame.requests.push(json!({
-                    "at": trace::now_ms(), "tranche": tranche, "held": held, "charged": charged,
+                    "at": jsrt::date::now_ms() as u64, "tranche": tranche, "held": held, "charged": charged,
                     "status": serde_json::to_value(reply.stop_reason).unwrap_or(Value::Null),
                 }));
             }
@@ -680,13 +682,13 @@ impl FrameSession {
             frame.outputs.remove(0);
         }
         let record = |error: Option<&str>| {
-            let mut record = json!({"attempt": attempt, "at": trace::now_ms(), "output": output});
+            let mut record = json!({"attempt": attempt, "at": jsrt::date::now_ms() as u64, "output": output});
             if let Some(error) = error {
                 record["error"] = error.into();
             }
             record
         };
-        let error = if js_trim(&text).is_empty() {
+        let error = if jsrt::string::trim(&text).is_empty() {
             "the reply is empty".to_string()
         } else {
             let parsed = match &options.contract {
@@ -717,7 +719,7 @@ impl FrameSession {
         if live.finalized.swap(true, Ordering::SeqCst) {
             return;
         }
-        lock(&live.frame).ended_at = Some(trace::now_ms());
+        lock(&live.frame).ended_at = Some(jsrt::date::now_ms() as u64);
         let outcome = live.outcome();
         let (document, summary) = {
             let mut ledger = lock(&self.ledger);
@@ -914,7 +916,7 @@ fn unsent(engine: &Engine, stop_reason: StopReason, error: String) -> AssistantM
         raw_stop_reason: None,
         end_turn: None,
         provider_metadata: None,
-        timestamp: trace::now_ms() as i64,
+        timestamp: jsrt::date::now_ms(),
     }
 }
 

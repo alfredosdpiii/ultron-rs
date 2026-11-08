@@ -70,14 +70,10 @@ pub fn create_gate<C: Clone, E: Clone>() -> (Gate<C, E>, GateControl<C, E>) {
     (Gate(inner.clone()), GateControl(inner))
 }
 
-fn lock<C, E>(inner: &Mutex<Inner<C, E>>) -> std::sync::MutexGuard<'_, Inner<C, E>> {
-    inner.lock().unwrap_or_else(|e| e.into_inner())
-}
-
 impl<C: Clone, E: Clone> Gate<C, E> {
     /// Runs `invoke` only while the gate is open.
     pub fn admit<T>(&self, invoke: impl FnOnce() -> T) -> Result<T, Refusal<C, E>> {
-        match &lock(&self.0).state {
+        match &jsrt::sync::lock(&self.0).state {
             State::Open => {}
             State::Aborting(cancellation) => {
                 return Err(Refusal::Aborting(AbortRequested {
@@ -91,14 +87,14 @@ impl<C: Clone, E: Clone> Gate<C, E> {
 
     /// Aborted once the abort is durable or the gate closed.
     pub fn signal(&self) -> CancelSignal {
-        lock(&self.0).signal.clone()
+        jsrt::sync::lock(&self.0).signal.clone()
     }
 }
 
 impl<C: Clone, E: Clone> GateControl<C, E> {
     /// Refuses new effects with `cancellation`; only from the open state.
     pub fn begin_abort(&self, cancellation: C) {
-        let mut inner = lock(&self.0);
+        let mut inner = jsrt::sync::lock(&self.0);
         if matches!(inner.state, State::Open) {
             inner.state = State::Aborting(cancellation);
         }
@@ -106,7 +102,7 @@ impl<C: Clone, E: Clone> GateControl<C, E> {
 
     /// Aborts admitted work; only while aborting and not yet signalled.
     pub fn signal_abort(&self) {
-        let inner = lock(&self.0);
+        let inner = jsrt::sync::lock(&self.0);
         if matches!(inner.state, State::Aborting(_)) && !inner.signal.is_cancelled() {
             inner.signal.cancel("Abort requested");
         }
@@ -114,7 +110,7 @@ impl<C: Clone, E: Clone> GateControl<C, E> {
 
     /// Refuses every later effect with `error` and signals admitted work.
     pub fn close(&self, error: E, reason: &str) {
-        let mut inner = lock(&self.0);
+        let mut inner = jsrt::sync::lock(&self.0);
         if matches!(inner.state, State::Closed(_)) {
             return;
         }

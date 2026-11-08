@@ -21,7 +21,7 @@
 //! time (TS interleaves `goal.*` requests with commands; only their order of effects matters here).
 
 use crate::store::{DocumentStore, read_versioned};
-use crate::util::{Clock, fields, js_trim, lock, sha256_hex, stringify, utf16_len, utf16_prefix, uuid};
+use crate::util::Clock;
 use crate::{ApiModule, Request, TaskHost};
 use fancy_regex::Regex;
 use kernel::Signal;
@@ -99,26 +99,9 @@ fn regexes() -> &'static [(Regex, &'static str); 3] {
     })
 }
 
-/// `text.slice(-units)` in UTF-16 code units.
-fn utf16_suffix(text: &str, units: usize) -> &str {
-    let total = utf16_len(text);
-    if total <= units {
-        return text;
-    }
-    let skip = total - units;
-    let mut used = 0;
-    for (index, ch) in text.char_indices() {
-        if used >= skip {
-            return &text[index..];
-        }
-        used += ch.len_utf16();
-    }
-    ""
-}
-
 /// A check result's fingerprint: exit status and output, with durations and addresses left out.
 pub fn check_signature(result: &GoalCheckResult) -> String {
-    let mut output = utf16_suffix(&result.output, CHECK_OUTPUT_CHARS).to_string();
+    let mut output = jsrt::utf16::tail(&result.output, CHECK_OUTPUT_CHARS).to_string();
     for (pattern, replacement) in regexes() {
         output = pattern.replace_all(&output, *replacement).into_owned();
     }
@@ -127,7 +110,7 @@ pub fn check_signature(result: &GoalCheckResult) -> String {
     } else {
         result.exit_code.map_or("null".to_string(), |code| code.to_string())
     };
-    sha256_hex(format!("{status}\n{}", js_trim(&output)).as_bytes())[..16].to_string()
+    jsrt::hash::sha256_hex(format!("{status}\n{}", jsrt::string::trim(&output)).as_bytes())[..16].to_string()
 }
 
 fn text_of(goal: &Value, key: &str) -> String {
@@ -245,7 +228,7 @@ fn public_goal(goal: &Value) -> Value {
 
 fn text(value: Option<&Value>, name: &str) -> Result<String, String> {
     match value.and_then(Value::as_str) {
-        Some(text) if !js_trim(text).is_empty() => Ok(utf16_prefix(text, TEXT_MAX_CHARS).to_string()),
+        Some(text) if !jsrt::string::trim(text).is_empty() => Ok(jsrt::utf16::head(text, TEXT_MAX_CHARS).to_string()),
         _ => Err(format!("{name} must be a non-empty string")),
     }
 }
@@ -256,37 +239,22 @@ fn evidence_list(value: Option<&Value>) -> Result<Vec<Value>, String> {
     )?;
     if !items
         .iter()
-        .all(|item| item.as_str().is_some_and(|text| !js_trim(text).is_empty()))
+        .all(|item| item.as_str().is_some_and(|text| !jsrt::string::trim(text).is_empty()))
     {
         return Err("every evidence item must be a non-empty string".into());
     }
     Ok(items
         .iter()
         .take(EVIDENCE_MAX)
-        .map(|item| Value::from(utf16_prefix(item.as_str().unwrap_or_default(), TEXT_MAX_CHARS)))
+        .map(|item| Value::from(jsrt::utf16::head(item.as_str().unwrap_or_default(), TEXT_MAX_CHARS)))
         .collect())
 }
 
 fn tail(output: &str) -> String {
-    if utf16_len(output) > CHECK_OUTPUT_CHARS {
-        format!("…{}", utf16_suffix(output, CHECK_OUTPUT_CHARS - 1))
+    if jsrt::utf16::len(output) > CHECK_OUTPUT_CHARS {
+        format!("…{}", jsrt::utf16::tail(output, CHECK_OUTPUT_CHARS - 1))
     } else {
         output.to_string()
-    }
-}
-
-/// JavaScript `String(value)` for a task's error.
-fn js_string(value: &Value) -> String {
-    match value {
-        Value::Null => "null".into(),
-        Value::String(text) => text.clone(),
-        Value::Object(_) => "[object Object]".into(),
-        Value::Array(items) => items
-            .iter()
-            .map(|item| if item.is_null() { String::new() } else { js_string(item) })
-            .collect::<Vec<_>>()
-            .join(","),
-        other => stringify(other),
     }
 }
 
@@ -393,14 +361,14 @@ impl GoalDriver {
 
     /// The goal now (a copy), after the document loads.
     pub fn get(&self) -> Result<Option<Value>, String> {
-        let mut state = lock(&self.state);
+        let mut state = jsrt::sync::lock(&self.state);
         self.load(&mut state)?;
         Ok(state.goal.clone())
     }
 
     /// Stops starting jobs (shutdown).
     pub fn close(&self) {
-        lock(&self.state).closed = true;
+        jsrt::sync::lock(&self.state).closed = true;
     }
 
     fn start_job(&self, state: &mut State, signal: &Signal) {
@@ -453,10 +421,10 @@ impl GoalDriver {
 
     /// `/goal [objective | pause | resume | clear | check [command] | status]`; returns the text to show.
     pub fn command(&self, args: &str, signal: &Signal) -> Result<String, String> {
-        let mut guard = lock(&self.state);
+        let mut guard = jsrt::sync::lock(&self.state);
         let state = &mut *guard;
         self.load(state)?;
-        let text = js_trim(args);
+        let text = jsrt::string::trim(args);
         if text.is_empty() || text == "status" {
             return Ok(goal_status_text(state.goal.as_ref()));
         }
@@ -492,11 +460,11 @@ impl GoalDriver {
             let Some(goal) = state.goal.as_mut() else {
                 return Ok("Set a goal first: /goal <objective>.".into());
             };
-            let command = js_trim(&text["check".len()..]);
+            let command = jsrt::string::trim(&text["check".len()..]);
             goal["check"] = if command.is_empty() {
                 Value::Null
             } else {
-                utf16_prefix(command, TEXT_MAX_CHARS).into()
+                jsrt::utf16::head(command, TEXT_MAX_CHARS).into()
             };
             goal["revision"] = (int_of(goal, "revision") + 1).into();
             goal["stuck"] = 0.into();
@@ -512,9 +480,9 @@ impl GoalDriver {
         }
         let now = self.now();
         state.goal = Some(json!({
-            "id": format!("goal-{}", &uuid()[..8]),
+            "id": format!("goal-{}", &jsrt::random::uuid_v4()[..8]),
             "revision": revision,
-            "objective": utf16_prefix(text, TEXT_MAX_CHARS),
+            "objective": jsrt::utf16::head(text, TEXT_MAX_CHARS),
             "check": null,
             "status": "active",
             "reason": null,
@@ -540,7 +508,7 @@ impl GoalDriver {
     /// A task ended (the worker's task-end observer; `result` is its `NativeResult`): a goal job that ended early is
     /// started again when its run made progress, otherwise the goal pauses.
     pub fn task_ended(&self, task_id: &str, result: Option<&Value>) -> Result<(), String> {
-        let mut guard = lock(&self.state);
+        let mut guard = jsrt::sync::lock(&self.state);
         let state = &mut *guard;
         self.load(state)?;
         self.job_ended(state, task_id, result);
@@ -558,11 +526,11 @@ impl GoalDriver {
         goal["job"] = Value::Null;
         let answer = match result.map(|result| (&result["value"], result.get("error"))) {
             Some((Value::String(value), _)) => value.clone(),
-            Some((_, Some(error))) if !error.is_null() => js_string(error),
+            Some((_, Some(error))) if !error.is_null() => jsrt::value::string(Some(error)),
             _ => String::new(),
         };
-        goal["last_answer"] = if utf16_len(&answer) > 1000 {
-            format!("{}…", utf16_prefix(&answer, 999)).into()
+        goal["last_answer"] = if jsrt::utf16::len(&answer) > 1000 {
+            format!("{}…", jsrt::utf16::head(&answer, 999)).into()
         } else if answer.is_empty() {
             Value::Null
         } else {
@@ -639,11 +607,11 @@ impl GoalDriver {
 
     /// One `goal.*` request from `lane`.
     pub fn handle_request(&self, kind: &str, payload: &Map<String, Value>, lane: &str) -> Result<Value, String> {
-        let mut guard = lock(&self.state);
+        let mut guard = jsrt::sync::lock(&self.state);
         let state = &mut *guard;
         self.load(state)?;
         if kind == "goal.get" {
-            fields(payload, &[])?;
+            jsrt::payload::fields(payload, &[])?;
             return Ok(state.goal.as_ref().map_or(Value::Null, public_goal));
         }
         let goal = state.goal.as_ref().ok_or("There is no session goal")?;
@@ -653,7 +621,7 @@ impl GoalDriver {
         }
         match kind {
             "goal.check" => {
-                fields(payload, &[])?;
+                jsrt::payload::fields(payload, &[])?;
                 if goal["check"].is_null() {
                     return Err("This goal has no check command (the user sets one with /goal check)".into());
                 }
@@ -686,7 +654,7 @@ impl GoalDriver {
                 Ok(run)
             }
             "goal.complete" => {
-                fields(payload, &["revision", "summary", "evidence"])?;
+                jsrt::payload::fields(payload, &["revision", "summary", "evidence"])?;
                 Self::current(goal, payload.get("revision"))?;
                 let summary = text(payload.get("summary"), "summary")?;
                 let evidence = evidence_list(payload.get("evidence"))?;
@@ -712,7 +680,7 @@ impl GoalDriver {
                 )
             }
             "goal.blocked" => {
-                fields(payload, &["revision", "reason"])?;
+                jsrt::payload::fields(payload, &["revision", "reason"])?;
                 Self::current(goal, payload.get("revision"))?;
                 let reason = text(payload.get("reason"), "reason")?;
                 let checks = int_of(goal, "checks");
@@ -735,7 +703,7 @@ impl ApiModule for GoalDriver {
     }
 
     fn start(&self, _host: &dyn TaskHost) -> Result<(), String> {
-        self.load(&mut lock(&self.state))
+        self.load(&mut jsrt::sync::lock(&self.state))
     }
 
     fn handle(&self, request: &Request<'_>) -> Result<Value, String> {

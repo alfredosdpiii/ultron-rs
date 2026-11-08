@@ -9,6 +9,7 @@ autotests = false
 
 [dependencies]
 indexmap = "=2.14.2"
+jsrt = { path = "../jsrt" }
 serde_json = { version = "=1.0.151", features = ["preserve_order"] }
 
 [lints]

@@ -23,7 +23,7 @@ use std::path::{Path, PathBuf};
 use std::pin::pin;
 use std::sync::{Arc, Mutex};
 use std::task::Poll;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::Duration;
 
 /// `RLM_TOOL_DESCRIPTION` and `RLM_TOOL_SNIPPET` from ultron/rlm/prompt.ts.
 const RLM_DESCRIPTION: &str = "Run a Python cell in your persistent REPL: variables, imports and functions persist across calls, top-level `await` works, and the last expression's value is shown with anything printed (kept as `_`).\nPre-imported: `bash`, `read`, `edit`, `write`, `view_image`, `rlm`, `agents`, `workflows`, `background`, `tools`, `mcp`, `ctx`, `skills`, `memory`, `hints`, `agent`, `Budget`, `state`, `preview`, `asyncio`; `help(obj)` shows any API's docs.";
@@ -46,12 +46,7 @@ pub fn rlm_tool() -> Tool {
     }
 }
 
-pub fn now_ms() -> i64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_millis() as i64)
-        .unwrap_or(0)
-}
+pub use jsrt::date::now_ms;
 
 pub fn text_block(text: String) -> UserContent {
     UserContent::Text(TextContent {
@@ -62,9 +57,9 @@ pub fn text_block(text: String) -> UserContent {
 
 /// `formatClock`: local time with its UTC offset, to the minute ("2026-10-05 14:03 UTC+02:00"), in `zone` (the
 /// session's `TZ`, else `/etc/localtime`).
-pub fn format_clock(ms: i64, zone: &kernel_apis::localtime::Zone) -> String {
+pub fn format_clock(ms: i64, zone: &jsrt::localtime::Zone) -> String {
     let offset = zone.offset(ms as f64);
-    let local = kernel_apis::localtime::fields(ms as f64, offset);
+    let local = jsrt::localtime::fields(ms as f64, offset);
     let minutes = offset.div_euclid(60);
     let sign = if minutes >= 0 { '+' } else { '-' };
     format!(
@@ -81,22 +76,10 @@ pub fn format_clock(ms: i64, zone: &kernel_apis::localtime::Zone) -> String {
 
 /// `formatClock` for UTC: "2026-10-05 14:03 UTC+00:00".
 pub fn format_clock_utc(ms: i64) -> String {
-    let secs = ms.div_euclid(1000);
-    let (days, rem) = (secs.div_euclid(86_400), secs.rem_euclid(86_400));
-    // Civil date from days since 1970-01-01 (Howard Hinnant's algorithm).
-    let z = days + 719_468;
-    let era = z.div_euclid(146_097);
-    let doe = z - era * 146_097;
-    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
-    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-    let mp = (5 * doy + 2) / 153;
-    let day = doy - (153 * mp + 2) / 5 + 1;
-    let month = if mp < 10 { mp + 3 } else { mp - 9 };
-    let year = yoe + era * 400 + i64::from(month <= 2);
+    let utc = jsrt::localtime::fields(ms as f64, 0);
     format!(
-        "{year}-{month:02}-{day:02} {:02}:{:02} UTC+00:00",
-        rem / 3600,
-        rem % 3600 / 60
+        "{}-{:02}-{:02} {:02}:{:02} UTC+00:00",
+        utc.year, utc.month, utc.day, utc.hour, utc.minute
     )
 }
 
@@ -118,8 +101,8 @@ pub fn format_gap(ms: i64) -> String {
 }
 
 /// The zone clock lines are in: the session's `TZ`, else `/etc/localtime` (`new Date(...)` of the TypeScript worker).
-pub fn clock_zone(env: &Env) -> kernel_apis::localtime::Zone {
-    kernel_apis::localtime::Zone::from_env((env.var)("TZ").as_deref())
+pub fn clock_zone(env: &Env) -> jsrt::localtime::Zone {
+    jsrt::localtime::Zone::from_env((env.var)("TZ").as_deref())
 }
 
 /// `clockContextEnabled`: `ULTRON_CLOCK_CONTEXT=off|0|false` disables clock lines.
@@ -130,7 +113,7 @@ pub fn clock_enabled(env: &Env) -> bool {
 
 /// The clock lines of `withClockLines` as `(index, text, timestamp)`: one before each user message that opens the
 /// conversation or follows a gap of `CLOCK_GAP_MS` or more; `index` is the user message the line precedes.
-fn clock_texts(messages: &[Value], zone: &kernel_apis::localtime::Zone) -> Vec<(usize, String, i64)> {
+fn clock_texts(messages: &[Value], zone: &jsrt::localtime::Zone) -> Vec<(usize, String, i64)> {
     let mut out = Vec::new();
     let mut previous: Option<i64> = None;
     for (index, message) in messages.iter().enumerate() {
@@ -169,11 +152,11 @@ fn is_compaction_summary(message: &Value) -> bool {
 
 /// One clock line (a user message) per [`clock_texts`] entry, with the index of the message it precedes, in UTC.
 pub fn clock_lines(messages: &[Value]) -> Vec<(usize, Message)> {
-    clock_lines_in(messages, &kernel_apis::localtime::Zone::utc())
+    clock_lines_in(messages, &jsrt::localtime::Zone::utc())
 }
 
 /// [`clock_lines`] in `zone`.
-pub fn clock_lines_in(messages: &[Value], zone: &kernel_apis::localtime::Zone) -> Vec<(usize, Message)> {
+pub fn clock_lines_in(messages: &[Value], zone: &jsrt::localtime::Zone) -> Vec<(usize, Message)> {
     clock_texts(messages, zone)
         .into_iter()
         .map(|(index, text, at)| {
@@ -189,11 +172,11 @@ pub fn clock_lines_in(messages: &[Value], zone: &kernel_apis::localtime::Zone) -
 /// `withClockLines`: the messages with their clock lines in place; `None` when no line was added. Lines are derived,
 /// never stored.
 pub fn with_clock_lines(messages: &[Value]) -> Option<Vec<Value>> {
-    with_clock_lines_in(messages, &kernel_apis::localtime::Zone::utc())
+    with_clock_lines_in(messages, &jsrt::localtime::Zone::utc())
 }
 
 /// [`with_clock_lines`] in `zone`.
-pub fn with_clock_lines_in(messages: &[Value], zone: &kernel_apis::localtime::Zone) -> Option<Vec<Value>> {
+pub fn with_clock_lines_in(messages: &[Value], zone: &jsrt::localtime::Zone) -> Option<Vec<Value>> {
     let lines = clock_texts(messages, zone);
     if lines.is_empty() {
         return None;

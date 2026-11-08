@@ -8,9 +8,7 @@ use crate::codec::{self, JSONL_STORAGE_VERSION, ParsedHeader};
 use crate::io;
 use crate::legacy_v3::LegacyV3Source;
 use crate::state::{CommitResult, State, Write};
-use crate::usage::num;
 use serde_json::{Map, Value, json};
-use session_file::js;
 use std::path::{Path, PathBuf};
 
 enum Backing {
@@ -27,7 +25,7 @@ pub struct JsonlStorage {
 }
 
 fn header_line(header: &Map<String, Value>) -> String {
-    format!("{}\n", js::stringify(&Value::Object(header.clone())))
+    format!("{}\n", jsrt::json::stringify(&Value::Object(header.clone())))
 }
 
 impl JsonlStorage {
@@ -189,7 +187,10 @@ impl JsonlStorage {
         all.extend(writes.iter().cloned());
         let (committed, first_seq) = self.state.prepare(&all, timestamp)?;
         let mut header = self.header.clone();
-        header.insert("nextSeq".into(), num((first_seq + committed.len() as i64) as f64));
+        header.insert(
+            "nextSeq".into(),
+            jsrt::json::number((first_seq + committed.len() as i64) as f64),
+        );
         let mut content = header_line(&header);
         for write in source.writes(None)? {
             content.push_str(&codec::serialize_transaction(&[write]));

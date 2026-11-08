@@ -199,3 +199,20 @@ fn session_core_auto_compaction_overflow_commits_as_an_error() {
     assert_eq!(Reason::parse(Reason::Threshold.name()), Some(Reason::Threshold));
     assert_eq!(Reason::parse("manual"), None);
 }
+
+/// The error prints the value as `String(value)`: an array's `null` items are empty (node 26: `String([1, null])` is
+/// `"1,"`), and an integral float has no fraction.
+#[test]
+fn session_core_auto_compaction_setting_errors_print_string_of_the_value() {
+    let error = |value: Value| {
+        auto_compaction::settings(&json!({"compaction": {"reserveTokens": value}}), "p", "m", None).unwrap_err()
+    };
+    assert_eq!(
+        error(json!([1, null])),
+        "Invalid compaction.reserveTokens setting: 1,. Expected a non-negative safe integer."
+    );
+    assert_eq!(
+        error(json!([-1.0, [2, null]])),
+        "Invalid compaction.reserveTokens setting: -1,2,. Expected a non-negative safe integer."
+    );
+}

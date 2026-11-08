@@ -6,11 +6,8 @@
 //! a value of no kind.
 
 use serde_json::Value;
-use session_file::js::{format_f64, to_number};
 
-use crate::tool::{js_number, valid};
-
-const MAX_SAFE: f64 = 9_007_199_254_740_991.0;
+use crate::tool::valid;
 
 /// `FromType`: the converted value (TypeBox mutates objects in place and returns them; this returns the result).
 pub(crate) fn convert(schema: &Value, value: Value) -> Value {
@@ -30,8 +27,8 @@ pub(crate) fn convert(schema: &Value, value: Value) -> Value {
             Value::Array(items.into_iter().map(|item| convert(&schema["items"], item)).collect())
         }
         Some("string") => try_string(&value).unwrap_or(value),
-        Some("number") => try_number(&value).map_or(value, js_number),
-        Some("integer") => try_number(&value).map_or(value, |n| js_number(n.trunc())),
+        Some("number") => try_number(&value).map_or(value, jsrt::json::number),
+        Some("integer") => try_number(&value).map_or(value, |n| jsrt::json::number(n.trunc())),
         Some("boolean") => try_boolean(&value).map_or(value, Value::Bool),
         Some("null") => {
             if try_null(&value) {
@@ -100,7 +97,7 @@ fn from_literal(constant: &Value, value: Value) -> Value {
     }
     let converted = match constant {
         Value::Bool(_) => try_boolean(&value).map(Value::Bool),
-        Value::Number(_) => try_number(&value).map(js_number),
+        Value::Number(_) => try_number(&value).map(jsrt::json::number),
         Value::String(_) => try_string(&value),
         _ => None,
     };
@@ -114,7 +111,7 @@ fn from_literal(constant: &Value, value: Value) -> Value {
 fn try_string(value: &Value) -> Option<Value> {
     match value {
         Value::Bool(b) => Some(Value::String(b.to_string())),
-        Value::Number(n) => Some(Value::String(format_f64(n.as_f64().unwrap_or(0.0)))),
+        Value::Number(n) => Some(Value::String(jsrt::number::to_string(n.as_f64().unwrap_or(0.0)))),
         Value::Null => Some(Value::String("null".into())),
         Value::String(_) => Some(value.clone()),
         _ => None,
@@ -129,7 +126,7 @@ fn try_number(value: &Value) -> Option<f64> {
         Value::Number(n) => n.as_f64().filter(|n| n.is_finite()),
         Value::Null => Some(0.0),
         Value::String(text) => {
-            let coerced = to_number(value);
+            let coerced = jsrt::value::number(value);
             if coerced.is_finite() {
                 return Some(coerced);
             }
@@ -140,7 +137,7 @@ fn try_number(value: &Value) -> Option<f64> {
             if lower == "true" {
                 return Some(1.0);
             }
-            big_int(text).filter(|n| n.abs() <= MAX_SAFE)
+            big_int(text).filter(|n| n.abs() <= jsrt::number::MAX_SAFE_INTEGER as f64)
         }
         _ => None,
     }

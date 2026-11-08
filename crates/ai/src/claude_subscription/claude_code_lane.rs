@@ -22,7 +22,6 @@
 //! does not serve keeps `claude_code_cli`'s tools error.
 
 use super::{Env, catalog, process};
-use crate::options::now_ms;
 use crate::transcript::current_tools;
 use crate::types::{AssistantMessage, AssistantMessageEvent, EventSink, Model, StopReason, TranscriptContext};
 
@@ -61,7 +60,7 @@ pub fn route(model: &Model, context: &TranscriptContext, env: impl FnOnce() -> E
 
 /// End a refused request's stream: `start`, then `error` with the message.
 pub fn refuse(model: &Model, error: String, sink: &mut EventSink<'_>) -> AssistantMessage {
-    let mut message = AssistantMessage::pending(model, now_ms());
+    let mut message = AssistantMessage::pending(model, jsrt::date::now_ms());
     sink(&AssistantMessageEvent::Start {
         partial: message.clone(),
     });

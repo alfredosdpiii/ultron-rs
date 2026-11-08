@@ -269,7 +269,7 @@ pub struct Link {
 
 impl Shared {
     fn lock(&self) -> MutexGuard<'_, State> {
-        self.state.lock().unwrap_or_else(|e| e.into_inner())
+        jsrt::sync::lock(&self.state)
     }
 
     fn connection(&self) -> Arc<Connection> {

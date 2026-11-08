@@ -8,7 +8,6 @@ use ai::azure_openai_responses::AzureOpenAIResponsesOptions;
 use ai::bedrock::{self, BedrockOptions};
 use ai::cloudflare::resolve_cloudflare_model;
 use ai::http::{BoxFuture, HeaderMap};
-use ai::json::normalize_numbers;
 use ai::openai_codex_responses::{self, OpenAICodexResponsesOptions};
 use ai::openai_completions::{self, OpenAICompletionsOptions};
 use ai::openai_responses::{self, OpenAIResponsesOptions};
@@ -272,7 +271,7 @@ fn pin_generated_ids(text: &str) -> String {
 }
 
 fn compact(value: &Value) -> String {
-    pin_generated_ids(&serde_json::to_string(&normalize_numbers(value.clone())).unwrap())
+    pin_generated_ids(&serde_json::to_string(&jsrt::json::normalize_numbers(value.clone())).unwrap())
 }
 
 fn differences(fixture: &Value, scenario: &Value) -> Vec<String> {
@@ -282,7 +281,10 @@ fn differences(fixture: &Value, scenario: &Value) -> Vec<String> {
     let mut diffs = Vec::new();
     let mut check = |what: &str, expected: &Value, actual: &Value| {
         let ordered = what.starts_with("request") && !(what.ends_with("body") && scenario["unorderedBody"] == true);
-        let (e, a) = (normalize_numbers(expected.clone()), normalize_numbers(actual.clone()));
+        let (e, a) = (
+            jsrt::json::normalize_numbers(expected.clone()),
+            jsrt::json::normalize_numbers(actual.clone()),
+        );
         let (e, a) = if ordered {
             (json!(compact(&e)), json!(compact(&a)))
         } else {
@@ -691,13 +693,13 @@ fn claude_differences(fixture: &Value, scenario: &Value) -> Vec<String> {
     for (i, (expected, actual)) in expected_events.iter().zip(&actual_events).enumerate() {
         let mut actual = actual.clone();
         pin_event_clock(&mut actual, &now);
-        if normalize_numbers(expected.clone()) != normalize_numbers(actual.clone()) {
+        if jsrt::json::normalize_numbers(expected.clone()) != jsrt::json::normalize_numbers(actual.clone()) {
             diffs.push(format!("{name}: event {i}\n  expected {expected}\n  actual   {actual}"));
         }
     }
     let mut result = scrub(serde_json::to_value(result).unwrap());
     pin_clock(&mut result, &now);
-    if normalize_numbers(scenario["result"].clone()) != normalize_numbers(result.clone()) {
+    if jsrt::json::normalize_numbers(scenario["result"].clone()) != jsrt::json::normalize_numbers(result.clone()) {
         diffs.push(format!(
             "{name}: result\n  expected {}\n  actual   {result}",
             scenario["result"]
@@ -745,8 +747,8 @@ fn ai_claude_code_cli_helpers_match_typescript() {
     for case in units["usage"].as_array().unwrap() {
         let usage = ai::claude_code_cli::usage_from_result(&case["result"]);
         assert_eq!(
-            normalize_numbers(serde_json::to_value(usage).unwrap()),
-            normalize_numbers(case["usage"].clone())
+            jsrt::json::normalize_numbers(serde_json::to_value(usage).unwrap()),
+            jsrt::json::normalize_numbers(case["usage"].clone())
         );
     }
     for case in units["reset"].as_array().unwrap() {
@@ -758,6 +760,21 @@ fn ai_claude_code_cli_helpers_match_typescript() {
             });
         assert_eq!(json!(ai::claude_code_cli::reset_text(info.as_ref())), case["text"]);
     }
+}
+
+/// `new Date(253402300800000).toISOString()` is `+010000-01-01T00:00:00.000Z` in node; past TimeClip's range
+/// `toISOString` throws, and the reset hint is left out.
+#[test]
+fn ai_claude_code_reset_text_writes_iso_years_like_javascript() {
+    let info = |resets_at| ai::claude_code_cli::RateLimitInfo {
+        resets_at: Some(resets_at),
+        ..Default::default()
+    };
+    assert_eq!(
+        ai::claude_code_cli::reset_text(Some(&info(253_402_300_800_000.0))),
+        "; resets at +010000-01-01T00:00:00.000Z"
+    );
+    assert_eq!(ai::claude_code_cli::reset_text(Some(&info(1e20))), "");
 }
 
 // ------------------------------------------------------------------------------------------------- OAuth flows
@@ -949,7 +966,7 @@ fn oauth_differences(scenario: &Value) -> Vec<String> {
     let prompts: Value = serde_json::from_str(&port(&json!(*interaction.prompts.lock().unwrap()).to_string())).unwrap();
     let mut diffs = Vec::new();
     let mut check = |what: &str, expected: &Value, actual: &Value| {
-        if normalize_numbers(expected.clone()) != normalize_numbers(actual.clone()) {
+        if jsrt::json::normalize_numbers(expected.clone()) != jsrt::json::normalize_numbers(actual.clone()) {
             diffs.push(format!("{name}: {what}\n  expected {expected}\n  actual   {actual}"));
         }
     };

@@ -18,7 +18,7 @@ use durable::{
 };
 use serde_json::json;
 use session_journal::{Session, Write};
-use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
+use std::sync::{Arc, Mutex, MutexGuard};
 
 /// The namespace and list key the durable records live under.
 pub const NAMESPACE: &str = "ultron.module";
@@ -28,7 +28,7 @@ pub const KEY: &str = "durable";
 pub type SharedSession = Arc<Mutex<Session>>;
 
 pub fn lock(session: &SharedSession) -> MutexGuard<'_, Session> {
-    session.lock().unwrap_or_else(PoisonError::into_inner)
+    jsrt::sync::lock(session)
 }
 
 /// Sees every durable commit after it is in the journal (on the committing thread; it must not block).

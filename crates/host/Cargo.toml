@@ -11,6 +11,7 @@ autotests = false
 fancy-regex = "=0.19.2"
 getrandom = "=0.4.3"
 image = { version = "=0.25.10", default-features = false, features = ["bmp", "gif", "jpeg", "png", "webp"] }
+jsrt = { path = "../jsrt" }
 kernel = { path = "../kernel" }
 loki = { path = "../loki" }
 sandbox = { path = "../sandbox" }

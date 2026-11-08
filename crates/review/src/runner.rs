@@ -185,7 +185,7 @@ impl Runner for ProcessRunner {
             stderr: if timed_out {
                 format!(
                     "{command}: timed out after {}s",
-                    crate::js::number(crate::js::round(timeout_ms as f64 / 1000.0))
+                    jsrt::number::to_string(jsrt::number::round(timeout_ms as f64 / 1000.0))
                 )
             } else {
                 stderr

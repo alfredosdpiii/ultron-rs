@@ -13,7 +13,6 @@
 
 use crate::schedules::SchedulesModule;
 use crate::tasks::TaskHost;
-use crate::util::lock;
 use kernel::Signal;
 use serde_json::Value;
 use std::sync::atomic::{AtomicI64, Ordering};
@@ -98,7 +97,7 @@ struct Shared {
 
 impl Shared {
     fn wake(&self) {
-        lock(&self.flags).woken = true;
+        jsrt::sync::lock(&self.flags).woken = true;
         self.bell.notify_all();
     }
 }
@@ -143,10 +142,10 @@ impl ScheduleTicker {
 
     /// Stops the ticker and waits for its thread; a tick in progress finishes first. Idempotent.
     pub fn close(&self) {
-        lock(&self.shared.flags).closed = true;
+        jsrt::sync::lock(&self.shared.flags).closed = true;
         self.shared.bell.notify_all();
         self.module.on_change(None);
-        let thread = lock(&self.thread).take();
+        let thread = jsrt::sync::lock(&self.thread).take();
         if let Some(thread) = thread {
             let _ = thread.join();
         }
@@ -167,7 +166,7 @@ fn run(
     observer: Option<TickObserver>,
 ) {
     loop {
-        if lock(&shared.flags).closed {
+        if jsrt::sync::lock(&shared.flags).closed {
             return;
         }
         let deadline = match module.next_fire() {
@@ -191,7 +190,7 @@ fn run(
             Ok(next) => next,
             Err(_) => Some(clock.now().saturating_add(RETRY_MS)),
         };
-        let mut flags = lock(&shared.flags);
+        let mut flags = jsrt::sync::lock(&shared.flags);
         while !flags.woken && !flags.closed {
             let limit = deadline.map(|deadline| clock.wait_limit(deadline));
             match limit {

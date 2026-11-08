@@ -19,7 +19,7 @@ use std::time::Duration;
 
 /// `createHash("sha256").update(text).digest("hex")` (the workspace's sha2, as the module's own versions use).
 fn sha(text: &str) -> String {
-    kernel_apis::util::sha256_hex(text.as_bytes())
+    jsrt::hash::sha256_hex(text.as_bytes())
 }
 
 const REVIEW: &str = "---\nname: review\ndescription: Review a diff for correctness bugs\n---\nRead the diff, then report bugs with file and line.";

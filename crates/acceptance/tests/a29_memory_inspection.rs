@@ -97,11 +97,11 @@ fn acceptance_a29_why_shows_injected_evidence_without_a_new_search_or_other_scop
         .as_array()
         .unwrap()
         .iter()
-        .map(|item| json!({"id": item["id"], "textHash": kernel_apis::util::sha256_hex(item["text"].as_str().unwrap().as_bytes())}))
+        .map(|item| json!({"id": item["id"], "textHash": jsrt::hash::sha256_hex(item["text"].as_str().unwrap().as_bytes())}))
         .collect();
     assert_eq!(
         references,
-        vec![json!({"id": "session-fact", "textHash": kernel_apis::util::sha256_hex(b"session evidence")})]
+        vec![json!({"id": "session-fact", "textHash": jsrt::hash::sha256_hex(b"session evidence")})]
     );
     for (key, value) in [
         ("taskId", json!("task-a")),

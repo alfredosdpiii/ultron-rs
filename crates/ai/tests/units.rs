@@ -3,7 +3,7 @@
 
 use ai::constrained::make_strict_json_schema;
 use ai::env::{EnvSource, env_api_key_in, find_env_keys_in};
-use ai::json::{normalize_numbers, parse_json_with_repair, parse_streaming_json, repair_json, short_hash};
+use ai::json::{parse_json_with_repair, parse_streaming_json, repair_json, short_hash};
 use ai::models::{
     builtin_model, builtin_models, builtin_providers, calculate_cost, clamp_thinking_level, supported_thinking_levels,
 };
@@ -30,7 +30,7 @@ fn ai_parse_streaming_json_matches_upstream_for_every_prefix() {
     let mut failures = Vec::new();
     for case in cases("partialJson") {
         let input = case["input"].as_str().unwrap();
-        let actual = normalize_numbers(parse_streaming_json(input));
+        let actual = jsrt::json::normalize_numbers(parse_streaming_json(input));
         if actual != case["output"] {
             failures.push(format!("{input:?}: expected {} got {actual}", case["output"]));
         }
@@ -43,7 +43,7 @@ fn ai_repair_json_matches_upstream() {
     for case in cases("repairJson") {
         let input = case["input"].as_str().unwrap();
         assert_eq!(repair_json(input), case["output"].as_str().unwrap(), "{input:?}");
-        let parsed = parse_json_with_repair(input).map_or(json!("<error>"), normalize_numbers);
+        let parsed = parse_json_with_repair(input).map_or(json!("<error>"), jsrt::json::normalize_numbers);
         assert_eq!(parsed, case["parsed"], "{input:?}");
     }
 }
@@ -78,7 +78,7 @@ fn ai_calculate_cost_uses_tiers_and_long_cache_writes() {
         .unwrap();
         calculate_cost(&model, &mut usage);
         assert_eq!(
-            normalize_numbers(serde_json::to_value(&usage.cost).unwrap()),
+            jsrt::json::normalize_numbers(serde_json::to_value(&usage.cost).unwrap()),
             case["cost"],
             "{}",
             case["usage"]
@@ -228,7 +228,7 @@ fn ai_transform_messages_matches_upstream() {
     let now = PROVIDERS["now"].as_i64().unwrap();
     let output = transform_messages(&input, &model, Some(&normalize), now);
     assert_eq!(
-        normalize_numbers(serde_json::to_value(output).unwrap()),
+        jsrt::json::normalize_numbers(serde_json::to_value(output).unwrap()),
         transform["output"]
     );
 }
@@ -240,7 +240,10 @@ fn ai_message_and_event_serde_shapes_match_typescript_json() {
     for scenario in PROVIDERS["scenarios"].as_array().unwrap() {
         for message in scenario["context"]["messages"].as_array().unwrap() {
             let parsed: Message = serde_json::from_value(message.clone()).unwrap_or_else(|e| panic!("{e}: {message}"));
-            assert_eq!(normalize_numbers(serde_json::to_value(&parsed).unwrap()), *message);
+            assert_eq!(
+                jsrt::json::normalize_numbers(serde_json::to_value(&parsed).unwrap()),
+                *message
+            );
             checked += 1;
         }
         for event in scenario["events"].as_array().unwrap() {
@@ -257,8 +260,8 @@ fn ai_message_and_event_serde_shapes_match_typescript_json() {
             let parsed: AssistantMessageEvent =
                 serde_json::from_value(event.clone()).unwrap_or_else(|e| panic!("{e}: {event}"));
             assert_eq!(
-                normalize_numbers(serde_json::to_value(&parsed).unwrap()),
-                normalize_numbers(event)
+                jsrt::json::normalize_numbers(serde_json::to_value(&parsed).unwrap()),
+                jsrt::json::normalize_numbers(event)
             );
             checked += 1;
         }
@@ -296,7 +299,7 @@ fn ai_builtin_catalog_round_trips_every_model() {
         for (id, value) in models.as_object().unwrap() {
             let model = builtin_model(provider, id).unwrap();
             assert_eq!(
-                &normalize_numbers(serde_json::to_value(model).unwrap()),
+                &jsrt::json::normalize_numbers(serde_json::to_value(model).unwrap()),
                 value,
                 "{provider}/{id}"
             );

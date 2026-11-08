@@ -5,9 +5,7 @@
 use crate::catalog::Meta;
 use crate::chord::{Publish, ServiceError, ServiceResult, subscribe_id, unsubscribe_id};
 use crate::coord_client::{CoordinatorConnection, Event};
-use crate::paths::uuid_v4;
 use crate::process::{self, Role};
-use base64::Engine;
 use serde_json::{Value, json};
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
@@ -386,7 +384,7 @@ impl Manager {
                     process::kill(pid, rustix::process::Signal::KILL);
                 }
                 for peer in live {
-                    let _ = this.send(&peer, json!({"type": "ping", "nonce": uuid_v4()}));
+                    let _ = this.send(&peer, json!({"type": "ping", "nonce": jsrt::random::uuid_v4()}));
                 }
             }
         });
@@ -497,7 +495,7 @@ impl Manager {
     }
 
     fn lock(&self) -> MutexGuard<'_, Inner> {
-        self.inner.lock().unwrap_or_else(|e| e.into_inner())
+        jsrt::sync::lock(&self.inner)
     }
 
     fn wait_until(&self, timeout: Duration, mut done: impl FnMut(&mut Inner) -> bool) -> (MutexGuard<'_, Inner>, bool) {
@@ -694,9 +692,9 @@ impl Manager {
     }
 
     fn launch(&self, meta: &Meta) -> Result<Handle, ServiceError> {
-        let peer = format!("worker-{}", uuid_v4());
-        let token = uuid_v4();
-        let key = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(meta.path.display().to_string());
+        let peer = format!("worker-{}", jsrt::random::uuid_v4());
+        let token = jsrt::random::uuid_v4();
+        let key = jsrt::base64::encode_url(meta.path.display().to_string());
         let coordinator = self.coordinator();
         let mut env = vec![
             (
@@ -816,7 +814,7 @@ impl Manager {
                 ));
             }
         }
-        let attachment = uuid_v4();
+        let attachment = jsrt::random::uuid_v4();
         if let Some(worker) = self.lock().workers.get_mut(&handle.peer) {
             worker.attachments.insert(attachment.clone());
         }
@@ -856,7 +854,7 @@ impl Manager {
     }
 
     fn apply_demand(&self, peer: &str, attachment: &str, attached: bool) -> Result<(), String> {
-        let request = uuid_v4();
+        let request = jsrt::random::uuid_v4();
         {
             let mut inner = self.lock();
             if inner.workers.get(peer).is_none_or(|w| w.stopping) {
@@ -927,7 +925,7 @@ impl Manager {
             inner.subscriptions.insert(key, (handle.peer.clone(), publish));
         }
         let unsubscribe = unsubscribe_id(&call).map(|id| scoped(&scope, &id));
-        let request = uuid_v4();
+        let request = jsrt::random::uuid_v4();
         let (sub_key, inner_scope) = (subscription.map(|id| scoped(&scope, &id)), scope.clone());
         let manager_done: Done = Box::new(move |result: ServiceResult| done(result));
         let wrapped: Done = {
@@ -1040,7 +1038,7 @@ impl Manager {
             worker.terminated.clone()
         };
         self.reject_worker_operations(peer, "Experimental server is shutting down");
-        let request = uuid_v4();
+        let request = jsrt::random::uuid_v4();
         self.lock()
             .releases
             .insert(request.clone(), (peer.to_string(), None, false));

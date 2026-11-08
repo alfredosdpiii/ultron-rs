@@ -7,7 +7,8 @@
 //! rows with a dotted outline around the selected turn ([`compose_outline_column`]). [`FrameBrowser`] lays a
 //! header, the scrolled body and a footer over the whole screen and keeps the selection revealed.
 
-use crate::utils::{is_whitespace_char, truncate_to_width, visible_width};
+use crate::utils::{truncate_to_width, visible_width};
+use jsrt::string;
 
 /// One selectable transcript item: a turn plus its rendered child range.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -96,7 +97,7 @@ pub fn append_outline_entries(
 
 /// JS `/\S/.test(row)`.
 pub fn has_non_blank(row: &str) -> bool {
-    row.chars().any(|c| !is_whitespace_char(c))
+    row.chars().any(|c| !string::is_space(c))
 }
 
 /// `outlineVisibility`: per target, whether it renders at least one non-blank row.

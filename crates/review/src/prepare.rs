@@ -11,7 +11,7 @@ use regex::Regex;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::js::{cmp16, number, path_join, trim};
+use crate::js::path_join;
 use crate::settings::Mise;
 
 const PYTHON: [&str; 6] = [
@@ -109,7 +109,7 @@ pub fn detect_ecosystems(repo: &Path) -> Ecosystems {
     }
     let mut nested = Vec::new();
     walk(repo, "", 0, &mut nested);
-    nested.sort_by(|a, b| cmp16(a, b));
+    nested.sort_by(|a, b| jsrt::utf16::cmp(a, b));
     let mut python = present(&PYTHON);
     python.extend(present(&PYTHON_LOCKS));
     python.extend(extra);
@@ -190,7 +190,9 @@ pub fn toolchain_requests(repo: &Path) -> ToolchainRequests {
     }
     if let Some(versions) = read(&repo.join(".tool-versions")).filter(|text| !text.is_empty()) {
         for line in versions.split('\n') {
-            let mut words = trim(line).split(crate::js::is_space).filter(|word| !word.is_empty());
+            let mut words = jsrt::string::trim(line)
+                .split(jsrt::string::is_space)
+                .filter(|word| !word.is_empty());
             // `"".split(/\s+/)` is `[""]`: an empty line names no tool.
             let (tool, version) = (words.next().unwrap_or(""), words.next());
             if let Some(version) = version {
@@ -206,13 +208,13 @@ pub fn toolchain_requests(repo: &Path) -> ToolchainRequests {
     if out.python.is_none()
         && let Some(text) = read(&repo.join(".python-version"))
     {
-        let first = trim(trim(&text).split('\n').next().unwrap_or(""));
+        let first = jsrt::string::trim(jsrt::string::trim(&text).split('\n').next().unwrap_or(""));
         if !first.is_empty() {
             out.python = Some(first.to_string());
         }
     }
     if let Some(text) = read(&repo.join(".nvmrc")).or_else(|| read(&repo.join(".node-version"))) {
-        let version = trim(&text);
+        let version = jsrt::string::trim(&text);
         let version = version.strip_prefix('v').unwrap_or(version);
         if !version.is_empty() && out.node.is_none() {
             out.node = Some(version.to_string());
@@ -249,39 +251,12 @@ pub fn toolchain_requests(repo: &Path) -> ToolchainRequests {
         && let Some(engines) = parsed
             .get("engines")
             .and_then(|engines| engines.get("node"))
-            .filter(|node| truthy(node))
-        && let Some(major) = regex("([0-9]+)").captures(&js_string(engines))
+            .filter(|node| jsrt::value::truthy(Some(node)))
+        && let Some(major) = regex("([0-9]+)").captures(&jsrt::value::string(Some(engines)))
     {
         out.node = Some(major[1].to_string());
     }
     out
-}
-
-/// JavaScript truthiness of a parsed JSON value.
-fn truthy(value: &Value) -> bool {
-    match value {
-        Value::Null => false,
-        Value::Bool(flag) => *flag,
-        Value::Number(n) => n.as_f64().is_some_and(|n| n != 0.0),
-        Value::String(text) => !text.is_empty(),
-        Value::Array(_) | Value::Object(_) => true,
-    }
-}
-
-/// `String(value)` for a parsed JSON value.
-fn js_string(value: &Value) -> String {
-    match value {
-        Value::Null => "null".into(),
-        Value::Bool(flag) => flag.to_string(),
-        Value::Number(n) => n.as_f64().map(number).unwrap_or_default(),
-        Value::String(text) => text.clone(),
-        Value::Array(items) => items
-            .iter()
-            .map(|item| if item.is_null() { String::new() } else { js_string(item) })
-            .collect::<Vec<_>>()
-            .join(","),
-        Value::Object(_) => "[object Object]".into(),
-    }
 }
 
 /// The content hash that names the cache entry: every detected file's name and text (sorted by name), and the
@@ -289,7 +264,7 @@ fn js_string(value: &Value) -> String {
 pub fn environment_hash(repo: &Path, python: Option<&str>) -> String {
     let found = detect_ecosystems(repo);
     let mut names: Vec<&String> = found.python.iter().chain(&found.node).chain(&found.tools).collect();
-    names.sort_by(|a, b| cmp16(a, b));
+    names.sort_by(|a, b| jsrt::utf16::cmp(a, b));
     let mut context = ring::digest::Context::new(&ring::digest::SHA256);
     for name in names {
         context.update(format!("{name}\n").as_bytes());
@@ -306,7 +281,7 @@ pub fn environment_hash(repo: &Path, python: Option<&str>) -> String {
 pub fn find_mise(env: &HashMap<String, String>, home: &str, setting: Option<&Mise>) -> Option<String> {
     match setting {
         Some(Mise::Enabled(false)) => return None,
-        Some(Mise::Path(path)) if !trim(path).is_empty() && path != "true" => return Some(path.clone()),
+        Some(Mise::Path(path)) if !jsrt::string::trim(path).is_empty() && path != "true" => return Some(path.clone()),
         _ => {}
     }
     let path = env.get("PATH").map(String::as_str).unwrap_or("");

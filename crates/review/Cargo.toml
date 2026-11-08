@@ -10,6 +10,7 @@ autotests = false
 [dependencies]
 ai = { path = "../ai" }
 inference = { path = "../inference" }
+jsrt = { path = "../jsrt" }
 kernel = { path = "../kernel" }
 knowledge = { path = "../knowledge" }
 indexmap = { version = "=2.14.2", features = ["serde"] }

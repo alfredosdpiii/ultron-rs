@@ -3,39 +3,15 @@
 //! both kept in a [`TraceStore`] (the session values `ultron.rlm.frames/<id>` and `ultron.rlm.frames/index`), so
 //! `rlm.frames` reads them in any later cell, and after the session reopens.
 
-use super::{Kind, Ledger, OUTPUT_PREVIEW_CHARS, Outcome, View, bounded, fields, js_len, optional_integer};
+use super::{Kind, Ledger, OUTPUT_PREVIEW_CHARS, Outcome, View, bounded, fields, optional_integer};
 use serde_json::{Map, Value, json};
 use std::collections::HashMap;
 use std::sync::Mutex;
-use std::time::{SystemTime, UNIX_EPOCH};
 
 const TRACE_INDEX_LIMIT: usize = 200;
 pub(crate) const TRACE_REQUEST_LIMIT: usize = 50;
 /// The session-value namespace of frame traces; the index is its key `index`.
 pub const TRACE_NAMESPACE: &str = "ultron.rlm.frames";
-
-pub(crate) fn now_ms() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0, |elapsed| elapsed.as_millis() as u64)
-}
-
-/// A random v4 UUID with a prefix (`frame-…`, `budget-…`).
-pub(crate) fn uuid(prefix: &str) -> String {
-    let mut bytes = [0u8; 16];
-    getrandom::fill(&mut bytes).expect("system randomness");
-    bytes[6] = (bytes[6] & 0x0f) | 0x40;
-    bytes[8] = (bytes[8] & 0x3f) | 0x80;
-    let hex: String = bytes.iter().map(|b| format!("{b:02x}")).collect();
-    format!(
-        "{prefix}-{}-{}-{}-{}-{}",
-        &hex[..8],
-        &hex[8..12],
-        &hex[12..16],
-        &hex[16..20],
-        &hex[20..]
-    )
-}
 
 /// Where frame traces live (`FrameTraceStore`): one document per key, replaced whole.
 pub trait TraceStore: Send + Sync {
@@ -128,7 +104,7 @@ impl Frame {
     /// A frame whose node is a child of `budget`'s, at `depth`.
     pub fn new(ledger: &mut Ledger, budget: &Budget, task: &str, views: Vec<View>) -> Self {
         Self {
-            id: uuid("frame"),
+            id: format!("frame-{}", jsrt::random::uuid_v4()),
             node: ledger.add(Some(budget.node), None, None),
             task: task.to_string(),
             views,
@@ -137,7 +113,7 @@ impl Frame {
             attempts: Vec::new(),
             requests: Vec::new(),
             measured: (0, 0, 0.0),
-            started_at: now_ms(),
+            started_at: jsrt::date::now_ms() as u64,
             ended_at: None,
             kind: "infer",
             batch: 1,
@@ -263,7 +239,7 @@ pub(crate) fn summary(ledger: &Ledger, budget: &Budget, frame: &Frame, outcome: 
     // `task.replace(/\s+/g, " ")`: every run of whitespace becomes one space.
     let mut collapsed = String::new();
     for c in frame.task.chars() {
-        if c.is_whitespace() || c == '\u{feff}' {
+        if jsrt::string::is_space(c) {
             if !collapsed.ends_with(' ') {
                 collapsed.push(' ');
             }
@@ -363,5 +339,5 @@ impl Traces {
 
 /// `chars` of a view as the trace reports it.
 pub(crate) fn view_chars(text: &str) -> u64 {
-    js_len(text) as u64
+    jsrt::utf16::len(text) as u64
 }

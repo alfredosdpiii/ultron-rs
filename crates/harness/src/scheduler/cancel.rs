@@ -4,14 +4,12 @@
 
 use std::collections::HashMap;
 use std::hash::Hash;
-use std::sync::{Arc, Condvar, Mutex, MutexGuard};
+use std::sync::{Arc, Condvar, Mutex};
 use std::time::Duration;
 
 use super::HarnessError;
 
-pub(crate) fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
-    mutex.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
-}
+pub(crate) use jsrt::sync::lock;
 
 type Callback = Box<dyn FnOnce(&HarnessError) + Send>;
 

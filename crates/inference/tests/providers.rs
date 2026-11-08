@@ -238,8 +238,8 @@ fn replay(name: &str) {
                 assert_eq!(actual["method"], expected["method"], "{name}: method");
                 assert_eq!(actual["url"], expected["url"], "{name}: path");
                 assert_eq!(
-                    ai::json::normalize_numbers(actual["body"].clone()).to_string(),
-                    ai::json::normalize_numbers(expected["body"].clone()).to_string(),
+                    jsrt::json::normalize_numbers(actual["body"].clone()).to_string(),
+                    jsrt::json::normalize_numbers(expected["body"].clone()).to_string(),
                     "{name}: body"
                 );
             }
@@ -337,8 +337,8 @@ fn inference_frame_payload_caps_match_typescript() {
             case["provider"].as_str().unwrap(),
         );
         assert_eq!(
-            ai::json::normalize_numbers(out),
-            ai::json::normalize_numbers(case["out"].clone()),
+            jsrt::json::normalize_numbers(out),
+            jsrt::json::normalize_numbers(case["out"].clone()),
             "{case}"
         );
     }

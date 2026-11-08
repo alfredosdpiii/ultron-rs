@@ -7,8 +7,6 @@
 
 use super::log::{EntryKind, LogEntry, LogUsage, SessionLog, log_usage, record};
 use super::stats::{CELL_APIS, Cells, Stats, parse_session_stats};
-use crate::js::{num, string};
-use crate::list_models::locale_compare;
 use indexmap::{IndexMap, IndexSet};
 use serde_json::{Map, Value, json};
 use std::collections::{HashMap, HashSet};
@@ -88,20 +86,20 @@ impl Bucket {
     }
 
     fn fields(&self) -> Map<String, Value> {
-        let opt = |v: Option<f64>| v.map_or(Value::Null, num);
+        let opt = |v: Option<f64>| v.map_or(Value::Null, jsrt::json::number);
         let Value::Object(map) = json!({
-            "responses": num(self.responses),
-            "input": num(self.input),
-            "output": num(self.output),
-            "cacheRead": num(self.cache_read),
-            "cacheWrite": num(self.cache_write),
-            "totalTokens": num(self.total_tokens),
+            "responses": jsrt::json::number(self.responses),
+            "input": jsrt::json::number(self.input),
+            "output": jsrt::json::number(self.output),
+            "cacheRead": jsrt::json::number(self.cache_read),
+            "cacheWrite": jsrt::json::number(self.cache_write),
+            "totalTokens": jsrt::json::number(self.total_tokens),
             "cost": {
                 "reportedUsd": opt(self.reported_usd),
                 "subscriptionUsd": opt(self.subscription_usd),
-                "unpricedResponses": num(self.unpriced),
+                "unpricedResponses": jsrt::json::number(self.unpriced),
             },
-            "unmeasured": num(self.unmeasured),
+            "unmeasured": jsrt::json::number(self.unmeasured),
         }) else {
             unreachable!()
         };
@@ -162,7 +160,7 @@ impl Buckets<'_> {
 fn plural(count: f64, one: &str) -> String {
     format!(
         "{} {}",
-        crate::js::number(count),
+        jsrt::number::to_string(count),
         if count == 1.0 {
             one.to_string()
         } else {
@@ -181,7 +179,7 @@ fn depth_verdict(level: f64, frames: f64, subagents: f64, nested: f64, typed: f6
         "{}{}",
         plural(subagents, "sub-agent"),
         if nested > 0.0 {
-            format!(" ({} nested)", crate::js::number(nested))
+            format!(" ({} nested)", jsrt::number::to_string(nested))
         } else {
             String::new()
         }
@@ -192,7 +190,7 @@ fn depth_verdict(level: f64, frames: f64, subagents: f64, nested: f64, typed: f6
     if background > 0.0 {
         parts.push(plural(background, "background job"));
     }
-    format!("depth {}: {}", crate::js::number(level), parts.join(", "))
+    format!("depth {}: {}", jsrt::number::to_string(level), parts.join(", "))
 }
 
 /// Whether nothing ran in the session: no entry, no task, and no runtime value beyond the skill catalog.
@@ -219,7 +217,7 @@ struct Task {
 fn definition_name(definition: Option<&Value>) -> String {
     let text = match definition {
         None | Some(Value::Null) => "unknown".to_string(),
-        Some(v) => string(v),
+        Some(v) => jsrt::value::string(Some(v)),
     };
     // `.replace(/@\d+$/, "")`
     if let Some(at) = text.rfind('@') {
@@ -276,12 +274,12 @@ fn by_model_list(models: IndexMap<String, ModelCount>) -> Value {
         b.1.count
             .partial_cmp(&a.1.count)
             .unwrap_or(std::cmp::Ordering::Equal)
-            .then_with(|| locale_compare(&a.0, &b.0))
+            .then_with(|| jsrt::collate::locale_compare(&a.0, &b.0))
     });
     Value::Array(
         list.into_iter()
             .map(|(model, c)| {
-                json!({"model": model, "count": num(c.count), "tokens": num(c.tokens), "unmeasured": num(c.unmeasured)})
+                json!({"model": model, "count": jsrt::json::number(c.count), "tokens": jsrt::json::number(c.tokens), "unmeasured": jsrt::json::number(c.unmeasured)})
             })
             .collect(),
     )
@@ -291,19 +289,19 @@ fn apis_value(apis: &IndexMap<String, f64>) -> Value {
     let mut ordered = Map::new();
     for api in CELL_APIS {
         if let Some(n) = apis.get(api) {
-            ordered.insert(api.to_string(), num(*n));
+            ordered.insert(api.to_string(), jsrt::json::number(*n));
         }
     }
     let mut unknown: Vec<&String> = apis.keys().filter(|k| !CELL_APIS.contains(&k.as_str())).collect();
-    unknown.sort_by(|a, b| a.encode_utf16().cmp(b.encode_utf16()));
+    jsrt::utf16::sort(&mut unknown);
     for api in unknown {
-        ordered.insert(api.clone(), num(apis[api]));
+        ordered.insert(api.clone(), jsrt::json::number(apis[api]));
     }
     Value::Object(ordered)
 }
 
 fn cells_value(cells: &Cells) -> Value {
-    json!({"count": num(cells.count), "failed": num(cells.failed), "apis": apis_value(&cells.apis)})
+    json!({"count": jsrt::json::number(cells.count), "failed": jsrt::json::number(cells.failed), "apis": apis_value(&cells.apis)})
 }
 
 /// Build the report from a session file's digest.
@@ -452,12 +450,12 @@ pub fn build_session_report_with(log: &SessionLog, subscription_providers: &[Str
                 Value::Null
             }
             Some(s) => json!({
-                "count": num(s.external_turns.0),
-                "completed": num(s.external_turns.0),
+                "count": jsrt::json::number(s.external_turns.0),
+                "completed": jsrt::json::number(s.external_turns.0),
                 "aborted": 0,
                 "failed": 0,
                 "running": 0,
-                "wallMs": num(s.external_turns.1),
+                "wallMs": jsrt::json::number(s.external_turns.1),
             }),
         }
     } else {
@@ -469,12 +467,12 @@ pub fn build_session_report_with(log: &SessionLog, subscription_providers: &[Str
             .count() as f64;
         let with = |f: &dyn Fn(&str) -> bool| main_runs.iter().filter(|r| f(&r.status)).count() as f64;
         json!({
-            "count": num(main_runs.len() as f64 + running),
-            "completed": num(with(&|s| s == "completed")),
-            "aborted": num(with(&|s| s == "aborted")),
-            "failed": num(with(&|s| s == "failed" || s == "declined")),
-            "running": num(running),
-            "wallMs": num(main_runs.iter().fold(0.0, |t, r| t + (r.ended_at - r.started_at).max(0.0))),
+            "count": jsrt::json::number(main_runs.len() as f64 + running),
+            "completed": jsrt::json::number(with(&|s| s == "completed")),
+            "aborted": jsrt::json::number(with(&|s| s == "aborted")),
+            "failed": jsrt::json::number(with(&|s| s == "failed" || s == "declined")),
+            "running": jsrt::json::number(running),
+            "wallMs": jsrt::json::number(main_runs.iter().fold(0.0, |t, r| t + (r.ended_at - r.started_at).max(0.0))),
         })
     };
 
@@ -705,7 +703,12 @@ pub fn build_session_report_with(log: &SessionLog, subscription_providers: &[Str
     let other_tools_value = Value::Object(
         other_tools
             .iter()
-            .map(|(name, (calls, failed))| (name.clone(), json!({"calls": num(*calls), "failed": num(*failed)})))
+            .map(|(name, (calls, failed))| {
+                (
+                    name.clone(),
+                    json!({"calls": jsrt::json::number(*calls), "failed": jsrt::json::number(*failed)}),
+                )
+            })
             .collect(),
     );
     let cells_from = |source: &str, by: &[Cells; 3]| -> Value {
@@ -825,7 +828,7 @@ pub fn build_session_report_with(log: &SessionLog, subscription_providers: &[Str
             worktrees.push(json!({
                 "task": child.id,
                 "branch": branch,
-                "changedFiles": num(w.get("changed_files").and_then(Value::as_array).map_or(0, Vec::len) as f64),
+                "changedFiles": jsrt::json::number(w.get("changed_files").and_then(Value::as_array).map_or(0, Vec::len) as f64),
                 "merge": merge,
             }));
         }
@@ -861,7 +864,10 @@ pub fn build_session_report_with(log: &SessionLog, subscription_providers: &[Str
         traces: &IndexMap<String, &Map<String, Value>>,
         level_of_task: &dyn Fn(Option<&str>) -> f64,
     ) -> f64 {
-        let id = trace.get("id").map(string).unwrap_or_default();
+        let id = trace
+            .get("id")
+            .map(|v| jsrt::value::string(Some(v)))
+            .unwrap_or_default();
         if let Some(known) = levels.get(&id) {
             return *known;
         }
@@ -1006,11 +1012,11 @@ pub fn build_session_report_with(log: &SessionLog, subscription_providers: &[Str
             "this session predates the count".into(),
         );
     }
-    let nudges_value = |n: &[f64; 3]| json!({"toolRounds": num(n[0]), "wait": num(n[1]), "skill": num(n[2])});
+    let nudges_value = |n: &[f64; 3]| json!({"toolRounds": jsrt::json::number(n[0]), "wait": jsrt::json::number(n[1]), "skill": jsrt::json::number(n[2])});
     let (secrets_masked, reported_nudges) = if !external {
-        (num(redactions), nudges_value(&nudges))
+        (jsrt::json::number(redactions), nudges_value(&nudges))
     } else if let Some(s) = &stats {
-        (num(s.secrets_masked), nudges_value(&s.nudges))
+        (jsrt::json::number(s.secrets_masked), nudges_value(&s.nudges))
     } else {
         unrecorded.insert(
             "guardrails.secretsMasked".into(),
@@ -1045,7 +1051,7 @@ pub fn build_session_report_with(log: &SessionLog, subscription_providers: &[Str
             for op in ops {
                 let field = |k: &str| match op.as_object().and_then(|o| o.get(k)) {
                     None | Some(Value::Null) => "unknown".to_string(),
-                    Some(v) => string(v),
+                    Some(v) => jsrt::value::string(Some(v)),
                 };
                 *counted
                     .entry(format!("{}.{}", field("kind"), field("state")))
@@ -1076,32 +1082,34 @@ pub fn build_session_report_with(log: &SessionLog, subscription_providers: &[Str
     root_model_list.sort_by(|a, b| {
         b.1.partial_cmp(&a.1)
             .unwrap_or(std::cmp::Ordering::Equal)
-            .then_with(|| locale_compare(&a.0, &b.0))
+            .then_with(|| jsrt::collate::locale_compare(&a.0, &b.0))
     });
     let mut models: Vec<(String, Bucket)> = buckets.models.clone().into_iter().collect();
     models.sort_by(|a, b| {
         b.1.total_tokens
             .partial_cmp(&a.1.total_tokens)
             .unwrap_or(std::cmp::Ordering::Equal)
-            .then_with(|| locale_compare(&a.0, &b.0))
+            .then_with(|| jsrt::collate::locale_compare(&a.0, &b.0))
     });
     let mut frames_value = json!({
-        "count": num(frames[0]),
-        "complete": num(frames[1]),
-        "incomplete": num(frames[2]),
-        "failed": num(frames[3]),
-        "cancelled": num(frames[4]),
-        "running": num(frames[5]),
-        "nested": num(frames[6]),
+        "count": jsrt::json::number(frames[0]),
+        "complete": jsrt::json::number(frames[1]),
+        "incomplete": jsrt::json::number(frames[2]),
+        "failed": jsrt::json::number(frames[3]),
+        "cancelled": jsrt::json::number(frames[4]),
+        "running": jsrt::json::number(frames[5]),
+        "nested": jsrt::json::number(frames[6]),
         "incompleteReasons": counts_value(&incomplete_reasons),
-        "budgetTokens": num(budget_tokens),
+        "budgetTokens": jsrt::json::number(budget_tokens),
         "byModel": by_model_list(frame_by_model),
     });
     let host_call = |name: &str| {
-        num(stats
-            .as_ref()
-            .and_then(|s| s.host_calls.get(name).copied())
-            .unwrap_or(0.0))
+        jsrt::json::number(
+            stats
+                .as_ref()
+                .and_then(|s| s.host_calls.get(name).copied())
+                .unwrap_or(0.0),
+        )
     };
     frames_value["calls"] = if stats_cover {
         json!({"infer": host_call("rlm.infer"), "map": host_call("rlm.map")})
@@ -1116,12 +1124,12 @@ pub fn build_session_report_with(log: &SessionLog, subscription_providers: &[Str
                     (
                         name.clone(),
                         json!({
-                            "checks": num(g.checks),
-                            "blocked": num(g.blocked),
-                            "unchecked": num(g.unchecked),
-                            "afterChecks": num(g.after_checks),
-                            "afterFindings": num(g.after_findings),
-                            "ms": num(g.ms),
+                            "checks": jsrt::json::number(g.checks),
+                            "blocked": jsrt::json::number(g.blocked),
+                            "unchecked": jsrt::json::number(g.unchecked),
+                            "afterChecks": jsrt::json::number(g.after_checks),
+                            "afterFindings": jsrt::json::number(g.after_findings),
+                            "ms": jsrt::json::number(g.ms),
                         }),
                     )
                 })
@@ -1135,9 +1143,9 @@ pub fn build_session_report_with(log: &SessionLog, subscription_providers: &[Str
             "path": log.path.display().to_string(),
             "cwd": log.header.cwd,
             "name": name,
-            "createdAt": num(log.header.created_at),
-            "modifiedAt": num(log.modified_at),
-            "bytes": num(log.bytes as f64),
+            "createdAt": jsrt::json::number(log.header.created_at),
+            "modifiedAt": jsrt::json::number(log.modified_at),
+            "bytes": jsrt::json::number(log.bytes as f64),
             "parentSessionId": log.header.parent_session_id,
         },
         "mode": mode,
@@ -1145,7 +1153,7 @@ pub fn build_session_report_with(log: &SessionLog, subscription_providers: &[Str
         "root": {
             "models": root_model_list
                 .into_iter()
-                .map(|(model, responses)| json!({"model": model, "responses": num(responses)}))
+                .map(|(model, responses)| json!({"model": model, "responses": jsrt::json::number(responses)}))
                 .collect::<Vec<_>>(),
         },
         "cells": cells,
@@ -1158,37 +1166,37 @@ pub fn build_session_report_with(log: &SessionLog, subscription_providers: &[Str
                 typed.len() as f64,
                 background.len() as f64,
             ),
-            "level": num(level),
+            "level": jsrt::json::number(level),
             "frames": frames_value,
             "subagents": {
-                "count": num(children.len() as f64),
-                "maxDepth": num(max_child_depth),
-                "nested": num(nested_children),
-                "completed": num(state(&children, &["completed"])),
-                "failed": num(state(&children, &["failed"])),
-                "cancelled": num(state(&children, &["cancelled"])),
-                "interrupted": num(state(&children, &["interrupted"])),
-                "running": num(state(&children, &["admitted", "running"])),
+                "count": jsrt::json::number(children.len() as f64),
+                "maxDepth": jsrt::json::number(max_child_depth),
+                "nested": jsrt::json::number(nested_children),
+                "completed": jsrt::json::number(state(&children, &["completed"])),
+                "failed": jsrt::json::number(state(&children, &["failed"])),
+                "cancelled": jsrt::json::number(state(&children, &["cancelled"])),
+                "interrupted": jsrt::json::number(state(&children, &["interrupted"])),
+                "running": jsrt::json::number(state(&children, &["admitted", "running"])),
                 "byModel": by_model_list(child_by_model),
                 "verdicts": {
-                    "verified": num(verdicts[0]),
-                    "contradicted": num(verdicts[1]),
-                    "unverified": num(verdicts[2]),
-                    "invalid": num(verdicts[3]),
-                    "unchecked": num(verdicts[4]),
-                    "none": num(verdicts[5]),
+                    "verified": jsrt::json::number(verdicts[0]),
+                    "contradicted": jsrt::json::number(verdicts[1]),
+                    "unverified": jsrt::json::number(verdicts[2]),
+                    "invalid": jsrt::json::number(verdicts[3]),
+                    "unchecked": jsrt::json::number(verdicts[4]),
+                    "none": jsrt::json::number(verdicts[5]),
                 },
-                "claims": {"passed": num(claims[0]), "failed": num(claims[1]), "blocked": num(claims[2])},
+                "claims": {"passed": jsrt::json::number(claims[0]), "failed": jsrt::json::number(claims[1]), "blocked": jsrt::json::number(claims[2])},
                 "worktrees": worktrees,
             },
             "workflows": if stats_cover { json!({"runs": host_call("workflows.run")}) } else { Value::Null },
-            "typedAgents": {"count": num(typed.len() as f64), "byDefinition": counts_value(&by_definition)},
+            "typedAgents": {"count": jsrt::json::number(typed.len() as f64), "byDefinition": counts_value(&by_definition)},
             "backgroundJobs": {
-                "count": num(background.len() as f64),
-                "completed": num(state(&background, &["completed"])),
-                "failed": num(state(&background, &["failed"])),
-                "cancelled": num(state(&background, &["cancelled", "interrupted"])),
-                "running": num(state(&background, &["admitted", "running"])),
+                "count": jsrt::json::number(background.len() as f64),
+                "completed": jsrt::json::number(state(&background, &["completed"])),
+                "failed": jsrt::json::number(state(&background, &["failed"])),
+                "cancelled": jsrt::json::number(state(&background, &["cancelled", "interrupted"])),
+                "running": jsrt::json::number(state(&background, &["admitted", "running"])),
             },
         },
         "usage": {
@@ -1214,9 +1222,9 @@ pub fn build_session_report_with(log: &SessionLog, subscription_providers: &[Str
             "secretsMasked": secrets_masked,
             "hints": counts_value(&hints),
             "nudges": reported_nudges,
-            "usageLimitBlocks": stats.as_ref().map_or(Value::Null, |s| num(s.usage_limit_blocks)),
+            "usageLimitBlocks": stats.as_ref().map_or(Value::Null, |s| jsrt::json::number(s.usage_limit_blocks)),
             "countersSince": match &stats {
-                Some(s) if !stats_cover => num(s.since),
+                Some(s) if !stats_cover => jsrt::json::number(s.since),
                 _ => Value::Null,
             },
         },
@@ -1229,5 +1237,10 @@ pub fn build_session_report_with(log: &SessionLog, subscription_providers: &[Str
 }
 
 fn counts_value(counts: &IndexMap<String, f64>) -> Value {
-    Value::Object(counts.iter().map(|(k, v)| (k.clone(), num(*v))).collect())
+    Value::Object(
+        counts
+            .iter()
+            .map(|(k, v)| (k.clone(), jsrt::json::number(*v)))
+            .collect(),
+    )
 }

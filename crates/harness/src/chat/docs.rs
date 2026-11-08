@@ -84,30 +84,8 @@ pub static PROVIDER: LazyLock<Doc> = LazyLock::new(|| {
             "ultron.provider",
             1,
             conversation(DocumentHistory::Latest, DocumentFork::Initial),
-            |_| json!({ "sessionId": uuid_v7() }),
+            |_| json!({ "sessionId": jsrt::random::uuid_v7(jsrt::date::now_ms()) }),
         )
         .checkpoint_when(|_, _, _, _| Ok(true)),
     )
 });
-
-/// A UUIDv7: 48 bits of Unix milliseconds, then random bits.
-pub fn uuid_v7() -> String {
-    let millis = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|elapsed| elapsed.as_millis() as u64)
-        .unwrap_or(0);
-    let mut bytes = [0u8; 16];
-    getrandom::fill(&mut bytes).expect("OS randomness is unavailable");
-    bytes[..6].copy_from_slice(&millis.to_be_bytes()[2..]);
-    bytes[6] = (bytes[6] & 0x0f) | 0x70;
-    bytes[8] = (bytes[8] & 0x3f) | 0x80;
-    let hex: String = bytes.iter().map(|byte| format!("{byte:02x}")).collect();
-    format!(
-        "{}-{}-{}-{}-{}",
-        &hex[0..8],
-        &hex[8..12],
-        &hex[12..16],
-        &hex[16..20],
-        &hex[20..32]
-    )
-}

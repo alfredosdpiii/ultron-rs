@@ -366,8 +366,8 @@ pub fn validate_base_url(value: &str) -> Option<String> {
 /// `parseModelIds`: split on whitespace and commas, unique, in order.
 pub fn parse_model_ids(value: &str) -> Vec<String> {
     let mut ids: Vec<String> = Vec::new();
-    for id in value.split(|c: char| crate::js::is_space(c) || c == ',') {
-        let id = crate::js::trim(id);
+    for id in value.split(|c: char| jsrt::string::is_space(c) || c == ',') {
+        let id = jsrt::string::trim(id);
         if !id.is_empty() && !ids.iter().any(|existing| existing == id) {
             ids.push(id.to_string());
         }
@@ -393,7 +393,7 @@ pub struct CustomEndpoint {
 /// object is an error, so a broken file is never overwritten.
 pub fn merge_custom_endpoint(existing: Option<&str>, endpoint: &CustomEndpoint) -> Result<(String, bool), String> {
     let mut config = Map::new();
-    if let Some(existing) = existing.filter(|text| !crate::js::trim(text).is_empty()) {
+    if let Some(existing) = existing.filter(|text| !jsrt::string::trim(text).is_empty()) {
         let text = existing.strip_prefix('\u{feff}').unwrap_or(existing);
         let parsed: Value = serde_json::from_str(&ai::model_config::strip_json_comments(text))
             .map_err(|error| format!("models.json is not valid JSON: {error}"))?;
@@ -410,7 +410,7 @@ pub fn merge_custom_endpoint(existing: Option<&str>, endpoint: &CustomEndpoint) 
     let key = endpoint
         .api_key
         .as_deref()
-        .map(crate::js::trim)
+        .map(jsrt::string::trim)
         .filter(|k| !k.is_empty())
         .unwrap_or(NO_KEY_PLACEHOLDER);
     providers.insert(
@@ -424,7 +424,7 @@ pub fn merge_custom_endpoint(existing: Option<&str>, endpoint: &CustomEndpoint) 
     );
     config.insert("providers".into(), Value::Object(providers));
     Ok((
-        format!("{}\n", config::json::stringify_pretty(&Value::Object(config))),
+        format!("{}\n", jsrt::json::stringify_pretty(&Value::Object(config))),
         replaced,
     ))
 }
@@ -619,7 +619,7 @@ fn transport_get(request: &FetchRequest, proxy: &ai::net::ProxyEnv) -> Result<Fe
 
 /// `listEndpointModels`: the ids `GET <baseUrl>/models` lists, sorted; `None` when it does not answer with a list.
 pub fn list_endpoint_models(base_url: &str, api_key: Option<&str>, fetch: &Fetch) -> Option<Vec<String>> {
-    let key = api_key.map(crate::js::trim).filter(|k| !k.is_empty());
+    let key = api_key.map(jsrt::string::trim).filter(|k| !k.is_empty());
     let response = fetch(&FetchRequest {
         url: format!("{}/models", base_url.trim_end_matches('/')),
         headers: key
@@ -640,7 +640,7 @@ pub fn list_endpoint_models(base_url: &str, api_key: Option<&str>, fetch: &Fetch
         .filter(|id| !id.is_empty())
         .map(str::to_string)
         .collect();
-    ids.sort_by(|a, b| a.encode_utf16().cmp(b.encode_utf16()));
+    jsrt::utf16::sort(&mut ids);
     Some(ids)
 }
 
@@ -727,13 +727,18 @@ pub fn hindsight_docker_args(options: &HindsightDockerOptions) -> Vec<String> {
     if options.has_api_key {
         args.extend(["-e".into(), "HINDSIGHT_API_LLM_API_KEY".into()]);
     }
-    if let Some(model) = options.model.as_deref().map(crate::js::trim).filter(|m| !m.is_empty()) {
+    if let Some(model) = options
+        .model
+        .as_deref()
+        .map(jsrt::string::trim)
+        .filter(|m| !m.is_empty())
+    {
         args.extend(["-e".into(), format!("HINDSIGHT_API_LLM_MODEL={model}")]);
     }
     let base_url = options
         .base_url
         .as_deref()
-        .map(crate::js::trim)
+        .map(jsrt::string::trim)
         .filter(|b| !b.is_empty());
     if let Some(base_url) = base_url {
         args.extend(["-e".into(), format!("HINDSIGHT_API_LLM_BASE_URL={base_url}")]);
@@ -796,8 +801,8 @@ pub enum UrlSource {
 /// `effectiveHindsightUrl`: ULTRON_HINDSIGHT_URL, then the `hindsightUrl` setting, then localhost:8888; `None`
 /// when memory is turned off.
 pub fn effective_hindsight_url(env_value: Option<&str>, setting: Option<&str>) -> (Option<String>, UrlSource) {
-    let from_env = env_value.map(crate::js::trim).filter(|v| !v.is_empty());
-    let setting = setting.map(crate::js::trim).filter(|v| !v.is_empty());
+    let from_env = env_value.map(jsrt::string::trim).filter(|v| !v.is_empty());
+    let setting = setting.map(jsrt::string::trim).filter(|v| !v.is_empty());
     let source = if from_env.is_some() {
         UrlSource::Env
     } else if setting.is_some() {
@@ -892,7 +897,7 @@ pub fn should_offer_setup(input: &SetupOfferInput) -> bool {
     if input.explicit_model || input.dismissed {
         return false;
     }
-    if let Some(skip) = (input.var)("ULTRON_SKIP_SETUP").map(|s| crate::js::trim(&s).to_lowercase())
+    if let Some(skip) = (input.var)("ULTRON_SKIP_SETUP").map(|s| jsrt::string::trim(&s).to_lowercase())
         && !skip.is_empty()
         && !["0", "false", "no"].contains(&skip.as_str())
     {

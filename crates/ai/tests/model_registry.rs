@@ -24,7 +24,7 @@ fn temp_dir(tag: &str) -> tempfile::TempDir {
 }
 
 fn normalize(value: Value) -> Value {
-    ai::json::normalize_numbers(value)
+    jsrt::json::normalize_numbers(value)
 }
 
 fn models_json(models: &[Model]) -> Value {

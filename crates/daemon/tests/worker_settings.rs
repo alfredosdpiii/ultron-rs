@@ -177,3 +177,46 @@ fn daemon_worker_settings_debug_environment_sorts_like_locale_compare() {
     let keys: Vec<&str> = shown.keys().map(String::as_str).collect();
     assert_eq!(keys, ["PI_A_B", "PI_A1", "PI_ab", "PI_Ab", "PI_AB"]);
 }
+
+#[test]
+fn daemon_worker_settings_invalid_idle_timeout_prints_like_string_of_value() {
+    // `String([1, null])` is "1," and `String(-1.0)` is "-1" (serde printed "[1,null]"-style "1,null" and "-1.0").
+    for (setting, shown) in [(json!([1, null]), "1,"), (json!(-1.0), "-1")] {
+        let tmp = tempfile::tempdir().unwrap();
+        let (cwd, agent) = (tmp.path().join("cwd"), tmp.path().join("agent"));
+        std::fs::create_dir_all(&cwd).unwrap();
+        std::fs::create_dir_all(&agent).unwrap();
+        std::fs::write(
+            agent.join("settings.json"),
+            json!({ "httpIdleTimeoutMs": setting }).to_string(),
+        )
+        .unwrap();
+        let settings = SettingsManager::create(&cwd, &agent, false);
+        assert_eq!(
+            worker_settings::http_idle_timeout_ms(&settings),
+            Err(format!("Invalid httpIdleTimeoutMs setting: {shown}"))
+        );
+    }
+}
+
+#[test]
+fn daemon_worker_settings_debug_environment_sorts_punctuation_like_icu() {
+    // `["PI_A-B", "PI_A_B", "PI_A~", "PI_A$"].sort((a, b) => a.localeCompare(b))` in Node: CLDR punctuation order.
+    let vars = ["PI_A-B", "PI_A_B", "PI_A~", "PI_A$"].map(|n| (n.to_string(), "v".to_string()));
+    let shown = worker_settings::debug_environment(vars);
+    let keys: Vec<&str> = shown.keys().map(String::as_str).collect();
+    assert_eq!(keys, ["PI_A_B", "PI_A-B", "PI_A~", "PI_A$"]);
+}
+
+#[test]
+fn daemon_session_command_trims_like_js_trim() {
+    // `" /goal ship it\u0085 ".trim()` keeps the U+0085 (NEL is not JavaScript whitespace).
+    let (name, op) = daemon::session_commands::command(" /goal ship it\u{85} ").unwrap();
+    assert_eq!(name, "goal");
+    assert_eq!(
+        op,
+        session_core::core::Op::Goal {
+            args: "ship it\u{85}".into()
+        }
+    );
+}

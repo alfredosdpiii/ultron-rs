@@ -53,15 +53,6 @@ pub struct Lease {
 
 const MAX_EVICTION_RECORDS: usize = 256;
 
-/// A clock reading as JSON: whole milliseconds as integers, like JavaScript numbers print.
-fn ms(value: f64) -> Value {
-    if value.fract() == 0.0 && value.abs() < 9e15 {
-        json!(value as i64)
-    } else {
-        json!(value)
-    }
-}
-
 /// A kernel's snapshot reply (`KernelExecutionResult`: `{status, error?: {evalue}, snapshot?: {skipped}}`) as the
 /// pool's outcome: the skipped names, or why it failed.
 pub fn snapshot_outcome(reply: &Value) -> Result<Vec<String>, String> {
@@ -237,7 +228,7 @@ impl<K: PoolableKernel> KernelPool<K> {
 
     /// Evict one lane (`reason`: idle, capacity, explicit, close). Refusals are recorded too.
     pub fn evict(&mut self, lane: &str, reason: &str) -> Value {
-        let at = ms((self.options.now)());
+        let at = jsrt::json::number((self.options.now)());
         let refuse = |refused: &str| {
             json!({ "lane": lane, "reason": reason, "at": at, "evicted": false, "refused": refused,
                     "restorable": "none", "nonRestorable": [] })
@@ -318,7 +309,7 @@ impl<K: PoolableKernel> KernelPool<K> {
             .map(|(lane, e)| {
                 let pinned: Vec<&String> = self.pins.get(lane).map(|h| h.iter().collect()).unwrap_or_default();
                 let idle = if e.running > 0 { 0.0 } else { now - e.last_used };
-                json!({ "lane": lane, "running": e.running, "pinnedBy": pinned, "idleMs": ms(idle) })
+                json!({ "lane": lane, "running": e.running, "pinnedBy": pinned, "idleMs": jsrt::json::number(idle) })
             })
             .collect();
         json!({ "live": self.entries.len(), "maxLive": self.options.max_live, "lanes": lanes })

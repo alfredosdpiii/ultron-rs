@@ -229,7 +229,7 @@ fn import_lines(result: &session_core::migration::ImportResult) -> Vec<String> {
             "  imported usage of {} Pi {} (${}) into usage root {}",
             result.usage_entries,
             entries(result.usage_entries),
-            session_file::js::format_f64(result.usage_cost),
+            jsrt::number::to_string(result.usage_cost),
             result.usage_root
         ));
     }
@@ -261,7 +261,7 @@ fn sorted_names(dir: &Path) -> Result<Vec<String>, Failure> {
         .flatten()
         .map(|e| e.file_name().to_string_lossy().into_owned())
         .collect();
-    names.sort_by(|a, b| a.encode_utf16().cmp(b.encode_utf16()));
+    jsrt::utf16::sort(&mut names);
     Ok(names)
 }
 
@@ -293,11 +293,6 @@ fn collect_profile(agent_dir: &Path, skip: Option<&Path>) -> Result<Vec<(String,
     Ok(out)
 }
 
-fn sha256(data: &[u8]) -> String {
-    use sha2::{Digest, Sha256};
-    Sha256::digest(data).iter().map(|b| format!("{b:02x}")).collect()
-}
-
 fn chmod(path: &Path, mode: u32) -> Result<(), Failure> {
     std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode)).map_err(|e| io_error(&e, "chmod", path))
 }
@@ -315,12 +310,6 @@ fn mkdir_recursive(path: &Path) -> Result<(), Failure> {
         .mode(0o700)
         .create(path)
         .map_err(|e| io_error(&e, "mkdir", path))
-}
-
-fn now_ms() -> i64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |d| d.as_millis() as i64)
 }
 
 fn write_new(path: &Path, data: &[u8], mode: u32) -> Result<(), Failure> {
@@ -344,7 +333,7 @@ fn backup_profile(agent_dir: &Path, backup_dir: &Path) -> Result<(PathBuf, usize
         )));
     }
     mkdir_recursive(backup_dir)?;
-    let created = session_file::js::iso_string(now_ms());
+    let created = jsrt::date::iso_string(jsrt::date::now_ms());
     let base = format!("ultron-profile-{}", created.replace([':', '.'], "-"));
     let mut target = None;
     for attempt in 0..100 {
@@ -401,7 +390,7 @@ fn backup_profile(agent_dir: &Path, backup_dir: &Path) -> Result<(PathBuf, usize
             write_new(&destination, &data, 0o600)?;
             chmod(&destination, 0o600)?;
             entries
-                .push(json!({"path": rel, "type": "file", "size": data.len(), "sha256": sha256(&data), "mode": mode}));
+                .push(json!({"path": rel, "type": "file", "size": data.len(), "sha256": jsrt::hash::sha256_hex(&data), "mode": mode}));
         }
         let count = entries.len();
         let manifest = json!({
@@ -413,7 +402,7 @@ fn backup_profile(agent_dir: &Path, backup_dir: &Path) -> Result<(PathBuf, usize
         });
         write_new(
             &target.join(MANIFEST_FILE),
-            format!("{}\n", config::json::stringify_pretty(&manifest)).as_bytes(),
+            format!("{}\n", jsrt::json::stringify_pretty(&manifest)).as_bytes(),
             0o600,
         )?;
         Ok(count)
@@ -494,9 +483,7 @@ fn verify_profile_backup(root: &Path) -> Result<Vec<Value>, Failure> {
     let mut expected = std::collections::HashSet::new();
     for entry in entries {
         if !is_safe_relative_path(entry.get("path")) {
-            let shown = entry
-                .get("path")
-                .map_or("undefined".to_string(), session_file::js::stringify);
+            let shown = entry.get("path").map_or("undefined".to_string(), jsrt::json::stringify);
             problems.push(format!("unsafe path in manifest: {shown}"));
             continue;
         }
@@ -522,7 +509,7 @@ fn verify_profile_backup(root: &Path) -> Result<Vec<Value>, Failure> {
                     problems.push(format!("not a regular file: {path}"));
                 } else {
                     let data = std::fs::read(&absolute).unwrap_or_default();
-                    if Some(sha256(&data).as_str()) != entry.get("sha256").and_then(Value::as_str)
+                    if Some(jsrt::hash::sha256_hex(&data).as_str()) != entry.get("sha256").and_then(Value::as_str)
                         || Some(meta.len() as f64) != entry.get("size").and_then(Value::as_f64)
                     {
                         problems.push(format!("hash mismatch: {path}"));
@@ -570,7 +557,7 @@ fn restore_profile(root: &Path, agent_dir: &Path) -> Result<usize, Failure> {
             symlink(target, &temporary).map_err(|e| io_error(&e, "symlink", &temporary))?;
         } else {
             let data = std::fs::read(files_root.join(rel)).map_err(|e| io_error(&e, "open", &files_root.join(rel)))?;
-            if Some(sha256(&data).as_str()) != entry["sha256"].as_str() {
+            if Some(jsrt::hash::sha256_hex(&data).as_str()) != entry["sha256"].as_str() {
                 return Err(verification_error(&[format!("hash mismatch: {rel}")]));
             }
             write_new(&temporary, &data, 0o600)?;

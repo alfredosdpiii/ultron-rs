@@ -138,7 +138,7 @@ pub fn child_mcp_config(server: &ChildServer, run: &ChildRun, model: &str, token
     if run.cwd.is_some() {
         env.insert("ULTRON_CHILD_CWD".into(), cwd.into());
     }
-    session_file::js::stringify(&json!({
+    jsrt::json::stringify(&json!({
         "mcpServers": {"ultron": {"type": "stdio", "command": server.self_cmd.command, "args": args, "env": env}}
     }))
 }
@@ -228,7 +228,7 @@ pub fn child_result(
     if result.get("is_error") == Some(&Value::Bool(true)) && text.trim().is_empty() {
         let subtype = match result.get("subtype") {
             None | Some(Value::Null) => "error".to_string(),
-            other => crate::mcp_protocol::js_string(other),
+            other => jsrt::value::string(other),
         };
         return Err(format!("claude child failed: {subtype}"));
     }

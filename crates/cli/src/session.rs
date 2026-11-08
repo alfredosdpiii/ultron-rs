@@ -5,7 +5,6 @@ use serde_json::Value;
 use std::fs;
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
-use std::time::UNIX_EPOCH;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct NativeSession {
@@ -56,16 +55,11 @@ fn header(path: &Path) -> Option<NativeSession> {
     if value.get("kind")?.as_str()? != "header" {
         return None;
     }
-    let modified = fs::metadata(path)
-        .ok()?
-        .modified()
-        .ok()?
-        .duration_since(UNIX_EPOCH)
-        .ok()?;
+    let modified = fs::metadata(path).ok()?.modified().ok()?;
     Some(NativeSession {
         id: value.get("id")?.as_str()?.to_string(),
         created_at: value.get("createdAt")?.as_f64()?,
-        modified_at: modified.as_secs_f64() * 1000.0,
+        modified_at: jsrt::date::mtime_ms(modified),
         cwd: value.get("cwd")?.as_str()?.to_string(),
         path: path.to_path_buf(),
     })
@@ -105,7 +99,7 @@ fn list_sessions_of(session_dir: &Path, cwd: Option<&Path>) -> Result<Vec<Native
         r.modified_at
             .total_cmp(&l.modified_at)
             .then(r.created_at.total_cmp(&l.created_at))
-            .then_with(|| crate::list_models::locale_compare(&l.id, &r.id))
+            .then_with(|| jsrt::collate::locale_compare(&l.id, &r.id))
     });
     Ok(sessions)
 }

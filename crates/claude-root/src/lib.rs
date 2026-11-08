@@ -51,12 +51,8 @@ impl Ctx {
     }
 }
 
-/// `n` random bytes as lowercase hex.
-pub fn random_hex(n: usize) -> String {
-    let mut bytes = vec![0u8; n];
-    let _ = getrandom::fill(&mut bytes);
-    bytes.iter().map(|b| format!("{b:02x}")).collect()
-}
+// ponytail: only the do-not-touch bridge.rs still calls `crate::random_hex`; drop this once it is gone.
+pub use jsrt::random::random_hex;
 
 /// `os.tmpdir()`: `TMPDIR` without a trailing slash, else `/tmp`.
 pub fn tmpdir(var: &dyn Fn(&str) -> Option<String>) -> PathBuf {
@@ -72,7 +68,7 @@ pub fn temp_dir(prefix: &str, var: &dyn Fn(&str) -> Option<String>) -> Result<Pa
     use std::os::unix::fs::DirBuilderExt;
     let base = tmpdir(var);
     for _ in 0..16 {
-        let path = base.join(format!("{prefix}{}", random_hex(3)));
+        let path = base.join(format!("{prefix}{}", jsrt::random::random_hex(3)));
         match std::fs::DirBuilder::new().mode(0o700).create(&path) {
             Ok(()) => return Ok(path),
             Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,

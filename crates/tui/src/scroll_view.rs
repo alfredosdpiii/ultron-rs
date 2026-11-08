@@ -7,6 +7,8 @@
 
 use std::time::{Duration, Instant};
 
+use jsrt::number;
+
 use crate::utils::{ansi_len, get_active_background_ansi, grapheme_width, slice_with_width, visible_width};
 use unicode_segmentation::UnicodeSegmentation;
 
@@ -275,11 +277,6 @@ pub struct ScrollbarGeometry {
     pub max_scroll_top: usize,
 }
 
-/// JavaScript `Math.round` for non-negative values.
-fn js_round(x: f64) -> usize {
-    (x + 0.5).floor() as usize
-}
-
 /// `getScrollbarGeometry` of a view laid out at `rect` over `content_height` rows; `include_hidden_auto` also
 /// answers for an `auto` scrollbar that is hidden (hover reveals it).
 pub fn scrollbar_geometry(
@@ -300,14 +297,14 @@ pub fn scrollbar_geometry(
     let thumb = if content_height == 0 {
         track
     } else {
-        min_thumb.max(track.min(js_round((track * track) as f64 / content_height as f64)))
+        min_thumb.max(track.min(number::round((track * track) as f64 / content_height as f64) as usize))
     };
     let max_scroll_top = content_height.saturating_sub(track);
     let max_thumb_top = track - thumb;
     let offset = if max_scroll_top == 0 {
         0
     } else {
-        js_round(view.scroll_top as f64 / max_scroll_top as f64 * max_thumb_top as f64)
+        number::round(view.scroll_top as f64 / max_scroll_top as f64 * max_thumb_top as f64) as usize
     };
     Some(ScrollbarGeometry {
         column: rect.x + rect.width - 1,

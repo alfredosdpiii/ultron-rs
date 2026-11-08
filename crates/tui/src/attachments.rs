@@ -545,14 +545,14 @@ impl EnhancedPaste {
                     mime: mime.to_string(),
                     chunks: Vec::new(),
                 });
-                let encoded = B64.encode(mime);
+                let encoded = jsrt::base64::encode(mime);
                 let mut meta = vec!["type=read".to_string()];
                 if let Some(loc) = loc {
                     meta.push(format!("loc={loc}"));
                 }
                 if let Some(pw) = pw {
                     meta.push(format!("pw={pw}"));
-                    meta.push(format!("name={}", B64.encode("Paste event")));
+                    meta.push(format!("name={}", jsrt::base64::encode("Paste event")));
                 }
                 if kitty_dot {
                     events.push(PasteEvent::Write(format!("{OSC5522}{};{encoded}\x07", meta.join(":"))));
@@ -569,7 +569,7 @@ impl EnhancedPaste {
                     events.push(PasteEvent::Text(String::from_utf8_lossy(&bytes).into_owned()));
                 } else {
                     events.push(PasteEvent::Image {
-                        data_b64: B64.encode(&bytes),
+                        data_b64: jsrt::base64::encode(&bytes),
                         mime,
                     });
                 }
@@ -631,7 +631,7 @@ impl Attachments {
             None => path.to_string(),
         };
         let bytes = std::fs::read(expanded)?;
-        Ok(self.add_image(B64.encode(bytes), mime, Some(path.to_string())))
+        Ok(self.add_image(jsrt::base64::encode(bytes), mime, Some(path.to_string())))
     }
 
     pub fn placeholder(&self, n: usize) -> String {

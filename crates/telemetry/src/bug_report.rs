@@ -4,7 +4,6 @@
 //! The model-written summary (`generateBugReportSummary`) needs a model call and is not part of this crate.
 
 use crate::crash_log::{CrashRecord, Extension};
-use crate::js;
 use serde_json::{Map, Value, json};
 use std::collections::BTreeMap;
 use std::io;
@@ -176,7 +175,7 @@ pub fn collect_environment(host: &Host, env: &BTreeMap<String, String>) -> Value
         .and_then(|s| s.split(['/', '\\']).next_back())
         .filter(|s| !s.is_empty());
     let mut pi_names: Vec<&String> = env.keys().filter(|name| name.starts_with("PI_")).collect();
-    pi_names.sort_by(|a, b| js::utf16_cmp(a, b));
+    jsrt::utf16::sort(&mut pi_names);
     json!({
         "version": host.version,
         "userAgent": user_agent(host),
@@ -204,7 +203,7 @@ fn sorted_keys(value: Option<&Value>) -> Value {
         .and_then(Value::as_object)
         .map(|m| m.keys().collect())
         .unwrap_or_default();
-    names.sort_by(|a, b| js::utf16_cmp(a, b));
+    jsrt::utf16::sort(&mut names);
     json!(names)
 }
 
@@ -238,7 +237,7 @@ pub fn describe_model(model: &Value) -> Value {
         let value = model.get(key);
         out.insert(
             key.into(),
-            if js::truthy(value) {
+            if jsrt::value::truthy(value) {
                 redact_json_value(value.unwrap_or(&Value::Null))
             } else {
                 Value::Null
@@ -269,10 +268,10 @@ pub fn describe_provider(info: &ProviderInfo) -> Value {
     let provider = &info.provider;
     let auth = provider.get("auth");
     let mut auth_types = Vec::new();
-    if js::truthy(auth.and_then(|a| a.get("apiKey"))) {
+    if jsrt::value::truthy(auth.and_then(|a| a.get("apiKey"))) {
         auth_types.push("api_key");
     }
-    if js::truthy(auth.and_then(|a| a.get("oauth"))) {
+    if jsrt::value::truthy(auth.and_then(|a| a.get("oauth"))) {
         auth_types.push("oauth");
     }
     let mut out = Map::new();
@@ -281,7 +280,7 @@ pub fn describe_provider(info: &ProviderInfo) -> Value {
     let base_url = provider.get("baseUrl");
     out.insert(
         "baseUrl".into(),
-        if js::truthy(base_url) {
+        if jsrt::value::truthy(base_url) {
             redact_url_value(base_url.unwrap_or(&Value::Null))
         } else {
             Value::Null
@@ -338,7 +337,7 @@ pub struct MetadataInput<'a> {
 /// `collectBugReportMetadata`: `report.json`. Settings lose `trackingId` and every credential; the cwd is only
 /// included with the session.
 pub fn collect_bug_report_metadata(input: &MetadataInput<'_>) -> Value {
-    let hint = input.hint.map(js::trim).filter(|h| !h.is_empty());
+    let hint = input.hint.map(jsrt::string::trim).filter(|h| !h.is_empty());
     let mut session = Map::new();
     session.insert("id".into(), json!(input.session_id));
     session.insert("included".into(), json!(input.include_session));
@@ -395,7 +394,7 @@ pub fn collect_bug_report_diagnostics(session_id: &str, entries: &[Value], crash
         if is_empty_like(&diagnostics)
             && stop_reason != Some("error")
             && stop_reason != Some("aborted")
-            && !js::truthy(message.get("errorMessage"))
+            && !jsrt::value::truthy(message.get("errorMessage"))
         {
             continue;
         }
@@ -453,7 +452,9 @@ pub struct BugReportFile {
 
 /// `JSON.stringify(value, null, 2)`.
 pub(crate) fn pretty(value: &impl serde::Serialize) -> String {
-    serde_json::to_string_pretty(value).unwrap_or_default()
+    serde_json::to_value(value)
+        .map(|v| jsrt::json::stringify_pretty(&v))
+        .unwrap_or_default()
 }
 
 /// `bugReportFiles`: the files shared by upload and zip export.

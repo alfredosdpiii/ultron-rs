@@ -6,7 +6,7 @@
 //! (undici's), then a 1006 closure. Pings are answered; sends go through one ordered writer with the relay's
 //! pending-byte limit (`OrderedWebSocketWriter`).
 
-use protocol::websocket::{Message, MessageDecoder, accept_key, base64, encode_message};
+use protocol::websocket::{Message, MessageDecoder, accept_key, encode_message};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::Duration;
@@ -177,12 +177,6 @@ impl WsReader {
     }
 }
 
-fn random<const N: usize>() -> [u8; N] {
-    let mut bytes = [0u8; N];
-    let _ = getrandom::fill(&mut bytes);
-    bytes
-}
-
 /// Open `url` (`ws:` or `wss:`) offering `protocol`, with `authorization`; every failure is [`CONNECTION_FAILED`].
 pub async fn connect(
     url: &str,
@@ -198,7 +192,7 @@ pub async fn connect(
         _ => return Err(CONNECTION_FAILED.into()),
     };
     http.set_scheme(scheme).map_err(|_| CONNECTION_FAILED.to_string())?;
-    let key = base64(&random::<16>());
+    let key = jsrt::base64::encode(jsrt::random::bytes::<16>());
     let client = reqwest::Client::builder()
         .http1_only()
         .no_proxy()
@@ -262,7 +256,7 @@ async fn write_loop(
     while let Some(out) = rx.recv().await {
         match out {
             Out::Message(message, bytes) => {
-                let frame = encode_message(&message, Some(random::<4>()));
+                let frame = encode_message(&message, Some(jsrt::random::bytes::<4>()));
                 let written = write.write_all(&frame).await;
                 pending.fetch_sub(bytes, Ordering::SeqCst);
                 if written.is_err() {
@@ -270,7 +264,7 @@ async fn write_loop(
                 }
             }
             Out::Close(code, reason) => {
-                let frame = encode_message(&Message::Close(Some(code), reason), Some(random::<4>()));
+                let frame = encode_message(&Message::Close(Some(code), reason), Some(jsrt::random::bytes::<4>()));
                 let _ = write.write_all(&frame).await;
                 let _ = write.flush().await;
                 break;

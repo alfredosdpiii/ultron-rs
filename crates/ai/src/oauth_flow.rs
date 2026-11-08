@@ -5,9 +5,7 @@
 use crate::env::provider_env_value;
 use crate::http::{AbortSignal, BoxFuture, HttpRequest, HttpResponse, Transport, cancelled, is_aborted};
 use crate::jsutil::Utf8Stream;
-use crate::options::now_ms;
 use serde_json::Value;
-use sha2::{Digest, Sha256};
 use std::time::Duration;
 
 const LOGO_SVG: &str = r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 800" aria-hidden="true"><path fill="#fff" fill-rule="evenodd" d="M165.29 165.29 H517.36 V400 H400 V517.36 H282.65 V634.72 H165.29 Z M282.65 282.65 V400 H400 V282.65 Z"/><path fill="#fff" d="M517.36 400 H634.72 V634.72 H517.36 Z"/></svg>"##;
@@ -140,7 +138,7 @@ pub fn oauth_redirect_host(host: &str) -> String {
 pub type Clock = fn() -> i64;
 
 pub fn system_clock() -> i64 {
-    now_ms()
+    jsrt::date::now_ms()
 }
 
 /// Clock, timers and randomness of a login (`Date.now`, `setTimeout`, `crypto.getRandomValues`), so flows replay
@@ -161,7 +159,7 @@ pub struct SystemLoginEnv;
 
 impl LoginEnv for SystemLoginEnv {
     fn now_ms(&self) -> f64 {
-        now_ms() as f64
+        jsrt::date::now_ms() as f64
     }
 
     fn sleep(&self, ms: f64) -> BoxFuture<'_, ()> {
@@ -169,7 +167,7 @@ impl LoginEnv for SystemLoginEnv {
     }
 
     fn fill_random(&self, buf: &mut [u8]) {
-        getrandom::fill(buf).expect("OS random source");
+        jsrt::random::fill(buf);
     }
 }
 
@@ -191,14 +189,8 @@ impl LoginEnv for ClockLoginEnv {
     }
 }
 
-/// base64url without padding.
-pub fn base64url(bytes: &[u8]) -> String {
-    crate::jsutil::btoa(bytes)
-        .replace('+', "-")
-        .replace('/', "_")
-        .trim_end_matches('=')
-        .to_string()
-}
+// ponytail: session-core/tests/codex_sockets.rs still imports `ai::oauth_flow::base64url`.
+pub use jsrt::base64::encode_url as base64url;
 
 /// `generatePKCE` with the OS random source.
 pub fn generate_pkce() -> (String, String) {
@@ -209,30 +201,13 @@ pub fn generate_pkce() -> (String, String) {
 pub fn generate_pkce_from(env: &dyn LoginEnv) -> (String, String) {
     let mut bytes = [0u8; 32];
     env.fill_random(&mut bytes);
-    let verifier = base64url(&bytes);
+    let verifier = jsrt::base64::encode_url(bytes);
     let challenge = pkce_challenge(&verifier);
     (verifier, challenge)
 }
 
 pub fn pkce_challenge(verifier: &str) -> String {
-    base64url(&Sha256::digest(verifier.as_bytes()))
-}
-
-/// A random UUID v4 (`crypto.randomUUID`).
-pub fn random_uuid() -> String {
-    let mut b = [0u8; 16];
-    SystemLoginEnv.fill_random(&mut b);
-    b[6] = (b[6] & 0x0f) | 0x40;
-    b[8] = (b[8] & 0x3f) | 0x80;
-    let hex: String = b.iter().map(|x| format!("{x:02x}")).collect();
-    format!(
-        "{}-{}-{}-{}-{}",
-        &hex[0..8],
-        &hex[8..12],
-        &hex[12..16],
-        &hex[16..20],
-        &hex[20..32]
-    )
+    jsrt::base64::encode_url(jsrt::hash::sha256(verifier))
 }
 
 /// `application/x-www-form-urlencoded` (`URLSearchParams.toString()`).

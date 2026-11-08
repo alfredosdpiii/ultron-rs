@@ -1,6 +1,7 @@
 //! ANSI-aware measurement, truncation and wrapping (port of packages/tui/src/utils.ts).
 
 use crate::tables;
+use jsrt::string;
 use unicode_segmentation::UnicodeSegmentation;
 
 fn in_table(table: &[(u32, u32)], cp: char) -> bool {
@@ -18,18 +19,8 @@ fn in_table(table: &[(u32, u32)], cp: char) -> bool {
         .is_ok()
 }
 
-/// JavaScript `\s`.
-pub fn is_whitespace_char(c: char) -> bool {
-    in_table(tables::JS_SPACE, c)
-}
-
-/// JavaScript `String.prototype.trimEnd`.
-pub fn js_trim_end(s: &str) -> &str {
-    s.trim_end_matches(is_whitespace_char)
-}
-
 fn js_is_blank(s: &str) -> bool {
-    s.chars().all(is_whitespace_char)
+    s.chars().all(string::is_space)
 }
 
 pub fn is_cjk_break(c: char) -> bool {
@@ -617,7 +608,7 @@ fn wrap_single_line(line: &str, width: usize) -> Vec<String> {
             continue;
         }
         if current_width + token_width > width && current_width > 0 {
-            let mut line_to_wrap = js_trim_end(&current).to_string();
+            let mut line_to_wrap = current.trim_end_matches(string::is_space).to_string();
             line_to_wrap.push_str(&tracker.line_end_reset());
             wrapped.push(line_to_wrap);
             if is_ws {
@@ -639,7 +630,10 @@ fn wrap_single_line(line: &str, width: usize) -> Vec<String> {
     if wrapped.is_empty() {
         return vec![String::new()];
     }
-    wrapped.iter().map(|l| js_trim_end(l).to_string()).collect()
+    wrapped
+        .iter()
+        .map(|l| l.trim_end_matches(string::is_space).to_string())
+        .collect()
 }
 
 fn break_long_word(word: &str, width: usize, tracker: &mut AnsiCodeTracker) -> Vec<String> {

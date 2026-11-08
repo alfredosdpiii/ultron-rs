@@ -26,9 +26,9 @@ use crate::scroll_view::{
 };
 use crate::sgr_mouse::parse_sgr_mouse;
 use crate::utils::{
-    ansi_len, extract_ansi_code, grapheme_width, js_trim_end, strip_terminal_sequences, truncate_to_width,
-    visible_width,
+    ansi_len, extract_ansi_code, grapheme_width, strip_terminal_sequences, truncate_to_width, visible_width,
 };
+use jsrt::string;
 
 /// Rows a page scroll keeps from the previous page (`PAGE_SCROLL_OVERLAP`).
 pub const PAGE_SCROLL_OVERLAP: usize = 4;
@@ -517,7 +517,11 @@ impl FullscreenViewport {
                 visible_width(line),
             );
             let text = slice_by_column(line, a, b.saturating_sub(a), true);
-            lines.push(js_trim_end(&strip_terminal_sequences(&text)).to_string());
+            lines.push(
+                strip_terminal_sequences(&text)
+                    .trim_end_matches(string::is_space)
+                    .to_string(),
+            );
         }
         let text = lines.join("\n");
         (!text.is_empty()).then_some(text)

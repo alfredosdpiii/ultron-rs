@@ -18,7 +18,7 @@ use std::collections::BTreeMap;
 use std::io::{Read, Write};
 use std::os::unix::net::UnixStream;
 use std::path::PathBuf;
-use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError, Weak};
+use std::sync::{Arc, Condvar, Mutex, PoisonError, Weak};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 /// The `source` of every report.
@@ -256,10 +256,6 @@ struct Shared {
     done_wake: Condvar,
 }
 
-fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
-    mutex.lock().unwrap_or_else(PoisonError::into_inner)
-}
-
 fn now_ns() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -406,7 +402,7 @@ fn metadata_params(sent: Option<&Metadata>, now: &Metadata) -> Option<Map<String
 fn run(shared: Arc<Shared>, mut transport: Box<dyn Transport>) {
     loop {
         let line = {
-            let mut q = lock(&shared.queue);
+            let mut q = jsrt::sync::lock(&shared.queue);
             loop {
                 match shared.next(&mut q, Instant::now()) {
                     Next::Send(line) => break Some(line),
@@ -424,14 +420,14 @@ fn run(shared: Arc<Shared>, mut transport: Box<dyn Transport>) {
         };
         let Some(line) = line else { break };
         if let Err(error) = transport.send(&line) {
-            let mut q = lock(&shared.queue);
+            let mut q = jsrt::sync::lock(&shared.queue);
             if shared.debug && !q.logged {
                 eprintln!("ultron: herdr report failed: {error}");
             }
             q.logged = true;
         }
     }
-    *lock(&shared.done) = true;
+    *jsrt::sync::lock(&shared.done) = true;
     shared.done_wake.notify_all();
 }
 
@@ -471,14 +467,14 @@ impl Reporter {
             .name("herdr-reporter".into())
             .spawn(move || run(worker, transport));
         if spawned.is_err() {
-            *lock(&shared.done) = true;
+            *jsrt::sync::lock(&shared.done) = true;
         }
-        *lock(&ACTIVE) = Some(Arc::downgrade(&shared));
+        *jsrt::sync::lock(&ACTIVE) = Some(Arc::downgrade(&shared));
         Reporter { shared }
     }
 
     fn update(&self, change: impl FnOnce(&mut Queue)) {
-        let mut q = lock(&self.shared.queue);
+        let mut q = jsrt::sync::lock(&self.shared.queue);
         if q.releasing {
             return;
         }
@@ -519,7 +515,7 @@ impl Reporter {
 
 fn release(shared: &Shared) {
     {
-        let mut q = lock(&shared.queue);
+        let mut q = jsrt::sync::lock(&shared.queue);
         if !q.releasing {
             q.releasing = true;
             q.metadata = None;
@@ -528,7 +524,7 @@ fn release(shared: &Shared) {
     }
     shared.wake.notify_all();
     let deadline = Instant::now() + RELEASE_WAIT;
-    let mut done = lock(&shared.done);
+    let mut done = jsrt::sync::lock(&shared.done);
     while !*done {
         let now = Instant::now();
         if now >= deadline {
@@ -551,7 +547,7 @@ impl Drop for Reporter {
 /// Release the most recently started reporter that is still alive (for signal handlers that exit the process
 /// without running destructors).
 pub fn release_active() {
-    let active = lock(&ACTIVE).as_ref().and_then(Weak::upgrade);
+    let active = jsrt::sync::lock(&ACTIVE).as_ref().and_then(Weak::upgrade);
     if let Some(shared) = active {
         release(&shared);
     }

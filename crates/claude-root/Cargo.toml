@@ -17,6 +17,7 @@ harness = { path = "../harness" }
 herdr = { path = "../herdr" }
 host = { path = "../host" }
 indexmap = "=2.14.2"
+jsrt = { path = "../jsrt" }
 kernel = { path = "../kernel" }
 kernel-apis = { path = "../kernel-apis" }
 loki = { path = "../loki" }

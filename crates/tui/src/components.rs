@@ -1,6 +1,7 @@
 //! Basic components: Text, TruncatedText, Spacer and Container (ports of packages/tui/src/components/*.ts).
 
 use crate::utils::{apply_background_to_line, truncate_to_width, visible_width, wrap_text_with_ansi};
+use jsrt::string;
 
 /// A renderable: lines for a width, each at most `width` columns.
 pub trait Component {
@@ -57,7 +58,7 @@ impl Component for Text {
 
 impl Text {
     fn render_uncached(&self, width: usize) -> Vec<String> {
-        if self.text.chars().all(crate::utils::is_whitespace_char) {
+        if self.text.chars().all(string::is_space) {
             return Vec::new();
         }
         let normalized = self.text.replace('\t', "   ");

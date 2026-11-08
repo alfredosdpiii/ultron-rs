@@ -60,7 +60,7 @@ impl Lifecycle {
     }
 
     fn lock(&self) -> std::sync::MutexGuard<'_, Inner> {
-        self.inner.lock().unwrap_or_else(|e| e.into_inner())
+        jsrt::sync::lock(&self.inner)
     }
 
     fn token(inner: &mut Inner) -> u64 {

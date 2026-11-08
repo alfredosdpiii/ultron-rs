@@ -1,6 +1,5 @@
 //! Durable module documents (`HostModuleStore`): one JSON document per module, replaced whole on every write.
 
-use crate::util::{lock, uuid};
 use serde_json::Value;
 use std::path::PathBuf;
 use std::sync::Mutex;
@@ -27,11 +26,11 @@ impl MemoryDocumentStore {
 
 impl DocumentStore for MemoryDocumentStore {
     fn read(&self) -> Result<Option<Value>, String> {
-        Ok(lock(&self.document).clone())
+        Ok(jsrt::sync::lock(&self.document).clone())
     }
 
     fn write(&self, document: &Value) -> Result<(), String> {
-        *lock(&self.document) = Some(document.clone());
+        *jsrt::sync::lock(&self.document) = Some(document.clone());
         Ok(())
     }
 }
@@ -62,7 +61,7 @@ impl DocumentStore for FileDocumentStore {
         if let Some(parent) = self.path.parent() {
             std::fs::create_dir_all(parent).map_err(|error| error.to_string())?;
         }
-        let temporary = PathBuf::from(format!("{}.{}.tmp", self.path.display(), uuid()));
+        let temporary = PathBuf::from(format!("{}.{}.tmp", self.path.display(), jsrt::random::uuid_v4()));
         std::fs::write(&temporary, serde_json::to_string(document).unwrap_or_default())
             .map_err(|error| error.to_string())?;
         std::fs::rename(&temporary, &self.path).map_err(|error| error.to_string())

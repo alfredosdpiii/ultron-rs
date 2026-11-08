@@ -4,7 +4,6 @@
 //! text) after every step, across reopens, tampered, newer and corrupt documents and failing writes.
 
 use kernel::Signal;
-use kernel_apis::util::stringify;
 use kernel_apis::{ApiModule, DocumentStore, Request, TaskHost};
 use serde_json::{Value, json};
 use services::ReleaseGateModule;
@@ -121,15 +120,17 @@ fn services_release_gates_match_the_release_gate_module() {
                             signal: &Signal::new(),
                         })
                     });
-                    let at = format!("{name} / step {index} {kind} {}", stringify(&args[1]));
+                    let at = format!("{name} / step {index} {kind} {}", jsrt::json::stringify(&args[1]));
                     match (step.get("ok"), step.get("error"), outcome) {
-                        (Some(want), _, Ok(got)) => assert_eq!(stringify(&got), stringify(want), "{at}"),
+                        (Some(want), _, Ok(got)) => {
+                            assert_eq!(jsrt::json::stringify(&got), jsrt::json::stringify(want), "{at}")
+                        }
                         (_, Some(want), Err(got)) => assert_eq!(got, want.as_str().unwrap(), "{at}"),
                         (want, error, got) => panic!("{at}: want {want:?} / {error:?}, got {got:?}"),
                     }
                     let document = store.document.lock().unwrap().clone().unwrap_or(Value::Null);
                     assert_eq!(
-                        stringify(&document),
+                        jsrt::json::stringify(&document),
                         step["document"].as_str().unwrap(),
                         "{at}: document"
                     );

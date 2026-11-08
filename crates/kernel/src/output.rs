@@ -1,6 +1,7 @@
 //! Bounded output: per-cell stream limits, raw fd 1/fd 2 capture, output from outside a cell, and the stderr tail.
 //! Lengths are JavaScript string lengths (UTF-16 code units), as in kernel.ts; a cut never splits a character.
 
+use jsrt::utf16;
 use std::collections::VecDeque;
 
 /// Protocol frames are bounded per frame (wire bytes, including JSON overhead).
@@ -14,56 +15,18 @@ pub(crate) const STDERR_TAIL_CHARS: usize = 8000;
 /// Raw output from outside any cell, kept for the next cell.
 pub(crate) const MAX_ORPHAN_CHARS: usize = 64 * 1024;
 
-pub(crate) fn utf16_len(text: &str) -> usize {
-    text.chars().map(char::len_utf16).sum()
-}
-
-/// Byte index of the last character boundary at or before `units` UTF-16 code units into `text`.
-fn utf16_index(text: &str, units: usize) -> usize {
-    let mut counted = 0;
-    for (index, character) in text.char_indices() {
-        counted += character.len_utf16();
-        if counted > units {
-            return index;
-        }
-    }
-    text.len()
-}
-
-/// The first `units` UTF-16 code units of `text` (fewer when that would split a character).
-pub(crate) fn utf16_head(text: &str, units: usize) -> &str {
-    &text[..utf16_index(text, units)]
-}
-
-/// The last `units` UTF-16 code units of `text` (fewer when that would split a character).
-pub(crate) fn utf16_tail(text: &str, units: usize) -> &str {
-    let length = utf16_len(text);
-    if length <= units {
-        return text;
-    }
-    let skip = length - units;
-    let mut counted = 0;
-    for (index, character) in text.char_indices() {
-        if counted >= skip {
-            return &text[index..];
-        }
-        counted += character.len_utf16();
-    }
-    ""
-}
-
 /// `current` + `text` within the per-cell stream limit; the marker is added once, the first time it cuts.
 pub(crate) fn append_bounded(current: &mut String, text: &str) {
-    let used = utf16_len(current);
+    let used = utf16::len(current);
     if used > MAX_REQUEST_STREAM_CHARS {
         return;
     }
     let room = MAX_REQUEST_STREAM_CHARS - used;
-    if utf16_len(text) <= room {
+    if utf16::len(text) <= room {
         current.push_str(text);
         return;
     }
-    current.push_str(&text[..utf16_index(text, room)]);
+    current.push_str(utf16::head(text, room));
     current.push_str(REQUEST_STREAM_MARKER);
 }
 
@@ -72,8 +35,8 @@ pub(crate) fn keep_tail(tail: &mut String, text: &str) {
     if text.is_empty() {
         return;
     }
-    tail.push_str(utf16_tail(text, STDERR_TAIL_CHARS));
-    let kept = utf16_tail(tail, STDERR_TAIL_CHARS).len();
+    tail.push_str(utf16::tail(text, STDERR_TAIL_CHARS));
+    let kept = utf16::tail(tail, STDERR_TAIL_CHARS).len();
     tail.drain(..tail.len() - kept);
 }
 
@@ -131,16 +94,16 @@ impl RawCapture {
     pub(crate) fn push(&mut self, mut text: &str) {
         let half = MAX_REQUEST_STREAM_CHARS / 2;
         if self.head_len < half {
-            let split = utf16_index(text, half - self.head_len);
+            let split = utf16::head(text, half - self.head_len).len();
             let taken = &text[..split];
             self.head.push_str(taken);
-            self.head_len += utf16_len(taken);
+            self.head_len += utf16::len(taken);
             text = &text[split..];
         }
         if text.is_empty() {
             return;
         }
-        let length = utf16_len(text);
+        let length = utf16::len(text);
         self.tail.push_back((text.to_string(), length));
         self.tail_len += length;
         while self.tail.len() > 1 && self.tail_len - self.tail[0].1 >= half {
@@ -157,8 +120,8 @@ impl RawCapture {
         let mut dropped = self.dropped;
         let mut tail = joined.as_str();
         if self.tail_len > half {
-            tail = utf16_tail(tail, half);
-            dropped += self.tail_len - utf16_len(tail);
+            tail = utf16::tail(tail, half);
+            dropped += self.tail_len - utf16::len(tail);
         }
         if dropped == 0 {
             return format!("{}{tail}", self.head);

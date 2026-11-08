@@ -7,12 +7,13 @@ use std::collections::{HashMap, HashSet};
 use tui::keybindings::KeybindingsManager;
 use tui::utils::{truncate_to_width, visible_width};
 
+use super::flat;
 use super::graph::{
     GraphKind, GraphNode, GraphProgress, GraphStatus, bar, build_rlm_graph, count, is_finished, rollup, status_color,
     task_status,
 };
 use super::visualizer::{Color, RlmSnapshot, RlmStyle, RlmTask, format_duration, short_id};
-use super::{flat, js_num};
+use jsrt::number;
 
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct DagNode {
@@ -1000,10 +1001,18 @@ fn card_lines(node: &DagNode, run: &DagRun, width: usize, selected: bool, style:
         stats.push(t);
     }
     if let Some(t) = node.turns {
-        stats.push(format!("{} turn{}", js_num(t), if t == 1.0 { "" } else { "s" }));
+        stats.push(format!(
+            "{} turn{}",
+            number::to_string(t),
+            if t == 1.0 { "" } else { "s" }
+        ));
     }
     if let Some(t) = node.tool_calls {
-        stats.push(format!("{} tool{}", js_num(t), if t == 1.0 { "" } else { "s" }));
+        stats.push(format!(
+            "{} tool{}",
+            number::to_string(t),
+            if t == 1.0 { "" } else { "s" }
+        ));
     }
     let lines = vec![
         head,

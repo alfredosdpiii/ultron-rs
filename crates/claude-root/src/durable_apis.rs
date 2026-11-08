@@ -139,7 +139,7 @@ pub fn open(
     let (catalog_env, key_env) = (env.clone(), env.clone());
     // Requests of no conversation carry this provider session: every request is a child's.
     let root_session = Arc::new(std::sync::OnceLock::new());
-    let _ = root_session.set(format!("ultron-claude-root-{}", crate::random_hex(8)));
+    let _ = root_session.set(format!("ultron-claude-root-{}", jsrt::random::random_hex(8)));
     let (charged, charge_stack) = (children.clone(), stack.clone());
     let budget = session_core::view_images::context_image_budget((env.var)("ULTRON_CONTEXT_IMAGES").as_deref());
     let models = TurnModels {

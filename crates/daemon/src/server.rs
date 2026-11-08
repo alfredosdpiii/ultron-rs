@@ -52,7 +52,7 @@ fn keep_dreaming(options: &ServerOptions, log: &dyn Fn(&str)) {
         &home,
         &settings,
         kernel_apis::prompt_schedule::clock_for(&|key| std::env::var(key).ok()),
-        &kernel_apis::localtime::Zone::from_env(std::env::var("TZ").ok().as_deref()),
+        &jsrt::localtime::Zone::from_env(std::env::var("TZ").ok().as_deref()),
     );
     if let Err(error) = result {
         log(&format!("dream schedule: {error}"));
@@ -95,7 +95,7 @@ pub fn record_error(path: &Path, label: &str, message: &str) {
         .mode(0o600)
         .open(path)
     {
-        let time = session_file::js::iso_string(paths::now_ms());
+        let time = jsrt::date::iso_string(jsrt::date::now_ms());
         let _ = writeln!(file, "{time} {label} {message}");
     }
 }
@@ -143,7 +143,7 @@ impl Lifetime {
     }
 
     fn lock(&self) -> std::sync::MutexGuard<'_, LifetimeState> {
-        self.state.lock().unwrap_or_else(|e| e.into_inner())
+        jsrt::sync::lock(&self.state)
     }
 
     pub fn start(&self, retire: Box<dyn Fn() + Send + Sync>) {
@@ -354,7 +354,7 @@ fn start_generation(
     paths::ensure_private_directory(&sockets_dir).map_err(Err)?;
     let socket_path = sockets_dir.join(format!("{server_id}.sock"));
     let control_path = sockets_dir.join(format!("control-{server_id}.sock"));
-    let nonce: String = paths::uuid_v4().replace('-', "")[..12].to_string();
+    let nonce: String = jsrt::random::uuid_v4().replace('-', "")[..12].to_string();
     let endpoint_path = sockets_dir.join(format!("server-{server_id}-{nonce}.sock"));
     remove_dead_endpoints(&sockets_dir, server_id);
     session_core::startup_trace::trace_startup(

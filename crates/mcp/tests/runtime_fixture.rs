@@ -112,9 +112,8 @@ fn mcp_runtime_convert_results_match_typescript() {
             if failing {
                 return Err("disk full".into());
             }
-            use base64::Engine;
             let mut saved = saved.borrow_mut();
-            saved.push(json!({ "data": base64::engine::general_purpose::STANDARD.encode(data), "extension": ext }));
+            saved.push(json!({ "data": jsrt::base64::encode(data), "extension": ext }));
             Ok(format!("/saved/{}{ext}", saved.len()))
         };
         let out = convert_mcp_result(

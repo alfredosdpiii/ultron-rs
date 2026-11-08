@@ -108,17 +108,7 @@ pub fn http_idle_timeout_ms(settings: &Settings) -> Result<u64, String> {
     match settings.get("httpIdleTimeoutMs") {
         None => Ok(DEFAULT_HTTP_IDLE_TIMEOUT_MS),
         Some(value) => parse_timeout(value).ok_or_else(|| {
-            let shown = match value {
-                Value::String(s) => s.clone(),
-                Value::Null => "null".into(),
-                Value::Object(_) => "[object Object]".into(),
-                Value::Array(items) => items
-                    .iter()
-                    .map(|v| v.as_str().map_or_else(|| v.to_string(), str::to_string))
-                    .collect::<Vec<_>>()
-                    .join(","),
-                other => other.to_string(),
-            };
+            let shown = jsrt::value::string(Some(value));
             format!("Invalid httpIdleTimeoutMs setting: {shown}")
         }),
     }

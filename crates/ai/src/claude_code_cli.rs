@@ -6,7 +6,7 @@
 //!
 //! A request whose transcript declares tools fails before any process starts (no tool runner is registered here).
 
-use crate::options::{SimpleStreamOptions, StreamOptions, now_ms};
+use crate::options::{SimpleStreamOptions, StreamOptions};
 use crate::transcript::{current_system_message, current_tools, system_message_text};
 use crate::types::{
     AssistantContent, AssistantMessage, AssistantMessageDiagnostic, AssistantMessageEvent, DiagnosticErrorInfo,
@@ -87,9 +87,7 @@ fn positive_int(value: Option<&String>, fallback: u64, allow_zero: bool) -> u64 
         return fallback;
     };
     match text.parse::<f64>() {
-        Ok(n) if n.fract() == 0.0 && n.abs() <= 9_007_199_254_740_991.0 && n >= if allow_zero { 0.0 } else { 1.0 } => {
-            n as u64
-        }
+        Ok(n) if jsrt::number::is_safe_integer(n) && n >= if allow_zero { 0.0 } else { 1.0 } => n as u64,
         _ => fallback,
     }
 }
@@ -129,10 +127,6 @@ pub fn child_env(options: &StreamOptions) -> Env {
 
 static RESOLVED_CLI: LazyLock<Mutex<HashMap<String, String>>> = LazyLock::new(Mutex::default);
 
-fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
-    mutex.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
-}
-
 fn is_executable(file: &Path) -> bool {
     use std::os::unix::fs::PermissionsExt;
     std::fs::metadata(file).is_ok_and(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
@@ -149,7 +143,7 @@ pub fn resolve_claude_cli(env: &Env) -> Result<String, String> {
         configured.as_deref().unwrap_or_default(),
         env.get("PATH").map(String::as_str).unwrap_or_default()
     );
-    if let Some(found) = lock(&RESOLVED_CLI).get(&key) {
+    if let Some(found) = jsrt::sync::lock(&RESOLVED_CLI).get(&key) {
         return Ok(found.clone());
     }
     let found = match &configured {
@@ -166,7 +160,7 @@ pub fn resolve_claude_cli(env: &Env) -> Result<String, String> {
     };
     match found {
         Some(found) => {
-            lock(&RESOLVED_CLI).insert(key, found.clone());
+            jsrt::sync::lock(&RESOLVED_CLI).insert(key, found.clone());
             Ok(found)
         }
         None => Err(match configured {
@@ -354,7 +348,7 @@ pub async fn ensure_claude_cli(bin: &str, env: &Env, cwd: &Path) -> Result<Claud
         "{bin}\0{}",
         env.get("CLAUDE_CONFIG_DIR").map(String::as_str).unwrap_or_default()
     );
-    if let Some(entry) = lock(&PROBES).get(&key)
+    if let Some(entry) = jsrt::sync::lock(&PROBES).get(&key)
         && (entry.result.is_ok() || entry.at.elapsed() < PROBE_FAILURE_TTL)
     {
         return entry.result.clone();
@@ -363,7 +357,7 @@ pub async fn ensure_claude_cli(bin: &str, env: &Env, cwd: &Path) -> Result<Claud
     let result = tokio::task::spawn_blocking(move || probe_cli(&bin_owned, &env_owned, &cwd_owned))
         .await
         .map_err(|e| e.to_string())?;
-    lock(&PROBES).insert(
+    jsrt::sync::lock(&PROBES).insert(
         key,
         ProbeEntry {
             result: result.clone(),
@@ -379,7 +373,7 @@ static WORK_DIR: LazyLock<Mutex<Option<PathBuf>>> = LazyLock::new(Mutex::default
 
 /// One empty directory per user, so no project CLAUDE.md or settings are near the call.
 pub fn empty_work_dir() -> Result<PathBuf, String> {
-    let mut guard = lock(&WORK_DIR);
+    let mut guard = jsrt::sync::lock(&WORK_DIR);
     if let Some(dir) = guard.as_ref() {
         return Ok(dir.clone());
     }
@@ -411,7 +405,7 @@ struct Permit(Arc<Limiter>);
 
 impl Drop for Permit {
     fn drop(&mut self) {
-        *lock(&self.0.active) -= 1;
+        *jsrt::sync::lock(&self.0.active) -= 1;
         self.0.notify.notify_one();
     }
 }
@@ -421,7 +415,7 @@ async fn acquire(limit: u64, signal: Option<&crate::http::AbortSignal>) -> Resul
     loop {
         let notified = limiter.notify.notified();
         {
-            let mut active = lock(&limiter.active);
+            let mut active = jsrt::sync::lock(&limiter.active);
             if *active < limit {
                 *active += 1;
                 return Ok(Permit(limiter.clone()));
@@ -474,7 +468,7 @@ impl CliProcess {
         let mut child = match spawned {
             Ok(child) => child,
             Err(error) => {
-                *lock(&exited) = Some((None, None));
+                *jsrt::sync::lock(&exited) = Some((None, None));
                 let _ = sender.send(ChildEvent::Exited(None, None));
                 return CliProcess {
                     child: Arc::new(Mutex::new(Command::new("true").spawn().expect("`true` runs"))),
@@ -498,7 +492,7 @@ impl CliProcess {
                 let mut reader = BufReader::new(stderr);
                 let mut chunk = String::new();
                 while reader.read_line(&mut chunk).is_ok_and(|n| n > 0) {
-                    let mut buffer = lock(&tail_buffer);
+                    let mut buffer = jsrt::sync::lock(&tail_buffer);
                     let joined = format!("{buffer}{chunk}");
                     *buffer = tail(&joined, STDERR_TAIL_CHARS);
                     chunk.clear();
@@ -521,7 +515,7 @@ impl CliProcess {
                     }
                 }
                 let status = loop {
-                    let polled = lock(&child).try_wait();
+                    let polled = jsrt::sync::lock(&child).try_wait();
                     match polled {
                         Ok(Some(status)) => break Some(status),
                         Ok(None) => std::thread::sleep(Duration::from_millis(2)),
@@ -531,7 +525,7 @@ impl CliProcess {
                 use std::os::unix::process::ExitStatusExt;
                 let code = status.and_then(|s| s.code());
                 let signal = status.and_then(|s| s.signal());
-                *lock(&exited) = Some((code, signal));
+                *jsrt::sync::lock(&exited) = Some((code, signal));
                 let _ = sender.send(ChildEvent::Exited(code, signal));
             });
         }
@@ -547,7 +541,7 @@ impl CliProcess {
     }
 
     fn alive(&self) -> bool {
-        self.spawn_error.is_none() && lock(&self.exited).is_none()
+        self.spawn_error.is_none() && jsrt::sync::lock(&self.exited).is_none()
     }
 
     fn send(&mut self, message: &Value) {
@@ -589,7 +583,7 @@ impl CliProcess {
                 .status()
                 .is_ok_and(|s| s.success());
             if !sent {
-                let _ = lock(&self.child).kill();
+                let _ = jsrt::sync::lock(&self.child).kill();
             }
         };
         signal("-TERM");
@@ -598,13 +592,13 @@ impl CliProcess {
         let pid = self.pid;
         std::thread::spawn(move || {
             std::thread::sleep(KILL_GRACE);
-            if lock(&exited).is_none() {
+            if jsrt::sync::lock(&exited).is_none() {
                 let _ = Command::new("kill")
                     .args(["-KILL", "--", &format!("-{pid}")])
                     .stdout(Stdio::null())
                     .stderr(Stdio::null())
                     .status();
-                let _ = lock(&child).kill();
+                let _ = jsrt::sync::lock(&child).kill();
             }
         });
     }
@@ -622,7 +616,7 @@ static SPARES: LazyLock<Mutex<Vec<Spare>>> = LazyLock::new(Mutex::default);
 static PROVEN_KEYS: LazyLock<Mutex<HashSet<String>>> = LazyLock::new(Mutex::default);
 
 fn take_spare(key: &str) -> Option<CliProcess> {
-    let mut spares = lock(&SPARES);
+    let mut spares = jsrt::sync::lock(&SPARES);
     let mut index = 0;
     while index < spares.len() {
         if spares[index].key != key {
@@ -642,7 +636,7 @@ fn start_spare(key: &str, bin: &str, args: &[String], env: &Env, cwd: &Path, con
     if config.warm_spares == 0 {
         return;
     }
-    let mut spares = lock(&SPARES);
+    let mut spares = jsrt::sync::lock(&SPARES);
     let now = Instant::now();
     spares.retain(|spare| {
         let keep = spare.expires > now && spare.process.alive();
@@ -667,19 +661,19 @@ fn start_spare(key: &str, bin: &str, args: &[String], env: &Env, cwd: &Path, con
 
 /// Test hook: forget cached CLI paths, probes and warm spares.
 pub fn reset_claude_code_cli_state() {
-    lock(&RESOLVED_CLI).clear();
-    lock(&PROBES).clear();
-    lock(&PROVEN_KEYS).clear();
-    for spare in lock(&SPARES).drain(..) {
+    jsrt::sync::lock(&RESOLVED_CLI).clear();
+    jsrt::sync::lock(&PROBES).clear();
+    jsrt::sync::lock(&PROVEN_KEYS).clear();
+    for spare in jsrt::sync::lock(&SPARES).drain(..) {
         spare.process.kill();
     }
-    *lock(&WORK_DIR) = None;
+    *jsrt::sync::lock(&WORK_DIR) = None;
 }
 
 /// `claudeCodeCliStats`: requests in flight and live spares.
 pub fn claude_code_cli_stats() -> (u64, usize) {
-    let in_flight = *lock(&LIMITER.active);
-    let spares = lock(&SPARES).iter().filter(|s| s.process.alive()).count();
+    let in_flight = *jsrt::sync::lock(&LIMITER.active);
+    let spares = jsrt::sync::lock(&SPARES).iter().filter(|s| s.process.alive()).count();
     (in_flight, spares)
 }
 
@@ -748,7 +742,7 @@ pub fn render_claude_code_prompt(messages: &[Message], images: bool) -> Vec<Valu
                             "[tool call {} (id {}): {}]",
                             call.name,
                             call.id,
-                            crate::json::stringify(&call.arguments)
+                            jsrt::json::stringify(&call.arguments)
                         )),
                         AssistantContent::Thinking(_) => None,
                     })
@@ -867,7 +861,7 @@ fn plan_request(
             &mut content,
             &format!(
                 "\n\nReply with only one JSON value (no prose, no code fences) that satisfies this JSON schema: {}",
-                crate::json::stringify(schema)
+                jsrt::json::stringify(schema)
             ),
         );
     }
@@ -903,7 +897,7 @@ fn plan_request(
         None => "--settings={\"alwaysThinkingEnabled\":false}".into(),
     });
     if structured && let Some(schema) = schema {
-        args.push(format!("--json-schema={}", crate::json::stringify(schema)));
+        args.push(format!("--json-schema={}", jsrt::json::stringify(schema)));
     }
     let mut env = base_env.clone();
     if let Some(max_tokens) = payload["max_tokens"].as_u64()
@@ -968,22 +962,6 @@ pub fn rate_limit_info(event: &Value) -> Option<RateLimitInfo> {
     })
 }
 
-/// `new Date(ms).toISOString()`.
-pub fn iso_string(ms: f64) -> String {
-    let ms = ms as i64;
-    let date = crate::aws::amz_date(ms);
-    format!(
-        "{}-{}-{}T{}:{}:{}.{:03}Z",
-        &date[0..4],
-        &date[4..6],
-        &date[6..8],
-        &date[9..11],
-        &date[11..13],
-        &date[13..15],
-        ms.rem_euclid(1000)
-    )
-}
-
 /// `resetText`.
 pub fn reset_text(info: Option<&RateLimitInfo>) -> String {
     match info.and_then(|i| i.resets_at).filter(|r| *r != 0.0) {
@@ -993,7 +971,9 @@ pub fn reset_text(info: Option<&RateLimitInfo>) -> String {
             } else {
                 resets_at
             };
-            format!("; resets at {}", iso_string(ms))
+            // `toISOString` throws for a time beyond TimeClip's range; the reset hint is then left out.
+            jsrt::date::time_clip(ms)
+                .map_or_else(String::new, |ms| format!("; resets at {}", jsrt::date::iso_string(ms)))
         }
         None => String::new(),
     }
@@ -1097,7 +1077,7 @@ fn output_limit_exceeded(lower: &str) -> bool {
 fn diagnostic(kind: &str, message: &str) -> AssistantMessageDiagnostic {
     AssistantMessageDiagnostic {
         kind: kind.into(),
-        timestamp: now_ms(),
+        timestamp: jsrt::date::now_ms(),
         error: Some(DiagnosticErrorInfo {
             name: None,
             message: message.into(),
@@ -1316,7 +1296,7 @@ impl RequestRun<'_, '_> {
         }
         if plan.structured {
             let text = match result.get("structured_output").filter(|v| !v.is_null()) {
-                Some(value) => crate::json::stringify(value),
+                Some(value) => jsrt::json::stringify(value),
                 None => result
                     .get("result")
                     .and_then(Value::as_str)
@@ -1432,7 +1412,7 @@ impl RequestRun<'_, '_> {
         }
         // Give the stderr reader a moment to collect the last lines.
         std::thread::sleep(Duration::from_millis(20));
-        let stderr = lock(&child.stderr).clone();
+        let stderr = jsrt::sync::lock(&child.stderr).clone();
         if let Some(start) = stderr.find("unknown option '") {
             let rest = &stderr[start + "unknown option '".len()..];
             if let Some(end) = rest.find('\'') {
@@ -1484,7 +1464,7 @@ pub async fn stream_simple(
     options: &ClaudeCodeOptions,
     sink: &mut EventSink<'_>,
 ) -> AssistantMessage {
-    let mut output = AssistantMessage::pending(model, now_ms());
+    let mut output = AssistantMessage::pending(model, jsrt::date::now_ms());
     output.stop_reason = StopReason::Stop;
     let mut run = RequestRun {
         output,
@@ -1602,10 +1582,10 @@ async fn drive(
             use_schema_flag,
         )
         .map_err(failed)?;
-        let key = crate::json::stringify(&json!([bin, cwd.to_string_lossy(), plan.args, plan.env]));
+        let key = jsrt::json::stringify(&json!([bin, cwd.to_string_lossy(), plan.args, plan.env]));
         let mut child = take_spare(&key).unwrap_or_else(|| CliProcess::spawn(&bin, &plan.args, &plan.env, &cwd));
         *spawned = true;
-        if lock(&PROVEN_KEYS).contains(&key) {
+        if jsrt::sync::lock(&PROVEN_KEYS).contains(&key) {
             start_spare(&key, &bin, &plan.args, &plan.env, &cwd, config);
         }
         let attempt = run.drive(&mut child, &plan, signal, deadline, config.timeout_ms).await;
@@ -1628,7 +1608,7 @@ async fn drive(
             Some(Failure::Length) | None => {}
         }
         if !crate::http::is_aborted(signal) {
-            lock(&PROVEN_KEYS).insert(key.clone());
+            jsrt::sync::lock(&PROVEN_KEYS).insert(key.clone());
             start_spare(&key, &bin, &plan.args, &plan.env, &cwd, config);
         }
         return Ok(());

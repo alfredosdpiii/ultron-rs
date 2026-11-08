@@ -123,6 +123,17 @@ fn ai_oauth_codex_account_id_reads_jwt_claim() {
     assert_eq!(codex_account_id(&format!("h.{payload}.s.x")), None);
 }
 
+/// A non-string `chatgpt_account_id` is returned as is and sent as `String(accountId)`: node prints `String([1, 2])`
+/// as `1,2` (not the JSON text `[1,2]`).
+#[test]
+fn ai_codex_account_id_of_an_array_claim_is_its_javascript_string() {
+    let payload = jsrt::base64::encode(r#"{"https://api.openai.com/auth":{"chatgpt_account_id":[1,2]}}"#);
+    assert_eq!(
+        ai::openai_codex_responses::extract_account_id(&format!("h.{payload}.s")),
+        Ok("1,2".to_string())
+    );
+}
+
 #[test]
 fn ai_oauth_copilot_urls_and_domains() {
     assert_eq!(

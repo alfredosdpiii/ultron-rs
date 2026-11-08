@@ -16,7 +16,6 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 use crate::accounts::Account;
-use crate::js::{head16, trim};
 use crate::runner::{Env, RunOptions, Runner};
 
 /// What a GitHub call (or the work around it) failed with.
@@ -58,32 +57,6 @@ impl std::error::Error for Error {}
 
 // ---- JavaScript conversions the TypeScript relies on ----
 
-/// `Number(text)`: JavaScript's string to number (whitespace trimmed, empty is 0, hex/octal/binary prefixes,
-/// `Infinity`); NaN for anything else.
-pub fn js_number(text: &str) -> f64 {
-    let text = trim(text);
-    if text.is_empty() {
-        return 0.0;
-    }
-    match text {
-        "Infinity" | "+Infinity" => return f64::INFINITY,
-        "-Infinity" => return f64::NEG_INFINITY,
-        _ => {}
-    }
-    for (prefix, radix) in [("0x", 16), ("0X", 16), ("0o", 8), ("0O", 8), ("0b", 2), ("0B", 2)] {
-        if let Some(digits) = text.strip_prefix(prefix) {
-            return u128::from_str_radix(digits, radix).map_or(f64::NAN, |n| n as f64);
-        }
-    }
-    if !text
-        .chars()
-        .all(|c| c.is_ascii_digit() || matches!(c, '.' | 'e' | 'E' | '+' | '-'))
-    {
-        return f64::NAN;
-    }
-    text.parse::<f64>().unwrap_or(f64::NAN)
-}
-
 /// `Number(value)` of a JSON value (undefined: NaN).
 pub fn js_value_number(value: Option<&Value>) -> f64 {
     match value {
@@ -91,7 +64,7 @@ pub fn js_value_number(value: Option<&Value>) -> f64 {
         Some(Value::Null) => 0.0,
         Some(Value::Bool(b)) => f64::from(u8::from(*b)),
         Some(Value::Number(n)) => n.as_f64().unwrap_or(f64::NAN),
-        Some(Value::String(s)) => js_number(s),
+        Some(Value::String(s)) => jsrt::number::parse(s),
         Some(Value::Array(items)) => match items.as_slice() {
             [] => 0.0,
             [one] if !one.is_object() && !one.is_array() => js_value_number(Some(one)),
@@ -107,29 +80,6 @@ pub fn id_of(value: Option<&Value>) -> i64 {
     if n.is_finite() && n.fract() == 0.0 { n as i64 } else { 0 }
 }
 
-/// `String(value)` for what an API field holds.
-pub fn js_string(value: Option<&Value>) -> String {
-    match value {
-        None => "undefined".into(),
-        Some(Value::Null) => "null".into(),
-        Some(Value::Bool(b)) => b.to_string(),
-        Some(Value::Number(n)) => n.as_f64().map_or_else(|| n.to_string(), crate::js::number),
-        Some(Value::String(s)) => s.clone(),
-        Some(Value::Array(items)) => items
-            .iter()
-            .map(|item| {
-                if item.is_null() {
-                    String::new()
-                } else {
-                    js_string(Some(item))
-                }
-            })
-            .collect::<Vec<_>>()
-            .join(","),
-        Some(Value::Object(_)) => "[object Object]".into(),
-    }
-}
-
 /// `encodeURIComponent`.
 pub fn encode_uri_component(text: &str) -> String {
     let mut out = String::new();
@@ -141,29 +91,6 @@ pub fn encode_uri_component(text: &str) -> String {
         }
     }
     out
-}
-
-/// `new Date(ms).toISOString()` (years 0..=9999).
-pub fn iso_from_ms(ms: i64) -> String {
-    let days = ms.div_euclid(86_400_000);
-    let rest = ms.rem_euclid(86_400_000);
-    // Civil date from days since the epoch (Howard Hinnant's algorithm).
-    let z = days + 719_468;
-    let era = z.div_euclid(146_097);
-    let doe = z.rem_euclid(146_097);
-    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
-    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-    let mp = (5 * doy + 2) / 153;
-    let day = doy - (153 * mp + 2) / 5 + 1;
-    let month = if mp < 10 { mp + 3 } else { mp - 9 };
-    let year = yoe + era * 400 + i64::from(month <= 2);
-    format!(
-        "{year:04}-{month:02}-{day:02}T{:02}:{:02}:{:02}.{:03}Z",
-        rest / 3_600_000,
-        rest / 60_000 % 60,
-        rest / 1000 % 60,
-        rest % 1000
-    )
 }
 
 /// `typeof value === "string" ? value : ""`.
@@ -235,8 +162,8 @@ pub fn parse_api_output(stdout: &str) -> ApiOutput {
     for line in Regex::new(r"\r?\n").expect("static pattern").split(head) {
         if let Some(colon) = line.find(':').filter(|colon| *colon > 0) {
             headers.insert(
-                trim(&line[..colon]).to_lowercase(),
-                trim(&line[colon + 1..]).to_string(),
+                jsrt::string::trim(&line[..colon]).to_lowercase(),
+                jsrt::string::trim(&line[colon + 1..]).to_string(),
             );
         }
     }
@@ -411,13 +338,6 @@ pub struct RequestOptions {
 pub type EnvSource = Arc<dyn Fn() -> Result<Env, Error> + Send + Sync>;
 pub type Clock = Arc<dyn Fn() -> i64 + Send + Sync>;
 
-/// The wall clock in epoch milliseconds (`Date.now`).
-pub fn system_now() -> i64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |elapsed| elapsed.as_millis() as i64)
-}
-
 /// One account's view of GitHub.
 #[derive(Clone)]
 pub struct GitHub {
@@ -440,7 +360,7 @@ impl GitHub {
             account,
             runner,
             env,
-            now: now.unwrap_or_else(|| Arc::new(system_now)),
+            now: now.unwrap_or_else(|| Arc::new(jsrt::date::now_ms)),
         }
     }
 
@@ -485,11 +405,14 @@ impl GitHub {
                 &result.stderr
             };
             return Err(Error::GitHub {
-                message: format!("gh api {method} {path} failed: {}", head16(trim(detail), 300)),
+                message: format!(
+                    "gh api {method} {path} failed: {}",
+                    jsrt::utf16::head(jsrt::string::trim(detail), 300)
+                ),
                 status: 0,
             });
         }
-        let body = if trim(&parsed.text).is_empty() {
+        let body = if jsrt::string::trim(&parsed.text).is_empty() {
             None
         } else {
             serde_json::from_str::<Value>(&parsed.text).ok()
@@ -514,7 +437,7 @@ impl GitHub {
         }
         let full = format!("GitHub {method} {path}: {} {message}", response.status);
         Err(Error::GitHub {
-            message: head16(&full, 400).to_string(),
+            message: jsrt::utf16::head(&full, 400).to_string(),
             status: response.status,
         })
     }
@@ -525,7 +448,7 @@ impl GitHub {
             return None;
         }
         let now = (self.now)() as f64;
-        let header = |name: &str| headers.get(name).map_or(f64::NAN, |value| js_number(value));
+        let header = |name: &str| headers.get(name).map_or(f64::NAN, |value| jsrt::number::parse(value));
         let retry_after = header("retry-after");
         if retry_after.is_finite() && retry_after > 0.0 {
             return Some(now + retry_after * 1000.0);
@@ -603,7 +526,7 @@ impl GitHub {
         let interval = response
             .headers
             .get("x-poll-interval")
-            .map_or(f64::NAN, |v| js_number(v));
+            .map_or(f64::NAN, |v| jsrt::number::parse(v));
         let header = |name: &str| response.headers.get(name).filter(|value| !value.is_empty()).cloned();
         let poll_interval = (interval.is_finite() && interval > 0.0).then_some(crate::js::Num(interval));
         if response.status == 304 {
@@ -661,7 +584,7 @@ impl GitHub {
             let url = format!(
                 "{}/pulls/{}",
                 text(item.get("repository_url")),
-                js_string(item.get("number"))
+                jsrt::value::string(item.get("number"))
             );
             if let Some(found) = pull_ref_from_url(&url, &self.account.host)
                 && item.get("pull_request").is_some()
@@ -796,7 +719,7 @@ impl GitHub {
             let at = text(event.get("created_at"));
             if latest
                 .as_ref()
-                .is_none_or(|latest| crate::js::cmp16(&at, latest).is_gt())
+                .is_none_or(|latest| jsrt::utf16::cmp(&at, latest).is_gt())
             {
                 latest = Some(at);
             }
@@ -823,7 +746,7 @@ impl GitHub {
             let at = text(event.get("created_at"));
             if latest
                 .as_ref()
-                .is_none_or(|(known, _)| crate::js::cmp16(&at, known).is_gt())
+                .is_none_or(|(known, _)| jsrt::utf16::cmp(&at, known).is_gt())
             {
                 latest = Some((at, login(event.get("actor"))));
             }
@@ -953,7 +876,7 @@ impl GitHub {
         {
             let message = format!("GitHub GraphQL: {}", text(first.get("message")));
             return Err(Error::GitHub {
-                message: head16(&message, 300).to_string(),
+                message: jsrt::utf16::head(&message, 300).to_string(),
                 status: 200,
             });
         }

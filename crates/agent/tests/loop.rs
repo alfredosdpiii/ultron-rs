@@ -259,7 +259,7 @@ async fn replay(scenario: &Value) {
 
     // JSON numbers compare as JS numbers do (0.0 is 0).
     let normalize = |value: Value| {
-        let mut value = ai::json::normalize_numbers(value);
+        let mut value = jsrt::json::normalize_numbers(value);
         zero_timestamps(&mut value);
         if let Value::Array(items) = &mut value {
             order_concurrent_completions(items);

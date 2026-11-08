@@ -18,6 +18,7 @@ icu_properties = { version = "=2.3.0", default-features = false, features = ["co
 icu_provider = { version = "=2.3.1", default-features = false }
 icu_segmenter = { version = "=2.3.0", default-features = false, features = ["compiled_data"] }
 image = { version = "=0.25.10", default-features = false, features = ["bmp", "gif", "ico", "jpeg", "png", "tiff", "webp"] }
+jsrt = { path = "../jsrt" }
 unicode-segmentation = "=1.13.3"
 serde_json = { version = "=1.0.151", features = ["preserve_order"] }
 syntect = { version = "=5.3.0", default-features = false, features = ["default-syntaxes", "regex-fancy", "yaml-load"] }

@@ -15,13 +15,10 @@ use agent::{Agent, AgentControl, AgentEvent};
 use ai::{AssistantContent, Message, StopReason, UserMessage, UserMessageContent};
 use delegation::child::ChildAgentFactory;
 use delegation::host::{ChildRun, ChildRunner};
+use jsrt::sync;
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
-
-fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
-    mutex.lock().unwrap_or_else(PoisonError::into_inner)
-}
 
 /// The running in-memory children, by lane.
 #[derive(Default)]
@@ -38,7 +35,7 @@ impl MemoryChildren {
 
     /// Steer the running child on `lane` with `message`; false when no child runs there.
     pub fn steer(&self, lane: &str, message: &str) -> bool {
-        let Some(control) = lock(&self.running).get(lane).cloned() else {
+        let Some(control) = sync::lock(&self.running).get(lane).cloned() else {
             return false;
         };
         control.steer(Message::User(UserMessage {
@@ -50,7 +47,7 @@ impl MemoryChildren {
 
     /// Whether a child runs on `lane`.
     pub fn is_running(&self, lane: &str) -> bool {
-        lock(&self.running).contains_key(lane)
+        sync::lock(&self.running).contains_key(lane)
     }
 
     /// The runner of subagents built by `factory`.
@@ -75,7 +72,7 @@ impl MemoryChildren {
         let seen = conversation.clone();
         agent.subscribe(move |event| {
             if let AgentEvent::MessageEnd { message } = event {
-                lock(&seen).push(message.clone());
+                sync::lock(&seen).push(message.clone());
             }
         });
         let lane = run.lane_name.clone();
@@ -84,13 +81,13 @@ impl MemoryChildren {
             reminders.set_lane_meter(
                 &lane,
                 Some(Arc::new(move || {
-                    Some(ai::transcript::estimate_context_tokens(&lock(&meter)).tokens)
+                    Some(ai::transcript::estimate_context_tokens(&sync::lock(&meter)).tokens)
                 })),
             );
         }
-        lock(&self.running).insert(lane.clone(), control);
+        sync::lock(&self.running).insert(lane.clone(), control);
         let ended = |children: &MemoryChildren| {
-            lock(&children.running).remove(&lane);
+            sync::lock(&children.running).remove(&lane);
             if let Some(reminders) = children.reminders.get() {
                 reminders.set_lane_meter(&lane, None);
             }

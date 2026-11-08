@@ -9,7 +9,7 @@ use crate::session::SessionError;
 use chord_delta::Op;
 use serde_json::Value;
 use std::collections::VecDeque;
-use std::sync::{Arc, Condvar, Mutex, MutexGuard};
+use std::sync::{Arc, Condvar, Mutex};
 use std::time::Duration;
 
 /// Maximum exact committed frames retained behind one unavailable listener; one more collapses them into a root
@@ -67,10 +67,6 @@ pub(crate) struct WatchShared {
     changed: Condvar,
 }
 
-fn lock(shared: &WatchShared) -> MutexGuard<'_, State> {
-    shared.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
-}
-
 impl WatchShared {
     pub(crate) fn new(record: DocumentId, value: Arc<Value>) -> Arc<WatchShared> {
         Arc::new(WatchShared {
@@ -87,12 +83,12 @@ impl WatchShared {
     }
 
     pub(crate) fn is_ended(&self) -> bool {
-        lock(self).end.is_some()
+        jsrt::sync::lock(&self.state).end.is_some()
     }
 
     /// Queue one committed frame; past the bound, every pending frame collapses into one root replacement.
     pub(crate) fn advance(&self, value: Observed, ops: Vec<Op>) {
-        let mut state = lock(self);
+        let mut state = jsrt::sync::lock(&self.state);
         if state.end.is_some() || state.retired {
             return;
         }
@@ -114,7 +110,7 @@ impl WatchShared {
 
     /// End once: drop pending frames and settle. A callback already running keeps running.
     pub(crate) fn terminate(&self, end: WatchEnd) {
-        let mut state = lock(self);
+        let mut state = jsrt::sync::lock(&self.state);
         if state.end.is_none() {
             state.end = Some(end);
             state.pending.clear();
@@ -125,7 +121,7 @@ impl WatchShared {
     fn deliver(self: Arc<Self>, mut listener: Listener) {
         loop {
             let frame = {
-                let mut state = lock(&self);
+                let mut state = jsrt::sync::lock(&self.state);
                 loop {
                     if state.end.is_some() {
                         return;
@@ -160,7 +156,7 @@ pub struct Watch {
 impl Watch {
     /// Acquisition revision before start; the latest delivered revision afterward; `None` after retirement.
     pub fn value(&self) -> Observed {
-        lock(&self.shared).value.clone()
+        jsrt::sync::lock(&self.shared.state).value.clone()
     }
 
     /// Install the sole listener; frames are delivered in commit order on the watch's own thread, one at a time.
@@ -170,7 +166,7 @@ impl Watch {
         listener: impl FnMut(&Observed, &[Op]) -> Result<(), String> + Send + 'static,
     ) -> Result<(), SessionError> {
         {
-            let mut state = lock(&self.shared);
+            let mut state = jsrt::sync::lock(&self.shared.state);
             if state.started {
                 return Err(SessionError::Error("Watch is already started".into()));
             }
@@ -197,12 +193,12 @@ impl Watch {
 
     /// The terminal result, once the watch has ended.
     pub fn end(&self) -> Option<WatchEnd> {
-        lock(&self.shared).end.clone()
+        jsrt::sync::lock(&self.shared.state).end.clone()
     }
 
     /// Wait up to `timeout` for the watch to end.
     pub fn closed(&self, timeout: Duration) -> Option<WatchEnd> {
-        let state = lock(&self.shared);
+        let state = jsrt::sync::lock(&self.shared.state);
         let (state, _) = self
             .shared
             .changed

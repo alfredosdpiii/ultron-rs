@@ -6,7 +6,7 @@ use std::fs;
 use serde_json::{Value, json};
 use session_file::{
     Env, Leaf, NewSessionOptions, SessionManager, SystemEnv, Uuidv7, build_context_entries, build_session_context,
-    find_most_recent_session, js, list_all_sessions, list_sessions, load_entries_from_file, migrate_session_entries,
+    find_most_recent_session, list_all_sessions, list_sessions, load_entries_from_file, migrate_session_entries,
 };
 
 /// Real clock and randomness; the agent dir is a temp dir, never the user's.
@@ -901,7 +901,7 @@ fn session_file_numbers_serialize_like_json_stringify() {
     let input = "[0,-0,1,-1,0.1,0.30000000000000004,1e21,1e-7,1.5e-7,0.000001,123456789012345678901,9007199254740993,1.7976931348623157e308,5e-324,-2.5e-10,100,1234.5678,1e20,12345678901234567890]";
     let parsed: Value = serde_json::from_str(input).unwrap();
     assert_eq!(
-        js::stringify(&parsed),
+        jsrt::json::stringify(&parsed),
         "[0,0,1,-1,0.1,0.30000000000000004,1e+21,1e-7,1.5e-7,0.000001,123456789012345680000,9007199254740992,1.7976931348623157e+308,5e-324,-2.5e-10,100,1234.5678,100000000000000000000,12345678901234567000]"
     );
 }
@@ -911,12 +911,12 @@ fn session_file_objects_and_strings_serialize_like_json_stringify() {
     let parsed: Value =
         serde_json::from_str(r#"{"b":1,"10":2,"2":3,"a":4,"01":5,"4294967295":6,"4294967294":7}"#).unwrap();
     assert_eq!(
-        js::stringify(&parsed),
+        jsrt::json::stringify(&parsed),
         r#"{"2":3,"10":2,"4294967294":7,"b":1,"a":4,"01":5,"4294967295":6}"#
     );
     let s = Value::from("\u{0}\u{8}\u{c}\n\r\t\u{1f}\u{7f}\"\\/\u{2028}é");
     assert_eq!(
-        js::stringify(&s),
+        jsrt::json::stringify(&s),
         "\"\\u0000\\b\\f\\n\\r\\t\\u001f\u{7f}\\\"\\\\/\u{2028}é\""
     );
 }
@@ -944,11 +944,11 @@ fn session_file_dates_parse_and_print_like_v8() {
         ("2025-01-01T00:00:00.Z", None),
     ];
     for (input, expected) in cases {
-        assert_eq!(js::parse_date(input), expected, "{input}");
+        assert_eq!(jsrt::date::parse_date(input), expected, "{input}");
     }
     let iso: Vec<String> = [0, 1_735_689_600_123, -1, 253_402_300_800_000, -62_198_755_200_000]
         .into_iter()
-        .map(js::iso_string)
+        .map(jsrt::date::iso_string)
         .collect();
     assert_eq!(
         iso,
@@ -964,12 +964,12 @@ fn session_file_dates_parse_and_print_like_v8() {
 
 #[test]
 fn session_file_trim_and_number_coercion_follow_javascript() {
-    assert_eq!(js::trim(" \u{a0}\u{feff}\u{2028}x\u{85} "), "x\u{85}");
+    assert_eq!(jsrt::string::trim(" \u{a0}\u{feff}\u{2028}x\u{85} "), "x\u{85}");
     let numbers: Vec<Option<f64>> = [
         "", " 12 ", "0x1F", "1e3", ".5", "5.", "+5", "-0b1", "abc", "Infinity", "1_000", "3",
     ]
     .into_iter()
-    .map(|s| Some(js::to_number(&Value::from(s))).filter(|n| n.is_finite()))
+    .map(|s| Some(jsrt::value::number(&Value::from(s))).filter(|n| n.is_finite()))
     .collect();
     assert_eq!(
         numbers,
@@ -1003,4 +1003,45 @@ fn session_file_uuid_v7_is_monotonic_and_versioned() {
         "clock going backwards keeps the last timestamp"
     );
     assert!(b > a);
+}
+
+#[test]
+fn session_file_listing_orders_names_by_locale_compare() {
+    // `files.sort((a, b) => b.localeCompare(a))`: ICU sorts "_" before "-" ("a_b".localeCompare("a-b") === -1 in
+    // node), so descending is a-b, a_b; the old byte-order stand-in gave a_b first. Equal activity keeps that order.
+    let (_dir, path) = tmp();
+    let header = "{\"type\":\"session\",\"version\":3,\"id\":\"s\",\"timestamp\":\"2025-01-01T00:00:00.000Z\",\"cwd\":\"/tmp\"}\n";
+    for name in ["a_b.jsonl", "a-b.jsonl"] {
+        fs::write(format!("{path}/{name}"), header).unwrap();
+    }
+    let env_box = TestEnv("/nonexistent-agent-dir".into());
+    let names: Vec<String> = list_sessions(&env_box, "/tmp", Some(&path))
+        .unwrap()
+        .into_iter()
+        .map(|s| s.path.rsplit('/').next().unwrap().to_string())
+        .collect();
+    assert_eq!(names, ["a-b.jsonl", "a_b.jsonl"]);
+}
+
+#[test]
+fn session_file_mtime_fallback_uses_node_mtime_ms() {
+    // D7: Node's `mtimeMs` is `sec * 1e3 + nsec / 1e6` = 1735689600000.9998 for (1735689600 s, 999810 ns), which
+    // TimeClip truncates to ...000; `as_secs_f64() * 1000` rounded it up to ...001.
+    let (_dir, path) = tmp();
+    let file = format!("{path}/s.jsonl");
+    fs::write(
+        &file,
+        "{\"type\":\"session\",\"version\":3,\"id\":\"s\",\"timestamp\":\"not a date\",\"cwd\":\"/tmp\"}\n",
+    )
+    .unwrap();
+    let at = std::time::UNIX_EPOCH + std::time::Duration::new(1_735_689_600, 999_810);
+    fs::File::options()
+        .write(true)
+        .open(&file)
+        .unwrap()
+        .set_modified(at)
+        .unwrap();
+    let env_box = TestEnv("/nonexistent-agent-dir".into());
+    let info = list_sessions(&env_box, "/tmp", Some(&path)).unwrap();
+    assert_eq!(info[0].modified, Some(1_735_689_600_000));
 }

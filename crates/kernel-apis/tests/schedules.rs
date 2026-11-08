@@ -6,7 +6,6 @@ mod common;
 
 use common::{FIXED_NOW, Made, assert_area, fixture, inner, run_scenario};
 use kernel::Signal;
-use kernel_apis::util::lock;
 use kernel_apis::{DocumentStore, KernelApis, MemoryDocumentStore, SchedulesModule, TaskHost};
 use serde_json::{Value, json};
 use std::path::Path;
@@ -41,15 +40,15 @@ impl TaskHost for FakeTasks {
         Err(format!("Unknown Ultron definition: {definition}"))
     }
     fn tasks(&self) -> Result<Vec<Value>, String> {
-        lock(&self.log).push(json!(["tasks"]));
-        Ok(lock(&self.tasks).clone())
+        jsrt::sync::lock(&self.log).push(json!(["tasks"]));
+        Ok(jsrt::sync::lock(&self.tasks).clone())
     }
     fn spawn(&self, request: &Value, parent: Option<&str>, _signal: &Signal) -> Result<Value, String> {
-        lock(&self.log).push(json!(["spawn", request, parent]));
+        jsrt::sync::lock(&self.log).push(json!(["spawn", request, parent]));
         if request["definition"] == "refused-check@1" {
             return Err("Usage budget exhausted".into());
         }
-        let mut tasks = lock(&self.tasks);
+        let mut tasks = jsrt::sync::lock(&self.tasks);
         if let Some(existing) = tasks.iter().find(|task| task["key"] == request["key"]) {
             return Ok(existing.clone());
         }
@@ -59,8 +58,8 @@ impl TaskHost for FakeTasks {
         Ok(task)
     }
     fn result(&self, task_id: &str) -> Result<Value, String> {
-        lock(&self.log).push(json!(["result", task_id]));
-        let tasks = lock(&self.tasks);
+        jsrt::sync::lock(&self.log).push(json!(["result", task_id]));
+        let tasks = jsrt::sync::lock(&self.tasks);
         let task = tasks
             .iter()
             .find(|task| task["id"] == task_id)
@@ -99,7 +98,7 @@ fn host(preloaded: Option<&Value>) -> Made {
             .with_host(fake, "main")
             .with(Arc::new(module)),
         env: Vec::new(),
-        state: Box::new(move || json!({"document": store.read().unwrap(), "log": *lock(&log.log)})),
+        state: Box::new(move || json!({"document": store.read().unwrap(), "log": *jsrt::sync::lock(&log.log)})),
     }
 }
 
@@ -155,7 +154,7 @@ fn kernel_apis_schedules_slot_runs_once_across_ticks_and_restart() {
         call(&restarted, &fake, "schedules.tick", json!({})).unwrap(),
         json!({"fired": [], "failed": []})
     );
-    assert_eq!(lock(&fake.tasks).len(), 1);
+    assert_eq!(jsrt::sync::lock(&fake.tasks).len(), 1);
 }
 
 /// "missed ticks coalesce into one run for the latest slot and record the skipped count"; "max_runs completes".

@@ -13,6 +13,7 @@ ai = { path = "../ai" }
 getrandom = "=0.4.3"
 harness = { path = "../harness" }
 jsonschema = { path = "../jsonschema" }
+jsrt = { path = "../jsrt" }
 kernel = { path = "../kernel" }
 kernel-apis = { path = "../kernel-apis" }
 regex = "=1.13.1"

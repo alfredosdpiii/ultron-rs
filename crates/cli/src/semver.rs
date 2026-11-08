@@ -97,7 +97,9 @@ fn numeric(text: &str) -> Option<u64> {
     if text.is_empty() || !text.bytes().all(|b| b.is_ascii_digit()) || (text.len() > 1 && text.starts_with('0')) {
         return None;
     }
-    text.parse::<u64>().ok().filter(|n| *n <= 9_007_199_254_740_991)
+    text.parse::<u64>()
+        .ok()
+        .filter(|n| *n <= jsrt::number::MAX_SAFE_INTEGER as u64)
 }
 
 fn letter_dash_number(text: &str) -> bool {

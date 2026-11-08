@@ -9,7 +9,7 @@ use std::time::Duration;
 
 use serde_json::{Map, Value};
 
-use crate::json::{parse, stringify_pretty};
+use crate::json::parse;
 use crate::lock::{acquire, lock_path_for};
 
 pub type AuthData = Map<String, Value>;
@@ -126,7 +126,7 @@ impl AuthStorage {
                 }
                 Some(next) => {
                     data.insert(provider.to_string(), next.clone());
-                    let text = stringify_pretty(&Value::Object(data.clone()));
+                    let text = jsrt::json::stringify_pretty(&Value::Object(data.clone()));
                     Ok(((Some(next), data), Some(text)))
                 }
             }
@@ -139,7 +139,7 @@ impl AuthStorage {
         let data = with_locked_file(&self.path, |content| {
             let mut data = parse_data(content)?;
             data.shift_remove(provider);
-            let text = stringify_pretty(&Value::Object(data.clone()));
+            let text = jsrt::json::stringify_pretty(&Value::Object(data.clone()));
             Ok((data, Some(text)))
         })?;
         self.data = data;

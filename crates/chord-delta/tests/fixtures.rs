@@ -125,3 +125,18 @@ fn trim_never_splits_a_surrogate_pair() {
     let error = apply(target, ops).unwrap_err();
     assert_eq!(error.to_string(), r#"trim splits a surrogate pair: ["s"]"#);
 }
+
+#[test]
+fn chord_delta_error_messages_echo_values_like_js_string() {
+    // D-S2: `String(1.0)` is "1" and `String([1, null, 2.5])` is "1,,2.5" (node); serde printed "1.0".
+    let message = |op: Value| Op::from_json(&op).err().map(|e| e.to_string());
+    assert_eq!(message(json!([1.0, 0])).as_deref(), Some("unknown op verb: 1"));
+    assert_eq!(
+        message(json!([[1.0, null, 2.5], 0])).as_deref(),
+        Some("unknown op verb: 1,,2.5")
+    );
+    assert_eq!(
+        validate_wire_op(&json!([1e-6])).map_err(|e| e.to_string()),
+        Err("unknown op verb: 0.000001".into())
+    );
+}

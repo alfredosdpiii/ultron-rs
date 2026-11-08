@@ -9,10 +9,7 @@
 //! version can be rolled back, which restores the version it superseded (or leaves none active).
 //! `.history.json` is written as `JSON.stringify(history, null, "\t")`, so either implementation reads the other's.
 
-use crate::util::{
-    Clock, fields, iso, js_trim, locale_compare, object, safe_integer, sha256_hex, stringify, stringify_tabs,
-    system_clock, utf16_len, utf16_prefix, uuid,
-};
+use crate::util::{Clock, object, system_clock};
 use kernel::{HostHandler, Kernel, KernelOptions, Signal, Status};
 use serde_json::{Map, Value, json};
 use std::path::{Path, PathBuf};
@@ -70,7 +67,7 @@ fn code_skill_name(value: Option<&Value>) -> Result<String, String> {
 
 fn source_text(value: Option<&Value>, label: &str) -> Result<String, String> {
     let text = match value.and_then(Value::as_str) {
-        Some(text) if !js_trim(text).is_empty() => text,
+        Some(text) if !jsrt::string::trim(text).is_empty() => text,
         _ => return Err(format!("{label} must be nonempty Python source")),
     };
     if text.len() > MAX_SOURCE_BYTES {
@@ -82,7 +79,7 @@ fn source_text(value: Option<&Value>, label: &str) -> Result<String, String> {
 fn nonempty_json(value: &Value) -> bool {
     match value {
         Value::Null => false,
-        Value::String(text) => !js_trim(text).is_empty(),
+        Value::String(text) => !jsrt::string::trim(text).is_empty(),
         Value::Array(items) => items.iter().any(nonempty_json),
         Value::Object(map) => map.values().any(nonempty_json),
         _ => true,
@@ -94,14 +91,14 @@ fn evidence_value(value: Option<&Value>) -> Result<Value, String> {
     let value = value
         .filter(|value| nonempty_json(value))
         .ok_or("evidence must be nonempty JSON (what worked, and where)")?;
-    if stringify(value).len() > MAX_EVIDENCE_BYTES {
+    if jsrt::json::stringify(value).len() > MAX_EVIDENCE_BYTES {
         return Err("evidence exceeds 16 KiB".into());
     }
     Ok(value.clone())
 }
 
 fn atomic_write(path: &Path, content: &str) -> Result<(), String> {
-    let temporary = PathBuf::from(format!("{}.{}.tmp", path.display(), uuid()));
+    let temporary = PathBuf::from(format!("{}.{}.tmp", path.display(), jsrt::random::uuid_v4()));
     std::fs::write(&temporary, content).map_err(|error| error.to_string())?;
     std::fs::rename(&temporary, path).map_err(|error| error.to_string())
 }
@@ -135,11 +132,11 @@ fn one_line(text: Option<&str>, limit: usize) -> String {
         .unwrap_or("")
         .split('\n')
         .map(|item| item.strip_suffix('\r').unwrap_or(item))
-        .find(|item| !js_trim(item).is_empty())
+        .find(|item| !jsrt::string::trim(item).is_empty())
         .unwrap_or("");
-    let trimmed = js_trim(line);
-    if utf16_len(trimmed) > limit {
-        format!("{}…", utf16_prefix(trimmed, limit - 1))
+    let trimmed = jsrt::string::trim(line);
+    if jsrt::utf16::len(trimmed) > limit {
+        format!("{}…", jsrt::utf16::head(trimmed, limit - 1))
     } else {
         trimmed.to_string()
     }
@@ -160,7 +157,7 @@ fn skill_markdown(name: &str, record: &Value) -> String {
     let mut lines = vec![
         "---".to_string(),
         format!("name: {}", name.replace('_', "-")),
-        format!("description: {}", stringify(&Value::String(description))),
+        format!("description: {}", jsrt::json::stringify(&Value::String(description))),
         "---".to_string(),
         format!("# {name} ({kind} skill, version {})", record["version"]),
         String::new(),
@@ -170,7 +167,7 @@ fn skill_markdown(name: &str, record: &Value) -> String {
         lines.extend([String::new(), format!("Task family: {family}")]);
     }
     if let Some(doc) = doc {
-        lines.extend([String::new(), js_trim(doc).to_string()]);
+        lines.extend([String::new(), jsrt::string::trim(doc).to_string()]);
     }
     let functions = record["test"]["functions"].as_array().cloned().unwrap_or_default();
     if !functions.is_empty() {
@@ -196,7 +193,7 @@ fn test_runner(name: &str, kind: CodeSkillKind, dir: &Path, report_path: &Path) 
         "dir": dir.to_string_lossy(),
         "reportPath": report_path.to_string_lossy(),
     });
-    let literal = stringify(&Value::String(stringify(&options)));
+    let literal = jsrt::json::stringify(&Value::String(jsrt::json::stringify(&options)));
     format!("\n{}", RUNNER.replace("{CONFIG}", &literal))
 }
 
@@ -204,7 +201,7 @@ fn failed_report(error: &str, duration_ms: i64) -> Value {
     json!({
         "passed": false,
         "tests": [],
-        "error": utf16_prefix(error, 2000),
+        "error": jsrt::utf16::head(error, 2000),
         "durationMs": duration_ms,
         "doc": null,
         "functions": [],
@@ -348,7 +345,7 @@ impl CodeSkills {
         let name = history["name"].as_str().unwrap_or_default();
         atomic_write(
             &self.base(name).join(".history.json"),
-            &format!("{}\n", stringify_tabs(history)),
+            &format!("{}\n", jsrt::json::stringify_indented(history, "\t")),
         )
     }
 
@@ -377,7 +374,7 @@ impl CodeSkills {
     fn secret_check(name: &str, source: &str, test_source: &str, evidence: &Value) -> Value {
         let evidence_text = match evidence {
             Value::String(text) => text.clone(),
-            other => stringify(other),
+            other => jsrt::json::stringify(other),
         };
         if host::secrets::contains_code_secret(&format!("{name}\n{source}\n{test_source}\n{evidence_text}")) {
             json!({"status": "sensitive", "reason": "the proposal contains a secret or credential"})
@@ -399,7 +396,7 @@ impl CodeSkills {
             .prefix("ultron-skill-test-")
             .tempdir()
             .map_err(|error| error.to_string())?;
-        let report_path = work.path().join(format!(".report-{}.json", uuid()));
+        let report_path = work.path().join(format!(".report-{}.json", jsrt::random::uuid_v4()));
         // A copy, so the test can never alter the version it is judging.
         let dir = work.path().join("candidate");
         std::fs::create_dir(&dir).map_err(|error| error.to_string())?;
@@ -480,15 +477,17 @@ impl CodeSkills {
             CodeSkillKind::Code => &["name", "source", "test_source", "evidence"],
             CodeSkillKind::Policy => &["name", "source", "test_source", "evidence", "family"],
         };
-        fields(payload, allowed)?;
+        jsrt::payload::fields(payload, allowed)?;
         let name = code_skill_name(payload.get("name"))?;
         let source = source_text(payload.get("source"), "source")?;
         let test_source = source_text(payload.get("test_source"), "test_source")?;
         let evidence = evidence_value(payload.get("evidence"))?;
         let family = match payload.get("family") {
             None => Value::Null,
-            Some(Value::String(family)) if !js_trim(family).is_empty() && utf16_len(family) <= MAX_FAMILY_CHARS => {
-                Value::String(js_trim(family).to_string())
+            Some(Value::String(family))
+                if !jsrt::string::trim(family).is_empty() && jsrt::utf16::len(family) <= MAX_FAMILY_CHARS =>
+            {
+                Value::String(jsrt::string::trim(family).to_string())
             }
             Some(_) => {
                 return Err(format!(
@@ -518,8 +517,8 @@ impl CodeSkills {
                 ("secretCheck", secret_check),
             ]));
         }
-        let at = || iso(self.now());
-        let cause = uuid();
+        let at = || jsrt::date::iso_string(self.now());
+        let cause = jsrt::random::uuid_v4();
         let version = {
             let _lock = SkillLock::acquire(&base)?;
             let mut history = read_history(&base, &name)?;
@@ -538,7 +537,7 @@ impl CodeSkills {
                 ("createdAt", at().into()),
                 (
                     "sha256",
-                    json!({"skill": sha256_hex(source.as_bytes()), "test": sha256_hex(test_source.as_bytes())}),
+                    json!({"skill": jsrt::hash::sha256_hex(source.as_bytes()), "test": jsrt::hash::sha256_hex(test_source.as_bytes())}),
                 ),
                 ("evidence", evidence.clone()),
                 ("previous", Value::Null),
@@ -613,11 +612,11 @@ impl CodeSkills {
 
     /// `skills.rollback`: only the active version can be rolled back; the version it superseded returns.
     pub fn rollback(&self, payload: &Map<String, Value>) -> Result<Value, String> {
-        fields(payload, &["name", "version"])?;
+        jsrt::payload::fields(payload, &["name", "version"])?;
         let name = code_skill_name(payload.get("name"))?;
         let version = payload
             .get("version")
-            .and_then(safe_integer)
+            .and_then(jsrt::number::safe_integer)
             .filter(|version| *version >= 1)
             .ok_or("version must be a positive integer")?;
         let base = self.base(&name);
@@ -627,8 +626,8 @@ impl CodeSkills {
         let _lock = SkillLock::acquire(&base)?;
         let mut history = read_history(&base, &name)?;
         let active = history["active"].clone();
-        let at = iso(self.now());
-        let cause = uuid();
+        let at = jsrt::date::iso_string(self.now());
+        let cause = jsrt::random::uuid_v4();
         let entries = versions(&mut history);
         let index = entries
             .iter()
@@ -726,7 +725,7 @@ impl CodeSkills {
             let text = |value: &Value, key: &str| value[key].as_str().unwrap_or("").to_string();
             text(b, "activatedAt")
                 .cmp(&text(a, "activatedAt"))
-                .then_with(|| locale_compare(&text(a, "name"), &text(b, "name")))
+                .then_with(|| jsrt::collate::locale_compare(&text(a, "name"), &text(b, "name")))
         });
         skills
     }
@@ -769,14 +768,14 @@ impl CodeSkills {
                 skill["name"].as_str().unwrap_or(""),
                 skill["version"]
             );
-            if utf16_len(&line) > MAX_DESCRIPTION_ENTRY_CHARS {
-                line = format!("{}…", utf16_prefix(&line, MAX_DESCRIPTION_ENTRY_CHARS - 1));
+            if jsrt::utf16::len(&line) > MAX_DESCRIPTION_ENTRY_CHARS {
+                line = format!("{}…", jsrt::utf16::head(&line, MAX_DESCRIPTION_ENTRY_CHARS - 1));
             }
-            if index >= MAX_DESCRIPTION_ENTRIES || size + utf16_len(&line) > MAX_DESCRIPTION_CHARS {
+            if index >= MAX_DESCRIPTION_ENTRIES || size + jsrt::utf16::len(&line) > MAX_DESCRIPTION_CHARS {
                 lines.push(format!("- … {} more: `await skills.code_list()`", skills.len() - index));
                 break;
             }
-            size += utf16_len(&line) + 1;
+            size += jsrt::utf16::len(&line) + 1;
             lines.push(line);
         }
         let mut out = vec!["Active code skills (`from code_skills import <name>`):".to_string()];

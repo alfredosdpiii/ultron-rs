@@ -175,23 +175,6 @@ pub struct Parsed {
     pub help: bool,
 }
 
-/// JavaScript `Number(text)` for the decimal forms a command line carries: trimmed, empty is 0, else a finite
-/// decimal (no hex, no `Infinity`), otherwise NaN.
-fn js_number(text: &str) -> f64 {
-    let trimmed = text.trim();
-    if trimmed.is_empty() {
-        return 0.0;
-    }
-    let valid = trimmed
-        .trim_start_matches(['+', '-'])
-        .chars()
-        .all(|c| c.is_ascii_digit() || matches!(c, '.' | 'e' | 'E' | '+' | '-'));
-    if !valid {
-        return f64::NAN;
-    }
-    trimmed.parse::<f64>().unwrap_or(f64::NAN)
-}
-
 fn whole(value: f64, min: f64) -> Option<f64> {
     (value.is_finite() && value.fract() == 0.0 && value >= min).then_some(value)
 }
@@ -314,19 +297,19 @@ pub fn parse_args(args: &[String]) -> Result<Parsed, UsageError> {
             }
             "--plan-cells" => {
                 parsed.plan_cells = Some(
-                    whole(js_number(&value()?), 1.0)
+                    whole(jsrt::number::parse(&value()?), 1.0)
                         .ok_or_else(|| UsageError("--plan-cells takes a whole number of cells".into()))?,
                 );
             }
             "--verify-candidates" => {
                 parsed.verify_candidates = Some(
-                    whole(js_number(&value()?), 1.0)
+                    whole(jsrt::number::parse(&value()?), 1.0)
                         .ok_or_else(|| UsageError("--verify-candidates takes a whole number".into()))?,
                 );
             }
             "--verify-batch" => {
                 parsed.verify_batch = Some(
-                    whole(js_number(&value()?), 1.0)
+                    whole(jsrt::number::parse(&value()?), 1.0)
                         .ok_or_else(|| UsageError("--verify-batch takes a whole number".into()))?,
                 );
             }
@@ -360,7 +343,7 @@ pub fn parse_args(args: &[String]) -> Result<Parsed, UsageError> {
             }
             "--max-comments" => {
                 parsed.max_comments = Some(
-                    whole(js_number(&value()?), 0.0)
+                    whole(jsrt::number::parse(&value()?), 0.0)
                         .ok_or_else(|| UsageError("--max-comments takes a whole number".into()))?,
                 );
             }
@@ -375,7 +358,7 @@ pub fn parse_args(args: &[String]) -> Result<Parsed, UsageError> {
             }
             "--deadline" => {
                 parsed.deadline_seconds = Some(
-                    whole(js_number(&value()?), 0.0)
+                    whole(jsrt::number::parse(&value()?), 0.0)
                         .ok_or_else(|| UsageError("--deadline takes whole seconds (0 for no deadline)".into()))?,
                 );
             }
@@ -383,8 +366,11 @@ pub fn parse_args(args: &[String]) -> Result<Parsed, UsageError> {
             "--list" => parsed.list = true,
             "--only" => parsed.only = Some(list(value()?)),
             "--limit" | "--controls" | "--scan" => {
-                let count = whole(js_number(&value()?), if arg == "--controls" { 0.0 } else { 1.0 })
-                    .ok_or_else(|| UsageError(format!("{arg} takes a whole number")))?;
+                let count = whole(
+                    jsrt::number::parse(&value()?),
+                    if arg == "--controls" { 0.0 } else { 1.0 },
+                )
+                .ok_or_else(|| UsageError(format!("{arg} takes a whole number")))?;
                 match arg.as_str() {
                     "--limit" => parsed.limit = Some(count),
                     "--controls" => parsed.controls = Some(count),
@@ -451,7 +437,7 @@ pub fn describe_stages(stages: Option<&Map<String, Value>>) -> String {
         .filter_map(|(name, ms)| {
             let ms = ms.as_f64().filter(|ms| *ms > 0.0)?;
             let name = name.strip_suffix("Ms").unwrap_or(name);
-            Some(format!("{name} {} s", review::js::round(ms / 1000.0)))
+            Some(format!("{name} {} s", jsrt::number::round(ms / 1000.0)))
         })
         .collect();
     if parts.is_empty() {
@@ -587,7 +573,10 @@ pub fn offline_json(raw: &Value, startup_ms: Option<u64>, block_at: Option<&str>
     }
     timing.insert("frames".into(), array_copy(timing_in.get("frames")));
     timing.insert("investigators".into(), array_copy(timing_in.get("investigators")));
-    if let Some(reference) = timing_in.get("reference").filter(|value| truthy(value)) {
+    if let Some(reference) = timing_in
+        .get("reference")
+        .filter(|value| jsrt::value::truthy(Some(value)))
+    {
         timing.insert("reference".into(), reference.clone());
     }
     let usage_in = object(result.get("usage"), &empty);
@@ -653,23 +642,12 @@ pub fn offline_json(raw: &Value, startup_ms: Option<u64>, block_at: Option<&str>
     Value::Object(out)
 }
 
-/// JavaScript truthiness of a JSON value.
-fn truthy(value: &Value) -> bool {
-    match value {
-        Value::Null => false,
-        Value::Bool(flag) => *flag,
-        Value::Number(number) => number.as_f64().is_some_and(|n| n != 0.0 && !n.is_nan()),
-        Value::String(text) => !text.is_empty(),
-        _ => true,
-    }
-}
-
 /// `String(value)` for an array element joined by `Array.join`.
 fn js_text(value: &Value) -> String {
     match value {
         Value::Null => String::new(),
         Value::String(text) => text.clone(),
-        other => session_file::js::stringify(other),
+        other => jsrt::json::stringify(other),
     }
 }
 
@@ -710,11 +688,8 @@ fn logger(var: &crate::VarLookup) -> Log {
     let mask = var("ULTRON_MASK_SECRETS");
     let masker = known_secrets();
     Arc::new(move |line: &str| {
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map_or(0, |d| d.as_millis() as i64);
         let (masked, _) = masker.mask_counted(line, mask.as_deref());
-        eprintln!("{} {masked}", kernel_apis::util::iso(now));
+        eprintln!("{} {masked}", jsrt::date::iso_string(jsrt::date::now_ms()));
     })
 }
 
@@ -1107,7 +1082,7 @@ fn eval_command(
         .file_name()
         .map_or_else(|| "repo".into(), |name| name.to_string_lossy().into_owned());
     let report_dir = dir.join("evals");
-    let report = report_dir.join(format!("{name}-{}.json", now_ms()));
+    let report = report_dir.join(format!("{name}-{}.json", jsrt::date::now_ms()));
     let document = json!({
         "repo": repo_dir.display().to_string(), "blockAt": config.block_at, "mode": config.mode,
         "model": config.model, "cases": rows, "summary": totals,
@@ -1272,28 +1247,30 @@ fn model_lines(config: &AutoreviewConfig) -> Vec<String> {
     describe_models(config)
 }
 
-fn now_ms() -> i64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |d| d.as_millis() as i64)
-}
-
 /// `age`: "never", "<n> s ago", "<n> min ago" or "<n> h ago".
 pub fn age(iso: Option<&str>, now: i64) -> String {
     let Some(at) = iso.filter(|iso| !iso.is_empty()) else {
         return "never".into();
     };
-    let parsed = review::ledger::parse_iso_ms(at).map_or(f64::NAN, |ms| ms as f64);
-    let seconds = review::js::round((now as f64 - parsed) / 1000.0).max(0.0);
+    let parsed = jsrt::date::parse_date(at).map_or(f64::NAN, |ms| ms as f64);
+    // `Math.max(0, NaN)` is NaN; Rust's `f64::max` would return the 0.
+    let rounded = jsrt::number::round((now as f64 - parsed) / 1000.0);
+    let seconds = if rounded.is_nan() { rounded } else { rounded.max(0.0) };
     if seconds.is_nan() {
         return "NaN h ago".into();
     }
     if seconds < 90.0 {
-        format!("{} s ago", review::js::number(seconds))
+        format!("{} s ago", jsrt::number::to_string(seconds))
     } else if seconds < 5400.0 {
-        format!("{} min ago", review::js::number(review::js::round(seconds / 60.0)))
+        format!(
+            "{} min ago",
+            jsrt::number::to_string(jsrt::number::round(seconds / 60.0))
+        )
     } else {
-        format!("{} h ago", review::js::number(review::js::round(seconds / 3600.0)))
+        format!(
+            "{} h ago",
+            jsrt::number::to_string(jsrt::number::round(seconds / 3600.0))
+        )
     }
 }
 
@@ -1323,7 +1300,7 @@ fn status(
 ) -> Result<i32, Failure> {
     let state = review::state::StateStore::new(state_path).read();
     let accounts = review::accounts::list_accounts(&*ov.runner(), config.accounts.as_deref()).unwrap_or_default();
-    let now = now_ms();
+    let now = jsrt::date::now_ms();
     let io = |error: std::io::Error| Failure::Error(error.to_string());
     if parsed.json {
         let listed: Vec<Value> = accounts
@@ -1354,18 +1331,18 @@ fn status(
     let mut lines = vec![format!(
         "Posting: {}; poll every {} s; up to {} reviews at once; model {}",
         if config.dry_run { "off (dry run)" } else { "on" },
-        review::js::number(config.poll_seconds.0),
-        review::js::number(config.concurrency.0),
+        jsrt::number::to_string(config.poll_seconds.0),
+        jsrt::number::to_string(config.concurrency.0),
         config.model.clone().unwrap_or_else(|| "the default model".into())
     )];
     if let Some(daemon) = &state.daemon {
         lines.push(format!(
             "Daemon: pid {}, started {}{}",
-            review::js::number(daemon.pid.0),
+            jsrt::number::to_string(daemon.pid.0),
             age(Some(&daemon.started_at), now),
             daemon.engine_start_ms.map_or(String::new(), |ms| format!(
                 ", engine start {} ms",
-                review::js::number(ms.0)
+                jsrt::number::to_string(ms.0)
             ))
         ));
     }
@@ -1383,7 +1360,7 @@ fn status(
         let paused = entry
             .paused_until
             .as_deref()
-            .filter(|until| review::ledger::parse_iso_ms(until).is_some_and(|at| at > now))
+            .filter(|until| jsrt::date::parse_date(until).is_some_and(|at| at > now))
             .map_or(String::new(), |until| format!(", paused until {until}"));
         let error = entry
             .last_error
@@ -1431,21 +1408,24 @@ fn status(
                 .as_deref()
                 .filter(|v| !v.is_empty())
                 .map_or(String::new(), |v| format!(" {v}")),
-            review::js::number(ms(record.findings)),
-            review::js::number(review::js::round(ms(record.total_ms) / 1000.0)),
+            jsrt::number::to_string(ms(record.findings)),
+            jsrt::number::to_string(jsrt::number::round(ms(record.total_ms) / 1000.0)),
             record.tag_to_ack_ms.map_or(String::new(), |n| format!(
                 "tag to ack {} s, ",
-                review::js::to_fixed(n.0 / 1000.0, 1)
+                jsrt::number::to_fixed(n.0 / 1000.0, 1)
             )),
             record.ack_to_post_ms.map_or(String::new(), |n| format!(
                 "ack to review {} s, ",
-                review::js::number(review::js::round(n.0 / 1000.0))
+                jsrt::number::to_string(jsrt::number::round(n.0 / 1000.0))
             )),
-            review::js::number(review::js::round(ms(record.pickup_to_post_ms) / 1000.0)),
+            jsrt::number::to_string(jsrt::number::round(ms(record.pickup_to_post_ms) / 1000.0)),
             record
                 .cost_usd
                 .filter(|cost| cost.0 != 0.0)
-                .map_or(String::new(), |cost| format!(", ${}", review::js::to_fixed(cost.0, 2))),
+                .map_or(String::new(), |cost| format!(
+                    ", ${}",
+                    jsrt::number::to_fixed(cost.0, 2)
+                )),
             describe_stages(stages.as_ref())
         ));
     }
@@ -1572,7 +1552,7 @@ fn doctor(
         if let Some(prepared) = &prepared {
             json.insert("prepared".into(), prepared.json.clone());
         }
-        writeln!(out, "{}", session_file::js::stringify(&Value::Object(json))).map_err(io)?;
+        writeln!(out, "{}", jsrt::json::stringify(&Value::Object(json))).map_err(io)?;
     } else if report.get("mechanism").is_some_and(Value::is_null) {
         let message = report.get("message").and_then(Value::as_str).unwrap_or_default();
         let mut lines = model_lines.to_vec();
@@ -1585,7 +1565,7 @@ fn doctor(
         let shown = |key: &str| match check.get(key) {
             None => "undefined".to_string(),
             Some(Value::String(text)) => text.clone(),
-            Some(other) => session_file::js::stringify(other),
+            Some(other) => jsrt::json::stringify(other),
         };
         let owners = if config.test_owners.is_empty() {
             String::new()
@@ -1660,7 +1640,7 @@ fn run_prepare(
         log: &log,
         timeout_ms: None,
         force,
-        now: &now_ms,
+        now: &jsrt::date::now_ms,
     };
     review::prepare_env::prepare_environment(repo_dir, &options).map_err(Failure::Error)
 }
@@ -1683,7 +1663,7 @@ fn prepare_command(
     let prepared = run_prepare(&repo_dir, parsed, config, env, cache_dir, ov, err, true)?;
     let io = |error: std::io::Error| Failure::Error(error.to_string());
     if parsed.json {
-        writeln!(out, "{}", session_file::js::stringify(&prepared.json)).map_err(io)?;
+        writeln!(out, "{}", jsrt::json::stringify(&prepared.json)).map_err(io)?;
     } else {
         let mut lines = vec![format!(
             "Environment {} at {}{}",
@@ -1700,7 +1680,7 @@ fn prepare_command(
         lines.extend(prepared.failures.iter().map(|item| format!("  failed: {item}")));
         lines.push(format!(
             "  {} s",
-            review::js::number(review::js::round(prepared.ms as f64 / 1000.0))
+            jsrt::number::to_string(jsrt::number::round(prepared.ms as f64 / 1000.0))
         ));
         writeln!(out, "{}", lines.join("\n")).map_err(io)?;
     }
@@ -1803,7 +1783,7 @@ fn reviewer_deps(
             (env.var)("ULTRON_HINDSIGHT_URL").as_deref(),
             hindsight::resolve::setting_url(&manager).as_deref(),
         );
-        url.and_then(|url| hindsight::lessons::HindsightLessons::new(&url, Box::new(now_ms), None).ok())
+        url.and_then(|url| hindsight::lessons::HindsightLessons::new(&url, Box::new(jsrt::date::now_ms), None).ok())
             .map(|lessons| Arc::new(lessons) as Arc<dyn review::reviewer::LessonMemory>)
     } else {
         None
@@ -1821,7 +1801,7 @@ fn reviewer_deps(
         config: config.clone(),
         paths: paths.clone(),
         log,
-        now: Arc::new(now_ms),
+        now: Arc::new(jsrt::date::now_ms),
         random: Arc::new(random),
         lessons,
         // Test environments are built before a review (autoreview.prepareEnvs), with the network, into the cache.
@@ -1831,7 +1811,7 @@ fn reviewer_deps(
             mise: Some(config.mise.clone()),
             env: prepare_vars(env),
             home: env.home.display().to_string(),
-            now: Arc::new(now_ms),
+            now: Arc::new(jsrt::date::now_ms),
         })),
         home: env.home.display().to_string(),
         // Re-read from the global settings file every poll and before each decision and model turn.
@@ -1913,7 +1893,7 @@ fn review_pull_request(
         account,
         pull: pull.clone(),
         reasons: vec!["manual".into()],
-        picked_at: now_ms(),
+        picked_at: jsrt::date::now_ms(),
         notified_at: None,
     };
     let options = review::reviewer::ReviewOptions {
@@ -1924,7 +1904,7 @@ fn review_pull_request(
         review::reviewer::review_pull(&deps, &candidate, options).map_err(|error| Failure::Error(error.to_string()))?;
     let io = |error: std::io::Error| Failure::Error(error.to_string());
     if parsed.json {
-        writeln!(out, "{}", session_file::js::stringify(&outcome_json(&outcome))).map_err(io)?;
+        writeln!(out, "{}", jsrt::json::stringify(&outcome_json(&outcome))).map_err(io)?;
     } else {
         writeln!(out, "{}", outcome_text(&review::github::pull_key(&pull), &outcome)).map_err(io)?;
     }
@@ -1951,7 +1931,7 @@ fn daemon_command(
     let masker = known_secrets();
     deps.log = review::daemon::create_logger(
         Some(paths.logs.clone()),
-        Arc::new(now_ms),
+        Arc::new(jsrt::date::now_ms),
         review::daemon::stderr_writer(),
         Arc::new(move |line: &str| masker.mask_counted(line, mask_setting.as_deref()).0),
     );
@@ -2005,11 +1985,11 @@ fn daemon_command(
         lock.release();
         if parsed.json {
             let reviews = outcomes.lock().unwrap_or_else(|e| e.into_inner()).clone();
-            writeln!(out, "{}", session_file::js::stringify(&json!({"reviews": reviews}))).map_err(io)?;
+            writeln!(out, "{}", jsrt::json::stringify(&json!({"reviews": reviews}))).map_err(io)?;
         }
         return Ok(0);
     }
-    let _ = review::daemon::record_daemon_start(&store, std::process::id(), now_ms(), None);
+    let _ = review::daemon::record_daemon_start(&store, std::process::id(), jsrt::date::now_ms(), None);
     let stopper = daemon.stopper();
     signals::set_handler(Arc::new(move |_| stopper.stop()));
     daemon.run();
@@ -2094,7 +2074,7 @@ fn ban_command(parsed: &Parsed, env: &Env, out: &mut dyn Write) -> Result<i32, F
             for (key, logins) in list.rules() {
                 ban.insert(key.clone(), json!(logins));
             }
-            writeln!(out, "{}", session_file::js::stringify(&Value::Object(ban))).map_err(io)?;
+            writeln!(out, "{}", jsrt::json::stringify(&Value::Object(ban))).map_err(io)?;
         } else {
             let mut lines = vec!["Bans (autoreview.ban):".to_string()];
             lines.extend(crate::autoreview_ban::ban_lines(&list));
@@ -2239,7 +2219,7 @@ fn execute(
     if parsed.json {
         let max_comments = Some(config.max_comments.0 as i64);
         let json = offline_json(&result, start_ms, Some(&config.block_at), max_comments);
-        writeln!(out, "{}", session_file::js::stringify(&json)).map_err(io)?;
+        writeln!(out, "{}", jsrt::json::stringify(&json)).map_err(io)?;
     } else {
         let typed: EngineResult = serde_json::from_value(result).unwrap_or_default();
         let plan = plan_review(

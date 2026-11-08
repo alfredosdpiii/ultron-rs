@@ -124,7 +124,7 @@ pub struct ImagesOptions {
 
 impl ImagesOptions {
     fn now(&self) -> i64 {
-        self.now_ms.unwrap_or_else(crate::options::now_ms)
+        self.now_ms.unwrap_or_else(jsrt::date::now_ms)
     }
 }
 

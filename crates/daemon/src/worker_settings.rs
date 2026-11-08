@@ -139,18 +139,11 @@ pub fn http_idle_timeout_ms(settings: &SettingsManager) -> Result<u64, String> {
         Some(value) => match ai::http::parse_http_idle_timeout_ms(value) {
             Some(ms) => Ok(ms),
             None if value.is_null() => Ok(DEFAULT_HTTP_IDLE_TIMEOUT_MS),
-            None => Err(format!("Invalid httpIdleTimeoutMs setting: {}", js_string(value))),
+            None => Err(format!(
+                "Invalid httpIdleTimeoutMs setting: {}",
+                jsrt::value::string(Some(value))
+            )),
         },
-    }
-}
-
-/// `String(value)` of a JSON value.
-fn js_string(value: &Value) -> String {
-    match value {
-        Value::String(s) => s.clone(),
-        Value::Array(items) => items.iter().map(js_string).collect::<Vec<_>>().join(","),
-        Value::Object(_) => "[object Object]".into(),
-        other => other.to_string(),
     }
 }
 
@@ -756,7 +749,7 @@ pub fn debug_environment(vars: impl IntoIterator<Item = (String, String)>) -> Ma
         .into_iter()
         .filter(|(name, _)| name.starts_with("ULTRON_") || name.starts_with("PI_"))
         .collect();
-    picked.sort_by(|(a, _), (b, _)| locale_compare(a, b));
+    picked.sort_by(|(a, _), (b, _)| jsrt::collate::locale_compare(a, b));
     picked
         .into_iter()
         .map(|(name, value)| {
@@ -768,32 +761,4 @@ pub fn debug_environment(vars: impl IntoIterator<Item = (String, String)>) -> Ma
             (name, Value::String(value))
         })
         .collect()
-}
-
-/// `String.prototype.localeCompare` for identifier-like names: case-insensitive first (`_` before letters and
-/// digits, digits before letters), then lowercase before uppercase.
-fn locale_compare(a: &str, b: &str) -> std::cmp::Ordering {
-    let key = |s: &str| -> Vec<(u8, char)> {
-        s.chars()
-            .map(|c| {
-                let class = if c.is_ascii_alphabetic() {
-                    3
-                } else if c.is_ascii_digit() {
-                    2
-                } else {
-                    1
-                };
-                (class, c.to_ascii_lowercase())
-            })
-            .collect()
-    };
-    key(a).cmp(&key(b)).then_with(|| {
-        // Lowercase sorts before uppercase at the first case difference.
-        for (x, y) in a.chars().zip(b.chars()) {
-            if x != y {
-                return x.is_ascii_uppercase().cmp(&y.is_ascii_uppercase());
-            }
-        }
-        a.len().cmp(&b.len())
-    })
 }

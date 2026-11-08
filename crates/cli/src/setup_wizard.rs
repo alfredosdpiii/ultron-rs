@@ -616,7 +616,7 @@ fn custom_endpoint<U: SetupUi>(ui: &mut U, deps: &SetupDeps) -> Result<Option<St
     let endpoint = CustomEndpoint {
         provider_id: provider_id.clone(),
         base_url,
-        api_key: Some(api_key).filter(|k| !crate::js::trim(k).is_empty()),
+        api_key: Some(api_key).filter(|k| !jsrt::string::trim(k).is_empty()),
         api: api.to_string(),
         model_ids,
     };
@@ -764,18 +764,18 @@ fn test_and_report<U: SetupUi>(ui: &mut U, deps: &SetupDeps, model: &Model) -> R
         &format!("Testing {} with one tiny request…", describe(model)),
         move || test(&env, &target),
     )?;
-    let seconds = crate::js::to_fixed(result.ms as f64 / 1000.0, 1);
+    let seconds = jsrt::number::to_fixed(result.ms as f64 / 1000.0, 1);
     if result.ok {
         let reply = result
             .reply
             .as_deref()
             .map(|r| {
                 let collapsed = r
-                    .split(crate::js::is_space)
+                    .split(jsrt::string::is_space)
                     .filter(|s| !s.is_empty())
                     .collect::<Vec<_>>();
                 let joined = collapsed.join(" ");
-                crate::js::head16(crate::js::trim(&joined), 60).to_string()
+                jsrt::utf16::head(jsrt::string::trim(&joined), 60).to_string()
             })
             .unwrap_or_default();
         let shown = if reply.is_empty() {
@@ -825,7 +825,7 @@ fn hindsight_setting(settings: &SettingsManager) -> Option<String> {
         .global_settings()
         .get("hindsightUrl")
         .and_then(Value::as_str)
-        .map(crate::js::trim)
+        .map(jsrt::string::trim)
         .filter(|v| !v.is_empty())
         .map(str::to_string)
 }
@@ -1015,7 +1015,7 @@ fn custom_hindsight_url<U: SetupUi>(ui: &mut U, deps: &mut SetupDeps) -> Result<
     else {
         return Ok(None);
     };
-    let trimmed = crate::js::trim(&url).trim_end_matches('/').to_string();
+    let trimmed = jsrt::string::trim(&url).trim_end_matches('/').to_string();
     let probed = probe(ui, deps, format!("Checking {trimmed}…"), &trimmed)?;
     match &probed {
         Err(reason) => {
@@ -1097,7 +1097,7 @@ fn install_with_docker<U: SetupUi>(ui: &mut U, deps: &SetupDeps, url: &str) -> R
             InputOptions {
                 secret: true,
                 validate: Some(Box::new(|value: &str| {
-                    crate::js::trim(value)
+                    jsrt::string::trim(value)
                         .is_empty()
                         .then(|| "Paste the key, or press Esc to go back".to_string())
                 })),
@@ -1140,7 +1140,12 @@ fn install_with_docker<U: SetupUi>(ui: &mut U, deps: &SetupDeps, url: &str) -> R
     }
     let docker = deps.run_docker.clone();
     let env: Vec<(String, String)> = api_key
-        .map(|k| vec![("HINDSIGHT_API_LLM_API_KEY".to_string(), crate::js::trim(&k).to_string())])
+        .map(|k| {
+            vec![(
+                "HINDSIGHT_API_LLM_API_KEY".to_string(),
+                jsrt::string::trim(&k).to_string(),
+            )]
+        })
         .unwrap_or_default();
     let (ok, output) = ui.busy("Pulling and starting Hindsight (docker run)…", move || {
         docker(&args, &env)
@@ -1202,7 +1207,7 @@ fn loki_step<U: SetupUi>(ui: &mut U, deps: &mut SetupDeps) -> Result<SummaryLine
         Some(version) => ui.note(&format!("✓ Bundled Loki {version}"), Tone::Success),
     }
     for name in ["ULTRON_LOKI", "ULTRON_LOKI_AUTOINIT", "ULTRON_LOKI_AUTOCOMMIT"] {
-        if let Some(value) = deps.var(name).filter(|v| !crate::js::trim(v).is_empty()) {
+        if let Some(value) = deps.var(name).filter(|v| !jsrt::string::trim(v).is_empty()) {
             ui.note(
                 &format!("{name}={value} is set; it overrides the settings saved here."),
                 Tone::Warning,
@@ -1338,7 +1343,7 @@ pub fn test_model(env: &Env, model: &Model) -> ModelTestResult {
     let context = ai::TranscriptContext {
         messages: vec![ai::Message::User(ai::UserMessage {
             content: ai::UserMessageContent::Text("Reply with the single word: ok".into()),
-            timestamp: session_core::lane::now_ms(),
+            timestamp: jsrt::date::now_ms(),
         })],
     };
     let abort = ai::AbortSignal::new();

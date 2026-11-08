@@ -1,36 +1,16 @@
 //! JSON helpers ported from `utils/json-parse.ts`, `utils/hash.ts`, and the `partial-json` 0.1.7 parser upstream uses
 //! for streamed tool arguments.
 
-use serde_json::{Map, Number, Value};
+use serde_json::{Map, Value};
 
 /// Parse JSON the way `JSON.parse` yields numbers: integral values become integers, so re-serializing matches
 /// `JSON.stringify` (`-3e2` is `-300`, not `-300.0`).
 pub fn parse_json(text: &str) -> Result<Value, serde_json::Error> {
-    serde_json::from_str::<Value>(text).map(normalize_numbers)
+    serde_json::from_str::<Value>(text).map(jsrt::json::normalize_numbers)
 }
 
-/// Integral floats within the exact range become integers; `-0` becomes `0`.
-pub fn normalize_numbers(value: Value) -> Value {
-    match value {
-        Value::Number(n) if n.is_f64() => {
-            let f = n.as_f64().unwrap_or_default();
-            if f.fract() == 0.0 && f.abs() < 9_007_199_254_740_992.0 {
-                // ponytail: i64 covers the exact-integer range of an f64.
-                Value::Number(Number::from(f as i64))
-            } else {
-                Value::Number(n)
-            }
-        }
-        Value::Array(items) => Value::Array(items.into_iter().map(normalize_numbers).collect()),
-        Value::Object(map) => Value::Object(map.into_iter().map(|(k, v)| (k, normalize_numbers(v))).collect()),
-        other => other,
-    }
-}
-
-/// `JSON.stringify` of a parsed value.
-pub fn stringify(value: &Value) -> String {
-    serde_json::to_string(value).unwrap_or_default()
-}
+// ponytail: cli/tests (provider_auth, tui_login_providers) still import `ai::json::normalize_numbers`.
+pub use jsrt::json::normalize_numbers;
 
 const VALID_JSON_ESCAPES: &[char] = &['"', '\\', '/', 'b', 'f', 'n', 'r', 't', 'u'];
 
@@ -164,7 +144,7 @@ fn last_index_of(s: &[char], c: char) -> isize {
 fn js_key(value: &Value) -> String {
     match value {
         Value::String(s) => s.clone(),
-        other => stringify(other),
+        other => jsrt::json::stringify(other),
     }
 }
 
@@ -344,21 +324,4 @@ fn radix36(mut n: u32) -> String {
         n /= 36;
     }
     digits.iter().rev().collect()
-}
-
-/// Number of UTF-16 code units, JavaScript's `length`.
-pub(crate) fn js_len(text: &str) -> usize {
-    text.encode_utf16().count()
-}
-
-/// JavaScript `text.slice(0, n)` over UTF-16 code units, never splitting a surrogate pair.
-pub(crate) fn js_prefix(text: &str, n: usize) -> &str {
-    let mut units = 0;
-    for (index, c) in text.char_indices() {
-        units += c.len_utf16();
-        if units > n {
-            return &text[..index];
-        }
-    }
-    text
 }

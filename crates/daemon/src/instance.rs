@@ -5,7 +5,6 @@
 //! `ULTRON_SERVER_DIR` names an instance directory directly. Auth, settings, skills, themes and models stay shared.
 
 use serde_json::{Value, json};
-use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
 
 pub const ENV_SERVER_DIR: &str = "ULTRON_SERVER_DIR";
@@ -72,8 +71,7 @@ fn sanitize(name: &str) -> String {
 
 /// `~/.ultron/projects/<sanitized basename>-<first 12 hex of sha256(root)>`.
 pub fn project_dir(home: &Path, root: &Path) -> PathBuf {
-    let digest = Sha256::digest(root.as_os_str().as_encoded_bytes());
-    let hex: String = digest.iter().take(6).map(|b| format!("{b:02x}")).collect();
+    let hex = &jsrt::hash::sha256_hex(root.as_os_str().as_encoded_bytes())[..12];
     let name = root
         .file_name()
         .map(|n| n.to_string_lossy().into_owned())
@@ -141,8 +139,7 @@ pub fn socket_dir(server_dir: &Path) -> PathBuf {
     if server_dir.as_os_str().len() + 1 + LONGEST_SOCKET_NAME <= MAX_SOCKET_PATH {
         return server_dir.to_path_buf();
     }
-    let digest = Sha256::digest(server_dir.as_os_str().as_encoded_bytes());
-    let hex: String = digest.iter().take(6).map(|b| format!("{b:02x}")).collect();
+    let hex = &jsrt::hash::sha256_hex(server_dir.as_os_str().as_encoded_bytes())[..12];
     std::env::temp_dir()
         .join(format!("ultron-{}", rustix::process::getuid().as_raw()))
         .join(hex)

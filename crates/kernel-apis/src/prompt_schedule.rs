@@ -12,7 +12,6 @@
 
 use crate::artifacts::KeyedDocuments;
 use crate::schedule_tick::{SystemTickClock, TickClock};
-use crate::util::{iso, lock};
 use crate::{ApiModule, Request};
 use serde_json::{Map, Value, json};
 use std::path::{Path, PathBuf};
@@ -139,8 +138,8 @@ impl Schedule {
     pub fn view(&self) -> Value {
         let mut view = self.to_json();
         view["every"] = self.interval_ms.map(format_interval).into();
-        view["next"] = self.next_due.map(iso).into();
-        view["untilIso"] = self.until.map(iso).into();
+        view["next"] = self.next_due.map(jsrt::date::iso_string).into();
+        view["untilIso"] = self.until.map(jsrt::date::iso_string).into();
         view
     }
 
@@ -152,7 +151,7 @@ impl Schedule {
     /// One line of `/schedules` and `ultron schedule list`: name, next fire, runs, repeat, id.
     pub fn line(&self) -> String {
         let next = match (self.next_due, self.state) {
-            (Some(due), State::Active) => format!("next {}", iso(due)),
+            (Some(due), State::Active) => format!("next {}", jsrt::date::iso_string(due)),
             (_, state) => state.name().to_string(),
         };
         let runs = match self.max_runs {
@@ -399,7 +398,7 @@ impl ScheduleModule {
             Kind::Every => &["interval", "prompt", "name", "until_ms", "until_in_ms", "max_runs"],
             Kind::At => &["when_ms", "when_in_ms", "prompt", "name"],
         };
-        crate::util::fields(payload, allowed)?;
+        jsrt::payload::fields(payload, allowed)?;
         let prompt = payload
             .get("prompt")
             .and_then(Value::as_str)
@@ -408,7 +407,7 @@ impl ScheduleModule {
         if prompt.len() > MAX_PROMPT_BYTES {
             return Err(format!("schedule prompt must be at most {MAX_PROMPT_BYTES} bytes"));
         }
-        let _writing = lock(&self.writing);
+        let _writing = jsrt::sync::lock(&self.writing);
         let now = self.now();
         let (interval_ms, next_due, until, max_runs) = match kind {
             Kind::Every => {
@@ -425,14 +424,20 @@ impl ScheduleModule {
                 };
                 let first = now + interval;
                 if until.is_some_and(|until| until < first) {
-                    return Err(format!("schedule until is before the first run ({})", iso(first)));
+                    return Err(format!(
+                        "schedule until is before the first run ({})",
+                        jsrt::date::iso_string(first)
+                    ));
                 }
                 (Some(interval), first, until, max_runs)
             }
             Kind::At => {
                 let due = Self::time(payload, "when", now)?.ok_or("schedule.at needs a time")?;
                 if due <= now {
-                    return Err(format!("schedule.at time must be in the future (got {})", iso(due)));
+                    return Err(format!(
+                        "schedule.at time must be in the future (got {})",
+                        jsrt::date::iso_string(due)
+                    ));
                 }
                 (None, due, None, None)
             }
@@ -442,7 +447,7 @@ impl ScheduleModule {
         if active.len() >= MAX_ACTIVE {
             return Err(format!("a session can have at most {MAX_ACTIVE} active schedules"));
         }
-        let id = format!("sch-{}", &crate::util::uuid().replace('-', "")[..8]);
+        let id = format!("sch-{}", &jsrt::random::uuid_v4().replace('-', "")[..8]);
         let name = match payload.get("name").filter(|n| !n.is_null()) {
             None => id.clone(),
             Some(name) => {
@@ -478,7 +483,7 @@ impl ScheduleModule {
 
     /// Cancel the active schedule whose id, else name, is `name_or_id`.
     pub fn cancel(&self, name_or_id: &str) -> Result<Schedule, String> {
-        let _writing = lock(&self.writing);
+        let _writing = jsrt::sync::lock(&self.writing);
         let all = self.all()?;
         let found = all
             .iter()
@@ -507,7 +512,7 @@ impl ScheduleModule {
         due: i64,
         deliver: &mut dyn FnMut(&Value) -> Result<(), String>,
     ) -> Result<Option<Fired>, String> {
-        let _writing = lock(&self.writing);
+        let _writing = jsrt::sync::lock(&self.writing);
         let now = self.now();
         let Some(mut schedule) = self.all()?.into_iter().find(|s| s.id == id) else {
             return Ok(None);

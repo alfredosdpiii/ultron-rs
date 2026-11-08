@@ -4,9 +4,9 @@
 
 use crate::constrained::{json_schema_tool_parameters, resolve_json_schema_strict_sampling};
 use crate::http::{HeaderBuilder, Read, cancelled, is_aborted, read_chunk, truncate_error_text};
-use crate::json::{parse_json, parse_streaming_json, short_hash, stringify};
+use crate::json::{parse_json, parse_streaming_json, short_hash};
 use crate::models::{calculate_cost, clamp_thinking_level};
-use crate::options::{SimpleStreamOptions, StreamOptions, build_base_options, now_ms, pi_user_agent};
+use crate::options::{SimpleStreamOptions, StreamOptions, build_base_options, pi_user_agent};
 use crate::transcript::{
     current_tools, render_system_message_update, resolve_transcript, system_message_text, transform_messages,
 };
@@ -165,7 +165,7 @@ fn to_chat_messages(messages: &[Message], supports_images: bool) -> Vec<Value> {
                             );
                         }
                         AssistantContent::ToolCall(call) => {
-                            let arguments = if js_truthy(&call.arguments) {
+                            let arguments = if jsrt::value::truthy(Some(&call.arguments)) {
                                 call.arguments.clone()
                             } else {
                                 json!({})
@@ -173,7 +173,7 @@ fn to_chat_messages(messages: &[Message], supports_images: bool) -> Vec<Value> {
                             tool_calls.push(json!({
                                 "id": call.id,
                                 "type": "function",
-                                "function": { "name": call.name, "arguments": stringify(&arguments) },
+                                "function": { "name": call.name, "arguments": jsrt::json::stringify(&arguments) },
                                 "index": 0,
                             }));
                         }
@@ -227,10 +227,6 @@ fn to_chat_messages(messages: &[Message], supports_images: bool) -> Vec<Value> {
     result
 }
 
-fn js_truthy(value: &Value) -> bool {
-    !matches!(value, Value::Null | Value::Bool(false)) && value.as_str() != Some("") && value.as_f64() != Some(0.0)
-}
-
 fn to_function_tools(tools: &[Tool]) -> Result<Vec<Value>, String> {
     tools
         .iter()
@@ -251,7 +247,7 @@ fn to_function_tools(tools: &[Tool]) -> Result<Vec<Value>, String> {
 
 /// `mapToolChoice`: a known string passes through, anything else names a function.
 fn map_tool_choice(choice: &Value) -> Option<Value> {
-    if !js_truthy(choice) {
+    if !jsrt::value::truthy(Some(choice)) {
         return None;
     }
     if let Some(s @ ("auto" | "none" | "any" | "required")) = choice.as_str() {
@@ -428,7 +424,7 @@ pub async fn stream(
         model.compat_bool("supportsMidConvoSystemMessages").unwrap_or(false),
     );
     let mut run = Run {
-        output: AssistantMessage::pending(model, now_ms()),
+        output: AssistantMessage::pending(model, jsrt::date::now_ms()),
         sink,
         current: None,
         tools: IndexMap::new(),
@@ -757,7 +753,7 @@ impl Run<'_, '_> {
         {
             self.output.response_id = Some(id.to_string());
         }
-        if let Some(usage) = chunk.get("usage").filter(|u| js_truthy(u)) {
+        if let Some(usage) = chunk.get("usage").filter(|u| jsrt::value::truthy(Some(u))) {
             let count = |key: &str| usage.get(key).and_then(Value::as_u64).unwrap_or(0);
             let prompt = count("prompt_tokens");
             let cached = cached_prompt_tokens(usage, prompt);
@@ -847,7 +843,7 @@ impl Run<'_, '_> {
             }
             let args_delta = match call.pointer("/function/arguments") {
                 Some(Value::String(s)) => s.clone(),
-                Some(other) if js_truthy(other) => stringify(other),
+                Some(other) if jsrt::value::truthy(Some(other)) => jsrt::json::stringify(other),
                 _ => "{}".to_string(),
             };
             let (index, partial_args) = self

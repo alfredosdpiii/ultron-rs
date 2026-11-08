@@ -1,7 +1,6 @@
 //! Transcript helpers (`utils/transcript.ts`, `utils/text.ts`), cross-provider message transformation
 //! (`api/transform-messages.ts`) and the context token estimate (`utils/estimate.ts`).
 
-use crate::json::{js_len, stringify};
 use crate::types::{
     AssistantContent, AssistantMessage, Context, Message, Model, StopReason, SystemContent, SystemMessage, TextContent,
     Tool, ToolCall, ToolResultMessage, TranscriptContext, TypedText, UserContent, UserMessageContent,
@@ -422,7 +421,7 @@ fn user_content_chars(content: &[UserContent]) -> usize {
     content
         .iter()
         .map(|b| match b {
-            UserContent::Text(t) => js_len(&t.text),
+            UserContent::Text(t) => jsrt::utf16::len(&t.text),
             UserContent::Image(_) => ESTIMATED_IMAGE_CHARS,
         })
         .sum()
@@ -431,8 +430,8 @@ fn user_content_chars(content: &[UserContent]) -> usize {
 pub fn estimate_message_tokens(message: &Message) -> u64 {
     match message {
         Message::System(system) => {
-            let tools = |json: Option<String>| json.map_or(0, |j| ceil_tokens(js_len(&j)));
-            ceil_tokens(js_len(&system_message_text(system)))
+            let tools = |json: Option<String>| json.map_or(0, |j| ceil_tokens(jsrt::utf16::len(&j)));
+            ceil_tokens(jsrt::utf16::len(&system_message_text(system)))
                 + tools(
                     system
                         .tools_added
@@ -449,7 +448,7 @@ pub fn estimate_message_tokens(message: &Message) -> u64 {
                 )
         }
         Message::User(user) => match &user.content {
-            UserMessageContent::Text(text) => ceil_tokens(js_len(text)),
+            UserMessageContent::Text(text) => ceil_tokens(jsrt::utf16::len(text)),
             UserMessageContent::Blocks(blocks) => ceil_tokens(user_content_chars(blocks)),
         },
         Message::ToolResult(result) => ceil_tokens(user_content_chars(&result.content)),
@@ -458,9 +457,11 @@ pub fn estimate_message_tokens(message: &Message) -> u64 {
                 .content
                 .iter()
                 .map(|b| match b {
-                    AssistantContent::Text(t) => js_len(&t.text),
-                    AssistantContent::Thinking(t) => js_len(&t.thinking),
-                    AssistantContent::ToolCall(c) => js_len(&c.name) + js_len(&stringify(&c.arguments)),
+                    AssistantContent::Text(t) => jsrt::utf16::len(&t.text),
+                    AssistantContent::Thinking(t) => jsrt::utf16::len(&t.thinking),
+                    AssistantContent::ToolCall(c) => {
+                        jsrt::utf16::len(&c.name) + jsrt::utf16::len(&jsrt::json::stringify(&c.arguments))
+                    }
                 })
                 .sum(),
         ),

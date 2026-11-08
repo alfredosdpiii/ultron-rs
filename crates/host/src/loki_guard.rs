@@ -174,7 +174,7 @@ const OFF_VALUES: [&str; 5] = ["off", "0", "false", "no", "none"];
 pub fn loki_timeout(value: Option<&str>) -> Option<std::time::Duration> {
     // `Number(value)`: surrounding whitespace is ignored, and integral forms like "250.0" or "1e3" are integers.
     let n: f64 = value?.trim().parse().ok()?;
-    (n.fract() == 0.0 && n > 0.0 && n <= 9_007_199_254_740_991.0).then(|| std::time::Duration::from_millis(n as u64))
+    (jsrt::number::is_safe_integer(n) && n > 0.0).then(|| std::time::Duration::from_millis(n as u64))
 }
 
 /// `lokiMode`: ULTRON_LOKI (off | advise | on), else the `loki.mode` setting, else on.

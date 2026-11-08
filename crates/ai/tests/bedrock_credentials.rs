@@ -228,14 +228,15 @@ fn dpop_pem() -> String {
         .step_by(2)
         .map(|i| u8::from_str_radix(&hex[i..i + 2], 16).unwrap())
         .collect();
-    let point = |key: &str| ai::jsutil::atob(&dpop[key].as_str().unwrap().replace('-', "+").replace('_', "/")).unwrap();
+    let point =
+        |key: &str| jsrt::base64::atob(&dpop[key].as_str().unwrap().replace('-', "+").replace('_', "/")).unwrap();
     let mut der = vec![0x30, 0x77, 0x02, 0x01, 0x01, 0x04, 0x20];
     der.extend(&d);
     der.extend([0xa0, 0x0a, 0x06, 0x08, 0x2a, 0x86, 0x48, 0xce, 0x3d, 0x03, 0x01, 0x07]);
     der.extend([0xa1, 0x44, 0x03, 0x42, 0x00, 0x04]);
     der.extend(point("x"));
     der.extend(point("y"));
-    let body = ai::jsutil::btoa(&der);
+    let body = jsrt::base64::encode(&der);
     let lines: Vec<&str> = body
         .as_bytes()
         .chunks(64)
@@ -254,7 +255,7 @@ fn dpop_pem_json() -> String {
 }
 
 fn base64url_decode(text: &str) -> Vec<u8> {
-    ai::jsutil::atob(&text.replace('-', "+").replace('_', "/")).unwrap()
+    jsrt::base64::atob(&text.replace('-', "+").replace('_', "/")).unwrap()
 }
 
 /// A DPoP proof as the generator records it (jti and iat as placeholders), after checking its signature with the
@@ -284,23 +285,11 @@ fn decode_dpop(value: &str) -> Value {
     }
     if payload["iat"]
         .as_i64()
-        .is_some_and(|iat| (iat * 1000 - now_ms()).abs() < 600_000)
+        .is_some_and(|iat| (iat * 1000 - jsrt::date::now_ms()).abs() < 600_000)
     {
         payload["iat"] = json!("<iat>");
     }
     json!({"header": header, "payload": payload, "signatureBytes": signature.len()})
-}
-
-fn now_ms() -> i64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_millis() as i64
-}
-
-/// `new Date(ms).toISOString()`.
-fn iso(ms: i64) -> String {
-    ai::claude_code_cli::iso_string(ms as f64)
 }
 
 /// `<home>`, `<port>` and `<now+N>` in a scenario value.
@@ -312,7 +301,10 @@ fn expand(text: &str, home: &str, port: u16) -> String {
     while let Some(start) = out.find("<now+") {
         let end = start + out[start..].find('>').unwrap();
         let seconds: i64 = out[start + 5..end].parse().unwrap();
-        out.replace_range(start..=end, &iso(now_ms() + seconds * 1000));
+        out.replace_range(
+            start..=end,
+            &jsrt::date::iso_string(jsrt::date::now_ms() + seconds * 1000),
+        );
     }
     out
 }
@@ -500,8 +492,8 @@ fn replay(scenario: &Value) {
     {
         let text = std::fs::read_to_string(home_dir.path().join(path)).unwrap();
         let token: Value = serde_json::from_str(&text).unwrap();
-        let expires = ai::model_refresh::parse_iso_ms(token["accessToken"]["expiresAt"].as_str().unwrap()).unwrap();
-        let lifetime = ((expires - now_ms()) as f64 / 60_000.0).round() as i64;
+        let expires = jsrt::date::parse_date(token["accessToken"]["expiresAt"].as_str().unwrap()).unwrap();
+        let lifetime = ((expires - jsrt::date::now_ms()) as f64 / 60_000.0).round() as i64;
         assert_eq!(json!(lifetime), *minutes, "{name}: {path} lifetime in minutes");
     }
     let error = message
@@ -544,6 +536,20 @@ fn scenario(name: &str) -> &'static Value {
         .iter()
         .find(|s| s["name"] == name)
         .unwrap_or_else(|| panic!("no scenario {name}"))
+}
+
+/// `new Date("2001-01-01T00:00:00+00:00")` is a date in 2001, so this `credential_process` output has expired, as in
+/// the recorded `...Z` scenario. (The old ISO reader returned no date for an offset without a fraction, which read as
+/// "never expires" and accepted the credentials.)
+#[test]
+fn ai_bedrock_credentials_process_expiration_with_an_offset_is_expired() {
+    let mut case = scenario("credential-process-expired").clone();
+    let script = case["files"]["proc.sh"]
+        .as_str()
+        .unwrap()
+        .replace("2001-01-01T00:00:00Z", "2001-01-01T00:00:00+00:00");
+    case["files"]["proc.sh"] = json!(script);
+    replay(&case);
 }
 
 #[test]
@@ -643,12 +649,8 @@ fn ai_bedrock_credentials_signin_endpoints_match_the_sdk_rules() {
 /// The PEM the replay writes is the one Node exported for the generator's key, and it parses to that key.
 #[test]
 fn ai_bedrock_credentials_dpop_key_is_nodes_sec1_pem() {
-    use sha2::Digest;
     let pem = dpop_pem();
-    let digest: String = sha2::Sha256::digest(pem.as_bytes())
-        .iter()
-        .map(|b| format!("{b:02x}"))
-        .collect();
+    let digest = jsrt::hash::sha256_hex(&pem);
     assert_eq!(digest, FIXTURE["dpop"]["pemSha256"].as_str().unwrap());
     let (scalar, point) = ai::aws_credentials::parse_sec1_pem(&pem).unwrap();
     assert_eq!(scalar, (1u8..=32).collect::<Vec<_>>());
@@ -664,7 +666,7 @@ fn ai_bedrock_credentials_dpop_key_is_nodes_sec1_pem() {
     let wrap = |der: &[u8]| {
         format!(
             "-----BEGIN EC PRIVATE KEY-----\n{}\n-----END EC PRIVATE KEY-----\n",
-            ai::jsutil::btoa(der)
+            jsrt::base64::encode(der)
         )
     };
     assert_eq!(

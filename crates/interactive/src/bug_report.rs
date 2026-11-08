@@ -272,7 +272,7 @@ impl BugFlow {
         match &mut self.step {
             Step::Hint(dialog) => match dialog.handle_input(data) {
                 DialogOutcome::Submit(text) => {
-                    let hint = session_file::js::trim(&text).to_string();
+                    let hint = jsrt::string::trim(&text).to_string();
                     self.choices.hint = (!hint.is_empty()).then_some(hint);
                     self.step = Step::Transcript(self.selector(
                         "Include the session transcript?",

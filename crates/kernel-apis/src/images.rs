@@ -6,7 +6,6 @@
 //! `provider/id` or a bare catalog id. `size` is an aspect ratio (`16:9`) or a resolution (`1K`, `2K`, `4K`), sent as
 //! OpenRouter's `image_config`. `images.baseUrl` replaces the provider's base URL (a proxy, or a test's fake).
 
-use crate::util::fields;
 use crate::{ApiModule, Request};
 use ai::http::Transport;
 use ai::images::{
@@ -163,7 +162,7 @@ impl ImagesModule {
     }
 
     fn generate(&self, request: &Request<'_>) -> Result<Value, String> {
-        fields(request.payload, &["prompt", "model", "size", "n", "out"])?;
+        jsrt::payload::fields(request.payload, &["prompt", "model", "size", "n", "out"])?;
         let prompt = text_field(request, "prompt")?.ok_or("images.generate prompt must be a non-empty string")?;
         let count = match request.payload.get("n") {
             None | Some(Value::Null) => 1,

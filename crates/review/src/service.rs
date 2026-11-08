@@ -80,7 +80,7 @@ pub fn service_file(
         "linux" => {
             let config = env
                 .get("XDG_CONFIG_HOME")
-                .map(|value| crate::js::trim(value))
+                .map(|value| jsrt::string::trim(value))
                 .filter(|value| !value.is_empty())
                 .map_or_else(|| path_join(&[home, ".config"]), str::to_string);
             let mut lines = vec![

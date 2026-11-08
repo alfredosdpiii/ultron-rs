@@ -17,7 +17,8 @@ use crate::keys::{KeyContext, decode_printable_key, matches_key};
 use crate::mouse::{MouseButton, MouseEvent, MouseEventType, MouseResult};
 use crate::renderer::CURSOR_MARKER;
 use crate::select::{SelectList, SelectListTheme};
-use crate::utils::{is_cjk_break, is_whitespace_char, slice_with_width, visible_width};
+use crate::utils::{is_cjk_break, slice_with_width, visible_width};
+use jsrt::{string, utf16};
 
 /// One visual chunk of a wrapped logical line; `start`/`end` are byte offsets into the line.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -29,15 +30,11 @@ pub struct TextChunk {
 
 /// TS `isWhitespaceChar(segment)`: `/\s/.test`, true when any character is whitespace.
 fn is_ws(s: &str) -> bool {
-    s.chars().any(is_whitespace_char)
+    s.chars().any(string::is_space)
 }
 
 fn is_cjk(s: &str) -> bool {
     s.chars().any(is_cjk_break)
-}
-
-fn u16_len(s: &str) -> usize {
-    s.encode_utf16().count()
 }
 
 /// Byte offset of the first character starting at or after UTF-16 offset `u`.
@@ -429,7 +426,7 @@ impl Editor {
     }
 
     pub fn add_to_history(&mut self, text: &str) {
-        let trimmed = text.trim_matches(is_whitespace_char);
+        let trimmed = text.trim_matches(string::is_space);
         if trimmed.is_empty() || self.history.first().is_some_and(|h| h == trimmed) {
             return;
         }
@@ -444,7 +441,7 @@ impl Editor {
     pub fn set_history(&mut self, entries: &[&str]) {
         self.history = entries
             .iter()
-            .map(|e| e.trim_matches(is_whitespace_char).to_string())
+            .map(|e| e.trim_matches(string::is_space).to_string())
             .filter(|e| !e.is_empty())
             .take(self.history_limit)
             .collect();
@@ -869,7 +866,7 @@ impl Editor {
             }
         }
         let line_count = filtered.split('\n').count();
-        let total = u16_len(&filtered);
+        let total = utf16::len(&filtered);
         if line_count > 10 || total > 1000 {
             self.paste_counter += 1;
             let id = self.paste_counter;
@@ -920,7 +917,7 @@ impl Editor {
         self.cancel_autocomplete();
         let result = self
             .expand_paste_markers(&self.text())
-            .trim_matches(is_whitespace_char)
+            .trim_matches(string::is_space)
             .to_string();
         self.lines = vec![String::new()];
         self.cursor_line = 0;
@@ -999,25 +996,25 @@ impl Editor {
         let current_col = match self.snapped_from {
             Some(snap) => {
                 let vl = vls[find_visual_line_at(vls, cur.logical, byte_of_u16(cur_line, snap))];
-                snap - u16_len(&cur_line[..vl.start])
+                snap - utf16::len(&cur_line[..vl.start])
             }
-            None => u16_len(&cur_line[cur.start..self.cursor_col]),
+            None => utf16::len(&cur_line[cur.start..self.cursor_col]),
         };
         let max_col = |vl: VisualLine, i: usize| {
-            let len = u16_len(&self.lines[vl.logical][vl.start..vl.start + vl.len]);
+            let len = utf16::len(&self.lines[vl.logical][vl.start..vl.start + vl.len]);
             if is_last(i) { len } else { len.saturating_sub(1) }
         };
         let (source_max, target_max) = (max_col(cur, current), max_col(tgt, target));
         let move_to = self.vertical_move_column(current_col, source_max, target_max);
         self.cursor_line = tgt.logical;
         let line = self.lines[tgt.logical].clone();
-        let col = (u16_len(&line[..tgt.start]) + move_to).min(u16_len(&line));
+        let col = (utf16::len(&line[..tgt.start]) + move_to).min(utf16::len(&line));
         let mut seg_u16 = 0;
         for (index, seg) in self.graphemes(&line) {
             if seg_u16 > col {
                 break;
             }
-            let len = u16_len(seg);
+            let len = utf16::len(seg);
             if len > 1 && col < seg_u16 + len {
                 if index < tgt.start && target > current {
                     let seg_end = index + seg.len();
@@ -1229,7 +1226,7 @@ impl Editor {
                 self.cursor_line += 1;
                 self.set_cursor_col(0);
             } else if let Some(vl) = vls.get(current) {
-                self.preferred_visual_col = Some(u16_len(&line[vl.start..self.cursor_col]));
+                self.preferred_visual_col = Some(utf16::len(&line[vl.start..self.cursor_col]));
             }
         } else if delta_col < 0 {
             if self.cursor_col > 0 {
@@ -1267,7 +1264,7 @@ impl Editor {
     fn word_backward_target(&self) -> usize {
         let line = self.line();
         let spans = self.marker_spans();
-        let p = line[..self.cursor_col].trim_end_matches(is_whitespace_char).len();
+        let p = line[..self.cursor_col].trim_end_matches(string::is_space).len();
         if let Some(&(s, _)) = spans.iter().find(|&&(_, e)| e == p) {
             return s;
         }
@@ -1280,7 +1277,7 @@ impl Editor {
         let line = self.line();
         let spans = self.marker_spans();
         let rest = &line[self.cursor_col..];
-        let p = self.cursor_col + rest.len() - rest.trim_start_matches(is_whitespace_char).len();
+        let p = self.cursor_col + rest.len() - rest.trim_start_matches(string::is_space).len();
         if let Some(&(_, e)) = spans.iter().find(|&&(s, _)| s == p) {
             return e;
         }

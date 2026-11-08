@@ -9,7 +9,7 @@ use crate::auth::{AuthEvent, AuthInteraction, AuthPrompt, ModelAuth, OAuthAuth, 
 use crate::http::{AbortSignal, BoxFuture, HttpRequest, Transport, cancelled, is_aborted};
 use crate::oauth_flow::{
     fetch_text, form_urlencode, generate_pkce, oauth_callback_host, oauth_error_html, oauth_redirect_host,
-    oauth_success_html, random_uuid,
+    oauth_success_html,
 };
 use serde_json::{Map, Value, json};
 use std::sync::{Arc, Mutex};
@@ -274,7 +274,7 @@ impl OpenRouterOAuth {
     async fn login_flow(&self, interaction: &dyn AuthInteraction) -> Result<OAuthCredential, String> {
         let signal = interaction.signal();
         let (verifier, challenge) = generate_pkce();
-        let path = format!("/oauth/callback/{}", random_uuid());
+        let path = format!("/oauth/callback/{}", jsrt::random::uuid_v4());
         if is_aborted(signal.as_ref()) {
             return Err(CANCELLED.into());
         }

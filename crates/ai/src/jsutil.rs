@@ -1,5 +1,6 @@
-//! Small JavaScript runtime semantics the ported providers depend on: `TextDecoder` streaming UTF-8 decoding, `atob` /
-//! `btoa`, and `String.prototype.trim`.
+//! Small JavaScript runtime semantics the ported providers depend on: `TextDecoder` streaming UTF-8 decoding, the
+//! Latin-1 binary string of `atob`, and V8's `JSON.parse` error messages. (`atob` / `btoa` and `trim` are
+//! `jsrt::base64` and `jsrt::string`.)
 
 /// `new TextDecoder()` used with `{ stream: true }`: invalid sequences become U+FFFD, an incomplete sequence at the end
 /// of a chunk waits for the next one.
@@ -46,80 +47,6 @@ impl Utf8Stream {
         self.pending.clear();
         out
     }
-}
-
-const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-
-/// `btoa` over bytes.
-pub fn btoa(bytes: &[u8]) -> String {
-    let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
-    for chunk in bytes.chunks(3) {
-        let b = [chunk[0], *chunk.get(1).unwrap_or(&0), *chunk.get(2).unwrap_or(&0)];
-        let n = (u32::from(b[0]) << 16) | (u32::from(b[1]) << 8) | u32::from(b[2]);
-        out.push(ALPHABET[(n >> 18) as usize & 63] as char);
-        out.push(ALPHABET[(n >> 12) as usize & 63] as char);
-        out.push(if chunk.len() > 1 {
-            ALPHABET[(n >> 6) as usize & 63] as char
-        } else {
-            '='
-        });
-        out.push(if chunk.len() > 2 {
-            ALPHABET[n as usize & 63] as char
-        } else {
-            '='
-        });
-    }
-    out
-}
-
-/// `atob` (WHATWG forgiving-base64 decode): ASCII whitespace is ignored, padding is optional; `None` where `atob`
-/// throws `InvalidCharacterError`.
-pub fn atob(text: &str) -> Option<Vec<u8>> {
-    let mut data: Vec<u8> = text
-        .bytes()
-        .filter(|b| !matches!(b, b'\t' | b'\n' | b'\x0c' | b'\r' | b' '))
-        .collect();
-    if !text.is_ascii() {
-        return None;
-    }
-    if data.len().is_multiple_of(4) {
-        if data.ends_with(b"==") {
-            data.truncate(data.len() - 2);
-        } else if data.ends_with(b"=") {
-            data.truncate(data.len() - 1);
-        }
-    }
-    if data.len() % 4 == 1 {
-        return None;
-    }
-    let mut out = Vec::with_capacity(data.len() * 3 / 4);
-    let mut buffer: u32 = 0;
-    let mut bits = 0;
-    for byte in data {
-        let value = ALPHABET.iter().position(|&a| a == byte)? as u32;
-        buffer = (buffer << 6) | value;
-        bits += 6;
-        if bits >= 8 {
-            bits -= 8;
-            out.push((buffer >> bits) as u8);
-            buffer &= (1 << bits) - 1;
-        }
-    }
-    Some(out)
-}
-
-/// JavaScript's whitespace and line terminators (`String.prototype.trim`).
-pub fn is_js_whitespace(c: char) -> bool {
-    matches!(
-        c,
-        '\t' | '\n' | '\u{0B}' | '\u{0C}' | '\r' | ' ' | '\u{A0}' | '\u{1680}' | '\u{2000}'
-            ..='\u{200A}' | '\u{2028}' | '\u{2029}' | '\u{202F}' | '\u{205F}' | '\u{3000}' | '\u{FEFF}'
-    )
-}
-
-/// `String.prototype.trim`.
-pub fn js_trim(text: &str) -> &str {
-    text.trim_matches(is_js_whitespace)
 }
 
 /// The Latin-1 "binary string" `atob` returns, as JavaScript sees it.
@@ -397,5 +324,3 @@ pub fn loose_match(text: &str, first: &str, second: &str) -> bool {
         matches_at(i, &first) && (matches_at(i + first.len(), &second) || matches_at(i + first.len() + 1, &second))
     })
 }
-
-pub use model_scope::locale_compare;

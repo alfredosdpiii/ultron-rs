@@ -13,12 +13,12 @@
 
 use crate::Guard;
 use fancy_regex::Regex;
+use jsrt::sync;
 use serde_json::{Value, json};
-use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, HashMap};
 use std::path::{Component, Path, PathBuf};
 use std::sync::mpsc::{Sender, channel};
-use std::sync::{Arc, Condvar, LazyLock, Mutex, MutexGuard, PoisonError};
+use std::sync::{Arc, Condvar, LazyLock, Mutex, PoisonError};
 use std::time::Duration;
 
 /// A guard's answer: block with a reason, or allow with an optional note.
@@ -167,14 +167,14 @@ pub struct OutsideWork {
 impl OutsideChanges {
     /// Work outside the cells begins now: after-cell checks wait for it from this moment.
     pub fn begin(&self) -> OutsideWork {
-        lock(&self.state.0).running += 1;
+        sync::lock(&self.state.0).running += 1;
         OutsideWork { changes: self.clone() }
     }
 
     /// Wait (at most `limit`) for the work that has begun to end.
     fn wait(&self, limit: Duration) {
         let (state, ended) = &*self.state;
-        let mut state = lock(state);
+        let mut state = sync::lock(state);
         let end = std::time::Instant::now() + limit;
         while state.running > 0 {
             let left = end.saturating_duration_since(std::time::Instant::now());
@@ -190,7 +190,7 @@ impl OutsideChanges {
 
     /// Whether `path` (absolute) with `signature` (None: missing) is as the work outside the cells left it.
     fn explains(&self, path: &Path, signature: Option<&String>) -> bool {
-        lock(&self.state.0)
+        sync::lock(&self.state.0)
             .after
             .get(path)
             .is_some_and(|left| left.as_ref() == signature)
@@ -206,7 +206,7 @@ impl OutsideWork {
         let result = work();
         if let (Ok(before), Ok(after)) = (before, snapshot(root)) {
             let (added, modified, deleted, _) = diff_snapshots(&before, &after);
-            let mut state = lock(&self.changes.state.0);
+            let mut state = sync::lock(&self.changes.state.0);
             for relative in added.iter().chain(&modified) {
                 let signature = after.entries.get(relative).cloned();
                 state.after.insert(resolve_lexical(&after.root, relative), signature);
@@ -222,7 +222,7 @@ impl OutsideWork {
 impl Drop for OutsideWork {
     fn drop(&mut self) {
         let (state, ended) = &*self.changes.state;
-        let mut state = lock(state);
+        let mut state = sync::lock(state);
         state.running = state.running.saturating_sub(1);
         ended.notify_all();
     }
@@ -303,12 +303,7 @@ pub type Clock = Arc<dyn Fn() -> u64 + Send + Sync>;
 
 /// `Math.round(ms / 100) / 10` as JavaScript prints it ("5", "0.2").
 fn js_seconds(timeout: Duration) -> String {
-    let seconds = (timeout.as_millis() as f64 / 100.0).round() / 10.0;
-    if seconds.fract() == 0.0 {
-        format!("{}", seconds as i64)
-    } else {
-        format!("{seconds}")
-    }
+    jsrt::number::to_string(jsrt::number::round(timeout.as_millis() as f64 / 100.0) / 10.0)
 }
 
 /// How one timed guard call ended.
@@ -427,14 +422,6 @@ struct Inner {
     worker: Mutex<Option<Sender<String>>>,
 }
 
-fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
-    mutex.lock().unwrap_or_else(PoisonError::into_inner)
-}
-
-fn sha256(bytes: &[u8]) -> String {
-    Sha256::digest(bytes).iter().map(|b| format!("{b:02x}")).collect()
-}
-
 /// `diffSnapshots`: added, modified and deleted paths (each sorted), and whether both pictures were complete.
 pub fn diff_snapshots(before: &Snapshot, after: &Snapshot) -> (Vec<String>, Vec<String>, Vec<String>, bool) {
     let mut added = Vec::new();
@@ -502,7 +489,7 @@ impl FileHooks {
             name: guard.name().to_string(),
             ..GuardStats::default()
         };
-        lock(&self.inner.guards).push(Registered {
+        sync::lock(&self.inner.guards).push(Registered {
             guard: Arc::from(guard),
             stats: Arc::new(Mutex::new(stats)),
         });
@@ -510,37 +497,37 @@ impl FileHooks {
 
     /// `observer` sees what each cell changed (after the guards); its lines go with the lane's next cell result.
     pub fn observe(&self, observer: Arc<dyn CellObserver>) {
-        lock(&self.inner.observers).push(observer);
+        sync::lock(&self.inner.observers).push(observer);
     }
 
     /// Files `changes` records as changed outside the cells are not a cell's changes (unless it changed them
     /// again), and an after-cell check waits for that work to end first.
     pub fn ignore_outside(&self, changes: OutsideChanges) {
-        *lock(&self.inner.outside) = Some(changes);
+        *sync::lock(&self.inner.outside) = Some(changes);
     }
 
     /// Every guard outcome goes to `on_record` (ULTRON_LOKI_LOG).
     pub fn on_record(&self, on_record: OnRecord) {
-        *lock(&self.inner.on_record) = Some(on_record);
+        *sync::lock(&self.inner.on_record) = Some(on_record);
     }
 
     /// The clock guard times are measured with (tests).
     pub fn set_clock(&self, now: Clock) {
-        *lock(&self.inner.now) = now;
+        *sync::lock(&self.inner.now) = now;
     }
 
     /// A new root turn began: per-turn times start from zero.
     pub fn begin_turn(&self) {
-        for registered in lock(&self.inner.guards).iter() {
-            lock(&registered.stats).turn_ms = 0;
+        for registered in sync::lock(&self.inner.guards).iter() {
+            sync::lock(&registered.stats).turn_ms = 0;
         }
     }
 
     /// Each guard's statistics, in registration order.
     pub fn stats(&self) -> Vec<GuardStats> {
-        lock(&self.inner.guards)
+        sync::lock(&self.inner.guards)
             .iter()
-            .map(|registered| lock(&registered.stats).clone())
+            .map(|registered| sync::lock(&registered.stats).clone())
             .collect()
     }
 
@@ -552,11 +539,11 @@ impl FileHooks {
     /// A cell is starting: make sure a baseline picture of the directory exists to compare its end with.
     pub fn cell_started(&self, _lane: &str) {
         let inner = &self.inner;
-        if !inner.watches_cells() || lock(&inner.baseline).is_some() {
+        if !inner.watches_cells() || sync::lock(&inner.baseline).is_some() {
             return;
         }
         let picture = inner.picture();
-        let mut baseline = lock(&inner.baseline);
+        let mut baseline = sync::lock(&inner.baseline);
         if baseline.is_none() {
             *baseline = picture;
         }
@@ -569,13 +556,13 @@ impl FileHooks {
         if !inner.watches_cells() {
             return;
         }
-        if lock(&inner.baseline).is_none() {
+        if sync::lock(&inner.baseline).is_none() {
             // No baseline yet (a guard became interested mid-session): this cell's changes cannot be told apart.
             self.cell_started(lane);
             return;
         }
-        *lock(&inner.queued) += 1;
-        let mut worker = lock(&inner.worker);
+        *sync::lock(&inner.queued) += 1;
+        let mut worker = sync::lock(&inner.worker);
         let sender = worker.get_or_insert_with(|| {
             let (sender, lanes) = channel::<String>();
             let inner = Arc::downgrade(&self.inner);
@@ -585,7 +572,7 @@ impl FileHooks {
                         return;
                     };
                     inner.after_cell(&lane);
-                    let mut queued = lock(&inner.queued);
+                    let mut queued = sync::lock(&inner.queued);
                     *queued -= 1;
                     inner.idle.notify_all();
                 }
@@ -593,13 +580,13 @@ impl FileHooks {
             sender
         });
         if sender.send(lane.to_string()).is_err() {
-            *lock(&inner.queued) -= 1;
+            *sync::lock(&inner.queued) -= 1;
         }
     }
 
     /// Wait for the after-cell checks already started.
     pub fn settled(&self) {
-        let mut queued = lock(&self.inner.queued);
+        let mut queued = sync::lock(&self.inner.queued);
         while *queued > 0 {
             queued = self.inner.idle.wait(queued).unwrap_or_else(PoisonError::into_inner);
         }
@@ -607,7 +594,7 @@ impl FileHooks {
 
     /// Findings from after-cell checks not yet shown to `lane`, as one block of text (and forget them).
     pub fn take_pending(&self, lane: &str) -> Option<String> {
-        let pending = lock(&self.inner.pending).remove(lane)?;
+        let pending = sync::lock(&self.inner.pending).remove(lane)?;
         if pending.is_empty() {
             return None;
         }
@@ -626,7 +613,7 @@ impl FileHooks {
     }
 
     fn guards(&self) -> Vec<Registered> {
-        lock(&self.inner.guards).clone()
+        sync::lock(&self.inner.guards).clone()
     }
 
     /// `beforeWrite` of one proposed write on `lane`: every enabled guard, in parallel, each within its time limit.
@@ -663,7 +650,7 @@ impl FileHooks {
             let answer = receiver.recv().unwrap_or(Answer::TimedOut);
             let ms = self.inner.now().saturating_sub(started);
             let name = registered.guard.name().to_string();
-            let mut stats = lock(&registered.stats);
+            let mut stats = sync::lock(&registered.stats);
             stats.total_ms += ms;
             stats.turn_ms += ms;
             stats.checks += 1;
@@ -707,7 +694,7 @@ impl FileHooks {
         }
         if reasons.is_empty() {
             // The write will happen with this content; an after-cell diff need not report it again.
-            lock(&self.inner.checked).insert(path, sha256(content.as_bytes()));
+            sync::lock(&self.inner.checked).insert(path, jsrt::hash::sha256_hex(content.as_bytes()));
             json!({ "blocked": false, "notes": notes })
         } else {
             json!({ "blocked": true, "reason": reasons.join("\n"), "notes": notes })
@@ -718,7 +705,7 @@ impl FileHooks {
     /// at once. `Some(reasons)` blocks it. Notes (a guard that could not check, advise-only refusals) are not shown
     /// for shell commands.
     pub fn before_shell_on(&self, lane: &str, command: &str) -> Option<String> {
-        let observers: Vec<Arc<dyn CellObserver>> = lock(&self.inner.observers)
+        let observers: Vec<Arc<dyn CellObserver>> = sync::lock(&self.inner.observers)
             .iter()
             .filter(|observer| observer.enabled())
             .cloned()
@@ -760,7 +747,7 @@ impl FileHooks {
             let answer = receiver.recv().unwrap_or(Answer::TimedOut);
             let ms = self.inner.now().saturating_sub(started);
             let name = registered.guard.name().to_string();
-            let mut stats = lock(&registered.stats);
+            let mut stats = sync::lock(&registered.stats);
             stats.total_ms += ms;
             stats.turn_ms += ms;
             stats.checks += 1;
@@ -798,17 +785,17 @@ impl Inner {
 
     fn watches_cells(&self) -> bool {
         self.snapshot.is_some()
-            && (lock(&self.guards).iter().any(|r| Inner::watching(&*r.guard))
-                || lock(&self.observers).iter().any(|observer| observer.enabled()))
+            && (sync::lock(&self.guards).iter().any(|r| Inner::watching(&*r.guard))
+                || sync::lock(&self.observers).iter().any(|observer| observer.enabled()))
     }
 
     fn now(&self) -> u64 {
-        let clock = lock(&self.now).clone();
+        let clock = sync::lock(&self.now).clone();
         clock()
     }
 
     fn record(&self, record: GuardRecord) {
-        let on_record = lock(&self.on_record).clone();
+        let on_record = sync::lock(&self.on_record).clone();
         if let Some(on_record) = on_record {
             on_record(&record);
         }
@@ -825,14 +812,14 @@ impl Inner {
 
     /// `#afterCell`: diff against the previous picture, then ask every watching guard (each within its time limit).
     fn after_cell(&self, lane: &str) {
-        let before = lock(&self.baseline).clone();
-        let outside = lock(&self.outside).clone();
+        let before = sync::lock(&self.baseline).clone();
+        let outside = sync::lock(&self.outside).clone();
         if let Some(outside) = &outside {
             outside.wait(OUTSIDE_WAIT);
         }
         let after = self.picture();
         if let Some(after) = &after {
-            *lock(&self.baseline) = Some(after.clone());
+            *sync::lock(&self.baseline) = Some(after.clone());
         }
         let (Some(before), Some(after)) = (before, after) else {
             return;
@@ -851,7 +838,7 @@ impl Inner {
         }
         // Checked writes outside the session directory (a sibling worktree) are in no snapshot; they are changes too.
         let elsewhere: Vec<PathBuf> = {
-            let mut checked = lock(&self.checked);
+            let mut checked = sync::lock(&self.checked);
             let outside: Vec<PathBuf> = checked
                 .keys()
                 .filter(|p| inside(&after.root, p).is_none())
@@ -861,7 +848,9 @@ impl Inner {
                 .into_iter()
                 .filter(|path| {
                     let approved = checked.remove(path);
-                    approved.is_some_and(|approved| std::fs::read(path).is_ok_and(|now| sha256(&now) == approved))
+                    approved.is_some_and(|approved| {
+                        std::fs::read(path).is_ok_and(|now| jsrt::hash::sha256_hex(&now) == approved)
+                    })
                 })
                 .collect()
         };
@@ -875,9 +864,9 @@ impl Inner {
         };
         for relative in added.iter().chain(&modified) {
             let path = resolve_lexical(&after.root, relative);
-            let approved = lock(&self.checked).remove(&path);
+            let approved = sync::lock(&self.checked).remove(&path);
             if let Some(approved) = approved
-                && std::fs::read(&path).is_ok_and(|current| sha256(&current) == approved)
+                && std::fs::read(&path).is_ok_and(|current| jsrt::hash::sha256_hex(&current) == approved)
             {
                 changes.checked.push(path);
                 continue;
@@ -886,10 +875,10 @@ impl Inner {
         }
         for relative in &deleted {
             let path = resolve_lexical(&after.root, relative);
-            lock(&self.checked).remove(&path);
+            sync::lock(&self.checked).remove(&path);
             changes.deleted.push(path);
         }
-        let guards: Vec<Registered> = lock(&self.guards)
+        let guards: Vec<Registered> = sync::lock(&self.guards)
             .iter()
             .filter(|r| Inner::watching(&*r.guard))
             .cloned()
@@ -947,7 +936,7 @@ impl Inner {
                 ),
             };
             {
-                let mut stats = lock(&registered.stats);
+                let mut stats = sync::lock(&registered.stats);
                 stats.total_ms += ms;
                 stats.turn_ms += ms;
                 stats.after_checks += 1;
@@ -968,7 +957,7 @@ impl Inner {
                 found.push(format!("[{name}] {text}"));
             }
         }
-        let observers: Vec<Arc<dyn CellObserver>> = lock(&self.observers)
+        let observers: Vec<Arc<dyn CellObserver>> = sync::lock(&self.observers)
             .iter()
             .filter(|observer| observer.enabled())
             .cloned()
@@ -977,7 +966,10 @@ impl Inner {
             found.extend(observer.cell_changed(&changes, &self.cwd, lane));
         }
         if !found.is_empty() {
-            lock(&self.pending).entry(lane.to_string()).or_default().extend(found);
+            sync::lock(&self.pending)
+                .entry(lane.to_string())
+                .or_default()
+                .extend(found);
         }
     }
 }

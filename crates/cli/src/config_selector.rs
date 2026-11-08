@@ -104,19 +104,6 @@ fn group_label(m: &PathMetadata, agent_dir: &str, home: &str) -> String {
     .to_string()
 }
 
-/// `String.prototype.localeCompare` for the names shown here: case-insensitive first, lower case first on ties.
-fn locale_compare(a: &str, b: &str) -> std::cmp::Ordering {
-    let key = |s: &str| -> Vec<(char, u8)> {
-        s.chars()
-            .map(|c| (c.to_lowercase().next().unwrap_or(c), u8::from(c.is_uppercase())))
-            .collect()
-    };
-    let (ka, kb) = (key(a), key(b));
-    let primary: Vec<char> = ka.iter().map(|k| k.0).collect();
-    let other: Vec<char> = kb.iter().map(|k| k.0).collect();
-    primary.cmp(&other).then_with(|| ka.cmp(&kb))
-}
-
 /// `buildGroups`.
 fn build_groups(resolved: &ResolvedPaths, agent_dir: &str, home: &str) -> Vec<Group> {
     let mut groups: Vec<(String, Group)> = Vec::new();
@@ -181,13 +168,13 @@ fn build_groups(resolved: &ResolvedPaths, agent_dir: &str, home: &str) -> Vec<Gr
                 std::cmp::Ordering::Greater
             };
         }
-        locale_compare(&a.source, &b.source)
+        jsrt::collate::locale_compare(&a.source, &b.source)
     });
     for group in &mut groups {
         group.subgroups.sort_by_key(|s| s.kind);
         for sub in &mut group.subgroups {
             sub.items
-                .sort_by(|a, b| locale_compare(&a.display_name, &b.display_name));
+                .sort_by(|a, b| jsrt::collate::locale_compare(&a.display_name, &b.display_name));
         }
     }
     groups

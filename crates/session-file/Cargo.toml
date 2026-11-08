@@ -10,6 +10,7 @@ autotests = false
 [dependencies]
 getrandom = "=0.4.3"
 indexmap = "=2.14.2"
+jsrt = { path = "../jsrt" }
 serde_json = { version = "=1.0.151", features = ["float_roundtrip", "preserve_order"] }
 
 [lints]

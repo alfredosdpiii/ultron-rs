@@ -6,7 +6,8 @@ use std::sync::LazyLock;
 
 use fancy_regex::Regex;
 
-use crate::utils::{is_whitespace_char as is_ws, js_trim_end, visible_width};
+use crate::utils::visible_width;
+use jsrt::string;
 
 const NEGATIVE_SPACE: &str = "\0";
 const NAMED_OPERATOR_START: char = '\u{f0004}';
@@ -27,14 +28,6 @@ static ROW_SPLIT: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\\\\(?:\[[^\]\
 static OPERATOR_MODIFIER: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"^\\(limits|nolimits)(?![A-Za-z])").expect("regex"));
 
-fn js_trim(s: &str) -> &str {
-    s.trim_matches(is_ws)
-}
-
-fn js_trim_start(s: &str) -> &str {
-    s.trim_start_matches(is_ws)
-}
-
 fn char_count(s: &str) -> usize {
     s.chars().count()
 }
@@ -45,18 +38,18 @@ fn replace_characters(value: &str, map: fn(char) -> Option<&'static str>) -> Opt
 
 /// `value.trim().replace(/\s*([=+-])\s*/g, "$1")`.
 fn normalize_script_value(value: &str) -> String {
-    let chars: Vec<char> = js_trim(value).chars().collect();
+    let chars: Vec<char> = string::trim(value).chars().collect();
     let mut out = String::new();
     let mut i = 0;
     while i < chars.len() {
         let mut j = i;
-        while j < chars.len() && is_ws(chars[j]) {
+        while j < chars.len() && string::is_space(chars[j]) {
             j += 1;
         }
         if j < chars.len() && matches!(chars[j], '=' | '+' | '-') {
             out.push(chars[j]);
             i = j + 1;
-            while i < chars.len() && is_ws(chars[i]) {
+            while i < chars.len() && string::is_space(chars[i]) {
                 i += 1;
             }
         } else {
@@ -97,7 +90,7 @@ fn is_simple(value: &str) -> bool {
 }
 
 fn format_fraction(numerator: &str, denominator: &str) -> String {
-    let (n, d) = (js_trim(numerator), js_trim(denominator));
+    let (n, d) = (string::trim(numerator), string::trim(denominator));
     let simple_d = NUMERIC_VALUE.is_match(d).unwrap_or(false) || char_count(d) == 1;
     let n = if is_simple(n) { n.to_string() } else { format!("({n})") };
     let d = if simple_d { d.to_string() } else { format!("({d})") };
@@ -105,7 +98,7 @@ fn format_fraction(numerator: &str, denominator: &str) -> String {
 }
 
 fn format_root(value: &str, symbol: &str) -> String {
-    let value = js_trim(value);
+    let value = string::trim(value);
     if is_simple(value) {
         format!("{symbol}{value}")
     } else {
@@ -158,7 +151,7 @@ fn normalize_output(value: &str) -> String {
                     in_space = false;
                 }
             }
-            js_trim(&out).to_string()
+            string::trim(&out).to_string()
         })
         .collect();
     let n = lines.len();
@@ -168,7 +161,7 @@ fn normalize_output(value: &str) -> String {
         .filter(|(i, l)| !l.is_empty() || (*i > 0 && *i + 1 < n))
         .map(|(_, l)| l.as_str())
         .collect();
-    js_trim(&kept.join("\n")).to_string()
+    string::trim(&kept.join("\n")).to_string()
 }
 
 enum Node {
@@ -237,7 +230,7 @@ fn join_layouts(layouts: &[Layout]) -> Layout {
                 line += &" ".repeat(layout.width);
             }
         }
-        lines.push(js_trim_end(&line).to_string());
+        lines.push(line.trim_end_matches(string::is_space).to_string());
         row += 1;
     }
     Layout {
@@ -279,13 +272,14 @@ fn render_layout(source: &str, nodes: &[Node]) -> Layout {
             let prev_matrix = matches!(previous, Some(Node::Matrix { .. }));
             if index > position {
                 let sliced = &source_line[position..index];
-                let trimmed = js_trim_end(if previous.is_some() {
-                    js_trim_start(sliced)
+                let trimmed = (if previous.is_some() {
+                    sliced.trim_start_matches(string::is_space)
                 } else {
                     sliced
-                });
-                let lead = prev_matrix && sliced.starts_with(is_ws);
-                let trail = matches!(node, Node::Matrix { .. }) && sliced.ends_with(is_ws);
+                })
+                .trim_end_matches(string::is_space);
+                let lead = prev_matrix && sliced.starts_with(string::is_space);
+                let trail = matches!(node, Node::Matrix { .. }) && sliced.ends_with(string::is_space);
                 let text = if !trimmed.is_empty() {
                     format!(
                         "{}{trimmed}{}",
@@ -370,11 +364,11 @@ fn render_layout(source: &str, nodes: &[Node]) -> Layout {
         if position < source_line.len() {
             let sliced = &source_line[position..];
             let trimmed = if previous.is_some() {
-                js_trim_start(sliced)
+                sliced.trim_start_matches(string::is_space)
             } else {
                 sliced
             };
-            let text = if matches!(previous, Some(Node::Matrix { .. })) && sliced.starts_with(is_ws) {
+            let text = if matches!(previous, Some(Node::Matrix { .. })) && sliced.starts_with(string::is_space) {
                 format!(" {trimmed}")
             } else {
                 trimmed.to_string()
@@ -414,7 +408,7 @@ fn trailing_marker(result: &str) -> Option<usize> {
 }
 
 fn trim_end_in_place(s: &mut String) {
-    let n = js_trim_end(s).len();
+    let n = s.trim_end_matches(string::is_space).len();
     s.truncate(n);
 }
 
@@ -438,7 +432,10 @@ fn strip_leading_spec(body: &str) -> String {
 
 /// `value.replace(/,\s*$/, "")`.
 fn strip_trailing_comma(value: &str) -> &str {
-    js_trim_end(value).strip_suffix(',').unwrap_or(value)
+    value
+        .trim_end_matches(string::is_space)
+        .strip_suffix(',')
+        .unwrap_or(value)
 }
 
 /// `/^(?:if|when|for|otherwise)\b/i`.
@@ -541,8 +538,8 @@ impl<'a> Parser<'a> {
                         result += &script;
                     }
                 }
-                c if is_ws(c) => {
-                    self.skip(is_ws);
+                c if string::is_space(c) => {
+                    self.skip(string::is_space);
                     result.push(' ');
                 }
                 '=' | '<' | '>' => {
@@ -597,7 +594,7 @@ impl<'a> Parser<'a> {
         };
         parse(self, initial);
         let mut next = self.position;
-        while self.at(next).is_some_and(is_ws) {
+        while self.at(next).is_some_and(string::is_space) {
             next += 1;
         }
         if let Some(m) = self.at(next)
@@ -673,7 +670,7 @@ impl<'a> Parser<'a> {
             return NEGATIVE_SPACE.into();
         }
         if is_font_switch(command) {
-            self.skip(is_ws);
+            self.skip(string::is_space);
             return String::new();
         }
         if is_ignored(command) {
@@ -687,7 +684,7 @@ impl<'a> Parser<'a> {
         }
         if command == "not" {
             let value = self.parse_required_argument(false);
-            let value = js_trim(&value);
+            let value = string::trim(&value);
             if let Some(n) = negated(value) {
                 return format!(" {n} ");
             }
@@ -738,7 +735,7 @@ impl<'a> Parser<'a> {
         if command == "sqrt" {
             let degree = self.parse_optional_argument();
             let value = self.parse_required_argument(true);
-            return match degree.as_deref().map(js_trim) {
+            return match degree.as_deref().map(string::trim) {
                 None | Some("2") => format_root(&value, "√"),
                 Some("3") => format_root(&value, "∛"),
                 Some("4") => format_root(&value, "∜"),
@@ -746,7 +743,7 @@ impl<'a> Parser<'a> {
             };
         }
         if command == "boxed" || command == "fbox" {
-            return format!("[{}]", js_trim(&self.parse_required_argument(true)));
+            return format!("[{}]", string::trim(&self.parse_required_argument(true)));
         }
         if matches!(command, "binom" | "dbinom" | "tbinom") {
             let a = self.parse_required_argument(true);
@@ -774,7 +771,7 @@ impl<'a> Parser<'a> {
                 self.position += 1;
             }
             let arg = self.parse_required_argument(true);
-            let operator = js_trim(&normalize_output(&arg)).to_string();
+            let operator = string::trim(&normalize_output(&arg)).to_string();
             return self.parse_operator(&operator, true, starred, true);
         }
         if command == "mod" || command == "bmod" {
@@ -782,7 +779,7 @@ impl<'a> Parser<'a> {
         }
         if command == "pmod" || command == "pod" {
             let value = self.parse_required_argument(true);
-            let value = js_trim(&value);
+            let value = string::trim(&value);
             return if command == "pmod" {
                 format!(" (mod {value})")
             } else {
@@ -793,14 +790,14 @@ impl<'a> Parser<'a> {
             let script = self.parse_required_argument(true);
             let value = self.parse_required_argument(true);
             let kind = if command == "underset" { Kind::Sub } else { Kind::Sup };
-            return format!("{}{}", js_trim(&value), format_script(&script, kind));
+            return format!("{}{}", string::trim(&value), format_script(&script, kind));
         }
         if is_plain_wrapper(command) {
             let value = self.parse_required_argument(true);
             return if command.starts_with("text") || command == "mbox" {
                 value
             } else {
-                js_trim(&value).into()
+                string::trim(&value).into()
             };
         }
         if command == "begin" {
@@ -876,7 +873,7 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_required_argument_value(&mut self) -> String {
-        self.skip(is_ws);
+        self.skip(string::is_space);
         match self.at(self.position) {
             None => {
                 self.supported = false;
@@ -954,7 +951,7 @@ impl<'a> Parser<'a> {
         self.position = end + end_marker.len();
         let env = environment.as_str();
         if matches!(env, "equation" | "equation*" | "displaymath") {
-            return js_trim(&self.render_nested(&body, true)).to_string();
+            return string::trim(&self.render_nested(&body, true)).to_string();
         }
         if matches!(
             env,
@@ -980,7 +977,7 @@ impl<'a> Parser<'a> {
                 } else {
                     cells.concat()
                 };
-                let rendered = js_trim(&self.render_nested(&source, true)).to_string();
+                let rendered = string::trim(&self.render_nested(&source, true)).to_string();
                 if !rendered.is_empty() {
                     rows.push(rendered);
                 }
@@ -1010,7 +1007,7 @@ impl<'a> Parser<'a> {
         for row in split_rows(body) {
             let cells: Vec<String> = row
                 .split('&')
-                .map(|cell| js_trim(&self.render_nested(cell, false)).to_string())
+                .map(|cell| string::trim(&self.render_nested(cell, false)).to_string())
                 .collect();
             if cells.iter().any(|c| !c.is_empty()) {
                 rows.push(cells);
@@ -1154,15 +1151,15 @@ pub fn render_latex(source: &str, display: bool) -> Option<String> {
     let lines = render_layout(&rendered, &nodes).lines;
     let indentation = lines
         .iter()
-        .filter(|l| !js_trim(l).is_empty())
-        .map(|l| l.len() - js_trim_start(l).len())
+        .filter(|l| !string::trim(l).is_empty())
+        .map(|l| l.len() - l.trim_start_matches(string::is_space).len())
         .min()
         .unwrap_or(0);
     let out: Vec<&str> = lines
         .iter()
-        .map(|l| js_trim_end(l.get(indentation..).unwrap_or("")))
+        .map(|l| l.get(indentation..).unwrap_or("").trim_end_matches(string::is_space))
         .collect();
-    Some(protect(js_trim_end(&out.join("\n"))))
+    Some(protect(out.join("\n").trim_end_matches(string::is_space)))
 }
 
 static BLOCK_DOLLAR: LazyLock<Regex> =
@@ -1183,7 +1180,7 @@ fn block_text(raw: &str) -> (String, bool) {
         if let Ok(Some(c)) = r.captures(raw)
             && let Some(text) = c.get(1).filter(|m| !m.as_str().is_empty())
         {
-            return (js_trim(text.as_str()).to_string(), false);
+            return (string::trim(text.as_str()).to_string(), false);
         }
     }
     let text = BLOCK_PENDING
@@ -1222,7 +1219,7 @@ fn inline_text(raw: &str) -> (String, bool) {
 /// or the token's source when it is unclosed, unsupported, or `render` is off (markdown.ts `renderLatex: false`).
 pub fn render_latex_token(raw: &str, block: bool, render: bool) -> String {
     let (text, pending) = if block { block_text(raw) } else { inline_text(raw) };
-    let fallback = if block { js_trim(raw) } else { raw };
+    let fallback = if block { string::trim(raw) } else { raw };
     if pending || !render {
         return fallback.to_string();
     }

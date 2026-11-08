@@ -2,7 +2,7 @@
 
 use review::ledger::{
     Fate, FateInput, FateKind, MERGED_OPEN, PostedFinding, ThreadState, fates_of, lessons_for, merge_fates,
-    parse_iso_ms, without_unposted_merges,
+    without_unposted_merges,
 };
 use serde_json::Value;
 
@@ -64,15 +64,42 @@ fn review_ledger_lessons_and_merge_match_typescript() {
 }
 
 #[test]
-fn review_ledger_parses_iso_times_like_date_parse() {
-    // Expected values are JS `Date.parse` results (node 26, TZ=UTC).
-    assert_eq!(parse_iso_ms("2026-10-10T00:00:00.000Z"), Some(1_791_590_400_000));
-    assert_eq!(parse_iso_ms("2026-09-20"), Some(1_789_862_400_000));
-    assert_eq!(parse_iso_ms("2026-09-10T00:00:00+02:00"), Some(1_788_991_200_000));
-    assert_eq!(parse_iso_ms("2026-08-01T12:30:45.5Z"), Some(1_785_587_445_500));
-    assert_eq!(parse_iso_ms("1969-12-31T23:59:59Z"), Some(-1000));
-    assert_eq!(parse_iso_ms("not a date"), None);
-    assert_eq!(parse_iso_ms("2026-13-01"), None);
+fn review_ledger_reads_fate_times_like_date_parse() {
+    // `lessons_for` windows fates with `Date.parse`. Node 26.12.1 (TZ=UTC): `Date.parse("2026-10-01T12:00:00+0200")`
+    // is 1790848800000 (a `±HHmm` offset), `Date.parse("2026-10-01 12:00Z")` is 1790856000000 (a space for the `T`),
+    // `Date.parse("2026-10-10t00:00z")` is 1791590400000, and `Date.parse("2026-10-01T24:30:00Z")`,
+    // `Date.parse("2026-10-01T12:00:00+25:00")` and `Date.parse("2026-10-10T24:30:00Z")` are NaN.
+    let fate = |id: &str, at: &str| Fate {
+        id: id.into(),
+        pull: "github.com/o/r#1".into(),
+        file: "a.rs".into(),
+        line: 1,
+        category: "bug".into(),
+        kind: "fast".into(),
+        level: "high".into(),
+        claim: "claim".into(),
+        fate: FateKind::Accepted,
+        how: "thumbs".into(),
+        at: at.into(),
+    };
+    let ledger = [
+        fate("1", "2026-10-01T12:00:00+0200"),
+        fate("2", "2026-10-01 12:00Z"),
+        fate("3", "2026-10-01T12:00:00.000Z"),
+        fate("4", "2026-10-01"),
+        fate("5", "2026-10-01T24:30:00Z"),
+        fate("6", "2026-10-01T12:00:00+25:00"),
+    ];
+    // Four readable times: one short of a lesson's MIN_SAMPLES.
+    assert!(lessons_for(&ledger, "2026-10-10T00:00:00.000Z").is_empty());
+    let mut five = ledger.to_vec();
+    five.push(fate("7", "2026-10-02T00:00:00Z"));
+    let lessons = lessons_for(&five, "2026-10-10T00:00:00.000Z");
+    assert_eq!(lessons.len(), 1);
+    assert_eq!(lessons[0].accepted, 5);
+    // An unparsable `now` (NaN) admits nothing; `now` itself may use any form Date.parse reads.
+    assert!(lessons_for(&five, "2026-10-10T24:30:00Z").is_empty());
+    assert_eq!(lessons_for(&five, "2026-10-10t00:00z").len(), 1);
 }
 
 /// fisher-ki-saas#2945: 199 findings listed only in the review body were recorded "merged with the finding open"

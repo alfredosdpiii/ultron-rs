@@ -3,7 +3,6 @@
 
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, BufRead, BufReader, Read, Write};
-use std::time::UNIX_EPOCH;
 
 use serde_json::Value;
 
@@ -19,17 +18,19 @@ pub const MAX_SESSION_HEADER_SCAN_BYTES: u64 = 1024 * 1024;
 
 /// One parsed line, as `JSON.parse` would accept it; falsy values (`null`, `0`, `false`, `""`) are skipped.
 fn parse_line(line: &str) -> Option<Value> {
-    if js::trim(line).is_empty() {
+    if jsrt::string::trim(line).is_empty() {
         return None;
     }
-    serde_json::from_str::<Value>(line).ok().filter(|v| js::truthy(Some(v)))
+    serde_json::from_str::<Value>(line)
+        .ok()
+        .filter(|v| jsrt::value::truthy(Some(v)))
 }
 
 /// `parseSessionEntries`: every non-blank line that parses as JSON (malformed lines are skipped).
 pub fn parse_session_entries(content: &str) -> Vec<Value> {
-    js::trim(content)
+    jsrt::string::trim(content)
         .split('\n')
-        .filter(|line| !js::trim(line).is_empty())
+        .filter(|line| !jsrt::string::trim(line).is_empty())
         .filter_map(|line| serde_json::from_str(line).ok())
         .collect()
 }
@@ -136,11 +137,7 @@ pub(crate) fn read_dir_sorted(dir: &str) -> io::Result<Vec<String>> {
 }
 
 fn mtime_ms(meta: &fs::Metadata) -> io::Result<f64> {
-    let modified = meta.modified()?;
-    Ok(match modified.duration_since(UNIX_EPOCH) {
-        Ok(d) => d.as_secs_f64() * 1000.0,
-        Err(e) => -(e.duration().as_secs_f64() * 1000.0),
-    })
+    Ok(jsrt::date::mtime_ms(meta.modified()?))
 }
 
 /// `findMostRecentSession`: the most recently modified `.jsonl` session in `dir`, optionally only
@@ -244,7 +241,7 @@ pub fn migrate_session_entries(entries: &mut [Value], env: &mut dyn Env) -> bool
     let header = entries.iter().find(|e| entry_type(e) == Some("session"));
     let version = match header.and_then(|h| h.get("version")) {
         None | Some(Value::Null) => 1.0,
-        Some(v) => js::to_number(v),
+        Some(v) => jsrt::value::number(v),
     };
     // NaN compares false everywhere: such a header reports a migration that changes nothing.
     if version >= CURRENT_SESSION_VERSION as f64 {
@@ -326,7 +323,7 @@ fn build_session_info(path: &str, mtime: Option<f64>) -> Option<SessionInfo> {
                 Some("session_info") => {
                     name = match entry.get("name") {
                         None | Some(Value::Null) => None,
-                        Some(Value::String(n)) => Some(js::trim(n).to_string()).filter(|n| !n.is_empty()),
+                        Some(Value::String(n)) => Some(jsrt::string::trim(n).to_string()).filter(|n| !n.is_empty()),
                         Some(_) => return None,
                     };
                     continue;
@@ -367,12 +364,12 @@ fn build_session_info(path: &str, mtime: Option<f64>) -> Option<SessionInfo> {
     }
     let header = header?;
     let header_time = match header.get("timestamp") {
-        Some(Value::String(s)) => js::parse_date(s),
+        Some(Value::String(s)) => jsrt::date::parse_date(s),
         _ => None,
     };
     let modified = match last_activity {
-        Some(t) if t > 0.0 => js::time_clip(t),
-        _ => header_time.or_else(|| js::time_clip(mtime)),
+        Some(t) if t > 0.0 => jsrt::date::time_clip(t),
+        _ => header_time.or_else(|| jsrt::date::time_clip(mtime)),
     };
     Some(SessionInfo {
         path: path.to_string(),
@@ -404,8 +401,7 @@ fn list_dir(dir: &str) -> Vec<SessionInfo> {
         return Vec::new();
     };
     names.retain(|n| n.ends_with(".jsonl"));
-    // ponytail: upstream orders by localeCompare (ICU collation) descending; byte order agrees on generated names.
-    names.reverse();
+    names.sort_by(|a, b| jsrt::collate::locale_compare(b, a));
     names
         .iter()
         .filter_map(|name| build_session_info(&join(&[dir, name]), None))
@@ -436,7 +432,10 @@ pub fn migrate_sessions_from_agent_root(agent_dir: &str) {
 fn move_root_session(agent_dir: &str, name: &str) -> Option<()> {
     let file = join(&[agent_dir, name]);
     let content = lossy(&fs::read(&file).ok()?);
-    let first_line = content.split('\n').next().filter(|l| !js::trim(l).is_empty())?;
+    let first_line = content
+        .split('\n')
+        .next()
+        .filter(|l| !jsrt::string::trim(l).is_empty())?;
     let header: Value = serde_json::from_str(first_line).ok()?;
     if entry_type(&header) != Some("session") {
         return None;
@@ -518,8 +517,7 @@ pub fn list_all_sessions(env: &dyn Env, session_dir: Option<&str>) -> Vec<Sessio
         if by_mtime != 0.0 && !by_mtime.is_nan() {
             return by_mtime;
         }
-        // ponytail: upstream uses localeCompare (ICU collation); byte order agrees on generated names.
-        match base(&b.0).cmp(&base(&a.0)) {
+        match jsrt::collate::locale_compare(&base(&b.0), &base(&a.0)) {
             std::cmp::Ordering::Less => -1.0,
             std::cmp::Ordering::Equal => 0.0,
             std::cmp::Ordering::Greater => 1.0,

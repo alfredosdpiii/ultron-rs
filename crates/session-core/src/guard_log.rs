@@ -25,13 +25,6 @@ fn target(value: Option<&str>) -> Option<PathBuf> {
     Some(std::path::absolute(Path::new(path)).unwrap_or_else(|_| PathBuf::from(path)))
 }
 
-fn now_ms() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis() as u64)
-        .unwrap_or(0)
-}
-
 /// Lines written by one process go out one at a time.
 static APPENDING: Mutex<()> = Mutex::new(());
 
@@ -49,7 +42,7 @@ fn append(target: &Path, line: &str) {
 pub fn loki_log(value: Option<&str>) -> Option<OnRecord> {
     let target = target(value)?;
     Some(Arc::new(move |record: &GuardRecord| {
-        append(&target, &log_line(now_ms(), record))
+        append(&target, &log_line(jsrt::date::now_ms() as u64, record))
     }))
 }
 
@@ -89,7 +82,7 @@ pub fn loki_setup(config: &crate::compose::Config) {
     };
     let python = project_python(&|key| (config.var)(key), &config.cwd);
     let record = setup_record(mode, python.as_deref(), started.elapsed().as_millis() as u64);
-    let mut line = json!({ "at": now_ms() });
+    let mut line = json!({ "at": jsrt::date::now_ms() as u64 });
     if let (Value::Object(line), Value::Object(fields)) = (&mut line, record) {
         line.extend(fields);
     }

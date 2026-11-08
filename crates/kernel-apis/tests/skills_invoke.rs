@@ -150,3 +150,24 @@ fn kernel_apis_skills_invoke_spawns_the_pinned_skill_as_the_typescript_module_do
     assert_eq!(actual["spawned"], fixture["spawned"]);
     assert_eq!(actual["invocations"], fixture["invocations"]);
 }
+
+#[test]
+fn kernel_apis_skills_select_considers_skills_in_locale_compare_order() {
+    // `localeCompare` (ICU) puts "_" before "-" and "~" before "$": node sorts ["my-skill", "my_skill"] to
+    // ["my_skill", "my-skill"]. The old copy compared punctuation by code point and gave "my-skill" first.
+    let skill = |name: &str| {
+        let content = format!("---\nname: {name}\ndescription: Ship it\n---\nBody.");
+        source(name, "Ship it", &format!("/skills/{name}/SKILL.md"), &content, false)
+    };
+    let catalog = vec![skill("my-skill"), skill("my_skill")];
+    let module = SkillsModule::new(
+        Arc::<MemoryDocumentStore>::default(),
+        Arc::new(move || Ok(catalog.clone())),
+        Arc::new(|| 1000),
+        None,
+    );
+    let payload = json!({"query": "ship"}).as_object().unwrap().clone();
+    let decision = module.handle("skills.select", &payload, None, &Signal::new()).unwrap();
+    let considered: Vec<&String> = decision["considered"].as_object().unwrap().keys().collect();
+    assert_eq!(considered, ["my_skill", "my-skill"]);
+}

@@ -147,7 +147,7 @@ impl Scheduler {
     }
 
     fn lock(&self) -> MutexGuard<'_, State> {
-        self.state.lock().unwrap_or_else(|e| e.into_inner())
+        jsrt::sync::lock(&self.state)
     }
 
     /// Read the schedules of every session in `session_dir`, then run the timer on its own thread.

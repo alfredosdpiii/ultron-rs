@@ -11,7 +11,7 @@
 
 use crate::memory_records::{IndexEntry, RecordIndex, Typed, content_cap, typed_fields};
 use crate::store::{DocumentStore, read_versioned};
-use crate::util::{Clock, iso, js_trim, lock, sha256_hex, stringify, system_clock, uuid};
+use crate::util::{Clock, system_clock};
 use kernel::Signal;
 use serde_json::{Map, Value, json};
 use std::collections::{HashMap, HashSet};
@@ -193,11 +193,11 @@ fn is_mutation(kind: &str) -> bool {
 }
 
 fn hash(text: &str) -> String {
-    sha256_hex(text.as_bytes())
+    jsrt::hash::sha256_hex(text.as_bytes())
 }
 
 fn nonempty(value: &Value) -> bool {
-    value.as_str().is_some_and(|text| !js_trim(text).is_empty())
+    value.as_str().is_some_and(|text| !jsrt::string::trim(text).is_empty())
 }
 
 fn is_sha256(value: &Value) -> bool {
@@ -245,18 +245,17 @@ fn scope_of(value: &Value) -> Result<&'static str> {
     }
 }
 
-fn js_space(ch: char) -> bool {
-    ch.is_whitespace() || ch == '\u{feff}'
-}
-
 /// `(?:^|:)<scope>:[^\s:][^\s]*$`
 fn scope_tag(tag: &str, scope: &str) -> bool {
     let needle = format!("{scope}:");
     tag.match_indices(&needle).any(|(at, _)| {
         let rest = &tag[at + needle.len()..];
         (at == 0 || tag[..at].ends_with(':'))
-            && rest.chars().next().is_some_and(|ch| !js_space(ch) && ch != ':')
-            && !rest.chars().any(js_space)
+            && rest
+                .chars()
+                .next()
+                .is_some_and(|ch| !jsrt::string::is_space(ch) && ch != ':')
+            && !rest.chars().any(jsrt::string::is_space)
     })
 }
 
@@ -448,7 +447,7 @@ fn check_abort(signal: &Signal) -> Result<()> {
 fn is_iso(value: &Value) -> bool {
     value
         .as_str()
-        .is_some_and(|text| !js_trim(text).is_empty() && session_file::js::parse_date(text).is_some())
+        .is_some_and(|text| !jsrt::string::trim(text).is_empty() && jsrt::date::parse_date(text).is_some())
 }
 
 /// `readJournal`: rejects unknown persisted fields and inconsistent histories rather than re-persisting them.
@@ -688,7 +687,7 @@ pub struct MemoryService {
 impl MemoryService {
     pub fn new(store: Arc<dyn DocumentStore>, backend: Arc<dyn MemoryBackend>, gate: MemoryGate) -> Result<Self> {
         let namespace = backend.namespace();
-        if js_trim(&namespace).is_empty() {
+        if jsrt::string::trim(&namespace).is_empty() {
             return Err(MemoryError::code("INVALID_CONFIG"));
         }
         let mut filters = Map::new();
@@ -756,7 +755,7 @@ impl MemoryService {
 
     /// Whether this session's journal holds the propose that created document `id`.
     fn journal_owns(&self, id: &str) -> bool {
-        lock(&self.inner)
+        jsrt::sync::lock(&self.inner)
             .records
             .iter()
             .any(|op| op["kind"] == "propose" && op["memoryId"] == id && op["phase"] == "backend")
@@ -792,7 +791,7 @@ impl MemoryService {
     }
 
     fn now(&self) -> String {
-        iso((self.clock)())
+        jsrt::date::iso_string((self.clock)())
     }
 
     fn commit(&self, inner: &mut Inner, change: impl FnOnce(&[Value]) -> Vec<Value>) -> Result<()> {
@@ -810,7 +809,7 @@ impl MemoryService {
     }
 
     fn load(&self) -> Result<()> {
-        let mut inner = lock(&self.inner);
+        let mut inner = jsrt::sync::lock(&self.inner);
         if inner.loaded.is_none() {
             let outcome = (|| {
                 let saved = self.store.read().map_err(|_| MemoryError::code("STORE_ERROR"))?;
@@ -858,7 +857,7 @@ impl MemoryService {
     }
 
     fn start(&self, kind: &str, fields: Vec<(&str, Value)>) -> Result<String> {
-        let id = uuid();
+        let id = jsrt::random::uuid_v4();
         let now = self.now();
         let mut op: Map<String, Value> = fields
             .into_iter()
@@ -874,7 +873,7 @@ impl MemoryService {
         ] {
             op.insert(key.into(), value);
         }
-        let mut inner = lock(&self.inner);
+        let mut inner = jsrt::sync::lock(&self.inner);
         self.commit(&mut inner, |records| {
             let mut next = records.to_vec();
             next.push(Value::Object(op));
@@ -884,7 +883,7 @@ impl MemoryService {
     }
 
     fn operation(&self, id: &str) -> Value {
-        lock(&self.inner)
+        jsrt::sync::lock(&self.inner)
             .records
             .iter()
             .find(|op| op["id"] == id)
@@ -894,7 +893,7 @@ impl MemoryService {
 
     fn update(&self, id: &str, fields: Vec<(&str, Value)>) -> Result<Value> {
         let now = self.now();
-        let mut inner = lock(&self.inner);
+        let mut inner = jsrt::sync::lock(&self.inner);
         self.commit(&mut inner, |records| {
             records
                 .iter()
@@ -930,7 +929,7 @@ impl MemoryService {
         };
         let op = self.operation(id);
         let mut code = if signal.is_aborted() { "ABORTED" } else { error.code };
-        let broken = lock(&self.inner).broken;
+        let broken = jsrt::sync::lock(&self.inner).broken;
         if !broken && op["state"] == "started" {
             let kind = op["kind"].as_str().unwrap_or("");
             let state = if is_mutation(kind) && op["phase"] == "backend" {
@@ -947,7 +946,7 @@ impl MemoryService {
                 code = "STORE_ERROR";
             }
         }
-        if lock(&self.inner).broken {
+        if jsrt::sync::lock(&self.inner).broken {
             code = "STORE_ERROR";
         }
         Err(MemoryError::code(code))
@@ -956,7 +955,7 @@ impl MemoryService {
     /// The propose operation that created document `id`, checked against the configured scope tags.
     fn owned(&self, id: &Value) -> Result<(String, Vec<String>)> {
         require_text(id)?;
-        let owner = lock(&self.inner)
+        let owner = jsrt::sync::lock(&self.inner)
             .records
             .iter()
             .find(|op| op["kind"] == "propose" && op["memoryId"] == *id && op["phase"] == "backend")
@@ -988,16 +987,16 @@ impl MemoryService {
     }
 
     fn locked<T>(&self, id: &str, action: impl FnOnce() -> Result<T>) -> Result<T> {
-        if !lock(&self.inner).busy.insert(id.to_string()) {
+        if !jsrt::sync::lock(&self.inner).busy.insert(id.to_string()) {
             return Err(MemoryError::code("BUSY"));
         }
         let outcome = action();
-        lock(&self.inner).busy.remove(id);
+        jsrt::sync::lock(&self.inner).busy.remove(id);
         outcome
     }
 
     fn editable(&self, id: &str) -> Result<()> {
-        let op = Self::latest(&lock(&self.inner).records, id)?;
+        let op = Self::latest(&jsrt::sync::lock(&self.inner).records, id)?;
         match op["state"].as_str() {
             Some("started" | "accepted" | "unknown") => Err(MemoryError::code("BUSY")),
             Some("forgotten") => Err(MemoryError::code("FORGOTTEN")),
@@ -1027,7 +1026,7 @@ impl MemoryService {
 
     pub fn list(&self) -> Result<Value> {
         self.load()?;
-        let mut records = lock(&self.inner).records.clone();
+        let mut records = jsrt::sync::lock(&self.inner).records.clone();
         let links: Vec<(String, Value)> = records
             .iter()
             .filter(|op| {
@@ -1048,7 +1047,7 @@ impl MemoryService {
     pub fn why(&self, task_id: &Value) -> Result<Value> {
         require_text(task_id)?;
         self.load()?;
-        let records = lock(&self.inner).records.clone();
+        let records = jsrt::sync::lock(&self.inner).records.clone();
         Ok(Value::Array(
             records
                 .into_iter()
@@ -1071,11 +1070,11 @@ impl MemoryService {
         self.load()?;
         let (query, task_id) = (query.as_str().unwrap_or(""), task_id.as_str().unwrap_or(""));
         let query_hash = hash(query);
-        let key = stringify(&json!([task_id, query_hash, scope]));
+        let key = jsrt::json::stringify(&json!([task_id, query_hash, scope]));
         let reused = if refresh {
             None
         } else {
-            lock(&self.inner).reuse.get(&key).cloned()
+            jsrt::sync::lock(&self.inner).reuse.get(&key).cloned()
         };
         // A cache hit is still scope-checked and returns the one recorded decision, not a new one.
         if let Some(reused) = reused {
@@ -1116,7 +1115,7 @@ impl MemoryService {
             let response = self.backend.recall(&request, signal).map_err(|error| MemoryError::of(&error))?;
             check_abort(signal)?;
             let items = response.get("results").and_then(Value::as_array).ok_or(MemoryError::code("INVALID_RESPONSE"))?;
-            let records = lock(&self.inner).records.clone();
+            let records = jsrt::sync::lock(&self.inner).records.clone();
             // A backend index or cache can lag a delete: never re-inject a document the user asked to forget.
             let forgotten: HashSet<String> = records
                 .iter()
@@ -1233,7 +1232,7 @@ impl MemoryService {
             };
             Ok(json!({"operation": operation, "results": results, "context": context}))
         })?;
-        lock(&self.inner).reuse.insert(key, prepared.clone());
+        jsrt::sync::lock(&self.inner).reuse.insert(key, prepared.clone());
         Ok(prepared)
     }
 
@@ -1245,7 +1244,7 @@ impl MemoryService {
     /// scope's tags exactly is dropped.
     pub fn recall_for_turn(&self, query: &str, limit: usize, signal: &Signal) -> Result<Vec<Value>> {
         let scopes = self.read_scopes();
-        if scopes.is_empty() || !self.backend.supports("recall") || js_trim(query).is_empty() {
+        if scopes.is_empty() || !self.backend.supports("recall") || jsrt::string::trim(query).is_empty() {
             return Ok(Vec::new());
         }
         self.load()?;
@@ -1264,7 +1263,7 @@ impl MemoryService {
             .get("results")
             .and_then(Value::as_array)
             .ok_or(MemoryError::code("INVALID_RESPONSE"))?;
-        let records = lock(&self.inner).records.clone();
+        let records = jsrt::sync::lock(&self.inner).records.clone();
         let mut found = Vec::new();
         for item in items {
             let (Some(id), Some(text)) = (
@@ -1334,7 +1333,7 @@ impl MemoryService {
         signal: &Signal,
     ) -> Result<bool> {
         let tags = self.tags(scope)?;
-        if !self.backend.supports("retain") || js_trim(text).is_empty() {
+        if !self.backend.supports("retain") || jsrt::string::trim(text).is_empty() {
             return Ok(false);
         }
         let request = json!({"action": "propose", "text": text, "scope": scope});
@@ -1372,7 +1371,7 @@ impl MemoryService {
         signal: &Signal,
     ) -> Result<bool> {
         let tags = self.tags("project")?;
-        if !self.backend.supports("retain") || js_trim(text).is_empty() {
+        if !self.backend.supports("retain") || jsrt::string::trim(text).is_empty() {
             return Ok(false);
         }
         let request = json!({"action": "propose", "text": text, "scope": "project"});
@@ -1390,7 +1389,7 @@ impl MemoryService {
         }
         let request = json!({
             "items": [{
-                "content": text, "context": context, "timestamp": iso((self.clock)()), "document_id": document_id,
+                "content": text, "context": context, "timestamp": jsrt::date::iso_string((self.clock)()), "document_id": document_id,
                 "tags": tags, "update_mode": "replace",
                 "metadata": {"ultron_source": "auto", "ultron_through": through},
             }],
@@ -1546,7 +1545,7 @@ impl MemoryService {
                 .map_err(|error| MemoryError::of(&error))?;
             return Ok(None);
         }
-        let content = model.get("content").and_then(Value::as_str).map(js_trim);
+        let content = model.get("content").and_then(Value::as_str).map(jsrt::string::trim);
         Ok(content.filter(|content| !content.is_empty()).map(|content| {
             json!({"id": id, "content": content, "refreshedAt": model.get("last_refreshed_at").cloned().unwrap_or(Value::Null)})
         }))
@@ -1676,7 +1675,7 @@ impl MemoryService {
     ) -> Result<Value> {
         let previous = memory_id
             .filter(|_| kind == "correct")
-            .and_then(|id| Self::current_claim(&lock(&self.inner).records, id));
+            .and_then(|id| Self::current_claim(&jsrt::sync::lock(&self.inner).records, id));
         let mut fields = Vec::new();
         if let Some(memory_id) = memory_id {
             fields.push(("memoryId", Value::from(memory_id)));
@@ -1715,7 +1714,7 @@ impl MemoryService {
             if !self.backend.supports("retain") {
                 return Err(MemoryError::code("UNSUPPORTED_API"));
             }
-            let memory_id = memory_id.map(str::to_string).unwrap_or_else(uuid);
+            let memory_id = memory_id.map(str::to_string).unwrap_or_else(jsrt::random::uuid_v4);
             // Persist the document handle and deduplication key BEFORE dispatch.
             self.update(
                 &id,
@@ -1726,7 +1725,7 @@ impl MemoryService {
                     ("phase", "backend".into()),
                 ],
             )?;
-            lock(&self.inner).reuse.clear();
+            jsrt::sync::lock(&self.inner).reuse.clear();
             check_abort(signal)?;
             let mut metadata = json!({"ultron_operation": id, "ultron_evidence_class": class});
             if let Some(typed) = typed {
@@ -1801,7 +1800,7 @@ impl MemoryService {
         let memory_id = id.as_str().unwrap_or("").to_string();
         let outcome = self.forget_owned(&memory_id, scope, tags, signal);
         // A requested forget outranks the backend (see `withdrawn`): the typed record stops pointing at it too.
-        if Self::withdrawn(&lock(&self.inner).records, &memory_id) && self.indexed(&memory_id).is_some() {
+        if Self::withdrawn(&jsrt::sync::lock(&self.inner).records, &memory_id) && self.indexed(&memory_id).is_some() {
             let _ = self.records.remove(&memory_id);
         }
         outcome
@@ -1824,7 +1823,7 @@ impl MemoryService {
                     return Err(MemoryError::code("UNSUPPORTED_API"));
                 }
                 self.update(&op, vec![("phase", "backend".into())])?;
-                lock(&self.inner).reuse.clear();
+                jsrt::sync::lock(&self.inner).reuse.clear();
                 check_abort(signal)?;
                 let response = self
                     .backend
@@ -1888,7 +1887,7 @@ impl MemoryService {
         self.locked(&memory_id, || {
             let op = self.start("get", vec![("memoryId", memory_id.clone().into()), ("scope", scope.clone().into())])?;
             self.attempt(&op, signal, || {
-                let mut current = Self::latest(&lock(&self.inner).records, &memory_id)?;
+                let mut current = Self::latest(&jsrt::sync::lock(&self.inner).records, &memory_id)?;
                 if current["state"] == "forgotten" {
                     return Err(MemoryError::code("FORGOTTEN"));
                 }

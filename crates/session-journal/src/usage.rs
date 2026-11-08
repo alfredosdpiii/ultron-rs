@@ -2,14 +2,8 @@
 
 use serde_json::{Map, Value, json};
 
-/// A JavaScript number as JSON: integral values within the safe range are written as integers.
-pub fn num(f: f64) -> Value {
-    if f.is_finite() && f.fract() == 0.0 && f.abs() <= 9_007_199_254_740_991.0 {
-        json!(f as i64)
-    } else {
-        json!(f)
-    }
-}
+// ponytail: kept as a re-export for session-core's op_journal and run.rs; new code calls `jsrt::json::number`.
+pub use jsrt::json::number as num;
 
 fn field(value: &Value, key: &str) -> f64 {
     value.get(key).and_then(Value::as_f64).unwrap_or(0.0)

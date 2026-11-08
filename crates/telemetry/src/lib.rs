@@ -3,5 +3,4 @@
 
 pub mod bug_report;
 pub mod crash_log;
-mod js;
 pub mod zip;

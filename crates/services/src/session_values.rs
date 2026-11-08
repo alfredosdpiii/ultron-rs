@@ -9,7 +9,6 @@
 
 use kernel_apis::DocumentStore;
 use kernel_apis::artifacts::KeyedDocuments;
-use kernel_apis::util::lock;
 use serde_json::Value;
 use session_journal::{Session, Write};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -58,7 +57,7 @@ impl SessionValues {
     }
 
     pub fn get(&self, namespace: &str, key: &str) -> Option<Value> {
-        lock(&self.session).value(namespace, key).cloned()
+        jsrt::sync::lock(&self.session).value(namespace, key).cloned()
     }
 
     /// One committed transaction setting the value.
@@ -66,7 +65,7 @@ impl SessionValues {
         if self.handed_over() {
             return Ok(());
         }
-        lock(&self.session)
+        jsrt::sync::lock(&self.session)
             .commit(&[Write::set(namespace, key, value.clone())])
             .map(drop)
     }
@@ -130,7 +129,7 @@ impl KeyedDocuments for SessionKeyed {
         self.values.set(&self.namespace, key, value)
     }
     fn list(&self, prefix: &str) -> Result<Vec<(String, Value)>, String> {
-        Ok(lock(&self.values.session)
+        Ok(jsrt::sync::lock(&self.values.session)
             .state()
             .scan_values(&self.namespace, prefix)
             .into_iter()

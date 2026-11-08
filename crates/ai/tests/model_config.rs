@@ -92,7 +92,7 @@ fn ai_model_config_models_store_clones_entries() {
     let mut first = store.read("p").unwrap();
     first.models[0].name = "mutated after read".into();
     let second = store.read("p").unwrap();
-    let as_json = |e: &ModelsStoreEntry| ai::json::normalize_numbers(serde_json::to_value(e).unwrap());
+    let as_json = |e: &ModelsStoreEntry| jsrt::json::normalize_numbers(serde_json::to_value(e).unwrap());
     assert_eq!(as_json(&second), recorded["read"]);
     assert_eq!(store.read("q"), None);
     assert!(recorded["missing"].is_null());

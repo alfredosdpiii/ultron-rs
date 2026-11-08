@@ -16,12 +16,13 @@ use durable::{ConversationId, Cursor, ROOT_CONVERSATION_ID, TaskId, TaskQuery};
 use harness::chat::children::{CHILD_KIND, ChildInput, child_report, spawn_child};
 use harness::chat::{ChatHarness, ModelRef};
 use harness::scheduler::{Cancel, Ctx};
+use jsrt::sync;
 use kernel::Signal;
 use serde_json::Value;
 use session_journal::Write;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex, OnceLock, PoisonError, Weak};
+use std::sync::{Arc, Mutex, OnceLock, Weak};
 use std::time::Duration;
 
 /// Where the TypeScript product keeps the task journal of a session's task host.
@@ -125,10 +126,6 @@ pub fn unfinished(session: &SharedSession) -> Vec<String> {
         .collect()
 }
 
-fn lock_map<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
-    mutex.lock().unwrap_or_else(PoisonError::into_inner)
-}
-
 /// Subagents as child conversations of the session's durable runtime.
 #[derive(Default)]
 pub struct DurableChildren {
@@ -200,7 +197,7 @@ impl DurableChildren {
         let chat = self.chat.get().cloned().ok_or("The durable runtime is not open")?;
         let stack = stack.upgrade().ok_or("The session is closed")?;
         let setup = child_setup(&stack, &run);
-        lock_map(&self.systems).insert(run.lane_name.clone(), setup.system);
+        sync::lock(&self.systems).insert(run.lane_name.clone(), setup.system);
         if let Some(session) = self.session.get()
             && !self.handed_over.load(Ordering::SeqCst)
         {
@@ -221,7 +218,7 @@ impl DurableChildren {
             cwd: run.cwd.clone(),
             env: run.env.clone(),
             agent: false,
-            usage_root: lock_map(&self.root).clone(),
+            usage_root: sync::lock(&self.root).clone(),
             fork: run.fork_at.as_deref().and_then(parse_fork_anchor),
             history: match run
                 .fork_at
@@ -250,7 +247,7 @@ impl DurableChildren {
             return crate::lane_reuse::continue_lane(&chat, conversation, &run);
         }
         // A typed agent's lane is never woken: it gets the subagent guide (crate::wake).
-        lock_map(&self.systems).insert(run.lane.clone(), stack.child_system());
+        sync::lock(&self.systems).insert(run.lane.clone(), stack.child_system());
         let model = match run.model.as_deref().and_then(|spec| spec.split_once('/')) {
             Some((provider, id)) => ModelRef::new(provider, id),
             None => ModelRef::new(&stack.model().provider, &stack.model().id),
@@ -355,12 +352,12 @@ impl DurableChildren {
 
     /// The usage root of the root turn now running (`None`: the ledger's default root).
     pub fn set_root(&self, root: Option<String>) {
-        *lock_map(&self.root) = root;
+        *sync::lock(&self.root) = root;
     }
 
     /// The usage root of the root turn running now (or last).
     pub fn current_root(&self) -> Option<String> {
-        lock_map(&self.root).clone()
+        sync::lock(&self.root).clone()
     }
 
     /// The input of the unfinished child task that runs `lane`, and its conversation once started.
@@ -470,7 +467,7 @@ impl DurableChildren {
 
     /// The system prompt a child lane was started with in this process.
     pub fn system_of(&self, lane: &str) -> Option<String> {
-        lock_map(&self.systems).get(lane).cloned()
+        sync::lock(&self.systems).get(lane).cloned()
     }
 
     /// Reopen the delegation host's tasks after a restart, reattaching every unfinished child the runtime still
@@ -547,7 +544,7 @@ impl DurableChildren {
             host: stack.delegation.clone(),
         };
         let setup = child_setup(stack, &run);
-        lock_map(&self.systems).insert(input.name.clone(), setup.system);
+        sync::lock(&self.systems).insert(input.name.clone(), setup.system);
         run
     }
 }

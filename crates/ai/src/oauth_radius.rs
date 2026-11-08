@@ -7,7 +7,7 @@ use crate::http::{AbortSignal, BoxFuture, HttpRequest, Transport, cancelled, is_
 use crate::jsutil::json_parse_error;
 use crate::oauth_flow::{
     Clock, ClockLoginEnv, FetchError, Poll, TextResponse, fetch_text, form_urlencode, generate_pkce,
-    oauth_callback_host, oauth_error_html, oauth_success_html, poll_device_code_flow, random_uuid,
+    oauth_callback_host, oauth_error_html, oauth_success_html, poll_device_code_flow,
 };
 use serde_json::{Map, Value};
 use std::sync::Arc;
@@ -286,7 +286,7 @@ impl RadiusOAuth {
         let signal = interaction.signal();
         let signal = signal.as_ref();
         let (verifier, challenge) = generate_pkce();
-        let state = random_uuid();
+        let state = jsrt::random::uuid_v4();
         let server = CallbackServer::start(&state, self.callback_port).await;
         let redirect_uri = format!("http://{CALLBACK_HOST}:{}{CALLBACK_PATH}", server.port);
         let redirect_uri = redirect_uri.as_str();

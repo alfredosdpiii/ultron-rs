@@ -14,8 +14,7 @@ use serde_json::{Value, json};
 use review::accounts::{Account, TokenStore};
 use review::ban::{BanList, Bans};
 use review::checkout::CheckoutManager;
-use review::github::{PullRef, iso_from_ms};
-use review::ledger::parse_iso_ms;
+use review::github::PullRef;
 use review::reviewer::{Candidate, ReviewEngine, ReviewerDeps};
 use review::runner::{Env, RunOptions, RunResult, Runner};
 use review::settings::{AutoreviewSettings, ModelFallbacks, autoreview_paths, resolve_config};
@@ -346,7 +345,7 @@ impl FakeHub {
                 can_push: false,
                 teams: HashMap::new(),
                 calls: Vec::new(),
-                now: parse_iso_ms("2026-10-04T10:00:00Z").expect("date"),
+                now: jsrt::date::parse_date("2026-10-04T10:00:00Z").expect("date"),
                 failures: Vec::new(),
                 clone_fails: false,
                 keep_comment: None,
@@ -391,7 +390,7 @@ impl FakeHub {
     }
 
     pub fn set_now(&self, iso: &str) {
-        self.lock().now = parse_iso_ms(iso).expect("date");
+        self.lock().now = jsrt::date::parse_date(iso).expect("date");
     }
 
     pub fn add_account(&self, login: &str, host: &str, active: bool) -> String {
@@ -561,7 +560,7 @@ impl FakeHub {
             .unwrap_or(1);
         let list =
             |items: Vec<Value>| respond(200, Some(Value::Array(if page == 1 { items } else { Vec::new() })), &[]);
-        let stamp = iso_from_ms(state.now);
+        let stamp = jsrt::date::iso_string(state.now);
 
         if path == "notifications" {
             let mut extra = vec![("Last-Modified".to_string(), "Sun, 04 Oct 2026 10:00:00 GMT".to_string())];

@@ -5,9 +5,7 @@
 
 use std::fmt;
 
-use config::json::js_number;
 use serde_json::{Map, Value, json};
-use sha2::{Digest, Sha256};
 
 /// Finished tasks kept in the persisted document: the newest ones. Memory keeps every task.
 pub const MAX_PERSISTED_FINISHED_TASKS: usize = 100;
@@ -129,7 +127,7 @@ impl fmt::Display for TaskStoreError {
                 f,
                 "Cannot resume: session value ultron.tasks/root has format version {}, but this Ultron reads only \
                  format version 1. It was left unchanged; open the session with the Ultron version that wrote it, or upgrade.",
-                js_stringify(version)
+                jsrt::json::stringify(version)
             ),
             TaskStoreError::InvalidResult => f.write_str("Invalid task result"),
             TaskStoreError::InvalidDefinition => f.write_str("definition must be id@version"),
@@ -152,14 +150,6 @@ pub trait TaskDocumentStore {
     fn write(&mut self, document: &Value) -> Result<(), String>;
 }
 
-/// `JSON.stringify` for strict JSON values (numbers formatted as JavaScript does).
-fn js_stringify(value: &Value) -> String {
-    match value {
-        Value::Number(n) => js_number(n),
-        other => other.to_string(),
-    }
-}
-
 /// SHA-256 of the canonical JSON (object keys sorted by UTF-16 code units, as JavaScript's sort does).
 pub fn task_fingerprint(request: &Value) -> String {
     fn canonical(item: &Value, out: &mut String) {
@@ -176,27 +166,24 @@ pub fn task_fingerprint(request: &Value) -> String {
             }
             Value::Object(map) => {
                 let mut keys: Vec<&String> = map.keys().collect();
-                keys.sort_by(|a, b| a.encode_utf16().cmp(b.encode_utf16()));
+                jsrt::utf16::sort(&mut keys);
                 out.push('{');
                 for (n, key) in keys.into_iter().enumerate() {
                     if n > 0 {
                         out.push(',');
                     }
-                    out.push_str(&Value::String(key.clone()).to_string());
+                    out.push_str(&jsrt::json::stringify(&Value::String(key.clone())));
                     out.push(':');
                     canonical(&map[key], out);
                 }
                 out.push('}');
             }
-            other => out.push_str(&js_stringify(other)),
+            other => out.push_str(&jsrt::json::stringify(other)),
         }
     }
     let mut text = String::new();
     canonical(request, &mut text);
-    Sha256::digest(text.as_bytes())
-        .iter()
-        .map(|b| format!("{b:02x}"))
-        .collect()
+    jsrt::hash::sha256_hex(text)
 }
 
 /// `id@version`: a lowercase id (`[a-z][a-z0-9-]*`) and a decimal version.
@@ -336,24 +323,12 @@ pub fn persisted_tasks(records: &[Task]) -> Vec<Task> {
 }
 
 fn random_task_id() -> String {
-    format!("ultron-task-{}", random_uuid())
+    format!("ultron-task-{}", jsrt::random::uuid_v4())
 }
 
 /// A random RFC 4122 version 4 UUID (`crypto.randomUUID`).
 pub fn random_uuid() -> String {
-    let mut b = [0u8; 16];
-    getrandom::fill(&mut b).expect("OS randomness is unavailable");
-    b[6] = (b[6] & 0x0f) | 0x40;
-    b[8] = (b[8] & 0x3f) | 0x80;
-    let hex: String = b.iter().map(|x| format!("{x:02x}")).collect();
-    format!(
-        "{}-{}-{}-{}-{}",
-        &hex[0..8],
-        &hex[8..12],
-        &hex[12..16],
-        &hex[16..20],
-        &hex[20..32]
-    )
+    jsrt::random::uuid_v4()
 }
 
 /// Serialized, commit-before-publish task records. `&mut self` serializes changes the way the

@@ -20,8 +20,7 @@ use std::path::Path;
 use regex::Regex;
 use serde_json::{Map, Value, json};
 
-use crate::github::iso_from_ms;
-use crate::js::{path_join, trim};
+use crate::js::path_join;
 use crate::prepare::{NODE_LOCKS, ToolchainEntry, ToolchainRequests, detect_ecosystems, environment_hash, find_mise};
 use crate::reviewer::{EnvironmentPreparer, PreparedEnvironment};
 use crate::runner::{RunOptions, RunResult, Runner};
@@ -113,22 +112,11 @@ impl Prepared {
     }
 }
 
-/// JavaScript truthiness of a parsed JSON value.
-fn truthy(value: Option<&Value>) -> bool {
-    match value {
-        None | Some(Value::Null) => false,
-        Some(Value::Bool(flag)) => *flag,
-        Some(Value::Number(n)) => n.as_f64().is_some_and(|n| n != 0.0 && !n.is_nan()),
-        Some(Value::String(text)) => !text.is_empty(),
-        Some(Value::Array(_) | Value::Object(_)) => true,
-    }
-}
-
 /// The last FAILURE_CHARS of stderr then stdout: backend tracebacks put the actionable error last.
 const FAILURE_CHARS: usize = 4000;
 
 fn failure_output(result: &RunResult) -> String {
-    let text = [trim(&result.stderr), trim(&result.stdout)]
+    let text = [jsrt::string::trim(&result.stderr), jsrt::string::trim(&result.stdout)]
         .into_iter()
         .filter(|text| !text.is_empty())
         .collect::<Vec<_>>()
@@ -218,10 +206,10 @@ fn compare_numeric(a: &str, b: &str) -> std::cmp::Ordering {
 
 /// The installed version satisfying `request` (a version or prefix such as "3.12" or "20"), the newest.
 fn pick(entries: Option<&Value>, request: &str) -> Option<(String, String)> {
-    let stripped =
-        request.trim_start_matches(|c: char| matches!(c, '~' | '^' | '>' | '=' | '<' | 'v') || crate::js::is_space(c));
+    let stripped = request
+        .trim_start_matches(|c: char| matches!(c, '~' | '^' | '>' | '=' | '<' | 'v') || jsrt::string::is_space(c));
     let wanted = stripped
-        .split(|c: char| c == ',' || c == '<' || crate::js::is_space(c))
+        .split(|c: char| c == ',' || c == '<' || jsrt::string::is_space(c))
         .next()
         .unwrap_or(stripped);
     let mut candidates: Vec<(String, String)> = entries
@@ -357,7 +345,7 @@ fn io_error(what: &str, path: &str, error: std::io::Error) -> String {
 fn ok_record(record_path: &str) -> Option<Map<String, Value>> {
     let text = fs::read_to_string(record_path).ok()?;
     match serde_json::from_str::<Value>(&text) {
-        Ok(Value::Object(record)) if truthy(record.get("ok")) => Some(record),
+        Ok(Value::Object(record)) if jsrt::value::truthy(record.get("ok")) => Some(record),
         _ => None,
     }
 }
@@ -684,7 +672,7 @@ pub fn prepare_environment(repo_dir: &str, options: &PrepareOptions) -> Result<P
         "failures": failures,
         "ms": now - started,
         "ok": ok,
-        "at": iso_from_ms(now),
+        "at": jsrt::date::iso_string(now),
         "repo": repo_dir,
     });
     write_record(&record_path, &to_json_1(&record))?;

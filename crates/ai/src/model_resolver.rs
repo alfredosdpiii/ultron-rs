@@ -10,7 +10,6 @@
 //! Evidence: `fixtures/generate-model-resolver.mjs` runs the TypeScript resolver; `tests/model_resolver.rs` replays it.
 
 use crate::types::Model;
-use model_scope::locale_compare;
 
 pub use model_scope::{THINKING_LEVELS, is_valid_thinking_level};
 
@@ -232,7 +231,7 @@ pub fn resolve_cli_model(
                 return CliModel::found(authenticated[0]);
             }
             let mut refs: Vec<String> = exact.iter().map(|m| reference(m)).collect();
-            refs.sort_by(|a, b| locale_compare(a, b));
+            refs.sort_by(|a, b| jsrt::collate::locale_compare(a, b));
             let hint = if authenticated.is_empty() {
                 "No matching provider is authenticated."
             } else {

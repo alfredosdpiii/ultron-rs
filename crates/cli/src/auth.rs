@@ -143,7 +143,7 @@ fn parse_duration(value: &str) -> Option<f64> {
 fn validate(args: &Args, kind: Kind) -> Result<(Option<String>, Option<String>), String> {
     let trimmed = |v: &Option<String>| {
         v.as_deref()
-            .map(crate::js::trim)
+            .map(jsrt::string::trim)
             .filter(|s| !s.is_empty())
             .map(str::to_string)
     };
@@ -532,7 +532,7 @@ pub fn run_with(
                 if let Some(c) = &credential {
                     result["credentials"] = Value::String(c.clone());
                 }
-                session_file::js::stringify(&result)
+                jsrt::json::stringify(&result)
             } else {
                 credential.unwrap_or_else(|| status.clone())
             };

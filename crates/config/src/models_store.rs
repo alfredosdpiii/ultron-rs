@@ -6,7 +6,6 @@ use std::path::{Path, PathBuf};
 use serde_json::Value;
 
 use crate::auth::{parse_data, with_locked_file};
-use crate::json::stringify_pretty;
 
 pub struct ModelsStore {
     path: PathBuf,
@@ -32,7 +31,7 @@ impl ModelsStore {
         with_locked_file(&self.path, |content| {
             let mut data = parse_data(content)?;
             data.insert(provider.to_string(), entry);
-            Ok(((), Some(stringify_pretty(&Value::Object(data)))))
+            Ok(((), Some(jsrt::json::stringify_pretty(&Value::Object(data)))))
         })
     }
 
@@ -40,7 +39,7 @@ impl ModelsStore {
         with_locked_file(&self.path, |content| {
             let mut data = parse_data(content)?;
             data.shift_remove(provider);
-            Ok(((), Some(stringify_pretty(&Value::Object(data)))))
+            Ok(((), Some(jsrt::json::stringify_pretty(&Value::Object(data)))))
         })
     }
 }

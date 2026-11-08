@@ -10,7 +10,6 @@ use crate::py;
 use crate::scan::{ENGINE, TEMPLATE};
 use regex::Regex;
 use serde_json::{Map, Value, json};
-use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
 
 macro_rules! asset {
@@ -496,7 +495,7 @@ pub fn install_managed(root: &Path, destination: &Path) -> Result<(), InitError>
     if destination.starts_with(root) {
         return Err("managed engine must be outside the repository".into());
     }
-    let digest: String = Sha256::digest(ENGINE).iter().map(|b| format!("{b:02x}")).collect();
+    let digest = jsrt::hash::sha256_hex(ENGINE);
     let release = destination.join(digest);
     mkdir(&release)?;
     let engine = release.join("loki.py");

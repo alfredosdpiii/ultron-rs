@@ -265,19 +265,9 @@ fn parse_pairs(option: &str, pairs: Option<&Vec<String>>, io: &mut Io) -> Option
     Some(record)
 }
 
-/// `Number(text)` as JSON.
+/// `Number(text)` as JSON (`NaN` and the infinities serialize as null).
 fn js_number_value(text: &str) -> Value {
-    let t = crate::js::trim(text);
-    let parsed = if t.is_empty() {
-        Some(0.0)
-    } else {
-        t.parse::<f64>().ok().filter(|n| n.is_finite())
-    };
-    match parsed {
-        Some(n) => crate::js::num(n),
-        // NaN serializes as null.
-        None => Value::Null,
-    }
+    jsrt::json::number(jsrt::number::parse(text))
 }
 
 fn add(args: &[String], project_config: &Path, env: &Env, agent_dir: &Path, io: &mut Io) -> i32 {
@@ -647,8 +637,8 @@ fn connect(entry: &ServerEntry, env: &Env) -> Connection {
         Err(error) => {
             let tail = stdio.map(|s| s.stderr()).map(|s| {
                 let trimmed = s.trim().to_string();
-                let len = crate::js::len16(&trimmed);
-                crate::js::tail16(&trimmed, len.saturating_sub(STDERR_TAIL_CHARS)).to_string()
+                let len = jsrt::utf16::len(&trimmed);
+                jsrt::utf16::skip(&trimmed, len.saturating_sub(STDERR_TAIL_CHARS)).to_string()
             });
             failed(match tail.filter(|t| !t.is_empty()) {
                 Some(tail) => format!("{error}\n{tail}"),
@@ -662,14 +652,19 @@ fn describe_transport(config: &Map<String, Value>) -> String {
     if let Some(url) = config.get("url").and_then(Value::as_str) {
         return url.to_string();
     }
-    let mut parts = vec![config.get("command").map(crate::js::string).unwrap_or_default()];
+    let mut parts = vec![
+        config
+            .get("command")
+            .map(|v| jsrt::value::string(Some(v)))
+            .unwrap_or_default(),
+    ];
     parts.extend(
         config
             .get("args")
             .and_then(Value::as_array)
             .into_iter()
             .flatten()
-            .map(crate::js::string),
+            .map(|v| jsrt::value::string(Some(v))),
     );
     parts.join(" ")
 }
@@ -727,7 +722,7 @@ fn list(loaded: &LoadedConfig, as_json: bool, note: Option<String>, env: &Env, a
         if let Some(note) = &note {
             value["note"] = Value::String(note.clone());
         }
-        io.log(&config::json::stringify_pretty(&value));
+        io.log(&jsrt::json::stringify_pretty(&value));
         return i32::from(failed);
     }
     if reports.is_empty() && loaded.errors.is_empty() {

@@ -7,6 +7,8 @@
 
 #[path = "all_messages_fixture.rs"]
 mod all_messages_fixture;
+#[path = "codec_and_ids.rs"]
+mod codec_and_ids;
 #[path = "context_projectors.rs"]
 mod context_projectors;
 #[path = "legacy_names.rs"]

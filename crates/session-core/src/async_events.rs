@@ -23,10 +23,11 @@
 //! The dispatcher is one thread: publications, run ends and drains are commands it handles in order, and each lane's
 //! batch is delivered after its coalescing deadline, so delivery decisions never race each other.
 
+use jsrt::sync;
 use serde_json::{Value, json};
 use std::collections::{HashMap, HashSet};
 use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender, channel};
-use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 pub const RUNTIME_EVENT_MESSAGE_TYPE: &str = "ultron-runtime-event";
@@ -89,7 +90,7 @@ pub fn runtime_event_text_with(events: &[RuntimeEvent], mask: &MaskText) -> Stri
     events
         .iter()
         .map(|e| {
-            let summary = crate::compose::js_slice(&e.summary, 4 * 240);
+            let summary = jsrt::utf16::head(&e.summary, 4 * 240).to_string();
             crate::compose::runtime_event_line_with(&e.kind, &e.id, &e.status, &summary, &e.fetch, mask)
         })
         .collect::<Vec<_>>()
@@ -221,10 +222,6 @@ struct Counts {
     aborted: HashSet<String>,
 }
 
-fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
-    mutex.lock().unwrap_or_else(PoisonError::into_inner)
-}
-
 /// `AsyncEventDispatcher`.
 pub struct Dispatcher {
     tx: Mutex<Option<Sender<Command>>>,
@@ -247,7 +244,7 @@ impl Dispatcher {
             steered: Vec::new(),
             chain_runs: HashMap::new(),
             notes: HashMap::new(),
-            now: now_ms,
+            now: || jsrt::date::now_ms() as u64,
         };
         let thread = std::thread::spawn(move || worker.run(&rx));
         Arc::new(Dispatcher {
@@ -263,7 +260,7 @@ impl Dispatcher {
     }
 
     fn send(&self, command: Command) -> bool {
-        lock(&self.tx).as_ref().is_some_and(|tx| tx.send(command).is_ok())
+        sync::lock(&self.tx).as_ref().is_some_and(|tx| tx.send(command).is_ok())
     }
 
     /// A completion: delivered after the coalescing window with the others of its lane.
@@ -271,9 +268,9 @@ impl Dispatcher {
         if !self.enabled {
             return;
         }
-        *lock(&self.counts).pending.entry(event.lane.clone()).or_default() += 1;
+        *sync::lock(&self.counts).pending.entry(event.lane.clone()).or_default() += 1;
         if !self.send(Command::Publish(event.clone())) {
-            let mut counts = lock(&self.counts);
+            let mut counts = sync::lock(&self.counts);
             if let Some(n) = counts.pending.get_mut(&event.lane) {
                 *n = n.saturating_sub(1);
             }
@@ -300,7 +297,7 @@ impl Dispatcher {
 
     /// Events for `lane` waiting to be delivered, or steered into a run that has not consumed them yet.
     pub fn pending_for(&self, lane: &str) -> usize {
-        let counts = lock(&self.counts);
+        let counts = sync::lock(&self.counts);
         counts.pending.get(lane).copied().unwrap_or(0)
             + counts.steered.get(lane).copied().unwrap_or(0)
             + counts.in_flight
@@ -308,16 +305,16 @@ impl Dispatcher {
 
     /// Whether a root turn was aborted (its work never restarts the model).
     pub fn root_aborted(&self, root: Option<&str>) -> bool {
-        root.is_some_and(|root| lock(&self.counts).aborted.contains(root))
+        root.is_some_and(|root| sync::lock(&self.counts).aborted.contains(root))
     }
 
     /// Stop delivering (pending events are dropped). The dispatcher thread ends by itself once its current
     /// delivery returns; this never waits for it, as a delivery may be waiting for the caller (the session actor).
     pub fn close(&self) {
-        if let Some(tx) = lock(&self.tx).take() {
+        if let Some(tx) = sync::lock(&self.tx).take() {
             let _ = tx.send(Command::Close);
         }
-        lock(&self.thread).take();
+        sync::lock(&self.thread).take();
     }
 }
 
@@ -325,12 +322,6 @@ impl Drop for Dispatcher {
     fn drop(&mut self) {
         self.close();
     }
-}
-
-fn now_ms() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |d| d.as_millis() as u64)
 }
 
 struct Steered {
@@ -378,7 +369,7 @@ impl Worker {
                 Ok(Command::RunEnded { lane, run_id, aborted }) => {
                     if lane == crate::lane::MAIN && aborted {
                         let root = (self.options.root_of_run)(&run_id);
-                        lock(&self.counts).aborted.insert(root.clone());
+                        sync::lock(&self.counts).aborted.insert(root.clone());
                         if let Some(callback) = &self.options.on_root_aborted {
                             callback(&root);
                         }
@@ -430,14 +421,14 @@ impl Worker {
             return;
         };
         {
-            let mut counts = lock(&self.counts);
+            let mut counts = sync::lock(&self.counts);
             if let Some(n) = counts.pending.get_mut(lane) {
                 *n = n.saturating_sub(events.len());
             }
             counts.in_flight += 1;
         }
         self.deliver(lane, events);
-        lock(&self.counts).in_flight -= 1;
+        sync::lock(&self.counts).in_flight -= 1;
     }
 
     fn message(&mut self, lane: &str, events: &[RuntimeEvent]) -> Value {
@@ -509,7 +500,7 @@ impl Worker {
         let Some(root) = chain_root(events) else {
             return Some("no root turn owns this work".into());
         };
-        if lock(&self.counts).aborted.contains(&root) {
+        if sync::lock(&self.counts).aborted.contains(&root) {
             return Some("the root turn was aborted".into());
         }
         let runs = self.chain_runs.get(&root).copied().unwrap_or(0);
@@ -527,7 +518,7 @@ impl Worker {
             Err(_) => return self.retry_later(events),
         };
         self.delivered(lane, "steer", &events, None);
-        *lock(&self.counts).steered.entry(lane.to_string()).or_default() += 1;
+        *sync::lock(&self.counts).steered.entry(lane.to_string()).or_default() += 1;
         self.steered.push(Steered {
             lane: lane.into(),
             entry,
@@ -543,7 +534,7 @@ impl Worker {
     /// work waiting and an unattached worker could retire with them undelivered.
     fn retry_later(&mut self, events: Vec<RuntimeEvent>) {
         {
-            let mut counts = lock(&self.counts);
+            let mut counts = sync::lock(&self.counts);
             for event in &events {
                 *counts.pending.entry(event.lane.clone()).or_default() += 1;
             }
@@ -554,7 +545,7 @@ impl Worker {
     fn forget_steer(&mut self, entry: &str) {
         if let Some(index) = self.steered.iter().position(|s| s.entry == entry) {
             let steered = self.steered.remove(index);
-            if let Some(n) = lock(&self.counts).steered.get_mut(&steered.lane) {
+            if let Some(n) = sync::lock(&self.counts).steered.get_mut(&steered.lane) {
                 *n = n.saturating_sub(1);
             }
         }

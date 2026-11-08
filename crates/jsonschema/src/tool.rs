@@ -6,18 +6,7 @@
 //! `anyOf`/`oneOf`/`allOf`.
 
 use crate::check::{SchemaError, check, errors};
-use config::json::stringify_pretty;
-use serde_json::{Map, Number, Value};
-use session_file::js::{format_f64, trim};
-
-/// A JavaScript number as JSON: integral values in the safe range as integers (so they serialize without a fraction).
-pub(crate) fn js_number(value: f64) -> Value {
-    if value.fract() == 0.0 && value.abs() < 9_007_199_254_740_992.0 {
-        Value::Number(Number::from(value as i64))
-    } else {
-        Number::from_f64(value).map_or(Value::Null, Value::Number)
-    }
-}
+use serde_json::{Map, Value};
 
 /// Validate and coerce `params` for tool `name` with parameter schema `schema`.
 pub fn prepare_tool_arguments(
@@ -90,7 +79,7 @@ fn failure(name: &str, schema: &Value, value: &Value, received: &Value) -> Strin
     };
     format!(
         "Validation failed for tool \"{name}\":\n{lines}\n\nReceived arguments:\n{}",
-        stringify_pretty(received)
+        jsrt::json::stringify_pretty(received)
     )
 }
 
@@ -159,28 +148,28 @@ fn normalize_optional_nulls(value: &mut Value, schema: &Value) {
 
 /// `Number(text)` for a string that is not blank; `None` when it is not a finite number.
 fn finite_number(text: &str) -> Option<f64> {
-    if trim(text).is_empty() {
+    if jsrt::string::trim(text).is_empty() {
         return None;
     }
-    let n = session_file::js::to_number(&Value::String(text.into()));
+    let n = jsrt::number::parse(text);
     n.is_finite().then_some(n)
 }
 
 fn coerce_primitive(value: &Value, kind: &str) -> Value {
     match (kind, value) {
-        ("number" | "integer", Value::Null) => js_number(0.0),
-        ("number", Value::String(s)) => finite_number(s).map_or_else(|| value.clone(), js_number),
+        ("number" | "integer", Value::Null) => jsrt::json::number(0.0),
+        ("number", Value::String(s)) => finite_number(s).map_or_else(|| value.clone(), jsrt::json::number),
         ("integer", Value::String(s)) => finite_number(s)
             .filter(|n| n.fract() == 0.0)
-            .map_or_else(|| value.clone(), js_number),
-        ("number" | "integer", Value::Bool(b)) => js_number(f64::from(u8::from(*b))),
+            .map_or_else(|| value.clone(), jsrt::json::number),
+        ("number" | "integer", Value::Bool(b)) => jsrt::json::number(f64::from(u8::from(*b))),
         ("boolean", Value::Null) => Value::Bool(false),
         ("boolean", Value::String(s)) if s == "true" => Value::Bool(true),
         ("boolean", Value::String(s)) if s == "false" => Value::Bool(false),
         ("boolean", Value::Number(n)) if n.as_f64() == Some(1.0) => Value::Bool(true),
         ("boolean", Value::Number(n)) if n.as_f64() == Some(0.0) => Value::Bool(false),
         ("string", Value::Null) => Value::String(String::new()),
-        ("string", Value::Number(n)) => Value::String(format_f64(n.as_f64().unwrap_or(0.0))),
+        ("string", Value::Number(n)) => Value::String(jsrt::number::to_string(n.as_f64().unwrap_or(0.0))),
         ("string", Value::Bool(b)) => Value::String(b.to_string()),
         ("null", Value::String(s)) if s.is_empty() => Value::Null,
         ("null", Value::Number(n)) if n.as_f64() == Some(0.0) => Value::Null,

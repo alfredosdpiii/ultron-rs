@@ -2,10 +2,10 @@
 //! messages, session-core auto_memory) reports them, and does not say Hindsight was not configured; a session with
 //! no memory at all reports as before.
 
-use cli::localtime::Zone;
 use cli::usage::log::read_session_log;
 use cli::usage::report::build_session_report;
 use cli::usage::text::{TextOptions, render_session_report};
+use jsrt::localtime::Zone;
 use serde_json::{Value, json};
 use std::path::Path;
 

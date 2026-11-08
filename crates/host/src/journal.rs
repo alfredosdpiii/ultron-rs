@@ -92,11 +92,7 @@ fn int_of(value: &Value, key: &str) -> Option<u64> {
 
 /// A number as JSON.stringify writes it: integral values without a fraction.
 fn js_number(value: f64) -> Value {
-    if value.fract() == 0.0 {
-        json!(value as i64)
-    } else {
-        json!(value)
-    }
+    jsrt::json::number(value)
 }
 
 impl JobRecord {

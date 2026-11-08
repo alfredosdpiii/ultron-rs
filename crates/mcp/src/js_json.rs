@@ -3,7 +3,7 @@
 //! JavaScript; only `\n` starts a line. Numbers become what JavaScript holds (doubles), written as integers when
 //! integral.
 
-use serde_json::{Map, Number, Value};
+use serde_json::{Map, Value};
 
 /// Sources at least this long show the unexpected token in context (V8 `kMinOriginalSourceLengthForContext`).
 const MIN_LENGTH_FOR_CONTEXT: usize = 21;
@@ -162,7 +162,7 @@ impl Parser<'_> {
             }
         }
         let value: f64 = self.text(start, self.pos).parse().unwrap_or(f64::NAN);
-        Ok(js_number(value))
+        Ok(jsrt::json::number(value))
     }
 
     fn hex(&mut self) -> Result<u16, String> {
@@ -284,14 +284,5 @@ impl Parser<'_> {
                 _ => return Err(self.expected("Expected ',' or ']' after array element")),
             }
         }
-    }
-}
-
-/// A JavaScript number as JSON: integral values in the safe range as integers (so they serialize without a fraction).
-pub fn js_number(value: f64) -> Value {
-    if value.fract() == 0.0 && value.abs() < 9_007_199_254_740_992.0 {
-        Value::Number(Number::from(value as i64))
-    } else {
-        Number::from_f64(value).map_or(Value::Null, Value::Number)
     }
 }

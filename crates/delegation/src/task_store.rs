@@ -84,8 +84,3 @@ impl TaskJournal {
         Ok(self.0.stored_json(&task))
     }
 }
-
-/// A random version-4 UUID (`randomUUID`).
-pub fn uuid_v4() -> String {
-    harness::task_store::random_uuid()
-}

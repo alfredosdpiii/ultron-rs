@@ -96,10 +96,6 @@ pub struct SecretDetector {
     test_value: Regex,
 }
 
-fn utf16_len(text: &str) -> usize {
-    text.encode_utf16().count()
-}
-
 /// Bits of Shannon entropy per character (code points counted, divided by the UTF-16 length as JS does).
 pub fn shannon_entropy(value: &str) -> f64 {
     if value.is_empty() {
@@ -112,7 +108,7 @@ pub fn shannon_entropy(value: &str) -> f64 {
             None => counts.push((c, 1)),
         }
     }
-    let length = utf16_len(value) as f64;
+    let length = jsrt::utf16::len(value) as f64;
     counts.iter().fold(0.0, |bits, (_, count)| {
         let p = *count as f64 / length;
         bits - p * p.log2()
@@ -325,7 +321,7 @@ impl OutputMasker {
         let mut known = self.known.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         for value in values.iter().filter_map(Value::as_str) {
             let value = value.trim();
-            if utf16_len(value) >= KNOWN_SECRET_MIN_LENGTH && !known.iter().any(|k| k == value) {
+            if jsrt::utf16::len(value) >= KNOWN_SECRET_MIN_LENGTH && !known.iter().any(|k| k == value) {
                 known.push(value.to_owned());
             }
         }

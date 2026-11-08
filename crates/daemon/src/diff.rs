@@ -7,6 +7,7 @@
 //! does upstream. Counting mismatches uses deep equality, which emits the same ops as upstream's identity count.
 
 use chord_delta::{Op, Path, RESERVED_SEGMENTS, Seg, overlap};
+use jsrt::utf16;
 use serde_json::{Map, Value};
 
 const DEFAULT_OVERLAP_SCAN: usize = 65_536;
@@ -29,15 +30,6 @@ fn same(left: &Value, right: &Value) -> bool {
     is_primitive(left) && left == right
 }
 
-fn utf16_len(text: &str) -> usize {
-    text.encode_utf16().count()
-}
-
-fn utf16_tail(text: &str, skip: usize) -> String {
-    let units: Vec<u16> = text.encode_utf16().skip(skip).collect();
-    String::from_utf16_lossy(&units)
-}
-
 fn emit_string(before: &str, after: &str, path: &[Seg], ops: &mut Vec<Op>) {
     if before == after {
         return;
@@ -51,9 +43,9 @@ fn emit_string(before: &str, after: &str, path: &[Seg], ops: &mut Vec<Op>) {
         ops.push(Op::Set(path.to_vec(), Value::String(after.to_string())));
         return;
     }
-    ops.push(Op::Trim(path.to_vec(), utf16_len(before) - shared));
-    if utf16_len(after) > shared {
-        ops.push(Op::Append(path.to_vec(), utf16_tail(after, shared)));
+    ops.push(Op::Trim(path.to_vec(), utf16::len(before) - shared));
+    if utf16::len(after) > shared {
+        ops.push(Op::Append(path.to_vec(), utf16::skip(after, shared).to_string()));
     }
 }
 
@@ -206,7 +198,7 @@ fn number_text(value: &serde_json::Number) -> usize {
 fn json_cost(value: &Value) -> usize {
     match value {
         Value::Null => 4,
-        Value::String(s) => utf16_len(s) + 2,
+        Value::String(s) => utf16::len(s) + 2,
         Value::Number(n) => number_text(n),
         Value::Bool(b) => {
             if *b {
@@ -217,7 +209,7 @@ fn json_cost(value: &Value) -> usize {
         }
         Value::Array(items) => 2 + items.iter().map(json_cost).sum::<usize>() + items.len().saturating_sub(1),
         Value::Object(map) => {
-            2 + map.iter().map(|(k, v)| utf16_len(k) + 3 + json_cost(v)).sum::<usize>() + map.len().saturating_sub(1)
+            2 + map.iter().map(|(k, v)| utf16::len(k) + 3 + json_cost(v)).sum::<usize>() + map.len().saturating_sub(1)
         }
     }
 }
@@ -226,7 +218,7 @@ fn path_cost(path: &[Seg]) -> usize {
     2 + path
         .iter()
         .map(|s| match s {
-            Seg::Key(k) => utf16_len(k) + 2,
+            Seg::Key(k) => utf16::len(k) + 2,
             Seg::Index(i) => i.to_string().len(),
         })
         .sum::<usize>()
@@ -238,7 +230,7 @@ fn op_cost(op: &Op) -> usize {
         Op::Replace(v) => 6 + json_cost(v),
         Op::Set(p, v) => 7 + path_cost(p) + json_cost(v),
         Op::Delete(p) => 6 + path_cost(p),
-        Op::Append(p, s) => 7 + path_cost(p) + utf16_len(s) + 2,
+        Op::Append(p, s) => 7 + path_cost(p) + utf16::len(s) + 2,
         Op::Trim(p, n) => 7 + path_cost(p) + n.to_string().len(),
         Op::Splice(p, i, r, items) => {
             10 + path_cost(p) + i.to_string().len() + r.to_string().len() + json_cost(&Value::Array(items.clone()))

@@ -20,6 +20,7 @@
 #[path = "checkpoints.rs"]
 pub mod checkpoints;
 
+use jsrt::utf16;
 use kernel::Signal;
 use regex::Regex;
 use serde::{Deserialize, Serialize};
@@ -393,14 +394,12 @@ pub fn repo_info(cwd: &Path) -> Result<RepoInfo> {
     })
 }
 
-fn random_hex(bytes: usize) -> String {
-    let mut buffer = vec![0u8; bytes];
-    let _ = getrandom::fill(&mut buffer);
-    buffer.iter().map(|b| format!("{b:02x}")).collect()
-}
-
 fn temporary_index(kind: &str) -> PathBuf {
-    std::env::temp_dir().join(format!("ultron-{kind}-{}-{}", std::process::id(), random_hex(6)))
+    std::env::temp_dir().join(format!(
+        "ultron-{kind}-{}-{}",
+        std::process::id(),
+        jsrt::random::random_hex(6)
+    ))
 }
 
 struct TempIndex(PathBuf);
@@ -474,23 +473,8 @@ pub fn record_json(record: &WorktreeRecord) -> String {
     let mut out = Vec::new();
     let formatter = serde_json::ser::PrettyFormatter::with_indent(b"\t");
     let mut serializer = serde_json::Serializer::with_formatter(&mut out, formatter);
-    let _ = serde::Serialize::serialize(&js_numbers(value), &mut serializer);
+    let _ = serde::Serialize::serialize(&jsrt::json::normalize_numbers(value), &mut serializer);
     String::from_utf8_lossy(&out).into_owned()
-}
-
-/// Whole floats as integers, as JavaScript prints them.
-fn js_numbers(value: serde_json::Value) -> serde_json::Value {
-    match value {
-        serde_json::Value::Number(n) => match n.as_f64() {
-            Some(f) if n.is_f64() && f.fract() == 0.0 && f.abs() < 9e15 => serde_json::Value::from(f as i64),
-            _ => serde_json::Value::Number(n),
-        },
-        serde_json::Value::Array(items) => serde_json::Value::Array(items.into_iter().map(js_numbers).collect()),
-        serde_json::Value::Object(map) => {
-            serde_json::Value::Object(map.into_iter().map(|(k, v)| (k, js_numbers(v))).collect())
-        }
-        other => other,
-    }
 }
 
 pub fn save_record(record: &WorktreeRecord) -> Result<()> {
@@ -840,7 +824,7 @@ fn create_in(info: &RepoInfo, options: &CreateWorktreeOptions<'_>) -> Result<Wor
         "{}-{}-{}",
         slug(options.session_id).chars().take(8).collect::<String>(),
         slug(options.name).chars().take(24).collect::<String>(),
-        random_hex(3)
+        jsrt::random::random_hex(3)
     );
     let path = records_dir(&info.common_dir).join(&id);
     let real = std::fs::canonicalize(options.cwd).unwrap_or_else(|_| normalize(options.cwd));
@@ -1148,23 +1132,6 @@ pub fn commit_child_worktree(
     })
 }
 
-fn utf16_len(text: &str) -> usize {
-    text.encode_utf16().count()
-}
-
-fn utf16_prefix(text: &str, units: usize) -> String {
-    let mut out = String::new();
-    let mut used = 0;
-    for c in text.chars() {
-        used += c.len_utf16();
-        if used > units {
-            break;
-        }
-        out.push(c);
-    }
-    out
-}
-
 /// A commit message from a child's summary, with its name and task (no trailers).
 pub fn commit_message(summary: &str, name: &str, task_id: Option<&str>, status: &str) -> String {
     let trimmed = summary.trim();
@@ -1176,9 +1143,9 @@ pub fn commit_message(summary: &str, name: &str, task_id: Option<&str>, status: 
     let mut lines = text.split('\n');
     let first = lines.next().unwrap_or("");
     let rest: Vec<&str> = lines.collect();
-    let long = utf16_len(first) > 72;
+    let long = utf16::len(first) > 72;
     let subject = if long {
-        format!("{}…", utf16_prefix(first, 71))
+        format!("{}…", utf16::head(first, 71))
     } else {
         first.to_string()
     };
@@ -1383,8 +1350,8 @@ fn write_changes(top: &Path, tree: &str, changes: &[TreeChange]) -> Result<()> {
 }
 
 fn clip(text: &str) -> String {
-    if utf16_len(text) > HUNK_TEXT_CHARS {
-        format!("{}…", utf16_prefix(text, HUNK_TEXT_CHARS - 1))
+    if utf16::len(text) > HUNK_TEXT_CHARS {
+        format!("{}…", utf16::head(text, HUNK_TEXT_CHARS - 1))
     } else {
         text.to_string()
     }

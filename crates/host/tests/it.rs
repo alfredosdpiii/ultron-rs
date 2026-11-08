@@ -19,6 +19,8 @@ mod fixture;
 mod guard_stats;
 #[path = "journal.rs"]
 mod journal;
+#[path = "js_parity.rs"]
+mod js_parity;
 #[path = "loki.rs"]
 mod loki;
 #[path = "loki_project_python.rs"]

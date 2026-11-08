@@ -2,7 +2,7 @@
 
 use crate::paths::{basename, join, resolve, resolve_path};
 use crate::skills::CONFIG_DIR_NAME;
-use crate::{Diagnostic, frontmatter, js_space};
+use crate::{Diagnostic, frontmatter};
 use std::fs;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -32,7 +32,7 @@ pub fn parse_command_args(args: &str) -> Vec<String> {
             Some(q) if c == q => quote = None,
             Some(_) => current.push(c),
             None if c == '"' || c == '\'' => quote = Some(c),
-            None if js_space(c) => {
+            None if jsrt::string::is_space(c) => {
                 if !current.is_empty() {
                     out.push(std::mem::take(&mut current));
                 }
@@ -153,7 +153,7 @@ fn load_file(path: &str, scope: &'static str) -> (Option<PromptTemplate>, Vec<Di
         && let Some(first) = parsed
             .body
             .split('\n')
-            .find(|line| !line.trim_matches(js_space).is_empty())
+            .find(|line| !jsrt::string::trim(line).is_empty())
     {
         description = first.chars().take(60).collect();
         if first.chars().count() > 60 {
@@ -236,7 +236,7 @@ pub fn expand_prompt_template(text: &str, templates: &[PromptTemplate]) -> Strin
     let Some(rest) = text.strip_prefix('/') else {
         return text.to_string();
     };
-    let name_len = rest.find(js_space).unwrap_or(rest.len());
+    let name_len = rest.find(jsrt::string::is_space).unwrap_or(rest.len());
     if name_len == 0 {
         return text.to_string();
     }
@@ -244,7 +244,7 @@ pub fn expand_prompt_template(text: &str, templates: &[PromptTemplate]) -> Strin
     match templates.iter().find(|t| t.name == name) {
         Some(template) => substitute_args(
             &template.content,
-            &parse_command_args(args.trim_start_matches(js_space)),
+            &parse_command_args(args.trim_start_matches(jsrt::string::is_space)),
         ),
         None => text.to_string(),
     }

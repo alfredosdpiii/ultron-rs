@@ -1,7 +1,6 @@
 //! Provider-side constrained sampling (`api/constrained-sampling.ts`): strict JSON-schema conversion and OpenAI
 //! grammar tools.
 
-use crate::json::stringify;
 use crate::types::{ConstrainedSamplingConfig, StrictMode, Tool};
 use indexmap::IndexMap;
 use serde_json::{Value, json};
@@ -297,10 +296,13 @@ impl GrammarInputBuffer {
         }
         let mut delta = String::new();
         if !self.started {
-            delta.push_str(&format!("{{{}:\"", stringify(&Value::String(property.to_string()))));
+            delta.push_str(&format!(
+                "{{{}:\"",
+                jsrt::json::stringify(&Value::String(property.to_string()))
+            ));
             self.started = true;
         }
-        let encoded = stringify(&Value::String(input_delta.to_string()));
+        let encoded = jsrt::json::stringify(&Value::String(input_delta.to_string()));
         delta.push_str(&encoded[1..encoded.len() - 1]);
         self.input = next.to_string();
         if close {

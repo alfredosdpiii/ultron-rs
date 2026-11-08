@@ -10,7 +10,7 @@
 
 use super::{Fail, io_message};
 use crate::env::{ProviderEnv, provider_env_value};
-use crate::jsutil::{atob, btoa, json_parse_error};
+use crate::jsutil::json_parse_error;
 use serde_json::Value;
 use std::path::{Path, PathBuf};
 
@@ -32,35 +32,31 @@ pub(super) struct CertificateToken {
     pub key: Vec<u8>,
 }
 
-fn truthy(value: Option<&Value>) -> bool {
-    super::js_truthy(value)
-}
-
 impl CertificateSource {
     /// The constructor's checks.
     pub(super) fn from_json(certificate: &Value) -> Result<CertificateSource, Fail> {
-        let default = truthy(certificate.get("use_default_certificate_config"));
+        let default = jsrt::value::truthy(certificate.get("use_default_certificate_config"));
         let location = certificate.get("certificate_config_location");
-        if !default && !truthy(location) {
+        if !default && !jsrt::value::truthy(location) {
             return Err(Fail::typed(
                 INVALID,
                 "Either `useDefaultCertificateConfig` must be true or a `certificateConfigLocation` must be provided.",
             ));
         }
-        if default && truthy(location) {
+        if default && jsrt::value::truthy(location) {
             return Err(Fail::typed(
                 INVALID,
                 "Both `useDefaultCertificateConfig` and `certificateConfigLocation` cannot be provided.",
             ));
         }
         // `certificateConfigLocation ?? ''`: an empty location searches the defaults.
-        let location = location.filter(|v| !v.is_null()).map(|v| super::js_string(Some(v)));
+        let location = location.filter(|v| !v.is_null()).map(|v| jsrt::value::string(Some(v)));
         Ok(CertificateSource {
             location: location.unwrap_or_default(),
             trust_chain: certificate
                 .get("trust_chain_path")
-                .filter(|v| truthy(Some(v)))
-                .map(|v| super::js_string(Some(v))),
+                .filter(|v| jsrt::value::truthy(Some(v)))
+                .map(|v| jsrt::value::string(Some(v))),
         })
     }
 
@@ -139,7 +135,7 @@ impl CertificateSource {
     /// `#processChainFromPaths`.
     fn chain(&self, leaf: Vec<u8>) -> Result<String, Fail> {
         let token = |certs: &[Vec<u8>]| {
-            serde_json::to_string(&certs.iter().map(|c| btoa(c)).collect::<Vec<_>>()).unwrap_or_default()
+            serde_json::to_string(&certs.iter().map(jsrt::base64::encode).collect::<Vec<_>>()).unwrap_or_default()
         };
         let Some(path) = &self.trust_chain else {
             return Ok(token(&[leaf]));
@@ -244,7 +240,7 @@ fn cert_and_key_paths(config_path: &str) -> Result<(String, String), Fail> {
     let config: Value = serde_json::from_str(&text).unwrap_or(Value::Null);
     let workload = &config["cert_configs"]["workload"];
     let (cert, key) = (workload.get("cert_path"), workload.get("key_path"));
-    if !truthy(cert) || !truthy(key) {
+    if !jsrt::value::truthy(cert) || !jsrt::value::truthy(key) {
         return Err(Fail::typed(
             INVALID,
             format!(
@@ -252,7 +248,7 @@ fn cert_and_key_paths(config_path: &str) -> Result<(String, String), Fail> {
             ),
         ));
     }
-    Ok((super::js_string(cert), super::js_string(key)))
+    Ok((jsrt::value::string(cert), jsrt::value::string(key)))
 }
 
 /// The PEM blocks of `text` labelled one of `labels`, decoded.
@@ -269,7 +265,7 @@ fn pem_blocks(text: &str, labels: &[&str]) -> Vec<Option<Vec<u8>>> {
             break;
         };
         if labels.contains(&label) {
-            out.push(atob(&body_start[..body_end]));
+            out.push(jsrt::base64::atob(&body_start[..body_end]));
         }
         rest = &body_start[body_end + end_marker.len()..];
     }

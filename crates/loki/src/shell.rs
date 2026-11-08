@@ -806,9 +806,7 @@ pub fn run_shell_writes(root: &Path, payload: &Value) -> (u8, String) {
 
 /// `event_path`: `~/.local/state/loki/<sha256(root)>/events.jsonl`.
 pub fn event_path(root: &Path) -> PathBuf {
-    use sha2::{Digest, Sha256};
-    let digest = Sha256::digest(resolve(root).as_os_str().as_encoded_bytes());
-    let identity: String = digest.iter().map(|b| format!("{b:02x}")).collect();
+    let identity = jsrt::hash::sha256_hex(resolve(root).as_os_str().as_encoded_bytes());
     let home = std::env::var_os("HOME").map(PathBuf::from).unwrap_or_default();
     home.join(".local/state/loki").join(identity).join("events.jsonl")
 }
@@ -817,7 +815,7 @@ fn sort_keys(value: Value) -> Value {
     match value {
         Value::Object(map) => {
             let mut entries: Vec<(String, Value)> = map.into_iter().collect();
-            entries.sort_by(|a, b| a.0.encode_utf16().cmp(b.0.encode_utf16()));
+            entries.sort_by(|a, b| jsrt::utf16::cmp(&a.0, &b.0));
             Value::Object(entries.into_iter().map(|(k, v)| (k, sort_keys(v))).collect())
         }
         Value::Array(items) => Value::Array(items.into_iter().map(sort_keys).collect()),

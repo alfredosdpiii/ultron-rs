@@ -307,3 +307,17 @@ fn telemetry_clear_crash_log_is_best_effort() {
     assert!(dir.path().exists());
     assert!(read_crash_log(&dir.path().join("missing/crashes.json")).is_empty());
 }
+
+#[test]
+fn telemetry_report_files_print_like_json_stringify() {
+    // D-J1: `JSON.stringify(value, null, 2)` writes `1.0` as `1` and puts array-index keys first (node prints
+    // `{\n  "2": 0.000001,\n  "b": 1\n}`); serde_json wrote `"b": 1.0` first and `1e-6`.
+    let bundle = BugReportBundle {
+        metadata: serde_json::from_str(r#"{"b":1.0,"2":0.000001}"#).unwrap(),
+        diagnostics: json!({}),
+        session_jsonl: None,
+        summary: None,
+    };
+    let files = bug_report_files(&bundle);
+    assert_eq!(files[0].data, "{\n  \"2\": 0.000001,\n  \"b\": 1\n}\n");
+}
