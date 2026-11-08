@@ -12,7 +12,7 @@ fn run_env(dir: &Path, vars: &[(&str, String)]) -> RunEnv {
     let agent = dir.join("agent");
     std::fs::create_dir_all(&agent).unwrap();
     let mut map: HashMap<String, String> = vars.iter().map(|(k, v)| (k.to_string(), v.clone())).collect();
-    map.insert("ULTRON_CODING_AGENT_DIR".into(), agent.display().to_string());
+    map.insert(config::paths::ENV_AGENT_DIR.into(), agent.display().to_string());
     RunEnv {
         cwd: dir.to_path_buf(),
         home: dir.join("home"),
@@ -47,7 +47,7 @@ fn session_core_snapshot_key_auto_store_uses_the_session_path_keyring() {
         dir.path(),
         &[
             ("PATH", format!("{}:/usr/bin:/bin", bin.display())),
-            ("ULTRON_RLM_SNAPSHOT_KEY_STORE", "auto".into()),
+            (kernel::snapshot_store::RLM_SNAPSHOT_KEY_STORE_ENV, "auto".into()),
         ],
     );
     let config = session_core::compose::Config::from_env(&env);

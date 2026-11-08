@@ -188,8 +188,8 @@ fn cli_help_lists_every_dispatched_subcommand() {
         .env_clear()
         .env("PATH", "/usr/bin:/bin")
         .env("HOME", tmp.path())
-        .env("ULTRON_CODING_AGENT_DIR", tmp.path().join("agent"))
-        .env("ULTRON_SERVER_DIR", tmp.path().join("server"))
+        .env(config::paths::ENV_AGENT_DIR, tmp.path().join("agent"))
+        .env(config::paths::ENV_SERVER_DIR, tmp.path().join("server"))
         .output()
         .unwrap();
     assert_eq!(output.status.code(), Some(0));
@@ -303,8 +303,8 @@ fn cli_binary_matches_typescript_cli() {
             .env_clear()
             .env("PATH", "/usr/bin:/bin")
             .env("HOME", &tmp_path)
-            .env("ULTRON_CODING_AGENT_DIR", tmp_path.join("agent"))
-            .env("ULTRON_SERVER_DIR", tmp_path.join("server"));
+            .env(config::paths::ENV_AGENT_DIR, tmp_path.join("agent"))
+            .env(config::paths::ENV_SERVER_DIR, tmp_path.join("server"));
         if let Some(env) = case.get("env").and_then(Value::as_object) {
             for (k, v) in env {
                 cmd.env(k, v.as_str().unwrap());
@@ -345,7 +345,7 @@ fn cli_bare_prompt_without_a_model_reports_the_setup_hint() {
         .current_dir(tmp.path())
         .env_clear()
         .env("HOME", tmp.path())
-        .env("ULTRON_CODING_AGENT_DIR", tmp.path().join("agent"))
+        .env(config::paths::ENV_AGENT_DIR, tmp.path().join("agent"))
         .output()
         .unwrap();
     assert_eq!(

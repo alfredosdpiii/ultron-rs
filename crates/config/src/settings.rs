@@ -206,12 +206,7 @@ fn load(path: &Path) -> Result<Settings, String> {
 /// `MODEL_REF_PATTERN`: a trimmed `provider/model[/more]` reference.
 pub fn model_ref(value: Option<&Value>) -> Option<String> {
     let trimmed = jsrt::string::trim(value?.as_str()?);
-    let parts: Vec<&str> = trimmed.split('/').collect();
-    let valid = parts.len() >= 2
-        && parts
-            .iter()
-            .all(|p| !p.is_empty() && !p.chars().any(jsrt::string::is_space));
-    valid.then(|| trimmed.to_string())
+    model_scope::is_model_ref(trimmed).then(|| trimmed.to_string())
 }
 
 /// A token cap setting (`rlm.mapTokens`): a positive safe integer; anything else (unset, `"off"`) is no cap.
@@ -221,8 +216,6 @@ pub fn token_cap(value: Option<&Value>) -> Option<u64> {
         .filter(|n| jsrt::number::is_safe_integer(*n) && *n >= 1.0)
         .map(|n| n as u64)
 }
-
-pub const FRAME_THINKING_LEVELS: [&str; 7] = ["off", "minimal", "low", "medium", "high", "xhigh", "max"];
 
 pub struct SettingsManager {
     paths: [PathBuf; 2],
@@ -674,8 +667,11 @@ impl SettingsManager {
         put("verifyModel", model("verifyModel"));
         put("budget", count("budget"));
         put("frameConcurrency", count("frameConcurrency"));
-        put("thinking", one_of("thinking", &FRAME_THINKING_LEVELS));
-        put("verifyThinking", one_of("verifyThinking", &FRAME_THINKING_LEVELS));
+        put("thinking", one_of("thinking", &model_scope::THINKING_LEVELS));
+        put(
+            "verifyThinking",
+            one_of("verifyThinking", &model_scope::THINKING_LEVELS),
+        );
         put("deadlineSeconds", zero("deadlineSeconds").then(|| 0.into()));
         put("deadlineSeconds", count("deadlineSeconds"));
         put("frameTimeoutSeconds", count("frameTimeoutSeconds"));
@@ -698,11 +694,11 @@ impl SettingsManager {
             );
         }
         put("deepModel", model("deepModel"));
-        put("deepThinking", one_of("deepThinking", &FRAME_THINKING_LEVELS));
+        put("deepThinking", one_of("deepThinking", &model_scope::THINKING_LEVELS));
         put("planModel", model("planModel"));
-        put("planThinking", one_of("planThinking", &FRAME_THINKING_LEVELS));
+        put("planThinking", one_of("planThinking", &model_scope::THINKING_LEVELS));
         put("askModel", model("askModel"));
-        put("askThinking", one_of("askThinking", &FRAME_THINKING_LEVELS));
+        put("askThinking", one_of("askThinking", &model_scope::THINKING_LEVELS));
         put("planStyle", one_of("planStyle", &["cell", "frame"]));
         put("planCells", count("planCells"));
         put("deepRounds", count("deepRounds"));

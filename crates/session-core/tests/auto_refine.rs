@@ -55,7 +55,7 @@ fn compact_then_prompt(settings: Option<Value>, wait_for_activation: bool) -> (p
         script(),
         Setup {
             settings,
-            vars: vec![("ULTRON_CLOCK_CONTEXT", "off".into())],
+            vars: vec![(session_core::lane::CLOCK_CONTEXT_ENV, "off".into())],
             ..Setup::default()
         },
     );

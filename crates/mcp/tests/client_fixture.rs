@@ -8,13 +8,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 fn python() -> String {
-    std::env::var("ULTRON_PYTHON").unwrap_or_else(|_| {
-        if Path::new("/usr/bin/python3").exists() {
-            "/usr/bin/python3".into()
-        } else {
-            "python3".into()
-        }
-    })
+    kernel::env::python(|name| std::env::var(name).ok())
 }
 
 fn fixtures() -> PathBuf {

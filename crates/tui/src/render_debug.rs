@@ -10,6 +10,9 @@ use std::sync::Mutex;
 use std::sync::mpsc::{Sender, channel};
 use std::thread::JoinHandle;
 
+pub const TUI_DEBUG_ENV: &str = "PI_TUI_DEBUG";
+pub const TUI_DEBUG_REDRAW_ENV: &str = "PI_TUI_DEBUG_REDRAW";
+
 /// Where `PI_TUI_DEBUG` dumps go (TS hardcodes it).
 pub const RENDER_DUMP_DIR: &str = "/tmp/tui";
 /// The redraw log's name in the log directory.
@@ -163,8 +166,8 @@ impl RenderDebug {
         let on = |name: &str| var(name).as_deref() == Some("1");
         let debug = RenderDebug {
             write_log,
-            redraw_dir: on("PI_TUI_DEBUG_REDRAW").then(|| log_dir.to_path_buf()),
-            dump_dir: on("PI_TUI_DEBUG").then(|| dump_dir.to_path_buf()),
+            redraw_dir: on(TUI_DEBUG_REDRAW_ENV).then(|| log_dir.to_path_buf()),
+            dump_dir: on(TUI_DEBUG_ENV).then(|| dump_dir.to_path_buf()),
             clock,
             nonce: std::sync::atomic::AtomicU64::new(0),
             files: FileWriter::default(),

@@ -13,6 +13,8 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
+pub const CONTEXT_IMAGES_ENV: &str = "ULTRON_CONTEXT_IMAGES";
+
 /// The model a lane's images go to, as the host's normalizer reads it (`input`, `inputLimits.images.resize`).
 pub fn image_model(model: &Model) -> ImageModel {
     let resize = model

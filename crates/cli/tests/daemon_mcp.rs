@@ -18,7 +18,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 fn python() -> String {
-    std::env::var("ULTRON_PYTHON").unwrap_or_else(|_| "/usr/bin/python3".into())
+    kernel::env::python(|name| std::env::var(name).ok())
 }
 
 fn fixture(name: &str) -> PathBuf {
@@ -263,8 +263,11 @@ fn cli_rpc_mode_relays_mcp_notices_as_extension_ui_requests() {
         env: vec![
             ("PATH".into(), std::env::var("PATH").unwrap_or_default()),
             ("HOME".into(), home.root.display().to_string()),
-            ("ULTRON_CODING_AGENT_DIR".into(), home.agent().display().to_string()),
-            ("ULTRON_SERVER_DIR".into(), home.server_dir().display().to_string()),
+            (config::paths::ENV_AGENT_DIR.into(), home.agent().display().to_string()),
+            (
+                config::paths::ENV_SERVER_DIR.into(),
+                home.server_dir().display().to_string(),
+            ),
             ("ANTHROPIC_API_KEY".into(), "test-key".into()),
         ],
         provider: Some("anthropic".into()),

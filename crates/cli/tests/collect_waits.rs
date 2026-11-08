@@ -142,7 +142,7 @@ fn sandbox(port: u16) -> Sandbox {
 /// `ultron -p` with the Rust runtime guide (not TypeScript's) and `env` set.
 fn run(sandbox: &Sandbox, env: &[(&str, &str)], args: &[&str]) -> Output {
     let mut command = sandbox.ultron();
-    command.env_remove("ULTRON_GUIDE");
+    command.env_remove(session_core::compose::GUIDE_ENV);
     for (key, value) in env {
         command.env(key, value);
     }
@@ -267,7 +267,10 @@ fn cli_collect_waits_a_root_with_events_off_waits_in_its_cell() {
     let sandbox = sandbox(port);
     let output = run(
         &sandbox,
-        &[("ULTRON_ASYNC_EVENTS", "off"), ("ULTRON_HINTS", "on")],
+        &[
+            (session_core::async_events::ASYNC_EVENTS_ENV, "off"),
+            (kernel_apis::cell_hints::HINTS_ENV, "on"),
+        ],
         &["-p", "--model", MODEL, "delegate"],
     );
     assert_eq!(text(&output.stdout), "parent done\n", "{}", text(&output.stderr));

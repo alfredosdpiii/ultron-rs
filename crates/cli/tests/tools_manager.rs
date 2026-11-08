@@ -10,11 +10,11 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use cli::Env;
-use cli::tools_manager::{ensure_fd, fd_asset_name, fd_path, latest_version_from_redirect, offline};
+use cli::tools_manager::{ensure_fd, fd_asset_name, fd_path, latest_version_from_redirect};
 
 fn env(vars: &[(&str, String)], agent: &Path) -> Env {
     let mut map: HashMap<String, String> = vars.iter().map(|(k, v)| (k.to_string(), v.clone())).collect();
-    map.insert("ULTRON_CODING_AGENT_DIR".into(), agent.display().to_string());
+    map.insert(config::paths::ENV_AGENT_DIR.into(), agent.display().to_string());
     Env {
         cwd: agent.to_path_buf(),
         home: agent.to_path_buf(),
@@ -53,7 +53,7 @@ fn cli_tools_manager_fd_lookup_order_matches_ts() {
     std::fs::remove_file(agent.join("bin").join("fd")).unwrap();
     let none = vec![
         ("PATH", dir.path().join("none").display().to_string()),
-        ("PI_OFFLINE", "1".to_string()),
+        (config::env::OFFLINE_ENV, "1".to_string()),
     ];
     assert_eq!(ensure_fd(&env(&none, &agent), "http://127.0.0.1:9"), None);
 }
@@ -61,10 +61,10 @@ fn cli_tools_manager_fd_lookup_order_matches_ts() {
 #[test]
 fn cli_tools_manager_offline_and_assets_match_ts() {
     let dir = tempfile::tempdir().unwrap();
-    let with = |v: &str| offline(&env(&[("PI_OFFLINE", v.to_string())], dir.path()));
+    let with = |v: &str| config::env::offline(&*env(&[(config::env::OFFLINE_ENV, v.to_string())], dir.path()).var);
     assert!(with("1") && with("true") && with("TRUE") && with("yes") && with("Yes"));
     assert!(!with("0") && !with("on") && !with(""));
-    assert!(!offline(&env(&[], dir.path())));
+    assert!(!config::env::offline(&*env(&[], dir.path()).var));
     assert_eq!(
         fd_asset_name("10.2.0", "linux", "x86_64").as_deref(),
         Some("fd-v10.2.0-x86_64-unknown-linux-musl.tar.gz")

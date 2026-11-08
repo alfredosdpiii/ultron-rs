@@ -29,7 +29,7 @@ fn fixture() -> Value {
 }
 
 fn python() -> String {
-    std::env::var("ULTRON_PYTHON").unwrap_or_else(|_| "/usr/bin/python3".into())
+    kernel::env::python(|name| std::env::var(name).ok())
 }
 
 /// A private temp root laid out like the generator's.
@@ -74,13 +74,16 @@ impl Root {
         let mut env: Vec<(String, String)> = vec![
             ("PATH".into(), format!("{}:/usr/bin:/bin", p("bin"))),
             ("HOME".into(), p("h")),
-            ("ULTRON_CODING_AGENT_DIR".into(), p("a")),
-            ("ULTRON_SERVER_DIR".into(), p("s")),
+            (config::paths::ENV_AGENT_DIR.into(), p("a")),
+            (config::paths::ENV_SERVER_DIR.into(), p("s")),
             ("XDG_RUNTIME_DIR".into(), p("r")),
             ("TMPDIR".into(), p("tmp")),
-            ("ULTRON_SELF_COMMAND".into(), r#"["/opt/ultron/bin/ultron"]"#.into()),
-            ("ULTRON_LOKI".into(), "off".into()),
-            ("ULTRON_PYTHON".into(), python()),
+            (
+                claude_root::worker_root::SELF_COMMAND_ENV.into(),
+                r#"["/opt/ultron/bin/ultron"]"#.into(),
+            ),
+            (session_core::compose::LOKI_ENV.into(), "off".into()),
+            (kernel::env::PYTHON_ENV.into(), python()),
             ("FAKE_CLAUDE_OUT".into(), p("launch.json")),
             ("LANG".into(), "C.UTF-8".into()),
         ];
@@ -175,7 +178,7 @@ fn run_process(case: &Value) -> Vec<String> {
         .as_str()
         .is_some_and(|name| name.starts_with("guide-") || name.starts_with("claude-"))
     {
-        env.push(("ULTRON_GUIDE".into(), "ts".into()));
+        env.push((session_core::compose::GUIDE_ENV.into(), "ts".into()));
     }
     let args: Vec<String> = strings(&case["args"]).iter().map(|a| root.sub(a)).collect();
     let mut child = root
@@ -352,7 +355,7 @@ fn run_mcp(case: &Value) -> Vec<String> {
     let mut env = root.env(case.get("env"));
     // The server's guide (instructions, prompt, resource) as TypeScript's `ultron mcp` words it: the Rust guide also
     // names the `mcp.json` servers and the Rust host's APIs the external root serves.
-    env.push(("ULTRON_GUIDE".into(), "ts".into()));
+    env.push((session_core::compose::GUIDE_ENV.into(), "ts".into()));
     let mut args = vec!["mcp".to_string()];
     args.extend(strings(&case["args"]).iter().map(|a| root.sub(a)));
     let mut child = root
@@ -594,7 +597,7 @@ fn claude_root_w18s_guide_for_claude_words_skills_as_the_launch_does() {
     let guide = ["guide", "--for", "claude", "--cwd", "<T>/w", "-nc"];
     let (rust, _) = run(&guide, &[]);
     assert!(rust.contains(PROACTIVE) && !rust.contains(TS), "{rust}");
-    let (ts, _) = run(&guide, &[("ULTRON_GUIDE", "ts")]);
+    let (ts, _) = run(&guide, &[(session_core::compose::GUIDE_ENV, "ts")]);
     assert!(ts.contains(TS) && !ts.contains(PROACTIVE), "{ts}");
     // The launch's system prompt carries the same note, line for line.
     let (_, launched) = run(&["claude", "-p", "hi", "-nc"], &[]);

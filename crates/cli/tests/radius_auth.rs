@@ -101,9 +101,9 @@ fn cli_auth_for_radius_providers_matches_typescript() {
             .env_clear()
             .env("PATH", "/usr/bin:/bin")
             .env("HOME", tmp.path())
-            .env("PI_OFFLINE", "1")
-            .env("ULTRON_CODING_AGENT_DIR", &agent)
-            .env("ULTRON_SERVER_DIR", tmp.path().join("server"));
+            .env(config::env::OFFLINE_ENV, "1")
+            .env(config::paths::ENV_AGENT_DIR, &agent)
+            .env(config::paths::ENV_SERVER_DIR, tmp.path().join("server"));
         for (k, v) in case["env"].as_object().unwrap() {
             command.env(k, v.as_str().unwrap());
         }

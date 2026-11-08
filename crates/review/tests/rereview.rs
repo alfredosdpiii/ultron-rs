@@ -292,7 +292,7 @@ fn review_rereview_the_engine_weighs_a_reply_against_the_source() {
         work = dir.path().display().to_string(),
         diff = empty.display().to_string(),
     );
-    let python = std::env::var("ULTRON_PYTHON").unwrap_or_else(|_| "/usr/bin/python3".into());
+    let python = kernel::env::python(|name| std::env::var(name).ok());
     let output = std::process::Command::new(python)
         .arg("-I")
         .arg("-c")

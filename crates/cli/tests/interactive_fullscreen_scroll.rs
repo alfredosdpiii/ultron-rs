@@ -10,9 +10,9 @@ use tui_harness::{Mock, Tui, text_reply};
 
 const MODEL: [&str; 2] = ["--model", "anthropic/claude-sonnet-4-5"];
 const ENV: [(&str, &str); 3] = [
-    ("ULTRON_AUTO_NAME", "off"),
-    ("ULTRON_SPLASH", "off"),
-    ("ULTRON_TUI_PARITY", "1"),
+    (session_core::core::AUTO_NAME_ENV, "off"),
+    (cli::interactive::SPLASH_ENV, "off"),
+    (interactive::qol::PARITY_ENV, "1"),
 ];
 
 fn long_answer() -> String {

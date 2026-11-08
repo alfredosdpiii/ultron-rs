@@ -5,6 +5,7 @@
 //! locks, so both implementations can share one agent directory.
 
 pub mod auth;
+pub mod env;
 pub mod json;
 pub mod lock;
 pub mod models_store;

@@ -118,7 +118,7 @@ fn case(spec: &Value, port: u16) -> Case {
         .iter()
         .map(|(k, v)| (k.clone(), v.as_str().unwrap().to_string()))
         .collect();
-    map.insert("ULTRON_CODING_AGENT_DIR".into(), dir.clone());
+    map.insert(config::paths::ENV_AGENT_DIR.into(), dir.clone());
     let env = RunEnv {
         cwd: tmp.path().join("cwd"),
         home: tmp.path().to_path_buf(),

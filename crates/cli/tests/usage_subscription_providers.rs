@@ -57,7 +57,7 @@ fn env(dir: &Path, vars: &[(&str, String)]) -> RunEnv {
     });
     std::fs::write(agent.join("auth.json"), auth.to_string()).unwrap();
     let mut map: HashMap<String, String> = vars.iter().map(|(k, v)| (k.to_string(), v.clone())).collect();
-    map.insert("ULTRON_CODING_AGENT_DIR".into(), agent.display().to_string());
+    map.insert(config::paths::ENV_AGENT_DIR.into(), agent.display().to_string());
     map.insert("PATH".into(), dir.join("empty-path").display().to_string());
     RunEnv {
         cwd: dir.join("cwd"),
@@ -82,7 +82,7 @@ fn cli_usage_subscription_providers_are_the_runtimes_subscription_logins() {
     std::fs::write(&cli, "").unwrap();
     let providers = session_core::lane::subscription_providers(&env(
         dir.path(),
-        &[("ULTRON_CLAUDE_CODE_BIN", cli.display().to_string())],
+        &[(ai::claude_code_cli::CLAUDE_CODE_BIN_ENV, cli.display().to_string())],
     ));
     assert_eq!(
         sorted(providers),
@@ -139,7 +139,10 @@ fn cli_models_claude_subscription_is_listed_by_claude_code_bin() {
             .count()
     };
     assert_eq!(listed(&env(dir.path(), &[])), 0, "no Claude Code: nothing listed");
-    let env = env(dir.path(), &[("ULTRON_CLAUDE_CODE_BIN", wrapper.display().to_string())]);
+    let env = env(
+        dir.path(),
+        &[(ai::claude_code_cli::CLAUDE_CODE_BIN_ENV, wrapper.display().to_string())],
+    );
     assert_eq!(listed(&env), ai::claude_subscription::catalog::pinned_routes().len());
 }
 

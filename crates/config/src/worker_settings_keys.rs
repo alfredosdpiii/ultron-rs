@@ -8,7 +8,10 @@ use std::path::Path;
 
 use serde_json::{Map, Value, json};
 
-use crate::settings::{FRAME_THINKING_LEVELS, Settings, SettingsManager, model_ref, token_cap};
+use crate::settings::{Settings, SettingsManager, model_ref, token_cap};
+
+pub const CLEAR_ON_SHRINK_ENV: &str = "PI_CLEAR_ON_SHRINK";
+pub const HARDWARE_CURSOR_ENV: &str = "PI_HARDWARE_CURSOR";
 
 /// `DEFAULT_HTTP_IDLE_TIMEOUT_MS` (core/http-dispatcher.ts): five minutes.
 pub const DEFAULT_HTTP_IDLE_TIMEOUT_MS: u64 = 300_000;
@@ -153,7 +156,7 @@ pub fn provider_request_options(settings: &Settings) -> Result<Value, String> {
 pub fn show_hardware_cursor(settings: &Settings, var: &dyn Fn(&str) -> Option<String>) -> bool {
     match settings.get("showHardwareCursor").and_then(Value::as_bool) {
         Some(on) => on,
-        None => var("PI_HARDWARE_CURSOR").as_deref() == Some("1"),
+        None => var(HARDWARE_CURSOR_ENV).as_deref() == Some("1"),
     }
 }
 
@@ -165,7 +168,7 @@ pub fn clear_on_shrink(settings: &Settings, var: &dyn Fn(&str) -> Option<String>
         .and_then(Value::as_bool)
     {
         Some(on) => on,
-        None => var("PI_CLEAR_ON_SHRINK").as_deref() == Some("1"),
+        None => var(CLEAR_ON_SHRINK_ENV).as_deref() == Some("1"),
     }
 }
 
@@ -184,7 +187,7 @@ impl SettingsManager {
         let frame_thinking = configured
             .get("frameThinking")
             .and_then(Value::as_str)
-            .filter(|level| FRAME_THINKING_LEVELS.contains(level))
+            .filter(|level| model_scope::THINKING_LEVELS.contains(level))
             .map(str::to_string);
         RlmModelSettings {
             frame_model: model_ref(configured.get("frameModel")),

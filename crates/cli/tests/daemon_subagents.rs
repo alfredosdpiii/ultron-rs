@@ -576,7 +576,7 @@ fn cli_durable_a_subagents_turns_are_charged_to_the_root_that_started_it() {
     let provider = provider(script);
     let home = Home::new(provider.port);
     // A turn limit makes the ledger keep its counts in the session (`ultron.usage`).
-    let server = Server::start(&home, &[("ULTRON_MAX_TOTAL_TURNS", "100")]);
+    let server = Server::start(&home, &[(delegation::usage::MAX_TOTAL_TURNS_ENV, "100")]);
     let connection = server.connect();
     let id = open(&connection);
     prompt(&connection, "spawn a greeter");

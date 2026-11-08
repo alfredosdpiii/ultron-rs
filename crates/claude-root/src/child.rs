@@ -15,6 +15,8 @@ use std::io::{BufRead, BufReader, Read, Write};
 use std::process::{Command, Stdio};
 use std::time::Duration;
 
+pub const CHILD_CWD_ENV: &str = "ULTRON_CHILD_CWD";
+
 /// Environment a child Claude Code must not inherit from the session that started its parent server.
 pub const PARENT_ONLY_ENV: [&str; 7] = [
     "CLAUDE_CODE_SESSION_ID",
@@ -131,12 +133,12 @@ pub fn child_mcp_config(server: &ChildServer, run: &ChildRun, model: &str, token
         args.push("--no-skills".into());
     }
     let mut env = Map::new();
-    env.insert("ULTRON_PARENT_TOKEN".into(), token.into());
+    env.insert(host::PARENT_TOKEN_ENV.into(), token.into());
     for (key, value) in &run.env {
         env.insert(key.clone(), value.clone().into());
     }
     if run.cwd.is_some() {
-        env.insert("ULTRON_CHILD_CWD".into(), cwd.into());
+        env.insert(CHILD_CWD_ENV.into(), cwd.into());
     }
     jsrt::json::stringify(&json!({
         "mcpServers": {"ultron": {"type": "stdio", "command": server.self_cmd.command, "args": args, "env": env}}
@@ -301,7 +303,7 @@ pub fn run_claude_child(
         command.env_remove(name);
     }
     // A subagent server's own verdict token never reaches its children (TypeScript deletes it from the env).
-    command.env_remove("ULTRON_PARENT_TOKEN");
+    command.env_remove(host::PARENT_TOKEN_ENV);
     let mut child = command.spawn().map_err(|e| e.to_string())?;
     if let Some(mut stdin) = child.stdin.take() {
         let _ = stdin.write_all(run.prompt.as_bytes());
@@ -321,7 +323,7 @@ pub fn run_claude_child(
     let killer_signal = signal.clone();
     let killer = std::thread::spawn(move || {
         while !killer_signal.wait(Duration::from_millis(200)) {
-            if !crate::control::pid_alive(pid) {
+            if !signals::pid_alive(pid) {
                 return;
             }
         }

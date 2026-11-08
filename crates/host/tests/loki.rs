@@ -63,8 +63,8 @@ fn replay(base: &Value, session: &Value) -> Vec<Value> {
     let mut options = KernelOptions::new(&cwd, runtime());
     let tmp_text = tmp.to_string_lossy().into_owned();
     for (key, value) in [
-        ("ULTRON_FILE_HOOKS", "1"),
-        ("ULTRON_RLM_SPILL_DIR", ""),
+        (kernel::env::FILE_HOOKS_ENV, "1"),
+        (kernel::env::RLM_SPILL_DIR_ENV, ""),
         ("TMPDIR", &tmp_text),
         ("HOME", &tmp_text),
         ("GIT_CONFIG_GLOBAL", "/dev/null"),

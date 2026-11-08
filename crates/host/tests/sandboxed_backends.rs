@@ -264,9 +264,15 @@ fn host_sandboxed_backends_worktree_variables_reach_the_command() {
         let name = mechanism.name();
         let tree = tree();
         let worktree = vec![
-            ("ULTRON_WORKTREE".to_string(), tree.project.display().to_string()),
-            ("ULTRON_PARENT_REPO".to_string(), "/parent/repo".to_string()),
-            ("ULTRON_WORKTREE_BRANCH".to_string(), "ultron/s1/child".to_string()),
+            (
+                kernel::env::WORKTREE_ENV.to_string(),
+                tree.project.display().to_string(),
+            ),
+            (kernel::env::PARENT_REPO_ENV.to_string(), "/parent/repo".to_string()),
+            (
+                kernel::env::WORKTREE_BRANCH_ENV.to_string(),
+                "ultron/s1/child".to_string(),
+            ),
         ];
         let host = host(&tree, mechanism, false).with_env(worktree.clone());
         let print = r#"printf '%s|%s|%s' "$ULTRON_WORKTREE" "$ULTRON_PARENT_REPO" "$ULTRON_WORKTREE_BRANCH""#;
@@ -284,7 +290,7 @@ fn host_sandboxed_argv_sets_the_commands_variables() {
     let argv = vec!["bash".to_string(), "-c".into(), "echo hi".into()];
     assert_eq!(host::sandboxed_argv(argv.clone(), &[]), argv);
     let env = [
-        ("ULTRON_WORKTREE".to_string(), "/w t".to_string()),
+        (kernel::env::WORKTREE_ENV.to_string(), "/w t".to_string()),
         ("PWD".to_string(), "/w t".to_string()),
     ];
     assert_eq!(

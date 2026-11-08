@@ -12,6 +12,9 @@ use std::process::{Command, Stdio};
 use std::sync::LazyLock;
 use std::time::{Duration, Instant};
 
+pub const CLAUDE_BIN_ENV: &str = "ULTRON_CLAUDE_BIN";
+pub const CLAUDE_SKIP_PERMISSIONS_ENV: &str = "ULTRON_CLAUDE_SKIP_PERMISSIONS";
+
 /// Claude Code model of the root, of claude subagents and (as claude-code/…) of frames.
 pub const DEFAULT_CLAUDE_MODEL: &str = "claude-opus-5-5";
 
@@ -30,7 +33,7 @@ const PROBE_TIMEOUT: Duration = Duration::from_secs(20);
 /// `ULTRON_CLAUDE_BIN`, else `claude` on PATH.
 pub fn resolve_claude_binary(var: &dyn Fn(&str) -> Option<String>) -> Option<String> {
     let path = var("PATH").unwrap_or_default();
-    if let Some(configured) = var("ULTRON_CLAUDE_BIN")
+    if let Some(configured) = var(CLAUDE_BIN_ENV)
         .map(|v| v.trim().to_string())
         .filter(|v| !v.is_empty())
     {
@@ -159,7 +162,7 @@ pub fn skip_permissions_args(
     uid: Option<u32>,
     setting: Option<bool>,
 ) -> Vec<String> {
-    let raw = var("ULTRON_CLAUDE_SKIP_PERMISSIONS").map(|v| v.trim().to_lowercase());
+    let raw = var(CLAUDE_SKIP_PERMISSIONS_ENV).map(|v| v.trim().to_lowercase());
     if matches!(raw.as_deref(), Some("off" | "0" | "false" | "no")) || setting == Some(false) {
         return Vec::new();
     }

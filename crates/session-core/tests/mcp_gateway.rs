@@ -16,7 +16,7 @@ use std::time::{Duration, Instant};
 const SECRET: &str = "fixture-not-a-secret-0001";
 
 fn python() -> String {
-    std::env::var("ULTRON_PYTHON").unwrap_or_else(|_| "/usr/bin/python3".into())
+    kernel::env::python(|name| std::env::var(name).ok())
 }
 
 fn server_script() -> PathBuf {
@@ -72,9 +72,12 @@ fn session_with(root: &Path, servers: Option<Value>, services: Services) -> Sess
     std::fs::create_dir_all(&cwd).unwrap();
     let vars: Vec<(String, String)> = vec![
         ("HOME".into(), home.display().to_string()),
-        ("ULTRON_CODING_AGENT_DIR".into(), agent.display().to_string()),
-        ("ULTRON_SERVER_DIR".into(), root.join("server").display().to_string()),
-        ("ULTRON_HINDSIGHT_URL".into(), "off".into()),
+        (config::paths::ENV_AGENT_DIR.into(), agent.display().to_string()),
+        (
+            config::paths::ENV_SERVER_DIR.into(),
+            root.join("server").display().to_string(),
+        ),
+        (hindsight::resolve::HINDSIGHT_URL_ENV.into(), "off".into()),
     ];
     let env = RunEnv {
         cwd,

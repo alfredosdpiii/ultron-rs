@@ -48,7 +48,7 @@ fn session_core_cell_results_carry_the_diff_of_the_files_the_cell_wrote() {
                 ("same.txt", b"same\n".to_vec()),
             ],
             // Loki advises instead of blocking, so the secret is written and its diff must be masked.
-            vars: vec![("ULTRON_LOKI", "advise".into())],
+            vars: vec![(session_core::compose::LOKI_ENV, "advise".into())],
             ..Setup::default()
         },
     );

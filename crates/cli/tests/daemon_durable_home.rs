@@ -91,7 +91,7 @@ fn command(home: &Home, args: &[&str]) -> std::process::Command {
             command.env(key, value);
         }
     }
-    command.env_remove("ULTRON_SERVER_DIR");
+    command.env_remove(config::paths::ENV_SERVER_DIR);
     command
 }
 

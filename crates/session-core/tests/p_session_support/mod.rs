@@ -136,7 +136,7 @@ pub struct Actor {
 }
 
 fn python() -> String {
-    std::env::var("ULTRON_PYTHON").unwrap_or_else(|_| "/usr/bin/python3".into())
+    kernel::env::python(|name| std::env::var(name).ok())
 }
 
 /// A session on `anthropic/claude-sonnet-4-5` against `script`.
@@ -162,16 +162,19 @@ pub fn actor(script: Script, setup: Setup) -> Actor {
     let mut vars: Vec<(String, String)> = vec![
         ("HOME".into(), root.display().to_string()),
         ("PATH".into(), "/usr/local/bin:/usr/bin:/bin".into()),
-        ("ULTRON_CODING_AGENT_DIR".into(), agent_dir.display().to_string()),
-        ("ULTRON_SERVER_DIR".into(), root.join("server").display().to_string()),
+        (config::paths::ENV_AGENT_DIR.into(), agent_dir.display().to_string()),
+        (
+            config::paths::ENV_SERVER_DIR.into(),
+            root.join("server").display().to_string(),
+        ),
         ("ANTHROPIC_API_KEY".into(), "test-key".into()),
-        ("ULTRON_HINDSIGHT_URL".into(), "off".into()),
-        ("ULTRON_PYTHON".into(), python()),
-        ("PI_OFFLINE".into(), "1".into()),
+        (hindsight::resolve::HINDSIGHT_URL_ENV.into(), "off".into()),
+        (kernel::env::PYTHON_ENV.into(), python()),
+        (config::env::OFFLINE_ENV.into(), "1".into()),
         ("TZ".into(), "UTC".into()),
         // A scripted root cell holds its tool call until it ends, however slow the machine: these tests read its
         // result in the turn. A test of the yield sets `ULTRON_CELL_YIELD_AFTER` itself (`setup.vars` win).
-        ("ULTRON_CELL_YIELD_AFTER".into(), "off".into()),
+        (kernel::env::CELL_YIELD_AFTER_ENV.into(), "off".into()),
     ];
     vars.extend(setup.vars.iter().map(|(k, v)| (k.to_string(), v.clone())));
     let env = session_core::RunEnv {

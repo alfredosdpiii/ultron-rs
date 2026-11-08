@@ -94,7 +94,7 @@ fn cases(root: &Path) -> Vec<Case> {
             }
             let mut env: HashMap<String, String> = [
                 ("HOME".to_string(), expand("<root>/home")),
-                ("PI_OFFLINE".to_string(), "1".to_string()),
+                (config::env::OFFLINE_ENV.to_string(), "1".to_string()),
             ]
             .into_iter()
             .collect();
@@ -200,16 +200,16 @@ fn ai_claude_code_find_cli_reports_the_path_typescript_checks() {
         Some(format!("{r}/cmd/claude.cmd"))
     );
     assert_eq!(
-        found(&[("ULTRON_CLAUDE_CODE_BIN", format!("  {r}/bin/claude "))]),
+        found(&[(ai::claude_code_cli::CLAUDE_CODE_BIN_ENV, format!("  {r}/bin/claude "))]),
         Some(format!("{r}/bin/claude"))
     );
     assert_eq!(
-        found(&[("ULTRON_CLAUDE_CODE_BIN", "~/.local/bin/claude".into())]),
+        found(&[(ai::claude_code_cli::CLAUDE_CODE_BIN_ENV, "~/.local/bin/claude".into())]),
         Some("~/.local/bin/claude".into())
     );
     assert_eq!(
         found(&[
-            ("ULTRON_CLAUDE_CODE_BIN", format!("{r}/missing")),
+            (ai::claude_code_cli::CLAUDE_CODE_BIN_ENV, format!("{r}/missing")),
             ("PATH", format!("{r}/bin"))
         ]),
         None

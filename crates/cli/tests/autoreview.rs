@@ -284,16 +284,16 @@ impl World {
             .env("PATH", "/usr/bin:/bin")
             .env("HOME", &self.work)
             .env("TZ", "UTC")
-            .env("ULTRON_CODING_AGENT_DIR", self.work.join("agent"))
-            .env("ULTRON_SERVER_DIR", self.work.join("server"))
+            .env(config::paths::ENV_AGENT_DIR, self.work.join("agent"))
+            .env(config::paths::ENV_SERVER_DIR, self.work.join("server"))
             .env("XDG_RUNTIME_DIR", self.work.join("run"))
-            .env("ULTRON_LOKI", "off")
-            .env("ULTRON_HINDSIGHT_URL", "off")
+            .env(session_core::compose::LOKI_ENV, "off")
+            .env(hindsight::resolve::HINDSIGHT_URL_ENV, "off")
             .env("GROQ_API_KEY", "stub-key")
             .env("GIT_CONFIG_GLOBAL", "/dev/null")
             .env("GIT_CONFIG_NOSYSTEM", "1");
-        if let Ok(python) = std::env::var("ULTRON_PYTHON") {
-            command.env("ULTRON_PYTHON", python);
+        if let Ok(python) = std::env::var(kernel::env::PYTHON_ENV) {
+            command.env(kernel::env::PYTHON_ENV, python);
         }
         let output = command.output().unwrap();
         (
@@ -863,9 +863,9 @@ fn cli_autoreview_install_and_uninstall_service() {
             .env_clear()
             .env("PATH", "/usr/bin:/bin")
             .env("HOME", &home)
-            .env("ULTRON_CODING_AGENT_DIR", home.join("agent"))
-            .env("ULTRON_SERVER_DIR", home.join("server"))
-            .env("ULTRON_SELF_COMMAND", "[\"/usr/bin/ultron\"]")
+            .env(config::paths::ENV_AGENT_DIR, home.join("agent"))
+            .env(config::paths::ENV_SERVER_DIR, home.join("server"))
+            .env(claude_root::worker_root::SELF_COMMAND_ENV, "[\"/usr/bin/ultron\"]")
             .output()
             .unwrap();
         (output.status.code().unwrap(), String::from_utf8(output.stdout).unwrap())
@@ -944,16 +944,16 @@ fn cli_autoreview_custom_provider_models_resolve() {
         .env("PATH", "/usr/bin:/bin")
         .env("HOME", &world.work)
         .env("TZ", "UTC")
-        .env("ULTRON_CODING_AGENT_DIR", world.work.join("agent"))
-        .env("ULTRON_SERVER_DIR", world.work.join("server"))
+        .env(config::paths::ENV_AGENT_DIR, world.work.join("agent"))
+        .env(config::paths::ENV_SERVER_DIR, world.work.join("server"))
         .env("XDG_RUNTIME_DIR", world.work.join("run"))
-        .env("ULTRON_LOKI", "off")
-        .env("ULTRON_HINDSIGHT_URL", "off")
+        .env(session_core::compose::LOKI_ENV, "off")
+        .env(hindsight::resolve::HINDSIGHT_URL_ENV, "off")
         .env("REV_KEY", "rev-key-1")
         .env("GIT_CONFIG_GLOBAL", "/dev/null")
         .env("GIT_CONFIG_NOSYSTEM", "1");
-    if let Ok(python) = std::env::var("ULTRON_PYTHON") {
-        command.env("ULTRON_PYTHON", python);
+    if let Ok(python) = std::env::var(kernel::env::PYTHON_ENV) {
+        command.env(kernel::env::PYTHON_ENV, python);
     }
     let output = command.output().unwrap();
     let stderr = String::from_utf8_lossy(&output.stderr);

@@ -724,7 +724,7 @@ fn kernel_stdio_protocol_channel_works() {
 fn kernel_200_cells_of_64_kb_keep_one_generation() {
     let kernel = kernel_with(
         KernelOptions {
-            env: vec![("ULTRON_RLM_OUTPUT_BYTES".into(), "131072".into())],
+            env: vec![(kernel::env::RLM_OUTPUT_BYTES_ENV.into(), "131072".into())],
             ..options()
         },
         null_handler(),
@@ -771,7 +771,7 @@ fn kernel_bridge_requests_over_4_mib_keep_one_generation() {
 fn kernel_single_output_over_the_frame_is_cut_in_the_cell() {
     let kernel = kernel_with(
         KernelOptions {
-            env: vec![("ULTRON_RLM_OUTPUT_BYTES".into(), (4 * MIB).to_string())],
+            env: vec![(kernel::env::RLM_OUTPUT_BYTES_ENV.into(), (4 * MIB).to_string())],
             ..options()
         },
         null_handler(),

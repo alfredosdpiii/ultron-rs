@@ -21,6 +21,7 @@ reqwest = { version = "=0.13.5", default-features = false, features = ["rustls",
 
 [dev-dependencies]
 jsonschema = { path = "../jsonschema" }
+kernel = { path = "../kernel" }
 tempfile = "=3.27.0"
 
 [lints]

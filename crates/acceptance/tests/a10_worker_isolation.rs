@@ -25,9 +25,9 @@ fn process_part() {
             ("ANTHROPIC_API_KEY", "sk-ant-planted"),
             ("GITHUB_TOKEN", "ghp_planted"),
             ("AWS_SECRET_ACCESS_KEY", "aws-planted"),
-            ("PI_SESSION_WORKER_CONTROL_TOKEN", "control-planted"),
+            (daemon::worker::CONTROL_TOKEN_ENV, "control-planted"),
             // A control variable without a credential-like name is removed by the control-channel rule itself.
-            ("PI_SESSION_WORKER_PEER_ID", "peer-planted"),
+            (daemon::worker::PEER_ID_ENV, "peer-planted"),
             ("ULTRON_SESSION_WORKER_PEER", "peer2-planted"),
             ("ULTRON_HARMLESS_SETTING", "kept"),
             // The provider key the binary itself uses must not reach Python either.
@@ -62,14 +62,14 @@ fn allow_list_part() {
     let environment = kernel::kernel_environment([
         ("GITHUB_TOKEN", "t"),
         ("OPENAI_API_KEY", "k"),
-        ("ULTRON_RLM_ENV_ALLOW", "GITHUB_TOKEN"),
+        (kernel::env::RLM_ENV_ALLOW_ENV, "GITHUB_TOKEN"),
         ("PATH", "/bin"),
     ]);
     assert_eq!(
         environment,
         vec![
             ("GITHUB_TOKEN", "t"),
-            ("ULTRON_RLM_ENV_ALLOW", "GITHUB_TOKEN"),
+            (kernel::env::RLM_ENV_ALLOW_ENV, "GITHUB_TOKEN"),
             ("PATH", "/bin")
         ]
     );

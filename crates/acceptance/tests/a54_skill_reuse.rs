@@ -99,7 +99,10 @@ fn run_task(provider: &Provider, install: &Install, server: &str) -> Run {
     let server_dir = install.root.path().join(server).display().to_string();
     let mut client = install.rpc(
         &["--no-session"],
-        &[("ULTRON_SERVER_DIR", &server_dir), ("ULTRON_CODE_SKILLS_DIR", "")],
+        &[
+            (config::paths::ENV_SERVER_DIR, &server_dir),
+            (kernel::env::CODE_SKILLS_DIR_ENV, ""),
+        ],
     );
     client
         .prompt_and_wait(

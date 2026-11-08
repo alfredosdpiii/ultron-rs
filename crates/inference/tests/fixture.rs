@@ -87,7 +87,7 @@ fn run_cell(cell: &Value, recorded_model: &Value) -> (Value, Vec<Value>) {
         cwd.join("context"),
     );
     let mut options = KernelOptions::new(&cwd, runtime());
-    options.env.push(("ULTRON_RLM_SPILL_DIR".into(), String::new()));
+    options.env.push((kernel::env::RLM_SPILL_DIR_ENV.into(), String::new()));
     options.env.push(("TMPDIR".into(), cwd.to_string_lossy().into_owned()));
     let kernel = Kernel::new(options, Arc::new(handler)).unwrap();
     let result = kernel.execute(cell["code"].as_str().unwrap(), None, None).unwrap();

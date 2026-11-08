@@ -636,8 +636,8 @@ fn claude_differences(fixture: &Value, scenario: &Value) -> Vec<String> {
     let log = dir.path().join("log");
     std::fs::write(&log, "").unwrap();
     let mut env: Map<String, Value> = json!({
-        "ULTRON_CLAUDE_CODE_BIN": format!("{fixtures_dir}/fake-claude/claude"),
-        "ULTRON_CLAUDE_CODE_WARM": "0",
+        (ai::claude_code_cli::CLAUDE_CODE_BIN_ENV): format!("{fixtures_dir}/fake-claude/claude"),
+        (ai::claude_code_cli::CLAUDE_CODE_WARM_ENV): "0",
         "CLAUDECODE": "1",
         "CLAUDE_CODE_SESSION_ID": "parent",
         "FAKE_CLAUDE_REPLY": format!("{dir_text}/reply"),

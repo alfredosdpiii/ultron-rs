@@ -38,7 +38,7 @@ fn replay(name: &str) {
         fixture["cols"].as_u64().unwrap(),
         fixture["rows"].as_u64().unwrap(),
         &args,
-        &[("PATH", "/usr/bin:/bin"), ("PI_OFFLINE", "1")],
+        &[("PATH", "/usr/bin:/bin"), (config::env::OFFLINE_ENV, "1")],
     );
     let mut screens = Vec::new();
     for step in scenario["steps"].as_array().unwrap() {

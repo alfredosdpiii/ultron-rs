@@ -100,11 +100,11 @@ fn cli_rpc_pi_events_bash_updates_and_session_info() {
     let env = [
         ("PATH", "/usr/local/bin:/usr/bin:/bin".to_string()),
         ("HOME", root.display().to_string()),
-        ("ULTRON_CODING_AGENT_DIR", agent_dir.display().to_string()),
-        ("ULTRON_SERVER_DIR", root.join("server").display().to_string()),
+        (config::paths::ENV_AGENT_DIR, agent_dir.display().to_string()),
+        (config::paths::ENV_SERVER_DIR, root.join("server").display().to_string()),
         ("ANTHROPIC_API_KEY", "test-key".into()),
-        ("ULTRON_HINDSIGHT_URL", "off".into()),
-        ("PI_OFFLINE", "1".into()),
+        (hindsight::resolve::HINDSIGHT_URL_ENV, "off".into()),
+        (config::env::OFFLINE_ENV, "1".into()),
         ("NO_COLOR", "1".into()),
         ("TZ", "UTC".into()),
     ];

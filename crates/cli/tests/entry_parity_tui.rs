@@ -23,10 +23,10 @@ fn run(root: &std::path::Path, args: &[&str], env: &[(&str, &str)]) -> std::proc
         .env_clear()
         .env("PATH", "/usr/bin:/bin")
         .env("HOME", root)
-        .env("ULTRON_CODING_AGENT_DIR", root.join("agent"))
-        .env("ULTRON_SERVER_DIR", root.join("server"))
+        .env(config::paths::ENV_AGENT_DIR, root.join("agent"))
+        .env(config::paths::ENV_SERVER_DIR, root.join("server"))
         .env("ANTHROPIC_API_KEY", "test-key")
-        .env("PI_SKIP_VERSION_CHECK", "1")
+        .env(config::env::SKIP_VERSION_CHECK_ENV, "1")
         .envs(env.iter().copied())
         .stdin(Stdio::null())
         .output()
@@ -109,7 +109,7 @@ fn cli_entry_tui_durable_persona_reports_the_workers_state_and_none_sticks() {
     let durable = tmp.0.join(".ultron/server");
     let durable_env = durable.display().to_string();
     // The durable instance's own directory (HOME's .ultron/server): its sessions have the persona on by default.
-    let env = [("ULTRON_SERVER_DIR", durable_env.as_str())];
+    let env = [(config::paths::ENV_SERVER_DIR, durable_env.as_str())];
     let tui = Tui::start_at(&tmp.0, mock.port, 140, 30, &["durable"], &env);
     tui.wait("ultron v");
     tui.send_text("/persona");
@@ -151,7 +151,10 @@ fn cli_entry_tui_ultron_s_resume_opens_the_picked_durable_session() {
     layout(&tmp.0, mock.port);
     let durable = tmp.0.join(".ultron/server");
     let durable_env = durable.display().to_string();
-    let env = [("ULTRON_SERVER_DIR", durable_env.as_str()), ("ULTRON_AUTO_NAME", "off")];
+    let env = [
+        (config::paths::ENV_SERVER_DIR, durable_env.as_str()),
+        (session_core::core::AUTO_NAME_ENV, "off"),
+    ];
     let link = tmp.0.join("bin/ultron-s");
     std::fs::create_dir_all(link.parent().unwrap()).unwrap();
     std::os::unix::fs::symlink(env!("CARGO_BIN_EXE_ultron"), &link).unwrap();
@@ -163,9 +166,9 @@ fn cli_entry_tui_ultron_s_resume_opens_the_picked_durable_session() {
             .env_clear()
             .env("PATH", "/usr/bin:/bin")
             .env("HOME", &tmp.0)
-            .env("ULTRON_CODING_AGENT_DIR", tmp.0.join("agent"))
+            .env(config::paths::ENV_AGENT_DIR, tmp.0.join("agent"))
             .env("ANTHROPIC_API_KEY", "test-key")
-            .env("PI_SKIP_VERSION_CHECK", "1")
+            .env(config::env::SKIP_VERSION_CHECK_ENV, "1")
             .envs(env.iter().copied())
             .stdin(Stdio::null())
             .output()
@@ -237,7 +240,7 @@ fn cli_entry_tui_durable_settings_list_the_durable_default_model() {
     close_and_quit(&plain, screen);
     drop(plain);
     let durable = tmp.0.join(".ultron/server").display().to_string();
-    let env = [("ULTRON_SERVER_DIR", durable.as_str())];
+    let env = [(config::paths::ENV_SERVER_DIR, durable.as_str())];
     let tui = Tui::start_at(&tmp.0, mock.port, 160, 40, &["durable", "--model", MODEL], &env);
     let screen = models_list(&tui);
     assert!(screen.contains("Durable default model"), "{screen}");

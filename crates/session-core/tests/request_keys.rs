@@ -151,14 +151,17 @@ fn session(
     let mut all: Vec<(String, String)> = vec![
         ("HOME".into(), root.display().to_string()),
         ("PATH".into(), "/usr/local/bin:/usr/bin:/bin".into()),
-        ("ULTRON_CODING_AGENT_DIR".into(), agent_dir.display().to_string()),
-        ("ULTRON_SERVER_DIR".into(), root.join("server").display().to_string()),
-        ("ULTRON_HINDSIGHT_URL".into(), "off".into()),
+        (config::paths::ENV_AGENT_DIR.into(), agent_dir.display().to_string()),
         (
-            "ULTRON_PYTHON".into(),
-            std::env::var("ULTRON_PYTHON").unwrap_or_else(|_| "/usr/bin/python3".into()),
+            config::paths::ENV_SERVER_DIR.into(),
+            root.join("server").display().to_string(),
         ),
-        ("PI_OFFLINE".into(), "1".into()),
+        (hindsight::resolve::HINDSIGHT_URL_ENV.into(), "off".into()),
+        (
+            kernel::env::PYTHON_ENV.into(),
+            kernel::env::python(|name| std::env::var(name).ok()),
+        ),
+        (config::env::OFFLINE_ENV.into(), "1".into()),
         ("TZ".into(), "UTC".into()),
     ];
     all.extend(vars.into_iter().map(|(k, v)| (k.to_string(), v)));
@@ -251,8 +254,8 @@ fn private_env(dir: &Path, vars: &[(&str, &str)]) -> RunEnv {
     let agent = dir.join("agent");
     std::fs::create_dir_all(&agent).unwrap();
     let mut map: HashMap<String, String> = vars.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect();
-    map.insert("ULTRON_CODING_AGENT_DIR".into(), agent.display().to_string());
-    map.insert("PI_OFFLINE".into(), "1".into());
+    map.insert(config::paths::ENV_AGENT_DIR.into(), agent.display().to_string());
+    map.insert(config::env::OFFLINE_ENV.into(), "1".into());
     RunEnv {
         cwd: dir.to_path_buf(),
         home: dir.join("home"),

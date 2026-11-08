@@ -27,7 +27,7 @@ use std::time::{Duration, Instant};
 const HANG_GUARD: Duration = Duration::from_secs(120);
 
 fn python() -> String {
-    std::env::var("ULTRON_PYTHON").unwrap_or_else(|_| "/usr/bin/python3".into())
+    kernel::env::python(|name| std::env::var(name).ok())
 }
 
 fn repo() -> PathBuf {
@@ -56,14 +56,17 @@ impl Root {
         let mut vars: Vec<(String, String)> = vec![
             ("PATH".into(), "/usr/bin:/bin".into()),
             ("HOME".into(), p("h")),
-            ("ULTRON_CODING_AGENT_DIR".into(), p("a")),
-            ("ULTRON_SERVER_DIR".into(), p("s")),
+            (config::paths::ENV_AGENT_DIR.into(), p("a")),
+            (config::paths::ENV_SERVER_DIR.into(), p("s")),
             ("XDG_RUNTIME_DIR".into(), p("r")),
             ("TMPDIR".into(), p("tmp")),
-            ("ULTRON_SELF_COMMAND".into(), r#"["/opt/ultron/bin/ultron"]"#.into()),
-            ("ULTRON_LOKI".into(), "off".into()),
-            ("ULTRON_PYTHON".into(), python()),
-            ("PI_OFFLINE".into(), "1".into()),
+            (
+                claude_root::worker_root::SELF_COMMAND_ENV.into(),
+                r#"["/opt/ultron/bin/ultron"]"#.into(),
+            ),
+            (session_core::compose::LOKI_ENV.into(), "off".into()),
+            (kernel::env::PYTHON_ENV.into(), python()),
+            (config::env::OFFLINE_ENV.into(), "1".into()),
         ];
         for (key, value) in extra {
             vars.retain(|(k, _)| k != key);
@@ -189,7 +192,7 @@ fn claude_root_mcp_child_server_relays_its_verdict_with_its_token_hidden_from_th
             "--allowance",
             "0",
         ],
-        root.env(&[("ULTRON_PARENT_TOKEN", "tok-77")]),
+        root.env(&[(host::PARENT_TOKEN_ENV, "tok-77")]),
     );
     assert_eq!(
         server.cell("import os\nprint(os.environ.get('ULTRON_PARENT_TOKEN'))"),
@@ -250,14 +253,14 @@ fn claude_root_mcp_child_server_spawns_count_from_its_level_and_allowance() {
     );
     server.close();
     // Levels above count toward ULTRON_SPAWN_DEPTH: at level 1 of 2 a child may nest no further.
-    let mut server = start("1", "5", root.env(&[("ULTRON_SPAWN_DEPTH", "2")]));
+    let mut server = start("1", "5", root.env(&[(delegation::host::SPAWN_DEPTH_ENV, "2")]));
     let refused = server.cell("await rlm.spawn('x', name='x', depth=1)");
     assert!(
         refused.contains("rlm.spawn depth=1 is too deep here: at most 0"),
         "{refused}"
     );
     server.close();
-    let mut server = start("2", "5", root.env(&[("ULTRON_SPAWN_DEPTH", "2")]));
+    let mut server = start("2", "5", root.env(&[(delegation::host::SPAWN_DEPTH_ENV, "2")]));
     let refused = server.cell("await rlm.spawn('x', name='x')");
     assert!(refused.contains("subagents nest at most 2 level(s) deep"), "{refused}");
     server.close();
@@ -416,7 +419,7 @@ fn claude_root_mcp_shell_job_ends_lead_the_next_result() {
 #[test]
 fn claude_root_mcp_events_off_answers_async_pending_as_typescript() {
     let root = Root::new();
-    let server = Server::start(&[], root.env(&[("ULTRON_ASYNC_EVENTS", "off")]));
+    let server = Server::start(&[], root.env(&[(session_core::async_events::ASYNC_EVENTS_ENV, "off")]));
     assert_eq!(
         server.inspect("async.pending").unwrap(),
         json!({"pending": false, "jobs": 0, "tasks": 0, "events": 0})
@@ -427,7 +430,7 @@ fn claude_root_mcp_events_off_answers_async_pending_as_typescript() {
 #[test]
 fn claude_root_mcp_tool_round_nudge_is_appended_to_cell_results() {
     let root = Root::new();
-    let mut server = Server::start(&[], root.env(&[("ULTRON_TOOL_ROUNDS_NUDGE", "2")]));
+    let mut server = Server::start(&[], root.env(&[(session_core::nudge::TOOL_ROUNDS_NUDGE_ENV, "2")]));
     assert_eq!(server.cell("print(1)"), "1");
     assert_eq!(
         server.cell("print(2)"),
@@ -510,7 +513,7 @@ fn claude_root_mcp_loki_setup_note_comes_with_the_session_context_once() {
     git(&["add", "a.txt"]);
     git(&["commit", "-qm", "init"]);
     let mut vars: Vec<(&str, &str)> = identity.to_vec();
-    vars.push(("ULTRON_LOKI", "on"));
+    vars.push((session_core::compose::LOKI_ENV, "on"));
     let mut server = Server::start(&[], root.env(&vars));
     // The runtime opens with the first cell; the commit follows in the background.
     assert_eq!(server.cell("print(1)"), "1");

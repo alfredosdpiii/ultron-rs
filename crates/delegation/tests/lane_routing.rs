@@ -64,8 +64,8 @@ fn root(max_lanes: usize, cancel_grace: Duration) -> Root {
         create: Arc::new(move |_lane| {
             let mut options = KernelOptions::new(cwd.clone(), runtime());
             options.env = vec![
-                ("ULTRON_CODING_AGENT_DIR".into(), private.display().to_string()),
-                ("ULTRON_SERVER_DIR".into(), private.display().to_string()),
+                (config::paths::ENV_AGENT_DIR.into(), private.display().to_string()),
+                (config::paths::ENV_SERVER_DIR.into(), private.display().to_string()),
             ];
             let null: Arc<dyn kernel::HostHandler> =
                 Arc::new(|_: &str, _: Map<String, Value>, _: &kernel::Signal| Ok(Value::Null));

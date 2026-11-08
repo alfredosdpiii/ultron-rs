@@ -31,8 +31,11 @@ fn session_core_mcp_gateway_reaches_http_servers_through_the_session_proxy() {
     .unwrap();
     let vars: Vec<(String, String)> = vec![
         ("HOME".into(), home.display().to_string()),
-        ("ULTRON_CODING_AGENT_DIR".into(), agent.display().to_string()),
-        ("ULTRON_SERVER_DIR".into(), root.join("server").display().to_string()),
+        (config::paths::ENV_AGENT_DIR.into(), agent.display().to_string()),
+        (
+            config::paths::ENV_SERVER_DIR.into(),
+            root.join("server").display().to_string(),
+        ),
         ("HTTP_PROXY".into(), proxy.url()),
     ];
     let env = RunEnv {

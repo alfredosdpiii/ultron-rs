@@ -31,7 +31,7 @@ use std::time::{Duration, Instant};
 const HANG_GUARD: Duration = Duration::from_secs(120);
 
 fn python() -> String {
-    std::env::var("ULTRON_PYTHON").unwrap_or_else(|_| "/usr/bin/python3".into())
+    kernel::env::python(|name| std::env::var(name).ok())
 }
 
 fn repo() -> PathBuf {
@@ -129,14 +129,17 @@ impl Root {
         let mut vars: Vec<(String, String)> = vec![
             ("PATH".into(), "/usr/bin:/bin".into()),
             ("HOME".into(), p("h")),
-            ("ULTRON_CODING_AGENT_DIR".into(), p("a")),
-            ("ULTRON_SERVER_DIR".into(), p("s")),
+            (config::paths::ENV_AGENT_DIR.into(), p("a")),
+            (config::paths::ENV_SERVER_DIR.into(), p("s")),
             ("XDG_RUNTIME_DIR".into(), p("r")),
             ("TMPDIR".into(), p("tmp")),
-            ("ULTRON_SELF_COMMAND".into(), r#"["/opt/ultron/bin/ultron"]"#.into()),
-            ("ULTRON_LOKI".into(), "off".into()),
-            ("ULTRON_PYTHON".into(), python()),
-            ("PI_OFFLINE".into(), "1".into()),
+            (
+                claude_root::worker_root::SELF_COMMAND_ENV.into(),
+                r#"["/opt/ultron/bin/ultron"]"#.into(),
+            ),
+            (session_core::compose::LOKI_ENV.into(), "off".into()),
+            (kernel::env::PYTHON_ENV.into(), python()),
+            (config::env::OFFLINE_ENV.into(), "1".into()),
         ];
         for (key, value) in extra {
             vars.retain(|(k, _)| k != key);
@@ -297,7 +300,7 @@ fn claude_root_w25c_claude_children_ignore_another_providers_child_model_and_kee
     let root = Root::new();
     let claude = root.claude();
     root.write("a/settings.json", r#"{"rlm": {"childModel": "openai/gpt-5.5"}}"#);
-    let mut server = Server::start(&[], root.env(&[("ULTRON_CLAUDE_BIN", &claude)]));
+    let mut server = Server::start(&[], root.env(&[(claude_root::claude_cli::CLAUDE_BIN_ENV, &claude)]));
     spawn_child(&mut server, "first brief", 0);
     let next = server.cell("print('next')");
     assert!(
@@ -307,13 +310,13 @@ fn claude_root_w25c_claude_children_ignore_another_providers_child_model_and_kee
     server.close();
     // rlm.childModel names a Claude Code model: spawns that name none run on it.
     root.write("a/settings.json", r#"{"rlm": {"childModel": "claude-code/haiku"}}"#);
-    let mut server = Server::start(&[], root.env(&[("ULTRON_CLAUDE_BIN", &claude)]));
+    let mut server = Server::start(&[], root.env(&[(claude_root::claude_cli::CLAUDE_BIN_ENV, &claude)]));
     spawn_child(&mut server, "second brief", 0);
     server.close();
     // A named child model (`--child-model`, here as `ultron claude` passes it) is never overridden by it.
     let mut server = Server::start(
         &["--child-model", "sonnet"],
-        root.env(&[("ULTRON_CLAUDE_BIN", &claude)]),
+        root.env(&[(claude_root::claude_cli::CLAUDE_BIN_ENV, &claude)]),
     );
     spawn_child(&mut server, "third brief", 0);
     // A spawn that names a model still runs on it.
@@ -348,7 +351,10 @@ fn claude_root_w25c_claude_child_usage_is_charged_to_the_turn_that_spawned_it() 
     let claude = root.claude();
     let mut server = Server::start(
         &[],
-        root.env(&[("ULTRON_CLAUDE_BIN", &claude), ("ULTRON_MAX_TOTAL_TOKENS", "1000")]),
+        root.env(&[
+            (claude_root::claude_cli::CLAUDE_BIN_ENV, &claude),
+            (delegation::usage::MAX_TOTAL_TOKENS_ENV, "1000"),
+        ]),
     );
     server.hook("user-prompt");
     let turn = server.control("status", json!({})).unwrap()["turn"]
@@ -426,7 +432,10 @@ fn claude_root_w25c_a_spent_root_admits_no_claude_child() {
     let claude = root.claude();
     let mut server = Server::start(
         &[],
-        root.env(&[("ULTRON_CLAUDE_BIN", &claude), ("ULTRON_MAX_TOTAL_TOKENS", "1000")]),
+        root.env(&[
+            (claude_root::claude_cli::CLAUDE_BIN_ENV, &claude),
+            (delegation::usage::MAX_TOTAL_TOKENS_ENV, "1000"),
+        ]),
     );
     server.hook("user-prompt");
     let turn = server.control("status", json!({})).unwrap()["turn"]
@@ -510,7 +519,7 @@ fn claude_root_w25c_named_frame_model_beats_rlm_frame_model() {
     // Named (`--frame-model`): it wins over rlm.frameModel and ULTRON_RLM_FRAME_MODEL.
     let mut server = Server::start(
         &["--frame-model", "claude-code/sonnet"],
-        root.env(&[("ULTRON_RLM_FRAME_MODEL", "groq/other-model")]),
+        root.env(&[(config::env::RLM_FRAME_MODEL_ENV, "groq/other-model")]),
     );
     let named: Value = serde_json::from_str(&server.cell(frame)).unwrap();
     assert_eq!(named["model"], "claude-code/sonnet", "{named}");
@@ -609,7 +618,7 @@ fn claude_root_w25c_guide_names_the_mcp_servers_and_the_rust_apis_the_external_r
     // Claude Code owns its context: no `ctx`.
     assert!(!prompt.contains("`ctx` edits"), "{prompt}");
     // The TypeScript guide (ULTRON_GUIDE=ts) names none of them, as TypeScript's `ultron claude` did.
-    let ts = print_config(&root, &[("ULTRON_GUIDE", "ts")]);
+    let ts = print_config(&root, &[(session_core::compose::GUIDE_ENV, "ts")]);
     for absent in [
         "MCP servers",
         "type=\"pitfall\"",
@@ -642,7 +651,7 @@ fn claude_root_w25c_system_md_and_append_system_md_shape_root_and_child_prompts(
     );
     // A Claude Code subagent gets both after its own identity and finishing rules.
     let claude = root.claude();
-    let mut server = Server::start(&[], root.env(&[("ULTRON_CLAUDE_BIN", &claude)]));
+    let mut server = Server::start(&[], root.env(&[(claude_root::claude_cli::CLAUDE_BIN_ENV, &claude)]));
     spawn_child(&mut server, "child brief", 0);
     server.close();
     let child = root.children()[0]["prompt"].as_str().unwrap().to_string();
@@ -656,7 +665,7 @@ fn claude_root_w25c_system_md_and_append_system_md_shape_root_and_child_prompts(
 fn claude_root_w25c_lokis_policy_reaches_the_root_prompt_and_claude_subagents() {
     let root = Root::new();
     root.git_repo();
-    let loki = [("ULTRON_LOKI", "on")];
+    let loki = [(session_core::compose::LOKI_ENV, "on")];
     let mut vars: Vec<(&str, &str)> = GIT_IDENTITY.to_vec();
     vars.extend(loki);
     // A first server sets Loki up (the minimal install, committed in the background).
@@ -686,7 +695,7 @@ fn claude_root_w25c_lokis_policy_reaches_the_root_prompt_and_claude_subagents() 
     // A Claude Code subagent's prompt carries it.
     let claude = root.claude();
     let mut child_vars = vars.clone();
-    child_vars.push(("ULTRON_CLAUDE_BIN", &claude));
+    child_vars.push((claude_root::claude_cli::CLAUDE_BIN_ENV, &claude));
     let mut server = Server::start(&[], root.env(&child_vars));
     spawn_child(&mut server, "child brief", 0);
     server.close();

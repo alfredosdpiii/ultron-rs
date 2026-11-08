@@ -33,6 +33,7 @@ signals = { path = "../signals" }
 tokio = { version = "=1.53.2", features = ["rt", "time"] }
 
 [dev-dependencies]
+hindsight = { path = "../hindsight" }
 tempfile = "=3.27.0"
 
 [lints]

@@ -97,8 +97,8 @@ fn cli_local_resources_resolve_matches_typescript_top_level_resources() {
             std::fs::write(root.join("work/.pi/settings.json"), case["project"].to_string()).unwrap();
         }
         let vars: HashMap<String, String> = [
-            ("PI_OFFLINE", "1".to_string()),
-            ("ULTRON_CODING_AGENT_DIR", root.join("agent").display().to_string()),
+            (config::env::OFFLINE_ENV, "1".to_string()),
+            (config::paths::ENV_AGENT_DIR, root.join("agent").display().to_string()),
         ]
         .into_iter()
         .map(|(k, v)| (k.to_string(), v))
@@ -182,7 +182,7 @@ fn cli_local_resources_extensions_match_typescript_top_level() {
             std::fs::write(root.join("work/.pi/settings.json"), case["project"].to_string()).unwrap();
         }
         let vars: HashMap<String, String> = HashMap::from([(
-            "ULTRON_CODING_AGENT_DIR".to_string(),
+            config::paths::ENV_AGENT_DIR.to_string(),
             root.join("agent").display().to_string(),
         )]);
         let env = cli::Env {

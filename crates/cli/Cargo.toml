@@ -16,7 +16,10 @@ agent = { path = "../agent" }
 base64 = "=0.23.1"
 image = { version = "=0.25.10", default-features = false, features = ["bmp", "gif", "jpeg", "png", "webp"] }
 ai = { path = "../ai" }
+kernel = { path = "../kernel" }
+loki = { path = "../loki" }
 mimalloc = { version = "=0.1.52", default-features = false }
+model-scope = { path = "../model-scope" }
 resources = { path = "../resources" }
 review = { path = "../review" }
 knowledge = { path = "../knowledge" }
@@ -59,7 +62,6 @@ sha2 = "=0.10.9"
 
 [dev-dependencies]
 chord-delta = { path = "../chord-delta" }
-kernel = { path = "../kernel" }
 rustix = { version = "=1.1.5", features = ["net", "process", "std"] }
 ring = "=0.17.14"
 tempfile = "=3.27.0"

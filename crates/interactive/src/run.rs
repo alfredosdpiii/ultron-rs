@@ -17,6 +17,8 @@ use tui::viewport::{GateDecision, RenderGate, ViewportRenderer};
 use crate::app::App;
 use crate::lane::LaneEvent;
 
+pub const TUI_WRITE_LOG_ENV: &str = "PI_TUI_WRITE_LOG";
+
 /// What the UI thread receives.
 pub enum UiEvent {
     Input(String),
@@ -141,7 +143,7 @@ pub fn terminal_debug(
     pid: u32,
     clock: Box<dyn Fn() -> i64 + Send + Sync>,
 ) -> (Option<Arc<tui::render_debug::RenderDebug>>, bool) {
-    let write_log = var("PI_TUI_WRITE_LOG").and_then(|value| {
+    let write_log = var(TUI_WRITE_LOG_ENV).and_then(|value| {
         let is_dir = std::fs::metadata(&value).is_ok_and(|m| m.is_dir());
         tui::render_debug::write_log_path(&value, is_dir, local, pid)
     });

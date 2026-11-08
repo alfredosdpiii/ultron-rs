@@ -313,7 +313,7 @@ fn acceptance_a52_a_subagent_lane_trims_then_compacts_and_keeps_its_notes() {
     )
     .unwrap();
     // Cell output up to its maximum budget (128 KiB), so the results are as large as printed.
-    let mut client = install.rpc(&["--no-session"], &[("ULTRON_RLM_OUTPUT_BYTES", "131072")]);
+    let mut client = install.rpc(&["--no-session"], &[(kernel::env::RLM_OUTPUT_BYTES_ENV, "131072")]);
     client.prompt_and_wait("Spawn the helper", HANG).unwrap();
     wait_until("the child's last request", || {
         provider

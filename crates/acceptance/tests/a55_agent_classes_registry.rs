@@ -54,9 +54,10 @@ impl Setup {
     fn kernel(&self) -> Kernel {
         let mut options = KernelOptions::new(env!("CARGO_MANIFEST_DIR"), runtime());
         options.snapshot_key = Some(vec![5; 32]);
-        options
-            .env
-            .push(("ULTRON_RLM_SPILL_DIR".into(), self.spill.path().display().to_string()));
+        options.env.push((
+            kernel::env::RLM_SPILL_DIR_ENV.into(),
+            self.spill.path().display().to_string(),
+        ));
         Kernel::new(options, Arc::new(self.fixture.agents.handler("main", null_handler()))).unwrap()
     }
     fn snapshot_path(&self) -> PathBuf {

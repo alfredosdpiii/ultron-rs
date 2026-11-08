@@ -177,8 +177,8 @@ impl Acp {
             .arg("acp")
             .args(["--model", "anthropic/claude-sonnet-4-5"])
             .args(args)
-            .env("ULTRON_HINDSIGHT_URL", "off")
-            .env("PI_OFFLINE", "1")
+            .env(hindsight::resolve::HINDSIGHT_URL_ENV, "off")
+            .env(config::env::OFFLINE_ENV, "1")
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());

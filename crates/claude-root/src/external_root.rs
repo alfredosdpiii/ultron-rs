@@ -202,13 +202,17 @@ impl ExternalRoot {
                 .filter_map(|part| serde_json::to_value(part).ok())
                 .collect())
         });
-        let async_events = session_core::async_events::async_events_enabled(var("ULTRON_ASYNC_EVENTS").as_deref());
+        let async_events = session_core::async_events::async_events_enabled(
+            var(session_core::async_events::ASYNC_EVENTS_ENV).as_deref(),
+        );
         ExternalRoot::new(events, runner, loki_context)
             .with_stats(stats)
             .with_host(host)
             .with_nudges(
-                session_core::nudge::tool_rounds_nudge_from_env(var("ULTRON_TOOL_ROUNDS_NUDGE").as_deref()),
-                session_core::nudge::skill_nudge_from_env(var("ULTRON_SKILL_NUDGE").as_deref()),
+                session_core::nudge::tool_rounds_nudge_from_env(
+                    var(session_core::nudge::TOOL_ROUNDS_NUDGE_ENV).as_deref(),
+                ),
+                session_core::nudge::skill_nudge_from_env(var(session_core::nudge::SKILL_NUDGE_ENV).as_deref()),
                 async_events,
             )
     }

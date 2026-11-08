@@ -358,13 +358,13 @@ impl Sandbox {
             .current_dir(&self.cwd)
             .env("PATH", std::env::var("PATH").unwrap_or_default())
             .env("HOME", &self.root)
-            .env("ULTRON_CODING_AGENT_DIR", &self.agent_dir)
-            .env("ULTRON_SERVER_DIR", self.root.join("server"))
+            .env(config::paths::ENV_AGENT_DIR, &self.agent_dir)
+            .env(config::paths::ENV_SERVER_DIR, self.root.join("server"))
             .env("ANTHROPIC_API_KEY", "test-key")
             .env("NO_COLOR", "1")
             .env("TZ", "UTC")
             // Requests are compared with TS recordings: the TS runtime guide, without the Rust-only lines.
-            .env("ULTRON_GUIDE", "ts");
+            .env(session_core::compose::GUIDE_ENV, "ts");
         command
     }
 }

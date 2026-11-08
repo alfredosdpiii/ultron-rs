@@ -9,7 +9,7 @@ use std::path::Path;
 use std::process::{Command, Stdio};
 
 fn python() -> String {
-    std::env::var("ULTRON_PYTHON").unwrap_or_else(|_| "/usr/bin/python3".into())
+    kernel::env::python(|name| std::env::var(name).ok())
 }
 
 fn fake_browser() -> String {
@@ -93,10 +93,10 @@ fn cli_mcp_login_logout_and_list_match_typescript() {
             .current_dir(&cwd)
             .env("PATH", &bin)
             .env("HOME", &base)
-            .env("ULTRON_CODING_AGENT_DIR", &agent)
-            .env("ULTRON_SERVER_DIR", base.join("server"))
+            .env(config::paths::ENV_AGENT_DIR, &agent)
+            .env(config::paths::ENV_SERVER_DIR, base.join("server"))
             .env("NO_COLOR", "1")
-            .env("PI_OFFLINE", "1")
+            .env(config::env::OFFLINE_ENV, "1")
             .stdin(Stdio::null())
             .output()
             .unwrap();

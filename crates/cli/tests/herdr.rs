@@ -279,8 +279,8 @@ fn cli_herdr_durable_tui_resumes_through_ultron_durable() {
         .env_clear()
         .env("PATH", "/usr/bin:/bin")
         .env("HOME", &tmp.0)
-        .env("ULTRON_CODING_AGENT_DIR", tmp.0.join("agent"))
-        .env("ULTRON_SERVER_DIR", tmp.0.join("server"))
+        .env(config::paths::ENV_AGENT_DIR, tmp.0.join("agent"))
+        .env(config::paths::ENV_SERVER_DIR, tmp.0.join("server"))
         .stdin(Stdio::null())
         .output()
         .unwrap();
@@ -371,7 +371,7 @@ fn cli_herdr_print_mode_reports_working_then_the_end_then_release() {
 #[test]
 fn cli_herdr_is_off_by_setting_or_env_and_silent_without_a_socket() {
     for (extra, settings) in [
-        (vec![("ULTRON_HERDR".to_string(), "0".to_string())], None),
+        (vec![(herdr::ULTRON_HERDR_ENV.to_string(), "0".to_string())], None),
         (Vec::new(), Some(r#"{"herdr": false}"#)),
     ] {
         let dir = tempfile::tempdir().unwrap();
@@ -393,7 +393,7 @@ fn cli_herdr_is_off_by_setting_or_env_and_silent_without_a_socket() {
 }
 
 fn python() -> String {
-    std::env::var("ULTRON_PYTHON").unwrap_or_else(|_| "/usr/bin/python3".into())
+    kernel::env::python(|name| std::env::var(name).ok())
 }
 
 fn repo() -> PathBuf {
@@ -413,14 +413,20 @@ fn claude_root() -> (tempfile::TempDir, Vec<(String, String)>) {
     let env = vec![
         ("PATH".into(), format!("{}:/usr/bin:/bin", p("bin"))),
         ("HOME".into(), p("h")),
-        ("ULTRON_CODING_AGENT_DIR".into(), p("a")),
-        ("ULTRON_SERVER_DIR".into(), p("s")),
+        (config::paths::ENV_AGENT_DIR.into(), p("a")),
+        (config::paths::ENV_SERVER_DIR.into(), p("s")),
         ("XDG_RUNTIME_DIR".into(), p("r")),
         ("TMPDIR".into(), p("tmp")),
-        ("ULTRON_SELF_COMMAND".into(), r#"["/opt/ultron/bin/ultron"]"#.into()),
-        ("ULTRON_CLAUDE_BIN".into(), claude.display().to_string()),
-        ("ULTRON_LOKI".into(), "off".into()),
-        ("ULTRON_PYTHON".into(), python()),
+        (
+            claude_root::worker_root::SELF_COMMAND_ENV.into(),
+            r#"["/opt/ultron/bin/ultron"]"#.into(),
+        ),
+        (
+            claude_root::claude_cli::CLAUDE_BIN_ENV.into(),
+            claude.display().to_string(),
+        ),
+        (session_core::compose::LOKI_ENV.into(), "off".into()),
+        (kernel::env::PYTHON_ENV.into(), python()),
         ("FAKE_CLAUDE_OUT".into(), p("launch.json")),
         ("LANG".into(), "C.UTF-8".into()),
     ];

@@ -20,7 +20,7 @@ const BIN: &str = env!("CARGO_BIN_EXE_ultron");
 const HANG_GUARD: Duration = Duration::from_secs(120);
 
 fn python() -> String {
-    std::env::var("ULTRON_PYTHON").unwrap_or_else(|_| "/usr/bin/python3".into())
+    kernel::env::python(|name| std::env::var(name).ok())
 }
 
 /// A Claude Code subagent that drives its own `ultron mcp --child` server: one cell, its text as the reply.
@@ -134,13 +134,13 @@ fn start(root: &Path, socket: &Path, log: &Path) -> Mcp {
         .env_clear()
         .env("PATH", format!("{}:/usr/bin:/bin", p("bin")))
         .env("HOME", p("h"))
-        .env("ULTRON_CODING_AGENT_DIR", p("a"))
-        .env("ULTRON_SERVER_DIR", p("s"))
+        .env(config::paths::ENV_AGENT_DIR, p("a"))
+        .env(config::paths::ENV_SERVER_DIR, p("s"))
         .env("XDG_RUNTIME_DIR", p("r"))
         .env("TMPDIR", p("tmp"))
-        .env("ULTRON_SELF_COMMAND", json!([BIN]).to_string())
-        .env("ULTRON_LOKI", "off")
-        .env("ULTRON_PYTHON", python())
+        .env(claude_root::worker_root::SELF_COMMAND_ENV, json!([BIN]).to_string())
+        .env(session_core::compose::LOKI_ENV, "off")
+        .env(kernel::env::PYTHON_ENV, python())
         .env("FAKE_CHILD_LOG", log)
         .env("CLAUDE_CODE_SESSION_ID", "sess-relay")
         .stdin(Stdio::piped())

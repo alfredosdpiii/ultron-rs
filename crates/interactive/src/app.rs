@@ -48,6 +48,8 @@ use crate::settings_selector::{SettingsEvent, SettingsInput, SettingsSelector, f
 use crate::transcript_picker::{PickerEvent, PickerMode, PickerOptions, TranscriptPicker};
 use crate::tree_selector::{FilterMode, TreeAction, TreeSelector};
 
+pub const RLM_PANE_AUTO_ENV: &str = "ULTRON_RLM_PANE_AUTO";
+
 /// The error a navigation answers when its branch summary was aborted (session-core `BRANCH_SUMMARY_ABORTED`).
 const BRANCH_SUMMARY_ABORTED: &str = "Branch summarization cancelled";
 /// What `/extension` answers (session-core `compose::EXTENSIONS_UNSUPPORTED`).
@@ -1017,19 +1019,19 @@ impl App {
     pub fn apply_startup_settings(&mut self, settings: &Value, var: &dyn Fn(&str) -> Option<String>) {
         // `getShowHardwareCursor`: the setting, else (`??`) `PI_HARDWARE_CURSOR=1`.
         self.show_hardware_cursor = match &settings["showHardwareCursor"] {
-            Value::Null => var("PI_HARDWARE_CURSOR").as_deref() == Some("1"),
+            Value::Null => var(config::worker_settings_keys::HARDWARE_CURSOR_ENV).as_deref() == Some("1"),
             value => jsrt::value::truthy(Some(value)),
         };
         // `getClearOnShrink`: a present setting (even null), else `PI_CLEAR_ON_SHRINK=1`.
         self.clear_on_shrink = match settings["terminal"].get("clearOnShrink") {
-            None => var("PI_CLEAR_ON_SHRINK").as_deref() == Some("1"),
+            None => var(config::worker_settings_keys::CLEAR_ON_SHRINK_ENV).as_deref() == Some("1"),
             Some(value) => jsrt::value::truthy(Some(value)),
         };
         if let Some(action) = settings["doubleEscapeAction"].as_str() {
             self.double_escape_action = action.to_string();
         }
         self.header.splash = self.splash_allowed && settings["quietStartup"] != true;
-        self.rlm_pane_auto = settings["rlmPaneAutoOpen"] != false && !env_off(var("ULTRON_RLM_PANE_AUTO").as_deref());
+        self.rlm_pane_auto = settings["rlmPaneAutoOpen"] != false && !env_off(var(RLM_PANE_AUTO_ENV).as_deref());
         if let Some(padding) = settings["editorPaddingX"].as_f64() {
             self.apply_local_setting("editorPaddingX", &Value::from(padding));
         }

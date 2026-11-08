@@ -13,7 +13,7 @@ fn run(sandbox: &Sandbox, env: &[(&str, &str)]) -> Output {
     let mut command = sandbox.ultron();
     command
         .env("PATH", "/usr/bin:/bin")
-        .env("PI_OFFLINE", "1")
+        .env(config::env::OFFLINE_ENV, "1")
         .args(["-p", "--model", MODEL, "x"]);
     for (k, v) in env {
         command.env(k, v);
@@ -37,9 +37,9 @@ fn cli_tool_env_and_extension_tools_setting_warn_and_keep_only_rlm() {
     let output = run(
         &sandbox,
         &[
-            ("ULTRON_TOOLS", " Native "),
-            ("ULTRON_EXTENSION_TOOLS", "NATIVE"),
-            ("ULTRON_NATIVE_EXTENSION_TOOLS", "a, ,b"),
+            (cli::startup::TOOLS_ENV, " Native "),
+            (cli::startup::EXTENSION_TOOLS_ENV, "NATIVE"),
+            (cli::startup::NATIVE_EXTENSION_TOOLS_ENV, "a, ,b"),
         ],
     );
     assert_eq!(text(&output.stdout), "a\n", "{}", text(&output.stderr));
@@ -60,7 +60,13 @@ fn cli_tool_env_and_extension_tools_setting_warn_and_keep_only_rlm() {
         r#"{"extensionTools": {"mode": "repl"}}"#,
     )
     .unwrap();
-    let output = run(&sandbox, &[("ULTRON_TOOLS", "rlm"), ("ULTRON_EXTENSION_TOOLS", "repl")]);
+    let output = run(
+        &sandbox,
+        &[
+            (cli::startup::TOOLS_ENV, "rlm"),
+            (cli::startup::EXTENSION_TOOLS_ENV, "repl"),
+        ],
+    );
     assert_eq!(text(&output.stdout), "b\n");
     assert_eq!(text(&output.stderr), "");
     for request in seen.lock().unwrap().requests.iter() {

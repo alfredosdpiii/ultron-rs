@@ -118,7 +118,7 @@ fn session_core_keep_going_ceiling_sends_a_final_nudge_and_stops() {
     let a = actor(
         script,
         Setup {
-            vars: vec![("ULTRON_KEEPGOING_MAX_CONTINUES", "3".into())],
+            vars: vec![(resources::keep_going::ENV_MAX_CONTINUES, "3".into())],
             ..Setup::default()
         },
     );

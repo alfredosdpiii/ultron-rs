@@ -63,7 +63,7 @@ fn session_core_event_summaries_are_masked() {
 
 #[test]
 fn session_core_event_summaries_honour_ultron_mask_secrets_off() {
-    let event = job_event(vec![("ULTRON_MASK_SECRETS", "off".into())]);
+    let event = job_event(vec![(session_core::compose::MASK_SECRETS_ENV, "off".into())]);
     assert!(event.contains(SECRET), "{event}");
 }
 

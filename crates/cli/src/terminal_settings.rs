@@ -35,7 +35,8 @@ pub fn capabilities_with(env: &Env, settings: &SettingsManager, probe: &dyn Fn(&
     let var = |k: &str| (env.var)(k);
     let in_tmux =
         var("TMUX").is_some_and(|v| !v.is_empty()) || var("TERM").is_some_and(|t| t.to_lowercase().starts_with("tmux"));
-    let decided = matches!(var("PI_HYPERLINKS").as_deref(), Some("1" | "0")) || overrides.hyperlinks.is_some();
+    let decided =
+        matches!(var(tui::image::HYPERLINKS_ENV).as_deref(), Some("1" | "0")) || overrides.hyperlinks.is_some();
     let tmux = in_tmux && !decided && probe(env);
     with_overrides(&var, false, tmux, &overrides)
 }

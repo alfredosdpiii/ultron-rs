@@ -331,7 +331,7 @@ fn promotion_an_entirely_carried_cherry_pick_is_a_complete_review() {
         work = dir.path().display().to_string(),
         diff = empty.display().to_string(),
     );
-    let python = std::env::var("ULTRON_PYTHON").unwrap_or_else(|_| "/usr/bin/python3".into());
+    let python = kernel::env::python(|name| std::env::var(name).ok());
     let output = std::process::Command::new(python)
         .arg("-I")
         .arg("-c")

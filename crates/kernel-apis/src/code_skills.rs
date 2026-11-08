@@ -16,6 +16,8 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime};
 
+pub const CODE_SKILL_TEST_TIMEOUT_MS_ENV: &str = "ULTRON_CODE_SKILL_TEST_TIMEOUT_MS";
+
 const MAX_SOURCE_BYTES: usize = 64 * 1024;
 const MAX_EVIDENCE_BYTES: usize = 16 * 1024;
 const MAX_FAMILY_CHARS: usize = 200;
@@ -286,7 +288,7 @@ pub struct CodeSkillsOptions {
 
 impl CodeSkillsOptions {
     pub fn new(dir: impl Into<PathBuf>, runtime_path: impl Into<PathBuf>) -> Self {
-        let configured = std::env::var("ULTRON_CODE_SKILL_TEST_TIMEOUT_MS")
+        let configured = std::env::var(CODE_SKILL_TEST_TIMEOUT_MS_ENV)
             .ok()
             .and_then(|value| value.trim().parse::<u64>().ok())
             .filter(|value| *value > 0);
@@ -309,7 +311,7 @@ impl CodeSkillsOptions {
     ) -> Self {
         let configured = base_env
             .iter()
-            .find(|(key, _)| key == "ULTRON_CODE_SKILL_TEST_TIMEOUT_MS")
+            .find(|(key, _)| key == CODE_SKILL_TEST_TIMEOUT_MS_ENV)
             .and_then(|(_, value)| value.trim().parse::<u64>().ok())
             .filter(|value| *value > 0);
         Self {
@@ -406,7 +408,7 @@ impl CodeSkills {
         options.python = self.options.python.clone();
         options.base_env = self.options.base_env.clone();
         options.env = vec![(
-            "ULTRON_CODE_SKILLS_DIR".into(),
+            kernel::env::CODE_SKILLS_DIR_ENV.into(),
             self.options.dir.to_string_lossy().into_owned(),
         )];
         let timeout = Duration::from_millis(self.options.test_timeout_ms);

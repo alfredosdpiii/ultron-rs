@@ -71,13 +71,11 @@ pub fn calculate_cost(model: &Model, usage: &mut Usage) {
     cost.total = cost.input + cost.output + cost.cache_read + cost.cache_write;
 }
 
-const EXTENDED_THINKING_LEVELS: [&str; 7] = ["off", "minimal", "low", "medium", "high", "xhigh", "max"];
-
 pub fn supported_thinking_levels(model: &Model) -> Vec<&'static str> {
     if !model.reasoning {
         return vec!["off"];
     }
-    EXTENDED_THINKING_LEVELS
+    model_scope::THINKING_LEVELS
         .into_iter()
         .filter(|level| match model.thinking_level(level) {
             crate::types::Mapped::Unsupported => false,
@@ -94,13 +92,13 @@ pub fn clamp_thinking_level(model: &Model, level: &str) -> &'static str {
     if let Some(found) = available.iter().find(|l| **l == level) {
         return found;
     }
-    let Some(requested) = EXTENDED_THINKING_LEVELS.iter().position(|l| *l == level) else {
+    let Some(requested) = model_scope::THINKING_LEVELS.iter().position(|l| *l == level) else {
         return first;
     };
-    let above = EXTENDED_THINKING_LEVELS[requested..]
+    let above = model_scope::THINKING_LEVELS[requested..]
         .iter()
         .find(|l| available.contains(l));
-    let below = EXTENDED_THINKING_LEVELS[..requested]
+    let below = model_scope::THINKING_LEVELS[..requested]
         .iter()
         .rev()
         .find(|l| available.contains(l));

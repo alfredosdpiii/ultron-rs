@@ -138,9 +138,9 @@ fn interactive_terminal_debug_env_logs_writes_redraws_and_renders() {
     let (write_dir, agent, dumps) = (temp.join("writes"), temp.join("agent"), temp.join("dumps"));
     std::fs::create_dir_all(&write_dir).unwrap();
     let vars: HashMap<&str, String> = HashMap::from([
-        ("PI_TUI_WRITE_LOG", write_dir.display().to_string()),
-        ("PI_TUI_DEBUG_REDRAW", "1".to_string()),
-        ("PI_TUI_DEBUG", "1".to_string()),
+        (interactive::run::TUI_WRITE_LOG_ENV, write_dir.display().to_string()),
+        (tui::render_debug::TUI_DEBUG_REDRAW_ENV, "1".to_string()),
+        (tui::render_debug::TUI_DEBUG_ENV, "1".to_string()),
     ]);
     let var = |name: &str| vars.get(name).cloned();
     let (debug, termux) = terminal_debug(&var, &agent, &dumps, STAMP, 4242, Box::new(|| 1_792_224_000_999));
@@ -197,13 +197,15 @@ fn interactive_terminal_debug_is_off_without_the_variables_and_reads_termux() {
     assert!(!terminal_debug(&empty, &temp, &temp, STAMP, 1, Box::new(|| 0)).1);
     // A write log that is not an existing directory is the file itself.
     let file = temp.join("tui.log");
-    let named = |name: &str| (name == "PI_TUI_WRITE_LOG").then(|| file.display().to_string());
+    let named = |name: &str| (name == interactive::run::TUI_WRITE_LOG_ENV).then(|| file.display().to_string());
     let (debug, _) = terminal_debug(&named, &temp, &temp, STAMP, 1, Box::new(|| 0));
     let debug = debug.unwrap();
     assert_eq!(debug.write_log.as_deref(), Some(file.as_path()));
     assert!(!debug.traces_renders());
     // Termux through the loop: a height change alone is diffed, never painted whole.
-    let redraw = |name: &str| (name == "PI_TUI_DEBUG_REDRAW" || name == "TERMUX_VERSION").then(|| "1".to_string());
+    let redraw = |name: &str| {
+        (name == tui::render_debug::TUI_DEBUG_REDRAW_ENV || name == "TERMUX_VERSION").then(|| "1".to_string())
+    };
     let agent = temp.join("agent");
     let (debug, termux) = terminal_debug(&redraw, &agent, &temp, STAMP, 1, Box::new(|| 0));
     let debug = debug.unwrap();

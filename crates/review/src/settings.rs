@@ -10,6 +10,8 @@ use serde_json::Value;
 
 use crate::js::{Num, clamp, path_join};
 
+pub const CACHE_DIR_ENV: &str = "ULTRON_AUTOREVIEW_CACHE_DIR";
+
 pub const DEFAULT_POLL_SECONDS: f64 = 45.0;
 pub const MIN_POLL_SECONDS: f64 = 20.0;
 pub const DEFAULT_CONCURRENCY: f64 = 3.0;
@@ -507,7 +509,7 @@ pub fn autoreview_paths(agent_dir: &str, env: &HashMap<String, String>, home: &s
             .map(|value| jsrt::string::trim(value))
             .filter(|value| !value.is_empty())
     };
-    let cache = match set("ULTRON_AUTOREVIEW_CACHE_DIR") {
+    let cache = match set(CACHE_DIR_ENV) {
         Some(cache) => cache.to_string(),
         None => {
             let base = set("XDG_CACHE_HOME").map_or_else(|| path_join(&[home, ".cache"]), str::to_string);

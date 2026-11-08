@@ -15,8 +15,8 @@ fn cli_update_models_without_credentials_refreshes_nothing_and_succeeds() {
         .env_clear()
         .env("PATH", "/usr/bin:/bin")
         .env("HOME", tmp.path())
-        .env("ULTRON_CODING_AGENT_DIR", tmp.path().join("agent"))
-        .env("ULTRON_SERVER_DIR", tmp.path().join("server"))
+        .env(config::paths::ENV_AGENT_DIR, tmp.path().join("agent"))
+        .env(config::paths::ENV_SERVER_DIR, tmp.path().join("server"))
         .output()
         .unwrap();
     assert_eq!(String::from_utf8_lossy(&output.stdout), "Model catalogs refreshed\n");

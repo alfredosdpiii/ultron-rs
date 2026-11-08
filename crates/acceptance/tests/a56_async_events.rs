@@ -166,7 +166,10 @@ fn acceptance_a56_async_events_off_disables_events_ported_part() {
     let order = Arc::new(Order::default());
     let provider = Provider::start(child_script(&order));
     let install = Install::new(&provider);
-    let mut client = install.rpc(&["--no-session"], &[("ULTRON_ASYNC_EVENTS", "off")]);
+    let mut client = install.rpc(
+        &["--no-session"],
+        &[(session_core::async_events::ASYNC_EVENTS_ENV, "off")],
+    );
     client
         .prompt_and_wait("PARENT: delegate the count", common::HANG)
         .unwrap();

@@ -29,3 +29,13 @@ fn model_scope_partial_match_takes_the_highest_id_by_locale_compare() {
     let models = [M("fa"), M("éa")];
     assert_eq!(parse_model_pattern("a", &models, false).model.map(|m| m.0), Some("fa"));
 }
+
+#[test]
+fn model_scope_is_model_ref_matches_the_javascript_pattern() {
+    for ok in ["a/b", "openrouter/x/y-1"] {
+        assert!(model_scope::is_model_ref(ok), "{ok}");
+    }
+    for bad in ["a", "a/", "/b", "a//b", "a/b c", "a/\u{feff}b", ""] {
+        assert!(!model_scope::is_model_ref(bad), "{bad:?}");
+    }
+}

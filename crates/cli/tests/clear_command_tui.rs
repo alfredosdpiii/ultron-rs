@@ -40,10 +40,10 @@ fn run(program: &Path, root: &Path, args: &[&str], env: &[(&str, &str)]) -> std:
         .env_clear()
         .env("PATH", "/usr/bin:/bin")
         .env("HOME", root)
-        .env("ULTRON_CODING_AGENT_DIR", root.join("agent"))
-        .env("ULTRON_SERVER_DIR", root.join("server"))
+        .env(config::paths::ENV_AGENT_DIR, root.join("agent"))
+        .env(config::paths::ENV_SERVER_DIR, root.join("server"))
         .env("ANTHROPIC_API_KEY", "test-key")
-        .env("PI_SKIP_VERSION_CHECK", "1")
+        .env(config::env::SKIP_VERSION_CHECK_ENV, "1")
         .envs(env.iter().copied())
         .stdin(Stdio::null())
         .output()
@@ -152,7 +152,7 @@ fn cli_clear_tui_durable_starts_a_new_server_session_on_the_durable_model() {
     layout(&tmp.0, mock.port);
     let durable = tmp.0.join(".ultron/server");
     let durable_env = durable.display().to_string();
-    let env = [("ULTRON_SERVER_DIR", durable_env.as_str())];
+    let env = [(config::paths::ENV_SERVER_DIR, durable_env.as_str())];
     // No `--model`: the session (and the one `/clear` starts) runs on `durable.model`.
     let tui = Tui::start_at(&tmp.0, mock.port, 120, 30, &["durable"], &env);
     tui.wait("claude-sonnet-4-5");
@@ -172,7 +172,7 @@ fn cli_clear_tui_ultron_s_home_session_moves_home_to_the_new_session() {
     layout(&tmp.0, mock.port);
     let durable = tmp.0.join(".ultron/server");
     let durable_env = durable.display().to_string();
-    let env = [("ULTRON_SERVER_DIR", durable_env.as_str())];
+    let env = [(config::paths::ENV_SERVER_DIR, durable_env.as_str())];
     let link = ultron_s(&tmp.0);
     let out = run(&link, &tmp.0, &["-p", "first question"], &env);
     assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
@@ -224,7 +224,7 @@ fn cli_clear_tui_ultron_s_other_session_leaves_home_alone() {
     layout(&tmp.0, mock.port);
     let durable = tmp.0.join(".ultron/server");
     let durable_env = durable.display().to_string();
-    let env = [("ULTRON_SERVER_DIR", durable_env.as_str())];
+    let env = [(config::paths::ENV_SERVER_DIR, durable_env.as_str())];
     let link = ultron_s(&tmp.0);
     let out = run(&link, &tmp.0, &["-p", "first question"], &env);
     assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));

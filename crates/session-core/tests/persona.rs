@@ -36,9 +36,12 @@ fn runtime(
     std::fs::write(cwd.join("AGENTS.md"), "Project rules.").unwrap();
     let mut all: Vec<(String, String)> = vec![
         ("HOME".into(), home.display().to_string()),
-        ("ULTRON_CODING_AGENT_DIR".into(), agent.display().to_string()),
-        ("ULTRON_SERVER_DIR".into(), root.join("server").display().to_string()),
-        ("ULTRON_HINDSIGHT_URL".into(), "off".into()),
+        (config::paths::ENV_AGENT_DIR.into(), agent.display().to_string()),
+        (
+            config::paths::ENV_SERVER_DIR.into(),
+            root.join("server").display().to_string(),
+        ),
+        (hindsight::resolve::HINDSIGHT_URL_ENV.into(), "off".into()),
     ];
     all.extend(vars.iter().map(|(k, v)| (k.to_string(), v.to_string())));
     let env = RunEnv {
@@ -123,7 +126,10 @@ fn session_core_engineering_mode_with_the_rust_guide_uses_bundled_skills_proacti
     let off = prompt(json!({"engineering": false}), &[]);
     assert!(off.contains(REACTIVE) && !off.contains(PROACTIVE), "{off}");
     // The TypeScript guide keeps TypeScript's wording.
-    let ts = prompt(json!({"engineering": true}), &[("ULTRON_GUIDE", "ts")]);
+    let ts = prompt(
+        json!({"engineering": true}),
+        &[(session_core::compose::GUIDE_ENV, "ts")],
+    );
     assert!(ts.contains(REACTIVE) && !ts.contains(PROACTIVE), "{ts}");
 }
 

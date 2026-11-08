@@ -24,7 +24,7 @@ use std::time::{Duration, Instant};
 const HANG_GUARD: Duration = Duration::from_secs(120);
 
 fn python() -> String {
-    std::env::var("ULTRON_PYTHON").unwrap_or_else(|_| "/usr/bin/python3".into())
+    kernel::env::python(|name| std::env::var(name).ok())
 }
 
 fn repo() -> PathBuf {
@@ -53,14 +53,17 @@ impl Root {
         let mut vars: Vec<(String, String)> = vec![
             ("PATH".into(), "/usr/bin:/bin".into()),
             ("HOME".into(), p("h")),
-            ("ULTRON_CODING_AGENT_DIR".into(), p("a")),
-            ("ULTRON_SERVER_DIR".into(), p("s")),
+            (config::paths::ENV_AGENT_DIR.into(), p("a")),
+            (config::paths::ENV_SERVER_DIR.into(), p("s")),
             ("XDG_RUNTIME_DIR".into(), p("r")),
             ("TMPDIR".into(), p("tmp")),
-            ("ULTRON_SELF_COMMAND".into(), r#"["/opt/ultron/bin/ultron"]"#.into()),
-            ("ULTRON_LOKI".into(), "off".into()),
-            ("ULTRON_PYTHON".into(), python()),
-            ("PI_OFFLINE".into(), "1".into()),
+            (
+                claude_root::worker_root::SELF_COMMAND_ENV.into(),
+                r#"["/opt/ultron/bin/ultron"]"#.into(),
+            ),
+            (session_core::compose::LOKI_ENV.into(), "off".into()),
+            (kernel::env::PYTHON_ENV.into(), python()),
+            (config::env::OFFLINE_ENV.into(), "1".into()),
         ];
         for (key, value) in extra {
             vars.retain(|(k, _)| k != key);
@@ -292,7 +295,11 @@ fn claude_root_ultron_children_get_the_context_reminder() {
         }
     }));
     // A margin past the whole window: the child's first cell result is already at the trigger.
-    let mut server = Server::start(&root, port, &[("ULTRON_CONTEXT_REMINDER_TOKENS", "100000000")]);
+    let mut server = Server::start(
+        &root,
+        port,
+        &[(session_core::compose::CONTEXT_REMINDER_TOKENS_ENV, "100000000")],
+    );
     let id = server.cell("h = await rlm.spawn('CHILD-BRIEF: run one cell', name='celler')\nprint(h.rlm_child_id)");
     wait_until("the child sends its cell result", || {
         requests.lock().unwrap().iter().any(has_tool_result)

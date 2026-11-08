@@ -386,15 +386,18 @@ impl Tui {
         let mut vars: Vec<(String, String)> = vec![
             ("PATH".into(), format!("{}:/usr/bin:/bin", no_browser.display())),
             ("HOME".into(), root.display().to_string()),
-            ("ULTRON_CODING_AGENT_DIR".into(), agent.display().to_string()),
-            ("ULTRON_SERVER_DIR".into(), root.join("server").display().to_string()),
+            (config::paths::ENV_AGENT_DIR.into(), agent.display().to_string()),
+            (
+                config::paths::ENV_SERVER_DIR.into(),
+                root.join("server").display().to_string(),
+            ),
             ("ANTHROPIC_API_KEY".into(), "test-key".into()),
             ("TZ".into(), "UTC".into()),
             ("TERM".into(), "xterm-256color".into()),
             ("COLORTERM".into(), "truecolor".into()),
             ("LANG".into(), "C.UTF-8".into()),
             // The startup update check never reaches the npm registry from a test.
-            ("PI_SKIP_VERSION_CHECK".into(), "1".into()),
+            (config::env::SKIP_VERSION_CHECK_ENV.into(), "1".into()),
         ];
         vars.extend(env.iter().map(|(k, v)| (k.to_string(), v.to_string())));
         let script = root.join("run.sh");

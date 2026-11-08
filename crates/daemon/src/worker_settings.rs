@@ -18,17 +18,6 @@ pub type Env<'a> = &'a dyn Fn(&str) -> Option<String>;
 pub const DEFAULT_THINKING_LEVEL: &str = "medium";
 /// `DEFAULT_HTTP_IDLE_TIMEOUT_MS`.
 pub const DEFAULT_HTTP_IDLE_TIMEOUT_MS: u64 = 300_000;
-const VALID_THINKING_LEVELS: [&str; 7] = ["off", "minimal", "low", "medium", "high", "xhigh", "max"];
-const FRAME_THINKING_LEVELS: [&str; 7] = VALID_THINKING_LEVELS;
-
-/// `MODEL_SETTING_ENV`: model settings and the environment variables that override them in a worker.
-pub const MODEL_SETTING_ENV: [(&str, &str); 5] = [
-    ("rlm.frameModel", "ULTRON_RLM_FRAME_MODEL"),
-    ("review.model", "ULTRON_REVIEW_MODEL"),
-    ("claudeCode.frameModel", "ULTRON_CLAUDE_FRAME_MODEL"),
-    ("claudeCode.childModel", "ULTRON_CLAUDE_CHILD_MODEL"),
-    ("claudeCode.model", "ULTRON_CLAUDE_MODEL"),
-];
 
 /// What the running session reports for the settings it holds live (the harness's compaction, retry and queues).
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -106,21 +95,6 @@ fn global<'a>(settings: &'a SettingsManager, field: &str) -> Option<&'a Value> {
 
 fn bool_or(settings: &SettingsManager, path: &[&str], default: bool) -> Value {
     get(settings, path).cloned().unwrap_or(Value::Bool(default))
-}
-
-/// `modelRef`: a trimmed `provider/model` reference, else none.
-fn model_ref(value: Option<&Value>) -> Option<String> {
-    let trimmed = value?.as_str()?.trim();
-    is_model_ref(trimmed).then(|| trimmed.to_string())
-}
-
-/// `MODEL_REF_PATTERN`: `^[^/\s]+\/[^/\s]+(?:\/[^/\s]+)*$`.
-fn is_model_ref(value: &str) -> bool {
-    let parts: Vec<&str> = value.split('/').collect();
-    parts.len() >= 2
-        && parts
-            .iter()
-            .all(|p| !p.is_empty() && !p.chars().any(char::is_whitespace))
 }
 
 fn floor_int(n: f64) -> Value {
@@ -272,7 +246,7 @@ pub fn values(settings: &SettingsManager, live: &Live, env: Env) -> Result<Map<S
         "showHardwareCursor",
         get(settings, &["showHardwareCursor"])
             .cloned()
-            .unwrap_or_else(|| json!(env("PI_HARDWARE_CURSOR").as_deref() == Some("1"))),
+            .unwrap_or_else(|| json!(env(config::worker_settings_keys::HARDWARE_CURSOR_ENV).as_deref() == Some("1"))),
     );
     put(
         "editorPaddingX",
@@ -294,7 +268,7 @@ pub fn values(settings: &SettingsManager, live: &Live, env: Env) -> Result<Map<S
         "terminal.clearOnShrink",
         get(settings, &["terminal", "clearOnShrink"])
             .cloned()
-            .unwrap_or_else(|| json!(env("PI_CLEAR_ON_SHRINK").as_deref() == Some("1"))),
+            .unwrap_or_else(|| json!(env(config::worker_settings_keys::CLEAR_ON_SHRINK_ENV).as_deref() == Some("1"))),
     );
     put(
         "terminal.showTerminalProgress",
@@ -324,20 +298,22 @@ pub fn values(settings: &SettingsManager, live: &Live, env: Env) -> Result<Map<S
     // `modelSettingValues`: global only.
     let object = |field: &str| global(settings, field).and_then(Value::as_object);
     let rlm = object("rlm");
-    let child = model_ref(rlm.and_then(|r| r.get("childModel")));
+    let child = config::settings::model_ref(rlm.and_then(|r| r.get("childModel")));
     let frame_thinking = rlm
         .and_then(|r| r.get("frameThinking"))
         .and_then(Value::as_str)
-        .filter(|l| FRAME_THINKING_LEVELS.contains(l));
+        .filter(|l| model_scope::THINKING_LEVELS.contains(l));
     put(
         "rlm.frameModel",
-        json!(model_ref(rlm.and_then(|r| r.get("frameModel")))),
+        json!(config::settings::model_ref(rlm.and_then(|r| r.get("frameModel")))),
     );
     put("rlm.childModel", json!(child));
     put("rlm.frameThinking", json!(frame_thinking));
     put(
         "review.model",
-        json!(model_ref(object("review").and_then(|r| r.get("model")))),
+        json!(config::settings::model_ref(
+            object("review").and_then(|r| r.get("model"))
+        )),
     );
     let claude = object("claudeCode");
     for key in ["frameModel", "childModel", "ultronChildModel", "model"] {
@@ -353,22 +329,12 @@ pub fn values(settings: &SettingsManager, live: &Live, env: Env) -> Result<Map<S
     Ok(v)
 }
 
-/// `modelEnvOverrides`: the environment variables that override model settings here, with their values.
+/// `modelEnvOverrides` as `{setting: {name, value}}`.
 pub fn model_env_overrides(env: Env) -> Map<String, Value> {
-    let mut overrides = Map::new();
-    for (key, name) in MODEL_SETTING_ENV {
-        let value = env(name).map(|v| v.trim().to_string()).filter(|v| !v.is_empty());
-        // provider/model variables count only when well formed (as the runtime reads them); aliases when non-empty.
-        let value = if key.starts_with("claudeCode.") && key != "claudeCode.frameModel" {
-            value
-        } else {
-            value.filter(|v| is_model_ref(v))
-        };
-        if let Some(value) = value {
-            overrides.insert(key.into(), json!({"name": name, "value": value}));
-        }
-    }
-    overrides
+    config::env::model_env_overrides(env)
+        .into_iter()
+        .map(|(key, name, value)| (key.to_string(), json!({"name": name, "value": value})))
+        .collect()
 }
 
 /// `readWorkerSettings`: `{values, cwd, agentDir, projectTrusted, savedTrust, envOverrides}`.
@@ -405,7 +371,7 @@ fn string(key: &str, value: Option<&Value>) -> Result<String, String> {
 
 fn thinking(key: &str, value: Option<&Value>) -> Result<String, String> {
     let level = string(key, value)?;
-    if !VALID_THINKING_LEVELS.contains(&level.as_str()) {
+    if !model_scope::THINKING_LEVELS.contains(&level.as_str()) {
         return Err(format!("{key}: invalid thinking level {level}"));
     }
     Ok(level)
@@ -428,7 +394,7 @@ fn model_value(key: &str, value: &Value) -> Result<Option<String>, String> {
         return Ok(None);
     }
     match value.as_str().map(str::trim) {
-        Some(v) if is_model_ref(v) => Ok(Some(v.to_string())),
+        Some(v) if model_scope::is_model_ref(v) => Ok(Some(v.to_string())),
         _ => Err(format!("{key} must be provider/model (or null to clear it)")),
     }
 }
@@ -673,7 +639,7 @@ pub fn apply(
         "rlm.frameThinking" => {
             let level = match value {
                 Value::Null => None,
-                value => Some(one_of(key, value, &FRAME_THINKING_LEVELS)?),
+                value => Some(one_of(key, value, &model_scope::THINKING_LEVELS)?),
             };
             nested(settings, "rlm", "frameThinking", opt(level));
             applied = Applied::Live;

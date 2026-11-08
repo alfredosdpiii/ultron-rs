@@ -70,11 +70,14 @@ fn run_env(root: &Path) -> RunEnv {
     let vars: Vec<(String, String)> = vec![
         ("HOME".into(), root.join("home").display().to_string()),
         (
-            "ULTRON_CODING_AGENT_DIR".into(),
+            config::paths::ENV_AGENT_DIR.into(),
             root.join("agent").display().to_string(),
         ),
-        ("ULTRON_SERVER_DIR".into(), root.join("server").display().to_string()),
-        ("PI_OFFLINE".into(), "1".into()),
+        (
+            config::paths::ENV_SERVER_DIR.into(),
+            root.join("server").display().to_string(),
+        ),
+        (config::env::OFFLINE_ENV.into(), "1".into()),
     ];
     RunEnv {
         cwd: root.join("work"),
@@ -298,7 +301,7 @@ fn session_core_resources_ignore_settings_packages_and_keep_local_ones() {
     .unwrap();
     let vars: Vec<(String, String)> = vec![
         ("HOME".into(), root.root.join("home").display().to_string()),
-        ("ULTRON_CODING_AGENT_DIR".into(), root.agent()),
+        (config::paths::ENV_AGENT_DIR.into(), root.agent()),
         ("PATH".into(), root.root.join("bin").display().to_string()),
     ];
     let env = RunEnv {

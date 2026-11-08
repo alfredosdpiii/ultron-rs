@@ -21,6 +21,8 @@ use std::path::PathBuf;
 use std::sync::{Arc, Condvar, Mutex, PoisonError, Weak};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
+pub const ULTRON_HERDR_ENV: &str = "ULTRON_HERDR";
+
 /// The `source` of every report.
 pub const SOURCE: &str = "ultron";
 /// The `agent` of every report.
@@ -54,10 +56,10 @@ pub fn disabled_by_env(value: Option<&str>) -> bool {
 /// outside herdr, when turned off, and inside an Ultron kernel (a cell's `ultron -p` must not take over the pane of
 /// the session that runs it; every kernel has `ULTRON_RLM_MAX_MEMORY_MB`).
 pub fn detect(var: &dyn Fn(&str) -> Option<String>, setting: Option<&Value>) -> Option<Pane> {
-    if setting == Some(&Value::Bool(false)) || disabled_by_env(var("ULTRON_HERDR").as_deref()) {
+    if setting == Some(&Value::Bool(false)) || disabled_by_env(var(ULTRON_HERDR_ENV).as_deref()) {
         return None;
     }
-    if var("ULTRON_RLM_MAX_MEMORY_MB").is_some() {
+    if var(kernel::env::RLM_MAX_MEMORY_MB_ENV).is_some() {
         return None;
     }
     if var("HERDR_ENV").as_deref().map(str::trim) != Some("1") {
@@ -68,7 +70,7 @@ pub fn detect(var: &dyn Fn(&str) -> Option<String>, setting: Option<&Value>) -> 
     Some(Pane {
         socket: PathBuf::from(socket),
         pane_id,
-        debug: var("ULTRON_DEBUG_INTERNAL").as_deref() == Some("1"),
+        debug: var(config::env::DEBUG_INTERNAL_ENV).as_deref() == Some("1"),
     })
 }
 

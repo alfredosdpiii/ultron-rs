@@ -76,8 +76,8 @@ fn replay(case: &Value) -> Vec<String> {
         .env("PATH", "/usr/bin:/bin")
         .env("HOME", &root)
         .env("TZ", "UTC")
-        .env("ULTRON_CODING_AGENT_DIR", root.join("agent"))
-        .env("ULTRON_SERVER_DIR", root.join("server"));
+        .env(config::paths::ENV_AGENT_DIR, root.join("agent"))
+        .env(config::paths::ENV_SERVER_DIR, root.join("server"));
     for (k, v) in case["env"].as_object().into_iter().flatten() {
         cmd.env(k, fill(v.as_str().unwrap()));
     }
@@ -311,8 +311,8 @@ fn cli_setup_help_names_the_checks_the_rust_setup_runs() {
         .env_clear()
         .env("PATH", "/usr/bin:/bin")
         .env("HOME", tmp.path())
-        .env("ULTRON_CODING_AGENT_DIR", tmp.path().join("agent"))
-        .env("ULTRON_SERVER_DIR", tmp.path().join("server"))
+        .env(config::paths::ENV_AGENT_DIR, tmp.path().join("agent"))
+        .env(config::paths::ENV_SERVER_DIR, tmp.path().join("server"))
         .output()
         .unwrap();
     let shown = String::from_utf8_lossy(&output.stdout);

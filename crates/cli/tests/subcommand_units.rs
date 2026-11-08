@@ -191,7 +191,7 @@ fn cli_mcp_add_reads_the_callback_port_like_number() {
         let env = session_core::RunEnv {
             cwd: dir.path().to_path_buf(),
             home: dir.path().to_path_buf(),
-            var: std::sync::Arc::new(move |k| (k == "ULTRON_CODING_AGENT_DIR").then(|| agent_var.clone())),
+            var: std::sync::Arc::new(move |k| (k == config::paths::ENV_AGENT_DIR).then(|| agent_var.clone())),
             docs: dir.path().join("docs"),
         };
         let args = [

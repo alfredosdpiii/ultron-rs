@@ -188,7 +188,10 @@ fn acceptance_a56_a_plain_bash_past_the_yield_window_detaches_and_its_completion
     // Situational hints are off by default; this row checks the job-detached hint.
     let mut client = install.rpc(
         &["--no-session"],
-        &[("ULTRON_BASH_YIELD_AFTER", "1"), ("ULTRON_HINTS", "on")],
+        &[
+            (kernel::env::BASH_YIELD_AFTER_ENV, "1"),
+            (kernel_apis::cell_hints::HINTS_ENV, "on"),
+        ],
     );
     client.prompt_and_wait(DETACH, HANG).unwrap();
     assert!(!install.project().join("job.done").exists());
@@ -362,7 +365,7 @@ fn acceptance_a56_a_spent_turn_budget_turns_the_reinvocation_into_quiet_delivery
         Reply::Text("STARTED".into())
     });
     let install = Install::new(&provider);
-    let mut client = install.rpc(&["--no-session"], &[("ULTRON_MAX_TOTAL_TURNS", "2")]);
+    let mut client = install.rpc(&["--no-session"], &[(delegation::usage::MAX_TOTAL_TURNS_ENV, "2")]);
     client.prompt_and_wait("BUDGET: start a job", HANG).unwrap();
     assert_eq!(client.get_last_assistant_text().unwrap().as_deref(), Some("STARTED"));
     std::fs::write(install.project().join("go"), "").unwrap();

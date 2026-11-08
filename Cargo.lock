@@ -65,6 +65,7 @@ dependencies = [
  "getrandom 0.4.3",
  "indexmap",
  "jsrt",
+ "kernel",
  "model-scope",
  "protocol",
  "rcgen",
@@ -338,6 +339,7 @@ dependencies = [
  "getrandom 0.4.3",
  "harness",
  "herdr",
+ "hindsight",
  "host",
  "indexmap",
  "jsrt",
@@ -383,8 +385,10 @@ dependencies = [
  "kernel",
  "kernel-apis",
  "knowledge",
+ "loki",
  "mcp",
  "mimalloc",
+ "model-scope",
  "protocol",
  "regex",
  "reqwest",
@@ -481,6 +485,7 @@ name = "config"
 version = "0.1.0"
 dependencies = [
  "jsrt",
+ "model-scope",
  "serde_json",
  "tempfile",
 ]
@@ -591,6 +596,7 @@ dependencies = [
  "jsrt",
  "kernel-apis",
  "mcp",
+ "model-scope",
  "protocol",
  "resources",
  "rustix",
@@ -622,6 +628,7 @@ version = "0.1.0"
 dependencies = [
  "agent",
  "ai",
+ "config",
  "getrandom 0.4.3",
  "harness",
  "jsonschema",
@@ -629,10 +636,12 @@ dependencies = [
  "kernel",
  "kernel-apis",
  "lanes",
+ "model-scope",
  "regex",
  "rustix",
  "serde",
  "serde_json",
+ "signals",
  "tempfile",
  "tokio",
 ]
@@ -1115,7 +1124,9 @@ dependencies = [
 name = "herdr"
 version = "0.1.0"
 dependencies = [
+ "config",
  "jsrt",
+ "kernel",
  "rustix",
  "serde_json",
  "tempfile",
@@ -1460,11 +1471,13 @@ version = "0.1.0"
 dependencies = [
  "agent",
  "ai",
+ "config",
  "getrandom 0.4.3",
  "host",
  "jsonschema",
  "jsrt",
  "kernel",
+ "model-scope",
  "serde_json",
  "tempfile",
  "tokio",
@@ -1475,6 +1488,7 @@ name = "interactive"
 version = "0.1.0"
 dependencies = [
  "base64 0.23.1",
+ "config",
  "crossterm",
  "fancy-regex 0.19.2",
  "image",
@@ -1635,6 +1649,7 @@ name = "knowledge"
 version = "0.1.0"
 dependencies = [
  "jsrt",
+ "kernel",
  "regex",
  "rusqlite",
  "serde_json",
@@ -1743,6 +1758,7 @@ version = "0.1.0"
 dependencies = [
  "fancy-regex 0.19.2",
  "jsrt",
+ "kernel",
  "regex",
  "reqwest",
  "rustix",
@@ -1769,6 +1785,7 @@ dependencies = [
  "getrandom 0.4.3",
  "jsonschema",
  "jsrt",
+ "kernel",
  "reqwest",
  "rustix",
  "serde_json",
@@ -2390,6 +2407,7 @@ name = "review"
 version = "0.1.0"
 dependencies = [
  "ai",
+ "config",
  "indexmap",
  "inference",
  "jsrt",
@@ -2783,6 +2801,7 @@ dependencies = [
 name = "session-file"
 version = "0.1.0"
 dependencies = [
+ "config",
  "getrandom 0.4.3",
  "indexmap",
  "jsrt",

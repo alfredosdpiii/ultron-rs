@@ -188,8 +188,11 @@ fn run(scenario: &Value, dir: &Path) -> (Value, Vec<Value>, Option<String>) {
         std::fs::write(cli.join("reply"), reply).unwrap();
         std::fs::write(cli.join("log"), "").unwrap();
         for (key, value) in [
-            ("ULTRON_CLAUDE_CODE_BIN", format!("{AI_FIXTURES}/fake-claude/claude")),
-            ("ULTRON_CLAUDE_CODE_WARM", "0".into()),
+            (
+                ai::claude_code_cli::CLAUDE_CODE_BIN_ENV,
+                format!("{AI_FIXTURES}/fake-claude/claude"),
+            ),
+            (ai::claude_code_cli::CLAUDE_CODE_WARM_ENV, "0".into()),
             ("FAKE_CLAUDE_REPLY", cli.join("reply").display().to_string()),
             ("FAKE_CLAUDE_LOG", cli.join("log").display().to_string()),
         ] {

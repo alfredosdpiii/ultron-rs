@@ -178,7 +178,8 @@ fn delegation_spawn_collect_finish_replay_typescript_scenarios() {
                 }
             })
         };
-        let spawn_depth = delegation::host::spawn_depth_limit(scenario["env"]["ULTRON_SPAWN_DEPTH"].as_str());
+        let spawn_depth =
+            delegation::host::spawn_depth_limit(scenario["env"][delegation::host::SPAWN_DEPTH_ENV].as_str());
         let mut options = DelegationOptions::new(runner);
         options.store = Box::new(Store(shared.clone()));
         options.spawn_depth = spawn_depth;

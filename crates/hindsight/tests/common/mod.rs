@@ -15,7 +15,7 @@ pub struct FakeHindsight {
 
 impl FakeHindsight {
     pub fn start() -> FakeHindsight {
-        let python = std::env::var("ULTRON_PYTHON").unwrap_or_else(|_| "/usr/bin/python3".into());
+        let python = kernel::env::python(|name| std::env::var(name).ok());
         let script = Path::new(env!("CARGO_MANIFEST_DIR")).join("fixtures/fake_hindsight.py");
         let mut child = Command::new(python)
             .arg("-I")

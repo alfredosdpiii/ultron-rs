@@ -16,6 +16,8 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
 
+pub const DREAM_ENV: &str = "ULTRON_DREAM";
+
 const AUTO_SERVER_STARTUP_GRACE: Duration = Duration::from_millis(10_000);
 const AUTO_SERVER_IDLE_GRACE: Duration = Duration::from_millis(1_000);
 const ACTIVATION_TIMEOUT: Duration = Duration::from_millis(10_000);
@@ -37,7 +39,7 @@ pub fn is_durable_directory(directory: &Path) -> bool {
 /// The durable instance's nightly dream schedule, reconciled to the user's settings before the timer reads the
 /// journals (crate::dream). A failure is logged and leaves the schedule as it was.
 fn keep_dreaming(options: &ServerOptions, log: &dyn Fn(&str)) {
-    if std::env::var("ULTRON_DREAM").is_ok_and(|v| matches!(v.as_str(), "off" | "0" | "false")) {
+    if std::env::var(DREAM_ENV).is_ok_and(|v| matches!(v.as_str(), "off" | "0" | "false")) {
         return;
     }
     let Some(home) = std::env::var_os("HOME").map(PathBuf::from) else {
@@ -82,7 +84,7 @@ pub fn error_log_path(directory: &Path, server_id: &str) -> PathBuf {
 
 /// `recordServerError`: append to the server log, rotating it past 1 MiB. Never fails.
 pub fn record_error(path: &Path, label: &str, message: &str) {
-    if std::env::var("ULTRON_DEBUG_INTERNAL").as_deref() == Ok("1") {
+    if std::env::var(config::env::DEBUG_INTERNAL_ENV).as_deref() == Ok("1") {
         eprintln!("{label} {message}");
     }
     if std::fs::metadata(path).is_ok_and(|m| m.len() > MAX_SERVER_LOG_BYTES) {
@@ -358,12 +360,12 @@ fn start_generation(
     let endpoint_path = sockets_dir.join(format!("server-{server_id}-{nonce}.sock"));
     remove_dead_endpoints(&sockets_dir, server_id);
     session_core::startup_trace::trace_startup(
-        std::env::var("ULTRON_STARTUP_TRACE").ok().as_deref(),
+        std::env::var(session_core::startup_trace::TRACE_ENV).ok().as_deref(),
         "server.coordinator",
     );
     let mut lease = coord_client::ensure_coordinator(&socket_path, &control_path).map_err(Err)?;
     session_core::startup_trace::trace_startup(
-        std::env::var("ULTRON_STARTUP_TRACE").ok().as_deref(),
+        std::env::var(session_core::startup_trace::TRACE_ENV).ok().as_deref(),
         "server.coordinator-ready",
     );
     let lifetime = Lifetime::with_graces(
@@ -453,7 +455,7 @@ fn start_generation(
     manager.set_coordinator(coordinator.clone());
     drop(lease);
     session_core::startup_trace::trace_startup(
-        std::env::var("ULTRON_STARTUP_TRACE").ok().as_deref(),
+        std::env::var(session_core::startup_trace::TRACE_ENV).ok().as_deref(),
         "server.connected",
     );
     manager.discover();

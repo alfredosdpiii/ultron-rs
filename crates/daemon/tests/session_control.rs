@@ -45,10 +45,10 @@ fn fixture_with(pool: OpResult) -> Fixture {
         }
     });
     let vars = vec![
-        ("ULTRON_CODING_AGENT_DIR".to_string(), "/a".to_string()),
+        (config::paths::ENV_AGENT_DIR.to_string(), "/a".to_string()),
         ("ANTHROPIC_API_KEY".to_string(), "sk".to_string()),
         ("ULTRON_API_KEY".to_string(), "sk".to_string()),
-        ("PI_OFFLINE".to_string(), "1".to_string()),
+        (config::env::OFFLINE_ENV.to_string(), "1".to_string()),
     ];
     let context = Arc::new(ControlContext {
         cwd: cwd.clone(),
@@ -292,7 +292,7 @@ fn daemon_session_control_debug_info_has_the_typescript_fields() {
     // Only `ULTRON_*`/`PI_*`, secret-looking names redacted.
     assert_eq!(
         info["environment"],
-        json!({"PI_OFFLINE": "1", "ULTRON_API_KEY": "<redacted>", "ULTRON_CODING_AGENT_DIR": "/a"})
+        json!({(config::env::OFFLINE_ENV): "1", "ULTRON_API_KEY": "<redacted>", (config::paths::ENV_AGENT_DIR): "/a"})
     );
     assert!(f.ops().contains(&Op::Inspect {
         request: "rlm.pool".into(),

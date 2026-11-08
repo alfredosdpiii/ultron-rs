@@ -408,19 +408,22 @@ fn run_case_with(case: &Value, journals: bool) -> Vec<Value> {
         // System directories only, as recorded: a user-installed `claude` CLI adds the claude-code provider.
         ("PATH", "/usr/local/bin:/usr/bin:/bin".into()),
         ("HOME", tmp_text.clone()),
-        ("ULTRON_CODING_AGENT_DIR", agent_dir.display().to_string()),
-        ("ULTRON_SERVER_DIR", root_dir.join("server").display().to_string()),
+        (config::paths::ENV_AGENT_DIR, agent_dir.display().to_string()),
+        (
+            config::paths::ENV_SERVER_DIR,
+            root_dir.join("server").display().to_string(),
+        ),
         ("ANTHROPIC_API_KEY", "test-key".into()),
-        ("ULTRON_HINDSIGHT_URL", "off".into()),
+        (hindsight::resolve::HINDSIGHT_URL_ENV, "off".into()),
         // TypeScript has no context reminder (session_core::context_reminder, Rust-only).
-        ("ULTRON_CONTEXT_REMINDER", "off".into()),
+        (session_core::compose::CONTEXT_REMINDER_ENV, "off".into()),
         // Nor a refinement request after a compaction (session_core::auto_refine).
-        ("ULTRON_AUTO_REFINE", "off".into()),
-        ("PI_OFFLINE", "1".into()),
+        (session_core::core::AUTO_REFINE_ENV, "off".into()),
+        (config::env::OFFLINE_ENV, "1".into()),
         ("NO_COLOR", "1".into()),
         ("TZ", "UTC".into()),
         // Requests are compared with TS recordings: the TS runtime guide.
-        ("ULTRON_GUIDE", "ts".into()),
+        (session_core::compose::GUIDE_ENV, "ts".into()),
     ];
     let options = RpcClientOptions {
         program: env!("CARGO_BIN_EXE_ultron").into(),
@@ -792,17 +795,20 @@ fn start_client(replies: Vec<Reply>) -> (RpcClient, Arc<Mutex<Vec<Value>>>, temp
     let env = [
         ("PATH", "/usr/local/bin:/usr/bin:/bin".to_string()),
         ("HOME", root_dir.display().to_string()),
-        ("ULTRON_CODING_AGENT_DIR", agent_dir.display().to_string()),
-        ("ULTRON_SERVER_DIR", root_dir.join("server").display().to_string()),
+        (config::paths::ENV_AGENT_DIR, agent_dir.display().to_string()),
+        (
+            config::paths::ENV_SERVER_DIR,
+            root_dir.join("server").display().to_string(),
+        ),
         ("ANTHROPIC_API_KEY", "test-key".into()),
-        ("ULTRON_HINDSIGHT_URL", "off".into()),
+        (hindsight::resolve::HINDSIGHT_URL_ENV, "off".into()),
         // Replies are scripted in order; a refinement request (session_core::auto_refine) would take one.
-        ("ULTRON_AUTO_REFINE", "off".into()),
-        ("PI_OFFLINE", "1".into()),
+        (session_core::core::AUTO_REFINE_ENV, "off".into()),
+        (config::env::OFFLINE_ENV, "1".into()),
         ("NO_COLOR", "1".into()),
         ("TZ", "UTC".into()),
         // Requests are compared with TS recordings: the TS runtime guide.
-        ("ULTRON_GUIDE", "ts".into()),
+        (session_core::compose::GUIDE_ENV, "ts".into()),
     ];
     let options = RpcClientOptions {
         program: env!("CARGO_BIN_EXE_ultron").into(),

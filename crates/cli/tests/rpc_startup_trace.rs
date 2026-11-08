@@ -13,13 +13,13 @@ fn run_rpc(sandbox: &common::Sandbox, trace: Option<&std::path::Path>) -> u32 {
     let mut command = sandbox.ultron();
     command
         .args(["--mode", "rpc", "--model", "anthropic/claude-sonnet-4-5"])
-        .env("PI_OFFLINE", "1")
-        .env("ULTRON_HINDSIGHT_URL", "off")
+        .env(config::env::OFFLINE_ENV, "1")
+        .env(hindsight::resolve::HINDSIGHT_URL_ENV, "off")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
     if let Some(trace) = trace {
-        command.env("ULTRON_STARTUP_TRACE", trace);
+        command.env(session_core::startup_trace::TRACE_ENV, trace);
     }
     let mut child = command.spawn().unwrap();
     let pid = child.id();
@@ -114,7 +114,10 @@ fn cli_rpc_startup_trace_milestones_are_not_traced_by_the_tui() {
         100,
         30,
         &["--model", "anthropic/claude-sonnet-4-5"],
-        &[("ULTRON_STARTUP_TRACE", &trace_text), ("ULTRON_HINDSIGHT_URL", "off")],
+        &[
+            (session_core::startup_trace::TRACE_ENV, &trace_text),
+            (hindsight::resolve::HINDSIGHT_URL_ENV, "off"),
+        ],
     );
     tui.wait("ultron v");
     // The session's worker is ready only after the link opened and attached its session.

@@ -47,11 +47,11 @@ fn ultron(root: &Path, gateway: &str, args: &[&str], env: &[(&str, &str)]) -> Co
         .env_clear()
         .env("PATH", "/usr/bin:/bin")
         .env("HOME", root)
-        .env("ULTRON_CODING_AGENT_DIR", root.join("agent"))
-        .env("ULTRON_SERVER_DIR", root.join("server"))
+        .env(config::paths::ENV_AGENT_DIR, root.join("agent"))
+        .env(config::paths::ENV_SERVER_DIR, root.join("server"))
         .env("ANTHROPIC_API_KEY", "test-key")
-        .env("PI_EXPERIMENTAL", "1")
-        .env("PI_RADIUS_GATEWAY", gateway)
+        .env(cli::experimental::EXPERIMENTAL_ENV, "1")
+        .env(server::radius_relay::ENV_RADIUS_GATEWAY, gateway)
         .env("NO_COLOR", "1")
         .env("TZ", "UTC");
     for (key, value) in env {
@@ -243,7 +243,7 @@ fn cli_radius_offline_and_missing_credentials_stay_local() {
         &tmp.0,
         &bridge.origin(),
         &["--server-id", SERVER_ID],
-        &[("PI_OFFLINE", "1")],
+        &[(config::env::OFFLINE_ENV, "1")],
     );
     assert_eq!(offline.line(), format!("Server: {SERVER_ID}"));
     offline.line();
@@ -253,7 +253,7 @@ fn cli_radius_offline_and_missing_credentials_stay_local() {
         &tmp.0,
         &bridge.origin(),
         &["client", "--connect", &address, "--auth-token", "t"],
-        &[("PI_OFFLINE", "1")],
+        &[(config::env::OFFLINE_ENV, "1")],
     ));
     assert_eq!(
         (out.as_str(), err.as_str(), code),
@@ -348,8 +348,8 @@ fn cli_radius_detached_server_runs_the_relay_with_the_stored_credential() {
         &["durable", "start"],
         &[
             ("RADIUS_API_KEY", "stored-key"),
-            ("ULTRON_SERVER_DIR", &durable.display().to_string()),
-            ("ULTRON_SERVER_ID", SERVER_ID),
+            (config::paths::ENV_SERVER_DIR, &durable.display().to_string()),
+            (cli::service_cli::SERVER_ID_ENV, SERVER_ID),
         ],
     ));
     assert_eq!(code, Some(0), "{err}");
@@ -366,7 +366,7 @@ fn cli_radius_detached_server_runs_the_relay_with_the_stored_credential() {
         &tmp.0,
         &bridge.origin(),
         &["durable", "stop"],
-        &[("ULTRON_SERVER_DIR", &durable.display().to_string())],
+        &[(config::paths::ENV_SERVER_DIR, &durable.display().to_string())],
     ));
     assert_eq!(code, Some(0), "{err}");
     assert_eq!(
@@ -406,7 +406,10 @@ fn cli_radius_client_tui_recovers_a_dropped_connection() {
         100,
         30,
         &["client", "--connect", &address, "--auth-token", "tok"],
-        &[("PI_EXPERIMENTAL", "1"), ("PI_RADIUS_GATEWAY", &origin)],
+        &[
+            (cli::experimental::EXPERIMENTAL_ENV, "1"),
+            (server::radius_relay::ENV_RADIUS_GATEWAY, &origin),
+        ],
     );
     tui.wait("Session: <ID>");
     tui.send_text("Say hello");

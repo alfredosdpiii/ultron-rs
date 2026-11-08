@@ -76,7 +76,7 @@ fn module(store: Arc<MemoryDocumentStore>, dir: &Path) -> Arc<SkillsModule> {
 /// A kernel as a worker starts one: code skills come from the profile's skills directory.
 fn kernel(dir: &Path, module: Option<Arc<SkillsModule>>) -> Kernel {
     let mut options = KernelOptions::new(std::env::temp_dir(), runtime());
-    options.env = vec![("ULTRON_CODE_SKILLS_DIR".into(), dir.display().to_string())];
+    options.env = vec![(kernel::env::CODE_SKILLS_DIR_ENV.into(), dir.display().to_string())];
     let mut apis = KernelApis::new(common::null_handler());
     if let Some(module) = module {
         apis = apis.with(module);

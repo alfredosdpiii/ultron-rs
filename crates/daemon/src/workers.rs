@@ -721,7 +721,7 @@ impl Manager {
             ));
         }
         session_core::startup_trace::trace_startup(
-            std::env::var("ULTRON_STARTUP_TRACE").ok().as_deref(),
+            std::env::var(session_core::startup_trace::TRACE_ENV).ok().as_deref(),
             "server.spawn-worker",
         );
         let child = process::spawn(Role::SessionWorker, &[self.worker_options(meta).to_string()], &env)

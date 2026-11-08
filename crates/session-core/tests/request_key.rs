@@ -18,7 +18,7 @@ fn env(dir: &Path, vars: &serde_json::Map<String, Value>) -> RunEnv {
         .iter()
         .map(|(k, v)| (k.clone(), v.as_str().unwrap().to_string()))
         .collect();
-    map.insert("ULTRON_CODING_AGENT_DIR".into(), agent.display().to_string());
+    map.insert(config::paths::ENV_AGENT_DIR.into(), agent.display().to_string());
     RunEnv {
         cwd: dir.to_path_buf(),
         home: dir.to_path_buf(),

@@ -20,11 +20,6 @@ const DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(120);
 const RETRYABLE_STATUS: [u16; 7] = [408, 425, 429, 500, 502, 503, 504];
 const MAX_RETRIES: usize = 2;
 
-/// `isOfflineModeEnabled`: `PI_OFFLINE` is `1`, `true` or `yes` (any case for the words).
-pub fn offline(env: &Env) -> bool {
-    (env.var)("PI_OFFLINE").is_some_and(|v| v == "1" || v.eq_ignore_ascii_case("true") || v.eq_ignore_ascii_case("yes"))
-}
-
 fn executable(path: &Path) -> bool {
     use std::os::unix::fs::PermissionsExt;
     path.metadata()
@@ -51,7 +46,7 @@ pub fn ensure_fd(env: &Env, host: &str) -> Option<PathBuf> {
     if let Some(path) = fd_path(env) {
         return Some(path);
     }
-    if offline(env) {
+    if config::env::offline(&*env.var) {
         return None;
     }
     download_fd(env, host).ok()

@@ -11,6 +11,8 @@ mod autoreview_ban;
 mod command_values;
 #[path = "durable_model.rs"]
 mod durable_model;
+#[path = "env.rs"]
+mod env;
 #[path = "fixture.rs"]
 mod fixture;
 #[path = "js_values.rs"]

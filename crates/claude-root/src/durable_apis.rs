@@ -125,7 +125,9 @@ pub fn open(
     let root_session = Arc::new(std::sync::OnceLock::new());
     let _ = root_session.set(format!("ultron-claude-root-{}", jsrt::random::random_hex(8)));
     let (charged, charge_stack) = (children.clone(), stack.clone());
-    let budget = session_core::view_images::context_image_budget((env.var)("ULTRON_CONTEXT_IMAGES").as_deref());
+    let budget = session_core::view_images::context_image_budget(
+        (env.var)(session_core::view_images::CONTEXT_IMAGES_ENV).as_deref(),
+    );
     let models = TurnModels {
         bridge: bridge.clone(),
         provider: provider as Arc<dyn agent::StreamFn>,

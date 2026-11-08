@@ -633,7 +633,7 @@ fn provider_compat() -> Schema {
 
 fn thinking_level_map() -> Schema {
     Schema::Obj(
-        ["off", "minimal", "low", "medium", "high", "xhigh", "max"]
+        model_scope::THINKING_LEVELS
             .map(|k| opt(k, Schema::AnyOf(vec![string(), Schema::Null])))
             .into(),
     )

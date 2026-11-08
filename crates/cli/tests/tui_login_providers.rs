@@ -54,7 +54,7 @@ fn profile() -> (tempfile::TempDir, cli::Env) {
     let env = cli::Env {
         cwd: tmp.path().to_path_buf(),
         home: tmp.path().to_path_buf(),
-        var: Arc::new(move |k| (k == "ULTRON_CODING_AGENT_DIR").then(|| dir.clone())),
+        var: Arc::new(move |k| (k == config::paths::ENV_AGENT_DIR).then(|| dir.clone())),
         docs: tmp.path().join("docs"),
     };
     (tmp, env)
@@ -253,7 +253,7 @@ fn cli_tui_login_opens_the_browser_from_the_runs_own_path() {
         cwd: tmp.path().to_path_buf(),
         home: tmp.path().to_path_buf(),
         var: Arc::new(move |k| match k {
-            "ULTRON_CODING_AGENT_DIR" => Some(dir.clone()),
+            config::paths::ENV_AGENT_DIR => Some(dir.clone()),
             "PATH" => Some(path.clone()),
             _ => None,
         }),

@@ -47,7 +47,7 @@ impl Root {
             ),
         )
         .unwrap();
-        let python = std::env::var("ULTRON_PYTHON").unwrap_or_else(|_| "/usr/bin/python3".into());
+        let python = kernel::env::python(|name| std::env::var(name).ok());
         let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("../ai/fixtures/claude-subscription/claude.py");
         let wrapper = sandbox.root.join("fake-bin/claude");
         std::fs::create_dir_all(wrapper.parent().unwrap()).unwrap();
@@ -67,7 +67,7 @@ impl Root {
                 "PATH",
                 format!("{}:/usr/bin:/bin", self.wrapper.parent().unwrap().display()),
             )
-            .env("ULTRON_CLAUDE_COMMAND", &self.wrapper)
+            .env(ai::claude_subscription::process::COMMAND_ENV, &self.wrapper)
             .env("FAKE_LOG", self.sandbox.root.join("claude-log.jsonl"))
             .env("TMPDIR", self.sandbox.root.join("tmp"))
             .stdin(std::process::Stdio::null())

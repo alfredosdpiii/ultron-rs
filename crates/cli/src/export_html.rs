@@ -8,6 +8,8 @@ use serde_json::{Map, Value, json};
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
+pub const SHARE_VIEWER_URL_ENV: &str = "PI_SHARE_VIEWER_URL";
+
 const TEMPLATE_HTML: &str = include_str!("../../../packages/coding-agent/src/core/export-html/template.html");
 const TEMPLATE_CSS: &str = include_str!("../../../packages/coding-agent/src/core/export-html/template.css");
 const TEMPLATE_JS: &str = include_str!("../../../packages/coding-agent/src/core/export-html/template.js");
@@ -197,7 +199,7 @@ const DEFAULT_SHARE_VIEWER_URL: &str = "https://pi.dev/session/";
 
 /// `getShareViewerUrl(gistId)`: `PI_SHARE_VIEWER_URL` (unset or empty: the default viewer) then `#<gist id>`.
 pub fn share_viewer_url(var: &dyn Fn(&str) -> Option<String>, gist_id: &str) -> String {
-    let base = var("PI_SHARE_VIEWER_URL")
+    let base = var(SHARE_VIEWER_URL_ENV)
         .filter(|v| !v.is_empty())
         .unwrap_or_else(|| DEFAULT_SHARE_VIEWER_URL.into());
     format!("{base}#{gist_id}")

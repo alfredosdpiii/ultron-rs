@@ -295,7 +295,7 @@ fn cli_service_release_install_restarts_the_service_only_when_its_unit_is_instal
             .env("PATH", "/usr/bin:/bin")
             .env("HOME", &root)
             .env("XDG_CONFIG_HOME", root.join("xdg"))
-            .env("ULTRON_PYTHON", "/bin/sh")
+            .env(kernel::env::PYTHON_ENV, "/bin/sh")
             .stdin(Stdio::null())
             .output()
             .unwrap();

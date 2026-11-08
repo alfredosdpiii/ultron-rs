@@ -577,7 +577,7 @@ fn services(
                 &refresh_state,
                 || {
                     // From the network unless offline (`PI_OFFLINE`), as the model runtime's refresh.
-                    if (env.var)("PI_OFFLINE").is_some() {
+                    if config::env::offline(&*env.var) {
                         return Ok(Vec::new());
                     }
                     session_core::model_refresh::refresh_catalogs(

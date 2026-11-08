@@ -60,11 +60,11 @@ fn replay(name: &str) {
         &["--model", "anthropic/claude-sonnet-4-5"],
         &[
             ("PATH", &path),
-            ("ULTRON_AUTO_NAME", "off"),
-            ("ULTRON_TUI_PARITY", "1"),
-            ("ULTRON_SPLASH", "off"),
-            ("PI_OFFLINE", "1"),
-            ("ULTRON_OAUTH_CALLBACK_PORT", "0"),
+            (session_core::core::AUTO_NAME_ENV, "off"),
+            (interactive::qol::PARITY_ENV, "1"),
+            (cli::interactive::SPLASH_ENV, "off"),
+            (config::env::OFFLINE_ENV, "1"),
+            (cli::tui_login::OAUTH_CALLBACK_PORT_ENV, "0"),
         ],
     );
     let root = tmp.0.display().to_string();

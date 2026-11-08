@@ -1,7 +1,7 @@
 //! The interactive TUI's startup checks, run off the UI thread (interactive-mode.ts `init`):
 //! - the update check (utils/version-check.ts `checkForNewVersion`): the npm registry's `latest` release, when it is
-//!   newer than this build; off when `PI_OFFLINE` is set or `PI_SKIP_VERSION_CHECK` / `ULTRON_SKIP_VERSION_CHECK` is
-//!   truthy, and quiet on any failure;
+//!   newer than this build; off in offline mode ([`config::env::offline`]) or when `PI_SKIP_VERSION_CHECK` /
+//!   `ULTRON_SKIP_VERSION_CHECK` is truthy, and quiet on any failure;
 //! - `getChangelogForDisplay`: the CHANGELOG.md entries newer than the `lastChangelogVersion` setting (a first run,
 //!   with no setting, records nothing: see [`startup_changelog`]);
 //! - `maybeWarnAboutAnthropicSubscriptionAuth`'s credential lookup.
@@ -9,6 +9,8 @@
 use interactive::lane::StartupNotice;
 
 use crate::Env;
+
+pub const ULTRON_SKIP_VERSION_CHECK_ENV: &str = "ULTRON_SKIP_VERSION_CHECK";
 
 /// A Rust-only test hook: where the update check asks instead of the npm registry (a test's 127.0.0.1 fake).
 pub const LATEST_VERSION_URL_VAR: &str = "ULTRON_LATEST_VERSION_URL";
@@ -23,9 +25,9 @@ fn truthy(value: Option<String>) -> bool {
 
 /// `areAutomaticVersionChecksDisabled`.
 pub fn version_checks_disabled(var: &dyn Fn(&str) -> Option<String>) -> bool {
-    var("PI_OFFLINE").is_some_and(|v| !v.is_empty())
-        || truthy(var("PI_SKIP_VERSION_CHECK"))
-        || truthy(var("ULTRON_SKIP_VERSION_CHECK"))
+    config::env::offline(var)
+        || truthy(var(config::env::SKIP_VERSION_CHECK_ENV))
+        || truthy(var(ULTRON_SKIP_VERSION_CHECK_ENV))
 }
 
 /// The registry document the update check reads.

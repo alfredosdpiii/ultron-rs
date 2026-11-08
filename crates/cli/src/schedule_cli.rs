@@ -90,7 +90,7 @@ fn wake(env: &Env) -> Result<bool, String> {
         &ServerOptions {
             directory: instance.dir.clone(),
             session_dir: dir,
-            server_id: (env.var)("ULTRON_SERVER_ID"),
+            server_id: (env.var)(crate::service_cli::SERVER_ID_ENV),
             model: WorkerModel {
                 env: crate::startup::worker_env(env),
                 ..Default::default()

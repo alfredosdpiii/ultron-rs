@@ -57,11 +57,14 @@ fn stack(root: &Path) -> Arc<Stack> {
         ("HOME".into(), home.display().to_string()),
         ("PATH".into(), bin.display().to_string()),
         (
-            "ULTRON_CODING_AGENT_DIR".into(),
+            config::paths::ENV_AGENT_DIR.into(),
             home.join(".ultron/agent").display().to_string(),
         ),
-        ("ULTRON_SERVER_DIR".into(), root.join("server").display().to_string()),
-        ("ULTRON_HINDSIGHT_URL".into(), "off".into()),
+        (
+            config::paths::ENV_SERVER_DIR.into(),
+            root.join("server").display().to_string(),
+        ),
+        (hindsight::resolve::HINDSIGHT_URL_ENV.into(), "off".into()),
     ];
     let env = RunEnv {
         cwd,

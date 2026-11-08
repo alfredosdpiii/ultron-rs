@@ -15,7 +15,7 @@ pub mod payload;
 mod session;
 mod trace;
 
-pub use map::{DEFAULT_MAP_TOKENS, Frames, INFERENCE_PROMPT, ModelSettings};
+pub use map::{DEFAULT_MAP_TOKENS, Frames, INFERENCE_PROMPT, ModelSettings, frame_env};
 pub use session::{FrameExecution, FrameGate, FrameMeter, FrameSession, FrameTasks};
 pub use trace::{MemoryTraceStore, TRACE_NAMESPACE, TraceStore};
 
@@ -42,7 +42,6 @@ const DEFAULT_SCALAR_REPAIRS: u64 = 1;
 const MAX_DEPTH: u64 = 4;
 const DEFAULT_TIMEOUT_MS: u64 = 10 * 60 * 1000;
 const MAX_TIMEOUT_MS: u64 = 60 * 60 * 1000;
-const THINKING_LEVELS: [&str; 7] = ["off", "minimal", "low", "medium", "high", "xhigh", "max"];
 
 /// `bounded(text, limit)`: at most `limit` UTF-16 units, the last one an ellipsis.
 fn bounded(text: &str, limit: usize) -> String {
@@ -687,7 +686,7 @@ impl Inference {
         let requested_depth = optional_integer(budget.get("depth"), "budget.depth", 1, MAX_DEPTH)?;
         let model = match payload.get("model") {
             None | Some(Value::Null) => None,
-            Some(Value::String(model)) if jsrt::string::is_model_ref(model) => Some(model.clone()),
+            Some(Value::String(model)) if model_scope::is_model_ref(model) => Some(model.clone()),
             Some(_) => return Err("model must be provider/model".into()),
         };
         let max_repairs = optional_integer(payload.get("max_repairs"), "max_repairs", 0, MAX_REPAIRS)?.unwrap_or(
@@ -703,9 +702,17 @@ impl Inference {
         let timeout = optional_integer(payload.get("timeout_ms"), "timeout_ms", 1, MAX_TIMEOUT_MS)?;
         let thinking = match payload.get("thinking") {
             None | Some(Value::Null) => None,
-            Some(level) => match level.as_str().filter(|level| THINKING_LEVELS.contains(level)) {
+            Some(level) => match level
+                .as_str()
+                .filter(|level| model_scope::THINKING_LEVELS.contains(level))
+            {
                 Some(level) => Some(level.to_string()),
-                None => return Err(format!("thinking must be one of {}", THINKING_LEVELS.join(", "))),
+                None => {
+                    return Err(format!(
+                        "thinking must be one of {}",
+                        model_scope::THINKING_LEVELS.join(", ")
+                    ));
+                }
             },
         };
         let admission = self

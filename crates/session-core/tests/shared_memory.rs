@@ -20,7 +20,7 @@ struct Fake {
 
 impl Fake {
     fn start() -> Fake {
-        let python = std::env::var("ULTRON_PYTHON").unwrap_or_else(|_| "/usr/bin/python3".into());
+        let python = kernel::env::python(|name| std::env::var(name).ok());
         let script = Path::new(env!("CARGO_MANIFEST_DIR")).join("../hindsight/fixtures/fake_hindsight.py");
         let mut child = Command::new(python)
             .arg("-I")
@@ -102,11 +102,11 @@ impl Machine {
         let mut all: Vec<(String, String)> = vec![
             ("HOME".into(), self.home().display().to_string()),
             (
-                "ULTRON_CODING_AGENT_DIR".into(),
+                config::paths::ENV_AGENT_DIR.into(),
                 self.home().join(".ultron/agent").display().to_string(),
             ),
             (
-                "ULTRON_SERVER_DIR".into(),
+                config::paths::ENV_SERVER_DIR.into(),
                 self.root.join("server").join(project).display().to_string(),
             ),
         ];
@@ -234,8 +234,8 @@ fn session_core_memory_follows_env_over_setting_and_turns_off() {
     let env = machine.instance(
         "alpha",
         &[
-            ("ULTRON_HINDSIGHT_URL", fake.base()),
-            ("ULTRON_HINDSIGHT_BANK", "team".into()),
+            (hindsight::resolve::HINDSIGHT_URL_ENV, fake.base()),
+            (hindsight::resolve::HINDSIGHT_BANK_ENV, "team".into()),
         ],
     );
     let stack = session(&env, "s1");
@@ -249,7 +249,7 @@ fn session_core_memory_follows_env_over_setting_and_turns_off() {
         ]
     );
     // "off" in the environment (or the setting) turns memory off, with the worker's message.
-    let off = machine.instance("beta", &[("ULTRON_HINDSIGHT_URL", "OFF".into())]);
+    let off = machine.instance("beta", &[(hindsight::resolve::HINDSIGHT_URL_ENV, "OFF".into())]);
     assert_eq!(off.hindsight, None);
     assert_eq!(
         host(&session(&off, "s2"), "memory.list", json!({})),
@@ -263,7 +263,10 @@ fn session_core_memory_follows_env_over_setting_and_turns_off() {
         .port();
     let down = machine.instance(
         "gamma",
-        &[("ULTRON_HINDSIGHT_URL", format!("http://127.0.0.1:{closed}"))],
+        &[(
+            hindsight::resolve::HINDSIGHT_URL_ENV,
+            format!("http://127.0.0.1:{closed}"),
+        )],
     );
     assert_eq!(
         host(
@@ -274,7 +277,10 @@ fn session_core_memory_follows_env_over_setting_and_turns_off() {
         Err("Memory operation did not complete (HTTP_ERROR)".into())
     );
     // An invalid URL fails the session, as createWorkerServices throws in TS.
-    let invalid = machine.instance("delta", &[("ULTRON_HINDSIGHT_URL", "localhost:8888".into())]);
+    let invalid = machine.instance(
+        "delta",
+        &[(hindsight::resolve::HINDSIGHT_URL_ENV, "localhost:8888".into())],
+    );
     assert_eq!(
         invalid.stack(&model(), None, "s4").err(),
         Some("Memory operation did not complete (INVALID_CONFIG)".into())

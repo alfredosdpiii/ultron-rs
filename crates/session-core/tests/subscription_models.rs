@@ -13,8 +13,11 @@ fn env(dir: &Path, claude: &Path) -> RunEnv {
     let agent = dir.join("agent");
     std::fs::create_dir_all(&agent).unwrap();
     let map: HashMap<String, String> = [
-        ("ULTRON_CODING_AGENT_DIR", agent.display().to_string()),
-        ("ULTRON_CLAUDE_COMMAND", claude.display().to_string()),
+        (config::paths::ENV_AGENT_DIR, agent.display().to_string()),
+        (
+            ai::claude_subscription::process::COMMAND_ENV,
+            claude.display().to_string(),
+        ),
         ("PATH", dir.join("empty-bin").display().to_string()),
     ]
     .into_iter()

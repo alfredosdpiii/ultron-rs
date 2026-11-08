@@ -25,7 +25,7 @@ fn env(dir: &Path, vars: &[(&str, &str)]) -> RunEnv {
     }}});
     std::fs::write(agent.join("models.json"), models.to_string()).unwrap();
     let mut map: HashMap<String, String> = vars.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect();
-    map.insert("ULTRON_CODING_AGENT_DIR".into(), agent.display().to_string());
+    map.insert(config::paths::ENV_AGENT_DIR.into(), agent.display().to_string());
     RunEnv {
         cwd: dir.join("cwd"),
         home: dir.to_path_buf(),

@@ -201,8 +201,8 @@ fn cli_terminal_settings_capabilities_probe_tmux_only_when_undecided() {
     assert_eq!(probes.get(), 1);
     assert!(caps(&[("TERM", "tmux-256color")], json!({})).hyperlinks);
     assert_eq!(probes.get(), 2);
-    assert!(!caps(&[("TMUX", "/s,1,0"), ("PI_HYPERLINKS", "0")], json!({})).hyperlinks);
-    assert!(caps(&[("TMUX", "/s,1,0"), ("PI_HYPERLINKS", "1")], json!({})).hyperlinks);
+    assert!(!caps(&[("TMUX", "/s,1,0"), (tui::image::HYPERLINKS_ENV, "0")], json!({})).hyperlinks);
+    assert!(caps(&[("TMUX", "/s,1,0"), (tui::image::HYPERLINKS_ENV, "1")], json!({})).hyperlinks);
     assert!(!caps(&[("TMUX", "/s,1,0")], json!({"terminal": {"hyperlinks": false}})).hyperlinks);
     assert!(!caps(&[("TERM", "xterm-256color")], json!({})).hyperlinks);
     assert_eq!(probes.get(), 2);

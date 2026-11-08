@@ -15,7 +15,10 @@ const MODEL: &str = "anthropic/claude-sonnet-4-5";
 
 fn run(sandbox: &Sandbox, args: &[&str], env: &[(&str, &str)]) -> Output {
     let mut command = sandbox.ultron();
-    command.env("PATH", "/usr/bin:/bin").env("PI_OFFLINE", "1").args(args);
+    command
+        .env("PATH", "/usr/bin:/bin")
+        .env(config::env::OFFLINE_ENV, "1")
+        .args(args);
     for (k, v) in env {
         command.env(k, v);
     }

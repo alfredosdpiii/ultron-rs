@@ -6,6 +6,9 @@
 
 use std::collections::{HashMap, HashSet};
 
+pub const SKILL_NUDGE_ENV: &str = "ULTRON_SKILL_NUDGE";
+pub const TOOL_ROUNDS_NUDGE_ENV: &str = "ULTRON_TOOL_ROUNDS_NUDGE";
+
 /// `DEFAULT_TOOL_ROUNDS_NUDGE`.
 pub const DEFAULT_TOOL_ROUNDS_NUDGE: u64 = 10;
 /// `DEFAULT_WAIT_ROUNDS`.

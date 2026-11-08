@@ -31,7 +31,7 @@ pub fn kernel_environment<K: AsRef<OsStr>, V: AsRef<OsStr>>(source: impl IntoIte
     let source: Vec<(K, V)> = source.into_iter().collect();
     let allowed: HashSet<String> = source
         .iter()
-        .find(|(name, _)| name.as_ref() == "ULTRON_RLM_ENV_ALLOW")
+        .find(|(name, _)| name.as_ref() == crate::env::RLM_ENV_ALLOW_ENV)
         .map(|(_, value)| {
             value
                 .as_ref()
@@ -106,13 +106,13 @@ pub fn kernel_resource_limits(
         max_memory_mb: field(
             "maxMemoryMb",
             overrides.max_memory_mb,
-            "ULTRON_RLM_MAX_MEMORY_MB",
+            crate::env::RLM_MAX_MEMORY_MB_ENV,
             DEFAULT_KERNEL_LIMITS.max_memory_mb,
         )?,
         max_cpu_seconds: field(
             "maxCpuSeconds",
             overrides.max_cpu_seconds,
-            "ULTRON_RLM_MAX_CPU_SECONDS",
+            crate::env::RLM_MAX_CPU_SECONDS_ENV,
             DEFAULT_KERNEL_LIMITS.max_cpu_seconds,
         )?,
     })

@@ -5,7 +5,6 @@
 //! ULTRON_RLM_FRAME_MODEL, else `rlm.frameModel`; `rlm.frameThinking` is the default thinking level.
 
 use super::{Inference, fields, optional_integer};
-use jsrt::string::is_model_ref;
 use kernel::{HostHandler, Signal};
 use serde_json::{Map, Value, json};
 use std::collections::HashMap;
@@ -16,9 +15,19 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 pub const DEFAULT_MAP_TOKENS: u64 = 500_000;
 const MAX_MAP_FRAMES: usize = 10_000;
 const MAX_CONCURRENCY: u64 = 16;
-const FRAME_MODEL_ENV: &str = "ULTRON_RLM_FRAME_MODEL";
-const REVIEW_MODEL_ENV: &str = "ULTRON_REVIEW_MODEL";
 const MAP_TOKENS_ENV: &str = "ULTRON_RLM_MAP_TOKENS";
+
+/// The variables frames read (the frame and review models, the map token cap), with their values in `var`.
+pub fn frame_env(var: &dyn Fn(&str) -> Option<String>) -> HashMap<String, String> {
+    [
+        config::env::RLM_FRAME_MODEL_ENV,
+        config::env::REVIEW_MODEL_ENV,
+        MAP_TOKENS_ENV,
+    ]
+    .into_iter()
+    .filter_map(|key| var(key).map(|value| (key.to_string(), value)))
+    .collect()
+}
 
 /// The bounded-inference API description for the model's runtime guide.
 pub const INFERENCE_PROMPT: &str = "Large inputs stay out of your context as handles; examples: `help(rlm.load)`, `help(rlm.map)`.
@@ -58,16 +67,14 @@ impl Frames {
         }
     }
 
-    /// `envModel`: a `provider/model` value of an environment variable, else none.
     fn env_model(&self, name: &str) -> Option<String> {
-        let value = jsrt::string::trim(self.env.get(name)?);
-        is_model_ref(value).then(|| value.to_string())
+        config::env::env_model(&|key| self.env.get(key).cloned(), name)
     }
 
     /// `effectiveFrameModel` as `{model?, source, env?}`.
     fn frame_model(&self, settings: &ModelSettings) -> Value {
-        match (self.env_model(FRAME_MODEL_ENV), &settings.frame_model) {
-            (Some(model), _) => json!({"model": model, "source": "env", "env": FRAME_MODEL_ENV}),
+        match (self.env_model(config::env::RLM_FRAME_MODEL_ENV), &settings.frame_model) {
+            (Some(model), _) => json!({"model": model, "source": "env", "env": config::env::RLM_FRAME_MODEL_ENV}),
             (None, Some(model)) => json!({"model": model, "source": "setting"}),
             (None, None) => json!({"source": "session"}),
         }
@@ -77,8 +84,8 @@ impl Frames {
     fn models(&self) -> Value {
         let settings = (self.settings)();
         let frame = self.frame_model(&settings);
-        let review = match (self.env_model(REVIEW_MODEL_ENV), &settings.review_model) {
-            (Some(model), _) => json!({"model": model, "source": "env", "env": REVIEW_MODEL_ENV}),
+        let review = match (self.env_model(config::env::REVIEW_MODEL_ENV), &settings.review_model) {
+            (Some(model), _) => json!({"model": model, "source": "env", "env": config::env::REVIEW_MODEL_ENV}),
             (None, Some(model)) => json!({"model": model, "source": "setting"}),
             (None, None) => match frame.get("model") {
                 Some(model) => json!({"model": model, "source": "frame"}),

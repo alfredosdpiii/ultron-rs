@@ -35,9 +35,12 @@ fn view_big_image(global: Value) -> String {
     std::fs::write(cwd.join("big.png"), p_session_support::png(3000, 2400)).unwrap();
     let vars: Vec<(String, String)> = vec![
         ("HOME".into(), home.display().to_string()),
-        ("ULTRON_CODING_AGENT_DIR".into(), agent_dir.display().to_string()),
-        ("ULTRON_SERVER_DIR".into(), root.join("server").display().to_string()),
-        ("ULTRON_HINDSIGHT_URL".into(), "off".into()),
+        (config::paths::ENV_AGENT_DIR.into(), agent_dir.display().to_string()),
+        (
+            config::paths::ENV_SERVER_DIR.into(),
+            root.join("server").display().to_string(),
+        ),
+        (hindsight::resolve::HINDSIGHT_URL_ENV.into(), "off".into()),
     ];
     let env = RunEnv {
         cwd: cwd.clone(),

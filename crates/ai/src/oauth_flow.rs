@@ -8,6 +8,9 @@ use crate::jsutil::Utf8Stream;
 use serde_json::Value;
 use std::time::Duration;
 
+pub const LEGACY_OAUTH_CALLBACK_HOST_ENV: &str = "PI_OAUTH_CALLBACK_HOST";
+pub const OAUTH_CALLBACK_HOST_ENV: &str = "ULTRON_OAUTH_CALLBACK_HOST";
+
 const LOGO_SVG: &str = r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 800" aria-hidden="true"><path fill="#fff" fill-rule="evenodd" d="M165.29 165.29 H517.36 V400 H400 V517.36 H282.65 V634.72 H165.29 Z M282.65 282.65 V400 H400 V282.65 Z"/><path fill="#fff" d="M517.36 400 H634.72 V634.72 H517.36 Z"/></svg>"##;
 
 fn escape_html(value: &str) -> String {
@@ -120,8 +123,8 @@ const LOOPBACK: &str = "127.0.0.1";
 
 /// `oauthCallbackHost`: loopback unless `ULTRON_OAUTH_CALLBACK_HOST` (or `PI_OAUTH_CALLBACK_HOST`) names another.
 pub fn oauth_callback_host() -> String {
-    provider_env_value("ULTRON_OAUTH_CALLBACK_HOST", None)
-        .or_else(|| provider_env_value("PI_OAUTH_CALLBACK_HOST", None))
+    provider_env_value(OAUTH_CALLBACK_HOST_ENV, None)
+        .or_else(|| provider_env_value(LEGACY_OAUTH_CALLBACK_HOST_ENV, None))
         .unwrap_or_else(|| LOOPBACK.into())
 }
 

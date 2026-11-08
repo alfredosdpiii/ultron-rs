@@ -21,7 +21,7 @@ fn env(dir: &Path, credential: serde_json::Value) -> RunEnv {
     RunEnv {
         cwd: dir.to_path_buf(),
         home: dir.to_path_buf(),
-        var: Arc::new(move |k| (k == "ULTRON_CODING_AGENT_DIR").then(|| agent_dir.clone())),
+        var: Arc::new(move |k| (k == config::paths::ENV_AGENT_DIR).then(|| agent_dir.clone())),
         docs: dir.join("docs"),
     }
 }

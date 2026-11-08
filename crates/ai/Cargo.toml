@@ -32,6 +32,7 @@ path = "src/bin/ultron_inert_mcp.rs"
 test = false
 
 [dev-dependencies]
+kernel = { path = "../kernel" }
 rcgen = "=0.14.7"
 tempfile = "=3.27.0"
 tokio-rustls = { version = "=0.26.6", default-features = false }

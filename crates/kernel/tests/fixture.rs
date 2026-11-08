@@ -141,8 +141,8 @@ fn kernel_session_replays_typescript_results_and_protocol_lines() {
             rlm.join("runtime.py").display().to_string(),
         ),
         ("ULTRON_TAP_LOG".into(), log.display().to_string()),
-        ("ULTRON_RLM_SPILL_DIR".into(), String::new()),
-        ("ULTRON_RLM_OUTPUT_BYTES".into(), "20000".into()),
+        (kernel::env::RLM_SPILL_DIR_ENV.into(), String::new()),
+        (kernel::env::RLM_OUTPUT_BYTES_ENV.into(), "20000".into()),
     ];
     let kernel = Kernel::new(options, Arc::new(EchoHandler)).unwrap();
     let normalize = |text: &str| {

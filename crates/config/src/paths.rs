@@ -10,6 +10,9 @@ pub const AGENT_CONFIG_DIR_NAME: &str = ".ultron";
 pub const ENV_AGENT_DIR: &str = "ULTRON_CODING_AGENT_DIR";
 /// `${APP_NAME.toUpperCase()}_CODING_AGENT_SESSION_DIR`.
 pub const ENV_SESSION_DIR: &str = "ULTRON_CODING_AGENT_SESSION_DIR";
+/// An instance directory (`daemon::instance`); `PI_SERVER_DIR` is its older name.
+pub const ENV_SERVER_DIR: &str = "ULTRON_SERVER_DIR";
+pub const LEGACY_ENV_SERVER_DIR: &str = "PI_SERVER_DIR";
 
 /// Node's `path.normalize` for POSIX paths, without the trailing-slash rule.
 pub fn normalize(path: &Path) -> PathBuf {

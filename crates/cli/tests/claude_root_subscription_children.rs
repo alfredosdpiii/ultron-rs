@@ -29,7 +29,7 @@ const ANSWER: &str = r#"{"answer": "subscribed"}"#;
 const OPUS_NATIVE: &str = "claude-opus-5-5[1m]";
 
 fn python() -> String {
-    std::env::var("ULTRON_PYTHON").unwrap_or_else(|_| "/usr/bin/python3".into())
+    kernel::env::python(|name| std::env::var(name).ok())
 }
 
 struct Server {
@@ -162,17 +162,20 @@ fn start(root: &Path, paid: u16, args: &[&str]) -> (Server, PathBuf, PathBuf) {
         .env_clear()
         .env("PATH", "/usr/bin:/bin")
         .env("HOME", p("h"))
-        .env("ULTRON_CODING_AGENT_DIR", p("a"))
-        .env("ULTRON_SERVER_DIR", p("s"))
+        .env(config::paths::ENV_AGENT_DIR, p("a"))
+        .env(config::paths::ENV_SERVER_DIR, p("s"))
         .env("XDG_RUNTIME_DIR", p("r"))
         .env("TMPDIR", p("tmp"))
         .env("CLAUDE_CONFIG_DIR", p("h"))
-        .env("ULTRON_SELF_COMMAND", r#"["/opt/ultron/bin/ultron"]"#)
-        .env("ULTRON_LOKI", "off")
-        .env("ULTRON_PYTHON", python())
-        .env("PI_OFFLINE", "1")
+        .env(
+            claude_root::worker_root::SELF_COMMAND_ENV,
+            r#"["/opt/ultron/bin/ultron"]"#,
+        )
+        .env(session_core::compose::LOKI_ENV, "off")
+        .env(kernel::env::PYTHON_ENV, python())
+        .env(config::env::OFFLINE_ENV, "1")
         .env("GROQ_API_KEY", ["fake", "groq", "key"].join("-"))
-        .env("ULTRON_CLAUDE_CODE_BIN", &fake)
+        .env(ai::claude_code_cli::CLAUDE_CODE_BIN_ENV, &fake)
         .env("FAKE_LOG", &log)
         .env(
             "FAKE_OFFLINE_BLOCKS",

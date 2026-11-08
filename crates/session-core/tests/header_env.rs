@@ -60,8 +60,8 @@ fn session_core_header_templates_see_the_stored_credential_env_like_typescript()
             .iter()
             .map(|(k, v)| (k.clone(), v.as_str().unwrap().to_string()))
             .collect();
-        map.insert("ULTRON_CODING_AGENT_DIR".into(), agent.display().to_string());
-        map.insert("PI_OFFLINE".into(), "1".into());
+        map.insert(config::paths::ENV_AGENT_DIR.into(), agent.display().to_string());
+        map.insert(config::env::OFFLINE_ENV.into(), "1".into());
         let env = RunEnv {
             cwd: tmp.path().to_path_buf(),
             home: tmp.path().join("home"),

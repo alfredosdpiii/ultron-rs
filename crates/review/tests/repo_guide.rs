@@ -65,7 +65,7 @@ fn engine(repo: &Path, base: &str, head: &str, body: &str) -> Value {
         rlm = rlm.display().to_string(),
         repo = repo.display().to_string(),
     );
-    let python = std::env::var("ULTRON_PYTHON").unwrap_or_else(|_| "/usr/bin/python3".into());
+    let python = kernel::env::python(|name| std::env::var(name).ok());
     let output = Command::new(python)
         .arg("-I")
         .arg("-c")

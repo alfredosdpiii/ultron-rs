@@ -19,8 +19,8 @@ fn cli_pi_package_dir_selects_the_package_directory_like_ts() {
         let value = abs(case["value"].as_str().unwrap());
         let agent = home.join("agent").display().to_string();
         let lookup = |key: &str| match key {
-            "PI_PACKAGE_DIR" => Some(value.clone()),
-            "ULTRON_CODING_AGENT_DIR" => Some(agent.clone()),
+            cli::assets::PACKAGE_DIR => Some(value.clone()),
+            config::paths::ENV_AGENT_DIR => Some(agent.clone()),
             _ => None,
         };
         match assets::package_dir(&lookup, &home) {
@@ -44,9 +44,9 @@ fn cli_pi_package_dir_selects_the_package_directory_like_ts() {
     // ULTRON_DEV_ASSETS, when set, still decides (here: the embedded files).
     let agent = home.join("agent").display().to_string();
     let both = |key: &str| match key {
-        "PI_PACKAGE_DIR" => Some(home.join("pkg").display().to_string()),
-        "ULTRON_DEV_ASSETS" => Some("0".into()),
-        "ULTRON_CODING_AGENT_DIR" => Some(agent.clone()),
+        cli::assets::PACKAGE_DIR => Some(home.join("pkg").display().to_string()),
+        cli::assets::DEV_ASSETS => Some("0".into()),
+        config::paths::ENV_AGENT_DIR => Some(agent.clone()),
         _ => None,
     };
     assert_eq!(

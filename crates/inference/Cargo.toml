@@ -10,10 +10,12 @@ autotests = false
 [dependencies]
 agent = { path = "../agent" }
 ai = { path = "../ai" }
+config = { path = "../config" }
 getrandom = "=0.4.3"
 jsonschema = { path = "../jsonschema" }
 jsrt = { path = "../jsrt" }
 kernel = { path = "../kernel" }
+model-scope = { path = "../model-scope" }
 serde_json = { version = "=1.0.151", features = ["preserve_order"] }
 tokio = { version = "=1.53.2", features = ["rt", "time"] }
 

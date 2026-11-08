@@ -11,6 +11,9 @@ use kernel_apis::MemoryError;
 use serde_json::{Map, Value, json};
 use std::path::Path;
 
+pub const HINDSIGHT_BANK_ENV: &str = "ULTRON_HINDSIGHT_BANK";
+pub const HINDSIGHT_URL_ENV: &str = "ULTRON_HINDSIGHT_URL";
+
 /// `DEFAULT_HINDSIGHT_URL` (core/defaults.ts).
 pub const DEFAULT_HINDSIGHT_URL: &str = "http://localhost:8888";
 /// The bank when `ULTRON_HINDSIGHT_BANK` is unset or empty.
@@ -87,10 +90,10 @@ pub struct Endpoint {
 impl Endpoint {
     /// From `ULTRON_HINDSIGHT_URL`, the global `hindsightUrl` setting under `agent_dir`, and `ULTRON_HINDSIGHT_BANK`.
     pub fn resolve(var: &dyn Fn(&str) -> Option<String>, global_setting: Option<String>) -> Option<Endpoint> {
-        let url = hindsight_url(var("ULTRON_HINDSIGHT_URL").as_deref(), global_setting.as_deref())?;
+        let url = hindsight_url(var(HINDSIGHT_URL_ENV).as_deref(), global_setting.as_deref())?;
         Some(Endpoint {
             url,
-            bank: bank(var("ULTRON_HINDSIGHT_BANK").as_deref()),
+            bank: bank(var(HINDSIGHT_BANK_ENV).as_deref()),
         })
     }
 

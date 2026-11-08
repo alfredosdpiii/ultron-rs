@@ -64,10 +64,13 @@ fn replay(case: &Value) -> Vec<String> {
     env.insert("HOME".into(), tmp_text.clone());
     env.insert("TZ".into(), "UTC".into());
     env.insert(
-        "ULTRON_CODING_AGENT_DIR".into(),
+        config::paths::ENV_AGENT_DIR.into(),
         root.join("agent").display().to_string(),
     );
-    env.insert("ULTRON_SERVER_DIR".into(), root.join("server").display().to_string());
+    env.insert(
+        config::paths::ENV_SERVER_DIR.into(),
+        root.join("server").display().to_string(),
+    );
     for (k, v) in case["env"].as_object().into_iter().flatten() {
         env.insert(k.clone(), v.as_str().unwrap().replace("<TMP>", &tmp_text));
     }
@@ -153,7 +156,7 @@ fn cli_self_update_package_commands_and_targets_are_not_supported() {
     let run_env = cli::Env {
         cwd: root.clone(),
         home: root.clone(),
-        var: Arc::new(move |k| (k == "ULTRON_CODING_AGENT_DIR").then(|| agent.clone())),
+        var: Arc::new(move |k| (k == config::paths::ENV_AGENT_DIR).then(|| agent.clone())),
         docs: root.join("docs"),
     };
     let (port, count) = registry(vec![json!({"status": 200, "body": {"version": "999.0.0"}})]);
@@ -224,7 +227,7 @@ fn cli_self_update_points_the_binary_at_the_release_download() {
         let run_env = cli::Env {
             cwd: root.clone(),
             home: root.clone(),
-            var: Arc::new(move |k| (k == "ULTRON_CODING_AGENT_DIR").then(|| agent.clone())),
+            var: Arc::new(move |k| (k == config::paths::ENV_AGENT_DIR).then(|| agent.clone())),
             docs: root.join("docs"),
         };
         let (mut out, mut err) = (Vec::new(), Vec::new());

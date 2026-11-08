@@ -35,9 +35,9 @@ fn call(host: &Host, lane: &str, kind: &str, payload: Value) -> Value {
 
 fn worktree_env(dir: &Path) -> Vec<(String, String)> {
     vec![
-        ("ULTRON_WORKTREE".into(), dir.display().to_string()),
-        ("ULTRON_PARENT_REPO".into(), "/repo".into()),
-        ("ULTRON_WORKTREE_BRANCH".into(), "ultron/t1".into()),
+        (kernel::env::WORKTREE_ENV.into(), dir.display().to_string()),
+        (kernel::env::PARENT_REPO_ENV.into(), "/repo".into()),
+        (kernel::env::WORKTREE_BRANCH_ENV.into(), "ultron/t1".into()),
         ("PWD".into(), dir.display().to_string()),
     ]
 }
@@ -161,7 +161,7 @@ fn host_shared_jobs_a_worktree_lanes_jobs_are_the_sessions() {
 fn host_commands_and_jobs_never_see_the_parent_verdict_token() {
     let tmp = tempfile::tempdir().unwrap();
     let dir = tmp.path().canonicalize().unwrap();
-    let env = vec![("ULTRON_PARENT_TOKEN".to_string(), "secret-token".to_string())];
+    let env = vec![(host::PARENT_TOKEN_ENV.to_string(), "secret-token".to_string())];
     let host = Host::new(&dir, dir.join(".jobs"), &dir, Box::new(AllowAll)).with_env(env);
     let echo = "echo T=$ULTRON_PARENT_TOKEN";
     assert_eq!(

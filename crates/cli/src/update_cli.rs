@@ -237,7 +237,7 @@ fn fetch_error(error: &reqwest::Error) -> String {
 /// `getLatestRelease(VERSION, { retry: true })`: up to `retries` (2 with `retry`, else 0) retries after a failure or a
 /// transient status, within ten seconds. `Ok(None)`: offline, an error status, or no valid version in the document.
 pub(crate) fn latest_release(env: &Env, url: &str, retries: u32) -> Result<Option<String>, String> {
-    if (env.var)("PI_OFFLINE").is_some_and(|v| !v.is_empty()) {
+    if config::env::offline(&*env.var) {
         return Ok(None);
     }
     let runtime = tokio::runtime::Builder::new_current_thread()

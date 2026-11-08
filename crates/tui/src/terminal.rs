@@ -11,6 +11,8 @@ use std::time::Duration;
 use crate::keyboard_protocol::KeyboardProtocol;
 use crate::stdin_buffer::{InputEvent, StdinBuffer};
 
+pub const TUI_ESC_TIMEOUT_ENV: &str = "PI_TUI_ESC_TIMEOUT";
+
 /// Escape output of the terminal, over any writer.
 pub struct Terminal<W: Write> {
     pub out: W,
@@ -130,7 +132,7 @@ fn deliver(events: Vec<InputEvent>, tx: &mpsc::Sender<String>) -> bool {
 /// Escape key. `PI_TUI_ESC_TIMEOUT` (milliseconds, a positive number), else 100 ms over SSH (`SSH_CONNECTION` or
 /// `SSH_TTY` set: legacy Alt+key is ESC plus a byte, and high-latency links split them), else 10 ms.
 pub fn resolve_escape_timeout(env: &dyn Fn(&str) -> Option<String>) -> Duration {
-    let configured = js_number(env("PI_TUI_ESC_TIMEOUT").as_deref());
+    let configured = js_number(env(TUI_ESC_TIMEOUT_ENV).as_deref());
     if configured.is_finite() && configured > 0.0 {
         return Duration::from_secs_f64(configured / 1000.0);
     }

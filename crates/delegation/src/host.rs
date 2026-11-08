@@ -33,8 +33,9 @@ use std::sync::mpsc::{Receiver, Sender, channel};
 use std::sync::{Arc, Condvar, Mutex, PoisonError};
 use std::time::Duration;
 
+pub const SPAWN_DEPTH_ENV: &str = "ULTRON_SPAWN_DEPTH";
+
 const CHILD: &str = "rlm-child@1";
-const THINKING_LEVELS: [&str; 7] = ["off", "minimal", "low", "medium", "high", "xhigh", "max"];
 /// Default ceiling on `rlm.spawn` nesting (`ULTRON_SPAWN_DEPTH`).
 pub const DEFAULT_SPAWN_DEPTH: u32 = 3;
 
@@ -1133,7 +1134,7 @@ impl Delegation {
         // A named model must be `provider/model` and one the session can run: never silently the root's model.
         let model = match kwargs.get("model") {
             Some(Value::String(model)) => {
-                if !jsrt::string::is_model_ref(model) {
+                if !model_scope::is_model_ref(model) {
                     return Err("model must be provider/model".into());
                 }
                 if let Some(check) = &self.inner.model_check {
@@ -1155,13 +1156,16 @@ impl Delegation {
         let worktree = self.new_worktree(mode, &name, setup.as_ref(), parent)?;
         let thinking = match kwargs.get("thinking") {
             None => None,
-            Some(value) => match value.as_str().filter(|t| THINKING_LEVELS.contains(t)) {
+            Some(value) => match value.as_str().filter(|t| model_scope::THINKING_LEVELS.contains(t)) {
                 Some(level) => Some(level.to_string()),
                 None => {
                     if let Some(record) = &worktree {
                         wt::remove_child_worktree(record, true);
                     }
-                    return Err(format!("thinking must be one of {}", THINKING_LEVELS.join(", ")));
+                    return Err(format!(
+                        "thinking must be one of {}",
+                        model_scope::THINKING_LEVELS.join(", ")
+                    ));
                 }
             },
         };

@@ -76,7 +76,10 @@ fn session_ids(dir: &std::path::Path) -> Vec<String> {
 fn command(sandbox: &Sandbox, case: &Value, args: &[String]) -> std::process::Command {
     let mut command = sandbox.ultron();
     // Nothing here launches a program by name from PATH but the kernel's interpreter.
-    command.env("PATH", "/usr/bin:/bin").env("PI_OFFLINE", "1").args(args);
+    command
+        .env("PATH", "/usr/bin:/bin")
+        .env(config::env::OFFLINE_ENV, "1")
+        .args(args);
     if case["noKey"] == true {
         command.env_remove("ANTHROPIC_API_KEY");
     }

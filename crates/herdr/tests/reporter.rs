@@ -267,11 +267,11 @@ fn herdr_detect_reads_the_injected_env_and_the_setting() {
     assert_eq!(detect(&vars(&inside), Some(&json!(false))), None);
     for off in ["0", "false", "OFF", "no"] {
         let mut env = inside.to_vec();
-        env.push(("ULTRON_HERDR", off));
+        env.push((herdr::ULTRON_HERDR_ENV, off));
         assert_eq!(detect(&vars(&env), None), None, "{off}");
     }
     let mut kernel = inside.to_vec();
-    kernel.push(("ULTRON_RLM_MAX_MEMORY_MB", "4096"));
+    kernel.push((kernel::env::RLM_MAX_MEMORY_MB_ENV, "4096"));
     assert_eq!(detect(&vars(&kernel), None), None);
     assert_eq!(detect(&vars(&inside[1..]), None), None);
     assert_eq!(detect(&vars(&[("HERDR_ENV", "1"), ("HERDR_PANE_ID", "p")]), None), None);

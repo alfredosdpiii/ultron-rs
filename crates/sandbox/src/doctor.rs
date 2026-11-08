@@ -11,6 +11,8 @@ use serde_json::{Map, Value, json};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
+pub const SANDBOX_CANARY_TOKEN_ENV: &str = "ULTRON_SANDBOX_CANARY_TOKEN";
+
 const PROBE: &str = r#"out() { printf 'PROBE %s=%s\n' "$1" "$2"; }
 name=$1; project=$2; home=$3; outside=$4; host_tmp=$5; port=$6; shift 6
 ( : > "$project/$name" ) 2>/dev/null && out project writable || out project read-only
@@ -77,7 +79,7 @@ pub fn self_check(policy: &Policy, mechanism: Option<Mechanism>, scratch_parent:
         }
     };
     command
-        .env("ULTRON_SANDBOX_CANARY_TOKEN", "not-a-real-token")
+        .env(SANDBOX_CANARY_TOKEN_ENV, "not-a-real-token")
         .current_dir(&project)
         .stdin(Stdio::null());
     let output = command.output();

@@ -300,8 +300,8 @@ fn settings(enabled: bool) -> Value {
 
 fn vars(extra: &[(&'static str, &str)]) -> Vec<(&'static str, String)> {
     let mut vars = vec![
-        ("ULTRON_CONTEXT_REMINDER_TOKENS", "10000".to_string()),
-        ("ULTRON_COMPACTION_TRIM", "off".to_string()),
+        (session_core::compose::CONTEXT_REMINDER_TOKENS_ENV, "10000".to_string()),
+        (kernel_apis::context_control::COMPACTION_TRIM_ENV, "off".to_string()),
     ];
     vars.extend(extra.iter().map(|(k, v)| (*k, v.to_string())));
     vars
@@ -376,14 +376,14 @@ fn session_core_context_reminder_names_the_context_limit_with_auto_compaction_of
 #[test]
 fn session_core_context_reminder_is_off_with_the_environment_switch() {
     assert_eq!(
-        root_results(true, &[("ULTRON_CONTEXT_REMINDER", "off")]),
+        root_results(true, &[(session_core::compose::CONTEXT_REMINDER_ENV, "off")]),
         ["one", "two", "three", "four", "five"]
     );
 }
 
 #[test]
 fn session_core_context_reminder_comes_after_the_budget_line() {
-    let results = root_results(true, &[("ULTRON_MAX_TOTAL_TURNS", "20")]);
+    let results = root_results(true, &[(delegation::usage::MAX_TOTAL_TURNS_ENV, "20")]);
     assert_eq!(
         results[1],
         format!(

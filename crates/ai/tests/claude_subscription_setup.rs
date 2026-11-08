@@ -65,7 +65,7 @@ fn ai_claude_subscription_path_and_explicit_commands_take_precedence() {
     env.insert("PATH".into(), home.path().join("path-bin").display().to_string());
     assert_eq!(resolve_claude(None, &env).unwrap(), std::slice::from_ref(&on_path));
     let mut overridden = env.clone();
-    overridden.insert("ULTRON_CLAUDE_COMMAND".into(), probed.clone());
+    overridden.insert(ai::claude_subscription::process::COMMAND_ENV.into(), probed.clone());
     assert_eq!(resolve_claude(None, &overridden).unwrap(), [probed]);
     assert_eq!(
         resolve_claude(Some(&[home.path().join("missing/claude").display().to_string()]), &env),
@@ -293,7 +293,7 @@ fn ai_claude_subscription_discovery_probes_follow_the_telemetry_setting() {
     let (config, env) = fake_config(&fake, &upstream.url(), &base);
     assert!(discover_models(&config, &env, TIMEOUT).is_some());
     let mut quiet = base.to_vec();
-    quiet.push(("ULTRON_CLAUDE_TELEMETRY", "off"));
+    quiet.push((ai::claude_subscription::process::TELEMETRY_ENV, "off"));
     let (config, env) = fake_config(&fake, &upstream.url(), &quiet);
     assert!(discover_models(&config, &env, TIMEOUT).is_some());
     let records = fake.records();

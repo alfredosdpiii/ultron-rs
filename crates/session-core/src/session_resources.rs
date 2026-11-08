@@ -21,6 +21,8 @@ use resources::prompt_templates::PromptTemplate;
 use resources::skills::{LoadSkillsOptions, Skill, load_skills};
 use std::path::Path;
 
+pub const BUNDLED_SKILLS_ENV: &str = "ULTRON_BUNDLED_SKILLS";
+
 /// Where one resource came from (`PathMetadata` with its path): its source (`local` or `auto`), scope and origin
 /// (always `top-level`), and its base directory.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -222,7 +224,7 @@ pub fn prompt_source_info(
 /// `defaultBundledSkillPaths`: the bundled skills directory `dir`, unless `ULTRON_BUNDLED_SKILLS` is `off`, `0` or
 /// `false`.
 pub fn bundled_skills(dir: &Path, var: &dyn Fn(&str) -> Option<String>) -> Option<String> {
-    let raw = var("ULTRON_BUNDLED_SKILLS").map(|v| v.trim().to_lowercase());
+    let raw = var(BUNDLED_SKILLS_ENV).map(|v| v.trim().to_lowercase());
     if matches!(raw.as_deref(), Some("off" | "0" | "false")) {
         return None;
     }

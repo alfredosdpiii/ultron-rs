@@ -172,17 +172,17 @@ fn start_full(replies: Vec<String>, summaries: Vec<String>, hold: bool, settings
     let env = [
         ("PATH", "/usr/local/bin:/usr/bin:/bin".to_string()),
         ("HOME", root.display().to_string()),
-        ("ULTRON_CODING_AGENT_DIR", agent_dir.display().to_string()),
-        ("ULTRON_SERVER_DIR", root.join("server").display().to_string()),
+        (config::paths::ENV_AGENT_DIR, agent_dir.display().to_string()),
+        (config::paths::ENV_SERVER_DIR, root.join("server").display().to_string()),
         ("ANTHROPIC_API_KEY", "test-key".into()),
-        ("ULTRON_HINDSIGHT_URL", "off".into()),
+        (hindsight::resolve::HINDSIGHT_URL_ENV, "off".into()),
         // The provider's replies are scripted in order; a refinement request (session_core::auto_refine) would take one.
-        ("ULTRON_AUTO_REFINE", "off".into()),
-        ("PI_OFFLINE", "1".into()),
+        (session_core::core::AUTO_REFINE_ENV, "off".into()),
+        (config::env::OFFLINE_ENV, "1".into()),
         ("NO_COLOR", "1".into()),
         ("TZ", "UTC".into()),
         // Requests are compared with TS recordings: the TS runtime guide.
-        ("ULTRON_GUIDE", "ts".into()),
+        (session_core::compose::GUIDE_ENV, "ts".into()),
     ];
     let options = RpcClientOptions {
         program: env!("CARGO_BIN_EXE_ultron").into(),
@@ -571,17 +571,17 @@ fn actor_full(replies: Vec<String>, summaries: Vec<String>, hold: bool, settings
     let vars: Vec<(String, String)> = vec![
         ("HOME".into(), sandbox.root.display().to_string()),
         (
-            "ULTRON_CODING_AGENT_DIR".into(),
+            config::paths::ENV_AGENT_DIR.into(),
             sandbox.agent_dir.display().to_string(),
         ),
         (
-            "ULTRON_SERVER_DIR".into(),
+            config::paths::ENV_SERVER_DIR.into(),
             sandbox.root.join("server").display().to_string(),
         ),
         ("ANTHROPIC_API_KEY".into(), "test-key".into()),
-        ("ULTRON_HINDSIGHT_URL".into(), "off".into()),
-        ("ULTRON_AUTO_REFINE".into(), "off".into()),
-        ("PI_OFFLINE".into(), "1".into()),
+        (hindsight::resolve::HINDSIGHT_URL_ENV.into(), "off".into()),
+        (session_core::core::AUTO_REFINE_ENV.into(), "off".into()),
+        (config::env::OFFLINE_ENV.into(), "1".into()),
     ];
     let env = cli::Env {
         cwd: sandbox.cwd.clone(),

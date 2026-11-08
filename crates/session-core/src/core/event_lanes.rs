@@ -15,6 +15,8 @@ use crate::subagents::DurableChildren;
 use harness::chat::{ChatHarness, SubmissionDraft, WhenBusy};
 use std::sync::mpsc::channel;
 
+pub const ASYNC_EVENTS_MAX_RUNS_ENV: &str = "ULTRON_ASYNC_EVENTS_MAX_RUNS";
+
 /// What the dispatcher asks of the root lane (answered by the actor, in order with its other work).
 pub enum LaneCall {
     Execution,
@@ -161,8 +163,9 @@ pub(super) fn install(
             .usage_root_for_lane(LANE, run)
             .unwrap_or_else(|| format!("turn:{run}"))
     }));
-    options.enabled = stack.events.enabled() && async_events_enabled((env.var)("ULTRON_ASYNC_EVENTS").as_deref());
-    options.max_runs = max_event_runs_from_env((env.var)("ULTRON_ASYNC_EVENTS_MAX_RUNS").as_deref());
+    options.enabled =
+        stack.events.enabled() && async_events_enabled((env.var)(crate::async_events::ASYNC_EVENTS_ENV).as_deref());
+    options.max_runs = max_event_runs_from_env((env.var)(ASYNC_EVENTS_MAX_RUNS_ENV).as_deref());
     // With events on, the dispatcher re-invokes the idle root when its work ends: the root lane is woken
     // (crate::wake), so its rlm.collect never waits; without them it waits in its cell like every other lane.
     stack.wake.set(options.enabled);

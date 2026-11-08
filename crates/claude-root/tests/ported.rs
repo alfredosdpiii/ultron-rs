@@ -15,8 +15,9 @@ use claude_root::launcher::{LaunchInput, LauncherOptions, build_claude_launch, p
 use claude_root::mcp_protocol::{McpHandlers, McpPrompt, McpResource, serve};
 use claude_root::mcp_server::parse_mcp_args;
 use claude_root::self_cmd::{SelfCommand, shell_quote};
-use claude_root::worker_root::{claude_root_requested, prepare_claude_root};
+use claude_root::worker_root::prepare_claude_root;
 use serde_json::{Map, Value, json};
+use session_core::core::claude_root_requested;
 use std::collections::BTreeSet;
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::UnixStream;
@@ -176,8 +177,22 @@ fn claude_root_skip_permissions_by_default_except_as_root_or_turned_off() {
         skip_permissions_args(&no_env, Some(1000), None),
         strings(&["--dangerously-skip-permissions"])
     );
-    assert!(skip_permissions_args(&env(&[("ULTRON_CLAUDE_SKIP_PERMISSIONS", "off")]), Some(1000), None).is_empty());
-    assert!(skip_permissions_args(&env(&[("ULTRON_CLAUDE_SKIP_PERMISSIONS", " NO ")]), Some(1000), None).is_empty());
+    assert!(
+        skip_permissions_args(
+            &env(&[(claude_root::claude_cli::CLAUDE_SKIP_PERMISSIONS_ENV, "off")]),
+            Some(1000),
+            None
+        )
+        .is_empty()
+    );
+    assert!(
+        skip_permissions_args(
+            &env(&[(claude_root::claude_cli::CLAUDE_SKIP_PERMISSIONS_ENV, " NO ")]),
+            Some(1000),
+            None
+        )
+        .is_empty()
+    );
     // Claude Code refuses the flag as root unless IS_SANDBOX=1.
     assert!(skip_permissions_args(&no_env, Some(0), None).is_empty());
     assert_eq!(
@@ -213,15 +228,18 @@ fn claude_root_skip_permissions_by_default_except_as_root_or_turned_off() {
 
 #[test]
 fn claude_root_prepare_claude_root_model_selection() {
-    let env = |k: &str| (k == "ULTRON_SELF_COMMAND").then(|| r#"["node","cli.js"]"#.to_string());
+    let env = |k: &str| (k == claude_root::worker_root::SELF_COMMAND_ENV).then(|| r#"["node","cli.js"]"#.to_string());
     let root = prepare_claude_root(None, None, &env).unwrap();
     assert_eq!(
         (root.provider, root.model.as_str()),
         (None, "claude-code/claude-opus-5-5")
     );
-    assert_eq!(root.env, vec![("ULTRON_ROOT".to_string(), "claude".to_string())]);
+    assert_eq!(
+        root.env,
+        vec![(session_core::core::ROOT_ENV.to_string(), "claude".to_string())]
+    );
     assert!(claude_root_requested(
-        &|k: &str| (k == "ULTRON_ROOT").then(|| " Claude ".to_string())
+        &|k: &str| (k == session_core::core::ROOT_ENV).then(|| " Claude ".to_string())
     ));
     assert!(!claude_root_requested(&no_env));
     let model = |provider: Option<&str>, model: Option<&str>| prepare_claude_root(provider, model, &env);
@@ -236,7 +254,7 @@ fn claude_root_prepare_claude_root_model_selection() {
         (Some("claude-code"), "opus")
     );
     let with_env = |k: &str| match k {
-        "ULTRON_CLAUDE_MODEL" => Some("sonnet".to_string()),
+        config::env::CLAUDE_MODEL_ENV => Some("sonnet".to_string()),
         other => env(other),
     };
     assert_eq!(
@@ -260,7 +278,12 @@ fn claude_root_prepare_claude_root_model_selection() {
     );
     // The worker needs to know how to start Ultron itself (`ULTRON_SELF_COMMAND`).
     let fresh = prepare_claude_root(None, None, &no_env).unwrap();
-    let command = &fresh.env.iter().find(|(k, _)| k == "ULTRON_SELF_COMMAND").unwrap().1;
+    let command = &fresh
+        .env
+        .iter()
+        .find(|(k, _)| k == claude_root::worker_root::SELF_COMMAND_ENV)
+        .unwrap()
+        .1;
     let parts: Vec<String> = serde_json::from_str(command).unwrap();
     assert_eq!(parts[0], std::env::current_exe().unwrap().display().to_string());
 }

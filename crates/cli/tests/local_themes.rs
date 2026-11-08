@@ -56,9 +56,12 @@ fn profile(root: &Path) -> cli::Env {
     std::fs::create_dir_all(root.join("cwd")).unwrap();
     let vars: Vec<(String, String)> = vec![
         ("HOME".into(), root.display().to_string()),
-        ("ULTRON_CODING_AGENT_DIR".into(), agent.display().to_string()),
-        ("ULTRON_SERVER_DIR".into(), root.join("server").display().to_string()),
-        ("PI_OFFLINE".into(), "1".into()),
+        (config::paths::ENV_AGENT_DIR.into(), agent.display().to_string()),
+        (
+            config::paths::ENV_SERVER_DIR.into(),
+            root.join("server").display().to_string(),
+        ),
+        (config::env::OFFLINE_ENV.into(), "1".into()),
     ];
     cli::Env {
         cwd: root.join("cwd"),
@@ -158,7 +161,10 @@ fn cli_interactive_theme_setting_names_a_local_theme() {
             100,
             30,
             &["--model", "anthropic/claude-sonnet-4-5"],
-            &[("ULTRON_AUTO_NAME", "off"), ("ULTRON_SPLASH", "off")],
+            &[
+                (session_core::core::AUTO_NAME_ENV, "off"),
+                (cli::interactive::SPLASH_ENV, "off"),
+            ],
         );
         tui.wait("Session:");
         let colored = tui.tmux(&["capture-pane", "-p", "-e", "-t", "t"]);

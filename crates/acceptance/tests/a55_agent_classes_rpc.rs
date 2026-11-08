@@ -95,7 +95,7 @@ fn results(messages: &[Value]) -> Vec<Value> {
 fn acceptance_a55_a_class_defined_in_a_cell_is_invokable_typed_end_to_end_keeps_state_and_rejects_a_bad_return() {
     let provider = Provider::start(script);
     let install = Install::new(&provider);
-    let mut client = install.rpc(&["--no-session"], &[("ULTRON_HINDSIGHT_URL", "off")]);
+    let mut client = install.rpc(&["--no-session"], &[(hindsight::resolve::HINDSIGHT_URL_ENV, "off")]);
     client
         .prompt_and_wait("A55: triage two reports with an agent class", common::HANG)
         .unwrap();

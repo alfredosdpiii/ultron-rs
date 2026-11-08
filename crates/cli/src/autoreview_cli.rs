@@ -30,7 +30,6 @@ const APP_NAME: &str = "ultron";
 const LEVELS: [&str; 5] = ["critical", "high", "medium", "low", "nit"];
 const REVIEW_MODES: [&str; 5] = ["fast", "deep", "both", "compiled", "hybrid"];
 const PLAN_STYLES: [&str; 2] = ["cell", "frame"];
-const FRAME_THINKING_LEVELS: [&str; 7] = config::settings::FRAME_THINKING_LEVELS;
 
 pub fn usage() -> String {
     format!(
@@ -213,15 +212,6 @@ pub fn parse_tokens(value: &str) -> Result<f64, UsageError> {
     Ok(amount)
 }
 
-/// `MODEL_REF`: `provider/model[/more]` without whitespace.
-fn is_model_ref(value: &str) -> bool {
-    let parts: Vec<&str> = value.split('/').collect();
-    parts.len() >= 2
-        && parts
-            .iter()
-            .all(|part| !part.is_empty() && !part.chars().any(char::is_whitespace))
-}
-
 fn is_python_version(value: &str) -> bool {
     let parts: Vec<&str> = value.split('.').collect();
     parts.len() <= 3
@@ -250,7 +240,7 @@ pub fn parse_args(args: &[String]) -> Result<Parsed, UsageError> {
                 .ok_or_else(|| UsageError(format!("{arg} needs a value")))
         };
         let model = |ref_: String| -> Result<String, UsageError> {
-            if is_model_ref(&ref_) {
+            if model_scope::is_model_ref(&ref_) {
                 Ok(ref_)
             } else {
                 Err(UsageError(format!("{arg} takes provider/model, not {ref_}")))
@@ -263,12 +253,12 @@ pub fn parse_args(args: &[String]) -> Result<Parsed, UsageError> {
                 .collect()
         };
         let thinking = |name: String| -> Result<String, UsageError> {
-            if FRAME_THINKING_LEVELS.contains(&name.as_str()) {
+            if model_scope::THINKING_LEVELS.contains(&name.as_str()) {
                 Ok(name)
             } else {
                 Err(UsageError(format!(
                     "{arg} takes one of {}, not {name}",
-                    FRAME_THINKING_LEVELS.join(", ")
+                    model_scope::THINKING_LEVELS.join(", ")
                 )))
             }
         };
@@ -685,7 +675,7 @@ fn known_secrets() -> Arc<host::secrets::OutputMasker> {
 }
 
 fn logger(var: &crate::VarLookup) -> Log {
-    let mask = var("ULTRON_MASK_SECRETS");
+    let mask = var(session_core::compose::MASK_SECRETS_ENV);
     let masker = known_secrets();
     Arc::new(move |line: &str| {
         let (masked, _) = masker.mask_counted(line, mask.as_deref());
@@ -717,7 +707,7 @@ fn saved_settings(env: &Env) -> Saved {
     let frame_thinking = rlm
         .and_then(|rlm| rlm.get("frameThinking"))
         .and_then(Value::as_str)
-        .filter(|level| FRAME_THINKING_LEVELS.contains(level))
+        .filter(|level| model_scope::THINKING_LEVELS.contains(level))
         .map(str::to_string);
     let text = |value: Option<&Value>| value.and_then(Value::as_str).map(str::to_string);
     let retry = manager.retry_settings();
@@ -834,14 +824,6 @@ fn configure(parsed: &Parsed, saved: &Saved, env: &Env) -> AutoreviewConfig {
     config
 }
 
-/// The process environment as a map, for the names the engine reads.
-fn frame_env(env: &Env) -> HashMap<String, String> {
-    ["ULTRON_RLM_FRAME_MODEL", "ULTRON_REVIEW_MODEL", "ULTRON_RLM_MAP_TOKENS"]
-        .into_iter()
-        .filter_map(|key| (env.var)(key).map(|value| (key.to_string(), value)))
-        .collect()
-}
-
 /// The kernel-backed engine on the configured model; models the frames name resolve as the session's do: the
 /// built-in catalog and models.json (custom providers and models, their keys and headers) with the profile's
 /// credentials.
@@ -876,7 +858,7 @@ fn open_engine(
         resolve,
         transport: Arc::new(ai::ReqwestTransport::for_env(&*env.var, None)),
         retry: saved.retry,
-        frame_env: frame_env(env),
+        frame_env: inference::frame_env(&*env.var),
         settings: inference::ModelSettings {
             frame_model: saved.frame_model.clone(),
             frame_thinking: saved.frame_thinking.clone(),
@@ -1446,14 +1428,7 @@ fn doctor(
     out: &mut dyn Write,
 ) -> Result<i32, Failure> {
     let runner = ov.runner();
-    // cli.ts: `env.ULTRON_PYTHON ?? (linux && /usr/bin/python3 exists ? "/usr/bin/python3" : "python3")`.
-    let python = (env.var)("ULTRON_PYTHON").unwrap_or_else(|| {
-        if cfg!(target_os = "linux") && Path::new("/usr/bin/python3").exists() {
-            "/usr/bin/python3".into()
-        } else {
-            "python3".into()
-        }
-    });
+    let python = kernel::env::python(|name| (env.var)(name));
     let script = config::paths::normalize(&env.docs.join("../src/ultron/rlm/autoreview_tests.py"))
         .display()
         .to_string();
@@ -1780,7 +1755,7 @@ fn reviewer_deps(
         let agent_dir = env.agent_dir();
         let manager = config::settings::SettingsManager::create(&env.cwd, &agent_dir, false);
         let url = hindsight::resolve::hindsight_url(
-            (env.var)("ULTRON_HINDSIGHT_URL").as_deref(),
+            (env.var)(hindsight::resolve::HINDSIGHT_URL_ENV).as_deref(),
             hindsight::resolve::setting_url(&manager).as_deref(),
         );
         url.and_then(|url| hindsight::lessons::HindsightLessons::new(&url, Box::new(jsrt::date::now_ms), None).ok())
@@ -1927,7 +1902,7 @@ fn daemon_command(
     out: &mut dyn Write,
 ) -> Result<i32, Failure> {
     let mut deps = reviewer_deps(config, saved, env, paths, ov)?;
-    let mask_setting = (env.var)("ULTRON_MASK_SECRETS");
+    let mask_setting = (env.var)(session_core::compose::MASK_SECRETS_ENV);
     let masker = known_secrets();
     deps.log = review::daemon::create_logger(
         Some(paths.logs.clone()),
@@ -2017,7 +1992,7 @@ pub fn user_service(env: &Env, platform: &str) -> Result<Option<review::service:
         command: me.command,
         args: me.args,
     };
-    let service_env: HashMap<String, String> = ["PATH", "ULTRON_CODING_AGENT_DIR", "XDG_CONFIG_HOME"]
+    let service_env: HashMap<String, String> = ["PATH", config::paths::ENV_AGENT_DIR, "XDG_CONFIG_HOME"]
         .into_iter()
         .filter_map(|key| (env.var)(key).map(|value| (key.to_string(), value)))
         .collect();
@@ -2107,7 +2082,7 @@ fn execute(
     }
     let saved = saved_settings(env);
     let config = configure(parsed, &saved, env);
-    let process_env: HashMap<String, String> = ["ULTRON_AUTOREVIEW_CACHE_DIR", "XDG_CACHE_HOME"]
+    let process_env: HashMap<String, String> = [review::settings::CACHE_DIR_ENV, "XDG_CACHE_HOME"]
         .into_iter()
         .filter_map(|key| (env.var)(key).map(|value| (key.to_string(), value)))
         .collect();

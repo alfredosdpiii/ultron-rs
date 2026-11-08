@@ -47,21 +47,27 @@ fn cli_auth_check_claude_code_matches_typescript() {
             }
             "configured" => {
                 let file = fake_claude(&root.join("tools"), &marker);
-                vars.insert("ULTRON_CLAUDE_CODE_BIN".into(), file);
+                vars.insert(ai::claude_code_cli::CLAUDE_CODE_BIN_ENV.into(), file);
             }
             "configured-missing" => {
                 fake_claude(&bin, &marker);
                 let missing = root.join("tools").join("claude");
-                vars.insert("ULTRON_CLAUDE_CODE_BIN".into(), missing.display().to_string());
+                vars.insert(
+                    ai::claude_code_cli::CLAUDE_CODE_BIN_ENV.into(),
+                    missing.display().to_string(),
+                );
             }
             "none" => {}
             other => panic!("unknown case {other}"),
         }
         vars.insert("PATH".into(), format!("{}:/usr/bin:/bin", bin.display()));
         vars.insert("HOME".into(), root.display().to_string());
-        vars.insert("PI_OFFLINE".into(), "1".into());
-        vars.insert("ULTRON_CODING_AGENT_DIR".into(), agent.display().to_string());
-        vars.insert("ULTRON_SERVER_DIR".into(), root.join("server").display().to_string());
+        vars.insert(config::env::OFFLINE_ENV.into(), "1".into());
+        vars.insert(config::paths::ENV_AGENT_DIR.into(), agent.display().to_string());
+        vars.insert(
+            config::paths::ENV_SERVER_DIR.into(),
+            root.join("server").display().to_string(),
+        );
         let env = cli::Env {
             cwd: root.to_path_buf(),
             home: root.to_path_buf(),

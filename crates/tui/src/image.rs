@@ -7,6 +7,10 @@ use crate::select::StyleFn;
 use crate::utils::truncate_to_width;
 use std::sync::{LazyLock, Mutex};
 
+pub const HYPERLINKS_ENV: &str = "PI_HYPERLINKS";
+pub const IMAGE_PROTOCOL_ENV: &str = "PI_IMAGE_PROTOCOL";
+pub const TRUE_COLOR_ENV: &str = "PI_TRUE_COLOR";
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ImageProtocol {
     Kitty,
@@ -32,15 +36,15 @@ pub fn detect_capabilities(
         Some("0") => Some(false),
         _ => None,
     };
-    let hyperlinks = flag("PI_HYPERLINKS");
+    let hyperlinks = flag(HYPERLINKS_ENV);
     let mut caps = detect_from_environment(env, windows, hyperlinks.unwrap_or(tmux_forwards_hyperlinks));
-    match env("PI_IMAGE_PROTOCOL").map(|v| v.to_lowercase()).as_deref() {
+    match env(IMAGE_PROTOCOL_ENV).map(|v| v.to_lowercase()).as_deref() {
         Some("kitty") => caps.images = Some(ImageProtocol::Kitty),
         Some("iterm2") => caps.images = Some(ImageProtocol::Iterm2),
         Some("none" | "0") => caps.images = None,
         _ => {}
     }
-    if let Some(t) = flag("PI_TRUE_COLOR") {
+    if let Some(t) = flag(TRUE_COLOR_ENV) {
         caps.true_color = t;
     }
     if let Some(h) = hyperlinks {

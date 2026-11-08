@@ -17,16 +17,16 @@ fn env(sandbox: &common::Sandbox) -> cli::Env {
     let vars: Vec<(String, String)> = vec![
         ("HOME".into(), sandbox.root.display().to_string()),
         (
-            "ULTRON_CODING_AGENT_DIR".into(),
+            config::paths::ENV_AGENT_DIR.into(),
             sandbox.agent_dir.display().to_string(),
         ),
         (
-            "ULTRON_SERVER_DIR".into(),
+            config::paths::ENV_SERVER_DIR.into(),
             sandbox.root.join("server").display().to_string(),
         ),
         ("ANTHROPIC_API_KEY".into(), "test-key".into()),
-        ("ULTRON_HINDSIGHT_URL".into(), "off".into()),
-        ("PI_OFFLINE".into(), "1".into()),
+        (hindsight::resolve::HINDSIGHT_URL_ENV.into(), "off".into()),
+        (config::env::OFFLINE_ENV.into(), "1".into()),
     ];
     cli::Env {
         cwd: sandbox.cwd.clone(),

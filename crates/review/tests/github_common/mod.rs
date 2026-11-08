@@ -1150,7 +1150,7 @@ pub fn setup(settings: Value, engine: Option<Arc<FakeEngine>>) -> Context {
     let engine = engine.unwrap_or_else(|| FakeEngine::new(Vec::new()));
     let root = dir.path().to_string_lossy().into_owned();
     let mut env = HashMap::new();
-    env.insert("ULTRON_AUTOREVIEW_CACHE_DIR".to_string(), format!("{root}/cache"));
+    env.insert(review::settings::CACHE_DIR_ENV.to_string(), format!("{root}/cache"));
     let paths = autoreview_paths(&format!("{root}/agent"), &env, "/home/u");
     let mut merged = json!({ "ackArt": "none" });
     if let (Value::Object(merged), Value::Object(settings)) = (&mut merged, settings) {

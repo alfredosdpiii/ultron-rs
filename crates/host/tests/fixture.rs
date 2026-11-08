@@ -47,7 +47,7 @@ fn replay(cells: &[String], guard: Box<dyn Guard>) -> Vec<Value> {
     let jobs = cwd.join(".jobs");
     let host = Arc::new(Host::new(&cwd, &jobs, &cwd, guard));
     let mut options = KernelOptions::new(&cwd, runtime());
-    options.env.push(("ULTRON_RLM_SPILL_DIR".into(), String::new()));
+    options.env.push((kernel::env::RLM_SPILL_DIR_ENV.into(), String::new()));
     options.env.push(("TMPDIR".into(), cwd.to_string_lossy().into_owned()));
     let kernel = Kernel::new(options, host).unwrap();
     let (cwd_text, jobs_text) = (cwd.to_string_lossy().into_owned(), jobs.to_string_lossy().into_owned());

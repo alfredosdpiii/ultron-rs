@@ -104,11 +104,23 @@ fn loki_auto_setup_switches_environment_overrides_settings_defaults_on() {
         with_context(&w.dir, &w.dir, extra, settings, |c| (auto_init(c), auto_commit(c)))
     };
     assert_eq!(on(&[], json!({})), (true, true));
-    assert!(!on(&[("ULTRON_LOKI_AUTOINIT", "off")], json!({"autoInit": true})).0);
+    assert!(
+        !on(
+            &[(loki::auto_setup::LOKI_AUTOINIT_ENV, "off")],
+            json!({"autoInit": true})
+        )
+        .0
+    );
     assert!(!on(&[], json!({"autoInit": false})).0);
-    assert!(!on(&[("ULTRON_LOKI_AUTOCOMMIT", "0")], json!({})).1);
-    assert!(on(&[("ULTRON_LOKI_AUTOCOMMIT", "on")], json!({"autoCommit": false})).1);
-    assert!(!on(&[("ULTRON_LOKI_AUTOINIT", " NONE ")], json!({})).0);
+    assert!(!on(&[(loki::auto_setup::LOKI_AUTOCOMMIT_ENV, "0")], json!({})).1);
+    assert!(
+        on(
+            &[(loki::auto_setup::LOKI_AUTOCOMMIT_ENV, "on")],
+            json!({"autoCommit": false})
+        )
+        .1
+    );
+    assert!(!on(&[(loki::auto_setup::LOKI_AUTOINIT_ENV, " NONE ")], json!({})).0);
 }
 
 #[test]
@@ -142,7 +154,12 @@ fn loki_auto_setup_every_skip_condition_names_its_reason() {
     );
     assert_eq!(reason(&root, &w.dir, &[("CI", "true")], json!({})), r("CI is set"));
     assert_eq!(
-        reason(&root, &w.dir, &[("ULTRON_LOKI_AUTOINIT", "off")], json!({})),
+        reason(
+            &root,
+            &w.dir,
+            &[(loki::auto_setup::LOKI_AUTOINIT_ENV, "off")],
+            json!({})
+        ),
         r("auto-install is off (ULTRON_LOKI_AUTOINIT)")
     );
     assert_eq!(
@@ -158,7 +175,7 @@ fn loki_auto_setup_every_skip_condition_names_its_reason() {
         r("the repository is listed in loki.ignoreRepos")
     );
     assert_eq!(
-        reason(&root, &w.dir, &[("ULTRON_WORKTREE", "1")], json!({})),
+        reason(&root, &w.dir, &[(kernel::env::WORKTREE_ENV, "1")], json!({})),
         r("this is an Ultron sub-agent worktree")
     );
     let nested = repository(&w.dir.join("ultron-worktrees"), "child", &w.dir);
@@ -182,7 +199,7 @@ fn loki_auto_setup_commit_skip_reasons_switches_ci_operations_detached_ignored()
     let r = |s: &str| Some(s.to_string());
     assert_eq!(reason(&[], json!({})), None);
     assert_eq!(
-        reason(&[("ULTRON_LOKI_AUTOCOMMIT", "off")], json!({})),
+        reason(&[(loki::auto_setup::LOKI_AUTOCOMMIT_ENV, "off")], json!({})),
         r("auto-commit is off (ULTRON_LOKI_AUTOCOMMIT)")
     );
     assert_eq!(
@@ -383,7 +400,13 @@ fn loki_auto_setup_creates_only_loki_commits_it_and_a_second_session_changes_not
 fn loki_auto_setup_notes_without_a_commit_and_stays_quiet_where_it_installs_nothing() {
     let w = work();
     let root = repository(&w.dir, "repo", &w.dir);
-    let skipped = with_context(&root, &w.dir, &[("ULTRON_LOKI_AUTOCOMMIT", "off")], json!({}), setup);
+    let skipped = with_context(
+        &root,
+        &w.dir,
+        &[(loki::auto_setup::LOKI_AUTOCOMMIT_ENV, "off")],
+        json!({}),
+        setup,
+    );
     assert_eq!(
         skipped,
         Setup::Notice(
@@ -393,7 +416,13 @@ fn loki_auto_setup_notes_without_a_commit_and_stays_quiet_where_it_installs_noth
         )
     );
     let other = repository(&w.dir, "other", &w.dir);
-    let off = with_context(&other, &w.dir, &[("ULTRON_LOKI_AUTOINIT", "off")], json!({}), setup);
+    let off = with_context(
+        &other,
+        &w.dir,
+        &[(loki::auto_setup::LOKI_AUTOINIT_ENV, "off")],
+        json!({}),
+        setup,
+    );
     assert_eq!(off, Setup::Quiet);
     assert!(!other.join(".loki").exists());
     let plain = w.dir.join("plain");

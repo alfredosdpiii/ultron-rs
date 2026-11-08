@@ -29,8 +29,11 @@ fn env(root: &Path, settings: Value) -> RunEnv {
     std::fs::write(agent.join("personality.md"), format!("{PERSONALITY}\n")).unwrap();
     let vars: Vec<(String, String)> = vec![
         ("HOME".into(), home.display().to_string()),
-        ("ULTRON_CODING_AGENT_DIR".into(), agent.display().to_string()),
-        ("ULTRON_SERVER_DIR".into(), root.join("s").display().to_string()),
+        (config::paths::ENV_AGENT_DIR.into(), agent.display().to_string()),
+        (
+            config::paths::ENV_SERVER_DIR.into(),
+            root.join("s").display().to_string(),
+        ),
     ];
     RunEnv {
         cwd,
@@ -152,7 +155,7 @@ fn claude_root_engineering_mode_asks_claude_to_use_bundled_skills_on_its_own() {
     let inner = base.var.clone();
     let ts = RunEnv {
         var: Arc::new(move |k: &str| {
-            if k == "ULTRON_GUIDE" {
+            if k == session_core::compose::GUIDE_ENV {
                 Some("ts".into())
             } else {
                 inner(k)

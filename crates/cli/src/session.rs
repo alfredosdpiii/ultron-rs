@@ -29,7 +29,7 @@ pub fn session_directory(session_dir: Option<&str>, env: &Env) -> PathBuf {
 pub fn session_directory_of(session_dir: Option<&str>, env: &Env, instance: &daemon::instance::Instance) -> PathBuf {
     let dir = session_dir
         .map(str::to_string)
-        .or_else(|| (env.var)("ULTRON_CODING_AGENT_SESSION_DIR"))
+        .or_else(|| (env.var)(config::paths::ENV_SESSION_DIR))
         .unwrap_or_else(|| instance.default_session_dir(&env.agent_dir()).display().to_string());
     resolve(&env.cwd, &dir)
 }

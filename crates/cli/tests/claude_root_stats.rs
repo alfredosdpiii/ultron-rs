@@ -18,7 +18,7 @@ use std::time::Duration;
 const BIN: &str = env!("CARGO_BIN_EXE_ultron");
 
 fn python() -> String {
-    std::env::var("ULTRON_PYTHON").unwrap_or_else(|_| "/usr/bin/python3".into())
+    kernel::env::python(|name| std::env::var(name).ok())
 }
 
 /// Every `.jsonl` file under `dir`.
@@ -60,14 +60,17 @@ fn cli_claude_root_mcp_counts_cells_and_turns_as_an_external_root() {
     let env: Vec<(&str, String)> = vec![
         ("PATH", format!("{}:/usr/bin:/bin", p("bin").display())),
         ("HOME", p("h").display().to_string()),
-        ("ULTRON_CODING_AGENT_DIR", p("a").display().to_string()),
-        ("ULTRON_SERVER_DIR", p("s").display().to_string()),
+        (config::paths::ENV_AGENT_DIR, p("a").display().to_string()),
+        (config::paths::ENV_SERVER_DIR, p("s").display().to_string()),
         ("XDG_RUNTIME_DIR", p("r").display().to_string()),
         ("TMPDIR", p("tmp").display().to_string()),
-        ("ULTRON_SELF_COMMAND", r#"["/opt/ultron/bin/ultron"]"#.into()),
-        ("ULTRON_LOKI", "off".into()),
-        ("ULTRON_PYTHON", python()),
-        ("ULTRON_OFFLINE", "1".into()),
+        (
+            claude_root::worker_root::SELF_COMMAND_ENV,
+            r#"["/opt/ultron/bin/ultron"]"#.into(),
+        ),
+        (session_core::compose::LOKI_ENV, "off".into()),
+        (kernel::env::PYTHON_ENV, python()),
+        (config::env::OFFLINE_ENV, "1".into()),
         ("CLAUDE_CODE_SESSION_ID", "sess-stats".into()),
         ("LANG", "C.UTF-8".into()),
     ];

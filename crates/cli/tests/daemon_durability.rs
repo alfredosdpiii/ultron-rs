@@ -422,7 +422,7 @@ fn cli_durable_worker_that_stops_answering_heartbeats_is_killed_and_restarted() 
         (text_reply("Back."), Duration::ZERO),
     ]);
     let home = Home::new(provider.port);
-    let server = Server::start(&home, common::SERVER_ID, &[("ULTRON_WORKER_HEARTBEAT_MS", "200")]);
+    let server = Server::start(&home, common::SERVER_ID, &[(daemon::workers::HEARTBEAT_ENV, "200")]);
     let connection = server.connect();
     let id = create(&connection);
     let session = attach(&connection, &id).unwrap();
@@ -509,7 +509,7 @@ fn cli_durable_two_servers_racing_for_one_session_one_is_refused() {
 fn cli_durable_stuck_run_is_reported_and_aborted_through_session_ops() {
     let provider = provider(vec![(text_reply("Too late."), STALL)]);
     let home = Home::new(provider.port);
-    let server = Server::start(&home, common::SERVER_ID, &[("ULTRON_STUCK_AFTER_MS", "500")]);
+    let server = Server::start(&home, common::SERVER_ID, &[(daemon::watchdog::STUCK_AFTER_ENV, "500")]);
     let connection = server.connect();
     let id = create(&connection);
     let session = attach(&connection, &id).unwrap();
@@ -973,7 +973,11 @@ fn cli_durable_a_signalled_worker_hands_its_running_shell_job_to_its_successor()
     )
     .unwrap();
     // Completion events would start a run of their own when the job ends; this test reads the job itself.
-    let run = prompted(&home, &[("ULTRON_ASYNC_EVENTS", "off")], "start the job");
+    let run = prompted(
+        &home,
+        &[(session_core::async_events::ASYNC_EVENTS_ENV, "off")],
+        "start the job",
+    );
     provider.wait_for(2, "the job was started");
     wait_idle(&run.connection, &run.id);
     assert!(tool_result_text(&provider.requests.lock().unwrap()[1]).contains("JOB running"));

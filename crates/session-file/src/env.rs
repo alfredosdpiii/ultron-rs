@@ -30,7 +30,7 @@ impl Env for SystemEnv {
     }
 
     fn agent_dir(&self) -> String {
-        match std::env::var("ULTRON_CODING_AGENT_DIR") {
+        match std::env::var(config::paths::ENV_AGENT_DIR) {
             Ok(dir) if !dir.is_empty() => crate::paths::normalize_path(&dir),
             _ => crate::paths::join(&[&crate::paths::home_dir(), ".ultron", "agent"]),
         }

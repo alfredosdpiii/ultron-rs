@@ -213,7 +213,7 @@ fn profile(spec: &Value, ports: (u16, u16)) -> Profile {
         .iter()
         .map(|(k, v)| (k.clone(), v.as_str().unwrap().to_string()))
         .collect();
-    map.insert("ULTRON_CODING_AGENT_DIR".into(), agent.display().to_string());
+    map.insert(config::paths::ENV_AGENT_DIR.into(), agent.display().to_string());
     Profile {
         env: RunEnv {
             cwd: tmp.path().join("cwd"),

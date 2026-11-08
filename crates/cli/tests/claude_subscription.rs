@@ -71,7 +71,7 @@ fn cli_claude_subscription_turn_runs_rlm_in_the_host_and_replays_natively() {
         format!(r#"{{"providers":{{"claude-subscription":{{"baseUrl":"http://127.0.0.1:{port}"}}}}}}"#),
     )
     .unwrap();
-    let python = std::env::var("ULTRON_PYTHON").unwrap_or_else(|_| "/usr/bin/python3".into());
+    let python = kernel::env::python(|name| std::env::var(name).ok());
     let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("../ai/fixtures/claude-subscription/claude.py");
     let wrapper = sandbox.root.join("fake-bin/claude");
     std::fs::create_dir_all(wrapper.parent().unwrap()).unwrap();
@@ -89,7 +89,7 @@ fn cli_claude_subscription_turn_runs_rlm_in_the_host_and_replays_natively() {
         // Only the fake and the system tools on PATH: even if ULTRON_CLAUDE_COMMAND were ignored, no real `claude`
         // (e.g. ~/.local/bin/claude) could be found.
         .env("PATH", format!("{}:/usr/bin:/bin", wrapper.parent().unwrap().display()))
-        .env("ULTRON_CLAUDE_COMMAND", &wrapper)
+        .env(ai::claude_subscription::process::COMMAND_ENV, &wrapper)
         .env("FAKE_LOG", &log)
         .env("FAKE_REMINDER", "1")
         .env("TMPDIR", &tmp)

@@ -102,11 +102,11 @@ fn replay_full(name: &str, divergences: &[(&str, &str)], last: Option<&dyn Fn(&s
         .unwrap_or_else(|| panic!("scenario {name} is not in the fixture"));
     let mock = Mock::start(replies(scenario), None);
     let mut env = vec![
-        ("ULTRON_AUTO_NAME", "off"),
+        (session_core::core::AUTO_NAME_ENV, "off"),
         // TypeScript makes no refinement request after a compaction (session_core::auto_refine).
-        ("ULTRON_AUTO_REFINE", "off"),
-        ("ULTRON_TUI_PARITY", "1"),
-        ("ULTRON_SPLASH", "off"),
+        (session_core::core::AUTO_REFINE_ENV, "off"),
+        (interactive::qol::PARITY_ENV, "1"),
+        (cli::interactive::SPLASH_ENV, "off"),
     ];
     for (k, v) in scenario["env"].as_object().into_iter().flatten() {
         env.push((k.as_str(), v.as_str().unwrap()));

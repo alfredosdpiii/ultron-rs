@@ -20,9 +20,9 @@ fn env_for(dir: &Path) -> cli::Env {
         cwd: dir.to_path_buf(),
         home: home.clone(),
         var: Arc::new(move |key| match key {
-            "ULTRON_CODING_AGENT_DIR" => Some(agent.display().to_string()),
-            "ULTRON_AUTOREVIEW_CACHE_DIR" => Some(cache.display().to_string()),
-            "ULTRON_HINDSIGHT_URL" => Some("off".into()),
+            config::paths::ENV_AGENT_DIR => Some(agent.display().to_string()),
+            review::settings::CACHE_DIR_ENV => Some(cache.display().to_string()),
+            hindsight::resolve::HINDSIGHT_URL_ENV => Some("off".into()),
             "HOME" => Some(home.display().to_string()),
             _ => None,
         }),

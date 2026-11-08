@@ -45,8 +45,8 @@ impl Root {
             .current_dir(self.root.join("cwd"))
             .env("PATH", "/usr/bin:/bin")
             .env("HOME", &self.root)
-            .env("ULTRON_CODING_AGENT_DIR", self.root.join("agent"))
-            .env("ULTRON_SERVER_DIR", self.root.join("server"))
+            .env(config::paths::ENV_AGENT_DIR, self.root.join("agent"))
+            .env(config::paths::ENV_SERVER_DIR, self.root.join("server"))
             .env("NO_COLOR", "1")
             .env("TZ", "UTC");
         for (key, value) in env {
@@ -171,8 +171,8 @@ fn messages_text(text: &str) -> String {
 }
 
 const OFFLINE: [(&str, &str); 5] = [
-    ("ULTRON_AUTO_NAME", "off"),
-    ("PI_OFFLINE", "1"),
+    (session_core::core::AUTO_NAME_ENV, "off"),
+    (config::env::OFFLINE_ENV, "1"),
     ("HTTP_PROXY", "http://127.0.0.1:9"),
     ("HTTPS_PROXY", "http://127.0.0.1:9"),
     ("NO_PROXY", "127.0.0.1,localhost"),
@@ -385,8 +385,8 @@ fn cli_bedrock_configured_endpoint_matches_typescript() {
             ("AWS_BEDROCK_SKIP_AUTH", "1"),
             ("AWS_ACCESS_KEY_ID", "AKIDFAKE"),
             ("AWS_SECRET_ACCESS_KEY", "secret-fake"),
-            ("ULTRON_AUTO_NAME", "off"),
-            ("PI_OFFLINE", "1"),
+            (session_core::core::AUTO_NAME_ENV, "off"),
+            (config::env::OFFLINE_ENV, "1"),
             ("HTTP_PROXY", proxy.as_str()),
             ("HTTPS_PROXY", proxy.as_str()),
             ("NO_PROXY", "127.0.0.1,localhost"),

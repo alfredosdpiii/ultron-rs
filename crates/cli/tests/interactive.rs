@@ -322,15 +322,18 @@ impl Tui {
         let mut vars: Vec<(String, String)> = vec![
             ("PATH".into(), "/usr/bin:/bin".into()),
             ("HOME".into(), root.display().to_string()),
-            ("ULTRON_CODING_AGENT_DIR".into(), agent.display().to_string()),
-            ("ULTRON_SERVER_DIR".into(), root.join("server").display().to_string()),
+            (config::paths::ENV_AGENT_DIR.into(), agent.display().to_string()),
+            (
+                config::paths::ENV_SERVER_DIR.into(),
+                root.join("server").display().to_string(),
+            ),
             ("ANTHROPIC_API_KEY".into(), "test-key".into()),
             ("TZ".into(), "UTC".into()),
             ("TERM".into(), "xterm-256color".into()),
             ("COLORTERM".into(), "truecolor".into()),
             ("LANG".into(), "C.UTF-8".into()),
             // The startup update check never reaches the npm registry from a test.
-            ("PI_SKIP_VERSION_CHECK".into(), "1".into()),
+            (config::env::SKIP_VERSION_CHECK_ENV.into(), "1".into()),
         ];
         vars.extend(env.iter().map(|(k, v)| (k.to_string(), v.to_string())));
         let script = root.join("run.sh");
@@ -525,9 +528,12 @@ fn replay(name: &str) {
         .unwrap_or_else(|| panic!("scenario {name} is not in the fixture"));
     let mock = Mock::start(replies(scenario), None);
     // The TypeScript client TUI names nothing and has none of the Rust-only additions.
-    let mut env = vec![("ULTRON_AUTO_NAME", "off"), ("ULTRON_TUI_PARITY", "1")];
+    let mut env = vec![
+        (session_core::core::AUTO_NAME_ENV, "off"),
+        (interactive::qol::PARITY_ENV, "1"),
+    ];
     if scenario["splash"] != true {
-        env.push(("ULTRON_SPLASH", "off"));
+        env.push((cli::interactive::SPLASH_ENV, "off"));
     }
     let tui = Tui::start(
         mock.port,
@@ -799,7 +805,7 @@ fn cli_interactive_resume_lists_this_directory_with_names() {
     let tmp = TempDir::new();
     let root = tmp.0.clone();
     let args = ["--model", "anthropic/claude-sonnet-4-5"];
-    let quiet = [("ULTRON_AUTO_NAME", "off")];
+    let quiet = [(session_core::core::AUTO_NAME_ENV, "off")];
     {
         let tui = Tui::start_at(
             &root,
@@ -892,7 +898,14 @@ fn cli_interactive_resume_search_finds_a_word_from_a_later_message() {
     let tmp = TempDir::new();
     let root = tmp.0.clone();
     let args = ["--model", "anthropic/claude-sonnet-4-5"];
-    let tui = Tui::start_at(&root, mock.port, 100, 30, &args, &[("ULTRON_AUTO_NAME", "off")]);
+    let tui = Tui::start_at(
+        &root,
+        mock.port,
+        100,
+        30,
+        &args,
+        &[(session_core::core::AUTO_NAME_ENV, "off")],
+    );
     tui.wait("ultron v");
     for (prompt, reply) in [("alpha prompt", "One."), ("second ask", "Quokka habitat.")] {
         tui.send_text(prompt);
@@ -946,7 +959,7 @@ fn cli_interactive_prompt_history_survives_restart() {
     let mock = Mock::start(vec![text_reply("A."), text_reply("B.")], None);
     let tmp = TempDir::new();
     let args = ["--model", "anthropic/claude-sonnet-4-5"];
-    let quiet = [("ULTRON_AUTO_NAME", "off")];
+    let quiet = [(session_core::core::AUTO_NAME_ENV, "off")];
     {
         let tui = Tui::start_at(&tmp.0, mock.port, 100, 30, &args, &quiet);
         tui.wait("ultron v");
@@ -977,7 +990,10 @@ fn cli_interactive_copy_sends_last_assistant_text_to_the_terminal_clipboard() {
         30,
         &["--model", "anthropic/claude-sonnet-4-5"],
         // The TypeScript `/copy` (with the overlays on, `/copy` opens the picker: interactive_overlays.rs).
-        &[("ULTRON_AUTO_NAME", "off"), ("ULTRON_TUI_PARITY", "1")],
+        &[
+            (session_core::core::AUTO_NAME_ENV, "off"),
+            (interactive::qol::PARITY_ENV, "1"),
+        ],
     );
     tui.wait("Session:");
     tui.tmux(&["set-option", "-s", "set-clipboard", "on"]);

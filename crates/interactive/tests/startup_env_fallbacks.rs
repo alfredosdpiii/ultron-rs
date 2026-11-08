@@ -95,19 +95,31 @@ fn applied(settings: Value, env: &[(&str, &str)]) -> (bool, bool) {
 
 #[test]
 fn interactive_startup_hardware_cursor_and_clear_on_shrink_fall_back_to_the_pi_env_vars() {
-    let on = [("PI_HARDWARE_CURSOR", "1"), ("PI_CLEAR_ON_SHRINK", "1")];
+    let on = [
+        (config::worker_settings_keys::HARDWARE_CURSOR_ENV, "1"),
+        (config::worker_settings_keys::CLEAR_ON_SHRINK_ENV, "1"),
+    ];
     assert_eq!(applied(json!({}), &[]), (false, false));
     assert_eq!(applied(json!({}), &on), (true, true));
     // Only "1" turns them on.
     assert_eq!(
         applied(
             json!({}),
-            &[("PI_HARDWARE_CURSOR", "true"), ("PI_CLEAR_ON_SHRINK", "yes")]
+            &[
+                (config::worker_settings_keys::HARDWARE_CURSOR_ENV, "true"),
+                (config::worker_settings_keys::CLEAR_ON_SHRINK_ENV, "yes")
+            ]
         ),
         (false, false)
     );
-    assert_eq!(applied(json!({}), &[("PI_HARDWARE_CURSOR", "1")]), (true, false));
-    assert_eq!(applied(json!({}), &[("PI_CLEAR_ON_SHRINK", "1")]), (false, true));
+    assert_eq!(
+        applied(json!({}), &[(config::worker_settings_keys::HARDWARE_CURSOR_ENV, "1")]),
+        (true, false)
+    );
+    assert_eq!(
+        applied(json!({}), &[(config::worker_settings_keys::CLEAR_ON_SHRINK_ENV, "1")]),
+        (false, true)
+    );
     // A setting wins over the environment, either way.
     let off = json!({"showHardwareCursor": false, "terminal": {"clearOnShrink": false}});
     assert_eq!(applied(off, &on), (false, false));

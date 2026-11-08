@@ -33,8 +33,8 @@ fn ai_claude_code_cli_second_request_takes_the_warm_spare() {
     .unwrap();
     let bin = concat!(env!("CARGO_MANIFEST_DIR"), "/fixtures/fake-claude/claude");
     let options: ClaudeCodeOptions = serde_json::from_value(json!({"env": {
-        "ULTRON_CLAUDE_CODE_BIN": bin,
-        "ULTRON_CLAUDE_CODE_WARM": "1",
+        (ai::claude_code_cli::CLAUDE_CODE_BIN_ENV): bin,
+        (ai::claude_code_cli::CLAUDE_CODE_WARM_ENV): "1",
         "CLAUDE_CONFIG_DIR": "/cfg/warm",
         "FAKE_CLAUDE_REPLY": dir.path().join("reply").to_string_lossy(),
         "FAKE_CLAUDE_LOG": log.to_string_lossy(),

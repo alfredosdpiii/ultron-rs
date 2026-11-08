@@ -8,13 +8,9 @@
 use crate::claude_cli::DEFAULT_CLAUDE_MODEL;
 use crate::self_cmd::self_command;
 
-/// `ULTRON_ROOT=claude` (what `ultron --claude` sets): the root lane runs on Claude Code.
-pub const ULTRON_ROOT_ENV: &str = "ULTRON_ROOT";
-pub const CLAUDE_CODE_PROVIDER_ID: &str = "claude-code";
+pub const SELF_COMMAND_ENV: &str = "ULTRON_SELF_COMMAND";
 
-pub fn claude_root_requested(var: &dyn Fn(&str) -> Option<String>) -> bool {
-    var(ULTRON_ROOT_ENV).is_some_and(|v| v.trim().eq_ignore_ascii_case("claude"))
-}
+pub const CLAUDE_CODE_PROVIDER_ID: &str = "claude-code";
 
 /// The root model `--claude` selects, and the environment the session worker must get.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -47,13 +43,13 @@ pub fn prepare_claude_root(
     model: Option<&str>,
     var: &dyn Fn(&str) -> Option<String>,
 ) -> Result<ClaudeRoot, String> {
-    let mut env = vec![(ULTRON_ROOT_ENV.to_string(), "claude".to_string())];
-    if var("ULTRON_SELF_COMMAND").is_none_or(|v| v.trim().is_empty())
+    let mut env = vec![(session_core::core::ROOT_ENV.to_string(), "claude".to_string())];
+    if var(SELF_COMMAND_ENV).is_none_or(|v| v.trim().is_empty())
         && let Ok(command) = self_command(var)
     {
         let parts: Vec<String> = std::iter::once(command.command).chain(command.args).collect();
         env.push((
-            "ULTRON_SELF_COMMAND".into(),
+            SELF_COMMAND_ENV.into(),
             serde_json::to_string(&parts).expect("strings serialize"),
         ));
     }
@@ -70,7 +66,7 @@ pub fn prepare_claude_root(
         {
             return Err(model_error(provider));
         }
-        let id = var("ULTRON_CLAUDE_MODEL")
+        let id = var(config::env::CLAUDE_MODEL_ENV)
             .map(|v| v.trim().to_string())
             .filter(|v| !v.is_empty())
             .unwrap_or_else(|| DEFAULT_CLAUDE_MODEL.into());

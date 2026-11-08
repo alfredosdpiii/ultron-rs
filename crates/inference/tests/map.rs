@@ -107,7 +107,7 @@ fn run_cell(cell: &Value, recorded_model: &Value) -> (Value, Vec<Value>) {
     let settings = settings_of(cell);
     let handler = Frames::new(inference, env, move || settings.clone());
     let mut options = KernelOptions::new(&cwd, runtime());
-    options.env.push(("ULTRON_RLM_SPILL_DIR".into(), String::new()));
+    options.env.push((kernel::env::RLM_SPILL_DIR_ENV.into(), String::new()));
     options.env.push(("TMPDIR".into(), cwd.to_string_lossy().into_owned()));
     let kernel = Kernel::new(options, Arc::new(handler)).unwrap();
     let result = kernel.execute(cell["code"].as_str().unwrap(), None, None).unwrap();
@@ -206,7 +206,7 @@ fn call(handler: &Frames, kind: &str, payload: Value) -> Value {
 fn inference_map_frame_model_env_names_the_frame_model() {
     let frame = json!({"frames": [{"task": "cat in French", "context": []}]});
     let (handler, _, _dir) = frames(
-        &[("ULTRON_RLM_FRAME_MODEL", " claude-code/haiku ")],
+        &[(config::env::RLM_FRAME_MODEL_ENV, " claude-code/haiku ")],
         ModelSettings::default(),
         false,
     );
@@ -220,7 +220,11 @@ fn inference_map_frame_model_env_names_the_frame_model() {
         reply["error"],
         "Admission refused: model claude-code/haiku is not available to this host"
     );
-    let (handler, transport, _dir) = frames(&[("ULTRON_RLM_FRAME_MODEL", "haiku")], ModelSettings::default(), false);
+    let (handler, transport, _dir) = frames(
+        &[(config::env::RLM_FRAME_MODEL_ENV, "haiku")],
+        ModelSettings::default(),
+        false,
+    );
     transport
         .replies
         .lock()

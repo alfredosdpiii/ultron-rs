@@ -198,7 +198,7 @@ fn claude_root_launcher_tells_the_server_the_roots_model_unless_it_is_the_defaul
     assert_eq!(mcp_args(&["--model", "claude-opus-5-5"], &none), base);
     assert_eq!(mcp_args(&["-p", "hi", "--model", "sonnet"], &none), with("sonnet"));
     assert_eq!(mcp_args(&["--model=haiku"], &none), with("haiku"));
-    let env = |key: &str| (key == "ULTRON_CLAUDE_MODEL").then(|| " claude-haiku-5-5 ".to_string());
+    let env = |key: &str| (key == config::env::CLAUDE_MODEL_ENV).then(|| " claude-haiku-5-5 ".to_string());
     assert_eq!(mcp_args(&[], &env), with("claude-haiku-5-5"));
     // A `--model` among the claude args beats ULTRON_CLAUDE_MODEL, as for `claude` itself.
     assert_eq!(mcp_args(&["--model", "sonnet"], &env), with("sonnet"));

@@ -18,7 +18,7 @@ use std::time::{Duration, Instant};
 const HANG_GUARD: Duration = Duration::from_secs(120);
 
 fn python() -> String {
-    std::env::var("ULTRON_PYTHON").unwrap_or_else(|_| "/usr/bin/python3".into())
+    kernel::env::python(|name| std::env::var(name).ok())
 }
 
 struct Server {
@@ -83,13 +83,16 @@ fn claude_root_mcp_spawns_claude_code_children_and_relays_their_verdict() {
         .env_clear()
         .env("PATH", format!("{}:/usr/bin:/bin", p("bin")))
         .env("HOME", p("h"))
-        .env("ULTRON_CODING_AGENT_DIR", p("a"))
-        .env("ULTRON_SERVER_DIR", p("s"))
+        .env(config::paths::ENV_AGENT_DIR, p("a"))
+        .env(config::paths::ENV_SERVER_DIR, p("s"))
         .env("XDG_RUNTIME_DIR", p("r"))
         .env("TMPDIR", p("tmp"))
-        .env("ULTRON_SELF_COMMAND", r#"["/opt/ultron/bin/ultron"]"#)
-        .env("ULTRON_LOKI", "off")
-        .env("ULTRON_PYTHON", python())
+        .env(
+            claude_root::worker_root::SELF_COMMAND_ENV,
+            r#"["/opt/ultron/bin/ultron"]"#,
+        )
+        .env(session_core::compose::LOKI_ENV, "off")
+        .env(kernel::env::PYTHON_ENV, python())
         .env("FAKE_CHILD_LOG", &log)
         // The parent's Claude Code session id must not reach its children.
         .env("CLAUDE_CODE_SESSION_ID", "sess-parent")
@@ -184,7 +187,7 @@ fn claude_root_mcp_spawns_claude_code_children_and_relays_their_verdict() {
         after("--parent-lane").starts_with("ultron.rlm-child."),
         "{server_args:?}"
     );
-    assert_eq!(ultron["env"]["ULTRON_PARENT_TOKEN"].as_str().unwrap().len(), 48);
+    assert_eq!(ultron["env"][host::PARENT_TOKEN_ENV].as_str().unwrap().len(), 48);
     assert_eq!(record["brief"], "please give a verdict");
     assert_eq!(record["env_has_session"], false);
     // The verdict was accepted from the token holder.

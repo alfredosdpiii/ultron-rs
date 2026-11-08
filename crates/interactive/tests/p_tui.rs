@@ -663,8 +663,9 @@ fn interactive_p_tui_rlm_pane_auto_opens_once_per_turn_without_focus() {
     );
     // rlmPaneAutoOpen off (or ULTRON_RLM_PANE_AUTO=off): never by itself.
     let mut h = harness();
-    h.app
-        .apply_startup_settings(&json!({}), &|k| (k == "ULTRON_RLM_PANE_AUTO").then(|| "off".into()));
+    h.app.apply_startup_settings(&json!({}), &|k| {
+        (k == interactive::app::RLM_PANE_AUTO_ENV).then(|| "off".into())
+    });
     h.screen_at(160, 40);
     h.app.apply(LaneEvent::RlmStatus(running_child()));
     let frame = h.app.render(160, 40);

@@ -50,7 +50,7 @@ pub fn resume_argv(parsed: &Args, env: &Env, session_id: &str) -> Vec<String> {
         return argv;
     }
     let mut argv = Vec::new();
-    let assigned: Vec<String> = ["ULTRON_SERVER_DIR", "ULTRON_CODING_AGENT_DIR"]
+    let assigned: Vec<String> = [config::paths::ENV_SERVER_DIR, config::paths::ENV_AGENT_DIR]
         .iter()
         .filter_map(|k| (env.var)(k).filter(|v| !v.is_empty()).map(|v| format!("{k}={v}")))
         .collect();

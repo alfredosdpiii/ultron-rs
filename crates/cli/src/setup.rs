@@ -97,7 +97,7 @@ pub fn start_model_state(env: &Env) -> StartModelState {
     if saved.as_ref().is_some_and(|m| runtime.has_configured_auth(&m.provider)) {
         return StartModelState::Usable;
     }
-    let claude_root = (env.var)("ULTRON_ROOT").is_some_and(|r| jsrt::string::trim(&r).to_lowercase() == "claude");
+    let claude_root = session_core::core::claude_root_requested(&*env.var);
     if runtime
         .available
         .iter()

@@ -118,7 +118,7 @@ fn cli_auth_for_builtin_and_models_json_providers_matches_typescript() {
             .iter()
             .map(|(k, v)| (k.clone(), v.as_str().unwrap().to_string()))
             .collect();
-        vars.insert("ULTRON_CODING_AGENT_DIR".into(), agent.display().to_string());
+        vars.insert(config::paths::ENV_AGENT_DIR.into(), agent.display().to_string());
         let env = cli::Env {
             cwd: tmp.path().to_path_buf(),
             home: tmp.path().to_path_buf(),

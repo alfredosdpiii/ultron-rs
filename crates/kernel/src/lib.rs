@@ -21,6 +21,7 @@
 
 mod config;
 pub mod continuity;
+pub mod env;
 mod output;
 mod process;
 mod sandboxed;
@@ -656,7 +657,7 @@ impl Kernel {
         let snapshot_key = options.snapshot_key.clone().unwrap_or_else(process_snapshot_key);
         let tree_memory_mb = match &options.tree_memory {
             Some(tree) => tree_memory::kernel_tree_memory_limit(
-                options.var("ULTRON_RLM_MAX_TREE_MEMORY_MB").as_deref(),
+                options.var(crate::env::RLM_MAX_TREE_MEMORY_MB_ENV).as_deref(),
                 limits.max_memory_mb,
                 tree.max_mb,
             )?,
@@ -1527,18 +1528,12 @@ impl Shared {
         }
     }
 
-    /// The interpreter: `python`, else `ULTRON_PYTHON`, else /usr/bin/python3 when it exists, else `python3`.
+    /// The interpreter: `python`, else [`crate::env::python`].
     fn python(&self) -> PathBuf {
         self.options
             .python
             .clone()
-            .unwrap_or_else(|| match self.options.var("ULTRON_PYTHON") {
-                Some(python) => PathBuf::from(python),
-                None if cfg!(target_os = "linux") && Path::new("/usr/bin/python3").exists() => {
-                    "/usr/bin/python3".into()
-                }
-                None => "python3".into(),
-            })
+            .unwrap_or_else(|| crate::env::python(|name| self.options.var(name)).into())
     }
 
     fn spawn(self: &Arc<Self>, state: &mut State, restore: bool) -> Result<u64, KernelError> {
@@ -1556,7 +1551,7 @@ impl Shared {
                 let requested = tree
                     .backend
                     .clone()
-                    .or_else(|| options.var("ULTRON_RLM_TREE_MEMORY_BACKEND"));
+                    .or_else(|| options.var(crate::env::RLM_TREE_MEMORY_BACKEND_ENV));
                 // Under a sandbox the scope would have to wrap the sandbox's launcher: the watchdog caps the tree.
                 tree_memory::tree_memory_backend(self.tree_memory_mb, requested.as_deref(), || {
                     mechanism.is_none() && tree_memory::cgroup_scope_available(tree.launcher.as_os_str())
@@ -1567,16 +1562,19 @@ impl Shared {
         if private_protocol {
             argv.push("--protocol-fds".into());
         }
-        let budget = rlm_output_budget(options.var("ULTRON_RLM_OUTPUT_BYTES").as_deref());
+        let budget = rlm_output_budget(options.var(crate::env::RLM_OUTPUT_BYTES_ENV).as_deref());
         let fixed_env: Vec<(String, String)> = vec![
             ("NO_COLOR".into(), "1".into()),
             ("PYTHONDONTWRITEBYTECODE".into(), "1".into()),
-            ("ULTRON_RLM_MAX_MEMORY_MB".into(), self.limits.max_memory_mb.to_string()),
             (
-                "ULTRON_RLM_MAX_CPU_SECONDS".into(),
+                crate::env::RLM_MAX_MEMORY_MB_ENV.into(),
+                self.limits.max_memory_mb.to_string(),
+            ),
+            (
+                crate::env::RLM_MAX_CPU_SECONDS_ENV.into(),
                 self.limits.max_cpu_seconds.to_string(),
             ),
-            ("ULTRON_RLM_OUTPUT_BYTES".into(), budget.to_string()),
+            (crate::env::RLM_OUTPUT_BYTES_ENV.into(), budget.to_string()),
         ];
         let mut command = match (mechanism, &options.sandbox) {
             (Some(mechanism), Some(launcher)) => sandboxed::command(sandboxed::Launch {

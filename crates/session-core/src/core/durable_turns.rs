@@ -132,7 +132,8 @@ pub(super) fn open_durable(
         charge: Some(charge_turns(children.clone(), lane.stack.clone(), child_costs.clone())),
         transform_child: Some({
             let context = child_context.clone();
-            let budget = crate::view_images::context_image_budget((env.var)("ULTRON_CONTEXT_IMAGES").as_deref());
+            let budget =
+                crate::view_images::context_image_budget((env.var)(crate::view_images::CONTEXT_IMAGES_ENV).as_deref());
             // Subagent lanes get clock lines as the root does (`clockLane`); typed agents and frames do not.
             let clock = lane::clock_enabled(env).then(|| (lane::clock_zone(env), children.clone()));
             Arc::new(move |conversation, messages: &mut Vec<ai::Message>| {
@@ -297,7 +298,7 @@ fn text_of(message: &Message) -> String {
 impl Core {
     /// `ULTRON_CONTEXT_IMAGES`: tool-result images a request keeps (0: all).
     fn image_budget(&self) -> usize {
-        crate::view_images::context_image_budget((self.env.var)("ULTRON_CONTEXT_IMAGES").as_deref())
+        crate::view_images::context_image_budget((self.env.var)(crate::view_images::CONTEXT_IMAGES_ENV).as_deref())
     }
 
     /// The operation of the run in progress.

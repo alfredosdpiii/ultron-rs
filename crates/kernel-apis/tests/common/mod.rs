@@ -88,7 +88,7 @@ pub fn run_scenario(scenario: &Value, make: &dyn Fn(&Path) -> Made) -> Value {
     let dir = temp.path().canonicalize().unwrap();
     let made = make(&dir);
     let mut options = KernelOptions::new(&dir, runtime());
-    options.env.push(("ULTRON_RLM_SPILL_DIR".into(), String::new()));
+    options.env.push((kernel::env::RLM_SPILL_DIR_ENV.into(), String::new()));
     options.env.push(("TMPDIR".into(), dir.to_string_lossy().into_owned()));
     options.env.extend(made.env.clone());
     let kernel = Kernel::new(options, Arc::new(made.handler)).unwrap();

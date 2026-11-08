@@ -3,13 +3,15 @@
 //! Nothing here draws to the terminal; `setup_wizard` asks the questions and `setup_tui` draws them.
 //!
 //! The Rust build runs without Node.js, so the environment check has no Node.js row; python3 is the interpreter the
-//! REPL kernel runs (`ULTRON_PYTHON`, else /usr/bin/python3 when it exists, else `python3`).
+//! REPL kernel runs (`kernel::env::python`).
 
 use serde_json::{Map, Value, json};
 use std::io::{Read, Write};
 use std::path::Path;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
+
+pub const SKIP_SETUP_ENV: &str = "ULTRON_SKIP_SETUP";
 
 // ---------------------------------------------------------------------------------------------------------- environment
 
@@ -69,18 +71,6 @@ pub fn probe_command(path: Option<&str>, command: &str, args: &[&str]) -> Option
     }
     let text = format!("{out}{err}");
     Some(text.trim().split('\n').next().unwrap_or("").trim().to_string())
-}
-
-/// The interpreter the REPL kernel runs: `ULTRON_PYTHON`, else /usr/bin/python3 when it exists, else `python3`.
-pub fn python_command(var: &dyn Fn(&str) -> Option<String>) -> String {
-    if let Some(python) = var("ULTRON_PYTHON").filter(|p| !p.is_empty()) {
-        return python;
-    }
-    if Path::new("/usr/bin/python3").exists() {
-        "/usr/bin/python3".into()
-    } else {
-        "python3".into()
-    }
 }
 
 /// python3 (the REPL runs on it) and Docker (only for installing Hindsight). `python` is the interpreter to probe.
@@ -897,7 +887,7 @@ pub fn should_offer_setup(input: &SetupOfferInput) -> bool {
     if input.explicit_model || input.dismissed {
         return false;
     }
-    if let Some(skip) = (input.var)("ULTRON_SKIP_SETUP").map(|s| jsrt::string::trim(&s).to_lowercase())
+    if let Some(skip) = (input.var)(SKIP_SETUP_ENV).map(|s| jsrt::string::trim(&s).to_lowercase())
         && !skip.is_empty()
         && !["0", "false", "no"].contains(&skip.as_str())
     {

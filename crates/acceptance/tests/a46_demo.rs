@@ -224,7 +224,10 @@ fn start(steps: Vec<String>, files: &[(&str, &str)]) -> (Provider, Install, RpcC
     for (name, content) in files {
         std::fs::write(install.project().join(name), content).unwrap();
     }
-    let client = install.rpc(&["--no-session"], &[("ULTRON_HINDSIGHT_URL", "http://127.0.0.1:9")]);
+    let client = install.rpc(
+        &["--no-session"],
+        &[(hindsight::resolve::HINDSIGHT_URL_ENV, "http://127.0.0.1:9")],
+    );
     (provider, install, client)
 }
 

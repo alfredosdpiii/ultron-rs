@@ -404,7 +404,9 @@ fn interactive_mouse_press_moved_off_its_cell_is_no_click() {
 #[test]
 fn interactive_hardware_cursor_and_clear_on_shrink_fall_back_to_env() {
     let env = |k: &str| match k {
-        "PI_HARDWARE_CURSOR" | "PI_CLEAR_ON_SHRINK" => Some("1".to_string()),
+        config::worker_settings_keys::HARDWARE_CURSOR_ENV | config::worker_settings_keys::CLEAR_ON_SHRINK_ENV => {
+            Some("1".to_string())
+        }
         _ => None,
     };
     let (mut app, _) = app();

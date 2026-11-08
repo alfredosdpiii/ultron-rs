@@ -26,7 +26,7 @@ use std::time::{Duration, Instant};
 const HANG_GUARD: Duration = Duration::from_secs(120);
 
 fn python() -> String {
-    std::env::var("ULTRON_PYTHON").unwrap_or_else(|_| "/usr/bin/python3".into())
+    kernel::env::python(|name| std::env::var(name).ok())
 }
 
 fn repo() -> PathBuf {
@@ -83,15 +83,18 @@ impl Root {
         let vars: Vec<(String, String)> = vec![
             ("PATH".into(), format!("{}:/usr/bin:/bin", p("bin"))),
             ("HOME".into(), p("h")),
-            ("ULTRON_CODING_AGENT_DIR".into(), p("a")),
-            ("ULTRON_SERVER_DIR".into(), p("s")),
+            (config::paths::ENV_AGENT_DIR.into(), p("a")),
+            (config::paths::ENV_SERVER_DIR.into(), p("s")),
             ("XDG_RUNTIME_DIR".into(), p("r")),
             ("TMPDIR".into(), p("tmp")),
-            ("ULTRON_SELF_COMMAND".into(), r#"["/opt/ultron/bin/ultron"]"#.into()),
-            ("ULTRON_LOKI".into(), "off".into()),
-            ("ULTRON_HINDSIGHT_URL".into(), "off".into()),
-            ("ULTRON_PYTHON".into(), python()),
-            ("PI_OFFLINE".into(), "1".into()),
+            (
+                claude_root::worker_root::SELF_COMMAND_ENV.into(),
+                r#"["/opt/ultron/bin/ultron"]"#.into(),
+            ),
+            (session_core::compose::LOKI_ENV.into(), "off".into()),
+            (hindsight::resolve::HINDSIGHT_URL_ENV.into(), "off".into()),
+            (kernel::env::PYTHON_ENV.into(), python()),
+            (config::env::OFFLINE_ENV.into(), "1".into()),
         ];
         RunEnv {
             cwd: self.path("w"),

@@ -23,7 +23,7 @@ const HANG_GUARD: Duration = Duration::from_secs(120);
 const CHILD_MODEL: &str = "groq/llama-3.3-70b-versatile";
 
 fn python() -> String {
-    std::env::var("ULTRON_PYTHON").unwrap_or_else(|_| "/usr/bin/python3".into())
+    kernel::env::python(|name| std::env::var(name).ok())
 }
 
 fn repo() -> PathBuf {
@@ -52,14 +52,17 @@ impl Root {
         let mut vars: Vec<(String, String)> = vec![
             ("PATH".into(), "/usr/bin:/bin".into()),
             ("HOME".into(), p("h")),
-            ("ULTRON_CODING_AGENT_DIR".into(), p("a")),
-            ("ULTRON_SERVER_DIR".into(), p("s")),
+            (config::paths::ENV_AGENT_DIR.into(), p("a")),
+            (config::paths::ENV_SERVER_DIR.into(), p("s")),
             ("XDG_RUNTIME_DIR".into(), p("r")),
             ("TMPDIR".into(), p("tmp")),
-            ("ULTRON_SELF_COMMAND".into(), r#"["/opt/ultron/bin/ultron"]"#.into()),
-            ("ULTRON_LOKI".into(), "off".into()),
-            ("ULTRON_PYTHON".into(), python()),
-            ("PI_OFFLINE".into(), "1".into()),
+            (
+                claude_root::worker_root::SELF_COMMAND_ENV.into(),
+                r#"["/opt/ultron/bin/ultron"]"#.into(),
+            ),
+            (session_core::compose::LOKI_ENV.into(), "off".into()),
+            (kernel::env::PYTHON_ENV.into(), python()),
+            (config::env::OFFLINE_ENV.into(), "1".into()),
             // A persistent child's requests carry its provider's own key (the fake provider ignores it).
             ("GROQ_API_KEY".into(), "fake-key-for-tests".into()),
         ];
@@ -858,7 +861,7 @@ fn claude_root_a_claude_subagents_server_forwards_the_shared_world_to_the_root()
             Reply::Cell("print((await board.add('deep task'))['by'])".into())
         }
     }));
-    let bin = [("ULTRON_CLAUDE_BIN", claude.to_str().unwrap())];
+    let bin = [(claude_root::claude_cli::CLAUDE_BIN_ENV, claude.to_str().unwrap())];
     let mut server = Server::with_child_model(&root, port, &bin, &["--children", "claude"]);
     let spawned = server.cell("h = await rlm.spawn('CLAUDE-BRIEF: help out', name='scout')\nprint(h.rlm_child_id)");
     let record = fake.join("child.json");
@@ -871,7 +874,7 @@ fn claude_root_a_claude_subagents_server_forwards_the_shared_world_to_the_root()
     let socket = child["socket"].as_str().unwrap().to_string();
     let lane = child["lane"].as_str().unwrap().to_string();
     let mut sub = Server::launch(
-        root.env(&[("ULTRON_PARENT_TOKEN", &token)]),
+        root.env(&[(host::PARENT_TOKEN_ENV, &token)]),
         &[
             "--child",
             "--parent-socket",

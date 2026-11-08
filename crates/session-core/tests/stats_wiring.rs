@@ -28,7 +28,7 @@ fn session_core_stats_count_the_steers_sent_to_the_root() {
             text("done"),
         ]),
         Setup {
-            vars: vec![("ULTRON_TOOL_ROUNDS_NUDGE", "2".into())],
+            vars: vec![(session_core::nudge::TOOL_ROUNDS_NUDGE_ENV, "2".into())],
             ..Setup::default()
         },
     );
@@ -53,7 +53,7 @@ fn session_core_stats_count_work_refused_at_a_root_limit() {
     let a = actor(
         in_order(vec![tool("toolu_1", cell), text("42"), text("done")]),
         Setup {
-            vars: vec![("ULTRON_MAX_TOTAL_TURNS", "2".into())],
+            vars: vec![(delegation::usage::MAX_TOTAL_TURNS_ENV, "2".into())],
             ..Setup::default()
         },
     );

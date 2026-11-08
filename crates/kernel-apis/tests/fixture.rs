@@ -65,7 +65,7 @@ fn skills_host(dir: &Path) -> Made {
     Made {
         handler: KernelApis::new(inner(Arc::new(AtomicI64::new(FIXED_NOW)))).with(Arc::new(module)),
         env: vec![(
-            "ULTRON_CODE_SKILLS_DIR".into(),
+            kernel::env::CODE_SKILLS_DIR_ENV.into(),
             skills_dir.to_string_lossy().into_owned(),
         )],
         state: Box::new(move || {

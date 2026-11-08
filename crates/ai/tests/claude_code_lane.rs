@@ -301,12 +301,15 @@ fn ai_claude_code_lane_dispatch_reroutes_every_caller() {
     seal();
     let fake = Fake::new();
     let env = [
-        ("ULTRON_CLAUDE_CODE_BIN", wrapper().display().to_string()),
+        (
+            ai::claude_code_cli::CLAUDE_CODE_BIN_ENV,
+            wrapper().display().to_string(),
+        ),
         ("FAKE_LOG", fake.log.display().to_string()),
         ("FAKE_NATIVE_ERROR", HIT_LIMIT.to_string()),
         ("ANTHROPIC_API_KEY", key()),
         // The subscription's own setting names another binary: the reroute runs the claude-code provider's CLI.
-        ("ULTRON_CLAUDE_COMMAND", "/bin/false".to_string()),
+        (ai::claude_subscription::process::COMMAND_ENV, "/bin/false".to_string()),
     ];
     let transport = Recording::default();
     let (message, events) = dispatch(&claude_code("claude-haiku-5-5"), &with_tools(), &env, &transport);
@@ -328,14 +331,20 @@ fn ai_claude_subscription_resolve_claude_falls_back_to_claude_code_bin() {
         env
     };
     assert_eq!(
-        process::resolve_claude(None, &env(&[("ULTRON_CLAUDE_CODE_BIN", &format!(" {bin} "))])),
+        process::resolve_claude(
+            None,
+            &env(&[(ai::claude_code_cli::CLAUDE_CODE_BIN_ENV, &format!(" {bin} "))])
+        ),
         Some(vec![bin.clone()])
     );
     let python = python();
     assert_eq!(
         process::resolve_claude(
             None,
-            &env(&[("ULTRON_CLAUDE_CODE_BIN", &bin), ("ULTRON_CLAUDE_COMMAND", &python)])
+            &env(&[
+                (ai::claude_code_cli::CLAUDE_CODE_BIN_ENV, &bin),
+                (ai::claude_subscription::process::COMMAND_ENV, &python)
+            ])
         ),
         Some(vec![python.clone()]),
         "ULTRON_CLAUDE_COMMAND wins"

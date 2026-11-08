@@ -32,7 +32,10 @@ fn records(vars: Vec<(&'static str, String)>, log: &std::path::Path) -> Vec<Valu
 fn session_core_loki_log_starts_with_the_setup_record_like_typescript() {
     let dir = tempfile::tempdir().unwrap();
     let log = dir.path().join("loki.jsonl");
-    let lines = records(vec![("ULTRON_LOKI_LOG", log.display().to_string())], &log);
+    let lines = records(
+        vec![(session_core::guard_log::LOKI_LOG_ENV, log.display().to_string())],
+        &log,
+    );
     let setup = &lines[0];
     let keys: Vec<&str> = setup.as_object().unwrap().keys().map(String::as_str).collect();
     assert_eq!(
@@ -70,9 +73,9 @@ fn session_core_loki_log_setup_names_the_project_python_and_advise_mode() {
     let missing = dir.path().join("no-such-python").display().to_string();
     let lines = records(
         vec![
-            ("ULTRON_LOKI_LOG", log.display().to_string()),
-            ("ULTRON_LOKI_PROJECT_PYTHON", missing.clone()),
-            ("ULTRON_LOKI", "advise".into()),
+            (session_core::guard_log::LOKI_LOG_ENV, log.display().to_string()),
+            (loki::project::LOKI_PROJECT_PYTHON_ENV, missing.clone()),
+            (session_core::compose::LOKI_ENV, "advise".into()),
         ],
         &log,
     );
@@ -86,8 +89,8 @@ fn session_core_loki_log_is_empty_with_loki_off() {
     let log = dir.path().join("loki.jsonl");
     let lines = records(
         vec![
-            ("ULTRON_LOKI_LOG", log.display().to_string()),
-            ("ULTRON_LOKI", "off".into()),
+            (session_core::guard_log::LOKI_LOG_ENV, log.display().to_string()),
+            (session_core::compose::LOKI_ENV, "off".into()),
         ],
         &log,
     );
@@ -111,8 +114,8 @@ fn session_core_loki_timeout_ms_reaches_the_session_guard() {
             ]),
             Setup {
                 vars: vec![
-                    ("ULTRON_LOKI_LOG", log.display().to_string()),
-                    ("ULTRON_LOKI_TIMEOUT_MS", "1".into()),
+                    (session_core::guard_log::LOKI_LOG_ENV, log.display().to_string()),
+                    (session_core::compose::LOKI_TIMEOUT_MS_ENV, "1".into()),
                 ],
                 ..Setup::default()
             },

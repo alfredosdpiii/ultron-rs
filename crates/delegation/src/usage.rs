@@ -11,6 +11,12 @@ use jsrt::{json, sync};
 use serde_json::{Map, Value, json};
 use std::sync::{Arc, Mutex};
 
+pub const MAX_ADMITTED_TASKS_ENV: &str = "ULTRON_MAX_ADMITTED_TASKS";
+pub const MAX_COST_USD_ENV: &str = "ULTRON_MAX_COST_USD";
+pub const MAX_TOTAL_TOKENS_ENV: &str = "ULTRON_MAX_TOTAL_TOKENS";
+pub const MAX_TOTAL_TURNS_ENV: &str = "ULTRON_MAX_TOTAL_TURNS";
+pub const MAX_WALL_MS_ENV: &str = "ULTRON_MAX_WALL_MS";
+
 /// Kinds a stored ledger may hold (`jev` calls of older sessions still count as calls).
 const STORED_KINDS: [&str; 3] = ["task", "model", "jev"];
 const STATUSES: [&str; 4] = ["succeeded", "failed", "cancelled", "unknown"];
@@ -56,11 +62,11 @@ pub fn limits_from_env(var: &dyn Fn(&str) -> Option<String>, settings: &Value) -
         }
     };
     let mut limits = UsageLimits {
-        max_admitted_tasks: integer("ULTRON_MAX_ADMITTED_TASKS", Some(DEFAULT_MAX_ADMITTED_TASKS), 0),
-        max_wall_ms: integer("ULTRON_MAX_WALL_MS", Some(DEFAULT_MAX_WALL_MS), 1),
+        max_admitted_tasks: integer(MAX_ADMITTED_TASKS_ENV, Some(DEFAULT_MAX_ADMITTED_TASKS), 0),
+        max_wall_ms: integer(MAX_WALL_MS_ENV, Some(DEFAULT_MAX_WALL_MS), 1),
         ..UsageLimits::default()
     };
-    let cost = var("ULTRON_MAX_COST_USD")
+    let cost = var(MAX_COST_USD_ENV)
         .map(|t| t.trim().trim_start_matches('$').to_string())
         .filter(|t| !t.is_empty())
         .and_then(|t| t.parse::<f64>().ok());
@@ -79,11 +85,11 @@ pub fn limits_from_env(var: &dyn Fn(&str) -> Option<String>, settings: &Value) -
         .and_then(Value::as_str)
         .is_some_and(unlimited);
     let tokens = integer(
-        "ULTRON_MAX_TOTAL_TOKENS",
+        MAX_TOTAL_TOKENS_ENV,
         (!tokens_off).then(|| setting("maxTotalTokens").unwrap_or(0)),
         1,
     );
-    let turns = integer("ULTRON_MAX_TOTAL_TURNS", Some(setting("maxTotalTurns").unwrap_or(0)), 1);
+    let turns = integer(MAX_TOTAL_TURNS_ENV, Some(setting("maxTotalTurns").unwrap_or(0)), 1);
     match tokens {
         Some(0) => limits.default_max_total_tokens = Some(DEFAULT_MAX_TOTAL_TOKENS),
         Some(n) => limits.max_total_tokens = Some(n),

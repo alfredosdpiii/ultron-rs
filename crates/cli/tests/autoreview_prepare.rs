@@ -32,9 +32,9 @@ fn env_for(base: &str) -> cli::Env {
         home,
         var: Arc::new(move |key| match key {
             "PATH" => Some(format!("{base}/bin:{base}/sys")),
-            "ULTRON_CODING_AGENT_DIR" => Some(format!("{base}/agent")),
-            "ULTRON_AUTOREVIEW_CACHE_DIR" => Some(format!("{base}/cache")),
-            "ULTRON_HINDSIGHT_URL" => Some("off".into()),
+            config::paths::ENV_AGENT_DIR => Some(format!("{base}/agent")),
+            review::settings::CACHE_DIR_ENV => Some(format!("{base}/cache")),
+            hindsight::resolve::HINDSIGHT_URL_ENV => Some("off".into()),
             "HOME" => Some(home_text.clone()),
             _ => None,
         }),

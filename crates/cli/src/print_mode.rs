@@ -19,7 +19,7 @@ use session_journal::repo::Metadata;
 
 /// `traceStartup(label)` with the run's `ULTRON_STARTUP_TRACE` (crate::startup_trace's format).
 pub fn trace_startup(env: &Env, label: &str) {
-    session_core::startup_trace::trace_startup((env.var)("ULTRON_STARTUP_TRACE").as_deref(), label);
+    session_core::startup_trace::trace_startup((env.var)(session_core::startup_trace::TRACE_ENV).as_deref(), label);
 }
 
 /// Which session a prompted run uses.
@@ -135,7 +135,8 @@ pub fn server_options(parsed: &Args, env: &Env, extension_mode: &str) -> Result<
     Ok(ServerOptions {
         directory: instance.dir.clone(),
         session_dir,
-        server_id: (env.var)("ULTRON_SERVER_ID").or_else(|| (env.var)("PI_SERVER_ID")),
+        server_id: (env.var)(crate::service_cli::SERVER_ID_ENV)
+            .or_else(|| (env.var)(crate::service_cli::LEGACY_SERVER_ID_ENV)),
         model: WorkerModel {
             provider: parsed.provider.clone(),
             model: parsed.model.clone(),

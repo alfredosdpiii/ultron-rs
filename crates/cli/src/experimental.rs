@@ -18,6 +18,8 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, mpsc};
 
+pub const EXPERIMENTAL_ENV: &str = "PI_EXPERIMENTAL";
+
 // ------------------------------------------------------------------------------------------------- command lines
 
 /// `TransportAddress` of `--connect`.
@@ -495,7 +497,7 @@ pub fn parse_transport_address(value: &str) -> Result<TransportAddress, String> 
 /// `runExperimentalCommand`: with `PI_EXPERIMENTAL=1`, `ultron server …` and `ultron client …` run here (`None`
 /// leaves every other command line to the stable CLI). Errors are printed as `Error: …` and exit 1.
 pub fn run(argv: &[String], env: &Env, out: &mut dyn Write, err: &mut dyn Write) -> Option<i32> {
-    if (env.var)("PI_EXPERIMENTAL").as_deref() != Some("1") {
+    if (env.var)(EXPERIMENTAL_ENV).as_deref() != Some("1") {
         return None;
     }
     let parsed = parse(argv)?;
@@ -547,7 +549,7 @@ fn instance_server_options(
     Ok(ServerOptions {
         directory: instance.dir.clone(),
         session_dir,
-        server_id: (env.var)("ULTRON_SERVER_ID"),
+        server_id: (env.var)(crate::service_cli::SERVER_ID_ENV),
         model: WorkerModel {
             provider,
             model,

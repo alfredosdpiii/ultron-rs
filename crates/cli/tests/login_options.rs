@@ -16,8 +16,8 @@ fn env_for(root: &std::path::Path, vars: HashMap<String, String>) -> Env {
         cwd: root.to_path_buf(),
         home: root.join("home"),
         var: Arc::new(move |k| match k {
-            "ULTRON_CODING_AGENT_DIR" => Some(agent.clone()),
-            "PI_OFFLINE" => Some("1".into()),
+            config::paths::ENV_AGENT_DIR => Some(agent.clone()),
+            config::env::OFFLINE_ENV => Some("1".into()),
             other => vars.get(other).cloned(),
         }),
         docs: PathBuf::new(),

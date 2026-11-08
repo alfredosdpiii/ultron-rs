@@ -46,7 +46,7 @@ impl Fixture {
         );
         let home = Home::new(anthropic.port);
         std::fs::write(home.agent().join("settings.json"), GLOBAL).unwrap();
-        let python = std::env::var("ULTRON_PYTHON").unwrap_or_else(|_| "/usr/bin/python3".into());
+        let python = kernel::env::python(|name| std::env::var(name).ok());
         let script = Path::new(env!("CARGO_MANIFEST_DIR")).join("../ai/fixtures/claude-subscription/claude.py");
         let fake = home.root.join("fake-bin/claude");
         std::fs::create_dir_all(fake.parent().unwrap()).unwrap();
@@ -70,7 +70,7 @@ impl Fixture {
                 "PATH",
                 format!("{}:/usr/bin:/bin", self.fake.parent().unwrap().display()),
             )
-            .env("ULTRON_CLAUDE_COMMAND", &self.fake)
+            .env(ai::claude_subscription::process::COMMAND_ENV, &self.fake)
             .env("FAKE_LOG", &self.log)
             .env(
                 "FAKE_OFFLINE_BLOCKS",
@@ -104,7 +104,7 @@ impl Fixture {
                 command.env(key, value);
             }
         }
-        command.env_remove("ULTRON_SERVER_DIR");
+        command.env_remove(config::paths::ENV_SERVER_DIR);
         self.with_fake(&mut command);
         output(&mut command)
     }

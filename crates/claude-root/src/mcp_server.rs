@@ -14,7 +14,7 @@
 use crate::claude_cli::{DEFAULT_CLAUDE_MODEL, resolve_claude_binary};
 use crate::control::{ControlClient, ControlHandler, ServerRecord, control_dir, socket_path_for, start_control_server};
 use crate::external_root::ExternalRoot;
-use crate::guide::{Audience, GuideOptions, UNLIMITED, claude_runtime_guide_for, claude_system_prompt, hints_enabled};
+use crate::guide::{Audience, GuideOptions, UNLIMITED, claude_runtime_guide_for, claude_system_prompt};
 use crate::mcp_protocol::{McpHandlers, McpPrompt, McpResource, serve};
 use crate::{Ctx, UsageError};
 use ai::AbortSignal;
@@ -27,6 +27,8 @@ use session_journal::repo::Metadata;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Condvar, Mutex, PoisonError};
 use std::time::{Duration, Instant};
+
+pub const CLAUDE_CHILDREN_ENV: &str = "ULTRON_CLAUDE_CHILDREN";
 
 /// How often a `wait-events` waiter looks at the root ([`Server::wait_events`]).
 const WAIT_EVENTS_POLL: Duration = Duration::from_millis(250);
@@ -214,14 +216,14 @@ pub fn resolve(args: &McpServerArgs, var: &dyn Fn(&str) -> Option<String>, cwd: 
     let named_frame_model = args
         .frame_model
         .clone()
-        .or_else(|| trimmed("ULTRON_CLAUDE_FRAME_MODEL"))
+        .or_else(|| trimmed(config::env::CLAUDE_FRAME_MODEL_ENV))
         .or(settings.frame_model.clone());
     let frame_model_explicit = named_frame_model.is_some();
     let frame_model = named_frame_model.unwrap_or_else(default_frame_model);
     let children = args
         .children
         .clone()
-        .or_else(|| var("ULTRON_CLAUDE_CHILDREN").filter(|v| v == "ultron" || v == "claude"))
+        .or_else(|| var(CLAUDE_CHILDREN_ENV).filter(|v| v == "ultron" || v == "claude"))
         .or(settings.children.clone())
         .unwrap_or_else(|| {
             if resolve_claude_binary(var).is_none() {
@@ -233,7 +235,7 @@ pub fn resolve(args: &McpServerArgs, var: &dyn Fn(&str) -> Option<String>, cwd: 
     let named_child_model = args
         .child_model
         .clone()
-        .or_else(|| trimmed("ULTRON_CLAUDE_CHILD_MODEL"))
+        .or_else(|| trimmed(config::env::CLAUDE_CHILD_MODEL_ENV))
         .or(settings.child_model.clone());
     let child_model_explicit = named_child_model.is_some();
     let child_model = named_child_model.unwrap_or_else(|| DEFAULT_CLAUDE_MODEL.into());
@@ -644,7 +646,7 @@ fn frames_env(env: &RunEnv, resolved: &Resolved) -> RunEnv {
     let (inner, frame) = (env.var.clone(), resolved.frame_model.clone());
     RunEnv {
         var: Arc::new(move |key: &str| {
-            if key == "ULTRON_RLM_FRAME_MODEL" {
+            if key == config::env::RLM_FRAME_MODEL_ENV {
                 Some(frame.clone())
             } else {
                 inner(key)
@@ -1312,11 +1314,11 @@ pub fn start(argv: &[String], ctx: &Ctx) -> Result<(Arc<Running>, Arc<Handlers>)
     // A subagent server's verdict token (TypeScript then deletes it from the process env, which Rust cannot do
     // without `unsafe`: the kernel's environment drops it as a credential and Claude Code children are started
     // without it).
-    let parent_token = (ctx.env.var)("ULTRON_PARENT_TOKEN");
+    let parent_token = (ctx.env.var)(host::PARENT_TOKEN_ENV);
     let var = env.var.clone();
     // A worktree subagent's server works in the worktree its parent gave it.
     if args.child
-        && let Some(dir) = var("ULTRON_CHILD_CWD")
+        && let Some(dir) = var(crate::child::CHILD_CWD_ENV)
             .map(|v| v.trim().to_string())
             .filter(|v| !v.is_empty())
     {
@@ -1376,7 +1378,7 @@ pub fn start(argv: &[String], ctx: &Ctx) -> Result<(Arc<Running>, Arc<Handlers>)
     };
     let root_finish = args.child.then(|| root_finish(parent.clone(), parent_token));
     let server = Arc::new(Server {
-        hints: hints_enabled(var("ULTRON_HINTS").as_deref()),
+        hints: kernel_apis::cell_hints::hints_enabled(var(kernel_apis::cell_hints::HINTS_ENV).as_deref()),
         args: args.clone(),
         env: env.clone(),
         name,
@@ -1606,8 +1608,8 @@ mod tests {
     fn env(root: &std::path::Path) -> RunEnv {
         let agent = root.join("agent");
         let vars = [
-            ("ULTRON_CODING_AGENT_DIR".to_string(), agent.display().to_string()),
-            ("PI_OFFLINE".to_string(), "1".to_string()),
+            (config::paths::ENV_AGENT_DIR.to_string(), agent.display().to_string()),
+            (config::env::OFFLINE_ENV.to_string(), "1".to_string()),
         ];
         RunEnv {
             cwd: root.to_path_buf(),

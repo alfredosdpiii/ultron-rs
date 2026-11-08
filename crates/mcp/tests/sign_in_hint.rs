@@ -54,7 +54,10 @@ fn mcp_sign_in_hint_reads_the_injected_environment() {
         CONTAINER
     );
     // A callback host put elsewhere on purpose: the redirect is expected to arrive.
-    for key in ["ULTRON_OAUTH_CALLBACK_HOST", "PI_OAUTH_CALLBACK_HOST"] {
+    for key in [
+        ai::oauth_flow::OAUTH_CALLBACK_HOST_ENV,
+        ai::oauth_flow::LEGACY_OAUTH_CALLBACK_HOST_ENV,
+    ] {
         assert_eq!(
             sign_in_hint(&env_of(&[
                 (key, "0.0.0.0"),

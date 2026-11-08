@@ -369,7 +369,7 @@ async fn read_events(
 
 fn resolve_cache_retention(options: &StreamOptions) -> Option<CacheRetention> {
     options.cache_retention.or_else(|| {
-        (provider_env_value("PI_CACHE_RETENTION", options.env.as_ref()).as_deref() == Some("long"))
+        (provider_env_value(crate::options::CACHE_RETENTION_ENV, options.env.as_ref()).as_deref() == Some("long"))
             .then_some(CacheRetention::Long)
     })
 }

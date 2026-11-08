@@ -46,7 +46,7 @@ pub struct Ctx {
 impl Ctx {
     /// The bundled skills directory (`<package>/skills`), unless `ULTRON_BUNDLED_SKILLS` turns it off.
     pub fn bundled_skills(&self) -> Option<PathBuf> {
-        guide::bundled_skills_enabled((self.env.var)("ULTRON_BUNDLED_SKILLS").as_deref())
+        guide::bundled_skills_enabled((self.env.var)(session_core::session_resources::BUNDLED_SKILLS_ENV).as_deref())
             .then(|| config::paths::normalize(&self.env.docs.join("../skills")))
     }
 }

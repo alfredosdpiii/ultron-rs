@@ -528,13 +528,7 @@ pub fn owner_alive(owner: &Owner) -> bool {
     if owner.host != hostname() || owner.pid == std::process::id() {
         return true;
     }
-    let Some(pid) = rustix::process::Pid::from_raw(owner.pid as i32) else {
-        return false;
-    };
-    match rustix::process::test_kill_process(pid) {
-        Ok(()) => true,
-        Err(error) => error == rustix::io::Errno::PERM,
-    }
+    signals::pid_alive(owner.pid)
 }
 
 // ---------------------------------------------------------------------------------------------------------------
@@ -888,9 +882,9 @@ fn create_in(info: &RepoInfo, options: &CreateWorktreeOptions<'_>) -> Result<Wor
 /// Environment of every process working in a child's worktree.
 pub fn worktree_env(record: &WorktreeRecord) -> Vec<(String, String)> {
     vec![
-        ("ULTRON_WORKTREE".into(), record.path.clone()),
-        ("ULTRON_PARENT_REPO".into(), record.repo.clone()),
-        ("ULTRON_WORKTREE_BRANCH".into(), record.branch.clone()),
+        (kernel::env::WORKTREE_ENV.into(), record.path.clone()),
+        (kernel::env::PARENT_REPO_ENV.into(), record.repo.clone()),
+        (kernel::env::WORKTREE_BRANCH_ENV.into(), record.branch.clone()),
         ("PWD".into(), record.cwd.clone()),
     ]
 }

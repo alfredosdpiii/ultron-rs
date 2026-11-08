@@ -33,7 +33,7 @@ fn cli_first_frame_waits_for_neither_the_network_nor_the_kernel() {
     let (port, _accepted) = black_hole();
     let gate = tempfile::tempdir().unwrap();
     let (go, started) = (gate.path().join("go"), gate.path().join("started"));
-    let real = std::env::var("ULTRON_PYTHON").unwrap_or_else(|_| "/usr/bin/python3".into());
+    let real = kernel::env::python(|name| std::env::var(name).ok());
     // The kernel's interpreter: records that it was asked for, then waits for `go` before it becomes Python.
     let python = gate.path().join("python");
     executable_support::install(
@@ -49,7 +49,7 @@ fn cli_first_frame_waits_for_neither_the_network_nor_the_kernel() {
         100,
         30,
         &["--model", "anthropic/claude-sonnet-4-5"],
-        &[("ULTRON_PYTHON", &python.display().to_string())],
+        &[(kernel::env::PYTHON_ENV, &python.display().to_string())],
     );
     let screen = tui.wait("ultron v");
     assert!(screen.contains("ultron v"), "{screen}");

@@ -210,7 +210,9 @@ fn interactive_qol_parity_off_paints_the_recorded_bytes() {
 #[test]
 fn interactive_qol_parity_from_env_turns_everything_off() {
     let settings = json!({"vimMode": true, "statusLine": {"preset": "full"}, "notifications": true});
-    let qol = QolSettings::from_settings(&settings, &|k| (k == "ULTRON_TUI_PARITY").then(|| "1".to_string()));
+    let qol = QolSettings::from_settings(&settings, &|k| {
+        (k == interactive::qol::PARITY_ENV).then(|| "1".to_string())
+    });
     assert_eq!(qol, QolSettings::parity());
     // Parity really paints differently from the defaults (the guard above is not vacuous).
     let defaults = paint(&mut parity_app(QolSettings::default()));

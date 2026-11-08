@@ -108,7 +108,7 @@ fn context() -> TranscriptContext {
 
 /// `compression.zstd.decompress` of the system's libzstd.
 fn libzstd_decode(bytes: &[u8]) -> Vec<u8> {
-    let python = std::env::var("ULTRON_PYTHON").unwrap_or_else(|_| "/usr/bin/python3".into());
+    let python = kernel::env::python(|name| std::env::var(name).ok());
     let mut child = std::process::Command::new(python)
         .args([
             "-I",

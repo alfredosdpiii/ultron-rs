@@ -128,8 +128,8 @@ fn kernel_snapshot_sessions_replay_typescript_results_files_and_protocol_lines()
                 rlm.join("runtime.py").display().to_string(),
             ),
             ("ULTRON_TAP_LOG".into(), log.display().to_string()),
-            ("ULTRON_RLM_SPILL_DIR".into(), String::new()),
-            ("ULTRON_RLM_OUTPUT_BYTES".into(), "20000".into()),
+            (kernel::env::RLM_SPILL_DIR_ENV.into(), String::new()),
+            (kernel::env::RLM_OUTPUT_BYTES_ENV.into(), "20000".into()),
             ("PYTHONHASHSEED".into(), "0".into()),
         ];
         let kernel = Kernel::new(

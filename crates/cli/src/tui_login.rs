@@ -11,6 +11,8 @@ use ai::http::{AbortSignal, BoxFuture};
 use interactive::lane::{LaneEvent, LoginEvent, LoginPrompt, LoginStep};
 use std::sync::{Arc, Mutex};
 
+pub const OAUTH_CALLBACK_PORT_ENV: &str = "ULTRON_OAUTH_CALLBACK_PORT";
+
 /// The pending prompt of the login running now, and its signal.
 #[derive(Default)]
 pub struct LoginSlot {
@@ -44,7 +46,7 @@ pub fn supported(env: &Env, provider: &str) -> bool {
 /// login's callback server off its registered port (`0`: any free port), so tests never hold a machine-wide port.
 pub fn options(env: &Env) -> session_core::stored_auth::OAuthOptions {
     session_core::stored_auth::OAuthOptions {
-        callback_port: (env.var)("ULTRON_OAUTH_CALLBACK_PORT").and_then(|p| p.trim().parse().ok()),
+        callback_port: (env.var)(OAUTH_CALLBACK_PORT_ENV).and_then(|p| p.trim().parse().ok()),
         ..session_core::stored_auth::OAuthOptions::for_env(env)
     }
 }
@@ -52,7 +54,7 @@ pub fn options(env: &Env) -> session_core::stored_auth::OAuthOptions {
 /// `browserReach()` (utils/remote-browser.ts): `local`, `container` or `ssh`.
 pub fn browser_reach(env: &Env) -> String {
     let set = |name: &str| (env.var)(name).is_some_and(|v| !v.trim().is_empty());
-    if set("ULTRON_OAUTH_CALLBACK_HOST") || set("PI_OAUTH_CALLBACK_HOST") {
+    if set(ai::oauth_flow::OAUTH_CALLBACK_HOST_ENV) || set(ai::oauth_flow::LEGACY_OAUTH_CALLBACK_HOST_ENV) {
         return "local".into();
     }
     let container = set("container")

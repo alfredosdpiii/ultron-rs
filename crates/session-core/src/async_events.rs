@@ -30,6 +30,8 @@ use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender, channel};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+pub const ASYNC_EVENTS_ENV: &str = "ULTRON_ASYNC_EVENTS";
+
 pub const RUNTIME_EVENT_MESSAGE_TYPE: &str = "ultron-runtime-event";
 pub const DEFAULT_COALESCE: Duration = Duration::from_millis(500);
 pub const DEFAULT_MAX_EVENT_RUNS: usize = 16;

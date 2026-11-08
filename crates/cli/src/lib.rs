@@ -280,7 +280,7 @@ fn run_inner(argv: &[String], env: &Env, out: &mut dyn Write, err: &mut dyn Writ
     // `prepareClaudeRoot`'s selection; crates/claude-root `subscription_root`).
     let claude_setting = claude_root::settings::ClaudeCodeSettings::load(&env.cwd, &env.agent_dir()).root;
     let mut rooted = None;
-    if parsed.claude || claude_root::worker_root::claude_root_requested(&*env.var) || claude_setting {
+    if parsed.claude || session_core::core::claude_root_requested(&*env.var) || claude_setting {
         match claude_root::worker_root::subscription_root(
             parsed.provider.as_deref(),
             parsed.model.as_deref(),
@@ -293,10 +293,7 @@ fn run_inner(argv: &[String], env: &Env, out: &mut dyn Write, err: &mut dyn Writ
                 // session's lane moves to the root model there (session-worker.ts).
                 rooted = Some(startup::overlay(
                     env,
-                    vec![(
-                        claude_root::worker_root::ULTRON_ROOT_ENV.to_string(),
-                        "claude".to_string(),
-                    )],
+                    vec![(session_core::core::ROOT_ENV.to_string(), "claude".to_string())],
                 ));
             }
             Err(message) => {

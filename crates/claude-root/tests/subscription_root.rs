@@ -31,7 +31,7 @@ fn claude_root_claude_flag_selects_the_claude_subscription_model() {
         root(Some("claude-subscription"), None),
         ok("claude-subscription/claude-opus-5-5")
     );
-    let env = |k: &str| (k == "ULTRON_CLAUDE_MODEL").then(|| " sonnet ".to_string());
+    let env = |k: &str| (k == config::env::CLAUDE_MODEL_ENV).then(|| " sonnet ".to_string());
     assert_eq!(
         subscription_root(None, None, &env).unwrap().model,
         "claude-subscription/sonnet"

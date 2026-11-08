@@ -211,8 +211,8 @@ fn session_core_provider_streams_claude_code_cli() {
     let log = dir.path().join("log");
     std::fs::write(&log, "").unwrap();
     let mut env: Map<String, Value> = json!({
-        "ULTRON_CLAUDE_CODE_BIN": format!("{FIXTURES}/fake-claude/claude"),
-        "ULTRON_CLAUDE_CODE_WARM": "0",
+        (ai::claude_code_cli::CLAUDE_CODE_BIN_ENV): format!("{FIXTURES}/fake-claude/claude"),
+        (ai::claude_code_cli::CLAUDE_CODE_WARM_ENV): "0",
         "CLAUDECODE": "1",
         "CLAUDE_CODE_SESSION_ID": "parent",
         "FAKE_CLAUDE_REPLY": dir.path().join("reply").display().to_string(),

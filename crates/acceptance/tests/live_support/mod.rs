@@ -114,13 +114,16 @@ impl LiveInstall {
         let mut env: Vec<(String, String)> = vec![
             ("PATH".into(), path_without_claude()),
             ("HOME".into(), self.root.path().display().to_string()),
-            ("ULTRON_CODING_AGENT_DIR".into(), self.agent().display().to_string()),
-            ("ULTRON_SERVER_DIR".into(), self.server().display().to_string()),
-            ("ULTRON_HINDSIGHT_URL".into(), "off".into()),
+            (config::paths::ENV_AGENT_DIR.into(), self.agent().display().to_string()),
+            (
+                config::paths::ENV_SERVER_DIR.into(),
+                self.server().display().to_string(),
+            ),
+            (hindsight::resolve::HINDSIGHT_URL_ENV.into(), "off".into()),
             ("NO_COLOR".into(), "1".into()),
         ];
-        if let Ok(python) = std::env::var("ULTRON_PYTHON") {
-            env.push(("ULTRON_PYTHON".into(), python));
+        if let Ok(python) = std::env::var(kernel::env::PYTHON_ENV) {
+            env.push((kernel::env::PYTHON_ENV.into(), python));
         }
         let mut all = vec!["--session-dir".to_string(), self.sessions().display().to_string()];
         all.extend(args.iter().map(|a| a.to_string()));

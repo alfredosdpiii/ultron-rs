@@ -19,7 +19,7 @@ struct Fake {
 
 impl Fake {
     fn start() -> Fake {
-        let python = std::env::var("ULTRON_PYTHON").unwrap_or_else(|_| "/usr/bin/python3".into());
+        let python = kernel::env::python(|name| std::env::var(name).ok());
         let script = Path::new(env!("CARGO_MANIFEST_DIR")).join("../hindsight/fixtures/fake_hindsight.py");
         let mut child = Command::new(python)
             .arg("-I")
@@ -91,11 +91,11 @@ impl Machine {
         let mut all: Vec<(String, String)> = vec![
             ("HOME".into(), self.home.display().to_string()),
             (
-                "ULTRON_CODING_AGENT_DIR".into(),
+                config::paths::ENV_AGENT_DIR.into(),
                 self.home.join(".ultron/agent").display().to_string(),
             ),
             (
-                "ULTRON_SERVER_DIR".into(),
+                config::paths::ENV_SERVER_DIR.into(),
                 self.home.join("server").display().to_string(),
             ),
         ];
@@ -139,7 +139,7 @@ fn cli_memory_import_codex_dry_run_import_and_rerun() {
     );
     let cwd = machine.home.join("work");
     std::fs::create_dir_all(&cwd).unwrap();
-    let env = machine.env(&cwd, &[("ULTRON_HINDSIGHT_URL", fake.base())]);
+    let env = machine.env(&cwd, &[(hindsight::resolve::HINDSIGHT_URL_ENV, fake.base())]);
     let index = machine.home.join(".ultron/agent/memory/records.json");
 
     let (code, out, err) = run(&["memory", "import", "--from", "codex", "--dry-run"], &env);
@@ -206,7 +206,7 @@ fn cli_memory_import_codex_dry_run_import_and_rerun() {
     let id = records[0]["id"].as_str().unwrap().to_string();
     let other = machine.home.join("elsewhere");
     std::fs::create_dir_all(&other).unwrap();
-    let session_env = machine.env(&other, &[("ULTRON_HINDSIGHT_URL", fake.base())]);
+    let session_env = machine.env(&other, &[(hindsight::resolve::HINDSIGHT_URL_ENV, fake.base())]);
     let runtime = session_core::compose::Runtime::new(
         &session_env,
         "print",
@@ -238,7 +238,7 @@ fn cli_memory_import_claude_code_project_notes_and_errors() {
         &memory.join("build.md"),
         "---\nname: build\ndescription: when building the app\nmetadata:\n  type: project\n---\nRun make build.\n",
     );
-    let env = machine.env(&checkout, &[("ULTRON_HINDSIGHT_URL", fake.base())]);
+    let env = machine.env(&checkout, &[(hindsight::resolve::HINDSIGHT_URL_ENV, fake.base())]);
     let (code, out, err) = run(&["memory", "import", "--from=claude-code", "--dry-run"], &env);
     assert_eq!((code, err.as_str()), (0, ""));
     assert!(
@@ -263,7 +263,7 @@ fn cli_memory_import_claude_code_project_notes_and_errors() {
 
     // Errors: no notes, a bad --from, memory off.
     let empty = Machine::new();
-    let env = empty.env(&checkout, &[("ULTRON_HINDSIGHT_URL", fake.base())]);
+    let env = empty.env(&checkout, &[(hindsight::resolve::HINDSIGHT_URL_ENV, fake.base())]);
     assert_eq!(
         run(&["memory", "import", "--from", "codex"], &env),
         (
@@ -282,7 +282,7 @@ fn cli_memory_import_claude_code_project_notes_and_errors() {
         &empty.home.join(".codex/memories/MEMORY.md"),
         "## Reusable knowledge\n- A fact\n",
     );
-    let off = empty.env(&checkout, &[("ULTRON_HINDSIGHT_URL", "off".into())]);
+    let off = empty.env(&checkout, &[(hindsight::resolve::HINDSIGHT_URL_ENV, "off".into())]);
     let (code, _, err) = run(&["memory", "import", "--from", "codex"], &off);
     assert_eq!(
         (code, err.as_str()),

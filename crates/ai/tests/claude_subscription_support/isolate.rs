@@ -26,7 +26,7 @@ pub const SEALED: &str = "ULTRON_TEST_SEALED_ROOT";
 /// Exit status of the sentinel `claude`.
 pub const SENTINEL_EXIT: i32 = 97;
 const KEEP: &[&str] = &[
-    "ULTRON_PYTHON",
+    kernel::env::PYTHON_ENV,
     "RUST_BACKTRACE",
     "RUST_LIB_BACKTRACE",
     "RUST_TEST_THREADS",
@@ -72,8 +72,8 @@ fn sealed_env(root: &Path) -> Vec<(String, String)> {
         ("HOME".to_string(), dir("home")),
         ("CLAUDE_CONFIG_DIR".to_string(), dir("claude-config")),
         ("TMPDIR".to_string(), dir("tmp")),
-        ("ULTRON_CODING_AGENT_DIR".to_string(), dir("agent")),
-        ("ULTRON_SERVER_DIR".to_string(), dir("server")),
+        (config::paths::ENV_AGENT_DIR.to_string(), dir("agent")),
+        (config::paths::ENV_SERVER_DIR.to_string(), dir("server")),
     ];
     for name in XDG {
         env.push((name.to_string(), dir(&name.to_lowercase())));
@@ -117,8 +117,8 @@ fn assert_sealed() {
         "HOME",
         "CLAUDE_CONFIG_DIR",
         "TMPDIR",
-        "ULTRON_CODING_AGENT_DIR",
-        "ULTRON_SERVER_DIR",
+        config::paths::ENV_AGENT_DIR,
+        config::paths::ENV_SERVER_DIR,
     ]
     .iter()
     .chain(XDG)
@@ -130,8 +130,8 @@ fn assert_sealed() {
         assert!(
             !name.starts_with("ANTHROPIC_")
                 && !name.starts_with("CLAUDE_CODE_")
-                && name != "ULTRON_CLAUDE_COMMAND"
-                && name != "ULTRON_CLAUDE_CODE_BIN",
+                && name != ai::claude_subscription::process::COMMAND_ENV
+                && name != ai::claude_code_cli::CLAUDE_CODE_BIN_ENV,
             "{name} leaked into the sealed environment"
         );
     }

@@ -50,7 +50,7 @@ fn acceptance_a56_a_slow_root_cell_yields_its_turn_the_user_chats_on_and_its_end
         Reply::Text("WORKING ON IT IN THE BACKGROUND".into())
     });
     let install = Install::new(&provider);
-    let mut client = install.rpc(&["--no-session"], &[("ULTRON_CELL_YIELD_AFTER", "1")]);
+    let mut client = install.rpc(&["--no-session"], &[(kernel::env::CELL_YIELD_AFTER_ENV, "1")]);
 
     // The cell outlives its 1 s budget: the tool call returns and the turn ends while it still runs.
     client.prompt_and_wait(PROMPT, HANG).unwrap();

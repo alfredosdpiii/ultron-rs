@@ -280,7 +280,7 @@ fn session_core_image_budget_replaces_the_oldest_images_like_typescript() {
             text("seen all"),
         ]),
         Setup {
-            vars: vec![("ULTRON_CONTEXT_IMAGES", "2".into())],
+            vars: vec![(session_core::view_images::CONTEXT_IMAGES_ENV, "2".into())],
             files: files("image-budget"),
             ..Setup::default()
         },
@@ -302,7 +302,7 @@ fn session_core_tool_round_nudge_steers_the_root_to_answer_like_typescript() {
             text("ANSWERED AFTER NUDGE"),
         ]),
         Setup {
-            vars: vec![("ULTRON_TOOL_ROUNDS_NUDGE", "3".into())],
+            vars: vec![(session_core::nudge::TOOL_ROUNDS_NUDGE_ENV, "3".into())],
             ..Setup::default()
         },
     );

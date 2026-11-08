@@ -340,13 +340,13 @@ impl Install {
             .current_dir(self.project())
             .env("PATH", std::env::var("PATH").unwrap_or_default())
             .env("HOME", self.root.path())
-            .env("ULTRON_CODING_AGENT_DIR", self.agent())
-            .env("ULTRON_SERVER_DIR", self.root.path().join("server"))
+            .env(config::paths::ENV_AGENT_DIR, self.agent())
+            .env(config::paths::ENV_SERVER_DIR, self.root.path().join("server"))
             .env("GROQ_API_KEY", "test-groq")
             .env("NO_COLOR", "1")
             .env("TZ", "UTC");
-        if let Ok(python) = std::env::var("ULTRON_PYTHON") {
-            command.env("ULTRON_PYTHON", python);
+        if let Ok(python) = std::env::var(kernel::env::PYTHON_ENV) {
+            command.env(kernel::env::PYTHON_ENV, python);
         }
         for (key, value) in env {
             command.env(key, value);
@@ -371,22 +371,25 @@ fn base_env(install: &Install, env: &[(&str, &str)]) -> Vec<(String, String)> {
     let mut out: Vec<(String, String)> = vec![
         ("PATH".into(), std::env::var("PATH").unwrap_or_default()),
         ("HOME".into(), install.root.path().display().to_string()),
-        ("ULTRON_CODING_AGENT_DIR".into(), install.agent().display().to_string()),
         (
-            "ULTRON_SERVER_DIR".into(),
+            config::paths::ENV_AGENT_DIR.into(),
+            install.agent().display().to_string(),
+        ),
+        (
+            config::paths::ENV_SERVER_DIR.into(),
             install.root.path().join("server").display().to_string(),
         ),
         ("GROQ_API_KEY".into(), "test-groq".into()),
-        ("ULTRON_HINDSIGHT_URL".into(), "off".into()),
-        ("PI_OFFLINE".into(), "1".into()),
+        (hindsight::resolve::HINDSIGHT_URL_ENV.into(), "off".into()),
+        (config::env::OFFLINE_ENV.into(), "1".into()),
         ("NO_COLOR".into(), "1".into()),
         ("TZ".into(), "UTC".into()),
         // A scripted root cell holds its tool call until it ends, however slow the machine: these tests read its
         // result in the turn. a56_cell_yield.rs sets `ULTRON_CELL_YIELD_AFTER` itself (`env` wins).
-        ("ULTRON_CELL_YIELD_AFTER".into(), "off".into()),
+        (kernel::env::CELL_YIELD_AFTER_ENV.into(), "off".into()),
     ];
-    if let Ok(python) = std::env::var("ULTRON_PYTHON") {
-        out.push(("ULTRON_PYTHON".into(), python));
+    if let Ok(python) = std::env::var(kernel::env::PYTHON_ENV) {
+        out.push((kernel::env::PYTHON_ENV.into(), python));
     }
     out.extend(env.iter().map(|(k, v)| (k.to_string(), v.to_string())));
     out

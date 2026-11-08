@@ -780,7 +780,7 @@ fn ai_claude_subscription_telemetry_stays_on_by_default_and_the_cli_never_update
     let fake = Fake::new();
     for env in [
         turn_env(&fake, &[]),
-        turn_env(&fake, &[("ULTRON_CLAUDE_TELEMETRY", "true")]),
+        turn_env(&fake, &[(ai::claude_subscription::process::TELEMETRY_ENV, "true")]),
     ] {
         for flag in QUIET {
             assert!(env.get(flag).is_none(), "{flag}");
@@ -789,7 +789,7 @@ fn ai_claude_subscription_telemetry_stays_on_by_default_and_the_cli_never_update
         assert_eq!(env["DISABLE_FEEDBACK_COMMAND"], "1");
     }
     for value in ["false", "off", "0", "no"] {
-        let env = turn_env(&fake, &[("ULTRON_CLAUDE_TELEMETRY", value)]);
+        let env = turn_env(&fake, &[(ai::claude_subscription::process::TELEMETRY_ENV, value)]);
         for flag in QUIET {
             assert_eq!(env[flag], "1", "{value} {flag}");
         }

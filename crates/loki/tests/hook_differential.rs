@@ -63,10 +63,7 @@ fn corpus() -> Value {
 }
 
 fn python() -> String {
-    std::env::var("ULTRON_PYTHON")
-        .ok()
-        .filter(|p| !p.is_empty())
-        .unwrap_or_else(|| "/usr/bin/python3".into())
+    kernel::env::python(|name| std::env::var(name).ok())
 }
 
 fn which(name: &str) -> PathBuf {

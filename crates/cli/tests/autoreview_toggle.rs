@@ -17,9 +17,9 @@ fn env_for(dir: &Path) -> cli::Env {
         cwd: dir.to_path_buf(),
         home: home.clone(),
         var: Arc::new(move |key| match key {
-            "ULTRON_CODING_AGENT_DIR" => Some(agent.display().to_string()),
+            config::paths::ENV_AGENT_DIR => Some(agent.display().to_string()),
             "XDG_CONFIG_HOME" => Some(config.display().to_string()),
-            "ULTRON_SELF_COMMAND" => Some(r#"["/opt/ultron/bin/ultron"]"#.into()),
+            claude_root::worker_root::SELF_COMMAND_ENV => Some(r#"["/opt/ultron/bin/ultron"]"#.into()),
             "PATH" => Some("/usr/bin:/bin".into()),
             "HOME" => Some(home.display().to_string()),
             _ => None,

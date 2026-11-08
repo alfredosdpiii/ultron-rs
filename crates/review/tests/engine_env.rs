@@ -88,8 +88,8 @@ fn review_w17e_a_review_kernel_sees_the_session_path_not_the_process_path() {
     let runtime = probe_runtime(&root);
 
     let mut session = vec![("PATH".to_string(), bin.display().to_string())];
-    if let Ok(python) = std::env::var("ULTRON_PYTHON") {
-        session.push(("ULTRON_PYTHON".into(), python));
+    if let Ok(python) = std::env::var(kernel::env::PYTHON_ENV) {
+        session.push((kernel::env::PYTHON_ENV.into(), python));
     }
     let seen = review(&root, runtime.clone(), Some(session));
     assert_eq!(seen["fake"], json!(fake.display().to_string()), "{seen}");

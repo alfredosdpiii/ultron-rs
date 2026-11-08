@@ -24,8 +24,8 @@ use tui::utils::{truncate_to_width, visible_width};
 use crate::components::{bold, fg};
 use crate::lane::ModelInfo;
 
-/// Ultron's thinking levels, in strip order.
-pub const THINKING_LEVELS: [&str; 6] = ["off", "minimal", "low", "medium", "high", "xhigh"];
+/// The thinking levels the strip offers: all but `max`.
+pub const THINKING_LEVELS: &[&str] = model_scope::THINKING_LEVELS.split_at(6).0;
 /// Recent scope size (`RECENT_LIMIT`).
 pub const RECENT_LIMIT: usize = 15;
 

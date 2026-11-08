@@ -49,9 +49,9 @@ fn session_core_request_trace_appends_deltas_and_marks_the_compaction_reset() {
         script,
         Setup {
             vars: vec![
-                ("ULTRON_REQUEST_TRACE", trace.display().to_string()),
+                (session_core::request_trace::TRACE_ENV, trace.display().to_string()),
                 // Clock lines open a turn after a gap; off, the deltas are exact.
-                ("ULTRON_CLOCK_CONTEXT", "off".into()),
+                (session_core::lane::CLOCK_CONTEXT_ENV, "off".into()),
             ],
             ..Setup::default()
         },

@@ -9,7 +9,7 @@ pub struct SelfCommand {
 
 /// `ULTRON_SELF_COMMAND` (a JSON array: command and leading args) overrides it; otherwise this executable.
 pub fn self_command(var: &dyn Fn(&str) -> Option<String>) -> Result<SelfCommand, String> {
-    if let Some(configured) = var("ULTRON_SELF_COMMAND")
+    if let Some(configured) = var(crate::worker_root::SELF_COMMAND_ENV)
         .map(|v| v.trim().to_string())
         .filter(|v| !v.is_empty())
     {

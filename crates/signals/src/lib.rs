@@ -24,6 +24,18 @@ static HANDLING: AtomicBool = AtomicBool::new(false);
 /// The last handled signal received (its number, set in the signal handler itself), 0 before any.
 static RECEIVED: AtomicUsize = AtomicUsize::new(0);
 
+/// `process.kill(pid, 0)` succeeds or fails with EPERM: a process with this pid exists (EPERM: one this user may not
+/// signal). Pid 0 and pids beyond `i32` name no single process.
+pub fn pid_alive(pid: u32) -> bool {
+    match i32::try_from(pid) {
+        Ok(raw) if raw > 0 => match nix::sys::signal::kill(nix::unistd::Pid::from_raw(raw), None) {
+            Ok(()) => true,
+            Err(error) => error == nix::errno::Errno::EPERM,
+        },
+        _ => false,
+    }
+}
+
 /// The exit code a signal ends a process with (`128 + n`: SIGINT 130, SIGTERM 143, SIGHUP 129).
 pub fn exit_code(signal: Signal) -> i32 {
     128 + signal as i32

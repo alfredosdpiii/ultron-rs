@@ -24,13 +24,6 @@ pub fn flatten(text: &str) -> String {
         .join(" ")
 }
 
-/// `^[^/\s]+\/[^/\s]+(?:\/[^/\s]+)*$`: a `provider/model` reference (more segments allowed), none empty or holding
-/// whitespace.
-pub fn is_model_ref(text: &str) -> bool {
-    let segments: Vec<&str> = text.split('/').collect();
-    segments.len() >= 2 && segments.iter().all(|s| !s.is_empty() && !s.chars().any(is_space))
-}
-
 /// `text.replace(/^```(?:json)?\s*\n([\s\S]*?)\n```$/, "$1")`: the body of a fenced model reply, else `text`.
 pub fn strip_json_fence(text: &str) -> &str {
     fence_body(text, true).unwrap_or(text)
@@ -84,16 +77,6 @@ mod tests {
                 "{:x}",
                 c as u32
             );
-        }
-    }
-
-    #[test]
-    fn jsrt_is_model_ref_matches_the_javascript_pattern() {
-        for ok in ["a/b", "openrouter/x/y-1"] {
-            assert!(is_model_ref(ok), "{ok}");
-        }
-        for bad in ["a", "a/", "/b", "a//b", "a/b c", "a/\u{feff}b", ""] {
-            assert!(!is_model_ref(bad), "{bad:?}");
         }
     }
 

@@ -9,7 +9,10 @@ use serde_json::json;
 use tui_harness::{Mock, Reply, Tui, sse, text_reply};
 
 const MODEL: [&str; 2] = ["--model", "anthropic/claude-sonnet-4-5"];
-const QUIET: [(&str, &str); 2] = [("ULTRON_AUTO_NAME", "off"), ("ULTRON_SPLASH", "off")];
+const QUIET: [(&str, &str); 2] = [
+    (session_core::core::AUTO_NAME_ENV, "off"),
+    (cli::interactive::SPLASH_ENV, "off"),
+];
 
 /// An Anthropic stream that fails mid-turn (an `error` event).
 fn error_reply() -> Reply {
@@ -133,7 +136,10 @@ fn cli_interactive_reattaches_after_the_session_worker_dies() {
         100,
         30,
         &MODEL,
-        &[("ULTRON_AUTO_NAME", "off"), ("ULTRON_TUI_PARITY", "1")],
+        &[
+            (session_core::core::AUTO_NAME_ENV, "off"),
+            (interactive::qol::PARITY_ENV, "1"),
+        ],
     );
     tui.wait("Session:");
     submit(&tui, "first", "Before.");

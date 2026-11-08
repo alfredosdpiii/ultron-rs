@@ -10,6 +10,8 @@ use serde::Deserialize;
 use serde_json::{Map, Value};
 use std::sync::Arc;
 
+pub const CACHE_RETENTION_ENV: &str = "PI_CACHE_RETENTION";
+
 /// Inspect or replace the provider payload before it is sent; `None` keeps it.
 pub type PayloadHook = Arc<dyn Fn(&Value, &Model) -> Option<Value> + Send + Sync>;
 
@@ -79,7 +81,7 @@ impl StreamOptions {
         if let Some(retention) = self.cache_retention {
             return retention;
         }
-        if provider_env_value("PI_CACHE_RETENTION", self.env.as_ref()).as_deref() == Some("long") {
+        if provider_env_value(CACHE_RETENTION_ENV, self.env.as_ref()).as_deref() == Some("long") {
             return CacheRetention::Long;
         }
         CacheRetention::Short

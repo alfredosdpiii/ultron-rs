@@ -315,18 +315,21 @@ impl Harness {
         let mut env = vec![
             ("PATH".to_string(), std::env::var("PATH").unwrap_or_default()),
             ("HOME".into(), path(self.root.path().to_path_buf())),
-            ("ULTRON_CODING_AGENT_DIR".into(), path(self.agent())),
-            ("ULTRON_SERVER_DIR".into(), path(self.root.path().join("server"))),
+            (config::paths::ENV_AGENT_DIR.into(), path(self.agent())),
+            (
+                config::paths::ENV_SERVER_DIR.into(),
+                path(self.root.path().join("server")),
+            ),
             ("GROQ_API_KEY".into(), "test-groq".into()),
-            ("ULTRON_HINDSIGHT_URL".into(), "off".into()),
-            ("PI_OFFLINE".into(), "1".into()),
+            (hindsight::resolve::HINDSIGHT_URL_ENV.into(), "off".into()),
+            (config::env::OFFLINE_ENV.into(), "1".into()),
             ("NO_COLOR".into(), "1".into()),
             ("TZ".into(), "UTC".into()),
             // The cells' results are read in the turn: a slow frame (a provider failure's retries) never yields it.
-            ("ULTRON_CELL_YIELD_AFTER".into(), "off".into()),
+            (kernel::env::CELL_YIELD_AFTER_ENV.into(), "off".into()),
         ];
-        if let Ok(python) = std::env::var("ULTRON_PYTHON") {
-            env.push(("ULTRON_PYTHON".into(), python));
+        if let Ok(python) = std::env::var(kernel::env::PYTHON_ENV) {
+            env.push((kernel::env::PYTHON_ENV.into(), python));
         }
         RpcClient::start(&RpcClientOptions {
             program: env!("CARGO_BIN_EXE_ultron-acceptance").into(),

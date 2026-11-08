@@ -116,7 +116,7 @@ fn cli_entry_durable_attaches_under_offline_and_the_proxy_setting_and_takes_sess
     }
     // PI_OFFLINE in the client's own environment attaches too, to the same server.
     let mut second = home.instance_command(&home.cwd(), &["durable", "-p", "again"]);
-    second.env("NO_PROXY", "127.0.0.1").env("PI_OFFLINE", "1");
+    second.env("NO_PROXY", "127.0.0.1").env(config::env::OFFLINE_ENV, "1");
     let (code, out, err) = output(&mut second);
     assert_eq!((code, out.as_str()), (0, "env answer\n"), "{err}");
     assert_eq!(daemon::instance::generations(&durable_dir(&home)).len(), 1);

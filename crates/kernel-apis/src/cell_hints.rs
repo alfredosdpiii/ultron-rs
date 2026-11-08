@@ -13,6 +13,9 @@ use serde_json::{Map, Value};
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, LazyLock, Mutex};
 
+pub const HINTS_ENV: &str = "ULTRON_HINTS";
+pub const HINTS_MAX_ENV: &str = "ULTRON_HINTS_MAX";
+
 pub const DEFAULT_HINT_MAX_PER_TAG: u64 = 3;
 pub const DEFAULT_BLOCKED_SECONDS: f64 = 60.0;
 pub const DEFAULT_READ_HANDLE_BYTES: u64 = 256 * 1024;

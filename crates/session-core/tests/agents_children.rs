@@ -34,7 +34,7 @@ fn session_core_agents_api_answers_for_subagents_and_status_carries_jobs() {
             }
         }),
         Setup {
-            vars: vec![("ULTRON_TOOL_ROUNDS_NUDGE", "0".into())],
+            vars: vec![(session_core::nudge::TOOL_ROUNDS_NUDGE_ENV, "0".into())],
             ..Setup::default()
         },
     );

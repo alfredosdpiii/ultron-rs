@@ -34,6 +34,16 @@ pub fn is_valid_thinking_level(level: &str) -> bool {
     THINKING_LEVELS.contains(&level)
 }
 
+/// `MODEL_REF_PATTERN` (`^[^/\s]+\/[^/\s]+(?:\/[^/\s]+)*$`): `provider/model[/more]`, no part empty or with
+/// whitespace.
+pub fn is_model_ref(value: &str) -> bool {
+    let parts: Vec<&str> = value.split('/').collect();
+    parts.len() >= 2
+        && parts
+            .iter()
+            .all(|part| !part.is_empty() && !part.chars().any(jsrt::string::is_space))
+}
+
 /// `String.prototype.localeCompare` (ICU root collation), re-exported for `ai::jsutil`.
 pub use jsrt::collate::locale_compare;
 

@@ -324,7 +324,7 @@ fn worktree_actor(keep: bool) -> p_session_support::Actor {
     });
     let mut vars = Vec::new();
     if keep {
-        vars.push(("ULTRON_KEEP_WORKTREES", "1".to_string()));
+        vars.push((delegation::worktrees::KEEP_WORKTREES_ENV, "1".to_string()));
     }
     let a = actor(
         script,
@@ -426,9 +426,9 @@ fn session_core_opening_a_session_prunes_orphan_worktrees() {
     let vars: Vec<(String, String)> = vec![
         ("HOME".into(), root.display().to_string()),
         ("PATH".into(), "/usr/bin:/bin".into()),
-        ("ULTRON_CODING_AGENT_DIR".into(), agent.display().to_string()),
-        ("ULTRON_HINDSIGHT_URL".into(), "off".into()),
-        ("PI_OFFLINE".into(), "1".into()),
+        (config::paths::ENV_AGENT_DIR.into(), agent.display().to_string()),
+        (hindsight::resolve::HINDSIGHT_URL_ENV.into(), "off".into()),
+        (config::env::OFFLINE_ENV.into(), "1".into()),
     ];
     let env = session_core::RunEnv {
         cwd: cwd.clone(),

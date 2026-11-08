@@ -7,7 +7,10 @@ mod tui_harness;
 use tui_harness::{Mock, TempDir, Tui};
 
 const MODEL: [&str; 2] = ["--model", "anthropic/claude-sonnet-4-5"];
-const QUIET: [(&str, &str); 2] = [("ULTRON_AUTO_NAME", "off"), ("ULTRON_SPLASH", "off")];
+const QUIET: [(&str, &str); 2] = [
+    (session_core::core::AUTO_NAME_ENV, "off"),
+    (cli::interactive::SPLASH_ENV, "off"),
+];
 
 #[test]
 fn cli_interactive_user_bash_commands_run_in_the_shell() {

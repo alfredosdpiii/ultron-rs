@@ -532,7 +532,7 @@ fn acceptance_a23_durable_work_wiring_drives_schedules_goal_and_jobs_like_the_co
     let (_temp, dir) = temp();
     let kernel = |w: &Worker| {
         let mut options = KernelOptions::new(&dir, common::runtime());
-        options.env.push(("ULTRON_RLM_SPILL_DIR".into(), String::new()));
+        options.env.push((kernel::env::RLM_SPILL_DIR_ENV.into(), String::new()));
         Kernel::new(options, Arc::new(w.apis())).unwrap()
     };
     let ok = |kernel: &Kernel, code: &str| {

@@ -124,7 +124,11 @@ fn inference_frame_naming_an_unknown_model_is_refused_unsent() {
 #[test]
 fn inference_frame_model_env_routes_code_free_frames_to_that_model() {
     let (handler, transport, asked, _dir) = setup(vec![reply("chat"), reply("chat again")], true);
-    let env = [("ULTRON_RLM_FRAME_MODEL".to_string(), "claude-code/haiku".to_string())].into();
+    let env = [(
+        config::env::RLM_FRAME_MODEL_ENV.to_string(),
+        "claude-code/haiku".to_string(),
+    )]
+    .into();
     let frames = Frames::new(handler, env, ModelSettings::default);
     let reply = call(
         &frames,

@@ -199,7 +199,7 @@ fn acceptance_a56_plain_bash_auto_detaches_a_slow_command_ported_part() {
     let dir = tempfile::tempdir().unwrap();
     let host = host(dir.path());
     // The window must outlast `echo early` however loaded the machine is; the rest waits for the test's `go`.
-    let k = kernel(&host, dir.path(), &[("ULTRON_BASH_YIELD_AFTER", "5")]);
+    let k = kernel(&host, dir.path(), &[(kernel::env::BASH_YIELD_AFTER_ENV, "5")]);
     assert_eq!(
         ok(
             &k,
@@ -231,7 +231,7 @@ fn acceptance_a56_plain_bash_auto_detaches_a_slow_command_ported_part() {
 fn acceptance_a56_plain_bash_within_the_window_returns_the_whole_output() {
     let dir = tempfile::tempdir().unwrap();
     let host = host(dir.path());
-    let k = kernel(&host, dir.path(), &[("ULTRON_BASH_YIELD_AFTER", "120")]);
+    let k = kernel(&host, dir.path(), &[(kernel::env::BASH_YIELD_AFTER_ENV, "120")]);
     assert_eq!(
         ok(
             &k,
@@ -260,7 +260,7 @@ fn acceptance_a56_plain_bash_within_the_window_returns_the_whole_output() {
 fn acceptance_a56_yield_after_none_and_off_block_without_a_job() {
     let dir = tempfile::tempdir().unwrap();
     let host = host(dir.path());
-    let k = kernel(&host, dir.path(), &[("ULTRON_BASH_YIELD_AFTER", "0.2")]);
+    let k = kernel(&host, dir.path(), &[(kernel::env::BASH_YIELD_AFTER_ENV, "0.2")]);
     let before = ok(&k, "len(await rlm.jobs())");
     let started = Instant::now();
     assert_eq!(
@@ -271,7 +271,7 @@ fn acceptance_a56_yield_after_none_and_off_block_without_a_job() {
         "('blocked', False, True)"
     );
     assert!(started.elapsed() >= Duration::from_millis(700));
-    let off = kernel(&host, dir.path(), &[("ULTRON_BASH_YIELD_AFTER", "off")]);
+    let off = kernel(&host, dir.path(), &[(kernel::env::BASH_YIELD_AFTER_ENV, "off")]);
     assert_eq!(
         ok(&off, "b = await bash('''sleep 0.5; echo off'''); (str(b), b.running)"),
         "('off', False)"

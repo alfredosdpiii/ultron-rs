@@ -32,7 +32,7 @@ fn run(env: &[(&str, &str)]) -> Vec<String> {
     let install = Install::new(&provider);
     // A plain bash still running after a second continues as a job (`ULTRON_BASH_YIELD_AFTER`).
     let mut env = env.to_vec();
-    env.push(("ULTRON_BASH_YIELD_AFTER", "1"));
+    env.push((kernel::env::BASH_YIELD_AFTER_ENV, "1"));
     let mut client = install.rpc(&["--no-session"], &env);
     client.prompt_and_wait(PROMPT, HANG).unwrap();
     let results: Vec<String> = provider.requests().iter().filter_map(last_tool_result).collect();
@@ -49,7 +49,7 @@ fn run(env: &[(&str, &str)]) -> Vec<String> {
 
 #[test]
 fn acceptance_a56_hints_job_detached_and_poll_loop_end_the_live_cell_results() {
-    let results = run(&[("ULTRON_HINTS", "on")]);
+    let results = run(&[(kernel_apis::cell_hints::HINTS_ENV, "on")]);
     assert_eq!(results.len(), 3, "{results:#?}");
     let first = &results[0];
     assert!(first.starts_with("STARTED True\n"), "{first}");

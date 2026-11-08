@@ -126,10 +126,13 @@ fn open(dir: &Path, journal: &Path, setup: &Setup) -> Opened {
         let mut options = KernelOptions::new(&cwd, runtime());
         options.env = vec![
             (
-                "ULTRON_CODING_AGENT_DIR".into(),
+                config::paths::ENV_AGENT_DIR.into(),
                 cwd.join("agent").display().to_string(),
             ),
-            ("ULTRON_SERVER_DIR".into(), cwd.join("server").display().to_string()),
+            (
+                config::paths::ENV_SERVER_DIR.into(),
+                cwd.join("server").display().to_string(),
+            ),
         ];
         let fallback: Arc<dyn HostHandler> = Arc::new(|kind: &str, _: Map<String, Value>, _: &Signal| {
             Err::<Value, String>(format!("Unknown host request {kind}"))

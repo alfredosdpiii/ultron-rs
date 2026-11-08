@@ -39,7 +39,7 @@ fn start(home: &Home) -> Server {
             r#"{"model":"anthropic/claude-sonnet-4-5"}"#,
         ])
         .env("__ULTRON_SERVER_KEEP_ALIVE", "1")
-        .env("PI_OFFLINE", "1")
+        .env(config::env::OFFLINE_ENV, "1")
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::inherit())
@@ -176,7 +176,7 @@ fn cli_daemon_session_control_settings_trust_debug_and_models_through_the_worker
     assert_eq!(info["model"], "anthropic/claude-sonnet-4-5");
     assert_ne!(info["pid"], json!(server.child.id()));
     assert_eq!(info["cwd"], json!(cwd));
-    assert_eq!(info["environment"]["PI_OFFLINE"], "1");
+    assert_eq!(info["environment"][config::env::OFFLINE_ENV], "1");
     assert!(info["kernelPool"].is_object());
     let available = control("reloadAuth", json!([null])).unwrap().unwrap()["availableModels"]
         .as_u64()

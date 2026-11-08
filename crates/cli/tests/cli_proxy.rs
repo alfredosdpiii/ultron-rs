@@ -50,10 +50,13 @@ fn env(root: &Path, vars: &[(&str, String)]) -> cli::Env {
     let mut map: HashMap<String, String> = vars.iter().map(|(k, v)| (k.to_string(), v.clone())).collect();
     map.insert("HOME".into(), root.display().to_string());
     map.insert(
-        "ULTRON_CODING_AGENT_DIR".into(),
+        config::paths::ENV_AGENT_DIR.into(),
         root.join("agent").display().to_string(),
     );
-    map.insert("ULTRON_SERVER_DIR".into(), root.join("server").display().to_string());
+    map.insert(
+        config::paths::ENV_SERVER_DIR.into(),
+        root.join("server").display().to_string(),
+    );
     cli::Env {
         cwd: root.join("work"),
         home: root.to_path_buf(),

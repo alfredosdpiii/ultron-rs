@@ -23,7 +23,7 @@ struct Fake {
 
 impl Fake {
     fn start() -> Fake {
-        let python = std::env::var("ULTRON_PYTHON").unwrap_or_else(|_| "/usr/bin/python3".into());
+        let python = kernel::env::python(|name| std::env::var(name).ok());
         let script = Path::new(env!("CARGO_MANIFEST_DIR")).join("../hindsight/fixtures/fake_hindsight.py");
         let mut child = Command::new(python)
             .arg("-I")
@@ -93,7 +93,7 @@ fn session_core_memory_pointer_follows_a_matching_file_change() {
             // pointer (a hang guard of 500 cells, never a timing expectation).
             tool(&format!("toolu_{}", results.len()), "print('NEXT')")
         }),
-        &[("ULTRON_HINDSIGHT_URL", &url)],
+        &[(hindsight::resolve::HINDSIGHT_URL_ENV, &url)],
         None,
     );
     w.call(Op::PromptAndWait {

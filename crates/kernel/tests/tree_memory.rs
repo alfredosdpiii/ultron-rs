@@ -153,7 +153,7 @@ fn hogs(count: u32, mb: u32) -> String {
 fn kernel_tree_memory_configuration_matches_typescript() {
     let fixture = fixture();
     for case in fixture["limits"].as_array().unwrap() {
-        let env = case["env"]["ULTRON_RLM_MAX_TREE_MEMORY_MB"].as_str();
+        let env = case["env"][kernel::env::RLM_MAX_TREE_MEMORY_MB_ENV].as_str();
         let got = kernel_tree_memory_limit(env, case["perProcess"].as_u64().unwrap(), case["override"].as_u64());
         let got = match got {
             Ok(value) => serde_json::json!({ "ok": value }),
@@ -397,7 +397,7 @@ fn options_with_launcher(launcher: &Path) -> KernelOptions {
 }
 
 fn kernel_python() -> String {
-    std::env::var("ULTRON_PYTHON").unwrap_or_else(|_| "/usr/bin/python3".into())
+    kernel::env::python(|name| std::env::var(name).ok())
 }
 
 #[test]

@@ -196,8 +196,8 @@ fn hindsight_worker_sessions_share_one_bank_like_typescript() {
         let url = worker["hindsightUrl"].as_str().unwrap_or("off").to_string();
         let bank = worker["bankId"].as_str().map(String::from);
         let var = move |key: &str| match key {
-            "ULTRON_HINDSIGHT_URL" => Some(url.clone()),
-            "ULTRON_HINDSIGHT_BANK" => bank.clone(),
+            hindsight::resolve::HINDSIGHT_URL_ENV => Some(url.clone()),
+            hindsight::resolve::HINDSIGHT_BANK_ENV => bank.clone(),
             _ => None,
         };
         let service = Endpoint::resolve(&var, None).map(|endpoint| {
@@ -330,7 +330,7 @@ fn hindsight_bank_from_env_like_typescript() {
     let resolve = |bank: Option<&str>| {
         let bank = bank.map(String::from);
         let var = move |key: &str| {
-            if key == "ULTRON_HINDSIGHT_BANK" {
+            if key == hindsight::resolve::HINDSIGHT_BANK_ENV {
                 bank.clone()
             } else {
                 None

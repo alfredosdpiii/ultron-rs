@@ -27,6 +27,9 @@ use tui::keybindings_file::UserBindings;
 use tui::qol_keys::native_app_keybindings;
 use tui::theme::{ColorMode, builtin_theme_json, create_theme};
 
+pub const PI_AGENT_DIR_ENV: &str = "PI_CODING_AGENT_DIR";
+pub const SPLASH_ENV: &str = "ULTRON_SPLASH";
+
 /// The tree's nodes with `checkpoint: true` on the entries a checkpoint (with a commit) is attached to.
 pub fn mark_checkpoints(mut tree: Value, checkpoints: &Value) -> Value {
     let marked: std::collections::HashSet<&str> = checkpoints["checkpoints"]
@@ -402,7 +405,7 @@ impl LaneClient for DaemonLane {
         self.share_cancel.store(true, std::sync::atomic::Ordering::SeqCst);
     }
     fn bug_report_target(&self) -> (String, bool) {
-        let offline = (self.env.var)("PI_OFFLINE").is_some_and(|v| !v.is_empty());
+        let offline = config::env::offline(&*self.env.var);
         (
             crate::bug_report::gateway_host(&crate::bug_report::gateway_url(&self.env)),
             offline,
@@ -766,8 +769,7 @@ fn listings(value: Value) -> Vec<SessionListing> {
 /// Pi's profile directory (read-only here): `PI_CODING_AGENT_DIR`, else `~/.pi/agent` (client-tui-sessions.ts
 /// `piAgentDir`).
 pub fn pi_agent_dir(env: &Env) -> String {
-    let dir =
-        (env.var)("PI_CODING_AGENT_DIR").unwrap_or_else(|| env.home.join(".pi").join("agent").display().to_string());
+    let dir = (env.var)(PI_AGENT_DIR_ENV).unwrap_or_else(|| env.home.join(".pi").join("agent").display().to_string());
     session_file::paths::resolve_path(&dir)
 }
 
@@ -1393,7 +1395,7 @@ fn link_thread(
                 // `models.refresh()`: from the network unless offline (`PI_OFFLINE`), on its own thread.
                 let (env, ui) = (catalog_env.clone(), ui.clone());
                 std::thread::spawn(move || {
-                    let refresh = if (env.var)("PI_OFFLINE").is_none() {
+                    let refresh = if !config::env::offline(&*env.var) {
                         match session_core::model_refresh::refresh_catalogs(
                             &env,
                             ai::model_refresh::DEFAULT_CATALOG_BASE_URL,
@@ -1417,7 +1419,7 @@ fn link_thread(
             }
             Command::LoginSaved(provider, name) => {
                 // `reloadWorkerAuth`: the catalog refresh reaches the network unless offline (`PI_OFFLINE`).
-                if (catalog_env.var)("PI_OFFLINE").is_none() {
+                if !config::env::offline(&*catalog_env.var) {
                     let _ = session_core::model_refresh::refresh_catalogs(
                         &catalog_env,
                         ai::model_refresh::DEFAULT_CATALOG_BASE_URL,
@@ -1455,23 +1457,10 @@ fn link_thread(
             Command::ReadSettings => {
                 let (cwd, agent_dir) = &settings_path;
                 let settings = config::settings::SettingsManager::for_worker(cwd, agent_dir, &catalog_env.home);
-                let env_overrides = [
-                    ("rlm.frameModel", "ULTRON_RLM_FRAME_MODEL"),
-                    ("review.model", "ULTRON_REVIEW_MODEL"),
-                    ("claudeCode.frameModel", "ULTRON_CLAUDE_FRAME_MODEL"),
-                    ("claudeCode.childModel", "ULTRON_CLAUDE_CHILD_MODEL"),
-                    ("claudeCode.model", "ULTRON_CLAUDE_MODEL"),
-                ]
-                .into_iter()
-                .filter_map(|(key, name)| {
-                    let value = std::env::var(name).ok()?.trim().to_string();
-                    let well_formed = key.starts_with("claudeCode.") && key != "claudeCode.frameModel"
-                        || value
-                            .split_once('/')
-                            .is_some_and(|(p, m)| !p.is_empty() && !m.is_empty());
-                    (!value.is_empty() && well_formed).then(|| (key.to_string(), (name.to_string(), value)))
-                })
-                .collect();
+                let env_overrides = config::env::model_env_overrides(&|name| std::env::var(name).ok())
+                    .into_iter()
+                    .map(|(key, name, value)| (key.to_string(), (name.to_string(), value)))
+                    .collect();
                 let mut themes = vec!["dark".to_string(), "light".to_string()];
                 if let Ok(dir) = std::fs::read_dir(agent_dir.join("themes")) {
                     let mut custom: Vec<String> = dir
@@ -2317,7 +2306,7 @@ fn run_tui(
     let model = crate::print_mode::resolve_model(parsed, env).ok();
     let models = catalog(env);
     let splash =
-        !(env.var)("ULTRON_SPLASH").is_some_and(|v| matches!(v.trim().to_lowercase().as_str(), "off" | "0" | "false"));
+        !(env.var)(SPLASH_ENV).is_some_and(|v| matches!(v.trim().to_lowercase().as_str(), "off" | "0" | "false"));
     // The worker's project trust: a trusted project's `.pi/settings.json` applies, a distrusted one's does not.
     let settings = config::settings::SettingsManager::for_worker(&env.cwd, &env.agent_dir(), &env.home);
     let presentation = presentation_settings(parsed, settings.settings());

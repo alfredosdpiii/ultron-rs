@@ -464,7 +464,7 @@ impl AuthProvider for ProviderAuth {
 /// Where this process runs relative to the user's browser (`browserReach`).
 pub fn browser_reach(var: &dyn Fn(&str) -> Option<String>, exists: &dyn Fn(&str) -> bool) -> &'static str {
     let set = |key: &str| var(key).is_some_and(|v| !v.trim().is_empty());
-    if set("ULTRON_OAUTH_CALLBACK_HOST") || set("PI_OAUTH_CALLBACK_HOST") {
+    if set(ai::oauth_flow::OAUTH_CALLBACK_HOST_ENV) || set(ai::oauth_flow::LEGACY_OAUTH_CALLBACK_HOST_ENV) {
         return "local";
     }
     let container = set("container")

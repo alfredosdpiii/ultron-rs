@@ -17,6 +17,8 @@ use serde_json::{Map, Value, json};
 use std::collections::HashSet;
 use std::sync::{Arc, Mutex};
 
+pub const COMPACTION_TRIM_ENV: &str = "ULTRON_COMPACTION_TRIM";
+
 pub const CONTEXT_EDIT_CUSTOM_TYPE: &str = "context_edit";
 pub const CONTEXT_OMITTED_CUSTOM_TYPE: &str = "context_edit:omitted";
 pub const CONTEXT_OMITTED_TOOL_RESULT_TEXT: &str = "[Tool result removed from context.]";
@@ -507,7 +509,7 @@ impl ContextControl {
         Self {
             branches,
             clock: system_clock(),
-            trim: compaction_trim_enabled(std::env::var("ULTRON_COMPACTION_TRIM").ok().as_deref()),
+            trim: compaction_trim_enabled(std::env::var(COMPACTION_TRIM_ENV).ok().as_deref()),
             pending: Mutex::new(Vec::new()),
             tracking: Mutex::new(tracking),
             state_cache: Mutex::new(None),

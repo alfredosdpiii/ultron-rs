@@ -11,7 +11,7 @@
 
 use crate::types::Model;
 
-pub use model_scope::{THINKING_LEVELS, is_valid_thinking_level};
+use model_scope::is_valid_thinking_level;
 
 /// `DEFAULT_THINKING_LEVEL` (core/defaults.ts).
 pub const DEFAULT_THINKING_LEVEL: &str = "medium";

@@ -7,20 +7,19 @@ use crate::Env;
 use crate::args::Args;
 use std::sync::Arc;
 
+pub const EXTENSION_TOOLS_ENV: &str = "ULTRON_EXTENSION_TOOLS";
+pub const NATIVE_EXTENSION_TOOLS_ENV: &str = "ULTRON_NATIVE_EXTENSION_TOOLS";
+pub const TOOLS_ENV: &str = "ULTRON_TOOLS";
+
 /// The variables a run may set for itself; workers get the ones whose value differs from this process's.
 const RUN_VARIABLES: [&str; 5] = [
-    "PI_OFFLINE",
-    "PI_SKIP_VERSION_CHECK",
+    config::env::OFFLINE_ENV,
+    config::env::SKIP_VERSION_CHECK_ENV,
     "HTTP_PROXY",
     "HTTPS_PROXY",
     // `--claude` / `claudeCode.root` (`prepareClaudeRoot`'s env): the worker moves a resumed lane to the root model.
-    "ULTRON_ROOT",
+    session_core::core::ROOT_ENV,
 ];
-
-/// `isTruthyEnvFlag`: `1`, `true` or `yes` (any case).
-pub fn truthy(value: Option<&str>) -> bool {
-    value.is_some_and(|v| v == "1" || v.eq_ignore_ascii_case("true") || v.eq_ignore_ascii_case("yes"))
-}
 
 /// `env` with `overrides` taking precedence.
 pub fn overlay(env: &Env, overrides: Vec<(String, String)>) -> Env {
@@ -42,15 +41,15 @@ pub fn overlay(env: &Env, overrides: Vec<(String, String)>) -> Env {
 
 /// `--offline` (or a truthy `PI_OFFLINE`): `PI_OFFLINE=1` and `PI_SKIP_VERSION_CHECK=1` for the whole run.
 pub fn offline_env(argv: &[String], env: &Env) -> Env {
-    let offline = argv.iter().any(|a| a == "--offline") || truthy((env.var)("PI_OFFLINE").as_deref());
+    let offline = argv.iter().any(|a| a == "--offline") || config::env::offline(&*env.var);
     if !offline {
         return env.clone();
     }
     overlay(
         env,
         vec![
-            ("PI_OFFLINE".into(), "1".into()),
-            ("PI_SKIP_VERSION_CHECK".into(), "1".into()),
+            (config::env::OFFLINE_ENV.into(), "1".into()),
+            (config::env::SKIP_VERSION_CHECK_ENV.into(), "1".into()),
         ],
     )
 }
@@ -226,16 +225,16 @@ pub fn tool_env_warnings(env: &Env) -> Vec<String> {
     const ONLY_RLM: &str = "the model's only tool is rlm";
     let mut warnings = Vec::new();
     let lower = |key: &str| (env.var)(key).map(|v| v.trim().to_lowercase());
-    if lower("ULTRON_TOOLS").as_deref() == Some("native") {
+    if lower(TOOLS_ENV).as_deref() == Some("native") {
         warnings.push(format!(
             "ULTRON_TOOLS=native is ignored: {ONLY_RLM}, whose REPL has read, edit, write and bash as Python functions"
         ));
     }
     let extension_tools = format!("{ONLY_RLM}, and Pi extensions are not supported by ultron-rs");
-    if lower("ULTRON_EXTENSION_TOOLS").as_deref() == Some("native") {
+    if lower(EXTENSION_TOOLS_ENV).as_deref() == Some("native") {
         warnings.push(format!("ULTRON_EXTENSION_TOOLS=native is ignored: {extension_tools}"));
     }
-    let listed: Vec<String> = (env.var)("ULTRON_NATIVE_EXTENSION_TOOLS")
+    let listed: Vec<String> = (env.var)(NATIVE_EXTENSION_TOOLS_ENV)
         .unwrap_or_default()
         .split(',')
         .map(str::trim)
@@ -298,22 +297,26 @@ mod tests {
     fn cli_startup_offline_flag_or_env_sets_offline_for_the_run_and_its_workers() {
         let args = |a: &[&str]| a.iter().map(|s| s.to_string()).collect::<Vec<_>>();
         let plain = offline_env(&args(&["-p", "x"]), &env_with(&[]));
-        assert_eq!((plain.var)("PI_OFFLINE"), None);
+        assert_eq!((plain.var)(config::env::OFFLINE_ENV), None);
         assert!(worker_env(&plain).is_empty());
         let flagged = offline_env(&args(&["--offline", "-p"]), &env_with(&[]));
-        assert_eq!((flagged.var)("PI_OFFLINE").as_deref(), Some("1"));
-        assert_eq!((flagged.var)("PI_SKIP_VERSION_CHECK").as_deref(), Some("1"));
+        assert_eq!((flagged.var)(config::env::OFFLINE_ENV).as_deref(), Some("1"));
+        assert_eq!((flagged.var)(config::env::SKIP_VERSION_CHECK_ENV).as_deref(), Some("1"));
         assert_eq!(
             worker_env(&flagged),
             [
-                ("PI_OFFLINE".to_string(), "1".to_string()),
-                ("PI_SKIP_VERSION_CHECK".to_string(), "1".to_string())
+                (config::env::OFFLINE_ENV.to_string(), "1".to_string()),
+                (config::env::SKIP_VERSION_CHECK_ENV.to_string(), "1".to_string())
             ]
         );
         // `isTruthyEnvFlag`: 1, true, yes; anything else is not offline.
         for (value, offline) in [("YES", true), ("true", true), ("1", true), ("0", false), ("no", false)] {
-            let env = offline_env(&args(&[]), &env_with(&[("PI_OFFLINE", value)]));
-            assert_eq!((env.var)("PI_SKIP_VERSION_CHECK").is_some(), offline, "{value}");
+            let env = offline_env(&args(&[]), &env_with(&[(config::env::OFFLINE_ENV, value)]));
+            assert_eq!(
+                (env.var)(config::env::SKIP_VERSION_CHECK_ENV).is_some(),
+                offline,
+                "{value}"
+            );
         }
     }
 
@@ -358,7 +361,7 @@ mod tests {
         .unwrap();
         let agent_dir = agent.display().to_string();
         let env = env_with(&[
-            ("ULTRON_CODING_AGENT_DIR", &agent_dir),
+            (config::paths::ENV_AGENT_DIR, &agent_dir),
             ("HTTPS_PROXY", "http://mine:1"),
         ]);
         let proxied = proxy_env(&env);

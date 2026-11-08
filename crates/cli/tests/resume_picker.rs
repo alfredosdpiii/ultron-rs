@@ -63,8 +63,8 @@ fn cli_native_prompted_resume_on_a_terminal_asks_which_session() {
             .current_dir(root.join("cwd"))
             .env("PATH", "/usr/bin:/bin")
             .env("HOME", &root)
-            .env("ULTRON_CODING_AGENT_DIR", &agent)
-            .env("ULTRON_SERVER_DIR", root.join("server"))
+            .env(config::paths::ENV_AGENT_DIR, &agent)
+            .env(config::paths::ENV_SERVER_DIR, root.join("server"))
             .env("ANTHROPIC_API_KEY", "test-key")
             .output()
             .unwrap();

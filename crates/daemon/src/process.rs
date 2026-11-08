@@ -10,6 +10,8 @@ use std::sync::OnceLock;
 
 pub use rustix::process::Signal;
 
+pub const INTERNAL_EXE_ENV: &str = "ULTRON_INTERNAL_EXE";
+
 /// The argument that marks an internal process invocation: `ultron __internal <role> ...`.
 pub const INTERNAL_ARGUMENT: &str = "__internal";
 
@@ -60,7 +62,7 @@ pub fn executable() -> PathBuf {
     EXECUTABLE
         .get()
         .cloned()
-        .or_else(|| std::env::var_os("ULTRON_INTERNAL_EXE").map(PathBuf::from))
+        .or_else(|| std::env::var_os(INTERNAL_EXE_ENV).map(PathBuf::from))
         .or_else(|| config::paths::own_executable().ok())
         .unwrap_or_else(|| PathBuf::from("ultron"))
 }
@@ -74,7 +76,7 @@ pub const AGENT_MARKERS: [(&str, &str); 2] = [("PI_CODING_AGENT", "true"), ("AI_
 /// `ULTRON_DEBUG_INTERNAL=1`. It runs with [`AGENT_MARKERS`] (under `env`, which wins as `options.env` does).
 pub fn spawn(role: Role, args: &[String], env: &[(String, String)]) -> std::io::Result<Child> {
     use std::os::unix::process::CommandExt;
-    let debug = std::env::var("ULTRON_DEBUG_INTERNAL").as_deref() == Ok("1");
+    let debug = std::env::var(config::env::DEBUG_INTERNAL_ENV).as_deref() == Ok("1");
     let mut command = Command::new(executable());
     command
         .arg(INTERNAL_ARGUMENT)
@@ -103,11 +105,10 @@ pub fn kill(pid: u32, signal: rustix::process::Signal) -> bool {
     rustix::process::Pid::from_raw(pid as i32).is_some_and(|pid| rustix::process::kill_process(pid, signal).is_ok())
 }
 
-pub fn alive(pid: u32) -> bool {
-    rustix::process::Pid::from_raw(pid as i32).is_some_and(|pid| rustix::process::test_kill_process(pid).is_ok())
-}
-
 /// `traceStartup(label)` from this process (`ULTRON_STARTUP_TRACE`; nothing when unset).
 pub fn trace_startup(label: &str) {
-    session_core::startup_trace::trace_startup(std::env::var("ULTRON_STARTUP_TRACE").ok().as_deref(), label);
+    session_core::startup_trace::trace_startup(
+        std::env::var(session_core::startup_trace::TRACE_ENV).ok().as_deref(),
+        label,
+    );
 }

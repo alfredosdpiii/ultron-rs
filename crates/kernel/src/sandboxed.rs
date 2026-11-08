@@ -134,7 +134,7 @@ pub(crate) fn command(launch: Launch<'_>) -> Command {
     let spill = policy
         .env
         .iter()
-        .find(|(name, _)| name == "ULTRON_RLM_SPILL_DIR")
+        .find(|(name, _)| name == crate::env::RLM_SPILL_DIR_ENV)
         .map(|(_, value)| PathBuf::from(value.trim()))
         .filter(|dir| dir.is_absolute());
     let snapshot_dir = launch.snapshot_path.and_then(Path::parent).map(Path::to_path_buf);
@@ -147,7 +147,7 @@ pub(crate) fn command(launch: Launch<'_>) -> Command {
     let skills = policy
         .env
         .iter()
-        .find(|(name, _)| name == "ULTRON_CODE_SKILLS_DIR")
+        .find(|(name, _)| name == crate::env::CODE_SKILLS_DIR_ENV)
         .and_then(|(_, value)| std::fs::canonicalize(value.trim()).ok());
     for path in python_paths(launch.python, launch.runtime).into_iter().chain(skills) {
         if !policy.writable.contains(&path) {

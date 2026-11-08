@@ -11,7 +11,7 @@ use std::path::Path;
 use std::sync::Arc;
 
 fn python() -> String {
-    std::env::var("ULTRON_PYTHON").unwrap_or_else(|_| "/usr/bin/python3".into())
+    kernel::env::python(|name| std::env::var(name).ok())
 }
 
 const EXPECTED: &str = "MCP server \"dies\" could not be connected: MCP server \"dies\" failed to connect: MCP connection closed\nfatal: cannot start";

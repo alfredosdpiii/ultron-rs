@@ -19,7 +19,7 @@ use std::time::{Duration, Instant};
 const GUARD: Duration = Duration::from_secs(120);
 
 fn python() -> String {
-    std::env::var("ULTRON_PYTHON").unwrap_or_else(|_| "/usr/bin/python3".into())
+    kernel::env::python(|name| std::env::var(name).ok())
 }
 
 fn wait_until(what: &str, ready: impl Fn() -> bool) {

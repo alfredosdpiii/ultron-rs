@@ -12,9 +12,9 @@ fn run(args: &[&str], cwd: &Path) -> (i32, String, String) {
         home: root.clone(),
         var: Arc::new(move |key| match key {
             "HOME" => Some(root.display().to_string()),
-            "ULTRON_CODING_AGENT_DIR" => Some(root.join("agent").display().to_string()),
-            "ULTRON_SERVER_DIR" => Some(root.join("server").display().to_string()),
-            "PI_OFFLINE" => Some("1".into()),
+            config::paths::ENV_AGENT_DIR => Some(root.join("agent").display().to_string()),
+            config::paths::ENV_SERVER_DIR => Some(root.join("server").display().to_string()),
+            config::env::OFFLINE_ENV => Some("1".into()),
             _ => None,
         }),
         docs: cwd.join("docs"),

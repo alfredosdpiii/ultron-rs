@@ -30,3 +30,16 @@ fn signals_leave_children_unblocked_and_reach_the_handler() {
     assert_eq!(rx.recv_timeout(Duration::from_secs(10)).unwrap(), Sig::SIGHUP);
     assert_eq!(received(), Some(Sig::SIGHUP));
 }
+
+#[test]
+fn signals_pid_alive_is_kill_zero_with_eperm_alive() {
+    assert!(signals::pid_alive(std::process::id()));
+    // Pid 1 belongs to root: kill(1, 0) fails with EPERM for any other user, and the process still exists.
+    assert!(signals::pid_alive(1));
+    assert!(!signals::pid_alive(0));
+    assert!(!signals::pid_alive(u32::MAX));
+    let mut child = std::process::Command::new("true").spawn().unwrap();
+    let pid = child.id();
+    child.wait().unwrap();
+    assert!(!signals::pid_alive(pid));
+}

@@ -28,8 +28,8 @@ fn kernel_w16f_base_env_replaces_the_process_environment_of_the_kernel() {
             ("PATH", "/w16f/session/bin"),
             ("W16F_SESSION_ONLY", "from-session"),
             ("W16F_API_TOKEN", "hidden"),
-            ("ULTRON_RLM_MAX_MEMORY_MB", "1234"),
-            ("ULTRON_RLM_MAX_CPU_SECONDS", "77"),
+            (kernel::env::RLM_MAX_MEMORY_MB_ENV, "1234"),
+            (kernel::env::RLM_MAX_CPU_SECONDS_ENV, "77"),
         ]),
         handler(),
     )
@@ -58,7 +58,11 @@ fn kernel_w16f_base_env_replaces_the_process_environment_of_the_kernel() {
 
 #[test]
 fn kernel_w16f_the_interpreter_comes_from_the_base_envs_ultron_python() {
-    let kernel = Kernel::new(options(&[("ULTRON_PYTHON", "/w16f/missing/python3")]), handler()).unwrap();
+    let kernel = Kernel::new(
+        options(&[(kernel::env::PYTHON_ENV, "/w16f/missing/python3")]),
+        handler(),
+    )
+    .unwrap();
     let error = kernel.start().unwrap_err();
     assert!(error.message().starts_with("RLM kernel spawn failed"), "{error:?}");
     kernel.shutdown();
@@ -76,4 +80,19 @@ fn kernel_w16f_only_a_real_command_group_other_than_the_hosts_own_may_be_signall
             Some(allowed)
         );
     }
+}
+
+/// kernel.ts's interpreter: `ULTRON_PYTHON` as given (`??`: even blank), else /usr/bin/python3 on Linux when it
+/// exists, else `python3`. Loki (after `ULTRON_LOKI_PYTHON`), `ultron setup` and `autoreview doctor` use it too.
+#[test]
+fn kernel_env_python_is_ultron_python_else_the_system_interpreter() {
+    let set = |value: &'static str| move |name: &str| (name == kernel::env::PYTHON_ENV).then(|| value.to_string());
+    assert_eq!(kernel::env::python(set("/opt/py")), "/opt/py");
+    assert_eq!(kernel::env::python(set("")), "");
+    let fallback = if cfg!(target_os = "linux") && std::path::Path::new("/usr/bin/python3").exists() {
+        "/usr/bin/python3"
+    } else {
+        "python3"
+    };
+    assert_eq!(kernel::env::python(|_| None), fallback);
 }

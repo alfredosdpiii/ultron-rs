@@ -7,8 +7,7 @@
 use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
 
-pub const ENV_SERVER_DIR: &str = "ULTRON_SERVER_DIR";
-const LEGACY_ENV_SERVER_DIR: &str = "PI_SERVER_DIR";
+use config::paths::{ENV_SERVER_DIR, LEGACY_ENV_SERVER_DIR};
 /// `sockaddr_un.sun_path` holds 108 bytes including the terminator.
 const MAX_SOCKET_PATH: usize = 107;
 /// The longest socket name a server directory holds: `server-<uuid>-<12 hex>.sock`.
@@ -175,7 +174,7 @@ fn read_records(dir: &Path, kind: &'static str, out: &mut Vec<Running>) {
             continue;
         };
         let pid = record["pid"].as_u64().unwrap_or(0) as u32;
-        if pid == 0 || !crate::process::alive(pid) {
+        if !signals::pid_alive(pid) {
             continue;
         }
         let session_dir = PathBuf::from(record["sessionDir"].as_str().unwrap_or_default());

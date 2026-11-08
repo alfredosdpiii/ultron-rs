@@ -26,6 +26,8 @@ use std::collections::HashMap;
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
 
+pub const TOOL_RESULT_BYTES_ENV: &str = "ULTRON_TOOL_RESULT_BYTES";
+
 pub const TOOL_CALL_MAX_ACTIVE: usize = 32;
 pub const TOOL_CALL_MAX_RETAINED: usize = 64;
 pub const TOOL_CALL_MAX_WAIT_SECONDS: f64 = 3600.0;
@@ -216,7 +218,7 @@ impl ToolCalls {
             inner: Arc::new(Inner {
                 runner,
                 store,
-                output_bytes: tool_result_budget(std::env::var("ULTRON_TOOL_RESULT_BYTES").ok().as_deref()),
+                output_bytes: tool_result_budget(std::env::var(TOOL_RESULT_BYTES_ENV).ok().as_deref()),
                 max_retained: TOOL_CALL_MAX_RETAINED,
                 now: system_clock(),
                 on_end: Mutex::new(None),

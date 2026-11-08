@@ -70,7 +70,7 @@ fn cli_tui_login_esc_stops_the_flow_and_saves_nothing() {
     let env = cli::Env {
         cwd: tmp.path().to_path_buf(),
         home: tmp.path().to_path_buf(),
-        var: Arc::new(move |k| (k == "ULTRON_CODING_AGENT_DIR").then(|| agent_dir.clone())),
+        var: Arc::new(move |k| (k == config::paths::ENV_AGENT_DIR).then(|| agent_dir.clone())),
         docs: tmp.path().join("docs"),
     };
     assert!(cli::tui_login::supported(&env, "gw"));

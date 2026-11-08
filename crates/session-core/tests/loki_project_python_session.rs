@@ -75,7 +75,7 @@ fn finding(missing: &str) -> (String, bool) {
             }
             tool(&format!("toolu_{}", results.len()), "print('NEXT')")
         }),
-        &[("ULTRON_LOKI_PROJECT_PYTHON", &python.display().to_string())],
+        &[(loki::project::LOKI_PROJECT_PYTHON_ENV, &python.display().to_string())],
         None,
     );
     w.call(Op::PromptAndWait {

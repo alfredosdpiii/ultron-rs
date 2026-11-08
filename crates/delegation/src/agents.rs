@@ -317,7 +317,7 @@ fn definition_key(value: Option<&Value>) -> Result<String, String> {
 fn task_options(payload: &Map<String, Value>) -> Result<(Option<String>, Option<String>, u64), String> {
     let model = match payload.get("model") {
         None | Some(Value::Null) => None,
-        Some(Value::String(model)) if string::is_model_ref(model) => Some(model.clone()),
+        Some(Value::String(model)) if model_scope::is_model_ref(model) => Some(model.clone()),
         Some(_) => return Err("model must be provider/model".into()),
     };
     let key = match payload.get("key") {

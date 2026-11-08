@@ -13,6 +13,8 @@ mod dream;
 mod extension_ui;
 #[path = "fixture.rs"]
 mod fixture;
+#[path = "instance.rs"]
+mod instance;
 #[path = "lane_publish.rs"]
 mod lane_publish;
 #[path = "lifecycle.rs"]

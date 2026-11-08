@@ -23,7 +23,7 @@ use tui_harness::{Mock, TempDir, Tui, text_reply};
 const MODEL: [&str; 2] = ["--model", "anthropic/claude-sonnet-4-5"];
 
 fn python() -> String {
-    std::env::var("ULTRON_PYTHON").unwrap_or_else(|_| "/usr/bin/python3".into())
+    kernel::env::python(|name| std::env::var(name).ok())
 }
 
 /// A gateway answering every `POST` with `status` and `body`; records each request's path, Authorization and body.
@@ -123,9 +123,9 @@ fn cli_interactive_bug_report_exports_a_zip_with_the_transcript() {
     let tmp = TempDir::new();
     let gateway_url = format!("http://127.0.0.1:{gateway_port}");
     let env = [
-        ("ULTRON_AUTO_NAME", "off"),
-        ("ULTRON_SPLASH", "off"),
-        ("PI_RADIUS_GATEWAY", gateway_url.as_str()),
+        (session_core::core::AUTO_NAME_ENV, "off"),
+        (cli::interactive::SPLASH_ENV, "off"),
+        (server::radius_relay::ENV_RADIUS_GATEWAY, gateway_url.as_str()),
     ];
     let tui = Tui::start_at(&tmp.0, mock.port, 120, 50, &MODEL, &env);
     tui.wait("Session:");
@@ -215,9 +215,9 @@ fn cli_interactive_bug_report_uploads_a_model_summary_instead_of_the_transcript(
     let tmp = TempDir::new();
     let gateway_url = format!("http://127.0.0.1:{gateway_port}/some/path");
     let env = [
-        ("ULTRON_AUTO_NAME", "off"),
-        ("ULTRON_SPLASH", "off"),
-        ("PI_RADIUS_GATEWAY", gateway_url.as_str()),
+        (session_core::core::AUTO_NAME_ENV, "off"),
+        (cli::interactive::SPLASH_ENV, "off"),
+        (server::radius_relay::ENV_RADIUS_GATEWAY, gateway_url.as_str()),
     ];
     let tui = Tui::start_at(&tmp.0, mock.port, 120, 50, &MODEL, &env);
     tui.wait("Session:");
@@ -289,9 +289,9 @@ fn cli_interactive_bug_report_failed_upload_offers_the_zip_and_cancel_and_offlin
     let tmp = TempDir::new();
     let gateway_url = format!("http://127.0.0.1:{gateway_port}");
     let env = [
-        ("ULTRON_AUTO_NAME", "off"),
-        ("ULTRON_SPLASH", "off"),
-        ("PI_RADIUS_GATEWAY", gateway_url.as_str()),
+        (session_core::core::AUTO_NAME_ENV, "off"),
+        (cli::interactive::SPLASH_ENV, "off"),
+        (server::radius_relay::ENV_RADIUS_GATEWAY, gateway_url.as_str()),
     ];
     let tui = Tui::start_at(&tmp.0, mock.port, 120, 50, &MODEL, &env);
     tui.wait("Session:");
@@ -326,10 +326,10 @@ fn cli_interactive_bug_report_failed_upload_offers_the_zip_and_cancel_and_offlin
     // Offline mode refuses the upload before anything is built.
     let tmp = TempDir::new();
     let env = [
-        ("ULTRON_AUTO_NAME", "off"),
-        ("ULTRON_SPLASH", "off"),
-        ("PI_RADIUS_GATEWAY", gateway_url.as_str()),
-        ("PI_OFFLINE", "1"),
+        (session_core::core::AUTO_NAME_ENV, "off"),
+        (cli::interactive::SPLASH_ENV, "off"),
+        (server::radius_relay::ENV_RADIUS_GATEWAY, gateway_url.as_str()),
+        (config::env::OFFLINE_ENV, "1"),
     ];
     let tui = Tui::start_at(&tmp.0, mock.port, 120, 50, &MODEL, &env);
     tui.wait("Session:");
@@ -357,7 +357,10 @@ fn cli_interactive_easter_eggs_draw_pi_components() {
         100,
         50,
         &MODEL,
-        &[("ULTRON_AUTO_NAME", "off"), ("ULTRON_SPLASH", "off")],
+        &[
+            (session_core::core::AUTO_NAME_ENV, "off"),
+            (cli::interactive::SPLASH_ENV, "off"),
+        ],
     );
     tui.wait("Session:");
     tui.send_text("/dementedelves");

@@ -11,6 +11,10 @@
 use crate::compaction_op::CompactionOp;
 use jsrt::sync;
 
+pub const AUTO_NAME_ENV: &str = "ULTRON_AUTO_NAME";
+pub const AUTO_REFINE_ENV: &str = "ULTRON_AUTO_REFINE";
+pub const RECOVERY_RESUME_ENV: &str = "ULTRON_RECOVERY_RESUME";
+
 #[path = "navigate.rs"]
 mod navigate;
 use crate::compose::{Runtime, Services};
@@ -767,10 +771,13 @@ fn event(fields: Vec<(&str, Value)>) -> Value {
 /// generation.ts `configurationError`'s message for `model_unavailable`.
 const MODEL_UNAVAILABLE: &str = "The configured model is unavailable in this process";
 
-/// `ultron --claude`, `ULTRON_ROOT=claude` or the `claudeCode.root` setting (worker-root.ts `claudeRootRequested`:
-/// the CLI sets `ULTRON_ROOT=claude` for the session workers it starts).
-fn claude_root_requested(env: &RunEnv) -> bool {
-    (env.var)("ULTRON_ROOT").is_some_and(|v| v.trim().eq_ignore_ascii_case("claude"))
+/// `ULTRON_ROOT=claude` (what `ultron --claude` sets for the session workers it starts): the root lane runs on
+/// Claude Code.
+pub const ROOT_ENV: &str = "ULTRON_ROOT";
+
+/// worker-root.ts `claudeRootRequested`: [`ROOT_ENV`] is `claude`.
+pub fn claude_root_requested(var: &dyn Fn(&str) -> Option<String>) -> bool {
+    var(ROOT_ENV).is_some_and(|v| jsrt::string::trim(&v).to_lowercase() == "claude")
 }
 
 /// A model the stored lane names that no longer resolves (removed from the catalog or models.json): the session
@@ -855,7 +862,7 @@ fn lane_config_resolving(
             // `ultron --claude` (session-worker.ts): a resumed lane that is not on the Claude root's provider moves
             // to the root model, as `lane.setModel` does (its thinking level stays). A plain `--model` keeps the
             // stored lane (above).
-            if claude_root_requested(env)
+            if claude_root_requested(&*env.var)
                 && let Ok(m) = &flag_model
                 && config["model"]["provider"] != json!(m.provider)
             {
@@ -943,8 +950,9 @@ impl Core {
         };
         let resume = open_operation.filter(|_| durable_records);
         let sessions_dir = session_root.join(lane::session_directory_name(&metadata.cwd));
-        let trace =
-            |label: &str| crate::startup_trace::trace_startup((env.var)("ULTRON_STARTUP_TRACE").as_deref(), label);
+        let trace = |label: &str| {
+            crate::startup_trace::trace_startup((env.var)(crate::startup_trace::TRACE_ENV).as_deref(), label)
+        };
         trace("worker.harness");
         let mut runtime = Runtime::new(&env, &mode, sessions_dir, services)?;
         trace("worker.resources-loaded");
@@ -1091,7 +1099,7 @@ impl Core {
         let (env_var, async_events) = (env.var.clone(), runtime.config.async_events);
         let auto_memory = crate::auto_memory::AutoMemory::new(&runtime.config.settings, runtime.hindsight_explicit);
         let auto_refine =
-            crate::auto_refine::AutoRefine::new(&runtime.config.settings, (env_var)("ULTRON_AUTO_REFINE").as_deref());
+            crate::auto_refine::AutoRefine::new(&runtime.config.settings, (env_var)(AUTO_REFINE_ENV).as_deref());
         let mut core = Core {
             model_unavailable,
             loki_notice,
@@ -1133,11 +1141,11 @@ impl Core {
             navigating: false,
             after_run: Vec::new(),
             nudger: crate::nudge::ToolRoundNudger::new(
-                crate::nudge::tool_rounds_nudge_from_env((env_var)("ULTRON_TOOL_ROUNDS_NUDGE").as_deref()),
+                crate::nudge::tool_rounds_nudge_from_env((env_var)(crate::nudge::TOOL_ROUNDS_NUDGE_ENV).as_deref()),
                 async_events,
             ),
             skill_nudger: crate::nudge::SkillExtractionNudger::new(crate::nudge::skill_nudge_from_env(
-                (env_var)("ULTRON_SKILL_NUDGE").as_deref(),
+                (env_var)(crate::nudge::SKILL_NUDGE_ENV).as_deref(),
             )),
             persona: Default::default(),
             persona_session: Default::default(),
@@ -2537,7 +2545,7 @@ impl Core {
             && !continuation
             && prompt["role"] != "custom"
             && self.runtime.mode != "rpc"
-            && !(self.env.var)("ULTRON_AUTO_NAME")
+            && !(self.env.var)(AUTO_NAME_ENV)
                 .is_some_and(|v| matches!(v.trim().to_lowercase().as_str(), "off" | "0" | "false"));
         let named = if auto_name {
             names::apply_auto_name(&mut lock_session(&self.session), &text)
@@ -2780,7 +2788,7 @@ impl Core {
         if self.run.is_some() {
             return answer(false, Value::Null, "a run is in progress");
         }
-        let resume_off = (self.env.var)("ULTRON_RECOVERY_RESUME")
+        let resume_off = (self.env.var)(RECOVERY_RESUME_ENV)
             .is_some_and(|v| matches!(v.trim().to_lowercase().as_str(), "off" | "0" | "false"));
         // The interrupted run continues first; queued messages stay queued and the loop delivers them as it would
         // have (steering during the run, follow-ups when it would end). Without one, the first queued message runs.
@@ -2959,7 +2967,7 @@ pub fn spawn(options: OpenOptions, sink: EventSink) -> Result<(Sender<Input>, Jo
     let (tx, rx) = std::sync::mpsc::channel();
     let (ready_tx, ready_rx) = std::sync::mpsc::channel();
     let input = tx.clone();
-    let trace_path = (options.env.var)("ULTRON_STARTUP_TRACE");
+    let trace_path = (options.env.var)(crate::startup_trace::TRACE_ENV);
     let handle = std::thread::spawn(move || match Core::open(options, input, sink) {
         Ok(core) => {
             crate::startup_trace::trace_startup(trace_path.as_deref(), "worker.ready");

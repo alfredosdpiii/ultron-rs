@@ -70,13 +70,16 @@ fn cases(root: &Path) -> Vec<Case> {
             }
             let mut vars: HashMap<String, String> = [
                 ("HOME", expand("<root>/home")),
-                ("PI_OFFLINE", "1".into()),
-                ("ULTRON_CODING_AGENT_DIR", agent.display().to_string()),
+                (config::env::OFFLINE_ENV, "1".into()),
+                (config::paths::ENV_AGENT_DIR, agent.display().to_string()),
                 (
-                    "ULTRON_SERVER_DIR",
+                    config::paths::ENV_SERVER_DIR,
                     root.join(format!("case-{i}/server")).display().to_string(),
                 ),
-                ("ULTRON_CLAUDE_COMMAND", expand("<root>/missing/claude")),
+                (
+                    ai::claude_subscription::process::COMMAND_ENV,
+                    expand("<root>/missing/claude"),
+                ),
             ]
             .into_iter()
             .map(|(k, v)| (k.to_string(), v))

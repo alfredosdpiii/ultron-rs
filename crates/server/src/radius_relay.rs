@@ -209,8 +209,8 @@ pub fn normalize_radius_gateway_url(value: &str) -> String {
     with_scheme.trim_end_matches('/').to_string()
 }
 
-/// `RadiusRelayAuthResolver`: offline mode (`PI_OFFLINE` set) has no relay; an explicit token (trimmed, never
-/// empty) wins; else the stored credential.
+/// `RadiusRelayAuthResolver`: offline mode has no relay; an explicit token (trimmed, never empty) wins; else the
+/// stored credential.
 pub struct RadiusRelayAuthResolver {
     input: Option<AuthInput>,
     gateway: String,

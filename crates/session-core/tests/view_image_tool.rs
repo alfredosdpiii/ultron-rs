@@ -37,9 +37,12 @@ fn fixture(vision: bool) -> Fixture {
     std::fs::write(cwd.join("dot.png"), p_session_support::png(4, 3)).unwrap();
     let vars: Vec<(String, String)> = vec![
         ("HOME".into(), home.display().to_string()),
-        ("ULTRON_CODING_AGENT_DIR".into(), agent_dir.display().to_string()),
-        ("ULTRON_SERVER_DIR".into(), root.join("server").display().to_string()),
-        ("ULTRON_HINDSIGHT_URL".into(), "off".into()),
+        (config::paths::ENV_AGENT_DIR.into(), agent_dir.display().to_string()),
+        (
+            config::paths::ENV_SERVER_DIR.into(),
+            root.join("server").display().to_string(),
+        ),
+        (hindsight::resolve::HINDSIGHT_URL_ENV.into(), "off".into()),
     ];
     let env = RunEnv {
         cwd: cwd.clone(),

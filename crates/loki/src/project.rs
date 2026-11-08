@@ -7,6 +7,8 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
+pub const LOKI_PROJECT_PYTHON_ENV: &str = "ULTRON_LOKI_PROJECT_PYTHON";
+
 /// Prints the interpreter's path, then 1 when it belongs to a virtual or conda environment (any Python 2.7+).
 pub const ENVIRONMENT_PROBE: &str = "import os, sys\nprint(sys.executable)\nbase = getattr(sys, 'base_prefix', sys.prefix)\nconda = os.path.isdir(os.path.join(sys.prefix, 'conda-meta'))\nprint(int(base != sys.prefix or hasattr(sys, 'real_prefix') or conda))";
 
@@ -37,7 +39,7 @@ const PROBE_TIMEOUT: Duration = Duration::from_secs(5);
 /// - `.venv` or `venv` in `cwd`.
 pub fn find_project_python(cwd: &Path, var: &dyn Fn(&str) -> Option<String>) -> Option<String> {
     let set = |key: &str| var(key).map(|v| v.trim().to_string()).filter(|v| !v.is_empty());
-    if let Some(named) = set("ULTRON_LOKI_PROJECT_PYTHON") {
+    if let Some(named) = set(LOKI_PROJECT_PYTHON_ENV) {
         return Some(named);
     }
     if set("LOKI_PYTHON").is_some() {

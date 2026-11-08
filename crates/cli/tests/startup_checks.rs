@@ -14,7 +14,7 @@ fn env_in(root: &Path) -> Env {
     Env {
         cwd: root.join("cwd"),
         home: root.join("home"),
-        var: Arc::new(move |k| (k == "ULTRON_CODING_AGENT_DIR").then(|| agent.clone())),
+        var: Arc::new(move |k| (k == config::paths::ENV_AGENT_DIR).then(|| agent.clone())),
         docs: root.join("pkg/docs"),
     }
 }
@@ -105,4 +105,25 @@ fn cli_subscription_auth_warning_reads_the_stored_credential_and_the_setting() {
         "anthropic"
     ));
     assert!(!case("{}", Some(oauth), "openai"));
+}
+
+/// `PI_OFFLINE` means offline only when it is `1`, `true` or `yes` (`config::env::offline`): the update check and
+/// the Radius relay used to treat any value (even `0`) as offline.
+#[test]
+fn cli_offline_sites_read_pi_offline_as_a_truthy_flag() {
+    use server::radius_relay::{AuthInput, RelayAuthResolver};
+    let with = |value: &'static str| move |k: &str| (k == config::env::OFFLINE_ENV).then(|| value.to_string());
+    for (value, offline) in [("1", true), ("YES", true), ("0", false), ("", false), ("off", false)] {
+        assert_eq!(
+            cli::startup_checks::version_checks_disabled(&with(value)),
+            offline,
+            "{value:?}"
+        );
+        let env = Env {
+            var: Arc::new(with(value)),
+            ..env_in(Path::new("/nonexistent"))
+        };
+        let resolver = cli::radius_relay::auth_resolver(&env, Some(AuthInput::Token("tok".into())));
+        assert_eq!(resolver.resolve(false).unwrap().is_none(), offline, "{value:?}");
+    }
 }

@@ -8,7 +8,9 @@ publish.workspace = true
 autotests = false
 
 [dependencies]
+config = { path = "../config" }
 jsrt = { path = "../jsrt" }
+kernel = { path = "../kernel" }
 rustix = { version = "=1.1.5", features = ["net", "std"] }
 serde_json = { version = "=1.0.151", features = ["preserve_order"] }
 

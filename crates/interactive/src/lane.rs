@@ -40,7 +40,7 @@ impl ModelInfo {
             return self.thinking_levels.clone();
         }
         let levels: &[&str] = if self.reasoning {
-            &["off", "minimal", "low", "medium", "high"]
+            &model_scope::THINKING_LEVELS[..5]
         } else {
             &["off"]
         };

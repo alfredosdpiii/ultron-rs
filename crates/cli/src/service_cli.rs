@@ -18,14 +18,17 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
+pub const LEGACY_SERVER_ID_ENV: &str = "PI_SERVER_ID";
+pub const SERVER_ID_ENV: &str = "ULTRON_SERVER_ID";
+
 /// Variables the unit keeps from the installing environment (locations only; never keys).
 const KEPT_VARS: [&str; 6] = [
-    "ULTRON_SERVER_DIR",
-    "PI_SERVER_DIR",
-    "ULTRON_SERVER_ID",
-    "PI_SERVER_ID",
-    "ULTRON_CODING_AGENT_DIR",
-    "ULTRON_CODING_AGENT_SESSION_DIR",
+    config::paths::ENV_SERVER_DIR,
+    config::paths::LEGACY_ENV_SERVER_DIR,
+    SERVER_ID_ENV,
+    LEGACY_SERVER_ID_ENV,
+    config::paths::ENV_AGENT_DIR,
+    config::paths::ENV_SESSION_DIR,
 ];
 /// Variables `systemctl --user` needs to reach the user manager, passed from the injected environment.
 const SYSTEMCTL_VARS: [&str; 4] = ["PATH", "HOME", "XDG_RUNTIME_DIR", "DBUS_SESSION_BUS_ADDRESS"];
@@ -147,7 +150,7 @@ pub fn durable_options(env: &Env) -> Result<ServerOptions, String> {
     Ok(ServerOptions {
         directory: instance.dir.clone(),
         session_dir: crate::session::session_directory_of(None, env, &instance),
-        server_id: (env.var)("ULTRON_SERVER_ID"),
+        server_id: (env.var)(SERVER_ID_ENV),
         // `--offline` and the `httpProxy` setting (already in `env`) hold for its workers.
         model: WorkerModel {
             env: crate::startup::worker_env(env),

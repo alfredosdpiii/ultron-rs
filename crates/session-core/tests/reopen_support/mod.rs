@@ -102,19 +102,19 @@ impl Home {
             json!({"providers": {"anthropic": {"baseUrl": format!("http://127.0.0.1:{port}")}}}).to_string(),
         )
         .unwrap();
-        let python = std::env::var("ULTRON_PYTHON").unwrap_or_else(|_| "/usr/bin/python3".into());
+        let python = kernel::env::python(|name| std::env::var(name).ok());
         let mut all: Vec<(String, String)> = vec![
             ("HOME".into(), self.root.display().to_string()),
             ("PATH".into(), "/usr/local/bin:/usr/bin:/bin".into()),
-            ("ULTRON_CODING_AGENT_DIR".into(), agent_dir.display().to_string()),
+            (config::paths::ENV_AGENT_DIR.into(), agent_dir.display().to_string()),
             (
-                "ULTRON_SERVER_DIR".into(),
+                config::paths::ENV_SERVER_DIR.into(),
                 self.root.join("server").display().to_string(),
             ),
             ("ANTHROPIC_API_KEY".into(), "test-key".into()),
-            ("ULTRON_HINDSIGHT_URL".into(), "off".into()),
-            ("ULTRON_PYTHON".into(), python),
-            ("PI_OFFLINE".into(), "1".into()),
+            (hindsight::resolve::HINDSIGHT_URL_ENV.into(), "off".into()),
+            (kernel::env::PYTHON_ENV.into(), python),
+            (config::env::OFFLINE_ENV.into(), "1".into()),
             ("TZ".into(), "UTC".into()),
         ];
         all.extend(vars.iter().map(|(k, v)| (k.to_string(), v.to_string())));

@@ -43,7 +43,7 @@ pub fn durable(args: &[String], env: &Env, out: &mut dyn Write, err: &mut dyn Wr
                 &ServerOptions {
                     directory: instance.dir.clone(),
                     session_dir,
-                    server_id: (env.var)("ULTRON_SERVER_ID"),
+                    server_id: (env.var)(crate::service_cli::SERVER_ID_ENV),
                     // `--offline` and the `httpProxy` setting hold for the server it starts and its workers.
                     model: WorkerModel {
                         env: crate::startup::worker_env(&crate::startup::proxy_env(env)),

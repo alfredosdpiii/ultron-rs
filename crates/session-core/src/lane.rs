@@ -25,6 +25,8 @@ use std::sync::{Arc, Mutex};
 use std::task::Poll;
 use std::time::Duration;
 
+pub const CLOCK_CONTEXT_ENV: &str = "ULTRON_CLOCK_CONTEXT";
+
 /// `RLM_TOOL_DESCRIPTION` and `RLM_TOOL_SNIPPET` from ultron/rlm/prompt.ts.
 const RLM_DESCRIPTION: &str = "Run a Python cell in your persistent REPL: variables, imports and functions persist across calls, top-level `await` works, and the last expression's value is shown with anything printed (kept as `_`).\nPre-imported: `bash`, `read`, `edit`, `write`, `view_image`, `rlm`, `agents`, `workflows`, `background`, `tools`, `mcp`, `ctx`, `skills`, `memory`, `hints`, `agent`, `Budget`, `state`, `preview`, `asyncio`; `help(obj)` shows any API's docs.";
 const RLM_SNIPPET: &str = "Python REPL for files, shell (`bash`), edits (`edit`), data and subagents";
@@ -107,8 +109,7 @@ pub fn clock_zone(env: &Env) -> jsrt::localtime::Zone {
 
 /// `clockContextEnabled`: `ULTRON_CLOCK_CONTEXT=off|0|false` disables clock lines.
 pub fn clock_enabled(env: &Env) -> bool {
-    !(env.var)("ULTRON_CLOCK_CONTEXT")
-        .is_some_and(|v| matches!(v.trim().to_lowercase().as_str(), "off" | "0" | "false"))
+    !(env.var)(CLOCK_CONTEXT_ENV).is_some_and(|v| matches!(v.trim().to_lowercase().as_str(), "off" | "0" | "false"))
 }
 
 /// The clock lines of `withClockLines` as `(index, text, timestamp)`: one before each user message that opens the

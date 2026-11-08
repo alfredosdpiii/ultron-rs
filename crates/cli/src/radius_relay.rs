@@ -1,6 +1,6 @@
 //! The Radius relay a server generation of this CLI runs (`startServerGeneration`'s `RadiusRelayHost` with
 //! `new RadiusRelayAuthResolver(options.relayAuth)`): the gateway from `PI_RADIUS_GATEWAY` (else
-//! `https://radius.pi.dev`), no relay in offline mode (`PI_OFFLINE` set), and the stored `radius` credential
+//! `https://radius.pi.dev`), no relay in offline mode ([`config::env::offline`]), and the stored `radius` credential
 //! (`getAuth("radius")`: auth.json's key or OAuth token, refreshed when it has under five minutes left, else
 //! `RADIUS_API_KEY`), looked up anew for every connection attempt.
 
@@ -30,10 +30,10 @@ pub fn relay_config(env: &Env) -> RelayConfig {
 
 /// `new RadiusRelayAuthResolver(input)` of this environment: an explicit credential (`--auth-token`,
 /// `--auth-token-file`) or the stored one, on `PI_RADIUS_GATEWAY` (else `https://radius.pi.dev`); offline mode
-/// (`PI_OFFLINE` set) has none.
+/// ([`config::env::offline`]) has none.
 pub fn auth_resolver(env: &Env, input: Option<AuthInput>) -> RadiusRelayAuthResolver {
     let gateway = (env.var)(ENV_RADIUS_GATEWAY).unwrap_or_else(|| DEFAULT_RADIUS_GATEWAY.into());
-    let offline = (env.var)("PI_OFFLINE").is_some();
+    let offline = config::env::offline(&*env.var);
     let lookup = env.clone();
     let stored: StoredToken = Arc::new(move || stored_radius_token(&lookup));
     RadiusRelayAuthResolver::new(input, &gateway, offline, stored)

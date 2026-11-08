@@ -103,7 +103,7 @@ fn cli_export_theme_export_page_finds_registered_and_custom_themes() {
     let env = cli::Env {
         cwd,
         home: root.0.join("home"),
-        var: Arc::new(move |k| (k == "ULTRON_CODING_AGENT_DIR").then(|| agent_var.clone())),
+        var: Arc::new(move |k| (k == config::paths::ENV_AGENT_DIR).then(|| agent_var.clone())),
         docs: root.0.join("docs"),
     };
     let cases = fixture["cases"].as_array().unwrap();
@@ -121,7 +121,11 @@ fn cli_export_theme_export_page_finds_registered_and_custom_themes() {
 fn cli_export_theme_share_viewer_url_falls_back_on_empty_like_ts() {
     for case in fixture()["share"].as_array().unwrap() {
         let value = case["env"].as_str().map(str::to_string);
-        let var = move |k: &str| (k == "PI_SHARE_VIEWER_URL").then(|| value.clone()).flatten();
+        let var = move |k: &str| {
+            (k == cli::export_html::SHARE_VIEWER_URL_ENV)
+                .then(|| value.clone())
+                .flatten()
+        };
         assert_eq!(
             cli::export_html::share_viewer_url(&var, case["gistId"].as_str().unwrap()),
             case["url"].as_str().unwrap(),

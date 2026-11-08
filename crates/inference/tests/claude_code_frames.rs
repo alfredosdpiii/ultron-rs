@@ -126,7 +126,7 @@ fn inference_depth_frame_on_claude_code_runs_on_the_subscription_without_api_cre
     let log = dir.path().join("claude.jsonl");
     let wrapper = Path::new(env!("CARGO_MANIFEST_DIR")).join("../ai/fixtures/claude-subscription/claude");
     let env: ai::env::ProviderEnv = [
-        ("ULTRON_CLAUDE_CODE_BIN", wrapper.display().to_string()),
+        (ai::claude_code_cli::CLAUDE_CODE_BIN_ENV, wrapper.display().to_string()),
         ("FAKE_LOG", log.display().to_string()),
         ("FAKE_NATIVE_ERROR", HIT_LIMIT.to_string()),
         ("ANTHROPIC_API_KEY", ["sk-ant-api03", "frame", "fixture"].join("-")),

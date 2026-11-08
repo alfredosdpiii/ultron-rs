@@ -270,8 +270,8 @@ fn resources_keep_going_ceiling_is_100_continues_or_8_hours_then_a_final_nudge()
     );
     assert_eq!(timed.keep_going, None);
     let env = |key: &str| match key {
-        "ULTRON_KEEPGOING_MAX_CONTINUES" => Some("3".to_string()),
-        "ULTRON_KEEPGOING_MAX_MS" => Some("bad".to_string()),
+        resources::keep_going::ENV_MAX_CONTINUES => Some("3".to_string()),
+        resources::keep_going::ENV_MAX_MS => Some("bad".to_string()),
         _ => None,
     };
     assert_eq!(

@@ -43,6 +43,14 @@ use std::sync::mpsc::Receiver;
 use std::sync::{Arc, Mutex, Weak};
 use std::time::Duration;
 
+pub const CONTEXT_REMINDER_ENV: &str = "ULTRON_CONTEXT_REMINDER";
+pub const CONTEXT_REMINDER_TOKENS_ENV: &str = "ULTRON_CONTEXT_REMINDER_TOKENS";
+pub const GUIDE_ENV: &str = "ULTRON_GUIDE";
+pub const LOKI_ENV: &str = "ULTRON_LOKI";
+pub const LOKI_TIMEOUT_MS_ENV: &str = "ULTRON_LOKI_TIMEOUT_MS";
+pub const MASK_SECRETS_ENV: &str = "ULTRON_MASK_SECRETS";
+pub const READ_HANDLE_BYTES_ENV: &str = "ULTRON_READ_HANDLE_BYTES";
+
 /// Host requests the subagent host serves.
 const DELEGATION_REQUESTS: [&str; 7] = [
     "rlm.spawn",
@@ -167,16 +175,16 @@ const SESSION_ENV_NAMES: &[&str] = &[
     "PYTHONPATH",
     "PYTHONHOME",
     "VIRTUAL_ENV",
-    "PI_OFFLINE",
-    "PI_SKIP_VERSION_CHECK",
-    "ULTRON_PYTHON",
-    "ULTRON_RLM_ENV_ALLOW",
-    "ULTRON_BASH_YIELD_AFTER",
-    "ULTRON_RLM_MAX_MEMORY_MB",
-    "ULTRON_RLM_MAX_CPU_SECONDS",
-    "ULTRON_RLM_OUTPUT_BYTES",
-    "ULTRON_RLM_MAX_TREE_MEMORY_MB",
-    "ULTRON_RLM_TREE_MEMORY_BACKEND",
+    config::env::OFFLINE_ENV,
+    config::env::SKIP_VERSION_CHECK_ENV,
+    kernel::env::PYTHON_ENV,
+    kernel::env::RLM_ENV_ALLOW_ENV,
+    kernel::env::BASH_YIELD_AFTER_ENV,
+    kernel::env::RLM_MAX_MEMORY_MB_ENV,
+    kernel::env::RLM_MAX_CPU_SECONDS_ENV,
+    kernel::env::RLM_OUTPUT_BYTES_ENV,
+    kernel::env::RLM_MAX_TREE_MEMORY_MB_ENV,
+    kernel::env::RLM_TREE_MEMORY_BACKEND_ENV,
 ];
 
 /// The environment a session's kernels and commands start from (TS: the worker's `process.env`, which kernel.ts
@@ -210,9 +218,9 @@ impl Config {
         // The worker's settings (`workerProjectTrusted`): a trusted project's `.pi/settings.json` applies too.
         let manager = config::settings::SettingsManager::for_worker(&env.cwd, &agent_dir, &env.home);
         let settings = Value::Object(manager.settings().clone());
-        let loki = loki_mode((env.var)("ULTRON_LOKI").as_deref(), &manager.loki_settings());
+        let loki = loki_mode((env.var)(LOKI_ENV).as_deref(), &manager.loki_settings());
         let loki_root = (loki != LokiMode::Off).then(|| git_root(&env.cwd).unwrap_or_else(|| env.cwd.clone()));
-        let skills_dir = (env.var)("ULTRON_CODE_SKILLS_DIR")
+        let skills_dir = (env.var)(kernel::env::CODE_SKILLS_DIR_ENV)
             .map(|dir| dir.trim().to_string())
             .filter(|dir| !dir.is_empty())
             .map_or_else(|| agent_dir.join("skills"), PathBuf::from);
@@ -226,16 +234,14 @@ impl Config {
             loki_root,
             runtime_path: config::paths::normalize(&env.docs.join("../src/ultron/rlm/runtime.py")),
             skills_dir,
-            mask_secrets: (env.var)("ULTRON_MASK_SECRETS"),
-            output_bytes: (env.var)("ULTRON_RLM_OUTPUT_BYTES"),
-            cell_yield_after: (env.var)("ULTRON_CELL_YIELD_AFTER"),
-            spawn_depth: delegation::host::spawn_depth_limit((env.var)("ULTRON_SPAWN_DEPTH").as_deref()),
-            async_events: (env.var)("ULTRON_ASYNC_EVENTS")
-                .is_none_or(|v| !matches!(v.trim().to_lowercase().as_str(), "off" | "0" | "false" | "no")),
-            frame_env: ["ULTRON_RLM_FRAME_MODEL", "ULTRON_REVIEW_MODEL", "ULTRON_RLM_MAP_TOKENS"]
-                .into_iter()
-                .filter_map(|key| (env.var)(key).map(|value| (key.to_string(), value)))
-                .collect(),
+            mask_secrets: (env.var)(MASK_SECRETS_ENV),
+            output_bytes: (env.var)(kernel::env::RLM_OUTPUT_BYTES_ENV),
+            cell_yield_after: (env.var)(kernel::env::CELL_YIELD_AFTER_ENV),
+            spawn_depth: delegation::host::spawn_depth_limit((env.var)(delegation::host::SPAWN_DEPTH_ENV).as_deref()),
+            async_events: crate::async_events::async_events_enabled(
+                (env.var)(crate::async_events::ASYNC_EVENTS_ENV).as_deref(),
+            ),
+            frame_env: inference::frame_env(&*env.var),
             var: env.var.clone(),
             masker: Arc::default(),
             project_trusted: manager.is_project_trusted(),
@@ -355,7 +361,7 @@ impl Config {
         let mut hooks = FileHooks::with_snapshots(cwd, workspace_snapshotter());
         hooks.ignore_outside(self.outside_changes.clone());
         match (
-            crate::guard_log::loki_log((self.var)("ULTRON_LOKI_LOG").as_deref()),
+            crate::guard_log::loki_log((self.var)(crate::guard_log::LOKI_LOG_ENV).as_deref()),
             record,
         ) {
             (Some(log), Some(record)) => hooks.on_record(Arc::new(move |outcome: &GuardRecord| {
@@ -379,7 +385,7 @@ impl Config {
                     .with_post_write(post_write)
                     .with_project_python(crate::guard_log::project_python(&*self.var, &self.cwd))
                     .with_timeout(host::loki_guard::loki_timeout(
-                        (self.var)("ULTRON_LOKI_TIMEOUT_MS").as_deref(),
+                        (self.var)(LOKI_TIMEOUT_MS_ENV).as_deref(),
                     )),
             ));
         }
@@ -446,7 +452,7 @@ pub fn mcp_runtime_guide(config: &Config) -> resources::runtime_guide::RuntimeGu
             .collect(),
         // The session runtime serves `rlm.ask`, `swarm`, `board`, `notes` (swarm_ops.rs) and typed memory: the model
         // is told, unless `ULTRON_GUIDE=ts` asks for the TypeScript guide (the TS-recorded request replays use it).
-        durable_apis: (config.var)("ULTRON_GUIDE").as_deref() != Some("ts"),
+        durable_apis: (config.var)(GUIDE_ENV).as_deref() != Some("ts"),
         // The root is woken by its work's ends only with completion events on (crate::wake); with them off it is
         // told to wait (`ULTRON_ASYNC_EVENTS=off`).
         delivery: if config.async_events {
@@ -456,9 +462,9 @@ pub fn mcp_runtime_guide(config: &Config) -> resources::runtime_guide::RuntimeGu
         },
         // The woken root's rlm.collect never waits (crate::wake); TypeScript's guide (`ULTRON_GUIDE=ts`, its
         // recorded replays) keeps its wording.
-        host_waits: (config.var)("ULTRON_GUIDE").as_deref() != Some("ts"),
+        host_waits: (config.var)(GUIDE_ENV).as_deref() != Some("ts"),
         // Cell results end with `[hint:<tag>]` lines under `ULTRON_HINTS=on`: the guide says what to do with them.
-        hints: kernel_apis::cell_hints::hints_enabled((config.var)("ULTRON_HINTS").as_deref()),
+        hints: kernel_apis::cell_hints::hints_enabled((config.var)(kernel_apis::cell_hints::HINTS_ENV).as_deref()),
         ..Default::default()
     }
 }
@@ -665,8 +671,8 @@ impl Runtime {
         services.resources = Arc::new(resolved);
         let mut diagnostics: Vec<String> = Vec::new();
         let setting_url = hindsight::resolve::setting_url(&manager);
-        let hindsight_explicit =
-            setting_url.is_some() || (env.var)("ULTRON_HINDSIGHT_URL").is_some_and(|url| !url.trim().is_empty());
+        let hindsight_explicit = setting_url.is_some()
+            || (env.var)(hindsight::resolve::HINDSIGHT_URL_ENV).is_some_and(|url| !url.trim().is_empty());
         let hindsight = hindsight::Endpoint::resolve(&|key| (env.var)(key), setting_url);
         // The `mcp` gateway lives in the REPL: the runtime guide lists it with its servers (`mcpServerNames`).
         let runtime_guide = mcp_runtime_guide(&config);
@@ -888,19 +894,19 @@ impl Runtime {
         let var = |key: &str| (config.var)(key);
         let context_reminders = Arc::new(crate::context_reminder::ContextReminders::new(
             crate::context_reminder::ReminderSettings::from_vars(
-                var("ULTRON_CONTEXT_REMINDER").as_deref(),
-                var("ULTRON_CONTEXT_REMINDER_TOKENS").as_deref(),
+                var(CONTEXT_REMINDER_ENV).as_deref(),
+                var(CONTEXT_REMINDER_TOKENS_ENV).as_deref(),
             ),
         ));
         let cell_hints = Arc::new(kernel_apis::cell_hints::CellHints::new(
             apis.hints.clone(),
             kernel_apis::cell_hints::CellHintsOptions {
-                enabled: kernel_apis::cell_hints::hints_enabled(var("ULTRON_HINTS").as_deref()),
-                max_per_tag: kernel_apis::cell_hints::hint_max_per_tag(var("ULTRON_HINTS_MAX").as_deref()),
-                async_events: config.async_events,
-                read_handle_bytes: kernel_apis::cell_hints::read_handle_bytes(
-                    var("ULTRON_READ_HANDLE_BYTES").as_deref(),
+                enabled: kernel_apis::cell_hints::hints_enabled(var(kernel_apis::cell_hints::HINTS_ENV).as_deref()),
+                max_per_tag: kernel_apis::cell_hints::hint_max_per_tag(
+                    var(kernel_apis::cell_hints::HINTS_MAX_ENV).as_deref(),
                 ),
+                async_events: config.async_events,
+                read_handle_bytes: kernel_apis::cell_hints::read_handle_bytes(var(READ_HANDLE_BYTES_ENV).as_deref()),
                 ..Default::default()
             },
         ));
@@ -1278,7 +1284,7 @@ impl Runtime {
         .with_base_env(config.child_env())
         // Cell results carry the diff of what they wrote (crate::cell_file_changes), except in the TS-compatible
         // output the TS-recorded replays compare (`ULTRON_GUIDE=ts`).
-        .recording_cell_writes((config.var)("ULTRON_GUIDE").as_deref() != Some("ts"))
+        .recording_cell_writes((config.var)(GUIDE_ENV).as_deref() != Some("ts"))
         .sandboxed(&config.settings, &config.home, Some(&tmp_dir)))
     }
 }
@@ -1589,12 +1595,15 @@ impl Stack {
         // The kernel starts from the session's environment (its PATH, its ULTRON_* settings), never the server's.
         options.base_env = Some(config.child_env());
         options.env = vec![
-            ("ULTRON_CODE_SKILLS_DIR".into(), config.skills_dir.display().to_string()),
-            ("ULTRON_RLM_SPILL_DIR".into(), spill_dir.display().to_string()),
+            (
+                kernel::env::CODE_SKILLS_DIR_ENV.into(),
+                config.skills_dir.display().to_string(),
+            ),
+            (kernel::env::RLM_SPILL_DIR_ENV.into(), spill_dir.display().to_string()),
             // The kernel's write skills ask the host's file hooks (Loki, the sandbox's containment) first.
-            ("ULTRON_FILE_HOOKS".into(), "1".into()),
+            (kernel::env::FILE_HOOKS_ENV.into(), "1".into()),
             // What a running cell prints reaches the host as it is written (`cell.output`): its partial output.
-            ("ULTRON_RLM_STREAM_OUTPUT".into(), "1".into()),
+            (kernel::env::RLM_STREAM_OUTPUT_ENV.into(), "1".into()),
             ("HOME".into(), config.home.display().to_string()),
         ];
         options.env.extend(extra);
@@ -1612,7 +1621,7 @@ impl Stack {
         // host watchdog; ULTRON_RLM_TREE_MEMORY_BACKEND=auto|cgroup opts into a systemd scope where one is available.
         options.tree_memory = Some(kernel::TreeMemoryOptions {
             backend: Some(
-                (config.var)("ULTRON_RLM_TREE_MEMORY_BACKEND")
+                (config.var)(kernel::env::RLM_TREE_MEMORY_BACKEND_ENV)
                     .filter(|value| !value.trim().is_empty())
                     .unwrap_or_else(|| "watchdog".into()),
             ),

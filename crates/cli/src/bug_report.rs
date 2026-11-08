@@ -27,7 +27,8 @@ pub struct Request {
 
 /// `getRadiusGatewayUrl()`.
 pub fn gateway_url(env: &Env) -> String {
-    let gateway = (env.var)("PI_RADIUS_GATEWAY").unwrap_or_else(|| ai::model_registry::DEFAULT_RADIUS_GATEWAY.into());
+    let gateway = (env.var)(server::radius_relay::ENV_RADIUS_GATEWAY)
+        .unwrap_or_else(|| ai::model_registry::DEFAULT_RADIUS_GATEWAY.into());
     ai::oauth_radius::normalize_radius_gateway_url(&gateway)
 }
 

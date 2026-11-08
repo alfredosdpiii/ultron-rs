@@ -117,17 +117,6 @@ impl ServerRecord {
     }
 }
 
-/// `process.kill(pid, 0)` succeeds or fails with EPERM.
-pub fn pid_alive(pid: u32) -> bool {
-    let Some(pid) = i32::try_from(pid).ok().and_then(rustix::process::Pid::from_raw) else {
-        return false;
-    };
-    match rustix::process::test_kill_process(pid) {
-        Ok(()) => true,
-        Err(e) => e == rustix::io::Errno::PERM,
-    }
-}
-
 /// Live servers in the registry, newest first; records of dead processes are removed.
 pub fn list_servers(dir: &Path) -> Vec<ServerRecord> {
     let mut records = Vec::new();
@@ -146,7 +135,7 @@ pub fn list_servers(dir: &Path) -> Vec<ServerRecord> {
         else {
             continue;
         };
-        if !pid_alive(record.pid) {
+        if !signals::pid_alive(record.pid) {
             let _ = std::fs::remove_file(&path);
             let _ = std::fs::remove_file(&record.socket);
             continue;

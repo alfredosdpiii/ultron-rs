@@ -2,8 +2,6 @@
 
 use serde_json::{Map, Value, json};
 
-const VALID_THINKING_LEVELS: [&str; 7] = ["off", "minimal", "low", "medium", "high", "xhigh", "max"];
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DiagnosticKind {
     Warning,
@@ -179,14 +177,14 @@ pub fn parse_args(args: &[String]) -> Args {
             "--exclude-tools" | "-xt" if has_next => r.exclude_tools = take(args, &mut i).map(|v| split_list(&v, true)),
             "--thinking" if has_next => {
                 let level = take(args, &mut i).unwrap_or_default();
-                if VALID_THINKING_LEVELS.contains(&level.as_str()) {
+                if model_scope::THINKING_LEVELS.contains(&level.as_str()) {
                     r.thinking = Some(level);
                 } else {
                     r.diagnostics.push(Diagnostic {
                         kind: DiagnosticKind::Warning,
                         message: format!(
                             "Invalid thinking level \"{level}\". Valid values: {}",
-                            VALID_THINKING_LEVELS.join(", ")
+                            model_scope::THINKING_LEVELS.join(", ")
                         ),
                     });
                 }

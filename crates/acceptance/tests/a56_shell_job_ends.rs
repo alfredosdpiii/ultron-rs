@@ -232,7 +232,7 @@ fn acceptance_a56_a_child_lane_sees_only_its_own_jobs_and_plain_bash_still_block
 #[test]
 fn acceptance_a56_plain_bash_auto_detaches_a_slow_command_then_announces_one_event() {
     let f = Fixture::new();
-    let k = f.kernel("main", &[("ULTRON_BASH_YIELD_AFTER", "5")]);
+    let k = f.kernel("main", &[(kernel::env::BASH_YIELD_AFTER_ENV, "5")]);
     assert_eq!(
         ok(
             &k,
@@ -266,7 +266,7 @@ fn acceptance_a56_plain_bash_auto_detaches_a_slow_command_then_announces_one_eve
 #[test]
 fn acceptance_a56_plain_bash_within_the_window_announces_nothing() {
     let f = Fixture::new();
-    let k = f.kernel("main", &[("ULTRON_BASH_YIELD_AFTER", "120")]);
+    let k = f.kernel("main", &[(kernel::env::BASH_YIELD_AFTER_ENV, "120")]);
     assert_eq!(
         ok(
             &k,

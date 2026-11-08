@@ -17,13 +17,16 @@ jsrt = { path = "../jsrt" }
 kernel = { path = "../kernel" }
 kernel-apis = { path = "../kernel-apis" }
 lanes = { path = "../lanes" }
+model-scope = { path = "../model-scope" }
 regex = "=1.13.1"
 rustix = { version = "=1.1.5", features = ["process", "std", "system"] }
 serde = { version = "=1.0.229", features = ["derive"] }
 serde_json = { version = "=1.0.151", features = ["preserve_order"] }
+signals = { path = "../signals" }
 tokio = { version = "=1.53.2", features = ["rt", "time"] }
 
 [dev-dependencies]
+config = { path = "../config" }
 tempfile = "=3.27.0"
 
 [lints]

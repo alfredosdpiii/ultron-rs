@@ -268,8 +268,8 @@ fn cli_setup_core_first_run_offer_only_on_a_terminal_start_without_a_model() {
         has_usable_model: &|| true,
         ..base(&none)
     }));
-    let skip = |k: &str| (k == "ULTRON_SKIP_SETUP").then(|| "1".to_string());
-    let skip_off = |k: &str| (k == "ULTRON_SKIP_SETUP").then(|| "0".to_string());
+    let skip = |k: &str| (k == cli::setup_core::SKIP_SETUP_ENV).then(|| "1".to_string());
+    let skip_off = |k: &str| (k == cli::setup_core::SKIP_SETUP_ENV).then(|| "0".to_string());
     let ci = |k: &str| (k == "CI").then(|| "true".to_string());
     for input in [
         SetupOfferInput {
@@ -446,7 +446,7 @@ impl Profile {
         // No provider keys from the machine running the tests: only these variables exist.
         let mut map: std::collections::HashMap<String, String> =
             vars.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect();
-        map.insert("ULTRON_CODING_AGENT_DIR".into(), self.agent().display().to_string());
+        map.insert(config::paths::ENV_AGENT_DIR.into(), self.agent().display().to_string());
         map.insert("PATH".into(), self.root.join("no-bin").display().to_string());
         cli::Env {
             cwd: self.root.clone(),
@@ -741,7 +741,7 @@ fn cli_setup_wizard_detects_a_running_hindsight_and_saves_a_custom_url() {
 #[test]
 fn cli_setup_wizard_shows_loki_analyzers_and_saves_its_toggles() {
     let profile = Profile::new();
-    let (mut deps, _) = deps(&profile, &[("ULTRON_LOKI_AUTOINIT", "off")]);
+    let (mut deps, _) = deps(&profile, &[(loki::auto_setup::LOKI_AUTOINIT_ENV, "off")]);
     deps.loki_version = Some("0.1.2 (35aa99c2aeee)".into());
     deps.probe =
         Arc::new(|command: &str, _: &[&str]| (command == "python3" || command == "ruff").then(|| "found".to_string()));

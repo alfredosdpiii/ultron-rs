@@ -112,7 +112,9 @@ fn host_bash_notes_no_match_reads_as_a_result_through_runtime_py() {
     for yield_after in ["", "off"] {
         let host = Arc::new(Host::new(&cwd, cwd.join(".jobs"), &cwd, Box::new(AllowAll)));
         let mut options = KernelOptions::new(&cwd, runtime());
-        options.env.push(("ULTRON_BASH_YIELD_AFTER".into(), yield_after.into()));
+        options
+            .env
+            .push((kernel::env::BASH_YIELD_AFTER_ENV.into(), yield_after.into()));
         let kernel = Kernel::new(options, host).unwrap();
         let cases = [
             (

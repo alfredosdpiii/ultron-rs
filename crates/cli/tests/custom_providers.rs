@@ -59,8 +59,8 @@ impl Root {
             .current_dir(self.root.join("cwd"))
             .env("PATH", "/usr/bin:/bin")
             .env("HOME", &self.root)
-            .env("ULTRON_CODING_AGENT_DIR", self.root.join("agent"))
-            .env("ULTRON_SERVER_DIR", self.root.join("server"))
+            .env(config::paths::ENV_AGENT_DIR, self.root.join("agent"))
+            .env(config::paths::ENV_SERVER_DIR, self.root.join("server"))
             .env("NO_COLOR", "1")
             .env("TZ", "UTC");
         for (key, value) in env {
@@ -209,7 +209,7 @@ fn cli_custom_provider_print_mode_reaches_loopback_stub() {
     let output = root
         .command(
             &["-p", "--no-session", "--model", "stubproxy/gpt-6.1-sol", "say hi"],
-            &[("STUB_KEY", "stub-key-123"), ("ULTRON_AUTO_NAME", "off")],
+            &[("STUB_KEY", "stub-key-123"), (session_core::core::AUTO_NAME_ENV, "off")],
         )
         .output()
         .unwrap();
@@ -266,10 +266,16 @@ fn cli_custom_provider_rpc_lists_and_selects_custom_models() {
     let env = [
         ("PATH", "/usr/bin:/bin".to_string()),
         ("HOME", root.root.display().to_string()),
-        ("ULTRON_CODING_AGENT_DIR", root.root.join("agent").display().to_string()),
-        ("ULTRON_SERVER_DIR", root.root.join("server").display().to_string()),
-        ("ULTRON_HINDSIGHT_URL", "off".into()),
-        ("PI_OFFLINE", "1".into()),
+        (
+            config::paths::ENV_AGENT_DIR,
+            root.root.join("agent").display().to_string(),
+        ),
+        (
+            config::paths::ENV_SERVER_DIR,
+            root.root.join("server").display().to_string(),
+        ),
+        (hindsight::resolve::HINDSIGHT_URL_ENV, "off".into()),
+        (config::env::OFFLINE_ENV, "1".into()),
         ("STUB_KEY", "stub-key-123".into()),
         ("NO_COLOR", "1".into()),
         ("TZ", "UTC".into()),
@@ -356,7 +362,7 @@ fn cli_print_mode_sends_the_auth_json_key() {
         let mut argv = vec!["-p", "--no-session", "--model", "stubproxy/gpt-6.1-sol"];
         argv.extend_from_slice(args);
         argv.push("say hi");
-        let mut vars = vec![("ULTRON_AUTO_NAME", "off")];
+        let mut vars = vec![(session_core::core::AUTO_NAME_ENV, "off")];
         vars.extend_from_slice(env);
         let output = root.command(&argv, &vars).output().unwrap();
         let stderr = String::from_utf8_lossy(&output.stderr);
@@ -415,8 +421,8 @@ fn cli_kimi_oauth_print_mode_sends_the_bearer_header() {
         .command(
             &["-p", "--no-session", "--model", "kimi-coding/k3", "say hi"],
             &[
-                ("ULTRON_AUTO_NAME", "off"),
-                ("PI_OFFLINE", "1"),
+                (session_core::core::AUTO_NAME_ENV, "off"),
+                (config::env::OFFLINE_ENV, "1"),
                 ("HTTP_PROXY", "http://127.0.0.1:9"),
                 ("HTTPS_PROXY", "http://127.0.0.1:9"),
                 ("NO_PROXY", "127.0.0.1,localhost"),

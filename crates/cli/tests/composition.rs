@@ -376,11 +376,11 @@ fn cli_composition_cell_calls_the_memory_api_on_the_injected_backend() {
     let vars: Vec<(String, String)> = vec![
         ("HOME".into(), sandbox.root.display().to_string()),
         (
-            "ULTRON_CODING_AGENT_DIR".into(),
+            config::paths::ENV_AGENT_DIR.into(),
             sandbox.agent_dir.display().to_string(),
         ),
         (
-            "ULTRON_SERVER_DIR".into(),
+            config::paths::ENV_SERVER_DIR.into(),
             sandbox.root.join("server").display().to_string(),
         ),
         ("ANTHROPIC_API_KEY".into(), "test-key".into()),
@@ -505,11 +505,11 @@ fn cli_composition_auto_memory_recalls_before_a_user_message() {
     let vars: Vec<(String, String)> = vec![
         ("HOME".into(), sandbox.root.display().to_string()),
         (
-            "ULTRON_CODING_AGENT_DIR".into(),
+            config::paths::ENV_AGENT_DIR.into(),
             sandbox.agent_dir.display().to_string(),
         ),
         (
-            "ULTRON_SERVER_DIR".into(),
+            config::paths::ENV_SERVER_DIR.into(),
             sandbox.root.join("server").display().to_string(),
         ),
         ("ANTHROPIC_API_KEY".into(), "test-key".into()),
@@ -689,7 +689,7 @@ fn cli_composition_lane_declares_exactly_the_rlm_tool() {
     let vars: Vec<(String, String)> = vec![
         ("HOME".into(), sandbox.root.display().to_string()),
         (
-            "ULTRON_CODING_AGENT_DIR".into(),
+            config::paths::ENV_AGENT_DIR.into(),
             sandbox.agent_dir.display().to_string(),
         ),
         ("PATH".into(), std::env::var("PATH").unwrap_or_default()),

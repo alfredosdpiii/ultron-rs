@@ -80,9 +80,9 @@ fn session_core_budget_gate_turn_limit_grants_one_final_request_then_ends_the_ru
         Box::new(|_, index| looping(index, &format!("print('round {index}')"))),
         Setup {
             vars: vec![
-                ("ULTRON_MAX_TOTAL_TURNS", "2".into()),
-                ("ULTRON_TOOL_ROUNDS_NUDGE", "0".into()),
-                ("ULTRON_ASYNC_EVENTS", "off".into()),
+                (delegation::usage::MAX_TOTAL_TURNS_ENV, "2".into()),
+                (session_core::nudge::TOOL_ROUNDS_NUDGE_ENV, "0".into()),
+                (session_core::async_events::ASYNC_EVENTS_ENV, "off".into()),
             ],
             ..Setup::default()
         },
@@ -140,8 +140,8 @@ fn session_core_budget_gate_final_request_answer_ends_the_run_with_it() {
         ]),
         Setup {
             vars: vec![
-                ("ULTRON_MAX_TOTAL_TURNS", "2".into()),
-                ("ULTRON_TOOL_ROUNDS_NUDGE", "0".into()),
+                (delegation::usage::MAX_TOTAL_TURNS_ENV, "2".into()),
+                (session_core::nudge::TOOL_ROUNDS_NUDGE_ENV, "0".into()),
             ],
             ..Setup::default()
         },
@@ -159,8 +159,8 @@ fn session_core_budget_gate_token_limit_is_a_turn_like_limit() {
         Box::new(|_, index| looping(index, "x = 1")),
         Setup {
             vars: vec![
-                ("ULTRON_MAX_TOTAL_TOKENS", "30".into()),
-                ("ULTRON_TOOL_ROUNDS_NUDGE", "0".into()),
+                (delegation::usage::MAX_TOTAL_TOKENS_ENV, "30".into()),
+                (session_core::nudge::TOOL_ROUNDS_NUDGE_ENV, "0".into()),
             ],
             ..Setup::default()
         },
@@ -182,8 +182,8 @@ fn session_core_budget_gate_cost_cap_stops_at_once() {
         Box::new(|_, index| looping(index, "print('ran')")),
         Setup {
             vars: vec![
-                ("ULTRON_MAX_COST_USD", "0.0001".into()),
-                ("ULTRON_TOOL_ROUNDS_NUDGE", "0".into()),
+                (delegation::usage::MAX_COST_USD_ENV, "0.0001".into()),
+                (session_core::nudge::TOOL_ROUNDS_NUDGE_ENV, "0".into()),
             ],
             ..Setup::default()
         },
@@ -222,9 +222,9 @@ fn session_core_budget_gate_counts_a_childs_turns_against_the_root() {
         }),
         Setup {
             vars: vec![
-                ("ULTRON_MAX_TOTAL_TURNS", "5".into()),
-                ("ULTRON_TOOL_ROUNDS_NUDGE", "0".into()),
-                ("ULTRON_ASYNC_EVENTS", "off".into()),
+                (delegation::usage::MAX_TOTAL_TURNS_ENV, "5".into()),
+                (session_core::nudge::TOOL_ROUNDS_NUDGE_ENV, "0".into()),
+                (session_core::async_events::ASYNC_EVENTS_ENV, "off".into()),
             ],
             ..Setup::default()
         },
@@ -277,7 +277,7 @@ fn session_core_budget_gate_a_frames_responses_count_once_in_the_tree() {
             reply
         }),
         Setup {
-            vars: vec![("ULTRON_MAX_TOTAL_TOKENS", "1000000".into())],
+            vars: vec![(delegation::usage::MAX_TOTAL_TOKENS_ENV, "1000000".into())],
             ..Setup::default()
         },
     );

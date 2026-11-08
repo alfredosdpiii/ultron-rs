@@ -216,9 +216,9 @@ fn interactive_qol_settings_keys_defaults_and_parity_env() {
     assert!(!from_settings(&json!({"statusLine": {"enabled": false}}), &none).status_line);
 
     // ULTRON_TUI_PARITY=1 wins over every setting; other values do not.
-    let parity = |k: &str| (k == "ULTRON_TUI_PARITY").then(|| "1".to_string());
+    let parity = |k: &str| (k == interactive::qol::PARITY_ENV).then(|| "1".to_string());
     assert_eq!(from_settings(&json!({"vimMode": true}), &parity), QolSettings::parity());
-    let zero = |k: &str| (k == "ULTRON_TUI_PARITY").then(|| "0".to_string());
+    let zero = |k: &str| (k == interactive::qol::PARITY_ENV).then(|| "0".to_string());
     assert!(from_settings(&json!({"vimMode": true}), &zero).vim);
     assert!(!QolSettings::parity().any() && QolSettings::default().any());
 }

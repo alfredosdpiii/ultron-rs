@@ -43,8 +43,8 @@ fn case_env(case: &Value, root: &Path) -> cli::Env {
         })
         .collect();
     vars.insert("PATH".into(), "/usr/bin:/bin".into());
-    vars.insert("PI_OFFLINE".into(), "1".into());
-    vars.insert("ULTRON_CODING_AGENT_DIR".into(), agent.display().to_string());
+    vars.insert(config::env::OFFLINE_ENV.into(), "1".into());
+    vars.insert(config::paths::ENV_AGENT_DIR.into(), agent.display().to_string());
     cli::Env {
         cwd: root.to_path_buf(),
         home: root.to_path_buf(),
@@ -99,7 +99,7 @@ fn cli_bug_report_provider_runtime_key_and_no_extension_provider() {
 
 /// The archive's files, read by the tests' Python.
 fn unzip(path: &Path) -> serde_json::Map<String, Value> {
-    let python = std::env::var("ULTRON_PYTHON").unwrap_or_else(|_| "/usr/bin/python3".into());
+    let python = kernel::env::python(|name| std::env::var(name).ok());
     let out = std::process::Command::new(python)
         .args([
             "-I",
@@ -124,9 +124,9 @@ fn cli_bug_report_provider_section_of_the_tui_report() {
     let mock = tui_harness::Mock::start(vec![tui_harness::text_reply("Hello back.")], None);
     let tmp = tui_harness::TempDir::new();
     let env = [
-        ("ULTRON_AUTO_NAME", "off"),
-        ("ULTRON_SPLASH", "off"),
-        ("PI_RADIUS_GATEWAY", "http://127.0.0.1:9"),
+        (session_core::core::AUTO_NAME_ENV, "off"),
+        (cli::interactive::SPLASH_ENV, "off"),
+        (server::radius_relay::ENV_RADIUS_GATEWAY, "http://127.0.0.1:9"),
     ];
     let args = ["--model", "anthropic/claude-sonnet-4-5", "--api-key", "cli-key"];
     let tui = tui_harness::Tui::start_at(&tmp.0, mock.port, 120, 50, &args, &env);

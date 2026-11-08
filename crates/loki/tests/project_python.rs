@@ -37,7 +37,12 @@ fn loki_project_python_named_wins_and_loki_python_is_left_to_the_engine() {
     let bin = work.path().join("bin");
     fake_python(&bin, "python", true);
     assert_eq!(
-        find(work.path(), &bin, &[("ULTRON_LOKI_PROJECT_PYTHON", " /named/python ")]).as_deref(),
+        find(
+            work.path(),
+            &bin,
+            &[(loki::project::LOKI_PROJECT_PYTHON_ENV, " /named/python ")]
+        )
+        .as_deref(),
         Some("/named/python")
     );
     assert_eq!(find(work.path(), &bin, &[("LOKI_PYTHON", "/set/by/user")]), None);

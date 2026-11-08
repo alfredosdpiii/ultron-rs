@@ -53,7 +53,7 @@ fn acceptance_after_cell_loki_finding_arrives_with_the_next_cell() {
     std::fs::write(project.join("settings.py"), "DEBUG = False\n").unwrap();
     git(&project, home, &["add", "-A"]);
     git(&project, home, &["-c", "commit.gpgsign=false", "commit", "-qm", "init"]);
-    let mut client = install.rpc(&["--no-session"], &[("ULTRON_MAX_TOTAL_TURNS", "1000")]);
+    let mut client = install.rpc(&["--no-session"], &[(delegation::usage::MAX_TOTAL_TURNS_ENV, "1000")]);
     client.prompt_and_wait("Change the settings", common::HANG).unwrap();
     let results = rpc_tool_results(&client.get_messages().unwrap());
     assert!(results[0].contains("written"));

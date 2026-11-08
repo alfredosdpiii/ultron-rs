@@ -150,7 +150,7 @@ fn root_model(options: &LauncherOptions, var: &dyn Fn(&str) -> Option<String>) -
     match named {
         Some(model) => (model, true),
         None => (
-            var("ULTRON_CLAUDE_MODEL")
+            var(config::env::CLAUDE_MODEL_ENV)
                 .map(|v| v.trim().to_string())
                 .filter(|v| !v.is_empty())
                 .or_else(|| options.root_model.clone())
@@ -393,7 +393,7 @@ pub fn run(
         platform: crate::guide::platform(),
         resources: &resources,
         bundled_skills: bundled.as_deref(),
-        hints: crate::guide::hints_enabled(var("ULTRON_HINTS").as_deref()),
+        hints: kernel_apis::cell_hints::hints_enabled(var(kernel_apis::cell_hints::HINTS_ENV).as_deref()),
         skip_permissions: skip,
         apis: Some(&apis),
     });

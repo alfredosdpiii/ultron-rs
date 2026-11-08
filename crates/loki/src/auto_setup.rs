@@ -13,6 +13,9 @@ use std::path::{Component, Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
+pub const LOKI_AUTOCOMMIT_ENV: &str = "ULTRON_LOKI_AUTOCOMMIT";
+pub const LOKI_AUTOINIT_ENV: &str = "ULTRON_LOKI_AUTOINIT";
+
 const OFF_VALUES: [&str; 5] = ["off", "0", "false", "no", "none"];
 const COMMIT_MESSAGE: &str = "Add Loki guardrails";
 const GIT_TIMEOUT_MS: u64 = 10_000;
@@ -43,7 +46,7 @@ const GIT_VARIABLES: [&str; 22] = [
     "GNUPGHOME",
     "SSH_AUTH_SOCK",
     "CI",
-    "ULTRON_WORKTREE",
+    kernel::env::WORKTREE_ENV,
 ];
 
 /// The session a setup is for: its directory, home, environment lookup and the global `loki` settings.
@@ -188,7 +191,7 @@ fn is_off(value: &str) -> bool {
 
 /// `lokiAutoInit`: ULTRON_LOKI_AUTOINIT, else the `loki.autoInit` setting, else on.
 pub fn auto_init(context: &SetupContext<'_>) -> bool {
-    match context.trimmed("ULTRON_LOKI_AUTOINIT") {
+    match context.trimmed(LOKI_AUTOINIT_ENV) {
         Some(raw) => !is_off(&raw),
         None => context.settings.get("autoInit") != Some(&Value::Bool(false)),
     }
@@ -196,7 +199,7 @@ pub fn auto_init(context: &SetupContext<'_>) -> bool {
 
 /// `lokiAutoCommit`: ULTRON_LOKI_AUTOCOMMIT, else the `loki.autoCommit` setting, else on.
 pub fn auto_commit(context: &SetupContext<'_>) -> bool {
-    match context.trimmed("ULTRON_LOKI_AUTOCOMMIT") {
+    match context.trimmed(LOKI_AUTOCOMMIT_ENV) {
         Some(raw) => !is_off(&raw),
         None => context.settings.get("autoCommit") != Some(&Value::Bool(false)),
     }
@@ -226,7 +229,8 @@ pub fn git_root(context: &SetupContext<'_>, cwd: &Path) -> Option<PathBuf> {
 
 /// `isUltronWorktreePath`.
 fn is_ultron_worktree(context: &SetupContext<'_>, path: &Path) -> bool {
-    context.trimmed("ULTRON_WORKTREE").is_some() || path.components().any(|part| part.as_os_str() == WORKTREES_DIR)
+    context.trimmed(kernel::env::WORKTREE_ENV).is_some()
+        || path.components().any(|part| part.as_os_str() == WORKTREES_DIR)
 }
 
 fn expand_home(path: &str, home: &Path) -> PathBuf {
@@ -246,7 +250,7 @@ fn writable(path: &Path) -> bool {
 /// `autoInitEligibility`: the repository root `.loki/` may be created in, or why not.
 pub fn auto_init_eligibility(context: &SetupContext<'_>) -> Result<PathBuf, String> {
     if !auto_init(context) {
-        return Err(if context.trimmed("ULTRON_LOKI_AUTOINIT").is_some() {
+        return Err(if context.trimmed(LOKI_AUTOINIT_ENV).is_some() {
             "auto-install is off (ULTRON_LOKI_AUTOINIT)".into()
         } else {
             "auto-install is off (loki.autoInit setting)".into()
@@ -301,7 +305,7 @@ const IN_PROGRESS: [(&str, &str); 6] = [
 /// `autoCommitSkipReason`: why `.loki/` must not be committed now, or none when it may be.
 pub fn auto_commit_skip_reason(context: &SetupContext<'_>, root: &Path) -> Option<String> {
     if !auto_commit(context) {
-        return Some(if context.trimmed("ULTRON_LOKI_AUTOCOMMIT").is_some() {
+        return Some(if context.trimmed(LOKI_AUTOCOMMIT_ENV).is_some() {
             "auto-commit is off (ULTRON_LOKI_AUTOCOMMIT)".into()
         } else {
             "auto-commit is off (loki.autoCommit setting)".into()

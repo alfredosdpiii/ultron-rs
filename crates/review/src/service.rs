@@ -75,7 +75,7 @@ pub fn service_file(
         .chain(["autoreview", "run"])
         .collect();
     let path = env.get("PATH").map_or("/usr/local/bin:/usr/bin:/bin", String::as_str);
-    let agent_dir = env.get("ULTRON_CODING_AGENT_DIR").filter(|dir| !dir.is_empty());
+    let agent_dir = env.get(config::paths::ENV_AGENT_DIR).filter(|dir| !dir.is_empty());
     match platform {
         "linux" => {
             let config = env
@@ -132,7 +132,7 @@ pub fn service_file(
             let logs = path_join(&[home, "Library", "Logs", &format!("{SERVICE_NAME}.log")]);
             let mut variables = vec![("PATH", path.to_string())];
             if let Some(dir) = agent_dir {
-                variables.push(("ULTRON_CODING_AGENT_DIR", dir.clone()));
+                variables.push((config::paths::ENV_AGENT_DIR, dir.clone()));
             }
             let mut lines = vec![
                 "<?xml version=\"1.0\" encoding=\"UTF-8\"?>".to_string(),

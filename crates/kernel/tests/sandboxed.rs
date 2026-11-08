@@ -135,7 +135,7 @@ fn options(tree: &Tree, launcher: Arc<Launcher>) -> KernelOptions {
     options.sandbox = Some(launcher);
     options.snapshot_key = Some(KEY.to_vec());
     options.snapshot_path = Some(tree.session.join("main.snapshot"));
-    options.env = vec![("ULTRON_RLM_SPILL_DIR".into(), tree.spill.display().to_string())];
+    options.env = vec![(kernel::env::RLM_SPILL_DIR_ENV.into(), tree.spill.display().to_string())];
     options
 }
 

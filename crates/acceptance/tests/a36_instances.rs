@@ -314,7 +314,7 @@ fn acceptance_a36_end_to_end_a_retained_instance_continues_its_lane_conversation
         panic!("Unscripted request: {first}");
     });
     let install = Install::new(&provider);
-    let mut client = install.rpc(&["--no-session"], &[("ULTRON_HINDSIGHT_URL", "off")]);
+    let mut client = install.rpc(&["--no-session"], &[(hindsight::resolve::HINDSIGHT_URL_ENV, "off")]);
     client
         .prompt_and_wait("A36: retain a child and ask it again", common::HANG)
         .unwrap();

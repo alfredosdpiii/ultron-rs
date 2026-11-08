@@ -41,7 +41,7 @@ fn run(flags: &[&str], extra_env: &[(&str, &str)]) -> (Value, String) {
         format!(r#"{{"providers":{{"claude-subscription":{{"baseUrl":"http://127.0.0.1:{port}"}}}}}}"#),
     )
     .unwrap();
-    let python = std::env::var("ULTRON_PYTHON").unwrap_or_else(|_| "/usr/bin/python3".into());
+    let python = kernel::env::python(|name| std::env::var(name).ok());
     let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("../ai/fixtures/claude-subscription/claude.py");
     let wrapper = sandbox.root.join("fake-bin/claude");
     std::fs::create_dir_all(wrapper.parent().unwrap()).unwrap();
@@ -56,7 +56,7 @@ fn run(flags: &[&str], extra_env: &[(&str, &str)]) -> (Value, String) {
     command
         .env_remove("ANTHROPIC_API_KEY")
         .env("PATH", format!("{}:/usr/bin:/bin", wrapper.parent().unwrap().display()))
-        .env("ULTRON_CLAUDE_COMMAND", &wrapper)
+        .env(ai::claude_subscription::process::COMMAND_ENV, &wrapper)
         .env("FAKE_LOG", sandbox.root.join("claude-log.jsonl"))
         .env("TMPDIR", &tmp)
         .args(flags)
@@ -88,7 +88,7 @@ fn claude_root_claude_flag_runs_the_root_on_the_claude_subscription() {
     assert_eq!(body["model"], "claude-opus-5-5[1m]", "the default root model");
     assert_eq!(tool_names(&body), ["mcp__ultron__rlm"], "the model's tool list");
     // --model and ULTRON_ROOT=claude: the same selection rules as TypeScript.
-    let (body, _) = run(&["--model", "sonnet"], &[("ULTRON_ROOT", "claude")]);
+    let (body, _) = run(&["--model", "sonnet"], &[(session_core::core::ROOT_ENV, "claude")]);
     assert_eq!(body["model"], "claude-sonnet-5-5[1m]");
     assert_eq!(tool_names(&body), ["mcp__ultron__rlm"]);
 }

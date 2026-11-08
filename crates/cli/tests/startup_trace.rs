@@ -15,11 +15,11 @@ fn run(trace: Option<&std::path::Path>) -> (Sandbox, String) {
     let mut command = sandbox.ultron();
     command.args(["--model", "anthropic/claude-sonnet-4-5", "-p", "hi"]);
     command
-        .env("ULTRON_HINDSIGHT_URL", "off")
-        .env("PI_OFFLINE", "1")
-        .env("ULTRON_LOKI", "off");
+        .env(hindsight::resolve::HINDSIGHT_URL_ENV, "off")
+        .env(config::env::OFFLINE_ENV, "1")
+        .env(session_core::compose::LOKI_ENV, "off");
     if let Some(trace) = trace {
-        command.env("ULTRON_STARTUP_TRACE", trace);
+        command.env(session_core::startup_trace::TRACE_ENV, trace);
     }
     let output = command.stdin(std::process::Stdio::null()).output().unwrap();
     assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));

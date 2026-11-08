@@ -266,13 +266,9 @@ impl Router {
         if let Some(model) = payload.get("model").and_then(Value::as_str) {
             return model.to_string();
         }
-        let env = self
-            .options
-            .frame_env
-            .get("ULTRON_RLM_FRAME_MODEL")
-            .map(|value| value.trim().to_string())
-            .filter(|value| is_model_ref(value));
-        env.or_else(|| self.options.settings.frame_model.clone())
+        let frame_env = &self.options.frame_env;
+        config::env::env_model(&|key| frame_env.get(key).cloned(), config::env::RLM_FRAME_MODEL_ENV)
+            .or_else(|| self.options.settings.frame_model.clone())
             .unwrap_or_else(|| self.default_ref.clone())
     }
 
@@ -301,12 +297,6 @@ impl Router {
         routes.insert(model.to_string(), frames.clone());
         Ok(frames)
     }
-}
-
-fn is_model_ref(value: &str) -> bool {
-    value
-        .split_once('/')
-        .is_some_and(|(provider, id)| !provider.is_empty() && !id.is_empty() && !value.contains(char::is_whitespace))
 }
 
 impl HostHandler for Router {

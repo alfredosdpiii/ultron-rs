@@ -16,7 +16,10 @@ fn cli_interactive_trust_debug_and_reload_work_through_the_worker() {
         100,
         30,
         &["--model", "anthropic/claude-sonnet-4-5"],
-        &[("ULTRON_AUTO_NAME", "off"), ("ULTRON_SPLASH", "off")],
+        &[
+            (session_core::core::AUTO_NAME_ENV, "off"),
+            (cli::interactive::SPLASH_ENV, "off"),
+        ],
     );
     tui.wait("Session:");
     let agent = tui.root.join("agent");

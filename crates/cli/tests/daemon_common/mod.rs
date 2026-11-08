@@ -144,15 +144,15 @@ impl Home {
             .current_dir(self.cwd())
             .env("PATH", std::env::var("PATH").unwrap_or_default())
             .env("HOME", &self.root)
-            .env("ULTRON_CODING_AGENT_DIR", self.agent())
-            .env("ULTRON_SERVER_DIR", self.server_dir())
+            .env(config::paths::ENV_AGENT_DIR, self.agent())
+            .env(config::paths::ENV_SERVER_DIR, self.server_dir())
             .env("ANTHROPIC_API_KEY", "test-key")
             // Replies are scripted in order; a refinement request (session_core::auto_refine) would take one.
-            .env("ULTRON_AUTO_REFINE", "off")
+            .env(session_core::core::AUTO_REFINE_ENV, "off")
             .env("NO_COLOR", "1")
             .env("TZ", "UTC")
             // The durable instance's nightly dream session (daemon::dream) would be one more session in its store.
-            .env("ULTRON_DREAM", "off");
+            .env(daemon::server::DREAM_ENV, "off");
         command
     }
 
@@ -164,7 +164,7 @@ impl Home {
     /// A command without `ULTRON_SERVER_DIR`, in `cwd`: it uses the project (or durable) instance under `HOME`.
     pub fn instance_command(&self, cwd: &Path, args: &[&str]) -> Command {
         let mut command = self.command(args);
-        command.env_remove("ULTRON_SERVER_DIR").current_dir(cwd);
+        command.env_remove(config::paths::ENV_SERVER_DIR).current_dir(cwd);
         command
     }
 

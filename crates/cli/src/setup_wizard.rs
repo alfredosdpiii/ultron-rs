@@ -836,7 +836,7 @@ fn hindsight_step<U: SetupUi>(ui: &mut U, deps: &mut SetupDeps) -> Result<Summar
         "Hindsight stores what the model keeps on purpose (memory.propose) and returns it when the model asks (memory.prepare).",
         Tone::Info,
     );
-    let env_url = deps.var("ULTRON_HINDSIGHT_URL");
+    let env_url = deps.var(hindsight::resolve::HINDSIGHT_URL_ENV);
     let (effective, source) =
         setup_core::effective_hindsight_url(env_url.as_deref(), hindsight_setting(&deps.settings).as_deref());
     if source == UrlSource::Env {
@@ -1206,7 +1206,11 @@ fn loki_step<U: SetupUi>(ui: &mut U, deps: &mut SetupDeps) -> Result<SummaryLine
         ),
         Some(version) => ui.note(&format!("✓ Bundled Loki {version}"), Tone::Success),
     }
-    for name in ["ULTRON_LOKI", "ULTRON_LOKI_AUTOINIT", "ULTRON_LOKI_AUTOCOMMIT"] {
+    for name in [
+        session_core::compose::LOKI_ENV,
+        loki::auto_setup::LOKI_AUTOINIT_ENV,
+        loki::auto_setup::LOKI_AUTOCOMMIT_ENV,
+    ] {
         if let Some(value) = deps.var(name).filter(|v| !jsrt::string::trim(v).is_empty()) {
             ui.note(
                 &format!("{name}={value} is set; it overrides the settings saved here."),
@@ -1446,7 +1450,7 @@ pub fn create_setup_deps(env: &Env) -> SetupDeps {
         probe: Arc::new(move |command: &str, args: &[&str]| {
             setup_core::probe_command(probe_path.as_deref(), command, args)
         }),
-        python: setup_core::python_command(&|k| (env.var)(k)),
+        python: kernel::env::python(|name| (env.var)(name)),
         fetch: setup_core::http_fetch_with(ai::net::ProxyEnv::from_lookup(&*env.var)),
         settings: SettingsManager::create(&env.cwd, &env.agent_dir(), false),
         test_model: Arc::new(test_model),

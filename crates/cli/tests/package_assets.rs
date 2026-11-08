@@ -123,13 +123,13 @@ impl Outside {
             .current_dir(&self.cwd)
             .env("PATH", self.root.join("tools"))
             .env("HOME", self.root.join("home"))
-            .env("ULTRON_CODING_AGENT_DIR", &self.agent)
-            .env("ULTRON_SERVER_DIR", self.root.join("server"))
+            .env(config::paths::ENV_AGENT_DIR, &self.agent)
+            .env(config::paths::ENV_SERVER_DIR, self.root.join("server"))
             .env("ANTHROPIC_API_KEY", "test-key")
             .env("NO_COLOR", "1")
             .env("TZ", "UTC");
-        if let Some(python) = std::env::var_os("ULTRON_PYTHON") {
-            command.env("ULTRON_PYTHON", python);
+        if let Some(python) = std::env::var_os(kernel::env::PYTHON_ENV) {
+            command.env(kernel::env::PYTHON_ENV, python);
         }
     }
 
@@ -204,7 +204,7 @@ fn cli_package_copied_binary_runs_with_the_checkout_hidden() {
     let reference = run({
         let mut c = Command::new(env!("CARGO_BIN_EXE_ultron"));
         outside.private(&mut c);
-        c.env("ULTRON_CODING_AGENT_DIR", outside.root.join("reference-agent"))
+        c.env(config::paths::ENV_AGENT_DIR, outside.root.join("reference-agent"))
             .arg("--help");
         c
     });
@@ -494,8 +494,8 @@ fn cli_package_dev_assets_chooses_where_the_files_come_from() {
     let lookup = |dev: Option<String>| {
         let agent = agent.display().to_string();
         move |key: &str| match key {
-            "ULTRON_CODING_AGENT_DIR" => Some(agent.clone()),
-            "ULTRON_DEV_ASSETS" => dev.clone(),
+            config::paths::ENV_AGENT_DIR => Some(agent.clone()),
+            cli::assets::DEV_ASSETS => dev.clone(),
             _ => None,
         }
     };
@@ -541,7 +541,9 @@ fn cli_package_install_script_installs_into_a_prefix_without_node() {
     let install = |args: &[&str], prefix_env: Option<&Path>| {
         let mut c = Command::new("/bin/sh");
         outside.private(&mut c);
-        c.env("ULTRON_DEV_ASSETS", "0").arg(stage.join("install.sh")).args(args);
+        c.env(cli::assets::DEV_ASSETS, "0")
+            .arg(stage.join("install.sh"))
+            .args(args);
         if let Some(prefix) = prefix_env {
             c.env("PREFIX", prefix);
         }
@@ -603,7 +605,7 @@ fn cli_package_install_script_installs_into_a_prefix_without_node() {
     let mut c = Command::new(&bin);
     outside.private(&mut c);
     let version = run({
-        c.env("ULTRON_DEV_ASSETS", "0").arg("--version");
+        c.env(cli::assets::DEV_ASSETS, "0").arg("--version");
         c
     });
     assert_eq!(

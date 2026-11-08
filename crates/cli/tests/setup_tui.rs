@@ -159,14 +159,14 @@ fn replay(name: &str) {
         ("HOME", root.display().to_string()),
         ("XDG_CONFIG_HOME", r(".config")),
         ("XDG_DATA_HOME", r(".local/share")),
-        ("ULTRON_CODING_AGENT_DIR", r("agent")),
-        ("ULTRON_SERVER_DIR", r("server")),
-        ("ULTRON_PYTHON", "python3".into()),
+        (config::paths::ENV_AGENT_DIR, r("agent")),
+        (config::paths::ENV_SERVER_DIR, r("server")),
+        (kernel::env::PYTHON_ENV, "python3".into()),
         ("TZ", "UTC".into()),
         ("TERM", "xterm-256color".into()),
         ("COLORTERM", "truecolor".into()),
         ("LANG", "C.UTF-8".into()),
-        ("PI_OFFLINE", "1".into()),
+        (config::env::OFFLINE_ENV, "1".into()),
     ];
     let script = root.join("run.sh");
     std::fs::write(
@@ -326,13 +326,13 @@ fn drive(steps: &[Step]) -> (Vec<String>, TempDir) {
         ("HOME", root.display().to_string()),
         ("XDG_CONFIG_HOME", r(".config")),
         ("XDG_DATA_HOME", r(".local/share")),
-        ("ULTRON_CODING_AGENT_DIR", r("agent")),
-        ("ULTRON_SERVER_DIR", r("server")),
-        ("ULTRON_PYTHON", "python3".into()),
+        (config::paths::ENV_AGENT_DIR, r("agent")),
+        (config::paths::ENV_SERVER_DIR, r("server")),
+        (kernel::env::PYTHON_ENV, "python3".into()),
         ("TZ", "UTC".into()),
         ("TERM", "xterm-256color".into()),
         ("LANG", "C.UTF-8".into()),
-        ("PI_OFFLINE", "1".into()),
+        (config::env::OFFLINE_ENV, "1".into()),
     ];
     let script = root.join("run.sh");
     std::fs::write(

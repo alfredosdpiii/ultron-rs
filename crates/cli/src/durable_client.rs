@@ -49,7 +49,7 @@ pub fn activate(options: &ServerOptions) -> Result<Route, String> {
 /// the instance or agent directory the caller's environment chose.
 pub fn durable_resume_argv(env: &Env, session_id: &str) -> Vec<String> {
     let mut argv = Vec::new();
-    let assigned: Vec<String> = ["ULTRON_SERVER_DIR", "ULTRON_CODING_AGENT_DIR"]
+    let assigned: Vec<String> = [config::paths::ENV_SERVER_DIR, config::paths::ENV_AGENT_DIR]
         .iter()
         .filter_map(|k| (env.var)(k).filter(|v| !v.is_empty()).map(|v| format!("{k}={v}")))
         .collect();
@@ -77,8 +77,8 @@ pub fn run(args: &[String], env: &Env, out: &mut dyn Write, err: &mut dyn Write)
         var: Arc::new(move |key| match key {
             CLIENT_ENV => Some("1".into()),
             config::settings::DURABLE_CLIENT_ENV => sessions.clone(),
-            daemon::instance::ENV_SERVER_DIR => Some(dir.clone()),
-            "PI_SERVER_DIR" => None,
+            config::paths::ENV_SERVER_DIR => Some(dir.clone()),
+            config::paths::LEGACY_ENV_SERVER_DIR => None,
             _ => inner(key),
         }),
         ..env.clone()

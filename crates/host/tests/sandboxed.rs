@@ -55,8 +55,8 @@ fn run(tree: &Tree, settings: Value, cells: &[&str]) -> Vec<Value> {
     let host =
         Host::new(&tree.project, &jobs, &tree.project, Box::new(AllowAll)).sandboxed(&settings, &tree.home, None);
     let mut options = KernelOptions::new(&tree.project, runtime());
-    options.env.push(("ULTRON_RLM_SPILL_DIR".into(), String::new()));
-    options.env.push(("ULTRON_FILE_HOOKS".into(), "1".into()));
+    options.env.push((kernel::env::RLM_SPILL_DIR_ENV.into(), String::new()));
+    options.env.push((kernel::env::FILE_HOOKS_ENV.into(), "1".into()));
     let kernel = Kernel::new(options, Arc::new(host)).unwrap();
     let results = cells
         .iter()

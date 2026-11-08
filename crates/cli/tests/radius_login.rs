@@ -149,12 +149,12 @@ fn replay(name: &str) {
         fixture["rows"].as_u64().unwrap(),
         &["--model", "anthropic/claude-sonnet-4-5"],
         &[
-            ("ULTRON_CODING_AGENT_DIR", &agent_dir),
-            ("ULTRON_AUTO_NAME", "off"),
+            (config::paths::ENV_AGENT_DIR, &agent_dir),
+            (session_core::core::AUTO_NAME_ENV, "off"),
             // The TypeScript layout (no Rust-only quality-of-life rows), as the other TUI replays run.
-            ("ULTRON_TUI_PARITY", "1"),
-            ("ULTRON_SPLASH", "off"),
-            ("PI_OFFLINE", "1"),
+            (interactive::qol::PARITY_ENV, "1"),
+            (cli::interactive::SPLASH_ENV, "off"),
+            (config::env::OFFLINE_ENV, "1"),
         ],
     );
     let root = tmp.0.display().to_string();

@@ -267,7 +267,7 @@ pub fn validate_definition(value: &Value) -> Result<Map<String, Value>, String> 
         }
     }
     if let Some(model) = value.get("model").and_then(Value::as_str)
-        && !jsrt::string::is_model_ref(model)
+        && !model_scope::is_model_ref(model)
     {
         return Err("Definition model must be provider/model".into());
     }

@@ -9,6 +9,7 @@ autotests = false
 
 [dependencies]
 ai = { path = "../ai" }
+config = { path = "../config" }
 inference = { path = "../inference" }
 jsrt = { path = "../jsrt" }
 kernel = { path = "../kernel" }

@@ -14,6 +14,8 @@ use std::path::Path;
 use std::process::{Command, Stdio};
 use std::sync::{Arc, LazyLock, Mutex};
 
+pub const LOKI_PYTHON_ENV: &str = "ULTRON_LOKI_PYTHON";
+
 const HELPER: &str = r#"
 import ast, json, sys, tokenize, io, warnings
 sys.setrecursionlimit(20000)
@@ -335,18 +337,13 @@ static STATE: LazyLock<Mutex<State>> = LazyLock::new(|| {
     })
 });
 
-/// The interpreter that parses Python for Loki (`findPython`: `ULTRON_LOKI_PYTHON`, trimmed), else the kernel's
-/// (`ULTRON_PYTHON`), else `python3`.
+/// The interpreter that parses Python for Loki (`findPython`: `ULTRON_LOKI_PYTHON`, trimmed), else the kernel's.
 fn interpreter() -> String {
-    ["ULTRON_LOKI_PYTHON", "ULTRON_PYTHON"]
-        .iter()
-        .find_map(|name| {
-            std::env::var(name)
-                .ok()
-                .map(|p| p.trim().to_string())
-                .filter(|p| !p.is_empty())
-        })
-        .unwrap_or_else(|| "python3".into())
+    std::env::var(LOKI_PYTHON_ENV)
+        .ok()
+        .map(|p| p.trim().to_string())
+        .filter(|p| !p.is_empty())
+        .unwrap_or_else(|| kernel::env::python(|name| std::env::var(name).ok()))
 }
 
 fn unavailable(message: impl Into<String>) -> CheckError {

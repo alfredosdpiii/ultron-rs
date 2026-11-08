@@ -59,7 +59,7 @@ pub fn loki_note_at(root: Option<&Path>) -> Option<String> {
 /// an external root cannot serve (see [`external_root_apis`]).
 /// `ULTRON_GUIDE=ts` keeps the TypeScript guide's set (it names neither `mcp.json` servers nor the Rust APIs).
 pub fn runtime_apis(env: &RunEnv) -> RuntimeGuideOptions {
-    if (env.var)("ULTRON_GUIDE").as_deref() == Some("ts") {
+    if (env.var)(session_core::compose::GUIDE_ENV).as_deref() == Some("ts") {
         return RuntimeGuideOptions::default();
     }
     external_root_apis(session_core::compose::mcp_runtime_guide(
@@ -158,7 +158,7 @@ pub fn load_prompt_resources(env: &RunEnv, bundled: Option<&Path>, flags: Resour
         context_files,
         skills,
         engineering,
-        proactive_skills: engineering && (env.var)("ULTRON_GUIDE").as_deref() != Some("ts"),
+        proactive_skills: engineering && (env.var)(session_core::compose::GUIDE_ENV).as_deref() != Some("ts"),
         ..shaped
     }
 }
@@ -232,7 +232,7 @@ pub fn claude_runtime_guide(hints: bool) -> String {
 /// Whether the root is woken by its events: Ultron's hooks are on (`hooks`) and the guide is not TypeScript's
 /// (`ULTRON_GUIDE=ts` keeps its next-call wording).
 pub fn wakes(var: &dyn Fn(&str) -> Option<String>, hooks: bool) -> bool {
-    hooks && var("ULTRON_GUIDE").as_deref() != Some("ts")
+    hooks && var(session_core::compose::GUIDE_ENV).as_deref() != Some("ts")
 }
 
 /// [`claude_runtime_guide`]; `wake`: events wake the idle root (crate::hooks::WAIT_EVENTS), as in native Ultron.
@@ -256,14 +256,6 @@ pub fn claude_runtime_guide_for(apis: Option<&RuntimeGuideOptions>, hints: bool,
         ..apis.cloned().unwrap_or_default()
     };
     rlm_runtime_prompt(&["rlm"], &options).unwrap_or_default()
-}
-
-/// `hintsEnabled`: `ULTRON_HINTS` is on, 1, true or yes.
-pub fn hints_enabled(value: Option<&str>) -> bool {
-    matches!(
-        value.map(|v| v.trim().to_lowercase()).as_deref(),
-        Some("on" | "1" | "true" | "yes")
-    )
 }
 
 fn root_identity() -> String {

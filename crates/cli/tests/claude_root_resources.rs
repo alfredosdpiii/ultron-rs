@@ -21,7 +21,7 @@ fn repo() -> PathBuf {
 }
 
 fn python() -> String {
-    std::env::var("ULTRON_PYTHON").unwrap_or_else(|_| "/usr/bin/python3".into())
+    kernel::env::python(|name| std::env::var(name).ok())
 }
 
 struct Root {
@@ -64,14 +64,17 @@ impl Root {
             .env_clear()
             .env("PATH", format!("{}:/usr/bin:/bin", p("bin")))
             .env("HOME", p("h"))
-            .env("ULTRON_CODING_AGENT_DIR", p("a"))
-            .env("ULTRON_SERVER_DIR", p("s"))
+            .env(config::paths::ENV_AGENT_DIR, p("a"))
+            .env(config::paths::ENV_SERVER_DIR, p("s"))
             .env("XDG_RUNTIME_DIR", p("r"))
             .env("TMPDIR", p("tmp"))
-            .env("ULTRON_SELF_COMMAND", r#"["/opt/ultron/bin/ultron"]"#)
-            .env("ULTRON_LOKI", "off")
-            .env("ULTRON_PYTHON", python())
-            .env("ULTRON_OFFLINE", "1")
+            .env(
+                claude_root::worker_root::SELF_COMMAND_ENV,
+                r#"["/opt/ultron/bin/ultron"]"#,
+            )
+            .env(session_core::compose::LOKI_ENV, "off")
+            .env(kernel::env::PYTHON_ENV, python())
+            .env(config::env::OFFLINE_ENV, "1")
             .env("FAKE_CLAUDE_OUT", p("launch.json"))
             .env("LANG", "C.UTF-8")
             .stdin(Stdio::null());

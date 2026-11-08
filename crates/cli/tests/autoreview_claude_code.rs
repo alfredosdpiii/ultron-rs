@@ -32,7 +32,7 @@ fn fixture() -> Value {
 
 /// The kernel's interpreter (`ULTRON_PYTHON`, else /usr/bin/python3) also runs the fake CLI.
 fn python() -> String {
-    std::env::var("ULTRON_PYTHON").unwrap_or_else(|_| "/usr/bin/python3".into())
+    kernel::env::python(|name| std::env::var(name).ok())
 }
 
 fn git(cwd: &Path, args: &[&str]) -> String {
@@ -130,17 +130,17 @@ impl World {
             .env("PATH", format!("{}:/usr/bin:/bin", self.work.join("bin").display()))
             .env("HOME", &self.work)
             .env("TZ", "UTC")
-            .env("ULTRON_CODING_AGENT_DIR", self.work.join("agent"))
-            .env("ULTRON_SERVER_DIR", self.work.join("server"))
+            .env(config::paths::ENV_AGENT_DIR, self.work.join("agent"))
+            .env(config::paths::ENV_SERVER_DIR, self.work.join("server"))
             .env("XDG_RUNTIME_DIR", self.work.join("run"))
             .env("TMPDIR", self.work.join("run"))
-            .env("ULTRON_LOKI", "off")
-            .env("ULTRON_HINDSIGHT_URL", "off")
+            .env(session_core::compose::LOKI_ENV, "off")
+            .env(hindsight::resolve::HINDSIGHT_URL_ENV, "off")
             .env("FAKE_CLAUDE_LOG", self.log())
             .env("GIT_CONFIG_GLOBAL", "/dev/null")
             .env("GIT_CONFIG_NOSYSTEM", "1");
-        if let Ok(python) = std::env::var("ULTRON_PYTHON") {
-            command.env("ULTRON_PYTHON", python);
+        if let Ok(python) = std::env::var(kernel::env::PYTHON_ENV) {
+            command.env(kernel::env::PYTHON_ENV, python);
         }
         let output = command.output().unwrap();
         (

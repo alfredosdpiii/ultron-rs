@@ -135,7 +135,7 @@ fn session_core_loki_notice_opens_the_first_root_turn_once_like_typescript() {
 fn session_core_loki_notice_says_why_it_did_not_commit_and_nothing_when_loki_is_off() {
     let home = repository_home();
     let mut vars = IDENTITY.to_vec();
-    vars.push(("ULTRON_LOKI_AUTOCOMMIT", "off"));
+    vars.push((loki::auto_setup::LOKI_AUTOCOMMIT_ENV, "off"));
     let w = home.open(Box::new(|_, _| text("done")), &vars, None);
     prompt(&w, "first");
     w.close();
@@ -153,7 +153,7 @@ fn session_core_loki_notice_says_why_it_did_not_commit_and_nothing_when_loki_is_
 
     let off = repository_home();
     let mut vars = IDENTITY.to_vec();
-    vars.push(("ULTRON_LOKI", "off"));
+    vars.push((session_core::compose::LOKI_ENV, "off"));
     let w = off.open(Box::new(|_, _| text("done")), &vars, None);
     prompt(&w, "first");
     w.close();

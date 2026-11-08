@@ -75,8 +75,8 @@ fn root(collect: CollectMode, max_lanes: usize, continuity: bool) -> Root {
         create: Arc::new(move |lane| {
             let mut options = KernelOptions::new(cwd.clone(), runtime());
             options.env = vec![
-                ("ULTRON_CODING_AGENT_DIR".into(), private.display().to_string()),
-                ("ULTRON_SERVER_DIR".into(), private.display().to_string()),
+                (config::paths::ENV_AGENT_DIR.into(), private.display().to_string()),
+                (config::paths::ENV_SERVER_DIR.into(), private.display().to_string()),
             ];
             if continuity {
                 options.snapshot_key = Some(vec![7; 32]);

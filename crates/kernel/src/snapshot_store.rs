@@ -11,6 +11,8 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
+pub const RLM_SNAPSHOT_KEY_STORE_ENV: &str = "ULTRON_RLM_SNAPSHOT_KEY_STORE";
+
 /// Marker left in place of the key file once the key lives in the OS keyring; it holds no secret.
 pub const SNAPSHOT_KEYRING_MARKER: &str = "rlm-snapshot.key.keyring";
 
@@ -304,7 +306,7 @@ pub fn load_snapshot_key(
 /// warning on stderr): the store from `ULTRON_RLM_SNAPSHOT_KEY_STORE`, the keyring through the session
 /// environment's `secret-tool`. `None` when the key cannot be loaded (the kernel then uses a process key).
 pub fn session_snapshot_key(agent_dir: &Path, var: &dyn Fn(&str) -> Option<String>) -> Option<Vec<u8>> {
-    let store = KeyStore::from_setting(var("ULTRON_RLM_SNAPSHOT_KEY_STORE").as_deref());
+    let store = KeyStore::from_setting(var(RLM_SNAPSHOT_KEY_STORE_ENV).as_deref());
     let keyring = secret_tool_keyring(agent_dir, var);
     let loaded = load_snapshot_key(agent_dir, store, &keyring).ok()?;
     if let Some(warning) = &loaded.warning {

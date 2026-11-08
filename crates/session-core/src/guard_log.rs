@@ -10,6 +10,8 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
+pub const LOKI_LOG_ENV: &str = "ULTRON_LOKI_LOG";
+
 /// One log line: `JSON.stringify({ at, ...record })`.
 pub fn log_line(at: u64, record: &GuardRecord) -> String {
     let mut line = json!({ "at": at });
@@ -77,7 +79,7 @@ pub fn loki_setup(config: &crate::compose::Config) {
         host::loki_guard::LokiMode::Advise => "advise",
         host::loki_guard::LokiMode::On => "on",
     };
-    let Some(target) = target((config.var)("ULTRON_LOKI_LOG").as_deref()) else {
+    let Some(target) = target((config.var)(LOKI_LOG_ENV).as_deref()) else {
         return;
     };
     let python = project_python(&|key| (config.var)(key), &config.cwd);
