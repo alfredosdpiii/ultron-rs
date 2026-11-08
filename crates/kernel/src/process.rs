@@ -68,7 +68,7 @@ pub(crate) fn descendant_pids(root: i32) -> Vec<i32> {
 /// The process group a host may signal for a command it started in a group of its own: `pgid` itself, when it is
 /// a real positive group id (never 0, -1 or another negative value, never init's 1) and neither this process's pid
 /// nor this process's own group. Pure, so the guard is tested without sending any signal.
-pub fn command_group_target(pgid: i32, own_pid: i32, own_group: i32) -> Option<Pid> {
+fn command_group_target(pgid: i32, own_pid: i32, own_group: i32) -> Option<Pid> {
     if pgid <= 1 || pgid == own_pid || pgid == own_group {
         return None;
     }
@@ -149,6 +149,26 @@ pub(crate) fn kill_process_tree(root: i32, owns_process_group: bool, root_alive:
             if pid != own {
                 signal(pid, Signal::KILL);
             }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::command_group_target;
+
+    /// The process-group kill guard, tested as a pure function only: no signal is ever sent here.
+    #[test]
+    fn kernel_w16f_only_a_real_command_group_other_than_the_hosts_own_may_be_signalled() {
+        let (own_pid, own_group) = (4242, 4000);
+        for refused in [0, -1, -4242, 1, own_pid, own_group, i32::MIN] {
+            assert_eq!(command_group_target(refused, own_pid, own_group), None, "{refused}");
+        }
+        for allowed in [2, 4001, 4243, i32::MAX] {
+            assert_eq!(
+                command_group_target(allowed, own_pid, own_group).map(|pid| pid.as_raw_nonzero().get()),
+                Some(allowed)
+            );
         }
     }
 }

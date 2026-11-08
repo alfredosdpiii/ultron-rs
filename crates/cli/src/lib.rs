@@ -321,7 +321,7 @@ fn run_inner(argv: &[String], env: &Env, out: &mut dyn Write, err: &mut dyn Writ
             err.write_all(warning.as_bytes()).map_err(io)?;
         }
         package_files(env)?;
-        let models = list_models::available_models(env);
+        let models = session_core::lane::available_models(env);
         out.write_all(list_models::render(&models, search, &env.docs()).as_bytes())
             .map_err(io)?;
         return Ok(0);
@@ -408,7 +408,7 @@ fn run_inner(argv: &[String], env: &Env, out: &mut dyn Write, err: &mut dyn Writ
         }
         Err(NativeError::Failed(message)) => {
             writeln!(err, "Error: {message}").map_err(io)?;
-            if let Some(hint) = startup::no_model_hint(env) {
+            if let Some(hint) = setup::no_model_hint(env) {
                 writeln!(err, "{hint}").map_err(io)?;
             }
             Ok(1)

@@ -308,7 +308,7 @@ pub struct NotificationPage {
     pub etag: Option<String>,
     /// Seconds GitHub asks to wait between polls (`X-Poll-Interval`).
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub poll_interval: Option<crate::js::Num>,
+    pub poll_interval: Option<jsrt::json::Num>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -511,7 +511,7 @@ impl GitHub {
             .get("x-poll-interval")
             .map_or(f64::NAN, |v| jsrt::number::parse(v));
         let header = |name: &str| response.headers.get(name).filter(|value| !value.is_empty()).cloned();
-        let poll_interval = (interval.is_finite() && interval > 0.0).then_some(crate::js::Num(interval));
+        let poll_interval = (interval.is_finite() && interval > 0.0).then_some(jsrt::json::Num(interval));
         if response.status == 304 {
             return Ok(NotificationPage {
                 not_modified: true,

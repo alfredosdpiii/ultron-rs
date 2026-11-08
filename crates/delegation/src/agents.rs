@@ -538,7 +538,7 @@ impl Agents {
 
     /// `loadTasks`: the registry, the journal (an earlier owner's unfinished tasks become interrupted), and the
     /// ledger, whose open reservations all belong to an ended owner and settle as unknown.
-    fn load(&self) -> Result<(), String> {
+    pub fn load_tasks(&self) -> Result<(), String> {
         let mut state = self.state();
         if state.loaded.is_none() {
             let outcome = (|| {
@@ -1628,7 +1628,7 @@ impl Agents {
         let Value::Object(payload) = payload else {
             return Err("Host payload must be a JSON object".into());
         };
-        self.load()?;
+        self.load_tasks()?;
         if self.state().closed {
             return Err("Ultron task host is closed".into());
         }
@@ -1643,7 +1643,7 @@ impl Agents {
             jsrt::payload::fields(&payload, &["graph"])?;
         }
         let Some(request) = Request::of(kind) else {
-            return Err(format!("Ultron RLM host request is not wired: {kind}"));
+            return Err(kernel::ops::not_wired(kind));
         };
         match request {
             Request::Ping => Ok(json!({ "ok": true })),
@@ -1772,7 +1772,7 @@ impl Agents {
         let Value::Object(payload) = payload else {
             return Err("Host payload must be a JSON object".into());
         };
-        self.load()?;
+        self.load_tasks()?;
         let parent = self.caller_task(lane);
         let request = self.request(&payload, parent.as_deref())?;
         self.spawn_task(request, None, parent.as_deref(), None)
@@ -2665,20 +2665,20 @@ impl kernel_apis::TaskHost for Agents {
     }
 
     fn strategy(&self, definition: &str) -> Result<String, String> {
-        self.load()?;
+        self.load_tasks()?;
         let key = definition_key(Some(&json!(definition)))?;
         Ok(self.definition(&key)?.strategy().as_str().into())
     }
 
     fn tasks(&self) -> Result<Vec<Value>, String> {
-        self.load()?;
+        self.load_tasks()?;
         self.state().journal.list()
     }
 
     /// Module work (instance invocations, skill runs, schedule firings, verifiers) is detached: it is collected
     /// later or awaited explicitly, and stops with its parent task's subtree.
     fn spawn(&self, request: &Value, parent: Option<&str>) -> Result<Value, String> {
-        self.load()?;
+        self.load_tasks()?;
         let definition = definition_key(request.get("definition"))?;
         let item = self.definition(&definition)?;
         let input = request.get("input").cloned().unwrap_or(Value::Null);

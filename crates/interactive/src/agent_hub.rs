@@ -23,6 +23,7 @@ use tui::{strip_terminal_sequences, truncate_to_width, visible_width};
 use crate::chat::{ChatStyle, ChatView};
 use crate::components::bold;
 use crate::copy_targets::TranscriptEntry;
+use crate::hub_frame::{bottom_border, boxed_row, divider, top_border};
 
 /// Identity of the ambient main session in the roster.
 pub const MAIN_AGENT_ID: &str = "Main";
@@ -1235,35 +1236,4 @@ fn replay(chat: &mut ChatView, entry: &TranscriptEntry) {
             }
         }
     }
-}
-
-fn top_border(t: &Theme, width: usize, title: &str) -> String {
-    let label = format!(" {title} ");
-    let fill = width.saturating_sub(2 + visible_width(&label));
-    format!(
-        "{}{}{}",
-        t.fg(Fg::Border, "╭"),
-        bold(&label),
-        t.fg(Fg::Border, &format!("{}╮", "─".repeat(fill)))
-    )
-}
-
-fn divider(t: &Theme, width: usize) -> String {
-    t.fg(Fg::Border, &format!("├{}┤", "─".repeat(width.saturating_sub(2))))
-}
-
-fn bottom_border(t: &Theme, width: usize) -> String {
-    t.fg(Fg::Border, &format!("╰{}╯", "─".repeat(width.saturating_sub(2))))
-}
-
-fn boxed_row(t: &Theme, content: &str, width: usize) -> String {
-    let inner = width.saturating_sub(4);
-    let cut = truncate_to_width(content, inner, "…", false);
-    let pad = inner.saturating_sub(visible_width(&cut));
-    format!(
-        "{} {cut}{} {}",
-        t.fg(Fg::Border, "│"),
-        " ".repeat(pad),
-        t.fg(Fg::Border, "│")
-    )
 }

@@ -799,7 +799,7 @@ impl Host {
                         .collect(),
                 ))
             }
-            other if other.starts_with("shell.") => Err(format!("Ultron RLM host request is not wired: {other}")),
+            other if other.starts_with("shell.") => Err(kernel::ops::not_wired(other)),
             other => Err(not_available(other)),
         }
     }
@@ -1255,19 +1255,33 @@ fn follow(job: &Arc<Job>, child: Option<std::process::Child>, shared: &Shared) {
 }
 
 /// Wait for a job at most `seconds` (at least 20 ms; None: until it ends) or until the calling cell ends.
-fn wait(job: &Job, seconds: Option<f64>, signal: &Signal) {
+fn wait(job: &Arc<Job>, seconds: Option<f64>, signal: &Signal) {
     job.waiters.fetch_add(1, Ordering::SeqCst);
     let deadline = seconds.map(|seconds| Instant::now() + Duration::from_secs_f64(seconds.max(0.02)));
+    let woken = job.clone();
+    let link = signal.link(move |_| {
+        let _done = sync::lock(&woken.done.0);
+        woken.done.1.notify_all();
+    });
     let mut done = sync::lock(&job.done.0);
-    while !*done && !signal.is_aborted() && deadline.is_none_or(|deadline| Instant::now() < deadline) {
-        done = job
-            .done
-            .1
-            .wait_timeout(done, POLL)
-            .unwrap_or_else(PoisonError::into_inner)
-            .0;
+    while !*done && !signal.is_aborted() {
+        done = match deadline {
+            None => job.done.1.wait(done).unwrap_or_else(PoisonError::into_inner),
+            Some(deadline) => {
+                let now = Instant::now();
+                if now >= deadline {
+                    break;
+                }
+                job.done
+                    .1
+                    .wait_timeout(done, deadline - now)
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .0
+            }
+        };
     }
     drop(done);
+    drop(link);
     job.waiters.fetch_sub(1, Ordering::SeqCst);
 }
 

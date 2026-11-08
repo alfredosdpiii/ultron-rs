@@ -32,6 +32,11 @@ pub const MERMAID_MODES: [&str; 3] = ["off", "final", "streaming"];
 pub const TUI_MODES: [&str; 2] = ["regular", "fullscreen"];
 pub const FULLSCREEN_EXIT_OUTPUTS: [&str; 2] = ["transcript", "resume-hint"];
 pub const FULLSCREEN_SCROLLBARS: [&str; 3] = ["hidden", "auto", "always"];
+/// `persona`: the Ultron persona (personality.md in the system prompt), or off.
+pub const PERSONA_KEY: &str = "persona";
+pub const PERSONA_ULTRON: &str = "ultron";
+pub const PERSONA_OFF: &str = "off";
+pub const PERSONA_VALUES: [&str; 2] = [PERSONA_ULTRON, PERSONA_OFF];
 /// `defaultProjectTrust`.
 pub const PROJECT_TRUST_DEFAULTS: [&str; 3] = ["ask", "always", "never"];
 

@@ -66,6 +66,14 @@ pub fn resolve(env: Option<&str>, setting: Option<&str>) -> (Option<String>, Sou
     (hindsight_url(env, setting), source)
 }
 
+/// [`resolve`] of `ULTRON_HINDSIGHT_URL` in `var` and the global `hindsightUrl` setting of `manager`.
+pub fn resolve_in(
+    var: &dyn Fn(&str) -> Option<String>,
+    manager: &config::settings::SettingsManager,
+) -> (Option<String>, Source) {
+    resolve(var(HINDSIGHT_URL_ENV).as_deref(), setting_url(manager).as_deref())
+}
+
 /// `SettingsManager.getHindsightUrl()`: the global `hindsightUrl` setting, trimmed, when a non-blank string.
 pub fn setting_url(manager: &config::settings::SettingsManager) -> Option<String> {
     manager
@@ -97,7 +105,7 @@ pub fn worker_scope_tags(session_id: &str, cwd: &str, home: &str) -> Map<String,
     tags.as_object().cloned().unwrap_or_default()
 }
 
-/// The server and bank this process uses (`None` from [`Endpoint::resolve`]: memory is off).
+/// The server and bank this process uses (`None` from [`Endpoint::at`]: memory is off).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Endpoint {
     pub url: String,
@@ -105,19 +113,18 @@ pub struct Endpoint {
 }
 
 impl Endpoint {
-    /// From `ULTRON_HINDSIGHT_URL`, the global `hindsightUrl` setting under `agent_dir`, and `ULTRON_HINDSIGHT_BANK`.
-    pub fn resolve(var: &dyn Fn(&str) -> Option<String>, global_setting: Option<String>) -> Option<Endpoint> {
-        let url = hindsight_url(var(HINDSIGHT_URL_ENV).as_deref(), global_setting.as_deref())?;
+    /// The server at `url` ([`resolve_in`]'s, `None`: memory is off) on the bank `ULTRON_HINDSIGHT_BANK` names.
+    pub fn at(url: Option<String>, var: &dyn Fn(&str) -> Option<String>) -> Option<Endpoint> {
         Some(Endpoint {
-            url,
+            url: url?,
             bank: bank(var(HINDSIGHT_BANK_ENV).as_deref()),
         })
     }
 
-    /// Like [`Endpoint::resolve`], reading the global settings file under `agent_dir`.
+    /// From `ULTRON_HINDSIGHT_URL`, the global `hindsightUrl` setting under `agent_dir`, and `ULTRON_HINDSIGHT_BANK`.
     pub fn from_env(var: &dyn Fn(&str) -> Option<String>, cwd: &Path, agent_dir: &Path) -> Option<Endpoint> {
         let manager = config::settings::SettingsManager::create(cwd, agent_dir, false);
-        Self::resolve(var, setting_url(&manager))
+        Self::at(resolve_in(var, &manager).0, var)
     }
 
     /// The session worker's backend (`createWorkerServices`): this bank, created on first use, tagged for the

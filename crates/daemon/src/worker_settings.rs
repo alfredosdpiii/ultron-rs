@@ -513,14 +513,19 @@ pub fn apply(
         }
         // The persona (resources::persona): `ultron`, or `off`/null to remove it; the worker renders its system
         // prompt again on the next request and reads it when a run ends.
-        "persona" => {
+        config::keys::PERSONA_KEY => {
             let persona = match value {
                 Value::Null => None,
-                value => Some(one_of(key, value, &[resources::persona::ULTRON, "off"])?),
+                value => Some(one_of(key, value, &config::keys::PERSONA_VALUES)?),
             };
             // Off is kept as `"off"` where a process default would turn it on again (the durable instance).
             let defaulted = config::settings::process_defaults().is_some_and(|d| d.contains_key(key));
-            settings.set_global(key, persona.filter(|p| p != "off" || defaulted).map(Value::String));
+            settings.set_global(
+                key,
+                persona
+                    .filter(|p| p != config::keys::PERSONA_OFF || defaulted)
+                    .map(Value::String),
+            );
             applied = Applied::Live;
         }
         "autoreview.enabled" | "autoreview.ack" => {

@@ -105,11 +105,6 @@ pub fn read_piped_stdin(parsed: &Args) -> Option<String> {
     piped_prompt(&String::from_utf8_lossy(&bytes))
 }
 
-/// `noModelHint`: the hint after a failed start with no model to start with (crate::setup::start_model_state).
-pub fn no_model_hint(env: &Env) -> Option<String> {
-    crate::setup::no_model_hint(env)
-}
-
 /// The model's tools TypeScript's worker would activate for these flags (`effectiveActiveToolNames` over the
 /// built-ins, whose default is `[rlm]`), and the warnings for what the Rust build cannot do: its model's tool list is
 /// exactly `[rlm]`, so flags that would take `rlm` away or add a native tool are reported and the list stays.

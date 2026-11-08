@@ -2,7 +2,7 @@
 //! `fixtures/generate-model-registry.mjs`): models.json providers and models composed over the built-in catalog,
 //! composition errors, availability, request auth (key and headers) and exact model references.
 
-use ai::model_registry::{ModelRegistry, request_options};
+use ai::model_registry::{ModelRegistry, prepare_request};
 use ai::{Model, SimpleStreamOptions};
 use serde_json::{Map, Value, json};
 use std::collections::HashMap;
@@ -214,7 +214,7 @@ fn ai_model_registry_request_headers_reach_options_not_json() {
             .into_iter()
             .collect(),
     );
-    let prepared = request_options(&model, &options).unwrap().unwrap();
+    let prepared = prepare_request(&model, &options).unwrap().1.unwrap();
     let headers: Vec<(String, Option<String>)> = prepared.base.headers.unwrap().into_iter().collect();
     assert_eq!(
         headers,
@@ -227,7 +227,7 @@ fn ai_model_registry_request_headers_reach_options_not_json() {
     );
     // A model the registry did not prepare sends what the caller sends.
     let plain = case.registry.find("cliproxyapi", "plain").unwrap();
-    assert!(request_options(&plain, &options).unwrap().is_none());
+    assert!(prepare_request(&plain, &options).unwrap().1.is_none());
 }
 
 /// `authHeader` without any key fails the request with the TypeScript auth error.
@@ -238,7 +238,7 @@ fn ai_model_registry_auth_header_needs_a_key() {
         case.registry.find("gw", "m").unwrap(),
         std::sync::Arc::new(|_: &str| None),
     );
-    let Err(error) = request_options(&model, &SimpleStreamOptions::default()) else {
+    let Err(error) = prepare_request(&model, &SimpleStreamOptions::default()) else {
         panic!("a bearer header without a key must fail");
     };
     assert_eq!(

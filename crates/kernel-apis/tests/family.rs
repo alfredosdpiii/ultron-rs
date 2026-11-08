@@ -96,7 +96,7 @@ fn test_requests(current: Arc<Mutex<Current>>) -> Arc<dyn HostHandler> {
         match kind {
             "test.lane" => current.lane = payload["lane"].as_str().unwrap().into(),
             "test.clock" => current.now += payload["ms"].as_i64().unwrap(),
-            _ => return Err(format!("Ultron RLM host request is not wired: {kind}")),
+            _ => return Err(kernel::ops::not_wired(kind)),
         }
         Ok(json!({"lane": current.lane, "now": current.now}))
     })

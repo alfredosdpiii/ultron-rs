@@ -129,6 +129,22 @@ pub fn number(x: f64) -> Value {
     }
 }
 
+/// A JavaScript number in a serde struct: written by JSON.stringify as an integer when it is one ([`number`]).
+#[derive(Debug, Clone, Copy, PartialEq, PartialOrd)]
+pub struct Num(pub f64);
+
+impl serde::Serialize for Num {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        number(self.0).serialize(serializer)
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for Num {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Num, D::Error> {
+        f64::deserialize(deserializer).map(Num)
+    }
+}
+
 /// Every integral float in `value` as an integer ([`number`]), as a `JSON.parse` / `JSON.stringify` round trip leaves
 /// a value that `serde_json` then writes the same way (`-3e2` is `-300`, not `-300.0`).
 pub fn normalize_numbers(value: Value) -> Value {

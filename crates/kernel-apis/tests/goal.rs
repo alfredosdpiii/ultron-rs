@@ -105,7 +105,7 @@ fn goal_host(_: &Path) -> Made {
             payload["payload"].as_object().unwrap(),
             payload["lane"].as_str().unwrap(),
         ),
-        _ => Err(format!("Ultron RLM host request is not wired: {kind}")),
+        _ => Err(kernel::ops::not_wired(kind)),
     });
     Made {
         handler: KernelApis::new(inner).with(driver),

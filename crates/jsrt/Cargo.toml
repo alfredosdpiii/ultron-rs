@@ -9,6 +9,7 @@ publish.workspace = true
 [dependencies]
 base64 = "=0.23.1"
 getrandom = "=0.4.3"
+serde = "=1.0.229"
 serde_json = { version = "=1.0.151", features = ["float_roundtrip", "preserve_order"] }
 sha2 = "=0.10.9"
 

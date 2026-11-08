@@ -10,7 +10,6 @@ pub mod daemon;
 pub mod engine;
 pub mod eval;
 pub mod github;
-pub mod js;
 pub mod ledger;
 pub mod lessons;
 pub mod local;

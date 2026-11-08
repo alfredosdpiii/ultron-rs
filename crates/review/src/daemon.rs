@@ -34,12 +34,12 @@ use crate::accounts::{Account, account_key};
 use crate::ban::{BanList, banned_author, banned_reason};
 use crate::engine::Log;
 use crate::github::{Clock, Error, GitHub, PullRef, pull_key};
-use crate::js::Num;
 use crate::reviewer::{
     Candidate, Outcome, Preparation, Prepared, ReviewOptions, ReviewerDeps, prepare_pull, run_review,
 };
 use crate::settings::RETENTION_DAYS;
 use crate::state::{AccountState, AutoreviewState, DaemonInfo, StateStore};
+use jsrt::json::Num;
 
 /// The search fallback runs on the first cycle and then every this many cycles.
 pub const SEARCH_EVERY: u64 = 5;

@@ -2871,8 +2871,12 @@ impl App {
                 Some(crate::modes::PersonaArg::Report) => self.send(LaneCommand::ReadPersona),
                 Some(crate::modes::PersonaArg::Global(on)) => {
                     self.send(LaneCommand::SaveSetting {
-                        key: "persona".into(),
-                        value: Value::from(if on { "ultron" } else { "off" }),
+                        key: config::keys::PERSONA_KEY.into(),
+                        value: Value::from(if on {
+                            config::keys::PERSONA_ULTRON
+                        } else {
+                            config::keys::PERSONA_OFF
+                        }),
                     });
                     self.show_status(&crate::modes::persona_changed(on));
                 }

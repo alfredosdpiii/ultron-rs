@@ -225,7 +225,7 @@ impl Host {
             .modules
             .iter()
             .find(|m| m.prefixes().iter().any(|prefix| kind.starts_with(prefix)))
-            .ok_or_else(|| format!("Ultron RLM host request is not wired: {kind}"))?;
+            .ok_or_else(|| kernel::ops::not_wired(kind))?;
         let signal = Signal::new();
         module.handle(&Request {
             kind,

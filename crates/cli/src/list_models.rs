@@ -3,12 +3,6 @@
 use ai::Model;
 use std::path::Path;
 
-/// The models of providers with credentials: built-in and models.json providers with a key (configured, in the
-/// environment) or an entry in auth.json.
-pub fn available_models(env: &crate::Env) -> Vec<Model> {
-    session_core::lane::available_models(env)
-}
-
 /// The warning `--list-models` writes to stderr when models.json did not load or a provider in it does not compose.
 pub fn models_json_warning(env: &crate::Env) -> Option<String> {
     session_core::lane::registry(env)

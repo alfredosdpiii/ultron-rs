@@ -822,14 +822,12 @@ fn hindsight_step<U: SetupUi>(ui: &mut U, deps: &mut SetupDeps) -> Result<Summar
         "Hindsight stores what the model keeps on purpose (memory.propose) and returns it when the model asks (memory.prepare).",
         Tone::Info,
     );
-    let env_url = deps.var(hindsight::resolve::HINDSIGHT_URL_ENV);
-    let setting = hindsight::resolve::setting_url(&deps.settings);
-    let (effective, source) = hindsight::resolve::resolve(env_url.as_deref(), setting.as_deref());
+    let (effective, source) = hindsight::resolve::resolve_in(&|name| deps.var(name), &deps.settings);
     if source == hindsight::resolve::Source::Env {
         ui.note(
             &format!(
                 "ULTRON_HINDSIGHT_URL is set ({}); it overrides anything saved here.",
-                env_url.unwrap_or_default()
+                deps.var(hindsight::resolve::HINDSIGHT_URL_ENV).unwrap_or_default()
             ),
             Tone::Warning,
         );

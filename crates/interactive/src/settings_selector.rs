@@ -901,8 +901,13 @@ impl SettingsSelector {
                     "persona",
                     "Persona",
                     "The Ultron persona: personality.md in the system prompt, announced next steps continued (applies from the next prompt)",
-                    if c.text("persona").as_deref() == Some("ultron") { "ultron" } else { "off" }.into(),
-                    &["ultron", "off"],
+                    if c.text(config::keys::PERSONA_KEY).as_deref() == Some(config::keys::PERSONA_ULTRON) {
+                        config::keys::PERSONA_ULTRON
+                    } else {
+                        config::keys::PERSONA_OFF
+                    }
+                    .into(),
+                    &config::keys::PERSONA_VALUES,
                 ),
             );
             items.insert(
@@ -1961,7 +1966,15 @@ impl SettingsSelector {
             "fullscreen-scrollbar" => ("fullscreenScrollbar", value.into()),
             "fullscreen-copy-on-select" => ("fullscreenCopyOnSelect", b),
             // As `/persona ultron|none` writes it.
-            "persona" => ("persona", if value == "ultron" { value } else { "off" }.into()),
+            "persona" => (
+                config::keys::PERSONA_KEY,
+                if value == config::keys::PERSONA_ULTRON {
+                    value
+                } else {
+                    config::keys::PERSONA_OFF
+                }
+                .into(),
+            ),
             "request-token-cap" => ("rootBudget.maxTotalTokens", token_cap_value(value)),
             "map-token-cap" => ("rlm.mapTokens", token_cap_value(value)),
             other => (other, value.into()),

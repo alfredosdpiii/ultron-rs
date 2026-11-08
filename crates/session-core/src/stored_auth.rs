@@ -28,8 +28,7 @@ pub fn stored_key(env: &Env, provider: &str) -> Result<Stored, String> {
     let Ok(text) = std::fs::read_to_string(&path) else {
         return Ok(Stored::Nothing);
     };
-    let data = config::json::parse(text.trim_start_matches('\u{feff}'))
-        .map_err(|e| format!("Credential store read failed for {provider}: {e}"))?;
+    let data = config::json::parse(&text).map_err(|e| format!("Credential store read failed for {provider}: {e}"))?;
     let Some(credential) = data.get(provider).filter(|c| !c.is_null()).cloned() else {
         return Ok(Stored::Nothing);
     };

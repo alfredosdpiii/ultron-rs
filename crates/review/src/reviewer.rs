@@ -30,7 +30,6 @@ use crate::engine::{Log, ReviewEngine};
 use crate::github::{
     Clock, Comment, Error, GitHub, PullRef, PullRequest, Review, ReviewCommentInput, ReviewInput, pull_key,
 };
-use crate::js::Num;
 use crate::ledger::{
     Fate, FateInput, FateKind, Lesson, ThreadState, fates_of, lessons_for, merge_fates, without_unposted_merges,
 };
@@ -43,6 +42,7 @@ use crate::promotion::{
 use crate::runner::Runner;
 use crate::settings::{AutoreviewConfig, AutoreviewPaths, MAX_ATTEMPTS, engine_settings, tests_eligible};
 use crate::state::{AutoreviewState, PostedFinding, PullState, ReviewRecord, StateStore, claim_hash, to_json_1};
+use jsrt::json::Num;
 
 /// Where fates and rules are also retained (Hindsight).
 pub trait LessonMemory: Send + Sync {

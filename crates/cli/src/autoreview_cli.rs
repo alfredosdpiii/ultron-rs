@@ -1357,7 +1357,7 @@ fn status(
         lines.push("  none".into());
     }
     for record in state.recent.iter().rev().take(15) {
-        let ms = |value: Option<review::js::Num>| value.map_or(0.0, |n| n.0);
+        let ms = |value: Option<jsrt::json::Num>| value.map_or(0.0, |n| n.0);
         let stages = record.stages.as_ref().map(|stages| {
             stages
                 .iter()
@@ -1741,10 +1741,7 @@ fn reviewer_deps(
     let lessons: Option<Arc<dyn review::reviewer::LessonMemory>> = if config.learn {
         let agent_dir = env.agent_dir();
         let manager = config::settings::SettingsManager::create(&env.cwd, &agent_dir, false);
-        let url = hindsight::resolve::hindsight_url(
-            (env.var)(hindsight::resolve::HINDSIGHT_URL_ENV).as_deref(),
-            hindsight::resolve::setting_url(&manager).as_deref(),
-        );
+        let (url, _) = hindsight::resolve::resolve_in(&*env.var, &manager);
         url.and_then(|url| review::lessons::HindsightLessons::new(&url, Box::new(jsrt::date::now_ms), None).ok())
             .map(|lessons| Arc::new(lessons) as Arc<dyn review::reviewer::LessonMemory>)
     } else {

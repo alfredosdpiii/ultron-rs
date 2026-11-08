@@ -344,11 +344,6 @@ impl ContextControl {
         self
     }
 
-    pub fn with_clock(mut self, clock: Clock) -> Self {
-        self.clock = clock;
-        self
-    }
-
     fn known(&self, lane: &str) {
         jsrt::sync::lock(&self.tracking).lanes.insert(lane.to_string());
     }
@@ -768,7 +763,7 @@ impl ContextControl {
                 }
                 Ok(json!({"id": self.append(lane, CONTEXT_NOTE_CUSTOM_TYPE, json!({"text": text}))?}))
             }
-            _ => Err(format!("Ultron RLM host request is not wired: {kind}")),
+            _ => Err(kernel::ops::not_wired(kind)),
         }
     }
 }

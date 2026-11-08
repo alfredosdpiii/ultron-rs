@@ -376,37 +376,18 @@ impl Core {
         &mut self,
         signal: &AbortSignal,
         retry: RetryPolicy,
-        ids: (&str, &str),
+        (run_id, step): (&str, &str),
         attempt_start: WatchEvent,
         attempt: AttemptFn<T>,
         journal: &mut dyn FnMut(&mut Core, RetryStep<'_>) -> Result<(), String>,
     ) -> Attempt<T> {
         let mut scheduled = false;
-        let outcome = self.attempt_loop(signal, retry, ids, &attempt_start, attempt, journal, &mut scheduled);
-        // AgentSession's `onRetryFinished`: the retries ended, however they did.
-        if scheduled {
-            self.emit(WatchEvent::SummarizationRetryFinished { lane: MAIN_LANE.into() });
-        }
-        outcome
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    fn attempt_loop<T: Send + 'static>(
-        &mut self,
-        signal: &AbortSignal,
-        retry: RetryPolicy,
-        (run_id, step): (&str, &str),
-        attempt_start: &WatchEvent,
-        attempt: AttemptFn<T>,
-        journal: &mut dyn FnMut(&mut Core, RetryStep<'_>) -> Result<(), String>,
-        scheduled: &mut bool,
-    ) -> Attempt<T> {
         let mut number = 1;
-        loop {
+        let outcome = loop {
             let run = attempt.clone();
             let (result, last) = self.off_actor(move || run()).unwrap_or_else(|error| (Err(error), None));
             if signal.aborted() {
-                return (result, last);
+                break (result, last);
             }
             let retrying = last.as_ref().and_then(|message| retry.retry_delay(number, message));
             let (error, delay) = match (&result, retrying) {
@@ -422,7 +403,7 @@ impl Core {
                             final_error: result.as_ref().err().cloned(),
                         });
                     }
-                    return (result, last);
+                    break (result, last);
                 }
             };
             let not_before = now_ms().saturating_add(i64::try_from(delay).unwrap_or(i64::MAX));
@@ -435,9 +416,9 @@ impl Core {
                     not_before,
                 },
             ) {
-                return (Err(write), last);
+                break (Err(write), last);
             }
-            *scheduled = true;
+            scheduled = true;
             self.emit(WatchEvent::RetryScheduled {
                 lane: MAIN_LANE.into(),
                 run_id: Some(run_id.into()),
@@ -464,7 +445,7 @@ impl Core {
             let cancel = signal.clone();
             let _ = self.off_actor(move || wait_until(not_before, &cancel));
             if signal.aborted() {
-                return (Err(CANCELLED.into()), None);
+                break (Err(CANCELLED.into()), None);
             }
             number += 1;
             self.emit(WatchEvent::RetryStart {
@@ -475,9 +456,14 @@ impl Core {
             });
             self.emit(attempt_start.clone());
             if let Err(write) = journal(self, RetryStep::Retry) {
-                return (Err(write), None);
+                break (Err(write), None);
             }
+        };
+        // AgentSession's `onRetryFinished`: the retries ended, however they did.
+        if scheduled {
+            self.emit(WatchEvent::SummarizationRetryFinished { lane: MAIN_LANE.into() });
         }
+        outcome
     }
 
     /// A manual compaction: `compaction_start`, the journaled operation (the summary, cancellable), the entry, `compaction_end`; answers Pi's `CompactionResult` fields of the compaction entry.

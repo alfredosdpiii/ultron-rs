@@ -632,10 +632,6 @@ impl UsageLedger {
         .expect("valid limits")
     }
 
-    pub fn default_root(&self) -> &str {
-        &self.root_id
-    }
-
     pub fn limits(&self) -> &UsageLimits {
         &self.limits
     }

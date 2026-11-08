@@ -5,7 +5,7 @@
 //!
 //! - a subagent server's `rlm.finish` is relayed to its parent as `child.finish` with ULTRON_PARENT_TOKEN, which its
 //!   kernel never sees; its spawns count from `--level` and `--allowance`;
-//! - `--children ultron` children run on `--ultron-child-model`;
+//! - `--children ultron` children run on `--ultron-child-model`, and a keyed frame model's key resolves per request;
 //! - `ctx.*` works on the root lane, shell-job ends reach Claude Code at the top of the next result, and
 //!   `ctx.state`, `rlm.pool` and `async.pending` are answered over the control socket;
 //! - the nudges of ULTRON_TOOL_ROUNDS_NUDGE are appended to cell results;
@@ -268,10 +268,13 @@ fn claude_root_mcp_child_server_spawns_count_from_its_level_and_allowance() {
 
 /// An OpenAI-compatible chat-completions endpoint on 127.0.0.1 that answers every request with `reply` and records
 /// the request bodies.
-fn fake_provider(reply: &'static str) -> (u16, Arc<Mutex<Vec<Value>>>) {
+/// Each request's `Authorization` header and JSON body.
+type Seen = Arc<Mutex<Vec<(Option<String>, Value)>>>;
+
+fn fake_provider(reply: &'static str) -> (u16, Seen) {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let port = listener.local_addr().unwrap().port();
-    let requests: Arc<Mutex<Vec<Value>>> = Arc::default();
+    let requests: Seen = Arc::default();
     let seen = requests.clone();
     std::thread::spawn(move || {
         for stream in listener.incoming() {
@@ -280,6 +283,7 @@ fn fake_provider(reply: &'static str) -> (u16, Arc<Mutex<Vec<Value>>>) {
             std::thread::spawn(move || {
                 let mut reader = BufReader::new(stream.try_clone().unwrap());
                 let mut length = 0;
+                let mut authorization = None;
                 let mut first = true;
                 loop {
                     let mut header = String::new();
@@ -294,13 +298,17 @@ fn fake_provider(reply: &'static str) -> (u16, Arc<Mutex<Vec<Value>>>) {
                         && k.eq_ignore_ascii_case("content-length")
                     {
                         length = v.trim().parse().unwrap();
+                    } else if let Some((k, v)) = header.split_once(':')
+                        && k.eq_ignore_ascii_case("authorization")
+                    {
+                        authorization = Some(v.trim().to_string());
                     }
                 }
                 let mut body = vec![0; length];
                 reader.read_exact(&mut body).unwrap();
                 seen.lock()
                     .unwrap()
-                    .push(serde_json::from_slice(&body).unwrap_or(Value::Null));
+                    .push((authorization, serde_json::from_slice(&body).unwrap_or(Value::Null)));
                 let chunk = |delta: Value, finish: Value| {
                     format!(
                         "data: {}\n\n",
@@ -357,9 +365,48 @@ fn claude_root_mcp_ultron_children_run_on_the_ultron_child_model() {
     assert!(next.starts_with("<runtime_event kind=\"child_done\""), "{next}");
     assert!(next.contains("child answer"), "{next}");
     // The child's requests went to the child model, and only to it.
-    let models: Vec<Value> = requests.lock().unwrap().iter().map(|r| r["model"].clone()).collect();
+    let models: Vec<Value> = requests
+        .lock()
+        .unwrap()
+        .iter()
+        .map(|(_, r)| r["model"].clone())
+        .collect();
     assert!(!models.is_empty());
     assert!(models.iter().all(|m| m == "llama-3.3-70b-versatile"), "{models:?}");
+    server.close();
+}
+
+#[test]
+fn claude_root_mcp_frame_model_key_resolves_per_request_as_in_a_native_session() {
+    let root = Root::new();
+    let (port, requests) = fake_provider("forty-two");
+    std::fs::write(
+        root.path("a/models.json"),
+        json!({"providers": {"groq": {"baseUrl": format!("http://127.0.0.1:{port}/v1")}}}).to_string(),
+    )
+    .unwrap();
+    let stored = |key: &str| {
+        std::fs::write(
+            root.path("a/auth.json"),
+            json!({"groq": {"type": "api_key", "key": key}}).to_string(),
+        )
+        .unwrap();
+    };
+    stored("fake-key-one");
+    let mut server = Server::start(&["--frame-model", "groq/llama-3.3-70b-versatile"], root.env(&[]));
+    let infer = "print(await rlm.infer('what is six times seven'))";
+    assert_eq!(server.cell(infer), "forty-two");
+    // A key stored after the server started (a `/login`, an auth.json edit) reaches the next frame.
+    stored("fake-key-two");
+    assert_eq!(server.cell(infer), "forty-two");
+    let keys: Vec<Option<String>> = requests.lock().unwrap().iter().map(|(key, _)| key.clone()).collect();
+    assert_eq!(
+        keys,
+        [
+            Some("Bearer fake-key-one".to_string()),
+            Some("Bearer fake-key-two".to_string())
+        ]
+    );
     server.close();
 }
 

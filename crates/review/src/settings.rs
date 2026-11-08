@@ -8,7 +8,7 @@ use indexmap::IndexMap;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
-use crate::js::Num;
+use jsrt::json::Num;
 
 pub const CACHE_DIR_ENV: &str = "ULTRON_AUTOREVIEW_CACHE_DIR";
 

@@ -1129,6 +1129,20 @@ mod migration {
         assert!(error.starts_with("Not a Pi session"), "{error}");
     }
 
+    /// A source that cannot be read is reported with its read error, as `loadEntriesFromFile` throws it, not as a
+    /// file that is no Pi session.
+    #[test]
+    fn acceptance_a25_import_reports_a_source_it_cannot_read() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("dir.jsonl");
+        std::fs::create_dir(&path).unwrap();
+        let error = import_pi_session(&path, &root.path().join("native"))
+            .unwrap_err()
+            .to_string();
+        let raw = std::io::Error::from_raw_os_error(21).to_string();
+        assert_eq!(error, format!("{}: {raw}", path.display()));
+    }
+
     #[test]
     fn acceptance_a25_round_trips_pi_to_native_to_pi_with_the_same_active_branch_messages_and_context() {
         let root = tempfile::tempdir().unwrap();

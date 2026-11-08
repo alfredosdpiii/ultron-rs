@@ -422,12 +422,13 @@ impl ToolCalls {
                 self.inner.changed.notify_all();
                 return Err(cancel.reason().unwrap_or_else(|| "tool call cancelled".into()));
             }
+            // Only [`ToolCalls::cancel`] aborts `cancel`, holding this lock, and it notifies `changed` before
+            // releasing it.
             state = self
                 .inner
                 .changed
-                .wait_timeout(state, Duration::from_millis(50))
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .0;
+                .wait(state)
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
         }
     }
 
@@ -807,7 +808,7 @@ impl ToolCalls {
                         .collect(),
                 ))
             }
-            other => Err(format!("Ultron RLM host request is not wired: {other}")),
+            other => Err(kernel::ops::not_wired(other)),
         }
     }
 }

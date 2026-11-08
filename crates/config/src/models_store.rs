@@ -26,7 +26,7 @@ impl ModelsStore {
     pub fn snapshot(&self) -> Map<String, Value> {
         match std::fs::read_to_string(&self.path)
             .ok()
-            .and_then(|text| serde_json::from_str(text.trim_start_matches('\u{feff}')).ok())
+            .and_then(|text| crate::json::parse(&text).ok())
         {
             Some(Value::Object(stored)) => stored,
             _ => Map::new(),

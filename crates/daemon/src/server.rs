@@ -28,6 +28,8 @@ const MAX_SERVER_LOG_BYTES: u64 = 1024 * 1024;
 pub const KEEP_ALIVE_ENV: &str = "__ULTRON_SERVER_KEEP_ALIVE";
 /// A test knob: the idle grace of an automatically activated server in ms (default 1000). Never set in the product.
 pub const IDLE_GRACE_ENV: &str = "__ULTRON_SERVER_IDLE_GRACE_MS";
+/// Carries a spawned server's `ServerOptions::root` from the activating client.
+const ROOT_ENV: &str = "__ULTRON_SERVER_ROOT";
 
 /// Whether `directory` is the durable instance's (`~/.ultron/server` of this process's HOME).
 pub fn is_durable_directory(directory: &Path) -> bool {
@@ -409,7 +411,7 @@ fn start_generation(
     // user's files, which an explicit `persona` value overrides).
     // They also start on `durable.model` (the Claude subscription by default) and save a chosen model there.
     if is_durable_directory(&options.directory) {
-        manager.set_settings_defaults(json!({resources::persona::SETTING: resources::persona::ULTRON}));
+        manager.set_settings_defaults(json!({config::keys::PERSONA_KEY: config::keys::PERSONA_ULTRON}));
         manager.set_durable();
     }
     let log_path = error_log_path(&options.directory, server_id);
@@ -585,7 +587,7 @@ pub fn activate_server(options: &ServerOptions, keep_alive: bool) -> io::Result<
         env.push((KEEP_ALIVE_ENV.to_string(), "1".to_string()));
     }
     if let Some(root) = &options.root {
-        env.push(("__ULTRON_SERVER_ROOT".to_string(), root.display().to_string()));
+        env.push((ROOT_ENV.to_string(), root.display().to_string()));
     }
     let child = process::spawn(Role::Server, &args, &env)?;
     let pid = child.id();
@@ -658,7 +660,7 @@ pub fn run_server_process(args: &[String], relay: Option<server::radius_relay::R
         server_id: Some(server_id.clone()),
         model,
         keep_alive: std::env::var(KEEP_ALIVE_ENV).as_deref() == Ok("1"),
-        root: std::env::var_os("__ULTRON_SERVER_ROOT").map(PathBuf::from),
+        root: std::env::var_os(ROOT_ENV).map(PathBuf::from),
         relay,
     })
     .map_err(|e| e.to_string())?;

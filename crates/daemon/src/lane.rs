@@ -19,11 +19,6 @@ impl Lane {
         }
     }
 
-    /// Replace the snapshot (the session actor's, once it opened).
-    pub fn reset(&self, snapshot: Value) {
-        self.transcript.change(|state| state["snapshot"] = snapshot);
-    }
-
     pub fn snapshot(&self) -> Value {
         self.transcript.value()["snapshot"].clone()
     }

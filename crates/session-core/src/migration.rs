@@ -654,7 +654,8 @@ pub fn import_pi_session_with(
         &pi_session_path.display().to_string(),
     ));
     let shown = pi_path.display().to_string();
-    let file_entries = session_file::load_entries_from_file(&session_file::SystemEnv, &shown).unwrap_or_default();
+    let file_entries = session_file::load_entries_from_file(&session_file::SystemEnv, &shown)
+        .map_err(|e| ImportError::Failed(format!("{shown}: {e}")))?;
     let header = match file_entries.first() {
         Some(header) if type_of(header) == "session" => header.clone(),
         _ => {

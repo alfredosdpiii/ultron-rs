@@ -947,10 +947,6 @@ impl Draft {
     pub fn abort(&self) {
         self.0.borrow_mut().open = false;
     }
-
-    pub fn is_open(&self) -> bool {
-        self.0.borrow().open
-    }
 }
 
 fn placed_child<'a>(value: &'a mut Value, segment: &Seg) -> Option<Place<'a>> {

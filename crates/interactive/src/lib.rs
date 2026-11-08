@@ -20,6 +20,7 @@ pub mod footer_data;
 pub mod header;
 pub mod history;
 pub mod history_search;
+mod hub_frame;
 pub mod image_convert;
 pub mod inspection;
 pub mod keybindings;

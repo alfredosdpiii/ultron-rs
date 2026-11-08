@@ -395,7 +395,6 @@ fn open_runtime(
     };
     let session: session_core::durable_store::SharedSession = Arc::new(Mutex::new(session));
     let model = frame_model(&resolved.frame_model, env)?;
-    let api_key = session_core::lane::api_key(&session_core::ModelFlags::default(), env, &model.provider);
     let sessions_dir = session_root.join(session_journal::catalog::session_directory_name(&metadata.cwd));
     // A root server fires its session's schedules itself (crate::schedules); the module tells it of each change.
     let timer = (!args.child).then(crate::schedules::ScheduleTimer::new);
@@ -458,14 +457,15 @@ fn open_runtime(
         )?),
         None => None,
     };
-    let lane = Arc::new(Lane::open_with(&runtime, &model, api_key, &metadata.id, subagents)?);
+    let lane = Arc::new(Lane::open_with(&runtime, &model, None, &metadata.id, subagents)?);
     // Only a root the launcher's wait-events hook wakes (`--wake`, events on) leaves waiting to the host: every other
     // root (`-p`, `--no-hooks`, a Claude child) and every child lane waits for its subagents in the cell
     // (session_core::wake).
     lane.stack.wake.set(args.wake && runtime.config.async_events);
     // The typed-agent host loads its journal once and settles every reservation left open then as abandoned: it
-    // loads now, before a subagent's model reservation is open.
-    let _ = kernel_apis::TaskHost::tasks(&lane.stack.agents);
+    // loads now, before a subagent's model reservation is open. A failed load is kept and surfaces on the first task
+    // call.
+    let _ = lane.stack.agents.load_tasks();
     let delegation = &lane.stack.delegation;
     // The root is itself a subagent (`rootSpawn`, `rootFinish`): nesting counts from its level and allowance, and its
     // `rlm.finish` verdict goes to its parent's server.
@@ -1058,7 +1058,7 @@ impl Server {
             return false;
         }
         let agent_dir = self.env.agent_dir();
-        let trusted = crate::guide::project_trusted(&self.env.cwd, &agent_dir, &self.env.home);
+        let trusted = config::trust::worker_project_trusted(&self.env.cwd, &agent_dir, &self.env.home);
         let settings = config::settings::SettingsManager::create(&self.env.cwd, &agent_dir, trusted);
         resources::persona::enabled(settings.settings())
     }

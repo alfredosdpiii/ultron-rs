@@ -70,7 +70,7 @@ pub fn inner(clock: Arc<AtomicI64>) -> Arc<dyn HostHandler> {
             let ms = payload["ms"].as_i64().unwrap();
             return Ok(json!(clock.fetch_add(ms, Ordering::SeqCst) + ms));
         }
-        Err(format!("Ultron RLM host request is not wired: {kind}"))
+        Err(kernel::ops::not_wired(kind))
     })
 }
 

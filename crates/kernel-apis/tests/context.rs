@@ -125,7 +125,7 @@ fn test_requests(fake: Fake) -> Arc<dyn HostHandler> {
                 }
                 Fake::lane_mut(&mut branches, spec["lane"].as_str().unwrap()).push(entry);
             }
-            _ => return Err(format!("Ultron RLM host request is not wired: {kind}")),
+            _ => return Err(kernel::ops::not_wired(kind)),
         }
         Ok(json!({"lane": branches.lane}))
     })

@@ -70,11 +70,6 @@ pub struct ResourceFlags {
     pub no_skills: bool,
 }
 
-/// `workerProjectTrusted`: nothing to trust, else the stored decision, else `defaultProjectTrust` is not "never".
-pub fn project_trusted(cwd: &Path, agent_dir: &Path, home: &Path) -> bool {
-    config::trust::worker_project_trusted(cwd, agent_dir, home)
-}
-
 /// `loadClaudePromptResources`: what native Ultron would load in `env`'s directory, with the session worker's
 /// resource loader (crate session-core `session_resources`: the settings' `skills` entries, the
 /// auto-discovered `.pi/skills`, `.agents/skills` up to the git root, `<agentDir>/skills` and `~/.agents/skills`,
@@ -84,7 +79,7 @@ pub fn project_trusted(cwd: &Path, agent_dir: &Path, home: &Path) -> bool {
 pub fn load_prompt_resources(env: &RunEnv, bundled: Option<&Path>, flags: ResourceFlags) -> PromptResources {
     let session = session_core::compose::Config::from_env(env);
     let agent_dir_path = env.agent_dir();
-    let trusted = project_trusted(&env.cwd, &agent_dir_path, &env.home);
+    let trusted = config::trust::worker_project_trusted(&env.cwd, &agent_dir_path, &env.home);
     let settings = config::settings::SettingsManager::create(&env.cwd, &agent_dir_path, trusted);
     // The persona does not depend on the context-file and skill flags; an unreadable file gives no section.
     let persona = if resources::persona::enabled(settings.settings()) {

@@ -434,6 +434,11 @@ pub const OPS: &[Op] = &[
     op("cell.output", "session_core::turns", &["text"], &[]),
 ];
 
+/// The TS host's refusal of a request kind it does not serve, which the model sees.
+pub fn not_wired(kind: &str) -> String {
+    format!("Ultron RLM host request is not wired: {kind}")
+}
+
 pub fn find(name: &str) -> Option<&'static Op> {
     OPS.iter().find(|op| op.name == name)
 }

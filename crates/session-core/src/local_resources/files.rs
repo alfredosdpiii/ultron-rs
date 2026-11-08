@@ -327,7 +327,7 @@ pub fn ancestor_agents_skill_dirs(start: &str) -> Vec<String> {
 /// `readPiManifest(...).extensions`: the `pi.extensions` list of a package.json when every entry is a string.
 fn pi_manifest_extensions(package_json: &str) -> Option<Vec<String>> {
     let text = std::fs::read_to_string(package_json).ok()?;
-    let manifest: serde_json::Value = serde_json::from_str(text.trim_start_matches('\u{feff}')).ok()?;
+    let manifest = config::json::parse(&text).ok()?;
     let list = manifest.get("pi")?.as_object()?.get("extensions")?.as_array()?;
     list.iter().map(|e| e.as_str().map(str::to_string)).collect()
 }

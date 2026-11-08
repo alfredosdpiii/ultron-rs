@@ -321,7 +321,7 @@ pub fn registry(env: &Env) -> ModelRegistry {
     let mut registry = ModelRegistry::load(&models, &env.home);
     if let Some(credentials) = std::fs::read_to_string(paths.auth())
         .ok()
-        .and_then(|text| config::json::parse(text.trim_start_matches('\u{feff}')).ok())
+        .and_then(|text| config::json::parse(&text).ok())
     {
         let store = config::models_store::ModelsStore::beside(&models);
         registry.import_legacy_radius(&credentials, &store, now_ms());

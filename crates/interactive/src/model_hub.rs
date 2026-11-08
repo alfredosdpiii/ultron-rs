@@ -22,6 +22,7 @@ use tui::parse_sgr_mouse;
 use tui::{truncate_to_width, visible_width};
 
 use crate::components::bold;
+use crate::hub_frame::{bottom_border, boxed_row, divider, top_border};
 use crate::lane::ModelInfo;
 
 /// The thinking levels the strip offers: all but `max`.
@@ -762,7 +763,7 @@ impl ModelHub {
                 t.fg(Fg::Border, "│")
             ));
         }
-        out.push(t.fg(Fg::Border, &format!("├{}┤", "─".repeat(width - 2))));
+        out.push(divider(&t, width));
         let footer = match &self.strip {
             Some(strip) => {
                 let chips: Vec<String> = THINKING_LEVELS
@@ -793,15 +794,8 @@ impl ModelHub {
                 ),
             ),
         };
-        let footer = truncate_to_width(&footer, inner.saturating_sub(2), "…", false);
-        let pad = inner.saturating_sub(2 + visible_width(&footer));
-        out.push(format!(
-            "{} {footer}{} {}",
-            t.fg(Fg::Border, "│"),
-            " ".repeat(pad),
-            t.fg(Fg::Border, "│")
-        ));
-        out.push(t.fg(Fg::Border, &format!("╰{}╯", "─".repeat(width - 2))));
+        out.push(boxed_row(&t, &footer, width));
+        out.push(bottom_border(&t, width));
         out
     }
 }
@@ -814,15 +808,4 @@ pub fn format_context(window: u64) -> String {
         w if w >= 1_000 => format!("{}k", w / 1_000),
         w => w.to_string(),
     }
-}
-
-fn top_border(t: &Theme, width: usize, title: &str) -> String {
-    let label = format!(" {title} ");
-    let fill = width.saturating_sub(2 + visible_width(&label));
-    format!(
-        "{}{}{}",
-        t.fg(Fg::Border, "╭"),
-        bold(&label),
-        t.fg(Fg::Border, &format!("{}╮", "─".repeat(fill)))
-    )
 }

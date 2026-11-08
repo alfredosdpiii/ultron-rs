@@ -691,7 +691,7 @@ impl GoalDriver {
                 self.set_status(state, "blocked", Some(&reason));
                 Ok(json!({"status": "blocked", "reason": reason}))
             }
-            _ => Err(format!("Ultron RLM host request is not wired: {kind}")),
+            _ => Err(kernel::ops::not_wired(kind)),
         }
     }
 }

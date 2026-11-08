@@ -688,11 +688,9 @@ impl Runtime {
             .extend(services.session.skill_paths.iter().cloned());
         services.resources = Arc::new(resolved);
         let mut diagnostics: Vec<String> = Vec::new();
-        let setting_url = hindsight::resolve::setting_url(&manager);
-        let env_url = (env.var)(hindsight::resolve::HINDSIGHT_URL_ENV);
-        let (_, source) = hindsight::resolve::resolve(env_url.as_deref(), setting_url.as_deref());
+        let (hindsight_url, source) = hindsight::resolve::resolve_in(&*env.var, &manager);
         let hindsight_explicit = source != hindsight::resolve::Source::Default;
-        let hindsight = hindsight::Endpoint::resolve(&|key| (env.var)(key), setting_url);
+        let hindsight = hindsight::Endpoint::at(hindsight_url, &*env.var);
         // The `mcp` gateway lives in the REPL: the runtime guide lists it with its servers (`mcpServerNames`).
         let runtime_guide = mcp_runtime_guide(&config);
         let system = match &services.session.system_prompt {

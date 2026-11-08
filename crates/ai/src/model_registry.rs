@@ -164,19 +164,14 @@ fn auth_failed(provider: &str, cause: &str) -> String {
     format!("API key auth failed for provider {provider}: {cause}")
 }
 
-/// The options a request to `model` goes out with: the stored credential's headers, under the configured headers,
-/// under the caller's own (`getAuth`'s `mergeHeaders(auth.headers, configuredHeaders)`, then `prepareRequest`'s
-/// `mergeHeaders(auth.headers, options.headers)`), when the model carries a [`RequestConfig`]; `None` when nothing
-/// changes.
-pub fn request_options(model: &Model, options: &SimpleStreamOptions) -> Result<Option<SimpleStreamOptions>, String> {
-    let stored = stored_request_auth(model);
-    options_with(model, options, stored.as_ref())
-}
-
 fn stored_request_auth(model: &Model) -> Option<StoredRequestAuth> {
     (model.request.as_ref()?.stored_auth.as_ref()?)()
 }
 
+/// The options a request to `model` goes out with: the stored credential's headers, under the configured headers,
+/// under the caller's own (`getAuth`'s `mergeHeaders(auth.headers, configuredHeaders)`, then `prepareRequest`'s
+/// `mergeHeaders(auth.headers, options.headers)`), when the model carries a [`RequestConfig`]; `None` when nothing
+/// changes.
 fn options_with(
     model: &Model,
     options: &SimpleStreamOptions,
@@ -218,10 +213,6 @@ fn options_with(
 
 /// `model` with the base URL its stored OAuth credential names for this request (`result.auth.baseUrl ? { ...model,
 /// baseUrl } : model`); `None` when it names none.
-pub fn request_model(model: &Model) -> Option<Model> {
-    model_with(model, stored_request_auth(model).as_ref())
-}
-
 fn model_with(model: &Model, stored: Option<&StoredRequestAuth>) -> Option<Model> {
     let base_url = stored?.base_url.clone()?;
     let mut model = model.clone();
@@ -229,8 +220,8 @@ fn model_with(model: &Model, stored: Option<&StoredRequestAuth>) -> Option<Model
     Some(model)
 }
 
-/// `prepareRequest`: [`request_model`] and [`request_options`] over one resolution of the stored credential (a
-/// refresh happens at most once per request).
+/// `prepareRequest`: the model a request goes to and the options it goes out with, over one resolution of the stored
+/// credential (a refresh happens at most once per request).
 pub fn prepare_request(
     model: &Model,
     options: &SimpleStreamOptions,

@@ -124,7 +124,7 @@ impl HintsModule {
             }
             "hints.unmute" => muted.retain(|tag| !requested.contains(tag)),
             "hints.muted" => {}
-            _ => return Err(format!("Ultron RLM host request is not wired: {kind}")),
+            _ => return Err(kernel::ops::not_wired(kind)),
         }
         entry["muted"] = json!(muted);
         if kind != "hints.muted" {

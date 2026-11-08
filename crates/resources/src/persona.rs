@@ -3,13 +3,12 @@
 //! taking it. Rust-only (no TypeScript reference); the nudge rule and text are those of the user's Claude Code hook
 //! (ultron-persona.py), recorded in fixtures/persona-nudge.json.
 
+use config::keys::{PERSONA_KEY, PERSONA_ULTRON};
 use regex::Regex;
 use serde_json::Value;
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
-pub const SETTING: &str = "persona";
-pub const ULTRON: &str = "ultron";
 pub const PERSONALITY_FILE: &str = "personality.md";
 /// Nudges allowed since the user last sent input.
 pub const MAX_NUDGES: u32 = 5;
@@ -26,7 +25,7 @@ pub fn section_text(personality: &str) -> String {
 
 /// Whether the settings' `persona` is `ultron` (any other value, or none, is off).
 pub fn enabled(settings: &serde_json::Map<String, Value>) -> bool {
-    settings.get(SETTING).and_then(Value::as_str) == Some(ULTRON)
+    settings.get(PERSONA_KEY).and_then(Value::as_str) == Some(PERSONA_ULTRON)
 }
 
 pub fn personality_path(agent_dir: &Path) -> PathBuf {

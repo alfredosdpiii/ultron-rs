@@ -3,7 +3,7 @@
 
 use kernel::Signal;
 use std::sync::mpsc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 /// One request as the client builds it. `headers` are final (names lower-case, values validated).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -125,9 +125,6 @@ async fn exchange(
     Ok(HttpResponse { status, body })
 }
 
-/// How often a waiting caller looks at its signal.
-const POLL: Duration = Duration::from_millis(5);
-
 impl Transport for ReqwestTransport {
     fn send(
         &self,
@@ -139,7 +136,9 @@ impl Transport for ReqwestTransport {
         let Some(runtime) = &self.runtime else {
             return Err(TransportError::Failed);
         };
-        let deadline = Instant::now() + timeout;
+        if signal.is_aborted() {
+            return Err(TransportError::Aborted);
+        }
         let (done, outcome) = mpsc::channel();
         let task = runtime.spawn({
             let client = self.client.clone();
@@ -147,19 +146,14 @@ impl Transport for ReqwestTransport {
                 let _ = done.send(exchange(client, request, max_bytes).await);
             }
         });
-        let result = loop {
-            if signal.is_aborted() {
-                break Err(TransportError::Aborted);
-            }
-            let now = Instant::now();
-            if now >= deadline {
-                break Err(TransportError::Timeout);
-            }
-            match outcome.recv_timeout(POLL.min(deadline - now)) {
-                Ok(result) => break result,
-                Err(mpsc::RecvTimeoutError::Timeout) => {}
-                Err(mpsc::RecvTimeoutError::Disconnected) => break Err(TransportError::Failed),
-            }
+        // An abort drops the exchange, and with it the sender this waits on.
+        let abort = task.abort_handle();
+        let _link = signal.link(move |_| abort.abort());
+        let result = match outcome.recv_timeout(timeout) {
+            Ok(result) => result,
+            Err(mpsc::RecvTimeoutError::Timeout) => Err(TransportError::Timeout),
+            Err(mpsc::RecvTimeoutError::Disconnected) if signal.is_aborted() => Err(TransportError::Aborted),
+            Err(mpsc::RecvTimeoutError::Disconnected) => Err(TransportError::Failed),
         };
         // Dropping the exchange closes its connection.
         task.abort();

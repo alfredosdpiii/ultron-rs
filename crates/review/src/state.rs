@@ -27,8 +27,8 @@ use serde_json::Value;
 
 use crate::checkout::make_private_dir;
 use crate::github::Error;
-use crate::js::Num;
 use crate::ledger::Fate;
+use jsrt::json::Num;
 
 pub const RECENT_LIMIT: usize = 50;
 pub const MAX_ATTEMPT_SHAS: usize = 8;

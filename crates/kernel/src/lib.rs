@@ -32,7 +32,7 @@ pub mod store;
 pub mod tree_memory;
 
 pub use continuity::{ContinuityPolicy, ContinuityReport, LostName};
-pub use process::{command_group_target, kill_command_group};
+pub use process::kill_command_group;
 pub use snapshot::{
     RestoreReport, SnapshotReport, load_or_create_snapshot_key, process_snapshot_key, sign_snapshot, verify_snapshot,
 };

@@ -2,6 +2,8 @@
 //! (`alwaysSkills`) in the system prompt; Default lists them like any other skill. A mode is the settings it writes;
 //! the session's next request uses it.
 
+use config::keys::{PERSONA_OFF, PERSONA_ULTRON};
+
 pub struct Mode {
     pub id: &'static str,
     pub label: &'static str,
@@ -79,8 +81,8 @@ pub fn persona_arg(args: &str) -> Option<PersonaArg> {
 /// `/persona` without an argument: the settings' persona.
 pub fn persona_status(persona: Option<&str>) -> String {
     match persona {
-        Some("ultron") => "Persona is ultron: personality.md is in the system prompt".into(),
-        Some("none" | "off") | None => "Persona is off (/persona ultron turns it on)".into(),
+        Some(PERSONA_ULTRON) => "Persona is ultron: personality.md is in the system prompt".into(),
+        Some("none" | PERSONA_OFF) | None => "Persona is off (/persona ultron turns it on)".into(),
         Some(other) => format!("Persona \"{other}\" is not known, so it is off: /persona ultron|none"),
     }
 }

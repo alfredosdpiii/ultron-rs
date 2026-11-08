@@ -56,9 +56,7 @@ pub struct Host {
 
 /// Every request the stack does not serve: the TS host's "not wired" refusal.
 pub fn unwired() -> Arc<dyn HostHandler> {
-    Arc::new(|kind: &str, _: Map<String, Value>, _: &Signal| {
-        Err::<Value, String>(format!("Ultron RLM host request is not wired: {kind}"))
-    })
+    Arc::new(|kind: &str, _: Map<String, Value>, _: &Signal| Err::<Value, String>(kernel::ops::not_wired(kind)))
 }
 
 pub fn build(setup: Setup) -> Host {

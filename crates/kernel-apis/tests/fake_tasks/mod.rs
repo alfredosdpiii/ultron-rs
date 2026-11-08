@@ -100,7 +100,7 @@ impl FakeTasks {
                     found["result"] = done(value);
                     Ok(json!(true))
                 }
-                _ => Err(format!("Ultron RLM host request is not wired: {kind}")),
+                _ => Err(kernel::ops::not_wired(kind)),
             }
         })
     }

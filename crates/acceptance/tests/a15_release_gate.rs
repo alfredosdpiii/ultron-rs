@@ -26,9 +26,8 @@ impl Host {
 }
 
 fn setup(store: Arc<MemoryDocumentStore>) -> Host {
-    let unwired: Arc<dyn HostHandler> = Arc::new(|kind: &str, _: Map<String, Value>, _: &Signal| {
-        Err::<Value, String>(format!("Ultron RLM host request is not wired: {kind}"))
-    });
+    let unwired: Arc<dyn HostHandler> =
+        Arc::new(|kind: &str, _: Map<String, Value>, _: &Signal| Err::<Value, String>(kernel::ops::not_wired(kind)));
     let module = ReleaseGateModule::new(store, Some(Arc::new(|| 5_000)));
     Host(KernelApis::new(unwired).with(Arc::new(module)))
 }
