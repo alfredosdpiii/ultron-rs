@@ -9,7 +9,7 @@ The bundled skills carry their own licenses (licenses/skills-*.LICENSE, also ins
 - Syntax definitions TypeScript, TypeScriptReact and Nix (crates/tui/src/syntaxes): vendored from oh-my-pi
   crates/pi-natives/src/syntaxes, MIT License, Copyright (c) 2025-2026 Can Bölük et al.; Nix derived from
   wmertens/sublime-nix, MIT, Copyright (c) 2016 Wout Mertens.
-- Emoji shortcode table (crates/tui/src/data/emojis.json): from oh-my-pi, built from gemoji (MIT).
+- Emoji shortcode table (crates/interactive/src/data/emojis.json): from oh-my-pi, built from gemoji (MIT).
 - marked v18.0.5 and highlight.js v11.9.0, inlined into pages written by `ultron --export`; texts below.
 
 -------------------------------------------------------------------------------

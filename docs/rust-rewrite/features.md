@@ -110,7 +110,7 @@ run guard.
   the project are blocked by the sandbox. Writable: <project>, ..., /tmp"), a path inside a hidden credential path
   that exists on the host, or a connection or name lookup failure while `sandbox.network` is off. Errors the
   sandbox did not cause (a path read-only on the host too, a missing file, `/tmp`) get no note.
-- **Prompt budget** (`crates/compaction/src/prompt_budget.rs`, checked in the session actor before every root
+- **Prompt budget** (`crates/session-core/src/prompt_budget.rs`, checked in the session actor before every root
   request). If the system prompt (context files, runtime and extension guides) plus the `rlm` tool schema, sized
   with auto-compaction's estimator, leave the conversation less than `compaction.reserveTokens` below the
   compaction threshold (`contextWindow - reserveTokens`; on windows under three times the reserve the fixed part may
@@ -470,7 +470,7 @@ stays on disk); in another session they leave the pointer. A client killed mid-r
 (an `at` schedule stays active), records `{error, at, due}` in `schedule-errors.json` and shows in the `ERROR` column of
 `ultron schedule list`. `schedule list` wakes the instance when a schedule is active.
 
-**Usage** (`crates/cli/src/usage/log.rs`). `ultron usage` reads durable children's responses from the session's
+**Usage** (`crates/usage/src/log.rs`). `ultron usage` reads durable children's responses from the session's
 durable records (`ultron.module/durable` `pi.assistant` entries): model, input/output/cache split and cost per
 response. A child on the root's model merges into its row; another model gets its own row. Ledger turns that the
 records lack stay a totals-only row, so totals equal the ledger; a conversation with no named owner goes to "other".

@@ -60,7 +60,7 @@ def main() -> int:
         if not files:
             out.append("\n(no license file in the published crate; licensed under the expression above)\n")
     # Non-crate code embedded in the binary: (name, version, license, repository, license file under the workspace).
-    vendored = [("pele", "1.7.0", "MIT", "https://github.com/obsidianmd/pele", "crates/kernel-apis/assets/pele/LICENSE")]
+    vendored = [("pele", "1.7.0", "MIT", "https://github.com/obsidianmd/pele", "crates/diagram/assets/pele/LICENSE")]
     out.append("\n\nThird-party code embedded in ultron\n" + "=" * 35 + "\n")
     for name, version, license, repository, file in vendored:
         path = os.path.join(metadata["workspace_root"], file)
