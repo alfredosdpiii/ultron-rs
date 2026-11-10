@@ -157,6 +157,10 @@ fn memorantado_recall_maps_memories_and_episodes_with_exact_tags() {
     assert!(results[0]["id"].as_str().unwrap().parse::<u64>().is_ok());
     assert_eq!(results[2]["type"], "experience");
     assert!(results[2]["document_id"].is_null());
+    assert!(
+        results[0]["confirmedAt"].is_string(),
+        "a memory's confirmation time comes back for the decay check"
+    );
 
     let worlds = backend
         .recall(

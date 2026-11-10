@@ -1,7 +1,7 @@
 //! `memory.*` (port of `ultron/memory.ts` NativeMemoryService and the memory dispatch of `worker-services.ts`).
 //!
 //! These calls are the model's, made on purpose; the session's automatic memory (session-core `auto_memory`) uses
-//! the Rust-only [`MemoryService::recall_for_turn`], [`MemoryService::retain_for_session`] and
+//! the Rust-only [`MemoryService::recall_for_turn`], [`MemoryService::retain_session_tail`] and
 //! [`MemoryService::project_digest`]. The journal (`{version, namespace, operations}`) records every
 //! prepare/propose/correct/forget/get with hashes and references, never memory text; text lives in the backend
 //! (Hindsight). `memory.reflect` and `memory.invalidate` (Rust-only) are journaled nowhere. Only propose-created documents can be read, corrected or forgotten. A correction
@@ -820,6 +820,12 @@ impl MemoryService {
         self
     }
 
+    /// The clock the service reads "now" from (fixtures pin it; the composition root keeps the system clock).
+    pub fn with_clock(mut self, clock: Clock) -> Self {
+        self.clock = clock;
+        self
+    }
+
     /// The files `quotes` cite, as file evidence for a backend that snapshots them (`supports("fileEvidence")`):
     /// `{source: "repo://<path>", content, quote}` for each quoted file under the root that can be read.
     fn quoted_files(&self, quotes: &[Quote]) -> Vec<Value> {
@@ -1372,7 +1378,7 @@ impl MemoryService {
     /// `limit` entries `{id, text, scope, type?, memoryId?, stale?}` (`stale`: why its quoted evidence no longer
     /// holds, see [`MemoryService::with_root`]). It is read-only and journals nothing; what the user
     /// forgot or replaced is withheld as [`MemoryService::prepare`] withholds it, and a result tagged with neither
-    /// scope's tags exactly is dropped.
+    /// scope's tags exactly is dropped, and so is an automatic memory not confirmed for [`AUTO_MEMORY_MAX_AGE_MS`].
     pub fn recall_for_turn(&self, query: &str, limit: usize, signal: &Signal) -> Result<Vec<Value>> {
         let scopes = self.read_scopes();
         if scopes.is_empty() || !self.backend.supports("recall") || jsrt::string::trim(query).is_empty() {
@@ -1395,6 +1401,7 @@ impl MemoryService {
             .and_then(Value::as_array)
             .ok_or(MemoryError::code(ErrorCode::InvalidResponse))?;
         let records = jsrt::sync::lock(&self.inner).records.clone();
+        let cutoff = (self.clock)() - AUTO_MEMORY_MAX_AGE_MS;
         let mut found = Vec::new();
         for item in items {
             let (Some(id), Some(text)) = (
@@ -1433,6 +1440,11 @@ impl MemoryService {
             if superseded {
                 continue;
             }
+            let auto = item["metadata"]["ultron_source"] == "auto";
+            let confirmed = item["confirmedAt"].as_str().and_then(jsrt::date::parse_date);
+            if auto && confirmed.is_some_and(|at| at < cutoff) {
+                continue;
+            }
             let mut entry = json!({"id": id, "text": text, "scope": scope});
             if let Some(kind) = item.get("type").filter(|t| t.is_string()) {
                 entry["type"] = kind.clone();
@@ -1451,48 +1463,10 @@ impl MemoryService {
         Ok(found)
     }
 
-    /// Automatic retain of a session's own account of its work (Rust-only; the session sends its compaction
-    /// summaries, see session-core `auto_memory`): appended to the document `document_id` under `scope`, processed
-    /// by Hindsight in the background. A text the write gate finds sensitive is not sent (`Ok(false)`).
-    pub fn retain_for_session(
-        &self,
-        document_id: &str,
-        text: &str,
-        context: &str,
-        timestamp: &str,
-        scope: &str,
-        signal: &Signal,
-    ) -> Result<bool> {
-        let tags = self.tags(scope)?;
-        if !self.backend.supports("retain") || jsrt::string::trim(text).is_empty() {
-            return Ok(false);
-        }
-        let request = json!({"action": "propose", "text": text, "scope": scope});
-        let decision = gate_decision(
-            &(self.gate)(&request, signal).map_err(|_| MemoryError::code(ErrorCode::OperationError))?,
-            false,
-        )?;
-        if decision["action"] != "keep" {
-            return Ok(false);
-        }
-        let request = json!({
-            "items": [{
-                "content": text, "context": context, "timestamp": timestamp, "document_id": document_id,
-                "tags": tags, "update_mode": "append", "metadata": {"ultron_source": "auto"},
-            }],
-            "async": true,
-        });
-        self.backend
-            .retain(&request, signal)
-            .map(|_| true)
-            .map_err(|error| MemoryError::of(&error))
-    }
-
-    /// Automatic retain of the part of a session no compaction summarized (Rust-only; session-core `auto_memory`
-    /// sends it when the session closes): `text` replaces the document `document_id` under the `project` scope,
-    /// marked as running `through` the session entry it ends at. When the document already ends there, nothing is
-    /// sent: a session closed and reopened without a new message is not read again. `Ok(false)` when nothing was
-    /// sent (unchanged, unsupported, empty, or a secret in `text`).
+    /// Automatic retain of a session's distilled notes (Rust-only; session-core `auto_memory` sends them): `text` is
+    /// the keyed claim `document_id` under the `project` scope, replacing the claim's text, and is marked as distilled
+    /// up to `through`, the session entry (or compaction) it came from. A text the write gate finds sensitive, or a
+    /// backend without `retain`, is not sent (`Ok(false)`).
     pub fn retain_session_tail(
         &self,
         document_id: &str,
@@ -1513,11 +1487,6 @@ impl MemoryService {
         if decision["action"] != "keep" {
             return Ok(false);
         }
-        // A missing document (or a server that cannot say) is no reason to skip.
-        let kept = self.backend.get(document_id, signal).unwrap_or(Value::Null);
-        if kept["document_metadata"]["ultron_through"] == through {
-            return Ok(false);
-        }
         let request = json!({
             "items": [{
                 "content": text, "context": context, "timestamp": jsrt::date::iso_string((self.clock)()), "document_id": document_id,
@@ -1530,6 +1499,22 @@ impl MemoryService {
             .retain(&request, signal)
             .map(|_| true)
             .map_err(|error| MemoryError::of(&error))
+    }
+
+    /// Whether `document_id` already holds notes distilled up to `through` (kept by an earlier
+    /// [`MemoryService::retain_session_tail`]), so that part of the session is not distilled again. A document the
+    /// backend cannot read counts as not kept.
+    pub fn tail_kept_through(&self, document_id: &str, through: &str, signal: &Signal) -> bool {
+        let kept = self.backend.get(document_id, signal).unwrap_or(Value::Null);
+        kept["document_metadata"]["ultron_through"] == through
+    }
+
+    /// Marks the memories `ids` re-confirmed in the backend: what the context showed and the model relied on. Only
+    /// numeric ids are claims (`episode-*` are not); a backend without `confirm`, or a failed call, is ignored.
+    pub fn confirm_recalled(&self, ids: &[String], signal: &Signal) {
+        for id in ids.iter().filter(|id| id.parse::<u64>().is_ok()) {
+            let _ = self.backend.confirm(id, &json!({}), signal);
+        }
     }
 
     /// The scopes a session reads beyond its own: `project` and `global`, those it has tags for.
@@ -2140,6 +2125,11 @@ const SCOPES: &[&str] = &["session", "project", "global"];
 /// 5 hits shown were noise). 0.05 kept a quarter of the useful ones.
 // ponytail: one fixed floor; the reranker is not calibrated across queries, so refit if the bank or reranker changes.
 const RECALL_MIN_SCORE: f64 = 0.005;
+
+/// An automatically kept memory (`ultron_source: auto`) not confirmed for this long is withheld from a turn's recall;
+/// `memory.prepare` still finds it.
+// ponytail: hard cutoff; a ranking prior in memorantado would fade old memories instead of dropping them at 90 days.
+const AUTO_MEMORY_MAX_AGE_MS: i64 = 90 * 24 * 60 * 60 * 1000;
 
 /// What a project's brief answers (see [`MemoryService::project_digest`]).
 const DIGEST_QUERY: &str = "What should a coding agent know before working in this project? Its conventions, the \

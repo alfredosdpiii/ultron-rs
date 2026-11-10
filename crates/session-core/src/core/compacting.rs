@@ -323,6 +323,7 @@ impl Core {
                 self.deferred.push_back(Input::Op(compact, reply));
             }
             Input::ActivityTick => self.report_activity(),
+            Input::MemoryKept(outcome) => self.memory_kept(outcome),
             // Closing cancels the compaction; the close itself runs once it has ended.
             close @ (Input::Close(_) | Input::HandOver(_)) => {
                 self.cancel_compaction();

@@ -144,6 +144,11 @@ impl AgentPaths {
     pub fn memory_backend(&self) -> PathBuf {
         self.join("memory-backend")
     }
+    /// One line per automatic memory keep that is not skipped: its time, session, kind and outcome (session-core
+    /// `auto_memory`).
+    pub fn auto_retain_log(&self) -> PathBuf {
+        self.join("memory/auto-retain.log")
+    }
     /// The session store of the durable and explicit instances and of `ultron claude` without
     /// `ULTRON_CODING_AGENT_SESSION_DIR`.
     pub fn experimental_sessions_dir(&self) -> PathBuf {

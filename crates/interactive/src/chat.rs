@@ -478,6 +478,11 @@ impl ChatView {
                 let t = Rc::clone(&self.style.theme);
                 self.append_notice_text(&t.fg(Fg::Muted, &line));
             }
+            // The outcome of an automatic memory keep (session_core::auto_memory): one muted line.
+            Some("custom") if message["customType"] == custom_types::MEMORY_KEPT => {
+                let t = Rc::clone(&self.style.theme);
+                self.append_notice_text(&t.fg(Fg::Muted, message["content"].as_str().unwrap_or_default()));
+            }
             // Other injected context is shown muted, so what reached the model is visible.
             Some("custom") if message["display"] == true => {
                 let text = match &message["content"] {

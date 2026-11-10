@@ -515,6 +515,8 @@ pub enum Input {
     Title(Box<AssistantMessage>),
     /// The bug report summary with this number ended.
     BugSummaryEnded(u64),
+    /// A background memory keep ended (crate::auto_memory::keep): shown to the user when it is worth a line.
+    MemoryKept(crate::auto_memory::Outcome),
     /// A user's command ended: its `BashResult` (camelCase, as recorded), or the error that failed it.
     BashDone {
         command: String,
@@ -1212,6 +1214,7 @@ impl Core {
                         self.bug_summary = None;
                     }
                 }
+                Input::MemoryKept(outcome) => self.memory_kept(outcome),
                 Input::BashDone {
                     command,
                     exclude,
@@ -2481,49 +2484,88 @@ impl Core {
         });
     }
 
-    /// After a completed compaction: keep its summary in long-term memory, when automatic retain is on
+    /// After a completed compaction: distil its summary into long-term memory, when automatic retain is on
     /// (crate::auto_memory), and propose refinements from it (crate::auto_refine).
     pub(super) fn retain_compaction(&self) {
         self.refine_after_compaction();
         if !self.auto_memory.retain {
             return;
         }
-        let (session_id, summary) = {
+        let (session_id, entries) = {
             let session = lock_session(&self.session);
-            let entries = session.branch_entries(MAIN_LANE).unwrap_or_default();
-            let summary = entries
-                .iter()
-                .rev()
-                .find(|entry| entry["type"] == "compaction")
-                .and_then(|entry| entry["summary"].as_str().map(str::to_string));
-            (session.id().to_string(), summary)
+            (
+                session.id().to_string(),
+                session.branch_entries(MAIN_LANE).unwrap_or_default(),
+            )
         };
-        if let Some(summary) = summary {
-            let cwd = self.runtime.config.cwd.display().to_string();
-            crate::auto_memory::retain_summary(&self.lane.stack, &session_id, &cwd, &summary);
+        let cwd = self.runtime.config.cwd.display().to_string();
+        if let Some(keep) = crate::auto_memory::summary_keep(&session_id, &cwd, &entries) {
+            self.keep_in_background(keep);
         }
     }
 
-    /// Keep what no compaction summarized in long-term memory as the session closes, when automatic retain is on
-    /// (crate::auto_memory).
-    /// `in_background` when the session stays open (it went quiet): the call does not hold the session up.
+    /// Keep what no compaction summarized in long-term memory, when automatic retain is on (crate::auto_memory).
+    /// `in_background` when the session stays open (it went quiet): the call does not hold the session up, and its
+    /// outcome is shown. As it closes, the keep waits at most [`crate::auto_memory::CLOSE_TIMEOUT`] and is not shown.
     pub(super) fn retain_tail(&self, in_background: bool) {
         if !self.auto_memory.retain {
             return;
         }
-        let (session_id, tail) = {
+        let (session_id, entries) = {
             let session = lock_session(&self.session);
-            let entries = session.branch_entries(MAIN_LANE).unwrap_or_default();
-            (session.id().to_string(), crate::auto_memory::session_tail(&entries))
+            (
+                session.id().to_string(),
+                session.branch_entries(MAIN_LANE).unwrap_or_default(),
+            )
         };
-        if let Some(tail) = tail {
-            let cwd = self.runtime.config.cwd.display().to_string();
-            let stack = self.lane.stack.clone();
-            if in_background {
-                std::thread::spawn(move || crate::auto_memory::retain_tail(&stack, &session_id, &cwd, tail, IDLE_WAIT));
-            } else {
-                crate::auto_memory::retain_tail(&stack, &session_id, &cwd, tail, crate::auto_memory::TAIL_TIMEOUT);
+        let cwd = self.runtime.config.cwd.display().to_string();
+        let Some(keep) = crate::auto_memory::tail_keep(&session_id, &cwd, &entries) else {
+            return;
+        };
+        if in_background {
+            self.keep_in_background(keep);
+        } else {
+            let summarizer = self.summarizer();
+            let agent_dir = self.runtime.config.agent_dir.clone();
+            crate::auto_memory::keep(
+                &self.lane.stack,
+                &agent_dir,
+                keep,
+                move |system, prompt| summarizer.ask(system, prompt),
+                crate::auto_memory::CLOSE_TIMEOUT,
+            );
+        }
+    }
+
+    /// Distils `keep` on a thread (the side request is the session's summarizer, bounded by IDLE_WAIT); its outcome
+    /// comes back to the actor as `Input::MemoryKept`.
+    fn keep_in_background(&self, keep: crate::auto_memory::Keep) {
+        let summarizer = self.summarizer();
+        let (stack, agent_dir, tx) = (
+            self.lane.stack.clone(),
+            self.runtime.config.agent_dir.clone(),
+            self.tx.clone(),
+        );
+        std::thread::spawn(move || {
+            let outcome = crate::auto_memory::keep(
+                &stack,
+                &agent_dir,
+                keep,
+                move |system, prompt| summarizer.ask(system, prompt),
+                IDLE_WAIT,
+            );
+            if let Some(outcome) = outcome {
+                let _ = tx.send(Input::MemoryKept(outcome));
             }
+        });
+    }
+
+    /// Shows a background keep's outcome as one display-only line, when the outcome is worth one. Not journaled: the
+    /// model never sees it.
+    fn memory_kept(&mut self, outcome: crate::auto_memory::Outcome) {
+        if outcome.shown() {
+            let message = crate::auto_memory::outcome_message(&outcome, now_ms() as u64);
+            self.announce_message(&message);
         }
     }
 

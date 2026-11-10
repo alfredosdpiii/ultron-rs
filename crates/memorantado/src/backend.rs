@@ -372,6 +372,7 @@ impl MemoryBackend for MemorantadoBackend {
                     "id": memory["id"].as_u64().map(|id| id.to_string()),
                     "text": memory["content"], "tags": memory["tags"], "document_id": memory["key"],
                     "metadata": memory["metadata"], "type": "world",
+                    "confirmedAt": memory["lastConfirmedAt"].as_str().or(memory["updatedAt"].as_str()).or(memory["createdAt"].as_str()),
                 }));
             }
         }
@@ -381,7 +382,7 @@ impl MemoryBackend for MemorantadoBackend {
                 results.push(json!({
                     "id": episode["id"].as_u64().map(|id| format!("episode-{id}")),
                     "text": episode["content"], "tags": episode["tags"], "document_id": null,
-                    "metadata": episode["metadata"], "type": "experience",
+                    "metadata": episode["metadata"], "type": "experience", "confirmedAt": episode["createdAt"],
                 }));
             }
         }

@@ -14,24 +14,27 @@
 //!   entry names its id, so the model can `memory.invalidate` a wrong fact or `memory.forget` a wrong memory. A
 //!   memory whose evidence quoted a file that no longer holds the quote is marked stale (autolith's check, with no
 //!   model call: kernel_apis `memory::staleness`).
-//! - Retain: a completed compaction's summary (goal, progress, decisions, as the model wrote them) is appended to the
-//!   session's summaries document under the `project` scope, in the background; Hindsight extracts its facts and
-//!   folds them into observations. Nothing is kept per turn: whole transcripts make noisy memories. The write gate
-//!   drops a summary that holds a secret, and the summarizer never sees recalled memory (compaction
-//!   `convert_for_summary`), so what was recalled is not kept again as if learned. A session that closes with
-//!   messages after its last compaction (or none at all, as most short sessions) keeps that tail too, as does one
-//!   quiet for [`IDLE_RETAIN`] (a durable session may never close): the user's
-//!   messages and the agent's final replies, without tool output, replacing the tail document of its segment
-//!   ([`session_tail`], [`retain_tail`]). A tail already kept as it is (a session reopened and closed again) is not
-//!   sent again.
+//! - Retain: what a session keeps is distilled, not transcribed. A completed compaction's summary, and the part of a
+//!   session no compaction summarized (the tail, [`session_tail`]: the user's messages and the agent's final replies),
+//!   go to one side request that answers with at most [`MAX_FACTS`] durable facts, each quoted verbatim from its
+//!   source ([`distill`]); the facts replace the session's claim for that summary or tail, marked with the entry it
+//!   covers. A tail is kept as the session closes (within [`CLOSE_TIMEOUT`]), or in the background after
+//!   [`IDLE_RETAIN`] of quiet; a summary in the background. A source its claim already covers costs no model call.
+//!   The memories the context showed for it are listed to the model, and the ones it relied on are re-confirmed
+//!   (`MemoryService::confirm_recalled`). Nothing is stored when no fact survives, and a keep that holds a secret is
+//!   dropped by the write gate. Every attempt's outcome goes to `memory/auto-retain.log`, and while the session is
+//!   open to the user as one muted line ([`Outcome`]).
 //! - Both are on when the settings say (`memory.autoRecall`, `memory.autoRetain`), else when the Hindsight server
 //!   is set explicitly (`ULTRON_HINDSIGHT_URL`, or the global `hindsightUrl` setting): the default URL alone is a
 //!   guess, and a test's empty home must not reach a developer's real memory bank.
 
 use crate::compose::Stack;
 use kernel::Signal;
+use kernel_apis::MemoryService;
 use serde_json::{Value, json};
 use std::collections::HashSet;
+use std::io::Write;
+use std::path::Path;
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
@@ -79,9 +82,9 @@ pub struct AutoMemory {
     quiet: Mutex<(Option<Instant>, bool)>,
 }
 
-/// How long a session stays quiet before its tail is kept without waiting for it to close: a durable session may
+/// How long a session stays quiet before its tail is distilled without waiting for it to close: a durable session may
 /// stay open for days, and most never compact.
-pub const IDLE_RETAIN: Duration = Duration::from_secs(30 * 60);
+pub const IDLE_RETAIN: Duration = Duration::from_secs(10 * 60);
 
 impl AutoMemory {
     /// From the merged `settings` (`memory.autoRecall`, `memory.autoRetain`: a boolean decides) and whether the
@@ -294,27 +297,7 @@ pub fn recall_message(recalled: &Recalled, timestamp: u64) -> Option<Value> {
     }))
 }
 
-/// Keep a compaction `summary` of session `session_id` (in `cwd`) in the background: appended to the session's
-/// summaries document under the `project` scope. Failures are not reported: the summary stays in the session.
-pub fn retain_summary(stack: &Arc<Stack>, session_id: &str, cwd: &str, summary: &str) {
-    if stack.memory().is_none() || summary.trim().is_empty() {
-        return;
-    }
-    let document_id = format!("ultron:session:{session_id}:summaries");
-    let context = format!(
-        "Compaction summary of an Ultron coding-agent session in {cwd}: the agent's own account of the user's goal, \
-         its progress and its decisions. What it says it did or verified is its claim, not a checked fact."
-    );
-    let timestamp = jsrt::date::iso_string(jsrt::date::now_ms());
-    let (stack, summary) = (stack.clone(), summary.to_string());
-    std::thread::spawn(move || {
-        if let Some(memory) = stack.memory() {
-            let _ = memory.retain_for_session(&document_id, &summary, &context, &timestamp, "project", &Signal::new());
-        }
-    });
-}
-
-/// The part of a session no compaction summarized, as kept when the session closes ([`retain_tail`]).
+/// The part of a session no compaction summarized, as distilled when the session closes ([`tail_keep`]).
 #[derive(Debug, PartialEq)]
 pub struct Tail {
     /// The compaction it follows (`None`: the session's start); names the document it is kept in.
@@ -330,8 +313,6 @@ pub const TAIL_MIN_MESSAGES: usize = 2;
 const TAIL_CHARS: usize = 12_000;
 /// The longest single message in a tail.
 const TAIL_MESSAGE_CHARS: usize = 1_500;
-/// How long closing waits for the tail to reach Hindsight.
-pub const TAIL_TIMEOUT: Duration = Duration::from_secs(2);
 
 /// What the branch `entries` hold after their last compaction: the user's messages and the agent's final replies
 /// (an assistant message that ended its run, not one that called a tool), oldest first; never tool output, custom
@@ -392,32 +373,292 @@ pub fn session_tail(entries: &[Value]) -> Option<Tail> {
     })
 }
 
-/// Keep the `tail` of session `session_id` (in `cwd`) as it closes: it replaces the session's tail document for
-/// its segment under the `project` scope, unless that already ends where the tail does. Waits at most
-/// `wait` ([`TAIL_TIMEOUT`] as it closes: the process may exit right after); failures are not reported.
-pub fn retain_tail(stack: &Arc<Stack>, session_id: &str, cwd: &str, tail: Tail, wait: Duration) {
-    if stack.memory().is_none() {
-        return;
+/// The most facts one keep stores.
+pub const MAX_FACTS: usize = 5;
+/// The shortest quote that proves a fact: a word or two of the source proves nothing.
+const MIN_QUOTE_CHARS: usize = 16;
+/// How long closing waits for a keep: the worker waits 10 s to exit, and a keep may not hold it past 8 s.
+pub const CLOSE_TIMEOUT: Duration = Duration::from_secs(8);
+const SYSTEM: &str = "You distill a coding agent's session into the few facts a future session should remember. \
+    Answer with JSON only.";
+
+/// One keep: the facts distilled from `source` replace the claim `document_id`, which records that it covers the
+/// session up to `through`.
+#[derive(Debug)]
+pub struct Keep {
+    pub document_id: String,
+    /// `tail` or `summary`, as the log names it.
+    pub kind: &'static str,
+    pub session: String,
+    pub through: String,
+    /// The conversation (a tail) or the compaction summary the facts are quoted from.
+    pub source: String,
+    pub context: String,
+    /// The memories the context showed for `source`: their ids, and their text as the model saw them.
+    pub recalled_ids: Vec<String>,
+    pub recalled_text: String,
+}
+
+/// How a keep ended.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Outcome {
+    Kept(usize),
+    Nothing,
+    Unchanged,
+    Failed(String),
+}
+
+impl Outcome {
+    /// Whether the user sees the outcome while the session is open: a keep that stored something, or failed.
+    pub fn shown(&self) -> bool {
+        matches!(self, Outcome::Kept(_) | Outcome::Failed(_))
     }
-    let document_id = format!(
-        "ultron:session:{session_id}:tail:{}",
-        tail.after.as_deref().unwrap_or("start")
-    );
-    let context = format!(
-        "The end of an Ultron coding-agent session in {cwd} that no compaction summarized: the user's messages and \
-         the agent's final replies, oldest first, with tool output left out. What the agent says it did or verified \
-         is its claim, not a checked fact."
-    );
+}
+
+impl std::fmt::Display for Outcome {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Outcome::Kept(n) => write!(formatter, "kept {n} {}", if *n == 1 { "fact" } else { "facts" }),
+            Outcome::Nothing => formatter.write_str("nothing worth keeping"),
+            Outcome::Unchanged => formatter.write_str("skipped unchanged"),
+            Outcome::Failed(code) => write!(formatter, "failed: {code}"),
+        }
+    }
+}
+
+/// The display-only message that tells the user a keep's outcome (never journaled, so never in the model's context).
+pub fn outcome_message(outcome: &Outcome, timestamp: u64) -> Value {
+    let content = match outcome {
+        Outcome::Failed(code) => format!("memory: keep failed ({code})"),
+        other => format!("memory: {other}"),
+    };
+    json!({
+        "role": "custom",
+        "customType": protocol::custom_types::MEMORY_KEPT,
+        "content": content,
+        "display": true,
+        "details": {},
+        "timestamp": timestamp,
+    })
+}
+
+/// The facts a distill reply holds, each checked against its source.
+#[derive(Debug, PartialEq)]
+pub struct Distilled {
+    /// One sentence each, at most [`MAX_FACTS`], whose quote is a verbatim substring of the source.
+    pub facts: Vec<String>,
+    /// The shown memory ids the reply says the conversation relied on (not yet checked against what was shown).
+    pub used: Vec<String>,
+}
+
+/// The facts in a distill `reply` (`{"facts": [{text, quote}], "used": [ids]}`, fenced or not). A fact is kept only
+/// if its quote is at least [`MIN_QUOTE_CHARS`] and found verbatim in `source`, and its text is at most
+/// [`ENTRY_CHARS`]; the rest are dropped. `None` when the reply is not JSON at all.
+pub fn distill(reply: &str, source: &str) -> Option<Distilled> {
+    let json = match (reply.find('{'), reply.rfind('}')) {
+        (Some(start), Some(end)) if start < end => &reply[start..=end],
+        _ => return None,
+    };
+    let value: Value = serde_json::from_str(json).ok()?;
+    let facts = value["facts"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|item| {
+            let text = item["text"].as_str()?.split_whitespace().collect::<Vec<_>>().join(" ");
+            let quote = item["quote"].as_str()?;
+            let verbatim = quote.trim().chars().count() >= MIN_QUOTE_CHARS && source.contains(quote);
+            (!text.is_empty() && text.chars().count() <= ENTRY_CHARS && verbatim).then_some(text)
+        })
+        .take(MAX_FACTS)
+        .collect();
+    let used = value["used"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|id| id.as_str().map(str::to_string))
+        .collect();
+    Some(Distilled { facts, used })
+}
+
+fn prompt(keep: &Keep) -> String {
+    let source = &keep.source;
+    let recalled = &keep.recalled_text;
+    let ids = serde_json::to_string(&keep.recalled_ids).unwrap_or_default();
+    format!(
+        "<source>\n{source}\n</source>\n\n<recalled>\n{recalled}\n</recalled>\n\n\
+         Propose at most {MAX_FACTS} facts the agent should remember for future sessions: durable ones a future \
+         session cannot see in the repo or git (the user's preferences and decisions, the user's corrections, gotchas \
+         and their fix). Each is ONE self-contained sentence, and `quote` is copied character for character from \
+         <source> (at least {MIN_QUOTE_CHARS} characters) and shows the fact; a fact whose quote is not in <source> is \
+         discarded. Prefer none over speculative ones: a source with nothing durable gets {{\"facts\": []}}. Do not \
+         restate what <recalled> already says.\n\n\
+         `used` lists the ids from {ids} that <source> relied on or corrected, copied exactly; [] if none.\n\n\
+         Answer with JSON only: {{\"facts\": [{{\"text\": \"...\", \"quote\": \"...\"}}], \"used\": []}}"
+    )
+}
+
+/// The memories the context showed since its last compaction: their ids, and their messages' text.
+pub fn recalled_since_compaction(entries: &[Value]) -> (Vec<String>, String) {
+    let start = entries
+        .iter()
+        .rposition(|entry| entry["type"] == "compaction")
+        .map_or(0, |at| at + 1);
+    let mut ids: Vec<String> = Vec::new();
+    let mut texts = Vec::new();
+    for entry in &entries[start..] {
+        let message = &entry["message"];
+        if entry["type"] != "message" || message["role"] != "custom" || message["customType"] != RECALLED_MEMORY {
+            continue;
+        }
+        for id in message["details"]["ids"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(Value::as_str)
+        {
+            if !ids.iter().any(|known| known == id) {
+                ids.push(id.to_string());
+            }
+        }
+        texts.push(message["content"].as_str().unwrap_or_default().to_string());
+    }
+    (ids, texts.join("\n\n"))
+}
+
+/// The keep of a session's tail as it closes or goes quiet; `None` when the tail is not worth keeping.
+pub fn tail_keep(session_id: &str, cwd: &str, entries: &[Value]) -> Option<Keep> {
+    let tail = session_tail(entries)?;
+    let (recalled_ids, recalled_text) = recalled_since_compaction(entries);
+    Some(Keep {
+        document_id: format!(
+            "ultron:session:{session_id}:tail:{}",
+            tail.after.as_deref().unwrap_or("start")
+        ),
+        kind: "tail",
+        session: session_id.into(),
+        through: tail.through,
+        source: tail.text,
+        context: format!(
+            "The end of an Ultron coding-agent session in {cwd} that no compaction summarized: the user's messages and \
+             the agent's final replies, oldest first, with tool output left out. What the agent says it did or verified \
+             is its claim, not a checked fact."
+        ),
+        recalled_ids,
+        recalled_text,
+    })
+}
+
+/// The keep of the newest compaction's summary, with the memories the segment it summarized showed.
+pub fn summary_keep(session_id: &str, cwd: &str, entries: &[Value]) -> Option<Keep> {
+    let at = entries.iter().rposition(|entry| entry["type"] == "compaction")?;
+    let compaction = &entries[at];
+    let id = compaction["id"].as_str()?;
+    let summary = compaction["summary"]
+        .as_str()
+        .filter(|summary| !summary.trim().is_empty())?;
+    let (recalled_ids, recalled_text) = recalled_since_compaction(&entries[..at]);
+    Some(Keep {
+        document_id: format!("ultron:session:{session_id}:summary:{id}"),
+        kind: "summary",
+        session: session_id.into(),
+        through: id.into(),
+        source: summary.into(),
+        context: format!(
+            "Compaction summary of an Ultron coding-agent session in {cwd}: the agent's own account of the user's goal, \
+             its progress and its decisions. What it says it did or verified is its claim, not a checked fact."
+        ),
+        recalled_ids,
+        recalled_text,
+    })
+}
+
+/// Distils `keep` and stores its facts under its claim, unless the claim already covers `keep.through` (no model
+/// call then). Nothing is written once `signal` is aborted.
+fn distill_and_store(
+    memory: &MemoryService,
+    keep: &Keep,
+    ask: impl FnOnce(&str, &str) -> Result<String, String>,
+    signal: &Signal,
+) -> Outcome {
+    if memory.tail_kept_through(&keep.document_id, &keep.through, signal) {
+        return Outcome::Unchanged;
+    }
+    let Ok(reply) = ask(SYSTEM, &prompt(keep)) else {
+        return Outcome::Failed("MODEL_ERROR".into());
+    };
+    let Some(distilled) = distill(&reply, &keep.source) else {
+        return Outcome::Failed("INVALID_RESPONSE".into());
+    };
+    if signal.is_aborted() {
+        return Outcome::Failed("TIMEOUT".into());
+    }
+    let used: Vec<String> = distilled
+        .used
+        .into_iter()
+        .filter(|id| keep.recalled_ids.contains(id))
+        .collect();
+    memory.confirm_recalled(&used, signal);
+    if distilled.facts.is_empty() {
+        return Outcome::Nothing;
+    }
+    if signal.is_aborted() {
+        return Outcome::Failed("TIMEOUT".into());
+    }
+    let notes = distilled
+        .facts
+        .iter()
+        .map(|fact| format!("- {fact}"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    match memory.retain_session_tail(&keep.document_id, &notes, &keep.context, &keep.through, signal) {
+        Ok(true) => Outcome::Kept(distilled.facts.len()),
+        Ok(false) => Outcome::Failed("NOT_SENT".into()),
+        Err(error) => Outcome::Failed(error.code.as_str().into()),
+    }
+}
+
+/// Distils and stores `keep` on a thread, waiting at most `wait` for its outcome; past `wait` the work is aborted
+/// (nothing is written after that) and the outcome is `TIMEOUT`. Every outcome but `Unchanged` is logged under
+/// `agent_dir`. `None` when the session has no memory service (nothing is kept, nothing logged).
+pub fn keep(
+    stack: &Arc<Stack>,
+    agent_dir: &Path,
+    keep: Keep,
+    ask: impl FnOnce(&str, &str) -> Result<String, String> + Send + 'static,
+    wait: Duration,
+) -> Option<Outcome> {
+    stack.memory()?;
+    let (session, kind) = (keep.session.clone(), keep.kind);
+    let signal = Signal::new();
     let (tx, rx) = std::sync::mpsc::channel();
-    let (stack, signal) = (stack.clone(), Signal::new());
-    let cancel = signal.clone();
+    let (stack, work) = (stack.clone(), signal.clone());
     std::thread::spawn(move || {
         if let Some(memory) = stack.memory() {
-            let _ = tx.send(memory.retain_session_tail(&document_id, &tail.text, &context, &tail.through, &cancel));
+            let _ = tx.send(distill_and_store(memory, &keep, ask, &work));
         }
     });
-    if rx.recv_timeout(wait).is_err() {
-        signal.abort("closing");
+    let outcome = rx.recv_timeout(wait).unwrap_or_else(|_| {
+        signal.abort("keep timed out");
+        Outcome::Failed("TIMEOUT".into())
+    });
+    if outcome != Outcome::Unchanged {
+        log_outcome(agent_dir, &session, kind, &outcome);
+    }
+    Some(outcome)
+}
+
+/// Appends one line to the auto-retain log: time, session, kind, outcome. Never the fact text.
+fn log_outcome(agent_dir: &Path, session: &str, kind: &str, outcome: &Outcome) {
+    let path = config::paths::AgentPaths::new(agent_dir).auto_retain_log();
+    let Some(dir) = path.parent() else { return };
+    let _ = std::fs::create_dir_all(dir);
+    if let Ok(mut file) = std::fs::OpenOptions::new().create(true).append(true).open(&path) {
+        let _ = writeln!(
+            file,
+            "{} {session} {kind} {outcome}",
+            jsrt::date::iso_string(jsrt::date::now_ms())
+        );
     }
 }
 
@@ -662,5 +903,189 @@ mod tests {
         assert_eq!(lines[1], format!("[{} messages left out]", 39 - kept));
         assert!(lines.last().unwrap().starts_with("User: 39 x"));
         assert_eq!(tail.through, "e39");
+    }
+
+    use serde_json::Map;
+
+    const SOURCE: &str = "User: always run scripts/nextest.sh, never cargo test.\n\nAgent: Done.";
+
+    #[derive(Default)]
+    struct Bank {
+        retains: Mutex<Vec<Value>>,
+        confirms: Mutex<Vec<String>>,
+    }
+
+    impl kernel_apis::memory::MemoryBackend for Bank {
+        fn namespace(&self) -> String {
+            "fake://distill".into()
+        }
+        fn scope_tags(&self) -> Map<String, Value> {
+            json!({"project": ["ultron:project:p1"]}).as_object().unwrap().clone()
+        }
+        fn recall(&self, _: &Value, _: &Signal) -> Result<Value, String> {
+            Ok(json!({"results": []}))
+        }
+        fn retain(&self, request: &Value, _: &Signal) -> Result<Value, String> {
+            self.retains.lock().unwrap().push(request["items"][0].clone());
+            Ok(json!({"success": true, "async": false}))
+        }
+        fn get(&self, document_id: &str, _: &Signal) -> Result<Value, String> {
+            let kept = self
+                .retains
+                .lock()
+                .unwrap()
+                .iter()
+                .rev()
+                .find(|item| item["document_id"] == document_id)
+                .cloned();
+            Ok(kept.map_or(Value::Null, |item| json!({"document_metadata": item["metadata"]})))
+        }
+        fn delete(&self, _: &str, _: &Signal) -> Result<Value, String> {
+            Err("UNSUPPORTED_API".into())
+        }
+        fn operation(&self, _: &str, _: &Signal) -> Result<Value, String> {
+            Err("UNSUPPORTED_API".into())
+        }
+        fn confirm(&self, id: &str, _: &Value, _: &Signal) -> Result<Value, String> {
+            self.confirms.lock().unwrap().push(id.into());
+            Ok(json!({}))
+        }
+    }
+
+    fn memory_over(bank: &Arc<Bank>) -> MemoryService {
+        MemoryService::new(
+            Arc::new(kernel::store::MemoryDocumentStore::default()),
+            bank.clone(),
+            kernel_apis::worker_gate(),
+        )
+        .unwrap()
+    }
+
+    fn keep_of(through: &str, recalled_ids: &[&str]) -> Keep {
+        Keep {
+            document_id: "ultron:session:s1:tail:start".into(),
+            kind: "tail",
+            session: "s1".into(),
+            through: through.into(),
+            source: SOURCE.into(),
+            context: "Session tail.".into(),
+            recalled_ids: recalled_ids.iter().map(|id| id.to_string()).collect(),
+            recalled_text: "- (project) Tests run under nice. [fact 42]".into(),
+        }
+    }
+
+    /// A model answer of `reply`, counting the requests.
+    fn asked(
+        reply: &str,
+        count: &Arc<std::sync::atomic::AtomicUsize>,
+    ) -> impl FnOnce(&str, &str) -> Result<String, String> {
+        let (reply, count) = (reply.to_string(), count.clone());
+        move |_, _| {
+            count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Ok(reply)
+        }
+    }
+
+    #[test]
+    fn auto_memory_distill_keeps_only_verbatim_quotes_and_caps_the_facts() {
+        let good = |text: &str| json!({"text": text, "quote": "always run scripts/nextest.sh"});
+        let reply = json!({"facts": [
+            good("A."),
+            {"text": "Invented.", "quote": "the agent broke the migrations"},
+            {"text": "Short.", "quote": "nextest"},
+            {"text": "x".repeat(ENTRY_CHARS + 1), "quote": "always run scripts/nextest.sh"},
+            {"text": "Second
+  fact.", "quote": "never cargo test"},
+            good("C."), good("D."), good("E."), good("F."),
+        ], "used": ["42", 7]});
+        let fenced = format!(
+            "Here you go:
+```json
+{reply}
+```"
+        );
+        let distilled = distill(&fenced, SOURCE).unwrap();
+        assert_eq!(distilled.facts, ["A.", "Second fact.", "C.", "D.", "E."]);
+        assert_eq!(distilled.used, ["42"], "a non-string id is not an id");
+        assert_eq!(
+            distill("I found nothing durable.", SOURCE),
+            None,
+            "not JSON is a failure, not a plan"
+        );
+    }
+
+    #[test]
+    fn auto_memory_tail_with_no_facts_stores_nothing() {
+        let bank = Arc::new(Bank::default());
+        let memory = memory_over(&bank);
+        let count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let outcome = distill_and_store(
+            &memory,
+            &keep_of("e2", &[]),
+            asked(r#"{"facts": []}"#, &count),
+            &Signal::new(),
+        );
+        assert_eq!(outcome, Outcome::Nothing);
+        assert!(bank.retains.lock().unwrap().is_empty());
+        let outcome = distill_and_store(
+            &memory,
+            &keep_of("e2", &[]),
+            asked(
+                r#"{"facts": [{"text": "Run tests.", "quote": "invented quote that is not there"}]}"#,
+                &count,
+            ),
+            &Signal::new(),
+        );
+        assert_eq!(
+            outcome,
+            Outcome::Nothing,
+            "a fact whose quote is not in the source is dropped"
+        );
+        assert!(bank.retains.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn auto_memory_unchanged_tail_asks_no_model() {
+        let bank = Arc::new(Bank::default());
+        let memory = memory_over(&bank);
+        let count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let reply =
+            r#"{"facts": [{"text": "Run tests with scripts/nextest.sh.", "quote": "always run scripts/nextest.sh"}]}"#;
+        let first = distill_and_store(&memory, &keep_of("e2", &[]), asked(reply, &count), &Signal::new());
+        assert_eq!(first, Outcome::Kept(1));
+        let again = distill_and_store(&memory, &keep_of("e2", &[]), asked(reply, &count), &Signal::new());
+        assert_eq!(again, Outcome::Unchanged);
+        assert_eq!(
+            count.load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "only the first keep asked the model"
+        );
+        let later = distill_and_store(&memory, &keep_of("e5", &[]), asked(reply, &count), &Signal::new());
+        assert_eq!(later, Outcome::Kept(1), "a session that went on is distilled again");
+        assert_eq!(
+            bank.retains.lock().unwrap()[0]["content"],
+            "- Run tests with scripts/nextest.sh."
+        );
+    }
+
+    #[test]
+    fn auto_memory_used_ids_confirm_only_shown_numeric_memories() {
+        let bank = Arc::new(Bank::default());
+        let memory = memory_over(&bank);
+        let count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let reply = r#"{"facts": [{"text": "Run tests with scripts/nextest.sh.", "quote": "always run scripts/nextest.sh"}],
+            "used": ["42", "episode-7", "99", "f9"]}"#;
+        let outcome = distill_and_store(
+            &memory,
+            &keep_of("e2", &["42", "episode-7", "f9"]),
+            asked(reply, &count),
+            &Signal::new(),
+        );
+        assert_eq!(outcome, Outcome::Kept(1));
+        assert_eq!(
+            *bank.confirms.lock().unwrap(),
+            ["42"],
+            "not shown, an episode, or not numeric: not confirmed"
+        );
     }
 }

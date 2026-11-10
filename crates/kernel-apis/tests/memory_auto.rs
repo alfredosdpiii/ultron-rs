@@ -1,5 +1,5 @@
-//! Automatic memory's service calls (kernel_apis::memory `recall_for_turn`, `retain_for_session`,
-//! `retain_session_tail`, `project_digest`), evidence quotes and staleness, and the model's `memory.reflect` /
+//! Automatic memory's service calls (kernel_apis::memory `recall_for_turn`, `retain_session_tail`,
+//! `tail_kept_through`, `project_digest`), evidence quotes and staleness, and the model's `memory.reflect` /
 //! `memory.invalidate`: Rust-only, with no TypeScript reference, so literal
 //! expectations over an in-process Hindsight-shaped bank.
 
@@ -184,6 +184,48 @@ fn kernel_apis_memory_recall_for_turn_asks_project_and_global_cheaply_and_keeps_
 }
 
 #[test]
+fn kernel_apis_memory_recall_for_turn_drops_auto_memories_unconfirmed_for_90_days() {
+    let now = jsrt::date::parse_date("2026-11-11T00:00:00Z").unwrap();
+    let day = 86_400_000;
+    let at = |days_ago: i64| jsrt::date::iso_string(now - days_ago * day);
+    let hit = |id: &str, source: &str, confirmed: String| {
+        json!({"id": id, "text": id, "type": "observation", "tags": ["ultron:project:p1"], "confirmedAt": confirmed,
+            "metadata": {"ultron_source": source}})
+    };
+    let (memory, _, _, _) = service_with(json!([
+        hit("old-auto", "auto", at(91)),
+        hit("old-user", "user", at(400)),
+        hit("fresh-auto", "auto", at(89)),
+        hit("confirmed-auto", "auto", at(10)),
+    ]));
+    let memory = memory.with_clock(Arc::new(move || now));
+    let ids = |found: &[Value]| {
+        found
+            .iter()
+            .map(|f| f["id"].as_str().unwrap().to_string())
+            .collect::<Vec<_>>()
+    };
+    let found = memory
+        .recall_for_turn("how do deploys work here", 6, &Signal::new())
+        .unwrap();
+    assert_eq!(ids(&found), ["old-user", "fresh-auto", "confirmed-auto"]);
+    // A deliberate prepare still finds the withheld memory.
+    let prepared = request(
+        &memory,
+        "memory.prepare",
+        json!({"query": "how do deploys work here", "taskId": "t1", "scope": "project"}),
+    )
+    .unwrap();
+    let prepared_ids: Vec<&str> = prepared["results"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|r| r["id"].as_str().unwrap())
+        .collect();
+    assert!(prepared_ids.contains(&"old-auto"), "{prepared_ids:?}");
+}
+
+#[test]
 fn kernel_apis_memory_recall_for_turn_withholds_what_the_user_forgot() {
     let (memory, _, _, results) = service_with(json!([]));
     let call = |kind: &str, payload: Value| handle(Some(&memory), kind, payload.as_object().unwrap(), &Signal::new());
@@ -209,43 +251,6 @@ fn kernel_apis_memory_recall_for_turn_withholds_what_the_user_forgot() {
     assert_eq!(
         found,
         [json!({"id": "f2", "text": "Kept.", "scope": "project", "type": "observation"})]
-    );
-}
-
-#[test]
-fn kernel_apis_memory_retain_for_session_appends_in_the_background_and_skips_secrets() {
-    let (memory, _, retains) = service(json!([]));
-    let kept = memory
-        .retain_for_session(
-            "ultron:session:s1:summaries",
-            "## Goal\nFaster journal writes.",
-            "Compaction summary.",
-            "2026-10-27T08:00:00.000Z",
-            "project",
-            &Signal::new(),
-        )
-        .unwrap();
-    assert!(kept);
-    assert_eq!(
-        retains.lock().unwrap()[0],
-        json!({
-            "items": [{
-                "content": "## Goal\nFaster journal writes.", "context": "Compaction summary.",
-                "timestamp": "2026-10-27T08:00:00.000Z", "document_id": "ultron:session:s1:summaries",
-                "tags": ["ultron:project:p1"], "update_mode": "append", "metadata": {"ultron_source": "auto"},
-            }],
-            "async": true,
-        })
-    );
-    let secret = format!("The {}={}", "api_key", ["sk", "fake", "0123456789"].join("-"));
-    let kept = memory
-        .retain_for_session("d", &secret, "c", "t", "project", &Signal::new())
-        .unwrap();
-    assert!(!kept);
-    assert_eq!(
-        retains.lock().unwrap().len(),
-        1,
-        "a summary holding a secret is not sent"
     );
 }
 
@@ -416,25 +421,22 @@ fn kernel_apis_memory_user_brief_reads_only_global_memories_and_is_created_once(
 }
 
 #[test]
-fn kernel_apis_memory_retain_session_tail_replaces_its_document_once_per_end() {
+fn kernel_apis_memory_retain_session_tail_replaces_its_document_and_marks_what_it_distilled() {
     let (memory, _, retains) = service(json!([]));
-    let keep = |through: &str, text: &str| {
+    let signal = Signal::new();
+    let doc = "ultron:session:s1:tail:start";
+    assert!(!memory.tail_kept_through(doc, "e4", &signal), "nothing kept yet");
+    assert!(
         memory
-            .retain_session_tail(
-                "ultron:session:s1:tail:start",
-                text,
-                "Session tail.",
-                through,
-                &Signal::new(),
-            )
+            .retain_session_tail(doc, "- Speed up the journal.", "Session tail.", "e4", &signal)
             .unwrap()
-    };
-    assert!(keep("e4", "User: speed up the journal\n\nAgent: Done."));
+    );
     let sent = retains.lock().unwrap()[0].clone();
     let item = &sent["items"][0];
     assert_eq!(sent["async"], true);
     assert_eq!(item["update_mode"], "replace");
-    assert_eq!(item["document_id"], "ultron:session:s1:tail:start");
+    assert_eq!(item["document_id"], doc);
+    assert_eq!(item["content"], "- Speed up the journal.");
     assert_eq!(item["tags"], json!(["ultron:project:p1"]));
     assert_eq!(
         item["metadata"],
@@ -442,18 +444,17 @@ fn kernel_apis_memory_retain_session_tail_replaces_its_document_once_per_end() {
     );
     assert_eq!(item["context"], "Session tail.");
     assert!(item["timestamp"].as_str().is_some_and(|at| at.ends_with('Z')));
+    assert!(memory.tail_kept_through(doc, "e4", &signal));
     assert!(
-        !keep("e4", "User: speed up the journal\n\nAgent: Done."),
-        "a tail the document already ends with is not sent again"
+        !memory.tail_kept_through(doc, "e9", &signal),
+        "a later end is distilled again"
     );
-    assert!(keep(
-        "e9",
-        "User: speed up the journal\n\nAgent: Done.\n\nUser: and the tests?"
-    ));
-    assert_eq!(retains.lock().unwrap().len(), 2);
-    let secret = format!("User: use {}={}", "api_key", ["sk", "fake", "0123456789"].join("-"));
-    assert!(!keep("e12", &secret), "a tail holding a secret is not sent");
-    assert_eq!(retains.lock().unwrap().len(), 2);
+    let secret = format!("- use {}={}", "api_key", ["sk", "fake", "0123456789"].join("-"));
+    assert!(
+        !memory.retain_session_tail(doc, &secret, "c", "e12", &signal).unwrap(),
+        "a secret is not sent"
+    );
+    assert_eq!(retains.lock().unwrap().len(), 1);
 }
 
 #[test]

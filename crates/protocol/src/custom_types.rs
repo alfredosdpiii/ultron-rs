@@ -5,6 +5,8 @@
 pub const NUDGE: &str = "ultron.nudge";
 /// Long-term memories recalled for a user message.
 pub const RECALLED_MEMORY: &str = "ultron.memory";
+/// The outcome of an automatic memory keep, shown while the session is open (display only, never in the model's context).
+pub const MEMORY_KEPT: &str = "ultron.memory-kept";
 /// Memory is paused: its backend (memorantado) did not answer when the session started.
 pub const MEMORY_PAUSED: &str = "ultron.memory-paused";
 /// The active instruction refinements.
