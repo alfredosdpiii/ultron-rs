@@ -114,6 +114,8 @@ fn daemon_dream_quiet_night_passes_without_a_run_until_a_session_changes() {
         inner: inner.clone(),
         instance_dir: instance.clone(),
         session_dir: sessions.clone(),
+        agent_dir: tmp.path().join("agent"),
+        home: home.clone(),
         clock: clock.clone(),
     };
     let meta = daemon::catalog::list(&sessions).pop().unwrap();
@@ -146,6 +148,67 @@ fn daemon_dream_quiet_night_passes_without_a_run_until_a_session_changes() {
     clock.set(due + 24 * 3_600_000 + 1);
     quiet.fire(&meta, &schedule.id, due + 24 * 3_600_000);
     assert_eq!(inner.0.lock().unwrap().len(), 2);
-    assert!(daemon::dream::changed_since(&sessions, &meta.id, Some(0)));
-    assert!(!daemon::dream::changed_since(&sessions, &meta.id, Some(i64::MAX / 2)));
+    assert!(daemon::dream::changed_since(
+        std::slice::from_ref(&sessions),
+        &meta.id,
+        Some(0)
+    ));
+    assert!(!daemon::dream::changed_since(
+        std::slice::from_ref(&sessions),
+        &meta.id,
+        Some(i64::MAX / 2)
+    ));
+}
+
+/// A session in the profile's own store (`agent/sessions`, which `sessions.list(cwd="all")` reads) changed after the
+/// dream's last run: the night is not quiet, so the dream runs.
+#[test]
+fn daemon_dream_session_in_the_profile_store_ends_a_quiet_night() {
+    changed_store_ends_a_quiet_night(|tmp| tmp.join("agent").join("sessions"));
+}
+
+/// A session started in a project lives in that project instance's own store, which the durable server does not own.
+#[test]
+fn daemon_dream_session_in_a_project_store_ends_a_quiet_night() {
+    changed_store_ends_a_quiet_night(|tmp| tmp.join("home/.ultron/projects/app-0123456789ab/sessions"));
+}
+
+fn changed_store_ends_a_quiet_night(store: impl Fn(&std::path::Path) -> std::path::PathBuf) {
+    let tmp = tempfile::tempdir().unwrap();
+    let (instance, sessions, agent) = (
+        tmp.path().join("server"),
+        tmp.path().join("sessions"),
+        tmp.path().join("agent"),
+    );
+    let home = tmp.path().join("home");
+    std::fs::create_dir_all(&home).unwrap();
+    let clock = ManualTickClock::new(NOON);
+    let schedule = ensure(&instance, &sessions, &home, &json!({}), clock.clone(), &Zone::utc())
+        .unwrap()
+        .unwrap();
+    let due = schedule.next_due.unwrap();
+    let meta = daemon::catalog::list(&sessions).pop().unwrap();
+    let mut last = schedule.clone();
+    last.last_fired = Some(0);
+    daemon::prompt_schedules::in_journal(&meta.path, clock.clone(), |m| m.put(&last)).unwrap();
+    session_journal::SessionRepo::new(&store(tmp.path()), session_journal::SystemClock::shared())
+        .create(&home.display().to_string(), None, None)
+        .unwrap();
+    let inner = std::sync::Arc::new(Recorded::default());
+    let quiet = daemon::dream::QuietDreams {
+        inner: inner.clone(),
+        instance_dir: instance,
+        session_dir: sessions,
+        agent_dir: agent,
+        home: home.clone(),
+        clock: clock.clone(),
+    };
+    clock.set(due + 1);
+    use daemon::prompt_schedules::Deliver;
+    quiet.fire(&meta, &schedule.id, due);
+    assert_eq!(
+        inner.0.lock().unwrap().len(),
+        1,
+        "a changed session in a store the dream reads is not a quiet night"
+    );
 }

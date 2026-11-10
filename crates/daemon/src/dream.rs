@@ -124,13 +124,13 @@ pub fn ensure(
     })
 }
 
-/// Whether a session of `session_dir` other than the dream session `dream` changed after `since` (the dream's last
-/// run, ms); never dreamed is yes.
-pub fn changed_since(session_dir: &Path, dream: &str, since: Option<i64>) -> bool {
+/// Whether a session of `roots` (the stores `sessions.list(cwd="all")` reads) other than the dream session `dream`
+/// changed after `since` (the dream's last run, ms); never dreamed is yes.
+pub fn changed_since(roots: &[PathBuf], dream: &str, since: Option<i64>) -> bool {
     let Some(since) = since else {
         return true;
     };
-    catalog::list(session_dir)
+    session_journal::search::list(roots, None, None)
         .iter()
         .any(|m| m.id != dream && m.modified_at > since as f64)
 }
@@ -143,6 +143,8 @@ pub struct QuietDreams {
     pub inner: Arc<dyn Deliver>,
     pub instance_dir: PathBuf,
     pub session_dir: PathBuf,
+    pub agent_dir: PathBuf,
+    pub home: PathBuf,
     pub clock: Arc<dyn TickClock>,
 }
 
@@ -153,7 +155,11 @@ impl Deliver for QuietDreams {
             && kernel_apis::prompt_schedule::scan_journal(&meta.path)
                 .iter()
                 .find(|s| s.id == id && s.name == SCHEDULE_NAME)
-                .is_some_and(|s| !changed_since(&self.session_dir, &meta.id, s.last_fired));
+                .is_some_and(|s| {
+                    let roots =
+                        session_core::compose::store_roots(&self.agent_dir, &self.home, Some(&self.session_dir));
+                    !changed_since(&roots, &meta.id, s.last_fired)
+                });
         if quiet {
             let skipped = crate::prompt_schedules::in_journal(&meta.path, self.clock.clone(), |module| {
                 module.skip(id, due)?;

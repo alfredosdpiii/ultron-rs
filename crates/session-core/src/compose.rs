@@ -1468,16 +1468,35 @@ struct ApiModules {
     sessions: Arc<kernel_apis::SessionsModule>,
 }
 
-/// Where a session's `sessions.*` and `/continue` look for sessions: its own session root (the parent of the cwd's
-/// `sessions_dir`), then the profile's native and Pi-format stores.
-pub(crate) fn session_roots(config: &Config, sessions_dir: &Path) -> Vec<PathBuf> {
-    let paths = config::paths::AgentPaths::new(&config.agent_dir);
-    sessions_dir
-        .parent()
+/// The session stores `sessions.*`, `/continue` and the dream's quiet check search: the session root itself, then the
+/// profile's native and Pi-format stores, then every project instance's own store (`<home>/.ultron/projects/*/sessions`,
+/// where a session started in a project is kept), in name order.
+// ponytail: one directory listing per call; cache the project stores if `sessions.*` shows up in a profile.
+pub fn store_roots(agent_dir: &Path, home: &Path, session_root: Option<&Path>) -> Vec<PathBuf> {
+    let paths = config::paths::AgentPaths::new(agent_dir);
+    let mut projects: Vec<PathBuf> =
+        std::fs::read_dir(home.join(config::paths::AGENT_CONFIG_DIR_NAME).join("projects"))
+            .map(|entries| entries.flatten().map(|entry| entry.path().join("sessions")).collect())
+            .unwrap_or_default();
+    projects.sort();
+    let mut roots: Vec<PathBuf> = Vec::new();
+    for root in session_root
         .map(Path::to_path_buf)
         .into_iter()
         .chain([paths.experimental_sessions_dir(), paths.sessions_dir()])
-        .collect()
+        .chain(projects)
+    {
+        if !roots.contains(&root) {
+            roots.push(root);
+        }
+    }
+    roots
+}
+
+/// Where a session's `sessions.*` and `/continue` look for sessions: its own session root (the parent of the cwd's
+/// `sessions_dir`), then the profile's native and Pi-format stores.
+pub(crate) fn session_roots(config: &Config, sessions_dir: &Path) -> Vec<PathBuf> {
+    store_roots(&config.agent_dir, &config.home, sessions_dir.parent())
 }
 
 /// `sessions.*` of session `session_id`: its own session root (the parent of the cwd's `sessions_dir`) first, then

@@ -423,12 +423,15 @@ fn start_generation(
     // Scheduled prompts: one timer per generation over the store's sessions; workers report their changes.
     let schedule_log = error_log_path(&options.directory, server_id);
     let schedule_clock = kernel_apis::prompt_schedule::clock_for(&|key| std::env::var(key).ok());
+    let home = std::env::var_os("HOME").map(PathBuf::from).unwrap_or_default();
     let schedules = crate::prompt_schedules::Scheduler::new(
         schedule_clock.clone(),
         Arc::new(crate::dream::QuietDreams {
             inner: Arc::new(crate::prompt_schedules::HubDeliver(Arc::downgrade(&hub))),
             instance_dir: options.directory.clone(),
             session_dir: options.session_dir.clone(),
+            agent_dir: config::paths::agent_dir(|key| std::env::var(key).ok(), &home),
+            home,
             clock: schedule_clock,
         }),
         Some(Box::new(move |message| {
