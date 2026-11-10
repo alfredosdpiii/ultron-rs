@@ -1,5 +1,5 @@
 //! Replays `fixtures/claude-code-provider.json` (recorded from the TypeScript model runtime by
-//! `fixtures/generate-claude-code-provider.mjs`): the always registered `claude-code` provider — its six models (`claude-fable-5-1` added in Rust after the recording), its
+//! `fixtures/generate-claude-code-provider.mjs`): the always registered `claude-code` provider and its recorded models, its
 //! place after every catalog provider, availability by where its CLI would be found, models.json overrides,
 //! `resolveCliModel`, `resolveModelScope` and `findInitialModel` with its models, and no remote catalog.
 //!
@@ -22,7 +22,7 @@ fn normalize(value: Value) -> Value {
 }
 
 fn models_json(models: &[Model]) -> Value {
-    normalize(serde_json::to_value(models).unwrap())
+    normalize(serde_json::to_value(models.iter().filter(|m| m.id != "claude-fable-5-2").collect::<Vec<_>>()).unwrap())
 }
 
 /// The generator's layout under a fresh root: `bin/claude` (executable), `plain/claude` (not executable),
@@ -149,7 +149,10 @@ fn ai_claude_code_availability_matches_typescript() {
         let ours = refs(&case.available());
         let theirs: Vec<String> = serde_json::from_value(case.spec["available"].clone()).unwrap();
         let claude_code = |refs: &[String]| -> Vec<String> {
-            refs.iter().filter(|r| r.starts_with("claude-code/")).cloned().collect()
+            refs.iter()
+                .filter(|r| r.starts_with("claude-code/") && *r != "claude-code/claude-fable-5-2")
+                .cloned()
+                .collect()
         };
         assert_eq!(claude_code(&ours), claude_code(&theirs), "{name}: available");
         let providers = |refs: &[String]| -> Vec<String> {
@@ -251,6 +254,7 @@ fn ai_claude_code_scopes_and_initial_model_match_typescript() {
             let (scoped, diagnostics) = resolve_model_scope(&patterns, &available);
             let got: Vec<Value> = scoped
                 .iter()
+                .filter(|s| s.model.id != "claude-fable-5-2")
                 .map(|s| json!({"model": format!("{}/{}", s.model.provider, s.model.id), "thinking": s.thinking_level}))
                 .collect();
             assert_eq!(Value::from(got), expected["models"], "{name}: {patterns:?}");
@@ -283,6 +287,40 @@ fn ai_claude_code_scopes_and_initial_model_match_typescript() {
             );
             assert_eq!(thinking, expected["thinking"].as_str().unwrap(), "{name}");
         }
+    }
+}
+
+#[test]
+fn ai_claude_code_fable_5_2_is_available_and_resolves_without_changing_older_models() {
+    let (_tmp, root) = layout();
+    for case in cases(&root) {
+        let configured = case.configured("claude-code");
+        assert_eq!(
+            case.available()
+                .iter()
+                .any(|m| m.provider == "claude-code" && m.id == "claude-fable-5-2"),
+            configured
+        );
+        let (scoped, _) = resolve_model_scope(&["claude-code/*".into()], &case.available());
+        assert_eq!(scoped.iter().any(|s| s.model.id == "claude-fable-5-2"), configured);
+        let resolved = case
+            .registry
+            .resolve_cli(Some("claude-code"), "claude-fable-5-2", None, &|p| case.configured(p));
+        let model = resolved.model.expect("explicit Fable 5.2 resolves");
+        assert_eq!(model.id, "claude-fable-5-2");
+        assert_eq!(
+            case.registry.find("claude-code", "claude-fable-5-2").unwrap().name,
+            "Claude Fable 5.2 (Claude Code CLI)"
+        );
+        assert_eq!(model.api, ai::claude_code::API);
+        assert!(case.registry.find("claude-code", "claude-fable-5-1").is_some());
+        let subscription = ai::claude_subscription::catalog::model(&model.id).unwrap();
+        assert_eq!(subscription.id, model.id);
+        assert_eq!(
+            ai::claude_subscription::catalog::native_model(&model.id).unwrap(),
+            "claude-fable-5-2"
+        );
+        assert!(!ai::claude_subscription::catalog::accepts_thinking_disable(&model.id));
     }
 }
 

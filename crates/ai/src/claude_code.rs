@@ -1,6 +1,6 @@
 //! The `claude-code` provider (`packages/ai/src/providers/claude-code.ts`): model calls run through the user's
 //! installed, logged-in `claude` CLI in headless mode (the `claude-code-cli` API, [`crate::claude_code_cli`]). It is
-//! always registered, after every catalog provider, with six models: Opus 5.5, Fable 5.1 and Haiku 5.5 by their exact ids,
+//! always registered, after every catalog provider, with explicit Opus, Fable and Haiku model ids,
 //! then the `opus`/`sonnet`/`haiku` aliases the CLI resolves itself. Its models answer only to their full
 //! `claude-code/<id>` reference ([`crate::model_resolver::is_claude_code_model`]) and never start a session on
 //! their own (`findInitialModel` skips them).
@@ -65,6 +65,7 @@ pub static MODELS: LazyLock<IndexMap<String, Model>> = LazyLock::new(|| {
     [
         ("claude-opus-5-5", "Claude Opus 5.5 (Claude Code CLI)"),
         ("claude-fable-5-1", "Claude Fable 5.1 (Claude Code CLI)"),
+        ("claude-fable-5-2", "Claude Fable 5.2 (Claude Code CLI)"),
         ("claude-haiku-5-5", "Claude Haiku 5.5 (Claude Code CLI)"),
         ("opus", "Claude Opus (Claude Code CLI)"),
         ("sonnet", "Claude Sonnet (Claude Code CLI)"),
