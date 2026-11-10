@@ -23,8 +23,7 @@ fn resources_runtime_guide_names_spawn_contracts_only_with_the_rust_apis() {
     assert!(rust[delegation..next].contains(sentence));
 }
 
-/// The `schedule` API (kernel_apis::prompt_schedule, Rust host only) is one pointer line in the Rust guide's other
-/// APIs; the TypeScript guide never names it.
+/// Durable schedule guidance is root-only and absent from the TypeScript guide.
 #[test]
 fn resources_runtime_guide_points_at_schedule_only_with_the_rust_apis() {
     let plain = rlm_runtime_prompt(&["rlm"], &RuntimeGuideOptions::default()).unwrap();
@@ -36,10 +35,27 @@ fn resources_runtime_guide_points_at_schedule_only_with_the_rust_apis() {
         },
     )
     .unwrap();
-    let line = r#"- `await schedule.every("1h", prompt)` or `schedule.at(when, prompt)` sends this session `prompt` later as a new turn (`help(schedule)`)."#;
-    assert!(rust.contains(&format!("{line}\n- `await diagram.mermaid(")), "{rust}");
-    assert!(!plain.contains("schedule.every"));
-    assert_eq!(rust.len() - rust.replace(line, "").len(), line.len());
+    for guidance in [
+        "keep watching",
+        "babysit this PR",
+        "loop this every 5 minutes",
+        "stop watching",
+        "cancel the loop",
+        "schedule.watch_pr",
+        "schedule.loop",
+        "schedule.list()",
+        "schedule.cancel(id_or_name)",
+        "unchanged polls do not wake a model",
+        "Closed/merged ends both",
+        "three consecutive failures",
+        "24h and 100 model wakes",
+        "Never merge without separate authorization",
+        "Opening a PR alone never requests monitoring",
+    ] {
+        assert!(rust.contains(guidance), "{guidance} missing from {rust}");
+    }
+    assert!(!plain.contains("schedule."));
+    assert_eq!(rust.matches("- Interpret explicit requests like").count(), 1);
 }
 
 /// `diagram.mermaid` (the diagram crate, Rust host only) is the last pointer line of the Rust guide; the

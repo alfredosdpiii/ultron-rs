@@ -1,6 +1,6 @@
 ---
 name: verify-schedule-fire
-description: "Model-check that a scheduled prompt (schedule.every / schedule.at) fires each slot once and the server keeps one delivery in flight, with the Quint spec in specs/schedule-fire. Use when a change touches the server's schedule timer, ScheduleModule::fire_with, or how the session worker starts a fired prompt."
+description: "Model-check that a scheduled prompt (schedule.every / schedule.at) fires each slot once and the server keeps one delivery in flight, with the Quint spec in specs/schedule-fire. Use when a change touches the server's schedule timer, ScheduleModule::fire_with, PR watch/loop registration or cancellation, or how the session worker starts a fired prompt."
 ---
 
 # Verify schedule single-flight
@@ -24,6 +24,7 @@ later, Node's `npx` and `python3`):
 
 ```python
 print(await bash('''bash specs/check.sh specs/schedule-fire'''))
+print(await bash('''bash specs/check.sh specs/pr-watch'''))
 ```
 
 Each line is `ok|DIFF <config> <rule> <verdict>`; exit 0 means every verdict is the one `specs/schedule-fire/expected`
@@ -70,7 +71,7 @@ which calls the same `fire_with`). A pass covers this model only.
 
 ## Coverage
 
-Sync commit: `5b47a9e7` (the model was last confirmed to describe the code at this commit).
+Sync base: `7baa7310` plus the uncommitted watch/loop feature. Rechecked the changes since `5b47a9e7` (the only covered-code addition was `skip`, outside unconditional delivery). Move this marker to the feature commit only after it exists. No historical failure was removed.
 
 - `crates/daemon/src/prompt_schedules.rs`: `Scheduler::run` (in-flight skip, due test), `Scheduler::delivered`
   (Done / Retry answers), `Scheduler::start`, `Scheduler::update`.
@@ -88,3 +89,40 @@ a run pass.
 When a change to covered code is intended, update the model from the code first, then `expected`, and keep each
 `broken_*` config breaking its rule. Move the sync commit only after you have read the covered code at the new commit
 and confirmed the model describes it. For drift across many commits, use `/skill:maintain-formal-verification-skill`.
+
+
+## PR condition and cancellation model
+
+`specs/pr-watch/pr_watch.qnt` covers the watch-specific branch of `ScheduleModule::create`, `fire_with`, `cancel`,
+and `prompt_schedule/watch.rs`'s `Watch::observe`. Network reads begin outside the write lock; applying a read
+rechecks the durable value, so an in-flight read cannot resurrect a cancelled watch. A restart discards an in-flight
+read and retains the durable baseline, error count and slot. The unconditional `schedule-fire` model still describes
+loop delivery, including its at-least-once fault finding. The PR model bounds one pinned PR, two open snapshots,
+three polls, two duplicate registrations, a terminal snapshot and fetch failures. It abstracts closed, merged and
+babysit merge-ready into the same terminal observation. Initial report-only baseline and the second consecutive
+failure are quiet; changed status, recovery, first and third failures wake.
+
+- **NoUnchangedWake**: a quiet baseline/identical observation never starts a model turn. Broken filter wakes on baseline.
+- **NoWakeAfterCancel**: an in-flight fetch cannot start a turn after cancellation. Broken recheck applies a terminal
+  result after cancel and wakes.
+- **OneRegistration**: repeating a start for the same active PR retains one registration. Broken dedup creates two.
+- **StopsAtTerminal**: closed/merged/merge-ready or the third failure ends polling. Broken stop leaves it active.
+
+Run both specs above; every `broken_*` config must still break its named rule. Read results through the bundled
+pstack statechart skill: each failing rule is a shortest-path finding, even when it is an intentional broken variant.
+The PR model excludes gh transport, readiness parsing, wall-clock expiry, wake budgets, journal write/delivery faults,
+babysit's initial wake, and session actor queueing. Real scripted-gh and Python bridge checks cover those paths:
+
+```python
+print(await bash('''scripts/nextest.sh -p kernel-apis -p session-core -p daemon --locked prompt_schedule'''))
+```
+
+The code-level negative check removes the complete post-fetch active/due/value guard, runs
+`watch_pr_cancel_during_poll_rejects_stale_result_without_holding_write_lock`, observes a failure, then restores the
+code. Run that check again after any change to fetch/apply ordering. The queue cancellation test covers a final
+one-run loop already counted as done but queued behind an active turn. Cancellation cannot interrupt work that
+has already begun. A queued fire lost on crash and at-least-once delivery under journal failure remain limitations.
+
+Offline agents must set `QUINT`, `QUINT_HOME`, `TLA2TOOLS`, `JAVA` to existing installations and put actual Node/Java
+binaries on PATH (not a version-manager shim needing trust). Never install tools or change trust to run this skill
+without permission. Use an empty HOME/no provider credentials for the Rust tests.

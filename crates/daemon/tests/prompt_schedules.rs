@@ -34,6 +34,7 @@ fn schedule(id: &str, session: &str, next_due: Option<i64>, state: State) -> Sch
         runs: 0,
         last_fired: None,
         state,
+        operation: None,
     }
 }
 
@@ -285,8 +286,8 @@ fn daemon_prompt_schedules_cancel_in_journal_takes_the_locks_and_writes_the_canc
     assert_eq!(read[0].state, State::Cancelled);
     assert!(!Path::new(&format!("{}.lock", probe.path.display())).exists());
     assert_eq!(
-        cancel_in_journal(&probe.path, "sch-1", clock.clone()).unwrap_err(),
-        "no active schedule sch-1"
+        cancel_in_journal(&probe.path, "sch-1", clock.clone()).unwrap().state,
+        State::Cancelled
     );
     // A live owner (a worker) holds the session: refused, nothing written.
     let owner = daemon::owner::OwnerLock::acquire(&probe.path, std::time::Duration::ZERO).unwrap();
@@ -352,4 +353,36 @@ fn daemon_prompt_schedules_hold_the_server_while_any_is_pending_and_keep_the_las
     assert_eq!(deliveries.recv_timeout(HANG).unwrap().1, "sch-2");
     assert!(!holds.recv_timeout(HANG).unwrap());
     s.stop();
+}
+
+#[test]
+fn daemon_prompt_schedules_recover_pr_watch_identity_baseline_and_cancel_from_journal() {
+    use daemon::prompt_schedules::in_journal;
+    use kernel_apis::prompt_schedule::{Observation, Operation, Watch, WatchMode};
+    let dir = tempfile::tempdir().unwrap();
+    let meta = session_with(dir.path(), &[]);
+    let clock = ManualTickClock::new(T0);
+    let mut watch = schedule("sch-watch", &meta.id, Some(T0), State::Active);
+    watch.until = Some(T0 + HOUR);
+    watch.max_runs = Some(20);
+    watch.operation = Some(Operation::Pr(Watch {
+        repo: "acme/widget".into(),
+        pr: 42,
+        mode: WatchMode::Watch,
+        polls: 3,
+        last_poll: Some(T0 - HOUR),
+        observation: Observation::Snapshot {
+            value: json!({"state":"OPEN","head":"abc","ready":false}),
+        },
+    }));
+    in_journal(&meta.path, clock.clone(), |module| module.put(&watch)).unwrap();
+    let recovered = scan_journal(&meta.path);
+    assert_eq!(recovered, vec![watch.clone()]);
+    assert_eq!(scan_sessions(dir.path())[0].1, vec![watch]);
+    cancel_in_journal(&meta.path, "sch-watch", clock.clone()).unwrap();
+    cancel_in_journal(&meta.path, "sch-watch", clock).unwrap();
+    let cancelled = scan_journal(&meta.path);
+    assert_eq!(cancelled[0].state, State::Cancelled);
+    assert!(cancelled[0].next_due.is_none());
+    assert_eq!(cancelled[0].view()["operation"]["repo"], "acme/widget");
 }

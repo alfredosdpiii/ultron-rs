@@ -18,6 +18,8 @@ kernel = { path = "../kernel" }
 model-scope = { path = "../model-scope" }
 protocol = { path = "../protocol" }
 resources = { path = "../resources" }
+serde = { version = "=1.0.229", features = ["derive"] }
+signals = { path = "../signals" }
 serde_json = { version = "=1.0.151", features = ["preserve_order"] }
 session-journal = { path = "../session-journal" }
 tempfile = "=3.27.0"

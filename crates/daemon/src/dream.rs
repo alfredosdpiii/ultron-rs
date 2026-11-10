@@ -117,6 +117,7 @@ pub fn ensure(
             runs: 0,
             last_fired: None,
             state: State::Active,
+            operation: None,
         };
         module.put(&schedule)?;
         Ok(Some(schedule))

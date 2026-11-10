@@ -252,6 +252,28 @@ pub const OPS: &[Op] = &[
         &["interval", "prompt", "name", "until_ms", "until_in_ms", "max_runs"],
         &["id"],
     ),
+    op(
+        "schedule.loop",
+        "kernel_apis::prompt_schedule",
+        &["interval", "prompt", "name", "until_ms", "until_in_ms", "max_runs"],
+        &["id"],
+    ),
+    op(
+        "schedule.watch_pr",
+        "kernel_apis::prompt_schedule",
+        &[
+            "repo",
+            "pr",
+            "mode",
+            "interval",
+            "prompt",
+            "name",
+            "until_ms",
+            "until_in_ms",
+            "max_runs",
+        ],
+        &["id"],
+    ),
     op("schedule.list", "kernel_apis::prompt_schedule", &[], &[]),
     op("goals.attach", "kernel_apis::schedules", &["id", "task_id"], &[]),
     op(

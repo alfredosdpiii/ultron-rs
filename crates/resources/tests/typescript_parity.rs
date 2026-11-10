@@ -473,7 +473,10 @@ fn resources_runtime_guide_names_the_swarm_apis_only_when_the_host_serves_them()
         ("\n- `await judge.decide(", "(`help(judge)`)."),
         ("\n- Before changing a config key", "(`help(knowledge)`)."),
         ("\n- `await rlm.images.generate(", "(`help(rlm.images)`)."),
-        ("\n- `await schedule.every(", "(`help(schedule)`)."),
+        (
+            "\n- Interpret explicit requests like",
+            "permission to monitor never grants permission for unrelated outward actions.",
+        ),
         ("\n- `await diagram.mermaid(", "(`help(diagram)`)."),
     ] {
         assert!(swarm[cursor..].starts_with(line), "{line} at {}", &swarm[cursor..]);

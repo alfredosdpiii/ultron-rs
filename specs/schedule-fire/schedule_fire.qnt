@@ -9,6 +9,8 @@
 //                                             not the stored next slot, deliver, then put), Schedule::next_after
 //   crates/session-core/src/core/schedule_ops.rs Core::schedule_fire, Core::schedule_start (start or queue the run)
 //
+// This model covers unconditional every/at/loop delivery. PR prefetch and quiet-slot advancement are
+// covered by specs/pr-watch; the lock still covers the due recheck, deliver and put below.
 // One step of the model is one critical section of the code. fire_with is two steps, its check-and-deliver and its
 // put, because the worker can die between them or the put can fail. Time is whole intervals: slot `t` is due at t.
 // Left out: `at` schedules, `until` and `max_runs`, cancellation, the retry delay (a retried slot is simply due

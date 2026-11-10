@@ -1,0 +1,5 @@
+code NoUnchangedWake=holds NoWakeAfterCancel=holds OneRegistration=holds StopsAtTerminal=holds
+broken_filter NoUnchangedWake=breaks NoWakeAfterCancel=holds OneRegistration=holds StopsAtTerminal=holds
+broken_recheck NoUnchangedWake=holds NoWakeAfterCancel=breaks OneRegistration=holds StopsAtTerminal=holds
+broken_dedup NoUnchangedWake=holds NoWakeAfterCancel=holds OneRegistration=breaks StopsAtTerminal=holds
+broken_stop NoUnchangedWake=holds NoWakeAfterCancel=holds OneRegistration=holds StopsAtTerminal=breaks

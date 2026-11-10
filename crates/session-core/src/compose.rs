@@ -1007,15 +1007,18 @@ impl Runtime {
                 judge.clone(),
             )),
             judge,
-            schedule: Arc::new(kernel_apis::prompt_schedule::ScheduleModule::new(
-                match &values {
-                    Some(values) => Box::new(values.keyed(kernel_apis::prompt_schedule::NAMESPACE)),
-                    None => Box::new(kernel_apis::artifacts::MemoryKeyedDocuments::default()),
-                },
-                session_id,
-                kernel_apis::prompt_schedule::clock_for(&*config.var),
-                self.services.on_schedules.clone(),
-            )),
+            schedule: Arc::new(
+                kernel_apis::prompt_schedule::ScheduleModule::new(
+                    match &values {
+                        Some(values) => Box::new(values.keyed(kernel_apis::prompt_schedule::NAMESPACE)),
+                        None => Box::new(kernel_apis::artifacts::MemoryKeyedDocuments::default()),
+                    },
+                    session_id,
+                    kernel_apis::prompt_schedule::clock_for(&*config.var),
+                    self.services.on_schedules.clone(),
+                )
+                .with_github(kernel_apis::prompt_schedule::GitHub::for_env(&*config.var)),
+            ),
             // `tools.*`: the `mcp` gateway called from the REPL, detached after `yield_after`.
             tools: Arc::new(kernel_apis::ToolCalls::new(
                 gateway.tool().is_some().then(|| {

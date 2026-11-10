@@ -522,7 +522,7 @@ fn claude_root_a_claude_subagents_server_refuses_persistent_children_and_schedul
             "{kind}"
         );
     }
-    for kind in ["schedule.every", "schedule.at"] {
+    for kind in ["schedule.every", "schedule.at", "schedule.loop", "schedule.watch_pr"] {
         assert_eq!(
             child_refusal(kind, &payload(json!({}))),
             Some(format!("{kind} is available to the root agent only"))

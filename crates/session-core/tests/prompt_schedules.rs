@@ -238,7 +238,7 @@ print(repr(schedule))";
         "ValueError schedule prompt must be a non-empty string",
         "[('once', 'at', '2027-01-15T08:01:30.000Z')]",
         "cancelled",
-        "<schedule: every(interval, prompt, name=, until=, max_runs=), at(when, prompt), list(), cancel(id)>",
+        "<schedule: watch_pr(repo, pr, mode=, prompt=), loop(interval, prompt), every(interval, prompt, name=, until=, max_runs=), at(when, prompt), list(), cancel(id)>",
     ] {
         assert!(results.contains(expected), "{expected} not in {results}");
     }
@@ -302,4 +302,147 @@ fn session_core_schedule_fire_that_cannot_start_counts_nothing_and_answers_the_e
     a.events.wait_count("run_end", 2);
     assert_eq!(user_texts(&a.requests()[2]).last().unwrap(), &json!("say hi"));
     assert_eq!(sets(), vec![(json!(0), json!("active")), (json!(1), json!("done"))]);
+}
+
+#[test]
+fn session_core_schedule_loop_and_watch_python_bridge_and_topic_changes() {
+    let dir = tempfile::tempdir().unwrap();
+    let clock = clock(dir.path());
+    let code = "\
+loop_id = await schedule.loop('5m', 'check local task', name='loop', max_runs=2)
+assert loop_id == await schedule.loop('5m', 'check local task')
+watch_id = await schedule.watch_pr('acme/widget', 42, mode='watch', prompt='report changes', name='watch')
+assert watch_id == await schedule.watch_pr('acme/widget', 42, prompt='report changes')
+print([(s['name'], s['operation']['type'], s['maxRuns']) for s in await schedule.list()])";
+    let a = actor(
+        in_order(vec![
+            tool("t1", code),
+            text("Registered."),
+            text("Other topic."),
+            text("Loop result."),
+        ]),
+        setup(&clock),
+    );
+    a.prompt("loop this every 5 minutes and keep watching the PR");
+    let results = tool_results(&a.requests()[1])
+        .iter()
+        .map(Value::to_string)
+        .collect::<String>();
+    assert!(results.contains("('loop', 'loop', 2)"), "{results}");
+    assert!(results.contains("('watch', 'pr', 100)"), "{results}");
+    a.prompt("an unrelated question");
+    assert!(list(&a).iter().all(|s| s["state"] == "active"));
+    let loop_id = list(&a).iter().find(|s| s["name"] == "loop").unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    set_clock(&clock, T0 + 300_000);
+    assert_eq!(fire(&a, &loop_id, T0 + 300_000)["fired"], true);
+    a.events.wait_count("run_end", 3);
+    a.call(Op::ScheduleCancel { id: "watch".into() }).unwrap();
+    a.call(Op::ScheduleCancel { id: loop_id }).unwrap();
+    assert!(list(&a).iter().all(|s| s["state"] == "cancelled"));
+}
+
+#[test]
+fn session_core_schedule_cancel_suppresses_already_queued_final_loop_turn() {
+    let dir = tempfile::tempdir().unwrap();
+    let clock = clock(dir.path());
+    let (release, released) = std::sync::mpsc::channel::<()>();
+    let replies = [
+        tool(
+            "t1",
+            "await schedule.loop('1m', 'queued task', name='loop', max_runs=1)",
+        ),
+        text("Registered."),
+        text("Long answer."),
+    ];
+    let script: p_session_support::Script = Box::new(move |_, index| {
+        if index == 2 {
+            released.recv_timeout(HANG).unwrap();
+        }
+        replies.get(index).cloned().unwrap_or_else(|| text("unexpected run"))
+    });
+    let a = actor(script, setup(&clock));
+    a.prompt("loop once");
+    set_clock(&clock, T0 + 60_000);
+    a.call(Op::Prompt {
+        message: "another task".into(),
+        images: Vec::new(),
+        queue: None,
+    })
+    .unwrap();
+    a.requests
+        .wait("long request", |requests| (requests.len() >= 3).then_some(()));
+    let id = list(&a)[0]["id"].as_str().unwrap().to_string();
+    assert_eq!(fire(&a, &id, T0 + 60_000)["fired"], true);
+    a.call(Op::ScheduleCancel { id }).unwrap();
+    release.send(()).unwrap();
+    a.events.wait_count("run_end", 2);
+    // A synchronous actor round-trip drains the queued Scheduled input after the completed run.
+    list(&a);
+    assert_eq!(a.events("run_start").len(), 2);
+    assert_eq!(a.requests().len(), 3);
+}
+
+#[test]
+fn session_core_pr_watch_polls_code_only_then_wakes_model_for_changed_ci() {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = tempfile::tempdir().unwrap();
+    let clock = clock(dir.path());
+    let gh = dir.path().join("gh");
+    std::fs::write(&gh,format!("#!{}\n", kernel::env::python(|name| std::env::var(name).ok())) + r#"import json, pathlib, sys
+root = pathlib.Path(__file__).parent
+if sys.argv[1:3] == ['pr','view']:
+    print((root / 'view').read_text())
+elif sys.argv[1:5] == ['api','--hostname','github.com','graphql']:
+    print(json.dumps({'data':{'repository':{'pullRequest':{'reviewThreads':{'nodes':[],'pageInfo':{'hasNextPage':False}}}}}}))
+else:
+    sys.exit(1)
+"#).unwrap();
+    std::fs::set_permissions(&gh, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let status = |ci: &str| {
+        std::fs::write(
+            dir.path().join("view"),
+            json!({
+                "state":"OPEN","mergeable":"MERGEABLE","mergeStateStatus":"BLOCKED","reviewDecision":"",
+                "headRefOid":"abc123","reviews":[],"statusCheckRollup":[{"context":"ci","state":ci}]
+            })
+            .to_string(),
+        )
+        .unwrap()
+    };
+    status("PENDING");
+    let mut config = setup(&clock);
+    config
+        .vars
+        .push(("PATH", format!("{}:/usr/bin:/bin", dir.path().display())));
+    let script = in_order(vec![
+        tool(
+            "t1",
+            "await schedule.watch_pr('acme/widget', 42, prompt='report changes', interval='1m', name='watch')",
+        ),
+        text("Watching."),
+        text("Answer to another topic."),
+        text("CI changed to success."),
+    ]);
+    let a = actor(script, config);
+    a.prompt("keep watching this PR");
+    let id = list(&a)[0]["id"].as_str().unwrap().to_string();
+    assert_eq!(fire(&a, &id, T0)["fired"], false);
+    set_clock(&clock, T0 + 60_000);
+    assert_eq!(fire(&a, &id, T0 + 60_000)["fired"], false);
+    assert_eq!(a.requests().len(), 2); // one tool turn + confirmation only, no poll model call
+    assert!(schedule_messages(&a).is_empty());
+    a.prompt("another topic");
+    status("SUCCESS");
+    set_clock(&clock, T0 + 120_000);
+    assert_eq!(fire(&a, &id, T0 + 120_000)["fired"], true);
+    a.events.wait_count("run_end", 3);
+    assert_eq!(a.requests().len(), 4);
+    assert_eq!(schedule_messages(&a).len(), 1);
+    let messages = user_texts(a.requests().last().unwrap());
+    let content = messages.last().unwrap().as_str().unwrap();
+    assert!(content.contains("SUCCESS") && content.contains("PENDING"), "{content}");
+    a.call(Op::ScheduleCancel { id }).unwrap();
 }

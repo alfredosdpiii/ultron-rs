@@ -29,7 +29,11 @@ pub fn child_refusal(kind: &str, payload: &Map<String, Value>) -> Option<String>
     if is_keep_spawn(kind, payload) || kind == "rlm.ask" {
         return Some(subagent_refusal(kind));
     }
-    (kind == "schedule.every" || kind == "schedule.at").then(|| format!("{kind} is available to the root agent only"))
+    matches!(
+        kind,
+        "schedule.every" | "schedule.at" | "schedule.loop" | "schedule.watch_pr"
+    )
+    .then(|| format!("{kind} is available to the root agent only"))
 }
 
 /// An `rlm.spawn` passed on; the subagent's name is remembered from its answer.

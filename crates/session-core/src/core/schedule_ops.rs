@@ -31,6 +31,18 @@ impl Core {
 
     /// Start a run of a fired schedule's prompt, or keep it for the end of the run in progress.
     pub(super) fn schedule_start(&mut self, message: Value) -> Result<(), String> {
+        if let Some(id) = message["details"]["id"].as_str() {
+            let cancelled = self
+                .lane
+                .stack
+                .prompt_schedules()
+                .all()?
+                .iter()
+                .any(|s| s.id == id && s.state == kernel_apis::prompt_schedule::State::Cancelled);
+            if cancelled {
+                return Ok(());
+            }
+        }
         if self.run.is_some() {
             self.after_run.push(Input::Scheduled(message));
             return Ok(());

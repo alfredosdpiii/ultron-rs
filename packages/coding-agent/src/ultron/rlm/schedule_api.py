@@ -51,8 +51,23 @@ def _prompt(prompt: Any) -> str:
     return prompt
 
 
+def _operation_payload(interval: Any, prompt: str, name: str | None, until: Any,
+                       max_runs: int) -> dict[str, Any]:
+    payload = {"interval": _interval(interval), "prompt": _prompt(prompt), "max_runs": max_runs}
+    if name is not None:
+        payload["name"] = name
+    if until is not None:
+        payload.update(_time(until, "until", "until"))
+    return payload
+
+
 class Schedule:
-    """Prompts this session sends itself later, each starting a turn of its own (one model run per fire).
+    """Durable, explicitly requested task loops and PR watches, plus scheduled prompts.
+
+    `await schedule.watch_pr("owner/repo", 123, prompt="report changes")` polls without model wakes
+    on identical results; `await schedule.loop("5m", "repeat task")` runs a model turn each interval.
+    `await schedule.list()` and /schedules expose state; `await schedule.cancel(id_or_name)` stops it.
+    Existing timed prompts each start a turn (one model run per fire):
 
     `id = await schedule.every("15m", "check CI on main and fix what broke", name="ci")` repeats (interval "90s",
     "15m", "1h", "1d", "1h30m" or seconds; at least 60 s; `until=` a time, `max_runs=` a count);
@@ -78,6 +93,34 @@ class Schedule:
             payload["max_runs"] = max_runs
         return (await self._bridge.request("schedule.every", payload))["id"]
 
+    async def loop(self, interval: Any, prompt: str, *, name: str | None = None,
+                   until: Any = None, max_runs: int = 100) -> str:
+        """Explicit user-requested task loop; default/hard ceiling 24h and 100 model wakes.
+
+        Repeating the same active task and interval returns its id. Every fire is a model turn.
+        Use watch_pr for PR monitoring: identical PR polls never run a model.
+        """
+        return (await self._bridge.request("schedule.loop",
+                _operation_payload(interval, prompt, name, until, max_runs)))["id"]
+
+    async def watch_pr(self, repo: str, pr: int, *, mode: str = "watch", prompt: str,
+                       interval: Any = "5m", name: str | None = None, until: Any = None,
+                       max_runs: int = 100) -> str:
+        """Watch a pinned github.com owner/repo and PR. Resolve a current PR before calling.
+
+        watch reports changes; babysit continues the rigor babysit playbook within `prompt`'s
+        original scope and stops at merge-ready. Neither authorizes merging or outward actions.
+        CI, reviews and paginated unresolved threads are polled in code. The first watch poll
+        establishes a baseline silently; babysit wakes initially to act. Changes, first fetch
+        failure, recovery and terminal status wake the model. Three consecutive failures stop
+        with a report; list() keeps the last error. Closed/merged PRs stop both modes.
+        Same active repo/PR returns its id; cancel before changing mode. Survives topic changes
+        and native-server restarts; defaults/ceilings: 24h, 100 wakes, >=60s between polls.
+        """
+        payload = {**_operation_payload(interval, prompt, name, until, max_runs),
+                   "repo": repo, "pr": pr, "mode": mode}
+        return (await self._bridge.request("schedule.watch_pr", payload))["id"]
+
     async def at(self, when: Any, prompt: str, name: str | None = None) -> str:
         """Send `prompt` once at `when` (ISO time, datetime, or seconds from now); returns the schedule id."""
         payload: dict[str, Any] = {"prompt": _prompt(prompt), **_time(when, "time", "when")}
@@ -96,4 +139,4 @@ class Schedule:
         return await self._bridge.request("schedule.cancel", {"id": name_or_id.strip()})
 
     def __repr__(self) -> str:
-        return "<schedule: every(interval, prompt, name=, until=, max_runs=), at(when, prompt), list(), cancel(id)>"
+        return "<schedule: watch_pr(repo, pr, mode=, prompt=), loop(interval, prompt), every(interval, prompt, name=, until=, max_runs=), at(when, prompt), list(), cancel(id)>"
