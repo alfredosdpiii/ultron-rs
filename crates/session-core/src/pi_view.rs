@@ -112,7 +112,7 @@ fn first_kept_entry_id(previous: &[&Value], tail: &[Value]) -> Option<String> {
 }
 
 /// Pi's `sessionEntryToContextMessages` for the Pi entries the conversion produces.
-fn pi_entry_context_messages(entry: &Value) -> Vec<Value> {
+pub(crate) fn pi_entry_context_messages(entry: &Value) -> Vec<Value> {
     match str_of(entry, "type") {
         Some("custom_message") => vec![json!({
             "role": "custom", "customType": entry["customType"], "content": entry["content"],

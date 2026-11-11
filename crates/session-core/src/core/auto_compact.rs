@@ -409,10 +409,7 @@ fn tail_from(path: &[Value], first: &str) -> Option<Vec<Value>> {
         path[kept_from..]
             .iter()
             .filter(|e| e["type"] != "compaction")
-            .flat_map(|e| match e["type"].as_str() {
-                Some("message") => vec![e["message"].clone()],
-                _ => session_journal::context::entry_context_messages(e),
-            })
+            .flat_map(crate::pi_view::pi_entry_context_messages)
             .collect(),
     )
 }
