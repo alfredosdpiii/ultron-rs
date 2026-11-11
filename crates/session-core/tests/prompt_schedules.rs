@@ -446,3 +446,51 @@ else:
     assert!(content.contains("SUCCESS") && content.contains("PENDING"), "{content}");
     a.call(Op::ScheduleCancel { id }).unwrap();
 }
+
+/// A text answer whose request used `input` tokens.
+fn text_at(answer: &str, input: u64) -> String {
+    [
+        json!({"type": "message_start", "message": {"id": "msg_t", "type": "message", "role": "assistant", "model": "claude-sonnet-4-5", "content": [], "stop_reason": null, "usage": {"input_tokens": input, "output_tokens": 1}}}),
+        json!({"type": "content_block_start", "index": 0, "content_block": {"type": "text", "text": ""}}),
+        json!({"type": "content_block_delta", "index": 0, "delta": {"type": "text_delta", "text": answer}}),
+        json!({"type": "content_block_stop", "index": 0}),
+        json!({"type": "message_delta", "delta": {"stop_reason": "end_turn"}, "usage": {"output_tokens": 5}}),
+        json!({"type": "message_stop"}),
+    ]
+    .iter()
+    .map(|e| format!("event: {}\ndata: {e}\n\n", e["type"].as_str().unwrap()))
+    .collect()
+}
+
+/// A fire whose prompt takes the context over the compaction threshold: the run compacts first, and the request
+/// after it still ends in the schedule's prompt.
+#[test]
+fn session_core_schedule_fire_that_compacts_first_still_sends_its_prompt() {
+    let dir = tempfile::tempdir().unwrap();
+    let clock = clock(dir.path());
+    let prompt = format!("check the build {}", "x".repeat(2_000));
+    let create = format!("sid = await schedule.every('1h', {prompt:?}, name='build')\nprint(sid)");
+    // A 1,000,000-token window with 900,000 reserved: the threshold is 100,000. The answer ends just under it.
+    let script = in_order(vec![
+        tool("toolu_1", &create),
+        text_at("Scheduled.", 99_900),
+        text("## Goal\nsummary"),
+        text("Build is green."),
+    ]);
+    let mut setup = setup(&clock);
+    setup.settings = Some(json!({"compaction": {"reserveTokens": 900_000, "keepRecentTokens": 1},
+        "refine": {"auto": false}}));
+    let a = actor(script, setup);
+    assert_eq!(a.prompt("watch the build")["error"], Value::Null);
+    assert!(a.events("compaction_end").is_empty(), "compacted before the fire");
+    let id = list(&a)[0]["id"].as_str().unwrap().to_string();
+    set_clock(&clock, T0 + HOUR + 5_000);
+    assert_eq!(fire(&a, &id, T0 + HOUR)["fired"], true);
+    a.events.wait_count("run_end", 2);
+    assert_eq!(a.events("compaction_end").len(), 1, "{:?}", a.events("compaction_end"));
+    let requests = a.requests();
+    assert_eq!(requests.len(), 4);
+    let last = requests[3]["messages"].as_array().unwrap().last().unwrap();
+    assert_eq!(last["role"], "user", "{last}");
+    assert_eq!(user_texts(&requests[3]).last().unwrap(), &json!(prompt));
+}
