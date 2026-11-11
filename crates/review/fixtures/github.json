@@ -8381,8 +8381,8 @@
     "requestedAt": null
    },
    "decision": {
-    "review": false,
-    "reason": "the pull request is a draft"
+    "review": true,
+    "reason": "review requested"
    },
    "asked": 0
   },
@@ -8470,8 +8470,8 @@
     "requestedAt": null
    },
    "decision": {
-    "review": false,
-    "reason": "the pull request is a draft"
+    "review": true,
+    "reason": "review requested"
    },
    "asked": 0
   },

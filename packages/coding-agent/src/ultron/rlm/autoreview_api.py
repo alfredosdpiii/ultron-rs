@@ -98,7 +98,7 @@ from review_prompts import (ALIASES, AUTOREVIEW_VERIFIER_BATCH_TASK, AUTOREVIEW_
 
 DEFAULT_CONCURRENCY = 8
 MAX_CONCURRENCY = 16
-#: No deadline, no per-frame timeout and no token cap unless the spec sets them.
+#: No deadline, no per-frame timeout and no token cap unless the spec sets them (the daemon sets a deadline).
 DEFAULT_DEADLINE_S = 0
 DEFAULT_FRAME_TIMEOUT_S = 0
 #: The host bounds every frame; this is its maximum, used when the pipeline sets no timeout of its own.
@@ -2014,8 +2014,10 @@ async def run(rlm: Any, spec: dict[str, Any], *, runner: Runner | None = None,
                                        for record in prepared["started"]["session"].records] if prepared["started"]["session"] is not None else []
             failed = [record for record in investigators if record["status"] == "failed"]
             if failed:
-                # With a fast pass the review stands as the fast one; alone, the deep pass is then incomplete.
-                (incomplete if not run_fast else not_checked).append(
+                # With a fast pass the review stands as the fast one; alone, or cut by the deadline, the deep pass
+                # is then incomplete (a review the deadline cut never approves).
+                cut = any(record.get("error") == DEADLINE_ERROR for record in failed)
+                (incomplete if cut or not run_fast else not_checked).append(
                     f"{len(failed)} investigator(s) of the deep pass failed: "
                     + ", ".join(f"{record['lens']} ({record.get('error', '')})" for record in failed))
             if deep_out["dropped"]:
@@ -2103,7 +2105,8 @@ async def run(rlm: Any, spec: dict[str, Any], *, runner: Runner | None = None,
     # Verdicts the early verification already has: no second frame for those findings.
     await asyncio.gather(*early_tasks, return_exceptions=True)
     early_verdicts: list[tuple[dict[str, Any], Any]] = []
-    for finding in candidates:
+    # Most serious first: what a deadline or the budget leaves unverified is the least serious.
+    for finding in sorted(candidates, key=level_rank):
         if finding.get("host_confirmed"):
             # The host ran the test itself: there is nothing for a verifier frame to add.
             continue

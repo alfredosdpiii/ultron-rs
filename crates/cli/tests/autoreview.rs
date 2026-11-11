@@ -498,7 +498,7 @@ const USAGE_EDITS: [(&str, &str); 5] = [
     ),
     (
         "                               autoreview.deadlineSeconds, none)\n",
-        "                               autoreview.deadlineSeconds, none)
+        "                               autoreview.deadlineSeconds, 1200; 0 for none)
   --list                       eval: list the cases and review nothing (no model calls)
   --limit <n>                  eval: reverted and fix-inducing commits reviewed at most (default 20)
   --controls <n>               eval: other commits reviewed as controls (default: as many as --limit)

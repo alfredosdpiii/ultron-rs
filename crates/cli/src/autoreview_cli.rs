@@ -112,7 +112,7 @@ Options:
   --block-at <level>           review: request changes from this level up (critical, high, medium, low, nit)
   --max-comments <n>           review: inline comments at most
   --deadline <seconds>         review: give up unfinished passes after this long and report the rest (default:
-                               autoreview.deadlineSeconds, none)
+                               autoreview.deadlineSeconds, 1200; 0 for none)
   --list                       eval: list the cases and review nothing (no model calls)
   --limit <n>                  eval: reverted and fix-inducing commits reviewed at most (default 20)
   --controls <n>               eval: other commits reviewed as controls (default: as many as --limit)

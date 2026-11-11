@@ -576,7 +576,7 @@ pub fn decide(input: &DecisionInput) -> Result<Decision, Error> {
             decision(false, format!("the pull request is {ended}"))
         });
     }
-    if pull.draft && !new_mention {
+    if pull.draft && !new_mention && !input.requested {
         return Ok(decision(false, "the pull request is a draft"));
     }
     if input.skip_bots && pull.author_is_bot && !new_mention {

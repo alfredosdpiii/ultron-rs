@@ -96,12 +96,12 @@ fn review_github_a_requested_review_acknowledges_then_posts_one_atomic_review() 
         json!({ "title": "Tweak total", "description": "Sums prices.", "ci": "1 passed, 1 failed (test)",
             "comments": [{ "author": "bob", "body": "price may be missing", "path": "calc.py", "line": 5 }] })
     );
-    // No token cap, deadline or frame timeout unless configured.
+    // No token cap or frame timeout unless configured; a review is given 20 minutes.
     for (key, value) in [
         ("concurrency", json!(8)),
         ("thinking", json!("low")),
         ("verifyThinking", json!("low")),
-        ("deadlineSeconds", json!(0)),
+        ("deadlineSeconds", json!(1200)),
         ("frameTimeoutSeconds", json!(0)),
     ] {
         assert_eq!(spec[key], value, "{key}");
@@ -624,9 +624,9 @@ fn review_github_a_requested_team_counts_only_for_members() {
 }
 
 #[test]
-fn review_github_a_draft_is_reviewed_only_when_mentioned() {
+fn review_github_a_draft_nobody_requested_this_account_on_is_reviewed_only_when_mentioned() {
     let context = setup(json!({}), None);
-    let mut pull = FakePull::new("o", "r", 1).requested(&[BOT]);
+    let mut pull = FakePull::new("o", "r", 1);
     pull.draft = true;
     context.hub.add_pull(pull);
     assert_eq!(
@@ -643,6 +643,15 @@ fn review_github_a_draft_is_reviewed_only_when_mentioned() {
         ))
     });
     assert_eq!(run(&context, &["mention"]).kind(), "posted");
+}
+
+#[test]
+fn review_github_a_draft_is_reviewed_when_this_account_is_requested() {
+    let context = setup(json!({}), None);
+    let mut pull = FakePull::new("o", "r", 1).requested(&[BOT]);
+    pull.draft = true;
+    context.hub.add_pull(pull);
+    assert_eq!(requested(&context).kind(), "posted");
 }
 
 #[test]

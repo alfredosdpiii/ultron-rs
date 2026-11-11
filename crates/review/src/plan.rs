@@ -15,7 +15,7 @@ use crate::settings::SIGNATURE;
 
 pub const LEVELS: [&str; 5] = ["critical", "high", "medium", "low", "nit"];
 pub const DEFAULT_BLOCK_AT: &str = "medium";
-pub const DEFAULT_MAX_COMMENTS: i64 = 5;
+pub const DEFAULT_MAX_COMMENTS: i64 = crate::settings::DEFAULT_MAX_COMMENTS as i64;
 pub const RELOCATE_WITHIN: i64 = 3;
 /// An inline comment's sentences (before any code block) aim to stay under this.
 pub const COMMENT_TARGET_CHARS: usize = 320;

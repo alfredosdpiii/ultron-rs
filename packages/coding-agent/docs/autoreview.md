@@ -72,7 +72,7 @@ It is skipped when:
 - the same head commit was already reviewed and nothing new asks for it;
 - new commits arrived after an approval or a comment-only review and nothing asks for another look: one review ends
   the account's part;
-- it is a draft, unless the account is explicitly @mentioned;
+- it is a draft, unless the account is requested by name or explicitly @mentioned (a requested team does not count on a draft);
 - a bot opened it (Dependabot, Renovate), unless the account is @mentioned (`autoreview.skipBots: false` reviews them too);
 - it is closed or merged, unless it was freshly mentioned (it then gets a comment-only review and no
   acknowledgement);
@@ -132,7 +132,7 @@ left alone until a new commit or a new mention.
 
    **Few, heavy comments.** Confirmed findings are ranked by level and by the strength of their evidence (a test
    the host ran, then source quoted from outside the diff, then the diff alone), and at most
-   `autoreview.maxComments` (5) are posted inline. A finding below `high` whose evidence is only the diff gets a
+   `autoreview.maxComments` (15) are posted inline. A finding below `high` whose evidence is only the diff gets a
    slot only when one is left, and a nit (a small, optional fix the author may skip) only after every other finding. The same problem in several places is one comment that lists
    the other places. What is not posted is counted in one closing line.
 
@@ -218,7 +218,7 @@ reviewed.
 | `autoreview.planStyle` | `"cell"` | `compiled` mode: `cell` has the planner write Python cells that run in a sandbox over the `rv` API; `frame` has it return one JSON program in a single frame. Without a sandbox the planner runs as a frame. |
 | `autoreview.planCells` | `4` | `compiled` mode: cells the planner may run (maximum 12). |
 | `autoreview.blockAt` | `"medium"` | A confirmed finding at this level or above makes the review request changes (`critical`, `high`, `medium`, `low`, `nit`). |
-| `autoreview.maxComments` | `5` | Inline comments per review at most; the rest are counted in the body. |
+| `autoreview.maxComments` | `15` | Inline comments per review at most (30 at most); the rest are counted in the body. |
 | `autoreview.deepRounds` | `4` | Lookup rounds one investigator may take (maximum 8). After the first, a round gets the new results in full and a one-line ledger of the earlier ones, which `recall` re-reads. Half the investigators use the fourth round and those find the most (1.7 findings against 1.4 for three rounds). |
 | `autoreview.overlap` | `false` | Run the fast pass beside the investigators' first round and verify each investigator's findings as it finishes (about 20 s faster); the fast findings then reach the investigators at round 2 instead of being their round-1 leads. A diff of 500 or more changed lines overlaps whatever this says. |
 | `autoreview.verifyBatch` | `4` | Findings of one file one verifier frame judges together (maximum 8; `1` is one frame per finding). A finding with a test run, or with more than 6,000 characters of material, keeps its own frame. |
@@ -229,7 +229,7 @@ reviewed.
 | `autoreview.thinking` | `"low"` (`high` for the recommended model) | Thinking level of the finder frames (`off`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`). Every thinking default is per model: see "Recommended models". |
 | `autoreview.verifyThinking` | `"low"` (`high` for the recommended model) | Thinking level of the verifier frames. |
 | `autoreview.frameConcurrency` | `8` | Model requests of one review in flight at once, finder and verifier frames alike (maximum 16). Lower it if your provider rate-limits; `autoreview.modelConcurrency` sets a limit per model. |
-| `autoreview.deadlineSeconds` | `0` (none) | Optional limit on how long one review may take (minimum 30). Unset or `0`, the review waits for every finder and verifier frame. See below. |
+| `autoreview.deadlineSeconds` | `1200` | How long one review may take (minimum 30). With `0`, the review waits for every finder and verifier frame. See below. |
 | `autoreview.frameTimeoutSeconds` | `0` (none) | Optional limit on how long one frame may take before it is retried or given up (minimum 10). |
 | `autoreview.dryRun` | `false` | Write would-be reviews to `autoreview/dry-run/` instead of posting. |
 | `autoreview.ack` | `true` | Post the acknowledgement comment. |
@@ -801,12 +801,11 @@ per review and the investigators a third of what they return at `high`. Do not l
   `reset_seconds`), before the pass is listed as not checked. A model the provider throttles has its in-flight limit
   halved for the rest of the review (`autoreview.modelConcurrency` sets the limits), and the review says so under
   "Not checked" when frames were lost to it.
-- By default there is no token cap, no per-frame timeout and no deadline: the review waits for every finder and
-  verifier frame and posts when all are done. Each limit is opt-in:
+- By default a review has 20 minutes, no token cap and no per-frame timeout. Each limit can be set:
   - `autoreview.budget` (or `--budget`): the cap counts what was really spent plus a bounded grant for each request
     in flight; a pass is refused only when that leaves no room for it.
   - `autoreview.frameTimeoutSeconds`: a frame that takes longer is retried, then given up.
-  - `autoreview.deadlineSeconds` (or `--deadline`): at three quarters of it unfinished finder passes are given up;
+  - `autoreview.deadlineSeconds` (or `--deadline`, `0` for none): at three quarters of it unfinished finder passes are given up;
     what was found is verified in the time left; the review is posted as incomplete (so never an approval) with
     the unfinished passes listed under "Not checked".
 - With `--json`, `timing.frames` lists every frame: `{phase, reviewer, ms, status, retries, model, error}`, and
