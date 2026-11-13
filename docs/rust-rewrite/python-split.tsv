@@ -22,6 +22,7 @@ rlm/runtime.py	2162	python	the REPL itself
 rlm/schedules_api.py	62	python	thin API
 rlm/secret_patterns.py	171	rust	crates/host secrets (done); Python keeps the shared pattern data only if the REPL needs it
 rlm/skills_api.py	259	python	thin API (code skills stay Python)
+rlm/spec_api.py	249	python	thin state API beside the review receipt; moves with review_api if that becomes Rust
 rlm/tools_api.py	458	python	thin API
 rlm/worktree_api.py	66	python	thin API
 loki-engine/loki.py	8668	rust	crates/loki binary with the same CLI and output
