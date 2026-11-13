@@ -491,12 +491,19 @@ impl MemoryBackend for RecallBank {
 
 /// Automatic recall (session_core::auto_memory): a user message's run opens with the memories recalled for it, as
 /// a custom message the request carries before the prompt, the first with the project's brief; a memory or brief
-/// already in the context is not shown again, and a short message recalls nothing. Closing keeps the session's
-/// messages, which no compaction summarized, as its tail.
+/// already in the context is not shown again, and a short message recalls nothing. Closing sends the session's
+/// messages, which no compaction summarized, to one side request, and keeps the facts it answers with as the tail.
 #[test]
 fn cli_composition_auto_memory_recalls_before_a_user_message() {
+    let facts = r#"{"facts": [{"text": "The user asks how to run this project's tests and lints.",
+        "quote": "how do I run the tests here"}], "used": []}"#;
     let (port, seen) = mock_server(
-        vec![anthropic_text("one"), anthropic_text("two"), anthropic_text("three")],
+        vec![
+            anthropic_text("one"),
+            anthropic_text("two"),
+            anthropic_text("three"),
+            anthropic_text(facts),
+        ],
         Naming::Fail,
     );
     let sandbox = sandbox(port);
@@ -594,9 +601,7 @@ fn cli_composition_auto_memory_recalls_before_a_user_message() {
     );
     assert_eq!(
         retains[0]["content"],
-        "User: how do I run the tests here\n\nAgent: one\n\nUser: and how do I run the lints\n\nAgent: two\n\n\
-         User: ok thanks\n\nAgent: three",
-        "recalled memory is not kept again"
+        "- The user asks how to run this project's tests and lints."
     );
     assert_eq!(retains[0]["update_mode"], "replace");
     let requests = seen.lock().unwrap().requests.clone();
@@ -616,6 +621,14 @@ fn cli_composition_auto_memory_recalls_before_a_user_message() {
             })
             .collect()
     };
+    let distilled = texts(&requests[3]).concat();
+    assert!(
+        distilled.starts_with(
+            "<source>\nUser: how do I run the tests here\n\nAgent: one\n\nUser: and how do I run the lints\n\n\
+             Agent: two\n\nUser: ok thanks\n\nAgent: three\n</source>"
+        ),
+        "recalled memory is not in what gets distilled: {distilled}"
+    );
     let first = texts(&requests[0]);
     assert_eq!(first.len(), 2, "{first:?}");
     assert!(
