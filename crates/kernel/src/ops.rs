@@ -180,7 +180,7 @@ pub const OPS: &[Op] = &[
         "memory.prepare",
         "kernel_apis::memory",
         &["query", "taskId", "scope", "refresh"],
-        &[],
+        &["results"],
     ),
     op(
         "memory.propose",
