@@ -10,7 +10,7 @@ use p_session_support::{text, tool, tool_results};
 use reopen_support::Home;
 use serde_json::{Value, json};
 use session_core::core::Op;
-use session_core::situational_skills::{SituationalSkills, rules};
+use session_core::situational_skills::{SelfReview, SituationalSkills, rules, self_review};
 use std::path::Path;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -150,6 +150,126 @@ fn session_core_situational_skills_bring_the_playbook_at_the_third_file_and_the_
         );
         assert_eq!(fresh.before_shell(command, "main"), None, "refused once: {command}");
     }
+}
+
+fn git(cwd: &Path, args: &[&str]) -> String {
+    let output = std::process::Command::new("git")
+        .args([
+            "-c",
+            "user.name=t",
+            "-c",
+            "user.email=t@example.invalid",
+            "-c",
+            "commit.gpgsign=false",
+        ])
+        .args(args)
+        .current_dir(cwd)
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "git {args:?}: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    String::from_utf8_lossy(&output.stdout).trim().to_string()
+}
+
+#[test]
+fn session_core_self_review_refuses_a_pull_request_until_the_committed_tree_is_reviewed() {
+    assert_eq!(self_review(&json!({})), SelfReview::Require);
+    assert_eq!(self_review(&json!({"selfReview": "advise"})), SelfReview::Advise);
+    assert_eq!(self_review(&json!({"selfReview": "off"})), SelfReview::Off);
+
+    let repo = tempfile::tempdir().unwrap();
+    let dir = repo.path();
+    git(dir, &["init", "-q"]);
+    std::fs::write(dir.join("a.txt"), "one\n").unwrap();
+    git(dir, &["add", "a.txt"]);
+    git(dir, &["commit", "-qm", "one"]);
+    let receipt = dir.join(".git/ultron-review/receipt.json");
+    std::fs::create_dir_all(receipt.parent().unwrap()).unwrap();
+    let write = |tree: &str, confirmed: u64, incomplete: bool, waived: Value| {
+        let body = json!({"tree": tree, "confirmed": confirmed, "incomplete": incomplete, "waived": waived});
+        std::fs::write(&receipt, body.to_string()).unwrap();
+    };
+    let gate = |mode| {
+        let skills = observer(json!({}), Arc::new(AtomicBool::new(true))).with_self_review(mode, dir);
+        // The reminder, once; what follows is the receipt's answer.
+        assert!(skills.before_shell("git commit -qm x", "main").is_some());
+        skills
+    };
+    let create = "gh pr create --fill";
+    let skills = gate(SelfReview::Require);
+
+    let refused = skills.before_shell(create, "main").unwrap_or_default();
+    assert!(refused.contains("has not been reviewed"), "{refused}");
+    assert!(
+        skills.before_shell(create, "main").is_some(),
+        "refused until reviewed, not once"
+    );
+    assert_eq!(
+        skills.before_shell("git push origin main", "main"),
+        None,
+        "a push stays advisory"
+    );
+    assert_eq!(
+        skills.before_shell("rg -n 'gh pr create' docs", "main"),
+        None,
+        "quoted text ships nothing"
+    );
+
+    let tree = git(dir, &["rev-parse", "HEAD^{tree}"]);
+    write(&tree, 0, false, Value::Null);
+    assert_eq!(skills.before_shell(create, "main"), None, "reviewed and clean");
+
+    write(&tree, 2, false, Value::Null);
+    let refused = skills.before_shell(create, "main").unwrap_or_default();
+    assert!(refused.contains("confirmed 2 finding(s)"), "{refused}");
+    write(&tree, 2, false, json!("  "));
+    assert!(
+        skills.before_shell(create, "main").is_some(),
+        "an empty reason waives nothing"
+    );
+    write(&tree, 2, false, json!("both are follow-ups, listed under Scope"));
+    assert_eq!(skills.before_shell(create, "main"), None, "waived with a reason");
+
+    write(&tree, 0, true, Value::Null);
+    let refused = skills.before_shell(create, "main").unwrap_or_default();
+    assert!(
+        refused.contains("did not finish"),
+        "an unfinished review is not a pass: {refused}"
+    );
+    std::fs::write(&receipt, "not json").unwrap();
+    assert!(
+        skills.before_shell(create, "main").is_some(),
+        "an unreadable receipt refuses"
+    );
+
+    write(&tree, 0, false, Value::Null);
+    std::fs::write(dir.join("a.txt"), "two\n").unwrap();
+    git(dir, &["commit", "-qam", "two"]);
+    let refused = skills.before_shell(create, "main").unwrap_or_default();
+    assert!(
+        refused.contains("has not been reviewed"),
+        "a new commit needs a new review: {refused}"
+    );
+
+    // The pull request is opened where the command goes, not where the session started.
+    let other = tempfile::tempdir().unwrap();
+    git(other.path(), &["init", "-q"]);
+    let elsewhere = format!("cd {} && gh pr create --fill", other.path().display());
+    let refused = skills.before_shell(&elsewhere, "main").unwrap_or_default();
+    assert!(refused.contains("no commit to review"), "{refused}");
+
+    assert_eq!(
+        gate(SelfReview::Advise).before_shell(create, "main"),
+        None,
+        "advise: the reminder only"
+    );
+    let off = observer(json!({}), Arc::new(AtomicBool::new(true))).with_self_review(SelfReview::Off, dir);
+    assert_eq!(off.before_shell(create, "main"), None, "off: nothing is refused");
 }
 
 #[test]

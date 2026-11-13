@@ -248,6 +248,7 @@ Resource paths in user settings resolve from the agent directory. Paths in proje
 | `enableSkillCommands` | boolean | `true` | Register skills as `/skill:name` commands. |
 | `alwaysSkills` | `string[]` | `[]` | Skill names whose full text is in the system prompt while engineering mode is on, so they apply to every task without being read or invoked (16,000 characters in all). See [Skills](skills.md). |
 | `engineering` | boolean | `false` | Engineering mode: puts the `alwaysSkills` in the system prompt. `/engineering true\|false` sets it. |
+| `selfReview` | `"require"` \| `"advise"` \| `"off"` | `"require"` | Engineering mode: what shipping asks. `advise` refuses a lane's first commit, push or `gh pr create` once, with the `blast-radius` skill. `require` also refuses `gh pr create` until `/review` has reviewed the committed tree and no confirmed finding is left unwaived. See [Skills](skills.md#self-review). |
 | `situationalSkills` | `object[]` \| `false` | built-in rules | Engineering mode: a cell that changes a file matching a rule's `paths` ends its result with the rule's `skill`, once per session. `false` or `[]` turns it off. See [Skills](skills.md#situational-skills). |
 
 Resource arrays support glob exclusions with `!pattern`, exact inclusion with `+path`, and exact exclusion with `-path`. Pi loads resources listed in both user-level and project settings.

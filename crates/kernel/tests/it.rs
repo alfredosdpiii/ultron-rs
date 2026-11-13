@@ -12,6 +12,8 @@ mod ops;
 mod process;
 #[path = "review_post.rs"]
 mod review_post;
+#[path = "review_receipt.rs"]
+mod review_receipt;
 #[path = "snapshot.rs"]
 mod snapshot;
 #[path = "snapshot_fixture.rs"]

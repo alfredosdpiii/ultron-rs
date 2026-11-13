@@ -1,8 +1,9 @@
 //! Dream mode (Rust-only): the durable instance learns while nobody uses it. Each server generation of the durable
 //! instance keeps one daily schedule ([`SCHEDULE_NAME`]) in its own session (the dream session, its id in the
 //! instance's [`SESSION_FILE`]); the schedule fires at `learn.dreamAt` local time (default [`DEFAULT_AT`]) with
-//! [`PROMPT`], which runs the bundled `ultron/dream` skill: it reads the recent sessions, autoreview's lessons and
-//! Hindsight's banks, and keeps only what evidence backs, through the gated APIs (`memory.propose`,
+//! [`PROMPT`], which runs the bundled `ultron/dream` skill: it reads the recent sessions, autoreview's lessons, the
+//! reviews of the user's own pull requests and Hindsight's banks, and keeps only what evidence backs, through the
+//! gated APIs (`memory.propose`,
 //! `memory.invalidate`, `skills.propose_code`), each change reversible. [`ensure`] reconciles the schedule to the
 //! settings on every start: run twice it changes nothing; `learn.dream: false` (or `ULTRON_DREAM=off`, for tests)
 //! cancels it. A night with nothing new (no session changed since the last dream) passes without a model run

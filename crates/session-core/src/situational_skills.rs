@@ -24,13 +24,20 @@
 //!
 //! Two skills follow the shape of the work, not a path: [`MANY_FILES_SKILL`] once a lane has changed [`MANY_FILES`]
 //! files, and [`SHIP_SKILL`] as the refusal of a lane's first command that commits, pushes or opens a pull request.
+//!
+//! That refusal is a reminder: the same command goes through the second time, reviewed or not. So opening a pull
+//! request also needs a receipt ([`SelfReview::Require`], the default of the `selfReview` setting): `/review` writes
+//! `<git dir>/ultron-review/receipt.json` naming the tree it reviewed, and `gh pr create` is refused until that
+//! tree is the one committed, with no confirmed finding left unwaived. A new commit is a new tree, so it needs a
+//! new review.
 
 use host::file_hooks::{CellChanges, CellObserver, inside};
 use kernel_apis::memory_records::Glob;
 use serde_json::Value;
 use std::collections::HashSet;
-use std::path::Path;
-use std::sync::{Arc, Mutex, PoisonError};
+use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
+use std::sync::{Arc, LazyLock, Mutex, PoisonError};
 
 /// Skills added to one cell's result at most.
 pub const PER_CELL: usize = 1;
@@ -110,12 +117,112 @@ pub const MANY_FILES_PART: &str = "Playbooks";
 /// The check before a commit, push or pull request.
 pub const SHIP_SKILL: &str = "blast-radius";
 
-/// Whether `command` commits, pushes or opens a pull request.
+/// What shipping asks of a lane (the `selfReview` setting).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SelfReview {
+    /// Nothing is refused.
+    Off,
+    /// The first commit, push or pull request of a lane is refused once, with [`SHIP_SKILL`].
+    Advise,
+    /// As `Advise`, and a pull request needs a review receipt for the committed tree.
+    Require,
+}
+
+/// The `selfReview` setting: `"off"`, `"advise"`, else `Require`.
+pub fn self_review(settings: &Value) -> SelfReview {
+    match settings["selfReview"].as_str() {
+        Some("off") => SelfReview::Off,
+        Some("advise") => SelfReview::Advise,
+        _ => SelfReview::Require,
+    }
+}
+
+/// `command` without its quoted text: a search for the words "gh pr create" ships nothing.
+// ponytail: a command inside quotes (`bash -c "git push"`) is not seen; parse the shell if that gets used to dodge.
+fn unquoted(command: &str) -> String {
+    static QUOTED: LazyLock<regex::Regex> = LazyLock::new(|| regex::Regex::new(r#"'[^']*'|"[^"]*""#).expect("valid"));
+    QUOTED.replace_all(command, "''").into_owned()
+}
+
+/// Whether `command` (unquoted) commits, pushes or opens a pull request.
 fn ships(command: &str) -> bool {
-    static SHIP: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
+    static SHIP: LazyLock<regex::Regex> = LazyLock::new(|| {
         regex::Regex::new(r"\bgit\s+(-C\s+\S+\s+)?(commit|push)\b|\bgh\s+pr\s+create\b").expect("valid")
     });
     SHIP.is_match(command)
+}
+
+/// Where `command` (unquoted) opens its pull request: the last `cd <dir>` before `gh pr create`, else `cwd`. `None`
+/// when it opens none.
+// ponytail: a quoted or `~` directory is not followed and falls back to `cwd`; parse the shell if that matters.
+fn pr_directory(command: &str, cwd: &Path) -> Option<PathBuf> {
+    static CREATE: LazyLock<regex::Regex> =
+        LazyLock::new(|| regex::Regex::new(r"\bgh\s+pr\s+create\b").expect("valid"));
+    static CD: LazyLock<regex::Regex> =
+        LazyLock::new(|| regex::Regex::new(r"(?:^|[;&|(\n])\s*cd\s+([^\s;&|)']+)").expect("valid"));
+    let before = &command[..CREATE.find(command)?.start()];
+    Some(match CD.captures_iter(before).last() {
+        Some(found) => cwd.join(&found[1]),
+        None => cwd.to_path_buf(),
+    })
+}
+
+/// Why a pull request may not be opened from `dir` yet: `None` when `/review` wrote a receipt for the tree committed
+/// there and no confirmed finding is left unwaived. Unreadable state refuses.
+fn receipt_refusal(dir: &Path) -> Option<String> {
+    let git = |args: &[&str]| {
+        let output = Command::new("git")
+            .args(args)
+            .current_dir(dir)
+            .env("GIT_OPTIONAL_LOCKS", "0")
+            .stdin(Stdio::null())
+            .stderr(Stdio::null())
+            .output()
+            .ok()?;
+        let text = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        (output.status.success() && !text.is_empty()).then_some(text)
+    };
+    let how = format!(
+        "commit the change, run `import review_api; review = await review_api.run(rlm, \"\", cwd={:?}); \
+         print(review.report)`, then run the command again",
+        dir.display().to_string()
+    );
+    let Some(tree) = git(&["rev-parse", "HEAD^{tree}"]) else {
+        return Some(format!(
+            "self-review comes first: no commit to review in {}; {how}.",
+            dir.display()
+        ));
+    };
+    let receipt = git(&["rev-parse", "--absolute-git-dir"])
+        .and_then(|git_dir| std::fs::read_to_string(Path::new(&git_dir).join("ultron-review/receipt.json")).ok())
+        .and_then(|text| serde_json::from_str::<Value>(&text).ok())
+        .filter(|receipt| receipt["tree"] == tree.as_str());
+    let Some(receipt) = receipt else {
+        return Some(format!(
+            "self-review comes first: the committed tree {} has not been reviewed (a commit after a review needs a \
+             new one); {how}.",
+            &tree[..tree.len().min(8)]
+        ));
+    };
+    let confirmed = receipt["confirmed"].as_u64().unwrap_or(u64::MAX);
+    let incomplete = receipt["incomplete"] != false;
+    let waived = receipt["waived"]
+        .as_str()
+        .is_some_and(|reason| !reason.trim().is_empty());
+    ((confirmed > 0 || incomplete) && !waived).then(|| {
+        let unfinished = if incomplete {
+            " and did not finish (see its report)"
+        } else {
+            ""
+        };
+        format!(
+            "self-review comes first: the review of this tree confirmed {confirmed} finding(s){unfinished}. Fix \
+             them, commit and review again (raise --budget for an unfinished one); or, for findings that are wrong \
+             or belong in a follow-up, record why with \
+             `review_api.waive(\"<reason>\", cwd={:?})` and say so in the pull request's description.",
+            dir.display().to_string()
+        )
+    })
 }
 
 /// `text` whole when it fits [`MAX_TEXT_CHARS`]; otherwise its paragraphs up to the bound, the headings of the
@@ -209,6 +316,9 @@ pub struct SituationalSkills {
     given: Mutex<HashSet<(String, String)>>,
     /// (lane, file) changed so far, for [`MANY_FILES`].
     changed: Mutex<HashSet<(String, String)>>,
+    self_review: SelfReview,
+    /// Where the session's commands run, for the receipt of a pull request.
+    cwd: PathBuf,
 }
 
 impl SituationalSkills {
@@ -219,7 +329,15 @@ impl SituationalSkills {
             engineering,
             given: Mutex::new(HashSet::new()),
             changed: Mutex::new(HashSet::new()),
+            self_review: SelfReview::Advise,
+            cwd: PathBuf::new(),
         }
+    }
+
+    /// What shipping asks, for commands that run in `cwd`.
+    pub fn with_self_review(mut self, self_review: SelfReview, cwd: &Path) -> SituationalSkills {
+        (self.self_review, self.cwd) = (self_review, cwd.to_path_buf());
+        self
     }
 
     /// `skill` for `lane` once, introduced by `head`: its `## part` section when it has one (the part to act on,
@@ -299,7 +417,7 @@ impl SituationalSkills {
 
 impl CellObserver for SituationalSkills {
     fn enabled(&self) -> bool {
-        !self.rules.is_empty() && (self.engineering)()
+        (!self.rules.is_empty() || self.self_review != SelfReview::Off) && (self.engineering)()
     }
 
     fn cell_changed(&self, changes: &CellChanges, cwd: &Path, lane: &str) -> Vec<String> {
@@ -320,25 +438,34 @@ impl CellObserver for SituationalSkills {
     }
 
     /// The lane's first commit or push is refused once, with [`SHIP_SKILL`]: given after it ran, the check came
-    /// too late to shape it. Running the same command again goes through.
+    /// too late to shape it. Running the same command again goes through, except a pull request without its
+    /// receipt ([`SelfReview::Require`]).
     fn before_shell(&self, command: &str, lane: &str) -> Option<String> {
-        if !ships(command) {
+        let command = unquoted(command);
+        if self.self_review == SelfReview::Off || !ships(&command) {
             return None;
         }
         let head = format!(
             "{SHIP_SKILL} comes first: check what this change could break outside its diff, then run the command \
              again (it is refused once per lane)."
         );
-        self.give(lane, SHIP_SKILL, head)
+        self.give(lane, SHIP_SKILL, head).or_else(|| {
+            let dir = pr_directory(&command, &self.cwd).filter(|_| self.self_review == SelfReview::Require)?;
+            receipt_refusal(&dir)
+        })
     }
 }
 
 /// The session's observer, or `None` when no rule applies.
 pub fn session_observer(
     settings: &Value,
+    cwd: &Path,
     resolve: Box<Resolve>,
     engineering: Box<Engineering>,
 ) -> Option<Arc<dyn CellObserver>> {
-    let rules = rules(settings);
-    (!rules.is_empty()).then(|| Arc::new(SituationalSkills::new(rules, resolve, engineering)) as Arc<dyn CellObserver>)
+    let (rules, self_review) = (rules(settings), self_review(settings));
+    (!rules.is_empty() || self_review != SelfReview::Off).then(|| {
+        Arc::new(SituationalSkills::new(rules, resolve, engineering).with_self_review(self_review, cwd))
+            as Arc<dyn CellObserver>
+    })
 }

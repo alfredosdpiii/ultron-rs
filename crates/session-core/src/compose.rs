@@ -1359,13 +1359,19 @@ impl Runtime {
             self.config.agent_dir.clone(),
             self.config.home.clone(),
         );
+        let session_cwd = cwd.clone();
         let engineering = move || {
             config::settings::SettingsManager::for_worker(&cwd, &agent_dir, &home)
                 .settings()
                 .get("engineering")
                 == Some(&Value::Bool(true))
         };
-        crate::situational_skills::session_observer(&self.config.settings, Box::new(resolve), Box::new(engineering))
+        crate::situational_skills::session_observer(
+            &self.config.settings,
+            &session_cwd,
+            Box::new(resolve),
+            Box::new(engineering),
+        )
     }
 
     /// The session's memory pointers: on while memory is (an injected backend or a Hindsight server) and the
