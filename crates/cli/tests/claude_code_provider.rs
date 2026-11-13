@@ -192,6 +192,23 @@ fn with_added_models(case: &Value, stdout: &str, added: &[String]) -> String {
     lines.iter().map(|line| format!("{line}\n")).collect()
 }
 
+/// `want` with `claude-fable-5-2`, which only the Rust catalog has (the fixture holds neither a listing nor a catalog
+/// entry for it, and the ai crate's parity tests leave it out the same way): it lists as `claude-fable-5-1` does,
+/// on the row after it.
+fn with_rust_only_model(want: &str) -> String {
+    let twin = |line: &str| line.starts_with("claude-code ") && line.contains(" claude-fable-5-1 ");
+    if !want.lines().any(twin) {
+        return want.to_string();
+    }
+    want.lines()
+        .flat_map(|line| {
+            let added = twin(line).then(|| line.replace("claude-fable-5-1", "claude-fable-5-2"));
+            std::iter::once(line.to_string()).chain(added)
+        })
+        .map(|line| format!("{line}\n"))
+        .collect()
+}
+
 #[test]
 fn cli_claude_code_list_models_matches_typescript() {
     let tmp = tempfile::tempdir().unwrap();
@@ -219,7 +236,7 @@ fn cli_claude_code_list_models_matches_typescript() {
             assert!(output.status.success(), "{label}: {output:?}");
             let stdout = String::from_utf8(output.stdout).unwrap().replace(&docs, "<docs>");
             let want = with_added_models(&case.spec, listing["stdout"].as_str().unwrap(), &added);
-            assert_eq!(stdout, want, "{label}");
+            assert_eq!(stdout, with_rust_only_model(&want), "{label}");
             let stderr = String::from_utf8(output.stderr).unwrap();
             assert_eq!(stderr, listing["stderr"].as_str().unwrap(), "{label}");
         }
