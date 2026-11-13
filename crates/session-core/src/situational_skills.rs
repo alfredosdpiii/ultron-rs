@@ -29,7 +29,8 @@
 //! request also needs a receipt ([`SelfReview::Require`], the default of the `selfReview` setting): `/review` writes
 //! `<git dir>/ultron-review/receipt.json` naming the tree it reviewed, and `gh pr create` is refused until that
 //! tree is the one committed, with no confirmed finding left unwaived. A new commit is a new tree, so it needs a
-//! new review.
+//! new review. Its body must then be the description `spec_api.description` wrote for that tree
+//! ([`description_refusal`]); what makes a description writable is decided in spec_api.py.
 
 use host::file_hooks::{CellChanges, CellObserver, inside};
 use kernel_apis::memory_records::Glob;
@@ -158,30 +159,81 @@ fn ships(command: &str) -> bool {
 fn pr_directory(command: &str, cwd: &Path) -> Option<PathBuf> {
     static CREATE: LazyLock<regex::Regex> =
         LazyLock::new(|| regex::Regex::new(r"\bgh\s+pr\s+create\b").expect("valid"));
+    directory_of(command, cwd, &CREATE)
+}
+
+/// Where `command` (unquoted) pushes from, by the same rule. `None` when it pushes nothing.
+fn push_directory(command: &str, cwd: &Path) -> Option<PathBuf> {
+    static PUSH: LazyLock<regex::Regex> = LazyLock::new(|| regex::Regex::new(r"\bgit\s+push\b").expect("valid"));
+    directory_of(command, cwd, &PUSH)
+}
+
+fn directory_of(command: &str, cwd: &Path, what: &regex::Regex) -> Option<PathBuf> {
     static CD: LazyLock<regex::Regex> =
         LazyLock::new(|| regex::Regex::new(r"(?:^|[;&|(\n])\s*cd\s+([^\s;&|)']+)").expect("valid"));
-    let before = &command[..CREATE.find(command)?.start()];
+    let before = &command[..what.find(command)?.start()];
     Some(match CD.captures_iter(before).last() {
         Some(found) => cwd.join(&found[1]),
         None => cwd.to_path_buf(),
     })
 }
 
+/// A git query's output in `dir`, `None` when it fails or prints nothing.
+fn git_value(dir: &Path, args: &[&str]) -> Option<String> {
+    let output = Command::new("git")
+        .args(args)
+        .current_dir(dir)
+        .env("GIT_OPTIONAL_LOCKS", "0")
+        .stdin(Stdio::null())
+        .stderr(Stdio::null())
+        .output()
+        .ok()?;
+    let text = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    (output.status.success() && !text.is_empty()).then_some(text)
+}
+
+/// Why `command` (as typed, quotes kept) may not open its pull request from `dir` yet: `None` when its body is a
+/// file `spec_api.description` wrote for the tree committed there (the file's first line names that tree, so a
+/// commit after it makes it stale). The description is where the spec's acceptance items, the recorded checks and
+/// the change's purposes are held against the diff (spec_api.py); this only checks that it was done for this tree.
+fn description_refusal(command: &str, dir: &Path) -> Option<String> {
+    static BODY: LazyLock<regex::Regex> = LazyLock::new(|| {
+        regex::Regex::new(r#"(?:--body-file|\s-F)(?:\s+|=)(?:"([^"]*)"|'([^']*)'|([^\s;&|)]+))"#).expect("valid")
+    });
+    let tree = git_value(dir, &["rev-parse", "HEAD^{tree}"])?;
+    let path = BODY
+        .captures(command)
+        .and_then(|found| found.iter().skip(1).flatten().next())
+        .map(|path| dir.join(path.as_str()));
+    let described = path
+        .and_then(|path| std::fs::read_to_string(path).ok())
+        .is_some_and(|text| text.lines().next() == Some(format!("<!-- ultron-description tree={tree} -->").as_str()));
+    (!described).then(|| {
+        format!(
+            "the description comes from the diff: run `import spec_api; path = spec_api.description(cwd={:?})`              (it names what is still open, if anything), then open the pull request with `--body-file <path>` in              place of --fill or --body. A commit after it needs a new one.",
+            dir.display().to_string()
+        )
+    })
+}
+
+/// The tree the description kept in `dir`'s repository was written for, when it is not the one committed there now:
+/// (described, committed). A push of the second makes a pull request's body describe a change it no longer carries.
+fn stale_description(dir: &Path) -> Option<(String, String)> {
+    let tree = git_value(dir, &["rev-parse", "HEAD^{tree}"])?;
+    let git_dir = git_value(dir, &["rev-parse", "--absolute-git-dir"])?;
+    let text = std::fs::read_to_string(Path::new(&git_dir).join("ultron-review/description.md")).ok()?;
+    let described = text
+        .lines()
+        .next()?
+        .strip_prefix("<!-- ultron-description tree=")?
+        .strip_suffix(" -->")?;
+    (described != tree).then(|| (described.to_string(), tree))
+}
+
 /// Why a pull request may not be opened from `dir` yet: `None` when `/review` wrote a receipt for the tree committed
 /// there and no confirmed finding is left unwaived. Unreadable state refuses.
 fn receipt_refusal(dir: &Path) -> Option<String> {
-    let git = |args: &[&str]| {
-        let output = Command::new("git")
-            .args(args)
-            .current_dir(dir)
-            .env("GIT_OPTIONAL_LOCKS", "0")
-            .stdin(Stdio::null())
-            .stderr(Stdio::null())
-            .output()
-            .ok()?;
-        let text = String::from_utf8_lossy(&output.stdout).trim().to_string();
-        (output.status.success() && !text.is_empty()).then_some(text)
-    };
+    let git = |args: &[&str]| git_value(dir, args);
     let how = format!(
         "commit the change, run `import review_api; review = await review_api.run(rlm, \"\", cwd={:?}); \
          print(review.report)`, then run the command again",
@@ -440,8 +492,8 @@ impl CellObserver for SituationalSkills {
     /// The lane's first commit or push is refused once, with [`SHIP_SKILL`]: given after it ran, the check came
     /// too late to shape it. Running the same command again goes through, except a pull request without its
     /// receipt ([`SelfReview::Require`]).
-    fn before_shell(&self, command: &str, lane: &str) -> Option<String> {
-        let command = unquoted(command);
+    fn before_shell(&self, typed: &str, lane: &str) -> Option<String> {
+        let command = unquoted(typed);
         if self.self_review == SelfReview::Off || !ships(&command) {
             return None;
         }
@@ -450,8 +502,29 @@ impl CellObserver for SituationalSkills {
              again (it is refused once per lane)."
         );
         self.give(lane, SHIP_SKILL, head).or_else(|| {
-            let dir = pr_directory(&command, &self.cwd).filter(|_| self.self_review == SelfReview::Require)?;
-            receipt_refusal(&dir)
+            if self.self_review != SelfReview::Require {
+                return None;
+            }
+            if let Some(dir) = pr_directory(&command, &self.cwd) {
+                return receipt_refusal(&dir).or_else(|| description_refusal(typed, &dir));
+            }
+            // A push stays advisory: said once per tree, then the same command goes through.
+            let dir = push_directory(&command, &self.cwd)?;
+            let (described, tree) = stale_description(&dir)?;
+            let mut given = self.given.lock().unwrap_or_else(PoisonError::into_inner);
+            given
+                .insert((lane.to_string(), format!("description {tree}")))
+                .then(|| {
+                    format!(
+                        "the description was written for tree {}, and this push carries {}: an open pull request would \
+                     describe a change it no longer carries. Run the push again (it is refused once per tree); then \
+                     review the new tree, run `spec_api.description(cwd={:?})` and update the pull request with \
+                     `gh pr edit --body-file <path>`.",
+                        &described[..described.len().min(8)],
+                        &tree[..tree.len().min(8)],
+                        dir.display().to_string()
+                    )
+                })
         })
     }
 }

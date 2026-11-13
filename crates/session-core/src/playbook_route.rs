@@ -87,10 +87,19 @@ pub fn playbook_message(text: &str, rigor_dir: &Path, shown: &[String], timestam
     let body = std::fs::read_to_string(&path).ok()?;
     let body = body.trim();
     let dir = rigor_dir.display();
+    // Work that changes code starts from what the finished work must do; the pull request's description is built
+    // from it (spec_api.py). Reading changes nothing.
+    let spec = if file == "investigation" {
+        ""
+    } else {
+        " Before the first edit, also write what the finished work must do: `import spec_api; \
+         print(spec_api.write(title, goal, [one sentence per behaviour a check can show true or false]))`; \
+         `help(spec_api)` has the rest."
+    };
     let head = format!(
         "[playbook] This request reads as a {title}. Follow rigor's {title} playbook below: put its steps in \
          state[\"plan\"] before your first edit and work through them; a step you skip stays with `skip: <reason>`. \
-         Name a better-fitting playbook in one line if this one is wrong. Paths are relative to {dir}."
+         Name a better-fitting playbook in one line if this one is wrong. Paths are relative to {dir}.{spec}"
     );
     let content = if body.chars().count() > MAX_PLAYBOOK_CHARS {
         format!("{head}\nRead {} now, before the first edit.", path.display())
@@ -157,6 +166,16 @@ mod tests {
         assert!(
             content.ends_with("### Refactoring\n\n1. Pin the contract."),
             "{content}"
+        );
+        assert!(
+            content.contains("spec_api.write("),
+            "work that changes code starts from a spec: {content}"
+        );
+        std::fs::write(dir.path().join("playbooks/investigation.md"), "### Investigation\n").unwrap();
+        let reading = playbook_message("how does the session worker start up", dir.path(), &[], 7).unwrap();
+        assert!(
+            !reading["content"].as_str().unwrap().contains("spec_api"),
+            "reading changes nothing: {reading}"
         );
         let entries = [json!({"type": "message", "message": message})];
         assert_eq!(shown(&entries), ["refactoring"]);

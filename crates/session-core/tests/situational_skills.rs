@@ -200,7 +200,12 @@ fn session_core_self_review_refuses_a_pull_request_until_the_committed_tree_is_r
         assert!(skills.before_shell("git commit -qm x", "main").is_some());
         skills
     };
-    let create = "gh pr create --fill";
+    // The description `spec_api.description` wrote for the committed tree, as the pull request's body.
+    let describe = |tree: &str| {
+        let body = format!("<!-- ultron-description tree={tree} -->\n## Why\n\nx\n");
+        std::fs::write(dir.join(".git/ultron-review/description.md"), body).unwrap();
+    };
+    let create = "gh pr create --title t --body-file .git/ultron-review/description.md";
     let skills = gate(SelfReview::Require);
 
     let refused = skills.before_shell(create, "main").unwrap_or_default();
@@ -222,7 +227,25 @@ fn session_core_self_review_refuses_a_pull_request_until_the_committed_tree_is_r
 
     let tree = git(dir, &["rev-parse", "HEAD^{tree}"]);
     write(&tree, 0, false, Value::Null);
-    assert_eq!(skills.before_shell(create, "main"), None, "reviewed and clean");
+    let refused = skills.before_shell(create, "main").unwrap_or_default();
+    assert!(
+        refused.contains("spec_api.description"),
+        "reviewed, not yet described: {refused}"
+    );
+    describe("0000");
+    assert!(
+        skills.before_shell(create, "main").is_some(),
+        "a description of another tree is stale"
+    );
+    describe(&tree);
+    let filled = skills.before_shell("gh pr create --fill", "main").unwrap_or_default();
+    assert!(
+        filled.contains("--body-file"),
+        "the body is that file, not the commit messages: {filled}"
+    );
+    assert_eq!(skills.before_shell(create, "main"), None, "reviewed and described");
+    let quoted = "gh pr create -t t -F '.git/ultron-review/description.md'";
+    assert_eq!(skills.before_shell(quoted, "main"), None, "-F, quoted");
 
     write(&tree, 2, false, Value::Null);
     let refused = skills.before_shell(create, "main").unwrap_or_default();
@@ -254,6 +277,16 @@ fn session_core_self_review_refuses_a_pull_request_until_the_committed_tree_is_r
     assert!(
         refused.contains("has not been reviewed"),
         "a new commit needs a new review: {refused}"
+    );
+    let refused = skills.before_shell("git push origin main", "main").unwrap_or_default();
+    assert!(
+        refused.contains("gh pr edit --body-file"),
+        "a push of another tree than the one described says so: {refused}"
+    );
+    assert_eq!(
+        skills.before_shell("git push origin main", "main"),
+        None,
+        "once per tree"
     );
 
     // The pull request is opened where the command goes, not where the session started.
