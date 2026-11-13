@@ -41,7 +41,10 @@ order, each dropped when empty:
 Attach screenshots or recordings when they prove a claim. Full SHAs, lane recitals, file-by-file checklists and
 "CLEAN" verdicts go in a linked artifact, not the body.
 
-**Forge.** GitHub through `gh` via `bash`. Write bodies to a file and pass `--body-file`.
+**Forge.** GitHub through `gh` via `bash`. Write bodies to a file and pass `--body-file`. With a spec on the branch
+(`spec_api.write`), the file is the one `spec_api.description()` returns after `/review` on the committed tree: it
+holds `## Why`, `## What changed`, `## Acceptance` and `## Verification` from what was recorded. Keep its first line,
+add the sections it lacks below, and build it again after every new commit.
 
 **Size and stacks.** Prefer five narrow PRs to one large one. A stack is a base-branch chain: the root PR targets trunk;
 each child branch is rebased onto its parent's exact tip and its PR targets the parent branch
