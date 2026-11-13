@@ -14,6 +14,11 @@ Skills written for Ultron itself, as opposed to the ports in the sibling directo
   change.
 
 Use: `/skill:<name>`. A skill with the same name in your own skills directories replaces the bundled one.
+- `mission`: work too big for one context, run by subagents. The orchestrator writes the spec (`spec_api`), splits
+  it into features on the board that each claim acceptance items, gives each to a worker in its own worktree under a
+  host-checked contract, and has a kept validator exercise each merged milestone and check each fix against the
+  failure it saw. Nobody approves a step. The shape follows
+  Factory's Droid missions; the text and the APIs are Ultron's.
 - `verified-core`: proved specs for small pure logic. The user states laws in `LAWS.bend`, Bend proves a reference
   implementation, and the shipped code is either the compiled Bend (`-o x.mjs` for JS/TS) or tested against it as
   an oracle (any language). `example/` is a checked last-write-wins replay with a 2000-case Python differential
