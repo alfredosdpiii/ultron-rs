@@ -46,6 +46,8 @@ fn run(program: &Path, root: &Path, args: &[&str], env: &[(&str, &str)]) -> std:
         .env(config::paths::ENV_SERVER_DIR, root.join("server"))
         .env("ANTHROPIC_API_KEY", "test-key")
         .env(config::env::SKIP_VERSION_CHECK_ENV, "1")
+        // The durable server this starts would run its nightly dream at 03:30 local time and take a scripted reply.
+        .env(daemon::server::DREAM_ENV, "off")
         .envs(env.iter().copied())
         .stdin(Stdio::null())
         .output()

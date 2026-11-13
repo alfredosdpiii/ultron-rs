@@ -430,6 +430,9 @@ impl Tui {
             ("LANG".into(), "C.UTF-8".into()),
             // The startup update check never reaches the npm registry from a test.
             (config::env::SKIP_VERSION_CHECK_ENV.into(), "1".into()),
+            // A durable server started here would run its nightly dream (daemon::dream) at 03:30 local time and
+            // take a scripted reply.
+            (daemon::server::DREAM_ENV.into(), "off".into()),
         ];
         vars.extend(env.iter().map(|(k, v)| (k.to_string(), v.to_string())));
         let script = root.join("run.sh");

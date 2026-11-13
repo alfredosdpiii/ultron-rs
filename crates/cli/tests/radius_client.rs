@@ -55,7 +55,9 @@ fn ultron(root: &Path, gateway: &str, args: &[&str], env: &[(&str, &str)]) -> Co
         .env(cli::experimental::EXPERIMENTAL_ENV, "1")
         .env(config::radius::ENV_RADIUS_GATEWAY, gateway)
         .env("NO_COLOR", "1")
-        .env("TZ", "UTC");
+        .env("TZ", "UTC")
+        // A durable server started here would run its nightly dream at 03:30 and make a model request.
+        .env(daemon::server::DREAM_ENV, "off");
     for (key, value) in env {
         command.env(key, value);
     }
