@@ -1279,6 +1279,59 @@ fn cli_rpc_compaction_summary_retry_needs_a_transient_error_and_retries_on() {
     }
 }
 
+/// An Anthropic stream that fails because the request is longer than the model's window.
+fn too_long() -> String {
+    let message = "prompt is too long: 213000 tokens > 200000 maximum";
+    let error = json!({"type": "error", "error": {"type": "invalid_request_error", "message": message}});
+    format!("event: error\ndata: {error}\n\n")
+}
+
+/// A summary request the model refuses as too long is no failure (Rust-only): the history is summarized in parts,
+/// each updating the summary of the parts before it, in the same attempt. A session whose model was switched to
+/// one that counts its history as more than its window could otherwise never compact, and so never answer again.
+#[test]
+fn cli_rpc_compaction_summarizes_in_parts_when_the_model_refuses_the_history_as_too_long() {
+    let asks = ["ask-one", "ask-two", "ask-three", "ask-four"];
+    let a = actor_full(
+        asks.iter().map(|ask| reply(10, &format!("Answer to {ask}."))).collect(),
+        vec![too_long(), reply(10, "## Goal\nFirst part.")],
+        false,
+        Some(json!({"retry": {"baseDelayMs": 1}})),
+    );
+    // Each ask is about 10,000 tokens, so the 20,000 kept leave the first asks to summarize.
+    for ask in asks {
+        a.prompt(&format!("{ask}. {}", "x".repeat(40_000)));
+    }
+    let compacted = a
+        .call(session_core::core::Op::Compact { instructions: None })
+        .unwrap()
+        .unwrap();
+    assert_eq!(compacted["summary"], "## Goal\nSummary from the model.");
+    let requests = a.requests.lock().unwrap().clone();
+    let summaries: Vec<String> = requests
+        .iter()
+        .filter(|body| is_summary(body))
+        .map(|body| body["messages"].to_string())
+        .collect();
+    let held = |n: usize| -> Vec<&str> {
+        let in_request = |ask: &&str| summaries[n].contains(&format!("{ask}. "));
+        asks.iter().copied().filter(in_request).collect()
+    };
+    assert_eq!(summaries.len(), 3, "the whole history, then its two parts");
+    let whole = held(0);
+    assert!(whole.len() >= 2, "{whole:?}");
+    assert_eq!([held(1), held(2)].concat(), whole, "each ask is in one part");
+    assert!(!held(1).is_empty() && !held(2).is_empty());
+    assert!(!summaries[1].contains("<previous-summary>"));
+    assert!(summaries[2].contains("<previous-summary>\\n## Goal\\nFirst part.\\n</previous-summary>"));
+    let (_, states, result) = a.last_operation();
+    assert!(!states.contains(&"summary.retry_wait".to_string()), "{states:?}");
+    assert_eq!(
+        (&result["kind"], &result["status"]),
+        (&json!("compaction"), &json!("completed"))
+    );
+}
+
 /// The summarization retry events AgentSession emits (`_summarizationRetryCallbacks` over `retryAssistantCall`) and
 /// their order: `summarization_retry_scheduled` with the retry's number (1), the retries allowed (`maxRetries`, 3), the
 /// delay and the provider's error message; `summarization_retry_attempt_start` with the source (`compaction` and its

@@ -973,20 +973,76 @@ fn combine_usage(first: &Usage, second: &Usage) -> Usage {
     }
 }
 
-/// Sends one request and checks the response; the error text is upstream's thrown message.
+/// Why a request gave no summary: the error text is upstream's thrown message, and `too_long` says the model refused
+/// the request as longer than its window (Rust-only).
+struct SummaryFailure {
+    message: String,
+    too_long: bool,
+}
+
+/// Sends one request and checks the response.
 async fn summarize(
     request: SummaryRequest,
     label: &str,
     call: &mut impl AsyncFnMut(SummaryRequest) -> AssistantMessage,
-) -> Result<(String, Usage), String> {
+) -> Result<(String, Usage), SummaryFailure> {
     let response = call(request).await;
-    if let Some(failure) = summarization_failure(&response, label) {
-        return Err(failure);
+    if let Some(message) = summarization_failure(&response, label) {
+        return Err(SummaryFailure {
+            message,
+            too_long: ai::overflow::is_context_overflow(&response),
+        });
     }
     if has_tool_call(&response) {
-        return Err(format!("{label} attempted to call a tool"));
+        return Err(SummaryFailure {
+            message: format!("{label} attempted to call a tool"),
+            too_long: false,
+        });
     }
     Ok((response_text(&response), response.usage))
+}
+
+/// Where to cut two or more `messages` in half by estimated size, with a message on each side.
+fn halfway(messages: &[Value]) -> usize {
+    let total: u64 = messages.iter().map(estimate_tokens).sum();
+    let mut seen = 0;
+    let half = messages.iter().position(|message| {
+        seen += estimate_tokens(message);
+        seen * 2 >= total
+    });
+    half.map_or(1, |index| index + 1).clamp(1, messages.len() - 1)
+}
+
+/// Summarizes `parts` in order, each updating the summary of what came before it (first `previous`). Rust-only: a
+/// part the model refuses as too long is cut in half and each half is tried in its place. The summary goes to the
+/// lane's current model, which after a model switch may count a history as more tokens than its window holds, and
+/// no estimate made here predicts a provider's count. One message that is too long alone fails with the
+/// provider's error.
+async fn summarize_parts(
+    parts: Vec<&[Value]>,
+    mut previous: Option<String>,
+    label: &str,
+    reserve_tokens: u64,
+    options: &CompactOptions<'_>,
+    call: &mut impl AsyncFnMut(SummaryRequest) -> AssistantMessage,
+) -> Result<(String, Usage), String> {
+    let mut pending: Vec<&[Value]> = parts.into_iter().rev().collect();
+    let mut usage: Option<Usage> = None;
+    while let Some(part) = pending.pop() {
+        let request = history_summary_request(part, reserve_tokens, previous.as_deref(), options);
+        match summarize(request, label, call).await {
+            Ok((text, used)) => {
+                usage = Some(usage.map_or(used.clone(), |sum| combine_usage(&sum, &used)));
+                previous = Some(text);
+            }
+            Err(failure) if failure.too_long && part.len() > 1 => {
+                let (first, rest) = part.split_at(halfway(part));
+                pending.extend([rest, first]);
+            }
+            Err(failure) => return Err(failure.message),
+        }
+    }
+    Ok((previous.unwrap_or_default(), usage.unwrap_or_default()))
 }
 
 /// `compact`: summarizes a prepared compaction through `call` (history, then the split turn's prefix when cutting
@@ -998,35 +1054,35 @@ pub async fn compact(
 ) -> Result<CompactionResult, String> {
     let prep = preparation;
     let reserve = prep.settings.reserve_tokens;
-    let history = || {
-        history_summary_request(
-            &prep.messages_to_summarize,
-            reserve,
-            prep.previous_summary.as_deref(),
-            options,
-        )
-    };
-    let (mut summary, usage) = if prep.is_split_turn && !prep.turn_prefix_messages.is_empty() {
-        let (history_text, history_usage) = if prep.messages_to_summarize.is_empty() {
-            (
-                prep.previous_summary
-                    .clone()
-                    .unwrap_or_else(|| NO_PRIOR_HISTORY.to_string()),
-                None,
-            )
-        } else {
-            let (text, usage) = summarize(history(), "Summarization", &mut call).await?;
-            (text, Some(usage))
-        };
-        let request = turn_prefix_request(&prep.turn_prefix_messages, reserve, options);
-        let (prefix_text, prefix_usage) = summarize(request, "Turn prefix summarization", &mut call).await?;
-        let usage = match history_usage {
-            Some(history_usage) => combine_usage(&history_usage, &prefix_usage),
-            None => prefix_usage,
-        };
-        (split_turn_summary(&history_text, &prefix_text), usage)
+    let split = prep.is_split_turn && !prep.turn_prefix_messages.is_empty();
+    let mut previous = prep.previous_summary.clone();
+    let mut usage = None;
+    if !split || !prep.messages_to_summarize.is_empty() {
+        let history = vec![&prep.messages_to_summarize[..]];
+        let (text, used) = summarize_parts(history, previous, "Summarization", reserve, options, &mut call).await?;
+        (previous, usage) = (Some(text), Some(used));
+    }
+    let plus = |used: Usage| usage.as_ref().map_or(used.clone(), |sum| combine_usage(sum, &used));
+    let (mut summary, usage) = if split {
+        const LABEL: &str = "Turn prefix summarization";
+        let prefix = &prep.turn_prefix_messages[..];
+        let request = turn_prefix_request(prefix, reserve, options);
+        match summarize(request, LABEL, &mut call).await {
+            Ok((prefix_text, used)) => {
+                let history = previous.unwrap_or_else(|| NO_PRIOR_HISTORY.to_string());
+                (split_turn_summary(&history, &prefix_text), plus(used))
+            }
+            // A prefix too long for the model is summarized as more history, in halves.
+            Err(failure) if failure.too_long && prefix.len() > 1 => {
+                let (first, rest) = prefix.split_at(halfway(prefix));
+                let (text, used) =
+                    summarize_parts(vec![first, rest], previous, LABEL, reserve, options, &mut call).await?;
+                (text, plus(used))
+            }
+            Err(failure) => return Err(failure.message),
+        }
     } else {
-        summarize(history(), "Summarization", &mut call).await?
+        (previous.unwrap_or_default(), usage.unwrap_or_default())
     };
     let (read_files, modified_files) = compute_file_lists(&prep.file_ops);
     summary.push_str(&format_file_operations(&read_files, &modified_files));

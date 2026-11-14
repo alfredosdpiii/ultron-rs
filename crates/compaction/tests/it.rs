@@ -6,6 +6,8 @@
 mod bug_summary;
 #[path = "fixture.rs"]
 mod fixture;
+#[path = "overflow.rs"]
+mod overflow;
 #[path = "recalled_memory.rs"]
 mod recalled_memory;
 #[path = "upstream.rs"]
