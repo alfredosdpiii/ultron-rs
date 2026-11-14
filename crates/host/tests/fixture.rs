@@ -192,6 +192,58 @@ fn host_guard_blocks_writes_edits_and_shell_commands() {
     assert_eq!(ok(6).1, json!("'ok'"));
 }
 
+/// Stands for a writer the kernel cannot see (another lane, a subagent in the same tree, a shell command): while the
+/// write whose content holds "MINE" is being checked, the file gets other text.
+struct Interloper;
+impl Guard for Interloper {
+    fn before_write(&self, _lane: &str, path: &str, content: &str) -> Value {
+        if content.contains("MINE") {
+            std::fs::write(path, "theirs\n").unwrap();
+        }
+        json!({ "blocked": false })
+    }
+}
+
+/// `write()`'s documentation recommends gathering writes and edits, and each one waits on the host's check between
+/// reading the file and writing it.
+#[test]
+fn host_edits_of_one_file_in_one_gather_all_land() {
+    let cells: Vec<String> = [
+        "import os; os.environ['ULTRON_FILE_HOOKS'] = '1'; await write('a.txt', 'alpha\\nbeta\\ngamma\\n')",
+        "await asyncio.gather(edit('a.txt', 'alpha', 'ALPHA'), edit('a.txt', 'beta', 'BETA'), edit('a.txt', 'gamma', 'GAMMA'))",
+        "open('a.txt').read()",
+    ]
+    .map(String::from)
+    .to_vec();
+    let results = replay(&cells, Box::new(AllowAll));
+    assert_eq!(results[1]["ok"]["error"], Value::Null, "{}", results[1]);
+    assert_eq!(results[2]["ok"]["result"], json!("'ALPHA\\nBETA\\nGAMMA\\n'"));
+}
+
+#[test]
+fn host_edit_refuses_a_file_that_changed_while_it_was_checked() {
+    let cells: Vec<String> = [
+        "import os; os.environ['ULTRON_FILE_HOOKS'] = '1'; await write('a.txt', 'one\\n')",
+        "await edit('a.txt', 'one', 'MINE')",
+        "open('a.txt').read()",
+        // The same edit goes through once nothing else is writing the file.
+        "await edit('a.txt', 'theirs', 'ours')",
+        "open('a.txt').read()",
+    ]
+    .map(String::from)
+    .to_vec();
+    let results = replay(&cells, Box::new(Interloper));
+    assert_eq!(
+        results[1]["ok"]["error"],
+        json!(
+            "ValueError: a.txt was not edited: it changed on disk while the edit was being checked. Read it again and redo the edit."
+        )
+    );
+    assert_eq!(results[2]["ok"]["result"], json!("'theirs\\n'"));
+    assert_eq!(results[3]["ok"]["result"], json!("'Edited a.txt'"));
+    assert_eq!(results[4]["ok"]["result"], json!("'ours\\n'"));
+}
+
 #[test]
 fn host_refuses_requests_that_need_models_or_agents() {
     let kinds = [

@@ -18,6 +18,7 @@ import threading
 import time
 import tokenize
 import traceback
+import weakref
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -782,6 +783,19 @@ async def _check_write(filepath: Path, content: str, display: str) -> None:
         raise ValueError(f"{display} was not written: {result.get('reason') or 'a write hook blocked it'}")
 
 
+# write() and edit() wait on the host's check between reading a file and writing it, so two of them on one file in
+# one gather would each write back the copy it read. They take turns per file; a lock lives while someone holds it.
+_PATH_LOCKS: weakref.WeakValueDictionary[str, asyncio.Lock] = weakref.WeakValueDictionary()
+
+
+def _path_lock(filepath: Path) -> asyncio.Lock:
+    key = os.path.realpath(filepath)
+    lock = _PATH_LOCKS.get(key)
+    if lock is None:
+        lock = _PATH_LOCKS[key] = asyncio.Lock()
+    return lock
+
+
 async def write(path: str | os.PathLike[str], text: str) -> str:
     """Create or overwrite a text file (parent directories are created).
 
@@ -801,9 +815,10 @@ async def write(path: str | os.PathLike[str], text: str) -> str:
     filepath = worktree_path(Path(path))
     if not filepath.is_absolute():
         filepath = Path.cwd() / filepath
-    await _check_write(filepath, text, str(path))
-    filepath.parent.mkdir(parents=True, exist_ok=True)
-    filepath.write_text(text)
+    async with _path_lock(filepath):
+        await _check_write(filepath, text, str(path))
+        filepath.parent.mkdir(parents=True, exist_ok=True)
+        filepath.write_text(text)
     return f"Wrote {path} ({len(text.encode('utf-8')):,} bytes)"
 
 
@@ -817,30 +832,42 @@ async def edit(path: str, old_str: str, new_str: str) -> str:
 
     Returns:
         A confirmation message. Raises FileNotFoundError when the file is missing and
-        ValueError when old_str is absent or appears more than once, or when a write check
-        (Loki guardrails, extension hooks) blocks the new content; then nothing is written.
+        ValueError when old_str is absent or appears more than once, when a write check
+        (Loki guardrails, extension hooks) blocks the new content, or when something else changed
+        the file while it was being checked; then nothing is written.
     """
     filepath = worktree_path(Path(path))
     if not filepath.is_absolute():
         filepath = Path.cwd() / filepath
-    if not filepath.exists():
-        raise FileNotFoundError(f"{path} not found")
-    content = filepath.read_text()
-    count = content.count(old_str)
-    if count == 0 and isinstance(old_str, str):
-        marker = REDACTION_MARKER.search(old_str)
-        if marker is not None:
-            # Cell output masks secrets, so text copied from it can hold a marker the file does not. Nothing is written.
+    async with _path_lock(filepath):
+        if not filepath.exists():
+            raise FileNotFoundError(f"{path} not found")
+        content = filepath.read_text()
+        count = content.count(old_str)
+        if count == 0 and isinstance(old_str, str):
+            marker = REDACTION_MARKER.search(old_str)
+            if marker is not None:
+                # Cell output masks secrets, so text copied from it can hold a marker the file does not. Nothing is written.
+                raise ValueError(
+                    f"old_str contains {marker.group(0)}, a mask that cell output shows in place of a secret; {path} "
+                    "holds the real value, unchanged. Make old_str the text before or after the secret (not the marker), "
+                    "or edit in code: `text = await read(path)` has the real content."
+                )
+        if count != 1:
+            raise ValueError(f"old_str must appear exactly once in {path} (found {count})")
+        updated = content.replace(old_str, new_str, 1)
+        await _check_write(filepath, updated, str(path))
+        # Writers this kernel's lock cannot see: another lane, a subagent in the same tree, a shell command.
+        try:
+            unchanged = filepath.read_text() == content
+        except OSError:
+            unchanged = False
+        if not unchanged:
             raise ValueError(
-                f"old_str contains {marker.group(0)}, a mask that cell output shows in place of a secret; {path} "
-                "holds the real value, unchanged. Make old_str the text before or after the secret (not the marker), "
-                "or edit in code: `text = await read(path)` has the real content."
+                f"{path} was not edited: it changed on disk while the edit was being checked. "
+                "Read it again and redo the edit."
             )
-    if count != 1:
-        raise ValueError(f"old_str must appear exactly once in {path} (found {count})")
-    updated = content.replace(old_str, new_str, 1)
-    await _check_write(filepath, updated, str(path))
-    filepath.write_text(updated)
+        filepath.write_text(updated)
     return f"Edited {path}"
 
 

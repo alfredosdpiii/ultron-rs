@@ -38,6 +38,7 @@
 
 ### Fixed
 
+- Two `edit()` calls on one file in the same `asyncio.gather` both answered "Edited" while one change was lost: each read the file, waited on the write check, then wrote back its own copy. Writes and edits of one file now run one at a time, and an `edit()` whose file changed on disk during the check (another lane, a subagent in the same tree, a shell command) raises `ValueError` and writes nothing.
 - A subagent reattached after its session's worker restarted was journaled as interrupted, so after a second restart it was aborted while still running, and `rlm.collect` answered `interrupted` for a result the root had already collected. It now stays running in the task journal until it ends, and its end is journaled.
 - The Radius relay sometimes closed its socket without the close frame when the server shut down just after it connected.
 - The tests that compare with TypeScript recordings no longer pin the product version, so they pass on a release after 0.87.39.
