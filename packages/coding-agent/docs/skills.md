@@ -83,10 +83,11 @@ Under `require`, a pull request also needs a description built from the change:
 1. Before the first edit, `spec_api.write(title, goal, acceptance)` records what the finished work must do, one sentence per behaviour a check can show true or false. The playbook that opens a request asks for it.
 2. `await spec_api.check(bash, command)` runs a check and records its exit code for the tree it ran on. A command that hides its exit code behind a pipe or `|| true` is refused.
 3. `spec_api.mark(id, status, evidence)` records how each item ended: `pass`, `fail` or `blocked`.
-4. A full `/review` holds the diff against the items with a finder of their own.
-5. `spec_api.description()` writes `<git dir>/ultron-review/description.md` for the committed tree. `gh pr create` is refused until `--body-file` names a description written for the tree at `HEAD`.
+4. `spec_api.decide(choice, reason, if_overruled)` records a choice the request left open, instead of asking. The description prints each one under `## Decisions`.
+5. A full `/review` holds the diff against the items with a finder of their own.
+6. `spec_api.description()` writes `<git dir>/ultron-review/description.md` for the committed tree. `gh pr create` is refused until `--body-file` names a description written for the tree at `HEAD`.
 
-`description` refuses while something is open and names it: no spec, an item that did not pass, no passing check on this tree, more than one purpose, a changed file under no purpose, or a confirmed finding. Nobody is asked to approve a step. What is open is fixed, or shipped with the reason `review_api.waive` recorded, which the description prints under `## Scope`. A push of a tree the description was not written for is refused once, with how to renew it. `/skill:mission` runs work too big for one session the same way: workers in worktrees held to host-run checks, and a validator per milestone that did not build what it checks.
+`description` refuses while something is open and names it: no spec, an item that did not pass, no passing check on this tree, more than one purpose, a changed file under no purpose, or a confirmed finding. Nobody is asked to approve a step. What is open is fixed, or shipped with the reason `review_api.waive` recorded, which the description prints under `## Scope`. A push of a tree the description was not written for is refused once, with how to renew it. `/skill:mission` runs work too big for one session the same way: a baseline run of the test command in a fresh worktree before any feature is built, workers in worktrees held to host-run checks, and a validator per milestone that did not build what it checks.
 
 Set `disable-model-invocation: true` in frontmatter when a skill should be available only through its explicit command. The `enableSkillCommands` [setting](settings.md) controls whether skill commands appear in interactive command discovery; manually entered `/skill:name` commands still work.
 

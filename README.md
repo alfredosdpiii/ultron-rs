@@ -302,7 +302,8 @@ the one that answered, and is otherwise marked for review.
 `/review main`, `/review 123` (a PR, through `gh`), `/review src/`. Five specialist reviewers (correctness,
 security, architecture, tests, AI/LLM integration) run as bounded `rlm.map` frames over the diff in chunks with the
 surrounding code; then every finding goes to a verifier frame that reads the lines it cites and the callers of the
-code involved. Rejected findings never reach the report, confirmations must quote the source, and the report ends
+code involved. One more finder looks at reuse: the change's new definitions are searched for in the rest of the
+repository first, and it judges only what the search found. Rejected findings never reach the report, confirmations must quote the source, and the report ends
 with counts, cost and what was not checked. One token cap covers it all (`--budget`, default 300k); `--only sec,bugs`,
 `--model`, `--deep` (a sub-agent re-checks undecided findings) and `--post` (only after you say yes) adjust it.
 It adds nothing to the prompt of ordinary turns.
