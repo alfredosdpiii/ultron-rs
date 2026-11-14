@@ -108,7 +108,8 @@ and are not restored after restart. Checks use the selected model, have no tools
   `passed` needs concrete evidence (a test command and its result, or file lines), and a malformed verdict is sent
   back to be fixed. The host snapshots the workspace before and after the child runs. If a file the child says it
   changed did not change, the verdict is `contradicted`, and a workflow node with a contradicted verdict fails. A
-  child that ends without a verdict keeps its result but is marked unverified.
+  child that ends without a verdict keeps its result but is marked unverified. What it left undone goes in
+  `left=[...]`; the host continues the root's turn once with those items.
 - **Contracts the host checks itself.** `rlm.spawn(brief, contract={"checks": [...], "returns": schema})` gives a
   child up to 16 checks that the host runs when it ends: a command and its expected exit code or output, files it may
   change (`changed_files_within`), `no_new_dependencies` and `files_exist`. A failed check fails the result, and
@@ -350,10 +351,13 @@ the same from the TUI. Pull request content is sent to the configured model prov
   [`secret-patterns.json`](packages/coding-agent/src/ultron/rlm/secret-patterns.json).
 - **The profile is off limits to the model.** `write()`, `edit()` and shell commands cannot change the profile's
   `settings.json`, `auth.json`, `skills/`, `skill-proposals/`, `memory-backend` or `optimize/`, whatever Loki's mode.
-- **A stuck-loop detector**, off by default (`ULTRON_HINTS=on` turns it and the other cell hints on), watches for
-  three failing cells in a row, the same two cells alternating, or eight failures in one turn. The first time, it
-  asks the model for three hypotheses and one cell that tests the likeliest; the second time, it tells the model to
-  stop repeating the approach and say what blocks it.
+- **A stuck-loop detector** watches for three failing cells in a row, the same two cells alternating, or eight
+  failures in one turn. The first time, it asks the model for three hypotheses and one cell that tests the likeliest;
+  the second time, it tells the model to stop repeating the approach and say what blocks it. A cell that ran three
+  times in a row with success is told rerunning adds nothing, and its seventh run in a row is refused. An empty
+  reply is continued twice. `ULTRON_TURN_GUARDS=off` turns these off; `ULTRON_HINTS=on` adds the other cell hints.
+- **Turn-end checks.** The `turnEndChecks` setting lists commands the host runs when a turn that did work ends; the
+  turn continues with the ones that failed.
 
 ## The durable instance and scheduled prompts
 

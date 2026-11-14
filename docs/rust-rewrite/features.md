@@ -567,3 +567,29 @@ and ACP. Durable `/persona` reports the worker's state and `/persona none` stick
 `--thinking` applies on resume without `--model` (TS keeps the stored lane with `--model`). `ultron-s` resolves
 `@file` in the caller's directory and refuses `-c`/`-r`/`--fork`; ACP refuses session selectors and names only its
 first session; `--no-session --name` keeps the name; herdr resumes a durable pane through `ultron durable --session`.
+
+## Turn guards, turn-end checks, model notes (ideas from Factory's droid and Amp)
+
+**Turn guards** (`ULTRON_TURN_GUARDS=off` turns them off; off under the TypeScript guide). When a root run on `main`
+ends normally with nothing waiting, after the keep-going and persona nudges, the host continues the turn with a
+journaled nudge message in three cases, the first that applies:
+
+- The reply had no text and no call: "continue", twice in a row at most; the third empty reply ends the turn.
+- A subagent of the root ended with `rlm.finish(..., left=[...])`: its items, once per subagent. `left` is a list of
+  at most 20 strings, kept in the verdict only when non-empty, and counted in the result's tag (`2 left undone`).
+- The `turnEndChecks` setting names commands (below).
+
+The `stuck-loop` and `repeated-cell` hints fire without `ULTRON_HINTS`. A cell that already ran six times in a row
+with success is refused the seventh time, on any lane, with an error result; another cell or the lane's next run
+starts the count over.
+
+**Turn-end checks.** `turnEndChecks` is a list of commands, each a string (it must exit 0) or a spawn contract's
+`run` check. When a root turn that made an `rlm` call ends, the host runs them on a thread, in the project directory
+under the session's sandbox; the session reports busy meanwhile. The turn is continued with the checks that failed,
+five times at most since the user's last message. A new prompt or a stop cancels checks still running.
+
+**Model notes.** `resources::model_notes` maps a model id prefix to short rules (comments, plain prose, parallel
+calls) rendered as a `<model_notes>` section. The root's follows `/model`; a subagent gets its own model's.
+
+Code: `crates/session-core/src/core/turn_guard.rs`, `crates/kernel-apis/src/cell_hints.rs` (`guards`),
+`crates/delegation/src/verdict.rs` (`left`), `crates/resources/src/model_notes.rs`.
