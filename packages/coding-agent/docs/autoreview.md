@@ -229,7 +229,7 @@ reviewed.
 | `autoreview.thinking` | `"low"` (`high` for the recommended model) | Thinking level of the finder frames (`off`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`). Every thinking default is per model: see "Recommended models". |
 | `autoreview.verifyThinking` | `"low"` (`high` for the recommended model) | Thinking level of the verifier frames. |
 | `autoreview.frameConcurrency` | `8` | Model requests of one review in flight at once, finder and verifier frames alike (maximum 16). Lower it if your provider rate-limits; `autoreview.modelConcurrency` sets a limit per model. |
-| `autoreview.deadlineSeconds` | `1200` | How long one review may take (minimum 30). With `0`, the review waits for every finder and verifier frame. See below. |
+| `autoreview.deadlineSeconds` | `0` (none) | Optional limit on how long one review may take (minimum 30). Unset or `0`, the review waits for every finder and verifier frame. See below. |
 | `autoreview.frameTimeoutSeconds` | `0` (none) | Optional limit on how long one frame may take before it is retried or given up (minimum 10). |
 | `autoreview.dryRun` | `false` | Write would-be reviews to `autoreview/dry-run/` instead of posting. |
 | `autoreview.ack` | `true` | Post the acknowledgement comment. |
@@ -482,11 +482,12 @@ flow; the expensive reasoning happens once, up front; execution is cheap, parall
    name nothing defines; a workflow unlike its siblings; a concrete input that defeats a new guard; a guard that
    runs after the destructive step; an except that can never fire or a rollback on one branch only; a comment that
    promises what the code does not do; a twin implementation left unchanged; set-and-clear attribute mismatches;
-   retry loops that cannot tell failure classes apart; and a few more, 23 in all) is given to the planner with,
+   retry loops that cannot tell failure classes apart; a migration that takes a lock or lacks the safeguards and
+   runbook row its siblings have; and a few more, 24 in all) is given to the planner with,
    for each, when it applies, the steps that establish it, the evidence it yields and the level it supports. The
    shapes whose trigger the map detects in the change (a new list member, a new env var or key, a new regex or
    guard, a changed test, changed exception handling, a changed comment, a changed workflow or manifest, a twin
-   file, a retry loop) become `T<n>` coverage items: each must have a check or be declared uncovered.
+   file, a retry loop, a changed migration or SQL file) become `T<n>` coverage items: each must have a check or be declared uncovered.
 5. **Validation and fallback.** The program is checked against the language before anything runs: ids,
    references, cycles, ops, predicates, bounds, coverage, and that every finding rests on an ask, a test run or an
    exact-count presence check (a finding grounded only in a capped grep or a read is refused). A bad program gets
@@ -801,11 +802,12 @@ per review and the investigators a third of what they return at `high`. Do not l
   `reset_seconds`), before the pass is listed as not checked. A model the provider throttles has its in-flight limit
   halved for the rest of the review (`autoreview.modelConcurrency` sets the limits), and the review says so under
   "Not checked" when frames were lost to it.
-- By default a review has 20 minutes, no token cap and no per-frame timeout. Each limit can be set:
+- By default there is no token cap, no per-frame timeout and no deadline: the review waits for every finder and
+  verifier frame and posts when all are done. Each limit is opt-in:
   - `autoreview.budget` (or `--budget`): the cap counts what was really spent plus a bounded grant for each request
     in flight; a pass is refused only when that leaves no room for it.
   - `autoreview.frameTimeoutSeconds`: a frame that takes longer is retried, then given up.
-  - `autoreview.deadlineSeconds` (or `--deadline`, `0` for none): at three quarters of it unfinished finder passes are given up;
+  - `autoreview.deadlineSeconds` (or `--deadline`): at three quarters of it unfinished finder passes are given up;
     what was found is verified in the time left; the review is posted as incomplete (so never an approval) with
     the unfinished passes listed under "Not checked".
 - With `--json`, `timing.frames` lists every frame: `{phase, reviewer, ms, status, retries, model, error}`, and

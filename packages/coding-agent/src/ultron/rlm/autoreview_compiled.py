@@ -369,6 +369,7 @@ _RETRY = re.compile(r"\b(retry|retries|attempt|timeout|poll|backoff|sleep)\b", r
 _WORKFLOW = re.compile(r"(^|/)\.github/workflows/|(^|/)\.gitlab-ci|(^|/)ci/|Jenkinsfile|\.circleci/", re.I)
 _MANIFEST = re.compile(r"(^|/)(k8s|helm|charts|deploy|infra|terraform|manifests?)/|\.tf$|docker-compose|(^|/)Dockerfile|"
                        r"\.(ya?ml)$", re.I)
+_MIGRATION = re.compile(r"\.sql$|(^|/)(migrations?|alembic)/.*\.(py|ts|js|rb|sql)$", re.I)
 
 
 def shape_items(brief: Any, files: list[FileDiff]) -> list[dict[str, str]]:
@@ -409,6 +410,9 @@ def shape_items(brief: Any, files: list[FileDiff]) -> list[dict[str, str]]:
         triggered["sibling-implementation"] = "the twin file(s) the brief names"
     if code and _RETRY.search(added):
         triggered["failure-retry"] = "the new retry, timeout or polling code"
+    migrations = [item.path for item in reviewable if _MIGRATION.search(item.path)]
+    if migrations:
+        triggered["migration-safety"] = ", ".join(migrations[:3])
     by_key = {shape["key"]: shape for shape in CHECK_CATALOGUE}
     items: list[dict[str, str]] = []
     for number, key in enumerate([key for key in TRIGGERED_SHAPES if key in triggered], 1):

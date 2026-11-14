@@ -338,7 +338,8 @@ Reply with one JSON object:
   with a wrong quote, or without evidence, is dropped. Cite the code outside the diff that shows the problem,
   and say when a search found nothing.{test_evidence}
 {finding_rules}
-- checked: at most 3 short sentences on what you checked and found to hold, each naming the file and line.
+- checked: at most 3 short sentences on what you checked and found to hold, each naming the file and line; plus
+  one line for each owed check (T<n>) you made that holds or that does not apply, starting with its id.
 - done: true when more reading would not change your findings.
 Do not guess what unseen code does: ask for it. Do not repeat a lead unless you add evidence from outside the
 diff. Zero findings is a normal answer."""
@@ -696,6 +697,17 @@ CHECK_CATALOGUE: list[dict[str, str]] = [
              "index) or runs only on one of the failure branches",
      "how": "read the forward and the rollback blocks; ask what the forward step changed that the rollback does not restore",
      "evidence": "an answer quoting both blocks", "level": "medium"},
+    {"key": "migration-safety", "trigger": "a new or changed database migration or SQL file",
+     "when": "a migration takes a lock the table's writers wait behind (a plain CREATE INDEX or unique index, an ALTER "
+             "TABLE with no lock_timeout), omits a safeguard its sibling migrations carry (IF NOT EXISTS, CONCURRENTLY, "
+             "SET LOCAL lock_timeout), is missing from the runbook or release checklist that lists its neighbours, "
+             "shares a name or number with another migration, or its header comment says what its body does not do",
+     "how": "read the two newest sibling migrations in the same directory and compare their safeguards line by line; "
+            "count_only grep of a neighbour's migration name across the repository's documents, then of this one's "
+            "(the neighbour is listed and this one is not); count_only grep of this migration's name or number in the "
+            "migrations directory (expect 1)",
+     "evidence": "the sibling's safeguard line beside the changed statement, or the neighbour's row with count 0 for "
+                 "this migration", "level": "medium (low when the table is known small)"},
     {"key": "regression-run", "trigger": "a test file the map tied to the change",
      "when": "a test fails at the reviewed commit and passed at the base",
      "how": "the host's automatic run (already done); run_tests on the selection where the planner needs more", 
@@ -704,7 +716,7 @@ CHECK_CATALOGUE: list[dict[str, str]] = [
 #: The catalogue shapes the host requires from the planner when their trigger is in the map (by key).
 TRIGGERED_SHAPES = ("registry-member", "unpinned-behaviour", "test-asserts-behaviour", "env-in-deploy", "manifest-reference",
                     "workflow-siblings", "input-defeats-guard", "guard-after-effect", "error-path", "comment-vs-code",
-                    "sibling-implementation", "failure-retry")
+                    "sibling-implementation", "failure-retry", "migration-safety")
 
 
 #: The planner's only interface to the repository when it plans in cells.

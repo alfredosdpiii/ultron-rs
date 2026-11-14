@@ -35,6 +35,8 @@
 - A REPL cell interrupted by a restart now says its effect is unknown: it may have partially run, was not replayed, and what it changed should be checked before running it again.
 - The nightly dream is skipped when no session changed since the last one.
 - The knowledge store is at schema 5; an older Ultron refuses a store this version has written, and its autoreview then runs without the store.
+- Autoreview posts up to 15 inline comments by default (was 5), reviews a draft when one of its accounts is requested by name. A review whose deep pass a configured deadline (`autoreview.deadlineSeconds`) cut is incomplete and never approves; the verifier takes the most serious findings first.
+- Autoreview owes a `migration-safety` check on every changed migration or SQL file: locks its writers wait behind, safeguards its sibling migrations carry, its row in the runbook, a duplicate name, and a header that says what the body does not do.
 
 ### Fixed
 

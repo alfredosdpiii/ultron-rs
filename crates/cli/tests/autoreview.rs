@@ -500,7 +500,7 @@ const USAGE_EDITS: [(&str, &str); 5] = [
     ),
     (
         "                               autoreview.deadlineSeconds, none)\n",
-        "                               autoreview.deadlineSeconds, 1200; 0 for none)
+        "                               autoreview.deadlineSeconds, none)
   --list                       eval: list the cases and review nothing (no model calls)
   --limit <n>                  eval: reverted and fix-inducing commits reviewed at most (default 20)
   --controls <n>               eval: other commits reviewed as controls (default: as many as --limit)
@@ -541,11 +541,19 @@ severity:",
     ),
 ];
 
-/// `value` with [`VERIFIER_EDITS`] made in every string it holds.
+/// Where the Rust investigator frames differ from the recorded ones (recorded, Rust): `checked` also accounts for
+/// each owed check.
+const INVESTIGATOR_EDITS: [(&str, &str); 1] = [(
+    "each naming the file and line.\n- done:",
+    "each naming the file and line; plus
+  one line for each owed check (T<n>) you made that holds or that does not apply, starting with its id.\n- done:",
+)];
+
+/// `value` with [`VERIFIER_EDITS`] and [`INVESTIGATOR_EDITS`] made in every string it holds.
 pub(crate) fn with_rust_verifier(value: &mut Value) {
     match value {
         Value::String(text) => {
-            for (recorded, rust) in VERIFIER_EDITS {
+            for (recorded, rust) in VERIFIER_EDITS.into_iter().chain(INVESTIGATOR_EDITS) {
                 if text.contains(recorded) {
                     *text = text.replace(recorded, rust);
                 }

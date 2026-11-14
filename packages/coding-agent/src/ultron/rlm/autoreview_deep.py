@@ -1026,7 +1026,8 @@ LAST_ROUND = ("This is your last round: requests will not be served. Reply with 
 SHAPE_LENS = {"registry-member": "siblings", "unpinned-behaviour": "tests", "test-asserts-behaviour": "tests",
               "env-in-deploy": "deployment", "manifest-reference": "deployment", "workflow-siblings": "deployment",
               "input-defeats-guard": "inputs", "guard-after-effect": "siblings", "error-path": "siblings",
-              "comment-vs-code": "claims", "sibling-implementation": "siblings", "failure-retry": "siblings"}
+              "comment-vs-code": "claims", "sibling-implementation": "siblings", "failure-retry": "siblings",
+              "migration-safety": "deployment"}
 
 
 def shapes_by_lens(shapes: list[dict[str, str]], lenses: list[str]) -> dict[str, list[dict[str, str]]]:
@@ -1107,7 +1108,15 @@ async def investigate(frames: Any, lens: str, base_views: list[str], repo: Repo,
         if number == 2 and leads_view is not None:
             lead = await leads_view
             leads_views = [lead] if lead else []
-        views = base_views + [f"Round {number} of {rounds}."] + leads_views + ledger_views + latest_views + ([LAST_ROUND] if last else [])
+        # A standing reminder from round 2 on: an investigator that uses every round never tries to finish early,
+        # so the finishing nudge below would never reach it.
+        still_owed = unchecked() if number > 1 else []
+        owed_views = ([DEEP_SHAPE_NUDGE + ", ".join(f"{item['id']} ({item['name']})" for item in still_owed) + "."]
+                      if still_owed else [])
+        # The round after a refused finish already carries this text among its reasons.
+        owed_views = [view for view in owed_views if not any(view in latest for latest in latest_views)]
+        views = (base_views + [f"Round {number} of {rounds}."] + leads_views + ledger_views + latest_views + owed_views
+                 + ([LAST_ROUND] if last else []))
         results = await frames.run("deep", [(lens, task, views)], contract=DEEP_CONTRACT, model=model,
                                    thinking=thinking, cutoff=cutoff, context=shared)
         result = results[0]
