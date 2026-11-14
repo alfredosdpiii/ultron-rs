@@ -48,6 +48,7 @@
 
 ### Fixed
 
+- A session whose model was switched near a full context could no longer answer: the compaction sent the whole history to the new model as one summary request, the model refused it as longer than its window ("Summarization failed: … Prompt is too long"), and every later message failed the same way. A summary request refused as too long is now cut in half and summarized in parts, each part updating the summary of the parts before it. One message that is too long on its own still fails with the provider's error.
 - Two `edit()` calls on one file in the same `asyncio.gather` both answered "Edited" while one change was lost: each read the file, waited on the write check, then wrote back its own copy. Writes and edits of one file now run one at a time, and an `edit()` whose file changed on disk during the check (another lane, a subagent in the same tree, a shell command) raises `ValueError` and writes nothing.
 - A scheduled wake (or any custom message) that took the context over the compaction threshold lost its prompt in the compaction, and the request failed with "History must end in a nonempty user/tool-result message".
 - A subagent reattached after its session's worker restarted was journaled as interrupted, so after a second restart it was aborted while still running, and `rlm.collect` answered `interrupted` for a result the root had already collected. It now stays running in the task journal until it ends, and its end is journaled.
