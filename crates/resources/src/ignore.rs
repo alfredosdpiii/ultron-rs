@@ -165,6 +165,11 @@ fn segment(glob: &[char], last_of_pattern: bool, after_slash: bool) -> Option<St
     Some(out)
 }
 
+/// A rule that matches no path.
+fn never() -> Option<Regex> {
+    Regex::new("[^\\s\\S]").ok()
+}
+
 /// `makeRegex` for one rule body (without its `!`).
 fn compile(body: &str) -> Option<Regex> {
     let body = trim_trailing_spaces(body);
@@ -207,7 +212,7 @@ fn compile(body: &str) -> Option<Regex> {
         let glob: Vec<char> = seg.chars().collect();
         match segment(&glob, last && !dir_only, index > 0) {
             Some(s) => source.push_str(&s),
-            None => return Regex::new("[^\\s\\S]").ok(),
+            None => return never(),
         }
     }
     if dir_only {
