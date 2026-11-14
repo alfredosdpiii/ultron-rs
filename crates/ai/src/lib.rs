@@ -46,6 +46,7 @@ pub mod openai_codex_responses;
 pub mod openai_completions;
 pub mod openai_responses;
 pub mod options;
+pub mod overflow;
 pub mod pi_messages;
 mod provider;
 pub mod retry;
