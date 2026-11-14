@@ -263,6 +263,9 @@ pub struct PromptMode {
     /// `"persona": "ultron"`: `<agent dir>/personality.md` is a section of the prompt (resources::persona), read
     /// when the prompt renders (session start, a change of the mode), never per request.
     pub persona: bool,
+    /// The id of the model the prompt is for: its family's notes are a section (resources::model_notes) under the
+    /// Rust guide. Empty: none.
+    pub model: String,
 }
 
 impl PromptMode {
@@ -348,6 +351,12 @@ pub fn system_prompt_with_resources(
         sections: [("runtime".to_string(), runtime)]
             .into_iter()
             .chain(loki_note.map(|note| ("loki".to_string(), note)))
+            // The TypeScript guide (`ULTRON_GUIDE=ts`, its recorded replays) keeps TypeScript's prompt.
+            .chain(
+                resources::model_notes::model_notes(&mode.model)
+                    .filter(|_| guide.durable_apis)
+                    .map(|notes| ("model_notes".to_string(), notes)),
+            )
             .collect(),
         engineering: mode.engineering,
         persona,

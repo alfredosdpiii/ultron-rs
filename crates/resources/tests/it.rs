@@ -4,6 +4,8 @@
 
 #[path = "keep_going.rs"]
 mod keep_going;
+#[path = "model_notes.rs"]
+mod model_notes;
 #[path = "persona.rs"]
 mod persona;
 #[path = "runtime_guide_contracts.rs"]

@@ -535,6 +535,8 @@ struct PromptState {
     current: Mutex<(crate::lane::PromptMode, String, Vec<String>)>,
     /// The session's own persona toggle over the settings' (resources::keep_going): `None` follows the settings.
     persona: Mutex<Option<bool>>,
+    /// The root lane's model id ([`crate::lane::PromptMode::model`]).
+    model: Mutex<String>,
 }
 
 impl SystemPrompt {
@@ -546,6 +548,7 @@ impl SystemPrompt {
             mode: Box::new(crate::lane::PromptMode::default),
             current: Mutex::new((Default::default(), text.into(), Vec::new())),
             persona: Mutex::new(None),
+            model: Mutex::new(String::new()),
         }))
     }
 
@@ -611,6 +614,7 @@ impl SystemPrompt {
             mode: Box::new(mode),
             current: Mutex::new((initial, text, warnings)),
             persona: Mutex::new(None),
+            model: Mutex::new(String::new()),
         })))
     }
 
@@ -624,6 +628,7 @@ impl SystemPrompt {
         if let Some(persona) = *sync::lock(&state.persona) {
             mode.persona = persona;
         }
+        mode.model = sync::lock(&state.model).clone();
         let mut current = sync::lock(&state.current);
         if current.0 != mode
             && let Ok((text, warnings)) = render(&mode)
@@ -634,8 +639,8 @@ impl SystemPrompt {
     }
 
     /// A subagent's prompt in the settings' current mode, for `reader`: the root's, with the subagent's runtime
-    /// guide. A fixed prompt is the same for every lane.
-    pub fn child_current(&self, reader: ChildReader) -> String {
+    /// guide and the notes of `model` (the subagent's own). A fixed prompt is the same for every lane.
+    pub fn child_current(&self, reader: ChildReader, model: &str) -> String {
         let state = &self.0;
         let Some(render) = &state.render_child else {
             return self.current();
@@ -644,6 +649,7 @@ impl SystemPrompt {
         if let Some(persona) = *sync::lock(&state.persona) {
             mode.persona = persona;
         }
+        mode.model = model.to_string();
         let mut child = sync::lock(&state.child);
         if let Some((cached, cached_reader, text)) = &*child
             && *cached == mode
@@ -666,6 +672,11 @@ impl SystemPrompt {
     /// The session's persona toggle (`None`: follow the settings), applied from the next request.
     pub fn set_persona(&self, persona: Option<bool>) {
         *sync::lock(&self.0.persona) = persona;
+    }
+
+    /// The root lane's model, applied from the next request.
+    pub fn set_model(&self, id: &str) {
+        *sync::lock(&self.0.model) = id.to_string();
     }
 
     /// The `alwaysSkills` problems of the prompt as last rendered.
@@ -964,6 +975,7 @@ impl Runtime {
             config.provider_token.clone(),
         );
         let root_model = Arc::new(Mutex::new(model.clone()));
+        self.system.set_model(&model.id);
         // `judge.decide` settles in the session's usage ledger, built with the stack below.
         let judge_ledger: Arc<std::sync::OnceLock<UsageLedger>> = Arc::default();
         // Its usage rows go to the session's values (set later by a composer that keeps them elsewhere).
@@ -1918,6 +1930,7 @@ impl Stack {
     /// `view_image` follow it.
     pub fn set_root_model(&self, model: &Model) {
         *sync::lock(&self.root_model) = model.clone();
+        self.system.set_model(&model.id);
         self.images.set_model(None, model.clone());
     }
 
@@ -1934,10 +1947,13 @@ impl Stack {
     /// The system prompt of a subagent lane on `model` (crate::wake: its runtime guide says to await before
     /// replying; crate::memory_guidance: a model cheaper than the root's is told how to use memory too).
     pub fn child_system(&self, model: &Model) -> String {
-        self.system.child_current(ChildReader {
-            in_memory: self.memory_children,
-            memory: crate::memory_guidance::memory_guidance(model, &self.root_model(), true),
-        })
+        self.system.child_current(
+            ChildReader {
+                in_memory: self.memory_children,
+                memory: crate::memory_guidance::memory_guidance(model, &self.root_model(), true),
+            },
+            &model.id,
+        )
     }
 
     /// As [`Stack::close`], for a worker whose session a successor worker takes over: running shell jobs keep

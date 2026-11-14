@@ -293,3 +293,46 @@ fn session_core_persona_nudge_yields_to_a_queued_user_message() {
     assert_eq!(a.events("run_start").len(), 1, "the queued message wins over the nudge");
     assert!(nudges(&a).is_empty());
 }
+
+/// The `<model_notes>` section of a prompt.
+fn notes(prompt: &str) -> Option<String> {
+    let start = prompt.find("<model_notes>\n")? + "<model_notes>\n".len();
+    let end = prompt[start..].find("\n</model_notes>")?;
+    Some(prompt[start..start + end].to_string())
+}
+
+#[test]
+fn session_core_model_notes_follow_the_root_model_and_a_subagent_gets_its_own() {
+    use session_core::compose::ChildReader;
+    let reader = ChildReader {
+        in_memory: false,
+        memory: session_core::memory_guidance::MemoryGuidance::Purpose,
+    };
+    let dir = tempfile::tempdir().unwrap();
+    let (runtime, _) = runtime(dir.path(), json!({}), None, &[]);
+    // A model without notes has no section.
+    runtime.system.set_model("claude-sonnet-4-5");
+    assert_eq!(notes(&runtime.system.current()), None);
+    runtime.system.set_model("claude-fable-5.2");
+    let fable = notes(&runtime.system.current()).unwrap();
+    assert_eq!(
+        Some(fable.as_str()),
+        resources::model_notes::model_notes("claude-fable-5-2").as_deref()
+    );
+    // A subagent's prompt carries its own model's notes, whatever the root's.
+    let child = runtime.system.child_current(reader, "claude-sonnet-5");
+    assert_eq!(notes(&child), resources::model_notes::model_notes("claude-sonnet-5"));
+    assert_ne!(notes(&child).as_deref(), Some(fable.as_str()));
+    assert_eq!(notes(&runtime.system.child_current(reader, "gpt-6-sol")), None);
+    runtime.system.set_model("claude-sonnet-4-5");
+    assert_eq!(notes(&runtime.system.current()), None);
+    // The TypeScript guide keeps TypeScript's prompt.
+    let ts = tempfile::tempdir().unwrap();
+    let (runtime, _) = runtime_ts(ts.path());
+    runtime.system.set_model("claude-fable-5.2");
+    assert_eq!(notes(&runtime.system.current()), None);
+}
+
+fn runtime_ts(root: &Path) -> (Runtime, std::path::PathBuf) {
+    runtime(root, json!({}), None, &[("ULTRON_GUIDE", "ts")])
+}
