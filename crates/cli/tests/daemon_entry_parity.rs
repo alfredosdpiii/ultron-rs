@@ -144,6 +144,12 @@ fn cli_entry_print_and_json_modes_run_session_commands_never_a_turn() {
     );
     let (code, out, err) = output(&mut home.command(&["--model", MODEL, "-p", "/goal clear"]));
     assert_eq!((code, out.as_str()), (0, "No goal to clear.\n"), "{err}");
+    let (code, out, err) = output(&mut home.command(&["--model", MODEL, "-p", "/observer on"]));
+    assert_eq!(
+        (code, out.as_str()),
+        (0, "Observer enabled for this session.\n"),
+        "{err}"
+    );
     let (code, out, err) = output(&mut home.command(&["--model", MODEL, "--mode", "json", "/keepgoing"]));
     assert_eq!(code, 0, "{err}");
     let result: Value = serde_json::from_str(out.trim()).unwrap();

@@ -1311,6 +1311,18 @@ impl SettingsSelector {
         if c.rust_rows
             && let Some(at) = rows.iter().position(|r| r.id == "claude-code-heading")
         {
+            let observer = c.text("observer.model");
+            rows.insert(
+                at,
+                row(
+                    "observer.model",
+                    "Observer model",
+                    "Conversation observer checks. Unset uses the current session model. Changes apply to the next check; the session model is unchanged.",
+                    setting(&observer, format!("same as session ({session})")),
+                    with(plain("", "Same as session model"), &all),
+                    observer,
+                ),
+            );
             let fallback = c.text("judge.fallbackModel");
             let escalate = c.text("judge.escalateModel");
             rows.insert(
@@ -2486,5 +2498,29 @@ mod tests {
         assert_eq!(s.input.get(RACE_MODELS), &Value::Null);
         assert_eq!(display(&s), "none (skills choose)");
         assert!(marked(&s).is_empty());
+    }
+    #[test]
+    fn settings_observer_model_selects_and_clears_without_switching_session() {
+        let mut s = selector(json!({}));
+        let row = s.model_rows().into_iter().find(|r| r.id == "observer.model").unwrap();
+        assert_eq!(row.label, "Observer model");
+        assert_eq!(row.choices[0].1, "Same as session model");
+        assert!(row.choices.iter().any(|c| c.0 == "anthropic/claude-haiku-4-5"));
+        let before = s.input.session.as_ref().map(model_ref);
+        assert_eq!(
+            s.picked(
+                SubKind::ModelPick("observer.model".into()),
+                "anthropic/claude-haiku-4-5".into()
+            ),
+            Some(SettingsEvent::ModelSetting {
+                key: "observer.model".into(),
+                label: "Observer model".into(),
+                value: "anthropic/claude-haiku-4-5".into()
+            })
+        );
+        assert_eq!(s.input.get("observer.model"), &json!("anthropic/claude-haiku-4-5"));
+        assert_eq!(s.input.session.as_ref().map(model_ref), before);
+        s.picked(SubKind::ModelPick("observer.model".into()), String::new());
+        assert_eq!(s.input.get("observer.model"), &Value::Null);
     }
 }

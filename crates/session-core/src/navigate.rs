@@ -119,6 +119,7 @@ impl Core {
             ),
             None => None,
         };
+        self.observer.branch_changed();
         let (leaf, editor_text) = selected.as_ref().map_or((None, None), resolve);
         let request = Request {
             target,

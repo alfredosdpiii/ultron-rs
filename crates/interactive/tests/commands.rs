@@ -47,6 +47,7 @@ fn record(command: &LaneCommand) -> Option<String> {
         LaneCommand::Export { path, theme } => format!("export {:?} {:?}", path.as_deref(), theme.as_deref()),
         LaneCommand::Usage => "usage".into(),
         LaneCommand::Goal(args) => format!("goal {args}"),
+        LaneCommand::Observer(args) => format!("observer {args}"),
         LaneCommand::SaveSetting { key, value } => format!("setting {key}={value}"),
         LaneCommand::Agents => "agents".into(),
         LaneCommand::Tree => "tree".into(),
@@ -1380,6 +1381,29 @@ fn interactive_commands_goal_reaches_the_session_goal_and_shows_its_reply() {
     assert!(!screen(&mut app).contains("not available in the Rust build"));
     app.apply(LaneEvent::GoalReply("Goal set: ship the parser".into()));
     assert!(screen(&mut app).contains(" Goal set: ship the parser"));
+}
+
+#[test]
+fn observer_commands_reach_the_session_without_a_prompt() {
+    let mut qol = interactive::qol::QolSettings::parity();
+    qol.overlays = true;
+    let (mut app, c) = app_with(qol, vec![model("a", true)]);
+    app.apply(LaneEvent::OperationStarted("root".into()));
+    for command in ["on", "show", "known", "dismiss", "off"] {
+        submit(&mut app, &format!("/observer {command}"));
+    }
+    assert_eq!(
+        calls(&c),
+        [
+            "observer on",
+            "observer show",
+            "observer known",
+            "observer dismiss",
+            "observer off"
+        ]
+    );
+    app.apply(LaneEvent::Notice("Observer enabled for this session.".into()));
+    assert!(screen(&mut app).contains("Observer enabled for this session."));
 }
 
 /// An assistant message whose route changed (the Claude subscription limit) shows its notice once in the transcript.

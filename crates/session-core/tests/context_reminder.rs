@@ -294,7 +294,7 @@ fn tool_at(id: &str, code: &str, input: u64) -> String {
 }
 
 fn settings(enabled: bool) -> Value {
-    json!({"compaction": {"enabled": enabled, "reserveTokens": 900_000}})
+    json!({"compaction": {"enabled": enabled, "reserveTokens": 900_000}, "observer": {"enabled": false}})
 }
 
 fn vars(extra: &[(&'static str, &str)]) -> Vec<(&'static str, String)> {

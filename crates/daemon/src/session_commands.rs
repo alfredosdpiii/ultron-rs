@@ -10,6 +10,16 @@ use session_core::core::Op;
 /// The command a prompt `message` is, as `(name, operation)`; `None` for any other text (a turn).
 pub fn command(message: &str) -> Option<(&'static str, Op)> {
     let text = jsrt::string::trim(message);
+    if let Some(rest) = text.strip_prefix("/observer")
+        && (rest.is_empty() || rest.starts_with(jsrt::string::is_space))
+    {
+        return Some((
+            "observer",
+            Op::Observer {
+                args: jsrt::string::trim(rest).to_string(),
+            },
+        ));
+    }
     if let Some(rest) = text.strip_prefix("/goal")
         && (rest.is_empty() || rest.starts_with(jsrt::string::is_space))
     {

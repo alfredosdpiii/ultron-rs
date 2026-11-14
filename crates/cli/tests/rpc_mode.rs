@@ -505,6 +505,15 @@ fn run_case_with(case: &Value, journals: bool) -> Vec<Value> {
                 "{g}"
             );
             assert!(g.get("id").is_none());
+        } else if w["command"] == "get_commands" {
+            let mut got = g.clone();
+            let commands = got["data"]["commands"].as_array_mut().unwrap();
+            assert_eq!(
+                commands.iter().filter(|command| command["name"] == "observer").count(),
+                1
+            );
+            commands.retain(|command| command["name"] != "observer");
+            assert_same(&got, w, &format!("{name} response {id}"));
         } else {
             assert_same(g, w, &format!("{name} response {id}"));
         }
@@ -1077,4 +1086,20 @@ fn cli_rpc_invalid_queue_mode_prints_string_of_the_value() {
     assert_eq!(response["error"], "Invalid queue mode: 1,", "{response}");
     let (_, code) = client.finish(Duration::from_secs(120));
     assert_eq!(code, Some(0));
+}
+
+#[test]
+fn cli_rpc_observer_commands_do_not_start_a_model_turn() {
+    let (mut client, requests, _tmp) = start_client(Vec::new());
+    let on = client.send(json!({"type":"prompt", "message":"/observer on"})).unwrap();
+    assert_eq!(on["data"]["text"], "Observer enabled for this session.");
+    let show = client.send(json!({"type":"observer", "args":"show"})).unwrap();
+    assert_eq!(show["data"]["text"], "Observer is on. No suggestion.");
+    let off = client
+        .send(json!({"type":"prompt", "message":"/observer off"}))
+        .unwrap();
+    assert_eq!(off["data"]["text"], "Observer disabled for this session.");
+    let (_, code) = client.finish(Duration::from_secs(120));
+    assert_eq!(code, Some(0));
+    assert!(requests.lock().unwrap().is_empty());
 }

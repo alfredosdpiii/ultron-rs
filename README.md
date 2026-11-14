@@ -92,6 +92,14 @@ wall-clock limit; it ends the goal with `goal.complete(...)`, which needs the ho
 exit 0 when one is set. `schedule.every("1h", prompt)` and `schedule.at(when, prompt)` let the root agent send its
 session a prompt later (see [The durable instance](#the-durable-instance-and-scheduled-prompts)).
 
+The conversation observer is on by default. Set `"observer": {"enabled": false}` in `settings.json` to disable it,
+or use `/observer off` for this session. Choose its model in `/settings` → Models → Observer model
+(`observer.model`, a `provider/model` string). Unset uses the current session model. It may make up to three additional model requests per root turn and announce a
+possible overlooked issue without adding it to the conversation. Use `/observer show` to read it, `/observer dismiss`
+or `/observer known` to clear it, and `/observer off` to stop observing for this session. Each check uses a
+bounded snapshot of the conversation, so it may miss later developments. Suggestions disappear on branch navigation
+and are not restored after restart. Checks use the selected model, have no tools, and may incur provider charges.
+
 ### 4. It has a runtime, not just a loop
 
 - **Sub-agents with their own kernels** (`rlm.spawn`), typed agents with validated inputs and outputs

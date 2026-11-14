@@ -279,6 +279,10 @@ pub fn values(settings: &SettingsManager, live: &Live, env: Env) -> Result<Map<S
     );
     // `modelSettingValues`: global only.
     let rlm = config::keys::rlm_model_settings(settings.global_settings());
+    put(
+        "observer.model",
+        get(settings, &["observer", "model"]).cloned().unwrap_or(Value::Null),
+    );
     put("rlm.frameModel", json!(rlm.frame_model));
     put("rlm.childModel", json!(rlm.child_model));
     put("rlm.frameThinking", json!(rlm.frame_thinking));
@@ -609,6 +613,10 @@ pub fn apply(
                 value => Some(one_of(key, value, &THINKING_LEVELS)?),
             };
             nested(settings, "rlm", "frameThinking", opt(level));
+            applied = Applied::Live;
+        }
+        "observer.model" => {
+            nested(settings, "observer", "model", opt(model_value(key, value)?));
             applied = Applied::Live;
         }
         "review.model" => {

@@ -480,11 +480,12 @@ fn acceptance_a25_native_rpc_runs_prompts_bash_and_session_commands_ported_part(
     let commands = commands.as_array().unwrap();
     let agent = install.agent().display().to_string();
     assert_eq!(
-        commands[..4],
+        commands[..5],
         [
             json!({"name": "mcp", "description": "MCP servers: status, connect or disconnect, sign in, enable or disable",
                 "source": "extension", "sourceInfo": {"path": "<inline:mcp>", "source": "inline", "scope": "temporary", "origin": "top-level"}}),
             json!({"name": "review", "description": "Review code changes: specialist reviewer frames, then a verifier per finding", "source": "prompt"}),
+            json!({"name": "observer", "description": "Manage the conversation observer", "source": "extension"}),
             json!({"name": "fix", "description": "Fix it", "source": "prompt", "sourceInfo": {"path": format!("{agent}/prompts/fix.md"),
                 "source": "auto", "scope": "user", "origin": "top-level", "baseDir": agent}}),
             json!({"name": "skill:demo", "description": "A demo skill", "source": "skill", "sourceInfo": {"path": format!("{agent}/skills/demo/SKILL.md"),
@@ -492,9 +493,9 @@ fn acceptance_a25_native_rpc_runs_prompts_bash_and_session_commands_ported_part(
         ]
     );
     // Then the bundled skills, which the worker loads by path (cli/tests/rpc_mode.rs replays them against TS).
-    assert!(commands.len() > 4);
+    assert!(commands.len() > 5);
     assert!(
-        commands[4..]
+        commands[5..]
             .iter()
             .all(|c| c["source"] == "skill" && c["sourceInfo"]["scope"] == "temporary")
     );

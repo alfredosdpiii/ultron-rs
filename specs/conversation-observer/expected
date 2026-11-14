@@ -1,0 +1,3 @@
+fixed NoRepeatedTopic=holds IdentitySafe=holds PublicationSafe=holds AtMostOneWorker=holds SettlementBeforeSend=holds
+broken_identity IdentitySafe=breaks PublicationSafe=breaks
+early_release AtMostOneWorker=breaks

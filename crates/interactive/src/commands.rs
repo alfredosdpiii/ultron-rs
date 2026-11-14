@@ -43,6 +43,7 @@ pub enum Slash {
     Session,
     Usage,
     Goal,
+    Observer,
     Copy,
     Export,
     Hotkeys,
@@ -90,11 +91,12 @@ pub enum Slash {
 
 impl Slash {
     /// Every command, in the order the editor's autocomplete lists them (the client TUI's, then the Rust-only ones).
-    pub const ALL: [Slash; 47] = [
+    pub const ALL: [Slash; 48] = [
         Slash::Name,
         Slash::Session,
         Slash::Usage,
         Slash::Goal,
+        Slash::Observer,
         Slash::Copy,
         Slash::Export,
         Slash::Hotkeys,
@@ -149,6 +151,12 @@ impl Slash {
                 "",
                 "What this session did: depth (frames, sub-agents), cells, tokens and cost, guardrails",
                 Tier::Client,
+            ),
+            Slash::Observer => (
+                "observer",
+                "[on|off|show|dismiss|known]",
+                "Manage conversation observer",
+                Tier::Overlay,
             ),
             Slash::Goal => (
                 "goal",

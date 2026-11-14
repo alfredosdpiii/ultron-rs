@@ -138,6 +138,7 @@ fn record(command: &LaneCommand) -> Option<String> {
         LaneCommand::Resume(path) => format!("resume {path}"),
         LaneCommand::ListSessions => "list".into(),
         LaneCommand::Goal(args) => format!("goal {args}"),
+        LaneCommand::Observer(args) => format!("observer {args}"),
         LaneCommand::SetName(name) => format!("name {name}"),
         LaneCommand::SelectModel { provider, id } => format!("model {provider}/{id}"),
         _ => return None,

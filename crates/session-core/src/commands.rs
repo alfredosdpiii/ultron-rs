@@ -1,10 +1,9 @@
 //! `listCommands` of the session control (session-control-provider.ts), as RPC `get_commands` answers it: the
-//! built-in `/mcp` (TypeScript's inline MCP extension, `source: "extension"`), `/review`, the prompt templates and
-//! the skills (`skill:<name>`), each with its `SourceInfo` as the resource loader gives it
+//! built-in `/mcp`, `/review`, `/observer`, the prompt templates and skills (`skill:<name>`), each with its
+//! `SourceInfo` as the resource loader gives it
 //! (crate::session_resources): auto-discovered ones `{source: "auto", scope, origin: "top-level", baseDir}`,
 //! settings entries `local`; the bundled skills the worker passes as paths are `{source: "local", scope:
-//! "temporary"}` with the skill's directory as `baseDir`. Pi extensions are not supported by ultron-rs, so no other
-//! extension command is listed.
+//! "temporary"}` with the skill's directory as `baseDir`. Pi extensions are not supported by ultron-rs.
 
 use serde_json::{Map, Value, json};
 
@@ -37,6 +36,12 @@ pub fn list_commands_with(
 ) -> Vec<Value> {
     let mut commands: Vec<Value> = vec![mcp_command()];
     commands.push(entry("review", Some(REVIEW_DESCRIPTION), "prompt", None));
+    commands.push(entry(
+        "observer",
+        Some("Manage the conversation observer"),
+        "extension",
+        None,
+    ));
     for template in crate::session_resources::prompts(cwd, agent_dir, extra) {
         let info = crate::session_resources::prompt_source_info(extra, &template, cwd, agent_dir);
         commands.push(entry(&template.name, Some(&template.description), "prompt", Some(info)));

@@ -268,7 +268,8 @@ impl TuiStream {
                 protocol::watch::stream_fold::fold_update(message, value);
                 *shown = Some(message.clone());
             }
-            WatchEvent::MessageEnd { .. } | WatchEvent::RunEnd { .. } => self.message = None,
+            WatchEvent::MessageEnd { message, .. } if message["role"] == "assistant" => self.message = None,
+            WatchEvent::RunEnd { .. } => self.message = None,
             _ => {}
         }
         interactive::lane_watch::lane_events(&event)
@@ -682,6 +683,12 @@ fn link_thread(
             }
             Command::Lane(LaneCommand::Usage) => match usage_report(&link, &catalog_env) {
                 Ok(text) => send(LaneEvent::Notice(text)),
+                Err(error) => send(LaneEvent::Status(format!("Error: {error}"))),
+            },
+            Command::Lane(LaneCommand::Observer(args)) => match link.op(&Op::Observer { args }) {
+                Ok(reply) => send(LaneEvent::Notice(
+                    reply.and_then(|v| v.as_str().map(str::to_string)).unwrap_or_default(),
+                )),
                 Err(error) => send(LaneEvent::Status(format!("Error: {error}"))),
             },
             // The worker owns the goal and starts its rounds; only this command (a person) changes it.
@@ -2227,6 +2234,16 @@ mod tests {
         };
         assert_eq!(message["content"], json!([{"type": "text", "text": "Hi"}]));
         assert_eq!(message["usage"], json!({"output": 1}));
+        stream.events(&json!({"type": "message_end", "message": {
+            "role": "custom", "customType": "ultron.observer", "content": "You should know", "display": true
+        }}));
+        let shown = stream.events(&update(
+            json!({"type": "text_delta", "contentIndex": 0, "delta": " there"}),
+        ));
+        let [LaneEvent::Streaming(message)] = shown.as_slice() else {
+            panic!("{shown:?}");
+        };
+        assert_eq!(message["content"], json!([{"type": "text", "text": "Hi there"}]));
         stream.events(&json!({"type": "message_end", "message": {"role": "assistant", "content": []}}));
         assert_eq!(
             stream.events(&update(json!({"type": "text_delta", "contentIndex": 0, "delta": "!"}))),

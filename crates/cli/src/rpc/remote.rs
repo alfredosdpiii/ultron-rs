@@ -542,6 +542,11 @@ impl Remote<'_> {
         Ok(self.op(op)?.unwrap_or_default())
     }
 
+    pub fn observer(&mut self, args: &str) -> Result<String, String> {
+        let reply = self.op(Op::Observer { args: args.to_string() })?;
+        Ok(reply.and_then(|v| v.as_str().map(str::to_string)).unwrap_or_default())
+    }
+
     /// `/goal <args>`: the session goal's command (set, pause, resume, clear, check); returns its reply text.
     pub fn goal(&mut self, args: &str) -> Result<String, String> {
         let reply = self.op(Op::Goal { args: args.to_string() })?;

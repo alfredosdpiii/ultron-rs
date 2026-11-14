@@ -834,6 +834,9 @@ impl Core {
             .request_messages(source_tip.as_deref())
             .map(|messages| GenerationStart { messages })
             .map_err(StartError::Request);
+        if let Ok(start) = &start {
+            self.observer_generation(&start.messages);
+        }
         answer.give(start);
     }
 

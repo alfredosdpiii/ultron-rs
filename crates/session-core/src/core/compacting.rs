@@ -307,6 +307,10 @@ impl Core {
                 reply(Ok(None));
             }
             Input::Op(Op::State, reply) => reply(Ok(Some(self.state()))),
+            Input::Op(Op::Observer { args }, reply) => {
+                reply(self.observer_command(&args).map(|text| Some(json!(text))));
+            }
+            Input::ObserverCompleted(completion) => self.observer_completed(completion),
             Input::Op(Op::Prompt { .. } | Op::PromptAndWait { .. }, reply) if self.run.is_none() => {
                 // AgentSession runs a prompt alongside a branch summary; the lane admits one operation at a time
                 // (harness `acceptRun`: `LaneBusy`), and the navigation is the lane's operation.
@@ -336,6 +340,7 @@ impl Core {
     /// `abort`: the compaction in progress is cancelled (a manual one's cancel request journaled first), then the
     /// run in progress is aborted.
     pub(super) fn abort(&mut self) {
+        self.observer.cancel();
         if let Some(signal) = self.compacting.clone()
             && !signal.aborted()
         {

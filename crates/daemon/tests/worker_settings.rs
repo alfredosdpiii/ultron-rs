@@ -83,6 +83,7 @@ fn daemon_worker_settings_read_matches_typescript() {
         let env = env_of(&case["env"]);
         let read = worker_settings::read(&settings, &live, &cwd, &agent, &|name| env.get(name).cloned()).unwrap();
         let mut expected = case["read"].clone();
+        expected["values"]["observer.model"] = Value::Null;
         let child = &case["files"]["global"]["rlm"]["childModel"];
         if claude_code_child("rlm.childModel", child) {
             expected["values"]["rlm.childModel"] = json!(child.as_str().unwrap().trim());
@@ -251,4 +252,30 @@ fn daemon_worker_settings_apply_takes_the_rust_only_tui_keys() {
     apply("rlm.raceModels", Value::Null).unwrap();
     apply("rootBudget.maxTotalTokens", Value::Null).unwrap();
     assert_eq!(file(), json!({"rlm": {}, "rootBudget": {}}));
+}
+
+#[test]
+fn daemon_worker_settings_observer_model_persists_and_clears() {
+    let tmp = tempfile::tempdir().unwrap();
+    let agent = tmp.path().join("agent");
+    let cwd = tmp.path().join("project");
+    std::fs::create_dir_all(&agent).unwrap();
+    std::fs::create_dir_all(&cwd).unwrap();
+    let mut settings = SettingsManager::create(&cwd, &agent, false);
+    worker_settings::apply(
+        &mut settings,
+        "observer.model",
+        &json!("anthropic/claude-haiku-4-5"),
+        None,
+    )
+    .unwrap();
+    let saved = SettingsManager::create(&cwd, &agent, false);
+    assert_eq!(saved.settings()["observer"]["model"], "anthropic/claude-haiku-4-5");
+    assert!(worker_settings::apply(&mut settings, "observer.model", &json!("invalid"), None).is_err());
+    worker_settings::apply(&mut settings, "observer.model", &Value::Null, None).unwrap();
+    assert!(
+        SettingsManager::create(&cwd, &agent, false).settings()["observer"]
+            .get("model")
+            .is_none()
+    );
 }

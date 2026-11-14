@@ -12,6 +12,8 @@ mod fake_proxy;
 mod isolate;
 #[path = "../../memorantado/tests/support/fake.rs"]
 mod memorantado_fake;
+#[path = "observer.rs"]
+mod observer;
 mod p_session_support;
 mod reopen_support;
 

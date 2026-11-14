@@ -468,6 +468,7 @@ pub enum LaneCommand {
     Usage,
     /// `/goal [objective | pause | resume | clear | check <command>]` ([`LaneEvent::GoalReply`] answers).
     Goal(String),
+    Observer(String),
     /// Read the session tree ([`LaneEvent::Tree`]).
     Tree,
     /// Navigate to the selected tree entry `target` (AgentSession `navigateTree`: before a user or custom message,

@@ -3060,6 +3060,7 @@ impl App {
             }),
             Slash::Usage => self.send(LaneCommand::Usage),
             Slash::Goal => self.send(LaneCommand::Goal(args.to_string())),
+            Slash::Observer => self.send(LaneCommand::Observer(args.to_string())),
             // With the overlays, `/agents` opens the agent hub (the inspection text is the worker's, not ported).
             Slash::Agents if self.qol.overlays && args.is_empty() => self.send(LaneCommand::Agents),
             // The inspection commands: one read-only host request each, answered as indented lines.
@@ -3547,6 +3548,7 @@ impl App {
                 let next = match key.as_str() {
                     "rlm.frameModel" | "rlm.frameThinking" => Some("the next frame"),
                     "review.model" => Some("the next /review"),
+                    "observer.model" => Some("the next observer check"),
                     "rlm.childModel" => Some("the next sub-agent"),
                     "rlm.raceModels" => Some("the next race"),
                     "judge.escalateModel" | "judge.fallbackModel" => Some("the next judge.decide"),

@@ -200,6 +200,9 @@ pub enum Op {
     Goal {
         args: String,
     },
+    Observer {
+        args: String,
+    },
     /// Start another root conversation in the session's durable runtime with `message` (Pi Durable's ownerless
     /// conversations: each runs, survives restarts and resumes on its own); answers `{conversationId}`.
     StartConversation {
@@ -375,6 +378,9 @@ impl Op {
             },
             "reviveAgent" => Op::ReviveAgent { id: need("id")? },
             "agentTranscript" => Op::AgentTranscript { id: need("id")? },
+            "observer" => Op::Observer {
+                args: text("args").unwrap_or_default(),
+            },
             "goal" => Op::Goal {
                 args: text("args").unwrap_or_default(),
             },
@@ -488,6 +494,7 @@ impl Op {
             Op::ReviveAgent { id } => json!({"op": "reviveAgent", "id": id}),
             Op::AgentTranscript { id } => json!({"op": "agentTranscript", "id": id}),
             Op::Goal { args } => json!({"op": "goal", "args": args}),
+            Op::Observer { args } => json!({"op": "observer", "args": args}),
             Op::StartConversation { message } => json!({"op": "startConversation", "message": message}),
             Op::ConversationInput { id, message } => json!({"op": "conversationInput", "id": id, "message": message}),
             Op::Conversations { id } => json!({"op": "conversations", "id": id}),
@@ -510,6 +517,7 @@ impl Op {
 /// What reaches the actor.
 pub enum Input {
     Op(Op, Reply),
+    ObserverCompleted(observer::Completion),
     Agent(Box<AgentEvent>),
     /// The model's title for the session arrived.
     Title(Box<AssistantMessage>),
@@ -717,6 +725,7 @@ pub struct Core {
     persona: resources::persona::Chain,
     /// The session's persona toggle and keep-going mode (the session value `ultron.module/persona`).
     persona_session: resources::keep_going::SessionPersona,
+    observer: observer::Observer,
 }
 
 mod auto_compact;
@@ -730,6 +739,7 @@ mod context_lane;
 mod continue_from;
 pub mod durable_turns;
 pub mod event_lanes;
+mod observer;
 mod persona_nudge;
 mod schedule_ops;
 mod user_bash;
@@ -1094,6 +1104,8 @@ impl Core {
         let auto_memory = crate::auto_memory::AutoMemory::new(&runtime.config.settings, runtime.memory_explicit);
         let auto_refine =
             crate::auto_refine::AutoRefine::new(&runtime.config.settings, (env.var)(AUTO_REFINE_ENV).as_deref());
+        let observer =
+            observer::Observer::new(runtime.config.settings["observer"]["enabled"].as_bool().unwrap_or(true));
         let mut core = Core {
             model_unavailable,
             loki_notice,
@@ -1137,6 +1149,7 @@ impl Core {
             skill_nudger,
             persona: Default::default(),
             persona_session: Default::default(),
+            observer,
         };
         // The session's persona toggle and keep-going mode, before a resumed run can end.
         core.persona_load();
@@ -1201,6 +1214,7 @@ impl Core {
         while let Some(input) = self.next_input() {
             match input {
                 Input::Op(op, reply) => self.op(op, reply),
+                Input::ObserverCompleted(completion) => self.observer_completed(completion),
                 Input::Agent(event) => self.on_agent_event(*event),
                 Input::Title(response) => {
                     if record_naming(&mut lock_session(&self.session), &response).is_ok() {
@@ -1674,6 +1688,7 @@ impl Core {
     /// tried again on the next activity tick, so a run is never reported ended while its operation stays open (a
     /// successor would end it a second time).
     fn run_end(&mut self) {
+        self.observer.cancel();
         let operation = self.operation_id();
         let Some(ending) = self.run.as_ref().map(|run| run.ending) else {
             return;
@@ -1847,6 +1862,7 @@ impl Core {
     }
 
     fn stop(&mut self, hand_over: bool) {
+        self.observer.shutdown();
         // A successor keeps the session going; a run in progress resumes when the session opens again.
         if !hand_over && self.run.is_none() {
             self.retain_tail(false);
@@ -2236,6 +2252,7 @@ impl Core {
                 crate::inspect::inspect(Some(&*runtime), &request, payload, &kernel::Signal::new()).map(Some)
             }
             Op::Goal { args } => self.lane.stack.goal.command(&args).map(|text| Some(json!(text))),
+            Op::Observer { args } => self.observer_command(&args).map(|text| Some(json!(text))),
             Op::ListSessions => {
                 let listed =
                     names::list_sessions(Path::new(self.repo.root()), &lock_session(&self.session).metadata().cwd);

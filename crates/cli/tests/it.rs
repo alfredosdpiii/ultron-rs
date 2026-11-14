@@ -147,6 +147,8 @@ mod interactive_fullscreen_scroll;
 mod interactive_import;
 #[path = "interactive_mcp.rs"]
 mod interactive_mcp;
+#[path = "interactive_observer.rs"]
+mod interactive_observer;
 #[path = "interactive_overlays.rs"]
 mod interactive_overlays;
 #[path = "interactive_trust_debug.rs"]

@@ -126,6 +126,11 @@ fn run_command(
         "prompt" => {
             let (message, images) = prompt_request(command, kind)?;
             // `/goal ...` is the session goal's command, as in the TUI: answered with its text, never a turn.
+            if let Some(rest) = message.trim().strip_prefix("/observer")
+                && (rest.is_empty() || rest.starts_with(char::is_whitespace))
+            {
+                return done(Some(json!({"text": session.observer(rest.trim())?})));
+            }
             if let Some(args) = goal_arguments(&message) {
                 return done(Some(json!({"text": session.goal(args)?})));
             }
@@ -271,6 +276,9 @@ fn run_command(
         }
         "get_messages" => done(Some(json!({"messages": session.messages()}))),
         "get_commands" => done(Some(json!({"commands": session.commands()?}))),
+        "observer" => done(Some(
+            json!({"text": session.observer(str_field("args").unwrap_or_default())?}),
+        )),
         "goal" => {
             let args = str_field("args").unwrap_or_default();
             done(Some(json!({"text": session.goal(args)?})))
