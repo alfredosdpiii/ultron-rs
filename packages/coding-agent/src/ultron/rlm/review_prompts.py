@@ -18,6 +18,8 @@ class Reviewer(NamedTuple):
     reads_docs: bool = False
     #: Review only chunks that mention LLM or model APIs.
     llm_only: bool = False
+    #: Review only chunks of these files (a reviewer whose checklist was built for them); None: every file.
+    only_paths: tuple[str, ...] | None = None
 
 
 REVIEWERS: dict[str, Reviewer] = {

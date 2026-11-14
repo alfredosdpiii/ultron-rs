@@ -227,3 +227,96 @@ fn a_review_lesson_is_kept_once() {
     assert_eq!(out["first_asked"], serde_json::json!([]));
     assert_eq!(out["unmarked"], "a review lesson starts with 'Review lesson:'");
 }
+
+#[test]
+fn review_holds_new_definitions_against_what_the_repository_already_has() {
+    let runtime = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../packages/coding-agent/src/ultron/rlm/runtime.py");
+    let handler: Arc<dyn HostHandler> = Arc::new(|_: &str, _: Map<String, Value>, _: &Signal| Ok(Value::Null));
+    let kernel = Kernel::new(KernelOptions::new(env!("CARGO_MANIFEST_DIR"), runtime), handler).unwrap();
+    let repo = tempfile::tempdir().unwrap();
+    let dir = repo.path();
+    git(dir, &["init", "-q"]);
+    let old = "def parse_money(text):\n    cents = text.replace('$', '')\n    return int(float(cents) * 100)\n";
+    std::fs::write(dir.join("money.py"), old).unwrap();
+    std::fs::write(dir.join("notes.py"), "limit = 1\n").unwrap();
+    git(dir, &["add", "."]);
+    git(dir, &["commit", "-qm", "one"]);
+    // The change: a second money parser under another name, a fallback that names nothing, and an edit with neither.
+    let new = "def parse_money_text(value):\n    cleaned = value.replace('$', '')\n    return int(float(cleaned) * 100)\n\n\n\
+               def total(rows):\n    # legacy rows carry strings: fall back to parsing them\n    \
+               return sum(parse_money_text(row) for row in rows)\n";
+    std::fs::write(dir.join("totals.py"), new).unwrap();
+    std::fs::write(dir.join("notes.py"), "limit = 2\n").unwrap();
+    let code = [
+        "import json, review_api as r",
+        &format!("d = {:?}", dir.display().to_string()),
+        "scope = r.resolve_scope(r.parse_args('', {}), d)",
+        "inventory, notes = r.reuse_inventory(r.Git(d), scope)",
+        "out = {'files': sorted(inventory), 'entries': '\\n'.join(inventory.get('totals.py', [])), 'notes': notes}",
+        "reviewer = r.reuse_reviewer(inventory)",
+        "chunks, _ = r.build_chunks(scope.files, scope.read_file)",
+        "plan = r.plan_find(chunks, [*r.parse_args('', {}).reviewers, reviewer], 100000)",
+        "out['reuse_frames'] = [chunk.path for item, chunk in plan['frames'] if item.key == 'reuse']",
+        "out['task'] = r.finder_task(reviewer)",
+        "finding = {'line': 1, 'severity': 'minor', 'category': 'duplication', 'confidence': 0.9,",
+        "           'claim': 'parse_money_text repeats parse_money', 'why': 'a fix to one misses the other',",
+        "           'suggested_fix': 'call parse_money'}",
+        "class Fake:",
+        "    def __init__(self):",
+        "        self.tasks, self.views = [], []",
+        "    async def map(self, tasks, items, **kwargs):",
+        "        if isinstance(tasks, str):",
+        "            self.views += items",
+        "            return [{'verdict': 'confirmed', 'evidence': '`def parse_money_text(value):` repeats money.py'}",
+        "                    for _ in items]",
+        "        self.tasks += tasks",
+        "        return [[finding] if 'Reuse and compatibility' in task and 'File: totals.py' in item else []",
+        "                for task, item in zip(tasks, items)]",
+        "    async def infer(self, task, context, **kwargs):",
+        "        return []",
+        "fake = Fake()",
+        "out['report'] = (await r.run(fake, '--model fake/model', cwd=d)).report",
+        "out['reuse_tasks'] = sum('Reuse and compatibility' in task for task in fake.tasks)",
+        "out['verifier_views'] = fake.views",
+        "fake = Fake()",
+        "await r.run(fake, '--model fake/model --only bugs', cwd=d)",
+        "out['only_bugs'] = sum('Reuse and compatibility' in task for task in fake.tasks)",
+        "print(json.dumps(out))",
+    ]
+    .join("\n");
+    let result = kernel.execute(&code, None, None).unwrap();
+    assert_eq!(result.status, Status::Ok, "{result:?}");
+    let out: Value = serde_json::from_str(result.stdout.trim()).unwrap();
+    let text = |key: &str| out[key].as_str().unwrap_or_else(|| panic!("{key}: {out}")).to_string();
+
+    // The inventory is made by searching, before any model is asked: the new definition with the one it resembles,
+    // and the added line that speaks of a fallback. A file with neither gets no frame.
+    assert_eq!(out["files"], serde_json::json!(["totals.py"]), "{out}");
+    let entries = text("entries");
+    assert!(entries.contains("totals.py:1 new `parse_money_text`"), "{entries}");
+    assert!(entries.contains("money.py:1: def parse_money(text):"), "{entries}");
+    assert!(
+        entries.contains("return int(float(cents) * 100)"),
+        "the existing body is shown: {entries}"
+    );
+    assert!(entries.contains("totals.py:7 "), "the fallback line: {entries}");
+    assert!(
+        !entries.contains("`total`"),
+        "a one-word name is not searched: {entries}"
+    );
+    assert_eq!(out["notes"], serde_json::json!([]), "{out}");
+    assert_eq!(out["reuse_frames"], serde_json::json!(["totals.py"]), "{out}");
+    assert!(text("task").contains("money.py:1: def parse_money(text):"), "{out}");
+
+    // A whole review asks the reuse finder once, and the verifier of its finding sees the existing definition.
+    assert_eq!(out["reuse_tasks"], 1, "{out}");
+    assert_eq!(out["only_bugs"], 0, "chosen reviewers only: {out}");
+    let views = out["verifier_views"][0].as_array().unwrap_or_else(|| panic!("{out}"));
+    assert!(
+        views
+            .iter()
+            .any(|view| view.as_str().unwrap().contains("money.py:1: def parse_money(text):")),
+        "{views:?}"
+    );
+    assert!(text("report").contains("parse_money_text repeats parse_money"), "{out}");
+}
