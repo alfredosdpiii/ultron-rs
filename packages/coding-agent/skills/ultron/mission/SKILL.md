@@ -1,6 +1,6 @@
 ---
 name: mission
-description: "Run work too big for one context as a mission. One spec with acceptance items, features that each claim items, workers in their own worktrees held to host-run checks, and a fresh validator per milestone that exercises the merged result. Nobody is asked to approve a step. Use for /skill:mission, 'run this as a mission', or a request with several features that one session would not finish well."
+description: "Run work too big for one context as a mission. One spec with acceptance items, features that each claim items, workers in their own worktrees held to host-run checks, and one validator per milestone, kept to check each fix, that exercises the merged result. Nobody is asked to approve a step. Use for /skill:mission, 'run this as a mission', or a request with several features that one session would not finish well."
 disable-model-invocation: true
 metadata:
   source: Ultron; the shape (a validation contract written before code, workers, validators that are not the worker) follows Factory's Droid missions, in Ultron's own words and APIs
@@ -11,8 +11,8 @@ metadata:
 A mission is one request split into features, built by subagents and checked by other subagents. You are the
 orchestrator: you plan, hand out work, judge what comes back and ship. You write no feature code yourself.
 
-Nobody approves a step. Where the request leaves a choice open, pick, and write the choice into the spec's goal so
-the pull request shows it. Stop for the user only when nothing can move without them (a credential, a paid call, a
+Nobody approves a step. Where the request leaves a choice open, pick, and record it with
+`spec_api.decide(choice, reason, if_overruled)` so the pull request shows it. Stop for the user only when nothing can move without them (a credential, a paid call, a
 destructive step).
 
 Two rules carry the whole thing:
@@ -74,7 +74,38 @@ Features that edit the same files are one feature, or run one after the other.
 
 ## 3. Build
 
-One worker per feature, each in its own worktree, each held to a contract the host checks itself. The brief is all
+Baseline first. Every worker's contract rests on the test command running in a fresh worktree, so show that it does
+before anyone builds on it: one worker that changes nothing, under a contract whose check is the repository's own
+test command (the one its README or CI runs; a check may take 600 000 ms at most, so name the part that covers the
+mission's paths when the whole suite takes longer).
+
+```python
+BASELINE = "pytest -q"
+base = await rlm.spawn(
+    f"Change nothing. Run `{BASELINE}`. If it fails, quote the first error and say whether the setup is at fault "
+    "(a dependency or tool the worktree lacks) or the tests themselves.",
+    name="baseline", worktree=True, contract={"checks": [{"run": BASELINE, "timeout_ms": 600_000}]})
+```
+
+End your turn; its end arrives as an event. The host ran the command and read the exit code, so the verdict is not
+the worker's word.
+
+```python
+item = (await rlm.collect([base]))[0]
+contract = (item["result"].get("check") or {}).get("contract") or {}
+if contract.get("verdict") != "verified":
+    print(contract.get("failed"), item["result"].get("summary"))
+    fix = await board.add("baseline", detail=f"`{BASELINE}` fails before any feature: {contract.get('failed')}")
+```
+
+A failing baseline is the first task on the board, and no feature worker starts until it is `done`. When the
+worktree lacks its setup, pass `worktree_setup={"command": "<install command>"}` to the baseline worker and to every
+worker after it, and run the baseline again. When the tests themselves fail, one worker repairs them under the same
+check (`worktree=True`, `contract={"checks": [{"run": BASELINE}]}`); merge and commit its work before step 3 goes on.
+A baseline is repaired in the setup or the code: an emptied or skipped test, a rule switched off, or a narrower
+command than the one that failed is not a repair.
+
+Then one worker per feature, each in its own worktree, each held to a contract the host checks itself. The brief is all
 the worker knows: give it the goal, the paths, the text of its items and its check command.
 
 ```python

@@ -19342,7 +19342,7 @@
       },
       {
        "name": "skill:mission",
-       "description": "Run work too big for one context as a mission. One spec with acceptance items, features that each claim items, workers in their own worktrees held to host-run checks, and a fresh validator per milestone that exercises the merged result. Nobody is asked to approve a step. Use for /skill:mission, 'run this as a mission', or a request with several features that one session would not finish well.",
+       "description": "Run work too big for one context as a mission. One spec with acceptance items, features that each claim items, workers in their own worktrees held to host-run checks, and one validator per milestone, kept to check each fix, that exercises the merged result. Nobody is asked to approve a step. Use for /skill:mission, 'run this as a mission', or a request with several features that one session would not finish well.",
        "source": "skill",
        "sourceInfo": {
         "path": "<root>/packages/coding-agent/skills/ultron/mission/SKILL.md",
