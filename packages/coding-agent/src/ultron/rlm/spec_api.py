@@ -6,11 +6,12 @@ description built from it.
                          ["A day with sales shows their sum", "A day without sales shows 0"]))
     await spec_api.check(bash, "pytest -q tests/test_totals.py")        # recorded with its exit code
     spec_api.mark("A1", "pass", "pytest -q tests/test_totals.py: 3 passed")
+    spec_api.decide("Totals are per UTC day", "the ticket names no time zone", "the grouping key changes")
     path = spec_api.description()                                        # after the commit and the review
     # gh pr create --title "..." --body-file <path>
 
-State lives beside the review's receipt, in `<git dir>/ultron-review/`: `spec.json` (the goal and the acceptance
-items of the branch), `checks.json` (commands with their exit code and the tree they ran on) and `description.md`.
+State lives beside the review's receipt, in `<git dir>/ultron-review/`: `spec.json` (the goal, the acceptance
+items and the decisions of the branch), `checks.json` (commands with their exit code and the tree they ran on) and `description.md`.
 `description` is the one place that decides whether a pull request is ready: the committed tree is reviewed, every
 acceptance item passed, a check passed on that tree, the change has one purpose and every changed file serves it.
 What is still open is either fixed or shipped with the reason `review_api.waive` recorded, which the description
@@ -71,7 +72,13 @@ def _render(spec: dict[str, Any]) -> str:
     for item in spec["acceptance"]:
         evidence = f": {item['evidence']}" if item["evidence"] else ""
         lines.append(f"- {item['status']} {item['id']} {item['text']}{evidence}")
+    if spec.get("decisions"):
+        lines += ["", "Decisions:", *(_decision(item) for item in spec["decisions"])]
     return "\n".join(lines) + "\n"
+
+
+def _decision(item: dict[str, Any]) -> str:
+    return f"- {item['id']} {item['choice']}. Why: {item['reason']}. If overruled: {item['if_overruled']}."
 
 
 def write(title: str, goal: str, acceptance: list[str], *, cwd: str | None = None, revise: str | None = None,
@@ -100,9 +107,11 @@ def write(title: str, goal: str, acceptance: list[str], *, cwd: str | None = Non
                         "evidence": kept.get(text, {}).get("evidence", "")}
                        for number, text in enumerate(items, 1)],
         "revisions": [*(old["revisions"] if old else []), *([revise.strip()] if old else [])],
+        "decisions": old.get("decisions", []) if old else [],
     }
     _store(directory / "spec.json", json.dumps(spec, indent=1) + "\n")
-    return _render(spec)
+    return _render(spec) + ("\nWhere the request leaves a choice open, pick, and record it: "
+                            "spec_api.decide(choice, reason, if_overruled).\n")
 
 
 def read(*, cwd: str | None = None, runner: Runner | None = None) -> str:
@@ -128,6 +137,29 @@ def mark(item_id: str, status: str, evidence: str, *, cwd: str | None = None, ru
         raise ReviewError(f"{item_id}: {status} needs its evidence: the command and what it showed, or the file "
                           "and lines")
     item["status"], item["evidence"] = status, " ".join(evidence.split())
+    _store(directory / "spec.json", json.dumps(spec, indent=1) + "\n")
+    return _render(spec)
+
+
+def decide(choice: str, reason: str, if_overruled: str, *, cwd: str | None = None,
+           runner: Runner | None = None) -> str:
+    """Record a choice the request left open, instead of asking: what you chose, why, and what would have to
+    change if the user overrules it. The description prints the decisions, so the reviewer of the pull request
+    sees them. Recording the same choice again updates it."""
+    git, directory = _state(cwd, runner)
+    spec = _spec(git, directory)
+    if spec is None:
+        raise ReviewError("no spec on this branch: spec_api.write(title, goal, acceptance) first")
+    fields = {"choice": choice, "reason": reason, "if_overruled": if_overruled}
+    fields = {name: " ".join(str(text).split()).rstrip(".") for name, text in fields.items()}
+    if not all(fields.values()):
+        raise ReviewError("a decision needs the choice, the reason, and what changes if it is overruled")
+    decisions = spec.setdefault("decisions", [])
+    same = next((item for item in decisions if item["choice"] == fields["choice"]), None)
+    if same:
+        same.update(fields)
+    else:
+        decisions.append({"id": f"D{len(decisions) + 1}", **fields})
     _store(directory / "spec.json", json.dumps(spec, indent=1) + "\n")
     return _render(spec)
 
@@ -232,6 +264,8 @@ def description(*, cwd: str | None = None, runner: Runner | None = None) -> str:
         out += ["## What changed", ""]
         out += [f"- {p['purpose']}" + (f" ({_names(p['files'])})" if p.get("files") else "") for p in purposes]
         out.append("")
+    if spec and spec.get("decisions"):
+        out += ["## Decisions", "", *(_decision(item) for item in spec["decisions"]), ""]
     if open_items:
         out += ["## Scope", "", f"- Ships with open items ({waived}): {'; '.join(open_items)}", ""]
     if spec:

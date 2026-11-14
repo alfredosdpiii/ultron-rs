@@ -68,9 +68,15 @@ fn a_description_is_built_from_the_spec_the_checks_and_the_review_or_refused() {
         "    json.dump({**body, **fields}, open(receipt, 'w'))",
         "out = {'unreviewed': describe()}",
         "out['empty'] = error(lambda: s.write('Totals', 'Totals per day.', [' '], cwd=d))",
+        "out['early_decision'] = error(lambda: s.decide('UTC days', 'no zone named', 'the key changes', cwd=d))",
         "out['written'] = s.write('Totals', 'The page shows totals per day.',",
         "                         ['A day with sales shows their sum', 'A day without sales shows 0'], cwd=d)",
         "out['again'] = error(lambda: s.write('Other', 'x', ['y'], cwd=d))",
+        // A choice the request left open is recorded, once, with what changes if the user overrules it.
+        "choice = ('Totals are per UTC day', 'the ticket names no time zone', 'the grouping key becomes the shop time zone')",
+        "s.decide(*choice, cwd=d)",
+        "out['decided'] = s.decide(*choice, cwd=d)",
+        "out['half_decision'] = error(lambda: s.decide('Totals are per UTC day', ' ', 'x', cwd=d))",
         "try:",
         "    await s.check(shell(0), 'pytest -q | tail -5', cwd=d)",
         "except r.ReviewError as e:",
@@ -131,6 +137,15 @@ fn a_description_is_built_from_the_spec_the_checks_and_the_review_or_refused() {
         text("again").contains("revise="),
         "a spec is not replaced silently: {out}"
     );
+    assert!(
+        text("written").contains("spec_api.decide("),
+        "the spec says how to record a choice: {out}"
+    );
+    assert!(text("early_decision").contains("no spec on this branch"), "{out}");
+    let decided = text("decided");
+    assert!(decided.contains("D1 Totals are per UTC day"), "{decided}");
+    assert!(!decided.contains("D2"), "the same choice is recorded once: {decided}");
+    assert!(text("half_decision").starts_with("error: "), "{out}");
     assert!(text("piped").contains("hides its exit code"), "{out}");
     assert_eq!(out["quoted_pipe"], 0, "a | inside quotes is no pipe: {out}");
     assert!(text("no_evidence").contains("evidence"), "{out}");
@@ -164,6 +179,13 @@ fn a_description_is_built_from_the_spec_the_checks_and_the_review_or_refused() {
         passed.contains("## Verification\n\n- `rg -c 'a|b' a.py`: exit 0 on this tree, last line `3 passed in 0.1s`\n"),
         "{passed}"
     );
+    assert!(
+        passed.contains(
+            "## Decisions\n\n- D1 Totals are per UTC day. Why: the ticket names no time zone. If overruled: the grouping \
+             key becomes the shop time zone.\n"
+        ),
+        "{passed}"
+    );
     assert!(!passed.contains("## Scope"), "nothing open: {passed}");
     assert!(text("failing").contains("exit 2"), "{out}");
 
@@ -184,6 +206,10 @@ fn a_description_is_built_from_the_spec_the_checks_and_the_review_or_refused() {
 
     let revised = &out["revised"];
     assert_eq!(revised["revisions"], json!(["the ticket added time zones"]));
+    assert_eq!(
+        revised["decisions"][0]["id"], "D1",
+        "a revised spec keeps its decisions: {revised}"
+    );
     assert_eq!(
         revised["acceptance"][0]["status"], "pass",
         "a kept item keeps its result: {revised}"
