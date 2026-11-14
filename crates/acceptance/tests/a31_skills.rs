@@ -409,17 +409,24 @@ fn acceptance_a31_concurrent_loads_selects_and_invokes_each_observe_one_catalog_
     let mut versions = vec![REVIEW.to_string()];
     let mut jobs: Vec<std::thread::JoinHandle<Option<&'static str>>> = Vec::new();
     for round in 1..=20 {
+        // No refresh is running here, so the catalog holds exactly the last revision: a pin to it wins.
+        let current = &versions[round - 1];
+        let pin = json!({"name": "review", "version": sha(current)});
+        assert_eq!(s.ok("skills.load", pin.clone())["content"], current.as_str());
+        s.ok(
+            "skills.invoke",
+            json!({"name": "review", "version": pin["version"], "input": {"round": round}}),
+        );
         let content = format!("{REVIEW}\nRevision {round}.");
         versions.push(content.clone());
-        {
+        let refresh = {
             let s = s.clone();
-            jobs.push(std::thread::spawn(move || {
+            std::thread::spawn(move || {
                 s.skills
                     .set(source("review", "Review a diff for correctness bugs", &content, false));
                 s.ok("skills.refresh", json!({}));
-                None
-            }));
-        }
+            })
+        };
         for pinned in [REVIEW.to_string(), versions[round - 1].clone()] {
             let invoke_version = sha(&pinned);
             let invoker = s.clone();
@@ -474,14 +481,16 @@ fn acceptance_a31_concurrent_loads_selects_and_invokes_each_observe_one_catalog_
                 None
             }));
         }
+        // The loads, selects and invokes above race this refresh; the next round's pin needs it installed.
+        refresh.join().unwrap();
     }
     let outcomes: Vec<_> = jobs.into_iter().filter_map(|job| job.join().unwrap()).collect();
-    // The race is real: some pinned loads win against a refresh and some lose.
-    assert!(outcomes.contains(&"loaded"));
+    // A pin that races a refresh wins or loses with the scheduler. A pin to the first version loses from round 2
+    // on: the first revision is installed by then.
     assert!(outcomes.contains(&"stale"));
-    // Every spawned child got the body of exactly the version its prompt names.
+    // Every spawned child got the body of exactly the version its prompt names: one per round at least.
     let spawned = s.host.spawned.lock().unwrap().clone();
-    assert!(!spawned.is_empty());
+    assert!(spawned.len() >= 20, "{}", spawned.len());
     for (request, _) in &spawned {
         let prompt = request["input"]["prompt"].as_str().unwrap();
         let at = prompt.find("Skill version: ").unwrap() + "Skill version: ".len();
