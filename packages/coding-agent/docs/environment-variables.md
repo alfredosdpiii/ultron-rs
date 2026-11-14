@@ -86,6 +86,7 @@ These variables are read by Pi itself:
 | `ULTRON_LOKI` | Loki guardrails: `off` disables them, `advise` reports without blocking, anything else is on (the default); overrides the `loki.mode` setting |
 | `ULTRON_LOKI_AUTOINIT`, `ULTRON_LOKI_AUTOCOMMIT` | `off` stops Ultron from creating `.loki/` in a repository, or from committing the `.loki/` it created |
 | `ULTRON_LOKI_TIMEOUT_MS` | How long a before-write Loki check may take (default 5000) before the write proceeds with a "not checked" note |
+| `ULTRON_LSP` | `off` (or `0`, `false`, `no`, `none`) stops sessions from running language servers on file writes; anything else turns them on. Overrides the `lsp.enabled` setting |
 | `ULTRON_LOKI_PYTHON` | Python 3.11+ interpreter that runs Loki (default `python3`) |
 | `ULTRON_LOKI_PROJECT_PYTHON` | The project's own interpreter, which Loki asks whether a newly imported module exists. Default: the `python` (else `python3`) on `PATH` when it belongs to a virtual or conda environment, else `.venv`/`venv` in the session directory or the repository root. Without one, new imports are reported as not checked |
 | `ULTRON_LOKI_LOG` | Append every Loki check (and setup) to this file as JSON lines |

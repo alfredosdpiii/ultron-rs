@@ -149,6 +149,33 @@ Global settings only (`~/.ultron/agent/settings.json`), so a repository cannot s
 
 `ULTRON_LOKI_TIMEOUT_MS` (default 5000) bounds each before-write check; a check that takes longer lets the write through with a visible note. `ULTRON_LOKI_LOG=<file>` appends every check as a JSON line.
 
+### Language servers (Ultron)
+
+| Setting | Type | Default | Description |
+|---|---|---|---|
+| `lsp.enabled` | boolean | `true` | Show the errors a language server finds in the new text of every REPL `edit()`/`write()`, as a note on that write; the write is never refused. `ULTRON_LSP` overrides it. Always off while `sandbox.mode` is not `off`, because the servers run outside the sandbox. |
+
+| Server | Files | Runs when | mise installs |
+|---|---|---|---|
+| rust-analyzer | `.rs` | the file is in a Cargo project | `rust-analyzer` |
+| pyright | `.py`, `.pyi` | always | `npm:pyright` |
+| typescript-language-server | `.ts`, `.tsx`, `.mts`, `.cts`, `.js`, `.jsx`, `.mjs`, `.cjs` | always | `npm:typescript-language-server`, `npm:typescript` |
+| effect-tsgo | the same | instead of typescript-language-server, when the project's `tsconfig.json` names `@effect/language-service` and its own TypeScript is not 5 or 6 | `npm:@effect/tsgo` |
+| gopls | `.go` | the file is in a Go module | `go:golang.org/x/tools/gopls` |
+| clangd | `.c`, `.h`, `.cc`, `.cpp`, `.cxx`, `.hh`, `.hpp`, `.hxx` | the project has `compile_commands.json`, `compile_flags.txt` or `.clangd` | `github:clangd/clangd` |
+| zls | `.zig` | always | `zls` |
+| lua-language-server | `.lua` | always | `lua-language-server` |
+| terraform-ls | `.tf`, `.tfvars` | always | `terraform-ls` |
+| bash-language-server | `.sh`, `.bash` | always | `npm:bash-language-server` |
+| yaml-language-server | `.yaml`, `.yml` | always | `npm:yaml-language-server` |
+| taplo | `.toml` | always | `taplo` |
+
+"Always" means in a Git repository or a directory tree with the server's project file; a file outside both is not checked. A server starts with the first write to a file of its project and is shared by the session's lanes. One that is missing from `PATH`, or is there and does not start, is run with `mise exec` when mise is installed, which installs it first; that install can take minutes, and the writes made meanwhile are not checked. Only errors are shown, at most ten per write. A write waits at most 4 seconds for them.
+
+Effect: TypeScript 5 and 6 load the `@effect/language-service` plugin in typescript-language-server when the project has it installed and named in `tsconfig.json`. TypeScript 7 loads no plugins, so such a project is checked by `effect-tsgo` (TypeScript 7 with the Effect diagnostics built in).
+
+rust-analyzer runs without `cargo check`, build scripts and proc macros, so it never builds anything. It reports syntax errors, type mismatches, wrong argument counts, missing fields and unresolved names. Errors it can only guess at without macro expansion are not shown: `E0277`, `E0282`, `E0432`, `E0599`, errors inside macro expansions, and unresolved names in a file with a macro it could not expand. zls writes a `.zig-cache` directory into the project.
+
 ## Sessions and context
 
 | Setting | Type | Default | Description |
