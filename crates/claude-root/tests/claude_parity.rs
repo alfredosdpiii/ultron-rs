@@ -127,6 +127,7 @@ impl Root {
         let p = |s: &str| self.path(s).display().to_string();
         let mut vars: Vec<(String, String)> = vec![
             ("ULTRON_HINDSIGHT_URL".into(), "off".into()),
+            ("ULTRON_LSP".into(), "off".into()),
             ("ULTRON_MEMORANTADO_URL".into(), "off".into()),
             ("PATH".into(), "/usr/bin:/bin".into()),
             ("HOME".into(), p("h")),

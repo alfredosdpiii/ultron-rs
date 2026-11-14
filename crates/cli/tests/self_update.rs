@@ -119,6 +119,7 @@ fn replay(case: &Value) -> Vec<String> {
             .current_dir(root.join("work"))
             .env_clear()
             .env("ULTRON_HINDSIGHT_URL", "off")
+            .env("ULTRON_LSP", "off")
             .env("ULTRON_MEMORANTADO_URL", "off")
             .envs(&env)
             .stdin(std::process::Stdio::null())

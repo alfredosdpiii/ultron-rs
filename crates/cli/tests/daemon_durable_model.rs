@@ -98,6 +98,7 @@ impl Fixture {
             .stdin(std::process::Stdio::null())
             .env_clear()
             .env("ULTRON_HINDSIGHT_URL", "off")
+            .env("ULTRON_LSP", "off")
             .env("ULTRON_MEMORANTADO_URL", "off");
         for (key, value) in template.get_envs() {
             if let Some(value) = value {

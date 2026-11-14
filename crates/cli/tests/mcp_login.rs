@@ -91,6 +91,7 @@ fn cli_mcp_login_logout_and_list_match_typescript() {
             .args(&args)
             .env_clear()
             .env("ULTRON_HINDSIGHT_URL", "off")
+            .env("ULTRON_LSP", "off")
             .env("ULTRON_MEMORANTADO_URL", "off")
             .current_dir(&cwd)
             .env("PATH", &bin)

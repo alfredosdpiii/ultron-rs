@@ -214,7 +214,7 @@ fn profile(spec: &Value, ports: (u16, u16)) -> Profile {
         .map(|(k, v)| (k.clone(), v.as_str().unwrap().to_string()))
         .collect();
     map.insert(config::paths::ENV_AGENT_DIR.into(), agent.display().to_string());
-    for name in ["ULTRON_HINDSIGHT_URL", "ULTRON_MEMORANTADO_URL"] {
+    for name in ["ULTRON_HINDSIGHT_URL", "ULTRON_MEMORANTADO_URL", "ULTRON_LSP"] {
         map.entry(name.into()).or_insert_with(|| "off".into());
     }
     Profile {

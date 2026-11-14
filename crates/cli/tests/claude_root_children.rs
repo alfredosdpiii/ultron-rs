@@ -82,6 +82,7 @@ fn claude_root_mcp_spawns_claude_code_children_and_relays_their_verdict() {
         .current_dir(root.join("w"))
         .env_clear()
         .env("ULTRON_HINDSIGHT_URL", "off")
+        .env("ULTRON_LSP", "off")
         .env("ULTRON_MEMORANTADO_URL", "off")
         .env("PATH", format!("{}:/usr/bin:/bin", p("bin")))
         .env("HOME", p("h"))

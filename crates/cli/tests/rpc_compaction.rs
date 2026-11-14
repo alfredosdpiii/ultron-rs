@@ -176,6 +176,7 @@ fn start_full(replies: Vec<String>, summaries: Vec<String>, hold: bool, settings
         (config::paths::ENV_SERVER_DIR, root.join("server").display().to_string()),
         ("ANTHROPIC_API_KEY", "test-key".into()),
         (hindsight::resolve::HINDSIGHT_URL_ENV, "off".into()),
+        ("ULTRON_LSP", "off".into()),
         ("ULTRON_MEMORANTADO_URL", "off".into()),
         // The provider's replies are scripted in order; a refinement request (session_core::auto_refine) would take
         // one.
@@ -582,6 +583,7 @@ fn actor_full(replies: Vec<String>, summaries: Vec<String>, hold: bool, settings
         ),
         ("ANTHROPIC_API_KEY".into(), "test-key".into()),
         (hindsight::resolve::HINDSIGHT_URL_ENV.into(), "off".into()),
+        ("ULTRON_LSP".into(), "off".into()),
         ("ULTRON_MEMORANTADO_URL".into(), "off".into()),
         (session_core::core::AUTO_REFINE_ENV.into(), "off".into()),
         (config::env::OFFLINE_ENV.into(), "1".into()),

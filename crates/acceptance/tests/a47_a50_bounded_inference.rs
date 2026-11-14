@@ -321,6 +321,7 @@ impl Harness {
             ),
             ("GROQ_API_KEY".into(), "test-groq".into()),
             (hindsight::resolve::HINDSIGHT_URL_ENV.into(), "off".into()),
+            ("ULTRON_LSP".into(), "off".into()),
             ("ULTRON_MEMORANTADO_URL".into(), "off".into()),
             (config::env::OFFLINE_ENV.into(), "1".into()),
             ("NO_COLOR".into(), "1".into()),

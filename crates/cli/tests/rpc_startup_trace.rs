@@ -15,6 +15,7 @@ fn run_rpc(sandbox: &common::Sandbox, trace: Option<&std::path::Path>) -> u32 {
         .args(["--mode", "rpc", "--model", "anthropic/claude-sonnet-4-5"])
         .env(config::env::OFFLINE_ENV, "1")
         .env(hindsight::resolve::HINDSIGHT_URL_ENV, "off")
+        .env("ULTRON_LSP", "off")
         .env("ULTRON_MEMORANTADO_URL", "off")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -118,6 +119,7 @@ fn cli_rpc_startup_trace_milestones_are_not_traced_by_the_tui() {
         &[
             (session_core::startup_trace::TRACE_ENV, &trace_text),
             (hindsight::resolve::HINDSIGHT_URL_ENV, "off"),
+            ("ULTRON_LSP", "off"),
             ("ULTRON_MEMORANTADO_URL", "off"),
         ],
     );

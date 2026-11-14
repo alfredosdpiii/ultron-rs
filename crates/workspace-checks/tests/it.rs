@@ -99,7 +99,8 @@ fn every_test_environment_turns_memory_services_off() {
         if !spawns && !runs && !text.contains("RunEnv {") {
             continue;
         }
-        for name in ["ULTRON_HINDSIGHT_URL", "ULTRON_MEMORANTADO_URL"] {
+        // And language servers off: a session with them on starts (and through mise installs) real servers.
+        for name in ["ULTRON_HINDSIGHT_URL", "ULTRON_MEMORANTADO_URL", "ULTRON_LSP"] {
             let constant = name.trim_start_matches("ULTRON_").to_string() + "_ENV";
             if !text.contains(name) && !text.contains(&constant) {
                 missing.push(format!(

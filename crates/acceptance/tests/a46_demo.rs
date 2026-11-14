@@ -229,6 +229,7 @@ fn start(steps: Vec<String>, files: &[(&str, &str)]) -> (Provider, Install, RpcC
         // The outage is Hindsight's: a memorantado the machine runs is never probed.
         &[
             (hindsight::resolve::HINDSIGHT_URL_ENV, "http://127.0.0.1:9"),
+            ("ULTRON_LSP", "off"),
             ("ULTRON_MEMORANTADO_URL", "off"),
         ],
     );

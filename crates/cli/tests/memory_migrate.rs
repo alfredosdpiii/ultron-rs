@@ -71,6 +71,7 @@ fn env_for(home: &Path, vars: Vec<(&'static str, String)>) -> cli::Env {
     let mut all: Vec<(String, String)> = vec![
         ("HOME".into(), home.display().to_string()),
         (config::paths::ENV_AGENT_DIR.into(), agent.display().to_string()),
+        ("ULTRON_LSP".into(), "off".into()),
     ];
     all.extend(vars.into_iter().map(|(k, v)| (k.to_string(), v)));
     cli::Env {

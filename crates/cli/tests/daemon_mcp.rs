@@ -279,6 +279,7 @@ fn cli_rpc_mode_relays_mcp_notices_as_extension_ui_requests() {
             ),
             ("ANTHROPIC_API_KEY".into(), "test-key".into()),
             ("ULTRON_HINDSIGHT_URL".into(), "off".into()),
+            ("ULTRON_LSP".into(), "off".into()),
             ("ULTRON_MEMORANTADO_URL".into(), "off".into()),
         ],
         provider: Some("anthropic".into()),

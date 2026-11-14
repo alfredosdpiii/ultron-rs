@@ -13,6 +13,7 @@ fn run(base: &std::path::Path, proxy: (&str, String), args: &[&str]) -> std::pro
         .args(args)
         .env_clear()
         .env("ULTRON_HINDSIGHT_URL", "off")
+        .env("ULTRON_LSP", "off")
         .env("ULTRON_MEMORANTADO_URL", "off")
         .current_dir(&cwd)
         .env("PATH", &bin)

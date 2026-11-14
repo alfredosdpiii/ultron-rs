@@ -115,6 +115,7 @@ fn ultron(root: &Path, args: &[&str]) -> Output {
     std::process::Command::new(env!("CARGO_BIN_EXE_ultron-acceptance"))
         .env_clear()
         .env("ULTRON_HINDSIGHT_URL", "off")
+        .env("ULTRON_LSP", "off")
         .env("ULTRON_MEMORANTADO_URL", "off")
         .args(args)
         .current_dir(root)

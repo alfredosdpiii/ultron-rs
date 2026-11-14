@@ -17,6 +17,7 @@ fn ultron_with(home: &Path, args: &[&str], vars: &[(&str, &str)]) -> Output {
         .current_dir(home)
         .env_clear()
         .env("ULTRON_HINDSIGHT_URL", "off")
+        .env("ULTRON_LSP", "off")
         .env("ULTRON_MEMORANTADO_URL", "off")
         .env("PATH", "/usr/bin:/bin")
         .env("HOME", home)

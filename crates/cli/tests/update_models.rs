@@ -14,6 +14,7 @@ fn cli_update_models_without_credentials_refreshes_nothing_and_succeeds() {
         .current_dir(tmp.path().join("work"))
         .env_clear()
         .env("ULTRON_HINDSIGHT_URL", "off")
+        .env("ULTRON_LSP", "off")
         .env("ULTRON_MEMORANTADO_URL", "off")
         .env("PATH", "/usr/bin:/bin")
         .env("HOME", tmp.path())

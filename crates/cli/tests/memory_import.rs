@@ -91,6 +91,7 @@ impl Machine {
         let mut all: Vec<(String, String)> = vec![
             ("HOME".into(), self.home.display().to_string()),
             // Imports go to Hindsight: a memorantado the machine runs is never probed.
+            ("ULTRON_LSP".into(), "off".into()),
             ("ULTRON_MEMORANTADO_URL".into(), "off".into()),
             (
                 config::paths::ENV_AGENT_DIR.into(),

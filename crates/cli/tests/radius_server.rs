@@ -114,6 +114,7 @@ fn cli_radius_server_command_prints_what_typescript_prints() {
             .current_dir(tmp.0.join("cwd"))
             .env_clear()
             .env("ULTRON_HINDSIGHT_URL", "off")
+            .env("ULTRON_LSP", "off")
             .env("ULTRON_MEMORANTADO_URL", "off")
             .env("PATH", "/usr/bin:/bin")
             .env("HOME", &tmp.0)

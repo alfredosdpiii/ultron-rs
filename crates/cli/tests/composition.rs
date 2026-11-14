@@ -377,6 +377,7 @@ fn cli_composition_cell_calls_the_memory_api_on_the_injected_backend() {
     let bank = Arc::new(FakeBank::default());
     let vars: Vec<(String, String)> = vec![
         ("ULTRON_HINDSIGHT_URL".into(), "off".into()),
+        ("ULTRON_LSP".into(), "off".into()),
         ("ULTRON_MEMORANTADO_URL".into(), "off".into()),
         ("HOME".into(), sandbox.root.display().to_string()),
         (
@@ -515,6 +516,7 @@ fn cli_composition_auto_memory_recalls_before_a_user_message() {
     let bank = Arc::new(RecallBank::default());
     let vars: Vec<(String, String)> = vec![
         ("ULTRON_HINDSIGHT_URL".into(), "off".into()),
+        ("ULTRON_LSP".into(), "off".into()),
         ("ULTRON_MEMORANTADO_URL".into(), "off".into()),
         ("HOME".into(), sandbox.root.display().to_string()),
         (
@@ -707,6 +709,7 @@ fn cli_composition_lane_declares_exactly_the_rlm_tool() {
     std::fs::write(installed.join("index.ts"), "export default function () {}").unwrap();
     let vars: Vec<(String, String)> = vec![
         ("ULTRON_HINDSIGHT_URL".into(), "off".into()),
+        ("ULTRON_LSP".into(), "off".into()),
         ("ULTRON_MEMORANTADO_URL".into(), "off".into()),
         ("HOME".into(), sandbox.root.display().to_string()),
         (

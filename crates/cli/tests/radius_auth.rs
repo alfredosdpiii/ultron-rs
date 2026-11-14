@@ -100,6 +100,7 @@ fn cli_auth_for_radius_providers_matches_typescript() {
             .current_dir(tmp.path())
             .env_clear()
             .env("ULTRON_HINDSIGHT_URL", "off")
+            .env("ULTRON_LSP", "off")
             .env("ULTRON_MEMORANTADO_URL", "off")
             .env("PATH", "/usr/bin:/bin")
             .env("HOME", tmp.path())

@@ -65,6 +65,7 @@ fn stack(root: &Path) -> Arc<Stack> {
             root.join("server").display().to_string(),
         ),
         (hindsight::resolve::HINDSIGHT_URL_ENV.into(), "off".into()),
+        ("ULTRON_LSP".into(), "off".into()),
         ("ULTRON_MEMORANTADO_URL".into(), "off".into()),
     ];
     let env = RunEnv {

@@ -105,6 +105,7 @@ impl Root {
             .current_dir(self.path().join("w"))
             .env_clear()
             .env("ULTRON_HINDSIGHT_URL", "off")
+            .env("ULTRON_LSP", "off")
             .env("ULTRON_MEMORANTADO_URL", "off")
             .envs(env.iter().map(|(k, v)| (k.as_str(), v.as_str())));
         command

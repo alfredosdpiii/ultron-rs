@@ -337,6 +337,7 @@ impl Install {
         command
             .env_clear()
             .env("ULTRON_HINDSIGHT_URL", "off")
+            .env("ULTRON_LSP", "off")
             .env("ULTRON_MEMORANTADO_URL", "off")
             .args(["-p", "--no-session", "--model", MODEL, prompt])
             .current_dir(self.project())
@@ -383,6 +384,7 @@ fn base_env(install: &Install, env: &[(&str, &str)]) -> Vec<(String, String)> {
         ),
         ("GROQ_API_KEY".into(), "test-groq".into()),
         (hindsight::resolve::HINDSIGHT_URL_ENV.into(), "off".into()),
+        ("ULTRON_LSP".into(), "off".into()),
         ("ULTRON_MEMORANTADO_URL".into(), "off".into()),
         (config::env::OFFLINE_ENV.into(), "1".into()),
         ("NO_COLOR".into(), "1".into()),

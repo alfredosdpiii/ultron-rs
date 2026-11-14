@@ -414,6 +414,7 @@ fn run_case_with(case: &Value, journals: bool) -> Vec<Value> {
         ),
         ("ANTHROPIC_API_KEY", "test-key".into()),
         (hindsight::resolve::HINDSIGHT_URL_ENV, "off".into()),
+        ("ULTRON_LSP", "off".into()),
         ("ULTRON_MEMORANTADO_URL", "off".into()),
         // TypeScript has no context reminder (session_core::context_reminder, Rust-only).
         (session_core::compose::CONTEXT_REMINDER_ENV, "off".into()),
@@ -802,6 +803,7 @@ fn start_client(replies: Vec<Reply>) -> (RpcClient, Arc<Mutex<Vec<Value>>>, temp
         ),
         ("ANTHROPIC_API_KEY", "test-key".into()),
         (hindsight::resolve::HINDSIGHT_URL_ENV, "off".into()),
+        ("ULTRON_LSP", "off".into()),
         ("ULTRON_MEMORANTADO_URL", "off".into()),
         // Replies are scripted in order; a refinement request (session_core::auto_refine) would take one.
         (session_core::core::AUTO_REFINE_ENV, "off".into()),

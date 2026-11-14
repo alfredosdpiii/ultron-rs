@@ -103,6 +103,7 @@ impl Machine {
             ("HOME".into(), self.home().display().to_string()),
             // These sessions remember on Hindsight (each test names its server): a memorantado the machine runs is
             // never probed unless a test sets its own URL, which wins over this default.
+            ("ULTRON_LSP".into(), "off".into()),
             ("ULTRON_MEMORANTADO_URL".into(), "off".into()),
             (
                 config::paths::ENV_AGENT_DIR.into(),

@@ -226,6 +226,7 @@ fn cli_claude_code_list_models_matches_typescript() {
             let output = command
                 .env_clear()
                 .env("ULTRON_HINDSIGHT_URL", "off")
+                .env("ULTRON_LSP", "off")
                 .env("ULTRON_MEMORANTADO_URL", "off")
                 .envs(&case.vars)
                 .env("NO_COLOR", "1")

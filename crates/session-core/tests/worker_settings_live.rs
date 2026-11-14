@@ -416,6 +416,7 @@ fn session_core_opening_a_session_prunes_orphan_worktrees() {
         ("PATH".into(), "/usr/bin:/bin".into()),
         (config::paths::ENV_AGENT_DIR.into(), agent.display().to_string()),
         (hindsight::resolve::HINDSIGHT_URL_ENV.into(), "off".into()),
+        ("ULTRON_LSP".into(), "off".into()),
         ("ULTRON_MEMORANTADO_URL".into(), "off".into()),
         (config::env::OFFLINE_ENV.into(), "1".into()),
     ];

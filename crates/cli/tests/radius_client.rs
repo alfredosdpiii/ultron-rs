@@ -46,6 +46,7 @@ fn ultron(root: &Path, gateway: &str, args: &[&str], env: &[(&str, &str)]) -> Co
         .current_dir(root.join("cwd"))
         .env_clear()
         .env("ULTRON_HINDSIGHT_URL", "off")
+        .env("ULTRON_LSP", "off")
         .env("ULTRON_MEMORANTADO_URL", "off")
         .env("PATH", "/usr/bin:/bin")
         .env("HOME", root)

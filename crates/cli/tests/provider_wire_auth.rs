@@ -42,6 +42,7 @@ impl Root {
             .args(args)
             .env_clear()
             .env("ULTRON_HINDSIGHT_URL", "off")
+            .env("ULTRON_LSP", "off")
             .env("ULTRON_MEMORANTADO_URL", "off")
             .current_dir(self.root.join("cwd"))
             .env("PATH", "/usr/bin:/bin")

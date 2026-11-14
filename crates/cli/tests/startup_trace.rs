@@ -16,6 +16,7 @@ fn run(trace: Option<&std::path::Path>) -> (Sandbox, String) {
     command.args(["--model", "anthropic/claude-sonnet-4-5", "-p", "hi"]);
     command
         .env(hindsight::resolve::HINDSIGHT_URL_ENV, "off")
+        .env("ULTRON_LSP", "off")
         .env("ULTRON_MEMORANTADO_URL", "off")
         .env(config::env::OFFLINE_ENV, "1")
         .env(session_core::compose::LOKI_ENV, "off");

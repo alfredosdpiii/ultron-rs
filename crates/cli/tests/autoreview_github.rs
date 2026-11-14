@@ -22,6 +22,7 @@ fn env_for(dir: &Path) -> cli::Env {
             config::paths::ENV_AGENT_DIR => Some(agent.display().to_string()),
             review::settings::CACHE_DIR_ENV => Some(cache.display().to_string()),
             hindsight::resolve::HINDSIGHT_URL_ENV => Some("off".into()),
+            "ULTRON_LSP" => Some("off".into()),
             "ULTRON_MEMORANTADO_URL" => Some("off".into()),
             "HOME" => Some(home.display().to_string()),
             _ => None,

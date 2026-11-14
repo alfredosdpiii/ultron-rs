@@ -29,6 +29,7 @@ fn env(root: &Path, settings: Value) -> RunEnv {
     std::fs::write(agent.join("personality.md"), format!("{PERSONALITY}\n")).unwrap();
     let vars: Vec<(String, String)> = vec![
         ("ULTRON_HINDSIGHT_URL".into(), "off".into()),
+        ("ULTRON_LSP".into(), "off".into()),
         ("ULTRON_MEMORANTADO_URL".into(), "off".into()),
         ("HOME".into(), home.display().to_string()),
         (config::paths::ENV_AGENT_DIR.into(), agent.display().to_string()),

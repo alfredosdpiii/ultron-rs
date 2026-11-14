@@ -77,6 +77,7 @@ fn memorantado_is_chosen_by_setting_else_when_it_answers() {
     let endpoint = up_endpoint(Endpoint::choose(&none, &picked, &agent(&d), Hindsight::Off, &up));
     assert_eq!(endpoint.url, "http://m:9");
     let env = |name: &str| match name {
+        "ULTRON_LSP" => Some("off".to_string()),
         "ULTRON_MEMORANTADO_URL" => Some("off".to_string()),
         _ => None,
     };

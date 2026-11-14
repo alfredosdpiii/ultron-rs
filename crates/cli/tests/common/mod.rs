@@ -375,6 +375,7 @@ impl Sandbox {
         command
             .env_clear()
             .env("ULTRON_HINDSIGHT_URL", "off")
+            .env("ULTRON_LSP", "off")
             .env("ULTRON_MEMORANTADO_URL", "off")
             .current_dir(&self.cwd)
             .env("PATH", std::env::var("PATH").unwrap_or_default())
