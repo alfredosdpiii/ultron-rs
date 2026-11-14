@@ -1,7 +1,7 @@
 //! Replays fixtures/verdict.json (recorded by fixtures/generate-verdict.mjs from verdict.ts): validateVerdict,
 //! isConcreteEvidence, workspacePath and verdictTag give the same verdicts, problems, paths and tags.
 
-use delegation::verdict::{is_concrete_evidence, validate_verdict, verdict_tag, workspace_path};
+use delegation::verdict::{is_concrete_evidence, left_items, validate_verdict, verdict_tag, workspace_path};
 use serde_json::{Value, json};
 use std::path::Path;
 
@@ -53,5 +53,45 @@ fn delegation_verdict_bounded_flattens_javascript_whitespace() {
     assert!(
         problems.contains(&"status must be \"passed\", \"failed\" or \"blocked\", not \"a\u{85}b c\"".to_string()),
         "{problems:?}"
+    );
+}
+
+#[test]
+fn delegation_verdict_keeps_left_items_and_tags_them() {
+    let payload = |left: Value| {
+        json!({ "status": "failed", "summary": "half done", "left": left })
+            .as_object()
+            .cloned()
+            .unwrap()
+    };
+    let verdict = validate_verdict(
+        &payload(json!(["  the retry path\n is untested ", "docs/api.md is stale"])),
+        None,
+    )
+    .unwrap();
+    assert_eq!(
+        verdict["left"],
+        json!(["the retry path is untested", "docs/api.md is stale"])
+    );
+    let result = json!({ "verdict": verdict, "check": { "outcome": "verified" } });
+    assert_eq!(
+        left_items(&result),
+        ["the retry path is untested", "docs/api.md is stale"]
+    );
+    assert_eq!(
+        verdict_tag(&result).as_deref(),
+        Some("[failed, verified; 2 left undone]")
+    );
+    // Nothing left: the verdict is TypeScript's, without the key.
+    let none = validate_verdict(&payload(json!([])), None).unwrap();
+    assert!(none.get("left").is_none(), "{none}");
+    assert_eq!(
+        validate_verdict(&payload(json!(["", 3])), None).unwrap_err(),
+        ["left must be a list of nonempty strings, one per thing left undone or found broken"]
+    );
+    let many: Vec<String> = (0..21).map(|i| format!("item {i}")).collect();
+    assert_eq!(
+        validate_verdict(&payload(json!(many)), None).unwrap_err(),
+        ["left has 21 items; give at most 20 (group the rest)"]
     );
 }

@@ -218,14 +218,15 @@ class RLMNamespace:
         return SpawnHandle(**result)
 
     async def finish(self, status: str, summary: str, *, evidence: Any = (), outputs: dict[str, Any] | None = None,
-                     changed_files: Any = ()) -> dict[str, Any]:
+                     changed_files: Any = (), left: Any = ()) -> dict[str, Any]:
         """As a subagent, record your verdict, then end your turn with a short reply.
 
         status: "passed" (the brief is done), "failed" (it could not be done) or "blocked" (something outside
         you stopped it). summary: what was done or what blocked it. evidence: concrete strings, each a command
         with its outcome ("pytest -q: exit 0, 12 passed") or a file with lines ("src/a.py:40-52 handles X");
         "passed" is rejected without it. outputs: named results for the parent. changed_files: every file
-        you (or your subagents) created, edited or deleted, relative to the working directory.
+        you (or your subagents) created, edited or deleted, relative to the working directory. left: one string
+        for each thing you left undone or found broken outside your brief; your parent must settle each.
 
         The host checks changed_files against the files that changed on disk while you ran and shows the
         parent any mismatch. A rejected call raises with the reasons: fix them and call again (a few attempts)."""
@@ -236,6 +237,8 @@ class RLMNamespace:
             "outputs": {} if outputs is None else outputs,
             "changed_files": [str(p) for p in changed_files] if isinstance(changed_files, (list, tuple, set)) else changed_files,
         }
+        if left:
+            payload["left"] = list(left) if isinstance(left, (list, tuple)) else left
         return await self._bridge.request("rlm.finish", payload)
 
     async def merge(self, children: Any = None, *, strategy: str = "sequential", on_conflict: str = "stop",

@@ -112,9 +112,9 @@ the worker knows: give it the goal, the paths, the text of its items and its che
 WORKER = """
 Rules: stay inside the paths above. Write the test for each item first and see it fail, then make it pass. Never
 edit a test, an assertion or a snapshot to reach green. Run checks whole: no `| tail`, no `|| true`. If you cannot
-check an item here, say blocked and why; blocked is not success. End your summary with one `Left: <what>` line for
-each thing you left undone or found broken outside your paths. Finish with
-rlm.finish(status, summary, evidence=[each command with its exit code], changed_files=[...])."""
+check an item here, say blocked and why; blocked is not success. Finish with
+rlm.finish(status, summary, evidence=[each command with its exit code], changed_files=[...],
+left=[one string for each thing you left undone or found broken outside your paths])."""
 
 def brief(f, found=""):
     items = "\n".join(line for line in spec_api.read().splitlines() if any(f" {i} " in line for i in f["items"]))
@@ -150,7 +150,8 @@ A worker whose contract failed after its retry is not merged, and its feature is
 Read the note, then either build it again with a narrower brief or mark its items `fail`. Do not fix it by hand and
 call it built.
 
-Before the next milestone, settle every `Left:` line the workers returned. Each becomes a new feature on the board, a
+Before the next milestone, settle every `left` item the workers returned (`result["verdict"]["left"]`; the host
+continues your turn once with them). Each becomes a new feature on the board, a
 new acceptance item (`spec_api.write(..., revise="<what turned up>")`), or a task you add and move to `dropped` with
 a note saying why it will never need doing. "Low priority" and "later" are not reasons: work that may need doing is
 tracked.

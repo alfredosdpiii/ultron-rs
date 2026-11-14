@@ -2081,6 +2081,22 @@ impl Delegation {
             .collect()
     }
 
+    /// What the finished children started from `lane` left undone (`rlm.finish(left=[...])`), in admission order:
+    /// each child's id, spawn name and items. Children that left nothing are not listed.
+    pub fn left_items(&self, lane: &str) -> Vec<(String, String, Vec<String>)> {
+        let state = sync::lock(&self.inner.state);
+        let parent = state.lane_tasks.get(lane).cloned();
+        state
+            .tasks
+            .iter()
+            .filter(|t| t.record["definition"] == CHILD && t.parent_id == parent)
+            .filter_map(|t| {
+                let items = crate::verdict::left_items(t.outcome.as_ref()?.as_ref().ok()?);
+                (!items.is_empty()).then(|| (t.id.clone(), t.name.clone().unwrap_or_else(|| t.id.clone()), items))
+            })
+            .collect()
+    }
+
     /// Host-side wait for tasks' results (in the given order), without holding any kernel. `timeout` bounds the
     /// whole wait; a task still running when it passes is left out.
     pub fn wait(&self, ids: &[String], timeout: Option<Duration>) -> Vec<(String, Result<Value, String>)> {

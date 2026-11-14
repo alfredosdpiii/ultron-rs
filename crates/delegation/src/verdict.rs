@@ -15,6 +15,8 @@ const EVIDENCE_ITEMS: usize = 40;
 const EVIDENCE_CHARS: usize = 1_000;
 const CHANGED_FILES: usize = 500;
 const OUTPUTS_BYTES: usize = 32 * 1024;
+const LEFT_ITEMS: usize = 20;
+const LEFT_CHARS: usize = 500;
 
 /// JavaScript `\w`, `\d` and `\b` are ASCII; the patterns spell them out so Rust's Unicode classes do not widen them.
 static CONCRETE: LazyLock<Vec<Regex>> = LazyLock::new(|| {
@@ -64,7 +66,8 @@ fn bounded(value: &str, limit: usize) -> String {
 pub fn validate_verdict(payload: &Map<String, Value>, workspace: Option<&str>) -> Result<Value, Vec<String>> {
     let mut problems = Vec::new();
     for key in payload.keys() {
-        if !["status", "summary", "outputs", "evidence", "changed_files"].contains(&key.as_str()) {
+        // `left` is Rust's (the message is TypeScript's, as recorded).
+        if !["status", "summary", "outputs", "evidence", "changed_files", "left"].contains(&key.as_str()) {
             problems.push(format!(
                 "unknown field \"{key}\" (use status, summary, outputs, evidence, changed_files)"
             ));
@@ -166,16 +169,47 @@ pub fn validate_verdict(payload: &Map<String, Value>, workspace: Option<&str>) -
         }
         _ => problems.push("changed_files must be a list of file paths (relative to the working directory)".into()),
     }
+    // What the child left undone or found broken outside its brief: its parent settles each ([`left_items`]).
+    let mut left: Vec<String> = Vec::new();
+    match payload.get("left").unwrap_or(&null) {
+        Value::Null => {}
+        Value::Array(items) if items.iter().all(|i| i.as_str().is_some_and(|t| !t.trim().is_empty())) => {
+            if items.len() > LEFT_ITEMS {
+                problems.push(format!(
+                    "left has {} items; give at most {LEFT_ITEMS} (group the rest)",
+                    items.len()
+                ));
+            }
+            left = items
+                .iter()
+                .filter_map(Value::as_str)
+                .map(|item| bounded(item, LEFT_CHARS))
+                .collect();
+        }
+        _ => problems.push("left must be a list of nonempty strings, one per thing left undone or found broken".into()),
+    }
     if !problems.is_empty() {
         return Err(problems);
     }
-    Ok(json!({
+    let mut verdict = json!({
         "status": status_text,
         "summary": summary,
         "outputs": outputs,
         "evidence": evidence,
         "changed_files": changed,
-    }))
+    });
+    if !left.is_empty() {
+        verdict["left"] = json!(left);
+    }
+    Ok(verdict)
+}
+
+/// The `left` items of a child's result (its verdict's), none for a result without a verdict.
+pub fn left_items(result: &Value) -> Vec<String> {
+    result["verdict"]["left"]
+        .as_array()
+        .map(|items| items.iter().filter_map(Value::as_str).map(str::to_string).collect())
+        .unwrap_or_default()
 }
 
 /// One-line tag for a completion event: `[passed, verified]`, `[failed, contradicted; ...]`, `[unverified]`.
@@ -210,6 +244,10 @@ pub fn verdict_tag(result: &Value) -> Option<String> {
         }
         if !list("outside").is_empty() {
             extra.push(format!("{} change(s) outside its worktree", list("outside").len()));
+        }
+        let left = left_items(result).len();
+        if left > 0 {
+            extra.push(format!("{left} left undone"));
         }
         extra.retain(|e| !e.is_empty());
         let outcome = check["outcome"].as_str().unwrap_or("unchecked");

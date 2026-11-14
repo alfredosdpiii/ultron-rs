@@ -390,7 +390,7 @@ pub const OPS: &[Op] = &[
     op(
         "rlm.finish",
         "delegation::host",
-        &["changed_files", "evidence", "outputs", "status", "summary"],
+        &["changed_files", "evidence", "left", "outputs", "status", "summary"],
         &[],
     ),
     op(
