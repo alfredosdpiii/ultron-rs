@@ -105,6 +105,8 @@ mod loki_log_lines;
 mod loki_notice;
 #[path = "loki_project_python_session.rs"]
 mod loki_project_python_session;
+#[path = "lsp_write.rs"]
+mod lsp_write;
 #[path = "mcp_gateway.rs"]
 mod mcp_gateway;
 #[path = "mcp_proxy.rs"]

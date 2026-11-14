@@ -1,0 +1,28 @@
+[package]
+name = "lsp"
+version = "0.1.0"
+description = "Language server diagnostics for every REPL file write: server detection, mise install, a stdio LSP client"
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+autotests = false
+
+[dependencies]
+host = { path = "../host" }
+jsrt = { path = "../jsrt" }
+loki = { path = "../loki" }
+sandbox = { path = "../sandbox" }
+rustix = { version = "=1.1.5", features = ["process", "std"] }
+serde_json = { version = "=1.0.151", features = ["preserve_order"] }
+url = "=2.5.8"
+
+[dev-dependencies]
+kernel = { path = "../kernel" }
+tempfile = "=3.27.0"
+
+[lints]
+workspace = true
+
+[[test]]
+name = "it"
+path = "tests/it.rs"

@@ -139,6 +139,8 @@ pub struct Config {
     pub provider_token: mcp::connection::ProviderToken,
     /// Files Loki's own setup commit changed (crate::loki_notice): not the changes of the cell it ran beside.
     pub outside_changes: host::file_hooks::OutsideChanges,
+    /// The session's language servers, shared by every lane; None when they are off (`lsp::enabled`).
+    pub lsp: Option<lsp::LspGuard>,
     /// The terminal appearance the attached TUI reported ([`crate::core::Op::SetTerminalTheme`]): `diagram.mermaid`'s
     /// `auto` theme follows it before the session's `COLORFGBG`.
     pub terminal_theme: Arc<std::sync::Mutex<Option<String>>>,
@@ -242,6 +244,8 @@ impl Config {
             .map(|dir| dir.trim().to_string())
             .filter(|dir| !dir.is_empty())
             .map_or_else(|| agent_dir.join("skills"), PathBuf::from);
+        let lsp = lsp::enabled((env.var)(lsp::LSP_ENV).as_deref(), &settings)
+            .then(|| lsp::LspGuard::new(session_environment(&*env.var)));
         Config {
             cwd: env.cwd.clone(),
             home: env.home.clone(),
@@ -274,6 +278,7 @@ impl Config {
             masker: Arc::default(),
             project_trusted: manager.is_project_trusted(),
             outside_changes: host::file_hooks::OutsideChanges::default(),
+            lsp,
             terminal_theme: Arc::default(),
             provider_token: {
                 let env = env.clone();
@@ -417,6 +422,9 @@ impl Config {
                         (self.var)(LOKI_TIMEOUT_MS_ENV).as_deref(),
                     )),
             ));
+        }
+        if let Some(lsp) = &self.lsp {
+            hooks.add(Box::new(lsp.clone()));
         }
         hooks
     }
