@@ -72,7 +72,11 @@ fn finding(missing: &str) -> (String, bool) {
             if results.iter().any(|r| r.to_string().contains("[Loki]")) || results.len() > 500 {
                 return text("done");
             }
-            tool(&format!("toolu_{}", results.len()), "print('NEXT')")
+            // Each cell differs: the same cell seven times in a row is refused (the turn guards).
+            tool(
+                &format!("toolu_{}", results.len()),
+                &format!("print('NEXT', {})", results.len()),
+            )
         }),
         &[(loki::project::LOKI_PROJECT_PYTHON_ENV, &python.display().to_string())],
         None,

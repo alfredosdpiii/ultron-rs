@@ -1020,7 +1020,8 @@ pub struct Rlm {
     mask_secrets: Option<String>,
     max_bytes: usize,
     spill_dir: PathBuf,
-    /// Situational hints (`ULTRON_HINTS=on`): one `[hint:<tag>]` line at the end of a cell's result.
+    /// Situational hints (`ULTRON_HINTS=on`; the loop guards without it): one `[hint:<tag>]` line at the end of a
+    /// cell's result.
     hints: Option<Arc<kernel_apis::cell_hints::CellHints>>,
     /// The images a cell attaches with `view_image` (crate::view_images).
     images: Arc<crate::view_images::ViewImages>,
@@ -1179,6 +1180,9 @@ impl Rlm {
         {
             let code = args["code"].as_str().ok_or("rlm needs a `code` string")?.to_string();
             if let Some(hints) = &self.hints {
+                if let Some(refusal) = hints.refusal(&self.lane, &code) {
+                    return Err(refusal);
+                }
                 hints.begin_cell(&self.lane, &code);
             }
             self.images.begin(&self.lane);

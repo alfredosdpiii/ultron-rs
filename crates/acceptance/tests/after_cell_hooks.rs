@@ -37,7 +37,8 @@ fn acceptance_after_cell_loki_finding_arrives_with_the_next_cell() {
         if results.iter().any(|r| r.contains("[Loki]")) || results.len() > 500 {
             return Reply::Text("done".into());
         }
-        Reply::Rlm("print('next cell')".into())
+        // Each cell differs: the same cell seven times in a row is refused (the turn guards).
+        Reply::Rlm(format!("print('next cell', {})", results.len()))
     });
     let install = Install::new(&provider);
     let project = install.project();

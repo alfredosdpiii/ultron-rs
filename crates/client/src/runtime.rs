@@ -815,7 +815,9 @@ fn wait_idle(
     let mut abort_sent = false;
     loop {
         let state = ops(connection, session, json!({"op": "state"}))?.unwrap_or_default();
-        let busy = state["isStreaming"] == true || state["pendingMessageCount"].as_u64().unwrap_or(0) > 0;
+        // Turn-end checks may continue the turn; they end without a run boundary, so the state is read again.
+        let checking = state["isChecking"] == true;
+        let busy = checking || state["isStreaming"] == true || state["pendingMessageCount"].as_u64().unwrap_or(0) > 0;
         if !busy || (abort_sent && state["isStreaming"] != true) {
             return Ok(());
         }
@@ -839,7 +841,7 @@ fn wait_idle(
             // A closed connection is reported by the next state read.
             match boundary.recv_timeout(Duration::from_millis(100)) {
                 Ok(()) => break,
-                Err(mpsc::RecvTimeoutError::Timeout) if connection.is_closed() => break,
+                Err(mpsc::RecvTimeoutError::Timeout) if connection.is_closed() || checking => break,
                 Err(mpsc::RecvTimeoutError::Timeout) => {}
                 Err(mpsc::RecvTimeoutError::Disconnected) => {
                     return Err(CallError::Disconnected("The transcript subscription ended".into()));

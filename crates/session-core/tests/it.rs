@@ -195,6 +195,8 @@ mod subscription_models;
 mod swarm_ops;
 #[path = "tool_arguments.rs"]
 mod tool_arguments;
+#[path = "turn_guard.rs"]
+mod turn_guard;
 #[path = "view_image_tool.rs"]
 mod view_image_tool;
 #[path = "view_images_trust.rs"]

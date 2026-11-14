@@ -361,6 +361,7 @@ impl Core {
         // worker retired without its child_done event.
         let running = self.run.is_some()
             || self.compacting.is_some()
+            || self.turn_guard_checking()
             || self.lane.stack.host.running_jobs() > 0
             || self.lane.stack.tool_calls().running(MAIN_LANE, &|_| false) > 0
             || !self.lane.stack.delegation.running(MAIN_LANE).is_empty()
@@ -384,9 +385,11 @@ impl Core {
         // A completion that arrived but is not forwarded yet still has to re-invoke the root.
         let stack = self.lane.stack.clone();
         forward_ends(&stack.events, &self.durable.children, &stack.agents, &self.events);
+        // Turn-end checks in progress may continue the turn (core::turn_guard): counted with the run.
+        let checking = usize::from(self.turn_guard_checking());
         let events = &self.events;
         if !events.enabled() {
-            return json!({"pending": false, "jobs": 0, "tools": 0, "tasks": 0, "events": 0, "running": 0});
+            return json!({"pending": checking > 0, "jobs": 0, "tools": 0, "tasks": 0, "events": 0, "running": checking});
         }
         let aborted = |root: Option<&str>| events.root_aborted(root);
         let jobs = self.lane.stack.host.running(MAIN_LANE, &aborted);
@@ -397,7 +400,7 @@ impl Core {
             + self.lane.stack.agents.running_announced(MAIN_LANE)
             + self.lane.stack.lanes.detached_running(MAIN_LANE);
         let pending = events.pending_for(MAIN_LANE);
-        let running = usize::from(self.run.is_some());
+        let running = usize::from(self.run.is_some()) + checking;
         json!({
             "pending": jobs + tools + tasks + pending + running > 0,
             "jobs": jobs,

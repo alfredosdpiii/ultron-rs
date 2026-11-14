@@ -23,6 +23,8 @@ pub const DEFAULT_READ_HANDLE_BYTES: u64 = 256 * 1024;
 const FAILURE_STREAK: usize = 3;
 /// The same successful cell this many times in a row (and again at twice as many).
 const CELL_REPEATS: usize = 3;
+/// The hints that fire without `ULTRON_HINTS` ([`CellHintsOptions::guards`]): a lane going in circles.
+const GUARD_TAGS: &[&str] = &["stuck-loop", "repeated-cell"];
 /// Same status call this many times in one cell.
 const POLL_REPEATS: usize = 3;
 
@@ -293,6 +295,9 @@ pub fn loop_hint_text(trip: &LoopTrip) -> String {
 #[derive(Clone)]
 pub struct CellHintsOptions {
     pub enabled: bool,
+    /// Loop guards, whether or not hints are `enabled`: the `stuck-loop` and `repeated-cell` hints fire, and a cell
+    /// that already ran twice [`CELL_REPEATS`] times in a row is refused ([`CellHints::refusal`]).
+    pub guards: bool,
     pub max_per_tag: u64,
     /// Completions are announced (ULTRON_ASYNC_EVENTS): the wait and polling hints point at events.
     pub async_events: bool,
@@ -309,6 +314,7 @@ impl Default for CellHintsOptions {
     fn default() -> Self {
         Self {
             enabled: true,
+            guards: true,
             max_per_tag: DEFAULT_HINT_MAX_PER_TAG,
             async_events: true,
             next_call_root: false,
@@ -390,21 +396,42 @@ impl CellHints {
         self.options.enabled
     }
 
+    /// Whether cells are observed at all: every hint is on, or the loop guards are.
+    pub fn active(&self) -> bool {
+        self.options.enabled || self.options.guards
+    }
+
+    /// Why `code` is not run on `lane`: the same cell just succeeded twice [`CELL_REPEATS`] times in a row there
+    /// (the `repeated-cell` hint said so twice). Any other cell starts the count over.
+    pub fn refusal(&self, lane: &str, code: &str) -> Option<String> {
+        if !self.options.guards {
+            return None;
+        }
+        let lanes = jsrt::sync::lock(&self.lanes);
+        let (previous, count) = lanes.get(lane)?.repeat.as_ref()?;
+        (*count >= CELL_REPEATS * 2 && previous == code.trim()).then(|| {
+            format!(
+                "Not run: this exact cell already ran {count} times in a row and succeeded each time. Use the output you have, run something different, or end your turn and wait for the event."
+            )
+        })
+    }
+
     fn now(&self) -> i64 {
         (self.options.now)()
     }
 
-    /// `lane`'s run ended: failure streaks start over with its next run.
+    /// `lane`'s run ended: failure streaks and repeats start over with its next run.
     pub fn run_ended(&self, lane: &str) {
         jsrt::sync::lock(&self.loops).reset(lane);
         if let Some(state) = jsrt::sync::lock(&self.lanes).get_mut(lane) {
             state.failure = None;
+            state.repeat = None;
         }
     }
 
     /// A cell starts on `lane`.
     pub fn begin_cell(&self, lane: &str, code: &str) {
-        if !self.enabled() {
+        if !self.active() {
             return;
         }
         jsrt::sync::lock(&self.lanes).entry(lane.to_string()).or_default().cell = Some(Cell {
@@ -472,7 +499,7 @@ impl CellHints {
 
     /// The cell on `lane` ended: the hint line to append to its result, if any.
     pub fn end_cell(&self, lane: &str, outcome: &CellOutcome<'_>) -> Option<String> {
-        if !self.enabled() {
+        if !self.active() {
             return None;
         }
         // A lane nothing wakes gets the hints that say to await what the answer needs.
@@ -492,6 +519,9 @@ impl CellHints {
         };
         if let Some(trip) = trip {
             candidates.insert(0, ("stuck-loop", loop_hint_text(&trip)));
+        }
+        if !self.options.enabled {
+            candidates.retain(|(tag, _)| GUARD_TAGS.contains(tag));
         }
         if candidates.is_empty() {
             return None;

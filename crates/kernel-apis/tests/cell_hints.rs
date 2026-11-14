@@ -570,3 +570,46 @@ fn kernel_apis_cell_hints_job_wording_follows_the_woken_lanes() {
         assert!(!hint.contains("end your turn"), "{hint}");
     }
 }
+
+#[test]
+fn kernel_apis_loop_guards_fire_without_hints_and_refuse_the_seventh_identical_cell() {
+    let fx = Fixture::new();
+    let guards = fx.make_with(CellHintsOptions {
+        enabled: false,
+        ..fx.options()
+    });
+    assert!(guards.active() && !guards.enabled());
+    let code = "print(len(rows))";
+    // Other hints stay off: a truncated result earns nothing.
+    assert_eq!(fx.cell(&guards, "x", &[], (TRUNCATED, None)), None);
+    for n in 1..=6 {
+        assert_eq!(guards.refusal("main", code), None, "cell {n} runs");
+        let hint = fx.cell(&guards, code, &[], OK);
+        assert_eq!(hint.is_some(), n == 3 || n == 6, "cell {n}: {hint:?}");
+    }
+    let refused = guards.refusal("main", &format!("{code}\n")).unwrap();
+    assert!(
+        refused.starts_with("Not run: this exact cell already ran 6 times in a row"),
+        "{refused}"
+    );
+    // Another lane, another cell, or the lane's next run is not refused.
+    assert_eq!(guards.refusal("side", code), None);
+    assert_eq!(guards.refusal("main", "print(len(rows) + 1)"), None);
+    guards.run_ended("main");
+    assert_eq!(guards.refusal("main", code), None);
+    // Three failures in a row with the same error trip the loop detector's hint too.
+    let key = Some("KeyError");
+    assert_eq!(fx.cell(&guards, "a[1]", &[], ("", key)), None);
+    assert_eq!(fx.cell(&guards, "a[2]", &[], ("", key)), None);
+    assert!(starts(&fx.cell(&guards, "a[3]", &[], ("", key)), "[hint:stuck-loop] "));
+    // Without the guards, nothing is observed or refused.
+    let off = fx.make_with(CellHintsOptions {
+        enabled: false,
+        guards: false,
+        ..fx.options()
+    });
+    for _ in 0..7 {
+        assert_eq!(fx.cell(&off, code, &[], OK), None);
+    }
+    assert_eq!(off.refusal("main", code), None);
+}

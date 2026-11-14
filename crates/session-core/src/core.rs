@@ -553,6 +553,11 @@ pub enum Input {
     Woken,
     /// A fired schedule's prompt that waited for the run in progress (core::schedule_ops).
     Scheduled(Value),
+    /// The turn-end checks numbered `id` ended (core::turn_guard): the labels and evidence of the ones that failed.
+    TurnChecked {
+        id: u64,
+        failed: Vec<String>,
+    },
 }
 
 /// Where lane-watch events go.
@@ -726,6 +731,8 @@ pub struct Core {
     /// The session's persona toggle and keep-going mode (the session value `ultron.module/persona`).
     persona_session: resources::keep_going::SessionPersona,
     observer: observer::Observer,
+    /// What the host checks when a run ends (core::turn_guard).
+    turn_guard: turn_guard::TurnGuard,
 }
 
 mod auto_compact;
@@ -742,6 +749,7 @@ pub mod event_lanes;
 mod observer;
 mod persona_nudge;
 mod schedule_ops;
+pub mod turn_guard;
 mod user_bash;
 
 /// The fork marker the session a client forked to carries until its first worker reads it
@@ -1150,6 +1158,7 @@ impl Core {
             persona: Default::default(),
             persona_session: Default::default(),
             observer,
+            turn_guard: Default::default(),
         };
         // The session's persona toggle and keep-going mode, before a resumed run can end.
         core.persona_load();
@@ -1261,6 +1270,7 @@ impl Core {
                 Input::Scheduled(message) => {
                     let _ = self.schedule_start(message);
                 }
+                Input::TurnChecked { id, failed } => self.turn_checked(id, failed),
             }
         }
         self.close();
@@ -1543,6 +1553,7 @@ impl Core {
                 }
                 if value["role"] == "assistant" {
                     self.persona_assistant(&value);
+                    self.turn_guard_assistant(&value);
                 }
                 self.journal(&agent_event);
                 self.announce();
@@ -1785,6 +1796,7 @@ impl Core {
             self.deferred.push_front(input);
         }
         self.persona_run_ended(aborted, failed);
+        self.turn_guard_run_ended(aborted, failed);
     }
 
     /// `appendCustomEntry`: a `custom` entry at the tip of `main`, announced; after the run in progress (a custom
@@ -1870,6 +1882,7 @@ impl Core {
         if let Some(run) = &self.run {
             run.signal.abort();
         }
+        self.turn_guard_cancel();
         // A successor takes the session: what this worker's hosts would still journal (a subagent's wait failing
         // as the runtime closes) is dropped, so its tasks stay unfinished for the successor to reattach.
         if hand_over && let Some(values) = &self.runtime.services.values {
@@ -1968,6 +1981,7 @@ impl Core {
     fn user_text(&mut self, message: &str) -> (String, Option<String>) {
         let message = crate::review_command::expand_review_command(message);
         let notice = self.persona_user_input(&message);
+        self.turn_guard_user_input();
         (self.expand_prompt_template(message), notice)
     }
 
@@ -2405,6 +2419,10 @@ impl Core {
         state.insert("thinkingLevel".into(), self.thinking.clone().into());
         state.insert("isStreaming".into(), self.run.is_some().into());
         state.insert("isCompacting".into(), self.compacting.is_some().into());
+        // Only while turn-end checks run (core::turn_guard): they may continue the turn.
+        if self.turn_guard_checking() {
+            state.insert("isChecking".into(), true.into());
+        }
         let mode = |all: bool| {
             if all {
                 config::keys::QUEUE_ALL
@@ -2793,6 +2811,8 @@ impl Core {
             ending: false,
         });
         self.persona_run_started();
+        // Checks of an earlier turn's end are not this run's.
+        self.turn_guard_cancel();
         self.emit(WatchEvent::RunStart {
             run_id: id,
             started_at: now_ms(),

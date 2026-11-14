@@ -32,6 +32,13 @@ pub fn nudge_line(message: &Value) -> String {
             details["max"].as_u64().unwrap_or(100)
         );
     }
+    // The turn guards' (session_core::core::turn_guard in the engine) name what continued the turn.
+    if let Some(guard) = details["guard"].as_str() {
+        return match (details["nudge"].as_u64(), details["max"].as_u64()) {
+            (Some(n), Some(max)) => format!("auto-continue: {guard} ({n}/{max})"),
+            _ => format!("auto-continue: {guard}"),
+        };
+    }
     format!(
         "auto-continue ({}/{})",
         details["nudge"].as_u64().unwrap_or(1),

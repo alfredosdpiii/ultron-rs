@@ -91,7 +91,11 @@ fn session_core_memory_pointer_follows_a_matching_file_change() {
             }
             // The check runs in the background after the writing cell; later cells run until one carries the
             // pointer (a hang guard of 500 cells, never a timing expectation).
-            tool(&format!("toolu_{}", results.len()), "print('NEXT')")
+            // Each cell differs: the same cell seven times in a row is refused (the turn guards).
+            tool(
+                &format!("toolu_{}", results.len()),
+                &format!("print('NEXT', {})", results.len()),
+            )
         }),
         &[(hindsight::resolve::HINDSIGHT_URL_ENV, &url)],
         None,

@@ -116,6 +116,8 @@ pub struct Config {
     pub ts_guide: bool,
     /// `ULTRON_HINTS=on` ([`hints`]).
     pub hints: bool,
+    /// Not `ULTRON_TURN_GUARDS=off`, outside the TypeScript guide ([`turn_guards`]).
+    pub turn_guards: bool,
     /// The global `rlm.resultFooter` setting, outside the TypeScript guide: REPL results end with
     /// [`crate::lane::result_footer`]s, and the runtime guide says so.
     pub result_footer: bool,
@@ -224,6 +226,16 @@ pub fn hints(var: &dyn Fn(&str) -> Option<String>) -> bool {
     kernel_apis::cell_hints::hints_enabled(var(kernel_apis::cell_hints::HINTS_ENV).as_deref())
 }
 
+/// `ULTRON_TURN_GUARDS`: `off` turns the turn guards off.
+pub const TURN_GUARDS_ENV: &str = "ULTRON_TURN_GUARDS";
+
+/// Whether the turn guards are on: a lane going in circles is told so and its seventh identical cell in a row is
+/// refused (kernel_apis::cell_hints), and the root's turn is continued after an empty reply or with what its
+/// subagents left undone (crate::core `turn_guard`). Off under `ULTRON_TURN_GUARDS=off` and the TypeScript guide.
+pub fn turn_guards(var: &dyn Fn(&str) -> Option<String>) -> bool {
+    !ts_guide(var) && !crate::flag_off(var(TURN_GUARDS_ENV).as_deref())
+}
+
 impl Config {
     pub fn child_env(&self) -> Vec<(String, String)> {
         session_environment(&*self.var)
@@ -265,6 +277,7 @@ impl Config {
             ),
             ts_guide: ts_guide(&*env.var),
             hints: hints(&*env.var),
+            turn_guards: turn_guards(&*env.var),
             result_footer: !ts_guide(&*env.var) && config::keys::result_footer(manager.global_settings()),
             tool_rounds_nudge: crate::nudge::tool_rounds_nudge_from_env(
                 (env.var)(crate::nudge::TOOL_ROUNDS_NUDGE_ENV).as_deref(),
@@ -803,6 +816,11 @@ impl Runtime {
             )?,
         };
         diagnostics.extend(system.warnings());
+        if let Err(error) =
+            crate::core::turn_guard::parse_checks(config.settings.as_object().unwrap_or(&Default::default()))
+        {
+            diagnostics.push(format!("{error}; no turn-end check runs"));
+        }
         Ok(Runtime {
             config: Arc::new(config),
             services,
@@ -1069,6 +1087,7 @@ impl Runtime {
             apis.hints.clone(),
             kernel_apis::cell_hints::CellHintsOptions {
                 enabled: config.hints,
+                guards: config.turn_guards,
                 max_per_tag: kernel_apis::cell_hints::hint_max_per_tag(
                     var(kernel_apis::cell_hints::HINTS_MAX_ENV).as_deref(),
                 ),
@@ -1780,7 +1799,7 @@ impl Stack {
                 self.delegation.clone(),
                 self.lane_steer.clone(),
             )) as Arc<dyn kernel_apis::ApiModule>);
-        let observed: Arc<dyn HostHandler> = if self.cell_hints.enabled() {
+        let observed: Arc<dyn HostHandler> = if self.cell_hints.active() {
             Arc::new(ObservedByHints {
                 inner: Arc::new(apis),
                 hints: self.cell_hints.clone(),
@@ -1880,7 +1899,7 @@ impl Stack {
             .config
             .session_dir("rlm-output", &self.session_id)
             .join(lane_dir(lane));
-        let hints = self.cell_hints.enabled().then(|| self.cell_hints.clone());
+        let hints = self.cell_hints.active().then(|| self.cell_hints.clone());
         Ok(rlm_over(
             &self.config,
             self.lanes.clone(),
