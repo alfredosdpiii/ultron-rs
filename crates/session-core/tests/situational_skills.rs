@@ -24,10 +24,11 @@ fn skill_text(name: &str) -> Option<(String, String)> {
     })
 }
 
+/// Files a cell wrote with `edit()` or `write()`.
 fn changes(files: &[&str]) -> CellChanges {
     CellChanges {
-        files: files.iter().map(|file| Path::new("/repo").join(file)).collect(),
-        checked: Vec::new(),
+        files: Vec::new(),
+        checked: files.iter().map(|file| Path::new("/repo").join(file)).collect(),
         deleted: Vec::new(),
         complete: true,
     }
@@ -116,6 +117,37 @@ fn session_core_situational_skills_give_each_skill_once_per_lane() {
     assert_eq!(child.len(), 1, "another lane gets it too");
     on.store(false, Ordering::SeqCst);
     assert!(!skills.enabled(), "off with engineering mode");
+}
+
+/// The after-cell comparison covers the whole session directory, where other sessions, builds and checkouts write
+/// too: a change the host did not make is not known to be the cell's.
+#[test]
+fn session_core_situational_skills_follow_only_files_written_with_edit_or_write() {
+    let skills = observer(json!({}), Arc::new(AtomicBool::new(true)));
+    let cwd = Path::new("/repo");
+    let elsewhere = CellChanges {
+        files: [
+            "target/debug/build/sys/out/bindgen.rs",
+            "other/tests/gate.rs",
+            "other/README.md",
+        ]
+        .iter()
+        .map(|file| cwd.join(file))
+        .collect(),
+        complete: true,
+        ..Default::default()
+    };
+    assert_eq!(skills.cell_changed(&elsewhere, cwd, "main"), Vec::<String>::new());
+    let given = skills.cell_changed(&changes(&["tests/test_app.py"]), cwd, "main");
+    assert_eq!(
+        given.len(),
+        1,
+        "those files neither used up the test skill nor counted toward the playbook: {given:?}"
+    );
+    assert!(
+        given[0].starts_with("[skill] You changed a test file (tests/test_app.py)"),
+        "{given:?}"
+    );
 }
 
 #[test]
@@ -369,15 +401,19 @@ fn session_core_situational_skills_excerpt_a_long_skill_and_skip_a_missing_one()
     );
 }
 
-const WRITE: &str = "from pathlib import Path\nPath('tests').mkdir(exist_ok=True)\nPath('tests/test_totals.py').write_text('def test_total():\\n    assert 1 + 1 == 2\\n')\nprint('WROTE')";
+const WRITE: &str =
+    "await write('tests/test_totals.py', 'def test_total():\\n    assert 1 + 1 == 2\\n')\nprint('WROTE')";
+/// A change the host did not make: to it, the same as another session writing in the directory.
+const ELSEWHERE: &str = "from pathlib import Path\nPath('tests').mkdir(exist_ok=True)\nPath('tests/test_elsewhere.py').write_text('')\nprint('ELSEWHERE')";
 
-fn run_session(engineering: bool, cells: usize) -> Vec<String> {
+/// A session whose first cells are `first`, in order.
+fn run_session(first: &'static [&'static str], engineering: bool, cells: usize) -> Vec<String> {
     let home = Home::new(Some(json!({"engineering": engineering})));
     let w = home.open(
         Box::new(move |request, _| {
             let results: Vec<String> = tool_results(request).iter().map(Value::to_string).collect();
-            if results.is_empty() {
-                return tool("toolu_0", WRITE);
+            if let Some(code) = first.get(results.len()) {
+                return tool(&format!("toolu_{}", results.len()), code);
             }
             // The check runs in the background after the writing cell; later cells run until one carries the skill
             // (a hang guard of `cells` cells, never a timing expectation), then two more.
@@ -405,7 +441,7 @@ fn run_session(engineering: bool, cells: usize) -> Vec<String> {
 
 #[test]
 fn session_core_situational_skills_follow_a_test_file_change_in_engineering_mode() {
-    let results = run_session(true, 40);
+    let results = run_session(&[WRITE], true, 40);
     assert!(results[0].contains("WROTE"), "{}", results[0]);
     let carrying: Vec<&String> = results.iter().filter(|r| r.contains("[skill] ")).collect();
     assert_eq!(carrying.len(), 1, "once: {results:?}");
@@ -429,9 +465,25 @@ fn session_core_situational_skills_follow_a_test_file_change_in_engineering_mode
 }
 
 #[test]
+fn session_core_situational_skills_name_the_file_the_cell_wrote_not_one_changed_by_other_means() {
+    let results = run_session(&[ELSEWHERE, WRITE], true, 40);
+    assert!(
+        results[0].contains("ELSEWHERE") && results[1].contains("WROTE"),
+        "{results:?}"
+    );
+    let carrying: Vec<&String> = results.iter().filter(|r| r.contains("[skill] ")).collect();
+    assert_eq!(carrying.len(), 1, "once: {results:?}");
+    assert!(
+        carrying[0].contains("[skill] You changed a test file (tests/test_totals.py)"),
+        "{}",
+        carrying[0]
+    );
+}
+
+#[test]
 fn session_core_situational_skills_stay_quiet_outside_engineering_mode() {
     // Off, no cell is even compared with the directory: nothing can arrive late.
-    let results = run_session(false, 5);
+    let results = run_session(&[WRITE], false, 5);
     assert!(results.len() > 5, "ran to the hang guard: {}", results.len());
     assert!(!results.iter().any(|r| r.contains("[skill] ")), "{results:?}");
 }

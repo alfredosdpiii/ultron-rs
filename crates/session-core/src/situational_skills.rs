@@ -7,13 +7,19 @@
 //! playbook was read once.
 //!
 //! Fix: a cell observer (host::file_hooks::CellObserver, beside kernel_apis::memory_pointers). When a cell on a lane
-//! changes a file matching a rule's paths, that lane's cell result ends with the rule's skill, its text whole:
+//! writes a file matching a rule's paths with `edit()` or `write()`, that lane's cell result ends with the rule's
+//! skill, its text whole:
 //!
 //! ```text
 //! [skill] You changed a test file (tests/test_totals.py): principle-test-behavior-not-implementation applies from
 //! here on.
 //! <the skill's text>
 //! ```
+//!
+//! Only those writes count. The after-cell comparison covers the whole session directory, where other sessions,
+//! builds, checkouts and unpacked archives write too, and the host cannot tell whose a change is that it did not
+//! make: in 18 sessions, 60 of 76 reminders named a file no recent cell had touched, and each used up its skill's
+//! one delivery. A file a cell changes by other means (a script, `Path.write_text`) brings no skill.
 //!
 //! Each skill reaches each lane once per session, at most [`PER_CELL`] per cell (another matching rule waits for its
 //! next matching change), and a skill longer than [`MAX_TEXT_CHARS`] is named with its file instead. Rules are the
@@ -426,7 +432,7 @@ impl SituationalSkills {
         Some(format!("{head}\n{}", excerpt(text.trim(), &file)))
     }
 
-    /// [`MANY_FILES_SKILL`] once `lane` has changed [`MANY_FILES`] files; it does not count toward [`PER_CELL`].
+    /// [`MANY_FILES_SKILL`] once `lane` has written [`MANY_FILES`] files; it does not count toward [`PER_CELL`].
     pub fn many_files(&self, lane: &str, paths: &[String]) -> Option<String> {
         let count = {
             let mut changed = self.changed.lock().unwrap_or_else(PoisonError::into_inner);
@@ -474,9 +480,8 @@ impl CellObserver for SituationalSkills {
 
     fn cell_changed(&self, changes: &CellChanges, cwd: &Path, lane: &str) -> Vec<String> {
         let paths: Vec<String> = changes
-            .files
+            .checked
             .iter()
-            .chain(&changes.checked)
             // A file in another repository (a sibling worktree) matches by its path in that repository.
             .filter_map(|path| {
                 inside(cwd, path).or_else(|| {
