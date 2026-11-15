@@ -103,6 +103,21 @@ pub fn text(text: &str) -> String {
     ])
 }
 
+/// A text answer after a thinking block, as a model that thinks first gives it.
+pub fn thinking_then_text(thinking: &str, text: &str) -> String {
+    sse(&[
+        start("msg_3"),
+        json!({"type": "content_block_start", "index": 0, "content_block": {"type": "thinking", "thinking": "", "signature": ""}}),
+        json!({"type": "content_block_delta", "index": 0, "delta": {"type": "thinking_delta", "thinking": thinking}}),
+        json!({"type": "content_block_stop", "index": 0}),
+        json!({"type": "content_block_start", "index": 1, "content_block": {"type": "text", "text": ""}}),
+        json!({"type": "content_block_delta", "index": 1, "delta": {"type": "text_delta", "text": text}}),
+        json!({"type": "content_block_stop", "index": 1}),
+        json!({"type": "message_delta", "delta": {"stop_reason": "end_turn"}, "usage": {"output_tokens": 5}}),
+        json!({"type": "message_stop"}),
+    ])
+}
+
 /// One `rlm` call running `code`.
 pub fn tool(id: &str, code: &str) -> String {
     sse(&[

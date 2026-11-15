@@ -74,10 +74,15 @@ impl Observer {
 }
 
 fn parse(response: &AssistantMessage, mask: &dyn Fn(&str) -> String) -> Option<Suggestion> {
-    if response.stop_reason != ai::StopReason::Stop || response.content.len() != 1 {
+    if response.stop_reason != ai::StopReason::Stop {
         return None;
     }
-    let ai::AssistantContent::Text(text) = &response.content[0] else {
+    // A model that thinks first puts a thinking block before its answer.
+    let mut answer = response
+        .content
+        .iter()
+        .filter(|part| !matches!(part, ai::AssistantContent::Thinking(_)));
+    let (Some(ai::AssistantContent::Text(text)), None) = (answer.next(), answer.next()) else {
         return None;
     };
     if text.text.chars().count() > 4096 {

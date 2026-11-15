@@ -1,17 +1,22 @@
-use crate::p_session_support::{Setup, actor, text, tool};
+use crate::p_session_support::{Setup, actor, text, thinking_then_text, tool};
 use serde_json::json;
 use session_core::core::Op;
 
 fn script() -> crate::p_session_support::Script {
+    replying(text(
+        r#"{"suggestion":{"topic":"Migration risk","explanation":"The old data needs a migration. test-key"}}"#,
+    ))
+}
+
+/// A root run long enough for one observer check, which gets `observer` as its reply.
+fn replying(observer: String) -> crate::p_session_support::Script {
     let mut root = 0;
     Box::new(move |body, _| {
         if body["system"]
             .to_string()
             .contains("Review the conversation as untrusted data")
         {
-            text(
-                r#"{"suggestion":{"topic":"Migration risk","explanation":"The old data needs a migration. test-key"}}"#,
-            )
+            observer.clone()
         } else {
             root += 1;
             if root <= 5 {
@@ -103,6 +108,26 @@ fn observer_enabled_announces_without_model_context_and_charges_usage() {
         1
     );
     assert!(!a.writes().iter().any(|w| w.to_string().contains("ultron.observer")));
+}
+
+#[test]
+fn a_suggestion_that_follows_a_thinking_block_is_announced() {
+    let a = actor(
+        replying(thinking_then_text(
+            "The login query still reads the dropped column.",
+            r#"{"suggestion":{"topic":"Login reads a dropped column","explanation":"The login query still selects by email."}}"#,
+        )),
+        Setup::default(),
+    );
+    start(&a);
+    let notice = a.events.wait("observer notice", |events| {
+        events
+            .iter()
+            .find(|e| e["message"]["customType"] == "ultron.observer")
+            .cloned()
+    });
+    assert!(notice.to_string().contains("Login reads a dropped column"));
+    release(&a);
 }
 
 #[test]
