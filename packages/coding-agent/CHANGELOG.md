@@ -38,6 +38,8 @@
 
 ### Changed
 
+- Situational skills and the rigor reminder at the third file follow only files a cell wrote with `edit()` or `write()`. They used to follow every file that changed in the session directory while a cell ran, so a build, a checkout or another session working in the same directory brought a skill to a cell that had written nothing, and used up that skill's one delivery. A file a cell changes with a script or `Path.write_text` no longer brings a skill.
+- The playbook that opens a request is chosen from the request's own words. A question ("whats your plan to fix?") opens Investigation, not Bug fix, unless it asks for the fix ("how do I fix the failing test"); requests to check, compare, measure, audit or look into something open Investigation; and in a message of more than 80 words only the first and last 40 are read, so a pasted page or traceback no longer picks the playbook.
 - Autoreview runs a deterministic stage on every diff before the model's findings are verified: Python compiles in process, JSON and TOML parse, `node --check`, error-class `ruff` and `mypy` when they are on PATH, and Loki's core rules. Its problems on added lines are posted as confirmed findings, and a model finding a stage contradicts (a syntax error in a file that compiles) is dropped.
 - The model can no longer write the profile's `settings.json`, `auth.json`, `skills/`, `skill-proposals/`, `memory-backend` or `optimize/` with `write()`, `edit()` or a shell command; the write is blocked whatever Loki's mode.
 - A REPL cell interrupted by a restart now says its effect is unknown: it may have partially run, was not replayed, and what it changed should be checked before running it again.

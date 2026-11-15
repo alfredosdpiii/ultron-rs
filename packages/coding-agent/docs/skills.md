@@ -60,7 +60,7 @@ While engineering mode is on, its full text (frontmatter removed) goes in the sy
 
 <a id="situational-skills"></a>
 
-In engineering mode, a skill can also come to the model when its situation does. When a cell changes a file matching a rule's paths, the cell's result ends with that skill's text, once per session and subagent (a subagent in its own worktree gets none), whatever the model would have read on its own. The rules are the `situationalSkills` setting:
+In engineering mode, a skill can also come to the model when its situation does. When a cell writes a file matching a rule's paths with `edit()` or `write()`, the cell's result ends with that skill's text, once per session and subagent (a subagent in its own worktree gets none), whatever the model would have read on its own. A file changed by other means (a script, a build, a checkout, another session working in the same directory) brings no skill, because the host cannot tell whose change it is. The rules are the `situationalSkills` setting:
 
 ```json
 {
