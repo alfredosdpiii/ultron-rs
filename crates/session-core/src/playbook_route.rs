@@ -8,6 +8,11 @@
 //! Fix: the request is matched against keyword routes ([`ROUTES`], first match wins) and the run opens with an
 //! `ultron.playbook` message holding that playbook's steps. A playbook already shown since the last compaction is not
 //! shown again.
+//!
+//! Two rules keep the keywords to the request itself. A question is not a request to change code ("whats your plan
+//! to fix?"), so it opens no playbook that changes code and falls to Investigation. And a long message is mostly
+//! pasted material (a web page, a traceback, a report) whose words are not the user's, so only its first and last
+//! [`EDGE_WORDS`] words are read: the request stands before or after the paste.
 
 use regex::Regex;
 use serde_json::{Value, json};
@@ -20,12 +25,12 @@ pub const MAX_PLAYBOOK_CHARS: usize = 5000;
 
 /// (playbook file stem, title, request pattern), in priority order.
 // ponytail: keyword routes, not a model call; a wrong pick costs one read of the right playbook. Ask a small
-// model when misroutes show up in sessions.
+// model when these still misroute: on 217 real messages they route 92, and the rest are mostly short follow-ups.
 pub const ROUTES: &[(&str, &str, &str)] = &[
     (
         "bug-fix",
         "Bug fix",
-        r"(?i)\b(fix(es|ed)?|bug|broken|crash(es|ing)?|regression|fails?|failing|doesn'?t work|not working|wrong)\b",
+        r"(?i)\b(fix(es)?|bug|broken|crash(es|ing)?|regression|fails?|failing|doesn'?t work|not working|wrong)\b",
     ),
     (
         "perf-issue",
@@ -45,9 +50,28 @@ pub const ROUTES: &[(&str, &str, &str)] = &[
     (
         "investigation",
         "Investigation",
-        r"(?i)(\bhow (does|do|is)\b|\bwhy (does|do|is)\b|\binvestigate\b|\bexplain\b|\bare we sure\b)",
+        r"(?i)\b(how (does|do|is)|why (does|do|is)|investigate|explain|are we sure|check|compare|measure|audit|analy[sz]e|look (at|into)|find out|what (can|else|do|does|is|are)|want to (know|understand))\b",
     ),
 ];
+
+/// Words read at each end of a message longer than both ends together.
+pub const EDGE_WORDS: usize = 40;
+/// The playbooks that change code: a question opens none of them.
+const CHANGES_CODE: &[&str] = &["bug-fix", "refactoring", "feature"];
+const INVESTIGATION: (&str, &str) = ("investigation", "Investigation");
+
+static OPENS_AS_QUESTION: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(
+        r"(?i)^(so |i see,? |and |but |also |ok(ay)?,? )*(what'?s?|why|how|is|are|was|were|does|do|did|which|where|who|when)\b",
+    )
+    .expect("valid pattern")
+});
+/// "lets add a flag?" asks for the change.
+static OPENS_AS_REQUEST: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"(?i)^(ok(ay)?,? |so |and |also )*(lets|let's|please)\b").expect("valid pattern"));
+/// "how do I fix the failing test" asks for the fix.
+static ASKS_FOR_A_FIX: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"(?i)\b(fix|repair|solve)\b").expect("valid pattern"));
 
 static COMPILED: LazyLock<Vec<(&'static str, &'static str, Regex)>> = LazyLock::new(|| {
     ROUTES
@@ -58,14 +82,24 @@ static COMPILED: LazyLock<Vec<(&'static str, &'static str, Regex)>> = LazyLock::
 
 /// The playbook (file stem, title) for a user message, `None` for a command, a short reply or no match.
 pub fn route(text: &str) -> Option<(&'static str, &'static str)> {
-    let text = text.trim();
-    if text.starts_with('/') || text.split_whitespace().count() < 5 {
+    let words: Vec<&str> = text.split_whitespace().collect();
+    if text.trim_start().starts_with('/') || words.len() < 5 {
         return None;
     }
+    let read = if words.len() > 2 * EDGE_WORDS {
+        [&words[..EDGE_WORDS], &words[words.len() - EDGE_WORDS..]]
+            .concat()
+            .join(" ")
+    } else {
+        words.join(" ")
+    };
+    let question = (read.ends_with('?') && !OPENS_AS_REQUEST.is_match(&read))
+        || (OPENS_AS_QUESTION.is_match(&read) && !ASKS_FOR_A_FIX.is_match(&read));
     COMPILED
         .iter()
-        .find(|(_, _, pattern)| pattern.is_match(text))
+        .find(|(file, _, pattern)| !(question && CHANGES_CODE.contains(file)) && pattern.is_match(&read))
         .map(|(file, title, _)| (*file, *title))
+        .or(question.then_some(INVESTIGATION))
 }
 
 /// Playbooks shown on the branch since its last compaction.
@@ -145,6 +179,60 @@ mod tests {
         assert_eq!(route("ok thanks"), None, "short replies");
         assert_eq!(route("/model claude opus five now please"), None, "commands");
         assert_eq!(route("summarize what we did in this session today"), None, "no route");
+    }
+
+    #[test]
+    fn playbook_route_reads_a_question_as_an_investigation() {
+        let name = |text: &str| route(text).map(|r| r.0);
+        for text in [
+            "check why the nightly job stopped running",
+            "compare our reviews with the other reviewers",
+            "measure how often memory recalls something useful",
+            "what can we take from this repository",
+            "whats your plan to fix?",
+            "so the import will fail if no session is open?",
+            "what is wrong with the parser output",
+            "look at the recent commits to see what is already fixed",
+        ] {
+            assert_eq!(name(text), Some("investigation"), "{text}");
+        }
+        assert_eq!(
+            name("why are we slower than the other reviewer?"),
+            Some("perf-issue"),
+            "a question still opens a playbook that fits it better"
+        );
+        for text in [
+            "check why the build fails and fix it",
+            "how do I fix the failing login test",
+            "lets fix the flaky upload test?",
+        ] {
+            assert_eq!(name(text), Some("bug-fix"), "{text}");
+        }
+        assert_eq!(name("lets add a --json flag to usage?"), Some("feature"));
+    }
+
+    #[test]
+    fn playbook_route_reads_only_the_ends_of_a_long_message() {
+        let name = |text: &str| route(text).map(|r| r.0);
+        let menu = "Product Pricing Docs Blog Careers Contact ".repeat(8);
+        let pasted = "the build fails with a crash in the parser ".repeat(20);
+        let footer = "Terms Privacy Status Security All rights reserved ".repeat(8);
+        assert_eq!(name(&format!("{menu}{pasted}{footer}")), None, "a pasted page");
+        assert_eq!(
+            name(&format!("{menu}{pasted}{footer}are we doing something similar here?")),
+            Some("investigation"),
+            "the question after the paste"
+        );
+        assert_eq!(
+            name(&format!("{menu}{pasted}{footer}fix this when I switch models")),
+            Some("bug-fix"),
+            "the request after the paste"
+        );
+        assert_eq!(
+            name(&format!("the upload test fails, the log is below {footer}{footer}")),
+            Some("bug-fix"),
+            "the request before the paste"
+        );
     }
 
     #[test]
