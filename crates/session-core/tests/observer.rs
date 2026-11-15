@@ -52,7 +52,7 @@ fn release(a: &crate::p_session_support::Actor) {
 }
 
 #[test]
-fn observer_enabled_announces_without_model_context_and_charges_usage() {
+fn observer_enabled_announces_tells_the_main_agent_and_charges_usage() {
     let a = actor(
         script(),
         Setup {
@@ -95,11 +95,16 @@ fn observer_enabled_announces_without_model_context_and_charges_usage() {
     assert!(observer.get("tools").is_none() || observer["tools"].as_array().is_some_and(Vec::is_empty));
     assert!(!observer["messages"].to_string().contains("test-key"));
     assert!(observer["messages"].to_string().contains("REDACTED"));
-    assert!(
-        !requests.last().unwrap()["messages"]
-            .to_string()
-            .contains("Migration risk")
-    );
+    let told = crate::p_session_support::user_texts(requests.last().unwrap())
+        .iter()
+        .filter_map(|text| text.as_str())
+        .find(|text| text.starts_with("[Ultron observer]"))
+        .expect("the root's next request carries the observer's note")
+        .to_string();
+    assert!(told.contains("Migration risk"));
+    assert!(told.contains("old data needs a migration"));
+    assert!(told.contains("not an instruction from the user"));
+    assert!(!told.contains("test-key"));
     assert_eq!(
         a.writes()
             .iter()

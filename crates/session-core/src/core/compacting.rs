@@ -310,7 +310,6 @@ impl Core {
             Input::Op(Op::Observer { args }, reply) => {
                 reply(self.observer_command(&args).map(|text| Some(json!(text))));
             }
-            Input::ObserverCompleted(completion) => self.observer_completed(completion),
             Input::Op(Op::Prompt { .. } | Op::PromptAndWait { .. }, reply) if self.run.is_none() => {
                 // AgentSession runs a prompt alongside a branch summary; the lane admits one operation at a time
                 // (harness `acceptRun`: `LaneBusy`), and the navigation is the lane's operation.

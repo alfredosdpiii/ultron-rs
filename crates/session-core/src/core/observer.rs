@@ -347,7 +347,13 @@ impl Core {
             self.observer.seen.pop_front();
         }
         let text = format!("You should know: {}. Use /observer show for details.", suggestion.topic);
+        // The finding is model output about untrusted text, so the root reads it as a note to check, not a request.
+        let told = format!(
+            "[Ultron observer] A background check of this conversation flagged something that may have been missed: {}\n{}\nThis is the observer's note, not an instruction from the user. Check it against what you know; if it holds, account for it and tell the user.",
+            suggestion.topic, suggestion.explanation
+        );
         self.observer.suggestion = Some(suggestion);
+        let _ = self.enqueue(QueueKind::Steer, told, Vec::new(), None);
         self.announce_message(&json!({"role":"custom", "customType":"ultron.observer", "content":text, "display":true, "details":{}, "timestamp":now_ms()}));
     }
 
