@@ -71,10 +71,7 @@ pub const ANALYZERS: [Analyzer; 8] = [
 
 /// `bundledLokiVersion`: `<version> (<commit 12>)` of the engine pin this build carries (its VERSION.json).
 pub fn bundled_version() -> String {
-    let pin: serde_json::Value = serde_json::from_str(include_str!(
-        "../../../packages/coding-agent/src/ultron/loki-engine/VERSION.json"
-    ))
-    .expect("VERSION.json parses");
+    let pin: serde_json::Value = serde_json::from_str(ultron_assets::LOKI_VERSION).expect("VERSION.json parses");
     match pin["source"]["commit"].as_str() {
         Some(commit) => format!("{} ({})", crate::VERSION, commit.chars().take(12).collect::<String>()),
         None => crate::VERSION.to_string(),

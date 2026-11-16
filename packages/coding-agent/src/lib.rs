@@ -25,3 +25,5 @@ pub const MARKED_JS: &str = include_str!("core/export-html/vendor/marked.min.js"
 pub const HIGHLIGHT_JS: &str = include_str!("core/export-html/vendor/highlight.min.js");
 pub const LOKI_ENGINE: &[u8] = include_bytes!("ultron/loki-engine/loki.py");
 pub const LOKI_TEMPLATE: &[u8] = include_bytes!("ultron/loki-engine/templates/loki.json");
+/// The engine pin (`VERSION.json`): the commit the bundled engine was taken from.
+pub const LOKI_VERSION: &str = include_str!("ultron/loki-engine/VERSION.json");
