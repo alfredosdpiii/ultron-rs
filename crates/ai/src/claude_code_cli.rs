@@ -254,10 +254,13 @@ fn probe_cli(bin: &str, env: &Env, cwd: &Path) -> Result<ClaudeCliCapabilities, 
     let version_run = exec_cli(bin, &["--version"], env, cwd)?;
     let help_run = exec_cli(bin, &["--help"], env, cwd)?;
     let auth_run = exec_cli(bin, &["auth", "status", "--json"], env, cwd)?;
+    // A launcher script may print its own lines before it starts the CLI (mise's `claude` wrapper reports the tool
+    // on stdout): the version is the CLI's last line, and the login state starts where the JSON does.
     let version = version_run
         .stdout
-        .split_whitespace()
-        .next()
+        .lines()
+        .rfind(|line| !line.trim().is_empty())
+        .and_then(|line| line.split_whitespace().next())
         .filter(|v| !v.is_empty())
         .unwrap_or("unknown")
         .to_string();
@@ -269,8 +272,10 @@ fn probe_cli(bin: &str, env: &Env, cwd: &Path) -> Result<ClaudeCliCapabilities, 
             missing.join(", ")
         ));
     }
-    let auth = serde_json::from_str::<Value>(auth_run.stdout.trim())
+    let auth_text = auth_run.stdout.trim();
+    let auth = serde_json::from_str::<Value>(auth_text)
         .ok()
+        .or_else(|| serde_json::from_str(&auth_text[auth_text.find("\n{")?..]).ok())
         .filter(|v| v.get("loggedIn").is_some_and(Value::is_boolean));
     let Some(auth) = auth else {
         let text = if auth_run.stderr.is_empty() {

@@ -577,18 +577,33 @@ pub fn run(
         let stdin = child.stdin.take().expect("stdin is piped");
         *child_slot = Some(signals::child::Watched::new(child));
         cleanup.reader = Some(std::thread::spawn(move || {
+            // A launcher script may print before it starts Claude Code (mise's `claude` wrapper reports the tool on
+            // stdout): what comes before the stream's first JSON line is not the stream. When no stream follows,
+            // the first such line is the error.
+            let mut preamble: Option<String> = None;
+            let mut started = false;
             for line in BufReader::new(stdout).lines() {
                 let Ok(line) = line else { break };
                 if line.trim().is_empty() {
                     continue;
                 }
                 let event = match serde_json::from_str::<Value>(&line) {
-                    Ok(value) => Event::Line(value),
+                    Ok(value) => {
+                        started = true;
+                        Event::Line(value)
+                    }
+                    Err(_) if !started => {
+                        preamble.get_or_insert(line);
+                        continue;
+                    }
                     Err(_) => Event::Invalid(line.chars().take(300).collect()),
                 };
                 if sender.send(event).is_err() {
                     return;
                 }
+            }
+            if let Some(line) = preamble.filter(|_| !started) {
+                let _ = sender.send(Event::Invalid(line.chars().take(300).collect()));
             }
             let _ = sender.send(Event::Eof);
         }));
