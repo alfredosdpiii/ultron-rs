@@ -17,7 +17,7 @@ theme = { package = "ultron-theme", path = "../theme", version = "=1.0.0" }
 tui = { package = "ultron-tui", path = "../tui", version = "=1.0.0" }
 
 [dev-dependencies]
-interactive = { package = "ultron-interactive", path = "../interactive", version = "=1.0.0" }
+interactive = { package = "ultron-interactive", path = "../interactive" }
 fancy-regex = "=0.19.2"
 
 [lints]

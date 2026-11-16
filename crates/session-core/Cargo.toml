@@ -53,7 +53,7 @@ workspace = true
 
 [dev-dependencies]
 base64 = "=0.23.1"
-harness = { package = "ultron-harness", path = "../harness", version = "=1.0.0", features = ["test-support"] }
+harness = { package = "ultron-harness", path = "../harness", features = ["test-support"] }
 serde = { version = "=1.0.229", features = ["derive"] }
 tempfile = "=3.27.0"
 

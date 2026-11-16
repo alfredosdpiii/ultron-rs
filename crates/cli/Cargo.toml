@@ -65,11 +65,11 @@ usage = { package = "ultron-usage", path = "../usage", version = "=1.0.0" }
 [dev-dependencies]
 indexmap = "=2.14.2"
 base64 = "=0.23.1"
-chord-delta = { package = "ultron-chord-delta", path = "../chord-delta", version = "=1.0.0" }
+chord-delta = { package = "ultron-chord-delta", path = "../chord-delta" }
 regex = "=1.13.1"
 rustix = { version = "=1.1.5", features = ["net", "process", "std"] }
 tempfile = "=3.27.0"
-websocket = { package = "ultron-websocket", path = "../websocket", version = "=1.0.0" }
+websocket = { package = "ultron-websocket", path = "../websocket" }
 
 [lints]
 workspace = true

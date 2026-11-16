@@ -30,7 +30,7 @@ signals = { package = "ultron-signals", path = "../signals", version = "=1.0.0" 
 tokio = { version = "=1.53.2", features = ["rt", "time"] }
 
 [dev-dependencies]
-config = { package = "ultron-config", path = "../config", version = "=1.0.0" }
+config = { package = "ultron-config", path = "../config" }
 tempfile = "=3.27.0"
 
 [lints]

@@ -22,7 +22,7 @@ serde_json = { version = "=1.0.151", features = ["preserve_order"] }
 tokio = { version = "=1.53.2", features = ["macros", "rt", "sync", "time"] }
 
 [dev-dependencies]
-host = { package = "ultron-host", path = "../host", version = "=1.0.0" }
+host = { package = "ultron-host", path = "../host" }
 tempfile = "=3.27.0"
 
 [lints]

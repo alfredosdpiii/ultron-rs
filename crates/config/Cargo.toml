@@ -21,8 +21,8 @@ signals = { package = "ultron-signals", path = "../signals", version = "=1.0.0" 
 workspace = true
 
 [dev-dependencies]
-loki = { package = "ultron-loki", path = "../loki", version = "=1.0.0" }
-review = { package = "ultron-review", path = "../review", version = "=1.0.0" }
+loki = { package = "ultron-loki", path = "../loki" }
+review = { package = "ultron-review", path = "../review" }
 tempfile = "=3.27.0"
 
 [[test]]

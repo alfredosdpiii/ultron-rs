@@ -23,23 +23,23 @@ daemon = { package = "ultron-daemon", path = "../daemon", version = "=1.0.0" }
 signals = { package = "ultron-signals", path = "../signals", version = "=1.0.0" }
 
 [dev-dependencies]
-jsrt = { package = "ultron-jsrt", path = "../jsrt", version = "=1.0.0" }
-config = { package = "ultron-config", path = "../config", version = "=1.0.0" }
-ai = { package = "ultron-ai", path = "../ai", version = "=1.0.0" }
-delegation = { package = "ultron-delegation", path = "../delegation", version = "=1.0.0" }
-host = { package = "ultron-host", path = "../host", version = "=1.0.0" }
-interactive = { package = "ultron-interactive", path = "../interactive", version = "=1.0.0" }
-inference = { package = "ultron-inference", path = "../inference", version = "=1.0.0" }
-kernel = { package = "ultron-kernel", path = "../kernel", version = "=1.0.0" }
-hindsight = { package = "ultron-hindsight", path = "../hindsight", version = "=1.0.0" }
-kernel-apis = { package = "ultron-kernel-apis", path = "../kernel-apis", version = "=1.0.0" }
-memorantado = { package = "ultron-memorantado", path = "../memorantado", version = "=1.0.0" }
-lanes = { package = "ultron-lanes", path = "../lanes", version = "=1.0.0" }
-protocol = { package = "ultron-protocol", path = "../protocol", version = "=1.0.0" }
-session-core = { package = "ultron-session-core", path = "../session-core", version = "=1.0.0" }
-services = { package = "ultron-services", path = "../services", version = "=1.0.0" }
-session-file = { package = "ultron-session-file", path = "../session-file", version = "=1.0.0" }
-session-journal = { package = "ultron-session-journal", path = "../session-journal", version = "=1.0.0" }
+jsrt = { package = "ultron-jsrt", path = "../jsrt" }
+config = { package = "ultron-config", path = "../config" }
+ai = { package = "ultron-ai", path = "../ai" }
+delegation = { package = "ultron-delegation", path = "../delegation" }
+host = { package = "ultron-host", path = "../host" }
+interactive = { package = "ultron-interactive", path = "../interactive" }
+inference = { package = "ultron-inference", path = "../inference" }
+kernel = { package = "ultron-kernel", path = "../kernel" }
+hindsight = { package = "ultron-hindsight", path = "../hindsight" }
+kernel-apis = { package = "ultron-kernel-apis", path = "../kernel-apis" }
+memorantado = { package = "ultron-memorantado", path = "../memorantado" }
+lanes = { package = "ultron-lanes", path = "../lanes" }
+protocol = { package = "ultron-protocol", path = "../protocol" }
+session-core = { package = "ultron-session-core", path = "../session-core" }
+services = { package = "ultron-services", path = "../services" }
+session-file = { package = "ultron-session-file", path = "../session-file" }
+session-journal = { package = "ultron-session-journal", path = "../session-journal" }
 serde_json = { version = "=1.0.151", features = ["preserve_order"] }
 tempfile = "=3.27.0"
 tokio = { version = "=1.53.2", features = ["time"] }
