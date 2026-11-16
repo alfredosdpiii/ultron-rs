@@ -1280,7 +1280,7 @@ fn count_points(count: f64, scale: f64) -> f64 {
 re!(GENERATED, r"\.(?:min|generated|pb|g)\.[\w]+$|_pb2\.py$");
 
 /// Vendored, generated, build-output and Loki-owned code is not project debt.
-fn slop_included(path: &str) -> bool {
+pub(crate) fn slop_included(path: &str) -> bool {
     if PROTECTED_PATHS.iter().any(|p| path_matches(path, p)) {
         return false;
     }

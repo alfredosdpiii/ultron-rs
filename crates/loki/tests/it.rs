@@ -17,6 +17,8 @@ mod differential;
 mod findings;
 #[path = "hook_differential.rs"]
 mod hook_differential;
+#[path = "hygiene.rs"]
+mod hygiene;
 #[path = "init_differential.rs"]
 mod init_differential;
 #[path = "installed_hooks.rs"]

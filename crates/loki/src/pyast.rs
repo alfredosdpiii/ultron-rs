@@ -337,7 +337,7 @@ static STATE: LazyLock<Mutex<State>> = LazyLock::new(|| {
 });
 
 /// The interpreter that parses Python for Loki (`findPython`: `ULTRON_LOKI_PYTHON`, trimmed), else the kernel's.
-fn interpreter() -> String {
+pub(crate) fn interpreter() -> String {
     std::env::var(LOKI_PYTHON_ENV)
         .ok()
         .map(|p| p.trim().to_string())

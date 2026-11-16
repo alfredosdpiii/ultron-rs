@@ -1,5 +1,5 @@
 //! The `loki` settings (global only, so a repository cannot turn its own checks off): `mode` (`on`, `advise`,
-//! `off`), `autoInit`, `autoCommit` and `ignoreRepos`.
+//! `off`), `hygiene` (`on`, `all`, `off`), `autoInit`, `autoCommit` and `ignoreRepos`.
 
 use serde_json::{Map, Value};
 
@@ -18,6 +18,13 @@ pub fn saved(global: &Map<String, Value>) -> Map<String, Value> {
         .filter(|m| ["on", "advise", "off"].contains(m))
     {
         out.insert("mode".into(), mode.into());
+    }
+    if let Some(hygiene) = configured
+        .get("hygiene")
+        .and_then(Value::as_str)
+        .filter(|h| ["on", "all", "off"].contains(h))
+    {
+        out.insert("hygiene".into(), hygiene.into());
     }
     for key in ["autoInit", "autoCommit"] {
         if let Some(Value::Bool(b)) = configured.get(key) {
