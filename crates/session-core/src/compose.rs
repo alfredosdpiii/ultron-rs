@@ -99,6 +99,8 @@ pub struct Config {
     /// The merged settings (`sandbox.*`, `loki`, ...).
     pub settings: Value,
     pub loki: LokiMode,
+    /// Which hygiene advisories Loki adds after a write (`ULTRON_LOKI_HYGIENE`, else `loki.hygiene`, else on).
+    pub loki_hygiene: loki::hygiene::Level,
     /// Where Loki's policy is read: the Git work tree containing the cwd, else the cwd (None when Loki is off).
     pub loki_root: Option<PathBuf>,
     pub runtime_path: PathBuf,
@@ -247,10 +249,9 @@ impl Config {
         // The worker's settings (`workerProjectTrusted`): a trusted project's `.pi/settings.json` applies too.
         let manager = config::settings::SettingsManager::for_worker(&env.cwd, &agent_dir, &env.home);
         let settings = Value::Object(manager.settings().clone());
-        let loki = loki_mode(
-            (env.var)(LOKI_ENV).as_deref(),
-            &loki::settings::saved(manager.global_settings()),
-        );
+        let loki_settings = loki::settings::saved(manager.global_settings());
+        let loki = loki_mode((env.var)(LOKI_ENV).as_deref(), &loki_settings);
+        let loki_hygiene = loki::hygiene::level((env.var)(loki::hygiene::HYGIENE_ENV).as_deref(), &loki_settings);
         let loki_root = (loki != LokiMode::Off).then(|| git_root(&env.cwd).unwrap_or_else(|| env.cwd.clone()));
         let skills_dir = (env.var)(kernel::env::CODE_SKILLS_DIR_ENV)
             .map(|dir| dir.trim().to_string())
@@ -265,6 +266,7 @@ impl Config {
             agent_dir,
             settings,
             loki,
+            loki_hygiene,
             loki_root,
             runtime_path: env.runtime(),
             skills_dir,
@@ -430,6 +432,7 @@ impl Config {
             hooks.add(Box::new(
                 LokiGuard::new(&root, self.loki)
                     .with_post_write(post_write)
+                    .with_hygiene(self.loki_hygiene)
                     .with_project_python(crate::guard_log::project_python(&*self.var, &self.cwd))
                     .with_timeout(host::loki_guard::loki_timeout(
                         (self.var)(LOKI_TIMEOUT_MS_ENV).as_deref(),

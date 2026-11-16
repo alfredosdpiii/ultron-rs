@@ -108,6 +108,8 @@ pub struct LokiGuard {
     post_write: bool,
     /// How long a before-write check may take (`timeoutMs`); None: no limit.
     timeout: Option<std::time::Duration>,
+    /// Which hygiene advisories follow a clean post-write check (`loki::hygiene`); off unless the session sets it.
+    hygiene: loki::hygiene::Level,
 }
 
 /// Runs Loki's post-write `hook` on repository-relative files.
@@ -132,7 +134,14 @@ impl LokiGuard {
             hook: std::sync::Arc::new(|root: &Path, files: &[String]| loki::run::hook(root, files, None)),
             post_write: true,
             timeout: None,
+            hygiene: loki::hygiene::Level::Off,
         }
+    }
+
+    /// Hygiene advisories for the lines a cell added, after a post-write check that found nothing to fix.
+    pub fn with_hygiene(mut self, level: loki::hygiene::Level) -> Self {
+        self.hygiene = level;
+        self
     }
 
     /// The limit on each before-write and before-shell check (see [`loki_timeout`]); None: no limit.
@@ -317,6 +326,12 @@ impl FileWriteGuard for LokiGuard {
                 outcome: AfterOutcome::Clean,
                 message: Some("post-write checks are paused: .loki/ has uncommitted changes, and Loki checks against the committed policy. Before-write checks of edit() and write() still run. Commit .loki/ to resume them (git add .loki && git commit -m 'Add Loki guardrails' -- .loki).".into()),
             }));
+        }
+        let mut report = report;
+        if !report.blocked() {
+            report
+                .warnings
+                .extend(loki::hygiene::written(&self.root, &checked, self.hygiene));
         }
         let advisory: Vec<String> = report.advisory().cloned().collect();
         let not_checked: Vec<String> = report.not_checked().cloned().collect();

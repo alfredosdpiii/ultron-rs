@@ -571,6 +571,49 @@ fn host_loki_after_cell_rust_engine_catches_a_secret_a_shell_write_introduced() 
     assert!(!findings.contains(&key), "the secret itself is never echoed");
 }
 
+/// A clean post-write check is followed by the hygiene advisories for the lines the cell added (`with_hygiene`):
+/// they arrive as FYI lines, never as findings to fix, and a guard without hygiene says nothing.
+#[test]
+fn host_loki_after_cell_hygiene_notes_are_advisories_for_added_lines() {
+    if loki::hygiene::score(&["x = 1\n"], loki::proc::Deadline::after(60.0)).is_err() {
+        return; // no Python with NumPy here
+    }
+    let swallowed =
+        "def load(path):\n    try:\n        return open(path).read()\n    except Exception:\n        pass\n";
+    let told = |level: loki::hygiene::Level| {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().canonicalize().unwrap();
+        git(&root, &["init", "-q", "-b", "main"]);
+        git(&root, &["config", "user.email", "t@example.com"]);
+        git(&root, &["config", "user.name", "T"]);
+        std::fs::write(root.join("store.py"), "LIMIT = 10\n").unwrap();
+        git(&root, &["add", "-A"]);
+        git(&root, &["-c", "commit.gpgsign=false", "commit", "-qm", "init"]);
+        let guard = LokiGuard::new(&root, LokiMode::On)
+            .with_hook(Arc::new(|_: &Path, _: &[String]| Ok(Report::default())))
+            .with_hygiene(level);
+        let mut hooks = FileHooks::with_snapshots(&root, snapshotter());
+        hooks.add(Box::new(guard));
+        hooks.cell_started("main");
+        std::fs::write(root.join("store.py"), format!("LIMIT = 10\n\n\n{swallowed}")).unwrap();
+        hooks.cell_ended("main");
+        hooks.settled();
+        hooks.take_pending("main")
+    };
+    let notes = told(loki::hygiene::Level::On).expect("the hygiene note");
+    let lines: Vec<&str> = notes.lines().collect();
+    assert_eq!(
+        lines[0], "[Loki] FYI (advisory, not blocking; no change required):",
+        "{notes}"
+    );
+    assert_eq!(lines.len(), 2, "{notes}");
+    assert!(
+        lines[1].starts_with("store.py:7: loki/hygiene-swallowed-error: "),
+        "{notes}"
+    );
+    assert_eq!(told(loki::hygiene::Level::Off), None);
+}
+
 #[test]
 fn host_loki_outside_a_repository_runs_only_before_write_checks() {
     let dir = tempfile::tempdir().unwrap();
