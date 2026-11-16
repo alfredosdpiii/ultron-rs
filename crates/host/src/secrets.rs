@@ -10,7 +10,7 @@ use serde_json::Value;
 use std::collections::HashMap;
 use std::sync::{Mutex, OnceLock};
 
-const PATTERNS: &str = include_str!("../../../packages/coding-agent/src/ultron/rlm/secret-patterns.json");
+const PATTERNS: &str = ultron_assets::SECRET_PATTERNS;
 const KNOWN_SECRET_MIN_LENGTH: usize = 8;
 /// JavaScript's (ASCII) word character, for `\b` and `\B`: fancy-regex cannot switch Unicode mode off inline.
 const W: &str = "[A-Za-z0-9_]";

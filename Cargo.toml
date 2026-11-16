@@ -1,11 +1,12 @@
 [workspace]
 resolver = "3"
-members = ["crates/*"]
+members = ["crates/*", "packages/coding-agent"]
 
 [workspace.package]
 edition = "2024"
 license = "MIT"
-publish = false
+repository = "https://github.com/alfredosdpiii/ultron-rs"
+version = "1.0.0"
 
 [workspace.lints.rust]
 unsafe_code = "forbid"

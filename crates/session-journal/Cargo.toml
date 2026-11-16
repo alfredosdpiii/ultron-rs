@@ -1,16 +1,19 @@
 [package]
-name = "session-journal"
-version = "0.1.0"
+name = "ultron-session-journal"
+version.workspace = true
 description = "Ultron's format-4 session journal (harness operation journal JSONL): storage, legacy v3 import, repository, fork, model context, run journal and session names"
 edition.workspace = true
 license.workspace = true
-publish.workspace = true
+repository.workspace = true
 autotests = false
 
+[lib]
+name = "session_journal"
+
 [dependencies]
-config = { path = "../config" }
+config = { package = "ultron-config", path = "../config", version = "=1.0.0" }
 fancy-regex = "=0.19.2"
-jsrt = { path = "../jsrt" }
+jsrt = { package = "ultron-jsrt", path = "../jsrt", version = "=1.0.0" }
 serde_json = { version = "=1.0.151", features = ["float_roundtrip", "preserve_order"] }
 
 [dev-dependencies]

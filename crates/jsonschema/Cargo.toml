@@ -1,14 +1,17 @@
 [package]
-name = "jsonschema"
-version = "0.1.0"
+name = "ultron-jsonschema"
+version.workspace = true
 description = "TypeBox's JSON-schema checking as the TypeScript product runs it: the definition-registry meta-check, Check/Errors (keyword order, en_US messages, the eight-error cap), the registered string formats, Value.Convert, and tool-argument preparation and validation"
 edition.workspace = true
 license.workspace = true
-publish.workspace = true
+repository.workspace = true
 autotests = false
 
+[lib]
+name = "jsonschema"
+
 [dependencies]
-jsrt = { path = "../jsrt" }
+jsrt = { package = "ultron-jsrt", path = "../jsrt", version = "=1.0.0" }
 fancy-regex = "=0.19.2"
 icu_normalizer = "=2.3.0"
 regex = "=1.13.1"

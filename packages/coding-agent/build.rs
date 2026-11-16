@@ -48,7 +48,7 @@ fn walk(dir: &Path, keep: Keep, out: &mut Vec<PathBuf>) {
 
 fn main() {
     let manifest = PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").unwrap());
-    let package = manifest.join("../../packages/coding-agent").canonicalize().unwrap();
+    let package = manifest.canonicalize().unwrap();
     let mut files = Vec::new();
     for (tree, keep) in TREES {
         let dir = package.join(tree);

@@ -1,20 +1,23 @@
 [package]
-name = "graph"
-version = "0.1.0"
+name = "ultron-graph"
+version.workspace = true
 description = "The REPL's knowledge API (relations across files on demand, settled by plain code and the judge, cached in the knowledge store) and its optional Neo4j mirror, with memorantado's memory relations mirrored read-only"
 edition.workspace = true
 license.workspace = true
-publish.workspace = true
+repository.workspace = true
 autotests = false
 
+[lib]
+name = "graph"
+
 [dependencies]
-blocking-http = { path = "../blocking-http" }
-config = { path = "../config" }
-jsrt = { path = "../jsrt" }
-kernel = { path = "../kernel" }
-kernel-apis = { path = "../kernel-apis" }
-knowledge = { path = "../knowledge" }
-memorantado = { path = "../memorantado" }
+blocking-http = { package = "ultron-blocking-http", path = "../blocking-http", version = "=1.0.0" }
+config = { package = "ultron-config", path = "../config", version = "=1.0.0" }
+jsrt = { package = "ultron-jsrt", path = "../jsrt", version = "=1.0.0" }
+kernel = { package = "ultron-kernel", path = "../kernel", version = "=1.0.0" }
+kernel-apis = { package = "ultron-kernel-apis", path = "../kernel-apis", version = "=1.0.0" }
+knowledge = { package = "ultron-knowledge", path = "../knowledge", version = "=1.0.0" }
+memorantado = { package = "ultron-memorantado", path = "../memorantado", version = "=1.0.0" }
 serde_json = { version = "=1.0.151", features = ["preserve_order"] }
 
 [dev-dependencies]

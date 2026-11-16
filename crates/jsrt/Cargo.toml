@@ -1,10 +1,13 @@
 [package]
-name = "jsrt"
-version = "0.1.0"
+name = "ultron-jsrt"
+version.workspace = true
 description = "JavaScript semantics the TypeScript port is held to (JSON.stringify, String/Number/toFixed/Math.round, trim and \\s, UTF-16 length and slice, Date.parse/toISOString/now, localeCompare, truthiness) and the small runtime helpers every crate had a copy of (base64, sha256 hex, UUIDs, poison-free locks, payload field checks)"
 edition.workspace = true
 license.workspace = true
-publish.workspace = true
+repository.workspace = true
+
+[lib]
+name = "jsrt"
 
 [dependencies]
 base64 = "=0.23.1"

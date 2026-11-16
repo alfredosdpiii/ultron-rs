@@ -1,20 +1,24 @@
 [package]
-name = "interactive"
-version = "0.1.0"
+name = "ultron-interactive"
+version.workspace = true
 description = "Interactive-mode conversation components (messages, tool/rlm cells, bash, summaries, footer, diffs) on the tui crate"
 edition.workspace = true
 license.workspace = true
-publish.workspace = true
+repository.workspace = true
 autotests = false
 
+[lib]
+name = "interactive"
+
 [dependencies]
-config = { path = "../config" }
-jsrt = { path = "../jsrt" }
-rlm-views = { path = "../rlm-views" }
-theme = { path = "../theme" }
-tui = { path = "../tui" }
-model-scope = { path = "../model-scope" }
-protocol = { path = "../protocol" }
+ultron-assets = { path = "../../packages/coding-agent", version = "=1.0.0" }
+config = { package = "ultron-config", path = "../config", version = "=1.0.0" }
+jsrt = { package = "ultron-jsrt", path = "../jsrt", version = "=1.0.0" }
+rlm-views = { package = "ultron-rlm-views", path = "../rlm-views", version = "=1.0.0" }
+theme = { package = "ultron-theme", path = "../theme", version = "=1.0.0" }
+tui = { package = "ultron-tui", path = "../tui", version = "=1.0.0" }
+model-scope = { package = "ultron-model-scope", path = "../model-scope", version = "=1.0.0" }
+protocol = { package = "ultron-protocol", path = "../protocol", version = "=1.0.0" }
 serde_json = { version = "=1.0.151", features = ["preserve_order"] }
 fancy-regex = "=0.19.2"
 crossterm = { version = "=0.29.0", default-features = false }

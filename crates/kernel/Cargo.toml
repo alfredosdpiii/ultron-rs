@@ -1,19 +1,22 @@
 [package]
-name = "kernel"
-version = "0.1.0"
+name = "ultron-kernel"
+version.workspace = true
 description = "Supervisor for Ultron's persistent Python kernel (runtime.py): process, wire protocol, host requests"
 edition.workspace = true
 license.workspace = true
-publish.workspace = true
+repository.workspace = true
 autotests = false
+
+[lib]
+name = "kernel"
 
 [dependencies]
 command-fds = "=0.3.3"
 getrandom = "=0.4.3"
-jsrt = { path = "../jsrt" }
+jsrt = { package = "ultron-jsrt", path = "../jsrt", version = "=1.0.0" }
 rustix = { version = "=1.1.5", features = ["process", "std"] }
-sandbox = { path = "../sandbox" }
-signals = { path = "../signals" }
+sandbox = { package = "ultron-sandbox", path = "../sandbox", version = "=1.0.0" }
+signals = { package = "ultron-signals", path = "../signals", version = "=1.0.0" }
 serde = { version = "=1.0.229", features = ["derive"] }
 serde_json = { version = "=1.0.151", features = ["preserve_order"] }
 

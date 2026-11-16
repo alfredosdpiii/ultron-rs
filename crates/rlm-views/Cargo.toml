@@ -1,20 +1,23 @@
 [package]
-name = "rlm-views"
-version = "0.1.0"
+name = "ultron-rlm-views"
+version.workspace = true
 description = "The live RLM views of the native TUI and `ultron watch` (run graph, docked panel, focus view, RLM pane, running work) and the one poll of the inspections they draw from"
 edition.workspace = true
 license.workspace = true
-publish.workspace = true
+repository.workspace = true
 autotests = false
 
+[lib]
+name = "rlm_views"
+
 [dependencies]
-jsrt = { path = "../jsrt" }
+jsrt = { package = "ultron-jsrt", path = "../jsrt", version = "=1.0.0" }
 serde_json = { version = "=1.0.151", features = ["preserve_order"] }
-theme = { path = "../theme" }
-tui = { path = "../tui" }
+theme = { package = "ultron-theme", path = "../theme", version = "=1.0.0" }
+tui = { package = "ultron-tui", path = "../tui", version = "=1.0.0" }
 
 [dev-dependencies]
-interactive = { path = "../interactive" }
+interactive = { package = "ultron-interactive", path = "../interactive", version = "=1.0.0" }
 fancy-regex = "=0.19.2"
 
 [lints]

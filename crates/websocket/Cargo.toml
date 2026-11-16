@@ -1,14 +1,17 @@
 [package]
-name = "websocket"
-version = "0.1.0"
+name = "ultron-websocket"
+version.workspace = true
 description = "RFC 6455 WebSocket framing without I/O: frames, a validating message decoder, close payloads, the handshake accept key"
 edition.workspace = true
 license.workspace = true
-publish.workspace = true
+repository.workspace = true
 autotests = false
 
+[lib]
+name = "websocket"
+
 [dependencies]
-jsrt = { path = "../jsrt" }
+jsrt = { package = "ultron-jsrt", path = "../jsrt", version = "=1.0.0" }
 ring = "=0.17.14"
 
 [lints]

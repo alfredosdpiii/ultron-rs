@@ -1,16 +1,19 @@
 [package]
-name = "herdr"
-version = "0.1.0"
+name = "ultron-herdr"
+version.workspace = true
 description = "Ultron in herdr's agents panel: pane detection from the injected env and a background reporter (state, session, metadata, release) over herdr's socket API"
 edition.workspace = true
 license.workspace = true
-publish.workspace = true
+repository.workspace = true
 autotests = false
 
+[lib]
+name = "herdr"
+
 [dependencies]
-config = { path = "../config" }
-jsrt = { path = "../jsrt" }
-kernel = { path = "../kernel" }
+config = { package = "ultron-config", path = "../config", version = "=1.0.0" }
+jsrt = { package = "ultron-jsrt", path = "../jsrt", version = "=1.0.0" }
+kernel = { package = "ultron-kernel", path = "../kernel", version = "=1.0.0" }
 rustix = { version = "=1.1.5", features = ["net", "std"] }
 serde_json = { version = "=1.0.151", features = ["preserve_order"] }
 

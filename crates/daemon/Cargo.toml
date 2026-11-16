@@ -1,29 +1,32 @@
 [package]
-name = "daemon"
-version = "0.1.0"
+name = "ultron-daemon"
+version.workspace = true
 description = "Ultron's local session daemon: coordinator, server generations, session worker supervision and the session worker process"
 edition.workspace = true
 license.workspace = true
-publish.workspace = true
+repository.workspace = true
 autotests = false
+
+[lib]
+name = "daemon"
 
 [dependencies]
 base64 = "=0.23.1"
-chord-delta = { path = "../chord-delta" }
-config = { path = "../config" }
-jsrt = { path = "../jsrt" }
-kernel-apis = { path = "../kernel-apis" }
-mcp = { path = "../mcp" }
-model-scope = { path = "../model-scope" }
-protocol = { path = "../protocol" }
-resources = { path = "../resources" }
-review = { path = "../review" }
+chord-delta = { package = "ultron-chord-delta", path = "../chord-delta", version = "=1.0.0" }
+config = { package = "ultron-config", path = "../config", version = "=1.0.0" }
+jsrt = { package = "ultron-jsrt", path = "../jsrt", version = "=1.0.0" }
+kernel-apis = { package = "ultron-kernel-apis", path = "../kernel-apis", version = "=1.0.0" }
+mcp = { package = "ultron-mcp", path = "../mcp", version = "=1.0.0" }
+model-scope = { package = "ultron-model-scope", path = "../model-scope", version = "=1.0.0" }
+protocol = { package = "ultron-protocol", path = "../protocol", version = "=1.0.0" }
+resources = { package = "ultron-resources", path = "../resources", version = "=1.0.0" }
+review = { package = "ultron-review", path = "../review", version = "=1.0.0" }
 rustix = { version = "=1.1.5", features = ["fs", "process", "std"] }
 serde_json = { version = "=1.0.151", features = ["float_roundtrip", "preserve_order"] }
-server = { path = "../server" }
-session-core = { path = "../session-core" }
-session-journal = { path = "../session-journal" }
-signals = { path = "../signals" }
+server = { package = "ultron-server", path = "../server", version = "=1.0.0" }
+session-core = { package = "ultron-session-core", path = "../session-core", version = "=1.0.0" }
+session-journal = { package = "ultron-session-journal", path = "../session-journal", version = "=1.0.0" }
+signals = { package = "ultron-signals", path = "../signals", version = "=1.0.0" }
 
 [dev-dependencies]
 tempfile = "=3.27.0"

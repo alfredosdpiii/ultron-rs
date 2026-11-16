@@ -1,15 +1,18 @@
 [package]
-name = "chord-delta"
-version = "0.1.0"
+name = "ultron-chord-delta"
+version.workspace = true
 description = "Chord delta operations over JSON: validation, application, and the wire codec"
 edition.workspace = true
 license.workspace = true
-publish.workspace = true
+repository.workspace = true
 autotests = false
+
+[lib]
+name = "chord_delta"
 
 [dependencies]
 indexmap = "=2.14.2"
-jsrt = { path = "../jsrt" }
+jsrt = { package = "ultron-jsrt", path = "../jsrt", version = "=1.0.0" }
 serde_json = { version = "=1.0.151", features = ["preserve_order"] }
 
 [lints]

@@ -1,14 +1,17 @@
 [package]
-name = "knowledge"
-version = "0.1.0"
+name = "ultron-knowledge"
+version.workspace = true
 description = "The knowledge graph: what each repository's files are made of (constructs and symbols, by git blob), shared by every repository and read by the kernel"
 edition.workspace = true
 license.workspace = true
-publish.workspace = true
+repository.workspace = true
 autotests = false
 
+[lib]
+name = "knowledge"
+
 [dependencies]
-jsrt = { path = "../jsrt" }
+jsrt = { package = "ultron-jsrt", path = "../jsrt", version = "=1.0.0" }
 regex = "=1.13.1"
 rusqlite = { version = "=0.40.2", features = ["bundled"] }
 tree-sitter = "=0.25.10"
@@ -19,7 +22,7 @@ tree-sitter-typescript = "=0.23.2"
 workspace = true
 
 [dev-dependencies]
-kernel = { path = "../kernel" }
+kernel = { package = "ultron-kernel", path = "../kernel", version = "=1.0.0" }
 serde_json = "=1.0.151"
 tempfile = "=3.27.0"
 

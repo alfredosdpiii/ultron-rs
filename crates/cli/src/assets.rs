@@ -30,19 +30,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-/// One embedded file: its path inside the package directory, its mode and its bytes.
-pub struct Asset {
-    pub path: &'static str,
-    pub mode: u32,
-    pub bytes: &'static [u8],
-}
-
-mod generated {
-    use super::Asset;
-    include!(concat!(env!("OUT_DIR"), "/assets.rs"));
-}
-
-pub use generated::{CHECKOUT, FILES, HASH};
+pub use ultron_assets::{Asset, CHECKOUT, FILES, HASH};
 
 /// The environment variable choosing where the package files come from.
 pub const DEV_ASSETS: &str = "ULTRON_DEV_ASSETS";

@@ -1,16 +1,19 @@
 [package]
-name = "agent"
-version = "0.1.0"
+name = "ultron-agent-core"
+version.workspace = true
 description = "Agent loop of packages/agent: turns over ai streaming, tool execution, steering/follow-up queues, abort, and the AgentEvent stream"
 edition.workspace = true
 license.workspace = true
-publish.workspace = true
+repository.workspace = true
 autotests = false
 
+[lib]
+name = "agent"
+
 [dependencies]
-ai = { path = "../ai" }
-jsonschema = { path = "../jsonschema" }
-jsrt = { path = "../jsrt" }
+ai = { package = "ultron-ai", path = "../ai", version = "=1.0.0" }
+jsonschema = { package = "ultron-jsonschema", path = "../jsonschema", version = "=1.0.0" }
+jsrt = { package = "ultron-jsrt", path = "../jsrt", version = "=1.0.0" }
 serde = { version = "=1.0.229", features = ["derive"] }
 serde_json = { version = "=1.0.151", features = ["float_roundtrip", "preserve_order"] }
 

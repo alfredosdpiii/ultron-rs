@@ -1,39 +1,43 @@
 [package]
-name = "claude-root"
-version = "0.1.0"
+name = "ultron-claude-root"
+description = "Claude Code as the root agent of Ultron: `ultron claude`, the Claude Code runner and its session bridge"
+version.workspace = true
 edition.workspace = true
 license.workspace = true
-publish.workspace = true
+repository.workspace = true
 autotests = false
 
+[lib]
+name = "claude_root"
+
 [dependencies]
-agent = { path = "../agent" }
-ai = { path = "../ai" }
-config = { path = "../config" }
-delegation = { path = "../delegation" }
-durable = { path = "../durable" }
-harness = { path = "../harness" }
-herdr = { path = "../herdr" }
-host = { path = "../host" }
+agent = { package = "ultron-agent-core", path = "../agent", version = "=1.0.0" }
+ai = { package = "ultron-ai", path = "../ai", version = "=1.0.0" }
+config = { package = "ultron-config", path = "../config", version = "=1.0.0" }
+delegation = { package = "ultron-delegation", path = "../delegation", version = "=1.0.0" }
+durable = { package = "ultron-durable", path = "../durable", version = "=1.0.0" }
+harness = { package = "ultron-harness", path = "../harness", version = "=1.0.0" }
+herdr = { package = "ultron-herdr", path = "../herdr", version = "=1.0.0" }
+host = { package = "ultron-host", path = "../host", version = "=1.0.0" }
 indexmap = "=2.14.2"
-jsrt = { path = "../jsrt" }
-kernel = { path = "../kernel" }
-kernel-apis = { path = "../kernel-apis" }
-lanes = { path = "../lanes" }
-loki = { path = "../loki" }
-mcp = { path = "../mcp" }
+jsrt = { package = "ultron-jsrt", path = "../jsrt", version = "=1.0.0" }
+kernel = { package = "ultron-kernel", path = "../kernel", version = "=1.0.0" }
+kernel-apis = { package = "ultron-kernel-apis", path = "../kernel-apis", version = "=1.0.0" }
+lanes = { package = "ultron-lanes", path = "../lanes", version = "=1.0.0" }
+loki = { package = "ultron-loki", path = "../loki", version = "=1.0.0" }
+mcp = { package = "ultron-mcp", path = "../mcp", version = "=1.0.0" }
 regex = "=1.13.1"
-resources = { path = "../resources" }
+resources = { package = "ultron-resources", path = "../resources", version = "=1.0.0" }
 rustix = { version = "=1.1.5", features = ["process", "std"] }
 serde_json = { version = "=1.0.151", features = ["preserve_order"] }
-session-core = { path = "../session-core" }
-session-journal = { path = "../session-journal" }
-signals = { path = "../signals" }
+session-core = { package = "ultron-session-core", path = "../session-core", version = "=1.0.0" }
+session-journal = { package = "ultron-session-journal", path = "../session-journal", version = "=1.0.0" }
+signals = { package = "ultron-signals", path = "../signals", version = "=1.0.0" }
 tokio = { version = "=1.53.2", features = ["rt", "time"] }
-usage = { path = "../usage" }
+usage = { package = "ultron-usage", path = "../usage", version = "=1.0.0" }
 
 [dev-dependencies]
-hindsight = { path = "../hindsight" }
+hindsight = { package = "ultron-hindsight", path = "../hindsight", version = "=1.0.0" }
 tempfile = "=3.27.0"
 
 [lints]

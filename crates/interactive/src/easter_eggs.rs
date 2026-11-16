@@ -330,7 +330,7 @@ pub fn seeded_random(now: std::time::Instant) -> impl FnMut() -> f64 {
 const BLOG_URL: &str = "https://mariozechner.at/posts/2026-04-08-ive-sold-out/";
 const IMAGE_FILENAME: &str = "clankolas.png";
 /// The announcement's image (modes/interactive/assets/clankolas.png).
-const IMAGE: &[u8] = include_bytes!("../../../packages/coding-agent/src/modes/interactive/assets/clankolas.png");
+const IMAGE: &[u8] = ultron_assets::CLANKOLAS_PNG;
 
 /// `EarendilAnnouncementComponent`, with its image as a terminal without image support shows it (this TUI draws
 /// every image as its fallback line).

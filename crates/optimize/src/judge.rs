@@ -29,7 +29,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 /// The frozen cases (shared with the judge crate's own bench test).
-pub const CASES: &str = include_str!("../../judge/tests/data/judgebench.json");
+pub const CASES: &str = judge::bench::CASES;
 /// The frozen recording of a live run on [`CASES`].
 pub const RECORDING: &str = include_str!("../sets/judgebench.recording.json");
 

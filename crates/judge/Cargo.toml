@@ -1,20 +1,23 @@
 [package]
-name = "judge"
-version = "0.1.0"
+name = "ultron-judge"
+version.workspace = true
 description = "The judge seat: closed-set decisions asked of Jev (TypeSafe System One), a d1 server or a chat model, with fallback, escalation to another model family, review verdicts, spend receipts and limits; judge.decide and ultron judge bench"
 edition.workspace = true
 license.workspace = true
-publish.workspace = true
+repository.workspace = true
 autotests = false
 
+[lib]
+name = "judge"
+
 [dependencies]
-ai = { path = "../ai" }
-blocking-http = { path = "../blocking-http" }
-config = { path = "../config" }
-host = { path = "../host" }
-jsrt = { path = "../jsrt" }
-kernel = { path = "../kernel" }
-kernel-apis = { path = "../kernel-apis" }
+ai = { package = "ultron-ai", path = "../ai", version = "=1.0.0" }
+blocking-http = { package = "ultron-blocking-http", path = "../blocking-http", version = "=1.0.0" }
+config = { package = "ultron-config", path = "../config", version = "=1.0.0" }
+host = { package = "ultron-host", path = "../host", version = "=1.0.0" }
+jsrt = { package = "ultron-jsrt", path = "../jsrt", version = "=1.0.0" }
+kernel = { package = "ultron-kernel", path = "../kernel", version = "=1.0.0" }
+kernel-apis = { package = "ultron-kernel-apis", path = "../kernel-apis", version = "=1.0.0" }
 serde_json = { version = "=1.0.151", features = ["preserve_order"] }
 tokio = { version = "=1.53.2", features = ["rt", "time"] }
 

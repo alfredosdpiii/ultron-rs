@@ -1,74 +1,75 @@
 [package]
-name = "cli"
-version = "0.1.0"
+name = "ultron-agent"
+version.workspace = true
 description = "The `ultron` binary: composition root (host stack, kernel), argument parsing, help, version, --list-models, session selection, print/JSON/RPC modes and `sandbox doctor`"
 edition.workspace = true
 license.workspace = true
-publish.workspace = true
+repository.workspace = true
 autotests = false
+
+[lib]
+name = "cli"
 
 [[bin]]
 name = "ultron"
 path = "src/main.rs"
 
 [dependencies]
-agent = { path = "../agent" }
+ultron-assets = { path = "../../packages/coding-agent", version = "=1.0.0" }
+agent = { package = "ultron-agent-core", path = "../agent", version = "=1.0.0" }
 image = { version = "=0.25.10", default-features = false, features = ["bmp", "gif", "jpeg", "png", "webp"] }
-ai = { path = "../ai" }
-blocking-http = { path = "../blocking-http" }
-kernel = { path = "../kernel" }
-loki = { path = "../loki" }
+ai = { package = "ultron-ai", path = "../ai", version = "=1.0.0" }
+blocking-http = { package = "ultron-blocking-http", path = "../blocking-http", version = "=1.0.0" }
+kernel = { package = "ultron-kernel", path = "../kernel", version = "=1.0.0" }
+loki = { package = "ultron-loki", path = "../loki", version = "=1.0.0" }
 mimalloc = { version = "=0.1.52", default-features = false }
-memorantado = { path = "../memorantado" }
-model-scope = { path = "../model-scope" }
-resources = { path = "../resources" }
-review = { path = "../review" }
-knowledge = { path = "../knowledge" }
+memorantado = { package = "ultron-memorantado", path = "../memorantado", version = "=1.0.0" }
+model-scope = { package = "ultron-model-scope", path = "../model-scope", version = "=1.0.0" }
+resources = { package = "ultron-resources", path = "../resources", version = "=1.0.0" }
+review = { package = "ultron-review", path = "../review", version = "=1.0.0" }
+knowledge = { package = "ultron-knowledge", path = "../knowledge", version = "=1.0.0" }
 tokio = { version = "=1.53.2", features = ["rt", "time"] }
-claude-root = { path = "../claude-root" }
-client = { path = "../client" }
-config = { path = "../config" }
-daemon = { path = "../daemon" }
-delegation = { path = "../delegation" }
-host = { path = "../host" }
-herdr = { path = "../herdr" }
-hindsight = { path = "../hindsight" }
-interactive = { path = "../interactive" }
+claude-root = { package = "ultron-claude-root", path = "../claude-root", version = "=1.0.0" }
+client = { package = "ultron-client", path = "../client", version = "=1.0.0" }
+config = { package = "ultron-config", path = "../config", version = "=1.0.0" }
+daemon = { package = "ultron-daemon", path = "../daemon", version = "=1.0.0" }
+delegation = { package = "ultron-delegation", path = "../delegation", version = "=1.0.0" }
+host = { package = "ultron-host", path = "../host", version = "=1.0.0" }
+herdr = { package = "ultron-herdr", path = "../herdr", version = "=1.0.0" }
+hindsight = { package = "ultron-hindsight", path = "../hindsight", version = "=1.0.0" }
+interactive = { package = "ultron-interactive", path = "../interactive", version = "=1.0.0" }
 rustix = { version = "=1.1.5", features = ["event", "std", "termios"] }
 reqwest = { version = "=0.13.5", default-features = false, features = ["rustls", "http2", "system-proxy"] }
-jsrt = { path = "../jsrt" }
-judge = { path = "../judge" }
-kernel-apis = { path = "../kernel-apis" }
-optimize = { path = "../optimize" }
-sandbox = { path = "../sandbox" }
-session-core = { path = "../session-core" }
-server = { path = "../server" }
-session-journal = { path = "../session-journal" }
-inference = { path = "../inference" }
-mcp = { path = "../mcp" }
-protocol = { path = "../protocol" }
-rlm-views = { path = "../rlm-views" }
-session-file = { path = "../session-file" }
-signals = { path = "../signals" }
-telemetry = { path = "../telemetry" }
+jsrt = { package = "ultron-jsrt", path = "../jsrt", version = "=1.0.0" }
+judge = { package = "ultron-judge", path = "../judge", version = "=1.0.0" }
+kernel-apis = { package = "ultron-kernel-apis", path = "../kernel-apis", version = "=1.0.0" }
+optimize = { package = "ultron-optimize", path = "../optimize", version = "=1.0.0" }
+sandbox = { package = "ultron-sandbox", path = "../sandbox", version = "=1.0.0" }
+session-core = { package = "ultron-session-core", path = "../session-core", version = "=1.0.0" }
+server = { package = "ultron-server", path = "../server", version = "=1.0.0" }
+session-journal = { package = "ultron-session-journal", path = "../session-journal", version = "=1.0.0" }
+inference = { package = "ultron-inference", path = "../inference", version = "=1.0.0" }
+mcp = { package = "ultron-mcp", path = "../mcp", version = "=1.0.0" }
+protocol = { package = "ultron-protocol", path = "../protocol", version = "=1.0.0" }
+rlm-views = { package = "ultron-rlm-views", path = "../rlm-views", version = "=1.0.0" }
+session-file = { package = "ultron-session-file", path = "../session-file", version = "=1.0.0" }
+signals = { package = "ultron-signals", path = "../signals", version = "=1.0.0" }
+telemetry = { package = "ultron-telemetry", path = "../telemetry", version = "=1.0.0" }
 sha2 = "=0.10.9"
 serde_json = { version = "=1.0.151", features = ["preserve_order"] }
-theme = { path = "../theme" }
-tui = { path = "../tui" }
+theme = { package = "ultron-theme", path = "../theme", version = "=1.0.0" }
+tui = { package = "ultron-tui", path = "../tui", version = "=1.0.0" }
 url = "=2.5.8"
-usage = { path = "../usage" }
-
-[build-dependencies]
-sha2 = "=0.10.9"
+usage = { package = "ultron-usage", path = "../usage", version = "=1.0.0" }
 
 [dev-dependencies]
 indexmap = "=2.14.2"
 base64 = "=0.23.1"
-chord-delta = { path = "../chord-delta" }
+chord-delta = { package = "ultron-chord-delta", path = "../chord-delta", version = "=1.0.0" }
 regex = "=1.13.1"
 rustix = { version = "=1.1.5", features = ["net", "process", "std"] }
 tempfile = "=3.27.0"
-websocket = { path = "../websocket" }
+websocket = { package = "ultron-websocket", path = "../websocket", version = "=1.0.0" }
 
 [lints]
 workspace = true

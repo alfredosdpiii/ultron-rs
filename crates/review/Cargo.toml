@@ -1,23 +1,26 @@
 [package]
-name = "review"
-version = "0.1.0"
+name = "ultron-review"
+version.workspace = true
 description = "Autoreview: the kernel review engine, its plan and the GitHub reviewer, daemon and service behind `ultron autoreview`"
 edition.workspace = true
 license.workspace = true
-publish.workspace = true
+repository.workspace = true
 autotests = false
 
+[lib]
+name = "review"
+
 [dependencies]
-ai = { path = "../ai" }
-config = { path = "../config" }
-hindsight = { path = "../hindsight" }
-inference = { path = "../inference" }
-jsrt = { path = "../jsrt" }
-kernel = { path = "../kernel" }
-kernel-apis = { path = "../kernel-apis" }
-loki = { path = "../loki" }
-knowledge = { path = "../knowledge" }
-model-scope = { path = "../model-scope" }
+ai = { package = "ultron-ai", path = "../ai", version = "=1.0.0" }
+config = { package = "ultron-config", path = "../config", version = "=1.0.0" }
+hindsight = { package = "ultron-hindsight", path = "../hindsight", version = "=1.0.0" }
+inference = { package = "ultron-inference", path = "../inference", version = "=1.0.0" }
+jsrt = { package = "ultron-jsrt", path = "../jsrt", version = "=1.0.0" }
+kernel = { package = "ultron-kernel", path = "../kernel", version = "=1.0.0" }
+kernel-apis = { package = "ultron-kernel-apis", path = "../kernel-apis", version = "=1.0.0" }
+loki = { package = "ultron-loki", path = "../loki", version = "=1.0.0" }
+knowledge = { package = "ultron-knowledge", path = "../knowledge", version = "=1.0.0" }
+model-scope = { package = "ultron-model-scope", path = "../model-scope", version = "=1.0.0" }
 indexmap = { version = "=2.14.2", features = ["serde"] }
 regex = "=1.13.1"
 ring = "=0.17.14"

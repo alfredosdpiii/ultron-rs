@@ -1,18 +1,21 @@
 [package]
-name = "client"
-version = "0.1.0"
+name = "ultron-client"
+version.workspace = true
 description = "Ultron session client: handshake, request correlation, Unix socket discovery, the Radius relay client transport and reconnector"
 edition.workspace = true
 license.workspace = true
-publish.workspace = true
+repository.workspace = true
 autotests = false
 
+[lib]
+name = "client"
+
 [dependencies]
-chord-delta = { path = "../chord-delta" }
-jsrt = { path = "../jsrt" }
-protocol = { path = "../protocol" }
-server = { path = "../server" }
-websocket = { path = "../websocket" }
+chord-delta = { package = "ultron-chord-delta", path = "../chord-delta", version = "=1.0.0" }
+jsrt = { package = "ultron-jsrt", path = "../jsrt", version = "=1.0.0" }
+protocol = { package = "ultron-protocol", path = "../protocol", version = "=1.0.0" }
+server = { package = "ultron-server", path = "../server", version = "=1.0.0" }
+websocket = { package = "ultron-websocket", path = "../websocket", version = "=1.0.0" }
 serde_json = { version = "=1.0.151", features = ["float_roundtrip", "preserve_order"] }
 tokio = { version = "=1.53.2", features = ["rt", "time", "net"] }
 

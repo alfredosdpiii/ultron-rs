@@ -23,7 +23,7 @@ pub mod trust;
 pub fn version() -> &'static str {
     static VERSION: std::sync::LazyLock<String> = std::sync::LazyLock::new(|| {
         let package: serde_json::Value =
-            serde_json::from_str(include_str!("../../../packages/coding-agent/package.json"))
+            serde_json::from_str(ultron_assets::PACKAGE_JSON)
                 .expect("packages/coding-agent/package.json parses");
         package["version"]
             .as_str()

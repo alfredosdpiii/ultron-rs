@@ -1,17 +1,20 @@
 [package]
-name = "ai"
-version = "0.1.0"
+name = "ultron-ai"
+version.workspace = true
 description = "Provider layer of packages/ai: message model, streaming events, every API implementation (Anthropic, OpenAI completions/responses/codex, Azure, Google, Vertex, Mistral, Bedrock, pi-messages, Claude Code CLI, Claude subscription), provider auth and every OAuth flow, images API, model catalog, user models.json, env API keys"
 edition.workspace = true
 license.workspace = true
-publish.workspace = true
+repository.workspace = true
 autotests = false
 
+[lib]
+name = "ai"
+
 [dependencies]
-config = { path = "../config" }
-jsrt = { path = "../jsrt" }
-websocket = { path = "../websocket" }
-model-scope = { path = "../model-scope" }
+config = { package = "ultron-config", path = "../config", version = "=1.0.0" }
+jsrt = { package = "ultron-jsrt", path = "../jsrt", version = "=1.0.0" }
+websocket = { package = "ultron-websocket", path = "../websocket", version = "=1.0.0" }
+model-scope = { package = "ultron-model-scope", path = "../model-scope", version = "=1.0.0" }
 crc32fast = "=1.5.2"
 indexmap = { version = "=2.14.2", features = ["serde"] }
 reqwest = { version = "=0.13.5", default-features = false, features = ["rustls", "http2", "system-proxy"] }
@@ -21,7 +24,7 @@ ring = "=0.17.14"
 rustix = { version = "=1.1.5", features = ["fs", "process", "std"] }
 serde = { version = "=1.0.229", features = ["derive"] }
 serde_json = { version = "=1.0.151", features = ["float_roundtrip", "preserve_order"] }
-signals = { path = "../signals" }
+signals = { package = "ultron-signals", path = "../signals", version = "=1.0.0" }
 tokio = { version = "=1.53.2", features = ["sync", "time", "macros", "rt", "net", "io-util", "process"] }
 
 [[bin]]
@@ -32,7 +35,7 @@ path = "src/bin/ultron_inert_mcp.rs"
 test = false
 
 [dev-dependencies]
-kernel = { path = "../kernel" }
+kernel = { package = "ultron-kernel", path = "../kernel", version = "=1.0.0" }
 rcgen = "=0.14.7"
 tempfile = "=3.27.0"
 tokio-rustls = { version = "=0.26.6", default-features = false }

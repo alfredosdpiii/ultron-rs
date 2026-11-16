@@ -1,19 +1,23 @@
 [package]
-name = "host"
-version = "0.1.0"
+name = "ultron-host"
+version.workspace = true
 description = "Rust host operations behind the Python kernel API: bash, shell jobs, write checks"
 edition.workspace = true
 license.workspace = true
-publish.workspace = true
+repository.workspace = true
 autotests = false
 
+[lib]
+name = "host"
+
 [dependencies]
+ultron-assets = { path = "../../packages/coding-agent", version = "=1.0.0" }
 fancy-regex = "=0.19.2"
 image = { version = "=0.25.10", default-features = false, features = ["bmp", "gif", "jpeg", "png", "webp"] }
-jsrt = { path = "../jsrt" }
-kernel = { path = "../kernel" }
-loki = { path = "../loki" }
-sandbox = { path = "../sandbox" }
+jsrt = { package = "ultron-jsrt", path = "../jsrt", version = "=1.0.0" }
+kernel = { package = "ultron-kernel", path = "../kernel", version = "=1.0.0" }
+loki = { package = "ultron-loki", path = "../loki", version = "=1.0.0" }
+sandbox = { package = "ultron-sandbox", path = "../sandbox", version = "=1.0.0" }
 serde_json = { version = "=1.0.151", features = ["preserve_order"] }
 
 [dev-dependencies]

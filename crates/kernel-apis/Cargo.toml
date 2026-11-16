@@ -1,27 +1,30 @@
 [package]
-name = "kernel-apis"
-version = "0.1.0"
+name = "ultron-kernel-apis"
+version.workspace = true
 description = "Host operations behind the thin Python kernel APIs: code skills and the skill catalog, memory, hints, images"
 edition.workspace = true
 license.workspace = true
-publish.workspace = true
+repository.workspace = true
 autotests = false
 
+[lib]
+name = "kernel_apis"
+
 [dependencies]
-ai = { path = "../ai" }
+ai = { package = "ultron-ai", path = "../ai", version = "=1.0.0" }
 base64 = "=0.23.1"
-config = { path = "../config" }
+config = { package = "ultron-config", path = "../config", version = "=1.0.0" }
 fancy-regex = "=0.19.2"
-host = { path = "../host" }
-jsrt = { path = "../jsrt" }
-kernel = { path = "../kernel" }
-model-scope = { path = "../model-scope" }
-protocol = { path = "../protocol" }
-resources = { path = "../resources" }
+host = { package = "ultron-host", path = "../host", version = "=1.0.0" }
+jsrt = { package = "ultron-jsrt", path = "../jsrt", version = "=1.0.0" }
+kernel = { package = "ultron-kernel", path = "../kernel", version = "=1.0.0" }
+model-scope = { package = "ultron-model-scope", path = "../model-scope", version = "=1.0.0" }
+protocol = { package = "ultron-protocol", path = "../protocol", version = "=1.0.0" }
+resources = { package = "ultron-resources", path = "../resources", version = "=1.0.0" }
 serde = { version = "=1.0.229", features = ["derive"] }
-signals = { path = "../signals" }
+signals = { package = "ultron-signals", path = "../signals", version = "=1.0.0" }
 serde_json = { version = "=1.0.151", features = ["preserve_order"] }
-session-journal = { path = "../session-journal" }
+session-journal = { package = "ultron-session-journal", path = "../session-journal", version = "=1.0.0" }
 tempfile = "=3.27.0"
 tokio = { version = "=1.53.2", features = ["rt", "time"] }
 yaml-rust2 = "=0.13.0"

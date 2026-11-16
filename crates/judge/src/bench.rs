@@ -179,3 +179,6 @@ pub fn probe(seat: &Seat, backend: &str, signal: &Signal) -> Result<String, Stri
     let ms = receipts.iter().filter(|r| r.sent()).map(|r| r.ms).sum::<f64>();
     Ok(format!("{} answered in {ms:.0} ms", reply.model))
 }
+
+/// The judgebench cases (`tests/data/judgebench.json`), the frozen set the judge seat is scored on.
+pub const CASES: &str = include_str!("../tests/data/judgebench.json");

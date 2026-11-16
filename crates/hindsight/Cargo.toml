@@ -1,17 +1,20 @@
 [package]
-name = "hindsight"
-version = "0.1.0"
+name = "ultron-hindsight"
+version.workspace = true
 description = "Ultron's Hindsight memory client: the native Hindsight 0.9.2 document endpoints behind memory.* and autoreview's lessons, the Hindsight URL and bank resolution, over the blocking-http transport"
 edition.workspace = true
 license.workspace = true
-publish.workspace = true
+repository.workspace = true
+
+[lib]
+name = "hindsight"
 
 [dependencies]
-blocking-http = { path = "../blocking-http" }
-config = { path = "../config" }
-jsrt = { path = "../jsrt" }
-kernel = { path = "../kernel" }
-kernel-apis = { path = "../kernel-apis" }
+blocking-http = { package = "ultron-blocking-http", path = "../blocking-http", version = "=1.0.0" }
+config = { package = "ultron-config", path = "../config", version = "=1.0.0" }
+jsrt = { package = "ultron-jsrt", path = "../jsrt", version = "=1.0.0" }
+kernel = { package = "ultron-kernel", path = "../kernel", version = "=1.0.0" }
+kernel-apis = { package = "ultron-kernel-apis", path = "../kernel-apis", version = "=1.0.0" }
 serde_json = { version = "=1.0.151", features = ["preserve_order"] }
 url = "=2.5.8"
 

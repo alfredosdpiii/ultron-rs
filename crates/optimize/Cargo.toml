@@ -1,22 +1,25 @@
 [package]
-name = "optimize"
-version = "0.1.0"
+name = "ultron-optimize"
+version.workspace = true
 description = "ultron optimize: Ultron's own pipelines (judge seat, memory recall, autoreview) run as versioned variants against frozen test sets, offline by default; cost/quality points, failures, the Pareto frontier, and fitted judge thresholds as a proposal"
 edition.workspace = true
 license.workspace = true
-publish.workspace = true
+repository.workspace = true
 autotests = false
 
+[lib]
+name = "optimize"
+
 [dependencies]
-ai = { path = "../ai" }
-blocking-http = { path = "../blocking-http" }
-config = { path = "../config" }
-delegation = { path = "../delegation" }
-jsrt = { path = "../jsrt" }
-judge = { path = "../judge" }
-kernel = { path = "../kernel" }
-kernel-apis = { path = "../kernel-apis" }
-review = { path = "../review" }
+ai = { package = "ultron-ai", path = "../ai", version = "=1.0.0" }
+blocking-http = { package = "ultron-blocking-http", path = "../blocking-http", version = "=1.0.0" }
+config = { package = "ultron-config", path = "../config", version = "=1.0.0" }
+delegation = { package = "ultron-delegation", path = "../delegation", version = "=1.0.0" }
+jsrt = { package = "ultron-jsrt", path = "../jsrt", version = "=1.0.0" }
+judge = { package = "ultron-judge", path = "../judge", version = "=1.0.0" }
+kernel = { package = "ultron-kernel", path = "../kernel", version = "=1.0.0" }
+kernel-apis = { package = "ultron-kernel-apis", path = "../kernel-apis", version = "=1.0.0" }
+review = { package = "ultron-review", path = "../review", version = "=1.0.0" }
 serde_json = { version = "=1.0.151", features = ["preserve_order"] }
 
 [dev-dependencies]

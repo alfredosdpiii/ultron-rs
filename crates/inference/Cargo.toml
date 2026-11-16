@@ -1,25 +1,28 @@
 [package]
-name = "inference"
-version = "0.1.0"
+name = "ultron-inference"
+version.workspace = true
 description = "Host side of rlm.infer (and rlm.load): budgets, contract validation with bounded re-asks, Incomplete results"
 edition.workspace = true
 license.workspace = true
-publish.workspace = true
+repository.workspace = true
 autotests = false
 
+[lib]
+name = "inference"
+
 [dependencies]
-agent = { path = "../agent" }
-ai = { path = "../ai" }
-config = { path = "../config" }
-jsonschema = { path = "../jsonschema" }
-jsrt = { path = "../jsrt" }
-kernel = { path = "../kernel" }
-model-scope = { path = "../model-scope" }
+agent = { package = "ultron-agent-core", path = "../agent", version = "=1.0.0" }
+ai = { package = "ultron-ai", path = "../ai", version = "=1.0.0" }
+config = { package = "ultron-config", path = "../config", version = "=1.0.0" }
+jsonschema = { package = "ultron-jsonschema", path = "../jsonschema", version = "=1.0.0" }
+jsrt = { package = "ultron-jsrt", path = "../jsrt", version = "=1.0.0" }
+kernel = { package = "ultron-kernel", path = "../kernel", version = "=1.0.0" }
+model-scope = { package = "ultron-model-scope", path = "../model-scope", version = "=1.0.0" }
 serde_json = { version = "=1.0.151", features = ["preserve_order"] }
 tokio = { version = "=1.53.2", features = ["macros", "rt", "sync", "time"] }
 
 [dev-dependencies]
-host = { path = "../host" }
+host = { package = "ultron-host", path = "../host", version = "=1.0.0" }
 tempfile = "=3.27.0"
 
 [lints]

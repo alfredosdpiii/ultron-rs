@@ -12,11 +12,11 @@ use std::path::Path;
 
 pub const SHARE_VIEWER_URL_ENV: &str = "PI_SHARE_VIEWER_URL";
 
-const TEMPLATE_HTML: &str = include_str!("../../../packages/coding-agent/src/core/export-html/template.html");
-const TEMPLATE_CSS: &str = include_str!("../../../packages/coding-agent/src/core/export-html/template.css");
-const TEMPLATE_JS: &str = include_str!("../../../packages/coding-agent/src/core/export-html/template.js");
-const MARKED_JS: &str = include_str!("../../../packages/coding-agent/src/core/export-html/vendor/marked.min.js");
-const HIGHLIGHT_JS: &str = include_str!("../../../packages/coding-agent/src/core/export-html/vendor/highlight.min.js");
+const TEMPLATE_HTML: &str = ultron_assets::EXPORT_HTML_TEMPLATE;
+const TEMPLATE_CSS: &str = ultron_assets::EXPORT_HTML_CSS;
+const TEMPLATE_JS: &str = ultron_assets::EXPORT_HTML_JS;
+const MARKED_JS: &str = ultron_assets::MARKED_JS;
+const HIGHLIGHT_JS: &str = ultron_assets::HIGHLIGHT_JS;
 
 fn parse_color(color: &str) -> Option<(u8, u8, u8)> {
     if let Some(hex) = color.strip_prefix('#')

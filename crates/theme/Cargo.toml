@@ -1,14 +1,17 @@
 [package]
-name = "theme"
-version = "0.1.0"
+name = "ultron-theme"
+version.workspace = true
 description = "Ultron themes: the theme document schema, the built-in dark and light themes, color resolution and conversion, ANSI palettes, text styles, the theme registry, and choosing a theme from the setting and the terminal's background"
 edition.workspace = true
 license.workspace = true
-publish.workspace = true
+repository.workspace = true
 autotests = false
 
+[lib]
+name = "theme"
+
 [dependencies]
-jsrt = { path = "../jsrt" }
+jsrt = { package = "ultron-jsrt", path = "../jsrt", version = "=1.0.0" }
 serde_json = { version = "=1.0.151", features = ["preserve_order"] }
 
 [lints]

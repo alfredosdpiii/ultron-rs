@@ -1,23 +1,26 @@
 [package]
-name = "lsp"
-version = "0.1.0"
+name = "ultron-lsp"
+version.workspace = true
 description = "Language server diagnostics for every REPL file write: server detection, mise install, a stdio LSP client"
 edition.workspace = true
 license.workspace = true
-publish.workspace = true
+repository.workspace = true
 autotests = false
 
+[lib]
+name = "lsp"
+
 [dependencies]
-host = { path = "../host" }
-jsrt = { path = "../jsrt" }
-loki = { path = "../loki" }
-sandbox = { path = "../sandbox" }
+host = { package = "ultron-host", path = "../host", version = "=1.0.0" }
+jsrt = { package = "ultron-jsrt", path = "../jsrt", version = "=1.0.0" }
+loki = { package = "ultron-loki", path = "../loki", version = "=1.0.0" }
+sandbox = { package = "ultron-sandbox", path = "../sandbox", version = "=1.0.0" }
 rustix = { version = "=1.1.5", features = ["process", "std"] }
 serde_json = { version = "=1.0.151", features = ["preserve_order"] }
 url = "=2.5.8"
 
 [dev-dependencies]
-kernel = { path = "../kernel" }
+kernel = { package = "ultron-kernel", path = "../kernel", version = "=1.0.0" }
 tempfile = "=3.27.0"
 
 [lints]
