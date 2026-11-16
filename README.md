@@ -307,8 +307,10 @@ surrounding code; then every finding goes to a verifier frame that reads the lin
 code involved. One more finder looks at reuse: the change's new definitions are searched for in the rest of the
 repository first, and it judges only what the search found. Another looks at contracts with unchanged code: for
 each endpoint the change names, what its handler answers and how its other callers read the answer. A verifier that
-lacks code names it and is asked once more with it. Rejected findings never reach the report, confirmations must quote the source, and the report ends
-with counts, cost and what was not checked. One token cap covers it all (`--budget`, default 300k); `--only sec,bugs`,
+lacks code names it and is asked again with it, up to three times. A review of the whole local change also starts
+sub-agents on the sub-agent model (set a cheap one): one per changed file reads what the file calls and what it
+replaces, and one re-checks each blocker or major left undecided (`--deep=0` turns them off). Rejected findings never reach the report, confirmations must quote the source, and the report ends
+with counts, cost and what was not checked. One token cap covers it all (`--budget`, default 300k; a review of the whole local change gets what its finder passes need, up to 2m); `--only sec,bugs`,
 `--model`, `--deep` (a sub-agent re-checks undecided findings) and `--post` (only after you say yes) adjust it.
 It adds nothing to the prompt of ordinary turns.
 
