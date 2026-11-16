@@ -220,7 +220,9 @@ path = spec_api.description()   # refuses with what is still open
 
 `gh pr create --title "<type(scope): subject>" --body-file <path>`. The description is built from the spec, the
 review's purposes and the recorded checks; add sections below its first line if a reviewer needs more. When
-`description` reports more than one purpose, open one pull request per purpose instead of waiving it.
+`description` reports more than one purpose, open one pull request per purpose instead of waiving it. When it
+reports more than 1,000 changed lines, ship the milestones as a short stack, one pull request each, per
+`pstack/rigor/playbooks/opening-a-pr.md` ("Size and stacks"): review each branch against its parent.
 
 ## What a mission is not for
 

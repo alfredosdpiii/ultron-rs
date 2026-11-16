@@ -46,11 +46,16 @@ Attach screenshots or recordings when they prove a claim. Full SHAs, lane recita
 holds `## Why`, `## What changed`, `## Acceptance` and `## Verification` from what was recorded. Keep its first line,
 add the sections it lacks below, and build it again after every new commit.
 
-**Size and stacks.** Prefer five narrow PRs to one large one. A stack is a base-branch chain: the root PR targets trunk;
-each child branch is rebased onto its parent's exact tip and its PR targets the parent branch
-(`gh pr create --base <parent-branch>`, `gh pr edit <pr> --base <parent-branch>`). As a parent merges, move its
-child onto trunk per `playbooks/shipping.md` step 4. Branch from trunk only for
-independent work. Rebase on trunk before substantial stack work.
+**Size and stacks.** One idea per PR: something a reviewer can judge on its own (the schema, then the emitter, then
+the wiring, then the UI). Decide the split before coding, in the spec. Aim for under 400 changed lines; past 1,000
+`spec_api.description()` refuses until the change is split, or `review_api.waive("<why it is one idea>")` records the
+reason. Each PR passes its own tests and leaves trunk working. Keep a stack to 3 or 4 PRs and land it bottom-up as
+each is approved: a change to a lower PR rebases every one above it. A stack is a base-branch chain: the root PR
+targets trunk; each child branch is rebased onto its parent's exact tip and its PR targets the parent branch
+(`gh pr create --base <parent-branch>`, `gh pr edit <pr> --base <parent-branch>`). Review a child against its parent,
+`await review_api.run(rlm, "<parent-branch>")`, so its receipt, purposes and line count cover only its own change;
+each branch keeps its own spec. As a parent merges, move its child onto trunk per `playbooks/shipping.md` step 4.
+Branch from trunk only for independent work. Rebase on trunk before substantial stack work.
 
 **Readiness.** Open every PR ready, never draft (omit `--draft`; `gh pr ready <number>` if one opens as draft). Run
 `gh pr view <number>` before you refer to its status.
