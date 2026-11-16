@@ -809,6 +809,14 @@ open redirects and disabled TLS verification in Python; SQL built with `Sprintf`
   that are never mixed: new findings ("fix these"), advisory lines such as a function grown complex (an FYI, no
   change required), and checks that could not run (a missing analyzer, said once per session). Existing code in an
   edited file is not reported.
+- Code hygiene notes. When that check finds nothing to fix, the bundled
+  [codehygiene](https://github.com/brianbell-x/codehygiene) model (a 13 KB network, vendored in
+  `crates/loki/vendor/codehygiene`) reads the files the cell changed, `edit()`/`write()` ones included, and Loki
+  passes on what it flags on lines the change added, as advisory lines: a swallowed error, a noisy comment, a
+  duplicated block, special-casing. `loki.hygiene` (or `ULTRON_LOKI_HYGIENE`) is `on`, `all` (adds dense lines, deep
+  nesting, cramped layout and naming, which also fire on formatter-clean code) or `off`. The model needs a Python
+  with NumPy: Loki's interpreter, else `uv` with NumPy in its cache. Nothing is downloaded; without NumPy the
+  session says once that hygiene was not checked.
 - A write into another repository (a sibling worktree) is checked against that repository's own `.loki/` policy.
 - A newly imported Python module is checked against the project's interpreter: `ULTRON_LOKI_PROJECT_PYTHON`, else
   the `python` that `bash()` runs when it belongs to a virtual or conda environment, else a `.venv`. Without one the

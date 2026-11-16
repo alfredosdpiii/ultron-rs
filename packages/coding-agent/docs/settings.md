@@ -143,6 +143,7 @@ Global settings only (`~/.ultron/agent/settings.json`), so a repository cannot s
 | Setting | Type | Default | Description |
 |---|---|---|---|
 | `loki.mode` | `"on" \| "advise" \| "off"` | `"on"` | Check every REPL file write with the bundled Loki engine: `on` blocks unsafe `edit()`/`write()` calls, `advise` only reports, `off` disables Loki. `ULTRON_LOKI` overrides it. |
+| `loki.hygiene` | `"on" \| "all" \| "off"` | `"on"` | After a post-write check that found nothing to fix, report what the bundled codehygiene model flags on the lines a cell added, as advisory lines (never blocking). `on`: swallowed errors, noisy comments, duplicated blocks, special-casing. `all` adds dense lines, deep nesting, cramped layout and naming. Needs a Python with NumPy (Loki's interpreter, else `uv` with NumPy cached); without one the session says so once. `ULTRON_LOKI_HYGIENE` overrides it. |
 | `loki.autoInit` | boolean | `true` | Create `.loki/` (engine and default policy, nothing else) in a Git repository that lacks it. Never in CI, a repository rooted at `$HOME` or `/`, under node_modules or in a read-only checkout. `ULTRON_LOKI_AUTOINIT` overrides it. |
 | `loki.autoCommit` | boolean | `true` | Commit the `.loki/` Ultron created, and only it, as "Add Loki guardrails" with your Git identity; never pushed, hooks and signing respected. On a fork this commit rides along in pull requests. `ULTRON_LOKI_AUTOCOMMIT` overrides it. |
 | `loki.ignoreRepos` | `string[]` | `[]` | Repository roots (absolute or `~/...`) where `.loki/` is never created. |

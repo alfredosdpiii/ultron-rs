@@ -593,3 +593,24 @@ calls) rendered as a `<model_notes>` section. The root's follows `/model`; a sub
 
 Code: `crates/session-core/src/core/turn_guard.rs`, `crates/kernel-apis/src/cell_hints.rs` (`guards`),
 `crates/delegation/src/verdict.rs` (`left`), `crates/resources/src/model_notes.rs`.
+
+## Code hygiene notes (Loki, the vendored codehygiene model)
+
+`loki::hygiene` embeds `crates/loki/vendor/codehygiene` (`__init__.py`, `weights.npz`; source and commit in its
+UPSTREAM.md) and runs it in a Python with NumPy: Loki's interpreter (`ULTRON_LOKI_PYTHON`, else the kernel's), else
+`uv run --offline --no-project --with numpy python`. Source, weights and the files' texts go in on stdin, so nothing
+is unpacked to disk and nothing is downloaded.
+
+- When: in `LokiGuard::after_cell_changes`, after a post-write check that blocks nothing, over the same files (at
+  most 40), in the background. Not before a write: a file takes 0.4 to 9 s.
+- What: squiggles on lines the working file adds to its committed text (`py::opcodes`), of the kinds
+  `swallowed_error`, `noisy_comment`, `duplicate_block` and `special_casing`; `all` adds `dense_line`, `deep_nesting`,
+  `cramped_layout` and `poor_naming`. At most 10 lines per check, then `... N more hygiene notes`.
+- Which files: the 19 suffixes the model's circuits cover, outside vendored and generated paths (`slop_included`).
+- Line: `path:line: loki/hygiene-<kind>: <upstream message>: `<start of the line>``, an advisory (FYI, never "fix
+  these"), followed from cell to cell like any other.
+- Cannot run (no NumPy, timeout after 20 s, model error): `NOT CHECKED hygiene: <reason>`, said once per session.
+- Switch: `ULTRON_LOKI_HYGIENE`, else global `loki.hygiene`: `on` (default), `all`, `off`.
+
+Code: `crates/loki/src/hygiene.rs`, `crates/host/src/loki_guard.rs` (`with_hygiene`),
+`crates/session-core/src/compose.rs` (`Config.loki_hygiene`).
