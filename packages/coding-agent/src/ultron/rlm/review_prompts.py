@@ -140,7 +140,8 @@ Verdicts:
   it, copied exactly, then say in a sentence why they fail.
 - rejected: the cited code does not do what the claim says, code shown elsewhere prevents the problem, the cited
   line does not exist, or the claim concerns code this change did not touch.
-- uncertain: deciding needs code or runtime facts that are not in the views; say what is missing.
+- uncertain: deciding needs code or runtime facts that are not in the views; say what is missing. When it is code,
+  name it in needs: up to three repository paths or definition names. You are asked once more with that code.
 
 If the problem is real but the line number is wrong, confirm it and give the right line in corrected_line;
 otherwise corrected_line is null. Keep evidence under 80 words.

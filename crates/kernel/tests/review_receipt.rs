@@ -320,3 +320,108 @@ fn review_holds_new_definitions_against_what_the_repository_already_has() {
     );
     assert!(text("report").contains("parse_money_text repeats parse_money"), "{out}");
 }
+
+/// A finder sees one chunk and the verifier a window, so neither knows what the endpoint a change calls answers,
+/// nor the code a verifier says it lacks: a search and one more ask supply both. Small findings do not hold a ship.
+#[test]
+fn review_reads_the_code_a_change_talks_to() {
+    let runtime = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../packages/coding-agent/src/ultron/rlm/runtime.py");
+    let handler: Arc<dyn HostHandler> = Arc::new(|_: &str, _: Map<String, Value>, _: &Signal| Ok(Value::Null));
+    let kernel = Kernel::new(KernelOptions::new(env!("CARGO_MANIFEST_DIR"), runtime), handler).unwrap();
+    let repo = tempfile::tempdir().unwrap();
+    let dir = repo.path();
+    git(dir, &["init", "-q"]);
+    let server = "@app.post(\"/hitl/approve\")\nasync def approve(request):\n    record(request)\n    if overruled:\n        \
+                  return {\"success\": True, \"status\": \"DENIED\"}\n    return {\"success\": True, \"status\": \"APPROVED\"}\n";
+    std::fs::write(dir.join("server.py"), server).unwrap();
+    let old = "const reply = await post(\"/hitl/approve\", body);\nif (reply.status === \"DENIED\") showOverruled();\n";
+    std::fs::write(dir.join("old_page.js"), old).unwrap();
+    let hooks = "def use_console_data():\n    data = None  # cleared when a load fails\n    return data\n";
+    std::fs::write(dir.join("hooks.py"), hooks).unwrap();
+    std::fs::create_dir_all(dir.join(".github/workflows")).unwrap();
+    let ci = "jobs:\n  lint:\n    steps:\n      - run: pip install ruff\n      - run: ruff check backend/\n      \
+              - run: ruff format --check backend/\n";
+    std::fs::write(dir.join(".github/workflows/ci.yml"), ci).unwrap();
+    git(dir, &["add", "."]);
+    git(dir, &["commit", "-qm", "one"]);
+    let page = "export function approve(body) {\n  return post(\"/hitl/approve\", body).then(() => \"approved\");\n}\n";
+    std::fs::write(dir.join("page.js"), page).unwrap();
+    let code = [
+        "import json, review_api as r",
+        &format!("d = {:?}", dir.display().to_string()),
+        "scope = r.resolve_scope(r.parse_args('', {}), d)",
+        "inventory, notes = r.contract_inventory(r.Git(d), scope)",
+        "out = {'files': sorted(inventory), 'entries': '\\n'.join(inventory.get('page.js', [])), 'notes': notes}",
+        "reviewer = r.contract_reviewer(inventory)",
+        "chunks, _ = r.build_chunks(scope.files, scope.read_file)",
+        "plan = r.plan_find(chunks, [*r.parse_args('', {}).reviewers, reviewer], 100000)",
+        "out['frames'] = [chunk.path for item, chunk in plan['frames'] if item.key == 'contract']",
+        "finding = {'line': 2, 'severity': 'minor', 'category': 'correctness', 'confidence': 0.9,",
+        "           'claim': 'the pane goes blank after a failed reload', 'why': 'the hook clears its data',",
+        "           'suggested_fix': 'keep the last data'}",
+        "class Fake:",
+        "    def __init__(self, sure):",
+        "        self.sure, self.asks = sure, []",
+        "    async def map(self, tasks, items, **kwargs):",
+        "        if not isinstance(tasks, str):",
+        "            return [[finding] if 'Correctness' in task else [] for task in tasks]",
+        "        self.asks.append(items)",
+        "        if self.sure and any('cleared when a load fails' in view for view in items[0]):",
+        "            return [{'verdict': 'confirmed', 'evidence': '`data = None  # cleared when a load fails`'}]",
+        "        return [{'verdict': 'uncertain', 'evidence': 'use_console_data is not in the views',",
+        "                 'needs': ['use_console_data']} for _ in items]",
+        "    async def infer(self, task, context, **kwargs):",
+        "        return []",
+        "fake = Fake(True)",
+        "out['report'] = (await r.run(fake, '--model fake/model', cwd=d)).report",
+        "out['asks'] = len(fake.asks)",
+        "out['second'] = fake.asks[1][0]",
+        "out['receipt'] = json.loads(open(r._receipt_path(r.Git(d))).read())",
+        "fake = Fake(False)",
+        "out['unsure'] = (await r.run(fake, '--model fake/model', cwd=d)).report",
+        "out['unsure_asks'] = len(fake.asks)",
+        "print(json.dumps(out))",
+    ]
+    .join("\n");
+    let result = kernel.execute(&code, None, None).unwrap();
+    assert_eq!(result.status, Status::Ok, "{result:?}");
+    let out: Value = serde_json::from_str(result.stdout.trim()).unwrap();
+    let text = |key: &str| out[key].as_str().unwrap_or_else(|| panic!("{key}: {out}")).to_string();
+
+    // The endpoint the new page calls, with what its handler answers and how the page it replaces reads the answer.
+    assert_eq!(out["files"], serde_json::json!(["page.js"]), "{out}");
+    let entries = text("entries");
+    assert!(entries.contains("server.py:1"), "{entries}");
+    assert!(
+        entries.contains("\"status\": \"DENIED\""),
+        "what the handler returns: {entries}"
+    );
+    assert!(entries.contains("old_page.js:1"), "the other caller: {entries}");
+    assert!(entries.contains("showOverruled"), "{entries}");
+    assert_eq!(out["frames"], serde_json::json!(["page.js"]), "{out}");
+
+    // A verifier that names the code it lacks is asked once more, with that code.
+    assert_eq!(out["asks"], 2, "{out}");
+    let second = out["second"].as_array().unwrap_or_else(|| panic!("{out}"));
+    assert!(
+        second.iter().any(
+            |view| view.as_str().unwrap().contains("hooks.py:1") && view.as_str().unwrap().contains("cleared when")
+        ),
+        "{second:?}"
+    );
+    let report = text("report");
+    assert!(report.contains("## Minor (1)"), "{report}");
+    assert!(!report.contains("## Uncertain"), "{report}");
+    // A minor finding is reported and does not hold the pull request.
+    assert_eq!(out["receipt"]["confirmed"], 0, "{out}");
+    assert_eq!(out["receipt"]["minor"], 1, "{out}");
+    // What CI will run is named where the report says nothing was run.
+    assert!(report.contains("`ruff format --check backend/`"), "{report}");
+    assert!(!report.contains("pip install"), "{report}");
+
+    // Asked once more only: what stays undecided names what to read.
+    assert_eq!(out["unsure_asks"], 2, "{out}");
+    let unsure = text("unsure");
+    assert!(unsure.contains("## Uncertain, not confirmed (1)"), "{unsure}");
+    assert!(unsure.contains("read the code it names"), "{unsure}");
+}
