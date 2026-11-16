@@ -139,6 +139,66 @@ fn ai_claude_code_cli_exit_error_waits_for_the_stderr_pipe_to_close() {
     claude_code_cli::reset_claude_code_cli_state();
 }
 
+/// A launcher script prints its own line on stdout before it starts Claude Code (mise's `claude` wrapper): the probe
+/// reads the version and the login state past it.
+#[test]
+fn ai_claude_code_cli_probe_reads_past_a_launchers_line() {
+    claude_code_cli::reset_claude_code_cli_state();
+    let dir = tempfile::tempdir().unwrap();
+    let fixture = concat!(env!("CARGO_MANIFEST_DIR"), "/fixtures/fake-claude/claude");
+    let bin = dir.path().join("claude");
+    std::fs::write(
+        &bin,
+        format!("#!/bin/sh\necho 'mise ~/.config/mise/config.toml tools: claude@2.1.322'\nexec {fixture} \"$@\"\n"),
+    )
+    .unwrap();
+    std::fs::set_permissions(&bin, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+    std::fs::write(
+        dir.path().join("reply"),
+        "{\"type\":\"result\",\"is_error\":false,\"result\":\"ok\",\"stop_reason\":\"end_turn\",\"usage\":{}}\n",
+    )
+    .unwrap();
+    let log = dir.path().join("log");
+    std::fs::write(&log, "").unwrap();
+    let options = |missing: &str| -> ClaudeCodeOptions {
+        serde_json::from_value(json!({"env": {
+            (ai::claude_code_cli::CLAUDE_CODE_BIN_ENV): bin.to_string_lossy(),
+            (ai::claude_code_cli::CLAUDE_CODE_WARM_ENV): "0",
+            "CLAUDE_CONFIG_DIR": "/cfg/launcher",
+            "FAKE_CLAUDE_NO_FLAGS": missing,
+            "FAKE_CLAUDE_REPLY": dir.path().join("reply").to_string_lossy(),
+            "FAKE_CLAUDE_LOG": log.to_string_lossy(),
+        }}))
+        .unwrap()
+    };
+    let context: TranscriptContext =
+        serde_json::from_value(json!({"messages": [{"role": "user", "content": "q", "timestamp": 1}]})).unwrap();
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_time()
+        .build()
+        .unwrap();
+    let ask = |missing: &str| {
+        claude_code_cli::reset_claude_code_cli_state();
+        runtime.block_on(claude_code_cli::stream_simple(
+            &cc_model(),
+            &context,
+            &options(missing),
+            &mut |_| {},
+        ))
+    };
+    let reply = ask("");
+    assert_eq!(reply.error_message, None);
+    assert!(
+        serde_json::to_string(&reply.content).unwrap().contains("\"ok\""),
+        "{:?}",
+        reply.content
+    );
+    // A CLI missing a flag is named by the version it printed, not by the launcher's first word.
+    let old = ask("--tools").error_message.unwrap_or_default();
+    assert!(old.contains("version 2.1.99) does not support --tools"), "{old}");
+    claude_code_cli::reset_claude_code_cli_state();
+}
+
 /// The page the browser thread read back from the callback server, once it has read it (hang guard 120 s).
 fn served_page(pages: &mpsc::Receiver<String>) -> String {
     pages

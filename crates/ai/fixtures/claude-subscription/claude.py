@@ -12,6 +12,7 @@ Behaviour switches (environment):
   FAKE_MODELS / FAKE_ACCOUNT   the initialize handshake's picker and account
   FAKE_HANDSHAKE_UPSTREAM      the handshake also POSTs to ANTHROPIC_BASE_URL (must be refused or never happen)
   FAKE_GARBAGE           print a non-JSON line and exit
+  FAKE_PREAMBLE          print this line first, as a launcher script does before it starts Claude Code
   FAKE_NATIVE_ERROR      `code:text`: answer with native's own API error, no upstream request
   FAKE_RATE_LIMIT        JSON `rate_limit_info`: emit native's `rate_limit_event` before answering (shape of the TypeScript
                          fakes: {"status": "rejected", "rateLimitType": "five_hour", "resetsAt": <epoch s>})
@@ -64,6 +65,8 @@ if argv[:2] == ["auth", "status"]:
     auth = json.loads(env.get("FAKE_AUTH", '{"loggedIn": true, "authMethod": "claude.ai", "subscriptionType": "pro"}'))
     print(json.dumps(auth))
     sys.exit(0 if auth.get("loggedIn") else 1)
+if env.get("FAKE_PREAMBLE"):
+    print(env["FAKE_PREAMBLE"], flush=True)
 if env.get("FAKE_GARBAGE"):
     print("mise WARN tool not activated", flush=True)
     sys.exit(0)

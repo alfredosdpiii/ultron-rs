@@ -686,6 +686,28 @@ fn ai_claude_subscription_invalid_stream_json_names_the_offending_line() {
     );
 }
 
+/// A launcher script prints its own line on stdout before Claude Code starts (mise's `claude` wrapper runs
+/// `mise use -g claude` first, which reports the tool there).
+#[test]
+fn ai_claude_subscription_reads_past_a_launchers_line_before_the_stream() {
+    seal();
+    let fake = Fake::new();
+    let (message, _) = call(
+        fake.config(
+            NO_UPSTREAM,
+            &[
+                ("FAKE_PREAMBLE", "mise ~/.config/mise/config.toml tools: claude@2.1.322"),
+                ("FAKE_OFFLINE_BLOCKS", r#"[{"type":"text","text":"done"}]"#),
+            ],
+        ),
+        &model("sonnet"),
+        &first_turn(),
+        &options(),
+    );
+    assert_eq!(message.error_message, None);
+    assert_eq!(text_of(&message), "done");
+}
+
 #[test]
 fn ai_claude_subscription_replay_needs_zero_turn_acknowledgments() {
     seal();
