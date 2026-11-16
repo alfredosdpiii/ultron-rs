@@ -524,12 +524,14 @@ fn harness_runtime_orders_commits_against_the_step_one_queued_before_lands_one_a
                 blocker.commit(|tx| Ok(tx.append_entry(conversation, EntryDraft::new("blocker")).map(drop)?))
             });
             gate.wait_entered();
+            // The scheduler's own commits may be on the line too, so `before` is one more than what is there.
+            let line = harness.line_len();
             let queued = runtime.clone();
             *b.lock().unwrap() = Some(spawn(move || {
                 queued.commit(&bg(), |_, _| Ok(completed(json!("before"))))
             }));
             // `before` is on the line behind the held commit before the handler returns.
-            line_reaches(&harness, 2);
+            line_reaches(&harness, line + 1);
             // Started after `before` was queued, so it lands after it: rejected whether it queues before or after the
             // step's own commit.
             let late = runtime.clone();
