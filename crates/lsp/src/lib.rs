@@ -273,6 +273,16 @@ impl LspGuard {
         if !first && client.loading() {
             return Report::Starting { server, root };
         }
+        // An environment made after the server started (`uv sync` in a new worktree) is found by a later write.
+        // ponytail: looked for only while none is known (the lookup runs `python`); one that moves or goes away
+        // needs a new session.
+        let known = client.settings();
+        if !first && server == "pyright" && known.pointer("/python/pythonPath").is_none() {
+            let found = servers::settings(spec, &root, &|name| self.inner.var(name));
+            if found != known {
+                client.configure(found, deadline);
+            }
+        }
         match client.check(path, language, content, deadline) {
             Ok(errors) => Report::Errors {
                 server,

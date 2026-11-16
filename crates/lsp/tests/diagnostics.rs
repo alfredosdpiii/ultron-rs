@@ -149,6 +149,20 @@ fn lsp_write_reports_the_errors_of_the_proposed_text_and_nothing_for_a_clean_one
 }
 
 #[test]
+fn lsp_python_environment_made_after_the_server_started_is_used_from_the_next_write() {
+    const UNRESOLVED: &str = "[LSP] pyright: 1 error in src/app.py with this write:\n  1:1 E1 IMPORT found on line 1";
+    let project = Project::new().with_server();
+    let hooks = project.hooks("push");
+    assert_eq!(notes(&hooks, "src/app.py", "IMPORT\n"), [UNRESOLVED]);
+    // `uv sync` in a new worktree, minutes after the first write started the server.
+    executable(&project.root.join(".venv/bin/python"), "");
+    assert_eq!(notes(&hooks, "src/app.py", "IMPORT\n# again\n"), [] as [&str; 0]);
+    // A project that has its environment from the start.
+    let hooks = project.hooks("push");
+    assert_eq!(notes(&hooks, "src/app.py", "IMPORT\n"), [] as [&str; 0]);
+}
+
+#[test]
 fn lsp_write_lists_at_most_ten_errors() {
     let project = Project::new().with_server();
     let note = notes(&project.hooks("push"), "many.py", &"ERROR\n".repeat(12)).remove(0);

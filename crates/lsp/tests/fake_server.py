@@ -2,7 +2,9 @@
 """A language server for tests: every line holding ERROR is an error, every line holding WARN a warning.
 FAKE_LSP picks how it reports: push (versioned publishes), unversioned (publishes without a version: an empty one
 before the errors, and none when a clean file stays clean, like typescript-language-server), pull (textDocument/diagnostic), loading (says it never
-finishes loading), slow (never reports), die (exits when a document opens)."""
+finishes loading), slow (never reports), die (exits when a document opens).
+A line holding IMPORT is an error until the client configures `python.pythonPath`, like an import pyright cannot
+resolve without the project's interpreter."""
 import json
 import os
 import sys
@@ -11,6 +13,8 @@ import time
 MODE = os.environ.get("FAKE_LSP", "push")
 docs = {}
 last = {}
+backlog = []
+python = None
 
 
 def send(message):
@@ -37,12 +41,27 @@ def read():
 def diagnostics(text):
     found = []
     for number, line in enumerate(text.split("\n")):
-        for word, severity in (("ERROR", 1), ("WARN", 2)):
-            if word in line:
+        for word, severity in (("ERROR", 1), ("WARN", 2), ("IMPORT", 1)):
+            if word in line and not (word == "IMPORT" and python):
                 at = {"line": number, "character": line.index(word)}
                 found.append({"range": {"start": at, "end": at}, "severity": severity, "code": "E1",
                               "message": "%s found\n  on line %d" % (word, number + 1)})
     return found
+
+
+def configure():
+    """Asks the client for the interpreter and waits for the answer; what arrives meanwhile is handled after."""
+    global python
+    send({"jsonrpc": "2.0", "id": "config-python", "method": "workspace/configuration",
+          "params": {"items": [{"section": "python"}]}})
+    while True:
+        message = read()
+        if message is None:
+            sys.exit(0)
+        if message.get("id") == "config-python":
+            python = ((message.get("result") or [None])[0] or {}).get("pythonPath")
+            return
+        backlog.append(message)
 
 
 def changed(uri, version, text):
@@ -64,7 +83,7 @@ def changed(uri, version, text):
 
 print("fake server banner", flush=True)
 while True:
-    message = read()
+    message = backlog.pop(0) if backlog else read()
     if message is None:
         break
     method, params = message.get("method"), message.get("params") or {}
@@ -73,7 +92,10 @@ while True:
         send({"jsonrpc": "2.0", "id": message["id"], "result": {"capabilities": capabilities}})
     elif method == "initialized":
         send({"jsonrpc": "2.0", "id": "config-1", "method": "workspace/configuration", "params": {"items": [{"section": "fake"}]}})
+        configure()
         send({"jsonrpc": "2.0", "method": "experimental/serverStatus", "params": {"health": "ok", "quiescent": MODE != "loading"}})
+    elif method == "workspace/didChangeConfiguration":
+        configure()
     elif method == "textDocument/didOpen":
         changed(params["textDocument"]["uri"], params["textDocument"]["version"], params["textDocument"]["text"])
     elif method == "textDocument/didChange":

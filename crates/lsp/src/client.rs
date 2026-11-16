@@ -62,6 +62,8 @@ struct State {
     received: u64,
     quiescent: bool,
     exited: bool,
+    /// Configuration requests answered so far.
+    configured: u64,
 }
 
 #[derive(Default)]
@@ -88,6 +90,8 @@ pub struct Client {
     status: bool,
     /// Held for a whole check: one at a time per server.
     docs: Mutex<HashMap<PathBuf, Doc>>,
+    /// What answers the server's configuration requests.
+    settings: Arc<Mutex<Value>>,
 }
 
 /// How a server process is started: `argv` in `cwd` with exactly `env`, for the project at `root`.
@@ -181,7 +185,7 @@ fn configuration(settings: &Value, params: Option<&Value>) -> Value {
     )
 }
 
-fn incoming(message: Value, shared: &Shared, out: &Sender<Vec<u8>>, settings: &Value) {
+fn incoming(message: Value, shared: &Shared, out: &Sender<Vec<u8>>, settings: &Mutex<Value>) {
     let method = message.get("method").and_then(Value::as_str);
     let id = message.get("id");
     let mut state = sync::lock(&shared.state);
@@ -189,7 +193,10 @@ fn incoming(message: Value, shared: &Shared, out: &Sender<Vec<u8>>, settings: &V
     match (method, id) {
         (Some(method), Some(id)) => {
             let result = match method {
-                "workspace/configuration" => configuration(settings, message.get("params")),
+                "workspace/configuration" => {
+                    state.configured += 1;
+                    configuration(&sync::lock(settings), message.get("params"))
+                }
                 _ => Value::Null,
             };
             let _ = out.send(frame(&json!({ "jsonrpc": "2.0", "id": id, "result": result })));
@@ -273,12 +280,13 @@ impl Client {
             }
         });
         let shared = Arc::new(Shared::default());
-        let (reader_shared, reader_out) = (shared.clone(), out.clone());
+        let settings = Arc::new(Mutex::new(settings));
+        let (reader_shared, reader_out, reader_settings) = (shared.clone(), out.clone(), settings.clone());
         let pid = child.id();
         std::thread::spawn(move || {
             let mut reader = BufReader::new(stdout);
             while let Some(message) = read_message(&mut reader) {
-                incoming(message, &reader_shared, &reader_out, &settings);
+                incoming(message, &reader_shared, &reader_out, &reader_settings);
             }
             sync::lock(&reader_shared.state).exited = true;
             reader_shared.changed.notify_all();
@@ -293,6 +301,7 @@ impl Client {
             pull: false,
             status,
             docs: Mutex::default(),
+            settings,
         };
         let params = json!({
             "processId": std::process::id(),
@@ -371,6 +380,24 @@ impl Client {
             &json!({ "jsonrpc": "2.0", "id": id, "method": method, "params": params }),
         ));
         self.wait(deadline, |state| state.responses.remove(&id))
+    }
+
+    pub fn settings(&self) -> Value {
+        sync::lock(&self.settings).clone()
+    }
+
+    /// Replaces the settings of a running server, and waits until `deadline` for it to ask for them again: what
+    /// it reports before that is still computed with the old ones.
+    pub fn configure(&self, settings: Value, deadline: Instant) {
+        *sync::lock(&self.settings) = settings.clone();
+        let asked = {
+            let mut state = sync::lock(&self.shared.state);
+            // Computed with the old settings.
+            state.published.clear();
+            state.configured
+        };
+        self.notify("workspace/didChangeConfiguration", json!({ "settings": settings }));
+        let _ = self.wait(deadline, |state| (state.configured > asked).then_some(()));
     }
 
     /// True while a server that reports its status has not finished loading the project.
