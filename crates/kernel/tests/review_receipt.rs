@@ -603,6 +603,9 @@ fn review_budget_grows_with_the_change() {
     assert!(!text("plan").contains("over budget"), "{}", text("plan"));
     assert!(out["budgets"][0].as_u64().unwrap() > 180_000, "{}", out["budgets"]);
     assert!(!text("report").contains("did not fit the budget"), "{}", text("report"));
+    // 12,000 changed lines: the report says so before a reviewer does.
+    assert!(text("report").contains("12,030 changed lines"), "{}", text("report"));
+    assert!(text("report").contains("under 400"), "{}", text("report"));
     // A named budget is a cap, and a review of a few paths keeps the default.
     assert!(text("capped").contains("over budget"), "{}", text("capped"));
     assert!(

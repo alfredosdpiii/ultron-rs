@@ -26,8 +26,9 @@ import re
 import time
 from pathlib import Path
 from typing import Any
+from urllib.parse import quote
 
-from review_api import Git, ReviewError, Runner, _receipt_path
+from review_api import SIZE_CEILING, Git, ReviewError, Runner, _receipt_path
 
 STATUSES = ("pending", "pass", "fail", "blocked")
 #: The first line of a description: the tree it was written for. A new commit is a new tree.
@@ -58,13 +59,25 @@ def _store(path: Path, text: str) -> None:
     os.replace(temporary, path)
 
 
+def _aside(directory: Path, branch: str) -> Path:
+    return directory / f"spec-{quote(branch, safe='')}.json"
+
+
 def _spec(git: Git, directory: Path) -> dict[str, Any] | None:
-    # ponytail: one spec per checkout, valid on the branch it was written on; key the file by branch if switching
-    # branches inside one checkout loses specs people wanted.
-    spec = _read(directory / "spec.json")
-    if not isinstance(spec, dict) or spec.get("branch") != git.value("rev-parse", "--abbrev-ref", "HEAD"):
+    """The spec of the checked-out branch, in `spec.json`. A stack switches branches inside one checkout, so the
+    spec of another branch is set aside under its branch's name and brought back when that branch is checked out."""
+    branch = git.value("rev-parse", "--abbrev-ref", "HEAD")
+    current = directory / "spec.json"
+    spec = _read(current)
+    if not branch or (isinstance(spec, dict) and spec.get("branch") == branch):
+        return spec if branch and isinstance(spec, dict) else None
+    if isinstance(spec, dict) and isinstance(spec.get("branch"), str) and spec["branch"]:
+        os.replace(current, _aside(directory, spec["branch"]))
+    mine = _read(_aside(directory, branch))
+    if not isinstance(mine, dict) or mine.get("branch") != branch:
         return None
-    return spec
+    os.replace(_aside(directory, branch), current)
+    return mine
 
 
 def _render(spec: dict[str, Any]) -> str:
@@ -265,6 +278,10 @@ def description(*, cwd: str | None = None, runner: Runner | None = None) -> str:
     if len(purposes) > 1:
         open_items.append(f"{len(purposes)} separate purposes ({'; '.join(p['purpose'] for p in purposes)}): "
                           "one pull request each")
+    lines = receipt.get("lines")
+    if isinstance(lines, int) and lines > SIZE_CEILING:
+        open_items.append(f"{lines:,} changed lines, past {SIZE_CEILING:,}: split it by idea into a short stack "
+                          "(review each branch against its parent branch), or waive with why it is one idea")
     named = {path for p in purposes for path in p.get("files") or []}
     stray = [path for path in files if path not in named] if purposes else []
     if stray:

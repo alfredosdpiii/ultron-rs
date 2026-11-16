@@ -52,6 +52,9 @@ DEFAULT_BUDGET_TOKENS = 300_000
 # With no --budget, a review of the whole local change gets what its finder passes need, up to this.
 AUTO_BUDGET_MAX = 2_000_000
 AUTO_BUDGET_HEADROOM = 1.25
+# Changed lines of one pull request: past the target the report says so, past the ceiling the description is held.
+SIZE_TARGET = 400
+SIZE_CEILING = 1_000
 MIN_BUDGET_TOKENS = 10_000
 FIND_SHARE = 0.6
 CHUNK_CHARS = 14_000
@@ -1083,13 +1086,17 @@ def render_report(*, label: str, files: list[FileDiff], reviewers: list[Reviewer
                   uncertain: list[dict[str, Any]], rejected: list[dict[str, Any]], stats: dict[str, Any],
                   not_checked: list[str], read_file: Callable[[str], list[str] | None],
                   path: str | None = None, post_line: str | None = None,
-                  purposes: list[dict[str, Any]] | None = None) -> str:
+                  purposes: list[dict[str, Any]] | None = None, lines: int = 0) -> str:
     """Markdown report: confirmed findings by severity, uncertain ones apart, then counts, cost and gaps.
     Rejected findings contribute only to the counts."""
     added = sum(item.added for item in files)
     removed = sum(item.removed for item in files)
     out = [f"# Code review: {label}", ""]
     out.append(f"{len(files)} files, +{added} -{removed} lines. Reviewers: {', '.join(r.title for r in reviewers)}.")
+    if lines > SIZE_TARGET:
+        out += ["", f"Size: {lines:,} changed lines in the reviewed files. A pull request under {SIZE_TARGET} is "
+                    f"usually approved in one pass; past {SIZE_CEILING:,} the description is held. Split by idea "
+                    "into a short stack, and review each branch against its parent branch."]
     if not confirmed:
         out += ["", "No confirmed findings."]
     shown = 0
@@ -1269,12 +1276,12 @@ def acceptance_reviewer(items: list[str]) -> Reviewer:
 
 
 def _acceptance_items(git: Git) -> list[str]:
+    import spec_api  # spec_api imports this module
+
     path = _receipt_path(git)
     try:
-        spec = json.loads((path.parent / "spec.json").read_text(encoding="utf-8")) if path else None
-        if spec["branch"] != git.value("rev-parse", "--abbrev-ref", "HEAD"):
-            return []
-        return [f"{item['id']} ({item['status']}): {item['text']}" for item in spec["acceptance"]]
+        spec = spec_api._spec(git, path.parent) if path else None
+        return [f"{item['id']} ({item['status']}): {item['text']}" for item in spec["acceptance"]] if spec else []
     except (OSError, ValueError, KeyError, TypeError):
         return []
 
@@ -1603,7 +1610,7 @@ def _receipt_path(git: Git) -> Path | None:
 
 
 def _write_receipt(git: Git, scope: Scope, options: Options, confirmed: int, incomplete: bool,
-                   purposes: list[dict[str, Any]] | None = None, minor: int = 0) -> str | None:
+                   purposes: list[dict[str, Any]] | None = None, minor: int = 0, lines: int = 0) -> str | None:
     """Record that the committed tree was reviewed, for the gate on `gh pr create` (the `selfReview` setting,
     session-core situational_skills.rs). Returns the line the report shows, or None when no receipt applies.
 
@@ -1625,7 +1632,7 @@ def _write_receipt(git: Git, scope: Scope, options: Options, confirmed: int, inc
     # request's base if that gets used to review less than the pull request holds.
     receipt = {"tree": tree, "confirmed": confirmed, "minor": minor, "incomplete": incomplete, "waived": None,
                "scope": scope.label,
-               "files": [item.path for item in scope.files], "purposes": purposes or [],
+               "files": [item.path for item in scope.files], "purposes": purposes or [], "lines": lines,
                "reviewed_at": time.strftime("%Y-%m-%dT%H:%M:%S%z")}
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -1939,12 +1946,15 @@ async def run(rlm: Any, args: str | list[str] | None = "", *, cwd: str | None = 
     incomplete = bool(plan["dropped"] or unverified or failures)
     purposes = await _purposes(rlm, scope.files, chunks, options.model or options.frame_model) if scope.whole else []
     holding = sum(finding["severity"] in ("blocker", "major") for finding in confirmed)
-    receipt_line = _write_receipt(git, scope, options, holding, incomplete, purposes, len(confirmed) - holding)
+    # Generated files, lockfiles, binaries and deletions are not read, so they are not counted either.
+    lines = (sum(item.added + item.removed for item in scope.files if skip_reason(item) is None)
+             if scope.whole and scope.pr is None else 0)
+    receipt_line = _write_receipt(git, scope, options, holding, incomplete, purposes, len(confirmed) - holding, lines)
     if receipt_line:
         not_checked.append(receipt_line)
     report_args = dict(label=scope.label, files=scope.files, reviewers=reviewers, confirmed=confirmed,
                        uncertain=uncertain, rejected=rejected, stats=stats, not_checked=not_checked,
-                       read_file=scope.read_file, purposes=purposes)
+                       read_file=scope.read_file, purposes=purposes, lines=lines)
     return _finish(report_args, git, scope.pr, options.post)
 
 

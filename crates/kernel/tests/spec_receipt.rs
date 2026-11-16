@@ -106,6 +106,10 @@ fn a_description_is_built_from_the_spec_the_checks_and_the_review_or_refused() {
         "out['waived'] = describe()",
         "reviewed(confirmed=1)",
         "out['finding'] = describe()",
+        "reviewed(lines=1200)",
+        "out['large'] = describe()",
+        "reviewed(lines=1000)",
+        "out['at_most'] = describe()",
         // The spec grew: said so, with the items that stay keeping their result.
         "reviewed()",
         "s.write('Totals', 'The page shows totals per day.', ['A day with sales shows their sum', 'Totals are in UTC'],",
@@ -203,6 +207,11 @@ fn a_description_is_built_from_the_spec_the_checks_and_the_review_or_refused() {
     );
     assert!(waived.contains("2 separate purposes"), "{waived}");
     assert!(text("finding").contains("1 confirmed finding"), "{out}");
+    // A pull request past 1,000 changed lines is split by idea, or ships with the reason it is one idea.
+    let large = text("large");
+    assert!(large.contains("1,200 changed lines"), "{large}");
+    assert!(large.contains("split it by idea"), "{large}");
+    assert!(!text("at_most").contains("changed lines"), "{out}");
 
     let revised = &out["revised"];
     assert_eq!(revised["revisions"], json!(["the ticket added time zones"]));
@@ -232,4 +241,56 @@ fn a_description_is_built_from_the_spec_the_checks_and_the_review_or_refused() {
         "{out}"
     );
     assert!(text("task").contains("A2 (pending): Totals are in UTC"), "{out}");
+}
+
+#[test]
+fn each_branch_of_a_stack_keeps_its_own_spec() {
+    let runtime = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../packages/coding-agent/src/ultron/rlm/runtime.py");
+    let handler: Arc<dyn HostHandler> = Arc::new(|_: &str, _: Map<String, Value>, _: &Signal| Ok(Value::Null));
+    let kernel = Kernel::new(KernelOptions::new(env!("CARGO_MANIFEST_DIR"), runtime), handler).unwrap();
+    let repo = tempfile::tempdir().unwrap();
+    let dir = repo.path();
+    git(dir, &["init", "-q"]);
+    std::fs::write(dir.join("a.py"), "one\n").unwrap();
+    git(dir, &["add", "a.py"]);
+    git(dir, &["commit", "-qm", "one"]);
+    git(dir, &["checkout", "-q", "-b", "stack/schema"]);
+    let code = [
+        "import json, subprocess, review_api as r, spec_api as s",
+        &format!("d = {:?}", dir.display().to_string()),
+        "def checkout(*args):",
+        "    subprocess.run(['git', 'checkout', '-q', *args], cwd=d, check=True)",
+        "s.write('Schema', 'The table exists.', ['The migration adds the table'], cwd=d)",
+        "s.mark('A1', 'pass', 'migrate: ok', cwd=d)",
+        "checkout('-b', 'stack/emitter')",
+        "out = {'child_before': s.read(cwd=d)}",
+        "s.write('Emitter', 'Rows are written.', ['A sale writes a row'], cwd=d)",
+        "out['child'] = s.read(cwd=d)",
+        "checkout('stack/schema')",
+        "out['parent'] = s.read(cwd=d)",
+        "out['parent_items'] = r._acceptance_items(r.Git(d))",
+        "checkout('stack/emitter')",
+        "out['child_again'] = s.read(cwd=d)",
+        "print(json.dumps(out))",
+    ]
+    .join("\n");
+    let result = kernel.execute(&code, None, None).unwrap();
+    assert_eq!(result.status, Status::Ok, "{result:?}");
+    let out: Value = serde_json::from_str(result.stdout.trim()).unwrap();
+    let text = |key: &str| out[key].as_str().unwrap_or_else(|| panic!("{key}: {out}")).to_string();
+
+    // A child branch starts without its parent's spec, and writing its own leaves the parent's in place.
+    assert!(text("child_before").contains("No spec on this branch"), "{out}");
+    assert!(text("child").contains("Spec: Emitter"), "{out}");
+    assert!(text("parent").contains("Spec: Schema"), "{out}");
+    assert!(
+        text("parent").contains("pass A1"),
+        "the parent keeps its results: {out}"
+    );
+    assert_eq!(
+        out["parent_items"],
+        json!(["A1 (pass): The migration adds the table"]),
+        "{out}"
+    );
+    assert!(text("child_again").contains("Spec: Emitter"), "{out}");
 }
