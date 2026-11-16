@@ -425,3 +425,189 @@ fn review_reads_the_code_a_change_talks_to() {
     assert!(unsure.contains("## Uncertain, not confirmed (1)"), "{unsure}");
     assert!(unsure.contains("read the code it names"), "{unsure}");
 }
+
+/// A whole self-review sends cheap sub-agents past the diff: one per changed file to read what the file calls and
+/// what it replaces, and one for each serious finding the frames could not decide.
+#[test]
+fn review_sends_children_past_the_diff() {
+    let runtime = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../packages/coding-agent/src/ultron/rlm/runtime.py");
+    let handler: Arc<dyn HostHandler> = Arc::new(|_: &str, _: Map<String, Value>, _: &Signal| Ok(Value::Null));
+    let kernel = Kernel::new(KernelOptions::new(env!("CARGO_MANIFEST_DIR"), runtime), handler).unwrap();
+    let repo = tempfile::tempdir().unwrap();
+    let dir = repo.path();
+    git(dir, &["init", "-q"]);
+    let server = "@app.post(\"/hitl/approve\")\nasync def approve(request):\n    if overruled:\n        \
+                  return {\"success\": True, \"status\": \"DENIED\"}\n    return {\"success\": True, \"status\": \"APPROVED\"}\n";
+    std::fs::write(dir.join("server.py"), server).unwrap();
+    // The page being replaced calls another route, so no search by route name finds it.
+    let old = "const reply = await decide(body);\nif (reply.status === \"DENIED\") showOverruled();\n";
+    std::fs::write(dir.join("old_page.js"), old).unwrap();
+    let hooks = "def use_console_data():\n    data = None  # cleared when a load fails\n    return data\n";
+    std::fs::write(dir.join("hooks.py"), hooks).unwrap();
+    git(dir, &["add", "."]);
+    git(dir, &["commit", "-qm", "one"]);
+    let page = "export function approve(body) {\n  return post(\"/hitl/approve\", body).then(() => \"approved\");\n}\n";
+    std::fs::write(dir.join("page.js"), page).unwrap();
+    let code = [
+        "import json, review_api as r, spec_api",
+        &format!("d = {:?}", dir.display().to_string()),
+        "spec_api.write('Approvals page', 'Approve from the new page.', ['The page approves a request.'], cwd=d)",
+        "found = {'findings': [{'line': 2, 'severity': 'major', 'category': 'correctness', 'confidence': 0.9,",
+        "    'claim': 'an overruled approval is announced as approved', 'why': 'old_page.js:2 handles DENIED',",
+        "    'suggested_fix': 'read reply.status', 'read': ['old_page.js:2']}]}",
+        "class Fake:",
+        "    def __init__(self):",
+        "        self.spawned, self.asks = [], []",
+        "    async def spawn(self, brief, **kwargs):",
+        "        self.spawned.append((brief, kwargs))",
+        "        return kwargs['name']",
+        "    async def results(self, handles):",
+        "        verdict = {'verdict': 'confirmed', 'evidence': 'export function approve(body) { drops the status'}",
+        "        return {'running': [], 'results': [{'id': h, 'result': {'status': 'succeeded',",
+        "                'value': json.dumps(found if h.startswith('review-explore') else verdict)}} for h in handles]}",
+        "    async def map(self, tasks, items, **kwargs):",
+        "        if not isinstance(tasks, str):",
+        "            return [[] for _ in tasks]",
+        "        self.asks.append(items)",
+        "        asked = '\\n'.join(items[0]).partition('Code you asked for:')[2]",
+        "        if 'hooks.py:1' in asked:",
+        "            return [{'verdict': 'uncertain', 'evidence': 'cannot tell from these lines'}]",
+        "        need = 'hooks.py' if 'server.py:1' in asked else 'server.py'",
+        "        return [{'verdict': 'uncertain', 'evidence': 'not in the views', 'needs': [need]}]",
+        "    async def infer(self, task, context, **kwargs):",
+        "        return []",
+        "fake = Fake()",
+        "out = {'report': (await r.run(fake, '', cwd=d)).report}",
+        "out['names'] = [kwargs['name'] for _, kwargs in fake.spawned]",
+        "out['models'] = [kwargs.get('model') for _, kwargs in fake.spawned]",
+        "out['brief'] = fake.spawned[0][0]",
+        "out['asks'] = len(fake.asks)",
+        "out['first'] = fake.asks[0][0]",
+        "out['last'] = fake.asks[-1][0]",
+        "out['receipt'] = json.loads(open(r._receipt_path(r.Git(d))).read())",
+        "out['spec'] = spec_api.read(cwd=d)",
+        "await r.run(Fake(), '', cwd=d)",
+        "out['spec_again'] = spec_api.read(cwd=d)",
+        "out['revised'] = spec_api.write('Approvals page', 'Approve.', ['The page approves.'], cwd=d, revise='wording')",
+        "fake = Fake()",
+        "await r.run(fake, '--deep=0', cwd=d)",
+        "out['off'] = len(fake.spawned)",
+        "print(json.dumps(out))",
+    ]
+    .join("\n");
+    let result = kernel.execute(&code, None, None).unwrap();
+    assert_eq!(result.status, Status::Ok, "{result:?}");
+    let out: Value = serde_json::from_str(result.stdout.trim()).unwrap();
+    let text = |key: &str| out[key].as_str().unwrap_or_else(|| panic!("{key}: {out}")).to_string();
+
+    // One explorer for the changed file, then one check of the major finding the frames left undecided; both on
+    // the host's sub-agent model, so none is named.
+    assert_eq!(
+        out["names"],
+        serde_json::json!(["review-explore-1", "review-check-1"]),
+        "{out}"
+    );
+    assert_eq!(out["models"], serde_json::json!([null, null]), "{out}");
+    let brief = text("brief");
+    assert!(brief.contains("page.js") && brief.contains("/hitl/approve"), "{brief}");
+    assert!(brief.contains("replaces"), "{brief}");
+    assert!(brief.contains("Do not run tests"), "{brief}");
+
+    // The verifier sees the code the explorer read, found by no search: the page being replaced.
+    let first = out["first"].as_array().unwrap_or_else(|| panic!("{out}"));
+    assert!(
+        first
+            .iter()
+            .any(|view| view.as_str().unwrap().contains("showOverruled")),
+        "{first:?}"
+    );
+    // It is asked again while it names code it has not seen: the handler, then the hook.
+    assert_eq!(out["asks"], 3, "{out}");
+    let last = out["last"]
+        .as_array()
+        .unwrap_or_else(|| panic!("{out}"))
+        .iter()
+        .map(|v| v.as_str().unwrap())
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(last.contains("server.py:1") && last.contains("hooks.py:1"), "{last}");
+
+    let report = text("report");
+    assert!(report.contains("## Major (1)"), "{report}");
+    assert!(
+        report.contains("an overruled approval is announced as approved"),
+        "{report}"
+    );
+    assert!(report.contains("2 sub-agents"), "{report}");
+    assert_eq!(out["receipt"]["confirmed"], 1, "{out}");
+
+    // The endpoint the change calls becomes an acceptance item only a run against the real handler passes.
+    let spec = text("spec");
+    assert!(
+        spec.contains("- pending A2 ") && spec.contains("`/hitl/approve`") && spec.contains("server.py:1"),
+        "{spec}"
+    );
+    assert!(report.contains("A2"), "{report}");
+    assert_eq!(text("spec_again").matches("/hitl/approve").count(), 1, "{out}");
+    assert!(text("revised").contains("`/hitl/approve`"), "{out}");
+
+    assert_eq!(out["off"], 0, "{out}");
+}
+
+#[test]
+fn review_budget_grows_with_the_change() {
+    let runtime = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../packages/coding-agent/src/ultron/rlm/runtime.py");
+    let handler: Arc<dyn HostHandler> = Arc::new(|_: &str, _: Map<String, Value>, _: &Signal| Ok(Value::Null));
+    let kernel = Kernel::new(KernelOptions::new(env!("CARGO_MANIFEST_DIR"), runtime), handler).unwrap();
+    let repo = tempfile::tempdir().unwrap();
+    let dir = repo.path();
+    git(dir, &["init", "-q"]);
+    for file in 0..30 {
+        std::fs::write(dir.join(format!("m{file}.py")), "x = 0\n").unwrap();
+    }
+    git(dir, &["add", "."]);
+    git(dir, &["commit", "-qm", "one"]);
+    // A change of 30 files of about 12,000 characters each: four finders on each is far past the 300k default.
+    for file in 0..30 {
+        let body: String = (0..400)
+            .map(|line| format!("value_{file}_{line} = compute({line})\n"))
+            .collect();
+        std::fs::write(dir.join(format!("m{file}.py")), body).unwrap();
+    }
+    let code = [
+        "import json, review_api as r",
+        &format!("d = {:?}", dir.display().to_string()),
+        "class Fake:",
+        "    def __init__(self):",
+        "        self.budgets = []",
+        "    async def map(self, tasks, items, **kwargs):",
+        "        self.budgets.append(kwargs['budget'].tokens)",
+        "        return [[] for _ in items]",
+        "    async def infer(self, task, context, **kwargs):",
+        "        return []",
+        "out = {'plan': (await r.run(Fake(), '--plan', cwd=d)).report}",
+        "out['capped'] = (await r.run(Fake(), '--plan --budget 300k', cwd=d)).report",
+        "out['paths'] = (await r.run(Fake(), '--plan m0.py m1.py', cwd=d)).report",
+        "fake = Fake()",
+        "out['report'] = (await r.run(fake, '--model fake/model --deep=0', cwd=d)).report",
+        "out['budgets'] = fake.budgets",
+        "print(json.dumps(out))",
+    ]
+    .join("\n");
+    let result = kernel.execute(&code, None, None).unwrap();
+    assert_eq!(result.status, Status::Ok, "{result:?}");
+    let out: Value = serde_json::from_str(result.stdout.trim()).unwrap();
+    let text = |key: &str| out[key].as_str().unwrap_or_else(|| panic!("{key}: {out}")).to_string();
+
+    // With no --budget, a review of the whole local change gets the budget its finder passes need.
+    assert!(!text("plan").contains("over budget"), "{}", text("plan"));
+    assert!(out["budgets"][0].as_u64().unwrap() > 180_000, "{}", out["budgets"]);
+    assert!(!text("report").contains("did not fit the budget"), "{}", text("report"));
+    // A named budget is a cap, and a review of a few paths keeps the default.
+    assert!(text("capped").contains("over budget"), "{}", text("capped"));
+    assert!(
+        text("paths").contains("of the 180,000-token find budget"),
+        "{}",
+        text("paths")
+    );
+}

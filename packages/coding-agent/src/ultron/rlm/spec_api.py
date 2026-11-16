@@ -105,7 +105,11 @@ def write(title: str, goal: str, acceptance: list[str], *, cwd: str | None = Non
         "goal": goal.strip(),
         "acceptance": [{"id": f"A{number}", "text": text, "status": kept.get(text, {}).get("status", "pending"),
                         "evidence": kept.get(text, {}).get("evidence", "")}
-                       for number, text in enumerate(items, 1)],
+                       for number, text in enumerate(items, 1)]
+        # What a review asked for stays until it is shown: rewording the spec does not answer it.
+        + [dict(item, id=f"A{number}") for number, item in enumerate(
+            (item for item in (old["acceptance"] if old else [])
+             if item.get("from") == "review" and item["text"] not in items), len(items) + 1)],
         "revisions": [*(old["revisions"] if old else []), *([revise.strip()] if old else [])],
         "decisions": old.get("decisions", []) if old else [],
     }
@@ -118,6 +122,22 @@ def read(*, cwd: str | None = None, runner: Runner | None = None) -> str:
     """The branch's spec as text, or a line saying there is none."""
     spec = _spec(*_state(cwd, runner))
     return _render(spec) if spec else "No spec on this branch.\n"
+
+
+def add_from_review(items: dict[str, str], *, cwd: str | None = None, runner: Runner | None = None) -> list[str]:
+    """Acceptance items a review adds, as {marker: text}: an item whose text holds the marker is there already.
+    Returns the new ids; none without a spec."""
+    git, directory = _state(cwd, runner)
+    spec = _spec(git, directory)
+    added = []
+    for marker, text in items.items() if spec else []:
+        if not any(marker in item["text"] for item in spec["acceptance"]):
+            added.append(f"A{len(spec['acceptance']) + 1}")
+            spec["acceptance"].append({"id": added[-1], "text": text, "status": "pending", "evidence": "",
+                                       "from": "review"})
+    if added:
+        _store(directory / "spec.json", json.dumps(spec, indent=1) + "\n")
+    return added
 
 
 def mark(item_id: str, status: str, evidence: str, *, cwd: str | None = None, runner: Runner | None = None) -> str:

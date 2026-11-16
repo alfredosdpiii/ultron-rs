@@ -18,8 +18,11 @@ The `/review` command asks the model to run one cell:
 4. Dedupe. Findings on the same file, nearby lines and the same category (or the same claim) merge into one.
 5. Verify. One `rlm.map` of verifier frames, one per finding, each seeing the cited source window, the hunk, and the
    definitions and uses of the names involved (found with `git grep`). Rejected findings are dropped; a confirmation
-   whose evidence does not quote the source is downgraded to uncertain. With `--deep`, uncertain findings go to a
-   sub-agent that can explore the repository: that is the one place a reviewer needs more than a fixed view.
+   whose evidence does not quote the source is downgraded to uncertain. A verifier that names code it lacks is
+   asked again with it, up to three times.
+   Sub-agents read past the diff where a fixed view cannot (a review of the whole local change, or `--deep`): one
+   per changed file follows it into what it calls and what it replaces and raises findings for the same verifier,
+   and one re-checks each blocker or major the verifier left undecided. They run on the host's sub-agent model.
 6. Report. Grouped by severity, with the real source line quoted by code, counts, cost and what was not checked.
 
 Everything runs under one token cap (`--budget`); frames past it come back `Incomplete` and are reported as
@@ -27,6 +30,7 @@ not checked. Nothing is posted unless `post(review, confirm=True)` is called aft
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import re
@@ -40,11 +44,14 @@ from pathlib import Path
 from typing import Any, Callable
 
 from infer_api import Budget, FrameError, Incomplete
-from review_prompts import ALIASES, DEEP_VERIFY_BRIEF, REVIEWERS, VERIFIER_TASK, Reviewer, finder_task
+from review_prompts import ALIASES, DEEP_VERIFY_BRIEF, EXPLORE_BRIEF, REVIEWERS, VERIFIER_TASK, Reviewer, finder_task
 
 SEVERITIES = ("blocker", "major", "minor", "nit")
 SEVERITY_TITLES = {"blocker": "Blockers", "major": "Major", "minor": "Minor", "nit": "Nits"}
 DEFAULT_BUDGET_TOKENS = 300_000
+# With no --budget, a review of the whole local change gets what its finder passes need, up to this.
+AUTO_BUDGET_MAX = 2_000_000
+AUTO_BUDGET_HEADROOM = 1.25
 MIN_BUDGET_TOKENS = 10_000
 FIND_SHARE = 0.6
 CHUNK_CHARS = 14_000
@@ -73,9 +80,12 @@ USAGE = """Usage: /review [base-ref | PR-number | path ...] [options]
   <path ...>        only these files or directories (combine with a ref or PR; `--` ends options)
 
   --only a,b        reviewers to run: bugs, security, arch, tests, ai (default: all)
-  --budget N        token cap for all frames, e.g. 200k or 1m (default 300k)
+  --budget N        token cap for all frames, e.g. 200k or 1m (default 300k; a review of the whole local change
+                    gets what its finder passes need instead, up to 2m)
   --model p/m       model for the frames (default: review.model, else rlm.frameModel, else the session's model)
-  --deep[=N]        re-check up to N uncertain findings with a sub-agent that explores the repo (default 3)
+  --deep[=N]        sub-agents that read the repository. A whole local review has them by default: one per changed
+                    file reads what it calls and replaces, and one re-checks each undecided blocker or major.
+                    N re-checks the N most severe undecided findings instead; --deep=0 turns them off
   --plan            show the scope, chunks and frame plan without calling a model
   --post            prepare the report for posting to the PR; posting still needs your explicit yes"""
 
@@ -123,12 +133,14 @@ class Options:
     targets: list[str] = field(default_factory=list)
     explicit_paths: list[str] = field(default_factory=list)
     only: list[str] | None = None
-    budget_tokens: int = DEFAULT_BUDGET_TOKENS
+    # None: the default, grown to fit a review of the whole local change. A named budget is a cap.
+    budget_tokens: int | None = None
     model: str | None = None
     # `review.model` (/settings -> Models) when neither --model nor ULTRON_REVIEW_MODEL names one; frames only.
     frame_model: str | None = None
     post: bool = False
-    deep: int = 0
+    # None: sub-agents where a review of the whole local change asks for them; 0: none; N: as --deep=N.
+    deep: int | None = None
     plan: bool = False
     help: bool = False
 
@@ -218,10 +230,10 @@ def parse_args(text: str | list[str] | None, env: dict[str, str] | None = None) 
         elif flag == "--deep":
             if inline is None:
                 options.deep = DEEP_DEFAULT
-            elif inline.isdigit() and 1 <= int(inline) <= DEEP_MAX:
+            elif inline.isdigit() and int(inline) <= DEEP_MAX:
                 options.deep = int(inline)
             else:
-                raise ReviewError(f"--deep=N takes a number from 1 to {DEEP_MAX}")
+                raise ReviewError(f"--deep=N takes a number from 0 to {DEEP_MAX}")
         elif token.startswith("-") and token != "-":
             raise ReviewError(f"unknown option {token}\n\n{USAGE}")
         else:
@@ -837,10 +849,10 @@ def apply_verdicts(findings: list[dict[str, Any]], verdicts: list[Any], sources:
     return confirmed, uncertain, rejected
 
 
-def parse_json_object(text: Any) -> dict[str, Any] | None:
-    """The last JSON object in a sub-agent's reply."""
+def parse_json_object(text: Any, key: str = "verdict") -> dict[str, Any] | None:
+    """The last JSON object with `key` in a sub-agent's reply."""
     if isinstance(text, dict):
-        return text
+        return text if key in text else None
     if not isinstance(text, str):
         return None
     decoder = json.JSONDecoder()
@@ -850,7 +862,7 @@ def parse_json_object(text: Any) -> dict[str, Any] | None:
             value, _ = decoder.raw_decode(text[match.start():])
         except ValueError:
             continue
-        if isinstance(value, dict) and "verdict" in value:
+        if isinstance(value, dict) and key in value:
             found = value
     return found
 
@@ -1128,7 +1140,8 @@ def render_report(*, label: str, files: list[FileDiff], reviewers: list[Reviewer
             f"{stats.get('verify_frames', 0)} verifier frames (re-asks included), {tokens:,} tokens of a "
             f"{stats.get('budget', 0):,}-token cap")
     if stats.get("subagents"):
-        cost += f"; {stats['subagents']} verification sub-agents (their tokens count in the session usage)"
+        cost += (f"; {stats['subagents']} sub-agents that read past the diff or re-checked a finding (their tokens "
+                 "count in the session usage)")
     out.append(cost + ".")
     if path:
         out.append(f"- Full report: {path}")
@@ -1525,20 +1538,23 @@ def contract_reviewer(inventory: dict[str, list[str]]) -> Reviewer:
 
 
 NEED_LINES = 60
+#: How many times a verifier is asked again while it names code it has not seen.
+NEED_ROUNDS = 3
 NEED_CHARS = 8_000
 _NEED_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]{0,80}")
 
 
 def needed_code(git: Git, scope: Scope, needs: Any) -> str:
-    """The code a verifier named as missing: a file from its start, or a definition found by name, numbered."""
+    """The code a reviewer named: a file from its start or around `path:line`, or a definition found by name,
+    numbered."""
     out: list[str] = []
     size = 0
     for need in needs[:3] if isinstance(needs, list) else []:
-        need = need.strip().strip("`").split("(")[0].split(":")[0] if isinstance(need, str) else ""
+        need, _, line = need.strip().strip("`").split("(")[0].partition(":") if isinstance(need, str) else ("", "", "")
         name = need.rsplit(".", 1)[-1]
         places: list[tuple[str, int]] = []
         if need and scope.read_file(need):
-            places.append((need, 1))
+            places.append((need, max(1, int(line) - 10) if line.isdigit() else 1))
         elif _NEED_NAME.fullmatch(name) and scope.grep_rev != "":
             args = ["grep", "-n", "-I", "-E", "-e", rf"({_DEFINITION_WORDS})[[:space:]]+{name}([^[:alnum:]_]|$)"]
             args += [scope.grep_rev] if scope.grep_rev else ["--untracked"]
@@ -1740,6 +1756,10 @@ async def run(rlm: Any, args: str | list[str] | None = "", *, cwd: str | None = 
         not_checked += contract_notes
         if contracts:
             reviewers = [*reviewers, contract_reviewer(contracts)]
+            if scope.whole and scope.pr is None and (ids := _run_items(git, contracts)):
+                not_checked.append(f"Added to the spec's acceptance list ({', '.join(ids)}): each endpoint this "
+                                   "change calls, to be shown with a run against its real handler, which no reading "
+                                   "of code shows. Mark each with spec_api.mark and what the run showed.")
         if scope.pr is None and (commands := ci_commands(scope.root)):
             not_checked.append("CI runs these, and this review ran none of them; run each before pushing: "
                                + ", ".join(f"`{_clip(command, 120)}`" for command in commands) + ".")
@@ -1756,6 +1776,12 @@ async def run(rlm: Any, args: str | list[str] | None = "", *, cwd: str | None = 
             report += f"\n{receipt_line}\n"
         return Review(report, scope=scope.label, pr=scope.pr)
 
+    if options.budget_tokens is None:
+        options.budget_tokens = DEFAULT_BUDGET_TOKENS
+        if scope.whole and scope.pr is None and options.only is None:
+            # This is the review a pull request waits on: a pass dropped for budget is a file nobody read.
+            need = plan_find(chunks, reviewers, AUTO_BUDGET_MAX)["estimate"] * AUTO_BUDGET_HEADROOM / FIND_SHARE
+            options.budget_tokens = min(AUTO_BUDGET_MAX, max(DEFAULT_BUDGET_TOKENS, int(need)))
     find_budget = int(options.budget_tokens * FIND_SHARE)
     plan = plan_find(chunks, reviewers, find_budget)
     if options.plan:
@@ -1774,6 +1800,15 @@ async def run(rlm: Any, args: str | list[str] | None = "", *, cwd: str | None = 
     frames = plan["frames"]
     raised: list[dict[str, Any]] = []
     failures: dict[str, list[str]] = {}
+    # Sub-agents: on for a review of the whole local change, where the repository is there to read; --deep=0 is off.
+    local = scope.pr is None and options.only is None
+    children = local and (scope.whole if options.deep is None else options.deep > 0)
+    exploring: list[tuple[Any, Chunk]] = []
+    if children:
+        try:
+            exploring = await _explore_start(rlm, scope, chunks, contracts)
+        except Exception as error:
+            not_checked.append(f"No sub-agent read past the diff ({_text(str(error) or type(error).__name__, 160)}).")
     if frames:
         results = await rlm.map([finder_task(reviewer) for reviewer, _ in frames], [chunk.text for _, chunk in frames],
                                 contract=FINDINGS_CONTRACT, budget=Budget(tokens=find_budget),
@@ -1791,6 +1826,18 @@ async def run(rlm: Any, args: str | list[str] | None = "", *, cwd: str | None = 
         for failure, where in failures.items():
             not_checked.append(f"{len(where)} reviewer passes {failure}: " + ", ".join(where[:8])
                                + (" ..." if len(where) > 8 else ""))
+    if exploring:
+        stats["subagents"] = len(exploring)
+        reviewers = [*reviewers, Reviewer(EXPLORE_KEY, f"Past the diff ({len(exploring)} sub-agents)", "", ())]
+        try:
+            explored, silent = await _explore_findings(rlm, scope, exploring)
+            raised += explored
+            if silent:
+                not_checked.append(f"{len(silent)} sub-agents reading past the diff gave no answer: "
+                                   + ", ".join(silent[:8]) + (" ..." if len(silent) > 8 else ""))
+        except Exception as error:
+            not_checked.append("The sub-agents reading past the diff were not heard "
+                               f"({_text(str(error) or type(error).__name__, 160)}).")
     stats["raised"] = len(raised)
     merged = dedupe(raised)
     stats["merged"] = len(merged)
@@ -1822,13 +1869,16 @@ async def run(rlm: Any, args: str | list[str] | None = "", *, cwd: str | None = 
         if CONTRACT_KEY in finding["reviewers"] and contracts.get(finding["file"]):
             views.append("What the endpoints this file talks to answer, and their other callers (found by a search "
                          "of the repository):\n" + "\n".join(contracts[finding["file"]]))
+        read = needed_code(git, scope, finding.get("read"))
+        if read:
+            views.append(f"Code outside the diff that the reviewer who raised this read:\n{read}")
         cost = _estimate_tokens(VERIFIER_TASK, *views, output=600)
         if estimate + cost > verify_budget:
             unverified.append(dict(finding, verification="not verified (budget)"))
             continue
         estimate += cost
         items.append(views)
-        sources.append(window + "\n" + hunk_text)
+        sources.append(window + "\n" + hunk_text + "\n" + read)
         counts.append(len(source) if source else None)
         to_verify.append(finding)
     confirmed: list[dict[str, Any]] = []
@@ -1842,33 +1892,47 @@ async def run(rlm: Any, args: str | list[str] | None = "", *, cwd: str | None = 
         stats["verify_frames"] = len(to_verify)
         stats["frames"] += calls
         stats["tokens"] += tokens
-        # A verifier that names the code it lacks is asked once more with it: once, so the cost stays bounded.
-        again = [(index, code) for index, verdict in enumerate(verdicts)
-                 if isinstance(verdict, dict) and verdict.get("verdict") == "uncertain"
-                 and (code := needed_code(git, scope, verdict.get("needs")))]
+        # A verifier that names code it has not seen is asked again with it, a few times: following a call takes a
+        # hop, and what it finds there may name the next. It stops when a round names nothing new.
+        given: dict[int, list[str]] = {}
         left = verify_budget - tokens
-        if again and left > 0:
+        for _ in range(NEED_ROUNDS):
+            again = []
+            for index, verdict in enumerate(verdicts):
+                if isinstance(verdict, dict) and verdict.get("verdict") == "uncertain":
+                    code = needed_code(git, scope, verdict.get("needs"))
+                    if code and code not in given.get(index, []):
+                        given.setdefault(index, []).append(code)
+                        again.append(index)
+            if not again or left <= 0:
+                break
             answers = await rlm.map(VERIFIER_TASK,
-                                    [[*items[index], f"Code you asked for:\n{code}"] for index, code in again],
+                                    [[*items[index], "Code you asked for:\n" + "\n\n".join(given[index])]
+                                     for index in again],
                                     contract=NEEDS_CONTRACT, budget=Budget(tokens=left),
                                     model=options.model or options.frame_model, timeout_ms=FRAME_TIMEOUT_MS)
             calls, tokens = _spent(answers)
+            left -= tokens
             stats["verify_frames"] += len(again)
             stats["frames"] += calls
             stats["tokens"] += tokens
-            for (index, code), answer in zip(again, answers):
+            for index, answer in zip(again, answers):
                 if isinstance(answer, dict):
                     verdicts[index] = answer
-                    sources[index] += "\n" + code
+                    sources[index] += "\n" + given[index][-1]
         confirmed, uncertain, rejected = apply_verdicts(to_verify, list(verdicts), sources, counts)
     uncertain += unverified
     if unverified:
         not_checked.append(f"{len(unverified)} findings were not verified within the budget (listed as uncertain).")
 
-    if options.deep and uncertain:
-        confirmed, uncertain, rejected, spawned = await _deep_verify(rlm, options, cwd, scope, confirmed, uncertain,
-                                                                      rejected)
-        stats["subagents"] = spawned
+    if children and uncertain:
+        try:
+            confirmed, uncertain, rejected, spawned = await _deep_verify(rlm, options, scope.root, scope, confirmed,
+                                                                          uncertain, rejected)
+            stats["subagents"] += spawned
+        except Exception as error:
+            not_checked.append("No sub-agent re-checked the undecided findings "
+                               f"({_text(str(error) or type(error).__name__, 160)}).")
 
     confirmed.sort(key=_rank)
     # A review that could not finish is not a pass: passes cut by the budget or failed, findings left unverified.
@@ -1900,22 +1964,109 @@ def _finish(report_args: dict[str, Any], git: Git | None, pr: int | None, post_r
                   report_args["rejected"], report_args["stats"], pr, post_requested and pr is not None)
 
 
+EXPLORE_KEY = "explore"
+#: Sub-agents that read past the diff, one per changed code or test file, the largest changes first.
+EXPLORERS = 12
+EXPLORE_TIMEOUT_MS = 600_000
+EXPLORE_HUNK_CHARS = 6_000
+#: How many endpoints a review adds to the spec's acceptance list.
+CONTRACT_ITEMS = 5
+_CONTRACT_ENTRY = re.compile(r"\A\S+ talks to `([^`]+)`.*?^  (\S+:\d+): .* answers:$", re.M | re.S)
+
+
+def _run_items(git: Git, contracts: dict[str, list[str]]) -> list[str]:
+    """Add to the branch's spec one acceptance item per endpoint the change calls: reading shows what a handler can
+    answer, and only a run against it shows the change handles that. Returns the new item ids."""
+    import spec_api  # spec_api imports this module
+
+    items: dict[str, str] = {}
+    for entry in dict.fromkeys(entry for found in contracts.values() for entry in found):
+        match = _CONTRACT_ENTRY.search(entry)
+        if match and len(items) < CONTRACT_ITEMS:
+            items[f"`{match[1]}`"] = (f"A run against the real handler of `{match[1]}` ({match[2]}) shows the change "
+                                      "handles each answer it gives; a test double does not show it.")
+    try:
+        return spec_api.add_from_review(items, cwd=git.cwd, runner=git._runner) if items else []
+    except (ReviewError, OSError, ValueError, KeyError, TypeError):
+        return []
+
+
+CHILD_POLL_S = 2.0
+
+
+async def _children(rlm: Any, handles: list[Any], timeout_ms: int) -> dict[Any, dict[str, Any]]:
+    """The results of the sub-agents that ended within `timeout_ms`, by id. `rlm.collect` is not used: in a root
+    cell it does not wait (the host waits between turns), and a review is one cell.
+    ponytail: asks the host every two seconds; a host-side wait usable from a root cell would replace the loop."""
+    deadline = time.monotonic() + timeout_ms / 1000
+    while True:
+        state = await rlm.results(handles)
+        if not state.get("running") or time.monotonic() >= deadline:
+            return {entry.get("id"): entry.get("result") or {} for entry in state.get("results", [])
+                    if isinstance(entry, dict)}
+        await asyncio.sleep(CHILD_POLL_S)
+
+
+async def _explore_start(rlm: Any, scope: Scope, chunks: list[Chunk],
+                         contracts: dict[str, list[str]]) -> list[tuple[Any, Chunk]]:
+    """Start the sub-agents that read past the diff. A frame judges the lines it is given; these follow a changed
+    file into what it calls and what it replaces, which no search by name finds. They take the host's sub-agent
+    model (`/settings -> Models`), which is where a cheap one is set."""
+    first: dict[str, Chunk] = {}
+    for chunk in chunks:
+        if chunk.kind != "doc":
+            first.setdefault(chunk.path, chunk)
+    files = sorted((item for item in scope.files if item.path in first), key=lambda item: -item.added)[:EXPLORERS]
+    started = []
+    for number, item in enumerate(files, 1):
+        hunks = "\n".join(line for hunk in item.hunks for line in render_hunk(hunk))[:EXPLORE_HUNK_CHARS]
+        known = contracts.get(item.path)
+        found = ("\nA search found this about the endpoints it talks to:\n" + "\n".join(known) + "\n") if known else ""
+        brief = EXPLORE_BRIEF.format(cwd=scope.root, path=item.path, hunks=hunks, contracts=found)
+        handle = await rlm.spawn(brief, name=f"review-explore-{number}", timeout_ms=EXPLORE_TIMEOUT_MS)
+        started.append((handle, first[item.path]))
+    return started
+
+
+async def _explore_findings(rlm: Any, scope: Scope,
+                            started: list[tuple[Any, Chunk]]) -> tuple[list[dict[str, Any]], list[str]]:
+    """What the sub-agents found, as findings for the same dedupe and verifier as a frame's (each with the code its
+    sub-agent read, under "read"), and the files whose sub-agent gave no answer."""
+    by_id = await _children(rlm, [handle for handle, _ in started], EXPLORE_TIMEOUT_MS + 30_000)
+    reviewer = Reviewer(EXPLORE_KEY, "Past the diff", "", ())
+    found: list[dict[str, Any]] = []
+    silent: list[str] = []
+    for handle, chunk in started:
+        result = by_id.get(getattr(handle, "rlm_child_id", handle), {})
+        value = parse_json_object(result.get("value"), "findings") if result.get("status") == "succeeded" else None
+        raw = value.get("findings") if value else None
+        if not isinstance(raw, list):
+            silent.append(chunk.path)
+            continue
+        source = scope.read_file(chunk.path)
+        for item in raw[:MAX_FINDINGS_PER_FRAME]:
+            for finding in normalize_findings([item], reviewer, chunk, len(source) if source else None):
+                found.append(dict(finding, read=item.get("read")))
+    return found, silent
+
+
 async def _deep_verify(rlm: Any, options: Options, cwd: str, scope: Scope, confirmed: list[dict[str, Any]],
                        uncertain: list[dict[str, Any]], rejected: list[dict[str, Any]]) -> tuple[Any, Any, Any, int]:
     """Re-check the most severe uncertain findings with sub-agents that can read the whole repository."""
-    chosen = sorted(uncertain, key=_rank)[: options.deep]
+    ranked = sorted(uncertain, key=_rank)
+    # By default every blocker and major: a serious finding is not left undecided for want of a look.
+    chosen = ([finding for finding in ranked if finding["severity"] in ("blocker", "major")][:DEEP_MAX]
+              if options.deep is None else ranked[: options.deep])
     rest = [finding for finding in uncertain if finding not in chosen]
     handles = []
     for index, finding in enumerate(chosen, 1):
         public = {key: finding[key] for key in ("file", "line", "severity", "category", "claim", "why")}
         brief = DEEP_VERIFY_BRIEF.format(cwd=cwd, finding=json.dumps(public, indent=1),
                                          note=finding.get("verification") or "no verdict")
-        kwargs: dict[str, Any] = {"name": f"review-check-{index}", "timeout_ms": DEEP_TIMEOUT_MS}
-        if options.model:
-            kwargs["model"] = options.model
-        handles.append(await rlm.spawn(brief, **kwargs))
-    results = await rlm.collect(handles, timeout_ms=DEEP_TIMEOUT_MS + 30_000)
-    by_id = {entry.get("id"): entry.get("result") or {} for entry in results if isinstance(entry, dict)}
+        handles.append(await rlm.spawn(brief, name=f"review-check-{index}", timeout_ms=DEEP_TIMEOUT_MS))
+    if not handles:
+        return confirmed, uncertain, rejected, 0
+    by_id = await _children(rlm, handles, DEEP_TIMEOUT_MS + 30_000)
     verdicts = []
     for handle in handles:
         result = by_id.get(getattr(handle, "rlm_child_id", handle), {})
