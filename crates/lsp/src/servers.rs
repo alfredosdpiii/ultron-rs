@@ -1,5 +1,5 @@
 //! The language servers Ultron knows: which files each checks, where its project root is, and how mise installs it.
-//! Every row was run against the real server (`cargo run -p lsp --example check -- <file>`).
+//! Every row was run against the real server (`cargo run -p ultron-lsp --example check -- <file>`).
 
 use crate::client::Diagnostic;
 use serde_json::{Value, json};

@@ -1,5 +1,5 @@
 //! What the language server says about files as they are on disk, with this process's environment:
-//! `cargo run -p lsp --example check -- <file>...`. Waits while a server starts, installs or loads its project.
+//! `cargo run -p ultron-lsp --example check -- <file>...`. Waits while a server starts, installs or loads its project.
 
 use lsp::{LspGuard, Report};
 use std::time::{Duration, Instant};
