@@ -74,6 +74,8 @@ pub trait Guard: Send + Sync {
     fn take_pending(&self, _lane: &str) -> Option<String> {
         None
     }
+    /// Waits for the after-cell checks already started.
+    fn settled(&self) {}
 }
 
 pub struct AllowAll;
@@ -503,6 +505,13 @@ impl Host {
 
     /// Findings of after-cell checks not yet shown to `lane` (and forget them), for its next cell result.
     pub fn take_pending(&self, lane: &str) -> Option<String> {
+        self.guard.take_pending(lane)
+    }
+
+    /// Findings of the after-cell checks of `lane`'s cells so far, once those checks have finished: what the last
+    /// cell of a turn changed has no next cell result to arrive with.
+    pub fn settled_pending(&self, lane: &str) -> Option<String> {
+        self.guard.settled();
         self.guard.take_pending(lane)
     }
 

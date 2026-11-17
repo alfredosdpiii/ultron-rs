@@ -137,3 +137,44 @@ fn acceptance_after_cell_loki_finding_arrives_with_the_next_cell() {
     assert!(at("[Loki]") < at("[budget left for this request:"), "{second}");
     assert!(second.trim_end().ends_with("model turns]"), "{second}");
 }
+
+/// A turn whose last cell made the write has no next cell result for the finding: the host waits for the check
+/// when the turn ends and continues the turn with it.
+#[test]
+fn acceptance_after_cell_finding_of_a_turns_last_cell_continues_the_turn() {
+    let key = format!("sk-{}", "a1B2c3D4e5F6g7H8i9J0".repeat(2));
+    let write = format!(
+        "from pathlib import Path\nPath('settings.py').write_text('DEBUG = False\\nAPI_KEY = \"{key}\"\\n')\nprint('written')"
+    );
+    let provider = Provider::start(move |request| {
+        if request.tool_results().is_empty() {
+            return Reply::Rlm(write.clone());
+        }
+        let told = request.users().iter().any(|text| text.contains("[Loki]"));
+        Reply::Text(if told { "seen" } else { "done" }.into())
+    });
+    let install = Install::new(&provider);
+    committed(&install, "settings.py", "DEBUG = False\n");
+    let mut client = install.rpc(&["--no-session"], &[]);
+    client.prompt_and_wait("Change the settings", common::HANG).unwrap();
+    let mut messages = client.get_messages().unwrap();
+    // The continued turn is a run of its own: wait for its answer (a hang guard, never a timing expectation).
+    let deadline = std::time::Instant::now() + common::HANG;
+    while !messages.iter().any(|m| m.to_string().contains("seen")) && std::time::Instant::now() < deadline {
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        messages = client.get_messages().unwrap();
+    }
+    let results = rpc_tool_results(&messages);
+    assert_eq!(results.len(), 1, "{results:?}");
+    assert!(!results[0].contains("[Loki]"), "the writing cell returns as usual");
+    let nudges: Vec<String> = messages
+        .iter()
+        .filter(|m| m["details"]["guard"] == "findings after the last cell")
+        .map(|m| m["content"].to_string())
+        .collect();
+    assert_eq!(nudges.len(), 1, "{messages:?}");
+    assert!(
+        nudges[0].contains("loki/secret") && !nudges[0].contains(&key),
+        "{nudges:?}"
+    );
+}

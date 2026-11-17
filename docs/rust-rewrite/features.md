@@ -611,6 +611,15 @@ is unpacked to disk and nothing is downloaded.
   these"), followed from cell to cell like any other.
 - Cannot run (no NumPy, timeout after 20 s, model error): `NOT CHECKED hygiene: <reason>`, said once per session.
 - Switch: `ULTRON_LOKI_HYGIENE`, else global `loki.hygiene`: `on` (default), `all`, `off`.
+- A turn's last cell: after-cell findings arrive with the lane's next cell result, and the last cell has none. When
+  a root turn that made an `rlm` call ends, the host waits for the checks in progress (`Host::settled_pending`) and
+  continues the turn with what they found (guard `findings after the last cell`), under the same count of five as
+  `turnEndChecks`.
+- The whole change: a lane's first commit or push (the once-per-lane refusal that gives `blast-radius`) also
+  carries `hygiene::changed`: the notes for every line the working tree adds against the merge base with
+  `origin/HEAD` (HEAD without one), at most 40 files. Lines already committed on the branch are in it; the per-cell
+  check compares with HEAD and no longer sees them.
 
 Code: `crates/loki/src/hygiene.rs`, `crates/host/src/loki_guard.rs` (`with_hygiene`),
-`crates/session-core/src/compose.rs` (`Config.loki_hygiene`).
+`crates/session-core/src/compose.rs` (`Config.loki_hygiene`), `crates/session-core/src/core/turn_guard.rs`,
+`crates/session-core/src/situational_skills.rs` (`hygiene_notes`).

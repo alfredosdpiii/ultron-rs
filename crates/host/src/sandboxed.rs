@@ -53,6 +53,10 @@ impl Guard for SandboxGuard {
     fn take_pending(&self, lane: &str) -> Option<String> {
         self.inner.take_pending(lane)
     }
+
+    fn settled(&self) {
+        self.inner.settled();
+    }
 }
 
 /// The environment a sandbox policy is built from: the host's base environment (the session's, see

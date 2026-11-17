@@ -1413,6 +1413,7 @@ impl Runtime {
             &session_cwd,
             Box::new(resolve),
             Box::new(engineering),
+            self.config.loki_hygiene,
         )
     }
 

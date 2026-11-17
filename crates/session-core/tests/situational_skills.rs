@@ -521,3 +521,34 @@ fn session_core_situational_skills_follow_a_change_in_a_sibling_repository() {
         "{given:?}"
     );
 }
+
+#[test]
+fn session_core_first_ship_of_a_lane_carries_hygiene_notes_for_the_whole_change() {
+    use loki::hygiene::{self, Level};
+    // Without a Python that has NumPy the model cannot run, as in Loki's own hygiene tests.
+    if hygiene::score(&["x = 1\n"], loki::proc::Deadline::after(60.0)).is_err() {
+        return;
+    }
+    let repo = tempfile::tempdir().unwrap();
+    let dir = repo.path();
+    git(dir, &["init", "-q"]);
+    std::fs::write(dir.join("store.py"), "LIMIT = 10\n").unwrap();
+    git(dir, &["add", "."]);
+    git(dir, &["commit", "-qm", "base"]);
+    let swallowed =
+        "def save(path, text):\n    try:\n        open(path, 'w').write(text)\n    except Exception:\n        pass\n";
+    std::fs::write(dir.join("store.py"), format!("LIMIT = 10\n\n\n{swallowed}")).unwrap();
+    let skills = |level| {
+        observer(json!({}), Arc::new(AtomicBool::new(true)))
+            .with_self_review(SelfReview::Advise, dir)
+            .with_hygiene(level)
+    };
+    let on = skills(Level::On);
+    let told = on.before_shell("git commit -qm x", "main").unwrap_or_default();
+    assert!(told.contains("store.py:7: loki/hygiene-swallowed-error"), "{told}");
+    assert_eq!(on.before_shell("git commit -qm x", "main"), None, "said once per lane");
+    let off = skills(Level::Off)
+        .before_shell("git commit -qm x", "main")
+        .unwrap_or_default();
+    assert!(off.contains("blast-radius") && !off.contains("hygiene"), "{off}");
+}

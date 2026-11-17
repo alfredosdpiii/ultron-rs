@@ -122,6 +122,25 @@ fn hygiene_reports_the_swallowed_error_a_write_added_not_the_one_already_committ
         "{notes:?}"
     );
     assert!(hygiene::written(&root, &files, Level::Off).is_empty());
+    // Once committed the line is no longer new to HEAD; against the base it still is.
+    git(&root, &["add", "."]);
+    git(
+        &root,
+        &[
+            "-c",
+            "user.name=t",
+            "-c",
+            "user.email=t@example.invalid",
+            "commit",
+            "-q",
+            "-m",
+            "more",
+        ],
+    );
+    assert!(hygiene::written(&root, &files, Level::On).is_empty());
+    assert_eq!(hygiene::changed(&root, "HEAD~1", Level::On), notes);
+    assert!(hygiene::changed(&root, "HEAD", Level::On).is_empty());
+    assert!(hygiene::changed(&root, "HEAD~1", Level::Off).is_empty());
 }
 
 #[test]

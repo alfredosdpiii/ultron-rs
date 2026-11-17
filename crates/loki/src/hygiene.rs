@@ -7,7 +7,7 @@
 // ponytail: a Python + NumPy subprocess per check (~0.3 s plus ~0.4 s per 100 lines); port the forward pass to Rust
 // if the NumPy requirement or the latency matters.
 
-use crate::git::head_text;
+use crate::git::{git_output, text_at};
 use crate::proc::{self, Deadline, RunError};
 use crate::{py, resolve};
 use serde_json::{Map, Value, json};
@@ -177,6 +177,33 @@ fn checked(name: &str) -> bool {
 /// Hygiene advisories for the written `files` (repository-relative) against their committed text, or one
 /// `NOT CHECKED hygiene: ...` line when the model could not run.
 pub fn written(root: &Path, files: &[String], level: Level) -> Vec<String> {
+    against(root, files, "HEAD", level)
+}
+
+/// Files the working tree adds or modifies against `base`, at most this many, are read by [`changed`].
+const MAX_CHANGED_FILES: usize = 40;
+
+/// Hygiene advisories for every line the working tree adds against `base` (a revision): the whole change, where
+/// [`written`] sees one cell's files against HEAD and so nothing of what is already committed.
+pub fn changed(root: &Path, base: &str, level: Level) -> Vec<String> {
+    if level == Level::Off {
+        return vec![];
+    }
+    let arguments = ["diff", "--name-only", "-z", "--diff-filter=AM", base, "--"];
+    let listed = match git_output(&resolve(root), &arguments, Deadline::after(SECONDS), None) {
+        Ok(listed) => listed,
+        Err(error) => return vec![format!("NOT CHECKED hygiene: {}", error.message())],
+    };
+    let files: Vec<String> = String::from_utf8_lossy(&listed)
+        .split('\0')
+        .filter(|name| !name.is_empty())
+        .take(MAX_CHANGED_FILES)
+        .map(String::from)
+        .collect();
+    against(root, &files, base, level)
+}
+
+fn against(root: &Path, files: &[String], base: &str, level: Level) -> Vec<String> {
     if level == Level::Off {
         return vec![];
     }
@@ -201,7 +228,7 @@ pub fn written(root: &Path, files: &[String], level: Level) -> Vec<String> {
         if squiggles.is_empty() {
             continue;
         }
-        match head_text(&root, name, deadline) {
+        match text_at(&root, base, name, deadline) {
             Ok(before) => found.extend(notes(name, &before, after, &squiggles, level)),
             Err(error) => return not_checked(error.message()),
         }

@@ -557,6 +557,8 @@ pub enum Input {
     TurnChecked {
         id: u64,
         failed: Vec<String>,
+        /// What the after-cell checks of the turn's last cells found.
+        findings: Option<String>,
     },
 }
 
@@ -1270,7 +1272,7 @@ impl Core {
                 Input::Scheduled(message) => {
                     let _ = self.schedule_start(message);
                 }
-                Input::TurnChecked { id, failed } => self.turn_checked(id, failed),
+                Input::TurnChecked { id, failed, findings } => self.turn_checked(id, failed, findings),
             }
         }
         self.close();

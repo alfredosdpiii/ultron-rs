@@ -1154,6 +1154,10 @@ impl Guard for FileHooks {
     fn take_pending(&self, lane: &str) -> Option<String> {
         FileHooks::take_pending(self, lane)
     }
+
+    fn settled(&self) {
+        FileHooks::settled(self);
+    }
 }
 
 #[cfg(test)]

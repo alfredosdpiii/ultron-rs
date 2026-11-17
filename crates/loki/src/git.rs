@@ -492,7 +492,12 @@ pub fn protected_change_violations(changes: &[FileChange], base: &Config) -> Res
 
 /// Committed HEAD text, or empty text for a file absent from HEAD.
 pub fn head_text(root: &Path, relative: &str, deadline: Deadline) -> Result<String, CheckError> {
-    let row = git_output(root, &["ls-tree", "-z", "HEAD", "--", relative], deadline, None)?;
+    text_at(root, "HEAD", relative, deadline)
+}
+
+/// The file's text at `revision`, or empty text for a file absent from it.
+pub fn text_at(root: &Path, revision: &str, relative: &str, deadline: Deadline) -> Result<String, CheckError> {
+    let row = git_output(root, &["ls-tree", "-z", revision, "--", relative], deadline, None)?;
     if row.is_empty() {
         return Ok(String::new());
     }

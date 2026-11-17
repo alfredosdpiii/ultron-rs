@@ -816,7 +816,9 @@ open redirects and disabled TLS verification in Python; SQL built with `Sprintf`
   duplicated block, special-casing. `loki.hygiene` (or `ULTRON_LOKI_HYGIENE`) is `on`, `all` (adds dense lines, deep
   nesting, cramped layout and naming, which also fire on formatter-clean code) or `off`. The model needs a Python
   with NumPy: Loki's interpreter, else `uv` with NumPy in its cache. Nothing is downloaded; without NumPy the
-  session says once that hygiene was not checked.
+  session says once that hygiene was not checked. Two more deliveries cover what a per-cell note misses: what the
+  checks find in a turn's last cell continues the turn (it has no next cell result to arrive with), and a lane's
+  first commit or push is shown the notes for every line the whole change adds, committed ones included.
 - A write into another repository (a sibling worktree) is checked against that repository's own `.loki/` policy.
 - A newly imported Python module is checked against the project's interpreter: `ULTRON_LOKI_PROJECT_PYTHON`, else
   the `python` that `bash()` runs when it belongs to a virtual or conda environment, else a `.venv`. Without one the

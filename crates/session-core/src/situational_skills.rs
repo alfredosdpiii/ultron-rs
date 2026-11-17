@@ -377,6 +377,8 @@ pub struct SituationalSkills {
     self_review: SelfReview,
     /// Where the session's commands run, for the receipt of a pull request.
     cwd: PathBuf,
+    /// Which hygiene notes the first commit or push of a lane is shown for the whole change.
+    hygiene: loki::hygiene::Level,
 }
 
 impl SituationalSkills {
@@ -389,7 +391,30 @@ impl SituationalSkills {
             changed: Mutex::new(HashSet::new()),
             self_review: SelfReview::Advise,
             cwd: PathBuf::new(),
+            hygiene: loki::hygiene::Level::Off,
         }
+    }
+
+    pub fn with_hygiene(mut self, level: loki::hygiene::Level) -> SituationalSkills {
+        self.hygiene = level;
+        self
+    }
+
+    /// Hygiene notes for every line the change in the session's repository adds against where it left the default
+    /// branch (HEAD without one): the per-write notes are advisory, one cell late and blind to committed lines.
+    fn hygiene_notes(&self) -> String {
+        let Some(root) = host::loki_guard::git_root(&self.cwd) else {
+            return String::new();
+        };
+        let base = git_value(&root, &["merge-base", "HEAD", "origin/HEAD"]).unwrap_or_else(|| "HEAD".into());
+        let notes = loki::hygiene::changed(&root, &base, self.hygiene);
+        if notes.is_empty() {
+            return String::new();
+        }
+        format!(
+            "\nHygiene notes on the lines this change adds (advisory: fix each, or say why it stays):\n{}",
+            notes.join("\n")
+        )
     }
 
     /// What shipping asks, for commands that run in `cwd`.
@@ -502,9 +527,15 @@ impl CellObserver for SituationalSkills {
         if self.self_review == SelfReview::Off || !ships(&command) {
             return None;
         }
+        let first = !self
+            .given
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .contains(&(lane.to_string(), SHIP_SKILL.to_string()));
         let head = format!(
             "{SHIP_SKILL} comes first: check what this change could break outside its diff, then run the command \
-             again (it is refused once per lane)."
+             again (it is refused once per lane).{}",
+            if first { self.hygiene_notes() } else { String::new() }
         );
         self.give(lane, SHIP_SKILL, head).or_else(|| {
             if self.self_review != SelfReview::Require {
@@ -540,10 +571,14 @@ pub fn session_observer(
     cwd: &Path,
     resolve: Box<Resolve>,
     engineering: Box<Engineering>,
+    hygiene: loki::hygiene::Level,
 ) -> Option<Arc<dyn CellObserver>> {
     let (rules, self_review) = (rules(settings), self_review(settings));
     (!rules.is_empty() || self_review != SelfReview::Off).then(|| {
-        Arc::new(SituationalSkills::new(rules, resolve, engineering).with_self_review(self_review, cwd))
-            as Arc<dyn CellObserver>
+        Arc::new(
+            SituationalSkills::new(rules, resolve, engineering)
+                .with_self_review(self_review, cwd)
+                .with_hygiene(hygiene),
+        ) as Arc<dyn CellObserver>
     })
 }

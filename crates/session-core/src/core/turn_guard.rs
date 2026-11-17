@@ -9,6 +9,10 @@
 //!    call: the host runs them off the actor, under the session's sandbox, and continues the turn with the ones
 //!    that failed, at most [`MAX_CHECK_CONTINUES`] times since the user's last input.
 //!
+//! 4. What the after-cell file hooks (Loki, hygiene) found in the turn's last cells: those findings arrive with a
+//!    lane's next cell result, and the last cell has none, so the host waits for the checks and continues the turn
+//!    with them, under the same count as 3.
+//!
 //! 1 and 2 are off under `ULTRON_TURN_GUARDS=off` and the TypeScript guide (crate::compose::turn_guards); 3 is on
 //! when the setting names checks.
 
@@ -109,6 +113,12 @@ pub fn left_text(left: &[(String, String, Vec<String>)]) -> String {
     lines.join("\n")
 }
 
+pub fn findings_text(findings: &str) -> String {
+    format!(
+        "Checks of the files your last cells changed finished after their results were returned:\n{findings}\nFix what needs fixing and end the turn again; for an advisory you leave as it is, say why in a sentence."
+    )
+}
+
 pub fn checks_text(failed: &[String]) -> String {
     format!(
         "The host ran this project's turn-end checks ({CHECKS_KEY}) and these did not pass:\n{}\nFix what they show and end the turn again; if one cannot pass here, say why.",
@@ -183,15 +193,22 @@ impl Core {
         let settings =
             config::settings::SettingsManager::create(&self.env.cwd, &config.agent_dir, config.project_trusted);
         let checks = parse_checks(settings.settings()).unwrap_or_default();
-        if checks.is_empty() {
-            return;
-        }
         self.turn_guard.check_seq += 1;
         let (id, signal) = (self.turn_guard.check_seq, Signal::new());
         self.turn_guard.checking = Some((id, signal.clone()));
         let runner = crate::contract_checks::check_runner(Arc::downgrade(&self.lane.stack));
         let (tx, cwd, env) = (self.tx.clone(), self.env.cwd.clone(), config.child_env());
+        let host = self.lane.stack.host.clone();
         std::thread::spawn(move || {
+            let findings = host.settled_pending(MAIN_LANE);
+            if checks.is_empty() {
+                let _ = tx.send(Input::TurnChecked {
+                    id,
+                    failed: Vec::new(),
+                    findings,
+                });
+                return;
+            }
             let contract = SpawnContract {
                 role: None,
                 checks,
@@ -209,22 +226,29 @@ impl Core {
                 .as_array()
                 .map(|items| items.iter().filter_map(Value::as_str).map(str::to_string).collect())
                 .unwrap_or_default();
-            let _ = tx.send(Input::TurnChecked { id, failed });
+            let _ = tx.send(Input::TurnChecked { id, failed, findings });
         });
         // The session is not idle while they run.
         self.report_activity();
     }
 
     /// The checks numbered `id` ended with `failed`: the turn continues with them, unless it has moved on.
-    pub(super) fn turn_checked(&mut self, id: u64, failed: Vec<String>) {
+    pub(super) fn turn_checked(&mut self, id: u64, failed: Vec<String>, findings: Option<String>) {
         if self.turn_guard.checking.as_ref().map(|(current, _)| *current) != Some(id) {
             return;
         }
         self.turn_guard.checking = None;
-        if !failed.is_empty() && self.run.is_none() {
+        if (!failed.is_empty() || findings.is_some()) && self.run.is_none() {
             self.turn_guard.check_continues += 1;
             let count = Some((self.turn_guard.check_continues, MAX_CHECK_CONTINUES));
-            let _ = self.prompt_with(nudge("turn-end checks failed", count, checks_text(&failed)), None, true);
+            let mut parts: Vec<String> = findings.iter().map(|found| findings_text(found)).collect();
+            let guard = if failed.is_empty() {
+                "findings after the last cell"
+            } else {
+                parts.push(checks_text(&failed));
+                "turn-end checks failed"
+            };
+            let _ = self.prompt_with(nudge(guard, count, parts.join("\n\n")), None, true);
         }
         self.report_activity();
     }
