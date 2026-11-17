@@ -19,15 +19,7 @@ pub mod radius;
 pub mod settings;
 pub mod trust;
 
-/// The product version (`VERSION` of config.ts): packages/coding-agent/package.json's `version`.
+/// The product version: the workspace's Cargo version, the one crates.io publishes.
 pub fn version() -> &'static str {
-    static VERSION: std::sync::LazyLock<String> = std::sync::LazyLock::new(|| {
-        let package: serde_json::Value =
-            serde_json::from_str(ultron_assets::PACKAGE_JSON).expect("packages/coding-agent/package.json parses");
-        package["version"]
-            .as_str()
-            .expect("package.json has a version")
-            .to_string()
-    });
-    &VERSION
+    env!("CARGO_PKG_VERSION")
 }
