@@ -9,7 +9,7 @@ inside it. The model writes a cell that loops, filters, fans out and keeps the r
 it prints comes back into its context.
 
 Ultron is one self-contained Rust binary. It needs no Node.js: it embeds its runtime files (the Python REPL runtime,
-bundled skills, docs and changelog; see `crates/cli/build.rs`) and needs only Python 3 at run time. It is a fork of
+bundled skills, docs and changelog; see `packages/coding-agent/build.rs`) and needs only Python 3 at run time. It is a fork of
 [Pi](https://github.com/badlogic/pi-mono) and keeps Pi's interface: the TUI, `-p` print mode, `--mode json`,
 `--mode rpc`, providers, skills and prompt templates. It adds an
 [Agent Client Protocol](#editors-ultron-acp) server for editors, a durable instance that keeps working after you
@@ -516,7 +516,7 @@ ultron setup                                            # provider and model, me
 From source:
 
 ```bash
-cargo build --release -p cli         # target/release/ultron
+cargo build --release -p ultron-agent         # target/release/ultron
 ln -s ultron target/release/ultron-s # optional: the durable home session
 target/release/ultron setup
 ```

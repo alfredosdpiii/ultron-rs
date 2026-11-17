@@ -2,7 +2,7 @@
 
 ultron-rs is the Rust rewrite of Ultron (github.com/alfredosdpiii/ultron), a fork of Pi (`badlogic/pi-mono`): a
 terminal coding agent whose model has one tool, a persistent Python REPL. The `ultron` binary is built from
-`crates/cli` and embeds its runtime files from `packages/coding-agent/` (see `crates/cli/build.rs`).
+`crates/cli` and embeds its runtime files from `packages/coding-agent/` (see `packages/coding-agent/build.rs`).
 
 ## Style
 

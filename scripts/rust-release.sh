@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Build a release archive of the Rust `ultron` binary. No Node.js is involved: the binary embeds its runtime files
-# (crates/cli/build.rs) and needs only Python 3 at run time, for the model's REPL. Publishes nothing.
+# (packages/coding-agent/build.rs) and needs only Python 3 at run time, for the model's REPL. Publishes nothing.
 #
 #   scripts/rust-release.sh [--out DIR] [--target TRIPLE]
 #
@@ -57,7 +57,7 @@ export CXXFLAGS="${CXXFLAGS:+$CXXFLAGS }$c_maps"
 export CARGO_PROFILE_RELEASE_STRIP=symbols
 export CARGO_PROFILE_RELEASE_DEBUG=0
 
-(cd "$root" && "${cargo[@]}" build --release --locked -p cli --bin ultron --target "$target")
+(cd "$root" && "${cargo[@]}" build --release --locked -p ultron-agent --bin ultron --target "$target")
 binary="${CARGO_TARGET_DIR:-$root/target}/$target/release/ultron"
 
 for path in "$root" "$HOME"; do

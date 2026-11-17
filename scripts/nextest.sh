@@ -4,7 +4,7 @@
 # at nice 19. Arguments go to `cargo nextest run`:
 #
 #   scripts/nextest.sh --workspace --locked
-#   scripts/nextest.sh -p review eval::
+#   scripts/nextest.sh -p ultron-review eval::
 #
 # Without a systemd user session (CI, a container) it runs under nice alone.
 set -eu

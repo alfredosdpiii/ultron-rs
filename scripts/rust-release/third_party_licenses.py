@@ -19,7 +19,7 @@ def main() -> int:
     metadata = json.load(sys.stdin)
     packages = {package["id"]: package for package in metadata["packages"]}
     nodes = {node["id"]: node for node in metadata["resolve"]["nodes"]}
-    root = next(id for id, package in packages.items() if package["name"] == "cli" and package["source"] is None)
+    root = next(id for id, package in packages.items() if package["name"] == "ultron-agent" and package["source"] is None)
 
     def proc_macro(package: dict) -> bool:
         return any("proc-macro" in target["kind"] for target in package["targets"])

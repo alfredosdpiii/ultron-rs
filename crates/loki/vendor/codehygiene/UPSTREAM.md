@@ -10,4 +10,4 @@ License: MIT, as declared in upstream's `pyproject.toml` (`license = {text = "MI
 file and names no copyright holder; the author is Brian Bell (github.com/brianbell-x).
 
 To update: copy the two files from a newer commit, change the commit and hashes above, and run
-`scripts/nextest.sh -p loki --locked hygiene::`.
+`scripts/nextest.sh -p ultron-loki --locked hygiene::`.

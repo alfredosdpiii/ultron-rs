@@ -113,7 +113,7 @@ parity! {
 /// (`fixtures/interactive-latency.json`, `interactive.mjs --latency`). A wall-clock benchmark against a time
 /// recorded on an idle machine, so it runs alone, never inside the shared suite (it failed there under load).
 #[test]
-#[ignore = "benchmark: run alone with `cargo test -p cli --test it -- --ignored first_frame_beats`"]
+#[ignore = "benchmark: run alone with `cargo test -p ultron-agent --test it -- --ignored first_frame_beats`"]
 fn cli_interactive_first_frame_beats_typescript_startup() {
     let latency: Value = serde_json::from_str(include_str!("../fixtures/interactive-latency.json")).unwrap();
     let budget = latency["tsFirstFrameMs"].as_u64().unwrap();

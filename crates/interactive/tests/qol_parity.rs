@@ -1,7 +1,7 @@
 //! Parity guard for the Rust-only TUI additions: with every addition off (`ULTRON_TUI_PARITY=1`), the bytes the paint
 //! loop writes for a representative session are exactly the bytes the TUI wrote before the additions existed.
 //! Fixture: fixtures/qol-parity-frames.json, recorded from the paint loop before any addition was wired in
-//! (`QOL_PARITY_RECORD=1 cargo test -p interactive --test qol_parity` rewrites it; never re-record to make a change
+//! (`QOL_PARITY_RECORD=1 cargo test -p ultron-interactive --test qol_parity` rewrites it; never re-record to make a change
 //! pass).
 
 use crate::support;
