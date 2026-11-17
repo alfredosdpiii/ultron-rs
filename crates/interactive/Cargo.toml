@@ -11,14 +11,14 @@ autotests = false
 name = "interactive"
 
 [dependencies]
-ultron-assets = { path = "../../packages/coding-agent", version = "=1.0.0" }
-config = { package = "ultron-config", path = "../config", version = "=1.0.0" }
-jsrt = { package = "ultron-jsrt", path = "../jsrt", version = "=1.0.0" }
-rlm-views = { package = "ultron-rlm-views", path = "../rlm-views", version = "=1.0.0" }
-theme = { package = "ultron-theme", path = "../theme", version = "=1.0.0" }
-tui = { package = "ultron-tui", path = "../tui", version = "=1.0.0" }
-model-scope = { package = "ultron-model-scope", path = "../model-scope", version = "=1.0.0" }
-protocol = { package = "ultron-protocol", path = "../protocol", version = "=1.0.0" }
+ultron-assets = { path = "../../packages/coding-agent", version = "=1.0.1" }
+config = { package = "ultron-config", path = "../config", version = "=1.0.1" }
+jsrt = { package = "ultron-jsrt", path = "../jsrt", version = "=1.0.1" }
+rlm-views = { package = "ultron-rlm-views", path = "../rlm-views", version = "=1.0.1" }
+theme = { package = "ultron-theme", path = "../theme", version = "=1.0.1" }
+tui = { package = "ultron-tui", path = "../tui", version = "=1.0.1" }
+model-scope = { package = "ultron-model-scope", path = "../model-scope", version = "=1.0.1" }
+protocol = { package = "ultron-protocol", path = "../protocol", version = "=1.0.1" }
 serde_json = { version = "=1.0.151", features = ["preserve_order"] }
 fancy-regex = "=0.19.2"
 crossterm = { version = "=0.29.0", default-features = false }

@@ -21,12 +21,12 @@ icu_properties = { version = "=2.3.0", default-features = false, features = ["co
 icu_provider = { version = "=2.3.1", default-features = false }
 icu_segmenter = { version = "=2.3.0", default-features = false, features = ["compiled_data"] }
 image = { version = "=0.25.10", default-features = false, features = ["bmp", "gif", "ico", "jpeg", "png", "tiff", "webp"] }
-jsrt = { package = "ultron-jsrt", path = "../jsrt", version = "=1.0.0" }
+jsrt = { package = "ultron-jsrt", path = "../jsrt", version = "=1.0.1" }
 unicode-segmentation = "=1.13.3"
 serde_json = { version = "=1.0.151", features = ["preserve_order"] }
-signals = { package = "ultron-signals", path = "../signals", version = "=1.0.0" }
+signals = { package = "ultron-signals", path = "../signals", version = "=1.0.1" }
 syntect = { version = "=5.3.0", default-features = false, features = ["default-syntaxes", "regex-fancy", "yaml-load"] }
-theme = { package = "ultron-theme", path = "../theme", version = "=1.0.0" }
+theme = { package = "ultron-theme", path = "../theme", version = "=1.0.1" }
 
 [dev-dependencies]
 serde_json = "=1.0.151"

@@ -11,20 +11,20 @@ autotests = false
 name = "kernel_apis"
 
 [dependencies]
-ai = { package = "ultron-ai", path = "../ai", version = "=1.0.0" }
+ai = { package = "ultron-ai", path = "../ai", version = "=1.0.1" }
 base64 = "=0.23.1"
-config = { package = "ultron-config", path = "../config", version = "=1.0.0" }
+config = { package = "ultron-config", path = "../config", version = "=1.0.1" }
 fancy-regex = "=0.19.2"
-host = { package = "ultron-host", path = "../host", version = "=1.0.0" }
-jsrt = { package = "ultron-jsrt", path = "../jsrt", version = "=1.0.0" }
-kernel = { package = "ultron-kernel", path = "../kernel", version = "=1.0.0" }
-model-scope = { package = "ultron-model-scope", path = "../model-scope", version = "=1.0.0" }
-protocol = { package = "ultron-protocol", path = "../protocol", version = "=1.0.0" }
-resources = { package = "ultron-resources", path = "../resources", version = "=1.0.0" }
+host = { package = "ultron-host", path = "../host", version = "=1.0.1" }
+jsrt = { package = "ultron-jsrt", path = "../jsrt", version = "=1.0.1" }
+kernel = { package = "ultron-kernel", path = "../kernel", version = "=1.0.1" }
+model-scope = { package = "ultron-model-scope", path = "../model-scope", version = "=1.0.1" }
+protocol = { package = "ultron-protocol", path = "../protocol", version = "=1.0.1" }
+resources = { package = "ultron-resources", path = "../resources", version = "=1.0.1" }
 serde = { version = "=1.0.229", features = ["derive"] }
-signals = { package = "ultron-signals", path = "../signals", version = "=1.0.0" }
+signals = { package = "ultron-signals", path = "../signals", version = "=1.0.1" }
 serde_json = { version = "=1.0.151", features = ["preserve_order"] }
-session-journal = { package = "ultron-session-journal", path = "../session-journal", version = "=1.0.0" }
+session-journal = { package = "ultron-session-journal", path = "../session-journal", version = "=1.0.1" }
 tempfile = "=3.27.0"
 tokio = { version = "=1.53.2", features = ["rt", "time"] }
 yaml-rust2 = "=0.13.0"

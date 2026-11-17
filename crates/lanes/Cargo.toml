@@ -11,8 +11,8 @@ autotests = false
 name = "lanes"
 
 [dependencies]
-jsrt = { package = "ultron-jsrt", path = "../jsrt", version = "=1.0.0" }
-kernel = { package = "ultron-kernel", path = "../kernel", version = "=1.0.0" }
+jsrt = { package = "ultron-jsrt", path = "../jsrt", version = "=1.0.1" }
+kernel = { package = "ultron-kernel", path = "../kernel", version = "=1.0.1" }
 serde_json = { version = "=1.0.151", features = ["preserve_order"] }
 
 [dev-dependencies]

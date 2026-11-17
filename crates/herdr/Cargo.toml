@@ -11,9 +11,9 @@ autotests = false
 name = "herdr"
 
 [dependencies]
-config = { package = "ultron-config", path = "../config", version = "=1.0.0" }
-jsrt = { package = "ultron-jsrt", path = "../jsrt", version = "=1.0.0" }
-kernel = { package = "ultron-kernel", path = "../kernel", version = "=1.0.0" }
+config = { package = "ultron-config", path = "../config", version = "=1.0.1" }
+jsrt = { package = "ultron-jsrt", path = "../jsrt", version = "=1.0.1" }
+kernel = { package = "ultron-kernel", path = "../kernel", version = "=1.0.1" }
 rustix = { version = "=1.1.5", features = ["net", "std"] }
 serde_json = { version = "=1.0.151", features = ["preserve_order"] }
 

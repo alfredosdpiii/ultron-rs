@@ -11,7 +11,7 @@ autotests = false
 name = "protocol"
 
 [dependencies]
-jsrt = { package = "ultron-jsrt", path = "../jsrt", version = "=1.0.0" }
+jsrt = { package = "ultron-jsrt", path = "../jsrt", version = "=1.0.1" }
 serde = { version = "=1.0.229", features = ["derive"] }
 serde_json = { version = "=1.0.151", features = ["float_roundtrip", "preserve_order"] }
 

@@ -11,9 +11,9 @@ autotests = false
 name = "session_journal"
 
 [dependencies]
-config = { package = "ultron-config", path = "../config", version = "=1.0.0" }
+config = { package = "ultron-config", path = "../config", version = "=1.0.1" }
 fancy-regex = "=0.19.2"
-jsrt = { package = "ultron-jsrt", path = "../jsrt", version = "=1.0.0" }
+jsrt = { package = "ultron-jsrt", path = "../jsrt", version = "=1.0.1" }
 serde_json = { version = "=1.0.151", features = ["float_roundtrip", "preserve_order"] }
 
 [dev-dependencies]

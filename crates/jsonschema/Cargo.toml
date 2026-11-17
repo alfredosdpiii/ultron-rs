@@ -11,7 +11,7 @@ autotests = false
 name = "jsonschema"
 
 [dependencies]
-jsrt = { package = "ultron-jsrt", path = "../jsrt", version = "=1.0.0" }
+jsrt = { package = "ultron-jsrt", path = "../jsrt", version = "=1.0.1" }
 fancy-regex = "=0.19.2"
 icu_normalizer = "=2.3.0"
 regex = "=1.13.1"

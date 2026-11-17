@@ -11,10 +11,10 @@ autotests = false
 name = "ai"
 
 [dependencies]
-config = { package = "ultron-config", path = "../config", version = "=1.0.0" }
-jsrt = { package = "ultron-jsrt", path = "../jsrt", version = "=1.0.0" }
-websocket = { package = "ultron-websocket", path = "../websocket", version = "=1.0.0" }
-model-scope = { package = "ultron-model-scope", path = "../model-scope", version = "=1.0.0" }
+config = { package = "ultron-config", path = "../config", version = "=1.0.1" }
+jsrt = { package = "ultron-jsrt", path = "../jsrt", version = "=1.0.1" }
+websocket = { package = "ultron-websocket", path = "../websocket", version = "=1.0.1" }
+model-scope = { package = "ultron-model-scope", path = "../model-scope", version = "=1.0.1" }
 crc32fast = "=1.5.2"
 indexmap = { version = "=2.14.2", features = ["serde"] }
 reqwest = { version = "=0.13.5", default-features = false, features = ["rustls", "http2", "system-proxy"] }
@@ -24,7 +24,7 @@ ring = "=0.17.14"
 rustix = { version = "=1.1.5", features = ["fs", "process", "std"] }
 serde = { version = "=1.0.229", features = ["derive"] }
 serde_json = { version = "=1.0.151", features = ["float_roundtrip", "preserve_order"] }
-signals = { package = "ultron-signals", path = "../signals", version = "=1.0.0" }
+signals = { package = "ultron-signals", path = "../signals", version = "=1.0.1" }
 tokio = { version = "=1.53.2", features = ["sync", "time", "macros", "rt", "net", "io-util", "process"] }
 
 [[bin]]

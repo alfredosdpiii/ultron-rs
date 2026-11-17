@@ -11,9 +11,9 @@ autotests = false
 name = "resources"
 
 [dependencies]
-config = { package = "ultron-config", path = "../config", version = "=1.0.0" }
-jsrt = { package = "ultron-jsrt", path = "../jsrt", version = "=1.0.0" }
-protocol = { package = "ultron-protocol", path = "../protocol", version = "=1.0.0" }
+config = { package = "ultron-config", path = "../config", version = "=1.0.1" }
+jsrt = { package = "ultron-jsrt", path = "../jsrt", version = "=1.0.1" }
+protocol = { package = "ultron-protocol", path = "../protocol", version = "=1.0.1" }
 regex = "=1.13.1"
 serde_json = { version = "=1.0.151", features = ["preserve_order"] }
 yaml-rust2 = "=0.13.0"

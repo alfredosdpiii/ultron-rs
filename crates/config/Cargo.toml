@@ -11,11 +11,11 @@ autotests = false
 name = "config"
 
 [dependencies]
-ultron-assets = { path = "../../packages/coding-agent", version = "=1.0.0" }
-jsrt = { package = "ultron-jsrt", path = "../jsrt", version = "=1.0.0" }
-model-scope = { package = "ultron-model-scope", path = "../model-scope", version = "=1.0.0" }
+ultron-assets = { path = "../../packages/coding-agent", version = "=1.0.1" }
+jsrt = { package = "ultron-jsrt", path = "../jsrt", version = "=1.0.1" }
+model-scope = { package = "ultron-model-scope", path = "../model-scope", version = "=1.0.1" }
 serde_json = { version = "=1.0.151", features = ["preserve_order"] }
-signals = { package = "ultron-signals", path = "../signals", version = "=1.0.0" }
+signals = { package = "ultron-signals", path = "../signals", version = "=1.0.1" }
 
 [lints]
 workspace = true

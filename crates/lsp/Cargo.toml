@@ -11,10 +11,10 @@ autotests = false
 name = "lsp"
 
 [dependencies]
-host = { package = "ultron-host", path = "../host", version = "=1.0.0" }
-jsrt = { package = "ultron-jsrt", path = "../jsrt", version = "=1.0.0" }
-loki = { package = "ultron-loki", path = "../loki", version = "=1.0.0" }
-sandbox = { package = "ultron-sandbox", path = "../sandbox", version = "=1.0.0" }
+host = { package = "ultron-host", path = "../host", version = "=1.0.1" }
+jsrt = { package = "ultron-jsrt", path = "../jsrt", version = "=1.0.1" }
+loki = { package = "ultron-loki", path = "../loki", version = "=1.0.1" }
+sandbox = { package = "ultron-sandbox", path = "../sandbox", version = "=1.0.1" }
 rustix = { version = "=1.1.5", features = ["process", "std"] }
 serde_json = { version = "=1.0.151", features = ["preserve_order"] }
 url = "=2.5.8"

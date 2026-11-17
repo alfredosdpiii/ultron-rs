@@ -11,13 +11,13 @@ autotests = false
 name = "diagram"
 
 [dependencies]
-jsrt = { package = "ultron-jsrt", path = "../jsrt", version = "=1.0.0" }
-kernel = { package = "ultron-kernel", path = "../kernel", version = "=1.0.0" }
-kernel-apis = { package = "ultron-kernel-apis", path = "../kernel-apis", version = "=1.0.0" }
+jsrt = { package = "ultron-jsrt", path = "../jsrt", version = "=1.0.1" }
+kernel = { package = "ultron-kernel", path = "../kernel", version = "=1.0.1" }
+kernel-apis = { package = "ultron-kernel-apis", path = "../kernel-apis", version = "=1.0.1" }
 resvg = { version = "=0.48.1", default-features = false, features = ["text", "system-fonts"] }
 serde_json = { version = "=1.0.151", features = ["preserve_order"] }
-signals = { package = "ultron-signals", path = "../signals", version = "=1.0.0" }
-theme = { package = "ultron-theme", path = "../theme", version = "=1.0.0" }
+signals = { package = "ultron-signals", path = "../signals", version = "=1.0.1" }
+theme = { package = "ultron-theme", path = "../theme", version = "=1.0.1" }
 
 [dev-dependencies]
 tempfile = "=3.27.0"

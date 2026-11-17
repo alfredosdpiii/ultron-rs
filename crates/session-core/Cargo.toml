@@ -11,42 +11,42 @@ autotests = false
 name = "session_core"
 
 [dependencies]
-agent = { package = "ultron-agent-core", path = "../agent", version = "=1.0.0" }
-ai = { package = "ultron-ai", path = "../ai", version = "=1.0.0" }
-blocking-http = { package = "ultron-blocking-http", path = "../blocking-http", version = "=1.0.0" }
-compaction = { package = "ultron-compaction", path = "../compaction", version = "=1.0.0" }
-config = { package = "ultron-config", path = "../config", version = "=1.0.0" }
-delegation = { package = "ultron-delegation", path = "../delegation", version = "=1.0.0" }
-diagram = { package = "ultron-diagram", path = "../diagram", version = "=1.0.0" }
-durable = { package = "ultron-durable", path = "../durable", version = "=1.0.0" }
-graph = { package = "ultron-graph", path = "../graph", version = "=1.0.0" }
-harness = { package = "ultron-harness", path = "../harness", version = "=1.0.0" }
-hindsight = { package = "ultron-hindsight", path = "../hindsight", version = "=1.0.0" }
-host = { package = "ultron-host", path = "../host", version = "=1.0.0" }
+agent = { package = "ultron-agent-core", path = "../agent", version = "=1.0.1" }
+ai = { package = "ultron-ai", path = "../ai", version = "=1.0.1" }
+blocking-http = { package = "ultron-blocking-http", path = "../blocking-http", version = "=1.0.1" }
+compaction = { package = "ultron-compaction", path = "../compaction", version = "=1.0.1" }
+config = { package = "ultron-config", path = "../config", version = "=1.0.1" }
+delegation = { package = "ultron-delegation", path = "../delegation", version = "=1.0.1" }
+diagram = { package = "ultron-diagram", path = "../diagram", version = "=1.0.1" }
+durable = { package = "ultron-durable", path = "../durable", version = "=1.0.1" }
+graph = { package = "ultron-graph", path = "../graph", version = "=1.0.1" }
+harness = { package = "ultron-harness", path = "../harness", version = "=1.0.1" }
+hindsight = { package = "ultron-hindsight", path = "../hindsight", version = "=1.0.1" }
+host = { package = "ultron-host", path = "../host", version = "=1.0.1" }
 indexmap = "=2.14.2"
-inference = { package = "ultron-inference", path = "../inference", version = "=1.0.0" }
-jsonschema = { package = "ultron-jsonschema", path = "../jsonschema", version = "=1.0.0" }
-jsrt = { package = "ultron-jsrt", path = "../jsrt", version = "=1.0.0" }
-judge = { package = "ultron-judge", path = "../judge", version = "=1.0.0" }
-kernel = { package = "ultron-kernel", path = "../kernel", version = "=1.0.0" }
-kernel-apis = { package = "ultron-kernel-apis", path = "../kernel-apis", version = "=1.0.0" }
-knowledge = { package = "ultron-knowledge", path = "../knowledge", version = "=1.0.0" }
-lanes = { package = "ultron-lanes", path = "../lanes", version = "=1.0.0" }
-loki = { package = "ultron-loki", path = "../loki", version = "=1.0.0" }
-lsp = { package = "ultron-lsp", path = "../lsp", version = "=1.0.0" }
-mcp = { package = "ultron-mcp", path = "../mcp", version = "=1.0.0" }
-memorantado = { package = "ultron-memorantado", path = "../memorantado", version = "=1.0.0" }
-model-scope = { package = "ultron-model-scope", path = "../model-scope", version = "=1.0.0" }
-protocol = { package = "ultron-protocol", path = "../protocol", version = "=1.0.0" }
+inference = { package = "ultron-inference", path = "../inference", version = "=1.0.1" }
+jsonschema = { package = "ultron-jsonschema", path = "../jsonschema", version = "=1.0.1" }
+jsrt = { package = "ultron-jsrt", path = "../jsrt", version = "=1.0.1" }
+judge = { package = "ultron-judge", path = "../judge", version = "=1.0.1" }
+kernel = { package = "ultron-kernel", path = "../kernel", version = "=1.0.1" }
+kernel-apis = { package = "ultron-kernel-apis", path = "../kernel-apis", version = "=1.0.1" }
+knowledge = { package = "ultron-knowledge", path = "../knowledge", version = "=1.0.1" }
+lanes = { package = "ultron-lanes", path = "../lanes", version = "=1.0.1" }
+loki = { package = "ultron-loki", path = "../loki", version = "=1.0.1" }
+lsp = { package = "ultron-lsp", path = "../lsp", version = "=1.0.1" }
+mcp = { package = "ultron-mcp", path = "../mcp", version = "=1.0.1" }
+memorantado = { package = "ultron-memorantado", path = "../memorantado", version = "=1.0.1" }
+model-scope = { package = "ultron-model-scope", path = "../model-scope", version = "=1.0.1" }
+protocol = { package = "ultron-protocol", path = "../protocol", version = "=1.0.1" }
 regex = "=1.13.1"
-resources = { package = "ultron-resources", path = "../resources", version = "=1.0.0" }
-sandbox = { package = "ultron-sandbox", path = "../sandbox", version = "=1.0.0" }
+resources = { package = "ultron-resources", path = "../resources", version = "=1.0.1" }
+sandbox = { package = "ultron-sandbox", path = "../sandbox", version = "=1.0.1" }
 serde_json = { version = "=1.0.151", features = ["preserve_order"] }
-services = { package = "ultron-services", path = "../services", version = "=1.0.0" }
-session-file = { package = "ultron-session-file", path = "../session-file", version = "=1.0.0" }
-session-journal = { package = "ultron-session-journal", path = "../session-journal", version = "=1.0.0" }
+services = { package = "ultron-services", path = "../services", version = "=1.0.1" }
+session-file = { package = "ultron-session-file", path = "../session-file", version = "=1.0.1" }
+session-journal = { package = "ultron-session-journal", path = "../session-journal", version = "=1.0.1" }
 tokio = { version = "=1.53.2", features = ["rt", "time"] }
-usage = { package = "ultron-usage", path = "../usage", version = "=1.0.0" }
+usage = { package = "ultron-usage", path = "../usage", version = "=1.0.1" }
 
 [lints]
 workspace = true

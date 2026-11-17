@@ -11,10 +11,10 @@ autotests = false
 name = "rlm_views"
 
 [dependencies]
-jsrt = { package = "ultron-jsrt", path = "../jsrt", version = "=1.0.0" }
+jsrt = { package = "ultron-jsrt", path = "../jsrt", version = "=1.0.1" }
 serde_json = { version = "=1.0.151", features = ["preserve_order"] }
-theme = { package = "ultron-theme", path = "../theme", version = "=1.0.0" }
-tui = { package = "ultron-tui", path = "../tui", version = "=1.0.0" }
+theme = { package = "ultron-theme", path = "../theme", version = "=1.0.1" }
+tui = { package = "ultron-tui", path = "../tui", version = "=1.0.1" }
 
 [dev-dependencies]
 interactive = { package = "ultron-interactive", path = "../interactive" }

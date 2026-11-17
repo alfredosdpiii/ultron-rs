@@ -11,13 +11,13 @@ autotests = false
 name = "compaction"
 
 [dependencies]
-ai = { package = "ultron-ai", path = "../ai", version = "=1.0.0" }
+ai = { package = "ultron-ai", path = "../ai", version = "=1.0.1" }
 indexmap = "=2.14.2"
-jsrt = { package = "ultron-jsrt", path = "../jsrt", version = "=1.0.0" }
-protocol = { package = "ultron-protocol", path = "../protocol", version = "=1.0.0" }
+jsrt = { package = "ultron-jsrt", path = "../jsrt", version = "=1.0.1" }
+protocol = { package = "ultron-protocol", path = "../protocol", version = "=1.0.1" }
 serde_json = { version = "=1.0.151", features = ["float_roundtrip", "preserve_order"] }
-session-file = { package = "ultron-session-file", path = "../session-file", version = "=1.0.0" }
-session-journal = { package = "ultron-session-journal", path = "../session-journal", version = "=1.0.0" }
+session-file = { package = "ultron-session-file", path = "../session-file", version = "=1.0.1" }
+session-journal = { package = "ultron-session-journal", path = "../session-journal", version = "=1.0.1" }
 
 [lints]
 workspace = true

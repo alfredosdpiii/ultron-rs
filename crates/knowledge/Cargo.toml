@@ -11,7 +11,7 @@ autotests = false
 name = "knowledge"
 
 [dependencies]
-jsrt = { package = "ultron-jsrt", path = "../jsrt", version = "=1.0.0" }
+jsrt = { package = "ultron-jsrt", path = "../jsrt", version = "=1.0.1" }
 regex = "=1.13.1"
 rusqlite = { version = "=0.40.2", features = ["bundled"] }
 tree-sitter = "=0.25.10"

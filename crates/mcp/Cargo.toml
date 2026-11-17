@@ -11,9 +11,9 @@ autotests = false
 name = "mcp"
 
 [dependencies]
-ai = { package = "ultron-ai", path = "../ai", version = "=1.0.0" }
-config = { package = "ultron-config", path = "../config", version = "=1.0.0" }
-jsrt = { package = "ultron-jsrt", path = "../jsrt", version = "=1.0.0" }
+ai = { package = "ultron-ai", path = "../ai", version = "=1.0.1" }
+config = { package = "ultron-config", path = "../config", version = "=1.0.1" }
+jsrt = { package = "ultron-jsrt", path = "../jsrt", version = "=1.0.1" }
 rustix = { version = "=1.1.5", features = ["process", "std"] }
 serde_json = { version = "=1.0.151", features = ["preserve_order"] }
 url = "=2.5.8"
