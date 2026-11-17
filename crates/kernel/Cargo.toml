@@ -13,10 +13,10 @@ name = "kernel"
 [dependencies]
 command-fds = "=0.3.3"
 getrandom = "=0.4.3"
-jsrt = { package = "ultron-jsrt", path = "../jsrt", version = "=1.0.1" }
+jsrt = { package = "ultron-jsrt", path = "../jsrt", version = "=1.0.2" }
 rustix = { version = "=1.1.5", features = ["process", "std"] }
-sandbox = { package = "ultron-sandbox", path = "../sandbox", version = "=1.0.1" }
-signals = { package = "ultron-signals", path = "../signals", version = "=1.0.1" }
+sandbox = { package = "ultron-sandbox", path = "../sandbox", version = "=1.0.2" }
+signals = { package = "ultron-signals", path = "../signals", version = "=1.0.2" }
 serde = { version = "=1.0.229", features = ["derive"] }
 serde_json = { version = "=1.0.151", features = ["preserve_order"] }
 

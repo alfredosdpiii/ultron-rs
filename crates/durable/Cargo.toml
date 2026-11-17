@@ -11,9 +11,9 @@ autotests = false
 name = "durable"
 
 [dependencies]
-chord-delta = { package = "ultron-chord-delta", path = "../chord-delta", version = "=1.0.1" }
+chord-delta = { package = "ultron-chord-delta", path = "../chord-delta", version = "=1.0.2" }
 indexmap = "=2.14.2"
-jsrt = { package = "ultron-jsrt", path = "../jsrt", version = "=1.0.1" }
+jsrt = { package = "ultron-jsrt", path = "../jsrt", version = "=1.0.2" }
 serde = { version = "=1.0.229", features = ["derive"] }
 serde_json = { version = "=1.0.151", features = ["preserve_order"] }
 

@@ -11,16 +11,16 @@ autotests = false
 name = "review"
 
 [dependencies]
-ai = { package = "ultron-ai", path = "../ai", version = "=1.0.1" }
-config = { package = "ultron-config", path = "../config", version = "=1.0.1" }
-hindsight = { package = "ultron-hindsight", path = "../hindsight", version = "=1.0.1" }
-inference = { package = "ultron-inference", path = "../inference", version = "=1.0.1" }
-jsrt = { package = "ultron-jsrt", path = "../jsrt", version = "=1.0.1" }
-kernel = { package = "ultron-kernel", path = "../kernel", version = "=1.0.1" }
-kernel-apis = { package = "ultron-kernel-apis", path = "../kernel-apis", version = "=1.0.1" }
-loki = { package = "ultron-loki", path = "../loki", version = "=1.0.1" }
-knowledge = { package = "ultron-knowledge", path = "../knowledge", version = "=1.0.1" }
-model-scope = { package = "ultron-model-scope", path = "../model-scope", version = "=1.0.1" }
+ai = { package = "ultron-ai", path = "../ai", version = "=1.0.2" }
+config = { package = "ultron-config", path = "../config", version = "=1.0.2" }
+hindsight = { package = "ultron-hindsight", path = "../hindsight", version = "=1.0.2" }
+inference = { package = "ultron-inference", path = "../inference", version = "=1.0.2" }
+jsrt = { package = "ultron-jsrt", path = "../jsrt", version = "=1.0.2" }
+kernel = { package = "ultron-kernel", path = "../kernel", version = "=1.0.2" }
+kernel-apis = { package = "ultron-kernel-apis", path = "../kernel-apis", version = "=1.0.2" }
+loki = { package = "ultron-loki", path = "../loki", version = "=1.0.2" }
+knowledge = { package = "ultron-knowledge", path = "../knowledge", version = "=1.0.2" }
+model-scope = { package = "ultron-model-scope", path = "../model-scope", version = "=1.0.2" }
 indexmap = { version = "=2.14.2", features = ["serde"] }
 regex = "=1.13.1"
 ring = "=0.17.14"

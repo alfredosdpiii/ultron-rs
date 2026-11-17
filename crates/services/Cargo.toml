@@ -11,11 +11,11 @@ autotests = false
 name = "services"
 
 [dependencies]
-jsrt = { package = "ultron-jsrt", path = "../jsrt", version = "=1.0.1" }
-kernel = { package = "ultron-kernel", path = "../kernel", version = "=1.0.1" }
-kernel-apis = { package = "ultron-kernel-apis", path = "../kernel-apis", version = "=1.0.1" }
+jsrt = { package = "ultron-jsrt", path = "../jsrt", version = "=1.0.2" }
+kernel = { package = "ultron-kernel", path = "../kernel", version = "=1.0.2" }
+kernel-apis = { package = "ultron-kernel-apis", path = "../kernel-apis", version = "=1.0.2" }
 serde_json = { version = "=1.0.151", features = ["preserve_order"] }
-session-journal = { package = "ultron-session-journal", path = "../session-journal", version = "=1.0.1" }
+session-journal = { package = "ultron-session-journal", path = "../session-journal", version = "=1.0.2" }
 
 [dev-dependencies]
 fancy-regex = "=0.19.2"

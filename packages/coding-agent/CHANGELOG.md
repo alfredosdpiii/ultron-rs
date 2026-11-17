@@ -56,6 +56,7 @@
 
 ### Fixed
 
+- `ultron --version` printed `1.0.0` on 1.0.1: the version came from `package.json`, which the release bump did not change. It is now the Cargo package version, the one crates.io publishes.
 - A subagent that ended after its root turn's wall budget was used up did not wake the idle session: its `child_done` event waited for your next message. A subagent's timeout is capped by that same budget, so one that timed out never woke it.
 - A `claude` launcher script that prints before it starts Claude Code no longer breaks the Claude providers. mise's `claude` wrapper runs `mise use -g claude` first, which reports the tool on stdout (`mise ~/.config/mise/config.toml tools: claude@…`); `claude-subscription` read that line as the stream and ended the turn with `Invalid native stream-json output`, and `claude-code` read it as the version and the login state. Both now read past what comes before the first JSON line; when no stream follows, the first such line is still the error.
 - pyright uses a Python environment made after it started. The project's interpreter was looked up once, when the first write to a Python file started the server; in a new worktree that write comes before `uv sync`, so every third-party import stayed "could not be resolved" for the rest of the session and hid the real errors behind "… and N more". While no interpreter is known, each write now looks again and passes a found one to the running server.

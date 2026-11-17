@@ -11,7 +11,7 @@ autotests = false
 name = "websocket"
 
 [dependencies]
-jsrt = { package = "ultron-jsrt", path = "../jsrt", version = "=1.0.1" }
+jsrt = { package = "ultron-jsrt", path = "../jsrt", version = "=1.0.2" }
 ring = "=0.17.14"
 
 [lints]

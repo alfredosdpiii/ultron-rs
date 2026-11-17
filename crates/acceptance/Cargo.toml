@@ -18,9 +18,9 @@ doc = false
 
 [dependencies]
 mimalloc = { version = "=0.1.52", default-features = false }
-cli = { package = "ultron-agent", path = "../cli", version = "=1.0.1" }
-daemon = { package = "ultron-daemon", path = "../daemon", version = "=1.0.1" }
-signals = { package = "ultron-signals", path = "../signals", version = "=1.0.1" }
+cli = { package = "ultron-agent", path = "../cli", version = "=1.0.2" }
+daemon = { package = "ultron-daemon", path = "../daemon", version = "=1.0.2" }
+signals = { package = "ultron-signals", path = "../signals", version = "=1.0.2" }
 
 [dev-dependencies]
 jsrt = { package = "ultron-jsrt", path = "../jsrt" }

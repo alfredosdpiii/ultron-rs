@@ -2776,7 +2776,7 @@ checksum = "b6f5e870be6c3b371b77fe0ee0bafb859fa4964b4404c27de1d380043c4dda20"
 
 [[package]]
 name = "ultron-acceptance"
-version = "1.0.1"
+version = "1.0.2"
 dependencies = [
  "mimalloc",
  "serde_json",
@@ -2806,7 +2806,7 @@ dependencies = [
 
 [[package]]
 name = "ultron-agent"
-version = "1.0.1"
+version = "1.0.2"
 dependencies = [
  "base64 0.23.1",
  "image",
@@ -2864,7 +2864,7 @@ dependencies = [
 
 [[package]]
 name = "ultron-agent-core"
-version = "1.0.1"
+version = "1.0.2"
 dependencies = [
  "serde",
  "serde_json",
@@ -2876,7 +2876,7 @@ dependencies = [
 
 [[package]]
 name = "ultron-ai"
-version = "1.0.1"
+version = "1.0.2"
 dependencies = [
  "crc32fast",
  "indexmap",
@@ -2901,14 +2901,14 @@ dependencies = [
 
 [[package]]
 name = "ultron-assets"
-version = "1.0.1"
+version = "1.0.2"
 dependencies = [
  "sha2",
 ]
 
 [[package]]
 name = "ultron-blocking-http"
-version = "1.0.1"
+version = "1.0.2"
 dependencies = [
  "reqwest",
  "tokio",
@@ -2917,7 +2917,7 @@ dependencies = [
 
 [[package]]
 name = "ultron-chord-delta"
-version = "1.0.1"
+version = "1.0.2"
 dependencies = [
  "indexmap",
  "serde_json",
@@ -2926,7 +2926,7 @@ dependencies = [
 
 [[package]]
 name = "ultron-claude-root"
-version = "1.0.1"
+version = "1.0.2"
 dependencies = [
  "indexmap",
  "regex",
@@ -2958,7 +2958,7 @@ dependencies = [
 
 [[package]]
 name = "ultron-client"
-version = "1.0.1"
+version = "1.0.2"
 dependencies = [
  "serde_json",
  "tempfile",
@@ -2972,7 +2972,7 @@ dependencies = [
 
 [[package]]
 name = "ultron-compaction"
-version = "1.0.1"
+version = "1.0.2"
 dependencies = [
  "indexmap",
  "serde_json",
@@ -2985,7 +2985,7 @@ dependencies = [
 
 [[package]]
 name = "ultron-config"
-version = "1.0.1"
+version = "1.0.2"
 dependencies = [
  "serde_json",
  "tempfile",
@@ -2999,7 +2999,7 @@ dependencies = [
 
 [[package]]
 name = "ultron-daemon"
-version = "1.0.1"
+version = "1.0.2"
 dependencies = [
  "base64 0.23.1",
  "rustix",
@@ -3022,7 +3022,7 @@ dependencies = [
 
 [[package]]
 name = "ultron-delegation"
-version = "1.0.1"
+version = "1.0.2"
 dependencies = [
  "regex",
  "rustix",
@@ -3047,7 +3047,7 @@ dependencies = [
 
 [[package]]
 name = "ultron-diagram"
-version = "1.0.1"
+version = "1.0.2"
 dependencies = [
  "resvg",
  "serde_json",
@@ -3061,7 +3061,7 @@ dependencies = [
 
 [[package]]
 name = "ultron-durable"
-version = "1.0.1"
+version = "1.0.2"
 dependencies = [
  "indexmap",
  "serde",
@@ -3072,7 +3072,7 @@ dependencies = [
 
 [[package]]
 name = "ultron-graph"
-version = "1.0.1"
+version = "1.0.2"
 dependencies = [
  "serde_json",
  "tempfile",
@@ -3087,7 +3087,7 @@ dependencies = [
 
 [[package]]
 name = "ultron-harness"
-version = "1.0.1"
+version = "1.0.2"
 dependencies = [
  "indexmap",
  "regex",
@@ -3106,7 +3106,7 @@ dependencies = [
 
 [[package]]
 name = "ultron-herdr"
-version = "1.0.1"
+version = "1.0.2"
 dependencies = [
  "rustix",
  "serde_json",
@@ -3118,7 +3118,7 @@ dependencies = [
 
 [[package]]
 name = "ultron-hindsight"
-version = "1.0.1"
+version = "1.0.2"
 dependencies = [
  "regex",
  "serde_json",
@@ -3132,7 +3132,7 @@ dependencies = [
 
 [[package]]
 name = "ultron-host"
-version = "1.0.1"
+version = "1.0.2"
 dependencies = [
  "fancy-regex 0.19.2",
  "image",
@@ -3148,7 +3148,7 @@ dependencies = [
 
 [[package]]
 name = "ultron-inference"
-version = "1.0.1"
+version = "1.0.2"
 dependencies = [
  "serde_json",
  "tempfile",
@@ -3165,7 +3165,7 @@ dependencies = [
 
 [[package]]
 name = "ultron-interactive"
-version = "1.0.1"
+version = "1.0.2"
 dependencies = [
  "base64 0.23.1",
  "crossterm",
@@ -3186,7 +3186,7 @@ dependencies = [
 
 [[package]]
 name = "ultron-jsonschema"
-version = "1.0.1"
+version = "1.0.2"
 dependencies = [
  "fancy-regex 0.19.2",
  "icu_normalizer",
@@ -3198,7 +3198,7 @@ dependencies = [
 
 [[package]]
 name = "ultron-jsrt"
-version = "1.0.1"
+version = "1.0.2"
 dependencies = [
  "base64 0.23.1",
  "getrandom 0.4.3",
@@ -3209,7 +3209,7 @@ dependencies = [
 
 [[package]]
 name = "ultron-judge"
-version = "1.0.1"
+version = "1.0.2"
 dependencies = [
  "serde_json",
  "tempfile",
@@ -3225,7 +3225,7 @@ dependencies = [
 
 [[package]]
 name = "ultron-kernel"
-version = "1.0.1"
+version = "1.0.2"
 dependencies = [
  "command-fds",
  "getrandom 0.4.3",
@@ -3241,7 +3241,7 @@ dependencies = [
 
 [[package]]
 name = "ultron-kernel-apis"
-version = "1.0.1"
+version = "1.0.2"
 dependencies = [
  "base64 0.23.1",
  "fancy-regex 0.19.2",
@@ -3264,7 +3264,7 @@ dependencies = [
 
 [[package]]
 name = "ultron-knowledge"
-version = "1.0.1"
+version = "1.0.2"
 dependencies = [
  "regex",
  "rusqlite",
@@ -3279,7 +3279,7 @@ dependencies = [
 
 [[package]]
 name = "ultron-lanes"
-version = "1.0.1"
+version = "1.0.2"
 dependencies = [
  "serde_json",
  "tempfile",
@@ -3289,7 +3289,7 @@ dependencies = [
 
 [[package]]
 name = "ultron-loki"
-version = "1.0.1"
+version = "1.0.2"
 dependencies = [
  "fancy-regex 0.19.2",
  "regex",
@@ -3308,7 +3308,7 @@ dependencies = [
 
 [[package]]
 name = "ultron-lsp"
-version = "1.0.1"
+version = "1.0.2"
 dependencies = [
  "rustix",
  "serde_json",
@@ -3323,7 +3323,7 @@ dependencies = [
 
 [[package]]
 name = "ultron-mcp"
-version = "1.0.1"
+version = "1.0.2"
 dependencies = [
  "getrandom 0.4.3",
  "reqwest",
@@ -3340,7 +3340,7 @@ dependencies = [
 
 [[package]]
 name = "ultron-memorantado"
-version = "1.0.1"
+version = "1.0.2"
 dependencies = [
  "serde_json",
  "tempfile",
@@ -3354,7 +3354,7 @@ dependencies = [
 
 [[package]]
 name = "ultron-model-scope"
-version = "1.0.1"
+version = "1.0.2"
 dependencies = [
  "serde_json",
  "ultron-jsrt",
@@ -3362,7 +3362,7 @@ dependencies = [
 
 [[package]]
 name = "ultron-optimize"
-version = "1.0.1"
+version = "1.0.2"
 dependencies = [
  "serde_json",
  "tempfile",
@@ -3379,7 +3379,7 @@ dependencies = [
 
 [[package]]
 name = "ultron-protocol"
-version = "1.0.1"
+version = "1.0.2"
 dependencies = [
  "serde",
  "serde_json",
@@ -3388,7 +3388,7 @@ dependencies = [
 
 [[package]]
 name = "ultron-resources"
-version = "1.0.1"
+version = "1.0.2"
 dependencies = [
  "regex",
  "serde_json",
@@ -3401,7 +3401,7 @@ dependencies = [
 
 [[package]]
 name = "ultron-review"
-version = "1.0.1"
+version = "1.0.2"
 dependencies = [
  "indexmap",
  "regex",
@@ -3424,7 +3424,7 @@ dependencies = [
 
 [[package]]
 name = "ultron-rlm-views"
-version = "1.0.1"
+version = "1.0.2"
 dependencies = [
  "fancy-regex 0.19.2",
  "serde_json",
@@ -3436,7 +3436,7 @@ dependencies = [
 
 [[package]]
 name = "ultron-sandbox"
-version = "1.0.1"
+version = "1.0.2"
 dependencies = [
  "rustix",
  "serde_json",
@@ -3446,7 +3446,7 @@ dependencies = [
 
 [[package]]
 name = "ultron-server"
-version = "1.0.1"
+version = "1.0.2"
 dependencies = [
  "reqwest",
  "serde_json",
@@ -3460,7 +3460,7 @@ dependencies = [
 
 [[package]]
 name = "ultron-services"
-version = "1.0.1"
+version = "1.0.2"
 dependencies = [
  "fancy-regex 0.19.2",
  "serde_json",
@@ -3473,7 +3473,7 @@ dependencies = [
 
 [[package]]
 name = "ultron-session-core"
-version = "1.0.1"
+version = "1.0.2"
 dependencies = [
  "base64 0.23.1",
  "indexmap",
@@ -3518,7 +3518,7 @@ dependencies = [
 
 [[package]]
 name = "ultron-session-file"
-version = "1.0.1"
+version = "1.0.2"
 dependencies = [
  "indexmap",
  "serde_json",
@@ -3529,7 +3529,7 @@ dependencies = [
 
 [[package]]
 name = "ultron-session-journal"
-version = "1.0.1"
+version = "1.0.2"
 dependencies = [
  "fancy-regex 0.19.2",
  "serde_json",
@@ -3540,7 +3540,7 @@ dependencies = [
 
 [[package]]
 name = "ultron-signals"
-version = "1.0.1"
+version = "1.0.2"
 dependencies = [
  "nix",
  "rustix",
@@ -3549,7 +3549,7 @@ dependencies = [
 
 [[package]]
 name = "ultron-telemetry"
-version = "1.0.1"
+version = "1.0.2"
 dependencies = [
  "crc32fast",
  "flate2",
@@ -3563,7 +3563,7 @@ dependencies = [
 
 [[package]]
 name = "ultron-theme"
-version = "1.0.1"
+version = "1.0.2"
 dependencies = [
  "serde_json",
  "ultron-jsrt",
@@ -3571,7 +3571,7 @@ dependencies = [
 
 [[package]]
 name = "ultron-tui"
-version = "1.0.1"
+version = "1.0.2"
 dependencies = [
  "arboard",
  "base64 0.23.1",
@@ -3593,7 +3593,7 @@ dependencies = [
 
 [[package]]
 name = "ultron-usage"
-version = "1.0.1"
+version = "1.0.2"
 dependencies = [
  "indexmap",
  "regex",
@@ -3610,7 +3610,7 @@ dependencies = [
 
 [[package]]
 name = "ultron-websocket"
-version = "1.0.1"
+version = "1.0.2"
 dependencies = [
  "ring",
  "ultron-jsrt",
@@ -3618,7 +3618,7 @@ dependencies = [
 
 [[package]]
 name = "ultron-workspace-checks"
-version = "1.0.1"
+version = "1.0.2"
 
 [[package]]
 name = "unicode-bidi"

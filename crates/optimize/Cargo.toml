@@ -11,15 +11,15 @@ autotests = false
 name = "optimize"
 
 [dependencies]
-ai = { package = "ultron-ai", path = "../ai", version = "=1.0.1" }
-blocking-http = { package = "ultron-blocking-http", path = "../blocking-http", version = "=1.0.1" }
-config = { package = "ultron-config", path = "../config", version = "=1.0.1" }
-delegation = { package = "ultron-delegation", path = "../delegation", version = "=1.0.1" }
-jsrt = { package = "ultron-jsrt", path = "../jsrt", version = "=1.0.1" }
-judge = { package = "ultron-judge", path = "../judge", version = "=1.0.1" }
-kernel = { package = "ultron-kernel", path = "../kernel", version = "=1.0.1" }
-kernel-apis = { package = "ultron-kernel-apis", path = "../kernel-apis", version = "=1.0.1" }
-review = { package = "ultron-review", path = "../review", version = "=1.0.1" }
+ai = { package = "ultron-ai", path = "../ai", version = "=1.0.2" }
+blocking-http = { package = "ultron-blocking-http", path = "../blocking-http", version = "=1.0.2" }
+config = { package = "ultron-config", path = "../config", version = "=1.0.2" }
+delegation = { package = "ultron-delegation", path = "../delegation", version = "=1.0.2" }
+jsrt = { package = "ultron-jsrt", path = "../jsrt", version = "=1.0.2" }
+judge = { package = "ultron-judge", path = "../judge", version = "=1.0.2" }
+kernel = { package = "ultron-kernel", path = "../kernel", version = "=1.0.2" }
+kernel-apis = { package = "ultron-kernel-apis", path = "../kernel-apis", version = "=1.0.2" }
+review = { package = "ultron-review", path = "../review", version = "=1.0.2" }
 serde_json = { version = "=1.0.151", features = ["preserve_order"] }
 
 [dev-dependencies]

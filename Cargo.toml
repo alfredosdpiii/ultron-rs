@@ -6,7 +6,7 @@ members = ["crates/*", "packages/coding-agent"]
 edition = "2024"
 license = "MIT"
 repository = "https://github.com/alfredosdpiii/ultron-rs"
-version = "1.0.1"
+version = "1.0.2"
 
 [workspace.lints.rust]
 unsafe_code = "forbid"

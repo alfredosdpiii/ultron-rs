@@ -12,21 +12,21 @@ name = "daemon"
 
 [dependencies]
 base64 = "=0.23.1"
-chord-delta = { package = "ultron-chord-delta", path = "../chord-delta", version = "=1.0.1" }
-config = { package = "ultron-config", path = "../config", version = "=1.0.1" }
-jsrt = { package = "ultron-jsrt", path = "../jsrt", version = "=1.0.1" }
-kernel-apis = { package = "ultron-kernel-apis", path = "../kernel-apis", version = "=1.0.1" }
-mcp = { package = "ultron-mcp", path = "../mcp", version = "=1.0.1" }
-model-scope = { package = "ultron-model-scope", path = "../model-scope", version = "=1.0.1" }
-protocol = { package = "ultron-protocol", path = "../protocol", version = "=1.0.1" }
-resources = { package = "ultron-resources", path = "../resources", version = "=1.0.1" }
-review = { package = "ultron-review", path = "../review", version = "=1.0.1" }
+chord-delta = { package = "ultron-chord-delta", path = "../chord-delta", version = "=1.0.2" }
+config = { package = "ultron-config", path = "../config", version = "=1.0.2" }
+jsrt = { package = "ultron-jsrt", path = "../jsrt", version = "=1.0.2" }
+kernel-apis = { package = "ultron-kernel-apis", path = "../kernel-apis", version = "=1.0.2" }
+mcp = { package = "ultron-mcp", path = "../mcp", version = "=1.0.2" }
+model-scope = { package = "ultron-model-scope", path = "../model-scope", version = "=1.0.2" }
+protocol = { package = "ultron-protocol", path = "../protocol", version = "=1.0.2" }
+resources = { package = "ultron-resources", path = "../resources", version = "=1.0.2" }
+review = { package = "ultron-review", path = "../review", version = "=1.0.2" }
 rustix = { version = "=1.1.5", features = ["fs", "process", "std"] }
 serde_json = { version = "=1.0.151", features = ["float_roundtrip", "preserve_order"] }
-server = { package = "ultron-server", path = "../server", version = "=1.0.1" }
-session-core = { package = "ultron-session-core", path = "../session-core", version = "=1.0.1" }
-session-journal = { package = "ultron-session-journal", path = "../session-journal", version = "=1.0.1" }
-signals = { package = "ultron-signals", path = "../signals", version = "=1.0.1" }
+server = { package = "ultron-server", path = "../server", version = "=1.0.2" }
+session-core = { package = "ultron-session-core", path = "../session-core", version = "=1.0.2" }
+session-journal = { package = "ultron-session-journal", path = "../session-journal", version = "=1.0.2" }
+signals = { package = "ultron-signals", path = "../signals", version = "=1.0.2" }
 
 [dev-dependencies]
 tempfile = "=3.27.0"

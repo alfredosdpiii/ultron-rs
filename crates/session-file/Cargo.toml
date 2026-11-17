@@ -11,9 +11,9 @@ autotests = false
 name = "session_file"
 
 [dependencies]
-config = { package = "ultron-config", path = "../config", version = "=1.0.1" }
+config = { package = "ultron-config", path = "../config", version = "=1.0.2" }
 indexmap = "=2.14.2"
-jsrt = { package = "ultron-jsrt", path = "../jsrt", version = "=1.0.1" }
+jsrt = { package = "ultron-jsrt", path = "../jsrt", version = "=1.0.2" }
 serde_json = { version = "=1.0.151", features = ["float_roundtrip", "preserve_order"] }
 
 [lints]

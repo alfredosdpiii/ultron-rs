@@ -10,7 +10,7 @@ repository.workspace = true
 name = "model_scope"
 
 [dependencies]
-jsrt = { package = "ultron-jsrt", path = "../jsrt", version = "=1.0.1" }
+jsrt = { package = "ultron-jsrt", path = "../jsrt", version = "=1.0.2" }
 serde_json = { version = "=1.0.151", features = ["preserve_order"] }
 
 [lints]

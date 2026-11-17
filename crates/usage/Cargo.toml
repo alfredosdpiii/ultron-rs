@@ -11,16 +11,16 @@ autotests = false
 name = "usage"
 
 [dependencies]
-config = { package = "ultron-config", path = "../config", version = "=1.0.1" }
-durable = { package = "ultron-durable", path = "../durable", version = "=1.0.1" }
-harness = { package = "ultron-harness", path = "../harness", version = "=1.0.1" }
+config = { package = "ultron-config", path = "../config", version = "=1.0.2" }
+durable = { package = "ultron-durable", path = "../durable", version = "=1.0.2" }
+harness = { package = "ultron-harness", path = "../harness", version = "=1.0.2" }
 indexmap = "=2.14.2"
-jsrt = { package = "ultron-jsrt", path = "../jsrt", version = "=1.0.1" }
-lanes = { package = "ultron-lanes", path = "../lanes", version = "=1.0.1" }
-protocol = { package = "ultron-protocol", path = "../protocol", version = "=1.0.1" }
+jsrt = { package = "ultron-jsrt", path = "../jsrt", version = "=1.0.2" }
+lanes = { package = "ultron-lanes", path = "../lanes", version = "=1.0.2" }
+protocol = { package = "ultron-protocol", path = "../protocol", version = "=1.0.2" }
 regex = "=1.13.1"
 serde_json = { version = "=1.0.151", features = ["preserve_order"] }
-session-journal = { package = "ultron-session-journal", path = "../session-journal", version = "=1.0.1" }
+session-journal = { package = "ultron-session-journal", path = "../session-journal", version = "=1.0.2" }
 
 [dev-dependencies]
 tempfile = "=3.27.0"

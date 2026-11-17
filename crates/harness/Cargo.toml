@@ -11,17 +11,17 @@ autotests = false
 name = "harness"
 
 [dependencies]
-ai = { package = "ultron-ai", path = "../ai", version = "=1.0.1" }
-chord-delta = { package = "ultron-chord-delta", path = "../chord-delta", version = "=1.0.1" }
-compaction = { package = "ultron-compaction", path = "../compaction", version = "=1.0.1" }
-durable = { package = "ultron-durable", path = "../durable", version = "=1.0.1" }
+ai = { package = "ultron-ai", path = "../ai", version = "=1.0.2" }
+chord-delta = { package = "ultron-chord-delta", path = "../chord-delta", version = "=1.0.2" }
+compaction = { package = "ultron-compaction", path = "../compaction", version = "=1.0.2" }
+durable = { package = "ultron-durable", path = "../durable", version = "=1.0.2" }
 indexmap = "=2.14.2"
-jsrt = { package = "ultron-jsrt", path = "../jsrt", version = "=1.0.1" }
-kernel = { package = "ultron-kernel", path = "../kernel", version = "=1.0.1" }
-model-scope = { package = "ultron-model-scope", path = "../model-scope", version = "=1.0.1" }
+jsrt = { package = "ultron-jsrt", path = "../jsrt", version = "=1.0.2" }
+kernel = { package = "ultron-kernel", path = "../kernel", version = "=1.0.2" }
+model-scope = { package = "ultron-model-scope", path = "../model-scope", version = "=1.0.2" }
 serde = { version = "=1.0.229", features = ["derive"] }
 serde_json = { version = "=1.0.151", features = ["preserve_order"] }
-session-journal = { package = "ultron-session-journal", path = "../session-journal", version = "=1.0.1" }
+session-journal = { package = "ultron-session-journal", path = "../session-journal", version = "=1.0.2" }
 
 [features]
 # The scripted provider `chat::faux`, for this crate's and dependents' tests.

@@ -1,6 +1,6 @@
 {
 	"name": "@bryandlp/ultron-coding-agent",
-	"version": "1.0.1",
+	"version": "1.0.2",
 	"description": "Ultron coding agent with RLM-first execution, typed agents, workflows, and session management",
 	"type": "module",
 	"piConfig": {

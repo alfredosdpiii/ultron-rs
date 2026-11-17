@@ -11,13 +11,13 @@ autotests = false
 name = "judge"
 
 [dependencies]
-ai = { package = "ultron-ai", path = "../ai", version = "=1.0.1" }
-blocking-http = { package = "ultron-blocking-http", path = "../blocking-http", version = "=1.0.1" }
-config = { package = "ultron-config", path = "../config", version = "=1.0.1" }
-host = { package = "ultron-host", path = "../host", version = "=1.0.1" }
-jsrt = { package = "ultron-jsrt", path = "../jsrt", version = "=1.0.1" }
-kernel = { package = "ultron-kernel", path = "../kernel", version = "=1.0.1" }
-kernel-apis = { package = "ultron-kernel-apis", path = "../kernel-apis", version = "=1.0.1" }
+ai = { package = "ultron-ai", path = "../ai", version = "=1.0.2" }
+blocking-http = { package = "ultron-blocking-http", path = "../blocking-http", version = "=1.0.2" }
+config = { package = "ultron-config", path = "../config", version = "=1.0.2" }
+host = { package = "ultron-host", path = "../host", version = "=1.0.2" }
+jsrt = { package = "ultron-jsrt", path = "../jsrt", version = "=1.0.2" }
+kernel = { package = "ultron-kernel", path = "../kernel", version = "=1.0.2" }
+kernel-apis = { package = "ultron-kernel-apis", path = "../kernel-apis", version = "=1.0.2" }
 serde_json = { version = "=1.0.151", features = ["preserve_order"] }
 tokio = { version = "=1.53.2", features = ["rt", "time"] }
 
