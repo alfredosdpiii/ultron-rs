@@ -2686,7 +2686,7 @@ W10R-04	budget	cost cap stops at once, no final request	session_core_budget_gate
 W10R-05	budget	a child's turns count against the root: R C C C C C* R*; child fails with the limit text	session_core_budget_gate_counts_a_childs_turns_against_the_root
 W10R-06	budget	frame responses count once in the tree spend	session_core_budget_gate_a_frames_responses_count_once_in_the_tree
 W10R-07	budget	ledger refusal counted at the root limit (onRefused)	session_core_stats_count_work_refused_at_a_root_limit
-W10R-08	async	re-invoke refused once the wall budget is used up	delegation_usage_reinvoke_is_refused_once_the_wall_budget_is_used_up
+W10R-08	async	re-invoke allowed after the wall budget is used up (new work still refused)	delegation_usage_reinvoke_is_allowed_after_the_wall_budget_is_used_up
 W10R-09	async	re-invoke reports a spent tree first	delegation_usage_reinvoke_reports_a_spent_tree_before_the_wall
 W10R-10	async	re-invoke refused at an unenforceable cost cap	delegation_usage_reinvoke_is_refused_at_a_cost_cap_that_cannot_be_enforced
 W10R-11	worktree	worktree host commands and jobs get the worktree env	host_shared_jobs_a_worktree_hosts_commands_get_its_environment

@@ -1,5 +1,5 @@
 //! Whether a completion may re-invoke a root (session-worker.ts, the async-event dispatcher's `refuse`): a spent
-//! turn/token/cost limit, a used-up wall budget (`remainingWallMs === 0`) or a cost cap that is reached or cannot be
+//! turn/token/cost limit or a cost cap that is reached or cannot be
 //! enforced keeps the root quiet. The ledger's clock is injected: time moves only when the test moves it.
 
 use delegation::usage::{ReserveRequest, UsageLedger, UsageLimits, UsageOptions};
@@ -29,25 +29,23 @@ fn reserve(ledger: &UsageLedger, root: &str, key: &str) {
 }
 
 #[test]
-fn delegation_usage_reinvoke_is_refused_once_the_wall_budget_is_used_up() {
+fn delegation_usage_reinvoke_is_allowed_after_the_wall_budget_is_used_up() {
     let now = Arc::new(Mutex::new(1_000.0));
     let limits = UsageLimits {
         max_wall_ms: Some(500),
         ..UsageLimits::default()
     };
     let ledger = ledger(limits, now.clone());
-    // A root that never reserved has no deadline: never refused for wall time.
-    assert_eq!(ledger.reinvoke_refusal("turn:a").unwrap(), None);
     reserve(&ledger, "turn:a", "k1");
-    *now.lock().unwrap() = 1_499.0;
-    assert_eq!(ledger.reinvoke_refusal("turn:a").unwrap(), None, "1 ms of wall left");
     *now.lock().unwrap() = 1_500.0;
-    assert_eq!(
-        ledger.reinvoke_refusal("turn:a").unwrap().as_deref(),
-        Some("wall budget of turn:a exhausted")
-    );
-    // Another root keeps its own wall budget.
-    assert_eq!(ledger.reinvoke_refusal("turn:b").unwrap(), None);
+    assert_eq!(ledger.status(Some("turn:a")).unwrap()["remainingWallMs"], 0);
+    assert_eq!(ledger.reinvoke_refusal("turn:a").unwrap(), None);
+    // The deadline still refuses new work.
+    let refused = ledger.reserve(&ReserveRequest {
+        root_id: Some("turn:a".into()),
+        ..ReserveRequest::task("k2")
+    });
+    assert!(refused.unwrap_err().contains("wall deadline exceeded"));
 }
 
 #[test]

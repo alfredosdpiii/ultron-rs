@@ -1105,15 +1105,14 @@ impl UsageLedger {
     }
 
     /// Why a completion may not re-invoke `root_id` (the async-event dispatcher's `refuse` in session-worker.ts): a
-    /// spent turn, token or cost limit, a used-up wall budget, or a cost cap that is reached or cannot be enforced.
+    /// spent turn, token or cost limit, or a cost cap that is reached or cannot be enforced. A used-up wall budget
+    /// does not refuse: a task's deadline is capped by its root's, so work that times out always ends past it, and
+    /// its end must still reach the model.
     pub fn reinvoke_refusal(&self, root_id: &str) -> Result<Option<String>, String> {
         if let Some(exhausted) = self.turn_budget_exhausted(Some(root_id))? {
             return Ok(Some(exhausted));
         }
         let status = self.status(Some(root_id))?;
-        if status["remainingWallMs"].as_f64() == Some(0.0) {
-            return Ok(Some(format!("wall budget of {root_id} exhausted")));
-        }
         if let Some(cap) = status["cost"]["maxCostUsd"].as_f64() {
             let spent = status["cost"]["spentUsd"].as_f64().unwrap_or(0.0);
             let unknown = status["cost"]["unknownPricedCalls"].as_f64().unwrap_or(0.0);
