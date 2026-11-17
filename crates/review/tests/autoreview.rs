@@ -5,8 +5,8 @@ use std::collections::HashMap;
 use std::path::Path;
 
 use review::plan::{
-    EngineFinding, EngineResult, LEVELS, PlanOptions, comment_marker, comment_text, cost_line, decide_verdict_in,
-    level_of, place_line, plan_review, rank_findings, severity_of, without_inline,
+    EngineFinding, EngineResult, LEVELS, PlanOptions, comment_marker, comment_text, decide_verdict_in, level_of,
+    place_line, plan_review, rank_findings, severity_of, without_inline,
 };
 use review::prepare::{
     ToolchainEntry, describe_toolchain, detect_ecosystems, environment_hash, find_mise, toolchain_requests,
@@ -165,7 +165,6 @@ fn review_plan_posts_like_plan_ts() {
         );
         let texts: Vec<String> = result.findings.iter().map(comment_text).collect();
         assert_eq!(json(texts), case["comments"], "case {number}");
-        assert_eq!(json(cost_line(&result)), case["cost"], "case {number}");
     }
     let ranges = [(10, 20), (40, 45)];
     for place in fx["places"].as_array().expect("places") {

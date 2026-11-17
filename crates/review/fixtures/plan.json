@@ -68,8 +68,7 @@
     "inSummary": [],
     "overCap": []
    },
-   "comments": [],
-   "cost": "Reviewed in 42 s: 12 model calls, 94k tokens, $0.31."
+   "comments": []
   },
   {
    "result": {
@@ -169,8 +168,7 @@
    },
    "comments": [
     "[high] total() skips the last item. range(len(items) - 1) stops one short."
-   ],
-   "cost": "Reviewed in 42 s: 12 model calls, 94k tokens, $0.31."
+   ]
   },
   {
    "result": {
@@ -297,8 +295,7 @@
    "comments": [
     "[low] total() skips the last item. range(len(items) - 1) stops one short.",
     "[nit] total() skips the last item. range(len(items) - 1) stops one short."
-   ],
-   "cost": "Reviewed in 42 s: 12 model calls, 94k tokens, $0.31."
+   ]
   },
   {
    "result": {
@@ -376,8 +373,7 @@
     "inSummary": [],
     "overCap": []
    },
-   "comments": [],
-   "cost": "Reviewed in 42 s: 12 model calls, 94k tokens, $0.31."
+   "comments": []
   },
   {
    "result": {
@@ -477,8 +473,7 @@
    },
    "comments": [
     "[high] total() skips the last item. range(len(items) - 1) stops one short."
-   ],
-   "cost": "Reviewed in 42 s: 12 model calls, 94k tokens, $0.31."
+   ]
   },
   {
    "result": {
@@ -578,8 +573,7 @@
    },
    "comments": [
     "[high] total() skips the last item. range(len(items) - 1) stops one short."
-   ],
-   "cost": "Reviewed in 42 s: 12 model calls, 94k tokens, $0.31."
+   ]
   },
   {
    "result": {
@@ -681,8 +675,7 @@
    },
    "comments": [
     "[medium] total() skips the last item. range(len(items) - 1) stops one short."
-   ],
-   "cost": "Reviewed in 42 s: 12 model calls, 94k tokens, $0.31."
+   ]
   },
   {
    "result": {
@@ -784,8 +777,7 @@
    },
    "comments": [
     "[low] total() skips the last item. range(len(items) - 1) stops one short."
-   ],
-   "cost": "Reviewed in 42 s: 12 model calls, 94k tokens, $0.31."
+   ]
   },
   {
    "result": {
@@ -884,8 +876,7 @@
    },
    "comments": [
     "[low] total() skips the last item. range(len(items) - 1) stops one short. Use range(len(items))."
-   ],
-   "cost": "Reviewed in 42 s: 12 model calls, 94k tokens, $0.31."
+   ]
   },
   {
    "result": {
@@ -971,8 +962,7 @@
    },
    "comments": [
     "[critical] total() skips the last item. range(len(items) - 1) stops one short."
-   ],
-   "cost": "Reviewed in 42 s: 12 model calls, 94k tokens, $0.31."
+   ]
   },
   {
    "result": {
@@ -1088,8 +1078,7 @@
     "inSummary": [],
     "overCap": []
    },
-   "comments": [],
-   "cost": "Reviewed in 42 s: 12 model calls, 94k tokens, $0.31."
+   "comments": []
   },
   {
    "result": {
@@ -1169,8 +1158,7 @@
     "inSummary": [],
     "overCap": []
    },
-   "comments": [],
-   "cost": "Reviewed in 42 s: 12 model calls, 94k tokens, $0.31."
+   "comments": []
   },
   {
    "result": {
@@ -1629,8 +1617,7 @@
     "[low] outside four? range(len(items) - 1) stops one short.",
     "[high] total() skips the last item. range(len(items) - 1) stops one short.",
     "[medium] total() skips the last item. range(len(items) - 1) stops one short."
-   ],
-   "cost": "Reviewed in 2.3 s: 3 model calls, 999 tokens."
+   ]
   },
   {
    "result": {
@@ -1817,8 +1804,7 @@
     "[critical] total() skips the last item. range(len(items) - 1) stops one short.",
     "[medium] total() skips the last item. range(len(items) - 1) stops one short.",
     "[high] total() skips the last item. range(len(items) - 1) stops one short. Proven by a test run the reviewer made."
-   ],
-   "cost": "Reviewed in 9.9 s: 1 model calls, 2k tokens, $0.13."
+   ]
   },
   {
    "result": {
@@ -1920,8 +1906,7 @@
    },
    "comments": [
     "[high] Weirdspace and café 😀xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx."
-   ],
-   "cost": "Reviewed in 11 s: 1 model calls, 0 tokens, $1.00."
+   ]
   },
   {
    "result": {
@@ -2047,8 +2032,7 @@
    "comments": [
     "[low] total() skips the last item. range(len(items) - 1) stops one short.",
     "[low]  ends with colon:"
-   ],
-   "cost": "Reviewed in 42 s: 1 model calls, 3k tokens, $2.50."
+   ]
   },
   {
    "result": {
@@ -2148,8 +2132,7 @@
    },
    "comments": [
     "[high] aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb. range(len(items) - 1) stops one short."
-   ],
-   "cost": "Reviewed in 42 s: 12 model calls, 94k tokens, $0.31."
+   ]
   }
  ],
  "places": [

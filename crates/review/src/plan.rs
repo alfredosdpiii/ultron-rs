@@ -621,37 +621,6 @@ pub fn decide_verdict_in(
     }
 }
 
-fn seconds(ms: f64) -> String {
-    if ms < 10_000.0 {
-        format!("{} s", jsrt::number::to_fixed(ms / 1000.0, 1))
-    } else {
-        format!("{} s", jsrt::number::to_string(jsrt::number::round(ms / 1000.0)))
-    }
-}
-
-fn tokens(count: f64) -> String {
-    if count >= 1000.0 {
-        format!("{}k", jsrt::number::to_string(jsrt::number::round(count / 1000.0)))
-    } else {
-        jsrt::number::to_string(count)
-    }
-}
-
-/// One line of timing and cost.
-pub fn cost_line(result: &EngineResult) -> String {
-    let cost = if result.usage.cost_usd > 0.0 {
-        format!(", ${}", jsrt::number::to_fixed(result.usage.cost_usd, 2))
-    } else {
-        String::new()
-    };
-    format!(
-        "Reviewed in {}: {} model calls, {} tokens{cost}.",
-        seconds(result.timing.total_ms),
-        jsrt::number::to_string(result.usage.frames),
-        tokens(result.usage.tokens)
-    )
-}
-
 /// Confirmed findings, the ones to post first: those that are serious (critical, high) or proven beyond the diff,
 /// then the rest; within each by level, then by evidence strength. Indices into `result.findings`.
 pub fn rank_findings(result: &EngineResult) -> Vec<usize> {

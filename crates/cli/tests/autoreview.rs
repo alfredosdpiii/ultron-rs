@@ -408,7 +408,7 @@ fn run_case(world: &World, case: &Value) -> (i32, Value, Vec<String>, Vec<Value>
     let work = world.work_text();
     let shown = match serde_json::from_str::<Value>(&stdout) {
         Ok(json) if json.is_object() => zero_times(json),
-        _ => Value::String(zero_duration(&stdout.replace(&work, "<work>"))),
+        _ => Value::String(stdout.replace(&work, "<work>")),
     };
     let mut requests: Vec<Value> = world
         .requests()
@@ -445,14 +445,6 @@ fn differences(a: &Value, b: &Value, path: &str) -> Vec<String> {
         _ if a == b => Vec::new(),
         _ => vec![format!("{path}: {a} != {b}")],
     }
-}
-
-/// The text review's duration line.
-fn zero_duration(text: &str) -> String {
-    regex::Regex::new(r"Reviewed in \d+(\.\d+)? s")
-        .unwrap()
-        .replace_all(text, "Reviewed in N s")
-        .into_owned()
 }
 
 fn case<'a>(recorded: &'a Value, name: &str) -> &'a Value {

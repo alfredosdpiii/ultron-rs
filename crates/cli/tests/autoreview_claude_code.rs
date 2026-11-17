@@ -201,11 +201,7 @@ fn shown(stdout: &str, work: &str) -> Value {
             }
             json
         }
-        _ => {
-            let text = stdout.replace(work, "<work>");
-            let duration = regex::Regex::new(r"Reviewed in \d+(\.\d+)? s").unwrap();
-            Value::String(duration.replace_all(&text, "Reviewed in N s").into_owned())
-        }
+        _ => Value::String(stdout.replace(work, "<work>")),
     }
 }
 
