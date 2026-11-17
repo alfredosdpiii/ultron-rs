@@ -85,6 +85,7 @@ Options:
   --verify-candidates <n>      review --mode hybrid (experimental): candidates verified at most (default:
                                autoreview.verifyCandidates, 12)
   --deep-model <p/m>           review: the model of the deep pass's investigators (default: the finder model)
+  --finder-models <p/m,p/m>    review: the finder frames take these models in turn (default: all on --model)
   --deep-thinking <level>      review: their thinking level (default: autoreview.deepThinking, high; medium was
                                measured to find a third as much). Every --*-thinking default is per model: the
                                recommended model thinks high at every stage
@@ -144,6 +145,7 @@ pub struct Parsed {
     pub verify_thinking: Option<String>,
     pub mode: Option<String>,
     pub deep_model: Option<String>,
+    pub finder_models: Option<Vec<String>>,
     pub deep_thinking: Option<String>,
     pub plan_model: Option<String>,
     pub plan_thinking: Option<String>,
@@ -278,6 +280,14 @@ pub fn parse_args(args: &[String]) -> Result<Parsed, UsageError> {
             "--verify-thinking" => parsed.verify_thinking = Some(thinking(value()?)?),
             "--deep-thinking" => parsed.deep_thinking = Some(thinking(value()?)?),
             "--deep-model" => parsed.deep_model = Some(model(value()?)?),
+            "--finder-models" => {
+                parsed.finder_models = Some(
+                    value()?
+                        .split(',')
+                        .map(|name| model(name.trim().to_string()))
+                        .collect::<Result<_, _>>()?,
+                )
+            }
             "--plan-model" => parsed.plan_model = Some(model(value()?)?),
             "--plan-thinking" => parsed.plan_thinking = Some(thinking(value()?)?),
             "--ask-model" => parsed.ask_model = Some(model(value()?)?),
@@ -413,7 +423,15 @@ pub fn describe_models(config: &AutoreviewConfig) -> Vec<String> {
                 ""
             }
         ),
-        stage("finders", &config.model, &config.thinking),
+        if config.finder_models.is_empty() {
+            stage("finders", &config.model, &config.thinking)
+        } else {
+            format!(
+                "  finders: {} in turn (thinking {})",
+                config.finder_models.join(", "),
+                config.thinking
+            )
+        },
         stage("investigators", &config.deep_model, &config.deep_thinking),
         stage("verifier", &config.verify_model, &config.verify_thinking),
         stage("planner (compiled)", &config.plan_model, &config.plan_thinking),
@@ -543,6 +561,7 @@ pub fn offline_json(
             out.insert("finderLevel".into(), or_else(finding, "finderLevel", level.into()));
             put_present(&mut out, "verifierLevel", finding, "verifierLevel");
             put_present(&mut out, "verifierScenarioHolds", finding, "verifierScenarioHolds");
+            put_present(&mut out, "levelReason", finding, "levelReason");
             out.insert("scenario".into(), or_else(finding, "scenario", "".into()));
             put_present(&mut out, "category", finding, "category");
             put_present(&mut out, "claim", finding, "claim");
@@ -627,6 +646,9 @@ pub fn offline_json(
     out.insert("usage".into(), Value::Object(usage));
     put_present(&mut out, "model", result, "model");
     put_present(&mut out, "verifyModel", result, "verifyModel");
+    if let Some(models) = result.get("finderModels").filter(|models| models.is_array()) {
+        out.insert("finderModels".into(), models.clone());
+    }
     out.insert("mode".into(), or_else(result, "mode", "fast".into()));
     out.insert("assurance".into(), assurance.join(" ").into());
     out.insert(
@@ -807,6 +829,9 @@ fn configure(parsed: &Parsed, saved: &Saved, env: &Env) -> AutoreviewConfig {
         settings.max_comments = parsed.max_comments;
     }
     set(&mut settings.deep_model, &parsed.deep_model);
+    if parsed.finder_models.is_some() {
+        settings.finder_models = parsed.finder_models.clone();
+    }
     set(&mut settings.deep_thinking, &parsed.deep_thinking);
     set(&mut settings.plan_model, &parsed.plan_model);
     set(&mut settings.plan_thinking, &parsed.plan_thinking);

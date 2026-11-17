@@ -317,7 +317,7 @@
    "runs": [
     {
      "code": 0,
-     "stdout": "Read the diff of `h` (1 file, +1 -1) with the code around it; every finding below was checked against the source by a second pass.\n\n**Approve.** No confirmed finding at medium or above.\n\nReviewed in 42 s: 2 model calls, 940 tokens, $0.01.\n\nAutomated review by Ultron\n",
+     "stdout": "**Approve.** No confirmed finding at medium or above.\n\nRead the diff of `h` (1 file, +1 -1) with the code around it; every finding below was checked against the source by a second pass.\n\nAutomated review by Ultron\n",
      "stderr": "prepared environment <hash>: nothing\nprepare: uv venv failed: no interpreter\n"
     }
    ],

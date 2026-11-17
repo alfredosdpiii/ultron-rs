@@ -1517,12 +1517,12 @@ async def run_deep(frames: Any, files: list[FileDiff], read_file: Callable[[str]
     for outcome in sorted(outcomes, key=lambda item: item["lens"] != "claims"):
         reply, record = outcome["reply"], outcome["record"]
         for sentence in reply.get("checked") if isinstance(reply.get("checked"), list) else []:
-            text = _text(sentence, 220)
+            text = _text(sentence, 1000)
             # Declarations of owed checks ("T2: not applicable, ...") are accounting, not assurance.
             if re.match(r"^\s*T\d+\b", text) or "not applicable" in text.lower():
                 continue
             if text and record["status"] != "failed" and len(checked) < 3:
-                checked.append(text if text.endswith((".", "!", "?")) else text + ".")
+                checked.append(text if text.endswith((".", "!", "?", "…")) else text + ".")
         record["findings"] = kept_by_lens.get(outcome["lens"], 0)
     records = [outcome["record"] for outcome in outcomes]
     public_runs = [{key: value for key, value in record.items() if key != "output"} | {"output": record["output"][-600:]}
@@ -1535,27 +1535,17 @@ async def run_deep(frames: Any, files: list[FileDiff], read_file: Callable[[str]
 
 
 def assurance(deep: dict[str, Any]) -> list[str]:
-    """Two to four sentences on what the deep pass traced: the host's own counts, then what held."""
+    """Two to four sentences on what the deep pass traced: how far the change was followed, then what held."""
     brief: Brief = deep["brief"]
-    records = deep["investigators"]
-    lookups = sum(record["requests"] for record in records)
-    ran = [record["lens"] for record in records if record["status"] != "failed"]
+    ran = [record["lens"] for record in deep["investigators"] if record["status"] != "failed"]
     if not ran:
         return []
     names = ", ".join(f"`{name}`" for name in brief.symbols[:4]) or "the changed code"
-    runs = deep["tests"]["runs"]
-    counts: dict[str, int] = {}
-    for run in runs:
-        counts[run["status"]] = counts.get(run["status"], 0) + 1
-    executed = ("nothing executed" if not runs else
-                f"{len(runs)} test run{'' if len(runs) == 1 else 's'} in a {deep['tests']['mechanism']} sandbox ("
-                + ", ".join(f"{count} {status}" for status, count in counts.items()) + ")")
-    first = (f"Beyond the diff, {names} {'was' if len(brief.symbols) == 1 else 'were'} followed to {brief.callers} "
+    first = (f"Beyond the diff, {names} {'were' if len(brief.symbols) > 1 else 'was'} followed to {brief.callers} "
              f"other use{'' if brief.callers == 1 else 's'}"
              + (f" and {len(brief.tests)} test file{'' if len(brief.tests) == 1 else 's'}" if brief.tests else
                 " (no test file mentions them)")
              + (f", and {brief.claims} claim{'' if brief.claims == 1 else 's'} of the change "
                 f"{'was' if brief.claims == 1 else 'were'} checked against the code" if brief.claims else "")
-             + f": {len(ran)} investigator{'' if len(ran) == 1 else 's'} ({', '.join(ran)}), {lookups} repository "
-             f"lookup{'' if lookups == 1 else 's'}, {executed}.")
+             + ".")
     return [first, *deep["checked"][:3]]

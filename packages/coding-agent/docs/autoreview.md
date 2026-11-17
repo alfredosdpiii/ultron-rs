@@ -141,15 +141,15 @@ left alone until a new commit or a new mention.
    in the body after "Pre-existing, not introduced by this change and not blocking it", never inline, and they
    never affect the verdict. With `--json` they are under `preexisting`.
 
-   An inline comment reads `[level] what is wrong, with the evidence. The fix.`, in plain sentences, about 320
-   characters at most. It sits on a diff line: its own, or the nearest within three lines of a hunk. A GitHub
+   An inline comment reads `[level] what is wrong, with the evidence. The fix.`, in plain sentences and never cut
+   short, with `Rated <level>: why this level` when the verifier gave a reason. It sits on a diff line: its own, or the nearest within three lines of a hunk. A GitHub
    suggestion block is used only when the fix is an exact replacement for the commented lines and those lines are
    all in the diff. Findings the verifier could not decide are never posted and never count toward the verdict. A
    finding somebody else already raised (same file, nearby line, similar claim) is not repeated.
 
-   The body has no headings or tables: a paragraph on what was checked and holds; a paragraph with the verdict and
-   what must be resolved before merge, each item with its file and line; a line on the non-blocking notes; what was
-   not checked; one line of timing and cost; and `Automated review by Ultron` (`autoreview.signature`).
+   The body has no headings or tables: a paragraph with the verdict and what must be resolved before merge, each
+   item with its file and line; a paragraph on what was checked and holds; a line on the non-blocking notes; what was
+   not checked; and `Automated review by Ultron` (`autoreview.signature`).
 
 After posting, the review is read back and any inline comment GitHub dropped is posted again on its own. If the head
 commit moved while the review ran, the review is discarded and the pull request is queued again.
@@ -210,6 +210,7 @@ reviewed.
 | `autoreview.mode` | `"both"` | `both`: the fast pass, then the deep one with its findings as leads, each finding verified by a verifier frame. `fast`: review the diff only. `deep`: only the investigation beyond the diff. Experimental: `hybrid` (the passes discover candidates and host-written check programs verify them) and `compiled` (one planner writes the whole review program); see below. |
 | `autoreview.verifyCandidates` | `12` | `hybrid` (experimental): candidates the host's checks decide per review at most (maximum 40); the rest go to the verifier frame. |
 | `autoreview.deepModel` | the finder model | `provider/model` of the deep pass's investigator frames. |
+| `autoreview.finderModels` | none | A list of `provider/model`: the fast pass's finder frames take them in turn, so one review mixes models. Empty or absent: every finder runs on `autoreview.model`. `--finder-models a,b,c` on the command line. |
 | `autoreview.deepThinking` | `"high"` | Their thinking level. Measured on 30 pull requests with the same investigator model, `medium` found a third as much (0.5 against 1.5 findings per investigator, 3 against 8 lookups). |
 | `autoreview.planModel` | the finder model | `compiled` mode: `provider/model` of the planner frame (one call per review; use a strong model). |
 | `autoreview.planThinking` | `"medium"` for cells, `"high"` for a frame | Its thinking level. |
@@ -300,7 +301,7 @@ branch only. The deep pass looks for these.
 2. **Investigators.** The method is claim-driven. One frame per part gets the diff, the brief, the retrieved block,
    the checks its part owes, and the fast pass's findings as leads; parts that do not apply to the change are skipped:
    - `claims`: for each claim, find where it must be true (the path that failed, every other reader and writer)
-     and check it there; what holds feeds the review's first paragraph.
+     and check it there; what holds feeds the review's second paragraph.
    - `siblings`: other producers and consumers, parallel implementations, families (keywords, enum members,
      regexes), and conventions the same file or module already follows that the change breaks or does not extend.
    - `deployment`: environment variables, flags, manifests, CI workflows, infrastructure and dependency pins the

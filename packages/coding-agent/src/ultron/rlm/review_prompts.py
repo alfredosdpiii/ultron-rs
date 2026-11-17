@@ -270,6 +270,10 @@ verdict:
 - unclear: a judgement call the views can neither show right nor wrong.
 - uncertain: deciding needs code or runtime facts that are not in the views; say what is missing.
 
+needs: when the verdict is uncertain or scenario_holds is "unknown" because code is missing (a caller, a later
+stage, a helper), name it: up to three repository paths, `path:line` places or definition names. You are asked
+once more with that code.
+
 scenario_holds: true when the source as written really fails in the finding's scenario; false when it does not;
 "unknown" when there is no scenario or the views cannot show it. Two-sided: name what would stop the scenario
 failing (a guard, a handler, a checking caller) and look for it; false when it is shown (quote it).
@@ -280,6 +284,8 @@ confirmed with "before": it is reported apart, as pre-existing, and never blocks
 
 severity: your own level, whatever the reviewer chose. Raise it when the scenario is a wrong result on an input
 the author means to support; lower it when the evidence is weaker than the level claims.
+severity_reason: one sentence on why this level and not the one above or below it: what limits the damage, or
+what makes the failure reachable ("only the report is affected; apply writes the manifest").
 {SEVERITY_RUBRIC}
 
 If the problem is real but the line number is wrong, confirm it and give the right line in corrected_line;

@@ -665,7 +665,7 @@ def normalize_findings(raw: Any, reviewer: Reviewer, chunk: Chunk, line_count: i
     for item in raw[:MAX_FINDINGS_PER_FRAME]:
         if not isinstance(item, dict):
             continue
-        claim = _text(item.get("claim"), 300)
+        claim = _text(item.get("claim"), 1000)
         if not claim:
             continue
         try:

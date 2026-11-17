@@ -18,11 +18,12 @@ pub const DEFAULT_BLOCK_AT: &str = "medium";
 pub const DEFAULT_MAX_COMMENTS: i64 = crate::settings::DEFAULT_MAX_COMMENTS as i64;
 pub const RELOCATE_WITHIN: i64 = 3;
 /// An inline comment's sentences (before any code block) aim to stay under this.
-pub const COMMENT_TARGET_CHARS: usize = 320;
 const MAX_BLOCKING_LISTED: usize = 4;
 const MAX_OUTSIDE_LISTED: usize = 3;
 const MAX_NOT_CHECKED: usize = 3;
 const MAX_BODY_LINES: usize = 60;
+/// `notChecked` lines that account for the deep pass's own steps: kept in the record, not posted.
+const PIPELINE_ACCOUNTING: [&str; 2] = ["Not traced by the deep pass", "Checks the deep pass"];
 const MAX_SOURCES_LISTED: usize = 6;
 const MAX_MISSING_LISTED: usize = 6;
 const STRENGTHS: [&str; 3] = ["test", "outside", "diff"];
@@ -90,6 +91,8 @@ pub struct EngineFinding {
     pub replacement: Option<String>,
     pub source: Option<String>,
     pub lesson: Option<String>,
+    /// The verifier's sentence on why the finding has this level and not a neighbouring one.
+    pub level_reason: Option<String>,
     /// `confirmed` or `uncertain`.
     pub verification: String,
 }
@@ -406,17 +409,6 @@ pub fn comment_marker(key: &str) -> String {
     format!("<!-- ultron-autoreview:{key} -->")
 }
 
-fn short(text: &str, limit: usize) -> String {
-    let flat = jsrt::string::flatten(text);
-    if jsrt::utf16::len(&flat) <= limit {
-        return flat;
-    }
-    format!(
-        "{}…",
-        jsrt::utf16::head(&flat, limit.saturating_sub(1).max(1)).trim_end_matches(jsrt::string::is_space)
-    )
-}
-
 /// `text` ending as a sentence.
 fn sentence(text: &str) -> String {
     let flat = jsrt::string::flatten(text);
@@ -439,32 +431,23 @@ fn non_empty(text: &Option<String>) -> Option<&str> {
     text.as_deref().filter(|text| !text.is_empty())
 }
 
-/// `[level] what is wrong, with the evidence. The fix.`: the sentences of an inline comment, within the target.
+/// `[level] what is wrong, with the evidence. The fix.`: the sentences of an inline comment.
 pub fn comment_text(finding: &EngineFinding) -> String {
     let head = format!("[{}] {}", finding.level(), sentence(&finding.claim));
     let fix = match (&finding.replacement, non_empty(&finding.suggested_fix)) {
         (None, Some(fix)) => sentence(fix),
         _ => String::new(),
     };
-    let room = COMMENT_TARGET_CHARS as i64
-        - jsrt::utf16::len(&head) as i64
-        - if fix.is_empty() {
-            0
-        } else {
-            jsrt::utf16::len(&fix) as i64 + 1
-        }
-        - 1;
     // The scenario is the evidence when there is one; else the reason.
     let evidence = match &finding.scenario {
         Some(scenario) if !jsrt::string::trim(scenario).is_empty() => scenario.as_str(),
         _ => finding.why.as_str(),
     };
-    let middle = if room >= 40 && !evidence.is_empty() {
-        sentence(&short(evidence, room as usize))
-    } else {
-        String::new()
-    };
-    [head, middle, fix, certainty(finding)]
+    let middle = sentence(evidence);
+    let rated = non_empty(&finding.level_reason)
+        .map(|reason| format!("Rated {}: {}", finding.level(), sentence(reason)))
+        .unwrap_or_default();
+    [head, middle, rated, fix, certainty(finding)]
         .into_iter()
         .filter(|part| !part.is_empty())
         .collect::<Vec<_>>()
@@ -740,6 +723,11 @@ pub fn plan_review(result: &EngineResult, options: &PlanOptions) -> ReviewPlan {
         let finding = &result.findings[index];
         let level = finding.level();
         let blocking = blocks(finding, block_at, fresh);
+        // A review that asks for changes carries what must be resolved and the notes worth a look, not its nits.
+        if verdict == Verdict::RequestChanges && level == "nit" {
+            over_cap.push(index);
+            continue;
+        }
         let key = format!("{short_sha}-{}", index + 1);
         let mut comment = plan_comment(finding, index, ranges(&finding.file), &key);
         // The same root cause at another place that is in the diff: the comment goes there, naming this place.
@@ -797,13 +785,13 @@ pub fn plan_review(result: &EngineResult, options: &PlanOptions) -> ReviewPlan {
         .count();
     let since = options.since_sha.as_deref().map(|sha| jsrt::utf16::head(sha, 7));
 
-    // Paragraph 1: what was checked and holds.
+    // Paragraph 2: what was checked and holds.
     let assurance: Vec<String> = result
         .assurance
         .iter()
         .flatten()
         .take(4)
-        .map(|item| short(item, 320))
+        .map(|item| jsrt::string::flatten(item))
         .collect();
     let scope = format!(
         "{} file{}, +{} -{}",
@@ -838,7 +826,7 @@ pub fn plan_review(result: &EngineResult, options: &PlanOptions) -> ReviewPlan {
         None => first,
     };
 
-    // Paragraph 2: the verdict and what must be resolved before merge.
+    // Paragraph 1: the verdict and what must be resolved before merge.
     let mut second = vec![format!("**{}.**", verdict.title())];
     if !blockers.is_empty() {
         let named: Vec<String> = blockers
@@ -857,7 +845,7 @@ pub fn plan_review(result: &EngineResult, options: &PlanOptions) -> ReviewPlan {
                 } else {
                     String::new()
                 };
-                format!("{number}{at} {}", sentence(&short(&finding.claim, 220)))
+                format!("{number}{at} {}", sentence(&finding.claim))
             })
             .collect();
         let lead = if verdict == Verdict::RequestChanges {
@@ -902,12 +890,12 @@ pub fn plan_review(result: &EngineResult, options: &PlanOptions) -> ReviewPlan {
                 let seen = if item.evidence.is_empty() {
                     String::new()
                 } else {
-                    format!(" Re-check: {}", sentence(&short(&item.evidence, 200)))
+                    format!(" Re-check: {}", sentence(&item.evidence))
                 };
                 format!(
                     "{number}{} {}{seen}",
                     place(&item.file, item.line),
-                    sentence(&short(&item.claim, 220))
+                    sentence(&item.claim)
                 )
             })
             .collect();
@@ -977,12 +965,7 @@ pub fn plan_review(result: &EngineResult, options: &PlanOptions) -> ReviewPlan {
             .take(MAX_OUTSIDE_LISTED)
             .map(|index| {
                 let finding = &result.findings[*index];
-                format!(
-                    "{} [{}] {}",
-                    where_(finding),
-                    finding.level(),
-                    sentence(&short(&finding.claim, 160))
-                )
+                format!("{} [{}] {}", where_(finding), finding.level(), sentence(&finding.claim))
             })
             .collect();
         let more = if outside.len() > MAX_OUTSIDE_LISTED {
@@ -996,14 +979,7 @@ pub fn plan_review(result: &EngineResult, options: &PlanOptions) -> ReviewPlan {
         let named: Vec<String> = result
             .preexisting
             .iter()
-            .map(|finding| {
-                format!(
-                    "{} [{}] {}",
-                    where_(finding),
-                    finding.level(),
-                    sentence(&short(&finding.claim, 160))
-                )
-            })
+            .map(|finding| format!("{} [{}] {}", where_(finding), finding.level(), sentence(&finding.claim)))
             .collect();
         notes.push(format!(
             "Pre-existing, not introduced by this change and not blocking it: {}",
@@ -1055,13 +1031,10 @@ pub fn plan_review(result: &EngineResult, options: &PlanOptions) -> ReviewPlan {
 
     // What was not checked: the reasons coverage is incomplete lead; routine skips follow.
     let mut gaps: Vec<&String> = result.incomplete.iter().collect();
-    gaps.extend(
-        result
-            .not_checked
-            .iter()
-            .filter(|item| !result.incomplete.contains(item)),
-    );
-    let mut paragraphs = vec![first, second.join(" ")];
+    gaps.extend(result.not_checked.iter().filter(|item| {
+        !result.incomplete.contains(item) && !PIPELINE_ACCOUNTING.iter().any(|lead| item.starts_with(lead))
+    }));
+    let mut paragraphs = vec![second.join(" "), first];
     if !notes.is_empty() {
         paragraphs.push(notes.join(" "));
     }
@@ -1073,7 +1046,7 @@ pub fn plan_review(result: &EngineResult, options: &PlanOptions) -> ReviewPlan {
             .iter()
             .take(MAX_NOT_CHECKED)
             .map(|gap| {
-                let gap = short(gap, 200);
+                let gap = jsrt::string::flatten(gap);
                 gap.strip_suffix('.').map(str::to_string).unwrap_or(gap)
             })
             .collect();
@@ -1084,7 +1057,6 @@ pub fn plan_review(result: &EngineResult, options: &PlanOptions) -> ReviewPlan {
         };
         paragraphs.push(format!("Not checked: {}{more}.", listed.join("; ")));
     }
-    paragraphs.push(cost_line(result));
     let mut lines: Vec<String> = Vec::new();
     for (index, paragraph) in paragraphs.into_iter().enumerate() {
         if index > 0 {

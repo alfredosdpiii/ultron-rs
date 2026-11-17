@@ -466,7 +466,7 @@ fn case<'a>(recorded: &'a Value, name: &str) -> &'a Value {
 
 /// Where `ultron autoreview --help` differs from the recorded TypeScript text (recorded, Rust): the ban commands,
 /// `autoreview.ban`, `eval` and `register` are Rust only.
-const USAGE_EDITS: [(&str, &str); 5] = [
+const USAGE_EDITS: [(&str, &str); 6] = [
     (
         "  status                       Accounts, last poll, queue and recent reviews\n",
         "  status                       Accounts, bans (when any), last poll, queue and recent reviews
@@ -488,6 +488,12 @@ const USAGE_EDITS: [(&str, &str); 5] = [
 ",
     ),
     ("learn, skipBots.\n", "learn, skipBots, ban.\n"),
+    (
+        "investigators (default: the finder model)\n",
+        "investigators (default: the finder model)
+  --finder-models <p/m,p/m>    review: the finder frames take these models in turn (default: all on --model)
+",
+    ),
     (
         "  install | uninstall ",
         "  eval <repo-dir>              Measure the reviewer on the repository's history: review the commits later reverted or
@@ -513,7 +519,7 @@ const USAGE_EDITS: [(&str, &str); 5] = [
 /// Where the Rust review pipeline's verifier frames differ from the recorded TypeScript ones (recorded, Rust): a real
 /// problem in code the change did not touch is confirmed as pre-existing (`introduced: "before"`, reported apart and
 /// never blocking) instead of rejected.
-pub(crate) const VERIFIER_EDITS: [(&str, &str); 3] = [
+pub(crate) const VERIFIER_EDITS: [(&str, &str); 5] = [
     (
         "- rejected: the cited code does not do what the claim says, code shown elsewhere prevents the problem, the cited
   line does not exist, or the claim concerns code this change did not touch. Also rejected: a tests finding
@@ -537,7 +543,23 @@ severity:",
     ),
     (
         r#""scenario_holds":{"enum":[true,false,"unknown"]},"#,
-        r#""scenario_holds":{"enum":[true,false,"unknown"]},"introduced":{"enum":["this_change","before"]},"#,
+        r#""scenario_holds":{"enum":[true,false,"unknown"]},"severity_reason":{"type":"string"},"needs":{"type":"array","maxItems":3,"items":{"type":"string"}},"introduced":{"enum":["this_change","before"]},"#,
+    ),
+    (
+        "say what is missing.\n\nscenario_holds:",
+        "say what is missing.
+
+needs: when the verdict is uncertain or scenario_holds is \"unknown\" because code is missing (a caller, a later
+stage, a helper), name it: up to three repository paths, `path:line` places or definition names. You are asked
+once more with that code.
+
+scenario_holds:",
+    ),
+    (
+        "lower it when the evidence is weaker than the level claims.\n",
+        "lower it when the evidence is weaker than the level claims.
+severity_reason: one sentence on why this level and not the one above or below it: what limits the damage, or
+what makes the failure reachable (\"only the report is affected; apply writes the manifest\").\n",
     ),
 ];
 
@@ -628,7 +650,7 @@ fn assert_case(world: &World, recorded: &Value, name: &str) -> (Value, String) {
         let cap = "max_completion_tokens";
         if want.to_string().contains("introduced: \\\"this_change\\\"")
             && let (Some(got_cap), Some(want_cap)) = (got[cap].as_i64(), want[cap].as_i64())
-            && (0..=64).contains(&(got_cap - want_cap))
+            && (0..=128).contains(&(got_cap - want_cap))
         {
             want[cap] = got_cap.into();
         }
@@ -801,6 +823,28 @@ fn cli_autoreview_verdict_follows_final_severity() {
     assert_eq!(json["verdict"], "approve");
 }
 
+/// `--finder-models a,b`: the finder frames take the models in turn; the verifier stays on `--model`.
+#[test]
+fn cli_autoreview_finder_models_are_mixed() {
+    let world = World::new();
+    let recorded = fixture();
+    let mut mixed = case(&recorded, "fast").clone();
+    let args = mixed["args"].as_array_mut().unwrap();
+    args.push(json!("--finder-models"));
+    args.push(json!("groq/llama-3.3-70b-versatile,groq/llama-3.1-8b-instant"));
+    let (code, stdout, stderr, requests, _) = run_case(&world, &mixed);
+    assert_eq!(code, 0, "stderr {stderr:?}");
+    assert_eq!(
+        stdout["finderModels"],
+        json!(["groq/llama-3.3-70b-versatile", "groq/llama-3.1-8b-instant"])
+    );
+    let on = |model: &str| requests.iter().filter(|request| request["model"] == model).count();
+    let finders = stdout["usage"]["byPhase"]["find"]["frames"].as_u64().unwrap() as usize;
+    assert!(finders >= 2, "the case needs two finder frames to mix");
+    assert_eq!(on("llama-3.1-8b-instant"), finders / 2);
+    assert_eq!(on("llama-3.3-70b-versatile"), requests.len() - finders / 2);
+}
+
 /// Without --json, the review body the poster would post.
 #[test]
 fn cli_autoreview_text_is_the_review_body() {
@@ -835,7 +879,7 @@ fn cli_autoreview_both_mode_investigates() {
         json["findings"][1]["evidence"],
         "calc.py:12 `return total(items) / count` | `return total(items) / count` divides the truncated sum by the full count."
     );
-    assert!(json["assurance"].as_str().unwrap().contains("nothing executed."));
+    assert!(!json["assurance"].as_str().unwrap().contains("investigator"));
     let claims = json["timing"]["investigators"]
         .as_array()
         .unwrap()

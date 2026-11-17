@@ -76,7 +76,7 @@ fn review_github_a_requested_review_acknowledges_then_posts_one_atomic_review() 
     assert_eq!(review["commit_id"], json!(head()));
     assert_eq!(review["event"], json!("REQUEST_CHANGES"));
     assert_eq!(
-        review["body"].as_str().expect("body").split("\n\n").nth(1),
+        review["body"].as_str().expect("body").split("\n\n").next(),
         Some("**Request changes.** To resolve before merge: `calc.py:4` (inline) total() skips the last item.")
     );
     let comments = review["comments"].as_array().expect("comments");
@@ -285,7 +285,7 @@ fn review_github_own_and_closed_pull_requests_get_a_comment() {
     let own = posted(run(&first, &["mention"]));
     assert_eq!(own.plan.event, "COMMENT");
     assert_eq!(
-        own.plan.body.split("\n\n").nth(1),
+        own.plan.body.split("\n\n").next(),
         Some(
             "**Comment.** Worth resolving: `calc.py:4` (inline) total() skips the last item. This account opened the pull request."
         )
@@ -1360,6 +1360,10 @@ fn review_body(context: &Context) -> String {
     review["body"].as_str().expect("body").to_string()
 }
 
+fn checked_paragraph(body: &str) -> &str {
+    body.split("\n\n").nth(1).expect("the paragraph after the verdict")
+}
+
 #[test]
 fn review_github_a_cherry_pick_reads_only_what_differs_from_the_pull_requests_it_carries() {
     // fisher-ki-saas#2945: each source merge picked with `git cherry-pick -x`, then adapted to the branch.
@@ -1384,7 +1388,7 @@ fn review_github_a_cherry_pick_reads_only_what_differs_from_the_pull_requests_it
     assert!(spec.get("carried").is_none());
     let body = review_body(&context);
     assert!(
-        body.starts_with(
+        checked_paragraph(&body).starts_with(
             "Cherry-pick of #2931: 3 changed lines match it line for line and were reviewed there (1 file entirely); \
              this review reads the rest. Read the diff of "
         ),
@@ -1464,7 +1468,7 @@ fn review_github_a_cherry_pick_that_is_all_carried_is_approved_when_what_it_carr
     assert_eq!(outcome.plan.event, "APPROVE");
     let body = review_body(&context);
     assert!(
-        body.starts_with(
+        checked_paragraph(&body).starts_with(
             "Cherry-pick of #2931: all 3 changed lines match it line for line and were reviewed there; nothing else \
              changed."
         ),
@@ -1517,7 +1521,7 @@ fn review_github_a_promotion_named_in_the_description_reads_what_differs_and_lis
     assert_eq!(context.engine.specs()[0]["diff"], json!(DIFF));
     let body = review_body(&context);
     assert!(
-        body.starts_with("Cherry-pick of #2926: 3 changed lines match it"),
+        checked_paragraph(&body).starts_with("Cherry-pick of #2926: 3 changed lines match it"),
         "{body}"
     );
     assert!(
@@ -1571,7 +1575,7 @@ fn review_github_a_cherry_pick_reads_in_full_a_file_whose_code_differs_on_its_br
     assert_eq!(context.engine.specs()[0]["diff"], json!(DIFF));
     let body = review_body(&context);
     assert!(
-        body.starts_with(
+        checked_paragraph(&body).starts_with(
             "Cherry-pick of #2931: 3 changed lines match it line for line and were reviewed there (1 file entirely); \
              this review reads the rest, and in full 1 file where this branch's code differs from what it was \
              reviewed against."

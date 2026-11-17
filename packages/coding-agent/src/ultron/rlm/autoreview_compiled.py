@@ -1392,9 +1392,9 @@ class Interpreter:
                  + (f", {unknown} could not be decided" if unknown else "") + ".")
         sentences = []
         for result in held:
-            text = _text(result.get("holds"), 220)
+            text = _text(result.get("holds"), 1000)
             if text and len(sentences) < MAX_HOLDS:
-                sentences.append(text if text.endswith((".", "!", "?")) else text + ".")
+                sentences.append(text if text.endswith((".", "!", "?", "…")) else text + ".")
         return [first, *sentences]
 
 

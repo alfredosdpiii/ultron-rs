@@ -141,6 +141,8 @@ pub struct AutoreviewSettings {
     pub poll_seconds: Option<f64>,
     pub concurrency: Option<f64>,
     pub model: Option<String>,
+    /// Finder frames take these in turn; empty or absent means every finder runs on `model`.
+    pub finder_models: Option<Vec<String>>,
     pub verify_model: Option<String>,
     pub budget: Option<f64>,
     pub frame_concurrency: Option<f64>,
@@ -212,6 +214,8 @@ pub struct AutoreviewConfig {
     pub concurrency: Num,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub finder_models: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub verify_model: Option<String>,
     pub budget: Num,
@@ -322,6 +326,7 @@ pub fn resolve_config(settings: &AutoreviewSettings, fallbacks: &ModelFallbacks,
     let strings = |own: &Option<Vec<String>>| own.clone().unwrap_or_default();
     AutoreviewConfig {
         accounts: settings.accounts.clone(),
+        finder_models: strings(&settings.finder_models),
         poll_seconds: Num(MIN_POLL_SECONDS.max(settings.poll_seconds.unwrap_or(DEFAULT_POLL_SECONDS))),
         concurrency: Num(at_least_one(
             settings.concurrency.unwrap_or(DEFAULT_CONCURRENCY),
@@ -410,6 +415,8 @@ pub fn resolve_config(settings: &AutoreviewSettings, fallbacks: &ModelFallbacks,
 pub struct EngineSettings {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub finder_models: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub verify_model: Option<String>,
     /// Absent when there is no cap.
@@ -448,6 +455,7 @@ pub struct EngineSettings {
 pub fn engine_settings(config: &AutoreviewConfig) -> EngineSettings {
     EngineSettings {
         model: config.model.clone(),
+        finder_models: config.finder_models.clone(),
         verify_model: config.verify_model.clone(),
         budget: (config.budget.0 > 0.0).then_some(config.budget),
         concurrency: config.frame_concurrency,
@@ -564,6 +572,21 @@ pub fn saved(global: &Map<String, Value>) -> Map<String, Value> {
     put("pollSeconds", count("pollSeconds"));
     put("concurrency", count("concurrency"));
     put("model", model("model"));
+    let finder_models: Vec<Value> = c
+        .get("finderModels")
+        .and_then(Value::as_array)
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(|item| config::settings::model_ref(Some(item)))
+                .map(Value::from)
+                .collect()
+        })
+        .unwrap_or_default();
+    put(
+        "finderModels",
+        (!finder_models.is_empty()).then_some(Value::Array(finder_models)),
+    );
     put("verifyModel", model("verifyModel"));
     put("budget", count("budget"));
     put("frameConcurrency", count("frameConcurrency"));

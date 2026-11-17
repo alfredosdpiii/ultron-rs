@@ -6948,7 +6948,7 @@
    "plan": {
     "verdict": "request_changes",
     "event": "REQUEST_CHANGES",
-    "body": "The retry path was checked. It follows the rule in app.md. The tests pin it.\n\n**Request changes.** To resolve before merge: (1) `calc.py:4` (inline) The id is logged unhashed, which house-rules.md forbids. (2) `calc.py:5` (inline) The total is wrong.\n\nReviewed in 42 s: 12 model calls, 94k tokens, $0.31.\n\nAutomated review by Ultron",
+    "body": "**Request changes.** To resolve before merge: (1) `calc.py:4` (inline) The id is logged unhashed, which house-rules.md forbids. (2) `calc.py:5` (inline) The total is wrong.\n\nThe retry path was checked. It follows the rule in app.md. The tests pin it.\n\nAutomated review by Ultron",
     "comments": [
      {
       "finding": 0,
@@ -6978,7 +6978,7 @@
     "plan": {
      "verdict": "request_changes",
      "event": "REQUEST_CHANGES",
-     "body": "The retry path was checked. The tests pin it.\n\n(2) `calc.py:5` (inline) The total is wrong.\n\nReviewed in 42 s: 12 model calls, 94k tokens, $0.31.\n\nAutomated review by Ultron",
+     "body": "(2) `calc.py:5` (inline) The total is wrong.\n\nThe retry path was checked. The tests pin it.\n\nAutomated review by Ultron",
      "comments": [
       {
        "finding": 1,
@@ -7074,7 +7074,7 @@
    "plan": {
     "verdict": "request_changes",
     "event": "REQUEST_CHANGES",
-    "body": "Line one is fine. See /home/u/guides/house-rules.md for more. Then this. And that? app.md\n\n**Request changes.** To resolve before merge: `calc.py:4` (inline) Per app.md! the cache is stale? Really. Yes.\n\nReviewed in 42 s: 12 model calls, 94k tokens, $0.31.\n\nAutomated review by Ultron",
+    "body": "**Request changes.** To resolve before merge: `calc.py:4` (inline) Per app.md! the cache is stale? Really. Yes.\n\nLine one is fine. See /home/u/guides/house-rules.md for more. Then this. And that? app.md\n\nAutomated review by Ultron",
     "comments": [
      {
       "finding": 0,
@@ -7094,7 +7094,7 @@
     "plan": {
      "verdict": "request_changes",
      "event": "REQUEST_CHANGES",
-     "body": "Line one is fine. Then this. And that?\n\nthe cache is stale? Really. Yes.\n\nReviewed in 42 s: 12 model calls, 94k tokens, $0.31.\n\nAutomated review by Ultron",
+     "body": "the cache is stale? Really. Yes.\n\nLine one is fine. Then this. And that?\n\nAutomated review by Ultron",
      "comments": [],
      "inSummary": [],
      "overCap": [
@@ -7175,7 +7175,7 @@
    "plan": {
     "verdict": "request_changes",
     "event": "REQUEST_CHANGES",
-    "body": "Read the diff of `aaaaaaa` (1 file, +1 -1) with the code around it; every finding below was checked against the source by a second pass.\n\n**Request changes.** To resolve before merge: `calc.py:4` (inline) total() skips the last item.\n\nReviewed in 42 s: 12 model calls, 94k tokens, $0.31.\n\nAutomated review by Ultron",
+    "body": "**Request changes.** To resolve before merge: `calc.py:4` (inline) total() skips the last item.\n\nRead the diff of `aaaaaaa` (1 file, +1 -1) with the code around it; every finding below was checked against the source by a second pass.\n\nAutomated review by Ultron",
     "comments": [
      {
       "finding": 0,
@@ -7195,7 +7195,7 @@
     "plan": {
      "verdict": "request_changes",
      "event": "REQUEST_CHANGES",
-     "body": "Read the diff of `aaaaaaa` (1 file, +1 -1) with the code around it; every finding below was checked against the source by a second pass.\n\n**Request changes.** To resolve before merge: `calc.py:4` (inline) total() skips the last item.\n\nReviewed in 42 s: 12 model calls, 94k tokens, $0.31.\n\nAutomated review by Ultron",
+     "body": "**Request changes.** To resolve before merge: `calc.py:4` (inline) total() skips the last item.\n\nRead the diff of `aaaaaaa` (1 file, +1 -1) with the code around it; every finding below was checked against the source by a second pass.\n\nAutomated review by Ultron",
      "comments": [
       {
        "finding": 0,
@@ -7277,7 +7277,7 @@
    "plan": {
     "verdict": "request_changes",
     "event": "REQUEST_CHANGES",
-    "body": "Read the diff of `aaaaaaa` (1 file, +1 -1) with the code around it; every finding below was checked against the source by a second pass.\n\n**Request changes.** To resolve before merge: `calc.py:4` (inline) total() skips the last item.\n\nReviewed in 42 s: 12 model calls, 94k tokens, $0.31.\n\nAutomated review by Ultron",
+    "body": "**Request changes.** To resolve before merge: `calc.py:4` (inline) total() skips the last item.\n\nRead the diff of `aaaaaaa` (1 file, +1 -1) with the code around it; every finding below was checked against the source by a second pass.\n\nAutomated review by Ultron",
     "comments": [
      {
       "finding": 0,
@@ -7297,7 +7297,7 @@
     "plan": {
      "verdict": "request_changes",
      "event": "REQUEST_CHANGES",
-     "body": "Read the diff of `aaaaaaa` (1 file, +1 -1) with the code around it; every finding below was checked against the source by a second pass.\n\n**Request changes.** To resolve before merge: `calc.py:4` (inline) total() skips the last item.\n\nReviewed in 42 s: 12 model calls, 94k tokens, $0.31.\n\nAutomated review by Ultron",
+     "body": "**Request changes.** To resolve before merge: `calc.py:4` (inline) total() skips the last item.\n\nRead the diff of `aaaaaaa` (1 file, +1 -1) with the code around it; every finding below was checked against the source by a second pass.\n\nAutomated review by Ultron",
      "comments": [
       {
        "finding": 0,
@@ -7404,7 +7404,7 @@
    "plan": {
     "verdict": "request_changes",
     "event": "REQUEST_CHANGES",
-    "body": "Read the diff of `aaaaaaa` (1 file, +1 -1) with the code around it; every finding below was checked against the source by a second pass.\n\n**Request changes.** To resolve before merge: (1) `calc.py:3` (inline) app.md. (2) `calc.py:2` (inline) fine. (3) `calc.py:1` (inline) house-rules.md.\n\nReviewed in 42 s: 12 model calls, 94k tokens, $0.31.\n\nAutomated review by Ultron",
+    "body": "**Request changes.** To resolve before merge: (1) `calc.py:3` (inline) app.md. (2) `calc.py:2` (inline) fine. (3) `calc.py:1` (inline) house-rules.md.\n\nRead the diff of `aaaaaaa` (1 file, +1 -1) with the code around it; every finding below was checked against the source by a second pass.\n\nAutomated review by Ultron",
     "comments": [
      {
       "finding": 0,
@@ -7444,7 +7444,7 @@
     "plan": {
      "verdict": "request_changes",
      "event": "REQUEST_CHANGES",
-     "body": "Read the diff of `aaaaaaa` (1 file, +1 -1) with the code around it; every finding below was checked against the source by a second pass.\n\n(2) `calc.py:2` (inline) fine.\n\nReviewed in 42 s: 12 model calls, 94k tokens, $0.31.\n\nAutomated review by Ultron",
+     "body": "(2) `calc.py:2` (inline) fine.\n\nRead the diff of `aaaaaaa` (1 file, +1 -1) with the code around it; every finding below was checked against the source by a second pass.\n\nAutomated review by Ultron",
      "comments": [
       {
        "finding": 1,

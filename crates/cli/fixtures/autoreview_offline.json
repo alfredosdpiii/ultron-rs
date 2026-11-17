@@ -695,7 +695,7 @@
    "rateLimited": 0,
    "scenarioHolds": true,
    "code": 0,
-   "stdout": "Read the diff of `a5ee7f7` (1 file, +1 -1) with the code around it; every finding below was checked against the source by a second pass, which rejected 1.\n\n**Request changes.** To resolve before merge: `calc.py:4` (inline) total() skips the last item.\n\nNot checked: AI and LLM integration reviewer skipped 1 slice(s) with no LLM-related code.\n\nReviewed in N s: 4 model calls, 480 tokens, $0.00.\n\nAutomated review by Ultron\n",
+   "stdout": "**Request changes.** To resolve before merge: `calc.py:4` (inline) total() skips the last item.\n\nRead the diff of `a5ee7f7` (1 file, +1 -1) with the code around it; every finding below was checked against the source by a second pass, which rejected 1.\n\nNot checked: AI and LLM integration reviewer skipped 1 slice(s) with no LLM-related code.\n\nAutomated review by Ultron\n",
    "stderr": [
     "<time> engine ready in N ms (model groq/llama-3.1-8b-instant)"
    ],
@@ -1046,7 +1046,7 @@
     "model": "groq/llama-3.1-8b-instant",
     "verifyModel": "groq/llama-3.1-8b-instant",
     "mode": "both",
-    "assurance": "Beyond the diff, `total` was followed to 1 other use (no test file mentions them): 3 investigators (claims, tests, inputs), 1 repository lookup, nothing executed. average() guards count == 0 before dividing (calc.py).",
+    "assurance": "Beyond the diff, `total` was followed to 1 other use (no test file mentions them). average() guards count == 0 before dividing (calc.py).",
     "tests": {
      "enabled": true,
      "mechanism": "bwrap",

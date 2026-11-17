@@ -59,6 +59,7 @@ from review_api import (
     FINDINGS_CONTRACT,
     MAX_FINDINGS_PER_FRAME,
     MIN_BUDGET_TOKENS,
+    needed_code,
     VERDICT_CONTRACT,
     Chunk,
     FileDiff,
@@ -263,6 +264,8 @@ AUTOREVIEW_VERDICT_CONTRACT: dict[str, Any] = {
         "verdict": {"enum": ["confirmed", "rejected", "unclear", "uncertain"]},
         "severity": {"enum": [*LEVELS, *OLD_TO_LEVEL]},
         "scenario_holds": {"enum": [True, False, "unknown"]},
+        "severity_reason": {"type": "string"},
+        "needs": {"type": "array", "maxItems": 3, "items": {"type": "string"}},
         # "before": a real problem in code the change did not alter (pre-existing): reported apart, never blocking.
         "introduced": {"enum": ["this_change", "before"]},
     },
@@ -649,6 +652,15 @@ def final_level(finding: dict[str, Any], verdict: Any) -> str:
     holds = _holds(verdict.get("scenario_holds")) if isinstance(verdict, dict) else None
     finding["verifier_level"] = rated
     finding["verifier_holds"] = holds if holds is not None else "unknown"
+    final = _final_level(finding, level, holds)
+    # The verifier's reason describes its own rating: it is posted only when that rating is the final one.
+    reason = _text(verdict.get("severity_reason"), 1000) if isinstance(verdict, dict) else ""
+    if reason and final == rated:
+        finding["level_reason"] = reason
+    return final
+
+
+def _final_level(finding: dict[str, Any], level: str, holds: bool | None) -> str:
     if level in SERIOUS and holds is not True:
         return "low"
     # A tests finding blocks a merge only when the host proved it: it applied the named change and the tests
@@ -785,14 +797,15 @@ class Frames:
 
     async def run(self, phase: str, jobs: list[tuple[str, str, Any]], *, contract: Any, model: str | None,
                   thinking: str | None, context: Any = None, cutoff: float | None = None,
-                  contracts: list[Any] | None = None) -> list[Any]:
+                  contracts: list[Any] | None = None, models: list[str] | None = None) -> list[Any]:
         """Run `jobs` ((label, task, item) each) and return their results in order: a value, an `Incomplete`
         (the cap is spent) or a `FrameError` (failed after retries, or unfinished at `cutoff`). `context` is the
         shared prefix of every frame (a list of views); `contracts`, one per job, overrides `contract`."""
         if self._slots is None:
             self._slots = asyncio.Semaphore(self.concurrency)
         return list(await asyncio.gather(*(
-            self._one(phase, label, task, item, contract=contracts[index] if contracts else contract, model=model,
+            self._one(phase, label, task, item, contract=contracts[index] if contracts else contract,
+                      model=models[index] if models else model,
                       thinking=thinking, context=context, cutoff=cutoff)
             for index, (label, task, item) in enumerate(jobs))))
 
@@ -1308,6 +1321,8 @@ def _public(finding: dict[str, Any], verification: str) -> dict[str, Any]:
         out["shape"] = finding["shape"]
     if finding.get("lesson"):
         out["lesson"] = finding["lesson"]
+    if finding.get("level_reason"):
+        out["levelReason"] = finding["level_reason"]
     if finding.get("rules"):
         out["rules"] = list(finding["rules"])
     if finding.get("blind"):
@@ -1338,6 +1353,8 @@ async def run(rlm: Any, spec: dict[str, Any], *, runner: Runner | None = None,
     budget = UNLIMITED if cap is None else cap
     model = spec.get("model") if isinstance(spec.get("model"), str) else None
     verify_model = spec.get("verifyModel") if isinstance(spec.get("verifyModel"), str) else model
+    finder_models = [name for name in spec.get("finderModels") or [] if isinstance(name, str)] \
+        if isinstance(spec.get("finderModels"), list) else []
     thinking = _thinking(spec.get("thinking"), DEFAULT_THINKING)
     verify_thinking = _thinking(spec.get("verifyThinking"), DEFAULT_THINKING)
     mode = spec.get("mode") if spec.get("mode") in MODES else DEFAULT_MODE
@@ -1640,6 +1657,8 @@ async def run(rlm: Any, spec: dict[str, Any], *, runner: Runner | None = None,
             results = await frames_runner.run(
                 "find", [(reviewer.key, autoreview_finder_task(reviewer), chunk.text) for reviewer, chunk in frames],
                 contract=AUTOREVIEW_FINDINGS_CONTRACT, model=model, thinking=thinking,
+                models=[finder_models[index % len(finder_models)] for index in range(len(frames))]
+                if finder_models else None,
                 context=frames_context,
                 cutoff=find_cutoff)
             failures: dict[str, list[str]] = {}
@@ -1805,6 +1824,23 @@ async def run(rlm: Any, spec: dict[str, Any], *, runner: Runner | None = None,
             else:
                 for index, verdict in zip(ids, unpack_batch(result, len(ids))):
                     verdicts[index] = verdict
+        # A verifier that could not settle the scenario for want of code is asked once more with the code it named.
+        again: list[tuple[int, list[str]]] = []
+        for offset, item in enumerate(views if git is not None else []):
+            verdict = verdicts.get(base + offset)
+            if isinstance(verdict, dict) and (verdict.get("verdict") == "uncertain"
+                                              or verdict.get("scenario_holds") == "unknown"):
+                code = needed_code(git, scope, verdict.get("needs"))
+                if code:
+                    again.append((base + offset, [*item, "Code you asked for:\n" + code]))
+        if again:
+            answers = await frames_runner.run("verify", [("verifier", AUTOREVIEW_VERIFIER_TASK, item) for _i, item in again],
+                                              contract=None, model=verify_model, thinking=verify_thinking,
+                                              cutoff=verify_cutoff, context=verifier_context,
+                                              contracts=[AUTOREVIEW_VERDICT_CONTRACT] * len(again))
+            for (index, _item), answer in zip(again, answers):
+                if isinstance(answer, dict):
+                    verdicts[index] = answer
         return [verdicts.get(base + offset, FrameError({"error": "no verdict"})) for offset in range(len(findings))]
 
     async def early_verify(lens: str, findings: list[dict[str, Any]]) -> None:
@@ -2299,6 +2335,7 @@ async def run(rlm: Any, spec: dict[str, Any], *, runner: Runner | None = None,
         if static_out else None,
         "blind": blind_out,
         "deepModel": deep_model if deep_out is not None else None,
+        "finderModels": finder_models or None,
         "deepThinking": deep_thinking if deep_out is not None else None,
         "planModel": plan_model if compiled_out is not None else None,
         "planThinking": plan_thinking if compiled_out is not None else None,
