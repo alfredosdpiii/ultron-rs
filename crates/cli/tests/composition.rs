@@ -278,6 +278,41 @@ fn cli_composition_delegation_child_done_continues_the_run() {
 }
 
 #[test]
+fn cli_composition_a_child_cancelled_at_the_root_wall_deadline_continues_the_run() {
+    // The frame starts the root's 2 s wall budget; the child never answers and is cancelled after 3 s, past that
+    // budget. Its end reaches the idle parent as any other does: it continues the run.
+    let (port, seen) = routed_server_held(
+        vec![
+            anthropic_tool(
+                "toolu_s",
+                "await rlm.infer('one word')\nh = await rlm.spawn('say hi', name='greeter', timeout_ms=3000)",
+            ),
+            anthropic_text("frame"),
+            anthropic_text("waiting for the child"),
+            anthropic_text("parent saw the end"),
+        ],
+        "say hi",
+        vec![anthropic_text("never sent")],
+        usize::MAX,
+    );
+    let sandbox = sandbox(port);
+    let output = sandbox
+        .ultron()
+        .env(delegation::usage::MAX_WALL_MS_ENV, "2000")
+        .args(["-p", "--model", MODEL, "delegate"])
+        .output()
+        .unwrap();
+    assert_eq!(stdout(&output), "parent saw the end\n", "{}", stderr(&output));
+    let requests = seen.lock().unwrap().clone();
+    let last = requests.iter().rfind(|r| r["child"] == false).unwrap();
+    let event = last["body"]["messages"].as_array().unwrap().last().unwrap().to_string();
+    assert!(
+        event.contains("<runtime_event kind=\\\"child_done\\\"") && event.contains("status=\\\"cancelled\\\""),
+        "{event}"
+    );
+}
+
+#[test]
 fn cli_composition_session_files_stay_private() {
     // Every file a composed session writes is under the private profile or the project.
     let (port, _seen) = mock_server(
