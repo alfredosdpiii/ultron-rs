@@ -154,6 +154,57 @@ fn review_writes_a_receipt_for_the_committed_tree_only() {
 }
 
 #[test]
+fn review_rounds_are_counted_per_branch() {
+    let runtime = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../packages/coding-agent/src/ultron/rlm/runtime.py");
+    let handler: Arc<dyn HostHandler> = Arc::new(|_: &str, _: Map<String, Value>, _: &Signal| Ok(Value::Null));
+    let kernel = Kernel::new(KernelOptions::new(env!("CARGO_MANIFEST_DIR"), runtime), handler).unwrap();
+    let repo = tempfile::tempdir().unwrap();
+    let dir = repo.path();
+    git(dir, &["init", "-q", "-b", "main"]);
+    std::fs::write(dir.join("a.py"), "one\n").unwrap();
+    git(dir, &["add", "a.py"]);
+    git(dir, &["commit", "-qm", "one"]);
+    git(dir, &["checkout", "-qb", "feature"]);
+    let code = [
+        "import json, os, subprocess, review_api as r",
+        &format!("d = {:?}", dir.display().to_string()),
+        "receipt = os.path.join(d, '.git', 'ultron-review', 'receipt.json')",
+        "def commit(text, branch=None):",
+        "    if branch:",
+        "        subprocess.run(['git', 'checkout', '-qb', branch, 'main'], cwd=d, check=True)",
+        "    open(os.path.join(d, 'a.py'), 'w').write(text)",
+        "    subprocess.run(['git', '-c', 'user.name=t', '-c', 'user.email=t@x', '-c', 'commit.gpgsign=false',",
+        "                    'commit', '-qam', text], cwd=d, check=True)",
+        "def review(confirmed=1):",
+        "    options = r.parse_args('', {})",
+        "    r._write_receipt(r.Git(d), r.resolve_scope(options, d), options, confirmed, False)",
+        "    return json.load(open(receipt))['round']",
+        "out = []",
+        "commit('two\\n')",
+        "out.append(review())",
+        "out.append(review())",
+        "commit('three\\n')",
+        "out.append(review())",
+        "commit('four\\n')",
+        "out.append(review())",
+        "commit('five\\n', branch='other')",
+        "out.append(review())",
+        "data = json.load(open(receipt))",
+        "del data['round']",
+        "json.dump(data, open(receipt, 'w'))",
+        "commit('six\\n')",
+        "out.append(review())",
+        "print(json.dumps(out))",
+    ]
+    .join("\n");
+    let result = kernel.execute(&code, None, None).unwrap();
+    assert_eq!(result.status, Status::Ok, "{result:?}");
+    let rounds: Value = serde_json::from_str(result.stdout.trim()).unwrap();
+    // First review, the same tree again, a fix, another fix, another branch, a receipt from before rounds.
+    assert_eq!(rounds, serde_json::json!([1, 1, 2, 3, 1, 2]));
+}
+
+#[test]
 fn a_review_lesson_is_kept_once() {
     let runtime = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../packages/coding-agent/src/ultron/rlm/runtime.py");
     let handler: Arc<dyn HostHandler> = Arc::new(|_: &str, _: Map<String, Value>, _: &Signal| Ok(Value::Null));

@@ -237,7 +237,9 @@ fn stale_description(dir: &Path) -> Option<(String, String)> {
 }
 
 /// Why a pull request may not be opened from `dir` yet: `None` when `/review` wrote a receipt for the tree committed
-/// there and no confirmed finding is left unwaived. Unreadable state refuses.
+/// there and no confirmed finding is left unwaived. Unreadable state refuses. From the branch's second review round
+/// (the receipt's `round`, 1 when absent) confirmed findings are waived and listed, not fixed and reviewed again:
+/// each fix commit is a new tree, so asking for another review would never end.
 fn receipt_refusal(dir: &Path) -> Option<String> {
     let git = |args: &[&str]| git_value(dir, args);
     let how = format!(
@@ -268,6 +270,14 @@ fn receipt_refusal(dir: &Path) -> Option<String> {
         .as_str()
         .is_some_and(|reason| !reason.trim().is_empty());
     ((confirmed > 0 || incomplete) && !waived).then(|| {
+        let dir = dir.display().to_string();
+        if !incomplete && receipt["round"].as_u64().unwrap_or(1) >= 2 {
+            return format!(
+                "self-review comes first: the review of this tree confirmed {confirmed} finding(s), and the review \
+                 rounds are used up (one review, one fix round). Stop fixing: record the remaining findings with \
+                 `review_api.waive(\"<reason>\", cwd={dir:?})` and list them in the pull request's description."
+            );
+        }
         let unfinished = if incomplete {
             " and did not finish (see its report)"
         } else {
@@ -277,8 +287,7 @@ fn receipt_refusal(dir: &Path) -> Option<String> {
             "self-review comes first: the review of this tree confirmed {confirmed} finding(s){unfinished}. Fix \
              them, commit and review again (raise --budget for an unfinished one); or, for findings that are wrong \
              or belong in a follow-up, record why with \
-             `review_api.waive(\"<reason>\", cwd={:?})` and say so in the pull request's description.",
-            dir.display().to_string()
+             `review_api.waive(\"<reason>\", cwd={dir:?})` and say so in the pull request's description."
         )
     })
 }

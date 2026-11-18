@@ -289,6 +289,20 @@ fn session_core_self_review_refuses_a_pull_request_until_the_committed_tree_is_r
     );
     write(&tree, 2, false, json!("both are follow-ups, listed under Scope"));
     assert_eq!(skills.before_shell(create, "main"), None, "waived with a reason");
+    let round = |round: u64| {
+        let body = json!({"tree": tree, "confirmed": 2, "incomplete": false, "waived": null, "round": round});
+        std::fs::write(&receipt, body.to_string()).unwrap();
+        skills.before_shell(create, "main").unwrap_or_default()
+    };
+    let first = round(1);
+    assert!(first.contains("review again"), "{first}");
+    let second = round(2);
+    assert!(
+        second.contains("review rounds are used up")
+            && second.contains("review_api.waive")
+            && !second.contains("review again"),
+        "a second round with findings ships them, waived: {second}"
+    );
 
     write(&tree, 0, true, Value::Null);
     let refused = skills.before_shell(create, "main").unwrap_or_default();

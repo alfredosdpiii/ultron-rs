@@ -1618,7 +1618,10 @@ def _write_receipt(git: Git, scope: Scope, options: Options, confirmed: int, inc
     nothing uncommitted: uncommitted edits are in the review but not in the tree a pull request would carry.
 
     `confirmed` counts blockers and majors, which hold the pull request. `minor` counts the rest: reported, and
-    never a reason for another round, since every fix of a small finding brings new small findings."""
+    never a reason for another round, since every fix of a small finding brings new small findings.
+
+    `round` counts the reviews of this branch since its merge base: 1 for the first, one more for each review of
+    another tree on the same branch. From round 2 the gate stops asking for fixes and wants the rest waived."""
     if not scope.whole or scope.pr is not None or options.only is not None:
         return None
     tree = git.value("rev-parse", "HEAD^{tree}")
@@ -1628,9 +1631,18 @@ def _write_receipt(git: Git, scope: Scope, options: Options, confirmed: int, inc
     code, dirty, _ = git.call("status", "--porcelain", "--untracked-files=no")
     if code != 0 or dirty.strip():
         return "No ship receipt: tracked files have uncommitted changes. Commit, then review again."
+    default = default_branch(git)
+    branch = f"{git.value('branch', '--show-current') or 'HEAD'} {default and git.value('merge-base', default, 'HEAD')}"
+    try:
+        previous = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        previous = None
+    previous = previous if isinstance(previous, dict) else {}
+    rounds = previous.get("round", 1) if previous.get("branch") == branch else 0
+    round_ = rounds if previous.get("tree") == tree and rounds else rounds + 1
     # ponytail: a narrow base ref (HEAD~1) is taken at its word and recorded in `scope`; compare it with the pull
     # request's base if that gets used to review less than the pull request holds.
-    receipt = {"tree": tree, "confirmed": confirmed, "minor": minor, "incomplete": incomplete, "waived": None,
+    receipt = {"tree": tree, "branch": branch, "round": round_, "confirmed": confirmed, "minor": minor, "incomplete": incomplete, "waived": None,
                "scope": scope.label,
                "files": [item.path for item in scope.files], "purposes": purposes or [], "lines": lines,
                "reviewed_at": time.strftime("%Y-%m-%dT%H:%M:%S%z")}

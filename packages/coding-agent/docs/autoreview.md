@@ -164,6 +164,13 @@ still present unread. An earlier finding that still blocks is named in the summa
 summary has a table of them, and the account's own review threads whose finding is fixed are resolved (by the
 thread id stored when the comment was posted).
 
+A local self-review (`/review` before `gh pr create`, the `selfReview` setting) re-reviews once. Its receipt counts
+rounds per branch and merge base: the first review is round 1, and each review of another tree on the same branch
+adds one. Confirmed findings in round 1 ask for a fix, a commit and another review. From round 2 the gate stops asking
+for fixes, since each fix commit is a new tree that would need a new review: the remaining findings are recorded with
+`review_api.waive("<reason>")` and listed in the pull request's description. An unfinished review still asks for
+another run.
+
 ### Cherry-picks and promotions
 
 A pull request that carries merged pull requests to another branch (a cherry-pick to a release or staging branch)
