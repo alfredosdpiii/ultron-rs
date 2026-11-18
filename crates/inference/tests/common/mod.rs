@@ -1,4 +1,5 @@
 //! Shared by the tests: a scripted chat-completions transport and the fixture's fake model.
+#![allow(dead_code)]
 
 use ai::{Body, HttpRequest, HttpResponse, Model, Transport};
 use serde_json::{Value, json};

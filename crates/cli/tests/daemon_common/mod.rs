@@ -147,6 +147,9 @@ impl Home {
             .current_dir(self.cwd())
             .env("PATH", std::env::var("PATH").unwrap_or_default())
             .env("HOME", &self.root)
+            // A long server directory puts its sockets under the temp dir (daemon::instance::socket_dir): the
+            // child must resolve the same one as the test that binds or reads them.
+            .env("TMPDIR", std::env::temp_dir())
             .env(config::paths::ENV_AGENT_DIR, self.agent())
             .env(config::paths::ENV_SERVER_DIR, self.server_dir())
             .env("ANTHROPIC_API_KEY", "test-key")

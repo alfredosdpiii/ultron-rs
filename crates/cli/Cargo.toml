@@ -79,6 +79,10 @@ name = "it"
 path = "tests/it.rs"
 
 [[test]]
+name = "daemon_durable_model"
+path = "tests/daemon_durable_model.rs"
+
+[[test]]
 name = "daemon_processes"
 path = "tests/daemon_processes.rs"
 

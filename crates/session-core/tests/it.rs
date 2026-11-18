@@ -8,8 +8,6 @@
 mod executable_support;
 #[path = "../../mcp/tests/support/fake_proxy.rs"]
 mod fake_proxy;
-#[path = "../../ai/tests/claude_subscription_support/isolate.rs"]
-mod isolate;
 #[path = "../../memorantado/tests/support/fake.rs"]
 mod memorantado_fake;
 #[path = "observer.rs"]
@@ -35,8 +33,6 @@ mod budget_line;
 mod cell_file_changes;
 #[path = "checkpoints.rs"]
 mod checkpoints;
-#[path = "claude_fallback.rs"]
-mod claude_fallback;
 #[path = "clock_format.rs"]
 mod clock_format;
 #[path = "clock_lanes.rs"]

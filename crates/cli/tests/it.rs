@@ -13,8 +13,6 @@ mod fake_proxy;
 mod github_common;
 #[path = "../../hindsight/tests/common/mod.rs"]
 mod hindsight_common;
-#[path = "../../ai/tests/claude_subscription_support/isolate.rs"]
-mod isolate;
 #[path = "../../memorantado/tests/support/fake.rs"]
 mod memorantado_fake;
 mod radius_bridge;
@@ -91,8 +89,6 @@ mod daemon_durability;
 mod daemon_durable_client;
 #[path = "daemon_durable_home.rs"]
 mod daemon_durable_home;
-#[path = "daemon_durable_model.rs"]
-mod daemon_durable_model;
 #[path = "daemon_durable_selectors.rs"]
 mod daemon_durable_selectors;
 #[path = "daemon_durable_session_options.rs"]

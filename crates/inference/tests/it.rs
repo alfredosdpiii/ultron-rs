@@ -5,11 +5,7 @@
 // Support modules are declared here, once; the files reach them through `crate::`.
 
 mod common;
-#[path = "../../ai/tests/claude_subscription_support/isolate.rs"]
-mod isolate;
 
-#[path = "claude_code_frames.rs"]
-mod claude_code_frames;
 #[path = "fixture.rs"]
 mod fixture;
 #[path = "frame_models.rs"]

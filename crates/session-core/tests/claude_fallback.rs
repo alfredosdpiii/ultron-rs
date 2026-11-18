@@ -4,7 +4,8 @@
 //! `fixtures/claude-subscription/claude.py`) and an in-memory Anthropic API; nothing reads the real environment,
 //! ~/.ultron or ~/.claude, and nothing reaches the network.
 
-use crate::isolate;
+#[path = "../../ai/tests/claude_subscription_support/isolate.rs"]
+mod isolate;
 
 use agent::StreamFn;
 use ai::claude_subscription::Config;

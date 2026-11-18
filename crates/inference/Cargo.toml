@@ -31,3 +31,7 @@ workspace = true
 [[test]]
 name = "it"
 path = "tests/it.rs"
+
+[[test]]
+name = "claude_code_frames"
+path = "tests/claude_code_frames.rs"

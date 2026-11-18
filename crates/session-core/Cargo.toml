@@ -62,6 +62,10 @@ name = "it"
 path = "tests/it.rs"
 
 [[test]]
+name = "claude_fallback"
+path = "tests/claude_fallback.rs"
+
+[[test]]
 name = "durable_chat_cell_kill"
 path = "tests/durable_chat_cell_kill.rs"
 
