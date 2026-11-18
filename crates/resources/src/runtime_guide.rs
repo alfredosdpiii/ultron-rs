@@ -138,7 +138,7 @@ waits = await asyncio.gather(*(mcp.call("exa-agent_exa_agent_wait_run", run_id=i
 ```
 "#;
 const DELEGATION_HEAD: &str = r#"## Delegation
-`h = await rlm.spawn(brief, name=...)` starts a subagent (own REPL, your tools and files, not your chat). Spawn only for independent multi-step work, with a self-contained brief (goal, paths, constraints, what to return), several at once; `depth=N` lets a child delegate too (≤3 levels). Children editing files: `worktree=True` each (coupled work in one brief), then `await rlm.merge(hs)`. Then do only work no child owns; never check on children's files, logs or progress: results come to you. With nothing of your own left, "#;
+`h = await rlm.spawn(brief, name=...)` starts a subagent (own REPL, your tools and files, not your chat). Spawn only for independent multi-step work, with a self-contained brief (goal, paths, constraints, what to return), several at once; `depth=N` lets a child delegate too (≤3 levels). Children editing files: `worktree=True` each (coupled work in one brief), then `await rlm.merge(hs)`; `cwd=dir` starts a child in another directory, and its worktree branches from the repository there. Then do only work no child owns; never check on children's files, logs or progress: results come to you. With nothing of your own left, "#;
 const DELEGATION_TAIL: &str = r#". Trust only verdicts whose `check.outcome` is "verified"; re-check the rest. `help(rlm.spawn)`.
 If you are a subagent, do the brief yourself (spawn only if given depth), then `await rlm.finish(status, summary, evidence=[...], changed_files=[...])` and reply briefly with paths and uncertainties.
 Typed agents, graphs, jobs: `help(agents)`, `help(workflows)`, `help(background)`."#;
