@@ -242,3 +242,93 @@ fn session_journal_ensure_lane_keeps_a_resumed_lane() {
     assert_eq!(config, run::lane_config("anthropic", "a", "high", &["rlm", "extra"]));
     assert_eq!(lines(), before + 1);
 }
+
+/// A response's usage write costs that response's root, however many roots the session already holds.
+#[test]
+fn session_journal_record_turn_writes_one_root_not_the_whole_ledger() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut session = repo(dir.path()).create("/w", None, None).unwrap();
+    let call = json!({"kind": "model", "taskId": "t", "usage": {"totalTokens": 1200, "cost": 0.01}, "settledAt": 5});
+    let roots: serde_json::Map<String, Value> = (0..300)
+        .map(|i| {
+            let id = format!("job:{i:04}");
+            let root = json!({"rootId": id, "startedAt": 1, "deadlineAt": null, "reservations": [],
+                "calls": [call, call, call]});
+            (id, root)
+        })
+        .collect();
+    // The layout older sessions hold: every root inside the one `root` value.
+    session
+        .commit(&[session_journal::Write::set(
+            "ultron.usage",
+            "root",
+            json!({"version": 1, "roots": roots}),
+        )])
+        .unwrap();
+    let config = run::lane_config("anthropic", "a", "high", &["rlm"]);
+    let prompt = json!({"role": "user", "content": [{"type": "text", "text": "hi"}], "timestamp": 1});
+    let mut run = run::Run::admit(&mut session, config, run::default_settings(), prompt).unwrap();
+    let path = session.metadata().path.clone();
+    let size = || std::fs::metadata(&path).unwrap().len();
+    let message = json!({"role": "assistant", "usage": {"totalTokens": 10, "cost": {"total": 0.5}}});
+    // The first write of a session in the old layout moves its roots out of the head, once.
+    run.record_turn(&mut session, &message).unwrap();
+    let before = size();
+    for _ in 1..20 {
+        run.record_turn(&mut session, &message).unwrap();
+    }
+    let per_response = (size() - before) / 19;
+    assert!(per_response < 1000, "{per_response} bytes appended per response");
+    // The first write moved the old roots out of the head; the document reads as before, with the new root last.
+    let reopened = repo(dir.path()).open(session.metadata()).unwrap();
+    let document = session_journal::ledger::read(&reopened).unwrap();
+    let ids: Vec<&String> = document["roots"].as_object().unwrap().keys().collect();
+    assert_eq!(ids.len(), 301);
+    assert_eq!((ids[0].as_str(), ids[299].as_str()), ("job:0000", "job:0299"));
+    assert!(ids[300].starts_with("turn:"), "{}", ids[300]);
+    assert_eq!(document["roots"]["job:0123"]["calls"], json!([call, call, call]));
+    assert_eq!(document["roots"][ids[300].as_str()]["turns"]["count"], 20);
+    assert_eq!(document["roots"][ids[300].as_str()]["turns"]["cost"], 10.0);
+    assert_eq!(
+        reopened.value("ultron.usage", "root"),
+        Some(&json!({"version": 1, "roots": {}}))
+    );
+}
+
+/// A settled call appends that call; a root the ledger folded moves aside whole and is not a ledger root again.
+#[test]
+fn session_journal_ledger_appends_a_call_and_sets_a_folded_root_aside() {
+    use session_journal::ledger;
+    let dir = tempfile::tempdir().unwrap();
+    let mut session = repo(dir.path()).create("/w", None, None).unwrap();
+    let call = |i: usize| json!({"kind": "model", "taskId": format!("t{i}"), "usage": {"totalTokens": 1200}});
+    let root = |calls: usize| {
+        json!({"rootId": "job:a", "startedAt": 1, "deadlineAt": null, "reservations": [],
+        "calls": (0..calls).map(call).collect::<Vec<_>>()})
+    };
+    let document = |calls: usize| json!({"version": 1, "roots": {"job:a": root(calls), "job:b": root(2)}});
+    let none = std::collections::BTreeSet::new();
+    let path = session.metadata().path.clone();
+    let size = || std::fs::metadata(&path).unwrap().len();
+    let mut grew = Vec::new();
+    for calls in [200, 201, 202] {
+        let before = size();
+        let writes = ledger::writes(&session, &document(calls), &none);
+        session.commit(&writes).unwrap();
+        grew.push(size() - before);
+    }
+    assert!(grew[0] > 10_000 && grew[1] < 300 && grew[2] < 300, "{grew:?}");
+    assert_eq!(ledger::read(&session).unwrap(), document(202));
+    // Folded: gone from what the ledger loads, still whole for the report.
+    let after = json!({"version": 1, "roots": {"job:b": root(2)}, "history": {"roots": 1}});
+    let writes = ledger::writes(&session, &after, &["job:a".to_string()].into());
+    session.commit(&writes).unwrap();
+    let reopened = repo(dir.path()).open(session.metadata()).unwrap();
+    assert_eq!(ledger::read(&reopened).unwrap(), after);
+    let all = ledger::read_all(&reopened).unwrap();
+    assert_eq!(all["roots"]["job:a"], root(202));
+    assert_eq!(
+        all["roots"].as_object().unwrap().keys().collect::<Vec<_>>(),
+        ["job:a", "job:b"]
+    );
+}

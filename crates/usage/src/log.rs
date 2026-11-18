@@ -102,11 +102,19 @@ struct DurableDigest {
 static DURABLE_MARK: std::sync::LazyLock<String> =
     std::sync::LazyLock::new(|| format!(r#""namespace":"{}","key":"{}""#, ns::MODULE, ns::DURABLE_KEY));
 
+static USAGE_MARK: std::sync::LazyLock<String> = std::sync::LazyLock::new(|| format!(r#""namespace":"{}""#, ns::USAGE));
+
 /// Whether a list-append line is a durable commit: its namespace and key come within its first bytes (as
 /// `state::commit_write` orders a list append's fields).
 fn is_durable_commit(line: &str) -> bool {
     let head = &line.as_bytes()[..line.len().min(160)];
     head.windows(DURABLE_MARK.len()).any(|w| w == DURABLE_MARK.as_bytes())
+}
+
+fn is_usage_list(line: &str) -> bool {
+    line.as_bytes()[..line.len().min(160)]
+        .windows(USAGE_MARK.len())
+        .any(|w| w == USAGE_MARK.as_bytes())
 }
 
 impl DurableDigest {
@@ -201,6 +209,8 @@ pub struct SessionLog {
     pub usage_rows: Vec<LogUsageRow>,
     /// Latest value by `namespace/key`, for the namespaces in [`KEPT_NAMESPACES`].
     pub values: IndexMap<String, Value>,
+    /// The usage ledger's call records by root (`session_journal::ledger`).
+    pub usage_calls: IndexMap<String, Vec<Value>>,
     pub operations: IndexMap<String, LogOperation>,
     pub results: Vec<LogResult>,
     /// Responses of the durable runtime's non-root conversations (sub-agents), from its records.
@@ -460,11 +470,12 @@ pub fn read_session_log(path: &Path) -> Result<SessionLog, LogError> {
         operations: IndexMap::new(),
         results: Vec::new(),
         durable_responses: Vec::new(),
+        usage_calls: IndexMap::new(),
         unreadable_lines: 0,
     };
     let mut durable = DurableDigest::default();
     // List appends are skipped unread (stream frames are most of a file), except the durable runtime's commits.
-    let skip = |line: &str| line.starts_with(r#"{"kind":"list""#) && !is_durable_commit(line);
+    let skip = |line: &str| line.starts_with(r#"{"kind":"list""#) && !is_durable_commit(line) && !is_usage_list(line);
     session_journal::catalog::scan_writes(path, skip, |writes| {
         let Some(writes) = writes else {
             log.unreadable_lines += 1;
@@ -482,6 +493,21 @@ pub fn read_session_log(path: &Path) -> Result<SessionLog, LogError> {
 fn apply(log: &mut SessionLog, durable: &mut DurableDigest, write: &Map<String, Value>) {
     let kind = write.get("kind").and_then(Value::as_str);
     if kind == Some("list") {
+        let calls = (write.get("namespace").and_then(Value::as_str) == Some(ns::USAGE))
+            .then(|| {
+                write
+                    .get("key")
+                    .and_then(Value::as_str)?
+                    .strip_prefix(session_journal::ledger::CALLS_PREFIX)
+            })
+            .flatten();
+        if let Some(root) = calls {
+            match (write.get("op").and_then(Value::as_str), write.get("value")) {
+                (Some("append"), Some(call)) => log.usage_calls.entry(root.to_string()).or_default().push(call.clone()),
+                _ => drop(log.usage_calls.shift_remove(root)),
+            }
+            return;
+        }
         if write.get("op").and_then(Value::as_str) == Some("append")
             && write.get("namespace").and_then(Value::as_str) == Some(ns::MODULE)
             && write.get("key").and_then(Value::as_str) == Some(ns::DURABLE_KEY)
@@ -572,6 +598,19 @@ fn apply(log: &mut SessionLog, durable: &mut DurableDigest, write: &Map<String, 
 impl SessionLog {
     pub fn value(&self, namespace: &str, key: &str) -> Option<&Value> {
         self.values.get(&format!("{namespace}/{key}"))
+    }
+
+    /// The usage ledger's document (`session_journal::ledger`).
+    pub fn usage_ledger(&self) -> Option<Value> {
+        let keyed = self.values_of(ns::USAGE).into_iter().filter_map(|(key, value)| {
+            let id = key
+                .strip_prefix(session_journal::ledger::ROOT_PREFIX)
+                .or_else(|| key.strip_prefix(session_journal::ledger::FOLDED_PREFIX))?;
+            Some((id, value))
+        });
+        session_journal::ledger::assemble(self.value(ns::USAGE, "root"), keyed, |id| {
+            self.usage_calls.get(id).cloned().unwrap_or_default()
+        })
     }
 
     /// The latest values of a namespace, by key, in the order they were first written.

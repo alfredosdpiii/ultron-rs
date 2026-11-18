@@ -1050,7 +1050,7 @@ mod migration {
             cost += reported["cost"]["total"].as_f64().unwrap();
         }
         let (native, _) = open_native(&sessions, &result.session_id);
-        let stored = native.value("ultron.usage", "root").unwrap().clone();
+        let stored = session_journal::ledger::read(&native).unwrap();
         let ledger = delegation::usage::UsageLedger::new(
             Box::new(kernel::store::MemoryDocumentStore::new(Some(stored.clone()))),
             Default::default(),

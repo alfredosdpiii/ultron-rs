@@ -1537,7 +1537,7 @@ fn claude_subagents(
             // One host per journal: the typed agents' tasks are a document of their own beside the subagents'.
             tasks: value(ns::TASKS, "agents"),
             definitions: value(DEFINITIONS_ROOT.namespace, DEFINITIONS_ROOT.key),
-            usage: Box::new(SessionUsageStore(session.clone())),
+            usage: Box::new(SessionUsageStore::new(session.clone())),
             // Typed `rlm` definitions run on a root server's durable runtime (crate::typed_agents); a Claude Code
             // subagent's server has none.
             lanes: match typed_lanes {

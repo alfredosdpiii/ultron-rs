@@ -29,7 +29,7 @@ pub const RLM_FRAMES: &str = "ultron.rlm.frames";
 /// Working-tree checkpoints (Rust-only), keyed by the turn's prompt entry id or `restore:<id>`.
 pub const CHECKPOINTS: &str = "ultron.checkpoint";
 
-/// The session's usage ledger (`root`).
+/// The session's usage ledger: its head at `root`, each root at `roots/<rootId>` (`crate::ledger`).
 pub const USAGE: &str = "ultron.usage";
 /// The delegation task ledger (`root`).
 pub const TASKS: &str = "ultron.tasks";

@@ -758,6 +758,7 @@ pub fn import_pi_session_with(
             ledger.import_history(&usage_root, "pi", &calls)?;
             let document = captured.lock().unwrap_or_else(PoisonError::into_inner).take();
             if let Some(document) = document {
+                // One value, as the TypeScript import writes it; the first ledger write moves the roots out.
                 commit(
                     &mut session,
                     &[Write::set(USAGE_ROOT.namespace, USAGE_ROOT.key, document)],

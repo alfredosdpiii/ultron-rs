@@ -6,7 +6,7 @@ use super::summary::{Scope, SummaryAttempt};
 use super::{FrameEncoder, MAIN_LANE, OpAt, retry_policy, stream_options};
 use crate::ns::{
     BRANCH_TIP, LANE_CONFIG, LANE_STATE, OP_META, OP_PREPARATION, OP_RESULT, OP_STATE, OP_TOOL_ARGS, PENDING_ENTRY,
-    PENDING_FRAMES, PENDING_TOOL_OUTPUT, USAGE,
+    PENDING_FRAMES, PENDING_TOOL_OUTPUT,
 };
 use serde_json::{Map, Value, json};
 
@@ -549,14 +549,10 @@ impl Run {
         }
     }
 
-    /// Count the response in the Ultron usage ledger (`ultron.usage/root`, root `turn:<operation>`).
+    /// Count the response in the Ultron usage ledger (`crate::ledger`, root `turn:<operation>`).
     pub fn record_turn(&mut self, session: &mut Session, message: &Value) -> Result<(), String> {
-        let mut document = session
-            .value(USAGE, "root")
-            .cloned()
-            .unwrap_or_else(|| json!({"version": 1, "roots": {}}));
         let root_id = format!("turn:{}", self.operation_id);
-        let mut root = document["roots"].get(&root_id).cloned().unwrap_or_else(
+        let mut root = crate::ledger::root(session, &root_id).unwrap_or_else(
             || json!({"rootId": root_id, "startedAt": null, "deadlineAt": null, "reservations": [], "calls": []}),
         );
         let turns = root
@@ -575,11 +571,8 @@ impl Run {
             "cost": num(f("cost") + cost.unwrap_or(0.0)),
             "unpriced": num(f("unpriced") + if cost.is_some() { 0.0 } else { 1.0 }),
         });
-        if !document["roots"].is_object() {
-            document["roots"] = json!({});
-        }
-        document["roots"][&root_id] = root;
-        session.commit(&[Write::set(USAGE, "root", document)])?;
+        let writes = crate::ledger::root_writes(session, &root_id, root);
+        session.commit(&writes)?;
         Ok(())
     }
 

@@ -394,7 +394,8 @@ pub fn build_session_report(log: &SessionLog, subscription_providers: &[String])
         .collect();
     let name = log.value(ns::SESSION_NAME, "").and_then(Value::as_str);
     let empty_roots = Map::new();
-    let usage_roots = record(record(log.value(ns::USAGE, "root")).and_then(|u| u.get("roots"))).unwrap_or(&empty_roots);
+    let ledger = log.usage_ledger();
+    let usage_roots = record(ledger.as_ref().and_then(|u| u.get("roots"))).unwrap_or(&empty_roots);
     let external_marks = name == Some("claude code")
         || name.is_some_and(|n| n.starts_with("claude subagent ("))
         || usage_roots.keys().any(|id| id.starts_with("turn:cc-"));

@@ -582,12 +582,20 @@ fn cli_durable_a_subagents_turns_are_charged_to_the_root_that_started_it() {
     // The root's two responses, the child's one, and the run its completion event started.
     wait_until("four responses", || provider.bodies().len() == 4);
     wait_idle(&connection, &id);
-    let ledger = writes(&home, &id)
+    // Each root is its own value (`roots/<rootId>`); the last write of a root is its state.
+    let ledger: serde_json::Map<String, Value> = writes(&home, &id)
         .into_iter()
-        .rfind(|w| w["namespace"] == "ultron.usage" && w["key"] == "root" && w["op"] == "set")
-        .expect("the ledger was written")["value"]
-        .clone();
-    let counts: Vec<(String, u64)> = ledger["roots"]
+        .filter(|w| w["namespace"] == "ultron.usage" && w["op"] == "set")
+        .filter_map(|w| {
+            Some((
+                w["key"].as_str()?.strip_prefix("roots/")?.to_string(),
+                w["value"]["root"].clone(),
+            ))
+        })
+        .collect();
+    assert!(!ledger.is_empty(), "the ledger was written");
+    let ledger = Value::Object(ledger);
+    let counts: Vec<(String, u64)> = ledger
         .as_object()
         .unwrap()
         .iter()
@@ -607,7 +615,7 @@ fn cli_durable_a_subagents_turns_are_charged_to_the_root_that_started_it() {
     let lanes = &report["usage"]["lanes"];
     assert_eq!(lanes["subagents"]["responses"], 1, "{lanes}");
     assert_eq!(lanes["root"]["responses"], 3, "{lanes}");
-    let ledger_tokens = ledger["roots"]
+    let ledger_tokens = ledger
         .as_object()
         .unwrap()
         .values()

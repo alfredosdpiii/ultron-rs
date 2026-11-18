@@ -376,7 +376,10 @@ fn claude_root_w25c_claude_child_usage_is_charged_to_the_turn_that_spawned_it() 
         "{text}"
     );
     // The session's ledger holds the child's model call, settled with what it reported, under the turn's root.
-    let ledger = server.value("ultron.usage", "root");
+    let ledger = {
+        let opened = server.running.opened().unwrap();
+        session_journal::ledger::read(&session_core::durable_store::lock(&opened.session)).unwrap()
+    };
     let turn_root = &ledger["roots"][format!("turn:{turn}")];
     let calls = turn_root["calls"].as_array().unwrap_or_else(|| panic!("{ledger}"));
     let call = calls

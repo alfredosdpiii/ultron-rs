@@ -482,3 +482,36 @@ fn session_core_recovery_a_run_whose_journal_write_failed_still_ends_once() {
         "nothing is left to end again"
     );
 }
+
+/// A root the ledger folded into its history is not a ledger root again on the next read (it was put back from the
+/// stored document and folded once more on every write); a root only the journal wrote stays.
+#[test]
+fn session_core_usage_store_does_not_put_back_a_root_the_ledger_folded() {
+    use kernel::store::DocumentStore;
+    use serde_json::json;
+    let dir = tempfile::tempdir().unwrap();
+    let session = repo(dir.path()).create("/w", None, None).unwrap();
+    let session = std::sync::Arc::new(std::sync::Mutex::new(session));
+    let store = session_core::subagents::SessionUsageStore::new(session.clone());
+    let root = |id: &str| json!({"rootId": id, "startedAt": 1, "deadlineAt": null, "reservations": [], "calls": []});
+    store
+        .write(&json!({"version": 1, "roots": {"job:a": root("job:a"), "job:b": root("job:b")}}))
+        .unwrap();
+    {
+        let mut journal = session.lock().unwrap();
+        let writes = session_journal::ledger::root_writes(&journal, "turn:x", root("turn:x"));
+        journal.commit(&writes).unwrap();
+    }
+    let ids = |document: &serde_json::Value| -> Vec<String> {
+        document["roots"].as_object().unwrap().keys().cloned().collect()
+    };
+    // The ledger read before the journal's root was written, then folds job:a.
+    store
+        .write(&json!({"version": 1, "roots": {"job:b": root("job:b")}, "history": {"roots": 1}}))
+        .unwrap();
+    let read = store.read().unwrap().unwrap();
+    assert_eq!(ids(&read), ["job:b", "turn:x"]);
+    assert_eq!(read["history"]["roots"], 1);
+    let all = session_journal::ledger::read_all(&session.lock().unwrap()).unwrap();
+    assert_eq!(ids(&all), ["job:a", "job:b", "turn:x"]);
+}

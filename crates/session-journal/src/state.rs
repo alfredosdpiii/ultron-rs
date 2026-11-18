@@ -411,6 +411,11 @@ impl State {
             .unwrap_or_default()
     }
 
+    /// A whole list, in append order.
+    pub fn list(&self, namespace: &str, key: &str) -> &[ListElement] {
+        self.lists.get(&physical_key(namespace, key)).map_or(&[], Vec::as_slice)
+    }
+
     /// Every list as `(namespace, key, elements)`, by physical key.
     pub fn lists(&self) -> Vec<(String, String, &[ListElement])> {
         let mut keys: Vec<&String> = self.lists.keys().collect();

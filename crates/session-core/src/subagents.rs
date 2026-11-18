@@ -21,7 +21,7 @@ use kernel::store::DocumentStore;
 use serde_json::Value;
 use services::SessionValues;
 use session_journal::Write;
-use session_journal::ns::{self, DEFINITIONS_ROOT, TASKS_ROOT, USAGE_ROOT};
+use session_journal::ns::{self, DEFINITIONS_ROOT, TASKS_ROOT};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, OnceLock, Weak};
 
@@ -50,32 +50,56 @@ pub fn value_store(session: &SharedSession, namespace: &str, key: &str) -> Box<d
     Box::new(services::SessionValues::shared(session.clone()).document(namespace, key))
 }
 
-/// The usage ledger's document (`ultron.usage` / `root`), which the operation journal also writes: each run counts
+/// The usage ledger's document (`session_journal::ledger`), which the operation journal also writes: each run counts
 /// its model turns there as it commits them. A ledger write keeps those counts: a root's `turns` are the stored
-/// ones when they are ahead of the ledger's.
-pub struct SessionUsageStore(pub SharedSession);
+/// ones when they are ahead of the ledger's. A stored root the ledger never saw is the journal's and stays; one it
+/// saw and dropped was folded into its history.
+pub struct SessionUsageStore {
+    session: SharedSession,
+    seen: std::sync::Mutex<std::collections::BTreeSet<String>>,
+}
+
+impl SessionUsageStore {
+    pub fn new(session: SharedSession) -> Self {
+        SessionUsageStore {
+            session,
+            seen: Default::default(),
+        }
+    }
+
+    fn saw(&self, document: Option<&Value>) {
+        let ids = document.and_then(|document| document["roots"].as_object());
+        *jsrt::sync::lock(&self.seen) = ids.into_iter().flat_map(|roots| roots.keys().cloned()).collect();
+    }
+}
 
 impl DocumentStore for SessionUsageStore {
     fn read(&self) -> Result<Option<Value>, String> {
-        Ok(lock(&self.0).value(USAGE_ROOT.namespace, USAGE_ROOT.key).cloned())
+        let document = session_journal::ledger::read(&lock(&self.session));
+        self.saw(document.as_ref());
+        Ok(document)
     }
 
     fn write(&self, document: &Value) -> Result<(), String> {
-        let mut session = lock(&self.0);
+        let mut session = lock(&self.session);
         let mut merged = document.clone();
-        if let Some(stored) = session.value(USAGE_ROOT.namespace, USAGE_ROOT.key).cloned() {
+        let mut folded = std::collections::BTreeSet::new();
+        if let Some(stored) = session_journal::ledger::read(&session) {
+            let seen = jsrt::sync::lock(&self.seen);
             let count = |root: &Value| root["turns"]["count"].as_f64().unwrap_or(0.0);
             for (id, root) in stored["roots"].as_object().into_iter().flatten() {
                 match merged["roots"].get(id) {
+                    None if seen.contains(id) => drop(folded.insert(id.clone())),
                     None if merged["roots"].is_object() => merged["roots"][id] = root.clone(),
                     Some(mine) if count(root) > count(mine) => merged["roots"][id]["turns"] = root["turns"].clone(),
                     _ => {}
                 }
             }
         }
-        session
-            .commit(&[Write::set(USAGE_ROOT.namespace, USAGE_ROOT.key, merged)])
-            .map(drop)
+        let writes = session_journal::ledger::writes(&session, &merged, &folded);
+        session.commit(&writes)?;
+        self.saw(Some(&merged));
+        Ok(())
     }
 }
 
@@ -148,7 +172,7 @@ impl DurableChildren {
                 // One host per journal: the typed agents' tasks are a document of their own beside the subagents'.
                 tasks: value(ns::TASKS, "agents"),
                 definitions: value(DEFINITIONS_ROOT.namespace, DEFINITIONS_ROOT.key),
-                usage: Box::new(SessionUsageStore(session.clone())),
+                usage: Box::new(SessionUsageStore::new(session.clone())),
                 lanes: Box::new(move |stack: Weak<Stack>| -> LaneRunner {
                     Arc::new(move |run: LaneRun| lanes.run_lane(&stack, run))
                 }),

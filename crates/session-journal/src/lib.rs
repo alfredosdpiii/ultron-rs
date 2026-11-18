@@ -15,6 +15,7 @@ pub mod codec;
 pub mod context;
 pub mod fork;
 pub mod io;
+pub mod ledger;
 pub mod legacy_v3;
 pub mod names;
 pub mod ns;

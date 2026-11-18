@@ -270,7 +270,7 @@ pub fn normalize_journal(text: &str) -> Value {
         folded.push(records);
     }
     folded.extend((!held.is_empty()).then_some(held));
-    let mut transactions = folded;
+    let mut transactions = whole_ledger(folded);
     let seqs: Vec<i64> = transactions
         .iter()
         .flatten()
@@ -286,6 +286,55 @@ pub fn normalize_journal(text: &str) -> Value {
     let whole = json!({"header": header, "transactions": transactions});
     let renamed = rename_ids(&jsrt::json::stringify(&whole), &mut Vec::new());
     zero_times(&serde_json::from_str(&renamed).unwrap())
+}
+
+/// Rust stores the usage ledger in parts (`session_journal::ledger`); TypeScript wrote the whole document as one
+/// value. Each transaction's ledger writes become the one write of the document they add up to.
+fn whole_ledger(transactions: Vec<Vec<Value>>) -> Vec<Vec<Value>> {
+    use session_journal::ledger::{CALLS_PREFIX, ROOT_PREFIX, assemble};
+    let mut head: Option<Value> = None;
+    let mut roots: Vec<(String, Value)> = Vec::new();
+    let mut calls: std::collections::BTreeMap<String, Vec<Value>> = Default::default();
+    let mut whole = Vec::new();
+    for records in transactions {
+        let mut kept: Vec<Value> = Vec::new();
+        let mut written: Option<usize> = None;
+        for record in records {
+            if record["namespace"] != "ultron.usage" {
+                kept.push(record);
+                continue;
+            }
+            let key = record["key"].as_str().unwrap();
+            let set = record["op"] != "delete";
+            if let Some(id) = key.strip_prefix(CALLS_PREFIX) {
+                let list = calls.entry(id.to_string()).or_default();
+                if set {
+                    list.push(record["value"].clone())
+                } else {
+                    list.clear()
+                }
+            } else if let Some(id) = key.strip_prefix(ROOT_PREFIX) {
+                roots.retain(|(stored, _)| stored != id);
+                roots.extend(set.then(|| (id.to_string(), record["value"].clone())));
+            } else if key == "root" {
+                head = set.then(|| record["value"].clone());
+            }
+            if written.is_none() {
+                written = Some(kept.len());
+                kept.push(record);
+            }
+        }
+        if let Some(at) = written {
+            let keyed = roots.iter().map(|(id, stored)| (id.as_str(), stored));
+            let document = assemble(head.as_ref(), keyed, |id| calls.get(id).cloned().unwrap_or_default());
+            kept[at]["kind"] = json!("value");
+            kept[at]["op"] = json!("set");
+            kept[at]["key"] = json!("root");
+            kept[at]["value"] = document.unwrap_or(Value::Null);
+        }
+        whole.push(kept);
+    }
+    whole
 }
 
 /// The header's cwd and the message entries of a format-4 journal (one chain from the root), timestamps zeroed.
