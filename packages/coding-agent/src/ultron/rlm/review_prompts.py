@@ -286,6 +286,10 @@ severity: your own level, whatever the reviewer chose. Raise it when the scenari
 the author means to support; lower it when the evidence is weaker than the level claims.
 severity_reason: one sentence on why this level and not the one above or below it: what limits the damage, or
 what makes the failure reachable ("only the report is affected; apply writes the manifest").
+Rate the consequence when the scenario happens: what the user or operator ends up with. Only protection quoted
+from the views lowers a level; "a later stage may catch it" with no such code shown does not, so name that code
+in needs instead. When scenario_holds is true and the change removes or narrows something the code did before for
+that input (a check, a rewrite, a hold), the level is at least medium, however rare the input.
 {SEVERITY_RUBRIC}
 
 If the problem is real but the line number is wrong, confirm it and give the right line in corrected_line;
