@@ -1,5 +1,6 @@
-//! Hygiene advisories (`loki::hygiene`): the vendored codehygiene model reports only the lines a change added, only
-//! the default kinds unless asked for all, and says "NOT CHECKED" rather than nothing when it cannot run.
+//! Hygiene advisories (`loki::hygiene`): the vendored codehygiene model and nits report only the lines a change
+//! added, only the default kinds unless asked for all, and each says "NOT CHECKED" rather than nothing when it cannot
+//! run.
 
 use loki::hygiene::{self, Level, Squiggle};
 use loki::proc::Deadline;
@@ -114,8 +115,12 @@ fn hygiene_reports_the_swallowed_error_a_write_added_not_the_one_already_committ
         "an unchanged file's old debt is not reported"
     );
     std::fs::write(root.join("store.py"), format!("{OLD}{NEW}")).unwrap();
-    let notes = hygiene::written(&root, &files, Level::On);
-    assert_eq!(notes.len(), 1, "{notes:?}");
+    let notes = hygiene::written_with(&root, &files, Level::On, &[]);
+    assert_eq!(notes.len(), 2, "{notes:?}");
+    assert!(
+        notes[1].starts_with("NOT CHECKED nits: ") && notes[1].contains("uv run --no-project --with git+https://"),
+        "without nits the model's note still arrives, and the gap names the command that fetches nits: {notes:?}"
+    );
     assert!(
         notes[0].starts_with("store.py:11: loki/hygiene-swallowed-error: ")
             && notes[0].ends_with("`except Exception:`"),
@@ -138,7 +143,16 @@ fn hygiene_reports_the_swallowed_error_a_write_added_not_the_one_already_committ
         ],
     );
     assert!(hygiene::written(&root, &files, Level::On).is_empty());
-    assert_eq!(hygiene::changed(&root, "HEAD~1", Level::On), notes);
+    let from_model = |notes: Vec<String>| -> Vec<String> {
+        notes
+            .into_iter()
+            .filter(|note| note.contains(": loki/hygiene-"))
+            .collect()
+    };
+    assert_eq!(
+        from_model(hygiene::changed(&root, "HEAD~1", Level::On)),
+        from_model(notes)
+    );
     assert!(hygiene::changed(&root, "HEAD", Level::On).is_empty());
     assert!(hygiene::changed(&root, "HEAD~1", Level::Off).is_empty());
 }
@@ -158,4 +172,86 @@ fn hygiene_skips_files_it_does_not_read() {
         hygiene::written(dir.path(), &files, Level::All).is_empty(),
         "prose, vendored code and a missing file start no model run and no note"
     );
+}
+
+#[test]
+fn hygiene_reports_one_note_where_nits_and_the_model_agree_and_it_is_the_nits_one() {
+    let (before, after) = ("a = 1\n", "a = 1\nexcept Exception:\nurl = 2\n");
+    let model = [
+        squiggle(1, "noisy_comment"),
+        squiggle(2, "swallowed_error"),
+        squiggle(3, "noisy_comment"),
+    ];
+    let nits = [
+        squiggle(1, "config_fallback"),
+        squiggle(2, "swallowed_error"),
+        squiggle(3, "config_fallback"),
+    ];
+    assert_eq!(
+        hygiene::merged("a.py", before, after, &model, &nits, Level::On),
+        [
+            "a.py:2: loki/nits-swallowed-error: why: `except Exception:`",
+            "a.py:3: loki/nits-config-fallback: why: `url = 2`",
+            "a.py:3: loki/hygiene-noisy-comment: why: `url = 2`",
+        ],
+        "line 1 was committed; on line 3 the two report different kinds, so both stay"
+    );
+    assert!(hygiene::merged("a.py", before, after, &model, &nits, Level::Off).is_empty());
+}
+
+#[test]
+fn nits_is_only_ever_run_from_what_is_already_on_the_machine() {
+    for launcher in loki::nits::launchers().iter().skip(1) {
+        assert!(launcher.contains(&"--offline".to_string()), "{launcher:?}");
+        assert!(
+            launcher.iter().any(|arg| arg.ends_with(loki::nits::COMMIT)),
+            "{launcher:?}"
+        );
+    }
+}
+
+const FALLBACK: &str = "import os\n\nURL = os.getenv('DATABASE_URL', 'localhost')\n";
+
+#[test]
+fn nits_reports_what_a_write_added_and_its_low_precision_rules_only_when_asked_for_all() {
+    let launchers = loki::nits::launchers();
+    let probe = [("a.py", "x = 1\n".to_string())];
+    if loki::nits::score(&launchers, &probe, false, Deadline::after(60.0)).is_err() {
+        return; // nits is neither installed nor in uv's cache here
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().canonicalize().unwrap();
+    git(&root, &["init", "-q"]);
+    std::fs::write(root.join("old.py"), FALLBACK).unwrap();
+    std::fs::write(root.join("store.py"), "LIMIT = 10\n").unwrap();
+    git(&root, &["add", "."]);
+    git(&root, &["commit", "-q", "-m", "base"]);
+    std::fs::write(root.join("old.py"), format!("{FALLBACK}LIMIT = 10\n")).unwrap();
+    std::fs::write(root.join("store.py"), format!("{FALLBACK}{NEW}")).unwrap();
+    let files = ["old.py".to_string(), "store.py".to_string()];
+    let nits_only = |level| -> Vec<String> {
+        hygiene::written_with(&root, &files, level, &launchers)
+            .into_iter()
+            .filter(|note| note.contains(": loki/nits-"))
+            .collect()
+    };
+    let on = nits_only(Level::On);
+    assert_eq!(on.len(), 1, "old.py's committed fallback is not reported: {on:?}");
+    assert!(
+        on[0].starts_with("store.py:3: loki/nits-config-fallback: p0.95 ") && on[0].ends_with("'localhost')`"),
+        "{on:?}"
+    );
+    let all = nits_only(Level::All);
+    assert!(
+        all.iter()
+            .any(|note| note.starts_with("store.py:9: loki/nits-swallowed-error: p0.")),
+        "a Python swallowed error measures under 0.80, so nits reports it only at `all`: {all:?}"
+    );
+    if model_runs() {
+        let both = hygiene::written_with(&root, &files, Level::All, &launchers);
+        let on_line = both
+            .iter()
+            .filter(|note| note.starts_with("store.py:9: ") && note.contains("swallowed-error"));
+        assert_eq!(on_line.count(), 1, "{both:?}");
+    }
 }

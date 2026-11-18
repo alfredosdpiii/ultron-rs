@@ -819,6 +819,14 @@ open redirects and disabled TLS verification in Python; SQL built with `Sprintf`
   session says once that hygiene was not checked. Two more deliveries cover what a per-cell note misses: what the
   checks find in a turn's last cell continues the turn (it has no next cell result to arrive with), and a lane's
   first commit or push is shown the notes for every line the whole change adds, committed ones included.
+- nits notes, beside them. [nits](https://github.com/jkomyno/nits) reads the same files with a parser (Python,
+  TypeScript, JavaScript and Rust) and Loki reports its findings on added lines as `loki/nits-<rule>` advisories, each
+  with the rule's measured precision (`p0.95`): a swallowed error, a failure returned as an empty value, a dev default
+  on an environment variable, a comment that restates its line, deep nesting. Where both tools flag one line for the
+  same thing, the nits note is the one shown. `on` keeps the rules that measure 0.80 or better in the file's
+  language; `all` adds the rest, and `off` turns both tools off. nits is not bundled: it runs when Loki's Python can
+  import it or `uv` has it cached, and the session says once how to fetch it when neither does
+  (`uv run --no-project --with git+https://github.com/jkomyno/nits@67c94b9f76054375f37b2df8e624a2f4d48ec0cc python -c pass`).
 - A write into another repository (a sibling worktree) is checked against that repository's own `.loki/` policy.
 - A newly imported Python module is checked against the project's interpreter: `ULTRON_LOKI_PROJECT_PYTHON`, else
   the `python` that `bash()` runs when it belongs to a virtual or conda environment, else a `.venv`. Without one the

@@ -4,12 +4,14 @@
 //!
 //! The model is NumPy code, so it runs in a Python that has NumPy: Loki's interpreter, else `uv run --offline` when
 //! NumPy is in uv's cache. Nothing is downloaded; without NumPy the check says once that it did not run.
+//!
+//! [`crate::nits`] reads the same files with a parser, and its findings are reported beside the model's.
 // ponytail: a Python + NumPy subprocess per check (~0.3 s plus ~0.4 s per 100 lines); port the forward pass to Rust
 // if the NumPy requirement or the latency matters.
 
 use crate::git::{git_output, text_at};
 use crate::proc::{self, Deadline, RunError};
-use crate::{py, resolve};
+use crate::{nits, py, resolve};
 use serde_json::{Map, Value, json};
 use std::collections::HashSet;
 use std::path::Path;
@@ -108,14 +110,20 @@ fn parse(stdout: &[u8]) -> Option<Vec<Vec<Squiggle>>> {
     )
 }
 
-/// The model's squiggles for each text, or why it could not run.
-pub fn score(texts: &[&str], deadline: Deadline) -> Result<Vec<Vec<Squiggle>>, String> {
-    let weights: String = WEIGHTS.iter().map(|byte| format!("{byte:02x}")).collect();
-    let request = json!({"source": SOURCE, "weights": weights, "texts": texts}).to_string();
+/// Runs `driver`, with `request` on its stdin, in the first of `launchers` whose Python has what the driver imports
+/// (it exits 3 when it does not, and [`FAILED`] when the check itself broke); `missing` is the answer when none has.
+pub(crate) fn drive(
+    launchers: &[Vec<String>],
+    driver: &str,
+    request: &str,
+    deadline: Deadline,
+    missing: &str,
+) -> Result<Vec<Vec<Squiggle>>, String> {
     // One BLAS thread: the check runs in the background beside the session's own work.
     let env = [("OMP_NUM_THREADS", "1"), ("OPENBLAS_NUM_THREADS", "1")];
-    for mut command in launchers() {
-        command.extend(["-I", "-c", DRIVER].map(String::from));
+    for launcher in launchers {
+        let mut command = launcher.clone();
+        command.extend(["-I", "-c", driver].map(String::from));
         let timeout = deadline.timeout().map_err(|_| "timed out".to_string())?;
         match proc::run(&command, &std::env::temp_dir(), Some(request.as_bytes()), &env, timeout) {
             Ok(out) if out.code == 0 => return parse(&out.stdout).ok_or_else(|| "unreadable reply".to_string()),
@@ -131,14 +139,20 @@ pub fn score(texts: &[&str], deadline: Deadline) -> Result<Vec<Vec<Squiggle>>, S
                     .collect());
             }
             Err(RunError::Timeout(_)) => return Err("timed out".into()),
-            // No NumPy there (the driver's exit 3, or uv without it cached), or no such launcher: try the next.
+            // The import is missing there (the driver's exit 3, or uv without it cached), or no such launcher: try
+            // the next.
             Ok(_) | Err(RunError::Os(..)) => {}
         }
     }
-    Err(
-        "needs NumPy, which neither Loki's Python nor uv's cache has (`uv run --with numpy python -c pass` fetches it once)"
-            .into(),
-    )
+    Err(missing.into())
+}
+
+/// The model's squiggles for each text, or why it could not run.
+pub fn score(texts: &[&str], deadline: Deadline) -> Result<Vec<Vec<Squiggle>>, String> {
+    let weights: String = WEIGHTS.iter().map(|byte| format!("{byte:02x}")).collect();
+    let request = json!({"source": SOURCE, "weights": weights, "texts": texts}).to_string();
+    let missing = "needs NumPy, which neither Loki's Python nor uv's cache has (`uv run --with numpy python -c pass` fetches it once)";
+    drive(&launchers(), DRIVER, &request, deadline, missing)
 }
 
 /// The 1-based lines of `after` that are not in `before`.
@@ -151,21 +165,46 @@ fn added_lines(before: &str, after: &str) -> HashSet<usize> {
         .collect()
 }
 
-/// The advisory lines for `name`: the squiggles of `level`'s kinds on lines the change from `before` to `after`
-/// added. Each carries the start of its line, so two findings of one kind in a file stay distinct to the host.
-pub fn notes(name: &str, before: &str, after: &str, squiggles: &[Squiggle], level: Level) -> Vec<String> {
+fn note(name: &str, after: &str, tool: &str, squiggle: &Squiggle) -> String {
+    let line = crate::hook::line_text(after, squiggle.line as i64);
+    let snippet: String = line.chars().take(SNIPPET_CHARS).collect();
+    let kind = squiggle.kind.replace('_', "-");
+    format!(
+        "{name}:{}: loki/{tool}-{kind}: {}: `{snippet}`",
+        squiggle.line, squiggle.message
+    )
+}
+
+/// The advisory lines for `name`, over the lines the change from `before` to `after` added: every nits finding, then
+/// the model's squiggles of `level`'s kinds that nits did not already report (same line, same kind). Each carries
+/// the start of its line, so two findings of one kind in a file stay distinct to the host.
+pub fn merged(
+    name: &str,
+    before: &str,
+    after: &str,
+    model: &[Squiggle],
+    nits: &[Squiggle],
+    level: Level,
+) -> Vec<String> {
+    if level == Level::Off {
+        return vec![];
+    }
     let added = added_lines(before, after);
-    squiggles
+    let nits: Vec<&Squiggle> = nits.iter().filter(|s| added.contains(&s.line)).collect();
+    let model = model
         .iter()
-        .filter(|s| level == Level::All || (level == Level::On && DEFAULT_KINDS.contains(&s.kind.as_str())))
         .filter(|s| added.contains(&s.line))
-        .map(|s| {
-            let line = crate::hook::line_text(after, s.line as i64);
-            let snippet: String = line.chars().take(SNIPPET_CHARS).collect();
-            let kind = s.kind.replace('_', "-");
-            format!("{name}:{}: loki/hygiene-{kind}: {}: `{snippet}`", s.line, s.message)
-        })
+        .filter(|s| level == Level::All || DEFAULT_KINDS.contains(&s.kind.as_str()))
+        .filter(|s| !nits.iter().any(|n| n.line == s.line && n.kind == s.kind));
+    nits.iter()
+        .map(|s| note(name, after, "nits", s))
+        .chain(model.map(|s| note(name, after, "hygiene", s)))
         .collect()
+}
+
+/// [`merged`] for the model alone.
+pub fn notes(name: &str, before: &str, after: &str, squiggles: &[Squiggle], level: Level) -> Vec<String> {
+    merged(name, before, after, squiggles, &[], level)
 }
 
 /// Whether hygiene reads `name` (repository-relative): a language the model knows, outside vendored and generated code.
@@ -174,10 +213,15 @@ fn checked(name: &str) -> bool {
         && crate::slop::slop_included(name)
 }
 
-/// Hygiene advisories for the written `files` (repository-relative) against their committed text, or one
-/// `NOT CHECKED hygiene: ...` line when the model could not run.
+/// Hygiene advisories for the written `files` (repository-relative) against their committed text, from the model
+/// and from nits, with one `NOT CHECKED <hygiene|nits>: ...` line for each of the two that could not run.
 pub fn written(root: &Path, files: &[String], level: Level) -> Vec<String> {
-    against(root, files, "HEAD", level)
+    against(root, files, "HEAD", level, &nits::launchers())
+}
+
+/// [`written`], with nits run by `nits_launchers`.
+pub fn written_with(root: &Path, files: &[String], level: Level, nits_launchers: &[Vec<String>]) -> Vec<String> {
+    against(root, files, "HEAD", level, nits_launchers)
 }
 
 /// Files the working tree adds or modifies against `base`, at most this many, are read by [`changed`].
@@ -200,37 +244,53 @@ pub fn changed(root: &Path, base: &str, level: Level) -> Vec<String> {
         .take(MAX_CHANGED_FILES)
         .map(String::from)
         .collect();
-    against(root, &files, base, level)
+    against(root, &files, base, level, &nits::launchers())
 }
 
-fn against(root: &Path, files: &[String], base: &str, level: Level) -> Vec<String> {
+fn against(root: &Path, files: &[String], base: &str, level: Level, nits_launchers: &[Vec<String>]) -> Vec<String> {
     if level == Level::Off {
         return vec![];
     }
     let root = resolve(root);
-    let sources: Vec<(&String, String)> = files
+    let sources: Vec<(&str, String)> = files
         .iter()
         .filter(|name| checked(name))
-        .filter_map(|name| proc::read_text(&root.join(name)).ok().map(|text| (name, text)))
+        .filter_map(|name| proc::read_text(&root.join(name)).ok().map(|text| (name.as_str(), text)))
         .collect();
     if sources.is_empty() {
         return vec![];
     }
-    let not_checked = |reason: &str| vec![format!("NOT CHECKED hygiene: {reason}")];
     let deadline = Deadline::after(SECONDS);
-    let texts: Vec<&str> = sources.iter().map(|(_, text)| text.as_str()).collect();
-    let scored = match score(&texts, deadline) {
-        Ok(scored) => scored,
-        Err(reason) => return not_checked(&reason),
+    let mut gaps = Vec::new();
+    let mut settle = |tool: &str, scored: Result<Vec<Vec<Squiggle>>, String>| {
+        scored.unwrap_or_else(|reason| {
+            gaps.push(format!("NOT CHECKED {tool}: {reason}"));
+            vec![vec![]; sources.len()]
+        })
     };
+    // nits first: it answers in a fraction of a second, the model can take most of the deadline.
+    let parsed = if sources.iter().any(|(name, _)| nits::reads(name)) {
+        settle(
+            "nits",
+            nits::score(nits_launchers, &sources, level == Level::All, deadline),
+        )
+    } else {
+        vec![vec![]; sources.len()]
+    };
+    let texts: Vec<&str> = sources.iter().map(|(_, text)| text.as_str()).collect();
+    let scored = settle("hygiene", score(&texts, deadline));
     let mut found = Vec::new();
-    for ((name, after), squiggles) in sources.iter().zip(scored) {
-        if squiggles.is_empty() {
+    for (((name, after), model), nits) in sources.iter().zip(&scored).zip(&parsed) {
+        if model.is_empty() && nits.is_empty() {
             continue;
         }
         match text_at(&root, base, name, deadline) {
-            Ok(before) => found.extend(notes(name, &before, after, &squiggles, level)),
-            Err(error) => return not_checked(error.message()),
+            Ok(before) => found.extend(merged(name, &before, after, model, nits, level)),
+            Err(error) => {
+                found.clear();
+                gaps.push(format!("NOT CHECKED hygiene: {}", error.message()));
+                break;
+            }
         }
     }
     if found.len() > MAX_NOTES {
@@ -238,5 +298,6 @@ fn against(root: &Path, files: &[String], base: &str, level: Level) -> Vec<Strin
         found.truncate(MAX_NOTES);
         found.push(format!("... {more} more hygiene notes"));
     }
+    found.extend(gaps);
     found
 }

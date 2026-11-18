@@ -21,6 +21,7 @@ pub mod init;
 pub mod installation;
 pub mod jsrules;
 pub mod langrules;
+pub mod nits;
 pub mod proc;
 pub mod project;
 pub mod py;

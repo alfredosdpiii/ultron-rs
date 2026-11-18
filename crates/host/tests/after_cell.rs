@@ -606,11 +606,12 @@ fn host_loki_after_cell_hygiene_notes_are_advisories_for_added_lines() {
         lines[0], "[Loki] FYI (advisory, not blocking; no change required):",
         "{notes}"
     );
-    assert_eq!(lines.len(), 2, "{notes}");
     assert!(
         lines[1].starts_with("store.py:7: loki/hygiene-swallowed-error: "),
         "{notes}"
     );
+    // Where nits is missing, a line saying so follows; no second advisory does.
+    assert!(lines[2..].iter().all(|line| !line.contains(": loki/")), "{notes}");
     assert_eq!(told(loki::hygiene::Level::Off), None);
 }
 

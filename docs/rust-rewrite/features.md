@@ -620,6 +620,17 @@ is unpacked to disk and nothing is downloaded.
   `origin/HEAD` (HEAD without one), at most 40 files. Lines already committed on the branch are in it; the per-cell
   check compares with HEAD and no longer sees them.
 
-Code: `crates/loki/src/hygiene.rs`, `crates/host/src/loki_guard.rs` (`with_hygiene`),
+**nits.** `loki::nits` runs github.com/jkomyno/nits (tree-sitter rules, commit `67c94b9`) in the same pass:
+Loki's interpreter when it can `import nits`, else `uv run --offline --no-project --with git+...@<commit> python`.
+It is not vendored (upstream has no license, and its parsers are native wheels) and never fetched by Ultron.
+
+- Which files: `.py`, `.ts`, `.tsx`, `.js`, `.jsx`, `.mjs`, `.cjs`, `.rs` among the ones the model reads.
+- What: `on` runs nits' default rules and keeps findings whose rule measures at least 0.80 in that file's language
+  (`check_source(min_precision=0.80)`); `all` runs every rule, opt-in ones included, with no floor.
+- Line: `path:line: loki/nits-<rule>: p<precision> <message>: `<start of the line>``, before the model's lines. A
+  model squiggle on the same line with the same kind name (`swallowed_error`, `deep_nesting`) is dropped.
+- Cannot run: `NOT CHECKED nits: ...` with the `uv run` command that fetches it; the model's notes still arrive.
+
+Code: `crates/loki/src/hygiene.rs`, `crates/loki/src/nits.rs`, `crates/host/src/loki_guard.rs` (`with_hygiene`),
 `crates/session-core/src/compose.rs` (`Config.loki_hygiene`), `crates/session-core/src/core/turn_guard.rs`,
 `crates/session-core/src/situational_skills.rs` (`hygiene_notes`).
