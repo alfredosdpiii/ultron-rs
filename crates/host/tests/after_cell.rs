@@ -571,10 +571,10 @@ fn host_loki_after_cell_rust_engine_catches_a_secret_a_shell_write_introduced() 
     assert!(!findings.contains(&key), "the secret itself is never echoed");
 }
 
-/// A clean post-write check is followed by the hygiene advisories for the lines the cell added (`with_hygiene`):
-/// they arrive as FYI lines, never as findings to fix, and a guard without hygiene says nothing.
+/// A post-write check is followed by the hygiene notes for the lines the cell added (`with_hygiene`): they arrive
+/// as things to fix, a note left open is counted on the next check, and a guard without hygiene says nothing.
 #[test]
-fn host_loki_after_cell_hygiene_notes_are_advisories_for_added_lines() {
+fn host_loki_after_cell_hygiene_notes_are_to_fix_and_stay_open_until_fixed() {
     if loki::hygiene::score(&["x = 1\n"], loki::proc::Deadline::after(60.0)).is_err() {
         return; // no Python with NumPy here
     }
@@ -598,13 +598,23 @@ fn host_loki_after_cell_hygiene_notes_are_advisories_for_added_lines() {
         std::fs::write(root.join("store.py"), format!("LIMIT = 10\n\n\n{swallowed}")).unwrap();
         hooks.cell_ended("main");
         hooks.settled();
-        hooks.take_pending("main")
+        let first = hooks.take_pending("main");
+        hooks.cell_started("main");
+        std::fs::write(root.join("store.py"), format!("LIMIT = 11\n\n\n{swallowed}")).unwrap();
+        hooks.cell_ended("main");
+        hooks.settled();
+        (first, hooks.take_pending("main"))
     };
-    let notes = told(loki::hygiene::Level::On).expect("the hygiene note");
+    let (notes, later) = told(loki::hygiene::Level::On);
+    let notes = notes.expect("the hygiene note");
     let lines: Vec<&str> = notes.lines().collect();
     assert_eq!(
-        lines[0], "[Loki] FYI (advisory, not blocking; no change required):",
+        lines[0], "[Loki] 1 hygiene note on lines this cell added; fix each, or say in a line why it stays:",
         "{notes}"
+    );
+    assert_eq!(
+        later.as_deref(),
+        Some("[Loki] 1 hygiene note reported earlier is still open in store.py.")
     );
     assert!(
         lines[1].starts_with("store.py:7: loki/hygiene-swallowed-error: "),
@@ -612,7 +622,7 @@ fn host_loki_after_cell_hygiene_notes_are_advisories_for_added_lines() {
     );
     // Where nits is missing, a line saying so follows; no second advisory does.
     assert!(lines[2..].iter().all(|line| !line.contains(": loki/")), "{notes}");
-    assert_eq!(told(loki::hygiene::Level::Off), None);
+    assert_eq!(told(loki::hygiene::Level::Off), (None, None));
 }
 
 #[test]

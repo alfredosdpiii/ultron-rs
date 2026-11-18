@@ -14,7 +14,7 @@ pub struct Report {
     pub warnings: Vec<String>,
 }
 
-const NOT_CHECKED: &str = "NOT CHECKED";
+pub const NOT_CHECKED: &str = "NOT CHECKED";
 /// The line a failed check puts between its blocking findings and its advisories.
 const ADVISORY_LABEL: &str = "loki: advisory (not blocking):";
 

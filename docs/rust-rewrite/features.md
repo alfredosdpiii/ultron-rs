@@ -601,14 +601,16 @@ UPSTREAM.md) and runs it in a Python with NumPy: Loki's interpreter (`ULTRON_LOK
 `uv run --offline --no-project --with numpy python`. Source, weights and the files' texts go in on stdin, so nothing
 is unpacked to disk and nothing is downloaded.
 
-- When: in `LokiGuard::after_cell_changes`, after a post-write check that blocks nothing, over the same files (at
+- When: in `LokiGuard::after_cell_changes`, after every post-write check, over the same files (at
   most 40), in the background. Not before a write: a file takes 0.4 to 9 s.
 - What: squiggles on lines the working file adds to its committed text (`py::opcodes`), of the kinds
   `swallowed_error`, `noisy_comment`, `duplicate_block` and `special_casing`; `all` adds `dense_line`, `deep_nesting`,
   `cramped_layout` and `poor_naming`. At most 10 lines per check, then `... N more hygiene notes`.
 - Which files: the 19 suffixes the model's circuits cover, outside vendored and generated paths (`slop_included`).
-- Line: `path:line: loki/hygiene-<kind>: <upstream message>: `<start of the line>``, an advisory (FYI, never "fix
-  these"), followed from cell to cell like any other.
+- Line: `path:line: loki/hygiene-<kind>: <upstream message>: `<start of the line>``, under its own heading
+  (`N hygiene notes on lines this cell added; fix each, or say in a line why it stays:`), never under the FYI one.
+  Notes are followed from cell to cell: one left open is counted (`N hygiene notes reported earlier are still open
+  in <paths>`) on every later check of that file, and the report's outcome is `findings`.
 - Cannot run (no NumPy, timeout after 20 s, model error): `NOT CHECKED hygiene: <reason>`, said once per session.
 - Switch: `ULTRON_LOKI_HYGIENE`, else global `loki.hygiene`: `on` (default), `all`, `off`.
 - A turn's last cell: after-cell findings arrive with the lane's next cell result, and the last cell has none. When

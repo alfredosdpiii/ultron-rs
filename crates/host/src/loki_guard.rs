@@ -108,7 +108,7 @@ pub struct LokiGuard {
     post_write: bool,
     /// How long a before-write check may take (`timeoutMs`); None: no limit.
     timeout: Option<std::time::Duration>,
-    /// Which hygiene advisories follow a clean post-write check (`loki::hygiene`); off unless the session sets it.
+    /// Which hygiene notes follow a post-write check (`loki::hygiene`); off unless the session sets it.
     hygiene: loki::hygiene::Level,
 }
 
@@ -327,16 +327,15 @@ impl FileWriteGuard for LokiGuard {
                 message: Some("post-write checks are paused: .loki/ has uncommitted changes, and Loki checks against the committed policy. Before-write checks of edit() and write() still run. Commit .loki/ to resume them (git add .loki && git commit -m 'Add Loki guardrails' -- .loki).".into()),
             }));
         }
-        let mut report = report;
-        if !report.blocked() {
-            report
-                .warnings
-                .extend(loki::hygiene::written(&self.root, &checked, self.hygiene));
-        }
+        let (hygiene_gaps, hygiene): (Vec<String>, Vec<String>) =
+            loki::hygiene::written(&self.root, &checked, self.hygiene)
+                .into_iter()
+                .partition(|line| line.starts_with(loki::run::NOT_CHECKED));
         let advisory: Vec<String> = report.advisory().cloned().collect();
-        let not_checked: Vec<String> = report.not_checked().cloned().collect();
+        let not_checked: Vec<String> = report.not_checked().cloned().chain(hygiene_gaps).collect();
         let blocking = self.unseen("blocking", &report.blocking, &checked);
         let advisory = self.unseen("advisory", &advisory, &checked);
+        let hygiene = self.unseen("hygiene", &hygiene, &checked);
         let mut sections = Vec::new();
         if !blocking.fresh.is_empty() {
             sections.push(format!(
@@ -359,6 +358,21 @@ impl FileWriteGuard for LokiGuard {
                 advisory.fresh.join("\n")
             ));
         }
+        if !hygiene.fresh.is_empty() {
+            sections.push(format!(
+                "{} on lines this cell added; fix each, or say in a line why it stays:\n{}",
+                count(hygiene.fresh.len(), "hygiene note"),
+                hygiene.fresh.join("\n")
+            ));
+        }
+        if hygiene.earlier > 0 {
+            sections.push(format!(
+                "{} reported earlier {} still open in {}.",
+                count(hygiene.earlier, "hygiene note"),
+                if hygiene.earlier == 1 { "is" } else { "are" },
+                hygiene.paths.join(", ")
+            ));
+        }
         sections.extend(self.notice(&not_checked));
         if targets.len() > checked.len() {
             sections.push(format!(
@@ -366,7 +380,7 @@ impl FileWriteGuard for LokiGuard {
                 targets.len() - checked.len()
             ));
         }
-        let outcome = if !report.blocking.is_empty() {
+        let outcome = if !report.blocking.is_empty() || !hygiene.fresh.is_empty() || hygiene.earlier > 0 {
             AfterOutcome::Findings
         } else if !advisory.fresh.is_empty() {
             AfterOutcome::Advisory

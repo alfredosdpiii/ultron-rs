@@ -75,19 +75,16 @@ fn hygiene_note(level: Option<&str>) -> String {
     told[0].clone()
 }
 
-/// The session's Loki guard passes on hygiene notes for the lines a cell added: the default kinds as an FYI, every
+/// The session's Loki guard passes on hygiene notes for the lines a cell added: the default kinds to fix, every
 /// kind under `ULTRON_LOKI_HYGIENE=all`.
 #[test]
-fn acceptance_after_cell_hygiene_notes_arrive_as_advisories() {
+fn acceptance_after_cell_hygiene_notes_arrive_as_things_to_fix() {
     let swallowed = "store.lua:2: loki/hygiene-swallowed-error: Ignored error: `function load() end`";
     let dense = "store.lua:3: loki/hygiene-dense-line: Dense line: `function save() end`";
     let note = hygiene_note(None);
-    assert!(
-        note.contains("FYI (advisory, not blocking; no change required):"),
-        "{note}"
-    );
+    assert!(note.contains("fix each, or say in a line why it stays:"), "{note}");
     assert!(note.contains(swallowed), "{note}");
-    assert!(!note.contains("fix these"), "{note}");
+    assert!(!note.contains("no change required"), "{note}");
     assert!(!note.contains("hygiene-dense-line"), "{note}");
     let all = hygiene_note(Some("all"));
     assert!(all.contains(swallowed) && all.contains(dense), "{all}");

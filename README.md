@@ -809,18 +809,19 @@ open redirects and disabled TLS verification in Python; SQL built with `Sprintf`
   that are never mixed: new findings ("fix these"), advisory lines such as a function grown complex (an FYI, no
   change required), and checks that could not run (a missing analyzer, said once per session). Existing code in an
   edited file is not reported.
-- Code hygiene notes. When that check finds nothing to fix, the bundled
+- Code hygiene notes. After that check, the bundled
   [codehygiene](https://github.com/brianbell-x/codehygiene) model (a 13 KB network, vendored in
   `crates/loki/vendor/codehygiene`) reads the files the cell changed, `edit()`/`write()` ones included, and Loki
-  passes on what it flags on lines the change added, as advisory lines: a swallowed error, a noisy comment, a
-  duplicated block, special-casing. `loki.hygiene` (or `ULTRON_LOKI_HYGIENE`) is `on`, `all` (adds dense lines, deep
+  passes on what it flags on lines the change added, as notes to fix ("fix each, or say in a line why it stays"): a
+  swallowed error, a noisy comment, a duplicated block, special-casing. A note left open is counted on every later
+  check of that file. `loki.hygiene` (or `ULTRON_LOKI_HYGIENE`) is `on`, `all` (adds dense lines, deep
   nesting, cramped layout and naming, which also fire on formatter-clean code) or `off`. The model needs a Python
   with NumPy: Loki's interpreter, else `uv` with NumPy in its cache. Nothing is downloaded; without NumPy the
   session says once that hygiene was not checked. Two more deliveries cover what a per-cell note misses: what the
   checks find in a turn's last cell continues the turn (it has no next cell result to arrive with), and a lane's
   first commit or push is shown the notes for every line the whole change adds, committed ones included.
 - nits notes, beside them. [nits](https://github.com/jkomyno/nits) reads the same files with a parser (Python,
-  TypeScript, JavaScript and Rust) and Loki reports its findings on added lines as `loki/nits-<rule>` advisories, each
+  TypeScript, JavaScript and Rust) and Loki reports its findings on added lines as `loki/nits-<rule>` notes, each
   with the rule's measured precision (`p0.95`): a swallowed error, a failure returned as an empty value, a dev default
   on an environment variable, a comment that restates its line, deep nesting. Where both tools flag one line for the
   same thing, the nits note is the one shown. `on` keeps the rules that measure 0.80 or better in the file's
