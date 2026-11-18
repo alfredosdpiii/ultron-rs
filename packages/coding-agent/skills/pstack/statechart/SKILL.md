@@ -15,16 +15,16 @@ The chart shows how a system moves between states, in the words of the person wh
 
 ## Run
 
-Work in a scratch folder outside the repo. Write a Quint or TLA+ spec and its TLC config. Then run the command through `bash` with the absolute path of this skill's directory:
+Work in a scratch folder outside the repo. Write a TLA+ spec or a Quint `SPEC.qnt` and its TLC config. Then run the command through `bash` with the absolute path of this skill's directory:
 
 ```python
 SC = "<absolute path of this skill's directory>/scripts/statechart"
-print(await bash(f"{SC} SPEC.qnt --config SPEC.cfg --out SPEC-chart"))
+print(await bash(f"{SC} SPEC.tla [--config FILE] [--view FILE] [--out DIR]"))
 ```
 
 `scripts/statechart.ts` is TypeScript. The `statechart` wrapper picks a runtime that executes TypeScript (Node 22.18 to 22.x, Node 23.6 or later, Bun 1.1.5 or later, or Deno 2.0 or later); wrong use prints the full usage.
 
-The first run installs TLC and Java with mise, which downloads about 305 MB and needs the network. With `java` on PATH, pass `JAVA=$(command -v java)` so only TLC downloads, or set `TLA2TOOLS` to a `tla2tools.jar` you have. TLC runs can take minutes; start a long one as a job (`bash(..., yield_after=0)`) and do other work until its event arrives.
+The first run installs TLC and Java with mise and needs the network. With `java` on PATH, pass `JAVA=$(command -v java)` so only TLC downloads, or set `TLA2TOOLS` to a `tla2tools.jar` you have. TLC runs can take minutes; start a long one as a job (`bash(..., yield_after=0)`) and do other work until its event arrives.
 
 A `SPEC.qnt` is compiled to TLA+ first (`quint compile --target tlaplus`), with Quint at the version `scripts/package.json` pins, from npm's cache (or `QUINT=<path>`). Quint compiles through Apalache, which it downloads once (about 200 MB) and runs on the same Java, so a Quint spec needs Java whatever checks it; each compile takes about 20 seconds. `--main MODULE` picks the module when it is not the one named after the file. The config, the view and the report use the names in the compiled TLA+: a module's own definitions keep their Quint names (`init`, `step`, your actions and invariants), and a Quint `const` becomes a TLA+ `CONSTANT` that the config sets (`CONSTANT CHECK_LOCK = TRUE`). Definitions that come from an `import m(X = v).*` instance are renamed with the instance path (`mutex_ok_mutex_Acquire`), so give the command the module that declares the machine and set its constants in the config.
 
@@ -32,10 +32,8 @@ A `SPEC.qnt` is compiled to TLA+ first (`quint compile --target tlaplus`), with 
 
 ## Write the spec
 
-Write Quint unless the user or the project prefers TLA+: its types and `quint run` (a random simulation that checks an invariant in seconds) catch modeling errors before TLC does. Write `step` as `any { ... }` of named actions, and `init` and `step` as the module's own actions.
-
 - Write each rule that the reader agrees to as an INVARIANT. A rule can be about a screen, a result, a stored value, or a message. If the model has no variable for a rule, add the variable. Never weaken a rule to make it hold.
-- Write `Next` (Quint: `step`) as a disjunction of the actions, such as `YouPressPlay \/ YouPressStop` (Quint: `any { YouPressPlay, YouPressStop }`). If you do not, TLC names every step `Next`.
+- Write `Next` as a disjunction of the actions, such as `YouPressPlay \/ YouPressStop`. If you do not, TLC names every step `Next`.
 - A state with no step out breaks `NoDeadlock`, also when it is a correct end state. When an INVARIANT or a PROPERTY already has that name, the rule is `CHECK_DEADLOCK`. Add to `Next` an action that is true only in the end states and changes nothing, such as `Done == phase \in {"paid", "failed"} /\ UNCHANGED vars`, and give it a label in `step()`.
 
 ## Pick the chart
@@ -85,7 +83,7 @@ Aim for about 20 arrows or fewer, because a busier chart is hard to read. First 
 
 Show `chart.mmd` to the user as a `mermaid` code block. The chart has a budget of 500 states, counted by TLC on the config as written. Above that, the chart draws only the paths to the rules that break, and when no rule breaks, the command writes no `chart.mmd`. It still checks each rule, and the report gives the state count and each bug path. To see the whole graph, make the model smaller.
 
-Render charts with Pele. When the user asks for an image, or a chart is too large to read as text, follow `references/render.md`. Do not use a different renderer unless the user asks for it. Pele writes SVG, which `await view_image(path)` cannot show (it reads PNG, JPEG, GIF and WebP), so to check a chart yourself, screenshot one SVG to PNG with a headless Chromium browser (`chromium`, `google-chrome` or `brave`): `<browser> --headless=new --hide-scrollbars --window-size=W,H --screenshot=chart.png file:///abs/path/chart.svg`, with W and H from the SVG's width and height. Then look at the PNG with `await view_image(path)`. Do not use `rsvg-convert` or ImageMagick: they ignore the `--pele-*` CSS variables and draw those parts black.
+Render charts with Pele. When the user asks for an image, or a chart is too large to read as text, follow `references/render.md`. Do not use a different renderer unless the user asks for it.
 
 ## Hand off
 

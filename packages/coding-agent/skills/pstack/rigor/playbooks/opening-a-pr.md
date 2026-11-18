@@ -1,70 +1,17 @@
 ### Opening a PR
 
-Run at the end of every other playbook that changes code. The repo's own rules (AGENTS.md, CONTRIBUTING, commit
-conventions) win over this file where they differ.
+Run at the end of every other playbook that changes code.
 
-**Worktree.** Work from a git worktree off main, not a shared checkout other sessions use. Children that edit files get
-their own (`worktree=True`) and come back through `rlm.merge`. A branch dirty with unrelated work: export your patch,
-start a fresh worktree, apply it there. A snarled worktree: start again from main and redo minimally.
+Work from a git worktree off trunk, and keep unrelated work out of it. Children that edit files get `worktree=True` and come back through `rlm.merge`. Rebase into small, landable commits. Strip slop from the diff, then `../no-comments/SKILL.md`, then `../unslop/SKILL.md`.
 
-**Commits.** Commit liberally, staging explicit paths. Rebase into small, ordered commits before the PR. Each commit is
-a future PR: landable, ordered to tell the story. Amend when the fix belongs in the commit just made; a new commit when
-separable. Commit bodies don't restate the subject.
+**Self-review.** Run `r = await review_api.run(rlm, "main")` after `import review_api`, then `print(r.report)`. Fix what holds up in one fix round. Then stop: findings left after that are reported in the PR, not acted on, and the fix round is not reviewed again. Only that one review round runs, however many children the change used.
 
-**Before the PR.** Strip slop from the diff, then `../no-comments/SKILL.md`. Run `/review` on the diff (or
-`r = await review_api.run(rlm, "main")` after `import review_api`, then `print(r.report)`) and fix what holds up. Write
-the title, description and commit bodies with `../technical-writing/SKILL.md` (every layer except Diátaxis, and the STE
-vocabulary rules: one word per action, keep articles, a plain verb over `-ing` where one works), then
-`../unslop/SKILL.md`.
+**Title.** `type(scope): subject`, naming a real symbol when one carries the change. No trailing period.
 
-**Titles.** Conventional Commits, `type(scope): subject`, unless the repo uses another form: `feat`, `fix`, `docs`,
-`refactor`, `test`, `chore` or `perf`; the changed area as scope; a short imperative subject naming a real symbol when
-one carries the change; no trailing period.
+**Body.** A one-minute briefing under 40 lines, with these `##` headings in order, dropping empty ones: `## Why`, `## What changed`, `## Scope`, `## Tradeoffs` (only rejected alternatives a reviewer would otherwise ask about), `## Blast Radius`, `## Verification`. Write it with `../technical-writing/SKILL.md`. Evidence logs and long tables go in a linked file, not the body.
 
-**Descriptions.** The body is a one-minute briefing, not a lab notebook, for a reviewer who has the diff. It says why
-the change exists, what it leaves out, what it could break and how you proved it. Short sentences, few identifiers, no
-walls of text, under about 40 lines (it becomes the squash commit body). `##` headings, not bold lead-ins, in this
-order, each dropped when empty:
+**Stacks.** Stack follow-ups by base branch. Each child branch targets its parent branch (`gh pr create --base <parent-branch>`). Keep a stack to three or four PRs.
 
-- `## Why`: the problem and the approach in one to three sentences. No SHAs, rebase genealogy or "based on main"
-  preamble.
-- `## What changed`: one to three bullets. Name a symbol or path only when it carries the change; both sides of a rename.
-- `## Scope`: always. One to three items on what the PR covers and what it deliberately leaves out (a follow-up, a known
-  gap). No symbols, paths or file-by-file essay.
-- `## Tradeoffs`: only rejected alternatives a reviewer would ask about. Skip it when there was no real choice.
-- `## Blast Radius`: one or two sentences on who or what it touches and why that is safe or risky. If main is red, the
-  cost of leaving it red.
-- `## Verification`: one to three bullets, each a real run and its outcome. For perf, one primary number as
-  `before → after` with its unit; link the arena or swarm directory for the rest. No sample-size methodology, lane
-  recitals or metric tables.
+**Readiness.** Open PRs ready for review, never as a draft (omit `--draft`; `gh pr ready <number>` if one opens as draft). Opening a PR does not start a babysit.
 
-Attach screenshots or recordings when they prove a claim. Full SHAs, lane recitals, file-by-file checklists and
-"CLEAN" verdicts go in a linked artifact, not the body.
-
-**Forge.** GitHub through `gh` via `bash`. Write bodies to a file and pass `--body-file`. With a spec on the branch
-(`spec_api.write`), the file is the one `spec_api.description()` returns after `/review` on the committed tree: it
-holds `## Why`, `## What changed`, `## Acceptance` and `## Verification` from what was recorded. Keep its first line,
-add the sections it lacks below, and build it again after every new commit.
-
-**Size and stacks.** One idea per PR: something a reviewer can judge on its own (the schema, then the emitter, then
-the wiring, then the UI). Decide the split before coding, in the spec. Aim for under 400 changed lines; past 1,000
-`spec_api.description()` refuses until the change is split, or `review_api.waive("<why it is one idea>")` records the
-reason. Each PR passes its own tests and leaves trunk working. Keep a stack to 3 or 4 PRs and land it bottom-up as
-each is approved: a change to a lower PR rebases every one above it. A stack is a base-branch chain: the root PR
-targets trunk; each child branch is rebased onto its parent's exact tip and its PR targets the parent branch
-(`gh pr create --base <parent-branch>`, `gh pr edit <pr> --base <parent-branch>`). Review a child against its parent,
-`await review_api.run(rlm, "<parent-branch>")`, so its receipt, purposes and line count cover only its own change;
-each branch keeps its own spec. As a parent merges, move its child onto trunk per `playbooks/shipping.md` step 4.
-Branch from trunk only for independent work. Rebase on trunk before substantial stack work.
-
-**Readiness.** Open every PR ready, never draft (omit `--draft`; `gh pr ready <number>` if one opens as draft). Run
-`gh pr view <number>` before you refer to its status.
-
-**Babysit.** Opening a PR does not start a babysit. Post the URL and keep building; finish the phase or stack first.
-Babysit only when the user asks, once the stack exists (`playbooks/babysit.md`); a babysit per new PR stalls the build
-and spends checks on commits later waves restart. Push back when feedback drifts from intent.
-
-A child that opens a PR runs the pre-PR steps above and posts the URL in its `rlm.finish` outputs, then returns
-without babysitting, unless it is an Orchestrate owner whose brief assigns the babysit loop
-(`playbooks/orchestrate.md`). That owner starts the loop after its code-ready report, reports merge-ready, and is
-exempt from the rules here and in `playbooks/babysit.md` that hold babysitting until a whole stack is built.
+**Review rules (the self-review above is the one review round).** The bar in the kickoff is the whole bar: add no check, gate, sign-off or review round above it. Block only for a failing run at this head or a bug a user would hit, and report anything the base already has in one line. A self-review runs at most one review round and one fix round. Findings left after that are reported, not acted on, and a fix round is never itself re-reviewed.

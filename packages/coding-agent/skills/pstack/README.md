@@ -6,6 +6,8 @@ port changes the mechanics so they run in Ultron's REPL: subagents are `rlm.spaw
 judges and reviewers are `rlm.infer` frames, model panels come from `rlm.find_models`, long runs are `/goal`, and
 nothing polls or spawns a subagent just to read files.
 
+The port tracks upstream pstack 0.15.43 (commit `e1cc031` of cursor/plugins); diff from there when syncing again.
+
 pstack is MIT licensed; its license is [LICENSE](LICENSE) in this directory, and each ported `SKILL.md` names its
 source. Changes from the original: Cursor-only mechanics replaced or removed, `poteto-mode` renamed `rigor`, the
 three orchestration playbooks merged into one, and `setup-pstack`, `poteto-help` and `make-bot-ui` left out (Ultron's

@@ -11,95 +11,51 @@ metadata:
 
 # Rigor
 
-Invoked as `/skill:rigor <request>`. Read the request, pick a playbook below, put its steps in your plan, follow it.
-Once loaded, rigor applies for the rest of the task, including follow-up turns on it. A casual turn, a new unrelated
-task, or the user opting out ends it.
+Invoked as `/skill:rigor <request>`. Pick a playbook below, put its steps in your plan, follow it. Rigor holds for the
+rest of the task, follow-up turns included, until a casual turn, an unrelated task, or the user opting out.
 
-Paths in this skill and its playbooks are relative to this skill's directory: `playbooks/bug-fix.md` is
-`<this dir>/playbooks/bug-fix.md`, and another skill such as `../how/SKILL.md` sits next to this one. Read them with
-`await read(...)`. The principles are skills too (`../principle-<name>/SKILL.md`); read one in full before you claim to apply it.
-
-You are the lead. You plan, review and verify, and you own every line that ships, whoever typed it.
+Paths here are relative to this skill's directory (`playbooks/bug-fix.md`, `../how/SKILL.md`); read them with
+`await read(...)`. You are the lead: you plan, review and verify, and you own every line that ships.
 
 ## Non-negotiables
 
-The principles below ground every trigger. In your reply, name each principle that shaped a decision and the choice it
-changed. Cite only principles whose leaf you read this session.
+The Principles section grounds every trigger. In your reply, name each principle that shaped a decision and the
+choice it changed. Cite only principles whose leaf you read this session.
 
-- Your first message on a task → tell the user, in your own words, their goal, the problem they are solving, and, if
-  the task ships a change, the smallest change you expect to meet it. Don't wait for confirmation. If the evidence
-  rules out the change the user asked for, show it and stop. Restate the user's goal in each child's brief, open each
-  PR's `## Why` with it, and open each final report with it, your final reply included, except after a fully specified
-  one-line edit.
+- First message → restate the user's goal and the smallest change that meets it, then proceed. If the evidence rules
+  out the asked-for change, show it and stop. Open each child brief, PR `## Why` and final report with the goal.
 - Nontrivial change, architecture decision, or "are we sure?" → `../how/SKILL.md`.
-- About to ask the user "which approach", "how should I", "what should this do" → classify it first. If the answer is
-  a fact you could observe by running something (behavior, timing, layout, output, perf, whether an eval separates),
-  it is not the human's to answer: sketch it via `playbooks/prototype.md` and let the result decide. A read-only
-  investigation answers from evidence instead. Ask only for a product or preference call no experiment can settle.
-  Under a full-autonomy grant, decide what the grant covers, act, and report it; for a call only the operator can
-  make, apply a default, explain it, and say what the operator could tell you instead, in plain words. Never hand the
-  operator a token to type back.
-- Any code → name the data shape first and choose its organizing structure per `the model-the-domain principle (`../principle-model-the-domain/SKILL.md`)`.
-- Code crossing a function boundary → `../architect/SKILL.md` before implementing.
-- Parallel fan-out → `../swarm/SKILL.md` (coverage matrices, races, gauntlets, partitions); design or code bakeoffs →
-  `../arena/SKILL.md`.
-- Contested design → `../interrogate/SKILL.md` before shipping.
+- A fork you could settle by running something → prototype it per `playbooks/prototype.md` instead of asking. Ask only
+  for a product or preference call. Under a full-autonomy grant, apply a default, act, and say what the user could
+  tell you instead.
+- Code → name the data shape first (`../principle-model-the-domain/SKILL.md`). Across a function boundary →
+  `../architect/SKILL.md`. Fan-out → `../swarm/SKILL.md`. Bakeoff → `../arena/SKILL.md`. Contested design →
+  `../interrogate/SKILL.md`.
+- Prose, your reply included → `../unslop/SKILL.md`; skills and briefs also `playbooks/authoring-a-skill.md`. Docs,
+  PR descriptions, commit messages → `../technical-writing/SKILL.md`.
 - Nontrivial multi-step → write the throughput checkpoint (`playbooks/feature.md` step 3).
-- Any prose, your reply included → `../unslop/SKILL.md`, and the rules in **Writing the reply**. Agent-facing prose
-  (skills, briefs) also follows `playbooks/authoring-a-skill.md`.
-- Docs, RFCs, readmes, PR descriptions, commit messages → `../technical-writing/SKILL.md`.
-- Before commit → strip slop from the diff: dead code, defensive noise, speculative options, needless comments. Before
-  review → `../no-comments/SKILL.md`.
-- Shipping a UI, CLI or TUI → drive the real surface yourself: `bash` with tmux for CLIs and TUIs, a configured browser
-  MCP server for web UIs (`await mcp.servers()`). For bugs, reproduce on that surface first; hand off to the user only
-  under `playbooks/bug-fix.md` step 1's exception.
-- Proving a change on the app → through the project's verification skill (a project skill such as
-  `.pi/skills/verify-<app>/` that drives the app) when it has one. None, and the change needs proving on a UI, CLI or
-  service → `../create-verification-skill/SKILL.md` in the same task. It fails on behavior that works, or the app
-  gained features its map lacks → `../maintain-verification-skill/SKILL.md`.
-- Reading or editing `.ts` or `.tsx` → `../typescript-best-practices/SKILL.md`.
-- A diff whose callers, consumers or shared state lie outside it → `../blast-radius/SKILL.md` before the PR.
-- The user corrects a mistake agents have made before in this repo → `../correct/SKILL.md`, so the next one cannot.
-- A benchmark, a measured speedup or regression → `../benchmark-checklist/SKILL.md` before you report or act on it.
-- The user asks for formal verification, or a race, retry, state machine, parser or other invariant that tests rarely
-  reach → `../create-formal-verification-skill/SKILL.md` (Quint (compiled to TLA+) by default for ordering and
-  concurrency, TLA+ directly when preferred, read with `../statechart/SKILL.md`; Bend for pure logic with laws). The
-  project has a verify skill and the change touches its covered code → run it. Merges or refactors that skipped it →
-  `../maintain-formal-verification-skill/SKILL.md`.
-- Any PR-status request ("babysit this", "get it green", "check on PR X", "address the review comments") →
-  `playbooks/babysit.md`. Opening a PR never starts one.
-- Land or ship a green stack → `playbooks/shipping.md`. Green is not safe.
-- Review bots commented → skeptical posture: they catch real bugs and file noise. Triage per `playbooks/babysit.md`.
-- A broken skill mid-task → fix it in its own change. Don't block, don't silently work around it.
-- Long, autonomous or multi-phase work, or work the user steps away from → a decision trail via
-  `../show-me-your-work/SKILL.md`. Commit it when the stakes need an audit record; otherwise keep it local.
+- Before commit → strip dead code, defensive noise, speculative options and needless comments. Before review →
+  `../no-comments/SKILL.md`.
+- Shipping a UI, CLI or TUI → drive the real surface: `bash` with tmux for CLIs and TUIs, a browser MCP server for web
+  UIs (`await mcp.servers()`). Reproduce bugs there first.
+- A number you measured → `../benchmark-checklist/SKILL.md`.
+- PR status ("babysit", "get it green", review comments) → `playbooks/babysit.md`; opening a PR never starts one.
+  Landing a green stack → `playbooks/shipping.md`. Bot review comments → judge each on its merits.
+- A broken skill mid-task → fix it in its own change; don't silently work around it.
+- Long or unattended work → `../show-me-your-work/SKILL.md`.
+- A change to a state machine, a retry path, a race or a parser → write the model and run the checker in this task:
+  "One change, no verify skill yet" in `../create-formal-verification-skill/SKILL.md`.
+- A diff whose callers or shared state lie outside it → `../blast-radius/SKILL.md` before shipping.
 
-## Skills by situation
-
-The rest of the bundled skills, for what the user asks or the moment calls for:
-
-- Explain so the user understands → `../teach/SKILL.md` (it runs how and why). A picture says it better → a terminal
-  diagram with `../../humanlayer/diagram-it/SKILL.md`, a page with `../../qingyuna/answer-me-with-html/SKILL.md`, an
-  illustrated figure with `../../wheresryan/anatomy/SKILL.md`.
-- Show a PM, designer or reviewer how the system moves between states, or turn an agreed chart into a Quint or TLA+
-  skeleton → `../statechart/SKILL.md`.
-- Catch the user up on this session → `../ketchup/SKILL.md` (`../ketchup-video/SKILL.md` as a video); on their work
-  across sessions → `../recall/SKILL.md`; on one prior session to resume → `playbooks/session-pickup.md`.
-- The user found your last reply hard to follow → `../bro/SKILL.md`.
-- Before work on a long or messy ask, play the goal back → `../in-your-own-words/SKILL.md`; a prompt to aim deeper
-  before sending → `../sharpen/SKILL.md` (it returns the prompt, not the work).
-- Turn what a finished task taught into skill edits → `../reflect/SKILL.md`; the user's habits into a personal mode
-  skill → `../automate-me/SKILL.md`.
-
-Close calls: how explains what code does, why the reasons, teach both plainly. Interrogate reviews the diff;
-blast-radius looks for breakage outside it. Arena gives every worker one brief and merges the best; swarm splits work
-into slices or a race. Ketchup covers this session; recall rebuilds context across sessions.
+Also: play a messy ask back first → `../in-your-own-words/SKILL.md`; sharpen a prompt → `../sharpen/SKILL.md`; the
+user lost the thread → `../bro/SKILL.md`; state charts for a PM or designer → `../statechart/SKILL.md`; resume one
+prior session → `playbooks/session-pickup.md`; lessons into skills → `../reflect/SKILL.md`; the user's habits into a
+mode skill → `../automate-me/SKILL.md`.
 
 ## Principles
 
-Read the leaf for any principle you apply. Each entry names when it applies. Each leaf is
-`../principle-<title>/SKILL.md`, with the title in kebab case, hyphens kept and other punctuation dropped, unless the
-entry gives its path.
+Read the leaf for any principle you apply. Each leaf is `../principle-<title>/SKILL.md`, title in kebab case, hyphens
+kept and other punctuation dropped, unless the entry gives its path.
 
 **Core**
 - **Laziness Protocol.** Sizing a diff, tempted by abstractions or layers. Bias to deletion and the smallest change.
@@ -127,7 +83,7 @@ entry gives its path.
 - **Sequence Work into Verifiable Units** (`../principle-sequence-verifiable-units/SKILL.md`). Multi-step work and
   commit or PR stacking. Small units, each ending in a check.
 - **Test Behavior, Not Implementation.** Any test. Fails when observable behavior breaks, passes through refactors.
-- **Explain the Number.** Before you measure, and before you trust or act on a measured number. Find what limits it; rule out that it measured something else.
+- **Explain the Number.** Before you measure, and before you trust or act on a measured number. Find what limits it.
 
 **Delegation**
 - **Guard the Context Window.** Large outputs and files. Narrow with code, keep bulk in variables, print summaries.
@@ -138,31 +94,29 @@ entry gives its path.
 
 ## Autonomy
 
-**Just do it.** Reversible work and external actions (MCP tools, team chat, tickets, kicking off evals) proceed
-without asking.
+**Just do it.** Reversible work and external actions (MCP tools, team chat, tickets, evals) proceed without asking.
 
 **Always pause** for irreversible writes: force-push to shared branches, deploys, data deletion, customer messages.
 
-**Session overrides.** "Don't stop", "going to bed", "run until done", "be fully autonomous" → keep going; for a long
-run that should outlive your turns, see
+**Session overrides.** "Don't stop", "going to bed", "run until done" → keep going. A run that should outlive your
+turns is a `/goal` per `playbooks/autonomous-run.md`; wait on CI or a merge with `schedule.watch_pr(...)`, never a poll.
 
-**No is an acceptable answer.** Asked whether to do something, invited to add scope, or shown an approach, give your
-real judgment. Decline or push back when it is true. Candor over agreement.
+**No is an acceptable answer.** Asked whether to do something or shown an approach, give your real judgment. Candor
+over agreement.
 
 ## Subagents and models
 
-**Whether to delegate is your call.** A child earns its cost when the work is independent and multi-step, when a
-separate reviewer catches what the author misses, or when parallel attempts beat one. A small or tightly coupled
-change you make yourself. When the user asks for a swarm, an arena, a race or subagents, use it: that is not a
-judgment call. Playbook steps that say "delegate" describe how to delegate when you do.
+Delegating is your call: a child earns its cost on independent multi-step work, as a separate reviewer, or in parallel
+attempts. A small or coupled change you make yourself. A user asking for a swarm, arena or subagents is not a judgment
+call. The session that loads rigor runs the playbook; never spawn a child to run it.
 
-Spawn for independent multi-step work, never to read or classify files: narrow with `bash("rg ...")`, `rlm.load`
-handles and `rlm.map` frames. A child editing files gets `worktree=True`; bring its work back with `rlm.merge`.
+**Independent parts start together.** When a task has parts that do not need each other's result, start them in the
+same cell: spawn the slower one and do the other yourself. Never ask the user which comes first, and never run a
+session search, a build or a test suite in the foreground while other work waits.
 
-Children see neither your chat nor this skill. A code-writing child's brief starts with "Read
-`<absolute path of this skill>/SKILL.md` in full and work by it", then goal, paths, the named data shape, constraints,
-success criteria and what to return. File pointers, not pasted context. Workflow skills that pick their own models
-(how, why, interrogate, reflect, swarm, arena) keep their choice.
+Children see neither your chat nor this skill. A child's brief starts with "Read `<absolute path of this skill>/worker.md` before anything else.", then goal, paths, the named data shape, constraints,
+success criteria and what to return, as file pointers. Workflow skills that pick their own models (how, why,
+interrogate, reflect, swarm, arena) keep their choice.
 
 Route models by role. Resolve them once per task and keep them in `state`:
 
@@ -175,66 +129,41 @@ async def pick(*queries):
     return None  # None: the settings default
 
 state["models"] = {
-    "code": await pick("codex", "sonnet"),     # routine code delegates
-    "hard": await pick("opus", "gpt-5"),       # cross-cutting design, concurrency, subtle algorithms
-    "judgment": await pick("opus", "gemini"),  # prose, review, verdicts
+    "code": await pick("code", "coder"),           # routine code delegates
+    "hard": await pick("reason", "large"),          # cross-cutting design, concurrency, subtle algorithms
+    "judgment": await pick("reason", "review"),    # prose, review, verdicts
 }
 print(state["models"])
 ```
 
 The queries are examples; use what `find_models` offers. Pass `model=state["models"][role]` to `rlm.spawn`,
-`rlm.infer` and `rlm.map`. The hardest changes go to the `hard` model whether the task is vague or precisely
-specified; trivial mechanical edits go to `code`.
+`rlm.infer` and `rlm.map`. The hardest changes go to `hard`, trivial mechanical edits to `code`.
 
 **Match the effort to the job.** Before each `rlm.spawn`, `rlm.infer` or `rlm.map`, set `thinking=` for the job
-(`minimal`, `low`, `medium`, `high`, `xhigh`, `max`). Start from `xhigh`. Raise it to `max` for the hardest or subtlest
-work, lower it one step for judgment and review, and two or more steps for routine work such as a mechanical edit or a
-classification frame. Change only the level, never the model a role names, so a diverse panel stays diverse. If a call
-rejects the level, drop `thinking=` (the settings default) and say so. A call that rejects a role's model never
-gets it again: fall through the role's remaining `find_models` queries, and omit `model=` so the child runs on the
-settings default when none resolves. Say so.
-
-The session that loads rigor runs the playbook. Never spawn a child to run the playbook itself.
+(`minimal` to `max`): higher for the hardest or subtlest work, lower for review and routine frames. Change only the
+level, never the model a role names. If a call rejects the level, drop `thinking=` and say so.
 
 You own every child's work. Trust a verdict only when `result["check"]["outcome"] == "verified"`; re-check the rest.
-Review the diff and write your own summary. A second opinion is the same brief on a different model; agreement is
-high signal.
+Review the diff and write your own summary. A second opinion is the same brief on a different model.
 
-**Fresh children by default.** New work (a fix round, a follow-up, a retry, the next queue item) goes to a fresh child
-with consolidated scope: the original brief, every later directive, the prior child's report and branch. Reuse a child
-only when the work needs state that lives in it and is costly to move (its uncommitted worktree, a server it runs).
+**Fresh children by default.** A fix round, follow-up, retry or next queue item goes to a fresh child with the
+original brief, every later directive, and the prior child's report and branch. Reuse a child only for state costly
+to move (its uncommitted worktree, a server it runs).
 
 ## Writing the reply
 
-Write it clean as you draft; a cleanup pass does not remove these patterns.
-
-- Short declarative sentences, one thought each.
-- No long-dash character. Write a file-list bullet as a sentence ("`main.js` owns persistence").
-- No colon as a mid-sentence connector. A colon before a list is fine.
-- Terse is not an excuse to drop content. Every section the playbook's reply names stays.
-- Frame impact for the consumer and the maintainer first: who the work is for, what changes for them, what the next
-  owner inherits.
-- Never fabricate a link, citation or transcript reference. Link only what you produced or read this session.
-- Every claim carries its evidence or its label in the same sentence: measured, inferred, or guess. Never hand the
-  human a check you could run.
-
-Every playbook ends with such a reply, PR links as `https://github.com/<owner>/<repo>/pull/<number>`. Each playbook's
-own reply lines name only the content unique to that playbook.
-
-## Comments
-
-Keep a comment only for a non-obvious why the code cannot show. Scripts and tests get no phase-narrating comments;
-the assertion message documents the step (`assert ok, "persisted across restart"`). This holds for children's diffs too.
+Short declarative sentences with no long dash and no colon as a connector. Lead with what changes for the user and
+the next owner. Terse never drops a section the playbook's reply names. Link only what you produced or read this
+session; PR links as `https://github.com/<owner>/<repo>/pull/<number>`. Give each claim its evidence or a label
+(measured, inferred, or guess). Never hand the human a check you could run. Keep a code comment only for a
+non-obvious why; tests document steps in assertion messages, children's diffs included.
 
 ## Playbooks
 
-Match the task to a playbook below and read its full steps at `playbooks/<title>.md`, with the title in kebab case,
-hyphens kept and other punctuation dropped. Put its steps into `state["plan"]` as your first items, before
-task-specific ones, and print it compactly as you go. A step you skip stays with `skip: <reason>`.
-
-A large or cross-cutting effort, or work the user will trust later without watching, routes to
-`../figure-it-out/SKILL.md` even when a narrower playbook fits; so does a task no playbook fits. A standing,
-multi-day program with many PRs and children routes to Orchestrate.
+Match the task to a playbook below and read its steps at `playbooks/<title>.md`, title in kebab case. Put its steps
+into `state["plan"]` first, print it compactly as you go, and mark a skipped step `skip: <reason>`. Large,
+cross-cutting or unattended work, or a task no playbook fits, routes to `../figure-it-out/SKILL.md`; a standing
+multi-day program of many PRs routes to Orchestrate.
 
 - **Investigation.** Read-only: how does X work, why is Y this way, are we sure about Z, X or Y?
 - **Bug fix.** Reproduce, root-cause and fix a reported defect with runtime evidence.

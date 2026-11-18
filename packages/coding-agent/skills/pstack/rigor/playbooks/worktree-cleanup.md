@@ -1,58 +1,12 @@
-### Worktree cleanup
+### Worktree and simulator cleanup
 
-1. Snapshot and audit. Record `df -h .`. Ultron's own child worktrees come first: `await rlm.worktrees.list(all=True)`
-   shows them, and `await rlm.worktrees.cleanup()` removes finished children's worktrees and those of crashed sessions,
-   keeping branches with unmerged work. For the rest, classify every worktree from `git worktree list --porcelain`,
-   never hand-typed paths (`the encode-lessons-in-structure principle (`../principle-encode-lessons-in-structure/SKILL.md`)`):
+1. Snapshot and audit. Record `df -h /`, then list the worktrees with `git worktree list --porcelain` and check each one's merge state yourself (principle-build-the-lever; the upstream audit script is not bundled here). Pass `-b origin/<branch>` logic into the check when PRs target another branch. Without `-b` it checks `MERGED` against `origin/HEAD`, so pass `-b origin/<branch>` when PRs target another branch. It reads paths from `git worktree list`, never hand-typed, since a hand-typed `myrepo-worktrees/x` misses one that lives at `.cursor/worktrees/myrepo/x` (principle-encode-lessons-in-structure). It classifies each worktree by size, age, merge state, uncommitted work, PR state, and the newest chat that touched it, then suggests a bucket. The transcript scan is slow, so background it.
+2. The bucket is advice, not permission. The pinned and active chats are the real artifact (principle-prove-it-works). Get that set from the user or sidebar and cross-check every candidate. The lever has marked `safe` a worktree the user had pinned, so the pinned set wins.
+3. Verify usage before deleting. For every `verify-recent-chat` row, or anything you doubt, fan subagents out to read the transcripts and report whether the chat is pinned or ongoing and which worktrees it touches (principle-guard-the-context-window, transcripts are bulk). A pinned chat spawns arena and repro trees into sibling worktrees via background subagents, and those are in use even when their names never hit the sidebar. Pick each subagent's reasoning level for the job, per the Subagents section.
+4. Pause on irreversible loss. `wip:N` is N tracked uncommitted edits. Show the diff and get a decision first, since removing a clean worktree is recoverable from its branch but uncommitted work is gone. `scratch:N` is untracked throwaway, safe to drop, but name the files. Per Autonomy, clean and merged and not-in-use proceeds. `wip` and in-use pause.
+5. Prune the confirmed set. Per path, `git worktree remove --force <path>`. If the dir survives on ignored build artifacts, `rm -rf` it, then `git worktree prune`. Branch refs survive, so no commits are lost. Confirm with `df -h /` and re-list.
+6. Simulators and other reclaimers. Simulators are usually the next-biggest win. `xcrun simctl --set testing delete all` (XCTestDevices clones), `xcrun simctl delete unavailable`, and `xcrun simctl runtime list` then `runtime delete <id>` for old runtimes. More when needed: Xcode `DerivedData` and `iOS DeviceSupport`, `~/Library/Application Support/Cursor` (`state.vscdb.backup`, and `snapshots/roots/<root>` where a `<root>` named for a folder you opened as a workspace balloons), package caches (pnpm, uv, brew, yarn). Clear only caches the user has not said to keep.
 
-```python
-import json, re, time
+This is the one playbook that deletes user state with no code review to catch a slip, so the gates above are the review.
 
-# MERGED checks against the branch PRs merge into: origin/HEAD (the remote's default branch) unless you set another
-base = ""  # e.g. "origin/integration" when PRs target a branch other than the default
-if not base:
-    head = await bash('''git symbolic-ref --short refs/remotes/origin/HEAD''')
-    base = head.strip() if head.ok else "origin/main"
-    print("no base given; MERGED checks against", base)
-await bash(f'''git fetch origin '+refs/heads/{base.removeprefix("origin/")}:refs/remotes/{base}' --quiet''')
-trunk = base
-out = await bash('''gh pr list --author "@me" --state all --limit 500 --json number,state,headRefName''')
-prs = json.loads(out) if out.ok else []
-by_branch = {p["headRefName"]: f"#{p['number']}/{p['state']}" for p in prs}
-paths = re.findall(r"^worktree (.+)$", await bash('''git worktree list --porcelain'''), re.M)[1:]
-rows = []
-for wt in paths:
-    size = (await bash(f'''du -sh "{wt}" | cut -f1''')).strip()
-    head = (await bash(f'''git -C "{wt}" rev-parse HEAD''')).strip()
-    stamp = await bash(f'''git -C "{wt}" log -1 --format=%ct''')
-    age = (time.time() - int(stamp.strip())) / 86400 if stamp.ok else -1
-    merged = (await bash(f'''git merge-base --is-ancestor {head} {trunk}''')).ok
-    status = (await bash(f'''git -C "{wt}" status --porcelain''')).splitlines()
-    wip = sum(1 for s in status if not s.startswith("??"))
-    branch = (await bash(f'''git -C "{wt}" symbolic-ref --quiet --short HEAD''')).strip()
-    pr = by_branch.get(branch, "-")
-    bucket = "hold-wip" if wip else "hold-open-pr" if "OPEN" in pr else "safe" if merged or pr != "-" else "review"
-    rows.append({"path": wt, "size": size, "age_days": round(age), "merged": merged, "wip": wip,
-                 "scratch": len(status) - wip, "branch": branch, "pr": pr, "bucket": bucket})
-state["worktree_audit"] = rows
-for r in rows:
-    print(r["bucket"], r["size"], f"{r['age_days']}d", r["pr"], f"wip:{r['wip']}", r["path"])
-```
-
-   Squash-merged branches are not ancestors of the base, so PR state is the stronger signal.
-2. The bucket is advice, not permission. Ask which worktrees the user or a running session is using, and cross-check
-   every candidate against that set; the in-use set wins over `safe`.
-3. Verify usage before deleting. For anything you doubt, look for live users: processes with the path as cwd
-   (`lsof +D <path>` or `fuser`), a tmux pane in it, a recent session that worked there (`rg -l <path>` over this
-   project's sessions under the agent dir `sessions/`).
-4. Pause on irreversible loss. `wip:N` is N tracked uncommitted edits: show the diff and get a decision first. A clean
-   worktree is recoverable from its branch; uncommitted work is not. Untracked scratch is throwaway, but name the
-   files. Clean, merged and not in use proceeds; wip and in-use pause.
-5. Prune the confirmed set. Per path, `git worktree remove --force <path>`; if the directory survives on ignored build
-   artifacts, `rm -rf` it, then `git worktree prune`. Branch refs survive, so no commits are lost. Confirm with
-   `df -h .` and a fresh `git worktree list`.
-6. Other reclaimers when needed: package caches (npm, pnpm, uv, pip), build outputs. Clear only caches the user has not
-   said to keep.
-
-**Reply:** `df -h` before and after with the space reclaimed, the worktrees pruned, and a one-line reason for each held
-back (in use by what, or uncommitted work).
+**Reply:** `df -h /` before and after with space reclaimed, the worktrees pruned, and a one-line reason for each held back (in-use by which chat, or uncommitted work).

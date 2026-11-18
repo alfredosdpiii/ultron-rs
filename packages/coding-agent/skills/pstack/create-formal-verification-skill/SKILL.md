@@ -13,6 +13,16 @@ metadata:
 
 A test checks the cases that someone thought to write. Formal verification checks every case in a stated scope: every order of steps in a model, every input up to a bound, or every input. This skill finds the part of the repo where that matters most, verifies one property of it, and leaves a project-local skill that lets the next agent check a change against that property. Write that skill for an agent who reads it cold, mid-change, and has never seen your work. The user must be able to trust the result and act on it without learning the verification language.
 
+## One change, no verify skill yet
+
+When the task in front of you is one change to a state machine, a retry path, a race or a parser, and the project has no verify skill for it, do not stop at reading this file and do not generate a skill. Verify that change now:
+
+1. Write a model of the changed code (Quint by default) and state the property the bug broke in one sentence.
+2. Run the checker on the model of the old code and see it fail, then on the fix and see it pass. Read both results with the pstack statechart skill.
+3. Report the command and what it printed.
+
+An exhaustive test over every reachable state is an acceptable substitute only when you counted the states and say so in the reply: give the count and why a model would add nothing. Generate the skill below when the user asks for one, or when the same area needs verifying a second time.
+
 ## Choose the target from the code
 
 Answer from the codebase, and ask the user only what you cannot observe. If the user named an area or a bug, start there.
