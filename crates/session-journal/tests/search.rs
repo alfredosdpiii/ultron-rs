@@ -70,6 +70,7 @@ fn query(matcher: Matcher) -> Query {
         limit: 50,
         per_session: 10,
         snippet: 40,
+        max_bytes: search::MAX_SEARCH_BYTES,
     }
 }
 
@@ -367,6 +368,62 @@ fn session_journal_search_reads_legacy_v3_files_with_stable_ids() {
         std::fs::read_to_string(&path).unwrap(),
         text,
         "the legacy file is not upgraded"
+    );
+}
+
+#[test]
+fn session_journal_grep_skips_sessions_over_the_bound_and_stops_inside_one() {
+    let store = store();
+    let size = |id: &str| {
+        let listed = search::list(&store.roots, Some("/w"), None);
+        std::fs::metadata(&listed.iter().find(|m| m.id == id).unwrap().path)
+            .unwrap()
+            .len()
+    };
+    let (a, b) = (size("a"), size("b"));
+    let mut bounded = query(Matcher::terms(&["retry".into()]).unwrap());
+    bounded.max_bytes = a.min(b) - 1;
+    let found = search::grep(&store.roots, &bounded, &never);
+    assert!(found.hits.is_empty(), "{found:?}");
+    assert_eq!(found.searched, 2);
+    assert_eq!(
+        found.errors,
+        [
+            format!("a: skipped, {a} bytes over the {}-byte search bound", a.min(b) - 1),
+            format!("b: skipped, {b} bytes over the {}-byte search bound", a.min(b) - 1),
+        ]
+    );
+    // A stop raised while the first session is read ends the search there, for terms and for a pattern.
+    for matcher in [
+        Matcher::terms(&["retry".into()]).unwrap(),
+        Matcher::pattern("retry", true).unwrap(),
+    ] {
+        let asked = std::cell::Cell::new(0);
+        let stop = || {
+            asked.set(asked.get() + 1);
+            asked.get() > 1
+        };
+        let found = search::grep(&store.roots, &query(matcher), &stop);
+        assert_eq!(
+            (found.hits.len(), found.searched, found.truncated),
+            (0, 1, true),
+            "{found:?}"
+        );
+    }
+    let asked = std::cell::Cell::new(0);
+    let counting = || {
+        asked.set(asked.get() + 1);
+        false
+    };
+    let found = search::grep(
+        &store.roots,
+        &query(Matcher::pattern("retry", true).unwrap()),
+        &counting,
+    );
+    assert!(
+        asked.get() > 2 * found.searched + 1,
+        "stop is asked while a session is read: {}",
+        asked.get()
     );
 }
 

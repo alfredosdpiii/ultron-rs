@@ -129,6 +129,20 @@ fn kernel_apis_sessions_checks_payloads_and_scopes_to_the_cwd() {
         );
     }
 
+    let bounded = SessionsModule::new(vec![dir.path().to_path_buf()], "here", "/w", Arc::new(|| 0)).with_max_bytes(1);
+    let listed = call(&bounded, "sessions.list", json!({}), &signal).unwrap();
+    assert_eq!(
+        (&listed["sessions"][0]["id"], &listed["sessions"][0]["first_message"]),
+        (&json!("here"), &Value::Null),
+        "a session over the bound is listed from its header"
+    );
+    let skipped = call(&bounded, "sessions.search", json!({"terms": ["needle"]}), &signal).unwrap();
+    assert_eq!(skipped["hits"], json!([]));
+    assert!(
+        skipped["errors"][0].as_str().unwrap().starts_with("here: skipped, "),
+        "{skipped}"
+    );
+
     signal.abort("cell ended");
     let stopped = call(&module, "sessions.search", json!({"pattern": "needle"}), &signal).unwrap();
     assert_eq!(

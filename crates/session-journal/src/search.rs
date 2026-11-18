@@ -15,6 +15,7 @@ use fancy_regex::{Regex, RegexBuilder};
 use serde_json::Value;
 use std::collections::HashSet;
 use std::fmt;
+use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
 
 /// The lane whose branch is the session's conversation.
@@ -83,13 +84,18 @@ impl fmt::Display for SpanRef {
 /// or one that does not apply, is skipped), or a legacy Pi v3 file read as format 4 (its entry ids are derived
 /// deterministically, so a span into it names the same entries on every read until the file is upgraded).
 pub fn replay(path: &Path) -> Result<State, String> {
+    replay_until(path, &|| false)
+}
+
+/// [`replay`], skipping the rest of a format-4 file once `stop` says so (the state is then partial).
+fn replay_until(path: &Path, stop: &dyn Fn() -> bool) -> Result<State, String> {
     let (line, _) =
         crate::io::first_line(path).map_err(|e| format!("Failed to read session {}: {e}", path.display()))?;
     let mut state = State::default();
     match codec::parse_header(&line) {
         Ok(ParsedHeader::V4(_)) => scan_writes(
             path,
-            |_| false,
+            |_| stop(),
             |writes| {
                 if let Some(writes) = writes
                     && state.validate(&writes).is_ok()
@@ -272,20 +278,34 @@ impl Matcher {
         Ok(Matcher::Terms(terms))
     }
 
-    /// Whether a file can hold a match, from its raw text (terms must each appear, JSON-escaped); a pattern always
+    /// Whether a file can hold a match, from its raw text read line by line until every term has appeared
+    /// JSON-escaped (a JSON line escapes its newlines, so no term spans two lines), or until `stop`; a pattern always
     /// can.
-    fn may_match(&self, path: &Path) -> bool {
+    fn may_match(&self, path: &Path, stop: &dyn Fn() -> bool) -> bool {
         let Matcher::Terms(terms) = self else {
             return true;
         };
-        let Ok(raw) = std::fs::read_to_string(path) else {
+        let Ok(file) = std::fs::File::open(path) else {
             return false;
         };
-        let raw = raw.to_lowercase();
-        terms.iter().all(|term| {
-            let escaped = jsrt::json::stringify(&Value::String(term.clone()));
-            raw.contains(&escaped[1..escaped.len() - 1])
-        })
+        let mut missing: Vec<String> = terms
+            .iter()
+            .map(|term| {
+                let escaped = jsrt::json::stringify(&Value::String(term.clone()));
+                escaped[1..escaped.len() - 1].to_string()
+            })
+            .collect();
+        let mut reader = BufReader::new(file);
+        let mut line = Vec::new();
+        while !missing.is_empty() && !stop() {
+            line.clear();
+            if !matches!(reader.read_until(b'\n', &mut line), Ok(read) if read > 0) {
+                return false;
+            }
+            let lower = String::from_utf8_lossy(&line).to_lowercase();
+            missing.retain(|term| !lower.contains(term.as_str()));
+        }
+        missing.is_empty()
     }
 
     /// The byte offset of the first match in `text` and the number of matches, or `None`.
@@ -339,6 +359,23 @@ pub struct Query {
     pub per_session: usize,
     /// The snippet's length around the first match, in bytes.
     pub snippet: usize,
+    /// Sessions whose file is larger than this many bytes are not read, only named in `errors`
+    /// ([`MAX_SEARCH_BYTES`] by default).
+    pub max_bytes: u64,
+}
+
+/// The largest session file a search or listing reads, in bytes: reading one costs time and memory in its size.
+pub const MAX_SEARCH_BYTES: u64 = 1 << 30;
+
+/// Why a session file over `max_bytes` is not read, or `None` when it may be.
+pub fn over_bound(metadata: &Metadata, max_bytes: u64) -> Option<String> {
+    let size = std::fs::metadata(&metadata.path).map_or(0, |m| m.len());
+    (size > max_bytes).then(|| {
+        format!(
+            "{}: skipped, {size} bytes over the {max_bytes}-byte search bound",
+            metadata.id
+        )
+    })
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -383,8 +420,9 @@ fn snippet(text: &str, at: usize, width: usize) -> String {
     out
 }
 
-/// Search the sessions under `roots`. `stop` is asked between sessions (a cancelled request ends the search early,
-/// as `truncated`).
+/// Search the sessions under `roots`. `stop` is asked between sessions and while one is read (a cancelled request
+/// ends the search early, as `truncated`). A session file over `query.max_bytes` is not searched: it is named in
+/// `errors`.
 pub fn grep(roots: &[PathBuf], query: &Query, stop: &dyn Fn() -> bool) -> Found {
     let mut found = Found::default();
     let scope = list(roots, query.cwd.as_deref(), query.since_ms);
@@ -397,10 +435,18 @@ pub fn grep(roots: &[PathBuf], query: &Query, stop: &dyn Fn() -> bool) -> Found 
             break;
         }
         found.searched += 1;
-        if !query.matcher.may_match(&metadata.path) {
+        if let Some(skipped) = over_bound(metadata, query.max_bytes) {
+            found.errors.push(skipped);
             continue;
         }
-        let state = match replay(&metadata.path) {
+        if !query.matcher.may_match(&metadata.path, stop) {
+            continue;
+        }
+        let state = match replay_until(&metadata.path, stop) {
+            Ok(_) if stop() => {
+                found.truncated = true;
+                break;
+            }
             Ok(state) => state,
             Err(error) => {
                 found.errors.push(error);

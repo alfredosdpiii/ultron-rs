@@ -26,6 +26,8 @@ pub struct SessionsModule {
     /// This session's cwd, the default scope.
     cwd: String,
     now: Clock,
+    /// Session files larger than this are listed without reading them and not searched.
+    max_bytes: u64,
 }
 
 impl SessionsModule {
@@ -41,7 +43,14 @@ impl SessionsModule {
             session_id: session_id.into(),
             cwd: cwd.into(),
             now,
+            max_bytes: search::MAX_SEARCH_BYTES,
         }
+    }
+
+    /// The largest session file read (default [`search::MAX_SEARCH_BYTES`]).
+    pub fn with_max_bytes(mut self, max_bytes: u64) -> Self {
+        self.max_bytes = max_bytes;
+        self
     }
 
     /// `cwd`: absent for this session's cwd, "all" for every cwd, else an absolute path.
@@ -70,8 +79,10 @@ impl SessionsModule {
             .into_iter()
             .take(limit)
             .map(|metadata| {
-                let listing = session_journal::names::listing(metadata);
-                let m = &listing.metadata;
+                // A session over the bound is listed from its header alone: its name and messages are not read.
+                let skipped = search::over_bound(&metadata, self.max_bytes).is_some();
+                let listing = (!skipped).then(|| session_journal::names::listing(metadata.clone()));
+                let m = &metadata;
                 json!({
                     "id": m.id,
                     "cwd": m.cwd,
@@ -79,9 +90,9 @@ impl SessionsModule {
                     "created": m.created_at,
                     "modified": m.modified_at as i64,
                     "parent": m.parent_session_id,
-                    "name": listing.name,
-                    "first_message": listing.first_message,
-                    "messages": listing.message_count,
+                    "name": listing.as_ref().map(|l| &l.name),
+                    "first_message": listing.as_ref().map(|l| &l.first_message),
+                    "messages": listing.as_ref().map(|l| l.message_count),
                     "current": m.id == self.session_id,
                 })
             })
@@ -110,6 +121,7 @@ impl SessionsModule {
             limit: count(payload, "limit", DEFAULT_LIMIT, 1)?.min(MAX_LIMIT),
             per_session: count(payload, "per_session", DEFAULT_PER_SESSION, 1)?.min(MAX_LIMIT),
             snippet: count(payload, "snippet", DEFAULT_SNIPPET, 1)?,
+            max_bytes: self.max_bytes,
         };
         let found = search::grep(&self.roots, &query, &|| request.signal.is_aborted());
         let hits: Vec<Value> = found

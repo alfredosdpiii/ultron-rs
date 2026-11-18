@@ -56,7 +56,8 @@ class Sessions:
 
     async def list(self, *, cwd: Any = None, days: float | None = None, limit: int | None = None) -> list[dict]:
         """Sessions of this project (`cwd=` another path, or "all"), modified in the last `days` days if given,
-        newest first, at most `limit` (default 50)."""
+        newest first, at most `limit` (default 50). A session file over 1 GiB is listed from its header alone:
+        its `name`, `first_message` and `messages` are None."""
         reply = await self._bridge.request("sessions.list", _payload(cwd=_cwd(cwd), days=days, limit=limit))
         return reply["sessions"]
 
@@ -68,7 +69,8 @@ class Sessions:
         (`cwd=` another path, or "all"), optionally only `sessions=[ids]`, those modified in the last `days`, and
         `roles=["user", "assistant", "toolResult", ...]`. Each hit carries a `snippet` around its first match and
         its `span` for `sessions.read`. Limits: `limit` hits (default 50), `per_session` (default 10), `snippet`
-        characters (default 300); `truncated` says a limit ended the search early."""
+        characters (default 300); `truncated` says a limit ended the search early. A session file over 1 GiB is
+        not searched: `errors` names it ("<id>: skipped, <size> bytes over the <bound>-byte search bound")."""
         if (pattern is None) == (terms is None):
             raise ValueError("sessions.search takes a pattern or terms=[...], not both")
         if pattern is not None and (not isinstance(pattern, str) or not pattern):
