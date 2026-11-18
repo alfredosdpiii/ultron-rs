@@ -157,7 +157,7 @@ class RLMNamespace:
 
     async def spawn(self, prompt: str, **kwargs: Any) -> SpawnHandle:
         """Start a subagent and return its SpawnHandle at once (`h.rlm_child_id`); options: name (required),
-        model, thinking, timeout_ms, depth, worktree, worktree_setup, context, fork.
+        model, thinking, timeout_ms, depth, worktree, worktree_setup, cwd, context, fork.
 
         The child has its own REPL and your tools and shares your filesystem, but not your conversation: give
         a self-contained brief (goal, paths, constraints, what to return). Its final reply is its result.
@@ -186,13 +186,16 @@ class RLMNamespace:
         changed_files, diffstat). worktree="auto" falls back to your shared tree outside Git. Gitignored
         node_modules/.venv/venv are linked in and small .env files copied; worktree_setup={"link": [...],
         "copy": [...], "command": "npm ci"} changes that (linked dependencies are shared: children must not
-        install different ones; servers they start share your ports). Its own children branch from its worktree."""
+        install different ones; servers they start share your ports). Its own children branch from its worktree.
+        cwd="path" (absolute or relative to your working directory; it must exist) runs the child there; with
+        worktree=True the worktree branches from the Git repository at that path and `rlm.merge` merges back into
+        it, so a session whose directory only holds a repository can still use worktrees. keep=True refuses it."""
         if not isinstance(prompt, str) or not prompt.strip():
             raise ValueError("rlm.spawn prompt must be a non-empty string")
         name = kwargs.get("name")
         if not isinstance(name, str) or not name.strip():
             raise ValueError("rlm.spawn name must be a non-empty string")
-        allowed = {"name", "model", "thinking", "timeout_ms", "depth", "worktree", "worktree_setup", "context", "fork"}
+        allowed = {"name", "model", "thinking", "timeout_ms", "depth", "worktree", "worktree_setup", "cwd", "context", "fork"}
         unknown = sorted(set(kwargs) - allowed)
         if unknown:
             raise TypeError(f"rlm.spawn unknown options: {', '.join(unknown)}")
@@ -211,6 +214,10 @@ class RLMNamespace:
             raise ValueError('rlm.spawn context must be "fresh", "fork" or "retrieve"')
         if kwargs.get("worktree_setup") is not None and not isinstance(kwargs["worktree_setup"], dict):
             raise ValueError('rlm.spawn worktree_setup must be a dict: {"link": [...], "copy": [...], "command": "..."}')
+        if kwargs.get("cwd") is not None:
+            if not isinstance(kwargs["cwd"], (str, os.PathLike)) or not str(kwargs["cwd"]).strip():
+                raise ValueError("rlm.spawn cwd must be a directory path")
+            kwargs["cwd"] = str(kwargs["cwd"])
         result = await self._bridge.request("rlm.spawn", {
             "prompt": prompt,
             "kwargs": kwargs,
@@ -1037,6 +1044,7 @@ class RuntimeState:
         self.namespace.clear()
         self.namespace.update(self.bindings)
         self.namespace["state"] = state
+        _DEFINITIONS.clear()
         # Agent classes and their instances live in `state`; define the classes again for the fresh scratch.
         agent_class_api.rehydrate()
 
@@ -1253,11 +1261,61 @@ def _decode_value(value: Any) -> Any:
     raise SnapshotIntegrityError(f"snapshot contains an unknown tag: {_text_preview(str(tag))}")
 
 
-def _persistable_namespace() -> tuple[dict[str, str], dict[str, str]]:
-    """Encode restorable names, each once to its compact JSON text, and give every other user name an explicit reason."""
+_DEFINING = (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef, ast.Import, ast.ImportFrom)
+# Name -> (source of the top-level def, class or import statement that bound it, the object it bound), in the
+# order they ran. A snapshot keeps the source of each name still bound to that object and a restore runs it again.
+_DEFINITIONS: dict[str, tuple[str, Any]] = {}
+
+
+def _definitions(tree: ast.Module) -> list[tuple[str, str]]:
+    found: list[tuple[str, str]] = []
+    for node in tree.body:
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            found.append((node.name, ast.unparse(node)))
+        elif isinstance(node, ast.Import):
+            found.extend((alias.asname or alias.name.partition(".")[0], ast.unparse(ast.Import(names=[alias]))) for alias in node.names)
+        elif isinstance(node, ast.ImportFrom):
+            found.extend(
+                (alias.asname or alias.name, ast.unparse(ast.ImportFrom(module=node.module, names=[alias], level=node.level)))
+                for alias in node.names if alias.name != "*"
+            )
+    return found
+
+
+def _record_definitions(definitions: list[tuple[str, str]], before: dict[str, Any]) -> None:
+    """Keep the statements of a cell that bound a new object; one the cell never reached leaves its name as it was."""
+    for name, source in definitions:
+        value = _STATE.namespace.get(name)
+        if value is not None and value is not before.get(name):
+            _DEFINITIONS.pop(name, None)
+            _DEFINITIONS[name] = (source, value)
+
+
+def _checked_definitions(value: Any) -> list[tuple[str, str]]:
+    """A snapshot's definitions: each must be one def, class or import statement, so nothing else runs on restore."""
+    if type(value) is not list:
+        raise SnapshotIntegrityError("snapshot integrity check failed: malformed definitions")
+    checked: list[tuple[str, str]] = []
+    for item in value:
+        if type(item) is not list or len(item) != 2 or type(item[0]) is not str or type(item[1]) is not str:
+            raise SnapshotIntegrityError("snapshot integrity check failed: malformed definitions")
+        try:
+            body = ast.parse(item[1], filename="<rlm-cell>", mode="exec").body
+        except SyntaxError:
+            body = []
+        if len(body) != 1 or not isinstance(body[0], _DEFINING):
+            raise SnapshotIntegrityError("snapshot integrity check failed: a definition is not one def, class or import")
+        checked.append((item[0], item[1]))
+    return checked
+
+
+def _persistable_namespace() -> tuple[dict[str, str], dict[str, str], list[tuple[str, str]]]:
+    """Encode restorable names, each once to its compact JSON text, keep the source of names a def, class or import
+    bound, and give every other user name an explicit reason."""
     encoded: dict[str, Any] = {}
     reasons: dict[str, str] = {}
     owners: dict[int, str] = {}
+    defined: set[str] = set()
     for name, value in list(_STATE.namespace.items()):
         if name.startswith("__") or (name in _STATE.bindings and value is _STATE.bindings[name]):
             continue
@@ -1265,7 +1323,11 @@ def _persistable_namespace() -> tuple[dict[str, str], dict[str, str]]:
         try:
             candidate = json.dumps(_encode_value(value, mutable), separators=(",", ":"), allow_nan=True)
         except _NonRestorable as error:
-            reasons[name] = str(error)
+            # Agent classes come back from `state` (agent_class_api.rehydrate), not from their statement.
+            if name in _DEFINITIONS and _DEFINITIONS[name][1] is value and getattr(value, "__agent__", None) is None:
+                defined.add(name)
+            else:
+                reasons[name] = str(error)
             continue
         except Exception as error:
             reasons[name] = f"not encodable: {type(error).__name__}"
@@ -1281,7 +1343,7 @@ def _persistable_namespace() -> tuple[dict[str, str], dict[str, str]]:
         for item in mutable:
             owners[item] = name
         encoded[name] = candidate
-    return encoded, reasons
+    return encoded, reasons, [(name, source) for name, (source, _) in _DEFINITIONS.items() if name in defined]
 
 
 def save_snapshot(path: str) -> dict[str, Any]:
@@ -1293,9 +1355,9 @@ def save_snapshot(path: str) -> dict[str, Any]:
     target = Path(path)
     target.parent.mkdir(parents=True, exist_ok=True)
     agent_class_api.flush()
-    encoded, reasons = _persistable_namespace()
+    encoded, reasons, definitions = _persistable_namespace()
     skipped = sorted(reasons)
-    rest = json.dumps({"skipped": skipped, "reasons": reasons}, separators=(",", ":"), allow_nan=True)
+    rest = json.dumps({"defs": definitions, "skipped": skipped, "reasons": reasons}, separators=(",", ":"), allow_nan=True)
     body = ('{"names":{' + ",".join(json.dumps(name) + ":" + text for name, text in encoded.items()) + "}," + rest[1:]).encode()
     digest = hashlib.sha256(body).hexdigest()
     header = json.dumps(
@@ -1307,7 +1369,7 @@ def save_snapshot(path: str) -> dict[str, Any]:
     temporary.write_bytes(content)
     os.replace(temporary, target)
     return {
-        "saved": sorted(encoded),
+        "saved": sorted([*encoded, *(name for name, _ in definitions)]),
         "skipped": skipped,
         "reasons": reasons,
         "serializer": "json",
@@ -1369,16 +1431,29 @@ def restore_snapshot(path: str, verified_sha256: Any = None) -> dict[str, Any]:
         raise SnapshotIntegrityError("snapshot integrity check failed: malformed body")
     # Decode everything before touching the namespace, so a bad snapshot changes nothing.
     decoded = {name: _decode_value(value) for name, value in names.items()}
+    # Snapshots written before definitions were kept have no "defs".
+    definitions = _checked_definitions(data.get("defs", []))
     before = dict(_STATE.namespace)
     _STATE.namespace.update(decoded)
+    redefined: list[str] = []
     try:
+        for name, source in definitions:
+            try:
+                code = compile(source, "<rlm-cell>", "exec")
+                _remember_cell_source(code, source)
+                exec(code, _STATE.namespace, _STATE.namespace)
+                _DEFINITIONS[name] = (source, _STATE.namespace[name])
+                redefined.append(name)
+            except Exception as error:
+                skipped.append(name)
+                reasons[name] = f"definition failed on restore: {type(error).__name__}: {error}"
         agent_class_api.rehydrate()
     except BaseException:
         # Defining the stored agent classes failed: put the namespace back as it was.
         _STATE.namespace.clear()
         _STATE.namespace.update(before)
         raise
-    return {"restored": sorted(decoded), "missing": False, "skipped": sorted(skipped), "reasons": reasons}
+    return {"restored": sorted([*decoded, *redefined]), "missing": False, "skipped": sorted(skipped), "reasons": reasons}
 
 
 _UNCLOSED = re.compile(r"^'([(\[{])' was never closed$")
@@ -1464,9 +1539,10 @@ class _RawShellLiterals(ast.NodeTransformer):
         return node
 
 
-def _prepare_code(source: str) -> tuple[Any, str | None]:
+def _prepare_code(source: str) -> tuple[Any, str | None, list[tuple[str, str]]]:
     tree, text, note = _parse_cell(source)
     tree = _RawShellLiterals(text).visit(tree)
+    definitions = _definitions(tree)
     if tree.body and isinstance(tree.body[-1], ast.Expr):
         tree.body[-1] = ast.Assign(
             targets=[ast.Name(id="_rlm_result", ctx=ast.Store())],
@@ -1475,7 +1551,7 @@ def _prepare_code(source: str) -> tuple[Any, str | None]:
     ast.fix_missing_locations(tree)
     code = compile(tree, "<rlm-cell>", "exec", flags=ast.PyCF_ALLOW_TOP_LEVEL_AWAIT)
     _remember_cell_source(code, text)
-    return code, note
+    return code, note, definitions
 
 
 # Every cell is compiled as "<rlm-cell>", so a traceback cannot find its text by file name; the code objects of
@@ -2094,7 +2170,8 @@ async def execute_cell(request_id: str, source: str) -> None:
         live = _LiveOutput.open(request_id)
         _STATE.namespace.pop("_rlm_result", None)
         try:
-            compiled, note = _prepare_code(source)
+            compiled, note, definitions = _prepare_code(source)
+            bound_before = {name: _STATE.namespace.get(name) for name, _ in definitions}
             if note is not None:
                 stdout.write(note + "\n")
             _arm_cpu_limit()
@@ -2110,6 +2187,7 @@ async def execute_cell(request_id: str, source: str) -> None:
                             await result
                     finally:
                         agent_class_api.end_cell()
+                        _record_definitions(definitions, bound_before)
                 if "_rlm_result" in _STATE.namespace:
                     value = _STATE.namespace.pop("_rlm_result")
                     if value is None:

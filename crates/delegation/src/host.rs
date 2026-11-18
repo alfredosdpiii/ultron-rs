@@ -64,7 +64,8 @@ pub struct ChildRun {
     pub model: Option<String>,
     pub thinking: Option<String>,
     pub timeout_ms: u64,
-    /// A worktree child's (or its descendant's) working directory and extra environment; `None` / empty: the host's.
+    /// The child's working directory (its worktree's, or `rlm.spawn(cwd=)`'s, or an ancestor's) and a worktree
+    /// child's extra environment; `None` / empty: the host's.
     pub cwd: Option<String>,
     pub env: Vec<(String, String)>,
     /// `rlm.spawn(fork=True)`: the anchor (from the [`crate::fork::ForkPointHook`]) of the parent's conversation the
@@ -195,6 +196,8 @@ struct Task {
     /// A terminal result is being finalized (worktree commit) before it is committed.
     finishing: bool,
     worktree: Option<WorktreeRecord>,
+    /// `rlm.spawn(cwd=)` without a worktree of its own: the directory it (and its descendants) works in.
+    cwd: Option<PathBuf>,
     /// The worktree's files when the child started (after setup), and the parent's tree then.
     worktree_baseline: Option<WorkspaceSnapshot>,
     outside_before: Option<WorkspaceSnapshot>,
@@ -441,10 +444,17 @@ impl State {
             .iter()
             .find_map(|id| self.task(id).and_then(|t| t.worktree.as_ref()))
     }
-    /// The directory a task works in: its (or an ancestor's) worktree, else the shared workspace.
+    /// The directory a task works in: its (or the nearest ancestor's) worktree or `cwd=`, else the shared workspace.
     fn workspace_of(&self, id: Option<&str>, shared: Option<&Path>) -> Option<PathBuf> {
-        self.worktree_of(id)
-            .map(|w| PathBuf::from(&w.cwd))
+        self.line(id)
+            .iter()
+            .filter_map(|id| self.task(id))
+            .find_map(|t| {
+                t.worktree
+                    .as_ref()
+                    .map(|w| PathBuf::from(&w.cwd))
+                    .or_else(|| t.cwd.clone())
+            })
             .or_else(|| shared.map(Path::to_path_buf))
     }
     /// A child lane sees only its own task and descendants; the root sees everything.
@@ -951,6 +961,8 @@ impl Delegation {
                 base: info["base"].as_str().unwrap_or_default().to_string(),
                 commit: info["commit"].as_str().map(String::from),
             };
+            // A child spawned with `cwd=` merges into the repository its worktree branched from.
+            let target = info["repo"].as_str().map_or(target, Path::new);
             let outcome = match wt::merge_child_worktree(target, &source, on_conflict == "markers") {
                 Ok(outcome) => outcome,
                 Err(error) => {
@@ -1107,6 +1119,7 @@ impl Delegation {
                 "depth",
                 "worktree",
                 "worktree_setup",
+                "cwd",
                 "fork",
                 "context",
                 "role",
@@ -1137,6 +1150,21 @@ impl Delegation {
                         .into(),
                 );
             }
+        };
+        let shared = self.inner.workspace.as_deref();
+        let spawner_dir = sync::lock(&self.inner.state).workspace_of(parent, shared);
+        let cwd = match kwargs.get("cwd") {
+            None | Some(Value::Null) => None,
+            Some(Value::String(raw)) => {
+                let path = spawner_dir
+                    .as_deref()
+                    .map_or_else(|| PathBuf::from(raw), |dir| dir.join(raw));
+                match std::fs::canonicalize(&path) {
+                    Ok(dir) if dir.is_dir() => Some(dir),
+                    _ => return Err(format!("cwd={raw:?} is not an existing directory ({})", path.display())),
+                }
+            }
+            Some(_) => return Err("cwd must be a directory path string".into()),
         };
         let setup = check_worktree_setup(kwargs.get("worktree_setup"))?;
         if setup.is_some() && mode == WorktreeMode::Off {
@@ -1177,8 +1205,8 @@ impl Delegation {
             }
             None => None,
         };
-        // The worktree branches from the spawner's tree as it is now, before the child is admitted.
-        let worktree = self.new_worktree(mode, &name, setup.as_ref(), parent)?;
+        // The worktree branches from the spawner's tree (or `cwd=`'s) as it is now, before the child is admitted.
+        let worktree = self.new_worktree(mode, &name, setup.as_ref(), cwd.clone().or(spawner_dir))?;
         let thinking = match kwargs.get("thinking").map(model_scope::thinking_level) {
             None => None,
             Some(Ok(level)) => Some(level),
@@ -1256,6 +1284,7 @@ impl Delegation {
                     record_error = wt::save_record(&record).err().map(|error| error.message);
                     record
                 }),
+                cwd: cwd.filter(|_| worktree.is_none()),
                 worktree_baseline: None,
                 outside_before: None,
                 before: None,
@@ -1285,7 +1314,9 @@ impl Delegation {
                 (None, _) => prompt,
             };
             (
-                inherited.map(|w| w.cwd.clone()),
+                state
+                    .workspace_of(Some(&task_id), None)
+                    .map(|dir| dir.display().to_string()),
                 inherited.map(wt::worktree_env).unwrap_or_default(),
                 match note {
                     Some(note) => format!("{prompt}\n\n{note}"),
@@ -1352,18 +1383,17 @@ impl Delegation {
         }))
     }
 
-    /// `newWorktree`: a private worktree for a child of `parent` (`worktree=True`), branched from the spawner's tree.
+    /// `newWorktree`: a private worktree (`worktree=True`) branched from the repository at `from`.
     fn new_worktree(
         &self,
         mode: WorktreeMode,
         name: &str,
         setup: Option<&WorktreeSetup>,
-        parent: Option<&str>,
+        from: Option<PathBuf>,
     ) -> Result<Option<WorktreeRecord>, String> {
         if mode == WorktreeMode::Off {
             return Ok(None);
         }
-        let from = sync::lock(&self.inner.state).workspace_of(parent, self.inner.workspace.as_deref());
         let Some(from) = from else {
             if mode == WorktreeMode::Auto {
                 return Ok(None);

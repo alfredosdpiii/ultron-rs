@@ -75,26 +75,28 @@ shared_b = shared_a
 huge = 10 ** 5000
 "#;
 
-const UNSUPPORTED_NAMES: [&str; 18] = [
-    "Color",
-    "Point",
+const UNSUPPORTED_NAMES: [&str; 11] = [
     "cyclic",
-    "enum",
-    "function",
     "generator",
     "huge",
     "instance",
     "lambda_value",
-    "math",
     "module",
     "open_file",
     "shared_a",
     "shared_b",
     "sock",
-    "socket",
     "str_subclass",
-    "tempfile",
 ];
+
+/// Functions, classes and imports come back by running their source again.
+const DEFINED_NAMES: [&str; 7] = ["Color", "Point", "enum", "function", "math", "socket", "tempfile"];
+
+fn saved_names() -> Vec<&'static str> {
+    let mut names: Vec<&str> = RESTORED_NAMES.iter().chain(&DEFINED_NAMES).copied().collect();
+    names.sort();
+    names
+}
 
 const RESTORED_NAMES: [&str; 8] = [
     "blob",
@@ -166,11 +168,10 @@ fn acceptance_a08_snapshot_type_matrix_reports_every_unsupported_name_with_a_rea
     let saved = save_matrix(&file.path);
     assert_eq!(saved.result.status, Status::Ok);
     let report = saved.snapshot.unwrap();
-    assert_eq!(report.saved, RESTORED_NAMES);
+    assert_eq!(report.saved, saved_names());
     assert_eq!(report.skipped, UNSUPPORTED_NAMES);
     let reason = |name: &str| report.reason(name).unwrap_or_default().to_string();
     for (name, want) in [
-        ("function", "unsupported type builtins.function"),
         ("lambda_value", "unsupported type builtins.function"),
         ("generator", "unsupported type builtins.generator"),
         ("open_file", "unsupported type"),
@@ -201,7 +202,7 @@ fn acceptance_a08_restore_brings_back_equal_typed_values_and_reports_non_restora
     let restored = target.restore(Some(&file.path)).unwrap();
     assert_eq!(restored.result.status, Status::Ok);
     let report = restored.restore.unwrap();
-    assert_eq!(report.restored, RESTORED_NAMES);
+    assert_eq!(report.restored, saved_names());
     assert!(!report.missing);
     assert_eq!(report.skipped, UNSUPPORTED_NAMES);
     assert!(report.reason("generator").unwrap().contains("generator"));
@@ -229,8 +230,8 @@ fn acceptance_a08_startup_restore_from_a_configured_snapshot_reports_the_same_na
     let restarted = kernel(Some(&file.path));
     assert_eq!(value(&restarted, &check_equal()), "[]");
     assert_eq!(
-        value(&restarted, "'sock' in globals() or 'function' in globals()"),
-        "False"
+        value(&restarted, "('sock' in globals(), function(1), Point(2).x)"),
+        "(False, 2, 2)"
     );
 }
 

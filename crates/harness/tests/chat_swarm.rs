@@ -777,7 +777,7 @@ fn harness_chat_swarm_keeps_shared_notes_and_refuses_a_stale_writer() {
 }
 
 /// `rlm.spawn(keep=True, ...)` as `swarm_api.py` sends it (`keep` at the payload's top level): a persistent child is
-/// a child conversation in the session's directory, so `worktree=`, `worktree_setup=`, `depth=` and `fork=` are
+/// a child conversation in the session's directory, so `worktree=`, `worktree_setup=`, `depth=`, `fork=` and `cwd=` are
 /// refused with what to do instead, never silently dropped (the handle used to say `"worktree": null`), and no child
 /// is started; their unset values (False, None, 0) are accepted.
 #[test]
@@ -795,6 +795,7 @@ fn harness_chat_swarm_refuses_options_a_persistent_child_cannot_honour() {
                 json!({ "name": "w", "worktree_setup": { "link": [] } }),
                 json!({ "name": "w", "depth": 1 }),
                 json!({ "name": "w", "fork": true }),
+                json!({ "name": "w", "cwd": "repo" }),
                 json!({ "name": "ok", "worktree": false, "depth": 0, "fork": false, "worktree_setup": null }),
             ] {
                 let spawned = ops
@@ -814,10 +815,10 @@ fn harness_chat_swarm_refuses_options_a_persistent_child_cannot_honour() {
         let (chat, root) = open_chat(Controlled::new(backend), &setup);
         root.submit(SubmissionDraft::input("go")).unwrap().wait(&bg()).unwrap();
         let seen = seen.lock().unwrap().clone();
-        assert_eq!(seen.len(), 7);
+        assert_eq!(seen.len(), 8);
         for (result, key) in seen
             .iter()
-            .zip(["worktree", "worktree", "worktree_setup", "depth", "fork"])
+            .zip(["worktree", "worktree", "worktree_setup", "depth", "fork", "cwd"])
         {
             assert_eq!(
                 result.as_ref().unwrap_err(),
@@ -826,10 +827,10 @@ fn harness_chat_swarm_refuses_options_a_persistent_child_cannot_honour() {
                 )
             );
         }
-        let accepted = seen[5].as_ref().unwrap();
+        let accepted = seen[6].as_ref().unwrap();
         assert_eq!(accepted["name"], "ok", "{accepted}");
         // Only the accepted spawn started a child.
-        let listed = seen[6].as_ref().unwrap();
+        let listed = seen[7].as_ref().unwrap();
         let names: Vec<&Value> = listed["subagents"]
             .as_array()
             .unwrap()

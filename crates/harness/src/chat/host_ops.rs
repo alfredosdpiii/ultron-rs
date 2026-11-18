@@ -157,6 +157,7 @@ impl HostOps {
             ("worktree_setup", &[Value::Null][..]),
             ("depth", &[Value::Null, json!(0)][..]),
             ("fork", &[Value::Null, Value::Bool(false)][..]),
+            ("cwd", &[Value::Null][..]),
         ] {
             if let Some(value) = options.get(key)
                 && !unset.contains(value)

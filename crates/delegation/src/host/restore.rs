@@ -126,6 +126,10 @@ impl Delegation {
                     waiters: 0,
                     signal: signal.clone(),
                     finishing: false,
+                    cwd: run
+                        .as_ref()
+                        .filter(|_| worktree.is_none())
+                        .and_then(|run| run.cwd.as_deref().map(PathBuf::from)),
                     worktree,
                     worktree_baseline: None,
                     outside_before: None,

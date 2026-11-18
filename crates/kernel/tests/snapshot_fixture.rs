@@ -112,7 +112,11 @@ fn kernel_snapshot_sessions_replay_typescript_results_files_and_protocol_lines()
     let normalize =
         |value: Value| -> Value { serde_json::from_str(&value.to_string().replace(&dir_text, "<dir>")).unwrap() };
     let rlm = rlm_dir();
-    for spec in fixture["kernels"].as_array().unwrap() {
+    // The TypeScript supervisor that recorded the fixture is gone: ULTRON_BLESS_SNAPSHOT_FIXTURE=1 records what this
+    // run produced instead of comparing, for a deliberate change to the snapshot format.
+    let bless = std::env::var_os("ULTRON_BLESS_SNAPSHOT_FIXTURE").is_some();
+    let mut blessed = fixture.clone();
+    for (kernel_index, spec) in fixture["kernels"].as_array().unwrap().iter().enumerate() {
         let name = spec["name"].as_str().unwrap();
         let log = dir.join(format!("{}.log", name.replace(' ', "-")));
         let mut options = KernelOptions::new(&dir, Path::new(env!("CARGO_MANIFEST_DIR")).join("fixtures/tap.py"));
@@ -137,13 +141,18 @@ fn kernel_snapshot_sessions_replay_typescript_results_files_and_protocol_lines()
             Arc::new(|_: &str, _: Map<String, Value>, _: &kernel::Signal| Ok(Value::Null)),
         )
         .unwrap();
-        for expected in spec["steps"].as_array().unwrap() {
+        for (step_index, expected) in spec["steps"].as_array().unwrap().iter().enumerate() {
+            let recorded = &mut blessed["kernels"][kernel_index]["steps"][step_index];
             let step = expected["step"].as_array().unwrap();
             let kind = step[0].as_str().unwrap();
             let arg = step[1].as_str().unwrap();
             match kind {
                 "read" => {
                     let text = std::fs::read_to_string(file(arg)).unwrap();
+                    if bless {
+                        recorded["file"] = Value::from(text);
+                        continue;
+                    }
                     assert_eq!(text, expected["file"].as_str().unwrap(), "{name}: signed file {arg}");
                     continue;
                 }
@@ -184,10 +193,31 @@ fn kernel_snapshot_sessions_replay_typescript_results_files_and_protocol_lines()
                 Ok(reply) => json!({"step": step, "ok": normalize(serde_json::to_value(&reply).unwrap())}),
                 Err(error) => json!({"step": step, "error": normalize(Value::from(error.message()))}),
             };
+            if bless {
+                *recorded = got;
+                continue;
+            }
             assert_eq!(&got, expected, "{name}");
         }
         kernel.shutdown();
         let wire = normalize_wire(&std::fs::read_to_string(&log).unwrap_or_default(), &dir_text);
+        if bless {
+            blessed["kernels"][kernel_index]["wire"] = wire;
+            continue;
+        }
         assert_eq!(wire, spec["wire"], "{name}: protocol lines");
+    }
+    if bless {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("fixtures/snapshot.json");
+        // The recorded file is indented by one space.
+        let mut text = Vec::new();
+        let formatter = serde_json::ser::PrettyFormatter::with_indent(b" ");
+        serde::Serialize::serialize(
+            &blessed,
+            &mut serde_json::Serializer::with_formatter(&mut text, formatter),
+        )
+        .unwrap();
+        text.push(b'\n');
+        std::fs::write(path, text).unwrap();
     }
 }

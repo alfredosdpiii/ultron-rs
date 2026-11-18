@@ -256,3 +256,89 @@ fn delegation_spawn_worktrees_replay_typescript_scenarios() {
     }
     assert_eq!(got, want);
 }
+
+/// A runner that writes `made.txt` in its working directory and records that directory.
+fn cwd_host(session: &Path) -> (Delegation, Arc<Mutex<Vec<Option<String>>>>) {
+    let seen: Arc<Mutex<Vec<Option<String>>>> = Arc::default();
+    let sink = seen.clone();
+    let runner: ChildRunner = Arc::new(move |run| {
+        if let Some(cwd) = &run.cwd {
+            std::fs::write(Path::new(cwd).join("made.txt"), "made\n").unwrap();
+        }
+        sink.lock().unwrap().push(run.cwd.clone());
+        Ok("done".into())
+    });
+    let mut options = DelegationOptions::new(runner);
+    options.store = Box::new(Store(Arc::default()));
+    options.workspace = Some(session.to_path_buf());
+    options.session_id = "cwd-session".into();
+    (Delegation::new(options).0, seen)
+}
+
+#[test]
+fn delegation_spawn_cwd_runs_the_child_in_that_directory() {
+    let dir = tempfile::tempdir().unwrap();
+    let session = std::fs::canonicalize(dir.path()).unwrap();
+    std::fs::create_dir(session.join("sub")).unwrap();
+    let (host, seen) = cwd_host(&session);
+    let spawn = |cwd: &str| {
+        host.handle(
+            "rlm.spawn",
+            json!({ "prompt": "go", "kwargs": { "name": "c", "cwd": cwd } }),
+            "main",
+        )
+    };
+    spawn("sub").unwrap();
+    let missing = spawn("nowhere").unwrap_err();
+    assert!(missing.contains("cwd") && missing.contains("nowhere"), "{missing}");
+    settle(&host);
+    host.close();
+    let sub = session.join("sub").display().to_string();
+    assert_eq!(*seen.lock().unwrap(), [Some(sub)]);
+}
+
+#[test]
+fn delegation_spawn_worktree_branches_from_the_repo_at_cwd() {
+    let dir = tempfile::tempdir().unwrap();
+    let session = std::fs::canonicalize(dir.path()).unwrap();
+    let repo = session.join("repo");
+    std::fs::create_dir(&repo).unwrap();
+    git(&repo, &["init", "-q", "-b", "main"]);
+    std::fs::write(repo.join("a.txt"), "a\n").unwrap();
+    let quiet = [
+        "-c",
+        "user.name=F",
+        "-c",
+        "user.email=f@example.com",
+        "-c",
+        "commit.gpgsign=false",
+    ];
+    git(&repo, &[&quiet[..], &["add", "-A"]].concat());
+    git(&repo, &[&quiet[..], &["commit", "-q", "-m", "initial"]].concat());
+    let (host, seen) = cwd_host(&session);
+    let refused = host
+        .handle(
+            "rlm.spawn",
+            json!({ "prompt": "go", "kwargs": { "name": "w", "worktree": true } }),
+            "main",
+        )
+        .unwrap_err();
+    assert!(refused.contains("worktree=True"), "{refused}");
+    let spawned = host
+        .handle(
+            "rlm.spawn",
+            json!({ "prompt": "go", "kwargs": { "name": "w", "worktree": true, "cwd": repo.display().to_string() } }),
+            "main",
+        )
+        .unwrap();
+    let worktree_cwd = spawned["worktree"]["cwd"].as_str().unwrap().to_string();
+    let branch = spawned["worktree"]["branch"].as_str().unwrap();
+    git(&repo, &["rev-parse", "--verify", branch]);
+    settle(&host);
+    assert_eq!(*seen.lock().unwrap(), [Some(worktree_cwd)]);
+    let merged = host.handle("rlm.merge", json!({}), "main").unwrap();
+    assert_eq!(merged["ok"], true, "{merged}");
+    assert_eq!(std::fs::read_to_string(repo.join("made.txt")).unwrap(), "made\n");
+    assert!(!session.join("made.txt").exists());
+    host.close();
+}

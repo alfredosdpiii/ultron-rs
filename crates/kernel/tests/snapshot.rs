@@ -98,26 +98,22 @@ shared_b = shared_a
 huge = 10 ** 5000
 "#;
 
-const UNSUPPORTED_NAMES: [&str; 18] = [
-    "Color",
-    "Point",
+const UNSUPPORTED_NAMES: [&str; 11] = [
     "cyclic",
-    "enum",
-    "function",
     "generator",
     "huge",
     "instance",
     "lambda_value",
-    "math",
     "module",
     "open_file",
     "shared_a",
     "shared_b",
     "sock",
-    "socket",
     "str_subclass",
-    "tempfile",
 ];
+
+/// Bound by a top-level def, class or import: saved as that statement and run again on restore.
+const DEFINED_NAMES: [&str; 7] = ["Color", "Point", "enum", "function", "math", "socket", "tempfile"];
 
 const RESTORED_NAMES: [&str; 8] = [
     "blob",
@@ -140,10 +136,11 @@ fn kernel_snapshot_type_matrix_saves_plain_data_and_reports_every_unsupported_na
     let saved = source.snapshot(None).unwrap();
     assert_eq!(saved.result.status, Status::Ok);
     let report = saved.snapshot.unwrap();
-    assert_eq!(report.saved, RESTORED_NAMES);
+    let mut saved: Vec<&str> = RESTORED_NAMES.iter().chain(&DEFINED_NAMES).copied().collect();
+    saved.sort();
+    assert_eq!(report.saved, saved);
     assert_eq!(report.skipped, UNSUPPORTED_NAMES);
     let reason = |name: &str| report.reason(name).unwrap().to_string();
-    assert!(reason("function").contains("unsupported type builtins.function"));
     assert!(reason("lambda_value").contains("unsupported type builtins.function"));
     assert!(reason("generator").contains("unsupported type builtins.generator"));
     assert!(reason("open_file").contains("unsupported type"));
@@ -161,6 +158,22 @@ fn kernel_snapshot_type_matrix_saves_plain_data_and_reports_every_unsupported_na
     let mut names: Vec<&String> = body["names"].as_object().unwrap().keys().collect();
     names.sort();
     assert_eq!(names, RESTORED_NAMES);
+    let defined: Vec<&str> = body["defs"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|pair| pair[0].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        defined,
+        ["math", "socket", "tempfile", "enum", "function", "Point", "Color"]
+    );
+    let target = kernel(&KEY, None);
+    assert_eq!(target.restore(Some(&path)).unwrap().result.status, Status::Ok);
+    assert_eq!(
+        value(&target, "(function(1), Point(2).x, Color('red').name, math.floor(1.5))"),
+        "(2, 2, 'RED', 1)"
+    );
     assert_eq!(std::fs::metadata(&path).unwrap().permissions().mode() & 0o777, 0o600);
     // No unsigned or temporary file is left beside it.
     let leftovers: Vec<_> = std::fs::read_dir(directory.path())
@@ -457,7 +470,10 @@ fn kernel_continuity_state_survives_sigkill_of_an_idle_kernel_and_unsupported_na
         &kernel,
         "total = 41\nrows = [{'id': 1}, {'id': 2}]\nstate['phase'] = 'collect'",
     );
-    value(&kernel, "helper = lambda x: x + 1\nimport fractions");
+    value(
+        &kernel,
+        "helper = lambda x: x + 1\nimport fractions\ndef double(x):\n    return x * 2",
+    );
     checkpointed(&kernel, "helper");
     let old = kernel.pid().unwrap();
     kill(old);
@@ -465,7 +481,7 @@ fn kernel_continuity_state_survives_sigkill_of_an_idle_kernel_and_unsupported_na
 
     let reply = kernel
         .execute_cell(
-            "(total + 1, rows[1]['id'], state, 'helper' in globals(), 'fractions' in globals())",
+            "(total + 1, rows[1]['id'], state, 'helper' in globals(), fractions.Fraction(1, 2).numerator, double(4))",
             None,
             None,
         )
@@ -473,7 +489,7 @@ fn kernel_continuity_state_survives_sigkill_of_an_idle_kernel_and_unsupported_na
     assert_eq!(reply.result.status, Status::Ok);
     assert_eq!(
         reply.result.result.as_deref(),
-        Some("(42, 2, {'phase': 'collect'}, False, False)")
+        Some("(42, 2, {'phase': 'collect'}, False, 1, 8)")
     );
     let report = reply.recovery.clone().expect("recovery report");
     // The reason is the error the dead kernel's cells got, with its stderr tail.
@@ -484,11 +500,14 @@ fn kernel_continuity_state_survives_sigkill_of_an_idle_kernel_and_unsupported_na
         ContinuityReport {
             reason: reason.clone(),
             snapshot_path: path.display().to_string(),
-            restored: vec!["rows".into(), "state".into(), "total".into()],
-            lost: vec![
-                lost("fractions", "unsupported type builtins.module"),
-                lost("helper", "unsupported type builtins.function"),
+            restored: vec![
+                "double".into(),
+                "fractions".into(),
+                "rows".into(),
+                "state".into(),
+                "total".into(),
             ],
+            lost: vec![lost("helper", "unsupported type builtins.function")],
             interrupted_cell: false,
             unsaved_cells: 0,
             restore_error: None,
@@ -503,8 +522,8 @@ fn kernel_continuity_state_survives_sigkill_of_an_idle_kernel_and_unsupported_na
         report.render(),
         format!(
             "[RLM kernel restarted after: {reason}]\n\
-         [Restored: rows, state, total]\n\
-         [Lost: fractions (unsupported type builtins.module); helper (unsupported type builtins.function)]\n"
+         [Restored: double, fractions, rows, state, total]\n\
+         [Lost: helper (unsupported type builtins.function)]\n"
         )
     );
     assert_eq!(kernel.last_recovery(), Some(report));
