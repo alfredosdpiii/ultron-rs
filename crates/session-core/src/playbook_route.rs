@@ -45,7 +45,7 @@ pub const ROUTES: &[(&str, &str, &str)] = &[
     (
         "feature",
         "Feature",
-        r"(?i)\b(add|implement|build|support|introduce|create|make it|new (option|flag|command|endpoint|page))\b",
+        r"(?i)\b(add|implement|build|support|introduce|create|make it|integrate|new (option|flag|command|endpoint|page)|i (want|need) (a|an|it to|ultron to|this to|the \w+ to))\b",
     ),
     (
         "investigation",
@@ -62,13 +62,26 @@ const INVESTIGATION: (&str, &str) = ("investigation", "Investigation");
 
 static OPENS_AS_QUESTION: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(
-        r"(?i)^(so |i see,? |and |but |also |ok(ay)?,? )*(what'?s?|why|how|is|are|was|were|does|do|did|which|where|who|when)\b",
+        r"(?i)^(so |i see,? |and |but |also |ok(ay)?,? )*(what'?s?|why|how|is|are|was|were|does|did|which|where|who|when|do (we|you|i|they))\b",
     )
     .expect("valid pattern")
 });
-/// "lets add a flag?" asks for the change.
-static OPENS_AS_REQUEST: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"(?i)^(ok(ay)?,? |so |and |also )*(lets|let's|please)\b").expect("valid pattern"));
+/// "lets add a flag?" and "fix the parser, and what broke it?" ask for the change.
+static OPENS_AS_REQUEST: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(
+        r"(?i)^(ok(ay)?,? |so |and |also |yes,? )*(lets|let's|please|fix|add|implement|build|make|create|rename|refactor|i (want|need) (a|an|it to|ultron to|this to|the \w+ to))\b",
+    )
+    .expect("valid pattern")
+});
+/// "did you fix the tests" asks what happened, not for the fix.
+static ASKS_FOR_STATUS: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?i)^(so |i see,? |and |but |also |ok(ay)?,? )*(did|is|are|was|were|has|have)\b")
+        .expect("valid pattern")
+});
+/// A document to write is not a feature to build.
+static ASKS_FOR_A_DOCUMENT: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?i)\b(write-?up|slides?|decision matrix|presentation|pdf|diagram)\b").expect("valid pattern")
+});
 /// "how do I fix the failing test" asks for the fix.
 static ASKS_FOR_A_FIX: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"(?i)\b(fix|repair|solve)\b").expect("valid pattern"));
@@ -93,11 +106,16 @@ pub fn route(text: &str) -> Option<(&'static str, &'static str)> {
     } else {
         words.join(" ")
     };
-    let question = (read.ends_with('?') && !OPENS_AS_REQUEST.is_match(&read))
-        || (OPENS_AS_QUESTION.is_match(&read) && !ASKS_FOR_A_FIX.is_match(&read));
+    let question = !OPENS_AS_REQUEST.is_match(&read)
+        && (read.ends_with('?')
+            || ASKS_FOR_STATUS.is_match(&read)
+            || (OPENS_AS_QUESTION.is_match(&read) && !ASKS_FOR_A_FIX.is_match(&read)));
+    let document = ASKS_FOR_A_DOCUMENT.is_match(&read);
     COMPILED
         .iter()
-        .find(|(file, _, pattern)| !(question && CHANGES_CODE.contains(file)) && pattern.is_match(&read))
+        .find(|(file, _, pattern)| {
+            !(question && CHANGES_CODE.contains(file)) && !(document && *file == "feature") && pattern.is_match(&read)
+        })
         .map(|(file, title, _)| (*file, *title))
         .or(question.then_some(INVESTIGATION))
 }
@@ -209,6 +227,26 @@ mod tests {
             assert_eq!(name(text), Some("bug-fix"), "{text}");
         }
         assert_eq!(name("lets add a --json flag to usage?"), Some("feature"));
+    }
+
+    #[test]
+    fn playbook_route_tells_a_request_from_a_status_question_or_a_document() {
+        let name = |text: &str| route(text).map(|r| r.0);
+        assert_eq!(
+            name("did you fix the tests and the other finding"),
+            Some("investigation")
+        );
+        assert_eq!(
+            name("fix the contradictions but leave it to the model, would this work?"),
+            Some("bug-fix")
+        );
+        assert_eq!(
+            name("I want the observer to tell the main agent its findings"),
+            Some("feature")
+        );
+        assert_eq!(name("lets integrate memory into self review?"), Some("feature"));
+        assert_eq!(name("create a decision matrix for the three options"), None);
+        assert_eq!(name("do what you think is best here"), None);
     }
 
     #[test]
