@@ -424,9 +424,17 @@ impl ModelRegistry {
         )
     }
 
-    /// A `claude-subscription/<id>` reference (or `--provider claude-subscription --model <id>`).
+    /// A `claude-subscription/<id>` or `antigravity-cli/<id>` reference (or `--provider <that> --model <id>`).
     fn resolve_dynamic(&self, cli_provider: Option<&str>, cli_model: &str) -> Option<Model> {
-        let dynamic = crate::claude_subscription::PROVIDER;
+        [
+            crate::claude_subscription::PROVIDER,
+            crate::models::ANTIGRAVITY_PROVIDER,
+        ]
+        .into_iter()
+        .find_map(|dynamic| self.resolve_dynamic_of(dynamic, cli_provider, cli_model))
+    }
+
+    fn resolve_dynamic_of(&self, dynamic: &str, cli_provider: Option<&str>, cli_model: &str) -> Option<Model> {
         fn prefixed<'t>(text: &'t str, dynamic: &str) -> Option<&'t str> {
             let head = text.get(..dynamic.len() + 1)?;
             head.eq_ignore_ascii_case(&format!("{dynamic}/"))

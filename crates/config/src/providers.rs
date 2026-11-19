@@ -15,6 +15,9 @@ macro_rules! claude_code_default_model {
 pub const CLAUDE_CODE: &str = claude_code!();
 /// The Claude subscription provider (`ai::claude_subscription`): the Rust root under `--claude`; TypeScript has none.
 pub const CLAUDE_SUBSCRIPTION: &str = "claude-subscription";
+/// The opt-in Antigravity CLI provider (`agy`): never listed or chosen by default, selected only as
+/// `antigravity-cli/<id>`; its API id is the same string.
+pub const ANTIGRAVITY_CLI: &str = "antigravity-cli";
 /// Kimi For Coding: the footer marks its cost `(sub)` whatever the runtime reports.
 pub const KIMI_CODING: &str = "kimi-coding";
 /// The Claude Code model of the root, of claude subagents and (as `claude-code/…`) of frames.

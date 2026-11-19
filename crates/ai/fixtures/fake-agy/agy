@@ -1,0 +1,37 @@
+#!/usr/bin/env python3
+"""Offline ACP peer. On its first turn request a cell; on the next, echo its tool result."""
+import json
+import sys
+import urllib.request
+
+
+def answer(message, result):
+    print(json.dumps({"jsonrpc": "2.0", "id": message["id"], "result": result}), flush=True)
+
+
+for line in sys.stdin:
+    message = json.loads(line)
+    params = message["params"]
+    method = message["method"]
+    if method == "initialize":
+        answer(message, {"protocolVersion": 1})
+    elif method == "session/new":
+        server, = params["mcpServers"]
+        answer(message, {"sessionId": "offline"})
+    elif method == "session/set_model":
+        assert params["modelId"] == "offline-test"
+        answer(message, {})
+    elif method == "session/prompt":
+        transcript = json.loads(params["prompt"][0]["text"].split("\n", 1)[1])
+        results = [entry for entry in transcript if entry["role"] == "toolResult"]
+        if len(results) < 2:
+            cells = ["from pathlib import Path; retained = Path('fixture.txt').read_text().strip(); print(len(retained))", "print(retained[::-1])"]
+            rpc = {"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {"name": "rlm", "arguments": {"code": cells[len(results)]}}}
+            headers = {pair["name"]: pair["value"] for pair in server["headers"]}
+            urllib.request.urlopen(urllib.request.Request(server["url"], json.dumps(rpc).encode(), headers), timeout=15)
+            raise RuntimeError("The bridge executed a cell instead of handing it back to Ultron")
+        update = {"sessionUpdate": "agent_message_chunk", "content": {"type": "text", "text": json.dumps(results[-1]["content"])}}
+        print(json.dumps({"jsonrpc": "2.0", "method": "session/update", "params": {"sessionId": "offline", "update": update}}), flush=True)
+        answer(message, {"stopReason": "end_turn"})
+    else:
+        raise ValueError(method)

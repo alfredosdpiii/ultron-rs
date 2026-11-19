@@ -660,6 +660,19 @@ MCP servers are built in: list them in `~/.ultron/agent/mcp.json` (or `ultron mc
 them with `/mcp` and `ultron mcp list|login|logout`, and call them from Python. They connect on first use, so they
 never slow startup. See [docs/mcp.md](packages/coding-agent/docs/mcp.md).
 
+## Antigravity CLI
+
+Select an Antigravity model in `/models` (also `/model`) or `/settings` → **Models**. Both pickers use the IDs and names from `agy models` on your account. To select one from the command line:
+
+```sh
+ultron --model antigravity-cli/gemini-3.8-flash-medium
+```
+
+Ultron starts `agy acp` in a temporary workspace for each model response. It supplies the transcript once and
+returns MCP tool requests to the current Ultron lane; switching models does not create a second Python kernel.
+Only the Ultron `rlm` call may receive a one-time ACP permission approval. Antigravity may still run built-in tools under its own sandbox policy;
+this provider is not a guarantee that every Antigravity action goes through Ultron. Claude and the defaults are unchanged.
+
 ## Claude Code
 
 Ultron works with the [Claude Code](https://claude.com/claude-code) CLI in three ways:

@@ -28,6 +28,7 @@ pub const APIS: &[&str] = &[
     "pi-messages",
     crate::claude_code::API,
     "claude-subscription",
+    crate::models::ANTIGRAVITY_API,
 ];
 
 /// [`stream_simple_routed`] through the process's router.
@@ -87,6 +88,7 @@ pub async fn stream_simple_routed(
         "mistral-conversations" => mistral::stream_simple(model, context, options, transport, sink).await,
         "bedrock-converse-stream" => Ok(bedrock::stream_simple(model, context, options, transport, sink).await),
         "pi-messages" => Ok(pi_messages::stream_simple(model, context, options, transport, sink).await),
+        crate::models::ANTIGRAVITY_API => crate::antigravity::stream_simple(model, context, options, sink).await,
         crate::claude_code::API => {
             // With tools: the Claude subscription, for every caller (session lanes, inference frames with depth).
             if let Some(message) = router.stream_claude_code(model, context, options, sink).await {

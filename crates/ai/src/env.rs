@@ -95,6 +95,9 @@ pub fn env_api_key_in(provider: &str, source: &EnvSource<'_>) -> Option<String> 
     if provider == crate::claude_code::PROVIDER {
         return Some(crate::claude_code::REQUEST_KEY.into());
     }
+    if provider == crate::models::ANTIGRAVITY_PROVIDER {
+        return Some(crate::models::ANTIGRAVITY_REQUEST_KEY.into());
+    }
     if let Some(keys) = find_env_keys_in(provider, source) {
         let key = if provider == "anthropic" {
             keys.iter().find(|k| **k != ANTHROPIC_AUTH_TOKEN_ENV).copied()

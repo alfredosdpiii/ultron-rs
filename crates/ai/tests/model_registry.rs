@@ -247,6 +247,41 @@ fn ai_model_registry_auth_header_needs_a_key() {
     );
 }
 
+/// antigravity-cli is opt-in: nothing lists it, so it is never available or a default, and only its full
+/// reference (or `--provider antigravity-cli`) selects an `agy models` id.
+#[test]
+fn ai_model_registry_antigravity_is_selected_only_by_full_reference() {
+    let tmp = temp_dir("antigravity");
+    let dir = tmp.path().to_path_buf();
+    let registry = ModelRegistry::load(&dir.join("models.json"), &dir);
+    let model = registry.resolve(None, "antigravity-cli/gemini-3.8-flash-high").unwrap();
+    assert_eq!(
+        (model.provider.as_str(), model.api.as_str(), model.id.as_str()),
+        ("antigravity-cli", "antigravity-cli", "gemini-3.8-flash-high")
+    );
+    let flagged = registry
+        .resolve(Some("antigravity-cli"), "claude-opus-5-5-low")
+        .unwrap();
+    assert_eq!(flagged.provider, "antigravity-cli");
+    assert!(registry.resolve(None, "antigravity-cli/bad id").is_err());
+    assert!(registry.resolve(None, "gemini-3.8-flash-high").is_err());
+    assert!(!registry.provider_ids().iter().any(|p| p == "antigravity-cli"));
+    assert!(!registry.all_models().iter().any(|m| m.provider == "antigravity-cli"));
+    assert_eq!(
+        registry.resolve(None, "claude-code/claude-opus-5-5").unwrap().provider,
+        "claude-code"
+    );
+    let source = ai::env::EnvSource {
+        lookup: &|_| None,
+        exists: &|_| false,
+        home: None,
+    };
+    assert_eq!(
+        ai::env::env_api_key_in("antigravity-cli", &source).as_deref(),
+        Some(ai::models::ANTIGRAVITY_REQUEST_KEY)
+    );
+}
+
 /// claude-subscription takes any valid id (its catalog is a route table, not a list): a models.json entry for it
 /// (a base URL, as tests and proxies set) applies to whatever id is named, and references resolve with or without it.
 #[test]

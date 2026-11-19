@@ -66,6 +66,7 @@ pub enum Slash {
     Fork,
     Clone,
     Model,
+    Models,
     Agents,
     Memory,
     Skills,
@@ -91,7 +92,7 @@ pub enum Slash {
 
 impl Slash {
     /// Every command, in the order the editor's autocomplete lists them (the client TUI's, then the Rust-only ones).
-    pub const ALL: [Slash; 48] = [
+    pub const ALL: [Slash; 49] = [
         Slash::Name,
         Slash::Session,
         Slash::Usage,
@@ -119,6 +120,7 @@ impl Slash {
         Slash::Fork,
         Slash::Clone,
         Slash::Model,
+        Slash::Models,
         Slash::Agents,
         Slash::Memory,
         Slash::Skills,
@@ -236,6 +238,12 @@ impl Slash {
                 Tier::Client,
             ),
             Slash::Model => ("model", "<provider/model>", "Select model", Tier::Client),
+            Slash::Models => (
+                "models",
+                "<provider/model>",
+                "Select model (alias for /model)",
+                Tier::Overlay,
+            ),
             Slash::Agents => (
                 "agents",
                 "[task-id]",
@@ -347,6 +355,7 @@ impl Slash {
 
     /// The command `/name` runs, with the overlays on or off; `None` when there is none.
     pub fn parse(name: &str, overlays: bool) -> Option<Slash> {
+        let name = if name == "models" { "model" } else { name };
         Slash::ALL
             .into_iter()
             .find(|c| c.spec().name == name)

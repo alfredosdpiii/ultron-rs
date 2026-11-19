@@ -39,7 +39,61 @@ pub fn builtin_model(provider: &str, id: &str) -> Option<&'static Model> {
     if provider == crate::claude_subscription::PROVIDER {
         return crate::claude_subscription::catalog::interned(id);
     }
+    if provider == ANTIGRAVITY_PROVIDER {
+        return antigravity_interned(id);
+    }
     provider_models(provider)?.get(id)
+}
+
+/// The opt-in `antigravity-cli` provider: requests run through the logged-in `agy` CLI
+/// (`crate::antigravity`), which owns its login. Pickers discover the account catalog at runtime;
+/// any id `agy models` prints (`<id>\t<name>` lines) resolves as
+/// `antigravity-cli/<id>`, and the CLI rejects an id it does not serve.
+pub const ANTIGRAVITY_PROVIDER: &str = config::providers::ANTIGRAVITY_CLI;
+pub const ANTIGRAVITY_API: &str = config::providers::ANTIGRAVITY_CLI;
+/// The key its requests carry: none (the CLI authenticates itself); request paths require one.
+pub const ANTIGRAVITY_REQUEST_KEY: &str = "<antigravity-cli>";
+
+/// An id shaped like the ones `agy models` lists (`gemini-3.8-flash-high`, `claude-opus-5-5-low`).
+pub fn antigravity_valid_id(id: &str) -> bool {
+    id.len() <= 64
+        && id.as_bytes().first().is_some_and(u8::is_ascii_alphanumeric)
+        && id
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'.' | b'_'))
+}
+
+pub fn antigravity_model(id: &str) -> Option<Model> {
+    if !antigravity_valid_id(id) {
+        return None;
+    }
+    // The id carries its effort (`-low`/`-high`), so no thinking levels; window and output cap are not reported
+    // by the CLI, so these are conservative.
+    serde_json::from_value(serde_json::json!({
+        "id": id,
+        "name": format!("{id} (Antigravity CLI)"),
+        "api": ANTIGRAVITY_API,
+        "provider": ANTIGRAVITY_PROVIDER,
+        "baseUrl": "antigravity-cli://agy",
+        "reasoning": false,
+        "input": ["text"],
+        "cost": {"input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0},
+        "contextWindow": 200_000,
+        "maxTokens": 32_000,
+    }))
+    .ok()
+}
+
+fn antigravity_interned(id: &str) -> Option<&'static Model> {
+    static INTERNED: LazyLock<std::sync::Mutex<std::collections::HashMap<String, &'static Model>>> =
+        LazyLock::new(Default::default);
+    let mut table = INTERNED.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    if let Some(found) = table.get(id) {
+        return Some(found);
+    }
+    let built: &'static Model = Box::leak(Box::new(antigravity_model(id)?));
+    table.insert(id.to_string(), built);
+    Some(built)
 }
 
 /// Fill `usage.cost` from the model's rates: the highest tier whose threshold the total input exceeds applies to the

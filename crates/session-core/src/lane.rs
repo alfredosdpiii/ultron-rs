@@ -440,7 +440,13 @@ fn stored_oauth(env: &Env, provider: &str) -> bool {
 fn prepare(registry: &ModelRegistry, model: Model, env: &Env) -> Model {
     let mut model = registry.for_requests(model, env.var.clone());
     // Claude Code's own login authenticates its CLI providers; nothing stored in auth.json reaches them.
-    if [ai::claude_code::PROVIDER, ai::claude_subscription::PROVIDER].contains(&model.provider.as_str()) {
+    if [
+        ai::claude_code::PROVIDER,
+        ai::claude_subscription::PROVIDER,
+        ai::models::ANTIGRAVITY_PROVIDER,
+    ]
+    .contains(&model.provider.as_str())
+    {
         return model;
     }
     let (env, provider) = (env.clone(), model.provider.clone());
@@ -653,6 +659,16 @@ pub fn available_models(env: &Env) -> Vec<Model> {
         })
         .collect();
     models.extend(subscription_models(env, &registry, &models));
+    if let Some(path) = (env.var)("PATH") {
+        for model in ai::antigravity::catalog::discover(&path, &env.home) {
+            if !models
+                .iter()
+                .any(|listed| listed.provider == model.provider && listed.id == model.id)
+            {
+                models.push(prepare(&registry, model, env));
+            }
+        }
+    }
     models
 }
 

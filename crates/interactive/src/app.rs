@@ -2889,8 +2889,8 @@ impl App {
                 self.send(LaneCommand::ContinueSession((!id.is_empty()).then(|| id.to_string())));
             }
             Slash::ScopedModels => self.open_scoped_models(),
-            Slash::Model if self.qol.overlays && args.is_empty() => self.open_model_hub(),
-            Slash::Model => self.model_command(args),
+            Slash::Model | Slash::Models if self.qol.overlays && args.is_empty() => self.open_model_hub(),
+            Slash::Model | Slash::Models => self.model_command(args),
             Slash::Resume => self.send(LaneCommand::ListSessions),
             Slash::Import => match path_argument(args) {
                 Some(path) => {

@@ -370,7 +370,10 @@ pub fn find_initial_model(
             .unwrap_or_else(|| model_scope::DEFAULT_THINKING_LEVEL.into());
         return (Some(found.clone()), thinking);
     }
-    let available: Vec<&Model> = available.iter().filter(|m| !is_claude_code_model(m)).collect();
+    let available: Vec<&Model> = available
+        .iter()
+        .filter(|m| !is_claude_code_model(m) && m.provider != crate::models::ANTIGRAVITY_PROVIDER)
+        .collect();
     let chosen = DEFAULT_MODEL_PER_PROVIDER
         .iter()
         .find_map(|(provider, id)| {

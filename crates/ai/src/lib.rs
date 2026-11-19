@@ -7,6 +7,7 @@
 //! a stubbed `fetch` and record requests, events and results; the tests replay them here.
 
 pub mod anthropic;
+pub mod antigravity;
 pub mod auth;
 pub mod aws;
 pub mod aws_credentials;
