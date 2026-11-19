@@ -5,9 +5,9 @@ import { pathToFileURL } from "node:url";
 import { inspect } from "node:util";
 import { checkView } from "./frontends/view.ts";
 import { compile } from "./pipeline.ts";
-import { type CheckerName, check, messageOf } from "./run.ts";
+import { check, messageOf } from "./run.ts";
 
-const [stage, specFile, configFile, checker, main, viewFile] = process.argv.slice(2);
+const [stage, specFile, configFile, viewFile] = process.argv.slice(2);
 
 try {
   const view = checkView(
@@ -15,7 +15,7 @@ try {
     inspect,
   );
   const { files, exit } = compile(
-    await check(specFile, configFile, { checker: checker as CheckerName, main: main || undefined }),
+    await check(specFile, configFile),
     view,
   );
   const draft = path.join(stage, "draft");

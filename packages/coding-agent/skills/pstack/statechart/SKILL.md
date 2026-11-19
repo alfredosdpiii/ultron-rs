@@ -15,7 +15,7 @@ The chart shows how a system moves between states, in the words of the person wh
 
 ## Run
 
-Work in a scratch folder outside the repo. Write a TLA+ spec or a Quint `SPEC.qnt` and its TLC config. Then run the command through `bash` with the absolute path of this skill's directory:
+Work in a scratch folder outside the repo. Write a TLA+ spec and its TLC config. Then run the command through `bash` with the absolute path of this skill's directory:
 
 ```python
 SC = "<absolute path of this skill's directory>/scripts/statechart"
@@ -24,11 +24,7 @@ print(await bash(f"{SC} SPEC.tla [--config FILE] [--view FILE] [--out DIR]"))
 
 `scripts/statechart.ts` is TypeScript. The `statechart` wrapper picks a runtime that executes TypeScript (Node 22.18 to 22.x, Node 23.6 or later, Bun 1.1.5 or later, or Deno 2.0 or later); wrong use prints the full usage.
 
-The first run installs TLC and Java with mise and needs the network. With `java` on PATH, pass `JAVA=$(command -v java)` so only TLC downloads, or set `TLA2TOOLS` to a `tla2tools.jar` you have. TLC runs can take minutes; start a long one as a job (`bash(..., yield_after=0)`) and do other work until its event arrives.
-
-A `SPEC.qnt` is compiled to TLA+ first (`quint compile --target tlaplus`), with Quint at the version `scripts/package.json` pins, from npm's cache (or `QUINT=<path>`). Quint compiles through Apalache, which it downloads once (about 200 MB) and runs on the same Java, so a Quint spec needs Java whatever checks it; each compile takes about 20 seconds. `--main MODULE` picks the module when it is not the one named after the file. The config, the view and the report use the names in the compiled TLA+: a module's own definitions keep their Quint names (`init`, `step`, your actions and invariants), and a Quint `const` becomes a TLA+ `CONSTANT` that the config sets (`CONSTANT CHECK_LOCK = TRUE`). Definitions that come from an `import m(X = v).*` instance are renamed with the instance path (`mutex_ok_mutex_Acquire`), so give the command the module that declares the machine and set its constants in the config.
-
-`--checker tla-ts` checks with tla-ts instead of TLC on Java: same command line, same verdicts, same state graph and chart, no Java (pinned in `scripts/package.json`, from npm's cache, or `TLA_TS=<path>`). tla-ts 0.0.8 cannot read the Apalache module that Quint's TLA+ extends, so check a `SPEC.qnt` with the default `tlc`.
+The checker is everystate, a TLA+ model checker with TLC's command line, output and verdicts as one native binary, so nothing here needs Java. It comes from npm's cache at the version `scripts/package.json` pins (the first run needs the network), or set `EVERYSTATE_JAVA` to the path of an `everystate-java` you have. The report and the notes below say TLC, because the output is TLC's. A large model can take minutes; start a long one as a job (`bash(..., yield_after=0)`) and do other work until its event arrives.
 
 ## Write the spec
 
