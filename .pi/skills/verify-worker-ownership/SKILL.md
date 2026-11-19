@@ -1,11 +1,11 @@
 ---
 name: verify-worker-ownership
-description: "Model-check session worker ownership (attachments and the worker's demand ledger, session_demand timeouts, retirement, re-attach after a crash restart) with the Quint spec in specs/worker-ownership: a client is never moved to a session it left, no demand leaks, a worker without clients retires. Use when a change touches Manager::attach_client / release_attachment / apply_demand, the worker's demand handling or Lifecycle::reconcile, or Hub::attach / detach / invalidate / reattach."
+description: "Model-check session worker ownership (attachments and the worker's demand ledger, session_demand timeouts, retirement, re-attach after a crash restart) with the TLA+ spec in specs/worker-ownership: a client is never moved to a session it left, no demand leaks, a worker without clients retires. Use when a change touches Manager::attach_client / release_attachment / apply_demand, the worker's demand handling or Lifecycle::reconcile, or Hub::attach / detach / invalidate / reattach."
 ---
 
 # Verify worker ownership and re-attach
 
-`specs/worker-ownership/worker_ownership.qnt` models one client connection, two sessions A and B, one server
+`specs/worker-ownership/worker_ownership.tla` models one client connection, two sessions A and B, one server
 generation: the router (`by_conn`, `reconnecting`, the `serialized` lock, the attach procedure and the reattach
 thread), the manager's `apply_demand` with its timeout, each session's worker (demand set, initial grace timer,
 retirement, a crash with a restart) and the FIFO channel to it. TLC checks every order of those steps.

@@ -899,11 +899,11 @@ cargo fmt --all -- --check
 cargo clippy --workspace --all-targets --locked -- -D warnings
 nice -n 19 cargo nextest run --workspace --locked   # cargo install cargo-nextest
 scripts/rust-release.sh              # dist/rust-release/ultron-<version>-<target>.tar.gz; publishes nothing
-specs/check.sh specs/spawn-collect   # check a Quint spec with TLC (needs Quint, Java 11+)
+specs/check.sh specs/spawn-collect   # check a TLA+ spec with everystate (no Java)
 ```
 
 `scripts/rust-release.sh` builds a reproducible archive: the stripped binary, `install.sh`, README, LICENSE, NOTICE
-and the third-party licenses, plus a `.sha256` file. `specs/` holds Quint specs of Ultron's own protocols
+and the third-party licenses, plus a `.sha256` file. `specs/` holds TLA+ specs of Ultron's own protocols
 (`spawn-collect`, `schedule-fire`, `goal-driver`, `root-run`, `worker-ownership`); `specs/check.sh` checks each rule
 in its own TLC run and compares the verdict with the spec's `expected` file, and the specs with a model of earlier
 code reproduce the bugs that code had.
@@ -922,7 +922,7 @@ See [AGENTS.md](AGENTS.md) for the rules agents and contributors follow.
   runtime (`src/ultron/rlm/*.py`, `secret-patterns.json`), the Loki engine, the bundled `skills/`, `docs/`,
   `CHANGELOG.md` and `package.json` (the version), the `--export` HTML template and the built-in themes.
 - `scripts/rust-release.sh`, `scripts/rust-release/`: the release archive (binary, `install.sh`, licenses).
-- `specs/`: Quint specs of Ultron's protocols and `check.sh`.
+- `specs/`: TLA+ specs of Ultron's protocols and `check.sh`.
 - `docs/rust-rewrite/`: the rewrite's baseline, decision log and feature ledger.
 
 ## Credits and license

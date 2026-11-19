@@ -79,7 +79,7 @@ adding code, decide what it changes with and put it there.
   reservation) before replacing it. Never hold a lock while calling code that can call back into it. State that must
   survive a restart is written before it is acted on, files are written atomically (`config::paths::write_private`:
   temp file, fsync, rename), and recovery handles every persisted state by name. A protocol across threads,
-  processes or restarts gets a Quint spec in `specs/` (see `specs/check.sh` and its verify skills) that models both
+  processes or restarts gets a TLA+ spec in `specs/` (see `specs/check.sh` and its verify skills) that models both
   the bug class and the fix.
 - **Fail closed** on unreadable security state (trust, approvals, credentials).
 - **Comments** say what the code cannot: an outside constraint, a reason, a workaround and the problem behind it.

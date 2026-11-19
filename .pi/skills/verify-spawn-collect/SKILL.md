@@ -1,11 +1,11 @@
 ---
 name: verify-spawn-collect
-description: "Model-check rlm.spawn / rlm.collect across worker restarts (a subagent's work never replayed, its result stable, a reattached child kept running) with the Quint spec in specs/spawn-collect. Use when a change touches the delegation host's spawn, end, collect or restore, the task journal's recovery, or how a new worker reattaches subagents."
+description: "Model-check rlm.spawn / rlm.collect across worker restarts (a subagent's work never replayed, its result stable, a reattached child kept running) with the TLA+ spec in specs/spawn-collect. Use when a change touches the delegation host's spawn, end, collect or restore, the task journal's recovery, or how a new worker reattaches subagents."
 ---
 
 # Verify spawn/collect across restarts
 
-`specs/spawn-collect/spawn_collect.qnt` models one subagent through worker restarts (a hand-over or a crash, then the
+`specs/spawn-collect/spawn_collect.tla` models one subagent through worker restarts (a hand-over or a crash, then the
 next worker opening the session): its record in the task journal, its conversation in the durable runtime, and the
 delegation host of whichever worker owns the session. TLC checks every order of those steps.
 
@@ -20,19 +20,18 @@ delegation host of whichever worker owns the session. TLC checks every order of 
 
 ## Run
 
-From the repo root (about 20 s; the first run downloads Apalache, about 200 MB, and TLC 1.7.4, and needs Java 11 or
-later, Node's `npx` and `python3`):
+From the repo root (about 10 s; it needs everystate 0.3.1, from PATH or fetched by Node's `npx`, and no Java):
 
 ```python
 print(await bash('''bash specs/check.sh specs/spawn-collect'''))
 ```
 
 Each line is `ok|DIFF <config> <rule> <verdict>`; exit 0 means every verdict is the one `specs/spawn-collect/expected`
-records. Tool versions are pinned in `specs/check.sh` (Quint 0.33.1, Apalache 0.62.4, TLC 1.7.4); `QUINT`,
-`TLA2TOOLS` and `JAVA` point it at local copies. While editing the model, a simulation answers in seconds:
+records. The checker's version is pinned in `specs/check.sh`; `EVERYSTATE` points it at a local copy. While editing the
+model, one config answers in a second or two:
 
 ```python
-print(await bash('''npx --yes @informalsystems/quint@0.33.1 run specs/spawn-collect/spawn_collect.qnt --main spawn_collect_two_restarts --invariant OneResult --max-steps 20'''))
+print(await bash('''bash specs/check.sh specs/spawn-collect code_two_restarts'''))
 ```
 
 To see a rule's shortest path in plain steps, or a chart of the model, read the spec and one of its configs with the

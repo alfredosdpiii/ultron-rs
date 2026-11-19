@@ -1,11 +1,11 @@
 ---
 name: verify-root-run
-description: "Model-check the root run's lifecycle across the session actor, the run journal (`ultron.op.*`, its `at` states) and the durable runtime through worker restarts (a run ends once, recovery never loses or invents a run, a finished run is never reported failed, a queued steer reaches the model once) with the Quint spec in specs/root-run. Use when a change touches Run::admit_with / finish, recovery::settle, Core::open's settle-or-reopen choice, reopen_run, catch_up, submit_queued, harness_idle / run_end, or how a delivered queued message is matched to its queue item."
+description: "Model-check the root run's lifecycle across the session actor, the run journal (`ultron.op.*`, its `at` states) and the durable runtime through worker restarts (a run ends once, recovery never loses or invents a run, a finished run is never reported failed, a queued steer reaches the model once) with the TLA+ spec in specs/root-run. Use when a change touches Run::admit_with / finish, recovery::settle, Core::open's settle-or-reopen choice, reopen_run, catch_up, submit_queued, harness_idle / run_end, or how a delivered queued message is matched to its queue item."
 ---
 
 # Verify the root run lifecycle
 
-`specs/root-run/root_run.qnt` models one root run and two queued messages with the same text (a follow-up, then a
+`specs/root-run/root_run.tla` models one root run and two queued messages with the same text (a follow-up, then a
 steer) through worker restarts: the run journal in the session file (the open operation, its `at`, OP_RESULT, the
 pending entries of the lane's inbox), the durable runtime (the prompt's submission, the run, its answers, each queued
 message's submission: queued, placed, done) and the actor's memory (`Core.run`, the queue items, a held error). A

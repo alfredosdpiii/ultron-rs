@@ -1,11 +1,11 @@
 ---
 name: verify-schedule-fire
-description: "Model-check that a scheduled prompt (schedule.every / schedule.at) fires each slot once and the server keeps one delivery in flight, with the Quint spec in specs/schedule-fire. Use when a change touches the server's schedule timer, ScheduleModule::fire_with, PR watch/loop registration or cancellation, or how the session worker starts a fired prompt."
+description: "Model-check that a scheduled prompt (schedule.every / schedule.at) fires each slot once and the server keeps one delivery in flight, with the TLA+ spec in specs/schedule-fire. Use when a change touches the server's schedule timer, ScheduleModule::fire_with, PR watch/loop registration or cancellation, or how the session worker starts a fired prompt."
 ---
 
 # Verify schedule single-flight
 
-`specs/schedule-fire/schedule_fire.qnt` models one `every` schedule: the stored value's next slot, two server
+`specs/schedule-fire/schedule_fire.tla` models one `every` schedule: the stored value's next slot, two server
 generations (an old server still firing while a new one reads the journals), their deliveries, the worker's
 `fire_with` (check and start, then record), and, in the faults config, a worker that dies or a record that fails
 between the start and the record. TLC checks every order of those steps over three slots.
@@ -19,8 +19,7 @@ between the start and the record. TLC checks every order of those steps over thr
 
 ## Run
 
-From the repo root (about 20 s; the first run downloads Apalache, about 200 MB, and TLC 1.7.4, and needs Java 11 or
-later, Node's `npx` and `python3`):
+From the repo root (about 10 s; it needs everystate 0.3.1, from PATH or fetched by Node's `npx`, and no Java):
 
 ```python
 print(await bash('''bash specs/check.sh specs/schedule-fire'''))
@@ -28,11 +27,11 @@ print(await bash('''bash specs/check.sh specs/pr-watch'''))
 ```
 
 Each line is `ok|DIFF <config> <rule> <verdict>`; exit 0 means every verdict is the one `specs/schedule-fire/expected`
-records. Tool versions are pinned in `specs/check.sh` (Quint 0.33.1, Apalache 0.62.4, TLC 1.7.4); `QUINT`,
-`TLA2TOOLS` and `JAVA` point it at local copies. While editing the model, a simulation answers in seconds:
+records. The checker's version is pinned in `specs/check.sh`; `EVERYSTATE` points it at a local copy. While editing the
+model, one config answers in a second or two:
 
 ```python
-print(await bash('''npx --yes @informalsystems/quint@0.33.1 run specs/schedule-fire/schedule_fire.qnt --main schedule_fire_faults --invariant OneRunPerSlot --max-steps 25'''))
+print(await bash('''bash specs/check.sh specs/schedule-fire faults'''))
 ```
 
 To see a rule's shortest path in plain steps, read the spec and one of its configs with the statechart skill
@@ -93,7 +92,7 @@ and confirmed the model describes it. For drift across many commits, use `/skill
 
 ## PR condition and cancellation model
 
-`specs/pr-watch/pr_watch.qnt` covers the watch-specific branch of `ScheduleModule::create`, `fire_with`, `cancel`,
+`specs/pr-watch/pr_watch.tla` covers the watch-specific branch of `ScheduleModule::create`, `fire_with`, `cancel`,
 and `prompt_schedule/watch.rs`'s `Watch::observe`. Network reads begin outside the write lock; applying a read
 rechecks the durable value, so an in-flight read cannot resurrect a cancelled watch. A restart discards an in-flight
 read and retains the durable baseline, error count and slot. The unconditional `schedule-fire` model still describes
@@ -123,6 +122,6 @@ code. Run that check again after any change to fetch/apply ordering. The queue c
 one-run loop already counted as done but queued behind an active turn. Cancellation cannot interrupt work that
 has already begun. A queued fire lost on crash and at-least-once delivery under journal failure remain limitations.
 
-Offline agents must set `QUINT`, `QUINT_HOME`, `TLA2TOOLS`, `JAVA` to existing installations and put actual Node/Java
-binaries on PATH (not a version-manager shim needing trust). Never install tools or change trust to run this skill
+Offline agents must set `EVERYSTATE` to an existing installation and put an actual Node
+binary on PATH (not a version-manager shim needing trust). Never install tools or change trust to run this skill
 without permission. Use an empty HOME/no provider credentials for the Rust tests.

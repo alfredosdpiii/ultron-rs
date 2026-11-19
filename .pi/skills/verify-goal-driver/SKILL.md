@@ -1,11 +1,11 @@
 ---
 name: verify-goal-driver
-description: "Model-check that /goal pause, clear and replace never deadlock on the goal driver's lock (the stopped job's end calls back into the driver) with the Quint spec in specs/goal-driver. Use when a change touches GoalDriver::command, task_ended / job_ended, TaskGoalJobs, Agents::cancel or commit, or the on_task_end hook."
+description: "Model-check that /goal pause, clear and replace never deadlock on the goal driver's lock (the stopped job's end calls back into the driver) with the TLA+ spec in specs/goal-driver. Use when a change touches GoalDriver::command, task_ended / job_ended, TaskGoalJobs, Agents::cancel or commit, or the on_task_end hook."
 ---
 
 # Verify the goal driver's lock
 
-`specs/goal-driver/goal_driver.qnt` models one `/goal pause | clear | <new objective>` against the goal's running job
+`specs/goal-driver/goal_driver.tla` models one `/goal pause | clear | <new objective>` against the goal's running job
 J: the command's thread, J's own task thread ending J, a child task K of J with its own thread, and the helper thread
 `Agents::cancel` starts to cancel K. The goal driver's lock (`GoalDriver.state`, a std Mutex, not re-entrant) and each
 task's state (running, finishing, ended) are explicit. TLC checks every order of those steps.
@@ -21,7 +21,7 @@ task's state (running, finishing, ended) are explicit. TLC checks every order of
 
 ## Run
 
-From the repo root (about 1 min; the first run downloads Apalache and TLC, see `specs/check.sh`):
+From the repo root (about 10 s; everystate comes from PATH or `npx`, see `specs/check.sh`):
 
 ```python
 print(await bash('''bash specs/check.sh specs/goal-driver'''))
