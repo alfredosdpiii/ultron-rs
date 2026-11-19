@@ -13,8 +13,34 @@ use std::collections::HashMap;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 
+/// The recording, with the window and output cap the Rust catalog gives each `claude-code` model in place of the
+/// 200K/32K the TypeScript provider recorded for all of them; a models.json override keeps its own numbers.
 fn fixture() -> Value {
-    serde_json::from_str(include_str!("../fixtures/claude-code-provider.json")).unwrap()
+    let mut fixture = serde_json::from_str(include_str!("../fixtures/claude-code-provider.json")).unwrap();
+    rust_limits(&mut fixture);
+    fixture
+}
+
+fn rust_limits(value: &mut Value) {
+    match value {
+        Value::Array(items) => items.iter_mut().for_each(rust_limits),
+        Value::Object(map) => {
+            let recorded = map.get("provider") == Some(&json!("claude-code"))
+                && map.get("contextWindow") == Some(&json!(200_000))
+                && map.get("maxTokens") == Some(&json!(32_000));
+            let ours = map
+                .get("id")
+                .and_then(Value::as_str)
+                .filter(|_| recorded)
+                .and_then(|id| ai::claude_code::MODELS.get(id));
+            if let Some(ours) = ours {
+                map.insert("contextWindow".into(), json!(ours.context_window));
+                map.insert("maxTokens".into(), json!(ours.max_tokens));
+            }
+            map.values_mut().for_each(rust_limits);
+        }
+        _ => {}
+    }
 }
 
 fn normalize(value: Value) -> Value {
@@ -318,7 +344,7 @@ fn ai_claude_code_fable_5_2_is_available_and_resolves_without_changing_older_mod
         assert_eq!(subscription.id, model.id);
         assert_eq!(
             ai::claude_subscription::catalog::native_model(&model.id).unwrap(),
-            "claude-fable-5-2"
+            "claude-fable-5-2[1m]"
         );
         assert!(!ai::claude_subscription::catalog::accepts_thinking_disable(&model.id));
     }

@@ -209,6 +209,31 @@ fn with_rust_only_model(want: &str) -> String {
         .collect()
 }
 
+/// `want` with the window and output cap the Rust catalog gives each `claude-code` model, in place of the 200K/32K
+/// the TypeScript provider recorded for all of them; a row a models.json override changed keeps its own numbers.
+fn with_rust_limits(want: &str) -> String {
+    let short = |tokens: u64| match tokens {
+        1_000_000 => "1M".to_string(),
+        tokens => format!("{}K", tokens / 1000),
+    };
+    want.lines()
+        .map(|line| {
+            let model = line
+                .strip_prefix("claude-code ")
+                .and_then(|rest| rest.split_whitespace().next())
+                .and_then(|id| ai::claude_code::MODELS.get(id));
+            match model {
+                Some(model) => line.replace(
+                    "200K     32K      ",
+                    &format!("{:<9}{:<9}", short(model.context_window), short(model.max_tokens)),
+                ),
+                None => line.to_string(),
+            }
+        })
+        .map(|line| format!("{line}\n"))
+        .collect()
+}
+
 #[test]
 fn cli_claude_code_list_models_matches_typescript() {
     let tmp = tempfile::tempdir().unwrap();
@@ -237,7 +262,7 @@ fn cli_claude_code_list_models_matches_typescript() {
             assert!(output.status.success(), "{label}: {output:?}");
             let stdout = String::from_utf8(output.stdout).unwrap().replace(&docs, "<docs>");
             let want = with_added_models(&case.spec, listing["stdout"].as_str().unwrap(), &added);
-            assert_eq!(stdout, with_rust_only_model(&want), "{label}");
+            assert_eq!(stdout, with_rust_limits(&with_rust_only_model(&want)), "{label}");
             let stderr = String::from_utf8(output.stderr).unwrap();
             assert_eq!(stderr, listing["stderr"].as_str().unwrap(), "{label}");
         }

@@ -1588,7 +1588,7 @@ mod tests {
                 sonnet.context_window,
                 sonnet.max_tokens
             ),
-            ("Claude Sonnet (Claude Code CLI)", "claude-code-cli", 200_000, 32_000)
+            ("Claude Sonnet (Claude Code CLI)", "claude-code-cli", 1_000_000, 128_000)
         );
         // An id the provider does not list is no Claude Code model: frames run on the default frame model, never on
         // the settings' default model (a paid API model here).

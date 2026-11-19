@@ -40,7 +40,7 @@ const EFFORT_LEVELS: [(&str, &str); 6] = [
     ("max", "max"),
 ];
 
-fn alias_model(id: &str, name: &str) -> Model {
+fn alias_model(id: &str, name: &str, max_tokens: u64) -> Model {
     let effort: serde_json::Map<String, serde_json::Value> =
         EFFORT_LEVELS.iter().map(|(k, v)| (k.to_string(), json!(v))).collect();
     serde_json::from_value(json!({
@@ -54,25 +54,26 @@ fn alias_model(id: &str, name: &str) -> Model {
         "input": ["text", "image"],
         // Subscription usage has no per-token price here; each response carries the CLI's own reported cost.
         "cost": {"input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0},
-        "contextWindow": 200_000,
-        "maxTokens": 32_000,
+        "contextWindow": 1_000_000,
+        "maxTokens": max_tokens,
     }))
     .expect("claude-code models deserialize")
 }
 
-/// `CLAUDE_CODE_MODELS`, by id in catalog order.
+/// `CLAUDE_CODE_MODELS`, by id in catalog order, each with the output default the CLI gives it (a request's
+/// `max_tokens` is exported to the CLI only when it differs). Every one has a native 1M window.
 pub static MODELS: LazyLock<IndexMap<String, Model>> = LazyLock::new(|| {
     [
-        ("claude-opus-5-5", "Claude Opus 5.5 (Claude Code CLI)"),
-        ("claude-fable-5-1", "Claude Fable 5.1 (Claude Code CLI)"),
-        ("claude-fable-5-2", "Claude Fable 5.2 (Claude Code CLI)"),
-        ("claude-haiku-5-5", "Claude Haiku 5.5 (Claude Code CLI)"),
-        ("opus", "Claude Opus (Claude Code CLI)"),
-        ("sonnet", "Claude Sonnet (Claude Code CLI)"),
-        ("haiku", "Claude Haiku (Claude Code CLI)"),
+        ("claude-opus-5-5", "Claude Opus 5.5 (Claude Code CLI)", 128_000),
+        ("claude-fable-5-1", "Claude Fable 5.1 (Claude Code CLI)", 64_000),
+        ("claude-fable-5-2", "Claude Fable 5.2 (Claude Code CLI)", 128_000),
+        ("claude-haiku-5-5", "Claude Haiku 5.5 (Claude Code CLI)", 128_000),
+        ("opus", "Claude Opus (Claude Code CLI)", 128_000),
+        ("sonnet", "Claude Sonnet (Claude Code CLI)", 128_000),
+        ("haiku", "Claude Haiku (Claude Code CLI)", 128_000),
     ]
     .into_iter()
-    .map(|(id, name)| (id.to_string(), alias_model(id, name)))
+    .map(|(id, name, max_tokens)| (id.to_string(), alias_model(id, name, max_tokens)))
     .collect()
 });
 

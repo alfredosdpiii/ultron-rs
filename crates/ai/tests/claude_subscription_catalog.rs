@@ -25,8 +25,16 @@ fn ai_claude_subscription_catalog_windows_match_explicit_native_routes() {
     for (route, _, window) in catalog::pinned_routes() {
         assert_eq!(context_window(&route), window, "{route}");
         assert_eq!(native_model(&route).unwrap(), route);
-        assert_eq!(catalog::model(&route).unwrap().context_window, window);
+        let model = catalog::model(&route).unwrap();
+        assert_eq!(model.context_window, window);
+        let cap = if window == catalog::LONG_WINDOW {
+            128_000
+        } else {
+            64_000
+        };
+        assert_eq!(model.max_tokens, cap, "{route}");
     }
+    assert_eq!(catalog::model("unqualified-future-model").unwrap().max_tokens, 64_000);
     // Unpinned: the plain id runs within native's 200K gateway default; a [1m] id is never promised more.
     assert_eq!(context_window("unqualified-future-model"), 200_000);
     assert_eq!(context_window("unqualified-future-model[1m]"), 200_000);
@@ -48,7 +56,10 @@ fn ai_claude_subscription_aliases_resolve_to_pinned_routes_and_models_resolve_by
         ("opus", "claude-opus-5-5[1m]"),
         ("haiku", "claude-haiku-5-5[1m]"),
         ("claude-haiku-4-5", "claude-haiku-4-5-20251001"),
-        ("fable", "claude-fable-5-1[1m]"),
+        ("fable", "claude-fable-5-2[1m]"),
+        ("claude-fable-5-2", "claude-fable-5-2[1m]"),
+        ("claude-fable-5", "claude-fable-5[1m]"),
+        ("claude-opus-4-7", "claude-opus-4-7[1m]"),
         ("claude-opus-5-5", "claude-opus-5-5[1m]"),
         ("unqualified-future-model", "unqualified-future-model"),
     ];
@@ -91,6 +102,10 @@ fn ai_claude_subscription_aliases_resolve_to_pinned_routes_and_models_resolve_by
     assert_eq!(
         catalog::version_hint("opus").unwrap(),
         "Opus 5.5 needs Claude Code 2.1.280 or newer; run `claude update`"
+    );
+    assert_eq!(
+        catalog::version_hint("fable").unwrap(),
+        "Fable 5.2 needs Claude Code 2.1.322 or newer; run `claude update`"
     );
     assert!(catalog::version_hint("claude-opus-4-8").is_none());
     // The CLI login authenticates the provider: there is never a key to look up or send.

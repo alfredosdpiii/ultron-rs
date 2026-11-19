@@ -16,6 +16,9 @@ pub const UPSTREAM: &str = "https://api.anthropic.com";
 pub const LONG: &str = "[1m]";
 pub const PLAIN_WINDOW: u64 = 200_000;
 pub const LONG_WINDOW: u64 = 1_000_000;
+/// Output caps (Claude Code's `max_output_tokens.upper`): every model pinned at 1M takes 128K, Haiku 4.5 takes 64K.
+pub const LONG_MAX_OUTPUT: u64 = 128_000;
+pub const PLAIN_MAX_OUTPUT: u64 = 64_000;
 
 /// Canonical ids (as the CLI spells them) and their qualified windows, in catalog order.
 pub const CONTEXT_WINDOWS: &[(&str, u64)] = &[
@@ -26,7 +29,10 @@ pub const CONTEXT_WINDOWS: &[(&str, u64)] = &[
     ("claude-opus-5-5", LONG_WINDOW),
     ("claude-opus-5", LONG_WINDOW),
     ("claude-opus-4-8", LONG_WINDOW),
+    ("claude-opus-4-7", LONG_WINDOW),
+    ("claude-fable-5-2", LONG_WINDOW),
     ("claude-fable-5-1", LONG_WINDOW),
+    ("claude-fable-5", LONG_WINDOW),
 ];
 
 /// Family aliases and the undated Haiku 4.5 id.
@@ -35,7 +41,7 @@ pub const ALIASES: &[(&str, &str)] = &[
     ("haiku", "claude-haiku-5-5"),
     ("claude-haiku-4-5", "claude-haiku-4-5-20251001"),
     ("opus", "claude-opus-5-5"),
-    ("fable", "claude-fable-5-1"),
+    ("fable", "claude-fable-5-2"),
 ];
 
 /// Families that answer `thinking: {"type": "disabled"}` with a 400: a caller's disable is omitted for them.
@@ -54,6 +60,7 @@ pub const MIN_CLI_VERSIONS: &[(&str, &str)] = &[
     ("claude-haiku-5-5", "2.1.293"),
     ("claude-sonnet-5-5", "2.1.284"),
     ("claude-opus-5-5", "2.1.280"),
+    ("claude-fable-5-2", "2.1.322"),
 ];
 
 fn alias(base: &str) -> &str {
@@ -189,7 +196,11 @@ pub fn model(id: &str) -> Option<Model> {
         cost: ModelCost::default(),
         prompt_cache: None,
         context_window: context_window(id),
-        max_tokens: 64_000,
+        max_tokens: if context_window(id) == LONG_WINDOW {
+            LONG_MAX_OUTPUT
+        } else {
+            PLAIN_MAX_OUTPUT
+        },
         sampling_params: None,
         headers: None,
         compat: None,
