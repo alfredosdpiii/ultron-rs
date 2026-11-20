@@ -159,6 +159,7 @@ fn review_plan_names_preexisting_problems_without_blocking() {
             since_sha: None,
             signature: false,
             block_at: Some("medium".into()),
+            never_request_changes: false,
             max_comments: Some(5),
             promotion: None,
             fresh_lines: None,

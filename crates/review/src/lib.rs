@@ -10,6 +10,7 @@ pub mod checks;
 pub mod daemon;
 pub mod engine;
 pub mod eval;
+pub mod eval_labels;
 pub mod github;
 pub mod ledger;
 pub mod lessons;

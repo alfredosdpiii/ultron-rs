@@ -504,6 +504,9 @@ const USAGE_EDITS: [(&str, &str); 6] = [
   --controls <n>               eval: other commits reviewed as controls (default: as many as --limit)
   --scan <n>                   eval: commits of history searched for cases (default 2000)
   --only <sha,...>             eval: review only the cases whose commits start with these
+  --labels <file>              eval: score recorded reviews against adjudicated labels instead (no review, no model
+                               call); with <repo-dir>, check that each defect's fix comes after its head
+  --packet                     eval --labels: print the blinded findings to label, and score nothing
 ",
     ),
 ];

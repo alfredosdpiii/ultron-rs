@@ -697,7 +697,8 @@ With `--json`, `timing.stages` says where the time went (`scopeMs`, `recheckMs`,
 has `generic`, `refutedByTest` and `duplicateOf` (what was merged into what, and at which stage) beside `rejected`
 and `duplicates`; confirmed findings carry `verifierLevel` and `verifierScenarioHolds`; a tests finding
 carries `unpinned`; and every finding has `posted` (`inline`, `body` or `counted`: what the poster would do with
-it under `--block-at` and `--max-comments`) and `rank`.
+it under `--block-at` and `--max-comments`) and `rank`. When an investigator refutes a first-pass finding,
+`dropped.refutedByInvestigator` records the claim, reason and checked citation locations.
 
 ## Private review guides
 
@@ -903,6 +904,35 @@ Each review is a full review and costs what one costs; `--list` prints the cases
 (every case, its score with its confirmed findings, and the totals) is kept under
 `~/.ultron/agent/autoreview/evals/`; `--json` prints it. Read a control's block next to the catches: the findings
 say whether it is a false alarm or a problem the history never fixed.
+
+### Scoring recorded reviews against labels (`eval --labels`)
+
+`ultron autoreview eval --labels <labels.json> [<repo-dir>]` scores reviews that already ran (the records under
+`~/.ultron/agent/autoreview/reviews/`) against labels a person wrote. It runs no review and calls no model.
+
+- **Pinned to a head.** Each case names the full head commit, and its record must be a review of that head. Given
+  `<repo-dir>`, every defect's `fixedBy` must come strictly after the head, so a defect is something a later fix
+  showed, not hindsight about code the head already had.
+- **Blinded.** `--packet` prints what the labeller sees: each finding's place, claim and fix under an id built from
+  the head and the claim, sorted by id. It leaves out level, verification, confidence, source, reasoning, rank and
+  whether the finding was posted.
+- **Discovery and posting are scored apart.** Discovery is every finding the engine returned, confirmed or not.
+  Posting is the findings the record says went out. A defect counts as caught only when a finding about it is
+  labelled right on both its `trigger` and its `consequence`. A finding right on only one of them is `partial`.
+- **Other findings** are `novel` (a real problem missing from the defect list) or `unsupported`. The suggested fix
+  is judged by itself (`correct`, `partial`, `wrong`) and does not change the finding's verdict.
+
+```json
+{"cases": [{"head": "<40-hex sha>", "record": "b3d8a46.json",
+  "defects": [{"id": "partial-scores", "trigger": "...", "consequence": "...", "fixedBy": "<sha>"}],
+  "findings": {"926c6d8d4194340c": {"verdict": "defect", "defect": "partial-scores",
+                                    "trigger": true, "consequence": true, "fix": "partial"}}}]}
+```
+
+`record` is relative to the labels file. A finding with no label counts in `findings` but not in `labelled`.
+Label mistakes are errors with exit code 1: an unknown verdict or fix, a `defect` verdict that names no defect of
+the case, or an id that no finding of the head has. The numbers describe the labelled cases only. Labels written
+from the same history the reviewer was tuned on say nothing about other repositories.
 
 ## Run it as a service
 

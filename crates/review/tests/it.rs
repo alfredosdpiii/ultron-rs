@@ -22,6 +22,8 @@ mod engine;
 mod engine_env;
 #[path = "eval.rs"]
 mod eval;
+#[path = "eval_labels.rs"]
+mod eval_labels;
 #[path = "failure_register.rs"]
 mod failure_register;
 #[path = "github_accounts.rs"]

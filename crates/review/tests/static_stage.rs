@@ -297,3 +297,154 @@ fn review_loki_scan_reports_net_new_findings_only() {
         "rlm.spawn is not available"
     );
 }
+
+/// A head commit where `_close_record` catches every exception (line 9), so `abandon_start` always releases the claim,
+/// and `_write_run` treats any OSError as a missing record (line 18). (dir, base, head)
+fn rechunk_repository() -> (tempfile::TempDir, String, String) {
+    let dir = tempfile::tempdir().expect("dir");
+    let repo = dir.path();
+    git(repo, &["init", "-q", "-b", "main"]);
+    std::fs::write(repo.join("rechunk.py"), RECHUNK_BASE).expect("base");
+    git(repo, &["add", "."]);
+    git(repo, &["commit", "-qm", "base"]);
+    let base = git(repo, &["rev-parse", "HEAD"]);
+    std::fs::write(repo.join("rechunk.py"), RECHUNK_HEAD).expect("head");
+    git(repo, &["add", "."]);
+    git(repo, &["commit", "-qm", "head"]);
+    let head = git(repo, &["rev-parse", "HEAD"]);
+    (dir, base, head)
+}
+
+const RECHUNK_BASE: &str = r#"import json
+import os
+
+
+def _close_record(path, record):
+    try:
+        with open(path, "w") as handle:
+            json.dump(record, handle)
+    finally:
+        pass
+
+
+def _write_run(path, record):
+    try:
+        with open(path) as handle:
+            current = json.load(handle)
+    except FileNotFoundError:
+        current = None
+    if current is None:
+        current = record
+    with open(path, "w") as handle:
+        json.dump(current, handle)
+
+
+def abandon_start(claims, path, record):
+    _close_record(path, record)
+    claims.release(record["project"])
+"#;
+
+const RECHUNK_HEAD: &str = r#"import json
+import os
+
+
+def _close_record(path, record):
+    try:
+        with open(path, "w") as handle:
+            json.dump(record, handle)
+    except Exception:
+        return False
+    return True
+
+
+def _write_run(path, record):
+    try:
+        with open(path) as handle:
+            current = json.load(handle)
+    except OSError:
+        current = None
+    if current is None:
+        current = record
+    with open(path, "w") as handle:
+        json.dump(current, handle)
+
+
+def abandon_start(claims, path, record):
+    _close_record(path, record)
+    claims.release(record["project"])
+"#;
+
+/// The fast pass raises three findings; the claims investigator refutes two of them as leads. The refutation of
+/// line 27 quotes line 9 as it is, so that lead is dropped; the one of line 6 quotes a line that is not there, so it
+/// refutes nothing. Line 18, a different failure in the same flow, is never refuted and stays.
+const RECHUNK_RLM: &str = r#"LEADS = []
+class Rlm:
+    async def map(self, tasks, items, **options):
+        task = tasks[0]
+        if 'Your specialty: Correctness' in task:
+            return [[
+                {'file': 'rechunk.py', 'line': 27, 'end_line': 27, 'severity': 'medium', 'category': 'correctness',
+                 'claim': 'abandon_start releases the project claim only after _close_record returns, so a failure in _close_record leaves the claim held.',
+                 'why': 'w', 'suggested_fix': 'f', 'confidence': 0.8, 'replacement': None, 'scenario': '_close_record raises OSError'},
+                {'file': 'rechunk.py', 'line': 18, 'end_line': 18, 'severity': 'medium', 'category': 'error-handling',
+                 'claim': '_write_run treats any OSError reading run.json as if no record exists and overwrites the record another pod began.',
+                 'why': 'w', 'suggested_fix': 'f', 'confidence': 0.8, 'replacement': None, 'scenario': 'EACCES on run.json'},
+                {'file': 'rechunk.py', 'line': 6, 'end_line': 6, 'severity': 'medium', 'category': 'data-loss',
+                 'claim': '_close_record truncates the record file before json.dump, so a crash mid-write leaves an empty file.',
+                 'why': 'w', 'suggested_fix': 'f', 'confidence': 0.8, 'replacement': None, 'scenario': 'crash during dump'}]]
+        if 'You investigate one pull request' in task:
+            views = items[0]
+            lead_view = next((v for v in views if isinstance(v, str) and v.startswith('Leads from the first pass')), '')
+            leads = json.loads(lead_view.split('\n', 1)[1]) if lead_view else []
+            LEADS.extend(leads)
+            ids = {('held' if 'claim held' in l['claim'] else 'truncate' if 'truncates' in l['claim'] else 'oserror'): l.get('id') for l in leads}
+            refuted = []
+            if 'held' in ids:
+                refuted.append({'lead': ids['held'], 'why': '_close_record catches Exception and returns, so release always runs.',
+                                'evidence': [{'path': 'rechunk.py', 'line': 9, 'quote': 'except Exception:'}]})
+            if 'truncate' in ids:
+                # A refutation whose quote is not at its line refutes nothing.
+                refuted.append({'lead': ids['truncate'], 'why': 'it writes atomically.',
+                                'evidence': [{'path': 'rechunk.py', 'line': 6, 'quote': 'os.replace(tmp, path)'}]})
+            return [{'findings': [], 'requests': [], 'done': True, 'refuted': refuted,
+                     'checked': ['rechunk.py:9 catches Exception in _close_record, so the lead that abandon_start leaves the claim held does not hold.']}]
+        if 'You check several findings' in task or 'You check one finding' in task:
+            def verdict(n):
+                return {'finding': n, 'verdict': 'confirmed', 'evidence': '`json.dump(current, handle)`', 'corrected_line': None,
+                        'severity': 'medium', 'scenario_holds': True}
+            if 'You check several findings' in task:
+                return [[verdict(n) for n in range(1, 4)]]
+            return [verdict(1)]
+        return [[]] if 'specialty' in task else [{}]
+
+result = asyncio.run(a.run(Rlm(), {'repoDir': repo, 'base': base, 'head': head, 'mode': 'both'}))
+print(json.dumps({'findings': sorted([f['line'], f['claim'][:40]] for f in result['findings']),
+                  'refuted': result['dropped'].get('refutedByInvestigator'), 'leads': [l.get('id') for l in LEADS],
+                  'notChecked': result['notChecked']}))
+"#;
+
+/// Fisher #3239: the review posted "a failure in _close_record leaves the claim held" inline while its own summary
+/// said that lead does not hold. A lead the deep pass refutes with checked evidence is not posted.
+#[test]
+fn review_drops_a_lead_the_deep_pass_refuted_and_keeps_a_different_failure() {
+    let (dir, base, head) = rechunk_repository();
+    let got = engine(dir.path(), &base, &head, RECHUNK_RLM);
+    assert_eq!(
+        got["findings"],
+        json!([
+            [6, "_close_record truncates the record file "],
+            [18, "_write_run treats any OSError reading ru"]
+        ]),
+        "{got}"
+    );
+    assert_eq!(
+        got["refuted"],
+        json!([{"file": "rechunk.py", "line": 27, "by": "claims",
+            "claim": "abandon_start releases the project claim only after _close_record returns, so a failure in \
+                      _close_record leaves the claim held.",
+            "why": "_close_record catches Exception and returns, so release always runs.",
+            "evidence": ["rechunk.py:9"]}])
+    );
+    // The investigators saw each lead with the id a refutation names.
+    assert!(got["leads"].as_array().unwrap().iter().all(|id| id.is_i64()), "{got}");
+}
