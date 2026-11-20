@@ -1705,6 +1705,7 @@ async def run(rlm: Any, spec: dict[str, Any], *, runner: Runner | None = None,
     merged: list[dict[str, Any]] = []
     duplicates = 0
     refuted = 0
+    refuted_leads: list[dict[str, Any]] = []
     find_ms = 0
     # With `overlap` the fast pass runs beside the investigators' first round in `both` and its findings reach them
     # from the second round on; by default the finders run first and their findings are the investigators' leads
@@ -1973,7 +1974,8 @@ async def run(rlm: Any, spec: dict[str, Any], *, runner: Runner | None = None,
                 guidance=guidance, enrich=parse_rules, generic=generic_reason, intent=stated,
                 prepared=prepared, prove_leads=not hybrid, keep_session=hybrid,
                 shapes=prepared["shapes"] if prepared else None, leads_future=leads_future,
-                on_investigator=early_verify if parallel else None, shared_prefix=system_prefix)
+                on_investigator=early_verify if parallel else None, shared_prefix=system_prefix,
+                risk_triage=(mode == "deep"))
             if parallel:
                 async def fast_then_leads() -> None:
                     try:
@@ -2012,6 +2014,10 @@ async def run(rlm: Any, spec: dict[str, Any], *, runner: Runner | None = None,
             refuted = len([item for item in merged + deep_out["findings"] if item.get("proof") == "refuted"])
             merged = [item for item in merged if item.get("proof") != "refuted"]
             deep_out["findings"] = [item for item in deep_out["findings"] if item.get("proof") != "refuted"]
+            # A lead an investigator showed false, with quotes the host found at their lines, is not posted beside the
+            # summary that says it does not hold. Only that lead goes: another finding on the same code stays.
+            refuted_leads = deep_out["refuted"]
+            merged = [item for item in merged if not any(entry["lead"] is item for entry in refuted_leads)]
             test_report = deep_out["tests"]
             if test_report["note"]:
                 not_checked.append(test_report["note"][0].upper() + test_report["note"][1:] + ".")
@@ -2217,7 +2223,13 @@ async def run(rlm: Any, spec: dict[str, Any], *, runner: Runner | None = None,
             if not source:
                 return None
             hunk = hunk_for(by_path.get(finding["file"]), finding["line"])
-            return "\n".join(render_hunk(hunk)) if hunk else "(no hunk)", source_window(source, finding["line"])
+            window = source_window(source, finding["line"])
+            blind_repo = (deep_out or compiled_out or {}).get("repo") or (prepared or {}).get("repo")
+            if blind_repo is not None and finding.get("citations"):
+                cited = deep.cited_windows(blind_repo, finding)
+                if cited:
+                    window = f"{window}\n\n{cited}"
+            return "\n".join(render_hunk(hunk)) if hunk else "(no hunk)", window
         try:
             blind_out = await blind.check(rlm, sorted(confirmed, key=level_rank), blind_material)
         except Exception as error:  # the verifier's verdicts stand
@@ -2314,7 +2326,11 @@ async def run(rlm: Any, spec: dict[str, Any], *, runner: Runner | None = None,
         "earlier": earlier,
         "dropped": {"rejected": len(rejected), "duplicates": duplicates, "generic": len(dropped_generic),
                     **({"preexisting": unnamed_preexisting} if unnamed_preexisting else {}),
-                    "refutedByTest": refuted, "contradicted": len(contradicted), "duplicateOf": duplicate_records},
+                    "refutedByTest": refuted, "contradicted": len(contradicted), "duplicateOf": duplicate_records,
+                    "refutedByInvestigator": [{"file": entry["lead"]["file"], "line": entry["lead"]["line"],
+                                               "claim": entry["lead"]["claim"], "by": entry["lens"], "why": entry["why"],
+                                               "evidence": [f"{c['path']}:{c['line']}" for c in entry["citations"]]}
+                                              for entry in refuted_leads]},
         "timing": {"totalMs": int((clock() - started) * 1000), "scopeMs": scope_ms, "findMs": find_ms,
                    "verifyMs": verify_ms, "deepMs": deep_ms, "programMs": program_ms, "stages": stages,
                    "frames": frames_runner.timings, "investigators": investigators, "program": program_records,

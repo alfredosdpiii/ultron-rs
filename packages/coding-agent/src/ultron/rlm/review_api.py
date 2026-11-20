@@ -467,6 +467,11 @@ _GENERATED = re.compile(
 )
 _BINARY_EXT = re.compile(r"\.(png|jpe?g|gif|webp|ico|pdf|zip|gz|tgz|jar|wasm|woff2?|ttf|otf|mp[34]|mov|so|dylib|dll|exe)$", re.I)
 _DOC = re.compile(r"\.(md|mdx|rst|txt|adoc)$", re.I)
+_OPS_DOC = re.compile(
+    r"(^|/)(runbooks?|playbooks?|migrations?|release|deploy|rollback|incident|ops)/"
+    r"|(runbook|prod-release|rollback|migration)[._-]",
+    re.I,
+)
 _TEST = re.compile(r"(^|/)(tests?|__tests__|spec|specs)/|[._-](test|spec)\.[^/]+$|(^|/)test_[^/]+\.py$", re.I)
 
 
@@ -592,7 +597,7 @@ def applies(reviewer: Reviewer, chunk: Chunk) -> bool:
     if reviewer.only_paths is not None:
         return chunk.path in reviewer.only_paths
     if chunk.kind == "doc":
-        return reviewer.reads_docs
+        return reviewer.reads_docs or (reviewer.key in ("bugs", "arch") and bool(_OPS_DOC.search(chunk.path)))
     if reviewer.llm_only:
         return bool(_LLM_HINT.search(chunk.text))
     return True

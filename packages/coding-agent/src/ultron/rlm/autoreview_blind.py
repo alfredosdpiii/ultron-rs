@@ -21,7 +21,7 @@ KIND = "review.finding"
 QUESTIONS: dict[str, Any] = {
     "shown": {
         "type": "yesno",
-        "instructions": "Does the code shown (the diff hunk, the source around the line and the quoted source) "
+        "instructions": "Does the code shown (the diff hunk, the source around the line, any cited files, and the quoted source) "
                         "itself show what the claim says? Answer yes only when the code shows it; answer no when the "
                         "claim needs facts the code shown does not contain, or the code shows otherwise.",
     },

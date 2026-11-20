@@ -49,14 +49,14 @@ from review_api import (
 import autoreview_reference as reference_module
 from knowledge_api import GRAPH_SCHEMA, Knowledge, QueryError, construct_label
 import autoreview_tests as testing
-from review_prompts import DEEP_LENSES, DEEP_NUDGE, DEEP_SHAPE_NUDGE, DEEP_SHAPES_HEADER, DEEP_TRACE_NUDGE, deep_task
+from review_prompts import DEEP_LENSES, DEEP_NUDGE, DEEP_SHAPE_NUDGE, DEEP_SHAPES_HEADER, DEEP_TRACE_NUDGE, RISK_TRIAGE_TASK, deep_task, risk_tracer_task
 
 GIT_TIMEOUT_S = 30
 #: The only git subcommands the deep pass runs. All of them only read the object database.
 ALLOWED_GIT = ("grep", "show", "ls-tree", "log")
 
-DEFAULT_ROUNDS = 4
-MAX_ROUNDS = 8
+DEFAULT_ROUNDS = 6
+MAX_ROUNDS = 10
 MAX_REQUESTS = 8
 ROUND_CHARS = 24_000
 #: A ledger line of an earlier result, re-readable by `recall`.
@@ -74,8 +74,15 @@ BRIEF_CHARS = 8_000
 #: Changed files whose likes the brief lists, and how many changed files it looks at for them.
 MAX_LIKE = 6
 MAX_LIKE_SCANNED = 12
-DIFF_CHARS = 80_000
+DIFF_CHARS = 200_000
 LEADS_CHARS = 4_000
+#: The leads shown to the investigators; only these can be refuted.
+MAX_LEADS = 20
+LEADS_HEADER = (
+    "Leads from the first pass (unverified; extend, correct or ignore them). A lead you checked and found false "
+    "(the failure it names cannot happen) goes in refuted as "
+    '{"lead": id, "why": "...", "evidence": [citations]}, not only in checked: the host drops it from the review.\n'
+)
 MAX_DEEP_FINDINGS = 8
 MAX_CITATIONS = 6
 CITATION_SLACK = 2
@@ -123,6 +130,15 @@ DEEP_CONTRACT: dict[str, Any] = {
         },
         "requests": {"type": "array", "items": {"type": "object"}},
         "checked": {"type": "array", "items": {"type": "string"}},
+        "refuted": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {"lead": {"type": "integer"}, "why": {"type": "string"},
+                               "evidence": {"type": "array", "items": _CITATION}},
+                "required": ["lead", "why", "evidence"],
+            },
+        },
         "done": {"type": "boolean"},
     },
     "required": ["findings", "requests", "done"],
@@ -157,6 +173,8 @@ class Repo:
         self.graph: dict[str, Any] | None = None
         #: Graph queries served in this review, for the record.
         self.graph_queries = 0
+        #: Per-file diff sections indexed from the full diff so truncated files remain readable.
+        self.diff_by_file: dict[str, str] = {}
 
     def _git(self, *args: str) -> tuple[int, str, str]:
         if not args or args[0] not in ALLOWED_GIT:
@@ -274,9 +292,9 @@ def serve_request(repo: Repo, request: Any, tests: "testing.TestSession | None" 
     """Answer one investigator request from the head commit: (title, body). Raises Rejected for anything outside
     the closed set: five read-only lookups and, when the review may run tests, two sandboxed test executions."""
     if not isinstance(request, dict) or len(request) != 1:
-        raise Rejected("a request is an object with exactly one of read, grep, list, definition, references, "
-                       "symbol, callers, callees, tests_of, history, blame_range, pickaxe, review_notes, rules_for, "
-                       "graph")
+        raise Rejected("a request is an object with exactly one of read, read_diff, grep, list, definition, references, "
+                       "symbol, callers, callees, tests_of, history, blame_range, pickaxe, probe, review_notes, "
+                       "rules_for, graph")
     kind, args = next(iter(request.items()))
     if not isinstance(args, dict):
         raise Rejected(f"{kind} takes an object")
@@ -292,6 +310,26 @@ def serve_request(repo: Repo, request: Any, tests: "testing.TestSession | None" 
         if kind == "callees":
             raise Rejected(f"no definition of {name.strip()} in the reference; ask for definition or grep instead")
         kind, args = ("definition" if kind == "symbol" else "references"), {"symbol": name.strip()}
+    if kind == "probe":
+        return _serve_probe(args)
+    if kind == "read_diff":
+        raw_path = args.get("path")
+        if not isinstance(raw_path, str) or not raw_path.strip():
+            raise Rejected("read_diff takes a file path in path")
+        path = raw_path.strip().lstrip("./")
+        section = repo.diff_by_file.get(path)
+        if section is None:
+            raise Rejected(f"{path} is not in the diff")
+        diff_lines_list = section.splitlines()
+        try:
+            start = max(1, int(args.get("start") or 1))
+            end = int(args.get("end") or start + MAX_READ_LINES - 1)
+        except (TypeError, ValueError):
+            raise Rejected("read_diff takes line numbers in start and end") from None
+        end = min(end, len(diff_lines_list), start + MAX_READ_LINES - 1)
+        if start > len(diff_lines_list):
+            raise Rejected(f"diff of {path} has {len(diff_lines_list)} lines")
+        return f"diff {path}:{start}-{end} (of {len(diff_lines_list)} lines)", "\n".join(diff_lines_list[start - 1 : end])
     if kind == "read":
         path = repo.path(args.get("path"))
         lines = repo.lines(path)
@@ -433,6 +471,59 @@ MAX_NOTES = 8
 NOTE_CHARS = 400
 
 
+_PROBE_RUNNER = """
+import builtins, sys
+ALLOWED = {"re", "json", "math", "collections", "itertools", "functools", "string", "difflib", "statistics", "datetime", "time", "urllib.parse"}
+real_import = builtins.__import__
+def safe_import(name, globals=None, locals=None, fromlist=(), level=0):
+    if level != 0 or (name not in ALLOWED and name.split(".")[0] not in ALLOWED):
+        raise ImportError(f"import {name!r} is not allowed in probe")
+    return real_import(name, globals, locals, fromlist, level)
+safe_builtins = {k: getattr(builtins, k) for k in (
+    "abs", "all", "any", "bool", "chr", "dict", "enumerate", "filter", "float", "frozenset", "int",
+    "isinstance", "len", "list", "map", "max", "min", "ord", "pow", "print", "range", "repr",
+    "reversed", "round", "set", "slice", "sorted", "str", "sum", "tuple", "type", "zip",
+    "Exception", "ValueError", "TypeError", "KeyError", "IndexError", "AssertionError",
+)}
+safe_builtins["__import__"] = safe_import
+exec(compile(sys.argv[1], "<probe>", "exec"), {"__builtins__": safe_builtins})
+"""
+
+
+def _serve_probe(args: dict[str, Any]) -> tuple[str, str]:
+    code = args.get("code")
+    if not isinstance(code, str) or not code.strip() or len(code) > 4_000:
+        raise Rejected("probe takes a Python snippet in code (1..4000 chars)")
+    exit_code, stdout, stderr = _run_process(["python3", "-I", "-c", _PROBE_RUNNER, code], "/tmp", 5.0)
+    out = (stdout or "") + (f"\n[stderr]\n{stderr}" if stderr else "")
+    out = _clip(out.strip() or "(no output)", 4_000)
+    return f"probe (exit {exit_code})", out
+
+
+TRIAGE_CONTRACT: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "paths": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 6,
+            "items": {
+                "type": "object",
+                "properties": {
+                    "id": {"type": "string"},
+                    "title": {"type": "string"},
+                    "question": {"type": "string"},
+                    "start_files": {"type": "array", "items": {"type": "string"}, "maxItems": 6},
+                    "focus": {"type": "string"},
+                },
+                "required": ["id", "title", "question", "start_files", "focus"],
+            },
+        },
+    },
+    "required": ["paths"],
+}
+
+
 def _serve_notes(repo: Repo, kind: str, args: dict[str, Any]) -> tuple[str, str]:
     """What reviewers said in earlier pull requests: on this file (`review_notes`), or, addressed, on the files that
     share its rarest constructs (`like_notes`). From the knowledge store; nothing when the host has none."""
@@ -548,7 +639,7 @@ def serve(repo: Repo, requests: Any, limit: int = ROUND_CHARS,
     return "\n\n".join(block for _title, block in blocks), served, rejected
 
 
-_CONSTANT = re.compile(r"^\s*(?:export\s+)?(?:const\s+|final\s+|static\s+)*([A-Z][A-Z0-9_]{2,})\s*[:=]")
+_CONSTANT = re.compile(r"^\s*(?:export\s+)?(?:const\s+|final\s+|static\s+){0,3}([A-Z][A-Z0-9_]{2,})\s*[:=]")
 _ENV = re.compile(r"""(?:environ(?:\.get)?\s*[\[(]\s*|getenv\(\s*|process\.env\.|\$\{?)["']?([A-Z][A-Z0-9_]{3,})""")
 _FLAG = re.compile(r"""["'\s](--[a-z][a-z0-9-]{2,})""")
 _TABLE = re.compile(r"\b(?:alter|create)\s+table\s+(?:if\s+(?:not\s+)?exists\s+)?[`\"\[]?(\w+)"
@@ -617,12 +708,14 @@ def extract(files: list[FileDiff], read_file: Callable[[str], list[str] | None])
     for item in files:
         if skip_reason(item):
             continue
-        doc = file_kind(item.path) == "doc"
+        kind = file_kind(item.path)
+        doc = kind == "doc"
+        test = kind == "test"
         source = read_file(item.path)
         for hunk in item.hunks:
             added = [line for line in hunk.lines if line.kind == "+"]
             # The definition an added line sits in changed, even when its `def` line did not.
-            if source and not doc:
+            if source and not doc and not test:
                 for line in added:
                     first = line.new or hunk.new_first
                     for index in range(min(first, len(source)) - 1, max(-1, first - 80), -1):
@@ -642,9 +735,10 @@ def extract(files: list[FileDiff], read_file: Callable[[str], list[str] | None])
                     for flag in _FLAG.findall(" " + text):
                         _add(out["flags"], flag, 6)
                     continue
-                match = _DEF.match(text)
-                if match:
-                    _add(out["defined"], match.group(1) or match.group(2), 12)
+                if not test:
+                    match = _DEF.match(text)
+                    if match:
+                        _add(out["defined"], match.group(1) or match.group(2), 12)
                 match = _CONSTANT.match(text)
                 if match:
                     _add(out["constants"], match.group(1), 10)
@@ -851,6 +945,12 @@ def _flat(text: str) -> str:
     return " ".join(text.split())
 
 
+def _loose(text: str) -> str:
+    s = _flat(text)
+    while "\\\\" in s:
+        s = s.replace("\\\\", "\\")
+    return s.replace("\\'", "'").replace('\\"', '"')
+
 def merge_rules(into: dict[str, Any], other: dict[str, Any]) -> None:
     """The rules `other` cited, also cited by `into` that takes its place: each is credited with the fate."""
     if other.get("rules"):
@@ -878,6 +978,10 @@ def check_citations(repo: Repo, raw: Any, diff_lines: dict[str, set[int]]) -> tu
         low, high = max(1, line - CITATION_SLACK), min(len(lines), line + CITATION_SLACK)
         at = next((number for number in range(low, high + 1) if quote in _flat(lines[number - 1])
                    or (len(_flat(lines[number - 1])) >= 8 and _flat(lines[number - 1]) in quote)), None)
+        if at is None:
+            loose_quote = _loose(quote)
+            at = next((number for number in range(low, high + 1) if loose_quote in _loose(lines[number - 1])
+                       or (len(_loose(lines[number - 1])) >= 8 and _loose(lines[number - 1]) in loose_quote)), None)
         if at is None:
             return [], f"{path}:{line} does not say {_clip(quote, 80)!r}", False
         citations.append({"path": path, "line": at, "quote": _clip(lines[at - 1].strip(), 240)})
@@ -1050,7 +1154,8 @@ async def investigate(frames: Any, lens: str, base_views: list[str], repo: Repo,
                       thinking: str | None, cutoff: float | None, clock: Callable[[], float],
                       tests: "testing.TestSession | None" = None, something_outside: bool = True,
                       required: list[str] | None = None, shapes: list[dict[str, str]] | None = None,
-                      shared: list[str] | None = None, leads_view: "asyncio.Future[str | None] | None" = None) -> dict[str, Any]:
+                      shared: list[str] | None = None, leads_view: "asyncio.Future[str | None] | None" = None,
+                      task_override: str | None = None) -> dict[str, Any]:
     """One investigator's retrieval loop: ask the frame, serve what it requests, ask again. `shapes` are the
     catalogue checks this part owes (`T<n>` items): each must be made (named in a finding or in checked) or
     declared not applicable in checked, else the investigator is sent back once. `shared` are the views every
@@ -1059,8 +1164,8 @@ async def investigate(frames: Any, lens: str, base_views: list[str], repo: Repo,
     new results in full and a one-line ledger of the earlier ones (ids), which `{"recall": {"id": "r1.2"}}`
     re-reads in full. `leads_view`, when given, is the fast pass's leads as a view, awaited before the second round
     (the first round runs beside the fast pass)."""
-    task = deep_task(lens, tests is not None, notes=repo.knowledge is not None,
-                     graph=GRAPH_SCHEMA if repo.graph is not None else "")
+    task = task_override or deep_task(lens, tests is not None, notes=repo.knowledge is not None,
+                                      graph=GRAPH_SCHEMA if repo.graph is not None else "")
     began = clock()
     leads_views: list[str] = []
     #: The latest round's results and the nudges (sent in full), the ledger of earlier results, and their text.
@@ -1257,17 +1362,42 @@ def regression_findings(repo: Repo, compared: dict[str, Any]) -> list[dict[str, 
     return out
 
 
+def index_diff(diff_text: str) -> dict[str, str]:
+    """Split rendered diff text into {path: section} keyed by `File: <path>` headers."""
+    sections: dict[str, str] = {}
+    matches = list(re.finditer(r"^File: (\S+)", diff_text, re.M))
+    for i, match in enumerate(matches):
+        end = matches[i + 1].start() if i + 1 < len(matches) else len(diff_text)
+        sections[match.group(1)] = diff_text[match.start():end].rstrip()
+    return sections
+
+
+def _order_diff(diff_text: str) -> str:
+    """Put production code and docs before tests so large test diffs never push production files past DIFF_CHARS."""
+    matches = list(re.finditer(r"^File: (\S+)", diff_text, re.M))
+    if len(matches) < 2:
+        return diff_text
+    prefix = diff_text[:matches[0].start()]
+    rank = {"code": 0, "doc": 1, "test": 2}
+    sections = []
+    for i, match in enumerate(matches):
+        end = matches[i + 1].start() if i + 1 < len(matches) else len(diff_text)
+        sections.append((rank.get(file_kind(match.group(1)), 0), i, diff_text[match.start():end]))
+    sections.sort(key=lambda item: (item[0], item[1]))
+    return prefix + "".join(sec for _, _, sec in sections)
+
+
 def diff_view(diff_text: str) -> str:
-    """The diff as frames see it: up to DIFF_CHARS, then the files past the cut by name, so a large change's
-    tail is read with lookups instead of going unseen."""
-    out = f"The diff under review (new-file line numbers in the gutter):\n{diff_text[:DIFF_CHARS]}"
-    if len(diff_text) <= DIFF_CHARS:
+    """The diff as frames see it: production code and docs first, up to DIFF_CHARS, then files past the cut."""
+    ordered = _order_diff(diff_text)
+    out = f"The diff under review (new-file line numbers in the gutter):\n{ordered[:DIFF_CHARS]}"
+    if len(ordered) <= DIFF_CHARS:
         return out
-    shown = re.findall(r"^File: (\S+)", diff_text[:DIFF_CHARS], re.M)
+    shown = re.findall(r"^File: (\S+)", ordered[:DIFF_CHARS], re.M)
     # The file the cut falls inside continues past it.
-    rest = list(dict.fromkeys(shown[-1:] + re.findall(r"^File: (\S+)", diff_text[DIFF_CHARS:], re.M)))
+    rest = list(dict.fromkeys(shown[-1:] + re.findall(r"^File: (\S+)", ordered[DIFF_CHARS:], re.M)))
     listing = "\n".join(f"  {path}" + (" (continued)" if path in shown else "") for path in rest[:200])
-    return (out + "\n... (diff cut at its size limit; these changed files are past the cut, read them with lookups:\n"
+    return (out + '\n... (diff cut at its size limit; read any file below with {"read_diff": {"path": "..."}} or read:\n'
             + listing + (f"\n  (+{len(rest) - 200} more)" if len(rest) > 200 else "") + ")")
 
 
@@ -1370,7 +1500,8 @@ async def run_deep(frames: Any, files: list[FileDiff], read_file: Callable[[str]
                    prepared: dict[str, Any] | None = None, prove_leads: bool = True,
                    keep_session: bool = False, shapes: list[dict[str, str]] | None = None,
                    shared_prefix: bool = False, leads_future: "asyncio.Future[list[dict[str, Any]]] | None" = None,
-                   on_investigator: Callable[[str, list[dict[str, Any]]], Any] | None = None) -> dict[str, Any]:
+                   on_investigator: Callable[[str, list[dict[str, Any]]], Any] | None = None,
+                   risk_triage: bool = False) -> dict[str, Any]:
     """The deep pass: map, (optionally) the tests the map tied to the change, investigators, evidence checks.
     Returns findings (unverified, except regressions the host observed itself), what was dropped, the
     investigators' records, the test executions, and the facts the summary's assurance is written from.
@@ -1387,6 +1518,7 @@ async def run_deep(frames: Any, files: list[FileDiff], read_file: Callable[[str]
     repo = prepared["repo"] if prepared else Repo(root, rev, runner)
     if not repo.files():
         raise RuntimeError("the reviewed commit could not be read")
+    repo.diff_by_file = index_diff(diff_text)
     brief = prepared["brief"] if prepared else build_brief(repo, files, read_file, title=title, description=description, base=base)
     lenses = [lens for lens in brief.lenses if lens in DEEP_LENSES and (not only or lens in only)]
     # Whether the map found anything outside the diff worth looking at.
@@ -1419,13 +1551,18 @@ async def run_deep(frames: Any, files: list[FileDiff], read_file: Callable[[str]
                               reference=(brief.reference_text or "") if reference_view in ("all", "investigators") else "")
         views: list[str] = [] if shared_prefix else list(shared)
 
+        shown_leads: list[dict[str, Any]] = []
+
         def leads_block(items: list[dict[str, Any]]) -> str | None:
-            if not items:
-                return None
-            public = [{"file": lead.get("file"), "line": lead.get("line"), "level": lead.get("level"),
-                       "claim": lead.get("claim")} for lead in items[:20]]
-            return ("Leads from the first pass (unverified; extend, correct or ignore them):\n"
-                    + json.dumps(public, indent=1)[:LEADS_CHARS])
+            keys = ("id", "file", "line", "level", "claim")
+            public = []
+            for lead in items[:MAX_LEADS]:
+                row = {key: lead.get(key) for key in keys}
+                if len(json.dumps([*public, row], indent=1)) > LEADS_CHARS:
+                    break
+                public.append(row)
+                shown_leads.append(lead)
+            return LEADS_HEADER + json.dumps(public, indent=1) if public else None
 
         lead_view = leads_block(leads)
         if lead_view and leads_future is None:
@@ -1467,12 +1604,14 @@ async def run_deep(frames: Any, files: list[FileDiff], read_file: Callable[[str]
         findings.extend(structural)
         kept_by_lens: dict[str, int] = {}
 
-        async def one(lens: str) -> dict[str, Any]:
+        async def one(lens: str, task_override: str | None = None) -> dict[str, Any]:
             outcome = await investigate(frames, lens, views, repo, rounds=rounds, model=model, thinking=thinking,
                                         cutoff=cutoff, clock=clock, tests=session, something_outside=outside,
-                                        required=brief.required.get(lens), shapes=owed.get(lens),
+                                        required=None if task_override else brief.required.get(lens),
+                                        shapes=None if task_override else owed.get(lens),
                                         shared=shared if shared_prefix else None,
-                                        leads_view=asyncio.shield(leads_as_view) if leads_as_view is not None else None)
+                                        leads_view=asyncio.shield(leads_as_view) if leads_as_view is not None else None,
+                                        task_override=task_override)
             reply = outcome["reply"]
             raw = reply.get("findings") if isinstance(reply.get("findings"), list) else []
             mine: list[dict[str, Any]] = []
@@ -1501,7 +1640,27 @@ async def run_deep(frames: Any, files: list[FileDiff], read_file: Callable[[str]
                 await on_investigator("structure", structural)
             except Exception:
                 pass
-        outcomes = await asyncio.gather(*(one(lens) for lens in lenses))
+        risk_tasks: list[tuple[str, str]] = []
+        if risk_triage and not only:
+            triage_results = await frames.run(
+                "deep", [("triage", RISK_TRIAGE_TASK, views)],
+                contract=TRIAGE_CONTRACT, model=model, thinking=thinking,
+                cutoff=cutoff, context=shared if shared_prefix else None,
+            )
+            triage_res = triage_results[0] if triage_results else None
+            raw_paths = triage_res.get("paths") if isinstance(triage_res, dict) else None
+            if isinstance(raw_paths, list):
+                graph_schema = GRAPH_SCHEMA if repo.graph is not None else ""
+                for idx, item in enumerate(raw_paths[:6], 1):
+                    if isinstance(item, dict) and item.get("question"):
+                        rid = str(item.get("id") or f"R{idx}").strip()
+                        risk_tasks.append((f"risk:{rid}", risk_tracer_task(item, session is not None,
+                                                                           notes=repo.knowledge is not None,
+                                                                           graph=graph_schema)))
+        if risk_tasks:
+            outcomes = await asyncio.gather(*(one(lens, task_override=t) for lens, t in risk_tasks))
+        else:
+            outcomes = await asyncio.gather(*(one(lens) for lens in lenses))
         if leads_future is not None:
             leads = list(leads_future.result() or []) if leads_future.done() and not leads_future.cancelled() \
                 and leads_future.exception() is None else []
@@ -1511,6 +1670,7 @@ async def run_deep(frames: Any, files: list[FileDiff], read_file: Callable[[str]
         # The exports are removed whatever happened, unless the caller keeps the session for its own checks.
         if session is not None and not keep_session:
             session.close()
+    refuted = refuted_leads(repo, outcomes, shown_leads, diff_lines)
     checked: list[str] = []
     records = []
     # What the claims investigator verified leads the assurance.
@@ -1528,10 +1688,34 @@ async def run_deep(frames: Any, files: list[FileDiff], read_file: Callable[[str]
     public_runs = [{key: value for key, value in record.items() if key != "output"} | {"output": record["output"][-600:]}
                    for record in runs]
     return {"findings": findings, "dropped": dropped, "generic": generic_dropped, "investigators": records,
-            "checked": checked, "repo": repo,
+            "checked": checked, "refuted": refuted, "repo": repo,
             "brief": brief, "lenses": lenses, "diff_cut": cut,
             "tests": {"enabled": tests is not None, "mechanism": mechanism, "note": test_note, "runs": public_runs,
                       "env": started["env"], "toolchain": started["toolchain"]}}
+
+
+def refuted_leads(repo: Repo, outcomes: list[dict[str, Any]], leads: list[dict[str, Any]],
+                  diff_lines: dict[str, set[int]]) -> list[dict[str, Any]]:
+    """The leads an investigator showed false, each with the citations that show it:
+    [{"lead": the lead itself, "lens", "why", "citations"}]. A refutation whose quotes are not at their lines, or
+    that names no lead it was shown, refutes nothing."""
+    by_id = {lead["id"]: lead for lead in leads[:MAX_LEADS] if isinstance(lead.get("id"), int)}
+    out: list[dict[str, Any]] = []
+    claims = [(outcome["lens"], item) for outcome in outcomes if outcome["record"]["status"] != "failed"
+              for item in _list(outcome["reply"].get("refuted")) if isinstance(item, dict)]
+    for lens, item in claims:
+        lead = by_id.get(item.get("lead")) if type(item.get("lead")) is int else None
+        why = _text(item.get("why"), 300)
+        if lead is None or not why or any(entry["lead"] is lead for entry in out):
+            continue
+        citations, problem, _beyond = check_citations(repo, item.get("evidence"), diff_lines)
+        if problem is None:
+            out.append({"lead": lead, "lens": lens, "why": why, "citations": citations})
+    return out
+
+
+def _list(value: Any) -> list[Any]:
+    return value if isinstance(value, list) else []
 
 
 def assurance(deep: dict[str, Any]) -> list[str]:

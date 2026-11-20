@@ -30,7 +30,8 @@ REVIEWERS: dict[str, Reviewer] = {
         (
             "Conditions and bounds: inverted or off-by-one comparisons, wrong loop ranges, slices that drop or repeat an element.",
             "Missing values: None, null, undefined or empty collections reaching code that assumes a value; unchecked lookups, parses and casts.",
-            "Errors: exceptions swallowed or reported as success, failure paths that leave partial state, cleanup that never runs.",
+            "Errors: check for swallowed exceptions and skipped cleanup. After a durable write, trace the next fallible "
+            "call. If it fails, what stays committed, what does the caller see, and what will a retry read? Check rollback.",
             "Timeouts, cancellation and cleanup: follow each changed timeout, cancel, except/finally and teardown to its end. Does the caller get the documented error type or a raw cancellation? Is the failure recorded where success would be (a circuit breaker, a ledger, spend, a retry budget)? Does a failed cleanup step skip the steps after it?",
             "Async and concurrency: a missing await, tasks or promises nobody waits for, shared state changed without ordering, check-then-use races.",
             "Contracts: a changed return type, signature, default or side effect that callers visible in the view still depend on.",
@@ -225,7 +226,8 @@ FINDING_RULES = """- unpinned: required for a finding about tests, else null. {"
   one-line replacement, else null}. "Add coverage", "assert more" or an untested edge case without such a named
   change is not a finding: leave it out. A value in a workflow, manifest, configuration, SQL, script or document
   file (a literal the author chose: a name, a URL, a version, a setting) is not a behaviour a test pins: never
-  report a missing test for it.
+  report a missing test for it. SQL CHECK constraints, triggers and migrations with database tests ARE behaviours:
+  check that the tests actually exercise the new branch, lane or constraint.
 - consequence: required for an architecture or maintainability finding, else "". The problem that exists now,
   with file:line of each side: two copies that already disagree, a caller that breaks, a contract a named consumer
   relies on. "Could drift", "kept in sync by hand", pin or naming consistency, or coupling without a consumer that
@@ -356,6 +358,7 @@ the repository for you, at the reviewed commit.
 Reply with one JSON object:
 - requests: what to read next, at most 8 a round, each one of
   {{"read": {{"path": "...", "start": 1, "end": 80}}}}   lines of a file (200 at most)
+  {{"read_diff": {{"path": "...", "start": 1, "end": 200}}}}   rendered diff hunks of a changed file (use for files past the diff cut)
   {{"grep": {{"pattern": "...", "path_glob": "tests/**", "max": 20, "start": 1, "end": 80}}}}   a regular expression in
     tracked files; start and end (optional) keep only the hits in that line window
   {{"list": {{"dir": "..."}}}}   the entries of a directory
@@ -367,7 +370,8 @@ Reply with one JSON object:
   {{"history": {{"path": "...", "n": 10}}}}   the recent commits that touched a file
   {{"blame_range": {{"path": "...", "start": 10, "end": 20}}}}   the commits that last changed those lines
   {{"pickaxe": {{"string": "...", "n": 5}}}}   the commits that added or removed a string
-  {{"recall": {{"id": "r1.2"}}}}   an earlier result in full again (after round 1 they are listed by id, one line each){notes_requests}{test_requests}
+  {{"recall": {{"id": "r1.2"}}}}   an earlier result in full again (after round 1 they are listed by id, one line each)
+  {{"probe": {{"code": "..."}}}}   run a tiny stdlib-only Python snippet (re, json, math, collections, itertools, functools, string, difflib, statistics, datetime; 5s cap, no fs/network) to test a regex, edge input or timing; print() what you want to see{notes_requests}{test_requests}
 - findings: every problem you can prove so far (repeat earlier ones you still hold): file and line (where the
   problem is, in the diff or not), severity, category, claim (one sentence), why, scenario, suggested_fix,
   confidence, and evidence: the citations that prove it, each {{"path", "line", "quote"}}, the quote one source
@@ -403,7 +407,9 @@ infrastructure setting and dependency pin the change relies on: is it actually s
 run the new gate? Do ordering, replicas and volumes still fit? Is a dependency pin inside the range it claims?
 For a migration or a new query: is there an index for its filter or join at production size; does a build or
 backfill lock a large table; is the migration listed where the repository's release checklist or runbook lists
-its neighbours (prod-release, deploy docs, DBA gates)? Cite the neighbour that is listed.""",
+its neighbours (prod-release, deploy docs, DBA gates)? Walk the documented precheck and recovery steps (e.g. failed-migration resolve / --rolled-back vs --applied warnings)
+against neighbouring entries in the same runbook and against what the migration actually does. Would it actually stop or
+guide the operator safely? Cite the conflicting conditions or the missing checklist/recovery entry.""",
     "tests": """Your part: tests that pin. For each new behaviour, would any test fail if it were removed, its guard
 dropped or its default changed? Read the neighbouring tests first: a case another test already covers is not a
 finding. Give the mutation in unpinned whenever the change is one line: the host runs it when tests can run.
@@ -462,6 +468,48 @@ DEEP_GRAPH_REQUESTS = """
   {{"graph": {{"sql": "SELECT ..."}}}}   one read-only SQLite query over the whole repository's code graph at the
     reviewed commit, 30 rows: {schema}. Use it for what no single lookup answers: every caller of a name in the
     repository, the routes that lack a guard the others have, the files that import a changed module"""
+
+
+RISK_TRIAGE_TASK = """You are the lead reviewer triaging a pull request before focused tracers run in parallel.
+Read the diff, brief, retrieved context and PR description once, and output 4 to 6 concrete, PR-specific risk paths
+worth tracing end-to-end. Each path will be handed to its own dedicated tracer that reads files, greps callers, and
+runs small stdlib probes.
+
+Prioritize real merge-blocking and cross-layer risks specific to THIS diff:
+1. Cross-layer contracts: frontend/UI payloads vs backend DTO/validators vs DB constraints/migrations vs ML/downstream consumers.
+2. State, transaction, rollback, lock, concurrency and retry boundaries (what stays committed or stale when step N fails?).
+3. Operational runbooks, migrations and deployment gates (index locks, P3009 recovery commands, deploy ordering, CI coverage).
+4. Adversarial inputs, bounds and UI edge states (stored data exceeding new caps on PATCH, empty/zero-row/page-change states, regex bypasses).
+5. Unpinned behaviour on new guards, constraints or error paths.
+
+Reply with one JSON object {"paths": [...]}. Each path needs:
+- id: "R1", "R2", ...
+- title: short name (<= 80 chars)
+- question: the exact concrete failure hypothesis to prove or refute (1-2 sentences)
+- start_files: 1 to 4 repository file paths to inspect first
+- focus: what callers, siblings, runbooks, tests or inputs to check."""
+
+
+def risk_tracer_task(path_item: dict[str, object], tests: bool = False, notes: bool = False, graph: str = "") -> str:
+    raw_starts = path_item.get("start_files")
+    starts = ", ".join(str(x) for x in raw_starts) if isinstance(raw_starts, list) and raw_starts else "(from diff)"
+    focus = (
+        f"Your focused risk path ({path_item.get('id', 'R')}): {path_item.get('title', '')}\n"
+        f"Hypothesis to prove or refute: {path_item.get('question', '')}\n"
+        f"Start files: {starts}\n"
+        f"Focus: {path_item.get('focus', '')}\n"
+        "Trace this path end-to-end across layers (UI, backend, DB/migrations, ML, runbooks, tests). "
+        "Look up every relevant caller/writer/reader before concluding; use probe to verify regexes, bounds or edge cases. "
+        "Report every real defect you prove along this path (and any sibling defect you uncover nearby)."
+    )
+    rules = DEEP_RULES.format(
+        executes=", and you run nothing yourself" if tests else " and nothing is executed",
+        notes_requests=(DEEP_NOTES_REQUESTS.format() if notes else "")
+        + (DEEP_GRAPH_REQUESTS.format(schema=graph) if graph else ""),
+        finding_rules=FINDING_RULES,
+        test_requests=DEEP_TEST_REQUESTS if tests else "",
+        test_evidence=DEEP_TEST_EVIDENCE if tests else "")
+    return f"{rules}\n\n{focus}\n\n{SEVERITY_RUBRIC}"
 
 
 def deep_task(lens: str, tests: bool = False, notes: bool = False, graph: str = "") -> str:
@@ -672,7 +720,7 @@ CHECK_CATALOGUE: list[dict[str, str]] = [
      "when": "a new except/catch can never fire because the callee returns a sentinel; an error is swallowed or reported "
              "as success; a specific error became a generic skip; a cleanup or rollback runs on one failure branch only",
      "how": "read the callee (definition); ask whether it raises or returns on the failure path; read the failure "
-            "branches and ask which ones restore state",
+            "branches and transaction boundary; name what stays committed, what the caller sees and what a retry reads",
      "evidence": "an answer quoting the return or the branch", "level": "high with the scenario"},
     {"key": "comment-vs-code", "trigger": "a new or changed comment, docstring or document",
      "when": "a comment, help text, README or description promises a behaviour, scope or default the code does not have",
@@ -760,6 +808,7 @@ TRIGGERED_SHAPES = ("registry-member", "unpinned-behaviour", "test-asserts-behav
 RV_API = """rv, the review API (every call is recorded as a step of the review program; ids are given back and may be
 passed as id=...; every call returns a dict, or raises RvError with the host's reason):
 - rv.read(path, start=1, end=None) -> {"id", "count": lines, "text"}   lines of a file (200 at most)
+- rv.read_diff(path, start=1, end=None) -> {"id", "count": lines, "text"}   rendered diff hunks of a changed file (use for files past the diff cut)
 - rv.grep(pattern, glob=None, start=None, end=None, count_only=False, max=20) -> {"id", "count", "capped",
   "items": [{"path", "line", "text"}], "text"}   a regular expression in tracked files; start/end keep hits in a line
   window; count_only makes the count exact (up to 1000); capped means the count was cut at max

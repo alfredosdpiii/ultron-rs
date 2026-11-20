@@ -48,7 +48,7 @@ import autoreview_tests as testing
 from review_prompts import (ASK_TASK, CANDIDATE_PLANNER_TASK, CHECK_CATALOGUE, COMPILED_REPAIR, RESOLVE_TASK, RV_API,
                             TRIGGERED_SHAPES, cell_planner_task, compiled_planner_task)
 
-LOOKUPS = ("read", "grep", "list", "definition", "references", "history", "blame_range", "pickaxe")
+LOOKUPS = ("read", "read_diff", "grep", "list", "definition", "references", "history", "blame_range", "pickaxe")
 TEST_OPS = ("run_tests", "mutation_check")
 #: Results with items a `for_each` may iterate.
 ITERABLE = ("grep", "references", "list", "history", "blame_range", "pickaxe")
@@ -86,7 +86,7 @@ RETRIEVAL_HITS = 12
 #: repository is `rv`.
 PLAN_STYLES = ("cell", "frame")
 DEFAULT_PLAN_STYLE = "cell"
-DEFAULT_PLAN_CELLS = 4
+DEFAULT_PLAN_CELLS = 10
 MAX_PLAN_CELLS = 12
 #: The hybrid mode: candidates from discovery verified by host-written check programs.
 DEFAULT_VERIFY_CANDIDATES = 12
@@ -232,7 +232,7 @@ def _normalize_step(raw: Any, errors: list[str], *, inside: str | None = None) -
         if not isinstance(args, dict):
             errors.append(f"{label}: {op} takes an args object")
             return None
-        needed = {"read": ("path",), "grep": ("pattern",), "list": ("dir",), "definition": ("symbol",),
+        needed = {"read": ("path",), "read_diff": ("path",), "grep": ("pattern",), "list": ("dir",), "definition": ("symbol",),
                   "references": ("symbol",), "history": ("path",), "blame_range": ("path",), "pickaxe": ("string",),
                   "run_tests": ("paths",), "mutation_check": ("path", "line", "replacement", "tests")}[op]
         for key in needed:
@@ -578,7 +578,7 @@ def _count_of(op: str, title: str, body: str) -> int | None:
     match = _TITLE_COUNT.search(title)
     if match:
         return int(match.group(1) or match.group(2))
-    if op == "read":
+    if op in ("read", "read_diff"):
         return len(body.splitlines())
     return None
 
@@ -1740,7 +1740,7 @@ class CellSession:
         sid = self._id(kwargs.pop("id", None))
         covers = kwargs.pop("covers", None)
         if name in LOOKUPS or name in TEST_OPS:
-            names = {"read": ("path", "start", "end"), "grep": ("pattern", "glob", "start", "end", "count_only", "max"),
+            names = {"read": ("path", "start", "end"), "read_diff": ("path", "start", "end"), "grep": ("pattern", "glob", "start", "end", "count_only", "max"),
                      "list": ("dir",), "definition": ("symbol",), "references": ("symbol",), "history": ("path", "n"),
                      "blame_range": ("path", "start", "end"), "pickaxe": ("string", "n"), "run_tests": ("paths", "select"),
                      "mutation_check": ("path", "line", "replacement", "tests")}[name]
@@ -2393,6 +2393,7 @@ async def run_compiled(frames: Any, files: list[FileDiff], read_file: Callable[[
     repo = deep.Repo(root, rev, runner)
     if not repo.files():
         raise RuntimeError("the reviewed commit could not be read")
+    repo.diff_by_file = deep.index_diff(diff_text)
     brief = deep.build_brief(repo, files, read_file, title=title, description=description, base=base,
                              knowledge=knowledge)
     diff_lines = {item.path: {line.new for hunk in item.hunks for line in hunk.lines if line.new is not None}
