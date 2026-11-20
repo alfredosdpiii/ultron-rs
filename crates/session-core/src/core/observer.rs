@@ -88,7 +88,14 @@ fn parse(response: &AssistantMessage, mask: &dyn Fn(&str) -> String) -> Option<S
     if text.text.chars().count() > 4096 {
         return None;
     }
-    let value: Value = serde_json::from_str(&text.text).ok()?;
+    let trimmed = text.text.trim();
+    let json_text = trimmed
+        .strip_prefix("```")
+        .and_then(|rest| rest.find('\n').map(|nl| &rest[nl + 1..]))
+        .and_then(|rest| rest.trim_end().strip_suffix("```"))
+        .map(str::trim)
+        .unwrap_or(trimmed);
+    let value: Value = serde_json::from_str(json_text).ok()?;
     let obj = value.as_object()?;
     if obj.len() != 1 {
         return None;
@@ -117,7 +124,6 @@ impl Core {
         if self.observer.operation.as_deref() != Some(&operation) {
             self.observer.cancel();
             self.observer.operation = Some(operation.clone());
-            self.observer.generations = 0;
             self.observer.attempts = 0;
         }
         self.observer.generations += 1;

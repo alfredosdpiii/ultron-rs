@@ -1549,10 +1549,10 @@ def contract_reviewer(inventory: dict[str, list[str]]) -> Reviewer:
                     entries, only_paths=tuple(inventory))
 
 
-NEED_LINES = 60
+NEED_LINES = 160
 #: How many times a verifier is asked again while it names code it has not seen.
 NEED_ROUNDS = 3
-NEED_CHARS = 8_000
+NEED_CHARS = 24_000
 _NEED_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]{0,80}")
 
 
@@ -1561,7 +1561,7 @@ def needed_code(git: Git, scope: Scope, needs: Any) -> str:
     numbered."""
     out: list[str] = []
     size = 0
-    for need in needs[:3] if isinstance(needs, list) else []:
+    for need in needs[:5] if isinstance(needs, list) else []:
         need, _, line = need.strip().strip("`").split("(")[0].partition(":") if isinstance(need, str) else ("", "", "")
         name = need.rsplit(".", 1)[-1]
         places: list[tuple[str, int]] = []

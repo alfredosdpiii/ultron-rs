@@ -1825,16 +1825,28 @@ async def run(rlm: Any, spec: dict[str, Any], *, runner: Runner | None = None,
             else:
                 for index, verdict in zip(ids, unpack_batch(result, len(ids))):
                     verdicts[index] = verdict
-        # A verifier that could not settle the scenario for want of code is asked once more with the code it named.
-        again: list[tuple[int, list[str]]] = []
-        for offset, item in enumerate(views if git is not None else []):
-            verdict = verdicts.get(base + offset)
-            if isinstance(verdict, dict) and (verdict.get("verdict") == "uncertain"
-                                              or verdict.get("scenario_holds") == "unknown"):
-                code = needed_code(git, scope, verdict.get("needs"))
-                if code:
-                    again.append((base + offset, [*item, "Code you asked for:\n" + code]))
-        if again:
+        # A verifier that could not settle the scenario for want of code gets up to 2 follow-up lookup rounds.
+        current_items: dict[int, list[str]] = {base + offset: list(item) for offset, item in enumerate(views if git is not None else [])}
+        seen_needs: dict[int, set[str]] = {}
+        for _hop in range(2):
+            again: list[tuple[int, list[str]]] = []
+            for index, item in current_items.items():
+                verdict = verdicts.get(index)
+                if isinstance(verdict, dict) and (verdict.get("verdict") == "uncertain"
+                                                  or verdict.get("scenario_holds") == "unknown"):
+                    raw_needs = verdict.get("needs") if isinstance(verdict.get("needs"), list) else []
+                    seen = seen_needs.setdefault(index, set())
+                    fresh = [n for n in raw_needs if isinstance(n, str) and n.strip() not in seen]
+                    if not fresh:
+                        continue
+                    seen.update(n.strip() for n in fresh)
+                    code = needed_code(git, scope, fresh)
+                    if code:
+                        updated = [*item, "Code you asked for:\n" + code]
+                        current_items[index] = updated
+                        again.append((index, updated))
+            if not again:
+                break
             answers = await frames_runner.run("verify", [("verifier", AUTOREVIEW_VERIFIER_TASK, item) for _i, item in again],
                                               contract=None, model=verify_model, thinking=verify_thinking,
                                               cutoff=verify_cutoff, context=verifier_context,
