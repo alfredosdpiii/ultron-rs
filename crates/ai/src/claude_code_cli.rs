@@ -231,7 +231,22 @@ pub fn parse_help_flags(help: &str) -> Vec<String> {
             }
             let flag: String = chars[i..j].iter().collect::<String>().to_lowercase();
             if !flags.contains(&flag) {
-                flags.push(flag);
+                flags.push(flag.clone());
+            }
+            // Also expand optional suffixes like `--system-prompt[-file]` listed in `claude --help`.
+            if chars.get(j) == Some(&'[') && chars.get(j + 1) == Some(&'-') {
+                let mut k = j + 2;
+                while chars.get(k).is_some_and(|c| c.is_ascii_alphanumeric() || *c == '-') {
+                    k += 1;
+                }
+                if k > j + 2 && chars.get(k) == Some(&']') {
+                    let suffix: String = chars[j + 1..k].iter().collect::<String>().to_lowercase();
+                    let expanded = format!("{flag}{suffix}");
+                    if !flags.contains(&expanded) {
+                        flags.push(expanded);
+                    }
+                    j = k + 1;
+                }
             }
             i = j;
             continue;
@@ -747,11 +762,28 @@ fn effort_for(model: &Model, level: Option<&str>) -> Option<String> {
     }
 }
 
+struct TempPromptFile(std::path::PathBuf);
+
+impl Drop for TempPromptFile {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.0);
+    }
+}
+
+fn write_temp_system_prompt(system: &str) -> std::io::Result<TempPromptFile> {
+    static NEXT_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+    let id = NEXT_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let path = std::env::temp_dir().join(format!("ultron-claude-sys-{}-{id}.txt", std::process::id()));
+    std::fs::write(&path, system)?;
+    Ok(TempPromptFile(path))
+}
+
 struct PlannedRequest {
     args: Vec<String>,
     env: Env,
     message: Value,
     structured: bool,
+    _system_prompt_file: Option<TempPromptFile>,
 }
 
 fn plan_request(
@@ -767,12 +799,19 @@ fn plan_request(
     if system.is_empty() {
         system = NEUTRAL_SYSTEM_PROMPT.into();
     }
+    let mut system_prompt_file: Option<TempPromptFile> = None;
     if system.encode_utf16().count() > MAX_SYSTEM_PROMPT_ARG_CHARS {
-        content.insert(
-            0,
-            json!({"type": "text", "text": format!("<instructions>\n{system}\n</instructions>\n\n")}),
-        );
-        system = NEUTRAL_SYSTEM_PROMPT.into();
+        if capabilities.flags.contains("--system-prompt-file")
+            && let Ok(file) = write_temp_system_prompt(&system)
+        {
+            system_prompt_file = Some(file);
+        } else {
+            content.insert(
+                0,
+                json!({"type": "text", "text": format!("<instructions>\n{system}\n</instructions>\n\n")}),
+            );
+            system = NEUTRAL_SYSTEM_PROMPT.into();
+        }
     }
     let schema = payload.get("json_schema").filter(|s| !s.is_null());
     let structured = schema.is_some_and(|s| s.is_object() && s["type"] == "object") && use_schema_flag;
@@ -819,7 +858,12 @@ fn plan_request(
     .map(|s| s.to_string())
     .collect();
     args.push(format!("--model={model_id}"));
-    args.push(format!("--system-prompt={system}"));
+    if let Some(file) = &system_prompt_file {
+        args.push("--system-prompt-file".into());
+        args.push(file.0.to_string_lossy().into_owned());
+    } else {
+        args.push(format!("--system-prompt={system}"));
+    }
     args.push(match effort {
         Some(effort) => format!("--effort={effort}"),
         None => "--settings={\"alwaysThinkingEnabled\":false}".into(),
@@ -839,6 +883,7 @@ fn plan_request(
         env,
         message: json!({"type": "user", "message": {"role": "user", "content": content}}),
         structured,
+        _system_prompt_file: system_prompt_file,
     })
 }
 
@@ -1510,7 +1555,9 @@ async fn drive(
         }
         if !crate::http::is_aborted(signal) {
             jsrt::sync::lock(&PROVEN_KEYS).insert(key.clone());
-            start_spare(&key, &bin, &plan.args, &plan.env, &cwd, config);
+            if plan._system_prompt_file.is_none() {
+                start_spare(&key, &bin, &plan.args, &plan.env, &cwd, config);
+            }
         }
         return Ok(());
     }
@@ -1524,4 +1571,41 @@ pub async fn stream(
     sink: &mut EventSink<'_>,
 ) -> AssistantMessage {
     stream_simple(model, context, options, sink).await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_help_flags_expands_optional_suffix() {
+        let flags = parse_help_flags("via: --system-prompt[-file], --append-system-prompt[-file]");
+        assert!(flags.contains(&"--system-prompt".to_string()));
+        assert!(flags.contains(&"--system-prompt-file".to_string()));
+        assert!(flags.contains(&"--append-system-prompt".to_string()));
+        assert!(flags.contains(&"--append-system-prompt-file".to_string()));
+    }
+
+    #[test]
+    fn large_system_prompt_uses_file_when_supported() {
+        let model = crate::models::builtin_model("claude-code", "sonnet").expect("builtin sonnet");
+        let big = "S".repeat(MAX_SYSTEM_PROMPT_ARG_CHARS + 50);
+        let payload = json!({
+            "model": "sonnet",
+            "system": big,
+            "content": [{"type": "text", "text": "hi"}],
+        });
+        let caps = ClaudeCliCapabilities {
+            version: "2.0.0".into(),
+            flags: HashSet::from(["--system-prompt".into(), "--system-prompt-file".into()]),
+            warnings: Vec::new(),
+        };
+        let plan = plan_request(model, &payload, &Env::new(), 8192, &caps, false).expect("plan");
+        let idx = plan.args.iter().position(|a| a == "--system-prompt-file").expect("flag");
+        let path = std::path::PathBuf::from(&plan.args[idx + 1]);
+        assert_eq!(std::fs::read_to_string(&path).expect("temp file"), big);
+        assert_eq!(plan.message["message"]["content"].as_array().unwrap().len(), 1);
+        drop(plan);
+        assert!(!path.exists(), "temp system prompt file cleaned up on Drop");
+    }
 }

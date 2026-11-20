@@ -1632,8 +1632,10 @@ async def run_deep(frames: Any, files: list[FileDiff], read_file: Callable[[str]
         findings.extend(structural)
         kept_by_lens: dict[str, int] = {}
 
-        async def one(lens: str, task_override: str | None = None, extra_views: list[str] | None = None) -> dict[str, Any]:
-            lens_views = [*views, *extra_views] if extra_views else views
+        async def one(lens: str, task_override: str | None = None, extra_views: list[str] | None = None,
+                      base_views: list[str] | None = None) -> dict[str, Any]:
+            base = views if base_views is None else base_views
+            lens_views = [*base, *extra_views] if extra_views else base
             outcome = await investigate(frames, lens, lens_views, repo, rounds=rounds, model=model, thinking=thinking,
                                         cutoff=cutoff, clock=clock, tests=session, something_outside=outside,
                                         required=None if task_override else brief.required.get(lens),
@@ -1669,7 +1671,7 @@ async def run_deep(frames: Any, files: list[FileDiff], read_file: Callable[[str]
                 await on_investigator("structure", structural)
             except Exception:
                 pass
-        risk_tasks: list[tuple[str, str, list[str]]] = []
+        risk_tasks: list[tuple[str, str, list[str], list[str] | None]] = []
         if risk_triage and not only:
             manifest = _file_manifest(files)
             triage_views = [*views, manifest] if manifest else views
@@ -1683,6 +1685,10 @@ async def run_deep(frames: Any, files: list[FileDiff], read_file: Callable[[str]
             if isinstance(raw_paths, list):
                 graph_schema = GRAPH_SCHEMA if repo.graph is not None else ""
                 shown_in_diff = set(re.findall(r"^File: (\S+)", _order_diff(diff_text)[:DIFF_CHARS], re.M))
+                # Without shared_prefix, drop the full 200 KB diff from each tracer and send only its start_files + manifest.
+                scoped_base = [v for v in views[1:]] if (not shared_prefix and views) else None
+                if scoped_base is not None and manifest:
+                    scoped_base = [manifest, *scoped_base]
                 for idx, item in enumerate(raw_paths[:8], 1):
                     if isinstance(item, dict) and item.get("question"):
                         rid = str(item.get("id") or f"R{idx}").strip()
@@ -1690,13 +1696,18 @@ async def run_deep(frames: Any, files: list[FileDiff], read_file: Callable[[str]
                         starts = item.get("start_files") if isinstance(item.get("start_files"), list) else []
                         for sf in starts[:4]:
                             sp = str(sf).strip().lstrip("./")
-                            if sp and sp not in shown_in_diff and sp in repo.diff_by_file:
+                            if not sp or sp not in repo.diff_by_file:
+                                continue
+                            if scoped_base is not None:
+                                extra.append(f"Diff hunks for start file {sp}:\n{_clip(repo.diff_by_file[sp], 16_000)}")
+                            elif sp not in shown_in_diff:
                                 extra.append(f"Diff hunks for start file {sp} (past the main diff cut):\n{_clip(repo.diff_by_file[sp], 16_000)}")
                         risk_tasks.append((f"risk:{rid}", risk_tracer_task(item, session is not None,
                                                                            notes=repo.knowledge is not None,
-                                                                           graph=graph_schema), extra))
+                                                                           graph=graph_schema), extra, scoped_base))
         if risk_tasks:
-            outcomes = await asyncio.gather(*(one(lens, task_override=t, extra_views=ex) for lens, t, ex in risk_tasks))
+            outcomes = await asyncio.gather(*(one(lens, task_override=t, extra_views=ex, base_views=bv)
+                                              for lens, t, ex, bv in risk_tasks))
         else:
             outcomes = await asyncio.gather(*(one(lens) for lens in lenses))
         if leads_future is not None:
