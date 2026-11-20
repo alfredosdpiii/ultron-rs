@@ -207,6 +207,8 @@ pub struct PullRequest {
     pub base_ref: String,
     pub url: String,
     pub created_at: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub updated_at: String,
     pub requested_reviewers: Vec<String>,
     pub requested_teams: Vec<String>,
     /// The commit a merge made on the base branch (squash, merge or rebase); a cherry-pick's source.
@@ -606,6 +608,7 @@ impl GitHub {
             base_ref: text(base.and_then(|b| b.get("ref"))),
             url: text(item.get("html_url")),
             created_at: text(item.get("created_at")),
+            updated_at: text(item.get("updated_at")),
             requested_reviewers: items(item.get("requested_reviewers"))
                 .iter()
                 .map(|v| login(Some(v)))

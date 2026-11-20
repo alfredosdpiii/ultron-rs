@@ -25,6 +25,14 @@ pub const MIN_BUDGET_TOKENS: f64 = 10_000.0;
 pub const DEFAULT_FRAME_CONCURRENCY: f64 = 8.0;
 pub const MAX_FRAME_CONCURRENCY: f64 = 16.0;
 pub const DEFAULT_MODE: &str = "both";
+
+fn is_false(v: &bool) -> bool {
+    !*v
+}
+
+fn is_zero_num(v: &Num) -> bool {
+    v.0 == 0.0
+}
 pub const DEFAULT_VERIFY_CANDIDATES: f64 = 12.0;
 pub const MAX_VERIFY_CANDIDATES: f64 = 40.0;
 pub const DEFAULT_PLAN_STYLE: &str = "cell";
@@ -167,6 +175,8 @@ pub struct AutoreviewSettings {
     pub deep_rounds: Option<f64>,
     pub reference_view: Option<String>,
     pub block_at: Option<String>,
+    pub never_request_changes: Option<bool>,
+    pub quiet_minutes: Option<f64>,
     pub max_comments: Option<f64>,
     pub run_tests: Option<bool>,
     pub test_owners: Option<Vec<String>>,
@@ -242,6 +252,10 @@ pub struct AutoreviewConfig {
     pub overlap: bool,
     pub model_concurrency: IndexMap<String, Num>,
     pub block_at: String,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub never_request_changes: bool,
+    #[serde(default, skip_serializing_if = "is_zero_num")]
+    pub quiet_minutes: Num,
     pub max_comments: Num,
     pub run_tests: bool,
     pub test_owners: Vec<String>,
@@ -372,6 +386,8 @@ pub fn resolve_config(settings: &AutoreviewSettings, fallbacks: &ModelFallbacks,
         overlap: settings.overlap == Some(Value::Bool(true)),
         model_concurrency,
         block_at: text(&settings.block_at, DEFAULT_BLOCK_AT),
+        never_request_changes: settings.never_request_changes.unwrap_or(false),
+        quiet_minutes: Num(settings.quiet_minutes.unwrap_or(0.0).clamp(0.0, 1440.0).floor()),
         max_comments: Num(MAX_MAX_COMMENTS.min(settings.max_comments.unwrap_or(DEFAULT_MAX_COMMENTS))),
         run_tests: settings.run_tests.unwrap_or(true),
         test_owners: strings(&settings.test_owners)
@@ -566,7 +582,7 @@ pub fn saved(global: &Map<String, Value>) -> Map<String, Value> {
             out.insert(key.into(), v);
         }
     };
-    let modes = ["fast", "deep", "both", "compiled", "hybrid"];
+    let modes = ["fast", "deep", "both", "compiled", "hybrid", "auto"];
     put("enabled", flag("enabled"));
     put("accounts", strings("accounts"));
     put("pollSeconds", count("pollSeconds"));
@@ -634,6 +650,8 @@ pub fn saved(global: &Map<String, Value>) -> Map<String, Value> {
         one_of("blockAt", &["critical", "high", "medium", "low", "nit"]),
     );
     put("maxComments", zero("maxComments").then(|| 0.into()));
+    put("neverRequestChanges", flag("neverRequestChanges"));
+    put("quietMinutes", count("quietMinutes"));
     put("maxComments", count("maxComments"));
     put("runTests", flag("runTests"));
     put("testOwners", strings("testOwners"));

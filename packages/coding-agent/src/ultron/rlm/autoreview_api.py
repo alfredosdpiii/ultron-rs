@@ -121,7 +121,7 @@ THINKING_LEVELS = ("off", "minimal", "low", "medium", "high", "xhigh", "max")
 DEFAULT_THINKING = "low"
 #: `compiled` (experimental): one planner frame writes a review program the host executes (autoreview_compiled.py). `hybrid` (experimental): the
 #: fast and deep passes discover candidates, host-written check programs verify them (the default).
-MODES = ("fast", "deep", "both", "compiled", "hybrid")
+MODES = ("fast", "deep", "both", "compiled", "hybrid", "auto")
 DEFAULT_MODE = "both"
 DEFAULT_DEEP_THINKING = "high"
 DEFAULT_PLAN_THINKING = "high"
@@ -1494,6 +1494,14 @@ async def run(rlm: Any, spec: dict[str, Any], *, runner: Runner | None = None,
     program_started = clock()
     compiled_out: dict[str, Any] | None = None
     program_stats: dict[str, Any] | None = None
+    if mode == "auto":
+        prod_chunks = [c for c in chunks if c.get("kind") == "code"]
+        prod_lines = sum(int(c.get("added") or 0) + int(c.get("removed") or 0) for c in prod_chunks)
+        risky_path = any(
+            any(tok in str(c.get("path") or "").lower() for tok in ("migration", "auth", "security", "lock", "tx", "transaction", "prisma", "schema", "purge", "billing", "payment"))
+            for c in chunks
+        )
+        mode = "fast" if (prod_lines <= 80 and len(prod_chunks) <= 3 and not risky_path) else "deep"
     if mode == "compiled":
         if deep_rev is None:
             not_checked.append("The compiled mode was skipped: the repository was not available.")

@@ -193,6 +193,8 @@ pub struct PlanOptions {
     pub since_sha: Option<String>,
     pub signature: bool,
     pub block_at: Option<String>,
+    #[serde(default)]
+    pub never_request_changes: bool,
     pub max_comments: Option<i64>,
     /// A cherry-pick or promotion: only what differs from the merged pull requests it carries was read.
     #[serde(default)]
@@ -675,13 +677,18 @@ pub fn plan_review(result: &EngineResult, options: &PlanOptions) -> ReviewPlan {
     let block_at = options.block_at.as_deref().unwrap_or(DEFAULT_BLOCK_AT);
     let max_comments = options.max_comments.unwrap_or(DEFAULT_MAX_COMMENTS).max(0) as usize;
     let fresh = options.fresh_lines.as_ref();
-    let Decision { verdict, reason } = decide_verdict_in(
+    let Decision { verdict: raw_verdict, reason } = decide_verdict_in(
         result,
         options.self_authored,
         &options.state,
         options.block_at.as_deref(),
         fresh,
     );
+    let verdict = if options.never_request_changes && raw_verdict == Verdict::RequestChanges {
+        Verdict::Comment
+    } else {
+        raw_verdict
+    };
     let mut comments: Vec<PlannedComment> = Vec::new();
     let mut in_summary = Vec::new();
     let mut over_cap = Vec::new();

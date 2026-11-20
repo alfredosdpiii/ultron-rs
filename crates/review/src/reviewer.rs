@@ -869,13 +869,28 @@ pub fn prepare_pull(deps: &ReviewerDeps, candidate: &Candidate, options: ReviewO
         let mut decided = decide(&DecisionInput {
             pull: &pull,
             last_sha: last_sha.clone(),
-            last_at,
+            last_at: last_at.clone(),
             last_requested_changes,
             mention_at: mention_at.clone(),
             requested,
             skip_bots: deps.config.skip_bots,
             requested_at: &requested_at,
         })?;
+        let has_new_mention = mention_at.as_deref().is_some_and(|m| last_at.as_deref().is_none_or(|l| m > l));
+        if decided.review && deps.config.quiet_minutes.0 > 0.0 && !has_new_mention {
+            let quiet_ms = deps.config.quiet_minutes.0 * 60_000.0;
+            let last_activity = jsrt::date::parse_date(&pull.updated_at)
+                .or_else(|| jsrt::date::parse_date(&pull.created_at));
+            if let Some(at) = last_activity
+                && (jsrt::date::now_ms() as f64 - at as f64) < quiet_ms
+            {
+                decided.review = false;
+                decided.reason = format!(
+                    "waiting for quiet window ({} min since last update, autoreview.quietMinutes)",
+                    deps.config.quiet_minutes.0 as u64
+                );
+            }
+        }
         if !decided.review && !ignored.is_empty() {
             decided.reason = format!("{}; ignored {} (autoreview.ban)", decided.reason, ignored.join(" and "));
         }
@@ -1700,6 +1715,7 @@ fn review_in(
             since_sha: since_sha.clone(),
             signature: deps.config.signature,
             block_at: Some(deps.config.block_at.clone()),
+            never_request_changes: deps.config.never_request_changes,
             max_comments: Some(deps.config.max_comments.0 as i64),
             promotion: promotion.as_ref().map(|delta| PromotionNote {
                 sources: delta.sources.clone(),
