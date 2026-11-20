@@ -506,7 +506,7 @@ TRIAGE_CONTRACT: dict[str, Any] = {
         "paths": {
             "type": "array",
             "minItems": 1,
-            "maxItems": 6,
+            "maxItems": 8,
             "items": {
                 "type": "object",
                 "properties": {
@@ -1372,6 +1372,34 @@ def index_diff(diff_text: str) -> dict[str, str]:
     return sections
 
 
+def _file_manifest(files: list[FileDiff], limit: int = 6_000) -> str:
+    """Compact per-area manifest of all changed non-test files (plus test count) so triage sees every service even past DIFF_CHARS."""
+    by_area: dict[str, list[tuple[int, str, int, int]]] = {}
+    test_count = 0
+    for item in files:
+        if skip_reason(item):
+            continue
+        if file_kind(item.path) == "test":
+            test_count += 1
+            continue
+        area = item.path.split("/", 1)[0] + "/" if "/" in item.path else "(root)"
+        by_area.setdefault(area, []).append((item.added + item.removed, item.path, item.added, item.removed))
+    if not by_area:
+        return ""
+    lines = ['Changed production/doc files by area (use {"read_diff": {"path": "..."}} for any file past the diff cut):']
+    per_area = max(6, 40 // max(1, len(by_area)))
+    for area in sorted(by_area):
+        entries = sorted(by_area[area], key=lambda row: (-row[0], row[1]))
+        lines.append(f"[{area}] ({len(entries)} files)")
+        for _, path, added, removed in entries[:per_area]:
+            lines.append(f"  {path} (+{added}/-{removed})")
+        if len(entries) > per_area:
+            lines.append(f"  (+{len(entries) - per_area} more in {area})")
+    if test_count:
+        lines.append(f"(+{test_count} changed test file(s))")
+    return _clip("\n".join(lines), limit)
+
+
 def _order_diff(diff_text: str) -> str:
     """Put production code and docs before tests so large test diffs never push production files past DIFF_CHARS."""
     matches = list(re.finditer(r"^File: (\S+)", diff_text, re.M))
@@ -1642,8 +1670,10 @@ async def run_deep(frames: Any, files: list[FileDiff], read_file: Callable[[str]
                 pass
         risk_tasks: list[tuple[str, str]] = []
         if risk_triage and not only:
+            manifest = _file_manifest(files)
+            triage_views = [*views, manifest] if manifest else views
             triage_results = await frames.run(
-                "deep", [("triage", RISK_TRIAGE_TASK, views)],
+                "deep", [("triage", RISK_TRIAGE_TASK, triage_views)],
                 contract=TRIAGE_CONTRACT, model=model, thinking=thinking,
                 cutoff=cutoff, context=shared if shared_prefix else None,
             )
@@ -1651,7 +1681,7 @@ async def run_deep(frames: Any, files: list[FileDiff], read_file: Callable[[str]
             raw_paths = triage_res.get("paths") if isinstance(triage_res, dict) else None
             if isinstance(raw_paths, list):
                 graph_schema = GRAPH_SCHEMA if repo.graph is not None else ""
-                for idx, item in enumerate(raw_paths[:6], 1):
+                for idx, item in enumerate(raw_paths[:8], 1):
                     if isinstance(item, dict) and item.get("question"):
                         rid = str(item.get("id") or f"R{idx}").strip()
                         risk_tasks.append((f"risk:{rid}", risk_tracer_task(item, session is not None,

@@ -471,8 +471,8 @@ DEEP_GRAPH_REQUESTS = """
 
 
 RISK_TRIAGE_TASK = """You are the lead reviewer triaging a pull request before focused tracers run in parallel.
-Read the diff, brief, retrieved context and PR description once, and output 4 to 6 concrete, PR-specific risk paths
-worth tracing end-to-end. Each path will be handed to its own dedicated tracer that reads files, greps callers, and
+Read the diff, brief, retrieved context and PR description once, and output 4 to 8 concrete, PR-specific risk paths
+worth tracing end-to-end. You also receive a full changed-file manifest grouped by top-level area (e.g. backend/, frontend/, ml/, docs/) covering every changed file even past the diff cut: allocate paths across EVERY changed production area so no service is starved (tracers can call read_diff on files past the cut). Each path will be handed to its own dedicated tracer that reads files, greps callers, and
 runs small stdlib probes.
 
 Prioritize real merge-blocking and cross-layer risks specific to THIS diff:
