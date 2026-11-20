@@ -67,8 +67,10 @@ pub fn antigravity_model(id: &str) -> Option<Model> {
     if !antigravity_valid_id(id) {
         return None;
     }
-    // The id carries its effort (`-low`/`-high`), so no thinking levels; window and output cap are not reported
-    // by the CLI, so these are conservative.
+    // The id carries its effort (`-low`/`-high`), so no thinking levels. `agy models` reports no limits: Neon gets the
+    // 512K Google documents for Antigravity (https://antigravity.google/docs/models, not the Gemini API's 1M); other
+    // ids keep a conservative 200K.
+    let context_window = if id.starts_with("gemini-4-neon") { 512_000 } else { 200_000 };
     serde_json::from_value(serde_json::json!({
         "id": id,
         "name": format!("{id} (Antigravity CLI)"),
@@ -78,7 +80,7 @@ pub fn antigravity_model(id: &str) -> Option<Model> {
         "reasoning": false,
         "input": ["text"],
         "cost": {"input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0},
-        "contextWindow": 200_000,
+        "contextWindow": context_window,
         "maxTokens": 32_000,
     }))
     .ok()
