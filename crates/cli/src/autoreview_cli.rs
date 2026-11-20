@@ -119,6 +119,9 @@ Options:
   --controls <n>               eval: other commits reviewed as controls (default: as many as --limit)
   --scan <n>                   eval: commits of history searched for cases (default 2000)
   --only <sha,...>             eval: review only the cases whose commits start with these
+  --labels <file>              eval: score recorded reviews against adjudicated labels instead (no review, no model
+                               call); with <repo-dir>, check that each defect's fix comes after its head
+  --packet                     eval --labels: print the blinded findings to label, and score nothing
 
 Settings (global settings.json): autoreview.accounts, pollSeconds, concurrency, model, verifyModel, budget, dryRun,
 frameConcurrency, modelConcurrency, mode, deepModel, deepThinking, deepRounds, referenceView, verifyBatch, planModel, planThinking, askModel, askThinking, planStyle, planCells, verifyCandidates, prepareEnvs, mise, blockAt, maxComments, runTests, testOwners, testRuns, testTimeoutSeconds, testEnv, testImage, checkoutRoots, guides, thinking, verifyThinking, deadlineSeconds, frameTimeoutSeconds, ack, ackLines, ackArt, signature, learn, skipBots, ban.
@@ -177,6 +180,10 @@ pub struct Parsed {
     pub scan: Option<f64>,
     /// eval: the cases to review, by commit prefix.
     pub only: Option<Vec<String>>,
+    /// eval: score recorded reviews against this labels file instead of reviewing (review::eval_labels).
+    pub labels: Option<String>,
+    /// eval --labels: print what the adjudicator sees of each case, and score nothing.
+    pub packet: bool,
     pub help: bool,
 }
 
@@ -368,6 +375,8 @@ pub fn parse_args(args: &[String]) -> Result<Parsed, UsageError> {
             }
             "--repo-dir" => parsed.repo_dir = Some(value()?),
             "--list" => parsed.list = true,
+            "--labels" => parsed.labels = Some(value()?),
+            "--packet" => parsed.packet = true,
             "--only" => parsed.only = Some(list(value()?)),
             "--limit" | "--controls" | "--scan" => {
                 let count = whole(
@@ -511,6 +520,7 @@ pub fn offline_json(
         since_sha: None,
         signature: false,
         block_at: block_at.map(str::to_string),
+        never_request_changes: false,
         max_comments,
         promotion: None,
         fresh_lines: None,
@@ -585,6 +595,9 @@ pub fn offline_json(
     dropped.insert("refutedByTest".into(), or_else(dropped_in, "refutedByTest", json!(0)));
     dropped.insert("duplicateOf".into(), or_else(dropped_in, "duplicateOf", json!([])));
     put_present(&mut dropped, "preexisting", dropped_in, "preexisting");
+    put_when(&mut dropped, "refutedByInvestigator", dropped_in, |entries| {
+        entries.as_array().is_some_and(|items| !items.is_empty())
+    });
     // Findings the deterministic stage contradicted (Rust-only, when there were any).
     put_when(&mut dropped, "contradicted", dropped_in, |count| {
         count.as_u64().is_some_and(|n| n > 0)
@@ -1025,6 +1038,67 @@ fn register_command(
     }
     for line in lines {
         writeln!(out, "{line}").map_err(io)?;
+    }
+    Ok(0)
+}
+
+/// `eval --labels <file> [<repo-dir>]`: recorded reviews scored against adjudicated labels (review::eval_labels), with
+/// no review and no model call. `--packet` prints the blinded findings to label instead.
+fn labels_command(
+    parsed: &Parsed,
+    env: &Env,
+    ov: &Overrides,
+    out: &mut dyn Write,
+    err: &mut dyn Write,
+) -> Result<i32, Failure> {
+    use review::eval_labels::{Labels, packet, parse_record, score, summary_lines};
+    let io = |error: std::io::Error| Failure::Error(error.to_string());
+    let path = absolute(&env.cwd, parsed.labels.as_deref().unwrap_or_default());
+    let text =
+        std::fs::read_to_string(&path).map_err(|error| Failure::Error(format!("{}: {error}", path.display())))?;
+    let labels: Labels =
+        serde_json::from_str(&text).map_err(|error| Failure::Error(format!("{}: {error}", path.display())))?;
+    let base = path.parent().map(PathBuf::from).unwrap_or_default();
+    let mut cases = Vec::new();
+    for case in labels.cases {
+        let file = base.join(&case.record);
+        let raw: Value = std::fs::read_to_string(&file)
+            .map_err(|error| error.to_string())
+            .and_then(|text| serde_json::from_str(&text).map_err(|error| error.to_string()))
+            .map_err(|error| Failure::Error(format!("{}: {error}", file.display())))?;
+        let recorded = parse_record(&raw).map_err(|error| Failure::Error(format!("{}: {error}", file.display())))?;
+        cases.push((case, recorded));
+    }
+    if parsed.packet {
+        let packets: Vec<Value> = cases.iter().map(|(_, recorded)| packet(recorded)).collect();
+        writeln!(out, "{:#}", json!({ "cases": packets })).map_err(io)?;
+        return Ok(0);
+    }
+    let repo = parsed
+        .target
+        .as_deref()
+        .map(|target| absolute(&env.cwd, target).display().to_string());
+    let runner = ov.runner();
+    match score(&cases, repo.as_deref().map(|repo| (&*runner, repo))) {
+        Ok(scored) if parsed.json => writeln!(out, "{scored}").map_err(io)?,
+        Ok(scored) => {
+            if repo.is_none() {
+                writeln!(
+                    err,
+                    "no repository given: the fixes were not checked to come after their heads"
+                )
+                .map_err(io)?;
+            }
+            for line in summary_lines(&scored) {
+                writeln!(out, "{line}").map_err(io)?;
+            }
+        }
+        Err(problems) => {
+            for problem in problems {
+                writeln!(err, "{problem}").map_err(io)?;
+            }
+            return Ok(1);
+        }
     }
     Ok(0)
 }
@@ -2226,6 +2300,7 @@ fn execute(
         }
         "doctor" => return doctor(parsed, &config, &model_lines(&config), env, &paths.cache, ov, out),
         "prepare" => return prepare_command(parsed, &config, env, &paths.cache, ov, out, err),
+        "eval" if parsed.labels.is_some() => return labels_command(parsed, env, ov, out, err),
         "eval" => return eval_command(parsed, &config, &saved, env, &paths, ov, out, err),
         "register" => return register_command(parsed, &paths, out),
         other => {
@@ -2322,6 +2397,7 @@ fn execute(
                 since_sha: None,
                 signature: config.signature,
                 block_at: Some(config.block_at.clone()),
+                never_request_changes: config.never_request_changes,
                 max_comments: Some(config.max_comments.0 as i64),
                 promotion: None,
                 fresh_lines: None,
