@@ -122,6 +122,24 @@ DEFAULT_THINKING = "low"
 #: `compiled` (experimental): one planner frame writes a review program the host executes (autoreview_compiled.py). `hybrid` (experimental): the
 #: fast and deep passes discover candidates, host-written check programs verify them (the default).
 MODES = ("fast", "deep", "both", "compiled", "hybrid", "auto")
+_AUTO_RISKY_TOKENS = ("migration", "auth", "security", "lock", "transaction", "prisma", "schema", "purge", "billing", "payment")
+
+
+def _pick_auto_mode(chunks: list[Any]) -> str:
+    prod_chunks = [c for c in chunks if getattr(c, "kind", None) == "code"]
+    prod_files = {getattr(c, "path", "") for c in prod_chunks}
+    prod_lines = sum(
+        1
+        for c in prod_chunks
+        for hunk in (getattr(c, "hunks", None) or ())
+        for line in (getattr(hunk, "lines", None) or ())
+        if getattr(line, "kind", None) in ("+", "-")
+    )
+    risky_path = any(
+        any(tok in str(getattr(c, "path", "") or "").lower() for tok in _AUTO_RISKY_TOKENS)
+        for c in chunks
+    )
+    return "fast" if (prod_lines <= 80 and len(prod_files) <= 3 and not risky_path) else "deep"
 DEFAULT_MODE = "both"
 DEFAULT_DEEP_THINKING = "high"
 DEFAULT_PLAN_THINKING = "high"
@@ -1495,13 +1513,7 @@ async def run(rlm: Any, spec: dict[str, Any], *, runner: Runner | None = None,
     compiled_out: dict[str, Any] | None = None
     program_stats: dict[str, Any] | None = None
     if mode == "auto":
-        prod_chunks = [c for c in chunks if c.get("kind") == "code"]
-        prod_lines = sum(int(c.get("added") or 0) + int(c.get("removed") or 0) for c in prod_chunks)
-        risky_path = any(
-            any(tok in str(c.get("path") or "").lower() for tok in ("migration", "auth", "security", "lock", "tx", "transaction", "prisma", "schema", "purge", "billing", "payment"))
-            for c in chunks
-        )
-        mode = "fast" if (prod_lines <= 80 and len(prod_chunks) <= 3 and not risky_path) else "deep"
+        mode = _pick_auto_mode(chunks)
     if mode == "compiled":
         if deep_rev is None:
             not_checked.append("The compiled mode was skipped: the repository was not available.")
