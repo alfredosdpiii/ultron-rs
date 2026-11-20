@@ -80,15 +80,17 @@ impl Summarizer {
         let request = compaction::SummaryRequest {
             context,
             max_tokens: match self.model.max_tokens {
-                0 => 2048,
-                max => max.min(2048),
+                0 => 8192,
+                max => max.min(8192),
             },
             reasoning: None,
             session_id: Some(self.session_id.clone()),
         };
         let response = runtime.block_on(self.stream(request, &AbortSignal::new()));
         if response.stop_reason != ai::StopReason::Stop {
-            return Err(response.error_message.unwrap_or_else(|| "no answer".into()));
+            return Err(response
+                .error_message
+                .unwrap_or_else(|| format!("stop_reason={:?}", response.stop_reason)));
         }
         Ok(response
             .content

@@ -584,8 +584,17 @@ fn distill_and_store(
     if memory.tail_kept_through(&keep.document_id, &keep.through, signal) {
         return Outcome::Unchanged;
     }
-    let Ok(reply) = ask(SYSTEM, &prompt(keep)) else {
-        return Outcome::Failed("MODEL_ERROR".into());
+    let reply = match ask(SYSTEM, &prompt(keep)) {
+        Ok(reply) => reply,
+        Err(err) => {
+            let detail: String = err.split_whitespace().collect::<Vec<_>>().join(" ").chars().take(160).collect();
+            let code = if detail.is_empty() {
+                "MODEL_ERROR".into()
+            } else {
+                format!("MODEL_ERROR: {detail}")
+            };
+            return Outcome::Failed(code);
+        }
     };
     let Some(distilled) = distill(&reply, &keep.source) else {
         return Outcome::Failed("INVALID_RESPONSE".into());
