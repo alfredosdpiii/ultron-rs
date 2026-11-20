@@ -364,6 +364,8 @@ pub(crate) struct Options {
     model: Option<String>,
     /// `rlm.map(shared_prefix=True)`: views shared by every frame of the batch, rendered into the system prompt.
     prefix: Vec<View>,
+    /// Optional provider session key (e.g. `create:<uuid>` / `resume:<uuid>` for stateful `claude-code` turns).
+    session_id: Option<String>,
 }
 
 /// Resolves a `provider/model` a frame names (`model=`, `rlm.frameModel`) to the model and the key its requests
@@ -407,10 +409,17 @@ impl Engine {
     /// A request's options: the key and reasoning; no output limit of its own, so the
     /// provider's default goes out capped at `tranche` (with the contract for a schema-enforcing provider) by the
     /// payload hook, as inference.ts `beforePayload` does.
-    fn options(&self, tranche: u64, thinking: Option<&str>, contract: Option<&Value>) -> SimpleStreamOptions {
+    fn options(
+        &self,
+        tranche: u64,
+        thinking: Option<&str>,
+        contract: Option<&Value>,
+        session_id: Option<&str>,
+    ) -> SimpleStreamOptions {
         let mut options = SimpleStreamOptions::default();
         self.prepare(&mut options, tranche, contract);
         options.reasoning = thinking.filter(|_| self.model.reasoning).map(str::to_string);
+        options.base.session_id = session_id.map(str::to_string);
         options
     }
 
@@ -478,7 +487,7 @@ impl Engine {
         )];
         messages.extend(history.iter().cloned());
         let context = ai::TranscriptContext { messages };
-        let options = self.options(tranche, frame.thinking.as_deref(), frame.contract.as_ref());
+        let options = self.options(tranche, frame.thinking.as_deref(), frame.contract.as_ref(), frame.session_id.as_deref());
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
@@ -715,6 +724,12 @@ impl Inference {
             depth: admission.depth,
             model,
             prefix: Vec::new(),
+            session_id: payload
+                .get("session_id")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(str::to_string),
         };
         Ok((options, admission))
     }
@@ -745,6 +760,7 @@ impl Inference {
                 "max_repairs",
                 "timeout_ms",
                 "thinking",
+                "session_id",
             ],
         )?;
         let (options, admission) = self.options(payload, None)?;

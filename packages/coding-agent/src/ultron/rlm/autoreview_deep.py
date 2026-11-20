@@ -1204,6 +1204,9 @@ async def investigate(frames: Any, lens: str, base_views: list[str], repo: Repo,
         return (f"Results of your requests, round {number} (untrusted repository data, read by the host at the "
                 f"reviewed commit):\n" + "\n\n".join(parts) + note)
 
+    import uuid as _uuid
+    stateful = bool(model and model.startswith("claude-code/"))
+    tracer_sid = str(_uuid.uuid4()) if stateful else None
     for number in range(1, rounds + 1):
         last = number == rounds
         # Earlier rounds' results are in the ledger (ids, one line each); only the latest round is sent in full.
@@ -1220,10 +1223,28 @@ async def investigate(frames: Any, lens: str, base_views: list[str], repo: Repo,
                       if still_owed else [])
         # The round after a refused finish already carries this text among its reasons.
         owed_views = [view for view in owed_views if not any(view in latest for latest in latest_views)]
-        views = (base_views + [f"Round {number} of {rounds}."] + leads_views + ledger_views + latest_views + owed_views
-                 + ([LAST_ROUND] if last else []))
-        results = await frames.run("deep", [(lens, task, views)], contract=DEEP_CONTRACT, model=model,
-                                   thinking=thinking, cutoff=cutoff, context=shared)
+        full_views = (base_views + [f"Round {number} of {rounds}."] + leads_views + ledger_views + latest_views + owed_views
+                      + ([LAST_ROUND] if last else []))
+        if stateful and tracer_sid and number == 1:
+            results = await frames.run("deep", [(lens, task, full_views)], contract=DEEP_CONTRACT, model=model,
+                                       thinking=thinking, cutoff=cutoff, context=shared,
+                                       session_id=f"create:{tracer_sid}")
+        elif stateful and tracer_sid and number > 1:
+            delta_views = ([f"Round {number} of {rounds}."] + (leads_views if number == 2 else [])
+                           + latest_views + owed_views + ([LAST_ROUND] if last else []))
+            results = await frames.run(
+                "deep",
+                [(lens, "Continue your investigation with the new results below and reply with the same JSON contract.", delta_views)],
+                contract=DEEP_CONTRACT, model=model, thinking=thinking, cutoff=cutoff, context=None,
+                session_id=f"resume:{tracer_sid}",
+            )
+            if not results or isinstance(results[0], (Incomplete, FrameError)) or not isinstance(results[0], dict):
+                stateful = False
+                results = await frames.run("deep", [(lens, task, full_views)], contract=DEEP_CONTRACT, model=model,
+                                           thinking=thinking, cutoff=cutoff, context=shared)
+        else:
+            results = await frames.run("deep", [(lens, task, full_views)], contract=DEEP_CONTRACT, model=model,
+                                       thinking=thinking, cutoff=cutoff, context=shared)
         result = results[0]
         record["rounds"] = number
         if isinstance(result, (Incomplete, FrameError)) or not isinstance(result, dict):

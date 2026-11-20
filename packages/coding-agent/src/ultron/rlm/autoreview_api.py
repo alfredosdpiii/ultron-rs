@@ -797,7 +797,8 @@ class Frames:
 
     async def run(self, phase: str, jobs: list[tuple[str, str, Any]], *, contract: Any, model: str | None,
                   thinking: str | None, context: Any = None, cutoff: float | None = None,
-                  contracts: list[Any] | None = None, models: list[str] | None = None) -> list[Any]:
+                  contracts: list[Any] | None = None, models: list[str] | None = None,
+                  session_id: str | None = None) -> list[Any]:
         """Run `jobs` ((label, task, item) each) and return their results in order: a value, an `Incomplete`
         (the cap is spent) or a `FrameError` (failed after retries, or unfinished at `cutoff`). `context` is the
         shared prefix of every frame (a list of views); `contracts`, one per job, overrides `contract`."""
@@ -806,7 +807,7 @@ class Frames:
         return list(await asyncio.gather(*(
             self._one(phase, label, task, item, contract=contracts[index] if contracts else contract,
                       model=models[index] if models else model,
-                      thinking=thinking, context=context, cutoff=cutoff)
+                      thinking=thinking, context=context, cutoff=cutoff, session_id=session_id)
             for index, (label, task, item) in enumerate(jobs))))
 
     def limit_of(self, model: str | None) -> int:
@@ -837,7 +838,8 @@ class Frames:
         self.throttled[key] = limit
 
     async def _one(self, phase: str, label: str, task: str, item: Any, *, contract: Any, model: str | None,
-                   thinking: str | None, context: str | None, cutoff: float | None) -> Any:
+                   thinking: str | None, context: str | None, cutoff: float | None,
+                   session_id: str | None = None) -> Any:
         estimate = (len(task) + _item_chars(item) + _item_chars(context or "")) // 3
         assert self._slots is not None
         async with self._slots:
@@ -874,7 +876,8 @@ class Frames:
                                                  budget=None if self.cap is None else Budget(tokens=grant),
                                                  model=model, thinking=thinking,
                                                  shared_prefix=self.system_prefix and bool(context),
-                                                 concurrency=1, timeout_ms=max(1_000, int(timeout_s * 1000)))
+                                                 concurrency=1, timeout_ms=max(1_000, int(timeout_s * 1000)),
+                                                 session_id=session_id)
                     self.usage.add(results, phase)
                     tokens += _spent(results)[1]
                     result = results[0] if len(results) else FrameError({"error": "the frame returned nothing"})

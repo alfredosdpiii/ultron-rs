@@ -479,7 +479,8 @@ class Inference:
     async def map(self, tasks: Any, items: Any = None, *, context: Any = None, contract: Any = None,
                   budget: Any = None, model: str | None = None, max_repairs: int | None = None,
                   concurrency: int = 8, timeout_ms: int | None = None,
-                  thinking: str | None = None, shared_prefix: bool = False) -> "MapResults":
+                  thinking: str | None = None, shared_prefix: bool = False,
+                  session_id: str | None = None) -> "MapResults":
         """Fan frames out under one shared budget, preserving order.
 
         `rlm.map(task, items)` runs `task` once per item (a view, a string, or a list of them);
@@ -528,6 +529,7 @@ class Inference:
             "concurrency": concurrency,
             "timeout_ms": timeout_ms,
             "thinking": thinking,
+            **({"session_id": session_id} if session_id else {}),
         })
         results = MapResults(_outcome(item, raise_errors=False) for item in reply["results"])
         budget = reply.get("budget") if isinstance(reply.get("budget"), dict) else {}

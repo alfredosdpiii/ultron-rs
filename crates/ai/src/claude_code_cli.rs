@@ -793,14 +793,17 @@ fn plan_request(
     default_max_tokens: u64,
     capabilities: &ClaudeCliCapabilities,
     use_schema_flag: bool,
+    session_id: Option<&str>,
 ) -> Result<PlannedRequest, String> {
     let mut content: Vec<Value> = payload["content"].as_array().cloned().unwrap_or_default();
     let mut system = payload["system"].as_str().unwrap_or_default().trim().to_string();
     if system.is_empty() {
         system = NEUTRAL_SYSTEM_PROMPT.into();
     }
+    let resume_id = session_id.and_then(|s| s.strip_prefix("resume:")).filter(|s| !s.is_empty());
+    let create_id = session_id.and_then(|s| s.strip_prefix("create:")).filter(|s| !s.is_empty());
     let mut system_prompt_file: Option<TempPromptFile> = None;
-    if system.encode_utf16().count() > MAX_SYSTEM_PROMPT_ARG_CHARS {
+    if resume_id.is_none() && system.encode_utf16().count() > MAX_SYSTEM_PROMPT_ARG_CHARS {
         if capabilities.flags.contains("--system-prompt-file")
             && let Ok(file) = write_temp_system_prompt(&system)
         {
@@ -852,17 +855,25 @@ fn plan_request(
         "--setting-sources=",
         "--permission-prompts=none",
         "--disable-slash-commands",
-        "--no-session-persistence",
     ]
     .iter()
     .map(|s| s.to_string())
     .collect();
-    args.push(format!("--model={model_id}"));
-    if let Some(file) = &system_prompt_file {
-        args.push("--system-prompt-file".into());
-        args.push(file.0.to_string_lossy().into_owned());
+    if let Some(id) = resume_id {
+        args.push(format!("--resume={id}"));
+    } else if let Some(id) = create_id {
+        args.push(format!("--session-id={id}"));
     } else {
-        args.push(format!("--system-prompt={system}"));
+        args.push("--no-session-persistence".into());
+    }
+    args.push(format!("--model={model_id}"));
+    if resume_id.is_none() {
+        if let Some(file) = &system_prompt_file {
+            args.push("--system-prompt-file".into());
+            args.push(file.0.to_string_lossy().into_owned());
+        } else {
+            args.push(format!("--system-prompt={system}"));
+        }
     }
     args.push(match effort {
         Some(effort) => format!("--effort={effort}"),
@@ -1526,6 +1537,7 @@ async fn drive(
             default_max_tokens,
             &capabilities,
             use_schema_flag,
+            options.base.base.session_id.as_deref(),
         )
         .map_err(failed)?;
         let key = jsrt::json::stringify(&json!([bin, cwd.to_string_lossy(), plan.args, plan.env]));
@@ -1555,7 +1567,7 @@ async fn drive(
         }
         if !crate::http::is_aborted(signal) {
             jsrt::sync::lock(&PROVEN_KEYS).insert(key.clone());
-            if plan._system_prompt_file.is_none() {
+            if plan._system_prompt_file.is_none() && options.base.base.session_id.is_none() {
                 start_spare(&key, &bin, &plan.args, &plan.env, &cwd, config);
             }
         }
@@ -1600,7 +1612,7 @@ mod tests {
             flags: HashSet::from(["--system-prompt".into(), "--system-prompt-file".into()]),
             warnings: Vec::new(),
         };
-        let plan = plan_request(model, &payload, &Env::new(), 8192, &caps, false).expect("plan");
+        let plan = plan_request(model, &payload, &Env::new(), 8192, &caps, false, None).expect("plan");
         let idx = plan.args.iter().position(|a| a == "--system-prompt-file").expect("flag");
         let path = std::path::PathBuf::from(&plan.args[idx + 1]);
         assert_eq!(std::fs::read_to_string(&path).expect("temp file"), big);

@@ -144,6 +144,7 @@ impl Frames {
                 "concurrency",
                 "timeout_ms",
                 "thinking",
+                "session_id",
             ],
         )?;
         let items = match payload.get("frames") {
