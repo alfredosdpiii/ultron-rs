@@ -58,10 +58,10 @@ ALLOWED_GIT = ("grep", "show", "ls-tree", "log")
 DEFAULT_ROUNDS = 6
 MAX_ROUNDS = 10
 MAX_REQUESTS = 8
-ROUND_CHARS = 24_000
+ROUND_CHARS = 48_000
 #: A ledger line of an earlier result, re-readable by `recall`.
 LEDGER_LINE_CHARS = 160
-MAX_READ_LINES = 200
+MAX_READ_LINES = 400
 MAX_GREP_HITS = 50
 DEFAULT_GREP_HITS = 20
 #: Hits fetched for a scoped or count-only grep: its count is exact up to this many.
@@ -86,7 +86,7 @@ LEADS_HEADER = (
 MAX_DEEP_FINDINGS = 8
 MAX_CITATIONS = 6
 CITATION_SLACK = 2
-CITED_WINDOW = 6
+CITED_WINDOW = 18
 DEDUPE_WINDOW = 3
 MERGE_WINDOW = 5
 LEVEL_ORDER = ("critical", "high", "medium", "low", "nit")
@@ -1632,8 +1632,9 @@ async def run_deep(frames: Any, files: list[FileDiff], read_file: Callable[[str]
         findings.extend(structural)
         kept_by_lens: dict[str, int] = {}
 
-        async def one(lens: str, task_override: str | None = None) -> dict[str, Any]:
-            outcome = await investigate(frames, lens, views, repo, rounds=rounds, model=model, thinking=thinking,
+        async def one(lens: str, task_override: str | None = None, extra_views: list[str] | None = None) -> dict[str, Any]:
+            lens_views = [*views, *extra_views] if extra_views else views
+            outcome = await investigate(frames, lens, lens_views, repo, rounds=rounds, model=model, thinking=thinking,
                                         cutoff=cutoff, clock=clock, tests=session, something_outside=outside,
                                         required=None if task_override else brief.required.get(lens),
                                         shapes=None if task_override else owed.get(lens),
@@ -1668,7 +1669,7 @@ async def run_deep(frames: Any, files: list[FileDiff], read_file: Callable[[str]
                 await on_investigator("structure", structural)
             except Exception:
                 pass
-        risk_tasks: list[tuple[str, str]] = []
+        risk_tasks: list[tuple[str, str, list[str]]] = []
         if risk_triage and not only:
             manifest = _file_manifest(files)
             triage_views = [*views, manifest] if manifest else views
@@ -1681,14 +1682,21 @@ async def run_deep(frames: Any, files: list[FileDiff], read_file: Callable[[str]
             raw_paths = triage_res.get("paths") if isinstance(triage_res, dict) else None
             if isinstance(raw_paths, list):
                 graph_schema = GRAPH_SCHEMA if repo.graph is not None else ""
+                shown_in_diff = set(re.findall(r"^File: (\S+)", _order_diff(diff_text)[:DIFF_CHARS], re.M))
                 for idx, item in enumerate(raw_paths[:8], 1):
                     if isinstance(item, dict) and item.get("question"):
                         rid = str(item.get("id") or f"R{idx}").strip()
+                        extra: list[str] = []
+                        starts = item.get("start_files") if isinstance(item.get("start_files"), list) else []
+                        for sf in starts[:4]:
+                            sp = str(sf).strip().lstrip("./")
+                            if sp and sp not in shown_in_diff and sp in repo.diff_by_file:
+                                extra.append(f"Diff hunks for start file {sp} (past the main diff cut):\n{_clip(repo.diff_by_file[sp], 16_000)}")
                         risk_tasks.append((f"risk:{rid}", risk_tracer_task(item, session is not None,
                                                                            notes=repo.knowledge is not None,
-                                                                           graph=graph_schema)))
+                                                                           graph=graph_schema), extra))
         if risk_tasks:
-            outcomes = await asyncio.gather(*(one(lens, task_override=t) for lens, t in risk_tasks))
+            outcomes = await asyncio.gather(*(one(lens, task_override=t, extra_views=ex) for lens, t, ex in risk_tasks))
         else:
             outcomes = await asyncio.gather(*(one(lens) for lens in lenses))
         if leads_future is not None:

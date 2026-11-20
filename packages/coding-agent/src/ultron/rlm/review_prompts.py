@@ -357,8 +357,8 @@ the repository for you, at the reviewed commit.
 
 Reply with one JSON object:
 - requests: what to read next, at most 8 a round, each one of
-  {{"read": {{"path": "...", "start": 1, "end": 80}}}}   lines of a file (200 at most)
-  {{"read_diff": {{"path": "...", "start": 1, "end": 200}}}}   rendered diff hunks of a changed file (use for files past the diff cut)
+  {{"read": {{"path": "...", "start": 1, "end": 200}}}}   lines of a file (400 at most)
+  {{"read_diff": {{"path": "...", "start": 1, "end": 400}}}}   rendered diff hunks of a changed file (use for files past the diff cut)
   {{"grep": {{"pattern": "...", "path_glob": "tests/**", "max": 20, "start": 1, "end": 80}}}}   a regular expression in
     tracked files; start and end (optional) keep only the hits in that line window
   {{"list": {{"dir": "..."}}}}   the entries of a directory
@@ -477,7 +477,7 @@ runs small stdlib probes.
 
 Prioritize real merge-blocking and cross-layer risks specific to THIS diff:
 1. Cross-layer contracts: frontend/UI payloads vs backend DTO/validators vs DB constraints/migrations vs ML/downstream consumers.
-2. State, transaction, rollback, lock, concurrency and retry boundaries (what stays committed or stale when step N fails?).
+2. State, transaction, rollback, lock, concurrency and retry boundaries: when a DB transaction rolls back or a remote/vector-store/delete call fails mid-way, what stays committed or stale (active markers, orphaned vectors, unlocked reads, batch/cap limits that drain slowly on retry)?
 3. Operational runbooks, migrations and deployment gates (index locks, P3009 recovery commands, deploy ordering, CI coverage).
 4. Adversarial inputs, bounds and UI edge states (stored data exceeding new caps on PATCH, empty/zero-row/page-change states, regex bypasses).
 5. Unpinned behaviour on new guards, constraints or error paths.
