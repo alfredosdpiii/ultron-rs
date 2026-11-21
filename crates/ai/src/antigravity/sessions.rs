@@ -13,12 +13,22 @@ use std::sync::{Arc, Mutex, Once, OnceLock};
 use std::time::{Duration, Instant};
 use tokio::sync::{mpsc, oneshot};
 
-/// Idle eviction for live `agy` sessions.
-const IDLE: Duration = Duration::from_secs(600);
-const MAX_LIVE: usize = 4;
+/// Idle eviction for live `agy` processes (30 min); evicted sessions can still reattach via ACP `session/load`.
+const IDLE: Duration = Duration::from_secs(1800);
+const MAX_LIVE: usize = 8;
+/// Archived (process-stopped) sessions kept for ACP `session/load` reattachment.
+const ARCHIVE_TTL: Duration = Duration::from_secs(24 * 3600);
+const MAX_ARCHIVED: usize = 32;
 
 type Outcome = io::Result<(Vec<AssistantContent>, Usage)>;
-type Registry = Arc<Mutex<Vec<Live>>>;
+
+#[derive(Default)]
+struct Pool {
+    live: Vec<Live>,
+    archived: Vec<Archived>,
+}
+
+type Registry = Arc<Mutex<Pool>>;
 
 struct Live {
     agy: Agy,
@@ -27,6 +37,42 @@ struct Live {
     seen: usize,
     hash: u64,
     used: Instant,
+}
+
+/// An evicted `agy` session whose process was stopped to free RAM, but whose ACP `session_id` and workspace are kept
+/// so a later turn can reattach via `session/load` and send only the delta messages.
+struct Archived {
+    session_id: String,
+    workspace: tempfile::TempDir,
+    model: String,
+    seen: usize,
+    hash: u64,
+    used: Instant,
+}
+
+impl Pool {
+    fn archive(&mut self, mut live: Live) {
+        if live.agy.held.is_some() || live.agy.turn.is_some() || live.agy.session.is_empty() {
+            return;
+        }
+        let Some(workspace) = live.agy.workspace.take() else {
+            return;
+        };
+        self.archived.push(Archived {
+            session_id: std::mem::take(&mut live.agy.session),
+            workspace,
+            model: live.model,
+            seen: live.seen,
+            hash: live.hash,
+            used: live.used,
+        });
+        while self.archived.len() > MAX_ARCHIVED {
+            let oldest = (0..self.archived.len())
+                .min_by_key(|&i| self.archived[i].used)
+                .expect("non-empty");
+            self.archived.swap_remove(oldest);
+        }
+    }
 }
 
 struct Job {
@@ -168,19 +214,26 @@ async fn reap(registry: Registry) {
     let mut tick = tokio::time::interval(Duration::from_secs(30));
     loop {
         tick.tick().await;
-        registry
-            .lock()
-            .expect("agy registry")
-            .retain(|live| live.used.elapsed() < IDLE);
+        let mut pool = registry.lock().expect("agy registry");
+        let mut i = 0;
+        while i < pool.live.len() {
+            if pool.live[i].used.elapsed() >= IDLE {
+                let evicted = pool.live.swap_remove(i);
+                pool.archive(evicted);
+            } else {
+                i += 1;
+            }
+        }
+        pool.archived.retain(|a| a.used.elapsed() < ARCHIVE_TTL);
     }
 }
 
 /// Runs one model call. The session is out of the registry meanwhile, so no two calls drive one agy.
 async fn run(mut job: Job, registry: Registry) {
     let messages = &job.context.messages;
-    let mut slot = take(&registry, &job.model.id, messages);
+    let (mut slot, archived) = take(&registry, &job.model.id, messages);
     let outcome = tokio::select! {
-        outcome = serve(&mut slot, &job.model, messages, job.env.as_ref(), &job.deltas) => outcome,
+        outcome = serve(&mut slot, archived, &job.model, messages, job.env.as_ref(), &job.deltas) => outcome,
         () = job.reply.closed() => {
             // The caller aborted or timed out: stop agy's turn and drop the session.
             if let Some(live) = slot.as_mut() {
@@ -199,30 +252,44 @@ async fn run(mut job: Job, registry: Registry) {
         && let Some(mut live) = slot
     {
         live.used = Instant::now();
-        let mut lives = registry.lock().expect("agy registry");
-        lives.push(live);
-        while lives.len() > MAX_LIVE {
-            let oldest = (0..lives.len()).min_by_key(|&i| lives[i].used).expect("non-empty");
-            lives.swap_remove(oldest);
+        let mut pool = registry.lock().expect("agy registry");
+        pool.live.push(live);
+        while pool.live.len() > MAX_LIVE {
+            let oldest = (0..pool.live.len())
+                .min_by_key(|&i| pool.live[i].used)
+                .expect("non-empty");
+            let evicted = pool.live.swap_remove(oldest);
+            pool.archive(evicted);
         }
     }
     // The caller may have gone between the outcome and this send; the session is kept either way.
     let _unread = job.reply.send(outcome);
 }
 
-fn take(registry: &Registry, model: &str, messages: &[Message]) -> Option<Live> {
-    let mut lives = registry.lock().expect("agy registry");
-    let index = (0..lives.len())
+fn take(registry: &Registry, model: &str, messages: &[Message]) -> (Option<Live>, Option<Archived>) {
+    let mut pool = registry.lock().expect("agy registry");
+    if let Some(index) = (0..pool.live.len())
         .filter(|&i| {
-            let live = &lives[i];
+            let live = &pool.live[i];
             live.model == model && live.seen < messages.len() && prefix_hash(&messages[..live.seen]) == live.hash
         })
-        .max_by_key(|&i| lives[i].seen)?;
-    Some(lives.swap_remove(index))
+        .max_by_key(|&i| pool.live[i].seen)
+    {
+        return (Some(pool.live.swap_remove(index)), None);
+    }
+    let archived = (0..pool.archived.len())
+        .filter(|&i| {
+            let a = &pool.archived[i];
+            a.model == model && a.seen < messages.len() && prefix_hash(&messages[..a.seen]) == a.hash
+        })
+        .max_by_key(|&i| pool.archived[i].seen)
+        .map(|index| pool.archived.swap_remove(index));
+    (None, archived)
 }
 
 async fn serve(
     slot: &mut Option<Live>,
+    archived: Option<Archived>,
     model: &Model,
     messages: &[Message],
     env: Option<&ProviderEnv>,
@@ -243,7 +310,36 @@ async fn serve(
             Err(error) => eprintln!("agy session ended, replaying the transcript to a fresh agy: {error}"),
         }
     }
-    // No live session continues this transcript, or the one that did failed: replay it to a fresh agy.
+    if let Some(archived) = archived {
+        let delta = &messages[archived.seen..];
+        let start = delta.iter().take_while(|m| matches!(m, Message::Assistant(_))).count();
+        if !delta.iter().any(|m| matches!(m, Message::System(_)))
+            && start < delta.len()
+            && let Some(prompt) = delta_prompt(&delta[start..])
+        {
+            match Agy::resume(model, messages, env, archived.session_id, archived.workspace).await {
+                Ok(agy) => {
+                    let live = slot.insert(Live {
+                        agy,
+                        model: model.id.clone(),
+                        seen: messages.len(),
+                        hash: prefix_hash(messages),
+                        used: Instant::now(),
+                    });
+                    match live.agy.advance(Step::Prompt(prompt), Some(deltas)).await {
+                        Ok(done) => return Ok(done),
+                        Err(error) => {
+                            eprintln!("agy resumed session failed, replaying to a fresh agy: {error}");
+                        }
+                    }
+                }
+                Err(error) => {
+                    eprintln!("agy session/load failed, replaying to a fresh agy: {error}");
+                }
+            }
+        }
+    }
+    // No live or archived session continues this transcript, or the one that did failed: replay it to a fresh agy.
     *slot = None;
     let (agy, step) = Agy::start(model, messages, env, true).await?;
     let live = slot.insert(Live {

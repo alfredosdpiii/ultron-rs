@@ -63,17 +63,21 @@ pub fn antigravity_valid_id(id: &str) -> bool {
             .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'.' | b'_'))
 }
 
-/// The input `agy` keeps of one prompt, in its own tokens and for every model: on agy 1.5.13 a code word at the end of
-/// 179K characters came back and at 224K it was lost (about 70K tokens), and an empty prompt already costs about 10.7K.
-/// As the context window it makes sessions compact at 50K - reserveTokens (33.6K by default, about 134K characters)
-/// before `crate::antigravity` has to drop history from its prompt of 3 characters per token (150K, under the 179K
-/// that survived), and it leaves Ultron's system prompt and tool schemas (about 12.5K) under 50K - 2 * reserveTokens.
-pub const ANTIGRAVITY_INPUT_TOKENS: u64 = 50_000;
+/// Conservative default context window for `antigravity-cli` models when `agy` holds the session natively.
+/// `gemini-4-neon*` gets the 512K window Google documents for Antigravity (`antigravity.google/docs/models`);
+/// per-prompt replay truncation stays bounded independently in `crate::antigravity` (`PROMPT_BUDGET`).
+pub const ANTIGRAVITY_DEFAULT_CONTEXT_WINDOW: u64 = 200_000;
+pub const ANTIGRAVITY_NEON_CONTEXT_WINDOW: u64 = 512_000;
 
 pub fn antigravity_model(id: &str) -> Option<Model> {
     if !antigravity_valid_id(id) {
         return None;
     }
+    let context_window = if id.starts_with("gemini-4-neon") {
+        ANTIGRAVITY_NEON_CONTEXT_WINDOW
+    } else {
+        ANTIGRAVITY_DEFAULT_CONTEXT_WINDOW
+    };
     // The id carries its effort (`-low`/`-high`), so no thinking levels.
     serde_json::from_value(serde_json::json!({
         "id": id,
@@ -82,9 +86,9 @@ pub fn antigravity_model(id: &str) -> Option<Model> {
         "provider": ANTIGRAVITY_PROVIDER,
         "baseUrl": "antigravity-cli://agy",
         "reasoning": false,
-        "input": ["text"],
+        "input": ["text", "image"],
         "cost": {"input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0},
-        "contextWindow": ANTIGRAVITY_INPUT_TOKENS,
+        "contextWindow": context_window,
         "maxTokens": 32_000,
     }))
     .ok()

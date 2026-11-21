@@ -11,7 +11,7 @@ use crate::options::SimpleStreamOptions;
 use crate::provider::Run;
 use crate::types::{
     AssistantContent, AssistantMessage, AssistantMessageEvent, EventSink, Message, Model, StopReason, TextContent,
-    ThinkingContent, ToolCall, TranscriptContext, Usage,
+    ThinkingContent, ToolCall, TranscriptContext, Usage, UserContent, UserMessageContent,
 };
 use serde_json::{Value, json};
 use std::collections::HashSet;
@@ -20,8 +20,10 @@ use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, ChildStdin, Command};
 use tokio::sync::{mpsc, oneshot};
 
-/// `agy` silently drops the end of a longer prompt, which holds the newest messages.
-const PROMPT_BUDGET: usize = crate::models::ANTIGRAVITY_INPUT_TOKENS as usize * 3;
+/// `agy` silently drops the end of a single `session/prompt` past ~179K characters (~70K tokens), which holds the
+/// newest messages. Keep each individual prompt under 150K characters; in session mode `agy` holds the full
+/// conversation history across turns (up to the model's real context window).
+const PROMPT_BUDGET: usize = 150_000;
 /// agy keeps about 20K tokens of one external MCP server's tool schemas and silently drops the tools past it
 /// (agy issue #1530): 3 characters per token, less a fifth for margin.
 const MANIFEST_BUDGET: usize = 48_000;
@@ -72,17 +74,72 @@ fn prompt(messages: &[Message], budget: usize) -> io::Result<String> {
     ))
 }
 
+/// Replaces inline base64 `Image` blocks in a serialized message with compact placeholders and collects native ACP
+/// `image` content blocks so multimodal attachments reach `agy` natively without bloating `PROMPT_BUDGET`.
+fn strip_images(message: &Message, images: &mut Vec<Value>) -> Message {
+    let replace = |blocks: &[UserContent], images: &mut Vec<Value>| -> Vec<UserContent> {
+        blocks
+            .iter()
+            .map(|b| match b {
+                UserContent::Image(image) => {
+                    images.push(json!({"type": "image", "data": image.data, "mimeType": image.mime_type}));
+                    UserContent::Text(TextContent {
+                        text: format!("[attached image #{}]", images.len()),
+                        text_signature: None,
+                    })
+                }
+                other => other.clone(),
+            })
+            .collect()
+    };
+    match message {
+        Message::User(user) => match &user.content {
+            UserMessageContent::Blocks(blocks) if blocks.iter().any(|b| matches!(b, UserContent::Image(_))) => {
+                let mut cloned = user.clone();
+                cloned.content = UserMessageContent::Blocks(replace(blocks, images));
+                Message::User(cloned)
+            }
+            _ => message.clone(),
+        },
+        Message::ToolResult(result) if result.content.iter().any(|b| matches!(b, UserContent::Image(_))) => {
+            let mut cloned = result.clone();
+            cloned.content = replace(&result.content, images);
+            Message::ToolResult(cloned)
+        }
+        _ => message.clone(),
+    }
+}
+
+/// Builds the ACP `session/prompt` content block list: one text block carrying the transcript plus any native image
+/// blocks extracted from the included messages.
+fn prompt_blocks(messages: &[Message], budget: usize) -> io::Result<Vec<Value>> {
+    let mut images = Vec::new();
+    let stripped: Vec<Message> = messages.iter().map(|m| strip_images(m, &mut images)).collect();
+    let text = prompt(&stripped, budget)?;
+    let mut blocks = Vec::with_capacity(1 + images.len());
+    blocks.push(json!({"type": "text", "text": text}));
+    blocks.extend(images);
+    Ok(blocks)
+}
+
 /// Only the messages agy has not seen, for a live session; `None` when they do not fit one prompt.
-fn delta_prompt(messages: &[Message]) -> Option<String> {
+fn delta_prompt(messages: &[Message]) -> Option<Vec<Value>> {
+    let mut images = Vec::new();
     let json: Vec<String> = messages
         .iter()
-        .map(|m| serde_json::to_string(m).expect("transcript messages serialize"))
+        .map(|m| serde_json::to_string(&strip_images(m, &mut images)).expect("transcript messages serialize"))
         .collect();
     let text = format!(
         "New messages in this Ultron conversation; continue at the final one. {RULES}\nMessages: [{}]",
         json.join(",")
     );
-    (text.len() <= PROMPT_BUDGET).then_some(text)
+    if text.len() > PROMPT_BUDGET {
+        return None;
+    }
+    let mut blocks = Vec::with_capacity(1 + images.len());
+    blocks.push(json!({"type": "text", "text": text}));
+    blocks.extend(images);
+    Some(blocks)
 }
 
 fn usage(result: &Value) -> Usage {
@@ -129,7 +186,7 @@ enum Event {
 
 /// What advances agy to Ultron's next model response.
 enum Step {
-    Prompt(String),
+    Prompt(Vec<Value>),
     Answer(Value),
 }
 
@@ -143,7 +200,7 @@ struct Agy {
     tail: tokio::task::JoinHandle<Vec<u8>>,
     bridge: bridge::Bridge,
     names: HashSet<String>,
-    _workspace: tempfile::TempDir,
+    workspace: Option<tempfile::TempDir>,
     session: String,
     next_id: u64,
     /// The `session/prompt` in flight.
@@ -166,14 +223,12 @@ impl Drop for Agy {
 }
 
 impl Agy {
-    /// Starts agy for `messages` and returns the step that sends their full replay. With `sessions`, agy reaches the
-    /// bridge through the `ultron` server of its own config, whose relay reads the bridge from agy's environment.
-    async fn start(
-        model: &Model,
+    /// Spawns `agy acp` in `workspace` with its loopback MCP bridge ready.
+    async fn spawn_in(
         messages: &[Message],
         env: Option<&ProviderEnv>,
-        sessions: bool,
-    ) -> io::Result<(Agy, Step)> {
+        workspace: tempfile::TempDir,
+    ) -> io::Result<Agy> {
         let tools = crate::transcript::current_tools(messages);
         let manifest = bridge::manifest(&tools);
         let size = manifest.to_string().len();
@@ -184,7 +239,6 @@ impl Agy {
             )));
         }
         let bridge = bridge::Bridge::start(manifest).await?;
-        let workspace = tempfile::tempdir()?;
         let mut command = Command::new("agy");
         command
             .args([
@@ -233,7 +287,7 @@ impl Agy {
                 }
             }
         });
-        let mut agy = Agy {
+        Ok(Agy {
             input: child.stdin.take().expect("piped"),
             group: child.id().and_then(|id| rustix::process::Pid::from_raw(id as i32)),
             child,
@@ -241,7 +295,7 @@ impl Agy {
             tail,
             names: tools.into_iter().map(|t| t.name).collect(),
             bridge,
-            _workspace: workspace,
+            workspace: Some(workspace),
             session: String::new(),
             next_id: 0,
             turn: None,
@@ -249,9 +303,55 @@ impl Agy {
             text: String::new(),
             thought: String::new(),
             context_used: 0,
-        };
+        })
+    }
+
+    /// Starts a fresh `agy` session for `messages` and returns the step that sends their full replay. With `sessions`,
+    /// agy reaches the bridge through the `ultron` server of its own config, whose relay reads the bridge from agy's
+    /// environment.
+    async fn start(
+        model: &Model,
+        messages: &[Message],
+        env: Option<&ProviderEnv>,
+        sessions: bool,
+    ) -> io::Result<(Agy, Step)> {
+        let mut agy = Self::spawn_in(messages, env, tempfile::tempdir()?).await?;
         match agy.open(model, messages, sessions).await {
             Ok(step) => Ok((agy, step)),
+            Err(error) => Err(agy.failed(error).await),
+        }
+    }
+
+    /// Reattaches a fresh `agy acp` process to a previously saved `session_id` via ACP `session/load`, avoiding a
+    /// full transcript replay after an idle eviction.
+    async fn resume(
+        model: &Model,
+        messages: &[Message],
+        env: Option<&ProviderEnv>,
+        session_id: String,
+        workspace: tempfile::TempDir,
+    ) -> io::Result<Agy> {
+        let mut agy = Self::spawn_in(messages, env, workspace).await?;
+        let loaded = async {
+            agy.request("initialize", json!({"protocolVersion":1,"clientCapabilities":{}}))
+                .await?;
+            let cwd = agy.workspace.as_ref().expect("workspace").path().to_path_buf();
+            agy.request(
+                "session/load",
+                json!({"sessionId": session_id, "cwd": cwd, "mcpServers": []}),
+            )
+            .await?;
+            agy.session = session_id;
+            agy.request(
+                "session/set_model",
+                json!({"sessionId": agy.session, "modelId": model.id}),
+            )
+            .await?;
+            Ok(())
+        }
+        .await;
+        match loaded {
+            Ok(()) => Ok(agy),
             Err(error) => Err(agy.failed(error).await),
         }
     }
@@ -267,7 +367,8 @@ impl Agy {
         };
         // No `systemPrompt.append`: the backend refuses appended text that names another assistant identity, and agy
         // reports that as 429 RESOURCE_EXHAUSTED on every turn.
-        let params = json!({"cwd": self._workspace.path(), "mcpServers": servers});
+        let cwd = self.workspace.as_ref().expect("workspace").path();
+        let params = json!({"cwd": cwd, "mcpServers": servers});
         let session = self.request("session/new", params).await?;
         self.session = session["sessionId"]
             .as_str()
@@ -278,7 +379,7 @@ impl Agy {
             json!({"sessionId":self.session,"modelId":model.id}),
         )
         .await?;
-        Ok(Step::Prompt(prompt(messages, PROMPT_BUDGET)?))
+        Ok(Step::Prompt(prompt_blocks(messages, PROMPT_BUDGET)?))
     }
 
     async fn send(&mut self, message: Value) -> io::Result<()> {
@@ -344,7 +445,7 @@ impl Agy {
                 let update = &frame["params"]["update"];
                 if update["sessionUpdate"] == "usage_update" {
                     self.context_used = update["used"].as_u64().unwrap_or(self.context_used);
-                } else if update["sessionUpdate"] == "agent_message_chunk" {
+                } else if self.turn.is_some() && update["sessionUpdate"] == "agent_message_chunk" {
                     let chunk = update["content"]["text"].as_str().unwrap_or_default();
                     if !chunk.is_empty() {
                         self.text.push_str(chunk);
@@ -355,7 +456,7 @@ impl Agy {
                     if self.text.len() > FRAME_LIMIT as usize {
                         return Err(io::Error::other("agy response exceeds limit"));
                     }
-                } else if update["sessionUpdate"] == "agent_thought_chunk" {
+                } else if self.turn.is_some() && update["sessionUpdate"] == "agent_thought_chunk" {
                     let chunk = update["content"]["text"].as_str().unwrap_or_default();
                     if !chunk.is_empty() {
                         self.thought.push_str(chunk);
@@ -378,8 +479,8 @@ impl Agy {
         deltas: Option<&mpsc::UnboundedSender<AgyDelta>>,
     ) -> io::Result<(Vec<AssistantContent>, Usage)> {
         match step {
-            Step::Prompt(text) => {
-                let params = json!({"sessionId":self.session,"prompt":[{"type":"text","text":text}]});
+            Step::Prompt(blocks) => {
+                let params = json!({"sessionId": self.session, "prompt": blocks});
                 self.turn = Some(self.call("session/prompt", params).await?);
             }
             Step::Answer(result) => {
@@ -1016,5 +1117,53 @@ mod tests {
             .await
             .unwrap();
         assert_ne!(reply_text(&fresh)["pid"], report["pid"]);
+    }
+
+    #[tokio::test]
+    async fn session_load_resumes_with_delta_prompt_and_ignores_replay_chunks() {
+        let model = crate::models::antigravity_model("offline-test").unwrap();
+        let options = fake_agy_options();
+        let messages = vec![
+            system(rlm_tool()),
+            message(json!({"role":"user","content":"follow up","timestamp":0})),
+        ];
+        let mut agy = Agy::resume(
+            &model,
+            &messages,
+            options.base.env.as_ref(),
+            "offline".into(),
+            tempfile::tempdir().unwrap(),
+        )
+        .await
+        .unwrap();
+        let prompt = delta_prompt(&messages[1..]).unwrap();
+        let (content, _) = agy.advance(Step::Prompt(prompt), None).await.unwrap();
+        let [AssistantContent::Text(text)] = &content[..] else {
+            panic!("{content:?}");
+        };
+        assert!(!text.text.contains("HISTORICAL-REPLAY"), "{}", text.text);
+        let report: Value = serde_json::from_str(&text.text).unwrap();
+        assert_eq!(report["loaded"], true);
+        assert_eq!(report["delta"], 1);
+    }
+
+    #[test]
+    fn prompt_blocks_extracts_images_as_native_acp_blocks() {
+        let messages = vec![message(json!({
+            "role": "user",
+            "content": [
+                {"type": "text", "text": "describe this"},
+                {"type": "image", "data": "QUJD", "mimeType": "image/png"}
+            ],
+            "timestamp": 0
+        }))];
+        let blocks = prompt_blocks(&messages, 150_000).unwrap();
+        assert_eq!(blocks.len(), 2);
+        assert!(blocks[0]["text"].as_str().unwrap().contains("[attached image #1]"));
+        assert!(!blocks[0]["text"].as_str().unwrap().contains("QUJD"));
+        assert_eq!(
+            blocks[1],
+            json!({"type": "image", "data": "QUJD", "mimeType": "image/png"})
+        );
     }
 }

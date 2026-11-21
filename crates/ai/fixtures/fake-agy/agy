@@ -10,7 +10,7 @@ import time
 import urllib.request
 
 CELLS = ["from pathlib import Path; retained = Path('fixture.txt').read_text().strip(); print(len(retained))", "print(retained[::-1])"]
-state = {"append": None, "server": None, "prompts": 0}
+state = {"append": None, "server": None, "prompts": 0, "loaded": False}
 
 
 def send(frame):
@@ -89,6 +89,11 @@ for line in sys.stdin:
         state["server"] = (params["mcpServers"] or [None])[0]
         state["append"] = params.get("_meta", {}).get("antigravity", {}).get("systemPrompt", {}).get("append")
         answer(message, {"sessionId": "offline"})
+    elif method == "session/load":
+        state["loaded"] = True
+        # Replay a historical chunk during session/load; Ultron must ignore chunks before a prompt turn.
+        send({"jsonrpc": "2.0", "method": "session/update", "params": {"sessionId": params["sessionId"], "update": {"sessionUpdate": "agent_message_chunk", "content": {"type": "text", "text": "HISTORICAL-REPLAY"}}}})
+        answer(message, {})
     elif method == "session/set_model":
         if params["modelId"] == "offline-logged-out":
             print("Error: not signed in. Run `agy login` first.", file=sys.stderr, flush=True)
@@ -100,7 +105,7 @@ for line in sys.stdin:
         state["prompts"] += 1
         text = params["prompt"][0]["text"]
         assert state["append"] is None or "\nSystem: " not in text, "system prompt sent twice"
-        report = {"pid": os.getpid(), "append": state["append"], "prompts": state["prompts"], "system": "SYSTEM RULES" in text}
+        report = {"pid": os.getpid(), "append": state["append"], "prompts": state["prompts"], "system": "SYSTEM RULES" in text, "loaded": state["loaded"]}
         if "\nMessages: " in text:
             report["delta"] = len(json.loads(text.split("\nMessages: ", 1)[1]))
             finish(message, json.dumps(report), USAGE)
